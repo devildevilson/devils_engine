@@ -12,7 +12,7 @@
 namespace devils_engine {
 namespace utils {
 
-constexpr auto default_binary_options = alpaca::options::with_checksum | alpaca::options::with_version;
+//constexpr auto default_binary_options = alpaca::options::with_checksum | alpaca::options::with_version;
 
 // в этом чет особо нет никакого смысла
 // есть смысл - легко сделать настроечки присобачив этот интерфейс к любой структуре
@@ -24,7 +24,7 @@ struct serializable {
   std::expected<std::string, glz::error_ctx> to_string() const;
   glz::error_ctx from_string(const std::string& str);
   std::vector<uint8_t> to_binary() const;
-  std::error_code from_binary(const std::vector<uint8_t> &data);
+  std::errc from_binary(const std::vector<uint8_t> &data);
   bool dump(const std::string &path); // .json поймем что нужно сделать по расширению
   bool load(const std::string &path);
 };
@@ -49,13 +49,15 @@ glz::error_ctx serializable<T>::from_string(const std::string& str) {
 template <typename T>
 std::vector<uint8_t> serializable<T>::to_binary() const {
   const auto& obj = static_cast<const T&>(*this);
-  return utils::to_binary<default_binary_options>(obj); // тут наверное будут в целом стандартные опции
+  //return utils::to_binary<default_binary_options>(obj); // тут наверное будут в целом стандартные опции
+  return utils::to_binary(obj); // опции есть, нужно разобраться что к чему
 }
 
 template <typename T>
-std::error_code serializable<T>::from_binary(const std::vector<uint8_t>& data) {
+std::errc serializable<T>::from_binary(const std::vector<uint8_t>& data) {
   auto& obj = static_cast<T&>(*this);
-  return utils::from_binary<default_binary_options>(obj, data);
+  //return utils::from_binary<default_binary_options>(obj, data);
+  return utils::from_binary(data, obj);
 }
 
 template <typename T>

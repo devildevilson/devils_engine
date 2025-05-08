@@ -10,8 +10,6 @@ set(SRC_LIST
   src/utils/core.cpp
   src/utils/block_allocator.cpp
   src/utils/stack_allocator.cpp
-  src/utils/bits.cpp
-  src/utils/bitstream.cpp
   src/utils/prng.cpp
   src/utils/fileio.cpp
   src/utils/time.cpp
@@ -26,13 +24,10 @@ set(SRC_LIST
 set(HDR_LIST
   include/devils_engine/utils/block_allocator.h
   include/devils_engine/utils/stack_allocator.h
-  include/devils_engine/utils/bits.h
-  include/devils_engine/utils/bitstream.h
   include/devils_engine/utils/memory_pool.h
   include/devils_engine/utils/type_traits.h
   include/devils_engine/utils/core.h
   include/devils_engine/utils/string-utils.hpp
-  include/devils_engine/utils/flat_hash_map.hpp
   include/devils_engine/utils/safe_handle.h
   include/devils_engine/utils/prng.h
   include/devils_engine/utils/dice.h
@@ -47,9 +42,12 @@ set(HDR_LIST
   include/devils_engine/utils/load_stage.h 
   include/devils_engine/utils/loader.h 
   include/devils_engine/utils/prng_string.h 
-  "include/devils_engine/utils/locale-utils.hpp" 
+  include/devils_engine/utils/locale-utils.hpp
   include/devils_engine/utils/shared_data_system.h 
   include/devils_engine/utils/serializable.h
+  include/devils_engine/utils/event_dispatcher.h
+  include/devils_engine/utils/event_consumer.h
+  include/devils_engine/utils/context_stack.h
 )
 
 add_library(devils_mood src/mood/system.cpp include/devils_engine/mood/system.h)
@@ -119,7 +117,7 @@ target_compile_options(devils_utils PRIVATE
 )
 
 target_link_libraries(devils_utils 
-  PUBLIC devils_engine::thread devils_mood devils_simul devils_aesthetics spdlog::spdlog glaze::glaze alpaca::alpaca gtl minizip
+  PUBLIC devils_engine::thread devils_mood devils_simul devils_aesthetics spdlog::spdlog glaze::glaze gtl minizip #alpaca::alpaca
   PRIVATE engine_c_part1 density ZLIB::ZLIB bcrypt ncrypt crypt32
 )
 

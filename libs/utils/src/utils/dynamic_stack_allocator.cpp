@@ -9,7 +9,7 @@ namespace devils_engine {
     {}
 
     dynamic_stack_allocator::~dynamic_stack_allocator() noexcept {
-      ::operator delete[](m_memory, std::align_val_t{m_aligment});
+      operator delete[](m_memory, std::align_val_t{m_aligment});
     }
 
     dynamic_stack_allocator::dynamic_stack_allocator(dynamic_stack_allocator &&move) noexcept :
@@ -19,7 +19,7 @@ namespace devils_engine {
     }
 
     dynamic_stack_allocator & dynamic_stack_allocator::operator=(dynamic_stack_allocator &&move) noexcept {
-      ::operator delete[](m_memory, std::align_val_t{m_aligment});
+      operator delete[](m_memory, std::align_val_t{m_aligment});
 
       m_aligment = move.m_aligment; 
       m_size = move.m_size;
@@ -57,7 +57,7 @@ namespace devils_engine {
 
     std::tuple<char*, size_t> dynamic_stack_allocator::grow_memory(char* mem) const noexcept {
       if (mem == nullptr) {
-        char* new_mem = ::new (std::align_val_t{m_aligment}) char[m_size];
+        char* new_mem = new (std::align_val_t{m_aligment}) char[m_size];
         return std::make_tuple(new_mem, m_size);
       }
 
@@ -67,7 +67,7 @@ namespace devils_engine {
       char* new_mem = ::new (std::align_val_t{m_aligment}) char[new_size];
       assert(new_mem != nullptr);
       memcpy(new_mem, mem, m_allocated);
-      ::operator delete[](mem, std::align_val_t{m_aligment});
+      operator delete[](mem, std::align_val_t{m_aligment});
 
       return std::make_tuple(new_mem, new_size);
     }

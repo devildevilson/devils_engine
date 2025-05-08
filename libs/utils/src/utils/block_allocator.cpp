@@ -81,7 +81,7 @@ namespace devils_engine {
       char* current = m_memory;
       while (current != nullptr) {
         char* tmp = reinterpret_cast<char**>(current)[0];
-        ::operator delete[] (current, std::align_val_t{m_align});
+        operator delete[] (current, std::align_val_t{m_align});
         current = tmp;
       }
 
@@ -107,7 +107,7 @@ namespace devils_engine {
 
     void block_allocator::create_new_memory() noexcept {
       // char* new_mem = new (std::align_val_t{ m_align }) char[m_memory_size + m_align];
-      char* new_mem = reinterpret_cast<char*>(::operator new((m_memory_size + m_align) * sizeof(char), std::align_val_t{m_align}));
+      char* new_mem = reinterpret_cast<char*>(operator new((m_memory_size + m_align) * sizeof(char), std::align_val_t{m_align}));
       assert(new_mem != nullptr);
       reinterpret_cast<char**>(new_mem)[0] = m_memory;
       m_memory = new_mem;
@@ -216,7 +216,7 @@ namespace devils_engine {
 
     char* block_allocator_mt::create_new_memory(char* old_mem) noexcept {
       //char* new_mem = new (std::align_val_t{m_align}) char[m_memory_size + m_align];
-      char* new_mem = reinterpret_cast<char*>(::operator new((m_memory_size + m_align) * sizeof(char), std::align_val_t{ m_align }));
+      char* new_mem = reinterpret_cast<char*>(operator new((m_memory_size + m_align) * sizeof(char), std::align_val_t{ m_align }));
       assert(new_mem != nullptr);
       reinterpret_cast<char**>(new_mem)[0] = old_mem;
       //memory = new_mem;

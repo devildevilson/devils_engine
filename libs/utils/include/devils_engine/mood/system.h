@@ -14,6 +14,8 @@
 namespace devils_engine {
 namespace mood {
 // по идее эту таблицу можно шарить между системами
+// более того у меня наверное будет общая таблица со всеми возможными функциями
+// будут возвращать либо bool, либо число, либо строку, либо это функция эффект
 struct table {
   using action_f = std::function<int32_t(void* userdata)>; // non-zero return == error
   using guard_f = std::function<int32_t(void* userdata)>; // less zero return == error

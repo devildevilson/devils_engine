@@ -156,7 +156,7 @@ TEST_CASE("Block allocator tests", "[block_allocator]") {
 
   // utility
   REQUIRE(al.alignment() == alignment);
-  REQUIRE(al.allocation_size() == block_size);
+  REQUIRE(al.allocation_size() == utils::align_to(block_size, alignment));
   REQUIRE(al.size() == utils::align_to(overall_size, alignment));
   REQUIRE(al.compute_full_size() == 0); // lazy allocation
 
