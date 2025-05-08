@@ -15,7 +15,7 @@ constexpr const char* upper_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
 constexpr const char* base16_alphabet = "abcdef1234567890";
 
 template <typename T>
-void strgen(const char* alphabet, const size_t alphabet_length, T &rnd, std::string &container) {
+void strgen(const char* alphabet, const size_t alphabet_length, std::string &container, T& rnd) {
   for (auto &c : container) {
     const size_t index = utils::interval(alphabet_length, rnd);
     c = alphabet[index];

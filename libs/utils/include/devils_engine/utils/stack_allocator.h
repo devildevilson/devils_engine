@@ -5,6 +5,7 @@
 #include <atomic>
 #include "utils/core.h"
 #include "utils/type_traits.h"
+#include "utils/list.h"
 
 namespace devils_engine {
   namespace utils {
@@ -74,6 +75,47 @@ namespace devils_engine {
       size_t m_size;
       char* m_memory;
       std::atomic<size_t> m_allocated;
+    };
+
+    // фиксированные куски памяти, но можно использовать как memory_pool
+    class fixed_pool_mt {
+    public:
+      fixed_pool_mt(const size_t size, const size_t block_size, const size_t aligment) noexcept;
+      ~fixed_pool_mt() noexcept;
+
+      fixed_pool_mt(const fixed_pool_mt& allocator) noexcept = delete;
+      fixed_pool_mt(fixed_pool_mt&& move) noexcept;
+      fixed_pool_mt& operator=(const fixed_pool_mt& allocator) noexcept = delete;
+      fixed_pool_mt& operator=(fixed_pool_mt&& move) noexcept;
+
+      void* allocate() noexcept;
+
+      template <typename T, typename... Args>
+      T* create(Args&&... args) {
+        auto ptr = allocate();
+        utils_assertf(ptr != nullptr, "Could not allocate memory for '{}', size: {}", utils::type_name<T>(), m_size);
+        return new (ptr) T(std::forward<Args>(args)...);
+      }
+
+      template <typename T>
+      void destroy(T* ptr) {
+        ptr->~T();
+        free(ptr);
+      }
+
+      void free(void* ptr) noexcept;
+
+      size_t size() const noexcept;
+      size_t block_size() const noexcept;
+      size_t aligment() const noexcept;
+    private:
+      struct stack_element_t : public utils::forw::list<stack_element_t, 0> {};
+
+      size_t m_aligment;
+      size_t m_block_size;
+      size_t m_size;
+      char* m_memory;
+      std::atomic<stack_element_t*> m_stack;
     };
   }
 }

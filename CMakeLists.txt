@@ -37,7 +37,7 @@ if (MSVC)
   set(FREETYPE_INCLUDE_DIRS ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/freetype/include)
 endif()
 
-if (MSVC) 
+if (MSVC) # probably can be dealed within cmake build system ???
   set(DENSITY_LIBRARY ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density-win32/density.lib)
   set(DENSITY_LIBRARY_DIR ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density-win32)
   set(DENSITY_INCLUDE_DIRS ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density-win32/include)
@@ -49,9 +49,9 @@ if (MSVC)
   set(OPENAL_INCLUDE_DIRS ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/openal/include)
 endif()
 
-include_directories(${FETCHCONTENT_BASE_DIR}/zlib-build/)
 include_directories(${FETCHCONTENT_BASE_DIR}/dr_libs-src/)
 include_directories(${FETCHCONTENT_BASE_DIR}/stb-src/)
+include_directories(${FETCHCONTENT_BASE_DIR}/zpp_bits-src/)
 
 if (MSVC)
   set(GLFW3_LIBRARY_NAME glfw3dll)
@@ -99,19 +99,27 @@ set(CATCH_INSTALL_EXTRAS OFF)
 FetchContent_Declare(
   glaze
   GIT_REPOSITORY https://github.com/stephenberry/glaze.git
-  GIT_TAG        3b2dd7bebb3646e570c00ff524d8e2a5a15fbc9b # version 5.1.2
+  GIT_TAG        v5.2.0 # version 5.1.2
   GIT_SHALLOW    TRUE
   GIT_PROGRESS   TRUE
   FIND_PACKAGE_ARGS
 )
 
+#FetchContent_Declare(
+#  alpaca
+#  GIT_REPOSITORY https://github.com/p-ranav/alpaca.git
+#  GIT_TAG        83a592f0c3807500f1aaf3b07fd48105a01e2780 # Oct 1, 2024
+#  GIT_SHALLOW    TRUE
+#  GIT_PROGRESS   TRUE
+#  OVERRIDE_FIND_PACKAGE 
+#)
+
 FetchContent_Declare(
-  alpaca
-  GIT_REPOSITORY https://github.com/p-ranav/alpaca.git
-  GIT_TAG        83a592f0c3807500f1aaf3b07fd48105a01e2780 # Oct 1, 2024
-  GIT_SHALLOW    TRUE
+  zpp_bits
+  GIT_REPOSITORY https://github.com/eyalz800/zpp_bits.git
+  GIT_TAG        v4.5
   GIT_PROGRESS   TRUE
-  OVERRIDE_FIND_PACKAGE 
+  SOURCE_SUBDIR somePathThatNeverExistsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa
 )
 
 FetchContent_Declare(
@@ -263,12 +271,18 @@ FetchContent_Declare(
   FIND_PACKAGE_ARGS
 )
 
-FetchContent_MakeAvailable(glaze alpaca gtl spdlog minizip-ng ZLIB PNG atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm Catch2)
+FetchContent_MakeAvailable(ZLIB)
+
+# workarounds for zlib-ng
+add_library(ZLIB::ZLIB ALIAS zlib)
+set(ZLIB_INCLUDE_DIR "${FETCHCONTENT_BASE_DIR}/zlib-build/")
+set(ZLIB_INCLUDE_DIRS "${FETCHCONTENT_BASE_DIR}/zlib-build/")
+
+FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng PNG atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm Catch2)
 
 find_package(Threads REQUIRED)
 
 # workarounds for other libs
-add_library(ZLIB::ZLIB ALIAS zlib)
 add_library(PNG::PNG ALIAS png_shared)
 
 if(MSVC)
@@ -315,3 +329,7 @@ add_subdirectory(tests/)
 #endforeach()
 
 # вообще по итогу наверное лучше будет оформить единую либу со всеми зависимостями
+
+add_library(devils_engine)
+target_link_libraries(devils_engine PUBLIC devils_engine::acumen devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::thread devils_engine::utils devils_engine::visage)
+add_library(devils_engine::devils_plane ALIAS devils_engine)
