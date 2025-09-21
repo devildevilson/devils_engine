@@ -19,6 +19,16 @@ namespace devils_engine {
         list() noexcept : m_next(nullptr) {}
         ~list() noexcept { invalidate(); }
 
+        list(const list& copy) noexcept = delete;
+        list(list&& move) noexcept : m_next(move.m_next) { move.invalidate(); }
+        list& operator=(const list& copy) noexcept = delete;
+        list& operator=(list&& move) noexcept {
+          this->invalidate();
+          this->m_next = move.m_next;
+          move.invalidate();
+          return *this;
+        }
+
         void add(T* obj) noexcept {
           static_assert(std::is_base_of_v<list<T, t>, T>);
           current_list_p l = obj;
@@ -135,11 +145,37 @@ namespace devils_engine {
         
         // использовать this плохая идея для контейнеров вроде std vector
         // хотя в этом случае вся структура не имеет смысла
+        // переопределим move и запретим copy?
         list() noexcept : m_next(static_cast<T*>(this)), m_prev(static_cast<T*>(this)) {}
-        // пока непонятно насколько это испортит разные списки в игре
-        // но с другой стороны, если мы в этот момент не будем ничего обходить
-        // то так аккуратно уберем невалидные данные
         ~list() noexcept { remove(); }
+        list(const list& copy) noexcept = delete;
+        list(list&& move) noexcept {
+          if (move.empty()) this->remove();
+          else {
+            this->remove();
+            this->m_prev = move.m_prev;
+            this->m_next = move.m_next;
+            this->m_prev->m_next = this;
+            this->m_next->m_prev = this;
+            move.invalidate();
+          }
+        }
+
+        list& operator=(const list& copy) noexcept = delete;
+        list& operator=(list&& move) noexcept {
+          if (move.empty()) this->remove();
+          else {
+            this->remove();
+            this->m_prev = move.m_prev;
+            this->m_next = move.m_next;
+            this->m_prev->m_next = this;
+            this->m_next->m_prev = this;
+            move.invalidate();
+          }
+
+          return *this;
+        }
+
     
         void add(T* obj) noexcept {
           static_assert(std::is_base_of_v<list<T, t>, T>);

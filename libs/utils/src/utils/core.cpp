@@ -103,5 +103,38 @@ namespace devils_engine {
       const auto bin_dir = std::string_view(str).substr(0, first_slash);
       return std::string(bin_dir.substr(0, bin_dir.rfind('/')+1));
     }
+
+    uint32_t crc32c(const uint8_t* data, const size_t len) noexcept {
+      uint64_t crc = 0xffffffffu;
+      size_t i = 0;
+
+      // 8 байт
+      for (; i + sizeof(uint64_t) <= len; i += sizeof(uint64_t)) {
+        uint64_t chunk = 0;
+        memcpy(&chunk, data + i, sizeof(uint64_t));
+        crc = _mm_crc32_u64(crc, chunk);
+      }
+
+      // 4 байт
+      if (i + sizeof(uint32_t) <= len) {
+        uint32_t chunk = 0;
+        std::memcpy(&chunk, data + i, sizeof(uint32_t));
+        crc = _mm_crc32_u32(crc, chunk);
+        i += sizeof(uint32_t);
+      }
+
+      // 1 байт
+      for (; i < len; i++) {
+        crc = _mm_crc32_u8(crc, data[i]);
+      }
+
+      return static_cast<uint32_t>(crc ^ 0xffffffffu); // финальный XOR
+    }
+
+    uint32_t crc32c(const std::span<const uint8_t>& data) noexcept { return crc32c(data.data(), data.size()); }
+    uint32_t crc32c(const std::span<const char>& data) noexcept { return crc32c(reinterpret_cast<const uint8_t*>(data.data()), data.size()); }
+    uint32_t crc32c(const std::span<uint8_t>& data) noexcept { return crc32c(data.data(), data.size()); }
+    uint32_t crc32c(const std::span<char>& data) noexcept { return crc32c(reinterpret_cast<const uint8_t*>(data.data()), data.size()); }
+    uint32_t crc32c(const std::string_view& data) noexcept { return crc32c(reinterpret_cast<const uint8_t*>(data.data()), data.size()); }
   }
 }

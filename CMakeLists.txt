@@ -318,6 +318,7 @@ add_subdirectory(libs/painter/)
 add_subdirectory(libs/visage/)
 add_subdirectory(libs/bindings/)
 add_subdirectory(libs/acumen/)
+add_subdirectory(libs/catalogue/)
 add_subdirectory(tests/)
 
 #foreach (library_path IN LISTS DYN_LIBRARIES_LIST)
@@ -331,5 +332,5 @@ add_subdirectory(tests/)
 # вообще по итогу наверное лучше будет оформить единую либу со всеми зависимостями
 
 add_library(devils_engine)
-target_link_libraries(devils_engine PUBLIC devils_engine::acumen devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::thread devils_engine::utils devils_engine::visage)
+target_link_libraries(devils_engine PUBLIC devils_engine::catalogue devils_engine::acumen devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::thread devils_engine::utils devils_engine::visage)
 add_library(devils_engine::devils_plane ALIAS devils_engine)

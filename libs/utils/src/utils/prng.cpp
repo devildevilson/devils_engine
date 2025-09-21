@@ -1,54 +1,99 @@
 #include "prng.h"
 
+#include "type_traits.h"
+
 // надеюсь я все правильно записал и у меня не будет глупых проблем со случацными числами
 
 namespace devils_engine {
   namespace utils {
-    double prng_normalize(const uint64_t value) {
+    double prng_normalize(const uint64_t value) noexcept {
       union { uint64_t i; double d; } u;
       u.i = (UINT64_C(0x3FF) << 52) | (value >> 12);
       return u.d - 1.0;
     }
     
-    float prng_normalizef(const uint32_t value) {
+    float prng_normalizef(const uint32_t value) noexcept {
       union { uint32_t i; float f; } u;
       const uint32_t float_mask = 0x7f << 23;
       u.i = float_mask | (value >> 9);
       return u.f - 1.0f;
     }
-
-    // предполагаем что числа не 0? имеет смысл
-
-    uint64_t mix(const uint64_t v1, const uint64_t v2) {
-      xoroshiro128starstar::state s{ { v1, v2 } };
-      return xoroshiro128starstar::value(xoroshiro128starstar::next(s));
+    
+    template <typename... Args>
+    static uint64_t mix_impl(Args&&... args) noexcept {
+      const uint64_t arr[] = { std::forward<Args>(args)... };
+      const size_t size = sizeof(arr) / sizeof(arr[0]);
+      const auto input = std::string_view(reinterpret_cast<const char*>(arr), sizeof(uint64_t) * size);
+      return utils::murmur_hash64A(input, splitmix(arr[0]));
     }
 
-    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3) {
-      // в таких функциях было бы неплохо миксовать случайное число
-      return mix(v1, mix(v2, v3));
+    uint64_t mix(const uint64_t v1) noexcept {
+      return wyhash64(v1);
     }
 
-    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4) {
-      xoshiro256starstar::state s{ { v1, v2, v3, v4 } };
+    uint64_t mix(const uint64_t v1, const uint64_t v2) noexcept {
+      return mix_splitmix(v1, v2);
+    }
+
+    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3) noexcept {
+      return mix_impl(v1, v2, v3);
+    }
+
+    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4) noexcept {
+      return mix_impl(v1, v2, v3, v4);
+    }
+
+    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5) noexcept {
+      return mix_impl(v1, v2, v3, v4, v5);
+    }
+
+    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5, const uint64_t v6) noexcept {
+      return mix_impl(v1, v2, v3, v4, v5, v6);
+    }
+
+    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5, const uint64_t v6, const uint64_t v7) noexcept {
+      return mix_impl(v1, v2, v3, v4, v5, v6, v7);
+    }
+
+    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5, const uint64_t v6, const uint64_t v7, const uint64_t v8) noexcept {
+      return mix_impl(v1, v2, v3, v4, v5, v6, v7, v8);
+    }
+
+    uint64_t mix_hash(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4) noexcept {
+      const uint64_t arr[] = { v1, v2, v3, v4 };
+      const size_t size = sizeof(arr) / sizeof(arr[0]);
+      const auto input = std::string_view(reinterpret_cast<const char*>(arr), sizeof(uint64_t) * size);
+      return utils::murmur_hash64A(input, splitmix(v1));
+    }
+
+    uint64_t mix_splitmix(const uint64_t v1, const uint64_t v2) noexcept {
+      return splitmix(v1, v2);
+    }
+
+    uint64_t mix_splitmix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4) noexcept {
+      return mix_splitmix(mix_splitmix(v1, v2), mix_splitmix(v3, v4));
+    }
+
+    uint64_t mix_xoshiro1(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4) noexcept {
+      xoshiro256starstar::state s{ { mix(v1), mix(v2), mix(v3), mix(v4) } };
       return xoshiro256starstar::value(xoshiro256starstar::next(s));
     }
 
-    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5) {
-      return mix(v1, v2, v3, mix(v4, v5));
+    constexpr size_t mix_count = 10;
+    uint64_t mix_xoshiro2(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4) noexcept {
+      xoshiro256starstar::state s{ { v1, v2, v3, v4 } };
+      for (size_t i = 0; i < mix_count; ++i) {
+        s = xoshiro256starstar::next(s);
+      }
+      return xoshiro256starstar::value(s);
     }
 
-    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5, const uint64_t v6) {
-      return mix(mix(v1, v6), v2, v3, v4, v5);
-    }
-
-    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5, const uint64_t v6, const uint64_t v7) {
-      return mix(v1, mix(v2, v7), v3, v4, v5, v6);
-    }
-
-    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5, const uint64_t v6, const uint64_t v7, const uint64_t v8) {
-      xoshiro512starstar::state s{ { v1, v2, v3, v4, v5, v6, v7, v8 } };
-      return xoshiro512starstar::value(xoshiro512starstar::next(s));
+    uint64_t mix_mulxor(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4) noexcept {
+      uint64_t x = (v1 ^ (v2 << 1)) * 0x9e3779b97f4a7c15ULL;
+      x ^= (v3 ^ (v4 << 3)) * 0xbf58476d1ce4e5b9ULL;
+      x ^= x >> 33;
+      x *= 0xff51afd7ed558ccdULL;
+      return x ^ (x >> 29);
     }
     
     static inline uint64_t rotl(const uint64_t x, int k) {

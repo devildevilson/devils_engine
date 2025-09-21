@@ -25,7 +25,7 @@ set(HDR_LIST
   include/devils_engine/demiurg/settings.h 
   include/devils_engine/demiurg/zip_module.h
   include/devils_engine/demiurg/module_system.h
- )
+  "include/devils_engine/demiurg/resource_loader.h")
 
 add_library(devils_demiurg ${SRC_LIST} ${HDR_LIST})
 

@@ -52,7 +52,7 @@ set(HDR_LIST
 
 add_library(devils_mood src/mood/system.cpp include/devils_engine/mood/system.h)
 target_compile_features(devils_mood PRIVATE cxx_std_23)
-target_include_directories(devils_mood INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine>")
+target_include_directories(devils_mood INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
 target_include_directories(devils_mood PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/mood>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine>")
 target_link_libraries(devils_mood gtl spdlog::spdlog)
 
@@ -68,7 +68,7 @@ target_compile_options(devils_mood PRIVATE
 
 add_library(devils_simul src/simul/interface.cpp include/devils_engine/simul/interface.h)
 target_compile_features(devils_simul PRIVATE cxx_std_23)
-target_include_directories(devils_simul INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine>")
+target_include_directories(devils_simul INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
 target_include_directories(devils_simul PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/simul>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine>")
 target_link_libraries(devils_simul spdlog::spdlog)
 
@@ -84,8 +84,9 @@ target_compile_options(devils_simul PRIVATE
 
 # include/devils_engine/aesthetics/world.h include/devils_engine/aesthetics/common.h include/devils_engine/aesthetics/simple_systems.h
 add_library(devils_aesthetics INTERFACE)
-target_include_directories(devils_aesthetics INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine>")
+target_include_directories(devils_aesthetics INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
 
+# mess, why do I made this?
 add_library(devils_utils ${SRC_LIST} ${HDR_LIST})
 add_library(engine_c_part1 src/utils/sha256.c include/devils_engine/utils/sha256cpp.h)
 
@@ -121,7 +122,7 @@ target_link_libraries(devils_utils
   PRIVATE engine_c_part1 density ZLIB::ZLIB bcrypt ncrypt crypt32
 )
 
-target_include_directories(devils_utils INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine>")
+target_include_directories(devils_utils INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
 target_include_directories(devils_utils PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utils>")
 target_include_directories(engine_c_part1 PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utils>")
 

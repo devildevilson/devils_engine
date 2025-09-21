@@ -24,6 +24,8 @@ struct font_t;
 // для каких то других систем которые используют луа будет другой хук и другое время 
 // больше всего меня волнует генератор, как бы не попасть в просак с ним
 
+// со шрифтами нужно будет повозиться
+
 class system {
 public:
   static constexpr int hook_after_instructions_count = 100000;
@@ -34,7 +36,7 @@ public:
 
   system(const font_t* default_font);
   ~system() noexcept;
-  void load_entry_point(const std::string &path); // потом будет текст скрипта
+  void load_entry_point(const std::string &path); // resource
   void update(const size_t time);
 
   nk_context* ctx_native() const noexcept;

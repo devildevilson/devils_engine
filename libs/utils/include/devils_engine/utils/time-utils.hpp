@@ -149,8 +149,7 @@ namespace utils {
     timestamp_t start_time;
     timestamp_t elapsed_time;
 
-    // mcs
-    static size_t resolution();
+    static size_t resolution(); // mcs
 
     app_clock(const timestamp_t start_time) noexcept;
     void update(const size_t delta);
@@ -158,6 +157,24 @@ namespace utils {
     timestamp_t timestamp() const;
     int64_t diff(const timestamp_t timestamp) const;
     double seconds() const;
+  };
+
+  // наверное этот тип будет полезнее чем app_clock
+  struct app_timer {
+    timestamp_t start_time;
+    size_t elapsed_time;
+    timestamp_t end_time;
+
+    static size_t resolution(); // mcs
+    static double seconds(const int64_t time);
+
+    app_timer(const timestamp_t start_time, const timestamp_t end_time = 0) noexcept;
+    void update(const size_t delta) noexcept;
+
+    std::tuple<timestamp_t, timestamp_t, timestamp_t> status() const noexcept;
+    bool elapsed() const noexcept;
+    timestamp_t timestamp() const noexcept;
+    int64_t diff(const timestamp_t timestamp) const noexcept;
   };
 }
 }
