@@ -3,6 +3,8 @@
 #include "utils/core.h"
 #include "utils/list.h"
 #include "utils/block_allocator.h"
+#include "utils/string-utils.hpp"
+#include "mood/system.h"
 
 using namespace devils_engine;
 
@@ -177,3 +179,197 @@ TEST_CASE("Block allocator tests", "[block_allocator]") {
   }
 }
 
+TEST_CASE("Mood system tests", "[mood::system]") {
+  const std::initializer_list<std::string_view> a_strs = { "action1", "action2", "action3", "action4", "action5" };
+  const std::initializer_list<std::string_view> g_strs = { "guard1", "guard2", "guard3", "guard4", "guard5", "guard6", };
+
+  mood::table t;
+  for (const auto& name : a_strs) {
+    t.actions[name] = [] (void*) { return 0; };
+  }
+
+  for (const auto& name : g_strs) {
+    t.actions[name] = [] (void*) { return 0; };
+  }
+
+  const std::vector<std::string> lines = {
+    "begin + idle = prepare_weapon",
+    "initial_state [guard1] = prepare_weapon1",
+    "initial_state = prepare_weapon",
+    "prepare_weapon + idle = melee_ready",
+    "melee_ready + attack = melee_attack",
+    "melee_attack + idle = melee_attack_end",
+    "melee_attack + on_entry / action2, action3, action4",
+    "melee_attack + on_exit / action2",
+    "melee_attack_end + idle = melee_ready",
+    "melee_attack_end + attack [guard1] / action1 = melee_attack2",
+    "melee_attack_end + attack [guard2] / action2 = melee_attack2",
+    "melee_attack_end + attack [guard5] / action5 = melee_attack2",
+    "melee_attack_end + attack [guard3] / action3 = melee_attack2",
+    "melee_attack_end + fdfgwewg [ guard1, guard2, guard3 ] / action1 = melee_attack2",
+    "any_state + attack [guard1] / action1 = melee_attack2",
+  };
+
+  mood::system s(&t, lines);
+
+  const auto trans1 = s.find_transitions("begin", "idle"); // find transition from state 'begin' thru event 'idle'
+  REQUIRE(trans1.size() == 1); // 1 transition
+  REQUIRE(trans1[0].current_state == "begin");
+  REQUIRE(trans1[0].event == "idle");
+  REQUIRE(trans1[0].next_state == "prepare_weapon");
+  const auto trans2 = s.find_transitions("begin", "attack");
+  REQUIRE(trans2.size() == 0); // no such transitions
+  const auto trans3 = s.find_transitions("melee_attack_end", "attack");
+  REQUIRE(trans3.size() == 4); // 4 transitions
+  REQUIRE(trans3[0].current_state == "melee_attack_end");
+  REQUIRE(trans3[0].event == "attack");
+  REQUIRE(trans3[0].next_state == "melee_attack2");
+  REQUIRE(trans3[0].guards[0] == "guard1");
+  REQUIRE(trans3[1].guards[0] == "guard2");
+  REQUIRE(trans3[2].guards[0] == "guard5");
+  REQUIRE(trans3[3].guards[0] == "guard3");
+  REQUIRE(trans3[0].actions[0] == "action1");
+  REQUIRE(trans3[1].actions[0] == "action2");
+  REQUIRE(trans3[2].actions[0] == "action5");
+  REQUIRE(trans3[3].actions[0] == "action3");
+  const auto trans4 = s.find_transitions("initial_state", "");
+  REQUIRE(trans4.size() == 2); // 2 transitions
+  REQUIRE(trans4[0].event == "");
+  REQUIRE(trans4[0].guards[0] == "guard1");
+  REQUIRE(trans4[1].guards[0] == ""); // no guards at all
+  const auto trans5 = s.find_transitions("melee_attack", "idle");
+  REQUIRE(trans5.size() == 1);
+  REQUIRE(trans5[0].current_state_on_exit.size() == 1); // convenient way to find melee_attack + on_exit
+  REQUIRE(trans5[0].next_state_on_entry.size() == 0);
+  const auto trans6 = s.find_transitions("melee_ready", "attack");
+  REQUIRE(trans6.size() == 1);
+  REQUIRE(trans6[0].next_state == "melee_attack");
+  REQUIRE(trans6[0].current_state_on_exit.size() == 0);
+  REQUIRE(trans6[0].next_state_on_entry.size() == 1); // convenient way to find melee_attack + on_entry
+}
+
+TEST_CASE("String utility tests", "[utils::string]") {
+  SECTION("split test normal usage 'abc.ab.rtetr.bac.wert'") {
+    const std::string_view test1 = "abc.ab.rtetr.bac.wert";
+
+    std::array<std::string_view, 3> arr1;
+    auto ans1 = std::span(arr1.data(), arr1.size());
+    const size_t ret1 = utils::string::split(test1, ".", ans1); // can be used with span
+    REQUIRE(ret1 == SIZE_MAX); // arr size too small for this string
+    REQUIRE(arr1[0] == "abc");
+    REQUIRE(arr1[1] == "ab");
+    REQUIRE(arr1[2] == "rtetr.bac.wert"); // last one holds remainder of original string 
+
+    std::array<std::string_view, 6> arr2;
+    const size_t ret2 = utils::string::split(test1, ".", arr2.data(), arr2.size()); // can be used without span
+    REQUIRE(ret2 == 5); // arr size is ok fow this string
+    REQUIRE(arr2[0] == "abc");
+    REQUIRE(arr2[1] == "ab");
+    REQUIRE(arr2[2] == "rtetr");
+    REQUIRE(arr2[3] == "bac");
+    REQUIRE(arr2[4] == "wert");
+    REQUIRE(arr2[5] == ""); // no data
+  }
+  
+  SECTION("split test abnormal usage 'qwertyuiop', 'asd.....asd.....asd', ''") {
+    const std::string_view test1 = "qwertyuiop";
+    const std::string_view test2 = "asd.....asd.....asd";
+    const std::string_view test3 = "";
+
+    std::array<std::string_view, 10> arr;
+    auto ans = std::span(arr.data(), arr.size());
+    size_t ret = 0;
+
+    ret = utils::string::split(test1, ".", ans);
+    REQUIRE(ret == 1);
+    REQUIRE(arr[0] == "qwertyuiop");
+    REQUIRE(arr[1] == "");
+
+    ret = utils::string::split(test2, ".", ans);
+    REQUIRE(ret == SIZE_MAX);
+    REQUIRE(arr[0] == "asd");
+    REQUIRE(arr[1] == "");
+    REQUIRE(arr[2] == "");
+    REQUIRE(arr[3] == "");
+    REQUIRE(arr[4] == "");
+    REQUIRE(arr[5] == "asd");
+    REQUIRE(arr[9] == ".asd");
+
+    ret = utils::string::split(test3, ".", ans);
+    REQUIRE(ret == 1);
+    REQUIRE(arr[0] == "");
+  }
+
+  SECTION("split test different token usage") {
+    const std::string_view test1 = "qwertyuiop";
+    const std::string_view test2 = "asd.....asd.....asd";
+    const std::string_view test3 = "ababababbbabbabababaabaababababbabababaaaababb";
+
+    std::array<std::string_view, 100> arr;
+    auto ans = std::span(arr.data(), arr.size());
+    size_t ret = 0;
+
+    ret = utils::string::split(test1, "yu", ans);
+    REQUIRE(ret == 2);
+    REQUIRE(arr[0] == "qwert");
+    REQUIRE(arr[1] == "iop");
+
+    ret = utils::string::split(test2, ".....", ans);
+    REQUIRE(ret == 3);
+    REQUIRE(arr[0] == "asd");
+    REQUIRE(arr[1] == "asd");
+    REQUIRE(arr[2] == "asd");
+
+    ret = utils::string::split(test3, "bab", ans);
+    REQUIRE(ret == 11);
+    REQUIRE(arr[0]  == "a");
+    REQUIRE(arr[1]  == "a");
+    REQUIRE(arr[2]  == "b");
+    REQUIRE(arr[3]  == "");
+    REQUIRE(arr[4]  == "a");
+    REQUIRE(arr[5]  == "aabaa");
+    REQUIRE(arr[6]  == "a");
+    REQUIRE(arr[7]  == "");
+    REQUIRE(arr[8]  == "a");
+    REQUIRE(arr[9]  == "aaaa");
+    REQUIRE(arr[10] == "b");
+  }
+
+  SECTION("inside2 test") {
+    const std::string_view test1 = "{ \"abbbaab\": \"abc\", \"babav\": [ \"ababab\", 123, { \"bfsdb\": [ \"abc\" ] } ] }";
+    const auto ret = utils::string::inside2(test1, "[", "]");
+    REQUIRE(ret == "\"ababab\", 123, { \"bfsdb\": [ \"abc\" ] }");
+  }
+
+  SECTION("trim test") {
+    REQUIRE(utils::string::trim("   a    ") == "a");
+    REQUIRE(utils::string::trim("   a") == "a");
+    REQUIRE(utils::string::trim("a    ") == "a");
+    REQUIRE(utils::string::trim("a") == "a");
+    REQUIRE(utils::string::trim("\n\t\v\ra    ") == "a");
+  }
+
+  SECTION("stoi test") {
+    REQUIRE(utils::string::stoi("10") == 10);
+    REQUIRE(utils::string::stoi("34634634") == 34634634);
+    REQUIRE(utils::string::stoi("1") == 1);
+    REQUIRE(utils::string::stoi("") == 0);
+    REQUIRE(utils::string::stoi("a1") == 0);
+    REQUIRE(utils::string::stoi("-1") == 0);
+  }
+
+  SECTION("slice test") {
+    REQUIRE(utils::string::slice("qwertyuiop") == "qwertyuiop");
+    REQUIRE(utils::string::slice("qwertyuiop", 1) == "wertyuiop");
+    REQUIRE(utils::string::slice("qwertyuiop", 1, 1) == "");
+    REQUIRE(utils::string::slice("qwertyuiop", 1, 2) == "w");
+    REQUIRE(utils::string::slice("qwertyuiop", -5, -2) == "yui");
+    REQUIRE(utils::string::slice("qwertyuiop", 3, -3) == "rtyu");
+  }
+
+  SECTION("find_ci test") {
+    REQUIRE(utils::string::find_ci("QWERTYUIOP", "qwe") == 0);
+    REQUIRE(utils::string::find_ci("QwErTyUiOp", "qWe") == 0);
+    REQUIRE(utils::string::find_ci("QwErTyUiOp", "ert") == 2);
+  }
+}

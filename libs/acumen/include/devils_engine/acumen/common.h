@@ -15,6 +15,7 @@
 
 namespace devils_engine {
 namespace acumen {
+// динамический сет?
 using state = std::bitset<DEVILS_ENGINE_ACUMEN_STATE_SIZE>;
 
 struct state_metric {

@@ -9,19 +9,27 @@
 
 namespace devils_engine {
   namespace utils {
-    double prng_normalize(const uint64_t value);  // или сделать через темлейт
-    float prng_normalizef(const uint32_t value);
+    double prng_normalize(const uint64_t value) noexcept;  // или сделать через темлейт
+    float prng_normalizef(const uint32_t value) noexcept;
 
     // используем xoshiro
     // можно было бы сделать через шаблоны, но мне лень
     // ХОТЯ БЫ ОДНО ЧИСЛО ДОЛЖНО БЫТЬ НЕ 0
-    uint64_t mix(const uint64_t v1, const uint64_t v2);
-    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3);
-    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4);
-    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5);
-    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5, const uint64_t v6);
-    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5, const uint64_t v6, const uint64_t v7);
-    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5, const uint64_t v6, const uint64_t v7, const uint64_t v8);
+    // миксы переделать - просто xoshiro недостаточно, лучше использовать вычисление хеша
+    uint64_t mix(const uint64_t v1) noexcept;
+    uint64_t mix(const uint64_t v1, const uint64_t v2) noexcept;
+    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3) noexcept;
+    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4) noexcept;
+    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5) noexcept;
+    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5, const uint64_t v6) noexcept;
+    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5, const uint64_t v6, const uint64_t v7) noexcept;
+    uint64_t mix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4, const uint64_t v5, const uint64_t v6, const uint64_t v7, const uint64_t v8) noexcept;
+    uint64_t mix_splitmix(const uint64_t v1, const uint64_t v2) noexcept;
+    uint64_t mix_hash(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4) noexcept;
+    uint64_t mix_splitmix(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4) noexcept;
+    uint64_t mix_xoshiro1(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4) noexcept;
+    uint64_t mix_xoshiro2(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4) noexcept;
+    uint64_t mix_mulxor(const uint64_t v1, const uint64_t v2, const uint64_t v3, const uint64_t v4) noexcept;
 
     struct mulberry32 {  // используется для инициализации
       static const size_t state_size = 1;

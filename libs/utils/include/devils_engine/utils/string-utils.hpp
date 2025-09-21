@@ -38,6 +38,11 @@ constexpr size_t split(const std::string_view &input, const std::string_view &to
   return count;
 }
 
+constexpr size_t split(const std::string_view& input, const std::string_view& token, std::string_view* arr, const size_t max_size) {
+  auto ans = std::span(arr, max_size);
+  return split(input, token, ans);
+}
+
 // должен возвращать размер массива + SIZE_MAX если больше max_arr, 
 // если SIZE_MAX то последним аргументом должна быть оставшаяся строка
 constexpr size_t split2(const std::string_view &input, const std::string_view &token, std::string_view *arr, const size_t max_arr) {
@@ -157,6 +162,29 @@ constexpr size_t find_ci(const T& str1, const T& str2, const std::locale& loc = 
 
 constexpr size_t find_ci(const std::string_view& str1, const char* str2, const std::locale& loc = std::locale()) {
   return find_ci(str1, std::string_view(str2), loc);
+}
+
+constexpr bool parse_dice(const std::string_view& str, size_t& count, size_t& upper_bound) noexcept {
+  // к нам приходит строка вида: 20d20, d30, 100
+  std::array<std::string_view, 2> data;
+  auto sp = std::span(data.data(), data.size());
+  const size_t c = string::split(str, "d", sp);
+  if (c == SIZE_MAX) return false;
+  if (c == 1) {
+    count = 1;
+    upper_bound = string::stoi(data[0]);
+    return true;
+  }
+
+  if (data[0] == "") {
+    count = 1;
+    upper_bound = string::stoi(data[1]);
+    return true;
+  }
+
+  count = string::stoi(data[0]);
+  upper_bound = string::stoi(data[1]);
+  return true;
 }
 
 }

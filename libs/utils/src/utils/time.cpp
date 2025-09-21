@@ -425,5 +425,18 @@ namespace utils {
   }
 
   double app_clock::seconds() const { return double(this->timestamp()) / double(resolution()); }
+
+  size_t app_timer::resolution() { return 1000000; }
+  double app_timer::seconds(const int64_t time) { return double(time) / double(resolution()); }
+
+  app_timer::app_timer(const timestamp_t start_time, const timestamp_t end_time) noexcept : start_time(start_time), elapsed_time(0), end_time(end_time) {}
+  void app_timer::update(const size_t delta) noexcept { elapsed_time += delta; }
+
+  // а зачем тут elapsed time? если сильно нужно то у меня для этого start_time - timestamp, скорее тут можно вернуть время окончания
+  // правильно мы в функцию будем пихать дельту, текущий таймстемп, старт?, конец?
+  std::tuple<timestamp_t, timestamp_t, timestamp_t> app_timer::status() const noexcept { return std::make_tuple(timestamp(), start_time, end_time); }
+  bool app_timer::elapsed() const noexcept { return elapsed_time != 0 && timestamp() >= elapsed_time; }
+  timestamp_t app_timer::timestamp() const noexcept { return start_time + elapsed_time; }
+  int64_t app_timer::diff(const timestamp_t timestamp) const noexcept { return int64_t(timestamp) - int64_t(this->timestamp()); }
 }
 }

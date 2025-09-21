@@ -12,6 +12,7 @@
 #include "utils/named_serializer.h"
 #include "utils/fileio.h"
 #include "utils/sha256.h"
+#include "thread/atomic.h"
 
 namespace fs = std::filesystem;
 
@@ -55,11 +56,7 @@ namespace devils_engine {
       return i >= exts.size() ? SIZE_MAX : i;
     }
 
-    // по умолчанию что можно в путь положить?
-    resource_system::resource_system() noexcept {} //: root_path("./mods/"), modules_list_name() {}
-    //resource_system::resource_system(std::string root) noexcept : root_path(std::move(root)), modules_list_name() {
-    //  if (root_path[root_path.size() - 1] != '/') root_path += '/';
-    //}
+    resource_system::resource_system() noexcept {}
 
     resource_system::~resource_system() noexcept { 
       clear();
@@ -342,33 +339,46 @@ void resource_system::parse_resources(module_system* sys) {
         case state::warm: load_warm(handle); break;
         case state::hot : return; // не нужно увеличивать стейт
       }
-
-      _state = std::max(_state + 1, 2);
+      
+      //_state = std::min(_state + 1, 2);
+      _state.fetch_add(1, std::memory_order_relaxed);
+      thread::atomic_min(_state, static_cast<int32_t>(state::count));
     }
 
     void resource_interface::unload(const utils::safe_handle_t& handle) {
-      switch (_state) {
+      const auto cur = static_cast<state::values>(_state.load(std::memory_order_relaxed));
+      switch (cur) {
         case state::cold: break;
         case state::warm: if (!flag(resource_flags::force_unload_warm)) {unload_warm(handle);} break;
         case state::hot : unload_hot(handle); break;
       }
 
-      _state = std::min(_state - 1, 0);
+      //_state = std::max(_state - 1, 0);
+      _state.fetch_add(-1, std::memory_order_relaxed);
+      thread::atomic_max(_state, 0);
     }
 
     void resource_interface::force_unload(const utils::safe_handle_t& handle) {
-      switch (_state) {
+      const auto cur = static_cast<state::values>(_state.load(std::memory_order_relaxed));
+      switch (cur) {
         case state::cold: break;
         case state::warm: unload_warm(handle); break;
         case state::hot : unload_hot(handle);  break;
       }
 
-      _state = std::min(_state - 1, 0);
+      //_state = std::max(_state - 1, 0);
+      _state.fetch_add(-1, std::memory_order_relaxed);
+      thread::atomic_max(_state, 0);
     }
 
     enum state::values resource_interface::state() const { 
-      if (_state == state::warm && flag(resource_flags::warm_and_hot_same)) return state::hot; 
-      return static_cast<state::values>(_state);
+      const auto cur = static_cast<state::values>(_state.load(std::memory_order_relaxed));
+      if (cur == state::warm && flag(resource_flags::warm_and_hot_same)) return state::hot;
+      return cur;
+    }
+
+    bool resource_interface::usable() const {
+      return state() == state::hot;
     }
   }
 }

@@ -3,7 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <vector>
+//#include <vector>
 #include <gtl/phmap.hpp>
 #include "utils/event_consumer.h"
 #include "utils/type_traits.h"
@@ -24,7 +24,7 @@ public:
   template<typename Event_T>
   void emit(const Event_T& event);
 protected:
-  gtl::node_hash_map<size_t, std::vector<basic_consumer*>> consumers;
+  gtl::node_hash_map<size_t, basic_consumer_container> consumers;
 };
 
 template<typename Event_T, typename T>
@@ -34,11 +34,11 @@ void event_dispatcher::subscribe(T* ptr) {
 
   auto itr = consumers.find(type_id);
   if (itr == consumers.end()) {
-    itr = consumers.emplace(std::make_pair(type_id, std::vector<basic_consumer*>{})).first;
+    itr = consumers.emplace(std::make_pair(type_id, basic_consumer_container<Event_T>())).first;
   }
 
-  auto basic_ptr = static_cast<basic_consumer*>(ptr);
-  itr->second.push_back(basic_ptr); // тут скорее всего очень важна последовательность
+  auto basic_ptr = static_cast<event_consumer<Event_T>*>(ptr);
+  itr->second.get<Event_T>()->add(basic_ptr);
 }
 
 template<typename Event_T, typename T>
@@ -50,9 +50,8 @@ void event_dispatcher::unsubscribe(T* ptr) {
   if (itr == consumers.end()) return;
 
   
-  auto basic_ptr = static_cast<basic_consumer*>(ptr);
-  auto cons_itr = std::find(itr->second.begin(), itr->second.end(), basic_ptr);
-  itr->second.erase(cons_itr);
+  auto basic_ptr = static_cast<event_consumer<Event_T>*>(ptr);
+  basic_ptr->unsubscribe();
 }
 
 template<typename Event_T>
@@ -62,9 +61,9 @@ void event_dispatcher::emit(const Event_T& event) {
   auto itr = consumers.find(type_id);
   if (itr == consumers.end()) return;
 
-  for (auto &ptr : itr->second) {
-    auto cons_ptr = static_cast<event_consumer<Event_T>*>(ptr);
-    cons_ptr->consume(event);
+  auto empty_el = itr->second.get<Event_T>();
+  for (auto p = empty_el->next(empty_el); p != nullptr; p = p->next(empty_el)) {
+    p->consume(event);
   }
 }
 }

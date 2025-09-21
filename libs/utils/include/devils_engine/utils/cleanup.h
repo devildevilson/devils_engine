@@ -9,8 +9,8 @@ namespace devils_engine {
 namespace utils {
 
 template <typename Callback, typename... Args>
+  requires(std::is_void_v<std::invoke_result_t<Callback, Args...>>)
 class cleanup {
-  static_assert(std::is_void_v<std::invoke_result_t<Callback, Args...>>);
 public:
   cleanup(Callback callback, Args&&... args) noexcept : callback(std::move(callback)), args(std::forward<Args>(args)...) {}
   ~cleanup() noexcept { invoke(); }
