@@ -18,6 +18,8 @@ elseif (MSVC_TOOLSET_VERSION EQUAL 142)
   set(GLFW3_FOLDER_NAME lib-vc2019)
 elseif (MSVC_TOOLSET_VERSION EQUAL 143)
   set(GLFW3_FOLDER_NAME lib-vc2022)
+elseif (MINGW)
+  set(GLFW3_FOLDER_NAME lib-mingw-w64)
 endif()
 
 set(SRC_LIST
@@ -48,7 +50,7 @@ target_compile_options(devils_input PRIVATE
   $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -fno-rtti -mavx>>
 )
 
-target_include_directories(devils_input INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine>") # ???
+target_include_directories(devils_input INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>") # ???
 
 target_include_directories(devils_input PRIVATE 
   "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/input>"
@@ -58,7 +60,7 @@ target_include_directories(devils_input SYSTEM PRIVATE
   "${FETCHCONTENT_BASE_DIR}/glfw3-src/include"
 )
 
-target_link_directories(devils_input PRIVATE
+target_link_directories(devils_input PUBLIC
   "${FETCHCONTENT_BASE_DIR}/glfw3-src/${GLFW3_FOLDER_NAME}"
 )
 

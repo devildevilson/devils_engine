@@ -12,7 +12,7 @@
 #error "Unknown compiler"
 #endif
 
-#include "utils/core.h"
+#include "devils_engine/utils/core.h"
 
 #define GLFW_INCLUDE_VULKAN
 //#include "painter/vulkan_header.h"
@@ -26,9 +26,9 @@ static_assert(sizeof(icon_t) == sizeof(GLFWimage));
 static_assert(alignof(icon_t) == alignof(GLFWimage));
 
 init::init(error_callback callback) {
-  if (!glfwInit()) utils::error("Could not init GLFW");
+  if (!glfwInit()) utils::error{}("Could not init GLFW");
   glfwSetErrorCallback(callback);
-  //if (!glfwVulkanSupported()) utils::error("Vulkan is not supported by this system");
+  if (!glfwVulkanSupported()) utils::error{}("Vulkan is not supported by this system");
 }
 init::~init() noexcept {
   glfwTerminate();
