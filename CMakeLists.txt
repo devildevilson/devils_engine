@@ -31,29 +31,17 @@ if (MSVC)
 endif()
 
 # 3 dependencies for user to deal with
-if (MSVC) 
+if (WIN32) # freetype has proper cmake support
   set(FREETYPE_LIBRARY ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/freetype/freetype.lib)
   set(FREETYPE_LIBRARY_DIR ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/freetype)
   set(FREETYPE_INCLUDE_DIRS ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/freetype/include)
-endif()
-
-if (MSVC) # probably can be dealed within cmake build system ???
-  set(DENSITY_LIBRARY ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density-win32/density.lib)
-  set(DENSITY_LIBRARY_DIR ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density-win32)
-  set(DENSITY_INCLUDE_DIRS ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density-win32/include)
-endif()
-
-if (MSVC) 
-  set(OPENAL_LIBRARY ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/openal/OpenAL32.lib)
-  set(OPENAL_LIBRARY_DIR ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/openal)
-  set(OPENAL_INCLUDE_DIRS ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/openal/include)
 endif()
 
 include_directories(${FETCHCONTENT_BASE_DIR}/dr_libs-src/)
 include_directories(${FETCHCONTENT_BASE_DIR}/stb-src/)
 include_directories(${FETCHCONTENT_BASE_DIR}/zpp_bits-src/)
 
-if (MSVC)
+if (WIN32)
   set(GLFW3_LIBRARY_NAME glfw3dll)
 else()
   #find_package(glfw3 REQUIRED)
@@ -157,7 +145,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   minizip-ng
   GIT_REPOSITORY https://github.com/zlib-ng/minizip-ng.git
-  GIT_TAG        4.0.9
+  GIT_TAG        4.0.10
   GIT_PROGRESS   TRUE
   FIND_PACKAGE_ARGS
 )
@@ -271,6 +259,14 @@ FetchContent_Declare(
   FIND_PACKAGE_ARGS
 )
 
+FetchContent_Declare(
+  RE-flex
+  GIT_REPOSITORY https://github.com/Genivia/RE-flex.git
+  GIT_TAG        v6.0.0
+  GIT_PROGRESS   TRUE
+  FIND_PACKAGE_ARGS
+)
+
 FetchContent_MakeAvailable(ZLIB)
 
 # workarounds for zlib-ng
@@ -278,7 +274,7 @@ add_library(ZLIB::ZLIB ALIAS zlib)
 set(ZLIB_INCLUDE_DIR "${FETCHCONTENT_BASE_DIR}/zlib-build/")
 set(ZLIB_INCLUDE_DIRS "${FETCHCONTENT_BASE_DIR}/zlib-build/")
 
-FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng PNG atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm Catch2)
+FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng PNG atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm Catch2 RE-flex)
 
 find_package(Threads REQUIRED)
 
@@ -331,6 +327,17 @@ add_subdirectory(tests/)
 
 # вообще по итогу наверное лучше будет оформить единую либу со всеми зависимостями
 
-add_library(devils_engine)
-target_link_libraries(devils_engine PUBLIC devils_engine::catalogue devils_engine::acumen devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::thread devils_engine::utils devils_engine::visage)
+add_library(devils_engine INTERFACE)
+target_link_libraries(devils_engine INTERFACE devils_engine::catalogue devils_engine::acumen devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::thread devils_engine::utils devils_engine::visage)
 add_library(devils_engine::devils_plane ALIAS devils_engine)
+
+if (WIN32)
+  set(SHADERC_LIBRARY_NAME shaderc_shared)
+  set(VULKAN_LIBRARY_NAME vulkan-1)
+else()
+  set(SHADERC_LIBRARY_NAME libshaderc)
+  set(VULKAN_LIBRARY_NAME vulkan)
+endif()
+
+add_executable(fast_test main.cpp)
+target_link_libraries(fast_test devils_engine::devils_plane ${SHADERC_LIBRARY_NAME} Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp)
