@@ -7,7 +7,7 @@
 #include <string>
 #include <memory>
 #include <mutex>
-#include "thread/lock.h"
+#include "devils_engine/thread/lock.h"
 #include "load_stage.h"
 
 namespace devils_engine {

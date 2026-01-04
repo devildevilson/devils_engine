@@ -16,6 +16,8 @@
 #include <span>
 #include <list>
 #include <optional>
+#include <atomic>
+#include <algorithm>
 
 namespace devils_engine {
   namespace utils {
@@ -555,7 +557,7 @@ namespace devils_engine {
       }
 
       constexpr uint32_t murmur_hash3_x86_32(const std::string_view &key, const uint32_t seed = 0) noexcept {
-        const uint32_t len = key.size();
+        const uint32_t len = uint32_t(key.size());
         const uint32_t nblocks = len / sizeof(uint32_t);
 
         uint32_t h1 = seed;
@@ -640,6 +642,16 @@ namespace devils_engine {
         constexpr std::string_view sv() const noexcept { return std::string_view(value, N-1); }
         auto operator<=>(const template_string_impl&) const = default;
         bool operator==(const template_string_impl&) const = default;
+      };
+
+      template <size_t N>
+      struct sequential_type_id_impl {
+        inline static std::atomic<size_t> counter{0};
+        template <typename T>
+        static size_t get() noexcept {
+          static const size_t cur = counter.fetch_add(1, std::memory_order_relaxed);
+          return cur;
+        }
       };
     }
 
@@ -736,6 +748,12 @@ namespace devils_engine {
       using type = std::remove_reference_t<std::remove_cv_t<T>>; // std::remove_pointer_t
       const auto name = detail::get_type_name<type>();
       return murmur_hash64A(name, default_murmur_seed);
+    }
+
+    template <size_t N, typename T>
+    size_t sequential_type_id() noexcept {
+      using type = detail::sequential_type_id_impl<N>;
+      return type::template get<T>();
     }
 
     constexpr uint64_t wyhash64(uint64_t x) noexcept {

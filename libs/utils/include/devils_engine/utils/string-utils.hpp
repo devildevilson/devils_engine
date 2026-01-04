@@ -63,6 +63,13 @@ constexpr size_t split2(const std::string_view &input, const std::string_view &t
   return count;
 }
 
+constexpr std::tuple<std::string_view, std::string_view> split_prefix(const std::string_view& input, const std::string_view& token) {
+  const size_t place = input.find(token);
+  if (place == std::string_view::npos) return std::make_tuple(input, std::string_view());
+  if (place == 0) return std::make_tuple(std::string_view(), input);
+  return std::make_tuple(input.substr(0, place), input.substr(place));
+}
+
 // инсайд бы лучше переписать со стэком
 constexpr std::string_view inside(const std::string_view &input, const std::string_view &right, const std::string_view &left) {
   const size_t start = input.find(right);
@@ -78,17 +85,20 @@ constexpr std::string_view inside2(const std::string_view& input, const std::str
   const size_t start = input.find(right);
   if (start == std::string_view::npos) return std::string_view();
 
+  size_t cur_pos = start + right.size();
   std::string_view ret;
-  stack.push_back(start);
+  stack.push_back(cur_pos);
   while (!stack.empty()) {
-    const size_t right_pos = input.find(right, stack.back()+right.size());
-    const size_t left_pos = input.find(left, stack.back()+right.size());
+    const size_t right_pos = input.find(right, cur_pos);
+    const size_t left_pos = input.find(left, cur_pos);
     if (right_pos < left_pos) {
-      stack.push_back(right_pos);
+      cur_pos = right_pos + right.size();
+      stack.push_back(cur_pos);
     } else {
       const size_t pos = stack.back();
       stack.pop_back();
-      ret = input.substr(pos+right.size(), left_pos - (pos+right.size()));
+      ret = input.substr(pos, left_pos - pos);
+      cur_pos = left_pos + left.size();
     }
   }
 
@@ -106,7 +116,7 @@ constexpr std::string_view trim(const std::string_view &input) {
   int64_t right = 0;
   int64_t left = input.size() - 1;
 
-  for (; right < input.size() && is_whitespace(input[right]); ++right) {}
+  for (; size_t(right) < input.size() && is_whitespace(input[right]); ++right) {}
   for (; left >= right && is_whitespace(input[left]); --left) {}
 
   if (right > left) return std::string_view();

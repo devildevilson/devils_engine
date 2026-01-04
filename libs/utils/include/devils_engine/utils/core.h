@@ -7,12 +7,11 @@
 #include <stdexcept>
 #include <iostream>
 #include <source_location>
+#include <format>
 #include <print>
 //#include <fmt/base.h>
 #include <spdlog/spdlog.h>
 #include "type_traits.h"
-
-// сюда нужно пихнуть стактрейс
 
 namespace devils_engine {
 namespace utils {
@@ -24,13 +23,30 @@ namespace utils {
 
 #   define DEVILS_ENGINE_EPSILON 0.000001
 
-std::string_view make_sane_file_name(const std::string_view &str);
+constexpr std::string_view make_sane_file_name(const std::string_view &str) {
+  const size_t slash1_index = str.rfind("/");
+  if (slash1_index == std::string_view::npos) return str;
 
-template <typename... Args>
-void error(const std::format_string<Args...> &format, Args&&... args) {
-  spdlog::error(format, std::forward<Args>(args)...);
-  throw std::runtime_error("Got runtime error");
+  const auto str2 = str.substr(0, slash1_index);
+  const size_t slash2_index = str2.rfind("/");
+  return slash2_index == std::string_view::npos ? str.substr(slash1_index + 1) : str.substr(slash2_index + 1);
 }
+
+struct error {
+  std::source_location loc;
+  explicit constexpr error(std::source_location l = std::source_location::current()) noexcept : loc(l) {}
+  template <typename... Args>
+  constexpr void operator()(const std::format_string<Args...>& format, Args&&... args) const {
+    spdlog::error(format, std::forward<Args>(args)...);
+    throw std::runtime_error(std::format("{}:{}: {}: Got runtime error", make_sane_file_name(loc.file_name()), loc.line(), loc.function_name()));
+  }
+};
+
+//template <typename... Args>
+//void error(const std::format_string<Args...> &format, Args&&... args, std::source_location loc = std::source_location::current()) {
+//  spdlog::error(format, std::forward<Args>(args)...);
+//  throw std::runtime_error(std::format("{}:{}: {}: Got runtime error", make_sane_file_name(loc.file_name()), loc.line(), loc.function_name()));
+//}
 
 template <typename... Args>
 constexpr void info(const std::format_string<Args...> &format, Args&&... args) {
@@ -143,6 +159,14 @@ public:
   tracer & operator=(tracer &&move) noexcept = delete;
 };
 
+#ifdef DEBUGTRACE
+#define DS_TRACEOBJ devils_engine::utils::tracer __trace_obj;
+#else
+#define DS_TRACEOBJ
+#endif
+
+#define FORCE_DS_TRACEOBJ devils_engine::utils::tracer __trace_obj;
+
 template <typename T>
 constexpr size_t count_significant(T v) {
   if constexpr (std::is_enum_v<T>) { return count_significant(static_cast<int64_t>(v)); }
@@ -182,6 +206,7 @@ std::u32string cast32(const std::string_view &str) noexcept;
 // windows, unix, macos
 std::string app_path() noexcept;
 std::string project_folder() noexcept;
+std::string cache_folder() noexcept;
 
 uint32_t crc32c(const uint8_t* data, const size_t len) noexcept;
 uint32_t crc32c(const std::span<const uint8_t> &data) noexcept;

@@ -7,6 +7,8 @@
 #include <ctime>
 #include <string>
 #include <filesystem>
+#include <functional>
+#include <source_location>
 
 namespace fs = std::filesystem;
 
@@ -29,6 +31,30 @@ namespace utils {
     time_log & operator=(const time_log &copy) noexcept = delete;
     time_log & operator=(time_log &&move) noexcept = delete;
   };
+
+  class trace_time_log {
+  public:
+    std::string_view str;
+    std::chrono::steady_clock::time_point tp;
+    std::source_location l;
+
+    trace_time_log(const std::string_view& str, std::source_location loc = std::source_location::current()) noexcept;
+    ~trace_time_log() noexcept;
+    void update_tp();
+
+    trace_time_log(const trace_time_log& copy) noexcept = delete;
+    trace_time_log(trace_time_log&& move) noexcept = delete;
+    trace_time_log& operator=(const trace_time_log& copy) noexcept = delete;
+    trace_time_log& operator=(trace_time_log&& move) noexcept = delete;
+  };
+
+#ifdef DEBUGTRACE
+#define DS_TIME_TRACEOBJ(msg) devils_engine::utils::trace_time_log __trace_obj(msg);
+#else
+#define DS_TIME_TRACEOBJ(msg)
+#endif
+
+#define FORCE_DS_TIME_TRACEOBJ(msg) devils_engine::utils::trace_time_log __trace_obj(msg);
 
   // возвращаем unix timestamp (наверное будет приходить по локальному времени...)
   // unix timestamp это количество секунд !!! не путать с игровым стемпом
@@ -67,9 +93,9 @@ namespace utils {
     return std::invoke(f, std::forward<Args>(args)...);
   }
 
-  template <typename T1, typename T2>
-  int64_t count_mcs(const T1 &tp1, const T2 &tp2) {
-    const auto dur = std::chrono::clock_cast<std::chrono::high_resolution_clock>(tp2) - std::chrono::clock_cast<std::chrono::high_resolution_clock>(tp1);
+  template <typename T>
+  int64_t count_mcs(const T &tp1, const T &tp2) {
+    const auto dur = tp2 - tp1;
     return std::chrono::duration_cast<std::chrono::microseconds>(dur).count();
   }
 

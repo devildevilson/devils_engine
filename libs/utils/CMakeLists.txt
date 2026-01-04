@@ -6,6 +6,12 @@ project(
   LANGUAGES CXX C
 )
 
+if (WIN32) # probably can be dealed within cmake build system ???
+  set(DENSITY_LIBRARY ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density-win32/density.lib)
+  set(DENSITY_LIBRARY_DIR ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density-win32)
+  set(DENSITY_INCLUDE_DIRS ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density-win32/include)
+endif()
+
 set(SRC_LIST
   src/utils/core.cpp
   src/utils/block_allocator.cpp
@@ -19,6 +25,7 @@ set(SRC_LIST
   src/utils/compression.cpp
   src/utils/loader.cpp
   src/utils/locale.cpp
+  src/utils/patterns.cpp
 )
 
 set(HDR_LIST
@@ -48,13 +55,14 @@ set(HDR_LIST
   include/devils_engine/utils/event_dispatcher.h
   include/devils_engine/utils/event_consumer.h
   include/devils_engine/utils/context_stack.h
+  include/devils_engine/utils/patterns.h
 )
 
 add_library(devils_mood src/mood/system.cpp include/devils_engine/mood/system.h)
 target_compile_features(devils_mood PRIVATE cxx_std_23)
 target_include_directories(devils_mood INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
 target_include_directories(devils_mood PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/mood>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine>")
-target_link_libraries(devils_mood gtl spdlog::spdlog)
+target_link_libraries(devils_mood gtl spdlog::spdlog ReflexLibStatic)
 
 target_compile_options(devils_mood PRIVATE 
   $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /wd5045 /wd4820 /GR- /permissive- /Zc:preprocessor>>
@@ -118,15 +126,19 @@ target_compile_options(devils_utils PRIVATE
 )
 
 target_link_libraries(devils_utils 
-  PUBLIC devils_engine::thread devils_mood devils_simul devils_aesthetics spdlog::spdlog glaze::glaze gtl minizip #alpaca::alpaca
+  PUBLIC devils_engine::thread devils_mood devils_simul devils_aesthetics spdlog::spdlog glaze::glaze gtl minizip ReflexLibStatic #alpaca::alpaca
   PRIVATE engine_c_part1 density ZLIB::ZLIB bcrypt ncrypt crypt32
 )
 
 target_include_directories(devils_utils INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
-target_include_directories(devils_utils PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utils>")
+target_include_directories(devils_utils PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utils>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utf>")
 target_include_directories(engine_c_part1 PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utils>")
 
-target_link_directories(devils_utils PRIVATE ${DENSITY_LIBRARY_DIR})
+target_link_directories(devils_utils PUBLIC ${DENSITY_LIBRARY_DIR})
 target_include_directories(devils_utils PRIVATE ${DENSITY_INCLUDE_DIRS})
+
+if (MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL GNU)
+  target_link_libraries(devils_utils PUBLIC stdc++exp) # std:: print, println, ...
+endif()
 
 add_library(devils_engine::utils ALIAS devils_utils)

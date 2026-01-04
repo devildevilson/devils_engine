@@ -3,9 +3,9 @@
 
 #include <cstddef>
 #include <atomic>
-#include "utils/core.h"
-#include "utils/type_traits.h"
-#include "utils/list.h"
+#include "core.h"
+#include "type_traits.h"
+#include "list.h"
 
 namespace devils_engine {
   namespace utils {

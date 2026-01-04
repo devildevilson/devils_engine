@@ -6,7 +6,7 @@ namespace devils_engine {
 namespace utils {
 locale::locale() : locale("en") {}
 locale::locale(const std::string_view& code) : container(0) {
-  if (code.size() > maximum_language_code_length) utils::error("Could not create locale class from language code '{}', code size too large ({} > {})", code, code.size(), maximum_language_code_length);
+  if (code.size() > maximum_language_code_length) utils::error{}("Could not create locale class from language code '{}', code size too large ({} > {})", code, code.size(), maximum_language_code_length);
   auto mem = reinterpret_cast<char*>(&container);
   memcpy(mem, code.data(), code.size());
 }

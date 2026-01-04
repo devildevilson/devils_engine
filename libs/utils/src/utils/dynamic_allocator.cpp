@@ -141,14 +141,14 @@ namespace devils_engine {
       return std::make_tuple(m_memory + sizeof(size_t), reinterpret_cast<size_t*>(m_memory)[0]);
     }
     std::tuple<void*, size_t> dynamic_allocator::back() const {
-      if (m_count == 0) utils::error("empty dynamic_allocator");
+      if (m_count == 0) utils::error{}("empty dynamic_allocator");
       const auto itr = seek(m_count-1);
-      if (itr == end()) utils::error("Unexpected dynamic_allocator behaviour: count {} size {}", m_count, m_size);
+      if (itr == end()) utils::error{}("Unexpected dynamic_allocator behaviour: count {} size {}", m_count, m_size);
       return std::make_tuple(*itr, itr.size());
     }
 
     std::tuple<void*, size_t> dynamic_allocator::pop_back() {
-      if (m_count == 0) utils::error("empty dynamic_allocator");
+      if (m_count == 0) utils::error{}("empty dynamic_allocator");
       if (m_count == 1) { clear(); return std::make_tuple(nullptr, 0); }
 
       const auto new_last = seek(m_count-2);
@@ -164,7 +164,7 @@ namespace devils_engine {
     size_t dynamic_allocator::capacity() const noexcept { return m_capacity; }
 
     void dynamic_allocator::new_memory_and_copy() {
-      if (m_grow_policy <= 1.0f) utils::error("dynamic_allocator has m_grow_policy {}", m_grow_policy);
+      if (m_grow_policy <= 1.0f) utils::error{}("dynamic_allocator has m_grow_policy {}", m_grow_policy);
 
       auto old_memory = m_memory;
       const size_t old_capacity = m_capacity;

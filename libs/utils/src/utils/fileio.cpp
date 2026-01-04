@@ -8,18 +8,18 @@ namespace fs = std::filesystem;
 namespace devils_engine {
 namespace file_io {
 template <>
-std::vector<char> read(const std::string &path, const enum type type) {
+std::vector<char> read(const std::string &path, const enum type type) noexcept {
   const auto flags = type == type::binary ? std::ios::in | std::ios::binary : std::ios::in;
   std::ifstream file(path, flags);
-  if (!file) utils::error("Could not load file {}", path);
+  if (!file) return std::vector<char>();
   return std::vector<char>((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
 }
 
 template <>
-std::vector<uint8_t> read(const std::string &path, const enum type type) {
+std::vector<uint8_t> read(const std::string &path, const enum type type) noexcept {
   const auto flags = type == type::binary ? std::ios::in | std::ifstream::ate | std::ios::binary : std::ios::in | std::ifstream::ate;
   std::ifstream file(path, flags);
-  if (!file) utils::error("Could not load file {}", path);
+  if (!file) return std::vector<uint8_t>();
   const size_t file_size = file.tellg();
   file.seekg(0);
   std::vector<uint8_t> ret(file_size, 0);
@@ -27,71 +27,91 @@ std::vector<uint8_t> read(const std::string &path, const enum type type) {
   return ret;
 }
 
-std::string read(const std::string &path, const enum type type) {
+std::string read(const std::string &path, const enum type type) noexcept {
   const auto flags = type == type::binary ? std::ios::in | std::ios::binary : std::ios::in;
   std::ifstream file(path, flags);
-  if (!file) utils::error("Could not load file {}", path);
+  if (!file) return std::string();
   return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
 }
 
-void write(const std::span<char> &bytes, const std::string &path, const enum type type) {
+bool write(const std::span<char> &bytes, const std::string &path, const enum type type) noexcept {
   const auto flags = type == type::binary ? std::ios::out | std::ios::binary | std::ios::trunc : std::ios::out | std::ios::trunc;
   std::ofstream file(path, flags);
+  if (!file) return false;
   file.write(bytes.data(), bytes.size());
+  return true;
 }
 
-void write(const std::span<uint8_t> &bytes, const std::string &path, const enum type type) {
+bool write(const std::span<uint8_t> &bytes, const std::string &path, const enum type type) noexcept {
   const auto flags = type == type::binary ? std::ios::out | std::ios::binary | std::ios::trunc : std::ios::out | std::ios::trunc;
   std::ofstream file(path, flags);
+  if (!file) return false;
   file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  return true;
 }
 
-void write(const std::string &bytes, const std::string &path, const enum type type) {
+bool write(const std::string &bytes, const std::string &path, const enum type type) noexcept {
   const auto flags = type == type::binary ? std::ios::out | std::ios::binary | std::ios::trunc : std::ios::out | std::ios::trunc;
   std::ofstream file(path, flags);
+  if (!file) return false;
   file << bytes;
+  return true;
 }
 
-void write(const std::span<const char> &bytes, const std::string &path, const enum type type) {
+bool write(const std::span<const char> &bytes, const std::string &path, const enum type type) noexcept {
   const auto flags = type == type::binary ? std::ios::out | std::ios::binary | std::ios::trunc : std::ios::out | std::ios::trunc;
   std::ofstream file(path, flags);
+  if (!file) return false;
   file.write(bytes.data(), bytes.size());
+  return true;
 }
 
-void write(const std::span<const uint8_t> &bytes, const std::string &path, const enum type type) {
+bool write(const std::span<const uint8_t> &bytes, const std::string &path, const enum type type) noexcept {
   const auto flags = type == type::binary ? std::ios::out | std::ios::binary | std::ios::trunc : std::ios::out | std::ios::trunc;
   std::ofstream file(path, flags);
+  if (!file) return false;
   file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  return true;
 }
 
-void append(const std::span<char> &bytes, const std::string &path, const enum type type) {
+bool append(const std::span<char> &bytes, const std::string &path, const enum type type) noexcept {
   const auto flags = type == type::binary ? std::ios::out | std::ios::binary | std::ios::app : std::ios::out | std::ios::app;
   std::ofstream file(path, flags);
+  if (!file) return false;
   file.write(bytes.data(), bytes.size());
+  return true;
 }
 
-void append(const std::span<uint8_t> &bytes, const std::string &path, const enum type type) {
+bool append(const std::span<uint8_t> &bytes, const std::string &path, const enum type type) noexcept {
   const auto flags = type == type::binary ? std::ios::out | std::ios::binary | std::ios::app : std::ios::out | std::ios::app;
   std::ofstream file(path, flags);
+  if (!file) return false;
   file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  return true;
 }
 
-void append(const std::string &bytes, const std::string &path, const enum type type) {
+bool append(const std::string &bytes, const std::string &path, const enum type type) noexcept {
   const auto flags = type == type::binary ? std::ios::out | std::ios::binary | std::ios::app : std::ios::out | std::ios::app;
   std::ofstream file(path, flags);
+  if (!file) return false;
   file << bytes;
+  return true;
 }
 
-void append(const std::span<const char> &bytes, const std::string &path, const enum type type) {
+bool append(const std::span<const char> &bytes, const std::string &path, const enum type type) noexcept {
   const auto flags = type == type::binary ? std::ios::out | std::ios::binary | std::ios::app : std::ios::out | std::ios::app;
   std::ofstream file(path, flags);
+  if (!file) return false;
   file.write(bytes.data(), bytes.size());
+  return true;
 }
 
-void append(const std::span<const uint8_t> &bytes, const std::string &path, const enum type type) {
+bool append(const std::span<const uint8_t> &bytes, const std::string &path, const enum type type) noexcept {
   const auto flags = type == type::binary ? std::ios::out | std::ios::binary | std::ios::app : std::ios::out | std::ios::app;
   std::ofstream file(path, flags);
+  if (!file) return false;
   file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  return true;
 }
 
 bool create_directory(const std::string &path) {

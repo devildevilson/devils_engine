@@ -44,7 +44,7 @@
 
 #include <cstdint>
 #include <iterator>
-#include <utf/utf.hpp>
+#include <utf.hpp>
 
 namespace devils_engine {
 namespace utf {
