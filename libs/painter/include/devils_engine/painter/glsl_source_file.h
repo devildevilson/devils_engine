@@ -3,7 +3,7 @@
 
 #include <cstdint>
 #include <cstddef>
-#include "demiurg/resource_base.h"
+#include "devils_engine/demiurg/resource_base.h"
 
 namespace devils_engine {
 namespace painter {

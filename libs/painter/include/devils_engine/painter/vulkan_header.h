@@ -14,11 +14,12 @@
 #include <cstdint>
 #include <cstddef>
 #include <string_view>
-#include <utils/reflect>
+//#include <devils_engine/utils/reflect>
 #include <bitset>
 #include <tuple>
-#include "utils/type_traits.h"
-#include "utils/core.h"
+#include "devils_engine/utils/type_traits.h"
+#include "devils_engine/utils/core.h"
+#include "common.h"
 
 namespace devils_engine {
 namespace painter {
@@ -29,91 +30,6 @@ void set_name(vk::Device device, T handle, const std::string &name) {
   device.setDebugUtilsObjectNameEXT(i);
 }
 
-//template <typename T>
-//consteval void count_features(size_t &counter, const T &obj) {
-//  reflect::for_each([&](auto I) {
-//    using value_type = decltype(reflect::get<I>(obj));
-//    using mem_type = std::remove_cvref_t<value_type>;
-//    if constexpr (!std::is_same_v<mem_type, VkBool32>) return;
-//    counter += 1;
-//  }, obj);
-//}
-//
-//template <typename T>
-//consteval bool find_feature(size_t &counter, const std::string_view &name, const T &obj) {
-//  bool found = false;
-//
-//  reflect::for_each([&](auto I) {
-//    using value_type = decltype(reflect::get<I>(obj));
-//    using mem_type = std::remove_cvref_t<value_type>;
-//    if constexpr (!std::is_same_v<mem_type, VkBool32>) return;
-//
-//    const std::string_view member_name = reflect::member_name<I>(obj);
-//    if (member_name == name) { found = true; return; }
-//
-//    counter += 1;
-//  }, obj);
-//
-//  return found;
-//}
-//
-//template <typename T>
-//consteval void insert_feature_to_map(phmap::flat_hash_map<std::string_view, size_t> &memo, size_t &counter, const T &obj) {
-//  reflect::for_each([&](auto I) {
-//    using value_type = decltype(reflect::get<I>(obj));
-//    using mem_type = std::remove_cvref_t<value_type>;
-//    if constexpr (!std::is_same_v<mem_type, VkBool32>) return;
-//
-//    const std::string_view member_name = reflect::member_name<I>(obj);
-//    memo.insert(std::make_pair(member_name, counter));
-//
-//    counter += 1;
-//  }, obj);
-//}
-//
-//consteval size_t count_vulkan_device_features() {
-//  size_t counter = 0;
-//  const auto obj10 = VkPhysicalDeviceFeatures{};
-//  const auto obj11 = VkPhysicalDeviceVulkan11Features{};
-//  const auto obj12 = VkPhysicalDeviceVulkan12Features{};
-//  const auto obj13 = VkPhysicalDeviceVulkan13Features{};
-//
-//  //reflect::for_each([&](auto I) {
-//  //  using value_type = decltype(reflect::get<I>(obj10));
-//  //  using mem_type = std::remove_cvref_t<value_type>;
-//  //  //const auto member_name = reflect::member_name<I>(obj10);
-//  //  //const auto type_name = utils::type_name<mem_type>();
-//  //  //utils::println(type_name, member_name);
-//  //  //std::cout << type_name << " " << member_name << "\n";
-//  //  if constexpr (!std::is_same_v<mem_type, VkBool32>) return;
-//  //  counter += 1;
-//  //}, obj10);
-//  count_features(counter, obj10);
-//  count_features(counter, obj11);
-//  count_features(counter, obj12);
-//  count_features(counter, obj13);
-//
-//  return counter;
-//}
-//
-//consteval size_t get_feature_index(const std::string_view &name) {
-//  bool found = false;
-//  size_t counter = 0;
-//  const auto obj10 = VkPhysicalDeviceFeatures{};
-//  const auto obj11 = VkPhysicalDeviceVulkan11Features{};
-//  const auto obj12 = VkPhysicalDeviceVulkan12Features{};
-//  const auto obj13 = VkPhysicalDeviceVulkan13Features{};
-//
-//  if (find_feature(counter, name, obj10)) return counter;
-//  if (find_feature(counter, name, obj11)) return counter;
-//  if (find_feature(counter, name, obj12)) return counter;
-//  if (find_feature(counter, name, obj13)) return counter;
-//
-//  return SIZE_MAX;
-//}
-//
-//constexpr size_t device_features_count = count_vulkan_device_features();
-//using vulkan_features_bitset = std::bitset<device_features_count>;
 using vulkan_features_bitset = std::bitset<256>;
 
 // так теперь надо заполнить фичи в битовое поле
@@ -195,6 +111,15 @@ void change_image_layout(
 vma::VulkanFunctions make_functions();
 
 vk::ComponentMapping to_rgba(vk::Format format);
+
+vk::AttachmentStoreOp converts(const store_op::values e);
+vk::AttachmentLoadOp convertl(const store_op::values e);
+vk::ImageLayout convertil(const usage::values e);
+vk::AccessFlags convertam(const usage::values e);
+vk::PipelineStageFlags convertps(const usage::values e);
+vk::DescriptorType convertdt(const usage::values e);
+vk::ImageUsageFlags convertiuf(const usage::values e);
+vk::BufferUsageFlags convertbuf(const usage::values e);
 
 }
 }

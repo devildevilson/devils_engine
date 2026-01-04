@@ -1,6 +1,6 @@
 #include "shader_source_file.h"
 
-#include "demiurg/module_interface.h"
+#include "devils_engine/demiurg/module_interface.h"
 
 namespace devils_engine {
 namespace painter {

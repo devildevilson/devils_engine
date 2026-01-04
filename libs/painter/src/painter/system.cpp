@@ -93,7 +93,7 @@ uint32_t system::compute_frame() {
         recreate(caps.currentExtent.width, caps.currentExtent.height);
         break;
       }
-      default: utils::error("Acquiring image error '{}'", vk::to_string(vk::Result(res)));
+      default: utils::error{}("Acquiring image error '{}'", vk::to_string(vk::Result(res)));
     }
   } while (res != vk::Result::eSuccess && res != vk::Result::eSuboptimalKHR);
 
@@ -112,7 +112,7 @@ uint32_t system::compute_frame() {
       recreate(caps.currentExtent.width, caps.currentExtent.height);
       break;
     }
-    default: utils::error("Presentation error '{}'", vk::to_string(vk::Result(res)));
+    default: utils::error{}("Presentation error '{}'", vk::to_string(vk::Result(res)));
   }
 
   return submiter_counter;

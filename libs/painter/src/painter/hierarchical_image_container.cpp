@@ -101,14 +101,14 @@ void hierarchical_image_container2::write_descriptor_set(VkDescriptorSet set, co
 hierarchical_image_container::hierarchical_image_container(std::string name, VkDevice device, VkPhysicalDevice physical_device, extent_t memory_extents, extent_t block_extents) :
   image_container(std::move(name)), device(device), physical_device(physical_device), memory_extents(memory_extents), block_extents(block_extents)
 {
-  if (memory_extents.width < block_extents.width * 2) utils::error("Block extents ({}, {}) too big for this memory extent ({}, {})", block_extents.width, block_extents.height, memory_extents.width, memory_extents.height);
-  if (memory_extents.height < block_extents.height * 2) utils::error("Block extents ({}, {}) too big for this memory extent ({}, {})", block_extents.width, block_extents.height, memory_extents.width, memory_extents.height);
-  if (block_extents.width != block_extents.height) utils::error("Block extents ({}, {}) should be equal", block_extents.width, block_extents.height);
+  if (memory_extents.width < block_extents.width * 2) utils::error{}("Block extents ({}, {}) too big for this memory extent ({}, {})", block_extents.width, block_extents.height, memory_extents.width, memory_extents.height);
+  if (memory_extents.height < block_extents.height * 2) utils::error{}("Block extents ({}, {}) too big for this memory extent ({}, {})", block_extents.width, block_extents.height, memory_extents.width, memory_extents.height);
+  if (block_extents.width != block_extents.height) utils::error{}("Block extents ({}, {}) should be equal", block_extents.width, block_extents.height);
   if (memory_extents.width != utils::next_power_of_2(memory_extents.width) ||
       memory_extents.height != utils::next_power_of_2(memory_extents.height) ||
       block_extents.width != utils::next_power_of_2(block_extents.width) ||
       block_extents.height != utils::next_power_of_2(block_extents.height)) 
-    utils::error("Sizes must be a power-of-2 number, for ex: ({}, {}), ({}, {})", utils::next_power_of_2(memory_extents.width), utils::next_power_of_2(memory_extents.height), utils::next_power_of_2(block_extents.width), utils::next_power_of_2(block_extents.height));
+    utils::error{}("Sizes must be a power-of-2 number, for ex: ({}, {}), ({}, {})", utils::next_power_of_2(memory_extents.width), utils::next_power_of_2(memory_extents.height), utils::next_power_of_2(block_extents.width), utils::next_power_of_2(block_extents.height));
 
   const auto yes_flags = vk::MemoryPropertyFlagBits::eDeviceLocal;
   const auto no_flags = vk::MemoryPropertyFlagBits::eHostCached | vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostVisible;
@@ -125,7 +125,7 @@ hierarchical_image_container::hierarchical_image_container(std::string name, VkD
     }
   }
 
-  if (i >= props.memoryTypeCount) utils::error("Could not find appropriate memory type");
+  if (i >= props.memoryTypeCount) utils::error{}("Could not find appropriate memory type");
 
   const auto usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc;
   const auto inf1 = texture2D({block_extents.width, block_extents.height}, usage);
@@ -187,14 +187,14 @@ bool hierarchical_image_container::is_exists(const uint32_t index) const {
 
 uint32_t hierarchical_image_container::create(std::string name, const extent_t extent, const extent_t real_extent, const uint32_t format, VkSampler sampler) {
   if (const uint32_t el_size = format_element_size(format); el_size > sizeof(uint32_t)) {
-    utils::error("Format '{}' has element size {} more than standart format '{}'. It is not currently supported", vk::to_string(vk::Format(format)), el_size, vk::to_string(vk::Format::eR8G8B8A8Unorm));
+    utils::error{}("Format '{}' has element size {} more than standart format '{}'. It is not currently supported", vk::to_string(vk::Format(format)), el_size, vk::to_string(vk::Format::eR8G8B8A8Unorm));
   }
 
   if (extent.width < block_extents.width || extent.height < block_extents.height) {
     utils::warn("Image size too small ({}, {}) for image '{}'", extent.width, extent.height, name);
   }
 
-  if (sampler == VK_NULL_HANDLE) utils::error("Trying to create image view '{}' without a sampler object", name);
+  if (sampler == VK_NULL_HANDLE) utils::error{}("Trying to create image view '{}' without a sampler object", name);
 
   // это совсем строгий алгоритм, но он позволит избежать сильной фрагментации
   // можем ли мы тут попробовать взять хотя бы какой то размер уменьшая запрашиваемый размер текстурки?
@@ -202,7 +202,7 @@ uint32_t hierarchical_image_container::create(std::string name, const extent_t e
   const uint32_t width_pow2 = utils::next_power_of_2(extent.width);
   const uint32_t height_pow2 = utils::next_power_of_2(extent.height);
 
-  if (width_pow2 == memory_extents.width || height_pow2 == memory_extents.height) utils::error("Image '{}' size ({}, {}) too big", name, extent.width, extent.height);
+  if (width_pow2 == memory_extents.width || height_pow2 == memory_extents.height) utils::error{}("Image '{}' size ({}, {}) too big", name, extent.width, extent.height);
 
   // предположим что мы правильно указали block_extents
   const uint32_t bit_image_size = std::max(width_pow2, height_pow2) / block_extents.width;
@@ -287,8 +287,8 @@ uint32_t hierarchical_image_container::create_any(std::string name, const extent
 }
 
 void hierarchical_image_container::destroy(const uint32_t index) {
-  if (index >= images.size()) utils::error("Trying to destroy image index '{}', but container has only {} images", index, images.size());
-  if (!is_exists(index)) utils::error("Trying to destroy non existant image index '{}'", index);
+  if (index >= images.size()) utils::error{}("Trying to destroy image index '{}', but container has only {} images", index, images.size());
+  if (!is_exists(index)) utils::error{}("Trying to destroy non existant image index '{}'", index);
 
   vk::Device d(device);
   d.destroy(images[index].view);
@@ -310,8 +310,8 @@ void hierarchical_image_container::destroy(const uint32_t index) {
 }
 
 void hierarchical_image_container::adjust_extents(const uint32_t index, const extent_t extent) {
-  if (index >= images.size()) utils::error("Trying to adjust image index '{}' sizes, but container has only {} images", index, images.size());
-  if (!is_exists(index)) utils::error("Trying to adjust non existant image index '{}' sizes", index);
+  if (index >= images.size()) utils::error{}("Trying to adjust image index '{}' sizes, but container has only {} images", index, images.size());
+  if (!is_exists(index)) utils::error{}("Trying to adjust non existant image index '{}' sizes", index);
   images[index].width = extent.width;
   images[index].height = extent.height;
 }
@@ -381,8 +381,8 @@ void hierarchical_image_container::update_descriptor_set(VkDescriptorSet set, co
 }
 
 void hierarchical_image_container::change_layout(VkCommandBuffer buffer, const uint32_t index, const uint32_t old_layout, const uint32_t new_layout) const {
-  if (index >= images.size()) utils::error("Trying to change layout on image index '{}', but capacity is {}", index, images.size());
-  if (is_exists(index)) utils::error("Trying to change layout on non existing image index '{}'", index);
+  if (index >= images.size()) utils::error{}("Trying to change layout on image index '{}', but capacity is {}", index, images.size());
+  if (is_exists(index)) utils::error{}("Trying to change layout on non existing image index '{}'", index);
 
   const auto img = images[index].handle;
 
@@ -411,8 +411,8 @@ void hierarchical_image_container::change_layout_all(VkCommandBuffer buffer, con
 }
 
 void hierarchical_image_container::copy_data(VkCommandBuffer buffer, VkImage image, const uint32_t index) const {
-  if (index >= images.size()) utils::error("Trying to copy image to image index '{}', but capacity is {}", index, images.size());
-  if (is_exists(index)) utils::error("Trying to copy image to non existing image index '{}'", index);
+  if (index >= images.size()) utils::error{}("Trying to copy image to image index '{}', but capacity is {}", index, images.size());
+  if (is_exists(index)) utils::error{}("Trying to copy image to non existing image index '{}'", index);
 
   const auto &img = images[index];
 
@@ -426,8 +426,8 @@ void hierarchical_image_container::copy_data(VkCommandBuffer buffer, VkImage ima
 #define MAKE_BLIT_OFFSETS(w_1,h_1) {VkOffset3D{0,0,0}, VkOffset3D{int32_t(w_1),int32_t(h_1),1}}
 
 void hierarchical_image_container::blit_data(VkCommandBuffer buffer, const std::tuple<VkImage, uint32_t, uint32_t> &src_image, const uint32_t index, const uint32_t filter) const {
-  if (index >= images.size()) utils::error("Trying to blit image to image index '{}', but capacity is {}", index, images.size());
-  if (is_exists(index)) utils::error("Trying to blit image to non existing image index '{}'", index);
+  if (index >= images.size()) utils::error{}("Trying to blit image to image index '{}', but capacity is {}", index, images.size());
+  if (is_exists(index)) utils::error{}("Trying to blit image to non existing image index '{}'", index);
 
   const auto &[ src, src_width, src_height ] = src_image;
   const auto &img = images[index];

@@ -5,42 +5,51 @@
 #include <cstdint>
 #include <string>
 #include <vector>
-#include "common.h"
 #include "vulkan_minimal.h"
+#include "device_features.h"
 
-// было бы еще неплохо посмотреть какие фичи есть у устройства
-// для этого нужно подтягивать структуры с фичами, но беда в том что это не энумы а говно какое то
-// так что желательно пройтись по ним и например найти полный размер всех фич
-// для этого можно пробежаться по всем структурам в рефлекте
-// и даже найти по имени переменной фичу + также расставить значения в битовом поле
+/*
+на счет разных фич устройства: к сожалению простого способа понять что мне нужно а что нет
+несуществует, единственное что я могу сделать это структуру которая проверит жеско заданные
+фичи, которые меня интересуют, собственно нужно просто выкинуть их в большой энум
+типа мне нужны просто пачка проверок
 
-// часть данных из этой структуры запишем в кеш - по нему быстренько снова создадим устройство
+тут нужно предусмотреть наличие на диске кешированного устройства
+*/
+
+
 
 namespace devils_engine {
 namespace painter {
+
+struct cached_system_data {
+  std::string device_name;
+  std::string device_type;
+  uint32_t device_id;
+  uint32_t vendor_id;
+  uint32_t graphics_queue;
+  uint32_t compute_queue;
+  uint32_t transfer_queue;
+  uint32_t present_queue; // было бы чудесно если бы совпадало с graphics_queue
+  std::string desirable_present_mode;
+  std::string fallback_present_mode;
+  size_t memory_capacity;
+  std::vector<std::string> features;
+};
+
+struct physical_device_data {
+  VkPhysicalDevice handle;
+  device_features_t features;
+  uint32_t desirable_present_mode;
+  uint32_t fallback_present_mode;
+  uint32_t graphics_queue;
+  uint32_t compute_queue;
+  uint32_t transfer_queue;
+  uint32_t present_queue;
+};
+
 struct system_info {
   struct physical_device {
-    enum class type {
-      other,
-      integrated_gpu,
-      discrete_gpu,
-      virtual_gpu,
-      cpu,
-      count
-    };
-    static std::string to_string(const enum type type);
-
-    enum class present_mode {
-      immediate,
-      mailbox,
-      fifo,
-      fifo_relaxed,
-      shared_demand_refresh,
-      shared_continuous_refresh,
-      count
-    };
-    static std::string to_string(const enum present_mode present_mode);
-
     struct queue_properties_t {
       VkFlags flags;
       uint32_t queue_count;
@@ -52,13 +61,17 @@ struct system_info {
     size_t memory;
     uint32_t id;
     uint32_t vendor_id;
-    enum type type;
+    physical_device_type::values type;
     uint32_t queue_family_index_surface_support;
     std::vector<queue_properties_t> queue_families;
-    std::vector<present_mode> present_modes;
+    std::vector<physical_device_present_mode::values> present_modes;
+    device_features_t features;
 
     physical_device();
   };
+
+  static bool try_load_cached_data(VkInstance instance, physical_device_data* phys_data = nullptr, cached_system_data* cached_data = nullptr);
+  static void print_choosed_device(VkPhysicalDevice device) noexcept;
 
   bool instance_owner;
   VkInstance instance;
@@ -73,10 +86,9 @@ struct system_info {
   // запускаем в конструкторе
   void init();
 
-  // запишем в массив
   void check_devices_surface_capability(const VkSurfaceKHR s);
 
-  VkPhysicalDevice choose_physical_device() const;
+  physical_device_data choose_physical_device() const;
 
   void dump_cache_to_disk(VkPhysicalDevice dev, cached_system_data* cached_data = nullptr);
 };

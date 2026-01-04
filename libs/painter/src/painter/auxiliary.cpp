@@ -1,12 +1,12 @@
 #include "auxiliary.h"
 
+#include <gtl/phmap.hpp>
+
 #include "vulkan_header.h"
-
-#include "input/core.h"
-
 #include "system_info.h"
 
-#include "gtl/phmap.hpp"
+#include "devils_engine/input/core.h"
+#include "devils_engine/utils/core.h"
 
 #include <ranges>
 namespace rv = std::ranges::views;
@@ -21,6 +21,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
   void* pUserData
 ) {
   utils::println("validation layer:", pCallbackData->pMessage);
+  (void)pUserData;
+  (void)messageType;
+  (void)messageSeverity;
   return VK_FALSE;
 }
 
@@ -49,7 +52,7 @@ std::vector<const char*> get_required_extensions() {
 }
 
 void load_dispatcher1() { 
-  if (!input::vulkan_supported()) utils::error("Vulkan is not supported by this system");
+  if (!input::vulkan_supported()) utils::error{}("Vulkan is not supported by this system");
   VULKAN_HPP_DEFAULT_DISPATCHER.init();  
   input::init_vulkan_loader(VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr);
 }
@@ -64,8 +67,9 @@ VkDebugUtilsMessengerEXT create_debug_messenger(VkInstance inst) {
 
   const auto type = vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
                     vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance |
-                    vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral | 
-                    vk::DebugUtilsMessageTypeFlagBitsEXT::eDeviceAddressBinding;
+                    vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral;
+
+  //vk::DebugUtilsMessageTypeFlagBitsEXT::eDeviceAddressBinding
 
   vk::DebugUtilsMessengerCreateInfoEXT info({}, severity, type, &debug_callback, nullptr);
 
@@ -79,6 +83,83 @@ void destroy_debug_messenger(VkInstance inst, VkDebugUtilsMessengerEXT handle) {
   instance.destroyDebugUtilsMessengerEXT(handle);
 }
 
+VkPhysicalDevice choose_physical_device(VkInstance inst) {
+  vk::PhysicalDevice cur_dev = VK_NULL_HANDLE;
+  size_t max_size = 0;
+
+  const auto devs = vk::Instance(inst).enumeratePhysicalDevices();
+  for (const auto& dev : devs) {
+    const auto props = dev.getProperties();
+    if (props.deviceType != vk::PhysicalDeviceType::eDiscreteGpu) continue;
+    const auto queue_props = dev.getQueueFamilyProperties();
+    bool pres_support = false;
+    for (uint32_t i = 0; i < queue_props.size(); ++i) {
+      pres_support = pres_support || physical_device_presentation_support(inst, dev, i);
+    }
+    if (!pres_support) continue;
+
+    const auto mem_props = dev.getMemoryProperties();
+    for (uint32_t i = 0; i < mem_props.memoryHeapCount; ++i) {
+      if ((mem_props.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal) == vk::MemoryHeapFlagBits::eDeviceLocal) {
+        if (max_size < mem_props.memoryHeaps[i].size) {
+          cur_dev = dev;
+          max_size = mem_props.memoryHeaps[i].size;
+        }
+      }
+    }
+  }
+
+  if (cur_dev != VK_NULL_HANDLE) {
+    const auto props = cur_dev.getProperties();
+    const auto dev_type = vk::to_string(props.deviceType);
+    utils::info("Using device '{}', type '{}'", props.deviceName.data(), dev_type);
+    return cur_dev;
+  }
+
+  for (const auto& dev : devs) {
+    const auto props = dev.getProperties();
+    if (props.deviceType != vk::PhysicalDeviceType::eIntegratedGpu) continue;
+
+    const auto queue_props = dev.getQueueFamilyProperties();
+    bool pres_support = false;
+    for (uint32_t i = 0; i < queue_props.size(); ++i) {
+      pres_support = pres_support || physical_device_presentation_support(inst, dev, i);
+    }
+
+    if (pres_support) {
+      cur_dev = dev;
+      break;
+    }
+  }
+
+  if (cur_dev != VK_NULL_HANDLE) {
+    const auto props = cur_dev.getProperties();
+    const auto dev_type = vk::to_string(props.deviceType);
+    utils::info("Using device '{}', type '{}'", props.deviceName.data(), dev_type);
+    return cur_dev;
+  }
+
+  for (const auto& dev : devs) {
+    const auto queue_props = dev.getQueueFamilyProperties();
+    bool pres_support = false;
+    for (uint32_t i = 0; i < queue_props.size(); ++i) {
+      pres_support = pres_support || physical_device_presentation_support(inst, dev, i);
+    }
+
+    if (pres_support) {
+      cur_dev = dev;
+      break;
+    }
+  }
+
+  if (cur_dev == VK_NULL_HANDLE) return cur_dev;
+
+  const auto props = cur_dev.getProperties();
+  const auto dev_type = vk::to_string(props.deviceType);
+  utils::info("Using device '{}', type '{}'", props.deviceName.data(), dev_type);
+  return cur_dev;
+}
+
 #define GLFW_TRUE 1
 bool physical_device_presentation_support(VkInstance inst, VkPhysicalDevice dev, const uint32_t queue_family_index) {
   return input::get_physical_device_presentation_support(inst, dev, queue_family_index) == GLFW_TRUE;
@@ -87,7 +168,7 @@ bool physical_device_presentation_support(VkInstance inst, VkPhysicalDevice dev,
 VkSurfaceKHR create_surface(VkInstance instance, GLFWwindow* window) {
   VkSurfaceKHR surf = VK_NULL_HANDLE;
   const auto res = input::create_window_surface(instance, window, nullptr, &surf);
-  if (res != VK_SUCCESS) utils::error("Could not create surface from window '{}', result: {}", input::window_title(window), vk::to_string(vk::Result(res)));
+  if (res != VK_SUCCESS) utils::error{}("Could not create surface from window '{}', result: {}", input::window_title(window), vk::to_string(vk::Result(res)));
   return surf;
 }
 
@@ -102,14 +183,14 @@ VkPhysicalDevice find_device_process(VkInstance i, cached_system_data* cached_da
   inf.check_devices_surface_capability(surf);
   const auto dev = inf.choose_physical_device();
 
-  inf.dump_cache_to_disk(dev, cached_data);
+  inf.dump_cache_to_disk(dev.handle, cached_data);
 
   painter::destroy_surface(inf.instance, surf);
   input::destroy(w);
 
   // инстанса уже тут не будет, мы можем чуть переделать структуру system_info
   // передав туда инстанс, вот теперь девайс должен быть валидным указателем
-  return dev;
+  return dev.handle;
 }
 
 bool do_command(VkDevice device, VkCommandPool pool, VkQueue queue, VkFence fence, std::function<void(VkCommandBuffer)> action) {
@@ -123,6 +204,24 @@ bool do_command(VkDevice device, VkCommandPool pool, VkQueue queue, VkFence fenc
   buffer->end();
 
   const vk::SubmitInfo si(nullptr, nullptr, buffer.get(), nullptr);
+  vk::Queue(queue).submit(si, fence);
+
+  const auto res = d.waitForFences(vk::Fence(fence), VK_TRUE, SIZE_MAX);
+  d.resetFences(vk::Fence(fence));
+
+  return res == vk::Result::eSuccess;
+}
+
+bool do_command(VkDevice device, VkQueue queue, VkFence fence, VkCommandBuffer buf, std::function<void(VkCommandBuffer)> action) {
+  vk::Device d(device);
+  vk::CommandBuffer task(buf);
+
+  vk::CommandBufferBeginInfo cbbi(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+  task.begin(cbbi);
+  action(buf);
+  task.end();
+
+  const vk::SubmitInfo si(nullptr, nullptr, task, nullptr);
   vk::Queue(queue).submit(si, fence);
 
   const auto res = d.waitForFences(vk::Fence(fence), VK_TRUE, SIZE_MAX);
