@@ -8,8 +8,8 @@
 #include <vector>
 #include <bitset>
 #include <atomic>
-#include "utils/list.h"
-#include "utils/safe_handle.h"
+#include "devils_engine/utils/list.h"
+#include "devils_engine/utils/safe_handle.h"
 //#include <boost/sml.hpp>
 //namespace sml = boost::sml;
 

@@ -13,9 +13,9 @@
 #include <functional>
 #include <concepts>
 #include "resource_base.h"
-#include "utils/block_allocator.h"
-#include "utils/memory_pool.h"
-#include "utils/type_traits.h"
+#include "devils_engine/utils/block_allocator.h"
+#include "devils_engine/utils/memory_pool.h"
+#include "devils_engine/utils/type_traits.h"
 #include <gtl/phmap.hpp>
 
 namespace devils_engine {

@@ -7,12 +7,12 @@
 #include "module_interface.h"
 #include "module_system.h"
 #include "folder_module.h"
-#include "utils/time-utils.hpp"
-#include "utils/string-utils.hpp"
-#include "utils/named_serializer.h"
-#include "utils/fileio.h"
-#include "utils/sha256.h"
-#include "thread/atomic.h"
+#include "devils_engine/utils/time-utils.hpp"
+#include "devils_engine/utils/string-utils.hpp"
+#include "devils_engine/utils/named_serializer.h"
+#include "devils_engine/utils/fileio.h"
+#include "devils_engine/utils/sha256.h"
+#include "devils_engine/thread/atomic.h"
 
 namespace fs = std::filesystem;
 
@@ -34,7 +34,7 @@ namespace devils_engine {
     {
       auto sp = std::span(exts.data(), exts.size());
       const size_t count = utils::string::split(this->ext, ",", sp);
-      if (count == SIZE_MAX) utils::error("Found to many extensions in str '{}' when creating demiurg resource type '{}'", this->ext, this->name);
+      if (count == SIZE_MAX) utils::error{}("Found to many extensions in str '{}' when creating demiurg resource type '{}'", this->ext, this->name);
     }
 
     resource_interface *resource_system::type::create() { 

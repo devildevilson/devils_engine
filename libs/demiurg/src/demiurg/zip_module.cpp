@@ -1,6 +1,6 @@
 #include "zip_module.h"
 
-#include "utils/core.h"
+#include "devils_engine/utils/core.h"
 
 #include "resource_system.h"
 
@@ -27,12 +27,12 @@ std::string_view zip_module::name() const { return module_name; }
 void zip_module::open() {
   native_handle = mz_zip_reader_create();
   const auto err = mz_zip_reader_open_file(native_handle, _path.c_str());
-  if (err != MZ_OK) utils::error("Could not open archive '{}'", _path);
+  if (err != MZ_OK) utils::error{}("Could not open archive '{}'", _path);
 }
 void zip_module::close() {
   if (native_handle == nullptr) return;
   const auto err = mz_zip_reader_close(native_handle);
-  if (err != MZ_OK) utils::error("Could not close archive '{}'", _path);
+  if (err != MZ_OK) utils::error{}("Could not close archive '{}'", _path);
   mz_zip_reader_delete(&native_handle);
   native_handle = nullptr;
 }
@@ -69,7 +69,7 @@ static std::tuple<std::string_view, std::string_view, std::string_view> parse_pa
 //
 //    mz_zip_file *file_info = nullptr;
 //    auto cur = mz_zip_reader_entry_get_info(native_handle, &file_info);
-//    if (cur != MZ_OK) utils::error("Could not get entry from archive '{}'", _path);
+//    if (cur != MZ_OK) utils::error{}("Could not get entry from archive '{}'", _path);
 //
 //    utils::println(file_info->filename, file_info->uncompressed_size);
 //    std::string file_path = file_info->filename;
@@ -107,7 +107,7 @@ void zip_module::resources_list(resource_system* s) const {
 
     mz_zip_file *file_info = nullptr;
     auto cur = mz_zip_reader_entry_get_info(native_handle, &file_info);
-    if (cur != MZ_OK) utils::error("Could not get entry from archive '{}'", _path);
+    if (cur != MZ_OK) utils::error{}("Could not get entry from archive '{}'", _path);
 
     //utils::println(file_info->filename, file_info->uncompressed_size);
     std::string file_path = file_info->filename;
@@ -128,52 +128,52 @@ void zip_module::load_binary(const std::string &path, std::vector<uint8_t> &mem)
   int32_t err = 0;
   err = mz_zip_reader_locate_entry(native_handle, path.c_str(), 0);
   // мы можем не найти энтри?
-  if (err != MZ_OK) utils::error("Could not get entry '{}' from archive '{}'", path, _path);
+  if (err != MZ_OK) utils::error{}("Could not get entry '{}' from archive '{}'", path, _path);
 
   err = mz_zip_reader_entry_open(native_handle);
-  if (err != MZ_OK) utils::error("Could not open entry '{}' from archive '{}'", path, _path);
+  if (err != MZ_OK) utils::error{}("Could not open entry '{}' from archive '{}'", path, _path);
 
   mz_zip_file *file_info = nullptr;
   err = mz_zip_reader_entry_get_info(native_handle, &file_info);
-  if (err != MZ_OK) utils::error("Could not get entry info '{}' from archive '{}'", path, _path);
+  if (err != MZ_OK) utils::error{}("Could not get entry info '{}' from archive '{}'", path, _path);
 
   mem.resize(file_info->uncompressed_size, 0);
   err = mz_zip_reader_entry_read(native_handle, mem.data(), mem.size());
-  if (err != MZ_OK) utils::error("Could not read entry data '{}' from archive '{}'", path, _path);
+  if (err != MZ_OK) utils::error{}("Could not read entry data '{}' from archive '{}'", path, _path);
 }
 
 void zip_module::load_binary(const std::string &path, std::vector<char> &mem) const {
   int32_t err = 0;
   err = mz_zip_reader_locate_entry(native_handle, path.c_str(), 0);
-  if (err != MZ_OK) utils::error("Could not get entry '{}' from archive '{}'", path, _path);
+  if (err != MZ_OK) utils::error{}("Could not get entry '{}' from archive '{}'", path, _path);
 
   err = mz_zip_reader_entry_open(native_handle);
-  if (err != MZ_OK) utils::error("Could not open entry '{}' from archive '{}'", path, _path);
+  if (err != MZ_OK) utils::error{}("Could not open entry '{}' from archive '{}'", path, _path);
 
   mz_zip_file *file_info = nullptr;
   err = mz_zip_reader_entry_get_info(native_handle, &file_info);
-  if (err != MZ_OK) utils::error("Could not get entry info '{}' from archive '{}'", path, _path);
+  if (err != MZ_OK) utils::error{}("Could not get entry info '{}' from archive '{}'", path, _path);
 
   mem.resize(file_info->uncompressed_size, 0);
   err = mz_zip_reader_entry_read(native_handle, mem.data(), mem.size());
-  if (err != MZ_OK) utils::error("Could not read entry data '{}' from archive '{}'", path, _path);
+  if (err != MZ_OK) utils::error{}("Could not read entry data '{}' from archive '{}'", path, _path);
 }
 
 void zip_module::load_text(const std::string &path, std::string &mem) const {
   int32_t err = 0;
   err = mz_zip_reader_locate_entry(native_handle, path.c_str(), 0);
-  if (err != MZ_OK) utils::error("Could not get entry '{}' from archive '{}'", path, _path);
+  if (err != MZ_OK) utils::error{}("Could not get entry '{}' from archive '{}'", path, _path);
 
   err = mz_zip_reader_entry_open(native_handle);
-  if (err != MZ_OK) utils::error("Could not open entry '{}' from archive '{}'", path, _path);
+  if (err != MZ_OK) utils::error{}("Could not open entry '{}' from archive '{}'", path, _path);
 
   mz_zip_file *file_info = nullptr;
   err = mz_zip_reader_entry_get_info(native_handle, &file_info);
-  if (err != MZ_OK) utils::error("Could not get entry info '{}' from archive '{}'", path, _path);
+  if (err != MZ_OK) utils::error{}("Could not get entry info '{}' from archive '{}'", path, _path);
 
   mem.resize(file_info->uncompressed_size, 0);
   err = mz_zip_reader_entry_read(native_handle, mem.data(), mem.size());
-  if (err != MZ_OK) utils::error("Could not read entry data '{}' from archive '{}'", path, _path);
+  if (err != MZ_OK) utils::error{}("Could not read entry data '{}' from archive '{}'", path, _path);
 }
 }
 }

@@ -1,10 +1,10 @@
 #include "modules_listing.h"
 
 #include <filesystem>
-#include "utils/named_serializer.h"
-#include "utils/fileio.h"
-#include "utils/time-utils.hpp"
-#include "utils/sha256cpp.h"
+#include "devils_engine/utils/named_serializer.h"
+#include "devils_engine/utils/fileio.h"
+#include "devils_engine/utils/time-utils.hpp"
+#include "devils_engine/utils/sha256cpp.h"
 
 namespace fs = std::filesystem;
 
@@ -85,13 +85,13 @@ void modules_listing::save_list(const std::string &name, const std::vector<std::
 modules_listing::list modules_listing::load_list(const std::string &name) const {
   // по идее все листы мы подгрузим в reload(), можно тут подгрузить что то конкретное без запоминания
   const auto path = root_path + name + ".json";
-  if (!file_io::exists(path)) utils::error("File '{}' not exists", path);
+  if (!file_io::exists(path)) utils::error{}("File '{}' not exists", path);
 
   const auto cont = file_io::read(path);
   std::vector<list_entry> list_entries;
   const auto ec = utils::from_json(list_entries, cont);
   if (ec) {
-    utils::error("Could not parse json '{}' for struct '{}' (err code: {})", path, "std::vector<list_entry>", static_cast<size_t>(ec.ec));
+    utils::error{}("Could not parse json '{}' for struct '{}' (err code: {})", path, "std::vector<list_entry>", static_cast<size_t>(ec.ec));
   }
 
   list l;
