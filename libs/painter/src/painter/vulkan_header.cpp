@@ -9,6 +9,8 @@
 
 #include <gtl/phmap.hpp>
 
+#include "devils_engine/utils/reflect"
+
 VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 
 namespace devils_engine {
@@ -314,7 +316,7 @@ std::tuple<vk::AccessFlags, vk::AccessFlags, vk::PipelineStageFlags, vk::Pipelin
       srcStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
 
       break;
-    default: utils::error("The layout '{}' is not supported yet", vk::to_string(old)); break;
+    default: utils::error{}("The layout '{}' is not supported yet", vk::to_string(old)); break;
   }
 
   switch (New) {
@@ -358,7 +360,7 @@ std::tuple<vk::AccessFlags, vk::AccessFlags, vk::PipelineStageFlags, vk::Pipelin
       dstStage = vk::PipelineStageFlagBits::eComputeShader;
 
       break;
-    default: utils::error("The layout '{}' is not supported yet", vk::to_string(New)); break;
+    default: utils::error{}("The layout '{}' is not supported yet", vk::to_string(New)); break;
   }
       
   return std::make_tuple(srcFlags, dstFlags, srcStage, dstStage);
@@ -672,6 +674,233 @@ size_t allocator_storage_aligment(VmaAllocator allocator) {
 size_t allocator_uniform_aligment(VmaAllocator allocator) {
   return (*allocator).m_PhysicalDeviceProperties.limits.minUniformBufferOffsetAlignment;
 }
+
+vk::AttachmentStoreOp converts(const store_op::values e) {
+  switch (e) {
+    case store_op::none: return vk::AttachmentStoreOp::eNone;
+    case store_op::store: return vk::AttachmentStoreOp::eStore;
+    case store_op::clear: return vk::AttachmentStoreOp::eDontCare;
+    case store_op::dont_care: return vk::AttachmentStoreOp::eDontCare;
+    default: utils::error{}("Invalid resource::store_op?");
+  }
+
+  return vk::AttachmentStoreOp::eStore;
+}
+
+vk::AttachmentLoadOp convertl(const store_op::values e) {
+  switch (e) {
+    case store_op::none: return vk::AttachmentLoadOp::eNone;
+    case store_op::store: return vk::AttachmentLoadOp::eLoad;
+    case store_op::clear: return vk::AttachmentLoadOp::eClear;
+    case store_op::dont_care: return vk::AttachmentLoadOp::eDontCare;
+    default: utils::error{}("Invalid resource::store_op?");
+  }
+
+  return vk::AttachmentLoadOp::eLoad;
+}
+
+vk::ImageLayout convertil(const usage::values e) {
+  switch (e) {
+    case usage::color_attachment: return vk::ImageLayout::eColorAttachmentOptimal;
+    case usage::depth_attachment: return vk::ImageLayout::eDepthStencilAttachmentOptimal;
+    case usage::input_attachment: return vk::ImageLayout::eShaderReadOnlyOptimal;
+    case usage::resolve_attachment: return vk::ImageLayout::eColorAttachmentOptimal;
+    case usage::ignore_attachment: return vk::ImageLayout::eUndefined;
+    case usage::sampled: return vk::ImageLayout::eShaderReadOnlyOptimal;
+    case usage::depth_read: return vk::ImageLayout::eDepthStencilReadOnlyOptimal;
+    case usage::texel_read: return vk::ImageLayout::eGeneral;
+    case usage::texel_write: return vk::ImageLayout::eGeneral;
+    case usage::transfer_dst: return vk::ImageLayout::eTransferDstOptimal;
+    case usage::transfer_src: return vk::ImageLayout::eTransferSrcOptimal;
+    case usage::indirect_read: return vk::ImageLayout::eGeneral;
+    case usage::present: return vk::ImageLayout::ePresentSrcKHR;
+    case usage::host_read: return vk::ImageLayout::eGeneral;
+    case usage::host_write: return vk::ImageLayout::eGeneral;
+    case usage::general: return vk::ImageLayout::eGeneral;
+    case usage::uniform: return vk::ImageLayout::eShaderReadOnlyOptimal;
+    case usage::vertex: return vk::ImageLayout::eGeneral;
+    case usage::index: return vk::ImageLayout::eGeneral;
+    case usage::storage_read: return vk::ImageLayout::eGeneral;
+    case usage::storage_write: return vk::ImageLayout::eGeneral;
+    case usage::accel_struct_build_read: return vk::ImageLayout::eGeneral;
+    case usage::accel_struct_build_write: return vk::ImageLayout::eGeneral;
+    case usage::accel_struct_read: return vk::ImageLayout::eGeneral;
+    case usage::accel_struct_write: return vk::ImageLayout::eGeneral;
+    default: break;
+  }
+
+  utils::error{}("Bad resource usage {}", static_cast<size_t>(e));
+  return vk::ImageLayout::eUndefined;
+}
+
+vk::AccessFlags convertam(const usage::values e) {
+  switch (e) {
+    case usage::color_attachment: return vk::AccessFlagBits::eColorAttachmentWrite;
+    case usage::depth_attachment: return vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+    case usage::input_attachment: return vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentRead;
+    case usage::ignore_attachment: return vk::AccessFlags(0);
+    case usage::sampled: return vk::AccessFlagBits::eShaderRead;
+    case usage::texel_read: return vk::AccessFlagBits::eShaderRead;
+    case usage::texel_write: return vk::AccessFlagBits::eShaderWrite;
+    case usage::depth_read: return vk::AccessFlagBits::eShaderRead;
+    case usage::transfer_dst: return vk::AccessFlagBits::eTransferWrite;
+    case usage::transfer_src: return vk::AccessFlagBits::eTransferRead;
+    case usage::indirect_read: return vk::AccessFlagBits::eIndirectCommandRead;
+    case usage::present: return vk::AccessFlags(0);
+    case usage::host_read: return vk::AccessFlagBits::eHostRead;
+    case usage::host_write: return vk::AccessFlagBits::eHostWrite;
+    case usage::general: return vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+    case usage::uniform: return vk::AccessFlagBits::eUniformRead;
+    case usage::vertex: return vk::AccessFlagBits::eVertexAttributeRead;
+    case usage::index: return vk::AccessFlagBits::eIndexRead;
+    case usage::storage_read: return vk::AccessFlagBits::eShaderRead;
+    case usage::storage_write: return vk::AccessFlagBits::eShaderWrite;
+    case usage::accel_struct_build_read: return vk::AccessFlagBits::eAccelerationStructureReadKHR;
+    case usage::accel_struct_build_write: return vk::AccessFlagBits::eAccelerationStructureWriteKHR;
+    case usage::accel_struct_read: return vk::AccessFlagBits::eAccelerationStructureReadKHR;
+    case usage::accel_struct_write: return vk::AccessFlagBits::eAccelerationStructureWriteKHR;
+    default: break;
+  }
+
+  utils::error{}("Bad resource usage {}", static_cast<size_t>(e));
+  return vk::AccessFlags(0);
+}
+
+vk::PipelineStageFlags convertps(const usage::values e) {
+  const auto any_shader = vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eTessellationControlShader | vk::PipelineStageFlagBits::eTessellationEvaluationShader | vk::PipelineStageFlagBits::eGeometryShader | vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader;
+  const auto basic_shader = vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader;
+
+  switch (e) {
+    case usage::color_attachment: return vk::PipelineStageFlagBits::eColorAttachmentOutput;
+    case usage::depth_attachment: return vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests;
+    case usage::input_attachment: return vk::PipelineStageFlagBits::eFragmentShader;
+    case usage::ignore_attachment: return vk::PipelineStageFlagBits(0);
+    case usage::sampled: return basic_shader;
+    case usage::texel_read: return any_shader;
+    case usage::texel_write: return any_shader;
+    case usage::depth_read: return basic_shader;
+    case usage::transfer_dst: return vk::PipelineStageFlagBits::eTransfer;
+    case usage::transfer_src: return vk::PipelineStageFlagBits::eTransfer;
+    case usage::indirect_read: return vk::PipelineStageFlagBits::eDrawIndirect;
+    case usage::present: return vk::PipelineStageFlagBits::eBottomOfPipe;
+    case usage::host_read: return vk::PipelineStageFlagBits::eHost;
+    case usage::host_write: return vk::PipelineStageFlagBits::eHost;
+    case usage::general: return vk::PipelineStageFlagBits::eAllCommands;
+    case usage::uniform: return any_shader;
+    case usage::vertex: return vk::PipelineStageFlagBits::eVertexInput;
+    case usage::index: return vk::PipelineStageFlagBits::eVertexInput;
+    case usage::storage_read: return any_shader;
+    case usage::storage_write: return any_shader;
+    case usage::accel_struct_build_read: return vk::PipelineStageFlagBits::eAccelerationStructureBuildKHR;
+    case usage::accel_struct_build_write: return vk::PipelineStageFlagBits::eAccelerationStructureBuildKHR;
+    case usage::accel_struct_read: return vk::PipelineStageFlagBits::eRayTracingShaderKHR;
+    case usage::accel_struct_write: return vk::PipelineStageFlagBits::eRayTracingShaderKHR;
+    default: break;
+  }
+
+  utils::error{}("Bad resource usage {}", static_cast<size_t>(e));
+  return vk::PipelineStageFlags(0);
+}
+
+vk::DescriptorType convertdt(const usage::values e) {
+  switch (e) {
+    case usage::color_attachment: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
+    case usage::depth_attachment: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
+    case usage::input_attachment: return vk::DescriptorType::eInputAttachment;
+    case usage::ignore_attachment: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
+    case usage::sampled: return vk::DescriptorType::eSampledImage;
+    case usage::texel_read: return vk::DescriptorType::eStorageImage;
+    case usage::texel_write: return vk::DescriptorType::eStorageImage;
+    case usage::depth_read: return vk::DescriptorType::eSampledImage;
+    case usage::transfer_dst: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
+    case usage::transfer_src: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
+    case usage::indirect_read: return vk::DescriptorType::eStorageBuffer;
+    case usage::present: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
+    case usage::host_read: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
+    case usage::host_write: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
+    case usage::general: return vk::DescriptorType::eStorageBuffer;
+    case usage::uniform: return vk::DescriptorType::eUniformBuffer;
+    case usage::vertex: return vk::DescriptorType::eStorageBuffer;
+    case usage::index: return vk::DescriptorType::eStorageBuffer;
+    case usage::storage_read: return vk::DescriptorType::eStorageBuffer;
+    case usage::storage_write: return vk::DescriptorType::eStorageBuffer;
+    case usage::accel_struct_build_read: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
+    case usage::accel_struct_build_write: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
+    case usage::accel_struct_read: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
+    case usage::accel_struct_write: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
+    default: break;
+  }
+
+  utils::error{}("Bad resource usage {}", static_cast<size_t>(e));
+  return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
+}
+
+vk::ImageUsageFlags convertiuf(const usage::values e) {
+  switch (e) {
+    case usage::color_attachment: return vk::ImageUsageFlagBits::eColorAttachment;
+    case usage::depth_attachment: return vk::ImageUsageFlagBits::eDepthStencilAttachment;
+    case usage::input_attachment: return vk::ImageUsageFlagBits::eInputAttachment;
+    case usage::ignore_attachment: return vk::ImageUsageFlagBits{0};
+    case usage::sampled: return vk::ImageUsageFlagBits::eSampled;
+    case usage::texel_read: return vk::ImageUsageFlagBits::eStorage;
+    case usage::texel_write: return vk::ImageUsageFlagBits::eStorage;
+    case usage::depth_read: return vk::ImageUsageFlagBits::eSampled;
+    case usage::transfer_dst: return vk::ImageUsageFlagBits::eTransferDst;
+    case usage::transfer_src: return vk::ImageUsageFlagBits::eTransferSrc;
+    case usage::indirect_read: return vk::ImageUsageFlagBits::eStorage;
+    case usage::present: return vk::ImageUsageFlagBits{0};
+    case usage::host_read: return vk::ImageUsageFlagBits{ 0 };
+    case usage::host_write: return vk::ImageUsageFlagBits{ 0 };
+    case usage::general: return vk::ImageUsageFlagBits::eStorage;
+    case usage::uniform: return vk::ImageUsageFlagBits::eStorage;
+    case usage::vertex: return vk::ImageUsageFlagBits::eStorage;
+    case usage::index: return vk::ImageUsageFlagBits::eStorage;
+    case usage::storage_read: return vk::ImageUsageFlagBits::eStorage;
+    case usage::storage_write: return vk::ImageUsageFlagBits::eStorage;
+    case usage::accel_struct_build_read: return vk::ImageUsageFlagBits{ 0 };
+    case usage::accel_struct_build_write: return vk::ImageUsageFlagBits{ 0 };
+    case usage::accel_struct_read: return vk::ImageUsageFlagBits{ 0 };
+    case usage::accel_struct_write: return vk::ImageUsageFlagBits{ 0 };
+    default: break;
+  }
+
+  utils::error{}("Bad resource usage {}", static_cast<size_t>(e));
+  return vk::ImageUsageFlagBits{ 0 };
+}
+
+vk::BufferUsageFlags convertbuf(const usage::values e) {
+  switch (e) {
+    case usage::color_attachment: return vk::BufferUsageFlagBits{ 0 };
+    case usage::depth_attachment: return vk::BufferUsageFlagBits{ 0 };
+    case usage::input_attachment: return vk::BufferUsageFlagBits{ 0 };
+    case usage::ignore_attachment: return vk::BufferUsageFlagBits{ 0 };
+    case usage::sampled: return vk::BufferUsageFlagBits::eUniformTexelBuffer;
+    case usage::texel_read: return vk::BufferUsageFlagBits::eStorageTexelBuffer;
+    case usage::texel_write: return vk::BufferUsageFlagBits::eStorageTexelBuffer;
+    case usage::depth_read: return vk::BufferUsageFlagBits::eUniformTexelBuffer;
+    case usage::transfer_dst: return vk::BufferUsageFlagBits::eTransferDst;
+    case usage::transfer_src: return vk::BufferUsageFlagBits::eTransferSrc;
+    case usage::indirect_read: return vk::BufferUsageFlagBits::eIndirectBuffer;
+    case usage::present: return vk::BufferUsageFlagBits{ 0 };
+    case usage::host_read: return vk::BufferUsageFlagBits{ 0 };
+    case usage::host_write: return vk::BufferUsageFlagBits{ 0 };
+    case usage::general: return vk::BufferUsageFlagBits::eStorageBuffer;
+    case usage::uniform: return vk::BufferUsageFlagBits::eUniformBuffer;
+    case usage::vertex: return vk::BufferUsageFlagBits::eVertexBuffer;
+    case usage::index: return vk::BufferUsageFlagBits::eIndexBuffer;
+    case usage::storage_read: return vk::BufferUsageFlagBits::eStorageBuffer;
+    case usage::storage_write: return vk::BufferUsageFlagBits::eStorageBuffer;
+    case usage::accel_struct_build_read: return vk::BufferUsageFlagBits{ 0 };
+    case usage::accel_struct_build_write: return vk::BufferUsageFlagBits{ 0 };
+    case usage::accel_struct_read: return vk::BufferUsageFlagBits{ 0 };
+    case usage::accel_struct_write: return vk::BufferUsageFlagBits{ 0 };
+    default: break;
+  }
+
+  utils::error{}("Bad resource usage {}", static_cast<size_t>(e));
+  return vk::BufferUsageFlagBits{ 0 };
+}
+
 
 }
 }

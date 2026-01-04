@@ -7,13 +7,17 @@
 #include <string_view>
 #include <functional>
 #include <tuple>
-#include "common.h"
+#include <string>
+//#include "common.h"
 #include "vulkan_minimal.h"
 
 typedef struct GLFWwindow GLFWwindow;
 
 namespace devils_engine {
 namespace painter {
+
+struct cached_system_data;
+
 const std::vector<const char*> default_validation_layers = { "VK_LAYER_KHRONOS_validation" };
 const std::vector<const char*> default_device_extensions = { "VK_KHR_swapchain" };
 
@@ -27,6 +31,7 @@ void load_dispatcher3(VkDevice device);
 VkDebugUtilsMessengerEXT create_debug_messenger(VkInstance inst);
 void destroy_debug_messenger(VkInstance inst, VkDebugUtilsMessengerEXT handle);
 
+VkPhysicalDevice choose_physical_device(VkInstance inst);
 bool physical_device_presentation_support(VkInstance inst, VkPhysicalDevice dev, const uint32_t queue_family_index);
 VkSurfaceKHR create_surface(VkInstance instance, GLFWwindow* window);
 void destroy_surface(VkInstance instance, VkSurfaceKHR surface);
@@ -34,6 +39,7 @@ void destroy_surface(VkInstance instance, VkSurfaceKHR surface);
 VkPhysicalDevice find_device_process(VkInstance instance, cached_system_data* cached_data = nullptr);
 
 bool do_command(VkDevice device, VkCommandPool pool, VkQueue queue, VkFence fence, std::function<void(VkCommandBuffer)> action);
+bool do_command(VkDevice device, VkQueue queue, VkFence fence, VkCommandBuffer buf, std::function<void(VkCommandBuffer)> action);
 void copy_buffer(VkDevice device, VkCommandPool pool, VkQueue queue, VkFence fence, VkBuffer src, VkBuffer dst, size_t srcoffset = 0, size_t dstoffset = 0, size_t size = VK_WHOLE_SIZE);
 //void copy_image(VkDevice device, VkCommandPool pool, VkQueue queue, VkFence fence, VkImage dst, VkImage src, );
 

@@ -100,7 +100,7 @@ uint32_t image_pool::create(std::string name, const extent_t, const uint32_t for
 
   // отказаться от проверок компатибилити ? или может быть позже добавить если мне придет в голову что то совсем дикое
   // проверить сэмплер на наличие? вообще имеет смысл
-  if (sampler == VK_NULL_HANDLE) utils::error("Trying to create image view '{}' without a sampler object", name);
+  if (sampler == VK_NULL_HANDLE) utils::error{}("Trying to create image view '{}' without a sampler object", name);
 
   const vk::ImageSubresourceRange isr(choose_aspect(format), 0, 1, index, 1);
   const auto ivci = view_info(_storage, vk::Format(format), vk::ImageViewType::e2D, isr);
@@ -215,7 +215,7 @@ void image_pool::update_descriptor_set(VkDescriptorSet set, const uint32_t bindi
 }
 
 void image_pool::change_layout(VkCommandBuffer buffer, const uint32_t index, const uint32_t old_layout, const uint32_t new_layout) const {
-  if (index >= capacity()) utils::error("Trying to change layout on image index '{}', but capacity is {}", index, capacity());
+  if (index >= capacity()) utils::error{}("Trying to change layout on image index '{}', but capacity is {}", index, capacity());
 
   vk::CommandBuffer b(buffer);
   vk::ImageSubresourceRange isr(vk::ImageAspectFlagBits::eColor, 0, 1, index, 1);
@@ -231,7 +231,7 @@ void image_pool::change_layout_all(VkCommandBuffer buffer, const uint32_t old_la
 }
 
 void image_pool::copy_data(VkCommandBuffer buffer, VkImage image, const uint32_t index) const {
-  if (index >= capacity()) utils::error("Trying to copy image to image index '{}', but capacity is {}", index, capacity());
+  if (index >= capacity()) utils::error{}("Trying to copy image to image index '{}', but capacity is {}", index, capacity());
 
   vk::CommandBuffer b(buffer);
   vk::ImageSubresourceLayers isl1(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
@@ -243,7 +243,7 @@ void image_pool::copy_data(VkCommandBuffer buffer, VkImage image, const uint32_t
 #define MAKE_BLIT_OFFSETS(w_1,h_1) {VkOffset3D{0,0,0}, VkOffset3D{int32_t(w_1),int32_t(h_1),1}}
 
 void image_pool::blit_data(VkCommandBuffer buffer, const std::tuple<VkImage,uint32_t,uint32_t> &src_image, const uint32_t index, const uint32_t filter) const {
-  if (index >= capacity()) utils::error("Trying to blit image to image index '{}', but capacity is {}", index, capacity());
+  if (index >= capacity()) utils::error{}("Trying to blit image to image index '{}', but capacity is {}", index, capacity());
 
   const auto &[ src, src_width, src_height ] = src_image;
   vk::CommandBuffer b(buffer);

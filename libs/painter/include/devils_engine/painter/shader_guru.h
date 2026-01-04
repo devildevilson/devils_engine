@@ -94,7 +94,7 @@ std::string make_default_c_type() {
       // агрегатный подтип? + у нас еще будет color_t который ракрывается в
       // vec4, надо его с чем то скомбинировать или не надо, пусть будет int'ом
       // последним
-      utils::error("Default c struct type does not support type '{}'", utils::type_name<mem_type>());
+      utils::error{}("Default c struct type does not support type '{}'", utils::type_name<mem_type>());
     }
 
     const auto variable = "  " + std::string(type_name) + " " + member_name + "; \n";
@@ -144,7 +144,7 @@ std::string make_shader_block_type(const uint32_t binding_index, const block_typ
       const auto variable = std::string(type_name) + "_t " + member_name + "[]; \n";
       layout += variable;
     } else {
-      utils::error("Shader block type does not support type '{}'", utils::type_name<mem_type>());
+      utils::error{}("Shader block type does not support type '{}'", utils::type_name<mem_type>());
     }
 
     if (!type_name.empty()) {

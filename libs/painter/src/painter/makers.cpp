@@ -883,7 +883,7 @@ namespace devils_engine {
       const auto info = get_info(layout, renderPass, subpass, base, baseIndex);
       
       auto [res, p] = device.createGraphicsPipeline(cache, info);
-      if (res != vk::Result::eSuccess) utils::error("Could not create graphics pipeline '{}'", name);
+      if (res != vk::Result::eSuccess) utils::error{}("Could not create graphics pipeline '{}'", name);
       if (!name.empty()) set_name(device, p, name);
       
       shaders_specs.clear();
@@ -962,7 +962,7 @@ namespace devils_engine {
       );
 
       auto [res, p] = device.createComputePipeline(nullptr, info);
-      if (res != vk::Result::eSuccess) utils::error("Could not create compute pipeline '{}'", name);
+      if (res != vk::Result::eSuccess) utils::error{}("Could not create compute pipeline '{}'", name);
       if (!name.empty()) set_name(device, p, name);
       entries.clear();
       
@@ -1236,7 +1236,7 @@ namespace devils_engine {
 
     device_maker & device_maker::createQueue(const uint32_t queue_family_index, const uint32_t maxCount, const float* priority) {
       const auto &props = phys.getQueueFamilyProperties();
-      if (queue_family_index >= props.size()) utils::error("Invalid queue family index {}, max is {}", queue_family_index, props.size());
+      if (queue_family_index >= props.size()) utils::error{}("Invalid queue family index {}, max is {}", queue_family_index, props.size());
       const uint32_t queuesCount = std::min(maxCount, props[queue_family_index].queueCount);
       if (queuesCount < maxCount) utils::warn("Queue family does not provide this much {} queues, createing with {}", maxCount, queuesCount);
 

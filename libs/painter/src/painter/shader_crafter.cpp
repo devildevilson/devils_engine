@@ -2,10 +2,10 @@
 
 #include <memory>
 #include <shaderc/shaderc.hpp>
-#include "demiurg/resource_system.h"
+#include "devils_engine/demiurg/resource_system.h"
 #include "glsl_source_file.h"
 
-#include "utils/core.h"
+#include "devils_engine/utils/core.h"
 
 namespace devils_engine {
 namespace painter {

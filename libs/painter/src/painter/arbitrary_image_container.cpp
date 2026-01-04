@@ -95,7 +95,7 @@ uint32_t arbitrary_image_container::create(std::string name, const image_contain
   uint32_t i = 0;
   for (; i < images.size() && is_exists(i); ++i) {}
 
-  if (sampler == VK_NULL_HANDLE) utils::error("Trying to create image view '{}' without a sampler object", name);
+  if (sampler == VK_NULL_HANDLE) utils::error{}("Trying to create image view '{}' without a sampler object", name);
 
   //const auto usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc;
   const auto usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc;
@@ -198,8 +198,8 @@ void arbitrary_image_container::update_descriptor_set(VkDescriptorSet set, const
 }
 
 void arbitrary_image_container::change_layout(VkCommandBuffer buffer, const uint32_t index, const uint32_t old_layout, const uint32_t new_layout) const {
-  if (index >= images.size()) utils::error("Trying to change layout on image index '{}', but capacity is {}", index, images.size());
-  if (!is_exists(index)) utils::error("Trying to change layout on non existing image index '{}'", index);
+  if (index >= images.size()) utils::error{}("Trying to change layout on image index '{}', but capacity is {}", index, images.size());
+  if (!is_exists(index)) utils::error{}("Trying to change layout on non existing image index '{}'", index);
 
   const auto img = images[index].handle;
 
@@ -228,8 +228,8 @@ void arbitrary_image_container::change_layout_all(VkCommandBuffer buffer, const 
 }
 
 void arbitrary_image_container::copy_data(VkCommandBuffer buffer, VkImage image, const uint32_t index) const {
-  if (index >= images.size()) utils::error("Trying to copy image to image index '{}', but capacity is {}", index, images.size());
-  if (!is_exists(index)) utils::error("Trying to copy image to non existing image index '{}'", index);
+  if (index >= images.size()) utils::error{}("Trying to copy image to image index '{}', but capacity is {}", index, images.size());
+  if (!is_exists(index)) utils::error{}("Trying to copy image to non existing image index '{}'", index);
 
   const auto &img = images[index];
 
@@ -243,8 +243,8 @@ void arbitrary_image_container::copy_data(VkCommandBuffer buffer, VkImage image,
 #define MAKE_BLIT_OFFSETS(w_1,h_1) {VkOffset3D{0,0,0}, VkOffset3D{int32_t(w_1),int32_t(h_1),1}}
 
 void arbitrary_image_container::blit_data(VkCommandBuffer buffer, const std::tuple<VkImage, uint32_t, uint32_t> &src_image, const uint32_t index, const uint32_t filter) const {
-  if (index >= images.size()) utils::error("Trying to blit image to image index '{}', but capacity is {}", index, images.size());
-  if (!is_exists(index)) utils::error("Trying to blit image to non existing image index '{}'", index);
+  if (index >= images.size()) utils::error{}("Trying to blit image to image index '{}', but capacity is {}", index, images.size());
+  if (!is_exists(index)) utils::error{}("Trying to blit image to non existing image index '{}'", index);
 
   const auto &[ src, src_width, src_height ] = src_image;
   const auto &img = images[index];
