@@ -3,7 +3,7 @@
 #include <cstdlib>
 #include <filesystem>
 
-#include "utf/utf.hpp"
+#include "utf.hpp"
 
 #ifdef _WIN32
 #include <windows.h>    //GetModuleFileNameW
@@ -13,21 +13,12 @@
 #endif
 
 #define DEVILS_ENGINE_AESTHETICS_IMPLEMENTATION
-#include "aesthetics/world.h"
+#include "devils_engine/aesthetics/world.h"
 
 namespace fs = std::filesystem;
 
 namespace devils_engine {
   namespace utils {
-    std::string_view make_sane_file_name(const std::string_view &str) {
-      const size_t slash1_index = str.rfind("/");
-      if (slash1_index == std::string_view::npos) return str;
-
-      const auto str2 = str.substr(0, slash1_index);
-      const size_t slash2_index = str2.rfind("/");
-      return slash2_index == std::string_view::npos ? str.substr(slash1_index+1) : str.substr(slash2_index+1);
-    }
-
     void assert_failed_detail(
       const std::string_view &cond_str,
       const std::string_view &file_name,
@@ -102,6 +93,10 @@ namespace devils_engine {
       const size_t first_slash = str.rfind('/');
       const auto bin_dir = std::string_view(str).substr(0, first_slash);
       return std::string(bin_dir.substr(0, bin_dir.rfind('/')+1));
+    }
+
+    std::string cache_folder() noexcept {
+      return project_folder() + "cache/";
     }
 
     uint32_t crc32c(const uint8_t* data, const size_t len) noexcept {

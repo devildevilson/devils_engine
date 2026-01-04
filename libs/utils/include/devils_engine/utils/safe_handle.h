@@ -1,10 +1,10 @@
-#ifndef DEVILS_ENGINE_SAFE_HANDLE_H
-#define DEVILS_ENGINE_SAFE_HANDLE_H
+#ifndef DEVILS_ENGINE_UTILS_SAFE_HANDLE_H
+#define DEVILS_ENGINE_UTILS_SAFE_HANDLE_H
 
 #include <cstddef>
 #include <cstdint>
-#include <utils/core.h>
-#include <utils/type_traits.h>
+#include "core.h"
+#include "type_traits.h"
 
 namespace devils_engine {
   namespace utils {

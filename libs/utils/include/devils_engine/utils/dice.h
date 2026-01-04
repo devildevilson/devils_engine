@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <array>
-#include <utils/prng.h>
+#include "devils_engine/utils/prng.h"
 
 namespace devils_engine {
   namespace utils {

@@ -110,11 +110,12 @@ namespace devils_engine {
     {
       // кажется в таком виде operator new[] отрабаотывает так же как и operator new
       m_memory = reinterpret_cast<char*>(operator new(m_size, std::align_val_t{ m_aligment }));
-      size_t offset = (m_size / m_block_size) * m_block_size;
-      while (offset >= m_block_size) {
-        const size_t cur_pos = offset - m_block_size;
-        auto cur_stack_el = reinterpret_cast<stack_element_t*>(&m_memory[cur_pos]);
+      size_t cur_pos = 0;
+      while (cur_pos < m_size) {
+        //auto cur_stack_el = reinterpret_cast<stack_element_t*>(&m_memory[cur_pos]);
+        auto cur_stack_el = new (&m_memory[cur_pos]) stack_element_t();
         utils::forw::atomic_list_push<0>(m_stack, cur_stack_el);
+        cur_pos += m_block_size;
       }
     }
 
@@ -164,7 +165,8 @@ namespace devils_engine {
     }
 
     void fixed_pool_mt::free(void* ptr) noexcept {
-      auto stack_el = reinterpret_cast<stack_element_t*>(ptr);
+      //auto stack_el = reinterpret_cast<stack_element_t*>(ptr);
+      auto stack_el = new (ptr) stack_element_t();
       utils::forw::atomic_list_push<0>(m_stack, stack_el);
     }
 

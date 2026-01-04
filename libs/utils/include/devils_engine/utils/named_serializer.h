@@ -4,16 +4,16 @@
 #include <string>
 #include <stdexcept>
 #include <iostream>
-#include <utils/reflect>
+#include <devils_engine/utils/reflect>
 #include <vector>
 #include <array>
 #include <format>
 #include <glaze/glaze.hpp>
 //#include <alpaca/alpaca.h>
 #include <zpp_bits.h>
-#include "utils/core.h"
-#include "utils/type_traits.h"
-#include "utils/string-utils.hpp"
+#include "core.h"
+#include "type_traits.h"
+#include "string-utils.hpp"
 
 // для json лучше использовать glaze
 // для lua имеет смысл написать десериализатор (позже)
@@ -25,7 +25,7 @@ template <typename T>
 glz::error_ctx to_json(const T &x, std::string &c) {
   return glz::write_json(x, c);
   // if (ec) {
-  //   utils::error("Could not write json for struct '{}' (err code: {})", utils::type_name<T>(), static_cast<size_t>(ec.ec));
+  //   utils::error{}("Could not write json for struct '{}' (err code: {})", utils::type_name<T>(), static_cast<size_t>(ec.ec));
   // }
 }
 
@@ -33,7 +33,7 @@ template <glz::opts O, typename T>
 glz::error_ctx to_json(const T &x, std::string &c) {
   return glz::write<O>(x, c);
   // if (ec) {
-  //   utils::error("Could not write json for struct '{}' (err code: {})", utils::type_name<T>(), static_cast<size_t>(ec.ec));
+  //   utils::error{}("Could not write json for struct '{}' (err code: {})", utils::type_name<T>(), static_cast<size_t>(ec.ec));
   // }
 }
 
@@ -67,7 +67,7 @@ auto from_json(T &x, const std::string &c) {
 //  std::error_code ec;
 //  x = alpaca::deserialize<T, O>(c, ec);
 //  //if (ec) {
-//  //  utils::error("Could not parse binary for struct '{}' (msg: {})", utils::type_name<T>(), ec.message());
+//  //  utils::error{}("Could not parse binary for struct '{}' (msg: {})", utils::type_name<T>(), ec.message());
 //  //}
 //  return ec;
 //}
@@ -87,7 +87,7 @@ auto from_json(T &x, const std::string &c) {
 //  std::error_code ec;
 //  x = alpaca::deserialize<T, alpaca::options::none>(c, ec);
 //  //if (ec) {
-//  //  utils::error("Could not parse binary for struct '{}' (msg: {})", utils::type_name<T>(), ec.message());
+//  //  utils::error{}("Could not parse binary for struct '{}' (msg: {})", utils::type_name<T>(), ec.message());
 //  //}
 //  return ec;
 //}
@@ -101,11 +101,10 @@ auto from_json(T &x, const std::string &c) {
 //std::errc::invalid_argument - attempting to serialize null pointer or a value - less variant.
 //std::errc::protocol_error - attempt to deserialize an invalid protocol message.
 
-const auto default_options = zpp::bits::endian::network{};
-
 template <typename T>
 std::vector<uint8_t> to_binary(const T& x) {
-  auto [data, out] = zpp::bits::data_out(default_options);
+  auto default_options = zpp::bits::endian::network{};
+  auto& [data, out] = zpp::bits::data_out<uint8_t>(default_options);
   auto res = out(x);
   if (res.has_value()) return data;
   return std::vector<uint8_t>{};
@@ -113,12 +112,14 @@ std::vector<uint8_t> to_binary(const T& x) {
 
 template <typename T>
 std::errc to_binary(const T& x, std::vector<uint8_t>& data) {
+  auto default_options = zpp::bits::endian::network{};
   zpp::bits::out out(data, default_options);
   return out(x);
 }
 
 template <typename T>
 T from_binary(const std::vector<uint8_t>& data) {
+  auto default_options = zpp::bits::endian::network{};
   zpp::bits::in in(data, default_options);
   T x;
   in(x);
@@ -127,6 +128,7 @@ T from_binary(const std::vector<uint8_t>& data) {
 
 template <typename T>
 std::errc from_binary(const std::vector<uint8_t>& data, T& x) {
+  auto default_options = zpp::bits::endian::network{};
   zpp::bits::in in(data, default_options);
   return in(x);
 }
@@ -193,7 +195,7 @@ bool to_lua_impl(const T &x, std::string &c) {
     c.append(name);
     c.push_back('=');
     const bool ret = to_lua_value(val, c);
-    if (!ret) utils::error("Could not serialize value of type '{}' ({})", utils::type_name<mem_type>(), name);
+    if (!ret) utils::error{}("Could not serialize value of type '{}' ({})", utils::type_name<mem_type>(), name);
     c.push_back(',');
   }, x);
 

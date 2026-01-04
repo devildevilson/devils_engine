@@ -1,6 +1,6 @@
 #include "loader.h"
 
-#include "utils/core.h"
+#include "core.h"
 
 namespace devils_engine {
 namespace utils {
@@ -36,13 +36,13 @@ template <typename Clock>
 static Clock::time_point tp_from_mcs(const size_t mcs) {
   std::chrono::microseconds dur(mcs);
   std::chrono::time_point<Clock> dt(dur);
-  return Clock::time_point(dt);
+  return typename Clock::time_point(dt);
 }
 
 loader::loader(std::string name) noexcept : load_stage(std::move(name)), _counter(0), _tp(mcs_epoch<clock>(clock::now())), waiters_count(0), waiters{nullptr} {}
 
 void loader::add_waiter(thread::semaphore_interface* inter) {
-  if (waiters_count >= max_waiters) utils::error("Too many waiters for loader '{}'", name);
+  if (waiters_count >= max_waiters) utils::error{}("Too many waiters for loader '{}'", name);
   const size_t index = waiters_count;
   waiters_count += 1;
   waiters[index] = inter;

@@ -12,6 +12,20 @@ namespace utils {
 
   void time_log::update_tp() { tp = std::chrono::steady_clock::now(); }
 
+  trace_time_log::trace_time_log(const std::string_view& str, std::source_location loc) noexcept : 
+    str(str), tp(std::chrono::steady_clock::now()), l(loc)
+  {
+    spdlog::log(spdlog::level::trace, "in  {}:{} `{}`.", make_sane_file_name(l.file_name()), l.line(), l.function_name());
+  }
+
+  trace_time_log::~trace_time_log() noexcept {
+    const auto dur = std::chrono::steady_clock::now() - tp;
+    const size_t mcs = std::chrono::duration_cast<std::chrono::microseconds>(dur).count();
+    spdlog::log(spdlog::level::trace, "out {}:{} `{}`. {} took {} mcs ({:.3} seconds)", make_sane_file_name(l.file_name()), l.line(), l.function_name(), str, mcs, double(mcs) / 1000000.0);
+  }
+
+  void trace_time_log::update_tp() { tp = std::chrono::steady_clock::now(); }
+
   unix_timestamp_t timestamp() noexcept {
     const auto p1 = std::chrono::system_clock::now();
     return std::chrono::duration_cast<std::chrono::seconds>(p1.time_since_epoch()).count();

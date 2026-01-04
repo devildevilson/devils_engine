@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include "utils/list.h"
+#include "devils_engine/utils/type_traits.h"
 
 #ifndef DEVILS_ENGINE_AESTHETICS_VERSION_BITS
 #define DEVILS_ENGINE_AESTHETICS_VERSION_BITS 10
@@ -14,8 +14,19 @@
 #define DEVILS_ENGINE_AESTHETICS_ENTITY_ID_SIZE uint32_t
 #endif
 
+#ifndef DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_COMPONENTS_TYPE_ID
+#define DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_COMPONENTS_TYPE_ID UINT64_C(0xae000001)
+#endif
+
+#ifndef DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_EVENTS_TYPE_ID
+#define DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_EVENTS_TYPE_ID UINT64_C(0xae000002)
+#endif
+
 namespace devils_engine {
 namespace aesthetics {
+constexpr size_t seq_components_type_id = DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_COMPONENTS_TYPE_ID;
+constexpr size_t seq_events_type_id = DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_EVENTS_TYPE_ID;
+
 constexpr size_t make_mask(const size_t bits) noexcept {
   size_t mask = 0;
   for (size_t i = 0; i < bits; ++i) { mask = mask | (size_t(0x1) << i); }
@@ -25,6 +36,7 @@ constexpr size_t make_mask(const size_t bits) noexcept {
 constexpr size_t entityid_version_bits = DEVILS_ENGINE_AESTHETICS_VERSION_BITS;
 using entityid_t = DEVILS_ENGINE_AESTHETICS_ENTITY_ID_SIZE;
 constexpr entityid_t invalid_entityid = entityid_t(make_mask(sizeof(entityid_t) * CHAR_BIT));
+constexpr size_t maximum_entities = make_mask(sizeof(entityid_t) * CHAR_BIT - entityid_version_bits);
 static_assert(invalid_entityid == UINT32_MAX);
 
 constexpr entityid_t make_entityid(const size_t index, const uint32_t version) noexcept {
@@ -58,6 +70,18 @@ struct global_index {
   }
 };
 
+// это будет работать если world будет сторого один на весь проект
+// точнее работать то будет всегда, просто будет много лишней фигни 
+template <typename T>
+size_t component_type_id() noexcept {
+  return utils::sequential_type_id<seq_components_type_id, T>();
+}
+
+template <typename T>
+size_t event_type_id() noexcept {
+  return utils::sequential_type_id<seq_events_type_id, T>();
+}
+
 template <typename T>
 struct create_component_event {
   entityid_t id;
@@ -77,43 +101,19 @@ public:
   virtual ~accurate_remover() noexcept = default;
 };
 
-// лист?
+// лист? зачем лист?
 template <typename T>
-class basic_reciever : public accurate_remover, public utils::ring::list<basic_reciever<T>, 0> {
+class basic_reciever : public accurate_remover {
 public:
   virtual ~basic_reciever() noexcept = default;
   virtual void receive(const T& event) = 0;
-  inline basic_reciever<T>* next(const basic_reciever<T>* ref) const { return utils::ring::list_next<0>(this, ref); }
-  inline void add(basic_reciever<T>* obj) { utils::ring::list_radd<0>(this, obj); }
-  inline void unsubscribe() { utils::ring::list_remove(this); }
-};
-
-template <typename T>
-class basic_reciever_impl : public basic_reciever<T> {
-public:
-  inline void receive(const T& event) override {}
-};
-
-// это первый элемент в листе basic_reciever, нужен чтобы более аккуратно сделать добавление удаление
-// с этим у нас есть гарантия что мы можем использовать basic_reciever в векторе без проблем
-// по крайней мере там должен правильно отработать move 
-struct basic_reciever_container {
-  //char mem[container_size]; // не получится использовать статическую память =(
-  //accurate_remover* ptr;
-  std::unique_ptr<accurate_remover> ptr;
-
-  template <typename T>
-  basic_reciever_container() noexcept : ptr(new basic_reciever_impl<T>()) {}
-
-  template <typename T>
-  basic_reciever<T>* get() const { return static_cast<basic_reciever<T>*>(ptr.get()); }
 };
 
 class basic_system : public basic_reciever<update_event> {
 public:
   virtual ~basic_system() noexcept = default;
   inline void receive(const update_event& event) override { update(event.time); }
-  virtual void update(const size_t& time) = 0;
+  virtual void update(const size_t time) = 0;
 };
 
 inline bool all_of_not_null() { return true; }
@@ -133,7 +133,6 @@ bool all_of_is_null(const T& val, const Comp_T&... values) {
 }
 
 // грязный хак, но зато очень удобно - легко создавать любые классы без наследования лишних базовых классов
-// надо бы так же сделать и в рендере
 class basic_container {
 public:
   virtual ~basic_container() noexcept = default;
