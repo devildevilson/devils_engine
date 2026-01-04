@@ -7,7 +7,7 @@
 #include <mutex>
 #include <future>
 #include <type_traits>
-#include "utils/stack_allocator.h"
+#include "devils_engine/utils/stack_allocator.h"
 
 namespace devils_engine {
 namespace thread {
@@ -36,9 +36,9 @@ public:
     std::unique_lock l(mutex);
     if (stop) return;
     auto ptr = stack.allocate(sizeof(T));
-    if (ptr == nullptr) utils::error("Could not allocate {} bytes from stack. Allocated already {}. Forgot to reset?", sizeof(T), stack.size());
-    new (ptr) T(std::forward<Args>(args)...);
-    queue.push(ptr);
+    if (ptr == nullptr) utils::error{}("Could not allocate {} bytes from stack. Allocated already {}. Forgot to reset?", sizeof(T), stack.size());
+    auto final_ptr = new (ptr) T(std::forward<Args>(args)...);
+    queue.push(final_ptr);
   }
 
   template <typename F>
@@ -58,7 +58,7 @@ public:
   void submit(F f, Args&&... args) {
     struct func_job : public arbitrary_job {
       F f;
-      std::tuple<Args> args;
+      std::tuple<Args...> args;
       func_job(F f, Args&&... args) noexcept : f(std::move(f)), args(std::forward<Args>(args)...) {}
       void execute() const override {
         std::apply(std::move(f), std::move(args));
@@ -98,7 +98,7 @@ public:
   auto submit_r(F f, Args&&... args) -> std::future<typename std::invoke_result_t<F, Args&&...>> {
     struct func_job : public arbitrary_job {
       F f;
-      std::tuple<Args> args;
+      std::tuple<Args...> args;
       std::promise<typename std::invoke_result_t<F, Args&&...>> promise;
       func_job(F f, Args&&... args) noexcept : f(std::move(f)), args(std::forward<Args>(args)...) {}
       func_job(func_job&& move) noexcept = default;

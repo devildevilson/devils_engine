@@ -20,7 +20,7 @@ set(HDR_LIST
   include/devils_engine/thread/lock.h
   include/devils_engine/thread/stack_pool.h
   include/devils_engine/thread/atomic_pool.h
-)
+ "include/devils_engine/thread/queue1.h")
 
 add_library(devils_thread ${SRC_LIST} ${HDR_LIST})
 
@@ -42,7 +42,7 @@ target_compile_options(devils_thread PRIVATE
   $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -fno-rtti>>
 )
 
-target_include_directories(devils_thread INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine>") # ???
+target_include_directories(devils_thread INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>") # ???
 
 target_include_directories(devils_thread PRIVATE 
   "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/thread>"
