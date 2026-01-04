@@ -9,6 +9,7 @@
 #include <string>
 #include <span>
 #include <array>
+#include <iostream>
 #include <gtl/phmap.hpp>
 #include "devils_engine/utils/type_traits.h"
 #include "zpp_bits.h"
@@ -129,7 +130,7 @@ struct rpc_function {
     static void write(Args... args) {
       // возьмем core и туда запишем id функции и все аргументы
       // нет, id наверное только запишем в function_buffer_header
-      channel_t::buffer.headers.push_back({ 1, id, channel_t::buffer.payload.size() });
+      channel_t::buffer.headers.push_back({ 1u, id, uint32_t(channel_t::buffer.payload.size()) });
       zpp::bits::size_varint{};
     }
 
