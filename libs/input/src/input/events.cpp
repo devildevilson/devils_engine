@@ -1,8 +1,8 @@
 #include "events.h"
 
-#include "utils/time-utils.hpp"
+#include "devils_engine/utils/time-utils.hpp"
 #include "core.h"
-#include "utils/core.h"
+#include "devils_engine/utils/core.h"
 
 namespace devils_engine {
 namespace input {
@@ -197,7 +197,7 @@ void events::set_key(const std::string_view &id, const int32_t scancode, const i
     itr = event_mapping.insert(std::make_pair(persistend_id, event_map{})).first;
   }
 
-  if (slot >= itr->second.keys.size()) utils::error("Bad set key args. Trying to set to event '{}' slot {}", id, slot);
+  if (slot >= itr->second.keys.size()) utils::error{}("Bad set key args. Trying to set to event '{}' slot {}", id, slot);
   const auto old_scancode = itr->second.keys[slot];
   itr->second.keys[slot] = scancode;
 
