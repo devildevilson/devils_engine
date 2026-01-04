@@ -2,12 +2,12 @@
 
 #include <algorithm>
 
-#include "utils/core.h"
-#include "utils/fileio.h"
+#include "devils_engine/utils/core.h"
+#include "devils_engine/utils/fileio.h"
 #include "header.h"
-#include "utf/utf.hpp"
+#include "devils_engine/utf/utf.hpp"
 
-#include "painter/arbitrary_image_container.h"
+//#include "devils_engine/painter/arbitrary_image_container.h"
 
 #define MSDFGEN_PUBLIC
 #include "msdfgen.h"
@@ -71,7 +71,7 @@ struct freetype_raii {
   msdfgen::FreetypeHandle* ft;
 
   freetype_raii() : ft(msdfgen::initializeFreetype()) {
-    if (ft == nullptr) utils::error("Could not init freetype");
+    if (ft == nullptr) utils::error{}("Could not init freetype");
   }
   ~freetype_raii() noexcept {
     msdfgen::deinitializeFreetype(ft);
@@ -84,7 +84,7 @@ struct font_raii {
   font_raii(msdfgen::FreetypeHandle* ft, const msdfgen::byte* data, const size_t length, const std::string_view &hint) : 
     fh(msdfgen::loadFontData(ft, data, length))
   {
-    if (fh == nullptr) utils::error("Could not load font '{}'", hint);
+    if (fh == nullptr) utils::error{}("Could not load font '{}'", hint);
   }
 
   ~font_raii() {
@@ -150,10 +150,10 @@ std::tuple<std::unique_ptr<font_t>, uint32_t> load_font(painter::host_image_cont
   generator.generate(glyphs.data(), glyphs.size());
   msdfgen::BitmapConstRef<msdf_atlas::byte, color_channels> atlas_storage = generator.atlasStorage();
   
-  const uint32_t host_image_id = imgs->create("font_storage", {uint32_t(width), uint32_t(height)}, painter::rgb24_format, VK_NULL_HANDLE);
-  auto mem = imgs->mapped_memory(host_image_id);
-  const size_t size = size_t(width) * size_t(height) * color_channels * sizeof(msdf_atlas::byte);
-  memcpy(mem, atlas_storage.pixels, size);
+  //const uint32_t host_image_id = imgs->create("font_storage", {uint32_t(width), uint32_t(height)}, painter::rgb24_format, VK_NULL_HANDLE);
+  //auto mem = imgs->mapped_memory(host_image_id);
+  //const size_t size = size_t(width) * size_t(height) * color_channels * sizeof(msdf_atlas::byte);
+  //memcpy(mem, atlas_storage.pixels, size);
 
   msdfgen::savePng(atlas_storage, "font.png");
 
@@ -205,9 +205,10 @@ std::tuple<std::unique_ptr<font_t>, uint32_t> load_font(painter::host_image_cont
   f->nkfont->height = 1000.0f;
   f->nkfont->width = &local_text_width;
   f->nkfont->query = &local_query_font_glyph;
-  f->nkfont->texture.id = host_image_id; // будет другим
+  //f->nkfont->texture.id = host_image_id; // будет другим
+  f->nkfont->texture.id = UINT32_MAX;
 
-  return std::make_tuple(std::move(f), host_image_id);
+  return std::make_tuple(std::move(f), UINT32_MAX);
 }
 }
 }

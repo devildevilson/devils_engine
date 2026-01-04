@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <chrono>
-#include "bindings/lua_header.h"
+#include "devils_engine/bindings/lua_header.h"
 
 struct nk_context;
 struct nk_buffer;

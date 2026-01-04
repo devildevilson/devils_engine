@@ -81,18 +81,18 @@ void draw_resource::prepare(const uint32_t width, const uint32_t height) {
   const uint32_t flags = nk_convert(ctx, cmds, &vertices, &elements, &config);
   if (flags != 0) {
     if ((flags & NK_CONVERT_COMMAND_BUFFER_FULL) == NK_CONVERT_COMMAND_BUFFER_FULL) {
-      utils::error("Command buffer full");
+      utils::error{}("Command buffer full");
     }
 
     if ((flags & NK_CONVERT_VERTEX_BUFFER_FULL) == NK_CONVERT_VERTEX_BUFFER_FULL) {
-      utils::error("Vertex buffer full");
+      utils::error{}("Vertex buffer full");
     }
 
     if ((flags & NK_CONVERT_ELEMENT_BUFFER_FULL) == NK_CONVERT_ELEMENT_BUFFER_FULL) {
-      utils::error("Index buffer full");
+      utils::error{}("Index buffer full");
     }
 
-    utils::error("Invalid data");
+    utils::error{}("Invalid data");
   }
 
   auto mat = reinterpret_cast<glm::mat4*>(uniform_host.mapped_data());

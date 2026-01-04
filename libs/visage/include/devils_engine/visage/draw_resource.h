@@ -4,9 +4,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
-#include "painter/vulkan_minimal.h"
+#include "devils_engine/painter/vulkan_minimal.h"
 #include "painter/buffer_resources.h"
-#include "utils/stack_allocator.h"
+#include "devils_engine/utils/stack_allocator.h"
 
 struct nk_context;
 struct nk_buffer;
