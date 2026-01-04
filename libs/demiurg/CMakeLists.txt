@@ -43,7 +43,7 @@ target_compile_options(devils_demiurg PRIVATE
   $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -fno-rtti -mavx>>
 )
 
-target_include_directories(devils_demiurg INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine>") # ???
+target_include_directories(devils_demiurg INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>") # ???
 
 target_include_directories(devils_demiurg PRIVATE 
   "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/demiurg>"
