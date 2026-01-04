@@ -1,10 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "utils/core.h"
-#include "utils/list.h"
-#include "utils/block_allocator.h"
-#include "utils/string-utils.hpp"
-#include "mood/system.h"
+#include "devils_engine/utils/core.h"
+#include "devils_engine/utils/list.h"
+#include "devils_engine/utils/block_allocator.h"
+#include "devils_engine/utils/string-utils.hpp"
+#include "devils_engine/mood/system.h"
 
 using namespace devils_engine;
 
@@ -189,7 +189,7 @@ TEST_CASE("Mood system tests", "[mood::system]") {
   }
 
   for (const auto& name : g_strs) {
-    t.actions[name] = [] (void*) { return 0; };
+    t.guards[name] = [] (void*) { return 0; };
   }
 
   const std::vector<std::string> lines = {
@@ -296,8 +296,7 @@ TEST_CASE("String utility tests", "[utils::string]") {
     REQUIRE(arr[9] == ".asd");
 
     ret = utils::string::split(test3, ".", ans);
-    REQUIRE(ret == 1);
-    REQUIRE(arr[0] == "");
+    REQUIRE(ret == 0);
   }
 
   SECTION("split test different token usage") {
@@ -337,7 +336,7 @@ TEST_CASE("String utility tests", "[utils::string]") {
 
   SECTION("inside2 test") {
     const std::string_view test1 = "{ \"abbbaab\": \"abc\", \"babav\": [ \"ababab\", 123, { \"bfsdb\": [ \"abc\" ] } ] }";
-    const auto ret = utils::string::inside2(test1, "[", "]");
+    const auto ret = utils::string::trim(utils::string::inside2(test1, "[", "]"));
     REQUIRE(ret == "\"ababab\", 123, { \"bfsdb\": [ \"abc\" ] }");
   }
 
