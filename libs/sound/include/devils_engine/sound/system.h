@@ -9,7 +9,7 @@
 
 #include <glm/vec3.hpp>
 
-#include "utils/memory_pool.h"
+#include "devils_engine/utils/memory_pool.h"
 #include "resource.h"
 #include "basic_sources.h"
 
@@ -143,7 +143,7 @@ namespace devils_engine {
         vsources.push_back(std::move(ptr));
 
         /*if constexpr (std::is_base_of_v<background_source, T>) {
-          if (background != nullptr) utils::error("More background sounds?");
+          if (background != nullptr) utils::error{}("More background sounds?");
           background = p;
         } else if constexpr (std::is_base_of_v<menu_source, T>) {
           menu_sources.push_back(p);
