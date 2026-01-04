@@ -1,7 +1,7 @@
 #include "font_atlas_packer.h"
 
-#include "utils/fileio.h"
-#include "utils/core.h"
+#include "devils_engine/utils/fileio.h"
+#include "devils_engine/utils/core.h"
 
 #include "header.h"
 
@@ -15,7 +15,7 @@ struct freetype_raii {
   msdfgen::FreetypeHandle* ft;
 
   freetype_raii() : ft(msdfgen::initializeFreetype()) {
-    if (ft == nullptr) utils::error("Could not init freetype");
+    if (ft == nullptr) utils::error{}("Could not init freetype");
   }
   ~freetype_raii() noexcept {
     msdfgen::deinitializeFreetype(ft);
@@ -28,7 +28,7 @@ struct font_raii {
   font_raii(msdfgen::FreetypeHandle* ft, const msdfgen::byte* data, const size_t length, const std::string_view& hint) :
     fh(msdfgen::loadFontData(ft, data, length))
   {
-    if (fh == nullptr) utils::error("Could not load font '{}'", hint);
+    if (fh == nullptr) utils::error{}("Could not load font '{}'", hint);
   }
 
   ~font_raii() {
@@ -73,7 +73,7 @@ std::tuple<std::vector<std::unique_ptr<font_t>>, font_atlas_packer::font_image_t
 
       msdf_atlas::Charset set;
       for (const auto &pair : cfg.charsets) {
-        if (pair.first > pair.second) utils::error("Bad charset ({}, {})", pair.first, pair.second);
+        if (pair.first > pair.second) utils::error{}("Bad charset ({}, {})", pair.first, pair.second);
         for (uint32_t i = pair.first; i < pair.second; ++i) {
           set.add(i);
         }
@@ -159,7 +159,7 @@ std::tuple<std::vector<std::unique_ptr<font_t>>, font_atlas_packer::font_image_t
     img.height = height;
     img.channels = color_channels;
     memcpy(img.bytes.data(), atlas_storage.pixels, size);
-  } else utils::error("Unsupported color channels count {}", cfg.color_channels);
+  } else utils::error{}("Unsupported color channels count {}", cfg.color_channels);
   
   size_t offset = 0;
   std::vector<std::unique_ptr<font_t>> fonts;

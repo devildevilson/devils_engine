@@ -7,7 +7,7 @@
 #include <vector>
 #include <string>
 #include <memory>
-#include "utils/locale-utils.hpp"
+#include "devils_engine/utils/locale-utils.hpp"
 #include "font.h"
 
 namespace devils_engine {

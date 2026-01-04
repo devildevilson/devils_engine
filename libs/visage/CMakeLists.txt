@@ -9,8 +9,8 @@ project(
 )
 
 set(SRC_LIST
-  src/visage/draw_resource.cpp
-  src/visage/draw_stage.cpp
+  #src/visage/draw_resource.cpp
+  #src/visage/draw_stage.cpp
   src/visage/font.cpp
   src/visage/header.cpp
   src/visage/system.cpp
@@ -18,8 +18,8 @@ set(SRC_LIST
 )
 
 set(HDR_LIST
-  include/devils_engine/visage/draw_resource.h
-  include/devils_engine/visage/draw_stage.h
+  #include/devils_engine/visage/draw_resource.h
+  #include/devils_engine/visage/draw_stage.h
   include/devils_engine/visage/font.h
   include/devils_engine/visage/header.h
   include/devils_engine/visage/system.h
@@ -42,10 +42,9 @@ target_compile_options(devils_visage PRIVATE
   $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -fno-rtti -mavx>>
 )
 
-target_include_directories(devils_visage INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine>")
+target_include_directories(devils_visage INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 
-target_include_directories(devils_visage PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/visage>")
-target_include_directories(devils_visage PRIVATE "${FETCHCONTENT_BASE_DIR}/nuklear-src")
+target_include_directories(devils_visage PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/visage>" "${FETCHCONTENT_BASE_DIR}/nuklear-src")
 
 target_link_directories(devils_visage PRIVATE ${FREETYPE_LIBRARY_DIR})
 target_include_directories(devils_visage PRIVATE ${FREETYPE_INCLUDE_DIRS})

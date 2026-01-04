@@ -2,10 +2,10 @@
 
 #include <cstring>
 
-#include "utils/core.h"
-#include "utils/time-utils.hpp"
-#include "bindings/env.h"
-#include "bindings/nuklear_bindings.h"
+#include "devils_engine/utils/core.h"
+#include "devils_engine/utils/time-utils.hpp"
+#include "devils_engine/bindings/env.h"
+#include "devils_engine/bindings/nuklear_bindings.h"
 #include "header.h"
 #include "font.h"
 
@@ -30,7 +30,7 @@ static void simple_hook(lua_State *L, lua_Debug *ar) {
   lua_getinfo(L, "nSl", ar);
   std::string_view source(ar->source, ar->srclen);
   std::string_view name(ar->name ? ar->name : "<unknown>");
-  utils::error("Called Lua hook after {} instructions. Exit lua script after {} mcs ({} seconds). Context: {}:{}:{}", system::instruction_counter, mcs, s, source, name, ar->currentline);
+  utils::error{}("Called Lua hook after {} instructions. Exit lua script after {} mcs ({} seconds). Context: {}:{}:{}", system::instruction_counter, mcs, s, source, name, ar->currentline);
 }
 
 system::system(const font_t* default_font) : default_font(default_font) {
