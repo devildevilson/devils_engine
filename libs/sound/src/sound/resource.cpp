@@ -7,7 +7,7 @@
 #include "wav_decoder.h"
 #include "flac_decoder.h"
 #include "pcm_decoder.h"
-#include "utils/core.h"
+#include "devils_engine/utils/core.h"
 
 #define SMALL_SOUND_COEFFICIENT 5.0f
 
@@ -39,7 +39,7 @@ resource::resource(std::string id, enum type type, std::vector<char> buffer) :
   } else if (type == type::flac) {
     sound.reset(new flac_decoder(this->id, this->buffer.data(), this->buffer.size()));
   } else {
-    utils::error("Invalid sound resource type {}", size_t(type));
+    utils::error{}("Invalid sound resource type {}", size_t(type));
   }
 
   const size_t frames_treshold = second_to_pcm_frames(SMALL_SOUND_COEFFICIENT, sound->sample_rate()); // , sound->channels()

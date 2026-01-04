@@ -9,8 +9,8 @@
 #include "AL/alc.h"
 #include "AL/alext.h"
 #include "spdlog/spdlog.h"
-#include "utils/type_traits.h"
-#include "utils/core.h"
+#include "devils_engine/utils/type_traits.h"
+#include "devils_engine/utils/core.h"
 
 namespace devils_engine {
   namespace sound {

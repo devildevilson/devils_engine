@@ -79,7 +79,7 @@ namespace devils_engine {
 
       const auto error_str = get_al_error_str(err);
       const auto enum_str = get_al_enum_error_str(err);
-      utils::error("Got AL error {} ({}): {}", enum_str, err, error_str);
+      utils::error{}("Got AL error {} ({}): {}", enum_str, err, error_str);
     }
 
     void check_alc_error(ALenum err) {
@@ -87,7 +87,7 @@ namespace devils_engine {
 
       const auto error_str = get_alc_error_str(err);
       const auto enum_str = get_alc_enum_error_str(err);
-      utils::error("Got ALC error {} ({}): {}", enum_str, err, error_str);
+      utils::error{}("Got ALC error {} ({}): {}", enum_str, err, error_str);
     }
 
     int32_t to_al_format(const uint16_t channels, const uint32_t bitsPerChannel) {

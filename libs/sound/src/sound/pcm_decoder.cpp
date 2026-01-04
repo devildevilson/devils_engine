@@ -4,7 +4,7 @@
 
 #include "AL/al.h"
 #include "al_helper.h"
-#include "utils/core.h"
+#include "devils_engine/utils/core.h"
 
 namespace devils_engine {
   namespace sound {
@@ -31,7 +31,7 @@ namespace devils_engine {
       m_bits_per_channel = parent->bits_per_channel();
       m_sample_rate = parent->sample_rate();
       m_frames_count = parent->frames_count();
-      if (!parent->seek(0)) utils::error("Could not initialize pcm_decoder");
+      if (!parent->seek(0)) utils::error{}("Could not initialize pcm_decoder");
       parent->get_frames(buffer.data(), parent->frames_count());
     }
 

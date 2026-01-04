@@ -1,6 +1,6 @@
 #include "ogg_decoder.h"
 
-#include "utils/core.h"
+#include "devils_engine/utils/core.h"
 
 #include "AL/al.h"
 #include "al_helper.h"
@@ -13,7 +13,7 @@ namespace devils_engine {
     ogg_decoder::ogg_decoder(const std::string_view &name, const void* memory, const size_t memory_size) {
       int32_t err;
       data = stb_vorbis_open_memory(reinterpret_cast<const uint8_t*>(memory), memory_size, &err, nullptr);
-      if (data == nullptr) utils::error("Failed to parse ogg resource '{}'", name);
+      if (data == nullptr) utils::error{}("Failed to parse ogg resource '{}'", name);
 
       const stb_vorbis_info &info = stb_vorbis_get_info(data);
 

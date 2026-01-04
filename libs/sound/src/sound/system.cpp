@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <cassert>
+#include <cstring>
 #include <glm/glm.hpp>
 
 #include "AL/al.h"
@@ -9,7 +10,7 @@
 #include "AL/alext.h"
 #include "al_helper.h"
 
-#include "utils/core.h"
+#include "devils_engine/utils/core.h"
 
 //#define SOUND_LOADING_COEFFICIENT 1.0f
 
@@ -55,7 +56,7 @@ static void completely_stop_source(source &s) {
       ctx = alc_call(alcCreateContext, device, nullptr);
 
       if (!alc_call(alcMakeContextCurrent, device, ctx)) {
-        utils::error("sound::system: OpenAL: Could not make context current");
+        utils::error{}("sound::system: OpenAL: Could not make context current");
       }
 
       al_call_info(alDistanceModel, AL_LINEAR_DISTANCE_CLAMPED);
@@ -136,7 +137,7 @@ static void completely_stop_source(source &s) {
     {}
 
     //size_t system::setup_sound(const system::resource *res, const settings &info) {
-    //  if (info.type >= volume_set::sound_types_count) utils::error("Could not set volume to sound type {} max is {}", info.type, volume_set::sound_types_count);
+    //  if (info.type >= volume_set::sound_types_count) utils::error{}("Could not set volume to sound type {} max is {}", info.type, volume_set::sound_types_count);
 
     //  if (info.force_source < sources.size()) {
     //    for (size_t i = 0; i < queue_size; ++i) {
@@ -269,7 +270,7 @@ static void completely_stop_source(source &s) {
     }
 
     void system::set_source_volume(const uint32_t type, const float val) {
-      if (type >= volume_set::sound_types_count) utils::error("Could not set volume to sound type {} max is {}", type, volume_set::sound_types_count);
+      if (type >= volume_set::sound_types_count) utils::error{}("Could not set volume to sound type {} max is {}", type, volume_set::sound_types_count);
       volume.source[type] = std::clamp(val, 0.0f, 1.0f);
     }
 
@@ -370,7 +371,7 @@ static void completely_stop_source(source &s) {
 
     /*void system::load_resource(std::string id, const enum resource::type type, std::vector<char> buffer) {
       const auto itr = resources.find(id);
-      if (itr != resources.end()) utils::error("Resource {} is already created", std::string_view(id));
+      if (itr != resources.end()) utils::error{}("Resource {} is already created", std::string_view(id));
 
       auto res = resource_pool.create(std::move(id), type, std::move(buffer));
       resources.emplace(res->id, res);
@@ -479,7 +480,7 @@ static void completely_stop_source(source &s) {
     //  const uint16_t channels
     //) {
     //  if (!res->sound->seek(loaded_frames))
-    //    utils::error("seek to pcm frame {} failed in resource '{}'", loaded_frames, res->id);
+    //    utils::error{}("seek to pcm frame {} failed in resource '{}'", loaded_frames, res->id);
 
     //  const uint16_t final_channels = std::min(channels, res->sound->channels());
     //  const size_t frames = res->sound->get_frames(buffer, frames_count, final_channels);

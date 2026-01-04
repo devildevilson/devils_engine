@@ -36,7 +36,7 @@ namespace devils_engine {
       };
 
       if (!drmp3_init_memory(&data, memory, memory_size, &allocation_callbacks)) {
-        utils::error("Failed to parse mp3 resource '{}'", name);
+        utils::error{}("Failed to parse mp3 resource '{}'", name);
       }
 
       m_sample_rate = data.sampleRate;

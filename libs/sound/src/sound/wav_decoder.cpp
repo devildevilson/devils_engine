@@ -36,7 +36,7 @@ namespace devils_engine {
       };
 
       if (!drwav_init_memory(&data, memory, memory_size, &allocation_callbacks)) {
-        utils::error("Failed to parse wav resource '{}'", name);
+        utils::error{}("Failed to parse wav resource '{}'", name);
       }
 
       m_sample_rate = data.sampleRate;
@@ -168,7 +168,7 @@ namespace devils_engine {
       } else if (bits_per_channel() <= 32) {
         readed_frames = get_frames_templ<float>(&data, buffer, memory, frames_count, final_channels);
       } else {
-        utils::error("wav format with {} bits per channel is not supported", bits_per_channel());
+        utils::error{}("wav format with {} bits per channel is not supported", bits_per_channel());
       }
 
       return readed_frames;
@@ -191,7 +191,7 @@ namespace devils_engine {
       } else if (bits_per_channel() <= 32) {
         readed_frames =   get_frames_templ<float>(&data, buffer, al_buffer, frames_count, final_channels, final_sample_rate);
       } else {
-        utils::error("wav format with {} bits per channel is not supported", bits_per_channel());
+        utils::error{}("wav format with {} bits per channel is not supported", bits_per_channel());
       }
 
       return readed_frames;

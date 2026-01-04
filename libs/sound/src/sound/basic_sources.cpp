@@ -147,7 +147,7 @@ void background_source::setup_source(const struct source &source) {
 // имеет смысл сделать проверки чтобы мы были либо в паузе либо в финише
 // это по идее логическая ошибка которую надо поправить в коде
 struct source background_source::release_source() {
-  if (!(state() == processing_state::finished || state() == processing_state::paused)) utils::error("Trying to remove source from playing sound resource!");
+  if (!(state() == processing_state::finished || state() == processing_state::paused)) utils::error{}("Trying to remove source from playing sound resource!");
 
   const auto s = sound_processing_data::source;
   sound_processing_data::source = sound::source();
@@ -176,7 +176,7 @@ size_t background_source::compute_frames_to_load(const size_t expected) {
 
 size_t background_source::load_next(const uint32_t buffer_handle, const size_t offset, const size_t amount, const uint16_t channels) {
   if (!basic_sound_data::res->sound->seek(offset)) {
-    utils::error("seek to pcm frame {} failed in resource '{}'", offset, basic_sound_data::res->id);
+    utils::error{}("seek to pcm frame {} failed in resource '{}'", offset, basic_sound_data::res->id);
   }
 
   const uint16_t final_channels = std::min(channels, basic_sound_data::res->sound->channels());
