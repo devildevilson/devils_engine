@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <array>
+#include <cstring>
 #include "common.h"
 #include "registry.h"
 #include "devils_engine/utils/core.h"
@@ -59,7 +60,7 @@ template <size_t id>
 void channel_data<id>::add_consumer(consumer* c) {
   size_t index = 0;
   while (index < channel_data<id>::max_consumer_count && consumers[index] != nullptr) { index += 1; }
-  if (index >= channel_data<id>::max_consumer_count) utils::error("Could not add new consumer to '{}'", utils::type_name<decltype(channel_data<id>)>());
+  if (index >= channel_data<id>::max_consumer_count) utils::error{}("Could not add new consumer to '{}'", utils::type_name<channel_data<id>>());
   consumers[index] = c;
 }
 

@@ -1,4 +1,4 @@
-#include "devils_engine/catalogue/core.h"
+#include "core.h"
 
 namespace devils_engine {
 namespace catalogue {
