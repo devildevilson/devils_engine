@@ -2,6 +2,14 @@ cmake_minimum_required(VERSION 3.30)
 
 include(FetchContent)
 
+set(CMAKE_CONFIGURATION_TYPES
+  Debug
+  Release
+  MinSizeRel
+  RelWithDebInfo
+  CACHE STRING "Build configurations" FORCE
+)
+
 project(
   devils_engine
   VERSION 0.1.1
@@ -16,19 +24,31 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
 
 set(PROJECT_EXTERNAL_DEPENDENCY_DIR ${CMAKE_CURRENT_LIST_DIR}/external)
 
-if (CMAKE_BUILD_TYPE STREQUAL "")
-  set(CMAKE_BUILD_TYPE Debug)
-endif()
+add_library(devils_engine_options INTERFACE)
+target_compile_features(devils_engine_options INTERFACE cxx_std_23)
+#target_compile_features(devils_engine_options INTERFACE c_std_11)
+target_compile_options(devils_engine_options INTERFACE
+  $<$<CONFIG:Debug>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MDd /ZI /Wall /wd5045 /wd4820 /GR- /permissive- /Zc:preprocessor>>
+  $<$<CONFIG:Release>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MD /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>
+  $<$<CONFIG:MinSizeRel>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MD /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>
+  $<$<CONFIG:RelWithDebInfo>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MDd /ZI /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>
 
-if (CMAKE_BUILD_TYPE STREQUAL "Release")
-  add_definitions(-D_NDEBUG)
-  add_definitions(-DNDEBUG)
-endif()
+  $<$<CONFIG:Debug>:$<$<CXX_COMPILER_ID:GNU,Clang>:-mavx -g -Wall -Wextra -fno-rtti -fno-inline>>
+  $<$<CONFIG:Release>:$<$<CXX_COMPILER_ID:GNU,Clang>:-mavx -O3 -Wall -Wextra -fno-rtti -pipe -flto>>
+  $<$<CONFIG:MinSizeRel>:$<$<CXX_COMPILER_ID:GNU,Clang>:-mavx -O3 -Wall -Wextra -fno-rtti -pipe -flto -s>>
+  $<$<CONFIG:RelWithDebInfo>:$<$<CXX_COMPILER_ID:GNU,Clang>:-mavx -O3 -g -Wall -Wextra -fno-rtti -pipe -flto>>
+)
+target_compile_definitions(devils_engine_options INTERFACE
+  $<$<CONFIG:Debug>:>
+  $<$<CONFIG:Release>:NDEBUG _NDEBUG>
+  $<$<CONFIG:MinSizeRel>:NDEBUG _NDEBUG>
+  $<$<CONFIG:RelWithDebInfo>:>
+)
+target_compile_definitions(devils_engine_options INTERFACE
+  DEVILS_ENGINE_ENGINE_NAME="${DEVILS_ENGINE_NAME}"
+)
 
-# имеет смысл задать списки флагов компиляции по умолчанию
-if (MSVC)
-  
-endif()
+add_library(devils_engine::options ALIAS devils_engine_options)
 
 # 3 dependencies for user to deal with
 if (WIN32) # freetype has proper cmake support
@@ -281,6 +301,12 @@ find_package(Threads REQUIRED)
 # workarounds for other libs
 add_library(PNG::PNG ALIAS png_shared)
 
+# MSVC workaround
+if ("cxx_std_17" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+  target_compile_features(Catch2 PRIVATE cxx_std_17)
+  target_compile_features(Catch2WithMain PRIVATE cxx_std_17)
+endif()
+
 if(MSVC)
   set(DYN_LIBRARIES_LIST
     libs/lua54/lua54.dll
@@ -328,7 +354,7 @@ add_subdirectory(tests/)
 # вообще по итогу наверное лучше будет оформить единую либу со всеми зависимостями
 
 add_library(devils_engine INTERFACE)
-target_link_libraries(devils_engine INTERFACE devils_engine::catalogue devils_engine::acumen devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::thread devils_engine::utils devils_engine::visage)
+target_link_libraries(devils_engine INTERFACE devils_engine::catalogue devils_engine::acumen devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::thread devils_engine::utils devils_engine::visage devils_engine::options)
 add_library(devils_engine::devils_plane ALIAS devils_engine)
 
 if (WIN32)

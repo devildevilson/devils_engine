@@ -63,27 +63,9 @@ set(HDR_LIST
  "include/devils_engine/painter/device_features.h")
 
 add_library(devils_painter ${SRC_LIST} ${HDR_LIST})
-
-target_compile_features(devils_painter PRIVATE cxx_std_23)
-
-#${VULKAN_LIBRARY_NAME} # dynamic loading?
-target_link_libraries(devils_painter PRIVATE ${SHADERC_LIBRARY_NAME} Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp devils_engine::input devils_engine::demiurg devils_engine::utils sul::dynamic_bitset)
-
-target_compile_options(devils_painter PRIVATE 
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /wd5045 /wd4820 /wd4514 /wd4191 /GR- /permissive- /Zc:preprocessor /arch:AVX>>
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:GNU,Clang>:-g -Wall -Wextra -fno-rtti -mavx>>
-)
-
-target_compile_options(devils_painter PRIVATE 
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /GR- /O2 /permissive- /Zc:preprocessor /arch:AVX>>
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -fno-rtti -mavx>>
-)
-
-target_include_directories(devils_painter INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>") # ???
-
-target_include_directories(devils_painter PRIVATE 
-  "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/painter>"
-)
+target_link_libraries(devils_painter PRIVATE devils_engine::options ${SHADERC_LIBRARY_NAME} Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp devils_engine::input devils_engine::demiurg devils_engine::utils sul::dynamic_bitset)
+target_include_directories(devils_painter INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
+target_include_directories(devils_painter PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/painter>")
 
 if (MSVC)
   target_link_directories(devils_painter PUBLIC ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/vulkan)

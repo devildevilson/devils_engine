@@ -35,26 +35,9 @@ set(HDR_LIST
 )
 
 add_library(devils_input ${SRC_LIST} ${HDR_LIST})
-
-target_compile_features(devils_input PRIVATE cxx_std_23)
-
-target_link_libraries(devils_input PRIVATE devils_engine::utils ${GLFW3_LIBRARY_NAME} Vulkan::Headers)
-
-target_compile_options(devils_input PRIVATE 
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /wd5045 /wd4820 /wd4514 /wd4191 /GR- /permissive- /Zc:preprocessor /arch:AVX>>
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:GNU,Clang>:-g -Wall -Wextra -fno-rtti -mavx>>
-)
-
-target_compile_options(devils_input PRIVATE 
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /GR- /O2 /permissive- /Zc:preprocessor /arch:AVX>>
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -fno-rtti -mavx>>
-)
-
-target_include_directories(devils_input INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>") # ???
-
-target_include_directories(devils_input PRIVATE 
-  "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/input>"
-)
+target_link_libraries(devils_input PRIVATE devils_engine::options devils_engine::utils ${GLFW3_LIBRARY_NAME} Vulkan::Headers)
+target_include_directories(devils_input INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
+target_include_directories(devils_input PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/input>")
 
 target_include_directories(devils_input SYSTEM PRIVATE
   "${FETCHCONTENT_BASE_DIR}/glfw3-src/include"

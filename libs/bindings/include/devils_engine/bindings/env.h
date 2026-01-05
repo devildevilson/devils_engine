@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
-#include "utils/core.h"
 #include "lua_header.h"
 
 namespace devils_engine {

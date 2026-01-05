@@ -49,30 +49,11 @@ set(HDR_LIST
 )
 
 add_library(devils_sound ${SRC_LIST} ${HDR_LIST})
-
-target_compile_features(devils_sound PRIVATE cxx_std_23)
-
-target_link_libraries(devils_sound PRIVATE devils_engine::utils glm::glm ${OPENAL_LIBRARY_NAME}) # openal
-
-target_compile_options(devils_sound PRIVATE 
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /wd5045 /wd4820 /GR- /permissive- /Zc:preprocessor /arch:AVX>>
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:GNU,Clang>:-g -Wall -Wextra -fno-rtti -mavx>>
-)
-
-target_compile_options(devils_sound PRIVATE 
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /GR- /O2 /permissive- /Zc:preprocessor /arch:AVX>>
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -fno-rtti -mavx>>
-)
-
+target_link_libraries(devils_sound PRIVATE devils_engine::options devils_engine::utils glm::glm ${OPENAL_LIBRARY_NAME}) # openal
 target_include_directories(devils_sound INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>") # ???
-
-target_include_directories(devils_sound PRIVATE 
-  "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/sound>"
-)
-
+target_include_directories(devils_sound PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/sound>")
 target_link_directories(devils_sound PUBLIC ${OPENAL_LIBRARY_DIR})
 target_include_directories(devils_sound PRIVATE ${OPENAL_INCLUDE_DIRS})
-
 target_include_directories(devils_sound PRIVATE "${FETCHCONTENT_BASE_DIR}/stb-src" "${FETCHCONTENT_BASE_DIR}/dr_libs-src")
 
 add_library(devils_engine::sound ALIAS devils_sound)

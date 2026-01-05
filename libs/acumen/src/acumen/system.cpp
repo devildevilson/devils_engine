@@ -1,5 +1,9 @@
 #include "system.h"
 
+#if __cplusplus == 202306L
+const char* abc = "sfasfsaddsada";
+#endif
+
 namespace devils_engine {
 namespace acumen {
 state_metric::state_metric() noexcept : weight(1.0) {}

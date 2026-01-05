@@ -23,29 +23,12 @@ set(HDR_LIST
  "include/devils_engine/thread/queue1.h")
 
 add_library(devils_thread ${SRC_LIST} ${HDR_LIST})
-
-target_compile_features(devils_thread INTERFACE cxx_std_23)
-target_compile_features(devils_thread PRIVATE cxx_std_23)
-
 target_link_libraries(devils_thread 
   PUBLIC max0x7ba::atomic_queue Threads::Threads
-  PRIVATE devils_engine::utils 
+  PRIVATE devils_engine::options devils_engine::utils 
 )
 
-target_compile_options(devils_thread PRIVATE 
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /wd5045 /wd4820 /GR- /permissive- /Zc:preprocessor>>
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:GNU,Clang>:-g -Wall -Wextra -fno-rtti>>
-)
-
-target_compile_options(devils_thread PRIVATE 
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /GR- /O2 /permissive- /Zc:preprocessor>>
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -fno-rtti>>
-)
-
-target_include_directories(devils_thread INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>") # ???
-
-target_include_directories(devils_thread PRIVATE 
-  "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/thread>"
-)
+target_include_directories(devils_thread INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
+target_include_directories(devils_thread PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/thread>")
 
 add_library(devils_engine::thread ALIAS devils_thread)

@@ -46,20 +46,14 @@ struct vulkan_init {
     ici.enabledExtensionCount = exts.size();
     ici.ppEnabledExtensionNames = exts.data();
 
-    utils::println("createInstance");
     instance = vk::createInstance(ici);
     painter::load_dispatcher2(instance);
     mess = painter::create_debug_messenger(instance);
-    utils::println("create_debug_messenger");
-    //auto phys_dev = painter::choose_physical_device(inst);
-    //if (phys_dev == VK_NULL_HANDLE) utils::error{}("Could not find proper physical device");
 
     if (!painter::system_info::try_load_cached_data(instance, &p_data, nullptr)) {
       auto w = input::create_window(640, 480, "fast_test");
       VkSurfaceKHR surface = VK_NULL_HANDLE;
-      utils::println("create_window_surface");
       input::create_window_surface(instance, w, nullptr, &surface);
-      utils::println("create_window_surface end");
 
       painter::system_info si(instance);
       si.check_devices_surface_capability(surface);
