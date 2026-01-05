@@ -1,7 +1,7 @@
 #include "nuklear_bindings.h"
 
-#include "visage/header.h"
-#include "utils/core.h"
+#include "devils_engine/visage/header.h"
+#include "devils_engine/utils/core.h"
 
 // как сюда передать контекст?
 // по идее у нас для этого есть общий сол стейт
@@ -363,7 +363,7 @@ struct nk {
     if (!x_offset) {
         x_offset = nk_add_value_g(ctx_ptr, win, id_hash, scroll.x);
         y_offset = nk_add_value_g(ctx_ptr, win, id_hash+1, scroll.y);
-        if (x_offset == nullptr || y_offset == nullptr) utils::error("Could not create scroll memory by id '{}'", id);
+        if (x_offset == nullptr || y_offset == nullptr) utils::error{}("Could not create scroll memory by id '{}'", id);
         if (x_offset == nullptr || y_offset == nullptr) return std::make_tuple(nullptr, nullptr);
         *x_offset = scroll.x; // ???
         *y_offset = scroll.y;
@@ -429,7 +429,7 @@ struct nk {
     lua_Debug ar;
     lua_getstack(s.L, 1, &ar); // where function was called
     lua_getinfo(s.L, "nSl", &ar);
-    utils::error("Not implemented yet");
+    utils::error{}("Not implemented yet");
     return nk_tree_image_push_hashed(ctx_ptr, nk_tree_type(type), img, title, nk_collapse_states(state), ar.source, ar.srclen, ar.currentline);
   }
 
@@ -438,13 +438,13 @@ struct nk {
     lua_Debug ar;
     lua_getstack(s.L, 1, &ar); // where function was called
     lua_getinfo(s.L, "nSl", &ar);
-    utils::error("Not implemented yet");
+    utils::error{}("Not implemented yet");
     return nk_tree_image_push_hashed(ctx_ptr, nk_tree_type(type), img, title, nk_collapse_states(state), ar.source, ar.srclen, id);
   }
 
   static bool tree_image_push_hashed(const char* title, const int32_t type, const int32_t state, const char* hash, const int32_t id) {
     struct nk_image img;
-    utils::error("Not implemented yet");
+    utils::error{}("Not implemented yet");
     return nk_tree_image_push_hashed(ctx_ptr, nk_tree_type(type), img, title, nk_collapse_states(state), hash, strlen(hash), id);
   }
 
@@ -480,7 +480,7 @@ struct nk {
       state = nk_add_value_g(ctx_ptr, win, tree_hash, 0);
       *state = init_state;
     }
-    utils::error("Not implemented yet");
+    utils::error{}("Not implemented yet");
     nk_tree_state_image_push(ctx_ptr, nk_tree_type(type), img, title, (enum nk_collapse_states*)state);
   }
 
@@ -516,7 +516,7 @@ struct nk {
     lua_Debug ar;
     lua_getstack(s.L, 1, &ar); // where function was called
     lua_getinfo(s.L, "nSl", &ar);
-    utils::error("Not implemented yet");
+    utils::error{}("Not implemented yet");
     const auto ret = nk_tree_element_image_push_hashed(ctx_ptr, nk_tree_type(type), img, title, nk_collapse_states(init_state), &sel, ar.source, ar.srclen, ar.currentline);
     return std::make_tuple(ret, sel);
   }
@@ -526,14 +526,14 @@ struct nk {
     lua_Debug ar;
     lua_getstack(s.L, 1, &ar); // where function was called
     lua_getinfo(s.L, "nSl", &ar);
-    utils::error("Not implemented yet");
+    utils::error{}("Not implemented yet");
     const auto ret = nk_tree_element_image_push_hashed(ctx_ptr, nk_tree_type(type), img, title, nk_collapse_states(init_state), &sel, ar.source, ar.srclen, id);
     return std::make_tuple(ret, sel);
   }
 
   static std::tuple<bool, bool> tree_element_image_push_hashed(sol::this_state s, const char* title, const int32_t type, const int32_t init_state, nk_bool sel, const char* hash, const int32_t id) {
     struct nk_image img;
-    utils::error("Not implemented yet");
+    utils::error{}("Not implemented yet");
     const auto ret = nk_tree_element_image_push_hashed(ctx_ptr, nk_tree_type(type), img, title, nk_collapse_states(init_state), &sel, hash, strlen(hash), id);
     return std::make_tuple(ret, sel);
   }
@@ -691,7 +691,7 @@ struct nk {
       const auto img = o.as<const struct nk_image*>();
       ret = nk_button_image(ctx_ptr, *img);
     } else {
-      utils::error("'nk.button' input must be either string, table, symbol or image");
+      utils::error{}("'nk.button' input must be either string, table, symbol or image");
     }
     return ret;
   }
@@ -708,7 +708,7 @@ struct nk {
         const auto img = o.as<const struct nk_image*>();
         ret = nk_button_image_text(ctx_ptr, *img, txt.data(), txt.size(), flags);
       } else {
-        utils::error("'nk.button' first argument must be either symbol or image");
+        utils::error{}("'nk.button' first argument must be either symbol or image");
       }
     }
 
@@ -849,7 +849,7 @@ struct nk {
         const struct nk_image* img = o.as<const struct nk_image*>();
         ret = nk_select_image_text(ctx_ptr, *img, txt, strlen(txt), align, value);
       } else {
-        utils::error("Function 'nk.select' expects symbol or image as first argument");
+        utils::error{}("Function 'nk.select' expects symbol or image as first argument");
       }
     } else {
       ret = nk_select_text(ctx_ptr, txt, strlen(txt), align, value);
@@ -868,7 +868,7 @@ struct nk {
         const struct nk_image* img = o.as<const struct nk_image*>();
         ret = nk_selectable_image_text(ctx_ptr, *img, txt, strlen(txt), align, &value);
       } else {
-        utils::error("Function 'nk.selectable' expects symbol or image as first argument");
+        utils::error{}("Function 'nk.selectable' expects symbol or image as first argument");
       }
     } else {
       ret = nk_selectable_text(ctx_ptr, txt, strlen(txt), align, &value);
@@ -999,13 +999,13 @@ struct nk {
       else if (name == "hex") f = &nk_filter_hex;
       else if (name == "oct") f = &nk_filter_oct;
       else if (name == "binary") f = &nk_filter_binary;
-      else utils::error("Could not find filter by name '{}'", name);
+      else utils::error{}("Could not find filter by name '{}'", name);
     } else if (filter.is<sol::function>()) {
       const auto fil = filter.as<sol::function>();
       text_edit_filter = fil;
       f = &custom_filter;
     } else {
-      utils::error("'nk.edit_string' unsupported text editor filter type");
+      utils::error{}("'nk.edit_string' unsupported text editor filter type");
     }
 
     nk_edit_string(ctx_ptr, flags, default_text_editor_buffer.data(), &size, max, f);
@@ -1035,13 +1035,13 @@ struct nk {
       else if (name == "hex") f = &nk_filter_hex;
       else if (name == "oct") f = &nk_filter_oct;
       else if (name == "binary") f = &nk_filter_binary;
-      else utils::error("Could not find filter by name '{}'", name);
+      else utils::error{}("Could not find filter by name '{}'", name);
     } else if (filter.is<sol::function>()) {
       const auto fil = filter.as<sol::function>();
       text_edit_filter = fil;
       f = &custom_filter;
     } else {
-      utils::error("'nk.edit_string2' unsupported text editor filter type");
+      utils::error{}("'nk.edit_string2' unsupported text editor filter type");
     }
 
     int32_t size = default_text_editor_buffer.size();
@@ -1116,7 +1116,7 @@ struct nk {
       auto f = v.as<sol::function>();
       nk_plot_function(ctx_ptr, nk_chart_type(type), &f, &get_plot_value_from_function, count, offset);
     } else {
-      utils::error("'nk.plot' expects table or function as input");
+      utils::error{}("'nk.plot' expects table or function as input");
     }
   }
 
@@ -1173,7 +1173,7 @@ struct nk {
       auto f = o.as<sol::function>();
       ret = nk_combo_callback(ctx_ptr, &get_combobox_value_from_function, &f, selected, count, item_size, v);
     } else {
-      utils::error("'nk.combobox' expects table of function as input");
+      utils::error{}("'nk.combobox' expects table of function as input");
     }
 
     return ret;
@@ -1202,14 +1202,14 @@ struct nk {
           ret = nk_combo_begin_symbol(ctx_ptr, nk_symbol_type(s), v);
         }
       } else {
-        utils::error("'nk.combo.begin' either nil, img or symbol must be provided as second argument");
+        utils::error{}("'nk.combo.begin' either nil, img or symbol must be provided as second argument");
       }
     } else {
       if (name.has_value()) {
         auto n = name.value();
         ret = nk_combo_begin_text(ctx_ptr, n, strlen(n), v);
       } else {
-        utils::error("'nk.combo.begin' first argument must be valid if second is nil");
+        utils::error{}("'nk.combo.begin' first argument must be valid if second is nil");
       }
     }
 
@@ -1239,7 +1239,7 @@ struct nk {
         const auto s = symbol_or_img.as<uint32_t>();
         ret = nk_combo_item_symbol_text(ctx_ptr, nk_symbol_type(s), name, strlen(name), flags);
       } else {
-        utils::error("'nk.combo.item' either nil, img or symbol must be provided as first argument");
+        utils::error{}("'nk.combo.item' either nil, img or symbol must be provided as first argument");
       }
     } else {
       ret = nk_combo_item_text(ctx_ptr, name, strlen(name), flags);
@@ -1274,7 +1274,7 @@ struct nk {
         const auto s = symbol_or_img.as<uint32_t>();
         ret = nk_contextual_item_symbol_text(ctx_ptr, nk_symbol_type(s), name, strlen(name), aligment);
       } else {
-        utils::error("'nk.contextual.item' either nil, img or symbol must be provided as second argument");
+        utils::error{}("'nk.contextual.item' either nil, img or symbol must be provided as second argument");
       }
     } else {
       ret = nk_contextual_item_text(ctx_ptr, name, strlen(name), aligment);
@@ -1326,7 +1326,7 @@ struct nk {
         const auto s = symbol_or_img.as<uint32_t>();
         ret = nk_menu_begin_symbol_text(ctx_ptr, name, strlen(name), align, nk_symbol_type(s), v1);
       } else {
-        utils::error("'nk.menu.begin_text' either nil, img or symbol must be provided as second argument");
+        utils::error{}("'nk.menu.begin_text' either nil, img or symbol must be provided as second argument");
       }
     } else {
       ret = nk_menu_begin_text(ctx_ptr, name, strlen(name), align, v1);
@@ -1345,7 +1345,7 @@ struct nk {
       const auto s = symbol_or_img.as<uint32_t>();
       ret = nk_menu_begin_symbol(ctx_ptr, name, nk_symbol_type(s), v1);
     } else {
-      utils::error("'nk.menu.begin' either img or symbol must be provided as second argument");
+      utils::error{}("'nk.menu.begin' either img or symbol must be provided as second argument");
     }
 
     return ret;
@@ -1361,7 +1361,7 @@ struct nk {
         const auto s = symbol_or_img.as<uint32_t>();
         ret = nk_menu_item_symbol_text(ctx_ptr, nk_symbol_type(s), name, strlen(name), align);
       } else {
-        utils::error("'nk.menu.item' either nil, img or symbol must be provided as second argument");
+        utils::error{}("'nk.menu.item' either nil, img or symbol must be provided as second argument");
       }
     } else {
       ret = nk_menu_item_text(ctx_ptr, name, strlen(name), align);

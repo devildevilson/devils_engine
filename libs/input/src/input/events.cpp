@@ -70,7 +70,7 @@ void events::update(const size_t time) {
           break;
         }
 
-        d.current = press ? d.current = event_state::press : d.current;
+        d.current = press ? event_state::press : d.current;
         d.press_event_time = 0;
         break;
       }
@@ -82,13 +82,13 @@ void events::update(const size_t time) {
           break;
         }
 
-        d.current = !press ? d.current = event_state::click : d.current;
+        d.current = !press ? event_state::click : d.current;
         d.click_event_time = 0;
         break;
       }
 
       case event_state::long_press: {
-        d.current = !press ? d.current = event_state::long_click : d.current;
+        d.current = !press ? event_state::long_click : d.current;
         d.click_event_time = 0;
         break;
       }
@@ -110,7 +110,7 @@ void events::update(const size_t time) {
           break;
         }
 
-        d.current = !press ? d.current = event_state::double_click : d.current;
+        d.current = !press ? event_state::double_click : d.current;
         d.click_event_time = 0;
         break;
       }

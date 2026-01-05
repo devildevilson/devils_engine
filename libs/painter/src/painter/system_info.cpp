@@ -329,12 +329,14 @@ bool system_info::try_load_cached_data(VkInstance instance, physical_device_data
   const auto file_path = directory_path + "main_device.json";
   if (!file_io::exists(file_path)) return false;
 
-  const auto content = file_io::read(file_path);
   cached_system_data cur_data;
-  const auto err = utils::from_json(cur_data, content);
-  if (err) {
-    utils::warn("Could not load cached device data from file '{}'", file_path);
-    return false;
+  {
+    const auto content = file_io::read(file_path);
+    const auto err = utils::from_json(cur_data, content);
+    if (err) {
+      utils::warn("Could not load cached device data from file '{}'", file_path);
+      return false;
+    }
   }
 
   VkPhysicalDevice dev = VK_NULL_HANDLE;
@@ -371,6 +373,8 @@ bool system_info::try_load_cached_data(VkInstance instance, physical_device_data
   d.present_queue = cur_data.present_queue;
 
   if (phys_data != nullptr) *phys_data = d;
+
+  return true;
 }
 
 void system_info::print_choosed_device(VkPhysicalDevice device) noexcept {

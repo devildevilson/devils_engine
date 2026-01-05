@@ -17,25 +17,8 @@ set(HDR_LIST
 )
 
 add_library(devils_acumen ${SRC_LIST} ${HDR_LIST})
-
-target_compile_features(devils_acumen PRIVATE cxx_std_23)
-
-target_link_libraries(devils_acumen PRIVATE devils_engine::utils)
-
-target_compile_options(devils_acumen PRIVATE 
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /wd5045 /wd4820 /GR- /permissive- /Zc:preprocessor /arch:AVX>>
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:GNU,Clang>:-g -Wall -Wextra -fno-rtti -mavx>>
-)
-
-target_compile_options(devils_acumen PRIVATE 
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /GR- /O2 /permissive- /Zc:preprocessor /arch:AVX>>
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -fno-rtti -mavx>>
-)
-
-target_include_directories(devils_acumen INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>") # ???
-
-target_include_directories(devils_acumen PRIVATE 
-  "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/acumen>"
-)
+target_link_libraries(devils_acumen PRIVATE devils_engine::options devils_engine::utils)
+target_include_directories(devils_acumen INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
+target_include_directories(devils_acumen PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/acumen>")
 
 add_library(devils_engine::acumen ALIAS devils_acumen)

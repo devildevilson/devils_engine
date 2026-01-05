@@ -59,75 +59,37 @@ set(HDR_LIST
 )
 
 add_library(devils_mood src/mood/system.cpp include/devils_engine/mood/system.h)
-target_compile_features(devils_mood PRIVATE cxx_std_23)
 target_include_directories(devils_mood INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
 target_include_directories(devils_mood PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/mood>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine>")
-target_link_libraries(devils_mood gtl spdlog::spdlog ReflexLibStatic)
-
-target_compile_options(devils_mood PRIVATE 
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /wd5045 /wd4820 /GR- /permissive- /Zc:preprocessor>>
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:GNU,Clang>:-g -Wall -Wextra -fno-rtti>>
-)
-
-target_compile_options(devils_mood PRIVATE 
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /GR- /O2 /permissive- /Zc:preprocessor>>
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -fno-rtti>>
-)
+target_link_libraries(devils_mood gtl spdlog::spdlog devils_engine::options)
 
 add_library(devils_simul src/simul/interface.cpp include/devils_engine/simul/interface.h)
-target_compile_features(devils_simul PRIVATE cxx_std_23)
 target_include_directories(devils_simul INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
 target_include_directories(devils_simul PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/simul>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine>")
-target_link_libraries(devils_simul spdlog::spdlog)
-
-target_compile_options(devils_simul PRIVATE 
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /wd5045 /wd4820 /GR- /permissive- /Zc:preprocessor>>
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:GNU,Clang>:-g -Wall -Wextra -fno-rtti>>
-)
-
-target_compile_options(devils_simul PRIVATE 
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /GR- /O2 /permissive- /Zc:preprocessor>>
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -fno-rtti>>
-)
+target_link_libraries(devils_simul spdlog::spdlog devils_engine::options)
 
 # include/devils_engine/aesthetics/world.h include/devils_engine/aesthetics/common.h include/devils_engine/aesthetics/simple_systems.h
 add_library(devils_aesthetics INTERFACE)
 target_include_directories(devils_aesthetics INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
+target_link_libraries(devils_aesthetics INTERFACE devils_engine::options)
 
 # mess, why do I made this?
 add_library(devils_utils ${SRC_LIST} ${HDR_LIST})
+
 add_library(engine_c_part1 src/utils/sha256.c include/devils_engine/utils/sha256cpp.h)
-
-target_compile_features(devils_utils PRIVATE cxx_std_23)
-
 target_compile_features(engine_c_part1 PRIVATE c_std_11)
-
-#"$<$<CONFIG:DEBUG>:SHELL:${LOCAL_CXX_DEBUG_OPTIONS}>" "$<$<CONFIG:DEBUG>:SHELL:${LOCAL_C_DEBUG_OPTIONS}>"
-#"$<$<CONFIG:RELEASE>:SHELL:${LOCAL_CXX_RELEASE_OPTIONS}>" "$<$<CONFIG:RELEASE>:SHELL:${LOCAL_C_RELEASE_OPTIONS}>"
-
 target_compile_options(engine_c_part1 PRIVATE 
   $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /wd5045 /wd4820 /Zc:preprocessor /arch:AVX>>
   $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:GNU,Clang>:-g -Wall -Wextra -mavx>>
 )
-
 target_compile_options(engine_c_part1 PRIVATE 
   $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /O2 /Zc:preprocessor /arch:AVX>>
   $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -mavx>>
 )
 
-target_compile_options(devils_utils PRIVATE 
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /wd5045 /wd4820 /GR- /permissive- /Zc:preprocessor /arch:AVX>>
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:GNU,Clang>:-g -Wall -Wextra -fno-rtti -mavx>>
-)
-
-target_compile_options(devils_utils PRIVATE 
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /GR- /O2 /permissive- /Zc:preprocessor /arch:AVX>>
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -fno-rtti -mavx>>
-)
-
 target_link_libraries(devils_utils 
   PUBLIC devils_engine::thread devils_mood devils_simul devils_aesthetics spdlog::spdlog glaze::glaze gtl minizip ReflexLibStatic #alpaca::alpaca
-  PRIVATE engine_c_part1 density ZLIB::ZLIB bcrypt ncrypt crypt32
+  PRIVATE engine_c_part1 density ZLIB::ZLIB bcrypt ncrypt crypt32 devils_engine::options
 )
 
 target_include_directories(devils_utils INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
@@ -142,3 +104,6 @@ if (MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL GNU)
 endif()
 
 add_library(devils_engine::utils ALIAS devils_utils)
+add_library(devils_engine::aesthetics ALIAS devils_aesthetics)
+add_library(devils_engine::mood ALIAS devils_mood)
+add_library(devils_engine::simul ALIAS devils_simul)

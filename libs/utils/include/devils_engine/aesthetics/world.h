@@ -180,6 +180,8 @@ public:
     iterator end() const;
     template <typename F>
     void each(const F &f) const;
+    size_t size() const;
+    query_tuple_t operator[](const size_t index) const;
     container_t& array();
     const container_t& array() const;
 
@@ -297,6 +299,8 @@ public:
     iterator end() const;
     template <typename F>
     void each(const F& f) const;
+    size_t size() const;
+    lazy_query_tuple_t operator[](const size_t index) const;
     container_t& array();
     const container_t& array() const;
 
@@ -436,6 +440,14 @@ public:
   template <typename T>
     requires(std::derived_from<T, basic_system>)
   bool remove_system(T* ptr);
+
+  // почему мы хотим скопировать? 
+  // во первых нам может быть интересно сохранить предыдущий стейт
+  // во вторых это самый адекватный способ перекинуть данные в другие системы
+  // другие системы могли бы обращаться за компонентами через общий АПИ?
+  // они не понимают когда чего поменялось, поэтому вряд ли
+  template <typename T>
+  void copy_underlying(std::vector<uint32_t>& sparce, std::vector<T>& tight) const;
 private:
   size_t cur_index;
   std::vector<entityid_t> removed_entities;
@@ -645,6 +657,17 @@ void world::query_t<Comp_T...>::each(const F &f) const {
 }
 
 template <typename... Comp_T>
+size_t world::query_t<Comp_T...>::size() const {
+  return container.size();
+}
+
+template <typename... Comp_T>
+world::query_t<Comp_T...>::query_tuple_t world::query_t<Comp_T...>::operator[](const size_t index) const {
+  if (index >= size()) utils::error{}("Recieved bad index for query type '{}', query size < index ({} < {})", utils::type_name<world::query_t<Comp_T...>>(), size(), index);
+  return world->get_tuple<Comp_T...>(container[index]);
+}
+
+template <typename... Comp_T>
 world::query_t<Comp_T...>::container_t& world::query_t<Comp_T...>::array() { return container; }
 template <typename... Comp_T>
 const world::query_t<Comp_T...>::container_t& world::query_t<Comp_T...>::array() const { return container; }
@@ -843,6 +866,17 @@ void world::lazy_query_t<Comp_T...>::each(const F& f) const {
   for (const auto &t : container) {
     std::apply(f, world->get_tuple<Comp_T...>(t));
   }
+}
+
+template <typename... Comp_T>
+size_t world::lazy_query_t<Comp_T...>::size() const {
+  return container.size();
+}
+
+template <typename... Comp_T>
+world::lazy_query_t<Comp_T...>::lazy_query_tuple_t world::lazy_query_t<Comp_T...>::operator[](const size_t index) const {
+  if (index >= size()) utils::error{}("Recieved bad index for query type '{}', query size < index ({} < {})", utils::type_name<world::query_t<Comp_T...>>(), size(), index);
+  return world->get_tuple<Comp_T...>(container[index]);
 }
 
 template <typename... Comp_T>
@@ -1187,6 +1221,17 @@ template <typename T>
 bool world::remove_system(T* ptr) {
   unsubscribe<update_event>(ptr);
   return remove_unique(ptr);
+}
+
+template <typename T>
+void world::copy_underlying(std::vector<uint32_t>& sparce, std::vector<T>& tight) const {
+  auto stor = get_allocator<T>(sizeof(T) * 250);
+  if (stor == nullptr) return;
+  
+  sparce.resize(stor->sparce_set.size(), invalid_entityid);
+  tight.resize(stor->components.size());
+  memcpy(sparce.data(), stor->sparce_set.data(), stor->sparce_set.size() * sizeof(stor->sparce_set[0]));
+  std::copy(stor->components.begin(), stor->components.end(), tight.begin());
 }
 
 template<typename T>

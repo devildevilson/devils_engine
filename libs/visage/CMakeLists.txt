@@ -27,25 +27,9 @@ set(HDR_LIST
 )
 
 add_library(devils_visage ${SRC_LIST} ${HDR_LIST})
-
-target_compile_features(devils_visage PRIVATE cxx_std_23)
-
-target_link_libraries(devils_visage PRIVATE Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp devils_engine::utils devils_engine::bindings devils_engine::painter msdfgen::msdfgen msdf-atlas-gen::msdf-atlas-gen glm::glm)
-
-target_compile_options(devils_visage PRIVATE 
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /wd5045 /wd4820 /GR- /permissive- /Zc:preprocessor /arch:AVX>>
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:GNU,Clang>:-g -Wall -Wextra -fno-rtti -mavx>>
-)
-
-target_compile_options(devils_visage PRIVATE 
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /GR- /O2 /permissive- /Zc:preprocessor /arch:AVX>>
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -fno-rtti -mavx>>
-)
-
+target_link_libraries(devils_visage PRIVATE devils_engine::options Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp devils_engine::utils devils_engine::bindings devils_engine::painter msdfgen::msdfgen msdf-atlas-gen::msdf-atlas-gen glm::glm)
 target_include_directories(devils_visage INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
-
 target_include_directories(devils_visage PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/visage>" "${FETCHCONTENT_BASE_DIR}/nuklear-src")
-
 target_link_directories(devils_visage PRIVATE ${FREETYPE_LIBRARY_DIR})
 target_include_directories(devils_visage PRIVATE ${FREETYPE_INCLUDE_DIRS})
 

@@ -3,10 +3,10 @@
 #include <queue>
 #include <vector>
 
-#include "utils/prng.h"
-#include "utils/dice.h"
-#include "utils/time-utils.hpp"
-#include "utils/core.h"
+#include "devils_engine/utils/prng.h"
+#include "devils_engine/utils/dice.h"
+#include "devils_engine/utils/time-utils.hpp"
+#include "devils_engine/utils/core.h"
 #include "shared.h"
 
 namespace devils_engine {
@@ -180,7 +180,7 @@ static sol::table create_table(const sol::object arr_size, const sol::object has
 }
 
 static void num_queue(const double first_count, const sol::function prepare_function, const sol::function queue_function, sol::this_state s) {
-  if (first_count < 0) utils::error("Bad count value {}, function: {}", first_count, "num_queue");
+  if (first_count < 0) utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
   if (std::abs(first_count) < DEVILS_ENGINE_EPSILON) return;
 
   sol::state_view lua = s;
@@ -202,7 +202,7 @@ static void num_queue(const double first_count, const sol::function prepare_func
 }
 
 static void queue(const double first_count, const sol::function prepare_function, const sol::function queue_function, sol::this_state s) {
-  if (first_count < 0) utils::error("Bad count value {}, function: {}", first_count, "num_queue");
+  if (first_count < 0) utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
   if (std::abs(first_count) < DEVILS_ENGINE_EPSILON) return;
 
   sol::state_view lua = s;
@@ -224,7 +224,7 @@ static void queue(const double first_count, const sol::function prepare_function
 }
 
 static void num_random_queue(const int64_t seed, const double first_count, const sol::function prepare_function, const sol::function queue_function, sol::this_state s) {
-  if (first_count < 0) utils::error("Bad count value {}, function: {}", first_count, "num_queue");
+  if (first_count < 0) utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
   if (std::abs(first_count) < DEVILS_ENGINE_EPSILON) return;
         
   sol::state_view lua = s;
@@ -249,7 +249,7 @@ static void num_random_queue(const int64_t seed, const double first_count, const
 }
 
 static void random_queue(const int64_t seed, const double first_count, const sol::function prepare_function, const sol::function queue_function, sol::this_state s) {
-  if (first_count < 0) utils::error("Bad count value {}, function: {}", first_count, "num_queue");
+  if (first_count < 0) utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
   if (std::abs(first_count) < DEVILS_ENGINE_EPSILON) return;
         
   sol::state_view lua = s;
@@ -388,7 +388,7 @@ void basic_functions(sol::table t) {
 void sol_lua_check_error(sol::this_state s, const sol::function_result &res) {
   if (res.status() == sol::call_status::ok) return;
   sol::error err = res;
-  //utils::error("{}\n", err.what());
+  //utils::error{}("{}\n", err.what());
   devils_engine::utils::println(err.what());
   luaL_error(s, "Catched lua error");
 }
@@ -396,7 +396,7 @@ void sol_lua_check_error(sol::this_state s, const sol::function_result &res) {
 void sol_lua_check_error(const sol::function_result &res) {
   if (res.status() == sol::call_status::ok) return;
   sol::error err = res;
-  devils_engine::utils::error("{}\n", err.what());
+  devils_engine::utils::error{}("{}\n", err.what());
 }
 
 void sol_lua_warn_error(const sol::function_result &res) {

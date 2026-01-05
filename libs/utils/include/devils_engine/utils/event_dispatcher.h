@@ -104,6 +104,9 @@ public:
   template<typename Event_T>
   std::vector<Event_T> consume();
 
+  template<typename Event_T>
+  void consume(std::vector<Event_T>& arr);
+
   template<typename Event_T, typename F>
     requires(std::is_invocable_r_v<bool, F, const Event_T&, const Event_T&>)
   void sort(const F& fn);
@@ -329,6 +332,18 @@ std::vector<Event_T> event_dispatcher2_mt<ID>::consume() {
   const std::lock_guard l(ptr->m);
   std::swap(out, ptr->data);
   return out;
+}
+
+template <size_t ID>
+template<typename Event_T>
+void event_dispatcher2_mt<ID>::consume(std::vector<Event_T>& arr) {
+  using final_evt_t = std::remove_cvref_t<Event_T>;
+  const size_t type_id = utils::sequential_type_id<ID, final_evt_t>();
+  if (type_id >= memory.size()) utils::error{}("Register a type '{}' before use it in 'event_dispatcher2_mt'", utils::type_name<final_evt_t>());
+
+  auto ptr = get_bucket<final_evt_t>();
+  const std::lock_guard l(ptr->m);
+  std::swap(arr, ptr->data);
 }
 
 template <size_t ID>
