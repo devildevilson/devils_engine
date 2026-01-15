@@ -701,6 +701,7 @@ vk::AttachmentLoadOp convertl(const store_op::values e) {
 
 vk::ImageLayout convertil(const usage::values e) {
   switch (e) {
+    case usage::undefined: return vk::ImageLayout::eUndefined;
     case usage::color_attachment: return vk::ImageLayout::eColorAttachmentOptimal;
     case usage::depth_attachment: return vk::ImageLayout::eDepthStencilAttachmentOptimal;
     case usage::input_attachment: return vk::ImageLayout::eShaderReadOnlyOptimal;
@@ -735,6 +736,7 @@ vk::ImageLayout convertil(const usage::values e) {
 
 vk::AccessFlags convertam(const usage::values e) {
   switch (e) {
+    case usage::undefined: return vk::AccessFlags(0);
     case usage::color_attachment: return vk::AccessFlagBits::eColorAttachmentWrite;
     case usage::depth_attachment: return vk::AccessFlagBits::eDepthStencilAttachmentWrite;
     case usage::input_attachment: return vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentRead;
@@ -771,6 +773,7 @@ vk::PipelineStageFlags convertps(const usage::values e) {
   const auto basic_shader = vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eFragmentShader | vk::PipelineStageFlagBits::eComputeShader;
 
   switch (e) {
+    case usage::undefined: return vk::PipelineStageFlagBits::eTopOfPipe;
     case usage::color_attachment: return vk::PipelineStageFlagBits::eColorAttachmentOutput;
     case usage::depth_attachment: return vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests;
     case usage::input_attachment: return vk::PipelineStageFlagBits::eFragmentShader;
@@ -804,20 +807,12 @@ vk::PipelineStageFlags convertps(const usage::values e) {
 
 vk::DescriptorType convertdt(const usage::values e) {
   switch (e) {
-    case usage::color_attachment: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
-    case usage::depth_attachment: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
     case usage::input_attachment: return vk::DescriptorType::eInputAttachment;
-    case usage::ignore_attachment: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
     case usage::sampled: return vk::DescriptorType::eSampledImage;
     case usage::texel_read: return vk::DescriptorType::eStorageImage;
     case usage::texel_write: return vk::DescriptorType::eStorageImage;
     case usage::depth_read: return vk::DescriptorType::eSampledImage;
-    case usage::transfer_dst: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
-    case usage::transfer_src: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
     case usage::indirect_read: return vk::DescriptorType::eStorageBuffer;
-    case usage::present: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
-    case usage::host_read: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
-    case usage::host_write: return vk::DescriptorType(VK_DESCRIPTOR_TYPE_MAX_ENUM);
     case usage::general: return vk::DescriptorType::eStorageBuffer;
     case usage::uniform: return vk::DescriptorType::eUniformBuffer;
     case usage::vertex: return vk::DescriptorType::eStorageBuffer;
@@ -837,6 +832,7 @@ vk::DescriptorType convertdt(const usage::values e) {
 
 vk::ImageUsageFlags convertiuf(const usage::values e) {
   switch (e) {
+    case usage::undefined: return vk::ImageUsageFlagBits{0};
     case usage::color_attachment: return vk::ImageUsageFlagBits::eColorAttachment;
     case usage::depth_attachment: return vk::ImageUsageFlagBits::eDepthStencilAttachment;
     case usage::input_attachment: return vk::ImageUsageFlagBits::eInputAttachment;
@@ -870,6 +866,7 @@ vk::ImageUsageFlags convertiuf(const usage::values e) {
 
 vk::BufferUsageFlags convertbuf(const usage::values e) {
   switch (e) {
+    case usage::undefined: return vk::BufferUsageFlagBits{0};
     case usage::color_attachment: return vk::BufferUsageFlagBits{ 0 };
     case usage::depth_attachment: return vk::BufferUsageFlagBits{ 0 };
     case usage::input_attachment: return vk::BufferUsageFlagBits{ 0 };

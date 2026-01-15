@@ -15,7 +15,7 @@ namespace devils_engine {
 namespace painter {
 
 #ifndef _NDEBUG
-#define DS_ASSERT_ARRAY_GET(arr, index) (arr)[(index)]; if (index >= (arr).size()) utils::error{}("Assert failed: "#arr".size() ({}) < index {}. {} {}", (arr).size(), (index), __FILE__, __LINE__);
+#define DS_ASSERT_ARRAY_GET(arr, index) [&]() -> decltype((arr)[(index)]) { if ((index) >= (arr).size()) utils::error{}("Assert failed: "#arr".size() ({}) < index ({})", (arr).size(), (index)); return (arr)[(index)]; }()
 #else
 #define DS_ASSERT_ARRAY_GET(arr, index) (arr)[(index)];
 #endif
@@ -61,6 +61,7 @@ struct counter {
   void push_value() noexcept;
   uint32_t get_value() const noexcept;
   void inc_next_value() noexcept;
+  void set_value(const uint32_t val) noexcept;
 };
 
 struct extent { uint32_t x,y,z; };
@@ -142,7 +143,7 @@ struct resource_instance {
 struct constant {
   std::string name;
   std::string layout_str;
-  std::vector<uint32_t> layout;
+  std::vector<format::values> layout;
   std::vector<double> value; // double -> [float,uint] по формату
 
   size_t size;
@@ -242,7 +243,7 @@ struct geometry {
 
   std::string name;
   std::string layout_str;
-  std::vector<uint32_t> vertex_layout;
+  std::vector<format::values> vertex_layout;
   enum index_type index_type;
   uint32_t topology_type;
   bool restart;
@@ -258,7 +259,7 @@ struct draw_group {
 
   std::string name;
   std::string layout_str;
-  std::vector<uint32_t> instance_layout;
+  std::vector<format::values> instance_layout;
   uint32_t budget_constant;
   uint32_t types_constant;
   enum type type; // host_visible - хост напрямую пишет сюда
@@ -393,13 +394,13 @@ struct semaphore {
   std::string name;
   std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> handles;
 
-  semaphore() noexcept;
+  inline semaphore() noexcept { memset(handles.data(), 0, sizeof(handles)); }
 };
 
 // ничего не создаем, только парсим и связываем структуры друг с другом
 // передаем локальный graphics_base, потому что отдельную структуру создавать капец лень
 void parse_data(graphics_base* ctx, std::string path); // folder?
-command_params parse_command(graphics_base* ctx, const uint32_t step_index, const std::string_view& command_str);
+command_params parse_command(graphics_base* ctx, const step_base& step, const std::string_view& command_str);
 
 }
 }

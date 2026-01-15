@@ -1,0 +1,17 @@
+[
+  {
+    "name": "draw_triangles",
+    "blending": {},
+    "barriers": [],
+    "resources": [],
+    "sets": [],
+    "push_constants": [],
+    "material": "mat1",
+    "geometry": "g1",
+    "command": "draw constant tri_const"
+  },
+  {
+    "name": "blit_to_swapchain",
+    "command": "blit albedo_res swapchain_image"
+  }
+]

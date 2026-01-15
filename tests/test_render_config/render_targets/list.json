@@ -1,0 +1,7 @@
+[
+  {
+    "name": "rt1",
+    "resources": [ [ "albedo_res", "color_attachment" ] ],
+    "blending": []
+  }
+]

@@ -9,19 +9,19 @@ project(
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 
 add_executable(utils_general_test utils_general_test.cpp)
-target_link_libraries(utils_general_test PRIVATE devils_engine::utils Catch2::Catch2WithMain)
+target_link_libraries(utils_general_test PRIVATE devils_engine::options devils_engine::utils Catch2::Catch2WithMain)
 target_link_directories(utils_general_test PRIVATE ${DENSITY_LIBRARY_DIR})
-target_compile_features(utils_general_test PRIVATE cxx_std_23)
 
-target_compile_options(utils_general_test PRIVATE 
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /wd5045 /wd4820 /GR- /permissive- /Zc:preprocessor>>
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:GNU,Clang>:-g -Wall -Wextra -fno-rtti>>
+add_custom_target(copy_render_config
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_LIST_DIR}/test_render_config ${DEVILS_ENGINE_OUTPUT_DIRECTORY}/tests/render_config
 )
 
-target_compile_options(utils_general_test PRIVATE 
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /GR- /O2 /permissive- /Zc:preprocessor>>
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -fno-rtti>>
+add_custom_target(copy_shaders
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_LIST_DIR}/shaders ${DEVILS_ENGINE_OUTPUT_DIRECTORY}/tests/shaders
 )
+
+add_dependencies(utils_general_test copy_render_config)
+add_dependencies(utils_general_test copy_shaders)
 
 include(CTest)
 include(Catch)

@@ -48,7 +48,7 @@ void events::update(const size_t time) {
   for (auto &[scancode, d] : key_mapping) {
     const bool state_changed = d.key_time == 0;
     const auto prev = d.prev;
-    const auto key_time = d.key_time;
+    //const auto key_time = d.key_time;
     const auto press_event_time = d.press_event_time;
     const auto click_event_time = d.click_event_time;
 
@@ -221,11 +221,11 @@ void events::set_key(const std::string_view &id, const int32_t scancode, const i
   // обновим настройки
 }
 
-const std::array<std::string_view, 16> &events::mapping(const int32_t scancode) {
+std::span<std::string_view> events::mapping(const int32_t scancode) {
   const auto key_itr = key_mapping.find(scancode);
-  if (key_itr == key_mapping.end()) return std::array<std::string_view, 16>();
+  if (key_itr == key_mapping.end()) return std::span<std::string_view>();
 
-  return key_itr->second.events;
+  return std::span<std::string_view>(key_itr->second.events.data(), key_itr->second.events.size());
 }
 
 event_state::values events::current_event_state(const int32_t scancode) {

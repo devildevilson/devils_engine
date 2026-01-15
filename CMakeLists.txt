@@ -16,11 +16,12 @@ project(
   LANGUAGES CXX C
 )
 
-set(DEVILS_ENGINE_NAME "devils_engine")
+set(DEVILS_ENGINE_NAME devils_engine)
 
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/lib")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
+set(DEVILS_ENGINE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${DEVILS_ENGINE_NAME}")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${DEVILS_ENGINE_OUTPUT_DIRECTORY}/lib")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${DEVILS_ENGINE_OUTPUT_DIRECTORY}/bin")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${DEVILS_ENGINE_OUTPUT_DIRECTORY}/bin")
 
 set(PROJECT_EXTERNAL_DEPENDENCY_DIR ${CMAKE_CURRENT_LIST_DIR}/external)
 
@@ -28,7 +29,7 @@ add_library(devils_engine_options INTERFACE)
 target_compile_features(devils_engine_options INTERFACE cxx_std_23)
 #target_compile_features(devils_engine_options INTERFACE c_std_11)
 target_compile_options(devils_engine_options INTERFACE
-  $<$<CONFIG:Debug>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MDd /ZI /Wall /wd5045 /wd4820 /GR- /permissive- /Zc:preprocessor>>
+  $<$<CONFIG:Debug>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MDd /ZI /Wall /wd5045 /wd4820 /wd4514 /GR- /permissive- /Zc:preprocessor>>
   $<$<CONFIG:Release>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MD /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>
   $<$<CONFIG:MinSizeRel>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MD /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>
   $<$<CONFIG:RelWithDebInfo>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MDd /ZI /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>
@@ -45,6 +46,7 @@ target_compile_definitions(devils_engine_options INTERFACE
   $<$<CONFIG:RelWithDebInfo>:>
 )
 target_compile_definitions(devils_engine_options INTERFACE
+  DEVILS_ENGINE_PROJECT_NAME="${PROJECT_NAME}"
   DEVILS_ENGINE_ENGINE_NAME="${DEVILS_ENGINE_NAME}"
 )
 
@@ -133,7 +135,8 @@ FetchContent_Declare(
 FetchContent_Declare(
   gtl
   GIT_REPOSITORY https://github.com/greg7mdp/gtl.git
-  GIT_TAG        v1.2.0
+  #GIT_TAG        v1.2.0
+  GIT_TAG        e302ad9e3b6810bcc1ba2419eb5aaf5f32056823
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE 
 )
@@ -327,8 +330,8 @@ else()
   )
 endif()
 
-add_compile_definitions("DEVILS_ENGINE_PROJECT_NAME=\"${PROJECT_NAME}\"")
-add_compile_definitions("DEVILS_ENGINE_ENGINE_NAME=\"${DEVILS_ENGINE_NAME}\"")
+#add_compile_definitions("DEVILS_ENGINE_PROJECT_NAME=\"${PROJECT_NAME}\"")
+#add_compile_definitions("DEVILS_ENGINE_ENGINE_NAME=\"${DEVILS_ENGINE_NAME}\"")
 
 # Link each target with other targets or add options, etc.
 add_subdirectory(libs/utils/)
@@ -367,3 +370,4 @@ endif()
 
 add_executable(fast_test main.cpp)
 target_link_libraries(fast_test devils_engine::devils_plane ${SHADERC_LIBRARY_NAME} Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp)
+add_dependencies(fast_test copy_render_config copy_shaders)

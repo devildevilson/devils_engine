@@ -40,6 +40,7 @@ counter& counter::operator=(counter&& move) noexcept {
 void counter::push_value() noexcept { value.store(next_value.load(std::memory_order_acquire), std::memory_order_release); }
 uint32_t counter::get_value() const noexcept { return value.load(std::memory_order_acquire); }
 void counter::inc_next_value() noexcept { next_value.fetch_add(1, std::memory_order_release); }
+void counter::set_value(const uint32_t val) noexcept { next_value.store(val, std::memory_order_release); }
 resource::frame::frame() noexcept { memset(this, 0, sizeof(*this)); }
 resource::resource() noexcept : format_hint(VK_FORMAT_UNDEFINED), size_hint(0), size(UINT32_MAX), role(role::values::count), type(type::values::count), swap(0), usage_mask(0) {}
 resource_instance::resource_instance() noexcept : role(role::values::count), handle(0), view(VK_NULL_HANDLE) {}
@@ -55,7 +56,8 @@ geometry::geometry() noexcept : index_type(index_type::u32), topology_type(0), r
 draw_group::draw_group() noexcept : budget_constant(UINT32_MAX), types_constant(UINT32_MAX), instances_buffer(UINT32_MAX), type(type::device_local), indirect_buffer(UINT32_MAX), descriptor(UINT32_MAX) {}
 execution_pass_base::resource_info::resource_info() noexcept : slot(INVALID_RESOURCE_SLOT), usage(usage::undefined), action(store_op::none) {}
 execution_pass_base::resource_info::resource_info(const uint32_t slot, const usage::values usage, const store_op::values action) noexcept : slot(slot), usage(usage), action(action) {}
-blend_data::blend_data() noexcept { memset(this, 0, sizeof(*this)); }
+constexpr uint32_t default_color_blending = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+blend_data::blend_data() noexcept { memset(this, 0, sizeof(*this)); colorWriteMask = default_color_blending; }
 
 constant_value::value_t constant_value::compute_value() const {
   const auto& [x, y, z] = current_value;
@@ -83,11 +85,7 @@ void resource_container::create_container(VmaAllocator alc, const uint32_t host_
     ici.extent = vk::Extent3D{ extent.x, extent.y, 1u };
     ici.tiling = bool(host_visible) ? vk::ImageTiling::eLinear : vk::ImageTiling::eOptimal;
 
-    // ожидаем что все картинки будут только на гпу? увы нет
-
-    // если мы тупо выберем vma::MemoryUsage::eGpuToCpu то будет норм?
-    // нужно для одного паттерна выбрать одно а для другого другое
-    // могу выбрать паттерны, но пока что пусть будет так
+    // patterns from roles
     vma::AllocationCreateInfo aci{};
     aci.usage = bool(host_visible) ? vma::MemoryUsage::eCpuOnly : vma::MemoryUsage::eGpuOnly;
 
@@ -199,20 +197,33 @@ size_t geometry::index_size() const {
 }
 
 struct base_layout {
+  format::values fmt_id;
   uint32_t components;
   uint32_t size;
   vk::Format format;
 };
 
-static std::vector<base_layout> parse_layout(const std::string_view& str) {
+static std::vector<format::values> parse_layout(const std::string_view& str) {
   if (str.empty()) return {};
   if (isdigit(str[0])) return {};
 
   // нас инресуют сиквенсы букв, после них сиквенсы цифр
-  size_t i = 0, k = 0;
-  std::vector<base_layout> parts;
+  size_t i = 0;
+  std::vector<format::values> parts;
   bool cur_letter = true;
-  for (; i < str.size(); ++i) {
+  while (i < str.size()) {
+    const size_t start = i;
+    for (; i < str.size() && !isdigit(str[i]); ++i) {}
+    for (; i < str.size() && isdigit(str[i]); ++i) {}
+
+    const auto part = str.substr(start, i - start);
+    const auto fmt_id = format::from_string(part);
+    if (fmt_id >= format::count) utils::error{}("Could not parse format part '{}' from format '{}'", part, str);
+
+    parts.push_back(fmt_id);
+  }
+
+  /*for (; i < str.size(); ++i) {
     if (isdigit(str[i])) cur_letter = false;
 
     if (!isdigit(str[i]) && !cur_letter) {
@@ -227,9 +238,9 @@ static std::vector<base_layout> parse_layout(const std::string_view& str) {
       cur_letter = true;
       k = i;
     }
-  }
+  }*/
 
-  const auto part = str.substr(k, i - k);
+  /*const auto part = str.substr(k, i - k);
   const uint32_t fmt_id = format::from_string(part);
   const auto l = base_layout{
     format::el_count(fmt_id),
@@ -239,9 +250,101 @@ static std::vector<base_layout> parse_layout(const std::string_view& str) {
 
   parts.push_back(l);
   cur_letter = true;
-  k = i;
+  k = i;*/
 
   return parts;
+}
+
+// цель этой функции? однозначно посчитать размер в байтах
+// по идее некоторые типы без паддинга могут привести к фигне и навреное нужно ворнинг кидать?
+static size_t compute_size(const std::span<const format::values>& layout, const std::string_view& type_hint, const std::string_view& name_hint) {
+  size_t size = 0;
+  auto prev_fmt = format::count;
+  uint32_t prev_channels = 0;
+  uint32_t prev_elem_size = 0;
+  bool prev_is_pad_or_indirect = true;
+  for (const auto fmt : layout) {
+    if (fmt == format::pad1) {
+      prev_elem_size = 1 * sizeof(uint32_t);
+      size += prev_elem_size;
+      prev_fmt = fmt;
+      prev_channels = 1;
+      prev_is_pad_or_indirect = true;
+      continue;
+    }
+
+    if (fmt == format::pad2) {
+      prev_elem_size = 2 * sizeof(uint32_t);
+      size += prev_elem_size;
+      prev_fmt = fmt;
+      prev_channels = 2;
+      prev_is_pad_or_indirect = true;
+      continue;
+    }
+
+    if (fmt == format::pad3) {
+      prev_elem_size = 3 * sizeof(uint32_t);
+      size += prev_elem_size;
+      prev_fmt = fmt;
+      prev_channels = 3;
+      prev_is_pad_or_indirect = true;
+      continue;
+    }
+
+    if (fmt == format::dispatch3) {
+      size += 3 * sizeof(uint32_t);
+      prev_fmt = fmt;
+      prev_channels = 3;
+      prev_is_pad_or_indirect = true;
+      continue;
+    }
+
+    if (fmt == format::draw4) {
+      size += 4 * sizeof(uint32_t);
+      prev_fmt = fmt;
+      prev_channels = 4;
+      prev_is_pad_or_indirect = true;
+      continue;
+    }
+
+    if (fmt == format::indexed5) {
+      size += 5 * sizeof(uint32_t);
+      prev_fmt = fmt;
+      prev_channels = 5;
+      prev_is_pad_or_indirect = true;
+      continue;
+    }
+
+    // вообще может быть много чем...
+    // а и потом 4 * sizeof(uint32_t) это много...
+    if (fmt == format::swapchain4) {
+      size += 4 * sizeof(uint32_t);
+      prev_fmt = fmt;
+      prev_channels = 4;
+      prev_is_pad_or_indirect = true;
+      continue;
+    }
+
+    const uint32_t vk_fmt = format::to_vulkan_format(fmt);
+    const uint32_t channels = format_channel_count(vk_fmt);
+    const uint32_t elem_size = format_element_size(vk_fmt, format::to_vulkan_aspect(fmt));
+    // alignof(vec4) == 16, alignof(vec3) == 16, alignof(vec2) == 8, alignof(vec1) == 4
+    const uint32_t final_elem_size = utils::align_to(std::max(size_t(elem_size), sizeof(uint32_t)), sizeof(uint32_t));
+
+    // warning?
+    if (!prev_is_pad_or_indirect && (prev_elem_size / prev_channels) >= sizeof(uint32_t) && (prev_elem_size / prev_channels) < (elem_size / channels)) {
+      utils::warn("Previous fmt '{}' in layout of {} '{}' might need explicit padding before '{}' in some contexts", format::to_string(prev_fmt), type_hint, name_hint, format::to_string(fmt));
+    }
+
+    size += final_elem_size;
+
+    prev_fmt = fmt;
+    prev_channels = channels;
+    prev_elem_size = elem_size;
+    prev_is_pad_or_indirect = false;
+  }
+
+  return size;
 }
 
 struct constant_value_mirror {
@@ -263,8 +366,8 @@ struct constant_value_mirror {
     cv.scale = scale;
     cv.presets_count = presets.size();
     cv.scale_presets_count = scale_presets.size();
-    if (cv.presets_count >= preset::count) utils::error{}("Too many presets in constant value '{}'", name);
-    if (cv.scale_presets_count >= preset::count) utils::error{}("Too many scale_presets in constant value '{}'", name);
+    if (cv.presets_count > preset::count) utils::error{}("Too many presets in constant value '{}'", name);
+    if (cv.scale_presets_count > preset::count) utils::error{}("Too many scale_presets in constant value '{}'", name);
     for (size_t i = 0; i < presets.size(); ++i) {
       const auto& [p_name, value] = presets[i];
       cv.presets[i] = std::make_tuple(check(preset::from_string(p_name), p_name, name), value);
@@ -306,17 +409,14 @@ struct resource_mirror {
     res.usage_mask = 0;
 
     if (role::is_image(res.role) || role::is_attachment(res.role)) {
-      const uint32_t fmt_id = format::from_string(res.format);
-      if (fmt_id == UINT32_MAX) utils::error{}("Could not parse format '{}' for role '{}', resource '{}'", res.format, role, res.name);
+      const auto fmt_id = format::from_string(res.format);
+      if (fmt_id >= format::count) utils::error{}("Could not parse format '{}' for role '{}', resource '{}'", res.format, role, res.name);
       res.format_hint = format::to_vulkan_format(fmt_id);
       res.size_hint = format::size(fmt_id);
     } else {
       const auto& meta = parse_layout(res.format);
       res.format_hint = UINT32_MAX;
-      res.size_hint = 0;
-      for (const auto& l : meta) {
-        res.size_hint += l.size;
-      }
+      res.size_hint = compute_size(meta, "resource", name);
     }
 
     return res;
@@ -339,20 +439,59 @@ struct constant_mirror {
     c.offset = 0;
     c.value = value;
 
-    const auto list = parse_layout(layout);
-    for (const auto& l : list) {
-      if (l.components == 0) utils::error{}("Could not parse constant layout '{}' for object '{}'", layout, name);
-      c.layout.push_back(static_cast<uint32_t>(l.format));
-      c.size += l.size;
-    }
+    c.layout = parse_layout(layout);
+    c.size = compute_size(c.layout, "constant", name);
 
     return c;
   }
 };
 
+static std::tuple<uint32_t, uint32_t, uint32_t> parse_blend_exp(const std::string_view& exp) {
+  if (exp.empty()) return std::make_tuple(UINT32_MAX, UINT32_MAX, UINT32_MAX);
+  std::array<std::string_view, 3> parts;
+  const auto& [part1, remaining] = utils::string::split_prefix(utils::string::trim(exp), " ");
+  const auto& [part2, part3_raw] = utils::string::split_prefix(utils::string::trim(remaining), " ");
+  const auto part3 = utils::string::trim(part3_raw);
+  const uint32_t f1 = check(blend_factor::from_string(part1), "blend_factor", parts[0]);
+  const uint32_t op = check(blend_op::from_string(part2), "blend_op", parts[1]);
+  const uint32_t f2 = check(blend_factor::from_string(part3), "blend_factor", parts[2]);
+  return std::make_tuple(f1, op, f2);
+}
+
+struct blend_data_mirror {
+  bool enable;
+  std::string color;
+  std::string alpha;
+  std::string mask;
+
+  blend_data convert() const {
+    blend_data bd;
+    bd.enable = enable;
+    const auto& [srcColorBlendFactor, colorBlendOp, dstColorBlendFactor] = parse_blend_exp(color);
+    const auto& [srcAlphaBlendFactor, alphaBlendOp, dstAlphaBlendFactor] = parse_blend_exp(alpha);
+    bd.srcColorBlendFactor = srcColorBlendFactor;
+    bd.colorBlendOp = colorBlendOp;
+    bd.dstColorBlendFactor = dstColorBlendFactor;
+    bd.srcAlphaBlendFactor = srcAlphaBlendFactor;
+    bd.alphaBlendOp = alphaBlendOp;
+    bd.dstAlphaBlendFactor = dstAlphaBlendFactor;
+    if (mask.empty()) bd.colorWriteMask = default_color_blending;
+    for (const auto c : mask) {
+      if (c == 'r') bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_R_BIT;
+      if (c == 'g') bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_G_BIT;
+      if (c == 'b') bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_B_BIT;
+      if (c == 'a') bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_A_BIT;
+    }
+
+    return bd;
+  }
+};
+
+// вторым аргументом тут бы задать clearvalue
 struct render_target_mirror {
   std::string name;
   std::vector<std::tuple<std::string, std::string>> resources;
+  std::vector<blend_data_mirror> blending;
 
   render_target convert(const graphics_base& ctx) const {
     const uint32_t exists = ctx.find_draw_group(name);
@@ -365,6 +504,11 @@ struct render_target_mirror {
       const auto type_id = check(usage::from_string(type), type, name);
       if (!usage::is_attachment(type_id)) utils::error{}("Could not parse attachment type '{}', render target: {}", type, name);
       rt.resources.push_back(std::make_tuple(index, type_id));
+    }
+
+    rt.default_blending.resize(rt.resources.size());
+    for (size_t i = 0; i < std::min(blending.size(), rt.default_blending.size()); ++i) {
+      rt.default_blending[i] = blending[i].convert();
     }
 
     return rt;
@@ -461,23 +605,25 @@ struct material_mirror {
     m.raster.line_width = raster.line_width;
     m.depth.test = depth.test;
     m.depth.write = depth.write;
+    m.depth.compare = check(compare_op::from_string(depth.compare), "compare_op", depth.compare, m.name);
     m.depth.bounds_test = depth.bounds_test;
     m.depth.stencil_test = depth.stencil_test;
-    m.depth.compare = check(compare_op::from_string(depth.compare), "compare_op", depth.compare, m.name);
-    m.depth.front.fail_op = check(stencil_op::from_string(depth.front.fail_op), "stencil_op", depth.front.fail_op, m.name);
-    m.depth.front.pass_op = check(stencil_op::from_string(depth.front.pass_op), "stencil_op", depth.front.pass_op, m.name);
-    m.depth.front.depth_fail_op = check(stencil_op::from_string(depth.front.depth_fail_op), "stencil_op", depth.front.depth_fail_op, m.name);
-    m.depth.front.compare_op = check(compare_op::from_string(depth.front.compare_op), "compare_op", depth.front.compare_op, m.name);
-    m.depth.front.compare_mask = depth.front.compare_mask;
-    m.depth.front.write_mask = depth.front.write_mask;
-    m.depth.front.reference = depth.front.reference;
-    m.depth.back.fail_op = check(stencil_op::from_string(depth.back.fail_op), "stencil_op", depth.back.fail_op, m.name);
-    m.depth.back.pass_op = check(stencil_op::from_string(depth.back.pass_op), "stencil_op", depth.back.pass_op, m.name);
-    m.depth.back.depth_fail_op = check(stencil_op::from_string(depth.back.depth_fail_op), "stencil_op", depth.back.depth_fail_op, m.name);
-    m.depth.back.compare_op = check(compare_op::from_string(depth.back.compare_op), "compare_op", depth.back.compare_op, m.name);
-    m.depth.back.compare_mask = depth.back.compare_mask;
-    m.depth.back.write_mask = depth.back.write_mask;
-    m.depth.back.reference = depth.back.reference;
+    if (m.depth.stencil_test) {
+      m.depth.front.fail_op = check(stencil_op::from_string(depth.front.fail_op), "stencil_op", depth.front.fail_op, m.name);
+      m.depth.front.pass_op = check(stencil_op::from_string(depth.front.pass_op), "stencil_op", depth.front.pass_op, m.name);
+      m.depth.front.depth_fail_op = check(stencil_op::from_string(depth.front.depth_fail_op), "stencil_op", depth.front.depth_fail_op, m.name);
+      m.depth.front.compare_op = check(compare_op::from_string(depth.front.compare_op), "compare_op", depth.front.compare_op, m.name);
+      m.depth.front.compare_mask = depth.front.compare_mask;
+      m.depth.front.write_mask = depth.front.write_mask;
+      m.depth.front.reference = depth.front.reference;
+      m.depth.back.fail_op = check(stencil_op::from_string(depth.back.fail_op), "stencil_op", depth.back.fail_op, m.name);
+      m.depth.back.pass_op = check(stencil_op::from_string(depth.back.pass_op), "stencil_op", depth.back.pass_op, m.name);
+      m.depth.back.depth_fail_op = check(stencil_op::from_string(depth.back.depth_fail_op), "stencil_op", depth.back.depth_fail_op, m.name);
+      m.depth.back.compare_op = check(compare_op::from_string(depth.back.compare_op), "compare_op", depth.back.compare_op, m.name);
+      m.depth.back.compare_mask = depth.back.compare_mask;
+      m.depth.back.write_mask = depth.back.write_mask;
+      m.depth.back.reference = depth.back.reference;
+    }
     m.depth.min_bounds = depth.min_bounds;
     m.depth.max_bounds = depth.max_bounds;
     return m;
@@ -522,22 +668,17 @@ struct geometry_mirror {
     geometry g;
     g.name = name;
     g.layout_str = vertex_layout;
-    const auto list = parse_layout(vertex_layout);
-    for (const auto& l : list) {
-      if (l.components == 0) {
-        utils::error{}("Could not parse vertex_layout '{}' for geometry '{}'", vertex_layout, name);
-      }
-      g.vertex_layout.push_back(static_cast<uint32_t>(l.format));
-      g.stride += l.size;
-    }
+    g.vertex_layout = parse_layout(vertex_layout);
+    g.stride = compute_size(g.vertex_layout, "geometry", name);
 
     g.index_type = geometry::index_type::none;
     g.index_type = index_type == "u32" ? geometry::index_type::u32 : g.index_type;
     g.index_type = index_type == "u16" ? geometry::index_type::u16 : g.index_type;
     g.index_type = index_type == "u8" ? geometry::index_type::u8 : g.index_type;
-    if (g.index_type == geometry::index_type::none && !index_type.empty()) {
+    if (g.index_type == geometry::index_type::none && !index_type.empty() && index_type != "none") {
       utils::error{}("Could not parse geometry '{}' index type '{}'", name, index_type);
     }
+    g.topology_type = check(primitive_topology::from_string(topology), "primitive_topology", topology, name);
     g.restart = restart;
     return g;
   }
@@ -561,63 +702,10 @@ struct draw_group_mirror {
     dg.types_constant = check(ctx.find_constant_value(draw_capacity), "constant_value", draw_capacity, name);
     dg.type = draw_group::type::device_local;
     if (type == "host_visible") dg.type = draw_group::type::host_visible;
-    const auto list = parse_layout(layout);
-    for (const auto& l : list) {
-      if (l.components == 0) {
-        utils::error{}("Could not parse vertex_layout '{}' for geometry '{}'", layout, name);
-      }
-      dg.instance_layout.push_back(static_cast<uint32_t>(l.format));
-      dg.stride += l.size;
-    }
+    dg.instance_layout = parse_layout(layout);
+    dg.stride = compute_size(dg.instance_layout, "draw_group", name);
     return dg;
   }
-};
-
-// таблицу операций blend_op еще нужно сделать
-
-static std::tuple<uint32_t, uint32_t, uint32_t> parse_blend_exp(const std::string_view& exp) {
-  if (exp.empty()) return std::make_tuple(UINT32_MAX, UINT32_MAX, UINT32_MAX);
-  std::array<std::string_view, 3> parts;
-  const auto& [part1, remaining] = utils::string::split_prefix(utils::string::trim(exp), " ");
-  const auto& [part2, part3_raw] = utils::string::split_prefix(utils::string::trim(remaining), " ");
-  const auto part3 = utils::string::trim(part3_raw);
-  const uint32_t f1 = check(blend_factor::from_string(part1), "blend_factor", parts[0]);
-  const uint32_t op = check(blend_op::from_string(part2), "blend_op", parts[1]);
-  const uint32_t f2 = check(blend_factor::from_string(part3), "blend_factor", parts[2]);
-  return std::make_tuple(f1, op, f2);
-}
-
-struct blend_data_mirror {
-  bool enable;
-  std::string color;
-  std::string alpha;
-  std::string mask;
-
-  blend_data convert() const {
-    blend_data bd;
-    bd.enable = enable;
-    const auto& [srcColorBlendFactor, colorBlendOp, dstColorBlendFactor] = parse_blend_exp(color);
-    const auto& [srcAlphaBlendFactor, alphaBlendOp, dstAlphaBlendFactor] = parse_blend_exp(alpha);
-    bd.srcColorBlendFactor = srcColorBlendFactor;
-    bd.colorBlendOp = colorBlendOp;
-    bd.dstColorBlendFactor = dstColorBlendFactor;
-    bd.srcAlphaBlendFactor = srcAlphaBlendFactor;
-    bd.alphaBlendOp = alphaBlendOp;
-    bd.dstAlphaBlendFactor = dstAlphaBlendFactor;
-    if (mask.empty()) bd.colorWriteMask = UINT32_MAX;
-    for (const auto c : mask) {
-      if (c == 'r') bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_R_BIT;
-      if (c == 'g') bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_G_BIT;
-      if (c == 'b') bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_B_BIT;
-      if (c == 'a') bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_A_BIT;
-    }
-
-    return bd;
-  }
-};
-
-struct blit_data {
-  std::string type;
 };
 
 struct pass2_mirror {
@@ -625,11 +713,14 @@ struct pass2_mirror {
   std::string render_target;
   std::vector<std::unordered_map<std::string, std::tuple<std::string, std::string>>> subpasses;
   std::vector<std::string> steps; // ключевое слово next_subpass
+
+  std::vector<std::string> wait_for;
+  std::vector<std::string> signal;
 };
 
 struct pass_step2_mirror {
   std::string name;
-  std::string type;
+  //std::string type;
   std::unordered_map<std::string, blend_data_mirror> blending;
   std::vector<std::tuple<std::string, std::string>> barriers;
   std::vector<std::tuple<std::string, std::string>> resources;
@@ -703,7 +794,7 @@ static void parse_step2(
     step.push_constants.push_back(index);
   }
 
-  step.material = check(ctx.find_material(data.material), "material", data.material, step.name);
+  if (!data.material.empty()) step.material = check(ctx.find_material(data.material), "material", data.material, step.name);
   if (!data.geometry.empty()) step.geometry = check(ctx.find_geometry(data.geometry), "geometry", data.geometry, step.name);
   if (!data.draw_group.empty()) step.draw_group = check(ctx.find_draw_group(data.draw_group), "draw_group", data.draw_group, step.name);
   step.command = data.command;
@@ -714,11 +805,15 @@ static void parse_step2(
   const bool is_compute = csv == "dispatch";
 
   if (is_graphics && step.geometry == UINT32_MAX) {
-    utils::error{}("Graphics set must specify geometry, step '{}'", step.name);
+    utils::error{}("Graphics step must specify geometry, step '{}'", step.name);
+  }
+
+  if ((is_graphics || is_compute) && step.material == UINT32_MAX) {
+    utils::error{}("Graphics or compute step must specify material, step '{}'", step.name);
   }
 
   // парсим команду где? да можно и тут так то
-  step.cmd_params = parse_command(&ctx, ctx.find_execution_step(data.name), step.command);
+  step.cmd_params = parse_command(&ctx, step, step.command);
 
   for (uint32_t i = 0; i < step.cmd_params.resources.size() && std::get<0>(step.cmd_params.resources[i]) != INVALID_RESOURCE_SLOT; ++i) {
     const auto& [cmd_res, cmd_usage] = step.cmd_params.resources[i];
@@ -755,13 +850,17 @@ static void parse_execution_pass2(
   if (!data.render_target.empty()) pass.render_target = check(ctx.find_render_target(data.render_target), "render_target", data.render_target, pass.name);
   const bool is_render_pass = pass.render_target != INVALID_RESOURCE_SLOT;
 
+  pass.wait_for = data.wait_for;
+  pass.signal = data.signal;
+
   for (const auto& step_name : data.steps) {
     if (step_name == "next_subpass") {
       pass.steps.push_back(UINT32_MAX);
       continue;
     }
 
-    const uint32_t index = check(ctx.find_execution_pass(step_name), "execution_pass", step_name, pass.name);
+    //const uint32_t index = check(ctx.find_execution_pass(step_name), "execution_pass", step_name, pass.name);
+    const uint32_t index = check(ctx.find_execution_step(step_name), "execution_step", step_name, pass.name);
     const auto& step = ctx.steps[index];
 
     if (is_render_pass && command::is_compute(step.cmd_params.type)) {
@@ -776,13 +875,16 @@ static void parse_execution_pass2(
 
     pass.read = pass.read | step.read;
     pass.write = pass.write | step.write;
+
+    const auto t = step.type();
+    pass.step_mask.set(t, true);
   }
 
   for (const auto& subpass : data.subpasses) {
     if (is_render_pass) {
       const auto& rt = DS_ASSERT_ARRAY_GET(ctx.render_targets, pass.render_target);
       pass.subpasses.emplace_back();
-      pass.subpasses.resize(rt.resources.size());
+      pass.subpasses.back().resize(rt.resources.size());
     }
 
     pass.barriers.emplace_back();
@@ -793,6 +895,9 @@ static void parse_execution_pass2(
       const auto action = check(store_op::from_string(action_str), action_str, pass.name);
 
       const auto& info = ri{ index, usage, action };
+
+      if (usage::is_read(usage)) pass.read.set(index, true);
+      if (usage::is_write(usage)) pass.write.set(index, true);
 
       if (is_render_pass) {
         const auto& rt = ctx.render_targets[pass.render_target];
@@ -807,6 +912,8 @@ static void parse_execution_pass2(
       }
     }
   }
+
+
 }
 
 static void parse_render_graph2(
@@ -841,13 +948,14 @@ std::vector<T> parse_file(const std::string& file) {
 
   std::vector<value_t> local_arr;
   auto err = utils::from_json(local_arr, content);
-  if (err) {
-    value_t val;
+  if (err.ec == glz::error_code::expected_bracket) {
+    value_t val{};
     auto err = utils::from_json(val, content);
-    if (err) { utils::warn("Could not parse file '{}' as type '{}'", file, utils::type_name<value_t>()); return {}; }
+    if (err) { utils::warn("Could not parse file '{}' as type '{}', error: {}", file, utils::type_name<value_t>(), glz::format_error(err)); return {}; }
     local_arr.emplace_back(std::move(val));
-  } else {
-    //for (auto& el : local_arr) { arr.emplace_back(std::move(el)); }
+  } else if (err) {
+    utils::warn("Could not parse file '{}' as type '{}', error: {}", file, utils::type_name<std::vector<value_t>>(), glz::format_error(err));
+    return {};
   }
 
   return local_arr;
@@ -868,11 +976,14 @@ std::vector<T> parse_folder(const std::string &folder) {
 
     std::vector<value_t> local_arr;
     auto err = utils::from_json(local_arr, content);
-    if (err) {
-      value_t val;
+    if (err.ec == glz::error_code::expected_bracket) {
+      value_t val{};
       auto err = utils::from_json(val, content);
-      if (err) { utils::warn("Could not parse file '{}' as type '{}'", entry.path().generic_string(), utils::type_name<value_t>()); continue; }
+      if (err) { utils::warn("Could not parse file '{}' as type '{}', error: {}", entry.path().generic_string(), utils::type_name<value_t>(), glz::format_error(err)); continue; }
       arr.emplace_back(std::move(val));
+    } else if (err) {
+      utils::warn("Could not parse file '{}' as type '{}', error: {}", entry.path().generic_string(), utils::type_name<std::vector<value_t>>(), glz::format_error(err));
+      return {};
     } else {
       for (auto& el : local_arr) { arr.emplace_back(std::move(el)); }
     }
@@ -893,9 +1004,7 @@ template <typename OUT, typename T, typename F>
 std::vector<OUT> convert(graphics_base& ctx, const std::vector<T>& in, const F &f) {
   std::vector<OUT> arr;
   for (const auto& el : in) {
-    OUT val;
-    f(el, ctx, val);
-    arr.emplace_back(std::move(val));
+    f(el, ctx, arr.emplace_back());
   }
   return arr;
 }
@@ -960,6 +1069,11 @@ void parse_data(graphics_base* ctx, std::string path) {
       const auto& first = lctx.resources[lctx.swapchain_slot];
       utils::error{}("Found several resources with role present, first '{}' current '{}'", first.name, res.name);
     }
+
+    // не тут проверяем на то является ли базовый класс презентабельным или нет
+    //if (lctx.presentation_engine_type != presentation_engine_type::main) {
+    //  utils::error{}("This base class does not support presentation");
+    //}
 
     lctx.swapchain_slot = i;
 
@@ -1031,13 +1145,14 @@ void parse_data(graphics_base* ctx, std::string path) {
 }
 
 command_params::command_params() noexcept { memset(this, -1, sizeof(*this)); }
+step_type::values step_base::type() const {
+  return command::convert(cmd_params.type);
+}
 
 // это капец
 // мы к сожалению не угадаем с форматом индирект буфера до того как эта функция будет запущена
 // многое зависит от текстовой команды, можем хотя бы проверить чтобы буфер был не меньше чем структура
-command_params parse_command(graphics_base* ctx, const uint32_t step_index, const std::string_view& command_str) {
-  const auto& step = DS_ASSERT_ARRAY_GET(ctx->steps, step_index);
-
+command_params parse_command(graphics_base* ctx, const step_base& step, const std::string_view& command_str) {
   const uint32_t geometry_index = step.geometry;
   const bool is_indexed = geometry_index < ctx->geometries.size() && ctx->geometries[geometry_index].index_type != geometry::index_type::none;
 

@@ -134,10 +134,6 @@ namespace utils {
     this->start_date = d;
   }
 
-  static int32_t sign(const double a) {
-    return a >= 0 ? 1 : -1;
-  }
-
   // недостаточная проверка валидности !!!!!!!!! но будет работать если задавать только стартовый год
   bool date_system::is_valid(const date &d) const {
     if (d.year < start_date.year) return false;

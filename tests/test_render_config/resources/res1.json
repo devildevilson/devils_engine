@@ -1,0 +1,18 @@
+[
+  {
+    "name": "albedo_res",
+    "format": "c4",
+    "role": "gbuffer_albedo",
+    "size": "viewport",
+    "type": "frames_in_flight",
+    "swap": "per_frame"
+  },
+  {
+    "name": "swapchain_image",
+    "format": "swapchain4",
+    "role": "present",
+    "size": "viewport",
+    "type": "swapchain",
+    "swap": "swapchain"
+  }
+]

@@ -56,6 +56,11 @@ public:
   atomic_pool(const size_t thread_count);
   ~atomic_pool() noexcept;
 
+  atomic_pool(const atomic_pool& copy) noexcept = delete;
+  atomic_pool(atomic_pool&& move) noexcept = default;
+  atomic_pool& operator=(const atomic_pool& copy) noexcept = delete;
+  atomic_pool& operator=(atomic_pool&& move) noexcept = default;
+
   void submitbase(task_interface* t) noexcept;
 
   template<class F, class... Args>

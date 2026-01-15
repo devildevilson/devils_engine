@@ -46,6 +46,16 @@ struct physical_device_data {
   uint32_t compute_queue;
   uint32_t transfer_queue;
   uint32_t present_queue;
+
+  inline physical_device_data() noexcept : 
+    handle(VK_NULL_HANDLE), 
+    desirable_present_mode(UINT32_MAX), 
+    fallback_present_mode(UINT32_MAX), 
+    graphics_queue(UINT32_MAX),
+    compute_queue(UINT32_MAX),
+    transfer_queue(UINT32_MAX),
+    present_queue(UINT32_MAX)
+  {}
 };
 
 struct system_info {

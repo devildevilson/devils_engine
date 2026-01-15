@@ -2,20 +2,22 @@
 
 #include "vulkan_header.h"
 #include "makers.h"
+#include "auxiliary.h"
 
 #include "devils_engine/utils/fileio.h"
 
-#include <iostream>
+#include <cmath>
+#include <limits>
 
 namespace devils_engine {
 namespace painter {
 
 
-graphics_base::graphics_base(VkInstance instance, VkDevice device, VkPhysicalDevice physical_device, VkSurfaceKHR surface) noexcept :
+graphics_base::graphics_base(VkInstance instance, VkDevice device, VkPhysicalDevice physical_device, enum presentation_engine_type presentation_engine_type) noexcept :
   instance(instance),
   device(device),
   physical_device(physical_device),
-  surface(surface),
+  surface(VK_NULL_HANDLE),
   cache(VK_NULL_HANDLE),
   graphics(VK_NULL_HANDLE),
   transfer(VK_NULL_HANDLE),
@@ -23,16 +25,24 @@ graphics_base::graphics_base(VkInstance instance, VkDevice device, VkPhysicalDev
   descriptor_pool(VK_NULL_HANDLE),
   swapchain(VK_NULL_HANDLE),
   allocator(VK_NULL_HANDLE),
+  presentation_engine_type(presentation_engine_type),
+  current_presentable_state(static_cast<uint32_t>(vk::Result::eSuccess)),
   swapchain_slot(INVALID_RESOURCE_SLOT),
   swapchain_counter_index(INVALID_RESOURCE_SLOT),
   per_frame_counter_index(INVALID_RESOURCE_SLOT),
   per_update_counter_index(INVALID_RESOURCE_SLOT),
   frames_in_flight_constant_value_index(INVALID_RESOURCE_SLOT),
-  current_render_graph_index(INVALID_RESOURCE_SLOT)
+  current_render_graph_index(INVALID_RESOURCE_SLOT),
+  swapchain_image_semaphore(INVALID_RESOURCE_SLOT),
+  finish_rendering_semaphore(INVALID_RESOURCE_SLOT),
+  computed_current_frame_index(INVALID_RESOURCE_SLOT),
+  swapchain_image_size(std::make_tuple(640, 480))
 {}
 
 graphics_base::~graphics_base() noexcept {
   if (device == VK_NULL_HANDLE) return;
+
+  vk::Queue(graphics).waitIdle();
 
   vk::Device dev(device);
   for (auto& f : fences) { dev.destroy(f); }
@@ -112,11 +122,352 @@ void graphics_base::dump_cache_on_disk(const std::string& path) const {
   if (cache == VK_NULL_HANDLE) return;
 
   const auto data = vk::Device(device).getPipelineCacheData(cache);
+  const bool res = file_io::write(data, path);
+  if (!res) utils::warn("Could not write pipeline cache '{}' on disk", path);
+}
 
+void graphics_base::set_surface(VkSurfaceKHR surface, const uint32_t width, const uint32_t height) {
+  this->surface = surface;
+  // когда мы вызываем эту команду? думаю что ее нужно просто переделать в set_surface
+  this->swapchain_image_size = std::make_tuple(width, height);
+}
+
+static double mix(const double x, const double y, const double a) {
+  return x * (1.0 - a) + y * a;
+}
+
+static uint16_t float2half_rn(float a) {
+  uint32_t ia = std::bit_cast<uint32_t>(a);
+  uint16_t ir = (ia >> 16) & 0x8000;
+
+  if ((ia & 0x7f800000) == 0x7f800000) {
+    if ((ia & 0x7fffffff) == 0x7f800000) {
+      ir |= 0x7c00; /* infinity */
+    } else {
+      ir |= 0x7e00 | ((ia >> (24 - 11)) & 0x1ff); /* NaN, quietened */
+    }
+  } else if ((ia & 0x7f800000) >= 0x33000000) {
+    int shift = (int)((ia >> 23) & 0xff) - 127;
+    if (shift > 15) {
+      ir |= 0x7c00; /* infinity */
+    } else {
+      ia = (ia & 0x007fffff) | 0x00800000; /* extract mantissa */
+      if (shift < -14) { /* denormal */  
+        ir |= ia >> (-1 - shift);
+        ia = ia << (32 - (-1 - shift));
+      } else { /* normal */
+        ir |= ia >> (24 - 11);
+        ia = ia << (32 - (24 - 11));
+        ir = ir + ((14 + shift) << 10);
+      }
+      /* IEEE-754 round to nearest of even */
+      if ((ia > 0x80000000) || ((ia == 0x80000000) && (ir & 1))) {
+        ir++;
+      }
+    }
+  }
+  return ir;
+}
+
+static std::tuple<size_t, size_t> populate_dispatch3(const std::span<uint32_t>& memory, const std::span<const double>& values) {
+  memory[0] = 0 < values.size() ? uint32_t(values[0]) : 0u;
+  memory[1] = 1 < values.size() ? uint32_t(values[1]) : 0u;
+  memory[2] = 2 < values.size() ? uint32_t(values[2]) : 0u;
+  return std::make_tuple(3 * sizeof(uint32_t),3);
+}
+
+static std::tuple<size_t, size_t> populate_draw4(const std::span<uint32_t>& memory, const std::span<const double>& values) {
+  memory[0] = 0 < values.size() ? uint32_t(values[0]) : 0u;
+  memory[1] = 1 < values.size() ? uint32_t(values[1]) : 0u;
+  memory[2] = 2 < values.size() ? uint32_t(values[2]) : 0u;
+  memory[3] = 3 < values.size() ? uint32_t(values[3]) : 0u;
+  return std::make_tuple(4 * sizeof(uint32_t), 4);
+}
+
+static std::tuple<size_t, size_t> populate_indexed5(const std::span<uint32_t>& memory, const std::span<const double>& values) {
+  memory[0] = 0 < values.size() ? uint32_t(values[0]) : 0u;
+  memory[1] = 1 < values.size() ? uint32_t(values[1]) : 0u;
+  memory[2] = 2 < values.size() ? uint32_t(values[2]) : 0u;
+  memory[3] = 3 < values.size() ? std::bit_cast<uint32_t>(int32_t(values[3])) : 0u;
+  memory[4] = 4 < values.size() ? uint32_t(values[4]) : 0u;
+  return std::make_tuple(5 * sizeof(uint32_t), 5);
+}
+
+static std::tuple<size_t, size_t> populate_d32s8(const std::span<uint32_t>& memory, const std::span<const double>& values) {
+  const float depth = 0 < values.size() ? float(values[0]) : 0.0f;
+  const uint32_t stencil = 1 < values.size() ? uint32_t(values[1]) : 0u;
+  memory[0] = std::bit_cast<uint32_t>(depth);
+  memory[1] = stencil;
+  return std::make_tuple(2 * sizeof(uint32_t),2);
+}
+
+static std::tuple<size_t, size_t> populate_d24s8(const std::span<uint32_t>& memory, const std::span<const double>& values) {
+  const float depth = 0 < values.size() ? float(values[0]) : 0.0f;
+  const uint32_t stencil = 1 < values.size() ? uint32_t(values[1]) : 0u;
+  const uint32_t depth24 = uint32_t(depth * 16777215.0f); // clamp [0,1]
+  const uint32_t stencil8 = stencil & 0xFF;
+  memory[0] = (depth24 << 0) | (stencil8 << 24);
+  return std::make_tuple(1 * sizeof(uint32_t), 2);
+}
+
+static std::tuple<size_t, size_t> populate_d16s8(const std::span<uint32_t>& memory, const std::span<const double>& values) {
+  const double depth = 0 < values.size() ? double(values[0]) : 0.0;
+  const uint32_t stencil = 1 < values.size() ? uint32_t(values[1]) : 0u;
+  const uint32_t depth16 = uint32_t(depth * double(UINT16_MAX)); // clamp [0,1]
+  const uint32_t stencil8 = stencil & 0xFF;
+  memory[0] = (depth16 << 0) | (stencil8 << 16);
+  return std::make_tuple(1 * sizeof(uint32_t), 2);
+}
+
+static std::tuple<size_t, size_t> put_values(const std::span<uint32_t> &memory, const std::span<const format::values> &layout, const std::span<const double>& values) {
+  size_t offset = 0;
+  size_t counter = 0;
+  auto cur_memory = memory;
+  for (const auto fmt : layout) {
+    if (counter >= values.size()) break;
+
+    cur_memory = std::span(memory.begin() + (offset/sizeof(uint32_t)), memory.end());
+
+    if (fmt == format::pad1) {
+      offset += 1 * sizeof(uint32_t);
+      //counter += 1; // ?
+      continue;
+    }
+
+    if (fmt == format::pad2) {
+      offset += 2 * sizeof(uint32_t);
+      //counter += 2; // ?
+      continue;
+    }
+
+    if (fmt == format::pad3) {
+      offset += 3 * sizeof(uint32_t);
+      //counter += 3; // ?
+      continue;
+    }
+
+    if (fmt == format::dispatch3) {
+      const auto [add_offset, add_counter] = populate_dispatch3(cur_memory, values);
+      offset += add_offset;
+      counter += add_counter;
+      continue;
+    }
+
+    if (fmt == format::draw4) {
+      const auto [add_offset, add_counter] = populate_draw4(cur_memory, values);
+      offset += add_offset;
+      counter += add_counter;
+      continue;
+    }
+
+    if (fmt == format::indexed5) {
+      const auto [add_offset, add_counter] = populate_indexed5(cur_memory, values);
+      offset += add_offset;
+      counter += add_counter;
+      continue;
+    }
+
+    const uint32_t vk_fmt = format::to_vulkan_format(fmt);
+
+    if (vk_fmt == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+      const auto [add_offset, add_counter] = populate_d32s8(cur_memory, values);
+      offset += add_offset;
+      counter += add_counter;
+      continue;
+    }
+
+    if (vk_fmt == VK_FORMAT_D24_UNORM_S8_UINT) {
+      const auto [add_offset, add_counter] = populate_d24s8(cur_memory, values);
+      offset += add_offset;
+      counter += add_counter;
+      continue;
+    }
+
+    if (vk_fmt == VK_FORMAT_D16_UNORM_S8_UINT) {
+      const auto [add_offset, add_counter] = populate_d16s8(cur_memory, values);
+      offset += add_offset;
+      counter += add_counter;
+      continue;
+    }
+
+    const uint32_t channels = format_channel_count(vk_fmt);
+    const uint32_t elem_size = format_element_size(vk_fmt, format::to_vulkan_aspect(fmt));
+    // alignof(vec4) == 16, alignof(vec3) == 16, alignof(vec2) == 8, alignof(vec1) == 4
+    //const uint32_t final_elem_size = elem_size == 12 ? 16 : std::max(elem_size, 4u);
+    //const uint32_t local_aligment = (elem_size / channels) < 4 ? 1 : final_elem_size;
+      
+    // тут укладываем байт за байтом придерживаясь алигмента
+    // с1с1с1с1 - должен попасть в отдельный uint ... нет для простоты пусть минимум будет 4 байта, то есть тут 4 uint =( 
+    // а с4с1с4с1 - попадут в 4 отдельных uint
+    // а с4с1с2с1 - это 2 uint....
+
+    // вообще что делать с форматами DEPTH & STENCIL?
+    // как минимум я должен распаковать clear value
+
+    constexpr auto min8 = std::numeric_limits<int8_t>::min();
+    constexpr auto max8 = std::numeric_limits<int8_t>::max();
+    constexpr auto min16 = std::numeric_limits<int16_t>::min();
+    constexpr auto max16 = std::numeric_limits<int16_t>::max();
+
+    if (elem_size / channels == sizeof(uint8_t)) {
+      const auto el_type = format::element_type(fmt);
+      switch (el_type) {
+        case format_element_type::UNORM: {
+          auto ptr = reinterpret_cast<uint8_t*>(&cur_memory[0]);
+          for (uint32_t i = 0; i < channels && counter < values.size(); ++i, ++counter) {
+            ptr[i] = uint8_t(std::round(double(UINT8_MAX) * std::clamp(values[counter], 0.0, 1.0)));
+          }
+          break;
+        }
+        case format_element_type::SNORM: {
+          auto ptr = reinterpret_cast<int8_t*>(&cur_memory[0]);
+          for (uint32_t i = 0; i < channels && counter < values.size(); ++i, ++counter) {
+            double tmp = (std::clamp(values[counter], -1.0, 1.0) + 1.0) / 2.0;
+            double val = mix(min8, max8, tmp);
+            ptr[i] = int8_t(val);
+          }
+          break;
+        }
+        case format_element_type::UINT: {
+          auto ptr = reinterpret_cast<uint8_t*>(&cur_memory[0]);
+          for (uint32_t i = 0; i < channels && counter < values.size(); ++i, ++counter) {
+            ptr[i] = uint8_t(values[counter]);
+          }
+          break;
+        }
+        case format_element_type::SINT: {
+          auto ptr = reinterpret_cast<int8_t*>(&cur_memory[0]);
+          for (uint32_t i = 0; i < channels && counter < values.size(); ++i, ++counter) {
+            ptr[i] = int8_t(values[counter]);
+          }
+          break;
+        }
+        default: utils::error{}("Invalid format element type {} for {} byte element", static_cast<uint32_t>(el_type), elem_size / channels);
+      }
+
+      offset += 1 * sizeof(uint32_t);
+      continue;
+    }
+
+    if (elem_size / channels == sizeof(uint16_t)) {
+      const auto el_type = format::element_type(fmt);
+      const uint32_t offset_count = (channels + 1) / 2;
+      switch (el_type) {
+        case format_element_type::UNORM: {
+          uint32_t i = 0;
+          for (uint32_t add = 0; add < offset_count; ++add) {
+            for (; i < channels && counter < values.size(); ++i, ++counter) {
+              auto ptr = reinterpret_cast<uint16_t*>(&cur_memory[add]);
+              assert((i - 2 * add) < 2);
+              ptr[(i - 2 * add)] = uint16_t(std::round(double(UINT16_MAX) * std::clamp(values[counter], 0.0, 1.0)));
+            }
+          }
+          break;
+        }
+        case format_element_type::SNORM: {
+          uint32_t i = 0;
+          for (uint32_t add = 0; add < offset_count; ++add) {
+            for (; i < channels && counter < values.size(); ++i, ++counter) {
+              auto ptr = reinterpret_cast<int16_t*>(&cur_memory[add]);
+              double tmp = (std::clamp(values[counter], -1.0, 1.0) + 1.0) / 2.0;
+              double val = mix(min16, max16, tmp);
+              assert((i - 2 * add) < 2);
+              ptr[(i - 2 * add)] = int16_t(val);
+            }
+          }
+          break;
+        }
+        case format_element_type::UINT: {
+          uint32_t i = 0;
+          for (uint32_t add = 0; add < offset_count; ++add) {
+            for (; i < channels && counter < values.size(); ++i, ++counter) {
+              auto ptr = reinterpret_cast<uint16_t*>(&cur_memory[add]);
+              assert((i - 2 * add) < 2);
+              ptr[(i - 2 * add)] = uint16_t(values[counter]);
+            }
+          }
+          break;
+        }
+        case format_element_type::SINT: {
+          uint32_t i = 0;
+          for (uint32_t add = 0; add < offset_count; ++add) {
+            for (; i < channels && counter < values.size(); ++i, ++counter) {
+              auto ptr = reinterpret_cast<int16_t*>(&cur_memory[add]);
+              assert((i - 2 * add) < 2);
+              ptr[(i - 2 * add)] = int16_t(values[counter]);
+            }
+          }
+          break;
+        }
+        case format_element_type::SFLOAT: {
+          uint32_t i = 0;
+          for (uint32_t add = 0; add < offset_count; ++add) {
+            for (; i < channels && counter < values.size(); ++i, ++counter) {
+              auto ptr = reinterpret_cast<uint16_t*>(&cur_memory[add]);
+              assert((i - 2 * add) < 2);
+              ptr[(i - 2 * add)] = float2half_rn(values[counter]);
+            }
+          }
+          break;
+        }
+        default: utils::error{}("Invalid format element type {} for {} byte element", static_cast<uint32_t>(el_type), elem_size / channels);
+      }
+
+      offset += offset_count * sizeof(uint32_t);
+      continue;
+    }
+
+    if (elem_size / channels == sizeof(uint32_t)) {
+      const auto el_type = format::element_type(fmt);
+      switch (el_type) {
+        case format_element_type::UINT: {
+          for (uint32_t i = 0, add = 0; i < channels && counter < values.size(); ++i, ++counter, ++add) {
+            auto ptr = reinterpret_cast<uint32_t*>(&cur_memory[add]);
+            *ptr = uint32_t(values[counter]);
+          }
+          break;
+        }
+        case format_element_type::SINT: {
+          for (uint32_t i = 0, add = 0; i < channels && counter < values.size(); ++i, ++counter, ++add) {
+            auto ptr = reinterpret_cast<int32_t*>(&cur_memory[add]);
+            *ptr = int32_t(values[counter]);
+          }
+          break;
+        }
+        case format_element_type::SFLOAT: {
+          for (uint32_t i = 0, add = 0; i < channels && counter < values.size(); ++i, ++counter, ++add) {
+            auto ptr = reinterpret_cast<float*>(&cur_memory[add]);
+            *ptr = float(values[counter]);
+          }
+          break;
+        }
+        default: utils::error{}("Invalid format element type {} for {} byte element", static_cast<uint32_t>(el_type), elem_size / channels);
+      }
+
+      offset += channels * sizeof(uint32_t);  
+      continue;
+    }
+
+    utils::error{}("Bad format? '{}'", format::to_string(fmt));
+  }
+
+  return std::make_tuple(offset, counter);
+}
+
+// вроде бы почти все сделал, нужно добавить тип pad
+// нужно распределить на отдельные функции это дело
+// + нужно сделать общую функцию где я принимаю на вход std::span<double> 
+// и запихиваю правильные данные в память как я это делаю здесь
+void graphics_base::populate_constant_default_values() {
+  for (const auto& c : constants) {
+    auto spn = std::span(constants_memory[1].begin() + (c.offset/sizeof(uint32_t)), constants_memory[1].end());
+    put_values(spn, c.layout, c.value);
+  }
 }
 
 // ?
 void graphics_base::resize_viewport(const uint32_t width, const uint32_t height) {
+  swapchain_image_size = std::make_tuple(width, height);
   recreate_swapchain(width, height);
   recreate_screensize_resources(width, height);
   execution_graph.resize_viewport(this, width, height);
@@ -198,13 +549,19 @@ void graphics_base::recreate_screensize_resources(const uint32_t width, const ui
 
     const bool is_image = role::is_image(res.role);
 
+    const auto [size, exts] = res.compute_frame_size(this);
     const uint32_t buffering = res.compute_buffering(this);
     for (uint32_t i = 0; i < buffering; ++i) {
       if (is_image) dev.destroy(res.handles[i].view);
-      // уникальные индексы...
+      
       const auto itr = std::find(indices.begin(), indices.end(), res.handles[i].index);
       if (itr == indices.end()) {
         indices.push_back(res.handles[i].index);
+        // желательно слои прикрутить к контейнерам буферов
+        // определять что картинка или нет по другим метрикам (например по мип уровням)
+        auto& cont = DS_ASSERT_ARRAY_GET(resource_containers, res.handles[i].index);
+        cont.size = size * buffering;
+        cont.extent = { std::get<0>(exts), std::get<1>(exts) };
       }
     }
   }
@@ -245,7 +602,7 @@ void graphics_base::recreate_screensize_resources(const uint32_t width, const ui
         ivci.subresourceRange = std::bit_cast<vk::ImageSubresourceRange>(res.handles[i].subimage);
 
         res.handles[i].view = dev.createImageView(ivci);
-        set_name(device, vk::ImageView(res.handles[i].view), res.name + ".view");
+        set_name(device, vk::ImageView(res.handles[i].view), res.name + ".view" + std::to_string(i));
       }
     }
   }
@@ -263,35 +620,133 @@ void graphics_base::create_fences() {
   }
 }
 
+void graphics_base::create_global_semaphores() {
+  vk::Device dev(device);
+  const uint32_t count = frames_in_flight();
+
+  {
+    uint32_t sem_index = find_semaphore("swapchain_image");
+    if (sem_index == INVALID_RESOURCE_SLOT) {
+      sem_index = semaphores.size();
+      semaphores.emplace_back().name = "swapchain_image";
+    } else {
+      auto& sem = DS_ASSERT_ARRAY_GET(semaphores, sem_index);
+      for (auto& s : sem.handles) {
+        dev.destroy(s);
+        s = VK_NULL_HANDLE;
+      }
+    }
+
+    auto& sem = DS_ASSERT_ARRAY_GET(semaphores, sem_index);
+    for (uint32_t i = 0; i < count; ++i) {
+      sem.handles[i] = dev.createSemaphore(vk::SemaphoreCreateInfo{});
+    }
+
+    swapchain_image_semaphore = sem_index;
+  }
+
+  {
+    uint32_t sem_index = find_semaphore("finish_rendering");
+    if (sem_index == INVALID_RESOURCE_SLOT) {
+      sem_index = semaphores.size();
+      semaphores.emplace_back().name = "finish_rendering";
+    }
+    else {
+      auto& sem = DS_ASSERT_ARRAY_GET(semaphores, sem_index);
+      for (auto& s : sem.handles) {
+        dev.destroy(s);
+        s = VK_NULL_HANDLE;
+      }
+    }
+
+    auto& sem = DS_ASSERT_ARRAY_GET(semaphores, sem_index);
+    for (uint32_t i = 0; i < count; ++i) {
+      sem.handles[i] = dev.createSemaphore(vk::SemaphoreCreateInfo{});
+    }
+
+    finish_rendering_semaphore = sem_index;
+  }
+}
+
 void graphics_base::draw() {
   
 }
 
 // ожидание фрейма лучше отдельно сделать
 void graphics_base::prepare_frame() {
+  update_frame();
   update_counters();
+  computed_current_frame_index = current_frame_in_flight();
+  wait_fence();
+  image_acquire();
   //update_constant_memory(); // слишком часто
   update_descriptors(); // тут перевыделения памяти, лучше убрать отсюда
   
-  const uint32_t cur_frame = current_frame_index();
-  auto f = fences[cur_frame % fences.size()];
+  //if (!can_draw()) return;
+
+  /*auto f = fences[computed_current_frame_index];
   const size_t sec1 = size_t(1000) * size_t(1000) * size_t(1000);
   const auto res = vk::Device(device).waitForFences(vk::Fence(f), true, sec1);
-  if (res != vk::Result::eSuccess) utils::error{}("waitForFences failed for current frame {}", cur_frame);
-  vk::Device(device).resetFences(vk::Fence(f));
+  if (res != vk::Result::eSuccess) utils::error{}("waitForFences failed for current frame {}", current_frame_index());
+  vk::Device(device).resetFences(vk::Fence(f));*/
 
   // ???
 }
 
 void graphics_base::submit_frame() {
-  const uint32_t cur_frame = current_frame_index();
-  auto f = fences[cur_frame % fences.size()];
-  execution_graph.submit(this, graphics, f);
+  if (!can_draw()) return;
+
+  //const uint32_t frames_count = frames_in_flight();
+  //const uint32_t cur_frame = current_frame_index();
+  auto f = fences[computed_current_frame_index];
+
+  VkSemaphore finish_rendering = VK_NULL_HANDLE;
+  if (presentation_engine_type == presentation_engine_type::main) {
+    const auto& sem = DS_ASSERT_ARRAY_GET(semaphores, finish_rendering_semaphore);
+    finish_rendering = sem.handles[computed_current_frame_index];
+  }
+
+  execution_graph.submit(this, graphics, finish_rendering, f);
+
+  if (presentation_engine_type != presentation_engine_type::main) return;
+
+  const auto& counter = DS_ASSERT_ARRAY_GET(counters, swapchain_counter_index);
+  const uint32_t current_index = counter.get_value();
+  // не та семафора... должна остаться семафора после сабмита
+  // где ее вообще определить? по идее она внешняя
+  // ее бы передавать вместе с фенс
+  const auto handle = vk::Semaphore(finish_rendering);
+  vk::SwapchainKHR sw(swapchain);
+
+  vk::PresentInfoKHR pi{};
+  pi.waitSemaphoreCount = 1;
+  pi.pWaitSemaphores = &handle;
+  pi.swapchainCount = 1;
+  pi.pSwapchains = &sw;
+  pi.pImageIndices = &current_index;
+  const auto res = vk::Queue(graphics).presentKHR(pi);
+  current_presentable_state = static_cast<uint32_t>(res);
+
+  switch (res) {
+    case vk::Result::eSuccess: [[fallthrough]];
+    case vk::Result::eSuboptimalKHR: [[fallthrough]];
+    case vk::Result::eErrorOutOfDateKHR: [[fallthrough]];
+    case vk::Result::eErrorSurfaceLostKHR: break;
+    default: utils::error{}("Could not acquire next swapchain image, got: {}", vk::to_string(res));
+  }
+}
+
+void graphics_base::update_frame() {
+  inc_counter(per_frame_counter_index);
 }
 
 void graphics_base::update_event() {
   update_constant_memory();
   inc_counter(per_update_counter_index);
+}
+
+bool graphics_base::can_draw() const {
+  return presentable_state_stable() || presentable_state_suboptimal();
 }
 
 void graphics_base::inc_counter(const uint32_t slot) {
@@ -303,6 +758,33 @@ void graphics_base::update_counters() {
   for (auto& c : counters) {
     c.push_value();
   }
+}
+
+void graphics_base::image_acquire() {
+  if (presentation_engine_type != presentation_engine_type::main) return;
+  if (!can_draw()) return;
+
+  if (surface == VK_NULL_HANDLE) {
+    utils::error{}("No surface?");
+  }
+
+  const auto& sem = DS_ASSERT_ARRAY_GET(semaphores, swapchain_image_semaphore);
+  const auto cur = sem.handles[computed_current_frame_index];
+  //utils::info("Current image aqcuire semaphore {:p}", (const void*)cur);
+  constexpr size_t ms1 = size_t(1000) * size_t(1000);
+  const auto res = vk::Device(device).acquireNextImageKHR(swapchain, ms1, cur); // UINT64_MAX ?
+  current_presentable_state = static_cast<uint32_t>(res.result);
+  switch (res.result) {
+    case vk::Result::eSuccess: [[fallthrough]];
+    case vk::Result::eSuboptimalKHR: [[fallthrough]];
+    case vk::Result::eErrorOutOfDateKHR: [[fallthrough]];
+    case vk::Result::eErrorSurfaceLostKHR: break;
+    default: utils::error{}("Could not acquire next swapchain image, got: {}", vk::to_string(res.result));
+  }
+
+  auto& counter = DS_ASSERT_ARRAY_GET(counters, swapchain_counter_index);
+  counter.set_value(res.value);
+  counter.push_value(); // ......
 }
 
 void graphics_base::update_constant_memory() {
@@ -336,6 +818,10 @@ uint32_t graphics_base::frames_in_flight() const {
 
 uint32_t graphics_base::swapchain_frames() const {
   return swapchain_images.size();
+}
+
+uint32_t graphics_base::current_frame_in_flight() const {
+  return current_frame_index() % frames_in_flight();
 }
 
 std::tuple<uint32_t, uint32_t> graphics_base::swapchain_extent() const {
@@ -511,7 +997,7 @@ uint32_t graphics_base::find_pair(const uint32_t draw_group, const uint32_t mesh
 
 int32_t graphics_base::recreate_basic_resources(const std::string& folder) {
   // создаем ленивый парсинг контекст 
-  graphics_base ctx(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+  graphics_base ctx(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, presentation_engine_type);
   // парсим ресурсы
   try { // УЖАС (дебаг онли я надеюсь)
     parse_data(&ctx, folder);
@@ -560,8 +1046,8 @@ int32_t graphics_base::recreate_basic_resources(const std::string& folder) {
   constants_memory[0].clear();
   constants_memory[1].clear();
 
-  constants_memory[0].resize(offset, 0);
-  constants_memory[1].resize(offset, 0);
+  constants_memory[0].resize(offset/sizeof(uint32_t), 0);
+  constants_memory[1].resize(offset/sizeof(uint32_t), 0);
 
 
   // начинаем создавать все подряд
@@ -571,6 +1057,7 @@ int32_t graphics_base::recreate_basic_resources(const std::string& folder) {
   revalidate_pairs(draw_group_names);
   update_descriptors();
   create_fences();
+  create_global_semaphores();
 
   // теперь кажется все
 
@@ -578,6 +1065,13 @@ int32_t graphics_base::recreate_basic_resources(const std::string& folder) {
 }
 
 void graphics_base::recreate_swapchain(const uint32_t width, const uint32_t height) {
+  if (presentation_engine_type != presentation_engine_type::main) return;
+
+  if (surface == VK_NULL_HANDLE) {
+    utils::error{}("No surface?");
+  }
+
+  if (swapchain_slot == INVALID_RESOURCE_SLOT) utils::error{}("Swapchain resource with role 'present' was not created");
   auto& res = DS_ASSERT_ARRAY_GET(resources, swapchain_slot);
 
   vk::Device dev(device);
@@ -596,6 +1090,8 @@ void graphics_base::recreate_swapchain(const uint32_t width, const uint32_t heig
 
   swapchain_images.clear();
 
+  // sanity check
+  assert(extent.width != 0 && extent.height != 0);
   this->swapchain_image_size = std::make_tuple(extent.width, extent.height);
 
   vk::SwapchainCreateInfoKHR sci{};
@@ -617,6 +1113,8 @@ void graphics_base::recreate_swapchain(const uint32_t width, const uint32_t heig
 
   swapchain = new_swapchain;
 
+  set_name(device, vk::SwapchainKHR(swapchain), "graphics_base.swapchain");
+
   const auto vk_images = dev.getSwapchainImagesKHR(swapchain);
   swapchain_images.resize(vk_images.size(), VK_NULL_HANDLE);
   static_assert(sizeof(VkImage) == sizeof(vk::Image));
@@ -624,6 +1122,8 @@ void graphics_base::recreate_swapchain(const uint32_t width, const uint32_t heig
 
   for (uint32_t i = 0; i < swapchain_images.size(); ++i) {
     res.handles[i].index = INVALID_RESOURCE_SLOT;
+
+    set_name(device, vk::Image(swapchain_images[i]), res.name + ".image" + std::to_string(i));
 
     vk::ImageViewCreateInfo ivci{};
     ivci.image = swapchain_images[i];
@@ -637,6 +1137,8 @@ void graphics_base::recreate_swapchain(const uint32_t width, const uint32_t heig
     ivci.subresourceRange.layerCount = 1;
     res.handles[i].view = dev.createImageView(ivci);
     res.handles[i].subimage = std::bit_cast<subresource_image>(ivci.subresourceRange);
+
+    set_name(device, vk::ImageView(res.handles[i].view), res.name + ".view" + std::to_string(i));
   }
 }
 
@@ -744,8 +1246,8 @@ void graphics_base::create_resources() {
     }
   }
 
-  const auto& caps = vk::PhysicalDevice(physical_device).getSurfaceCapabilitiesKHR(surface);
-  const auto& ext = choose_swapchain_extent(caps.currentExtent.width, caps.currentExtent.height, caps);
+  //const auto& caps = vk::PhysicalDevice(physical_device).getSurfaceCapabilitiesKHR(surface);
+  //const auto& ext = choose_swapchain_extent(caps.currentExtent.width, caps.currentExtent.height, caps);
   vma::Allocator al(allocator);
 
   // имя?
@@ -774,9 +1276,17 @@ void graphics_base::create_resources() {
 
   for (uint32_t i = 0; i < resources.size(); ++i) {
     auto& res = resources[i];
-    if (res.role == role::present) continue;
 
     const bool is_image = role::is_image(res.role);
+
+    if (is_image) {
+      res.usage_mask = res.usage_mask | static_cast<uint32_t>(image_flags[i]);
+    } else {
+      res.usage_mask = res.usage_mask | static_cast<uint32_t>(buffer_flags[i]);
+    }
+
+    if (res.role == role::present) continue;
+
     const bool is_buffer = role::is_buffer(res.role);
     const bool is_attachment = role::is_attachment(res.role);
 
@@ -795,10 +1305,8 @@ void graphics_base::create_resources() {
     const uint32_t buffering = res.compute_buffering(this);
     auto image_extent = vk::Extent2D{ std::get<0>(img_ext), std::get<1>(img_ext) };
 
-    if (is_image) {
-      res.usage_mask = res.usage_mask | static_cast<uint32_t>(image_flags[i]);
-    } else {
-      res.usage_mask = res.usage_mask | static_cast<uint32_t>(buffer_flags[i]);
+    if (buffering == 0) {
+      utils::error{}("Invalid buffering for resource '{}'", res.name);
     }
 
     // если у нас роль present то мы пропускаем этот ресурс и создадим его отдельно при создании свопчеина
@@ -942,7 +1450,7 @@ void graphics_base::create_resources() {
 
         res.handles[j].view = dev.createImageView(ivci);
 
-        set_name(device, vk::ImageView(res.handles[i].view), res.name + ".view");
+        set_name(device, vk::ImageView(res.handles[i].view), res.name + ".view" + std::to_string(j));
 
         res.handles[j].subimage = std::bit_cast<subresource_image>(ivci.subresourceRange);
       } else {
@@ -1105,6 +1613,16 @@ void graphics_base::update_descriptors() {
   dev.updateDescriptorSets(writes, nullptr);*/
 }
 
+void graphics_base::wait_fence() {
+  if (!can_draw()) return;
+
+  auto f = fences[computed_current_frame_index];
+  const size_t sec1 = size_t(1000) * size_t(1000) * size_t(1000);
+  const auto res = vk::Device(device).waitForFences(vk::Fence(f), true, sec1);
+  if (res != vk::Result::eSuccess) utils::error{}("waitForFences failed for current frame {}", current_frame_index());
+  vk::Device(device).resetFences(vk::Fence(f));
+}
+
 void graphics_base::change_render_graph(const uint32_t index) {
   // тут что мы делаем? 
   // идем в execution_graph и заполняем там массивы
@@ -1190,7 +1708,7 @@ void graphics_base::change_render_graph(const uint32_t index) {
       group.steps.push_back(cur_step);
     }
 
-    if (is_render_pass) {
+    {
       auto ptr = std::make_unique<execution_pass_end_instance>();
       ptr->type = step_interface::type::execution_pass;
       ptr->super = pass_index;
@@ -1226,6 +1744,7 @@ void graphics_base::change_render_graph(const uint32_t index) {
 
     static_assert(step_type::count == 3);
 
+    // тут походу не совпадают семафоры?
     auto& group = DS_ASSERT_ARRAY_GET(execution_graph.groups, i);
     for (const auto& name : pass.wait_for) {
       const uint32_t global_index = find_semaphore(name);
@@ -1233,8 +1752,8 @@ void graphics_base::change_render_graph(const uint32_t index) {
         const auto& sem = DS_ASSERT_ARRAY_GET(semaphores, global_index);
         for (uint32_t j = 0; j < group.frames.size(); ++j) {
           const uint32_t sem_index = j; // тот же кадр
-          group.frames[i].wait_for.push_back(sem.handles[sem_index]);
-          group.frames[i].wait_for_stages.push_back(static_cast<uint32_t>(wait_for_stages));
+          group.frames[j].wait_for.push_back(sem.handles[sem_index]);
+          group.frames[j].wait_for_stages.push_back(static_cast<uint32_t>(wait_for_stages));
         }
 
         continue;
@@ -1245,8 +1764,8 @@ void graphics_base::change_render_graph(const uint32_t index) {
         const auto& sem = DS_ASSERT_ARRAY_GET(execution_graph.local_semaphores, local_index);
         for (uint32_t j = 0; j < group.frames.size(); ++j) {
           const uint32_t sem_index = j == 0 ? group.frames.size()-1 : j-1; // предыдущий кадр
-          group.frames[i].wait_for.push_back(sem.handles[sem_index]);
-          group.frames[i].wait_for_stages.push_back(static_cast<uint32_t>(wait_for_stages));
+          group.frames[j].wait_for.push_back(sem.handles[sem_index]);
+          group.frames[j].wait_for_stages.push_back(static_cast<uint32_t>(wait_for_stages));
         }
 
         continue;
@@ -1258,6 +1777,19 @@ void graphics_base::change_render_graph(const uint32_t index) {
 
   // так и дальше че? ну и все походу
   // наконецто... будем надеяться что это хотя бы сработает как надо
+}
+
+bool graphics_base::presentable_state_stable() const {
+  return presentation_engine_type != presentation_engine_type::main || 
+    (presentation_engine_type == presentation_engine_type::main && current_presentable_state == static_cast<uint32_t>(vk::Result::eSuccess));
+}
+
+bool graphics_base::presentable_state_suboptimal() const {
+  return presentation_engine_type == presentation_engine_type::main && current_presentable_state == static_cast<uint32_t>(vk::Result::eSuboptimalKHR);
+}
+
+bool graphics_base::presentable_state_waiting_host_event() const {
+  return presentation_engine_type == presentation_engine_type::main && (current_presentable_state == static_cast<uint32_t>(vk::Result::eErrorOutOfDateKHR) || current_presentable_state == static_cast<uint32_t>(vk::Result::eErrorSurfaceLostKHR));
 }
 
 void graphics_ctx::prepare() {
@@ -1276,6 +1808,18 @@ void graphics_ctx::prepare() {
 
     const uint32_t cur_index = counter.get_value() % buffering;
     const auto& cur_handle = base_res.handles[cur_index];
+
+    if (base_res.role == role::present) {
+      const uint32_t cur_img_index = base->current_swapchain_image_index();
+      resources[i].img = DS_ASSERT_ARRAY_GET(base->swapchain_images, cur_img_index);
+      resources[i].subimg = cur_handle.subimage;
+      resources[i].view = cur_handle.view;
+      const auto [x, y] = base->swapchain_extent();
+      resources[i].extent = { x, y };
+      resources[i].role = base_res.role;
+      resources[i].usage = usage::undefined;
+      continue;
+    }
 
     const auto& base_res_container = DS_ASSERT_ARRAY_GET(base->resource_containers, cur_handle.index);
 
@@ -1308,6 +1852,7 @@ void graphics_ctx::prepare() {
 }
 
 void graphics_ctx::draw() {
+  if (!base->can_draw()) return;
   base->execution_graph.process(this, VK_NULL_HANDLE);
 }
 

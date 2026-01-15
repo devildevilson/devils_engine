@@ -1,0 +1,7 @@
+{
+  "name": "g1",
+  "vertex_layout": "",
+  "index_type": "none",
+  "topology": "triangle_list",
+  "restart": false
+}
