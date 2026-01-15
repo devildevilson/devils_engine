@@ -1,0 +1,14 @@
+{
+  "name": "mat1",
+  "shaders": { "vertex": "vertex1.vert.glsl", "fragment": "fragment1.frag.glsl" },
+  "depth": {
+    "test": false,
+    "write": false,
+    "compare": "less_or_equal"
+  },
+  "raster": {
+    "cull": "none",
+    "front_face": "cw",
+    "polygon": "fill"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "graphics1",
+  "passes": [
+    {
+      "name": "p1",
+      "wait_for": [],
+      "signal": [],
+      "render_target": "rt1",
+      "subpasses": [
+        { "albedo_res": [ "undefined", "clear" ] },
+        { "albedo_res": [ "color_attachment", "store" ] },
+        { "albedo_res": [ "transfer_src", "store" ] }
+      ],
+      "steps": [ "draw_triangles" ]
+    },
+    {
+      "name": "p2",
+      "wait_for": [ "swapchain_image" ],
+      "signal": [],
+      "subpasses": [
+        { "albedo_res": [ "transfer_src", "store" ], "swapchain_image": [ "transfer_dst", "store" ] },
+        { "albedo_res": [ "color_attachment", "store" ], "swapchain_image": [ "present", "store" ] }
+      ],
+      "steps": [ "blit_to_swapchain" ]
+    }
+  ],
+  "present_source": "swapchain_image"
+}

@@ -188,13 +188,14 @@ public:
   std::vector<pipeline_recreation*> pipeline_steps;
   std::vector<viewport_resizer*> viewport_steps;
 
+  // тут должна быть семафора конца кадра
   std::vector<semaphore> local_semaphores;
 
   void process(graphics_ctx*, VkCommandBuffer) const override;
   void recreate_pipeline(const graphics_base*) override;
   void resize_viewport(const graphics_base*, const uint32_t width, const uint32_t height) override;
   void clear();
-  void submit(const graphics_base*, VkQueue q, VkFence f) const;
+  void submit(const graphics_base*, VkQueue q, VkSemaphore finish, VkFence f) const;
 
   uint32_t create_semaphore(std::string name, const uint32_t count);
   uint32_t find_semaphore(const std::string_view& name) const;

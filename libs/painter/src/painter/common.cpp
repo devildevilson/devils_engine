@@ -591,6 +591,13 @@ bool is_transfer(const values u) noexcept {
   return false;
 }
 
+step_type::values convert(const values u) noexcept {
+  if (is_graphics(u)) return step_type::graphics;
+  if (is_compute(u))  return step_type::compute;
+  if (is_transfer(u)) return step_type::transfer;
+  return step_type::count;
+}
+
 }
 
 namespace primitive_topology {
@@ -672,7 +679,7 @@ constexpr std::string_view names[] = {
 };
 
 const gtl::flat_hash_map<std::string_view, values> map = {
-#define X(name, vulkan_value) std::make_pair(names[values::name], values::name),
+#define X(name, vulkan_value) std::make_pair(#name, values::name),
   DEVILS_ENGINE_PAINTER_BLEND_OP_LIST
 #undef X
   std::make_pair("+", values::add),
@@ -707,7 +714,7 @@ constexpr std::string_view names[] = {
 };
 
 const gtl::flat_hash_map<std::string_view, values> map = {
-#define X(name, vulkan_value) std::make_pair(names[values::name], values::name),
+#define X(name, vulkan_value) std::make_pair(#name, values::name),
   DEVILS_ENGINE_PAINTER_COMPARE_OP_LIST
 #undef X
 };
@@ -835,7 +842,7 @@ constexpr std::string_view names[] = {
 };
 
 const gtl::flat_hash_map<std::string_view, values> map = {
-#define X(name, vulkan_value) std::make_pair(names[values::name], values::name),
+#define X(name, vulkan_value) std::make_pair( #name , values::name),
   DEVILS_ENGINE_PAINTER_FRONT_FACE_LIST
 #undef X
 };
@@ -854,41 +861,41 @@ uint32_t from_string(const std::string_view& name) noexcept {
 
 namespace format {
 constexpr std::string_view names[] = {
-#define X(name, aspect, vulkan_value) #name,
+#define X(name, aspect, vulkan_value, element_type) #name,
   DEVILS_ENGINE_PAINTER_FORMAT_NAME_LIST
 #undef X
 };
 
 constexpr VkImageAspectFlags aspect_map[] = {
-#define X(name, aspect, vulkan_value) aspect,
+#define X(name, aspect, vulkan_value, element_type) aspect,
   DEVILS_ENGINE_PAINTER_FORMAT_NAME_LIST
 #undef X
 };
 
 constexpr VkFormat format_map[] = {
-#define X(name, aspect, vulkan_value) vulkan_value,
+#define X(name, aspect, vulkan_value, element_type) vulkan_value,
   DEVILS_ENGINE_PAINTER_FORMAT_NAME_LIST
 #undef X
 };
 
 const gtl::flat_hash_map<std::string_view, values> map = {
-#define X(name, aspect, vulkan_value) std::make_pair(names[values::name], values::name),
+#define X(name, aspect, vulkan_value, element_type) std::make_pair(names[values::name], values::name),
   DEVILS_ENGINE_PAINTER_FORMAT_NAME_LIST
 #undef X
 };
 
-std::string_view to_string(const uint32_t u) noexcept {
+std::string_view to_string(const values u) noexcept {
   if (u >= count) return std::string_view();
   return names[u];
 }
 
-uint32_t from_string(const std::string_view& name) noexcept {
+values from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return UINT32_MAX;
+  if (itr == map.end()) return values::count;
   return itr->second;
 }
 
-uint32_t size(const uint32_t u) noexcept {
+uint32_t size(const values u) noexcept {
   if (u >= count) return 0;
   if (u == format::dispatch3) return sizeof(VkDispatchIndirectCommand);
   if (u == format::draw4) return sizeof(VkDrawIndirectCommand);
@@ -897,17 +904,7 @@ uint32_t size(const uint32_t u) noexcept {
   return format_element_size(to_vulkan_format(u), to_vulkan_aspect(u));
 }
 
-uint32_t to_vulkan_format(const uint32_t u) noexcept {
-  if (u >= count) return 0;
-  return format_map[u];
-}
-
-uint32_t to_vulkan_aspect(const uint32_t u) noexcept {
-  if (u >= count) return 0;
-  return aspect_map[u];
-}
-
-uint32_t el_count(const uint32_t u) noexcept {
+uint32_t el_count(const values u) noexcept {
   if (u >= count) return 0;
   if (u == format::dispatch3) return sizeof(VkDispatchIndirectCommand) / sizeof(uint32_t);
   if (u == format::draw4) return sizeof(VkDrawIndirectCommand) / sizeof(uint32_t);
@@ -916,13 +913,34 @@ uint32_t el_count(const uint32_t u) noexcept {
   return format_channel_count(to_vulkan_format(u));
 }
 
+format_element_type::values element_type(const values u) noexcept {
+  switch (u) {
+#define X(name, aspect, vulkan_value, element_type) case values::name : return format_element_type::element_type;
+    DEVILS_ENGINE_PAINTER_FORMAT_NAME_LIST
+#undef X
+    default: break;
+  }
+
+  return format_element_type::INVALID;
+}
+
+uint32_t to_vulkan_format(const values u) noexcept {
+  if (u >= count) return 0;
+  return format_map[u];
+}
+
+uint32_t to_vulkan_aspect(const values u) noexcept {
+  if (u >= count) return 0;
+  return aspect_map[u];
+}
+
 bool is_depth_vk_format(const uint32_t fmt) noexcept {
   const auto vk_fmt = static_cast<vk::Format>(fmt);
-  return vk_fmt == vk::Format::eD16Unorm &&
-    vk_fmt == vk::Format::eD16UnormS8Uint &&
-    vk_fmt == vk::Format::eD24UnormS8Uint &&
-    vk_fmt == vk::Format::eD32Sfloat &&
-    vk_fmt == vk::Format::eD32SfloatS8Uint &&
+  return vk_fmt == vk::Format::eD16Unorm ||
+    vk_fmt == vk::Format::eD16UnormS8Uint ||
+    vk_fmt == vk::Format::eD24UnormS8Uint ||
+    vk_fmt == vk::Format::eD32Sfloat ||
+    vk_fmt == vk::Format::eD32SfloatS8Uint ||
     vk_fmt == vk::Format::eX8D24UnormPack32;
 }
 }

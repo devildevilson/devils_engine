@@ -440,13 +440,13 @@ namespace devils_engine {
       constexpr std::string_view get_type_name() noexcept {
 #if defined(_MSC_VER)
         constexpr std::string_view start_char_seq = "get_type_name<";
-        constexpr std::string_view end_char_seq = ">(void)";
+        constexpr std::string_view end_char_seq = ">(";
         constexpr std::string_view function_type_pattern = ")(";
         constexpr std::string_view sig = __FUNCSIG__;
         constexpr size_t sig_size = sig.size()+1;
         constexpr size_t str_seq_name_start = sig.find(start_char_seq) + start_char_seq.size();
-        constexpr size_t end_of_char_str = sig.rfind(start_char_seq);
-        constexpr size_t count = sig_size - str_seq_name_start - end_char_seq.size() - 1; // отстается символ '>' в конце
+        constexpr size_t end_of_char_str = sig.rfind(end_char_seq);
+        constexpr size_t count = end_of_char_str - str_seq_name_start; // отстается символ '>' в конце
         constexpr std::string_view substr = sig.substr(str_seq_name_start, count);
         if constexpr (substr.find(function_type_pattern) == std::string_view::npos) {
           constexpr std::string_view class_char_seq = "class ";

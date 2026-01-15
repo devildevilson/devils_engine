@@ -99,7 +99,7 @@ std::vector<uint32_t> shader_crafter::compile(const std::string &source_name, co
     options.AddMacroDefinition(name, value);
   }
 
-  options.SetIncluder(std::make_unique<simple_shader_includer>(_sys));
+  if (_sys != nullptr) options.SetIncluder(std::make_unique<simple_shader_includer>(_sys));
   options.SetTargetEnvironment(shaderc_target_env_vulkan, 0);
   //options.SetTargetSpirv(shaderc_spirv_version_1_6);
   options.SetTargetSpirv(shaderc_spirv_version_1_0);
@@ -115,7 +115,6 @@ std::vector<uint32_t> shader_crafter::compile(const std::string &source_name, co
   }
 
   const auto preprocessed_source = std::string{preprocess_result.cbegin(), preprocess_result.cend()};
-  utils::println("preprocessed_source", preprocessed_source);
 
   const auto result = compiler.CompileGlslToSpv(preprocessed_source, kind, source_name.c_str(), _entry_point.c_str(), options);
   if (result.GetCompilationStatus() != shaderc_compilation_status_success) {

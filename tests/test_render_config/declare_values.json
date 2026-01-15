@@ -1,0 +1,11 @@
+[
+  { "name": "viewport", "type": "screensize" },
+  { "name": "viewport_half", "type": "screensize", "scale": [ 0.5 ] },
+  { "name": "name_instances", "type": "fixed", "value": [ 5000 ] },
+  {
+    "name": "shadow_map",
+    "type": "fixed",
+    "value": [ 2048 ],
+    "presets": [ [ "low", [ 1024 ] ], [ "mid", [ 2048 ] ], [ "high", [ 4096 ] ] ]
+  }
+]

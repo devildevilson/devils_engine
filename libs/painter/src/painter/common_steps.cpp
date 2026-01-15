@@ -7,6 +7,8 @@
 #include "devils_engine/utils/string-utils.hpp"
 #include "auxiliary.h"
 #include "assets_base.h"
+#include "shader_crafter.h"
+#include "shaderc/shaderc.h"
 
 // у нас тут будет удобный способ брать текущее состояние ресурсов
 // и запишем туда текущий usage
@@ -96,6 +98,11 @@ static void make_barriers1(graphics_ctx* ctx, VkCommandBuffer buf, const std::ve
       ctx->buffer_barriers.emplace_back(std::bit_cast<buffer_memory_barrier>(buf_bar));
     }
 
+    //{
+    //  const auto& bres = DS_ASSERT_ARRAY_GET(ctx->base->resources, index);
+    //  utils::info("Make barrier for resource '{}' from '{}' to '{}'", bres.name, usage::to_string(res.usage), usage::to_string(usage));
+    //}
+
     res.usage = usage;
   }
 
@@ -137,8 +144,7 @@ static void make_barriers2(graphics_ctx* ctx, VkCommandBuffer buf, const std::ve
       img_bar.image = res.img;
       img_bar.subresourceRange = std::bit_cast<vk::ImageSubresourceRange>(res.subimg);
       ctx->image_barriers.emplace_back(std::bit_cast<image_memory_barrier>(img_bar));
-    }
-    else {
+    } else {
       vk::BufferMemoryBarrier buf_bar{};
       buf_bar.srcAccessMask = convertam(res.usage);
       buf_bar.dstAccessMask = convertam(ri.usage);
@@ -147,6 +153,11 @@ static void make_barriers2(graphics_ctx* ctx, VkCommandBuffer buf, const std::ve
       buf_bar.size = res.subbuf.size;
       ctx->buffer_barriers.emplace_back(std::bit_cast<buffer_memory_barrier>(buf_bar));
     }
+
+    //{
+    //  const auto& bres = DS_ASSERT_ARRAY_GET(ctx->base->resources, ri.slot);
+    //  utils::info("Make barrier for resource '{}' from '{}' to '{}'", bres.name, usage::to_string(res.usage), usage::to_string(ri.usage));
+    //}
 
     res.usage = ri.usage;
   }
@@ -164,6 +175,13 @@ static void make_barriers2(graphics_ctx* ctx, VkCommandBuffer buf, const std::ve
 
   ctx->image_barriers.clear();
   ctx->buffer_barriers.clear();
+}
+
+static void change_usages(graphics_ctx* ctx, const std::vector<execution_pass_base::resource_info>& barriers) {
+  for (const auto& ri : barriers) {
+    auto& res = DS_ASSERT_ARRAY_GET(ctx->resources, ri.slot);
+    res.usage = ri.usage;
+  }
 }
 
 graphics_step_instance::~graphics_step_instance() noexcept {
@@ -203,36 +221,56 @@ void graphics_step_instance::create_pipeline_layout(const graphics_base* ctx) {
 void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
   const auto& step = DS_ASSERT_ARRAY_GET(ctx->steps, super);
 
+  vk::UniqueShaderModule usm_vertex;
+  vk::UniqueShaderModule usm_fragment;
+
   pipeline_maker pm(device);
 
   const auto& material = DS_ASSERT_ARRAY_GET(ctx->materials, step.material);
 
   {
-    vk::UniqueShaderModule usm_vertex;
-    vk::UniqueShaderModule usm_fragment;
+    shader_crafter sc(nullptr);
 
     // тут шейдеры
-    const auto shaders_path = utils::project_folder() + "shaders/";
+    const auto shaders_path = utils::project_folder() + "tests/shaders/";
     if (!material.shaders.vertex.empty()) {
       const auto full_path = shaders_path + material.shaders.vertex;
-      const auto content = file_io::read<uint8_t>(full_path);
-      // а как по старинке то теперь загружать =(
+      const auto content = file_io::read(full_path);
+      if (!file_io::exists(full_path)) utils::error{}("Shader file '{}' not found", full_path);
+
+      sc.set_optimization(true);
+      sc.set_shader_entry_point("main");
+      sc.set_shader_type(shaderc_vertex_shader);
+
+      const auto res = sc.compile(full_path, content);
+      if (res.empty()) {
+        utils::error{}("Vertex shader compilation failed\nError: {}", sc.err_msg());
+      }
+
       vk::ShaderModuleCreateInfo smci{};
-      smci.codeSize = content.size();
-      smci.pCode = reinterpret_cast<const uint32_t*>(content.data());
-      vk::Device dev(device);
-      usm_vertex = dev.createShaderModuleUnique(smci);
+      smci.codeSize = res.size() * sizeof(res[0]);
+      smci.pCode = res.data();
+      usm_vertex = vk::Device(device).createShaderModuleUnique(smci);
     }
 
-    if (!material.shaders.vertex.empty()) {
+    if (!material.shaders.fragment.empty()) {
       const auto full_path = shaders_path + material.shaders.fragment;
-      const auto content = file_io::read<uint8_t>(full_path);
+      const auto content = file_io::read(full_path);
+      if (!file_io::exists(full_path)) utils::error{}("Shader file '{}' not found", full_path);
+
+      sc.set_optimization(true);
+      sc.set_shader_entry_point("main");
+      sc.set_shader_type(shaderc_fragment_shader);
+
+      const auto res = sc.compile(full_path, content);
+      if (res.empty()) {
+        utils::error{}("Fragment shader compilation failed\nError: {}", sc.err_msg());
+      }
 
       vk::ShaderModuleCreateInfo smci{};
-      smci.codeSize = content.size();
-      smci.pCode = reinterpret_cast<const uint32_t*>(content.data());
-      vk::Device dev(device);
-      usm_fragment = dev.createShaderModuleUnique(smci);
+      smci.codeSize = res.size() * sizeof(res[0]);
+      smci.pCode = res.data();
+      usm_fragment = vk::Device(device).createShaderModuleUnique(smci);
     }
 
     pm.addShader(vk::ShaderStageFlagBits::eVertex, usm_vertex.get());
@@ -244,30 +282,35 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
     pm.vertexBinding(0, geo.stride, vk::VertexInputRate::eVertex);
     size_t offset = 0;
     for (uint32_t i = 0; i < geo.vertex_layout.size(); ++i) {
-      const auto& f = geo.vertex_layout[i];
-      const auto format = static_cast<vk::Format>(f);
+      const auto f = geo.vertex_layout[i];
+      const auto format = static_cast<vk::Format>(format::to_vulkan_format(f));
       const auto& fmt_data = format_element_size(f);
       pm.vertexAttribute(i, 0, format, offset);
       offset += fmt_data;
     }
   }
 
-  const auto& draw_group = DS_ASSERT_ARRAY_GET(ctx->draw_groups, step.draw_group);
-  if (draw_group.stride != 0) {
-    pm.vertexBinding(1, draw_group.stride, vk::VertexInputRate::eInstance);
-    size_t offset = 0;
-    for (uint32_t i = 0; i < draw_group.instance_layout.size(); ++i) {
-      const auto f = draw_group.instance_layout[i];
-      const auto format = static_cast<vk::Format>(f);
-      const auto& fmt_data = format_element_size(f);
-      pm.vertexAttribute(i, 1, format, offset);
-      offset += fmt_data;
+  if (step.draw_group != INVALID_RESOURCE_SLOT) {
+    const auto& draw_group = DS_ASSERT_ARRAY_GET(ctx->draw_groups, step.draw_group);
+    if (draw_group.stride != 0) {
+      pm.vertexBinding(1, draw_group.stride, vk::VertexInputRate::eInstance);
+      size_t offset = 0;
+      for (uint32_t i = 0; i < draw_group.instance_layout.size(); ++i) {
+        const auto f = draw_group.instance_layout[i];
+        const auto format = static_cast<vk::Format>(format::to_vulkan_format(f));
+        const auto& fmt_data = format_element_size(f);
+        pm.vertexAttribute(i, 1, format, offset);
+        offset += fmt_data;
+      }
     }
   }
 
   // нужно явно прописать это дело в шагах
   pm.dynamicState(vk::DynamicState::eViewport);
   pm.dynamicState(vk::DynamicState::eScissor);
+
+  pm.viewport(); // empty viewport for DynamicState
+  pm.scissor();  // empty scissor  for DynamicState
 
   pm.assembly(static_cast<vk::PrimitiveTopology>(geo.topology_type), geo.restart);
   pm.tessellation(false);
@@ -291,7 +334,7 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
   pm.depthBounds(material.depth.bounds_test, material.depth.min_bounds, material.depth.max_bounds);
 
   pm.logicOp(false);
-  pm.blendConstant(nullptr);
+  //pm.blendConstant(nullptr);
 
   const auto& rt = DS_ASSERT_ARRAY_GET(ctx->render_targets, render_target_index);
   auto blending = rt.default_blending; // copy
@@ -367,42 +410,45 @@ execution_pass_instance::~execution_pass_instance() noexcept {
 
 void execution_pass_instance::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   const auto& pass = DS_ASSERT_ARRAY_GET(ctx->base->passes, super);
-  if (pass.render_target == INVALID_RESOURCE_SLOT) return;
-  const auto& rt = DS_ASSERT_ARRAY_GET(ctx->base->render_targets, pass.render_target);
+  if (pass.render_target != INVALID_RESOURCE_SLOT) {
+    const auto& rt = DS_ASSERT_ARRAY_GET(ctx->base->render_targets, pass.render_target);
 
-  // здесь мы должны:
-  // бегин рендер пасс (клир + фреймбуфер), сет динамик статес
+    // здесь мы должны:
+    // бегин рендер пасс (клир + фреймбуфер), сет динамик статес
 
-  vk::CommandBuffer task(buf);
+    vk::CommandBuffer task(buf);
 
-  const uint32_t f_index = compute_frame_index(ctx->base);
+    const uint32_t f_index = compute_frame_index(ctx->base);
 
-  vk::Rect2D area{};
-  area.extent = vk::Extent2D{0u,0u};
-  area.offset = vk::Offset2D(width, height);
+    vk::Rect2D area{};
+    area.offset = vk::Offset2D{ 0,0 };
+    area.extent = vk::Extent2D(this->width, this->height);
 
-  std::array<vk::ClearValue, 16> cvs;
-  memset(cvs.data(), 0, sizeof(cvs));
+    std::array<vk::ClearValue, 16> cvs;
+    memset(cvs.data(), 0, sizeof(cvs));
 
-  const auto sc = vk::SubpassContents::eInline;
+    const auto sc = vk::SubpassContents::eInline;
 
-  vk::RenderPassBeginInfo rpbi{};
-  rpbi.renderPass = renderpass;
-  rpbi.framebuffer = framebuffers[f_index];
-  rpbi.renderArea = area;
-  rpbi.clearValueCount = rt.resources.size();
-  rpbi.pClearValues = cvs.data();
-  task.beginRenderPass(rpbi, sc);
+    vk::RenderPassBeginInfo rpbi{};
+    rpbi.renderPass = renderpass;
+    rpbi.framebuffer = framebuffers[f_index];
+    rpbi.renderArea = area;
+    rpbi.clearValueCount = rt.resources.size();
+    rpbi.pClearValues = cvs.data();
+    task.beginRenderPass(rpbi, sc);
 
-  vk::Viewport v{};
-  v.x = 0;
-  v.y = 0;
-  v.width = width;
-  v.height = height;
-  v.minDepth = 0.0f;
-  v.maxDepth = 1.0f;
-  task.setViewport(0, v);
-  task.setScissor(0, area);
+    vk::Viewport v{};
+    v.x = 0;
+    v.y = 0;
+    v.width = width;
+    v.height = height;
+    v.minDepth = 0.0f;
+    v.maxDepth = 1.0f;
+    task.setViewport(0, v);
+    task.setScissor(0, area);
+
+    change_usages(ctx, pass.subpasses.front());
+  }
 
   make_barriers2(ctx, buf, pass.barriers[0]);
 }
@@ -576,6 +622,8 @@ void execution_pass_instance::create_framebuffers(const graphics_base* ctx) {
 
   std::array<vk::ImageView, 8> views;
   for (uint32_t i = 0; i < framebuffers.size(); ++i) {
+    views = {};
+
     vk::FramebufferCreateInfo fci{};
     fci.renderPass = renderpass;
 
@@ -583,7 +631,8 @@ void execution_pass_instance::create_framebuffers(const graphics_base* ctx) {
       const auto& [res_index, usage] = rt.resources[j];
       const auto& res = DS_ASSERT_ARRAY_GET(ctx->resources, res_index);
 
-      const uint32_t current_index = i % res.compute_buffering(ctx);
+      const uint32_t buffering = res.compute_buffering(ctx);
+      const uint32_t current_index = i % buffering;
       views[j] = res.handles[current_index].view;
 
       const auto [size, img_ext] = res.compute_frame_size(ctx);
@@ -610,6 +659,8 @@ void execution_pass_instance::create_framebuffers(const graphics_base* ctx) {
     fci.attachmentCount = rt.resources.size();
     fci.pAttachments = views.data();
     framebuffers[i] = vk::Device(device).createFramebuffer(fci);
+
+    set_name(device, vk::Framebuffer(framebuffers[i]), std::format("{}.framebuffer{:02}", pass.name, i));
   }
 }
 
@@ -633,7 +684,8 @@ uint32_t execution_pass_instance::compute_frame_index(const graphics_base* ctx) 
     const auto& [res_index, usage] = rt.resources[i];
     const auto& res = DS_ASSERT_ARRAY_GET(ctx->resources, res_index);
     const auto& counter = DS_ASSERT_ARRAY_GET(ctx->counters, res.swap);
-    frameindex += counter.get_value() * strides[i];
+    const uint32_t buffering = res.compute_buffering(ctx);
+    frameindex += (counter.get_value() % buffering) * strides[i];
   }
 
   return frameindex;
@@ -648,6 +700,11 @@ void subpass_next::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
 
   const auto& barriers = DS_ASSERT_ARRAY_GET(pass.barriers, index + 1);
   make_barriers2(ctx, buf, barriers);
+
+  if (pass.render_target != INVALID_RESOURCE_SLOT) {
+    const auto& subpasses = DS_ASSERT_ARRAY_GET(pass.subpasses, index + 1);
+    change_usages(ctx, subpasses);
+  }
 }
 
 void execution_pass_end_instance::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
@@ -655,6 +712,7 @@ void execution_pass_end_instance::process(graphics_ctx* ctx, VkCommandBuffer buf
   if (pass.render_target != INVALID_RESOURCE_SLOT) {
     vk::CommandBuffer task(buf);
     task.endRenderPass();
+    change_usages(ctx, pass.subpasses.back());
   }
 
   make_barriers2(ctx, buf, pass.barriers.back());
@@ -667,9 +725,14 @@ execution_group::~execution_group() noexcept {
 void execution_group::process(graphics_ctx* ctx) const {
   const uint32_t cur_index = ctx->base->current_frame_index() % frames.size();
   auto cb = frames[cur_index].buffer;
+  vk::CommandBuffer task(cb);
+  vk::CommandBufferBeginInfo cbbi{};
+  cbbi.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
+  task.begin(cbbi);
   for (auto p : steps) {
     p->process(ctx, cb);
   }
+  task.end();
 }
 
 void execution_group::populate_command_buffers() {
@@ -711,7 +774,8 @@ void render_graph_instance::clear() {
   local_semaphores.clear();
 }
 
-void render_graph_instance::submit(const graphics_base* ctx, VkQueue q, VkFence f) const {
+void render_graph_instance::submit(const graphics_base* ctx, VkQueue q, VkSemaphore finish, VkFence f) const {
+  std::array<vk::Semaphore, 16> finish_semaphores;
   std::array<vk::SubmitInfo, 16> infos;
   assert(groups.size() < 16);
   const uint32_t frame_index = ctx->current_frame_index();
@@ -719,16 +783,26 @@ void render_graph_instance::submit(const graphics_base* ctx, VkQueue q, VkFence 
     const auto& group = groups[i];
     const auto& cur_frame = group.frames[frame_index % group.frames.size()];
     assert(cur_frame.wait_for.size() == cur_frame.wait_for_stages.size());
+    assert(cur_frame.signal.size() < 15);
+
+    memcpy(finish_semaphores.data(), cur_frame.signal.data(), cur_frame.signal.size() * sizeof(cur_frame.signal[0]));
+    if (i == groups.size()-1) finish_semaphores[cur_frame.signal.size()] = finish;
+
     infos[i].waitSemaphoreCount = cur_frame.wait_for.size();
     infos[i].pWaitSemaphores = reinterpret_cast<const vk::Semaphore*>(cur_frame.wait_for.data());
+    //for (const auto sem : cur_frame.wait_for) { utils::info("Current wait for semaphore {:p}", (const void*)sem); }
     infos[i].pWaitDstStageMask = reinterpret_cast<const vk::PipelineStageFlags*>(cur_frame.wait_for_stages.data());
-    infos[i].signalSemaphoreCount = cur_frame.signal.size();
-    infos[i].pSignalSemaphores = reinterpret_cast<const vk::Semaphore*>(cur_frame.signal.data());
+    infos[i].signalSemaphoreCount = cur_frame.signal.size() + size_t(i == groups.size()-1 && finish != VK_NULL_HANDLE);
+    infos[i].pSignalSemaphores = finish_semaphores.data();
     infos[i].commandBufferCount = 1;
     infos[i].pCommandBuffers = reinterpret_cast<const vk::CommandBuffer*>(&cur_frame.buffer);
   }
 
-  vk::Queue(q).submit(groups.size(), infos.data(), f);
+  // mutex
+  const auto res = vk::Queue(q).submit(groups.size(), infos.data(), f);
+  if (res != vk::Result::eSuccess) {
+    utils::error{}("Failed to submit commads to queue, result: {}", vk::to_string(res));
+  }
 }
 
 uint32_t render_graph_instance::create_semaphore(std::string name, const uint32_t count) {
@@ -754,6 +828,7 @@ uint32_t render_graph_instance::find_semaphore(const std::string_view& name) con
 }
 
 static void bind_descriptor_sets(graphics_ctx* ctx, VkCommandBuffer buf, VkPipelineLayout pipeline_layout, const std::vector<uint32_t> &sets) {
+  if (sets.empty()) return;
   vk::CommandBuffer task(buf);
 
   for (const auto desc : sets) {
@@ -901,8 +976,18 @@ void graphics_draw_constant::process(graphics_ctx* ctx, VkCommandBuffer buf) con
 
   // стоп геометрия будет скорее всего, а значит и меш тоже наверное будет
   // следить за тем чтобы тут был только один меш?
+  // геометрия тут нужна для того чтобы задать примитив ассембли в материале
+  // без геометрии как? определять ассембли в материале и в геометрии его переопределять
+  // наверное тут должен быть скорее дополнительный тип объектов - компут генератед меш...
   if (step.geometry != INVALID_RESOURCE_SLOT) {
-    utils::error{}("How it would looks like?");
+    const auto& geo = DS_ASSERT_ARRAY_GET(ctx->base->geometries, step.geometry);
+    if (!geo.vertex_layout.empty()) {
+      // откуда брать буфер?
+    }
+
+    if (geo.index_type != geometry::index_type::none) {
+      // откуда брать буфер?
+    }
   }
 
   if (step.draw_group != INVALID_RESOURCE_SLOT) {
@@ -938,8 +1023,18 @@ void graphics_draw_indexed_constant::process(graphics_ctx* ctx, VkCommandBuffer 
 
   // стоп геометрия будет скорее всего, а значит и меш тоже наверное будет
   // следить за тем чтобы тут был только один меш?
+  // геометрия тут нужна для того чтобы задать примитив ассембли в материале
+  // без геометрии как? определять ассембли в материале и в геометрии его переопределять
+  // наверное тут должен быть скорее дополнительный тип объектов - компут генератед меш...
   if (step.geometry != INVALID_RESOURCE_SLOT) {
-    utils::error{}("How it would looks like?");
+    const auto& geo = DS_ASSERT_ARRAY_GET(ctx->base->geometries, step.geometry);
+    if (!geo.vertex_layout.empty()) {
+      // откуда брать буфер?
+    }
+
+    if (geo.index_type != geometry::index_type::none) {
+      // откуда брать буфер?
+    }
   }
 
   if (step.draw_group != INVALID_RESOURCE_SLOT) {
@@ -975,8 +1070,18 @@ void graphics_draw_indirect::process(graphics_ctx* ctx, VkCommandBuffer buf) con
 
   // стоп геометрия будет скорее всего, а значит и меш тоже наверное будет
   // следить за тем чтобы тут был только один меш?
+  // геометрия тут нужна для того чтобы задать примитив ассембли в материале
+  // без геометрии как? определять ассембли в материале и в геометрии его переопределять
+  // наверное тут должен быть скорее дополнительный тип объектов - компут генератед меш...
   if (step.geometry != INVALID_RESOURCE_SLOT) {
-    utils::error{}("How it would looks like?");
+    const auto& geo = DS_ASSERT_ARRAY_GET(ctx->base->geometries, step.geometry);
+    if (!geo.vertex_layout.empty()) {
+      // откуда брать буфер?
+    }
+
+    if (geo.index_type != geometry::index_type::none) {
+      // откуда брать буфер?
+    }
   }
 
   if (step.draw_group != INVALID_RESOURCE_SLOT) {
@@ -1011,8 +1116,18 @@ void graphics_draw_indexed_indirect::process(graphics_ctx* ctx, VkCommandBuffer 
 
   // стоп геометрия будет скорее всего, а значит и меш тоже наверное будет
   // следить за тем чтобы тут был только один меш?
+  // геометрия тут нужна для того чтобы задать примитив ассембли в материале
+  // без геометрии как? определять ассембли в материале и в геометрии его переопределять
+  // наверное тут должен быть скорее дополнительный тип объектов - компут генератед меш...
   if (step.geometry != INVALID_RESOURCE_SLOT) {
-    utils::error{}("How it would looks like?");
+    const auto& geo = DS_ASSERT_ARRAY_GET(ctx->base->geometries, step.geometry);
+    if (!geo.vertex_layout.empty()) {
+      // откуда брать буфер?
+    }
+
+    if (geo.index_type != geometry::index_type::none) {
+      // откуда брать буфер?
+    }
   }
 
   if (step.draw_group != INVALID_RESOURCE_SLOT) {

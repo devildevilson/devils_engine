@@ -28,6 +28,17 @@ struct graphics_options {
   // motion blur......
 };
 
+struct vk_queue {
+  VkQueue queue;
+  std::mutex mutex;
+
+  inline vk_queue(VkQueue queue) noexcept : queue(queue) {}
+  void wait_idle();
+  uint32_t submit();
+};
+
+enum class presentation_engine_type { main, no_present };
+
 // не знает про окно
 // это общий контекст, наверное будем везде его таскать с собой
 // вообще не должен быть таковым
@@ -76,20 +87,28 @@ struct graphics_base {
 
   // сырые данные для constants? как мы задаем их?
   // они должны быть по умолчанию буферизированы, каунтером определим куда пишем
-  std::array<std::vector<uint8_t>, 2> constants_memory;
+  std::array<std::vector<uint32_t>, 2> constants_memory;
 
-  uint32_t swapchain_slot; // откуда? у картинки должна быть роль swapchain?
+  enum presentation_engine_type presentation_engine_type;
+  uint32_t current_presentable_state;
+
+  uint32_t swapchain_slot; // роль present
   uint32_t swapchain_counter_index;
   uint32_t per_frame_counter_index;
   uint32_t per_update_counter_index;
   uint32_t frames_in_flight_constant_value_index;
   uint32_t current_render_graph_index;
 
+  uint32_t swapchain_image_semaphore;
+  uint32_t finish_rendering_semaphore;
+
+  uint32_t computed_current_frame_index;
+
   std::tuple<uint32_t, uint32_t> swapchain_image_size;
 
   // где то еще должен быть дексриптор для текстурок
 
-  graphics_base(VkInstance instance, VkDevice device, VkPhysicalDevice physical_device, VkSurfaceKHR surface) noexcept;
+  graphics_base(VkInstance instance, VkDevice device, VkPhysicalDevice physical_device, enum presentation_engine_type presentation_engine_type) noexcept;
   ~graphics_base() noexcept;
 
   // API
@@ -98,6 +117,8 @@ struct graphics_base {
   void create_descriptor_pool();
   void get_or_create_pipeline_cache(const std::string& path);
   void dump_cache_on_disk(const std::string& path) const;
+  void set_surface(VkSurfaceKHR surface, const uint32_t width, const uint32_t height);
+  void populate_constant_default_values();
 
   // придется пересоздать все зависимые ресурсы то есть render_targets и обновить дескрипторы
   void resize_viewport(const uint32_t width, const uint32_t height);
@@ -108,8 +129,11 @@ struct graphics_base {
   // ну или подготовку вынести наружу
   void draw(); // обновим каунтеры, зайдем в render_graph, запишем команды, передадим их в queue
   void prepare_frame(); // чисто подготовим все что нужно со стороны graphics_base
-  void submit_frame(); // тут отправим что подготовили в очередь
+  void submit_frame(); // тут отправим что подготовили в очередь, present когда?
+  void update_frame();
   void update_event(); // обновим память + обновим per_update индекс
+
+  bool can_draw() const;
 
   void change_render_graph(const uint32_t index);
 
@@ -121,6 +145,7 @@ struct graphics_base {
   uint32_t current_update_index() const;
   uint32_t frames_in_flight() const;
   uint32_t swapchain_frames() const;
+  uint32_t current_frame_in_flight() const;
 
   std::tuple<uint32_t, uint32_t> swapchain_extent() const;
 
@@ -175,10 +200,13 @@ struct graphics_base {
   void clear_semaphores();
 
   void create_fences();
+  void create_global_semaphores();
 
   // prepare_frame
   void update_counters();
+  void image_acquire();
   void update_descriptors();
+  void wait_fence();
 
   // update_event
   void update_constant_memory();
@@ -194,6 +222,10 @@ struct graphics_base {
 
   template <typename T, typename... Args>
   T* create_render_step(Args&&... args);
+
+  bool presentable_state_stable() const;
+  bool presentable_state_suboptimal() const;
+  bool presentable_state_waiting_host_event() const;
 };
 
 struct resource_inst {

@@ -7,6 +7,7 @@
 #include <string_view>
 #include <array>
 #include <chrono>
+#include <span>
 //#include <utils/flat_hash_map.hpp>
 #include "gtl/phmap.hpp"
 
@@ -130,7 +131,7 @@ public:
   static std::string_view key_name(const std::string_view &id, const uint8_t slot);
   static std::string key_name_native(const int32_t key, const int32_t scancode);
   static std::string key_name_native(const std::string_view &id, const uint8_t slot);
-  static const std::array<std::string_view, 16> & mapping(const int32_t scancode);
+  static std::span<std::string_view> mapping(const int32_t scancode);
   // current_key_state ? наверное нет
   static event_state::values current_event_state(const int32_t scancode);
   // тут все в кучу собираем? есть небольшая вероятность что будет нажато

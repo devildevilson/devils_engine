@@ -117,7 +117,40 @@ constexpr const T& min(const T &a, const T &b, Ts&&... args) {
   return a < m ? a : m;
 }
 
-constexpr size_t align_to(const size_t size, const size_t alignment) {
+constexpr double floor(const double val) noexcept {
+  const int64_t value = static_cast<int64_t>(val);
+  return val < value ? value - 1 : value;
+}
+
+constexpr double ceil(const double val) noexcept {
+  const int64_t value = static_cast<int64_t>(val);
+  return val > value ? value + 1 : value;
+}
+
+constexpr double fract(const double val) noexcept {
+  const int64_t integral = static_cast<int64_t>(val);
+  return val - integral;
+}
+
+constexpr double sign_fract(const double val) noexcept {
+  const int64_t integral = static_cast<int64_t>(floor(val));
+  return val > 0.0 ? val - integral : integral - val;
+}
+
+constexpr double abs(const double val) noexcept {
+  const uint64_t mask = ~(static_cast<uint64_t>(INT64_MIN));
+  return std::bit_cast<double>(std::bit_cast<uint64_t>(val) & mask);
+}
+
+constexpr double round(const double val) noexcept {
+  return double(val >= 0.0 ? int64_t(val + 0.5) : int64_t(val - 0.5));
+}
+
+constexpr double sign(const double val) noexcept {
+  return val >= 0.0 ? 1.0 : -1.0;
+}
+
+constexpr size_t align_to(const size_t size, const size_t alignment) noexcept {
   return (size + alignment - 1) / alignment * alignment;
 }
 
