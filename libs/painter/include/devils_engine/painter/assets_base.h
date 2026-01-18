@@ -58,6 +58,10 @@ struct buffer_slot {
   buffer_slot& operator=(buffer_slot&& move) noexcept;
 };
 
+// текстурки зависят от дескриптора
+// смена текстурок в слоте должна проиходить плавнее в том плане что
+// мы бы хотели положить текстурку возможно в тот же слот что и старая текстурка которую сейчас удаляют
+// наверное для буферов норм, а для текстурок так себе
 struct texture_slot {
   std::string name;
   std::atomic<asset_state> state;
@@ -78,13 +82,13 @@ struct texture_slot {
 };
 
 struct texture_create_info { 
-  std::string name;
+  //std::string name;
   struct { uint32_t x, y, z; } extents; 
   uint32_t format; 
 };
 
 struct buffer_create_info { 
-  std::string name;
+  //std::string name;
   std::string geometry_name;
 
   uint32_t vertex_count; 
@@ -100,11 +104,11 @@ struct assets_base {
   VkFence fence;
   VkCommandPool command_pool;
   //VkDescriptorPool descriptor_pool;
-  VkCommandBuffer buffer;
+  VkCommandBuffer command_buffer;
 
   VmaAllocator allocator;
 
-  const graphics_base* base;
+  const graphics_base* base; // нужно чтобы геометрию найти
 
   // первый слот это всегда пустой буфер или картинка
   // что такое пустой буфер? маленький буфер со специальной топологией 
@@ -114,8 +118,13 @@ struct assets_base {
   std::vector<buffer_slot> buffer_slots;
   std::vector<texture_slot> texture_slots;
 
-  assets_base() noexcept;
+  assets_base(VkDevice device, VkPhysicalDevice physical_device) noexcept;
   ~assets_base() noexcept;
+
+  void create_fence();
+  void create_command_buffer(VkQueue transfer, const uint32_t queue_family_index);
+  void create_allocator(VkInstance inst, const size_t preferred_heap_block = 0);
+  void set_graphics_base(const graphics_base* base);
 
   // это дело должно работать обособлено
   // рендеру интересно только тогда когда заполнен дескриптор или создана связка (mesh, draw_group)
@@ -131,8 +140,8 @@ struct assets_base {
 
   // как бы оформить батч копи? то есть это надо предсоздать стаджинг буферы
   // потом закинуть, вообще для батч копи нужно создать много буферов
-  void populate_buffer_storage(const buffer_asset_handle& h, const std::span<uint8_t>& vertex_data, const std::span<uint8_t>& index_data);
-  void populate_texture_storage(const texture_asset_handle& h, const std::span<uint8_t>& data);
+  void populate_buffer_storage(const buffer_asset_handle& h, const std::span<const uint8_t>& vertex_data, const std::span<const uint8_t>& index_data);
+  void populate_texture_storage(const texture_asset_handle& h, const std::span<const uint8_t>& data);
 
   void mark_ready_buffer_slot(const buffer_asset_handle& h);
   void mark_ready_texture_slot(const texture_asset_handle& h);

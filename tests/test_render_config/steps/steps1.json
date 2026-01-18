@@ -8,7 +8,8 @@
     "push_constants": [],
     "material": "mat1",
     "geometry": "g1",
-    "command": "draw constant tri_const"
+    "draw_group": "dg1",
+    "command": "draw"
   },
   {
     "name": "blit_to_swapchain",

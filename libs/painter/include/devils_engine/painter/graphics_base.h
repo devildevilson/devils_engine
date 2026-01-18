@@ -13,6 +13,12 @@
 
 /*
 тут еще непонятно откуда брать дескриптор текстурок...
+
+нужен доступ к каждому текущему ресурсу в обход graphics_ctx
+оттуда получим например указатель
+прежде это для того чтобы взять per_update ресурсы и заполнить их из хоста
+для чего еще может быть полезно? копировать что то извне? наверное, 
+но тогда это нужно делать в потоке графики...
 */
 
 namespace devils_engine {
@@ -39,12 +45,6 @@ struct vk_queue {
 
 enum class presentation_engine_type { main, no_present };
 
-// не знает про окно
-// это общий контекст, наверное будем везде его таскать с собой
-// вообще не должен быть таковым
-// наверное нас интерсует graphics_base, от которого сделаем graphics_ctx
-// для других систем будет что то вроде assets_base
-// и compute_base (очень похожая на graphics_base, но без рендер штук)
 struct graphics_base {
   VkInstance instance;
   VkDevice device;
@@ -119,6 +119,14 @@ struct graphics_base {
   void dump_cache_on_disk(const std::string& path) const;
   void set_surface(VkSurfaceKHR surface, const uint32_t width, const uint32_t height);
   void populate_constant_default_values();
+
+  buffer_frame get_current_buffer_resource_frame(const uint32_t res_index, const uint32_t counter_offset = 0) const;
+  image_frame get_current_image_resource_frame(const uint32_t res_index, const uint32_t counter_offset = 0) const;
+
+  buffer_frame get_current_instance_resource_frame(const uint32_t pair_index, const uint32_t counter_offset = 0) const;
+  buffer_frame get_current_indirect_resource_frame(const uint32_t pair_index, const uint32_t counter_offset = 0) const;
+
+  bool wait_all_fences(const size_t timeout = 1000000000) const;
 
   // придется пересоздать все зависимые ресурсы то есть render_targets и обновить дескрипторы
   void resize_viewport(const uint32_t width, const uint32_t height);
@@ -198,6 +206,7 @@ struct graphics_base {
   void clear_render_graph();
   void clear_resources();
   void clear_semaphores();
+  void clear_descriptors();
 
   void create_fences();
   void create_global_semaphores();

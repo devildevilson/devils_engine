@@ -1,0 +1,9 @@
+[
+  {
+    "name": "dg1",
+    "layout": "v4",
+    "budget": "fig_instances",
+    "draw_capacity": "fig_types",
+    "type": "host_visible"
+  }
+]

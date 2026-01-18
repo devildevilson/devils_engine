@@ -277,6 +277,7 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
     pm.addShader(vk::ShaderStageFlagBits::eFragment, usm_fragment.get());
   }
 
+  uint32_t location_offset = 0;
   const auto& geo = DS_ASSERT_ARRAY_GET(ctx->geometries, step.geometry);
   if (geo.stride != 0) {
     pm.vertexBinding(0, geo.stride, vk::VertexInputRate::eVertex);
@@ -284,10 +285,13 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
     for (uint32_t i = 0; i < geo.vertex_layout.size(); ++i) {
       const auto f = geo.vertex_layout[i];
       const auto format = static_cast<vk::Format>(format::to_vulkan_format(f));
-      const auto& fmt_data = format_element_size(f);
-      pm.vertexAttribute(i, 0, format, offset);
-      offset += fmt_data;
+      utils::info("Vertex stride for '{}' location {}, offset {}, format '{}'", material.name, location_offset + i, offset, vk::to_string(format));
+      const auto el_size = format_element_size(static_cast<uint32_t>(format));
+      pm.vertexAttribute(location_offset + i, 0, format, offset);
+      offset += el_size;
     }
+
+    location_offset += geo.vertex_layout.size();
   }
 
   if (step.draw_group != INVALID_RESOURCE_SLOT) {
@@ -298,10 +302,13 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
       for (uint32_t i = 0; i < draw_group.instance_layout.size(); ++i) {
         const auto f = draw_group.instance_layout[i];
         const auto format = static_cast<vk::Format>(format::to_vulkan_format(f));
-        const auto& fmt_data = format_element_size(f);
-        pm.vertexAttribute(i, 1, format, offset);
-        offset += fmt_data;
+        utils::info("Instance stride for '{}' location {}, offset {}, format '{}'", material.name, location_offset + i, offset, vk::to_string(format));
+        const auto el_size = format_element_size(static_cast<uint32_t>(format));
+        pm.vertexAttribute(location_offset + i, 1, format, offset);
+        offset += el_size;
       }
+
+      location_offset += draw_group.instance_layout.size();
     }
   }
 
@@ -885,6 +892,8 @@ void graphics_draw::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
       const size_t offset = inst_buf.subbuf.offset + pair.instance_offset;
       task.bindVertexBuffers(1, vk::Buffer(inst_buf.buf), offset);
 
+      // должны быть барьеры для инстансного буфера и индирект, где?
+      // вообще наверное прямо тут, но они могут быть лишними
       const size_t ind_offset = indi_buf.subbuf.offset + pair.indirect_offset;
       task.drawIndirect(indi_buf.buf, ind_offset, 1, 32);
     }

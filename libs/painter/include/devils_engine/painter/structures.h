@@ -131,13 +131,30 @@ struct resource {
   uint32_t compute_buffering(const graphics_base* base) const;
 };
 
-struct resource_instance {
+// нужно получить буфер или картинку с правильными контейнерами, view и subresource
+struct buffer_frame {
   std::string_view name;
+  std::string_view format;
   enum role::values role;
-  size_t handle; // size, offset
-  VkImageView view; 
+  uint32_t stride;
+  subresource_buffer sub;
+  VkBuffer handle;
+  void* mapped;
 
-  resource_instance() noexcept;
+  buffer_frame() noexcept;
+};
+
+struct image_frame {
+  std::string_view name;
+  std::string_view format;
+  enum role::values role;
+  uint32_t vk_format;
+  subresource_image sub;
+  VkImageView view;
+  VkImage handle;
+  void* mapped;
+
+  image_frame() noexcept;
 };
 
 struct constant {
