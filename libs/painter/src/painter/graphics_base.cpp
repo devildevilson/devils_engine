@@ -42,7 +42,8 @@ graphics_base::graphics_base(VkInstance instance, VkDevice device, VkPhysicalDev
 graphics_base::~graphics_base() noexcept {
   if (device == VK_NULL_HANDLE) return;
 
-  vk::Queue(graphics).waitIdle();
+  //vk::Queue(graphics).waitIdle();
+  wait_all_fences();
 
   vk::Device dev(device);
   for (auto& f : fences) { dev.destroy(f); }
@@ -55,6 +56,9 @@ graphics_base::~graphics_base() noexcept {
 
   clear();
   vma::Allocator(allocator).destroy();
+
+  vk::Queue(graphics).waitIdle();
+  clear_semaphores();
 }
 
 void graphics_base::create_allocator(const size_t preferred_heap_block) {
@@ -465,6 +469,100 @@ void graphics_base::populate_constant_default_values() {
   }
 }
 
+buffer_frame graphics_base::get_current_buffer_resource_frame(const uint32_t res_index, const uint32_t counter_offset) const {
+  if (res_index >= resources.size()) return buffer_frame();
+  const auto& res = resources[res_index];
+  if (role::is_image(res.role)) return buffer_frame();
+
+  const auto& counter = DS_ASSERT_ARRAY_GET(counters, res.swap);
+  const uint32_t cur_index = counter.get_value();
+  const uint32_t buffering = res.compute_buffering(this);
+  const auto& frame = res.handles[(cur_index+counter_offset) % buffering];
+
+  const auto& res_cont = DS_ASSERT_ARRAY_GET(resource_containers, frame.index);
+
+  buffer_frame bf;
+  bf.name = res.name;
+  bf.format = res.format;
+  bf.role = res.role;
+  bf.stride = res.size_hint;
+  bf.sub = frame.subbuffer;
+  bf.handle = std::bit_cast<VkBuffer>(res_cont.handle);
+  bf.mapped = res_cont.mem_ptr; // first byte of VkBuffer
+
+  return bf;
+}
+
+image_frame graphics_base::get_current_image_resource_frame(const uint32_t res_index, const uint32_t counter_offset) const {
+  if (res_index >= resources.size()) return image_frame();
+  const auto& res = resources[res_index];
+  if (!role::is_image(res.role)) return image_frame();
+
+  const auto& counter = DS_ASSERT_ARRAY_GET(counters, res.swap);
+  const uint32_t cur_index = counter.get_value();
+  const uint32_t buffering = res.compute_buffering(this);
+  const auto& frame = res.handles[(cur_index+counter_offset) % buffering];
+
+  VkImage img = VK_NULL_HANDLE;
+  void* mem_ptr = nullptr;
+  if (res.role == role::present) {
+    img = swapchain_images[cur_index % buffering];
+  } else {
+    const auto& res_cont = DS_ASSERT_ARRAY_GET(resource_containers, frame.index);
+    img = std::bit_cast<VkImage>(res_cont.handle);
+    mem_ptr = res_cont.mem_ptr;
+  }
+
+  image_frame ifr;
+  ifr.name = res.name;
+  ifr.format = res.format;
+  ifr.role = res.role;
+  ifr.vk_format = res.format_hint;
+  ifr.sub = frame.subimage;
+  ifr.view = frame.view;
+  ifr.handle = img;
+  ifr.mapped = mem_ptr; // first byte of VkImage
+  return ifr;
+}
+
+buffer_frame graphics_base::get_current_instance_resource_frame(const uint32_t pair_index, const uint32_t counter_offset) const {
+  if (pair_index >= pairs.size()) return buffer_frame();
+
+  const auto& pair = pairs[pair_index];
+  const auto& dg = DS_ASSERT_ARRAY_GET(draw_groups, pair.draw_group);
+  auto fr = get_current_buffer_resource_frame(dg.instances_buffer, counter_offset);
+  fr.sub.offset = fr.sub.offset + pair.instance_offset;
+  fr.sub.size = size_t(pair.max_size) * size_t(fr.stride);
+
+  return fr;
+}
+
+buffer_frame graphics_base::get_current_indirect_resource_frame(const uint32_t pair_index, const uint32_t counter_offset) const {
+  if (pair_index >= pairs.size()) return buffer_frame();
+
+  const auto& pair = pairs[pair_index];
+  const auto& dg = DS_ASSERT_ARRAY_GET(draw_groups, pair.draw_group);
+  auto fr = get_current_buffer_resource_frame(dg.indirect_buffer, counter_offset);
+  fr.sub.offset = fr.sub.offset + pair.indirect_offset;
+  fr.sub.size = fr.stride;
+
+  return fr;
+}
+
+bool graphics_base::wait_all_fences(const size_t timeout) const {
+  const auto res = vk::Device(device).waitForFences(fences.size(), reinterpret_cast<const vk::Fence*>(fences.data()), true, timeout);
+  switch (res) { 
+    case vk::Result::eErrorDeviceLost: 
+    case vk::Result::eErrorOutOfDeviceMemory: 
+    case vk::Result::eErrorOutOfHostMemory: 
+    case vk::Result::eErrorUnknown: 
+    case vk::Result::eErrorValidationFailedEXT: utils::warn("'vkWaitForFences' returns '{}' in 'graphics_base'", vk::to_string(res)); break;
+    default: break;
+  }
+
+  return res == vk::Result::eSuccess;
+}
+
 // ?
 void graphics_base::resize_viewport(const uint32_t width, const uint32_t height) {
   swapchain_image_size = std::make_tuple(width, height);
@@ -501,6 +599,8 @@ void graphics_base::clear_resources() {
   }
 
   for (auto& res_c : resource_containers) {
+    if (res_c.mem_ptr != nullptr) alc.unmapMemory(res_c.alloc);
+
     if (res_c.is_image()) {
       alc.destroyImage(std::bit_cast<VkImage>(res_c.handle), res_c.alloc);
     } else {
@@ -525,10 +625,20 @@ void graphics_base::clear_semaphores() {
   semaphores.clear();
 }
 
+void graphics_base::clear_descriptors() {
+  vk::Device dev(device);
+
+  for (auto& set : descriptors) {
+    dev.destroy(set.setlayout);
+  }
+
+  descriptors.clear();
+}
+
 void graphics_base::clear() {
   clear_render_graph();
-  clear_semaphores();
   clear_resources();
+  clear_descriptors();
 }
 
 void graphics_base::recreate_screensize_resources(const uint32_t width, const uint32_t height) {
@@ -1148,27 +1258,7 @@ void graphics_base::clear_prev_resources() {
   dev.resetDescriptorPool(descriptor_pool);
   dev.resetCommandPool(command_pool);
 
-  execution_graph.clear(); // framebuffers using views
-
-  for (auto& d : descriptors) {
-    dev.destroy(d.setlayout);
-  }
-
-  for (auto& res : resources) {
-    for (auto& h : res.handles) {
-      dev.destroy(h.view);
-    }
-  }
-
-  for (auto& cont : resource_containers) {
-    if (cont.is_image()) {
-      const auto handle = std::bit_cast<VkImage>(cont.handle);
-      a.destroyImage(handle, cont.alloc);
-    } else {
-      const auto handle = std::bit_cast<VkBuffer>(cont.handle);
-      a.destroyBuffer(handle, cont.alloc);
-    }
-  }
+  clear();
 
   constant_values.clear();
   counters.clear();

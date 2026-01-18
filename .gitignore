@@ -4,3 +4,4 @@ external/
 exclude/
 .vs/
 CMakeSettings.json
+.gitignore

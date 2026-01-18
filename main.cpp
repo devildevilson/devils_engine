@@ -6,6 +6,7 @@
 #include "devils_engine/painter/system_info.h"
 #include "devils_engine/utils/core.h"
 #include "devils_engine/input/core.h"
+#include "devils_engine/utils/time-utils.hpp"
 
 #include <chrono>
 
@@ -161,6 +162,10 @@ static void print_vec(const std::span<const uint32_t>& arr) {
   utils::println("}");
 }
 
+static uint32_t make_color(const float r, const float g, const float b, const float a) {
+  return (uint32_t(std::round(std::clamp(r, 0.0f, 1.0f) * 255.0f)) << 0) | (uint32_t(std::round(std::clamp(g, 0.0f, 1.0f) * 255.0f)) << 8) | (uint32_t(std::round(std::clamp(b, 0.0f, 1.0f) * 255.0f)) << 16) | (uint32_t(std::round(std::clamp(a, 0.0f, 1.0f) * 255.0f)) << 24);
+}
+
 int main() {
   const auto cur_folder = utils::project_folder();
   utils::println(cur_folder);
@@ -174,6 +179,8 @@ int main() {
   auto graphics_queue = dev.getQueue(vk.p_data.graphics_queue, 0);
   auto compute_queue = dev.getQueue(vk.p_data.compute_queue, 0);
   auto transfer_queue = dev.getQueue(vk.p_data.transfer_queue, 0);
+
+  painter::set_name(dev, graphics_queue, "main_graphics_queue");
 
   // если по итогу мне нужны треугольники, то нужно сделать что?
   // нужно задать файлики описаний ресурсов, создаю папку тест рендер граф получается
@@ -208,11 +215,19 @@ int main() {
   base.resize_viewport(g_width, g_height);
 
   for (const auto& res : base.resources) {
-    utils::info("Created resource '{}', role '{}', buffering '{}' ({})", res.name, painter::role::to_string(res.role), painter::type::to_string(res.type), res.compute_buffering(&base));
+    if (painter::role::is_image(res.role)) {
+      utils::info("Created image  resource '{}', role '{}', buffering '{}' ({})", res.name, painter::role::to_string(res.role), painter::type::to_string(res.type), res.compute_buffering(&base));
+    } else {
+      utils::info("Created buffer resource '{}', role '{}', buffering '{}' ({}), stride {}", res.name, painter::role::to_string(res.role), painter::type::to_string(res.type), res.compute_buffering(&base), res.size_hint);
+    }
   }
 
   for (const auto& res : base.resource_containers) {
-    utils::info("Created container '{}', extent ({}, {}), layers {}, format '{}'", res.name, res.extent.x, res.extent.y, res.layers, vk::to_string(static_cast<vk::Format>(res.format)));
+    if (res.is_image()) {
+      utils::info("Created image container '{}', extent ({}, {}), layers {}, format '{}'", res.name, res.extent.x, res.extent.y, res.layers, vk::to_string(static_cast<vk::Format>(res.format)));
+    } else {
+      utils::info("Created buffer container '{}', size {}", res.name, res.size);
+    }
   }
 
   // теперь нужно создать рендер граф
@@ -224,35 +239,82 @@ int main() {
 
   print_vec(base.constants_memory[1]);
 
-  // сделали рендер граф, что теперь?
-  // создадим кеш и попробуем что нибудь нарисовать
-  painter::graphics_ctx ctx;
-  ctx.base = &base;
+  painter::assets_base assets(dev, vk.p_data.handle);
+  assets.create_fence();
+  assets.create_allocator(vk.instance);
+  assets.create_command_buffer(transfer_queue, vk.p_data.transfer_queue);
+  assets.set_graphics_base(&base);
+
+  // зададим ресурс для треугольника
+  uint32_t pair_index = painter::INVALID_RESOURCE_SLOT;
+  {
+    const auto tri_h = assets.register_buffer_storage("triangle");
+    painter::buffer_create_info bci{ "g1", 3, 0 };
+    assets.create_buffer_storage(tri_h, bci);
+    struct buffer_data { float x, y, z; uint32_t c; };
+    const buffer_data buffer_mem[] = { { -1, -1, 0, make_color(1,0,0,1) }, { 1, -1, 0, make_color(0,1,0,1) }, { 0, 1, 0, make_color(0,0,1,1) } };
+    const size_t buffer_mem_size = sizeof(buffer_mem);
+    assets.populate_buffer_storage(tri_h, std::span(reinterpret_cast<const uint8_t*>(&buffer_mem[0]), buffer_mem_size), std::span<const uint8_t>());
+
+    assets.mark_ready_buffer_slot(tri_h);
+
+    const uint32_t dg_index = base.find_draw_group("dg1");
+    pair_index = base.register_pair(dg_index, tri_h, 500);
+  }
+
+  // как сделать аккуратное заполнение vertexCount и firstInstance?
+  // при регистрации пары мы бы хотели закинуть данные через fillbuffer?
+  // наверное если есть cpu доступ, то можно поди закинуть данные из меша наместе
+  // а если только gpu то в компут шейдере обновим...
+  {
+    const auto inst = base.get_current_instance_resource_frame(pair_index, 1);
+    const auto indi = base.get_current_indirect_resource_frame(pair_index, 1);
+
+    // хочу 4 треугольника по разным осям
+    utils::info("Instance buffer: name '{}', format '{}', offset '{}', stride '{}', role '{}'", inst.name, inst.format, inst.sub.offset, inst.stride, painter::role::to_string(inst.role));
+    utils::info("Indirect buffer: name '{}', format '{}', offset '{}', stride '{}', role '{}'", indi.name, indi.format, indi.sub.offset, indi.stride, painter::role::to_string(indi.role));
+
+    struct vec4 { float x,y,z,w; };
+    auto ptr = reinterpret_cast<vec4*>(&reinterpret_cast<uint8_t*>(inst.mapped)[inst.sub.offset]);
+    auto com_ptr = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
+
+    ptr[0] = vec4{ 0, 0.5, 0, 0};
+    ptr[1] = vec4{ 0.5, 0, 0, 0};
+    ptr[2] = vec4{ 0,-0.5, 0, 0};
+    ptr[3] = vec4{-0.5, 0, 0, 0};
+
+    com_ptr[0].vertexCount = 3;
+    com_ptr[0].instanceCount = 4;
+    com_ptr[0].firstVertex = 0;
+    com_ptr[0].firstInstance = 0;
+  }
+
+  // теперь если я хочу закинуть UI данные в рендер я что должен сделать?
+  // вызываю get_current_buffer_resource_frame и копирую сырые данные через memcpy?
 
   base.update_event();
 
   constexpr auto fps60 = std::chrono::microseconds(size_t(utils::round(double(std::chrono::microseconds(std::chrono::seconds(1)).count()) / 60.0)));
-  
+
+  painter::graphics_ctx ctx;
+  ctx.base = &base;
+  ctx.assets = &assets;
+
   auto tp = std::chrono::steady_clock::now();
   size_t counter = 0;
   while (counter < 100) {
     ++counter;
 
     base.prepare_frame();
-    ctx.prepare();
+    ctx.prepare(); // нужен дескриптор
     ctx.draw();
     base.submit_frame();
 
     //utils::info("Submited frame");
 
-    std::this_thread::sleep_until(tp + counter * fps60);
+    // что делать если лагает? желательно все равно выводить картинку, но пропускать кадры
+    std::this_thread::sleep_until(tp + fps60 * counter);
   }
-
-  //painter::assets_base assets;
-  //assets.device = dev;
-  //assets.physical_device = vk.p_data.handle;
-
-  // создать аллокатор, комманд пул
 
   utils::println("Exit");
 }

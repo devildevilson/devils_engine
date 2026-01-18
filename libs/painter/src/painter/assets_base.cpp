@@ -163,12 +163,12 @@ texture_slot& texture_slot::operator=(texture_slot&& move) noexcept {
   return *this;
 }
 
-assets_base::assets_base() noexcept :
-  device(VK_NULL_HANDLE),
-  physical_device(VK_NULL_HANDLE),
+assets_base::assets_base(VkDevice device, VkPhysicalDevice physical_device) noexcept :
+  device(device),
+  physical_device(physical_device),
   transfer(VK_NULL_HANDLE),
   command_pool(VK_NULL_HANDLE),
-  buffer(VK_NULL_HANDLE),
+  command_buffer(VK_NULL_HANDLE),
   allocator(VK_NULL_HANDLE),
   base(nullptr)
 {
@@ -179,6 +179,8 @@ assets_base::assets_base() noexcept :
 assets_base::~assets_base() noexcept {
   if (device == VK_NULL_HANDLE) return;
   if (allocator == VK_NULL_HANDLE) return;
+
+  if (base != nullptr) base->wait_all_fences();
 
   vk::Device dev(device);
   vma::Allocator a(allocator);
@@ -195,6 +197,40 @@ assets_base::~assets_base() noexcept {
 
   a.destroy();
   dev.destroy(command_pool);
+  dev.destroy(fence);
+}
+
+void assets_base::create_fence() {
+  fence = vk::Device(device).createFence(vk::FenceCreateInfo{});
+}
+
+void assets_base::create_command_buffer(VkQueue transfer, const uint32_t queue_family_index) {
+  vk::CommandPoolCreateInfo cpci{};
+  cpci.queueFamilyIndex = queue_family_index;
+  cpci.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer | vk::CommandPoolCreateFlagBits::eTransient;
+
+  command_pool = vk::Device(device).createCommandPool(cpci);
+  command_buffer = vk::Device(device).allocateCommandBuffers(vk::CommandBufferAllocateInfo(command_pool, vk::CommandBufferLevel::ePrimary, 1))[0];
+  this->transfer = transfer;
+}
+
+void assets_base::create_allocator(VkInstance inst, const size_t preferred_heap_block) {
+  vma::VulkanFunctions fns = make_functions();
+
+  // аллокатор
+  vma::AllocatorCreateInfo aci{};
+  aci.instance = inst;
+  aci.physicalDevice = physical_device;
+  aci.device = device;
+  aci.vulkanApiVersion = VK_API_VERSION_1_0;
+  aci.pVulkanFunctions = &fns;
+  aci.preferredLargeHeapBlockSize = preferred_heap_block;
+
+  allocator = vma::createAllocator(aci);
+}
+
+void assets_base::set_graphics_base(const graphics_base* base) {
+  this->base = base;
 }
 
 buffer_asset_handle assets_base::register_buffer_storage(std::string name) {
@@ -328,7 +364,7 @@ void assets_base::create_buffer_storage(const buffer_asset_handle& h, const buff
 
   // тут нужно найти геометрию 
   const uint32_t index = base->find_geometry(info.geometry_name);
-  if (index == INVALID_RESOURCE_SLOT) utils::error{}("Could not find geometry '{}' for buffer '{}'", info.geometry_name, info.name);
+  if (index == INVALID_RESOURCE_SLOT) utils::error{}("Could not find geometry '{}' for buffer '{}'", info.geometry_name, buffer_slots[h].name);
 
   const auto& geo = DS_ASSERT_ARRAY_GET(base->geometries, index);
 
@@ -350,12 +386,12 @@ void assets_base::create_buffer_storage(const buffer_asset_handle& h, const buff
   const auto& [v_buf, v_alc] = a.createBuffer(bci, aci, &v_ai);
   bci.size = index_size;
   bci.usage = vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndexBuffer;
-  const auto& [i_buf, i_alc] = a.createBuffer(bci, aci, &i_ai);
+  const auto& [i_buf, i_alc] = index_size != 0 ? a.createBuffer(bci, aci, &i_ai) : std::make_pair(vk::Buffer{}, vma::Allocation{});
 
-  set_name(dev, v_buf, info.name + "_vertex");
-  set_name(dev, i_buf, info.name + "_index");
+  set_name(dev, v_buf, buffer_slots[h].name + "_vertex");
+  if (index_size != 0) set_name(dev, i_buf, buffer_slots[h].name + "_index");
 
-  buffer_slots[h].name = info.name;
+  //buffer_slots[h].name = info.name;
   buffer_slots[h].geometry_name = info.geometry_name;
   buffer_slots[h].index_alc = i_alc;
   buffer_slots[h].index_storage = i_buf;
@@ -400,10 +436,10 @@ void assets_base::create_texture_storage(const texture_asset_handle& h, const te
 
   auto view = dev.createImageView(ivci);
 
-  set_name(dev, image, info.name + "_storage");
-  set_name(dev, view, info.name + "_view");
+  set_name(dev, image, texture_slots[h].name + "_storage");
+  set_name(dev, view, texture_slots[h].name + "_view");
 
-  texture_slots[h].name = info.name;
+  //texture_slots[h].name = info.name;
   texture_slots[h].alc = allocation;
   texture_slots[h].storage = image;
   texture_slots[h].view = view;
@@ -411,7 +447,7 @@ void assets_base::create_texture_storage(const texture_asset_handle& h, const te
   texture_slots[h].extents = { info.extents.x, info.extents.y, 1 };
 }
 
-void assets_base::populate_buffer_storage(const buffer_asset_handle& h, const std::span<uint8_t>& vertex_data, const std::span<uint8_t>& index_data) {
+void assets_base::populate_buffer_storage(const buffer_asset_handle& h, const std::span<const uint8_t>& vertex_data, const std::span<const uint8_t>& index_data) {
   if (h >= buffer_slots.size()) utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
 
   // тут мы просто проверим если состояние reserved то создадим ГПУ ресурсы
@@ -442,27 +478,27 @@ void assets_base::populate_buffer_storage(const buffer_asset_handle& h, const st
   vma::AllocationInfo i_ai{};
   const auto& [v_buf, v_alc] = a.createBuffer(bci, aci, &v_ai);
   bci.size = index_data.size();
-  const auto& [i_buf, i_alc] = a.createBuffer(bci, aci, &i_ai);
+  const auto& [i_buf, i_alc] = !index_data.empty() ? a.createBuffer(bci, aci, &i_ai) : std::make_pair(vk::Buffer{}, vma::Allocation{});
 
   memcpy(v_ai.pMappedData, vertex_data.data(), vertex_data.size());
-  memcpy(i_ai.pMappedData, index_data.data(), index_data.size());
+  if (!index_data.empty()) memcpy(i_ai.pMappedData, index_data.data(), index_data.size());
 
   a.flushAllocation(v_alc, 0, vertex_data.size());
-  a.flushAllocation(i_alc, 0, index_data.size());
+  if (!index_data.empty()) a.flushAllocation(i_alc, 0, index_data.size());
 
   const vk::BufferCopy v_c(0, 0, vertex_data.size());
   const vk::BufferCopy i_c(0, 0, index_data.size());
-  do_command(device, transfer, fence, buffer, [&](VkCommandBuffer cb) {
+  do_command(device, transfer, fence, command_buffer, [&](VkCommandBuffer cb) {
     vk::CommandBuffer task(cb);
     task.copyBuffer(v_buf, slot.vertex_storage, v_c);
-    task.copyBuffer(i_buf, slot.index_storage, i_c);
+    if (!index_data.empty()) task.copyBuffer(i_buf, slot.index_storage, i_c);
   });
 
   a.destroyBuffer(v_buf, v_alc);
-  a.destroyBuffer(i_buf, i_alc);
+  if (!index_data.empty()) a.destroyBuffer(i_buf, i_alc);
 }
 
-void assets_base::populate_texture_storage(const texture_asset_handle& h, const std::span<uint8_t>& data) {
+void assets_base::populate_texture_storage(const texture_asset_handle& h, const std::span<const uint8_t>& data) {
   if (h >= texture_slots.size()) utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
 
   const auto s = texture_slots[h].state.load(CONSUME);
@@ -498,7 +534,7 @@ void assets_base::populate_texture_storage(const texture_asset_handle& h, const 
   vk::ImageMemoryBarrier bar2(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, slot.storage, range1);
   vk::BufferImageCopy bic(0, slot.extents.x, slot.extents.y, range2, { 0,0,0 }, { slot.extents.x, slot.extents.y, 1 });
 
-  do_command(device, transfer, fence, buffer, [&](VkCommandBuffer cb) {
+  do_command(device, transfer, fence, command_buffer, [&](VkCommandBuffer cb) {
     vk::CommandBuffer task(cb);
     task.pipelineBarrier(
       vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion,

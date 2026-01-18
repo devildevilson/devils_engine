@@ -43,7 +43,6 @@ void counter::inc_next_value() noexcept { next_value.fetch_add(1, std::memory_or
 void counter::set_value(const uint32_t val) noexcept { next_value.store(val, std::memory_order_release); }
 resource::frame::frame() noexcept { memset(this, 0, sizeof(*this)); }
 resource::resource() noexcept : format_hint(VK_FORMAT_UNDEFINED), size_hint(0), size(UINT32_MAX), role(role::values::count), type(type::values::count), swap(0), usage_mask(0) {}
-resource_instance::resource_instance() noexcept : role(role::values::count), handle(0), view(VK_NULL_HANDLE) {}
 constant::constant() noexcept : size(0), offset(0) {}
 uint32_t render_target::resource_index(const uint32_t res_id) const {
   uint32_t i = 0;
@@ -53,11 +52,14 @@ uint32_t render_target::resource_index(const uint32_t res_id) const {
 descriptor::descriptor() noexcept : setlayout(VK_NULL_HANDLE) { memset(sets.data(), 0, sizeof(sets)); }
 material::material() noexcept {}
 geometry::geometry() noexcept : index_type(index_type::u32), topology_type(0), restart(false), stride(0) {}
-draw_group::draw_group() noexcept : budget_constant(UINT32_MAX), types_constant(UINT32_MAX), instances_buffer(UINT32_MAX), type(type::device_local), indirect_buffer(UINT32_MAX), descriptor(UINT32_MAX) {}
+draw_group::draw_group() noexcept : budget_constant(UINT32_MAX), types_constant(UINT32_MAX), instances_buffer(UINT32_MAX), type(type::device_local), indirect_buffer(UINT32_MAX), descriptor(UINT32_MAX), stride(0) {}
 execution_pass_base::resource_info::resource_info() noexcept : slot(INVALID_RESOURCE_SLOT), usage(usage::undefined), action(store_op::none) {}
 execution_pass_base::resource_info::resource_info(const uint32_t slot, const usage::values usage, const store_op::values action) noexcept : slot(slot), usage(usage), action(action) {}
 constexpr uint32_t default_color_blending = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 blend_data::blend_data() noexcept { memset(this, 0, sizeof(*this)); colorWriteMask = default_color_blending; }
+
+buffer_frame::buffer_frame() noexcept : role(role::count), stride(0), sub({0,0}), handle(VK_NULL_HANDLE), mapped(nullptr) {}
+image_frame::image_frame() noexcept : role(role::count), vk_format(0), sub({0,0,0,0,0}), view(VK_NULL_HANDLE), handle(VK_NULL_HANDLE), mapped(nullptr) {}
 
 constant_value::value_t constant_value::compute_value() const {
   const auto& [x, y, z] = current_value;
@@ -356,7 +358,7 @@ struct constant_value_mirror {
   std::vector<std::tuple<std::string, constant_value::value_t>> scale_presets;
 
   constant_value convert(const graphics_base& ctx) const {
-    const uint32_t exists = ctx.find_draw_group(name);
+    const uint32_t exists = ctx.find_constant_value(name);
     if (exists != UINT32_MAX) utils::error{}("Constant value '{}' is already exists", name);
 
     constant_value cv;
@@ -394,7 +396,7 @@ struct resource_mirror {
 
   // mirror context
   resource convert(const graphics_base& ctx) const {
-    const uint32_t exists = ctx.find_draw_group(name);
+    const uint32_t exists = ctx.find_resource(name);
     if (exists != UINT32_MAX) utils::error{}("Resource '{}' is already exists", name);
 
     resource res;
@@ -429,7 +431,7 @@ struct constant_mirror {
   std::vector<double> value;
 
   constant convert(const graphics_base& ctx) const {
-    const uint32_t exists = ctx.find_draw_group(name);
+    const uint32_t exists = ctx.find_constant(name);
     if (exists != UINT32_MAX) utils::error{}("Constant '{}' is already exists", name);
 
     constant c;
@@ -494,7 +496,7 @@ struct render_target_mirror {
   std::vector<blend_data_mirror> blending;
 
   render_target convert(const graphics_base& ctx) const {
-    const uint32_t exists = ctx.find_draw_group(name);
+    const uint32_t exists = ctx.find_render_target(name);
     if (exists != UINT32_MAX) utils::error{}("Render target '{}' is already exists", name);
 
     render_target rt;
@@ -520,7 +522,7 @@ struct descriptor_mirror {
   std::vector<std::tuple<std::string, std::string>> layout;
 
   descriptor convert(const graphics_base& ctx) const {
-    const uint32_t exists = ctx.find_draw_group(name);
+    const uint32_t exists = ctx.find_descriptor(name);
     if (exists != UINT32_MAX) utils::error{}("Descriptor '{}' is already exists", name);
 
     descriptor d;
@@ -587,7 +589,7 @@ struct material_mirror {
   struct depth depth;
 
   material convert(const graphics_base& ctx) const {
-    const uint32_t exists = ctx.find_draw_group(name);
+    const uint32_t exists = ctx.find_material(name);
     if (exists != UINT32_MAX) utils::error{}("Material '{}' is already exists", name);
 
     material m;
@@ -662,7 +664,7 @@ struct geometry_mirror {
   bool restart;
 
   geometry convert(const graphics_base& ctx) const {
-    const uint32_t exists = ctx.find_draw_group(name);
+    const uint32_t exists = ctx.find_geometry(name);
     if (exists != UINT32_MAX) utils::error{}("Geometry '{}' is already exists", name);
 
     geometry g;
@@ -1019,6 +1021,7 @@ void parse_data(graphics_base* ctx, std::string path) {
   const auto& render_targets = parse_folder<render_target_mirror>(path + "render_targets/");
   const auto& geometries = parse_folder<geometry_mirror>(path + "geometries/");
   const auto& materials = parse_folder<material_mirror>(path + "materials/");
+  const auto& draw_groups = parse_folder<draw_group_mirror>(path + "draw_groups/");
   const auto& steps = parse_folder<pass_step2_mirror>(path + "steps/");
   const auto& execution_passes = parse_folder<pass2_mirror>(path + "execution_passes/");
   const auto& render_graphs = parse_folder<render_graph2_mirror>(path + "render_graphs/");
@@ -1057,6 +1060,7 @@ void parse_data(graphics_base* ctx, std::string path) {
   lctx.render_targets = convert<render_target>(lctx, render_targets);
   lctx.geometries = convert<geometry>(lctx, geometries);
   lctx.materials = convert<material>(lctx, materials);
+  lctx.draw_groups = convert<draw_group>(lctx, draw_groups);
   lctx.steps = convert<step_base>(lctx, steps, &parse_step2);
   lctx.passes = convert<execution_pass_base>(lctx, execution_passes, &parse_execution_pass2);
   lctx.graphs = convert<render_graph_base>(lctx, render_graphs, &parse_render_graph2);
@@ -1092,11 +1096,19 @@ void parse_data(graphics_base* ctx, std::string path) {
     // нужно создать 3 ресурса: 2 буфера и дескриптор
 
     // если тип host_visible то роль соответственно должна быть input
+    auto inst_counter_index = lctx.per_frame_counter_index;
+    auto indi_counter_index = lctx.per_frame_counter_index;
+    auto inst_type = type::frames_in_flight;
+    auto indi_type = type::frames_in_flight;
     auto inst_role = role::instance_output;
     auto indi_role = role::indirect_output;
     if (group.type == draw_group::type::host_visible) {
       inst_role = role::instance_input;
       indi_role = role::indirect_input;
+      inst_type = type::doublebuffer;
+      indi_type = type::doublebuffer;
+      inst_counter_index = lctx.per_update_counter_index;
+      indi_counter_index = lctx.per_update_counter_index;
     }
 
     {
@@ -1107,11 +1119,11 @@ void parse_data(graphics_base* ctx, std::string path) {
       r.size_hint = group.stride;
       r.size = group.budget_constant; // как указать байты? наверное тут поставим UINT32_MAX + рядом укажем
       r.role = inst_role;
-      r.type = type::triplebuffer; // по идее frames_in_flight, да и вообще большинство ресурсов это frames_in_flight
-      r.swap = lctx.per_frame_counter_index;
+      r.type = inst_type;
+      r.swap = inst_counter_index;
       r.usage_mask = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; // ?
 
-      group.indirect_buffer = lctx.resources.size();
+      group.instances_buffer = lctx.resources.size();
       lctx.resources.emplace_back(std::move(r));
     }
 
@@ -1126,11 +1138,11 @@ void parse_data(graphics_base* ctx, std::string path) {
       r.size_hint = 16 + 16; // создадим буфер хотя бы на один элемент?
       r.size = group.types_constant;
       r.role = indi_role;
-      r.type = type::triplebuffer; // ?
-      r.swap = lctx.per_frame_counter_index;
+      r.type = indi_type;
+      r.swap = indi_counter_index;
       r.usage_mask = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; // ?
 
-      group.instances_buffer = lctx.resources.size();
+      group.indirect_buffer = lctx.resources.size();
       lctx.resources.emplace_back(std::move(r));
     }
 
