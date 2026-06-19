@@ -2,20 +2,38 @@
 
 #include <thread>
 #include "utils/time-utils.hpp"
+#include <immintrin.h>
 
 namespace devils_engine {
 namespace simul {
-const size_t default_30fps = double(utils::app_clock::resolution()) / 30.0;
+static inline void cpu_relax() {
+  _mm_pause();
+}
+
+template <typename T>
+void spin_sleep_for(const T &dur) {
+  const size_t amount = std::chrono::duration_cast<std::chrono::nanoseconds>(dur).count();
+  const auto tp = std::chrono::high_resolution_clock::now();
+  size_t ns = 0;
+  while (ns < amount) {
+    const auto new_dur = std::chrono::high_resolution_clock::now() - tp;
+    ns = std::chrono::duration_cast<std::chrono::nanoseconds>(new_dur).count();
+
+    cpu_relax();
+  }
+}
+
+constexpr size_t default_30fps = double(utils::global_time_resolution) / 30.0;
 
 advancer::advancer() noexcept : _frame_time(default_30fps), new_frame_time(default_30fps), _counter(0), _stop(false) {}
+advancer::advancer(const size_t frame_time) noexcept : _frame_time(frame_time), new_frame_time(frame_time), _counter(0), _stop(false) {}
 void advancer::run(const size_t wait_mcs) {
-  // чуть обождем, мы можем запустить звуки чуть позже чем основную симуляцию
-  // тогда ограничение в виде sleep_until сработает чуть лучше
-  std::this_thread::sleep_for(std::chrono::microseconds(wait_mcs));
+  // spin better
+  spin_sleep_for(std::chrono::microseconds(wait_mcs));
 
   {
     std::unique_lock l(mutex);
-    init();
+    //init();
     _start = clock_t::now();
   }
 

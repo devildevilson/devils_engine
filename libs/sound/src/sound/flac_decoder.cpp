@@ -38,7 +38,7 @@ namespace devils_engine {
       if (data == nullptr) utils::error{}("Failed to parse flac resource '{}'", name);
 
       m_sample_rate = data->sampleRate;
-      m_bits_per_channel = data->bitsPerSample;
+      m_format = bits_per_sample_to_format(adjust_bits_per_channel(data->bitsPerSample));
       m_frames_count = data->totalPCMFrameCount;
       m_channels = data->channels;
     }
@@ -63,7 +63,8 @@ namespace devils_engine {
       auto* final_data = reinterpret_cast<T*>(memory);
       size_t readed_frames = 0;
       if (channels == 1 && data->channels != 1) {
-        const size_t block_bytes_size = pcm_frames_to_bytes(frames_count, data->channels, data->bitsPerSample);
+        const auto cur_fmt = bits_per_sample_to_format(adjust_bits_per_channel(data->bitsPerSample));
+        const size_t block_bytes_size = pcm_samples_to_bytes(frames_count, data->channels, cur_fmt);
         if (buffer.size() < block_bytes_size) buffer.resize(block_bytes_size, 0);
         auto block_data = reinterpret_cast<T*>(buffer.data());
 
@@ -97,7 +98,8 @@ namespace devils_engine {
       static_assert(std::is_same_v<T, float> || std::is_same_v<T, int16_t>, "Supported formats is float32 and signed16");
 
       size_t readed_frames = 0;
-      const size_t block_bytes_size = pcm_frames_to_bytes(frames_count, data->channels, data->bitsPerSample);
+      const auto cur_fmt = bits_per_sample_to_format(adjust_bits_per_channel(data->bitsPerSample));
+      const size_t block_bytes_size = pcm_samples_to_bytes(frames_count, data->channels, cur_fmt);
       if (buffer.size() < block_bytes_size) buffer.resize(block_bytes_size, 0);
 
       if (channels == 1 && data->channels != 1) {
@@ -140,12 +142,12 @@ namespace devils_engine {
 
       size_t readed_frames = 0;
 
-      if (bits_per_channel() <= 16) {
+      if (format() == format::s16) {
         readed_frames = get_frames_templ<int16_t>(data, buffer, memory, frames_count, final_channels);
-      } else if (bits_per_channel() <= 32) {
+      } else if (format() == format::s24 || format() == format::f32) {
         readed_frames = get_frames_templ<float>(data, buffer, memory, frames_count, final_channels);
       } else {
-        utils::error{}("flac format with {} bits per channel is not supported", bits_per_channel());
+        utils::error{}("flac format with {} bits per channel is not supported", data->bitsPerSample);
       }
 
       return readed_frames;
@@ -162,12 +164,12 @@ namespace devils_engine {
 
       size_t readed_frames = 0;
 
-      if (bits_per_channel() <= 16) {
+      if (format() == format::s16) {
         readed_frames = get_frames_templ<int16_t>(data, buffer, al_buffer, frames_count, final_channels, final_sample_rate);
-      } else if (bits_per_channel() <= 32) {
+      } else if (format() == format::s24 || format() == format::f32) {
         readed_frames = get_frames_templ<float>(data, buffer, al_buffer, frames_count, final_channels, final_sample_rate);
       } else {
-        utils::error{}("flac format with {} bits per channel is not supported", bits_per_channel());
+        utils::error{}("flac format with {} bits per channel is not supported", data->bitsPerSample);
       }
 
       return readed_frames;

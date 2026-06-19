@@ -10,7 +10,10 @@
 #else
 #include <limits.h>
 #include <unistd.h>     //readlink
+#include <cpuid.h>
 #endif
+
+#include <cpuinfo.h>
 
 #define DEVILS_ENGINE_AESTHETICS_IMPLEMENTATION
 #include "devils_engine/aesthetics/world.h"
@@ -97,6 +100,25 @@ namespace devils_engine {
 
     std::string cache_folder() noexcept {
       return project_folder() + "cache/";
+    }
+
+    std::string get_cpu_name() noexcept {
+      std::string proc_name;
+      cpuinfo_initialize();
+
+      const auto ptr = cpuinfo_get_current_processor();
+      if (ptr == nullptr) {
+        const uint32_t count = cpuinfo_get_packages_count();
+        if (count > 0) {
+          const auto pack = cpuinfo_get_package(0);
+          proc_name = pack->name;
+        }
+      } else {
+        proc_name = ptr->package->name;
+      }
+
+      cpuinfo_deinitialize();
+      return proc_name;
     }
 
     uint32_t crc32c(const uint8_t* data, const size_t len) noexcept {

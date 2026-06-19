@@ -80,6 +80,7 @@ public:
   using clock_t = std::chrono::high_resolution_clock;
 
   advancer() noexcept;
+  advancer(const size_t frame_time) noexcept;
   virtual ~advancer() noexcept = default;
 
   virtual void run(const size_t wait_mcs); // interface functions under the mutex

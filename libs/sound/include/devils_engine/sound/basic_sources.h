@@ -13,7 +13,7 @@ struct sound_processing_data {
   size_t time;
   size_t loaded_frames;
   size_t processed_frames;
-  struct source source;
+  //struct source source;
   inline sound_processing_data() noexcept : time(0), loaded_frames(0), processed_frames(0) {}
 };
 
@@ -36,10 +36,10 @@ struct advanced_sound_data {
 
 // relative?
 struct full_sound_data {
-  glm::vec3 pos;
-  glm::vec3 dir;
-  glm::vec3 vel;
-  inline full_sound_data() noexcept : pos(0.0f, 0.0f, 0.0f), dir(0.0f, 0.0f, 0.0f), vel(0.0f, 0.0f, 0.0f) {}
+  //glm::vec3 pos;
+  //glm::vec3 dir;
+  //glm::vec3 vel;
+  //inline full_sound_data() noexcept : pos(0.0f, 0.0f, 0.0f), dir(0.0f, 0.0f, 0.0f), vel(0.0f, 0.0f, 0.0f) {}
 };
 
 // будет один стерео источник

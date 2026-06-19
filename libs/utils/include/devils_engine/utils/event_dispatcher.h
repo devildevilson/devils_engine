@@ -143,7 +143,8 @@ void event_dispatcher::subscribe(T* ptr) {
 
   auto itr = consumers.find(type_id);
   if (itr == consumers.end()) {
-    itr = consumers.emplace(std::make_pair(type_id, basic_consumer_container<Event_T>())).first;
+    //itr = consumers.emplace(std::make_pair(type_id, basic_consumer_container<Event_T>())).first;
+    utils::error{}("Not implemented");
   }
 
   auto basic_ptr = static_cast<event_consumer<Event_T>*>(ptr);
@@ -203,7 +204,7 @@ template <size_t ID>
 template<typename Event_T, typename... Args>
 void event_dispatcher2<ID>::submit(Event_T&& event, Args&&... args) {
   submit(std::forward<Event_T>(event));
-  submit(std::forward<Args>(args));
+  submit(std::forward<Args>(args)...);
 }
 
 template <size_t ID>
@@ -257,7 +258,7 @@ void event_dispatcher2<ID>::bucket<Event_T>::clear() { data.clear(); }
 
 template <size_t ID>
 template<typename Event_T>
-event_dispatcher2<ID>::bucket<Event_T>* event_dispatcher2<ID>::get_bucket() {
+event_dispatcher2<ID>::template bucket<Event_T>* event_dispatcher2<ID>::get_bucket() {
   using final_evt_t = std::remove_cvref_t<Event_T>;
   const size_t type_id = utils::sequential_type_id<ID, final_evt_t>();
   if (type_id >= memory.size()) return nullptr;
@@ -266,7 +267,7 @@ event_dispatcher2<ID>::bucket<Event_T>* event_dispatcher2<ID>::get_bucket() {
 
 template <size_t ID>
 template<typename Event_T>
-const event_dispatcher2<ID>::bucket<Event_T>* event_dispatcher2<ID>::get_bucket() const {
+const event_dispatcher2<ID>::template bucket<Event_T>* event_dispatcher2<ID>::get_bucket() const {
   using final_evt_t = std::remove_cvref_t<Event_T>;
   const size_t type_id = utils::sequential_type_id<ID, final_evt_t>();
   if (type_id >= memory.size()) return nullptr;

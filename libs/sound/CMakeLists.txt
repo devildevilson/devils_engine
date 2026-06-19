@@ -31,7 +31,7 @@ set(SRC_LIST
   src/sound/pcm_decoder.cpp
   src/sound/system.cpp
   src/sound/resource.cpp 
-  src/sound/basic_sources.cpp
+  #src/sound/basic_sources.cpp
 )
 
 set(HDR_LIST
@@ -46,10 +46,10 @@ set(HDR_LIST
   include/devils_engine/sound/virtual_source.h 
   include/devils_engine/sound/resource.h 
   include/devils_engine/sound/basic_sources.h
-)
+ "include/devils_engine/sound/common.h")
 
 add_library(devils_sound ${SRC_LIST} ${HDR_LIST})
-target_link_libraries(devils_sound PRIVATE devils_engine::options devils_engine::utils glm::glm ${OPENAL_LIBRARY_NAME}) # openal
+target_link_libraries(devils_sound PRIVATE devils_engine::options devils_engine::utils ${OPENAL_LIBRARY_NAME} miniaudio) # openal
 target_include_directories(devils_sound INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>") # ???
 target_include_directories(devils_sound PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/sound>")
 target_link_directories(devils_sound PUBLIC ${OPENAL_LIBRARY_DIR})

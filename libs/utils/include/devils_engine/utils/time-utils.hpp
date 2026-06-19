@@ -17,6 +17,8 @@ namespace utils {
   using timestamp_t = size_t;
   using unix_timestamp_t = size_t;
 
+  constexpr size_t global_time_resolution = UINT64_C(1000000);
+
   class time_log {
   public:
     std::string_view str;

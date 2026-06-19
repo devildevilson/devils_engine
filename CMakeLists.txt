@@ -16,12 +16,14 @@ project(
   LANGUAGES CXX C
 )
 
+set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+
 set(DEVILS_ENGINE_NAME devils_engine)
 
-set(DEVILS_ENGINE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${DEVILS_ENGINE_NAME}")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${DEVILS_ENGINE_OUTPUT_DIRECTORY}/lib")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${DEVILS_ENGINE_OUTPUT_DIRECTORY}/bin")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${DEVILS_ENGINE_OUTPUT_DIRECTORY}/bin")
+#set(DEVILS_ENGINE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${DEVILS_ENGINE_NAME}")
+#set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/lib")
+#set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${DEVILS_ENGINE_OUTPUT_DIRECTORY}/bin")
+#set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${DEVILS_ENGINE_OUTPUT_DIRECTORY}/bin")
 
 set(PROJECT_EXTERNAL_DEPENDENCY_DIR ${CMAKE_CURRENT_LIST_DIR}/external)
 
@@ -29,7 +31,7 @@ add_library(devils_engine_options INTERFACE)
 target_compile_features(devils_engine_options INTERFACE cxx_std_23)
 #target_compile_features(devils_engine_options INTERFACE c_std_11)
 target_compile_options(devils_engine_options INTERFACE
-  $<$<CONFIG:Debug>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MDd /ZI /Wall /wd5045 /wd4820 /wd4514 /GR- /permissive- /Zc:preprocessor>>
+  $<$<CONFIG:Debug>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MDd /Zi /Wall /wd5045 /wd4820 /wd4514 /GR- /permissive- /Zc:preprocessor>>
   $<$<CONFIG:Release>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MD /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>
   $<$<CONFIG:MinSizeRel>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MD /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>
   $<$<CONFIG:RelWithDebInfo>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MDd /ZI /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>
@@ -87,6 +89,8 @@ set(MSDF_ATLAS_USE_SKIA OFF)
 set(MSDF_ATLAS_BUILD_STANDALONE OFF)
 set(MSDF_ATLAS_MSDFGEN_EXTERNAL ON)
 
+set(SPDLOG_BUILD_EXAMPLE OFF)
+set(SPDLOG_BUILD_TESTS OFF)
 set(SPDLOG_USE_STD_FORMAT ON)
 
 set(ZLIB_COMPAT ON)
@@ -105,6 +109,14 @@ set(GLM_ENABLE_SIMD_AVX ON)
 
 set(CATCH_INSTALL_DOCS OFF)
 set(CATCH_INSTALL_EXTRAS OFF)
+
+set(MINIAUDIO_USE_STDINT ON)
+set(MINIAUDIO_INSTALL OFF)
+set(MINIAUDIO_NO_WAV ON)
+set(MINIAUDIO_NO_FLAC ON)
+set(MINIAUDIO_NO_MP3 ON)
+set(MINIAUDIO_NO_LIBVORBIS ON)
+set(MINIAUDIO_NO_LIBOPUS ON)
 
 FetchContent_Declare(
   glaze
@@ -282,10 +294,34 @@ FetchContent_Declare(
   FIND_PACKAGE_ARGS
 )
 
+#FetchContent_Declare(
+#  RE-flex
+#  GIT_REPOSITORY https://github.com/Genivia/RE-flex.git
+#  GIT_TAG        v6.0.0
+#  GIT_PROGRESS   TRUE
+#  FIND_PACKAGE_ARGS
+#)
+
 FetchContent_Declare(
-  RE-flex
-  GIT_REPOSITORY https://github.com/Genivia/RE-flex.git
-  GIT_TAG        v6.0.0
+  cpuinfo
+  GIT_REPOSITORY https://github.com/pytorch/cpuinfo.git
+  GIT_TAG        c4b4f4bf08c0cf486fc3111d0244ebf2a48ad01b
+  GIT_PROGRESS   TRUE
+  FIND_PACKAGE_ARGS
+)
+
+FetchContent_Declare(
+  miniaudio
+  GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+  GIT_TAG        0.11.25
+  GIT_PROGRESS   TRUE
+  FIND_PACKAGE_ARGS
+)
+
+FetchContent_Declare(
+  rapidhash
+  GIT_REPOSITORY https://github.com/Nicoshev/rapidhash.git
+  GIT_TAG        rapidhash_v3
   GIT_PROGRESS   TRUE
   FIND_PACKAGE_ARGS
 )
@@ -297,7 +333,11 @@ add_library(ZLIB::ZLIB ALIAS zlib)
 set(ZLIB_INCLUDE_DIR "${FETCHCONTENT_BASE_DIR}/zlib-build/")
 set(ZLIB_INCLUDE_DIRS "${FETCHCONTENT_BASE_DIR}/zlib-build/")
 
-FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng PNG atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm Catch2 RE-flex)
+FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng PNG atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm Catch2 cpuinfo miniaudio rapidhash) # RE-flex
+
+#target_compile_options(spdlog 
+#  PRIVATE /fsanitize=address
+#)
 
 find_package(Threads REQUIRED)
 
@@ -330,6 +370,8 @@ else()
   )
 endif()
 
+include_directories("${FETCHCONTENT_BASE_DIR}/rapidhash-src/")
+
 #add_compile_definitions("DEVILS_ENGINE_PROJECT_NAME=\"${PROJECT_NAME}\"")
 #add_compile_definitions("DEVILS_ENGINE_ENGINE_NAME=\"${DEVILS_ENGINE_NAME}\"")
 
@@ -345,6 +387,7 @@ add_subdirectory(libs/bindings/)
 add_subdirectory(libs/acumen/)
 add_subdirectory(libs/catalogue/)
 add_subdirectory(tests/)
+add_subdirectory(tests/tile_frontier/)
 
 #foreach (library_path IN LISTS DYN_LIBRARIES_LIST)
 #  add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD 
@@ -368,6 +411,32 @@ else()
   set(VULKAN_LIBRARY_NAME vulkan)
 endif()
 
-add_executable(fast_test main.cpp)
-target_link_libraries(fast_test devils_engine::devils_plane ${SHADERC_LIBRARY_NAME} Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp)
-add_dependencies(fast_test copy_render_config copy_shaders)
+set(FAST_TEST_TARGET fast_test)
+set(FAST_TEST_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${FAST_TEST_TARGET}")
+
+add_executable(${FAST_TEST_TARGET} main.cpp)
+target_link_libraries(${FAST_TEST_TARGET} devils_engine::devils_plane ${SHADERC_LIBRARY_NAME} Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp)
+set_target_properties(${FAST_TEST_TARGET} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${FAST_TEST_OUTPUT_DIRECTORY}/bin")
+
+set(GRAPHICS_TEST_CONFIG_LOCATION ${CMAKE_CURRENT_LIST_DIR}/tests/)
+
+add_custom_command(TARGET ${FAST_TEST_TARGET} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory 
+    ${GRAPHICS_TEST_CONFIG_LOCATION}/test_render_config 
+    ${FAST_TEST_OUTPUT_DIRECTORY}/tests/render_config
+)
+
+add_custom_command(TARGET ${FAST_TEST_TARGET} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory 
+    ${GRAPHICS_TEST_CONFIG_LOCATION}/shaders 
+    ${FAST_TEST_OUTPUT_DIRECTORY}/tests/shaders
+)
+
+if (WIN32)
+  add_custom_command(TARGET ${FAST_TEST_TARGET} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      $<TARGET_RUNTIME_DLLS:${FAST_TEST_TARGET}>
+      $<TARGET_FILE_DIR:${FAST_TEST_TARGET}>
+    COMMAND_EXPAND_LISTS
+  )
+endif()

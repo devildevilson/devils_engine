@@ -281,6 +281,7 @@ struct image_memory_barrier {
   subresource_image subresourceRange;
 };
 
+// обновление дескрипторов нужно сделать тут
 struct graphics_ctx {
   const graphics_base* base;
   const assets_base* assets;

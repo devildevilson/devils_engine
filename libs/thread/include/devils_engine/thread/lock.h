@@ -7,6 +7,8 @@
 #include <atomic>
 #include <thread>
 
+#include <immintrin.h>
+
 namespace devils_engine {
 namespace thread {
 namespace semaphore_state {
@@ -26,12 +28,31 @@ public:
   inline bool wait_for(T dur, const size_t tolerance_in_ns = 1) const { return wait_until(clock::now() + dur, tolerance_in_ns); }
 };
 
+// ARM?
+inline void cpu_relax() noexcept { _mm_pause(); }
+inline void light_cpu_relax() noexcept { std::this_thread::yield(); }
+
 class spin_mutex {
 public: 
+  static constexpr int max_backoff = 64;
+
   inline spin_mutex() noexcept : val(false) {}
-  inline bool try_lock() noexcept { return !val.exchange(true); }
-  inline void lock() noexcept { while (val.exchange(true)) {} }
-  inline void unlock() noexcept { val = false; }
+  inline bool try_lock() noexcept { return !val.exchange(true, std::memory_order_acquire); }
+  inline void lock() noexcept { 
+    int backoff = 1;
+
+    for (;;) {
+      while (val.load(std::memory_order_relaxed)) { 
+        for (int i = 0; i < backoff; ++i) cpu_relax(); 
+      } 
+
+      if (try_lock()) return;
+
+      backoff = std::min(backoff * 2, max_backoff);
+    }
+  }
+
+  inline void unlock() noexcept { val.store(false, std::memory_order_release); }
 private:
   std::atomic_bool val;
 };
@@ -39,9 +60,14 @@ private:
 class light_spin_mutex {
 public: 
   inline light_spin_mutex() noexcept : val(false) {}
-  inline bool try_lock() noexcept { return !val.exchange(true); }
-  inline void lock() noexcept { while (val.exchange(true)) { std::this_thread::sleep_for(std::chrono::nanoseconds(1)); } }
-  inline void unlock() noexcept { val = false; }
+  inline bool try_lock() noexcept { return !val.exchange(true, std::memory_order_acquire); }
+  inline void lock() noexcept {
+    for (;;) {
+      while (val.load(std::memory_order_relaxed)) { light_cpu_relax(); }
+      if (try_lock()) return;
+    }
+  }
+  inline void unlock() noexcept { val.store(false, std::memory_order_release); }
 private:
   std::atomic_bool val;
 };
@@ -54,6 +80,8 @@ void spin_sleep_for(const T &dur) {
   while (ns < amount) {
     const auto new_dur = std::chrono::high_resolution_clock::now() - tp;
     ns = std::chrono::duration_cast<std::chrono::nanoseconds>(new_dur).count();
+
+    cpu_relax();
   }
 }
 
@@ -64,6 +92,8 @@ void spin_sleep_until(const T &tp) {
   while (ns < 0) {
     const auto new_dur = std::chrono::high_resolution_clock::now() - orig_tp;
     ns = std::chrono::duration_cast<std::chrono::nanoseconds>(new_dur).count();
+
+    cpu_relax();
   }
 }
 
@@ -73,9 +103,10 @@ void light_spin_sleep_for(const T &dur) {
   const auto tp = std::chrono::high_resolution_clock::now();
   size_t ns = 0;
   while (ns < amount) {
-    std::this_thread::sleep_for(std::chrono::nanoseconds(1));
     const auto new_dur = std::chrono::high_resolution_clock::now() - tp;
     ns = std::chrono::duration_cast<std::chrono::nanoseconds>(new_dur).count();
+
+    light_cpu_relax();
   }
 }
 
@@ -84,9 +115,10 @@ void light_spin_sleep_until(const T &tp) {
   const auto orig_tp = std::chrono::clock_cast<std::chrono::high_resolution_clock>(tp);
   int64_t ns = -1;
   while (ns < 0) {
-    std::this_thread::sleep_for(std::chrono::nanoseconds(1));
     const auto new_dur = std::chrono::high_resolution_clock::now() - orig_tp;
     ns = std::chrono::duration_cast<std::chrono::nanoseconds>(new_dur).count();
+
+    light_cpu_relax();
   }
 }
 }

@@ -3,15 +3,19 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <span>
+#include <string_view>
+#include "common.h"
 
 namespace devils_engine {
   namespace sound {
     class decoder {
     public:
       inline decoder() noexcept :
+        m_format(format::unknown),
         m_channels(0),
         m_sample_rate(0),
-        m_bits_per_channel(0),
         m_frames_count(0)
       {}
 
@@ -27,16 +31,18 @@ namespace devils_engine {
         const uint32_t sample_rate_override = 0
       ) = 0;
 
+      inline enum format format() const noexcept { return m_format; }
       inline uint16_t channels() const noexcept { return m_channels; }
       inline uint32_t sample_rate() const noexcept { return m_sample_rate; }
-      inline uint32_t bits_per_channel() const noexcept { return m_bits_per_channel; }
       inline size_t frames_count() const noexcept { return m_frames_count; }
     protected:
+      enum format m_format;
       uint16_t m_channels;
       uint32_t m_sample_rate;
-      uint32_t m_bits_per_channel;
       size_t m_frames_count;
     };
+
+    std::unique_ptr<decoder> make_decoder(const data_type type, const std::string_view &name, const std::span<const char> &data);
   }
 }
 

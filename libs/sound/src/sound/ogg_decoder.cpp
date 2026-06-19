@@ -18,7 +18,7 @@ namespace devils_engine {
       const stb_vorbis_info &info = stb_vorbis_get_info(data);
 
       m_sample_rate = info.sample_rate;
-      m_bits_per_channel = 32;
+      m_format = format::f32;
       m_channels = info.channels;
       // либо я путаю, либо здесь напортачили, но тут возвращаются фреймы (фрейм = сэмпл / канал)
       // а ниже в функциях stb_vorbis_get_samples_* возвращаются именно сэмплы
@@ -50,7 +50,7 @@ namespace devils_engine {
       const uint16_t final_channels = channels_override != 0 ? channels_override : channels();
       const uint32_t final_sample_rate = sample_rate_override != 0 ? sample_rate_override : sample_rate();
 
-      const size_t block_bytes_size = pcm_frames_to_bytes(frames_count, final_channels, bits_per_channel());
+      const size_t block_bytes_size = pcm_samples_to_bytes(frames_count, data->channels, format());
       if (buffer.size() < block_bytes_size) buffer.resize(block_bytes_size, 0);
 
       // float32 портит звук? или это stb_vorbis говно?
@@ -60,9 +60,9 @@ namespace devils_engine {
                                                                             reinterpret_cast<float*>(buffer.data()),
                                                                             num_floats);
       const size_t readed_frames = readed_samples / final_channels; // фреймы - это сэмпл * каналы
-      const size_t cur_block_size = pcm_frames_to_bytes(readed_frames, final_channels, bits_per_channel());
+      const size_t cur_block_size = pcm_samples_to_bytes(readed_frames, final_channels, format());
       al_call(alBufferData, al_buffer,
-              to_al_format(final_channels, bits_per_channel()),
+              to_al_format(final_channels, 32),
               buffer.data(), cur_block_size,
               final_sample_rate);
 

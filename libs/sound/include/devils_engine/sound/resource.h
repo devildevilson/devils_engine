@@ -7,6 +7,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <span>
+#include "common.h"
 #include "decoder.h"
 
 namespace devils_engine {
@@ -44,6 +46,13 @@ struct resource {
   ~resource() noexcept;
 
   double duration() const; // s
+};
+
+// id и data должны существовать на протяжении использования ресурса
+struct resource2 {
+  std::string_view id;
+  enum data_type type;
+  std::span<const char> data;
 };
 }
 }

@@ -1011,6 +1011,7 @@ std::vector<OUT> convert(graphics_base& ctx, const std::vector<T>& in, const F &
   return arr;
 }
 
+semaphore::semaphore() noexcept { memset(handles.data(), 0, sizeof(handles)); }
 
 void parse_data(graphics_base* ctx, std::string path) {
   const auto& constant_values = parse_file<constant_value_mirror>(path + "declare_values.json");

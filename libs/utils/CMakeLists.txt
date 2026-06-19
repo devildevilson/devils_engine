@@ -25,7 +25,7 @@ set(SRC_LIST
   src/utils/compression.cpp
   src/utils/loader.cpp
   src/utils/locale.cpp
-  src/utils/patterns.cpp
+  #src/utils/patterns.cpp
 )
 
 set(HDR_LIST
@@ -55,8 +55,8 @@ set(HDR_LIST
   include/devils_engine/utils/event_dispatcher.h
   include/devils_engine/utils/event_consumer.h
   include/devils_engine/utils/context_stack.h
-  include/devils_engine/utils/patterns.h
-)
+  #include/devils_engine/utils/patterns.h
+ "include/devils_engine/utils/actor_ref.h" "include/devils_engine/utils/string_id.h")
 
 add_library(devils_mood src/mood/system.cpp include/devils_engine/mood/system.h)
 target_include_directories(devils_mood INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
@@ -88,8 +88,8 @@ target_compile_options(engine_c_part1 PRIVATE
 )
 
 target_link_libraries(devils_utils 
-  PUBLIC devils_engine::thread devils_mood devils_simul devils_aesthetics spdlog::spdlog glaze::glaze gtl minizip ReflexLibStatic #alpaca::alpaca
-  PRIVATE engine_c_part1 density ZLIB::ZLIB bcrypt ncrypt crypt32 devils_engine::options
+  PUBLIC devils_engine::thread devils_mood devils_simul devils_aesthetics spdlog::spdlog glaze::glaze gtl minizip #ReflexLibStatic #alpaca::alpaca
+  PRIVATE engine_c_part1 density ZLIB::ZLIB bcrypt ncrypt crypt32 devils_engine::options cpuinfo
 )
 
 target_include_directories(devils_utils INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")

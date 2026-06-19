@@ -9,6 +9,7 @@
 #include "devils_engine/utils/time-utils.hpp"
 
 #include <chrono>
+#include <cmath>
 
 using namespace devils_engine;
 
@@ -166,9 +167,13 @@ static uint32_t make_color(const float r, const float g, const float b, const fl
   return (uint32_t(std::round(std::clamp(r, 0.0f, 1.0f) * 255.0f)) << 0) | (uint32_t(std::round(std::clamp(g, 0.0f, 1.0f) * 255.0f)) << 8) | (uint32_t(std::round(std::clamp(b, 0.0f, 1.0f) * 255.0f)) << 16) | (uint32_t(std::round(std::clamp(a, 0.0f, 1.0f) * 255.0f)) << 24);
 }
 
+// дебаг утилиты желательно включать в рантайме
 int main() {
   const auto cur_folder = utils::project_folder();
   utils::println(cur_folder);
+
+  const auto proc_name = utils::get_cpu_name();
+  utils::println(proc_name);
 
   input_init ii(&error_callback);
   vulkan_init vk;
@@ -193,7 +198,8 @@ int main() {
   base.create_descriptor_pool();
   // свопчеин зависит от пачки ресурсов с диска
   //base.recreate_swapchain(640, 480);
-  base.get_or_create_pipeline_cache(utils::cache_folder() + "graphics_pipeline_cache");
+  const auto cache_file = utils::cache_folder() + "graphics_pipeline_cache";
+  base.get_or_create_pipeline_cache(cache_file);
 
   // нужны количество картинок для всех ресурсов которые зависят от свопчейна (кроме презент)
   // ... блин а обычные то ресурсы не будут пересоздаваться количественно
@@ -239,6 +245,8 @@ int main() {
 
   print_vec(base.constants_memory[1]);
 
+  base.dump_cache_on_disk(cache_file);
+
   painter::assets_base assets(dev, vk.p_data.handle);
   assets.create_fence();
   assets.create_allocator(vk.instance);
@@ -270,7 +278,6 @@ int main() {
     const auto inst = base.get_current_instance_resource_frame(pair_index, 1);
     const auto indi = base.get_current_indirect_resource_frame(pair_index, 1);
 
-    // хочу 4 треугольника по разным осям
     utils::info("Instance buffer: name '{}', format '{}', offset '{}', stride '{}', role '{}'", inst.name, inst.format, inst.sub.offset, inst.stride, painter::role::to_string(inst.role));
     utils::info("Indirect buffer: name '{}', format '{}', offset '{}', stride '{}', role '{}'", indi.name, indi.format, indi.sub.offset, indi.stride, painter::role::to_string(indi.role));
 
@@ -315,6 +322,28 @@ int main() {
     // что делать если лагает? желательно все равно выводить картинку, но пропускать кадры
     std::this_thread::sleep_until(tp + fps60 * counter);
   }
+
+  // нарисовал 4 треугольника, что теперь? хороший вопрос
+  // теперь бы финализировать систему в виде актора
+  // положить систему в отдельный поток
+  // и отправить ему данные из основного
+
+  // вообще бы собрать в кучу все системы...
+  // блен мотивация куда то улетучилась =(
+  // надо придумать проектик, чтобы я хотел небольшого сделать чтобы потестить штуки?
+  // наверное я бы хотел сделать тайловый генератор какой нибудь
+  // в смысле генератор карты + бесконечность тайлов
+
+  // так возвращаемся, хочу небольшой проект: 
+  // вид сверху, генерированные тайлы, какие то штуки на карте
+  // челиксы которые по этой карте передвигаются и реагируют друг на друга и на предметы на карте
+  // так с чего мы начнем? наверное с того что мне нужно описать системы как актор модел
+  // значит какие системы у меня есть: звук, графика, загрузка ассетов, главная система
+  // нужно описать simul::interface для каждой + поставить рядом utils::actor_ref
+  // в основной системе описать компоненты, системы, камеру и контроллер
+  // наверное что то из этого появится в основном движке...
+  // так наверное следует начать с того что мы положим все системы в simul::interface и попробуем их просто 
+  // запустить параллельно
 
   utils::println("Exit");
 }

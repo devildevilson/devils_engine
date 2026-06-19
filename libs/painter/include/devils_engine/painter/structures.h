@@ -411,7 +411,7 @@ struct semaphore {
   std::string name;
   std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> handles;
 
-  inline semaphore() noexcept { memset(handles.data(), 0, sizeof(handles)); }
+  semaphore() noexcept;
 };
 
 // ничего не создаем, только парсим и связываем структуры друг с другом

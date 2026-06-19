@@ -4,6 +4,7 @@
 #include <vector>
 #include <string_view>
 
+#include "common.h"
 #include "decoder.h"
 
 namespace devils_engine {
@@ -13,8 +14,8 @@ namespace devils_engine {
       pcm_decoder(
         const void* memory,
         const size_t memory_size,
+        const enum format format,
         const uint16_t channels,
-        const uint32_t bits_pes_channel,
         const uint32_t sample_rate,
         const size_t frames_count
       );

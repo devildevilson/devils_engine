@@ -40,7 +40,7 @@ namespace devils_engine {
       }
 
       m_sample_rate = data.sampleRate;
-      m_bits_per_channel = data.bitsPerSample;
+      m_format = bits_per_sample_to_format(adjust_bits_per_channel(data.bitsPerSample));
       m_frames_count = data.totalPCMFrameCount;
       m_channels = data.channels;
     }
@@ -69,7 +69,8 @@ namespace devils_engine {
       auto* final_data = reinterpret_cast<T*>(memory);
       size_t readed_frames = 0;
       if (channels == 1 && data->channels != 1) {
-        const size_t block_bytes_size = pcm_frames_to_bytes(frames_count, data->channels, data->bitsPerSample);
+        const auto cur_fmt = bits_per_sample_to_format(adjust_bits_per_channel(data->bitsPerSample));
+        const size_t block_bytes_size = pcm_samples_to_bytes(frames_count, data->channels, cur_fmt);
         if (buffer.size() < block_bytes_size) buffer.resize(block_bytes_size, 0);
         auto block_data = reinterpret_cast<T*>(buffer.data());
 
@@ -111,8 +112,8 @@ namespace devils_engine {
         "Supported formats is float32, signed16 and unsigned8"
       );
 
-      const uint32_t final_bits = adjust_bits_per_channel(data->bitsPerSample);
-      const size_t block_bytes_size = pcm_frames_to_bytes(frames_count, data->channels, final_bits);
+      const auto cur_fmt = bits_per_sample_to_format(adjust_bits_per_channel(data->bitsPerSample));
+      const size_t block_bytes_size = pcm_samples_to_bytes(frames_count, data->channels, cur_fmt);
       if (buffer.size() < block_bytes_size) buffer.resize(block_bytes_size, 0);
 
       size_t readed_frames = 0;
@@ -129,9 +130,9 @@ namespace devils_engine {
 
         make_mono(block_data, block_data, readed_frames, data->channels);
 
-        const size_t buffer_size = pcm_frames_to_bytes(readed_frames, channels, final_bits);
+        const size_t buffer_size = pcm_samples_to_bytes(readed_frames, channels, cur_fmt);
         al_call(alBufferData, al_buffer,
-                to_al_format(channels, final_bits),
+                to_al_format(channels, format_to_bits(cur_fmt)),
                 block_data, buffer_size, sample_rate);
       } else if (channels == data->channels) {
         auto block_data = reinterpret_cast<T*>(buffer.data());
@@ -144,9 +145,9 @@ namespace devils_engine {
           readed_frames = drwav_read_pcm_frames(data, frames_count, block_data);
         }
 
-        const size_t buffer_size = pcm_frames_to_bytes(readed_frames, channels, final_bits);
+        const size_t buffer_size = pcm_samples_to_bytes(readed_frames, channels, cur_fmt);
         al_call(alBufferData, al_buffer,
-                to_al_format(channels, final_bits),
+                to_al_format(channels, format_to_bits(cur_fmt)),
                 block_data, buffer_size, sample_rate); //.data()
       } else {
         // ошибка, наверное просто вернем 0
@@ -161,14 +162,14 @@ namespace devils_engine {
       const uint16_t final_channels = channels_override != 0 ? channels_override : channels();
 
       size_t readed_frames = 0;
-      if (bits_per_channel() <= 8) {
+      if (format() == format::u8) {
         readed_frames = get_frames_templ<uint8_t>(&data, buffer, memory, frames_count, final_channels);
-      } else if (bits_per_channel() <= 16) {
+      } else if (format() == format::s16) {
         readed_frames = get_frames_templ<int16_t>(&data, buffer, memory, frames_count, final_channels);
-      } else if (bits_per_channel() <= 32) {
+      } else if (format() == format::f32) {
         readed_frames = get_frames_templ<float>(&data, buffer, memory, frames_count, final_channels);
       } else {
-        utils::error{}("wav format with {} bits per channel is not supported", bits_per_channel());
+        utils::error{}("wav format with {} bits per channel is not supported", data.bitsPerSample);
       }
 
       return readed_frames;
@@ -184,14 +185,14 @@ namespace devils_engine {
       const uint32_t final_sample_rate = sample_rate_override != 0 ? sample_rate_override : sample_rate();
 
       size_t readed_frames = 0;
-      if (bits_per_channel() <= 8) {
+      if (format() == format::u8) {
         readed_frames = get_frames_templ<uint8_t>(&data, buffer, al_buffer, frames_count, final_channels, final_sample_rate);
-      } else if (bits_per_channel() <= 16) {
+      } else if (format() == format::s16) {
         readed_frames = get_frames_templ<int16_t>(&data, buffer, al_buffer, frames_count, final_channels, final_sample_rate);
-      } else if (bits_per_channel() <= 32) {
+      } else if (format() == format::f32) {
         readed_frames =   get_frames_templ<float>(&data, buffer, al_buffer, frames_count, final_channels, final_sample_rate);
       } else {
-        utils::error{}("wav format with {} bits per channel is not supported", bits_per_channel());
+        utils::error{}("wav format with {} bits per channel is not supported", data.bitsPerSample);
       }
 
       return readed_frames;

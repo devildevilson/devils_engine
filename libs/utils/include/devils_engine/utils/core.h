@@ -240,6 +240,8 @@ std::u32string cast32(const std::string_view &str) noexcept;
 std::string app_path() noexcept;
 std::string project_folder() noexcept;
 std::string cache_folder() noexcept;
+// имеет смысл добавить получение каких то цифр к этому
+std::string get_cpu_name() noexcept;
 
 uint32_t crc32c(const uint8_t* data, const size_t len) noexcept;
 uint32_t crc32c(const std::span<const uint8_t> &data) noexcept;

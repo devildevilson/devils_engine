@@ -5,3 +5,5 @@ exclude/
 .vs/
 CMakeSettings.json
 .gitignore
+deps/
+

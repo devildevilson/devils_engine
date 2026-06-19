@@ -22,6 +22,28 @@ elseif (MINGW)
   set(GLFW3_FOLDER_NAME lib-mingw-w64)
 endif()
 
+add_library(glfw3 SHARED IMPORTED GLOBAL)
+
+if (MSVC)
+set_target_properties(glfw3 PROPERTIES
+  IMPORTED_LOCATION
+    "${FETCHCONTENT_BASE_DIR}/glfw3-src/${GLFW3_FOLDER_NAME}/glfw3.dll"
+  IMPORTED_IMPLIB
+    "${FETCHCONTENT_BASE_DIR}/glfw3-src/${GLFW3_FOLDER_NAME}/glfw3dll.lib"
+  INTERFACE_INCLUDE_DIRECTORIES
+    "${FETCHCONTENT_BASE_DIR}/glfw3-src/include"
+)
+else(MINGW)
+set_target_properties(glfw3 PROPERTIES
+  IMPORTED_LOCATION
+    "${FETCHCONTENT_BASE_DIR}/glfw3-src/${GLFW3_FOLDER_NAME}/glfw3.dll"
+  IMPORTED_IMPLIB
+    "${FETCHCONTENT_BASE_DIR}/glfw3-src/${GLFW3_FOLDER_NAME}/libglfw3dll.a"
+  INTERFACE_INCLUDE_DIRECTORIES
+    "${FETCHCONTENT_BASE_DIR}/glfw3-src/include"
+)
+endif()
+
 set(SRC_LIST
   src/input/core.cpp
   src/input/events.cpp
@@ -35,17 +57,17 @@ set(HDR_LIST
 )
 
 add_library(devils_input ${SRC_LIST} ${HDR_LIST})
-target_link_libraries(devils_input PRIVATE devils_engine::options devils_engine::utils ${GLFW3_LIBRARY_NAME} Vulkan::Headers)
+target_link_libraries(devils_input PRIVATE devils_engine::options devils_engine::utils glfw3 Vulkan::Headers)
 target_include_directories(devils_input INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_input PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/input>")
 
-target_include_directories(devils_input SYSTEM PRIVATE
-  "${FETCHCONTENT_BASE_DIR}/glfw3-src/include"
-)
+#target_include_directories(devils_input SYSTEM PRIVATE
+#  "${FETCHCONTENT_BASE_DIR}/glfw3-src/include"
+#)
 
-target_link_directories(devils_input PUBLIC
-  "${FETCHCONTENT_BASE_DIR}/glfw3-src/${GLFW3_FOLDER_NAME}"
-)
+#target_link_directories(devils_input PUBLIC
+#  "${FETCHCONTENT_BASE_DIR}/glfw3-src/${GLFW3_FOLDER_NAME}"
+#)
 
 #if (MSVC)
 #  target_include_directories(devils_input PRIVATE ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/vulkan/Include)

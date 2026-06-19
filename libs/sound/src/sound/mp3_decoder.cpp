@@ -40,7 +40,7 @@ namespace devils_engine {
       }
 
       m_sample_rate = data.sampleRate;
-      m_bits_per_channel = 32;
+      m_format = format::f32;
       m_frames_count = drmp3_get_pcm_frame_count(&data);
       m_channels = data.channels;
     }
@@ -61,7 +61,7 @@ namespace devils_engine {
       auto* final_data = reinterpret_cast<float*>(memory);
       size_t readed_frames = 0;
       if (final_channels == 1 && data.channels != 1) {
-        const size_t block_bytes_size = pcm_frames_to_bytes(frames_count, data.channels, bits_per_channel());
+        const size_t block_bytes_size = pcm_samples_to_bytes(frames_count, data.channels, format());
         if (buffer.size() < block_bytes_size) buffer.resize(block_bytes_size, 0);
         auto block_data = reinterpret_cast<float*>(buffer.data());
 
@@ -87,7 +87,7 @@ namespace devils_engine {
       const uint32_t final_sample_rate = sample_rate_override != 0 ? sample_rate_override : sample_rate();
 
       size_t readed_frames = 0;
-      const size_t block_bytes_size = pcm_frames_to_bytes(frames_count, data.channels, bits_per_channel());
+      const size_t block_bytes_size = pcm_samples_to_bytes(frames_count, data.channels, format());
       if (buffer.size() < block_bytes_size) buffer.resize(block_bytes_size, 0);
 
       if (final_channels == 1 && data.channels != 1) {
@@ -95,16 +95,16 @@ namespace devils_engine {
         readed_frames = drmp3_read_pcm_frames_f32(&data, frames_count, block_data);
 
         make_mono(block_data, block_data, readed_frames, data.channels);
-        const size_t buffer_size = pcm_frames_to_bytes(readed_frames, final_channels, bits_per_channel());
+        const size_t buffer_size = pcm_samples_to_bytes(readed_frames, final_channels, format());
         al_call(alBufferData, al_buffer,
-                to_al_format(final_channels, bits_per_channel()),
+                to_al_format(final_channels, 32),
                 block_data, buffer_size, final_sample_rate); //.data()
       } else if (final_channels == data.channels) {
         auto block_data = reinterpret_cast<float*>(buffer.data());
         readed_frames = drmp3_read_pcm_frames_f32(&data, frames_count, block_data); //.data()
-        const size_t buffer_size = pcm_frames_to_bytes(readed_frames, final_channels, bits_per_channel());
+        const size_t buffer_size = pcm_frames_to_bytes(readed_frames, final_channels, 32);
         al_call(alBufferData, al_buffer,
-                to_al_format(final_channels, bits_per_channel()),
+                to_al_format(final_channels, 32),
                 block_data, buffer_size, final_sample_rate); //.data()
 
       } else {
