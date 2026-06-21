@@ -49,7 +49,11 @@ uint32_t render_target::resource_index(const uint32_t res_id) const {
   for (; i < resources.size() && std::get<0>(resources[i]) != res_id; ++i) {}
   return i >= resources.size() ? UINT32_MAX : i;
 }
-descriptor::descriptor() noexcept : setlayout(VK_NULL_HANDLE) { memset(sets.data(), 0, sizeof(sets)); }
+descriptor::descriptor() noexcept : texture_count(0), texture_sampler(UINT32_MAX), texture_stage(VK_SHADER_STAGE_ALL), setlayout(VK_NULL_HANDLE) { memset(sets.data(), 0, sizeof(sets)); }
+sampler::sampler() noexcept :
+  mag_filter(VK_FILTER_LINEAR), min_filter(VK_FILTER_LINEAR),
+  address_u(VK_SAMPLER_ADDRESS_MODE_REPEAT), address_v(VK_SAMPLER_ADDRESS_MODE_REPEAT), address_w(VK_SAMPLER_ADDRESS_MODE_REPEAT),
+  mipmap_mode(VK_SAMPLER_MIPMAP_MODE_LINEAR), handle(VK_NULL_HANDLE) {}
 material::material() noexcept {}
 geometry::geometry() noexcept : index_type(index_type::u32), topology_type(0), restart(false), stride(0) {}
 draw_group::draw_group() noexcept : budget_constant(UINT32_MAX), types_constant(UINT32_MAX), instances_buffer(UINT32_MAX), type(type::device_local), indirect_buffer(UINT32_MAX), descriptor(UINT32_MAX), stride(0) {}
@@ -517,9 +521,80 @@ struct render_target_mirror {
   }
 };
 
-struct descriptor_mirror {
+static uint32_t parse_filter(const std::string_view& s, const std::string_view& owner) {
+  if (s == "linear")  return VK_FILTER_LINEAR;
+  if (s == "nearest") return VK_FILTER_NEAREST;
+  utils::error{}("Unknown sampler filter '{}' (sampler '{}')", s, owner);
+  return VK_FILTER_LINEAR;
+}
+
+static uint32_t parse_address(const std::string_view& s, const std::string_view& owner) {
+  if (s == "repeat") return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  if (s == "mirror") return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+  if (s == "clamp")  return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  if (s == "border") return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+  utils::error{}("Unknown sampler address mode '{}' (sampler '{}')", s, owner);
+  return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+}
+
+// 'fragment | vertex | ...' или 'all'. Пустая строка => all.
+static uint32_t parse_shader_stages(const std::string_view& s) {
+  if (s.empty()) return VK_SHADER_STAGE_ALL;
+  uint32_t flags = 0;
+  size_t i = 0;
+  while (i < s.size()) {
+    size_t j = s.find('|', i);
+    if (j == std::string_view::npos) j = s.size();
+    auto tok = s.substr(i, j - i);
+    while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t')) tok.remove_prefix(1);
+    while (!tok.empty() && (tok.back()  == ' ' || tok.back()  == '\t')) tok.remove_suffix(1);
+    if      (tok == "all")          return VK_SHADER_STAGE_ALL;
+    else if (tok == "vertex")       flags |= VK_SHADER_STAGE_VERTEX_BIT;
+    else if (tok == "fragment")     flags |= VK_SHADER_STAGE_FRAGMENT_BIT;
+    else if (tok == "compute")      flags |= VK_SHADER_STAGE_COMPUTE_BIT;
+    else if (tok == "geometry")     flags |= VK_SHADER_STAGE_GEOMETRY_BIT;
+    else if (tok == "tess_control") flags |= VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+    else if (tok == "tess_eval")    flags |= VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+    else if (!tok.empty()) utils::error{}("Unknown shader stage '{}'", tok);
+    i = j + 1;
+  }
+  return flags == 0 ? VK_SHADER_STAGE_ALL : flags;
+}
+
+struct sampler_mirror {
   std::string name;
-  std::vector<std::tuple<std::string, std::string>> layout;
+  std::string filter = "linear";
+  std::string address = "repeat";
+  // под доращивание: mipmap, anisotropy, lod, border_color, compare
+
+  sampler convert(const graphics_base& /*ctx*/) const {
+    sampler s;
+    s.name = name;
+    const uint32_t f = parse_filter(filter, name);
+    s.mag_filter = f; s.min_filter = f;
+    const uint32_t a = parse_address(address, name);
+    s.address_u = a; s.address_v = a; s.address_w = a;
+    return s;
+  }
+};
+
+struct descriptor_mirror {
+  // запись layout: resource + usage (+ опц. sampler, +опц. shader-стадии).
+  // если задан sampler — binding станет combinedImageSampler (см. create_descriptor_set_layouts).
+  struct entry {
+    std::string resource;
+    std::string usage;
+    std::string sampler;          // пусто => без сэмплера
+    std::string stage = "all";    // 'fragment | vertex | ...' либо 'all'
+  };
+
+  std::string name;
+  std::vector<entry> layout;
+
+  // asset-текстурный binding (опционально): texture_count картинок из assets_base, один sampler.
+  uint32_t texture_count = 0;
+  std::string texture_sampler;
+  std::string texture_stage = "fragment";
 
   descriptor convert(const graphics_base& ctx) const {
     const uint32_t exists = ctx.find_descriptor(name);
@@ -527,12 +602,23 @@ struct descriptor_mirror {
 
     descriptor d;
     d.name = name;
-    for (const auto& [res_name, usage] : layout) {
-      const uint32_t index = check(ctx.find_resource(res_name), "resource", res_name, name);
-      d.layout.push_back(std::make_tuple(
-        index,
-        check(usage::from_string(usage), usage, name)
-      ));
+    if (texture_count > 0) {
+      d.texture_count = texture_count;
+      d.texture_stage = parse_shader_stages(texture_stage);
+      if (texture_sampler.empty()) utils::error{}("Descriptor '{}' has texture_count but no texture_sampler", name);
+      d.texture_sampler = ctx.find_sampler(texture_sampler);
+      if (d.texture_sampler == UINT32_MAX) utils::error{}("Sampler '{}' not found (descriptor '{}')", texture_sampler, name);
+    }
+    for (const auto& e : layout) {
+      const uint32_t res_index = check(ctx.find_resource(e.resource), "resource", e.resource, name);
+      const auto usage_value = check(usage::from_string(e.usage), e.usage, name);
+      uint32_t sampler_index = UINT32_MAX;
+      if (!e.sampler.empty()) {
+        sampler_index = ctx.find_sampler(e.sampler);
+        if (sampler_index == UINT32_MAX) utils::error{}("Sampler '{}' not found (descriptor '{}')", e.sampler, name);
+      }
+      const uint32_t stages = parse_shader_stages(e.stage);
+      d.layout.push_back(std::make_tuple(res_index, usage_value, sampler_index, stages));
     }
     return d;
   }
@@ -775,7 +861,7 @@ static void parse_step2(
     const uint32_t index = check(ctx.find_resource(res_name), "resource", res_name, step.name);
     const auto usage = check(usage::from_string(usage_str), usage_str, step.name);
     step.barriers.push_back(std::make_tuple(index, usage));
-    ctx.descriptors[step.descriptor].layout.push_back(std::make_tuple(index, usage));
+    ctx.descriptors[step.descriptor].layout.push_back(std::make_tuple(index, usage, UINT32_MAX, uint32_t(VK_SHADER_STAGE_ALL)));
 
     if (usage::is_read(usage)) step.read.set(index, true);
     if (usage::is_write(usage)) step.write.set(index, true);
@@ -1018,6 +1104,7 @@ void parse_data(graphics_base* ctx, std::string path) {
   const auto& counter_names = parse_file<std::string>(path + "declare_counters.tavl");
   const auto& constants = parse_folder<constant_mirror>(path + "constants/");
   const auto& resources = parse_folder<resource_mirror>(path + "resources/");
+  const auto& samplers = parse_folder<sampler_mirror>(path + "samplers/");
   const auto& descriptors = parse_folder<descriptor_mirror>(path + "descriptors/");
   const auto& render_targets = parse_folder<render_target_mirror>(path + "render_targets/");
   const auto& geometries = parse_folder<geometry_mirror>(path + "geometries/");
@@ -1057,6 +1144,7 @@ void parse_data(graphics_base* ctx, std::string path) {
   lctx.constant_values = convert<constant_value>(lctx, constant_values);
   lctx.constants = convert<constant>(lctx, constants);
   lctx.resources = convert<resource>(lctx, resources);
+  lctx.samplers = convert<sampler>(lctx, samplers); // до дескрипторов: их convert ищет sampler по имени
   lctx.descriptors = convert<descriptor>(lctx, descriptors);
   lctx.render_targets = convert<render_target>(lctx, render_targets);
   lctx.geometries = convert<geometry>(lctx, geometries);
@@ -1150,7 +1238,7 @@ void parse_data(graphics_base* ctx, std::string path) {
     {
       descriptor d;
       d.name = group.name + ".descriptor";
-      d.layout = { std::make_tuple(group.instances_buffer, usage::storage_write), std::make_tuple(group.indirect_buffer, usage::storage_write) };
+      d.layout = { std::make_tuple(group.instances_buffer, usage::storage_write, UINT32_MAX, uint32_t(VK_SHADER_STAGE_ALL)), std::make_tuple(group.indirect_buffer, usage::storage_write, UINT32_MAX, uint32_t(VK_SHADER_STAGE_ALL)) };
 
       lctx.descriptors.emplace_back(std::move(d));
     }

@@ -16,6 +16,7 @@
 #include "render_system.h"
 #include "assets_system.h"
 #include "mesh_resource.h"
+#include "texture_resource.h"
 
 /*
 вопрос в том как правильно передать окно в рендер?
@@ -223,6 +224,17 @@ void simulation::init() {
     utils::info("main: requested mesh 'mesh/test' -> hot");
   } else {
     utils::warn("main: test mesh resource not found in registry");
+  }
+
+  // три grass-текстуры → texture_slots 0,1,2 (порядок запроса = порядок слотов, т.к. assets грузит по очереди)
+  for (const auto* name : { "textures/grass", "textures/grass1_0", "textures/grass3" }) {
+    if (auto* tex = container->assets_sim->resources()->get<texture_resource>(name)) {
+      command_load_resource cmd{tex, static_cast<int32_t>(demiurg::state::hot)};
+      aactor->send(cmd);
+      utils::info("main: requested texture '{}' -> hot", name);
+    } else {
+      utils::warn("main: texture resource '{}' not found in registry", name);
+    }
   }
 }
 

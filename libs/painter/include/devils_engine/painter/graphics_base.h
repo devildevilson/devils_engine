@@ -71,6 +71,7 @@ struct graphics_base {
   std::vector<constant> constants;
   std::vector<render_target> render_targets;
   std::vector<descriptor> descriptors;
+  std::vector<sampler> samplers;
   std::vector<material> materials;
   std::vector<geometry> geometries;
   std::vector<draw_group> draw_groups;
@@ -163,6 +164,7 @@ struct graphics_base {
   uint32_t find_constant(const std::string_view& name) const;
   uint32_t find_render_target(const std::string_view& name) const;
   uint32_t find_descriptor(const std::string_view& name) const;
+  uint32_t find_sampler(const std::string_view& name) const;
   uint32_t find_material(const std::string_view& name) const;
   uint32_t find_geometry(const std::string_view& name) const;
   uint32_t find_draw_group(const std::string_view& name) const;
@@ -222,6 +224,7 @@ struct graphics_base {
 
   // recreate_basic_resources
   void clear_prev_resources();
+  void create_samplers();
   void create_descriptor_set_layouts();
   void create_resources();
   void create_descriptor_sets();

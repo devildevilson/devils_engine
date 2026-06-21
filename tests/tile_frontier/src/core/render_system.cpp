@@ -19,6 +19,7 @@
 #include "messages.h"
 #include "message_dispatcher.h"
 #include "mesh_resource.h"
+#include "texture_resource.h"
 
 namespace tile_frontier {
 namespace core {
@@ -284,27 +285,112 @@ static void render_create_test_triangles(render_simulation_init& c) {
   const uint32_t dg_index = c.base->find_draw_group("dg1");
   if (dg_index == painter::INVALID_RESOURCE_SLOT) utils::error{}("Could not find draw group 'dg1'");
 
-  c.triangle_pair_index = c.base->register_pair(dg_index, tri_h, 500);
-
-  const auto inst = c.base->get_current_instance_resource_frame(c.triangle_pair_index, 1);
-  const auto indi = c.base->get_current_indirect_resource_frame(c.triangle_pair_index, 1);
+  c.triangle_pair_index = c.base->register_pair(dg_index, tri_h, 8); // скромный max_count (см. коммент в render_register_mesh_draw)
 
   struct vec4 { float x, y, z, w; };
-  auto ptr = reinterpret_cast<vec4*>(&reinterpret_cast<uint8_t*>(inst.mapped)[inst.sub.offset]);
-  auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
+  const vec4 positions[] = {
+    { 0.0f, 0.5f, 0.0f, 0.0f }, { 0.5f, 0.0f, 0.0f, 0.0f },
+    { 0.0f,-0.5f, 0.0f, 0.0f }, {-0.5f, 0.0f, 0.0f, 0.0f },
+  };
 
-  ptr[0] = vec4{  0.0f,  0.5f, 0.0f, 0.0f };
-  ptr[1] = vec4{  0.5f,  0.0f, 0.0f, 0.0f };
-  ptr[2] = vec4{  0.0f, -0.5f, 0.0f, 0.0f };
-  ptr[3] = vec4{ -0.5f,  0.0f, 0.0f, 0.0f };
-
-  cmd[0].vertexCount = 3;
-  cmd[0].instanceCount = 4;
-  cmd[0].firstVertex = 0;
-  cmd[0].firstInstance = 0;
+  // пишем в оба буфера doublebuffer (см. коммент в render_register_mesh_draw)
+  for (uint32_t off = 0; off < 2; ++off) {
+    const auto inst = c.base->get_current_instance_resource_frame(c.triangle_pair_index, off);
+    const auto indi = c.base->get_current_indirect_resource_frame(c.triangle_pair_index, off);
+    auto ptr = reinterpret_cast<vec4*>(&reinterpret_cast<uint8_t*>(inst.mapped)[inst.sub.offset]);
+    auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
+    for (uint32_t i = 0; i < 4; ++i) ptr[i] = positions[i];
+    cmd[0].vertexCount = 3;
+    cmd[0].instanceCount = 4;
+    cmd[0].firstVertex = 0;
+    cmd[0].firstInstance = 0;
+  }
 
   c.base->update_event();
   c.triangles_ready = true;
+}
+
+// Фаза A: рисуем УЖЕ загруженный с диска меш (его GPU-буфер = m.gpu_index) сеткой инстансов.
+// Это путь треугольника, но на ресурсе из конвейера ассетов. Требует готового графа.
+static void render_register_mesh_draw(render_simulation_init& c, mesh_resource& m) {
+  if (m.gpu_index == mesh_resource::invalid_gpu_index) return;
+
+  const uint32_t dg_index = c.base->find_draw_group("dg1");
+  if (dg_index == painter::INVALID_RESOURCE_SLOT) { utils::warn("mesh draw: draw group 'dg1' not found"); return; }
+
+  // max_count = бюджет инстансов пары. ВАЖНО: register_pair страйдит indirect-оффсет пар по
+  // max_count*INDIRECT_BUFFER_SIZE, а indirect-буфер маленький — большой max_count у нескольких
+  // пар вылетает за буфер (VUID-vkCmdDrawIndirect-00487). Держим скромным.
+  const uint32_t pair = c.base->register_pair(dg_index, m.gpu_index, 8);
+
+  // w = индекс текстуры (цикл 0,1,2 — три grass-текстуры); шейдер сэмплит tex[w]
+  struct vec4 { float x, y, z, w; };
+  const vec4 positions[] = {
+    { -0.6f, -0.5f, 0.0f, 0.0f }, { 0.0f, -0.5f, 0.0f, 1.0f }, { 0.6f, -0.5f, 0.0f, 2.0f },
+    { -0.6f,  0.5f, 0.0f, 0.0f }, { 0.0f,  0.5f, 0.0f, 1.0f }, { 0.6f,  0.5f, 0.0f, 2.0f },
+  };
+  const uint32_t count = 6;
+
+  // dg1 host_visible = doublebuffer (per_update). Пишем в ОБА буфера (offset 0 и 1), чтобы draw
+  // читал корректные данные при любой чётности per_update (фиксы статичных данных, заполняемых
+  // асинхронно пока рендер-цикл уже крутится — иначе update_event уводит чтение в пустой буфер).
+  for (uint32_t off = 0; off < 2; ++off) {
+    const auto inst = c.base->get_current_instance_resource_frame(pair, off);
+    const auto indi = c.base->get_current_indirect_resource_frame(pair, off);
+    auto ptr = reinterpret_cast<vec4*>(&reinterpret_cast<uint8_t*>(inst.mapped)[inst.sub.offset]);
+    auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
+    for (uint32_t i = 0; i < count; ++i) ptr[i] = positions[i];
+    cmd[0].vertexCount = m.vertex_count;
+    cmd[0].instanceCount = count;
+    cmd[0].firstVertex = 0;
+    cmd[0].firstInstance = 0;
+  }
+
+  c.base->update_event();
+  utils::info("mesh '{}': registered draw, {} instances, {} verts", m.id, count, m.vertex_count);
+}
+
+// Мост asset-текстура → дескриптор: пишем view текстуры (assets_base.texture_slots[slot])
+// в asset-текстурный binding дескриптора 'textures' во ВСЕ кадровые сеты. Под-шаг 1 — одна
+// текстура (элемент массива 0). Перед записью ждём GPU (одноразовая загрузка на старте);
+// TODO: для рантайм-смены текстур размазать обновление на 3 кадра вместо drain.
+static void render_bind_textures(render_simulation_init& c) {
+  const uint32_t di = c.base->find_descriptor("textures");
+  if (di == painter::INVALID_RESOURCE_SLOT) { utils::warn("render: descriptor 'textures' not found"); return; }
+
+  auto& d = c.base->descriptors[di];
+  if (d.texture_count == 0) return;
+  if (c.assets->texture_slots.empty()) return;
+
+  render_drain(c); // гарантируем, что сеты сейчас не читаются GPU (одноразовые загрузки на старте)
+
+  const uint32_t binding = uint32_t(d.layout.size());
+  const uint32_t n = d.texture_count;
+  const vk::Sampler samp(c.base->samplers[d.texture_sampler].handle);
+
+  // Заполняем ВСЕ N элементов массива: i-й = texture_slots[i], недостающие → slot 0
+  // (все элементы должны быть валидны, иначе UB/ошибка валидации при доступе из шейдера).
+  std::vector<vk::DescriptorImageInfo> infos(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    const uint32_t slot = (i < c.assets->texture_slots.size()) ? i : 0u;
+    infos[i] = vk::DescriptorImageInfo(samp, vk::ImageView(c.assets->texture_slots[slot].view), vk::ImageLayout::eShaderReadOnlyOptimal);
+  }
+
+  std::vector<vk::WriteDescriptorSet> writes;
+  for (const auto set : d.sets) {
+    if (set == VK_NULL_HANDLE) continue;
+    vk::WriteDescriptorSet w;
+    w.dstSet = set;
+    w.dstBinding = binding;
+    w.dstArrayElement = 0;
+    w.descriptorCount = n;
+    w.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    w.pImageInfo = infos.data();
+    writes.push_back(w);
+  }
+
+  vk::Device(c.device).updateDescriptorSets(writes, nullptr);
+  utils::info("render: bound {} textures into descriptor 'textures' ({} sets)", c.assets->texture_slots.size(), writes.size());
 }
 
 static void render_attach_window(render_simulation_init& c, const command_window_recreation& cmd) {
@@ -405,8 +491,18 @@ void render_simulation::update(const size_t time) {
     dispatcher_consume(container->gpu_transition_commands, [this] (const auto& cmd) {
       gpu_load_context ctx{ container->assets.get(), container->base.get() };
       const utils::safe_handle_t handle(&ctx);
-      if (cmd.load) cmd.res->load(handle);  // warm→hot: load_warm (upload+gpu_index)
-      else          cmd.res->unload(handle); // hot→warm: unload_hot
+      if (cmd.load) {
+        cmd.res->load(handle);  // warm→hot: load_warm (upload+gpu_index) — полиморфно
+        // как только меш на GPU и граф готов — регистрируем его на отрисовку (только меши!)
+        if (container->graph_ready && cmd.res->loading_type_id == utils::type_id<mesh_resource>()) {
+          render_register_mesh_draw(*container, *static_cast<mesh_resource*>(cmd.res));
+        } else if (cmd.res->loading_type_id == utils::type_id<texture_resource>()) {
+          // текстура на GPU — перезаполняем массив дескриптора 'textures' из texture_slots
+          render_bind_textures(*container);
+        }
+      } else {
+        cmd.res->unload(handle); // hot→warm: unload_hot
+      }
       if (container->aactor != nullptr) {
         command_gpu_done done{cmd.res};
         container->aactor->send(done);

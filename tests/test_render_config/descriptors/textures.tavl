@@ -1,0 +1,8 @@
+// descriptor_mirror: name, layout[(resource,usage,sampler,stage)], texture_count/texture_sampler/texture_stage
+// asset-текстурный дескриптор: одна текстура из assets_base (под-шаг 1), combinedImageSampler.
+{
+  name = textures
+  texture_count = 8
+  texture_sampler = linear
+  texture_stage = fragment
+}

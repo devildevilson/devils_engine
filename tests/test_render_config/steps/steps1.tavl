@@ -5,6 +5,7 @@
   material = mat1
   geometry = g1
   draw_group = dg1
+  sets = [ textures ]
   command = "draw"
 }
 {

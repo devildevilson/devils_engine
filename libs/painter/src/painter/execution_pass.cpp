@@ -1201,12 +1201,19 @@ void create_render_graph(painter_base& ctx) {
 void create_descriptor_set_layouts(painter_base& ctx) {
   for (auto& desc : ctx.descriptors) {
     descriptor_set_layout_maker dslm(ctx.device);
+    std::vector<std::vector<vk::Sampler>> imm_keep; // combined() хранит samplers.data() до create()
+    imm_keep.reserve(desc.layout.size());
     for (uint32_t i = 0; i < desc.layout.size(); ++i) {
-      const auto& [ slot, usage ] = desc.layout[i];
+      const auto& [ slot, usage, sampler_index, stages ] = desc.layout[i];
       const auto& res = ctx.resources[slot];
-      const auto dt = convertdt(usage);
       const uint32_t buffers_count = static_cast<uint32_t>(res.type);
-      dslm.binding(i, convertdt(usage), vk::ShaderStageFlagBits::eAll, buffers_count);
+      const auto stage = vk::ShaderStageFlags(stages);
+      if (sampler_index != INVALID_RESOURCE_SLOT) {
+        imm_keep.emplace_back(buffers_count, vk::Sampler(ctx.samplers[sampler_index].handle));
+        dslm.combined(i, vk::DescriptorType::eCombinedImageSampler, stage, imm_keep.back());
+      } else {
+        dslm.binding(i, convertdt(usage), stage, buffers_count);
+      }
     }
     desc.setlayout = dslm.create(desc.name);
   }

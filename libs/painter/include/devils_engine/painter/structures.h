@@ -191,9 +191,35 @@ struct render_target {
   uint32_t resource_index(const uint32_t res_id) const;
 };
 
+// Сэмплер как самостоятельный тип render-graph. Пока — фильтрация + address mode;
+// поля под доращивание (lod/anisotropy/border/...). VkSampler создаётся в create_samplers().
+struct sampler {
+  std::string name;
+  uint32_t mag_filter;   // VkFilter
+  uint32_t min_filter;   // VkFilter
+  uint32_t address_u;    // VkSamplerAddressMode
+  uint32_t address_v;
+  uint32_t address_w;
+  uint32_t mipmap_mode;  // VkSamplerMipmapMode
+  VkSampler handle;
+
+  sampler() noexcept;
+};
+
 struct descriptor {
   std::string name;
-  std::vector<std::tuple<uint32_t, enum usage::values>> layout; // slot + usage + shaders? + samplers?
+  // (slot, usage, sampler_index, shader_stages). sampler_index == UINT32_MAX => без сэмплера
+  // (тогда тип binding'а = convertdt(usage)); иначе sampled+sampler => eCombinedImageSampler.
+  std::vector<std::tuple<uint32_t, enum usage::values, uint32_t, uint32_t>> layout;
+
+  // Опциональный asset-текстурный binding (combinedImageSampler), заполняемый РЕНДЕРОМ из
+  // assets_base.texture_slots (а не из ctx.resources — текстуры не render-graph ресурсы).
+  // binding-индекс = layout.size() (после resource-bindings). texture_count: 0 => нет, 1 => одиночная,
+  // >1 => массив (индекс в массиве = gpu_index текстуры).
+  uint32_t texture_count;
+  uint32_t texture_sampler;   // индекс sampler; UINT32_MAX => нет
+  uint32_t texture_stage;     // VkShaderStageFlags
+
   VkDescriptorSetLayout setlayout;
   std::array<VkDescriptorSet, MAX_FRAMES_IN_FLIGHT> sets; // per_frame
 

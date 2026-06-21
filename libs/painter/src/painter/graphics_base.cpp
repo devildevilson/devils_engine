@@ -632,7 +632,13 @@ void graphics_base::clear_descriptors() {
     dev.destroy(set.setlayout);
   }
 
+  for (auto& s : samplers) {
+    if (s.handle != VK_NULL_HANDLE) dev.destroy(vk::Sampler(s.handle));
+    s.handle = VK_NULL_HANDLE;
+  }
+
   descriptors.clear();
+  samplers.clear();
 }
 
 void graphics_base::clear() {
@@ -881,8 +887,10 @@ void graphics_base::image_acquire() {
   const auto& sem = DS_ASSERT_ARRAY_GET(semaphores, swapchain_image_semaphore);
   const auto cur = sem.handles[computed_current_frame_index];
   //utils::info("Current image aqcuire semaphore {:p}", (const void*)cur);
-  constexpr size_t ms1 = size_t(1000) * size_t(1000);
-  const auto res = vk::Device(device).acquireNextImageKHR(swapchain, ms1, cur); // UINT64_MAX ?
+  // прежний таймаут 1мс почти всегда падал в Timeout (vsync-кадр ~16мс). Берём щедрый, но конечный
+  // (1с) — при норме acquire возвращается быстро, а при реальном дедлоке даст внятную ошибку, не hang.
+  constexpr size_t acquire_timeout_ns = size_t(1000) * size_t(1000) * size_t(1000);
+  const auto res = vk::Device(device).acquireNextImageKHR(swapchain, acquire_timeout_ns, cur);
   current_presentable_state = static_cast<uint32_t>(res.result);
   switch (res.result) {
     case vk::Result::eSuccess: [[fallthrough]];
@@ -972,6 +980,12 @@ uint32_t graphics_base::find_descriptor(const std::string_view& name) const {
   uint32_t i = 0;
   for (; i < descriptors.size() && descriptors[i].name != name; ++i) {}
   return i >= descriptors.size() ? INVALID_RESOURCE_SLOT : i;
+}
+
+uint32_t graphics_base::find_sampler(const std::string_view& name) const {
+  uint32_t i = 0;
+  for (; i < samplers.size() && samplers[i].name != name; ++i) {}
+  return i >= samplers.size() ? INVALID_RESOURCE_SLOT : i;
 }
 
 uint32_t graphics_base::find_material(const std::string_view& name) const {
@@ -1137,6 +1151,7 @@ int32_t graphics_base::recreate_basic_resources(const std::string& folder) {
   std::swap(constants, ctx.constants);
   std::swap(render_targets, ctx.render_targets);
   std::swap(descriptors, ctx.descriptors);
+  std::swap(samplers, ctx.samplers);
   std::swap(materials, ctx.materials);
   std::swap(geometries, ctx.geometries);
   std::swap(draw_groups, ctx.draw_groups);
@@ -1170,6 +1185,7 @@ int32_t graphics_base::recreate_basic_resources(const std::string& folder) {
 
 
   // начинаем создавать все подряд
+  create_samplers(); // до layout'ов: immutable-сэмплеры зашиваются в descriptor set layout
   create_descriptor_set_layouts();
   create_resources();
   create_descriptor_sets();
@@ -1293,15 +1309,40 @@ void graphics_base::clear_prev_resources() {
   // пары не трогаем пока что
 }
 
+void graphics_base::create_samplers() {
+  for (auto& s : samplers) {
+    sampler_maker sm{ vk::Device(device) };
+    sm.filter(vk::Filter(s.min_filter), vk::Filter(s.mag_filter));
+    sm.mipmapMode(vk::SamplerMipmapMode(s.mipmap_mode));
+    sm.addressMode(vk::SamplerAddressMode(s.address_u), vk::SamplerAddressMode(s.address_v), vk::SamplerAddressMode(s.address_w));
+    s.handle = sm.create(s.name);
+    utils::info("graphics_base: created sampler '{}'", s.name);
+  }
+}
+
 void graphics_base::create_descriptor_set_layouts() {
   for (auto& desc : descriptors) {
     descriptor_set_layout_maker dslm(device);
+    // combined() хранит pImmutableSamplers = samplers.data(); держим эти векторы живыми до create()
+    std::vector<std::vector<vk::Sampler>> imm_keep;
+    imm_keep.reserve(desc.layout.size() + 1);
     for (uint32_t i = 0; i < desc.layout.size(); ++i) {
-      const auto& [slot, usage] = desc.layout[i];
+      const auto& [slot, usage, sampler_index, stages] = desc.layout[i];
       const auto& res = resources[slot];
-      const auto dt = convertdt(usage);
       const uint32_t buffers_count = static_cast<uint32_t>(res.type);
-      dslm.binding(i, convertdt(usage), vk::ShaderStageFlagBits::eAll, buffers_count);
+      const auto stage = vk::ShaderStageFlags(stages);
+      if (sampler_index != INVALID_RESOURCE_SLOT) {
+        // sampled + sampler => combinedImageSampler с immutable-сэмплером (по одному на элемент массива)
+        imm_keep.emplace_back(buffers_count, vk::Sampler(samplers[sampler_index].handle));
+        dslm.combined(i, vk::DescriptorType::eCombinedImageSampler, stage, imm_keep.back());
+      } else {
+        dslm.binding(i, convertdt(usage), stage, buffers_count);
+      }
+    }
+    // asset-текстурный binding идёт после resource-bindings (binding = layout.size())
+    if (desc.texture_count > 0) {
+      imm_keep.emplace_back(desc.texture_count, vk::Sampler(samplers[desc.texture_sampler].handle));
+      dslm.combined(uint32_t(desc.layout.size()), vk::DescriptorType::eCombinedImageSampler, vk::ShaderStageFlags(desc.texture_stage), imm_keep.back());
     }
     desc.setlayout = dslm.create(desc.name);
   }
@@ -1603,17 +1644,18 @@ void graphics_base::update_descriptors() {
     const auto set = d.sets[current_set_index];
 
     for (uint32_t bind = 0; bind < d.layout.size(); ++bind) {
-      const auto& [res_index, usage] = d.layout[bind];
+      const auto& [res_index, usage, sampler_index, stages] = d.layout[bind];
       const auto& res = resources[res_index];
       const uint32_t buffering = static_cast<uint32_t>(res.type);
       const bool is_image = role::is_image(res.role);
+      const bool combined = sampler_index != INVALID_RESOURCE_SLOT;
 
       writes.emplace_back();
       writes.back().dstSet = set;
       writes.back().dstBinding = bind;
       writes.back().dstArrayElement = 0;
       writes.back().descriptorCount = buffering;
-      writes.back().descriptorType = convertdt(usage);
+      writes.back().descriptorType = combined ? vk::DescriptorType::eCombinedImageSampler : convertdt(usage);
 
       if (is_image) {
         offsets.push_back(std::make_tuple(images.size(), is_image));
@@ -1623,7 +1665,8 @@ void graphics_base::update_descriptors() {
           const uint32_t final_index = (current_clock + j) % buffering;
 
           images.emplace_back();
-          images.back().sampler = nullptr;
+          // immutable-сэмплер уже в layout; для combined достаточно view (sampler в write игнорируется)
+          images.back().sampler = combined ? vk::Sampler(samplers[sampler_index].handle) : vk::Sampler(nullptr);
           images.back().imageView = res.handles[final_index].view;
           images.back().imageLayout = convertil(usage);
         }

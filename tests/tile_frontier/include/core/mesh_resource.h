@@ -6,19 +6,12 @@
 
 #include <devils_engine/demiurg/resource_base.h>
 
-namespace devils_engine { namespace painter { class assets_base; class graphics_base; } }
+#include "gpu_load_context.h"
 
 namespace tile_frontier {
 namespace core {
 
 using namespace devils_engine;
-
-// Контекст GPU-стороны: поток рендера передаёт его в load_warm/unload_hot через handle
-// (см. resource_loader — warm↔hot исполняет рендер, а не поток ассетов).
-struct gpu_load_context {
-  painter::assets_base* assets;
-  painter::graphics_base* base;
-};
 
 // Простой mesh-ресурс под MVP: сырые вершинные байты с диска → GPU-буфер.
 //   cold→warm (load_cold, поток ассетов): читает байты через demiurg-модуль;

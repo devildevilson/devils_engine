@@ -1,0 +1,6 @@
+// sampler_mirror: name, filter (linear|nearest), address (repeat|mirror|clamp|border)
+{
+  name = linear
+  filter = linear
+  address = repeat
+}

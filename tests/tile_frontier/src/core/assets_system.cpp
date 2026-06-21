@@ -10,6 +10,7 @@
 #include "messages.h"
 #include "message_dispatcher.h"
 #include "mesh_resource.h"
+#include "texture_resource.h"
 
 namespace tile_frontier {
 namespace core {
@@ -41,6 +42,7 @@ void assets_simulation::init() {
 
   container->resources = std::make_unique<demiurg::resource_system>();
   container->resources->register_type<mesh_resource>("mesh", "mesh");
+  container->resources->register_type<texture_resource>("textures", "png");
 
   // Реестр строим один раз здесь (init вызывается на главном потоке до старта потока ассетов).
   const auto modules_root = utils::project_folder() + "resources/modules/";

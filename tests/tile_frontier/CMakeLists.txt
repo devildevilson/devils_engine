@@ -20,7 +20,9 @@ set(HDR_LIST
   include/core/sound_system.h
   include/core/render_system.h
   include/core/assets_system.h
+  include/core/gpu_load_context.h
   include/core/mesh_resource.h
+  include/core/texture_resource.h
   include/core/simulation.h
 )
 
@@ -31,6 +33,8 @@ set(SRC_LIST
   src/core/render_system.cpp
   src/core/assets_system.cpp
   src/core/mesh_resource.cpp
+  src/core/texture_resource.cpp
+  src/core/stb_image_impl.cpp
   src/core/simulation.cpp
 )
 

@@ -543,8 +543,11 @@ void assets_base::populate_texture_storage(const texture_asset_handle& h, const 
 
     task.copyBufferToImage(buf, slot.storage, vk::ImageLayout::eTransferDstOptimal, bic);
 
+    // dst = eAllCommands: bar2.dstAccessMask = ShaderRead не поддерживается стейджем Transfer (VUID-02820).
+    // Допустимо при общей очереди graphics+transfer (одно семейство); для выделенной transfer-очереди
+    // понадобится queue ownership transfer.
     task.pipelineBarrier(
-      vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion,
+      vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, vk::DependencyFlagBits::eByRegion,
       nullptr, nullptr, bar2
     );
   });
