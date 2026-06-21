@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.30)
 
 include(FetchContent)
 
+if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_GENERATOR MATCHES "Visual Studio|Xcode|Ninja Multi-Config")
+  set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+endif()
+
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 set(CMAKE_CONFIGURATION_TYPES
   Debug
   Release

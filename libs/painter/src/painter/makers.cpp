@@ -1291,6 +1291,7 @@ namespace devils_engine {
       info.pEnabledFeatures = &f;
       
       auto dev = phys.createDevice(info);
+      VULKAN_HPP_DEFAULT_DISPATCHER.init(dev);
       
       for (uint32_t i = 0; i < queueInfos.size(); ++i) {
         delete [] priorities[i];

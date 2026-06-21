@@ -2,6 +2,8 @@
 
 #include <thread>
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <devils_engine/sound/system.h>
 #include <devils_engine/utils/event_dispatcher.h>
 #include <devils_engine/utils/core.h>
@@ -13,6 +15,10 @@
 #include <devils_engine/utils/fileio.h>
 
 #include <devils_engine/painter/graphics_base.h>
+#include <devils_engine/painter/assets_base.h>
+#include <devils_engine/painter/auxiliary.h>
+#include <devils_engine/painter/makers.h>
+#include <devils_engine/painter/system_info.h>
 
 #include <tavl/deserialize.h>
 
@@ -52,6 +58,7 @@ struct render_config {
   std::string pipeline_cache = "cache/render/pipeline_cache.bin";
   std::string preferred_gpu;
   uint32_t preferred_gpu_index = 0;
+  std::string graph = "graphics1";
 };
 
 struct metrics_config {
@@ -74,6 +81,25 @@ static size_t frame_time_from_fps(const uint32_t fps) noexcept {
 static size_t thread_start_gap(const size_t frame_time, const uint32_t divisor) noexcept {
   const auto valid_divisor = std::max(divisor, 1u);
   return utils::round(double(frame_time) / double(valid_divisor));
+}
+
+static std::string make_project_path(std::string path) {
+  if (path.empty()) return utils::project_folder();
+  if (path.front() == '/') return path;
+  return utils::project_folder() + path;
+}
+
+static std::string make_project_folder_path(std::string path) {
+  path = make_project_path(std::move(path));
+  if (!path.empty() && path.back() != '/') path.push_back('/');
+  return path;
+}
+
+static uint32_t make_color(const float r, const float g, const float b, const float a) {
+  const auto pack = [] (const float v) {
+    return uint32_t(std::round(std::clamp(v, 0.0f, 1.0f) * 255.0f));
+  };
+  return (pack(r) << 0) | (pack(g) << 8) | (pack(b) << 16) | (pack(a) << 24);
 }
 
 static app_config load_app_config(const std::string& path) {
@@ -112,74 +138,138 @@ struct resource_status {
   // ???
 };
 
-template <typename T>
-class event_dispatcher2_adapter : public utils::message_reciever<T> {
-public:
-  std::mutex mutex;
-  std::vector<T> messages;
+struct message_dispatcher_stats {
+  size_t sent = 0;
+  size_t consumed = 0;
+  size_t dropped = 0;
+  size_t high_watermark = 0;
+  size_t capacity = std::numeric_limits<size_t>::max();
+};
 
-  event_dispatcher2_adapter() noexcept = default;
-  event_dispatcher2_adapter(const size_t reserved) noexcept {
+template <typename T>
+class message_dispatcher : public utils::message_reciever<T> {
+public:
+  message_dispatcher() noexcept = default;
+  message_dispatcher(const size_t reserved, const size_t capacity = std::numeric_limits<size_t>::max()) noexcept :
+    capacity(capacity)
+  {
     messages.reserve(reserved);
   }
 
   utils::send_status send(T msg) override {
     const std::lock_guard l(mutex);
+    if (messages.size() >= capacity) {
+      stats_data.dropped += 1;
+      return utils::send_status::mailbox_full;
+    }
+
     messages.push_back(std::move(msg));
+    on_sent(1);
     return utils::send_status::ok;
   }
 
   utils::send_status send(std::vector<T>& msg) override {
+    if (msg.empty()) return utils::send_status::ok;
+
     const std::lock_guard l(mutex);
-    std::swap(messages, msg);
+    const size_t available = capacity - messages.size();
+    if (msg.size() > available) {
+      stats_data.dropped += msg.size();
+      return utils::send_status::backpressure;
+    }
+
+    const size_t count = msg.size();
+    messages.insert(
+      messages.end(),
+      std::make_move_iterator(msg.begin()),
+      std::make_move_iterator(msg.end())
+    );
+    msg.clear();
+    on_sent(count);
     return utils::send_status::ok;
   }
 
-  void consume(std::vector<T>& msg) {
+  void reserve(const size_t count) {
     const std::lock_guard l(mutex);
-    std::swap(messages, msg);
+    messages.reserve(count);
   }
 
-  std::vector<T> consume() {
-    std::vector<T> msg;
+  void set_capacity(const size_t value) {
+    const std::lock_guard l(mutex);
+    capacity = value;
+    stats_data.capacity = value;
+  }
+
+  void consume_all(std::vector<T>& msg) {
     const std::lock_guard l(mutex);
     std::swap(messages, msg);
+    stats_data.consumed += msg.size();
+  }
+
+  std::vector<T> consume_all() {
+    std::vector<T> msg;
+    consume_all(msg);
     return msg;
+  }
+
+  bool consume_last(std::vector<T>& cache) {
+    consume_all(cache);
+    if (cache.empty()) return false;
+    return true;
+  }
+
+  size_t pending() const {
+    const std::lock_guard l(mutex);
+    return messages.size();
+  }
+
+  message_dispatcher_stats stats() const {
+    const std::lock_guard l(mutex);
+    return stats_data;
+  }
+private:
+  mutable std::mutex mutex;
+  std::vector<T> messages;
+  size_t capacity = std::numeric_limits<size_t>::max();
+  message_dispatcher_stats stats_data;
+
+  void on_sent(const size_t count) noexcept {
+    stats_data.sent += count;
+    stats_data.high_watermark = std::max(stats_data.high_watermark, messages.size());
   }
 };
 
 template <typename T>
-struct cached_event_dispatcher {
-  event_dispatcher2_adapter<T> dis;
+struct cached_message_dispatcher {
+  message_dispatcher<T> dis;
   std::vector<T> cache;
 
-  cached_event_dispatcher() noexcept = default;
-  cached_event_dispatcher(const size_t reserved) noexcept : dis(reserved) {
+  cached_message_dispatcher() noexcept = default;
+  cached_message_dispatcher(const size_t reserved) noexcept : dis(reserved) {
     cache.reserve(reserved);
   }
 };
 
 template <typename T, typename F>
-void dispatcher_consume(event_dispatcher2_adapter<T>& dis, std::vector<T>& arr, F f) {
-  dis.consume(arr);
+void dispatcher_consume(message_dispatcher<T>& dis, std::vector<T>& arr, F f) {
+  dis.consume_all(arr);
   for (const auto& cmd : arr) { std::invoke(f, cmd); }
   arr.clear();
 }
 
 template <typename T, typename F>
-void dispatcher_consume_last(event_dispatcher2_adapter<T>& dis, std::vector<T>& arr, F f) {
-  dis.consume(arr);
-  if (!arr.empty()) { std::invoke(f, arr.back()); }
+void dispatcher_consume_last(message_dispatcher<T>& dis, std::vector<T>& arr, F f) {
+  if (dis.consume_last(arr)) { std::invoke(f, arr.back()); }
   arr.clear();
 }
 
 template <typename T, typename F>
-void dispatcher_consume(cached_event_dispatcher<T>& ced, F f) {
+void dispatcher_consume(cached_message_dispatcher<T>& ced, F f) {
   dispatcher_consume<T>(ced.dis, ced.cache, std::move(f));
 }
 
 template <typename T, typename F>
-void dispatcher_consume_last(cached_event_dispatcher<T>& ced, F f) {
+void dispatcher_consume_last(cached_message_dispatcher<T>& ced, F f) {
   dispatcher_consume_last<T>(ced.dis, ced.cache, std::move(f));
 }
 
@@ -270,7 +360,7 @@ struct simulation_init {
   std::unique_ptr<std::jthread> render_thread;
   std::unique_ptr<std::jthread> assets_thread;
 
-  //event_dispatcher2_adapter<> ;
+  //message_dispatcher<> ;
 
   GLFWwindow* window;
   GLFWmonitor* monitor;
@@ -327,12 +417,17 @@ simulation::~simulation() noexcept {
   container->render_thread.reset();
   container->assets_thread.reset();
 
+  container->render_sim.reset();
+
   if (container->window != nullptr) {
     input::destroy(container->window);
     container->window = nullptr;
   }
   container->monitor = nullptr;
   container->in.reset();
+
+  container->sound_sim.reset();
+  container->assets_sim.reset();
 
   aactor = nullptr;
   gactor = nullptr;
@@ -376,7 +471,17 @@ void simulation::init() {
   container->sound_sim->init();
   sactor = container->sound_sim->get_actor();
   
-  container->render_sim.reset(new render_simulation(render_ft));
+  render_simulation_config render_cfg;
+  render_cfg.render_config_folder = make_project_folder_path(container->config.render.config_folder);
+  render_cfg.pipeline_cache_path = make_project_path(container->config.render.pipeline_cache);
+  render_cfg.graph_name = container->config.render.graph;
+  render_cfg.create_vulkan_on_init = container->config.window.create_on_start;
+
+  if (container->config.window.create_on_start && !container->in) {
+    container->in = std::make_unique<input::init>(&error_callback);
+  }
+
+  container->render_sim.reset(new render_simulation(render_ft, std::move(render_cfg)));
   container->render_sim->init();
   gactor = container->render_sim->get_actor();
 
@@ -482,7 +587,7 @@ struct sound_simulation_init {
   sound::system2 s;
 
   std::vector<command_sound> command_cache;
-  event_dispatcher2_adapter<command_sound> commands;
+  message_dispatcher<command_sound> commands;
 
   std::string res_id;
   std::vector<char> music_data;
@@ -536,22 +641,254 @@ void sound_simulation::update(const size_t time) {
 sound_actor* sound_simulation::get_actor() { return &actor; }
 
 struct render_simulation_init {
-  cached_event_dispatcher<command_window_recreation> window_recreation_commands;
-  cached_event_dispatcher<command_window_resize> window_resizing_commands;
+  cached_message_dispatcher<command_window_recreation> window_recreation_commands;
+  cached_message_dispatcher<command_window_resize> window_resizing_commands;
+
+  render_simulation_config config;
+
+  VkInstance instance = VK_NULL_HANDLE;
+  VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
+  VkDevice device = VK_NULL_HANDLE;
+  VkSurfaceKHR surface = VK_NULL_HANDLE;
+  painter::physical_device_data physical_device_data;
+
+  VkQueue graphics_queue = VK_NULL_HANDLE;
+  VkQueue transfer_queue = VK_NULL_HANDLE;
 
   std::unique_ptr<painter::graphics_base> base;
+  std::unique_ptr<painter::assets_base> assets;
+  painter::graphics_ctx ctx;
+
+  uint32_t triangle_pair_index = painter::INVALID_RESOURCE_SLOT;
+  bool instance_ready = false;
+  bool device_ready = false;
+  bool base_ready = false;
+  bool surface_ready = false;
+  bool graph_ready = false;
+  bool triangles_ready = false;
+
+  ~render_simulation_init() noexcept {
+    if (device != VK_NULL_HANDLE) {
+      painter::load_dispatcher3(device);
+      vk::Device(device).waitIdle();
+    }
+
+    ctx = painter::graphics_ctx{};
+    assets.reset();
+    base.reset();
+
+    if (instance != VK_NULL_HANDLE && surface != VK_NULL_HANDLE) {
+      vk::Instance(instance).destroy(surface);
+      surface = VK_NULL_HANDLE;
+    }
+
+    if (device != VK_NULL_HANDLE) {
+      vk::Device(device).destroy();
+      device = VK_NULL_HANDLE;
+    }
+
+    if (instance != VK_NULL_HANDLE) {
+      if (debug_messenger != VK_NULL_HANDLE) {
+        painter::destroy_debug_messenger(instance, debug_messenger);
+        debug_messenger = VK_NULL_HANDLE;
+      }
+
+      vk::Instance(instance).destroy();
+      instance = VK_NULL_HANDLE;
+    }
+  }
 };
 
-render_simulation::render_simulation(const size_t frame_time) noexcept : simul::advancer(frame_time) {}
+static void render_create_instance(render_simulation_init& c) {
+  if (c.instance_ready) return;
+
+  painter::load_dispatcher1();
+
+  vk::ApplicationInfo ai{};
+  ai.pApplicationName = "tile_frontier";
+  ai.applicationVersion = VK_MAKE_VERSION(0, 1, 1);
+  ai.pEngineName = "devils_engine";
+  ai.engineVersion = VK_MAKE_VERSION(0, 1, 1);
+  ai.apiVersion = VK_API_VERSION_1_0;
+
+  std::vector<const char*> exts = painter::get_required_extensions();
+  vk::InstanceCreateInfo ici{};
+  ici.pApplicationInfo = &ai;
+  assert(enable_validation_layers);
+  if (::enable_validation_layers) {
+    if (!painter::check_validation_layer_support(painter::default_validation_layers)) {
+      utils::error{}("Requested Vulkan validation layers are not available");
+    }
+
+    ici.enabledLayerCount = painter::default_validation_layers.size();
+    ici.ppEnabledLayerNames = painter::default_validation_layers.data();
+  }
+  ici.enabledExtensionCount = exts.size();
+  ici.ppEnabledExtensionNames = exts.data();
+
+  utils::info("tile_frontier: creating Vulkan instance");
+  c.instance = vk::createInstance(ici);
+  utils::info("tile_frontier: Vulkan instance created");
+  painter::load_dispatcher2(c.instance);
+  c.debug_messenger = painter::create_debug_messenger(c.instance);
+  c.instance_ready = true;
+}
+
+static void render_create_device(render_simulation_init& c, const command_window_recreation* window = nullptr) {
+  if (c.device_ready) return;
+
+  bool cached = painter::system_info::try_load_cached_data(c.instance, &c.physical_device_data, nullptr);
+  if (!cached) {
+    if (window == nullptr || window->w == nullptr) return;
+
+    painter::system_info si(c.instance);
+    si.check_devices_surface_capability(c.surface);
+    c.physical_device_data = si.choose_physical_device();
+    si.dump_cache_to_disk(c.physical_device_data.handle, nullptr);
+  }
+
+  painter::system_info::print_choosed_device(c.physical_device_data.handle);
+
+  painter::device_maker dm(c.instance);
+  dm.beginDevice(c.physical_device_data.handle);
+  dm.createQueues(1);
+  dm.features(vk::PhysicalDevice(c.physical_device_data.handle).getFeatures());
+  dm.setExtensions(painter::default_device_extensions);
+  c.device = dm.create({}, "tile_frontier.device");
+  painter::load_dispatcher3(c.device);
+
+  vk::Device dev(c.device);
+  c.graphics_queue = dev.getQueue(c.physical_device_data.graphics_queue, 0);
+  c.transfer_queue = dev.getQueue(c.physical_device_data.transfer_queue, 0);
+  painter::set_name(dev, vk::Queue(c.graphics_queue), "tile_frontier.graphics_queue");
+
+  c.device_ready = true;
+}
+
+static void render_create_base_resources(render_simulation_init& c) {
+  if (c.base_ready || !c.device_ready) return;
+
+  c.base = std::make_unique<painter::graphics_base>(
+    c.instance,
+    c.device,
+    c.physical_device_data.handle,
+    painter::presentation_engine_type::main
+  );
+
+  c.base->create_allocator();
+  c.base->create_command_pool(c.physical_device_data.graphics_queue, c.graphics_queue);
+  c.base->create_descriptor_pool();
+  c.base->get_or_create_pipeline_cache(c.config.pipeline_cache_path);
+
+  const auto res = c.base->recreate_basic_resources(c.config.render_config_folder);
+  if (res != 0) utils::error{}("Could not parse render config folder '{}'", c.config.render_config_folder);
+
+  c.assets = std::make_unique<painter::assets_base>(c.device, c.physical_device_data.handle);
+  c.assets->create_fence();
+  c.assets->create_allocator(c.instance);
+  c.assets->create_command_buffer(c.transfer_queue, c.physical_device_data.transfer_queue);
+  c.assets->set_graphics_base(c.base.get());
+
+  c.ctx.base = c.base.get();
+  c.ctx.assets = c.assets.get();
+  c.base_ready = true;
+}
+
+static void render_create_test_triangles(render_simulation_init& c) {
+  if (c.triangles_ready || !c.graph_ready) return;
+
+  const auto tri_h = c.assets->register_buffer_storage("triangle");
+  painter::buffer_create_info bci{ "g1", 3, 0 };
+  c.assets->create_buffer_storage(tri_h, bci);
+
+  struct buffer_data { float x, y, z; uint32_t c; };
+  const buffer_data buffer_mem[] = {
+    { -1.0f, -1.0f, 0.0f, make_color(1.0f, 0.0f, 0.0f, 1.0f) },
+    {  1.0f, -1.0f, 0.0f, make_color(0.0f, 1.0f, 0.0f, 1.0f) },
+    {  0.0f,  1.0f, 0.0f, make_color(0.0f, 0.0f, 1.0f, 1.0f) }
+  };
+
+  const auto vertex_bytes = std::span(reinterpret_cast<const uint8_t*>(buffer_mem), sizeof(buffer_mem));
+  c.assets->populate_buffer_storage(tri_h, vertex_bytes, std::span<const uint8_t>());
+  c.assets->mark_ready_buffer_slot(tri_h);
+
+  const uint32_t dg_index = c.base->find_draw_group("dg1");
+  if (dg_index == painter::INVALID_RESOURCE_SLOT) utils::error{}("Could not find draw group 'dg1'");
+
+  c.triangle_pair_index = c.base->register_pair(dg_index, tri_h, 500);
+
+  const auto inst = c.base->get_current_instance_resource_frame(c.triangle_pair_index, 1);
+  const auto indi = c.base->get_current_indirect_resource_frame(c.triangle_pair_index, 1);
+
+  struct vec4 { float x, y, z, w; };
+  auto ptr = reinterpret_cast<vec4*>(&reinterpret_cast<uint8_t*>(inst.mapped)[inst.sub.offset]);
+  auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
+
+  ptr[0] = vec4{  0.0f,  0.5f, 0.0f, 0.0f };
+  ptr[1] = vec4{  0.5f,  0.0f, 0.0f, 0.0f };
+  ptr[2] = vec4{  0.0f, -0.5f, 0.0f, 0.0f };
+  ptr[3] = vec4{ -0.5f,  0.0f, 0.0f, 0.0f };
+
+  cmd[0].vertexCount = 3;
+  cmd[0].instanceCount = 4;
+  cmd[0].firstVertex = 0;
+  cmd[0].firstInstance = 0;
+
+  c.base->update_event();
+  c.triangles_ready = true;
+}
+
+static void render_attach_window(render_simulation_init& c, const command_window_recreation& cmd) {
+  if (!c.instance_ready) render_create_instance(c);
+
+  if (c.surface != VK_NULL_HANDLE) {
+    if (c.base) c.base->wait_all_fences();
+    vk::Instance(c.instance).destroy(c.surface);
+    c.surface = VK_NULL_HANDLE;
+    c.surface_ready = false;
+    c.graph_ready = false;
+    c.triangles_ready = false;
+  }
+
+  const auto res = input::create_window_surface(c.instance, cmd.w, nullptr, &c.surface);
+  if (res != static_cast<uint32_t>(vk::Result::eSuccess)) {
+    utils::error{}("Could not create window surface, got {}", vk::to_string(static_cast<vk::Result>(res)));
+  }
+  c.surface_ready = true;
+
+  render_create_device(c, &cmd);
+  render_create_base_resources(c);
+
+  c.base->set_surface(c.surface, cmd.width, cmd.height);
+  c.base->resize_viewport(cmd.width, cmd.height);
+
+  const uint32_t graph_index = c.base->find_render_graph(c.config.graph_name);
+  if (graph_index == painter::INVALID_RESOURCE_SLOT) utils::error{}("Could not find render graph '{}'", c.config.graph_name);
+
+  c.base->populate_constant_default_values();
+  c.base->change_render_graph(graph_index);
+  c.base->dump_cache_on_disk(c.config.pipeline_cache_path);
+
+  c.graph_ready = true;
+  render_create_test_triangles(c);
+}
+
+render_simulation::render_simulation(const size_t frame_time, render_simulation_config config) noexcept :
+  simul::advancer(frame_time),
+  container(std::make_unique<render_simulation_init>())
+{
+  container->config = std::move(config);
+}
+
 void render_simulation::init() {
-  container = std::make_unique<render_simulation_init>();
   actor.add_receiver<command_window_recreation>(&container->window_recreation_commands.dis);
   actor.add_receiver<command_window_resize>(&container->window_resizing_commands.dis);
 
-  // нужно создать рендер стейт
-  // для него нужен инстанс + устройство + физическое устройство
-  // по идее мы должны получить это дело из json конфига с диска
-  //container->base = std::make_unique<painter::graphics_base>();
+  if (container->config.create_vulkan_on_init) {
+    render_create_instance(*container);
+    render_create_device(*container);
+    render_create_base_resources(*container);
+  }
 
   // еще дополнительно нужно создать менеджера GPU ресурсов
   // я вот о чем подумал: должен быть менеджер ассетов, который
@@ -599,14 +936,21 @@ void render_simulation::update(const size_t time) {
   //utils::info("Render loop");
 
   // ловим событие пересоздания окна
-  dispatcher_consume_last(container->window_recreation_commands, [] (const auto& cmd) {
-      
+  dispatcher_consume_last(container->window_recreation_commands, [this] (const auto& cmd) {
+    render_attach_window(*container, cmd);
   });
 
   // ловим событие изменение размеров окна
-  dispatcher_consume_last(container->window_resizing_commands, [] (const auto& cmd) {
-    
+  dispatcher_consume_last(container->window_resizing_commands, [this] (const auto& cmd) {
+    if (container->base && container->surface_ready) container->base->resize_viewport(cmd.width, cmd.height);
   });
+
+  if (container->triangles_ready && container->base->can_draw()) {
+    container->base->prepare_frame();
+    container->ctx.prepare();
+    container->ctx.draw();
+    container->base->submit_frame();
+  }
 }
 
 graphics_actor* render_simulation::get_actor() { return &actor; }

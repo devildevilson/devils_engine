@@ -93,6 +93,7 @@ std::string_view monitor_name(GLFWmonitor* m) noexcept;
 
 bool vulkan_supported() noexcept;
 const char** get_required_instance_extensions(uint32_t* count) noexcept;
+PFN_vkGetInstanceProcAddr get_instance_proc_addr() noexcept;
 void init_vulkan_loader(PFN_vkGetInstanceProcAddr fn) noexcept;
 uint32_t get_physical_device_presentation_support(VkInstance i, VkPhysicalDevice p, uint32_t index) noexcept;
 uint32_t create_window_surface(VkInstance i, GLFWwindow* w, const void* ptr, VkSurfaceKHR* s) noexcept;

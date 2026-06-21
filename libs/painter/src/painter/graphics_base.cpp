@@ -42,22 +42,23 @@ graphics_base::graphics_base(VkInstance instance, VkDevice device, VkPhysicalDev
 graphics_base::~graphics_base() noexcept {
   if (device == VK_NULL_HANDLE) return;
 
-  //vk::Queue(graphics).waitIdle();
+  vk::Device dev(device);
+  //dev.waitIdle();
+  if (graphics != VK_NULL_HANDLE) vk::Queue(graphics).waitIdle();
+
   wait_all_fences();
 
-  vk::Device dev(device);
   for (auto& f : fences) { dev.destroy(f); }
-  dev.destroy(command_pool);
-  dev.destroy(descriptor_pool);
-  dev.destroy(swapchain);
-  dev.destroy(cache);
+  if (command_pool != VK_NULL_HANDLE) dev.destroy(command_pool);
+  if (descriptor_pool != VK_NULL_HANDLE) dev.destroy(descriptor_pool);
+  if (swapchain != VK_NULL_HANDLE) dev.destroy(swapchain);
+  if (cache != VK_NULL_HANDLE) dev.destroy(cache);
 
   if (allocator == VK_NULL_HANDLE) return;
 
   clear();
   vma::Allocator(allocator).destroy();
 
-  vk::Queue(graphics).waitIdle();
   clear_semaphores();
 }
 
@@ -1106,6 +1107,8 @@ uint32_t graphics_base::find_pair(const uint32_t draw_group, const uint32_t mesh
 }
 
 int32_t graphics_base::recreate_basic_resources(const std::string& folder) {
+  utils::info("graphics_base: recreate basic resources from '{}'", folder);
+
   // создаем ленивый парсинг контекст 
   graphics_base ctx(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, presentation_engine_type);
   // парсим ресурсы
@@ -1147,6 +1150,13 @@ int32_t graphics_base::recreate_basic_resources(const std::string& folder) {
   per_update_counter_index = ctx.per_update_counter_index;
   swapchain_slot = ctx.swapchain_slot;
 
+  utils::info(
+    "graphics_base: parsed resources={}, graphs={}, swapchain_slot={}",
+    resources.size(),
+    graphs.size(),
+    swapchain_slot
+  );
+
   size_t offset = 0;
   for (auto& c : constants) {
     c.offset = offset;
@@ -1177,11 +1187,15 @@ int32_t graphics_base::recreate_basic_resources(const std::string& folder) {
 void graphics_base::recreate_swapchain(const uint32_t width, const uint32_t height) {
   if (presentation_engine_type != presentation_engine_type::main) return;
 
-  if (surface == VK_NULL_HANDLE) {
-    utils::error{}("No surface?");
-  }
+  if (surface == VK_NULL_HANDLE) utils::error{}("Could not recreate swapchain: no surface");
 
-  if (swapchain_slot == INVALID_RESOURCE_SLOT) utils::error{}("Swapchain resource with role 'present' was not created");
+  if (swapchain_slot == INVALID_RESOURCE_SLOT) {
+    utils::error{}(
+      "Could not recreate swapchain: resource with role 'present' was not created, resources={}, graphs={}",
+      resources.size(),
+      graphs.size()
+    );
+  }
   auto& res = DS_ASSERT_ARRAY_GET(resources, swapchain_slot);
 
   vk::Device dev(device);

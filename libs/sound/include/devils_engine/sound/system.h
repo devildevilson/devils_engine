@@ -128,7 +128,7 @@ namespace devils_engine {
       size_t available_sources_count() const;
     private:
       struct volume_set {
-        static const size_t sound_types_count = 8;
+        inline static constexpr size_t sound_types_count = 8;
         float master;
         float source[sound_types_count];
 

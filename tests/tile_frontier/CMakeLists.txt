@@ -21,7 +21,16 @@ set(SRC_LIST
  "src/core/system.cpp")
 
 add_executable(${PROJECT_NAME} ${SRC_LIST} ${HDR_LIST})
-target_link_libraries(${PROJECT_NAME} devils_engine::devils_plane glm::glm devils_engine::options tavl)
+target_link_libraries(
+  ${PROJECT_NAME}
+  devils_engine::devils_plane
+  glm::glm
+  devils_engine::options
+  tavl
+  Vulkan::Headers
+  GPUOpen::VulkanMemoryAllocator
+  VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp
+)
 set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
 target_include_directories(${PROJECT_NAME} INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
 target_include_directories(${PROJECT_NAME} PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/core>")
@@ -39,4 +48,22 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory 
     ${CMAKE_CURRENT_LIST_DIR}/resources 
     ${PROJECT_OUTPUT_DIRECTORY}/resources
+)
+
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/tests/test_render_config
+    ${PROJECT_OUTPUT_DIRECTORY}/render_config
+)
+
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/tests/shaders
+    ${PROJECT_OUTPUT_DIRECTORY}/shaders
+)
+
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/tests/shaders
+    ${PROJECT_OUTPUT_DIRECTORY}/tests/shaders
 )

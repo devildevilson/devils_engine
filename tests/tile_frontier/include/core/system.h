@@ -2,6 +2,7 @@
 #define TILE_FRONTIER_CORE_SYSTEM_H
 
 #include <memory>
+#include <string>
 #include <devils_engine/simul/interface.h>
 #include <devils_engine/utils/actor_ref.h>
 #include <devils_engine/utils/type_traits.h>
@@ -34,6 +35,13 @@ using assets_actor = utils::actor_ref<seq_assets_type_id>;
 
 struct task_id_t {};
 inline size_t generate_task_id() noexcept { return utils::sequential_type_id<0, task_id_t>(); };
+
+struct render_simulation_config {
+  std::string render_config_folder;
+  std::string pipeline_cache_path;
+  std::string graph_name = "graphics1";
+  bool create_vulkan_on_init = true;
+};
 
 //simulation_actor* g_core_actor = nullptr;
 //sound_actor* g_sound_actor = nullptr;
@@ -78,7 +86,7 @@ private:
 
 class render_simulation : public simul::advancer {
 public:
-  render_simulation(const size_t frame_time) noexcept;
+  render_simulation(const size_t frame_time, render_simulation_config config) noexcept;
   void init() override;
   bool stop_predicate() const override;
   void update(const size_t time) override;

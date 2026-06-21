@@ -94,6 +94,9 @@ std::string_view monitor_name(GLFWmonitor *m) noexcept {
 
 bool vulkan_supported() noexcept { return glfwVulkanSupported(); }
 const char** get_required_instance_extensions(uint32_t* count) noexcept { return glfwGetRequiredInstanceExtensions(count); }
+PFN_vkGetInstanceProcAddr get_instance_proc_addr() noexcept {
+  return reinterpret_cast<PFN_vkGetInstanceProcAddr>(glfwGetInstanceProcAddress(nullptr, "vkGetInstanceProcAddr"));
+}
 void init_vulkan_loader(PFN_vkGetInstanceProcAddr fn) noexcept { glfwInitVulkanLoader(fn); }
 uint32_t get_physical_device_presentation_support(VkInstance i, VkPhysicalDevice p, uint32_t index) noexcept { return glfwGetPhysicalDevicePresentationSupport(i, p, index); }
 uint32_t create_window_surface(VkInstance i, GLFWwindow* w, const void* ptr, VkSurfaceKHR* s) noexcept { return glfwCreateWindowSurface(i, w, (const VkAllocationCallbacks*)ptr, s); }

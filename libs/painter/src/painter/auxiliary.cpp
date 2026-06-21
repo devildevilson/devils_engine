@@ -53,14 +53,39 @@ std::vector<const char*> get_required_extensions() {
 
 void load_dispatcher1() { 
   if (!input::vulkan_supported()) utils::error{}("Vulkan is not supported by this system");
-  VULKAN_HPP_DEFAULT_DISPATCHER.init();  
-  input::init_vulkan_loader(VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr);
+
+  const auto vkGetInstanceProcAddr = input::get_instance_proc_addr();
+  if (vkGetInstanceProcAddr == nullptr) utils::error{}("Could not load vkGetInstanceProcAddr");
+
+  VULKAN_HPP_DEFAULT_DISPATCHER.init(vkGetInstanceProcAddr);
+  input::init_vulkan_loader(vkGetInstanceProcAddr);
+
+  if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateInstance == nullptr) {
+    utils::error{}("Vulkan dispatcher is missing vkCreateInstance");
+  }
 }
 
-void load_dispatcher2(VkInstance inst) { VULKAN_HPP_DEFAULT_DISPATCHER.init(vk::Instance(inst)); }
-void load_dispatcher3(VkDevice device) { VULKAN_HPP_DEFAULT_DISPATCHER.init(vk::Device(device)); }
+void load_dispatcher2(VkInstance inst) {
+  VULKAN_HPP_DEFAULT_DISPATCHER.init(vk::Instance(inst));
+  if (VULKAN_HPP_DEFAULT_DISPATCHER.vkDestroyInstance == nullptr) {
+    utils::error{}("Vulkan instance dispatcher is missing vkDestroyInstance");
+  }
+}
+
+void load_dispatcher3(VkDevice device) {
+  VULKAN_HPP_DEFAULT_DISPATCHER.init(vk::Device(device));
+  if (VULKAN_HPP_DEFAULT_DISPATCHER.vkDestroyDevice == nullptr) {
+    utils::error{}("Vulkan device dispatcher is missing vkDestroyDevice");
+  }
+}
 
 VkDebugUtilsMessengerEXT create_debug_messenger(VkInstance inst) {
+  if (!enable_validation_layers) return VK_NULL_HANDLE;
+  if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateDebugUtilsMessengerEXT == nullptr) {
+    utils::warn("Vulkan instance dispatcher is missing vkCreateDebugUtilsMessengerEXT; debug messenger is disabled");
+    return VK_NULL_HANDLE;
+  }
+
   const auto severity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eError |
                         vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
                         vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo;
@@ -79,6 +104,9 @@ VkDebugUtilsMessengerEXT create_debug_messenger(VkInstance inst) {
 }
 
 void destroy_debug_messenger(VkInstance inst, VkDebugUtilsMessengerEXT handle) {
+  if (handle == VK_NULL_HANDLE) return;
+  if (VULKAN_HPP_DEFAULT_DISPATCHER.vkDestroyDebugUtilsMessengerEXT == nullptr) return;
+
   vk::Instance instance(inst);
   instance.destroyDebugUtilsMessengerEXT(handle);
 }
