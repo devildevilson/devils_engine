@@ -44,7 +44,6 @@ graphics_base::~graphics_base() noexcept {
 
   vk::Device dev(device);
   //dev.waitIdle();
-  if (graphics != VK_NULL_HANDLE) vk::Queue(graphics).waitIdle();
 
   wait_all_fences();
 

@@ -99,6 +99,7 @@ struct system_info {
   void check_devices_surface_capability(const VkSurfaceKHR s);
 
   physical_device_data choose_physical_device() const;
+  physical_device_data choose_physical_device_headless() const;
 
   void dump_cache_to_disk(VkPhysicalDevice dev, cached_system_data* cached_data = nullptr);
 };

@@ -53,6 +53,8 @@ struct simulation_config {
 };
 
 struct render_config {
+  bool enabled = true;
+  bool headless = false;
   std::string config_folder = "render_config";
   std::string cache_folder = "cache/render";
   std::string pipeline_cache = "cache/render/pipeline_cache.bin";
@@ -471,19 +473,22 @@ void simulation::init() {
   container->sound_sim->init();
   sactor = container->sound_sim->get_actor();
   
-  render_simulation_config render_cfg;
-  render_cfg.render_config_folder = make_project_folder_path(container->config.render.config_folder);
-  render_cfg.pipeline_cache_path = make_project_path(container->config.render.pipeline_cache);
-  render_cfg.graph_name = container->config.render.graph;
-  render_cfg.create_vulkan_on_init = container->config.window.create_on_start;
+  if (container->config.render.enabled) {
+    render_simulation_config render_cfg;
+    render_cfg.render_config_folder = make_project_folder_path(container->config.render.config_folder);
+    render_cfg.pipeline_cache_path = make_project_path(container->config.render.pipeline_cache);
+    render_cfg.graph_name = container->config.render.graph;
+    render_cfg.headless = container->config.render.headless;
+    render_cfg.create_vulkan_on_init = container->config.window.create_on_start || container->config.render.headless;
 
-  if (container->config.window.create_on_start && !container->in) {
-    container->in = std::make_unique<input::init>(&error_callback);
+    if (container->config.window.create_on_start && !container->config.render.headless && !container->in) {
+      container->in = std::make_unique<input::init>(&error_callback);
+    }
+
+    container->render_sim.reset(new render_simulation(render_ft, std::move(render_cfg)));
+    container->render_sim->init();
+    gactor = container->render_sim->get_actor();
   }
-
-  container->render_sim.reset(new render_simulation(render_ft, std::move(render_cfg)));
-  container->render_sim->init();
-  gactor = container->render_sim->get_actor();
 
   container->assets_sim.reset(new assets_simulation(assets_ft));
   container->assets_sim->init();
@@ -495,12 +500,16 @@ void simulation::init() {
   const auto assets_gap = thread_start_gap(assets_ft, gap_divisor);
 
   container->sound_thread.reset (new std::jthread([sys = container->sound_sim.get(), sound_gap] (){ sys->run(sound_gap); }));
-  container->render_thread.reset(new std::jthread([sys = container->render_sim.get(), render_gap](){ sys->run(render_gap); }));
+  if (container->render_sim) {
+    container->render_thread.reset(new std::jthread([sys = container->render_sim.get(), render_gap](){ sys->run(render_gap); }));
+  }
   container->assets_thread.reset(new std::jthread([sys = container->assets_sim.get(), assets_gap](){ sys->run(assets_gap); }));
 
   // Окно - поздний ресурс. Render thread должен жить и без него, а это событие
   // может прийти сейчас, после загрузки ассетов или после полного пересоздания окна.
-  if (container->config.window.create_on_start) create_window_and_notify_render(*container, gactor);
+  if (container->config.window.create_on_start && container->render_sim && !container->config.render.headless) {
+    create_window_and_notify_render(*container, gactor);
+  }
 }
 
 static size_t test_counter = 0;
@@ -668,41 +677,103 @@ struct render_simulation_init {
   bool triangles_ready = false;
 
   ~render_simulation_init() noexcept {
-    if (device != VK_NULL_HANDLE) {
-      painter::load_dispatcher3(device);
-      vk::Device(device).waitIdle();
-    }
-
+    // Best-effort fallback. Normal shutdown should go through render_shutdown().
+    if (device != VK_NULL_HANDLE) vk::Device(device).waitIdle();
     ctx = painter::graphics_ctx{};
     assets.reset();
     base.reset();
-
-    if (instance != VK_NULL_HANDLE && surface != VK_NULL_HANDLE) {
-      vk::Instance(instance).destroy(surface);
-      surface = VK_NULL_HANDLE;
-    }
-
-    if (device != VK_NULL_HANDLE) {
-      vk::Device(device).destroy();
-      device = VK_NULL_HANDLE;
-    }
-
-    if (instance != VK_NULL_HANDLE) {
-      if (debug_messenger != VK_NULL_HANDLE) {
-        painter::destroy_debug_messenger(instance, debug_messenger);
-        debug_messenger = VK_NULL_HANDLE;
-      }
-
-      vk::Instance(instance).destroy();
-      instance = VK_NULL_HANDLE;
-    }
+    if (instance != VK_NULL_HANDLE && surface != VK_NULL_HANDLE) vk::Instance(instance).destroy(surface);
+    if (device != VK_NULL_HANDLE) vk::Device(device).destroy();
+    if (instance != VK_NULL_HANDLE && debug_messenger != VK_NULL_HANDLE) painter::destroy_debug_messenger(instance, debug_messenger);
+    if (instance != VK_NULL_HANDLE) vk::Instance(instance).destroy();
   }
 };
+
+static void render_drain(render_simulation_init& c) {
+  if (c.device == VK_NULL_HANDLE) return;
+
+  painter::load_dispatcher3(c.device);
+  if (c.base) c.base->wait_all_fences();
+  if (c.graphics_queue != VK_NULL_HANDLE) vk::Queue(c.graphics_queue).waitIdle();
+}
+
+static void render_destroy_swapchain(render_simulation_init& c) {
+  if (!c.base || c.base->swapchain == VK_NULL_HANDLE) return;
+
+  render_drain(c);
+
+  vk::Device dev(c.device);
+  if (c.base->swapchain_slot != painter::INVALID_RESOURCE_SLOT) {
+    auto& res = DS_ASSERT_ARRAY_GET(c.base->resources, c.base->swapchain_slot);
+    for (size_t i = 0; i < c.base->swapchain_images.size(); ++i) {
+      if (res.handles[i].view != VK_NULL_HANDLE) {
+        dev.destroy(res.handles[i].view);
+        res.handles[i].view = VK_NULL_HANDLE;
+      }
+    }
+  }
+
+  c.base->swapchain_images.clear();
+  dev.destroy(c.base->swapchain);
+  c.base->swapchain = VK_NULL_HANDLE;
+}
+
+static void render_detach_window(render_simulation_init& c) {
+  render_destroy_swapchain(c);
+
+  if (c.instance != VK_NULL_HANDLE && c.surface != VK_NULL_HANDLE) {
+    vk::Instance(c.instance).destroy(c.surface);
+    c.surface = VK_NULL_HANDLE;
+  }
+
+  if (c.base) c.base->surface = VK_NULL_HANDLE;
+  c.surface_ready = false;
+  c.graph_ready = false;
+  c.triangles_ready = false;
+}
+
+static void render_shutdown(render_simulation_init& c) {
+  render_drain(c);
+
+  c.ctx = painter::graphics_ctx{};
+  c.assets.reset();
+  c.base.reset();
+
+  if (c.instance != VK_NULL_HANDLE && c.surface != VK_NULL_HANDLE) {
+    vk::Instance(c.instance).destroy(c.surface);
+    c.surface = VK_NULL_HANDLE;
+  }
+
+  if (c.device != VK_NULL_HANDLE) {
+    vk::Device(c.device).destroy();
+    c.device = VK_NULL_HANDLE;
+  }
+
+  if (c.instance != VK_NULL_HANDLE) {
+    if (c.debug_messenger != VK_NULL_HANDLE) {
+      painter::destroy_debug_messenger(c.instance, c.debug_messenger);
+      c.debug_messenger = VK_NULL_HANDLE;
+    }
+
+    vk::Instance(c.instance).destroy();
+    c.instance = VK_NULL_HANDLE;
+  }
+
+  c.graphics_queue = VK_NULL_HANDLE;
+  c.transfer_queue = VK_NULL_HANDLE;
+  c.physical_device_data = painter::physical_device_data{};
+  c.instance_ready = false;
+  c.device_ready = false;
+  c.base_ready = false;
+  c.surface_ready = false;
+  c.graph_ready = false;
+  c.triangles_ready = false;
+}
 
 static void render_create_instance(render_simulation_init& c) {
   if (c.instance_ready) return;
 
-  painter::load_dispatcher1();
+  painter::load_dispatcher1(!c.config.headless);
 
   vk::ApplicationInfo ai{};
   ai.pApplicationName = "tile_frontier";
@@ -711,7 +782,7 @@ static void render_create_instance(render_simulation_init& c) {
   ai.engineVersion = VK_MAKE_VERSION(0, 1, 1);
   ai.apiVersion = VK_API_VERSION_1_0;
 
-  std::vector<const char*> exts = painter::get_required_extensions();
+  std::vector<const char*> exts = painter::get_required_extensions(!c.config.headless);
   vk::InstanceCreateInfo ici{};
   ici.pApplicationInfo = &ai;
   assert(enable_validation_layers);
@@ -739,12 +810,20 @@ static void render_create_device(render_simulation_init& c, const command_window
 
   bool cached = painter::system_info::try_load_cached_data(c.instance, &c.physical_device_data, nullptr);
   if (!cached) {
-    if (window == nullptr || window->w == nullptr) return;
+    if (c.config.headless) {
+      painter::system_info si(c.instance);
+      c.physical_device_data = si.choose_physical_device_headless();
+    } else {
+      if (window == nullptr || window->w == nullptr) {
+        utils::warn("Render device cache is missing and no window surface is available; device creation is postponed");
+        return;
+      }
 
-    painter::system_info si(c.instance);
-    si.check_devices_surface_capability(c.surface);
-    c.physical_device_data = si.choose_physical_device();
-    si.dump_cache_to_disk(c.physical_device_data.handle, nullptr);
+      painter::system_info si(c.instance);
+      si.check_devices_surface_capability(c.surface);
+      c.physical_device_data = si.choose_physical_device();
+      si.dump_cache_to_disk(c.physical_device_data.handle, nullptr);
+    }
   }
 
   painter::system_info::print_choosed_device(c.physical_device_data.handle);
@@ -753,7 +832,11 @@ static void render_create_device(render_simulation_init& c, const command_window
   dm.beginDevice(c.physical_device_data.handle);
   dm.createQueues(1);
   dm.features(vk::PhysicalDevice(c.physical_device_data.handle).getFeatures());
-  dm.setExtensions(painter::default_device_extensions);
+  if (c.config.headless) {
+    dm.setExtensions({});
+  } else {
+    dm.setExtensions(painter::default_device_extensions);
+  }
   c.device = dm.create({}, "tile_frontier.device");
   painter::load_dispatcher3(c.device);
 
@@ -772,7 +855,7 @@ static void render_create_base_resources(render_simulation_init& c) {
     c.instance,
     c.device,
     c.physical_device_data.handle,
-    painter::presentation_engine_type::main
+    c.config.headless ? painter::presentation_engine_type::no_present : painter::presentation_engine_type::main
   );
 
   c.base->create_allocator();
@@ -839,16 +922,10 @@ static void render_create_test_triangles(render_simulation_init& c) {
 }
 
 static void render_attach_window(render_simulation_init& c, const command_window_recreation& cmd) {
+  if (c.config.headless) return;
   if (!c.instance_ready) render_create_instance(c);
 
-  if (c.surface != VK_NULL_HANDLE) {
-    if (c.base) c.base->wait_all_fences();
-    vk::Instance(c.instance).destroy(c.surface);
-    c.surface = VK_NULL_HANDLE;
-    c.surface_ready = false;
-    c.graph_ready = false;
-    c.triangles_ready = false;
-  }
+  if (c.surface != VK_NULL_HANDLE) render_detach_window(c);
 
   const auto res = input::create_window_surface(c.instance, cmd.w, nullptr, &c.surface);
   if (res != static_cast<uint32_t>(vk::Result::eSuccess)) {
@@ -878,6 +955,10 @@ render_simulation::render_simulation(const size_t frame_time, render_simulation_
   container(std::make_unique<render_simulation_init>())
 {
   container->config = std::move(config);
+}
+
+render_simulation::~render_simulation() noexcept {
+  if (container) render_shutdown(*container);
 }
 
 void render_simulation::init() {

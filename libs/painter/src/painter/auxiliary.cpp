@@ -9,6 +9,11 @@
 #include "devils_engine/utils/core.h"
 
 #include <ranges>
+#if defined(_WIN32)
+  #include <windows.h>
+#else
+  #include <dlfcn.h>
+#endif
 namespace rv = std::ranges::views;
 
 namespace devils_engine {
@@ -37,12 +42,26 @@ bool check_validation_layer_support(const std::vector<const char*>& layers) {
   return std::ranges::count_if(layers_props, layers_pred) == layers.size();
 }
 
-std::vector<const char*> get_required_extensions() {
-  uint32_t glfw_extension_count = 0;
-  const char** glfw_extensions;
-  glfw_extensions = input::get_required_instance_extensions(&glfw_extension_count);
+static PFN_vkGetInstanceProcAddr load_system_instance_proc_addr() {
+#if defined(_WIN32)
+  static HMODULE vulkan = LoadLibraryA("vulkan-1.dll");
+  if (vulkan == nullptr) return nullptr;
+  return reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(vulkan, "vkGetInstanceProcAddr"));
+#else
+  static void* vulkan = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+  if (vulkan == nullptr) vulkan = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+  if (vulkan == nullptr) return nullptr;
+  return reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(vulkan, "vkGetInstanceProcAddr"));
+#endif
+}
 
-  std::vector<const char*> extensions(glfw_extensions, glfw_extensions + glfw_extension_count);
+std::vector<const char*> get_required_extensions(const bool require_surface) {
+  std::vector<const char*> extensions;
+  if (require_surface) {
+    uint32_t glfw_extension_count = 0;
+    const char** glfw_extensions = input::get_required_instance_extensions(&glfw_extension_count);
+    extensions.assign(glfw_extensions, glfw_extensions + glfw_extension_count);
+  }
 
   if (enable_validation_layers) {
     extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -51,19 +70,25 @@ std::vector<const char*> get_required_extensions() {
   return extensions;
 }
 
-void load_dispatcher1() { 
-  if (!input::vulkan_supported()) utils::error{}("Vulkan is not supported by this system");
-
-  const auto vkGetInstanceProcAddr = input::get_instance_proc_addr();
+void load_dispatcher1(const bool require_glfw_surface) {
+  PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = nullptr;
+  if (require_glfw_surface) {
+    if (!input::vulkan_supported()) utils::error{}("Vulkan is not supported by this GLFW context");
+    vkGetInstanceProcAddr = input::get_instance_proc_addr();
+  } else {
+    vkGetInstanceProcAddr = load_system_instance_proc_addr();
+  }
   if (vkGetInstanceProcAddr == nullptr) utils::error{}("Could not load vkGetInstanceProcAddr");
 
   VULKAN_HPP_DEFAULT_DISPATCHER.init(vkGetInstanceProcAddr);
-  input::init_vulkan_loader(vkGetInstanceProcAddr);
+  if (require_glfw_surface) input::init_vulkan_loader(vkGetInstanceProcAddr);
 
   if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateInstance == nullptr) {
     utils::error{}("Vulkan dispatcher is missing vkCreateInstance");
   }
 }
+
+void load_dispatcher1() { load_dispatcher1(true); }
 
 void load_dispatcher2(VkInstance inst) {
   VULKAN_HPP_DEFAULT_DISPATCHER.init(vk::Instance(inst));

@@ -221,6 +221,19 @@ static std::pair<physical_device_present_mode::values, physical_device_present_m
   return std::make_pair(secondary, physical_device_present_mode::values::immediate);
 }
 
+static void fill_queue_indices(physical_device_data& p_data, const system_info::physical_device& info) {
+  p_data.graphics_queue = find_queue(info.queue_families, vk::QueueFlagBits::eGraphics, {});
+  p_data.compute_queue = find_queue(info.queue_families, vk::QueueFlagBits::eCompute, { p_data.graphics_queue });
+  p_data.transfer_queue = find_queue(info.queue_families, vk::QueueFlagBits::eTransfer, { p_data.graphics_queue, p_data.compute_queue });
+
+  if (p_data.compute_queue == UINT32_MAX) p_data.compute_queue = p_data.graphics_queue;
+  if (p_data.transfer_queue == UINT32_MAX) p_data.transfer_queue = p_data.graphics_queue;
+
+  assert(p_data.graphics_queue != UINT32_MAX);
+  assert(p_data.compute_queue != UINT32_MAX);
+  assert(p_data.transfer_queue != UINT32_MAX);
+}
+
 physical_device_data system_info::choose_physical_device() const {
   // как найти подходящее устройство? нам 100% нужно найти устройство с возможностью вывода на экран
   // дальше желательно чтобы оно было дискретной карточкой и желательно чтобы там было побольше памяти доступно
@@ -321,6 +334,52 @@ physical_device_data system_info::choose_physical_device() const {
   assert(p_data.compute_queue != UINT32_MAX);
   assert(p_data.transfer_queue != UINT32_MAX);
   p_data.present_queue = info.queue_family_index_surface_support;
+
+  return p_data;
+}
+
+physical_device_data system_info::choose_physical_device_headless() const {
+  physical_device_data p_data;
+  size_t max_mem = 0;
+  uint32_t dev_index = UINT32_MAX;
+
+  const auto choose = [&] (const physical_device_type::values type) {
+    for (uint32_t index = 0; index < devices.size(); ++index) {
+      const auto& info = devices[index];
+      if (info.type != type) continue;
+      if (find_queue(info.queue_families, vk::QueueFlagBits::eGraphics, {}) == UINT32_MAX) continue;
+
+      if (max_mem < info.memory) {
+        p_data.handle = info.handle;
+        max_mem = info.memory;
+        dev_index = index;
+      }
+    }
+  };
+
+  choose(physical_device_type::values::discrete_gpu);
+  if (p_data.handle == VK_NULL_HANDLE) choose(physical_device_type::values::integrated_gpu);
+  if (p_data.handle == VK_NULL_HANDLE) {
+    for (uint32_t index = 0; index < devices.size(); ++index) {
+      const auto& info = devices[index];
+      if (find_queue(info.queue_families, vk::QueueFlagBits::eGraphics, {}) == UINT32_MAX) continue;
+
+      if (max_mem < info.memory) {
+        p_data.handle = info.handle;
+        max_mem = info.memory;
+        dev_index = index;
+      }
+    }
+  }
+
+  if (p_data.handle == VK_NULL_HANDLE || dev_index == UINT32_MAX) utils::error{}("Could not find a headless-capable Vulkan physical device");
+
+  const auto& info = devices[dev_index];
+  p_data.features = info.features;
+  p_data.desirable_present_mode = physical_device_present_mode::values::count;
+  p_data.fallback_present_mode = physical_device_present_mode::values::count;
+  p_data.present_queue = UINT32_MAX;
+  fill_queue_indices(p_data, info);
 
   return p_data;
 }

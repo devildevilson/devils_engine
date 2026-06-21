@@ -41,6 +41,7 @@ struct render_simulation_config {
   std::string pipeline_cache_path;
   std::string graph_name = "graphics1";
   bool create_vulkan_on_init = true;
+  bool headless = false;
 };
 
 //simulation_actor* g_core_actor = nullptr;
@@ -87,6 +88,7 @@ private:
 class render_simulation : public simul::advancer {
 public:
   render_simulation(const size_t frame_time, render_simulation_config config) noexcept;
+  ~render_simulation() noexcept;
   void init() override;
   bool stop_predicate() const override;
   void update(const size_t time) override;
