@@ -1,6 +1,7 @@
 #include "locale-utils.hpp"
 
 #include "core.h"
+#include <cstring>
 
 namespace devils_engine {
 namespace utils {

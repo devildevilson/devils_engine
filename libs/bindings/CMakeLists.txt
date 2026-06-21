@@ -9,9 +9,14 @@ project(
 )
 
 if (MSVC)
-
+  # windows: prebuilt lua54 (см. WIN32-блок ниже)
+  set(DEVILS_LUA_LIBRARIES lua54)
 else()
-  find_package(Lua REQUIRED)
+  # sol2 больше не поддерживается и не умеет lua5.5. find_package(Lua) на этой системе
+  # цепляет несовместимую liblua5.5 при заголовках 5.4, поэтому берем строго lua5.4 через pkg-config.
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(lua54 REQUIRED IMPORTED_TARGET lua5.4)
+  set(DEVILS_LUA_LIBRARIES PkgConfig::lua54)
 endif()
 
 set(SRC_LIST
@@ -29,7 +34,7 @@ set(HDR_LIST
 
 add_library(devils_bindings ${SRC_LIST} ${HDR_LIST})
 target_link_libraries(devils_bindings 
-  PUBLIC sol2::sol2 lua54
+  PUBLIC sol2::sol2 ${DEVILS_LUA_LIBRARIES}
   PRIVATE devils_engine::options devils_engine::utils devils_engine::visage glm::glm
 )
 

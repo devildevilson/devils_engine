@@ -38,7 +38,7 @@ struct constant_value {
 
   value_t current_value;
   scale_t current_scale;
-
+ 
   constant_value() noexcept;
   value_t compute_value() const;
   size_t reduce_value() const;

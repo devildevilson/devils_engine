@@ -1,0 +1,4 @@
+// каждый top-level идентификатор = один std::string инстанс
+per_frame
+per_update
+swapchain

@@ -1128,7 +1128,7 @@ static void completely_stop_source(system::source &s) {
       // тут просто нужно разделить 2 числа
       const size_t cur_cursor = cur_task.inst->data_source.cursor_pos.load(std::memory_order_acquire) * cur_task.inst->data_source.channels;
       if (!ma_sound_is_playing(&cur_task.inst->sound) && cur_cursor == 0) return 1.0f;
-      uint64_t samples_count = 0;
+      ma_uint64 samples_count = 0;
       auto res = ma_sound_get_cursor_in_pcm_frames(&cur_task.inst->sound, &samples_count);
       if (res != MA_SUCCESS) return 0.0;
       return double(cur_cursor) / double(samples_count);
@@ -1141,7 +1141,7 @@ static void completely_stop_source(system::source &s) {
       auto& cur_task = m_tasks[index];
       if (cur_task.inst == nullptr) return false;
 
-      uint64_t samples_count = 0;
+      ma_uint64 samples_count = 0;
       auto res = ma_sound_get_cursor_in_pcm_frames(&cur_task.inst->sound, &samples_count);
       if (res != MA_SUCCESS) return false;
 
@@ -1274,8 +1274,8 @@ static void completely_stop_source(system::source &s) {
         // free_frames может стать чуть больше за это время
         if (free_frames > 0 && t.frames_decoded < t.decoder->frames_count()) {
           // для каждой таски декодируем очередной кусок данных
-          size_t frames = t.decoder->get_frames(cache1.data(), free_frames);
-          size_t frames_out = frames;
+          ma_uint64 frames = t.decoder->get_frames(cache1.data(), free_frames);
+          ma_uint64 frames_out = frames;
           t.frames_decoded += frames;
 
           // возможно его преобразуем

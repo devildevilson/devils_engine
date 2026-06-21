@@ -1,0 +1,13 @@
+// pass_step2_mirror: name, blending(map), barriers/resources/sets/push_constants(lists),
+// material, geometry, draw_group, command. Пустые контейнеры опущены = дефолт.
+{
+  name = draw_triangles
+  material = mat1
+  geometry = g1
+  draw_group = dg1
+  command = "draw"
+}
+{
+  name = blit_to_swapchain
+  command = "blit albedo_res swapchain_image"
+}

@@ -7,10 +7,10 @@
 
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/type_traits.h"
-#include "devils_engine/utils/named_serializer.h"
 #include "devils_engine/utils/fileio.h"
 #include "devils_engine/utils/string-utils.hpp"
 #include "gtl/phmap.hpp"
+#include "tavl/tavl.h"
 
 #include <filesystem>
 
@@ -937,37 +937,49 @@ static void parse_render_graph2(
   graph.present_source = check(ctx.find_resource(data.present_source), "resource", data.present_source, graph.name);
 }
 
+// tavl: каждый top-level блок/строка в файле = один инстанс T (см. deserialize_next).
+// один и тот же цикл читает и одиночную запись, и "list" файл из нескольких записей.
+template <typename T>
+static std::vector<T> parse_config_content(const std::string& content, const std::string& label) {
+  tavl::parser p;
+  p.add_default_operator();
+  p.flush(content);
+  p.finish();
+
+  tavl::ct_context ctx;
+  std::vector<T> arr;
+  T val{};
+  while (tavl::deserialize_next(p, ctx, val)) {
+    arr.emplace_back(std::move(val));
+    val = T{};
+  }
+
+  for (const auto& d : ctx.diagnostics) {
+    if (!d.error.is_critical()) continue;
+    utils::warn("Could not parse config '{}' as type '{}': error '{}' at field '{}'", label, utils::type_name<T>(), tavl::to_string(d.error.type), d.field);
+  }
+
+  return arr;
+}
+
 template <typename T>
 std::vector<T> parse_file(const std::string& file) {
-  using value_t = T;
-
   if (!file_io::exists(file)) {
     utils::warn("File '{}' not found", file);
     return {};
   }
 
   const auto content = file_io::read(file);
-
-  std::vector<value_t> local_arr;
-  auto err = utils::from_json(local_arr, content);
-  if (err.ec == glz::error_code::expected_bracket) {
-    value_t val{};
-    auto err = utils::from_json(val, content);
-    if (err) { utils::warn("Could not parse file '{}' as type '{}', error: {}", file, utils::type_name<value_t>(), glz::format_error(err)); return {}; }
-    local_arr.emplace_back(std::move(val));
-  } else if (err) {
-    utils::warn("Could not parse file '{}' as type '{}', error: {}", file, utils::type_name<std::vector<value_t>>(), glz::format_error(err));
-    return {};
-  }
-
-  return local_arr;
+  return parse_config_content<T>(content, file);
 }
 
 template <typename T>
 std::vector<T> parse_folder(const std::string &folder) {
-  using value_t = T;
+  std::vector<T> arr;
 
-  std::vector<value_t> arr;
+  // папки может не быть (напр. descriptors/ или execution_passes/) - directory_iterator кинул бы исключение
+  if (!fs::exists(folder) || !fs::is_directory(folder)) return arr;
+
   for (const auto& entry : fs::directory_iterator(folder)) {
     if (!entry.is_regular_file()) {
       utils::warn("Ignore '{}'", entry.path().generic_string());
@@ -975,20 +987,8 @@ std::vector<T> parse_folder(const std::string &folder) {
     }
 
     const auto content = file_io::read(entry.path().generic_string());
-
-    std::vector<value_t> local_arr;
-    auto err = utils::from_json(local_arr, content);
-    if (err.ec == glz::error_code::expected_bracket) {
-      value_t val{};
-      auto err = utils::from_json(val, content);
-      if (err) { utils::warn("Could not parse file '{}' as type '{}', error: {}", entry.path().generic_string(), utils::type_name<value_t>(), glz::format_error(err)); continue; }
-      arr.emplace_back(std::move(val));
-    } else if (err) {
-      utils::warn("Could not parse file '{}' as type '{}', error: {}", entry.path().generic_string(), utils::type_name<std::vector<value_t>>(), glz::format_error(err));
-      return {};
-    } else {
-      for (auto& el : local_arr) { arr.emplace_back(std::move(el)); }
-    }
+    auto local_arr = parse_config_content<T>(content, entry.path().generic_string());
+    for (auto& el : local_arr) { arr.emplace_back(std::move(el)); }
   }
 
   return arr;
@@ -1014,8 +1014,8 @@ std::vector<OUT> convert(graphics_base& ctx, const std::vector<T>& in, const F &
 semaphore::semaphore() noexcept { memset(handles.data(), 0, sizeof(handles)); }
 
 void parse_data(graphics_base* ctx, std::string path) {
-  const auto& constant_values = parse_file<constant_value_mirror>(path + "declare_values.json");
-  const auto& counter_names = parse_file<std::string>(path + "declare_counters.json");
+  const auto& constant_values = parse_file<constant_value_mirror>(path + "declare_values.tavl");
+  const auto& counter_names = parse_file<std::string>(path + "declare_counters.tavl");
   const auto& constants = parse_folder<constant_mirror>(path + "constants/");
   const auto& resources = parse_folder<resource_mirror>(path + "resources/");
   const auto& descriptors = parse_folder<descriptor_mirror>(path + "descriptors/");

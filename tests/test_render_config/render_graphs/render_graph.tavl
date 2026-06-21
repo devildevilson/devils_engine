@@ -1,0 +1,28 @@
+// render_graph2_mirror: name, passes(vector<pass2_mirror>), present_source
+// pass2_mirror: name, render_target, subpasses(vector<map<string, tuple<string,string>>>),
+//               steps(vector<string>), wait_for(vector<string>), signal(vector<string>)
+{
+  name = graphics1
+  passes = [
+    {
+      name = p1
+      render_target = rt1
+      subpasses = [
+        { albedo_res = undefined = clear },
+        { albedo_res = color_attachment = store },
+        { albedo_res = transfer_src = store }
+      ]
+      steps = [ draw_triangles ]
+    },
+    {
+      name = p2
+      wait_for = [ swapchain_image ]
+      subpasses = [
+        { albedo_res = transfer_src = store, swapchain_image = transfer_dst = store },
+        { albedo_res = color_attachment = store, swapchain_image = present = store }
+      ]
+      steps = [ blit_to_swapchain ]
+    }
+  ]
+  present_source = swapchain_image
+}

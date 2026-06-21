@@ -69,7 +69,7 @@ if (WIN32)
   set(GLFW3_LIBRARY_NAME glfw3dll)
 else()
   #find_package(glfw3 REQUIRED)
-  set(GLFW3_LIBRARY_NAME glfw3)
+  #set(GLFW3_LIBRARY_NAME glfw3)
 endif()
 
 set(ZLIB_BUILD_EXAMPLES OFF)
@@ -326,6 +326,20 @@ FetchContent_Declare(
   FIND_PACKAGE_ARGS
 )
 
+FetchContent_Declare(
+  tavl
+  GIT_REPOSITORY https://github.com/devildevilson/tavl.git
+  GIT_TAG        v1.0.0
+  OVERRIDE_FIND_PACKAGE
+)
+
+FetchContent_Declare(
+  devils_script
+  GIT_REPOSITORY https://github.com/devildevilson/devils_script.git
+  GIT_TAG        v1.0.0
+  OVERRIDE_FIND_PACKAGE
+)
+
 FetchContent_MakeAvailable(ZLIB)
 
 # workarounds for zlib-ng
@@ -333,7 +347,7 @@ add_library(ZLIB::ZLIB ALIAS zlib)
 set(ZLIB_INCLUDE_DIR "${FETCHCONTENT_BASE_DIR}/zlib-build/")
 set(ZLIB_INCLUDE_DIRS "${FETCHCONTENT_BASE_DIR}/zlib-build/")
 
-FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng PNG atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm Catch2 cpuinfo miniaudio rapidhash) # RE-flex
+FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng PNG atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm Catch2 cpuinfo miniaudio rapidhash tavl devils_script) # RE-flex
 
 #target_compile_options(spdlog 
 #  PRIVATE /fsanitize=address
@@ -366,7 +380,7 @@ if(MSVC)
   )
 else()
   set(DYN_LIBRARIES_LIST
-
+    
   )
 endif()
 
@@ -407,8 +421,10 @@ if (WIN32)
   set(SHADERC_LIBRARY_NAME shaderc_shared)
   set(VULKAN_LIBRARY_NAME vulkan-1)
 else()
-  set(SHADERC_LIBRARY_NAME libshaderc)
-  set(VULKAN_LIBRARY_NAME vulkan)
+  find_package(Vulkan REQUIRED)
+  find_library(SHADERC_LIB NAMES shaderc_combined shaderc)
+  set(SHADERC_LIBRARY_NAME ${SHADERC_LIB})
+  set(VULKAN_LIBRARY_NAME Vulkan::Vulkan)
 endif()
 
 set(FAST_TEST_TARGET fast_test)

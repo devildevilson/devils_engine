@@ -18,6 +18,7 @@
 #include <optional>
 #include <atomic>
 #include <algorithm>
+#include <climits>
 
 namespace devils_engine {
   namespace utils {

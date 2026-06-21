@@ -1,0 +1,5 @@
+// render_target_mirror: name, resources(vector<tuple<string,string>>), blending(vector<blend_data_mirror>)
+{
+  name = rt1
+  resources = [ albedo_res = color_attachment ]
+}

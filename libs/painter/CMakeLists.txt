@@ -15,8 +15,11 @@ if (WIN32)
   set(SHADERC_LIBRARY_NAME shaderc_shared)
   set(VULKAN_LIBRARY_NAME vulkan-1)
 else()
-  set(SHADERC_LIBRARY_NAME libshaderc)
-  set(VULKAN_LIBRARY_NAME vulkan)
+  find_package(Vulkan REQUIRED)
+  find_library(SHADERC_LIB NAMES shaderc_combined shaderc)
+  find_package(glslang REQUIRED)
+  set(SHADERC_LIBRARY_NAME ${SHADERC_LIB} glslang::glslang)
+  set(VULKAN_LIBRARY_NAME Vulkan::Vulkan)
 endif()
 
 set(SRC_LIST
@@ -63,7 +66,7 @@ set(HDR_LIST
  "include/devils_engine/painter/device_features.h")
 
 add_library(devils_painter ${SRC_LIST} ${HDR_LIST})
-target_link_libraries(devils_painter PRIVATE devils_engine::options ${SHADERC_LIBRARY_NAME} Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp devils_engine::input devils_engine::demiurg devils_engine::utils sul::dynamic_bitset)
+target_link_libraries(devils_painter PRIVATE devils_engine::options ${SHADERC_LIBRARY_NAME} Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp devils_engine::input devils_engine::demiurg devils_engine::utils sul::dynamic_bitset tavl)
 target_include_directories(devils_painter INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_painter PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/painter>")
 

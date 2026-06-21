@@ -417,7 +417,7 @@ void render_simulation::init() {
   // нужно создать рендер стейт
   // для него нужен инстанс + устройство + физическое устройство
   // по идее мы должны получить это дело из json конфига с диска
-  container->base = std::make_unique<painter::graphics_base>();
+  //container->base = std::make_unique<painter::graphics_base>();
 
   // еще дополнительно нужно создать менеджера GPU ресурсов
   // я вот о чем подумал: должен быть менеджер ассетов, который

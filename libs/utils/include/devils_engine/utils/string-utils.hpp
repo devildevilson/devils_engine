@@ -138,16 +138,16 @@ static_assert(stoi("10") == 10);
 static_assert(stoi("346346363") == 346346363);
 
 constexpr std::string_view slice(const std::string_view &input, const int64_t start = 0, const int64_t end = INT64_MAX) {
-  const size_t fstart = start < 0 ? std::max(int64_t(input.size())+start, 0ll) : start;
-  const size_t fend = end < 0 ? std::max(int64_t(input.size())+end, 0ll) : end;
+  const size_t fstart = start < 0 ? std::max(int64_t(input.size())+start, INT64_C(0)) : start;
+  const size_t fend = end < 0 ? std::max(int64_t(input.size())+end, INT64_C(0)) : end;
   if (fstart >= fend) return std::string_view();
   return input.substr(fstart, fend-fstart);
 }
 
 template <typename T, size_t N = SIZE_MAX>
 constexpr std::span<T, N> slice(const std::span<T, N> &input, const int64_t start = 0, const int64_t end = INT64_MAX) {
-  const size_t fstart = start < 0 ? std::max(int64_t(input.size())+start, 0ll) : std::min(size_t(start), input.size());
-  const size_t fend = end < 0 ? std::max(int64_t(input.size())+end, 0ll) : std::min(size_t(end), input.size());
+  const size_t fstart = start < 0 ? std::max(int64_t(input.size())+start, INT64_C(0)) : std::min(size_t(start), input.size());
+  const size_t fend = end < 0 ? std::max(int64_t(input.size())+end, INT64_C(0)) : std::min(size_t(end), input.size());
   if (fstart >= fend) return std::span<T>();
   return std::span<T>(input.data()+fstart, fend - fstart);
 }

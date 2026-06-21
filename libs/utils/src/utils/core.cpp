@@ -11,6 +11,7 @@
 #include <limits.h>
 #include <unistd.h>     //readlink
 #include <cpuid.h>
+#include <immintrin.h>
 #endif
 
 #include <cpuinfo.h>

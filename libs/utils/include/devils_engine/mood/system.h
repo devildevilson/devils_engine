@@ -56,8 +56,8 @@ public:
 
     std::span<const transition> current_state_on_exit;
     std::span<const transition> next_state_on_entry;
-    std::array<const table::guard_f*, 8> guards_ptr;
-    std::array<const table::action_f*, 8> actions_ptr;
+    std::array<const mood::table::guard_f*, 8> guards_ptr;
+    std::array<const mood::table::action_f*, 8> actions_ptr;
 
     transition() noexcept = default;
     int32_t is_valid(void* userdata) const;
@@ -66,12 +66,12 @@ public:
     int32_t on_entry(void* userdata) const;
   };
   
-  system(const struct table* table, std::vector<std::string> lines) noexcept;
+  system(const struct mood::table* table, std::vector<std::string> lines) noexcept;
 
   std::span<const transition> find_transitions(const std::string_view& current_state, const std::string_view& event) const;
   std::span<const transition> transitions() const;
 private:
-  const struct table* table;
+  const struct mood::table* table;
   std::vector<transition> m_transitions; // gtl::flat_hash_map ?
   std::vector<std::string> m_memory;
 };

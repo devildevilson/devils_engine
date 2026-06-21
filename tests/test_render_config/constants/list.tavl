@@ -1,0 +1,11 @@
+// constant_mirror: name, layout, value(vector<double>)
+{
+  name = tri_const
+  layout = draw4
+  value = [3.0, 1.0, 0.0, 0.0]
+}
+{
+  name = ui_data
+  layout = ui1v1
+  value = [1.0, 2.0]
+}

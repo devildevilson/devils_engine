@@ -565,6 +565,8 @@ namespace devils_engine {
     }
 
 #ifndef _WIN32
+    using uint128_t = __uint128_t;
+    using int128_t = __int128_t;
 
     #define PCG_128BIT_CONSTANT(high,low) ((((__uint128_t)high) << 64) + low)
     static inline __uint128_t pcg_output_rxs_m_xs_128_128(__uint128_t state) {
@@ -668,7 +670,7 @@ namespace devils_engine {
     }
     
     cmwc256::state cmwc256::init(const uint64_t seed) {
-      return typed_init<cmwc256>();
+      return typed_init<cmwc256>(seed);
     }
       
     cmwc256::state cmwc256::next(state s) {

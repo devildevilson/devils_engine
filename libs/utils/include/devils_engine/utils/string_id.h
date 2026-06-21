@@ -3,8 +3,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <vector>
-#include <string>
 #include <string_view>
 #include <gtl/phmap.hpp>
 
@@ -13,167 +13,101 @@
 
 namespace devils_engine {
 namespace utils {
-/**
- * несколько замечаний: система должна выдать стабильный uint64_t айдишник на произвольную строку
- * желательно сделать систему thread safe
- * для этого лучше добавить регистрацию отдельно и заранее все строки зарегистрировать 
- * порядок регистрации строк не должен иметь значения... хотя стоп
- * а как же последовательность?
- * 
- * мы сделаем вот что - есть минимум две системы:
- * зависимая от последовательности
- * независимая от последовательности
- * + к этому добавим возможность иметь системам маленькую lookup table для независимых id
- * 
- * как обойтись без предварительной регистрации? она по идее не должна требоваться хотя бы для 
- * order_independent варианта... ощущение что для thread safe варианта особо никак
- */ 
+
+// в этом файле две независимые штуки:
+//
+// 1. string_hash - свободная функция для строк, которым НЕ нужен последовательный id.
+//    отдает стабильный 64 битный хеш строки (rapidhash). никакого состояния, ничего регистрировать
+//    не нужно, можно звать откуда угодно и из любого потока. для compile time строк есть отдельный
+//    constexpr murmur в type_traits.h - runtime и compile time строки мы намеренно не смешиваем.
+//
+// 2. string_pool - класс для строк, которым нужен ПОСЛЕДОВАТЕЛЬНЫЙ плотный id (0..N).
+//    такой id удобно использовать как позицию бита (флаги состояний GOAP и тому подобное).
+//    контракт по тредам: вся регистрация (reg) проходит ДО использования в однопоточной фазе
+//    (например при загрузке модулей), после чего lookup/name только читают и потокобезопасны.
 
 using id = uint64_t;
 constexpr id invalid_id = UINT64_MAX;
 
-namespace hash_string {
-using value = uint64_t;
+// --- 1. непоследовательный хеш ---
 
-// дает случайное uint64_t число
-template <size_t ID>
-class order_independent {
+[[nodiscard]] inline id string_hash(const std::string_view& str) noexcept {
+  return rapidhash(str.data(), str.size());
+}
+
+[[nodiscard]] inline id string_hash(const std::string_view& str, const uint64_t seed) noexcept {
+  return rapidhash_withSeed(str.data(), str.size(), seed);
+}
+
+// --- 2. последовательный пул строк ---
+
+// TAG разделяет независимые пулы на уровне типа: id из одного пула нельзя случайно скормить другому.
+template <size_t TAG = 0>
+class string_pool {
 public:
-  id reg(const std::string_view& str);
+  // регистрирует строку и возвращает ее плотный id. повторный reg той же строки отдает тот же id.
+  // НЕ потокобезопасно - звать только в однопоточной фазе загрузки.
+  id reg(const std::string_view& str) {
+    // offset/size в entry это uint32_t - страхуемся заранее, чтобы обскурный баг не всплыл потом
+    if (str.size() >= UINT32_MAX) utils::error{}("string_pool: string is too long ({} bytes), max is {}", str.size(), UINT32_MAX);
 
-  // thread safe
-  id lookup(const std::string_view &str) const;
-  std::string_view lookup(const id val) const;
-private:
-  struct data {
-    uint32_t offset;
-    uint32_t size;
-  };
+    const auto hash = string_hash(str);
+    const auto itr = m_lookup.find(hash);
+    if (itr != m_lookup.end()) {
+      if (str != view(itr->second)) {
+        utils::error{}("String hash collision in string_pool: '{}' vs '{}'. You are winner =)", str, view(itr->second));
+      }
+      return itr->second;
+    }
 
-  gtl::flat_hash_map<value, uint64_t> lookup_table;
-  std::vector<data> lookup_string;
-  std::vector<char> memory;
-};
+    const uint32_t offset = static_cast<uint32_t>(m_memory.size());
+    m_memory.insert(m_memory.end(), str.begin(), str.end());
+    m_memory.push_back('\0');
 
-// дает последовательное uint64_t число
-template <size_t ID>
-class order_dependent {
-public:
-  id reg(const std::string_view& str);
-
-  // thread safe
-  id lookup(const std::string_view &str) const;
-  std::string_view lookup(const id val) const;
-private:
-  struct data {
-    uint32_t offset;
-    uint32_t size;
-    value hash_value;
-  };
-
-  gtl::flat_hash_map<value, uint64_t> lookup_table;
-  std::vector<data> lookup_string;
-  std::vector<char> memory;
-};
-
-template <size_t ID>
-id order_independent<ID>::reg(const std::string_view& str) {
-  const auto hash = rapidhash_withSeed(str.data(), str.size(), ID);
-  const auto itr = lookup_table.find(hash);
-  if (itr != lookup_table.end()) {
-    // тут строку надо сравнить и если не совпадает то вылетаем =(
-    const auto& d = lookup_string[itr->second];
-    const auto contained_str = std::string_view(&memory[d.offset], d.size);
-    if (str != contained_str) utils::error{}("String hash collision: hash('{}') == hash('{}'). You are winner =)", str, contained_str);
-    return hash;
+    const id index = m_entries.size();
+    m_entries.emplace_back(entry{ offset, static_cast<uint32_t>(str.size()) });
+    m_lookup.emplace(hash, index);
+    return index;
   }
 
-  const size_t cur_pos = memory.size();
-  memory.resize(cur_pos + str.size()+1, 0);
-  memcpy(&memory[cur_pos], str.data(), str.size());
-  memory[cur_pos + str.size()] = '\0';
-
-  const uint64_t index = lookup_string.size();
-  lookup_string.emplace_back(data{cur_pos, str.size(), hash});
-
-  lookup_table.emplace(std::make_pair(hash, index));
-
-  return hash;
-}
-
-template <size_t ID>
-id order_independent<ID>::lookup(const std::string_view& str) const {
-  const auto hash = rapidhash_withSeed(str.data(), str.size(), ID);
-  const auto itr = lookup_table.find(hash);
-  if (itr == lookup_table.end()) return invalid_id;
-
-  const auto& d = lookup_string[itr->second];
-  const auto contained_str = std::string_view(&memory[d.offset], d.size);
-  if (str != contained_str) utils::error{}("String hash collision: hash('{}') == hash('{}'). You are winner =)", str, contained_str);
-
-  return hash;
-}
-
-template <size_t ID>
-std::string_view order_independent<ID>::lookup(const id val) const {
-  const auto itr = lookup_table.find(val);
-  if (itr == lookup_table.end()) return std::string_view();
-
-  const auto& d = lookup_string[itr->second];
-  return std::string_view(&memory[d.offset], d.size);
-}
-
-template <size_t ID>
-id order_dependent<ID>::reg(const std::string_view& str) {
-  const auto hash = rapidhash_withSeed(str.data(), str.size(), ID);
-  const auto itr = lookup_table.find(hash);
-  if (itr != lookup_table.end()) {
-    // тут строку надо сравнить и если не совпадает то вылетаем =(
-    const auto& d = lookup_string[itr->second];
-    const auto contained_str = std::string_view(&memory[d.offset], d.size);
-    if (str != contained_str) utils::error{}("String hash collision: hash('{}') == hash('{}'). You are winner =)", str, contained_str);
-    return hash;
+  // потокобезопасно после завершения регистрации. invalid_id если строка не зарегистрирована.
+  [[nodiscard]] id lookup(const std::string_view& str) const {
+    const auto hash = string_hash(str);
+    const auto itr = m_lookup.find(hash);
+    if (itr == m_lookup.end()) return invalid_id;
+    if (str != view(itr->second)) {
+      utils::error{}("String hash collision in string_pool: '{}' vs '{}'. You are winner =)", str, view(itr->second));
+    }
+    return itr->second;
   }
 
-  const size_t cur_pos = memory.size();
-  memory.resize(cur_pos + str.size()+1, 0);
-  memcpy(&memory[cur_pos], str.data(), str.size());
-  memory[cur_pos + str.size()] = '\0';
+  // потокобезопасно после завершения регистрации. пустой view если id невалиден.
+  [[nodiscard]] std::string_view name(const id val) const {
+    if (val >= m_entries.size()) return std::string_view();
+    return view(val);
+  }
 
-  const uint64_t index = lookup_string.size();
-  lookup_string.emplace_back(data{cur_pos, str.size(), hash});
+  [[nodiscard]] bool contains(const std::string_view& str) const { return lookup(str) != invalid_id; }
+  [[nodiscard]] size_t size() const noexcept { return m_entries.size(); }
+  [[nodiscard]] bool empty() const noexcept { return m_entries.empty(); }
 
-  lookup_table.emplace(std::make_pair(hash, index));
+  void clear() noexcept {
+    m_lookup.clear();
+    m_entries.clear();
+    m_memory.clear();
+  }
+private:
+  struct entry { uint32_t offset; uint32_t size; };
 
-  return index;
-}
+  [[nodiscard]] std::string_view view(const id index) const noexcept {
+    const auto& e = m_entries[index];
+    return std::string_view(&m_memory[e.offset], e.size);
+  }
 
-template <size_t ID>
-id order_dependent<ID>::lookup(const std::string_view& str) const {
-  const auto hash = rapidhash_withSeed(str.data(), str.size(), ID);
-  const auto itr = lookup_table.find(hash);
-  if (itr == lookup_table.end()) return invalid_id;
-
-  const auto& d = lookup_string[itr->second];
-  const auto contained_str = std::string_view(&memory[d.offset], d.size);
-  if (str != contained_str) utils::error{}("String hash collision: hash('{}') == hash('{}'). You are winner =)", str, contained_str);
-
-  return itr->second;
-}
-
-template <size_t ID>
-std::string_view order_dependent<ID>::lookup(const id val) const {
-  if (val >= lookup_string.size()) return std::string_view();
-  const auto& d = lookup_string[val];
-  return std::string_view(&memory[d.offset], d.size);
-}
-
-}
-
-template <size_t ID>
-using arbitrary_hash = hash_string::order_independent<ID>;
-template <size_t ID>
-using monotonic_hash = hash_string::order_dependent<ID>;
+  gtl::flat_hash_map<uint64_t, id> m_lookup;
+  std::vector<entry> m_entries;
+  std::vector<char> m_memory;
+};
 
 }
 }

@@ -10,6 +10,10 @@ if (WIN32) # probably can be dealed within cmake build system ???
   set(DENSITY_LIBRARY ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density-win32/density.lib)
   set(DENSITY_LIBRARY_DIR ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density-win32)
   set(DENSITY_INCLUDE_DIRS ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density-win32/include)
+else()
+  set(DENSITY_LIBRARY ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density/density.a)
+  set(DENSITY_LIBRARY_DIR ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density)
+  set(DENSITY_INCLUDE_DIRS ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density/include)
 endif()
 
 set(SRC_LIST
@@ -89,8 +93,12 @@ target_compile_options(engine_c_part1 PRIVATE
 
 target_link_libraries(devils_utils 
   PUBLIC devils_engine::thread devils_mood devils_simul devils_aesthetics spdlog::spdlog glaze::glaze gtl minizip #ReflexLibStatic #alpaca::alpaca
-  PRIVATE engine_c_part1 density ZLIB::ZLIB bcrypt ncrypt crypt32 devils_engine::options cpuinfo
+  PRIVATE engine_c_part1 density ZLIB::ZLIB devils_engine::options cpuinfo
 )
+
+if (WIN32)
+  target_link_libraries(devils_utils bcrypt ncrypt crypt32)
+endif()
 
 target_include_directories(devils_utils INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
 target_include_directories(devils_utils PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utils>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utf>")
