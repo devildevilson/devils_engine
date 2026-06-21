@@ -1,4 +1,4 @@
-#include "system.h"
+#include "simulation.h"
 
 using namespace tile_frontier;
 

@@ -12,13 +12,25 @@ set(PROJECT_EXTERNAL_DEPENDENCY_DIR ${CMAKE_CURRENT_LIST_DIR}/external)
 
 #add_subdirectory(../)
 
-set(HDR_LIST 
-  include/core/system.h
+set(HDR_LIST
+  include/core/actors.h
+  include/core/config.h
+  include/core/messages.h
+  include/core/message_dispatcher.h
+  include/core/sound_system.h
+  include/core/render_system.h
+  include/core/assets_system.h
+  include/core/simulation.h
 )
 
-set(SRC_LIST 
+set(SRC_LIST
   main.cpp
- "src/core/system.cpp")
+  src/core/config.cpp
+  src/core/sound_system.cpp
+  src/core/render_system.cpp
+  src/core/assets_system.cpp
+  src/core/simulation.cpp
+)
 
 add_executable(${PROJECT_NAME} ${SRC_LIST} ${HDR_LIST})
 target_link_libraries(
