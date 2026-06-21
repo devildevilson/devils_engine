@@ -14,6 +14,7 @@ struct GLFWwindow;
 struct GLFWmonitor;
 
 namespace devils_engine { namespace thread { class atomic_pool; } }
+namespace devils_engine { namespace demiurg { class resource_interface; } }
 
 namespace tile_frontier {
 namespace core {
@@ -93,6 +94,26 @@ struct command_thread_pool_change_owner {
 struct command_current_loading_state {
   std::string msg;
   // размеры?
+};
+
+// main → assets: «доведи ресурс до состояния target».
+// Валюта контракта — указатель на resource_interface из реестра ассетов
+// (реестр строится один раз в init и потом только читается, поэтому указатель стабилен).
+// target — это demiurg::state::values (cold=0/warm=1/hot=2); храним int чтобы не тянуть demiurg в хедер.
+struct command_load_resource {
+  demiurg::resource_interface* res;
+  int32_t target;
+};
+
+// assets → render: «ресурс в памяти, подготовь его на GPU» (warm→hot) либо выгрузи (hot→warm).
+struct command_gpu_transition {
+  demiurg::resource_interface* res;
+  bool load; // true: warm→hot (load_warm); false: hot→warm (unload_hot)
+};
+
+// render → assets: «GPU-переход завершён» (рендер уже флипнул _state и записал gpu_index в ресурс).
+struct command_gpu_done {
+  demiurg::resource_interface* res;
 };
 
 }

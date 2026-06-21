@@ -12,6 +12,7 @@ set(SRC_LIST
   src/demiurg/modules_listing.cpp
   src/demiurg/zip_module.cpp
   src/demiurg/module_system.cpp
+  src/demiurg/resource_loader.cpp
 )
 
 set(HDR_LIST

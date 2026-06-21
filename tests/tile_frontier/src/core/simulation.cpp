@@ -8,11 +8,14 @@
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/time-utils.hpp>
 
+#include <devils_engine/demiurg/resource_system.h>
+
 #include "config.h"
 #include "messages.h"
 #include "sound_system.h"
 #include "render_system.h"
 #include "assets_system.h"
+#include "mesh_resource.h"
 
 /*
 вопрос в том как правильно передать окно в рендер?
@@ -65,6 +68,10 @@ struct simulation_init {
   GLFWmonitor* monitor;
 
   std::unique_ptr<input::init> in;
+
+  // тестовое наблюдение за прогоном контракта загрузки
+  mesh_resource* watch_res = nullptr;
+  bool watch_logged = false;
 
   simulation_init() : pool(nullptr), window(nullptr), monitor(nullptr) {}
 };
@@ -186,6 +193,8 @@ void simulation::init() {
   container->assets_sim.reset(new assets_simulation(assets_ft));
   container->assets_sim->init();
   aactor = container->assets_sim->get_actor();
+  container->assets_sim->set_render_actor(gactor); // gactor может быть null (render выключен)
+  if (container->render_sim) container->render_sim->set_assets_actor(aactor);
 
   const auto gap_divisor = container->config.simulation.thread_start_gap_divisor;
   const auto sound_gap = thread_start_gap(sound_ft, gap_divisor);
@@ -202,6 +211,18 @@ void simulation::init() {
   // может прийти сейчас, после загрузки ассетов или после полного пересоздания окна.
   if (container->config.window.create_on_start && container->render_sim && !container->config.render.headless) {
     create_window_and_notify_render(*container, gactor);
+  }
+
+  // Тестовый прогон контракта загрузки: просим у ассетов довести меш 'test' до hot.
+  // Указатель ресурса берём из реестра (он стабилен после init), а сам запрос шлём
+  // сообщением в актор ассетов — менеджмент крутится на его потоке.
+  if (auto* res = container->assets_sim->resources()->get<mesh_resource>("mesh/test")) {
+    command_load_resource cmd{res, static_cast<int32_t>(demiurg::state::hot)};
+    aactor->send(cmd);
+    container->watch_res = res;
+    utils::info("main: requested mesh 'mesh/test' -> hot");
+  } else {
+    utils::warn("main: test mesh resource not found in registry");
   }
 }
 
@@ -248,6 +269,12 @@ void simulation::update(const size_t time) {
   // для разных игр разные АПИ функции
 
   if (container && container->in) input::poll_events();
+
+  // наблюдаем за тестовым ресурсом: main видит hot и читает gpu_index (записан рендером)
+  if (container && container->watch_res && !container->watch_logged && container->watch_res->usable()) {
+    utils::info("main: resource '{}' reached HOT, gpu_index={}", container->watch_res->id, container->watch_res->gpu_index);
+    container->watch_logged = true;
+  }
 
   // задаем нажатие кнопок для интерфейса
 

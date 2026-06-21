@@ -8,6 +8,7 @@
 
 #include <devils_engine/input/core.h>
 #include <devils_engine/utils/core.h>
+#include <devils_engine/utils/safe_handle.h>
 
 #include <devils_engine/painter/graphics_base.h>
 #include <devils_engine/painter/assets_base.h>
@@ -17,6 +18,7 @@
 
 #include "messages.h"
 #include "message_dispatcher.h"
+#include "mesh_resource.h"
 
 namespace tile_frontier {
 namespace core {
@@ -33,6 +35,9 @@ static uint32_t make_color(const float r, const float g, const float b, const fl
 struct render_simulation_init {
   cached_message_dispatcher<command_window_recreation> window_recreation_commands;
   cached_message_dispatcher<command_window_resize> window_resizing_commands;
+  cached_message_dispatcher<command_gpu_transition> gpu_transition_commands;
+
+  assets_actor* aactor = nullptr; // куда слать ack о завершении GPU-перехода
 
   render_simulation_config config;
 
@@ -345,6 +350,7 @@ render_simulation::~render_simulation() noexcept {
 void render_simulation::init() {
   actor.add_receiver<command_window_recreation>(&container->window_recreation_commands.dis);
   actor.add_receiver<command_window_resize>(&container->window_resizing_commands.dis);
+  actor.add_receiver<command_gpu_transition>(&container->gpu_transition_commands.dis);
 
   if (container->config.create_vulkan_on_init) {
     render_create_instance(*container);
@@ -393,6 +399,21 @@ void render_simulation::update(const size_t time) {
     if (container->base && container->surface_ready) container->base->resize_viewport(cmd.width, cmd.height);
   });
 
+  // GPU-переходы ресурсов (warm↔hot) — их исполняет рендер на своём потоке.
+  // Берём только когда GPU-ресурсы готовы; иначе команды копятся в диспетчере до готовности.
+  if (container->base_ready) {
+    dispatcher_consume(container->gpu_transition_commands, [this] (const auto& cmd) {
+      gpu_load_context ctx{ container->assets.get(), container->base.get() };
+      const utils::safe_handle_t handle(&ctx);
+      if (cmd.load) cmd.res->load(handle);  // warm→hot: load_warm (upload+gpu_index)
+      else          cmd.res->unload(handle); // hot→warm: unload_hot
+      if (container->aactor != nullptr) {
+        command_gpu_done done{cmd.res};
+        container->aactor->send(done);
+      }
+    });
+  }
+
   if (container->triangles_ready && container->base->can_draw()) {
     container->base->prepare_frame();
     container->ctx.prepare();
@@ -402,6 +423,10 @@ void render_simulation::update(const size_t time) {
 }
 
 graphics_actor* render_simulation::get_actor() { return &actor; }
+
+void render_simulation::set_assets_actor(assets_actor* aactor) {
+  if (container) container->aactor = aactor;
+}
 
 }
 }

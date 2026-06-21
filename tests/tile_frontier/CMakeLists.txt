@@ -20,6 +20,7 @@ set(HDR_LIST
   include/core/sound_system.h
   include/core/render_system.h
   include/core/assets_system.h
+  include/core/mesh_resource.h
   include/core/simulation.h
 )
 
@@ -29,6 +30,7 @@ set(SRC_LIST
   src/core/sound_system.cpp
   src/core/render_system.cpp
   src/core/assets_system.cpp
+  src/core/mesh_resource.cpp
   src/core/simulation.cpp
 )
 

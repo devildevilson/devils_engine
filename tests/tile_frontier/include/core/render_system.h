@@ -33,6 +33,9 @@ public:
   void update(const size_t time) override;
 
   graphics_actor* get_actor();
+
+  // Куда слать ack о завершении GPU-перехода ресурса (command_gpu_done).
+  void set_assets_actor(assets_actor* aactor);
 private:
   std::unique_ptr<render_simulation_init> container;
   graphics_actor actor;

@@ -16,8 +16,8 @@ simulation = {
 }
 
 render = {
-  enabled = false
-  headless = false
+  enabled = true
+  headless = true
   config_folder = "render_config"
   cache_folder = "cache"
   pipeline_cache = "cache/graphics_pipeline_cache"

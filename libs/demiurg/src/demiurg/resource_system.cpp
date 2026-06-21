@@ -82,7 +82,7 @@ namespace devils_engine {
       if (id == "") return nullptr;
 
       const auto itr = std::lower_bound(resources.begin(), resources.end(), id, &get_f);
-      if ((*itr)->id != id) return nullptr;
+      if (itr == resources.end() || (*itr)->id != id) return nullptr;
       return (*itr);
     }
 
