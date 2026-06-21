@@ -8,7 +8,9 @@ namespace rv = std::ranges::views;
 #include "auxiliary.h"
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/fileio.h"
-#include "devils_engine/utils/named_serializer.h"
+
+#include <tavl/deserialize.h>
+#include <tavl/serialize.h>
 
 namespace devils_engine {
 namespace painter {
@@ -326,15 +328,25 @@ physical_device_data system_info::choose_physical_device() const {
 bool system_info::try_load_cached_data(VkInstance instance, physical_device_data* phys_data, cached_system_data* cached_data) {
   const auto directory_path = utils::cache_folder();
   if (!file_io::exists(directory_path)) return false;
-  const auto file_path = directory_path + "main_device.json";
+  const auto file_path = directory_path + "main_device.tavl";
   if (!file_io::exists(file_path)) return false;
 
   cached_system_data cur_data;
   {
     const auto content = file_io::read(file_path);
-    const auto err = utils::from_json(cur_data, content);
-    if (err) {
+
+    tavl::parser parser;
+    parser.add_default_operator();
+    parser.flush(content);
+    parser.finish();
+
+    tavl::ct_context ctx;
+    tavl::deserialize(parser, ctx, cur_data);
+    if (!ctx.diagnostics.empty()) {
       utils::warn("Could not load cached device data from file '{}'", file_path);
+      for (const auto& d : ctx.diagnostics) {
+        utils::warn("  tavl diagnostic {}, field '{}'", static_cast<size_t>(d.error.type), d.field);
+      }
       return false;
     }
   }
@@ -420,9 +432,15 @@ void system_info::dump_cache_to_disk(VkPhysicalDevice dev, cached_system_data* c
   const auto directory_path = utils::cache_folder();
   if (!file_io::exists(directory_path)) file_io::create_directory(directory_path);
 
-  const auto file_path = directory_path + "main_device.json";
-  const auto json = utils::to_json<glz::opts{ .prettify = true, .indentation_width = 2 }>(data);
-  const bool res = file_io::write(json.value(), file_path);
+  const auto file_path = directory_path + "main_device.tavl";
+  std::string tavl_data;
+  const bool serialized = tavl::serialize(data, tavl_data);
+  if (!serialized) {
+    utils::warn("Could not serialize cached device data to tavl");
+    return;
+  }
+
+  const bool res = file_io::write(tavl_data, file_path);
   if (!res) utils::warn("Could not write file '{}'", file_path);
 
   if (cached_data != nullptr) *cached_data = data;

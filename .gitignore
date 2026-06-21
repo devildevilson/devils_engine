@@ -6,4 +6,4 @@ exclude/
 CMakeSettings.json
 .gitignore
 deps/
-
+AGENTS.md

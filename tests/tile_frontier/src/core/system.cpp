@@ -1,6 +1,7 @@
 #include "system.h"
 
 #include <thread>
+#include <algorithm>
 #include <devils_engine/sound/system.h>
 #include <devils_engine/utils/event_dispatcher.h>
 #include <devils_engine/utils/core.h>
@@ -12,6 +13,8 @@
 #include <devils_engine/utils/fileio.h>
 
 #include <devils_engine/painter/graphics_base.h>
+
+#include <tavl/deserialize.h>
 
 /*
 вопрос в том как правильно передать окно в рендер?
@@ -26,16 +29,80 @@
 namespace tile_frontier {
 namespace core {
 
+struct window_config {
+  std::string title = "tile_frontier";
+  uint32_t width = 1280;
+  uint32_t height = 720;
+  bool create_on_start = true;
+};
+
+struct simulation_config {
+  uint32_t main_fps = 20;
+  uint32_t sound_fps = 60;
+  uint32_t render_fps = 60;
+  uint32_t assets_fps = 60;
+  uint32_t worker_threads_reserved = 4;
+  uint32_t min_worker_threads = 1;
+  uint32_t thread_start_gap_divisor = 4;
+};
+
+struct render_config {
+  std::string config_folder = "render_config";
+  std::string cache_folder = "cache/render";
+  std::string pipeline_cache = "cache/render/pipeline_cache.bin";
+  std::string preferred_gpu;
+  uint32_t preferred_gpu_index = 0;
+};
+
+struct metrics_config {
+  bool enabled = true;
+  uint32_t log_interval_ms = 1000;
+};
+
+struct app_config {
+  window_config window;
+  simulation_config simulation;
+  render_config render;
+  metrics_config metrics;
+};
+
+static size_t frame_time_from_fps(const uint32_t fps) noexcept {
+  const auto valid_fps = std::max(fps, 1u);
+  return utils::round(double(utils::global_time_resolution) / double(valid_fps));
+}
+
+static size_t thread_start_gap(const size_t frame_time, const uint32_t divisor) noexcept {
+  const auto valid_divisor = std::max(divisor, 1u);
+  return utils::round(double(frame_time) / double(valid_divisor));
+}
+
+static app_config load_app_config(const std::string& path) {
+  app_config cfg;
+  if (!file_io::exists(path)) {
+    utils::warn("Could not find app config '{}', using defaults", path);
+    return cfg;
+  }
+
+  const auto content = file_io::read(path);
+  tavl::parser parser;
+  parser.add_default_operator();
+  parser.flush(content);
+  parser.finish();
+
+  tavl::ct_context ctx;
+  tavl::deserialize(parser, ctx, cfg);
+
+  if (!ctx.diagnostics.empty()) {
+    utils::warn("App config '{}' produced {} tavl diagnostics", path, ctx.diagnostics.size());
+    for (const auto& d : ctx.diagnostics) {
+      utils::warn("  tavl diagnostic {}, field '{}'", static_cast<size_t>(d.error.type), d.field);
+    }
+  }
+
+  return cfg;
+}
+
 constexpr size_t main_frame_time = utils::round(double(utils::global_time_resolution) * (1.0/20.0));
-
-constexpr size_t sound_frame_time = utils::round(double(utils::global_time_resolution) * (1.0/60.0));
-constexpr size_t sound_thread_gap = utils::round(double(sound_frame_time) / 4.0);
-
-constexpr size_t render_frame_time = utils::round(double(utils::global_time_resolution) * (1.0/60.0));
-constexpr size_t render_thread_gap = utils::round(double(sound_frame_time) / 4.0);
-
-constexpr size_t assets_frame_time = utils::round(double(utils::global_time_resolution) * (1.0/60.0));
-constexpr size_t assets_thread_gap = utils::round(double(sound_frame_time) / 4.0);
 
 // все равно придется делить по типам ресурсов
 // помоему только за звуком нужно вот так следить
@@ -190,6 +257,8 @@ struct command_current_loading_state {
 // тут что? все другие системы + потоки для них + тред пул
 // кеш?
 struct simulation_init {
+  app_config config;
+
   std::unique_ptr<thread::atomic_pool> pool_container;
   thread::atomic_pool* pool;
 
@@ -206,10 +275,40 @@ struct simulation_init {
   GLFWwindow* window;
   GLFWmonitor* monitor;
 
-  input::init in;
+  std::unique_ptr<input::init> in;
 
-  simulation_init() : pool(nullptr), window(nullptr), monitor(nullptr), in(&error_callback) {}
+  simulation_init() : pool(nullptr), window(nullptr), monitor(nullptr) {}
 };
+
+static void create_window_and_notify_render(simulation_init& c, graphics_actor* gactor) {
+  if (c.window != nullptr) return;
+
+  if (!c.in) c.in = std::make_unique<input::init>(&error_callback);
+
+  c.monitor = input::primary_monitor();
+  c.window = input::create_window(c.config.window.width, c.config.window.height, c.config.window.title);
+  if (c.window == nullptr) {
+    utils::error{}(
+      "Could not create window '{}' {}x{}",
+      c.config.window.title,
+      c.config.window.width,
+      c.config.window.height
+    );
+  }
+
+  if (c.monitor != nullptr) {
+    const auto monitor_name = input::monitor_name(c.monitor);
+    utils::info("Using monitor '{}'", monitor_name);
+  }
+
+  command_window_recreation wr{
+    c.window,
+    c.monitor,
+    c.config.window.width,
+    c.config.window.height
+  };
+  gactor->send(wr);
+}
 
 struct assets_simulation_init {
   thread::atomic_pool* pool;
@@ -218,50 +317,85 @@ struct assets_simulation_init {
 simulation::simulation() noexcept : simul::advancer(main_frame_time), sactor(nullptr), gactor(nullptr), aactor(nullptr) {}
 
 simulation::~simulation() noexcept {
-  container->sound_sim->stop();
-  container->render_sim->stop();
-  container->assets_sim->stop();
+  if (!container) return;
+
+  if (container->sound_sim)  container->sound_sim->stop();
+  if (container->render_sim) container->render_sim->stop();
+  if (container->assets_sim) container->assets_sim->stop();
+
+  container->sound_thread.reset();
+  container->render_thread.reset();
+  container->assets_thread.reset();
+
+  if (container->window != nullptr) {
+    input::destroy(container->window);
+    container->window = nullptr;
+  }
+  container->monitor = nullptr;
+  container->in.reset();
+
+  aactor = nullptr;
+  gactor = nullptr;
+  sactor = nullptr;
 }
 
 void simulation::init() {
-  const uint32_t thread_count = std::min(int(std::thread::hardware_concurrency()) - 4, 1);
+  container.reset(new simulation_init);
+  const auto config_path = utils::project_folder() + "resources/config/app.tavl";
+  container->config = load_app_config(config_path);
+  set_frame_time(frame_time_from_fps(container->config.simulation.main_fps));
+
+  const uint32_t hw_threads = std::max(std::thread::hardware_concurrency(), 1u);
+  const uint32_t reserved_threads = container->config.simulation.worker_threads_reserved;
+  const uint32_t min_worker_threads = std::max(container->config.simulation.min_worker_threads, 1u);
+  const uint32_t thread_count = std::max(
+    hw_threads > reserved_threads ? hw_threads - reserved_threads : min_worker_threads,
+    min_worker_threads
+  );
 
   const auto cpu_name = utils::get_cpu_name();
-  utils::info("Using cpu '{}', cores: {}", cpu_name, std::thread::hardware_concurrency());
+  utils::info("Using cpu '{}', cores: {}, worker threads: {}", cpu_name, hw_threads, thread_count);
+  utils::info(
+    "Loaded app config '{}': window {}x{}, render config '{}', GPU preference '{}' / index {}",
+    config_path,
+    container->config.window.width,
+    container->config.window.height,
+    container->config.render.config_folder,
+    container->config.render.preferred_gpu,
+    container->config.render.preferred_gpu_index
+  );
 
-  container.reset(new simulation_init);
   container->pool_container.reset(new thread::atomic_pool(thread_count));
   container->pool = container->pool_container.get();
 
-  container->sound_sim.reset(new sound_simulation(sound_frame_time));
+  const auto sound_ft = frame_time_from_fps(container->config.simulation.sound_fps);
+  const auto render_ft = frame_time_from_fps(container->config.simulation.render_fps);
+  const auto assets_ft = frame_time_from_fps(container->config.simulation.assets_fps);
+
+  container->sound_sim.reset(new sound_simulation(sound_ft));
   container->sound_sim->init();
   sactor = container->sound_sim->get_actor();
   
-  container->render_sim.reset(new render_simulation(render_frame_time));
+  container->render_sim.reset(new render_simulation(render_ft));
   container->render_sim->init();
   gactor = container->render_sim->get_actor();
 
-  container->assets_sim.reset(new assets_simulation(assets_frame_time));
+  container->assets_sim.reset(new assets_simulation(assets_ft));
   container->assets_sim->init();
   aactor = container->assets_sim->get_actor();
 
-  // нужно еще создать окно и передать его в графику
-  // окно создаем здесь, а в графику передадим с помощью ивента
-  // в последствии может возникнуть ситуация где мы окно полностью пересоздадим
-  // тогда мы снова отправим запрос на пересоздание окна в графику
+  const auto gap_divisor = container->config.simulation.thread_start_gap_divisor;
+  const auto sound_gap = thread_start_gap(sound_ft, gap_divisor);
+  const auto render_gap = thread_start_gap(render_ft, gap_divisor);
+  const auto assets_gap = thread_start_gap(assets_ft, gap_divisor);
 
-  container->sound_thread.reset (new std::jthread([sys = container->sound_sim.get()] (){ sys->run(sound_thread_gap); }));
-  container->render_thread.reset(new std::jthread([sys = container->render_sim.get()](){ sys->run(render_thread_gap); }));
-  container->assets_thread.reset(new std::jthread([sys = container->assets_sim.get()](){ sys->run(assets_thread_gap); }));
+  container->sound_thread.reset (new std::jthread([sys = container->sound_sim.get(), sound_gap] (){ sys->run(sound_gap); }));
+  container->render_thread.reset(new std::jthread([sys = container->render_sim.get(), render_gap](){ sys->run(render_gap); }));
+  container->assets_thread.reset(new std::jthread([sys = container->assets_sim.get(), assets_gap](){ sys->run(assets_gap); }));
 
-  container->monitor = input::primary_monitor();
-  container->window = input::create_window(800, 600, "test_actors");
-
-  const auto monitor_name = input::monitor_name(container->monitor);
-  utils::info("Using monitor '{}'", monitor_name);
-
-  command_window_recreation wr{ container->window, container->monitor };
-  gactor->send(wr);
+  // Окно - поздний ресурс. Render thread должен жить и без него, а это событие
+  // может прийти сейчас, после загрузки ассетов или после полного пересоздания окна.
+  if (container->config.window.create_on_start) create_window_and_notify_render(*container, gactor);
 }
 
 static size_t test_counter = 0;
@@ -318,7 +452,7 @@ void simulation::update(const size_t time) {
 
   //utils::info("Main loop");
 
-  input::poll_events();
+  if (container && container->in) input::poll_events();
 
   // задаем нажатие кнопок для интерфейса 
 

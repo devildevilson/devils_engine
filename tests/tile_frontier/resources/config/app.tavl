@@ -1,0 +1,29 @@
+window = {
+  title = "tile_frontier"
+  width = 1280
+  height = 720
+  create_on_start = true
+}
+
+simulation = {
+  main_fps = 20
+  sound_fps = 60
+  render_fps = 60
+  assets_fps = 60
+  worker_threads_reserved = 4
+  min_worker_threads = 1
+  thread_start_gap_divisor = 4
+}
+
+render = {
+  config_folder = "render_config"
+  cache_folder = "cache/render"
+  pipeline_cache = "cache/render/pipeline_cache.bin"
+  preferred_gpu = ""
+  preferred_gpu_index = 0
+}
+
+metrics = {
+  enabled = true
+  log_interval_ms = 1000
+}
