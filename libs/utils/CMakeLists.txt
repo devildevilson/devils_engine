@@ -92,7 +92,7 @@ target_compile_options(engine_c_part1 PRIVATE
 )
 
 target_link_libraries(devils_utils 
-  PUBLIC devils_engine::thread devils_mood devils_simul devils_aesthetics spdlog::spdlog glaze::glaze gtl minizip #ReflexLibStatic #alpaca::alpaca
+  PUBLIC devils_engine::thread devils_mood devils_simul devils_aesthetics spdlog::spdlog glaze::glaze gtl #ReflexLibStatic #alpaca::alpaca
   PRIVATE engine_c_part1 density ZLIB::ZLIB devils_engine::options cpuinfo
 )
 

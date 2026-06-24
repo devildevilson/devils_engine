@@ -33,32 +33,8 @@ set(DEVILS_ENGINE_NAME devils_engine)
 
 set(PROJECT_EXTERNAL_DEPENDENCY_DIR ${CMAKE_CURRENT_LIST_DIR}/external)
 
-add_library(devils_engine_options INTERFACE)
-target_compile_features(devils_engine_options INTERFACE cxx_std_23)
-#target_compile_features(devils_engine_options INTERFACE c_std_11)
-target_compile_options(devils_engine_options INTERFACE
-  $<$<CONFIG:Debug>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MDd /Zi /Wall /wd5045 /wd4820 /wd4514 /GR- /permissive- /Zc:preprocessor>>
-  $<$<CONFIG:Release>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MD /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>
-  $<$<CONFIG:MinSizeRel>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MD /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>
-  $<$<CONFIG:RelWithDebInfo>:$<$<CXX_COMPILER_ID:MSVC>:/arch:AVX /MDd /ZI /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>
-
-  $<$<CONFIG:Debug>:$<$<CXX_COMPILER_ID:GNU,Clang>:-mavx -g -Wall -Wextra -fno-rtti -fno-inline>>
-  $<$<CONFIG:Release>:$<$<CXX_COMPILER_ID:GNU,Clang>:-mavx -O3 -Wall -Wextra -fno-rtti -pipe -flto>>
-  $<$<CONFIG:MinSizeRel>:$<$<CXX_COMPILER_ID:GNU,Clang>:-mavx -O3 -Wall -Wextra -fno-rtti -pipe -flto -s>>
-  $<$<CONFIG:RelWithDebInfo>:$<$<CXX_COMPILER_ID:GNU,Clang>:-mavx -O3 -g -Wall -Wextra -fno-rtti -pipe -flto>>
-)
-target_compile_definitions(devils_engine_options INTERFACE
-  $<$<CONFIG:Debug>:>
-  $<$<CONFIG:Release>:NDEBUG _NDEBUG>
-  $<$<CONFIG:MinSizeRel>:NDEBUG _NDEBUG>
-  $<$<CONFIG:RelWithDebInfo>:>
-)
-target_compile_definitions(devils_engine_options INTERFACE
-  DEVILS_ENGINE_PROJECT_NAME="${PROJECT_NAME}"
-  DEVILS_ENGINE_ENGINE_NAME="${DEVILS_ENGINE_NAME}"
-)
-
-add_library(devils_engine::options ALIAS devils_engine_options)
+# devils_engine::options (compile/link flags + header-only include dirs) lives
+# in libs/options and is added below, after FetchContent_MakeAvailable().
 
 # 3 dependencies for user to deal with
 if (WIN32) # freetype has proper cmake support
@@ -66,10 +42,6 @@ if (WIN32) # freetype has proper cmake support
   set(FREETYPE_LIBRARY_DIR ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/freetype)
   set(FREETYPE_INCLUDE_DIRS ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/freetype/include)
 endif()
-
-include_directories(${FETCHCONTENT_BASE_DIR}/dr_libs-src/)
-include_directories(${FETCHCONTENT_BASE_DIR}/stb-src/)
-include_directories(${FETCHCONTENT_BASE_DIR}/zpp_bits-src/)
 
 if (WIN32)
   set(GLFW3_LIBRARY_NAME glfw3dll)
@@ -335,14 +307,14 @@ FetchContent_Declare(
 FetchContent_Declare(
   tavl
   GIT_REPOSITORY https://github.com/devildevilson/tavl.git
-  GIT_TAG        v1.0.0
+  GIT_TAG        v1.0.2
   OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
   devils_script
   GIT_REPOSITORY https://github.com/devildevilson/devils_script.git
-  GIT_TAG        v1.0.0
+  GIT_TAG        v1.1.1
   OVERRIDE_FIND_PACKAGE
 )
 
@@ -390,12 +362,11 @@ else()
   )
 endif()
 
-include_directories("${FETCHCONTENT_BASE_DIR}/rapidhash-src/")
-
 #add_compile_definitions("DEVILS_ENGINE_PROJECT_NAME=\"${PROJECT_NAME}\"")
 #add_compile_definitions("DEVILS_ENGINE_ENGINE_NAME=\"${DEVILS_ENGINE_NAME}\"")
 
 # Link each target with other targets or add options, etc.
+add_subdirectory(libs/options/)
 add_subdirectory(libs/utils/)
 add_subdirectory(libs/sound/)
 add_subdirectory(libs/demiurg/)
