@@ -615,10 +615,13 @@ void graphics_base::clear_resources() {
 void graphics_base::clear_semaphores() {
   vk::Device dev(device);
 
-  const uint32_t cur_frames_count = frames_in_flight();
+  // Уничтожаем ВЕСЬ массив хэндлов, а не frames_in_flight: present-wait семафор (finish_rendering)
+  // создаётся на все MAX_FRAMES_IN_FLIGHT слотов (индексация по образу свопчейна), и обрезка по
+  // frames_in_flight оставляла бы хвост неосвобождённым (VUID-vkDestroyDevice). destroy(null) безопасен.
   for (auto& sem : semaphores) {
-    for (uint32_t i = 0; i < cur_frames_count; ++i) {
-      dev.destroy(sem.handles[i]);
+    for (auto& s : sem.handles) {
+      dev.destroy(s);
+      s = VK_NULL_HANDLE;
     }
   }
 
@@ -775,8 +778,12 @@ void graphics_base::create_global_semaphores() {
       }
     }
 
+    // finish_rendering — present-wait семафор: его держит vkQueuePresentKHR до показа образа,
+    // поэтому он индексируется по ИНДЕКСУ ОБРАЗА свопчейна (см. submit_frame), а не по frame-in-flight.
+    // Число образов на момент вызова ещё неизвестно (свопчейн создаётся позже), а движок и так
+    // ограничивает образы MAX_FRAMES_IN_FLIGHT — поэтому создаём хэндлы на все слоты.
     auto& sem = DS_ASSERT_ARRAY_GET(semaphores, sem_index);
-    for (uint32_t i = 0; i < count; ++i) {
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
       sem.handles[i] = dev.createSemaphore(vk::SemaphoreCreateInfo{});
     }
 
@@ -816,21 +823,25 @@ void graphics_base::submit_frame() {
   //const uint32_t cur_frame = current_frame_index();
   auto f = fences[computed_current_frame_index];
 
+  // present-wait семафор индексируем по ИНДЕКСУ ОБРАЗА свопчейна (из acquireNextImage), а не по
+  // frame-in-flight: его держит pending-present до показа образа, и он свободен ровно тогда, когда
+  // этот образ снова заacquire'ен. Иначе пере-сигналим занятый презентом семафор (VU про "in use
+  // by swapchain"). acquire-семафор остаётся per-frame — это другой семафор и к образу не привязан.
+  const uint32_t current_index =
+    (presentation_engine_type == presentation_engine_type::main)
+      ? DS_ASSERT_ARRAY_GET(counters, swapchain_counter_index).get_value()
+      : 0u;
+
   VkSemaphore finish_rendering = VK_NULL_HANDLE;
   if (presentation_engine_type == presentation_engine_type::main) {
     const auto& sem = DS_ASSERT_ARRAY_GET(semaphores, finish_rendering_semaphore);
-    finish_rendering = sem.handles[computed_current_frame_index];
+    finish_rendering = sem.handles[current_index];
   }
 
   execution_graph.submit(this, graphics, finish_rendering, f);
 
   if (presentation_engine_type != presentation_engine_type::main) return;
 
-  const auto& counter = DS_ASSERT_ARRAY_GET(counters, swapchain_counter_index);
-  const uint32_t current_index = counter.get_value();
-  // не та семафора... должна остаться семафора после сабмита
-  // где ее вообще определить? по идее она внешняя
-  // ее бы передавать вместе с фенс
   const auto handle = vk::Semaphore(finish_rendering);
   vk::SwapchainKHR sw(swapchain);
 
@@ -1259,23 +1270,38 @@ void graphics_base::recreate_swapchain(const uint32_t width, const uint32_t heig
   static_assert(sizeof(VkImage) == sizeof(vk::Image));
   memcpy(swapchain_images.data(), vk_images.data(), sizeof(vk_images[0]) * vk_images.size());
 
+  // ImageView нужен ТОЛЬКО если usage образа поддерживает view (sampled / storage / любой attachment).
+  // Для present-only свопчейна (его лишь блитят в конце) usage = TRANSFER_DST: view не нужен
+  // (vkCmdBlitImage берёт сам образ), а его создание нарушает спеку (VUID-VkImageViewCreateInfo-None-02273
+  // и связанные). subresourceRange всё равно сохраняем — он нужен для барьеров/смены layout образа.
+  constexpr vk::ImageUsageFlags view_capable_usage =
+    vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage |
+    vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eDepthStencilAttachment |
+    vk::ImageUsageFlagBits::eInputAttachment | vk::ImageUsageFlagBits::eTransientAttachment;
+  const bool needs_view = bool(static_cast<vk::ImageUsageFlags>(res.usage_mask) & view_capable_usage);
+
+  vk::ImageSubresourceRange range{};
+  range.aspectMask = vk::ImageAspectFlagBits::eColor;
+  range.baseMipLevel = 0;
+  range.levelCount = 1;
+  range.baseArrayLayer = 0;
+  range.layerCount = 1;
+
   for (uint32_t i = 0; i < swapchain_images.size(); ++i) {
     res.handles[i].index = INVALID_RESOURCE_SLOT;
+    res.handles[i].subimage = std::bit_cast<subresource_image>(range);
 
     set_name(device, vk::Image(swapchain_images[i]), res.name + ".image" + std::to_string(i));
+
+    if (!needs_view) { res.handles[i].view = VK_NULL_HANDLE; continue; }
 
     vk::ImageViewCreateInfo ivci{};
     ivci.image = swapchain_images[i];
     ivci.format = format.format;
     ivci.viewType = vk::ImageViewType::e2D;
     ivci.components = vk::ComponentMapping{};
-    ivci.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-    ivci.subresourceRange.baseMipLevel = 0;
-    ivci.subresourceRange.levelCount = 1;
-    ivci.subresourceRange.baseArrayLayer = 0;
-    ivci.subresourceRange.layerCount = 1;
+    ivci.subresourceRange = range;
     res.handles[i].view = dev.createImageView(ivci);
-    res.handles[i].subimage = std::bit_cast<subresource_image>(ivci.subresourceRange);
 
     set_name(device, vk::ImageView(res.handles[i].view), res.name + ".view" + std::to_string(i));
   }
