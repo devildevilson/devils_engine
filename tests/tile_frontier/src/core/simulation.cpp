@@ -1,6 +1,8 @@
 #include "simulation.h"
 
 #include <algorithm>
+#include <cstring>
+#include <span>
 #include <thread>
 
 #include <devils_engine/input/core.h>
@@ -17,6 +19,9 @@
 #include "assets_system.h"
 #include "mesh_resource.h"
 #include "texture_resource.h"
+#include "texture_set.h"
+#include "tile_map.h"
+#include "tile_batch.h"
 
 /*
 вопрос в том как правильно передать окно в рендер?
@@ -73,6 +78,13 @@ struct simulation_init {
   // тестовое наблюдение за прогоном контракта загрузки
   mesh_resource* watch_res = nullptr;
   bool watch_logged = false;
+
+  // модель тайловой карты (главная сторона)
+  texture_set textures;     // текстуры карты, собранные по префиксу пути
+  tile_grid grid;           // квадратная сетка тайлов
+  camera2d cam;             // орто top-down камера
+  tile_batch batch;         // продюсер инстансов видимого среза
+  bool tiles_logged = false;
 
   simulation_init() : pool(nullptr), window(nullptr), monitor(nullptr) {}
 };
@@ -236,6 +248,33 @@ void simulation::init() {
       utils::warn("main: texture resource '{}' not found in registry", name);
     }
   }
+
+  // --- модель тайловой карты ---
+  // Набор текстур = все ресурсы с id-префиксом "textures/" (детерминированный порядок реестра).
+  const uint32_t tex_count = container->textures.gather(*container->assets_sim->resources(), "textures/");
+  utils::info("main: gathered {} textures by prefix 'textures/'", tex_count);
+
+  // Квадратная сетка 64x64, тайл 1.0 мир.ед. Индекс текстуры — шахматный паттерн по набору.
+  container->grid.tile_size = 1.0f;
+  container->grid.resize(64, 64);
+  const uint32_t pick = std::max(tex_count, 1u);
+  for (uint32_t y = 0; y < container->grid.height; ++y) {
+    for (uint32_t x = 0; x < container->grid.width; ++x) {
+      container->grid.at(x, y).texture = (x + y) % pick;
+    }
+  }
+
+  // Камера смотрит в центр карты; половина ширины обзора = 8 тайлов.
+  const glm::vec2 extent = container->grid.world_extent();
+  container->cam.center = extent * 0.5f;
+  container->cam.half_width = 8.0f;
+  container->cam.aspect = float(container->config.window.width) / float(std::max(container->config.window.height, 1u));
+
+  // Валидируем раскладку tile_instance против layout "v2ui1" один раз.
+  if (const auto r = container->batch.bind("v2ui1"); !r) {
+    utils::error{}("tile_instance layout mismatch vs 'v2ui1': {} (attr {}, expected {}, actual {})",
+      instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
+  }
 }
 
 static size_t test_counter = 0;
@@ -286,6 +325,29 @@ void simulation::update(const size_t time) {
   if (container && container->watch_res && !container->watch_logged && container->watch_res->usable()) {
     utils::info("main: resource '{}' reached HOT, gpu_index={}", container->watch_res->id, container->watch_res->gpu_index);
     container->watch_logged = true;
+  }
+
+  // --- пайплайн тайловой карты: фрустум камеры -> срез сетки -> инстансы -> сообщение ---
+  if (container && container->batch.valid()) {
+    const tile_span span = visible_tiles(container->cam, container->grid, 1.0f);
+    container->batch.build(container->grid, span);
+
+    // собираем сообщение в рендер: метаданные + упакованные байты инстансов ("v2ui1").
+    command_draw_tiles msg;
+    const glm::mat4 vp = container->cam.view_proj();
+    std::memcpy(msg.view_proj.data(), &vp[0][0], sizeof(float) * 16);
+    msg.count = container->batch.count();
+    msg.stride = tile_batch::stride();
+    msg.bytes.resize(size_t(msg.count) * msg.stride);
+    container->batch.blit(std::span<uint8_t>(msg.bytes));
+    // TODO: gactor->send(msg) — когда на render-стороне появится draw_group "v2ui1" + шейдер с MVP.
+
+    if (!container->tiles_logged) {
+      utils::info(
+        "main: tile slice [{},{})x[{},{}) = {} instances, {} B/inst, {} B payload",
+        span.x0, span.x1, span.y0, span.y1, msg.count, msg.stride, msg.bytes.size());
+      container->tiles_logged = true;
+    }
   }
 
   // задаем нажатие кнопок для интерфейса

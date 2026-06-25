@@ -18,6 +18,7 @@
 
 #include "messages.h"
 #include "message_dispatcher.h"
+#include "draw_intent.h"
 #include "mesh_resource.h"
 #include "texture_resource.h"
 
@@ -287,19 +288,25 @@ static void render_create_test_triangles(render_simulation_init& c) {
 
   c.triangle_pair_index = c.base->register_pair(dg_index, tri_h, 8); // скромный max_count (см. коммент в render_register_mesh_draw)
 
-  struct vec4 { float x, y, z, w; };
-  const vec4 positions[] = {
+  // Контракт main->render: пакуем инстансы в сырые байты через draw_intent. dg1 layout = "v4",
+  // поэтому инстанс = glm::vec4 (один атрибут v4); матчер сверяет это с draw_group до записи.
+  const glm::vec4 positions[] = {
     { 0.0f, 0.5f, 0.0f, 0.0f }, { 0.5f, 0.0f, 0.0f, 0.0f },
     { 0.0f,-0.5f, 0.0f, 0.0f }, {-0.5f, 0.0f, 0.0f, 0.0f },
   };
+
+  draw_intent<glm::vec4> intent;
+  if (const auto r = intent.bind(std::span<const painter::format::values>(c.base->draw_groups[dg_index].instance_layout), uint32_t(c.base->draw_groups[dg_index].stride)); !r)
+    utils::error{}("dg1 instance layout mismatch: {} (attr {}, expected {}, actual {})",
+      core::instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
+  const std::span<const glm::vec4> instances(positions, 4);
 
   // пишем в оба буфера doublebuffer (см. коммент в render_register_mesh_draw)
   for (uint32_t off = 0; off < 2; ++off) {
     const auto inst = c.base->get_current_instance_resource_frame(c.triangle_pair_index, off);
     const auto indi = c.base->get_current_indirect_resource_frame(c.triangle_pair_index, off);
-    auto ptr = reinterpret_cast<vec4*>(&reinterpret_cast<uint8_t*>(inst.mapped)[inst.sub.offset]);
+    intent.blit(instances, inst.mapped, inst.sub.offset);
     auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
-    for (uint32_t i = 0; i < 4; ++i) ptr[i] = positions[i];
     cmd[0].vertexCount = 3;
     cmd[0].instanceCount = 4;
     cmd[0].firstVertex = 0;
@@ -323,13 +330,20 @@ static void render_register_mesh_draw(render_simulation_init& c, mesh_resource& 
   // пар вылетает за буфер (VUID-vkCmdDrawIndirect-00487). Держим скромным.
   const uint32_t pair = c.base->register_pair(dg_index, m.gpu_index, 8);
 
-  // w = индекс текстуры (цикл 0,1,2 — три grass-текстуры); шейдер сэмплит tex[w]
-  struct vec4 { float x, y, z, w; };
-  const vec4 positions[] = {
+  // w = индекс текстуры (цикл 0,1,2 — три grass-текстуры); шейдер сэмплит tex[w]. dg1 layout="v4".
+  const glm::vec4 positions[] = {
     { -0.6f, -0.5f, 0.0f, 0.0f }, { 0.0f, -0.5f, 0.0f, 1.0f }, { 0.6f, -0.5f, 0.0f, 2.0f },
     { -0.6f,  0.5f, 0.0f, 0.0f }, { 0.0f,  0.5f, 0.0f, 1.0f }, { 0.6f,  0.5f, 0.0f, 2.0f },
   };
   const uint32_t count = 6;
+
+  draw_intent<glm::vec4> intent;
+  if (const auto r = intent.bind(std::span<const painter::format::values>(c.base->draw_groups[dg_index].instance_layout), uint32_t(c.base->draw_groups[dg_index].stride)); !r) {
+    utils::warn("mesh draw: dg1 instance layout mismatch: {} (attr {})",
+      core::instance_layout::match_error::to_string(r.error), r.where);
+    return;
+  }
+  const std::span<const glm::vec4> instances(positions, count);
 
   // dg1 host_visible = doublebuffer (per_update). Пишем в ОБА буфера (offset 0 и 1), чтобы draw
   // читал корректные данные при любой чётности per_update (фиксы статичных данных, заполняемых
@@ -337,9 +351,8 @@ static void render_register_mesh_draw(render_simulation_init& c, mesh_resource& 
   for (uint32_t off = 0; off < 2; ++off) {
     const auto inst = c.base->get_current_instance_resource_frame(pair, off);
     const auto indi = c.base->get_current_indirect_resource_frame(pair, off);
-    auto ptr = reinterpret_cast<vec4*>(&reinterpret_cast<uint8_t*>(inst.mapped)[inst.sub.offset]);
+    intent.blit(instances, inst.mapped, inst.sub.offset);
     auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
-    for (uint32_t i = 0; i < count; ++i) ptr[i] = positions[i];
     cmd[0].vertexCount = m.vertex_count;
     cmd[0].instanceCount = count;
     cmd[0].firstVertex = 0;
@@ -368,12 +381,21 @@ static void render_bind_textures(render_simulation_init& c) {
   const uint32_t n = d.texture_count;
   const vk::Sampler samp(c.base->samplers[d.texture_sampler].handle);
 
-  // Заполняем ВСЕ N элементов массива: i-й = texture_slots[i], недостающие → slot 0
-  // (все элементы должны быть валидны, иначе UB/ошибка валидации при доступе из шейдера).
+  // texture_slots ПРЕД-АЛЛОЦИРОВАН на MAX_TEXTURE_SLOTS (assets_base), большинство слотов ещё с
+  // null-view (текстуры грузятся по одной). Заполняем ВСЕ N элементов массива дескриптора: i-й =
+  // texture_slots[i].view, ЕСЛИ ОН ВАЛИДЕН, иначе — первый валидный view (фолбэк). Так ни один
+  // элемент не остаётся VK_NULL_HANDLE (иначе VUID-VkWriteDescriptorSet-descriptorType-02997).
+  vk::ImageView fallback{};
+  for (uint32_t i = 0; i < n && i < c.assets->texture_slots.size(); ++i) {
+    if (c.assets->texture_slots[i].view != VK_NULL_HANDLE) { fallback = vk::ImageView(c.assets->texture_slots[i].view); break; }
+  }
+  if (!fallback) return; // ни одной готовой текстуры — нечего биндить (не пишем null'ы)
+
   std::vector<vk::DescriptorImageInfo> infos(n);
   for (uint32_t i = 0; i < n; ++i) {
-    const uint32_t slot = (i < c.assets->texture_slots.size()) ? i : 0u;
-    infos[i] = vk::DescriptorImageInfo(samp, vk::ImageView(c.assets->texture_slots[slot].view), vk::ImageLayout::eShaderReadOnlyOptimal);
+    vk::ImageView v = (i < c.assets->texture_slots.size()) ? vk::ImageView(c.assets->texture_slots[i].view) : vk::ImageView{};
+    if (!v) v = fallback;
+    infos[i] = vk::DescriptorImageInfo(samp, v, vk::ImageLayout::eShaderReadOnlyOptimal);
   }
 
   std::vector<vk::WriteDescriptorSet> writes;

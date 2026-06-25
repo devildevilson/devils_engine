@@ -1,6 +1,7 @@
 #ifndef TILE_FRONTIER_CORE_MESSAGES_H
 #define TILE_FRONTIER_CORE_MESSAGES_H
 
+#include <array>
 #include <cstdint>
 #include <cstddef>
 #include <string>
@@ -114,6 +115,21 @@ struct command_gpu_transition {
 // render → assets: «GPU-переход завершён» (рендер уже флипнул _state и записал gpu_index в ресурс).
 struct command_gpu_done {
   demiurg::resource_interface* res;
+};
+
+// main → render: срез ВИДИМЫХ тайлов на отрисовку. ВОТ ОНО — «сообщение в рендер тред».
+// Метаданные (как трансформировать + сколько инстансов + страйд) + СЫРЫЕ БАЙТЫ инстансов в
+// формате instance_layout draw_group ("v2ui1"). Байты пакует tile_batch через draw_intent.
+//
+// ХРАНИЛИЩЕ БАЙТ — точка для будущей ревизии hot-path: сейчас std::vector<uint8_t> (аллокация
+// на сообщение). Производитель пишет через draw_intent::blit в ЛЮБОЙ буфер, поэтому замена на
+// пул/ring буферов позже НЕ затронет логику сборки среза. view_proj держим как std::array<float,16>
+// (= column-major glm::mat4), чтобы не тянуть glm в этот лёгкий, всюду включаемый хедер.
+struct command_draw_tiles {
+  std::array<float, 16> view_proj{}; // world(xy) -> clip (ortho top-down)
+  uint32_t count = 0;                // число инстансов
+  uint32_t stride = 0;               // байт на инстанс (= sizeof(tile_instance))
+  std::vector<uint8_t> bytes;        // упакованные инстансы
 };
 
 }

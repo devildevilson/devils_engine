@@ -17,12 +17,17 @@ set(HDR_LIST
   include/core/config.h
   include/core/messages.h
   include/core/message_dispatcher.h
+  include/core/instance_layout.h
+  include/core/draw_intent.h
   include/core/sound_system.h
   include/core/render_system.h
   include/core/assets_system.h
   include/core/gpu_load_context.h
   include/core/mesh_resource.h
   include/core/texture_resource.h
+  include/core/texture_set.h
+  include/core/tile_map.h
+  include/core/tile_batch.h
   include/core/simulation.h
 )
 
@@ -34,6 +39,8 @@ set(SRC_LIST
   src/core/assets_system.cpp
   src/core/mesh_resource.cpp
   src/core/texture_resource.cpp
+  src/core/texture_set.cpp
+  src/core/tile_map.cpp
   src/core/stb_image_impl.cpp
   src/core/simulation.cpp
 )
