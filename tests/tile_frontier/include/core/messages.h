@@ -132,6 +132,16 @@ struct command_draw_tiles {
   std::vector<uint8_t> bytes;        // упакованные инстансы
 };
 
+// main → render: записать СЫРЫЕ БАЙТЫ в host-visible буфер-ресурс рендер-графа (по имени).
+// Контракт записи в произвольный буфер — аналог draw_group-контракта, но для общих буферов
+// (камера/константы кадра и т.п.). Render пишет байты во ВСЕ per_update-копии буфера; смену
+// активной копии делает отдельное событие update (флип per_update в конце апдейтов main).
+// bytes обрезаются до размера одной копии буфера. Имя стабильно (резолвится find_resource).
+struct command_write_buffer {
+  std::string buffer;          // имя ресурса (напр. "camera_buffer")
+  std::vector<uint8_t> bytes;  // сырые данные
+};
+
 }
 }
 

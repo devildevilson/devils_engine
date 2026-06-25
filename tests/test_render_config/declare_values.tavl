@@ -10,6 +10,11 @@
   scale = [0.5, 0.5, 1.0]
 }
 {
+  name = single_element
+  type = fixed
+  value = [1, 0, 0]
+}
+{
   name = fig_instances
   type = fixed
   value = [5000, 0, 0]

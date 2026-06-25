@@ -15,3 +15,15 @@
   type = swapchain
   swap = swapchain
 }
+// Камера: host-visible uniform-буфер с двойной буферизацией (per_update). Размер = size_hint(format)
+// * single_element = 64 байта (mat4 view_proj). role=upload — host пишет напрямую (как draw_group
+// host_visible). ВНИМАНИЕ: usage_mask собирается из ссылок в шагах — пока буфер ни к чему не
+// подключён, usage=0 (createBuffer-варнинг ожидаем; уйдёт, когда дескриптор/шаг тайла его подцепит).
+{
+  name = camera_buffer
+  format = v4v4v4v4
+  role = upload
+  size = single_element
+  type = doublebuffer
+  swap = per_update
+}

@@ -336,6 +336,16 @@ void simulation::update(const size_t time) {
     command_draw_tiles msg;
     const glm::mat4 vp = container->cam.view_proj();
     std::memcpy(msg.view_proj.data(), &vp[0][0], sizeof(float) * 16);
+
+    // Контракт записи в буфер: шлём view_proj камеры (mat4 = 64 байта) в host-visible camera_buffer.
+    if (gactor != nullptr) {
+      command_write_buffer cam;
+      cam.buffer = "camera_buffer";
+      cam.bytes.resize(sizeof(glm::mat4));
+      std::memcpy(cam.bytes.data(), &vp[0][0], sizeof(glm::mat4));
+      gactor->send(cam);
+    }
+
     msg.count = container->batch.count();
     msg.stride = tile_batch::stride();
     msg.bytes.resize(size_t(msg.count) * msg.stride);

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <utility>
 
@@ -38,6 +39,7 @@ struct render_simulation_init {
   cached_message_dispatcher<command_window_recreation> window_recreation_commands;
   cached_message_dispatcher<command_window_resize> window_resizing_commands;
   cached_message_dispatcher<command_gpu_transition> gpu_transition_commands;
+  cached_message_dispatcher<command_write_buffer> write_buffer_commands;
 
   assets_actor* aactor = nullptr; // куда слать ack о завершении GPU-перехода
 
@@ -415,6 +417,25 @@ static void render_bind_textures(render_simulation_init& c) {
   utils::info("render: bound {} textures into descriptor 'textures' ({} sets)", c.assets->texture_slots.size(), writes.size());
 }
 
+// Контракт записи в буфер: пишем сырые байты в host-visible буфер-ресурс по имени, во ВСЕ
+// per_update-копии (смену активной копии делает событие update). Аналог draw_group host_visible,
+// но для произвольного буфера. Требует готового графа (ресурсы созданы).
+static void render_write_buffer(render_simulation_init& c, const command_write_buffer& cmd) {
+  const uint32_t ri = c.base->find_resource(cmd.buffer);
+  if (ri == painter::INVALID_RESOURCE_SLOT) { utils::warn("write_buffer: resource '{}' not found", cmd.buffer); return; }
+
+  const auto& res = c.base->resources[ri];
+  const auto [frame_size, ext] = res.compute_frame_size(c.base.get()); // размер ОДНОЙ копии в байтах
+  const uint32_t buffering = res.compute_buffering(c.base.get());
+  const size_t n = std::min(cmd.bytes.size(), size_t(frame_size));
+
+  for (uint32_t off = 0; off < buffering; ++off) {
+    const auto bf = c.base->get_current_buffer_resource_frame(ri, off);
+    if (bf.mapped == nullptr) { utils::warn("write_buffer: '{}' is not host-visible", cmd.buffer); return; }
+    std::memcpy(static_cast<uint8_t*>(bf.mapped) + bf.sub.offset, cmd.bytes.data(), n);
+  }
+}
+
 static void render_attach_window(render_simulation_init& c, const command_window_recreation& cmd) {
   if (c.config.headless) return;
   if (!c.instance_ready) render_create_instance(c);
@@ -459,6 +480,7 @@ void render_simulation::init() {
   actor.add_receiver<command_window_recreation>(&container->window_recreation_commands.dis);
   actor.add_receiver<command_window_resize>(&container->window_resizing_commands.dis);
   actor.add_receiver<command_gpu_transition>(&container->gpu_transition_commands.dis);
+  actor.add_receiver<command_write_buffer>(&container->write_buffer_commands.dis);
 
   if (container->config.create_vulkan_on_init) {
     render_create_instance(*container);
@@ -529,6 +551,13 @@ void render_simulation::update(const size_t time) {
         command_gpu_done done{cmd.res};
         container->aactor->send(done);
       }
+    });
+  }
+
+  // Контракт записи в буферы (камера и т.п.) — нужен готовый граф (ресурсы созданы).
+  if (container->graph_ready) {
+    dispatcher_consume(container->write_buffer_commands, [this] (const auto& cmd) {
+      render_write_buffer(*container, cmd);
     });
   }
 
