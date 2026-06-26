@@ -2,6 +2,7 @@
 #define DEVILS_ENGINE_SOUND_SYSTEM_H
 
 #include <string>
+#include <string_view>
 #include <vector>
 #include <queue>
 #include <unordered_map>
@@ -37,6 +38,7 @@ typedef struct ALCcontext ALCcontext;
 typedef struct ma_device ma_device;
 typedef struct ma_engine ma_engine;
 typedef struct ma_sound ma_sound;
+typedef struct ma_context ma_context;
 
 // как бы аккуратно сделать поиск?
 #define SOUND_SYSTEM_EXTENSION_LIST \
@@ -67,6 +69,7 @@ namespace devils_engine {
       enum type type;
       float pitch;
       float volume;
+      double start;
       size_t after;
 
       vec3 pos;
@@ -80,6 +83,28 @@ namespace devils_engine {
     // dedicated update for sound position
     struct task_update {
       size_t id;
+      vec3 pos;
+      vec3 dir;
+      vec3 vel;
+    };
+
+    enum class task_state {
+      queued,
+      playing,
+      stopped,
+      finished
+    };
+
+    struct task_status {
+      size_t id;
+      std::string_view resource_id;
+      enum type type;
+      enum task_state state;
+      double progress;
+      size_t after;
+      size_t frames_decoded;
+      size_t frames_total;
+      size_t underruns;
       vec3 pos;
       vec3 dir;
       vec3 vel;
@@ -188,7 +213,7 @@ namespace devils_engine {
       struct sound_instance;
       struct miniaudio_data_converter;
 
-      system2(); // сюда передать устройство, пересоздадим всю структуру чтобы поменять устройство
+      system2(const std::string_view device_name = {}, const double stream_buffer_seconds = 1.0, const size_t decode_frames_per_update = 0); // сюда передать устройство, пересоздадим всю структуру чтобы поменять устройство
       ~system2() noexcept;
 
       system2(const system2& copy) noexcept = delete;
@@ -201,8 +226,12 @@ namespace devils_engine {
       bool play_sound(const size_t task_id); // мы не хотим этим пользоваться нигде кроме музыки
       bool stop_sound(const size_t task_id); // мы не хотим этим пользоваться нигде кроме музыки (наверное хотим приостановить все звуки в меню)
       double stat_sound(const size_t task_id) const; // [0,1]
+      bool stat_sound(const size_t task_id, struct task_status &out) const;
+      void snapshot(std::vector<struct task_status> &out) const;
       bool set_sound(const size_t task_id, const double place); // [0,1]
       bool update_sound(const struct task_update &task);
+      void set_decode_budget_frames(const size_t frames) noexcept;
+      static bool playback_devices(std::vector<std::string> &out);
 
       bool set_listener_pos(const vec3 &pos);
       bool set_listener_ori(const vec3 &look_at, const vec3 &up);
@@ -220,6 +249,12 @@ namespace devils_engine {
         struct task task;
         size_t timestamp;
         size_t frames_decoded;
+        size_t stream_begin_frame;
+        size_t stream_frames_count;
+        size_t source_frames_count;
+        bool initialized;
+        bool segment_registered;
+        bool started;
         std::unique_ptr<sound::decoder> decoder;
         std::unique_ptr<miniaudio_data_converter> converter;
       };
@@ -227,6 +262,9 @@ namespace devils_engine {
       size_t cur_time;
       uint32_t playback_channels;
       uint32_t playback_sample_rate;
+      double stream_buffer_seconds;
+      size_t decode_frames_per_update;
+      std::unique_ptr<ma_context> m_context;
       std::unique_ptr<ma_engine> m_engine;
       std::unique_ptr<ma_device> m_device;
       std::vector<std::unique_ptr<sound_instance>> m_instances_mono;
@@ -240,6 +278,7 @@ namespace devils_engine {
       std::vector<uint32_t> cache2;
 
       size_t find_task_id(const size_t task_id) const;
+      struct task_status make_status(const sound_task &task) const;
       uint32_t instance_init(sound_instance* inst, const uint32_t sample_rate, const uint32_t channels, const enum format format) const;
     };
   }

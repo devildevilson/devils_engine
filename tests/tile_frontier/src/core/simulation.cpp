@@ -1,6 +1,7 @@
 #include "simulation.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <span>
 #include <thread>
@@ -85,6 +86,13 @@ struct simulation_init {
   camera2d cam;             // орто top-down камера
   tile_batch batch;         // продюсер инстансов видимого среза
   bool tiles_logged = false;
+
+  std::vector<std::string> sound_devices;
+  std::atomic_bool sound_devices_ready = false;
+  bool sound_devices_requested = false;
+  bool sound_devices_logged = false;
+  bool sound_recreate_test_sent = false;
+  size_t tick = 0;
 
   simulation_init() : pool(nullptr), window(nullptr), monitor(nullptr) {}
 };
@@ -220,6 +228,16 @@ void simulation::init() {
   }
   container->assets_thread.reset(new std::jthread([sys = container->assets_sim.get(), assets_gap](){ sys->run(assets_gap); }));
 
+  if (sactor != nullptr) {
+    command_sound_devices devices;
+    devices.request_id = generate_task_id();
+    devices.out = &container->sound_devices;
+    devices.ready = &container->sound_devices_ready;
+    sactor->send(devices);
+    container->sound_devices_requested = true;
+    utils::info("main: requested sound playback devices");
+  }
+
   // Окно - поздний ресурс. Render thread должен жить и без него, а это событие
   // может прийти сейчас, после загрузки ассетов или после полного пересоздания окна.
   if (container->config.window.create_on_start && container->render_sim && !container->config.render.headless) {
@@ -285,6 +303,10 @@ bool simulation::stop_predicate() const {
 }
 
 void simulation::update(const size_t time) {
+  if (container) {
+    container->tick += 1;
+  }
+
   // думаем, собираем инпут, считаем физику, разбираемся с геймплеем, пробегаем UI, отправляем данные другим акторам
   // тут нужны состояния у системы + пауза
   // пауза это что? не думаем, не считаем физику, не разбираемся с геймплеем, но пробегаем UI
@@ -320,6 +342,40 @@ void simulation::update(const size_t time) {
   // для разных игр разные АПИ функции
 
   if (container && container->in) input::poll_events();
+
+  if (
+    container &&
+    container->sound_devices_requested &&
+    !container->sound_devices_logged &&
+    container->sound_devices_ready.load(std::memory_order_acquire)
+  ) {
+    utils::info("main: sound playback devices count {}", container->sound_devices.size());
+    for (size_t i = 0; i < container->sound_devices.size(); ++i) {
+      utils::info("main: sound device[{}] '{}'", i, container->sound_devices[i]);
+    }
+    container->sound_devices_logged = true;
+  }
+
+  if (container && sactor != nullptr && !container->sound_recreate_test_sent && container->sound_devices_logged && container->tick >= 45) {
+    const std::string device_name = container->sound_devices.empty() ? std::string() : container->sound_devices.front();
+
+    command_recreate_sound_system recreate;
+    recreate.device_name = device_name;
+    sactor->send(recreate);
+
+    command_sound play;
+    play.taskid = generate_task_id();
+    play.after = SIZE_MAX;
+    play.res = nullptr;
+    play.sourceid = 0;
+    play.cmd = 0;
+    play.type = 0;
+    play.mix = 0;
+    sactor->send(play);
+
+    container->sound_recreate_test_sent = true;
+    utils::info("main: requested sound system recreation with device '{}' and queued test sound {}", device_name, play.taskid);
+  }
 
   // наблюдаем за тестовым ресурсом: main видит hot и читает gpu_index (записан рендером)
   if (container && container->watch_res && !container->watch_logged && container->watch_res->usable()) {

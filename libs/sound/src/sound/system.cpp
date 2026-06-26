@@ -1,5 +1,6 @@
 #include "system.h"
 
+#include <algorithm>
 #include <iostream>
 #include <cassert>
 #include <cstring>
@@ -109,6 +110,7 @@ static void completely_stop_source(system::source &s) {
       type(type::sfx),
       pitch(1.0f),
       volume(1.0f),
+      start(0.0),
       after(SIZE_MAX)
     {}
 
@@ -600,13 +602,11 @@ static void completely_stop_source(system::source &s) {
       std::atomic<size_t> write_pos;
       std::atomic<size_t> read_pos;
       std::atomic<size_t> cursor_pos;
-      std::atomic<size_t> task_id;
-      std::atomic<size_t> new_cursor_pos; // может быть SIZE_MAX
-      std::atomic<size_t> new_frame_size;
-      std::atomic<size_t> new_task_id;
+      std::atomic<size_t> frames_read_total;
+      std::atomic<size_t> frames_written_total;
+      std::atomic<size_t> underrun_count;
 
       size_t current_cursor_pos;
-      size_t sound_frames_size;
 
       // never change once initialized 
       uint32_t sample_rate;
@@ -618,24 +618,23 @@ static void completely_stop_source(system::source &s) {
         write_pos(0),
         read_pos(0),
         cursor_pos(0),
-        task_id(0),
-        new_cursor_pos(0),
-        new_frame_size(0),
-        new_task_id(0),
+        frames_read_total(0),
+        frames_written_total(0),
+        underrun_count(0),
         current_cursor_pos(0),
-        sound_frames_size(0),
         sample_rate(0),
         channels(0),
         format(format::unknown)
       {}
 
-      void init(const size_t id) noexcept {
-        read_pos.store(write_pos.load(std::memory_order_acquire), std::memory_order_release);
-        task_id.store(id, std::memory_order_release);
-        new_task_id.store(id, std::memory_order_release);
-        new_cursor_pos.store(SIZE_MAX, std::memory_order_release);
+      void reset_stream() noexcept {
+        read_pos.store(0, std::memory_order_release);
+        write_pos.store(0, std::memory_order_release);
+        cursor_pos.store(0, std::memory_order_release);
+        frames_read_total.store(0, std::memory_order_release);
+        frames_written_total.store(0, std::memory_order_release);
+        underrun_count.store(0, std::memory_order_release);
         current_cursor_pos = 0;
-        // sample size?
       }
 
       bool is_standart_mono() const noexcept {
@@ -644,10 +643,6 @@ static void completely_stop_source(system::source &s) {
 
       bool is_standart_stereo() const noexcept {
         return sample_rate == 48000 && channels == 2 && format == format::f32;
-      }
-
-      std::tuple<size_t, size_t> get_ids() const noexcept {
-        return std::make_tuple(task_id.load(std::memory_order_acquire), new_task_id.load(std::memory_order_acquire));
       }
 
       size_t buffer_size() const noexcept {
@@ -679,7 +674,6 @@ static void completely_stop_source(system::source &s) {
       //const size_t buffer_size = bytes_to_pcm_frames(ptr->buffer.size() * sizeof(ptr->buffer[0]), ptr->channels, ptr->format);
       const size_t buffer_size = ptr->buffer_size();
 
-      const size_t samplesCount = frameCount * ptr->channels;
       const size_t bytesCount = pcm_samples_to_bytes(frameCount, ptr->channels, ptr->format);
       //utils::info("Data source read {} frames ({} samples, {} bytes)", frameCount, samplesCount, bytesCount);
 
@@ -710,6 +704,7 @@ static void completely_stop_source(system::source &s) {
       // если не хватает сэмплов заполним тишиной
       if (to_read < bytesCount) {
         memset(out_buffer + to_read, 0, bytesCount - to_read);
+        ptr->underrun_count.fetch_add(1, std::memory_order_relaxed);
       }
 
       // двигаем указатель чтения
@@ -717,17 +712,12 @@ static void completely_stop_source(system::source &s) {
 
       const size_t final_frames_read = bytes_to_pcm_frames(to_read, ptr->channels, ptr->format);
       ptr->current_cursor_pos += final_frames_read;
-      if (ptr->current_cursor_pos >= ptr->sound_frames_size) {
-        ptr->task_id.store(ptr->new_task_id.load(std::memory_order_acquire), std::memory_order_release);
-        ptr->current_cursor_pos -= ptr->sound_frames_size;
-        ptr->sound_frames_size = ptr->new_frame_size.load(std::memory_order_acquire);
-      }
-
       ptr->cursor_pos.store(ptr->current_cursor_pos, std::memory_order_release);
+      ptr->frames_read_total.fetch_add(final_frames_read, std::memory_order_release);
 
       // может быть стриминг... вообще для стриминга генерировать бы пакеты вне my_data_source_read
       // мы бы хотели добавить шумы
-      if (ptr->current_cursor_pos == 0 && to_read == 0) {
+      if (to_read == 0) {
         if (pFramesRead) *pFramesRead = 0;
         return MA_AT_END;
       }
@@ -742,7 +732,6 @@ static void completely_stop_source(system::source &s) {
       auto out = reinterpret_cast<uint8_t*>(src->buffer.data());
       const size_t buffer_size = src->buffer.size() * sizeof(src->buffer[0]);
 
-      const size_t samplesCount = frame_count * src->channels;
       const size_t bytesCount = pcm_samples_to_bytes(frame_count, src->channels, src->format);
 
       // получаем позицию кольцевого буфера (сначала write потом read)
@@ -765,14 +754,22 @@ static void completely_stop_source(system::source &s) {
 
       src->write_pos.store(write_pos + to_write, std::memory_order_release);
 
-      return bytes_to_pcm_frames(to_write, src->channels, src->format);
+      const size_t written_frames = bytes_to_pcm_frames(to_write, src->channels, src->format);
+      src->frames_written_total.fetch_add(written_frames, std::memory_order_release);
+      return written_frames;
     }
 
     // поиск в фреймах (сэмплы * каналы)
     static ma_result my_data_source_seek(ma_data_source* pDataSource, ma_uint64 frameIndex) {
       auto ptr = (devils_engine_sound_data_source*)pDataSource;
-      ptr->read_pos.store(ptr->write_pos.load(std::memory_order_acquire), std::memory_order_release);
-      ptr->new_cursor_pos.store(frameIndex, std::memory_order_release);
+      const size_t frame_bytes = pcm_frame_to_bytes(ptr->channels, ptr->format);
+      const size_t byte_pos = frameIndex * frame_bytes;
+      ptr->read_pos.store(byte_pos, std::memory_order_release);
+      ptr->write_pos.store(byte_pos, std::memory_order_release);
+      ptr->cursor_pos.store(frameIndex, std::memory_order_release);
+      ptr->frames_read_total.store(frameIndex, std::memory_order_release);
+      ptr->frames_written_total.store(frameIndex, std::memory_order_release);
+      ptr->current_cursor_pos = frameIndex;
 
       utils::info("Data source seek");
 
@@ -838,7 +835,7 @@ static void completely_stop_source(system::source &s) {
       // (например если VOIP то мы будем заполнять потихоньку буфер данных в ресурсе)
       // пока что такого нет
 
-      *pLength = ptr->sound_frames_size;
+      *pLength = ptr->frames_written_total.load(std::memory_order_acquire);
 
       utils::info("Data source get_length");
 
@@ -854,7 +851,7 @@ static void completely_stop_source(system::source &s) {
     };
 
 
-    static ma_result standart_source_init(devils_engine_sound_data_source* pMyDataSource, const uint32_t sample_rate, const uint32_t channels, const enum format format) {
+    static ma_result standart_source_init(devils_engine_sound_data_source* pMyDataSource, const uint32_t sample_rate, const uint32_t channels, const enum format format, const double buffer_seconds) {
       auto baseConfig = ma_data_source_config_init();
       baseConfig.vtable = &g_data_source_vtable;
 
@@ -867,7 +864,7 @@ static void completely_stop_source(system::source &s) {
       pMyDataSource->channels = channels;
       pMyDataSource->sample_rate = sample_rate;
 
-      const size_t buffer_size = seconds_to_bytes(0.2, pMyDataSource->sample_rate, pMyDataSource->channels, pMyDataSource->format);
+      const size_t buffer_size = seconds_to_bytes(buffer_seconds, pMyDataSource->sample_rate, pMyDataSource->channels, pMyDataSource->format);
       pMyDataSource->buffer.resize(buffer_size, 0.0f);
       pMyDataSource->read_pos = 0;
       pMyDataSource->write_pos = 0;
@@ -875,12 +872,12 @@ static void completely_stop_source(system::source &s) {
       return MA_SUCCESS;
     }
 
-    static ma_result standart_mono_source_init(devils_engine_sound_data_source* pMyDataSource) {
-      return standart_source_init(pMyDataSource, 48000, 1, format::f32);
+    static ma_result standart_mono_source_init(devils_engine_sound_data_source* pMyDataSource, const double buffer_seconds) {
+      return standart_source_init(pMyDataSource, 48000, 1, format::f32, buffer_seconds);
     }
 
-    static ma_result standart_stereo_source_init(devils_engine_sound_data_source* pMyDataSource) {
-      return standart_source_init(pMyDataSource, 48000, 2, format::f32);
+    static ma_result standart_stereo_source_init(devils_engine_sound_data_source* pMyDataSource, const double buffer_seconds) {
+      return standart_source_init(pMyDataSource, 48000, 2, format::f32, buffer_seconds);
     }
 
 //    static ma_result sound_instance_init(system2::sound_instance* ptr, const uint32_t sample_rate, const uint32_t channels, const enum format format) {
@@ -911,7 +908,45 @@ static void completely_stop_source(system::source &s) {
       }
     }
 
-    system2::system2() : cur_time(0), playback_channels(0), playback_sample_rate(0) {
+    static bool is_positioned_type(const enum type sound_type) noexcept {
+      return sound_type == type::sfx || sound_type == type::talk_pos;
+    }
+
+    static bool is_too_far(const ma_engine* engine, const struct task &task) noexcept {
+      if (!is_positioned_type(task.type)) return false;
+      const auto pos = ma_engine_listener_get_position(engine, 0);
+      const auto dist2 = distance2(task.pos, vec3(pos.x, pos.y, pos.z));
+      return dist2 >= default_sound_max_distance * default_sound_max_distance;
+    }
+
+    bool system2::playback_devices(std::vector<std::string> &out) {
+      out.clear();
+
+      ma_context context;
+      auto result = ma_context_init(nullptr, 0, nullptr, &context);
+      if (result != MA_SUCCESS) return false;
+
+      ma_device_info* playback_infos = nullptr;
+      ma_uint32 playback_count = 0;
+      result = ma_context_get_devices(&context, &playback_infos, &playback_count, nullptr, nullptr);
+      if (result == MA_SUCCESS) {
+        out.reserve(playback_count);
+        for (ma_uint32 i = 0; i < playback_count; ++i) {
+          out.emplace_back(playback_infos[i].name);
+        }
+      }
+
+      ma_context_uninit(&context);
+      return result == MA_SUCCESS;
+    }
+
+    system2::system2(const std::string_view device_name, const double stream_buffer_seconds, const size_t decode_frames_per_update) :
+      cur_time(0),
+      playback_channels(0),
+      playback_sample_rate(0),
+      stream_buffer_seconds(std::max(stream_buffer_seconds, 0.05)),
+      decode_frames_per_update(decode_frames_per_update)
+    {
       ma_result result = MA_SUCCESS;
 
       {
@@ -929,7 +964,40 @@ static void completely_stop_source(system::source &s) {
 
       // возможно потом придется зафорсить количество каналов
       {
+        m_context.reset(new ma_context);
+        result = ma_context_init(nullptr, 0, nullptr, m_context.get());
+        if (result != MA_SUCCESS) {
+          utils::error{}("Could not initialize sound context");
+        }
+
+        const ma_device_id* device_id = nullptr;
+        std::string_view default_device_name;
+        if (!device_name.empty()) {
+          ma_device_info* playback_infos = nullptr;
+          ma_uint32 playback_count = 0;
+          result = ma_context_get_devices(m_context.get(), &playback_infos, &playback_count, nullptr, nullptr);
+          if (result != MA_SUCCESS) {
+            utils::error{}("Could not enumerate sound devices");
+          }
+
+          for (ma_uint32 i = 0; i < playback_count; ++i) {
+            if (playback_infos[i].isDefault) {
+              default_device_name = playback_infos[i].name;
+            }
+
+            if (std::string_view(playback_infos[i].name) != device_name) continue;
+            device_id = &playback_infos[i].id;
+            break;
+          }
+
+          if (device_id == nullptr) {
+            const std::string_view fallback_name = default_device_name.empty() ? std::string_view("<unknown>") : default_device_name;
+            utils::warn("Could not find requested sound device '{}'; creating default playback device '{}'", device_name, fallback_name);
+          }
+        }
+
         auto cfg = ma_device_config_init(ma_device_type_playback);
+        cfg.playback.pDeviceID = device_id;
         cfg.playback.format = ma_format_f32;
         cfg.playback.channels = 0;
         cfg.sampleRate = 0;
@@ -937,7 +1005,7 @@ static void completely_stop_source(system::source &s) {
         cfg.pUserData = m_engine.get();
 
         m_device.reset(new ma_device);
-        result = ma_device_init(nullptr, &cfg, m_device.get());
+        result = ma_device_init(m_context.get(), &cfg, m_device.get());
         if (result != MA_SUCCESS) {
           utils::error{}("Could not initialize device");
         }
@@ -956,7 +1024,7 @@ static void completely_stop_source(system::source &s) {
           auto s = &m_instances_mono.back()->sound;
           auto ds = &m_instances_mono.back()->data_source;
 
-          result = standart_mono_source_init(ds);
+          result = standart_mono_source_init(ds, this->stream_buffer_seconds);
           if (result != MA_SUCCESS) {
             utils::error{}("Could not initialize data source");
           }
@@ -985,7 +1053,7 @@ static void completely_stop_source(system::source &s) {
           auto s = &m_instances_stereo.back()->sound;
           auto ds = &m_instances_stereo.back()->data_source;
 
-          result = standart_stereo_source_init(ds);
+          result = standart_stereo_source_init(ds, this->stream_buffer_seconds);
           if (result != MA_SUCCESS) {
             utils::error{}("Could not initialize data source");
           }
@@ -1004,6 +1072,10 @@ static void completely_stop_source(system::source &s) {
           ma_sound_set_min_distance(s, 0.0f);
           ma_sound_set_max_distance(s, default_sound_max_distance);
         }
+      }
+
+      if (this->decode_frames_per_update == 0) {
+        this->decode_frames_per_update = playback_sample_rate;
       }
 
       constexpr size_t cache_size = pcm_samples_to_bytes(48000, 8, format::f32) / sizeof(uint32_t);
@@ -1038,28 +1110,16 @@ static void completely_stop_source(system::source &s) {
       }
 
       ma_device_uninit(m_device.get());
+      ma_context_uninit(m_context.get());
       ma_engine_uninit(m_engine.get());
     }
 
     bool system2::setup_sound(const struct task &task) {
       // еще нужно поглядеть будем ли мы вообще воспроизводить этот звук
-      if (task.type == type::sfx || task.type == type::talk_pos) {
-        const auto pos = ma_engine_listener_get_position(m_engine.get(), 0);
-        const auto dist2 = distance2(task.pos, vec3(pos.x, pos.y, pos.z));
-        if (dist2 >= default_sound_max_distance * default_sound_max_distance) return false;
-
-        // если есть звук приоритетом меньше чем этот, нужно его вытеснить
-      }
-
-      const size_t index = find_task_id(task.after);
-      if (index != SIZE_MAX) {
-        auto& cur_task = m_tasks[index];
-        if (cur_task.inst != nullptr) {
-          m_tasks.push_back({cur_task.inst, task, cur_time, 0});
-        }
-      }
-
-      m_tasks.push_back({nullptr, task, cur_time, 0});
+      if (task.id == SIZE_MAX || task.res.data.empty() || task.res.type == data_type::undefined) return false;
+      if (is_too_far(m_engine.get(), task)) return false;
+      if (find_task_id(task.id) != SIZE_MAX) return false;
+      m_tasks.push_back({nullptr, task, cur_time, 0, 0, 0, 0, false, false, false, nullptr, nullptr});
       return true;
     }
 
@@ -1067,35 +1127,29 @@ static void completely_stop_source(system::source &s) {
       const size_t index = find_task_id(task_id);
       if (index == SIZE_MAX) return false;
       auto& cur_task = m_tasks[index];
-      if (cur_task.inst != nullptr) {
-        // нужно остановить звук, обнулить буферизацию
-        // может быть такое что мы еще не доиграли текущий звук
-        // но у него есть следующий в списке
-        // нужно убрать текущий и стартануть следующий, как?
-        // поставить позицию курсора почти в конец 
 
-        const auto [cur_task_id, next_task_id] = cur_task.inst->data_source.get_ids();
-        if (cur_task_id == task_id && next_task_id == task_id) {
-          // просто останавливаем звук и возвращаем все на свои места
-          ma_sound_stop(&cur_task.inst->sound);
-          if (cur_task.inst->data_source.is_standart_mono()) {
-            m_instances_mono_stack.push_back(cur_task.inst);
-          } else if (cur_task.inst->data_source.is_standart_stereo()) {
-            m_instances_stereo_stack.push_back(cur_task.inst);
-          } else {
-            // удаляем нестандартный звук
-            ma_sound_uninit(&cur_task.inst->sound);
-            auto itr = std::find_if(m_instances.begin(), m_instances.end(), [ptr = cur_task.inst] (const auto &a) { return a.get() == ptr; });
-            m_instances.erase(itr);
-          }
-        } else if (cur_task_id == task_id) {
-          // есть следующий звук, ставим курсор на очень большое число
-          constexpr size_t big_frame_index = 3 * 60 * 60 * default_sound_sample_rate;
-          my_data_source_seek(&cur_task.inst->data_source, big_frame_index);
+      if (cur_task.inst != nullptr) {
+        auto* inst = cur_task.inst;
+        ma_sound_stop(&inst->sound);
+        inst->data_source.reset_stream();
+
+        if (inst->data_source.is_standart_mono()) {
+          m_instances_mono_stack.push_back(inst);
+        } else if (inst->data_source.is_standart_stereo()) {
+          m_instances_stereo_stack.push_back(inst);
+        } else {
+          ma_sound_uninit(&inst->sound);
+          data_source_uninit(&inst->data_source);
+          auto itr = std::find_if(m_instances.begin(), m_instances.end(), [ptr = inst] (const auto &a) { return a.get() == ptr; });
+          if (itr != m_instances.end()) m_instances.erase(itr);
         }
+
+        std::erase_if(m_tasks, [inst] (const auto &t) { return t.inst == inst; });
+        return true;
       }
 
       m_tasks.erase(m_tasks.begin() + index);
+      return true;
     }
 
     bool system2::play_sound(const size_t task_id) {
@@ -1104,7 +1158,8 @@ static void completely_stop_source(system::source &s) {
 
       auto& cur_task = m_tasks[index];
       if (cur_task.inst == nullptr) return false;
-      ma_sound_start(&cur_task.inst->sound);
+      const auto res = ma_sound_start(&cur_task.inst->sound);
+      if (res == MA_SUCCESS) cur_task.started = true;
       return true;
     }
 
@@ -1115,6 +1170,7 @@ static void completely_stop_source(system::source &s) {
       auto& cur_task = m_tasks[index];
       if (cur_task.inst == nullptr) return false;
       ma_sound_stop(&cur_task.inst->sound);
+      cur_task.started = false;
       return true;
     }
 
@@ -1123,15 +1179,55 @@ static void completely_stop_source(system::source &s) {
       if (index == SIZE_MAX) return 0.0;
 
       auto& cur_task = m_tasks[index];
-      if (cur_task.inst == nullptr) return 0.0;
+      if (cur_task.inst == nullptr || cur_task.stream_frames_count == 0) return 0.0;
 
-      // тут просто нужно разделить 2 числа
-      const size_t cur_cursor = cur_task.inst->data_source.cursor_pos.load(std::memory_order_acquire) * cur_task.inst->data_source.channels;
-      if (!ma_sound_is_playing(&cur_task.inst->sound) && cur_cursor == 0) return 1.0f;
-      ma_uint64 samples_count = 0;
-      auto res = ma_sound_get_cursor_in_pcm_frames(&cur_task.inst->sound, &samples_count);
-      if (res != MA_SUCCESS) return 0.0;
-      return double(cur_cursor) / double(samples_count);
+      const size_t frames_read = cur_task.inst->data_source.frames_read_total.load(std::memory_order_acquire);
+      if (frames_read <= cur_task.stream_begin_frame) return 0.0;
+      const size_t local_frames = std::min(frames_read - cur_task.stream_begin_frame, cur_task.stream_frames_count);
+      return double(local_frames) / double(cur_task.stream_frames_count);
+    }
+
+    task_status system2::make_status(const system2::sound_task &task) const {
+      task_status status;
+      status.id = task.task.id;
+      status.resource_id = task.task.res.id;
+      status.type = task.task.type;
+      status.state = task_state::queued;
+      status.progress = 0.0;
+      status.after = task.task.after;
+      status.frames_decoded = task.frames_decoded;
+      status.frames_total = task.stream_frames_count;
+      status.underruns = 0;
+      status.pos = task.task.pos;
+      status.dir = task.task.dir;
+      status.vel = task.task.vel;
+
+      if (task.inst == nullptr || task.stream_frames_count == 0) return status;
+
+      const size_t frames_read = task.inst->data_source.frames_read_total.load(std::memory_order_acquire);
+      if (frames_read > task.stream_begin_frame) {
+        const size_t local_frames = std::min(frames_read - task.stream_begin_frame, task.stream_frames_count);
+        status.progress = double(local_frames) / double(task.stream_frames_count);
+      }
+
+      status.state = status.progress >= 1.0 ? task_state::finished : task_state::playing;
+      status.underruns = task.inst->data_source.underrun_count.load(std::memory_order_acquire);
+      return status;
+    }
+
+    bool system2::stat_sound(const size_t task_id, struct task_status &out) const {
+      const size_t index = find_task_id(task_id);
+      if (index == SIZE_MAX) return false;
+      out = make_status(m_tasks[index]);
+      return true;
+    }
+
+    void system2::snapshot(std::vector<struct task_status> &out) const {
+      out.clear();
+      out.reserve(m_tasks.size());
+      for (const auto& task : m_tasks) {
+        out.push_back(make_status(task));
+      }
     }
 
     bool system2::set_sound(const size_t task_id, const double place) {
@@ -1139,14 +1235,28 @@ static void completely_stop_source(system::source &s) {
       if (index == SIZE_MAX) return false;
 
       auto& cur_task = m_tasks[index];
-      if (cur_task.inst == nullptr) return false;
+      cur_task.task.start = std::clamp(place, 0.0, 1.0);
+      if (cur_task.inst == nullptr) return true;
 
-      ma_uint64 samples_count = 0;
-      auto res = ma_sound_get_cursor_in_pcm_frames(&cur_task.inst->sound, &samples_count);
-      if (res != MA_SUCCESS) return false;
+      const auto shared_inst = cur_task.inst;
+      const auto shared_count = std::count_if(m_tasks.begin(), m_tasks.end(), [shared_inst] (const auto &t) {
+        return t.inst == shared_inst;
+      });
+      if (shared_count != 1) return false;
 
-      res = ma_sound_seek_to_pcm_frame(&cur_task.inst->sound, place * double(samples_count));
-      return res == MA_SUCCESS;
+      ma_sound_stop(&shared_inst->sound);
+      shared_inst->data_source.reset_stream();
+      cur_task.frames_decoded = 0;
+      cur_task.stream_begin_frame = 0;
+      cur_task.stream_frames_count = 0;
+      cur_task.source_frames_count = 0;
+      cur_task.initialized = false;
+      cur_task.segment_registered = false;
+      cur_task.started = false;
+      cur_task.decoder.reset();
+      cur_task.converter.reset();
+      cur_task.timestamp = cur_time;
+      return true;
     }
 
     bool system2::update_sound(const struct task_update &task) {
@@ -1156,10 +1266,22 @@ static void completely_stop_source(system::source &s) {
       auto& cur_task = m_tasks[index];
       if (cur_task.inst == nullptr) return false;
 
+      cur_task.task.pos = task.pos;
+      cur_task.task.dir = task.dir;
+      cur_task.task.vel = task.vel;
+
+      if (is_too_far(m_engine.get(), cur_task.task)) {
+        return remove_sound(task.id);
+      }
+
       ma_sound_set_position(&cur_task.inst->sound, task.pos.x, task.pos.y, task.pos.z);
       ma_sound_set_direction(&cur_task.inst->sound, task.dir.x, task.dir.y, task.dir.z);
       ma_sound_set_velocity(&cur_task.inst->sound, task.vel.x, task.vel.y, task.vel.z);
       return true;
+    }
+
+    void system2::set_decode_budget_frames(const size_t frames) noexcept {
+      decode_frames_per_update = frames == 0 ? playback_sample_rate : frames;
     }
 
     bool system2::set_listener_pos(const vec3 &pos) {
@@ -1192,13 +1314,21 @@ static void completely_stop_source(system::source &s) {
     }
 
     void system2::update(const size_t time) {
-      const size_t cur_time = this->cur_time;
       this->cur_time += time;
 
       for (auto& t : m_tasks) {
-        const bool new_task = t.timestamp == cur_time;
-        if (new_task) {
+        if (!t.initialized) {
           t.decoder = make_decoder(t.task.res.type, t.task.res.id, t.task.res.data);
+          if (!t.decoder) {
+            utils::error{}("Could not create decoder for sound task '{}'", t.task.res.id);
+          }
+
+          t.source_frames_count = t.decoder->frames_count();
+          const size_t start_frame = std::min<size_t>(t.task.start * double(t.source_frames_count), t.source_frames_count);
+          if (start_frame != 0 && !t.decoder->seek(start_frame)) {
+            utils::error{}("Could not seek sound task '{}' to frame {}", t.task.res.id, start_frame);
+          }
+          t.stream_frames_count = t.source_frames_count - start_frame;
 
           const uint32_t out_channels = 
             (t.task.type == type::sfx || t.task.type == type::talk_pos ? 1 : 
@@ -1221,60 +1351,87 @@ static void completely_stop_source(system::source &s) {
           if (res != MA_SUCCESS) {
             utils::error{}("Could not initialize data converter for sound task '{}'", t.task.res.id);
           }
+
+          t.initialized = true;
         }
 
         if (t.inst == nullptr) {
-
-          if (t.task.type == type::sfx || t.task.type == type::talk_pos) {
+          if (t.task.after != SIZE_MAX) {
+            const size_t prev_index = find_task_id(t.task.after);
+            if (prev_index == SIZE_MAX || m_tasks[prev_index].inst == nullptr) continue;
+            t.inst = m_tasks[prev_index].inst;
+          } else if (t.task.type == type::sfx || t.task.type == type::talk_pos) {
             if (!m_instances_mono_stack.empty()) {
               t.inst = m_instances_mono_stack.back();
               m_instances_mono_stack.pop_back();
-              t.inst->data_source.init(t.task.id);
+              t.inst->data_source.reset_stream();
             }
           } else if (t.task.type == type::ui_effect) {
             if (!m_instances_stereo_stack.empty()) {
               t.inst = m_instances_stereo_stack.back();
               m_instances_stereo_stack.pop_back();
-              t.inst->data_source.init(t.task.id);
+              t.inst->data_source.reset_stream();
+            }
+          } else if (t.decoder->channels() == 1) {
+            if (!m_instances_mono_stack.empty()) {
+              t.inst = m_instances_mono_stack.back();
+              m_instances_mono_stack.pop_back();
+              t.inst->data_source.reset_stream();
+            }
+          } else if (t.decoder->channels() == 2) {
+            if (!m_instances_stereo_stack.empty()) {
+              t.inst = m_instances_stereo_stack.back();
+              m_instances_stereo_stack.pop_back();
+              t.inst->data_source.reset_stream();
             }
           } else {
-
-            if (t.decoder->channels() == 1) {
-              if (!m_instances_mono_stack.empty()) {
-                t.inst = m_instances_mono_stack.back();
-                m_instances_mono_stack.pop_back();
-                t.inst->data_source.init(t.task.id);
-              }
-            } else if (t.decoder->channels() == 2) {
-              if (!m_instances_stereo_stack.empty()) {
-                t.inst = m_instances_stereo_stack.back();
-                m_instances_stereo_stack.pop_back();
-                t.inst->data_source.init(t.task.id);
-              }
-            } else {
-              m_instances.emplace_back(new sound_instance);
-              instance_init(m_instances.back().get(), t.decoder->sample_rate(), t.decoder->channels(), t.decoder->format());
-            }
-
+            m_instances.emplace_back(new sound_instance);
+            instance_init(m_instances.back().get(), playback_sample_rate, t.decoder->channels(), format::f32);
+            t.inst = m_instances.back().get();
+            t.inst->data_source.reset_stream();
           }
         }
 
         if (t.inst == nullptr) continue;
 
-        // зададим следующий id
-        const auto [cur_task_id, next_task_id] = t.inst->data_source.get_ids();
-        if (t.frames_decoded == 0 && cur_task_id == next_task_id && next_task_id != t.task.id) {
-          t.inst->data_source.new_frame_size.store(t.decoder->frames_count(), std::memory_order_release);
-          t.inst->data_source.new_task_id.store(t.task.id, std::memory_order_release);
-          continue;
+        if (!t.segment_registered) {
+          ma_sound_set_volume(&t.inst->sound, t.task.volume);
+          ma_sound_set_pitch(&t.inst->sound, t.task.pitch);
+          ma_sound_set_position(&t.inst->sound, t.task.pos.x, t.task.pos.y, t.task.pos.z);
+          ma_sound_set_direction(&t.inst->sound, t.task.dir.x, t.task.dir.y, t.task.dir.z);
+          ma_sound_set_velocity(&t.inst->sound, t.task.vel.x, t.task.vel.y, t.task.vel.z);
+        }
+
+        if (!t.segment_registered) {
+          if (t.task.after != SIZE_MAX) {
+            const size_t prev_index = find_task_id(t.task.after);
+            if (prev_index != SIZE_MAX) {
+              const auto& prev = m_tasks[prev_index];
+              if (!prev.segment_registered || prev.frames_decoded < prev.stream_frames_count) continue;
+            }
+          }
+
+          t.stream_begin_frame = t.inst->data_source.frames_written_total.load(std::memory_order_acquire);
+          t.segment_registered = true;
         }
 
         const bool was_start = t.frames_decoded == 0;
         const size_t free_frames = t.inst->data_source.available_frames_to_write();
         // free_frames может стать чуть больше за это время
-        if (free_frames > 0 && t.frames_decoded < t.decoder->frames_count()) {
+        if (free_frames > 0 && t.frames_decoded < t.stream_frames_count) {
+          const size_t input_cache_frames = bytes_to_pcm_frames(cache1.size() * sizeof(cache1[0]), t.decoder->channels(), t.decoder->format());
+          const size_t output_cache_frames = bytes_to_pcm_frames(cache2.size() * sizeof(cache2[0]), t.inst->data_source.channels, t.inst->data_source.format);
           // для каждой таски декодируем очередной кусок данных
-          ma_uint64 frames = t.decoder->get_frames(cache1.data(), free_frames);
+          const size_t frames_to_read = std::min({
+            free_frames,
+            decode_frames_per_update,
+            input_cache_frames,
+            output_cache_frames,
+            t.stream_frames_count - t.frames_decoded
+          });
+          if (frames_to_read == 0) continue;
+
+          ma_uint64 frames = t.decoder->get_frames(cache1.data(), frames_to_read);
           ma_uint64 frames_out = frames;
           t.frames_decoded += frames;
 
@@ -1289,36 +1446,56 @@ static void completely_stop_source(system::source &s) {
           assert(writed_frames == frames_out);
         }
 
-        if (was_start) {
+        if (was_start && !t.started) {
           const auto res = ma_sound_start(&t.inst->sound);
           assert(res == MA_SUCCESS);
+          t.started = true;
         }
-
-        assert(ma_sound_is_playing(&t.inst->sound));
       }
 
-      for (auto it = m_tasks.begin(); it != m_tasks.end(); ++it) {
+      for (auto it = m_tasks.begin(); it != m_tasks.end();) {
         auto& t = *it;
-
-        const auto [cur_task_id, next_task_id] = t.inst->data_source.get_ids();
-        const bool is_playing = ma_sound_is_playing(&t.inst->sound);
-
-        // удалим таску которая закончила проигрываться и не получила дальнеших указаний
-        if (t.frames_decoded >= t.decoder->frames_count() && cur_task_id == t.task.id && !is_playing) {
-          it = m_tasks.erase(it);
+        if (t.inst == nullptr || !t.segment_registered) {
+          ++it;
+          continue;
         }
 
-        // удалим таску которая здесь уже не проигрывается
-        if (t.frames_decoded >= t.decoder->frames_count() && t.task.id < cur_task_id) {
+        const size_t frames_read = t.inst->data_source.frames_read_total.load(std::memory_order_acquire);
+        const bool fully_decoded = t.frames_decoded >= t.stream_frames_count;
+        const bool fully_read = frames_read >= t.stream_begin_frame + t.stream_frames_count;
+        if (fully_decoded && fully_read) {
+          auto* inst = t.inst;
           it = m_tasks.erase(it);
+          const bool has_more_tasks = std::any_of(m_tasks.begin(), m_tasks.end(), [inst] (const auto &other) {
+            return other.inst == inst;
+          });
+          if (!has_more_tasks) {
+            ma_sound_stop(&inst->sound);
+            inst->data_source.reset_stream();
+            if (inst->data_source.is_standart_mono()) {
+              m_instances_mono_stack.push_back(inst);
+            } else if (inst->data_source.is_standart_stereo()) {
+              m_instances_stereo_stack.push_back(inst);
+            } else {
+              ma_sound_uninit(&inst->sound);
+              data_source_uninit(&inst->data_source);
+              auto custom_it = std::find_if(m_instances.begin(), m_instances.end(), [inst] (const auto &ptr) {
+                return ptr.get() == inst;
+              });
+              if (custom_it != m_instances.end()) m_instances.erase(custom_it);
+            }
+          }
+          continue;
         }
+
+        ++it;
       }
     }
 
     size_t system2::find_task_id(const size_t task_id) const {
       if (task_id == SIZE_MAX) return SIZE_MAX;
 
-      const auto itr = std::lower_bound(m_tasks.begin(), m_tasks.end(), task_id, [] (const auto &inst, const size_t id) { return inst.task.id == id; });
+      const auto itr = std::find_if(m_tasks.begin(), m_tasks.end(), [task_id] (const auto &inst) { return inst.task.id == task_id; });
       if (itr != m_tasks.end() && itr->task.id == task_id) return itr - m_tasks.begin();
       return SIZE_MAX;
     }
@@ -1329,7 +1506,7 @@ static void completely_stop_source(system::source &s) {
       auto s = &inst->sound;
       auto ds = &inst->data_source;
 
-      auto result = standart_source_init(ds, sample_rate, channels, format);
+      auto result = standart_source_init(ds, sample_rate, channels, format, stream_buffer_seconds);
       if (result != MA_SUCCESS) {
         utils::error{}("Could not initialize data source");
       }

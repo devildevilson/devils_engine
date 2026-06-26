@@ -2,6 +2,7 @@
 #define TILE_FRONTIER_CORE_MESSAGES_H
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstddef>
 #include <string>
@@ -45,6 +46,32 @@ struct command_sound {
   uint32_t mix;
 };
 
+struct command_sound_update {
+  size_t taskid;
+  float pos[3];
+  float dir[3];
+  float vel[3];
+};
+
+struct sound_status {
+  size_t taskid;
+  size_t after;
+  uint32_t type;
+  uint32_t state;
+  double progress;
+  size_t frames_decoded;
+  size_t frames_total;
+  size_t underruns;
+  float pos[3];
+  float dir[3];
+  float vel[3];
+};
+
+struct command_sound_snapshot {
+  size_t request_id;
+  std::vector<sound_status>* out;
+};
+
 struct command_update_ui {
   std::vector<uint32_t> vertices;
   std::vector<uint32_t> indices;
@@ -54,7 +81,13 @@ struct command_update_ui {
 
 // тут по идее нужно указать выбранное звуковое устройство
 struct command_recreate_sound_system {
+  std::string device_name;
+};
 
+struct command_sound_devices {
+  size_t request_id;
+  std::vector<std::string>* out;
+  std::atomic_bool* ready;
 };
 
 struct command_window_recreation {
