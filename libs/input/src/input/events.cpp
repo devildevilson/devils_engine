@@ -131,7 +131,7 @@ void events::update_key(const int32_t scancode, const int32_t state) {
   itr->second.state = static_cast<key_state::values>(state);
 }
 
-bool events::is_pressed(const std::string_view &id) {
+bool events::is_pressed(const event_id id) {
   const auto itr = event_mapping.find(id);
   if (itr == event_mapping.end()) return false;
 
@@ -145,7 +145,11 @@ bool events::is_pressed(const std::string_view &id) {
   return false;
 }
 
-bool events::is_released(const std::string_view &id) {
+bool events::is_pressed(const std::string_view &id) {
+  return is_pressed(make_event_id(id));
+}
+
+bool events::is_released(const event_id id) {
   const auto itr = event_mapping.find(id);
   if (itr == event_mapping.end()) return false;
 
@@ -159,11 +163,15 @@ bool events::is_released(const std::string_view &id) {
   return true;
 }
 
+bool events::is_released(const std::string_view &id) {
+  return is_released(make_event_id(id));
+}
+
 std::string_view events::key_name(const int32_t key, const int32_t scancode) {
   return input::key_name(key, scancode);
 }
 
-std::string_view events::key_name(const std::string_view &id, const uint8_t slot) {
+std::string_view events::key_name(const event_id id, const uint8_t slot) {
   const auto itr = event_mapping.find(id);
   if (itr == event_mapping.end()) return std::string_view();
 
@@ -174,11 +182,69 @@ std::string_view events::key_name(const std::string_view &id, const uint8_t slot
   return input::key_name(-1, scancode);
 }
 
+std::string_view events::key_name(const std::string_view &id, const uint8_t slot) {
+  return key_name(make_event_id(id), slot);
+}
+
+std::string_view events::key_name_canonical(const int32_t scancode) {
+  return input::key_name_canonical(scancode);
+}
+
+std::string_view events::key_name_canonical(const event_id id, const uint8_t slot) {
+  const auto itr = event_mapping.find(id);
+  if (itr == event_mapping.end()) return std::string_view();
+
+  if (slot >= itr->second.keys.size()) return std::string_view();
+  if (itr->second.keys[slot] == -1) return std::string_view();
+
+  return input::key_name_canonical(itr->second.keys[slot]);
+}
+
+std::string_view events::key_name_canonical(const std::string_view &id, const uint8_t slot) {
+  return key_name_canonical(make_event_id(id), slot);
+}
+
+std::string_view events::key_name_us_layout(const int32_t scancode) {
+  return input::key_name_us_layout(scancode);
+}
+
+std::string_view events::key_name_us_layout(const event_id id, const uint8_t slot) {
+  const auto itr = event_mapping.find(id);
+  if (itr == event_mapping.end()) return std::string_view();
+
+  if (slot >= itr->second.keys.size()) return std::string_view();
+  if (itr->second.keys[slot] == -1) return std::string_view();
+
+  return input::key_name_us_layout(itr->second.keys[slot]);
+}
+
+std::string_view events::key_name_us_layout(const std::string_view &id, const uint8_t slot) {
+  return key_name_us_layout(make_event_id(id), slot);
+}
+
+std::string events::key_name_local(const int32_t scancode) {
+  return input::key_name_local(scancode);
+}
+
+std::string events::key_name_local(const event_id id, const uint8_t slot) {
+  const auto itr = event_mapping.find(id);
+  if (itr == event_mapping.end()) return std::string();
+
+  if (slot >= itr->second.keys.size()) return std::string();
+  if (itr->second.keys[slot] == -1) return std::string();
+
+  return input::key_name_local(itr->second.keys[slot]);
+}
+
+std::string events::key_name_local(const std::string_view &id, const uint8_t slot) {
+  return key_name_local(make_event_id(id), slot);
+}
+
 std::string events::key_name_native(const int32_t key, const int32_t scancode) {
   return input::key_name_native(key, scancode);
 }
 
-std::string events::key_name_native(const std::string_view &id, const uint8_t slot) {
+std::string events::key_name_native(const event_id id, const uint8_t slot) {
   const auto itr = event_mapping.find(id);
   if (itr == event_mapping.end()) return std::string();
 
@@ -189,12 +255,14 @@ std::string events::key_name_native(const std::string_view &id, const uint8_t sl
   return input::key_name_native(-1, scancode);
 }
 
-void events::set_key(const std::string_view &id, const int32_t scancode, const int32_t key, const uint8_t slot) {
-  // тут нужно убедиться что это либо дефолтный ивент либо добавить его в список
-  const auto persistend_id = make_persistent_event_id(id);
-  auto itr = event_mapping.find(persistend_id);
+std::string events::key_name_native(const std::string_view &id, const uint8_t slot) {
+  return key_name_native(make_event_id(id), slot);
+}
+
+void events::set_key(const event_id id, const int32_t scancode, const int32_t key, const uint8_t slot) {
+  auto itr = event_mapping.find(id);
   if (itr == event_mapping.end()) {
-    itr = event_mapping.insert(std::make_pair(persistend_id, event_map{})).first;
+    itr = event_mapping.insert(std::make_pair(id, event_map{})).first;
   }
 
   if (slot >= itr->second.keys.size()) utils::error{}("Bad set key args. Trying to set to event '{}' slot {}", id, slot);
@@ -208,24 +276,50 @@ void events::set_key(const std::string_view &id, const int32_t scancode, const i
   }
 
   for (auto &name : key_itr->second.events) {
-    if (name.empty()) { name = persistend_id; break; }
+    if (name == invalid_event_id) { name = id; break; }
   }
 
   auto old_key_itr = key_mapping.find(old_scancode);
   if (old_key_itr != key_mapping.end()) {
     for (auto &name : old_key_itr->second.events) {
-      if (name == persistend_id) { name = std::string_view(); break; }
+      if (name == id) { name = invalid_event_id; break; }
     }
+
+    bool empty = true;
+    for (const auto name : old_key_itr->second.events) {
+      if (name != invalid_event_id) {
+        empty = false;
+        break;
+      }
+    }
+
+    if (empty) key_mapping.erase(old_key_itr);
   }
 
   // обновим настройки
 }
 
-std::span<std::string_view> events::mapping(const int32_t scancode) {
-  const auto key_itr = key_mapping.find(scancode);
-  if (key_itr == key_mapping.end()) return std::span<std::string_view>();
+void events::set_key(const std::string_view &id, const int32_t scancode, const int32_t key, const uint8_t slot) {
+  const auto hash = make_event_id(id);
+  auto itr = event_mapping.find(hash);
+  if (itr == event_mapping.end()) {
+    event_map map;
+    map.name = std::string(id);
+    event_mapping.emplace(hash, map);
+  } else if (itr->second.name.empty()) {
+    itr->second.name = std::string(id);
+  } else if (std::string_view(itr->second.name) != id) {
+    utils::error{}("Input event hash collision: '{}' vs '{}'", itr->second.name, id);
+  }
 
-  return std::span<std::string_view>(key_itr->second.events.data(), key_itr->second.events.size());
+  set_key(hash, scancode, key, slot);
+}
+
+std::span<const events::event_id> events::mapping(const int32_t scancode) {
+  const auto key_itr = key_mapping.find(scancode);
+  if (key_itr == key_mapping.end()) return std::span<const event_id>();
+
+  return std::span<const event_id>(key_itr->second.events.data(), key_itr->second.events.size());
 }
 
 event_state::values events::current_event_state(const int32_t scancode) {
@@ -235,9 +329,9 @@ event_state::values events::current_event_state(const int32_t scancode) {
   return key_itr->second.current;
 }
 
-uint32_t events::current_event_state(const std::string_view &id) {
+uint32_t events::current_event_state(const event_id id) {
   uint32_t mask = 0;
-  
+
   const auto itr = event_mapping.find(id);
   if (itr == event_mapping.end()) return mask;
 
@@ -250,7 +344,11 @@ uint32_t events::current_event_state(const std::string_view &id) {
   return mask;
 }
 
-event_state::values events::max_event_state(const std::string_view &id) {
+uint32_t events::current_event_state(const std::string_view &id) {
+  return current_event_state(make_event_id(id));
+}
+
+event_state::values events::max_event_state(const event_id id) {
   event_state::values max = event_state::values::release;
 
   const auto itr = event_mapping.find(id);
@@ -262,6 +360,10 @@ event_state::values events::max_event_state(const std::string_view &id) {
   }
 
   return max;
+}
+
+event_state::values events::max_event_state(const std::string_view &id) {
+  return max_event_state(make_event_id(id));
 }
 
 bool events::check_key(const int32_t scancode, const uint32_t states) {
@@ -287,7 +389,7 @@ bool events::timed_check_key(const int32_t scancode, const uint32_t states, cons
   return (key_event_state & states) != 0;
 }
 
-bool events::check_event(const std::string_view &event, const uint32_t states) {
+bool events::check_event(const event_id event, const uint32_t states) {
   const auto itr = event_mapping.find(event);
   if (itr == event_mapping.end()) return false;
 
@@ -299,7 +401,11 @@ bool events::check_event(const std::string_view &event, const uint32_t states) {
   return false;
 }
 
-bool events::timed_check_event(const std::string_view &event, const uint32_t states, const size_t wait, const size_t period) {
+bool events::check_event(const std::string_view &event, const uint32_t states) {
+  return check_event(make_event_id(event), states);
+}
+
+bool events::timed_check_event(const event_id event, const uint32_t states, const size_t wait, const size_t period) {
   const auto itr = event_mapping.find(event);
   if (itr == event_mapping.end()) return false;
 
@@ -310,17 +416,16 @@ bool events::timed_check_event(const std::string_view &event, const uint32_t sta
   return false;
 }
 
+bool events::timed_check_event(const std::string_view &event, const uint32_t states, const size_t wait, const size_t period) {
+  return timed_check_event(make_event_id(event), states, wait, period);
+}
+
 void events::set_long_press_duration(const size_t dur) { long_press_duration = dur; }
 void events::set_double_press_duration(const size_t dur) { double_press_duration = dur; }
 void events::set_engine_tick_time(const size_t time) { engine_tick_time = time; }
 
-std::string_view events::make_persistent_event_id(const std::string_view &id) {
-  auto itr = additional_events.find(id);
-  if (itr == additional_events.end()) {
-    itr = additional_events.emplace(std::string(id)).first;
-  }
-  
-  return std::string_view(*itr);
+events::event_id events::make_event_id(const std::string_view &id) noexcept {
+  return utils::string_hash(id);
 }
 
 struct events::auxiliary &events::auxiliary_data() { return auxiliary; }
@@ -330,8 +435,7 @@ size_t events::long_press_duration = utils::app_clock::resolution() / 3;
 size_t events::double_press_duration = utils::app_clock::resolution() / 3;
 size_t events::engine_tick_time = utils::app_clock::resolution() / 30; // 30fps
 struct events::auxiliary events::auxiliary;
-gtl::flat_hash_map<std::string_view, events::event_map> events::event_mapping;
+gtl::flat_hash_map<events::event_id, events::event_map> events::event_mapping;
 gtl::flat_hash_map<int32_t, events::key_data> events::key_mapping;  // scancodes
-gtl::flat_hash_set<std::string> events::additional_events;
 }
 }

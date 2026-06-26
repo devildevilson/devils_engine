@@ -184,6 +184,38 @@ std::string_view key_name(const int32_t key, const int32_t scancode) {
   return std::string_view(str == nullptr ? "" : str);
 }
 
+std::string_view key_name_canonical(const int32_t scancode) noexcept {
+  return get_key_name_canonical(scancode);
+}
+
+std::string_view key_name_us_layout(const int32_t scancode) noexcept {
+  return get_key_name_us_layout(scancode);
+}
+
+std::string key_name_local(const int32_t scancode) {
+  return get_key_name_local(scancode);
+}
+
+std::string_view glfw_key_name_canonical(const int32_t key) noexcept {
+  return get_glfw_key_name_canonical(key);
+}
+
+std::string_view glfw_key_name_us_layout(const int32_t key) noexcept {
+  return get_glfw_key_name_us_layout(key);
+}
+
+std::string glfw_key_name_local(const int32_t key) {
+  return get_glfw_key_name_local(key);
+}
+
+int32_t glfw_key_from_canonical(const std::string_view &name) noexcept {
+  return get_glfw_key_from_canonical(name);
+}
+
+std::tuple<int32_t, int32_t> key_from_canonical(const std::string_view &name) noexcept {
+  return get_key_from_canonical(name);
+}
+
 std::string key_name_native(const int32_t, const int32_t scancode) {
   return get_key_name(scancode);
 }
