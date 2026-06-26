@@ -1,0 +1,24 @@
+cmake_minimum_required(VERSION 3.30)
+
+project(
+  devils_simul
+  VERSION 0.1.1
+  LANGUAGES CXX
+)
+
+add_library(devils_simul
+  src/simul/interface.cpp
+  include/devils_engine/simul/interface.h
+)
+
+target_include_directories(devils_simul
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
+  PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/simul>"
+)
+
+target_link_libraries(devils_simul
+  PUBLIC devils_engine::options
+  PRIVATE devils_engine::utils
+)
+
+add_library(devils_engine::simul ALIAS devils_simul)

@@ -36,6 +36,9 @@ set(PROJECT_EXTERNAL_DEPENDENCY_DIR ${CMAKE_CURRENT_LIST_DIR}/external)
 # devils_engine::options (compile/link flags + header-only include dirs) lives
 # in libs/options and is added below, after FetchContent_MakeAvailable().
 
+option(DEVILS_ENGINE_BUILD_TESTS "Build devils_engine tests" ON)
+option(DEVILS_ENGINE_BUILD_VENDOR_TESTS "Build tests provided by third-party dependencies" OFF)
+
 # 3 dependencies for user to deal with
 if (WIN32) # freetype has proper cmake support
   set(FREETYPE_LIBRARY ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/freetype/freetype.lib)
@@ -50,11 +53,17 @@ else()
   #set(GLFW3_LIBRARY_NAME glfw3)
 endif()
 
+set(BUILD_TESTING ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "Build tests for third-party dependencies" FORCE)
+
 set(ZLIB_BUILD_EXAMPLES OFF)
 set(ZLIB_BUILD_TESTING OFF)
+set(ZLIB_ENABLE_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
+set(ZLIBNG_ENABLE_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
+set(WITH_GTEST ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
 set(PNG_STATIC OFF)
 set(PNG_TOOLS OFF)
 set(PNG_EXECUTABLES OFF)
+set(PNG_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
 
 set(MSDFGEN_DISABLE_SVG ON)
 set(MSDFGEN_USE_SKIA OFF)
@@ -78,15 +87,18 @@ set(DYNAMICBITSET_BUILD_EXAMPLE OFF)
 set(DYNAMICBITSET_BUILD_DOCS OFF)
 set(DYNAMICBITSET_FORMAT_TARGET OFF)
 
+set(CPUINFO_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(CPUINFO_BUILD_UNIT_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
+set(CPUINFO_BUILD_MOCK_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
+set(CPUINFO_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(CPUINFO_BUILD_PKG_CONFIG OFF CACHE BOOL "" FORCE)
+
 set(VULKAN_HEADERS_ENABLE_INSTALL OFF)
 set(VMA_BUILD_SAMPLES OFF)
 
 set(GLM_BUILD_LIBRARY OFF)
 set(GLM_ENABLE_CXX_20 ON)
 set(GLM_ENABLE_SIMD_AVX ON)
-
-set(CATCH_INSTALL_DOCS OFF)
-set(CATCH_INSTALL_EXTRAS OFF)
 
 set(MINIAUDIO_USE_STDINT ON)
 set(MINIAUDIO_INSTALL OFF)
@@ -95,6 +107,10 @@ set(MINIAUDIO_NO_FLAC ON)
 set(MINIAUDIO_NO_MP3 ON)
 set(MINIAUDIO_NO_LIBVORBIS ON)
 set(MINIAUDIO_NO_LIBOPUS ON)
+
+set(TAVL_BUILD_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
+set(DS_BUILD_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
+set(DS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
   glaze
@@ -211,6 +227,14 @@ FetchContent_Declare(
 )
 
 FetchContent_Declare(
+  reflect
+  GIT_REPOSITORY https://github.com/qlibs/reflect.git
+  GIT_TAG        v1.2.6
+  GIT_PROGRESS   TRUE
+  SOURCE_SUBDIR somePathThatNeverExistsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa
+)
+
+FetchContent_Declare(
   glfw3
   URL  https://github.com/glfw/glfw/releases/download/3.4/glfw-3.4.bin.WIN64.zip
   FIND_PACKAGE_ARGS
@@ -265,9 +289,9 @@ FetchContent_Declare(
 )
 
 FetchContent_Declare(
-  Catch2
-  GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-  GIT_TAG        v3.8.1
+  doctest
+  GIT_REPOSITORY https://github.com/doctest/doctest.git
+  GIT_TAG        v2.5.2
   GIT_PROGRESS   TRUE
   FIND_PACKAGE_ARGS
 )
@@ -325,7 +349,7 @@ add_library(ZLIB::ZLIB ALIAS zlib)
 set(ZLIB_INCLUDE_DIR "${FETCHCONTENT_BASE_DIR}/zlib-build/")
 set(ZLIB_INCLUDE_DIRS "${FETCHCONTENT_BASE_DIR}/zlib-build/")
 
-FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng PNG atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm Catch2 cpuinfo miniaudio rapidhash tavl devils_script) # RE-flex
+FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng PNG atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect) # RE-flex
 
 #target_compile_options(spdlog 
 #  PRIVATE /fsanitize=address
@@ -336,10 +360,8 @@ find_package(Threads REQUIRED)
 # workarounds for other libs
 add_library(PNG::PNG ALIAS png_shared)
 
-# MSVC workaround
-if ("cxx_std_17" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
-  target_compile_features(Catch2 PRIVATE cxx_std_17)
-  target_compile_features(Catch2WithMain PRIVATE cxx_std_17)
+if (DEVILS_ENGINE_BUILD_TESTS OR DEVILS_ENGINE_BUILD_VENDOR_TESTS)
+  enable_testing()
 endif()
 
 if(MSVC)
@@ -368,17 +390,49 @@ endif()
 # Link each target with other targets or add options, etc.
 add_subdirectory(libs/options/)
 add_subdirectory(libs/utils/)
+add_subdirectory(libs/thread/)
+add_subdirectory(libs/mood/)
+add_subdirectory(libs/simul/)
+add_subdirectory(libs/aesthetics/)
 add_subdirectory(libs/sound/)
 add_subdirectory(libs/demiurg/)
-add_subdirectory(libs/thread/)
 add_subdirectory(libs/input/)
 add_subdirectory(libs/painter/)
 add_subdirectory(libs/visage/)
 add_subdirectory(libs/bindings/)
 add_subdirectory(libs/acumen/)
 add_subdirectory(libs/catalogue/)
-add_subdirectory(tests/)
+
+add_library(devils_engine INTERFACE)
+target_link_libraries(devils_engine INTERFACE devils_engine::catalogue devils_engine::acumen devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::thread devils_engine::utils devils_engine::mood devils_engine::simul devils_engine::aesthetics devils_engine::visage devils_engine::options)
+add_library(devils_engine::devils_plane ALIAS devils_engine)
+
+if (DEVILS_ENGINE_BUILD_TESTS)
+  add_subdirectory(tests/)
+endif()
 add_subdirectory(tests/tile_frontier/)
+
+if (DEVILS_ENGINE_BUILD_TESTS)
+  add_custom_target(devils_engine_test
+    COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} --output-on-failure -L devils_engine
+    DEPENDS utils_general_test utils_contract_test thread_general_test
+    USES_TERMINAL
+    COMMENT "Running devils_engine tests"
+  )
+endif()
+
+if (DEVILS_ENGINE_BUILD_VENDOR_TESTS)
+  add_custom_target(devils_engine_vendor_test
+    COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} --output-on-failure -LE devils_engine
+    USES_TERMINAL
+    COMMENT "Running third-party dependency tests"
+  )
+else()
+  add_custom_target(devils_engine_vendor_test
+    COMMAND ${CMAKE_COMMAND} -E echo "Third-party dependency tests are disabled. Reconfigure with -DDEVILS_ENGINE_BUILD_VENDOR_TESTS=ON to build and run them."
+    USES_TERMINAL
+  )
+endif()
 
 #foreach (library_path IN LISTS DYN_LIBRARIES_LIST)
 #  add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD 
@@ -387,12 +441,6 @@ add_subdirectory(tests/tile_frontier/)
 #        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/" 
 #    COMMENT "Copy libs")
 #endforeach()
-
-# вообще по итогу наверное лучше будет оформить единую либу со всеми зависимостями
-
-add_library(devils_engine INTERFACE)
-target_link_libraries(devils_engine INTERFACE devils_engine::catalogue devils_engine::acumen devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::thread devils_engine::utils devils_engine::visage devils_engine::options)
-add_library(devils_engine::devils_plane ALIAS devils_engine)
 
 if (WIN32)
   set(SHADERC_LIBRARY_NAME shaderc_shared)

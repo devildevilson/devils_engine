@@ -1,5 +1,6 @@
 #include "core.h"
 
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 
@@ -15,9 +16,6 @@
 #endif
 
 #include <cpuinfo.h>
-
-#define DEVILS_ENGINE_AESTHETICS_IMPLEMENTATION
-#include "devils_engine/aesthetics/world.h"
 
 namespace fs = std::filesystem;
 

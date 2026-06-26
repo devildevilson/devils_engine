@@ -62,21 +62,6 @@ set(HDR_LIST
   #include/devils_engine/utils/patterns.h
  "include/devils_engine/utils/actor_ref.h" "include/devils_engine/utils/string_id.h")
 
-add_library(devils_mood src/mood/system.cpp include/devils_engine/mood/system.h)
-target_include_directories(devils_mood INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
-target_include_directories(devils_mood PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/mood>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine>")
-target_link_libraries(devils_mood gtl spdlog::spdlog devils_engine::options)
-
-add_library(devils_simul src/simul/interface.cpp include/devils_engine/simul/interface.h)
-target_include_directories(devils_simul INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
-target_include_directories(devils_simul PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/simul>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine>")
-target_link_libraries(devils_simul spdlog::spdlog devils_engine::options)
-
-# include/devils_engine/aesthetics/world.h include/devils_engine/aesthetics/common.h include/devils_engine/aesthetics/simple_systems.h
-add_library(devils_aesthetics INTERFACE)
-target_include_directories(devils_aesthetics INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
-target_link_libraries(devils_aesthetics INTERFACE devils_engine::options)
-
 # mess, why do I made this?
 add_library(devils_utils ${SRC_LIST} ${HDR_LIST})
 
@@ -92,7 +77,7 @@ target_compile_options(engine_c_part1 PRIVATE
 )
 
 target_link_libraries(devils_utils 
-  PUBLIC devils_engine::thread devils_mood devils_simul devils_aesthetics spdlog::spdlog glaze::glaze gtl #ReflexLibStatic #alpaca::alpaca
+  PUBLIC devils_engine::thread spdlog::spdlog glaze::glaze gtl #ReflexLibStatic #alpaca::alpaca
   PRIVATE engine_c_part1 density ZLIB::ZLIB devils_engine::options cpuinfo
 )
 
@@ -112,6 +97,3 @@ if (MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL GNU)
 endif()
 
 add_library(devils_engine::utils ALIAS devils_utils)
-add_library(devils_engine::aesthetics ALIAS devils_aesthetics)
-add_library(devils_engine::mood ALIAS devils_mood)
-add_library(devils_engine::simul ALIAS devils_simul)

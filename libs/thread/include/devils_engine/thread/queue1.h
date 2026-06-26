@@ -92,7 +92,7 @@ bool queue1<T, N>::dequeue(T& v) noexcept {
           std::memory_order_relaxed
         )
         ) {
-        out = std::move(cell.data);
+        v = std::move(cell.data);
         cell.seq.store(pos + buffer.size(), std::memory_order_release);
         return true;
       }

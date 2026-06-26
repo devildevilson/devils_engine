@@ -1,7 +1,7 @@
 #include "interface.h"
 
 #include <thread>
-#include "utils/time-utils.hpp"
+#include "devils_engine/utils/time-utils.hpp"
 #include <immintrin.h>
 
 namespace devils_engine {

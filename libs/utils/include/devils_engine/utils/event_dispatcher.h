@@ -4,6 +4,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <concepts>
+#include <algorithm>
+#include <mutex>
+#include <span>
 #include <vector>
 #include <type_traits>
 #include <memory>

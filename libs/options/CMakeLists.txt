@@ -91,4 +91,5 @@ target_include_directories(devils_engine_options INTERFACE
   "${stb_SOURCE_DIR}/"
   "${zpp_bits_SOURCE_DIR}/"
   "${rapidhash_SOURCE_DIR}/"
+  "${reflect_SOURCE_DIR}/"
 )

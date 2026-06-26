@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include "world.h"
-#include "thread/atomic_pool.h"
+#include "devils_engine/thread/atomic_pool.h"
 
 namespace devils_engine {
 namespace aesthetics {

@@ -1,8 +1,8 @@
 #include "system.h"
 
-#include "utils/core.h"
-#include "utils/string-utils.hpp"
-#include "utils/patterns.h"
+#include "devils_engine/utils/core.h"
+#include "devils_engine/utils/string-utils.hpp"
+#include "devils_engine/utils/patterns.h"
 
 #include <algorithm>
 #include <cctype>

@@ -6,36 +6,48 @@ project(
   LANGUAGES CXX C
 )
 
-list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
-
 set(TEST_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/devils_engine/tests")
 
-add_executable(utils_general_test utils_general_test.cpp)
-target_link_libraries(utils_general_test PRIVATE devils_engine::options devils_engine::utils Catch2::Catch2WithMain)
-target_link_directories(utils_general_test PRIVATE ${DENSITY_LIBRARY_DIR})
-set_target_properties(utils_general_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_OUTPUT_DIRECTORY}/bin")
+function(devils_add_doctest target)
+  add_executable(${target} doctest_main.cpp ${ARGN})
+  target_link_libraries(${target} PRIVATE devils_engine::options doctest::doctest)
+  target_link_directories(${target} PRIVATE ${DENSITY_LIBRARY_DIR})
+  set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_OUTPUT_DIRECTORY}/bin")
+
+  if (WIN32)
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_RUNTIME_DLLS:${target}>
+        $<TARGET_FILE_DIR:${target}>
+      COMMAND_EXPAND_LISTS
+    )
+  endif()
+
+  doctest_discover_tests(${target}
+    TEST_PREFIX "${target}::"
+    PROPERTIES LABELS devils_engine
+  )
+endfunction()
+
+include("${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake")
+
+devils_add_doctest(utils_general_test utils_general_test.cpp)
+target_link_libraries(utils_general_test PRIVATE devils_engine::utils devils_engine::mood)
+
+devils_add_doctest(utils_contract_test utils_contract_test.cpp)
+target_link_libraries(utils_contract_test PRIVATE devils_engine::utils)
+
+devils_add_doctest(thread_general_test thread_general_test.cpp)
+target_link_libraries(thread_general_test PRIVATE devils_engine::thread)
 
 add_custom_command(TARGET utils_general_test POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory 
-    ${CMAKE_CURRENT_LIST_DIR}/test_render_config 
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_LIST_DIR}/test_render_config
     ${TEST_OUTPUT_DIRECTORY}/render_config
 )
 
 add_custom_command(TARGET utils_general_test POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory 
-    ${CMAKE_CURRENT_LIST_DIR}/shaders 
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_LIST_DIR}/shaders
     ${TEST_OUTPUT_DIRECTORY}/shaders
 )
-
-if (WIN32)
-  add_custom_command(TARGET utils_general_test POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      $<TARGET_RUNTIME_DLLS:utils_general_test>
-      $<TARGET_FILE_DIR:utils_general_test>
-    COMMAND_EXPAND_LISTS
-  )
-endif()
-
-include(CTest)
-include(Catch)
-catch_discover_tests(utils_general_test)

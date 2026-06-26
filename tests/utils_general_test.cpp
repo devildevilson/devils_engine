@@ -1,4 +1,4 @@
-#include <catch2/catch_test_macros.hpp>
+#include <doctest/doctest.h>
 
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/list.h"
@@ -19,8 +19,8 @@ struct list_test_2_t : public utils::ring::list<list_test_2_t, list_type_2>, pub
 
 struct list_test4_t : public utils::forw::list<list_test4_t, list_type_1> {};
 
-TEST_CASE("Single and double linked lists", "[list]") {
-  SECTION("ring list usage") {
+TEST_CASE("Single and double linked lists [list]") {
+  SUBCASE("ring list usage") {
     list_test_1_t lt1;
     list_test_1_t lt2;
     list_test_1_t lt3;
@@ -113,7 +113,7 @@ TEST_CASE("Single and double linked lists", "[list]") {
     // this breaks ciclyng and makes list_count executes forever
   }
 
-  SECTION("forw list usage") {
+  SUBCASE("forw list usage") {
     list_test4_t lt1;
     list_test4_t lt2;
     list_test4_t lt3;
@@ -150,7 +150,7 @@ struct basic_struct {
   ~basic_struct() noexcept { a = 0; }
 };
 
-TEST_CASE("Block allocator tests", "[block_allocator]") {
+TEST_CASE("Block allocator tests [block_allocator]") {
   const size_t overall_size = 4 * 1024 * 1024; // 4KB
   const size_t block_size = 256;
   const size_t alignment = 16;
@@ -179,7 +179,7 @@ TEST_CASE("Block allocator tests", "[block_allocator]") {
   }
 }
 
-TEST_CASE("Mood system tests", "[mood::system]") {
+TEST_CASE("Mood system tests [mood::system]") {
   const std::initializer_list<std::string_view> a_strs = { "action1", "action2", "action3", "action4", "action5" };
   const std::initializer_list<std::string_view> g_strs = { "guard1", "guard2", "guard3", "guard4", "guard5", "guard6", };
 
@@ -248,8 +248,8 @@ TEST_CASE("Mood system tests", "[mood::system]") {
   REQUIRE(trans6[0].next_state_on_entry.size() == 1); // convenient way to find melee_attack + on_entry
 }
 
-TEST_CASE("String utility tests", "[utils::string]") {
-  SECTION("split test normal usage 'abc.ab.rtetr.bac.wert'") {
+TEST_CASE("String utility tests [utils::string]") {
+  SUBCASE("split test normal usage 'abc.ab.rtetr.bac.wert'") {
     const std::string_view test1 = "abc.ab.rtetr.bac.wert";
 
     std::array<std::string_view, 3> arr1;
@@ -271,7 +271,7 @@ TEST_CASE("String utility tests", "[utils::string]") {
     REQUIRE(arr2[5] == ""); // no data
   }
   
-  SECTION("split test abnormal usage 'qwertyuiop', 'asd.....asd.....asd', ''") {
+  SUBCASE("split test abnormal usage 'qwertyuiop', 'asd.....asd.....asd', ''") {
     const std::string_view test1 = "qwertyuiop";
     const std::string_view test2 = "asd.....asd.....asd";
     const std::string_view test3 = "";
@@ -299,7 +299,7 @@ TEST_CASE("String utility tests", "[utils::string]") {
     REQUIRE(ret == 0);
   }
 
-  SECTION("split test different token usage") {
+  SUBCASE("split test different token usage") {
     const std::string_view test1 = "qwertyuiop";
     const std::string_view test2 = "asd.....asd.....asd";
     const std::string_view test3 = "ababababbbabbabababaabaababababbabababaaaababb";
@@ -334,13 +334,13 @@ TEST_CASE("String utility tests", "[utils::string]") {
     REQUIRE(arr[10] == "b");
   }
 
-  SECTION("inside2 test") {
+  SUBCASE("inside2 test") {
     const std::string_view test1 = "{ \"abbbaab\": \"abc\", \"babav\": [ \"ababab\", 123, { \"bfsdb\": [ \"abc\" ] } ] }";
     const auto ret = utils::string::trim(utils::string::inside2(test1, "[", "]"));
     REQUIRE(ret == "\"ababab\", 123, { \"bfsdb\": [ \"abc\" ] }");
   }
 
-  SECTION("trim test") {
+  SUBCASE("trim test") {
     REQUIRE(utils::string::trim("   a    ") == "a");
     REQUIRE(utils::string::trim("   a") == "a");
     REQUIRE(utils::string::trim("a    ") == "a");
@@ -348,7 +348,7 @@ TEST_CASE("String utility tests", "[utils::string]") {
     REQUIRE(utils::string::trim("\n\t\v\ra    ") == "a");
   }
 
-  SECTION("stoi test") {
+  SUBCASE("stoi test") {
     REQUIRE(utils::string::stoi("10") == 10);
     REQUIRE(utils::string::stoi("34634634") == 34634634);
     REQUIRE(utils::string::stoi("1") == 1);
@@ -357,7 +357,7 @@ TEST_CASE("String utility tests", "[utils::string]") {
     REQUIRE(utils::string::stoi("-1") == 0);
   }
 
-  SECTION("slice test") {
+  SUBCASE("slice test") {
     REQUIRE(utils::string::slice("qwertyuiop") == "qwertyuiop");
     REQUIRE(utils::string::slice("qwertyuiop", 1) == "wertyuiop");
     REQUIRE(utils::string::slice("qwertyuiop", 1, 1) == "");
@@ -366,7 +366,7 @@ TEST_CASE("String utility tests", "[utils::string]") {
     REQUIRE(utils::string::slice("qwertyuiop", 3, -3) == "rtyu");
   }
 
-  SECTION("find_ci test") {
+  SUBCASE("find_ci test") {
     REQUIRE(utils::string::find_ci("QWERTYUIOP", "qwe") == 0);
     REQUIRE(utils::string::find_ci("QwErTyUiOp", "qWe") == 0);
     REQUIRE(utils::string::find_ci("QwErTyUiOp", "ert") == 2);
