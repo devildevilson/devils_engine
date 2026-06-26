@@ -40,6 +40,9 @@ target_link_libraries(utils_contract_test PRIVATE devils_engine::utils)
 devils_add_doctest(thread_general_test thread_general_test.cpp)
 target_link_libraries(thread_general_test PRIVATE devils_engine::thread)
 
+devils_add_doctest(sound_system_test sound_system_test.cpp)
+target_link_libraries(sound_system_test PRIVATE devils_engine::sound devils_engine::utils)
+
 add_custom_command(TARGET utils_general_test POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${CMAKE_CURRENT_LIST_DIR}/test_render_config

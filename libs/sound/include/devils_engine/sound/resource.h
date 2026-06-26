@@ -51,8 +51,8 @@ struct resource {
 // id и data должны существовать на протяжении использования ресурса
 struct resource2 {
   std::string_view id;
-  enum data_type type;
-  std::span<const char> data;
+  enum data_type type = data_type::undefined;
+  std::span<const char> data = {};
 };
 }
 }
