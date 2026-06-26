@@ -92,6 +92,8 @@ namespace devils_engine {
 
       template <typename T, typename... Args>
       T* create(Args&&... args) {
+        utils_assertf(sizeof(T) <= m_block_size, "Object '{}' size {} is bigger than fixed_pool_mt block size {}", utils::type_name<T>(), sizeof(T), m_block_size);
+        utils_assertf(m_aligment % alignof(T) == 0, "Object '{}' alignment {} is not compatible with fixed_pool_mt alignment {}", utils::type_name<T>(), alignof(T), m_aligment);
         auto ptr = allocate();
         utils_assertf(ptr != nullptr, "Could not allocate memory for '{}', size: {}", utils::type_name<T>(), m_size);
         return new (ptr) T(std::forward<Args>(args)...);

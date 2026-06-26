@@ -45,6 +45,7 @@ set(HDR_LIST
   include/devils_engine/thread/stack_pool.h
   include/devils_engine/thread/atomic_pool.h
   include/devils_engine/thread/queue1.h
+  include/devils_engine/thread/spsc_queue.h
   include/devils_engine/utils/type_traits.h
   include/devils_engine/utils/core.h
   include/devils_engine/utils/string-utils.hpp

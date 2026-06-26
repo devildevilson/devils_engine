@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -58,6 +59,18 @@ struct pooled_node {
 struct alignas(64) over_aligned_node {
   std::uint64_t value;
   std::byte padding[64 - sizeof(std::uint64_t)];
+};
+
+struct fixed_pool_small_object {
+  int value;
+};
+
+struct fixed_pool_large_object {
+  std::byte bytes[32];
+};
+
+struct alignas(32) fixed_pool_over_aligned_object {
+  int value;
 };
 
 }
@@ -238,4 +251,23 @@ TEST_CASE("fixed_pool_mt returns nullptr when exhausted and reuses freed blocks 
   blocks.push_back(reused);
 
   for (auto* block : blocks) pool.free(block);
+}
+
+TEST_CASE("fixed_pool_mt create rejects objects that do not fit the block contract [utils::fixed_pool_mt]") {
+  utils::fixed_pool_mt pool(32, 16, 16);
+
+  CHECK_THROWS_AS(pool.create<fixed_pool_large_object>(), std::runtime_error);
+
+  auto* first = pool.create<fixed_pool_small_object>();
+  auto* second = pool.create<fixed_pool_small_object>();
+  REQUIRE(first != nullptr);
+  REQUIRE(second != nullptr);
+  CHECK(pool.allocate() == nullptr);
+
+  pool.destroy(first);
+  pool.destroy(second);
+
+  utils::fixed_pool_mt alignment_pool(64, 64, 16);
+  CHECK_THROWS_AS(alignment_pool.create<fixed_pool_over_aligned_object>(), std::runtime_error);
+  CHECK(alignment_pool.allocate() != nullptr);
 }

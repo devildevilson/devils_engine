@@ -1,6 +1,10 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <span>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -8,8 +12,23 @@
 #include "devils_engine/thread/atomic_pool.h"
 #include "devils_engine/thread/lock.h"
 #include "devils_engine/thread/queue1.h"
+#include "devils_engine/thread/spsc_queue.h"
 
 using namespace devils_engine;
+
+namespace {
+
+struct non_default_constructible {
+  int value;
+
+  explicit non_default_constructible(const int value_) noexcept : value(value_) {}
+  non_default_constructible(const non_default_constructible&) noexcept = default;
+  non_default_constructible(non_default_constructible&&) noexcept = default;
+  non_default_constructible& operator=(const non_default_constructible&) noexcept = default;
+  non_default_constructible& operator=(non_default_constructible&&) noexcept = default;
+};
+
+}
 
 TEST_CASE("atomic_min and atomic_max update only in the requested direction [thread::atomic]") {
   std::atomic<int> value = 10;
@@ -48,6 +67,114 @@ TEST_CASE("queue1 preserves FIFO order and reports full or empty states [thread:
   CHECK(queue.enqueue(6));
   REQUIRE(queue.dequeue(out));
   CHECK(out == 6);
+}
+
+TEST_CASE("spsc_queue preserves FIFO order and reuses fixed storage [thread::spsc_queue]") {
+  CHECK_THROWS_AS(thread::spsc_queue<int>(0), std::invalid_argument);
+
+  thread::spsc_queue<int> queue(3);
+  int out = -1;
+
+  CHECK(queue.empty());
+  CHECK(queue.capacity() == 3);
+  CHECK(queue.size_approx() == 0);
+  CHECK_FALSE(queue.try_pop(out));
+  CHECK(out == -1);
+
+  CHECK(queue.try_push(1));
+  CHECK(queue.try_push(2));
+  CHECK(queue.try_push(3));
+  CHECK(queue.full());
+  CHECK(queue.size_approx() == 3);
+  CHECK_FALSE(queue.try_push(4));
+
+  REQUIRE(queue.try_pop(out));
+  CHECK(out == 1);
+  CHECK(queue.try_push(4));
+
+  for (const int expected : {2, 3, 4}) {
+    REQUIRE(queue.try_pop(out));
+    CHECK(out == expected);
+  }
+
+  CHECK(queue.empty());
+  CHECK_FALSE(queue.try_pop(out));
+}
+
+TEST_CASE("spsc_queue supports non default constructible values [thread::spsc_queue]") {
+  thread::spsc_queue<non_default_constructible> queue(2);
+  non_default_constructible out(-1);
+
+  CHECK(queue.emplace(42));
+  REQUIRE(queue.try_pop(out));
+  CHECK(out.value == 42);
+}
+
+TEST_CASE("spsc_queue bulk push and pop return processed element counts [thread::spsc_queue]") {
+  thread::spsc_queue<int> queue(5);
+  std::array<int, 4> first_batch = {1, 2, 3, 4};
+  std::array<int, 4> second_batch = {5, 6, 7, 8};
+  std::array<int, 3> first_out = {-1, -1, -1};
+  std::array<int, 8> second_out = {-1, -1, -1, -1, -1, -1, -1, -1};
+
+  CHECK(queue.try_push(std::span<const int>(first_batch)) == 4);
+  CHECK(queue.try_pop(std::span<int>(first_out)) == 3);
+  CHECK(first_out == std::array<int, 3>{1, 2, 3});
+
+  CHECK(queue.try_push(std::span<const int>(second_batch)) == 4);
+  CHECK(queue.full());
+  CHECK(queue.try_pop(std::span<int>(second_out)) == 5);
+
+  const std::array<int, 8> expected = {4, 5, 6, 7, 8, -1, -1, -1};
+  CHECK(second_out == expected);
+  CHECK(queue.empty());
+}
+
+TEST_CASE("spsc_queue transfers values between one producer and one consumer [thread::spsc_queue]") {
+  constexpr int count = 4096;
+  thread::spsc_queue<int> queue(64);
+  std::atomic<bool> producer_done = false;
+  std::array<int, 17> batch = {};
+  std::vector<int> consumed;
+  consumed.reserve(count);
+
+  std::thread producer([&] {
+    for (int i = 0; i < count;) {
+      const int batch_count = std::min<int>(static_cast<int>(batch.size()), count - i);
+      for (int j = 0; j < batch_count; ++j) {
+        batch[static_cast<size_t>(j)] = i + j;
+      }
+
+      const size_t pushed = queue.try_push(std::span<const int>(batch.data(), static_cast<size_t>(batch_count)));
+      if (pushed != 0) {
+        i += static_cast<int>(pushed);
+      } else {
+        std::this_thread::yield();
+      }
+    }
+
+    producer_done.store(true, std::memory_order_release);
+  });
+
+  std::thread consumer([&] {
+    int value = -1;
+    while (!producer_done.load(std::memory_order_acquire) || !queue.empty()) {
+      if (queue.try_pop(value)) {
+        consumed.push_back(value);
+      } else {
+        std::this_thread::yield();
+      }
+    }
+  });
+
+  producer.join();
+  consumer.join();
+
+  REQUIRE(consumed.size() == static_cast<size_t>(count));
+  for (int i = 0; i < count; ++i) {
+    CHECK(consumed[static_cast<size_t>(i)] == i);
+  }
+  CHECK(queue.empty());
 }
 
 TEST_CASE("spin_mutex serializes concurrent updates [thread::spin_mutex]") {
