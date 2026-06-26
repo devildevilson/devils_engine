@@ -6,7 +6,7 @@ project(
   LANGUAGES CXX C
 )
 
-set(PROJECT_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${PROJECT_NAME}")
+set(PROJECT_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 
 set(PROJECT_EXTERNAL_DEPENDENCY_DIR ${CMAKE_CURRENT_LIST_DIR}/external)
 
@@ -59,6 +59,8 @@ target_link_libraries(
 set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
 target_include_directories(${PROJECT_NAME} INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
 target_include_directories(${PROJECT_NAME} PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/core>")
+include("${CMAKE_SOURCE_DIR}/cmake/devils_portable_runtime.cmake")
+devils_bundle_runtime_dependencies(${PROJECT_NAME})
 
 if (WIN32)
   add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD

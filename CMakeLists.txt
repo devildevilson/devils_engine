@@ -71,10 +71,11 @@ set(MSDFGEN_USE_VCPKG OFF)
 set(MSDFGEN_BUILD_STANDALONE OFF)
 #set(MSDFGEN_DISABLE_PNG ON)
 
-set(MSDF_ATLAS_USE_VCPKG OFF)
-set(MSDF_ATLAS_USE_SKIA OFF)
-set(MSDF_ATLAS_BUILD_STANDALONE OFF)
-set(MSDF_ATLAS_MSDFGEN_EXTERNAL ON)
+set(MSDF_ATLAS_MSDFGEN_EXTERNAL ON CACHE BOOL "Use the project-managed msdfgen target" FORCE)
+set(MSDF_ATLAS_BUILD_STANDALONE OFF CACHE BOOL "Do not build the msdf-atlas-gen standalone executable" FORCE)
+set(MSDF_ATLAS_USE_VCPKG OFF CACHE BOOL "Do not let msdf-atlas-gen configure vcpkg" FORCE)
+set(MSDF_ATLAS_USE_SKIA OFF CACHE BOOL "Do not build msdf-atlas-gen with Skia" FORCE)
+set(MSDF_ATLAS_NO_ARTERY_FONT ON CACHE BOOL "Do not require the artery-font-format submodule" FORCE)
 
 set(SPDLOG_BUILD_EXAMPLE OFF)
 set(SPDLOG_BUILD_TESTS OFF)
@@ -206,6 +207,7 @@ FetchContent_Declare(
   msdf-atlas-gen
   GIT_REPOSITORY https://github.com/Chlumsky/msdf-atlas-gen.git
   GIT_TAG        v1.3
+  GIT_SUBMODULES ""
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE
 )
@@ -268,8 +270,9 @@ FetchContent_Declare(
   VulkanMemoryAllocator-Hpp
   GIT_REPOSITORY https://github.com/YaaZ/VulkanMemoryAllocator-Hpp.git
   GIT_TAG        v3.2.1
+  GIT_SUBMODULES ""
+  SOURCE_SUBDIR  include
   GIT_PROGRESS   TRUE
-  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
@@ -350,6 +353,11 @@ set(ZLIB_INCLUDE_DIR "${FETCHCONTENT_BASE_DIR}/zlib-build/")
 set(ZLIB_INCLUDE_DIRS "${FETCHCONTENT_BASE_DIR}/zlib-build/")
 
 FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng PNG atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect) # RE-flex
+
+add_library(VulkanMemoryAllocator-Hpp INTERFACE)
+add_library(VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp ALIAS VulkanMemoryAllocator-Hpp)
+target_include_directories(VulkanMemoryAllocator-Hpp INTERFACE "${vulkanmemoryallocator-hpp_SOURCE_DIR}/include")
+target_link_libraries(VulkanMemoryAllocator-Hpp INTERFACE Vulkan::Headers GPUOpen::VulkanMemoryAllocator)
 
 #target_compile_options(spdlog 
 #  PRIVATE /fsanitize=address
