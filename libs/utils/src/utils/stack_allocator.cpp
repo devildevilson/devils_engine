@@ -11,7 +11,7 @@ namespace devils_engine {
       m_allocated(0)
     {}
 
-    stack_allocator::~stack_allocator() noexcept { operator delete[] (m_memory, std::align_val_t{m_aligment}); }
+    stack_allocator::~stack_allocator() noexcept { operator delete(m_memory, std::align_val_t{m_aligment}); }
 
     stack_allocator::stack_allocator(stack_allocator &&move) noexcept :
       m_aligment(move.m_aligment),
@@ -25,7 +25,7 @@ namespace devils_engine {
     }
 
     stack_allocator & stack_allocator::operator=(stack_allocator &&move) noexcept {
-      operator delete[] (m_memory, std::align_val_t{m_aligment});
+      operator delete(m_memory, std::align_val_t{m_aligment});
 
       m_aligment = move.m_aligment;
       m_size = move.m_size;
@@ -62,7 +62,7 @@ namespace devils_engine {
       m_allocated(0)
     {}
 
-    stack_allocator_mt::~stack_allocator_mt() noexcept { operator delete[] (m_memory, std::align_val_t{m_aligment}); }
+    stack_allocator_mt::~stack_allocator_mt() noexcept { operator delete(m_memory, std::align_val_t{m_aligment}); }
 
     stack_allocator_mt::stack_allocator_mt(stack_allocator_mt &&move) noexcept :
       m_aligment(move.m_aligment),
@@ -76,7 +76,7 @@ namespace devils_engine {
     }
 
     stack_allocator_mt & stack_allocator_mt::operator=(stack_allocator_mt &&move) noexcept {
-      operator delete[] (m_memory, std::align_val_t{m_aligment});
+      operator delete(m_memory, std::align_val_t{m_aligment});
 
       m_aligment = move.m_aligment;
       m_size = move.m_size;
@@ -93,9 +93,14 @@ namespace devils_engine {
       if (m_memory == nullptr || size == 0) return nullptr;
 
       const size_t final_size = utils::align_to(size, m_aligment);
-      const size_t offset = m_allocated.fetch_add(final_size);
-      if (offset + final_size > m_size) return nullptr;
-      return &m_memory[offset];
+      size_t offset = m_allocated.load(std::memory_order_relaxed);
+      while (offset + final_size <= m_size) {
+        if (m_allocated.compare_exchange_weak(offset, offset + final_size, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+          return &m_memory[offset];
+        }
+      }
+
+      return nullptr;
     }
 
     void stack_allocator_mt::clear() noexcept { m_allocated = 0; }
@@ -126,14 +131,14 @@ namespace devils_engine {
     fixed_pool_mt::fixed_pool_mt(fixed_pool_mt&& move) noexcept :
       m_aligment(move.m_aligment), m_block_size(move.m_block_size), m_size(move.m_size), m_memory(move.m_memory), m_stack(nullptr)
     {
-      m_stack.exchange(move.m_stack);
+      m_stack.store(move.m_stack.exchange(nullptr));
 
       // переделываем
       move.m_memory = reinterpret_cast<char*>(operator new(m_size, std::align_val_t{ m_aligment }));
       int64_t offset = (m_size / m_block_size) * m_block_size;
       while (offset > 0) {
         const size_t cur_pos = offset - m_block_size;
-        auto cur_stack_el = reinterpret_cast<stack_element_t*>(&move.m_memory[cur_pos]);
+        auto cur_stack_el = new (&move.m_memory[cur_pos]) stack_element_t();
         utils::forw::atomic_list_push<0>(move.m_stack, cur_stack_el);
       }
     }
@@ -145,14 +150,13 @@ namespace devils_engine {
       m_block_size = move.m_block_size; 
       m_size = move.m_size; 
       m_memory = move.m_memory; 
-      m_stack = nullptr;
-      m_stack.exchange(move.m_stack);
+      m_stack.store(move.m_stack.exchange(nullptr));
 
       move.m_memory = reinterpret_cast<char*>(operator new(m_size, std::align_val_t{ m_aligment }));
       int64_t offset = (m_size / m_block_size) * m_block_size;
       while (offset > 0) {
         const size_t cur_pos = offset - m_block_size;
-        auto cur_stack_el = reinterpret_cast<stack_element_t*>(&move.m_memory[cur_pos]);
+        auto cur_stack_el = new (&move.m_memory[cur_pos]) stack_element_t();
         utils::forw::atomic_list_push<0>(move.m_stack, cur_stack_el);
       }
 
@@ -165,6 +169,8 @@ namespace devils_engine {
     }
 
     void fixed_pool_mt::free(void* ptr) noexcept {
+      if (ptr == nullptr) return;
+
       //auto stack_el = reinterpret_cast<stack_element_t*>(ptr);
       auto stack_el = new (ptr) stack_element_t();
       utils::forw::atomic_list_push<0>(m_stack, stack_el);

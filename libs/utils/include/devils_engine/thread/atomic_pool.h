@@ -11,6 +11,8 @@
 #include <future>
 #include <memory>
 #include <cmath>
+#include <tuple>
+#include <type_traits>
 
 #include "atomic_queue/atomic_queue.h"
 #include "devils_engine/utils/stack_allocator.h"
@@ -44,8 +46,8 @@ public:
     F fn;
     Args_t args;
 
-    template <typename... Args>
-    task_t(F&& fn_, Args&&... args_) noexcept : fn(std::forward<F>(fn_)), args(std::make_tuple(std::forward<Args>(args)...)) {}
+    template <typename Fn, typename... Args>
+    task_t(Fn&& fn_, Args&&... args_) noexcept : fn(std::forward<Fn>(fn_)), args(std::forward<Args>(args_)...) {}
     void process() const override {
       std::apply(fn, args);
     }
@@ -65,7 +67,7 @@ public:
 
   template<class F, class... Args>
   void submit(F&& f, Args&&... args) noexcept {
-    using local_task_t = task_t<F, std::tuple<Args...>>;
+    using local_task_t = task_t<std::decay_t<F>, std::tuple<std::decay_t<Args>...>>;
     static_assert(sizeof(local_task_t) <= MAXIMUM_TASK_SIZE);
     auto ptr = stack_pool.create<local_task_t>(std::forward<F>(f), std::forward<Args>(args)...);
     submitbase(ptr);

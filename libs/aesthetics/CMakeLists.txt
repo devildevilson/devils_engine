@@ -19,7 +19,7 @@ target_include_directories(devils_aesthetics
 )
 
 target_link_libraries(devils_aesthetics
-  PUBLIC devils_engine::options devils_engine::utils devils_engine::thread gtl
+  PUBLIC devils_engine::options devils_engine::utils gtl
 )
 
 add_library(devils_engine::aesthetics ALIAS devils_aesthetics)

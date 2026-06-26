@@ -3,6 +3,8 @@
 
 #include <cstddef>
 #include <algorithm>
+#include <new>
+#include <utility>
 
 namespace devils_engine {
   namespace utils {
@@ -47,7 +49,7 @@ namespace devils_engine {
           return ptr;
         }
         
-        if (current_memory >= last_memory) allocate_memory();
+        if (current_memory + sizeof(T) > last_memory) allocate_memory();
         auto ptr = current_memory;
         current_memory += sizeof(T);
         return ptr;
@@ -69,7 +71,7 @@ namespace devils_engine {
       }
       
       constexpr size_t block_elem_count() const {
-        return N / sizeof(T);
+        return usable_bytes() / sizeof(T);
       }
       
       void clear() {
@@ -78,7 +80,7 @@ namespace devils_engine {
           auto ptr_mem = reinterpret_cast<char**>(old_mem);
           char* tmp = ptr_mem[0];
           
-          delete [] old_mem;
+          operator delete(old_mem, std::align_val_t{block_alignment()});
           old_mem = tmp;
         }
         
@@ -115,28 +117,33 @@ namespace devils_engine {
         return (mem + align - 1) / align * align;
       }
       
-      constexpr size_t ptr_align() const {
+      constexpr size_t block_alignment() const {
         return std::max(alignof(T), alignof(char*));
+      }
+
+      constexpr size_t block_header_size() const {
+        return align_to(sizeof(char*), alignof(T));
+      }
+
+      constexpr size_t min_block_size() const {
+        return block_header_size() + sizeof(T);
+      }
+
+      constexpr size_t usable_bytes() const {
+        return final_block_size() - block_header_size();
       }
       
       size_t final_block_size() const {
-        const size_t elem_size = std::max(sizeof(T), sizeof(char*));
-        const size_t elem_align = std::max(alignof(T), alignof(char*));
-        const size_t count = N / elem_size;
-        const size_t mem = align_to(count * elem_size, elem_align);
-        const size_t diff = N - mem;
-        const size_t align_ptr = ptr_align();
-        return diff < align_ptr ? N + align_ptr : N;
+        return align_to(std::max(N, min_block_size()), block_alignment());
       }
       
       void allocate_memory() {
         const size_t block_size = final_block_size();
-        const size_t offset = N % alignof(T);
-        char* new_memory = new char[block_size];
-        auto ptr_mem = reinterpret_cast<char**>(new_memory + offset);
+        char* new_memory = reinterpret_cast<char*>(operator new(block_size, std::align_val_t{block_alignment()}));
+        auto ptr_mem = reinterpret_cast<char**>(new_memory);
         ptr_mem[0] = memory;
         memory = new_memory;
-        current_memory = new_memory + ptr_align() + offset;
+        current_memory = new_memory + block_header_size();
         last_memory = new_memory + block_size;
       }
     };

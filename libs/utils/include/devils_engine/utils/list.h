@@ -121,12 +121,15 @@ namespace devils_engine {
       template <size_t t, typename T>
       T* atomic_list_pop(std::atomic<T*> &cur) noexcept {
         auto cur_obj = cur.load(std::memory_order_acquire);
+        if (cur_obj == nullptr) return nullptr;
+
         list<T, t>* l = cur_obj;
         while (!cur.compare_exchange_weak(
           cur_obj, l->m_next,
           std::memory_order_acquire,
           std::memory_order_relaxed
         )) {
+          if (cur_obj == nullptr) return nullptr;
           l = cur_obj;
         }
 

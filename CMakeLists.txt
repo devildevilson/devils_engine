@@ -398,7 +398,6 @@ endif()
 # Link each target with other targets or add options, etc.
 add_subdirectory(libs/options/)
 add_subdirectory(libs/utils/)
-add_subdirectory(libs/thread/)
 add_subdirectory(libs/mood/)
 add_subdirectory(libs/simul/)
 add_subdirectory(libs/aesthetics/)
@@ -412,7 +411,7 @@ add_subdirectory(libs/acumen/)
 add_subdirectory(libs/catalogue/)
 
 add_library(devils_engine INTERFACE)
-target_link_libraries(devils_engine INTERFACE devils_engine::catalogue devils_engine::acumen devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::thread devils_engine::utils devils_engine::mood devils_engine::simul devils_engine::aesthetics devils_engine::visage devils_engine::options)
+target_link_libraries(devils_engine INTERFACE devils_engine::catalogue devils_engine::acumen devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::utils devils_engine::mood devils_engine::simul devils_engine::aesthetics devils_engine::visage devils_engine::options)
 add_library(devils_engine::devils_plane ALIAS devils_engine)
 
 if (DEVILS_ENGINE_BUILD_TESTS)

@@ -20,6 +20,9 @@ set(SRC_LIST
   src/utils/core.cpp
   src/utils/block_allocator.cpp
   src/utils/stack_allocator.cpp
+  src/thread/pool.cpp
+  src/thread/stack_pool.cpp
+  src/thread/atomic_pool.cpp
   src/utils/prng.cpp
   src/utils/fileio.cpp
   src/utils/time.cpp
@@ -36,6 +39,12 @@ set(HDR_LIST
   include/devils_engine/utils/block_allocator.h
   include/devils_engine/utils/stack_allocator.h
   include/devils_engine/utils/memory_pool.h
+  include/devils_engine/thread/pool.h
+  include/devils_engine/thread/atomic.h
+  include/devils_engine/thread/lock.h
+  include/devils_engine/thread/stack_pool.h
+  include/devils_engine/thread/atomic_pool.h
+  include/devils_engine/thread/queue1.h
   include/devils_engine/utils/type_traits.h
   include/devils_engine/utils/core.h
   include/devils_engine/utils/string-utils.hpp
@@ -77,7 +86,7 @@ target_compile_options(engine_c_part1 PRIVATE
 )
 
 target_link_libraries(devils_utils 
-  PUBLIC devils_engine::thread spdlog::spdlog glaze::glaze gtl #ReflexLibStatic #alpaca::alpaca
+  PUBLIC max0x7ba::atomic_queue Threads::Threads spdlog::spdlog glaze::glaze gtl #ReflexLibStatic #alpaca::alpaca
   PRIVATE engine_c_part1 density ZLIB::ZLIB devils_engine::options cpuinfo
 )
 
@@ -85,8 +94,8 @@ if (WIN32)
   target_link_libraries(devils_utils bcrypt ncrypt crypt32)
 endif()
 
-target_include_directories(devils_utils INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
-target_include_directories(devils_utils PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utils>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utf>")
+target_include_directories(devils_utils PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
+target_include_directories(devils_utils PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utils>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utf>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/thread>")
 target_include_directories(engine_c_part1 PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utils>")
 
 target_link_directories(devils_utils PUBLIC ${DENSITY_LIBRARY_DIR})
@@ -97,3 +106,4 @@ if (MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL GNU)
 endif()
 
 add_library(devils_engine::utils ALIAS devils_utils)
+add_library(devils_engine::thread ALIAS devils_utils)
