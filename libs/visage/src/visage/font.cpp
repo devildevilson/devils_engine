@@ -42,9 +42,12 @@ void font_t::query_font_glyph(float font_height, struct nk_user_font_glyph *glyp
   glyph->height = double(g->h) * local_scale;
   glyph->xadvance = g->advance * scale * local_scale;
   glyph->uv[0].x = g->al / double(width);
-  glyph->uv[0].y = g->ab / double(height);
   glyph->uv[1].x = g->ar / double(width);
-  glyph->uv[1].y = g->at / double(height);
+  // v меняем местами: GPU-текстура = сырой bottom-up массив атласа (вертикально зеркальна
+  // относительно «нормального» вида), поэтому верх квада (uv[0]) сэмплит верх глифа = at/H
+  // (больший v), низ (uv[1]) = ab/H. Иначе глифы выходят вверх ногами.
+  glyph->uv[0].y = g->at / double(height);
+  glyph->uv[1].y = g->ab / double(height);
   glyph->offset.x = g->pl * scale * local_scale;
   glyph->offset.y = g->pb * scale * local_scale;
 }

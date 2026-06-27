@@ -199,17 +199,13 @@ std::tuple<std::vector<std::unique_ptr<font_t>>, font_atlas_packer::font_image_t
       return a.codepoint < b.codepoint;
     });
 
-    // переводим данные в удобный для нас вид
+    // atlas-bounds (al/ab/ar/at) НЕ зеркалим: сырые пиксели атласа кладутся в GPU-текстуру
+    // строка-в-строку, поэтому v = atlas_y / H напрямую (проверено по числам: для 'C' контент
+    // лежит на v~0.71..0.83 = ab/at, а зеркалирование уводило сэмпл на чужой глиф).
+    // Плоскостные bounds (pb/pt, em-space, y вверх) зеркалим под y-вниз nuklear (offset глифа).
     for (auto& g : f->glyphs) {
-      const int ny = f->height - (g.y + g.h);
-      const double nab = double(f->height) - g.at;
-      const double nat = double(ny + g.h) - 0.5;
-      const double npb = 1.0 - g.pt; // все еще немного сомневаюсь на счет этого
+      const double npb = 1.0 - g.pt;
       const double npt = 1.0 - g.pb;
-
-      g.y = ny;
-      g.ab = nab;
-      g.at = nat;
       g.pb = npb;
       g.pt = npt;
     }
