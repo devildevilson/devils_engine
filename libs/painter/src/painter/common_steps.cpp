@@ -1150,6 +1150,70 @@ void graphics_draw_indexed_indirect::process(graphics_ctx* ctx, VkCommandBuffer 
   task.drawIndexedIndirect(res.buf, res.subbuf.offset, 1, res.subbuf.size);
 }
 
+graphics_draw_ui::graphics_draw_ui(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept :
+  graphics_step_instance(super, device, renderpass, subpass_index, render_target_index)
+{}
+
+// Зеркало visage::gui_draw_command_t (render_output.h) — байтовый контракт main->render.
+// Должно совпадать поле-в-поле (28 байт, всё по 4 байта). Буфер команд: [uint32 count][массив].
+namespace {
+struct ui_command_wire {
+  uint32_t elem_count;
+  float clip_x, clip_y, clip_w, clip_h;
+  uint32_t texture_id;
+  uint32_t mode;
+  uint32_t transform_id; // пока не используется (см. visage::gui_draw_command_t)
+};
+static_assert(sizeof(ui_command_wire) == 32, "ui_command_wire должен совпадать с visage::gui_draw_command_t");
+
+// push-константа UI: (tex_id, mode). Совпадает с ui1ui1 (constant ui_push) и pc в ui.frag.
+struct ui_push_t { uint32_t tex_id; uint32_t mode; };
+}
+
+void graphics_draw_ui::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
+  const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, super);
+
+  const auto& [vtx_i, vtx_u] = step.cmd_params.resources[0];
+  const auto& [idx_i, idx_u] = step.cmd_params.resources[1];
+  const auto& [cmd_i, cmd_u] = step.cmd_params.resources[2];
+
+  vk::CommandBuffer task(buf);
+
+  make_barriers1(ctx, buf, step.barriers);
+  bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
+  task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+
+  // буферы — обычные per_update ресурсы; .handle для bind, .mapped для CPU-чтения команд
+  const auto vtx = ctx->base->get_current_buffer_resource_frame(vtx_i);
+  const auto idx = ctx->base->get_current_buffer_resource_frame(idx_i);
+  const auto cmds = ctx->base->get_current_buffer_resource_frame(cmd_i);
+  if (cmds.mapped == nullptr) return; // буфер команд обязан быть host-visible
+
+  task.bindVertexBuffers(0, vk::Buffer(vtx.handle), vk::DeviceSize(vtx.sub.offset));
+  task.bindIndexBuffer(idx.handle, idx.sub.offset, vk::IndexType::eUint16); // nuklear: 16-бит индексы
+
+  const uint8_t* cmd_base = static_cast<const uint8_t*>(cmds.mapped) + cmds.sub.offset;
+  const uint32_t count = *reinterpret_cast<const uint32_t*>(cmd_base);
+  const auto* list = reinterpret_cast<const ui_command_wire*>(cmd_base + sizeof(uint32_t));
+
+  uint32_t first_index = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const auto& c = list[i];
+
+    // честный scissor per-command (clip_rect nuklear в пикселях окна)
+    vk::Rect2D scissor;
+    scissor.offset = vk::Offset2D(int32_t(c.clip_x), int32_t(c.clip_y));
+    scissor.extent = vk::Extent2D(uint32_t(c.clip_w), uint32_t(c.clip_h));
+    task.setScissor(0, scissor);
+
+    const ui_push_t pc{ c.texture_id, c.mode };
+    task.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eAll, 0, sizeof(pc), &pc);
+
+    task.drawIndexed(c.elem_count, 1, first_index, 0, 0);
+    first_index += c.elem_count;
+  }
+}
+
 compute_dispatch_constant::compute_dispatch_constant(const uint32_t super, VkDevice device) noexcept :
   compute_step_instance(super, device)
 {}

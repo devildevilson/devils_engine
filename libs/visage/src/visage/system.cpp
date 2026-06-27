@@ -168,6 +168,10 @@ void system::convert() {
   vertices_.assign(static_cast<const uint8_t*>(vbuf.memory.ptr), static_cast<const uint8_t*>(vbuf.memory.ptr) + vbuf.allocated);
   indices_.assign(static_cast<const uint8_t*>(ebuf.memory.ptr), static_cast<const uint8_t*>(ebuf.memory.ptr) + ebuf.allocated);
 
+  // id текстуры атласа шрифта (выставлен set_texture_id). По нему отличаем текст от фигур:
+  // фигуры nuklear идут с null-текстурой (id 0), текст — с этим id, остальное — image.
+  const int font_tex_id = (default_font && default_font->nkfont) ? default_font->nkfont->texture.id : -1;
+
   commands_.clear();
   const nk_draw_command* cmd = nullptr;
   nk_draw_foreach(cmd, c, cmds.get()) {
@@ -179,7 +183,10 @@ void system::convert() {
     out.clip_w = cmd->clip_rect.w;
     out.clip_h = cmd->clip_rect.h;
     out.texture_id = uint32_t(cmd->texture.id);
-    out.userdata_id = uint32_t(cmd->userdata.id);
+    if (int(cmd->texture.id) == font_tex_id) out.mode = gui_draw_mode::msdf;
+    else if (cmd->texture.id == 0)           out.mode = gui_draw_mode::solid;
+    else                                     out.mode = gui_draw_mode::image;
+    out.transform_id = uint32_t(cmd->userdata.id); // userptr окна -> будущая кастомная матрица
     commands_.push_back(out);
   }
 

@@ -1862,6 +1862,7 @@ void graphics_base::change_render_graph(const uint32_t index) {
         case command::values::draw_indexed_indirect: cur_step = create_render_step<graphics_draw_indexed_indirect>(step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
         case command::values::draw_constant        : cur_step = create_render_step<graphics_draw_constant>        (step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
         case command::values::draw_indexed_constant: cur_step = create_render_step<graphics_draw_indexed_constant>(step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
+        case command::values::draw_ui               : cur_step = create_render_step<graphics_draw_ui>              (step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
         case command::values::dispatch_indirect    : cur_step = create_render_step<compute_dispatch_indirect>     (step_index, device); break;
         case command::values::dispatch_constant    : cur_step = create_render_step<compute_dispatch_constant>     (step_index, device); break;
         case command::values::copy_buffer          : cur_step = create_render_step<transfer_copy_buffer>          (step_index); break;

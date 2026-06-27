@@ -557,7 +557,8 @@ bool is_graphics(const values u) noexcept {
     case values::draw_indirect:
     case values::draw_indexed_indirect: 
     case values::draw_constant:
-    case values::draw_indexed_constant: return true;
+    case values::draw_indexed_constant:
+    case values::draw_ui: return true;
     default: break;
   }
 

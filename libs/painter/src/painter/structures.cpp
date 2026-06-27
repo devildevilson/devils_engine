@@ -1268,6 +1268,26 @@ command_params parse_command(graphics_base* ctx, const step_base& step, const st
     return p;
   }
 
+  // UI: "draw_ui <vertices> <indices> <commands>". Без draw_group/пар — буферы это обычные
+  // per_update host-visible ресурсы рендер-графа. vertices/indices биндятся как vertex/index,
+  // commands читается на CPU (mapped) в graphics_draw_ui::process. Usage буферов задаётся
+  // отдельно в step.barriers (vertex/index/host_read), здесь только резолвим имена в слоты.
+  if (part == "draw_ui") {
+    command_params p;
+    p.type = command::values::draw_ui;
+    auto rest = utils::string::trim(remaining);
+    const usage::values usages[3] = { usage::vertex, usage::index, usage::host_read };
+    for (int i = 0; i < 3; ++i) {
+      const auto& [tok, rem] = utils::string::split_prefix(rest, " ");
+      const auto nm = utils::string::trim(tok);
+      if (nm.empty()) utils::error{}("Command 'draw_ui' in step '{}' expects 3 resources: <vertices> <indices> <commands>", step.name);
+      const uint32_t index = check(ctx->find_resource(nm), "resource", nm, step.name);
+      p.resources[i] = std::make_tuple(index, usages[i]);
+      rest = utils::string::trim(rem);
+    }
+    return p;
+  }
+
   const auto& [type, raw_res_name] = utils::string::split_prefix(utils::string::trim(remaining), " ");
   const auto res_name = utils::string::trim(raw_res_name);
 

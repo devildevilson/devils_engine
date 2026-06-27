@@ -240,6 +240,16 @@ public:
   void process(graphics_ctx*, VkCommandBuffer) const override;
 };
 
+// Шаг отрисовки интерфейса (visage/Nuklear). НЕ использует draw_group/пары: vertex/index/command
+// буферы приходят как обычные per_update host-visible ресурсы рендер-графа (cmd_params.resources
+// 0/1/2 = vertices/indices/commands). Буфер команд самоописывающийся ([uint32 count][команды]),
+// читается на CPU (mapped); по каждой команде: setScissor + push (tex_id,mode) + drawIndexed.
+class graphics_draw_ui : public graphics_step_instance {
+public:
+  graphics_draw_ui(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept;
+  void process(graphics_ctx*, VkCommandBuffer) const override;
+};
+
 class compute_dispatch_constant : public compute_step_instance {
 public:
   compute_dispatch_constant(const uint32_t super, VkDevice device) noexcept;

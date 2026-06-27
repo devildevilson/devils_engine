@@ -248,6 +248,7 @@
   X(draw_indexed_indirect) \
   X(draw_constant) \
   X(draw_indexed_constant) \
+  X(draw_ui) \
   X(dispatch) \
   X(dispatch_indirect) \
   X(dispatch_constant) \
