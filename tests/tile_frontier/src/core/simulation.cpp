@@ -613,6 +613,34 @@ void simulation::update(const size_t time) {
     g_ui_input.scroll_y = 0.0f;
     g_ui_input.text.clear();
 
+    // отправляем буферы UI в рендер (контракт записи в host-visible ресурсы). Шаг draw_ui
+    // забиндит ui_vertices/ui_indices и проитерирует ui_commands. Буфер команд самоописывающийся:
+    // [uint32 count][gui_draw_command_t...].
+    if (gactor != nullptr) {
+      const auto verts = container->ui->vertices();
+      const auto inds = container->ui->indices();
+      const auto cmds = container->ui->commands();
+
+      command_write_buffer wv;
+      wv.buffer = "ui_vertices";
+      wv.bytes.assign(verts.begin(), verts.end());
+      gactor->send(wv);
+
+      command_write_buffer wi;
+      wi.buffer = "ui_indices";
+      wi.bytes.assign(inds.begin(), inds.end());
+      gactor->send(wi);
+
+      command_write_buffer wc;
+      wc.buffer = "ui_commands";
+      const uint32_t count = uint32_t(cmds.size());
+      const size_t body = cmds.size() * sizeof(visage::gui_draw_command_t);
+      wc.bytes.resize(sizeof(uint32_t) + body);
+      std::memcpy(wc.bytes.data(), &count, sizeof(uint32_t));
+      if (body != 0) std::memcpy(wc.bytes.data() + sizeof(uint32_t), cmds.data(), body);
+      gactor->send(wc);
+    }
+
     if (!container->ui_logged) {
       utils::info("visage: ui buffers — {} vtx bytes, {} idx bytes, {} draw commands",
         container->ui->vertices().size(), container->ui->indices().size(), container->ui->commands().size());

@@ -1179,7 +1179,10 @@ void graphics_draw_ui::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
 
   vk::CommandBuffer task(buf);
 
-  make_barriers1(ctx, buf, step.barriers);
+  // НЕ вызываем make_barriers1: барьеры внутри render pass требуют self-dependency сабпасса
+  // (VUID-07889). UI-буферы host-visible и пишутся до сабмита кадра — host-coherent записи
+  // делает видимыми сам vkQueueSubmit, явный барьер не нужен. step.barriers используется только
+  // для сбора usage_mask буферов (create_resources), не для барьеров здесь.
   bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
   task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
 
@@ -1200,10 +1203,16 @@ void graphics_draw_ui::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   for (uint32_t i = 0; i < count; ++i) {
     const auto& c = list[i];
 
-    // честный scissor per-command (clip_rect nuklear в пикселях окна)
+    // честный scissor per-command (clip_rect nuklear в пикселях окна). clip может выходить за
+    // левый/верхний край (отрицательные) — клампим offset>=0 и пересчитываем extent (Vulkan
+    // требует offset>=0, VUID-00595).
+    const float x0 = c.clip_x < 0.0f ? 0.0f : c.clip_x;
+    const float y0 = c.clip_y < 0.0f ? 0.0f : c.clip_y;
+    const float x1 = c.clip_x + c.clip_w;
+    const float y1 = c.clip_y + c.clip_h;
     vk::Rect2D scissor;
-    scissor.offset = vk::Offset2D(int32_t(c.clip_x), int32_t(c.clip_y));
-    scissor.extent = vk::Extent2D(uint32_t(c.clip_w), uint32_t(c.clip_h));
+    scissor.offset = vk::Offset2D(int32_t(x0), int32_t(y0));
+    scissor.extent = vk::Extent2D(uint32_t(x1 > x0 ? x1 - x0 : 0.0f), uint32_t(y1 > y0 ? y1 - y0 : 0.0f));
     task.setScissor(0, scissor);
 
     const ui_push_t pc{ c.texture_id, c.mode };

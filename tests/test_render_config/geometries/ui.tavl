@@ -1,0 +1,10 @@
+// Геометрия интерфейса: вершина gui_vertex_t = pos(vec2) + uv(vec2) + цвет(R8G8B8A8).
+// Индексы 16-бит (nuklear). triangle_list. Вершинный/индексный буферы приходят в draw_ui как
+// обычные ресурсы (не через draw_group) — здесь задаётся только раскладка вершины для пайплайна.
+{
+  name = ui
+  vertex_layout = v2v2c4
+  index_type = u16
+  topology = triangle_list
+  restart = false
+}

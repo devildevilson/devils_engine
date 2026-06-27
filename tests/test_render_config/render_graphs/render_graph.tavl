@@ -12,7 +12,7 @@
         { albedo_res = (color_attachment, store) },
         { albedo_res = (transfer_src, store) }
       ]
-      steps = [ draw_triangles ]
+      steps = [ draw_triangles, draw_ui ]
     },
     {
       name = p2

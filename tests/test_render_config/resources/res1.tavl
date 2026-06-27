@@ -24,9 +24,37 @@
 // уйдёт на шаге 4, когда UI-шаг сошлётся на camera_buffer и дескриптор его свяжет).
 {
   name = camera_buffer
-  format = v4v4v4v4v4v4v4v4v4
+  format = v4v4v4v4v4v4v4v4v4v4v4v4
   role = upload
   size = single_element
+  type = doublebuffer
+  swap = per_update
+}
+// Буферы интерфейса (visage). Host-visible (role=upload), doublebuffer/per_update — пишем в
+// неиспользуемую копию, не дожидаясь fence. format c1 => размер копии = <bytes value>.
+// vertices/indices биндятся в draw_ui (через barriers получают vertex/index usage); commands
+// читается на CPU (.mapped) и интерпретируется как [uint32 count][gui_draw_command_t...].
+{
+  name = ui_vertices
+  format = c1
+  role = upload
+  size = ui_vertices_bytes
+  type = doublebuffer
+  swap = per_update
+}
+{
+  name = ui_indices
+  format = c1
+  role = upload
+  size = ui_indices_bytes
+  type = doublebuffer
+  swap = per_update
+}
+{
+  name = ui_commands
+  format = c1
+  role = upload
+  size = ui_commands_bytes
   type = doublebuffer
   swap = per_update
 }

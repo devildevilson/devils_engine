@@ -1,0 +1,20 @@
+// Материал интерфейса. Шейдеры UI (MSDF-текст + фигуры + картинки, режим в push-константе).
+// Глубина выключена (UI поверх сцены), грани не отсекаем (nuklear даёт оба порядка обхода).
+// Альфа-блендинг задаётся в шаге draw_ui (per-attachment), не тут.
+{
+  name = ui
+  shaders = {
+    vertex = "ui.vert.glsl"
+    fragment = "ui.frag.glsl"
+  }
+  depth = {
+    test = false
+    write = false
+    compare = less_or_equal
+  }
+  raster = {
+    cull = none
+    front_face = cw
+    polygon = fill
+  }
+}

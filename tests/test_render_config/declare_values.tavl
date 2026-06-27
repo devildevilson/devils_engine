@@ -24,6 +24,24 @@
   type = fixed
   value = [5, 0, 0]
 }
+// Фиксированные размеры (в БАЙТАХ) host-visible буферов интерфейса. Буферы используют format c1
+// (size_hint=1), поэтому итоговый размер копии = это значение. Щедрый запас: main пишет только
+// использованный префикс каждый кадр (буфер команд самоописывающийся).
+{
+  name = ui_vertices_bytes
+  type = fixed
+  value = [4194304, 0, 0]
+}
+{
+  name = ui_indices_bytes
+  type = fixed
+  value = [1048576, 0, 0]
+}
+{
+  name = ui_commands_bytes
+  type = fixed
+  value = [65536, 0, 0]
+}
 {
   name = shadow_map
   type = fixed

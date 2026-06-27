@@ -1276,7 +1276,10 @@ command_params parse_command(graphics_base* ctx, const step_base& step, const st
     command_params p;
     p.type = command::values::draw_ui;
     auto rest = utils::string::trim(remaining);
-    const usage::values usages[3] = { usage::vertex, usage::index, usage::host_read };
+    // commands читается только на CPU (.mapped) — реального GPU-usage нет, но Vulkan требует
+    // ненулевой usage у буфера; transfer_dst — безобидный валидный плейсхолдер. ДОЛЖЕН совпадать
+    // с usage этого ресурса в step.barriers (иначе конфликт при сборке).
+    const usage::values usages[3] = { usage::vertex, usage::index, usage::transfer_dst };
     for (int i = 0; i < 3; ++i) {
       const auto& [tok, rem] = utils::string::split_prefix(rest, " ");
       const auto nm = utils::string::trim(tok);

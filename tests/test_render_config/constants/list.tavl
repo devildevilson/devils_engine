@@ -9,3 +9,10 @@
   layout = ui1v1
   value = [1.0, 2.0]
 }
+// push-константа draw_ui: (uint tex_id, uint mode) = 8 байт. Объявляет push-range в pipeline
+// layout (значение не используется — draw_ui пушит per-command). Совпадает с pc в ui.frag.
+{
+  name = ui_push
+  layout = ui1ui1
+  value = [0.0, 0.0]
+}
