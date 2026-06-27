@@ -1155,19 +1155,29 @@ graphics_draw_ui::graphics_draw_ui(const uint32_t super, VkDevice device, VkRend
 {}
 
 // Зеркало visage::gui_draw_command_t (render_output.h) — байтовый контракт main->render.
-// Должно совпадать поле-в-поле (28 байт, всё по 4 байта). Буфер команд: [uint32 count][массив].
+// Должно совпадать поле-в-поле (44 байта, всё по 4 байта). Буфер команд: [uint32 count][массив].
 namespace {
 struct ui_command_wire {
   uint32_t elem_count;
   float clip_x, clip_y, clip_w, clip_h;
   uint32_t texture_id;
   uint32_t mode;
-  uint32_t transform_id; // пока не используется (см. visage::gui_draw_command_t)
+  float boldness;
+  float outline_width;
+  uint32_t outline_color;
+  float softness;
 };
-static_assert(sizeof(ui_command_wire) == 32, "ui_command_wire должен совпадать с visage::gui_draw_command_t");
+static_assert(sizeof(ui_command_wire) == 44, "ui_command_wire должен совпадать с visage::gui_draw_command_t");
 
-// push-константа UI: (tex_id, mode). Совпадает с ui1ui1 (constant ui_push) и pc в ui.frag.
-struct ui_push_t { uint32_t tex_id; uint32_t mode; };
+// push-константа UI: (tex_id, mode) + SDF-эффекты. Совпадает с constant ui_push и pc в ui.frag.
+struct ui_push_t {
+  uint32_t tex_id;
+  uint32_t mode;
+  float boldness;
+  float outline_width;
+  uint32_t outline_color;
+  float softness;
+};
 }
 
 void graphics_draw_ui::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
@@ -1215,7 +1225,7 @@ void graphics_draw_ui::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
     scissor.extent = vk::Extent2D(uint32_t(x1 > x0 ? x1 - x0 : 0.0f), uint32_t(y1 > y0 ? y1 - y0 : 0.0f));
     task.setScissor(0, scissor);
 
-    const ui_push_t pc{ c.texture_id, c.mode };
+    const ui_push_t pc{ c.texture_id, c.mode, c.boldness, c.outline_width, c.outline_color, c.softness };
     task.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eAll, 0, sizeof(pc), &pc);
 
     task.drawIndexed(c.elem_count, 1, first_index, 0, 0);

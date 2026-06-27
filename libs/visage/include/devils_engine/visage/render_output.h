@@ -38,16 +38,19 @@ enum values : uint32_t {
 // Это валюта шага draw_ui: рендер пробежит по массиву таких команд (setScissor + push + drawIndexed).
 // Буфер команд самоописывающийся: впереди uint32 count, затем массив.
 //
-// transform_id = nk userdata команды (nk_handle.id). Сейчас draw_ui его игнорирует (весь UI идёт
-// через ui_proj), но поле в КОНТРАКТЕ-байтах зарезервировано под будущие окошки над юнитами:
-// им зададут кастомную матрицу через userptr nk-окна, она придёт в convert как userdata, а шейдер
-// позже выберет матрицу по этому индексу. Менять контракт через потоки дорого — резервируем сразу.
+// SDF-эффекты (boldness/outline/softness) запекаются в команду на стороне visage (convert) из
+// effect-арены по nk userdata команды и едут в шейдер per-draw push-константой. Хранилища сырых
+// data в GPU нет (см. visage-ui-roadmap) — пока всё через push-константу.
 struct gui_draw_command_t {
   uint32_t elem_count;
   float clip_x, clip_y, clip_w, clip_h;
   uint32_t texture_id;
-  uint32_t mode;          // gui_draw_mode::values
-  uint32_t transform_id;  // nk userdata; 0 = общий ui_proj (пока всегда)
+  uint32_t mode;            // gui_draw_mode::values
+  // SDF-эффекты текста (mode=msdf); для прочих режимов игнорируются
+  float boldness;           // сдвиг порога: >0 жирнее, <0 тоньше
+  float outline_width;      // ширина контура в SDF-единицах (0 = нет контура)
+  uint32_t outline_color;   // R8G8B8A8
+  float softness;           // размытие края (0 = резко)
 };
 
 }

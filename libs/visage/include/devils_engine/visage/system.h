@@ -7,6 +7,7 @@
 #include <span>
 #include <vector>
 #include "devils_engine/bindings/lua_header.h"
+#include "devils_engine/utils/stack_allocator.h"
 #include "render_output.h"
 
 struct nk_context;
@@ -87,6 +88,12 @@ private:
   std::vector<uint8_t> vertices_;
   std::vector<uint8_t> indices_;
   std::vector<gui_draw_command_t> commands_;
+
+  // CPU-скретч под SDF-эффекты текста (push_font пишет сюда struct, nk_handle.id = offset).
+  // Очищается в начале каждого update; offset 0 = дефолтный эффект (без жирности/контура).
+  utils::stack_allocator effect_arena;
+  // стек userdata для баланса push_font/pop_font (у nuklear нет стека userdata, как у font)
+  std::vector<int> userdata_stack;
 };
 }
 }

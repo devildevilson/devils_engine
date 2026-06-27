@@ -23,6 +23,25 @@ static void simple_free(nk_handle, void* old) {
   free(old);
 }
 
+// SDF-эффекты текста, кладутся в effect_arena (CPU-скретч). nk userdata команды = offset сюда.
+// convert запекает эти поля в gui_draw_command_t -> push-константа -> ui.frag. POD, 16 байт.
+struct ui_text_effect {
+  float boldness;
+  float outline_width;
+  uint32_t outline_color; // R8G8B8A8
+  float softness;
+};
+
+// lua-таблица {r,g,b,a} в 0..1 -> упакованный R8G8B8A8
+static uint32_t pack_color01(const sol::table& t) {
+  const auto b = [&t](const int i) {
+    double v = t.get_or(i, 0.0);
+    v = v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
+    return uint32_t(v * 255.0 + 0.5);
+  };
+  return b(1) | (b(2) << 8) | (b(3) << 16) | (b(4) << 24);
+}
+
 static void simple_hook(lua_State *L, lua_Debug *ar) {
   system::instruction_counter += system::hook_after_instructions_count;
   auto cur_tp = std::chrono::steady_clock::now();
@@ -36,7 +55,7 @@ static void simple_hook(lua_State *L, lua_Debug *ar) {
   utils::error{}("Called Lua hook after {} instructions. Exit lua script after {} mcs ({} seconds). Context: {}:{}:{}", system::instruction_counter, mcs, s, source, name, ar->currentline);
 }
 
-system::system(const font_t* default_font) : default_font(default_font) {
+system::system(const font_t* default_font) : default_font(default_font), effect_arena(64 * 1024, 16) {
   lua.open_libraries(
     //sol::lib::debug,
     sol::lib::base, 
@@ -74,12 +93,43 @@ system::system(const font_t* default_font) : default_font(default_font) {
   // bindings не может зависеть от visage (циклическая зависимость). Мапится на встроенный
   // стек шрифтов nuklear; один атлас годится для всех размеров (MSDF масштабируется в шейдере).
   // lua обязан балансировать push/pop в пределах кадра.
+  // push_font(arg): arg = число (только размер) или таблица {size=, bold=, softness=, outline={color={r,g,b,a}, width=}}.
+  // Меняет и размер (nk_style_push_font), и SDF-эффекты (через userdata = offset в effect_arena).
   sol::table nk_tbl = env["nk"];
-  nk_tbl.set_function("push_font", [this](const float size) {
+  nk_tbl.set_function("push_font", [this](const sol::object arg) {
+    float size = float(this->default_font->nkfont->height);
+    ui_text_effect eff{0.0f, 0.0f, 0u, 0.0f};
+
+    if (arg.is<double>()) {
+      size = float(arg.as<double>());
+    } else if (arg.is<sol::table>()) {
+      const sol::table t = arg.as<sol::table>();
+      size = float(t.get_or("size", double(size)));
+      eff.boldness = float(t.get_or("bold", 0.0));
+      eff.softness = float(t.get_or("softness", 0.0));
+      const sol::optional<sol::table> outline = t["outline"];
+      if (outline.has_value()) {
+        const sol::table o = outline.value();
+        eff.outline_width = float(o.get_or("width", 0.0));
+        const sol::optional<sol::table> col = o["color"];
+        if (col.has_value()) eff.outline_color = pack_color01(col.value());
+      }
+    }
+
+    // эффект в арену, offset -> userdata (его подхватят последующие text-команды)
+    auto* e = effect_arena.create<ui_text_effect>(eff);
+    nk_handle h; h.id = int(effect_arena.offset_of(e));
+    userdata_stack.push_back(ctx->userdata.id); // для восстановления на pop
+    nk_set_user_data(ctx.get(), h);
     nk_style_push_font(ctx.get(), this->default_font->user_font(size));
   });
   nk_tbl.set_function("pop_font", [this]() {
     nk_style_pop_font(ctx.get());
+    if (!userdata_stack.empty()) {
+      nk_handle h; h.id = userdata_stack.back();
+      userdata_stack.pop_back();
+      nk_set_user_data(ctx.get(), h);
+    }
   });
 }
 
@@ -126,6 +176,14 @@ void system::input(const input_snapshot_t& in) {
 void system::update(const size_t time) {
   instruction_counter = 0;
   start_tp = clock_t::now();
+
+  // сброс арены эффектов на кадр. offset 0 = дефолтный эффект (без жирности/контура): его берёт
+  // весь текст без push_font (у него nk userdata.id = 0). Реальные push_font получают offset > 0.
+  effect_arena.clear();
+  userdata_stack.clear();
+  effect_arena.create<ui_text_effect>(ui_text_effect{0.0f, 0.0f, 0u, 0.0f});
+  nk_handle zero; zero.id = 0;
+  nk_set_user_data(ctx.get(), zero);
 
   // защищённый вызов: ошибка в lua не должна ронять движок (panic->abort) и, что важнее,
   // не должна оставлять nk в рассинхроне (незакрытое окно -> ассерт на следующем nk_begin).
@@ -198,7 +256,17 @@ void system::convert() {
     if (int(cmd->texture.id) == font_tex_id) out.mode = gui_draw_mode::msdf;
     else if (cmd->texture.id == 0)           out.mode = gui_draw_mode::solid;
     else                                     out.mode = gui_draw_mode::image;
-    out.transform_id = uint32_t(cmd->userdata.id); // userptr окна -> будущая кастомная матрица
+
+    // запекаем SDF-эффект по userdata (offset в арене; 0 = дефолт). Гард по границам арены.
+    ui_text_effect eff{0.0f, 0.0f, 0u, 0.0f};
+    const size_t eoff = size_t(cmd->userdata.id);
+    if (eoff + sizeof(ui_text_effect) <= effect_arena.size()) {
+      eff = *reinterpret_cast<const ui_text_effect*>(effect_arena.at(eoff));
+    }
+    out.boldness = eff.boldness;
+    out.outline_width = eff.outline_width;
+    out.outline_color = eff.outline_color;
+    out.softness = eff.softness;
     commands_.push_back(out);
   }
 

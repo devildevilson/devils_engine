@@ -9,10 +9,15 @@ return function(time)
     nk.layout.row_dynamic(28, 1)
     nk.label("tile_frontier UI", nil, nk.text_align.left)
 
-    -- динамический размер шрифта: push_font(size) / pop_font (стек шрифтов nuklear)
-    nk.push_font(34)
+    -- размер + SDF-эффекты: push_font({size=, bold=, outline={color={r,g,b,a}, width=}, softness=})
+    nk.push_font({size = 34, bold = 0.1, outline = {color = {0.0, 0.0, 0.0, 1.0}, width = 0.15}})
     nk.layout.row_dynamic(42, 1)
-    nk.label("BIG 34px", nil, nk.text_align.left)
+    nk.label("BIG outline", nil, nk.text_align.left)
+    nk.pop_font()
+
+    nk.push_font({size = 22, bold = 0.12})
+    nk.layout.row_dynamic(28, 1)
+    nk.label("bold 22px", nil, nk.text_align.left)
     nk.pop_font()
 
     nk.push_font(12)

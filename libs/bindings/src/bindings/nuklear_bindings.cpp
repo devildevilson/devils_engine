@@ -1855,7 +1855,7 @@ void nk_functions(sol::table t) {
   {
     auto b1 = nk.create_named("menubar");
     b1.set_function("begin", &nk::menubar_begin);
-    b1.set_function("end", &nk::menubar_end);
+    b1.set_function("endf", &nk::menubar_end);
     b1.set_function(sol::meta_function::new_index, sol::detail::fail_on_newindex);
 
     auto b = nk.create_named("menu");
