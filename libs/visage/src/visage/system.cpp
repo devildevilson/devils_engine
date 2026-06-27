@@ -69,6 +69,18 @@ system::system(const font_t* default_font) : default_font(default_font) {
 
   bindings::setup_nk_context(ctx.get());
   bindings::nk_functions(env);
+
+  // Динамический размер шрифта. Регистрируем тут (а не в bindings): нужен доступ к font_t, а
+  // bindings не может зависеть от visage (циклическая зависимость). Мапится на встроенный
+  // стек шрифтов nuklear; один атлас годится для всех размеров (MSDF масштабируется в шейдере).
+  // lua обязан балансировать push/pop в пределах кадра.
+  sol::table nk_tbl = env["nk"];
+  nk_tbl.set_function("push_font", [this](const float size) {
+    nk_style_push_font(ctx.get(), this->default_font->user_font(size));
+  });
+  nk_tbl.set_function("pop_font", [this]() {
+    nk_style_pop_font(ctx.get());
+  });
 }
 
 system::~system() noexcept {

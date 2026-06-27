@@ -4,11 +4,21 @@
 
 return function(time)
   local flags = nk.panel_flags.border | nk.panel_flags.title | nk.panel_flags.movable
-  if nk.begin("hello", {50, 50, 300, 200}, flags) then
-    -- label — обычная функция, гоняет путь измерения/раскладки текста (шрифт)
+  if nk.begin("hello", {50, 50, 340, 280}, flags) then
     -- label — обычная функция; flags = выравнивание текста (nk.text_align)
     nk.layout.row_dynamic(28, 1)
     nk.label("tile_frontier UI", nil, nk.text_align.left)
+
+    -- динамический размер шрифта: push_font(size) / pop_font (стек шрифтов nuklear)
+    nk.push_font(34)
+    nk.layout.row_dynamic(42, 1)
+    nk.label("BIG 34px", nil, nk.text_align.left)
+    nk.pop_font()
+
+    nk.push_font(12)
+    nk.layout.row_dynamic(18, 1)
+    nk.label("small 12px text", nil, nk.text_align.left)
+    nk.pop_font()
 
     nk.layout.row_dynamic(30, 1)
     if nk.button("Click me") then
