@@ -24,6 +24,8 @@
 #include "assets_system.h"
 #include "mesh_resource.h"
 #include "texture_resource.h"
+#include "font_atlas_resource.h"
+#include "global_ubo.h"
 #include "texture_set.h"
 #include "tile_map.h"
 #include "tile_batch.h"
@@ -156,6 +158,10 @@ struct simulation_init {
   std::unique_ptr<visage::system> ui;
   bool ui_logged = false;
 
+  // атлас шрифта как GPU-текстура в таблице ассетов (см. font_atlas_resource)
+  std::unique_ptr<font_atlas_resource> ui_atlas;
+  bool ui_atlas_logged = false;
+
   // модель тайловой карты (главная сторона)
   texture_set textures;     // текстуры карты, собранные по префиксу пути
   tile_grid grid;           // квадратная сетка тайлов
@@ -268,6 +274,11 @@ static void setup_visage(simulation_init& c) {
   c.ui.reset(new visage::system(c.ui_font.get()));
   c.ui->load_entry_point(utils::project_folder() + "resources/ui/entry.lua");
   utils::info("visage: system created, entry point loaded");
+
+  // атлас на GPU как обычная текстура: переносим байты в ресурс, который пройдёт штатный путь
+  // ассетов (cold→warm→hot) и сядет в дескриптор 'textures'. Запрос на загрузку шлёт init().
+  c.ui_atlas = std::make_unique<font_atlas_resource>(
+    std::move(c.ui_font_image.bytes), c.ui_font_image.width, c.ui_font_image.height, c.ui_font_image.channels);
 }
 
 void simulation::init() {
@@ -409,6 +420,14 @@ void simulation::init() {
 
   // интерфейс (visage) в главном потоке
   setup_visage(*container);
+
+  // атлас шрифта → GPU тем же путём, что и текстуры: просим ассеты довести до hot.
+  // Слот определится динамически (после grass-текстур); main прочитает gpu_index по hot.
+  if (container->ui_atlas && aactor != nullptr) {
+    command_load_resource cmd{container->ui_atlas.get(), static_cast<int32_t>(demiurg::state::hot)};
+    aactor->send(cmd);
+    utils::info("main: requested font atlas -> hot");
+  }
 }
 
 static size_t test_counter = 0;
@@ -499,6 +518,15 @@ void simulation::update(const size_t time) {
     container->watch_logged = true;
   }
 
+  // атлас шрифта доехал на GPU: фиксируем слот в шрифте (nuklear зашьёт его в texture.id
+  // draw-команд текста; шейдер UI по нему сэмплит атлас). gpu_index записан рендером.
+  if (container && container->ui_atlas && !container->ui_atlas_logged && container->ui_atlas->usable()) {
+    const uint32_t slot = container->ui_atlas->gpu_index;
+    if (container->ui_font) container->ui_font->set_texture_id(slot);
+    utils::info("main: font atlas reached HOT, texture slot={}", slot);
+    container->ui_atlas_logged = true;
+  }
+
   // --- пайплайн тайловой карты: фрустум камеры -> срез сетки -> инстансы -> сообщение ---
   if (container && container->batch.valid()) {
     const tile_span span = visible_tiles(container->cam, container->grid, 1.0f);
@@ -509,12 +537,27 @@ void simulation::update(const size_t time) {
     const glm::mat4 vp = container->cam.view_proj();
     std::memcpy(msg.view_proj.data(), &vp[0][0], sizeof(float) * 16);
 
-    // Контракт записи в буфер: шлём view_proj камеры (mat4 = 64 байта) в host-visible camera_buffer.
+    // Контракт записи в буфер: шлём общий UBO (view_proj + ui_proj + misc) в host-visible
+    // camera_buffer. ui_proj — ortho «пиксели окна -> clip» (Vulkan: y вниз, начало слева-сверху),
+    // как старый матрикс nuklear-конвертера. screen_size/px_range кладём в misc.
     if (gactor != nullptr) {
+      const float w = float(std::max(container->config.window.width, 1u));
+      const float h = float(std::max(container->config.window.height, 1u));
+
+      global_ubo_t ubo{};
+      ubo.view_proj = vp;
+      ubo.ui_proj = glm::mat4(1.0f);
+      ubo.ui_proj[0][0] = 2.0f / w;
+      ubo.ui_proj[1][1] = 2.0f / h;
+      ubo.ui_proj[2][2] = -1.0f;
+      ubo.ui_proj[3][0] = -1.0f;
+      ubo.ui_proj[3][1] = -1.0f;
+      ubo.misc = glm::vec4(w, h, 2.0f /* sdf px_range, = font_atlas_packer pixel_range */, 0.0f);
+
       command_write_buffer cam;
       cam.buffer = "camera_buffer";
-      cam.bytes.resize(sizeof(glm::mat4));
-      std::memcpy(cam.bytes.data(), &vp[0][0], sizeof(glm::mat4));
+      cam.bytes.resize(sizeof(global_ubo_t));
+      std::memcpy(cam.bytes.data(), &ubo, sizeof(global_ubo_t));
       gactor->send(cam);
     }
 

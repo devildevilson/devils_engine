@@ -18,6 +18,10 @@ namespace devils_engine {
 namespace visage {
 font_t::~font_t() = default;
 
+void font_t::set_texture_id(uint32_t id) {
+  if (nkfont) nkfont->texture.id = int(id);
+}
+
 const font_t::glyph_t *font_t::find_glyph(const uint32_t codepoint) const {
   // glyphs отсортированы по codepoint (см. font_atlas_packer::load_fonts) -> бинарный поиск.
   // ВАЖНО: компаратор lower_bound — это упорядочивающий предикат comp(element, value),

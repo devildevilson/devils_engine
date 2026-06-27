@@ -15,13 +15,16 @@
   type = swapchain
   swap = swapchain
 }
-// Камера: host-visible uniform-буфер с двойной буферизацией (per_update). Размер = size_hint(format)
-// * single_element = 64 байта (mat4 view_proj). role=upload — host пишет напрямую (как draw_group
-// host_visible). ВНИМАНИЕ: usage_mask собирается из ссылок в шагах — пока буфер ни к чему не
-// подключён, usage=0 (createBuffer-варнинг ожидаем; уйдёт, когда дескриптор/шаг тайла его подцепит).
+// Общий uniform-буфер (один на все шейдеры), host-visible, double-buffer (per_update).
+// std140-раскладка (см. global_ubo.h / global_ubo в шейдерах), 9*v4 = 144 байта:
+//   mat4 view_proj (мир->clip, камера) + mat4 ui_proj (пиксели окна->clip, UI) +
+//   vec4 misc (x=screen_w, y=screen_h, z=sdf_px_range, w=reserved).
+// role=upload — host пишет напрямую. ВНИМАНИЕ: usage_mask собирается из ссылок в ШАГАХ —
+// пока ни один шаг не подцепил буфер как uniform, usage=0 (createBuffer-варнинг ожидаем;
+// уйдёт на шаге 4, когда UI-шаг сошлётся на camera_buffer и дескриптор его свяжет).
 {
   name = camera_buffer
-  format = v4v4v4v4
+  format = v4v4v4v4v4v4v4v4v4
   role = upload
   size = single_element
   type = doublebuffer

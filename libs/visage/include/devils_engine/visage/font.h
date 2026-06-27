@@ -74,6 +74,10 @@ struct font_t {
   const glyph_t *find_glyph(const uint32_t codepoint) const;
   void query_font_glyph(float font_height, struct nk_user_font_glyph *glyph, nk_rune codepoint, nk_rune next_codepoint) const;
   double text_width(double height, const std::string_view &txt) const;
+
+  // индекс GPU-слота атласа этого шрифта: nuklear зашивает его в texture.id draw-команд текста,
+  // а шейдер UI по нему сэмплит нужную текстуру. Определён в font.cpp (nk_user_font там полный).
+  void set_texture_id(uint32_t id);
 };
 
 // конфиг? наверное будет класс атлас пакер, который на выход даст:

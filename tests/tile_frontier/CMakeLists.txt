@@ -23,8 +23,10 @@ set(HDR_LIST
   include/core/render_system.h
   include/core/assets_system.h
   include/core/gpu_load_context.h
+  include/core/global_ubo.h
   include/core/mesh_resource.h
   include/core/texture_resource.h
+  include/core/font_atlas_resource.h
   include/core/texture_set.h
   include/core/tile_map.h
   include/core/tile_batch.h
@@ -39,6 +41,7 @@ set(SRC_LIST
   src/core/assets_system.cpp
   src/core/mesh_resource.cpp
   src/core/texture_resource.cpp
+  src/core/font_atlas_resource.cpp
   src/core/texture_set.cpp
   src/core/tile_map.cpp
   src/core/stb_image_impl.cpp
