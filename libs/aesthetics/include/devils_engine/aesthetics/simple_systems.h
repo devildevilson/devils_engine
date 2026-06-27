@@ -17,10 +17,10 @@ public:
   template_system(class world* world) noexcept;
   ~template_system() noexcept;
 
-  void update(const size_t& time) override;
-  virtual void process(const query_t::query_tuple_t &data) = 0;
+  void update(const size_t time) override;
+  virtual void process(const typename query_t::query_tuple_t &data) = 0;
 protected:
-  class world* world;
+  class world* m_world;
   query_t query;
 };
 
@@ -32,33 +32,31 @@ public:
   template_system_mt(thread::atomic_pool* pool, class world* world) noexcept;
   ~template_system_mt() noexcept;
 
-  void update(const size_t& time) override;
+  void update(const size_t time) override;
 protected:
   thread::atomic_pool* pool;
-  class world* world;
-  query_t query;
 };
 
 template<typename... Comp_T>
-template_system<Comp_T...>::template_system(class world* world) noexcept : world(world), query(world->query<Comp_T...>()) {}
+template_system<Comp_T...>::template_system(class world* world) noexcept : m_world(world), query(world->query<Comp_T...>()) {}
 template<typename... Comp_T>
-template_system<Comp_T...>::~template_system() noexcept { world->remove_query(query); }
+template_system<Comp_T...>::~template_system() noexcept = default;
 template<typename... Comp_T>
-void template_system<Comp_T...>::update(const size_t& time) {
+void template_system<Comp_T...>::update(const size_t time) {
   for (const auto &t : query) { process(t); }
 }
 
 template<typename... Comp_T>
-template_system_mt<Comp_T...>::template_system_mt(thread::atomic_pool* pool, class world* world) noexcept : pool(pool), world(world), query(world->query<Comp_T...>()) {}
+template_system_mt<Comp_T...>::template_system_mt(thread::atomic_pool* pool, class world* world) noexcept : template_system<Comp_T...>(world), pool(pool) {}
 template<typename... Comp_T>
-template_system_mt<Comp_T...>::~template_system_mt() noexcept { world->remove_query(query); }
+template_system_mt<Comp_T...>::~template_system_mt() noexcept = default;
 template<typename... Comp_T>
-void template_system_mt<Comp_T...>::update(const size_t& time) {
-  pool->distribute1(query.size(), [this] (const size_t start, const size_t count, const query_t& query) {
+void template_system_mt<Comp_T...>::update(const size_t time) {
+  pool->distribute1(this->query.size(), [this] (const size_t start, const size_t count, const query_t& query) {
     for (size_t i = start; i < start + count; ++i) {
       this->process(query[i]);
     }
-  }, std::ref(query));
+  }, std::ref(this->query));
 
   // иногда синхронизация нужна, иногда нет
   pool->compute();

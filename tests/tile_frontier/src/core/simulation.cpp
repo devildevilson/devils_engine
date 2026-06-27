@@ -13,6 +13,10 @@
 
 #include <devils_engine/demiurg/resource_system.h>
 
+#include <devils_engine/visage/system.h>
+#include <devils_engine/visage/font.h>
+#include <devils_engine/visage/font_atlas_packer.h>
+
 #include "config.h"
 #include "messages.h"
 #include "sound_system.h"
@@ -55,6 +59,71 @@ static void error_callback(int, const char* msg) noexcept {
   utils::warn("GLFW error: {}", msg);
 }
 
+// --- ввод для интерфейса (visage), шаг 1.1 ---
+// GLFW-коллбэки не имеют захватов (это C-указатели на функции) и срабатывают в input::poll_events
+// на главном потоке, в том же кадре до сборки снапшота. Поэтому аккумулируем в файловую структуру
+// без атомиков (одно окно/один UI). Позицию мыши опрашиваем напрямую (input::cursor_pos), а
+// дискретные события (кнопки/колесо/текст/клавиши) копим тут.
+namespace {
+// Зеркало стабильных констант GLFW (публичный ABI, не меняется). input-обёртка их наружу не
+// отдаёт, а коллбэки приходят с сырыми int-кодами, поэтому держим нужный минимум здесь.
+namespace glfw_const {
+  enum { release = 0, press = 1, repeat = 2 };
+  enum { mouse_left = 0, mouse_right = 1, mouse_middle = 2 };
+  enum { mod_shift = 0x0001, mod_control = 0x0002 };
+  enum {
+    key_enter = 257, key_tab = 258, key_backspace = 259, key_delete = 261,
+    key_right = 262, key_left = 263, key_down = 264, key_up = 265
+  };
+}
+
+struct ui_input_t {
+  bool mouse_left = false, mouse_middle = false, mouse_right = false;
+  float scroll_x = 0.0f, scroll_y = 0.0f;   // накапливается между кадрами, обнуляется при consume
+  std::vector<uint32_t> text;                // utf32-кодпоинты, введённые между кадрами
+  bool shift = false, ctrl = false;
+  bool backspace = false, del = false, enter = false, tab = false;
+  bool left = false, right = false, up = false, down = false;
+};
+ui_input_t g_ui_input;
+
+void ui_mouse_button_cb(GLFWwindow*, int button, int action, int) noexcept {
+  const bool down = (action != glfw_const::release);
+  switch (button) {
+    case glfw_const::mouse_left:   g_ui_input.mouse_left = down; break;
+    case glfw_const::mouse_right:  g_ui_input.mouse_right = down; break;
+    case glfw_const::mouse_middle: g_ui_input.mouse_middle = down; break;
+    default: break;
+  }
+}
+
+void ui_scroll_cb(GLFWwindow*, double x, double y) noexcept {
+  g_ui_input.scroll_x += float(x);
+  g_ui_input.scroll_y += float(y);
+}
+
+void ui_char_cb(GLFWwindow*, unsigned int codepoint) noexcept {
+  g_ui_input.text.push_back(uint32_t(codepoint));
+}
+
+void ui_key_cb(GLFWwindow*, int key, int, int action, int mods) noexcept {
+  const bool down = (action != glfw_const::release);
+  g_ui_input.shift = (mods & glfw_const::mod_shift) != 0;
+  g_ui_input.ctrl  = (mods & glfw_const::mod_control) != 0;
+  switch (key) {
+    case glfw_const::key_backspace: g_ui_input.backspace = down; break;
+    case glfw_const::key_delete:    g_ui_input.del = down; break;
+    case glfw_const::key_enter:     g_ui_input.enter = down; break;
+    case glfw_const::key_tab:       g_ui_input.tab = down; break;
+    case glfw_const::key_left:      g_ui_input.left = down; break;
+    case glfw_const::key_right:     g_ui_input.right = down; break;
+    case glfw_const::key_up:        g_ui_input.up = down; break;
+    case glfw_const::key_down:      g_ui_input.down = down; break;
+    default: break;
+  }
+}
+} // namespace
+
 // тут что? все другие системы + потоки для них + тред пул
 // кеш?
 struct simulation_init {
@@ -79,6 +148,13 @@ struct simulation_init {
   // тестовое наблюдение за прогоном контракта загрузки
   mesh_resource* watch_res = nullptr;
   bool watch_logged = false;
+
+  // интерфейс (visage) живёт в главном потоке. ui_font_image — CPU-байты атласа,
+  // их позже (шаг 2) зальём в GPU-ресурс шрифта на потоке рендера.
+  std::unique_ptr<visage::font_t> ui_font;
+  visage::font_atlas_packer::font_image_t ui_font_image;
+  std::unique_ptr<visage::system> ui;
+  bool ui_logged = false;
 
   // модель тайловой карты (главная сторона)
   texture_set textures;     // текстуры карты, собранные по префиксу пути
@@ -118,6 +194,13 @@ static void create_window_and_notify_render(simulation_init& c, graphics_actor* 
     utils::info("Using monitor '{}'", monitor_name);
   }
 
+  // ввод для интерфейса: позицию курсора опрашиваем в update через input::cursor_pos,
+  // а дискретные события копим коллбэками (срабатывают в input::poll_events).
+  input::set_window_callback(c.window, &ui_mouse_button_cb);
+  input::set_window_callback(c.window, &ui_scroll_cb);
+  input::set_window_callback(c.window, &ui_char_cb);
+  input::set_window_callback(c.window, &ui_key_cb);
+
   command_window_recreation wr{
     c.window,
     c.monitor,
@@ -155,6 +238,36 @@ simulation::~simulation() noexcept {
   aactor = nullptr;
   gactor = nullptr;
   sactor = nullptr;
+}
+
+// Поднимаем интерфейс в главном потоке: строим MSDF-атлас шрифта на CPU (GPU пока не нужен —
+// nk_convert требует только метрик глифов), создаём visage::system на дефолтном шрифте и
+// загружаем lua entry. Байты атласа держим в контейнере под будущую заливку на GPU (шаг 2).
+static void setup_visage(simulation_init& c) {
+  visage::font_atlas_packer packer;
+  packer.setup_font(utils::project_folder() + "resources/fonts/crimson.roman.ttf");
+
+  visage::font_atlas_packer::config fcfg{};
+  fcfg.max_corner_angle = 3.0;
+  fcfg.minimum_scale = 32.0;
+  fcfg.pixel_range = 2.0;
+  fcfg.mitter_limit = 1.0;
+  fcfg.color_channels = 4; // mtsdf — пригодится под границы/эффекты на шаге SDF
+  fcfg.thread_count = 4;
+  fcfg.save_png = false;
+  // charsets оставляем пустым: load_fonts всегда грузит ASCII. Кириллицу/локали — на шаге 2/3.
+
+  auto [fonts, img] = packer.load_fonts(fcfg);
+  if (fonts.empty()) utils::error{}("visage: font atlas packer produced no fonts");
+
+  c.ui_font = std::move(fonts.front());
+  c.ui_font_image = std::move(img);
+  utils::info("visage: font atlas {}x{}x{}ch, {} glyphs",
+    c.ui_font_image.width, c.ui_font_image.height, c.ui_font_image.channels, c.ui_font->glyphs.size());
+
+  c.ui.reset(new visage::system(c.ui_font.get()));
+  c.ui->load_entry_point(utils::project_folder() + "resources/ui/entry.lua");
+  utils::info("visage: system created, entry point loaded");
 }
 
 void simulation::init() {
@@ -293,6 +406,9 @@ void simulation::init() {
     utils::error{}("tile_instance layout mismatch vs 'v2ui1': {} (attr {}, expected {}, actual {})",
       instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
   }
+
+  // интерфейс (visage) в главном потоке
+  setup_visage(*container);
 }
 
 static size_t test_counter = 0;
@@ -416,14 +532,50 @@ void simulation::update(const size_t time) {
     }
   }
 
-  // задаем нажатие кнопок для интерфейса
+  // --- интерфейс (visage): главный поток раздаёт ввод, строит UI и гонит nk_convert в буферы ---
+  // Порядок строгий: input() -> update() -> convert(). Отправку буферов в рендер (через
+  // command_update_ui + шаг draw_ui) подключим на шаге 4; пока только производим и логируем.
+  if (container && container->ui) {
+    // собираем снапшот ввода: позиция мыши — опросом, остальное — из аккумулятора коллбэков
+    visage::input_snapshot_t snap;
+    if (container->window != nullptr) {
+      const auto [mx, my] = input::cursor_pos(container->window);
+      snap.mouse_x = float(mx);
+      snap.mouse_y = float(my);
+    }
+    snap.mouse_left = g_ui_input.mouse_left;
+    snap.mouse_middle = g_ui_input.mouse_middle;
+    snap.mouse_right = g_ui_input.mouse_right;
+    snap.scroll_x = g_ui_input.scroll_x;
+    snap.scroll_y = g_ui_input.scroll_y;
+    snap.text = g_ui_input.text.data();
+    snap.text_count = g_ui_input.text.size();
+    snap.key_shift = g_ui_input.shift;
+    snap.key_ctrl = g_ui_input.ctrl;
+    snap.key_backspace = g_ui_input.backspace;
+    snap.key_delete = g_ui_input.del;
+    snap.key_enter = g_ui_input.enter;
+    snap.key_tab = g_ui_input.tab;
+    snap.key_left = g_ui_input.left;
+    snap.key_right = g_ui_input.right;
+    snap.key_up = g_ui_input.up;
+    snap.key_down = g_ui_input.down;
 
-  // обходим visage
+    container->ui->input(snap); // читает snap.text — должен отработать до clear ниже
+    container->ui->update(time);
+    container->ui->convert();
 
-  // собираем буферы команд в кучу и отправляем их на отрисовку
+    // потребляем накопленные за кадр события (уровневые состояния кнопок/клавиш оставляем)
+    g_ui_input.scroll_x = 0.0f;
+    g_ui_input.scroll_y = 0.0f;
+    g_ui_input.text.clear();
 
-  // тут придется уже сразу сделать преобразование шрифта в СДФ
-  // а это значит еще вопрос локализации
+    if (!container->ui_logged) {
+      utils::info("visage: ui buffers — {} vtx bytes, {} idx bytes, {} draw commands",
+        container->ui->vertices().size(), container->ui->indices().size(), container->ui->commands().size());
+      container->ui_logged = true;
+    }
+  }
 
   // app.send_event требует функцию которая
   // получит тип системы и вернет id

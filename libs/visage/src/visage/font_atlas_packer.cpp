@@ -214,9 +214,21 @@ std::tuple<std::vector<std::unique_ptr<font_t>>, font_atlas_packer::font_image_t
       g.pt = npt;
     }
 
+    // fallback-глиф: на нём find_glyph отдыхает, когда codepoint не найден. Без него
+    // text_width/query_font_glyph разыменовывали неинициализированный указатель -> segfault.
+    // Предпочитаем пробел, затем '?', иначе первый доступный глиф.
+    f->fallback = nullptr;
+    if (const auto* g = f->find_glyph(0x20); g != nullptr) f->fallback = g;
+    else if (const auto* g = f->find_glyph('?'); g != nullptr) f->fallback = g;
+    else if (!f->glyphs.empty()) f->fallback = &f->glyphs.front();
+    f->fallback_codepoint = f->fallback != nullptr ? f->fallback->codepoint : 0;
+
     f->nkfont.reset(new nk_user_font);
     memset(f->nkfont.get(), 0, sizeof(nk_user_font));
-    f->nkfont->height = 1000.0f;
+    // height — это РАЗМЕР ШРИФТА В ПИКСЕЛЯХ, которым nuklear верстает весь UI (раскладка строк,
+    // замер текста). MSDF рисуется в любом размере, поэтому держим вменяемый дефолт. Динамическая
+    // смена размера у nuklear требует подмены nk_user_font (см. шаг 3 плана) — пока один размер.
+    f->nkfont->height = 18.0f;
     f->nkfont->query = local_query_font_glyph;
     f->nkfont->width = local_text_width;
     f->nkfont->userdata.ptr = f.get();

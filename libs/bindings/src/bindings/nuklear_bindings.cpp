@@ -675,7 +675,8 @@ struct nk {
   // наверное имеет смысл сократить функции кнопки (или использовать call?)
   // и по приходящему типу посмотреть просто
 
-  static bool button(sol::object o) {
+  // первый аргумент — сама таблица nk.button (приходит из __call метатаблицы), игнорируем
+  static bool button(sol::table, sol::object o) {
     bool ret = false;
     if (o.is<std::string_view>()) {
       const auto txt = o.as<std::string_view>();
@@ -696,7 +697,7 @@ struct nk {
     return ret;
   }
 
-  static bool button(sol::object o, const std::string_view &txt, const uint32_t flags) {
+  static bool button(sol::table, sol::object o, const std::string_view &txt, const uint32_t flags) {
     bool ret = false;
     if (!o.valid()) {
       ret = nk_button_text(ctx_ptr, txt.data(), txt.size());
@@ -1771,12 +1772,18 @@ void nk_functions(sol::table t) {
     w.set_function(sol::meta_function::new_index, sol::detail::fail_on_newindex);
   }
   {
-    using bf1_t = bool(*)(sol::object);
-    using bf2_t = bool(*)(sol::object, const std::string_view &, const uint32_t);
+    // __call метатаблицы передаёт сам объект как первый аргумент (self), поэтому nk::button
+    // принимает ведущую таблицу и игнорирует её. Перегрузка разрешается по числу аргументов:
+    // `nk.button("txt")` -> (self, txt); `nk.button(symbol_or_image, "txt", flags)` -> (self, obj, txt, flags).
+    using bf1_t = bool(*)(sol::table, sol::object);
+    using bf2_t = bool(*)(sol::table, sol::object, const std::string_view &, const uint32_t);
     bf1_t f1 = &nk::button;
     bf2_t f2 = &nk::button;
     auto b = nk.create_named("button");
     b.set_function(sol::meta_function::call, sol::overload(f1, f2));
+    // чтобы `nk.button(...)` вызывался: __call живёт в МЕТАтаблице вызываемого объекта,
+    // а не в самой таблице. Делаем таблицу-кнопку своей же метатаблицей.
+    b[sol::metatable_key] = b;
     /*
     b.set_function("text", &nk::button_text);
     b.set_function("color", &nk::button_color);

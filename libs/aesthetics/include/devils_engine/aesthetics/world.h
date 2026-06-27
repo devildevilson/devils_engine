@@ -30,55 +30,53 @@ class world {
 public:
   template <typename... Comp_T>
   using tuple_t = std::tuple<entityid_t, Comp_T*...>;
+  template <typename... Comp_T>
+  using const_tuple_t = std::tuple<entityid_t, const Comp_T*...>;
   //using raw_itr = gtl::flat_hash_map<entityid_t, void*>::const_iterator;
-  using raw_itr = std::vector<entityid_t>::iterator;
+  using raw_itr = std::vector<entityid_t>::const_iterator;
 
-  class container_interface {
+  class component_storage {
   public:
     std::string_view type_name;
     size_t type_index;
-    //size_t size;
 
-    inline container_interface(const std::string_view& type_name, const size_t type_index) noexcept : type_name(type_name), type_index(type_index) {} //, size(0)
-    virtual ~container_interface() noexcept = default;
+    inline component_storage(const std::string_view& type_name, const size_t type_index) noexcept : type_name(type_name), type_index(type_index) {}
+    virtual ~component_storage() noexcept = default;
     virtual bool remove(const entityid_t id) noexcept = 0; // придется делать виртуальной?
-    virtual void* rawget(const entityid_t id) const noexcept = 0;
-
-    template <typename T>
-    T* create(const entityid_t id);
-    template <typename T, typename... Args>
-    T* create(const entityid_t id, Args&&... args);
-    template <typename T>
-    T* get(const entityid_t id) const;
+    virtual void* rawget(const entityid_t id) noexcept = 0;
+    virtual const void* rawget(const entityid_t id) const noexcept = 0;
   };
 
   template <typename T>
-  class sparce_dence_set : public container_interface {
+  class sparce_dence_set : public component_storage {
   public:
     std::vector<T> components;
+    std::vector<entityid_t> entities;
     std::vector<entityid_t> sparce_set;
     //size_t offset;
 
-    inline sparce_dence_set() noexcept : container_interface(utils::type_name<T>(), aesthetics::component_type_id<T>()) {} //, offset(0)
+    inline sparce_dence_set() noexcept : component_storage(utils::type_name<T>(), aesthetics::component_type_id<T>()) {} //, offset(0)
     bool remove(const entityid_t id) noexcept override;
-    void* rawget(const entityid_t id) const noexcept override;
+    void* rawget(const entityid_t id) noexcept override;
+    const void* rawget(const entityid_t id) const noexcept override;
 
     T* create_comp(const entityid_t id);
     template <typename... Args>
     T* create_comp(const entityid_t id, Args&&... args);
-    T* get_comp(const entityid_t id) const;
+    T* get_comp(const entityid_t id);
+    const T* get_comp(const entityid_t id) const;
   };
 
   // вернет итераторы, будет ходить по каждому энтити у которого есть этот набор компонентов
   template <typename... Comp_T>
   class view_t {
   public:
-    using view_tuple_t = tuple_t<Comp_T...>;
+    using view_tuple_t = const_tuple_t<Comp_T...>;
 
     class iterator {
     public:
       //using underlying_itr = gtl::flat_hash_map<entityid_t, void*>::const_iterator;
-      using underlying_itr = std::vector<entityid_t>::iterator;
+      using underlying_itr = std::vector<entityid_t>::const_iterator;
       // берем "случайные" итераторы у хранилища компонентов
       // тут это сработает
 
@@ -115,7 +113,7 @@ public:
 
     class iterator {
     public:
-      using underlying_t = container_t::iterator;
+      using underlying_t = container_t::const_iterator;
 
       iterator(class world* world, underlying_t itr) noexcept;
 
@@ -172,9 +170,9 @@ public:
     ~query_t() noexcept;
 
     query_t(const query_t& copy) noexcept = delete;
-    query_t(query_t&& move) noexcept;
+    query_t(query_t&& move) noexcept = delete;
     query_t& operator=(const query_t& copy) noexcept = delete;
-    query_t& operator=(query_t&& move) noexcept;
+    query_t& operator=(query_t&& move) noexcept = delete;
 
     iterator begin() const;
     iterator end() const;
@@ -234,10 +232,10 @@ public:
   public:
     using lazy_query_tuple_t = tuple_t<Comp_T...>;
     using container_t = std::vector<entityid_t>;
-    
+
     class iterator {
     public:
-      using underlying_t = container_t::iterator;
+      using underlying_t = container_t::const_iterator;
 
       iterator(class world* world, underlying_t itr) noexcept;
 
@@ -291,9 +289,9 @@ public:
     ~lazy_query_t() noexcept;
 
     lazy_query_t(const lazy_query_t& copy) noexcept = delete;
-    lazy_query_t(lazy_query_t&& move) noexcept;
+    lazy_query_t(lazy_query_t&& move) noexcept = delete;
     lazy_query_t& operator=(const lazy_query_t& copy) noexcept = delete;
-    lazy_query_t& operator=(lazy_query_t&& move) noexcept;
+    lazy_query_t& operator=(lazy_query_t&& move) noexcept = delete;
 
     iterator begin() const;
     iterator end() const;
@@ -316,6 +314,7 @@ public:
   class entity {
   public:
     using components_arr = std::vector<std::pair<size_t, void*>>;
+    using const_components_arr = std::vector<std::pair<size_t, const void*>>;
 
     entity() noexcept;
     entity(const entityid_t id, class world* world) noexcept;
@@ -328,7 +327,8 @@ public:
 
     entityid_t id() const noexcept;
     class world* world() const noexcept;
-    const components_arr& components() const noexcept;
+    components_arr components() const;
+    const_components_arr const_components() const;
     bool valid() const noexcept;
     bool exists() const noexcept; // at least one component
 
@@ -341,6 +341,7 @@ public:
     template <typename T>
     auto get_tuple() const -> tuple_t<T>;
     template <typename T, typename... Comp_T>
+      requires(sizeof...(Comp_T) > 0)
     auto get_tuple() const -> tuple_t<T, Comp_T...>;
     template <typename T>
     bool has() const;
@@ -363,11 +364,13 @@ public:
   world& operator=(world&& move) noexcept = default;
   entityid_t gen_entityid();
   void remove_entity(const entityid_t id);
-  entity::components_arr find_components(const entityid_t id) const;
+  entity::components_arr find_components(const entityid_t id);
+  entity::const_components_arr find_components(const entityid_t id) const;
   entity get_entity(const entityid_t id) const;
   bool exists(const entityid_t id) const; // has at least one component
   bool raw_has(const entityid_t id, const size_t type_id) const;
-  void* raw_get(const entityid_t id, const size_t type_id) const;
+  void* raw_get(const entityid_t id, const size_t type_id);
+  const void* raw_get(const entityid_t id, const size_t type_id) const;
   bool raw_remove(const entityid_t id, const size_t type_id);
   void clear(const entityid_t id);
 
@@ -381,7 +384,9 @@ public:
   template<typename T>
   sparce_dence_set<T>* get_or_create_allocator(const size_t block_size);
   template<typename T>
-  sparce_dence_set<T>* get_allocator() const;
+  sparce_dence_set<T>* get_allocator();
+  template<typename T>
+  const sparce_dence_set<T>* get_allocator() const;
 
   template <typename T>
   T* create(const entityid_t id);
@@ -390,11 +395,19 @@ public:
   template <typename T>
   bool remove(const entityid_t id);
   template <typename T>
-  T* get(const entityid_t id) const;
+  T* get(const entityid_t id);
   template <typename T>
-  auto get_tuple(const entityid_t id) const -> tuple_t<T>;
+  const T* get(const entityid_t id) const;
+  template <typename T>
+  auto get_tuple(const entityid_t id) -> tuple_t<T>;
+  template <typename T>
+  auto get_tuple(const entityid_t id) const -> const_tuple_t<T>;
   template <typename T, typename... Comp_T>
-  auto get_tuple(const entityid_t id) const -> tuple_t<T, Comp_T...>;
+    requires(sizeof...(Comp_T) > 0)
+  auto get_tuple(const entityid_t id) -> tuple_t<T, Comp_T...>;
+  template <typename T, typename... Comp_T>
+    requires(sizeof...(Comp_T) > 0)
+  auto get_tuple(const entityid_t id) const -> const_tuple_t<T, Comp_T...>;
   template <typename T>
   bool has(const entityid_t id) const;
   template <typename T, typename T2, typename... Comp_T>
@@ -432,7 +445,6 @@ public:
   template <typename T>
   bool remove_unique(T* ptr);
   //template <typename... Comp_T>
-  //bool remove_query(query_t<Comp_T...>* ptr);
 
   template <typename T, typename... Args>
     requires(std::derived_from<T, basic_system>)
@@ -441,7 +453,7 @@ public:
     requires(std::derived_from<T, basic_system>)
   bool remove_system(T* ptr);
 
-  // почему мы хотим скопировать? 
+  // почему мы хотим скопировать?
   // во первых нам может быть интересно сохранить предыдущий стейт
   // во вторых это самый адекватный способ перекинуть данные в другие системы
   // другие системы могли бы обращаться за компонентами через общий АПИ?
@@ -451,12 +463,11 @@ public:
 private:
   size_t cur_index;
   std::vector<entityid_t> removed_entities;
-  std::vector<std::unique_ptr<container_interface>> containers;
+  std::vector<std::unique_ptr<component_storage>> containers;
   std::vector<std::vector<accurate_remover*>> subscribers;
   std::vector<std::unique_ptr<basic_container>> arbitrary_container;
 
   //template<typename T>
-  //gtl::flat_hash_map<size_t, std::unique_ptr<container_interface>>::iterator get_or_create_allocator(const size_t block_size, const size_t alloc_size = sizeof(T), const size_t alignment = alignof(T));
   /*template<typename T>
   sparce_dence_set<T>* get_or_create_allocator(const size_t block_size);
   template<typename T>
@@ -469,9 +480,9 @@ private:
 
 template <typename... Comp_T>
 world::view_t<Comp_T...>::iterator::iterator(const class world* world, world::view_t<Comp_T...>::iterator::underlying_itr it, world::view_t<Comp_T...>::iterator::underlying_itr end) noexcept : world(world), it(it), end(end) {
-  if (it == end) return;
-  bool ret = world->has<Comp_T...>(*it);
-  for (; it != end && !ret; ++it) { ret = world->has<Comp_T...>(*it); }
+  while (this->it != this->end && !world->has<Comp_T...>(*this->it)) {
+    ++this->it;
+  }
 }
 template <typename... Comp_T>
 world::view_t<Comp_T...>::view_tuple_t world::view_t<Comp_T...>::iterator::operator*() const { return world->get_tuple<Comp_T...>(*it); }
@@ -479,8 +490,10 @@ template <typename... Comp_T>
 world::view_t<Comp_T...>::view_tuple_t world::view_t<Comp_T...>::iterator::get() const { return world->get_tuple<Comp_T...>(*it); }
 template <typename... Comp_T>
 world::view_t<Comp_T...>::iterator& world::view_t<Comp_T...>::iterator::operator++() {
-  bool ret = false;
-  for (; it != end && !ret; ++it) { ret = world->has<Comp_T...>(*it); }
+  if (it != end) ++it;
+  while (it != end && !world->has<Comp_T...>(*it)) {
+    ++it;
+  }
   return *this;
 }
 template <typename... Comp_T>
@@ -542,7 +555,7 @@ template <typename... Comp_T>
 template <typename T>
 void world::query_t<Comp_T...>::query_receiver<T>::receive(const T& event) {
   const auto& t = world->get_tuple<Comp_T...>(event.id);
-  if (std::apply(&all_of_not_null<entityid_t, Comp_T*...>, t)) {
+  if (std::apply([](const auto&... args) { return all_of_not_null(args...); }, t)) {
     q->add_entity(event.id);
   }
 }
@@ -554,7 +567,7 @@ template <typename... Comp_T>
 template <typename T>
 void world::query_t<Comp_T...>::query_remover<T>::receive(const T& event) {
   const auto& t = world->get_tuple<Comp_T...>(event.id);
-  if (std::apply(&all_of_not_null<entityid_t, Comp_T*...>, t)) {
+  if (std::apply([](const auto&... args) { return all_of_not_null(args...); }, t)) {
     q->remove_entity(event.id);
   }
 }
@@ -613,9 +626,10 @@ world::query_t<Comp_T...>::query_t(class world* world) noexcept :
 {
   subscribe_all<0>(world, receivers);
   subscribe_all<0>(world, removers);
+  if (!world->is_allocators_exist<Comp_T...>()) return;
   const auto& view = world->view<Comp_T...>();
   for (const auto &t : view) {
-    add_entity(t);
+    add_entity(std::get<0>(t));
   }
 }
 template <typename... Comp_T>
@@ -624,26 +638,6 @@ world::query_t<Comp_T...>::~query_t() noexcept {
 
   unsubscribe_all<0>(world, receivers);
   unsubscribe_all<0>(world, removers);
-}
-
-template <typename... Comp_T>
-world::query_t<Comp_T...>::query_t(query_t&& move) noexcept :
-  world(move.world),
-  container(std::move(move.container)),
-  receivers(std::move(move.receivers)),
-  removers(std::move(move.removers))
-{
-  move.world = nullptr;
-}
-
-template <typename... Comp_T>
-world::query_t<Comp_T...>& world::query_t<Comp_T...>::operator=(query_t&& move) noexcept {
-  world = move.world;
-  container = std::move(move.container);
-  receivers = std::move(move.receivers);
-  removers = std::move(move.removers);
-  move.world = nullptr;
-  return *this;
 }
 
 template <typename... Comp_T>
@@ -699,6 +693,7 @@ void world::query_t<Comp_T...>::add_entity(const entityid_t id) {
     return l(get_entityid_index(a), get_entityid_index(b));
   });
 
+  if (itr != container.end() && get_entityid_index(*itr) == get_entityid_index(id)) return;
   container.insert(itr, id);
 }
 
@@ -709,6 +704,7 @@ void world::query_t<Comp_T...>::remove_entity(const entityid_t id) {
     return l(get_entityid_index(a), get_entityid_index(b));
   });
 
+  if (itr == container.end() || get_entityid_index(*itr) != get_entityid_index(id)) return;
   container.erase(itr);
 }
 
@@ -720,7 +716,7 @@ world::lazy_view_t<Comp_T...>::lazy_view_tuple_t world::lazy_view_t<Comp_T...>::
 template <typename... Comp_T>
 world::lazy_view_t<Comp_T...>::lazy_view_tuple_t world::lazy_view_t<Comp_T...>::iterator::get() const { return world->get_tuple<Comp_T...>((*it)); }
 template <typename... Comp_T>
-world::lazy_view_t<Comp_T...>::iterator& world::lazy_view_t<Comp_T...>::iterator::operator++() { ++it; }
+world::lazy_view_t<Comp_T...>::iterator& world::lazy_view_t<Comp_T...>::iterator::operator++() { ++it; return *this; }
 template <typename... Comp_T>
 world::lazy_view_t<Comp_T...>::iterator world::lazy_view_t<Comp_T...>::iterator::operator++(int) {
   auto cur = it;
@@ -728,15 +724,13 @@ world::lazy_view_t<Comp_T...>::iterator world::lazy_view_t<Comp_T...>::iterator:
   return iterator(world, cur);
 }
 
-static void make_unique_entityids(const class world* world, gtl::flat_hash_set<entityid_t>& ids) {}
+[[maybe_unused]] static void make_unique_entityids(const class world*, gtl::flat_hash_set<entityid_t>&) {}
 
 template <typename T, typename... Comp_T>
 static void make_unique_entityids(const class world* world, gtl::flat_hash_set<entityid_t> &ids) {
   auto stor = world->get_allocator<T>();
-  //auto begin = world->raw_begin<T>();
-  //auto end = world->raw_end<T>();
-  for (size_t i = 0; i < stor->sparce_set.size(); ++i) {
-    const auto ent_id = make_entityid(i, get_entityid_version(stor->sparce_set[i]));
+  if (stor == nullptr) return;
+  for (const auto ent_id : stor->entities) {
     ids.emplace(ent_id);
   }
 
@@ -809,7 +803,7 @@ world::lazy_query_t<Comp_T...>::query_remover<T>::query_remover(const class worl
 template <typename... Comp_T>
 template <typename T>
 void world::lazy_query_t<Comp_T...>::query_remover<T>::receive(const T& event) {
-  const bool any = world->has_any<Comp_T...>;
+  const bool any = world->has_any<Comp_T...>(event.id);
   if (!any) {
     q->remove_entity(event.id);
   }
@@ -821,9 +815,10 @@ world::lazy_query_t<Comp_T...>::lazy_query_t(class world* world) noexcept :
 {
   subscribe_all<0>(world, receivers);
   subscribe_all<0>(world, removers);
+  if (!world->is_allocators_exist<Comp_T...>()) return;
   const auto view = world->lazy_view<Comp_T...>();
   for (const auto& t : view) {
-    add_entity(t);
+    add_entity(std::get<0>(t));
   }
 }
 
@@ -833,26 +828,6 @@ world::lazy_query_t<Comp_T...>::~lazy_query_t() noexcept {
 
   unsubscribe_all<0>(world, receivers);
   unsubscribe_all<0>(world, removers);
-}
-
-template <typename... Comp_T>
-world::lazy_query_t<Comp_T...>::lazy_query_t(lazy_query_t&& move) noexcept :
-  world(move.world),
-  container(std::move(move.container)),
-  receivers(std::move(move.receivers)),
-  removers(std::move(move.removers))
-{
-  move.world = nullptr;
-}
-
-template <typename... Comp_T>
-world::lazy_query_t<Comp_T...>& world::lazy_query_t<Comp_T...>::operator=(lazy_query_t&& move) noexcept {
-  world = move.world;
-  container = std::move(move.container);
-  receivers = std::move(move.receivers);
-  removers = std::move(move.removers);
-  move.world = nullptr;
-  return *this;
 }
 
 template <typename... Comp_T>
@@ -892,6 +867,7 @@ void world::lazy_query_t<Comp_T...>::add_entity(const entityid_t id) {
     return l(get_entityid_index(a), get_entityid_index(b));
   });
 
+  if (itr != container.end() && get_entityid_index(*itr) == get_entityid_index(id)) return;
   container.insert(itr, id);
 }
 
@@ -902,14 +878,9 @@ void world::lazy_query_t<Comp_T...>::remove_entity(const entityid_t id) {
     return l(get_entityid_index(a), get_entityid_index(b));
   });
 
+  if (itr == container.end() || get_entityid_index(*itr) != get_entityid_index(id)) return;
   container.erase(itr);
 }
-
-static bool entity_component_predicate(const std::pair<size_t, void*> &pair, const size_t &type_id) {
-  std::less<size_t> l;
-  return l(pair.first, type_id);
-}
-
 template <typename T, typename... Args>
 T* world::entity::create(Args&&... args) {
   return m_world->create(m_id, std::forward<Args>(args)...);
@@ -931,6 +902,7 @@ auto world::entity::get_tuple() const -> tuple_t<T> {
 }
 
 template <typename T, typename... Comp_T>
+  requires(sizeof...(Comp_T) > 0)
 auto world::entity::get_tuple() const -> tuple_t<T, Comp_T...> {
   return m_world->get_tuple<T, Comp_T...>(m_id);
 }
@@ -966,7 +938,7 @@ bool world::is_allocators_exist() const {
 template <typename T>
 T* world::create(const entityid_t id) {
   auto stor = get_or_create_allocator<T>(sizeof(T) * 250);
-  auto ptr = stor->create(id);
+  auto ptr = stor->create_comp(id);
   if (ptr == nullptr) return nullptr;
   emit(create_component_event<T>{id, ptr});
   return ptr;
@@ -975,7 +947,7 @@ T* world::create(const entityid_t id) {
 template <typename T, typename... Args>
 T* world::create(const entityid_t id, Args&&... args) {
   auto stor = get_or_create_allocator<T>(sizeof(T)*250);
-  auto ptr = stor->create(id, std::forward<Args>(args)...);
+  auto ptr = stor->create_comp(id, std::forward<Args>(args)...);
   if (ptr == nullptr) return nullptr;
   emit(create_component_event<T>{id, ptr});
   return ptr;
@@ -986,7 +958,7 @@ bool world::remove(const entityid_t id) {
   auto stor = get_allocator<T>();
   if (stor == nullptr) return false;
 
-  auto ptr = stor->get(id);
+  auto ptr = stor->get_comp(id);
   if (ptr == nullptr) return false;
   emit(remove_component_event<T>{id, ptr});
 
@@ -995,19 +967,38 @@ bool world::remove(const entityid_t id) {
 }
 
 template <typename T>
-T* world::get(const entityid_t id) const {
+T* world::get(const entityid_t id) {
   auto stor = get_allocator<T>();
   if (stor == nullptr) return nullptr;
-  return stor->get(id);
+  return stor->get_comp(id);
 }
 
 template <typename T>
-auto world::get_tuple(const entityid_t id) const -> tuple_t<T> {
+const T* world::get(const entityid_t id) const {
+  auto stor = get_allocator<T>();
+  if (stor == nullptr) return nullptr;
+  return stor->get_comp(id);
+}
+
+template <typename T>
+auto world::get_tuple(const entityid_t id) -> tuple_t<T> {
+  return std::make_tuple(id, get<T>(id));
+}
+
+template <typename T>
+auto world::get_tuple(const entityid_t id) const -> const_tuple_t<T> {
   return std::make_tuple(id, get<T>(id));
 }
 
 template <typename T, typename... Comp_T>
-auto world::get_tuple(const entityid_t id) const -> tuple_t<T, Comp_T...> {
+  requires(sizeof...(Comp_T) > 0)
+auto world::get_tuple(const entityid_t id) -> tuple_t<T, Comp_T...> {
+  return std::make_tuple(id, get<T>(id), get<Comp_T>(id)...);
+}
+
+template <typename T, typename... Comp_T>
+  requires(sizeof...(Comp_T) > 0)
+auto world::get_tuple(const entityid_t id) const -> const_tuple_t<T, Comp_T...> {
   return std::make_tuple(id, get<T>(id), get<Comp_T>(id)...);
 }
 
@@ -1029,23 +1020,23 @@ bool world::has_any(const entityid_t id) const {
 template <typename T>
 size_t world::count() const {
   auto stor = get_allocator<T>();
-  return stor != nullptr ? stor->size : 0;
+  return stor != nullptr ? stor->components.size() : 0;
 }
 
 template <typename T>
 world::raw_itr world::raw_begin() const {
   //auto itr = containers.find(utils::type_id<T>());
   //return itr->second->components.begin();
-  auto stor = get_or_create_allocator<T>(sizeof(T) * 250);
-  return stor->sparce_set.begin();
+  auto stor = get_allocator<T>();
+  return stor->entities.begin();
 }
 
 template <typename T>
 world::raw_itr world::raw_end() const {
   //auto itr = containers.find(utils::type_id<T>());
   //return itr->second->components.end();
-  auto stor = get_or_create_allocator<T>(sizeof(T) * 250);
-  return stor->sparce_set.end();
+  auto stor = get_allocator<T>();
+  return stor->entities.end();
 }
 
 template <typename Event_T, typename T>
@@ -1095,6 +1086,7 @@ bool world::unsubscribe(T* ptr) {
   if (itr == subscribers[event_id].end()) return false;
 
   subscribers[event_id].erase(itr);
+  return true;
 
   //if constexpr (std::is_same_v<update_event, Event_T>) {
   //  auto better_ptr = static_cast<basic_reciever<Event_T>*>(ptr);
@@ -1149,9 +1141,9 @@ void world::emit(const Event_T& event) const {
 
 template <typename... Comp_T>
 world::view_t<Comp_T...> world::view() const {
-  // желательно создать все аллокаторы для компонентов 
+  // желательно создать все аллокаторы для компонентов
   // по идее это все должно быть конст
-  // вылетать? единственный вменяемый сценарий честно говоря 
+  // вылетать? единственный вменяемый сценарий честно говоря
   if (!is_allocators_exist<Comp_T...>()) utils::error{}("Could not create view '{}', all allocators must be created beforehand", utils::type_name<view_t<Comp_T...>>());
   return view_t<Comp_T...>(this);
 }
@@ -1203,11 +1195,6 @@ world::lazy_query_t<Comp_T...> world::lazy_query() {
 }
 
 
-//template <typename... Comp_T>
-//bool world::remove_query(query_t<Comp_T...>* ptr) {
-//  return remove_unique(ptr);
-//}
-
 template <typename T, typename... Args>
   requires(std::derived_from<T, basic_system>)
 T* world::create_system(Args&&... args) {
@@ -1225,9 +1212,9 @@ bool world::remove_system(T* ptr) {
 
 template <typename T>
 void world::copy_underlying(std::vector<uint32_t>& sparce, std::vector<T>& tight) const {
-  auto stor = get_allocator<T>(sizeof(T) * 250);
+  auto stor = get_allocator<T>();
   if (stor == nullptr) return;
-  
+
   sparce.resize(stor->sparce_set.size(), invalid_entityid);
   tight.resize(stor->components.size());
   memcpy(sparce.data(), stor->sparce_set.data(), stor->sparce_set.size() * sizeof(stor->sparce_set[0]));
@@ -1253,33 +1240,24 @@ world::sparce_dence_set<T>* world::get_or_create_allocator(const size_t) {
 }
 
 template<typename T>
-world::sparce_dence_set<T>* world::get_allocator() const {
+world::sparce_dence_set<T>* world::get_allocator() {
   const size_t index = aesthetics::component_type_id<T>();
   if (index >= containers.size()) return nullptr;
   return static_cast<sparce_dence_set<T>*>(containers[index].get());
 }
 
-//template <typename T>
-//T* world::container_interface::create(const entityid_t id) {
-//  auto ptr = allocate(id);
-//  if (ptr == nullptr) return nullptr;
-//  auto comp_ptr = new (ptr) T();
-//  return comp_ptr;
-//}
-//
-//template <typename T, typename... Args>
-//T* world::container_interface::create(const entityid_t id, Args&&... args) {
-//  auto ptr = allocate(id);
-//  if (ptr == nullptr) return nullptr;
-//  auto comp_ptr = new (ptr) T(std::forward<Args>(args)...);
-//  return comp_ptr;
-//}
+template<typename T>
+const world::sparce_dence_set<T>* world::get_allocator() const {
+  const size_t index = aesthetics::component_type_id<T>();
+  if (index >= containers.size()) return nullptr;
+  return static_cast<const sparce_dence_set<T>*>(containers[index].get());
+}
 
 //template<typename T>
 //world::type_container<T>::type_container(const std::string_view& type_name, const size_t block_size) noexcept : type_container(type_name, block_size, sizeof(T), alignof(T)) {}
 //template<typename T>
 //world::type_container<T>::type_container(const std::string_view& type_name, const size_t block_size, const size_t alloc_size, const size_t alignment) noexcept :
-//  container_interface(type_name), allocator(block_size, alloc_size, alignment)
+//  component_storage(type_name), allocator(block_size, alloc_size, alignment)
 //{}
 //template<typename T>
 //world::type_container<T>::~type_container() noexcept {
@@ -1310,7 +1288,7 @@ world::sparce_dence_set<T>* world::get_allocator() const {
 //}
 //
 //template<typename T>
-//world::small_type_container<T>::small_type_container(const std::string_view& type_name, utils::block_allocator* allocator) noexcept : container_interface(type_name), allocator(allocator) {}
+//world::small_type_container<T>::small_type_container(const std::string_view& type_name, utils::block_allocator* allocator) noexcept : component_storage(type_name), allocator(allocator) {}
 //template<typename T>
 //world::small_type_container<T>::~small_type_container() noexcept {
 //  for (const auto& [id, ptr] : components) {
@@ -1341,42 +1319,6 @@ world::sparce_dence_set<T>* world::get_allocator() const {
 //}
 
 template <typename T>
-T* world::container_interface::create(const entityid_t id) {
-  auto ptr = static_cast<sparce_dence_set<T>*>(this);
-  return ptr->create(id);
-}
-template <typename T, typename... Args>
-T* world::container_interface::create(const entityid_t id, Args&&... args) {
-  auto ptr = static_cast<sparce_dence_set<T>*>(this);
-  return ptr->create(id, std::forward<Args>(args)...);
-}
-
-template <typename T>
-T* world::container_interface::get(const entityid_t id) const {
-  auto ptr = static_cast<const sparce_dence_set<T>*>(this);
-  return ptr->get(id);
-}
-
-static size_t count_invalid_data_from_begin(const std::vector<entityid_t> &datas) {
-  size_t i = 0;
-  for (; i < datas.size() && is_invalid_entityid(datas[i]); ++i) {}
-  return i;
-}
-
-static size_t move_data(std::vector<entityid_t>& datas) {
-  const size_t count = count_invalid_data_from_begin(datas);
-  if (count == 0) return 0;
-  if (count == datas.size()) {
-    datas.clear();
-    return count;
-  }
-
-  memmove(datas.data(), datas.data()+count, (datas.size() - count) * sizeof(datas[0]));
-  datas.resize(datas.size() - count);
-  return count;
-}
-
-template <typename T>
 bool world::sparce_dence_set<T>::remove(const entityid_t id) noexcept {
   const size_t ent_index = get_entityid_index(id);
   if (sparce_set.size() <= ent_index) return false;
@@ -1384,16 +1326,17 @@ bool world::sparce_dence_set<T>::remove(const entityid_t id) noexcept {
   if (get_entityid_version(id) != get_entityid_version(sparce_set[ent_index])) return false;
 
   const size_t container_index = get_entityid_index(sparce_set[ent_index]);
+  const size_t last_index = components.size() - 1;
 
-  auto itr = std::find_if(sparce_set.begin(), sparce_set.end(), [this](const auto data) {
-    const size_t container_index = get_entityid_index(data);
-    if (container_index == components.size() - 1) return true;
-    return false;
-  });
+  if (container_index != last_index) {
+    components[container_index] = std::move(components.back());
+    entities[container_index] = entities.back();
+    const size_t moved_entity_index = get_entityid_index(entities[container_index]);
+    sparce_set[moved_entity_index] = make_entityid(container_index, get_entityid_version(entities[container_index]));
+  }
 
-  std::swap(components[container_index], components.back());
   components.pop_back();
-  *itr = make_entityid(container_index, get_entityid_version(*itr));
+  entities.pop_back();
   sparce_set[ent_index] = invalid_entityid;
 
   return true;
@@ -1432,7 +1375,7 @@ bool world::sparce_dence_set<T>::remove(const entityid_t id) noexcept {
 }
 
 template <typename T>
-void* world::sparce_dence_set<T>::rawget(const entityid_t id) const noexcept {
+void* world::sparce_dence_set<T>::rawget(const entityid_t id) noexcept {
   const size_t ent_index = get_entityid_index(id);
   if (sparce_set.size() <= ent_index) return nullptr;
   if (sparce_set[ent_index] == invalid_entityid) return nullptr;
@@ -1453,6 +1396,17 @@ void* world::sparce_dence_set<T>::rawget(const entityid_t id) const noexcept {
 }
 
 template <typename T>
+const void* world::sparce_dence_set<T>::rawget(const entityid_t id) const noexcept {
+  const size_t ent_index = get_entityid_index(id);
+  if (sparce_set.size() <= ent_index) return nullptr;
+  if (sparce_set[ent_index] == invalid_entityid) return nullptr;
+  if (get_entityid_version(id) != get_entityid_version(sparce_set[ent_index])) return nullptr;
+
+  const size_t container_index = get_entityid_index(sparce_set[ent_index]);
+  return &components[container_index];
+}
+
+template <typename T>
 T* world::sparce_dence_set<T>::create_comp(const entityid_t id) {
   const size_t ent_index = get_entityid_index(id);
   if (sparce_set.size() <= ent_index) {
@@ -1463,6 +1417,7 @@ T* world::sparce_dence_set<T>::create_comp(const entityid_t id) {
 
   const size_t cont_index = components.size();
   components.emplace_back();
+  entities.push_back(id);
   sparce_set[ent_index] = make_entityid(cont_index, get_entityid_version(id));
   return &(components.back());
 
@@ -1519,6 +1474,7 @@ T* world::sparce_dence_set<T>::create_comp(const entityid_t id, Args&&... args) 
 
   const size_t cont_index = components.size();
   components.emplace_back(std::forward<Args>(args)...);
+  entities.push_back(id);
   sparce_set[ent_index] = make_entityid(cont_index, get_entityid_version(id));
   return &(components.back());
 
@@ -1564,7 +1520,7 @@ T* world::sparce_dence_set<T>::create_comp(const entityid_t id, Args&&... args) 
 }
 
 template <typename T>
-T* world::sparce_dence_set<T>::get_comp(const entityid_t id) const {
+T* world::sparce_dence_set<T>::get_comp(const entityid_t id) {
   const size_t ent_index = get_entityid_index(id);
   if (sparce_set.size() <= ent_index) return nullptr;
   if (sparce_set[ent_index] == invalid_entityid) return nullptr;
@@ -1583,7 +1539,7 @@ T* world::sparce_dence_set<T>::get_comp(const entityid_t id) const {
   const size_t container_index = get_entityid_index(data);
   return &components[container_index];*/
 }
-  
+
 
 
 }
@@ -1602,7 +1558,8 @@ world::entity::~entity() noexcept {}
 
 entityid_t world::entity::id() const noexcept { return m_id; }
 class world* world::entity::world() const noexcept { return m_world; }
-const world::entity::components_arr& world::entity::components() const noexcept { return m_world->find_components(m_id); }
+world::entity::components_arr world::entity::components() const { return m_world->find_components(m_id); }
+world::entity::const_components_arr world::entity::const_components() const { return static_cast<const class world*>(m_world)->find_components(m_id); }
 bool world::entity::valid() const noexcept { return m_world != nullptr; }
 bool world::entity::exists() const noexcept { return m_world->exists(m_id); }
 
@@ -1628,10 +1585,24 @@ void world::remove_entity(const entityid_t id) {
   removed_entities.push_back(id);
 }
 
-world::entity::components_arr world::find_components(const entityid_t id) const {
+world::entity::components_arr world::find_components(const entityid_t id) {
   world::entity::components_arr arr;
   for (const auto& up : containers) {
+    if (up == nullptr) continue;
     auto ptr = up->rawget(id);
+    if (ptr != nullptr) {
+      arr.emplace_back(std::make_pair(up->type_index, ptr));
+    }
+  }
+
+  return arr;
+}
+
+world::entity::const_components_arr world::find_components(const entityid_t id) const {
+  world::entity::const_components_arr arr;
+  for (const auto& up : containers) {
+    if (up == nullptr) continue;
+    auto ptr = static_cast<const component_storage*>(up.get())->rawget(id);
     if (ptr != nullptr) {
       arr.emplace_back(std::make_pair(up->type_index, ptr));
     }
@@ -1646,7 +1617,8 @@ world::entity world::get_entity(const entityid_t id) const {
 
 bool world::exists(const entityid_t id) const {
   for (const auto& up : containers) {
-    auto ptr = up->rawget(id);
+    if (up == nullptr) continue;
+    auto ptr = static_cast<const component_storage*>(up.get())->rawget(id);
     if (ptr != nullptr) return true;
   }
 
@@ -1654,18 +1626,39 @@ bool world::exists(const entityid_t id) const {
 }
 
 bool world::raw_has(const entityid_t id, const size_t type_id) const { return raw_get(id, type_id) != nullptr; }
-void* world::raw_get(const entityid_t id, const size_t type_id) const {
+void* world::raw_get(const entityid_t id, const size_t type_id) {
   if (type_id >= containers.size()) return nullptr;
+  if (containers[type_id] == nullptr) return nullptr;
   return containers[type_id]->rawget(id);
+}
+
+const void* world::raw_get(const entityid_t id, const size_t type_id) const {
+  if (type_id >= containers.size()) return nullptr;
+  if (containers[type_id] == nullptr) return nullptr;
+  return static_cast<const component_storage*>(containers[type_id].get())->rawget(id);
+}
+
+template <typename T>
+const T* world::sparce_dence_set<T>::get_comp(const entityid_t id) const {
+  const size_t ent_index = get_entityid_index(id);
+  if (sparce_set.size() <= ent_index) return nullptr;
+  if (sparce_set[ent_index] == invalid_entityid) return nullptr;
+  if (get_entityid_version(id) != get_entityid_version(sparce_set[ent_index])) return nullptr;
+
+  const size_t container_index = get_entityid_index(sparce_set[ent_index]);
+  return &components[container_index];
 }
 
 bool world::raw_remove(const entityid_t id, const size_t type_id) {
   if (type_id >= containers.size()) return false;
+  if (containers[type_id] == nullptr) return false;
   return containers[type_id]->remove(id);
 }
 
 void world::clear(const entityid_t id) {
-  for (auto& up : containers) { up->remove(id); }
+  for (auto& up : containers) {
+    if (up != nullptr) up->remove(id);
+  }
 }
 
 }

@@ -1,6 +1,7 @@
-#include "font.h" 
+#include "font.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/fileio.h"
@@ -15,14 +16,21 @@
 
 namespace devils_engine {
 namespace visage {
+font_t::~font_t() = default;
+
 const font_t::glyph_t *font_t::find_glyph(const uint32_t codepoint) const {
-  auto itr = std::upper_bound(glyphs.begin(), glyphs.end(), codepoint, [] (const uint32_t codepoint, const auto &g) { return g.codepoint == codepoint; });
-  if (itr == glyphs.end()) return fallback;
-  return &(*itr);
+  // glyphs отсортированы по codepoint (см. font_atlas_packer::load_fonts) -> бинарный поиск.
+  // ВАЖНО: компаратор lower_bound — это упорядочивающий предикат comp(element, value),
+  // а не равенство (прежний код использовал '==' в upper_bound -> UB и возврат мусора).
+  auto itr = std::lower_bound(glyphs.begin(), glyphs.end(), codepoint,
+    [] (const glyph_t &g, const uint32_t cp) { return g.codepoint < cp; });
+  if (itr != glyphs.end() && itr->codepoint == codepoint) return &(*itr);
+  return fallback; // может быть nullptr — вызывающие обязаны это проверять
 }
 
 void font_t::query_font_glyph(float font_height, struct nk_user_font_glyph *glyph, nk_rune codepoint, nk_rune next_codepoint) const {
   auto g = find_glyph(codepoint);
+  if (g == nullptr) { memset(glyph, 0, sizeof(*glyph)); return; }
 
   const double local_scale = font_height / scale;
 
@@ -49,7 +57,7 @@ double font_t::text_width(double height, const std::string_view &txt) const {
 
   while (size <= txt.size() && gsize != 0 && rune != NK_UTF_INVALID) {
     const auto g = find_glyph(rune);
-    text_width += g->advance * scale * local_scale;
+    if (g != nullptr) text_width += g->advance * scale * local_scale;
     gsize = nk_utf_decode(txt.data() + size, &rune, txt.size() - size);
     size += gsize;
   }

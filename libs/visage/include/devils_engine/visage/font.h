@@ -66,6 +66,11 @@ struct font_t {
   struct config *config; // конфиг тут хранить?
   std::unique_ptr<nk_user_font> nkfont;
 
+  // деструктор объявлен и определён в font.cpp: nkfont — unique_ptr<nk_user_font> (неполный
+  // тип здесь), поэтому уничтожение должно происходить там, где nk_user_font полный.
+  font_t() = default;
+  ~font_t();
+
   const glyph_t *find_glyph(const uint32_t codepoint) const;
   void query_font_glyph(float font_height, struct nk_user_font_glyph *glyph, nk_rune codepoint, nk_rune next_codepoint) const;
   double text_width(double height, const std::string_view &txt) const;
