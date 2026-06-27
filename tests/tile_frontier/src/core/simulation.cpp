@@ -256,7 +256,7 @@ static void setup_visage(simulation_init& c) {
   visage::font_atlas_packer::config fcfg{};
   fcfg.max_corner_angle = 3.0;
   fcfg.minimum_scale = 32.0;
-  fcfg.pixel_range = 2.0;
+  fcfg.pixel_range = 4.0; // ширина полосы SDF (текселей) — должна совпадать с px_range в ui.frag
   fcfg.mitter_limit = 1.0;
   fcfg.color_channels = 4; // mtsdf — пригодится под границы/эффекты на шаге SDF
   fcfg.thread_count = 4;
@@ -552,7 +552,7 @@ void simulation::update(const size_t time) {
       ubo.ui_proj[2][2] = -1.0f;
       ubo.ui_proj[3][0] = -1.0f;
       ubo.ui_proj[3][1] = -1.0f;
-      ubo.misc = glm::vec4(w, h, 2.0f /* sdf px_range, = font_atlas_packer pixel_range */, 0.0f);
+      ubo.misc = glm::vec4(w, h, 4.0f /* sdf px_range, = font_atlas_packer pixel_range */, 0.0f);
 
       command_write_buffer cam;
       cam.buffer = "camera_buffer";

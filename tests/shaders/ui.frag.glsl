@@ -24,7 +24,7 @@ layout(push_constant) uniform ui_pc_block {
 } pc;
 
 // pixel_range, с которым генерился атлас (font_atlas_packer::config.pixel_range = 2.0)
-const float px_range = 2.0;
+const float px_range = 4.0;
 
 float median(float r, float g, float b) { return max(min(r, g), min(max(r, g), b)); }
 
