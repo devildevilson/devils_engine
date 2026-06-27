@@ -49,6 +49,9 @@ namespace devils_engine {
     }
 
     void stack_allocator::clear() noexcept { m_allocated = 0; }
+    size_t stack_allocator::offset_of(const void* ptr) const noexcept { return static_cast<const char*>(ptr) - m_memory; }
+    void* stack_allocator::at(const size_t offset) noexcept { return m_memory + offset; }
+    const void* stack_allocator::at(const size_t offset) const noexcept { return m_memory + offset; }
     size_t stack_allocator::capacity() const noexcept { return m_size; }
     size_t stack_allocator::aligment() const noexcept { return m_aligment; }
     size_t stack_allocator::size() const noexcept { return m_allocated; }

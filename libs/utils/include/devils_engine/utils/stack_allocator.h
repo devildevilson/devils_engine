@@ -31,6 +31,12 @@ namespace devils_engine {
 
       void clear() noexcept;
 
+      // смещение аллокации в арене и обратное разрешение. Удобно хранить «ссылку» на данные как
+      // число (напр. в nk_handle.id), а потом достать указатель: create -> offset_of -> ... -> at.
+      size_t offset_of(const void* ptr) const noexcept;
+      void* at(const size_t offset) noexcept;
+      const void* at(const size_t offset) const noexcept;
+
       size_t capacity() const noexcept;
       size_t aligment() const noexcept;
       size_t size() const noexcept;
