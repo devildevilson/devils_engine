@@ -6,8 +6,9 @@ return function(time)
   local flags = nk.panel_flags.border | nk.panel_flags.title | nk.panel_flags.movable
   if nk.begin("hello", {50, 50, 300, 200}, flags) then
     -- label — обычная функция, гоняет путь измерения/раскладки текста (шрифт)
+    -- label — обычная функция; flags = выравнивание текста (nk.text_align)
     nk.layout.row_dynamic(28, 1)
-    nk.label("tile_frontier UI", nil, 0)
+    nk.label("tile_frontier UI", nil, nk.text_align.left)
 
     nk.layout.row_dynamic(30, 1)
     if nk.button("Click me") then

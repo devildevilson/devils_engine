@@ -620,13 +620,14 @@ struct nk {
 
   // basic
 
-  static void text(const char* txt, const sol::optional<sol::table> &opt_color, const uint32_t flags) {
-    if (opt_color.has_value()) {
-      auto t = opt_color.value();
-      const auto c = to_color(t);
-      nk_text_colored(ctx_ptr, txt, strlen(txt), flags, c); 
+  // цвет — sol::object (НЕ sol::optional): опциональный аргумент в средней позиции при nil из lua
+  // не занимает слот стека -> flags читается неверно. См. sol-optional-middle-arg-gotcha.
+  static void text(const char* txt, const sol::object &color, const uint32_t flags) {
+    if (color.is<sol::table>()) {
+      const auto c = to_color(color.as<sol::table>());
+      nk_text_colored(ctx_ptr, txt, strlen(txt), flags, c);
     } else {
-      nk_text(ctx_ptr, txt, strlen(txt), flags); 
+      nk_text(ctx_ptr, txt, strlen(txt), flags);
     }
   }
 
@@ -640,11 +641,13 @@ struct nk {
     }
   }
 
-  static void label(const char* txt, const sol::optional<sol::table> &opt_color, const uint32_t flags) {
-    if (opt_color.has_value()) {
-      auto t = opt_color.value();
-      const auto c = to_color(t);
-      nk_label_colored(ctx_ptr, txt, flags, c); 
+  // ВАЖНО: цвет — sol::object, а НЕ sol::optional<sol::table>. Опциональный аргумент в СРЕДНЕЙ
+  // позиции при передаче nil из lua НЕ занимает слот стека -> следующий аргумент (flags) читается
+  // неверно (=0), из-за чего nk_label с align 0 ничего не рисует. sol::object всегда занимает слот.
+  static void label(const char* txt, const sol::object &color, const uint32_t flags) {
+    if (color.is<sol::table>()) {
+      const auto c = to_color(color.as<sol::table>());
+      nk_label_colored(ctx_ptr, txt, flags, c);
     } else {
       nk_label(ctx_ptr, txt, flags);
     }
@@ -1182,22 +1185,24 @@ struct nk {
 
   // abstract combobox
 
-  static bool combo_begin(const sol::optional<const char*> &name, const sol::object &symbol_or_img, const sol::table &vec) {
+  // name — sol::object (НЕ sol::optional): опциональный аргумент НЕ в конце при nil из lua не
+  // занимает слот стека -> следующие аргументы читаются неверно. См. sol-optional-middle-arg-gotcha.
+  static bool combo_begin(const sol::object &name, const sol::object &symbol_or_img, const sol::table &vec) {
     bool ret = false;
     const auto v = to_vec2(vec);
+    const bool has_name = name.is<const char*>();
+    const char* n = has_name ? name.as<const char*>() : nullptr;
     if (symbol_or_img.valid()) {
       if (symbol_or_img.is<const struct nk_image*>()) {
         auto img = symbol_or_img.as<const struct nk_image*>();
-        if (name.has_value()) {
-          auto n = name.value();
+        if (has_name) {
           ret = nk_combo_begin_image_text(ctx_ptr, n, strlen(n), *img, v);
         } else {
           ret = nk_combo_begin_image(ctx_ptr, *img, v);
         }
       } else if (symbol_or_img.is<uint32_t>()) {
         const auto s = symbol_or_img.as<uint32_t>();
-        if (name.has_value()) {
-          auto n = name.value();
+        if (has_name) {
           ret = nk_combo_begin_symbol_text(ctx_ptr, n, strlen(n), nk_symbol_type(s), v);
         } else {
           ret = nk_combo_begin_symbol(ctx_ptr, nk_symbol_type(s), v);
@@ -1206,8 +1211,7 @@ struct nk {
         utils::error{}("'nk.combo.begin' either nil, img or symbol must be provided as second argument");
       }
     } else {
-      if (name.has_value()) {
-        auto n = name.value();
+      if (has_name) {
         ret = nk_combo_begin_text(ctx_ptr, n, strlen(n), v);
       } else {
         utils::error{}("'nk.combo.begin' first argument must be valid if second is nil");
@@ -1612,6 +1616,21 @@ void nk_functions(sol::table t) {
     enm.set("top_left_down_right", nk_style_cursor::NK_CURSOR_RESIZE_TOP_LEFT_DOWN_RIGHT);
     enm.set("top_right_down_left", nk_style_cursor::NK_CURSOR_RESIZE_TOP_RIGHT_DOWN_LEFT);
     enm.set("count", nk_style_cursor::NK_CURSOR_COUNT);
+    enm.set_function(sol::meta_function::new_index, sol::detail::fail_on_newindex);
+  }
+  {
+    // выравнивание текста для label/text. ВАЖНО: nk_label с flags=0 (без горизонтального бита)
+    // НЕ рисует текст. Готовые комбинации left/centered/right включают вертикальный middle.
+    auto enm = nk.create_named("text_align");
+    enm.set("left", NK_TEXT_LEFT);
+    enm.set("centered", NK_TEXT_CENTERED);
+    enm.set("right", NK_TEXT_RIGHT);
+    enm.set("align_left", NK_TEXT_ALIGN_LEFT);
+    enm.set("align_centered", NK_TEXT_ALIGN_CENTERED);
+    enm.set("align_right", NK_TEXT_ALIGN_RIGHT);
+    enm.set("align_top", NK_TEXT_ALIGN_TOP);
+    enm.set("align_middle", NK_TEXT_ALIGN_MIDDLE);
+    enm.set("align_bottom", NK_TEXT_ALIGN_BOTTOM);
     enm.set_function(sol::meta_function::new_index, sol::detail::fail_on_newindex);
   }
 
