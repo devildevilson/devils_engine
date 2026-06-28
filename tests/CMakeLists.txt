@@ -40,8 +40,15 @@ target_link_libraries(utils_contract_test PRIVATE devils_engine::utils)
 devils_add_doctest(thread_general_test thread_general_test.cpp)
 target_link_libraries(thread_general_test PRIVATE devils_engine::thread)
 
+devils_add_doctest(aesthetics_world_test aesthetics_world_test.cpp)
+target_link_libraries(aesthetics_world_test PRIVATE devils_engine::aesthetics)
+
 devils_add_doctest(sound_system_test sound_system_test.cpp)
 target_link_libraries(sound_system_test PRIVATE devils_engine::sound devils_engine::utils)
+
+add_executable(aesthetics_world_benchmark aesthetics_world_benchmark.cpp)
+target_link_libraries(aesthetics_world_benchmark PRIVATE devils_engine::options devils_engine::aesthetics)
+set_target_properties(aesthetics_world_benchmark PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_OUTPUT_DIRECTORY}/bin")
 
 add_custom_command(TARGET utils_general_test POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory

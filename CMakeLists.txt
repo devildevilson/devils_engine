@@ -341,7 +341,7 @@ FetchContent_Declare(
 FetchContent_Declare(
   devils_script
   GIT_REPOSITORY https://github.com/devildevilson/devils_script.git
-  GIT_TAG        v1.1.1
+  GIT_TAG        v1.2.0
   OVERRIDE_FIND_PACKAGE
 )
 
@@ -422,7 +422,7 @@ add_subdirectory(tests/tile_frontier/)
 if (DEVILS_ENGINE_BUILD_TESTS)
   add_custom_target(devils_engine_test
     COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} --output-on-failure -L devils_engine
-    DEPENDS utils_general_test utils_contract_test thread_general_test sound_system_test
+    DEPENDS utils_general_test utils_contract_test thread_general_test aesthetics_world_test sound_system_test
     USES_TERMINAL
     COMMENT "Running devils_engine tests"
   )
