@@ -37,4 +37,18 @@ return function(time)
   end
   -- nk.end должен вызываться всегда, даже если begin вернул false (требование Nuklear)
   nk.endf()
+
+  local stats_flags = nk.panel_flags.border | nk.panel_flags.title | nk.panel_flags.movable
+  if nk.begin("actor stats", {980, 48, 250, 176}, stats_flags) then
+    nk.push_font(14)
+    nk.layout.row_dynamic(20, 1)
+    nk.label(string.format("actors: %.0f", tf_actor_count or 0), nil, nk.text_align.left)
+    nk.label(string.format("instances: %.0f", tf_actor_instances or 0), nil, nk.text_align.left)
+    nk.label(string.format("intents: %.0f", tf_actor_intents or 0), nil, nk.text_align.left)
+    nk.label(string.format("main fps: %.1f", tf_main_fps or 0), nil, nk.text_align.left)
+    nk.label(string.format("intent/s: %.0f", tf_intents_per_sec or 0), nil, nk.text_align.left)
+    nk.label(string.format("actor update: %.1f us", tf_actor_update_avg_us or 0), nil, nk.text_align.left)
+    nk.pop_font()
+  end
+  nk.endf()
 end

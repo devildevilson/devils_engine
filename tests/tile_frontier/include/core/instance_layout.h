@@ -35,6 +35,10 @@ namespace instance_layout {
 
 using namespace devils_engine;
 
+struct rgba8_color {
+  uint32_t value = 0xffffffffu;
+};
+
 // один атом = один вершинный атрибут: тип элемента + число компонент + размер в байтах
 struct atom {
   painter::format_element_type::values element_type = painter::format_element_type::INVALID;
@@ -70,6 +74,7 @@ template <typename T> struct is_leaf : std::false_type {};
 template <> struct is_leaf<float> : std::true_type {};
 template <> struct is_leaf<uint32_t> : std::true_type {};
 template <> struct is_leaf<int32_t> : std::true_type {};
+template <> struct is_leaf<rgba8_color> : std::true_type {};
 template <glm::length_t L, typename U, glm::qualifier Q> struct is_leaf<glm::vec<L, U, Q>> : std::true_type {};
 template <typename U, std::size_t N> struct is_leaf<std::array<U, N>> : std::true_type {};
 
@@ -77,6 +82,7 @@ template <typename T> struct leaf_traits;
 template <> struct leaf_traits<float> { static constexpr atom value{painter::format_element_type::SFLOAT, 1, 4}; };
 template <> struct leaf_traits<uint32_t> { static constexpr atom value{painter::format_element_type::UINT, 1, 4}; };
 template <> struct leaf_traits<int32_t> { static constexpr atom value{painter::format_element_type::SINT, 1, 4}; };
+template <> struct leaf_traits<rgba8_color> { static constexpr atom value{painter::format_element_type::UNORM, 4, 4}; };
 template <glm::length_t L, typename U, glm::qualifier Q> struct leaf_traits<glm::vec<L, U, Q>> {
   static constexpr atom value{detail::scalar_element_type<U>(), uint32_t(L), uint32_t(uint32_t(L) * sizeof(U))};
 };

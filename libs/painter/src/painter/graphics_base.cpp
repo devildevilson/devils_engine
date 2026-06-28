@@ -1591,6 +1591,7 @@ void graphics_base::create_resources() {
     const bool is_image = role::is_image(res.role);
 
     const uint32_t buffering = res.compute_buffering(this);
+    const auto frame_size = std::get<0>(res.compute_frame_size(this));
 
     for (uint32_t j = 0; j < buffering; ++j) {
       res.handles[j].index = cont_index;
@@ -1624,12 +1625,12 @@ void graphics_base::create_resources() {
 
         res.handles[j].subimage = std::bit_cast<subresource_image>(ivci.subresourceRange);
       } else {
-        res.handles[j].subbuffer.offset = match.offset + match.layer_size * j;
-        res.handles[j].subbuffer.size = match.layer_size;
+        res.handles[j].subbuffer.offset = match.offset + frame_size * j;
+        res.handles[j].subbuffer.size = frame_size;
       }
     }
 
-    match.offset += match.layer_size * buffering;
+    match.offset += frame_size * buffering;
     match.layer_offset += buffering;
   }
 }

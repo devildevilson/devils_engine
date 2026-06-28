@@ -186,6 +186,15 @@ struct command_draw_tiles {
   std::vector<uint8_t> bytes;        // упакованные инстансы
 };
 
+// main → render: lightweight actor instances. Actor layout is v2ui1c4v1:
+// world center + type/texture index + color + visual size. Kept as a separate command so render can
+// use a different draw_group/pair budget without changing producer code later.
+struct command_draw_actors {
+  uint32_t count = 0;
+  uint32_t stride = 0;
+  std::vector<uint8_t> bytes;
+};
+
 // main → render: записать СЫРЫЕ БАЙТЫ в host-visible буфер-ресурс рендер-графа (по имени).
 // Контракт записи в произвольный буфер — аналог draw_group-контракта, но для общих буферов
 // (камера/константы кадра и т.п.). Render пишет байты во ВСЕ per_update-копии буфера; смену

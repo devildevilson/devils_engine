@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <span>
 #include <thread>
@@ -23,13 +24,13 @@
 #include "sound_system.h"
 #include "render_system.h"
 #include "assets_system.h"
-#include "mesh_resource.h"
 #include "texture_resource.h"
 #include "font_atlas_resource.h"
 #include "global_ubo.h"
 #include "texture_set.h"
 #include "tile_map.h"
 #include "tile_batch.h"
+#include "actor_simulation.h"
 
 /*
 вопрос в том как правильно передать окно в рендер?
@@ -57,6 +58,7 @@ static size_t thread_start_gap(const size_t frame_time, const uint32_t divisor) 
 }
 
 constexpr size_t main_frame_time = utils::round(double(utils::global_time_resolution) * (1.0/20.0));
+constexpr uint32_t initial_actor_count = 4096;
 
 static void error_callback(int, const char* msg) noexcept {
   utils::warn("GLFW error: {}", msg);
@@ -148,10 +150,6 @@ struct simulation_init {
 
   std::unique_ptr<input::init> in;
 
-  // тестовое наблюдение за прогоном контракта загрузки
-  mesh_resource* watch_res = nullptr;
-  bool watch_logged = false;
-
   // интерфейс (visage) живёт в главном потоке. ui_font_image — CPU-байты атласа,
   // их позже (шаг 2) зальём в GPU-ресурс шрифта на потоке рендера.
   std::unique_ptr<visage::font_t> ui_font;
@@ -178,11 +176,27 @@ struct simulation_init {
   bool tiles_logged = false;
   bool chunks_logged = false;
 
+  // первый actor simulation slice: aesthetics компоненты -> intents -> apply -> GPU batch
+  actor_world_slice actors;
+  actor_batch actors_batch;
+  bool actors_logged = false;
+  actor_metrics actors_last_metrics;
+  uint64_t metrics_frames = 0;
+  uint64_t metrics_actor_ticks = 0;
+  uint64_t metrics_intents = 0;
+  uint64_t metrics_instances = 0;
+  uint64_t metrics_actor_update_us = 0;
+  double ui_main_fps = 0.0;
+  double ui_intents_per_sec = 0.0;
+  double ui_instances_per_sec = 0.0;
+  double ui_actor_update_avg_us = 0.0;
+  std::chrono::steady_clock::time_point metrics_last_log = std::chrono::steady_clock::now();
+
   std::vector<std::string> sound_devices;
   std::atomic_bool sound_devices_ready = false;
   bool sound_devices_requested = false;
   bool sound_devices_logged = false;
-  bool sound_recreate_test_sent = false;
+  bool sound_recreate_test_sent = false; 
   size_t tick = 0;
 
   simulation_init() : pool(nullptr), window(nullptr), monitor(nullptr) {}
@@ -379,18 +393,6 @@ void simulation::init() {
     create_window_and_notify_render(*container, gactor);
   }
 
-  // Тестовый прогон контракта загрузки: просим у ассетов довести меш 'test' до hot.
-  // Указатель ресурса берём из реестра (он стабилен после init), а сам запрос шлём
-  // сообщением в актор ассетов — менеджмент крутится на его потоке.
-  if (auto* res = container->assets_sim->resources()->get<mesh_resource>("mesh/test")) {
-    command_load_resource cmd{res, static_cast<int32_t>(demiurg::state::hot)};
-    aactor->send(cmd);
-    container->watch_res = res;
-    utils::info("main: requested mesh 'mesh/test' -> hot");
-  } else {
-    utils::warn("main: test mesh resource not found in registry");
-  }
-
   // три grass-текстуры → texture_slots 0,1,2 (порядок запроса = порядок слотов, т.к. assets грузит по очереди)
   for (const auto* name : { "textures/grass", "textures/grass1_0", "textures/grass3" }) {
     if (auto* tex = container->assets_sim->resources()->get<texture_resource>(name)) {
@@ -442,6 +444,20 @@ void simulation::init() {
     utils::error{}("tile_instance layout mismatch vs 'v2ui1': {} (attr {}, expected {}, actual {})",
       instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
   }
+
+  if (const auto r = container->actors_batch.bind("v2ui1c4v1"); !r) {
+    utils::error{}("actor_instance layout mismatch vs 'v2ui1c4v1': {} (attr {}, expected {}, actual {})",
+      instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
+  }
+
+  container->actors.init(
+    initial_actor_count,
+    glm::vec2{0.5f, 0.5f},
+    glm::max(extent - glm::vec2{0.5f, 0.5f}, glm::vec2{0.5f, 0.5f}),
+    std::max(tex_count, 1u)
+  );
+  container->metrics_last_log = std::chrono::steady_clock::now();
+  utils::info("main: spawned {} lightweight actors in aesthetics world", initial_actor_count);
 
   // интерфейс (visage) в главном потоке
   setup_visage(*container);
@@ -537,12 +553,6 @@ void simulation::update(const size_t time) {
     utils::info("main: requested sound system recreation with device '{}' and queued test sound {}", device_name, play.taskid);
   }
 
-  // наблюдаем за тестовым ресурсом: main видит hot и читает gpu_index (записан рендером)
-  if (container && container->watch_res && !container->watch_logged && container->watch_res->usable()) {
-    utils::info("main: resource '{}' reached HOT, gpu_index={}", container->watch_res->id, container->watch_res->gpu_index);
-    container->watch_logged = true;
-  }
-
   // атлас шрифта доехал на GPU: фиксируем слот в шрифте (nuklear зашьёт его в texture.id
   // draw-команд текста; шейдер UI по нему сэмплит атлас). gpu_index записан рендером.
   if (container && container->ui_atlas && !container->ui_atlas_logged && container->ui_atlas->usable()) {
@@ -626,6 +636,74 @@ void simulation::update(const size_t time) {
     if (gactor != nullptr) gactor->send(std::move(msg));
   }
 
+  // --- actor simulation slice: simple AI -> move intents -> aesthetics components -> GPU batch ---
+  if (container && container->actors_batch.valid()) {
+    const auto t0 = std::chrono::steady_clock::now();
+    container->actors_last_metrics = container->actors.update(
+      float(time) / float(utils::global_time_resolution),
+      container->actors_batch
+    );
+    const auto t1 = std::chrono::steady_clock::now();
+    const uint64_t update_us = uint64_t(std::max<int64_t>(utils::count_mcs(t0, t1), 0));
+
+    command_draw_actors msg;
+    msg.count = container->actors_batch.count();
+    msg.stride = actor_batch::stride();
+    msg.bytes.resize(size_t(msg.count) * msg.stride);
+    container->actors_batch.blit(std::span<uint8_t>(msg.bytes));
+
+    if (!container->actors_logged) {
+      utils::info(
+        "main: actor slice {} actors, {} intents, {} instances, {} B/inst, {} B payload",
+        container->actors_last_metrics.actors,
+        container->actors_last_metrics.intents,
+        msg.count,
+        msg.stride,
+        msg.bytes.size()
+      );
+      container->actors_logged = true;
+    }
+
+    if (gactor != nullptr) gactor->send(std::move(msg));
+
+    container->metrics_frames += 1;
+    container->metrics_actor_ticks += 1;
+    container->metrics_intents += container->actors_last_metrics.intents;
+    container->metrics_instances += container->actors_last_metrics.instances;
+    container->metrics_actor_update_us += update_us;
+
+    if (container->config.metrics.enabled) {
+      const auto now = std::chrono::steady_clock::now();
+      const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - container->metrics_last_log).count();
+      if (elapsed_ms >= container->config.metrics.log_interval_ms && container->metrics_frames != 0) {
+        const double seconds = double(elapsed_ms) / 1000.0;
+        const double fps = double(container->metrics_frames) / seconds;
+        const double intent_rate = double(container->metrics_intents) / seconds;
+        const double instance_rate = double(container->metrics_instances) / seconds;
+        const double avg_actor_us = double(container->metrics_actor_update_us) / double(container->metrics_actor_ticks);
+        container->ui_main_fps = fps;
+        container->ui_intents_per_sec = intent_rate;
+        container->ui_instances_per_sec = instance_rate;
+        container->ui_actor_update_avg_us = avg_actor_us;
+        utils::info(
+          "metrics: main_fps={:.1f}, actors={}, intents/s={:.0f}, actor_instances/s={:.0f}, actor_update_avg_us={:.1f}",
+          fps,
+          container->actors_last_metrics.actors,
+          intent_rate,
+          instance_rate,
+          avg_actor_us
+        );
+
+        container->metrics_last_log = now;
+        container->metrics_frames = 0;
+        container->metrics_actor_ticks = 0;
+        container->metrics_intents = 0;
+        container->metrics_instances = 0;
+        container->metrics_actor_update_us = 0;
+      }
+    }
+  }
+
   // --- интерфейс (visage): главный поток раздаёт ввод, строит UI и гонит nk_convert в буферы ---
   // Порядок строгий: input() -> update() -> convert(). Отправку буферов в рендер (через
   // command_update_ui + шаг draw_ui) подключим на шаге 4; пока только производим и логируем.
@@ -656,6 +734,14 @@ void simulation::update(const size_t time) {
     snap.key_down = g_ui_input.down;
 
     container->ui->input(snap); // читает snap.text — должен отработать до clear ниже
+    container->ui->set_env_number("tf_main_fps", container->ui_main_fps);
+    container->ui->set_env_number("tf_actor_count", double(container->actors_last_metrics.actors));
+    container->ui->set_env_number("tf_actor_intents", double(container->actors_last_metrics.intents));
+    container->ui->set_env_number("tf_actor_instances", double(container->actors_last_metrics.instances));
+    container->ui->set_env_number("tf_actor_ticks", double(container->actors_last_metrics.ticks));
+    container->ui->set_env_number("tf_intents_per_sec", container->ui_intents_per_sec);
+    container->ui->set_env_number("tf_instances_per_sec", container->ui_instances_per_sec);
+    container->ui->set_env_number("tf_actor_update_avg_us", container->ui_actor_update_avg_us);
     container->ui->update(time);
     container->ui->convert();
 

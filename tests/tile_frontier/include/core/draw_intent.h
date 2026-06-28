@@ -42,7 +42,7 @@ public:
   // привязка к УЖЕ РАСПАРСЕННОМУ layout draw_group: атомы (draw_group::instance_layout) + страйд
   // (draw_group::stride). Так хедер не зависит от painter/structures.h — render-сторона, у которой
   // полный draw_group, передаёт поля явно. format::values приходит из лёгкого painter/common.h.
-  instance_layout::match_result bind(const std::span<const painter::format::values>& layout, const uint32_t stride) {
+  instance_layout::match_result bind(const std::span<const devils_engine::painter::format::values>& layout, const uint32_t stride) {
     match_ = instance_layout::check<T>(layout, stride);
     return match_;
   }

@@ -107,7 +107,7 @@ system::system(const font_t* default_font) : default_font(default_font), effect_
       size = float(t.get_or("size", double(size)));
       eff.boldness = float(t.get_or("bold", 0.0));
       eff.softness = float(t.get_or("softness", 0.0));
-      const sol::optional<sol::table> outline = t["outline"];
+      const sol::optional<sol::table> outline = t["outline"]; 
       if (outline.has_value()) {
         const sol::table o = outline.value();
         eff.outline_width = float(o.get_or("width", 0.0));
@@ -184,6 +184,10 @@ void system::input(const input_snapshot_t& in) {
   for (size_t i = 0; i < in.text_count; ++i) nk_input_unicode(c, nk_rune(in.text[i]));
 
   nk_input_end(c);
+}
+
+void system::set_env_number(const std::string& name, const double value) {
+  env[name] = value;
 }
 
 void system::update(const size_t time) {

@@ -22,7 +22,7 @@
 #include "draw_intent.h"
 #include "tile_map.h"
 #include "tile_batch.h"
-#include "mesh_resource.h"
+#include "actor_simulation.h"
 #include "texture_resource.h"
 
 namespace tile_frontier {
@@ -43,6 +43,7 @@ struct render_simulation_init {
   cached_message_dispatcher<command_gpu_transition> gpu_transition_commands;
   cached_message_dispatcher<command_write_buffer> write_buffer_commands;
   cached_message_dispatcher<command_draw_tiles> draw_tile_commands;
+  cached_message_dispatcher<command_draw_actors> draw_actor_commands;
 
   assets_actor* aactor = nullptr; // куда слать ack о завершении GPU-перехода
 
@@ -61,15 +62,15 @@ struct render_simulation_init {
   std::unique_ptr<painter::assets_base> assets;
   painter::graphics_ctx ctx;
 
-  uint32_t triangle_pair_index = painter::INVALID_RESOURCE_SLOT;
   uint32_t tile_pair_index = painter::INVALID_RESOURCE_SLOT;
+  uint32_t actor_pair_index = painter::INVALID_RESOURCE_SLOT;
   bool instance_ready = false;
   bool device_ready = false;
   bool base_ready = false;
   bool surface_ready = false;
   bool graph_ready = false;
-  bool triangles_ready = false;
   bool tiles_ready = false;
+  bool actors_ready = false;
 
   ~render_simulation_init() noexcept {
     // Best-effort fallback. Normal shutdown should go through render_shutdown().
@@ -124,9 +125,10 @@ static void render_detach_window(render_simulation_init& c) {
   if (c.base) c.base->surface = VK_NULL_HANDLE;
   c.surface_ready = false;
   c.graph_ready = false;
-  c.triangles_ready = false;
   c.tiles_ready = false;
+  c.actors_ready = false;
   c.tile_pair_index = painter::INVALID_RESOURCE_SLOT;
+  c.actor_pair_index = painter::INVALID_RESOURCE_SLOT;
 }
 
 static void render_shutdown(render_simulation_init& c) {
@@ -164,9 +166,10 @@ static void render_shutdown(render_simulation_init& c) {
   c.base_ready = false;
   c.surface_ready = false;
   c.graph_ready = false;
-  c.triangles_ready = false;
   c.tiles_ready = false;
+  c.actors_ready = false;
   c.tile_pair_index = painter::INVALID_RESOURCE_SLOT;
+  c.actor_pair_index = painter::INVALID_RESOURCE_SLOT;
 }
 
 static void render_create_instance(render_simulation_init& c) {
@@ -276,104 +279,6 @@ static void render_create_base_resources(render_simulation_init& c) {
   c.base_ready = true;
 }
 
-static void render_create_test_triangles(render_simulation_init& c) {
-  if (c.triangles_ready || !c.graph_ready) return;
-
-  const auto tri_h = c.assets->register_buffer_storage("triangle");
-  painter::buffer_create_info bci{ "g1", 3, 0 };
-  c.assets->create_buffer_storage(tri_h, bci);
-
-  struct buffer_data { float x, y, z; uint32_t c; };
-  const buffer_data buffer_mem[] = {
-    { -1.0f, -1.0f, 0.0f, make_color(1.0f, 0.0f, 0.0f, 1.0f) },
-    {  1.0f, -1.0f, 0.0f, make_color(0.0f, 1.0f, 0.0f, 1.0f) },
-    {  0.0f,  1.0f, 0.0f, make_color(0.0f, 0.0f, 1.0f, 1.0f) }
-  };
-
-  const auto vertex_bytes = std::span(reinterpret_cast<const uint8_t*>(buffer_mem), sizeof(buffer_mem));
-  c.assets->populate_buffer_storage(tri_h, vertex_bytes, std::span<const uint8_t>());
-  c.assets->mark_ready_buffer_slot(tri_h);
-
-  const uint32_t dg_index = c.base->find_draw_group("dg1");
-  if (dg_index == painter::INVALID_RESOURCE_SLOT) utils::error{}("Could not find draw group 'dg1'");
-
-  c.triangle_pair_index = c.base->register_pair(dg_index, tri_h, 8); // скромный max_count (см. коммент в render_register_mesh_draw)
-
-  // Контракт main->render: пакуем инстансы в сырые байты через draw_intent. dg1 layout = "v4",
-  // поэтому инстанс = glm::vec4 (один атрибут v4); матчер сверяет это с draw_group до записи.
-  const glm::vec4 positions[] = {
-    { 0.0f, 0.5f, 0.0f, 0.0f }, { 0.5f, 0.0f, 0.0f, 0.0f },
-    { 0.0f,-0.5f, 0.0f, 0.0f }, {-0.5f, 0.0f, 0.0f, 0.0f },
-  };
-
-  draw_intent<glm::vec4> intent;
-  if (const auto r = intent.bind(std::span<const painter::format::values>(c.base->draw_groups[dg_index].instance_layout), uint32_t(c.base->draw_groups[dg_index].stride)); !r)
-    utils::error{}("dg1 instance layout mismatch: {} (attr {}, expected {}, actual {})",
-      core::instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
-  const std::span<const glm::vec4> instances(positions, 4);
-
-  // пишем в оба буфера doublebuffer (см. коммент в render_register_mesh_draw)
-  for (uint32_t off = 0; off < 2; ++off) {
-    const auto inst = c.base->get_current_instance_resource_frame(c.triangle_pair_index, off);
-    const auto indi = c.base->get_current_indirect_resource_frame(c.triangle_pair_index, off);
-    intent.blit(instances, inst.mapped, inst.sub.offset);
-    auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
-    cmd[0].vertexCount = 3;
-    cmd[0].instanceCount = 4;
-    cmd[0].firstVertex = 0;
-    cmd[0].firstInstance = 0;
-  }
-
-  c.base->update_event();
-  c.triangles_ready = true;
-}
-
-// Фаза A: рисуем УЖЕ загруженный с диска меш (его GPU-буфер = m.gpu_index) сеткой инстансов.
-// Это путь треугольника, но на ресурсе из конвейера ассетов. Требует готового графа.
-static void render_register_mesh_draw(render_simulation_init& c, mesh_resource& m) {
-  if (m.gpu_index == mesh_resource::invalid_gpu_index) return;
-
-  const uint32_t dg_index = c.base->find_draw_group("dg1");
-  if (dg_index == painter::INVALID_RESOURCE_SLOT) { utils::warn("mesh draw: draw group 'dg1' not found"); return; }
-
-  // max_count = бюджет инстансов пары. ВАЖНО: register_pair страйдит indirect-оффсет пар по
-  // max_count*INDIRECT_BUFFER_SIZE, а indirect-буфер маленький — большой max_count у нескольких
-  // пар вылетает за буфер (VUID-vkCmdDrawIndirect-00487). Держим скромным.
-  const uint32_t pair = c.base->register_pair(dg_index, m.gpu_index, 8);
-
-  // w = индекс текстуры (цикл 0,1,2 — три grass-текстуры); шейдер сэмплит tex[w]. dg1 layout="v4".
-  const glm::vec4 positions[] = {
-    { -0.6f, -0.5f, 0.0f, 0.0f }, { 0.0f, -0.5f, 0.0f, 1.0f }, { 0.6f, -0.5f, 0.0f, 2.0f },
-    { -0.6f,  0.5f, 0.0f, 0.0f }, { 0.0f,  0.5f, 0.0f, 1.0f }, { 0.6f,  0.5f, 0.0f, 2.0f },
-  };
-  const uint32_t count = 6;
-
-  draw_intent<glm::vec4> intent;
-  if (const auto r = intent.bind(std::span<const painter::format::values>(c.base->draw_groups[dg_index].instance_layout), uint32_t(c.base->draw_groups[dg_index].stride)); !r) {
-    utils::warn("mesh draw: dg1 instance layout mismatch: {} (attr {})",
-      core::instance_layout::match_error::to_string(r.error), r.where);
-    return;
-  }
-  const std::span<const glm::vec4> instances(positions, count);
-
-  // dg1 host_visible = doublebuffer (per_update). Пишем в ОБА буфера (offset 0 и 1), чтобы draw
-  // читал корректные данные при любой чётности per_update (фиксы статичных данных, заполняемых
-  // асинхронно пока рендер-цикл уже крутится — иначе update_event уводит чтение в пустой буфер).
-  for (uint32_t off = 0; off < 2; ++off) {
-    const auto inst = c.base->get_current_instance_resource_frame(pair, off);
-    const auto indi = c.base->get_current_indirect_resource_frame(pair, off);
-    intent.blit(instances, inst.mapped, inst.sub.offset);
-    auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
-    cmd[0].vertexCount = m.vertex_count;
-    cmd[0].instanceCount = count;
-    cmd[0].firstVertex = 0;
-    cmd[0].firstInstance = 0;
-  }
-
-  c.base->update_event();
-  utils::info("mesh '{}': registered draw, {} instances, {} verts", m.id, count, m.vertex_count);
-}
-
 static void render_create_tile_draw(render_simulation_init& c) {
   if (c.tiles_ready || !c.graph_ready) return;
 
@@ -420,6 +325,60 @@ static void render_create_tile_draw(render_simulation_init& c) {
   utils::info("render tiles: registered tile quad draw pair");
 }
 
+static void render_create_actor_draw(render_simulation_init& c) {
+  if (c.actors_ready || !c.graph_ready) return;
+
+  const uint32_t dg_index = c.base->find_draw_group("dg_actors");
+  if (dg_index == painter::INVALID_RESOURCE_SLOT) {
+    utils::warn("render actors: draw group 'dg_actors' not found");
+    return;
+  }
+
+  draw_intent<actor_instance> intent;
+  if (const auto r = intent.bind(std::span<const painter::format::values>(c.base->draw_groups[dg_index].instance_layout), uint32_t(c.base->draw_groups[dg_index].stride)); !r) {
+    utils::warn("render actors: dg_actors instance layout mismatch: {} (attr {}, expected {}, actual {})",
+      core::instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
+    return;
+  }
+
+  const auto tri_h = c.assets->register_buffer_storage("actor_triangle");
+  painter::buffer_create_info bci{ "g1", 3, 0 };
+  c.assets->create_buffer_storage(tri_h, bci);
+
+  struct vertex_data { float x, y, z; uint32_t c; };
+  const uint32_t white = make_color(1.0f, 1.0f, 1.0f, 1.0f);
+  const vertex_data vertices[] = {
+    {  0.0f,  0.58f, 0.0f, white },
+    { -0.50f, -0.35f, 0.0f, white },
+    {  0.50f, -0.35f, 0.0f, white },
+  };
+
+  const auto vertex_bytes = std::span(reinterpret_cast<const uint8_t*>(vertices), sizeof(vertices));
+  c.assets->populate_buffer_storage(tri_h, vertex_bytes, std::span<const uint8_t>());
+  c.assets->mark_ready_buffer_slot(tri_h);
+
+  c.actor_pair_index = c.base->register_pair(dg_index, tri_h, 5000);
+
+  for (uint32_t off = 0; off < 2; ++off) {
+    const auto indi = c.base->get_current_indirect_resource_frame(c.actor_pair_index, off);
+    auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
+    cmd[0].vertexCount = 3;
+    cmd[0].instanceCount = 0;
+    cmd[0].firstVertex = 0;
+    cmd[0].firstInstance = 0;
+  }
+
+  c.actors_ready = true;
+  utils::info(
+    "render actors: registered actor triangle draw pair {} (dg '{}', layout '{}', stride {}, max {})",
+    c.actor_pair_index,
+    c.base->draw_groups[dg_index].name,
+    c.base->draw_groups[dg_index].layout_str,
+    c.base->draw_groups[dg_index].stride,
+    c.base->pairs[c.actor_pair_index].max_size
+  );
+}
+
 static void render_update_tile_draw(render_simulation_init& c, const command_draw_tiles& msg) {
   if (!c.tiles_ready || c.tile_pair_index == painter::INVALID_RESOURCE_SLOT) return;
   if (msg.stride != tile_batch::stride()) {
@@ -438,6 +397,30 @@ static void render_update_tile_draw(render_simulation_init& c, const command_dra
 
     auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
     cmd[0].vertexCount = 6;
+    cmd[0].instanceCount = count;
+    cmd[0].firstVertex = 0;
+    cmd[0].firstInstance = 0;
+  }
+}
+
+static void render_update_actor_draw(render_simulation_init& c, const command_draw_actors& msg) {
+  if (!c.actors_ready || c.actor_pair_index == painter::INVALID_RESOURCE_SLOT) return;
+  if (msg.stride != actor_batch::stride()) {
+    utils::warn("render actors: bad instance stride {}, expected {}", msg.stride, actor_batch::stride());
+    return;
+  }
+
+  const auto& pair = c.base->pairs[c.actor_pair_index];
+  const uint32_t count = std::min(msg.count, pair.max_size);
+  const size_t bytes = std::min(msg.bytes.size(), size_t(count) * msg.stride);
+
+  for (uint32_t off = 0; off < 2; ++off) {
+    const auto inst = c.base->get_current_instance_resource_frame(c.actor_pair_index, off);
+    const auto indi = c.base->get_current_indirect_resource_frame(c.actor_pair_index, off);
+    if (bytes != 0) std::memcpy(static_cast<uint8_t*>(inst.mapped) + inst.sub.offset, msg.bytes.data(), bytes);
+
+    auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
+    cmd[0].vertexCount = 3;
     cmd[0].instanceCount = count;
     cmd[0].firstVertex = 0;
     cmd[0].firstInstance = 0;
@@ -541,8 +524,8 @@ static void render_attach_window(render_simulation_init& c, const command_window
   c.base->dump_cache_on_disk(c.config.pipeline_cache_path);
 
   c.graph_ready = true;
-  render_create_test_triangles(c);
   render_create_tile_draw(c);
+  render_create_actor_draw(c);
 }
 
 render_simulation::render_simulation(const size_t frame_time, render_simulation_config config) noexcept :
@@ -562,6 +545,7 @@ void render_simulation::init() {
   actor.add_receiver<command_gpu_transition>(&container->gpu_transition_commands.dis);
   actor.add_receiver<command_write_buffer>(&container->write_buffer_commands.dis);
   actor.add_receiver<command_draw_tiles>(&container->draw_tile_commands.dis);
+  actor.add_receiver<command_draw_actors>(&container->draw_actor_commands.dis);
 
   if (container->config.create_vulkan_on_init) {
     render_create_instance(*container);
@@ -619,9 +603,7 @@ void render_simulation::update(const size_t time) {
       if (cmd.load) {
         cmd.res->load(handle);  // warm→hot: load_warm (upload+gpu_index) — полиморфно
         // как только меш на GPU и граф готов — регистрируем его на отрисовку (только меши!)
-        if (container->graph_ready && cmd.res->loading_type_id == utils::type_id<mesh_resource>()) {
-          render_register_mesh_draw(*container, *static_cast<mesh_resource*>(cmd.res));
-        } else if (cmd.res->loading_type_id == utils::type_id<texture_resource>()) {
+        if (cmd.res->loading_type_id == utils::type_id<texture_resource>()) {
           // текстура на GPU — перезаполняем массив дескриптора 'textures' из texture_slots
           render_bind_textures(*container);
         }
@@ -646,7 +628,11 @@ void render_simulation::update(const size_t time) {
     if (container->graph_ready) render_update_tile_draw(*container, cmd);
   });
 
-  if (container->triangles_ready && container->base->can_draw()) {
+  dispatcher_consume_last(container->draw_actor_commands, [this] (const auto& cmd) {
+    if (container->graph_ready) render_update_actor_draw(*container, cmd);
+  });
+
+  if (container->graph_ready && container->base->can_draw()) {
     container->base->prepare_frame();
     container->ctx.prepare();
     container->ctx.draw();

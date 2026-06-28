@@ -66,6 +66,7 @@ public:
   // Порядок за кадр: input() -> update() -> convert(). input раздаёт ввод в nk,
   // update гоняет lua entry (строит UI), convert гонит nk_convert в host-буферы ниже.
   void input(const input_snapshot_t& in);
+  void set_env_number(const std::string& name, double value);
   void update(const size_t time);
   void convert();
 

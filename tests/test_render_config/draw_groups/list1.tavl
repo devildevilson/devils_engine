@@ -13,3 +13,10 @@
   draw_capacity = fig_types
   type = host_visible
 }
+{
+  name = dg_actors
+  layout = v2ui1c4v1
+  budget = fig_instances
+  draw_capacity = fig_types
+  type = host_visible
+}

@@ -30,6 +30,7 @@ set(HDR_LIST
   include/core/texture_set.h
   include/core/tile_map.h
   include/core/tile_batch.h
+  include/core/actor_simulation.h
   include/core/simulation.h
 )
 
@@ -44,6 +45,7 @@ set(SRC_LIST
   src/core/font_atlas_resource.cpp
   src/core/texture_set.cpp
   src/core/tile_map.cpp
+  src/core/actor_simulation.cpp
   src/core/stb_image_impl.cpp
   src/core/simulation.cpp
 )
