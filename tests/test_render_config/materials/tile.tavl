@@ -1,0 +1,17 @@
+{
+  name = tile
+  shaders = {
+    vertex = "tile.vert.glsl"
+    fragment = "tile.frag.glsl"
+  }
+  depth = {
+    test = false
+    write = false
+    compare = less_or_equal
+  }
+  raster = {
+    cull = none
+    front_face = cw
+    polygon = fill
+  }
+}

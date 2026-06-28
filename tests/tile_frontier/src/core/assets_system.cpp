@@ -11,6 +11,7 @@
 #include "message_dispatcher.h"
 #include "mesh_resource.h"
 #include "texture_resource.h"
+#include "tile_map.h"
 
 namespace tile_frontier {
 namespace core {
@@ -24,8 +25,10 @@ struct assets_simulation_init {
 
   message_dispatcher<command_load_resource> load_commands;
   message_dispatcher<command_gpu_done> gpu_done_commands;
+  message_dispatcher<command_load_chunk> chunk_commands;
   std::vector<command_load_resource> load_cache;
   std::vector<command_gpu_done> gpu_done_cache;
+  std::vector<command_load_chunk> chunk_cache;
 
   std::vector<demiurg::resource_loader::external_job> gpu_jobs;
 
@@ -39,6 +42,7 @@ void assets_simulation::init() {
   container.reset(new assets_simulation_init);
   actor.add_receiver<command_load_resource>(&container->load_commands);
   actor.add_receiver<command_gpu_done>(&container->gpu_done_commands);
+  actor.add_receiver<command_load_chunk>(&container->chunk_commands);
 
   container->resources = std::make_unique<demiurg::resource_system>();
   container->resources->register_type<mesh_resource>("mesh", "mesh");
@@ -66,6 +70,20 @@ void assets_simulation::update(const size_t time) {
   // запросы от main: довести ресурс до target
   dispatcher_consume(container->load_commands, container->load_cache, [this] (const auto& cmd) {
     container->loader.request(cmd.res, static_cast<demiurg::state::values>(cmd.target));
+  });
+
+  // mock world streaming: CPU-чанк генерируется на assets thread и возвращается main actor.
+  dispatcher_consume(container->chunk_commands, container->chunk_cache, [] (const auto& cmd) {
+    if (cmd.reply_to == nullptr || cmd.size == 0) return;
+
+    const tile_chunk chunk = generate_mock_chunk(chunk_coord{cmd.x, cmd.y}, cmd.size, cmd.texture_count);
+    command_chunk_loaded out;
+    out.x = chunk.coord.x;
+    out.y = chunk.coord.y;
+    out.size = chunk.size;
+    out.textures.reserve(chunk.tiles.size());
+    for (const auto& t : chunk.tiles) out.textures.push_back(t.texture);
+    cmd.reply_to->send(std::move(out));
   });
 
   // reconcile: cold↔warm делаем сами, warm↔hot уходит в gpu_jobs

@@ -20,6 +20,8 @@
 #include "messages.h"
 #include "message_dispatcher.h"
 #include "draw_intent.h"
+#include "tile_map.h"
+#include "tile_batch.h"
 #include "mesh_resource.h"
 #include "texture_resource.h"
 
@@ -40,6 +42,7 @@ struct render_simulation_init {
   cached_message_dispatcher<command_window_resize> window_resizing_commands;
   cached_message_dispatcher<command_gpu_transition> gpu_transition_commands;
   cached_message_dispatcher<command_write_buffer> write_buffer_commands;
+  cached_message_dispatcher<command_draw_tiles> draw_tile_commands;
 
   assets_actor* aactor = nullptr; // куда слать ack о завершении GPU-перехода
 
@@ -59,12 +62,14 @@ struct render_simulation_init {
   painter::graphics_ctx ctx;
 
   uint32_t triangle_pair_index = painter::INVALID_RESOURCE_SLOT;
+  uint32_t tile_pair_index = painter::INVALID_RESOURCE_SLOT;
   bool instance_ready = false;
   bool device_ready = false;
   bool base_ready = false;
   bool surface_ready = false;
   bool graph_ready = false;
   bool triangles_ready = false;
+  bool tiles_ready = false;
 
   ~render_simulation_init() noexcept {
     // Best-effort fallback. Normal shutdown should go through render_shutdown().
@@ -120,6 +125,8 @@ static void render_detach_window(render_simulation_init& c) {
   c.surface_ready = false;
   c.graph_ready = false;
   c.triangles_ready = false;
+  c.tiles_ready = false;
+  c.tile_pair_index = painter::INVALID_RESOURCE_SLOT;
 }
 
 static void render_shutdown(render_simulation_init& c) {
@@ -158,6 +165,8 @@ static void render_shutdown(render_simulation_init& c) {
   c.surface_ready = false;
   c.graph_ready = false;
   c.triangles_ready = false;
+  c.tiles_ready = false;
+  c.tile_pair_index = painter::INVALID_RESOURCE_SLOT;
 }
 
 static void render_create_instance(render_simulation_init& c) {
@@ -365,6 +374,76 @@ static void render_register_mesh_draw(render_simulation_init& c, mesh_resource& 
   utils::info("mesh '{}': registered draw, {} instances, {} verts", m.id, count, m.vertex_count);
 }
 
+static void render_create_tile_draw(render_simulation_init& c) {
+  if (c.tiles_ready || !c.graph_ready) return;
+
+  const uint32_t dg_index = c.base->find_draw_group("dg_tiles");
+  if (dg_index == painter::INVALID_RESOURCE_SLOT) {
+    utils::warn("render tiles: draw group 'dg_tiles' not found");
+    return;
+  }
+
+  draw_intent<tile_instance> intent;
+  if (const auto r = intent.bind(std::span<const painter::format::values>(c.base->draw_groups[dg_index].instance_layout), uint32_t(c.base->draw_groups[dg_index].stride)); !r) {
+    utils::warn("render tiles: dg_tiles instance layout mismatch: {} (attr {}, expected {}, actual {})",
+      core::instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
+    return;
+  }
+
+  const auto quad_h = c.assets->register_buffer_storage("tile_quad");
+  painter::buffer_create_info bci{ "g1", 6, 0 };
+  c.assets->create_buffer_storage(quad_h, bci);
+
+  struct vertex_data { float x, y, z; uint32_t c; };
+  const uint32_t white = make_color(1.0f, 1.0f, 1.0f, 1.0f);
+  const vertex_data vertices[] = {
+    { -0.5f, -0.5f, 0.0f, white }, {  0.5f, -0.5f, 0.0f, white }, {  0.5f,  0.5f, 0.0f, white },
+    { -0.5f, -0.5f, 0.0f, white }, {  0.5f,  0.5f, 0.0f, white }, { -0.5f,  0.5f, 0.0f, white },
+  };
+
+  const auto vertex_bytes = std::span(reinterpret_cast<const uint8_t*>(vertices), sizeof(vertices));
+  c.assets->populate_buffer_storage(quad_h, vertex_bytes, std::span<const uint8_t>());
+  c.assets->mark_ready_buffer_slot(quad_h);
+
+  c.tile_pair_index = c.base->register_pair(dg_index, quad_h, 5000);
+
+  for (uint32_t off = 0; off < 2; ++off) {
+    const auto indi = c.base->get_current_indirect_resource_frame(c.tile_pair_index, off);
+    auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
+    cmd[0].vertexCount = 6;
+    cmd[0].instanceCount = 0;
+    cmd[0].firstVertex = 0;
+    cmd[0].firstInstance = 0;
+  }
+
+  c.tiles_ready = true;
+  utils::info("render tiles: registered tile quad draw pair");
+}
+
+static void render_update_tile_draw(render_simulation_init& c, const command_draw_tiles& msg) {
+  if (!c.tiles_ready || c.tile_pair_index == painter::INVALID_RESOURCE_SLOT) return;
+  if (msg.stride != tile_batch::stride()) {
+    utils::warn("render tiles: bad instance stride {}, expected {}", msg.stride, tile_batch::stride());
+    return;
+  }
+
+  const auto& pair = c.base->pairs[c.tile_pair_index];
+  const uint32_t count = std::min(msg.count, pair.max_size);
+  const size_t bytes = std::min(msg.bytes.size(), size_t(count) * msg.stride);
+
+  for (uint32_t off = 0; off < 2; ++off) {
+    const auto inst = c.base->get_current_instance_resource_frame(c.tile_pair_index, off);
+    const auto indi = c.base->get_current_indirect_resource_frame(c.tile_pair_index, off);
+    if (bytes != 0) std::memcpy(static_cast<uint8_t*>(inst.mapped) + inst.sub.offset, msg.bytes.data(), bytes);
+
+    auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
+    cmd[0].vertexCount = 6;
+    cmd[0].instanceCount = count;
+    cmd[0].firstVertex = 0;
+    cmd[0].firstInstance = 0;
+  }
+}
+
 // Мост asset-текстура → дескриптор: пишем view текстуры (assets_base.texture_slots[slot])
 // в asset-текстурный binding дескриптора 'textures' во ВСЕ кадровые сеты. Под-шаг 1 — одна
 // текстура (элемент массива 0). Перед записью ждём GPU (одноразовая загрузка на старте);
@@ -463,6 +542,7 @@ static void render_attach_window(render_simulation_init& c, const command_window
 
   c.graph_ready = true;
   render_create_test_triangles(c);
+  render_create_tile_draw(c);
 }
 
 render_simulation::render_simulation(const size_t frame_time, render_simulation_config config) noexcept :
@@ -481,6 +561,7 @@ void render_simulation::init() {
   actor.add_receiver<command_window_resize>(&container->window_resizing_commands.dis);
   actor.add_receiver<command_gpu_transition>(&container->gpu_transition_commands.dis);
   actor.add_receiver<command_write_buffer>(&container->write_buffer_commands.dis);
+  actor.add_receiver<command_draw_tiles>(&container->draw_tile_commands.dis);
 
   if (container->config.create_vulkan_on_init) {
     render_create_instance(*container);
@@ -560,6 +641,10 @@ void render_simulation::update(const size_t time) {
       render_write_buffer(*container, cmd);
     });
   }
+
+  dispatcher_consume_last(container->draw_tile_commands, [this] (const auto& cmd) {
+    if (container->graph_ready) render_update_tile_draw(*container, cmd);
+  });
 
   if (container->triangles_ready && container->base->can_draw()) {
     container->base->prepare_frame();

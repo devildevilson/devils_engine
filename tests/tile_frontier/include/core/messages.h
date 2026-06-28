@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "actors.h"
+
 // Контракты между системами: структуры, которые ходят через диспетчер сообщений.
 // Это намеренно "тупые" POD-подобные сообщения без логики и без тяжёлых зависимостей
 // (окно/пул объявлены вперёд), чтобы хедер был дешёвым для включения отовсюду.
@@ -137,6 +139,25 @@ struct command_current_loading_state {
 struct command_load_resource {
   demiurg::resource_interface* res;
   int32_t target;
+};
+
+// main → assets: запросить CPU-чанк мира. Это mock-ассетный путь для первого world slice:
+// assets thread детерминированно генерирует payload и отвечает command_chunk_loaded в reply_to.
+// Позже coord/size останутся ключом запроса, а генератор заменится на demiurg-backed ресурс.
+struct command_load_chunk {
+  int32_t x = 0;
+  int32_t y = 0;
+  uint32_t size = 0;
+  uint32_t texture_count = 0;
+  simulation_actor* reply_to = nullptr;
+};
+
+// assets → main: готовый CPU payload чанка. textures.size() == size*size, row-major.
+struct command_chunk_loaded {
+  int32_t x = 0;
+  int32_t y = 0;
+  uint32_t size = 0;
+  std::vector<uint32_t> textures;
 };
 
 // assets → render: «ресурс в памяти, подготовь его на GPU» (warm→hot) либо выгрузи (hot→warm).

@@ -19,6 +19,7 @@
 
 #include "config.h"
 #include "messages.h"
+#include "message_dispatcher.h"
 #include "sound_system.h"
 #include "render_system.h"
 #include "assets_system.h"
@@ -165,9 +166,17 @@ struct simulation_init {
   // модель тайловой карты (главная сторона)
   texture_set textures;     // текстуры карты, собранные по префиксу пути
   tile_grid grid;           // квадратная сетка тайлов
+  uint32_t chunk_size = 16;
+  uint32_t chunks_x = 4;
+  uint32_t chunks_y = 4;
+  std::vector<bool> chunks_requested;
+  std::vector<bool> chunks_loaded;
+  uint32_t chunks_loaded_count = 0;
+  cached_message_dispatcher<command_chunk_loaded> chunk_loaded_commands;
   camera2d cam;             // орто top-down камера
   tile_batch batch;         // продюсер инстансов видимого среза
   bool tiles_logged = false;
+  bool chunks_logged = false;
 
   std::vector<std::string> sound_devices;
   std::atomic_bool sound_devices_ready = false;
@@ -283,6 +292,8 @@ static void setup_visage(simulation_init& c) {
 
 void simulation::init() {
   container.reset(new simulation_init);
+  actor.add_receiver<command_chunk_loaded>(&container->chunk_loaded_commands.dis);
+
   const auto config_path = utils::project_folder() + "resources/config/app.tavl";
   container->config = load_app_config(config_path);
   set_frame_time(frame_time_from_fps(container->config.simulation.main_fps));
@@ -396,14 +407,28 @@ void simulation::init() {
   const uint32_t tex_count = container->textures.gather(*container->assets_sim->resources(), "textures/");
   utils::info("main: gathered {} textures by prefix 'textures/'", tex_count);
 
-  // Квадратная сетка 64x64, тайл 1.0 мир.ед. Индекс текстуры — шахматный паттерн по набору.
+  // Квадратная сетка чанков 4x4 по 16 тайлов. Стартово всё заполнено текстурой 0, затем assets
+  // thread вернёт mock CPU payload для каждого чанка и main применит его к grid.
   container->grid.tile_size = 1.0f;
-  container->grid.resize(64, 64);
-  const uint32_t pick = std::max(tex_count, 1u);
-  for (uint32_t y = 0; y < container->grid.height; ++y) {
-    for (uint32_t x = 0; x < container->grid.width; ++x) {
-      container->grid.at(x, y).texture = (x + y) % pick;
+  container->grid.resize(container->chunks_x * container->chunk_size, container->chunks_y * container->chunk_size);
+  container->chunks_requested.assign(size_t(container->chunks_x) * container->chunks_y, false);
+  container->chunks_loaded.assign(size_t(container->chunks_x) * container->chunks_y, false);
+
+  if (aactor != nullptr) {
+    for (uint32_t cy = 0; cy < container->chunks_y; ++cy) {
+      for (uint32_t cx = 0; cx < container->chunks_x; ++cx) {
+        const size_t idx = size_t(cy) * container->chunks_x + cx;
+        command_load_chunk cmd;
+        cmd.x = int32_t(cx);
+        cmd.y = int32_t(cy);
+        cmd.size = container->chunk_size;
+        cmd.texture_count = std::max(tex_count, 1u);
+        cmd.reply_to = &actor;
+        aactor->send(cmd);
+        container->chunks_requested[idx] = true;
+      }
     }
+    utils::info("main: requested {} mock world chunks via assets", container->chunks_requested.size());
   }
 
   // Камера смотрит в центр карты; половина ширины обзора = 8 тайлов.
@@ -527,6 +552,31 @@ void simulation::update(const size_t time) {
     container->ui_atlas_logged = true;
   }
 
+  if (container) {
+    dispatcher_consume(container->chunk_loaded_commands, [this] (const auto& cmd) {
+      tile_chunk chunk;
+      chunk.coord = chunk_coord{cmd.x, cmd.y};
+      chunk.size = cmd.size;
+      chunk.tiles.resize(cmd.textures.size());
+      for (size_t i = 0; i < cmd.textures.size(); ++i) chunk.tiles[i].texture = cmd.textures[i];
+
+      apply_chunk(container->grid, chunk);
+
+      if (cmd.x >= 0 && cmd.y >= 0 && uint32_t(cmd.x) < container->chunks_x && uint32_t(cmd.y) < container->chunks_y) {
+        const size_t idx = size_t(cmd.y) * container->chunks_x + size_t(cmd.x);
+        if (!container->chunks_loaded[idx]) {
+          container->chunks_loaded[idx] = true;
+          container->chunks_loaded_count += 1;
+        }
+      }
+    });
+
+    if (!container->chunks_logged && container->chunks_loaded_count == container->chunks_loaded.size()) {
+      utils::info("main: all {} mock world chunks loaded", container->chunks_loaded_count);
+      container->chunks_logged = true;
+    }
+  }
+
   // --- пайплайн тайловой карты: фрустум камеры -> срез сетки -> инстансы -> сообщение ---
   if (container && container->batch.valid()) {
     const tile_span span = visible_tiles(container->cam, container->grid, 1.0f);
@@ -565,7 +615,6 @@ void simulation::update(const size_t time) {
     msg.stride = tile_batch::stride();
     msg.bytes.resize(size_t(msg.count) * msg.stride);
     container->batch.blit(std::span<uint8_t>(msg.bytes));
-    // TODO: gactor->send(msg) — когда на render-стороне появится draw_group "v2ui1" + шейдер с MVP.
 
     if (!container->tiles_logged) {
       utils::info(
@@ -573,6 +622,8 @@ void simulation::update(const size_t time) {
         span.x0, span.x1, span.y0, span.y1, msg.count, msg.stride, msg.bytes.size());
       container->tiles_logged = true;
     }
+
+    if (gactor != nullptr) gactor->send(std::move(msg));
   }
 
   // --- интерфейс (visage): главный поток раздаёт ввод, строит UI и гонит nk_convert в буферы ---

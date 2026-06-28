@@ -417,6 +417,8 @@ execution_pass_instance::~execution_pass_instance() noexcept {
 
 void execution_pass_instance::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   const auto& pass = DS_ASSERT_ARRAY_GET(ctx->base->passes, super);
+  make_barriers2(ctx, buf, pass.barriers[0]);
+
   if (pass.render_target != INVALID_RESOURCE_SLOT) {
     const auto& rt = DS_ASSERT_ARRAY_GET(ctx->base->render_targets, pass.render_target);
 
@@ -456,8 +458,6 @@ void execution_pass_instance::process(graphics_ctx* ctx, VkCommandBuffer buf) co
 
     change_usages(ctx, pass.subpasses.front());
   }
-
-  make_barriers2(ctx, buf, pass.barriers[0]);
 }
 
 // разделить нужно на версию С динамикой и без

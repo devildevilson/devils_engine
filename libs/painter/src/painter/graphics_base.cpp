@@ -1355,7 +1355,7 @@ void graphics_base::create_descriptor_set_layouts() {
     for (uint32_t i = 0; i < desc.layout.size(); ++i) {
       const auto& [slot, usage, sampler_index, stages] = desc.layout[i];
       const auto& res = resources[slot];
-      const uint32_t buffers_count = static_cast<uint32_t>(res.type);
+      const uint32_t buffers_count = res.compute_buffering(this);
       const auto stage = vk::ShaderStageFlags(stages);
       if (sampler_index != INVALID_RESOURCE_SLOT) {
         // sampled + sampler => combinedImageSampler с immutable-сэмплером (по одному на элемент массива)
@@ -1672,7 +1672,7 @@ void graphics_base::update_descriptors() {
     for (uint32_t bind = 0; bind < d.layout.size(); ++bind) {
       const auto& [res_index, usage, sampler_index, stages] = d.layout[bind];
       const auto& res = resources[res_index];
-      const uint32_t buffering = static_cast<uint32_t>(res.type);
+      const uint32_t buffering = res.compute_buffering(this);
       const bool is_image = role::is_image(res.role);
       const bool combined = sampler_index != INVALID_RESOURCE_SLOT;
 
@@ -1707,8 +1707,10 @@ void graphics_base::update_descriptors() {
 
           buffers.emplace_back();
           buffers.back().buffer = handle;
-          buffers.back().offset = res.handles[final_index].subbuffer.offset;
-          buffers.back().range = res.handles[final_index].subbuffer.size;
+          const auto& sub = res.handles[final_index].subbuffer;
+          const size_t available = sub.offset < cont.size ? cont.size - sub.offset : 0;
+          buffers.back().offset = sub.offset;
+          buffers.back().range = sub.size <= available ? sub.size : available;
         }
       }
     }

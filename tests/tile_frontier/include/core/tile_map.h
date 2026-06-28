@@ -10,6 +10,7 @@
 // Главная (геймплейная) сторона: модель мира под рендер тайловой карты.
 //  - tile        : одна клетка (пока хранит только индекс текстуры)
 //  - tile_grid   : плоская квадратная сетка W x H, row-major, мировые координаты
+//  - tile_chunk  : CPU payload одного чанка; пока генерируется mock-ассетами
 //  - texture_set : набор текстур, собранный из реестра ассетов по префиксу пути
 //  - camera2d    : ортографическая top-down камера; её "фрустум" = мировой прямоугольник
 //  - tile_span   : прямоугольный срез сетки (пересечение view rect с сеткой)
@@ -45,6 +46,31 @@ struct tile_grid {
   // мировой размер всей карты
   glm::vec2 world_extent() const noexcept { return glm::vec2(float(width), float(height)) * tile_size; }
 };
+
+struct chunk_coord {
+  int32_t x = 0;
+  int32_t y = 0;
+};
+
+// CPU-представление одного квадратного чанка. tiles.size() == size*size, row-major.
+// Чанк (cx,cy) покрывает глобальные тайлы:
+//   x in [cx*size, (cx+1)*size), y in [cy*size, (cy+1)*size)
+struct tile_chunk {
+  chunk_coord coord{};
+  uint32_t size = 0;
+  std::vector<tile> tiles;
+
+  bool valid() const noexcept { return size != 0 && tiles.size() == size_t(size) * size; }
+  tile& at(const uint32_t x, const uint32_t y) noexcept { return tiles[size_t(y) * size + x]; }
+  const tile& at(const uint32_t x, const uint32_t y) const noexcept { return tiles[size_t(y) * size + x]; }
+};
+
+// Mock "asset load": детерминированно генерирует содержимое чанка на CPU. Реальная версия позже
+// заменит тело на чтение/декод demiurg-ресурса, но contract останется тем же: coord -> tile_chunk.
+tile_chunk generate_mock_chunk(chunk_coord coord, uint32_t chunk_size, uint32_t texture_count);
+
+// Скопировать чанк в глобальную сетку. Часть чанка за границей grid молча отбрасывается.
+void apply_chunk(tile_grid& grid, const tile_chunk& chunk);
 
 // Прямоугольный срез сетки: полуоткрытый диапазон [x0,x1) x [y0,y1).
 struct tile_span {
