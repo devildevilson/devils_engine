@@ -216,7 +216,6 @@ static std::vector<format::values> parse_layout(const std::string_view& str) {
   // нас инресуют сиквенсы букв, после них сиквенсы цифр
   size_t i = 0;
   std::vector<format::values> parts;
-  bool cur_letter = true;
   while (i < str.size()) {
     const size_t start = i;
     for (; i < str.size() && !isdigit(str[i]); ++i) {}
@@ -225,6 +224,11 @@ static std::vector<format::values> parse_layout(const std::string_view& str) {
     const auto part = str.substr(start, i - start);
     const auto fmt_id = format::from_string(part);
     if (fmt_id >= format::count) utils::error{}("Could not parse format part '{}' from format '{}'", part, str);
+
+    if (fmt_id == format::mat4 || fmt_id == format::mat44) {
+      parts.insert(parts.end(), 4, format::v4);
+      continue;
+    }
 
     parts.push_back(fmt_id);
   }

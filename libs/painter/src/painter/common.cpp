@@ -901,6 +901,7 @@ uint32_t size(const values u) noexcept {
   if (u == format::dispatch3) return sizeof(VkDispatchIndirectCommand);
   if (u == format::draw4) return sizeof(VkDrawIndirectCommand);
   if (u == format::indexed5) return sizeof(VkDrawIndexedIndirectCommand);
+  if (u == format::mat4 || u == format::mat44) return 4 * format::size(format::v4);
   if (u == format::swapchain4) return 0;
   return format_element_size(to_vulkan_format(u), to_vulkan_aspect(u));
 }
@@ -910,6 +911,7 @@ uint32_t el_count(const values u) noexcept {
   if (u == format::dispatch3) return sizeof(VkDispatchIndirectCommand) / sizeof(uint32_t);
   if (u == format::draw4) return sizeof(VkDrawIndirectCommand) / sizeof(uint32_t);
   if (u == format::indexed5) return sizeof(VkDrawIndexedIndirectCommand) / sizeof(uint32_t);
+  if (u == format::mat4 || u == format::mat44) return 16;
   if (u == format::swapchain4) return 0;
   return format_channel_count(to_vulkan_format(u));
 }

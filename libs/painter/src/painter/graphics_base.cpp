@@ -12,6 +12,28 @@
 namespace devils_engine {
 namespace painter {
 
+static size_t buffer_suballocation_alignment(const VkPhysicalDevice physical_device, const uint32_t usage_mask) {
+  if (physical_device == VK_NULL_HANDLE) return 1;
+
+  const auto props = vk::PhysicalDevice(physical_device).getProperties();
+  size_t alignment = 1;
+
+  const auto has_usage = [usage_mask](const VkBufferUsageFlags bit) noexcept {
+    return (usage_mask & uint32_t(bit)) != 0;
+  };
+
+  if (has_usage(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)) {
+    alignment = std::max(alignment, size_t(props.limits.minUniformBufferOffsetAlignment));
+  }
+  if (has_usage(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+    alignment = std::max(alignment, size_t(props.limits.minStorageBufferOffsetAlignment));
+  }
+  if (has_usage(VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT) || has_usage(VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT)) {
+    alignment = std::max(alignment, size_t(props.limits.minTexelBufferOffsetAlignment));
+  }
+
+  return std::max<size_t>(alignment, 1);
+}
 
 graphics_base::graphics_base(VkInstance instance, VkDevice device, VkPhysicalDevice physical_device, enum presentation_engine_type presentation_engine_type) noexcept :
   instance(instance),
@@ -1443,6 +1465,8 @@ void graphics_base::create_resources() {
   std::vector<matching_resources> matching;
 
   std::vector<uint32_t> container_table(resources.size(), 0);
+  std::vector<size_t> frame_sizes(resources.size(), 0);
+  std::vector<size_t> frame_strides(resources.size(), 0);
 
   for (uint32_t i = 0; i < resources.size(); ++i) {
     auto& res = resources[i];
@@ -1474,6 +1498,12 @@ void graphics_base::create_resources() {
     auto [buffer_size, img_ext] = res.compute_frame_size(this);
     const uint32_t buffering = res.compute_buffering(this);
     auto image_extent = vk::Extent2D{ std::get<0>(img_ext), std::get<1>(img_ext) };
+    const size_t frame_size = buffer_size;
+    const size_t frame_stride = is_buffer
+      ? utils::align_to(frame_size, buffer_suballocation_alignment(physical_device, res.usage_mask))
+      : frame_size;
+    frame_sizes[i] = frame_size;
+    frame_strides[i] = frame_stride;
 
     if (buffering == 0) {
       utils::error{}("Invalid buffering for resource '{}'", res.name);
@@ -1547,7 +1577,7 @@ void graphics_base::create_resources() {
       matching.back().layer_offset = 0;
       matching.back().offset = 0;
       matching.back().size = 0;
-      matching.back().layer_size = buffer_size;
+      matching.back().layer_size = frame_stride;
 
       itr = matching.begin() + (matching.size()-1);
     }
@@ -1556,7 +1586,7 @@ void graphics_base::create_resources() {
     // на хосте никаких layers наверное не будет и нужно несколько ресурсов городить
     // не будет, да надо в принципе отказаться от host visible картинок в этом контексте
     if (!is_buffer) itr->layers += buffering;
-    itr->size += buffer_size * buffering;
+    itr->size += frame_stride * buffering;
     if (itr->name.empty()) itr->name = res.name;
     else itr->name += " | " + res.name;
 
@@ -1591,7 +1621,8 @@ void graphics_base::create_resources() {
     const bool is_image = role::is_image(res.role);
 
     const uint32_t buffering = res.compute_buffering(this);
-    const auto frame_size = std::get<0>(res.compute_frame_size(this));
+    const auto frame_size = frame_sizes[i];
+    const auto frame_stride = frame_strides[i];
 
     for (uint32_t j = 0; j < buffering; ++j) {
       res.handles[j].index = cont_index;
@@ -1625,12 +1656,12 @@ void graphics_base::create_resources() {
 
         res.handles[j].subimage = std::bit_cast<subresource_image>(ivci.subresourceRange);
       } else {
-        res.handles[j].subbuffer.offset = match.offset + frame_size * j;
+        res.handles[j].subbuffer.offset = match.offset + frame_stride * j;
         res.handles[j].subbuffer.size = frame_size;
       }
     }
 
-    match.offset += frame_size * buffering;
+    match.offset += frame_stride * buffering;
     match.layer_offset += buffering;
   }
 }

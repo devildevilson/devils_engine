@@ -16,7 +16,7 @@
   swap = swapchain
 }
 // Общий uniform-буфер (один на все шейдеры), host-visible, double-buffer (per_update).
-// std140-раскладка (см. global_ubo.h / global_ubo в шейдерах), 9*v4 = 144 байта:
+// std140-раскладка (см. global_ubo.h / global_ubo в шейдерах), 2*mat4 + 4*v4 = 192 байта:
 //   mat4 view_proj (мир->clip, камера) + mat4 ui_proj (пиксели окна->clip, UI) +
 //   vec4 misc (x=screen_w, y=screen_h, z=sdf_px_range, w=reserved).
 // role=upload — host пишет напрямую. ВНИМАНИЕ: usage_mask собирается из ссылок в ШАГАХ —
@@ -24,7 +24,7 @@
 // уйдёт на шаге 4, когда UI-шаг сошлётся на camera_buffer и дескриптор его свяжет).
 {
   name = camera_buffer
-  format = v4v4v4v4v4v4v4v4v4v4v4v4
+  format = mat4mat4v4v4v4v4
   role = upload
   size = single_element
   type = doublebuffer
