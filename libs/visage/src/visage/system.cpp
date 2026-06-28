@@ -121,7 +121,7 @@ system::system(const font_t* default_font) : default_font(default_font), effect_
     nk_handle h; h.id = int(effect_arena.offset_of(e));
     userdata_stack.push_back(ctx->userdata.id); // для восстановления на pop
     nk_set_user_data(ctx.get(), h);
-    nk_style_push_font(ctx.get(), this->default_font->user_font(size));
+    nk_style_push_font(ctx.get(), this->sized_font(size));
   });
   nk_tbl.set_function("pop_font", [this]() {
     nk_style_pop_font(ctx.get());
@@ -137,6 +137,19 @@ system::~system() noexcept {
   bindings::setup_nk_context(nullptr);
   if (cmds) nk_buffer_free(cmds.get());
   if (ctx) nk_free(ctx.get());
+}
+
+nk_user_font* system::sized_font(float height) {
+  const int tex_id = default_font->nkfont->texture.id;
+  for (auto &[h, uf] : sized_fonts_) {
+    if (h == height) { uf->texture.id = tex_id; return uf.get(); }
+  }
+  // копируем базовый nkfont (query/width/userdata=font_t*/texture) и меняем только height
+  auto uf = std::make_unique<nk_user_font>(*default_font->nkfont);
+  uf->height = height;
+  nk_user_font* ptr = uf.get();
+  sized_fonts_.emplace_back(height, std::move(uf));
+  return ptr;
 }
 
 void system::load_entry_point(const std::string &path) {

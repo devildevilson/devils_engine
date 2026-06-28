@@ -19,25 +19,9 @@ namespace visage {
 font_t::~font_t() = default;
 
 void font_t::set_texture_id(uint32_t id) {
+  // только базовый nkfont; sized-варианты живут в visage::system и берут актуальный texture.id
+  // отсюда при каждом push_font, так что гонки «push до HOT -> stale id» больше нет.
   if (nkfont) nkfont->texture.id = int(id);
-  // обновляем и уже созданные sized-варианты: они могли быть закэшированы push_font'ом ДО того,
-  // как атлас дошёл до HOT (тогда у них texture.id ещё 0 -> convert считал их текст null-текстурой
-  // = mode solid -> глифы рисовались сплошными блоками).
-  for (auto &[h, uf] : sized_fonts) {
-    if (uf) uf->texture.id = int(id);
-  }
-}
-
-const nk_user_font *font_t::user_font(float height) const {
-  for (const auto &[h, uf] : sized_fonts) {
-    if (h == height) return uf.get();
-  }
-  // копируем базовый nkfont (query/width/userdata=this/texture) и меняем только height
-  auto uf = std::make_unique<nk_user_font>(*nkfont);
-  uf->height = height;
-  const nk_user_font *ptr = uf.get();
-  sized_fonts.emplace_back(height, std::move(uf));
-  return ptr;
 }
 
 const font_t::glyph_t *font_t::find_glyph(const uint32_t codepoint) const {

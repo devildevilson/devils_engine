@@ -6,12 +6,15 @@
 #include <chrono>
 #include <span>
 #include <vector>
+#include <utility>
+#include <memory>
 #include "devils_engine/bindings/lua_header.h"
 #include "devils_engine/utils/stack_allocator.h"
 #include "render_output.h"
 
 struct nk_context;
 struct nk_buffer;
+struct nk_user_font;
 
 namespace devils_engine {
 namespace visage {
@@ -74,6 +77,12 @@ public:
   nk_context* ctx_native() const noexcept;
   nk_buffer* cmds_native() const noexcept;
 private:
+  // nk_user_font под заданный размер (в пикселях) для nk_style_push_font. Кэшируется по размеру:
+  // MSDF масштабируется в шейдере, поэтому все варианты делят атлас/глифы (query/width/userdata)
+  // базового default_font->nkfont и отличаются только height. texture.id освежается из nkfont
+  // при каждом вызове (атлас мог дойти до HOT уже после кэширования варианта).
+  nk_user_font* sized_font(float height);
+
   sol::state lua;
   sol::environment env;
   const font_t* default_font;
@@ -94,6 +103,9 @@ private:
   utils::stack_allocator effect_arena;
   // стек userdata для баланса push_font/pop_font (у nuklear нет стека userdata, как у font)
   std::vector<int> userdata_stack;
+  // кэш nk_user_font по размерам (см. sized_font). Живёт всё время жизни system; nk держит
+  // указатели на варианты в стеке стиля и draw-командах, поэтому хранилище должно быть стабильным.
+  std::vector<std::pair<float, std::unique_ptr<nk_user_font>>> sized_fonts_;
 };
 }
 }

@@ -6,7 +6,6 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include <utility>
 
 struct nk_user_font_glyph;
 typedef uint32_t nk_rune;
@@ -67,19 +66,10 @@ struct font_t {
   struct config *config; // конфиг тут хранить?
   std::unique_ptr<nk_user_font> nkfont; // базовый (дефолтный размер)
 
-  // кэш nk_user_font под разные размеры: MSDF масштабируется в шейдере на любой размер, поэтому
-  // все варианты делят тот же атлас/глифы (query/width/userdata/texture), различаясь только height.
-  // mutable: создаётся по запросу из const-контекста (default_font const* в visage::system).
-  mutable std::vector<std::pair<float, std::unique_ptr<nk_user_font>>> sized_fonts;
-
   // деструктор объявлен и определён в font.cpp: nkfont — unique_ptr<nk_user_font> (неполный
   // тип здесь), поэтому уничтожение должно происходить там, где nk_user_font полный.
   font_t() = default;
   ~font_t();
-
-  // nk_user_font с заданным размером (в пикселях), создаётся/кэшируется на основе nkfont.
-  // Для nk_style_push_font (динамический размер шрифта).
-  const nk_user_font *user_font(float height) const;
 
   const glyph_t *find_glyph(const uint32_t codepoint) const;
   void query_font_glyph(float font_height, struct nk_user_font_glyph *glyph, nk_rune codepoint, nk_rune next_codepoint) const;
@@ -87,6 +77,7 @@ struct font_t {
 
   // индекс GPU-слота атласа этого шрифта: nuklear зашивает его в texture.id draw-команд текста,
   // а шейдер UI по нему сэмплит нужную текстуру. Определён в font.cpp (nk_user_font там полный).
+  // Варианты под разные размеры держит visage::system и освежает texture.id при push_font.
   void set_texture_id(uint32_t id);
 };
 
