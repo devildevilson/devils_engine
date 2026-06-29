@@ -8,8 +8,11 @@
 #include "devils_engine/mood/runtime.h"
 #include "devils_engine/act/registry.h"
 #include "devils_engine/act/function.h"
+#include "devils_engine/utils/kd_tree.h"
 
 #include <memory>
+#include <vector>
+#include <algorithm>
 
 using namespace devils_engine;
 
@@ -402,5 +405,102 @@ TEST_CASE("String utility tests [utils::string]") {
     REQUIRE(utils::string::find_ci("QWERTYUIOP", "qwe") == 0);
     REQUIRE(utils::string::find_ci("QwErTyUiOp", "qWe") == 0);
     REQUIRE(utils::string::find_ci("QwErTyUiOp", "ert") == 2);
+  }
+}
+
+TEST_CASE("kd_tree nearest/radius with predicate [utils::kd_tree]") {
+  struct pl { uint32_t id; float size; };
+  struct pt { float x, y; uint32_t id; float size; };
+  const std::vector<pt> pts = {
+    {  0.0f,  0.0f, 0, 1.0f }, {  1.0f,  0.0f, 1, 2.0f }, {  0.0f,  1.0f, 2, 0.5f },
+    {  3.0f,  3.0f, 3, 3.0f }, { -2.0f,  1.0f, 4, 2.5f }, {  5.0f,  5.0f, 5, 0.2f },
+    {  2.0f, -1.0f, 6, 1.5f }, { -1.0f, -1.0f, 7, 4.0f }, {  4.0f,  0.0f, 8, 0.8f },
+    {  0.0f,  4.0f, 9, 2.2f },
+  };
+
+  utils::kd_tree<pl> tree;
+  for (const auto& p : pts) tree.insert(utils::kd_tree<pl>::point{ p.x, p.y }, pl{ p.id, p.size });
+  tree.build();
+  REQUIRE(tree.size() == pts.size());
+
+  // брутфорс: минимальная дистанция² среди СТРОГО крупнее (исключая self) в радиусе r.
+  const auto brute_d2 = [&](const pt& self, const float r) {
+    float best = r * r;
+    for (const auto& p : pts) {
+      if (p.id == self.id || !(p.size > self.size)) continue;
+      const float dx = p.x - self.x, dy = p.y - self.y, d2 = dx * dx + dy * dy;
+      if (d2 < best) best = d2;
+    }
+    return best; // == r*r если никого нет
+  };
+
+  SUBCASE("nearest-bigger matches brute force for every actor") {
+    const float r = 100.0f;
+    for (const auto& self : pts) {
+      const auto* n = tree.nearest(utils::kd_tree<pl>::point{ self.x, self.y }, r,
+        [&](const pl& p) { return p.id != self.id && p.size > self.size; });
+      const float bd2 = brute_d2(self, r);
+      if (bd2 >= r * r) {
+        REQUIRE(n == nullptr); // никого крупнее
+      } else {
+        REQUIRE(n != nullptr);
+        const float dx = n->pos[0] - self.x, dy = n->pos[1] - self.y;
+        REQUIRE((dx * dx + dy * dy) == doctest::Approx(bd2)); // та же дистанция (устойчиво к ничьим)
+        REQUIRE(n->payload.size > self.size);
+      }
+    }
+  }
+
+  SUBCASE("radius bound excludes targets beyond it") {
+    // у точки 5 (5,5, size 0.2) все крупнее далеко — крошечный радиус ⇒ никого.
+    const auto* n = tree.nearest(utils::kd_tree<pl>::point{ 5.0f, 5.0f }, 0.5f,
+      [](const pl& p) { return p.size > 0.2f; });
+    REQUIRE(n == nullptr);
+  }
+
+  SUBCASE("predicate excludes self") {
+    const auto* n = tree.nearest(utils::kd_tree<pl>::point{ 0.0f, 0.0f }, 100.0f,
+      [](const pl& p) { return p.id != 0; });
+    REQUIRE(n != nullptr);
+    REQUIRE(n->payload.id != 0u);
+  }
+
+  SUBCASE("empty tree returns nullptr") {
+    utils::kd_tree<pl> empty;
+    empty.build();
+    REQUIRE(empty.nearest(utils::kd_tree<pl>::point{ 0.0f, 0.0f }, 10.0f,
+      [](const pl&) { return true; }) == nullptr);
+  }
+
+  SUBCASE("radius visits exactly the in-range set") {
+    std::vector<uint32_t> got;
+    tree.radius(utils::kd_tree<pl>::point{ 0.0f, 0.0f }, 1.5f, [](const pl&) { return true; },
+      [&](const utils::kd_tree<pl>::node& n) { got.push_back(n.payload.id); });
+    std::vector<uint32_t> exp;
+    for (const auto& p : pts) if (p.x * p.x + p.y * p.y <= 1.5f * 1.5f) exp.push_back(p.id);
+    std::sort(got.begin(), got.end());
+    std::sort(exp.begin(), exp.end());
+    REQUIRE(got == exp);
+  }
+
+  SUBCASE("nearest2 equals two separate nearest calls") {
+    const auto d2 = [](const utils::kd_tree<pl>::node* n, const pt& self) {
+      if (n == nullptr) return -1.0f;
+      const float dx = n->pos[0] - self.x, dy = n->pos[1] - self.y;
+      return dx * dx + dy * dy;
+    };
+    const float r = 100.0f;
+    for (const auto& self : pts) {
+      const utils::kd_tree<pl>::point q{ self.x, self.y };
+      const auto bigger  = [&](const pl& p) { return p.id != self.id && p.size > self.size; };
+      const auto smaller = [&](const pl& p) { return p.id != self.id && p.size < self.size; };
+      const auto [a2, b2] = tree.nearest2(q, r, bigger, smaller);
+      const auto* a1 = tree.nearest(q, r, bigger);
+      const auto* b1 = tree.nearest(q, r, smaller);
+      REQUIRE((a2 == nullptr) == (a1 == nullptr));
+      REQUIRE((b2 == nullptr) == (b1 == nullptr));
+      if (a1 != nullptr) REQUIRE(d2(a2, self) == doctest::Approx(d2(a1, self)));
+      if (b1 != nullptr) REQUIRE(d2(b2, self) == doctest::Approx(d2(b1, self)));
+    }
   }
 }

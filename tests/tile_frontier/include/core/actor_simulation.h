@@ -14,6 +14,7 @@
 #include <devils_engine/act/registry.h>     // act::registry + function<RetT>
 #include <devils_engine/act/intent.h>       // act::intent — обобщённый буфер интентов
 #include <devils_engine/acumen/system.h>    // acumen::system — GOAP над act::registry
+#include <devils_engine/utils/kd_tree.h>    // utils::kd_tree — пространственный акселератор sense
 
 #include "draw_intent.h"
 #include "tile_map.h"
@@ -43,6 +44,13 @@ struct actor_visual {
   float size = 1.0f;
 };
 
+// Payload точки в kD-дереве восприятия: размер (для фильтра крупнее/мельче) и индекс
+// сущности (исключить себя). Позиция лежит в самом узле дерева (node.pos).
+struct perception_target {
+  float size = 0.0f;
+  uint32_t idx = 0;
+};
+
 // Восприятие: результат слоя поиска цели (sense-фаза). Хранит позицию ближайшего
 // БО́ЛЬШЕГО актора (угроза, от него бежим) и ближайшего МЕНЬШЕГО (добыча, за ней
 // гонимся). Предикаты/эффекты GOAP читают это за O(1) вместо повторного скана мира.
@@ -51,6 +59,13 @@ struct actor_perception {
   glm::vec2 prey_pos{0.0f, 0.0f};   // ближайший актор мельче нас
   bool has_threat = false;
   bool has_prey = false;
+};
+
+// Состояние планировщика ИИ на акторе: тик последнего решения. «Давность» (tick -
+// last_think) = приоритет на повторное обдумывание (дольше ждал — раньше выберут). Между
+// решениями актор коастит на последней скорости. Сюда же позже ляжет LOD/таймаут/dirty.
+struct actor_cognition {
+  uint64_t last_think = 0;
 };
 
 // GPU instance for actor draw group. Layout: "v2ui1c4v1".
@@ -102,10 +117,12 @@ private:
   // Регистрирует нативные геймплейные функции (предикаты-метрики + эффекты-действия)
   // в act::registry и собирает GOAP-систему acumen (резолв по имени — одноразовый).
   void setup_brain_registry();
-  // Слой поиска цели: наполняет actor_perception (ближайшая угроза/добыча). Сейчас
-  // наивный O(N²) проход — очевидный кандидат на пространственный грид при росте N.
-  void sense();
-  void think(uint64_t tick);
+  // Строит kD-дерево восприятия над ВСЕМИ акторами (позиции меняются каждый тик).
+  void build_sense_tree();
+  // Планировщик когниции: выбирает «созревших» акторов в пределах бюджета (приоритет —
+  // давность решения), и только им обновляет восприятие + гоняет GOAP → intent. Остальные
+  // коастят на прошлом решении. Так стоимость ИИ ∝ бюджету, а не числу акторов.
+  void cognition(uint64_t tick);
   void apply(float dt_seconds);
 
   devils_engine::aesthetics::world world_;
@@ -117,7 +134,19 @@ private:
   // мемоизация решений GOAP: акторы в одном значащем состоянии делят один просчёт A*.
   // (one-per-thread; при MT — per-worker + merge между кадрами.)
   devils_engine::acumen::solution_cache plan_cache_;
+  // kD-дерево слоя восприятия: перестраивается раз за тик, отвечает на «ближайший
+  // крупнее/мельче в радиусе» с прунингом (бывший наивный/грид-скан). Арена реюзится.
+  devils_engine::utils::kd_tree<perception_target> sense_tree_;
   std::vector<devils_engine::act::intent> intents_;   // обобщённый буфер интентов (sort by actor id)
+
+  // ── планировщик когниции ──
+  // бюджет: максимум акторов, обдумываемых за тик. Стоимость ИИ ∝ ему, а не числу акторов;
+  // остальные коастят. Приоритет выбора — давность (никто не голодает). count-budget
+  // (не время) → детерминированно. ~1/8 от 4096 для демонстрации децимации; крутилка.
+  uint32_t think_budget_ = 512;
+  struct think_request { uint64_t overdue; devils_engine::aesthetics::entityid_t actor; };
+  std::vector<think_request> due_; // переиспользуемый скретч отбора
+
   uint64_t tick_ = 0;
 };
 

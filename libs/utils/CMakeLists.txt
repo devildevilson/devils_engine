@@ -69,6 +69,7 @@ set(HDR_LIST
   include/devils_engine/utils/event_dispatcher.h
   include/devils_engine/utils/event_consumer.h
   include/devils_engine/utils/context_stack.h
+  include/devils_engine/utils/kd_tree.h
   #include/devils_engine/utils/patterns.h
  "include/devils_engine/utils/actor_ref.h" "include/devils_engine/utils/string_id.h")
 

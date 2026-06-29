@@ -6,13 +6,9 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
-#include <limits>
 #include <memory>
 #include <type_traits>
 #include <utility>
-#include <vector>
-
-#include <gtl/phmap.hpp>
 
 #include <devils_engine/aesthetics/common.h>
 #include <devils_engine/act/exec_context.h>
@@ -91,66 +87,11 @@ namespace flags {
 enum : size_t { threat_present = 0, prey_present = 1, resolved = 2 };
 }
 
-// Слой поиска цели — простенький равномерный грид. Эффективный радиус восприятия ≈ одна
-// ячейка: query смотрит 3×3 соседних ячейки, т.е. актор «видит» цель примерно в пределах
-// detection_cell. Это одновременно ускоритель (O(акторов_в_ячейке) на запрос вместо O(N))
-// и модель ограниченного зрения. Грид на хеш-карте → произвольные (в т.ч. отрицательные)
-// координаты, движение не ограничено. Точный ближайший через расширение колец — потом.
-static constexpr float detection_cell = 3.0f; // мир в тайлах (tile_size=1), шаг спавна ~1
-
-struct nearest_result { glm::vec2 pos; bool found; };
-
-class spatial_grid {
-public:
-  void build(const aesthetics::world& world) {
-    cells_.clear();
-    for (auto [id, pos, vis] : world.view<actor_position, actor_visual>()) {
-      cells_[key_of(pos->value)].push_back(
-        entry{ pos->value, vis->size, aesthetics::get_entityid_index(id) });
-    }
-  }
-
-  // Ближайший актор СТРОГО больше (want_bigger=true) либо меньше (false) в 3×3 ячейках
-  // вокруг self. Тай-брейк по индексу сущности — детерминированный выбор при равных дистанциях.
-  nearest_result query(const glm::vec2 self_pos, const float self_size,
-                       const size_t self_idx, const bool want_bigger) const {
-    nearest_result best{ glm::vec2{0.0f, 0.0f}, false };
-    float best_d2 = std::numeric_limits<float>::max();
-    size_t best_idx = 0;
-    const int32_t cx = cell_coord(self_pos.x);
-    const int32_t cy = cell_coord(self_pos.y);
-
-    for (int32_t dy = -1; dy <= 1; ++dy) {
-      for (int32_t dx = -1; dx <= 1; ++dx) {
-        const auto it = cells_.find(key(cx + dx, cy + dy));
-        if (it == cells_.end()) continue;
-        for (const auto& e : it->second) {
-          if (e.idx == self_idx) continue;
-          const bool match = want_bigger ? (e.size > self_size) : (e.size < self_size);
-          if (!match) continue;
-          const glm::vec2 d = e.pos - self_pos;
-          const float d2 = d.x * d.x + d.y * d.y;
-          if (d2 < best_d2 || (d2 == best_d2 && e.idx < best_idx)) {
-            best_d2 = d2;
-            best_idx = e.idx;
-            best = nearest_result{ e.pos, true };
-          }
-        }
-      }
-    }
-    return best;
-  }
-
-private:
-  struct entry { glm::vec2 pos; float size; size_t idx; };
-  static int32_t cell_coord(const float v) noexcept { return int32_t(std::floor(v / detection_cell)); }
-  static int64_t key(const int32_t cx, const int32_t cy) noexcept {
-    return (int64_t(uint32_t(cx)) << 32) | int64_t(uint32_t(cy));
-  }
-  static int64_t key_of(const glm::vec2 p) noexcept { return key(cell_coord(p.x), cell_coord(p.y)); }
-
-  gtl::flat_hash_map<int64_t, std::vector<entry>> cells_;
-};
+// Радиус восприятия для kD-запроса (мировые единицы, tile_size=1, шаг спавна ~1).
+// Ограничивает поиск «ближайшего крупнее/мельче» (иначе предикат-NN без кандидата
+// деградирует в полный обход) и задаёт модель ограниченного зрения: вне радиуса — не видим.
+// Меньше радиус → меньше площадь поиска → дешевле query (квадратично).
+static constexpr float perception_radius = 4.0f;
 
 static uint32_t mix32(uint32_t x) noexcept {
   x ^= x >> 16;
@@ -330,63 +271,100 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
     world_.create<actor_brain>(id, seed, seed % 31u, 0.65f + unit_from_hash(seed) * 1.35f);
     world_.create<actor_visual>(id, (i + 1u) % tex_count, actor_color(i), actor_size(seed));
     world_.create<actor_perception>(id);
+    world_.create<actor_cognition>(id); // last_think=0 ⇒ все «созрели» на старте, бюджет раскатает по тикам
   }
 }
 
 actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& batch) {
   tick_ += 1;
-  perf("sense", &actor_world_slice::sense, this);            // слой поиска цели
-  perf("think", &actor_world_slice::think, this, tick_);     // GOAP: действие → intent
-  perf("apply", &actor_world_slice::apply, this, dt_seconds);
-  perf("build", &actor_batch::build, &batch, world_);        // упаковка инстансов в батч
+  perf("sense.tree", &actor_world_slice::build_sense_tree, this); // kD над всеми (позиции)
+  perf("cognition",  &actor_world_slice::cognition, this, tick_); // отбор по бюджету → восприятие + GOAP
+  perf("apply",      &actor_world_slice::apply, this, dt_seconds);
+  perf("build",      &actor_batch::build, &batch, world_);        // упаковка инстансов в батч
 
   return actor_metrics{
     uint32_t(world_.count<actor_position>()),
-    uint32_t(intents_.size()),
+    uint32_t(intents_.size()), // = сколько актороов реально думали в этот тик
     batch.count(),
     tick_
   };
 }
 
-// sense — слой поиска цели: строим грид раз за тик, затем на каждого актора берём
-// ближайшего крупнее (угроза) и мельче (добыча) из 3×3 ячеек, кладём в actor_perception.
-void actor_world_slice::sense() {
-  spatial_grid grid;
-  grid.build(world_);
-
-  for (auto [id, pos, vis, per] : world_.view<actor_position, actor_visual, actor_perception>()) {
-    const size_t idx = aesthetics::get_entityid_index(id);
-    const auto threat = grid.query(pos->value, vis->size, idx, /*want_bigger=*/true);
-    const auto prey   = grid.query(pos->value, vis->size, idx, /*want_bigger=*/false);
-    per->threat_pos = threat.pos; per->has_threat = threat.found;
-    per->prey_pos   = prey.pos;   per->has_prey   = prey.found;
+// build_sense_tree — kD-дерево над ВСЕМИ акторами (даже не думающие — потенциальные цели).
+// Дёшево (O(N), build ~0.5ms на 4096); запросы по нему делает только cognition для отобранных.
+void actor_world_slice::build_sense_tree() {
+  using kd = utils::kd_tree<perception_target>;
+  sense_tree_.clear();
+  for (auto [id, pos, vis] : world_.view<actor_position, actor_visual>()) {
+    sense_tree_.insert(kd::point{ pos->value.x, pos->value.y },
+                       perception_target{ vis->size, uint32_t(aesthetics::get_entityid_index(id)) });
   }
+  sense_tree_.build();
 }
 
-// think — ЧИСТАЯ фаза: на каждую сущность строим dry-run контекст, считаем GOAP-стейт
-// предикатами и планируем (find_solution) до цели resolved. Первое действие плана
-// (flee/chase/wander) → intent call_function с fn_id эффекта. Мир НЕ мутируется. Буфер
-// сортируем по индексу сущности, чтобы apply шла в фиксированном порядке.
-void actor_world_slice::think(const uint64_t tick) {
+// cognition — ПЛАНИРОВЩИК + восприятие + GOAP для отобранного подмножества.
+//   1) отбор: все «созревшие» (last_think < tick) → приоритет по давности (дольше ждал —
+//      раньше; тай-брейк по id → детерминированно), обрезка бюджетом think_budget_.
+//   2) на каждого отобранного: kD-запрос восприятия (угроза/добыча) + GOAP decide → intent,
+//      пометка last_think=tick. Не отобранные пропускают всё и коастят на прошлой скорости.
+// Стоимость восприятия+GOAP ∝ бюджету, а не числу акторов. Отбор — O(N)-скан (на миллионах
+// заменить на timing-wheel/бакеты по давности); горячая работа ограничена бюджетом.
+void actor_world_slice::cognition(const uint64_t tick) {
+  using kd = utils::kd_tree<perception_target>;
   intents_.clear();
+
+  // (1) собрать созревших и обрезать бюджетом по приоритету-давности.
+  due_.clear();
+  for (auto [id, cog] : world_.view<actor_cognition>()) {
+    if (cog->last_think < tick) due_.push_back(think_request{ tick - cog->last_think, id });
+  }
+  if (due_.size() > think_budget_) {
+    std::nth_element(due_.begin(), due_.begin() + think_budget_, due_.end(),
+      [] (const think_request& a, const think_request& b) {
+        if (a.overdue != b.overdue) return a.overdue > b.overdue;                       // дольше ждал — раньше
+        return aesthetics::get_entityid_index(a.actor) < aesthetics::get_entityid_index(b.actor); // детерм. тай-брейк
+      });
+    due_.resize(think_budget_);
+  }
+
+  // (2) восприятие + GOAP только для отобранных.
   const auto& goal_state = goap_->get_goals().front().goal;
-  const uint64_t goal_id = utils::string_hash("resolved"); // одна цель → дешёвое тождество
+  const uint64_t goal_id = utils::string_hash("resolved");
 
-  for (auto [id, pos, brain] : world_.view<actor_position, actor_brain>()) {
-    (void)pos;
-    const auto ctx = make_ctx(world_, id, brain->seed, tick); // sink=nullptr ⇒ dry-run
+  for (const auto& req : due_) {
+    const auto id = req.actor;
+    auto* pos   = world_.get<actor_position>(id);
+    auto* vis   = world_.get<actor_visual>(id);
+    auto* per   = world_.get<actor_perception>(id);
+    auto* brain = world_.get<actor_brain>(id);
+    auto* cog   = world_.get<actor_cognition>(id);
+    if (pos == nullptr || vis == nullptr || per == nullptr || brain == nullptr || cog == nullptr) continue;
+
+    // восприятие: ближайший крупнее (угроза) + мельче (добыча) за один обход.
+    const float s = vis->size;
+    const uint32_t self = uint32_t(aesthetics::get_entityid_index(id));
+    const kd::point q{ pos->value.x, pos->value.y };
+    const auto [threat, prey] = sense_tree_.nearest2(q, perception_radius,
+      [s, self](const perception_target& t) { return t.idx != self && t.size > s; },
+      [s, self](const perception_target& t) { return t.idx != self && t.size < s; });
+    per->has_threat = threat != nullptr;
+    per->has_prey   = prey != nullptr;
+    if (threat != nullptr) per->threat_pos = glm::vec2(threat->pos[0], threat->pos[1]);
+    if (prey   != nullptr) per->prey_pos   = glm::vec2(prey->pos[0], prey->pos[1]);
+
+    // GOAP: dry-run ctx → decide (hit кеша ⇒ без A*) → первое действие плана → intent.
+    const auto ctx = make_ctx(world_, id, brain->seed, tick);
     const acumen::state start = goap_->compute_state(ctx);
-
-    // decide: hit в кеше ⇒ без A*; miss ⇒ find_solution в plan_container_ + запись в кеш.
     std::array<const acumen::action*, 4> plan{};
     const size_t n = goap_->decide(start, goal_state, goal_id, plan_cache_, plan_container_, plan);
-    if (n == 0 || plan[0] == nullptr) continue; // решения нет / уже в цели
+    cog->last_think = tick; // решение принято (даже если план пуст — переобдумаем по расписанию)
+    if (n == 0 || plan[0] == nullptr) continue;
 
     act::intent in;
     in.kind = act::intent_kind::call_function;
     in.actor = act::entity_id{ uint32_t(id) };
-    in.payload.call.fn = utils::string_hash(plan[0]->name); // эффект действия в реестре
-    in.source_action = in.payload.call.fn;                  // provenance: породившее действие
+    in.payload.call.fn = utils::string_hash(plan[0]->name);
+    in.source_action = in.payload.call.fn;
     intents_.push_back(in);
   }
 
