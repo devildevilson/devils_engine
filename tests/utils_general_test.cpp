@@ -5,6 +5,11 @@
 #include "devils_engine/utils/block_allocator.h"
 #include "devils_engine/utils/string-utils.hpp"
 #include "devils_engine/mood/system.h"
+#include "devils_engine/mood/runtime.h"
+#include "devils_engine/act/registry.h"
+#include "devils_engine/act/function.h"
+
+#include <memory>
 
 using namespace devils_engine;
 
@@ -183,13 +188,15 @@ TEST_CASE("Mood system tests [mood::system]") {
   const std::initializer_list<std::string_view> a_strs = { "action1", "action2", "action3", "action4", "action5" };
   const std::initializer_list<std::string_view> g_strs = { "guard1", "guard2", "guard3", "guard4", "guard5", "guard6", };
 
-  mood::table t;
+  // общий реестр геймплейных функций (бывшая mood::table): action = effect (void),
+  // guard = predicate (bool). Имена резолвятся mood::system по string_hash.
+  act::registry t;
   for (const auto& name : a_strs) {
-    t.actions[name] = [] (void*) { return 0; };
+    t.reg(name, std::make_unique<act::native_function<void>>(+[] (const act::exec_context&) {}));
   }
 
   for (const auto& name : g_strs) {
-    t.guards[name] = [] (void*) { return 0; };
+    t.reg(name, std::make_unique<act::native_function<bool>>(+[] (const act::exec_context&) { return true; }));
   }
 
   const std::vector<std::string> lines = {
@@ -239,13 +246,38 @@ TEST_CASE("Mood system tests [mood::system]") {
   REQUIRE(trans4[1].guards[0] == ""); // no guards at all
   const auto trans5 = s.find_transitions("melee_attack", "idle");
   REQUIRE(trans5.size() == 1);
-  REQUIRE(trans5[0].current_state_on_exit.size() == 1); // convenient way to find melee_attack + on_exit
-  REQUIRE(trans5[0].next_state_on_entry.size() == 0);
+  // on_exit/on_entry — это конвенции helper-слоя, system их не понимает: ищем напрямую как
+  // обычные псевдо-события (раньше это кэшировалось в transition::current_state_on_exit/...).
+  REQUIRE(s.find_transitions(trans5[0].current_state, "on_exit").size() == 1); // melee_attack + on_exit
+  REQUIRE(s.find_transitions(trans5[0].next_state, "on_entry").size() == 0);   // melee_attack_end + on_entry
   const auto trans6 = s.find_transitions("melee_ready", "attack");
   REQUIRE(trans6.size() == 1);
   REQUIRE(trans6[0].next_state == "melee_attack");
-  REQUIRE(trans6[0].current_state_on_exit.size() == 0);
-  REQUIRE(trans6[0].next_state_on_entry.size() == 1); // convenient way to find melee_attack + on_entry
+  REQUIRE(s.find_transitions(trans6[0].current_state, "on_exit").size() == 0); // melee_ready + on_exit
+  REQUIRE(s.find_transitions(trans6[0].next_state, "on_entry").size() == 1);   // melee_attack + on_entry
+
+  // доступ по предпосчитанному хешу даёт тот же результат, что и по строке.
+  REQUIRE(s.find_transitions(utils::string_hash("melee_attack_end"), utils::string_hash("attack")).size() == 4);
+
+  // helper-слой: шаг автомата. Все зарегистрированные гварды возвращают true.
+  const act::exec_context ctx{}; // sink == nullptr => dry-run; гварды ctx не используют
+  const auto st1 = mood::step(s, "melee_ready", "attack", ctx);
+  REQUIRE(st1.result == mood::step_result::transitioned);
+  REQUIRE(st1.next_state == utils::string_hash("melee_attack"));
+  // apply_transition: прогоняет on_exit(melee_ready)=пусто → эффекты перехода → on_entry(melee_attack)
+  // = action2/3/4 (no-op в тесте), возвращает хеш нового состояния. Не бросает.
+  REQUIRE(mood::apply_transition(s, utils::string_hash("melee_ready"), *st1.taken, ctx) == utils::string_hash("melee_attack"));
+  // fallback на any_state: у 'begin' нет своего 'attack' (trans2 пуст), но any_state + attack есть.
+  REQUIRE(s.find_transitions("begin", "attack").size() == 0);
+  const auto st2 = mood::step(s, "begin", "attack", ctx);
+  REQUIRE(st2.result == mood::step_result::transitioned); // подхватился any_state
+  REQUIRE(st2.next_state == utils::string_hash("melee_attack2"));
+  // нет перехода вообще (даже через any_state) — скорее опечатка в имени события.
+  const auto st3 = mood::step(s, "begin", "no_such_event", ctx);
+  REQUIRE(st3.result == mood::step_result::no_transition);
+  REQUIRE(st3.candidates == 0);
+
+  mood::validate(s); // не падает; выкидывает warning'и по тупиковым/недостижимым (any_state и т.п.)
 }
 
 TEST_CASE("String utility tests [utils::string]") {

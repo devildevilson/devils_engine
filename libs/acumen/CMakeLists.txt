@@ -17,7 +17,9 @@ set(HDR_LIST
 )
 
 add_library(devils_acumen ${SRC_LIST} ${HDR_LIST})
-target_link_libraries(devils_acumen PRIVATE devils_engine::options devils_engine::utils)
+# act PUBLIC: state_metric/action держат act::predicate_function*/effect_function* и
+# compute_state принимает act::exec_context в ПУБЛИЧНЫХ заголовках. act тянет utils+gtl PUBLIC.
+target_link_libraries(devils_acumen PUBLIC devils_engine::act PRIVATE devils_engine::options devils_engine::utils)
 target_include_directories(devils_acumen INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_acumen PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/acumen>")
 

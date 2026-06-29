@@ -7,9 +7,9 @@ const char* abc = "sfasfsaddsada";
 namespace devils_engine {
 namespace acumen {
 state_metric::state_metric() noexcept : weight(1.0) {}
-state_metric::state_metric(std::string name_, func_t f_) noexcept : name(std::move(name_)), weight(1.0), compute_func(std::move(f_)) {}
-state_metric::state_metric(std::string name_, const double weight_, func_t f_) noexcept : name(std::move(name_)), weight(weight_), compute_func(std::move(f_)) {}
-bool state_metric::compute(const void* p) const { return compute_func ? compute_func(p) : false; }
+state_metric::state_metric(std::string name_, const act::predicate_function* f_) noexcept : name(std::move(name_)), weight(1.0), compute_func(f_) {}
+state_metric::state_metric(std::string name_, const double weight_, const act::predicate_function* f_) noexcept : name(std::move(name_)), weight(weight_), compute_func(f_) {}
+bool state_metric::compute(const act::exec_context& ctx) const { return compute_func ? compute_func->invoke(ctx) : false; }
 
 scoped_state::scoped_state(const state& handle) noexcept : handle(handle) { mask.flip(); }
 scoped_state::scoped_state(const state& handle, const state& mask) noexcept : handle(handle), mask(mask) {}
@@ -38,8 +38,8 @@ double scoped_state::compute_variance_norm(const state& s) const noexcept {
 }
 
 action::action() noexcept {}
-action::action(std::string name_, scoped_state requirements_, scoped_state next_state_, scoped_state weight_state_, func_t f_) noexcept :
-  name(std::move(name_)), requirements(std::move(requirements_)), next_state(std::move(next_state_)), weight_state(std::move(weight_state_)), action_func(std::move(f_))
+action::action(std::string name_, scoped_state requirements_, scoped_state next_state_, scoped_state weight_state_, const act::effect_function* effect_) noexcept :
+  name(std::move(name_)), requirements(std::move(requirements_)), next_state(std::move(next_state_)), weight_state(std::move(weight_state_)), effect(effect_)
 {
 }
 
@@ -64,10 +64,10 @@ std::span<const goal> system::get_goals() const noexcept { return std::span(goal
 std::span<const action> system::get_actions() const noexcept { return std::span(actions); }
 
 // да было бы неплохо придумать быстрый расчет метрик
-state system::compute_state(const void* p) const {
+state system::compute_state(const act::exec_context& ctx) const {
   state s;
   for (size_t i = 0; i < metrics.size(); ++i) {
-    s.set(i, metrics[i].compute(p));
+    s.set(i, metrics[i].compute(ctx));
   }
   return s;
 }

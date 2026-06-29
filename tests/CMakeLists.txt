@@ -32,7 +32,7 @@ endfunction()
 include("${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake")
 
 devils_add_doctest(utils_general_test utils_general_test.cpp)
-target_link_libraries(utils_general_test PRIVATE devils_engine::utils devils_engine::mood)
+target_link_libraries(utils_general_test PRIVATE devils_engine::utils devils_engine::mood devils_engine::act)
 
 devils_add_doctest(utils_contract_test utils_contract_test.cpp)
 target_link_libraries(utils_contract_test PRIVATE devils_engine::utils)

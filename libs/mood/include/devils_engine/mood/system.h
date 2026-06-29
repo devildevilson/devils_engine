@@ -8,8 +8,12 @@
 #include <vector>
 #include <array>
 #include <span>
-#include <functional>
-#include "gtl/phmap.hpp"
+#include <gtl/phmap.hpp>
+
+#include "devils_engine/utils/string_id.h"   // utils::id / string_hash (предпосчёт хешей)
+#include "devils_engine/act/registry.h"      // act::registry (бывшая mood::table)
+#include "devils_engine/act/function.h"      // act::predicate_function / act::effect_function
+#include "devils_engine/act/exec_context.h"  // act::exec_context
 
 // реально думаю что у нас скорее всего будет общий реестр функций, более того
 // наверное будет общий реестр базовых геймплейных функций + реестр функций которые мы составим из них
@@ -31,17 +35,18 @@
 
 namespace devils_engine {
 namespace mood {
-// по идее эту таблицу можно шарить между системами
-// более того у меня наверное будет общая таблица со всеми возможными функциями
-// будут возвращать либо bool, либо число, либо строку, либо это функция эффект
-// как обычно таблицу тут лучше сделать через std vector
-struct table {
-  using action_f = std::function<int32_t(void* userdata)>; // non-zero return == error
-  using guard_f = std::function<int32_t(void* userdata)>; // less zero return == error
-
-  gtl::node_hash_map<std::string, action_f> actions;
-  gtl::node_hash_map<std::string, guard_f> guards;
-};
+// ТА САМАЯ "общая таблица функций между системами", о которой речь выше, теперь
+// существует как act::registry (devils_engine::act): guard = act::predicate_function
+// (bool), action = act::effect_function (void). mood больше не держит свой набор
+// std::function — он резолвит имена guard/action в типизированные указатели реестра при
+// сборке системы (см. конструктор) и зовёт их через общий act::exec_context.
+//
+// system — ТУПОЕ БЫСТРОЕ ХРАНИЛИЩЕ состояний и переходов: оно ничего не держит в рантайме,
+// ни на что не реагирует и НЕ знает про конвенции имён (any_state / idle / on_entry /
+// on_exit). Его задача — по (state, event) за O(1) вернуть отсортированный по исходному
+// порядку строк список переходов-кандидатов. Вся логика конвенций, шаг автомата, проверка
+// гвардов и валидация графа живут в helper-функциях (см. mood/runtime.h). Рантайм работает
+// на ХЕШАХ (utils::id), строки в transition нужны только для диагностики/describe.
 
 class system {
 public:
@@ -54,25 +59,35 @@ public:
     std::array<std::string_view, 8> guards;
     std::array<std::string_view, 8> actions;
 
-    std::span<const transition> current_state_on_exit;
-    std::span<const transition> next_state_on_entry;
-    std::array<const mood::table::guard_f*, 8> guards_ptr;
-    std::array<const mood::table::action_f*, 8> actions_ptr;
+    // предпосчитанные хеши — рантайм сравнивает/ищет по ним, не по строкам.
+    utils::id current_hash = utils::invalid_id;
+    utils::id event_hash   = utils::invalid_id;
+    utils::id next_hash    = utils::invalid_id; // invalid_id если next_state пуст (чистый эффект)
+
+    std::array<const act::predicate_function*, 8> guards_ptr{};
+    std::array<const act::effect_function*, 8> actions_ptr{};
 
     transition() noexcept = default;
-    int32_t is_valid(void* userdata) const;
-    int32_t on_exit(void* userdata) const;
-    int32_t process(void* userdata) const;
-    int32_t on_entry(void* userdata) const;
+    // гварды/эффекты ЭТОГО перехода — работают над собственными данными, конвенций не знают.
+    int32_t is_valid(const act::exec_context& ctx) const; // все ли гварды прошли (1/0)
+    int32_t process(const act::exec_context& ctx) const;  // выполнить эффекты перехода
   };
-  
-  system(const struct mood::table* table, std::vector<std::string> lines) noexcept;
 
+  // диапазон в m_transitions для одной (state, event) группы (группа непрерывна).
+  struct range { uint32_t offset = 0; uint32_t count = 0; };
+
+  system(const act::registry* registry, std::vector<std::string> lines) noexcept;
+
+  // основной доступ — по хешам (горячий путь). Порядок внутри группы = порядок исходных
+  // строк (АРХИВАЖНО для top-down проверки гвардов).
+  std::span<const transition> find_transitions(const utils::id state_hash, const utils::id event_hash) const;
+  // обёртки: хешируют и форвардят (парсинг/тесты/диагностика).
   std::span<const transition> find_transitions(const std::string_view& current_state, const std::string_view& event) const;
   std::span<const transition> transitions() const;
 private:
-  const struct mood::table* table;
-  std::vector<transition> m_transitions; // gtl::flat_hash_map ?
+  const act::registry* registry;
+  std::vector<transition> m_transitions;
+  gtl::flat_hash_map<uint64_t, range> m_index; // mix(state_hash, event_hash) -> диапазон
   std::vector<std::string> m_memory;
 };
 }

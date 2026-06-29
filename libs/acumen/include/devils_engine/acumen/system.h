@@ -30,7 +30,7 @@ public:
   std::span<const goal> get_goals() const noexcept;
   std::span<const action> get_actions() const noexcept;
 
-  state compute_state(const void* p) const;
+  state compute_state(const act::exec_context& ctx) const;
 private:
   std::vector<state_metric> metrics;
   std::vector<goal> goals;

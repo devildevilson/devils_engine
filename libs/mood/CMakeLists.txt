@@ -8,7 +8,9 @@ project(
 
 add_library(devils_mood
   src/mood/system.cpp
+  src/mood/runtime.cpp
   include/devils_engine/mood/system.h
+  include/devils_engine/mood/runtime.h
 )
 
 target_include_directories(devils_mood
@@ -16,8 +18,11 @@ target_include_directories(devils_mood
   PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/mood>"
 )
 
+# act PUBLIC: transition держит act::predicate_function*/effect_function*, конструктор
+# system принимает const act::registry*, методы — act::exec_context (всё в публичном
+# заголовке). act тянет utils+gtl PUBLIC, поэтому отдельный gtl тут больше не нужен.
 target_link_libraries(devils_mood
-  PUBLIC devils_engine::options gtl
+  PUBLIC devils_engine::options devils_engine::act
   PRIVATE devils_engine::utils
 )
 
