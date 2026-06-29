@@ -10,6 +10,8 @@
 #include "astar.h"
 
 namespace devils_engine {
+namespace act { class registry; } // резолв функций метрик/действий в конструкторе system
+
 namespace acumen {
 struct astar_data {
   scoped_state state;
@@ -19,7 +21,10 @@ struct astar_data {
 
 class system {
 public:
-  system(std::vector<state_metric> metrics, std::vector<goal> goals, std::vector<action> actions) noexcept;
+  // registry — общий реестр act: метрики резолвятся как предикаты, действия как эффекты
+  // (по их name). Резолв одноразовый в конструкторе → горячий путь без lookup'ов.
+  // НЕ noexcept: кидает utils::error на отсутствующей/не той категории функции (ошибка загрузки).
+  system(const act::registry* registry, std::vector<state_metric> metrics, std::vector<goal> goals, std::vector<action> actions);
   ~system() noexcept = default;
   system(const system& copy) noexcept = default;
   system(system&& move) noexcept = default;
@@ -51,7 +56,11 @@ private:
   const class system* system;
 };
 
-std::vector<const action*> find_solution(const system* sys, astar<astar_data>::container* c, const state& start, const scoped_state& goal_state);
+// Пишет план (действия цепочки решения в порядке исполнения) в `out` БЕЗ аллокаций — буфер даёт
+// вызывающий (напр. std::array на стеке). Возвращает ПОЛНУЮ длину плана: если она > out.size(),
+// в out лежит только префикс (план обрезан — увеличь буфер). 0 — решения нет ЛИБО start уже
+// удовлетворяет цели (действий не нужно). План НЕ включает стартовый узел и ВКЛЮЧАЕТ цель.
+size_t find_solution(const system* sys, astar<astar_data>::container* c, const state& start, const scoped_state& goal_state, std::span<const action*> out);
 
 }
 }

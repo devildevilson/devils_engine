@@ -46,6 +46,9 @@ target_link_libraries(aesthetics_world_test PRIVATE devils_engine::aesthetics)
 devils_add_doctest(sound_system_test sound_system_test.cpp)
 target_link_libraries(sound_system_test PRIVATE devils_engine::sound devils_engine::utils)
 
+devils_add_doctest(acumen_test acumen_test.cpp)
+target_link_libraries(acumen_test PRIVATE devils_engine::acumen devils_engine::act)
+
 add_executable(aesthetics_world_benchmark aesthetics_world_benchmark.cpp)
 target_link_libraries(aesthetics_world_benchmark PRIVATE devils_engine::options devils_engine::aesthetics)
 set_target_properties(aesthetics_world_benchmark PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_OUTPUT_DIRECTORY}/bin")

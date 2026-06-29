@@ -76,7 +76,9 @@ public:
   // диапазон в m_transitions для одной (state, event) группы (группа непрерывна).
   struct range { uint32_t offset = 0; uint32_t count = 0; };
 
-  system(const act::registry* registry, std::vector<std::string> lines) noexcept;
+  // НЕ noexcept: кидает utils::error на ошибке парсинга строки, дубле или отсутствующей
+  // функции guard/action в реестре (ошибка загрузки).
+  system(const act::registry* registry, std::vector<std::string> lines);
 
   // основной доступ — по хешам (горячий путь). Порядок внутри группы = порядок исходных
   // строк (АРХИВАЖНО для top-down проверки гвардов).

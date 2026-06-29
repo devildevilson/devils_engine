@@ -291,7 +291,7 @@ static inline uint64_t group_key(const utils::id state_hash, const utils::id eve
   return utils::mix(state_hash, event_hash);
 }
 
-system::system(const act::registry* registry, std::vector<std::string> lines) noexcept : registry(registry), m_memory(std::move(lines)) {
+system::system(const act::registry* registry, std::vector<std::string> lines) : registry(registry), m_memory(std::move(lines)) {
   // 1. распарсить все строки, предпосчитать хеши.
   m_transitions.reserve(m_memory.size());
   for (const auto& line : m_memory) {

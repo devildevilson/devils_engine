@@ -20,17 +20,19 @@ namespace acumen {
 // динамический сет?
 using state = std::bitset<DEVILS_ENGINE_ACUMEN_STATE_SIZE>;
 
-// метрика состояния = один бит GOAP-стейта = ПРЕДИКАТ над сущностью из общего реестра
-// act. Указатель кэшируется при сборке системы (resolve по имени в act::registry уходит
-// из горячего пути compute_state). Предикаты чистые — планировщик A* зовёт их свободно.
+// метрика состояния = один бит GOAP-стейта = ПРЕДИКАТ над сущностью из общего реестра act.
+// `name` — имя предиката в act::registry; `compute_func` РЕЗОЛВИТ system при сборке (lookup
+// уходит из горячего пути compute_state). Предикаты чистые — планировщик A* зовёт их свободно.
+// Бит в `state` для метрики — это её ИНДЕКС в массиве метрик системы (плотная нумерация;
+// compute_state ставит s[i] = metrics[i].compute(ctx)).
 struct state_metric {
   std::string name;
-  double weight; // вес наверное нужен только для того чтобы сортировать goal
-  const act::predicate_function* compute_func = nullptr;
+  double weight = 1.0; // вес наверное нужен только для того чтобы сортировать goal
+  const act::predicate_function* compute_func = nullptr; // резолвится system'ом из act::registry по name
 
   state_metric() noexcept;
-  state_metric(std::string name, const act::predicate_function* f) noexcept;
-  state_metric(std::string name, const double weight, const act::predicate_function* f) noexcept;
+  state_metric(std::string name) noexcept;
+  state_metric(std::string name, const double weight) noexcept;
   bool compute(const act::exec_context& ctx) const;
 };
 
@@ -63,12 +65,13 @@ struct action {
   scoped_state requirements; // must be valid thru action? bold statement
   scoped_state next_state;   // action successfully end when next_state becomes part of the state
   scoped_state weight_state; // priority
-  // эффект действия из общего реестра act. ВАЖНО: в планировании (A*) НЕ исполняется —
-  // план лишь выбирает действия; эффект применяется отдельной apply-фазой (через intent).
+  // эффект действия из общего реестра act, РЕЗОЛВИТСЯ system по `name` (пустое name => нет
+  // эффекта, чисто символический переход). ВАЖНО: в планировании (A*) НЕ исполняется — план
+  // лишь выбирает действия; эффект применяется отдельной apply-фазой (через intent).
   const act::effect_function* effect = nullptr;
 
   action() noexcept;
-  action(std::string name, scoped_state requirements, scoped_state next_state, scoped_state weight_state, const act::effect_function* effect) noexcept;
+  action(std::string name, scoped_state requirements, scoped_state next_state, scoped_state weight_state) noexcept;
   double compute_weight(const state& current_state) const noexcept;
 };
 }

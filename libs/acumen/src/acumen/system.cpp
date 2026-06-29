@@ -1,5 +1,9 @@
 #include "system.h"
 
+#include "devils_engine/utils/core.h"      // utils::error
+#include "devils_engine/utils/string_id.h" // utils::string_hash
+#include "devils_engine/act/registry.h"    // act::registry — резолв предикатов/эффектов
+
 #if __cplusplus == 202306L
 const char* abc = "sfasfsaddsada";
 #endif
@@ -7,8 +11,8 @@ const char* abc = "sfasfsaddsada";
 namespace devils_engine {
 namespace acumen {
 state_metric::state_metric() noexcept : weight(1.0) {}
-state_metric::state_metric(std::string name_, const act::predicate_function* f_) noexcept : name(std::move(name_)), weight(1.0), compute_func(f_) {}
-state_metric::state_metric(std::string name_, const double weight_, const act::predicate_function* f_) noexcept : name(std::move(name_)), weight(weight_), compute_func(f_) {}
+state_metric::state_metric(std::string name_) noexcept : name(std::move(name_)), weight(1.0) {}
+state_metric::state_metric(std::string name_, const double weight_) noexcept : name(std::move(name_)), weight(weight_) {}
 bool state_metric::compute(const act::exec_context& ctx) const { return compute_func ? compute_func->invoke(ctx) : false; }
 
 scoped_state::scoped_state(const state& handle) noexcept : handle(handle) { mask.flip(); }
@@ -38,8 +42,8 @@ double scoped_state::compute_variance_norm(const state& s) const noexcept {
 }
 
 action::action() noexcept {}
-action::action(std::string name_, scoped_state requirements_, scoped_state next_state_, scoped_state weight_state_, const act::effect_function* effect_) noexcept :
-  name(std::move(name_)), requirements(std::move(requirements_)), next_state(std::move(next_state_)), weight_state(std::move(weight_state_)), effect(effect_)
+action::action(std::string name_, scoped_state requirements_, scoped_state next_state_, scoped_state weight_state_) noexcept :
+  name(std::move(name_)), requirements(std::move(requirements_)), next_state(std::move(next_state_)), weight_state(std::move(weight_state_))
 {
 }
 
@@ -57,7 +61,24 @@ double action::compute_weight(const state& current_state) const noexcept {
   return count == 0 ? 0.5 : (1.0 - (double(pos) / double(count)));
 }
 
-system::system(std::vector<state_metric> metrics_, std::vector<goal> goals_, std::vector<action> actions_) noexcept : metrics(std::move(metrics_)), goals(std::move(goals_)), actions(std::move(actions_)) {}
+system::system(const act::registry* registry, std::vector<state_metric> metrics_, std::vector<goal> goals_, std::vector<action> actions_)
+  : metrics(std::move(metrics_)), goals(std::move(goals_)), actions(std::move(actions_))
+{
+  // резолв функций общего реестра act по именам (как в mood) — кэшируем типизированные
+  // указатели здесь, на фазе сборки, чтобы lookup ушёл из горячего цикла A*.
+  for (auto& m : metrics) {
+    const auto* fn = registry->predicate(utils::string_hash(m.name));
+    if (fn != nullptr) m.compute_func = fn;
+    else utils::error{}("acumen: state_metric '{}' has no matching predicate function in act::registry", m.name);
+  }
+
+  for (auto& a : actions) {
+    if (a.name.empty()) continue; // действие без эффекта — чисто символический переход состояния
+    const auto* fn = registry->effect(utils::string_hash(a.name));
+    if (fn != nullptr) a.effect = fn;
+    else utils::error{}("acumen: action '{}' has no matching effect function in act::registry", a.name);
+  }
+}
 
 std::span<const state_metric> system::get_metrics() const noexcept { return std::span(metrics); }
 std::span<const goal> system::get_goals() const noexcept { return std::span(goals); }
@@ -108,7 +129,7 @@ void planner::fill_successors(container* c, const astar_data& a, const void*) co
   }
 }
 
-std::vector<const action*> find_solution(const system* sys, astar<astar_data>::container* c, const state& start, const scoped_state& goal_state) {
+size_t find_solution(const system* sys, astar<astar_data>::container* c, const state& start, const scoped_state& goal_state, std::span<const action*> out) {
   planner p(sys);
   astar<astar_data>::algorithm a(c, &p, astar_data{ scoped_state(start), 0.0, nullptr }, astar_data{ goal_state, 0.0, nullptr }, nullptr);
 
@@ -117,16 +138,21 @@ std::vector<const action*> find_solution(const system* sys, astar<astar_data>::c
     state = a.step();
   }
 
-  if (state != astar<astar_data>::state::succeeded) { return std::vector<const action*>(); }
+  if (state != astar<astar_data>::state::succeeded) { return 0; }
 
-  if (p.is_same(a.solution_raw()->data, a.goal_node()->data, nullptr)) return { a.solution_raw()->data.action };
-
-  std::vector<const action*> arr;
-  for (auto node = a.solution_raw(); node != a.goal_node(); node = node->child) {
-    arr.push_back(node->data.action);
+  // План — действия узлов цепочки решения в порядке исполнения. Стартовый узел действия НЕ несёт
+  // (его data.action == nullptr, это лишь исходное состояние), поэтому идём со start->child и
+  // ВКЛЮЧАЕМ goal-узел — в нём лежит действие, достигшее цели. Пишем в out до его размера, но
+  // считаем ПОЛНУЮ длину (вызывающий увидит обрезание по count > out.size()). Если start уже
+  // удовлетворяет цели, start->child == nullptr ⇒ count 0 (пустой план).
+  size_t count = 0;
+  for (auto node = a.solution_raw()->child; node != nullptr; node = node->child) {
+    if (count < out.size()) out[count] = node->data.action;
+    ++count;
+    if (node == a.goal_node()) break;
   }
 
-  return arr;
+  return count;
 }
 
 }
