@@ -8,6 +8,7 @@
 
 #include "common.h"
 #include "astar.h"
+#include "cache.h"
 
 namespace devils_engine {
 namespace act { class registry; } // резолв функций метрик/действий в конструкторе system
@@ -36,10 +37,28 @@ public:
   std::span<const action> get_actions() const noexcept;
 
   state compute_state(const act::exec_context& ctx) const;
+
+  // Объединение масок всех действий/целей — биты, способные повлиять на план. Бит вне
+  // этой маски в ключ мемоизации не входит. Считается один раз в конструкторе.
+  const state& relevant_mask() const noexcept;
+
+  // Ключ мемоизации для (старт-состояние, тождество цели). goal_id — дешёвый идентификатор
+  // цели от вызывающего (одинаковая цель ⇒ одинаковый id; разные цели ⇒ разные id).
+  plan_key make_key(const state& start, uint64_t goal_id) const noexcept;
+
+  // Решает с мемоизацией: hit ⇒ копирует кешированный план; miss ⇒ find_solution в scratch
+  // и кладёт в cache (если план ≤ max_plan). Возвращает ПОЛНУЮ длину плана (как
+  // find_solution); out заполняется до min(out.size(), max_plan). scratch — переиспользуемый
+  // A*-контейнер; cache — таблица мемоизации (по одной на поток исполнения).
+  size_t decide(const state& start, const scoped_state& goal, uint64_t goal_id,
+                solution_cache& cache, astar<astar_data>::container& scratch,
+                std::span<const action*> out) const;
 private:
   std::vector<state_metric> metrics;
   std::vector<goal> goals;
   std::vector<action> actions;
+  state relevant_mask_;                 // ∪ масок действий/целей (значащие биты)
+  std::vector<uint16_t> relevant_bits_; // индексы set-бит relevant_mask_ (для проекции ключа)
 };
 
 class planner final : public astar<astar_data>::interface {

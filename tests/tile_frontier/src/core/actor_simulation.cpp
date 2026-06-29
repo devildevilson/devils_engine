@@ -1,12 +1,23 @@
 #include "actor_simulation.h"
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <functional>
+#include <limits>
 #include <memory>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+#include <gtl/phmap.hpp>
 
 #include <devils_engine/aesthetics/common.h>
 #include <devils_engine/act/exec_context.h>
 #include <devils_engine/act/function.h>
+#include <devils_engine/acumen/astar.h>     // astar<>::container для find_solution
 #include <devils_engine/utils/core.h>      // utils::error
 #include <devils_engine/utils/prng.h>      // utils::mix
 #include <devils_engine/utils/string_id.h> // utils::string_hash
@@ -15,6 +26,28 @@ namespace tile_frontier {
 namespace core {
 
 using namespace devils_engine;
+
+// Замер времени одного вызова: зовём fn(args...) через std::invoke, логируем мкс.
+// label добавлен к запрошенной сигнатуре — иначе не понять, какая фаза сколько ест.
+// Возвращает результат вызова (поддерживает void). Временный диагностический хелпер.
+template <typename F, typename... Args>
+static auto perf(const char* label, F&& fn, Args&&... args) -> std::invoke_result_t<F, Args...> {
+  using R = std::invoke_result_t<F, Args...>;
+  const auto t0 = std::chrono::steady_clock::now();
+  const auto log_us = [&] {
+    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - t0).count();
+    utils::info("perf {:<6}: {} us", label, us);
+  };
+  if constexpr (std::is_void_v<R>) {
+    std::invoke(std::forward<F>(fn), std::forward<Args>(args)...);
+    log_us();
+  } else {
+    auto r = std::invoke(std::forward<F>(fn), std::forward<Args>(args)...);
+    log_us();
+    return r;
+  }
+}
 
 // ── Мост act::exec_context ↔ aesthetics::world ─────────────────────────────
 // act намеренно ECS-агностичен: exec_context.w — НЕПРОЗРАЧНЫЙ тег (act::world
@@ -42,24 +75,82 @@ static act::exec_context make_ctx(
   return ctx;
 }
 
+// Мутирующий вариант моста для apply-фазы. effect_sink ещё не подключён (приедет с
+// catalogue), поэтому на MVP эффект мутирует мир НАПРЯМУЮ. const_cast здесь определён:
+// объект (actor_world_slice::world_) реально мутабелен, const на ctx.w — лишь контракт
+// exec_context (мир «только чтение» для предикатов и dry-run-планирования).
+static aesthetics::world& mutable_world_of(const act::exec_context& ctx) noexcept {
+  return *const_cast<aesthetics::world*>(reinterpret_cast<const aesthetics::world*>(ctx.w));
+}
+
 // purpose-метка для counter-RNG (utils::mix) — разводит потоки случайности.
 static constexpr uint64_t purpose_wander = 0x77616e646572ull; // "wander"
 
-// Нативная геймплейная функция-"мозг": решает, в какую из 8 сторон блуждать.
-// Категория number (real_t) — возвращает индекс направления 0..7. Читает мир
-// через мост (actor_brain даёт пер-акторную фазу), случайность — детерминированный
-// counter-RNG из immutable-входов контекста. Это и есть acumen/mood-шов в зачатке:
-// решение принимается ЧИСТО (dry-run), не мутируя мир; мутация — на apply-фазе.
-static act::real_t wander_direction(const act::exec_context& ctx) noexcept {
-  const auto& world = world_of(ctx);
-  const auto id = aesthetics::entityid_t(ctx.primary().id);
-  const auto* brain = world.get<actor_brain>(id);
-  const uint32_t phase = brain != nullptr ? brain->phase : 0u;
-  // медленная смена направления (~раз в 24 тика) с пер-акторной фазой.
-  const uint64_t slot = (ctx.rng_tick + phase) / 24u;
-  const uint64_t h = utils::mix(ctx.rng_seed, ctx.rng_entity, slot, purpose_wander);
-  return act::real_t(h & 7u);
+// Биты GOAP-стейта (= индекс метрики; resolved ставят действия, метрики его не считают).
+namespace flags {
+enum : size_t { threat_present = 0, prey_present = 1, resolved = 2 };
 }
+
+// Слой поиска цели — простенький равномерный грид. Эффективный радиус восприятия ≈ одна
+// ячейка: query смотрит 3×3 соседних ячейки, т.е. актор «видит» цель примерно в пределах
+// detection_cell. Это одновременно ускоритель (O(акторов_в_ячейке) на запрос вместо O(N))
+// и модель ограниченного зрения. Грид на хеш-карте → произвольные (в т.ч. отрицательные)
+// координаты, движение не ограничено. Точный ближайший через расширение колец — потом.
+static constexpr float detection_cell = 3.0f; // мир в тайлах (tile_size=1), шаг спавна ~1
+
+struct nearest_result { glm::vec2 pos; bool found; };
+
+class spatial_grid {
+public:
+  void build(const aesthetics::world& world) {
+    cells_.clear();
+    for (auto [id, pos, vis] : world.view<actor_position, actor_visual>()) {
+      cells_[key_of(pos->value)].push_back(
+        entry{ pos->value, vis->size, aesthetics::get_entityid_index(id) });
+    }
+  }
+
+  // Ближайший актор СТРОГО больше (want_bigger=true) либо меньше (false) в 3×3 ячейках
+  // вокруг self. Тай-брейк по индексу сущности — детерминированный выбор при равных дистанциях.
+  nearest_result query(const glm::vec2 self_pos, const float self_size,
+                       const size_t self_idx, const bool want_bigger) const {
+    nearest_result best{ glm::vec2{0.0f, 0.0f}, false };
+    float best_d2 = std::numeric_limits<float>::max();
+    size_t best_idx = 0;
+    const int32_t cx = cell_coord(self_pos.x);
+    const int32_t cy = cell_coord(self_pos.y);
+
+    for (int32_t dy = -1; dy <= 1; ++dy) {
+      for (int32_t dx = -1; dx <= 1; ++dx) {
+        const auto it = cells_.find(key(cx + dx, cy + dy));
+        if (it == cells_.end()) continue;
+        for (const auto& e : it->second) {
+          if (e.idx == self_idx) continue;
+          const bool match = want_bigger ? (e.size > self_size) : (e.size < self_size);
+          if (!match) continue;
+          const glm::vec2 d = e.pos - self_pos;
+          const float d2 = d.x * d.x + d.y * d.y;
+          if (d2 < best_d2 || (d2 == best_d2 && e.idx < best_idx)) {
+            best_d2 = d2;
+            best_idx = e.idx;
+            best = nearest_result{ e.pos, true };
+          }
+        }
+      }
+    }
+    return best;
+  }
+
+private:
+  struct entry { glm::vec2 pos; float size; size_t idx; };
+  static int32_t cell_coord(const float v) noexcept { return int32_t(std::floor(v / detection_cell)); }
+  static int64_t key(const int32_t cx, const int32_t cy) noexcept {
+    return (int64_t(uint32_t(cx)) << 32) | int64_t(uint32_t(cy));
+  }
+  static int64_t key_of(const glm::vec2 p) noexcept { return key(cell_coord(p.x), cell_coord(p.y)); }
+
+  gtl::flat_hash_map<int64_t, std::vector<entry>> cells_;
+};
 
 static uint32_t mix32(uint32_t x) noexcept {
   x ^= x >> 16;
@@ -108,6 +199,59 @@ static float actor_size(const uint32_t seed) noexcept {
   return 0.34f + unit_from_hash(mix32(seed ^ 0x9e37u)) * 0.42f;
 }
 
+// ── Геймплейные функции act (мозг акторов) ─────────────────────────────────
+// Предикаты ЧИСТЫЕ — читают actor_perception (наполнен sense-фазой) за O(1), их
+// свободно зовёт планировщик A*. Эффекты мутируют скорость на apply-фазе.
+
+static bool predicate_threat_present(const act::exec_context& ctx) noexcept {
+  const auto* per = world_of(ctx).get<actor_perception>(aesthetics::entityid_t(ctx.primary().id));
+  return per != nullptr && per->has_threat;
+}
+
+static bool predicate_prey_present(const act::exec_context& ctx) noexcept {
+  const auto* per = world_of(ctx).get<actor_perception>(aesthetics::entityid_t(ctx.primary().id));
+  return per != nullptr && per->has_prey;
+}
+
+// Ставит скорость актора в направлении dir (нормализованном) * его speed.
+static void set_velocity(aesthetics::world& world, const aesthetics::entityid_t self, glm::vec2 dir) noexcept {
+  auto* vel = world.get<actor_velocity>(self);
+  const auto* brain = world.get<actor_brain>(self);
+  if (vel == nullptr || brain == nullptr) return;
+  const float len2 = dir.x * dir.x + dir.y * dir.y;
+  dir = len2 > 1e-12f ? dir * (1.0f / std::sqrt(len2)) : glm::vec2{0.0f, 0.0f};
+  vel->value = dir * brain->speed;
+}
+
+static void effect_flee(const act::exec_context& ctx) noexcept {
+  auto& world = mutable_world_of(ctx);
+  const auto self = aesthetics::entityid_t(ctx.primary().id);
+  const auto* pos = world.get<actor_position>(self);
+  const auto* per = world.get<actor_perception>(self);
+  if (pos == nullptr || per == nullptr) return;
+  set_velocity(world, self, pos->value - per->threat_pos); // прочь от угрозы
+}
+
+static void effect_chase(const act::exec_context& ctx) noexcept {
+  auto& world = mutable_world_of(ctx);
+  const auto self = aesthetics::entityid_t(ctx.primary().id);
+  const auto* pos = world.get<actor_position>(self);
+  const auto* per = world.get<actor_perception>(self);
+  if (pos == nullptr || per == nullptr) return;
+  set_velocity(world, self, per->prey_pos - pos->value); // к добыче
+}
+
+static void effect_wander(const act::exec_context& ctx) noexcept {
+  auto& world = mutable_world_of(ctx);
+  const auto self = aesthetics::entityid_t(ctx.primary().id);
+  const auto* brain = world.get<actor_brain>(self);
+  const uint32_t phase = brain != nullptr ? brain->phase : 0u;
+  // медленная смена направления (~раз в 24 тика) с пер-акторной фазой.
+  const uint64_t slot = (ctx.rng_tick + phase) / 24u;
+  const uint64_t h = utils::mix(ctx.rng_seed, ctx.rng_entity, slot, purpose_wander);
+  set_velocity(world, self, direction_from_hash(uint32_t(h)));
+}
+
 void actor_batch::build(const aesthetics::world& world) {
   instances_.clear();
   instances_.reserve(world.count<actor_visual>());
@@ -122,10 +266,38 @@ void actor_world_slice::setup_brain_registry() {
   // пересоздаём реестр с нуля: reg() ассертит на повторную регистрацию имени,
   // а init() может вызываться многократно.
   registry_ = act::registry{};
-  registry_.reg("wander.direction", std::make_unique<act::native_function<act::real_t>>(
-    &wander_direction, "пер-акторное направление блуждания, индекс 0..7"));
-  wander_dir_fn_ = registry_.number(utils::string_hash("wander.direction"));
-  if (wander_dir_fn_ == nullptr) utils::error{}("act: функция 'wander.direction' не зарегистрирована как number");
+  registry_.reg("actor.threat_present", std::make_unique<act::native_function<bool>>(
+    &predicate_threat_present, "рядом есть актор крупнее"));
+  registry_.reg("actor.prey_present", std::make_unique<act::native_function<bool>>(
+    &predicate_prey_present, "рядом есть актор мельче"));
+  registry_.reg("flee",   std::make_unique<act::native_function<void>>(&effect_flee,   "бежать от ближайшей угрозы"));
+  registry_.reg("chase",  std::make_unique<act::native_function<void>>(&effect_chase,  "гнаться за ближайшей добычей"));
+  registry_.reg("wander", std::make_unique<act::native_function<void>>(&effect_wander, "блуждать в случайную сторону"));
+
+  // метрики (бит = индекс): 0 threat_present, 1 prey_present. resolved(2) ставят действия.
+  std::vector<acumen::state_metric> metrics = {
+    acumen::state_metric("actor.threat_present"),
+    acumen::state_metric("actor.prey_present"),
+  };
+
+  // приоритет кодируется requirements: flee применимо при угрозе; chase — без угрозы при
+  // добыче; wander — без угрозы и без добычи. Каждое действие ставит resolved ⇒ цель за 1 шаг.
+  acumen::scoped_state flee_req;   flee_req.set(flags::threat_present, true);
+  acumen::scoped_state chase_req;  chase_req.set(flags::threat_present, false); chase_req.set(flags::prey_present, true);
+  acumen::scoped_state wander_req; wander_req.set(flags::threat_present, false); wander_req.set(flags::prey_present, false);
+  acumen::scoped_state done;       done.set(flags::resolved, true);
+
+  std::vector<acumen::action> actions = {
+    acumen::action("flee",   flee_req,   done, acumen::scoped_state{}),
+    acumen::action("chase",  chase_req,  done, acumen::scoped_state{}),
+    acumen::action("wander", wander_req, done, acumen::scoped_state{}),
+  };
+
+  acumen::scoped_state goal_state; goal_state.set(flags::resolved, true);
+  std::vector<acumen::goal> goals = { acumen::goal{ "resolved", acumen::scoped_state{}, goal_state } };
+
+  // конструктор резолвит предикаты/эффекты по именам и кидает при промахе.
+  goap_.emplace(&registry_, std::move(metrics), std::move(goals), std::move(actions));
 }
 
 void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, const glm::vec2 max_bound, const uint32_t texture_count) {
@@ -133,12 +305,10 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   setup_brain_registry();
   intents_.clear();
   intents_.reserve(count);
-  min_bound_ = min_bound;
-  max_bound_ = max_bound;
   tick_ = 0;
 
   const uint32_t tex_count = std::max(texture_count, 1u);
-  const glm::vec2 extent = max_bound_ - min_bound_;
+  const glm::vec2 extent = max_bound - min_bound; // только для стартовой раскладки
   const uint32_t columns = std::max<uint32_t>(uint32_t(std::ceil(std::sqrt(float(std::max(count, 1u))))), 1u);
   const uint32_t rows = std::max<uint32_t>((count + columns - 1u) / columns, 1u);
 
@@ -153,20 +323,22 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
     const float jitter_y = (unit_from_hash(mix32(seed ^ 0x5a5au)) - 0.5f) * 0.35f;
 
     world_.create<actor_position>(id, glm::vec2{
-      min_bound_.x + extent.x * fx + jitter_x,
-      min_bound_.y + extent.y * fy + jitter_y
+      min_bound.x + extent.x * fx + jitter_x,
+      min_bound.y + extent.y * fy + jitter_y
     });
     world_.create<actor_velocity>(id, glm::vec2{0.0f, 0.0f});
     world_.create<actor_brain>(id, seed, seed % 31u, 0.65f + unit_from_hash(seed) * 1.35f);
     world_.create<actor_visual>(id, (i + 1u) % tex_count, actor_color(i), actor_size(seed));
+    world_.create<actor_perception>(id);
   }
 }
 
 actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& batch) {
   tick_ += 1;
-  think(tick_);
-  apply(dt_seconds);
-  batch.build(world_);
+  perf("sense", &actor_world_slice::sense, this);            // слой поиска цели
+  perf("think", &actor_world_slice::think, this, tick_);     // GOAP: действие → intent
+  perf("apply", &actor_world_slice::apply, this, dt_seconds);
+  perf("build", &actor_batch::build, &batch, world_);        // упаковка инстансов в батч
 
   return actor_metrics{
     uint32_t(world_.count<actor_position>()),
@@ -176,25 +348,45 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
   };
 }
 
-// think — ЧИСТАЯ фаза: на каждую сущность строим dry-run контекст, гоняем мозг
-// (act::number_function через реестр) и выдаём компактный act::intent. Мир НЕ
-// мутируется здесь → фаза параллелизуема. Буфер сортируем по индексу сущности,
-// чтобы apply шла в фиксированном детерминированном порядке.
+// sense — слой поиска цели: строим грид раз за тик, затем на каждого актора берём
+// ближайшего крупнее (угроза) и мельче (добыча) из 3×3 ячеек, кладём в actor_perception.
+void actor_world_slice::sense() {
+  spatial_grid grid;
+  grid.build(world_);
+
+  for (auto [id, pos, vis, per] : world_.view<actor_position, actor_visual, actor_perception>()) {
+    const size_t idx = aesthetics::get_entityid_index(id);
+    const auto threat = grid.query(pos->value, vis->size, idx, /*want_bigger=*/true);
+    const auto prey   = grid.query(pos->value, vis->size, idx, /*want_bigger=*/false);
+    per->threat_pos = threat.pos; per->has_threat = threat.found;
+    per->prey_pos   = prey.pos;   per->has_prey   = prey.found;
+  }
+}
+
+// think — ЧИСТАЯ фаза: на каждую сущность строим dry-run контекст, считаем GOAP-стейт
+// предикатами и планируем (find_solution) до цели resolved. Первое действие плана
+// (flee/chase/wander) → intent call_function с fn_id эффекта. Мир НЕ мутируется. Буфер
+// сортируем по индексу сущности, чтобы apply шла в фиксированном порядке.
 void actor_world_slice::think(const uint64_t tick) {
   intents_.clear();
+  const auto& goal_state = goap_->get_goals().front().goal;
+  const uint64_t goal_id = utils::string_hash("resolved"); // одна цель → дешёвое тождество
+
   for (auto [id, pos, brain] : world_.view<actor_position, actor_brain>()) {
     (void)pos;
     const auto ctx = make_ctx(world_, id, brain->seed, tick); // sink=nullptr ⇒ dry-run
-    const uint32_t dir_index = uint32_t(wander_dir_fn_->invoke(ctx)) & 7u;
-    const glm::vec2 dir = direction_from_hash(dir_index);
+    const acumen::state start = goap_->compute_state(ctx);
+
+    // decide: hit в кеше ⇒ без A*; miss ⇒ find_solution в plan_container_ + запись в кеш.
+    std::array<const acumen::action*, 4> plan{};
+    const size_t n = goap_->decide(start, goal_state, goal_id, plan_cache_, plan_container_, plan);
+    if (n == 0 || plan[0] == nullptr) continue; // решения нет / уже в цели
 
     act::intent in;
-    in.kind = act::intent_kind::move_to;
+    in.kind = act::intent_kind::call_function;
     in.actor = act::entity_id{ uint32_t(id) };
-    // payload.target несёт вектор скорости (направление * скорость) — apply его
-    // интегрирует. (move_to как «точка назначения» придёт, когда появится навигация.)
-    in.payload.target = act::vec3{ dir.x * brain->speed, dir.y * brain->speed, 0.0 };
-    in.source_action = utils::string_hash("wander"); // provenance: кто породил интент
+    in.payload.call.fn = utils::string_hash(plan[0]->name); // эффект действия в реестре
+    in.source_action = in.payload.call.fn;                  // provenance: породившее действие
     intents_.push_back(in);
   }
 
@@ -203,25 +395,27 @@ void actor_world_slice::think(const uint64_t tick) {
   });
 }
 
-// apply — ДЕТЕРМИНИРОВАННЫЙ барьер: проходим отсортированный буфер интентов в
-// id-порядке и мутируем компоненты. Единственный консьюмер на MVP; effect_sink
-// (лог в catalogue) подключится вторым консьюмером позже.
+// apply — ДЕТЕРМИНИРОВАННЫЙ барьер в двух фазах.
+//   1) исполнить эффекты выбранных действий в id-порядке (мутируют скорость). Все
+//      эффекты читают позиции ДО интеграции → решения по согласованному снимку тика.
+//   2) проинтегрировать позиции (движение НЕ ограничено — без отскоков/клампа).
+// Эффект мутирует напрямую (effect_sink подключится вторым консьюмером с catalogue).
 void actor_world_slice::apply(const float dt_seconds) {
   for (const auto& in : intents_) {
-    if (in.kind != act::intent_kind::move_to) continue;
+    if (in.kind != act::intent_kind::call_function) continue;
+    const auto* effect = registry_.effect(in.payload.call.fn);
+    if (effect == nullptr) continue;
 
     const auto id = aesthetics::entityid_t(in.actor.id);
-    auto* pos = world_.get<actor_position>(id);
-    auto* vel = world_.get<actor_velocity>(id);
-    if (pos == nullptr || vel == nullptr) continue;
+    const auto* brain = world_.get<actor_brain>(id);
+    const uint64_t seed = brain != nullptr ? brain->seed : 0u;
+    const auto ctx = make_ctx(world_, id, seed, tick_); // эффект сам кастует мир в мутабельный
+    effect->invoke(ctx);
+  }
 
-    vel->value = glm::vec2(float(in.payload.target.x), float(in.payload.target.y));
+  for (auto [id, pos, vel] : world_.view<actor_position, actor_velocity>()) {
+    (void)id;
     pos->value += vel->value * dt_seconds;
-
-    if (pos->value.x < min_bound_.x) { pos->value.x = min_bound_.x; vel->value.x = std::abs(vel->value.x); }
-    if (pos->value.y < min_bound_.y) { pos->value.y = min_bound_.y; vel->value.y = std::abs(vel->value.y); }
-    if (pos->value.x > max_bound_.x) { pos->value.x = max_bound_.x; vel->value.x = -std::abs(vel->value.x); }
-    if (pos->value.y > max_bound_.y) { pos->value.y = max_bound_.y; vel->value.y = -std::abs(vel->value.y); }
   }
 }
 

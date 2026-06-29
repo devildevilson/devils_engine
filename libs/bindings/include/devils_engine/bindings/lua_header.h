@@ -17,8 +17,11 @@
 #define DEVILS_ENGINE_TO_LUA_INDEX(index) ((index)+1)
 #define DEVILS_ENGINE_FROM_LUA_INDEX(index) ((index)-1)
 
-void sol_lua_check_error(sol::this_state s, const sol::function_result &res);
-void sol_lua_check_error(const sol::function_result &res);
-void sol_lua_warn_error(const sol::function_result &res);
+void sol_lua_check_error(sol::this_state s, const sol::unsafe_function_result &res);
+void sol_lua_check_error(sol::this_state s, const sol::protected_function_result &res);
+void sol_lua_check_error(const sol::unsafe_function_result &res);
+void sol_lua_check_error(const sol::protected_function_result &res);
+void sol_lua_warn_error(const sol::unsafe_function_result &res);
+void sol_lua_warn_error(const sol::protected_function_result &res);
 
 #endif

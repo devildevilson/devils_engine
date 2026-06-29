@@ -100,3 +100,110 @@ TEST_CASE("Acumen GOAP under act registry [acumen::system]") {
     REQUIRE_THROWS(acumen::system(&empty, bad, {}, {}));
   }
 }
+
+TEST_CASE("Acumen solution memoization [acumen::solution_cache]") {
+  // тот же крошечный GOAP: draw_weapon -> attack, цель enemy_dead.
+  act::registry reg;
+  reg.reg("has_weapon", std::make_unique<act::native_function<bool>>(&pred_false));
+  reg.reg("enemy_dead", std::make_unique<act::native_function<bool>>(&pred_false));
+  reg.reg("enemy_near", std::make_unique<act::native_function<bool>>(&pred_true));
+  reg.reg("draw_weapon", std::make_unique<act::native_function<void>>(&effect_noop));
+  reg.reg("attack",      std::make_unique<act::native_function<void>>(&effect_noop));
+
+  enum flag : size_t { has_weapon = 0, enemy_dead = 1, enemy_near = 2 };
+
+  std::vector<acumen::state_metric> metrics = {
+    acumen::state_metric("has_weapon"),
+    acumen::state_metric("enemy_dead"),
+    acumen::state_metric("enemy_near"),
+  };
+  acumen::scoped_state draw_next; draw_next.set(has_weapon, true);
+  acumen::scoped_state atk_req;   atk_req.set(has_weapon, true);
+  acumen::scoped_state atk_next;  atk_next.set(enemy_dead, true);
+  std::vector<acumen::action> actions = {
+    acumen::action("draw_weapon", acumen::scoped_state{}, draw_next, acumen::scoped_state{}),
+    acumen::action("attack",      atk_req,                atk_next,  acumen::scoped_state{}),
+  };
+  acumen::scoped_state goal_state; goal_state.set(enemy_dead, true);
+  std::vector<acumen::goal> goals = { acumen::goal{ "kill", acumen::scoped_state{}, goal_state } };
+
+  acumen::system sys(&reg, metrics, goals, actions);
+
+  astar<acumen::astar_data>::container scratch;
+  acumen::solution_cache cache;
+  std::array<const acumen::action*, 8> buf{};
+  const uint64_t goal_id = 1;
+
+  SUBCASE("relevant_mask covers only plan-affecting bits") {
+    REQUIRE(sys.relevant_mask().test(has_weapon));
+    REQUIRE(sys.relevant_mask().test(enemy_dead));
+    REQUIRE(sys.relevant_mask().test(enemy_near) == false); // не влияет на план
+  }
+
+  SUBCASE("first decide misses, fills cache, returns the full plan") {
+    acumen::state start; // всё false
+    const size_t n = sys.decide(start, goal_state, goal_id, cache, scratch, buf);
+    REQUIRE(n == 2);
+    REQUIRE(buf[0]->name == "draw_weapon");
+    REQUIRE(buf[1]->name == "attack");
+    REQUIRE(cache.size() == 1);
+    REQUIRE(cache.misses() == 1);
+    REQUIRE(cache.hits() == 0);
+  }
+
+  SUBCASE("second decide with same key hits and returns the same plan") {
+    acumen::state start;
+    sys.decide(start, goal_state, goal_id, cache, scratch, buf);            // miss
+    std::array<const acumen::action*, 8> buf2{};
+    const size_t n = sys.decide(start, goal_state, goal_id, cache, scratch, buf2); // hit
+    REQUIRE(n == 2);
+    REQUIRE(buf2[0]->name == "draw_weapon");
+    REQUIRE(buf2[1]->name == "attack");
+    REQUIRE(cache.hits() == 1);
+    REQUIRE(cache.size() == 1);
+  }
+
+  SUBCASE("irrelevant bit collapses to the same key (enemy_near ignored)") {
+    acumen::state a;                          // enemy_near = false
+    acumen::state b; b.set(enemy_near, true); // отличается ТОЛЬКО незначащим битом
+    sys.decide(a, goal_state, goal_id, cache, scratch, buf);            // miss
+    const size_t n = sys.decide(b, goal_state, goal_id, cache, scratch, buf); // hit
+    REQUIRE(n == 2);
+    REQUIRE(cache.hits() == 1);
+    REQUIRE(cache.size() == 1); // одна запись на оба состояния
+  }
+
+  SUBCASE("relevant bit changes the key (has_weapon distinguishes plans)") {
+    acumen::state a;                          // has_weapon false -> [draw_weapon, attack]
+    acumen::state b; b.set(has_weapon, true); // has_weapon true  -> [attack]
+    const size_t na = sys.decide(a, goal_state, goal_id, cache, scratch, buf);
+    REQUIRE(na == 2);
+    std::array<const acumen::action*, 8> buf2{};
+    const size_t nb = sys.decide(b, goal_state, goal_id, cache, scratch, buf2);
+    REQUIRE(nb == 1);
+    REQUIRE(buf2[0]->name == "attack");
+    REQUIRE(cache.size() == 2); // два разных ключа
+  }
+
+  SUBCASE("budget full: insert skipped, decide still solves correctly") {
+    acumen::solution_cache tiny(acumen::solution_cache::entry_bytes); // ~1 запись
+    REQUIRE(tiny.capacity_entries() == 1);
+    acumen::state a; sys.decide(a, goal_state, goal_id, tiny, scratch, buf); // занял слот
+    REQUIRE(tiny.size() == 1);
+    acumen::state b; b.set(has_weapon, true);
+    const size_t nb = sys.decide(b, goal_state, goal_id, tiny, scratch, buf); // miss, кешировать некуда
+    REQUIRE(nb == 1);                 // всё равно верно (живой решатель)
+    REQUIRE(buf[0]->name == "attack");
+    REQUIRE(tiny.size() == 1);        // бюджет не превышен
+  }
+
+  SUBCASE("merge folds warm entries from another cache") {
+    acumen::solution_cache c1, c2;
+    acumen::state a; sys.decide(a, goal_state, goal_id, c1, scratch, buf);
+    acumen::state b; b.set(has_weapon, true); sys.decide(b, goal_state, goal_id, c2, scratch, buf);
+    REQUIRE(c1.size() == 1);
+    REQUIRE(c2.size() == 1);
+    c1.merge(c2);
+    REQUIRE(c1.size() == 2); // влились записи из c2
+  }
+}

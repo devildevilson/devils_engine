@@ -13,7 +13,8 @@ set(SRC_LIST
 set(HDR_LIST
   include/devils_engine/acumen/common.h
   include/devils_engine/acumen/system.h
-  include/devils_engine/acumen/astar.h 
+  include/devils_engine/acumen/astar.h
+  include/devils_engine/acumen/cache.h
 )
 
 add_library(devils_acumen ${SRC_LIST} ${HDR_LIST})

@@ -15,9 +15,9 @@ namespace devils_engine {
 namespace painter {
 
 #ifndef _NDEBUG
-#define DS_ASSERT_ARRAY_GET(arr, index) [&]() -> decltype((arr)[(index)]) { if ((index) >= (arr).size()) utils::error{}("Assert failed: "#arr".size() ({}) < index ({})", (arr).size(), (index)); return (arr)[(index)]; }()
+#define DS_ASSERT_ARRAY_GET(arr, index) ([&]() -> decltype((arr)[(index)]) { if ((index) >= (arr).size()) utils::error{}("Assert failed: "#arr".size() ({}) < index ({})", (arr).size(), (index)); return (arr)[(index)]; }())
 #else
-#define DS_ASSERT_ARRAY_GET(arr, index) (arr)[(index)];
+#define DS_ASSERT_ARRAY_GET(arr, index) ((arr)[(index)])
 #endif
 
 struct graphics_base;

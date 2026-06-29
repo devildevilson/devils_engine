@@ -1,5 +1,9 @@
 #include "system.h"
 
+#include <array>
+#include <algorithm>
+#include <cassert>
+
 #include "devils_engine/utils/core.h"      // utils::error
 #include "devils_engine/utils/string_id.h" // utils::string_hash
 #include "devils_engine/act/registry.h"    // act::registry — резолв предикатов/эффектов
@@ -78,6 +82,24 @@ system::system(const act::registry* registry, std::vector<state_metric> metrics_
     if (fn != nullptr) a.effect = fn;
     else utils::error{}("acumen: action '{}' has no matching effect function in act::registry", a.name);
   }
+
+  // значащие биты = всё, что влияет на план: маски требований/эффектов/весов действий +
+  // маски требований/целей целей. Бит вне этого объединения на решение не влияет → в ключ
+  // мемоизации не входит (см. cache.h). Считаем один раз здесь.
+  relevant_mask_.reset();
+  for (const auto& a : actions) {
+    relevant_mask_ |= a.requirements.mask;
+    relevant_mask_ |= a.next_state.mask;
+    relevant_mask_ |= a.weight_state.mask;
+  }
+  for (const auto& g : goals) {
+    relevant_mask_ |= g.requirements.mask;
+    relevant_mask_ |= g.goal.mask;
+  }
+  relevant_bits_.clear();
+  for (size_t i = 0; i < relevant_mask_.size(); ++i) {
+    if (relevant_mask_.test(i)) relevant_bits_.push_back(uint16_t(i));
+  }
 }
 
 std::span<const state_metric> system::get_metrics() const noexcept { return std::span(metrics); }
@@ -91,6 +113,55 @@ state system::compute_state(const act::exec_context& ctx) const {
     s.set(i, metrics[i].compute(ctx));
   }
   return s;
+}
+
+const state& system::relevant_mask() const noexcept { return relevant_mask_; }
+
+plan_key system::make_key(const state& start, const uint64_t goal_id) const noexcept {
+  // проецируем значащие биты в плотные младшие позиции — ключ зависит лишь от того, что
+  // влияет на план. relevant_bits_.size() <= STATE_SIZE ⇒ b/64 < state_words (без OOB).
+  plan_key k;
+  k.goal_id = goal_id;
+  size_t b = 0;
+  for (const uint16_t idx : relevant_bits_) {
+    if (start.test(idx)) k.bits[b >> 6] |= (uint64_t(1) << (b & 63u));
+    ++b;
+  }
+  return k;
+}
+
+size_t system::decide(const state& start, const scoped_state& goal, const uint64_t goal_id,
+                      solution_cache& cache, astar<astar_data>::container& scratch,
+                      std::span<const action*> out) const {
+  // контроль соундности кеша: биты цели должны покрываться значащей маской, иначе ключ их
+  // не учтёт и кеш вернёт неверный план. Дёшево гасим в дебаге (в релизе цель фиксирована).
+  assert((goal.mask & ~relevant_mask_).none() &&
+         "acumen::decide: goal mask has bits outside relevant_mask (cache key would be unsound)");
+
+  const plan_key key = make_key(start, goal_id);
+  const action* const base = get_actions().data();
+
+  if (const cached_plan* hit = cache.find(key)) {
+    const size_t n = std::min(size_t(hit->length), out.size());
+    for (size_t i = 0; i < n; ++i) out[i] = base + hit->actions[i];
+    return hit->full_length;
+  }
+
+  // miss: живой поиск в локальный буфер (cap = max_plan), оттуда — и в кеш, и в out.
+  std::array<const action*, max_plan> tmp{};
+  const size_t full = find_solution(this, &scratch, start, goal, std::span<const action*>(tmp));
+
+  const size_t copy = std::min({ full, out.size(), max_plan });
+  for (size_t i = 0; i < copy; ++i) out[i] = tmp[i];
+
+  if (full <= max_plan) { // длиннее cap не представимо — не кешируем (редкий случай)
+    cached_plan p;
+    p.length = uint8_t(full);
+    p.full_length = uint8_t(std::min<size_t>(full, 255));
+    for (size_t i = 0; i < full; ++i) p.actions[i] = uint16_t(tmp[i] - base);
+    cache.insert(key, p);
+  }
+  return full;
 }
 
 planner::planner(const class system* system) noexcept : system(system) {}
@@ -144,7 +215,7 @@ size_t find_solution(const system* sys, astar<astar_data>::container* c, const s
   // (его data.action == nullptr, это лишь исходное состояние), поэтому идём со start->child и
   // ВКЛЮЧАЕМ goal-узел — в нём лежит действие, достигшее цели. Пишем в out до его размера, но
   // считаем ПОЛНУЮ длину (вызывающий увидит обрезание по count > out.size()). Если start уже
-  // удовлетворяет цели, start->child == nullptr ⇒ count 0 (пустой план).
+  // удовлетворяет цели, start->child == nullptr -> count 0 (пустой план).
   size_t count = 0;
   for (auto node = a.solution_raw()->child; node != nullptr; node = node->child) {
     if (count < out.size()) out[count] = node->data.action;
@@ -152,6 +223,12 @@ size_t find_solution(const system* sys, astar<astar_data>::container* c, const s
     if (node == a.goal_node()) break;
   }
 
+  // Узлы решения (start..goal) после успеха ещё висят в node_pool (free_unused чистит лишь
+  // тупиковые из open/closed). Возвращаем их в пул — блоки остаются, контейнер ПЕРЕИСПОЛЬЗУЕМ
+  // для следующего поиска без перевыделения (один container на поток исполнения). out уже
+  // скопирован, а data.action указывает в system->actions, не в узлы — освобождение безопасно.
+  // (Путь неудачи сюда не доходит — free_all отработал в step(); см. ранний return выше.)
+  a.free_solution();
   return count;
 }
 

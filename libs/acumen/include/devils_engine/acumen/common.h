@@ -15,10 +15,21 @@
 
 #define DEVILS_ENGINE_ACUMEN_EPSILON 0.0000001
 
+// Максимальная длина кешируемого плана (мемоизация). Пока константа в хедере; при нужде
+// навесим define сборщика. Планы длиннее НЕ кешируются (decide вернёт полную длину, но в
+// out отдаст не больше max_plan действий — для таких зови find_solution напрямую).
+#ifndef DEVILS_ENGINE_ACUMEN_MAX_PLAN
+#  define DEVILS_ENGINE_ACUMEN_MAX_PLAN 8
+#endif
+
 namespace devils_engine {
 namespace acumen {
 // динамический сет?
 using state = std::bitset<DEVILS_ENGINE_ACUMEN_STATE_SIZE>;
+
+inline constexpr size_t max_plan = DEVILS_ENGINE_ACUMEN_MAX_PLAN;
+// число 64-битных слов под проекцию значащих бит состояния в ключ мемоизации.
+inline constexpr size_t state_words = (DEVILS_ENGINE_ACUMEN_STATE_SIZE + 63) / 64;
 
 // метрика состояния = один бит GOAP-стейта = ПРЕДИКАТ над сущностью из общего реестра act.
 // `name` — имя предиката в act::registry; `compute_func` РЕЗОЛВИТ system при сборке (lookup

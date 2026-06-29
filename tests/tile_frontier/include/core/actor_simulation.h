@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -10,8 +11,9 @@
 #include <glm/glm.hpp>
 
 #include <devils_engine/aesthetics/world.h>
-#include <devils_engine/act/registry.h> // act::registry + function<RetT>
-#include <devils_engine/act/intent.h>   // act::intent — обобщённый буфер интентов
+#include <devils_engine/act/registry.h>     // act::registry + function<RetT>
+#include <devils_engine/act/intent.h>       // act::intent — обобщённый буфер интентов
+#include <devils_engine/acumen/system.h>    // acumen::system — GOAP над act::registry
 
 #include "draw_intent.h"
 #include "tile_map.h"
@@ -39,6 +41,16 @@ struct actor_visual {
   uint32_t texture = 0;
   instance_layout::rgba8_color color{};
   float size = 1.0f;
+};
+
+// Восприятие: результат слоя поиска цели (sense-фаза). Хранит позицию ближайшего
+// БО́ЛЬШЕГО актора (угроза, от него бежим) и ближайшего МЕНЬШЕГО (добыча, за ней
+// гонимся). Предикаты/эффекты GOAP читают это за O(1) вместо повторного скана мира.
+struct actor_perception {
+  glm::vec2 threat_pos{0.0f, 0.0f}; // ближайший актор крупнее нас
+  glm::vec2 prey_pos{0.0f, 0.0f};   // ближайший актор мельче нас
+  bool has_threat = false;
+  bool has_prey = false;
 };
 
 // GPU instance for actor draw group. Layout: "v2ui1c4v1".
@@ -87,18 +99,25 @@ public:
   const devils_engine::aesthetics::world& ecs() const noexcept { return world_; }
 
 private:
-  // Регистрирует нативные геймплейные функции "мозга" в act::registry и кэширует
-  // типизированные указатели (резолв по имени уходит из горячего пути think).
+  // Регистрирует нативные геймплейные функции (предикаты-метрики + эффекты-действия)
+  // в act::registry и собирает GOAP-систему acumen (резолв по имени — одноразовый).
   void setup_brain_registry();
+  // Слой поиска цели: наполняет actor_perception (ближайшая угроза/добыча). Сейчас
+  // наивный O(N²) проход — очевидный кандидат на пространственный грид при росте N.
+  void sense();
   void think(uint64_t tick);
   void apply(float dt_seconds);
 
   devils_engine::aesthetics::world world_;
-  devils_engine::act::registry registry_; // общий реестр геймплейных функций (см. libs/act)
-  const devils_engine::act::number_function* wander_dir_fn_ = nullptr; // кэш "wander.direction"
-  std::vector<devils_engine::act::intent> intents_; // обобщённый буфер интентов (sort by actor id)
-  glm::vec2 min_bound_{0.0f, 0.0f};
-  glm::vec2 max_bound_{0.0f, 0.0f};
+  devils_engine::act::registry registry_;        // общий реестр геймплейных функций (см. libs/act)
+  std::optional<devils_engine::acumen::system> goap_; // GOAP-поведение flee/chase/wander
+  // один A*-контейнер на весь think: find_solution чистит узлы решения в пул после каждого
+  // актора → переиспользуем без перевыделения (пул блоков остаётся тёплым между тиками).
+  devils_engine::astar<devils_engine::acumen::astar_data>::container plan_container_;
+  // мемоизация решений GOAP: акторы в одном значащем состоянии делят один просчёт A*.
+  // (one-per-thread; при MT — per-worker + merge между кадрами.)
+  devils_engine::acumen::solution_cache plan_cache_;
+  std::vector<devils_engine::act::intent> intents_;   // обобщённый буфер интентов (sort by actor id)
   uint64_t tick_ = 0;
 };
 

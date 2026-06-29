@@ -385,7 +385,7 @@ void basic_functions(sol::table t) {
 }
 }
 
-void sol_lua_check_error(sol::this_state s, const sol::function_result &res) {
+void sol_lua_check_error(sol::this_state s, const sol::unsafe_function_result &res) {
   if (res.status() == sol::call_status::ok) return;
   sol::error err = res;
   //utils::error{}("{}\n", err.what());
@@ -393,13 +393,33 @@ void sol_lua_check_error(sol::this_state s, const sol::function_result &res) {
   luaL_error(s, "Catched lua error");
 }
 
-void sol_lua_check_error(const sol::function_result &res) {
+void sol_lua_check_error(sol::this_state s, const sol::protected_function_result &res) {
+  if (res.status() == sol::call_status::ok) return;
+  sol::error err = res;
+  //utils::error{}("{}\n", err.what());
+  devils_engine::utils::println(err.what());
+  luaL_error(s, "Catched lua error");
+}
+
+void sol_lua_check_error(const sol::unsafe_function_result &res) {
   if (res.status() == sol::call_status::ok) return;
   sol::error err = res;
   devils_engine::utils::error{}("{}\n", err.what());
 }
 
-void sol_lua_warn_error(const sol::function_result &res) {
+void sol_lua_check_error(const sol::protected_function_result &res) {
+  if (res.status() == sol::call_status::ok) return;
+  sol::error err = res;
+  devils_engine::utils::error{}("{}\n", err.what());
+}
+
+void sol_lua_warn_error(const sol::protected_function_result &res) {
+  if (res.status() == sol::call_status::ok) return;
+  sol::error err = res;
+  devils_engine::utils::warn("{}\n", err.what());
+}
+
+void sol_lua_warn_error(const sol::unsafe_function_result &res) {
   if (res.status() == sol::call_status::ok) return;
   sol::error err = res;
   devils_engine::utils::warn("{}\n", err.what());
