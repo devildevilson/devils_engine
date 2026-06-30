@@ -10,6 +10,7 @@
 #include <devils_engine/input/core.h>
 #include <devils_engine/thread/atomic_pool.h>
 #include <devils_engine/utils/core.h>
+#include <devils_engine/utils/string_id.h>
 #include <devils_engine/utils/time-utils.hpp>
 
 #include <devils_engine/demiurg/resource_system.h>
@@ -71,6 +72,25 @@ static void error_callback(int, const char* msg) noexcept {
 // без атомиков (одно окно/один UI). Позицию мыши опрашиваем напрямую (input::cursor_pos), а
 // дискретные события (кнопки/колесо/текст/клавиши) копим тут.
 namespace {
+// Lua-ОБЁРТКА id звуковой задачи. Живёт ТОЛЬКО здесь, на границе биндинга — в контракте
+// сообщений (command_sound) ходит голый size_t, чтобы не тащить лишний тип по всем хедерам.
+// Смысл обёртки чисто lua-шный: usertype без арифметических метаметодов, поэтому скрипт не
+// сделает над id вычислений и не передаст случайное число в поле after (секвенсинг).
+struct sound_handle {
+  size_t value = SIZE_MAX;
+  bool valid() const noexcept { return value != SIZE_MAX; }
+};
+
+// Main-локальная запись таблицы состояния звука. = wire-запись (taskid/progress) + deadline:
+// 0 — ПОДТВЕРЖДЕНА последней публикацией звука; >0 — ОПТИМИСТИЧНАЯ (только что запрошен play,
+// ещё не доехал в публикацию), живёт до этого main-кадра. Срок отличает «ещё не стартовал»
+// (вернём 0) от «уже закончился» (nil), убирая отдельный pending-контейнер.
+struct ui_sound_state_entry {
+  size_t taskid;
+  double progress;
+  size_t deadline;
+};
+
 // Зеркало стабильных констант GLFW (публичный ABI, не меняется). input-обёртка их наружу не
 // отдаёт, а коллбэки приходят с сырыми int-кодами, поэтому держим нужный минимум здесь.
 namespace glfw_const {
@@ -197,8 +217,16 @@ struct simulation_init {
   std::atomic_bool sound_devices_ready = false;
   bool sound_devices_requested = false;
   bool sound_devices_logged = false;
-  bool sound_recreate_test_sent = false; 
+  bool sound_recreate_test_sent = false;
   size_t tick = 0;
+
+  // Единая таблица состояния звука для UI (app.sound_state). Звуковой поток ПУШИТ полный слепок
+  // (command_sound_state); consume в update СЛИВАЕТ его с оптимистичными записями, добавленными
+  // в app.play_sound (см. ui_sound_state_entry.deadline). _next — скретч под слияние без аллокаций.
+  cached_message_dispatcher<command_sound_state> sound_state_commands;
+  std::vector<ui_sound_state_entry> sound_state;
+  std::vector<ui_sound_state_entry> sound_state_next;
+  size_t sound_frame = 0; // счётчик main-кадров (для дедлайна оптимистичных записей)
 
   simulation_init() : pool(nullptr), window(nullptr), monitor(nullptr) {}
 };
@@ -308,6 +336,7 @@ static void setup_visage(simulation_init& c) {
 void simulation::init() {
   container.reset(new simulation_init);
   actor.add_receiver<command_chunk_loaded>(&container->chunk_loaded_commands.dis);
+  actor.add_receiver<command_sound_state>(&container->sound_state_commands.dis);
 
   const auto config_path = utils::project_folder() + "resources/config/app.tavl";
   container->config = load_app_config(config_path);
@@ -342,6 +371,7 @@ void simulation::init() {
 
   container->sound_sim.reset(new sound_simulation(sound_ft));
   container->sound_sim->init();
+  container->sound_sim->set_main_actor(&actor); // звук пушит сюда command_sound_state
   sactor = container->sound_sim->get_actor();
 
   if (container->config.render.enabled) {
@@ -462,6 +492,78 @@ void simulation::init() {
 
   // интерфейс (visage) в главном потоке
   setup_visage(*container);
+
+  // UI-биндинги звука. visage — чисто UI и про звук не знает, поэтому их регистрирует ХОСТ
+  // в lua-песочнице UI. Каждый — "обычный message на звуковой тред" (presentation→sound
+  // напрямую, в лог реплея НЕ попадает — см. водораздел звука). Живут в namespace `app`
+  // (общая точка для хост-биндингов; старый префикс tf_ выводим из обихода). Набор для плеера:
+  //   app.play_sound(name [, {start=0..1, after=handle}]) -> sound_handle
+  //   app.play_sound{ name="...", start=0..1, after=handle } -> sound_handle  (один аргумент-таблица)
+  //   app.stop_sound(handle)                                  -- остановить и освободить голос
+  //   app.sound_state(handle) -> progress(0..1) | nil         -- nil = задачи нет (играет ⇔ вернули число)
+  // Очередь/кроссфейд плеер собирает сам на lua, опрашивая state и запуская следующий трек.
+  // sound_handle — непрозрачный usertype без арифметики: скрипт не считает id и не суёт число.
+  {
+    auto& L = container->ui->script_state();
+    L.new_usertype<sound_handle>("sound_handle",
+      sol::no_constructor,
+      "valid", &sound_handle::valid);
+
+    sol::environment env = container->ui->script_env();
+    sol::table app = env["app"].get_or_create<sol::table>(); // общий namespace хост-биндингов
+
+    // первый аргумент — sol::object (строка-имя ИЛИ таблица-опции с полем name), второй —
+    // необязательная таблица-опции (когда имя задано строкой). sol::object у НЕпоследнего
+    // параметра безопаснее sol::optional (тот съедает не тот слот стека при nil).
+    app.set_function("play_sound",
+      [this](sol::object a, sol::optional<sol::table> b) -> sound_handle {
+        if (sactor == nullptr) return sound_handle{};
+
+        std::string name;
+        sol::optional<sol::table> opts;
+        if (a.is<sol::table>()) { opts = a.as<sol::table>(); name = opts->get_or("name", std::string{}); }
+        else if (a.is<std::string>()) { name = a.as<std::string>(); opts = b; }
+        if (name.empty()) return sound_handle{};
+
+        command_sound_play play{};
+        play.taskid = generate_task_id();
+        play.after = SIZE_MAX;
+        play.start = 0.0;
+        if (opts) {
+          play.start = std::clamp(opts->get_or("start", 0.0), 0.0, 1.0);
+          const sol::optional<sound_handle> after = (*opts)["after"];
+          if (after && after->valid()) play.after = after->value; // хэндл → секвенсинг
+        }
+        play.name = utils::string_hash(name); // тот же хеш, что у предзагруженных имён в акторе (позже — demiurg handle)
+        sactor->send(play);
+        // оптимистичная запись в ту же таблицу: пока play не доедет в публикацию (latency
+        // 1-2 кадра), app.sound_state по ней вернёт 0, а не nil (deadline = окно старта).
+        constexpr size_t startup_grace_frames = 30;
+        container->sound_state.push_back({play.taskid, 0.0, container->sound_frame + startup_grace_frames});
+        return sound_handle{play.taskid};
+      });
+
+    app.set_function("stop_sound", [this](const sound_handle& h) {
+      if (sactor == nullptr || !h.valid()) return;
+      command_sound_stop stop{};
+      stop.taskid = h.value;
+      sactor->send(stop);
+    });
+
+    // ищет id в единой таблице sound_state. Возвращает прогресс [0,1] или nil. Раз вернули
+    // число — звук в обработке (играет/в очереди/только что запрошен); nil — задачи уже нет.
+    // Оптимистичная запись с истёкшим окном старта (так и не доехала) трактуется как nil.
+    app.set_function("sound_state", [this](const sound_handle& h) -> sol::object {
+      auto& lua = container->ui->script_state();
+      if (!h.valid()) return sol::nil;
+      for (const auto& s : container->sound_state) {
+        if (s.taskid != h.value) continue;
+        if (s.deadline != 0 && container->sound_frame > s.deadline) return sol::nil; // окно вышло
+        return sol::make_object(lua, s.progress);
+      }
+      return sol::nil;
+    });
+  }
 
   // атлас шрифта → GPU тем же путём, что и текстуры: просим ассеты довести до hot.
   // Слот определится динамически (после grass-текстур); main прочитает gpu_index по hot.
@@ -664,15 +766,11 @@ void simulation::update(const size_t time) {
         if (sent >= max_sounds_per_tick) break;
         const glm::vec2 d = e.pos - listener;
         if (d.x * d.x + d.y * d.y > audible2) continue;
-        command_sound play{};
+        command_sound_play play{};
         play.taskid = generate_task_id();
-        play.after = SIZE_MAX;
-        play.res = nullptr;
+        play.after = SIZE_MAX; // без секвенсинга
         play.name = e.name;
-        play.sourceid = 0;
-        play.cmd = 0;
-        play.type = 0;
-        play.mix = 0;
+        play.start = 0.0;
         sactor->send(play);
         ++sent;
       }
@@ -754,6 +852,27 @@ void simulation::update(const size_t time) {
     container->ui->set_env_number("tf_intents_per_sec", container->ui_intents_per_sec);
     container->ui->set_env_number("tf_instances_per_sec", container->ui_instances_per_sec);
     container->ui->set_env_number("tf_actor_update_avg_us", container->ui_actor_update_avg_us);
+
+    // забираем последний слепок состояния звука (звук пушит его сам) и СЛИВАЕМ его с
+    // оптимистичными записями из app.play_sound: публикация — подтверждённые (deadline 0),
+    // плюс ещё-живые оптимистичные, которых публикация пока не знает (latency старта).
+    // Подтверждённая запись, исчезнувшая из публикации = звук закончился → выпадает сама.
+    container->sound_frame += 1;
+    dispatcher_consume_last(container->sound_state_commands, [this](command_sound_state& msg) {
+      auto& cur = container->sound_state;
+      auto& next = container->sound_state_next;
+      next.clear();
+      for (const auto& s : msg.sounds) next.push_back({s.taskid, s.progress, 0});
+      for (const auto& e : cur) {
+        if (e.deadline == 0) continue;                     // была подтверждена, но публикации больше нет → конец
+        if (e.deadline < container->sound_frame) continue; // окно старта вышло → считаем завершённой
+        bool in_pub = false;
+        for (const auto& s : msg.sounds) if (s.taskid == e.taskid) { in_pub = true; break; }
+        if (!in_pub) next.push_back(e); // оптимистичная, ещё не доехала — оставляем
+      }
+      std::swap(cur, next);
+    });
+
     container->ui->update(time);
     container->ui->convert();
 

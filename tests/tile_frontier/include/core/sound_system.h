@@ -23,6 +23,8 @@ public:
   void update(const size_t time) override;
 
   sound_actor* get_actor();
+  // реверс-связь: куда звук ПУШИТ слепок состояния (command_sound_state). Может быть nullptr.
+  void set_main_actor(simulation_actor* a);
 private:
   std::unique_ptr<sound_simulation_init> container;
   sound_actor actor;

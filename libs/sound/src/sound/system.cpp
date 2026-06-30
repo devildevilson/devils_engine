@@ -1179,12 +1179,15 @@ static void completely_stop_source(system::source &s) {
       if (index == SIZE_MAX) return 0.0;
 
       auto& cur_task = m_tasks[index];
-      if (cur_task.inst == nullptr || cur_task.stream_frames_count == 0) return 0.0;
+      if (cur_task.inst == nullptr || cur_task.stream_frames_count == 0 || cur_task.source_frames_count == 0)
+        return cur_task.task.start; // ещё не играет → абсолютная стартовая позиция
 
+      // АБСОЛЮТНАЯ позиция в источнике (с учётом старта не с нуля), как и в make_status
+      const size_t start_frame = cur_task.source_frames_count - cur_task.stream_frames_count;
       const size_t frames_read = cur_task.inst->data_source.frames_read_total.load(std::memory_order_acquire);
-      if (frames_read <= cur_task.stream_begin_frame) return 0.0;
+      if (frames_read <= cur_task.stream_begin_frame) return cur_task.task.start;
       const size_t local_frames = std::min(frames_read - cur_task.stream_begin_frame, cur_task.stream_frames_count);
-      return double(local_frames) / double(cur_task.stream_frames_count);
+      return double(start_frame + local_frames) / double(cur_task.source_frames_count);
     }
 
     task_status system2::make_status(const system2::sound_task &task) const {
@@ -1193,7 +1196,10 @@ static void completely_stop_source(system::source &s) {
       status.resource_id = task.task.res.id;
       status.type = task.task.type;
       status.state = task_state::queued;
-      status.progress = 0.0;
+      // progress — АБСОЛЮТНАЯ позиция в ИСТОЧНИКЕ [0,1], а не доля проигранного сегмента.
+      // При старте не с нуля сегмент = source - start_frame, поэтому без учёта start_frame
+      // прогресс шёл бы 0→1 по куску и «вдвое быстрее». До старта показываем сам старт.
+      status.progress = task.task.start;
       status.after = task.task.after;
       status.frames_decoded = task.frames_decoded;
       status.frames_total = task.stream_frames_count;
@@ -1202,12 +1208,13 @@ static void completely_stop_source(system::source &s) {
       status.dir = task.task.dir;
       status.vel = task.task.vel;
 
-      if (task.inst == nullptr || task.stream_frames_count == 0) return status;
+      if (task.inst == nullptr || task.stream_frames_count == 0 || task.source_frames_count == 0) return status;
 
+      const size_t start_frame = task.source_frames_count - task.stream_frames_count; // кадры до сегмента
       const size_t frames_read = task.inst->data_source.frames_read_total.load(std::memory_order_acquire);
       if (frames_read > task.stream_begin_frame) {
         const size_t local_frames = std::min(frames_read - task.stream_begin_frame, task.stream_frames_count);
-        status.progress = double(local_frames) / double(task.stream_frames_count);
+        status.progress = double(start_frame + local_frames) / double(task.source_frames_count);
       }
 
       status.state = status.progress >= 1.0 ? task_state::finished : task_state::playing;
