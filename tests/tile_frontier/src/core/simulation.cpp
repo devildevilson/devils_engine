@@ -475,7 +475,7 @@ void simulation::init() {
 static size_t test_counter = 0;
 bool simulation::stop_predicate() const {
   test_counter += 1;
-  return test_counter > 100;
+  return test_counter > 200;
   //return false; // выход из приложения?
 }
 

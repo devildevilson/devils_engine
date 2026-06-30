@@ -104,6 +104,19 @@ struct actor_grabbed {
   devils_engine::aesthetics::entityid_t by = devils_engine::aesthetics::invalid_entityid;
 };
 
+// Еда-предмет: статичная маленькая сущность. Тег. В дереве восприятия она — «добыча» (меньше
+// любого актора) и потребляется ТЕМ ЖЕ хэндшейком поедания (надёжно — еда не убегает).
+// Респавнится до целевого числа (см. maintain_food) → не даёт популяции выесть саму себя.
+struct food_item {
+  float nutrition = 1.0f; // задел: сейчас поедание просто обнуляет голод
+};
+
+// Препятствие: статичный диск. Из восприятия ИСКЛЮЧЕНО (не добыча/не угроза); столкновение
+// разрешается позиционно в фазе интеграции. Рисуется (есть position+visual).
+struct obstacle {
+  float radius = 1.0f;
+};
+
 // GPU instance for actor draw group. Layout: "v2ui1c4v1".
 struct actor_instance {
   glm::vec2 pos;
@@ -169,6 +182,10 @@ private:
   // Завершает поедание у хищников, чей срок истёк: сбрасывает голод, снимает actor_eating,
   // удаляет съеденную жертву из мира (kill-list, удаление ПОСЛЕ обхода). Зовётся после apply.
   void resolve_eating(uint64_t tick);
+  // Допополняет еду до food_target_ (детерминированно по тику+счётчику). Зовётся раз за тик.
+  void maintain_food();
+  // Спавнит одну еду-сущность в случайной (детерминированной) точке в пределах bounds.
+  void spawn_food();
 
   devils_engine::aesthetics::world world_;
   devils_engine::act::registry registry_;        // общий реестр геймплейных функций (см. libs/act)
@@ -198,7 +215,15 @@ private:
   std::vector<think_request> due_; // переиспользуемый скретч отбора
 
   uint64_t tick_ = 0;
-  uint64_t eaten_total_ = 0; // ВРЕМЕННО: всего съедено (диагностика — доказывает, что удаление работает)
+
+  // ── еда и препятствия (C2) ──
+  glm::vec2 spawn_min_{0.0f, 0.0f};   // границы спавна (для респавна еды), заданы в init
+  glm::vec2 spawn_max_{0.0f, 0.0f};
+  uint32_t  food_target_ = 0;         // целевое число еды на карте (поддерживается респавном)
+  uint64_t  food_spawn_seq_ = 0;      // счётчик спавнов — детерминированный поток позиций еды
+  uint32_t  texture_count_ = 1;       // запомненное число текстур (для визуала еды/спавна)
+  struct obstacle_disc { glm::vec2 pos; float radius; }; // плоский кэш препятствий для коллизии
+  std::vector<obstacle_disc> obstacles_;
 };
 
 } // namespace core

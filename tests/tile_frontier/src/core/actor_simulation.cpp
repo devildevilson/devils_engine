@@ -134,6 +134,16 @@ static float actor_size(const uint32_t seed) noexcept {
   return 0.34f + unit_from_hash(mix32(seed ^ 0x9e37u)) * 0.42f;
 }
 
+static instance_layout::rgba8_color pack_rgba(const float r, const float g, const float b, const float a) noexcept {
+  const auto p = [] (const float v) { return uint32_t(std::round(std::clamp(v, 0.0f, 1.0f) * 255.0f)); };
+  return instance_layout::rgba8_color{ (p(r) << 0) | (p(g) << 8) | (p(b) << 16) | (p(a) << 24) };
+}
+
+// ── еда и препятствия (C2) ─────────────────────────────────────────────────
+static constexpr float food_size = 0.2f;   // < минимального актора (0.34) ⇒ еда всем «добыча»
+static instance_layout::rgba8_color food_color() noexcept { return pack_rgba(0.20f, 0.95f, 0.35f, 1.0f); }     // ярко-зелёный
+static instance_layout::rgba8_color obstacle_color() noexcept { return pack_rgba(0.38f, 0.38f, 0.44f, 1.0f); } // серый
+
 // Анимация масштаба = синусоида, частота/амплитуда зависят от состояния FSM. ВЫВОДИМАЯ
 // величина (из state + tick + пер-акторной фазы) — НЕ хранится, не пишется в save. Частота в
 // циклах/тик (на main_fps≈20: 0.03 ц/т ≈ 0.6Гц медленно … 0.28 ц/т ≈ 5.6Гц паника).
@@ -400,6 +410,14 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   (void)world_.get_or_create_allocator<actor_eating>(sizeof(actor_eating) * 250);
   (void)world_.get_or_create_allocator<actor_grabbed>(sizeof(actor_grabbed) * 250);
 
+  // C2: границы для респавна еды, целевое число еды, кэш препятствий.
+  spawn_min_ = min_bound;
+  spawn_max_ = max_bound;
+  texture_count_ = std::max(texture_count, 1u);
+  food_target_ = std::max(count / 8u, 32u);
+  food_spawn_seq_ = 0;
+  obstacles_.clear();
+
   const uint32_t tex_count = std::max(texture_count, 1u);
   const glm::vec2 extent = max_bound - min_bound; // только для стартовой раскладки
   const uint32_t columns = std::max<uint32_t>(uint32_t(std::ceil(std::sqrt(float(std::max(count, 1u))))), 1u);
@@ -428,6 +446,27 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
     world_.create<actor_drives>(id, unit_from_hash(mix32(seed ^ 0xf00du)) * 0.4f, 0.0f);
     world_.create<actor_state>(id, utils::string_hash("think")); // стартуем «думающими»
   }
+
+  // Препятствия: статичные диски в детерминированных точках. Из восприятия исключены
+  // (build_sense_tree их пропускает), рисуются (есть position+visual). Кэшируем в obstacles_
+  // для дешёвой коллизии (O(N·M), M мало) в фазе интеграции.
+  const uint32_t obstacle_count = std::min(std::max(count / 256u, 8u), 64u); // кап: коллизия O(N·M)
+  obstacles_.reserve(obstacle_count);
+  for (uint32_t i = 0; i < obstacle_count; ++i) {
+    const uint32_t os = mix32(i * 2654435761u + 0x0b57ac1eu);
+    const float fx = unit_from_hash(os);
+    const float fy = unit_from_hash(mix32(os ^ 0x5bd1e995u));
+    const float radius = 1.0f + unit_from_hash(mix32(os ^ 0xa53cu)) * 1.5f; // 1.0..2.5
+    const glm::vec2 p{ min_bound.x + extent.x * fx, min_bound.y + extent.y * fy };
+    const auto id = world_.gen_entityid();
+    world_.create<actor_position>(id, p);
+    world_.create<actor_visual>(id, 0u, obstacle_color(), radius); // визуальный размер ≈ радиус
+    world_.create<obstacle>(id, radius);
+    obstacles_.push_back(obstacle_disc{ p, radius });
+  }
+
+  // Стартовая еда до целевого числа (дальше поддерживается maintain_food каждый тик).
+  for (uint32_t i = 0; i < food_target_; ++i) spawn_food();
 }
 
 actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& batch, thread::atomic_pool& pool) {
@@ -438,20 +477,8 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
   utils::info("perf cognition: {} us", to_us(utils::perf(&actor_world_slice::cognition, this, tick_, pool)));
   utils::info("perf apply : {} us",    to_us(utils::perf(&actor_world_slice::apply, this, dt_seconds)));
   utils::info("perf eating: {} us",    to_us(utils::perf(&actor_world_slice::resolve_eating, this, tick_)));
+  utils::info("perf food  : {} us",    to_us(utils::perf(&actor_world_slice::maintain_food, this)));
   utils::info("perf build : {} us",    to_us(utils::perf(&actor_batch::build, &batch, world_, tick_)));
-
-  // ВРЕМЕННАЯ ДИАГНОСТИКА (раз в секунду @20fps): подтверждает timestep, рост drives и поедание.
-  if (tick_ % 20 == 0) {
-    size_t nd = 0, hungry = 0, bored = 0; float sh = 0.0f, sb = 0.0f;
-    for (auto [id, dr] : world_.view<actor_drives>()) {
-      (void)id; ++nd; sh += dr->hunger; sb += dr->boredom;
-      if (dr->hunger >= hungry_threshold) ++hungry;
-      if (dr->boredom >= bored_threshold) ++bored;
-    }
-    utils::info("diag t={} dt={:.4f} actors={} eating={} grabbed={} eatenTotal={} avgHunger={:.2f} hungry={} avgBored={:.2f} bored={}",
-      tick_, dt_seconds, world_.count<actor_position>(), world_.count<actor_eating>(), world_.count<actor_grabbed>(),
-      eaten_total_, nd ? sh / float(nd) : 0.0f, hungry, nd ? sb / float(nd) : 0.0f, bored);
-  }
 
   return actor_metrics{
     uint32_t(world_.count<actor_position>()),
@@ -468,6 +495,7 @@ void actor_world_slice::build_sense_tree() {
   sense_tree_.clear();
   for (auto [id, pos, vis] : world_.view<actor_position, actor_visual>()) {
     if (world_.get<actor_grabbed>(id) != nullptr) continue; // схваченную добычу никто не таргетит
+    if (world_.get<obstacle>(id) != nullptr) continue;      // препятствие — не добыча/не угроза
     sense_tree_.insert(kd::point{ pos->value.x, pos->value.y },
                        perception_target{ vis->size, id });
   }
@@ -622,6 +650,17 @@ void actor_world_slice::apply(const float dt_seconds) {
   for (auto [id, pos, vel] : world_.view<actor_position, actor_velocity>()) {
     (void)id;
     pos->value += vel->value * dt_seconds;
+    // Жёсткая коллизия с препятствиями: оказался внутри диска → вытолкнуть на границу. Простое
+    // позиционное разрешение (без стиринга): актор «скользит» вдоль препятствия. O(M), M мало.
+    for (const auto& o : obstacles_) {
+      const glm::vec2 d = pos->value - o.pos;
+      const float d2 = d.x * d.x + d.y * d.y;
+      if (d2 < o.radius * o.radius) {
+        const float len = std::sqrt(d2);
+        const glm::vec2 n = len > 1e-6f ? d * (1.0f / len) : glm::vec2{1.0f, 0.0f};
+        pos->value = o.pos + n * o.radius;
+      }
+    }
   }
 
   // Пассивная динамика мотиваций (ВСЕ акторы, каждый тик — дёшево, O(N), плавно независимо
@@ -650,7 +689,33 @@ void actor_world_slice::resolve_eating(const uint64_t tick) {
     kill.push_back(eat->target);
   }
   for (const auto pid : finished) world_.remove<actor_eating>(pid);
-  for (const auto bid : kill) if (world_.exists(bid)) { world_.remove_entity(bid); ++eaten_total_; }
+  for (const auto bid : kill) if (world_.exists(bid)) world_.remove_entity(bid);
+}
+
+// spawn_food — одна еда-сущность в детерминированной точке в пределах bounds. Маленький размер
+// (< любого актора) ⇒ для всех «добыча»; своя яркая расцветка; без brain/cognition/velocity/state
+// ⇒ статична, не думает, не анимируется, в integration не двигается.
+void actor_world_slice::spawn_food() {
+  const uint64_t h1 = utils::mix(0xf00du, food_spawn_seq_, tick_, 1u);
+  const uint64_t h2 = utils::mix(0xf00du, food_spawn_seq_, tick_, 2u);
+  ++food_spawn_seq_;
+  const float fx = float(h1 & 0xffffffu) / float(0xffffffu);
+  const float fy = float(h2 & 0xffffffu) / float(0xffffffu);
+  const glm::vec2 p{ spawn_min_.x + (spawn_max_.x - spawn_min_.x) * fx,
+                     spawn_min_.y + (spawn_max_.y - spawn_min_.y) * fy };
+  const auto id = world_.gen_entityid();
+  world_.create<actor_position>(id, p);
+  world_.create<actor_visual>(id, 0u, food_color(), food_size);
+  world_.create<food_item>(id);
+}
+
+// maintain_food — допополнить еду до целевого числа. Кап на тик, чтобы не было всплеска при
+// массовом выедании. Детерминированно (spawn_food завязан на tick_ + счётчик).
+void actor_world_slice::maintain_food() {
+  const size_t have = world_.count<food_item>();
+  if (have >= food_target_) return;
+  size_t need = std::min<size_t>(food_target_ - have, 64); // не больше 64 спавнов/тик
+  for (size_t i = 0; i < need; ++i) spawn_food();
 }
 
 } // namespace core
