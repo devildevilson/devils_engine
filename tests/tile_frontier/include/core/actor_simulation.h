@@ -132,6 +132,16 @@ struct actor_metrics {
   uint64_t ticks = 0;
 };
 
+// Запрос на звук, порождённый симуляцией (вход в состояние FSM). ЭФЕМЕРНЫЙ side-output: не
+// реплицируемое состояние (sim-звуки переэмитятся при реплее интентов). name — хеш имени
+// предзагруженного звука в звуковом акторе; pos — мировая позиция (для куллинга по слушателю).
+// Собирается в apply, отдаётся наружу через sound_events(); презентационный мост (simulation.cpp)
+// решает, что реально проиграть (куллинг по близости к камере + кап) и шлёт command_sound.
+struct sound_emit {
+  uint64_t name = 0;
+  glm::vec2 pos{0.0f, 0.0f};
+};
+
 class actor_batch {
 public:
   instance_layout::match_result bind(const std::string_view& layout = "v2ui1c4v1") {
@@ -162,6 +172,9 @@ public:
 
   devils_engine::aesthetics::world& ecs() noexcept { return world_; }
   const devils_engine::aesthetics::world& ecs() const noexcept { return world_; }
+
+  // sim-звуки этого тика (вход в состояние FSM). Презентационный мост дренажит после update().
+  std::span<const sound_emit> sound_events() const noexcept { return sound_emits_; }
 
 private:
   // Регистрирует нативные геймплейные функции (предикаты-метрики + эффекты-действия)
@@ -195,6 +208,7 @@ private:
   // крупнее/мельче в радиусе» с прунингом. Арена реюзится. Читается воркерами конкурентно.
   devils_engine::utils::kd_tree<perception_target> sense_tree_;
   std::vector<devils_engine::act::intent> intents_;   // обобщённый буфер интентов (sort by actor id)
+  std::vector<sound_emit> sound_emits_;               // sim-звуки тика (вход в состояние FSM)
 
   // ── per-thread scratch для MT-cognition (индекс = pool.thread_index: 0=вызывающий, 1..=воркеры) ──
   // A*-контейнер на поток: find_solution чистит узлы решения в пул → переиспользуем без аллокаций.
