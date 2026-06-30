@@ -5,15 +5,16 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <functional>
 #include <memory>
-#include <type_traits>
+#include <thread>
 #include <utility>
 
 #include <devils_engine/aesthetics/common.h>
 #include <devils_engine/act/exec_context.h>
 #include <devils_engine/act/function.h>
 #include <devils_engine/acumen/astar.h>     // astar<>::container для find_solution
+#include <devils_engine/thread/atomic_pool.h> // MT-пул (distribute/thread_index/wait)
+#include <devils_engine/utils/perf.h>       // utils::perf — замер фаз
 #include <devils_engine/utils/core.h>      // utils::error
 #include <devils_engine/utils/prng.h>      // utils::mix
 #include <devils_engine/utils/string_id.h> // utils::string_hash
@@ -22,28 +23,6 @@ namespace tile_frontier {
 namespace core {
 
 using namespace devils_engine;
-
-// Замер времени одного вызова: зовём fn(args...) через std::invoke, логируем мкс.
-// label добавлен к запрошенной сигнатуре — иначе не понять, какая фаза сколько ест.
-// Возвращает результат вызова (поддерживает void). Временный диагностический хелпер.
-template <typename F, typename... Args>
-static auto perf(const char* label, F&& fn, Args&&... args) -> std::invoke_result_t<F, Args...> {
-  using R = std::invoke_result_t<F, Args...>;
-  const auto t0 = std::chrono::steady_clock::now();
-  const auto log_us = [&] {
-    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
-      std::chrono::steady_clock::now() - t0).count();
-    utils::info("perf {:<6}: {} us", label, us);
-  };
-  if constexpr (std::is_void_v<R>) {
-    std::invoke(std::forward<F>(fn), std::forward<Args>(args)...);
-    log_us();
-  } else {
-    auto r = std::invoke(std::forward<F>(fn), std::forward<Args>(args)...);
-    log_us();
-    return r;
-  }
-}
 
 // ── Мост act::exec_context ↔ aesthetics::world ─────────────────────────────
 // act намеренно ECS-агностичен: exec_context.w — НЕПРОЗРАЧНЫЙ тег (act::world
@@ -275,12 +254,14 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   }
 }
 
-actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& batch) {
+actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& batch, thread::atomic_pool& pool) {
   tick_ += 1;
-  perf("sense.tree", &actor_world_slice::build_sense_tree, this); // kD над всеми (позиции)
-  perf("cognition",  &actor_world_slice::cognition, this, tick_); // отбор по бюджету → восприятие + GOAP
-  perf("apply",      &actor_world_slice::apply, this, dt_seconds);
-  perf("build",      &actor_batch::build, &batch, world_);        // упаковка инстансов в батч
+  // utils::perf отдаёт длительность; здесь решаем её залогировать (в мкс). Замеры временные.
+  const auto to_us = [] (auto d) { return std::chrono::duration_cast<std::chrono::microseconds>(d).count(); };
+  utils::info("perf sense.tree: {} us", to_us(utils::perf(&actor_world_slice::build_sense_tree, this)));
+  utils::info("perf cognition: {} us", to_us(utils::perf(&actor_world_slice::cognition, this, tick_, pool)));
+  utils::info("perf apply : {} us",    to_us(utils::perf(&actor_world_slice::apply, this, dt_seconds)));
+  utils::info("perf build : {} us",    to_us(utils::perf(&actor_batch::build, &batch, world_)));
 
   return actor_metrics{
     uint32_t(world_.count<actor_position>()),
@@ -302,21 +283,70 @@ void actor_world_slice::build_sense_tree() {
   sense_tree_.build();
 }
 
-// cognition — ПЛАНИРОВЩИК + восприятие + GOAP для отобранного подмножества.
-//   1) отбор: все «созревшие» (last_think < tick) → приоритет по давности (дольше ждал —
-//      раньше; тай-брейк по id → детерминированно), обрезка бюджетом think_budget_.
-//   2) на каждого отобранного: kD-запрос восприятия (угроза/добыча) + GOAP decide → intent,
-//      пометка last_think=tick. Не отобранные пропускают всё и коастят на прошлой скорости.
-// Стоимость восприятия+GOAP ∝ бюджету, а не числу акторов. Отбор — O(N)-скан (на миллионах
-// заменить на timing-wheel/бакеты по давности); горячая работа ограничена бюджетом.
-void actor_world_slice::cognition(const uint64_t tick) {
+// decide_actor — восприятие (kD-запрос) + GOAP для ОДНОГО актора. Пишет в actor_perception
+// и actor_cognition этого актора (эксклюзивно — каждого обрабатывает ровно один поток), а
+// план/кеш/выход берёт из переданных per-thread scratch. Зовётся из воркеров конкурентно:
+// goap_->decide/compute_state и sense_tree_.nearest2 — const (чтение), мир читается + пишутся
+// ТОЛЬКО поля этого актора (непересекающаяся память) ⇒ гонок нет.
+void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint64_t tick,
+                                     astar<acumen::astar_data>::container& scratch,
+                                     acumen::solution_cache& cache,
+                                     std::vector<act::intent>& out) {
   using kd = utils::kd_tree<perception_target>;
+  auto* pos   = world_.get<actor_position>(id);
+  auto* vis   = world_.get<actor_visual>(id);
+  auto* per   = world_.get<actor_perception>(id);
+  auto* brain = world_.get<actor_brain>(id);
+  auto* cog   = world_.get<actor_cognition>(id);
+  if (pos == nullptr || vis == nullptr || per == nullptr || brain == nullptr || cog == nullptr) return;
+
+  // восприятие: ближайший крупнее (угроза) + мельче (добыча) за один обход.
+  const float s = vis->size;
+  const uint32_t self = uint32_t(aesthetics::get_entityid_index(id));
+  const kd::point q{ pos->value.x, pos->value.y };
+  const auto [threat, prey] = sense_tree_.nearest2(q, perception_radius,
+    [s, self](const perception_target& t) { return t.idx != self && t.size > s; },
+    [s, self](const perception_target& t) { return t.idx != self && t.size < s; });
+  per->has_threat = threat != nullptr;
+  per->has_prey   = prey != nullptr;
+  if (threat != nullptr) per->threat_pos = glm::vec2(threat->pos[0], threat->pos[1]);
+  if (prey   != nullptr) per->prey_pos   = glm::vec2(prey->pos[0], prey->pos[1]);
+
+  // GOAP: dry-run ctx → decide (hit кеша ⇒ без A*) → первое действие плана → intent.
+  const auto& goal_state = goap_->get_goals().front().goal;
+  const uint64_t goal_id = utils::string_hash("resolved");
+  const auto ctx = make_ctx(world_, id, brain->seed, tick);
+  const acumen::state start = goap_->compute_state(ctx);
+  std::array<const acumen::action*, 4> plan{};
+  const size_t n = goap_->decide(start, goal_state, goal_id, cache, scratch, plan);
+  cog->last_think = tick; // решение принято (даже если план пуст — переобдумаем по расписанию)
+  if (n == 0 || plan[0] == nullptr) return;
+
+  act::intent in;
+  in.kind = act::intent_kind::call_function;
+  in.actor = act::entity_id{ uint32_t(id) };
+  in.payload.call.fn = utils::string_hash(plan[0]->name);
+  in.source_action = in.payload.call.fn;
+  out.push_back(in);
+}
+
+// cognition — ПЛАНИРОВЩИК + MT-перебор отобранных.
+//   1) отбор (ОДНОПОТОЧНО, дёшево): «созревшие» (ещё не думал ИЛИ истёк commit) → приоритет
+//      по давности (дольше ждал — раньше; тай-брейк по id), обрезка бюджетом think_budget_.
+//   2) MT: due_ раскидывается по потокам пула (distribute), каждый чанк в СВОЙ scratch/cache/
+//      буфер (слот = pool.thread_index, эксклюзивен на поток) зовёт decide_actor.
+//   3) merge буферов → intents_, sort by id → детерминированный apply независимо от раскладки.
+// Стоимость восприятия+GOAP ∝ бюджету/числу_потоков. Отбор — O(N)-скан (на миллионах заменить
+// на timing-wheel). sense_tree_ строится ДО (build_sense_tree) и только читается воркерами.
+void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool) {
   intents_.clear();
 
-  // (1) собрать созревших и обрезать бюджетом по приоритету-давности.
+  // (1) отбор созревших + обрезка бюджетом.
   due_.clear();
   for (auto [id, cog] : world_.view<actor_cognition>()) {
-    if (cog->last_think < tick) due_.push_back(think_request{ tick - cog->last_think, id });
+    if (cog->last_think == 0 || tick - cog->last_think >= commit_ticks_) {
+      due_.push_back(think_request{ tick - cog->last_think, id });
+    }
   }
   if (due_.size() > think_budget_) {
     std::nth_element(due_.begin(), due_.begin() + think_budget_, due_.end(),
@@ -326,48 +356,32 @@ void actor_world_slice::cognition(const uint64_t tick) {
       });
     due_.resize(think_budget_);
   }
+  if (due_.empty()) return;
 
-  // (2) восприятие + GOAP только для отобранных.
-  const auto& goal_state = goap_->get_goals().front().goal;
-  const uint64_t goal_id = utils::string_hash("resolved");
-
-  for (const auto& req : due_) {
-    const auto id = req.actor;
-    auto* pos   = world_.get<actor_position>(id);
-    auto* vis   = world_.get<actor_visual>(id);
-    auto* per   = world_.get<actor_perception>(id);
-    auto* brain = world_.get<actor_brain>(id);
-    auto* cog   = world_.get<actor_cognition>(id);
-    if (pos == nullptr || vis == nullptr || per == nullptr || brain == nullptr || cog == nullptr) continue;
-
-    // восприятие: ближайший крупнее (угроза) + мельче (добыча) за один обход.
-    const float s = vis->size;
-    const uint32_t self = uint32_t(aesthetics::get_entityid_index(id));
-    const kd::point q{ pos->value.x, pos->value.y };
-    const auto [threat, prey] = sense_tree_.nearest2(q, perception_radius,
-      [s, self](const perception_target& t) { return t.idx != self && t.size > s; },
-      [s, self](const perception_target& t) { return t.idx != self && t.size < s; });
-    per->has_threat = threat != nullptr;
-    per->has_prey   = prey != nullptr;
-    if (threat != nullptr) per->threat_pos = glm::vec2(threat->pos[0], threat->pos[1]);
-    if (prey   != nullptr) per->prey_pos   = glm::vec2(prey->pos[0], prey->pos[1]);
-
-    // GOAP: dry-run ctx → decide (hit кеша ⇒ без A*) → первое действие плана → intent.
-    const auto ctx = make_ctx(world_, id, brain->seed, tick);
-    const acumen::state start = goap_->compute_state(ctx);
-    std::array<const acumen::action*, 4> plan{};
-    const size_t n = goap_->decide(start, goal_state, goal_id, plan_cache_, plan_container_, plan);
-    cog->last_think = tick; // решение принято (даже если план пуст — переобдумаем по расписанию)
-    if (n == 0 || plan[0] == nullptr) continue;
-
-    act::intent in;
-    in.kind = act::intent_kind::call_function;
-    in.actor = act::entity_id{ uint32_t(id) };
-    in.payload.call.fn = utils::string_hash(plan[0]->name);
-    in.source_action = in.payload.call.fn;
-    intents_.push_back(in);
+  // (2) per-thread scratch: слот = pool.thread_index (0=вызывающий, 1..size=воркеры). Размер
+  //     pool.size()+1; реаллокация только при смене числа потоков (обычно один раз).
+  const size_t slots = pool.size() + 1;
+  if (plan_containers_.size() != slots) {
+    plan_containers_.resize(slots);
+    plan_caches_.resize(slots);
+    intent_buffers_.resize(slots);
   }
+  for (auto& b : intent_buffers_) b.clear();
 
+  // (3) раскидать отобранных по потокам. Лямбда — lvalue (distribute копирует её на каждый
+  //     чанк; именованная не даст случайного move). Чанк зовётся как f(start, job_count).
+  auto job = [this, tick, &pool] (const size_t start, const size_t count) {
+    const uint32_t slot = pool.thread_index(std::this_thread::get_id());
+    auto& scratch = plan_containers_[slot];
+    auto& cache   = plan_caches_[slot];
+    auto& out     = intent_buffers_[slot];
+    for (size_t i = start; i < start + count; ++i) decide_actor(due_[i].actor, tick, scratch, cache, out);
+  };
+  pool.distribute(due_.size(), job);
+  pool.wait(); // ждём опустошения очереди И завершения задач в работе
+
+  // (4) слить выходы потоков и упорядочить детерминированно (sort by entity index).
+  for (auto& b : intent_buffers_) intents_.insert(intents_.end(), b.begin(), b.end());
   std::sort(intents_.begin(), intents_.end(), [] (const act::intent& a, const act::intent& b) {
     return aesthetics::get_entityid_index(a.actor.id) < aesthetics::get_entityid_index(b.actor.id);
   });

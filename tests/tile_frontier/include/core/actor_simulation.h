@@ -19,6 +19,8 @@
 #include "draw_intent.h"
 #include "tile_map.h"
 
+namespace devils_engine { namespace thread { class atomic_pool; } } // MT-пул для cognition
+
 namespace tile_frontier {
 namespace core {
 
@@ -108,7 +110,7 @@ private:
 class actor_world_slice {
 public:
   void init(uint32_t count, glm::vec2 min_bound, glm::vec2 max_bound, uint32_t texture_count);
-  actor_metrics update(float dt_seconds, actor_batch& batch);
+  actor_metrics update(float dt_seconds, actor_batch& batch, devils_engine::thread::atomic_pool& pool);
 
   devils_engine::aesthetics::world& ecs() noexcept { return world_; }
   const devils_engine::aesthetics::world& ecs() const noexcept { return world_; }
@@ -121,29 +123,38 @@ private:
   void build_sense_tree();
   // Планировщик когниции: выбирает «созревших» акторов в пределах бюджета (приоритет —
   // давность решения), и только им обновляет восприятие + гоняет GOAP → intent. Остальные
-  // коастят на прошлом решении. Так стоимость ИИ ∝ бюджету, а не числу акторов.
-  void cognition(uint64_t tick);
+  // коастят на прошлом решении. Тяжёлый перебор отобранных раскидан по потокам пула.
+  void cognition(uint64_t tick, devils_engine::thread::atomic_pool& pool);
+  // Восприятие (kD-запрос) + GOAP для ОДНОГО актора, в свой scratch/cache/буфер (на поток).
+  void decide_actor(devils_engine::aesthetics::entityid_t id, uint64_t tick,
+                    devils_engine::astar<devils_engine::acumen::astar_data>::container& scratch,
+                    devils_engine::acumen::solution_cache& cache,
+                    std::vector<devils_engine::act::intent>& out);
   void apply(float dt_seconds);
 
   devils_engine::aesthetics::world world_;
   devils_engine::act::registry registry_;        // общий реестр геймплейных функций (см. libs/act)
   std::optional<devils_engine::acumen::system> goap_; // GOAP-поведение flee/chase/wander
-  // один A*-контейнер на весь think: find_solution чистит узлы решения в пул после каждого
-  // актора → переиспользуем без перевыделения (пул блоков остаётся тёплым между тиками).
-  devils_engine::astar<devils_engine::acumen::astar_data>::container plan_container_;
-  // мемоизация решений GOAP: акторы в одном значащем состоянии делят один просчёт A*.
-  // (one-per-thread; при MT — per-worker + merge между кадрами.)
-  devils_engine::acumen::solution_cache plan_cache_;
   // kD-дерево слоя восприятия: перестраивается раз за тик, отвечает на «ближайший
-  // крупнее/мельче в радиусе» с прунингом (бывший наивный/грид-скан). Арена реюзится.
+  // крупнее/мельче в радиусе» с прунингом. Арена реюзится. Читается воркерами конкурентно.
   devils_engine::utils::kd_tree<perception_target> sense_tree_;
   std::vector<devils_engine::act::intent> intents_;   // обобщённый буфер интентов (sort by actor id)
 
+  // ── per-thread scratch для MT-cognition (индекс = pool.thread_index: 0=вызывающий, 1..=воркеры) ──
+  // A*-контейнер на поток: find_solution чистит узлы решения в пул → переиспользуем без аллокаций.
+  std::vector<devils_engine::astar<devils_engine::acumen::astar_data>::container> plan_containers_;
+  // мемоизация GOAP на поток (без шаринга — крошечное пространство состояний, дупликация копеечная).
+  std::vector<devils_engine::acumen::solution_cache> plan_caches_;
+  // выходные буферы интентов на поток → конкатенируются в intents_ и сортируются по id.
+  std::vector<std::vector<devils_engine::act::intent>> intent_buffers_;
+
   // ── планировщик когниции ──
-  // бюджет: максимум акторов, обдумываемых за тик. Стоимость ИИ ∝ ему, а не числу акторов;
-  // остальные коастят. Приоритет выбора — давность (никто не голодает). count-budget
-  // (не время) → детерминированно. ~1/8 от 4096 для демонстрации децимации; крутилка.
-  uint32_t think_budget_ = 512;
+  // окно коммита: актор держится своего решения K тиков (стенд-ин для длительности
+  // действия/анимации) и переобдумывает не чаще. Спрос ≈ N/commit, лаг ≈ commit (~60мс при 3).
+  uint32_t commit_ticks_ = 3;
+  // бюджет: потолок обдумываний/тик (спайк-сейфти). ДОЛЖЕН быть ≥ спроса (N/commit), иначе
+  // узким местом станет бюджет, а не коммит, и лаг вернётся к N/budget. count-budget → детерм.
+  uint32_t think_budget_ = 2048;
   struct think_request { uint64_t overdue; devils_engine::aesthetics::entityid_t actor; };
   std::vector<think_request> due_; // переиспользуемый скретч отбора
 

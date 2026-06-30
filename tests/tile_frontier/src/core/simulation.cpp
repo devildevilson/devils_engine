@@ -59,6 +59,7 @@ static size_t thread_start_gap(const size_t frame_time, const uint32_t divisor) 
 
 constexpr size_t main_frame_time = utils::round(double(utils::global_time_resolution) * (1.0/20.0));
 constexpr uint32_t initial_actor_count = 4096;
+//constexpr uint32_t initial_actor_count = 64000;
 
 static void error_callback(int, const char* msg) noexcept {
   utils::warn("GLFW error: {}", msg);
@@ -641,7 +642,8 @@ void simulation::update(const size_t time) {
     const auto t0 = std::chrono::steady_clock::now();
     container->actors_last_metrics = container->actors.update(
       float(time) / float(utils::global_time_resolution),
-      container->actors_batch
+      container->actors_batch,
+      *container->pool
     );
     const auto t1 = std::chrono::steady_clock::now();
     const uint64_t update_us = uint64_t(std::max<int64_t>(utils::count_mcs(t0, t1), 0));
