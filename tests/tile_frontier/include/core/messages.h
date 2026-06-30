@@ -33,22 +33,22 @@ struct resource_status {
   // ???
 };
 
-struct command_sound {
-  // ресурс
-  // команда (стоп, плей)
-  // данные
-
+// main → sound: проиграть предзагруженный звук. taskid генерит main, чтобы СРАЗУ вернуть
+// хэндл в lua (актор берёт его как id задачи). name — хеш имени (в будущем — handle ресурса
+// demiurg). start — [0,1] откуда играть. after — секвенсинг (SIZE_MAX = сразу).
+struct command_sound_play {
   size_t taskid;
-  size_t after;
-  void* res;
-  uint64_t name = 0; // хеш имени ПРЕДЗАГРУЖЕННОГО звука в акторе (0 = legacy/none); резолв name→ресурс на стороне актора
-  uint32_t sourceid; // по нему мы должны получить текущее положение
-  uint32_t cmd; // старт, стоп
-  uint32_t type;
-  // fadein fadeout ? по идее описывается в микшере
-  uint32_t mix;
+  size_t after = SIZE_MAX;
+  uint64_t name = 0; // хеш имени ПРЕДЗАГРУЖЕННОГО звука; резолв name→ресурс на стороне актора
+  double start = 0.0;
 };
 
+// main → sound: завершить задачу (remove_sound). Отдельное сообщение — без поля-команды-энума.
+struct command_sound_stop {
+  size_t taskid;
+};
+
+// main → sound: обновить позиционные параметры живой задачи (3D-листенер — позже).
 struct command_sound_update {
   size_t taskid;
   float pos[3];
@@ -56,23 +56,19 @@ struct command_sound_update {
   float vel[3];
 };
 
-struct sound_status {
+// sound → main: упрощённое состояние ОДНОГО звука в обработке (для UI «здесь и сейчас»).
+struct sound_state_entry {
   size_t taskid;
-  size_t after;
-  uint32_t type;
-  uint32_t state;
-  double progress;
-  size_t frames_decoded;
-  size_t frames_total;
-  size_t underruns;
-  float pos[3];
-  float dir[3];
-  float vel[3];
+  double progress; // [0,1]
 };
 
-struct command_sound_snapshot {
-  size_t request_id;
-  std::vector<sound_status>* out;
+// sound → main: ПОЛНЫЙ слепок состояния звуковой системы, публикуется периодически самим
+// звуковым потоком. main держит последний (consume_last) и читает из него app.sound_state.
+// Это «двойная буферизация через сообщение»: у звука своя живая копия задач, у main — её
+// снимок для UI; никаких сырых указателей/atomic наружу. Тот же паттерн пойдёт ассетам
+// (публиковать список ресурсов в обработке → прогресс-бар загрузки на экране).
+struct command_sound_state {
+  std::vector<sound_state_entry> sounds;
 };
 
 struct command_update_ui {

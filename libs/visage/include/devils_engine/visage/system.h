@@ -70,6 +70,12 @@ public:
   void update(const size_t time);
   void convert();
 
+  // Доступ к lua-стейту/песочнице UI для ХОСТА: visage не знает про геймплейные системы
+  // (звук/мир и т.п.), но хост может зарегистрировать свои usertype'ы в стейте и функции
+  // в env (напр. "сыграй звук" → message в звуковой тред). Так visage остаётся чисто UI.
+  sol::state& script_state() noexcept { return lua; }
+  sol::environment& script_env() noexcept { return env; }
+
   // Результат последнего convert(): сырые байты вершин, 16-бит индексы и список draw-команд.
   std::span<const uint8_t> vertices() const noexcept { return vertices_; }
   std::span<const uint8_t> indices() const noexcept { return indices_; }

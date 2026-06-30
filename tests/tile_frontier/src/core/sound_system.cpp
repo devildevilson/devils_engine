@@ -26,21 +26,22 @@ using namespace devils_engine;
 // вообще лучше бы иметь возможность найти устройство подходящее как у графики + сделать так чтобы его можно было выбрать
 struct sound_simulation_init {
   std::unique_ptr<sound::system2> s;
+  simulation_actor* main_actor = nullptr; // куда пушим command_sound_state (может быть nullptr)
 
-  std::vector<command_sound> command_cache;
+  std::vector<command_sound_play> play_cache;
+  std::vector<command_sound_stop> stop_cache;
   std::vector<command_sound_update> update_cache;
-  std::vector<command_sound_snapshot> snapshot_cache;
   std::vector<command_sound_devices> devices_cache;
   std::vector<command_recreate_sound_system> recreate_cache;
-  std::vector<sound::task_status> snapshot_status_cache;
-  message_dispatcher<command_sound> commands;
+  std::vector<sound::task_status> snapshot_status_cache; // буфер под публикацию состояния
+  message_dispatcher<command_sound_play> plays;
+  message_dispatcher<command_sound_stop> stops;
   message_dispatcher<command_sound_update> updates;
-  message_dispatcher<command_sound_snapshot> snapshots;
   message_dispatcher<command_sound_devices> devices;
   message_dispatcher<command_recreate_sound_system> recreate;
 
   // Предзагруженные звуки: name_hash → байты+тип+id. Звуковой актор владеет байтами (MVP —
-  // local-load из resources/sounds/<type>/); gameplay/UI ссылаются по name (см. command_sound.name).
+  // local-load из resources/sounds/<type>/); gameplay/UI ссылаются по name (command_sound_play.name).
   struct loaded_sound {
     std::string id;            // строковый id ресурса (нужен sound::resource2)
     std::vector<char> bytes;   // сырые байты (mp3) — живут пока играет (стриминговый декод)
@@ -55,14 +56,14 @@ sound_simulation::~sound_simulation() noexcept = default;
 void sound_simulation::init() {
   container.reset(new sound_simulation_init);
   container->s.reset(new sound::system2);
-  actor.add_receiver<command_sound>(&container->commands);
+  actor.add_receiver<command_sound_play>(&container->plays);
+  actor.add_receiver<command_sound_stop>(&container->stops);
   actor.add_receiver<command_sound_update>(&container->updates);
-  actor.add_receiver<command_sound_snapshot>(&container->snapshots);
   actor.add_receiver<command_sound_devices>(&container->devices);
   actor.add_receiver<command_recreate_sound_system>(&container->recreate);
 
   // Предзагрузка именованного набора из resources/sounds/<type>/ (MVP: актор сам грузит байты).
-  // Ключ = string_hash(имя), на него ссылается command_sound.name. Тип берётся по назначению.
+  // Ключ = string_hash(имя), на него ссылается command_sound_play.name. Тип берётся по назначению.
   // НИЧЕГО не играем на init (эмбиент придёт из UI; sim-звуки — по событиям).
   const std::string base = utils::project_folder() + "resources/sounds/";
   const auto load = [&] (const std::string_view name, const std::string& rel, const sound::type type) {
@@ -100,9 +101,8 @@ void sound_simulation::update(const size_t time) {
     container->s.reset(new sound::system2(cmd.device_name));
   });
 
-  dispatcher_consume(container->commands, container->command_cache, [this] (const auto &cmd) {
+  dispatcher_consume(container->plays, container->play_cache, [this] (const auto &cmd) {
     if (!container->s) return;
-    if (cmd.cmd != 0) return; // !=0 — стоп и пр. (пока не реализовано)
 
     // резолв name → предзагруженный звук (актор владеет байтами). Неизвестный name — пропуск.
     const auto it = container->sounds.find(cmd.name);
@@ -122,9 +122,14 @@ void sound_simulation::update(const size_t time) {
     t.command = sound::task::command::play; // POD без инициализации — явно задаём важные поля
     t.pitch = 1.0f;
     t.volume = 1.0f;
-    t.start = 0.0;
+    t.start = cmd.start; // [0,1] откуда играть (плеер может попросить продолжить с места)
     t.pos = sound::vec3(0.0f, 0.0f, 0.0f); // MVP: 2D, без 3D-листенера (позиционность — позже)
     container->s->setup_sound(t);
+  });
+
+  dispatcher_consume(container->stops, container->stop_cache, [this] (const auto &cmd) {
+    if (!container->s) return;
+    container->s->remove_sound(cmd.taskid); // остановить и освободить голос
   });
 
   dispatcher_consume(container->updates, container->update_cache, [this] (const auto &cmd) {
@@ -137,41 +142,26 @@ void sound_simulation::update(const size_t time) {
     container->s->update_sound(update);
   });
 
-  dispatcher_consume(container->snapshots, container->snapshot_cache, [this] (const auto &cmd) {
-    if (cmd.out == nullptr || !container->s) return;
-
-    container->s->snapshot(container->snapshot_status_cache);
-    cmd.out->clear();
-    cmd.out->reserve(container->snapshot_status_cache.size());
-    for (const auto &status : container->snapshot_status_cache) {
-      sound_status out;
-      out.taskid = status.id;
-      out.after = status.after;
-      out.type = static_cast<uint32_t>(status.type);
-      out.state = static_cast<uint32_t>(status.state);
-      out.progress = status.progress;
-      out.frames_decoded = status.frames_decoded;
-      out.frames_total = status.frames_total;
-      out.underruns = status.underruns;
-      out.pos[0] = status.pos.x;
-      out.pos[1] = status.pos.y;
-      out.pos[2] = status.pos.z;
-      out.dir[0] = status.dir.x;
-      out.dir[1] = status.dir.y;
-      out.dir[2] = status.dir.z;
-      out.vel[0] = status.vel.x;
-      out.vel[1] = status.vel.y;
-      out.vel[2] = status.vel.z;
-      cmd.out->push_back(out);
-    }
-  });
-
   //utils::time_log l("Sound update");
   //utils::info("Thread id {}", std::this_thread::get_id());
   if (container->s) container->s->update(time);
+
+  // ПУБЛИКАЦИЯ полного состояния → main (для app.sound_state / UI). Звук сам шлёт упрощённый
+  // слепок; main держит последний (consume_last). Никаких сырых указателей/atomic наружу.
+  // (Шлём каждый звуковой кадр; при желании легко троттлить аккумулятором времени.)
+  if (container->main_actor != nullptr && container->s) {
+    container->s->snapshot(container->snapshot_status_cache);
+    command_sound_state state;
+    state.sounds.reserve(container->snapshot_status_cache.size());
+    for (const auto &status : container->snapshot_status_cache) {
+      state.sounds.push_back(sound_state_entry{ status.id, status.progress });
+    }
+    container->main_actor->send(std::move(state));
+  }
 }
 
 sound_actor* sound_simulation::get_actor() { return &actor; }
+void sound_simulation::set_main_actor(simulation_actor* a) { container->main_actor = a; }
 
 }
 }
