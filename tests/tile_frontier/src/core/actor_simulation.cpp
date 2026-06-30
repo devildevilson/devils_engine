@@ -170,6 +170,16 @@ static float animation_scale(const uint64_t state, const uint64_t tick, const ui
   return 1.0f + amp * std::sin(6.28318530718f * freq * t);
 }
 
+// Биндинг «вход в состояние FSM → звук» (хеш имени предзагруженного звука; 0 = тихо). MVP:
+// только пунктовые события — eating (чавк) и flee (тревога). walking/ambient зарезервированы.
+static uint64_t sound_for_state(const uint64_t state) noexcept {
+  static const uint64_t h_eating = utils::string_hash("eating");
+  static const uint64_t h_flee   = utils::string_hash("flee");
+  if (state == h_eating) return utils::string_hash("eating");
+  if (state == h_flee)   return utils::string_hash("fleeing");
+  return 0;
+}
+
 // ── Геймплейные функции act (мозг акторов) ─────────────────────────────────
 // Предикаты ЧИСТЫЕ — читают actor_perception (наполнен sense-фазой) за O(1), их
 // свободно зовёт планировщик A*. Эффекты мутируют скорость на apply-фазе.
@@ -621,6 +631,7 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
 //   2) проинтегрировать позиции (движение НЕ ограничено — без отскоков/клампа).
 // Эффект мутирует напрямую (effect_sink подключится вторым консьюмером с catalogue).
 void actor_world_slice::apply(const float dt_seconds) {
+  sound_emits_.clear(); // sim-звуки этого тика собираем заново
   for (const auto& in : intents_) {
     if (in.kind != act::intent_kind::call_function) continue;
     const auto* effect = registry_.effect(in.payload.call.fn);
@@ -643,6 +654,12 @@ void actor_world_slice::apply(const float dt_seconds) {
       if (outcome.result == mood::step_result::transitioned &&
           outcome.next_state != utils::invalid_id && outcome.next_state != st->state) {
         st->state = mood::apply_transition(*fsm_, st->state, *outcome.taken, ctx);
+        // sim-звук на ВХОД в состояние (eating→чавк, flee→тревога). Позиция актора — для
+        // куллинга по слушателю в презентационном мосте. Эфемерно, не реплицируется.
+        if (const uint64_t snd = sound_for_state(st->state); snd != 0) {
+          if (const auto* p = world_.get<actor_position>(id); p != nullptr)
+            sound_emits_.push_back(sound_emit{ snd, p->value });
+        }
       }
     }
   }

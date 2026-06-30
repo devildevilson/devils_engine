@@ -41,6 +41,7 @@ struct command_sound {
   size_t taskid;
   size_t after;
   void* res;
+  uint64_t name = 0; // хеш имени ПРЕДЗАГРУЖЕННОГО звука в акторе (0 = legacy/none); резолв name→ресурс на стороне актора
   uint32_t sourceid; // по нему мы должны получить текущее положение
   uint32_t cmd; // старт, стоп
   uint32_t type;

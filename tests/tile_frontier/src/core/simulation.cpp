@@ -533,26 +533,8 @@ void simulation::update(const size_t time) {
     container->sound_devices_logged = true;
   }
 
-  if (container && sactor != nullptr && !container->sound_recreate_test_sent && container->sound_devices_logged && container->tick >= 45) {
-    const std::string device_name = container->sound_devices.empty() ? std::string() : container->sound_devices.front();
-
-    command_recreate_sound_system recreate;
-    recreate.device_name = device_name;
-    sactor->send(recreate);
-
-    command_sound play;
-    play.taskid = generate_task_id();
-    play.after = SIZE_MAX;
-    play.res = nullptr;
-    play.sourceid = 0;
-    play.cmd = 0;
-    play.type = 0;
-    play.mix = 0;
-    sactor->send(play);
-
-    container->sound_recreate_test_sent = true;
-    utils::info("main: requested sound system recreation with device '{}' and queued test sound {}", device_name, play.taskid);
-  }
+  // (бывший тест test.mp3 удалён: test.mp3 больше нет, звук теперь грузится именованным набором
+  //  и играется по событиям через мост sim→sound ниже + из UI в фазе D-UI.)
 
   // атлас шрифта доехал на GPU: фиксируем слот в шрифте (nuklear зашьёт его в texture.id
   // draw-команд текста; шейдер UI по нему сэмплит атлас). gpu_index записан рендером.
@@ -667,6 +649,34 @@ void simulation::update(const size_t time) {
     }
 
     if (gactor != nullptr) gactor->send(std::move(msg));
+
+    // презентационный мост sim→sound: эмиты звука (вход в состояние FSM) → звуковой актор.
+    // Куллинг по близости к слушателю (камере) + кап на тик (ограничение голосов). Звук
+    // эфемерен и НЕ реплицируется — здесь решается лишь что РЕАЛЬНО проиграть.
+    if (sactor != nullptr) {
+      const auto emits = container->actors.sound_events();
+      const glm::vec2 listener = container->cam.center;
+      const float audible = container->cam.half_width * 1.5f;
+      const float audible2 = audible * audible;
+      constexpr uint32_t max_sounds_per_tick = 8;
+      uint32_t sent = 0;
+      for (const auto& e : emits) {
+        if (sent >= max_sounds_per_tick) break;
+        const glm::vec2 d = e.pos - listener;
+        if (d.x * d.x + d.y * d.y > audible2) continue;
+        command_sound play{};
+        play.taskid = generate_task_id();
+        play.after = SIZE_MAX;
+        play.res = nullptr;
+        play.name = e.name;
+        play.sourceid = 0;
+        play.cmd = 0;
+        play.type = 0;
+        play.mix = 0;
+        sactor->send(play);
+        ++sent;
+      }
+    }
 
     container->metrics_frames += 1;
     container->metrics_actor_ticks += 1;
