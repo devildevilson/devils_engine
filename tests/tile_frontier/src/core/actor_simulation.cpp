@@ -13,6 +13,7 @@
 #include <devils_engine/act/exec_context.h>
 #include <devils_engine/act/function.h>
 #include <devils_engine/acumen/astar.h>     // astar<>::container для find_solution
+#include <devils_engine/mood/runtime.h>     // mood::step / apply_transition — шаг FSM
 #include <devils_engine/thread/atomic_pool.h> // MT-пул (distribute/thread_index/wait)
 #include <devils_engine/utils/perf.h>       // utils::perf — замер фаз
 #include <devils_engine/utils/core.h>      // utils::error
@@ -133,6 +134,28 @@ static float actor_size(const uint32_t seed) noexcept {
   return 0.34f + unit_from_hash(mix32(seed ^ 0x9e37u)) * 0.42f;
 }
 
+// Анимация масштаба = синусоида, частота/амплитуда зависят от состояния FSM. ВЫВОДИМАЯ
+// величина (из state + tick + пер-акторной фазы) — НЕ хранится, не пишется в save. Частота в
+// циклах/тик (на main_fps≈20: 0.03 ц/т ≈ 0.6Гц медленно … 0.28 ц/т ≈ 5.6Гц паника).
+// «Думаю — медленная синусоида, гонюсь/ем — быстрая» (как просил автор).
+static float animation_scale(const uint64_t state, const uint64_t tick, const uint32_t phase) noexcept {
+  static const uint64_t h_think = utils::string_hash("think");
+  static const uint64_t h_wander = utils::string_hash("wander");
+  static const uint64_t h_seek = utils::string_hash("seek_food");
+  static const uint64_t h_chase = utils::string_hash("chase");
+  static const uint64_t h_flee = utils::string_hash("flee");
+
+  float freq = 0.05f, amp = 0.10f; // дефолт
+  if      (state == h_think)  { freq = 0.03f; amp = 0.12f; } // медленное «дыхание» раздумья
+  else if (state == h_wander) { freq = 0.07f; amp = 0.10f; }
+  else if (state == h_seek)   { freq = 0.12f; amp = 0.12f; }
+  else if (state == h_chase)  { freq = 0.20f; amp = 0.16f; } // возбуждённо
+  else if (state == h_flee)   { freq = 0.28f; amp = 0.18f; } // паника
+
+  const float t = float(tick + uint64_t(phase));
+  return 1.0f + amp * std::sin(6.28318530718f * freq * t);
+}
+
 // ── Геймплейные функции act (мозг акторов) ─────────────────────────────────
 // Предикаты ЧИСТЫЕ — читают actor_perception (наполнен sense-фазой) за O(1), их
 // свободно зовёт планировщик A*. Эффекты мутируют скорость на apply-фазе.
@@ -221,13 +244,20 @@ static void effect_wander(const act::exec_context& ctx) noexcept {
   set_velocity(world, self, direction_from_hash(uint32_t(h)));
 }
 
-void actor_batch::build(const aesthetics::world& world) {
+void actor_batch::build(const aesthetics::world& world, const uint64_t tick) {
   instances_.clear();
   instances_.reserve(world.count<actor_visual>());
 
+  // Один проход по всему рисуемому (актёры И будущие предметы). У кого есть actor_state —
+  // масштаб анимируется синусоидой по состоянию; у предметов/препятствий (нет state) —
+  // базовый размер. get<> по id — O(1) sparse-set, проход не децимируется, цена приемлема.
   for (auto [id, pos, visual] : world.view<actor_position, actor_visual>()) {
-    (void)id;
-    instances_.push_back(actor_instance{pos->value, visual->texture, visual->color, visual->size});
+    float scale = visual->size;
+    if (const auto* st = world.get<actor_state>(id); st != nullptr) {
+      const auto* brain = world.get<actor_brain>(id);
+      scale *= animation_scale(st->state, tick, brain != nullptr ? brain->phase : 0u);
+    }
+    instances_.push_back(actor_instance{pos->value, visual->texture, visual->color, scale});
   }
 }
 
@@ -285,6 +315,19 @@ void actor_world_slice::setup_brain_registry() {
 
   // конструктор резолвит предикаты/эффекты по именам и кидает при промахе.
   goap_.emplace(&registry_, std::move(metrics), std::move(goals), std::move(actions));
+
+  // FSM-исполнитель (mood): событие = выбранное GOAP действие, ведёт в одноимённое состояние из
+  // ЛЮБОГО (any_state — wildcard). Движение остаётся эффектом GOAP в apply; FSM держит состояние
+  // (выбор анимации в рендере) и даёт точку для on_entry-эффектов: звук — фаза D, поедание (guard
+  // «добыча в радиусе» → состояние eating с длительностью) — фаза C. Пока чистые рёбра без эффектов.
+  std::vector<std::string> fsm_lines = {
+    "any_state + flee = flee",
+    "any_state + chase = chase",
+    "any_state + seek_food = seek_food",
+    "any_state + wander = wander",
+    "any_state + think = think",
+  };
+  fsm_.emplace(&registry_, std::move(fsm_lines));
 }
 
 void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, const glm::vec2 max_bound, const uint32_t texture_count) {
@@ -320,6 +363,7 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
     world_.create<actor_cognition>(id); // last_think=0 ⇒ все «созрели» на старте, бюджет раскатает по тикам
     // стартовый голод разный (из хэша сида) → акторы не синхронно проголодаются; скука с нуля.
     world_.create<actor_drives>(id, unit_from_hash(mix32(seed ^ 0xf00du)) * 0.4f, 0.0f);
+    world_.create<actor_state>(id, utils::string_hash("think")); // стартуем «думающими»
   }
 }
 
@@ -330,7 +374,7 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
   utils::info("perf sense.tree: {} us", to_us(utils::perf(&actor_world_slice::build_sense_tree, this)));
   utils::info("perf cognition: {} us", to_us(utils::perf(&actor_world_slice::cognition, this, tick_, pool)));
   utils::info("perf apply : {} us",    to_us(utils::perf(&actor_world_slice::apply, this, dt_seconds)));
-  utils::info("perf build : {} us",    to_us(utils::perf(&actor_batch::build, &batch, world_)));
+  utils::info("perf build : {} us",    to_us(utils::perf(&actor_batch::build, &batch, world_, tick_)));
 
   return actor_metrics{
     uint32_t(world_.count<actor_position>()),
@@ -477,7 +521,18 @@ void actor_world_slice::apply(const float dt_seconds) {
     const auto* brain = world_.get<actor_brain>(id);
     const uint64_t seed = brain != nullptr ? brain->seed : 0u;
     const auto ctx = make_ctx(world_, id, seed, tick_); // эффект сам кастует мир в мутабельный
-    effect->invoke(ctx);
+    effect->invoke(ctx); // движение (скорость + плейсхолдер укуса) — арбитраж GOAP
+
+    // FSM-исполнитель: событие = выбранное действие (его хеш уже лежит в intent.payload.call.fn,
+    // как и event_hash в mood). Меняем состояние ТОЛЬКО при реальном переходе — самопереход
+    // (то же действие) не пере-входит (не дёргает on_exit/on_entry зря; звук в фазе D — раз на смену).
+    if (auto* st = world_.get<actor_state>(id); st != nullptr) {
+      const auto outcome = mood::step(*fsm_, st->state, in.payload.call.fn, ctx);
+      if (outcome.result == mood::step_result::transitioned &&
+          outcome.next_state != utils::invalid_id && outcome.next_state != st->state) {
+        st->state = mood::apply_transition(*fsm_, st->state, *outcome.taken, ctx);
+      }
+    }
   }
 
   for (auto [id, pos, vel] : world_.view<actor_position, actor_velocity>()) {

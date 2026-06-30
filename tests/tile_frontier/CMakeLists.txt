@@ -54,6 +54,7 @@ add_executable(${PROJECT_NAME} ${SRC_LIST} ${HDR_LIST})
 target_link_libraries(
   ${PROJECT_NAME}
   devils_engine::devils_plane
+  devils_engine::mood
   glm::glm
   devils_engine::options
   tavl

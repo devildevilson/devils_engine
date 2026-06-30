@@ -14,6 +14,7 @@
 #include <devils_engine/act/registry.h>     // act::registry + function<RetT>
 #include <devils_engine/act/intent.h>       // act::intent — обобщённый буфер интентов
 #include <devils_engine/acumen/system.h>    // acumen::system — GOAP над act::registry
+#include <devils_engine/mood/system.h>      // mood::system — FSM-исполнитель (состояние/анимация/звук)
 #include <devils_engine/utils/kd_tree.h>    // utils::kd_tree — пространственный акселератор sense
 
 #include "draw_intent.h"
@@ -79,6 +80,14 @@ struct actor_drives {
   float boredom = 0.0f;
 };
 
+// Текущее состояние FSM-исполнителя (mood) — хеш имени состояния (think/wander/seek_food/
+// chase/flee/…). РЕПЛИЦИРУЕМОЕ состояние. Выбирает анимацию в рендере (state → freq/amp
+// синусоиды) и служит точкой входа для on_entry-эффектов (звук — фаза D, поедание — фаза C).
+// Хранится как uint64_t (= utils::id), чтобы не тянуть string_id в этот заголовок.
+struct actor_state {
+  uint64_t state = 0;
+};
+
 // GPU instance for actor draw group. Layout: "v2ui1c4v1".
 struct actor_instance {
   glm::vec2 pos;
@@ -101,7 +110,8 @@ public:
   }
   bool valid() const noexcept { return intent_.valid(); }
 
-  void build(const devils_engine::aesthetics::world& world);
+  // tick нужен для анимации (синусоида масштаба по текущему состоянию FSM, выводимая, не хранимая).
+  void build(const devils_engine::aesthetics::world& world, uint64_t tick);
 
   std::span<const actor_instance> instances() const noexcept { return instances_; }
   uint32_t count() const noexcept { return uint32_t(instances_.size()); }
@@ -143,7 +153,8 @@ private:
 
   devils_engine::aesthetics::world world_;
   devils_engine::act::registry registry_;        // общий реестр геймплейных функций (см. libs/act)
-  std::optional<devils_engine::acumen::system> goap_; // GOAP-поведение flee/chase/wander
+  std::optional<devils_engine::acumen::system> goap_; // GOAP-арбитр: выбирает действие по приоритету
+  std::optional<devils_engine::mood::system> fsm_;    // mood-исполнитель: действие→состояние→анимация/звук
   // kD-дерево слоя восприятия: перестраивается раз за тик, отвечает на «ближайший
   // крупнее/мельче в радиусе» с прунингом. Арена реюзится. Читается воркерами конкурентно.
   devils_engine::utils::kd_tree<perception_target> sense_tree_;
