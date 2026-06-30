@@ -14,6 +14,12 @@ const char* abc = "sfasfsaddsada";
 
 namespace devils_engine {
 namespace acumen {
+// Низкоуровневый alloc-free A*-примитив: пишет план (действия цепочки в порядке исполнения) в
+// out, возвращает ПОЛНУЮ длину (> out.size() ⇒ в out лежит префикс). 0 — решения нет ЛИБО start
+// уже удовлетворяет цели. План НЕ включает стартовый узел и ВКЛЮЧАЕТ цель. Внутренний (file-local):
+// единственная публичная точка входа — system::decide (мемоизация + cap), он зовёт его на miss/без кеша.
+static size_t find_solution(const system* sys, astar<astar_data>::container* c, const state& start, const scoped_state& goal_state, std::span<const action*> out);
+
 state_metric::state_metric() noexcept : weight(1.0) {}
 state_metric::state_metric(std::string name_) noexcept : name(std::move(name_)), weight(1.0) {}
 state_metric::state_metric(std::string name_, const double weight_) noexcept : name(std::move(name_)), weight(weight_) {}
@@ -130,36 +136,40 @@ plan_key system::make_key(const state& start, const uint64_t goal_id) const noex
   return k;
 }
 
-size_t system::decide(const state& start, const scoped_state& goal, const uint64_t goal_id,
-                      solution_cache& cache, astar<astar_data>::container& scratch,
-                      std::span<const action*> out) const {
+size_t system::decide(const decide_params& params, std::span<const action*> out) const {
+  assert(params.scratch != nullptr && "acumen::decide: scratch (A* container) is required");
   // контроль соундности кеша: биты цели должны покрываться значащей маской, иначе ключ их
   // не учтёт и кеш вернёт неверный план. Дёшево гасим в дебаге (в релизе цель фиксирована).
-  assert((goal.mask & ~relevant_mask_).none() &&
+  assert((params.goal.mask & ~relevant_mask_).none() &&
          "acumen::decide: goal mask has bits outside relevant_mask (cache key would be unsound)");
 
-  const plan_key key = make_key(start, goal_id);
   const action* const base = get_actions().data();
+  const bool use_cache = params.cache != nullptr;
 
-  if (const cached_plan* hit = cache.find(key)) {
-    const size_t n = std::min(size_t(hit->length), out.size());
-    for (size_t i = 0; i < n; ++i) out[i] = base + hit->actions[i];
-    return hit->full_length;
+  // hit (только с кешем): ключ зависит лишь от значащих бит старта + тождества цели.
+  plan_key key;
+  if (use_cache) {
+    key = make_key(params.start, params.goal_id);
+    if (const cached_plan* hit = params.cache->find(key)) {
+      const size_t n = std::min(size_t(hit->length), out.size());
+      for (size_t i = 0; i < n; ++i) out[i] = base + hit->actions[i];
+      return hit->full_length;
+    }
   }
 
-  // miss: живой поиск в локальный буфер (cap = max_plan), оттуда — и в кеш, и в out.
+  // miss / без кеша: живой поиск в локальный буфер (cap = max_plan), оттуда — и в кеш, и в out.
   std::array<const action*, max_plan> tmp{};
-  const size_t full = find_solution(this, &scratch, start, goal, std::span<const action*>(tmp));
+  const size_t full = find_solution(this, params.scratch, params.start, params.goal, std::span<const action*>(tmp));
 
   const size_t copy = std::min({ full, out.size(), max_plan });
   for (size_t i = 0; i < copy; ++i) out[i] = tmp[i];
 
-  if (full <= max_plan) { // длиннее cap не представимо — не кешируем (редкий случай)
-    cached_plan p;
-    p.length = uint8_t(full);
-    p.full_length = uint8_t(std::min<size_t>(full, 255));
-    for (size_t i = 0; i < full; ++i) p.actions[i] = uint16_t(tmp[i] - base);
-    cache.insert(key, p);
+  if (use_cache && full <= max_plan) { // длиннее cap не представимо — не кешируем (редкий случай)
+    cached_plan plan;
+    plan.length = uint8_t(full);
+    plan.full_length = uint8_t(std::min<size_t>(full, 255));
+    for (size_t i = 0; i < full; ++i) plan.actions[i] = uint16_t(tmp[i] - base);
+    params.cache->insert(key, plan);
   }
   return full;
 }
@@ -200,7 +210,7 @@ void planner::fill_successors(container* c, const astar_data& a, const void*) co
   }
 }
 
-size_t find_solution(const system* sys, astar<astar_data>::container* c, const state& start, const scoped_state& goal_state, std::span<const action*> out) {
+static size_t find_solution(const system* sys, astar<astar_data>::container* c, const state& start, const scoped_state& goal_state, std::span<const action*> out) {
   planner p(sys);
   astar<astar_data>::algorithm a(c, &p, astar_data{ scoped_state(start), 0.0, nullptr }, astar_data{ goal_state, 0.0, nullptr }, nullptr);
 

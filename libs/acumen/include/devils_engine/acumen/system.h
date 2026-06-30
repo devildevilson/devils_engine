@@ -20,6 +20,18 @@ struct astar_data {
   const struct action* action;
 };
 
+// Входные параметры решения (свёрнуты из плоского списка аргументов decide). Только ВХОД —
+// переиспользуемы между вызовами (выход out передаётся отдельным аргументом, он у каждого
+// вызова свой). scratch ОБЯЗАТЕЛЕН (переиспользуемый A*-контейнер на поток исполнения). cache
+// ОПЦИОНАЛЕН: nullptr ⇒ без мемоизации (всегда живой A*); иначе hit ⇒ копия плана, miss ⇒ поиск + insert.
+struct decide_params {
+  state start;                                       // стартовое состояние (значащие биты → ключ)
+  scoped_state goal;                                 // целевое состояние
+  uint64_t goal_id = 0;                              // дешёвый идентификатор цели от вызывающего
+  astar<astar_data>::container* scratch = nullptr;   // обязателен
+  solution_cache* cache = nullptr;                   // опционально (nullptr игнорируется)
+};
+
 class system {
 public:
   // registry — общий реестр act: метрики резолвятся как предикаты, действия как эффекты
@@ -46,13 +58,12 @@ public:
   // цели от вызывающего (одинаковая цель ⇒ одинаковый id; разные цели ⇒ разные id).
   plan_key make_key(const state& start, uint64_t goal_id) const noexcept;
 
-  // Решает с мемоизацией: hit ⇒ копирует кешированный план; miss ⇒ find_solution в scratch
-  // и кладёт в cache (если план ≤ max_plan). Возвращает ПОЛНУЮ длину плана (как
-  // find_solution); out заполняется до min(out.size(), max_plan). scratch — переиспользуемый
-  // A*-контейнер; cache — таблица мемоизации (по одной на поток исполнения).
-  size_t decide(const state& start, const scoped_state& goal, uint64_t goal_id,
-                solution_cache& cache, astar<astar_data>::container& scratch,
-                std::span<const action*> out) const;
+  // Единственная точка входа решения. С cache: hit ⇒ копирует кешированный план; miss ⇒ живой
+  // A* в params.scratch и кладёт в cache (если план ≤ max_plan). Без cache (params.cache == nullptr)
+  // — просто живой A*. out — буфер вызывающего под план в порядке исполнения (напр. std::array на
+  // стеке), отдельный аргумент (у каждого вызова свой). Возвращает ПОЛНУЮ длину плана; out
+  // заполняется до min(out.size(), max_plan).
+  size_t decide(const decide_params& params, std::span<const action*> out) const;
 private:
   std::vector<state_metric> metrics;
   std::vector<goal> goals;
@@ -74,12 +85,6 @@ public:
 private:
   const class system* system;
 };
-
-// Пишет план (действия цепочки решения в порядке исполнения) в `out` БЕЗ аллокаций — буфер даёт
-// вызывающий (напр. std::array на стеке). Возвращает ПОЛНУЮ длину плана: если она > out.size(),
-// в out лежит только префикс (план обрезан — увеличь буфер). 0 — решения нет ЛИБО start уже
-// удовлетворяет цели (действий не нужно). План НЕ включает стартовый узел и ВКЛЮЧАЕТ цель.
-size_t find_solution(const system* sys, astar<astar_data>::container* c, const state& start, const scoped_state& goal_state, std::span<const action*> out);
 
 }
 }

@@ -28,12 +28,8 @@ struct plan_key {
 };
 
 struct plan_key_hash {
-  size_t operator()(const plan_key& k) const noexcept {
-    uint64_t h = k.goal_id + 0x9e3779b97f4a7c15ull;
-    for (const uint64_t w : k.bits) h ^= w + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
-    h ^= h >> 33; h *= 0xff51afd7ed558ccdull; h ^= h >> 33; // fmix64, фикс. ширина
-    return size_t(h);
-  }
+  // hash_combine по словам ключа + fmix64-финализатор (оба из utils/hash.h). Реализация в cache.cpp.
+  size_t operator()(const plan_key& k) const noexcept;
 };
 
 // Кешированный план: до max_plan индексов действий (в system.get_actions()) в порядке
@@ -56,41 +52,24 @@ public:
 
   // бюджет в БАЙТАХ → лимит записей; при переполнении insert — no-op (решаем вживую,
   // без churn). Минимум 1 запись.
-  explicit solution_cache(const size_t max_bytes = default_bytes) noexcept
-    : max_entries(max_bytes / entry_bytes < 1 ? 1 : max_bytes / entry_bytes) {}
+  explicit solution_cache(const size_t max_bytes = default_bytes) noexcept;
 
-  const cached_plan* find(const plan_key& k) const noexcept {
-    const auto it = entries.find(k);
-    if (it == entries.end()) { ++miss_count; return nullptr; }
-    ++hit_count;
-    return &it->second;
-  }
+  const cached_plan* find(const plan_key& k) const noexcept;
 
   // false ⇒ бюджет исчерпан и ключа ещё нет (вставка пропущена). Перезапись существующего
   // ключа всегда ок (значение детерминированно то же, бюджет не растёт).
-  bool insert(const plan_key& k, const cached_plan& p) {
-    const auto it = entries.find(k);
-    if (it != entries.end()) { it->second = p; return true; }
-    if (entries.size() >= max_entries) return false;
-    entries.emplace(k, p);
-    return true;
-  }
+  bool insert(const plan_key& k, const cached_plan& p);
 
   // влить чужие записи (шаринг прогретой таблицы между потоками между кадрами).
-  void merge(const solution_cache& other) {
-    for (const auto& [k, v] : other.entries) {
-      if (entries.size() >= max_entries) break;
-      entries.try_emplace(k, v);
-    }
-  }
+  void merge(const solution_cache& other);
 
-  void clear() noexcept { entries.clear(); hit_count = 0; miss_count = 0; }
+  void clear() noexcept;
 
-  size_t size() const noexcept { return entries.size(); }
-  size_t capacity_entries() const noexcept { return max_entries; }
-  bool full() const noexcept { return entries.size() >= max_entries; }
-  size_t hits() const noexcept { return hit_count; }
-  size_t misses() const noexcept { return miss_count; }
+  size_t size() const noexcept;
+  size_t capacity_entries() const noexcept;
+  bool full() const noexcept;
+  size_t hits() const noexcept;
+  size_t misses() const noexcept;
 
 private:
   gtl::flat_hash_map<plan_key, cached_plan, plan_key_hash> entries;

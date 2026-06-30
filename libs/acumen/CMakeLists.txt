@@ -8,6 +8,7 @@ project(
 
 set(SRC_LIST
   src/acumen/system.cpp
+  src/acumen/cache.cpp
 )
 
 set(HDR_LIST

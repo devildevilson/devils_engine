@@ -8,6 +8,7 @@
 #include "common.h"
 #include "channel_data.h"
 #include "devils_engine/utils/type_traits.h"
+#include "devils_engine/utils/hash.h" // murmur_hash3_32
 #include "zpp_bits.h"
 
 namespace devils_engine {

@@ -1,6 +1,7 @@
 #include "prng.h"
 
 #include "type_traits.h"
+#include "hash.h" // splitmix / wyhash64 (вынесены из type_traits.h)
 
 // надеюсь я все правильно записал и у меня не будет глупых проблем со случацными числами
 

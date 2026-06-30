@@ -59,13 +59,16 @@ TEST_CASE("Acumen GOAP under act registry [acumen::system]") {
     REQUIRE(s.test(enemy_near) == true);
   }
 
-  SUBCASE("find_solution reaches the goal and uses the prerequisite action") {
+  // decide без кеша (params.cache == nullptr) — живой A* напрямую.
+  SUBCASE("decide without cache reaches the goal and uses the prerequisite action") {
     const act::exec_context ctx{};
     const auto start = sys.compute_state(ctx); // has_weapon/enemy_dead false, enemy_near true
 
     astar<acumen::astar_data>::container c;
     std::array<const acumen::action*, 8> buf{};
-    const size_t n = acumen::find_solution(&sys, &c, start, goal_state, buf);
+    acumen::decide_params dp;
+    dp.start = start; dp.goal = goal_state; dp.scratch = &c; // cache == nullptr
+    const size_t n = sys.decide(dp, buf);
 
     // точный план: сначала достать оружие, потом ударить (без ведущего nullptr, с финальным attack).
     REQUIRE(n == 2);
@@ -79,7 +82,9 @@ TEST_CASE("Acumen GOAP under act registry [acumen::system]") {
     acumen::state already; already.set(enemy_dead, true);
     astar<acumen::astar_data>::container c;
     std::array<const acumen::action*, 8> buf{};
-    const size_t n = acumen::find_solution(&sys, &c, already, goal_state, buf);
+    acumen::decide_params dp;
+    dp.start = already; dp.goal = goal_state; dp.scratch = &c;
+    const size_t n = sys.decide(dp, buf);
     REQUIRE(n == 0); // действий не нужно
   }
 
@@ -88,7 +93,9 @@ TEST_CASE("Acumen GOAP under act registry [acumen::system]") {
     const auto start = sys.compute_state(ctx);
     astar<acumen::astar_data>::container c;
     std::array<const acumen::action*, 1> small{};
-    const size_t n = acumen::find_solution(&sys, &c, start, goal_state, small);
+    acumen::decide_params dp;
+    dp.start = start; dp.goal = goal_state; dp.scratch = &c;
+    const size_t n = sys.decide(dp, small);
     REQUIRE(n == 2); // полная длина плана, хотя буфер на 1
     REQUIRE(small[0] != nullptr);
     REQUIRE(small[0]->name == "draw_weapon"); // записан только префикс
@@ -134,6 +141,15 @@ TEST_CASE("Acumen solution memoization [acumen::solution_cache]") {
   std::array<const acumen::action*, 8> buf{};
   const uint64_t goal_id = 1;
 
+  // общий вызов decide: цель/scratch фиксированы, варьируем старт, кеш и выходной буфер.
+  auto solve = [&](const acumen::state& start, acumen::solution_cache* cache_ptr,
+                   std::span<const acumen::action*> out) {
+    acumen::decide_params dp;
+    dp.start = start; dp.goal = goal_state; dp.goal_id = goal_id;
+    dp.scratch = &scratch; dp.cache = cache_ptr;
+    return sys.decide(dp, out);
+  };
+
   SUBCASE("relevant_mask covers only plan-affecting bits") {
     REQUIRE(sys.relevant_mask().test(has_weapon));
     REQUIRE(sys.relevant_mask().test(enemy_dead));
@@ -142,7 +158,7 @@ TEST_CASE("Acumen solution memoization [acumen::solution_cache]") {
 
   SUBCASE("first decide misses, fills cache, returns the full plan") {
     acumen::state start; // всё false
-    const size_t n = sys.decide(start, goal_state, goal_id, cache, scratch, buf);
+    const size_t n = solve(start, &cache, buf);
     REQUIRE(n == 2);
     REQUIRE(buf[0]->name == "draw_weapon");
     REQUIRE(buf[1]->name == "attack");
@@ -153,9 +169,9 @@ TEST_CASE("Acumen solution memoization [acumen::solution_cache]") {
 
   SUBCASE("second decide with same key hits and returns the same plan") {
     acumen::state start;
-    sys.decide(start, goal_state, goal_id, cache, scratch, buf);            // miss
+    solve(start, &cache, buf);            // miss
     std::array<const acumen::action*, 8> buf2{};
-    const size_t n = sys.decide(start, goal_state, goal_id, cache, scratch, buf2); // hit
+    const size_t n = solve(start, &cache, buf2); // hit
     REQUIRE(n == 2);
     REQUIRE(buf2[0]->name == "draw_weapon");
     REQUIRE(buf2[1]->name == "attack");
@@ -166,8 +182,8 @@ TEST_CASE("Acumen solution memoization [acumen::solution_cache]") {
   SUBCASE("irrelevant bit collapses to the same key (enemy_near ignored)") {
     acumen::state a;                          // enemy_near = false
     acumen::state b; b.set(enemy_near, true); // отличается ТОЛЬКО незначащим битом
-    sys.decide(a, goal_state, goal_id, cache, scratch, buf);            // miss
-    const size_t n = sys.decide(b, goal_state, goal_id, cache, scratch, buf); // hit
+    solve(a, &cache, buf);            // miss
+    const size_t n = solve(b, &cache, buf); // hit
     REQUIRE(n == 2);
     REQUIRE(cache.hits() == 1);
     REQUIRE(cache.size() == 1); // одна запись на оба состояния
@@ -176,10 +192,10 @@ TEST_CASE("Acumen solution memoization [acumen::solution_cache]") {
   SUBCASE("relevant bit changes the key (has_weapon distinguishes plans)") {
     acumen::state a;                          // has_weapon false -> [draw_weapon, attack]
     acumen::state b; b.set(has_weapon, true); // has_weapon true  -> [attack]
-    const size_t na = sys.decide(a, goal_state, goal_id, cache, scratch, buf);
+    const size_t na = solve(a, &cache, buf);
     REQUIRE(na == 2);
     std::array<const acumen::action*, 8> buf2{};
-    const size_t nb = sys.decide(b, goal_state, goal_id, cache, scratch, buf2);
+    const size_t nb = solve(b, &cache, buf2);
     REQUIRE(nb == 1);
     REQUIRE(buf2[0]->name == "attack");
     REQUIRE(cache.size() == 2); // два разных ключа
@@ -188,10 +204,10 @@ TEST_CASE("Acumen solution memoization [acumen::solution_cache]") {
   SUBCASE("budget full: insert skipped, decide still solves correctly") {
     acumen::solution_cache tiny(acumen::solution_cache::entry_bytes); // ~1 запись
     REQUIRE(tiny.capacity_entries() == 1);
-    acumen::state a; sys.decide(a, goal_state, goal_id, tiny, scratch, buf); // занял слот
+    acumen::state a; solve(a, &tiny, buf); // занял слот
     REQUIRE(tiny.size() == 1);
     acumen::state b; b.set(has_weapon, true);
-    const size_t nb = sys.decide(b, goal_state, goal_id, tiny, scratch, buf); // miss, кешировать некуда
+    const size_t nb = solve(b, &tiny, buf); // miss, кешировать некуда
     REQUIRE(nb == 1);                 // всё равно верно (живой решатель)
     REQUIRE(buf[0]->name == "attack");
     REQUIRE(tiny.size() == 1);        // бюджет не превышен
@@ -199,8 +215,8 @@ TEST_CASE("Acumen solution memoization [acumen::solution_cache]") {
 
   SUBCASE("merge folds warm entries from another cache") {
     acumen::solution_cache c1, c2;
-    acumen::state a; sys.decide(a, goal_state, goal_id, c1, scratch, buf);
-    acumen::state b; b.set(has_weapon, true); sys.decide(b, goal_state, goal_id, c2, scratch, buf);
+    acumen::state a; solve(a, &c1, buf);
+    acumen::state b; b.set(has_weapon, true); solve(b, &c2, buf);
     REQUIRE(c1.size() == 1);
     REQUIRE(c2.size() == 1);
     c1.merge(c2);

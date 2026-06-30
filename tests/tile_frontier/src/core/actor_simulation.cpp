@@ -318,7 +318,13 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
   const auto ctx = make_ctx(world_, id, brain->seed, tick);
   const acumen::state start = goap_->compute_state(ctx);
   std::array<const acumen::action*, 4> plan{};
-  const size_t n = goap_->decide(start, goal_state, goal_id, cache, scratch, plan);
+  acumen::decide_params dp;
+  dp.start = start;
+  dp.goal = goal_state;
+  dp.goal_id = goal_id;
+  dp.scratch = &scratch;
+  dp.cache = &cache;
+  const size_t n = goap_->decide(dp, plan);
   cog->last_think = tick; // решение принято (даже если план пуст — переобдумаем по расписанию)
   if (n == 0 || plan[0] == nullptr) return;
 
