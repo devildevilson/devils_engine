@@ -65,21 +65,21 @@ static constexpr uint64_t purpose_seek   = 0x7365656bull;     // "seek"
 
 // Биты GOAP-стейта (= индекс метрики; resolved ставят действия, метрики его не считают).
 namespace flags {
-enum : size_t { threat_present = 0, prey_present = 1, hungry = 2, bored = 3, resolved = 4 };
+enum : size_t { threat_present = 0, prey_present = 1, hungry = 2, bored = 3, prey_in_range = 4, resolved = 5 };
 }
 
 // ── тюнинг мотиваций (drives) ──────────────────────────────────────────────
 // Скорости в единицах/секунду; пороги в 0..1. hunger копится всегда; boredom копится пока
 // актор стоит (думает), быстро спадает в движении → колебание think⇄wander. Значения
 // подобраны на глаз для main_fps≈20 (dt≈0.05). Все крутилки — кандидаты в config позже.
-static constexpr float hunger_rate     = 0.05f; // голод/сек (≈20с до сытого→голодного)
+static constexpr float hunger_rate     = 0.08f; // голод/сек (≈12с до сытого→голодного)
 static constexpr float bored_rate      = 0.14f; // скука/сек пока стоит (думает)
 static constexpr float bored_relief    = 0.30f; // спад скуки/сек в движении
-static constexpr float hungry_threshold = 0.60f;
+static constexpr float hungry_threshold = 0.50f;
 static constexpr float bored_threshold  = 0.50f;
 static constexpr float still_speed2      = 0.01f; // |vel|^2 ниже — считаем «стоит»
-static constexpr float eat_radius        = 0.5f;  // дистанция «укуса» добычи (плейсхолдер до хэндшейка)
-static constexpr float eat_bite          = 0.5f;  // сколько голода снимает контакт с добычей
+static constexpr float eat_radius        = 0.9f;  // дистанция хвата добычи (≈ размер треуг. + запас)
+static constexpr uint64_t eat_duration   = 18;    // тиков длится поедание (≈0.9с при 20fps) = окно коммита
 
 // Радиус восприятия для kD-запроса (мировые единицы, tile_size=1, шаг спавна ~1).
 // Ограничивает поиск «ближайшего крупнее/мельче» (иначе предикат-NN без кандидата
@@ -144,6 +144,8 @@ static float animation_scale(const uint64_t state, const uint64_t tick, const ui
   static const uint64_t h_seek = utils::string_hash("seek_food");
   static const uint64_t h_chase = utils::string_hash("chase");
   static const uint64_t h_flee = utils::string_hash("flee");
+  static const uint64_t h_eating = utils::string_hash("eating");
+  static const uint64_t h_eaten = utils::string_hash("eaten");
 
   float freq = 0.05f, amp = 0.10f; // дефолт
   if      (state == h_think)  { freq = 0.03f; amp = 0.12f; } // медленное «дыхание» раздумья
@@ -151,6 +153,8 @@ static float animation_scale(const uint64_t state, const uint64_t tick, const ui
   else if (state == h_seek)   { freq = 0.12f; amp = 0.12f; }
   else if (state == h_chase)  { freq = 0.20f; amp = 0.16f; } // возбуждённо
   else if (state == h_flee)   { freq = 0.28f; amp = 0.18f; } // паника
+  else if (state == h_eating) { freq = 0.40f; amp = 0.22f; } // быстрая синусоида — кушаем
+  else if (state == h_eaten)  { freq = 0.55f; amp = 0.30f; } // жертва бьётся в захвате
 
   const float t = float(tick + uint64_t(phase));
   return 1.0f + amp * std::sin(6.28318530718f * freq * t);
@@ -180,6 +184,23 @@ static bool predicate_is_bored(const act::exec_context& ctx) noexcept {
   return dr != nullptr && dr->boredom >= bored_threshold;
 }
 
+// Добыча есть И в радиусе хвата — разделяет chase (далеко) и eat (вплотную).
+static bool predicate_prey_in_range(const act::exec_context& ctx) noexcept {
+  const auto self = aesthetics::entityid_t(ctx.primary().id);
+  const auto& w = world_of(ctx);
+  const auto* per = w.get<actor_perception>(self);
+  const auto* pos = w.get<actor_position>(self);
+  if (per == nullptr || pos == nullptr || !per->has_prey) return false;
+  const glm::vec2 d = per->prey_pos - pos->value;
+  return (d.x * d.x + d.y * d.y) <= eat_radius * eat_radius;
+}
+
+// Актор уже ест (есть actor_eating) — guard для перехода FSM в eating: транзит только если
+// хват реально удался (effect_eat выставил компонент). Иначе остаёмся в прежнем состоянии.
+static bool predicate_is_eating(const act::exec_context& ctx) noexcept {
+  return world_of(ctx).get<actor_eating>(aesthetics::entityid_t(ctx.primary().id)) != nullptr;
+}
+
 // Ставит скорость актора в направлении dir (нормализованном) * его speed.
 static void set_velocity(aesthetics::world& world, const aesthetics::entityid_t self, glm::vec2 dir) noexcept {
   auto* vel = world.get<actor_velocity>(self);
@@ -205,14 +226,37 @@ static void effect_chase(const act::exec_context& ctx) noexcept {
   const auto* pos = world.get<actor_position>(self);
   const auto* per = world.get<actor_perception>(self);
   if (pos == nullptr || per == nullptr) return;
-  const glm::vec2 to_prey = per->prey_pos - pos->value;
-  set_velocity(world, self, to_prey); // к добыче
-  // ПЛЕЙСХОЛДЕР до хэндшейка поедания (фаза C): дотянулись до добычи → «откусили» голод.
-  // Настоящее поедание (схватить/заморозить/анимация/удалить жертву) приедет интентом позже.
-  auto* dr = world.get<actor_drives>(self);
-  if (dr != nullptr && (to_prey.x * to_prey.x + to_prey.y * to_prey.y) <= eat_radius * eat_radius) {
-    dr->hunger = std::max(0.0f, dr->hunger - eat_bite);
-  }
+  set_velocity(world, self, per->prey_pos - pos->value); // к добыче
+}
+
+// Поедание: схватить добычу. Бежит в apply (id-порядок) ⇒ при конкуренции за одну жертву
+// хищник с МЕНЬШИМ id хватает первым, остальные видят actor_grabbed/actor_eating и пасуют
+// (детерминированно). Успех помечается actor_eating на себе — guard actor.is_eating пускает
+// FSM в состояние eating; провал ⇒ guard ложен ⇒ остаёмся в chase. Жертва замораживается и
+// получает actor_grabbed (её собственный интент в этом же apply пропустится — см. apply()).
+static void effect_eat(const act::exec_context& ctx) noexcept {
+  auto& world = mutable_world_of(ctx);
+  const auto self = aesthetics::entityid_t(ctx.primary().id);
+  if (world.get<actor_eating>(self) != nullptr) return; // уже ем (защитно)
+  const auto* per = world.get<actor_perception>(self);
+  const auto* pos = world.get<actor_position>(self);
+  if (per == nullptr || pos == nullptr || !per->has_prey) return;
+
+  const auto prey = per->prey_id;
+  if (aesthetics::is_invalid_entityid(prey) || !world.exists(prey)) return; // жертва исчезла
+  if (world.get<actor_grabbed>(prey) != nullptr) return;                    // уже схвачена (id-порядок)
+  if (world.get<actor_eating>(prey) != nullptr) return;                     // сама ест — не трогаем
+  const auto* ppos = world.get<actor_position>(prey);
+  if (ppos == nullptr) return;
+  const glm::vec2 d = ppos->value - pos->value;
+  if ((d.x * d.x + d.y * d.y) > eat_radius * eat_radius) return;            // вышла из радиуса
+
+  // хват: оба замирают, помечаем связь, жертва визуально «съедаемая».
+  world.create<actor_eating>(self, prey, ctx.rng_tick + eat_duration);
+  world.create<actor_grabbed>(prey, self);
+  set_velocity(world, self, glm::vec2{0.0f, 0.0f});
+  set_velocity(world, prey, glm::vec2{0.0f, 0.0f});
+  if (auto* bs = world.get<actor_state>(prey); bs != nullptr) bs->state = utils::string_hash("eaten");
 }
 
 // Сидит на месте и «думает» — скорость в ноль. Накопление скуки — пассивно в apply
@@ -273,30 +317,40 @@ void actor_world_slice::setup_brain_registry() {
     &predicate_is_hungry, "голод выше порога"));
   registry_.reg("actor.is_bored", std::make_unique<act::native_function<bool>>(
     &predicate_is_bored, "скука выше порога"));
+  registry_.reg("actor.prey_in_range", std::make_unique<act::native_function<bool>>(
+    &predicate_prey_in_range, "добыча в радиусе хвата"));
+  // ВАЖНО: на это имя ссылается СТРОКА FSM (mood) как гвард — парсер mood не допускает точку
+  // в идентификаторах, поэтому имя dot-free (в отличие от acumen-метрик "actor.*", которые в
+  // парсер mood не попадают и резолвятся по полному хешу строки).
+  registry_.reg("is_eating", std::make_unique<act::native_function<bool>>(
+    &predicate_is_eating, "актор уже ест (хват удался)"));
   registry_.reg("flee",      std::make_unique<act::native_function<void>>(&effect_flee,      "бежать от ближайшей угрозы"));
-  registry_.reg("chase",     std::make_unique<act::native_function<void>>(&effect_chase,     "гнаться за добычей (и есть при контакте)"));
+  registry_.reg("chase",     std::make_unique<act::native_function<void>>(&effect_chase,     "гнаться за добычей"));
+  registry_.reg("eat",       std::make_unique<act::native_function<void>>(&effect_eat,       "схватить добычу и начать есть"));
   registry_.reg("seek_food", std::make_unique<act::native_function<void>>(&effect_seek_food, "искать еду — рыскать пока голоден"));
   registry_.reg("wander",    std::make_unique<act::native_function<void>>(&effect_wander,    "блуждать (от скуки)"));
   registry_.reg("think",     std::make_unique<act::native_function<void>>(&effect_think,     "стоять и думать (копит скуку)"));
 
-  // метрики (бит = индекс): 0 threat, 1 prey, 2 hungry, 3 bored. resolved(4) ставят действия.
+  // метрики (бит = индекс): 0 threat, 1 prey, 2 hungry, 3 bored, 4 prey_in_range. resolved(5) — действия.
   std::vector<acumen::state_metric> metrics = {
     acumen::state_metric("actor.threat_present"),
     acumen::state_metric("actor.prey_present"),
     acumen::state_metric("actor.is_hungry"),
     acumen::state_metric("actor.is_bored"),
+    acumen::state_metric("actor.prey_in_range"),
   };
 
-  // Приоритетная лестница кодируется requirements (угроза доминирует; остальные разбивают
-  // пространство по hungry → prey/bored, без пересечений ⇒ ровно одно действие на состояние,
-  // план в 1 шаг). Каждое действие ставит resolved.
-  //   threat                       → flee
-  //   !threat & hungry & prey      → chase (гнаться и есть)
-  //   !threat & hungry & !prey     → seek_food (рыскать)
-  //   !threat & !hungry & bored    → wander
-  //   !threat & !hungry & !bored   → think (копит скуку → со временем bored → wander → скука спадает)
+  // Приоритетная лестница (угроза доминирует; дальше чистое разбиение по hungry → prey →
+  // in_range / bored ⇒ ровно одно действие на состояние, план в 1 шаг). Каждое ставит resolved.
+  //   threat                                  → flee
+  //   !threat & hungry & prey & in_range      → eat (схватить)
+  //   !threat & hungry & prey & !in_range     → chase (гнаться)
+  //   !threat & hungry & !prey                → seek_food (рыскать)
+  //   !threat & !hungry & bored               → wander
+  //   !threat & !hungry & !bored              → think (копит скуку → bored → wander → спад → think)
   acumen::scoped_state flee_req;  flee_req.set(flags::threat_present, true);
-  acumen::scoped_state chase_req; chase_req.set(flags::threat_present, false); chase_req.set(flags::hungry, true);  chase_req.set(flags::prey_present, true);
+  acumen::scoped_state eat_req;   eat_req.set(flags::threat_present, false);   eat_req.set(flags::hungry, true);   eat_req.set(flags::prey_present, true); eat_req.set(flags::prey_in_range, true);
+  acumen::scoped_state chase_req; chase_req.set(flags::threat_present, false); chase_req.set(flags::hungry, true); chase_req.set(flags::prey_present, true); chase_req.set(flags::prey_in_range, false);
   acumen::scoped_state seek_req;  seek_req.set(flags::threat_present, false);  seek_req.set(flags::hungry, true);  seek_req.set(flags::prey_present, false);
   acumen::scoped_state wander_req; wander_req.set(flags::threat_present, false); wander_req.set(flags::hungry, false); wander_req.set(flags::bored, true);
   acumen::scoped_state think_req;  think_req.set(flags::threat_present, false);  think_req.set(flags::hungry, false); think_req.set(flags::bored, false);
@@ -304,6 +358,7 @@ void actor_world_slice::setup_brain_registry() {
 
   std::vector<acumen::action> actions = {
     acumen::action("flee",      flee_req,   done, acumen::scoped_state{}),
+    acumen::action("eat",       eat_req,    done, acumen::scoped_state{}),
     acumen::action("chase",     chase_req,  done, acumen::scoped_state{}),
     acumen::action("seek_food", seek_req,   done, acumen::scoped_state{}),
     acumen::action("wander",    wander_req, done, acumen::scoped_state{}),
@@ -322,6 +377,7 @@ void actor_world_slice::setup_brain_registry() {
   // «добыча в радиусе» → состояние eating с длительностью) — фаза C. Пока чистые рёбра без эффектов.
   std::vector<std::string> fsm_lines = {
     "any_state + flee = flee",
+    "any_state + eat [is_eating] = eating", // только если хват реально удался (guard; имя dot-free для парсера mood)
     "any_state + chase = chase",
     "any_state + seek_food = seek_food",
     "any_state + wander = wander",
@@ -336,6 +392,13 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   intents_.clear();
   intents_.reserve(count);
   tick_ = 0;
+
+  // СОЗДАЁМ аллокаторы пулов поедания заранее на ГЛАВНОМ потоке. Две причины: (1) view<>
+  // (в resolve_eating) кидает, если аллокатора нет, а компоненты появляются лишь при первом
+  // хвате; (2) component_type_id — sequential_type_id (присваивается при первом обращении),
+  // фиксируем его до любого MT-доступа. block_size как в world::create (sizeof(T)*250).
+  (void)world_.get_or_create_allocator<actor_eating>(sizeof(actor_eating) * 250);
+  (void)world_.get_or_create_allocator<actor_grabbed>(sizeof(actor_grabbed) * 250);
 
   const uint32_t tex_count = std::max(texture_count, 1u);
   const glm::vec2 extent = max_bound - min_bound; // только для стартовой раскладки
@@ -374,7 +437,21 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
   utils::info("perf sense.tree: {} us", to_us(utils::perf(&actor_world_slice::build_sense_tree, this)));
   utils::info("perf cognition: {} us", to_us(utils::perf(&actor_world_slice::cognition, this, tick_, pool)));
   utils::info("perf apply : {} us",    to_us(utils::perf(&actor_world_slice::apply, this, dt_seconds)));
+  utils::info("perf eating: {} us",    to_us(utils::perf(&actor_world_slice::resolve_eating, this, tick_)));
   utils::info("perf build : {} us",    to_us(utils::perf(&actor_batch::build, &batch, world_, tick_)));
+
+  // ВРЕМЕННАЯ ДИАГНОСТИКА (раз в секунду @20fps): подтверждает timestep, рост drives и поедание.
+  if (tick_ % 20 == 0) {
+    size_t nd = 0, hungry = 0, bored = 0; float sh = 0.0f, sb = 0.0f;
+    for (auto [id, dr] : world_.view<actor_drives>()) {
+      (void)id; ++nd; sh += dr->hunger; sb += dr->boredom;
+      if (dr->hunger >= hungry_threshold) ++hungry;
+      if (dr->boredom >= bored_threshold) ++bored;
+    }
+    utils::info("diag t={} dt={:.4f} actors={} eating={} grabbed={} eatenTotal={} avgHunger={:.2f} hungry={} avgBored={:.2f} bored={}",
+      tick_, dt_seconds, world_.count<actor_position>(), world_.count<actor_eating>(), world_.count<actor_grabbed>(),
+      eaten_total_, nd ? sh / float(nd) : 0.0f, hungry, nd ? sb / float(nd) : 0.0f, bored);
+  }
 
   return actor_metrics{
     uint32_t(world_.count<actor_position>()),
@@ -390,8 +467,9 @@ void actor_world_slice::build_sense_tree() {
   using kd = utils::kd_tree<perception_target>;
   sense_tree_.clear();
   for (auto [id, pos, vis] : world_.view<actor_position, actor_visual>()) {
+    if (world_.get<actor_grabbed>(id) != nullptr) continue; // схваченную добычу никто не таргетит
     sense_tree_.insert(kd::point{ pos->value.x, pos->value.y },
-                       perception_target{ vis->size, uint32_t(aesthetics::get_entityid_index(id)) });
+                       perception_target{ vis->size, id });
   }
   sense_tree_.build();
 }
@@ -418,12 +496,12 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
   const uint32_t self = uint32_t(aesthetics::get_entityid_index(id));
   const kd::point q{ pos->value.x, pos->value.y };
   const auto [threat, prey] = sense_tree_.nearest2(q, perception_radius,
-    [s, self](const perception_target& t) { return t.idx != self && t.size > s; },
-    [s, self](const perception_target& t) { return t.idx != self && t.size < s; });
+    [s, self](const perception_target& t) { return uint32_t(aesthetics::get_entityid_index(t.id)) != self && t.size > s; },
+    [s, self](const perception_target& t) { return uint32_t(aesthetics::get_entityid_index(t.id)) != self && t.size < s; });
   per->has_threat = threat != nullptr;
   per->has_prey   = prey != nullptr;
   if (threat != nullptr) per->threat_pos = glm::vec2(threat->pos[0], threat->pos[1]);
-  if (prey   != nullptr) per->prey_pos   = glm::vec2(prey->pos[0], prey->pos[1]);
+  if (prey   != nullptr) { per->prey_pos = glm::vec2(prey->pos[0], prey->pos[1]); per->prey_id = prey->payload.id; }
 
   // GOAP: dry-run ctx → decide (hit кеша ⇒ без A*) → первое действие плана → intent.
   const auto& goal_state = goap_->get_goals().front().goal;
@@ -463,6 +541,9 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
   // (1) отбор созревших + обрезка бюджетом.
   due_.clear();
   for (auto [id, cog] : world_.view<actor_cognition>()) {
+    // едящие (закоммичены до конца поедания) и схваченные (заморожены, скоро удалятся) —
+    // не думают. Это и есть «коммит длительностью действия» вместо чистого commit_ticks.
+    if (world_.get<actor_eating>(id) != nullptr || world_.get<actor_grabbed>(id) != nullptr) continue;
     if (cog->last_think == 0 || tick - cog->last_think >= commit_ticks_) {
       due_.push_back(think_request{ tick - cog->last_think, id });
     }
@@ -518,6 +599,9 @@ void actor_world_slice::apply(const float dt_seconds) {
     if (effect == nullptr) continue;
 
     const auto id = aesthetics::entityid_t(in.actor.id);
+    // Актора схватили В ЭТОМ ЖЕ apply (хищник с меньшим id отработал раньше) → его собственный
+    // интент гасим, иначе движение перебьёт заморозку. Детерминированно (id-порядок).
+    if (world_.get<actor_grabbed>(id) != nullptr) continue;
     const auto* brain = world_.get<actor_brain>(id);
     const uint64_t seed = brain != nullptr ? brain->seed : 0u;
     const auto ctx = make_ctx(world_, id, seed, tick_); // эффект сам кастует мир в мутабельный
@@ -550,6 +634,23 @@ void actor_world_slice::apply(const float dt_seconds) {
     const float db = (speed2 <= still_speed2 ? bored_rate : -bored_relief) * dt_seconds;
     dr->boredom = std::clamp(dr->boredom + db, 0.0f, 1.0f);
   }
+}
+
+// resolve_eating — завершить поедание у хищников с истёкшим сроком: наелся (голод в ноль),
+// снять actor_eating (хищник снова «созреет» и переобдумает), удалить съеденную жертву. Удаление
+// компонентов/сущностей — ПОСЛЕ обхода view (нельзя мутировать пул, по которому идём). Поеданий
+// за тик мало → локальные буферы дёшевы.
+void actor_world_slice::resolve_eating(const uint64_t tick) {
+  std::vector<aesthetics::entityid_t> finished; // хищники, закончившие есть
+  std::vector<aesthetics::entityid_t> kill;     // съеденные жертвы на удаление
+  for (auto [id, eat] : world_.view<actor_eating>()) {
+    if (tick < eat->until_tick) continue;
+    if (auto* dr = world_.get<actor_drives>(id); dr != nullptr) dr->hunger = 0.0f; // наелся
+    finished.push_back(id);
+    kill.push_back(eat->target);
+  }
+  for (const auto pid : finished) world_.remove<actor_eating>(pid);
+  for (const auto bid : kill) if (world_.exists(bid)) { world_.remove_entity(bid); ++eaten_total_; }
 }
 
 } // namespace core

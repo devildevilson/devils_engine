@@ -47,19 +47,21 @@ struct actor_visual {
   float size = 1.0f;
 };
 
-// Payload точки в kD-дереве восприятия: размер (для фильтра крупнее/мельче) и индекс
-// сущности (исключить себя). Позиция лежит в самом узле дерева (node.pos).
+// Payload точки в kD-дереве восприятия: размер (для фильтра крупнее/мельче) и ПОЛНЫЙ
+// entityid цели (нужен, чтобы схватить добычу при поедании; самоисключение — по индексу
+// из id). Позиция лежит в самом узле дерева (node.pos).
 struct perception_target {
   float size = 0.0f;
-  uint32_t idx = 0;
+  devils_engine::aesthetics::entityid_t id = devils_engine::aesthetics::invalid_entityid;
 };
 
 // Восприятие: результат слоя поиска цели (sense-фаза). Хранит позицию ближайшего
 // БО́ЛЬШЕГО актора (угроза, от него бежим) и ближайшего МЕНЬШЕГО (добыча, за ней
-// гонимся). Предикаты/эффекты GOAP читают это за O(1) вместо повторного скана мира.
+// гонимся) + ПОЛНЫЙ id добычи (для хвата при поедании). Предикаты/эффекты читают O(1).
 struct actor_perception {
   glm::vec2 threat_pos{0.0f, 0.0f}; // ближайший актор крупнее нас
   glm::vec2 prey_pos{0.0f, 0.0f};   // ближайший актор мельче нас
+  devils_engine::aesthetics::entityid_t prey_id = devils_engine::aesthetics::invalid_entityid;
   bool has_threat = false;
   bool has_prey = false;
 };
@@ -86,6 +88,20 @@ struct actor_drives {
 // Хранится как uint64_t (= utils::id), чтобы не тянуть string_id в этот заголовок.
 struct actor_state {
   uint64_t state = 0;
+};
+
+// Хищник в процессе поедания: КОГО ест (полный id жертвы) и ДО какого тика. Пока компонент
+// есть — актор «закоммичен» (cognition его пропускает, скорость 0) → это НАСТОЯЩИЙ источник
+// коммита (ретайрит commit_ticks для едящих). Снимается в resolve_eating по истечении.
+struct actor_eating {
+  devils_engine::aesthetics::entityid_t target = devils_engine::aesthetics::invalid_entityid;
+  uint64_t until_tick = 0;
+};
+
+// Жертва, которую схватили: КТО ест. Пока есть — актор заморожен и пропущен cognition'ом,
+// из дерева восприятия исключён (никто другой её не таргетит), и будет удалён по завершении.
+struct actor_grabbed {
+  devils_engine::aesthetics::entityid_t by = devils_engine::aesthetics::invalid_entityid;
 };
 
 // GPU instance for actor draw group. Layout: "v2ui1c4v1".
@@ -150,6 +166,9 @@ private:
                     devils_engine::acumen::solution_cache& cache,
                     std::vector<devils_engine::act::intent>& out);
   void apply(float dt_seconds);
+  // Завершает поедание у хищников, чей срок истёк: сбрасывает голод, снимает actor_eating,
+  // удаляет съеденную жертву из мира (kill-list, удаление ПОСЛЕ обхода). Зовётся после apply.
+  void resolve_eating(uint64_t tick);
 
   devils_engine::aesthetics::world world_;
   devils_engine::act::registry registry_;        // общий реестр геймплейных функций (см. libs/act)
@@ -179,6 +198,7 @@ private:
   std::vector<think_request> due_; // переиспользуемый скретч отбора
 
   uint64_t tick_ = 0;
+  uint64_t eaten_total_ = 0; // ВРЕМЕННО: всего съедено (диагностика — доказывает, что удаление работает)
 };
 
 } // namespace core
