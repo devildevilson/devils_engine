@@ -60,11 +60,25 @@ static aesthetics::world& mutable_world_of(const act::exec_context& ctx) noexcep
 
 // purpose-метка для counter-RNG (utils::mix) — разводит потоки случайности.
 static constexpr uint64_t purpose_wander = 0x77616e646572ull; // "wander"
+static constexpr uint64_t purpose_seek   = 0x7365656bull;     // "seek"
 
 // Биты GOAP-стейта (= индекс метрики; resolved ставят действия, метрики его не считают).
 namespace flags {
-enum : size_t { threat_present = 0, prey_present = 1, resolved = 2 };
+enum : size_t { threat_present = 0, prey_present = 1, hungry = 2, bored = 3, resolved = 4 };
 }
+
+// ── тюнинг мотиваций (drives) ──────────────────────────────────────────────
+// Скорости в единицах/секунду; пороги в 0..1. hunger копится всегда; boredom копится пока
+// актор стоит (думает), быстро спадает в движении → колебание think⇄wander. Значения
+// подобраны на глаз для main_fps≈20 (dt≈0.05). Все крутилки — кандидаты в config позже.
+static constexpr float hunger_rate     = 0.05f; // голод/сек (≈20с до сытого→голодного)
+static constexpr float bored_rate      = 0.14f; // скука/сек пока стоит (думает)
+static constexpr float bored_relief    = 0.30f; // спад скуки/сек в движении
+static constexpr float hungry_threshold = 0.60f;
+static constexpr float bored_threshold  = 0.50f;
+static constexpr float still_speed2      = 0.01f; // |vel|^2 ниже — считаем «стоит»
+static constexpr float eat_radius        = 0.5f;  // дистанция «укуса» добычи (плейсхолдер до хэндшейка)
+static constexpr float eat_bite          = 0.5f;  // сколько голода снимает контакт с добычей
 
 // Радиус восприятия для kD-запроса (мировые единицы, tile_size=1, шаг спавна ~1).
 // Ограничивает поиск «ближайшего крупнее/мельче» (иначе предикат-NN без кандидата
@@ -133,6 +147,16 @@ static bool predicate_prey_present(const act::exec_context& ctx) noexcept {
   return per != nullptr && per->has_prey;
 }
 
+static bool predicate_is_hungry(const act::exec_context& ctx) noexcept {
+  const auto* dr = world_of(ctx).get<actor_drives>(aesthetics::entityid_t(ctx.primary().id));
+  return dr != nullptr && dr->hunger >= hungry_threshold;
+}
+
+static bool predicate_is_bored(const act::exec_context& ctx) noexcept {
+  const auto* dr = world_of(ctx).get<actor_drives>(aesthetics::entityid_t(ctx.primary().id));
+  return dr != nullptr && dr->boredom >= bored_threshold;
+}
+
 // Ставит скорость актора в направлении dir (нормализованном) * его speed.
 static void set_velocity(aesthetics::world& world, const aesthetics::entityid_t self, glm::vec2 dir) noexcept {
   auto* vel = world.get<actor_velocity>(self);
@@ -158,7 +182,32 @@ static void effect_chase(const act::exec_context& ctx) noexcept {
   const auto* pos = world.get<actor_position>(self);
   const auto* per = world.get<actor_perception>(self);
   if (pos == nullptr || per == nullptr) return;
-  set_velocity(world, self, per->prey_pos - pos->value); // к добыче
+  const glm::vec2 to_prey = per->prey_pos - pos->value;
+  set_velocity(world, self, to_prey); // к добыче
+  // ПЛЕЙСХОЛДЕР до хэндшейка поедания (фаза C): дотянулись до добычи → «откусили» голод.
+  // Настоящее поедание (схватить/заморозить/анимация/удалить жертву) приедет интентом позже.
+  auto* dr = world.get<actor_drives>(self);
+  if (dr != nullptr && (to_prey.x * to_prey.x + to_prey.y * to_prey.y) <= eat_radius * eat_radius) {
+    dr->hunger = std::max(0.0f, dr->hunger - eat_bite);
+  }
+}
+
+// Сидит на месте и «думает» — скорость в ноль. Накопление скуки — пассивно в apply
+// (актор стоит ⇒ boredom растёт), так что эффект просто гасит движение.
+static void effect_think(const act::exec_context& ctx) noexcept {
+  set_velocity(mutable_world_of(ctx), aesthetics::entityid_t(ctx.primary().id), glm::vec2{0.0f, 0.0f});
+}
+
+// Ищет еду — то же случайное блуждание, что и wander, но со своим потоком RNG (provenance/
+// звук позже могут отличаться). Голоден, но добычи в поле зрения нет ⇒ обшариваем местность.
+static void effect_seek_food(const act::exec_context& ctx) noexcept {
+  auto& world = mutable_world_of(ctx);
+  const auto self = aesthetics::entityid_t(ctx.primary().id);
+  const auto* brain = world.get<actor_brain>(self);
+  const uint32_t phase = brain != nullptr ? brain->phase : 0u;
+  const uint64_t slot = (ctx.rng_tick + phase) / 12u; // меняем курс чаще, чем при wander
+  const uint64_t h = utils::mix(ctx.rng_seed, ctx.rng_entity, slot, purpose_seek);
+  set_velocity(world, self, direction_from_hash(uint32_t(h)));
 }
 
 static void effect_wander(const act::exec_context& ctx) noexcept {
@@ -190,27 +239,45 @@ void actor_world_slice::setup_brain_registry() {
     &predicate_threat_present, "рядом есть актор крупнее"));
   registry_.reg("actor.prey_present", std::make_unique<act::native_function<bool>>(
     &predicate_prey_present, "рядом есть актор мельче"));
-  registry_.reg("flee",   std::make_unique<act::native_function<void>>(&effect_flee,   "бежать от ближайшей угрозы"));
-  registry_.reg("chase",  std::make_unique<act::native_function<void>>(&effect_chase,  "гнаться за ближайшей добычей"));
-  registry_.reg("wander", std::make_unique<act::native_function<void>>(&effect_wander, "блуждать в случайную сторону"));
+  registry_.reg("actor.is_hungry", std::make_unique<act::native_function<bool>>(
+    &predicate_is_hungry, "голод выше порога"));
+  registry_.reg("actor.is_bored", std::make_unique<act::native_function<bool>>(
+    &predicate_is_bored, "скука выше порога"));
+  registry_.reg("flee",      std::make_unique<act::native_function<void>>(&effect_flee,      "бежать от ближайшей угрозы"));
+  registry_.reg("chase",     std::make_unique<act::native_function<void>>(&effect_chase,     "гнаться за добычей (и есть при контакте)"));
+  registry_.reg("seek_food", std::make_unique<act::native_function<void>>(&effect_seek_food, "искать еду — рыскать пока голоден"));
+  registry_.reg("wander",    std::make_unique<act::native_function<void>>(&effect_wander,    "блуждать (от скуки)"));
+  registry_.reg("think",     std::make_unique<act::native_function<void>>(&effect_think,     "стоять и думать (копит скуку)"));
 
-  // метрики (бит = индекс): 0 threat_present, 1 prey_present. resolved(2) ставят действия.
+  // метрики (бит = индекс): 0 threat, 1 prey, 2 hungry, 3 bored. resolved(4) ставят действия.
   std::vector<acumen::state_metric> metrics = {
     acumen::state_metric("actor.threat_present"),
     acumen::state_metric("actor.prey_present"),
+    acumen::state_metric("actor.is_hungry"),
+    acumen::state_metric("actor.is_bored"),
   };
 
-  // приоритет кодируется requirements: flee применимо при угрозе; chase — без угрозы при
-  // добыче; wander — без угрозы и без добычи. Каждое действие ставит resolved ⇒ цель за 1 шаг.
-  acumen::scoped_state flee_req;   flee_req.set(flags::threat_present, true);
-  acumen::scoped_state chase_req;  chase_req.set(flags::threat_present, false); chase_req.set(flags::prey_present, true);
-  acumen::scoped_state wander_req; wander_req.set(flags::threat_present, false); wander_req.set(flags::prey_present, false);
-  acumen::scoped_state done;       done.set(flags::resolved, true);
+  // Приоритетная лестница кодируется requirements (угроза доминирует; остальные разбивают
+  // пространство по hungry → prey/bored, без пересечений ⇒ ровно одно действие на состояние,
+  // план в 1 шаг). Каждое действие ставит resolved.
+  //   threat                       → flee
+  //   !threat & hungry & prey      → chase (гнаться и есть)
+  //   !threat & hungry & !prey     → seek_food (рыскать)
+  //   !threat & !hungry & bored    → wander
+  //   !threat & !hungry & !bored   → think (копит скуку → со временем bored → wander → скука спадает)
+  acumen::scoped_state flee_req;  flee_req.set(flags::threat_present, true);
+  acumen::scoped_state chase_req; chase_req.set(flags::threat_present, false); chase_req.set(flags::hungry, true);  chase_req.set(flags::prey_present, true);
+  acumen::scoped_state seek_req;  seek_req.set(flags::threat_present, false);  seek_req.set(flags::hungry, true);  seek_req.set(flags::prey_present, false);
+  acumen::scoped_state wander_req; wander_req.set(flags::threat_present, false); wander_req.set(flags::hungry, false); wander_req.set(flags::bored, true);
+  acumen::scoped_state think_req;  think_req.set(flags::threat_present, false);  think_req.set(flags::hungry, false); think_req.set(flags::bored, false);
+  acumen::scoped_state done;      done.set(flags::resolved, true);
 
   std::vector<acumen::action> actions = {
-    acumen::action("flee",   flee_req,   done, acumen::scoped_state{}),
-    acumen::action("chase",  chase_req,  done, acumen::scoped_state{}),
-    acumen::action("wander", wander_req, done, acumen::scoped_state{}),
+    acumen::action("flee",      flee_req,   done, acumen::scoped_state{}),
+    acumen::action("chase",     chase_req,  done, acumen::scoped_state{}),
+    acumen::action("seek_food", seek_req,   done, acumen::scoped_state{}),
+    acumen::action("wander",    wander_req, done, acumen::scoped_state{}),
+    acumen::action("think",     think_req,  done, acumen::scoped_state{}),
   };
 
   acumen::scoped_state goal_state; goal_state.set(flags::resolved, true);
@@ -251,6 +318,8 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
     world_.create<actor_visual>(id, (i + 1u) % tex_count, actor_color(i), actor_size(seed));
     world_.create<actor_perception>(id);
     world_.create<actor_cognition>(id); // last_think=0 ⇒ все «созрели» на старте, бюджет раскатает по тикам
+    // стартовый голод разный (из хэша сида) → акторы не синхронно проголодаются; скука с нуля.
+    world_.create<actor_drives>(id, unit_from_hash(mix32(seed ^ 0xf00du)) * 0.4f, 0.0f);
   }
 }
 
@@ -414,6 +483,17 @@ void actor_world_slice::apply(const float dt_seconds) {
   for (auto [id, pos, vel] : world_.view<actor_position, actor_velocity>()) {
     (void)id;
     pos->value += vel->value * dt_seconds;
+  }
+
+  // Пассивная динамика мотиваций (ВСЕ акторы, каждый тик — дёшево, O(N), плавно независимо
+  // от каденса обдумывания). hunger копится всегда; boredom растёт пока стоит (думает), быстро
+  // спадает в движении. Решения по drives примутся на следующем созревании актора.
+  for (auto [id, dr, vel] : world_.view<actor_drives, actor_velocity>()) {
+    (void)id;
+    dr->hunger = std::clamp(dr->hunger + hunger_rate * dt_seconds, 0.0f, 1.0f);
+    const float speed2 = vel->value.x * vel->value.x + vel->value.y * vel->value.y;
+    const float db = (speed2 <= still_speed2 ? bored_rate : -bored_relief) * dt_seconds;
+    dr->boredom = std::clamp(dr->boredom + db, 0.0f, 1.0f);
   }
 }
 

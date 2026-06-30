@@ -70,6 +70,15 @@ struct actor_cognition {
   uint64_t last_think = 0;
 };
 
+// Мотивации актора (drives) — РЕПЛИЦИРУЕМОЕ состояние (тикает само, не выводимо из других
+// компонентов за тик ⇒ кандидат на запись в save, в отличие от perception/плана). 0..1.
+// hunger растёт со временем; boredom растёт пока актор стоит (думает), падает в движении.
+// Предикаты GOAP (is_hungry/is_bored) читают пороги, эффекты их двигают на apply-фазе.
+struct actor_drives {
+  float hunger = 0.0f;
+  float boredom = 0.0f;
+};
+
 // GPU instance for actor draw group. Layout: "v2ui1c4v1".
 struct actor_instance {
   glm::vec2 pos;
