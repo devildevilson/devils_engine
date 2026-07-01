@@ -6,14 +6,21 @@ project(
   LANGUAGES CXX C
 )
 
-if (WIN32) # probably can be dealed within cmake build system ???
-  set(DENSITY_LIBRARY ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density-win32/density.lib)
-  set(DENSITY_LIBRARY_DIR ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density-win32)
-  set(DENSITY_INCLUDE_DIRS ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density-win32/include)
+# компрессия: zstd (уже в дереве — minizip-ng собран с MZ_ZSTD, системный libzstd).
+find_package(zstd CONFIG QUIET)
+if (TARGET zstd::libzstd)
+  set(ZSTD_TARGET zstd::libzstd)
+elseif (TARGET zstd::libzstd_shared)
+  set(ZSTD_TARGET zstd::libzstd_shared)
+elseif (TARGET zstd::libzstd_static)
+  set(ZSTD_TARGET zstd::libzstd_static)
 else()
-  set(DENSITY_LIBRARY ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density/density.a)
-  set(DENSITY_LIBRARY_DIR ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density)
-  set(DENSITY_INCLUDE_DIRS ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/density/include)
+  find_library(ZSTD_LIBRARY NAMES zstd REQUIRED)
+  find_path(ZSTD_INCLUDE_DIR NAMES zstd.h REQUIRED)
+  add_library(zstd_local INTERFACE)
+  target_link_libraries(zstd_local INTERFACE ${ZSTD_LIBRARY})
+  target_include_directories(zstd_local INTERFACE ${ZSTD_INCLUDE_DIR})
+  set(ZSTD_TARGET zstd_local)
 endif()
 
 set(SRC_LIST
@@ -58,7 +65,6 @@ set(HDR_LIST
   include/devils_engine/utils/time-utils.hpp
   include/devils_engine/utils/sha256.h
   include/devils_engine/utf/utf.hpp
-  include/devils_engine/utils/density_api.h
   include/devils_engine/utils/compression.h
   include/devils_engine/utils/load_stage.h 
   include/devils_engine/utils/loader.h 
@@ -90,7 +96,7 @@ target_compile_options(engine_c_part1 PRIVATE
 
 target_link_libraries(devils_utils 
   PUBLIC max0x7ba::atomic_queue Threads::Threads spdlog::spdlog glaze::glaze gtl #ReflexLibStatic #alpaca::alpaca
-  PRIVATE engine_c_part1 density ZLIB::ZLIB devils_engine::options cpuinfo
+  PRIVATE engine_c_part1 ${ZSTD_TARGET} ZLIB::ZLIB devils_engine::options cpuinfo
 )
 
 if (WIN32)
@@ -100,9 +106,6 @@ endif()
 target_include_directories(devils_utils PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
 target_include_directories(devils_utils PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utils>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utf>" "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/thread>")
 target_include_directories(engine_c_part1 PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/devils_engine/utils>")
-
-target_link_directories(devils_utils PUBLIC ${DENSITY_LIBRARY_DIR})
-target_include_directories(devils_utils PRIVATE ${DENSITY_INCLUDE_DIRS})
 
 if (MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL GNU)
   target_link_libraries(devils_utils PUBLIC stdc++exp) # std:: print, println, ...

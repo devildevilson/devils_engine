@@ -11,7 +11,6 @@ set(TEST_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/devils_engine/tests")
 function(devils_add_doctest target)
   add_executable(${target} doctest_main.cpp ${ARGN})
   target_link_libraries(${target} PRIVATE devils_engine::options doctest::doctest)
-  target_link_directories(${target} PRIVATE ${DENSITY_LIBRARY_DIR})
   set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_OUTPUT_DIRECTORY}/bin")
 
   if (WIN32)
@@ -43,6 +42,9 @@ target_link_libraries(thread_general_test PRIVATE devils_engine::thread)
 devils_add_doctest(aesthetics_world_test aesthetics_world_test.cpp)
 target_link_libraries(aesthetics_world_test PRIVATE devils_engine::aesthetics)
 
+devils_add_doctest(aesthetics_serialization_test aesthetics_serialization_test.cpp)
+target_link_libraries(aesthetics_serialization_test PRIVATE devils_engine::aesthetics)
+
 devils_add_doctest(sound_system_test sound_system_test.cpp)
 target_link_libraries(sound_system_test PRIVATE devils_engine::sound devils_engine::utils)
 
@@ -52,6 +54,10 @@ target_link_libraries(acumen_test PRIVATE devils_engine::acumen devils_engine::a
 add_executable(aesthetics_world_benchmark aesthetics_world_benchmark.cpp)
 target_link_libraries(aesthetics_world_benchmark PRIVATE devils_engine::options devils_engine::aesthetics)
 set_target_properties(aesthetics_world_benchmark PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_OUTPUT_DIRECTORY}/bin")
+
+add_executable(aesthetics_serialization_benchmark aesthetics_serialization_benchmark.cpp)
+target_link_libraries(aesthetics_serialization_benchmark PRIVATE devils_engine::options devils_engine::aesthetics)
+set_target_properties(aesthetics_serialization_benchmark PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_OUTPUT_DIRECTORY}/bin")
 
 add_custom_command(TARGET utils_general_test POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
