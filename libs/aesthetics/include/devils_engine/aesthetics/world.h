@@ -410,12 +410,24 @@ public:
     class world* m_world;
   };
 
+  // снимок состояния генератора id: всё, что НЕ выводится из компонентов.
+  // множество живых энтити восстанавливается из блоков компонентов (у каждой
+  // хотя бы один компонент), а вот счётчик свежих индексов и free-list версий -
+  // только отсюда, чтобы созданные ПОСЛЕ загрузки энтити не коллизились.
+  struct snapshot_state {
+    size_t cur_index = 0;
+    std::vector<entityid_t> removed_entities;
+  };
+
   world() noexcept;
   world(const world& copy) noexcept = delete;
   world(world&& move) noexcept = default;
   world& operator=(const world& copy) noexcept = delete;
   world& operator=(world&& move) noexcept = default;
   entityid_t gen_entityid();
+
+  snapshot_state save_state() const; // определены в impl-блоке ниже
+  void load_state(const snapshot_state& s);
   void remove_entity(const entityid_t id);
   entity::components_arr find_components(const entityid_t id);
   entity::const_components_arr find_components(const entityid_t id) const;
@@ -1793,6 +1805,9 @@ entityid_t world::gen_entityid() {
   removed_entities.pop_back();
   return make_entityid(get_entityid_index(prev_ent), get_entityid_version(prev_ent)+1);
 }
+
+world::snapshot_state world::save_state() const { return snapshot_state{ cur_index, removed_entities }; }
+void world::load_state(const snapshot_state& s) { cur_index = s.cur_index; removed_entities = s.removed_entities; }
 
 void world::remove_entity(const entityid_t id) {
   clear(id);

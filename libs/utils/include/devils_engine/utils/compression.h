@@ -5,38 +5,30 @@
 #include <cstddef>
 #include <vector>
 
-// для компрессии общего назначения использую https://github.com/g1mv/density
+// компрессия общего назначения через zstd (https://github.com/facebook/zstd) — системная,
+// уже в дереве зависимостей (minizip-ng собран с MZ_ZSTD). Интерфейс стабилен: реализация в .cpp.
 
 namespace devils_engine {
 namespace utils {
 enum class compression_level {
-  chameleon,
-  cheetah,
-  lion,
+  fast,   // zstd 1  — быстрый, для сети
+  normal, // zstd 3  — дефолт zstd
+  high,   // zstd 12
+  best,   // zstd 19 — для диска
 
-  count,
-
-  fast = chameleon,
-  normal = cheetah,
-  best = lion
+  count
 };
 
-// вообще контекст как будто можно сохранять
-// нужен ли мне compression_processing_result? не уверен
-struct compression_processing_result {
-  int32_t state;
-  size_t bytesRead;
-  size_t bytesWritten;
-  void* context;
-};
+// на входе — исходный размер; безопасный размер выходного буфера.
+size_t compress_safe_size(const size_t origin_size) noexcept;   // ZSTD_compressBound
+size_t decompress_safe_size(const size_t origin_size) noexcept; // == origin_size (вызывающий знает сырой размер)
 
-size_t compress_safe_size(const size_t origin_size) noexcept;
-size_t decompress_safe_size(const size_t origin_size) noexcept;
-
-// простой АПИ, наверное настраивать словарь мне не потребуется
+// возвращают число записанных байт либо SIZE_MAX при ошибке.
 size_t compress(const uint8_t *input, const size_t input_size, uint8_t *output, const size_t output_size, const compression_level level) noexcept;
 size_t decompress(const uint8_t *input, const size_t input_size, uint8_t *output, const size_t output_size) noexcept;
 
+// vector-обёртки: compress по compressBound; decompress достаёт размер из zstd-фрейма.
+// пустой вектор при ошибке.
 std::vector<uint8_t> compress(const std::vector<uint8_t> &input, const compression_level level) noexcept;
 std::vector<uint8_t> decompress(const std::vector<uint8_t> &input) noexcept;
 }

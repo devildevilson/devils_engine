@@ -9,6 +9,9 @@
 #include "devils_engine/act/registry.h"
 #include "devils_engine/act/function.h"
 #include "devils_engine/utils/kd_tree.h"
+#include "devils_engine/utils/grid.h"
+#include "devils_engine/utils/aabb_tree.h"
+#include "devils_engine/utils/geometry.h"
 
 #include <memory>
 #include <vector>
@@ -503,4 +506,223 @@ TEST_CASE("kd_tree nearest/radius with predicate [utils::kd_tree]") {
       if (b1 != nullptr) REQUIRE(d2(b2, self) == doctest::Approx(d2(b1, self)));
     }
   }
+}
+
+TEST_CASE("geometry primitive predicates [utils::geom]") {
+  using namespace utils::geom;
+  using v2 = std::array<float, 2>;
+  using v3 = std::array<float, 3>;
+
+  SUBCASE("aabb / sphere basics 2D") {
+    aabb<v2, 2> b{ { 0, 0 }, { 10, 10 } };
+    REQUIRE(contains(b, v2{ 5, 5 }));
+    REQUIRE_FALSE(contains(b, v2{ 11, 5 }));
+    sphere<v2, 2> s{ { 5, 5 }, 2.0f };
+    REQUIRE(contains(s, v2{ 6, 6 }));            // dist √2 < 2
+    REQUIRE_FALSE(contains(s, v2{ 8, 8 }));      // dist √18 > 2
+    REQUIRE(overlaps(s, b));
+    REQUIRE_FALSE(overlaps(sphere<v2, 2>{ { 100, 100 }, 1.0f }, b));
+  }
+
+  SUBCASE("ray slab test respects tmax") {
+    aabb<v2, 2> b{ { 5, -1 }, { 6, 1 } };
+    REQUIRE(overlaps(ray<v2, 2>{ { 0, 0 }, { 1, 0 }, 100.0f }, b));  // достаёт
+    REQUIRE_FALSE(overlaps(ray<v2, 2>{ { 0, 0 }, { 1, 0 }, 3.0f }, b)); // tmax коротко
+    REQUIRE_FALSE(overlaps(ray<v2, 2>{ { 0, 0 }, { 0, 1 }, 100.0f }, b)); // мимо (вверх)
+  }
+
+  SUBCASE("cylinder flat caps 2D") {
+    cylinder<v2, 2> c{ { 0, 0 }, { 1, 0 }, 10.0f, 1.0f };
+    REQUIRE(contains(c, v2{ 5, 0.5f }));   // в пределах длины и радиуса
+    REQUIRE_FALSE(contains(c, v2{ 5, 2 }));  // за радиусом
+    REQUIRE_FALSE(contains(c, v2{ 11, 0 })); // за торцом (плоский торец)
+    REQUIRE_FALSE(contains(c, v2{ -0.5f, 0 })); // до начала
+  }
+
+  SUBCASE("up_cylinder ignores UP axis (Y) 3D") {
+    up_cylinder<v3, 3> uc{ { 0, 0, 0 }, 1.0f };
+    REQUIRE(contains<1>(uc, v3{ 0.5f, 9999, 0.5f }));   // высоко по Y — всё равно внутри колонны
+    REQUIRE_FALSE(contains<1>(uc, v3{ 2, 0, 0 }));      // вне радиуса в плоскости XZ
+    aabb<v3, 3> far{ { 5, 0, 5 }, { 6, 1, 6 } };
+    REQUIRE_FALSE(overlaps<1>(uc, far));
+  }
+
+  SUBCASE("obb vs aabb SAT 2D — rotated box separated by a gap") {
+    std::array<v2, 2> ax{ v2{ 0.7071f, 0.7071f }, v2{ -0.7071f, 0.7071f } }; // 45°
+    obb<v2, 2> o{ { 0, 0 }, { 1, 1 }, ax };
+    REQUIRE(overlaps(o, aabb<v2, 2>{ { -0.5f, -0.5f }, { 0.5f, 0.5f } }));
+    REQUIRE_FALSE(overlaps(o, aabb<v2, 2>{ { 3, 3 }, { 4, 4 } }));
+    REQUIRE(contains(o, v2{ 0, 1 }));          // вдоль повёрнутой оси
+    REQUIRE_FALSE(contains(o, v2{ 1.5f, 0 }));
+  }
+}
+
+TEST_CASE("spatial query API: point stores match brute force [utils::kd_tree,dense_grid,hash_grid]") {
+  using v2 = std::array<float, 2>;
+  struct pl { uint32_t id; };
+  std::vector<v2> pts;
+  for (int i = 0; i < 60; ++i) // детерминированное «облако» (без rand)
+    pts.push_back(v2{ float((i * 37) % 41) * 0.5f - 10.0f, float((i * 53) % 43) * 0.5f - 10.0f });
+
+  utils::kd_tree<pl, v2, 2> kd;
+  utils::hash_grid<pl, v2, 2> hg(2.0f);
+  utils::dense_grid<pl, v2, 2> dg(v2{ -12, -12 }, { 24, 24 }, 1.0f); // покрывает [-12,12)
+  for (int i = 0; i < int(pts.size()); ++i) {
+    kd.insert(pts[i], pl{ uint32_t(i) });
+    hg.insert(pts[i], pl{ uint32_t(i) });
+    dg.insert(pts[i], pl{ uint32_t(i) });
+  }
+  kd.build();
+
+  const auto check = [&](auto shape) {
+    std::vector<uint32_t> brute, a, b, c;
+    for (int i = 0; i < int(pts.size()); ++i)
+      if (utils::geom::test_contains<1>(shape, pts[i])) brute.push_back(uint32_t(i));
+    kd.query(shape, [&](const pl& p) { a.push_back(p.id); });
+    hg.query(shape, [&](const pl& p) { b.push_back(p.id); });
+    dg.query(shape, [&](const pl& p) { c.push_back(p.id); });
+    std::sort(brute.begin(), brute.end());
+    std::sort(a.begin(), a.end()); std::sort(b.begin(), b.end()); std::sort(c.begin(), c.end());
+    REQUIRE(a == brute);
+    REQUIRE(b == brute);
+    REQUIRE(c == brute);
+  };
+
+  check(utils::geom::aabb<v2, 2>{ { -3, -3 }, { 4, 5 } });
+  check(utils::geom::sphere<v2, 2>{ { 0, 0 }, 3.5f });
+  check(utils::geom::cylinder<v2, 2>{ { -8, -8 }, { 0.7071f, 0.7071f }, 25.0f, 1.5f });
+  check(utils::geom::obb<v2, 2>{ { 1, 1 }, { 3, 1 }, { v2{ 0.7071f, 0.7071f }, v2{ -0.7071f, 0.7071f } } });
+
+  SUBCASE("grids clear() then reuse") {
+    hg.clear(); dg.clear();
+    REQUIRE(hg.empty()); REQUIRE(dg.empty());
+    hg.insert(v2{ 0, 0 }, pl{ 99 }); dg.insert(v2{ 0, 0 }, pl{ 99 });
+    int nh = 0, nd = 0;
+    hg.query(utils::geom::sphere<v2, 2>{ { 0, 0 }, 1.0f }, [&](const pl& p) { REQUIRE(p.id == 99u); ++nh; });
+    dg.query(utils::geom::sphere<v2, 2>{ { 0, 0 }, 1.0f }, [&](const pl& p) { REQUIRE(p.id == 99u); ++nd; });
+    REQUIRE(nh == 1); REQUIRE(nd == 1);
+  }
+}
+
+TEST_CASE("spatial grids: incremental add/remove/update [utils::dense_grid,hash_grid]") {
+  using v2 = std::array<float, 2>;
+  struct pl { uint32_t id; };
+  utils::hash_grid<pl, v2, 2> hg(2.0f);
+  utils::dense_grid<pl, v2, 2> dg(v2{ -12, -12 }, { 24, 24 }, 1.0f);
+  std::vector<std::pair<uint32_t, v2>> ref;                 // живой эталон
+  std::vector<utils::grid_handle> hh(60), dh(60);
+
+  const auto pt = [](int i) { return v2{ float((i * 37) % 41) * 0.5f - 10.0f, float((i * 53) % 43) * 0.5f - 10.0f }; };
+  const auto check = [&](auto shape) {
+    std::vector<uint32_t> brute, a, b;
+    for (auto& [id, p] : ref) if (utils::geom::test_contains<1>(shape, p)) brute.push_back(id);
+    hg.query(shape, [&](const pl& p) { a.push_back(p.id); });
+    dg.query(shape, [&](const pl& p) { b.push_back(p.id); });
+    std::sort(brute.begin(), brute.end()); std::sort(a.begin(), a.end()); std::sort(b.begin(), b.end());
+    REQUIRE(a == brute);
+    REQUIRE(b == brute);
+  };
+  const auto probe = [&] {
+    check(utils::geom::sphere<v2, 2>{ { 0, 0 }, 4.0f });
+    check(utils::geom::aabb<v2, 2>{ { -5, -5 }, { 6, 6 } });
+  };
+
+  for (int i = 0; i < 60; ++i) { const v2 p = pt(i); hh[i] = hg.insert(p, pl{ uint32_t(i) }); dh[i] = dg.insert(p, pl{ uint32_t(i) }); ref.push_back({ uint32_t(i), p }); }
+  probe();
+
+  for (int i = 0; i < 60; i += 3) { hg.remove(hh[i]); dg.remove(dh[i]); } // удалить каждый 3-й
+  ref.erase(std::remove_if(ref.begin(), ref.end(), [](auto& e) { return e.first % 3 == 0; }), ref.end());
+  REQUIRE(hg.size() == ref.size());
+  REQUIRE(dg.size() == ref.size());
+  probe();
+
+  for (int i = 0; i < 60; ++i) { if (i % 3 == 0) continue; const v2 np{ float((i * 29) % 37) * 0.5f - 9.0f, float((i * 17) % 31) * 0.5f - 7.0f };
+    hg.update(hh[i], np); dg.update(dh[i], np); for (auto& e : ref) if (e.first == uint32_t(i)) e.second = np; }
+  probe();
+
+  SUBCASE("stale handle remove/update is a safe no-op") {
+    const size_t before = hg.size();
+    hg.remove(hh[0]); dg.remove(dh[0]);   // hh[0] уже удалён на шаге remove
+    hg.update(hh[0], v2{ 0, 0 });
+    REQUIRE(hg.size() == before);
+    REQUIRE(dg.size() == before);
+  }
+}
+
+TEST_CASE("spatial query API: aabb_tree (dynamic BVH) matches brute force [utils::aabb_tree]") {
+  using v2 = std::array<float, 2>;
+  using box2 = utils::geom::aabb<v2, 2>;
+  struct pl { uint32_t id; };
+  const auto mk = [](int i, float ox = 0, float oy = 0) { const float x = float((i * 7) % 37) + ox, y = float((i * 13) % 29) + oy; return box2{ { x, y }, { x + 2.0f, y + 1.5f } }; };
+
+  utils::aabb_tree<pl, v2, 2> tree;
+  std::vector<std::pair<uint32_t, box2>> ref;
+  std::vector<utils::bvh_handle> h(80);
+  for (int i = 0; i < 60; ++i) { const box2 b = mk(i); h[i] = tree.insert(b, pl{ uint32_t(i) }); ref.push_back({ uint32_t(i), b }); }
+  REQUIRE(tree.size() == 60);
+
+  const auto check = [&](auto shape) {
+    std::vector<uint32_t> brute, got;
+    for (auto& [id, b] : ref) if (utils::geom::test_overlaps<1>(shape, b)) brute.push_back(id);
+    tree.query(shape, [&](const pl& p) { got.push_back(p.id); });
+    std::sort(brute.begin(), brute.end()); std::sort(got.begin(), got.end());
+    REQUIRE(got == brute);
+  };
+  const auto probe = [&] {
+    check(utils::geom::aabb<v2, 2>{ { 5, 5 }, { 15, 15 } });
+    check(utils::geom::sphere<v2, 2>{ { 10, 10 }, 6.0f });
+    check(utils::geom::ray<v2, 2>{ { 0, 10 }, { 1, 0 }, 50.0f }); // ray осмыслен для тел
+    check(utils::geom::cylinder<v2, 2>{ { 0, 0 }, { 0.7071f, 0.7071f }, 50.0f, 2.0f });
+    check(utils::geom::obb<v2, 2>{ { 15, 15 }, { 5, 2 }, { v2{ 0.6f, 0.8f }, v2{ -0.8f, 0.6f } } });
+  };
+  probe();
+
+  SUBCASE("remove + update keep handles valid and results correct") {
+    for (int i = 0; i < 60; i += 4) tree.remove(h[i]);
+    ref.erase(std::remove_if(ref.begin(), ref.end(), [](auto& e) { return e.first % 4 == 0; }), ref.end());
+    REQUIRE(tree.size() == ref.size());
+    probe();
+
+    for (int i = 0; i < 60; ++i) { if (i % 4 == 0) continue; const box2 nb = mk(i, 3.0f, -4.0f); tree.update(h[i], nb); for (auto& e : ref) if (e.first == uint32_t(i)) e.second = nb; }
+    for (int i = 0; i < 60; ++i) if (i % 4 != 0) REQUIRE(tree.alive(h[i]));
+    probe();
+
+    tree.rebuild(); // инвалидирует хендлы, но query остаётся корректным
+    probe();
+  }
+
+  SUBCASE("empty tree query is a no-op") {
+    utils::aabb_tree<pl, v2, 2> empty;
+    int n = 0;
+    empty.query(utils::geom::sphere<v2, 2>{ { 0, 0 }, 100.0f }, [&](const pl&) { ++n; });
+    REQUIRE(n == 0);
+  }
+}
+
+TEST_CASE("geom::inflate — point store with per-object radius [utils::geom]") {
+  using v2 = std::array<float, 2>;
+  struct pl { uint32_t id; };
+  // объекты как точки, но у каждого «тело» радиуса R; запрос — раздутой формой.
+  const float R = 1.0f;
+  std::vector<v2> pts = { { 0, 0 }, { 5, 0 }, { 2.5f, 0 }, { -3, 3 }, { 10, 10 } };
+  utils::kd_tree<pl, v2, 2> kd;
+  for (int i = 0; i < int(pts.size()); ++i) kd.insert(pts[i], pl{ uint32_t(i) });
+  kd.build();
+
+  // «Тело радиуса R пересекает сферу s» ⟺ «центр внутри inflate(s, R)».
+  const utils::geom::sphere<v2, 2> s{ { 3.5f, 0 }, 1.0f };
+  std::vector<uint32_t> got, brute;
+  kd.query(utils::geom::inflate(s, R), [&](const pl& p) { got.push_back(p.id); });
+  for (int i = 0; i < int(pts.size()); ++i) { // эталон: пересечение диска(pt,R) со сферой s
+    const float dx = pts[i][0] - s.center[0], dy = pts[i][1] - s.center[1];
+    if (dx * dx + dy * dy <= (s.radius + R) * (s.radius + R)) brute.push_back(uint32_t(i));
+  }
+  std::sort(got.begin(), got.end()); std::sort(brute.begin(), brute.end());
+  REQUIRE(got == brute);
+
+  // inflate(ray) → cylinder радиуса R (толстый луч по точкам).
+  const auto thick = utils::geom::inflate(utils::geom::ray<v2, 2>{ { -10, 0 }, { 1, 0 }, 100.0f }, R);
+  int n = 0;
+  kd.query(thick, [&](const pl&) { ++n; });
+  REQUIRE(n == 3); // (0,0),(5,0),(2.5,0) в пределах R от оси y=0; (-3,3),(10,10) — нет
 }
