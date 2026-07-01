@@ -7,6 +7,8 @@
 #include <utility>
 #include <algorithm>
 
+#include "geometry.h"
+
 namespace devils_engine {
 namespace utils {
 // kd_tree — статическое k-d дерево над точками для запросов ближайшего/в радиусе.
@@ -25,11 +27,18 @@ namespace utils {
 // дерева). Порядок партиционирования nth_element не стабилен для равных ключей ⇒ для
 // строгого детерминизма позже (fixed-point) добавить тотальный тай-брейк по id в предикат
 // или пост-обработку. Сейчас точные совпадения дистанций между разными точками редки.
-template <typename T, typename Scalar = float, int Dim = 2>
+//
+// Vec — тип математического вектора (точка), доступ по operator[]; по умолчанию
+// std::array<float,Dim> (utils glm-free). Dim — число значимых осей. UpAxis — ось
+// "вверх" для 3D up_cylinder-запроса (radius-колонна); в 2D не используется.
+// В дополнение к nearest/radius есть унифицированный query(shape, visit) поверх
+// geom::overlaps/contains — общий контракт с cell_list/aabb_tree.
+template <typename T, typename Vec = std::array<float, 2>, int Dim = 2, int UpAxis = 1>
 class kd_tree {
 public:
-  using scalar = Scalar;
-  using point = std::array<scalar, Dim>;
+  using scalar = geom::scalar_of<Vec>;
+  using point = Vec;
+  using aabb = geom::aabb<Vec, Dim>;
 
   struct node {
     point pos;
@@ -46,7 +55,21 @@ public:
 
   // Балансирующее построение: медианное разбиение по чередующимся осям, на месте.
   void build() {
+    bounds_ = aabb::empty();
+    for (const auto& n : nodes_) bounds_.expand(n.pos);
     if (!nodes_.empty()) build_rec(0, nodes_.size(), 0);
+  }
+
+  // Унифицированный запрос: обойти все точки, лежащие ВНУТРИ формы shape.
+  // visit(const T& payload). Прунинг узлов по geom::overlaps(shape, region), точный
+  // лист-тест — geom::contains(shape, point). См. контракт в geometry.h.
+  // Формы: aabb / sphere / up_cylinder / ray(*) / cylinder / obb.
+  // (*) ray по точкам вырожден (мера ноль) — используйте cylinder (луч с радиусом).
+  template <typename Shape, typename Visit>
+  void query(const Shape& shape, Visit&& visit) const {
+    if (nodes_.empty()) return;
+    if (!geom::test_overlaps<UpAxis>(shape, bounds_)) return;
+    query_rec(0, nodes_.size(), 0, bounds_, shape, visit);
   }
 
   // Ближайший узел в пределах max_radius, чей payload проходит pred. nullptr — нет такого.
@@ -144,6 +167,24 @@ private:
     }
   }
 
+  template <typename Shape, typename Visit>
+  void query_rec(const size_t lo, const size_t hi, const int axis, aabb region,
+                 const Shape& shape, Visit& visit) const {
+    if (hi <= lo) return;
+    const size_t mid = lo + (hi - lo) / 2;
+    const node& n = nodes_[mid];
+
+    if (geom::test_contains<UpAxis>(shape, n.pos)) visit(n.payload);
+
+    const scalar split = n.pos[axis];
+    const int next = (axis + 1) % Dim;
+    // левое поддерево: координаты по axis <= split; правое: >= split.
+    aabb left = region;  left.max[axis] = split;
+    aabb right = region; right.min[axis] = split;
+    if (geom::test_overlaps<UpAxis>(shape, left))  query_rec(lo, mid, next, left, shape, visit);
+    if (geom::test_overlaps<UpAxis>(shape, right)) query_rec(mid + 1, hi, next, right, shape, visit);
+  }
+
   template <typename Pred, typename Visit>
   void radius_rec(const size_t lo, const size_t hi, const int axis, const point& q,
                   const scalar r2, Pred& pred, Visit& visit) const {
@@ -164,7 +205,8 @@ private:
     }
   }
 
-  std::vector<node> nodes_; // переиспользуемая арена точек (= неявное дерево после build)
+  std::vector<node> nodes_;   // переиспользуемая арена точек (= неявное дерево после build)
+  aabb bounds_ = aabb::empty(); // общий bbox всех точек (корневой регион для query-прунинга)
 };
 
 }
