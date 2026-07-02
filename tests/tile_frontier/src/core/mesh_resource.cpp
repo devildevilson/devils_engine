@@ -18,7 +18,7 @@ mesh_resource::mesh_resource() {
   set_flag(demiurg::resource_flags::binary, true);
 }
 
-void mesh_resource::load_cold(const utils::safe_handle_t& handle) {
+void mesh_resource::load_cold(const utils::safe_handle_t&) {
   module->load_binary(path, memory);
   vertex_count = uint32_t(memory.size() / vertex_stride);
   utils::info("mesh_resource '{}': loaded {} bytes ({} verts) to memory", id, memory.size(), vertex_count);
@@ -42,12 +42,12 @@ void mesh_resource::load_warm(const utils::safe_handle_t& handle) {
   utils::info("mesh_resource '{}': uploaded to GPU, gpu_index={}", id, gpu_index);
 }
 
-void mesh_resource::unload_hot(const utils::safe_handle_t& handle) {
+void mesh_resource::unload_hot(const utils::safe_handle_t&) {
   // TODO: реальное освобождение GPU-буфера через render API.
   gpu_index = invalid_gpu_index;
 }
 
-void mesh_resource::unload_warm(const utils::safe_handle_t& handle) {
+void mesh_resource::unload_warm(const utils::safe_handle_t&) {
   memory.clear();
   memory.shrink_to_fit();
 }

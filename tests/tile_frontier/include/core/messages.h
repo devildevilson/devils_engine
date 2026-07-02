@@ -187,8 +187,13 @@ struct command_draw_tiles {
 // world center + type/texture index + color + visual size. Kept as a separate command so render can
 // use a different draw_group/pair budget without changing producer code later.
 struct command_draw_actors {
+  uint32_t prev_count = 0;
   uint32_t count = 0;
   uint32_t stride = 0;
+  size_t sim_frame_time = 0;         // fixed sim-tick duration in global_time_resolution units
+  std::vector<uint32_t> prev_ids;    // stable ids parallel to prev_bytes
+  std::vector<uint32_t> ids;         // stable ids parallel to bytes
+  std::vector<uint8_t> prev_bytes;   // previous sim snapshot, same layout as bytes
   std::vector<uint8_t> bytes;
 };
 

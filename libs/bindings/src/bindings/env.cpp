@@ -151,7 +151,7 @@ static double prng64_normalize(const int64_t value) {
   return utils::prng_normalize(val);
 }
 
-static sol::table create_array(const double num, const sol::object &obj, sol::this_state s, sol::this_environment e) {
+static sol::table create_array(const double num, const sol::object &obj, sol::this_state, sol::this_environment e) {
   const size_t size = num;
   sol::environment env = e;
   auto t = env.create(size, 0);

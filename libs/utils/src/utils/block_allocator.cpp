@@ -65,7 +65,7 @@ namespace devils_engine {
       return mem;
     }
 
-    void* block_allocator::allocate1(const size_t count) noexcept {
+    void* block_allocator::allocate1(const size_t) noexcept {
       // имеет смысл реализовать аллокацию нескольких участков разом
       // но это в таком дизайне довольно сложно, нужно проверить
       // есть ли свободные участки памяти

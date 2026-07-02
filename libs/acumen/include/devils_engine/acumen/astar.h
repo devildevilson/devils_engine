@@ -57,7 +57,7 @@ struct astar {
     void add_successor(T data);
     void free_solution(node* start, node* goal) noexcept;
     void clear_memory(node* start, node* goal) noexcept;
-    void free_all(node* start, node* goal) noexcept;
+    void free_all(node* start, node*) noexcept;
     void free_unused() noexcept;
   };
 
@@ -138,7 +138,7 @@ void astar<T>::container::clear_memory(node* start, node* goal) noexcept {
 }
 
 template <typename T>
-void astar<T>::container::free_all(node* start, node* goal) noexcept {
+void astar<T>::container::free_all(node* start, node*) noexcept {
   for (size_t i = 0; i < openlist.size(); ++i) {
     node_pool.destroy(openlist[i]);
   }
@@ -153,7 +153,6 @@ void astar<T>::container::free_all(node* start, node* goal) noexcept {
   // по идее goal тоже отсутствует в openlist или closedlist
 
   start = nullptr;
-  goal = nullptr;
 }
 
 template <typename T>

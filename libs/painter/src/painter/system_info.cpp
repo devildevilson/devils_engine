@@ -182,14 +182,6 @@ void system_info::check_devices_surface_capability(const VkSurfaceKHR s) {
   }
 }
 
-static uint32_t find_queue(const std::vector<system_info::physical_device::queue_properties_t>& families, const vk::QueueFlags& flags) {
-  for (uint32_t i = 0; i < families.size(); ++i) {
-    if ((vk::QueueFlags(families[i].flags) & flags) == flags) return i;
-  }
-
-  return UINT32_MAX;
-}
-
 // по возможности поищем уникальные queue для каждого типа взаимодействия
 static uint32_t find_queue(const std::vector<system_info::physical_device::queue_properties_t>& families, const vk::QueueFlags& flags, const std::initializer_list<uint32_t>& ignore_queue) {
   for (int32_t count = int32_t(ignore_queue.size()); count >= 0; --count) {

@@ -29,11 +29,11 @@ demo::demo(const consume_type t) noexcept : c1(this), c2(this) {
   }
 }
 
-bool demo::write_to_disk(const std::string& path) const {
+bool demo::write_to_disk(const std::string&) const {
   return false;
 }
 
-bool demo::load_from_disk(const std::string& path) {
+bool demo::load_from_disk(const std::string&) {
   return false;
 }
 }

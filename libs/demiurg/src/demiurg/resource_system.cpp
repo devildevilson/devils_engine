@@ -143,15 +143,6 @@ namespace devils_engine {
       id = full_path.substr(module_size, full_path.size() - module_size - ext_size);
     }
 
-    static void make_forward_slash(std::string &path) {
-      const char backslash = '\\';
-      const char forwslash = '/';
-      std::replace(path.begin(), path.end(), backslash, forwslash);
-      for (auto itr = path.begin() + 1, prev = path.begin(); itr != path.end(); prev = itr, ++itr) {
-        if (*itr == forwslash && *prev == forwslash) itr = path.erase(itr);
-      }
-    }
-
 void resource_system::parse_resources(module_system* sys) {
   clear();
 
@@ -277,7 +268,7 @@ void resource_system::parse_resources(module_system* sys) {
       return std::make_tuple(id, name, ext);
     }
 
-    void resource_interface::set(std::string path, const std::string_view &module_name, const std::string_view &id, const std::string_view &ext) {
+    void resource_interface::set(std::string path, const std::string_view &module_name, const std::string_view &, const std::string_view &) {
       this->path = std::move(path);
       this->module_name = module_name;
       const auto [ local_id, local_name, local_ext ] = parse_path(this->path);
@@ -338,6 +329,7 @@ void resource_system::parse_resources(module_system* sys) {
         case state::cold: load_cold(handle); break;
         case state::warm: load_warm(handle); break;
         case state::hot : return; // не нужно увеличивать стейт
+        case state::count: return;
       }
       
       //_state = std::min(_state + 1, 2);
@@ -351,6 +343,7 @@ void resource_system::parse_resources(module_system* sys) {
         case state::cold: break;
         case state::warm: if (!flag(resource_flags::force_unload_warm)) {unload_warm(handle);} break;
         case state::hot : unload_hot(handle); break;
+        case state::count: return;
       }
 
       //_state = std::max(_state - 1, 0);
@@ -364,6 +357,7 @@ void resource_system::parse_resources(module_system* sys) {
         case state::cold: break;
         case state::warm: unload_warm(handle); break;
         case state::hot : unload_hot(handle);  break;
+        case state::count: return;
       }
 
       //_state = std::max(_state - 1, 0);

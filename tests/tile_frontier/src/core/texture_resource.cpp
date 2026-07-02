@@ -23,7 +23,7 @@ texture_resource::texture_resource() {
   set_flag(demiurg::resource_flags::binary, true);
 }
 
-void texture_resource::load_cold(const utils::safe_handle_t& handle) {
+void texture_resource::load_cold(const utils::safe_handle_t&) {
   std::vector<uint8_t> raw;
   module->load_binary(path, raw);
 
@@ -63,12 +63,12 @@ void texture_resource::load_warm(const utils::safe_handle_t& handle) {
   utils::info("texture_resource '{}': uploaded to GPU, gpu_index(slot)={}", id, gpu_index);
 }
 
-void texture_resource::unload_hot(const utils::safe_handle_t& handle) {
+void texture_resource::unload_hot(const utils::safe_handle_t&) {
   // TODO: реальное освобождение GPU-текстуры через render API.
   gpu_index = invalid_gpu_index;
 }
 
-void texture_resource::unload_warm(const utils::safe_handle_t& handle) {
+void texture_resource::unload_warm(const utils::safe_handle_t&) {
   memory.clear();
   memory.shrink_to_fit();
 }

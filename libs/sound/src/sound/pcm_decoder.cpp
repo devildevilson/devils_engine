@@ -75,13 +75,13 @@ namespace devils_engine {
     }
 
     size_t pcm_decoder::get_frames(
-      const uint32_t al_buffer,
+      const uint32_t,
       const size_t frames_count,
       const uint16_t channels_override,
       const uint32_t sample_rate_override
     ) {
       const uint16_t final_channels = channels_override != 0 ? channels_override : channels();
-      const uint32_t final_sample_rate = sample_rate_override != 0 ? sample_rate_override : sample_rate();
+      const uint32_t final_sample_rate [[maybe_unused]] = sample_rate_override != 0 ? sample_rate_override : sample_rate();
 
       const size_t expected_bytes = pcm_samples_to_bytes(frames_count, channels(), format());
       const size_t bytes_size = std::min(expected_bytes, buffer.size() - current_index);

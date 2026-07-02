@@ -159,8 +159,8 @@ struct rpc_function {
   static constexpr reg_fn_t reg = &detail_t::reg;
 };
 
-void add_gold(uint32_t entityid, int gold) {}
-void send_message(uint32_t playerid, const std::string_view &msg) {}
+void add_gold(uint32_t, int) {}
+void send_message(uint32_t, const std::string_view&) {}
 
 using add_gold_fn_t = rpc_function<core<0>, "add_gold", &add_gold>;
 using add_gold1_fn_t = rpc_function<core<1>, "add_gold", &add_gold>;

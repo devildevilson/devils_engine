@@ -16,7 +16,7 @@ public:
 
   shaderc_include_result* GetInclude(
     const char* requested_source, // запрашиваемый файл
-    shaderc_include_type type,
+    shaderc_include_type,
     const char* requesting_source, // файл который запрашивает
     size_t include_depth
   ) override {

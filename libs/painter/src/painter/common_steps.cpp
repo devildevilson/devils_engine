@@ -10,6 +10,8 @@
 #include "shader_crafter.h"
 #include "shaderc/shaderc.h"
 
+#include <algorithm>
+
 // у нас тут будет удобный способ брать текущее состояние ресурсов
 // и запишем туда текущий usage
 
@@ -406,7 +408,7 @@ void compute_step_instance::create_pipeline_layout(const graphics_base* ctx) {
   pipeline_layout = plm.create(step.name + ".pipeline_layout");
 }
 
-void compute_step_instance::create_pipeline(const graphics_base* ctx) {
+void compute_step_instance::create_pipeline(const graphics_base*) {
   // компут пайплайн гораздо проще
 }
 
@@ -433,8 +435,7 @@ void execution_pass_instance::process(graphics_ctx* ctx, VkCommandBuffer buf) co
     area.offset = vk::Offset2D{ 0,0 };
     area.extent = vk::Extent2D(this->width, this->height);
 
-    std::array<vk::ClearValue, 16> cvs;
-    memset(cvs.data(), 0, sizeof(cvs));
+    std::array<vk::ClearValue, 16> cvs{};
 
     const auto sc = vk::SubpassContents::eInline;
 
@@ -792,7 +793,11 @@ void render_graph_instance::submit(const graphics_base* ctx, VkQueue q, VkSemaph
     assert(cur_frame.wait_for.size() == cur_frame.wait_for_stages.size());
     assert(cur_frame.signal.size() < 15);
 
-    memcpy(finish_semaphores.data(), cur_frame.signal.data(), cur_frame.signal.size() * sizeof(cur_frame.signal[0]));
+    std::copy_n(
+      reinterpret_cast<const vk::Semaphore*>(cur_frame.signal.data()),
+      cur_frame.signal.size(),
+      finish_semaphores.data()
+    );
     if (i == groups.size()-1) finish_semaphores[cur_frame.signal.size()] = finish;
 
     infos[i].waitSemaphoreCount = cur_frame.wait_for.size();
@@ -880,7 +885,6 @@ void graphics_draw::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
 
   if (step.geometry != INVALID_RESOURCE_SLOT) {
-    const auto& geo = DS_ASSERT_ARRAY_GET(ctx->base->geometries, step.geometry);
     for (const auto pair_index : draw_group.pairs) {
       const auto& pair = DS_ASSERT_ARRAY_GET(ctx->base->pairs, pair_index);
       const auto& mesh = DS_ASSERT_ARRAY_GET(ctx->assets->buffer_slots, pair.mesh);
@@ -1466,11 +1470,7 @@ void transfer_blit_nearest::process(graphics_ctx* ctx, VkCommandBuffer buf) cons
 }
 
 transfer_clear_color::transfer_clear_color(const uint32_t super) noexcept : transfer_step_instance(super) {}
-void transfer_clear_color::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
-  const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, super);
-
-  vk::CommandBuffer task(buf);
-
+void transfer_clear_color::process(graphics_ctx*, VkCommandBuffer) const {
   assert(false);
 
   // колор записан в константу, причем по разному
@@ -1480,11 +1480,7 @@ void transfer_clear_color::process(graphics_ctx* ctx, VkCommandBuffer buf) const
 }
 
 transfer_clear_depth::transfer_clear_depth(const uint32_t super) noexcept : transfer_step_instance(super) {}
-void transfer_clear_depth::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
-  const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, super);
-
-  vk::CommandBuffer task(buf);
-
+void transfer_clear_depth::process(graphics_ctx*, VkCommandBuffer) const {
   assert(false);
 
   // как мы записываем глубину и трафарет?

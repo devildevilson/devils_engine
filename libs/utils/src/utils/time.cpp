@@ -299,10 +299,11 @@ namespace utils {
 
     cur_date.year += years;
 
+    const auto months_count = int32_t(this->months.size());
     while (months != 0) {
       const auto s = sign(months);
-      if (months >= this->months.size()) {
-        months = s * (std::abs(months) - this->months.size());
+      if (months >= months_count) {
+        months = s * (std::abs(months) - months_count);
         cur_date.year += s;
       } else {
         if (s > 0) {
@@ -337,7 +338,7 @@ namespace utils {
       cur_date.month = m_month;
 
       const uint32_t m_month_days = month_days(m_year, m_month);
-      if (abs_days >= m_month_days) days = s * (abs_days - m_month_days);
+      if (uint32_t(abs_days) >= m_month_days) days = s * int32_t(uint32_t(abs_days) - m_month_days);
       else {
         days = 0;
         cur_date.day = s > 0 ? cur_date.day + abs_days : m_month_days - abs_days;
