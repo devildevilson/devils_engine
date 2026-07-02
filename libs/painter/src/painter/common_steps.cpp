@@ -33,6 +33,19 @@ static_assert(alignof(image_memory_barrier) == alignof(vk::ImageMemoryBarrier));
 static_assert(sizeof(subresource_image) == sizeof(VkImageSubresourceRange));
 static_assert(alignof(subresource_image) == alignof(VkImageSubresourceRange));
 static_assert(sizeof(subresource_image) == sizeof(vk::ImageSubresourceRange));
+
+static vk::PipelineColorBlendAttachmentState blend_state(const blend_data& b) noexcept {
+  vk::PipelineColorBlendAttachmentState state{};
+  state.blendEnable = b.enable ? VK_TRUE : VK_FALSE;
+  state.srcColorBlendFactor = static_cast<vk::BlendFactor>(b.srcColorBlendFactor);
+  state.dstColorBlendFactor = static_cast<vk::BlendFactor>(b.dstColorBlendFactor);
+  state.colorBlendOp = static_cast<vk::BlendOp>(b.colorBlendOp);
+  state.srcAlphaBlendFactor = static_cast<vk::BlendFactor>(b.srcAlphaBlendFactor);
+  state.dstAlphaBlendFactor = static_cast<vk::BlendFactor>(b.dstAlphaBlendFactor);
+  state.alphaBlendOp = static_cast<vk::BlendOp>(b.alphaBlendOp);
+  state.colorWriteMask = static_cast<vk::ColorComponentFlags>(b.colorWriteMask);
+  return state;
+}
 static_assert(alignof(subresource_image) == alignof(vk::ImageSubresourceRange));
 
 static_assert(sizeof(vk::ImageLayout) == sizeof(uint32_t));
@@ -355,7 +368,7 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
   }
 
   for (const auto& b : blending) {
-    pm.colorBlending(std::bit_cast<vk::PipelineColorBlendAttachmentState>(b));
+    pm.colorBlending(blend_state(b));
   }
 
   auto pipe = pm.create(

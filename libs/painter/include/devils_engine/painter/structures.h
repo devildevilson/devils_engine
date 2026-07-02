@@ -104,11 +104,8 @@ struct resource {
   struct frame {
     size_t index;
     VkImageView view;
-
-    union {
-      subresource_image subimage;
-      subresource_buffer subbuffer;
-    };
+    subresource_image subimage;
+    subresource_buffer subbuffer;
 
     frame() noexcept;
   };
