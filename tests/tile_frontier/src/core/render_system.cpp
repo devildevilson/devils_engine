@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <cstring>
 #include <span>
-#include <unordered_map>
 #include <utility>
 
 #include <devils_engine/input/core.h>
@@ -72,11 +71,6 @@ struct render_simulation_init {
   bool graph_ready = false;
   bool tiles_ready = false;
   bool actors_ready = false;
-  bool actor_draw_ready = false;
-  command_draw_actors actor_draw;
-  size_t actor_draw_elapsed = 0;
-  std::vector<uint8_t> actor_interpolated_bytes;
-  std::unordered_map<uint32_t, uint32_t> actor_prev_index;
 
   ~render_simulation_init() noexcept {
     // Best-effort fallback. Normal shutdown should go through render_shutdown().
@@ -409,51 +403,7 @@ static void render_update_tile_draw(render_simulation_init& c, const command_dra
   }
 }
 
-static void interpolate_actor_draw(render_simulation_init& c) {
-  const auto& msg = c.actor_draw;
-  const size_t cur_size = size_t(msg.count) * msg.stride;
-  c.actor_interpolated_bytes.resize(cur_size);
-
-  const bool can_interpolate =
-    msg.stride == sizeof(actor_instance) &&
-    msg.ids.size() >= msg.count &&
-    msg.prev_ids.size() >= msg.prev_count &&
-    msg.prev_bytes.size() >= size_t(msg.prev_count) * msg.stride &&
-    msg.bytes.size() >= cur_size &&
-    msg.sim_frame_time != 0;
-
-  if (!can_interpolate) {
-    if (cur_size != 0) std::memcpy(c.actor_interpolated_bytes.data(), msg.bytes.data(), std::min(msg.bytes.size(), cur_size));
-    return;
-  }
-
-  const float alpha = std::clamp(float(c.actor_draw_elapsed) / float(msg.sim_frame_time), 0.0f, 1.0f);
-  for (uint32_t i = 0; i < msg.count; ++i) {
-    actor_instance cur;
-    std::memcpy(&cur, msg.bytes.data() + size_t(i) * msg.stride, sizeof(actor_instance));
-    actor_instance out = cur;
-    const auto itr = c.actor_prev_index.find(msg.ids[i]);
-    if (itr != c.actor_prev_index.end() && itr->second < msg.prev_count) {
-      actor_instance prev;
-      std::memcpy(&prev, msg.prev_bytes.data() + size_t(itr->second) * msg.stride, sizeof(actor_instance));
-      out.pos = prev.pos + (cur.pos - prev.pos) * alpha;
-      out.size = prev.size + (cur.size - prev.size) * alpha;
-    }
-    std::memcpy(c.actor_interpolated_bytes.data() + size_t(i) * msg.stride, &out, sizeof(actor_instance));
-  }
-}
-
-static void rebuild_actor_prev_index(render_simulation_init& c) {
-  c.actor_prev_index.clear();
-  c.actor_prev_index.reserve(c.actor_draw.prev_ids.size());
-  const uint32_t count = std::min<uint32_t>(uint32_t(c.actor_draw.prev_ids.size()), c.actor_draw.prev_count);
-  for (uint32_t i = 0; i < count; ++i) {
-    c.actor_prev_index.emplace(c.actor_draw.prev_ids[i], i);
-  }
-}
-
-static void render_update_actor_draw(render_simulation_init& c) {
-  const auto& msg = c.actor_draw;
+static void render_update_actor_draw(render_simulation_init& c, const command_draw_actors& msg) {
   if (!c.actors_ready || c.actor_pair_index == painter::INVALID_RESOURCE_SLOT) return;
   if (msg.stride != actor_batch::stride()) {
     utils::warn("render actors: bad instance stride {}, expected {}", msg.stride, actor_batch::stride());
@@ -462,13 +412,12 @@ static void render_update_actor_draw(render_simulation_init& c) {
 
   const auto& pair = c.base->pairs[c.actor_pair_index];
   const uint32_t count = std::min(msg.count, pair.max_size);
-  interpolate_actor_draw(c);
-  const size_t bytes = std::min(c.actor_interpolated_bytes.size(), size_t(count) * msg.stride);
+  const size_t bytes = std::min(msg.bytes.size(), size_t(count) * msg.stride);
 
   for (uint32_t off = 0; off < 2; ++off) {
     const auto inst = c.base->get_current_instance_resource_frame(c.actor_pair_index, off);
     const auto indi = c.base->get_current_indirect_resource_frame(c.actor_pair_index, off);
-    if (bytes != 0) std::memcpy(static_cast<uint8_t*>(inst.mapped) + inst.sub.offset, c.actor_interpolated_bytes.data(), bytes);
+    if (bytes != 0) std::memcpy(static_cast<uint8_t*>(inst.mapped) + inst.sub.offset, msg.bytes.data(), bytes);
 
     auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
     cmd[0].vertexCount = 3;
@@ -623,7 +572,7 @@ void render_simulation::init() {
 
 bool render_simulation::stop_predicate() const { return false; }
 
-void render_simulation::update(const size_t time) {
+void render_simulation::update(const size_t) {
   // тут че вообще делаем? пробегаем события
   // заходим в рендер граф, обрабатываем
   // вообще ничего особо сложного
@@ -679,19 +628,9 @@ void render_simulation::update(const size_t time) {
     if (container->graph_ready) render_update_tile_draw(*container, cmd);
   });
 
-  bool actor_draw_updated = false;
-  dispatcher_consume_last(container->draw_actor_commands, [this, &actor_draw_updated] (const auto& cmd) {
-    container->actor_draw = cmd;
-    container->actor_draw_elapsed = 0;
-    container->actor_draw_ready = true;
-    rebuild_actor_prev_index(*container);
-    actor_draw_updated = true;
+  dispatcher_consume_last(container->draw_actor_commands, [this] (const auto& cmd) {
+    if (container->graph_ready) render_update_actor_draw(*container, cmd);
   });
-
-  if (container->graph_ready && container->actor_draw_ready) {
-    if (!actor_draw_updated) container->actor_draw_elapsed += time;
-    render_update_actor_draw(*container);
-  }
 
   if (container->graph_ready && container->base->can_draw()) {
     container->base->prepare_frame();

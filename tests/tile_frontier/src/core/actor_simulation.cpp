@@ -315,9 +315,7 @@ static void effect_wander(const act::exec_context& ctx) noexcept {
 
 void actor_batch::build(const aesthetics::world& world, const uint64_t tick) {
   instances_.clear();
-  ids_.clear();
   instances_.reserve(world.count<actor_visual>());
-  ids_.reserve(world.count<actor_visual>());
 
   // Один проход по всему рисуемому (актёры И будущие предметы). У кого есть actor_state —
   // масштаб анимируется синусоидой по состоянию; у предметов/препятствий (нет state) —
@@ -328,7 +326,6 @@ void actor_batch::build(const aesthetics::world& world, const uint64_t tick) {
       const auto* brain = world.get<actor_brain>(id);
       scale *= animation_scale(st->state, tick, brain != nullptr ? brain->phase : 0u);
     }
-    ids_.push_back(uint32_t(id));
     instances_.push_back(actor_instance{pos->value, visual->texture, visual->color, scale});
   }
 }

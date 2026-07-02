@@ -21,7 +21,7 @@ namespace devils_engine {
 namespace painter {
 
 constant_value::constant_value() noexcept : type(value_type::fixed), value{ 0,0,0 }, scale{ 1,1,1 }, presets_count(0), scale_presets_count(0), presets{}, scale_presets{}, current_value{ 0,0,0 }, current_scale{ 1,1,1 } {
-  for (auto& v : presets) { v = std::make_pair(preset::low, value_t{ 0,0,0 }); }
+  presets.fill(std::make_pair(preset::low, value_t{ 0,0,0 }));
   for (auto& v : scale_presets) { v = std::make_pair(preset::low, scale_t{ 1,1,1 }); }
 }
 counter::counter() noexcept : value(0), next_value(0) {}
@@ -45,7 +45,7 @@ void counter::push_value() noexcept { value.store(next_value.load(std::memory_or
 uint32_t counter::get_value() const noexcept { return value.load(std::memory_order_acquire); }
 void counter::inc_next_value() noexcept { next_value.fetch_add(1, std::memory_order_release); }
 void counter::set_value(const uint32_t val) noexcept { next_value.store(val, std::memory_order_release); }
-resource::frame::frame() noexcept : index(0), view(VK_NULL_HANDLE), subbuffer{0, 0} {}
+resource::frame::frame() noexcept : index(0), view(VK_NULL_HANDLE), subimage{0, 0, 0, 0, 0}, subbuffer{0, 0} {}
 resource::resource() noexcept : format_hint(VK_FORMAT_UNDEFINED), size_hint(0), size(UINT32_MAX), role(role::values::count), type(type::values::count), swap(0), usage_mask(0) {}
 constant::constant() noexcept : size(0), offset(0) {}
 uint32_t render_target::resource_index(const uint32_t res_id) const {
@@ -482,7 +482,7 @@ static std::tuple<uint32_t, uint32_t, uint32_t> parse_blend_exp(const std::strin
 }
 
 struct blend_data_mirror {
-  bool enable;
+  bool enable = false;
   std::string color;
   std::string alpha;
   std::string mask;
@@ -652,16 +652,16 @@ struct material_mirror {
   };
 
   struct raster {
-    bool depth_clamp;
-    bool raster_discard;
-    bool depth_bias;
+    bool depth_clamp = false;
+    bool raster_discard = false;
+    bool depth_bias = false;
     std::string polygon;
     std::string cull;
     std::string front_face;
-    float bias_constant;
-    float bias_clamp;
-    float bias_slope;
-    float line_width;
+    float bias_constant = 0.0f;
+    float bias_clamp = 0.0f;
+    float bias_slope = 0.0f;
+    float line_width = 0.0f;
   };
 
   struct depth {
@@ -670,20 +670,20 @@ struct material_mirror {
       std::string pass_op;
       std::string depth_fail_op;
       std::string compare_op;
-      uint32_t compare_mask;
-      uint32_t write_mask;
-      uint32_t reference;
+      uint32_t compare_mask = 0;
+      uint32_t write_mask = 0;
+      uint32_t reference = 0;
     };
 
-    bool test;
-    bool write;
-    bool bounds_test;
-    bool stencil_test;
+    bool test = false;
+    bool write = false;
+    bool bounds_test = false;
+    bool stencil_test = false;
     std::string compare;
     stencil_op_state front;
     stencil_op_state back;
-    float min_bounds;
-    float max_bounds;
+    float min_bounds = 0.0f;
+    float max_bounds = 0.0f;
   };
 
   std::string name;
@@ -740,7 +740,7 @@ struct geometry_mirror {
   std::string vertex_layout;
   std::string index_type;
   std::string topology;
-  bool restart;
+  bool restart = false;
 
   geometry convert(const graphics_base& ctx) const {
     const uint32_t exists = ctx.find_geometry(name);
@@ -1090,7 +1090,7 @@ std::vector<OUT> convert(graphics_base& ctx, const std::vector<T>& in, const F &
   return arr;
 }
 
-semaphore::semaphore() noexcept { memset(handles.data(), 0, sizeof(handles)); }
+semaphore::semaphore() noexcept { handles.fill(VK_NULL_HANDLE); }
 
 void parse_data(graphics_base* ctx, std::string path) {
   const auto& constant_values = parse_file<constant_value_mirror>(path + "declare_values.tavl");
@@ -1238,8 +1238,12 @@ void parse_data(graphics_base* ctx, std::string path) {
   }
 }
 
-command_params::command_params() noexcept : type(static_cast<command::values>(UINT32_MAX)), resources{}, constants{} {
-  resources.fill(std::make_tuple(UINT32_MAX, usage::undefined));
+command_params::command_params() noexcept :
+  type(static_cast<command::values>(UINT32_MAX)),
+  resources{},
+  constants{}
+{
+  resources.fill(std::make_tuple(INVALID_RESOURCE_SLOT, static_cast<usage::values>(UINT32_MAX)));
   constants.fill(UINT32_MAX);
 }
 step_type::values step_base::type() const {

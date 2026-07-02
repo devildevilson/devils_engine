@@ -18,6 +18,19 @@ namespace fs = std::filesystem;
 namespace devils_engine {
 namespace painter {
 
+static vk::PipelineColorBlendAttachmentState blend_state(const blend_data& b) noexcept {
+  vk::PipelineColorBlendAttachmentState state{};
+  state.blendEnable = b.enable ? VK_TRUE : VK_FALSE;
+  state.srcColorBlendFactor = static_cast<vk::BlendFactor>(b.srcColorBlendFactor);
+  state.dstColorBlendFactor = static_cast<vk::BlendFactor>(b.dstColorBlendFactor);
+  state.colorBlendOp = static_cast<vk::BlendOp>(b.colorBlendOp);
+  state.srcAlphaBlendFactor = static_cast<vk::BlendFactor>(b.srcAlphaBlendFactor);
+  state.dstAlphaBlendFactor = static_cast<vk::BlendFactor>(b.dstAlphaBlendFactor);
+  state.alphaBlendOp = static_cast<vk::BlendOp>(b.alphaBlendOp);
+  state.colorWriteMask = static_cast<vk::ColorComponentFlags>(b.colorWriteMask);
+  return state;
+}
+
 
 
 //void create_descriptor_layout(
@@ -202,7 +215,7 @@ void create_pipeline(
   }
 
   for (const auto& b : blending) {
-    pm.colorBlending(std::bit_cast<vk::PipelineColorBlendAttachmentState>(b));
+    pm.colorBlending(blend_state(b));
   }
 
   auto pipe = pm.create(
@@ -1167,7 +1180,7 @@ void create_render_graph(painter_base& ctx) {
         pm.logicOp(false);
         pm.blendConstant(nullptr);
         for (const auto& blend : step.blending) {
-          pm.colorBlending(std::bit_cast<vk::PipelineColorBlendAttachmentState>(blend));
+          pm.colorBlending(blend_state(blend));
         }
 
         step.pipeline = pm.create(
