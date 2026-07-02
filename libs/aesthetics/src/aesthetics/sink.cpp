@@ -42,12 +42,11 @@ uint64_t checksum_of(const std::byte* p, const size_t n) noexcept {
 }
 } // namespace
 
-std::vector<uint8_t> pack(const world* w, const sink_policy& policy, const std::span<const uint8_t> screenshot) {
-  const std::vector<std::byte> raw = dump_world(w); // пред-размеченный буфер -> линейный дамп
-  const uint64_t raw_size = raw.size();
-  const uint64_t checksum = checksum_of(raw.data(), raw_size);
+std::vector<uint8_t> seal(const std::span<const std::byte> payload_raw, const sink_policy& policy, const std::span<const uint8_t> screenshot) {
+  const uint64_t raw_size = payload_raw.size();
+  const uint64_t checksum = checksum_of(payload_raw.data(), raw_size);
 
-  const auto* rp = reinterpret_cast<const uint8_t*>(raw.data());
+  const auto* rp = reinterpret_cast<const uint8_t*>(payload_raw.data());
   const std::vector<uint8_t> raw_u8(rp, rp + raw_size);
   const std::vector<uint8_t> compressed = utils::compress(raw_u8, policy.level);
 
@@ -73,7 +72,7 @@ std::vector<uint8_t> pack(const world* w, const sink_policy& policy, const std::
   return bytes;
 }
 
-bool unpack(const std::span<const uint8_t> data, world* w, std::vector<uint8_t>* screenshot_out) {
+bool unseal(const std::span<const uint8_t> data, std::vector<std::byte>& raw_out, std::vector<uint8_t>* screenshot_out) {
   le_reader rd{data};
   const uint32_t magic = rd.u32();
   const uint16_t version = rd.u16();
@@ -109,8 +108,19 @@ bool unpack(const std::span<const uint8_t> data, world* w, std::vector<uint8_t>*
   const uint64_t got = checksum_of(reinterpret_cast<const std::byte*>(raw.data()), raw.size());
   if (got != checksum) { utils::warn("snapshot container: checksum mismatch 0x{:016x} vs 0x{:016x}", got, checksum); return false; }
 
-  std::vector<std::byte> raw_b(reinterpret_cast<const std::byte*>(raw.data()), reinterpret_cast<const std::byte*>(raw.data()) + raw.size());
-  in_t in{raw_b};
+  raw_out.assign(reinterpret_cast<const std::byte*>(raw.data()), reinterpret_cast<const std::byte*>(raw.data()) + raw.size());
+  return true;
+}
+
+std::vector<uint8_t> pack(const world* w, const sink_policy& policy, const std::span<const uint8_t> screenshot) {
+  const std::vector<std::byte> raw = dump_world(w); // payload = ровно один мир
+  return seal(raw, policy, screenshot);
+}
+
+bool unpack(const std::span<const uint8_t> data, world* w, std::vector<uint8_t>* screenshot_out) {
+  std::vector<std::byte> raw;
+  if (!unseal(data, raw, screenshot_out)) return false;
+  in_t in{raw};
   return load_world(w, in);
 }
 

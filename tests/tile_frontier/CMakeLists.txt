@@ -63,8 +63,54 @@ target_link_libraries(
   VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp
 )
 set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
-target_include_directories(${PROJECT_NAME} INTERFACE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")
-target_include_directories(${PROJECT_NAME} PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/core>")
+target_include_directories(${PROJECT_NAME} PRIVATE
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/core>")
+
+# Snapshot round-trip smoke: сериализует РЕАЛЬНЫЕ компоненты tile_frontier (glm-адаптеры +
+# межсущностные ссылки) через aesthetics::serial и сверяет. Заголовочная зависимость от
+# компонентов -> линкует только devils_plane (тянет aesthetics/act/acumen/mood транзитивно).
+add_executable(tile_frontier_snapshot_smoke snapshot_smoke.cpp)
+target_link_libraries(tile_frontier_snapshot_smoke
+  devils_engine::devils_plane
+  glm::glm
+  tavl
+  Vulkan::Headers
+  GPUOpen::VulkanMemoryAllocator
+  VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp
+)
+target_include_directories(tile_frontier_snapshot_smoke PRIVATE
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/core>"
+)
+set_target_properties(tile_frontier_snapshot_smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
+
+# Resume-детерминизм: прогоняет РЕАЛЬНУЮ симуляцию слайса, save->load в чистый слайс, гоняет оба
+# синхронно и сверяет состояние побайтово через dump_world. Линкует actor_simulation.cpp (импл
+# слайса + регистрация компонентов через actor_snapshot.h) поверх devils_plane.
+add_executable(tile_frontier_resume_smoke resume_smoke.cpp src/core/actor_simulation.cpp)
+target_link_libraries(tile_frontier_resume_smoke
+  devils_engine::devils_plane
+  glm::glm
+  tavl
+  Vulkan::Headers
+  GPUOpen::VulkanMemoryAllocator
+  VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp
+)
+target_include_directories(tile_frontier_resume_smoke PRIVATE
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/core>"
+)
+set_target_properties(tile_frontier_resume_smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
+
+# Регистрация в ctest под меткой devils_engine (ctest -L devils_engine). Плоский main → код
+# возврата 0/1 = pass/fail, без doctest-дискавери. Метка ставит их в один прогон с остальными.
+if (DEVILS_ENGINE_BUILD_TESTS)
+  add_test(NAME tile_frontier_snapshot_smoke COMMAND tile_frontier_snapshot_smoke)
+  set_tests_properties(tile_frontier_snapshot_smoke PROPERTIES LABELS devils_engine)
+  add_test(NAME tile_frontier_resume_smoke COMMAND tile_frontier_resume_smoke)
+  set_tests_properties(tile_frontier_resume_smoke PROPERTIES LABELS devils_engine)
+endif()
 include("${CMAKE_SOURCE_DIR}/cmake/devils_portable_runtime.cmake")
 devils_bundle_runtime_dependencies(${PROJECT_NAME})
 

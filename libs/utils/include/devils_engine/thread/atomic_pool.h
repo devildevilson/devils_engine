@@ -121,7 +121,11 @@ private:
   std::vector<std::jthread> workers;
   atomic_queue queue;
   utils::fixed_pool_mt stack_pool;
-  std::atomic<size_t> busy_count;
+  std::atomic<size_t> busy_count; // задачи В ПРОЦЕССЕ исполнения (working_count)
+  // задачи, СУБМИТНУТЫЕ но не завершённые (в очереди ИЛИ в работе). Инкремент в submitbase ДО
+  // queue.push, декремент после process — закрывает TOCTOU-окно между try_pop и busy_count++,
+  // из-за которого wait() мог вернуться раньше, чем воркер начнёт задачу. wait() ждёт именно его.
+  std::atomic<size_t> pending;
   std::condition_variable cv;
   std::mutex cv_mtx;
 };

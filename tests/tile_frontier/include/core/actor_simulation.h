@@ -11,6 +11,7 @@
 #include <glm/glm.hpp>
 
 #include <devils_engine/aesthetics/world.h>
+#include <devils_engine/aesthetics/sink.h>   // serial::sink_policy/seal/unseal — save/load слайса
 #include <devils_engine/act/registry.h>     // act::registry + function<RetT>
 #include <devils_engine/act/intent.h>       // act::intent — обобщённый буфер интентов
 #include <devils_engine/acumen/system.h>    // acumen::system — GOAP над act::registry
@@ -173,6 +174,17 @@ public:
   devils_engine::aesthetics::world& ecs() noexcept { return world_; }
   const devils_engine::aesthetics::world& ecs() const noexcept { return world_; }
 
+  // ── save/load полного состояния слайса (мир + не-ECS скаляры) ──
+  // Слоистая схема сериализатора: dump_world кладёт компоненты, следом свой дампер кладёт
+  // реплицируемые скаляры (tick/seq/config), seal заворачивает готовый payload в пакет.
+  // save: слайс -> пакет (пригоден для диска/сети — политика решает компрессию/скриншот).
+  std::vector<uint8_t> save(const devils_engine::aesthetics::serial::sink_policy& policy =
+                              devils_engine::aesthetics::serial::disk_policy) const;
+  // load: пакет -> ЧИСТЫЙ слайс (пересобирает registry/GOAP/FSM, грузит мир и скаляры,
+  // перестраивает кэш препятствий). false при битом пакете/несовпадении схемы. Кэши/скретч
+  // MT перестраиваются лениво в update; obstacles_ восстанавливается здесь из компонентов.
+  bool load(std::span<const uint8_t> packet);
+
   // sim-звуки этого тика (вход в состояние FSM). Презентационный мост дренажит после update().
   std::span<const sound_emit> sound_events() const noexcept { return sound_emits_; }
 
@@ -199,6 +211,10 @@ private:
   void maintain_food();
   // Спавнит одну еду-сущность в случайной (детерминированной) точке в пределах bounds.
   void spawn_food();
+  // Перестраивает плоский кэш obstacles_ из компонентов мира (obstacle+position). Зовётся
+  // после load: кэш выводим из мира, поэтому в снапшот не пишется. Порядок = dense-порядок
+  // (= порядок id), совпадает с исходным спавном ⇒ детерминизм коллизии сохраняется.
+  void rebuild_obstacle_cache();
 
   devils_engine::aesthetics::world world_;
   devils_engine::act::registry registry_;        // общий реестр геймплейных функций (см. libs/act)
