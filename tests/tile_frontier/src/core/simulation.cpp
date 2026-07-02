@@ -735,8 +735,10 @@ void simulation::update(const size_t time) {
     command_draw_actors msg;
     msg.count = container->actors_batch.count();
     msg.stride = actor_batch::stride();
+    msg.sim_frame_time = time;
     msg.bytes.resize(size_t(msg.count) * msg.stride);
     container->actors_batch.blit(std::span<uint8_t>(msg.bytes));
+    msg.ids.assign(container->actors_batch.ids().begin(), container->actors_batch.ids().end());
 
     if (!container->actors_logged) {
       utils::info(
