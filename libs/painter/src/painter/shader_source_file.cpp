@@ -10,13 +10,13 @@ shader_source_file::shader_source_file() {
   set_flag(demiurg::resource_flags::binary, false);
 }
 
-void shader_source_file::load_cold(const utils::safe_handle_t &handle) {
+void shader_source_file::load_cold(const utils::safe_handle_t&) {
   memory = module->load_text(path);
 }
 
-void shader_source_file::load_warm(const utils::safe_handle_t &handle) {}
-void shader_source_file::unload_hot(const utils::safe_handle_t &handle) {}
-void shader_source_file::unload_warm(const utils::safe_handle_t& handle) { memory.clear(); memory.shrink_to_fit(); }
+void shader_source_file::load_warm(const utils::safe_handle_t&) {}
+void shader_source_file::unload_hot(const utils::safe_handle_t&) {}
+void shader_source_file::unload_warm(const utils::safe_handle_t&) { memory.clear(); memory.shrink_to_fit(); }
 
 }
 }

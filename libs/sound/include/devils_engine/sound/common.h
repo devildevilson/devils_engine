@@ -105,9 +105,6 @@ enum class data_type {
 
   undefined
 };
-
-static std::string_view type_to_string(const sound::data_type type);
-
 }
 }
 

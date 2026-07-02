@@ -61,7 +61,7 @@ void assets_simulation::init() {
 
 bool assets_simulation::stop_predicate() const { return false; }
 
-void assets_simulation::update(const size_t time) {
+void assets_simulation::update(const size_t) {
   // ack'и от рендера: GPU-переход завершён
   dispatcher_consume(container->gpu_done_commands, container->gpu_done_cache, [this] (const auto& cmd) {
     container->loader.external_done(cmd.res);

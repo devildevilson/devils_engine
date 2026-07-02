@@ -672,7 +672,7 @@ void graphics_base::clear() {
   clear_descriptors();
 }
 
-void graphics_base::recreate_screensize_resources(const uint32_t width, const uint32_t height) {
+void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t) {
   // какой алгоритм? в общем то все связи остаются какими есть
   // пробегаем все ресурсы у которых размер зависит, помечаем контейнеры
   // пересоздаем контейнеры и пересоздаем views
@@ -1160,7 +1160,7 @@ int32_t graphics_base::recreate_basic_resources(const std::string& folder) {
   // парсим ресурсы
   try { // УЖАС (дебаг онли я надеюсь)
     parse_data(&ctx, folder);
-  } catch(std::exception ex) {
+  } catch(const std::exception& ex) {
     utils::println(ex.what());
     return -1;
   }
@@ -1482,8 +1482,6 @@ void graphics_base::create_resources() {
     if (res.role == role::present) continue;
 
     const bool is_buffer = role::is_buffer(res.role);
-    const bool is_attachment = role::is_attachment(res.role);
-
     //const auto& size_value = DS_ASSERT_ARRAY_GET(constant_values, res.size);
 
     const uint32_t res_mips = 1;
@@ -1842,8 +1840,6 @@ void graphics_base::change_render_graph(const uint32_t index) {
 
   for (const auto pass_index : graph.passes) {
     const auto& pass = DS_ASSERT_ARRAY_GET(passes, pass_index);
-
-    const bool is_render_pass = pass.render_target != INVALID_RESOURCE_SLOT;
 
     auto ptr = std::make_unique<execution_pass_instance>();
     ptr->type = step_interface::type::execution_pass;

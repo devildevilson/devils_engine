@@ -31,10 +31,8 @@ public:
   template <typename... Args>
   view_iterator(Args &&...args) : super(std::forward<Args>(args)...) {}
 
-  T* &operator*() noexcept { return static_cast<T*>(super::operator*()); }
-  T* const &operator*() const noexcept { return static_cast<T*>(super::operator*()); }
-  T& operator->() noexcept { return *static_cast<T*>(super::operator*()); }
-  const T& operator->() const noexcept { return *static_cast<T*>(super::operator*()); }
+  T* operator*() const noexcept { return static_cast<T*>(super::operator*()); }
+  T* operator->() const noexcept { return static_cast<T*>(super::operator*()); }
 };
 
 template <typename T = resource_interface>
@@ -47,7 +45,7 @@ public:
   template<typename... Args>
   view(Args &&...args) : super(std::forward<Args>(args)...) {}
 
-  T* const& operator[](const size_t index) const { return static_cast<T*>(super::operator[](index)); }
+  T* operator[](const size_t index) const { return static_cast<T*>(super::operator[](index)); }
 
   iterator begin() const noexcept { return iterator(super::begin()); }
   iterator end() const noexcept { return iterator(super::end()); }

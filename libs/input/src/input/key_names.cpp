@@ -189,6 +189,7 @@ size_t get_key_name(const int32_t scancode, char* buffer, const size_t max_size)
   //const auto err = _wcslwr_s(buf, wchar_buf_size); // переводим в нижний регистр, нужно ли?
   return wcstombs(buffer, buf, max_size);
 #else
+  (void)scancode;
   // On Linux, local layout names currently come from glfwGetKeyName() in
   // get_key_name_local(). A native fallback would need backend-specific state.
   buffer[0] = '\0';

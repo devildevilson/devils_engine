@@ -46,7 +46,7 @@ static void simple_hook(lua_State *L, lua_Debug *ar) {
   system::instruction_counter += system::hook_after_instructions_count;
   auto cur_tp = std::chrono::steady_clock::now();
   const auto mcs = utils::count_mcs(system::start_tp, cur_tp);
-  if (mcs < system::seconds10) return;
+  if (mcs < int64_t(system::seconds10)) return;
   const double s = double(std::abs(mcs)) / double(utils::app_clock::resolution());
 
   lua_getinfo(L, "nSl", ar);

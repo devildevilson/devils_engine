@@ -204,7 +204,7 @@ struct nk {
     nk_window_collapse_if(ctx_ptr, name, nk_collapse_states(state), cond);
   }
 
-  static void window_show(const char *name, const int32_t state, const bool cond) {
+  static void window_show(const char *name, const int32_t state, const bool) {
     nk_window_show(ctx_ptr, name, nk_show_states(state));
   }
 
@@ -506,7 +506,7 @@ struct nk {
     return std::make_tuple(ret, sel);
   }
 
-  static std::tuple<bool, bool> tree_element_push_hashed(sol::this_state s, const char* title, const int32_t type, const int32_t init_state, nk_bool sel, const char* hash, const int32_t id) {
+  static std::tuple<bool, bool> tree_element_push_hashed(sol::this_state, const char* title, const int32_t type, const int32_t init_state, nk_bool sel, const char* hash, const int32_t id) {
     const auto ret = nk_tree_element_push_hashed(ctx_ptr, nk_tree_type(type), title, nk_collapse_states(init_state), &sel, hash, strlen(hash), id);
     return std::make_tuple(ret, sel);
   }
@@ -531,7 +531,7 @@ struct nk {
     return std::make_tuple(ret, sel);
   }
 
-  static std::tuple<bool, bool> tree_element_image_push_hashed(sol::this_state s, const char* title, const int32_t type, const int32_t init_state, nk_bool sel, const char* hash, const int32_t id) {
+  static std::tuple<bool, bool> tree_element_image_push_hashed(sol::this_state, const char* title, const int32_t type, const int32_t init_state, nk_bool sel, const char* hash, const int32_t id) {
     struct nk_image img;
     utils::error{}("Not implemented yet");
     const auto ret = nk_tree_element_image_push_hashed(ctx_ptr, nk_tree_type(type), img, title, nk_collapse_states(init_state), &sel, hash, strlen(hash), id);
@@ -1096,7 +1096,7 @@ struct nk {
     return nk_chart_push_slot(ctx_ptr, value, slot);
   }
 
-  static void chart_end(const uint32_t type, const int32_t count, const float min, const float max) {
+  static void chart_end(const uint32_t, const int32_t, const float, const float) {
     nk_chart_end(ctx_ptr);
   }
 

@@ -79,16 +79,6 @@ static void completely_stop_source(system::source &s) {
       return double(static_cast<size_t>(type)) / double(static_cast<size_t>(type::count));
     }
 
-    static std::string_view type_to_string(const sound::data_type type) {
-      switch (type) {
-#define X(name) case sound::data_type::name: return #name;
-        SOUND_SYSTEM_EXTENSION_LIST
-#undef X
-      }
-
-      return std::string_view();
-    }
-
     std::unique_ptr<decoder> make_decoder(const data_type type, const std::string_view &name, const std::span<const char> &data) {
       switch (type) {
         case data_type::mp3:  return std::make_unique<mp3_decoder>(name, data.data(), data.size());
@@ -97,6 +87,7 @@ static void completely_stop_source(system::source &s) {
         case data_type::ogg:  return std::make_unique<ogg_decoder>(name, data.data(), data.size());
         //case data_type::pcm:  return std::make_unique<pcm_decoder>(name, data.data(), data.size());
         case data_type::pcm:  return std::unique_ptr<decoder>();
+        case data_type::undefined: return std::unique_ptr<decoder>();
       }
 
       return std::unique_ptr<decoder>();
@@ -121,7 +112,7 @@ static void completely_stop_source(system::source &s) {
 
       // нужно добавить поддержку переключения источника звука
       char *devices = (char *)alcGetString(NULL, ALC_DEVICE_SPECIFIER);
-      while (devices && *devices != NULL) {
+      while (devices && *devices != '\0') {
         std::string_view str(devices);
         if (str == "OpenAL Soft") device = alc_call(alcOpenDevice, nullptr, devices);
         devices += strlen(devices) + 1;  // next device
@@ -327,7 +318,7 @@ static void completely_stop_source(system::source &s) {
     }
 
     // пройдемся по всем источникам, если что то закончило играть ставим следующий звук в очереди
-    void system::update(const size_t time) {
+    void system::update(const size_t) {
       al_call(alListenerf, AL_GAIN, volume.master);
 
       vec3 lpos;
@@ -847,7 +838,9 @@ static void completely_stop_source(system::source &s) {
       my_data_source_seek,
       my_data_source_get_data_format,
       my_data_source_get_cursor,
-      my_data_source_get_length
+      my_data_source_get_length,
+      nullptr,
+      0
     };
 
 
@@ -901,7 +894,7 @@ static void completely_stop_source(system::source &s) {
       sound_instance & operator=(sound_instance&& move) noexcept = delete;
     };
 
-    static void playback_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
+    static void playback_data_callback(ma_device* pDevice, void* pOutput, const void*, ma_uint32 frameCount) {
       const auto ret = ma_engine_read_pcm_frames(reinterpret_cast<ma_engine*>(pDevice->pUserData), pOutput, frameCount, nullptr);
       if (ret != MA_SUCCESS) {
         utils::error{}("'ma_engine_read_pcm_frames' error");
@@ -1315,7 +1308,7 @@ static void completely_stop_source(system::source &s) {
       ma_engine_set_volume(m_engine.get(), val);
     }
 
-    void system2::set_source_volume(const uint32_t type, const float val) {
+    void system2::set_source_volume(const uint32_t, const float) {
       // ...
       utils::error{}("Not implemented");
     }

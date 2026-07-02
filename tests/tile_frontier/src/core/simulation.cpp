@@ -200,6 +200,9 @@ struct simulation_init {
   // первый actor simulation slice: aesthetics компоненты -> intents -> apply -> GPU batch
   actor_world_slice actors;
   actor_batch actors_batch;
+  uint32_t actors_prev_count = 0;
+  std::vector<uint32_t> actors_prev_ids;
+  std::vector<uint8_t> actors_prev_bytes;
   bool actors_logged = false;
   actor_metrics actors_last_metrics;
   uint64_t metrics_frames = 0;
@@ -735,8 +738,18 @@ void simulation::update(const size_t time) {
     command_draw_actors msg;
     msg.count = container->actors_batch.count();
     msg.stride = actor_batch::stride();
+    msg.sim_frame_time = time;
+    msg.ids.assign(container->actors_batch.ids().begin(), container->actors_batch.ids().end());
     msg.bytes.resize(size_t(msg.count) * msg.stride);
     container->actors_batch.blit(std::span<uint8_t>(msg.bytes));
+    if (container->actors_prev_bytes.empty()) {
+      container->actors_prev_count = msg.count;
+      container->actors_prev_ids = msg.ids;
+      container->actors_prev_bytes = msg.bytes;
+    }
+    msg.prev_count = container->actors_prev_count;
+    msg.prev_ids = container->actors_prev_ids;
+    msg.prev_bytes = container->actors_prev_bytes;
 
     if (!container->actors_logged) {
       utils::info(
@@ -751,6 +764,10 @@ void simulation::update(const size_t time) {
     }
 
     if (gactor != nullptr) gactor->send(std::move(msg));
+    container->actors_prev_count = container->actors_batch.count();
+    container->actors_prev_ids.assign(container->actors_batch.ids().begin(), container->actors_batch.ids().end());
+    container->actors_prev_bytes.resize(size_t(container->actors_prev_count) * actor_batch::stride());
+    container->actors_batch.blit(std::span<uint8_t>(container->actors_prev_bytes));
 
     // презентационный мост sim→sound: эмиты звука (вход в состояние FSM) → звуковой актор.
     // Куллинг по близости к слушателю (камере) + кап на тик (ограничение голосов). Звук

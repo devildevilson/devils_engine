@@ -11,8 +11,15 @@
 //#include "devils_engine/painter/arbitrary_image_container.h"
 
 #define MSDFGEN_PUBLIC
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#endif
 #include "msdfgen.h"
 #include "msdf-atlas-gen/msdf-atlas-gen.h"
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 namespace devils_engine {
 namespace visage {
@@ -34,7 +41,7 @@ const font_t::glyph_t *font_t::find_glyph(const uint32_t codepoint) const {
   return fallback; // может быть nullptr — вызывающие обязаны это проверять
 }
 
-void font_t::query_font_glyph(float font_height, struct nk_user_font_glyph *glyph, nk_rune codepoint, nk_rune next_codepoint) const {
+void font_t::query_font_glyph(float font_height, struct nk_user_font_glyph *glyph, nk_rune codepoint, nk_rune) const {
   auto g = find_glyph(codepoint);
   if (g == nullptr) { memset(glyph, 0, sizeof(*glyph)); return; }
 
@@ -120,7 +127,7 @@ struct font_raii {
 // + к этому кириллическая талица 255 символов
 // 345 символов, примерно 19 символов в строке, 19 * 32 = 608 размер картинки
 // (в худшем случае), чуть больше 3к текстурка на 5 шрифтов
-std::tuple<std::unique_ptr<font_t>, uint32_t> load_font(painter::host_image_container* imgs, const std::string &path) {
+std::tuple<std::unique_ptr<font_t>, uint32_t> load_font(painter::host_image_container*, const std::string &path) {
   std::vector<msdf_atlas::GlyphGeometry> glyphs;
   msdf_atlas::FontGeometry fontGeometry(&glyphs);
 

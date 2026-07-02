@@ -4,7 +4,7 @@
 
 namespace devils_engine {
 namespace utils {
-loader2::loader2(std::string name) noexcept : _stage(nullptr), name(std::move(name)), _counter(0) {}
+loader2::loader2(std::string name) noexcept : name(std::move(name)), _stage(nullptr), _counter(0) {}
 
 void loader2::process() {
   while (true) {

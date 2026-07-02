@@ -20,9 +20,9 @@ namespace devils_engine {
 namespace painter {
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
-  VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-  VkDebugUtilsMessageTypeFlagsEXT messageType,
-  const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+  vk::DebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+  vk::DebugUtilsMessageTypeFlagsEXT messageType,
+  const vk::DebugUtilsMessengerCallbackDataEXT* pCallbackData,
   void* pUserData
 ) {
   utils::println("validation layer:", pCallbackData->pMessage);
@@ -39,7 +39,7 @@ bool check_validation_layer_support(const std::vector<const char*>& layers) {
   };
 
   const auto layers_props = vk::enumerateInstanceLayerProperties();
-  return std::ranges::count_if(layers_props, layers_pred) == layers.size();
+  return size_t(std::ranges::count_if(layers_props, layers_pred)) == layers.size();
 }
 
 static PFN_vkGetInstanceProcAddr load_system_instance_proc_addr() {
@@ -121,7 +121,10 @@ VkDebugUtilsMessengerEXT create_debug_messenger(VkInstance inst) {
 
   //vk::DebugUtilsMessageTypeFlagBitsEXT::eDeviceAddressBinding
 
-  vk::DebugUtilsMessengerCreateInfoEXT info({}, severity, type, &debug_callback, nullptr);
+  vk::DebugUtilsMessengerCreateInfoEXT info{};
+  info.messageSeverity = severity;
+  info.messageType = type;
+  info.pfnUserCallback = &debug_callback;
 
   vk::Instance instance(inst);
   VkDebugUtilsMessengerEXT handle = instance.createDebugUtilsMessengerEXT(info);

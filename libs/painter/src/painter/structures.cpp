@@ -12,6 +12,7 @@
 #include "gtl/phmap.hpp"
 #include "tavl/tavl.h"
 
+#include <algorithm>
 #include <filesystem>
 
 namespace fs = std::filesystem;
@@ -19,7 +20,10 @@ namespace fs = std::filesystem;
 namespace devils_engine {
 namespace painter {
 
-constant_value::constant_value() noexcept : type(value_type::fixed), value{ 0,0,0 }, scale{ 1,1,1 }, presets_count(0), scale_presets_count(0), presets{}, scale_presets{}, current_value{ 0,0,0 }, current_scale{ 1,1,1 } { memset(presets.data(), 0, sizeof(presets)); for (auto& v : scale_presets) { v = std::make_pair(preset::low, scale_t{ 1,1,1 }); } }
+constant_value::constant_value() noexcept : type(value_type::fixed), value{ 0,0,0 }, scale{ 1,1,1 }, presets_count(0), scale_presets_count(0), presets{}, scale_presets{}, current_value{ 0,0,0 }, current_scale{ 1,1,1 } {
+  for (auto& v : presets) { v = std::make_pair(preset::low, value_t{ 0,0,0 }); }
+  for (auto& v : scale_presets) { v = std::make_pair(preset::low, scale_t{ 1,1,1 }); }
+}
 counter::counter() noexcept : value(0), next_value(0) {}
 counter::counter(const counter& copy) noexcept : name(copy.name), value(copy.value.load(std::memory_order_acquire)), next_value(copy.next_value.load(std::memory_order_acquire)) {}
 counter::counter(counter&& move) noexcept : name(std::move(move.name)), value(move.value.load(std::memory_order_acquire)), next_value(move.next_value.load(std::memory_order_acquire)) {}
@@ -41,7 +45,7 @@ void counter::push_value() noexcept { value.store(next_value.load(std::memory_or
 uint32_t counter::get_value() const noexcept { return value.load(std::memory_order_acquire); }
 void counter::inc_next_value() noexcept { next_value.fetch_add(1, std::memory_order_release); }
 void counter::set_value(const uint32_t val) noexcept { next_value.store(val, std::memory_order_release); }
-resource::frame::frame() noexcept { memset(this, 0, sizeof(*this)); }
+resource::frame::frame() noexcept : index(0), view(VK_NULL_HANDLE), subbuffer{0, 0} {}
 resource::resource() noexcept : format_hint(VK_FORMAT_UNDEFINED), size_hint(0), size(UINT32_MAX), role(role::values::count), type(type::values::count), swap(0), usage_mask(0) {}
 constant::constant() noexcept : size(0), offset(0) {}
 uint32_t render_target::resource_index(const uint32_t res_id) const {
@@ -49,18 +53,27 @@ uint32_t render_target::resource_index(const uint32_t res_id) const {
   for (; i < resources.size() && std::get<0>(resources[i]) != res_id; ++i) {}
   return i >= resources.size() ? UINT32_MAX : i;
 }
-descriptor::descriptor() noexcept : texture_count(0), texture_sampler(UINT32_MAX), texture_stage(VK_SHADER_STAGE_ALL), setlayout(VK_NULL_HANDLE) { memset(sets.data(), 0, sizeof(sets)); }
+descriptor::descriptor() noexcept : texture_count(0), texture_sampler(UINT32_MAX), texture_stage(VK_SHADER_STAGE_ALL), setlayout(VK_NULL_HANDLE) { sets.fill(VK_NULL_HANDLE); }
 sampler::sampler() noexcept :
   mag_filter(VK_FILTER_LINEAR), min_filter(VK_FILTER_LINEAR),
   address_u(VK_SAMPLER_ADDRESS_MODE_REPEAT), address_v(VK_SAMPLER_ADDRESS_MODE_REPEAT), address_w(VK_SAMPLER_ADDRESS_MODE_REPEAT),
   mipmap_mode(VK_SAMPLER_MIPMAP_MODE_LINEAR), handle(VK_NULL_HANDLE) {}
 material::material() noexcept {}
 geometry::geometry() noexcept : index_type(index_type::u32), topology_type(0), restart(false), stride(0) {}
-draw_group::draw_group() noexcept : budget_constant(UINT32_MAX), types_constant(UINT32_MAX), instances_buffer(UINT32_MAX), type(type::device_local), indirect_buffer(UINT32_MAX), descriptor(UINT32_MAX), stride(0) {}
+draw_group::draw_group() noexcept : budget_constant(UINT32_MAX), types_constant(UINT32_MAX), type(type::device_local), instances_buffer(UINT32_MAX), indirect_buffer(UINT32_MAX), descriptor(UINT32_MAX), stride(0) {}
 execution_pass_base::resource_info::resource_info() noexcept : slot(INVALID_RESOURCE_SLOT), usage(usage::undefined), action(store_op::none) {}
 execution_pass_base::resource_info::resource_info(const uint32_t slot, const usage::values usage, const store_op::values action) noexcept : slot(slot), usage(usage), action(action) {}
 constexpr uint32_t default_color_blending = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-blend_data::blend_data() noexcept { memset(this, 0, sizeof(*this)); colorWriteMask = default_color_blending; }
+blend_data::blend_data() noexcept :
+  enable(false),
+  srcColorBlendFactor(0),
+  dstColorBlendFactor(0),
+  colorBlendOp(0),
+  srcAlphaBlendFactor(0),
+  dstAlphaBlendFactor(0),
+  alphaBlendOp(0),
+  colorWriteMask(default_color_blending)
+{}
 
 buffer_frame::buffer_frame() noexcept : role(role::count), stride(0), sub({0,0}), handle(VK_NULL_HANDLE), mapped(nullptr) {}
 image_frame::image_frame() noexcept : role(role::count), vk_format(0), sub({0,0,0,0,0}), view(VK_NULL_HANDLE), handle(VK_NULL_HANDLE), mapped(nullptr) {}
@@ -562,7 +575,7 @@ static uint32_t parse_shader_stages(const std::string_view& s) {
     else if (!tok.empty()) utils::error{}("Unknown shader stage '{}'", tok);
     i = j + 1;
   }
-  return flags == 0 ? VK_SHADER_STAGE_ALL : flags;
+  return flags == 0 ? uint32_t(VK_SHADER_STAGE_ALL) : flags;
 }
 
 struct sampler_mirror {
@@ -721,30 +734,6 @@ struct material_mirror {
     return m;
   }
 };
-
-static material_mirror material_mirror_init() {
-  material_mirror m;
-  m.raster.depth_clamp = false;
-  m.raster.raster_discard = false;
-  m.raster.depth_bias = false;
-  m.raster.bias_constant = 0.0f;
-  m.raster.bias_clamp = 0.0f;
-  m.raster.bias_slope = 0.0f;
-  m.raster.line_width = 0.0f;
-  m.depth.test = false;
-  m.depth.write = false;
-  m.depth.bounds_test = false;
-  m.depth.stencil_test = false;
-  m.depth.min_bounds = 0.0f;
-  m.depth.max_bounds = 0.0f;
-  m.depth.front.compare_mask = 0;
-  m.depth.front.write_mask = 0;
-  m.depth.front.reference = 0;
-  m.depth.back.compare_mask = 0;
-  m.depth.back.write_mask = 0;
-  m.depth.back.reference = 0;
-  return m;
-}
 
 struct geometry_mirror {
   std::string name;
@@ -1249,7 +1238,10 @@ void parse_data(graphics_base* ctx, std::string path) {
   }
 }
 
-command_params::command_params() noexcept { memset(this, -1, sizeof(*this)); }
+command_params::command_params() noexcept : type(static_cast<command::values>(UINT32_MAX)), resources{}, constants{} {
+  resources.fill(std::make_tuple(UINT32_MAX, usage::undefined));
+  constants.fill(UINT32_MAX);
+}
 step_type::values step_base::type() const {
   return command::convert(cmd_params.type);
 }

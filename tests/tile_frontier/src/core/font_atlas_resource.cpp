@@ -24,7 +24,7 @@ font_atlas_resource::font_atlas_resource(std::vector<uint8_t> atlas_bytes, uint3
   }
 }
 
-void font_atlas_resource::load_cold(const utils::safe_handle_t& handle) {
+void font_atlas_resource::load_cold(const utils::safe_handle_t&) {
   // никакого диска: отдаём уже сгенерированные байты в поля texture_resource
   width = stash_w;
   height = stash_h;
