@@ -189,7 +189,9 @@ struct command_draw_tiles {
 struct command_draw_actors {
   uint32_t count = 0;
   uint32_t stride = 0;
+  size_t sim_frame_time = 0;          // time between simulation snapshots, in utils::global_time_resolution units
   std::vector<uint8_t> bytes;
+  std::vector<uint32_t> ids;          // stable ids aligned with bytes/current instances
 };
 
 // main → render: записать СЫРЫЕ БАЙТЫ в host-visible буфер-ресурс рендер-графа (по имени).

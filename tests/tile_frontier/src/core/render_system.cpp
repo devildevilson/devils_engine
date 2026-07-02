@@ -1,6 +1,7 @@
 #include "render_system.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -9,6 +10,7 @@
 
 #include <devils_engine/input/core.h>
 #include <devils_engine/utils/core.h>
+#include <devils_engine/utils/time-utils.hpp>
 #include <devils_engine/utils/safe_handle.h>
 
 #include <devils_engine/painter/graphics_base.h>
@@ -20,6 +22,7 @@
 #include "messages.h"
 #include "message_dispatcher.h"
 #include "draw_intent.h"
+#include "interpolation.h"
 #include "tile_map.h"
 #include "tile_batch.h"
 #include "actor_simulation.h"
@@ -36,6 +39,25 @@ static uint32_t make_color(const float r, const float g, const float b, const fl
   };
   return (pack(r) << 0) | (pack(g) << 8) | (pack(b) << 16) | (pack(a) << 24);
 }
+
+// Политика смешивания инстанса актёра (см. blend_traits в interpolation.h). Позиция и размер —
+// непрерывные (лерп), texture/color — дискретные (снап к новейшему b). teleport-guard выключен
+// (snap_dist2 == 0): актёры движутся плавно; выставь порог, чтобы варп/телепорт не «ехал через
+// экран», а прыгал мгновенно.
+template <>
+struct blend_traits<actor_instance> {
+  static constexpr float snap_dist2 = 0.0f; // 0 = guard выключен
+  static actor_instance mix(const actor_instance& a, const actor_instance& b, const float t) noexcept {
+    actor_instance o = b; // discrete: texture, color берём у новейшего снапшота
+    if constexpr (snap_dist2 > 0.0f) {
+      const glm::vec2 d = b.pos - a.pos;
+      if (d.x * d.x + d.y * d.y > snap_dist2) return o; // телепорт: позицию не лерпим
+    }
+    o.pos  = a.pos  + (b.pos  - a.pos)  * t;
+    o.size = a.size + (b.size - a.size) * t;
+    return o;
+  }
+};
 
 struct render_simulation_init {
   cached_message_dispatcher<command_window_recreation> window_recreation_commands;
@@ -71,6 +93,11 @@ struct render_simulation_init {
   bool graph_ready = false;
   bool tiles_ready = false;
   bool actors_ready = false;
+  bool actor_draw_ready = false;
+  snapshot_interpolator<actor_instance> actor_interp;   // prev/cur + timing + blend (см. interpolation.h)
+  std::vector<uint8_t> actor_interp_bytes;              // переиспользуемый выход resolve() -> GPU
+  std::chrono::steady_clock::time_point actor_draw_last_tp{}; // для РЕАЛЬНОГО wall-time между кадрами (п.①)
+  bool actor_draw_tp_valid = false;
 
   ~render_simulation_init() noexcept {
     // Best-effort fallback. Normal shutdown should go through render_shutdown().
@@ -127,6 +154,8 @@ static void render_detach_window(render_simulation_init& c) {
   c.graph_ready = false;
   c.tiles_ready = false;
   c.actors_ready = false;
+  c.actor_draw_ready = false;
+  c.actor_draw_tp_valid = false; // сброс wall-clock базы: после detach/shutdown не считаем гигантский dt
   c.tile_pair_index = painter::INVALID_RESOURCE_SLOT;
   c.actor_pair_index = painter::INVALID_RESOURCE_SLOT;
 }
@@ -168,6 +197,8 @@ static void render_shutdown(render_simulation_init& c) {
   c.graph_ready = false;
   c.tiles_ready = false;
   c.actors_ready = false;
+  c.actor_draw_ready = false;
+  c.actor_draw_tp_valid = false; // сброс wall-clock базы: после detach/shutdown не считаем гигантский dt
   c.tile_pair_index = painter::INVALID_RESOURCE_SLOT;
   c.actor_pair_index = painter::INVALID_RESOURCE_SLOT;
 }
@@ -403,21 +434,19 @@ static void render_update_tile_draw(render_simulation_init& c, const command_dra
   }
 }
 
-static void render_update_actor_draw(render_simulation_init& c, const command_draw_actors& msg) {
+static void render_update_actor_draw(render_simulation_init& c) {
   if (!c.actors_ready || c.actor_pair_index == painter::INVALID_RESOURCE_SLOT) return;
-  if (msg.stride != actor_batch::stride()) {
-    utils::warn("render actors: bad instance stride {}, expected {}", msg.stride, actor_batch::stride());
-    return;
-  }
+  if (!c.actor_interp.has_data()) return;
 
   const auto& pair = c.base->pairs[c.actor_pair_index];
-  const uint32_t count = std::min(msg.count, pair.max_size);
-  const size_t bytes = std::min(msg.bytes.size(), size_t(count) * msg.stride);
+  c.actor_interp.resolve(c.actor_interp_bytes); // интерполяция prev->cur по alpha реальных часов
+  const uint32_t count = std::min(c.actor_interp.count(), pair.max_size);
+  const size_t bytes = std::min(c.actor_interp_bytes.size(), size_t(count) * sizeof(actor_instance));
 
   for (uint32_t off = 0; off < 2; ++off) {
     const auto inst = c.base->get_current_instance_resource_frame(c.actor_pair_index, off);
     const auto indi = c.base->get_current_indirect_resource_frame(c.actor_pair_index, off);
-    if (bytes != 0) std::memcpy(static_cast<uint8_t*>(inst.mapped) + inst.sub.offset, msg.bytes.data(), bytes);
+    if (bytes != 0) std::memcpy(static_cast<uint8_t*>(inst.mapped) + inst.sub.offset, c.actor_interp_bytes.data(), bytes);
 
     auto cmd = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
     cmd[0].vertexCount = 3;
@@ -572,7 +601,7 @@ void render_simulation::init() {
 
 bool render_simulation::stop_predicate() const { return false; }
 
-void render_simulation::update(const size_t) {
+void render_simulation::update([[maybe_unused]] const size_t time) {
   // тут че вообще делаем? пробегаем события
   // заходим в рендер граф, обрабатываем
   // вообще ничего особо сложного
@@ -628,9 +657,34 @@ void render_simulation::update(const size_t) {
     if (container->graph_ready) render_update_tile_draw(*container, cmd);
   });
 
-  dispatcher_consume_last(container->draw_actor_commands, [this] (const auto& cmd) {
-    if (container->graph_ready) render_update_actor_draw(*container, cmd);
+  bool actor_snapshot = false;
+  dispatcher_consume_last(container->draw_actor_commands, [this, &actor_snapshot] (const auto& cmd) {
+    if (cmd.stride != actor_batch::stride()) {
+      utils::warn("render actors: bad instance stride {}, expected {}", cmd.stride, actor_batch::stride());
+      return;
+    }
+    container->actor_interp.push(
+      std::span<const uint8_t>(cmd.bytes),
+      std::span<const uint32_t>(cmd.ids),
+      cmd.sim_frame_time);
+    container->actor_draw_ready = true;
+    actor_snapshot = true;
   });
+
+  if (container->graph_ready && container->actor_draw_ready) {
+    // alpha гоним по РЕАЛЬНОМУ прошедшему времени рендер-кадра, а не по номинальному шагу (п.①).
+    // На кадре прихода снапшота elapsed сброшен в push() -> не продвигаем (alpha=0 -> показываем prev).
+    const auto now = std::chrono::steady_clock::now();
+    if (!actor_snapshot) {
+      const size_t real_dt = container->actor_draw_tp_valid
+        ? size_t(std::max<int64_t>(utils::count_mcs(container->actor_draw_last_tp, now), 0))
+        : 0;
+      container->actor_interp.advance(real_dt);
+    }
+    container->actor_draw_last_tp = now;
+    container->actor_draw_tp_valid = true;
+    render_update_actor_draw(*container);
+  }
 
   if (container->graph_ready && container->base->can_draw()) {
     container->base->prepare_frame();

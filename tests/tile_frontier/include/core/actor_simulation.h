@@ -154,6 +154,7 @@ public:
   void build(const devils_engine::aesthetics::world& world, uint64_t tick);
 
   std::span<const actor_instance> instances() const noexcept { return instances_; }
+  std::span<const uint32_t> ids() const noexcept { return ids_; }
   uint32_t count() const noexcept { return uint32_t(instances_.size()); }
   static constexpr uint32_t stride() noexcept { return draw_intent<actor_instance>::stride(); }
 
@@ -164,6 +165,7 @@ public:
 private:
   draw_intent<actor_instance> intent_;
   std::vector<actor_instance> instances_;
+  std::vector<uint32_t> ids_;
 };
 
 class actor_world_slice {
