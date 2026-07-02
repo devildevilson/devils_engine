@@ -11,7 +11,7 @@ constexpr size_t standart_aligment = 16;
 namespace devils_engine {
 namespace thread {
 
-atomic_pool::atomic_pool(const size_t thread_count) : stack_pool(MAXIMUM_TASK_SIZE * MAXIMUM_TASK_COUNT, MAXIMUM_TASK_SIZE, standart_aligment), busy_count(0) {
+atomic_pool::atomic_pool(const size_t thread_count) : stack_pool(MAXIMUM_TASK_SIZE * MAXIMUM_TASK_COUNT, MAXIMUM_TASK_SIZE, standart_aligment), busy_count(0), pending(0) {
   for (size_t i = 0; i < thread_count; ++i) {
     workers.emplace_back([this] (std::stop_token stoken) {
       size_t spins = 0;
@@ -26,6 +26,7 @@ atomic_pool::atomic_pool(const size_t thread_count) : stack_pool(MAXIMUM_TASK_SI
           task->process();
           stack_pool.destroy(task); // вернем память
           busy_count.fetch_sub(1ull, PUB_CONSUME);
+          pending.fetch_sub(1ull, PUB_CONSUME); // задача завершена — снять «в полёте»
           continue;
         }
 
@@ -47,6 +48,7 @@ atomic_pool::atomic_pool(const size_t thread_count) : stack_pool(MAXIMUM_TASK_SI
           task->process();
           stack_pool.destroy(task); // вернем память
           busy_count.fetch_sub(1ull, PUB_CONSUME);
+          pending.fetch_sub(1ull, PUB_CONSUME); // задача завершена — снять «в полёте»
           continue;
         }
       }
@@ -66,6 +68,7 @@ atomic_pool::~atomic_pool() noexcept {
 
 void atomic_pool::submitbase(task_interface* t) noexcept {
   if (stop_source.stop_requested()) return;
+  pending.fetch_add(1ull, PUB_CONSUME); // считаем задачу «в полёте» ДО того, как она станет видна воркеру
   queue.push(t);
   cv.notify_one();
 }
@@ -81,6 +84,7 @@ void atomic_pool::compute() {
       spins = 0;
       task->process();
       stack_pool.destroy(task);
+      pending.fetch_sub(1ull, PUB_CONSUME); // caller-drain: тоже снять «в полёте»
       continue;
     }
 
@@ -103,6 +107,7 @@ void atomic_pool::compute(const size_t count) {
       spins = 0;
       task->process();
       stack_pool.destroy(task);
+      pending.fetch_sub(1ull, PUB_CONSUME); // caller-drain: тоже снять «в полёте»
       continue;
     }
 
@@ -115,7 +120,9 @@ void atomic_pool::compute(const size_t count) {
 }
 
 void atomic_pool::wait() noexcept {
-  while (!queue.was_empty() || working_count() != 0) {
+  // pending = субмитнутые-но-не-завершённые (очередь + в работе), считается атомарно с submitbase,
+  // без окна между «вынул из очереди» и «отметил занятым» → wait() не вернётся раньше времени.
+  while (pending.load(CONSUME) != 0) {
     std::this_thread::sleep_for(std::chrono::microseconds(1));
   }
 }

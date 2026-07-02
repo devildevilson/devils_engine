@@ -20,6 +20,11 @@
 #include <devils_engine/utils/prng.h>      // utils::mix
 #include <devils_engine/utils/string_id.h> // utils::string_hash
 
+// glm-адаптеры сериализации + регистрация ВСЕХ компонентов в реестр serial (SERIALIZABLE_COMPONENT).
+// Включён здесь, а не только в тестах, чтобы игровой бинарь сам умел save/load (регистрации линкуются
+// в этот TU) и чтобы сторонний дампер скаляров (sim_globals с glm::vec2) видел adapter<glm::vec2>.
+#include "core/actor_snapshot.h"
+
 namespace tile_frontier {
 namespace core {
 
@@ -733,6 +738,78 @@ void actor_world_slice::maintain_food() {
   if (have >= food_target_) return;
   size_t need = std::min<size_t>(food_target_ - have, 64); // не больше 64 спавнов/тик
   for (size_t i = 0; i < need; ++i) spawn_food();
+}
+
+// ── save/load ──────────────────────────────────────────────────────────────
+// Сторонняя (не-ECS) структура состояния слайса: реплицируемые скаляры (tick/seq → детерминизм
+// RNG и респавна) + конфиг (bounds/target/knobs), нужные для идентичного resume. Плоский агрегат
+// ⇒ сериализуется тем же ядром serialize<T>; glm::vec2 — через adapter (см. actor_snapshot.h).
+namespace {
+struct sim_globals {
+  uint64_t  tick;
+  uint64_t  food_spawn_seq;
+  glm::vec2 spawn_min;
+  glm::vec2 spawn_max;
+  uint32_t  food_target;
+  uint32_t  texture_count;
+  uint32_t  commit_ticks;
+  uint32_t  think_budget;
+};
+} // namespace
+
+void actor_world_slice::rebuild_obstacle_cache() {
+  obstacles_.clear();
+  for (auto [id, obs, pos] : world_.view<obstacle, actor_position>()) {
+    (void)id;
+    obstacles_.push_back(obstacle_disc{ pos->value, obs->radius });
+  }
+}
+
+std::vector<uint8_t> actor_world_slice::save(const aesthetics::serial::sink_policy& policy) const {
+  namespace serial = aesthetics::serial;
+  // payload = dump_world (компоненты) + свой дампер скаляров. Пред-resize по оценке мира + запас
+  // на sim_globals ⇒ запись линейным memcpy, ensure() почти не срабатывает; усекаем по pos().
+  std::vector<std::byte> raw;
+  raw.resize(serial::estimate_size(&world_) + 128);
+  serial::writer wr{ raw };
+  serial::dump_world(&world_, wr);
+  const sim_globals g{ tick_, food_spawn_seq_, spawn_min_, spawn_max_,
+                       food_target_, texture_count_, commit_ticks_, think_budget_ };
+  serial::serialize(wr, g);
+  raw.resize(wr.pos());
+  return serial::seal(raw, policy); // header + checksum + компрессия (+ скриншот — тут не задаём)
+}
+
+bool actor_world_slice::load(const std::span<const uint8_t> packet) {
+  namespace serial = aesthetics::serial;
+  // чистый слайс: пересобираем реестр функций + GOAP/FSM (как init), но БЕЗ спавна сущностей.
+  world_ = aesthetics::world{};
+  setup_brain_registry();
+  intents_.clear();
+  // как в init: аллокаторы пулов поедания заранее на главном потоке (view<> не кинет; type-id
+  // фиксируется до MT). load_world и так тронет все зарегистрированные типы, но порядок важен.
+  (void)world_.get_or_create_allocator<actor_eating>(sizeof(actor_eating) * 250);
+  (void)world_.get_or_create_allocator<actor_grabbed>(sizeof(actor_grabbed) * 250);
+
+  std::vector<std::byte> raw;
+  if (!serial::unseal(packet, raw)) return false;              // битый контейнер/checksum
+  serial::reader r{ raw };
+  if (!serial::load_world(&world_, r)) return false;           // magic/схема/обрыв → false
+  sim_globals g{};
+  serial::deserialize(r, g);
+  if (!r.ok) { utils::warn("slice load: truncated sim_globals"); return false; }
+
+  tick_          = g.tick;
+  food_spawn_seq_= g.food_spawn_seq;
+  spawn_min_     = g.spawn_min;
+  spawn_max_     = g.spawn_max;
+  food_target_   = g.food_target;
+  texture_count_ = g.texture_count;
+  commit_ticks_  = g.commit_ticks;
+  think_budget_  = g.think_budget;
+
+  rebuild_obstacle_cache(); // кэш выводим из мира, не хранится в снапшоте
+  return true;
 }
 
 } // namespace core
