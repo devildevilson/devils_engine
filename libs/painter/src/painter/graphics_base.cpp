@@ -1252,9 +1252,8 @@ int32_t graphics_base::commit_parsed_resources(graphics_base& ctx) {
   constants_memory[1].resize(offset/sizeof(uint32_t), 0);
 
   // Фаза 3: если задан стартовый граф — считаем used-set и создаём ТОЛЬКО его ресурсы/дескрипторы.
-  // Пусто ⇒ создаём всё (fs-путь fast_test/main.cpp; startup_graph_ там не задаётся).
-  resource_active_mask_.clear();
-  descriptor_active_mask_.clear();
+  // Иначе graph_filtered_ остаётся false ⇒ создаём всё (fs-путь fast_test/main.cpp).
+  graph_filtered_ = false;
   if (!startup_graph_.empty()) {
     const uint32_t gi = find_render_graph(startup_graph_);
     if (gi != INVALID_RESOURCE_SLOT) compute_active_masks(gi);
@@ -1446,16 +1445,24 @@ void graphics_base::create_descriptor_set_layouts() {
 // cmd-ресурсы и subpass/pass-барьеры (см. parse_execution_step2/parse_execution_pass2). Отдельно
 // доносим то, что read/write НЕ покрывает: буферы draw_group и ресурсы дескрипторов из step.sets.
 void graphics_base::compute_active_masks(const uint32_t graph_index) {
-  resource_active_mask_.assign(resources.size(), false);
-  descriptor_active_mask_.assign(descriptors.size(), false);
+  // Маски — bitset<MAXIMUM_RENDERING_RESOURCES_COUNT>; больше 256 ресурсов/дескрипторов сейчас
+  // неразумно — падаем громко (позже придумаем динамику).
+  if (resources.size() > MAXIMUM_RENDERING_RESOURCES_COUNT)
+    utils::error{}("graphics_base: resources={} exceed mask capacity {}", resources.size(), MAXIMUM_RENDERING_RESOURCES_COUNT);
+  if (descriptors.size() > MAXIMUM_RENDERING_RESOURCES_COUNT)
+    utils::error{}("graphics_base: descriptors={} exceed mask capacity {}", descriptors.size(), MAXIMUM_RENDERING_RESOURCES_COUNT);
+
+  resource_active_mask_.reset();
+  descriptor_active_mask_.reset();
+  graph_filtered_ = true;
 
   const auto& graph = DS_ASSERT_ARRAY_GET(graphs, graph_index);
 
   const auto mark_res = [&](const uint32_t idx) {
-    if (idx != INVALID_RESOURCE_SLOT && idx < resource_active_mask_.size()) resource_active_mask_[idx] = true;
+    if (idx != INVALID_RESOURCE_SLOT && idx < resources.size()) resource_active_mask_.set(idx);
   };
   const auto mark_desc = [&](const uint32_t idx) {
-    if (idx != INVALID_RESOURCE_SLOT && idx < descriptor_active_mask_.size()) descriptor_active_mask_[idx] = true;
+    if (idx != INVALID_RESOURCE_SLOT && idx < descriptors.size()) descriptor_active_mask_.set(idx);
   };
 
   mark_res(graph.present_source);
@@ -1499,12 +1506,9 @@ void graphics_base::compute_active_masks(const uint32_t graph_index) {
     for (const auto& [slot, usage, sampler_index, stages] : descriptors[d].layout) mark_res(slot);
   }
 
-  uint32_t res_count = 0, desc_count = 0;
-  for (const bool b : resource_active_mask_) res_count += b ? 1 : 0;
-  for (const bool b : descriptor_active_mask_) desc_count += b ? 1 : 0;
   utils::info(
     "graphics_base: active graph '{}' uses {}/{} resources, {}/{} descriptors",
-    graph.name, res_count, resources.size(), desc_count, descriptors.size()
+    graph.name, resource_active_mask_.count(), resources.size(), descriptor_active_mask_.count(), descriptors.size()
   );
 }
 

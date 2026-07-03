@@ -11,10 +11,7 @@ shader_source_file::shader_source_file() {
 }
 
 void shader_source_file::load_cold(const utils::safe_handle_t&) {
-  // SPIR-V — бинарь: читаем как байты (load_text мог бы исказить не-UTF8 содержимое).
-  std::vector<char> tmp;
-  module->load_binary(path, tmp);
-  memory.assign(tmp.begin(), tmp.end());
+  module->load_binary(path, memory); // SPIR-V — бинарь, читаем напрямую в vector<uint8_t>
 }
 
 void shader_source_file::load_warm(const utils::safe_handle_t&) {}
