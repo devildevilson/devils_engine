@@ -24,14 +24,20 @@ void resource_loader::request(resource_interface* res, int32_t target) {
   target = std::min(std::max(target, 0), res->final_state());
 
   if (auto* e = find(res)) {
-    e->target = target; // последний запрос побеждает
+    e->target = target; // последний запрос побеждает; зависимости уже заведены при первом request
     return;
   }
 
   // Уже в нужном состоянии и ничего не делаем — нет смысла заводить запись.
+  // (его зависимости к этому моменту тоже usable — иначе он бы сюда не добрался.)
   if (res->state() == target) return;
 
   entries.push_back(entry{res, target, false});
+
+  // Обеспечим зависимости: каждую доводим до usable (её final_state). Рекурсия завершается на
+  // уже заведённых записях (find выше) — предполагается DAG. Делаем ПОСЛЕ push, чтобы цикл
+  // A→B→A терминировал на повторном request(A).
+  for (auto* dep : res->dependencies) request(dep, dep->final_state());
 }
 
 size_t resource_loader::update(std::vector<external_job>& out) {
@@ -54,6 +60,12 @@ size_t resource_loader::update(std::vector<external_job>& out) {
     const utils::safe_handle_t handle(e.res);
 
     if (cur < e.target) {
+      // движемся вверх: зависимости должны быть usable ПРЕЖДЕ продвижения (over-approx: гейтим
+      // ресурс целиком, а не конкретный шаг). Зависимости крутятся в этом же loader'е и дойдут сами.
+      bool deps_ready = true;
+      for (auto* dep : e.res->dependencies) { if (!dep->usable()) { deps_ready = false; break; } }
+      if (!deps_ready) { ++i; continue; } // ждём зависимости — ресурс остаётся pending
+
       // движемся вверх: переход cur -> cur+1
       if (e.res->is_external_step(cur)) {
         // внешний (GPU/поток рендера) — отдаём наружу

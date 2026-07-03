@@ -18,27 +18,15 @@
 // 2. сделать ресурс (по крайней мере часть данных оттуда) потокобезопасным (сделал)
 // 3. сделать систему загрузки ресурсов 
 
-#define DEMIURG_STATES_LIST2 \
-  X(unload) \
-  X(memory_load) \
-
-// должны быть еще промежуточные состояния, когда ресурс догружается из состояния в состояние асинхронно
-// возможно сами состояния можно сделать атомарными
-// скорее всего нам нужно добавить еще одно действие для ресурса: парсинг
-// предположительно в нем мы парсим все конфиги и создаем сразу несколько дополнительных ресурсов
-// то есть на диске лежит json с массивом конфигов например для монстров
-// на этом этапе мы его прочитаем и создадим несколько ресурсов с названием типа
-// level1/monsters/config:mon1, level1/monsters/config:mon2
+// Будущее (list pattern): на диске json/tavl с массивом конфигов (напр. монстры) — на шаге
+// парсинга читаем файл и создаём несколько суб-ресурсов вида level1/monsters/config:mon1,
+// level1/monsters/config:mon2 (см. config-file-convention: path:name).
 #define DEMIURG_STATES_LIST \
   X(cold)                  \
   X(warm)                  \
   X(hot)                   \
 
-#define DEMIURG_ACTIONS_LIST2 \
-  X(unload) \
-  X(load_to_memory) \
-
-// по сути состояния у ресурса 3: ресурс на диске, ресурс в памяти, ресурс готов к использованию 
+// по сути состояния у ресурса 3: ресурс на диске, ресурс в памяти, ресурс готов к использованию
 // для большинства ресурсов "ресурс в памяти" и "ресурс готов к использованию" это одно и тоже
 // но например картинки мы бы хотели вгружать и выгружать в/из гпу
 // вообще между каждым состоянием есть промежуточное переходное состояние
@@ -70,10 +58,6 @@
 namespace devils_engine {
 namespace demiurg {
   class module_interface;
-
-  // events
-  struct loading { utils::safe_handle_t handle; };
-  struct unloading { utils::safe_handle_t handle; };
 
   namespace state {
     enum values {
@@ -116,18 +100,21 @@ namespace demiurg {
     std::string_view ext;
     std::string_view module_name;
     std::string_view type;
-    std::string_view loading_type;
     size_t loading_type_id;
 
     const module_interface* module;
 
-    size_t replacing_order;
     size_t raw_size;
 
-    inline resource_interface() noexcept : 
-      loading_type_id(0), 
+    // Зависимости ресурса (напр. pipeline зависит от shader-модулей). Загрузчик доводит их до
+    // usable ПРЕЖДЕ чем продвигать этот ресурс вверх. Плоский список — ring-list (replacement/
+    // supplementary/exemplary) занят override-цепочками модов и под зависимости не годится.
+    // Предполагается DAG (циклы не поддерживаются). Заполняет тип/настройка ресурса.
+    std::vector<resource_interface*> dependencies;
+
+    inline resource_interface() noexcept :
+      loading_type_id(0),
       module(nullptr),
-      replacing_order(0),
       raw_size(0),
       _state(0)
     {}
@@ -135,6 +122,10 @@ namespace demiurg {
 
     void set_path(std::string path, const std::string_view &root);
     void set(std::string path, const std::string_view &module_name, const std::string_view &id, const std::string_view &ext);
+
+    inline void add_dependency(resource_interface* dep) {
+      if (dep != nullptr && dep != this) dependencies.push_back(dep);
+    }
 
     resource_interface* replacement_next(const resource_interface* ptr) const;
     resource_interface* supplementary_next(const resource_interface* ptr) const;
