@@ -18,6 +18,9 @@
 #include <devils_engine/painter/auxiliary.h>
 #include <devils_engine/painter/makers.h>
 #include <devils_engine/painter/system_info.h>
+#include <devils_engine/painter/glsl_source_file.h>
+#include <devils_engine/painter/shader_source_file.h>
+#include <devils_engine/demiurg/resource_system.h>
 
 #include "messages.h"
 #include "message_dispatcher.h"
@@ -535,6 +538,25 @@ static void render_write_buffer(render_simulation_init& c, const command_write_b
   }
 }
 
+// п.1: загрузить/выгрузить CPU-исходники шейдеров движкового реестра (glsl + spv). Хост владеет
+// lifecycle ресурсов (graphics_base их НЕ грузит — см. п.7); шейдеры живут в памяти только на
+// время сборки пайплайнов. force_unload у warm_and_hot_same-ресурса возвращает его в cold
+// (unload_warm освобождает текст/байты).
+static void set_shader_sources_loaded(const demiurg::resource_system* reg, const bool load) {
+  if (reg == nullptr) return;
+  std::vector<painter::glsl_source_file*> glsl;
+  reg->find<painter::glsl_source_file>("shaders", glsl);
+  std::vector<painter::shader_source_file*> spv;
+  reg->find<painter::shader_source_file>("shaders/spv", spv);
+  const auto apply = [load](demiurg::resource_interface* r) {
+    if (load) r->load(utils::safe_handle_t{});
+    else      r->force_unload(utils::safe_handle_t{});
+  };
+  for (auto* r : glsl) apply(r);
+  for (auto* r : spv)  apply(r);
+  utils::info("render: shader sources {} ({} glsl + {} spv)", load ? "loaded" : "unloaded", glsl.size(), spv.size());
+}
+
 static void render_attach_window(render_simulation_init& c, const command_window_recreation& cmd) {
   if (c.config.headless) return;
   if (!c.instance_ready) render_create_instance(c);
@@ -557,7 +579,13 @@ static void render_attach_window(render_simulation_init& c, const command_window
   if (graph_index == painter::INVALID_RESOURCE_SLOT) utils::error{}("Could not find render graph '{}'", c.config.graph_name);
 
   c.base->populate_constant_default_values();
+  // п.1: шейдер-исходники — «загрузить → скомпилировать → выгрузить». Нужны ТОЛЬКО на время
+  // сборки пайплайнов (change_render_graph: GLSL→SPIR-V→VkShaderModule, модуль транзитен; никаких
+  // ссылок на ресурс не остаётся — create_pipeline берёт их через get<> транзитно). После билда
+  // освобождаем CPU-текст/байты. При будущем переключении графов (п.2/3) load-before-build повторится.
+  set_shader_sources_loaded(c.config.engine_registry, true);
   c.base->change_render_graph(graph_index);
+  set_shader_sources_loaded(c.config.engine_registry, false);
   c.base->dump_cache_on_disk(c.config.pipeline_cache_path);
 
   c.graph_ready = true;

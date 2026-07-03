@@ -357,17 +357,8 @@ void simulation::init() {
     utils::info("engine registry: preloaded {} render-config sources", rc.size());
   }
 
-  // Аналогично — тексты шейдеров (GLSL/SPIR-V) до warm на главном потоке: рендер-поток
-  // компилирует их синхронно в create_pipeline (Фаза 1), только на чтение.
-  {
-    std::vector<painter::glsl_source_file*> glsl;
-    container->engine_resources->find<painter::glsl_source_file>("shaders", glsl);
-    for (auto* r : glsl) r->load(utils::safe_handle_t{});
-    std::vector<painter::shader_source_file*> spv;
-    container->engine_resources->find<painter::shader_source_file>("shaders/spv", spv);
-    for (auto* r : spv) r->load(utils::safe_handle_t{});
-    utils::info("engine registry: preloaded {} glsl + {} spv shader sources", glsl.size(), spv.size());
-  }
+  // Шейдер-исходники НЕ preload'им здесь: их lifecycle («загрузить→скомпилировать→выгрузить»)
+  // живёт в рендер-потоке вокруг сборки пайплайнов (см. render_system set_shader_sources_loaded, п.1).
 
   const auto config_path = utils::project_folder() + "resources/engine/config/app.tavl"; // для лога
   if (auto* cfg_res = container->engine_resources->get<app_config_resource>("config/app")) {
