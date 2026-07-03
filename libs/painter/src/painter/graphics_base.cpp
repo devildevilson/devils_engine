@@ -1153,18 +1153,32 @@ uint32_t graphics_base::find_pair(const uint32_t draw_group, const uint32_t mesh
 }
 
 int32_t graphics_base::recreate_basic_resources(const std::string& folder) {
-  utils::info("graphics_base: recreate basic resources from '{}'", folder);
+  utils::info("graphics_base: recreate basic resources from folder '{}'", folder);
 
-  // создаем ленивый парсинг контекст 
   graphics_base ctx(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, presentation_engine_type);
-  // парсим ресурсы
   try { // УЖАС (дебаг онли я надеюсь)
     parse_data(&ctx, folder);
   } catch(const std::exception& ex) {
     utils::println(ex.what());
     return -1;
   }
+  return commit_parsed_resources(ctx);
+}
 
+int32_t graphics_base::recreate_basic_resources(const demiurg::resource_system* reg, const std::string& prefix) {
+  utils::info("graphics_base: recreate basic resources from engine registry, prefix '{}'", prefix);
+
+  graphics_base ctx(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, presentation_engine_type);
+  try {
+    parse_data(&ctx, reg, prefix);
+  } catch(const std::exception& ex) {
+    utils::println(ex.what());
+    return -1;
+  }
+  return commit_parsed_resources(ctx);
+}
+
+int32_t graphics_base::commit_parsed_resources(graphics_base& ctx) {
   // если дошли до этой точки то все связи уже в порядке
 
   std::vector<std::string> draw_group_names(draw_groups.size());
