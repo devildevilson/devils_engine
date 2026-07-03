@@ -93,6 +93,15 @@ struct graphics_base {
   const demiurg::resource_system* config_reg_ = nullptr;
   std::string shader_prefix_;
 
+  // Фаза 3: селективное создание ресурсов. Если startup_graph_ задан и найден, commit
+  // вычисляет транзитивный used-set этого графа и создаёт ТОЛЬКО нужные ему GPU-ресурсы
+  // (контейнеры) и дескрипторы. Индексы глобальные/стабильные — векторы НЕ компактятся,
+  // неиспользуемые слоты остаются без backing. Маски пусты ⇒ создаём ВСЁ (обратная
+  // совместимость: fs-путь fast_test/main.cpp, где startup_graph_ не задан).
+  std::string startup_graph_;
+  std::vector<bool> resource_active_mask_;   // пусто ⇒ все ресурсы активны
+  std::vector<bool> descriptor_active_mask_; // пусто ⇒ все дескрипторы активны
+
   // сырые данные для constants? как мы задаем их?
   // они должны быть по умолчанию буферизированы, каунтером определим куда пишем
   std::array<std::vector<uint32_t>, 2> constants_memory;
@@ -134,6 +143,11 @@ struct graphics_base {
     config_reg_ = reg;
     shader_prefix_ = std::move(prefix);
   }
+  // Фаза 3: задать граф, под который создавать ресурсы. Вызывать ДО recreate_basic_resources
+  // (там же commit). Пусто ⇒ создаём все ресурсы (обратная совместимость).
+  inline void set_startup_graph(std::string name) { startup_graph_ = std::move(name); }
+  inline bool is_resource_active(const uint32_t i) const { return resource_active_mask_.empty() || resource_active_mask_[i]; }
+  inline bool is_descriptor_active(const uint32_t i) const { return descriptor_active_mask_.empty() || descriptor_active_mask_[i]; }
   void set_surface(VkSurfaceKHR surface, const uint32_t width, const uint32_t height);
   void populate_constant_default_values();
 
@@ -245,6 +259,7 @@ struct graphics_base {
 
   // recreate_basic_resources
   void clear_prev_resources();
+  void compute_active_masks(const uint32_t graph_index); // Фаза 3: транзитивный used-set графа
   void create_samplers();
   void create_descriptor_set_layouts();
   void create_resources();

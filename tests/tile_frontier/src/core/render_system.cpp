@@ -297,6 +297,8 @@ static void render_create_base_resources(render_simulation_init& c) {
   c.base->get_or_create_pipeline_cache(c.config.cache_registry, c.config.pipeline_cache_id);
 
   if (c.config.engine_registry == nullptr) utils::error{}("render: engine registry is null (render-graph source)");
+  // Фаза 3: создаём GPU-ресурсы только под активный граф (commit посчитает его used-set).
+  c.base->set_startup_graph(c.config.graph_name);
   const auto res = c.base->recreate_basic_resources(c.config.engine_registry, c.config.render_config_prefix);
   if (res != 0) utils::error{}("Could not parse render config from engine registry prefix '{}'", c.config.render_config_prefix);
   // Шейдеры тоже из движкового реестра (Фаза 1): create_pipeline тянет их по shader-префиксу.
