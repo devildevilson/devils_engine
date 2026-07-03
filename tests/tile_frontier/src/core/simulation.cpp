@@ -14,6 +14,7 @@
 #include <devils_engine/utils/time-utils.hpp>
 
 #include <devils_engine/demiurg/resource_system.h>
+#include <devils_engine/demiurg/module_system.h>
 
 #include <devils_engine/visage/system.h>
 #include <devils_engine/visage/font.h>
@@ -26,6 +27,7 @@
 #include "render_system.h"
 #include "assets_system.h"
 #include "texture_resource.h"
+#include "app_config_resource.h"
 #include "font_atlas_resource.h"
 #include "global_ubo.h"
 #include "texture_set.h"
@@ -154,6 +156,11 @@ void ui_key_cb(GLFWwindow*, int key, int, int action, int mods) noexcept {
 // кеш?
 struct simulation_init {
   app_config config;
+
+  // Движковый (незаменяемый) реестр ресурсов: config/shaders/render-graph. Отдельный
+  // resource_system, изолированный от игрового (моды живут в assets). См. demiurg 1a (Q2).
+  std::unique_ptr<demiurg::module_system> engine_modules;
+  std::unique_ptr<demiurg::resource_system> engine_resources;
 
   std::unique_ptr<thread::atomic_pool> pool_container;
   thread::atomic_pool* pool;
@@ -338,8 +345,21 @@ void simulation::init() {
   actor.add_receiver<command_chunk_loaded>(&container->chunk_loaded_commands.dis);
   actor.add_receiver<command_sound_state>(&container->sound_state_commands.dis);
 
-  const auto config_path = utils::project_folder() + "resources/config/app.tavl";
-  container->config = load_app_config(config_path);
+  // Движковый реестр: engine-module = папка resources/engine/ (не перебивается модами).
+  // Новый demiurg-API не нужен — module_system::load_modules умеет директорию как модуль.
+  container->engine_resources = std::make_unique<demiurg::resource_system>();
+  container->engine_resources->register_type<app_config_resource>("config", "tavl");
+  container->engine_modules = std::make_unique<demiurg::module_system>(utils::project_folder() + "resources/");
+  container->engine_modules->load_modules({ demiurg::module_system::list_entry{"engine", "", ""} });
+  container->engine_resources->parse_resources(container->engine_modules.get());
+
+  const auto config_path = utils::project_folder() + "resources/engine/config/app.tavl"; // для лога
+  if (auto* cfg_res = container->engine_resources->get<app_config_resource>("config/app")) {
+    cfg_res->load(utils::safe_handle_t{}); // cold→warm: читает + парсит tavl (CPU, главный поток)
+    container->config = cfg_res->config();
+  } else {
+    utils::warn("engine registry: 'config/app' not found, using app_config defaults");
+  }
   set_frame_time(frame_time_from_fps(container->config.simulation.main_fps));
 
   const uint32_t hw_threads = std::max(std::thread::hardware_concurrency(), 1u);
