@@ -93,7 +93,6 @@ public:
     ) -> resource_interface * {
       auto ptr = std::apply(&utils::block_allocator::create<T>, std::tuple_cat(std::make_tuple(std::ref(allocator)), args));
       ptr->loading_type_id = utils::type_id<T>();
-      ptr->loading_type = utils::type_name<T>();
       return ptr;
     };
 
@@ -111,7 +110,6 @@ public:
     ) -> resource_interface * {
       auto ptr = std::apply(&utils::block_allocator::create<T>, std::tuple_cat(std::make_tuple(std::ref(allocator)), args));
       ptr->loading_type_id = utils::type_id<BaseT>();
-      ptr->loading_type = utils::type_name<T>();
       return ptr;
     };
 
