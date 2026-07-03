@@ -30,7 +30,7 @@
 #include "assets_system.h"
 #include "texture_resource.h"
 #include "app_config_resource.h"
-#include "font_atlas_resource.h"
+#include "font_resource.h"
 #include "global_ubo.h"
 #include "texture_set.h"
 #include "tile_map.h"
@@ -180,16 +180,14 @@ struct simulation_init {
 
   std::unique_ptr<input::init> in;
 
-  // интерфейс (visage) живёт в главном потоке. ui_font_image — CPU-байты атласа,
-  // их позже (шаг 2) зальём в GPU-ресурс шрифта на потоке рендера.
-  std::unique_ptr<visage::font_t> ui_font;
-  visage::font_atlas_packer::font_image_t ui_font_image;
+  // интерфейс (visage) живёт в главном потоке. Метрики глифов (font_t) и байты атласа теперь
+  // держит font_resource (многошаговый ресурс ttf→MSDF→GPU); visage::system заимствует font().
   std::unique_ptr<visage::system> ui;
   bool ui_logged = false;
 
-  // атлас шрифта как GPU-текстура в таблице ассетов (см. font_atlas_resource)
-  std::unique_ptr<font_atlas_resource> ui_atlas;
-  bool ui_atlas_logged = false;
+  // шрифт как многошаговый ресурс: CPU-шаги (ttf/MSDF) — синхронно в setup_visage, GPU — асинхронно
+  std::unique_ptr<font_resource> ui_font_res;
+  bool ui_font_logged = false;
 
   // модель тайловой карты (главная сторона)
   texture_set textures;     // текстуры карты, собранные по префиксу пути
@@ -307,39 +305,21 @@ simulation::~simulation() noexcept {
   sactor = nullptr;
 }
 
-// Поднимаем интерфейс в главном потоке: строим MSDF-атлас шрифта на CPU (GPU пока не нужен —
-// nk_convert требует только метрик глифов), создаём visage::system на дефолтном шрифте и
-// загружаем lua entry. Байты атласа держим в контейнере под будущую заливку на GPU (шаг 2).
+// Поднимаем интерфейс в главном потоке. Шрифт — многошаговый ресурс (font_resource):
+// CPU-шаги ttf→MSDF (уровни 0→1→2) гоняем ЗДЕСЬ синхронно, т.к. visage::system нужны метрики
+// глифов сразу для nk_convert; GPU-заливка (2→3) уйдёт штатным асинхронным путём ассетов из init().
+// Это переносит генерацию MSDF из ad-hoc кода в FSM-шаг ресурса (demiurg 1a срез 3, первый 4-state).
 static void setup_visage(simulation_init& c) {
-  visage::font_atlas_packer packer;
-  packer.setup_font(utils::project_folder() + "resources/fonts/crimson.roman.ttf");
+  c.ui_font_res = std::make_unique<font_resource>(utils::project_folder() + "resources/fonts/crimson.roman.ttf");
+  c.ui_font_res->load(utils::safe_handle_t{}); // 0→1: читаем ttf (CPU, главный поток)
+  c.ui_font_res->load(utils::safe_handle_t{}); // 1→2: MSDF-атлас + метрики глифов (CPU)
 
-  visage::font_atlas_packer::config fcfg{};
-  fcfg.max_corner_angle = 3.0;
-  fcfg.minimum_scale = 32.0;
-  fcfg.pixel_range = 4.0; // ширина полосы SDF (текселей) — должна совпадать с px_range в ui.frag
-  fcfg.mitter_limit = 1.0;
-  fcfg.color_channels = 4; // mtsdf — пригодится под границы/эффекты на шаге SDF
-  fcfg.thread_count = 4;
-  fcfg.save_png = false;
-  // charsets оставляем пустым: load_fonts всегда грузит ASCII. Кириллицу/локали — на шаге 2/3.
+  auto* font = c.ui_font_res->font();
+  if (font == nullptr) utils::error{}("visage: font_resource produced no font metrics");
 
-  auto [fonts, img] = packer.load_fonts(fcfg);
-  if (fonts.empty()) utils::error{}("visage: font atlas packer produced no fonts");
-
-  c.ui_font = std::move(fonts.front());
-  c.ui_font_image = std::move(img);
-  utils::info("visage: font atlas {}x{}x{}ch, {} glyphs",
-    c.ui_font_image.width, c.ui_font_image.height, c.ui_font_image.channels, c.ui_font->glyphs.size());
-
-  c.ui.reset(new visage::system(c.ui_font.get()));
+  c.ui.reset(new visage::system(font)); // visage заимствует метрики; байты атласа ждут GPU-шага
   c.ui->load_entry_point(utils::project_folder() + "resources/ui/entry.lua");
   utils::info("visage: system created, entry point loaded");
-
-  // атлас на GPU как обычная текстура: переносим байты в ресурс, который пройдёт штатный путь
-  // ассетов (cold→warm→hot) и сядет в дескриптор 'textures'. Запрос на загрузку шлёт init().
-  c.ui_atlas = std::make_unique<font_atlas_resource>(
-    std::move(c.ui_font_image.bytes), c.ui_font_image.width, c.ui_font_image.height, c.ui_font_image.channels);
 }
 
 void simulation::init() {
@@ -601,10 +581,12 @@ void simulation::init() {
 
   // атлас шрифта → GPU тем же путём, что и текстуры: просим ассеты довести до hot.
   // Слот определится динамически (после grass-текстур); main прочитает gpu_index по hot.
-  if (container->ui_atlas && aactor != nullptr) {
-    command_load_resource cmd{container->ui_atlas.get(), static_cast<int32_t>(demiurg::state::hot)};
+  if (container->ui_font_res && aactor != nullptr) {
+    // final_state() = 3 (font_resource много-шаговый); CPU-уровни (0..2) уже пройдены в setup_visage,
+    // ассетам остаётся довести 2→3 (GPU). target=final_state(), не state::hot (иначе стоп на MSDF).
+    command_load_resource cmd{container->ui_font_res.get(), container->ui_font_res->final_state()};
     aactor->send(cmd);
-    utils::info("main: requested font atlas -> hot");
+    utils::info("main: requested font atlas -> ready (level {})", container->ui_font_res->final_state());
   }
 }
 
@@ -674,11 +656,11 @@ void simulation::update(const size_t time) {
 
   // атлас шрифта доехал на GPU: фиксируем слот в шрифте (nuklear зашьёт его в texture.id
   // draw-команд текста; шейдер UI по нему сэмплит атлас). gpu_index записан рендером.
-  if (container && container->ui_atlas && !container->ui_atlas_logged && container->ui_atlas->usable()) {
-    const uint32_t slot = container->ui_atlas->gpu_index;
-    if (container->ui_font) container->ui_font->set_texture_id(slot);
-    utils::info("main: font atlas reached HOT, texture slot={}", slot);
-    container->ui_atlas_logged = true;
+  if (container && container->ui_font_res && !container->ui_font_logged && container->ui_font_res->usable()) {
+    const uint32_t slot = container->ui_font_res->gpu_index;
+    if (auto* font = container->ui_font_res->font()) font->set_texture_id(slot);
+    utils::info("main: font atlas reached GPU (usable), texture slot={}", slot);
+    container->ui_font_logged = true;
   }
 
   if (container) {
