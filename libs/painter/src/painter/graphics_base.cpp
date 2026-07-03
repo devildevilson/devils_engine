@@ -77,18 +77,20 @@ graphics_base::~graphics_base() noexcept {
 
   wait_all_fences();
 
+  clear_render_graph();
+  clear_descriptors();
+  if (allocator != VK_NULL_HANDLE) {
+    clear_resources();
+    vma::Allocator(allocator).destroy();
+    allocator = VK_NULL_HANDLE;
+  }
+  clear_semaphores();
+
   for (auto& f : fences) { dev.destroy(f); }
   if (command_pool != VK_NULL_HANDLE) dev.destroy(command_pool);
   if (descriptor_pool != VK_NULL_HANDLE) dev.destroy(descriptor_pool);
   if (swapchain != VK_NULL_HANDLE) dev.destroy(swapchain);
   if (cache != VK_NULL_HANDLE) dev.destroy(cache);
-
-  if (allocator == VK_NULL_HANDLE) return;
-
-  clear();
-  vma::Allocator(allocator).destroy();
-
-  clear_semaphores();
 }
 
 void graphics_base::create_allocator(const size_t preferred_heap_block) {
@@ -1226,13 +1228,24 @@ int32_t graphics_base::commit_parsed_resources(render_config_storage& storage) {
   constants_memory[0].resize(offset/sizeof(uint32_t), 0);
   constants_memory[1].resize(offset/sizeof(uint32_t), 0);
 
-  // Фаза 3: если задан стартовый граф — считаем used-set и создаём ТОЛЬКО его ресурсы/дескрипторы.
-  // Иначе graph_filtered_ остаётся false ⇒ создаём всё (fs-путь fast_test/main.cpp).
+  // Фаза 3: если заданы resident-графы — считаем объединённый used-set и создаём ТОЛЬКО
+  // их ресурсы/дескрипторы. Иначе graph_filtered_ остаётся false ⇒ создаём всё
+  // (fs-путь fast_test/main.cpp).
   graph_filtered_ = false;
-  if (!startup_graph_.empty()) {
-    const uint32_t gi = find_render_graph(startup_graph_);
-    if (gi != INVALID_RESOURCE_SLOT) compute_active_masks(gi);
-    else utils::warn("graphics_base: startup graph '{}' not found — создаём все ресурсы", startup_graph_);
+  if (!resident_graphs_.empty()) {
+    std::vector<uint32_t> graph_indices;
+    graph_indices.reserve(resident_graphs_.size());
+    for (const auto& graph_name : resident_graphs_) {
+      const uint32_t gi = find_render_graph(graph_name);
+      if (gi == INVALID_RESOURCE_SLOT) {
+        utils::warn("graphics_base: resident graph '{}' not found — пропускаем", graph_name);
+        continue;
+      }
+      graph_indices.push_back(gi);
+    }
+
+    if (!graph_indices.empty()) compute_active_masks(graph_indices);
+    else utils::warn("graphics_base: no resident graphs found — создаём все ресурсы");
   }
 
   // начинаем создавать все подряд
@@ -1387,7 +1400,9 @@ void graphics_base::create_samplers() {
 }
 
 void graphics_base::create_descriptor_set_layouts() {
-  for (auto& desc : descriptors) {
+  for (uint32_t di = 0; di < descriptors.size(); ++di) {
+    if (!is_descriptor_active(di)) continue; // Фаза 3: дескриптор не нужен resident-графам
+    auto& desc = descriptors[di];
     descriptor_set_layout_maker dslm(device);
     // combined() хранит pImmutableSamplers = samplers.data(); держим эти векторы живыми до create()
     std::vector<std::vector<vk::Sampler>> imm_keep;
@@ -1414,24 +1429,25 @@ void graphics_base::create_descriptor_set_layouts() {
   }
 }
 
-// Фаза 3: транзитивный used-set активного графа → resource_active_mask_/descriptor_active_mask_.
+// Фаза 3: транзитивный used-set resident-графов → resource_active_mask_/descriptor_active_mask_.
 // Над-аппроксимация БЕЗОПАСНА (лишний активный ресурс = как раньше; пропущенный нужный = краш),
 // поэтому берём с запасом. pass.read|write уже агрегирует барьеры шагов, ресурсы local-дескриптора,
 // cmd-ресурсы и subpass/pass-барьеры (см. parse_execution_step2/parse_execution_pass2). Отдельно
 // доносим то, что read/write НЕ покрывает: буферы draw_group и ресурсы дескрипторов из step.sets.
-void graphics_base::compute_active_masks(const uint32_t graph_index) {
-  // Маски — bitset<MAXIMUM_RENDERING_RESOURCES_COUNT>; больше 256 ресурсов/дескрипторов сейчас
+void graphics_base::compute_active_masks(const std::vector<uint32_t>& graph_indices) {
+  // Маски — bitset<MAXIMUM_RENDERING_RESOURCES_COUNT>; больше 256 графов/ресурсов/дескрипторов сейчас
   // неразумно — падаем громко (позже придумаем динамику).
+  if (graphs.size() > MAXIMUM_RENDERING_RESOURCES_COUNT)
+    utils::error{}("graphics_base: graphs={} exceed mask capacity {}", graphs.size(), MAXIMUM_RENDERING_RESOURCES_COUNT);
   if (resources.size() > MAXIMUM_RENDERING_RESOURCES_COUNT)
     utils::error{}("graphics_base: resources={} exceed mask capacity {}", resources.size(), MAXIMUM_RENDERING_RESOURCES_COUNT);
   if (descriptors.size() > MAXIMUM_RENDERING_RESOURCES_COUNT)
     utils::error{}("graphics_base: descriptors={} exceed mask capacity {}", descriptors.size(), MAXIMUM_RENDERING_RESOURCES_COUNT);
 
+  graph_active_mask_.reset();
   resource_active_mask_.reset();
   descriptor_active_mask_.reset();
   graph_filtered_ = true;
-
-  const auto& graph = DS_ASSERT_ARRAY_GET(graphs, graph_index);
 
   const auto mark_res = [&](const uint32_t idx) {
     if (idx != INVALID_RESOURCE_SLOT && idx < resources.size()) resource_active_mask_.set(idx);
@@ -1440,37 +1456,43 @@ void graphics_base::compute_active_masks(const uint32_t graph_index) {
     if (idx != INVALID_RESOURCE_SLOT && idx < descriptors.size()) descriptor_active_mask_.set(idx);
   };
 
-  mark_res(graph.present_source);
+  for (const uint32_t graph_index : graph_indices) {
+    if (graph_index >= graphs.size()) continue;
+    graph_active_mask_.set(graph_index);
 
-  for (const uint32_t pass_index : graph.passes) {
-    const auto& pass = DS_ASSERT_ARRAY_GET(passes, pass_index);
+    const auto& graph = DS_ASSERT_ARRAY_GET(graphs, graph_index);
+    mark_res(graph.present_source);
 
-    // pass-level барьеры и subpass-вложения (все слоты; read/write НЕ покрывает transfer_dst/upload и т.п.)
-    for (const auto& group : pass.barriers)  for (const auto& info : group) mark_res(info.slot);
-    for (const auto& group : pass.subpasses) for (const auto& info : group) mark_res(info.slot);
+    for (const uint32_t pass_index : graph.passes) {
+      const auto& pass = DS_ASSERT_ARRAY_GET(passes, pass_index);
 
-    if (pass.render_target != INVALID_RESOURCE_SLOT) {
-      const auto& rt = DS_ASSERT_ARRAY_GET(render_targets, pass.render_target);
-      for (const auto& [res_idx, usage] : rt.resources) mark_res(res_idx);
-    }
+      // pass-level барьеры и subpass-вложения (все слоты; read/write НЕ покрывает transfer_dst/upload и т.п.)
+      for (const auto& group : pass.barriers)  for (const auto& info : group) mark_res(info.slot);
+      for (const auto& group : pass.subpasses) for (const auto& info : group) mark_res(info.slot);
 
-    for (const uint32_t step_index : pass.steps) {
-      if (step_index == UINT32_MAX) continue; // маркер next_subpass
-      const auto& step = DS_ASSERT_ARRAY_GET(steps, step_index);
+      if (pass.render_target != INVALID_RESOURCE_SLOT) {
+        const auto& rt = DS_ASSERT_ARRAY_GET(render_targets, pass.render_target);
+        for (const auto& [res_idx, usage] : rt.resources) mark_res(res_idx);
+      }
 
-      // step.barriers уже вбирает barriers + step.resources (local-descr) + cmd_params.resources
-      // (см. parse_execution_step2), но берём ещё и cmd_params явно — над-аппроксимация безопасна.
-      for (const auto& [res_idx, usage] : step.barriers) mark_res(res_idx);
-      for (const auto& [res_idx, usage] : step.cmd_params.resources) mark_res(res_idx);
+      for (const uint32_t step_index : pass.steps) {
+        if (step_index == UINT32_MAX) continue; // маркер next_subpass
+        const auto& step = DS_ASSERT_ARRAY_GET(steps, step_index);
 
-      mark_desc(step.descriptor);
-      for (const uint32_t d : step.sets) mark_desc(d);
+        // step.barriers уже вбирает barriers + step.resources (local-descr) + cmd_params.resources
+        // (см. parse_execution_step2), но берём ещё и cmd_params явно — над-аппроксимация безопасна.
+        for (const auto& [res_idx, usage] : step.barriers) mark_res(res_idx);
+        for (const auto& [res_idx, usage] : step.cmd_params.resources) mark_res(res_idx);
 
-      if (step.draw_group != INVALID_RESOURCE_SLOT) {
-        const auto& dg = DS_ASSERT_ARRAY_GET(draw_groups, step.draw_group);
-        mark_res(dg.instances_buffer);
-        mark_res(dg.indirect_buffer);
-        mark_desc(dg.descriptor);
+        mark_desc(step.descriptor);
+        for (const uint32_t d : step.sets) mark_desc(d);
+
+        if (step.draw_group != INVALID_RESOURCE_SLOT) {
+          const auto& dg = DS_ASSERT_ARRAY_GET(draw_groups, step.draw_group);
+          mark_res(dg.instances_buffer);
+          mark_res(dg.indirect_buffer);
+          mark_desc(dg.descriptor);
+        }
       }
     }
   }
@@ -1482,50 +1504,70 @@ void graphics_base::compute_active_masks(const uint32_t graph_index) {
   }
 
   utils::info(
-    "graphics_base: active graph '{}' uses {}/{} resources, {}/{} descriptors",
-    graph.name, resource_active_mask_.count(), resources.size(), descriptor_active_mask_.count(), descriptors.size()
+    "graphics_base: {} resident graph(s) use {}/{} resources, {}/{} descriptors",
+    graph_active_mask_.count(), resource_active_mask_.count(), resources.size(), descriptor_active_mask_.count(), descriptors.size()
   );
 }
 
 void graphics_base::create_resources() {
-  // наверное тут пробежимся по шагам и соберем usage
+  // Собираем Vulkan usage только по resident-графам, если включена фильтрация. Когда два графа
+  // живут одновременно, общий ресурс получает union usage обоих графов и не требует пересоздания
+  // при переключении между ними.
   std::vector<vk::BufferUsageFlags> buffer_flags(resources.size());
   std::vector<vk::ImageUsageFlags> image_flags(resources.size());
-  for (const auto& step : steps) {
-    for (const auto& [res_index, usage] : step.barriers) {
-      const auto& res = DS_ASSERT_ARRAY_GET(resources, res_index);
-      const bool is_image = role::is_image(res.role);
-      if (is_image) {
-        image_flags[res_index] = image_flags[res_index] | convertiuf(usage);
-      } else {
-        buffer_flags[res_index] = buffer_flags[res_index] | convertbuf(usage);
-      }
-    }
-  }
 
-  for (const auto& pass : passes) {
+  const auto add_usage = [&](const uint32_t res_index, const usage::values usage) {
+    const auto& res = DS_ASSERT_ARRAY_GET(resources, res_index);
+    const bool is_image = role::is_image(res.role);
+    if (is_image) {
+      image_flags[res_index] = image_flags[res_index] | convertiuf(usage);
+    } else {
+      buffer_flags[res_index] = buffer_flags[res_index] | convertbuf(usage);
+    }
+  };
+
+  const auto consume_step = [&](const step_base& step) {
+    for (const auto& [res_index, usage] : step.barriers) {
+      add_usage(res_index, usage);
+    }
+  };
+
+  const auto consume_pass = [&](const execution_pass_base& pass) {
     for (const auto& subpass : pass.barriers) {
       for (const auto& info : subpass) {
-        const auto& res = DS_ASSERT_ARRAY_GET(resources, info.slot);
-        const bool is_image = role::is_image(res.role);
-        if (is_image) {
-          image_flags[info.slot] = image_flags[info.slot] | convertiuf(info.usage);
-        } else {
-          buffer_flags[info.slot] = buffer_flags[info.slot] | convertbuf(info.usage);
-        }
+        add_usage(info.slot, info.usage);
       }
     }
 
     for (const auto& subpass : pass.subpasses) {
       for (const auto& info : subpass) {
-        const auto& res = DS_ASSERT_ARRAY_GET(resources, info.slot);
-        const bool is_image = role::is_image(res.role);
-        if (is_image) {
-          image_flags[info.slot] = image_flags[info.slot] | convertiuf(info.usage);
-        } else {
-          buffer_flags[info.slot] = buffer_flags[info.slot] | convertbuf(info.usage);
-        }
+        add_usage(info.slot, info.usage);
       }
+    }
+  };
+
+  if (graph_filtered_) {
+    for (uint32_t gi = 0; gi < graphs.size(); ++gi) {
+      if (!is_graph_active(gi)) continue;
+      const auto& graph = graphs[gi];
+      for (const uint32_t pass_index : graph.passes) {
+        const auto& pass = DS_ASSERT_ARRAY_GET(passes, pass_index);
+        for (const uint32_t step_index : pass.steps) {
+          if (step_index == UINT32_MAX) continue;
+          consume_step(DS_ASSERT_ARRAY_GET(steps, step_index));
+        }
+        consume_pass(pass);
+      }
+    }
+  } else {
+    for (const auto& step : steps) consume_step(step);
+    for (const auto& pass : passes) consume_pass(pass);
+  }
+
+  for (uint32_t di = 0; di < descriptors.size(); ++di) {
+    if (!is_descriptor_active(di)) continue;
+    for (const auto& [res_index, usage, sampler_index, stages] : descriptors[di].layout) {
+      add_usage(res_index, usage);
     }
   }
 
@@ -1703,7 +1745,8 @@ void graphics_base::create_resources() {
   for (uint32_t i = 0; i < resources.size(); ++i) {
     auto& res = resources[i];
 
-    if (res.role != role::present && !is_resource_active(i)) continue; // Фаза 3: пропускаем неактивные
+    if (res.role == role::present) continue; // swapchain создаётся отдельно в recreate_swapchain()
+    if (!is_resource_active(i)) continue; // Фаза 3: пропускаем неактивные
 
     const uint32_t cont_index = container_table[i];
 
@@ -1924,16 +1967,15 @@ void graphics_base::wait_fence() {
   vk::Device(device).resetFences(vk::Fence(f));
 }
 
-void graphics_base::change_render_graph(const uint32_t index) {
-  // тут что мы делаем? 
-  // идем в execution_graph и заполняем там массивы
+render_graph_instance graphics_base::create_render_graph_instance(const uint32_t index) {
   if (index >= graphs.size()) utils::error{}("Try to get graph with index {}, but array has {} graphs", index, graphs.size());
-  if (!execution_graph.steps.empty()) utils::error{}("Current graph has not properly shutdowned");
 
   const auto& graph = DS_ASSERT_ARRAY_GET(graphs, index);
 
-  execution_graph.type = step_interface::type::render_graph;
-  execution_graph.super = index;
+  render_graph_instance out;
+  out.type = step_interface::type::render_graph;
+  out.super = index;
+  out.device = device;
 
   for (const auto pass_index : graph.passes) {
     const auto& pass = DS_ASSERT_ARRAY_GET(passes, pass_index);
@@ -1948,21 +1990,19 @@ void graphics_base::change_render_graph(const uint32_t index) {
 
     auto ptr_raw = ptr.get();
 
-    execution_graph.groups.emplace_back();
-    auto& group = execution_graph.groups.back();
+    out.groups.emplace_back();
+    auto& group = out.groups.back();
     group.device = device;
     group.pool = command_pool;
     group.steps.push_back(ptr_raw);
     group.frames.resize(frames_in_flight());
     group.populate_command_buffers();
 
-    execution_graph.steps.emplace_back(std::move(ptr));
-    execution_graph.viewport_steps.push_back(ptr_raw);
+    out.steps.emplace_back(std::move(ptr));
+    out.viewport_steps.push_back(ptr_raw);
 
     uint32_t subpass_index = 0;
     for (const auto step_index : pass.steps) {
-      const auto& step = DS_ASSERT_ARRAY_GET(steps, step_index);
-
       // next_subpass ???
       if (step_index == UINT32_MAX) {
         // тут мы создадим специальную штуку которая барьеры подхватит
@@ -1975,31 +2015,33 @@ void graphics_base::change_render_graph(const uint32_t index) {
 
         auto ptr_raw = ptr.get();
         group.steps.push_back(ptr_raw);
-        execution_graph.steps.emplace_back(std::move(ptr));
+        out.steps.emplace_back(std::move(ptr));
 
         subpass_index += 1;
         continue;
       }
 
+      const auto& step = DS_ASSERT_ARRAY_GET(steps, step_index);
+
       step_interface* cur_step = nullptr;
       switch (step.cmd_params.type) {
-        case command::values::draw                 : cur_step = create_render_step<graphics_draw>                 (step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
-        case command::values::draw_indexed         : cur_step = create_render_step<graphics_draw_indexed>         (step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
-        case command::values::draw_indirect        : cur_step = create_render_step<graphics_draw_indirect>        (step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
-        case command::values::draw_indexed_indirect: cur_step = create_render_step<graphics_draw_indexed_indirect>(step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
-        case command::values::draw_constant        : cur_step = create_render_step<graphics_draw_constant>        (step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
-        case command::values::draw_indexed_constant: cur_step = create_render_step<graphics_draw_indexed_constant>(step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
-        case command::values::draw_ui               : cur_step = create_render_step<graphics_draw_ui>              (step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
-        case command::values::dispatch_indirect    : cur_step = create_render_step<compute_dispatch_indirect>     (step_index, device); break;
-        case command::values::dispatch_constant    : cur_step = create_render_step<compute_dispatch_constant>     (step_index, device); break;
-        case command::values::copy_buffer          : cur_step = create_render_step<transfer_copy_buffer>          (step_index); break;
-        case command::values::copy_image           : cur_step = create_render_step<transfer_copy_image>           (step_index); break;
-        case command::values::copy_buffer_image    : cur_step = create_render_step<transfer_copy_buffer_image>    (step_index); break;
-        case command::values::copy_image_buffer    : cur_step = create_render_step<transfer_copy_image_buffer>    (step_index); break;
-        case command::values::blit_linear          : cur_step = create_render_step<transfer_blit_linear>          (step_index); break;
-        case command::values::blit_nearest         : cur_step = create_render_step<transfer_blit_nearest>         (step_index); break;
-        case command::values::clear_color          : cur_step = create_render_step<transfer_clear_color>          (step_index); break;
-        case command::values::clear_depth          : cur_step = create_render_step<transfer_clear_depth>          (step_index); break;
+        case command::values::draw                 : cur_step = create_render_step<graphics_draw>                 (out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
+        case command::values::draw_indexed         : cur_step = create_render_step<graphics_draw_indexed>         (out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
+        case command::values::draw_indirect        : cur_step = create_render_step<graphics_draw_indirect>        (out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
+        case command::values::draw_indexed_indirect: cur_step = create_render_step<graphics_draw_indexed_indirect>(out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
+        case command::values::draw_constant        : cur_step = create_render_step<graphics_draw_constant>        (out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
+        case command::values::draw_indexed_constant: cur_step = create_render_step<graphics_draw_indexed_constant>(out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
+        case command::values::draw_ui               : cur_step = create_render_step<graphics_draw_ui>              (out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
+        case command::values::dispatch_indirect    : cur_step = create_render_step<compute_dispatch_indirect>     (out, step_index, device); break;
+        case command::values::dispatch_constant    : cur_step = create_render_step<compute_dispatch_constant>     (out, step_index, device); break;
+        case command::values::copy_buffer          : cur_step = create_render_step<transfer_copy_buffer>          (out, step_index); break;
+        case command::values::copy_image           : cur_step = create_render_step<transfer_copy_image>           (out, step_index); break;
+        case command::values::copy_buffer_image    : cur_step = create_render_step<transfer_copy_buffer_image>    (out, step_index); break;
+        case command::values::copy_image_buffer    : cur_step = create_render_step<transfer_copy_image_buffer>    (out, step_index); break;
+        case command::values::blit_linear          : cur_step = create_render_step<transfer_blit_linear>          (out, step_index); break;
+        case command::values::blit_nearest         : cur_step = create_render_step<transfer_blit_nearest>         (out, step_index); break;
+        case command::values::clear_color          : cur_step = create_render_step<transfer_clear_color>          (out, step_index); break;
+        case command::values::clear_depth          : cur_step = create_render_step<transfer_clear_depth>          (out, step_index); break;
         default: break;
       }
 
@@ -2015,7 +2057,7 @@ void graphics_base::change_render_graph(const uint32_t index) {
 
       auto ptr_raw = ptr.get();
       group.steps.push_back(ptr_raw);
-      execution_graph.steps.emplace_back(std::move(ptr));
+      out.steps.emplace_back(std::move(ptr));
     }
 
     // для каждой группы создадим командные буферы
@@ -2024,8 +2066,8 @@ void graphics_base::change_render_graph(const uint32_t index) {
     // как минимум у нас есть 1 внешняя семафора - имейдж эквайр
 
     for (const auto& name : pass.signal) {
-      const uint32_t index = execution_graph.create_semaphore(name, frames_in_flight());
-      const auto& sem = DS_ASSERT_ARRAY_GET(execution_graph.local_semaphores, index);
+      const uint32_t index = out.create_semaphore(name, frames_in_flight());
+      const auto& sem = DS_ASSERT_ARRAY_GET(out.local_semaphores, index);
       for (uint32_t i = 0; i < group.frames.size(); ++i) {
         const uint32_t sem_index = i; // тот же кадр
         group.frames[i].signal.push_back(sem.handles[sem_index]);
@@ -2045,7 +2087,7 @@ void graphics_base::change_render_graph(const uint32_t index) {
     static_assert(step_type::count == 3);
 
     // тут походу не совпадают семафоры?
-    auto& group = DS_ASSERT_ARRAY_GET(execution_graph.groups, i);
+    auto& group = DS_ASSERT_ARRAY_GET(out.groups, i);
     for (const auto& name : pass.wait_for) {
       const uint32_t global_index = find_semaphore(name);
       if (global_index != INVALID_RESOURCE_SLOT) {
@@ -2059,9 +2101,9 @@ void graphics_base::change_render_graph(const uint32_t index) {
         continue;
       }
       
-      const uint32_t local_index = execution_graph.find_semaphore(name);
+      const uint32_t local_index = out.find_semaphore(name);
       if (local_index != INVALID_RESOURCE_SLOT) {
-        const auto& sem = DS_ASSERT_ARRAY_GET(execution_graph.local_semaphores, local_index);
+        const auto& sem = DS_ASSERT_ARRAY_GET(out.local_semaphores, local_index);
         for (uint32_t j = 0; j < group.frames.size(); ++j) {
           const uint32_t sem_index = j == 0 ? group.frames.size()-1 : j-1; // предыдущий кадр
           group.frames[j].wait_for.push_back(sem.handles[sem_index]);
@@ -2077,6 +2119,21 @@ void graphics_base::change_render_graph(const uint32_t index) {
 
   // так и дальше че? ну и все походу
   // наконецто... будем надеяться что это хотя бы сработает как надо
+  return out;
+}
+
+void graphics_base::change_render_graph(const uint32_t index) {
+  auto next_graph = create_render_graph_instance(index);
+
+  // Смена графа может происходить поверх уже отправленных кадров. Несколько кадров простоя
+  // допустимы: ждём graphics queue, меняем активный instance, затем чистим старые graph-local
+  // Vulkan-объекты (pipelines/renderpasses/framebuffers/local semaphores).
+  vk::Queue(graphics).waitIdle();
+
+  auto old_graph = std::move(execution_graph);
+  execution_graph = std::move(next_graph);
+  current_render_graph_index = index;
+  old_graph.clear();
 }
 
 bool graphics_base::presentable_state_stable() const {
