@@ -14,6 +14,12 @@
 namespace devils_engine {
 namespace painter {
 
+// resource::usage_mask хранит Vulkan usage как uint32_t (сюда кастятся vk::Buffer/ImageUsageFlags
+// в create_resources). Ловим момент, когда базовые usage-флаги перестанут влезать в 32 бита
+// (напр. переход на VkImageUsageFlagBits2 — 64-битный): тогда usage_mask нужно расширять.
+static_assert(sizeof(VkImageUsageFlags) == 4, "VkImageUsageFlags больше 32 бит — расширить resource::usage_mask");
+static_assert(sizeof(VkBufferUsageFlags) == 4, "VkBufferUsageFlags больше 32 бит — расширить resource::usage_mask");
+
 static size_t buffer_suballocation_alignment(const VkPhysicalDevice physical_device, const uint32_t usage_mask) {
   if (physical_device == VK_NULL_HANDLE) return 1;
 
@@ -1169,38 +1175,8 @@ uint32_t graphics_base::find_pair(const uint32_t draw_group, const uint32_t mesh
   return INVALID_RESOURCE_SLOT;
 }
 
-int32_t graphics_base::recreate_basic_resources(const std::string& folder) {
-  utils::info("graphics_base: recreate basic resources from folder '{}'", folder);
-
-  graphics_base ctx(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, presentation_engine_type);
-  try { // УЖАС (дебаг онли я надеюсь)
-    parse_data(&ctx, folder);
-  } catch(const std::exception& ex) {
-    utils::println(ex.what());
-    return -1;
-  }
-  return commit_parsed_resources(ctx);
-}
-
-int32_t graphics_base::recreate_basic_resources(const demiurg::resource_system* reg, const std::string& prefix) {
-  utils::info("graphics_base: recreate basic resources from engine registry, prefix '{}'", prefix);
-
-  // Реестр нужен позже, при компиляции шейдеров в create_pipeline (Фаза 1). shader_prefix_
-  // задаётся отдельно через set_shader_source (папка шейдеров != папка render-config).
-  config_reg_ = reg;
-
-  graphics_base ctx(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, presentation_engine_type);
-  try {
-    parse_data(&ctx, reg, prefix);
-  } catch(const std::exception& ex) {
-    utils::println(ex.what());
-    return -1;
-  }
-  return commit_parsed_resources(ctx);
-}
-
-int32_t graphics_base::commit_parsed_resources(graphics_base& ctx) {
-  // если дошли до этой точки то все связи уже в порядке
+int32_t graphics_base::commit_parsed_resources(render_config_storage& storage) {
+  // если дошли до этой точки то все связи уже в порядке (парсинг сделан снаружи, п.7)
 
   std::vector<std::string> draw_group_names(draw_groups.size());
   for (uint32_t i = 0; i < draw_groups.size(); ++i) { draw_group_names[i] = draw_groups[i].name; }
@@ -1208,29 +1184,28 @@ int32_t graphics_base::commit_parsed_resources(graphics_base& ctx) {
   // на фоне может происходить несвязная работа
   vk::Queue(graphics).waitIdle();
 
-  // уничтожим старое
+  // уничтожим старое (в т.ч. resource_containers — их в storage нет, это рантайм GPU)
   clear_prev_resources();
 
-  // проставим новые буферы (напомните мне складывать такие штуки в отдельную большую структуру)
-  std::swap(constant_values, ctx.constant_values);
-  std::swap(counters, ctx.counters);
-  std::swap(resource_containers, ctx.resource_containers);
-  std::swap(resources, ctx.resources);
-  std::swap(constants, ctx.constants);
-  std::swap(render_targets, ctx.render_targets);
-  std::swap(descriptors, ctx.descriptors);
-  std::swap(samplers, ctx.samplers);
-  std::swap(materials, ctx.materials);
-  std::swap(geometries, ctx.geometries);
-  std::swap(draw_groups, ctx.draw_groups);
-  std::swap(steps, ctx.steps);
-  std::swap(passes, ctx.passes);
-  std::swap(graphs, ctx.graphs);
+  // забираем распарсенный конфиг из storage
+  std::swap(constant_values, storage.constant_values);
+  std::swap(counters, storage.counters);
+  std::swap(resources, storage.resources);
+  std::swap(constants, storage.constants);
+  std::swap(render_targets, storage.render_targets);
+  std::swap(descriptors, storage.descriptors);
+  std::swap(samplers, storage.samplers);
+  std::swap(materials, storage.materials);
+  std::swap(geometries, storage.geometries);
+  std::swap(draw_groups, storage.draw_groups);
+  std::swap(steps, storage.steps);
+  std::swap(passes, storage.passes);
+  std::swap(graphs, storage.graphs);
 
-  swapchain_counter_index = ctx.swapchain_counter_index;
-  per_frame_counter_index = ctx.per_frame_counter_index;
-  per_update_counter_index = ctx.per_update_counter_index;
-  swapchain_slot = ctx.swapchain_slot;
+  swapchain_counter_index = storage.swapchain_counter_index;
+  per_frame_counter_index = storage.per_frame_counter_index;
+  per_update_counter_index = storage.per_update_counter_index;
+  swapchain_slot = storage.swapchain_slot;
 
   utils::info(
     "graphics_base: parsed resources={}, graphs={}, swapchain_slot={}",

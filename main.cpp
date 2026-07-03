@@ -205,7 +205,9 @@ int main() {
   // ... блин а обычные то ресурсы не будут пересоздаваться количественно
   // и все таки скорее должны зависесть от frames_in_flight 
   // нельзя их делать зависимыми от свопчейна 
-  const auto res = base.recreate_basic_resources(cur_folder + "tests/render_config/");
+  // п.7: парсинг конфига — снаружи graphics_base (build_render_config), класс только коммитит.
+  auto render_cfg_data = painter::build_render_config(cur_folder + "tests/render_config/");
+  const auto res = base.commit_parsed_resources(render_cfg_data);
   if (res != 0) {
     utils::error{}("Could not parse folder '{}'", "tests/render_config/");
   }

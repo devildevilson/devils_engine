@@ -144,8 +144,8 @@ struct graphics_base {
     config_reg_ = reg;
     shader_prefix_ = std::move(prefix);
   }
-  // Фаза 3: задать граф, под который создавать ресурсы. Вызывать ДО recreate_basic_resources
-  // (там же commit). Пусто ⇒ создаём все ресурсы (обратная совместимость).
+  // Фаза 3: задать граф, под который создавать ресурсы. Вызывать ДО commit_parsed_resources.
+  // Пусто ⇒ создаём все ресурсы (обратная совместимость).
   inline void set_startup_graph(std::string name) { startup_graph_ = std::move(name); }
   inline bool is_resource_active(const uint32_t i) const { return !graph_filtered_ || resource_active_mask_.test(i); }
   inline bool is_descriptor_active(const uint32_t i) const { return !graph_filtered_ || descriptor_active_mask_.test(i); }
@@ -224,14 +224,12 @@ struct graphics_base {
   void write_constant_data(const uint32_t slot, const T& data);
 
 
-  int32_t recreate_basic_resources(const std::string& folder); // источник — папка на диске (fast_test)
-  // источник — движковый demiurg-реестр (ресурсы render_config_source по префиксу), см. demiurg 1a срез 2
-  int32_t recreate_basic_resources(const demiurg::resource_system* reg, const std::string& prefix);
+  // Устанавливает распарсенное описание render-graph (п.7): забирает конфиг из storage
+  // (парсинг живёт снаружи — см. painter::build_render_config), пересоздаёт GPU-ресурсы под
+  // выбранный startup_graph_. graphics_base сам конфиги НЕ парсит.
+  int32_t commit_parsed_resources(render_config_storage& storage);
 
   // PRIVATE
-
-  // общий хвост recreate_basic_resources: забирает распарсенный ctx и пересоздаёт GPU-ресурсы
-  int32_t commit_parsed_resources(graphics_base& ctx);
 
   // resize_viewport 
   void recreate_swapchain(const uint32_t width, const uint32_t height); // свопчеин частично состоит из ресурса который мы задали

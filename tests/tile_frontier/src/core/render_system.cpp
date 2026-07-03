@@ -299,8 +299,11 @@ static void render_create_base_resources(render_simulation_init& c) {
   if (c.config.engine_registry == nullptr) utils::error{}("render: engine registry is null (render-graph source)");
   // Фаза 3: создаём GPU-ресурсы только под активный граф (commit посчитает его used-set).
   c.base->set_startup_graph(c.config.graph_name);
-  const auto res = c.base->recreate_basic_resources(c.config.engine_registry, c.config.render_config_prefix);
-  if (res != 0) utils::error{}("Could not parse render config from engine registry prefix '{}'", c.config.render_config_prefix);
+  // п.7: парсинг конфига живёт СНАРУЖИ graphics_base — билдер отдаёт распарсенное описание,
+  // класс только устанавливает его и создаёт GPU-ресурсы.
+  auto render_cfg_data = painter::build_render_config(c.config.engine_registry, c.config.render_config_prefix);
+  const auto res = c.base->commit_parsed_resources(render_cfg_data);
+  if (res != 0) utils::error{}("Could not commit render config from engine registry prefix '{}'", c.config.render_config_prefix);
   // Шейдеры тоже из движкового реестра (Фаза 1): create_pipeline тянет их по shader-префиксу.
   c.base->set_shader_source(c.config.engine_registry, c.config.shader_config_prefix);
 
