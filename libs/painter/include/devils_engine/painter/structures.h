@@ -438,13 +438,60 @@ struct semaphore {
   semaphore() noexcept;
 };
 
-// ничего не создаем, только парсим и связываем структуры друг с другом
-// передаем локальный graphics_base, потому что отдельную структуру создавать капец лень
-void parse_data(graphics_base* ctx, std::string path); // источник — папка на диске (сырой io; fast_test)
+// Распарсенное описание render-graph (п.7): парсер целится СЮДА, а не в graphics_base — класс
+// больше не парсит конфиги. Держит только конфиг-векторы + скалярные результаты парсинга и
+// символьную таблицу (find_*) для разрешения имён→индексов во время парсинга. GPU-объекты
+// (resource_containers, execution_graph, semaphores, pairs) сюда НЕ входят — это рантайм graphics_base.
+struct render_config_storage {
+  std::vector<constant_value> constant_values;
+  std::vector<counter> counters;
+  std::vector<resource> resources;
+  std::vector<constant> constants;
+  std::vector<render_target> render_targets;
+  std::vector<descriptor> descriptors;
+  std::vector<sampler> samplers;
+  std::vector<material> materials;
+  std::vector<geometry> geometries;
+  std::vector<draw_group> draw_groups;
+  std::vector<step_base> steps;
+  std::vector<execution_pass_base> passes;
+  std::vector<render_graph_base> graphs;
+
+  // скалярные результаты парсинга
+  uint32_t swapchain_slot = INVALID_RESOURCE_SLOT;
+  uint32_t swapchain_counter_index = INVALID_RESOURCE_SLOT;
+  uint32_t per_frame_counter_index = INVALID_RESOURCE_SLOT;
+  uint32_t per_update_counter_index = INVALID_RESOURCE_SLOT;
+
+  // символьная таблица (линейный поиск по имени; parse-time). find_semaphore тут нет — семафоры рантайм.
+#define DE_PAINTER_FIND(fn, vec) \
+  inline uint32_t fn(const std::string_view& name) const { \
+    uint32_t i = 0; for (; i < vec.size() && vec[i].name != name; ++i) {} \
+    return i >= vec.size() ? INVALID_RESOURCE_SLOT : i; \
+  }
+  DE_PAINTER_FIND(find_constant_value, constant_values)
+  DE_PAINTER_FIND(find_resource, resources)
+  DE_PAINTER_FIND(find_counter, counters)
+  DE_PAINTER_FIND(find_constant, constants)
+  DE_PAINTER_FIND(find_render_target, render_targets)
+  DE_PAINTER_FIND(find_descriptor, descriptors)
+  DE_PAINTER_FIND(find_sampler, samplers)
+  DE_PAINTER_FIND(find_material, materials)
+  DE_PAINTER_FIND(find_geometry, geometries)
+  DE_PAINTER_FIND(find_draw_group, draw_groups)
+  DE_PAINTER_FIND(find_execution_step, steps)
+  DE_PAINTER_FIND(find_execution_pass, passes)
+  DE_PAINTER_FIND(find_render_graph, graphs)
+#undef DE_PAINTER_FIND
+};
+
+// Парсинг описания render-graph в render_config_storage (graphics_base НЕ участвует — п.7).
+// Только парсим и связываем структуры друг с другом; ничего GPU не создаём.
+render_config_storage build_render_config(std::string path); // источник — папка на диске (сырой io; fast_test)
 // источник — движковый demiurg-реестр: prefix вида "render_config/" адресует ресурсы
 // render_config_source (файлы описания render-graph). См. demiurg 1a, срез 2.
-void parse_data(graphics_base* ctx, const demiurg::resource_system* reg, std::string prefix);
-command_params parse_command(graphics_base* ctx, const step_base& step, const std::string_view& command_str);
+render_config_storage build_render_config(const demiurg::resource_system* reg, std::string prefix);
+command_params parse_command(render_config_storage* ctx, const step_base& step, const std::string_view& command_str);
 
 }
 }

@@ -381,7 +381,7 @@ struct constant_value_mirror {
   std::vector<std::tuple<std::string, constant_value::value_t>> presets;
   std::vector<std::tuple<std::string, constant_value::value_t>> scale_presets;
 
-  constant_value convert(const graphics_base& ctx) const {
+  constant_value convert(const render_config_storage& ctx) const {
     const uint32_t exists = ctx.find_constant_value(name);
     if (exists != UINT32_MAX) utils::error{}("Constant value '{}' is already exists", name);
 
@@ -419,7 +419,7 @@ struct resource_mirror {
   std::string swap;
 
   // mirror context
-  resource convert(const graphics_base& ctx) const {
+  resource convert(const render_config_storage& ctx) const {
     const uint32_t exists = ctx.find_resource(name);
     if (exists != UINT32_MAX) utils::error{}("Resource '{}' is already exists", name);
 
@@ -454,7 +454,7 @@ struct constant_mirror {
   std::string layout;
   std::vector<double> value;
 
-  constant convert(const graphics_base& ctx) const {
+  constant convert(const render_config_storage& ctx) const {
     const uint32_t exists = ctx.find_constant(name);
     if (exists != UINT32_MAX) utils::error{}("Constant '{}' is already exists", name);
 
@@ -519,7 +519,7 @@ struct render_target_mirror {
   std::vector<std::tuple<std::string, std::string>> resources;
   std::vector<blend_data_mirror> blending;
 
-  render_target convert(const graphics_base& ctx) const {
+  render_target convert(const render_config_storage& ctx) const {
     const uint32_t exists = ctx.find_render_target(name);
     if (exists != UINT32_MAX) utils::error{}("Render target '{}' is already exists", name);
 
@@ -587,7 +587,7 @@ struct sampler_mirror {
   std::string address = "repeat";
   // под доращивание: mipmap, anisotropy, lod, border_color, compare
 
-  sampler convert(const graphics_base& /*ctx*/) const {
+  sampler convert(const render_config_storage& /*ctx*/) const {
     sampler s;
     s.name = name;
     const uint32_t f = parse_filter(filter, name);
@@ -616,7 +616,7 @@ struct descriptor_mirror {
   std::string texture_sampler;
   std::string texture_stage = "fragment";
 
-  descriptor convert(const graphics_base& ctx) const {
+  descriptor convert(const render_config_storage& ctx) const {
     const uint32_t exists = ctx.find_descriptor(name);
     if (exists != UINT32_MAX) utils::error{}("Descriptor '{}' is already exists", name);
 
@@ -694,7 +694,7 @@ struct material_mirror {
   struct raster raster;
   struct depth depth;
 
-  material convert(const graphics_base& ctx) const {
+  material convert(const render_config_storage& ctx) const {
     const uint32_t exists = ctx.find_material(name);
     if (exists != UINT32_MAX) utils::error{}("Material '{}' is already exists", name);
 
@@ -745,7 +745,7 @@ struct geometry_mirror {
   std::string topology;
   bool restart = false;
 
-  geometry convert(const graphics_base& ctx) const {
+  geometry convert(const render_config_storage& ctx) const {
     const uint32_t exists = ctx.find_geometry(name);
     if (exists != UINT32_MAX) utils::error{}("Geometry '{}' is already exists", name);
 
@@ -775,7 +775,7 @@ struct draw_group_mirror {
   std::string draw_capacity;
   std::string type;
 
-  draw_group convert(const graphics_base& ctx) const {
+  draw_group convert(const render_config_storage& ctx) const {
     const uint32_t exists = ctx.find_draw_group(name);
     if (exists != UINT32_MAX) utils::error{}("Draw group '{}' is already exists", name);
 
@@ -824,7 +824,7 @@ struct render_graph2_mirror {
 
 static void parse_step2(
   const pass_step2_mirror& data,
-  graphics_base& ctx,
+  render_config_storage& ctx,
   step_base& step
 ) {
   if (ctx.find_execution_step(data.name) != UINT32_MAX) utils::error{}("Execution step with name '{}' is already exists", data.name);
@@ -924,7 +924,7 @@ static void parse_step2(
 
 static void parse_execution_pass2(
   const pass2_mirror& data,
-  graphics_base& ctx,
+  render_config_storage& ctx,
   execution_pass_base& pass
 ) {
   using ri = execution_pass_base::resource_info;
@@ -1002,7 +1002,7 @@ static void parse_execution_pass2(
 
 static void parse_render_graph2(
   const render_graph2_mirror& data,
-  graphics_base& ctx,
+  render_config_storage& ctx,
   render_graph_base& graph
 ) {
   if (ctx.find_render_graph(data.name) != UINT32_MAX) utils::error{}("Render graph with name '{}' is already exists", data.name);
@@ -1141,18 +1141,18 @@ static config_source make_demiurg_config_source(const demiurg::resource_system* 
   return src;
 }
 
-static void parse_data_impl(graphics_base* ctx, const config_source& src);
+static void parse_data_impl(render_config_storage& lctx, const config_source& src);
 
 // локальный контекст, потому что очень лениво делать отельный класс
 template <typename OUT, typename T>
-std::vector<OUT> convert(graphics_base& ctx, const std::vector<T> &in) {
+std::vector<OUT> convert(render_config_storage& ctx, const std::vector<T> &in) {
   std::vector<OUT> arr;
   for (const auto& el : in) { arr.emplace_back(el.convert(ctx)); }
   return arr;
 }
 
 template <typename OUT, typename T, typename F>
-std::vector<OUT> convert(graphics_base& ctx, const std::vector<T>& in, const F &f) {
+std::vector<OUT> convert(render_config_storage& ctx, const std::vector<T>& in, const F &f) {
   std::vector<OUT> arr;
   for (const auto& el : in) {
     f(el, ctx, arr.emplace_back());
@@ -1162,7 +1162,7 @@ std::vector<OUT> convert(graphics_base& ctx, const std::vector<T>& in, const F &
 
 semaphore::semaphore() noexcept { handles.fill(VK_NULL_HANDLE); }
 
-static void parse_data_impl(graphics_base* ctx, const config_source& src) {
+static void parse_data_impl(render_config_storage& lctx, const config_source& src) {
   const auto constant_values = parse_config_content<constant_value_mirror>(src.read_file("declare_values.tavl"), "declare_values.tavl");
   const auto counter_names = parse_config_content<std::string>(src.read_file("declare_counters.tavl"), "declare_counters.tavl");
   const auto constants = parse_texts<constant_mirror>(src.read_folder("constants/"), "constants/");
@@ -1177,7 +1177,6 @@ static void parse_data_impl(graphics_base* ctx, const config_source& src) {
   const auto execution_passes = parse_texts<pass2_mirror>(src.read_folder("execution_passes/"), "execution_passes/");
   const auto render_graphs = parse_texts<render_graph2_mirror>(src.read_folder("render_graphs/"), "render_graphs/");
 
-  graphics_base& lctx = *ctx;
   for (const auto& name : counter_names) { lctx.counters.emplace_back(); lctx.counters.back().name = name; }
 
   // не будем особенно душить, сами создадим
@@ -1308,12 +1307,16 @@ static void parse_data_impl(graphics_base* ctx, const config_source& src) {
   }
 }
 
-void parse_data(graphics_base* ctx, std::string path) {
-  parse_data_impl(ctx, make_fs_config_source(std::move(path)));
+render_config_storage build_render_config(std::string path) {
+  render_config_storage storage;
+  parse_data_impl(storage, make_fs_config_source(std::move(path)));
+  return storage;
 }
 
-void parse_data(graphics_base* ctx, const demiurg::resource_system* reg, std::string prefix) {
-  parse_data_impl(ctx, make_demiurg_config_source(reg, std::move(prefix)));
+render_config_storage build_render_config(const demiurg::resource_system* reg, std::string prefix) {
+  render_config_storage storage;
+  parse_data_impl(storage, make_demiurg_config_source(reg, std::move(prefix)));
+  return storage;
 }
 
 command_params::command_params() noexcept :
@@ -1331,7 +1334,7 @@ step_type::values step_base::type() const {
 // это капец
 // мы к сожалению не угадаем с форматом индирект буфера до того как эта функция будет запущена
 // многое зависит от текстовой команды, можем хотя бы проверить чтобы буфер был не меньше чем структура
-command_params parse_command(graphics_base* ctx, const step_base& step, const std::string_view& command_str) {
+command_params parse_command(render_config_storage* ctx, const step_base& step, const std::string_view& command_str) {
   const uint32_t geometry_index = step.geometry;
   const bool is_indexed = geometry_index < ctx->geometries.size() && ctx->geometries[geometry_index].index_type != geometry::index_type::none;
 
