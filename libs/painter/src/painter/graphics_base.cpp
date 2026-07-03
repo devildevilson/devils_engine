@@ -1251,6 +1251,15 @@ int32_t graphics_base::commit_parsed_resources(graphics_base& ctx) {
   constants_memory[0].resize(offset/sizeof(uint32_t), 0);
   constants_memory[1].resize(offset/sizeof(uint32_t), 0);
 
+  // Фаза 3: если задан стартовый граф — считаем used-set и создаём ТОЛЬКО его ресурсы/дескрипторы.
+  // Пусто ⇒ создаём всё (fs-путь fast_test/main.cpp; startup_graph_ там не задаётся).
+  resource_active_mask_.clear();
+  descriptor_active_mask_.clear();
+  if (!startup_graph_.empty()) {
+    const uint32_t gi = find_render_graph(startup_graph_);
+    if (gi != INVALID_RESOURCE_SLOT) compute_active_masks(gi);
+    else utils::warn("graphics_base: startup graph '{}' not found — создаём все ресурсы", startup_graph_);
+  }
 
   // начинаем создавать все подряд
   create_samplers(); // до layout'ов: immutable-сэмплеры зашиваются в descriptor set layout
@@ -1431,6 +1440,74 @@ void graphics_base::create_descriptor_set_layouts() {
   }
 }
 
+// Фаза 3: транзитивный used-set активного графа → resource_active_mask_/descriptor_active_mask_.
+// Над-аппроксимация БЕЗОПАСНА (лишний активный ресурс = как раньше; пропущенный нужный = краш),
+// поэтому берём с запасом. pass.read|write уже агрегирует барьеры шагов, ресурсы local-дескриптора,
+// cmd-ресурсы и subpass/pass-барьеры (см. parse_execution_step2/parse_execution_pass2). Отдельно
+// доносим то, что read/write НЕ покрывает: буферы draw_group и ресурсы дескрипторов из step.sets.
+void graphics_base::compute_active_masks(const uint32_t graph_index) {
+  resource_active_mask_.assign(resources.size(), false);
+  descriptor_active_mask_.assign(descriptors.size(), false);
+
+  const auto& graph = DS_ASSERT_ARRAY_GET(graphs, graph_index);
+
+  const auto mark_res = [&](const uint32_t idx) {
+    if (idx != INVALID_RESOURCE_SLOT && idx < resource_active_mask_.size()) resource_active_mask_[idx] = true;
+  };
+  const auto mark_desc = [&](const uint32_t idx) {
+    if (idx != INVALID_RESOURCE_SLOT && idx < descriptor_active_mask_.size()) descriptor_active_mask_[idx] = true;
+  };
+
+  mark_res(graph.present_source);
+
+  for (const uint32_t pass_index : graph.passes) {
+    const auto& pass = DS_ASSERT_ARRAY_GET(passes, pass_index);
+
+    // pass-level барьеры и subpass-вложения (все слоты; read/write НЕ покрывает transfer_dst/upload и т.п.)
+    for (const auto& group : pass.barriers)  for (const auto& info : group) mark_res(info.slot);
+    for (const auto& group : pass.subpasses) for (const auto& info : group) mark_res(info.slot);
+
+    if (pass.render_target != INVALID_RESOURCE_SLOT) {
+      const auto& rt = DS_ASSERT_ARRAY_GET(render_targets, pass.render_target);
+      for (const auto& [res_idx, usage] : rt.resources) mark_res(res_idx);
+    }
+
+    for (const uint32_t step_index : pass.steps) {
+      if (step_index == UINT32_MAX) continue; // маркер next_subpass
+      const auto& step = DS_ASSERT_ARRAY_GET(steps, step_index);
+
+      // step.barriers уже вбирает barriers + step.resources (local-descr) + cmd_params.resources
+      // (см. parse_execution_step2), но берём ещё и cmd_params явно — над-аппроксимация безопасна.
+      for (const auto& [res_idx, usage] : step.barriers) mark_res(res_idx);
+      for (const auto& [res_idx, usage] : step.cmd_params.resources) mark_res(res_idx);
+
+      mark_desc(step.descriptor);
+      for (const uint32_t d : step.sets) mark_desc(d);
+
+      if (step.draw_group != INVALID_RESOURCE_SLOT) {
+        const auto& dg = DS_ASSERT_ARRAY_GET(draw_groups, step.draw_group);
+        mark_res(dg.instances_buffer);
+        mark_res(dg.indirect_buffer);
+        mark_desc(dg.descriptor);
+      }
+    }
+  }
+
+  // used-дескрипторы → их layout-ресурсы (ресурсы из sets, не попавшие в pass.read/write)
+  for (uint32_t d = 0; d < descriptors.size(); ++d) {
+    if (!descriptor_active_mask_[d]) continue;
+    for (const auto& [slot, usage, sampler_index, stages] : descriptors[d].layout) mark_res(slot);
+  }
+
+  uint32_t res_count = 0, desc_count = 0;
+  for (const bool b : resource_active_mask_) res_count += b ? 1 : 0;
+  for (const bool b : descriptor_active_mask_) desc_count += b ? 1 : 0;
+  utils::info(
+    "graphics_base: active graph '{}' uses {}/{} resources, {}/{} descriptors",
+    graph.name, res_count, resources.size(), desc_count, descriptors.size()
+  );
+}
+
 void graphics_base::create_resources() {
   // наверное тут пробежимся по шагам и соберем usage
   std::vector<vk::BufferUsageFlags> buffer_flags(resources.size());
@@ -1515,6 +1592,7 @@ void graphics_base::create_resources() {
     }
 
     if (res.role == role::present) continue;
+    if (!is_resource_active(i)) continue; // Фаза 3: ресурс не нужен активному графу — не создаём контейнер
 
     const bool is_buffer = role::is_buffer(res.role);
     //const auto& size_value = DS_ASSERT_ARRAY_GET(constant_values, res.size);
@@ -1645,7 +1723,9 @@ void graphics_base::create_resources() {
 
   for (uint32_t i = 0; i < resources.size(); ++i) {
     auto& res = resources[i];
-    
+
+    if (res.role != role::present && !is_resource_active(i)) continue; // Фаза 3: пропускаем неактивные
+
     const uint32_t cont_index = container_table[i];
 
     auto& match = matching[cont_index];
@@ -1700,7 +1780,9 @@ void graphics_base::create_resources() {
 }
 
 void graphics_base::create_descriptor_sets() {
-  for (auto& d : descriptors) {
+  for (uint32_t di = 0; di < descriptors.size(); ++di) {
+    if (!is_descriptor_active(di)) continue; // Фаза 3: дескриптор не нужен активному графу
+    auto& d = descriptors[di];
     descriptor_set_maker dsm(device);
     for (uint32_t i = 0; i < frames_in_flight(); ++i) {
       dsm.layout(d.setlayout);
@@ -1731,6 +1813,7 @@ void graphics_base::update_descriptors() {
   const uint32_t current_set_index = cur_frame_index % frames_in_flight_count;
 
   for (uint32_t i = 0; i < descriptors.size(); ++i) {
+    if (!is_descriptor_active(i)) continue; // Фаза 3: пропускаем дескрипторы вне активного графа
     const auto& d = descriptors[i];
     const auto set = d.sets[current_set_index];
 
