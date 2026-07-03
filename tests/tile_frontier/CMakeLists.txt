@@ -37,6 +37,7 @@ set(HDR_LIST
 set(SRC_LIST
   main.cpp
   src/core/config.cpp
+  src/core/app_config_resource.cpp
   src/core/sound_system.cpp
   src/core/render_system.cpp
   src/core/assets_system.cpp

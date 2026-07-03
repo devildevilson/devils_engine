@@ -50,9 +50,8 @@ struct app_config {
   metrics_config metrics;
 };
 
-// Загружает app.tavl. Если файла нет / есть диагностики — пишет warning и
-// возвращает значения по умолчанию для недостающих полей.
-app_config load_app_config(const std::string& path);
+// Конфиг грузится как demiurg-ресурс (app_config_resource) из движкового реестра —
+// см. simulation::init. Прежний load_app_config(file_io) удалён (demiurg 1a, Q3).
 
 // Резолв путей относительно project_folder(): абсолютные ('/...') оставляем как есть.
 std::string make_project_path(std::string path);
