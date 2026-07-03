@@ -9,6 +9,9 @@
 #include "devils_engine/utils/type_traits.h"
 #include "devils_engine/utils/fileio.h"
 #include "devils_engine/utils/string-utils.hpp"
+#include "devils_engine/demiurg/resource_system.h"
+#include "render_config_source.h"
+#include <functional>
 #include "gtl/phmap.hpp"
 #include "tavl/tavl.h"
 
@@ -1073,6 +1076,73 @@ std::vector<T> parse_folder(const std::string &folder) {
   return arr;
 }
 
+// Источник текста render-config, абстрагированный от места хранения. parse_data кормится
+// им, не зная, откуда пришёл текст (папка на диске или движковый demiurg-реестр).
+//   read_file("declare_values.tavl") -> текст одиночного файла ("" если нет)
+//   read_folder("constants/")        -> тексты всех файлов категории
+struct config_source {
+  std::function<std::string(const std::string&)> read_file;
+  std::function<std::vector<std::string>(const std::string&)> read_folder;
+};
+
+// распарсить все тексты одной категории в vector<T>
+template <typename T>
+static std::vector<T> parse_texts(const std::vector<std::string>& texts, const std::string& label) {
+  std::vector<T> arr;
+  for (const auto& content : texts) {
+    auto local = parse_config_content<T>(content, label);
+    for (auto& el : local) { arr.emplace_back(std::move(el)); }
+  }
+  return arr;
+}
+
+// источник на файловой системе (сырой io) — используется fast_test'ом
+static config_source make_fs_config_source(std::string path) {
+  config_source src;
+  src.read_file = [path](const std::string& name) -> std::string {
+    const auto file = path + name;
+    if (!file_io::exists(file)) { utils::warn("File '{}' not found", file); return {}; }
+    return file_io::read(file);
+  };
+  src.read_folder = [path](const std::string& name) -> std::vector<std::string> {
+    std::vector<std::string> out;
+    const auto folder = path + name;
+    if (!fs::exists(folder) || !fs::is_directory(folder)) return out; // категории может не быть
+    for (const auto& entry : fs::directory_iterator(folder)) {
+      if (!entry.is_regular_file()) { utils::warn("Ignore '{}'", entry.path().generic_string()); continue; }
+      out.emplace_back(file_io::read(entry.path().generic_string()));
+    }
+    return out;
+  };
+  return src;
+}
+
+// источник в движковом demiurg-реестре: prefix вида "render_config/"; ресурсы предварительно
+// доведены до warm (текст в памяти) на этапе инициализации, здесь только читаем text.
+static config_source make_demiurg_config_source(const demiurg::resource_system* reg, std::string prefix) {
+  config_source src;
+  src.read_file = [reg, prefix](const std::string& name) -> std::string {
+    // "declare_values.tavl" -> id "render_config/declare_values"
+    std::string id = prefix + name;
+    const auto dot = id.rfind('.');
+    if (dot != std::string::npos) id = id.substr(0, dot);
+    const auto* r = reg->get<render_config_source>(id);
+    if (r == nullptr) { utils::warn("render config resource '{}' not found in engine registry", id); return {}; }
+    return r->text;
+  };
+  src.read_folder = [reg, prefix](const std::string& name) -> std::vector<std::string> {
+    std::vector<render_config_source*> arr;
+    reg->find<render_config_source>(prefix + name, arr); // префиксный поиск по id
+    std::vector<std::string> out;
+    out.reserve(arr.size());
+    for (auto* r : arr) out.emplace_back(r->text);
+    return out;
+  };
+  return src;
+}
+
+static void parse_data_impl(graphics_base* ctx, const config_source& src);
+
 // локальный контекст, потому что очень лениво делать отельный класс
 template <typename OUT, typename T>
 std::vector<OUT> convert(graphics_base& ctx, const std::vector<T> &in) {
@@ -1092,20 +1162,20 @@ std::vector<OUT> convert(graphics_base& ctx, const std::vector<T>& in, const F &
 
 semaphore::semaphore() noexcept { handles.fill(VK_NULL_HANDLE); }
 
-void parse_data(graphics_base* ctx, std::string path) {
-  const auto& constant_values = parse_file<constant_value_mirror>(path + "declare_values.tavl");
-  const auto& counter_names = parse_file<std::string>(path + "declare_counters.tavl");
-  const auto& constants = parse_folder<constant_mirror>(path + "constants/");
-  const auto& resources = parse_folder<resource_mirror>(path + "resources/");
-  const auto& samplers = parse_folder<sampler_mirror>(path + "samplers/");
-  const auto& descriptors = parse_folder<descriptor_mirror>(path + "descriptors/");
-  const auto& render_targets = parse_folder<render_target_mirror>(path + "render_targets/");
-  const auto& geometries = parse_folder<geometry_mirror>(path + "geometries/");
-  const auto& materials = parse_folder<material_mirror>(path + "materials/");
-  const auto& draw_groups = parse_folder<draw_group_mirror>(path + "draw_groups/");
-  const auto& steps = parse_folder<pass_step2_mirror>(path + "steps/");
-  const auto& execution_passes = parse_folder<pass2_mirror>(path + "execution_passes/");
-  const auto& render_graphs = parse_folder<render_graph2_mirror>(path + "render_graphs/");
+static void parse_data_impl(graphics_base* ctx, const config_source& src) {
+  const auto constant_values = parse_config_content<constant_value_mirror>(src.read_file("declare_values.tavl"), "declare_values.tavl");
+  const auto counter_names = parse_config_content<std::string>(src.read_file("declare_counters.tavl"), "declare_counters.tavl");
+  const auto constants = parse_texts<constant_mirror>(src.read_folder("constants/"), "constants/");
+  const auto resources = parse_texts<resource_mirror>(src.read_folder("resources/"), "resources/");
+  const auto samplers = parse_texts<sampler_mirror>(src.read_folder("samplers/"), "samplers/");
+  const auto descriptors = parse_texts<descriptor_mirror>(src.read_folder("descriptors/"), "descriptors/");
+  const auto render_targets = parse_texts<render_target_mirror>(src.read_folder("render_targets/"), "render_targets/");
+  const auto geometries = parse_texts<geometry_mirror>(src.read_folder("geometries/"), "geometries/");
+  const auto materials = parse_texts<material_mirror>(src.read_folder("materials/"), "materials/");
+  const auto draw_groups = parse_texts<draw_group_mirror>(src.read_folder("draw_groups/"), "draw_groups/");
+  const auto steps = parse_texts<pass_step2_mirror>(src.read_folder("steps/"), "steps/");
+  const auto execution_passes = parse_texts<pass2_mirror>(src.read_folder("execution_passes/"), "execution_passes/");
+  const auto render_graphs = parse_texts<render_graph2_mirror>(src.read_folder("render_graphs/"), "render_graphs/");
 
   graphics_base& lctx = *ctx;
   for (const auto& name : counter_names) { lctx.counters.emplace_back(); lctx.counters.back().name = name; }
@@ -1236,6 +1306,14 @@ void parse_data(graphics_base* ctx, std::string path) {
       lctx.descriptors.emplace_back(std::move(d));
     }
   }
+}
+
+void parse_data(graphics_base* ctx, std::string path) {
+  parse_data_impl(ctx, make_fs_config_source(std::move(path)));
+}
+
+void parse_data(graphics_base* ctx, const demiurg::resource_system* reg, std::string prefix) {
+  parse_data_impl(ctx, make_demiurg_config_source(reg, std::move(prefix)));
 }
 
 command_params::command_params() noexcept :

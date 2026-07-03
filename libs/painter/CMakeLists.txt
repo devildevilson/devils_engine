@@ -25,6 +25,7 @@ endif()
 set(SRC_LIST
   src/painter/auxiliary.cpp
   src/painter/glsl_source_file.cpp
+  src/painter/render_config_source.cpp
   src/painter/makers.cpp
   src/painter/shader_crafter.cpp
   #src/painter/system.cpp
@@ -45,6 +46,7 @@ set(SRC_LIST
 set(HDR_LIST
   include/devils_engine/painter/auxiliary.h
   include/devils_engine/painter/glsl_source_file.h
+  include/devils_engine/painter/render_config_source.h
   include/devils_engine/painter/makers.h
   include/devils_engine/painter/shader_crafter.h
   #include/devils_engine/painter/system.h

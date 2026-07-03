@@ -22,6 +22,7 @@
 */
 
 namespace devils_engine {
+namespace demiurg { class resource_system; }
 namespace painter {
 
 struct assets_base;
@@ -193,9 +194,14 @@ struct graphics_base {
   void write_constant_data(const uint32_t slot, const T& data);
 
 
-  int32_t recreate_basic_resources(const std::string& folder); // возвратим статус
+  int32_t recreate_basic_resources(const std::string& folder); // источник — папка на диске (fast_test)
+  // источник — движковый demiurg-реестр (ресурсы render_config_source по префиксу), см. demiurg 1a срез 2
+  int32_t recreate_basic_resources(const demiurg::resource_system* reg, const std::string& prefix);
 
   // PRIVATE
+
+  // общий хвост recreate_basic_resources: забирает распарсенный ctx и пересоздаёт GPU-ресурсы
+  int32_t commit_parsed_resources(graphics_base& ctx);
 
   // resize_viewport 
   void recreate_swapchain(const uint32_t width, const uint32_t height); // свопчеин частично состоит из ресурса который мы задали

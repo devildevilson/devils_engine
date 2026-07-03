@@ -9,15 +9,23 @@
 
 #include "actors.h"
 
+namespace devils_engine { namespace demiurg { class resource_system; } }
+
 namespace tile_frontier {
 namespace core {
+
+using namespace devils_engine;
 
 struct render_simulation_init;
 
 // Параметры запуска рендера. Заполняются из app_config в simulation::init()
 // и фиксируются на время жизни render_simulation.
 struct render_simulation_config {
-  std::string render_config_folder;
+  // Движковый demiurg-реестр (config/shaders/render-graph), построенный в simulation::init
+  // и доступный только на чтение. render-graph грузится из него по префиксу render_config_prefix
+  // (ресурсы render_config_source), а не сканом папки. См. demiurg 1a, срез 2.
+  const demiurg::resource_system* engine_registry = nullptr;
+  std::string render_config_prefix; // напр. "render_config/"
   std::string pipeline_cache_path;
   std::string graph_name = "graphics1";
   bool create_vulkan_on_init = true;

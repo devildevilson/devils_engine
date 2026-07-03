@@ -12,6 +12,7 @@
 #include "vulkan_minimal.h"
 
 namespace devils_engine {
+namespace demiurg { class resource_system; }
 namespace painter {
 
 #ifndef _NDEBUG
@@ -439,7 +440,10 @@ struct semaphore {
 
 // ничего не создаем, только парсим и связываем структуры друг с другом
 // передаем локальный graphics_base, потому что отдельную структуру создавать капец лень
-void parse_data(graphics_base* ctx, std::string path); // folder?
+void parse_data(graphics_base* ctx, std::string path); // источник — папка на диске (сырой io; fast_test)
+// источник — движковый demiurg-реестр: prefix вида "render_config/" адресует ресурсы
+// render_config_source (файлы описания render-graph). См. demiurg 1a, срез 2.
+void parse_data(graphics_base* ctx, const demiurg::resource_system* reg, std::string prefix);
 command_params parse_command(graphics_base* ctx, const step_base& step, const std::string_view& command_str);
 
 }

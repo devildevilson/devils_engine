@@ -16,6 +16,8 @@
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/demiurg/module_system.h>
 
+#include <devils_engine/painter/render_config_source.h>
+
 #include <devils_engine/visage/system.h>
 #include <devils_engine/visage/font.h>
 #include <devils_engine/visage/font_atlas_packer.h>
@@ -349,9 +351,19 @@ void simulation::init() {
   // Новый demiurg-API не нужен — module_system::load_modules умеет директорию как модуль.
   container->engine_resources = std::make_unique<demiurg::resource_system>();
   container->engine_resources->register_type<app_config_resource>("config", "tavl");
+  container->engine_resources->register_type<painter::render_config_source>("render_config", "tavl");
   container->engine_modules = std::make_unique<demiurg::module_system>(utils::project_folder() + "resources/");
   container->engine_modules->load_modules({ demiurg::module_system::list_entry{"engine", "", ""} });
   container->engine_resources->parse_resources(container->engine_modules.get());
+
+  // Доводим все файлы описания render-graph до warm (текст в памяти) ЗДЕСЬ, на главном
+  // потоке до старта рендера — дальше поток рендера читает их только на чтение (parse_data).
+  {
+    std::vector<painter::render_config_source*> rc;
+    container->engine_resources->find<painter::render_config_source>("render_config", rc);
+    for (auto* r : rc) r->load(utils::safe_handle_t{});
+    utils::info("engine registry: preloaded {} render-config sources", rc.size());
+  }
 
   const auto config_path = utils::project_folder() + "resources/engine/config/app.tavl"; // для лога
   if (auto* cfg_res = container->engine_resources->get<app_config_resource>("config/app")) {
@@ -396,7 +408,9 @@ void simulation::init() {
 
   if (container->config.render.enabled) {
     render_simulation_config render_cfg;
-    render_cfg.render_config_folder = make_project_folder_path(container->config.render.config_folder);
+    render_cfg.engine_registry = container->engine_resources.get();
+    // config.config_folder ("render_config") — теперь ПРЕФИКС в движковом реестре, не путь на диске
+    render_cfg.render_config_prefix = container->config.render.config_folder + "/";
     render_cfg.pipeline_cache_path = make_project_path(container->config.render.pipeline_cache);
     render_cfg.graph_name = container->config.render.graph;
     render_cfg.headless = container->config.render.headless;

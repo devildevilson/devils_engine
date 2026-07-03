@@ -130,10 +130,13 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     ${PROJECT_OUTPUT_DIRECTORY}/resources
 )
 
+# render-graph описание грузится через движковый demiurg-реестр (resources/engine/render_config/),
+# а не сканом папки. test_render_config остаётся каноничным источником (шарится с fast_test/tests),
+# копируем его в движковое дерево ПОСЛЕ копирования resources/ (порядок POST_BUILD сохраняется).
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${CMAKE_SOURCE_DIR}/tests/test_render_config
-    ${PROJECT_OUTPUT_DIRECTORY}/render_config
+    ${PROJECT_OUTPUT_DIRECTORY}/resources/engine/render_config
 )
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
