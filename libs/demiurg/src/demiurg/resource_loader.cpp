@@ -1,5 +1,7 @@
 #include "resource_loader.h"
 
+#include <algorithm>
+
 #include "devils_engine/utils/safe_handle.h"
 
 namespace devils_engine {
@@ -15,18 +17,21 @@ resource_loader::entry* resource_loader::find(resource_interface* res) noexcept 
   return nullptr;
 }
 
-void resource_loader::request(resource_interface* res, state::values target) {
+void resource_loader::request(resource_interface* res, int32_t target) {
   if (res == nullptr) return;
 
+  // target не может превышать эффективный потолок ресурса (учёт warm_and_hot_same / top_state)
+  target = std::min(std::max(target, 0), res->final_state());
+
   if (auto* e = find(res)) {
-    e->target = static_cast<int32_t>(target); // последний запрос побеждает
+    e->target = target; // последний запрос побеждает
     return;
   }
 
   // Уже в нужном состоянии и ничего не делаем — нет смысла заводить запись.
   if (res->state() == target) return;
 
-  entries.push_back(entry{res, static_cast<int32_t>(target), false});
+  entries.push_back(entry{res, target, false});
 }
 
 size_t resource_loader::update(std::vector<external_job>& out) {
@@ -49,22 +54,21 @@ size_t resource_loader::update(std::vector<external_job>& out) {
     const utils::safe_handle_t handle(e.res);
 
     if (cur < e.target) {
-      // движемся вверх по состояниям
-      if (cur == static_cast<int32_t>(state::cold)) {
-        e.res->load(handle); // cold->warm, локально (диск/CPU)
-      } else {
-        // warm->hot: GPU-сторона, отдаём наружу
+      // движемся вверх: переход cur -> cur+1
+      if (e.res->is_external_step(cur)) {
+        // внешний (GPU/поток рендера) — отдаём наружу
         out.push_back(external_job{e.res, true});
         e.in_flight = true;
+      } else {
+        e.res->load(handle); // локально (диск/CPU)
       }
     } else {
-      // движемся вниз по состояниям
-      if (cur == static_cast<int32_t>(state::hot)) {
-        // hot->warm: GPU-сторона, отдаём наружу
+      // движемся вниз: переход cur -> cur-1 (обратный к (cur-1)->cur)
+      if (e.res->is_external_step(cur - 1)) {
         out.push_back(external_job{e.res, false});
         e.in_flight = true;
       } else {
-        e.res->unload(handle); // warm->cold, локально
+        e.res->unload(handle); // локально
       }
     }
 

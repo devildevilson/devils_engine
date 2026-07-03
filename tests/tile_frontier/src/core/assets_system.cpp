@@ -69,7 +69,7 @@ void assets_simulation::update(const size_t) {
 
   // запросы от main: довести ресурс до target
   dispatcher_consume(container->load_commands, container->load_cache, [this] (const auto& cmd) {
-    container->loader.request(cmd.res, static_cast<demiurg::state::values>(cmd.target));
+    container->loader.request(cmd.res, cmd.target); // target — уровень FSM (int), клампится в request
   });
 
   // mock world streaming: CPU-чанк генерируется на assets thread и возвращается main actor.
