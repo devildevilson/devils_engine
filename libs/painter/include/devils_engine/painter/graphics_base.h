@@ -93,13 +93,15 @@ struct graphics_base {
   const demiurg::resource_system* config_reg_ = nullptr;
   std::string shader_prefix_;
 
-  // Фаза 3: селективное создание ресурсов. Если startup_graph_ задан и найден, commit
-  // вычисляет транзитивный used-set этого графа и создаёт ТОЛЬКО нужные ему GPU-ресурсы
+  // Фаза 3: селективное создание ресурсов. Если resident_graphs_ задан и найден, commit
+  // вычисляет транзитивный used-set этих графов и создаёт ТОЛЬКО нужные им GPU-ресурсы
   // (контейнеры) и дескрипторы. Индексы глобальные/стабильные — не компактятся,
   // неиспользуемые слоты остаются без backing. graph_filtered_==false ⇒ создаём ВСЁ (обратная
-  // совместимость: fs-путь fast_test/main.cpp, где startup_graph_ не задан).
+  // совместимость: fs-путь fast_test/main.cpp, где resident-графы не заданы).
   std::string startup_graph_;
+  std::vector<std::string> resident_graphs_;
   bool graph_filtered_ = false;              // включена ли фильтрация по used-set
+  resource_usage_t graph_active_mask_;
   resource_usage_t resource_active_mask_;    // bitset<MAXIMUM_RENDERING_RESOURCES_COUNT>, значим при graph_filtered_
   resource_usage_t descriptor_active_mask_;
 
@@ -144,9 +146,16 @@ struct graphics_base {
     config_reg_ = reg;
     shader_prefix_ = std::move(prefix);
   }
-  // Фаза 3: задать граф, под который создавать ресурсы. Вызывать ДО commit_parsed_resources.
-  // Пусто ⇒ создаём все ресурсы (обратная совместимость).
-  inline void set_startup_graph(std::string name) { startup_graph_ = std::move(name); }
+  // Фаза 3: задать графы, которые должны жить одновременно. Вызывать ДО commit_parsed_resources.
+  // Пустой resident-набор ⇒ создаём все ресурсы (обратная совместимость).
+  inline void set_startup_graph(std::string name) {
+    startup_graph_ = std::move(name);
+    resident_graphs_.clear();
+    if (!startup_graph_.empty()) resident_graphs_.push_back(startup_graph_);
+  }
+  inline void add_resident_graph(std::string name) { if (!name.empty()) resident_graphs_.push_back(std::move(name)); }
+  inline void set_resident_graphs(std::vector<std::string> names) { resident_graphs_ = std::move(names); }
+  inline bool is_graph_active(const uint32_t i) const { return !graph_filtered_ || graph_active_mask_.test(i); }
   inline bool is_resource_active(const uint32_t i) const { return !graph_filtered_ || resource_active_mask_.test(i); }
   inline bool is_descriptor_active(const uint32_t i) const { return !graph_filtered_ || descriptor_active_mask_.test(i); }
   void set_surface(VkSurfaceKHR surface, const uint32_t width, const uint32_t height);
@@ -258,7 +267,7 @@ struct graphics_base {
 
   // recreate_basic_resources
   void clear_prev_resources();
-  void compute_active_masks(const uint32_t graph_index); // Фаза 3: транзитивный used-set графа
+  void compute_active_masks(const std::vector<uint32_t>& graph_indices); // Фаза 3: транзитивный used-set resident-графов
   void create_samplers();
   void create_descriptor_set_layouts();
   void create_resources();
@@ -266,9 +275,10 @@ struct graphics_base {
   void revalidate_pairs(const std::vector<std::string> &prev_drav_group_names);
 
   void update_all_descriptors(); // ?
+  render_graph_instance create_render_graph_instance(const uint32_t index);
 
   template <typename T, typename... Args>
-  T* create_render_step(Args&&... args);
+  T* create_render_step(render_graph_instance& graph, Args&&... args);
 
   bool presentable_state_stable() const;
   bool presentable_state_suboptimal() const;
@@ -357,20 +367,20 @@ void graphics_base::write_constant_data(const uint32_t slot, const T& data) {
 }
 
 template <typename T, typename... Args>
-T* graphics_base::create_render_step(Args&&... args) {
+T* graphics_base::create_render_step(render_graph_instance& graph, Args&&... args) {
   auto ptr = std::make_unique<T>(std::forward<Args>(args)...);
   ptr->create_related_primitives(this);
   auto ptr_raw = ptr.get();
 
   if constexpr (std::is_base_of_v<pipeline_recreation, T>) {
-    execution_graph.pipeline_steps.push_back(ptr_raw);
+    graph.pipeline_steps.push_back(ptr_raw);
   }
 
   if constexpr (std::is_base_of_v<viewport_resizer, T>) {
-    execution_graph.viewport_steps.push_back(ptr_raw);
+    graph.viewport_steps.push_back(ptr_raw);
   }
 
-  execution_graph.steps.emplace_back(std::move(ptr));
+  graph.steps.emplace_back(std::move(ptr));
   return ptr_raw;
 }
 

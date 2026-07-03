@@ -798,7 +798,21 @@ void render_graph_instance::resize_viewport(const graphics_base* ctx, const uint
 void render_graph_instance::clear() {
   pipeline_steps.clear();
   viewport_steps.clear();
-  groups.clear(); // тут аллоцированный командный буфер...
+
+  for (auto& group : groups) {
+    std::vector<vk::CommandBuffer> buffers;
+    buffers.reserve(group.frames.size());
+    for (auto& frame : group.frames) {
+      if (frame.buffer == VK_NULL_HANDLE) continue;
+      buffers.emplace_back(frame.buffer);
+      frame.buffer = VK_NULL_HANDLE;
+    }
+    if (!buffers.empty() && group.device != VK_NULL_HANDLE && group.pool != VK_NULL_HANDLE) {
+      vk::Device(group.device).freeCommandBuffers(group.pool, buffers);
+    }
+  }
+
+  groups.clear();
   steps.clear();
 
   for (auto& s : local_semaphores) {

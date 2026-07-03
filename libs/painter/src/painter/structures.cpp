@@ -1302,6 +1302,7 @@ static void parse_data_impl(render_config_storage& lctx, const config_source& sr
       d.name = group.name + ".descriptor";
       d.layout = { std::make_tuple(group.instances_buffer, usage::storage_write, UINT32_MAX, uint32_t(VK_SHADER_STAGE_ALL)), std::make_tuple(group.indirect_buffer, usage::storage_write, UINT32_MAX, uint32_t(VK_SHADER_STAGE_ALL)) };
 
+      group.descriptor = lctx.descriptors.size();
       lctx.descriptors.emplace_back(std::move(d));
     }
   }
