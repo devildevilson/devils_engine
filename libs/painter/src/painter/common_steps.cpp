@@ -8,6 +8,9 @@
 #include "auxiliary.h"
 #include "assets_base.h"
 #include "shader_crafter.h"
+#include "shader_source_file.h"
+#include "glsl_source_file.h"
+#include "devils_engine/demiurg/resource_system.h"
 #include "shaderc/shaderc.h"
 
 #include <algorithm>
@@ -233,6 +236,57 @@ void graphics_step_instance::create_pipeline_layout(const graphics_base* ctx) {
   pipeline_layout = plm.create(step.name + ".pipeline_layout");
 }
 
+// Загрузка одного шейдер-модуля (Фаза 1: конфиг painter на рельсах demiurg).
+// По расширению: .spv → готовые байты (shader_source_file, без компиляции); иначе GLSL
+// (glsl_source_file) → shader_crafter с реальным реестром (резолв #include через demiurg).
+// Если ctx->config_reg_ == nullptr — fs-fallback через file_io (fast_test / корневой main.cpp).
+static vk::UniqueShaderModule load_shader_module(const graphics_base* ctx, const std::string& shader_path, const uint32_t shader_kind) {
+  const auto make_module = [ctx](const void* data, const size_t bytes) {
+    vk::ShaderModuleCreateInfo smci{};
+    smci.codeSize = bytes;
+    smci.pCode = reinterpret_cast<const uint32_t*>(data);
+    return vk::Device(ctx->device).createShaderModuleUnique(smci);
+  };
+
+  const bool is_spv = shader_path.size() >= 4 && shader_path.compare(shader_path.size() - 4, 4, ".spv") == 0;
+
+  if (ctx->config_reg_ != nullptr) {
+    // demiurg-id = префикс + путь без ПОСЛЕДНЕГО расширения (parse_path режет по последней '.')
+    const size_t last_dot = shader_path.rfind('.');
+    const std::string stem = last_dot == std::string::npos ? shader_path : shader_path.substr(0, last_dot);
+    const std::string id = ctx->shader_prefix_ + stem;
+
+    if (is_spv) {
+      auto* res = ctx->config_reg_->get<shader_source_file>(id);
+      if (res == nullptr) utils::error{}("Shader resource '{}' (spv) not found in engine registry", id);
+      return make_module(res->memory.data(), res->memory.size());
+    }
+
+    auto* res = ctx->config_reg_->get<glsl_source_file>(id);
+    if (res == nullptr) utils::error{}("Shader resource '{}' (glsl) not found in engine registry", id);
+
+    shader_crafter sc(ctx->config_reg_);
+    sc.set_optimization(true);
+    sc.set_shader_entry_point("main");
+    sc.set_shader_type(shader_kind);
+    const auto spv = sc.compile(id, res->memory);
+    if (spv.empty()) utils::error{}("Shader '{}' compilation failed\nError: {}", id, sc.err_msg());
+    return make_module(spv.data(), spv.size() * sizeof(spv[0]));
+  }
+
+  // fs-fallback
+  const auto full_path = utils::project_folder() + "tests/shaders/" + shader_path;
+  if (!file_io::exists(full_path)) utils::error{}("Shader file '{}' not found", full_path);
+  const auto content = file_io::read(full_path);
+  shader_crafter sc(nullptr);
+  sc.set_optimization(true);
+  sc.set_shader_entry_point("main");
+  sc.set_shader_type(shader_kind);
+  const auto spv = sc.compile(full_path, content);
+  if (spv.empty()) utils::error{}("Shader '{}' compilation failed\nError: {}", full_path, sc.err_msg());
+  return make_module(spv.data(), spv.size() * sizeof(spv[0]));
+}
+
 void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
   const auto& step = DS_ASSERT_ARRAY_GET(ctx->steps, super);
 
@@ -244,49 +298,10 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
   const auto& material = DS_ASSERT_ARRAY_GET(ctx->materials, step.material);
 
   {
-    shader_crafter sc(nullptr);
-
-    // тут шейдеры
-    const auto shaders_path = utils::project_folder() + "tests/shaders/";
-    if (!material.shaders.vertex.empty()) {
-      const auto full_path = shaders_path + material.shaders.vertex;
-      const auto content = file_io::read(full_path);
-      if (!file_io::exists(full_path)) utils::error{}("Shader file '{}' not found", full_path);
-
-      sc.set_optimization(true);
-      sc.set_shader_entry_point("main");
-      sc.set_shader_type(shaderc_vertex_shader);
-
-      const auto res = sc.compile(full_path, content);
-      if (res.empty()) {
-        utils::error{}("Vertex shader compilation failed\nError: {}", sc.err_msg());
-      }
-
-      vk::ShaderModuleCreateInfo smci{};
-      smci.codeSize = res.size() * sizeof(res[0]);
-      smci.pCode = res.data();
-      usm_vertex = vk::Device(device).createShaderModuleUnique(smci);
-    }
-
-    if (!material.shaders.fragment.empty()) {
-      const auto full_path = shaders_path + material.shaders.fragment;
-      const auto content = file_io::read(full_path);
-      if (!file_io::exists(full_path)) utils::error{}("Shader file '{}' not found", full_path);
-
-      sc.set_optimization(true);
-      sc.set_shader_entry_point("main");
-      sc.set_shader_type(shaderc_fragment_shader);
-
-      const auto res = sc.compile(full_path, content);
-      if (res.empty()) {
-        utils::error{}("Fragment shader compilation failed\nError: {}", sc.err_msg());
-      }
-
-      vk::ShaderModuleCreateInfo smci{};
-      smci.codeSize = res.size() * sizeof(res[0]);
-      smci.pCode = res.data();
-      usm_fragment = vk::Device(device).createShaderModuleUnique(smci);
-    }
+    if (!material.shaders.vertex.empty())
+      usm_vertex = load_shader_module(ctx, material.shaders.vertex, shaderc_vertex_shader);
+    if (!material.shaders.fragment.empty())
+      usm_fragment = load_shader_module(ctx, material.shaders.fragment, shaderc_fragment_shader);
 
     pm.addShader(vk::ShaderStageFlagBits::eVertex, usm_vertex.get());
     pm.addShader(vk::ShaderStageFlagBits::eFragment, usm_fragment.get());

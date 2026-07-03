@@ -17,6 +17,10 @@
 #include <devils_engine/demiurg/module_system.h>
 
 #include <devils_engine/painter/render_config_source.h>
+#include <devils_engine/painter/glsl_source_file.h>
+#include <devils_engine/painter/shader_source_file.h>
+#include <devils_engine/painter/pipeline_cache_resource.h>
+#include <devils_engine/utils/fileio.h>
 
 #include <devils_engine/visage/system.h>
 #include <devils_engine/visage/font.h>
@@ -163,6 +167,10 @@ struct simulation_init {
   // resource_system, изолированный от игрового (моды живут в assets). См. demiurg 1a (Q2).
   std::unique_ptr<demiurg::module_system> engine_modules;
   std::unique_ptr<demiurg::resource_system> engine_resources;
+
+  // Pipeline cache (Фаза 2): ОТДЕЛЬНЫЙ demiurg-модуль над writable cache-папкой (не бандлится).
+  std::unique_ptr<demiurg::module_system> cache_modules;
+  std::unique_ptr<demiurg::resource_system> cache_resources;
 
   std::unique_ptr<thread::atomic_pool> pool_container;
   thread::atomic_pool* pool;
@@ -332,6 +340,10 @@ void simulation::init() {
   container->engine_resources = std::make_unique<demiurg::resource_system>();
   container->engine_resources->register_type<app_config_resource>("config", "tavl");
   container->engine_resources->register_type<painter::render_config_source>("render_config", "tavl");
+  // Шейдеры (Фаза 1): GLSL под папкой shaders/ (тип "shaders"), SPIR-V под shaders/spv/
+  // (тип "spv" — сегмент пути). Компиляция/загрузка выбирается по расширению в create_pipeline.
+  container->engine_resources->register_type<painter::glsl_source_file>("shaders", "glsl");
+  container->engine_resources->register_type<painter::shader_source_file>("spv", "spv");
   container->engine_modules = std::make_unique<demiurg::module_system>(utils::project_folder() + "resources/");
   container->engine_modules->load_modules({ demiurg::module_system::list_entry{"engine", "", ""} });
   container->engine_resources->parse_resources(container->engine_modules.get());
@@ -343,6 +355,18 @@ void simulation::init() {
     container->engine_resources->find<painter::render_config_source>("render_config", rc);
     for (auto* r : rc) r->load(utils::safe_handle_t{});
     utils::info("engine registry: preloaded {} render-config sources", rc.size());
+  }
+
+  // Аналогично — тексты шейдеров (GLSL/SPIR-V) до warm на главном потоке: рендер-поток
+  // компилирует их синхронно в create_pipeline (Фаза 1), только на чтение.
+  {
+    std::vector<painter::glsl_source_file*> glsl;
+    container->engine_resources->find<painter::glsl_source_file>("shaders", glsl);
+    for (auto* r : glsl) r->load(utils::safe_handle_t{});
+    std::vector<painter::shader_source_file*> spv;
+    container->engine_resources->find<painter::shader_source_file>("shaders/spv", spv);
+    for (auto* r : spv) r->load(utils::safe_handle_t{});
+    utils::info("engine registry: preloaded {} glsl + {} spv shader sources", glsl.size(), spv.size());
   }
 
   const auto config_path = utils::project_folder() + "resources/engine/config/app.tavl"; // для лога
@@ -387,11 +411,35 @@ void simulation::init() {
   sactor = container->sound_sim->get_actor();
 
   if (container->config.render.enabled) {
+    // Pipeline cache — ОТДЕЛЬНЫЙ demiurg-модуль над выделенной cache-подпапкой (Фаза 2). Раздаёт
+    // кэш на load; dump пишет на диск напрямую — round-trip через ре-скан модуля на каждом init.
+    // Модуль = <cache_folder>/painter/ (ИЗОЛИРОВАН: system_info кладёт main_device.tavl прямо в
+    // <cache_folder>/ — не хотим, чтобы он попадал под скан). Файл = painter/pipeline_cache/main.bin,
+    // id (относительно модуля) = "pipeline_cache/main", тип матчится на сегмент "pipeline_cache".
+    const std::string cache_module = container->config.render.cache_folder + "/painter";
+    const std::string pipeline_cache_id = "pipeline_cache/main";
+    const std::string pipeline_cache_path = make_project_path(cache_module + "/pipeline_cache/main.bin");
+    file_io::create_directory(make_project_path(container->config.render.cache_folder)); // <cache_folder>/
+    file_io::create_directory(make_project_path(cache_module));                          // .../painter/
+    file_io::create_directory(make_project_path(cache_module + "/pipeline_cache"));       // .../painter/pipeline_cache/
+    container->cache_resources = std::make_unique<demiurg::resource_system>();
+    container->cache_resources->register_type<painter::pipeline_cache_resource>("pipeline_cache", "bin");
+    container->cache_modules = std::make_unique<demiurg::module_system>(utils::project_folder());
+    container->cache_modules->load_modules({ demiurg::module_system::list_entry{cache_module, "", ""} });
+    container->cache_resources->parse_resources(container->cache_modules.get());
+    if (auto* pc = container->cache_resources->get<painter::pipeline_cache_resource>(pipeline_cache_id)) {
+      pc->load(utils::safe_handle_t{}); // cold→warm: читает блоб через модуль (CPU, главный поток)
+      utils::info("engine registry: pipeline cache '{}' preloaded", pipeline_cache_id);
+    }
+
     render_simulation_config render_cfg;
     render_cfg.engine_registry = container->engine_resources.get();
     // config.config_folder ("render_config") — теперь ПРЕФИКС в движковом реестре, не путь на диске
     render_cfg.render_config_prefix = container->config.render.config_folder + "/";
-    render_cfg.pipeline_cache_path = make_project_path(container->config.render.pipeline_cache);
+    render_cfg.shader_config_prefix = container->config.render.shader_folder + "/";
+    render_cfg.cache_registry = container->cache_resources.get();
+    render_cfg.pipeline_cache_id = pipeline_cache_id;
+    render_cfg.pipeline_cache_path = pipeline_cache_path;
     render_cfg.graph_name = container->config.render.graph;
     render_cfg.headless = container->config.render.headless;
     render_cfg.create_vulkan_on_init = container->config.window.create_on_start || container->config.render.headless;

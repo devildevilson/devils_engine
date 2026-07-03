@@ -26,6 +26,11 @@ struct render_simulation_config {
   // (ресурсы render_config_source), а не сканом папки. См. demiurg 1a, срез 2.
   const demiurg::resource_system* engine_registry = nullptr;
   std::string render_config_prefix; // напр. "render_config/"
+  std::string shader_config_prefix; // префикс шейдеров в реестре, напр. "shaders/"
+  // Pipeline cache через demiurg (Фаза 2): отдельный реестр над writable cache-папкой.
+  // load — из ресурса cache_registry->get(pipeline_cache_id); dump — на диск в pipeline_cache_path.
+  const demiurg::resource_system* cache_registry = nullptr;
+  std::string pipeline_cache_id; // напр. "pipeline_cache/main"
   std::string pipeline_cache_path;
   std::string graph_name = "graphics1";
   bool create_vulkan_on_init = true;
