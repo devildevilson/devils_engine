@@ -324,55 +324,69 @@ void resource_system::parse_resources(module_system* sys) {
       utils::ring::list_remove<list_type::exemplary>(this);
     }
 
-    void resource_interface::load(const utils::safe_handle_t& handle) {
-      switch (state()) {
+    int32_t resource_interface::top_state() const { return static_cast<int32_t>(state::hot); }
+
+    void resource_interface::load_step(const int32_t from, const utils::safe_handle_t& handle) {
+      // дефолтная 3-state лестница: 0->1 load_cold, 1->2 load_warm
+      switch (from) {
         case state::cold: load_cold(handle); break;
         case state::warm: load_warm(handle); break;
-        case state::hot : return; // не нужно увеличивать стейт
-        case state::count: return;
+        default: break; // многошаговые ресурсы переопределяют load_step для доп. уровней
       }
-      
-      //_state = std::min(_state + 1, 2);
+    }
+
+    void resource_interface::unload_step(const int32_t from, const utils::safe_handle_t& handle) {
+      // дефолтная 3-state лестница вниз: 2->1 unload_hot, 1->0 unload_warm
+      switch (from) {
+        case state::hot : unload_hot(handle);  break;
+        case state::warm: unload_warm(handle); break;
+        default: break;
+      }
+    }
+
+    bool resource_interface::is_external_step(const int32_t from) const {
+      // прежняя эвристика loader'а: warm->hot внешний (GPU/рендер), если не CPU-only
+      return from == static_cast<int32_t>(state::warm) && !flag(resource_flags::warm_and_hot_same);
+    }
+
+    int32_t resource_interface::final_state() const {
+      // warm_and_hot_same => ресурс "готов" уже на warm (hot-переход не выполняется)
+      return flag(resource_flags::warm_and_hot_same) ? static_cast<int32_t>(state::warm) : top_state();
+    }
+
+    void resource_interface::load(const utils::safe_handle_t& handle) {
+      const int32_t cur = _state.load(std::memory_order_relaxed);
+      if (cur >= final_state()) return; // уже готов
+      load_step(cur, handle);
       _state.fetch_add(1, std::memory_order_relaxed);
-      thread::atomic_min(_state, static_cast<int32_t>(state::count));
+      thread::atomic_min(_state, final_state());
     }
 
     void resource_interface::unload(const utils::safe_handle_t& handle) {
-      const auto cur = static_cast<state::values>(_state.load(std::memory_order_relaxed));
-      switch (cur) {
-        case state::cold: break;
-        case state::warm: if (!flag(resource_flags::force_unload_warm)) {unload_warm(handle);} break;
-        case state::hot : unload_hot(handle); break;
-        case state::count: return;
+      const int32_t cur = _state.load(std::memory_order_relaxed);
+      if (cur <= static_cast<int32_t>(state::cold)) return;
+      // force_unload_warm (сейчас нигде не ставится) — исторически пропускал выгрузку с warm
+      if (!(cur == static_cast<int32_t>(state::warm) && flag(resource_flags::force_unload_warm))) {
+        unload_step(cur, handle);
       }
-
-      //_state = std::max(_state - 1, 0);
       _state.fetch_add(-1, std::memory_order_relaxed);
       thread::atomic_max(_state, 0);
     }
 
     void resource_interface::force_unload(const utils::safe_handle_t& handle) {
-      const auto cur = static_cast<state::values>(_state.load(std::memory_order_relaxed));
-      switch (cur) {
-        case state::cold: break;
-        case state::warm: unload_warm(handle); break;
-        case state::hot : unload_hot(handle);  break;
-        case state::count: return;
-      }
-
-      //_state = std::max(_state - 1, 0);
+      const int32_t cur = _state.load(std::memory_order_relaxed);
+      if (cur <= static_cast<int32_t>(state::cold)) return;
+      unload_step(cur, handle);
       _state.fetch_add(-1, std::memory_order_relaxed);
       thread::atomic_max(_state, 0);
     }
 
-    enum state::values resource_interface::state() const { 
-      const auto cur = static_cast<state::values>(_state.load(std::memory_order_relaxed));
-      if (cur == state::warm && flag(resource_flags::warm_and_hot_same)) return state::hot;
-      return cur;
+    int32_t resource_interface::state() const {
+      return _state.load(std::memory_order_relaxed);
     }
 
     bool resource_interface::usable() const {
-      return state() == state::hot;
+      return _state.load(std::memory_order_relaxed) >= final_state();
     }
   }
 }

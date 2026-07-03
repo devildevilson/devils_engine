@@ -166,11 +166,21 @@ namespace demiurg {
     DEMIURG_ACTIONS_LIST
 #undef X
 
+    // Обобщённый FSM (demiurg 1a срез 3): состояние ресурса — уровень 0..top_state().
+    // Базово это cold(0)/warm(1)/hot(2). Многошаговые ресурсы (напр. шрифт: ttf→MSDF→GPU,
+    // top_state=3) переопределяют методы ниже; 3-state ресурсы используют дефолты —
+    // load_step/unload_step раскладываются на именованные load_cold/load_warm/unload_*.
+    virtual int32_t top_state() const;                                          // верхний достижимый уровень (деф. hot)
+    virtual void load_step(int32_t from, const utils::safe_handle_t& handle);   // переход from -> from+1
+    virtual void unload_step(int32_t from, const utils::safe_handle_t& handle); // переход from -> from-1
+    virtual bool is_external_step(int32_t from) const;                          // переход from->from+1 внешний (поток рендера/GPU)?
+    int32_t final_state() const; // верхний ЭФФЕКТИВНЫЙ уровень (учитывает warm_and_hot_same)
+
     void load(const utils::safe_handle_t& handle);
     void unload(const utils::safe_handle_t& handle);
     void force_unload(const utils::safe_handle_t& handle);
 
-    enum state::values state() const;
+    int32_t state() const;
     bool usable() const;
   protected:
     // по любому будет много флагов у нас для файла, нужно битовое поле
