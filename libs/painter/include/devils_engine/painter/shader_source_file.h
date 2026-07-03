@@ -1,8 +1,8 @@
 #ifndef DEVILS_ENGINE_PAINTER_SHADER_SOURCE_FILE_H
 #define DEVILS_ENGINE_PAINTER_SHADER_SOURCE_FILE_H
 
-#include <cstddef>
 #include <cstdint>
+#include <vector>
 #include "devils_engine/demiurg/resource_base.h"
 
 namespace devils_engine {
@@ -14,7 +14,7 @@ namespace painter {
 
 class shader_source_file : public demiurg::resource_interface {
 public:
-  std::string memory;
+  std::vector<uint8_t> memory; // сырые байты SPIR-V (.spv)
 
   shader_source_file();
 

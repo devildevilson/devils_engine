@@ -95,12 +95,13 @@ struct graphics_base {
 
   // Фаза 3: селективное создание ресурсов. Если startup_graph_ задан и найден, commit
   // вычисляет транзитивный used-set этого графа и создаёт ТОЛЬКО нужные ему GPU-ресурсы
-  // (контейнеры) и дескрипторы. Индексы глобальные/стабильные — векторы НЕ компактятся,
-  // неиспользуемые слоты остаются без backing. Маски пусты ⇒ создаём ВСЁ (обратная
+  // (контейнеры) и дескрипторы. Индексы глобальные/стабильные — не компактятся,
+  // неиспользуемые слоты остаются без backing. graph_filtered_==false ⇒ создаём ВСЁ (обратная
   // совместимость: fs-путь fast_test/main.cpp, где startup_graph_ не задан).
   std::string startup_graph_;
-  std::vector<bool> resource_active_mask_;   // пусто ⇒ все ресурсы активны
-  std::vector<bool> descriptor_active_mask_; // пусто ⇒ все дескрипторы активны
+  bool graph_filtered_ = false;              // включена ли фильтрация по used-set
+  resource_usage_t resource_active_mask_;    // bitset<MAXIMUM_RENDERING_RESOURCES_COUNT>, значим при graph_filtered_
+  resource_usage_t descriptor_active_mask_;
 
   // сырые данные для constants? как мы задаем их?
   // они должны быть по умолчанию буферизированы, каунтером определим куда пишем
@@ -146,8 +147,8 @@ struct graphics_base {
   // Фаза 3: задать граф, под который создавать ресурсы. Вызывать ДО recreate_basic_resources
   // (там же commit). Пусто ⇒ создаём все ресурсы (обратная совместимость).
   inline void set_startup_graph(std::string name) { startup_graph_ = std::move(name); }
-  inline bool is_resource_active(const uint32_t i) const { return resource_active_mask_.empty() || resource_active_mask_[i]; }
-  inline bool is_descriptor_active(const uint32_t i) const { return descriptor_active_mask_.empty() || descriptor_active_mask_[i]; }
+  inline bool is_resource_active(const uint32_t i) const { return !graph_filtered_ || resource_active_mask_.test(i); }
+  inline bool is_descriptor_active(const uint32_t i) const { return !graph_filtered_ || descriptor_active_mask_.test(i); }
   void set_surface(VkSurfaceKHR surface, const uint32_t width, const uint32_t height);
   void populate_constant_default_values();
 
