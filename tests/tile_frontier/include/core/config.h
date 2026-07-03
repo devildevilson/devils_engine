@@ -31,6 +31,7 @@ struct render_config {
   bool enabled = true;
   bool headless = false;
   std::string config_folder = "render_config";
+  std::string shader_folder = "shaders"; // префикс шейдеров в движковом demiurg-реестре
   std::string cache_folder = "cache/render";
   std::string pipeline_cache = "cache/render/pipeline_cache.bin";
   std::string preferred_gpu;

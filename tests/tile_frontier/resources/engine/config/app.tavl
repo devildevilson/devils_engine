@@ -19,6 +19,7 @@ render = {
   enabled = true
   headless = false
   config_folder = "render_config"
+  shader_folder = "shaders"
   cache_folder = "cache"
   pipeline_cache = "cache/graphics_pipeline_cache"
   preferred_gpu = ""

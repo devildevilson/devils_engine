@@ -26,6 +26,7 @@ set(SRC_LIST
   src/painter/auxiliary.cpp
   src/painter/glsl_source_file.cpp
   src/painter/render_config_source.cpp
+  src/painter/pipeline_cache_resource.cpp
   src/painter/makers.cpp
   src/painter/shader_crafter.cpp
   #src/painter/system.cpp

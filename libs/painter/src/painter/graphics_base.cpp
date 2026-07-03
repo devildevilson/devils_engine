@@ -5,6 +5,8 @@
 #include "auxiliary.h"
 
 #include "devils_engine/utils/fileio.h"
+#include "devils_engine/demiurg/resource_system.h"
+#include "pipeline_cache_resource.h"
 
 #include <cmath>
 #include <limits>
@@ -141,6 +143,21 @@ void graphics_base::get_or_create_pipeline_cache(const std::string& path) {
   pcci.initialDataSize = initial_mem.size();
   pcci.pInitialData = initial_mem.data();
   
+  cache = vk::Device(device).createPipelineCache(pcci);
+}
+
+void graphics_base::get_or_create_pipeline_cache(const demiurg::resource_system* reg, const std::string& id) {
+  vk::PipelineCacheCreateInfo pcci{};
+
+  const auto* res = reg != nullptr ? reg->get<pipeline_cache_resource>(id) : nullptr;
+  if (res != nullptr && !res->memory.empty()) {
+    pcci.initialDataSize = res->memory.size();
+    pcci.pInitialData = res->memory.data();
+    utils::info("graphics_base: pipeline cache seeded from resource '{}' ({} bytes)", id, res->memory.size());
+  } else {
+    utils::info("graphics_base: pipeline cache resource '{}' not present, creating empty", id);
+  }
+
   cache = vk::Device(device).createPipelineCache(pcci);
 }
 
@@ -1167,6 +1184,10 @@ int32_t graphics_base::recreate_basic_resources(const std::string& folder) {
 
 int32_t graphics_base::recreate_basic_resources(const demiurg::resource_system* reg, const std::string& prefix) {
   utils::info("graphics_base: recreate basic resources from engine registry, prefix '{}'", prefix);
+
+  // Реестр нужен позже, при компиляции шейдеров в create_pipeline (Фаза 1). shader_prefix_
+  // задаётся отдельно через set_shader_source (папка шейдеров != папка render-config).
+  config_reg_ = reg;
 
   graphics_base ctx(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, presentation_engine_type);
   try {

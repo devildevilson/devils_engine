@@ -87,6 +87,12 @@ struct graphics_base {
 
   render_graph_instance execution_graph;
 
+  // Источник шейдеров через demiurg (Фаза 1). Если config_reg_ != nullptr, create_pipeline
+  // тянет шейдеры из реестра (glsl_source_file/shader_source_file по расширению), иначе
+  // fs-fallback через file_io (fast_test / корневой main.cpp). shader_prefix_ — напр. "shaders/".
+  const demiurg::resource_system* config_reg_ = nullptr;
+  std::string shader_prefix_;
+
   // сырые данные для constants? как мы задаем их?
   // они должны быть по умолчанию буферизированы, каунтером определим куда пишем
   std::array<std::vector<uint32_t>, 2> constants_memory;
@@ -118,7 +124,16 @@ struct graphics_base {
   void create_command_pool(const uint32_t queue_family_index, VkQueue graphics);
   void create_descriptor_pool();
   void get_or_create_pipeline_cache(const std::string& path);
+  // Оверлоад (Фаза 2): начальные данные кэша берём из demiurg-ресурса pipeline_cache_resource
+  // по id. reg==nullptr / ресурс не найден / пуст ⇒ пустой кэш. Запись — по-прежнему на диск
+  // через dump_cache_on_disk (round-trip через отдельный cache-модуль).
+  void get_or_create_pipeline_cache(const demiurg::resource_system* reg, const std::string& id);
   void dump_cache_on_disk(const std::string& path) const;
+  // Задаёт demiurg-источник шейдеров (Фаза 1). Вызывать до change_render_graph.
+  inline void set_shader_source(const demiurg::resource_system* reg, std::string prefix) {
+    config_reg_ = reg;
+    shader_prefix_ = std::move(prefix);
+  }
   void set_surface(VkSurfaceKHR surface, const uint32_t width, const uint32_t height);
   void populate_constant_default_values();
 
