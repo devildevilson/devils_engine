@@ -12,10 +12,6 @@ typedef uint32_t nk_rune;
 struct nk_user_font;
 
 namespace devils_engine {
-namespace painter {
-class host_image_container;
-}
-
 namespace visage {
 // из чего состоит шрифт? шрифт это атлас в котором все элементы имет миллиард данных по расположению
 // да и в общем то все, если я хочу сделать наконец то дистанс шрифты
@@ -81,9 +77,7 @@ struct font_t {
   void set_texture_id(uint32_t id);
 };
 
-// конфиг? наверное будет класс атлас пакер, который на выход даст:
-// набор шрифтов + набор ГПУ картинок под шрифты
-std::tuple<std::unique_ptr<font_t>, uint32_t> load_font(painter::host_image_container* imgs, const std::string &path);
+// Загрузка/генерация атласа шрифта: см. font_atlas_packer (заменил легаси load_font).
 }
 }
 
