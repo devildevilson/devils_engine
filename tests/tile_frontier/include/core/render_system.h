@@ -17,6 +17,7 @@ namespace core {
 using namespace devils_engine;
 
 struct render_simulation_init;
+struct write_buffer_channel;
 
 // Параметры запуска рендера. Заполняются из app_config в simulation::init()
 // и фиксируются на время жизни render_simulation.
@@ -51,6 +52,9 @@ public:
 
   // Куда слать ack о завершении GPU-перехода ресурса (command_gpu_done).
   void set_assets_actor(assets_actor* aactor);
+
+  // SPSC-канал записи буферов (main→render), вертикальный срез брокера. Задаётся до старта потока.
+  void set_write_buffer_channel(write_buffer_channel* ch);
 private:
   std::unique_ptr<render_simulation_init> container;
   graphics_actor actor;
