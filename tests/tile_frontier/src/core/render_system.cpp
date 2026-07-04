@@ -80,7 +80,8 @@ struct render_simulation_init {
   // payload в byte_ring канала — ноль пер-кадровых аллокаций.
   write_buffer_channel* wb_channel = nullptr;
   gtl::flat_hash_map<uint64_t, uint32_t> wb_name_to_res;
-  cached_message_dispatcher<command_draw_tiles> draw_tile_commands;
+  // Снапшот тайлов — latest-wins мейлбокс (владелец main), вместо dispatcher/consume_last.
+  thread::mailbox<command_draw_tiles>* draw_tiles_mb = nullptr;
   // Снапшот акторов — latest-wins мейлбокс (владелец main): triple-buffer, слоты переиспользуют
   // ёмкость bytes/ids ⇒ ноль пер-кадровых аллокаций. Вместо dispatcher/consume_last.
   thread::mailbox<command_draw_actors>* draw_actors_mb = nullptr;
@@ -718,7 +719,6 @@ void render_simulation::init() {
   actor.add_receiver<command_gpu_transition>(&container->gpu_transition_commands.dis);
   actor.add_receiver<command_shaders_prepared>(&container->shaders_prepared_commands.dis);
   actor.add_receiver<command_set_active_graph>(&container->set_active_graph_commands.dis);
-  actor.add_receiver<command_draw_tiles>(&container->draw_tile_commands.dis);
 
   if (container->config.create_vulkan_on_init) {
     render_create_instance(*container);
@@ -820,9 +820,11 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
     });
   }
 
-  dispatcher_consume_last(container->draw_tile_commands, [this] (const auto& cmd) {
-    if (container->graph_ready) render_update_tile_draw(*container, cmd);
-  });
+  if (container->graph_ready && container->draw_tiles_mb) {
+    if (const command_draw_tiles* cmd = container->draw_tiles_mb->consume()) {
+      render_update_tile_draw(*container, *cmd);
+    }
+  }
 
   bool actor_snapshot = false;
   if (const command_draw_actors* cmd = container->draw_actors_mb ? container->draw_actors_mb->consume() : nullptr) {
@@ -875,6 +877,10 @@ void render_simulation::set_write_buffer_channel(write_buffer_channel* ch) {
 
 void render_simulation::set_draw_actors_mailbox(thread::mailbox<command_draw_actors>* mb) {
   if (container) container->draw_actors_mb = mb;
+}
+
+void render_simulation::set_draw_tiles_mailbox(thread::mailbox<command_draw_tiles>* mb) {
+  if (container) container->draw_tiles_mb = mb;
 }
 
 }

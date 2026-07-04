@@ -212,8 +212,9 @@ struct simulation_init {
   // держит указатель. Бюджеты фиксированы: очередь сообщений + byte_ring под payload.
   std::unique_ptr<write_buffer_channel> wb_channel;
 
-  // Latest-wins мейлбокс снапшота акторов main→render (triple-buffer; слоты переиспользуют ёмкость).
+  // Latest-wins мейлбоксы снапшотов main→render (triple-buffer; слоты переиспользуют ёмкость).
   std::unique_ptr<thread::mailbox<command_draw_actors>> draw_actors_mb;
+  std::unique_ptr<thread::mailbox<command_draw_tiles>> draw_tiles_mb;
 
   // модель тайловой карты (главная сторона)
   texture_set textures;     // текстуры карты, собранные по префиксу пути
@@ -471,6 +472,8 @@ void simulation::init() {
     // Latest-wins мейлбокс снапшота акторов (triple-buffer, 3 слота переиспользуют bytes/ids).
     container->draw_actors_mb = std::make_unique<thread::mailbox<command_draw_actors>>();
     container->render_sim->set_draw_actors_mailbox(container->draw_actors_mb.get());
+    container->draw_tiles_mb = std::make_unique<thread::mailbox<command_draw_tiles>>();
+    container->render_sim->set_draw_tiles_mailbox(container->draw_tiles_mb.get());
     gactor = container->render_sim->get_actor();
   }
 
@@ -801,9 +804,7 @@ void simulation::update(const size_t time) {
     container->batch.build(container->grid, span);
 
     // собираем сообщение в рендер: метаданные + упакованные байты инстансов ("v2ui1").
-    command_draw_tiles msg;
     const glm::mat4 vp = container->cam.view_proj();
-    std::memcpy(msg.view_proj.data(), &vp[0][0], sizeof(float) * 16);
 
     // Контракт записи в буфер: шлём общий UBO (view_proj + ui_proj + misc) в host-visible
     // camera_buffer. ui_proj — ortho «пиксели окна -> clip» (Vulkan: y вниз, начало слева-сверху),
@@ -829,19 +830,25 @@ void simulation::update(const size_t time) {
       }
     }
 
-    msg.count = container->batch.count();
-    msg.stride = tile_batch::stride();
-    msg.bytes.resize(size_t(msg.count) * msg.stride);
-    container->batch.blit(std::span<uint8_t>(msg.bytes));
+    // Тайлы — latest-wins мейлбокс: заполняем слот-продюсер НА МЕСТЕ (bytes переиспользует ёмкость
+    // 3 слотов), затем publish. Строим только когда рендер включён.
+    if (gactor != nullptr && container->draw_tiles_mb) {
+      auto& slot = container->draw_tiles_mb->write_slot();
+      std::memcpy(slot.view_proj.data(), &vp[0][0], sizeof(float) * 16);
+      slot.count = container->batch.count();
+      slot.stride = tile_batch::stride();
+      slot.bytes.resize(size_t(slot.count) * slot.stride);
+      container->batch.blit(std::span<uint8_t>(slot.bytes));
 
-    if (!container->tiles_logged) {
-      utils::info(
-        "main: tile slice [{},{})x[{},{}) = {} instances, {} B/inst, {} B payload",
-        span.x0, span.x1, span.y0, span.y1, msg.count, msg.stride, msg.bytes.size());
-      container->tiles_logged = true;
+      if (!container->tiles_logged) {
+        utils::info(
+          "main: tile slice [{},{})x[{},{}) = {} instances, {} B/inst, {} B payload",
+          span.x0, span.x1, span.y0, span.y1, slot.count, slot.stride, slot.bytes.size());
+        container->tiles_logged = true;
+      }
+
+      container->draw_tiles_mb->publish();
     }
-
-    if (gactor != nullptr) gactor->send(std::move(msg));
   }
 
   // --- actor simulation slice: simple AI -> move intents -> aesthetics components -> GPU batch ---

@@ -20,6 +20,7 @@ using namespace devils_engine;
 struct render_simulation_init;
 struct write_buffer_channel;
 struct command_draw_actors;
+struct command_draw_tiles;
 
 // Параметры запуска рендера. Заполняются из app_config в simulation::init()
 // и фиксируются на время жизни render_simulation.
@@ -58,8 +59,9 @@ public:
   // SPSC-канал записи буферов (main→render), вертикальный срез брокера. Задаётся до старта потока.
   void set_write_buffer_channel(write_buffer_channel* ch);
 
-  // Latest-wins мейлбокс снапшота акторов (main→render). Задаётся до старта потока.
+  // Latest-wins мейлбоксы снапшотов (main→render). Задаются до старта потока.
   void set_draw_actors_mailbox(thread::mailbox<command_draw_actors>* mb);
+  void set_draw_tiles_mailbox(thread::mailbox<command_draw_tiles>* mb);
 private:
   std::unique_ptr<render_simulation_init> container;
   graphics_actor actor;
