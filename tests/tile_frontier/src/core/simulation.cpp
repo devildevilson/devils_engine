@@ -31,6 +31,7 @@
 
 #include "config.h"
 #include "messages.h"
+#include "write_buffer_channel.h"
 #include "message_dispatcher.h"
 #include "sound_system.h"
 #include "render_system.h"
@@ -204,6 +205,10 @@ struct simulation_init {
   // Звуки — demiurg-ресурсы в потоке ассетов. main держит name_hash → указатель (для резолва в
   // command_sound_play из UI/геймплея) и запрашивает их до warm. Сам звук-актор ресурсы не хранит.
   gtl::flat_hash_map<uint64_t, sound::sound_resource*> sound_by_name;
+
+  // SPSC-канал записи буферов main→render (вертикальный срез брокера). Владелец — main; рендер
+  // держит указатель. Бюджеты фиксированы: очередь сообщений + byte_ring под payload.
+  std::unique_ptr<write_buffer_channel> wb_channel;
 
   // модель тайловой карты (главная сторона)
   texture_set textures;     // текстуры карты, собранные по префиксу пути
@@ -454,6 +459,10 @@ void simulation::init() {
 
     container->render_sim.reset(new render_simulation(render_ft, std::move(render_cfg)));
     container->render_sim->init();
+    // SPSC-канал записи буферов: бюджеты ФИКСИРОВАНЫ (64 сообщения/кадр-пачки, 1 МиБ арена под
+    // payload — camera_buffer ~192Б + UI vertices/indices/commands). overflow ⇒ drop (latest-wins).
+    container->wb_channel = std::make_unique<write_buffer_channel>(64, size_t(1) << 20);
+    container->render_sim->set_write_buffer_channel(container->wb_channel.get());
     gactor = container->render_sim->get_actor();
   }
 
@@ -805,11 +814,11 @@ void simulation::update(const size_t time) {
       ubo.ui_proj[3][1] = -1.0f;
       ubo.misc = glm::vec4(w, h, 4.0f /* sdf px_range, = font_atlas_packer pixel_range */, 0.0f);
 
-      command_write_buffer cam;
-      cam.buffer = "camera_buffer";
-      cam.bytes.resize(sizeof(global_ubo_t));
-      std::memcpy(cam.bytes.data(), &ubo, sizeof(global_ubo_t));
-      gactor->send(cam);
+      static const uint64_t camera_buffer_hash = utils::string_hash("camera_buffer");
+      if (container->wb_channel) {
+        container->wb_channel->write(camera_buffer_hash,
+          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&ubo), sizeof(global_ubo_t)));
+      }
     }
 
     msg.count = container->batch.count();
@@ -1000,24 +1009,19 @@ void simulation::update(const size_t time) {
       const auto inds = container->ui->indices();
       const auto cmds = container->ui->commands();
 
-      command_write_buffer wv;
-      wv.buffer = "ui_vertices";
-      wv.bytes.assign(verts.begin(), verts.end());
-      gactor->send(wv);
+      static const uint64_t ui_vertices_hash = utils::string_hash("ui_vertices");
+      static const uint64_t ui_indices_hash  = utils::string_hash("ui_indices");
+      static const uint64_t ui_commands_hash = utils::string_hash("ui_commands");
+      if (container->wb_channel) {
+        container->wb_channel->write(ui_vertices_hash, verts); // span<const uint8_t> напрямую
+        container->wb_channel->write(ui_indices_hash, inds);
 
-      command_write_buffer wi;
-      wi.buffer = "ui_indices";
-      wi.bytes.assign(inds.begin(), inds.end());
-      gactor->send(wi);
-
-      command_write_buffer wc;
-      wc.buffer = "ui_commands";
-      const uint32_t count = uint32_t(cmds.size());
-      const size_t body = cmds.size() * sizeof(visage::gui_draw_command_t);
-      wc.bytes.resize(sizeof(uint32_t) + body);
-      std::memcpy(wc.bytes.data(), &count, sizeof(uint32_t));
-      if (body != 0) std::memcpy(wc.bytes.data() + sizeof(uint32_t), cmds.data(), body);
-      gactor->send(wc);
+        // ui_commands самоописывающийся: [uint32 count]‖[тело] — scatter-запись без temp-буфера
+        const uint32_t count = uint32_t(cmds.size());
+        container->wb_channel->write(ui_commands_hash,
+          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&count), sizeof(uint32_t)),
+          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(cmds.data()), cmds.size() * sizeof(visage::gui_draw_command_t)));
+      }
     }
 
     if (!container->ui_logged) {

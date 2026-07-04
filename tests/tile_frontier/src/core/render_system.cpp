@@ -22,8 +22,12 @@
 #include <devils_engine/painter/shader_source_file.h>
 #include <devils_engine/demiurg/resource_system.h>
 
+#include <gtl/phmap.hpp>
+#include <devils_engine/utils/string_id.h>
+
 #include "messages.h"
 #include "message_dispatcher.h"
+#include "write_buffer_channel.h"
 #include "draw_intent.h"
 #include "interpolation.h"
 #include "tile_map.h"
@@ -69,7 +73,11 @@ struct render_simulation_init {
   cached_message_dispatcher<command_gpu_transition> gpu_transition_commands;
   cached_message_dispatcher<command_shaders_prepared> shaders_prepared_commands;
   cached_message_dispatcher<command_set_active_graph> set_active_graph_commands;
-  cached_message_dispatcher<command_write_buffer> write_buffer_commands;
+  // SPSC-канал записи буферов (вместо dispatcher command_write_buffer): указатель на общий канал
+  // (владелец — main) + карта имя-хеш→индекс ресурса (строится на graph-ready). POD-сообщения,
+  // payload в byte_ring канала — ноль пер-кадровых аллокаций.
+  write_buffer_channel* wb_channel = nullptr;
+  gtl::flat_hash_map<uint64_t, uint32_t> wb_name_to_res;
   cached_message_dispatcher<command_draw_tiles> draw_tile_commands;
   cached_message_dispatcher<command_draw_actors> draw_actor_commands;
 
@@ -573,19 +581,29 @@ static void render_bind_texture_slot(render_simulation_init& c, const uint32_t s
 // Контракт записи в буфер: пишем сырые байты в host-visible буфер-ресурс по имени, во ВСЕ
 // per_update-копии (смену активной копии делает событие update). Аналог draw_group host_visible,
 // но для произвольного буфера. Требует готового графа (ресурсы созданы).
-static void render_write_buffer(render_simulation_init& c, const command_write_buffer& cmd) {
-  const uint32_t ri = c.base->find_resource(cmd.buffer);
-  if (ri == painter::INVALID_RESOURCE_SLOT) { utils::warn("write_buffer: resource '{}' not found", cmd.buffer); return; }
+// Построить карту имя-хеш→индекс ресурса один раз на graph-ready (ресурсы созданы в commit).
+static void render_build_wb_name_map(render_simulation_init& c) {
+  c.wb_name_to_res.clear();
+  for (uint32_t i = 0; i < c.base->resources.size(); ++i) {
+    c.wb_name_to_res.emplace(utils::string_hash(c.base->resources[i].name), i);
+  }
+}
+
+// Запись сырых байт в host-visible буфер по имени-хешу (payload — span из арены канала).
+static void render_write_buffer_bytes(render_simulation_init& c, const uint64_t name_hash, const std::span<const std::byte> payload) {
+  const auto it = c.wb_name_to_res.find(name_hash);
+  if (it == c.wb_name_to_res.end()) { utils::warn("write_buffer: resource hash {} not found", name_hash); return; }
+  const uint32_t ri = it->second;
 
   const auto& res = c.base->resources[ri];
   const auto [frame_size, ext] = res.compute_frame_size(c.base.get()); // размер ОДНОЙ копии в байтах
   const uint32_t buffering = res.compute_buffering(c.base.get());
-  const size_t n = std::min(cmd.bytes.size(), size_t(frame_size));
+  const size_t n = std::min(payload.size(), size_t(frame_size));
 
   for (uint32_t off = 0; off < buffering; ++off) {
     const auto bf = c.base->get_current_buffer_resource_frame(ri, off);
-    if (bf.mapped == nullptr) { utils::warn("write_buffer: '{}' is not host-visible", cmd.buffer); return; }
-    std::memcpy(static_cast<uint8_t*>(bf.mapped) + bf.sub.offset, cmd.bytes.data(), n);
+    if (bf.mapped == nullptr) { utils::warn("write_buffer: resource {} is not host-visible", ri); return; }
+    std::memcpy(static_cast<uint8_t*>(bf.mapped) + bf.sub.offset, payload.data(), n);
   }
 }
 
@@ -648,6 +666,7 @@ static void render_try_create_graph(render_simulation_init& c) {
   c.base->dump_cache_on_disk(c.config.pipeline_cache_path);
 
   c.graph_ready = true;
+  render_build_wb_name_map(c); // имя-хеш→ресурс для канала записи буферов
   // Инициализируем дескриптор-массив 'textures' placeholder'ом ДО первой отрисовки: тайлы/акторы
   // рисуются сразу, а контентные текстуры приходят асинхронно позже (иначе VUID-...-08114 на
   // первых кадрах — null-view). При загрузке текстур render_bind_textures перезапишет слоты.
@@ -695,7 +714,6 @@ void render_simulation::init() {
   actor.add_receiver<command_gpu_transition>(&container->gpu_transition_commands.dis);
   actor.add_receiver<command_shaders_prepared>(&container->shaders_prepared_commands.dis);
   actor.add_receiver<command_set_active_graph>(&container->set_active_graph_commands.dis);
-  actor.add_receiver<command_write_buffer>(&container->write_buffer_commands.dis);
   actor.add_receiver<command_draw_tiles>(&container->draw_tile_commands.dis);
   actor.add_receiver<command_draw_actors>(&container->draw_actor_commands.dis);
 
@@ -791,11 +809,14 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
     });
   }
 
-  // Контракт записи в буферы (камера и т.п.) — нужен готовый граф (ресурсы созданы).
-  if (container->graph_ready) {
-    dispatcher_consume(container->write_buffer_commands, [this] (const auto& cmd) {
-      render_write_buffer(*container, cmd);
-    });
+  // Контракт записи в буферы (камера и т.п.) — нужен готовый граф (ресурсы созданы). Дренаж
+  // SPSC-канала: POD-сообщение {hash,pos,size} → байты из арены → буфер, затем release (курсор).
+  if (container->graph_ready && container->wb_channel != nullptr) {
+    wb_msg m{};
+    while (container->wb_channel->queue.try_pop(m)) {
+      render_write_buffer_bytes(*container, m.name_hash, container->wb_channel->arena.at(m.pos, m.size));
+      container->wb_channel->arena.release(m.pos + m.size); // FIFO-реклейм
+    }
   }
 
   dispatcher_consume_last(container->draw_tile_commands, [this] (const auto& cmd) {
@@ -845,6 +866,10 @@ void render_simulation::set_assets_actor(assets_actor* aactor) {
   if (!container) return;
   container->aactor = aactor;
   render_try_create_graph(*container);
+}
+
+void render_simulation::set_write_buffer_channel(write_buffer_channel* ch) {
+  if (container) container->wb_channel = ch;
 }
 
 }
