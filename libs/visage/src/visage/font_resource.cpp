@@ -6,15 +6,16 @@
 #include <devils_engine/utils/fileio.h>
 #include <devils_engine/utils/safe_handle.h>
 
-namespace tile_frontier {
-namespace core {
+#include "font.h"
+#include "font_atlas_packer.h"
 
-using namespace devils_engine;
+namespace devils_engine {
+namespace visage {
 
 font_resource::font_resource(std::string ttf_path) : ttf_path(std::move(ttf_path)) {
   path = "font/atlas"; // синтетический id (шрифт пока не в demiurg-реестре)
   id = path;
-  loading_type_id = utils::type_id<texture_resource>();
+  loading_type_id = utils::type_id<painter::gpu_texture_resource>(); // рендер льёт как обычную текстуру
 }
 
 int32_t font_resource::top_state() const {
@@ -33,10 +34,10 @@ void font_resource::load_step(const int32_t from, const utils::safe_handle_t& ha
     } break;
 
     case 1: { // MSDF: атлас (RGBA) + метрики глифов
-      visage::font_atlas_packer packer;
+      font_atlas_packer packer;
       packer.setup_font(ttf_bytes, "ttf");
 
-      visage::font_atlas_packer::config fcfg{};
+      font_atlas_packer::config fcfg{};
       fcfg.max_corner_angle = 3.0;
       fcfg.minimum_scale = 32.0;
       fcfg.pixel_range = 4.0; // = px_range в ui.frag
@@ -52,14 +53,14 @@ void font_resource::load_step(const int32_t from, const utils::safe_handle_t& ha
 
       width = img.width;
       height = img.height;
-      memory = std::move(img.bytes); // texture_resource::memory — зальётся на GPU в шаге 2→3
+      memory = std::move(img.bytes); // gpu_texture_resource::memory — зальётся на GPU в шаге 2→3
       ttf_bytes.clear(); ttf_bytes.shrink_to_fit();
 
       utils::info("font_resource: MSDF atlas {}x{}x{}ch, {} glyphs", width, height, img.channels, font_ptr->glyphs.size());
     } break;
 
-    case 2: // GPU-заливка (переиспользуем texture_resource)
-      texture_resource::load_warm(handle);
+    case 2: // GPU-заливка (переиспользуем базу)
+      painter::gpu_texture_resource::load_warm(handle);
       break;
 
     default: break;
@@ -68,9 +69,9 @@ void font_resource::load_step(const int32_t from, const utils::safe_handle_t& ha
 
 void font_resource::unload_step(const int32_t from, const utils::safe_handle_t& handle) {
   switch (from) {
-    case 3: texture_resource::unload_hot(handle); break;         // GPU
-    case 2: memory.clear(); memory.shrink_to_fit(); break;       // атлас-байты
-    case 1: ttf_bytes.clear(); ttf_bytes.shrink_to_fit(); break; // ttf
+    case 3: painter::gpu_texture_resource::unload_hot(handle); break; // GPU
+    case 2: memory.clear(); memory.shrink_to_fit(); break;           // атлас-байты
+    case 1: ttf_bytes.clear(); ttf_bytes.shrink_to_fit(); break;     // ttf
     default: break;
   }
 }

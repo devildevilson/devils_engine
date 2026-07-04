@@ -5,15 +5,15 @@
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/safe_handle.h>
 #include <devils_engine/demiurg/module_interface.h>
-#include <devils_engine/painter/assets_base.h>
 
-namespace tile_frontier {
-namespace core {
+#include "assets_base.h"
+#include "gpu_load_context.h"
 
-using namespace devils_engine;
+namespace devils_engine {
+namespace painter {
 
 mesh_resource::mesh_resource() {
-  // НЕ warm_and_hot_same: это GPU-ресурс, переход warm→hot делает рендер.
+  // НЕ warm_and_hot_same: это GPU-ресурс, переход warm->hot делает рендер.
   set_flag(demiurg::resource_flags::warm_and_hot_same, false);
   set_flag(demiurg::resource_flags::binary, true);
 }
@@ -28,7 +28,7 @@ void mesh_resource::load_warm(const utils::safe_handle_t& handle) {
   auto* ctx = handle.get<gpu_load_context>();
 
   const auto h = ctx->assets->register_buffer_storage(path);
-  painter::buffer_create_info bci{ "g1", vertex_count, 0 };
+  buffer_create_info bci{ "g1", vertex_count, 0 };
   ctx->assets->create_buffer_storage(h, bci);
   ctx->assets->populate_buffer_storage(h, std::span<const uint8_t>(memory), std::span<const uint8_t>());
   ctx->assets->mark_ready_buffer_slot(h);

@@ -11,8 +11,8 @@
 
 #include "messages.h"
 #include "message_dispatcher.h"
-#include "mesh_resource.h"
-#include "texture_resource.h"
+#include <devils_engine/painter/mesh_resource.h>
+#include <devils_engine/painter/texture_resource.h>
 #include "tile_map.h"
 
 namespace tile_frontier {
@@ -50,8 +50,10 @@ void assets_simulation::init() {
   actor.add_receiver<command_prepare_shaders>(&container->prepare_shader_commands);
 
   container->resources = std::make_unique<demiurg::resource_system>();
-  container->resources->register_type<mesh_resource>("mesh", "mesh");
-  container->resources->register_type<texture_resource>("textures", "png");
+  container->resources->register_type<painter::mesh_resource>("mesh", "mesh");
+  // Регистрируем png-текстуру, но loading_type_id = БАЗА gpu_texture_resource: рендер/texture_set
+  // работают через базу (нужен лишь gpu_index), не зная про конкретный png-декодер.
+  container->resources->register_type<painter::gpu_texture_resource, painter::texture_resource>("textures", "png");
 
   // Реестр строим один раз здесь (init вызывается на главном потоке до старта потока ассетов).
   const auto modules_root = utils::project_folder() + "resources/modules/";
