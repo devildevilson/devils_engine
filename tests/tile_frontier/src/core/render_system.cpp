@@ -812,11 +812,9 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
   // Контракт записи в буферы (камера и т.п.) — нужен готовый граф (ресурсы созданы). Дренаж
   // SPSC-канала: POD-сообщение {hash,pos,size} → байты из арены → буфер, затем release (курсор).
   if (container->graph_ready && container->wb_channel != nullptr) {
-    wb_msg m{};
-    while (container->wb_channel->queue.try_pop(m)) {
-      render_write_buffer_bytes(*container, m.name_hash, container->wb_channel->arena.at(m.pos, m.size));
-      container->wb_channel->arena.release(m.pos + m.size); // FIFO-реклейм
-    }
+    container->wb_channel->drain([this] (const wb_msg& m, const std::span<const std::byte> payload) {
+      render_write_buffer_bytes(*container, m.name_hash, payload);
+    });
   }
 
   dispatcher_consume_last(container->draw_tile_commands, [this] (const auto& cmd) {
