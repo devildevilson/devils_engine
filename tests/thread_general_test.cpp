@@ -14,8 +14,11 @@
 #include "devils_engine/thread/queue1.h"
 #include "devils_engine/thread/spsc_queue.h"
 #include "devils_engine/thread/byte_ring.h"
+#include "devils_engine/thread/payload_channel.h"
+#include "devils_engine/thread/mailbox.h"
 
 #include <cstring>
+#include <string>
 
 using namespace devils_engine;
 
@@ -336,4 +339,89 @@ TEST_CASE("byte_ring overflow returns -1, frees after release [thread::byte_ring
 
   arena.release(5);                 // освободили
   CHECK(arena.alloc(4, r) >= 0);    // теперь влезает (с заворотом)
+}
+
+// ── payload_channel (spsc_queue<Msg> + byte_ring) ──────────────────────────────
+
+namespace {
+struct pc_msg { uint64_t tag; int64_t pos; uint32_t size; }; // pos/size — контракт payload_channel
+}
+
+TEST_CASE("payload_channel writes payload via fill and drains in FIFO order [thread::payload_channel]") {
+  thread::payload_channel<pc_msg> ch(8, 256);
+
+  const std::pair<uint64_t, uint8_t> items[] = { {100, 0x11}, {200, 0x22}, {300, 0x33} };
+  for (const auto& [tag, val] : items) {
+    const bool ok = ch.write(16, [&](std::span<std::byte> region, int64_t pos) {
+      std::memset(region.data(), val, region.size());
+      return pc_msg{ tag, pos, static_cast<uint32_t>(region.size()) };
+    });
+    REQUIRE(ok);
+  }
+
+  size_t i = 0;
+  ch.drain([&](const pc_msg& m, std::span<const std::byte> payload) {
+    CHECK(m.tag == items[i].first);
+    CHECK(payload.size() == 16);
+    CHECK(all_equal(payload, items[i].second));
+    ++i;
+  });
+  CHECK(i == 3);
+  CHECK(ch.arena_used_approx() == 0); // всё реклеймнуто после drain
+}
+
+TEST_CASE("payload_channel write returns false on arena overflow [thread::payload_channel]") {
+  thread::payload_channel<pc_msg> ch(64, 32); // маленькая арена
+
+  int written = 0;
+  while (ch.write(16, [](std::span<std::byte> r, int64_t pos) {
+    return pc_msg{ 0, pos, static_cast<uint32_t>(r.size()) }; })) {
+    ++written;
+  }
+  CHECK(written == 2); // 32 / 16
+
+  // после дренажа снова можно писать
+  ch.drain([](const pc_msg&, std::span<const std::byte>) {});
+  CHECK(ch.write(16, [](std::span<std::byte> r, int64_t pos) {
+    return pc_msg{ 0, pos, static_cast<uint32_t>(r.size()) }; }));
+}
+
+// ── mailbox (latest-wins triple-buffer) ────────────────────────────────────────
+
+TEST_CASE("mailbox delivers latest value and drops older, reuses slots [thread::mailbox]") {
+  thread::mailbox<std::string> mb;
+
+  CHECK(mb.consume() == nullptr); // ничего не опубликовано
+
+  mb.write_slot() = "first";
+  mb.publish();
+  { const std::string* v = mb.consume(); REQUIRE(v != nullptr); CHECK(*v == "first"); }
+  CHECK(mb.consume() == nullptr); // с прошлого consume нового нет
+
+  // три публикации без чтения — консьюмер получит ТОЛЬКО последнюю (drop-oldest)
+  mb.write_slot() = "a"; mb.publish();
+  mb.write_slot() = "b"; mb.publish();
+  mb.write_slot() = "c"; mb.publish();
+  { const std::string* v = mb.consume(); REQUIRE(v != nullptr); CHECK(*v == "c"); }
+  CHECK(mb.consume() == nullptr);
+}
+
+TEST_CASE("mailbox reuses slot capacity across frames [thread::mailbox]") {
+  thread::mailbox<std::vector<int>> mb;
+
+  // Прогреваем все три слота ёмкостью >=1000 (triple-buffer ⇒ продюсер циклит по 3 слотам).
+  for (int i = 0; i < 3; ++i) {
+    mb.write_slot().assign(1000, 7);
+    mb.publish();
+    REQUIRE(mb.consume() != nullptr);
+  }
+
+  // После прогрева слот-продюсер уже имеет ёмкость — заполнение НА МЕСТЕ не реаллоцирует.
+  auto& slot = mb.write_slot();
+  CHECK(slot.capacity() >= 1000); // ёмкость переиспользована (слот из прогретого цикла)
+  slot.assign(500, 3);
+  mb.publish();
+  const auto* v = mb.consume();
+  REQUIRE(v != nullptr);
+  CHECK(v->size() == 500);
 }
