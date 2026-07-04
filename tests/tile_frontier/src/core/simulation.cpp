@@ -16,6 +16,9 @@
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/demiurg/module_system.h>
 
+#include <gtl/phmap.hpp>
+#include <devils_engine/sound/sound_resource.h>
+
 #include <devils_engine/painter/render_config_source.h>
 #include <devils_engine/painter/glsl_source_file.h>
 #include <devils_engine/painter/shader_source_file.h>
@@ -197,6 +200,10 @@ struct simulation_init {
   // шрифт как многошаговый ресурс: CPU-шаги (ttf/MSDF) — синхронно в setup_visage, GPU — асинхронно
   std::unique_ptr<visage::font_resource> ui_font_res;
   bool ui_font_logged = false;
+
+  // Звуки — demiurg-ресурсы в потоке ассетов. main держит name_hash → указатель (для резолва в
+  // command_sound_play из UI/геймплея) и запрашивает их до warm. Сам звук-актор ресурсы не хранит.
+  gtl::flat_hash_map<uint64_t, sound::sound_resource*> sound_by_name;
 
   // модель тайловой карты (главная сторона)
   texture_set textures;     // текстуры карты, собранные по префиксу пути
@@ -494,6 +501,25 @@ void simulation::init() {
     }
   }
 
+  // Звуки: резолвим короткое имя → demiurg-ресурс (поток ассетов), запрашиваем до warm и держим
+  // указатель в sound_by_name. UI/геймплей ссылаются по string_hash(имя), звук-актор получит res*.
+  {
+    const std::pair<const char*, const char*> named[] = {
+      { "eating",  "sounds/eating/freesound_community-chomp-chew-bite-102031" },
+      { "fleeing", "sounds/fleeing/freesound_community-escaping-downstairs-104907" },
+      { "walking", "sounds/walking/freesound_community-walking-46245" },
+      { "ambient", "sounds/ambient/soundreality-ambient-spring-forest-323801" },
+    };
+    for (const auto& [name, res_id] : named) {
+      auto* snd = container->assets_sim->resources()->get<sound::sound_resource>(res_id);
+      if (snd == nullptr) { utils::warn("main: sound resource '{}' not found in registry", res_id); continue; }
+      command_load_resource cmd{snd, static_cast<int32_t>(demiurg::state::warm)};
+      aactor->send(cmd);
+      container->sound_by_name.emplace(utils::string_hash(name), snd);
+    }
+    utils::info("main: requested {} sounds -> warm", container->sound_by_name.size());
+  }
+
   // --- модель тайловой карты ---
   // Набор текстур = все ресурсы с id-префиксом "textures/" (детерминированный порядок реестра).
   const uint32_t tex_count = container->textures.gather(*container->assets_sim->resources(), "textures/");
@@ -593,7 +619,10 @@ void simulation::init() {
           const sol::optional<sound_handle> after = (*opts)["after"];
           if (after && after->valid()) play.after = after->value; // хэндл → секвенсинг
         }
-        play.name = utils::string_hash(name); // тот же хеш, что у предзагруженных имён в акторе (позже — demiurg handle)
+        // резолв имя → demiurg-ресурс (main держит name_hash → sound_resource*). Неизвестное имя — тихо.
+        const auto snd_it = container->sound_by_name.find(utils::string_hash(name));
+        if (snd_it == container->sound_by_name.end()) return sound_handle{};
+        play.res = snd_it->second;
         sactor->send(play);
         // оптимистичная запись в ту же таблицу: пока play не доедет в публикацию (latency
         // 1-2 кадра), app.sound_state по ней вернёт 0, а не nil (deadline = окно старта).
@@ -845,10 +874,13 @@ void simulation::update(const size_t time) {
         if (sent >= max_sounds_per_tick) break;
         const glm::vec2 d = e.pos - listener;
         if (d.x * d.x + d.y * d.y > audible2) continue;
+        // резолв хеш-имя события → demiurg-ресурс; неизвестный звук пропускаем
+        const auto snd_it = container->sound_by_name.find(e.name);
+        if (snd_it == container->sound_by_name.end()) continue;
         command_sound_play play{};
         play.taskid = generate_task_id();
         play.after = SIZE_MAX; // без секвенсинга
-        play.name = e.name;
+        play.res = snd_it->second;
         play.start = 0.0;
         sactor->send(play);
         ++sent;

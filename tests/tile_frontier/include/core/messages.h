@@ -39,7 +39,9 @@ struct resource_status {
 struct command_sound_play {
   size_t taskid;
   size_t after = SIZE_MAX;
-  uint64_t name = 0; // хеш имени ПРЕДЗАГРУЖЕННОГО звука; резолв name→ресурс на стороне актора
+  // demiurg-хендл звук-ресурса (sound::sound_resource*), управляемого потоком ассетов. Звуковая
+  // система читает из него (view()) и НЕ хранит ресурсы. main резолвит имя→ресурс и шлёт указатель.
+  demiurg::resource_interface* res = nullptr;
   double start = 0.0;
 };
 
