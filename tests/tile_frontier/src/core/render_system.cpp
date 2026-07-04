@@ -25,6 +25,8 @@
 #include <gtl/phmap.hpp>
 #include <devils_engine/utils/string_id.h>
 
+#include <devils_engine/thread/mailbox.h>
+
 #include "messages.h"
 #include "message_dispatcher.h"
 #include "write_buffer_channel.h"
@@ -79,7 +81,9 @@ struct render_simulation_init {
   write_buffer_channel* wb_channel = nullptr;
   gtl::flat_hash_map<uint64_t, uint32_t> wb_name_to_res;
   cached_message_dispatcher<command_draw_tiles> draw_tile_commands;
-  cached_message_dispatcher<command_draw_actors> draw_actor_commands;
+  // Снапшот акторов — latest-wins мейлбокс (владелец main): triple-buffer, слоты переиспользуют
+  // ёмкость bytes/ids ⇒ ноль пер-кадровых аллокаций. Вместо dispatcher/consume_last.
+  thread::mailbox<command_draw_actors>* draw_actors_mb = nullptr;
 
   graphics_actor* self_actor = nullptr;
   assets_actor* aactor = nullptr; // куда слать ack о завершении GPU-перехода
@@ -715,7 +719,6 @@ void render_simulation::init() {
   actor.add_receiver<command_shaders_prepared>(&container->shaders_prepared_commands.dis);
   actor.add_receiver<command_set_active_graph>(&container->set_active_graph_commands.dis);
   actor.add_receiver<command_draw_tiles>(&container->draw_tile_commands.dis);
-  actor.add_receiver<command_draw_actors>(&container->draw_actor_commands.dis);
 
   if (container->config.create_vulkan_on_init) {
     render_create_instance(*container);
@@ -822,18 +825,18 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
   });
 
   bool actor_snapshot = false;
-  dispatcher_consume_last(container->draw_actor_commands, [this, &actor_snapshot] (const auto& cmd) {
-    if (cmd.stride != actor_batch::stride()) {
-      utils::warn("render actors: bad instance stride {}, expected {}", cmd.stride, actor_batch::stride());
-      return;
+  if (const command_draw_actors* cmd = container->draw_actors_mb ? container->draw_actors_mb->consume() : nullptr) {
+    if (cmd->stride != actor_batch::stride()) {
+      utils::warn("render actors: bad instance stride {}, expected {}", cmd->stride, actor_batch::stride());
+    } else {
+      container->actor_interp.push(
+        std::span<const uint8_t>(cmd->bytes),
+        std::span<const uint32_t>(cmd->ids),
+        cmd->sim_frame_time);
+      container->actor_draw_ready = true;
+      actor_snapshot = true;
     }
-    container->actor_interp.push(
-      std::span<const uint8_t>(cmd.bytes),
-      std::span<const uint32_t>(cmd.ids),
-      cmd.sim_frame_time);
-    container->actor_draw_ready = true;
-    actor_snapshot = true;
-  });
+  }
 
   if (container->graph_ready && container->actor_draw_ready) {
     // alpha гоним по РЕАЛЬНОМУ прошедшему времени рендер-кадра, а не по номинальному шагу (п.①).
@@ -868,6 +871,10 @@ void render_simulation::set_assets_actor(assets_actor* aactor) {
 
 void render_simulation::set_write_buffer_channel(write_buffer_channel* ch) {
   if (container) container->wb_channel = ch;
+}
+
+void render_simulation::set_draw_actors_mailbox(thread::mailbox<command_draw_actors>* mb) {
+  if (container) container->draw_actors_mb = mb;
 }
 
 }
