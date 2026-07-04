@@ -42,6 +42,10 @@ set(SRC_LIST
   src/painter/graphics_base.cpp
   src/painter/common_steps.cpp
   src/painter/assets_base.cpp
+  src/painter/gpu_texture_resource.cpp
+  src/painter/texture_resource.cpp
+  src/painter/mesh_resource.cpp
+  src/painter/stb_image_impl.cpp
 )
 
 set(HDR_LIST
@@ -72,6 +76,7 @@ add_library(devils_painter ${SRC_LIST} ${HDR_LIST})
 target_link_libraries(devils_painter PRIVATE devils_engine::options ${SHADERC_LIBRARY_NAME} Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp devils_engine::input devils_engine::demiurg devils_engine::utils sul::dynamic_bitset tavl)
 target_include_directories(devils_painter INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_painter PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/painter>")
+target_include_directories(devils_painter PRIVATE "${FETCHCONTENT_BASE_DIR}/stb-src") # stb_image.h для texture_resource
 
 if (MSVC)
   target_link_directories(devils_painter PUBLIC ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/vulkan)

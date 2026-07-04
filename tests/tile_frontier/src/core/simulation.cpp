@@ -32,9 +32,9 @@
 #include "sound_system.h"
 #include "render_system.h"
 #include "assets_system.h"
-#include "texture_resource.h"
+#include <devils_engine/painter/gpu_texture_resource.h>
 #include "app_config_resource.h"
-#include "font_resource.h"
+#include <devils_engine/visage/font_resource.h>
 #include "global_ubo.h"
 #include "texture_set.h"
 #include "tile_map.h"
@@ -195,7 +195,7 @@ struct simulation_init {
   bool ui_logged = false;
 
   // шрифт как многошаговый ресурс: CPU-шаги (ttf/MSDF) — синхронно в setup_visage, GPU — асинхронно
-  std::unique_ptr<font_resource> ui_font_res;
+  std::unique_ptr<visage::font_resource> ui_font_res;
   bool ui_font_logged = false;
 
   // модель тайловой карты (главная сторона)
@@ -319,7 +319,7 @@ simulation::~simulation() noexcept {
 // глифов сразу для nk_convert; GPU-заливка (2→3) уйдёт штатным асинхронным путём ассетов из init().
 // Это переносит генерацию MSDF из ad-hoc кода в FSM-шаг ресурса (demiurg 1a срез 3, первый 4-state).
 static void setup_visage(simulation_init& c) {
-  c.ui_font_res = std::make_unique<font_resource>(utils::project_folder() + "resources/fonts/crimson.roman.ttf");
+  c.ui_font_res = std::make_unique<visage::font_resource>(utils::project_folder() + "resources/fonts/crimson.roman.ttf");
   c.ui_font_res->load(utils::safe_handle_t{}); // 0→1: читаем ttf (CPU, главный поток)
   c.ui_font_res->load(utils::safe_handle_t{}); // 1→2: MSDF-атлас + метрики глифов (CPU)
 
@@ -485,7 +485,7 @@ void simulation::init() {
 
   // три grass-текстуры → texture_slots 0,1,2 (порядок запроса = порядок слотов, т.к. assets грузит по очереди)
   for (const auto* name : { "textures/grass", "textures/grass1_0", "textures/grass3" }) {
-    if (auto* tex = container->assets_sim->resources()->get<texture_resource>(name)) {
+    if (auto* tex = container->assets_sim->resources()->get<painter::gpu_texture_resource>(name)) {
       command_load_resource cmd{tex, static_cast<int32_t>(demiurg::state::hot)};
       aactor->send(cmd);
       utils::info("main: requested texture '{}' -> hot", name);

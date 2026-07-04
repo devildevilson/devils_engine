@@ -22,11 +22,7 @@ set(HDR_LIST
   include/core/sound_system.h
   include/core/render_system.h
   include/core/assets_system.h
-  include/core/gpu_load_context.h
   include/core/global_ubo.h
-  include/core/mesh_resource.h
-  include/core/texture_resource.h
-  include/core/font_resource.h
   include/core/texture_set.h
   include/core/tile_map.h
   include/core/tile_batch.h
@@ -41,13 +37,9 @@ set(SRC_LIST
   src/core/sound_system.cpp
   src/core/render_system.cpp
   src/core/assets_system.cpp
-  src/core/mesh_resource.cpp
-  src/core/texture_resource.cpp
-  src/core/font_resource.cpp
   src/core/texture_set.cpp
   src/core/tile_map.cpp
   src/core/actor_simulation.cpp
-  src/core/stb_image_impl.cpp
   src/core/simulation.cpp
 )
 

@@ -29,7 +29,8 @@
 #include "tile_map.h"
 #include "tile_batch.h"
 #include "actor_simulation.h"
-#include "texture_resource.h"
+#include <devils_engine/painter/gpu_texture_resource.h>
+#include <devils_engine/painter/gpu_load_context.h>
 
 namespace tile_frontier {
 namespace core {
@@ -771,14 +772,14 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
   // Берём только когда GPU-ресурсы готовы; иначе команды копятся в диспетчере до готовности.
   if (container->base_ready) {
     dispatcher_consume(container->gpu_transition_commands, [this] (const auto& cmd) {
-      gpu_load_context ctx{ container->assets.get(), container->base.get() };
+      painter::gpu_load_context ctx{ container->assets.get(), container->base.get() };
       const utils::safe_handle_t handle(&ctx);
       if (cmd.load) {
         cmd.res->load(handle);  // warm→hot: load_warm (upload+gpu_index) — полиморфно
         // как только меш на GPU и граф готов — регистрируем его на отрисовку (только меши!)
-        if (cmd.res->loading_type_id == utils::type_id<texture_resource>()) {
+        if (cmd.res->loading_type_id == utils::type_id<painter::gpu_texture_resource>()) {
           // текстура на GPU — точечно обновляем ЕЁ слот в дескриптор-массиве (не весь массив)
-          render_bind_texture_slot(*container, static_cast<texture_resource*>(cmd.res)->gpu_index);
+          render_bind_texture_slot(*container, static_cast<painter::gpu_texture_resource*>(cmd.res)->gpu_index);
         }
       } else {
         cmd.res->unload(handle); // hot→warm: unload_hot
