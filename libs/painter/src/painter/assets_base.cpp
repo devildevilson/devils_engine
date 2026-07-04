@@ -5,11 +5,6 @@
 #include "auxiliary.h"
 #include "graphics_base.h"
 
-constexpr auto ATOMIC_ONLY = std::memory_order_relaxed;
-constexpr auto PUBLISH = std::memory_order_release;
-constexpr auto CONSUME = std::memory_order_acquire;
-constexpr auto PUB_CONSUME = std::memory_order_acq_rel;
-
 namespace devils_engine {
 namespace painter  {
 buffer_slot::buffer_slot() noexcept :
@@ -32,7 +27,7 @@ buffer_slot::buffer_slot() noexcept :
 buffer_slot::buffer_slot(const buffer_slot& copy) noexcept :
   name(copy.name),
   geometry_name(copy.geometry_name),
-  state(copy.state.load(CONSUME)),
+  state(copy.state),
   forbid_after_frame(copy.forbid_after_frame),
   geometry(copy.geometry),
   vertex_count(copy.vertex_count),
@@ -51,7 +46,7 @@ buffer_slot::buffer_slot(const buffer_slot& copy) noexcept :
 buffer_slot& buffer_slot::operator=(const buffer_slot& copy) noexcept {
   name = copy.name;
   geometry_name = copy.geometry_name;
-  state.store(copy.state.load(CONSUME), PUBLISH);
+  state = copy.state;
   forbid_after_frame = copy.forbid_after_frame;
   geometry = copy.geometry;
   vertex_count = copy.vertex_count;
@@ -71,7 +66,7 @@ buffer_slot& buffer_slot::operator=(const buffer_slot& copy) noexcept {
 buffer_slot::buffer_slot(buffer_slot&& move) noexcept :
   name(std::move(move.name)),
   geometry_name(std::move(move.geometry_name)),
-  state(move.state.load(CONSUME)),
+  state(move.state),
   forbid_after_frame(move.forbid_after_frame),
   geometry(move.geometry),
   vertex_count(move.vertex_count),
@@ -90,7 +85,7 @@ buffer_slot::buffer_slot(buffer_slot&& move) noexcept :
 buffer_slot& buffer_slot::operator=(buffer_slot&& move) noexcept {
   name = std::move(move.name);
   geometry_name = std::move(move.geometry_name);
-  state.store(move.state.load(CONSUME), PUBLISH);
+  state = move.state;
   forbid_after_frame = move.forbid_after_frame;
   geometry = move.geometry;
   vertex_count = move.vertex_count;
@@ -119,7 +114,7 @@ texture_slot::texture_slot() noexcept :
 
 texture_slot::texture_slot(const texture_slot& copy) noexcept :
   name(copy.name),
-  state(copy.state.load(CONSUME)),
+  state(copy.state),
   forbid_after_frame(copy.forbid_after_frame),
   format(copy.format),
   extents(copy.extents),
@@ -130,7 +125,7 @@ texture_slot::texture_slot(const texture_slot& copy) noexcept :
 
 texture_slot& texture_slot::operator=(const texture_slot& copy) noexcept {
   name = copy.name;
-  state.store(copy.state.load(CONSUME), PUBLISH);
+  state = copy.state;
   forbid_after_frame = copy.forbid_after_frame;
   format = copy.format;
   extents = copy.extents;
@@ -142,7 +137,7 @@ texture_slot& texture_slot::operator=(const texture_slot& copy) noexcept {
 
 texture_slot::texture_slot(texture_slot&& move) noexcept :
   name(std::move(move.name)),
-  state(move.state.load(CONSUME)),
+  state(move.state),
   forbid_after_frame(move.forbid_after_frame),
   format(move.format),
   extents(move.extents),
@@ -153,7 +148,7 @@ texture_slot::texture_slot(texture_slot&& move) noexcept :
 
 texture_slot& texture_slot::operator=(texture_slot&& move) noexcept {
   name = std::move(move.name);
-  state.store(move.state.load(CONSUME), PUBLISH);
+  state = move.state;
   forbid_after_frame = move.forbid_after_frame;
   format = move.format;
   extents = move.extents;
@@ -242,15 +237,8 @@ buffer_asset_handle assets_base::register_buffer_storage(std::string name) {
   uint32_t i = 0;
   for (; i < buffer_slots.size(); ++i) {
     auto& slot = buffer_slots[i];
-    auto empty_state = asset_state::empty;
-    const bool success = slot.state.compare_exchange_strong(
-      empty_state, 
-      asset_state::reserved, 
-      CONSUME, // нужно ли нам что то записывать в empty?
-      ATOMIC_ONLY
-    );
-
-    if (!success) continue;
+    if (slot.state != asset_state::empty) continue;
+    slot.state = asset_state::reserved;
 
     slot.name = std::move(name);
     slot.forbid_after_frame = 0;
@@ -265,15 +253,8 @@ texture_asset_handle assets_base::register_texture_storage(std::string name) {
   uint32_t i = 0;
   for (; i < texture_slots.size(); ++i) {
     auto& slot = texture_slots[i];
-    auto empty_state = asset_state::empty;
-    const bool success = slot.state.compare_exchange_strong(
-      empty_state,
-      asset_state::reserved,
-      CONSUME, // нужно ли нам что то записывать в empty?
-      ATOMIC_ONLY
-    );
-
-    if (!success) continue;
+    if (slot.state != asset_state::empty) continue;
+    slot.state = asset_state::reserved;
 
     slot.name = std::move(name);
     slot.forbid_after_frame = 0;
@@ -287,7 +268,7 @@ texture_asset_handle assets_base::register_texture_storage(std::string name) {
 void assets_base::clear_buffer_storage(const buffer_asset_handle& h) {
   if (h >= buffer_slots.size()) utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
 
-  const auto s = buffer_slots[h].state.load(CONSUME);
+  const auto s = buffer_slots[h].state;
   if (s != asset_state::pending_remove) return;
 
   // проверим текущий кадр
@@ -311,13 +292,13 @@ void assets_base::clear_buffer_storage(const buffer_asset_handle& h) {
   buf.vertex_count = 0;
   buf.index_count = 0;
 
-  buf.state.store(asset_state::empty, PUBLISH);
+  buf.state = asset_state::empty;
 }
 
 void assets_base::clear_texture_storage(const texture_asset_handle& h) {
   if (h >= texture_slots.size()) utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
 
-  const auto s = texture_slots[h].state.load(CONSUME);
+  const auto s = texture_slots[h].state;
   if (s != asset_state::pending_remove) return;
 
   // проверим текущий кадр
@@ -336,7 +317,7 @@ void assets_base::clear_texture_storage(const texture_asset_handle& h) {
   tex.format = 0;
   memset(&tex.extents, 0, sizeof(tex.extents));
 
-  tex.state.store(asset_state::empty, PUBLISH);
+  tex.state = asset_state::empty;
 }
 
 buffer_asset_handle assets_base::find_buffer_storage(const std::string_view& name) const {
@@ -344,7 +325,7 @@ buffer_asset_handle assets_base::find_buffer_storage(const std::string_view& nam
   // похоже на то, но часто ли нам нужно будет поиск такой делать?
 
   for (uint32_t i = 0; i < buffer_slots.size(); ++i) {
-    const auto s = buffer_slots[i].state.load(CONSUME);
+    const auto s = buffer_slots[i].state;
     if (s == asset_state::ready && buffer_slots[i].name == name) return i;
   }
 
@@ -353,7 +334,7 @@ buffer_asset_handle assets_base::find_buffer_storage(const std::string_view& nam
 
 texture_asset_handle assets_base::find_texture_storage(const std::string_view& name) const {
   for (uint32_t i = 0; i < texture_slots.size(); ++i) {
-    const auto s = texture_slots[i].state.load(CONSUME);
+    const auto s = texture_slots[i].state;
     if (s == asset_state::ready && texture_slots[i].name == name) return i;
   }
 
@@ -364,7 +345,7 @@ void assets_base::create_buffer_storage(const buffer_asset_handle& h, const buff
   if (h >= buffer_slots.size()) utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
 
   // тут мы просто проверим если состояние reserved то создадим ГПУ ресурсы
-  const auto s = buffer_slots[h].state.load(CONSUME);
+  const auto s = buffer_slots[h].state;
   if (s != asset_state::reserved) return;
 
   // тут нужно найти геометрию 
@@ -412,7 +393,7 @@ void assets_base::create_texture_storage(const texture_asset_handle& h, const te
   if (h >= texture_slots.size()) utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
 
   // тут мы просто проверим если состояние reserved то создадим ГПУ ресурсы
-  const auto s = texture_slots[h].state.load(CONSUME);
+  const auto s = texture_slots[h].state;
   if (s != asset_state::reserved) return;
 
   vk::Device dev(device);
@@ -522,14 +503,14 @@ void assets_base::create_default_texture() {
   });
 
   a.destroyBuffer(buf, balloc);
-  default_texture.state.store(asset_state::ready, PUBLISH);
+  default_texture.state = asset_state::ready;
 }
 
 void assets_base::populate_buffer_storage(const buffer_asset_handle& h, const std::span<const uint8_t>& vertex_data, const std::span<const uint8_t>& index_data) {
   if (h >= buffer_slots.size()) utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
 
   // тут мы просто проверим если состояние reserved то создадим ГПУ ресурсы
-  const auto s = buffer_slots[h].state.load(CONSUME);
+  const auto s = buffer_slots[h].state;
   if (s != asset_state::reserved) return;
 
   // вот тут нужны стаджинг буферы
@@ -579,7 +560,7 @@ void assets_base::populate_buffer_storage(const buffer_asset_handle& h, const st
 void assets_base::populate_texture_storage(const texture_asset_handle& h, const std::span<const uint8_t>& data) {
   if (h >= texture_slots.size()) utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
 
-  const auto s = texture_slots[h].state.load(CONSUME);
+  const auto s = texture_slots[h].state;
   if (s != asset_state::reserved) return;
 
   const auto& slot = texture_slots[h];
@@ -638,13 +619,13 @@ void assets_base::populate_texture_storage(const texture_asset_handle& h, const 
 void assets_base::mark_ready_buffer_slot(const buffer_asset_handle& h) {
   if (h >= buffer_slots.size()) utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
 
-  buffer_slots[h].state.store(asset_state::ready, PUBLISH);
+  buffer_slots[h].state = asset_state::ready;
 }
 
 void assets_base::mark_ready_texture_slot(const texture_asset_handle& h) {
   if (h >= texture_slots.size()) utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
 
-  texture_slots[h].state.store(asset_state::ready, PUBLISH);
+  texture_slots[h].state = asset_state::ready;
 }
 
 void assets_base::mark_remove_buffer_slot(const buffer_asset_handle& h) {
@@ -652,7 +633,7 @@ void assets_base::mark_remove_buffer_slot(const buffer_asset_handle& h) {
 
   // тут пока ничего удалять не будем а просто пометим слот к удалению
   buffer_slots[h].forbid_after_frame = base->current_frame_index() + base->frames_in_flight() + 1;
-  buffer_slots[h].state.store(asset_state::pending_remove, PUBLISH);
+  buffer_slots[h].state = asset_state::pending_remove;
 }
 
 void assets_base::mark_remove_texture_slot(const texture_asset_handle& h) {
@@ -660,7 +641,7 @@ void assets_base::mark_remove_texture_slot(const texture_asset_handle& h) {
 
   // тут пока ничего удалять не будем а просто пометим слот к удалению
   texture_slots[h].forbid_after_frame = base->current_frame_index() + base->frames_in_flight() + 1;
-  texture_slots[h].state.store(asset_state::pending_remove, PUBLISH);
+  texture_slots[h].state = asset_state::pending_remove;
 }
 
 }

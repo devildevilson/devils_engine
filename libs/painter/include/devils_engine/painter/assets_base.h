@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <vector>
 #include <string>
-#include <atomic>
 #include <span>
 #include "vulkan_minimal.h"
 
@@ -28,7 +27,7 @@ enum class asset_state { empty, reserved, ready, pending_remove };
 struct buffer_slot {
   std::string name;
   std::string geometry_name;
-  std::atomic<asset_state> state;
+  asset_state state; // assets_base живёт строго на render-потоке; кросс-поточная публикация индекса идёт через demiurg::resource::_state, атомик тут не нужен
   uint32_t forbid_after_frame; // нам просто нужно записать раньше чем поменяем состояние
 
   // остается вопрос с заполнением инстанс буфера с цпу
@@ -64,7 +63,7 @@ struct buffer_slot {
 // наверное для буферов норм, а для текстурок так себе
 struct texture_slot {
   std::string name;
-  std::atomic<asset_state> state;
+  asset_state state; // assets_base живёт строго на render-потоке; кросс-поточная публикация индекса идёт через demiurg::resource::_state, атомик тут не нужен
   uint32_t forbid_after_frame;
 
   uint32_t format;

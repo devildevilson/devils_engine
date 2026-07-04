@@ -169,8 +169,9 @@ struct simulation_init {
   std::unique_ptr<demiurg::resource_system> engine_resources;
 
   // Pipeline cache (Фаза 2): ОТДЕЛЬНЫЙ demiurg-модуль над writable cache-папкой (не бандлится).
+  // Ресурсы модуля дописываются в общий engine_resources (append_resources) — своего resource_system
+  // у кэша нет. Модуль держим живым здесь: pipeline_cache_resource::load_cold читает через него.
   std::unique_ptr<demiurg::module_system> cache_modules;
-  std::unique_ptr<demiurg::resource_system> cache_resources;
 
   std::unique_ptr<thread::atomic_pool> pool_container;
   thread::atomic_pool* pool;
@@ -189,7 +190,7 @@ struct simulation_init {
   std::unique_ptr<input::init> in;
 
   // интерфейс (visage) живёт в главном потоке. Метрики глифов (font_t) и байты атласа теперь
-  // держит font_resource (многошаговый ресурс ttf→MSDF→GPU); visage::system заимствует font().
+  // держит font_resource (многошаговый ресурс ttf->MSDF->GPU); visage::system заимствует font().
   std::unique_ptr<visage::system> ui;
   bool ui_logged = false;
 
@@ -344,6 +345,10 @@ void simulation::init() {
   // (тип "spv" — сегмент пути). Компиляция/загрузка выбирается по расширению в create_pipeline.
   container->engine_resources->register_type<painter::glsl_source_file>("shaders", "glsl");
   container->engine_resources->register_type<painter::shader_source_file>("spv", "spv");
+  // Pipeline cache (Фаза 2) живёт в ТОМ ЖЕ движковом реестре — отдельный resource_system не нужен.
+  // Его МОДУЛЬ (отдельная cache-папка) дописывается в engine_resources позже (append_resources),
+  // когда из конфига известен cache_folder. Тип регистрируем сразу.
+  container->engine_resources->register_type<painter::pipeline_cache_resource>("pipeline_cache", "bin");
   container->engine_modules = std::make_unique<demiurg::module_system>(utils::project_folder() + "resources/");
   container->engine_modules->load_modules({ demiurg::module_system::list_entry{"engine", "", ""} });
   container->engine_resources->parse_resources(container->engine_modules.get());
@@ -413,12 +418,12 @@ void simulation::init() {
     file_io::create_directory(make_project_path(container->config.render.cache_folder)); // <cache_folder>/
     file_io::create_directory(make_project_path(cache_module));                          // .../painter/
     file_io::create_directory(make_project_path(cache_module + "/pipeline_cache"));       // .../painter/pipeline_cache/
-    container->cache_resources = std::make_unique<demiurg::resource_system>();
-    container->cache_resources->register_type<painter::pipeline_cache_resource>("pipeline_cache", "bin");
+    // Cache-МОДУЛЬ отдельный (свой корень-папка), но его ресурсы дописываем в ОБЩИЙ engine_resources
+    // (append_resources — без clear, id не пересекаются с движковыми). Отдельный resource_system не нужен.
     container->cache_modules = std::make_unique<demiurg::module_system>(utils::project_folder());
     container->cache_modules->load_modules({ demiurg::module_system::list_entry{cache_module, "", ""} });
-    container->cache_resources->parse_resources(container->cache_modules.get());
-    if (auto* pc = container->cache_resources->get<painter::pipeline_cache_resource>(pipeline_cache_id)) {
+    container->engine_resources->append_resources(container->cache_modules.get());
+    if (auto* pc = container->engine_resources->get<painter::pipeline_cache_resource>(pipeline_cache_id)) {
       pc->load(utils::safe_handle_t{}); // cold→warm: читает блоб через модуль (CPU, главный поток)
       utils::info("engine registry: pipeline cache '{}' preloaded", pipeline_cache_id);
     }
@@ -428,7 +433,7 @@ void simulation::init() {
     // config.config_folder ("render_config") — теперь ПРЕФИКС в движковом реестре, не путь на диске
     render_cfg.render_config_prefix = container->config.render.config_folder + "/";
     render_cfg.shader_config_prefix = container->config.render.shader_folder + "/";
-    render_cfg.cache_registry = container->cache_resources.get();
+    render_cfg.cache_registry = container->engine_resources.get(); // тот же реестр, что engine_registry
     render_cfg.pipeline_cache_id = pipeline_cache_id;
     render_cfg.pipeline_cache_path = pipeline_cache_path;
     render_cfg.graph_name = container->config.render.graph;
