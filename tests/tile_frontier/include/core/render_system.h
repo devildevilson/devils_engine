@@ -33,6 +33,8 @@ struct render_simulation_config {
   std::string pipeline_cache_id; // напр. "pipeline_cache/main"
   std::string pipeline_cache_path;
   std::string graph_name = "graphics1";
+  // п.2/п.3: доп. resident-граф (его ресурсы входят в общий used-set). Пусто ⇒ только graph_name.
+  std::string menu_graph_name;
   bool create_vulkan_on_init = true;
   bool headless = false;
 };

@@ -25,6 +25,8 @@ render = {
   preferred_gpu = ""
   preferred_gpu_index = 0
   graph = "graphics1"
+  menu_graph = "menu1"
+  demo_graph_toggle_ms = 0
 }
 
 metrics = {

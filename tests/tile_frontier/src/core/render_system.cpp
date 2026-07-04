@@ -67,6 +67,7 @@ struct render_simulation_init {
   cached_message_dispatcher<command_window_resize> window_resizing_commands;
   cached_message_dispatcher<command_gpu_transition> gpu_transition_commands;
   cached_message_dispatcher<command_shaders_prepared> shaders_prepared_commands;
+  cached_message_dispatcher<command_set_active_graph> set_active_graph_commands;
   cached_message_dispatcher<command_write_buffer> write_buffer_commands;
   cached_message_dispatcher<command_draw_tiles> draw_tile_commands;
   cached_message_dispatcher<command_draw_actors> draw_actor_commands;
@@ -307,8 +308,13 @@ static void render_create_base_resources(render_simulation_init& c) {
   c.base->get_or_create_pipeline_cache(c.config.cache_registry, c.config.pipeline_cache_id);
 
   if (c.config.engine_registry == nullptr) utils::error{}("render: engine registry is null (render-graph source)");
-  // Фаза 3: создаём GPU-ресурсы только под активный граф (commit посчитает его used-set).
+  // Фаза 3 / п.2: создаём GPU-ресурсы под ОБЪЕДИНЁННЫЙ used-set resident-графов (commit посчитает
+  // маски). Активный на старте — graph_name; menu_graph_name добавляем в резиденты, чтобы своп на
+  // него был мгновенным (его ресурсы уже созданы).
   c.base->set_startup_graph(c.config.graph_name);
+  if (!c.config.menu_graph_name.empty() && c.config.menu_graph_name != c.config.graph_name) {
+    c.base->add_resident_graph(c.config.menu_graph_name);
+  }
   // п.7: парсинг конфига живёт СНАРУЖИ graphics_base — билдер отдаёт распарсенное описание,
   // класс только устанавливает его и создаёт GPU-ресурсы.
   auto render_cfg_data = painter::build_render_config(c.config.engine_registry, c.config.render_config_prefix);
@@ -646,6 +652,7 @@ void render_simulation::init() {
   actor.add_receiver<command_window_resize>(&container->window_resizing_commands.dis);
   actor.add_receiver<command_gpu_transition>(&container->gpu_transition_commands.dis);
   actor.add_receiver<command_shaders_prepared>(&container->shaders_prepared_commands.dis);
+  actor.add_receiver<command_set_active_graph>(&container->set_active_graph_commands.dis);
   actor.add_receiver<command_write_buffer>(&container->write_buffer_commands.dis);
   actor.add_receiver<command_draw_tiles>(&container->draw_tile_commands.dis);
   actor.add_receiver<command_draw_actors>(&container->draw_actor_commands.dis);
@@ -698,6 +705,20 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
     container->shaders_prepared = cmd.failed == 0;
     utils::info("render: shader prepare result compiled={} failed={}", cmd.compiled, cmd.failed);
     render_try_create_graph(*container);
+  });
+
+  // п.2/п.3: смена активного render graph. Только когда граф уже собран (иначе первичная сборка
+  // выберет стартовый граф сама). Своп строит целевой инстанс и чистит старый — ресурсы не трогает.
+  dispatcher_consume_last(container->set_active_graph_commands, [this] (const auto& cmd) {
+    if (!container->graph_ready || !container->base) return;
+    const uint32_t idx = container->base->find_render_graph(cmd.name);
+    if (idx == painter::INVALID_RESOURCE_SLOT) {
+      utils::warn("render: set_active_graph — граф '{}' не найден", cmd.name);
+      return;
+    }
+    if (idx == container->base->current_render_graph_index) return;
+    container->base->change_render_graph(idx);
+    utils::info("render: активный граф переключён на '{}'", cmd.name);
   });
 
   // ловим событие изменение размеров окна

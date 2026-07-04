@@ -2123,12 +2123,24 @@ render_graph_instance graphics_base::create_render_graph_instance(const uint32_t
 }
 
 void graphics_base::change_render_graph(const uint32_t index) {
+  // п.2/п.3: своп активного графа. НЕ держим неактивные инстансы — целевой строим здесь, по запросу,
+  // а старый уничтожаем после свопа. GPU-ресурсы НЕ пересоздаются: их used-set = объединение
+  // resident-графов (compute_active_masks), значит своп между резидентными графами не трогает
+  // ресурсы/дескрипторы — только graph-local Vulkan-объекты (pipelines/renderpasses/framebuffers/
+  // command buffers/local semaphores). Пайплайны собираются из подготовленного assets-потоком SPIR-V.
+  if (graph_filtered_ && index < graphs.size() && !is_graph_active(index)) {
+    utils::warn("change_render_graph: graph '{}' не входит в resident-набор — его ресурсы могли не создаться",
+      DS_ASSERT_ARRAY_GET(graphs, index).name);
+  }
+
   auto next_graph = create_render_graph_instance(index);
 
   // Смена графа может происходить поверх уже отправленных кадров. Несколько кадров простоя
-  // допустимы: ждём graphics queue, меняем активный instance, затем чистим старые graph-local
-  // Vulkan-объекты (pipelines/renderpasses/framebuffers/local semaphores).
-  vk::Queue(graphics).waitIdle();
+  // допустимы. Синхронизируемся ТОЛЬКО ожиданием fence'ов кадров этого graphics_base (не device/
+  // queue-wide waitIdle): старый инстанс безопасно чистить, когда его submitted-кадры досчитаны.
+  // Целевой строим ДО ожидания, чтобы простой был минимальным. fence'ы созданы signaled, так что
+  // при первом (стартовом) вызове ожидание проходит мгновенно.
+  wait_all_fences();
 
   auto old_graph = std::move(execution_graph);
   execution_graph = std::move(next_graph);

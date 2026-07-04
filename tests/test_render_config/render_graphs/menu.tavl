@@ -1,0 +1,30 @@
+// п.2/п.3: второй resident-граф для демонстрации мгновенного свопа. Структурно как graphics1, но
+// в mp1 рисуется только UI (без тайлов/акторов) — «меню» поверх очищенного фона. Пассы названы
+// mp1/mp2 (имена пассов глобально уникальны). Steps (draw_ui/blit_to_swapchain) переиспользуются из
+// общего списка steps/. Ресурсы те же, что у graphics1 (подмножество) ⇒ used-set = объединение,
+// своп на этот граф не пересоздаёт GPU-ресурсы.
+{
+  name = menu1
+  passes = [
+    {
+      name = mp1
+      render_target = rt1
+      subpasses = [
+        { albedo_res = (undefined, clear) },
+        { albedo_res = (color_attachment, store) },
+        { albedo_res = (transfer_src, store) }
+      ]
+      steps = [ draw_ui ]
+    },
+    {
+      name = mp2
+      wait_for = [ swapchain_image ]
+      subpasses = [
+        { albedo_res = (transfer_src, store), swapchain_image = (transfer_dst, store) },
+        { albedo_res = (color_attachment, store), swapchain_image = (present, store) }
+      ]
+      steps = [ blit_to_swapchain ]
+    }
+  ]
+  present_source = swapchain_image
+}
