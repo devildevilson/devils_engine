@@ -6,13 +6,10 @@
 #include <string_view>
 #include <vector>
 
-#include <gtl/phmap.hpp>
-
 #include <devils_engine/sound/system.h>
 #include <devils_engine/sound/resource.h>
+#include <devils_engine/sound/sound_resource.h>
 #include <devils_engine/utils/core.h>
-#include <devils_engine/utils/fileio.h>
-#include <devils_engine/utils/string_id.h> // utils::string_hash — ключ предзагруженных звуков
 
 #include "messages.h"
 #include "message_dispatcher.h"
@@ -40,14 +37,8 @@ struct sound_simulation_init {
   message_dispatcher<command_sound_devices> devices;
   message_dispatcher<command_recreate_sound_system> recreate;
 
-  // Предзагруженные звуки: name_hash → байты+тип+id. Звуковой актор владеет байтами (MVP —
-  // local-load из resources/sounds/<type>/); gameplay/UI ссылаются по name (command_sound_play.name).
-  struct loaded_sound {
-    std::string id;            // строковый id ресурса (нужен sound::resource2)
-    std::vector<char> bytes;   // сырые байты (mp3) — живут пока играет (стриминговый декод)
-    sound::type type = sound::type::sfx;
-  };
-  gtl::flat_hash_map<uint64_t, loaded_sound> sounds;
+  // Звуковой актор НЕ хранит звук-ресурсы: играет из demiurg-хендла (command_sound_play.res),
+  // которым владеет поток ассетов. main резолвит имя→ресурс и шлёт указатель.
 };
 
 sound_simulation::sound_simulation(const size_t frame_time) noexcept : simul::advancer(frame_time) {}
@@ -61,24 +52,8 @@ void sound_simulation::init() {
   actor.add_receiver<command_sound_update>(&container->updates);
   actor.add_receiver<command_sound_devices>(&container->devices);
   actor.add_receiver<command_recreate_sound_system>(&container->recreate);
-
-  // Предзагрузка именованного набора из resources/sounds/<type>/ (MVP: актор сам грузит байты).
-  // Ключ = string_hash(имя), на него ссылается command_sound_play.name. Тип берётся по назначению.
-  // НИЧЕГО не играем на init (эмбиент придёт из UI; sim-звуки — по событиям).
-  const std::string base = utils::project_folder() + "resources/sounds/";
-  const auto load = [&] (const std::string_view name, const std::string& rel, const sound::type type) {
-    sound_simulation_init::loaded_sound ls;
-    ls.id = base + rel;
-    ls.bytes = file_io::read<char>(ls.id);
-    ls.type = type;
-    if (ls.bytes.empty()) { utils::warn("sound: failed to load '{}'", ls.id); return; }
-    container->sounds.emplace(utils::string_hash(name), std::move(ls));
-  };
-  load("eating",  "eating/freesound_community-chomp-chew-bite-102031.mp3", sound::type::sfx);
-  load("fleeing", "fleeing/freesound_community-escaping-downstairs-104907.mp3", sound::type::sfx);
-  load("walking", "walking/freesound_community-walking-46245.mp3", sound::type::sfx);
-  load("ambient", "ambient/soundreality-ambient-spring-forest-323801.mp3", sound::type::music);
-  utils::info("sound: preloaded {} named sounds", container->sounds.size());
+  // Звуки грузит поток АССЕТОВ (demiurg): main запрашивает их до warm и шлёт указатель в
+  // command_sound_play. Актор ничего не предзагружает и не хранит.
 }
 
 bool sound_simulation::stop_predicate() const { return false; }
@@ -104,21 +79,20 @@ void sound_simulation::update(const size_t time) {
   dispatcher_consume(container->plays, container->play_cache, [this] (const auto &cmd) {
     if (!container->s) return;
 
-    // резолв name → предзагруженный звук (актор владеет байтами). Неизвестный name — пропуск.
-    const auto it = container->sounds.find(cmd.name);
-    if (it == container->sounds.end()) {
-      utils::warn("sound: unknown sound name {} (task {})", cmd.name, cmd.taskid);
+    // Звук берём из demiurg-хендла (владеет поток ассетов); НЕ храним. Читаем данные через view().
+    auto* sres = static_cast<sound::sound_resource*>(cmd.res);
+    if (sres == nullptr) { utils::warn("sound: play task {} with null resource", cmd.taskid); return; }
+    const auto view = sres->view();
+    if (view.data.empty() || view.type == sound::data_type::undefined) {
+      utils::warn("sound: resource '{}' not ready (task {})", sres->id, cmd.taskid);
       return;
     }
-    const auto& ls = it->second;
 
     sound::task t;
     t.id = cmd.taskid == SIZE_MAX ? generate_task_id() : cmd.taskid;
     t.after = cmd.after;
-    t.res.id = std::string_view(ls.id);
-    t.res.type = sound::data_type::mp3;
-    t.res.data = std::span(ls.bytes);
-    t.type = ls.type;
+    t.res = view; // {id, type, span} — span живёт в ресурсе (поток ассетов)
+    t.type = sound::type::sfx; // TODO: категорию (sfx/music) нести в play-команде (стадийно: sfx)
     t.command = sound::task::command::play; // POD без инициализации — явно задаём важные поля
     t.pitch = 1.0f;
     t.volume = 1.0f;

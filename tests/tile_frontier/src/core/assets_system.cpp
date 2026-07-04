@@ -13,6 +13,7 @@
 #include "message_dispatcher.h"
 #include <devils_engine/painter/mesh_resource.h>
 #include <devils_engine/painter/texture_resource.h>
+#include <devils_engine/sound/sound_resource.h>
 #include "tile_map.h"
 
 namespace tile_frontier {
@@ -54,6 +55,8 @@ void assets_simulation::init() {
   // Регистрируем png-текстуру, но loading_type_id = БАЗА gpu_texture_resource: рендер/texture_set
   // работают через базу (нужен лишь gpu_index), не зная про конкретный png-декодер.
   container->resources->register_type<painter::gpu_texture_resource, painter::texture_resource>("textures", "png");
+  // Звуки — игровой контент (resources/modules/core/sounds/); тип матчится на сегмент "sounds".
+  container->resources->register_type<sound::sound_resource>("sounds", "mp3,flac,wav,ogg");
 
   // Реестр строим один раз здесь (init вызывается на главном потоке до старта потока ассетов).
   const auto modules_root = utils::project_folder() + "resources/modules/";
