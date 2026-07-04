@@ -12,6 +12,7 @@ namespace tile_frontier {
 namespace core {
 
 struct sound_simulation_init;
+struct broker;
 
 // звук делает что?
 class sound_simulation : public simul::advancer {
@@ -23,8 +24,8 @@ public:
   void update(const size_t time) override;
 
   sound_actor* get_actor();
-  // реверс-связь: куда звук ПУШИТ слепок состояния (command_sound_state). Может быть nullptr.
-  void set_main_actor(simulation_actor* a);
+  // Единый broker всех каналов (main владеет). Задаётся до старта потока.
+  void set_broker(broker* b);
 private:
   std::unique_ptr<sound_simulation_init> container;
   sound_actor actor;

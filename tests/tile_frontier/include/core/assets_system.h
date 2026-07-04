@@ -14,6 +14,7 @@ namespace tile_frontier {
 namespace core {
 
 struct assets_simulation_init;
+struct broker;
 
 // Тонкая обёртка над actor-паттерном: вся логика менеджмента загрузки — в
 // demiurg::resource_loader (внутри container). assets владеет реестром ресурсов
@@ -32,8 +33,8 @@ public:
   // Реестр ресурсов: строится в init() (на главном потоке), потом стабилен и читается main'ом.
   demiurg::resource_system* resources();
 
-  // Куда форвардить GPU-переходы (warm↔hot). Задаётся из simulation::init после создания рендера.
-  void set_render_actor(graphics_actor* gactor);
+  // Единый broker всех каналов (main владеет). Задаётся до старта потока.
+  void set_broker(broker* b);
 private:
   std::unique_ptr<assets_simulation_init> container;
   assets_actor actor;

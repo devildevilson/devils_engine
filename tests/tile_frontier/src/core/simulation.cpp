@@ -30,11 +30,9 @@
 #include <devils_engine/visage/font_atlas_packer.h>
 
 #include "config.h"
-#include <devils_engine/thread/mailbox.h>
 
 #include "messages.h"
-#include "write_buffer_channel.h"
-#include "message_dispatcher.h"
+#include "broker.h"
 #include "sound_system.h"
 #include "render_system.h"
 #include "assets_system.h"
@@ -208,13 +206,9 @@ struct simulation_init {
   // command_sound_play из UI/геймплея) и запрашивает их до warm. Сам звук-актор ресурсы не хранит.
   gtl::flat_hash_map<uint64_t, sound::sound_resource*> sound_by_name;
 
-  // SPSC-канал записи буферов main→render (вертикальный срез брокера). Владелец — main; рендер
-  // держит указатель. Бюджеты фиксированы: очередь сообщений + byte_ring под payload.
-  std::unique_ptr<write_buffer_channel> wb_channel;
-
-  // Latest-wins мейлбоксы снапшотов main→render (triple-buffer; слоты переиспользуют ёмкость).
-  std::unique_ptr<thread::mailbox<command_draw_actors>> draw_actors_mb;
-  std::unique_ptr<thread::mailbox<command_draw_tiles>> draw_tiles_mb;
+  // Единый broker всех межпоточных каналов. Владелец — main; создаётся в init ДО подсистем и
+  // раздаётся им указателем (set_broker) до старта потоков. Заменяет actor_ref/message_dispatcher.
+  std::unique_ptr<broker> br;
 
   // модель тайловой карты (главная сторона)
   texture_set textures;     // текстуры карты, собранные по префиксу пути
@@ -225,7 +219,6 @@ struct simulation_init {
   std::vector<bool> chunks_requested;
   std::vector<bool> chunks_loaded;
   uint32_t chunks_loaded_count = 0;
-  cached_message_dispatcher<command_chunk_loaded> chunk_loaded_commands;
   camera2d cam;             // орто top-down камера
   tile_batch batch;         // продюсер инстансов видимого среза
   bool tiles_logged = false;
@@ -255,9 +248,8 @@ struct simulation_init {
   size_t tick = 0;
 
   // Единая таблица состояния звука для UI (app.sound_state). Звуковой поток ПУШИТ полный слепок
-  // (command_sound_state); consume в update СЛИВАЕТ его с оптимистичными записями, добавленными
-  // в app.play_sound (см. ui_sound_state_entry.deadline). _next — скретч под слияние без аллокаций.
-  cached_message_dispatcher<command_sound_state> sound_state_commands;
+  // (command_sound_state, latest-wins мейлбокс); consume в update СЛИВАЕТ его с оптимистичными
+  // записями, добавленными в app.play_sound (см. ui_sound_state_entry.deadline).
   std::vector<ui_sound_state_entry> sound_state;
   std::vector<ui_sound_state_entry> sound_state_next;
   size_t sound_frame = 0; // счётчик main-кадров (для дедлайна оптимистичных записей)
@@ -265,7 +257,7 @@ struct simulation_init {
   simulation_init() : pool(nullptr), window(nullptr), monitor(nullptr) {}
 };
 
-static void create_window_and_notify_render(simulation_init& c, graphics_actor* gactor) {
+static void create_window_and_notify_render(simulation_init& c) {
   if (c.window != nullptr) return;
 
   if (!c.in) c.in = std::make_unique<input::init>(&error_callback);
@@ -293,13 +285,12 @@ static void create_window_and_notify_render(simulation_init& c, graphics_actor* 
   input::set_window_callback(c.window, &ui_char_cb);
   input::set_window_callback(c.window, &ui_key_cb);
 
-  command_window_recreation wr{
-    c.window,
-    c.monitor,
-    c.config.window.width,
-    c.config.window.height
-  };
-  gactor->send(wr);
+  if (c.br) {
+    c.br->window_recreation.write_slot() = command_window_recreation{
+      c.window, c.monitor, c.config.window.width, c.config.window.height
+    };
+    c.br->window_recreation.publish();
+  }
 }
 
 simulation::simulation() noexcept : simul::advancer(main_frame_time), sactor(nullptr), gactor(nullptr), aactor(nullptr) {}
@@ -351,8 +342,8 @@ static void setup_visage(simulation_init& c) {
 
 void simulation::init() {
   container.reset(new simulation_init);
-  actor.add_receiver<command_chunk_loaded>(&container->chunk_loaded_commands.dis);
-  actor.add_receiver<command_sound_state>(&container->sound_state_commands.dis);
+  // Единый broker создаётся ДО подсистем; раздаётся каждой (set_broker) до старта их потоков.
+  container->br = std::make_unique<broker>();
 
   // Движковый реестр: engine-module = папка resources/engine/ (не перебивается модами).
   // Новый demiurg-API не нужен — module_system::load_modules умеет директорию как модуль.
@@ -421,7 +412,7 @@ void simulation::init() {
 
   container->sound_sim.reset(new sound_simulation(sound_ft));
   container->sound_sim->init();
-  container->sound_sim->set_main_actor(&actor); // звук пушит сюда command_sound_state
+  container->sound_sim->set_broker(container->br.get());
   sactor = container->sound_sim->get_actor();
 
   if (container->config.render.enabled) {
@@ -465,23 +456,14 @@ void simulation::init() {
 
     container->render_sim.reset(new render_simulation(render_ft, std::move(render_cfg)));
     container->render_sim->init();
-    // SPSC-канал записи буферов: бюджеты ФИКСИРОВАНЫ (64 сообщения/кадр-пачки, 1 МиБ арена под
-    // payload — camera_buffer ~192Б + UI vertices/indices/commands). overflow ⇒ drop (latest-wins).
-    container->wb_channel = std::make_unique<write_buffer_channel>(64, size_t(1) << 20);
-    container->render_sim->set_write_buffer_channel(container->wb_channel.get());
-    // Latest-wins мейлбокс снапшота акторов (triple-buffer, 3 слота переиспользуют bytes/ids).
-    container->draw_actors_mb = std::make_unique<thread::mailbox<command_draw_actors>>();
-    container->render_sim->set_draw_actors_mailbox(container->draw_actors_mb.get());
-    container->draw_tiles_mb = std::make_unique<thread::mailbox<command_draw_tiles>>();
-    container->render_sim->set_draw_tiles_mailbox(container->draw_tiles_mb.get());
+    container->render_sim->set_broker(container->br.get()); // заодно триггерит попытку сборки графа
     gactor = container->render_sim->get_actor();
   }
 
   container->assets_sim.reset(new assets_simulation(assets_ft));
   container->assets_sim->init();
+  container->assets_sim->set_broker(container->br.get());
   aactor = container->assets_sim->get_actor();
-  container->assets_sim->set_render_actor(gactor); // gactor может быть null (render выключен)
-  if (container->render_sim) container->render_sim->set_assets_actor(aactor);
 
   const auto gap_divisor = container->config.simulation.thread_start_gap_divisor;
   const auto sound_gap = thread_start_gap(sound_ft, gap_divisor);
@@ -499,7 +481,7 @@ void simulation::init() {
     devices.request_id = generate_task_id();
     devices.out = &container->sound_devices;
     devices.ready = &container->sound_devices_ready;
-    sactor->send(devices);
+    container->br->sound_devices.try_push(devices);
     container->sound_devices_requested = true;
     utils::info("main: requested sound playback devices");
   }
@@ -507,14 +489,13 @@ void simulation::init() {
   // Окно - поздний ресурс. Render thread должен жить и без него, а это событие
   // может прийти сейчас, после загрузки ассетов или после полного пересоздания окна.
   if (container->config.window.create_on_start && container->render_sim && !container->config.render.headless) {
-    create_window_and_notify_render(*container, gactor);
+    create_window_and_notify_render(*container);
   }
 
   // три grass-текстуры → texture_slots 0,1,2 (порядок запроса = порядок слотов, т.к. assets грузит по очереди)
   for (const auto* name : { "textures/grass", "textures/grass1_0", "textures/grass3" }) {
     if (auto* tex = container->assets_sim->resources()->get<painter::gpu_texture_resource>(name)) {
-      command_load_resource cmd{tex, static_cast<int32_t>(demiurg::state::hot)};
-      aactor->send(cmd);
+      container->br->load_resource.try_push(command_load_resource{tex, static_cast<int32_t>(demiurg::state::hot)});
       utils::info("main: requested texture '{}' -> hot", name);
     } else {
       utils::warn("main: texture resource '{}' not found in registry", name);
@@ -533,8 +514,7 @@ void simulation::init() {
     for (const auto& [name, res_id] : named) {
       auto* snd = container->assets_sim->resources()->get<sound::sound_resource>(res_id);
       if (snd == nullptr) { utils::warn("main: sound resource '{}' not found in registry", res_id); continue; }
-      command_load_resource cmd{snd, static_cast<int32_t>(demiurg::state::warm)};
-      aactor->send(cmd);
+      container->br->load_resource.try_push(command_load_resource{snd, static_cast<int32_t>(demiurg::state::warm)});
       container->sound_by_name.emplace(utils::string_hash(name), snd);
     }
     utils::info("main: requested {} sounds -> warm", container->sound_by_name.size());
@@ -561,8 +541,7 @@ void simulation::init() {
         cmd.y = int32_t(cy);
         cmd.size = container->chunk_size;
         cmd.texture_count = std::max(tex_count, 1u);
-        cmd.reply_to = &actor;
-        aactor->send(cmd);
+        container->br->load_chunk.try_push(cmd);
         container->chunks_requested[idx] = true;
       }
     }
@@ -643,7 +622,7 @@ void simulation::init() {
         const auto snd_it = container->sound_by_name.find(utils::string_hash(name));
         if (snd_it == container->sound_by_name.end()) return sound_handle{};
         play.res = snd_it->second;
-        sactor->send(play);
+        container->br->sound_play.try_push(play);
         // оптимистичная запись в ту же таблицу: пока play не доедет в публикацию (latency
         // 1-2 кадра), app.sound_state по ней вернёт 0, а не nil (deadline = окно старта).
         constexpr size_t startup_grace_frames = 30;
@@ -655,7 +634,7 @@ void simulation::init() {
       if (sactor == nullptr || !h.valid()) return;
       command_sound_stop stop{};
       stop.taskid = h.value;
-      sactor->send(stop);
+      container->br->sound_stop.try_push(stop);
     });
 
     // ищет id в единой таблице sound_state. Возвращает прогресс [0,1] или nil. Раз вернули
@@ -678,8 +657,7 @@ void simulation::init() {
   if (container->ui_font_res && aactor != nullptr) {
     // final_state() = 3 (font_resource много-шаговый); CPU-уровни (0..2) уже пройдены в setup_visage,
     // ассетам остаётся довести 2→3 (GPU). target=final_state(), не state::hot (иначе стоп на MSDF).
-    command_load_resource cmd{container->ui_font_res.get(), container->ui_font_res->final_state()};
-    aactor->send(cmd);
+    container->br->load_resource.try_push(command_load_resource{container->ui_font_res.get(), container->ui_font_res->final_state()});
     utils::info("main: requested font atlas -> ready (level {})", container->ui_font_res->final_state());
   }
 }
@@ -705,9 +683,10 @@ void simulation::update(const size_t time) {
         uint64_t(rc.demo_graph_toggle_ms) * uint64_t(container->config.simulation.main_fps) / 1000ull);
       if (container->tick % period == 0) {
         const bool to_menu = (container->tick / period) % 2 == 1;
-        command_set_active_graph cmd;
-        cmd.name = to_menu ? rc.menu_graph : rc.graph;
-        gactor->send(std::move(cmd));
+        if (container->br) {
+          container->br->set_active_graph.write_slot().name = to_menu ? rc.menu_graph : rc.graph;
+          container->br->set_active_graph.publish();
+        }
       }
     }
   }
@@ -773,8 +752,9 @@ void simulation::update(const size_t time) {
     container->ui_font_logged = true;
   }
 
-  if (container) {
-    dispatcher_consume(container->chunk_loaded_commands, [this] (const auto& cmd) {
+  if (container && container->br) {
+    command_chunk_loaded cmd{};
+    while (container->br->chunk_loaded.try_pop(cmd)) {
       tile_chunk chunk;
       chunk.coord = chunk_coord{cmd.x, cmd.y};
       chunk.size = cmd.size;
@@ -790,7 +770,7 @@ void simulation::update(const size_t time) {
           container->chunks_loaded_count += 1;
         }
       }
-    });
+    }
 
     if (!container->chunks_logged && container->chunks_loaded_count == container->chunks_loaded.size()) {
       utils::info("main: all {} mock world chunks loaded", container->chunks_loaded_count);
@@ -824,16 +804,16 @@ void simulation::update(const size_t time) {
       ubo.misc = glm::vec4(w, h, 4.0f /* sdf px_range, = font_atlas_packer pixel_range */, 0.0f);
 
       static const uint64_t camera_buffer_hash = utils::string_hash("camera_buffer");
-      if (container->wb_channel) {
-        container->wb_channel->write(camera_buffer_hash,
+      if (container->br) {
+        container->br->write_buffer.write(camera_buffer_hash,
           std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&ubo), sizeof(global_ubo_t)));
       }
     }
 
     // Тайлы — latest-wins мейлбокс: заполняем слот-продюсер НА МЕСТЕ (bytes переиспользует ёмкость
     // 3 слотов), затем publish. Строим только когда рендер включён.
-    if (gactor != nullptr && container->draw_tiles_mb) {
-      auto& slot = container->draw_tiles_mb->write_slot();
+    if (gactor != nullptr && container->br) {
+      auto& slot = container->br->draw_tiles.write_slot();
       std::memcpy(slot.view_proj.data(), &vp[0][0], sizeof(float) * 16);
       slot.count = container->batch.count();
       slot.stride = tile_batch::stride();
@@ -847,7 +827,7 @@ void simulation::update(const size_t time) {
         container->tiles_logged = true;
       }
 
-      container->draw_tiles_mb->publish();
+      container->br->draw_tiles.publish();
     }
   }
 
@@ -864,8 +844,8 @@ void simulation::update(const size_t time) {
 
     // Снапшот акторов — latest-wins мейлбокс: заполняем слот-продюсер НА МЕСТЕ (bytes/ids
     // переиспользуют ёмкость между кадрами), затем publish. Строим только когда рендер включён.
-    if (gactor != nullptr && container->draw_actors_mb) {
-      auto& slot = container->draw_actors_mb->write_slot();
+    if (gactor != nullptr && container->br) {
+      auto& slot = container->br->draw_actors.write_slot();
       slot.count = container->actors_batch.count();
       slot.stride = actor_batch::stride();
       slot.sim_frame_time = time;
@@ -885,7 +865,7 @@ void simulation::update(const size_t time) {
         container->actors_logged = true;
       }
 
-      container->draw_actors_mb->publish();
+      container->br->draw_actors.publish();
     }
 
     // презентационный мост sim→sound: эмиты звука (вход в состояние FSM) → звуковой актор.
@@ -910,7 +890,7 @@ void simulation::update(const size_t time) {
         play.after = SIZE_MAX; // без секвенсинга
         play.res = snd_it->second;
         play.start = 0.0;
-        sactor->send(play);
+        container->br->sound_play.try_push(play);
         ++sent;
       }
     }
@@ -997,20 +977,20 @@ void simulation::update(const size_t time) {
     // плюс ещё-живые оптимистичные, которых публикация пока не знает (latency старта).
     // Подтверждённая запись, исчезнувшая из публикации = звук закончился → выпадает сама.
     container->sound_frame += 1;
-    dispatcher_consume_last(container->sound_state_commands, [this](command_sound_state& msg) {
+    if (const command_sound_state* msg = container->br ? container->br->sound_state.consume() : nullptr) {
       auto& cur = container->sound_state;
       auto& next = container->sound_state_next;
       next.clear();
-      for (const auto& s : msg.sounds) next.push_back({s.taskid, s.progress, 0});
+      for (const auto& s : msg->sounds) next.push_back({s.taskid, s.progress, 0});
       for (const auto& e : cur) {
         if (e.deadline == 0) continue;                     // была подтверждена, но публикации больше нет → конец
         if (e.deadline < container->sound_frame) continue; // окно старта вышло → считаем завершённой
         bool in_pub = false;
-        for (const auto& s : msg.sounds) if (s.taskid == e.taskid) { in_pub = true; break; }
+        for (const auto& s : msg->sounds) if (s.taskid == e.taskid) { in_pub = true; break; }
         if (!in_pub) next.push_back(e); // оптимистичная, ещё не доехала — оставляем
       }
       std::swap(cur, next);
-    });
+    }
 
     container->ui->update(time);
     container->ui->convert();
@@ -1031,13 +1011,13 @@ void simulation::update(const size_t time) {
       static const uint64_t ui_vertices_hash = utils::string_hash("ui_vertices");
       static const uint64_t ui_indices_hash  = utils::string_hash("ui_indices");
       static const uint64_t ui_commands_hash = utils::string_hash("ui_commands");
-      if (container->wb_channel) {
-        container->wb_channel->write(ui_vertices_hash, verts); // span<const uint8_t> напрямую
-        container->wb_channel->write(ui_indices_hash, inds);
+      if (container->br) {
+        container->br->write_buffer.write(ui_vertices_hash, verts); // span<const uint8_t> напрямую
+        container->br->write_buffer.write(ui_indices_hash, inds);
 
         // ui_commands самоописывающийся: [uint32 count]‖[тело] — scatter-запись без temp-буфера
         const uint32_t count = uint32_t(cmds.size());
-        container->wb_channel->write(ui_commands_hash,
+        container->br->write_buffer.write(ui_commands_hash,
           std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&count), sizeof(uint32_t)),
           std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(cmds.data()), cmds.size() * sizeof(visage::gui_draw_command_t)));
       }
