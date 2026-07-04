@@ -328,6 +328,7 @@ static void render_create_base_resources(render_simulation_init& c) {
   c.assets->create_allocator(c.instance);
   c.assets->create_command_buffer(c.transfer_queue, c.physical_device_data.transfer_queue);
   c.assets->set_graphics_base(c.base.get());
+  c.assets->create_default_texture(); // placeholder-view для незагруженных слотов дескриптор-массива
 
   c.ctx.base = c.base.get();
   c.ctx.assets = c.assets.get();
@@ -490,7 +491,12 @@ static void render_bind_textures(render_simulation_init& c) {
 
   auto& d = c.base->descriptors[di];
   if (d.texture_count == 0) return;
-  if (c.assets->texture_slots.empty()) return;
+
+  // Фолбэк — постоянная placeholder-текстура assets_base (создаётся до первого кадра). Гарантирует
+  // валидный view даже когда ещё НИ ОДНА контентная текстура не загружена, поэтому вызывать
+  // render_bind_textures можно (и нужно) сразу на graph-ready, до первой отрисовки.
+  const vk::ImageView fallback(c.assets->default_texture_view());
+  if (!fallback) { utils::warn("render: default texture not created — skip texture bind"); return; }
 
   render_drain(c); // гарантируем, что сеты сейчас не читаются GPU (одноразовые загрузки на старте)
 
@@ -500,14 +506,8 @@ static void render_bind_textures(render_simulation_init& c) {
 
   // texture_slots ПРЕД-АЛЛОЦИРОВАН на MAX_TEXTURE_SLOTS (assets_base), большинство слотов ещё с
   // null-view (текстуры грузятся по одной). Заполняем ВСЕ N элементов массива дескриптора: i-й =
-  // texture_slots[i].view, ЕСЛИ ОН ВАЛИДЕН, иначе — первый валидный view (фолбэк). Так ни один
-  // элемент не остаётся VK_NULL_HANDLE (иначе VUID-VkWriteDescriptorSet-descriptorType-02997).
-  vk::ImageView fallback{};
-  for (uint32_t i = 0; i < n && i < c.assets->texture_slots.size(); ++i) {
-    if (c.assets->texture_slots[i].view != VK_NULL_HANDLE) { fallback = vk::ImageView(c.assets->texture_slots[i].view); break; }
-  }
-  if (!fallback) return; // ни одной готовой текстуры — нечего биндить (не пишем null'ы)
-
+  // texture_slots[i].view, ЕСЛИ ОН ВАЛИДЕН, иначе — placeholder (magenta). Так ни один элемент не
+  // остаётся VK_NULL_HANDLE (иначе VUID-...-02997 при записи и -08114 при отрисовке).
   std::vector<vk::DescriptorImageInfo> infos(n);
   for (uint32_t i = 0; i < n; ++i) {
     vk::ImageView v = (i < c.assets->texture_slots.size()) ? vk::ImageView(c.assets->texture_slots[i].view) : vk::ImageView{};
@@ -529,7 +529,7 @@ static void render_bind_textures(render_simulation_init& c) {
   }
 
   vk::Device(c.device).updateDescriptorSets(writes, nullptr);
-  utils::info("render: bound {} textures into descriptor 'textures' ({} sets)", c.assets->texture_slots.size(), writes.size());
+  utils::info("render: bound {} texture slots into descriptor 'textures' ({} sets)", n, writes.size());
 }
 
 // Контракт записи в буфер: пишем сырые байты в host-visible буфер-ресурс по имени, во ВСЕ
@@ -610,6 +610,10 @@ static void render_try_create_graph(render_simulation_init& c) {
   c.base->dump_cache_on_disk(c.config.pipeline_cache_path);
 
   c.graph_ready = true;
+  // Инициализируем дескриптор-массив 'textures' placeholder'ом ДО первой отрисовки: тайлы/акторы
+  // рисуются сразу, а контентные текстуры приходят асинхронно позже (иначе VUID-...-08114 на
+  // первых кадрах — null-view). При загрузке текстур render_bind_textures перезапишет слоты.
+  render_bind_textures(c);
   render_create_tile_draw(c);
   render_create_actor_draw(c);
 }

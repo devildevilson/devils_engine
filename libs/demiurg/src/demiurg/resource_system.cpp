@@ -118,31 +118,6 @@ namespace devils_engine {
       return std::span(prev, end);
     }
 
-    static void parse_path(
-      const std::string &path, 
-      const std::string_view &root_path,
-      std::string_view &module_name,
-      std::string_view &file_name, 
-      std::string_view &ext,
-      std::string_view &id
-    ) {
-      std::string_view full_path = path;
-      utils_assertf(full_path.find(root_path) == 0, "Path to resource must have root folder part. Current path: {}", path);
-      full_path = full_path.substr(root_path.size()+1);
-
-      const size_t first_slash = full_path.find('/');
-      module_name = first_slash != std::string_view::npos ? full_path.substr(0, first_slash) : "";
-      const size_t last_slash_index = full_path.rfind('/');
-      file_name = last_slash_index != std::string_view::npos ? full_path.substr(last_slash_index) : full_path;
-      if (file_name == "." || file_name == "..") return;
-
-      const size_t dot_index = file_name.rfind('.');
-      ext = dot_index != 0 && dot_index != std::string_view::npos ? file_name.substr(dot_index+1) : "";
-      const size_t module_size = module_name == "" ? 0 : module_name.size()+1;
-      const size_t ext_size = ext == "" ? 0 : ext.size()+1;
-      id = full_path.substr(module_size, full_path.size() - module_size - ext_size);
-    }
-
 void resource_system::parse_resources(module_system* sys) {
   clear();
 
@@ -170,7 +145,6 @@ void resource_system::parse_resources(module_system* sys) {
           other_ptr = other_ptr->replacement_next(itr->second)) {}
 
       // тут мы реплейсмент меняем и с ним уходит сапплиментари
-      utils::println("res", res->module_name, res->id, "other_ptr", other_ptr != nullptr);
       if (other_ptr != nullptr) {
         // модули совпали, найдем у кого меньший индекс среди расширений
         // умрем на expr,exp например
@@ -208,10 +182,6 @@ void resource_system::parse_resources(module_system* sys) {
     std::less<std::string_view> l;
     return l(a->id, b->id);
   });
-
-  for (const auto ptr : resources) {
-    utils::println(ptr->module_name, ptr->id, ptr->ext);
-  }
 }
 
     void resource_system::clear() {
@@ -251,12 +221,6 @@ void resource_system::parse_resources(module_system* sys) {
       }
 
       return t;
-    }
-
-    void resource_interface::set_path(std::string path, const std::string_view &root) {
-      this->path = std::move(path);
-      std::string_view file_name;
-      parse_path(this->path, root, module_name, file_name, ext, id);
     }
 
     static std::tuple<std::string_view, std::string_view, std::string_view> parse_path(const std::string_view &path) {
