@@ -120,7 +120,6 @@ namespace demiurg {
     {}
     virtual ~resource_interface() noexcept = default;
 
-    void set_path(std::string path, const std::string_view &root);
     void set(std::string path, const std::string_view &module_name, const std::string_view &id, const std::string_view &ext);
 
     inline void add_dependency(resource_interface* dep) {
@@ -178,14 +177,6 @@ namespace demiurg {
     std::bitset<64> flags;
     std::atomic<int32_t> _state; // атомик? имеет смысл
   };
-
-  void parse_path(
-    const std::string& path, 
-    std::string_view& module_name,
-    std::string_view& file_name,
-    std::string_view& ext,
-    std::string_view& id
-  );
 }
 }
 

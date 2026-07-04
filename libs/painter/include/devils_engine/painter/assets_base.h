@@ -118,6 +118,12 @@ struct assets_base {
   std::vector<buffer_slot> buffer_slots;
   std::vector<texture_slot> texture_slots;
 
+  // Постоянная 1×1 placeholder-текстура (magenta) ВНЕ texture_slots: view для элементов дескриптор-
+  // массива, чей слот ещё не загружен. Гарантирует, что ни один combined-image-sampler не остаётся с
+  // null-view до прихода реальных текстур (иначе VUID-vkCmdDrawIndirect-None-08114 на первых кадрах).
+  // Не занимает контентный слот ⇒ контракт texture_set (индекс набора == gpu-слот) не нарушается.
+  texture_slot default_texture;
+
   assets_base(VkDevice device, VkPhysicalDevice physical_device) noexcept;
   ~assets_base() noexcept;
 
@@ -137,6 +143,11 @@ struct assets_base {
 
   void create_buffer_storage(const buffer_asset_handle& h, const buffer_create_info &info);
   void create_texture_storage(const texture_asset_handle& h, const texture_create_info &info);
+
+  // Создать placeholder-текстуру (см. default_texture). Идемпотентно. Зовётся один раз на потоке
+  // рендера после создания assets_base, ДО первой отрисовки графа.
+  void create_default_texture();
+  VkImageView default_texture_view() const noexcept { return default_texture.view; }
 
   // как бы оформить батч копи? то есть это надо предсоздать стаджинг буферы
   // потом закинуть, вообще для батч копи нужно создать много буферов

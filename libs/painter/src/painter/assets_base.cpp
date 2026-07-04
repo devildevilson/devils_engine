@@ -195,6 +195,11 @@ assets_base::~assets_base() noexcept {
     a.destroyImage(tex.storage, tex.alc);
   }
 
+  if (default_texture.view != VK_NULL_HANDLE) {
+    dev.destroy(default_texture.view);
+    a.destroyImage(default_texture.storage, default_texture.alc);
+  }
+
   a.destroy();
   dev.destroy(command_pool);
   dev.destroy(fence);
@@ -445,6 +450,79 @@ void assets_base::create_texture_storage(const texture_asset_handle& h, const te
   texture_slots[h].view = view;
   texture_slots[h].format = info.format;
   texture_slots[h].extents = { info.extents.x, info.extents.y, 1 };
+}
+
+void assets_base::create_default_texture() {
+  if (device == VK_NULL_HANDLE || allocator == VK_NULL_HANDLE) return;
+  if (default_texture.view != VK_NULL_HANDLE) return; // идемпотентно
+
+  vk::Device dev(device);
+  vma::Allocator a(allocator);
+
+  const uint32_t format = uint32_t(VK_FORMAT_R8G8B8A8_UNORM);
+
+  vk::ImageCreateInfo ici{};
+  ici.format = static_cast<vk::Format>(format);
+  ici.imageType = vk::ImageType::e2D;
+  ici.extent = vk::Extent3D{ 1, 1, 1 };
+  ici.mipLevels = 1;
+  ici.arrayLayers = 1;
+  ici.samples = vk::SampleCountFlagBits::e1;
+  ici.tiling = vk::ImageTiling::eOptimal;
+  ici.usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled;
+
+  vma::AllocationCreateInfo aci{};
+  aci.usage = vma::MemoryUsage::eGpuOnly;
+
+  const auto& [image, allocation] = a.createImage(ici, aci);
+
+  vk::ImageViewCreateInfo ivci{};
+  ivci.image = image;
+  ivci.viewType = vk::ImageViewType::e2D;
+  ivci.format = ici.format;
+  ivci.subresourceRange = vk::ImageSubresourceRange{ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+  auto view = dev.createImageView(ivci);
+
+  set_name(dev, image, "default_texture_storage");
+  set_name(dev, view, "default_texture_view");
+
+  default_texture.name = "default_texture";
+  default_texture.alc = allocation;
+  default_texture.storage = image;
+  default_texture.view = view;
+  default_texture.format = format;
+  default_texture.extents = { 1, 1, 1 };
+
+  // залить один magenta-пиксель (видимый признак «текстура не загрузилась») + перевести в
+  // ShaderReadOnlyOptimal. Путь копирования/барьеров — как в populate_texture_storage.
+  const uint8_t pixel[4] = { 255, 0, 255, 255 };
+
+  vk::BufferCreateInfo bci{};
+  bci.size = sizeof(pixel);
+  bci.usage = vk::BufferUsageFlagBits::eTransferSrc;
+  vma::AllocationCreateInfo baci{};
+  baci.usage = vma::MemoryUsage::eCpuOnly;
+  baci.flags = vma::AllocationCreateFlagBits::eMapped;
+  vma::AllocationInfo bai{};
+  const auto& [buf, balloc] = a.createBuffer(bci, baci, &bai);
+  memcpy(bai.pMappedData, pixel, sizeof(pixel));
+  a.flushAllocation(balloc, 0, sizeof(pixel));
+
+  const auto range1 = vk::ImageSubresourceRange{ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+  const auto range2 = vk::ImageSubresourceLayers{ vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+  vk::ImageMemoryBarrier bar1(vk::AccessFlags{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, range1);
+  vk::ImageMemoryBarrier bar2(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, range1);
+  vk::BufferImageCopy bic(0, 1, 1, range2, { 0,0,0 }, { 1, 1, 1 });
+
+  do_command(device, transfer, fence, command_buffer, [&](VkCommandBuffer cb) {
+    vk::CommandBuffer task(cb);
+    task.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion, nullptr, nullptr, bar1);
+    task.copyBufferToImage(buf, image, vk::ImageLayout::eTransferDstOptimal, bic);
+    task.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, vk::DependencyFlagBits::eByRegion, nullptr, nullptr, bar2);
+  });
+
+  a.destroyBuffer(buf, balloc);
+  default_texture.state.store(asset_state::ready, PUBLISH);
 }
 
 void assets_base::populate_buffer_storage(const buffer_asset_handle& h, const std::span<const uint8_t>& vertex_data, const std::span<const uint8_t>& index_data) {
