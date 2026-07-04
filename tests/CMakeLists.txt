@@ -51,6 +51,12 @@ target_link_libraries(sound_system_test PRIVATE devils_engine::sound devils_engi
 devils_add_doctest(acumen_test acumen_test.cpp)
 target_link_libraries(acumen_test PRIVATE devils_engine::acumen devils_engine::act)
 
+devils_add_doctest(demiurg_resource_loader_test demiurg_resource_loader_test.cpp)
+target_link_libraries(demiurg_resource_loader_test PRIVATE devils_engine::demiurg devils_engine::utils)
+
+devils_add_doctest(painter_shader_prepare_test painter_shader_prepare_test.cpp)
+target_link_libraries(painter_shader_prepare_test PRIVATE devils_engine::painter devils_engine::demiurg devils_engine::utils)
+
 add_executable(aesthetics_world_benchmark aesthetics_world_benchmark.cpp)
 target_link_libraries(aesthetics_world_benchmark PRIVATE devils_engine::options devils_engine::aesthetics)
 set_target_properties(aesthetics_world_benchmark PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_OUTPUT_DIRECTORY}/bin")

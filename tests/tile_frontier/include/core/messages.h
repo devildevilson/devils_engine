@@ -18,7 +18,7 @@ struct GLFWwindow;
 struct GLFWmonitor;
 
 namespace devils_engine { namespace thread { class atomic_pool; } }
-namespace devils_engine { namespace demiurg { class resource_interface; } }
+namespace devils_engine { namespace demiurg { class resource_interface; class resource_system; } }
 
 namespace tile_frontier {
 namespace core {
@@ -166,6 +166,20 @@ struct command_gpu_transition {
 // render → assets: «GPU-переход завершён» (рендер уже флипнул _state и записал gpu_index в ресурс).
 struct command_gpu_done {
   demiurg::resource_interface* res;
+};
+
+// render → assets: подготовить CPU-heavy shader payload для render graph. Assets thread грузит
+// GLSL из engine registry, компилирует в SPIR-V cache внутри glsl_source_file и отвечает render.
+struct command_prepare_shaders {
+  const demiurg::resource_system* registry = nullptr;
+  std::string prefix;
+  graphics_actor* reply_to = nullptr;
+};
+
+// assets → render: shader prepare завершён. failed > 0 означает, что render не должен собирать graph.
+struct command_shaders_prepared {
+  uint32_t compiled = 0;
+  uint32_t failed = 0;
 };
 
 // main → render: срез ВИДИМЫХ тайлов на отрисовку. ВОТ ОНО — «сообщение в рендер тред».

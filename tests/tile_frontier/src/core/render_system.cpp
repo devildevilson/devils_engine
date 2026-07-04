@@ -66,10 +66,12 @@ struct render_simulation_init {
   cached_message_dispatcher<command_window_recreation> window_recreation_commands;
   cached_message_dispatcher<command_window_resize> window_resizing_commands;
   cached_message_dispatcher<command_gpu_transition> gpu_transition_commands;
+  cached_message_dispatcher<command_shaders_prepared> shaders_prepared_commands;
   cached_message_dispatcher<command_write_buffer> write_buffer_commands;
   cached_message_dispatcher<command_draw_tiles> draw_tile_commands;
   cached_message_dispatcher<command_draw_actors> draw_actor_commands;
 
+  graphics_actor* self_actor = nullptr;
   assets_actor* aactor = nullptr; // куда слать ack о завершении GPU-перехода
 
   render_simulation_config config;
@@ -94,6 +96,11 @@ struct render_simulation_init {
   bool base_ready = false;
   bool surface_ready = false;
   bool graph_ready = false;
+  bool shader_prepare_requested = false;
+  bool shaders_prepared = false;
+  bool shader_prepare_failed = false;
+  uint32_t pending_graph_width = 0;
+  uint32_t pending_graph_height = 0;
   bool tiles_ready = false;
   bool actors_ready = false;
   bool actor_draw_ready = false;
@@ -557,6 +564,50 @@ static void set_shader_sources_loaded(const demiurg::resource_system* reg, const
   utils::info("render: shader sources {} ({} glsl + {} spv)", load ? "loaded" : "unloaded", glsl.size(), spv.size());
 }
 
+static void render_request_shader_prepare(render_simulation_init& c) {
+  if (c.shader_prepare_requested || c.shaders_prepared || c.shader_prepare_failed) return;
+
+  if (c.aactor == nullptr) {
+    utils::info("render: shader prepare waits for assets actor");
+    return;
+  }
+
+  command_prepare_shaders cmd;
+  cmd.registry = c.config.engine_registry;
+  cmd.prefix = c.config.shader_config_prefix;
+  cmd.reply_to = c.self_actor;
+  c.aactor->send(std::move(cmd));
+  c.shader_prepare_requested = true;
+  utils::info("render: requested shader prepare for prefix '{}'", c.config.shader_config_prefix);
+}
+
+static void render_try_create_graph(render_simulation_init& c) {
+  if (c.graph_ready || !c.base_ready || c.shader_prepare_failed) return;
+  if (!c.config.headless && !c.surface_ready) return;
+  if (!c.shaders_prepared) {
+    render_request_shader_prepare(c);
+    return;
+  }
+
+  if (c.pending_graph_width != 0 || c.pending_graph_height != 0) {
+    c.base->resize_viewport(c.pending_graph_width, c.pending_graph_height);
+  }
+
+  const uint32_t graph_index = c.base->find_render_graph(c.config.graph_name);
+  if (graph_index == painter::INVALID_RESOURCE_SLOT) utils::error{}("Could not find render graph '{}'", c.config.graph_name);
+
+  c.base->populate_constant_default_values();
+  // Нормальный путь: SPIR-V уже подготовлен assets-потоком в glsl_source_file::spirv.
+  // load_shader_module оставляет sync compile только как аварийный fallback.
+  c.base->change_render_graph(graph_index);
+  set_shader_sources_loaded(c.config.engine_registry, false);
+  c.base->dump_cache_on_disk(c.config.pipeline_cache_path);
+
+  c.graph_ready = true;
+  render_create_tile_draw(c);
+  render_create_actor_draw(c);
+}
+
 static void render_attach_window(render_simulation_init& c, const command_window_recreation& cmd) {
   if (c.config.headless) return;
   if (!c.instance_ready) render_create_instance(c);
@@ -573,24 +624,9 @@ static void render_attach_window(render_simulation_init& c, const command_window
   render_create_base_resources(c);
 
   c.base->set_surface(c.surface, cmd.width, cmd.height);
-  c.base->resize_viewport(cmd.width, cmd.height);
-
-  const uint32_t graph_index = c.base->find_render_graph(c.config.graph_name);
-  if (graph_index == painter::INVALID_RESOURCE_SLOT) utils::error{}("Could not find render graph '{}'", c.config.graph_name);
-
-  c.base->populate_constant_default_values();
-  // п.1: шейдер-исходники — «загрузить → скомпилировать → выгрузить». Нужны ТОЛЬКО на время
-  // сборки пайплайнов (change_render_graph: GLSL→SPIR-V→VkShaderModule, модуль транзитен; никаких
-  // ссылок на ресурс не остаётся — create_pipeline берёт их через get<> транзитно). После билда
-  // освобождаем CPU-текст/байты. При будущем переключении графов (п.2/3) load-before-build повторится.
-  set_shader_sources_loaded(c.config.engine_registry, true);
-  c.base->change_render_graph(graph_index);
-  set_shader_sources_loaded(c.config.engine_registry, false);
-  c.base->dump_cache_on_disk(c.config.pipeline_cache_path);
-
-  c.graph_ready = true;
-  render_create_tile_draw(c);
-  render_create_actor_draw(c);
+  c.pending_graph_width = cmd.width;
+  c.pending_graph_height = cmd.height;
+  render_try_create_graph(c);
 }
 
 render_simulation::render_simulation(const size_t frame_time, render_simulation_config config) noexcept :
@@ -605,9 +641,11 @@ render_simulation::~render_simulation() noexcept {
 }
 
 void render_simulation::init() {
+  container->self_actor = &actor;
   actor.add_receiver<command_window_recreation>(&container->window_recreation_commands.dis);
   actor.add_receiver<command_window_resize>(&container->window_resizing_commands.dis);
   actor.add_receiver<command_gpu_transition>(&container->gpu_transition_commands.dis);
+  actor.add_receiver<command_shaders_prepared>(&container->shaders_prepared_commands.dis);
   actor.add_receiver<command_write_buffer>(&container->write_buffer_commands.dis);
   actor.add_receiver<command_draw_tiles>(&container->draw_tile_commands.dis);
   actor.add_receiver<command_draw_actors>(&container->draw_actor_commands.dis);
@@ -652,6 +690,14 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
   // ловим событие пересоздания окна
   dispatcher_consume_last(container->window_recreation_commands, [this] (const auto& cmd) {
     render_attach_window(*container, cmd);
+  });
+
+  dispatcher_consume_last(container->shaders_prepared_commands, [this] (const auto& cmd) {
+    container->shader_prepare_requested = false;
+    container->shader_prepare_failed = cmd.failed != 0;
+    container->shaders_prepared = cmd.failed == 0;
+    utils::info("render: shader prepare result compiled={} failed={}", cmd.compiled, cmd.failed);
+    render_try_create_graph(*container);
   });
 
   // ловим событие изменение размеров окна
@@ -733,7 +779,9 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
 graphics_actor* render_simulation::get_actor() { return &actor; }
 
 void render_simulation::set_assets_actor(assets_actor* aactor) {
-  if (container) container->aactor = aactor;
+  if (!container) return;
+  container->aactor = aactor;
+  render_try_create_graph(*container);
 }
 
 }
