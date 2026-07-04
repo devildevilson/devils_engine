@@ -96,10 +96,7 @@ struct command_window_recreation {
   GLFWmonitor* m;
   uint32_t width, height;
 };
-
-struct command_window_resize {
-  uint32_t width, height;
-};
+// (command_window_resize удалён — не было продюсера; ресайз окна пока не проброшен)
 
 // обратно должны вернуть id для ресурса
 struct command_register_asset {
@@ -148,7 +145,6 @@ struct command_load_chunk {
   int32_t y = 0;
   uint32_t size = 0;
   uint32_t texture_count = 0;
-  simulation_actor* reply_to = nullptr;
 };
 
 // assets → main: готовый CPU payload чанка. textures.size() == size*size, row-major.
@@ -175,7 +171,6 @@ struct command_gpu_done {
 struct command_prepare_shaders {
   const demiurg::resource_system* registry = nullptr;
   std::string prefix;
-  graphics_actor* reply_to = nullptr;
 };
 
 // assets → render: shader prepare завершён. failed > 0 означает, что render не должен собирать graph.

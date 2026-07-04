@@ -25,10 +25,8 @@
 #include <gtl/phmap.hpp>
 #include <devils_engine/utils/string_id.h>
 
-#include <devils_engine/thread/mailbox.h>
-
 #include "messages.h"
-#include "message_dispatcher.h"
+#include "broker.h"
 #include "write_buffer_channel.h"
 #include "draw_intent.h"
 #include "interpolation.h"
@@ -70,24 +68,10 @@ struct blend_traits<actor_instance> {
 };
 
 struct render_simulation_init {
-  cached_message_dispatcher<command_window_recreation> window_recreation_commands;
-  cached_message_dispatcher<command_window_resize> window_resizing_commands;
-  cached_message_dispatcher<command_gpu_transition> gpu_transition_commands;
-  cached_message_dispatcher<command_shaders_prepared> shaders_prepared_commands;
-  cached_message_dispatcher<command_set_active_graph> set_active_graph_commands;
-  // SPSC-канал записи буферов (вместо dispatcher command_write_buffer): указатель на общий канал
-  // (владелец — main) + карта имя-хеш→индекс ресурса (строится на graph-ready). POD-сообщения,
-  // payload в byte_ring канала — ноль пер-кадровых аллокаций.
-  write_buffer_channel* wb_channel = nullptr;
+  // Все межпоточные каналы — в общем broker (владелец main); указатель ставится set_broker до старта.
+  broker* br = nullptr;
+  // карта имя-хеш→индекс ресурса для канала записи буферов (строится на graph-ready).
   gtl::flat_hash_map<uint64_t, uint32_t> wb_name_to_res;
-  // Снапшот тайлов — latest-wins мейлбокс (владелец main), вместо dispatcher/consume_last.
-  thread::mailbox<command_draw_tiles>* draw_tiles_mb = nullptr;
-  // Снапшот акторов — latest-wins мейлбокс (владелец main): triple-buffer, слоты переиспользуют
-  // ёмкость bytes/ids ⇒ ноль пер-кадровых аллокаций. Вместо dispatcher/consume_last.
-  thread::mailbox<command_draw_actors>* draw_actors_mb = nullptr;
-
-  graphics_actor* self_actor = nullptr;
-  assets_actor* aactor = nullptr; // куда слать ack о завершении GPU-перехода
 
   render_simulation_config config;
 
@@ -634,16 +618,15 @@ static void set_shader_sources_loaded(const demiurg::resource_system* reg, const
 static void render_request_shader_prepare(render_simulation_init& c) {
   if (c.shader_prepare_requested || c.shaders_prepared || c.shader_prepare_failed) return;
 
-  if (c.aactor == nullptr) {
-    utils::info("render: shader prepare waits for assets actor");
+  if (c.br == nullptr) {
+    utils::info("render: shader prepare waits for broker");
     return;
   }
 
   command_prepare_shaders cmd;
   cmd.registry = c.config.engine_registry;
   cmd.prefix = c.config.shader_config_prefix;
-  cmd.reply_to = c.self_actor;
-  c.aactor->send(std::move(cmd));
+  c.br->prepare_shaders.try_push(std::move(cmd));
   c.shader_prepare_requested = true;
   utils::info("render: requested shader prepare for prefix '{}'", c.config.shader_config_prefix);
 }
@@ -713,13 +696,6 @@ render_simulation::~render_simulation() noexcept {
 }
 
 void render_simulation::init() {
-  container->self_actor = &actor;
-  actor.add_receiver<command_window_recreation>(&container->window_recreation_commands.dis);
-  actor.add_receiver<command_window_resize>(&container->window_resizing_commands.dis);
-  actor.add_receiver<command_gpu_transition>(&container->gpu_transition_commands.dis);
-  actor.add_receiver<command_shaders_prepared>(&container->shaders_prepared_commands.dis);
-  actor.add_receiver<command_set_active_graph>(&container->set_active_graph_commands.dis);
-
   if (container->config.create_vulkan_on_init) {
     render_create_instance(*container);
     render_create_device(*container);
@@ -757,42 +733,41 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
 
   // в конце заходим в рендер граф и рисуем все подряд
 
-  // ловим событие пересоздания окна
-  dispatcher_consume_last(container->window_recreation_commands, [this] (const auto& cmd) {
-    render_attach_window(*container, cmd);
-  });
+  if (container->br == nullptr) return; // broker ещё не задан — нечего обрабатывать/рисовать
+  broker& br = *container->br;
 
-  dispatcher_consume_last(container->shaders_prepared_commands, [this] (const auto& cmd) {
+  // ловим событие пересоздания окна
+  if (const command_window_recreation* cmd = br.window_recreation.consume()) {
+    render_attach_window(*container, *cmd);
+  }
+
+  if (const command_shaders_prepared* cmd = br.shaders_prepared.consume()) {
     container->shader_prepare_requested = false;
-    container->shader_prepare_failed = cmd.failed != 0;
-    container->shaders_prepared = cmd.failed == 0;
-    utils::info("render: shader prepare result compiled={} failed={}", cmd.compiled, cmd.failed);
+    container->shader_prepare_failed = cmd->failed != 0;
+    container->shaders_prepared = cmd->failed == 0;
+    utils::info("render: shader prepare result compiled={} failed={}", cmd->compiled, cmd->failed);
     render_try_create_graph(*container);
-  });
+  }
 
   // п.2/п.3: смена активного render graph. Только когда граф уже собран (иначе первичная сборка
   // выберет стартовый граф сама). Своп строит целевой инстанс и чистит старый — ресурсы не трогает.
-  dispatcher_consume_last(container->set_active_graph_commands, [this] (const auto& cmd) {
-    if (!container->graph_ready || !container->base) return;
-    const uint32_t idx = container->base->find_render_graph(cmd.name);
-    if (idx == painter::INVALID_RESOURCE_SLOT) {
-      utils::warn("render: set_active_graph — граф '{}' не найден", cmd.name);
-      return;
+  if (container->graph_ready && container->base) {
+    if (const command_set_active_graph* cmd = br.set_active_graph.consume()) {
+      const uint32_t idx = container->base->find_render_graph(cmd->name);
+      if (idx == painter::INVALID_RESOURCE_SLOT) {
+        utils::warn("render: set_active_graph — граф '{}' не найден", cmd->name);
+      } else if (idx != container->base->current_render_graph_index) {
+        container->base->change_render_graph(idx);
+        utils::info("render: активный граф переключён на '{}'", cmd->name);
+      }
     }
-    if (idx == container->base->current_render_graph_index) return;
-    container->base->change_render_graph(idx);
-    utils::info("render: активный граф переключён на '{}'", cmd.name);
-  });
-
-  // ловим событие изменение размеров окна
-  dispatcher_consume_last(container->window_resizing_commands, [this] (const auto& cmd) {
-    if (container->base && container->surface_ready) container->base->resize_viewport(cmd.width, cmd.height);
-  });
+  }
 
   // GPU-переходы ресурсов (warm↔hot) — их исполняет рендер на своём потоке.
-  // Берём только когда GPU-ресурсы готовы; иначе команды копятся в диспетчере до готовности.
+  // Берём только когда GPU-ресурсы готовы; иначе команды копятся в очереди до готовности.
   if (container->base_ready) {
-    dispatcher_consume(container->gpu_transition_commands, [this] (const auto& cmd) {
+    command_gpu_transition cmd{};
+    while (br.gpu_transition.try_pop(cmd)) {
       painter::gpu_load_context ctx{ container->assets.get(), container->base.get() };
       const utils::safe_handle_t handle(&ctx);
       if (cmd.load) {
@@ -805,29 +780,26 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
       } else {
         cmd.res->unload(handle); // hot→warm: unload_hot
       }
-      if (container->aactor != nullptr) {
-        command_gpu_done done{cmd.res};
-        container->aactor->send(done);
-      }
-    });
+      br.gpu_done.try_push(command_gpu_done{cmd.res}); // ack ассетам
+    }
   }
 
   // Контракт записи в буферы (камера и т.п.) — нужен готовый граф (ресурсы созданы). Дренаж
   // SPSC-канала: POD-сообщение {hash,pos,size} → байты из арены → буфер, затем release (курсор).
-  if (container->graph_ready && container->wb_channel != nullptr) {
-    container->wb_channel->drain([this] (const wb_msg& m, const std::span<const std::byte> payload) {
+  if (container->graph_ready) {
+    br.write_buffer.drain([this] (const wb_msg& m, const std::span<const std::byte> payload) {
       render_write_buffer_bytes(*container, m.name_hash, payload);
     });
   }
 
-  if (container->graph_ready && container->draw_tiles_mb) {
-    if (const command_draw_tiles* cmd = container->draw_tiles_mb->consume()) {
+  if (container->graph_ready) {
+    if (const command_draw_tiles* cmd = br.draw_tiles.consume()) {
       render_update_tile_draw(*container, *cmd);
     }
   }
 
   bool actor_snapshot = false;
-  if (const command_draw_actors* cmd = container->draw_actors_mb ? container->draw_actors_mb->consume() : nullptr) {
+  if (const command_draw_actors* cmd = br.draw_actors.consume()) {
     if (cmd->stride != actor_batch::stride()) {
       utils::warn("render actors: bad instance stride {}, expected {}", cmd->stride, actor_batch::stride());
     } else {
@@ -865,22 +837,10 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
 
 graphics_actor* render_simulation::get_actor() { return &actor; }
 
-void render_simulation::set_assets_actor(assets_actor* aactor) {
+void render_simulation::set_broker(broker* b) {
   if (!container) return;
-  container->aactor = aactor;
-  render_try_create_graph(*container);
-}
-
-void render_simulation::set_write_buffer_channel(write_buffer_channel* ch) {
-  if (container) container->wb_channel = ch;
-}
-
-void render_simulation::set_draw_actors_mailbox(thread::mailbox<command_draw_actors>* mb) {
-  if (container) container->draw_actors_mb = mb;
-}
-
-void render_simulation::set_draw_tiles_mailbox(thread::mailbox<command_draw_tiles>* mb) {
-  if (container) container->draw_tiles_mb = mb;
+  container->br = b;
+  render_try_create_graph(*container); // триггер сборки графа (как раньше делал set_assets_actor)
 }
 
 }

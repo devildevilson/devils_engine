@@ -10,7 +10,6 @@
 #include "actors.h"
 
 namespace devils_engine { namespace demiurg { class resource_system; } }
-namespace devils_engine { namespace thread { template <typename> class mailbox; } }
 
 namespace tile_frontier {
 namespace core {
@@ -18,9 +17,7 @@ namespace core {
 using namespace devils_engine;
 
 struct render_simulation_init;
-struct write_buffer_channel;
-struct command_draw_actors;
-struct command_draw_tiles;
+struct broker;
 
 // Параметры запуска рендера. Заполняются из app_config в simulation::init()
 // и фиксируются на время жизни render_simulation.
@@ -53,15 +50,9 @@ public:
 
   graphics_actor* get_actor();
 
-  // Куда слать ack о завершении GPU-перехода ресурса (command_gpu_done).
-  void set_assets_actor(assets_actor* aactor);
-
-  // SPSC-канал записи буферов (main→render), вертикальный срез брокера. Задаётся до старта потока.
-  void set_write_buffer_channel(write_buffer_channel* ch);
-
-  // Latest-wins мейлбоксы снапшотов (main→render). Задаются до старта потока.
-  void set_draw_actors_mailbox(thread::mailbox<command_draw_actors>* mb);
-  void set_draw_tiles_mailbox(thread::mailbox<command_draw_tiles>* mb);
+  // Единый broker всех каналов (main владеет). Задаётся до старта потока; заодно триггерит попытку
+  // сборки графа (как раньше делал set_assets_actor).
+  void set_broker(broker* b);
 private:
   std::unique_ptr<render_simulation_init> container;
   graphics_actor actor;
