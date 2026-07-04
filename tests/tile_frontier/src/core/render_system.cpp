@@ -532,6 +532,43 @@ static void render_bind_textures(render_simulation_init& c) {
   utils::info("render: bound {} texture slots into descriptor 'textures' ({} sets)", n, writes.size());
 }
 
+// Точечное обновление ОДНОГО слота дескриптор-массива 'textures' (dstArrayElement=slot, count=1) во
+// все кадровые сеты. Вызывается при загрузке одной текстуры — не переписываем весь массив. Полное
+// заполнение placeholder'ом делается один раз на graph-ready (render_bind_textures).
+static void render_bind_texture_slot(render_simulation_init& c, const uint32_t slot) {
+  const uint32_t di = c.base->find_descriptor("textures");
+  if (di == painter::INVALID_RESOURCE_SLOT) return;
+
+  auto& d = c.base->descriptors[di];
+  if (d.texture_count == 0 || slot >= d.texture_count) return;
+  if (slot >= c.assets->texture_slots.size()) return;
+
+  vk::ImageView v(c.assets->texture_slots[slot].view);
+  if (!v) v = vk::ImageView(c.assets->default_texture_view()); // на всякий: не пишем null
+  if (!v) return;
+
+  render_drain(c); // одноразовые загрузки на старте; TODO: 3-кадровая размазка для рантайм-стриминга
+
+  const uint32_t binding = uint32_t(d.layout.size());
+  const vk::Sampler samp(c.base->samplers[d.texture_sampler].handle);
+  const vk::DescriptorImageInfo info(samp, v, vk::ImageLayout::eShaderReadOnlyOptimal);
+
+  std::vector<vk::WriteDescriptorSet> writes;
+  for (const auto set : d.sets) {
+    if (set == VK_NULL_HANDLE) continue;
+    vk::WriteDescriptorSet w;
+    w.dstSet = set;
+    w.dstBinding = binding;
+    w.dstArrayElement = slot;
+    w.descriptorCount = 1;
+    w.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    w.pImageInfo = &info;
+    writes.push_back(w);
+  }
+
+  vk::Device(c.device).updateDescriptorSets(writes, nullptr);
+}
+
 // Контракт записи в буфер: пишем сырые байты в host-visible буфер-ресурс по имени, во ВСЕ
 // per_update-копии (смену активной копии делает событие update). Аналог draw_group host_visible,
 // но для произвольного буфера. Требует готового графа (ресурсы созданы).
@@ -740,8 +777,8 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
         cmd.res->load(handle);  // warm→hot: load_warm (upload+gpu_index) — полиморфно
         // как только меш на GPU и граф готов — регистрируем его на отрисовку (только меши!)
         if (cmd.res->loading_type_id == utils::type_id<texture_resource>()) {
-          // текстура на GPU — перезаполняем массив дескриптора 'textures' из texture_slots
-          render_bind_textures(*container);
+          // текстура на GPU — точечно обновляем ЕЁ слот в дескриптор-массиве (не весь массив)
+          render_bind_texture_slot(*container, static_cast<texture_resource*>(cmd.res)->gpu_index);
         }
       } else {
         cmd.res->unload(handle); // hot→warm: unload_hot

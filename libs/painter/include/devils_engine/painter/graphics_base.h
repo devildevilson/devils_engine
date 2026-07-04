@@ -270,6 +270,10 @@ struct graphics_base {
   void compute_active_masks(const std::vector<uint32_t>& graph_indices); // Фаза 3: транзитивный used-set resident-графов
   void create_samplers();
   void create_descriptor_set_layouts();
+  // Пересоздать descriptor pool под фактические нужды активных дескрипторов (вызывать в commit
+  // ДО create_descriptor_sets). Фиксированный create_descriptor_pool не знает размеров bindless-
+  // массивов (texture_count до 4096) — считаем по распарсенным дескрипторам.
+  void recreate_descriptor_pool();
   void create_resources();
   void create_descriptor_sets();
   void revalidate_pairs(const std::vector<std::string> &prev_drav_group_names);

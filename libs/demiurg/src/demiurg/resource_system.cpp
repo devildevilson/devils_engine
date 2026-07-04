@@ -184,6 +184,37 @@ void resource_system::parse_resources(module_system* sys) {
   });
 }
 
+void resource_system::append_resources(module_system* sys) {
+  const size_t before = all_resources.size();
+
+  sys->open_modules();
+  sys->parse_resources(this); // дописывает ресурсы модуля(ей) в all_resources
+  sys->close_modules();
+
+  // Вносим ТОЛЬКО новые ресурсы (индексы [before, end)). Коллизию с уже загруженными ловим через
+  // get() (реестр `resources` на этот момент ещё полностью отсортирован — проверки идут ДО вставки).
+  // Override/ring-цепочки НЕ трогаем: append для непересекающихся под-реестров (см. хедер).
+  std::vector<resource_interface*> pending;
+  for (size_t i = before; i < all_resources.size(); ++i) {
+    auto* res = all_resources[i];
+    if (find_proper_type(res->id, res->ext) == nullptr) {
+      utils::warn("Could not find proper type for resource '{}' extension '{}'. Skip", res->id, res->ext);
+      continue;
+    }
+    if (get(res->id) != nullptr) {
+      utils::warn("append_resources: resource id '{}' already registered — override не поддержан в append, пропуск", res->id);
+      continue;
+    }
+    pending.push_back(res);
+  }
+
+  resources.insert(resources.end(), pending.begin(), pending.end());
+  std::sort(resources.begin(), resources.end(), [] (auto a, auto b) {
+    std::less<std::string_view> l;
+    return l(a->id, b->id);
+  });
+}
+
     void resource_system::clear() {
       for (auto ptr : all_resources) {
         const auto itr = types.find(ptr->type);

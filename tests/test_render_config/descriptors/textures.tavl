@@ -2,7 +2,7 @@
 // asset-текстурный дескриптор: одна текстура из assets_base (под-шаг 1), combinedImageSampler.
 {
   name = textures
-  texture_count = 8
+  texture_count = 4096
   texture_sampler = linear
   texture_stage = fragment
 }

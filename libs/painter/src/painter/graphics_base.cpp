@@ -1252,6 +1252,7 @@ int32_t graphics_base::commit_parsed_resources(render_config_storage& storage) {
   create_samplers(); // до layout'ов: immutable-сэмплеры зашиваются в descriptor set layout
   create_descriptor_set_layouts();
   create_resources();
+  recreate_descriptor_pool(); // размеры пула — по фактическим дескрипторам (texture_count уже клампнут)
   create_descriptor_sets();
   revalidate_pairs(draw_group_names);
   update_descriptors();
@@ -1422,6 +1423,19 @@ void graphics_base::create_descriptor_set_layouts() {
     }
     // asset-текстурный binding идёт после resource-bindings (binding = layout.size())
     if (desc.texture_count > 0) {
+      // Кламп размера bindless-массива по лимитам устройства: combined image sampler расходует и
+      // sampler, и sampled image, поэтому берём min по обоим на уровне stage и set. Кламп пишем
+      // обратно в desc.texture_count — его же читает биндер (render_bind_textures), чтобы не выйти
+      // за фактический размер массива.
+      const auto& lim = vk::PhysicalDevice(physical_device).getProperties().limits;
+      const uint32_t cap = std::min({
+        lim.maxPerStageDescriptorSampledImages, lim.maxPerStageDescriptorSamplers,
+        lim.maxDescriptorSetSampledImages, lim.maxDescriptorSetSamplers
+      });
+      if (desc.texture_count > cap) {
+        utils::warn("descriptor '{}': texture_count {} > device cap {} — clamped", desc.name, desc.texture_count, cap);
+        desc.texture_count = cap;
+      }
       imm_keep.emplace_back(desc.texture_count, vk::Sampler(samplers[desc.texture_sampler].handle));
       dslm.combined(uint32_t(desc.layout.size()), vk::DescriptorType::eCombinedImageSampler, vk::ShaderStageFlags(desc.texture_stage), imm_keep.back());
     }
@@ -1799,6 +1813,47 @@ void graphics_base::create_resources() {
     match.offset += frame_stride * buffering;
     match.layer_offset += buffering;
   }
+}
+
+void graphics_base::recreate_descriptor_pool() {
+  // Считаем нужды по типам: на каждый АКТИВНЫЙ дескриптор — per-set число дескрипторов каждого типа
+  // (resource-bindings по буферизации ресурса + asset-текстурный массив texture_count),
+  // умноженное на число кадровых копий сета (frames_in_flight). Линейная аккумуляция по типам —
+  // их немного, map не нужен.
+  const uint32_t frames = frames_in_flight();
+  std::vector<std::pair<vk::DescriptorType, uint32_t>> counts;
+  const auto add = [&](const vk::DescriptorType t, const uint32_t c) {
+    for (auto& [tt, cc] : counts) { if (tt == t) { cc += c; return; } }
+    counts.emplace_back(t, c);
+  };
+
+  uint32_t sets_total = 0;
+  for (uint32_t di = 0; di < descriptors.size(); ++di) {
+    if (!is_descriptor_active(di)) continue;
+    const auto& d = descriptors[di];
+    for (const auto& [slot, usage, sampler_index, stages] : d.layout) {
+      const uint32_t buffering = resources[slot].compute_buffering(this);
+      if (sampler_index != INVALID_RESOURCE_SLOT) add(vk::DescriptorType::eCombinedImageSampler, buffering);
+      else add(convertdt(usage), buffering);
+    }
+    if (d.texture_count > 0) add(vk::DescriptorType::eCombinedImageSampler, d.texture_count);
+    sets_total += frames;
+  }
+
+  std::vector<vk::DescriptorPoolSize> sizes;
+  sizes.reserve(counts.size());
+  for (const auto& [t, c] : counts) if (c > 0) sizes.emplace_back(t, c * frames);
+  if (sizes.empty()) sizes.emplace_back(vk::DescriptorType::eUniformBuffer, 1); // пустой пул создавать нельзя
+
+  vk::Device dev(device);
+  if (descriptor_pool != VK_NULL_HANDLE) { dev.destroy(descriptor_pool); descriptor_pool = VK_NULL_HANDLE; }
+
+  vk::DescriptorPoolCreateInfo dpci{};
+  dpci.maxSets = std::max(256u, sets_total);
+  dpci.poolSizeCount = uint32_t(sizes.size());
+  dpci.pPoolSizes = sizes.data();
+  descriptor_pool = dev.createDescriptorPool(dpci);
+  set_name(device, vk::DescriptorPool(descriptor_pool), "graphics_base.descriptor_pool");
 }
 
 void graphics_base::create_descriptor_sets() {

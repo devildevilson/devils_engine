@@ -187,6 +187,12 @@ public:
 
   void parse_resources(module_system* sys);
 
+  // Дописать ресурсы module_system'а в СУЩЕСТВУЮЩИЙ реестр (без clear). В отличие от
+  // parse_resources НЕ переигрывает override/dedup (ring-списки) по всему набору — рассчитан на
+  // ПОДРЕЕСТРЫ с id, не пересекающимися с уже загруженными (напр. отдельный cache-модуль движка).
+  // При коллизии id новый ресурс пропускается с warn (override в append не поддержан).
+  void append_resources(module_system* sys);
+
   void clear();
 
   size_t resources_count() const noexcept;
