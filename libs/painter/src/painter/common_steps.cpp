@@ -265,13 +265,15 @@ static vk::UniqueShaderModule load_shader_module(const graphics_base* ctx, const
     auto* res = ctx->config_reg_->get<glsl_source_file>(id);
     if (res == nullptr) utils::error{}("Shader resource '{}' (glsl) not found in engine registry", id);
 
-    shader_crafter sc(ctx->config_reg_);
-    sc.set_optimization(true);
-    sc.set_shader_entry_point("main");
-    sc.set_shader_type(shader_kind);
-    const auto spv = sc.compile(id, res->memory);
-    if (spv.empty()) utils::error{}("Shader '{}' compilation failed\nError: {}", id, sc.err_msg());
-    return make_module(spv.data(), spv.size() * sizeof(spv[0]));
+    if (!res->prepared(shader_kind)) {
+      std::string err;
+      if (!res->prepare_spirv(ctx->config_reg_, shader_kind, &err)) {
+        utils::error{}("Shader '{}' compilation failed\nError: {}", id, err);
+      }
+      utils::warn("Shader '{}' was compiled on render thread; expected assets-side prepared SPIR-V", id);
+    }
+
+    return make_module(res->spirv.data(), res->spirv.size() * sizeof(res->spirv[0]));
   }
 
   // fs-fallback

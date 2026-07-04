@@ -6,6 +6,8 @@
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/demiurg/module_system.h>
 #include <devils_engine/demiurg/resource_loader.h>
+#include <devils_engine/painter/glsl_source_file.h>
+#include <shaderc/shaderc.h>
 
 #include "messages.h"
 #include "message_dispatcher.h"
@@ -26,9 +28,11 @@ struct assets_simulation_init {
   message_dispatcher<command_load_resource> load_commands;
   message_dispatcher<command_gpu_done> gpu_done_commands;
   message_dispatcher<command_load_chunk> chunk_commands;
+  message_dispatcher<command_prepare_shaders> prepare_shader_commands;
   std::vector<command_load_resource> load_cache;
   std::vector<command_gpu_done> gpu_done_cache;
   std::vector<command_load_chunk> chunk_cache;
+  std::vector<command_prepare_shaders> prepare_shader_cache;
 
   std::vector<demiurg::resource_loader::external_job> gpu_jobs;
 
@@ -43,6 +47,7 @@ void assets_simulation::init() {
   actor.add_receiver<command_load_resource>(&container->load_commands);
   actor.add_receiver<command_gpu_done>(&container->gpu_done_commands);
   actor.add_receiver<command_load_chunk>(&container->chunk_commands);
+  actor.add_receiver<command_prepare_shaders>(&container->prepare_shader_commands);
 
   container->resources = std::make_unique<demiurg::resource_system>();
   container->resources->register_type<mesh_resource>("mesh", "mesh");
@@ -84,6 +89,47 @@ void assets_simulation::update(const size_t) {
     out.textures.reserve(chunk.tiles.size());
     for (const auto& t : chunk.tiles) out.textures.push_back(t.texture);
     cmd.reply_to->send(std::move(out));
+  });
+
+  dispatcher_consume(container->prepare_shader_commands, container->prepare_shader_cache, [] (const auto& cmd) {
+    command_shaders_prepared out;
+    if (cmd.registry == nullptr) {
+      if (cmd.reply_to != nullptr) cmd.reply_to->send(out);
+      return;
+    }
+
+    std::vector<painter::glsl_source_file*> shaders;
+    cmd.registry->template find<painter::glsl_source_file>(cmd.prefix, shaders);
+
+    const auto infer_kind = [] (const std::string_view id) -> uint32_t {
+      if (id.ends_with(".vert")) return shaderc_vertex_shader;
+      if (id.ends_with(".frag")) return shaderc_fragment_shader;
+      if (id.ends_with(".comp")) return shaderc_compute_shader;
+      if (id.ends_with(".geom")) return shaderc_geometry_shader;
+      if (id.ends_with(".tesc")) return shaderc_tess_control_shader;
+      if (id.ends_with(".tese")) return shaderc_tess_evaluation_shader;
+      return UINT32_MAX;
+    };
+
+    for (auto* shader : shaders) {
+      if (shader == nullptr) continue;
+      const uint32_t kind = infer_kind(shader->id);
+      if (kind == UINT32_MAX) {
+        utils::warn("assets: skip shader '{}' - cannot infer shader stage from id", shader->id);
+        continue;
+      }
+
+      std::string err;
+      if (shader->prepare_spirv(cmd.registry, kind, &err)) {
+        out.compiled += 1;
+      } else {
+        out.failed += 1;
+        utils::warn("assets: shader '{}' compilation failed: {}", shader->id, err);
+      }
+    }
+
+    utils::info("assets: prepared shaders prefix '{}' compiled={} failed={}", cmd.prefix, out.compiled, out.failed);
+    if (cmd.reply_to != nullptr) cmd.reply_to->send(out);
   });
 
   // reconcile: cold↔warm делаем сами, warm↔hot уходит в gpu_jobs

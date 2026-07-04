@@ -19,6 +19,12 @@
 // помечает ресурс in-flight и по завершении зовёт external_done(). Эвристика «что есть
 // GPU-переход»: если у ресурса НЕ выставлен флаг warm_and_hot_same, то warm<->hot внешний.
 //
+// Для тяжёлых render resources (например pipeline) правильный staged contract такой:
+// assets-поток делает CPU-heavy prepare/compile в локальных шагах ресурса, а внешний шаг
+// только публикует/коммитит render-owned GPU handles. VkPipeline технически можно создать
+// с другого потока при корректной синхронизации VkDevice/VkPipelineCache, но владение и
+// уничтожение graph-local handles остаётся проще и безопаснее держать на render side.
+//
 // Класс однопоточный: предполагается, что весь менеджмент крутится на одном акторе ассетов.
 
 namespace devils_engine {

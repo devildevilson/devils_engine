@@ -1,12 +1,37 @@
 #include "glsl_source_file.h"
 
 #include "devils_engine/demiurg/module_interface.h"
+#include "shader_crafter.h"
 
 namespace devils_engine {
 namespace painter {
-glsl_source_file::glsl_source_file() {
+glsl_source_file::glsl_source_file() : spirv_shader_kind(UINT32_MAX) {
   set_flag(demiurg::resource_flags::warm_and_hot_same, true);
   set_flag(demiurg::resource_flags::binary, false);
+}
+
+bool glsl_source_file::prepared(const uint32_t shader_kind) const noexcept {
+  return spirv_shader_kind == shader_kind && !spirv.empty();
+}
+
+bool glsl_source_file::prepare_spirv(const demiurg::resource_system* reg, const uint32_t shader_kind, std::string* error) {
+  if (prepared(shader_kind)) return true;
+
+  if (memory.empty()) load(utils::safe_handle_t{});
+
+  shader_crafter sc(reg);
+  sc.set_optimization(true);
+  sc.set_shader_entry_point("main");
+  sc.set_shader_type(shader_kind);
+  auto out = sc.compile(std::string(id), memory);
+  if (out.empty()) {
+    if (error != nullptr) *error = sc.err_msg();
+    return false;
+  }
+
+  spirv = std::move(out);
+  spirv_shader_kind = shader_kind;
+  return true;
 }
 
 // супер простой класс в котором мы просто ждем когда нас положат в какой нибудь шейдер
