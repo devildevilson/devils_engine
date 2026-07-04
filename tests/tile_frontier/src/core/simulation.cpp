@@ -30,6 +30,8 @@
 #include <devils_engine/visage/font_atlas_packer.h>
 
 #include "config.h"
+#include <devils_engine/thread/mailbox.h>
+
 #include "messages.h"
 #include "write_buffer_channel.h"
 #include "message_dispatcher.h"
@@ -209,6 +211,9 @@ struct simulation_init {
   // SPSC-канал записи буферов main→render (вертикальный срез брокера). Владелец — main; рендер
   // держит указатель. Бюджеты фиксированы: очередь сообщений + byte_ring под payload.
   std::unique_ptr<write_buffer_channel> wb_channel;
+
+  // Latest-wins мейлбокс снапшота акторов main→render (triple-buffer; слоты переиспользуют ёмкость).
+  std::unique_ptr<thread::mailbox<command_draw_actors>> draw_actors_mb;
 
   // модель тайловой карты (главная сторона)
   texture_set textures;     // текстуры карты, собранные по префиксу пути
@@ -463,6 +468,9 @@ void simulation::init() {
     // payload — camera_buffer ~192Б + UI vertices/indices/commands). overflow ⇒ drop (latest-wins).
     container->wb_channel = std::make_unique<write_buffer_channel>(64, size_t(1) << 20);
     container->render_sim->set_write_buffer_channel(container->wb_channel.get());
+    // Latest-wins мейлбокс снапшота акторов (triple-buffer, 3 слота переиспользуют bytes/ids).
+    container->draw_actors_mb = std::make_unique<thread::mailbox<command_draw_actors>>();
+    container->render_sim->set_draw_actors_mailbox(container->draw_actors_mb.get());
     gactor = container->render_sim->get_actor();
   }
 
@@ -847,27 +855,31 @@ void simulation::update(const size_t time) {
     const auto t1 = std::chrono::steady_clock::now();
     const uint64_t update_us = uint64_t(std::max<int64_t>(utils::count_mcs(t0, t1), 0));
 
-    command_draw_actors msg;
-    msg.count = container->actors_batch.count();
-    msg.stride = actor_batch::stride();
-    msg.sim_frame_time = time;
-    msg.bytes.resize(size_t(msg.count) * msg.stride);
-    container->actors_batch.blit(std::span<uint8_t>(msg.bytes));
-    msg.ids.assign(container->actors_batch.ids().begin(), container->actors_batch.ids().end());
+    // Снапшот акторов — latest-wins мейлбокс: заполняем слот-продюсер НА МЕСТЕ (bytes/ids
+    // переиспользуют ёмкость между кадрами), затем publish. Строим только когда рендер включён.
+    if (gactor != nullptr && container->draw_actors_mb) {
+      auto& slot = container->draw_actors_mb->write_slot();
+      slot.count = container->actors_batch.count();
+      slot.stride = actor_batch::stride();
+      slot.sim_frame_time = time;
+      slot.bytes.resize(size_t(slot.count) * slot.stride);
+      container->actors_batch.blit(std::span<uint8_t>(slot.bytes));
+      slot.ids.assign(container->actors_batch.ids().begin(), container->actors_batch.ids().end());
 
-    if (!container->actors_logged) {
-      utils::info(
-        "main: actor slice {} actors, {} intents, {} instances, {} B/inst, {} B payload",
-        container->actors_last_metrics.actors,
-        container->actors_last_metrics.intents,
-        msg.count,
-        msg.stride,
-        msg.bytes.size()
-      );
-      container->actors_logged = true;
+      if (!container->actors_logged) {
+        utils::info(
+          "main: actor slice {} actors, {} intents, {} instances, {} B/inst, {} B payload",
+          container->actors_last_metrics.actors,
+          container->actors_last_metrics.intents,
+          slot.count,
+          slot.stride,
+          slot.bytes.size()
+        );
+        container->actors_logged = true;
+      }
+
+      container->draw_actors_mb->publish();
     }
-
-    if (gactor != nullptr) gactor->send(std::move(msg));
 
     // презентационный мост sim→sound: эмиты звука (вход в состояние FSM) → звуковой актор.
     // Куллинг по близости к слушателю (камере) + кап на тик (ограничение голосов). Звук
