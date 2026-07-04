@@ -13,6 +13,9 @@
 #include "devils_engine/thread/lock.h"
 #include "devils_engine/thread/queue1.h"
 #include "devils_engine/thread/spsc_queue.h"
+#include "devils_engine/thread/byte_ring.h"
+
+#include <cstring>
 
 using namespace devils_engine;
 
@@ -252,4 +255,85 @@ TEST_CASE("atomic_pool supports explicit main-thread compute with zero workers [
   pool.compute();
   CHECK(counter.load(std::memory_order_relaxed) == 8);
   CHECK(pool.tasks_count() == 0);
+}
+
+// ── byte_ring (SPSC байт-арена под payload сообщений) ──────────────────────────
+
+namespace {
+struct payload_msg { int64_t pos; uint32_t size; uint32_t tag; };
+
+// записать байты в выданную область
+static void fill(std::span<std::byte> region, const uint8_t value) {
+  std::memset(region.data(), value, region.size());
+}
+static bool all_equal(std::span<const std::byte> region, const uint8_t value) {
+  for (auto b : region) if (std::to_integer<uint8_t>(b) != value) return false;
+  return true;
+}
+}
+
+TEST_CASE("byte_ring FIFO round-trip paired with spsc_queue [thread::byte_ring]") {
+  thread::byte_ring arena(64);
+  thread::spsc_queue<payload_msg> q(8);
+
+  // продюсер: три payload'а разного размера
+  const std::pair<uint32_t, uint8_t> items[] = { {10, 0xAA}, {20, 0xBB}, {8, 0xCC} };
+  for (uint32_t i = 0; i < 3; ++i) {
+    std::span<std::byte> region;
+    const int64_t pos = arena.alloc(items[i].first, region);
+    REQUIRE(pos >= 0);
+    fill(region, items[i].second);
+    REQUIRE(q.try_push(payload_msg{ pos, items[i].first, i }));
+  }
+
+  // консьюмер: читает в порядке отправки, проверяет данные, реклеймит
+  payload_msg m{};
+  for (uint32_t i = 0; i < 3; ++i) {
+    REQUIRE(q.try_pop(m));
+    CHECK(m.tag == i);
+    CHECK(m.size == items[i].first);
+    CHECK(all_equal(arena.at(m.pos, m.size), items[i].second));
+    arena.release(m.pos + m.size);
+  }
+  CHECK(arena.used_approx() == 0);
+}
+
+TEST_CASE("byte_ring wraps with padding, positions stay monotonic [thread::byte_ring]") {
+  thread::byte_ring arena(16);
+
+  std::span<std::byte> r;
+  const int64_t p0 = arena.alloc(6, r); REQUIRE(p0 == 0); fill(r, 1);
+  const int64_t p1 = arena.alloc(6, r); REQUIRE(p1 == 6); fill(r, 2);
+
+  // хвоста (idx 12, осталось 4) не хватает под 6 contiguous, пока не реклеймнем
+  std::span<std::byte> r2;
+  CHECK(arena.alloc(6, r2) == -1); // overflow: заняты 12 из 16, +паддинг не влезает
+
+  // реклеймим первые два — освобождаем место
+  arena.release(6);
+  arena.release(12);
+
+  // теперь alloc заворачивается: позиция монотонна (16 = 12 + паддинг 4), память с начала
+  const int64_t p2 = arena.alloc(6, r2);
+  REQUIRE(p2 == 16);                       // монотонно, НЕ 0
+  CHECK(arena.at(p2, 6).data() == arena.at(0, 6).data()); // физически с начала буфера (idx 0)
+  fill(r2, 3);
+  CHECK(all_equal(arena.at(p2, 6), 3));
+  arena.release(p2 + 6);
+  CHECK(arena.used_approx() == 0);
+}
+
+TEST_CASE("byte_ring overflow returns -1, frees after release [thread::byte_ring]") {
+  thread::byte_ring arena(8);
+
+  std::span<std::byte> r;
+  CHECK(arena.alloc(0, r) == -1);   // нулевой размер
+  CHECK(arena.alloc(9, r) == -1);   // больше ёмкости — никогда не влезет
+  CHECK(r.empty());
+
+  REQUIRE(arena.alloc(5, r) >= 0);  // заняли 5/8
+  CHECK(arena.alloc(4, r) == -1);   // не хватает (5 + паддинг/4)
+
+  arena.release(5);                 // освободили
+  CHECK(arena.alloc(4, r) >= 0);    // теперь влезает (с заворотом)
 }
