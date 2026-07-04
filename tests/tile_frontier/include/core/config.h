@@ -37,6 +37,12 @@ struct render_config {
   std::string preferred_gpu;
   uint32_t preferred_gpu_index = 0;
   std::string graph = "graphics1";
+  // п.2/п.3: второй resident-граф (его ресурсы попадают в общий used-set, своп на него мгновенный).
+  // Пусто ⇒ резидентен только основной граф.
+  std::string menu_graph = "menu1";
+  // Демо интеграционного слоя: >0 ⇒ main периодически переключает активный граф graph<->menu_graph
+  // каждые N мс (проверяет мгновенный своп без пересоздания ресурсов). 0 ⇒ выключено.
+  uint32_t demo_graph_toggle_ms = 0;
 };
 
 struct metrics_config {

@@ -432,6 +432,7 @@ void simulation::init() {
     render_cfg.pipeline_cache_id = pipeline_cache_id;
     render_cfg.pipeline_cache_path = pipeline_cache_path;
     render_cfg.graph_name = container->config.render.graph;
+    render_cfg.menu_graph_name = container->config.render.menu_graph;
     render_cfg.headless = container->config.render.headless;
     render_cfg.create_vulkan_on_init = container->config.window.create_on_start || container->config.render.headless;
 
@@ -639,6 +640,22 @@ bool simulation::stop_predicate() const {
 void simulation::update(const size_t time) {
   if (container) {
     container->tick += 1;
+  }
+
+  // Демо п.2/п.3: периодически переключаем активный render graph graph<->menu_graph, чтобы проверить
+  // мгновенный своп без пересоздания ресурсов. Управляется render.demo_graph_toggle_ms (0 ⇒ выкл).
+  if (container != nullptr && gactor != nullptr) {
+    const auto& rc = container->config.render;
+    if (rc.demo_graph_toggle_ms > 0 && !rc.menu_graph.empty() && rc.menu_graph != rc.graph) {
+      const uint64_t period = std::max<uint64_t>(1,
+        uint64_t(rc.demo_graph_toggle_ms) * uint64_t(container->config.simulation.main_fps) / 1000ull);
+      if (container->tick % period == 0) {
+        const bool to_menu = (container->tick / period) % 2 == 1;
+        command_set_active_graph cmd;
+        cmd.name = to_menu ? rc.menu_graph : rc.graph;
+        gactor->send(std::move(cmd));
+      }
+    }
   }
 
   // думаем, собираем инпут, считаем физику, разбираемся с геймплеем, пробегаем UI, отправляем данные другим акторам
