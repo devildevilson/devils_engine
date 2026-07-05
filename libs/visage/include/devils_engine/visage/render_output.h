@@ -40,23 +40,28 @@ enum values : uint32_t {
 // Убирает эвристики в convert()/шейдере: тип читается из id напрямую. id уходит как nk_handle.id (int),
 // поэтому бит 31 держим нулём. ВАЖНО: держи биты В СИНХРОНЕ с ui.frag (там продублированы те же маски).
 //   [0..13] index (14 бит, 0..16383) | [14] mirror U | [15] mirror V | [16..19] type (4 бита) |
-//   [20..30] free (11 бит — геральдика/палитра/эффект) | [31] не используем
+//   [20..23] sampler_id (4 бита, индекс в sampler-пуле) | [24..30] free (7 бит) | [31] не используем
 namespace tex_id {
-  inline constexpr uint32_t index_bits   = 14;
-  inline constexpr uint32_t index_mask   = (1u << index_bits) - 1u; // 0x3FFF
-  inline constexpr uint32_t mirror_u_bit = 1u << 14;
-  inline constexpr uint32_t mirror_v_bit = 1u << 15;
-  inline constexpr uint32_t type_shift   = 16;
-  inline constexpr uint32_t type_mask    = 0xFu;                     // 4 бита
+  inline constexpr uint32_t index_bits    = 14;
+  inline constexpr uint32_t index_mask    = (1u << index_bits) - 1u; // 0x3FFF
+  inline constexpr uint32_t mirror_u_bit  = 1u << 14;
+  inline constexpr uint32_t mirror_v_bit  = 1u << 15;
+  inline constexpr uint32_t type_shift    = 16;
+  inline constexpr uint32_t type_mask     = 0xFu;                    // 4 бита
+  inline constexpr uint32_t sampler_shift = 20;
+  inline constexpr uint32_t sampler_mask  = 0xFu;                    // 4 бита (до 16 семплеров)
 
-  inline constexpr uint32_t pack(const uint32_t type, const uint32_t index, const bool mirror_u = false, const bool mirror_v = false) {
+  inline constexpr uint32_t pack(const uint32_t type, const uint32_t index,
+      const bool mirror_u = false, const bool mirror_v = false, const uint32_t sampler_id = 0) {
     return (index & index_mask)
       | (mirror_u ? mirror_u_bit : 0u)
       | (mirror_v ? mirror_v_bit : 0u)
-      | ((type & type_mask) << type_shift);
+      | ((type & type_mask) << type_shift)
+      | ((sampler_id & sampler_mask) << sampler_shift);
   }
-  inline constexpr uint32_t index_of(const uint32_t id)  { return id & index_mask; }
-  inline constexpr uint32_t type_of(const uint32_t id)   { return (id >> type_shift) & type_mask; }
+  inline constexpr uint32_t index_of(const uint32_t id)    { return id & index_mask; }
+  inline constexpr uint32_t type_of(const uint32_t id)     { return (id >> type_shift) & type_mask; }
+  inline constexpr uint32_t sampler_of(const uint32_t id)  { return (id >> sampler_shift) & sampler_mask; }
   inline constexpr bool     mirror_u_of(const uint32_t id) { return (id & mirror_u_bit) != 0u; }
   inline constexpr bool     mirror_v_of(const uint32_t id) { return (id & mirror_v_bit) != 0u; }
 }

@@ -484,9 +484,9 @@ static void render_update_actor_draw(render_simulation_init& c) {
 // в asset-текстурный binding дескриптора 'textures' во ВСЕ кадровые сеты. Под-шаг 1 — одна
 // текстура (элемент массива 0). Перед записью ждём GPU (одноразовая загрузка на старте);
 // TODO: для рантайм-смены текстур размазать обновление на 3 кадра вместо drain.
-static void render_bind_textures(render_simulation_init& c, const char* desc_name) {
-  const uint32_t di = c.base->find_descriptor(desc_name);
-  if (di == painter::INVALID_RESOURCE_SLOT) { utils::warn("render: descriptor '{}' not found", desc_name); return; }
+static void render_bind_textures(render_simulation_init& c) {
+  const uint32_t di = c.base->find_descriptor("textures");
+  if (di == painter::INVALID_RESOURCE_SLOT) { utils::warn("render: descriptor 'textures' not found"); return; }
 
   auto& d = c.base->descriptors[di];
   if (d.texture_count == 0) return;
@@ -499,19 +499,17 @@ static void render_bind_textures(render_simulation_init& c, const char* desc_nam
 
   render_drain(c); // гарантируем, что сеты сейчас не читаются GPU (одноразовые загрузки на старте)
 
-  const uint32_t binding = uint32_t(d.layout.size());
+  const uint32_t binding = uint32_t(d.layout.size()); // SAMPLED_IMAGE массив (семплер-пул — binding+1, immutable)
   const uint32_t n = d.texture_count;
-  const vk::Sampler samp(c.base->samplers[d.texture_sampler].handle);
 
   // texture_slots ПРЕД-АЛЛОЦИРОВАН на MAX_TEXTURE_SLOTS (assets_base), большинство слотов ещё с
-  // null-view (текстуры грузятся по одной). Заполняем ВСЕ N элементов массива дескриптора: i-й =
-  // texture_slots[i].view, ЕСЛИ ОН ВАЛИДЕН, иначе — placeholder (magenta). Так ни один элемент не
-  // остаётся VK_NULL_HANDLE (иначе VUID-...-02997 при записи и -08114 при отрисовке).
+  // null-view (текстуры грузятся по одной). Заполняем ВСЕ N элементов: i-й = texture_slots[i].view,
+  // ЕСЛИ ВАЛИДЕН, иначе placeholder. SAMPLED_IMAGE — БЕЗ семплера (семплеры отдельным immutable-пулом).
   std::vector<vk::DescriptorImageInfo> infos(n);
   for (uint32_t i = 0; i < n; ++i) {
     vk::ImageView v = (i < c.assets->texture_slots.size()) ? vk::ImageView(c.assets->texture_slots[i].view) : vk::ImageView{};
     if (!v) v = fallback;
-    infos[i] = vk::DescriptorImageInfo(samp, v, vk::ImageLayout::eShaderReadOnlyOptimal);
+    infos[i] = vk::DescriptorImageInfo(vk::Sampler{}, v, vk::ImageLayout::eShaderReadOnlyOptimal);
   }
 
   std::vector<vk::WriteDescriptorSet> writes;
@@ -522,20 +520,20 @@ static void render_bind_textures(render_simulation_init& c, const char* desc_nam
     w.dstBinding = binding;
     w.dstArrayElement = 0;
     w.descriptorCount = n;
-    w.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    w.descriptorType = vk::DescriptorType::eSampledImage;
     w.pImageInfo = infos.data();
     writes.push_back(w);
   }
 
   vk::Device(c.device).updateDescriptorSets(writes, nullptr);
-  utils::info("render: bound {} texture slots into descriptor '{}' ({} sets)", n, desc_name, writes.size());
+  utils::info("render: bound {} sampled-image slots into descriptor 'textures' ({} sets)", n, writes.size());
 }
 
 // Точечное обновление ОДНОГО слота дескриптор-массива 'textures' (dstArrayElement=slot, count=1) во
 // все кадровые сеты. Вызывается при загрузке одной текстуры — не переписываем весь массив. Полное
 // заполнение placeholder'ом делается один раз на graph-ready (render_bind_textures).
-static void render_bind_texture_slot(render_simulation_init& c, const uint32_t slot, const char* desc_name) {
-  const uint32_t di = c.base->find_descriptor(desc_name);
+static void render_bind_texture_slot(render_simulation_init& c, const uint32_t slot) {
+  const uint32_t di = c.base->find_descriptor("textures");
   if (di == painter::INVALID_RESOURCE_SLOT) return;
 
   auto& d = c.base->descriptors[di];
@@ -549,8 +547,7 @@ static void render_bind_texture_slot(render_simulation_init& c, const uint32_t s
   render_drain(c); // одноразовые загрузки на старте; TODO: 3-кадровая размазка для рантайм-стриминга
 
   const uint32_t binding = uint32_t(d.layout.size());
-  const vk::Sampler samp(c.base->samplers[d.texture_sampler].handle);
-  const vk::DescriptorImageInfo info(samp, v, vk::ImageLayout::eShaderReadOnlyOptimal);
+  const vk::DescriptorImageInfo info(vk::Sampler{}, v, vk::ImageLayout::eShaderReadOnlyOptimal); // SAMPLED_IMAGE
 
   std::vector<vk::WriteDescriptorSet> writes;
   for (const auto set : d.sets) {
@@ -560,7 +557,7 @@ static void render_bind_texture_slot(render_simulation_init& c, const uint32_t s
     w.dstBinding = binding;
     w.dstArrayElement = slot;
     w.descriptorCount = 1;
-    w.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    w.descriptorType = vk::DescriptorType::eSampledImage;
     w.pImageInfo = &info;
     writes.push_back(w);
   }
@@ -659,8 +656,7 @@ static void render_try_create_graph(render_simulation_init& c) {
   // Инициализируем дескриптор-массив 'textures' placeholder'ом ДО первой отрисовки: тайлы/акторы
   // рисуются сразу, а контентные текстуры приходят асинхронно позже (иначе VUID-...-08114 на
   // первых кадрах — null-view). При загрузке текстур render_bind_textures перезапишет слоты.
-  render_bind_textures(c, "textures");
-  render_bind_textures(c, "mask_textures"); // те же view'ы под nearest-семплер (маски эффектов)
+  render_bind_textures(c);
   render_create_tile_draw(c);
   render_create_actor_draw(c);
 }
@@ -815,11 +811,7 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
         // как только меш на GPU и граф готов — регистрируем его на отрисовку (только меши!)
         if (cmd.res->loading_type_id == utils::type_id<painter::gpu_texture_resource>()) {
           // текстура на GPU — точечно обновляем ЕЁ слот в дескриптор-массиве (не весь массив)
-          {
-            const uint32_t slot = static_cast<painter::gpu_texture_resource*>(cmd.res)->gpu_index;
-            render_bind_texture_slot(*container, slot, "textures");
-            render_bind_texture_slot(*container, slot, "mask_textures"); // тот же view под nearest
-          }
+          render_bind_texture_slot(*container, static_cast<painter::gpu_texture_resource*>(cmd.res)->gpu_index);
         }
       } else {
         cmd.res->unload(handle); // hot→warm: unload_hot

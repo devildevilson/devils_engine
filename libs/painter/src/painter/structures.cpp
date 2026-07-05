@@ -56,7 +56,7 @@ uint32_t render_target::resource_index(const uint32_t res_id) const {
   for (; i < resources.size() && std::get<0>(resources[i]) != res_id; ++i) {}
   return i >= resources.size() ? UINT32_MAX : i;
 }
-descriptor::descriptor() noexcept : texture_count(0), texture_sampler(UINT32_MAX), texture_stage(VK_SHADER_STAGE_ALL), setlayout(VK_NULL_HANDLE) { sets.fill(VK_NULL_HANDLE); }
+descriptor::descriptor() noexcept : texture_count(0), texture_stage(VK_SHADER_STAGE_ALL), setlayout(VK_NULL_HANDLE) { sets.fill(VK_NULL_HANDLE); }
 sampler::sampler() noexcept :
   mag_filter(VK_FILTER_LINEAR), min_filter(VK_FILTER_LINEAR),
   address_u(VK_SAMPLER_ADDRESS_MODE_REPEAT), address_v(VK_SAMPLER_ADDRESS_MODE_REPEAT), address_w(VK_SAMPLER_ADDRESS_MODE_REPEAT),
@@ -611,9 +611,10 @@ struct descriptor_mirror {
   std::string name;
   std::vector<entry> layout;
 
-  // asset-текстурный binding (опционально): texture_count картинок из assets_base, один sampler.
+  // asset-текстурный binding (опционально): texture_count картинок из assets_base + ПУЛ семплеров
+  // (sampler_pool — immutable, binding L+1; шейдер берёт по sampler_id из id). bindless v2.
   uint32_t texture_count = 0;
-  std::string texture_sampler;
+  std::vector<std::string> sampler_pool; // напр. [linear, nearest]; индекс = sampler_id в tex_id
   std::string texture_stage = "fragment";
 
   descriptor convert(const render_config_storage& ctx) const {
@@ -625,9 +626,12 @@ struct descriptor_mirror {
     if (texture_count > 0) {
       d.texture_count = texture_count;
       d.texture_stage = parse_shader_stages(texture_stage);
-      if (texture_sampler.empty()) utils::error{}("Descriptor '{}' has texture_count but no texture_sampler", name);
-      d.texture_sampler = ctx.find_sampler(texture_sampler);
-      if (d.texture_sampler == UINT32_MAX) utils::error{}("Sampler '{}' not found (descriptor '{}')", texture_sampler, name);
+      if (sampler_pool.empty()) utils::error{}("Descriptor '{}' has texture_count but empty sampler_pool", name);
+      for (const auto& sname : sampler_pool) {
+        const uint32_t si = ctx.find_sampler(sname);
+        if (si == UINT32_MAX) utils::error{}("Sampler '{}' not found (descriptor '{}')", sname, name);
+        d.texture_samplers.push_back(si);
+      }
     }
     for (const auto& e : layout) {
       const uint32_t res_index = check(ctx.find_resource(e.resource), "resource", e.resource, name);

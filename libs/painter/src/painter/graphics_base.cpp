@@ -1421,23 +1421,28 @@ void graphics_base::create_descriptor_set_layouts() {
         dslm.binding(i, convertdt(usage), stage, buffers_count);
       }
     }
-    // asset-текстурный binding идёт после resource-bindings (binding = layout.size())
+    // asset-текстуры РАЗДЕЛЕНЫ (bindless v2): binding L = SAMPLED_IMAGE массив (пишется рендером),
+    // binding L+1 = SAMPLER массив (immutable пул; шейдер берёт по sampler_id из id).
     if (desc.texture_count > 0) {
-      // Кламп размера bindless-массива по лимитам устройства: combined image sampler расходует и
-      // sampler, и sampled image, поэтому берём min по обоим на уровне stage и set. Кламп пишем
-      // обратно в desc.texture_count — его же читает биндер (render_bind_textures), чтобы не выйти
-      // за фактический размер массива.
+      // Кламп размера массива sampled-image по лимиту устройства (пишем обратно — его читает биндер).
       const auto& lim = vk::PhysicalDevice(physical_device).getProperties().limits;
-      const uint32_t cap = std::min({
-        lim.maxPerStageDescriptorSampledImages, lim.maxPerStageDescriptorSamplers,
-        lim.maxDescriptorSetSampledImages, lim.maxDescriptorSetSamplers
-      });
+      const uint32_t cap = std::min(lim.maxPerStageDescriptorSampledImages, lim.maxDescriptorSetSampledImages);
       if (desc.texture_count > cap) {
         utils::warn("descriptor '{}': texture_count {} > device cap {} — clamped", desc.name, desc.texture_count, cap);
         desc.texture_count = cap;
       }
-      imm_keep.emplace_back(desc.texture_count, vk::Sampler(samplers[desc.texture_sampler].handle));
-      dslm.combined(uint32_t(desc.layout.size()), vk::DescriptorType::eCombinedImageSampler, vk::ShaderStageFlags(desc.texture_stage), imm_keep.back());
+      const uint32_t img_binding = uint32_t(desc.layout.size());
+      const auto tex_stage = vk::ShaderStageFlags(desc.texture_stage);
+      dslm.binding(img_binding, vk::DescriptorType::eSampledImage, tex_stage, desc.texture_count);
+
+      // sampler-пул: immutable-семплеры на binding L+1 (через combined с типом eSampler — pImmutableSamplers)
+      if (!desc.texture_samplers.empty()) {
+        std::vector<vk::Sampler> pool;
+        pool.reserve(desc.texture_samplers.size());
+        for (const uint32_t si : desc.texture_samplers) pool.push_back(vk::Sampler(samplers[si].handle));
+        imm_keep.push_back(std::move(pool));
+        dslm.combined(img_binding + 1, vk::DescriptorType::eSampler, tex_stage, imm_keep.back());
+      }
     }
     desc.setlayout = dslm.create(desc.name);
   }
@@ -1836,7 +1841,10 @@ void graphics_base::recreate_descriptor_pool() {
       if (sampler_index != INVALID_RESOURCE_SLOT) add(vk::DescriptorType::eCombinedImageSampler, buffering);
       else add(convertdt(usage), buffering);
     }
-    if (d.texture_count > 0) add(vk::DescriptorType::eCombinedImageSampler, d.texture_count);
+    if (d.texture_count > 0) {
+      add(vk::DescriptorType::eSampledImage, d.texture_count);          // массив картинок (пишется)
+      if (!d.texture_samplers.empty()) add(vk::DescriptorType::eSampler, uint32_t(d.texture_samplers.size())); // immutable пул
+    }
     sets_total += frames;
   }
 
