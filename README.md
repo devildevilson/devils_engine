@@ -31,7 +31,7 @@ Gameplay / simulation:
 - `mood` - маленькая FSM-система.
 - `aesthetics` - ECS и снапшоты мира.
 - `simul` - базовый update-loop для крупных симуляций.
-- `flow` - пока только набросок будущей системы анимаций.
+- `flow` - первый слой 2D/2.5D/UV presentation-анимаций.
 - `catalogue` - прототип записи/replay/RPC/dry-run вокруг вызовов функций.
 
 Ресурсы и платформенные подсистемы:
@@ -49,7 +49,8 @@ Presentation:
 Корневой CMake собирает большинство этих библиотек и дает общий target
 `devils_engine::devils_plane`.
 
-`libs/flow` - исключение: он пока не подключен как CMake target.
+`libs/flow` уже оформлен как CMake target; 3D/skeletal часть пока вне первого
+среза.
 
 ## libs/options
 
@@ -190,10 +191,12 @@ Guards и actions берутся из `act::registry`, поэтому `mood` и 
 
 ## libs/flow
 
-`flow` - пока только набросок будущей системы анимаций. Он не собирается как
-CMake target и не имеет полноценного runtime API.
+`flow` - первый рабочий слой будущей системы анимаций. Сейчас он закрывает
+минимальную 2D/2.5D/UV модель: анимация задается цепочкой timed state'ов, state
+выбирает картинку по направлению, накапливает UV-смещение и может эмитить action
+id для main/apply потока.
 
-Задуманная роль:
+Роль:
 
 - `mood` отвечает за gameplay state;
 - `flow` отвечает за то, как этот state выглядит во времени;
@@ -205,7 +208,15 @@ CMake target и не имеет полноценного runtime API.
 - flow state: конкретный clip, sprite frame sequence, directional sprite или
   material animation.
 
-В будущем `flow` может заниматься:
+Текущий state содержит:
+
+- duration в микросекундах;
+- `next` как индекс следующего state в общей таблице;
+- список `image_ref` с `demiurg::resource_interface*` и mirror flags;
+- `action` как `utils::id` или `invalid_id`;
+- `uv` как delta, к которой playback постепенно двигает текущее UV.
+
+В будущем `flow` может расшириться на:
 
 - 2D frame animation;
 - 2.5D directional sprites;
@@ -214,8 +225,9 @@ CMake target и не имеет полноценного runtime API.
 - animation callbacks через `act`;
 - visual interpolation на render-time.
 
-Как об этом думать сейчас: это зафиксированное направление дизайна, а не готовая
-библиотека.
+Как об этом думать сейчас: это presentation sampler. Он не грузит GPU напрямую,
+не вызывает gameplay effects сам и не рисует, а превращает playback state в
+маленький output для renderer/main.
 
 ## libs/aesthetics
 
@@ -579,8 +591,8 @@ simul + utils/thread primitives -> tile_frontier broker model
 - Самые фундаментальные библиотеки: `options`, `utils`, `act`, `demiurg`.
 - Самые активные интеграционные библиотеки: `painter`, `sound`, `visage`,
   `input`, `aesthetics`, `acumen`, `mood`.
-- Самые прототипные/незавершенные: `flow`, `catalogue`, часть старого кода в
-  `painter`, `sound`, `utils`.
+- Самые прототипные/незавершенные: `catalogue`, 3D-часть будущего `flow`, часть
+  старого кода в `painter`, `sound`, `utils`.
 - Главная интеграционная проверка сейчас живет в `tests/tile_frontier`.
 
 Этот файл должен оставаться общей картой. Если нужна точная память для будущих

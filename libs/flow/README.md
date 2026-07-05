@@ -1,38 +1,42 @@
 # flow
 
-`libs/flow` - заготовка будущей системы анимаций. Сейчас в библиотеке почти нет
-реализации: фактически есть только `flow::state_t` в `system.h`. Поэтому этот
-README фиксирует не столько текущий API, сколько предполагаемую границу
-подпроекта и направление дизайна.
+`libs/flow` - первый слой будущей системы анимаций. Сейчас реализован
+минимальный 2D/2.5D/UV presentation sampler: анимация задается цепочкой
+неизменяемых timed state'ов, runtime `playback` двигается по этой цепочке,
+выбирает картинку по направлению, накапливает UV-смещение и эмитит action id
+наружу.
 
-Будущая роль `flow` - интерпретировать gameplay state как визуальное состояние,
-растянутое во времени: 2D анимации, 2.5D sprite states, 3D skeletal clips,
-материальные/UV эффекты и animation callbacks.
+Роль `flow` - интерпретировать gameplay state как визуальное состояние,
+растянутое во времени. 3D skeletal clips, blending и сложные animation
+callbacks остаются будущими расширениями.
 
-## Текущий Код
+## Текущий Код / Первый Срез
 
-Сейчас есть один базовый тип:
+Базовый state сейчас выглядит концептуально так:
 
 ```cpp
-struct state_t {
-  using action_f = std::function<int32_t(void*)>;
+struct image_ref {
+  const demiurg::resource_interface* image;
+  uint8_t mirror_state;
+};
 
-  std::string name;
-  action_f action;
-  size_t time;
-  const state_t* next;
+struct state {
+  uint64_t duration_mcs;
+  uint32_t next;
+  std::vector<image_ref> images;
+  utils::id action;
+  vec2 uv;
 };
 ```
 
-Смысл текущего наброска:
+`flow::library` хранит общую таблицу state'ов. `next` в runtime - уже индекс в
+этой таблице, а не строка. `animation_resource` парсит `.tavl`, добавляет
+state'ы в library и резолвит строковые ссылки вида `anim/abc:2`.
 
-- `name` - имя состояния;
-- `action` - callback, который можно вызвать в этом состоянии;
-- `time` - длительность состояния;
-- `next` - следующее состояние в sequence.
-
-`flow::system` пока пустой. CMake target для `libs/flow` также отсутствует в
-самой папке: библиотека еще не оформлена как полноценный build target.
+`flow::playback` хранит текущий state, elapsed time, флаг уже отправленного
+action и текущее UV. UV двигается к `current_uv + state.uv` в течение duration,
+после чего целая часть отбрасывается через truncation, чтобы не наматывать
+бесполезные большие значения.
 
 ## Назначение
 
@@ -182,24 +186,32 @@ playback speed и т.п.
 
 ## Что Уже Умеет
 
-На данный момент `libs/flow` умеет только на уровне наброска:
+На данный момент `libs/flow` умеет:
 
-- описать named state;
-- указать длительность state;
-- указать callback function object;
-- связать state с `next`.
+- собираться как `devils_engine::flow`;
+- хранить immutable state'ы в `flow::library`;
+- резолвить имена state'ов вида `anim/abc:0` в индексы общей таблицы;
+- парсить `.tavl` state list через `flow::animation_resource`;
+- хранить картинки как `demiurg::resource_interface*` + mirror flags;
+- разбирать image refs вида `tex/img`, `tex/img:u`, `tex/img2:3:uv`;
+- выбирать directional image bucket с bucket 0, центрированным на угле 0;
+- проигрывать state chain через `flow::playback`;
+- эмитить `action_event` один раз при входе в state;
+- поддерживать `duration_mcs = 0` для последовательности action state'ов с
+  защитным лимитом от бесконечного цикла;
+- накапливать UV delta и truncation итогового значения;
+- отдавать `sprite_sample` без знания о GPU/render internals.
 
-Готовой системы обновления, resource loading, clip sampling, sprite selection,
-interpolation, blending или callbacks через `act` пока нет.
+Покрытие: `tests/flow_test.cpp` проверяет directional buckets, action-on-entry,
+переходы по `next`, UV accumulation/truncation, zero-duration chains и `.tavl`
+парсинг.
 
 ## Что Еще Не Сделано
 
 Основной техдолг:
 
-- оформить `libs/flow` как полноценный CMake target;
 - решить базовую модель времени: gameplay tick, render time, local clip time;
-- описать 2D animation data model;
-- описать 2.5D directional sprite model;
+- расширить 2D/2.5D модель после подключения к реальным sprite/image ресурсам;
 - описать 3D skeletal clip model;
 - определить формат animation resources и связь с `demiurg`;
 - определить ECS components для текущего animation state;

@@ -54,6 +54,9 @@ target_link_libraries(acumen_test PRIVATE devils_engine::acumen devils_engine::a
 devils_add_doctest(demiurg_resource_loader_test demiurg_resource_loader_test.cpp)
 target_link_libraries(demiurg_resource_loader_test PRIVATE devils_engine::demiurg devils_engine::utils)
 
+devils_add_doctest(flow_test flow_test.cpp)
+target_link_libraries(flow_test PRIVATE devils_engine::flow devils_engine::demiurg devils_engine::utils)
+
 devils_add_doctest(painter_shader_prepare_test painter_shader_prepare_test.cpp)
 target_link_libraries(painter_shader_prepare_test PRIVATE devils_engine::painter devils_engine::demiurg devils_engine::utils)
 

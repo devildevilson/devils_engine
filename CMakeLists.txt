@@ -402,6 +402,7 @@ add_subdirectory(libs/utils/)
 add_subdirectory(libs/act/)
 add_subdirectory(libs/mood/)
 add_subdirectory(libs/simul/)
+add_subdirectory(libs/flow/)
 add_subdirectory(libs/aesthetics/)
 add_subdirectory(libs/sound/)
 add_subdirectory(libs/demiurg/)
@@ -413,7 +414,7 @@ add_subdirectory(libs/acumen/)
 add_subdirectory(libs/catalogue/)
 
 add_library(devils_engine INTERFACE)
-target_link_libraries(devils_engine INTERFACE devils_engine::catalogue devils_engine::acumen devils_engine::act devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::utils devils_engine::mood devils_engine::simul devils_engine::aesthetics devils_engine::visage devils_engine::options)
+target_link_libraries(devils_engine INTERFACE devils_engine::catalogue devils_engine::acumen devils_engine::act devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::utils devils_engine::mood devils_engine::simul devils_engine::flow devils_engine::aesthetics devils_engine::visage devils_engine::options)
 add_library(devils_engine::devils_plane ALIAS devils_engine)
 
 if (DEVILS_ENGINE_BUILD_TESTS)
@@ -424,7 +425,7 @@ add_subdirectory(tests/tile_frontier/)
 if (DEVILS_ENGINE_BUILD_TESTS)
   add_custom_target(devils_engine_test
     COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} --output-on-failure -L devils_engine
-    DEPENDS utils_general_test utils_contract_test thread_general_test aesthetics_world_test sound_system_test acumen_test tile_frontier_snapshot_smoke tile_frontier_resume_smoke
+    DEPENDS utils_general_test utils_contract_test thread_general_test aesthetics_world_test sound_system_test acumen_test flow_test tile_frontier_snapshot_smoke tile_frontier_resume_smoke
     USES_TERMINAL
     COMMENT "Running devils_engine tests"
   )
