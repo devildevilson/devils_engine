@@ -484,9 +484,9 @@ static void render_update_actor_draw(render_simulation_init& c) {
 // в asset-текстурный binding дескриптора 'textures' во ВСЕ кадровые сеты. Под-шаг 1 — одна
 // текстура (элемент массива 0). Перед записью ждём GPU (одноразовая загрузка на старте);
 // TODO: для рантайм-смены текстур размазать обновление на 3 кадра вместо drain.
-static void render_bind_textures(render_simulation_init& c) {
-  const uint32_t di = c.base->find_descriptor("textures");
-  if (di == painter::INVALID_RESOURCE_SLOT) { utils::warn("render: descriptor 'textures' not found"); return; }
+static void render_bind_textures(render_simulation_init& c, const char* desc_name) {
+  const uint32_t di = c.base->find_descriptor(desc_name);
+  if (di == painter::INVALID_RESOURCE_SLOT) { utils::warn("render: descriptor '{}' not found", desc_name); return; }
 
   auto& d = c.base->descriptors[di];
   if (d.texture_count == 0) return;
@@ -528,14 +528,14 @@ static void render_bind_textures(render_simulation_init& c) {
   }
 
   vk::Device(c.device).updateDescriptorSets(writes, nullptr);
-  utils::info("render: bound {} texture slots into descriptor 'textures' ({} sets)", n, writes.size());
+  utils::info("render: bound {} texture slots into descriptor '{}' ({} sets)", n, desc_name, writes.size());
 }
 
 // Точечное обновление ОДНОГО слота дескриптор-массива 'textures' (dstArrayElement=slot, count=1) во
 // все кадровые сеты. Вызывается при загрузке одной текстуры — не переписываем весь массив. Полное
 // заполнение placeholder'ом делается один раз на graph-ready (render_bind_textures).
-static void render_bind_texture_slot(render_simulation_init& c, const uint32_t slot) {
-  const uint32_t di = c.base->find_descriptor("textures");
+static void render_bind_texture_slot(render_simulation_init& c, const uint32_t slot, const char* desc_name) {
+  const uint32_t di = c.base->find_descriptor(desc_name);
   if (di == painter::INVALID_RESOURCE_SLOT) return;
 
   auto& d = c.base->descriptors[di];
@@ -659,7 +659,8 @@ static void render_try_create_graph(render_simulation_init& c) {
   // Инициализируем дескриптор-массив 'textures' placeholder'ом ДО первой отрисовки: тайлы/акторы
   // рисуются сразу, а контентные текстуры приходят асинхронно позже (иначе VUID-...-08114 на
   // первых кадрах — null-view). При загрузке текстур render_bind_textures перезапишет слоты.
-  render_bind_textures(c);
+  render_bind_textures(c, "textures");
+  render_bind_textures(c, "mask_textures"); // те же view'ы под nearest-семплер (маски эффектов)
   render_create_tile_draw(c);
   render_create_actor_draw(c);
 }
@@ -814,7 +815,11 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
         // как только меш на GPU и граф готов — регистрируем его на отрисовку (только меши!)
         if (cmd.res->loading_type_id == utils::type_id<painter::gpu_texture_resource>()) {
           // текстура на GPU — точечно обновляем ЕЁ слот в дескриптор-массиве (не весь массив)
-          render_bind_texture_slot(*container, static_cast<painter::gpu_texture_resource*>(cmd.res)->gpu_index);
+          {
+            const uint32_t slot = static_cast<painter::gpu_texture_resource*>(cmd.res)->gpu_index;
+            render_bind_texture_slot(*container, slot, "textures");
+            render_bind_texture_slot(*container, slot, "mask_textures"); // тот же view под nearest
+          }
         }
       } else {
         cmd.res->unload(handle); // hot→warm: unload_hot

@@ -17,6 +17,8 @@ layout(location = 0) out vec4 frag_color;
 // 16 = гарантированный минимум Vulkan (maxPerStageDescriptorSampledImages>=16). Больше — в пассе
 // огромных дескрипторов (descriptor_indexing/nonuniform).
 layout(set = 1, binding = 0) uniform sampler2D tex[16];
+// те же asset-view'ы, но с NEAREST-семплером — для масок с резкими зонами (mix/quad); без бида
+layout(set = 2, binding = 0) uniform sampler2D mask_tex[16];
 
 layout(push_constant) uniform ui_pc_block {
   uint tex_id;       // УПАКОВАН: [0..13] индекс | [14] mirror U | [15] mirror V | [16..19] тип
@@ -93,7 +95,7 @@ void main() {
     // MIX: веса из каналов маски (R/G/B = comp0..2, comp3 = 1-R-G-B), альфа маски = непрозрачность
     const uint mask_index = pc.payload[0] & TEX_INDEX_MASK;
     const uint is_img     = pc.payload[5];
-    const vec4 mk = texture(tex[clamp(mask_index, 0u, 15u)], uv);
+    const vec4 mk = texture(mask_tex[clamp(mask_index, 0u, 15u)], uv); // nearest-семплер для масок
     const float w0 = mk.r, w1 = mk.g, w2 = mk.b;
     const float w3 = clamp(1.0 - (w0 + w1 + w2), 0.0, 1.0);
     const vec4 c0 = mix_comp(pc.payload[1], (is_img & 1u) != 0u, uv);
