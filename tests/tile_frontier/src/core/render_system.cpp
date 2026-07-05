@@ -787,6 +787,21 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
     }
   }
 
+  // обновление render-graph констант извне (напр. clear-цвет для шага clear). Нужны созданные
+  // ресурсы/константы (base_ready). name→find_constant, write_constant_data, публикация update_constant_memory.
+  if (container->base_ready && container->base) {
+    command_update_constant cmd;
+    while (br.update_constant.try_pop(cmd)) {
+      const uint32_t idx = container->base->find_constant(cmd.name);
+      if (idx == painter::INVALID_RESOURCE_SLOT) {
+        utils::warn("render: update_constant — константа '{}' не найдена", cmd.name);
+        continue;
+      }
+      container->base->write_constant_data(idx, cmd.bytes.data(), cmd.bytes.size());
+      container->base->update_constant_memory();
+    }
+  }
+
   // GPU-переходы ресурсов (warm↔hot) — их исполняет рендер на своём потоке.
   // Берём только когда GPU-ресурсы готовы; иначе команды копятся в очереди до готовности.
   if (container->base_ready) {

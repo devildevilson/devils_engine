@@ -9,8 +9,6 @@ project(
 )
 
 set(SRC_LIST
-  #src/visage/draw_resource.cpp
-  #src/visage/draw_stage.cpp
   src/visage/font.cpp
   src/visage/header.cpp
   src/visage/system.cpp
@@ -19,8 +17,6 @@ set(SRC_LIST
 )
 
 set(HDR_LIST
-  #include/devils_engine/visage/draw_resource.h
-  #include/devils_engine/visage/draw_stage.h
   include/devils_engine/visage/font.h
   include/devils_engine/visage/header.h
   include/devils_engine/visage/system.h

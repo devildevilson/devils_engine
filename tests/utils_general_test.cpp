@@ -286,6 +286,52 @@ TEST_CASE("Mood system tests [mood::system]") {
   mood::validate(s); // не падает; выкидывает warning'и по тупиковым/недостижимым (any_state и т.п.)
 }
 
+static int g_mood_mark_calls = 0;
+
+TEST_CASE("Mood runtime: blocked / internal / settle / limits [mood]") {
+  g_mood_mark_calls = 0;
+  act::registry t;
+  t.reg("never",  std::make_unique<act::native_function<bool>>(+[](const act::exec_context&){ return false; }));
+  t.reg("always", std::make_unique<act::native_function<bool>>(+[](const act::exec_context&){ return true; }));
+  t.reg("mark",   std::make_unique<act::native_function<void>>(+[](const act::exec_context&){ ++g_mood_mark_calls; }));
+
+  const std::vector<std::string> lines = {
+    "s0 + go [never] = s1",   // гвард всегда false → blocked
+    "s0 + tick / mark",       // внутренний переход (нет '= next'): эффект, состояние не меняется
+    "a + idle = b",           // цепочка completion-переходов для settle
+    "b + idle = c",
+    "c + idle = c",           // само-петля → settle обязан остановиться
+    "x + idle = y",           // цикл x<->y → settle останавливается по капу
+    "y + idle = x",
+  };
+  mood::system s(&t, lines);
+  const act::exec_context ctx{}; // dry-run ctx; эффекты в тесте no-op/счётчик
+
+  // blocked: переход по (s0, go) ЕСТЬ, но гвард 'never' его отсеял
+  const auto b = mood::step(s, "s0", "go", ctx);
+  REQUIRE(b.result == mood::step_result::blocked);
+  REQUIRE(b.candidates == 1);
+
+  // internal: transitioned, но next пуст → apply возвращает invalid_id (состояние не меняем), эффект сработал
+  const auto in = mood::step(s, "s0", "tick", ctx);
+  REQUIRE(in.result == mood::step_result::transitioned);
+  REQUIRE(in.taken != nullptr);
+  REQUIRE(in.taken->next_hash == utils::invalid_id);
+  REQUIRE(mood::apply_transition(s, utils::string_hash("s0"), *in.taken, ctx) == utils::invalid_id);
+  REQUIRE(g_mood_mark_calls == 1);
+
+  // settle: a → b → c (idle completion-цепочка), затем c+idle=c само-петля → стоп на 'c'
+  REQUIRE(mood::settle(s, utils::string_hash("a"), mood::conv::idle, ctx) == utils::string_hash("c"));
+
+  // settle с циклом x<->y обязан ТЕРМИНИРОВАТЬ по капу (не зациклиться), вернув x или y
+  const auto cyc = mood::settle(s, utils::string_hash("x"), mood::conv::idle, ctx, 8);
+  REQUIRE((cyc == utils::string_hash("x") || cyc == utils::string_hash("y")));
+
+  // лимит гвардов (>8) и неизвестный символ → ошибка на парсинге в конструкторе
+  REQUIRE_THROWS(mood::system(&t, std::vector<std::string>{ "st + ev [g1,g2,g3,g4,g5,g6,g7,g8,g9] = q" }));
+  REQUIRE_THROWS(mood::system(&t, std::vector<std::string>{ "st + @ = q" }));
+}
+
 TEST_CASE("String utility tests [utils::string]") {
   SUBCASE("split test normal usage 'abc.ab.rtetr.bac.wert'") {
     const std::string_view test1 = "abc.ab.rtetr.bac.wert";

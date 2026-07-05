@@ -28,6 +28,10 @@ constexpr size_t default_30fps = double(utils::global_time_resolution) / 30.0;
 advancer::advancer() noexcept : _frame_time(default_30fps), new_frame_time(default_30fps), _counter(0), _stop(false) {}
 advancer::advancer(const size_t frame_time) noexcept : _frame_time(frame_time), new_frame_time(frame_time), _counter(0), _stop(false) {}
 void advancer::run(const size_t wait_mcs) {
+  run(std::stop_token{}, wait_mcs); // пустой токен никогда не stop_requested → прежнее поведение
+}
+
+void advancer::run(std::stop_token st, const size_t wait_mcs) {
   // spin better
   spin_sleep_for(std::chrono::microseconds(wait_mcs));
 
@@ -49,9 +53,10 @@ void advancer::run(const size_t wait_mcs) {
       }
 
       _counter += 1;
-      next_tp = _start + std::chrono::microseconds(_counter * _frame_time); 
+      next_tp = _start + std::chrono::microseconds(_counter * _frame_time);
       update(_frame_time);
-      stop = stop_predicate() || _stop;
+      // stop_token: кооперативная остановка при разрушении std::jthread (без явного stop())
+      stop = stop_predicate() || _stop || st.stop_requested();
     }
 
     // update должен быть ПОД мьютексом? скорее да

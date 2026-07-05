@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <chrono>
 #include <mutex>
+#include <stop_token>
 
 // так ну это просто каркас системы которая постоянно апдейтит свое состояние
 // как системы правильно синхронизировать между собой? возможно это какой то еще дополнительный механизм сверху
@@ -84,6 +85,10 @@ public:
   virtual ~advancer() noexcept = default;
 
   virtual void run(const size_t wait_mcs); // interface functions under the mutex
+  // jthread-friendly вариант: цикл дополнительно наблюдает stop_token, поэтому УНИЧТОЖЕНИЕ std::jthread
+  // (его request_stop) кооперативно останавливает run без явного stop(). Старый run(wait_mcs) делегирует
+  // сюда с пустым токеном (никогда не stop_requested) — поведение прежнее.
+  virtual void run(std::stop_token st, const size_t wait_mcs);
 
   size_t frame_time() const;
   size_t counter() const;

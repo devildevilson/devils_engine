@@ -94,7 +94,9 @@ void sound_simulation::update(const size_t time) {
       t.id = cmd.taskid == SIZE_MAX ? generate_task_id() : cmd.taskid;
       t.after = cmd.after;
       t.res = view; // {id, type, span} — span живёт в ресурсе (поток ассетов)
-      t.type = sound::type::sfx; // TODO: категорию (sfx/music) нести в play-команде (стадийно: sfx)
+      // категория из команды (UINT32_MAX / вне диапазона → sfx по умолчанию); актор больше не хардкодит
+      t.type = cmd.type < static_cast<uint32_t>(sound::type::count)
+        ? static_cast<sound::type>(cmd.type) : sound::type::sfx;
       t.command = sound::task::command::play; // POD без инициализации — явно задаём важные поля
       t.pitch = 1.0f;
       t.volume = 1.0f;

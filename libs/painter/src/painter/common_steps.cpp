@@ -1514,22 +1514,61 @@ void transfer_blit_nearest::process(graphics_ctx* ctx, VkCommandBuffer buf) cons
 }
 
 transfer_clear_color::transfer_clear_color(const uint32_t super) noexcept : transfer_step_instance(super) {}
-void transfer_clear_color::process(graphics_ctx*, VkCommandBuffer) const {
-  assert(false);
+void transfer_clear_color::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
+  const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, super);
 
-  // колор записан в константу, причем по разному
-  // нужно отличать v4 от c4, v4 - 4 компонента 32бит, с4 - 4 компонента 8бит
+  const auto& [res_index, usage] = step.cmd_params.resources[0];
+  const auto& res = DS_ASSERT_ARRAY_GET(ctx->resources, res_index);
+  assert(role::is_image(res.role));
 
-  //task.clearColorImage();
+  // Цвет лежит в КОНСТАНТЕ (её можно обновлять извне через write_constant_data). Отличаем упаковку по
+  // первому формату layout: v4 = 4×float32 (16Б, байты сразу ложатся в union) vs c4 = rgba8 (4Б unorm,
+  // распаковываем каждый байт /255 в float). Тот же приём покрывает ui4/i4 (16Б memcpy в union).
+  const uint32_t const_index = step.cmd_params.constants[0];
+  const auto& c = DS_ASSERT_ARRAY_GET(ctx->base->constants, const_index);
+  const auto* raw = static_cast<const uint8_t*>(ctx->base->get_constant_data(const_index));
+
+  vk::ClearColorValue cv{};
+  const format::values f0 = c.layout.empty() ? format::v4 : c.layout[0];
+  const uint32_t vk_fmt = format::to_vulkan_format(f0);
+  const uint32_t channels = std::min<uint32_t>(4u, format_channel_count(vk_fmt));
+  const uint32_t elem = format_element_size(vk_fmt, format::to_vulkan_aspect(f0));
+  const uint32_t scalar = channels != 0 ? elem / channels : 4u;
+  if (scalar == 1) {
+    for (uint32_t i = 0; i < channels; ++i) cv.float32[i] = float(raw[i]) / 255.0f; // 8-бит unorm -> [0,1]
+  } else {
+    memcpy(&cv, raw, std::min<size_t>(c.size, sizeof(cv))); // 32-бит: байты уже совпадают с union
+  }
+
+  vk::CommandBuffer task(buf);
+  make_barriers1(ctx, buf, step.barriers); // перевод в transfer_dst
+  const auto range = std::bit_cast<vk::ImageSubresourceRange>(res.subimg);
+  task.clearColorImage(res.img, vk::ImageLayout::eTransferDstOptimal, cv, range);
 }
 
 transfer_clear_depth::transfer_clear_depth(const uint32_t super) noexcept : transfer_step_instance(super) {}
-void transfer_clear_depth::process(graphics_ctx*, VkCommandBuffer) const {
-  assert(false);
+void transfer_clear_depth::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
+  const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, super);
 
-  // как мы записываем глубину и трафарет?
+  const auto& [res_index, usage] = step.cmd_params.resources[0];
+  const auto& res = DS_ASSERT_ARRAY_GET(ctx->resources, res_index);
+  assert(role::is_image(res.role));
 
-  //task.clearDepthStencilImage();
+  // Глубина/трафарет тоже из константы: первый float = depth, необязательный второй компонент = stencil.
+  const uint32_t const_index = step.cmd_params.constants[0];
+  const auto& c = DS_ASSERT_ARRAY_GET(ctx->base->constants, const_index);
+  const auto* raw = static_cast<const uint8_t*>(ctx->base->get_constant_data(const_index));
+
+  vk::ClearDepthStencilValue dsv{};
+  dsv.depth = 1.0f;
+  if (c.size >= sizeof(float)) memcpy(&dsv.depth, raw, sizeof(float));
+  dsv.stencil = c.size >= sizeof(float) + sizeof(uint32_t)
+    ? *reinterpret_cast<const uint32_t*>(raw + sizeof(float)) : 0u;
+
+  vk::CommandBuffer task(buf);
+  make_barriers1(ctx, buf, step.barriers); // перевод в transfer_dst
+  const auto range = std::bit_cast<vk::ImageSubresourceRange>(res.subimg);
+  task.clearDepthStencilImage(res.img, vk::ImageLayout::eTransferDstOptimal, dsv, range);
 }
 
 }

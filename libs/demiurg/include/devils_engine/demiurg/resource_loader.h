@@ -66,6 +66,10 @@ private:
   };
 
   std::vector<entry> entries;
+  // текущий путь DFS внутри request() — для ДИАГНОСТИКИ циклов зависимостей (контракт требует DAG).
+  // Повторное появление ресурса на этом пути = цикл (в отличие от уже заведённой записи в entries,
+  // которая означает независимый более ранний запрос, а не цикл). Пуст между вызовами request().
+  std::vector<resource_interface*> visiting_;
 
   entry* find(resource_interface* res) noexcept;
 };

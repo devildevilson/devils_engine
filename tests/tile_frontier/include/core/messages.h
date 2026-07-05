@@ -43,6 +43,9 @@ struct command_sound_play {
   // система читает из него (view()) и НЕ хранит ресурсы. main резолвит имя→ресурс и шлёт указатель.
   demiurg::resource_interface* res = nullptr;
   double start = 0.0;
+  // категория звука (sound::type: music/talk/talk_pos/ui_effect/sfx). Держим как uint32, чтобы не
+  // тянуть sound-хедер сюда; UINT32_MAX = не задано → актор возьмёт sfx. Раньше актор хардкодил sfx.
+  uint32_t type = UINT32_MAX;
 };
 
 // main → sound: завершить задачу (remove_sound). Отдельное сообщение — без поля-команды-энума.
@@ -115,6 +118,14 @@ struct command_render_set_active {
 // Звуковой актор зовёт system2::set_master_volume. НЕ реплицируется (презентация).
 struct command_sound_set_master_gain {
   float gain = 1.0f;
+};
+
+// main → render: обновить именованную render-graph КОНСТАНТУ новыми байтами (напр. clear-цвет для
+// шага clear берётся из константы). Рендер резолвит name→find_constant, пишет write_constant_data и
+// публикует через update_constant_memory. bytes должны совпадать по размеру/раскладке с константой.
+struct command_update_constant {
+  std::string name;
+  std::vector<uint8_t> bytes;
 };
 
 // обратно должны вернуть id для ресурса

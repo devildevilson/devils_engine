@@ -131,6 +131,19 @@ void events::update_key(const int32_t scancode, const int32_t state) {
   itr->second.state = static_cast<key_state::values>(state);
 }
 
+// кнопки мыши — first-class через синтетический сканкод (см. mouse_button_scancode).
+void events::update_mouse_button(const int32_t button, const int32_t state) {
+  update_key(mouse_button_scancode(button), state);
+}
+
+void events::set_mouse_button(const event_id id, const int32_t button, const uint8_t slot) {
+  set_key(id, mouse_button_scancode(button), -1, slot);
+}
+
+void events::set_mouse_button(const std::string_view &id, const int32_t button, const uint8_t slot) {
+  set_key(id, mouse_button_scancode(button), -1, slot);
+}
+
 bool events::is_pressed(const event_id id) {
   const auto itr = event_mapping.find(id);
   if (itr == event_mapping.end()) return false;
