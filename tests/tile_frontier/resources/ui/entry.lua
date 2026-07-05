@@ -98,6 +98,18 @@ local function game_ui(time, timestamp, rng)
       nk.image(img, nk.placement.scale_ratio | nk.placement.center | nk.placement.mirror_u)
     end
 
+    -- Стадия 2: cooldown (заливка по градиент-маске) + 4-blend (смешение по каналам quad-маски)
+    local grad = app.image("grad2")
+    local quad = app.image("quad")
+    if img and grad then
+      nk.layout.row_dynamic(64, 1)
+      nk.image_gradient{ img = img, mask = grad, fill = 0.5 }
+    end
+    if quad then
+      nk.layout.row_dynamic(64, 1)
+      nk.image_mix{ comps = { {1,0,0,1}, {0,1,0,1}, {0,0,1,1}, {1,1,0,1} }, mask = quad }
+    end
+
     nk.layout.row_dynamic(30, 1)
     if nk.button("Play sound") then
       app.play_sound("eating")

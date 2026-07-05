@@ -689,6 +689,9 @@ void simulation::init() {
     { "grass",  "textures/grass" },
     { "grass1", "textures/grass1_0" },
     { "grass3", "textures/grass3" },
+    { "grad1",  "textures/grad1" }, // градиент-маски + 4-цветная маска для стенсил-эффектов (Стадия 2)
+    { "grad2",  "textures/grad2" },
+    { "quad",   "textures/quad" },
   };
   for (const auto& [friendly, res_id] : textures_named) {
     if (auto* tex = container->assets_sim->resources()->get<painter::gpu_texture_resource>(res_id)) {

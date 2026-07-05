@@ -31,6 +31,8 @@ enum values : uint32_t {
   msdf      = 1, // текст из mtsdf-атласа шрифта
   image     = 2, // nk_image — сэмпл текстуры * цвет
   composite = 3, // РЕЗЕРВ: составная картинка (геральдика — несколько слоёв); пока не реализовано
+  cooldown  = 4, // картинка проявляется по градиент-маске на долю fill (эффект перезарядки)
+  mix       = 5, // 4-blend: до 4 компонентов (картинки/цвета) по каналам маски
 };
 }
 
@@ -67,15 +69,17 @@ namespace tex_id {
 // SDF-эффекты (boldness/outline/softness) запекаются в команду на стороне visage (convert) из
 // effect-арены по nk userdata команды и едут в шейдер per-draw push-константой. Хранилища сырых
 // data в GPU нет (см. visage-ui-roadmap) — пока всё через push-константу.
+// texture_id УПАКОВАН (tex_id): тип+mirror+индекс — шейдер декодит сам. payload — обобщённая нагрузка
+// per-draw, интерпретируется ПО ТИПУ (держи в синхроне с ui.frag):
+//   msdf(1):     [0]=boldness [1]=outline_width [2]=outline_color(RGBA8) [3]=softness  (float↔uint через bitcast)
+//   cooldown(4): [0]=mask_index [1]=fill(float bits)
+//   mix(5):      [0]=mask_index [1..4]=comp0..3 (слот если image, иначе RGBA8) [5]=is_image (биты 0..3)
+//   image(2)/solid(0): игнорируется
 struct gui_draw_command_t {
   uint32_t elem_count;
   float clip_x, clip_y, clip_w, clip_h;
-  uint32_t texture_id;      // УПАКОВАННЫЙ id (см. tex_id): тип+mirror+индекс. Шейдер декодит сам.
-  // SDF-эффекты текста (type=msdf); для прочих типов игнорируются
-  float boldness;           // сдвиг порога: >0 жирнее, <0 тоньше
-  float outline_width;      // ширина контура в SDF-единицах (0 = нет контура)
-  uint32_t outline_color;   // R8G8B8A8
-  float softness;           // размытие края (0 = резко)
+  uint32_t texture_id;
+  uint32_t payload[6];
 };
 
 }

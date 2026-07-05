@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <bit>
 
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/time-utils.hpp"
@@ -32,6 +33,15 @@ struct ui_text_effect {
   float outline_width;
   uint32_t outline_color; // R8G8B8A8
   float softness;
+};
+
+// Параметры image-эффектов (cooldown/mix), кладутся в тот же effect_arena; convert читает по ТИПУ
+// (из tex_id) и запекает в payload draw-команды. mask/comp — индексы в bindless tex[] (или RGBA8-цвет).
+struct ui_image_effect {
+  uint32_t mask_index = 0;      // слот маски-трафарета
+  float    fill = 0.0f;         // cooldown: доля заполнения [0,1]
+  uint32_t comp[4] = {0, 0, 0, 0}; // mix: слот картинки (если бит is_image) или packed RGBA8-цвет
+  uint32_t is_image = 0;        // mix: биты 0..3 — какой comp это картинка
 };
 
 // lua-таблица {r,g,b,a} в 0..1 -> упакованный R8G8B8A8
@@ -292,6 +302,68 @@ system::system(const font_t* default_font) : default_font(default_font), effect_
       const struct nk_color c = color.has_value() ? table_to_nk_color(color.value()) : nk_rgba(255, 255, 255, 255);
       nk_draw_image(&ctx->current->buffer, target, &nkimg, c);
     });
+
+  // Стенсил-эффект COOLDOWN: картинка проявляется по градиент-маске на долю fill (незаполненное
+  // затемнено). nk.image_gradient{ img=<image>, mask=<image>, fill=0..1, placement=? }. Параметры —
+  // в effect_arena (offset в userdata), тип cooldown — в id; шейдер сэмплит img + mask, ревил по fill.
+  nk_tbl.set_function("image_gradient", [this](sol::table t) {
+    if (ctx->current == nullptr) return;
+    const sol::optional<visage::image> img = t["img"];
+    const sol::optional<visage::image> mask = t["mask"];
+    if (!img || !mask) return;
+    const float fill = float(t.get_or("fill", 1.0));
+    const uint32_t flags = uint32_t(t.get_or("placement", double(img_placement::fill)));
+
+    struct nk_rect bounds;
+    if (nk_widget(&bounds, ctx.get()) == NK_WIDGET_INVALID) return;
+    const struct nk_rect region = img->region[2] != 0
+      ? nk_rect(float(img->region[0]), float(img->region[1]), float(img->region[2]), float(img->region[3]))
+      : nk_rect(0.0f, 0.0f, float(img->w), float(img->h));
+    const struct nk_rect target = image_placement_rect(bounds, region.w, region.h, flags);
+
+    auto* e = effect_arena.create<ui_image_effect>(ui_image_effect{ mask->texture_id, fill, {0, 0, 0, 0}, 0 });
+    nk_handle h; h.id = int(effect_arena.offset_of(e));
+    const int prev_ud = ctx->userdata.id;
+    nk_set_user_data(ctx.get(), h);
+    const uint32_t packed = tex_id::pack(gui_draw_mode::cooldown, img->texture_id,
+      (flags & img_placement::mirror_u) != 0u, (flags & img_placement::mirror_v) != 0u);
+    const struct nk_image nkimg = nk_subimage_id(int(packed), img->w, img->h, region);
+    nk_draw_image(&ctx->current->buffer, target, &nkimg, nk_rgba(255, 255, 255, 255));
+    nk_handle ph; ph.id = prev_ud; nk_set_user_data(ctx.get(), ph); // вернуть прежний userdata
+  });
+
+  // Стенсил-эффект MIX (4-blend): до 4 компонентов (картинки/цвета) смешиваются по каналам маски
+  // (R/G/B = вес comp0..2, comp3 = 1-R-G-B, альфа = непрозрачность). nk.image_mix{ comps={…≤4}, mask= }.
+  // Каждый comp — visage::image (картинка) ИЛИ таблица цвета {r,g,b,a}. Заливает весь слот виджета.
+  nk_tbl.set_function("image_mix", [this](sol::table t) {
+    if (ctx->current == nullptr) return;
+    const sol::optional<visage::image> mask = t["mask"];
+    if (!mask) return;
+    const sol::optional<sol::table> comps = t["comps"];
+
+    ui_image_effect eff{};
+    eff.mask_index = mask->texture_id;
+    if (comps) {
+      for (int i = 0; i < 4; ++i) {
+        sol::object c = (*comps)[i + 1]; // lua 1-based
+        if (c.is<visage::image>()) { eff.comp[i] = c.as<visage::image>().texture_id; eff.is_image |= (1u << i); }
+        else if (c.is<sol::table>()) { eff.comp[i] = pack_color01(c.as<sol::table>()); } // RGBA8-цвет
+        // иначе comp остаётся 0 (чёрный цвет, вес по маске)
+      }
+    }
+
+    struct nk_rect bounds;
+    if (nk_widget(&bounds, ctx.get()) == NK_WIDGET_INVALID) return;
+
+    auto* e = effect_arena.create<ui_image_effect>(eff);
+    nk_handle h; h.id = int(effect_arena.offset_of(e));
+    const int prev_ud = ctx->userdata.id;
+    nk_set_user_data(ctx.get(), h);
+    // тип mix; index не сэмплится шейдером (используются comps+mask). uv [0,1] на весь виджет (w=h=1).
+    const struct nk_image nkimg = nk_subimage_id(int(tex_id::pack(gui_draw_mode::mix, 0)), 1, 1, nk_rect(0.0f, 0.0f, 1.0f, 1.0f));
+    nk_draw_image(&ctx->current->buffer, bounds, &nkimg, nk_rgba(255, 255, 255, 255));
+    nk_handle ph; ph.id = prev_ud; nk_set_user_data(ctx.get(), ph);
+  });
 }
 
 system::~system() noexcept {
@@ -447,16 +519,33 @@ void system::convert() {
     // здесь просто passthrough — декод (тип/mirror/индекс) делает шейдер. Больше нет эвристик.
     out.texture_id = uint32_t(cmd->texture.id);
 
-    // запекаем SDF-эффект по userdata (offset в арене; 0 = дефолт). Гард по границам арены.
-    ui_text_effect eff{0.0f, 0.0f, 0u, 0.0f};
+    // payload запекаем ПО ТИПУ (из tex_id): msdf → SDF-поля; cooldown/mix → ui_image_effect. Оба
+    // структа лежат в одном effect_arena по offset из nk userdata (producer пишет нужный). Гард границ.
+    for (auto& p : out.payload) p = 0u;
+    const uint32_t type = tex_id::type_of(out.texture_id);
     const size_t eoff = size_t(cmd->userdata.id);
-    if (eoff + sizeof(ui_text_effect) <= effect_arena.size()) {
-      eff = *reinterpret_cast<const ui_text_effect*>(effect_arena.at(eoff));
+    if (type == gui_draw_mode::msdf) {
+      ui_text_effect eff{0.0f, 0.0f, 0u, 0.0f};
+      if (eoff + sizeof(ui_text_effect) <= effect_arena.size()) eff = *reinterpret_cast<const ui_text_effect*>(effect_arena.at(eoff));
+      out.payload[0] = std::bit_cast<uint32_t>(eff.boldness);
+      out.payload[1] = std::bit_cast<uint32_t>(eff.outline_width);
+      out.payload[2] = eff.outline_color;
+      out.payload[3] = std::bit_cast<uint32_t>(eff.softness);
+    } else if (type == gui_draw_mode::cooldown || type == gui_draw_mode::mix) {
+      ui_image_effect eff{};
+      if (eoff + sizeof(ui_image_effect) <= effect_arena.size()) eff = *reinterpret_cast<const ui_image_effect*>(effect_arena.at(eoff));
+      out.payload[0] = eff.mask_index;
+      if (type == gui_draw_mode::cooldown) {
+        out.payload[1] = std::bit_cast<uint32_t>(eff.fill);
+      } else { // mix
+        out.payload[1] = eff.comp[0];
+        out.payload[2] = eff.comp[1];
+        out.payload[3] = eff.comp[2];
+        out.payload[4] = eff.comp[3];
+        out.payload[5] = eff.is_image;
+      }
     }
-    out.boldness = eff.boldness;
-    out.outline_width = eff.outline_width;
-    out.outline_color = eff.outline_color;
-    out.softness = eff.softness;
+    // image(2)/solid(0): payload остаётся нулевым
     commands_.push_back(out);
   }
 
