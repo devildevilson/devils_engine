@@ -30,6 +30,7 @@
 
 #include <devils_engine/visage/system.h>
 #include <devils_engine/visage/font.h>
+#include <devils_engine/visage/image.h>
 #include <devils_engine/visage/font_atlas_packer.h>
 
 #include "config.h"
@@ -284,6 +285,10 @@ struct simulation_init {
   // Звуки — demiurg-ресурсы в потоке ассетов. main держит name_hash → указатель (для резолва в
   // command_sound_play из UI/геймплея) и запрашивает их до warm. Сам звук-актор ресурсы не хранит.
   gtl::flat_hash_map<uint64_t, sound::sound_resource*> sound_by_name;
+
+  // Именованные картинки для UI: name_hash → текстура (gpu_index + размер). Хост-мост к demiurg:
+  // app.image(name) строит visage::image из usable()-текстуры. Позже заменится на demiurg require.
+  gtl::flat_hash_map<uint64_t, painter::gpu_texture_resource*> image_by_name;
 
   // Единый broker всех межпоточных каналов. Владелец — main; создаётся в init ДО подсистем и
   // раздаётся им указателем (set_broker) до старта потоков. Заменяет actor_ref/message_dispatcher.
@@ -679,13 +684,20 @@ void simulation::init() {
   }
 
   // три grass-текстуры → texture_slots 0,1,2 (порядок запроса = порядок слотов, т.к. assets грузит по очереди)
-  for (const auto* name : { "textures/grass", "textures/grass1_0", "textures/grass3" }) {
-    if (auto* tex = container->assets_sim->resources()->get<painter::gpu_texture_resource>(name)) {
+  // (friendly-имя для UI-картинок, id ресурса в реестре)
+  const std::pair<const char*, const char*> textures_named[] = {
+    { "grass",  "textures/grass" },
+    { "grass1", "textures/grass1_0" },
+    { "grass3", "textures/grass3" },
+  };
+  for (const auto& [friendly, res_id] : textures_named) {
+    if (auto* tex = container->assets_sim->resources()->get<painter::gpu_texture_resource>(res_id)) {
       container->br->load_resource.try_push(command_load_resource{tex, static_cast<int32_t>(demiurg::state::hot)});
       container->startup_resources.push_back(tex); // стартовый набор: от него зависит переход loading→game
-      utils::info("main: requested texture '{}' -> hot", name);
+      container->image_by_name.emplace(utils::string_hash(friendly), tex); // для app.image (UI)
+      utils::info("main: requested texture '{}' -> hot", res_id);
     } else {
-      utils::warn("main: texture resource '{}' not found in registry", name);
+      utils::warn("main: texture resource '{}' not found in registry", res_id);
     }
   }
 
@@ -875,6 +887,26 @@ void simulation::init() {
     });
     app.set_function("action_clicked", [](const std::string& name) -> bool {
       return input::events::check_event(std::string_view(name), input::event_state::click_mask);
+    });
+
+    // картинка для UI (хост-мост к demiurg): app.image(name [, {region={x,y,w,h}}]) -> visage::image | nil.
+    // Резолвит имя → gpu_texture_resource; строит хендл из gpu_index+размера когда текстура usable() (на GPU),
+    // иначе nil. Позже заменится на demiurg require/request — сигнатура/возврат подобраны так, чтобы lua не менять.
+    app.set_function("image", [this](const std::string& name, sol::optional<sol::table> opts) -> sol::object {
+      auto& lua = container->ui->script_state();
+      const auto it = container->image_by_name.find(utils::string_hash(name));
+      if (it == container->image_by_name.end()) return sol::nil;
+      auto* tex = it->second;
+      if (tex == nullptr || !tex->usable()) return sol::nil; // ещё не на GPU
+      visage::image img{};
+      img.texture_id = tex->gpu_index;
+      img.w = uint16_t(tex->width);
+      img.h = uint16_t(tex->height);
+      if (opts) {
+        const sol::optional<sol::table> region = (*opts)["region"];
+        if (region) for (int i = 0; i < 4; ++i) img.region[i] = uint16_t(region->get_or(i + 1, 0));
+      }
+      return sol::make_object(lua, img);
     });
 
     // состояние движка для UI (шаг 3a): lua рисует splash/loading/game по app.state(),
