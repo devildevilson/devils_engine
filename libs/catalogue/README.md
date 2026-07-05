@@ -1,298 +1,307 @@
 # catalogue
 
-`libs/catalogue` - ранний эксперимент с абстрактной оберткой над функциями,
-прежде всего над mutating effect-функциями. Идея библиотеки - уметь
-перехватывать вызовы, складывать их в бинарный поток, отдавать этот поток
-потребителям и потенциально проигрывать его обратно.
+`libs/catalogue` сейчас разворачивается в utility-слой для трассировки и
+интроспекции вызовов функций.
 
-Сейчас это не готовая система нетворкинга и не основной источник данных для
-multiplayer. Более вероятная будущая роль `catalogue` - утилитарный слой:
+Главная идея: в коде должна остаться обычная функция с обычной сигнатурой, но
+вызов проходит через маленькую constexpr-обертку. Эта обертка знает имя функции,
+имена аргументов, типы, домен трассировки и может передать эти данные в
+runtime-подключаемый `introspection_interface`.
 
-- полное логгирование изменений состояния entity для debug и проверки скриптов;
-- компактный RPC слой для небольшого числа функций;
-- dry-run/preview режим, где effect-функции не меняют выбранные области движка;
-- replay/demo/debug запись выбранных каналов.
+Старые идеи про binary buffer, replay и RPC остаются в проекте как legacy
+prototype. Они не являются текущим основным направлением. Сначала библиотека
+должна стать удобным инструментом для:
 
-Основной netcode, скорее всего, должен строиться вокруг input пользователя,
-intent-потока или полного world state snapshot, а не вокруг полной записи всех
-функциональных вызовов.
+- трассировки входа/выхода из выбранных функций;
+- debug-замера времени выполнения;
+- dry-run режима, где вызов описывается, но оригинальная функция не исполняется;
+- сбора статистики по последним вызовам.
 
-## Текущий Статус
+RPC/serialization стоит вернуться позже, когда станет ясно, какие именно вызовы
+и данные реально нужно переносить между процессами или писать в replay.
 
-Библиотека находится в состоянии прототипа. Внутри есть две линии кода:
+## Новый Introspection API
 
-- более старый черновик в `core.h`;
-- более разнесенный API в `common.h`, `registry.h`, `channel_data.h`,
-  `rpc_function.h`, `demo.h`.
-
-Они местами дублируют понятия (`registry`, `buffer`,
-`function_buffer_header`). Поэтому `catalogue` сейчас лучше воспринимать как
-дизайн-площадку, а не стабильный API.
-
-Внешних полноценных потребителей пока нет. `libs/act` уже содержит
-`effect_sink` с комментарием, что реальная реализация может переехать в
-`catalogue`; `tile_frontier` пока мутирует world напрямую и отмечает, что
-`effect_sink/catalogue` будет подключен позже.
-
-## Buffer Model
-
-Базовая единица данных - `catalogue::buffer`.
-
-Он состоит из:
-
-- `headers` - массив `function_buffer_header`;
-- `payload` - общий массив байт.
-
-`function_buffer_header` сейчас содержит:
+Основной заголовок:
 
 ```cpp
-struct function_buffer_header {
-  uint32_t tick;
-  uint32_t id;
-  uint32_t offset;
+#include "devils_engine/catalogue/introspection.h"
+```
+
+Минимальный пример:
+
+```cpp
+enum class trace_domain : uint64_t {
+  gameplay = 1,
+  ui = 2
 };
+
+int add_gold(int amount, int multiplier);
+
+using add_gold_wrap =
+  catalogue::outer<trace_domain::gameplay>::inner<
+    &add_gold,
+    "add_gold",
+    "amount",
+    "multiplier"
+  >;
+
+constexpr auto add_gold_fn = add_gold_wrap::fn_ptr;
+
+catalogue::trace_introspection trace;
+catalogue::outer<trace_domain::gameplay>::set_introspection(&trace);
+
+add_gold_fn(10, 2);
 ```
 
-Смысл:
-
-- `tick` - игровой тик, к которому относится вызов;
-- `id` - id функции;
-- `offset` - смещение payload этой функции внутри общего byte buffer.
-
-Идея простая: за tick собирается пачка вызовов, headers описывают порядок и
-функции, payload хранит сериализованные аргументы.
-
-Пока формат не финализирован:
-
-- нет общего tick-buffer header в активной линии API;
-- нет checksum;
-- нет versioning;
-- нет clear ownership contract для payload lifetime;
-- нет стабильного формата на диск.
-
-## Registry
-
-`catalogue::registry` хранит описание функций по id.
-
-Запись:
+`add_gold_fn` имеет тип:
 
 ```cpp
-struct registry::info {
-  size_t id;
-  std::string_view name;
-  invoke_fn fn;
+int (*)(int, int)
+```
+
+То есть это настоящий указатель на функцию с конкретными аргументами, а не
+универсальный `Args...`-call wrapper. Его можно дальше передавать в шаблоны,
+которые ожидают нормальную функцию с нормальной сигнатурой.
+
+## outer / inner
+
+`outer<Domain>` задает область трассировки. Обычно `Domain` - это enum:
+
+```cpp
+template <auto Domain>
+struct outer;
+```
+
+У каждого `outer<Domain>` есть свой runtime pointer:
+
+```cpp
+outer<Domain>::set_introspection(ptr);
+outer<Domain>::introspection();
+```
+
+Это позволяет включать разные политики для разных областей:
+
+- gameplay effects;
+- UI host API;
+- service/debug functions;
+- resource loading;
+- sound commands.
+
+`inner<Fn, Name, ArgNames...>` описывает конкретную функцию:
+
+- `Fn` - функция, метод или structural functor;
+- `Name` - имя функции для логов и id;
+- `ArgNames...` - имена аргументов для debug output.
+
+Публичные поля:
+
+- `fn_ptr` - constexpr указатель на обернутую функцию;
+- `function_id` - `utils::string_hash(Name)`;
+- `domain_id` - id домена;
+- `argument_count` - число аргументов оригинального вызова.
+
+Важно: `fn_ptr` constexpr. `function_id` сейчас не constexpr, потому что
+использует общий runtime `utils::string_hash`/rapidhash, а compile-time murmur id
+в `utils` намеренно отделен от runtime string ids.
+
+## Что Поддерживается
+
+Свободные функции:
+
+```cpp
+int f(int, float);
+using wrapped = outer<domain::gameplay>::inner<&f, "f", "a", "b">;
+constexpr auto ptr = wrapped::fn_ptr; // int (*)(int, float)
+```
+
+`noexcept` свободные функции тоже поддерживаются, но обертка пока не сохраняет
+`noexcept` в типе итогового указателя.
+
+Методы:
+
+```cpp
+struct wallet {
+  int add(int amount);
+  int get() const;
 };
+
+using add = outer<domain::gameplay>::inner<&wallet::add, "wallet.add", "self", "amount">;
+using get = outer<domain::gameplay>::inner<&wallet::get, "wallet.get", "self">;
+
+constexpr auto add_ptr = add::fn_ptr; // int (*)(wallet&, int)
+constexpr auto get_ptr = get::fn_ptr; // int (*)(const wallet&)
 ```
 
-`invoke_fn` сейчас имеет вид:
+Обычный метод получает объект первым аргументом как `T&`.
+`const`-метод получает объект как `const T&`.
+
+Structural functor:
 
 ```cpp
-void (*)(const function_buffer_header&, std::span<uint8_t>);
+struct multiply {
+  constexpr int operator()(int a, int b) const { return a * b; }
+};
+
+constexpr multiply mul{};
+
+using wrapped = outer<domain::service>::inner<mul, "multiply", "a", "b">;
+constexpr auto ptr = wrapped::fn_ptr; // int (*)(int, int)
 ```
 
-Реестр нужен, чтобы по `function_buffer_header::id` найти функцию-декодер и
-проиграть payload обратно.
+Ограничение первого среза: functor должен быть structural NTTP object с обычным,
+неперегруженным `operator()`. Generic lambda / overloaded functor пока не цель.
 
-В текущей реализации registry - это `gtl::flat_hash_map<size_t, info>`. Он не
-является общей gameplay-function таблицей. Это отдельная таблица для
-catalogue/RPC replay, а общий контракт gameplay-функций сейчас живет в
-`libs/act`.
+## Introspection Interface
 
-## Channels
-
-`channel_data<id>` - статический канал записи.
-
-В коде уже выделены channel ids:
-
-- `INPUT_CHANNEL_ID`;
-- `MUTATOR_CHANNEL_ID`;
-- `META_CHANNEL_ID`;
-- `SERVICE_CHANNEL_ID`.
-
-И aliases:
-
-- `input_channed_data`;
-- `mutator_channed_data`;
-- `meta_channed_data`;
-- `service_channed_data`.
-
-Каждый канал хранит:
-
-- `registry*`;
-- текущий `buffer`;
-- до 8 `consumer*`.
-
-API канала:
-
-- `init(registry*)`;
-- `add_consumer(consumer*)`;
-- `consume()`;
-- `clear_buffer()`.
-
-`consume()` просто передает текущий buffer всем зарегистрированным consumers.
-Это не очередь и не owning pipeline. Потребитель сам решает, копировать ли
-данные, писать ли на диск, отправлять ли по сети или анализировать сразу.
-
-## Consumers
-
-`consumer` - интерфейс приемника buffer:
+Контракт:
 
 ```cpp
-class consumer {
+class introspection_interface {
 public:
-  virtual ~consumer() noexcept = default;
-  virtual void consume(const buffer&) = 0;
+  virtual ~introspection_interface() noexcept = default;
+
+  virtual call_decision enter(const call_info& info) = 0;
+  virtual void exit(const call_info& info, uint64_t elapsed_mcs) = 0;
+  virtual void skipped(const call_info& info) = 0;
 };
 ```
 
-Идея в том, что один и тот же канал может одновременно кормить несколько
-потребителей:
+`enter()` вызывается перед оригинальной функцией.
 
-- demo recorder;
-- debug logger;
-- network sender;
-- script audit tool;
-- statistics collector.
+Если он возвращает `call_decision::execute`, функция исполняется, затем
+вызывается `exit()` с временем выполнения в микросекундах.
 
-Пока есть только demo consumer prototype.
+Если он возвращает `call_decision::skip`, оригинальная функция не исполняется,
+вызывается `skipped()`, а результатом становится:
 
-## RPC Function Wrapper
+- `void` для `void` функций;
+- default-constructed value для non-void функций.
 
-`rpc_function` - шаблонная обертка над свободной функцией.
+Поэтому dry-run non-void функции должны иметь default-constructible return type.
 
-Идея wrapper'а:
+## call_info И Аргументы
 
-- `call(args...)` - вызвать оригинальную функцию;
-- `write(args...)` - сериализовать вызов в channel buffer;
-- `log(args...)` - вызвать функцию и записать вызов;
-- `read(header, bytes)` - прочитать payload и вызвать функцию;
-- `reg()` - зарегистрировать reader в channel registry.
+`call_info` содержит:
 
-Id функции считается compile-time из имени:
+- `domain`;
+- `function`;
+- `function_name`;
+- `return_type`;
+- `file`/`line` reserved-поля;
+- `arguments`.
 
-```cpp
-static constexpr uint32_t id = utils::murmur_hash3_32(name);
+`arguments` - это `std::span<const argument_view>`.
+
+Lifetime важен: span валиден только внутри текущего синхронного вызова
+`enter()`/`exit()`/`skipped()`. Если introspection implementation хочет хранить
+аргументы дольше, она должна скопировать нужные строки/значения.
+
+`argument_view` содержит:
+
+- имя аргумента;
+- имя типа;
+- строковое значение;
+- флаг `printable`.
+
+В строку сейчас превращаются только простые типы:
+
+- `bool`;
+- integral, кроме `char`;
+- floating point;
+- enum как underlying integer;
+- `std::string`;
+- `std::string_view`;
+- типы, конвертируемые в `std::string_view`.
+
+Структуры, ресурсы, сложные объекты и ссылки на доменные сущности не
+разворачиваются. Они попадают в лог как `<opaque>`. Это намеренно: `catalogue`
+не должен в первом срезе превращаться в общий serializer.
+
+## Готовые Реализации
+
+`trace_introspection`
+
+Пишет через `utils::info`:
+
+- `enter 'name'`;
+- `exited 'name', took N mcs`;
+- `skipped 'name'`.
+
+`timing_introspection`
+
+Пишет через `utils::info` время выполнения и printable-аргументы:
+
+```text
+'add_gold' took 12 mcs (amount=5, multiplier=3)
 ```
 
-Для сериализации черновик использует `zpp_bits` в network endian.
+`dry_run_introspection`
 
-Важно: текущий `rpc_function.h` выглядит как активный прототип и местами
-рассинхронизирован с более старым `core.h`. Его нужно стабилизировать перед
-использованием как public API.
+Всегда возвращает `call_decision::skip`. Удобен для preview/audit сценариев,
+когда нужно увидеть, какой вызов был бы сделан, но не мутировать состояние.
 
-## Demo Prototype
+`statistics_introspection<Capacity>`
 
-`demo` - проба потребителя для записи входных и mutator каналов.
-
-Он содержит:
-
-- `input_consumer`;
-- `mutator_consumer`;
-- `storage.input_buffer`;
-- `storage.mutator_buffer`.
-
-При создании `demo(consume_type::all)` он подписывает consumers на input и
-mutator channels. Consumers просто копируют полученный `buffer` в storage.
-
-`write_to_disk` и `load_from_disk` пока возвращают `false`: файловый формат demo
-не реализован.
-
-## Связь С act
-
-`libs/act` уже содержит близкое понятие `effect_sink`.
-
-`effect_sink` принимает:
+Хранит rolling buffer последних `Capacity` завершенных вызовов и умеет считать
+среднее время по `function_id`:
 
 ```cpp
-emit(effect_id, args)
+catalogue::statistics_introspection<128> stats;
+outer<domain::gameplay>::set_introspection(&stats);
+
+// ...
+
+const double avg = stats.average_mcs(add_gold_wrap::function_id);
 ```
 
-и задуман как способ отделить mutating effect от прямой мутации мира. В будущем
-реализация такого sink может жить в `catalogue`:
+## Текущие Ограничения
 
-- dry-run sink ничего не применяет, только описывает возможный эффект;
-- logging sink пишет вызов в mutator channel;
-- replay sink читает channel buffer и применяет функции в порядке записи;
-- audit sink сверяет скриптовые изменения с ожидаемой областью доступа.
+- `outer<Domain>::intro_i` - raw pointer без ownership. Владелец обязан
+  гарантировать lifetime introspection object.
+- Runtime-переключение introspection pointer пока без синхронизации. Для
+  межпоточного hot-swap нужен atomic или внешний lifecycle barrier.
+- Исключения пока не обрабатываются отдельно: если оригинальная функция бросит,
+  `exit()` не будет вызван.
+- `noexcept` оригинальной функции не сохраняется в типе wrapper pointer.
+- Аргументы форматируются только для базовых типов; сложные структуры
+  deliberately opaque.
+- `file`/`line` в `call_info` зарезервированы, но пока не заполняются.
+- Старый RPC/buffer код остается рядом и не является стабильным public API.
 
-Пока этот мост не реализован. В `tile_frontier` эффекты actor simulation еще
-мутируют `aesthetics::world` напрямую.
+## Старый RPC / Replay Прототип
 
-## Возможные Роли
+В библиотеке все еще есть файлы:
 
-### Debug/Audit Logging
+- `common.h`;
+- `core.h`;
+- `channel_data.h`;
+- `registry.h`;
+- `rpc_function.h`;
+- `demo.h`.
 
-Самая практичная роль: записывать mutating calls и изменения entity state, чтобы
-ловить ошибки скриптов.
+Они описывают ранний подход:
 
-Примеры вопросов, на которые такой лог должен отвечать:
+- buffer из headers + payload;
+- registry для поиска function reader по id;
+- статические channels;
+- consumers для demo/debug/network;
+- `rpc_function` с `call/write/log/read/reg`.
 
-- какая функция изменила компонент;
-- в каком tick это произошло;
-- какой actor/script/source_action был причиной;
-- какие аргументы были переданы;
-- была ли функция разрешена для этой области мира.
+Эта линия не удалена, потому что часть идей пригодится позже для replay/RPC.
+Но текущий фокус другой: сначала нужен надежный seamless wrapper для обычных
+функций, методов и простых functor'ов, а уже затем можно решать, какие вызовы
+сериализовать и в каком формате.
 
-### RPC Layer
+## Как Об Этом Думать
 
-`catalogue` может быть компактным RPC helper'ом для небольшого числа функций:
+`catalogue` должен стать маленьким техническим слоем вокруг вызовов:
 
-- HTTP/service methods;
-- matchmaking/control plane;
-- debug commands;
-- небольшие engine service calls.
+```text
+обычная функция -> constexpr wrapper pointer -> runtime introspection policy
+```
 
-Это не обязательно должно быть связано с gameplay netcode.
-
-### Dry-Run
-
-Dry-run нужен для скриптов и UI-preview:
-
-- прогнать effect-функции без мутации мира;
-- проверить, какие вызовы они хотели сделать;
-- разрешить/запретить только часть областей движка;
-- показать пользователю последствия.
-
-В этом направлении `catalogue` должен сблизиться с `act::effect_sink`.
-
-## Что Уже Умеет
-
-На данный момент `libs/catalogue` умеет на уровне прототипа:
-
-- описывать buffer из headers + payload;
-- описывать consumer interface;
-- хранить registry function readers по id;
-- иметь несколько статических channels;
-- добавлять consumers к channel;
-- передавать текущий buffer всем consumers;
-- очищать channel buffer;
-- хранить demo storage для input/mutator buffers;
-- вычислять compile-time id функции по имени;
-- набрасывать wrapper-идею `call/write/log/read/reg` для free functions.
-
-## Что Еще Не Сделано
-
-Основной техдолг:
-
-- выбрать один API и убрать дублирование между `core.h` и новым набором
-  headers;
-- стабилизировать `rpc_function` templates и привести сигнатуры к
-  компилируемому public contract;
-- определить точный binary format: tick headers, payload sizes, checksum,
-  versioning, endian, alignment;
-- реализовать запись/чтение demo на диск;
-- решить, где живет real `effect_sink`: в `act`, `catalogue` или отдельном
-  replay/audit слое;
-- связать `act::value` и catalogue payload format;
-- добавить dry-run sinks и policy для разрешенных областей мутации;
-- добавить replay executor: пройти buffer headers, найти reader в registry и
-  вызвать функции;
-- добавить tests для registry/channel/demo/rpc wrapper;
-- определить, какие данные вообще стоит писать для debug, RPC, demo и
-  networking, чтобы не смешивать разные задачи в одном канале;
-- исправить мелкие артефакты текущего прототипа вроде include guard в
-  `demo.h`.
-
-Граница библиотеки сейчас должна оставаться узкой: `catalogue` - это не
-основной state storage и не основной netcode. Это utility layer для записи,
-анализа, dry-run и ограниченного RPC вокруг выбранных функций.
+Он не должен становиться главным gameplay registry вместо `act`, главным
+resource storage вместо `demiurg` или главным netcode. Его полезная роль сейчас:
+наблюдать, измерять, временно запрещать и статистически описывать выбранные
+вызовы без переписывания вызывающего кода под тяжелый framework.
