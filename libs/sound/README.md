@@ -168,6 +168,9 @@ Main сразу возвращает UI opaque handle на основе task id,
 - Профилировать `system2::update()`. Подозрительные места: создание decoder/converter на первом update задачи, seek, декодирование, `ma_data_converter_process_pcm_frames`, запись в ring buffer и уборка задач/voice instances.
 - Оформить контракт выгрузки `sound_resource`: нельзя освобождать `data`, пока active task держит `resource2::data`.
 - Подключить PCM в новом `resource2`/`system2` пути или убрать `pcm` из публичного списка форматов до готовности.
+- Добавить формат Opus и загрузку с диска через `opusfile`.
+- Добавить специальный источник постоянного/потокового звука, например live-поток из микрофона для VoIP.
+- Вместе с VoIP-источником добавить capture device: создать устройство записи, читать голос с микрофона, собирать Opus-пакеты, публиковать статус/метрики, дать настройки громкости, добавить базовую фильтрацию и проверить готовые решения/библиотеки для этой части.
 - Добавить тип звука в broker-команду play. Сейчас `tile_frontier` стадийно отправляет все как `sfx`.
 - Доделать `set_source_volume()` и общую модель групп громкости: master/music/sfx/ui/dialogue.
 - Добавить тесты на progress с `start > 0`, `after` sequencing, underrun accounting, device fallback и snapshot state.
