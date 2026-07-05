@@ -82,7 +82,7 @@ Lua entry-point загружается через `load_entry_point(path)`. Ск
 
 Контекст Nuklear сейчас передается в bindings через `bindings::setup_nk_context(ctx)`, то есть фактически глобальным указателем внутри binding layer. Для одного UI-контекста это работает, но для нескольких независимых `visage::system` или UI над юнитами это потребует пересмотра.
 
-Image API пока не оформлен. Часть функций уже принимает `nk_image*`, но функции, которые должны сами построить image из ресурса или региона текстуры, стоят заглушками.
+Image API (Стадия 1, 2026-07-05): картинка = `visage::image` (POD-хендл `texture_id`+`w`/`h`+`region`, хедер `image.h`, без зависимостей от nuklear/vulkan). `visage::system` регистрирует usertype `image`, таблицу-битмаску `nk.placement` (fill/stretch/scale_ratio/center/left/right/top/bottom) и `nk.image(img [, placement] [, color])` (берёт bounds виджета через `nk_widget`, считает целевой прямоугольник по placement, рисует `nk_draw_image`). Хендл строит хост — `app.image("name")` из загруженной `gpu_texture_resource` (мост к будущему demiurg `require`). Рендер картинок уже был готов (`gui_draw_mode::image` + `ui.frag` mode 2). Слоты 0–7 (проектный лимит `tex[8]`). НЕ сделано (Стадия 2): стенсил-эффекты (cooldown/4-blend) через маск-текстуру; старые заглушки `nk_image*` в `bindings` (`tree_image_push*`, button-image) не мигрированы на `visage::image`.
 
 ## Шрифты
 
@@ -182,7 +182,7 @@ Mode вычисляется по `texture.id`:
 
 ## Техдолг И Направления
 
-- Описать полноценное понятие `image` для Nuklear: ресурс demiurg, GPU texture slot, регион/UV, размеры, lifetime и Lua-facing handle. Сейчас image-функции частично заглушены.
+- ~~Описать полноценное понятие `image` для Nuklear~~ (Стадия 1 СДЕЛАНА 2026-07-05: `visage::image` + `nk.image`/`nk.placement` + host `app.image`). Осталось: Стадия 2 — стенсил-эффекты (cooldown/4-blend через маск-текстуру, рост контракта draw-команды + `ui.frag`); мигрировать старые `nk_image*`-заглушки bindings на `visage::image`; демиург-ресурс как источник картинки вместо host-моста.
 - Убрать раздражающую Lua-функцию `endf` и заменить ее на более нормальное имя `fin`.
 - Попробовать расширить Lua API через closable variables/functions Lua 5.4, чтобы UI-код мог безопаснее закрывать окна/groups/popups и не держать ручные begin/end пары.
 - Добавить runtime reload Lua UI: пересоздание или очистка state/env, перезагрузка entry files, сохранение/сброс нужного UI state и корректное восстановление Nuklear context.

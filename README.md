@@ -553,7 +553,8 @@ catalogue::domain<domain::gameplay>::set_introspection(&trace);
 
 Если introspection pointer не задан (`nullptr`), wrapper не собирает `call_info`
 и вызывает оригинальную функцию напрямую. `function_id` считается compile-time
-через `utils::murmur_hash64A`.
+через `utils::murmur_hash64A`. Параметр `domain<...>` оставлен `auto`, поэтому
+домен можно задавать и enum-значением, и `constexpr size_t`.
 
 Текущий набор готовых политик:
 
@@ -577,6 +578,7 @@ catalogue::domain<domain::gameplay>::set_introspection(&trace);
 Старый buffer/registry/channel/RPC/demo прототип все еще лежит в библиотеке, но
 сейчас считается legacy/deferred. К сериализации для RPC стоит вернуться позже,
 когда станет ясно, какие именно вызовы нужно переносить или писать в replay.
+Отдельный ближайший техдолг: registry функций внутри домена по `function_id`.
 
 Как об этом думать: `catalogue` - это наблюдатель и policy-wrapper вокруг
 выбранных функций. Он не заменяет `act` как gameplay registry, `demiurg` как

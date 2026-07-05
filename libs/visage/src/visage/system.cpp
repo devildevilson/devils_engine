@@ -1,6 +1,7 @@
 #include "system.h"
 
 #include <cstring>
+#include <algorithm>
 
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/time-utils.hpp"
@@ -8,6 +9,7 @@
 #include "devils_engine/bindings/nuklear_bindings.h"
 #include "header.h"
 #include "font.h"
+#include "image.h"
 
 namespace devils_engine {
 namespace visage {
@@ -112,6 +114,41 @@ static void simple_hook(lua_State *L, lua_Debug *ar) {
   utils::error{}("Called Lua hook after {} instructions. Exit lua script after {} mcs ({} seconds). Context: {}:{}:{}", system::instruction_counter, mcs, s, source, name, ar->currentline);
 }
 
+// Тег «это картинка» в id текстуры nk-команды. Проблема: у nuklear texture.id==0 означает «нет
+// текстуры» (фигуры/solid), но bindless-слот 0 — валидная картинка. Поэтому в handle картинки ставим
+// старший бит-флаг (как синтетические сканкоды мыши), а convert() его снимает → реальный слот для
+// шейдера. Так картинка в слоте 0 больше не путается с фигурой.
+static constexpr uint32_t image_id_flag = 1u << 30;
+
+// placement-флаги картинки (битовая маска, зеркалит таблицу nk.placement ниже).
+namespace img_placement {
+  enum : uint32_t {
+    fill        = 0,       // растянуть на весь виджет (дефолт; синоним stretch)
+    scale_ratio = 1u << 0, // вписать сохранив пропорции (fit)
+    center      = 1u << 1, // выравнивание по центру (дефолт при scale_ratio — флаг для явности)
+    left        = 1u << 2,
+    right       = 1u << 3,
+    top         = 1u << 4,
+    bottom      = 1u << 5,
+  };
+}
+
+// целевой прямоугольник картинки внутри bounds по placement-флагам. Без scale_ratio — весь bounds
+// (stretch). Со scale_ratio — вписать по min-масштабу (сохранить аспект) и выровнять (дефолт — центр).
+static struct nk_rect image_placement_rect(const struct nk_rect& b, const float iw, const float ih, const uint32_t flags) {
+  if (!(flags & img_placement::scale_ratio) || iw <= 0.0f || ih <= 0.0f) return b;
+  const float s = std::min(b.w / iw, b.h / ih);
+  const float w = iw * s, h = ih * s;
+  float x, y;
+  if (flags & img_placement::left)  x = b.x;
+  else if (flags & img_placement::right) x = b.x + b.w - w;
+  else x = b.x + (b.w - w) * 0.5f; // center по умолчанию
+  if (flags & img_placement::top)   y = b.y;
+  else if (flags & img_placement::bottom) y = b.y + b.h - h;
+  else y = b.y + (b.h - h) * 0.5f;
+  return nk_rect(x, y, w, h);
+}
+
 system::system(const font_t* default_font) : default_font(default_font), effect_arena(64 * 1024, 16) {
   fonts_.emplace_back("default", default_font); // базовый шрифт под именем "default" (шаг 2b)
   lua.open_libraries(
@@ -210,6 +247,49 @@ system::system(const font_t* default_font) : default_font(default_font), effect_
     }
     nk_style_from_table(ctx.get(), table);
   });
+
+  // Картинки (шаг: image + placement). Регистрируем тут (а не в bindings — тот не зависит от visage;
+  // + нужен nk_context). visage::image — POD-хендл (слот текстуры + регион), строит хост (app.image),
+  // позже будет отдавать demiurg-ресурс. nk.image перекрывает мёртвую заглушку из bindings::nk_functions.
+  lua.new_usertype<visage::image>("image",
+    sol::no_constructor, // конструируется хостом (app.image), не из lua
+    "texture_id", &visage::image::texture_id,
+    "w", &visage::image::w,
+    "h", &visage::image::h);
+
+  // placement-флаги (битовая маска, комбинируются через '|'); зеркалит img_placement выше.
+  sol::table placement = nk_tbl.create_named("placement");
+  placement["fill"]        = uint32_t(img_placement::fill);
+  placement["stretch"]     = uint32_t(img_placement::fill);
+  placement["scale_ratio"] = uint32_t(img_placement::scale_ratio);
+  placement["center"]      = uint32_t(img_placement::center);
+  placement["left"]        = uint32_t(img_placement::left);
+  placement["right"]       = uint32_t(img_placement::right);
+  placement["top"]         = uint32_t(img_placement::top);
+  placement["bottom"]      = uint32_t(img_placement::bottom);
+
+  // nk.image(img [, placement_flags] [, color]) — берёт слот виджета (nk_widget), считает целевой
+  // прямоугольник по placement (вписать/растянуть/выровнять) и рисует nk_draw_image. mode=image в
+  // convert() выставится сам (ненулевая не-шрифтовая текстура), ui.frag mode 2 сэмплит.
+  nk_tbl.set_function("image",
+    [this](const visage::image& img, sol::optional<uint32_t> placement_flags, sol::optional<sol::table> color) {
+      if (ctx->current == nullptr) return; // не внутри begin/end окна — рисовать некуда
+      struct nk_rect bounds;
+      const auto state = nk_widget(&bounds, ctx.get()); // продвигает layout + отдаёт bounds
+      if (state == NK_WIDGET_INVALID) return;           // виджет вне видимой области
+
+      // регион: если задан (region[2]!=0) — суб-прямоугольник, иначе вся картинка
+      const struct nk_rect region = img.region[2] != 0
+        ? nk_rect(float(img.region[0]), float(img.region[1]), float(img.region[2]), float(img.region[3]))
+        : nk_rect(0.0f, 0.0f, float(img.w), float(img.h));
+      // старший бит-флаг: помечаем handle как КАРТИНКУ (иначе слот 0 неотличим от фигуры в convert)
+      const struct nk_image nkimg = nk_subimage_id(int(img.texture_id | image_id_flag), img.w, img.h, region);
+
+      const uint32_t flags = placement_flags.value_or(uint32_t(img_placement::fill));
+      const struct nk_rect target = image_placement_rect(bounds, region.w, region.h, flags);
+      const struct nk_color c = color.has_value() ? table_to_nk_color(color.value()) : nk_rgba(255, 255, 255, 255);
+      nk_draw_image(&ctx->current->buffer, target, &nkimg, c);
+    });
 }
 
 system::~system() noexcept {
@@ -367,10 +447,22 @@ void system::convert() {
     out.clip_y = cmd->clip_rect.y;
     out.clip_w = cmd->clip_rect.w;
     out.clip_h = cmd->clip_rect.h;
-    out.texture_id = uint32_t(cmd->texture.id);
-    if (is_font_texture(int(cmd->texture.id))) out.mode = gui_draw_mode::msdf;
-    else if (cmd->texture.id == 0)             out.mode = gui_draw_mode::solid;
-    else                                       out.mode = gui_draw_mode::image;
+    // порядок важен: сначала бит-флаг картинки (снимаем → реальный слот), потом шрифт, потом
+    // texture.id==0 = фигура (solid), иначе legacy-картинка по сырому id.
+    const uint32_t rawid = uint32_t(cmd->texture.id);
+    if (rawid & image_id_flag) {
+      out.mode = gui_draw_mode::image;
+      out.texture_id = rawid & ~image_id_flag; // снимаем флаг → слот для шейдера
+    } else if (is_font_texture(int(rawid))) {
+      out.mode = gui_draw_mode::msdf;
+      out.texture_id = rawid;
+    } else if (rawid == 0) {
+      out.mode = gui_draw_mode::solid;
+      out.texture_id = 0;
+    } else {
+      out.mode = gui_draw_mode::image;
+      out.texture_id = rawid;
+    }
 
     // запекаем SDF-эффект по userdata (offset в арене; 0 = дефолт). Гард по границам арены.
     ui_text_effect eff{0.0f, 0.0f, 0u, 0.0f};

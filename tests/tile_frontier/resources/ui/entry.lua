@@ -89,6 +89,13 @@ local function game_ui(time, timestamp, rng)
     nk.label("small 12px text", nil, nk.text_align.left)
     nk.pop_font()
 
+    -- картинка: вписать с сохранением пропорций и отцентровать (шаг image + placement)
+    local img = app.image("grass")
+    if img then
+      nk.layout.row_dynamic(64, 1)
+      nk.image(img, nk.placement.scale_ratio | nk.placement.center)
+    end
+
     nk.layout.row_dynamic(30, 1)
     if nk.button("Play sound") then
       app.play_sound("eating")
