@@ -32,7 +32,8 @@ Gameplay / simulation:
 - `aesthetics` - ECS и снапшоты мира.
 - `simul` - базовый update-loop для крупных симуляций.
 - `flow` - первый слой 2D/2.5D/UV presentation-анимаций.
-- `catalogue` - прототип записи/replay/RPC/dry-run вокруг вызовов функций.
+- `catalogue` - utility-слой для трассировки, dry-run, timing и статистики
+  вокруг вызовов функций.
 
 Ресурсы и платформенные подсистемы:
 
@@ -518,31 +519,64 @@ host API, но не должен становиться владельцем gam
 
 ## libs/catalogue
 
-`catalogue` - ранний прототип слоя записи и воспроизведения вызовов функций.
+`catalogue` - новый utility-слой для seamless трассировки и интроспекции
+вызовов функций.
 
-Это не готовый netcode и не основная система сохранений.
+Главная идея: выбрать обычную функцию, метод или простой structural functor и
+получить `constexpr` указатель на обертку с нормальной конкретной сигнатурой.
+Код дальше вызывает этот указатель как обычную функцию, а `catalogue` вокруг
+вызова собирает `call_info`: домен, имя функции, тип результата, имена и
+значения простых аргументов.
 
-Идея такая:
+Пример формы API:
 
-- есть buffer из headers + byte payload;
-- header описывает tick, function id и offset payload;
-- channel собирает вызовы;
-- consumers могут писать demo, debug log, network packet или audit output;
-- registry знает, как по id вызвать reader/invoker.
+```cpp
+using add_gold_t =
+  catalogue::outer<domain::gameplay>::inner<
+    &add_gold,
+    "add_gold",
+    "amount",
+    "multiplier"
+  >;
 
-Возможные будущие роли:
+constexpr auto add_gold_fn = add_gold_t::fn_ptr; // int (*)(int, int)
+```
 
-- debug/audit logging;
-- replay/demo recording;
-- dry-run effect sink;
-- компактный RPC helper;
-- реализация для `act::effect_sink`.
+У каждого `outer<domain>` есть runtime-подключаемый
+`introspection_interface*`. Поэтому можно включить трассировку только для
+выбранной области:
 
-Сейчас в библиотеке есть несколько пересекающихся прототипов API. Перед активным
-использованием ее нужно стабилизировать.
+```cpp
+catalogue::trace_introspection trace;
+catalogue::outer<domain::gameplay>::set_introspection(&trace);
+```
 
-Как об этом думать: это площадка для идеи “записать выбранные function calls в
-байты и потом проанализировать или проиграть”, а не готовая инфраструктура.
+Текущий набор готовых политик:
+
+- `trace_introspection` - пишет вход/выход через `utils::info`;
+- `timing_introspection` - пишет время выполнения и printable-аргументы;
+- `dry_run_introspection` - не исполняет оригинальную функцию;
+- `statistics_introspection<N>` - хранит последние N замеров и считает среднее.
+
+Сейчас поддерживаются:
+
+- свободные функции;
+- `noexcept` свободные функции, но `noexcept` не сохраняется в wrapper pointer;
+- методы, где объект становится первым аргументом `T&`;
+- `const` методы, где объект становится первым аргументом `const T&`;
+- structural functor с обычным неперегруженным `operator()`.
+
+Аргументы в строку превращаются только для базовых типов, enum и строк. Сложные
+структуры намеренно показываются как `<opaque>`, потому что первый срез
+`catalogue` - это не serializer.
+
+Старый buffer/registry/channel/RPC/demo прототип все еще лежит в библиотеке, но
+сейчас считается legacy/deferred. К сериализации для RPC стоит вернуться позже,
+когда станет ясно, какие именно вызовы нужно переносить или писать в replay.
+
+Как об этом думать: `catalogue` - это наблюдатель и policy-wrapper вокруг
+выбранных функций. Он не заменяет `act` как gameplay registry, `demiurg` как
+resource registry и не является готовым netcode.
 
 ## Связи Между Подпроектами
 
