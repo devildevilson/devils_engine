@@ -1,17 +1,76 @@
 -- Минимальный entry-point интерфейса visage.
 -- visage::system грузит этот файл в песочнице env и вызывает возвращённую функцию каждый кадр.
--- На вход приходит time (игровое время кадра). Доступен только биндинг nk (Nuklear) + базовые функции.
+-- На вход приходит time (игровое время кадра). Доступен биндинг nk (Nuklear) + хост-namespace app.
+--
+-- Экраны выбираются по app.state() (FSM движка): boot → loading → game.
 
 -- Состояние плеера живёт в upvalue (между кадрами): движок отдаёт только примитивы
 -- play(+start)/state/stop, а очередь/повтор плеер держит сам на lua.
 local player = { handle = nil, loop = false }
+local styled = false
 
-return function(time)
+-- Тема Nuklear (шаг 2c). Применяем один раз: nk.style_from_table задаёт цвета во все под-стили.
+local function apply_theme()
+  nk.style_from_table({
+    window        = {0.10, 0.11, 0.14, 1.0},
+    header        = {0.16, 0.18, 0.24, 1.0},
+    text          = {0.86, 0.88, 0.92, 1.0},
+    border        = {0.30, 0.34, 0.44, 1.0},
+    button        = {0.20, 0.24, 0.34, 1.0},
+    button_hover  = {0.28, 0.34, 0.48, 1.0},
+    button_active = {0.16, 0.20, 0.30, 1.0},
+    slider_cursor = {0.40, 0.60, 0.90, 1.0},
+  })
+end
+
+-- boot: движок только стартует. Шрифт ещё мог не доехать на GPU, поэтому крупный текст даём
+-- вторым (italic) шрифтом лишь как «лого»; главное — прикрыть экран панелью.
+local function splash_screen()
+  local flags = nk.panel_flags.border | nk.panel_flags.title
+  if nk.begin("splash", {440, 280, 400, 150}, flags) then
+    nk.push_font({font = "italic", size = 40, bold = 0.08})
+    nk.layout.row_dynamic(52, 1)
+    nk.label("devils_engine", nil, nk.text_align.centered)
+    nk.pop_font()
+    nk.layout.row_dynamic(22, 1)
+    nk.label("starting up...", nil, nk.text_align.centered)
+  end
+  nk.endf()
+end
+
+-- loading: ассеты тянут стартовый набор. Прогресс — из app.loading_progress() [0,1].
+local function loading_screen()
+  local flags = nk.panel_flags.border | nk.panel_flags.title
+  if nk.begin("loading", {420, 300, 440, 160}, flags) then
+    nk.push_font({font = "italic", size = 30})
+    nk.layout.row_dynamic(40, 1)
+    nk.label("Loading resources", nil, nk.text_align.centered)
+    nk.pop_font()
+
+    local p = app.loading_progress()
+    nk.layout.row_dynamic(24, 1)
+    nk.progress(math.floor(p * 100 + 0.5), 100, false)
+    nk.layout.row_dynamic(20, 1)
+    nk.label(string.format("%.0f%%", p * 100), nil, nk.text_align.centered)
+  end
+  nk.endf()
+end
+
+-- game: обычный игровой UI (демо шрифтов/эффектов + звук + статистика + управление игрой).
+-- rng — непрозрачный rng_state (сид кадра от хоста), timestamp — монотонная метка времени.
+local function game_ui(time, timestamp, rng)
   local flags = nk.panel_flags.border | nk.panel_flags.title | nk.panel_flags.movable
-  if nk.begin("hello", {50, 50, 340, 280}, flags) then
-    -- label — обычная функция; flags = выравнивание текста (nk.text_align)
+  if nk.begin("hello", {50, 50, 340, 372}, flags) then
     nk.layout.row_dynamic(28, 1)
     nk.label("tile_frontier UI", nil, nk.text_align.left)
+
+    -- демо prng: value(rng)->[0,1]; следующее состояние prng64(rng); value(s,n,m)->[n,m];
+    -- микс двух состояний через '+' (rng + base.rng(42)). Случайность отвязана от математики.
+    local a = base.value(rng)
+    local roll = base.value(base.prng64(rng), 1, 6)
+    local mixed = base.value(rng + base.rng(42))
+    nk.layout.row_dynamic(18, 1)
+    nk.label(string.format("rng %.3f  d6=%d  mix %.3f  t=%d", a, roll, mixed, timestamp), nil, nk.text_align.left)
 
     -- размер + SDF-эффекты: push_font({size=, bold=, outline={color={r,g,b,a}, width=}, softness=})
     nk.push_font({size = 34, bold = 0.1, outline = {color = {0.0, 0.0, 0.0, 1.0}, width = 0.15}})
@@ -19,9 +78,10 @@ return function(time)
     nk.label("BIG outline", nil, nk.text_align.left)
     nk.pop_font()
 
-    nk.push_font({size = 22, bold = 0.12})
-    nk.layout.row_dynamic(28, 1)
-    nk.label("bold 22px", nil, nk.text_align.left)
+    -- второй шрифт (шаг 2b): выбираем базовый шрифт по имени "italic"
+    nk.push_font({font = "italic", size = 26})
+    nk.layout.row_dynamic(32, 1)
+    nk.label("italic font", nil, nk.text_align.left)
     nk.pop_font()
 
     nk.push_font(12)
@@ -30,24 +90,19 @@ return function(time)
     nk.pop_font()
 
     nk.layout.row_dynamic(30, 1)
-    if nk.button("Click me") then
-      print("visage: button clicked")
-    end
-
-    nk.layout.row_dynamic(30, 1)
-    if nk.button("And me") then
-      print("visage: second button clicked")
-    end
-
-    -- UI-звук: presentation→sound напрямую. app.play_sound возвращает непрозрачный
-    -- sound_handle (без арифметики); его можно передать вторым аргументом как after
-    -- для секвенсинга (играть после другой задачи).
-    nk.layout.row_dynamic(30, 1)
     if nk.button("Play sound") then
       app.play_sound("eating")
     end
+
+    -- управление игрой (шаг 2a/1f): полноэкранный режим + выход
+    nk.layout.row_dynamic(30, 2)
+    if nk.button(app.is_fullscreen() and "Windowed" or "Fullscreen") then
+      app.set_fullscreen(not app.is_fullscreen())
+    end
+    if nk.button("Quit") then
+      app.quit_game()
+    end
   end
-  -- nk.end должен вызываться всегда, даже если begin вернул false (требование Nuklear)
   nk.endf()
 
   local stats_flags = nk.panel_flags.border | nk.panel_flags.title | nk.panel_flags.movable
@@ -66,7 +121,7 @@ return function(time)
 
   -- Демо-плеер эмбиента: весь API звука (play+start, state, stop). Очередь/повтор — на lua.
   local pflags = nk.panel_flags.border | nk.panel_flags.title | nk.panel_flags.movable
-  if nk.begin("sound player", {50, 360, 340, 150}, pflags) then
+  if nk.begin("sound player", {50, 410, 340, 150}, pflags) then
     nk.layout.row_dynamic(28, 3)
     if nk.button("Play") then
       if player.handle then app.stop_sound(player.handle) end
@@ -74,7 +129,6 @@ return function(time)
     end
     if nk.button("From 50%") then
       if player.handle then app.stop_sound(player.handle) end
-      -- форма вызова одним аргументом-таблицей (в будущем name станет handle ресурса demiurg)
       player.handle = app.play_sound{ name = "ambient", start = 0.5 }
     end
     if nk.button("Stop") then
@@ -87,14 +141,13 @@ return function(time)
       player.loop = not player.loop
     end
 
-    -- индикатор + очередь силами lua: app.sound_state → progress(0..1) или nil (задачи уже нет)
     nk.layout.row_dynamic(20, 1)
     if player.handle then
       local progress = app.sound_state(player.handle)
       if progress then
         nk.label(string.format("playing  %.0f%%", progress * 100), nil, nk.text_align.left)
       elseif player.loop then
-        player.handle = app.play_sound("ambient") -- трек кончился → следующий (тут была бы очередь)
+        player.handle = app.play_sound("ambient")
       else
         player.handle = nil
         nk.label("finished", nil, nk.text_align.left)
@@ -104,4 +157,22 @@ return function(time)
     end
   end
   nk.endf()
+end
+
+-- entry получает (time, timestamp, rng_state): time — длительность кадра; timestamp — монотонная
+-- метка времени (для фиксации начала UI-анимаций); rng — сид псевдослучайности этого кадра.
+return function(time, timestamp, rng)
+  if not styled then apply_theme(); styled = true end
+
+  -- Esc → выход (именованное действие "quit", шаг 2d). Клик = завершённое нажатие в этом кадре.
+  if app.action_clicked("quit") then app.quit_game() end
+
+  local state = app.state()
+  if state == "boot" then
+    splash_screen()
+  elseif state == "loading" then
+    loading_screen()
+  else
+    game_ui(time, timestamp, rng)
+  end
 end

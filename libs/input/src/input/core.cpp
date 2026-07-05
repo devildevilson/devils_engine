@@ -113,10 +113,34 @@ void destroy(GLFWwindow* w) { glfwDestroyWindow(w); }
 void hide(GLFWwindow* w) { glfwHideWindow(w); }
 void show(GLFWwindow* w) { glfwShowWindow(w); }
 bool should_close(GLFWwindow* w) noexcept { return glfwWindowShouldClose(w); }
+void set_should_close(GLFWwindow* w, const bool value) noexcept { glfwSetWindowShouldClose(w, value ? GLFW_TRUE : GLFW_FALSE); }
 std::tuple<uint32_t, uint32_t> window_size(GLFWwindow* m) noexcept {
   int w=0,h=0;
   glfwGetWindowSize(m, &w, &h);
   return std::make_tuple(w,h);
+}
+
+void set_window_size(GLFWwindow* m, const uint32_t width, const uint32_t height) noexcept { glfwSetWindowSize(m, int(width), int(height)); }
+
+std::tuple<uint32_t, uint32_t> framebuffer_size(GLFWwindow* m) noexcept {
+  int w=0,h=0;
+  glfwGetFramebufferSize(m, &w, &h);
+  return std::make_tuple(w < 0 ? 0u : uint32_t(w), h < 0 ? 0u : uint32_t(h));
+}
+
+bool window_focused(GLFWwindow* m) noexcept { return glfwGetWindowAttrib(m, GLFW_FOCUSED) != 0; }
+bool window_iconified(GLFWwindow* m) noexcept { return glfwGetWindowAttrib(m, GLFW_ICONIFIED) != 0; }
+void maximize_window(GLFWwindow* w) noexcept { glfwMaximizeWindow(w); }
+void restore_window(GLFWwindow* w) noexcept { glfwRestoreWindow(w); }
+
+void set_window_monitor(GLFWwindow* w, GLFWmonitor* m, const int32_t xpos, const int32_t ypos, const uint32_t width, const uint32_t height, const int32_t refresh_rate) noexcept {
+  glfwSetWindowMonitor(w, m, xpos, ypos, int(width), int(height), refresh_rate);
+}
+
+std::tuple<int32_t, int32_t> window_pos(GLFWwindow* m) noexcept {
+  int x=0,y=0;
+  glfwGetWindowPos(m, &x, &y);
+  return std::make_tuple(int32_t(x), int32_t(y));
 }
 
 std::tuple<float, float> window_content_scale(GLFWwindow* m) noexcept {
@@ -147,6 +171,22 @@ void set_window_callback(GLFWwindow* w, window_content_scale_callback callback) 
 
 void set_window_callback(GLFWwindow* w, window_refresh_callback callback) {
   glfwSetWindowRefreshCallback(w, callback);
+}
+
+void set_framebuffer_size_callback(GLFWwindow* w, framebuffer_size_callback callback) {
+  glfwSetFramebufferSizeCallback(w, callback);
+}
+
+void set_window_focus_callback(GLFWwindow* w, window_focus_callback callback) {
+  glfwSetWindowFocusCallback(w, callback);
+}
+
+void set_window_iconify_callback(GLFWwindow* w, window_iconify_callback callback) {
+  glfwSetWindowIconifyCallback(w, callback);
+}
+
+void set_window_maximize_callback(GLFWwindow* w, window_maximize_callback callback) {
+  glfwSetWindowMaximizeCallback(w, callback);
 }
 
 void set_window_callback(GLFWwindow* w, key_callback callback) {

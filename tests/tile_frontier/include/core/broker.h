@@ -25,6 +25,8 @@ using namespace devils_engine;
 struct broker {
   // main → render (latest-wins)
   thread::mailbox<command_window_recreation> window_recreation;
+  thread::mailbox<command_window_resize>     window_resize;    // ресайз/фуллскрин (только свопчейн)
+  thread::mailbox<command_render_set_active> render_set_active; // гейт отрисовки
   thread::mailbox<command_set_active_graph>  set_active_graph;
   thread::mailbox<command_draw_tiles>        draw_tiles;
   thread::mailbox<command_draw_actors>       draw_actors;
@@ -54,6 +56,7 @@ struct broker {
   thread::spsc_queue<command_sound_update>    sound_update;     // lossy (latest-per-id)
   thread::spsc_queue<command_sound_devices>   sound_devices;    // handshake
   thread::spsc_queue<command_recreate_sound_system> recreate_sound;
+  thread::spsc_queue<command_sound_set_master_gain> sound_master_gain; // lossy (latest-wins по смыслу)
 
   broker()
     : write_buffer(64, size_t(1) << 20)
@@ -68,6 +71,7 @@ struct broker {
     , sound_update(64)
     , sound_devices(8)
     , recreate_sound(8)
+    , sound_master_gain(8)
   {}
 
   broker(const broker&) = delete;
