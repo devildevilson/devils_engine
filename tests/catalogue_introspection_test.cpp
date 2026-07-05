@@ -8,9 +8,14 @@ using namespace devils_engine;
 
 namespace {
 
-enum class test_domain : uint64_t {
-  gameplay = 1,
-  service = 2
+namespace domains {
+constexpr size_t gameplay = 1;
+constexpr size_t service = 2;
+}
+
+enum class enum_domain : uint64_t {
+  gameplay = 11,
+  service = 12
 };
 
 static int g_gold = 0;
@@ -75,7 +80,7 @@ struct recording_intro final : catalogue::introspection_interface {
 }
 
 TEST_CASE("catalogue wraps free functions with mirrored arguments") {
-  using add_gold_t = catalogue::domain<test_domain::gameplay>::fn_traits<&add_gold, "add_gold", "amount", "multiplier">;
+  using add_gold_t = catalogue::domain<domains::gameplay>::fn_traits<&add_gold, "add_gold", "amount", "multiplier">;
   constexpr auto add_gold_fn = add_gold_t::fn_ptr;
 
   static_assert(add_gold_t::argument_count == 2);
@@ -83,7 +88,7 @@ TEST_CASE("catalogue wraps free functions with mirrored arguments") {
   static_assert(std::is_same_v<decltype(add_gold_fn), int(* const)(int, int)>);
 
   recording_intro intro;
-  catalogue::domain<test_domain::gameplay>::set_introspection(&intro);
+  catalogue::domain<domains::gameplay>::set_introspection(&intro);
   g_gold = 0;
 
   const int res = add_gold_fn(5, 3);
@@ -97,14 +102,27 @@ TEST_CASE("catalogue wraps free functions with mirrored arguments") {
   CHECK(intro.last_arg_values[0] == "5");
   CHECK(intro.last_arg_values[1] == "3");
 
-  catalogue::domain<test_domain::gameplay>::set_introspection(nullptr);
+  catalogue::domain<domains::gameplay>::set_introspection(nullptr);
+}
+
+TEST_CASE("catalogue domain accepts enum values") {
+  using reset_t = catalogue::domain<enum_domain::service>::fn_traits<&reset_gold, "reset_gold">;
+  constexpr auto reset_fn = reset_t::fn_ptr;
+
+  static_assert(reset_t::domain_id == static_cast<utils::id>(enum_domain::service));
+  static_assert(reset_t::function_id == utils::murmur_hash64A("reset_gold"));
+  static_assert(std::is_same_v<decltype(reset_fn), void(* const)()>);
+
+  g_gold = 42;
+  reset_fn();
+  CHECK(g_gold == 0);
 }
 
 TEST_CASE("catalogue wrapper is a direct call when introspection is not set") {
-  using add_gold_t = catalogue::domain<test_domain::gameplay>::fn_traits<&add_gold, "add_gold", "amount", "multiplier">;
+  using add_gold_t = catalogue::domain<domains::gameplay>::fn_traits<&add_gold, "add_gold", "amount", "multiplier">;
   constexpr auto add_gold_fn = add_gold_t::fn_ptr;
 
-  catalogue::domain<test_domain::gameplay>::set_introspection(nullptr);
+  catalogue::domain<domains::gameplay>::set_introspection(nullptr);
   g_gold = 0;
 
   const int res = add_gold_fn(4, 2);
@@ -114,12 +132,12 @@ TEST_CASE("catalogue wrapper is a direct call when introspection is not set") {
 }
 
 TEST_CASE("catalogue dry-run skips wrapped free functions") {
-  using add_gold_t = catalogue::domain<test_domain::gameplay>::fn_traits<&add_gold, "add_gold", "amount", "multiplier">;
+  using add_gold_t = catalogue::domain<domains::gameplay>::fn_traits<&add_gold, "add_gold", "amount", "multiplier">;
   constexpr auto add_gold_fn = add_gold_t::fn_ptr;
 
   recording_intro intro;
   intro.decision = catalogue::call_decision::skip;
-  catalogue::domain<test_domain::gameplay>::set_introspection(&intro);
+  catalogue::domain<domains::gameplay>::set_introspection(&intro);
   g_gold = 0;
 
   const int res = add_gold_fn(5, 3);
@@ -130,17 +148,17 @@ TEST_CASE("catalogue dry-run skips wrapped free functions") {
   CHECK(intro.exit_count == 0);
   CHECK(intro.skipped_count == 1);
 
-  catalogue::domain<test_domain::gameplay>::set_introspection(nullptr);
+  catalogue::domain<domains::gameplay>::set_introspection(nullptr);
 }
 
 TEST_CASE("catalogue wraps member functions") {
-  using add_t = catalogue::domain<test_domain::gameplay>::fn_traits<&wallet::add, "wallet.add", "self", "amount">;
+  using add_t = catalogue::domain<domains::gameplay>::fn_traits<&wallet::add, "wallet.add", "self", "amount">;
   constexpr auto add_fn = add_t::fn_ptr;
 
   static_assert(std::is_same_v<decltype(add_fn), int(* const)(wallet&, int)>);
 
   recording_intro intro;
-  catalogue::domain<test_domain::gameplay>::set_introspection(&intro);
+  catalogue::domain<domains::gameplay>::set_introspection(&intro);
 
   wallet w;
   const int res = add_fn(w, 7);
@@ -152,11 +170,11 @@ TEST_CASE("catalogue wraps member functions") {
   CHECK(intro.last_arg_values[0] == "<opaque>");
   CHECK(intro.last_arg_values[1] == "7");
 
-  catalogue::domain<test_domain::gameplay>::set_introspection(nullptr);
+  catalogue::domain<domains::gameplay>::set_introspection(nullptr);
 }
 
 TEST_CASE("catalogue wraps const member functions") {
-  using get_t = catalogue::domain<test_domain::gameplay>::fn_traits<&wallet::get, "wallet.get", "self">;
+  using get_t = catalogue::domain<domains::gameplay>::fn_traits<&wallet::get, "wallet.get", "self">;
   constexpr auto get_fn = get_t::fn_ptr;
 
   static_assert(std::is_same_v<decltype(get_fn), int(* const)(const wallet&)>);
@@ -167,7 +185,7 @@ TEST_CASE("catalogue wraps const member functions") {
 }
 
 TEST_CASE("catalogue wraps structural functors") {
-  using mult_t = catalogue::domain<test_domain::service>::fn_traits<multiply, "multiply", "a", "b">;
+  using mult_t = catalogue::domain<domains::service>::fn_traits<multiply, "multiply", "a", "b">;
   constexpr auto mult_fn = mult_t::fn_ptr;
 
   static_assert(std::is_same_v<decltype(mult_fn), int(* const)(int, int)>);
@@ -175,11 +193,11 @@ TEST_CASE("catalogue wraps structural functors") {
 }
 
 TEST_CASE("catalogue statistics introspection records rolling timings") {
-  using reset_t = catalogue::domain<test_domain::service>::fn_traits<&reset_gold, "reset_gold">;
+  using reset_t = catalogue::domain<domains::service>::fn_traits<&reset_gold, "reset_gold">;
   constexpr auto reset_fn = reset_t::fn_ptr;
 
   catalogue::statistics_introspection<4> stats;
-  catalogue::domain<test_domain::service>::set_introspection(&stats);
+  catalogue::domain<domains::service>::set_introspection(&stats);
 
   reset_fn();
   reset_fn();
@@ -187,5 +205,5 @@ TEST_CASE("catalogue statistics introspection records rolling timings") {
   CHECK(stats.count() == 2);
   CHECK(stats.average_mcs(reset_t::function_id) >= 0.0);
 
-  catalogue::domain<test_domain::service>::set_introspection(nullptr);
+  catalogue::domain<domains::service>::set_introspection(nullptr);
 }

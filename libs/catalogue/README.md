@@ -66,11 +66,34 @@ int (*)(int, int)
 
 ## domain / fn_traits
 
-`domain<Domain>` задает область трассировки. Обычно `Domain` - это enum:
+`domain<Domain>` задает область трассировки. `Domain` - это `auto` template
+parameter, поэтому можно использовать и enum, и простой `constexpr size_t`.
 
 ```cpp
 template <auto Domain>
 struct domain;
+```
+
+Пример с числовыми доменами:
+
+```cpp
+namespace domains {
+constexpr size_t gameplay = 1;
+constexpr size_t service = 2;
+}
+
+using wrapped = catalogue::domain<domains::gameplay>::fn_traits<&f, "f", "a">;
+```
+
+Пример с enum:
+
+```cpp
+enum class domains : uint64_t {
+  gameplay = 1,
+  service = 2
+};
+
+using wrapped = catalogue::domain<domains::gameplay>::fn_traits<&f, "f", "a">;
 ```
 
 У каждого `domain<Domain>` есть свой runtime pointer:
@@ -271,6 +294,12 @@ const double avg = stats.average_mcs(add_gold_wrap::function_id);
   deliberately opaque.
 - `file`/`line` в `call_info` зарезервированы, но пока не заполняются.
 - Старый RPC/buffer код остается рядом и не является стабильным public API.
+
+## Техдолг
+
+- Добавить registry функций внутри домена по `function_id`, чтобы можно было
+  перечислять доступные wrapped-функции, искать метаданные по id и позже
+  использовать это для debug UI/RPC/replay.
 
 ## Старый RPC / Replay Прототип
 
