@@ -53,6 +53,13 @@ struct resource2 {
   std::string_view id;
   enum data_type type = data_type::undefined;
   std::span<const char> data = {};
+  // Метаданные исходного аудио. Заполняются ВСЕГДА (полезны и demiurg::resource, и микшеру). Для
+  // type==pcm data — это уже сырые декодированные кадры данного формата/каналов/частоты (короткие
+  // звуки декодируются в ресурсе целиком, чтобы микшер не декодил per-frame; см. sound_resource).
+  enum format sample_format = format::unknown;
+  uint16_t channels = 0;
+  uint32_t sample_rate = 0;
+  size_t frames_count = 0;
 };
 }
 }
