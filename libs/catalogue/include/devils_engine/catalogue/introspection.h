@@ -1,13 +1,18 @@
 #ifndef DEVILS_ENGINE_CATALOGUE_INTROSPECTION_H
 #define DEVILS_ENGINE_CATALOGUE_INTROSPECTION_H
 
+#include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <source_location>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -22,7 +27,7 @@ namespace catalogue {
 struct argument_view {
   std::string_view name;
   std::string_view type;
-  std::string value;
+  std::string_view value;
   bool printable = false;
 };
 
@@ -111,75 +116,97 @@ private:
 
 namespace detail {
 
+struct argument_value_buffer {
+  std::array<char, 64> chars{};
+};
+
+inline std::string_view shrink_placeholder(argument_value_buffer& buffer, const std::string_view type) {
+  constexpr std::string_view prefix = "devils_engine::";
+  constexpr std::string_view dots = "...";
+  constexpr size_t capacity = std::tuple_size_v<decltype(buffer.chars)>;
+
+  const auto write_wrapped = [&] (const std::string_view src) -> std::string_view {
+    if (src.size() + 2 > capacity) return {};
+    char* out = buffer.chars.data();
+    *out++ = '<';
+    for (const char c : src) *out++ = c;
+    *out++ = '>';
+    return std::string_view(buffer.chars.data(), size_t(out - buffer.chars.data()));
+  };
+
+  if (const auto full = write_wrapped(type); !full.empty()) return full;
+
+  char* out = buffer.chars.data();
+  size_t pos = 0;
+  while (pos < type.size()) {
+    if (type.substr(pos, prefix.size()) == prefix) {
+      pos += prefix.size();
+      continue;
+    }
+
+    if (out == buffer.chars.data() + capacity) break;
+    *out++ = type[pos++];
+  }
+
+  const size_t without_engine_size = size_t(out - buffer.chars.data());
+  if (without_engine_size + 2 <= capacity) {
+    for (size_t i = without_engine_size; i > 0; --i) {
+      buffer.chars[i] = buffer.chars[i - 1];
+    }
+    buffer.chars[0] = '<';
+    buffer.chars[without_engine_size + 1] = '>';
+    return std::string_view(buffer.chars.data(), without_engine_size + 2);
+  }
+
+  constexpr size_t payload_capacity = capacity - 2;
+  constexpr size_t prefix_capacity = payload_capacity - dots.size();
+  const size_t copy_count = std::min(without_engine_size, prefix_capacity);
+  for (size_t i = copy_count; i > 0; --i) {
+    buffer.chars[i] = buffer.chars[i - 1];
+  }
+  out = buffer.chars.data();
+  *out++ = '<';
+  out += copy_count;
+  for (const char c : dots) *out++ = c;
+  *out++ = '>';
+  return std::string_view(buffer.chars.data(), size_t(out - buffer.chars.data()));
+}
+
 template <typename T>
-std::string stringify_arg(const T& value, bool& printable) {
+std::string_view buffered_number(argument_value_buffer& buffer, const T value, bool& printable) {
+  const auto res = std::to_chars(buffer.chars.data(), buffer.chars.data() + buffer.chars.size(), value);
+  if (res.ec != std::errc{}) {
+    printable = false;
+    return {};
+  }
+
+  printable = true;
+  return std::string_view(buffer.chars.data(), size_t(res.ptr - buffer.chars.data()));
+}
+
+template <typename T>
+std::string_view stringify_arg(argument_value_buffer& buffer, const T& value, bool& printable) {
   using U = std::remove_cvref_t<T>;
   printable = true;
 
   if constexpr (std::is_same_v<U, bool>) {
     return value ? "true" : "false";
   } else if constexpr (std::is_integral_v<U> && !std::is_same_v<U, char>) {
-    return std::to_string(value);
+    return buffered_number(buffer, value, printable);
   } else if constexpr (std::is_floating_point_v<U>) {
-    return std::to_string(value);
+    return buffered_number(buffer, value, printable);
   } else if constexpr (std::is_enum_v<U>) {
-    return std::to_string(static_cast<std::underlying_type_t<U>>(value));
+    return buffered_number(buffer, static_cast<std::underlying_type_t<U>>(value), printable);
   } else if constexpr (std::is_same_v<U, std::string>) {
     return value;
   } else if constexpr (std::is_same_v<U, std::string_view>) {
-    return std::string(value);
+    return value;
   } else if constexpr (std::is_convertible_v<T, std::string_view>) {
-    return std::string(std::string_view(value));
+    return std::string_view(value);
   } else {
     printable = false;
-    return {};
+    return shrink_placeholder(buffer, utils::type_name<U>());
   }
-}
-
-template <size_t I, utils::template_string_t... Names>
-consteval std::string_view argument_name() {
-  constexpr std::array<std::string_view, sizeof...(Names)> names{Names.sv()...};
-  if constexpr (I < names.size()) return names[I];
-  else return {};
-}
-
-inline std::string fallback_argument_name(const size_t index) {
-  return "arg" + std::to_string(index);
-}
-
-template <size_t I, utils::template_string_t... Names, typename T>
-argument_view make_argument_view(const T& value) {
-  bool printable = false;
-  std::string str = stringify_arg(value, printable);
-  constexpr std::string_view fixed_name = argument_name<I, Names...>();
-  return argument_view{
-    fixed_name,
-    utils::type_name<std::remove_cvref_t<T>>(),
-    std::move(str),
-    printable
-  };
-}
-
-template <utils::template_string_t... Names, typename Tuple, size_t... I>
-auto make_argument_views_impl(Tuple&& tuple, std::index_sequence<I...>) {
-  return std::array<argument_view, sizeof...(I)>{
-    make_argument_view<I, Names...>(std::get<I>(std::forward<Tuple>(tuple)))...
-  };
-}
-
-template <utils::template_string_t... Names, typename... Args>
-auto make_argument_views(const Args&... args) {
-  auto tuple = std::forward_as_tuple(args...);
-  auto arr = make_argument_views_impl<Names...>(tuple, std::index_sequence_for<Args...>{});
-  for (size_t i = 0; i < arr.size(); ++i) {
-    if (!arr[i].name.empty()) continue;
-    // Store fallback names in a small static ring to keep string_view valid for
-    // the duration of a synchronous introspection call.
-    static thread_local std::array<std::string, 64> fallback_names;
-    fallback_names[i % fallback_names.size()] = fallback_argument_name(i);
-    arr[i].name = fallback_names[i % fallback_names.size()];
-  }
-  return arr;
 }
 
 template <typename Ret>
@@ -260,103 +287,155 @@ struct domain {
     static constexpr utils::id function_id = utils::murmur_hash64A(name);
     static constexpr utils::id domain_id = static_cast<utils::id>(Domain);
     static constexpr size_t argument_count = traits::argument_count;
+    static constexpr std::array<std::string_view, sizeof...(ArgNames)> argument_names{ArgNames.sv()...};
+
+    template <size_t N>
+    struct argument_pack {
+      std::array<argument_view, N> views{};
+      std::array<detail::argument_value_buffer, N> buffers{};
+    };
+
+    template <size_t I>
+    static consteval std::string_view argument_name() {
+      if constexpr (I < argument_names.size()) return argument_names[I];
+      else return {};
+    }
+
+    template <size_t I, typename T, size_t N>
+    static void make_argument_view(argument_pack<N>& pack, const T& value) {
+      bool printable = false;
+      const std::string_view str = detail::stringify_arg(pack.buffers[I], value, printable);
+      pack.views[I] = argument_view{
+        argument_name<I>(),
+        utils::type_name<std::remove_cvref_t<T>>(),
+        str,
+        printable
+      };
+    }
+
+    template <typename... Args, size_t... I>
+    static auto make_argument_views_impl(std::index_sequence<I...>, const Args&... args) {
+      argument_pack<sizeof...(Args)> pack{};
+      (make_argument_view<I>(pack, args), ...);
+      return pack;
+    }
 
     template <typename... Args>
-    static return_t call_free(Args... args) {
+    static auto make_argument_views(const Args&... args) {
+      return make_argument_views_impl<Args...>(std::index_sequence_for<Args...>{}, args...);
+    }
+
+    template <typename... Args>
+    static return_t invoke_free(Args&&... args) {
+      if constexpr (std::is_void_v<return_t>) {
+        std::invoke(Fn, std::forward<Args>(args)...);
+        return;
+      } else {
+        return std::invoke(Fn, std::forward<Args>(args)...);
+      }
+    }
+
+    template <typename Obj, typename... Args>
+    static return_t invoke_member(Obj&& obj, Args&&... args) {
+      if constexpr (std::is_void_v<return_t>) {
+        std::invoke(Fn, std::forward<Obj>(obj), std::forward<Args>(args)...);
+        return;
+      } else {
+        return std::invoke(Fn, std::forward<Obj>(obj), std::forward<Args>(args)...);
+      }
+    }
+
+    template <typename... Args>
+    static return_t invoke_functor(Args&&... args) {
+      if constexpr (std::is_void_v<return_t>) {
+        std::invoke(Fn, std::forward<Args>(args)...);
+        return;
+      } else {
+        return std::invoke(Fn, std::forward<Args>(args)...);
+      }
+    }
+
+    template <typename... Args>
+    static return_t call_free(Args&&... args) {
+      return call_free_at(std::source_location{}, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+    static return_t call_free_at(const std::source_location loc, Args&&... args) {
       introspection_interface* intro = intro_i;
       if (intro == nullptr) {
-        if constexpr (std::is_void_v<return_t>) {
-          Fn(std::forward<Args>(args)...);
-          return;
-        } else {
-          return Fn(std::forward<Args>(args)...);
-        }
+        return invoke_free(std::forward<Args>(args)...);
       }
 
-      auto arg_views = detail::make_argument_views<ArgNames...>(args...);
+      auto arg_views = make_argument_views(args...);
       const call_info info{
         domain_id,
         function_id,
         name,
         utils::type_name<return_t>(),
-        {},
-        0,
-        std::span<const argument_view>(arg_views.data(), arg_views.size())
+        loc.file_name(),
+        loc.line(),
+        std::span<const argument_view>(arg_views.views.data(), arg_views.views.size())
       };
 
       return detail::invoke_with_introspection<return_t>(info, intro, [&]() -> return_t {
-        if constexpr (std::is_void_v<return_t>) {
-          Fn(std::forward<Args>(args)...);
-          return;
-        } else {
-          return Fn(std::forward<Args>(args)...);
-        }
+        return invoke_free(std::forward<Args>(args)...);
       });
     }
 
     template <typename Obj, typename... Args>
-    static return_t call_member(Obj&& obj, Args... args) {
+    static return_t call_member(Obj&& obj, Args&&... args) {
+      return call_member_at(std::source_location{}, std::forward<Obj>(obj), std::forward<Args>(args)...);
+    }
+
+    template <typename Obj, typename... Args>
+    static return_t call_member_at(const std::source_location loc, Obj&& obj, Args&&... args) {
       introspection_interface* intro = intro_i;
       if (intro == nullptr) {
-        if constexpr (std::is_void_v<return_t>) {
-          (std::forward<Obj>(obj).*Fn)(std::forward<Args>(args)...);
-          return;
-        } else {
-          return (std::forward<Obj>(obj).*Fn)(std::forward<Args>(args)...);
-        }
+        return invoke_member(std::forward<Obj>(obj), std::forward<Args>(args)...);
       }
 
-      auto arg_views = detail::make_argument_views<ArgNames...>(obj, args...);
+      auto arg_views = make_argument_views(obj, args...);
       const call_info info{
         domain_id,
         function_id,
         name,
         utils::type_name<return_t>(),
-        {},
-        0,
-        std::span<const argument_view>(arg_views.data(), arg_views.size())
+        loc.file_name(),
+        loc.line(),
+        std::span<const argument_view>(arg_views.views.data(), arg_views.views.size())
       };
 
       return detail::invoke_with_introspection<return_t>(info, intro, [&]() -> return_t {
-        if constexpr (std::is_void_v<return_t>) {
-          (std::forward<Obj>(obj).*Fn)(std::forward<Args>(args)...);
-          return;
-        } else {
-          return (std::forward<Obj>(obj).*Fn)(std::forward<Args>(args)...);
-        }
+        return invoke_member(std::forward<Obj>(obj), std::forward<Args>(args)...);
       });
     }
 
     template <typename... Args>
-    static return_t call_functor(Args... args) {
+    static return_t call_functor(Args&&... args) {
+      return call_functor_at(std::source_location{}, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+    static return_t call_functor_at(const std::source_location loc, Args&&... args) {
       introspection_interface* intro = intro_i;
       if (intro == nullptr) {
-        if constexpr (std::is_void_v<return_t>) {
-          Fn(std::forward<Args>(args)...);
-          return;
-        } else {
-          return Fn(std::forward<Args>(args)...);
-        }
+        return invoke_functor(std::forward<Args>(args)...);
       }
 
-      auto arg_views = detail::make_argument_views<ArgNames...>(args...);
+      auto arg_views = make_argument_views(args...);
       const call_info info{
         domain_id,
         function_id,
         name,
         utils::type_name<return_t>(),
-        {},
-        0,
-        std::span<const argument_view>(arg_views.data(), arg_views.size())
+        loc.file_name(),
+        loc.line(),
+        std::span<const argument_view>(arg_views.views.data(), arg_views.views.size())
       };
 
       return detail::invoke_with_introspection<return_t>(info, intro, [&]() -> return_t {
-        if constexpr (std::is_void_v<return_t>) {
-          Fn(std::forward<Args>(args)...);
-          return;
-        } else {
-          return Fn(std::forward<Args>(args)...);
-        }
+        return invoke_functor(std::forward<Args>(args)...);
       });
     }
 
@@ -366,6 +445,16 @@ struct domain {
     template <typename Ret, typename... Args>
     struct maker<Ret (*)(Args...)> {
       using pointer_t = Ret (*)(Args...);
+      struct loc_fn_t {
+        std::source_location loc;
+
+        explicit constexpr loc_fn_t(const std::source_location l = std::source_location::current()) noexcept : loc(l) {}
+
+        template <typename... CallArgs>
+        Ret operator()(CallArgs&&... args) const {
+          return call_free_at(loc, std::forward<CallArgs>(args)...);
+        }
+      };
 
       static Ret call(Args... args) {
         return call_free(std::forward<Args>(args)...);
@@ -375,6 +464,16 @@ struct domain {
     template <typename Ret, typename... Args>
     struct maker<Ret (*)(Args...) noexcept> {
       using pointer_t = Ret (*)(Args...);
+      struct loc_fn_t {
+        std::source_location loc;
+
+        explicit constexpr loc_fn_t(const std::source_location l = std::source_location::current()) noexcept : loc(l) {}
+
+        template <typename... CallArgs>
+        Ret operator()(CallArgs&&... args) const {
+          return call_free_at(loc, std::forward<CallArgs>(args)...);
+        }
+      };
 
       static Ret call(Args... args) {
         return call_free(std::forward<Args>(args)...);
@@ -384,6 +483,16 @@ struct domain {
     template <typename Ret, typename C, typename... Args>
     struct maker<Ret (C::*)(Args...)> {
       using pointer_t = Ret (*)(C&, Args...);
+      struct loc_fn_t {
+        std::source_location loc;
+
+        explicit constexpr loc_fn_t(const std::source_location l = std::source_location::current()) noexcept : loc(l) {}
+
+        template <typename Obj, typename... CallArgs>
+        Ret operator()(Obj&& obj, CallArgs&&... args) const {
+          return call_member_at(loc, std::forward<Obj>(obj), std::forward<CallArgs>(args)...);
+        }
+      };
 
       static Ret call(C& obj, Args... args) {
         return call_member(obj, std::forward<Args>(args)...);
@@ -393,6 +502,16 @@ struct domain {
     template <typename Ret, typename C, typename... Args>
     struct maker<Ret (C::*)(Args...) noexcept> {
       using pointer_t = Ret (*)(C&, Args...);
+      struct loc_fn_t {
+        std::source_location loc;
+
+        explicit constexpr loc_fn_t(const std::source_location l = std::source_location::current()) noexcept : loc(l) {}
+
+        template <typename Obj, typename... CallArgs>
+        Ret operator()(Obj&& obj, CallArgs&&... args) const {
+          return call_member_at(loc, std::forward<Obj>(obj), std::forward<CallArgs>(args)...);
+        }
+      };
 
       static Ret call(C& obj, Args... args) {
         return call_member(obj, std::forward<Args>(args)...);
@@ -402,6 +521,16 @@ struct domain {
     template <typename Ret, typename C, typename... Args>
     struct maker<Ret (C::*)(Args...) const> {
       using pointer_t = Ret (*)(const C&, Args...);
+      struct loc_fn_t {
+        std::source_location loc;
+
+        explicit constexpr loc_fn_t(const std::source_location l = std::source_location::current()) noexcept : loc(l) {}
+
+        template <typename Obj, typename... CallArgs>
+        Ret operator()(Obj&& obj, CallArgs&&... args) const {
+          return call_member_at(loc, std::forward<Obj>(obj), std::forward<CallArgs>(args)...);
+        }
+      };
 
       static Ret call(const C& obj, Args... args) {
         return call_member(obj, std::forward<Args>(args)...);
@@ -411,6 +540,16 @@ struct domain {
     template <typename Ret, typename C, typename... Args>
     struct maker<Ret (C::*)(Args...) const noexcept> {
       using pointer_t = Ret (*)(const C&, Args...);
+      struct loc_fn_t {
+        std::source_location loc;
+
+        explicit constexpr loc_fn_t(const std::source_location l = std::source_location::current()) noexcept : loc(l) {}
+
+        template <typename Obj, typename... CallArgs>
+        Ret operator()(Obj&& obj, CallArgs&&... args) const {
+          return call_member_at(loc, std::forward<Obj>(obj), std::forward<CallArgs>(args)...);
+        }
+      };
 
       static Ret call(const C& obj, Args... args) {
         return call_member(obj, std::forward<Args>(args)...);
@@ -426,24 +565,65 @@ struct domain {
       template <typename Ret, typename C, typename... Args>
       struct impl<Ret (C::*)(Args...) const> {
         using pointer_t = Ret (*)(Args...);
+        struct loc_fn_t {
+          std::source_location loc;
+
+          explicit constexpr loc_fn_t(const std::source_location l = std::source_location::current()) noexcept : loc(l) {}
+
+          template <typename... CallArgs>
+          Ret operator()(CallArgs&&... args) const {
+            return call_functor_at(loc, std::forward<CallArgs>(args)...);
+          }
+        };
       };
 
       template <typename Ret, typename C, typename... Args>
       struct impl<Ret (C::*)(Args...) const noexcept> {
         using pointer_t = Ret (*)(Args...);
+        struct loc_fn_t {
+          std::source_location loc;
+
+          explicit constexpr loc_fn_t(const std::source_location l = std::source_location::current()) noexcept : loc(l) {}
+
+          template <typename... CallArgs>
+          Ret operator()(CallArgs&&... args) const {
+            return call_functor_at(loc, std::forward<CallArgs>(args)...);
+          }
+        };
       };
 
       template <typename Ret, typename C, typename... Args>
       struct impl<Ret (C::*)(Args...)> {
         using pointer_t = Ret (*)(Args...);
+        struct loc_fn_t {
+          std::source_location loc;
+
+          explicit constexpr loc_fn_t(const std::source_location l = std::source_location::current()) noexcept : loc(l) {}
+
+          template <typename... CallArgs>
+          Ret operator()(CallArgs&&... args) const {
+            return call_functor_at(loc, std::forward<CallArgs>(args)...);
+          }
+        };
       };
 
       template <typename Ret, typename C, typename... Args>
       struct impl<Ret (C::*)(Args...) noexcept> {
         using pointer_t = Ret (*)(Args...);
+        struct loc_fn_t {
+          std::source_location loc;
+
+          explicit constexpr loc_fn_t(const std::source_location l = std::source_location::current()) noexcept : loc(l) {}
+
+          template <typename... CallArgs>
+          Ret operator()(CallArgs&&... args) const {
+            return call_functor_at(loc, std::forward<CallArgs>(args)...);
+          }
+        };
       };
 
       using pointer_t = typename impl<decltype(&T::operator())>::pointer_t;
+      using loc_fn_t = typename impl<decltype(&T::operator())>::loc_fn_t;
 
       template <typename... Args>
       static return_t call(Args... args) {
@@ -452,6 +632,7 @@ struct domain {
     };
 
     using pointer_t = typename maker<fn_t>::pointer_t;
+    using loc_fn_t = typename maker<fn_t>::loc_fn_t;
     static constexpr pointer_t fn_ptr = &maker<fn_t>::call;
   };
 };

@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -13,9 +12,9 @@
 #include <devils_engine/act/exec_context.h>
 #include <devils_engine/act/function.h>
 #include <devils_engine/acumen/astar.h>     // astar<>::container для find_solution
+#include <devils_engine/catalogue/introspection.h>
 #include <devils_engine/mood/runtime.h>     // mood::step / apply_transition — шаг FSM
 #include <devils_engine/thread/atomic_pool.h> // MT-пул (distribute/thread_index/wait)
-#include <devils_engine/utils/perf.h>       // utils::perf — замер фаз
 #include <devils_engine/utils/core.h>      // utils::error
 #include <devils_engine/utils/prng.h>      // utils::mix
 #include <devils_engine/utils/string_id.h> // utils::string_hash
@@ -91,6 +90,34 @@ static constexpr uint64_t eat_duration   = 18;    // тиков длится п�
 // деградирует в полный обход) и задаёт модель ограниченного зрения: вне радиуса — не видим.
 // Меньше радиус → меньше площадь поиска → дешевле query (квадратично).
 static constexpr float perception_radius = 4.0f;
+
+namespace catalogue_domains {
+constexpr size_t actor_update_perf = 1;
+}
+
+class actor_update_perf_introspection final : public catalogue::introspection_interface {
+public:
+  catalogue::call_decision enter(const catalogue::call_info&) override {
+    return catalogue::call_decision::execute;
+  }
+
+  void exit(const catalogue::call_info& info, const uint64_t elapsed_mcs) override {
+    utils::info("perf {}: {} us", info.function_name, elapsed_mcs);
+  }
+
+  void skipped(const catalogue::call_info& info) override {
+    utils::info("perf {}: skipped", info.function_name);
+  }
+};
+
+using actor_perf_domain = catalogue::domain<catalogue_domains::actor_update_perf>;
+using build_actor_batch_perf = actor_perf_domain::fn_traits<&actor_batch::build, "build", "batch", "world", "tick">;
+using build_actor_batch_fn_t = build_actor_batch_perf::loc_fn_t;
+
+static void ensure_actor_perf_introspection() noexcept {
+  static actor_update_perf_introspection intro;
+  actor_perf_domain::set_introspection(&intro);
+}
 
 static uint32_t mix32(uint32_t x) noexcept {
   x ^= x >> 16;
@@ -488,15 +515,26 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
 }
 
 actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& batch, thread::atomic_pool& pool) {
+  using build_sense_tree_perf = actor_perf_domain::fn_traits<&actor_world_slice::build_sense_tree, "sense.tree", "self">;
+  using cognition_perf = actor_perf_domain::fn_traits<&actor_world_slice::cognition, "cognition", "self", "tick", "pool">;
+  using apply_perf = actor_perf_domain::fn_traits<&actor_world_slice::apply, "apply", "self", "dt_seconds">;
+  using resolve_eating_perf = actor_perf_domain::fn_traits<&actor_world_slice::resolve_eating, "eating", "self", "tick">;
+  using maintain_food_perf = actor_perf_domain::fn_traits<&actor_world_slice::maintain_food, "food", "self">;
+
+  using build_sense_tree_fn_t = build_sense_tree_perf::loc_fn_t;
+  using cognition_fn_t = cognition_perf::loc_fn_t;
+  using apply_fn_t = apply_perf::loc_fn_t;
+  using resolve_eating_fn_t = resolve_eating_perf::loc_fn_t;
+  using maintain_food_fn_t = maintain_food_perf::loc_fn_t;
+
   tick_ += 1;
-  // utils::perf отдаёт длительность; здесь решаем её залогировать (в мкс). Замеры временные.
-  const auto to_us = [] (auto d) { return std::chrono::duration_cast<std::chrono::microseconds>(d).count(); };
-  utils::info("perf sense.tree: {} us", to_us(utils::perf(&actor_world_slice::build_sense_tree, this)));
-  utils::info("perf cognition: {} us", to_us(utils::perf(&actor_world_slice::cognition, this, tick_, pool)));
-  utils::info("perf apply : {} us",    to_us(utils::perf(&actor_world_slice::apply, this, dt_seconds)));
-  utils::info("perf eating: {} us",    to_us(utils::perf(&actor_world_slice::resolve_eating, this, tick_)));
-  utils::info("perf food  : {} us",    to_us(utils::perf(&actor_world_slice::maintain_food, this)));
-  utils::info("perf build : {} us",    to_us(utils::perf(&actor_batch::build, &batch, world_, tick_)));
+  ensure_actor_perf_introspection();
+  build_sense_tree_fn_t{}(*this);
+  cognition_fn_t{}(*this, tick_, pool);
+  apply_fn_t{}(*this, dt_seconds);
+  resolve_eating_fn_t{}(*this, tick_);
+  maintain_food_fn_t{}(*this);
+  build_actor_batch_fn_t{}(batch, world_, tick_);
 
   return actor_metrics{
     uint32_t(world_.count<actor_position>()),
