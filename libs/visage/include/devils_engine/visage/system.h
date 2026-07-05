@@ -102,8 +102,6 @@ private:
   nk_user_font* sized_font(const font_t* base, float height);
   // резолв базового шрифта по имени; nullptr/неизвестное имя ⇒ default_font.
   const font_t* resolve_font(std::string_view name) const;
-  // texture.id принадлежит атласу какого-то зарегистрированного шрифта? (текст ⇒ msdf в convert)
-  bool is_font_texture(int id) const;
 
   sol::state lua;
   sol::environment env;

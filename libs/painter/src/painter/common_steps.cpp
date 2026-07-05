@@ -1203,24 +1203,24 @@ graphics_draw_ui::graphics_draw_ui(const uint32_t super, VkDevice device, VkRend
 {}
 
 // Зеркало visage::gui_draw_command_t (render_output.h) — байтовый контракт main->render.
-// Должно совпадать поле-в-поле (44 байта, всё по 4 байта). Буфер команд: [uint32 count][массив].
+// Должно совпадать поле-в-поле (40 байт, всё по 4 байта). Буфер команд: [uint32 count][массив].
+// texture_id УПАКОВАН (tex_id: тип+mirror+индекс); поля mode больше нет — тип декодит шейдер.
 namespace {
 struct ui_command_wire {
   uint32_t elem_count;
   float clip_x, clip_y, clip_w, clip_h;
   uint32_t texture_id;
-  uint32_t mode;
   float boldness;
   float outline_width;
   uint32_t outline_color;
   float softness;
 };
-static_assert(sizeof(ui_command_wire) == 44, "ui_command_wire должен совпадать с visage::gui_draw_command_t");
+static_assert(sizeof(ui_command_wire) == 40, "ui_command_wire должен совпадать с visage::gui_draw_command_t");
 
-// push-константа UI: (tex_id, mode) + SDF-эффекты. Совпадает с constant ui_push и pc в ui.frag.
+// push-константа UI: упакованный tex_id (тип+mirror+индекс) + SDF-эффекты. Совпадает с constant ui_push
+// и pc в ui.frag. Поля mode нет — тип берётся из tex_id в шейдере.
 struct ui_push_t {
   uint32_t tex_id;
-  uint32_t mode;
   float boldness;
   float outline_width;
   uint32_t outline_color;
@@ -1273,7 +1273,7 @@ void graphics_draw_ui::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
     scissor.extent = vk::Extent2D(uint32_t(x1 > x0 ? x1 - x0 : 0.0f), uint32_t(y1 > y0 ? y1 - y0 : 0.0f));
     task.setScissor(0, scissor);
 
-    const ui_push_t pc{ c.texture_id, c.mode, c.boldness, c.outline_width, c.outline_color, c.softness };
+    const ui_push_t pc{ c.texture_id, c.boldness, c.outline_width, c.outline_color, c.softness };
     task.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eAll, 0, sizeof(pc), &pc);
 
     task.drawIndexed(c.elem_count, 1, first_index, 0, 0);

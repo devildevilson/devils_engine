@@ -9,11 +9,12 @@
   layout = ui1v1
   value = [1.0, 2.0]
 }
-// push-константа draw_ui = 24 байта: uint tex_id, uint mode, float boldness, float outline_width,
-// uint outline_color (R8G8B8A8), float softness. Объявляет push-range в pipeline layout (значение
-// не используется — draw_ui пушит per-command). Совпадает с ui_push_t (common_steps) и pc в ui.frag.
+// push-константа draw_ui = 20 байт: uint tex_id (УПАКОВАН: тип+mirror+индекс), float boldness,
+// float outline_width, uint outline_color (R8G8B8A8), float softness. Поля mode нет — тип в tex_id.
+// Объявляет push-range в pipeline layout (значение не используется — draw_ui пушит per-command).
+// Совпадает с ui_push_t (common_steps) и pc в ui.frag.
 {
   name = ui_push
-  layout = ui1ui1v1v1ui1v1
-  value = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  layout = ui1v1v1ui1v1
+  value = [0.0, 0.0, 0.0, 0.0, 0.0]
 }

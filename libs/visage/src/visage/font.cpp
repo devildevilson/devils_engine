@@ -6,6 +6,7 @@
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/fileio.h"
 #include "header.h"
+#include "render_output.h" // tex_id::pack — упаковать тип msdf + слот в texture.id
 #include "devils_engine/utf/utf.hpp"
 
 
@@ -16,7 +17,9 @@ font_t::~font_t() = default;
 void font_t::set_texture_id(uint32_t id) {
   // только базовый nkfont; sized-варианты живут в visage::system и берут актуальный texture.id
   // отсюда при каждом push_font, так что гонки «push до HOT -> stale id» больше нет.
-  if (nkfont) nkfont->texture.id = int(id);
+  // Пакуем ТИП msdf + слот: текст-команды nuklear понесут упакованный id, шейдер декодит type=msdf
+  // (id — это gpu_index/слот атласа; см. tex_id в render_output.h).
+  if (nkfont) nkfont->texture.id = int(tex_id::pack(gui_draw_mode::msdf, id));
 }
 
 const font_t::glyph_t *font_t::find_glyph(const uint32_t codepoint) const {

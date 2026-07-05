@@ -114,13 +114,9 @@ static void simple_hook(lua_State *L, lua_Debug *ar) {
   utils::error{}("Called Lua hook after {} instructions. Exit lua script after {} mcs ({} seconds). Context: {}:{}:{}", system::instruction_counter, mcs, s, source, name, ar->currentline);
 }
 
-// Тег «это картинка» в id текстуры nk-команды. Проблема: у nuklear texture.id==0 означает «нет
-// текстуры» (фигуры/solid), но bindless-слот 0 — валидная картинка. Поэтому в handle картинки ставим
-// старший бит-флаг (как синтетические сканкоды мыши), а convert() его снимает → реальный слот для
-// шейдера. Так картинка в слоте 0 больше не путается с фигурой.
-static constexpr uint32_t image_id_flag = 1u << 30;
-
-// placement-флаги картинки (битовая маска, зеркалит таблицу nk.placement ниже).
+// placement/mirror-флаги картинки (битовая маска, зеркалит таблицу nk.placement ниже). mirror-биты
+// извлекаются в nk.image и пакуются в id текстуры (tex_id::pack) — тип картинки отличает её от фигуры,
+// см. render_output.h (раньше это делал одиночный бит-флаг image_id_flag, теперь — поле type).
 namespace img_placement {
   enum : uint32_t {
     fill        = 0,       // растянуть на весь виджет (дефолт; синоним stretch)
@@ -130,6 +126,8 @@ namespace img_placement {
     right       = 1u << 3,
     top         = 1u << 4,
     bottom      = 1u << 5,
+    mirror_u    = 1u << 6, // флип по u (пакуется в id)
+    mirror_v    = 1u << 7, // флип по v
   };
 }
 
@@ -267,6 +265,8 @@ system::system(const font_t* default_font) : default_font(default_font), effect_
   placement["right"]       = uint32_t(img_placement::right);
   placement["top"]         = uint32_t(img_placement::top);
   placement["bottom"]      = uint32_t(img_placement::bottom);
+  placement["mirror_u"]    = uint32_t(img_placement::mirror_u);
+  placement["mirror_v"]    = uint32_t(img_placement::mirror_v);
 
   // nk.image(img [, placement_flags] [, color]) — берёт слот виджета (nk_widget), считает целевой
   // прямоугольник по placement (вписать/растянуть/выровнять) и рисует nk_draw_image. mode=image в
@@ -282,10 +282,12 @@ system::system(const font_t* default_font) : default_font(default_font), effect_
       const struct nk_rect region = img.region[2] != 0
         ? nk_rect(float(img.region[0]), float(img.region[1]), float(img.region[2]), float(img.region[3]))
         : nk_rect(0.0f, 0.0f, float(img.w), float(img.h));
-      // старший бит-флаг: помечаем handle как КАРТИНКУ (иначе слот 0 неотличим от фигуры в convert)
-      const struct nk_image nkimg = nk_subimage_id(int(img.texture_id | image_id_flag), img.w, img.h, region);
-
       const uint32_t flags = placement_flags.value_or(uint32_t(img_placement::fill));
+      // пакуем тип(image)+mirror+индекс в id: тип отличает картинку от фигуры (слот 0 больше не путается),
+      // mirror и индекс декодит шейдер (см. tex_id в render_output.h).
+      const uint32_t packed = tex_id::pack(gui_draw_mode::image, img.texture_id,
+        (flags & img_placement::mirror_u) != 0u, (flags & img_placement::mirror_v) != 0u);
+      const struct nk_image nkimg = nk_subimage_id(int(packed), img.w, img.h, region);
       const struct nk_rect target = image_placement_rect(bounds, region.w, region.h, flags);
       const struct nk_color c = color.has_value() ? table_to_nk_color(color.value()) : nk_rgba(255, 255, 255, 255);
       nk_draw_image(&ctx->current->buffer, target, &nkimg, c);
@@ -309,13 +311,6 @@ const font_t* system::resolve_font(std::string_view name) const {
   return default_font;
 }
 
-bool system::is_font_texture(int id) const {
-  if (id == 0) return false; // id 0 = "нет текстуры" (фигуры/solid), а не незагруженный атлас
-  for (const auto& [n, ptr] : fonts_) {
-    if (ptr != nullptr && ptr->nkfont && ptr->nkfont->texture.id == id) return true;
-  }
-  return false;
-}
 
 nk_user_font* system::sized_font(const font_t* base, float height) {
   if (base == nullptr) base = default_font;
@@ -447,22 +442,10 @@ void system::convert() {
     out.clip_y = cmd->clip_rect.y;
     out.clip_w = cmd->clip_rect.w;
     out.clip_h = cmd->clip_rect.h;
-    // порядок важен: сначала бит-флаг картинки (снимаем → реальный слот), потом шрифт, потом
-    // texture.id==0 = фигура (solid), иначе legacy-картинка по сырому id.
-    const uint32_t rawid = uint32_t(cmd->texture.id);
-    if (rawid & image_id_flag) {
-      out.mode = gui_draw_mode::image;
-      out.texture_id = rawid & ~image_id_flag; // снимаем флаг → слот для шейдера
-    } else if (is_font_texture(int(rawid))) {
-      out.mode = gui_draw_mode::msdf;
-      out.texture_id = rawid;
-    } else if (rawid == 0) {
-      out.mode = gui_draw_mode::solid;
-      out.texture_id = 0;
-    } else {
-      out.mode = gui_draw_mode::image;
-      out.texture_id = rawid;
-    }
+    // id УПАКОВАН (tex_id: тип+mirror+индекс) на стороне продюсера: nk.image пакует type=image,
+    // font_t::set_texture_id — type=msdf, фигуры nuklear идут с texture.id==0 (type=0=solid). Поэтому
+    // здесь просто passthrough — декод (тип/mirror/индекс) делает шейдер. Больше нет эвристик.
+    out.texture_id = uint32_t(cmd->texture.id);
 
     // запекаем SDF-эффект по userdata (offset в арене; 0 = дефолт). Гард по границам арены.
     ui_text_effect eff{0.0f, 0.0f, 0u, 0.0f};
