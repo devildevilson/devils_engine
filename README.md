@@ -532,7 +532,7 @@ host API, но не должен становиться владельцем gam
 
 ```cpp
 using add_gold_t =
-  catalogue::outer<domain::gameplay>::inner<
+  catalogue::domain<domain::gameplay>::fn_traits<
     &add_gold,
     "add_gold",
     "amount",
@@ -542,14 +542,18 @@ using add_gold_t =
 constexpr auto add_gold_fn = add_gold_t::fn_ptr; // int (*)(int, int)
 ```
 
-У каждого `outer<domain>` есть runtime-подключаемый
+У каждого `catalogue::domain<...>` есть runtime-подключаемый
 `introspection_interface*`. Поэтому можно включить трассировку только для
 выбранной области:
 
 ```cpp
 catalogue::trace_introspection trace;
-catalogue::outer<domain::gameplay>::set_introspection(&trace);
+catalogue::domain<domain::gameplay>::set_introspection(&trace);
 ```
+
+Если introspection pointer не задан (`nullptr`), wrapper не собирает `call_info`
+и вызывает оригинальную функцию напрямую. `function_id` считается compile-time
+через `utils::murmur_hash64A`.
 
 Текущий набор готовых политик:
 
