@@ -96,7 +96,26 @@ struct command_window_recreation {
   GLFWmonitor* m;
   uint32_t width, height;
 };
-// (command_window_resize удалён — не было продюсера; ресайз окна пока не проброшен)
+
+// main → render: изменился размер фреймбуфера (ресайз/фуллскрин). Продюсер — main при событии
+// framebuffer size от GLFW. Рендер пересоздаёт ТОЛЬКО свопчейн (surface/device/graph не трогает),
+// в отличие от тяжёлого command_window_recreation. Нулевые размеры (сворачивание) сюда не шлём.
+struct command_window_resize {
+  uint32_t width = 0, height = 0;
+};
+
+// main → render: включить/выключить блок отрисовки. Продюсер — main по window_policy (потеря фокуса
+// со свёрнутым окном ⇒ не крутим кадры). Свёрнутое окно и так не рисуется (свопчейн 0×0), это
+// оптимизация «не гонять рендер-граф вхолостую».
+struct command_render_set_active {
+  bool draw = true;
+};
+
+// main → sound: мастер-громкость [0,1] финального микса (приглушение при потере фокуса и т.п.).
+// Звуковой актор зовёт system2::set_master_volume. НЕ реплицируется (презентация).
+struct command_sound_set_master_gain {
+  float gain = 1.0f;
+};
 
 // обратно должны вернуть id для ресурса
 struct command_register_asset {

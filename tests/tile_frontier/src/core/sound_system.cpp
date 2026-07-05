@@ -24,6 +24,7 @@ using namespace devils_engine;
 struct sound_simulation_init {
   std::unique_ptr<sound::system2> s;
   broker* br = nullptr; // все каналы — в общем broker (main владеет)
+  float master_gain = 1.0f; // мастер-громкость (main крутит по фокусу); переживает recreate устройства
   std::vector<sound::task_status> snapshot_status_cache; // буфер под публикацию состояния
 
   // Звуковой актор НЕ хранит звук-ресурсы: играет из demiurg-хендла (command_sound_play.res),
@@ -63,7 +64,18 @@ void sound_simulation::update(const size_t time) {
 
   {
     command_recreate_sound_system cmd{};
-    while (br.recreate_sound.try_pop(cmd)) container->s.reset(new sound::system2(cmd.device_name));
+    while (br.recreate_sound.try_pop(cmd)) {
+      container->s.reset(new sound::system2(cmd.device_name));
+      if (container->s) container->s->set_master_volume(container->master_gain); // переносим громкость на новое устройство
+    }
+  }
+
+  {
+    // мастер-громкость (приглушение при потере фокуса и т.п.). latest-wins по смыслу: применяем последнее.
+    command_sound_set_master_gain cmd{};
+    bool changed = false;
+    while (br.sound_master_gain.try_pop(cmd)) { container->master_gain = cmd.gain; changed = true; }
+    if (changed && container->s) container->s->set_master_volume(container->master_gain);
   }
 
   if (container->s) {

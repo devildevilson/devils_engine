@@ -151,6 +151,29 @@ static double prng64_normalize(const int64_t value) {
   return utils::prng_normalize(val);
 }
 
+// --- rng_state: непрозрачная обёртка prng-состояния для lua (см. env.h) ---
+// Следующее состояние = splitmix-хеш текущего (тот же шаг, что prng64(int) выше). Цепочка
+// prng64(prng64(s)) даёт детерминированный поток, отвязанный от обычной математики скрипта.
+static rng_state prng64_next(const rng_state& s) noexcept { return rng_state{ prng64_raw(s.s) }; }
+
+// value(s) -> [0,1): нормализуем состояние. Состояние уже хорошо перемешано (пришло из prng64/микса).
+static double value_normalize(const rng_state& s) noexcept { return utils::prng_normalize(s.s); }
+
+// value(s, n, m) -> целое [n, m] включительно. Равномерно из нормализованного состояния.
+static int64_t value_interval(const rng_state& s, const int64_t n, const int64_t m) noexcept {
+  if (m <= n) return n;
+  const uint64_t range = uint64_t(m - n) + 1ull;
+  int64_t v = n + int64_t(utils::prng_normalize(s.s) * double(range));
+  if (v > m) v = m; // страховка на случай нормализации, близкой к 1.0
+  return v;
+}
+
+// смешивание двух состояний (метаметод '+' и как обычная функция): mix — не сложение, а хеш-микс.
+static rng_state rng_mix(const rng_state& a, const rng_state& b) noexcept { return rng_state{ utils::mix(a.s, b.s) }; }
+
+// сид -> начальное состояние (хешируем, чтобы даже соседние сиды давали разные потоки).
+static rng_state rng_from_seed(const double seed) noexcept { return rng_state{ prng64_raw(s64_to_u64(int64_t(seed))) }; }
+
 static sol::table create_array(const double num, const sol::object &obj, sol::this_state, sol::this_environment e) {
   const size_t size = num;
   sol::environment env = e;
@@ -359,7 +382,20 @@ void basic_functions(sol::table t) {
   base.set_function("unpack_u32f32", &unpack_u32f32);
   base.set_function("unpack_u32u32", &unpack_u32u32);
   base.set_function("unpack_f32f32", &unpack_f32f32);
-  base.set_function("prng64", &prng64);
+  // rng_state — обёртка prng-состояния (см. env.h). Метаметод '+' = хеш-микс двух состояний
+  // ('local s3 = s1 + s2'); методы :next()/:value() дублируют одноимённые свободные функции.
+  base.new_usertype<rng_state>("rng_state",
+    sol::no_constructor,
+    sol::meta_function::addition, &rng_mix,
+    "next", &prng64_next,
+    "value", sol::overload(&value_normalize, &value_interval));
+
+  // prng64: поддерживает и старую форму (int64 -> int64), и новую (rng_state -> rng_state).
+  base.set_function("prng64", sol::overload(&prng64, &prng64_next));
+  // value(s) -> [0,1); value(s, n, m) -> целое [n, m]. Единая точка «состояние -> число».
+  base.set_function("value", sol::overload(&value_normalize, &value_interval));
+  base.set_function("rng", &rng_from_seed);   // сид (число) -> rng_state
+  base.set_function("rng_mix", &rng_mix);     // явный микс (то же, что '+')
   base.set_function("prng64_2", &prng64_2);
   base.set_function("prng64_normalize", &prng64_normalize);
   base.set_function("interval", &interval);

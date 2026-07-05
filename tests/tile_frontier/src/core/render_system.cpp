@@ -95,6 +95,7 @@ struct render_simulation_init {
   bool base_ready = false;
   bool surface_ready = false;
   bool graph_ready = false;
+  bool draw_active = true; // гейт отрисовки (main крутит по фокусу/сворачиванию, command_render_set_active)
   bool shader_prepare_requested = false;
   bool shaders_prepared = false;
   bool shader_prepare_failed = false;
@@ -684,6 +685,19 @@ static void render_attach_window(render_simulation_init& c, const command_window
   render_try_create_graph(c);
 }
 
+// Лёгкий путь ресайза: НЕ трогаем surface/device/graph, пересоздаём только свопчейн + screensize-ресурсы
+// + вьюпорт графа (resize_viewport делает всё это разом). В отличие от render_attach_window. Нулевые
+// размеры (свёрнутое окно) недопустимы — recreate_swapchain ассертит extent!=0, поэтому пропускаем.
+static void render_resize_swapchain(render_simulation_init& c, const uint32_t w, const uint32_t h) {
+  if (c.config.headless || !c.base || !c.graph_ready || !c.surface_ready) return;
+  if (w == 0 || h == 0) return;
+  c.base->wait_all_fences();
+  c.pending_graph_width = w;
+  c.pending_graph_height = h;
+  c.base->resize_viewport(w, h);
+  utils::info("render: resize swapchain {}x{}", w, h);
+}
+
 render_simulation::render_simulation(const size_t frame_time, render_simulation_config config) noexcept :
   simul::advancer(frame_time),
   container(std::make_unique<render_simulation_init>())
@@ -739,6 +753,16 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
   // ловим событие пересоздания окна
   if (const command_window_recreation* cmd = br.window_recreation.consume()) {
     render_attach_window(*container, *cmd);
+  }
+
+  // ресайз/фуллскрин: пересоздаём только свопчейн (легче полного пересоздания окна)
+  if (const command_window_resize* cmd = br.window_resize.consume()) {
+    render_resize_swapchain(*container, cmd->width, cmd->height);
+  }
+
+  // гейт отрисовки (потеря фокуса/сворачивание по window_policy)
+  if (const command_render_set_active* cmd = br.render_set_active.consume()) {
+    container->draw_active = cmd->draw;
   }
 
   if (const command_shaders_prepared* cmd = br.shaders_prepared.consume()) {
@@ -827,7 +851,7 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
     render_update_actor_draw(*container);
   }
 
-  if (container->graph_ready && container->base->can_draw()) {
+  if (container->graph_ready && container->draw_active && container->base->can_draw()) {
     container->base->prepare_frame();
     container->ctx.prepare();
     container->ctx.draw();

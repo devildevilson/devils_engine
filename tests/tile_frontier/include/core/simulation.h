@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <atomic>
 
 #include <devils_engine/simul/interface.h>
 
@@ -36,6 +37,10 @@ private:
   sound_actor* sactor;
   graphics_actor* gactor;
   assets_actor* aactor;
+
+  // выход из игры (app.quit_game из UI). stop_predicate() читает его вместо тестовой заглушки.
+  // atomic на случай, если позже флаг начнут выставлять не из main-потока (сейчас — из UI в main).
+  std::atomic_bool quit_requested{false};
 };
 
 }

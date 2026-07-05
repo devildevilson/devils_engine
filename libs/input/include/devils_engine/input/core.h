@@ -58,8 +58,12 @@ namespace devils_engine {
 namespace input {
 typedef void (*error_callback)(int, const char*) noexcept;
 typedef void (*window_size_callback)(GLFWwindow*, int, int) noexcept;
+typedef void (*framebuffer_size_callback)(GLFWwindow*, int, int) noexcept;
 typedef void (*window_content_scale_callback)(GLFWwindow*, float, float) noexcept;
 typedef void (*window_refresh_callback)(GLFWwindow*) noexcept;
+typedef void (*window_focus_callback)(GLFWwindow*, int) noexcept;
+typedef void (*window_iconify_callback)(GLFWwindow*, int) noexcept;
+typedef void (*window_maximize_callback)(GLFWwindow*, int) noexcept;
 typedef void (*key_callback)(GLFWwindow*, int, int, int, int) noexcept;
 typedef void (*character_callback)(GLFWwindow*, unsigned int) noexcept;
 typedef void (*cursor_position_callback)(GLFWwindow*, double, double) noexcept;
@@ -104,7 +108,20 @@ void destroy(GLFWwindow* w);
 void hide(GLFWwindow* w);
 void show(GLFWwindow* w);
 bool should_close(GLFWwindow* w) noexcept;
+void set_should_close(GLFWwindow* w, const bool value) noexcept;
 std::tuple<uint32_t, uint32_t> window_size(GLFWwindow* m) noexcept;
+void set_window_size(GLFWwindow* m, const uint32_t width, const uint32_t height) noexcept;
+// размер фреймбуфера В ПИКСЕЛЯХ (на hidpi != window_size); именно он нужен свопчейну.
+std::tuple<uint32_t, uint32_t> framebuffer_size(GLFWwindow* m) noexcept;
+bool window_focused(GLFWwindow* m) noexcept;
+bool window_iconified(GLFWwindow* m) noexcept;
+void maximize_window(GLFWwindow* w) noexcept;
+void restore_window(GLFWwindow* w) noexcept;
+// Переключение в полноэкранный режим на мониторе m (nullptr ⇒ вернуть оконный режим).
+// При возврате в оконный используется прямоугольник (xpos,ypos,width,height); refresh_rate
+// = DONT_CARE для оконного. glfwSetWindowMonitor.
+void set_window_monitor(GLFWwindow* w, GLFWmonitor* m, const int32_t xpos, const int32_t ypos, const uint32_t width, const uint32_t height, const int32_t refresh_rate) noexcept;
+std::tuple<int32_t, int32_t> window_pos(GLFWwindow* m) noexcept;
 std::tuple<float, float> window_content_scale(GLFWwindow* m) noexcept;
 std::string_view window_title(GLFWwindow* m) noexcept;
 GLFWmonitor* window_monitor(GLFWwindow* m) noexcept;
@@ -113,6 +130,12 @@ void set_icon(GLFWwindow* m, const size_t count, const icon_t* icons);
 void set_window_callback(GLFWwindow* w, window_size_callback callback);
 void set_window_callback(GLFWwindow* w, window_content_scale_callback callback);
 void set_window_callback(GLFWwindow* w, window_refresh_callback callback);
+// framebuffer/focus/iconify/maximize имеют те же сигнатуры, что window_size/cursor_enter,
+// поэтому у них ОТДЕЛЬНЫЕ имена сеттеров (перегрузка была бы неоднозначной по типу).
+void set_framebuffer_size_callback(GLFWwindow* w, framebuffer_size_callback callback);
+void set_window_focus_callback(GLFWwindow* w, window_focus_callback callback);
+void set_window_iconify_callback(GLFWwindow* w, window_iconify_callback callback);
+void set_window_maximize_callback(GLFWwindow* w, window_maximize_callback callback);
 void set_window_callback(GLFWwindow* w, key_callback callback);
 void set_window_callback(GLFWwindow* w, character_callback callback);
 void set_window_cursor_pos_callback(GLFWwindow* w, cursor_position_callback callback);
