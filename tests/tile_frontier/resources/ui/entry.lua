@@ -90,10 +90,12 @@ local function game_ui(time, timestamp, rng)
     nk.pop_font()
 
     -- картинка: вписать с сохранением пропорций и отцентровать (шаг image + placement)
+    -- + вторая копия с зеркальным флипом по u (mirror закодирован в id текстуры)
     local img = app.image("grass")
     if img then
-      nk.layout.row_dynamic(64, 1)
+      nk.layout.row_dynamic(64, 2)
       nk.image(img, nk.placement.scale_ratio | nk.placement.center)
+      nk.image(img, nk.placement.scale_ratio | nk.placement.center | nk.placement.mirror_u)
     end
 
     nk.layout.row_dynamic(30, 1)
