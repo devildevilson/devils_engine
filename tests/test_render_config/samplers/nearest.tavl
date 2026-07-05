@@ -1,0 +1,7 @@
+// sampler_mirror: name, filter (linear|nearest), address (repeat|mirror|clamp|border)
+// nearest — для масок с резкими зонами (напр. quad.png): без билинейного бида на стыках.
+{
+  name = nearest
+  filter = nearest
+  address = repeat
+}

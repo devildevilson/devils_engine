@@ -723,9 +723,11 @@ void simulation::init() {
   }
 
   // --- модель тайловой карты ---
-  // Набор текстур = все ресурсы с id-префиксом "textures/" (детерминированный порядок реестра).
-  const uint32_t tex_count = container->textures.gather(*container->assets_sim->resources(), "textures/");
-  utils::info("main: gathered {} textures by prefix 'textures/'", tex_count);
+  // Набор ТАЙЛОВЫХ текстур = только grass (маски grad/quad НЕ должны попадать в террейн — подстрока
+  // "textures/grass" их исключает: 'textures/grad*'/'textures/quad' её не содержат). Позже маски уедут
+  // в отдельный тип (textures/mask/).
+  const uint32_t tex_count = container->textures.gather(*container->assets_sim->resources(), "textures/grass");
+  utils::info("main: gathered {} tile textures by 'textures/grass'", tex_count);
 
   // Квадратная сетка чанков 4x4 по 16 тайлов. Стартово всё заполнено текстурой 0, затем assets
   // thread вернёт mock CPU payload для каждого чанка и main применит его к grid.

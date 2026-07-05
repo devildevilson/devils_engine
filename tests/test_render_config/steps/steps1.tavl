@@ -26,14 +26,14 @@
 }
 // Интерфейс. Без draw_group: vertex/index/command буферы — обычные ресурсы, имена в команде.
 // barriers дают usage: camera_buffer=uniform (для дескриптора globals), ui_vertices=vertex,
-// ui_indices=index. sets: globals (UBO, set0) + textures (атлас/картинки, set1). push_constants:
-// ui_push объявляет push-range (tex_id,mode). Альфа-блендинг на albedo_res (UI поверх сцены).
+// ui_indices=index. sets: globals (UBO, set0) + textures (linear, set1) + mask_textures (nearest, set2,
+// те же view'ы для масок эффектов). push_constants: ui_push. Альфа-блендинг на albedo_res.
 {
   name = draw_ui
   material = ui
   geometry = ui
   command = "draw_ui ui_vertices ui_indices ui_commands"
-  sets = [ globals, textures ]
+  sets = [ globals, textures, mask_textures ]
   push_constants = [ ui_push ]
   barriers = [ camera_buffer = uniform, ui_vertices = vertex, ui_indices = index, ui_commands = transfer_dst ]
   blending = {
