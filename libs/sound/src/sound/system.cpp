@@ -1318,7 +1318,15 @@ static void completely_stop_source(system::source &s) {
 
       for (auto& t : m_tasks) {
         if (!t.initialized) {
-          t.decoder = make_decoder(t.task.res.type, t.task.res.id, t.task.res.data);
+          // PCM-ветка: данные уже декодированы (короткий звук, sound_resource), метаданные в resource2 →
+          // pcm_decoder-passthrough. Остальные типы декодятся из сжатых байт через make_decoder.
+          if (t.task.res.type == data_type::pcm) {
+            const auto& r = t.task.res;
+            t.decoder = std::make_unique<pcm_decoder>(
+              r.data.data(), r.data.size(), r.sample_format, r.channels, r.sample_rate, r.frames_count);
+          } else {
+            t.decoder = make_decoder(t.task.res.type, t.task.res.id, t.task.res.data);
+          }
           if (!t.decoder) {
             utils::error{}("Could not create decoder for sound task '{}'", t.task.res.id);
           }
