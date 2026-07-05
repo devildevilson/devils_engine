@@ -22,6 +22,9 @@ struct simulation_config {
   uint32_t sound_fps = 60;
   uint32_t render_fps = 60;
   uint32_t assets_fps = 60;
+  // Тумблер звукового потока (топологическая настройка → требует перезапуска движка, как render.enabled).
+  // Выключение освобождает зарезервированное ядро под worker-потоки (см. init).
+  bool sound_enabled = true;
   uint32_t worker_threads_reserved = 4;
   uint32_t min_worker_threads = 1;
   uint32_t thread_start_gap_divisor = 4;

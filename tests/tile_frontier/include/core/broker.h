@@ -28,6 +28,7 @@ struct broker {
   thread::mailbox<command_window_resize>     window_resize;    // ресайз/фуллскрин (только свопчейн)
   thread::mailbox<command_render_set_active> render_set_active; // гейт отрисовки
   thread::mailbox<command_set_active_graph>  set_active_graph;
+  thread::spsc_queue<command_update_constant> update_constant;  // обновление render-graph константы
   thread::mailbox<command_draw_tiles>        draw_tiles;
   thread::mailbox<command_draw_actors>       draw_actors;
   write_buffer_channel                       write_buffer; // camera + UI буферы
@@ -59,7 +60,8 @@ struct broker {
   thread::spsc_queue<command_sound_set_master_gain> sound_master_gain; // lossy (latest-wins по смыслу)
 
   broker()
-    : write_buffer(64, size_t(1) << 20)
+    : update_constant(64)
+    , write_buffer(64, size_t(1) << 20)
     , gpu_transition(256)
     , gpu_done(256)
     , prepare_shaders(8)

@@ -9,8 +9,18 @@ fn_id registry::reg(const std::string_view& name, std::unique_ptr<function_base>
   utils::assertf(f != nullptr, "act::registry::reg: попытка зарегистрировать nullptr (имя '{}')", name);
   const fn_id id = utils::string_hash(name);
   const auto [itr, inserted] = functions.emplace(id, std::move(f));
-  // коллизия хеша = разные имена дали один fn_id; ловим на загрузке, а не в рантайме.
-  utils::assertf(inserted, "act::registry::reg: коллизия fn_id для имени '{}' (hash {:#x})", name, id);
+  if (!inserted) {
+    // Различаем ДВА случая (раньше был один assert на оба): повторная регистрация того же ИМЕНИ
+    // (ошибка в коде загрузки) vs настоящая хеш-коллизия двух РАЗНЫХ имён (переименуй одну функцию).
+    const auto nitr = names_.find(id);
+    const std::string_view prev = nitr != names_.end() ? std::string_view(nitr->second) : std::string_view("<unknown>");
+    if (prev == name) {
+      utils::assertf(false, "act::registry::reg: функция '{}' уже зарегистрирована (повторная регистрация)", name);
+    } else {
+      utils::assertf(false, "act::registry::reg: хеш-коллизия fn_id {:#x} между именами '{}' и '{}' — переименуй одну", id, prev, name);
+    }
+  }
+  names_.emplace(id, std::string(name));
   return id;
 }
 

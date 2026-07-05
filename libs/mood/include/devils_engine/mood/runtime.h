@@ -69,6 +69,13 @@ step_outcome step(const system& sys, const std::string_view& state, const std::s
 // итераций от зацикливания (idle A→B→A с вечно-истинными гвардами).
 utils::id apply_transition(const system& sys, const utils::id cur_state, const system::transition& taken, const act::exec_context& ctx);
 
+// Готовый «кадр apply-фазы» с КАПОМ (раньше цикл приходилось писать вручную у каждого вызывающего):
+// обработать пришедшее событие (step→apply_transition при transitioned), затем досчитать idle
+// (completion-transitions) до стабильного состояния, но не более max_idle_iters раз (защита от
+// зацикливания idle A→B→A с вечно-истинными гвардами; останов также на внутреннем переходе и
+// само-петле). ctx.sink должен быть боевым (не dry-run). Возвращает финальное состояние (хеш).
+utils::id settle(const system& sys, const utils::id cur_state, const utils::id event, const act::exec_context& ctx, const uint32_t max_idle_iters = 8);
+
 // валидация графа на загрузке: предупреждает (utils::warn) о тупиковых (next_state без исходящих
 // переходов) и недостижимых (current_state, который никогда не является чьим-то next_state)
 // состояниях, с fuzzy-подсказкой "did you mean" (мини-левенштейн). Конвенция any_state как

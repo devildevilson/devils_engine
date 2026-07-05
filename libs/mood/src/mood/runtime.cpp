@@ -62,6 +62,31 @@ utils::id apply_transition(const system& sys, const utils::id cur_state, const s
   return taken.next_hash; // invalid_id ⇒ вызывающий оставляет cur_state
 }
 
+utils::id settle(const system& sys, const utils::id cur_state, const utils::id event, const act::exec_context& ctx, const uint32_t max_idle_iters) {
+  utils::id state = cur_state;
+
+  // 1) обработать пришедшее событие
+  {
+    const auto o = step(sys, state, event, ctx);
+    if (o.result == step_result::transitioned && o.taken != nullptr) {
+      const auto next = apply_transition(sys, state, *o.taken, ctx);
+      if (next != utils::invalid_id) state = next;
+    }
+  }
+
+  // 2) досчитать idle (completion-transitions) до стабильного состояния, но не более max_idle_iters.
+  //    Останов: нет перехода / внутренний переход (состояние не меняется) / само-петля.
+  for (uint32_t i = 0; i < max_idle_iters; ++i) {
+    const auto o = step(sys, state, conv::idle, ctx);
+    if (o.result != step_result::transitioned || o.taken == nullptr) break;
+    const auto next = apply_transition(sys, state, *o.taken, ctx);
+    if (next == utils::invalid_id || next == state) break;
+    state = next;
+  }
+
+  return state;
+}
+
 // --- валидация графа ---
 
 // расстояние Левенштейна (две строки), две бегущие строки DP. Гоняется только на загрузке.

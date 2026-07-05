@@ -6,6 +6,7 @@
 #include <cstring>
 #include <span>
 #include <thread>
+#include <stop_token>
 
 #include <devils_engine/input/core.h>
 #include <devils_engine/input/events.h>
@@ -135,6 +136,8 @@ void ui_mouse_button_cb(GLFWwindow*, int button, int action, int) noexcept {
     case glfw_const::mouse_middle: g_ui_input.mouse_middle = down; break;
     default: break;
   }
+  // кнопки мыши как first-class действия input::events (GLFW press=1/release=0 == key_state)
+  input::events::update_mouse_button(button, action);
 }
 
 void ui_scroll_cb(GLFWwindow*, double x, double y) noexcept {
@@ -554,7 +557,11 @@ void simulation::init() {
   container->fb_height = std::max(container->config.window.height, 1u);
 
   const uint32_t hw_threads = std::max(std::thread::hardware_concurrency(), 1u);
-  const uint32_t reserved_threads = container->config.simulation.worker_threads_reserved;
+  // reserved считаем ДИНАМИЧЕСКИ: выключенный движковый поток (render/sound) освобождает ядро под
+  // worker'ов (топологическая настройка — применяется при старте движка). См. ROADMAP A-4.
+  uint32_t reserved_threads = container->config.simulation.worker_threads_reserved;
+  if (!container->config.render.enabled && reserved_threads > 0) reserved_threads -= 1;
+  if (!container->config.simulation.sound_enabled && reserved_threads > 0) reserved_threads -= 1;
   const uint32_t min_worker_threads = std::max(container->config.simulation.min_worker_threads, 1u);
   const uint32_t thread_count = std::max(
     hw_threads > reserved_threads ? hw_threads - reserved_threads : min_worker_threads,
@@ -580,10 +587,16 @@ void simulation::init() {
   const auto render_ft = frame_time_from_fps(container->config.simulation.render_fps);
   const auto assets_ft = frame_time_from_fps(container->config.simulation.assets_fps);
 
-  container->sound_sim.reset(new sound_simulation(sound_ft));
-  container->sound_sim->init();
-  container->sound_sim->set_broker(container->br.get());
-  sactor = container->sound_sim->get_actor();
+  // Звуковой поток — опциональная подсистема (sound_enabled). Если выключен, sound_sim не создаётся,
+  // sactor остаётся nullptr (все обращения к звуку уже защищены проверкой sactor != nullptr).
+  if (container->config.simulation.sound_enabled) {
+    container->sound_sim.reset(new sound_simulation(sound_ft));
+    container->sound_sim->init();
+    container->sound_sim->set_broker(container->br.get());
+    sactor = container->sound_sim->get_actor();
+  } else {
+    utils::info("main: sound disabled (sound_enabled=false), skipping sound subsystem");
+  }
 
   if (container->config.render.enabled) {
     // Pipeline cache — ОТДЕЛЬНЫЙ demiurg-модуль над выделенной cache-подпапкой (Фаза 2). Раздаёт
@@ -640,11 +653,14 @@ void simulation::init() {
   const auto render_gap = thread_start_gap(render_ft, gap_divisor);
   const auto assets_gap = thread_start_gap(assets_ft, gap_divisor);
 
-  container->sound_thread.reset (new std::jthread([sys = container->sound_sim.get(), sound_gap] (){ sys->run(sound_gap); }));
-  if (container->render_sim) {
-    container->render_thread.reset(new std::jthread([sys = container->render_sim.get(), render_gap](){ sys->run(render_gap); }));
+  // жлямбды берут std::stop_token: разрушение jthread кооперативно останавливает run (см. advancer::run)
+  if (container->sound_sim) {
+    container->sound_thread.reset(new std::jthread([sys = container->sound_sim.get(), sound_gap](std::stop_token st){ sys->run(st, sound_gap); }));
   }
-  container->assets_thread.reset(new std::jthread([sys = container->assets_sim.get(), assets_gap](){ sys->run(assets_gap); }));
+  if (container->render_sim) {
+    container->render_thread.reset(new std::jthread([sys = container->render_sim.get(), render_gap](std::stop_token st){ sys->run(st, render_gap); }));
+  }
+  container->assets_thread.reset(new std::jthread([sys = container->assets_sim.get(), assets_gap](std::stop_token st){ sys->run(st, assets_gap); }));
 
   if (sactor != nullptr) {
     command_sound_devices devices;

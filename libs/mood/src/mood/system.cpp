@@ -68,7 +68,8 @@ static size_t parse_line_to_tokens(const std::string_view& str, token* tokens, c
   size_t count = 0;
   size_t i = 0;
   while (i < str.size()) {
-    if (count >= max_tokens) return SIZE_MAX;
+    // +1 под завершающий end-токен ниже
+    if (count + 1 >= max_tokens) utils::error{}("Too many tokens in line '{}' (max {})", str, max_tokens);
 
     if (utils::string::is_whitespace(str[i])) { ++i; continue; }
 
@@ -88,7 +89,8 @@ static size_t parse_line_to_tokens(const std::string_view& str, token* tokens, c
       case '/': tokens[count] = { token_type::slash, std::string_view(&str[i], 1) }; count += 1; break;
       case '=': tokens[count] = { token_type::equals, std::string_view(&str[i], 1) }; count += 1; break;
       case ',': tokens[count] = { token_type::comma, std::string_view(&str[i], 1) }; count += 1; break;
-      default: return SIZE_MAX;
+      // диагностика с ПОЗИЦИЕЙ токена (была просто "unexpected symbol" без места)
+      default: utils::error{}("Could not parse line '{}': unexpected symbol '{}' at position {}", str, str[i], i);
     }
 
     ++i;
@@ -126,10 +128,15 @@ static system::transition parse_line(const std::string_view &line) {
 
   token_next_struct tok(token_arr.data(), token_count);
 
+  // байтовая позиция токена в строке (для диагностики). end-токен пуст → позиция = конец строки.
+  const auto pos = [&cur_line](const token& t) -> size_t {
+    return t.token.empty() ? cur_line.size() : size_t(t.token.data() - cur_line.data());
+  };
+
   auto cur = tok.next();
 
   if (cur.type != token_type::identifier) {
-    utils::error{}("Could not parse line '{}': expected identifer as first token", cur_line);
+    utils::error{}("Could not parse line '{}': expected identifier as first token, got '{}' at position {}", cur_line, cur.token, pos(cur));
   }
 
   t.current_state = cur.token;
@@ -137,7 +144,7 @@ static system::transition parse_line(const std::string_view &line) {
   cur = tok.next();
   if (cur.type == token_type::plus) {
     cur = tok.next();
-    if (cur.type != token_type::identifier) { utils::error{}("Could not parse line '{}': expected identifer after plus sign", cur_line); }
+    if (cur.type != token_type::identifier) { utils::error{}("Could not parse line '{}': expected identifier after '+' at position {}", cur_line, pos(cur)); }
     t.event = cur.token;
     cur = tok.next();
   }
@@ -146,7 +153,8 @@ static system::transition parse_line(const std::string_view &line) {
     cur = tok.next();
     size_t guards_size = 0;
     while (cur.type != token_type::rbracket && cur.type != token_type::end) {
-      if (cur.type != token_type::identifier) { utils::error{}("Could not parse line '{}': expected identifer within brackets", cur_line); }
+      if (cur.type != token_type::identifier) { utils::error{}("Could not parse line '{}': expected identifier within brackets at position {}", cur_line, pos(cur)); }
+      if (guards_size >= t.guards.size()) utils::error{}("Too many guards (max {}) in line '{}'", t.guards.size(), cur_line);
       t.guards[guards_size] = cur.token;
       guards_size += 1;
       cur = tok.next();
@@ -160,23 +168,24 @@ static system::transition parse_line(const std::string_view &line) {
     cur = tok.next();
     size_t actions_count = 0;
     while (cur.type != token_type::equals && cur.type != token_type::end) {
-      if (cur.type != token_type::identifier) { utils::error{}("Could not parse line '{}': expected identifer after slash", cur_line); }
+      if (cur.type != token_type::identifier) { utils::error{}("Could not parse line '{}': expected identifier after '/' at position {}", cur_line, pos(cur)); }
+      if (actions_count >= t.actions.size()) utils::error{}("Too many actions (max {}) in line '{}'", t.actions.size(), cur_line);
       t.actions[actions_count] = cur.token;
       actions_count += 1;
       cur = tok.next();
       if (cur.type == token_type::comma) cur = tok.next();
     }
   }
-  
+
   if (cur.type == token_type::equals) {
     cur = tok.next();
-    if (cur.type != token_type::identifier) { utils::error{}("Could not parse line '{}': expected identifer after equals", cur_line); }
+    if (cur.type != token_type::identifier) { utils::error{}("Could not parse line '{}': expected identifier after '=' at position {}", cur_line, pos(cur)); }
     t.next_state = cur.token;
     cur = tok.next();
   }
 
   if (cur.type != token_type::end) {
-    utils::error{}("Could not parse line '{}': expected end of sequence", cur_line);
+    utils::error{}("Could not parse line '{}': expected end of sequence, got '{}' at position {}", cur_line, cur.token, pos(cur));
   }
 
   /*utils::print(t.current_state, "+", t.event, "[");

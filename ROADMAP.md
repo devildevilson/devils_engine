@@ -179,6 +179,18 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
 
 ## Тех-долг по подсистемам `libs/`
 
+> **Статус: блок A (🟢 быстрые) ВЫПОЛНЕН (2026-07-05).** Сделано: input mouse-buttons first-class
+> (`events::update_mouse_button`/`set_mouse_button`); painter `clear_color`/`clear_depth` из констант +
+> сообщение `command_update_constant`; sound PCM убран из форматов + тип звука в play-команде; mood
+> тесты (blocked/internal/settle/limit) + лимит 8 guards/actions + `settle()` idle-helper + диагностика
+> парсера с позицией; act registry различает повтор имени vs hash-коллизию; aesthetics `view<T>` понятная
+> ошибка; catalogue `demo.h` include guard; demiurg диагностика циклов зависимостей; simul
+> jthread-friendly `run(stop_token,…)`; visage `endf`→`fin` + удалены dead `draw_resource`/`draw_stage`;
+> bindings `rng_state + int` (advance N); `sound.enabled` + динамический `worker_threads_reserved`.
+> **Отложено:** demiurg «строгий контракт zip до parse» (#13) — существующий путь уже warn+skip на
+> незарегистрированном типе; «строже» без уточнения автора смысла не имеет.
+> Собрано rc=0, тесты зелёные (кроме bundled cpuinfo init-test), tile_frontier доходит до game без lua-ошибок.
+
 Собрано из README каждого подпроекта. `libs/bindings` намеренно без README (сейчас сильно завязан на
 visage). Обозначения строк: **усилие** 🟢/🟡/🔴 (как выше) + **необходимость** `(н)` = необходимо /
 `(qol)` = quality of life.

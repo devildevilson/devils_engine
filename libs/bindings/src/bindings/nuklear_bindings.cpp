@@ -1636,7 +1636,7 @@ void nk_functions(sol::table t) {
 
   nk.set_function("begin", &nk::begin);
   nk.set_function("begin_titled", &nk::begin_titled);
-  nk.set_function("endf", &nk::end);
+  nk.set_function("fin", &nk::end);
   nk.set_function("item_is_any_active", &nk::item_is_any_active);
   nk.set_function("rule_horizontal", &nk::rule_horizontal);
   nk.set_function("spacer", &nk::spacer);
@@ -1747,7 +1747,7 @@ void nk_functions(sol::table t) {
     auto g = nk.create_named("group");
     g.set_function("begin", &nk::group_begin);
     g.set_function("begin_titled", &nk::group_begin_titled);
-    g.set_function("endf", &nk::group_end);
+    g.set_function("fin", &nk::group_end);
     g.set_function("scrolled_begin", &nk::group_scrolled_begin);
     g.set_function("scrolled_end", &nk::group_scrolled_end);
     g.set_function("get_scroll", &nk::group_get_scroll);
@@ -1824,14 +1824,14 @@ void nk_functions(sol::table t) {
     b.set_function("add_slot_colored", &nk::chart_add_slot_colored);
     b.set_function("push", &nk::chart_push);
     b.set_function("push_slot", &nk::chart_push_slot);
-    b.set_function("endf", &nk::chart_end);
+    b.set_function("fin", &nk::chart_end);
     b.set_function(sol::meta_function::new_index, sol::detail::fail_on_newindex);
   }
   {
     auto b = nk.create_named("popup");
     b.set_function("begin", &nk::popup_begin);
     b.set_function("close", &nk::popup_close);
-    b.set_function("endf", &nk::popup_end);
+    b.set_function("fin", &nk::popup_end);
     b.set_function("get_scroll", &nk::popup_get_scroll);
     b.set_function("set_scroll", &nk::popup_set_scroll);
     b.set_function(sol::meta_function::new_index, sol::detail::fail_on_newindex);
@@ -1841,7 +1841,7 @@ void nk_functions(sol::table t) {
     b.set_function("begin", &nk::combo_begin);
     b.set_function("item", &nk::combo_item);
     b.set_function("close", &nk::combo_close);
-    b.set_function("endf", &nk::combo_end);
+    b.set_function("fin", &nk::combo_end);
     b.set_function(sol::meta_function::new_index, sol::detail::fail_on_newindex);
   }
   {
@@ -1849,13 +1849,13 @@ void nk_functions(sol::table t) {
     b.set_function("begin", &nk::contextual_begin);
     b.set_function("item", &nk::contextual_item);
     b.set_function("close", &nk::contextual_close);
-    b.set_function("endf", &nk::contextual_end);
+    b.set_function("fin", &nk::contextual_end);
     b.set_function(sol::meta_function::new_index, sol::detail::fail_on_newindex);
   }
   {
     auto b1 = nk.create_named("menubar");
     b1.set_function("begin", &nk::menubar_begin);
-    b1.set_function("endf", &nk::menubar_end);
+    b1.set_function("fin", &nk::menubar_end);
     b1.set_function(sol::meta_function::new_index, sol::detail::fail_on_newindex);
 
     auto b = nk.create_named("menu");
@@ -1863,7 +1863,7 @@ void nk_functions(sol::table t) {
     b.set_function("begin", &nk::menu_begin);
     b.set_function("item", &nk::menu_item);
     b.set_function("close", &nk::menu_close);
-    b.set_function("endf", &nk::menu_end);
+    b.set_function("fin", &nk::menu_end);
     b.set_function(sol::meta_function::new_index, sol::detail::fail_on_newindex);
   }
 

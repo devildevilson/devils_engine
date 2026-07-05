@@ -23,6 +23,15 @@ void resource_loader::request(resource_interface* res, int32_t target) {
   // target не может превышать эффективный потолок ресурса (учёт warm_and_hot_same / top_state)
   target = std::min(std::max(target, 0), res->final_state());
 
+  // Диагностика ЦИКЛА: res уже на текущем пути DFS зависимостей → граф не DAG. (Уже заведённая
+  // запись в entries — это НЕ цикл, а независимый более ранний запрос; она ловится find() ниже.)
+  for (auto* v : visiting_) {
+    if (v == res) {
+      utils::warn("demiurg: обнаружен ЦИКЛ зависимостей на ресурсе '{}' — граф зависимостей должен быть DAG; ветка пропущена", res->id);
+      return;
+    }
+  }
+
   if (auto* e = find(res)) {
     e->target = target; // последний запрос побеждает; зависимости уже заведены при первом request
     return;
@@ -34,10 +43,12 @@ void resource_loader::request(resource_interface* res, int32_t target) {
 
   entries.push_back(entry{res, target, false});
 
-  // Обеспечим зависимости: каждую доводим до usable (её final_state). Рекурсия завершается на
-  // уже заведённых записях (find выше) — предполагается DAG. Делаем ПОСЛЕ push, чтобы цикл
-  // A→B→A терминировал на повторном request(A).
+  // Обеспечим зависимости: каждую доводим до usable (её final_state). visiting_ помечает текущий путь
+  // DFS (для детекции цикла выше); pop после обхода. Рекурсия также завершается на уже заведённых
+  // записях (find выше) — предполагается DAG.
+  visiting_.push_back(res);
   for (auto* dep : res->dependencies) request(dep, dep->final_state());
+  visiting_.pop_back();
 }
 
 size_t resource_loader::update(std::vector<external_job>& out) {

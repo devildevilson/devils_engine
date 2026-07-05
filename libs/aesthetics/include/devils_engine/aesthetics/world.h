@@ -1338,13 +1338,15 @@ world::view_t<Comp_T...> world::view() const {
   // желательно создать все аллокаторы для компонентов
   // по идее это все должно быть конст
   // вылетать? единственный вменяемый сценарий честно говоря
-  if (!is_allocators_exist<Comp_T...>()) utils::error{}("Could not create view '{}', all allocators must be created beforehand", utils::type_name<view_t<Comp_T...>>());
+  // view() КОНСТ (auto-create тут невозможен): аллокаторы каждого компонента должны быть созданы
+  // заранее — вызови world::get_or_create_allocator<T>() для КАЖДОГО T до горячего пути с view.
+  if (!is_allocators_exist<Comp_T...>()) utils::error{}("Could not create view '{}': не созданы аллокаторы всех компонентов — вызови get_or_create_allocator<T>() для каждого T заранее (view() const, авто-создание невозможно)", utils::type_name<view_t<Comp_T...>>());
   return view_t<Comp_T...>(this);
 }
 
 template <typename... Comp_T>
 world::lazy_view_t<Comp_T...> world::lazy_view() const {
-  if (!is_allocators_exist<Comp_T...>()) utils::error{}("Could not create view '{}', all allocators must be created beforehand", utils::type_name<lazy_view_t<Comp_T...>>());
+  if (!is_allocators_exist<Comp_T...>()) utils::error{}("Could not create view '{}': не созданы аллокаторы всех компонентов — вызови get_or_create_allocator<T>() для каждого T заранее (view() const, авто-создание невозможно)", utils::type_name<lazy_view_t<Comp_T...>>());
   return lazy_view_t<Comp_T...>(this);
 }
 

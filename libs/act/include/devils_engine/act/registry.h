@@ -2,6 +2,7 @@
 #define DEVILS_ENGINE_ACT_REGISTRY_H
 
 #include <memory>
+#include <string>
 #include <string_view>
 #include <gtl/phmap.hpp>
 #include "devils_engine/utils/string_id.h" // utils::id, string_hash
@@ -45,6 +46,9 @@ public:
 
 private:
   gtl::flat_hash_map<fn_id, std::unique_ptr<function_base>> functions;
+  // имена по fn_id — только для ДИАГНОСТИКИ на загрузке: отличить повторную регистрацию того же
+  // имени от настоящей хеш-коллизии двух РАЗНЫХ имён (см. reg()). Не используется в рантайме.
+  gtl::flat_hash_map<fn_id, std::string> names_;
 };
 
 }

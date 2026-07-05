@@ -171,6 +171,14 @@ static int64_t value_interval(const rng_state& s, const int64_t n, const int64_t
 // смешивание двух состояний (метаметод '+' и как обычная функция): mix — не сложение, а хеш-микс.
 static rng_state rng_mix(const rng_state& a, const rng_state& b) noexcept { return rng_state{ utils::mix(a.s, b.s) }; }
 
+// 'rng_state + int' — прокрутить состояние N раз вперёд (N<=0 → без изменений). Тот же шаг, что prng64/next.
+static rng_state rng_advance(const rng_state& s, const int64_t n) noexcept {
+  uint64_t v = s.s;
+  const uint64_t count = n <= 0 ? 0ull : static_cast<uint64_t>(n);
+  for (uint64_t i = 0; i < count; ++i) v = prng64_raw(v);
+  return rng_state{ v };
+}
+
 // сид -> начальное состояние (хешируем, чтобы даже соседние сиды давали разные потоки).
 static rng_state rng_from_seed(const double seed) noexcept { return rng_state{ prng64_raw(s64_to_u64(int64_t(seed))) }; }
 
@@ -386,7 +394,8 @@ void basic_functions(sol::table t) {
   // ('local s3 = s1 + s2'); методы :next()/:value() дублируют одноимённые свободные функции.
   base.new_usertype<rng_state>("rng_state",
     sol::no_constructor,
-    sol::meta_function::addition, &rng_mix,
+    // '+': (rng,rng) = хеш-микс; (rng,int) = прокрутить состояние N раз вперёд
+    sol::meta_function::addition, sol::overload(&rng_mix, &rng_advance),
     "next", &prng64_next,
     "value", sol::overload(&value_normalize, &value_interval));
 

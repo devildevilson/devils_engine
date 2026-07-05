@@ -35,7 +35,7 @@ local function splash_screen()
     nk.layout.row_dynamic(22, 1)
     nk.label("starting up...", nil, nk.text_align.centered)
   end
-  nk.endf()
+  nk.fin()
 end
 
 -- loading: ассеты тянут стартовый набор. Прогресс — из app.loading_progress() [0,1].
@@ -53,7 +53,7 @@ local function loading_screen()
     nk.layout.row_dynamic(20, 1)
     nk.label(string.format("%.0f%%", p * 100), nil, nk.text_align.centered)
   end
-  nk.endf()
+  nk.fin()
 end
 
 -- game: обычный игровой UI (демо шрифтов/эффектов + звук + статистика + управление игрой).
@@ -103,7 +103,7 @@ local function game_ui(time, timestamp, rng)
       app.quit_game()
     end
   end
-  nk.endf()
+  nk.fin()
 
   local stats_flags = nk.panel_flags.border | nk.panel_flags.title | nk.panel_flags.movable
   if nk.begin("actor stats", {980, 48, 250, 176}, stats_flags) then
@@ -117,7 +117,7 @@ local function game_ui(time, timestamp, rng)
     nk.label(string.format("actor update: %.1f us", tf_actor_update_avg_us or 0), nil, nk.text_align.left)
     nk.pop_font()
   end
-  nk.endf()
+  nk.fin()
 
   -- Демо-плеер эмбиента: весь API звука (play+start, state, stop). Очередь/повтор — на lua.
   local pflags = nk.panel_flags.border | nk.panel_flags.title | nk.panel_flags.movable
@@ -156,7 +156,7 @@ local function game_ui(time, timestamp, rng)
       nk.label("idle", nil, nk.text_align.left)
     end
   end
-  nk.endf()
+  nk.fin()
 end
 
 -- entry получает (time, timestamp, rng_state): time — длительность кадра; timestamp — монотонная

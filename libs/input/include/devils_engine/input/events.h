@@ -89,6 +89,12 @@ public:
   static constexpr size_t key_event_slots_count = 16;
   static constexpr event_id invalid_event_id = utils::invalid_id;
 
+  // Кнопки мыши как FIRST-CLASS bindable-события: реальные сканкоды клавиатуры GLFW — небольшие
+  // положительные, поэтому кнопкам мыши отдаём заведомо непересекающийся синтетический диапазон.
+  // Тогда весь механизм set_key/update_key/check_event работает над ними без спец-веток.
+  static constexpr int32_t mouse_button_scancode_base = 1 << 30;
+  static constexpr int32_t mouse_button_scancode(const int32_t button) noexcept { return mouse_button_scancode_base + button; }
+
   struct event_map {
     std::string name;
     std::array<int32_t, event_key_slots_count> keys;
@@ -131,6 +137,10 @@ public:
   static void update_key(const int32_t scancode, const int32_t state);
   static void set_key(const event_id id, const int32_t scancode, const int32_t key = -1, const uint8_t slot = 0);
   static void set_key(const std::string_view &id, const int32_t scancode, const int32_t key = -1, const uint8_t slot = 0);
+  // кнопки мыши first-class: те же события, но привязка/обновление по номеру кнопки (GLFW 0..7)
+  static void update_mouse_button(const int32_t button, const int32_t state);
+  static void set_mouse_button(const event_id id, const int32_t button, const uint8_t slot = 0);
+  static void set_mouse_button(const std::string_view &id, const int32_t button, const uint8_t slot = 0);
 
   static bool is_pressed(const event_id id);
   static bool is_pressed(const std::string_view &id);

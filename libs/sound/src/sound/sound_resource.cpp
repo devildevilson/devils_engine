@@ -14,7 +14,8 @@ static data_type type_from_ext(const std::string_view ext) noexcept {
   if (ext == "flac") return data_type::flac;
   if (ext == "wav")  return data_type::wav;
   if (ext == "ogg")  return data_type::ogg;
-  if (ext == "pcm")  return data_type::pcm;
+  // pcm НЕ поддержан в resource2/system2 пути: make_decoder(pcm) отдаёт null → play был бы фатальным.
+  // Не заявляем '.pcm' как загружаемый формат, пока PCM-ветка не готова (см. system.cpp make_decoder).
   return data_type::undefined;
 }
 
