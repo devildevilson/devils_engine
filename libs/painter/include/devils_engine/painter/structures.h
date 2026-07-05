@@ -210,12 +210,13 @@ struct descriptor {
   // (тогда тип binding'а = convertdt(usage)); иначе sampled+sampler => eCombinedImageSampler.
   std::vector<std::tuple<uint32_t, enum usage::values, uint32_t, uint32_t>> layout;
 
-  // Опциональный asset-текстурный binding (combinedImageSampler), заполняемый РЕНДЕРОМ из
-  // assets_base.texture_slots (а не из ctx.resources — текстуры не render-graph ресурсы).
-  // binding-индекс = layout.size() (после resource-bindings). texture_count: 0 => нет, 1 => одиночная,
-  // >1 => массив (индекс в массиве = gpu_index текстуры).
+  // Опциональный asset-текстурный binding, заполняемый РЕНДЕРОМ из assets_base.texture_slots (а не из
+  // ctx.resources — текстуры не render-graph ресурсы). РАЗДЕЛЁН на два binding'а (bindless v2):
+  //   binding L   = SAMPLED_IMAGE массив (texture_count), пишется рендером (view'ы, без сэмплера);
+  //   binding L+1 = SAMPLER массив (texture_samplers, immutable пул) — шейдер берёт по sampler_id из id.
+  // L = layout.size(). texture_count: 0 => нет asset-текстур.
   uint32_t texture_count;
-  uint32_t texture_sampler;   // индекс sampler; UINT32_MAX => нет
+  std::vector<uint32_t> texture_samplers; // пул семплеров (immutable); индекс = sampler_id в tex_id
   uint32_t texture_stage;     // VkShaderStageFlags
 
   VkDescriptorSetLayout setlayout;

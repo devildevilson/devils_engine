@@ -1,8 +1,10 @@
-// descriptor_mirror: name, layout[(resource,usage,sampler,stage)], texture_count/texture_sampler/texture_stage
-// asset-текстурный дескриптор: одна текстура из assets_base (под-шаг 1), combinedImageSampler.
+// descriptor_mirror: name, layout[(resource,usage,sampler,stage)], texture_count/sampler_pool/texture_stage
+// asset-текстуры (bindless v2): binding L = SAMPLED_IMAGE массив (пишется рендером из assets_base),
+// binding L+1 = SAMPLER массив (immutable пул). Шейдер собирает sampler2D(tex[index], samp[sampler_id]),
+// где sampler_id — поле в упакованном id. Порядок пула = индексы sampler_id: 0=linear, 1=nearest.
 {
   name = textures
   texture_count = 4096
-  texture_sampler = linear
+  sampler_pool = [ linear, nearest ]
   texture_stage = fragment
 }
