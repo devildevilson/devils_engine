@@ -238,7 +238,7 @@ using member_object_t = std::conditional_t<callable_traits<T>::is_const, const t
 }
 
 template <auto Domain>
-struct outer {
+struct domain {
   inline static introspection_interface* intro_i = nullptr;
 
   static void set_introspection(introspection_interface* ptr) noexcept {
@@ -250,19 +250,29 @@ struct outer {
   }
 
   template <auto Fn, utils::template_string_t Name, utils::template_string_t... ArgNames>
-  struct inner {
+  struct fn_traits {
     using fn_t = decltype(Fn);
     using traits = detail::callable_traits<fn_t>;
     using return_t = typename traits::result_type;
     using class_t = typename traits::member_of;
 
     static constexpr std::string_view name = Name.sv();
-    inline static const utils::id function_id = utils::string_hash(name);
+    static constexpr utils::id function_id = utils::murmur_hash64A(name);
     static constexpr utils::id domain_id = static_cast<utils::id>(Domain);
     static constexpr size_t argument_count = traits::argument_count;
 
     template <typename... Args>
     static return_t call_free(Args... args) {
+      introspection_interface* intro = intro_i;
+      if (intro == nullptr) {
+        if constexpr (std::is_void_v<return_t>) {
+          Fn(std::forward<Args>(args)...);
+          return;
+        } else {
+          return Fn(std::forward<Args>(args)...);
+        }
+      }
+
       auto arg_views = detail::make_argument_views<ArgNames...>(args...);
       const call_info info{
         domain_id,
@@ -274,7 +284,7 @@ struct outer {
         std::span<const argument_view>(arg_views.data(), arg_views.size())
       };
 
-      return detail::invoke_with_introspection<return_t>(info, intro_i, [&]() -> return_t {
+      return detail::invoke_with_introspection<return_t>(info, intro, [&]() -> return_t {
         if constexpr (std::is_void_v<return_t>) {
           Fn(std::forward<Args>(args)...);
           return;
@@ -286,6 +296,16 @@ struct outer {
 
     template <typename Obj, typename... Args>
     static return_t call_member(Obj&& obj, Args... args) {
+      introspection_interface* intro = intro_i;
+      if (intro == nullptr) {
+        if constexpr (std::is_void_v<return_t>) {
+          (std::forward<Obj>(obj).*Fn)(std::forward<Args>(args)...);
+          return;
+        } else {
+          return (std::forward<Obj>(obj).*Fn)(std::forward<Args>(args)...);
+        }
+      }
+
       auto arg_views = detail::make_argument_views<ArgNames...>(obj, args...);
       const call_info info{
         domain_id,
@@ -297,7 +317,7 @@ struct outer {
         std::span<const argument_view>(arg_views.data(), arg_views.size())
       };
 
-      return detail::invoke_with_introspection<return_t>(info, intro_i, [&]() -> return_t {
+      return detail::invoke_with_introspection<return_t>(info, intro, [&]() -> return_t {
         if constexpr (std::is_void_v<return_t>) {
           (std::forward<Obj>(obj).*Fn)(std::forward<Args>(args)...);
           return;
@@ -309,6 +329,16 @@ struct outer {
 
     template <typename... Args>
     static return_t call_functor(Args... args) {
+      introspection_interface* intro = intro_i;
+      if (intro == nullptr) {
+        if constexpr (std::is_void_v<return_t>) {
+          Fn(std::forward<Args>(args)...);
+          return;
+        } else {
+          return Fn(std::forward<Args>(args)...);
+        }
+      }
+
       auto arg_views = detail::make_argument_views<ArgNames...>(args...);
       const call_info info{
         domain_id,
@@ -320,7 +350,7 @@ struct outer {
         std::span<const argument_view>(arg_views.data(), arg_views.size())
       };
 
-      return detail::invoke_with_introspection<return_t>(info, intro_i, [&]() -> return_t {
+      return detail::invoke_with_introspection<return_t>(info, intro, [&]() -> return_t {
         if constexpr (std::is_void_v<return_t>) {
           Fn(std::forward<Args>(args)...);
           return;
