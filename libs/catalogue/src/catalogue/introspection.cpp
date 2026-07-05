@@ -12,7 +12,7 @@ static std::string format_arguments(const std::span<const argument_view> args) {
     if (i != 0) out += ", ";
     out += args[i].name;
     out += "=";
-    out += args[i].printable ? args[i].value : "<opaque>";
+    out += !args[i].value.empty() ? args[i].value : "<opaque>";
   }
   return out;
 }
