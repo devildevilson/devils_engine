@@ -22,14 +22,14 @@
 #include "tile_map.h"
 
 namespace devils_engine { namespace thread { class atomic_pool; } } // MT-пул для cognition
-namespace devils_engine { namespace catalogue { class statistics_introspection; } } // perf-стат апдейта актора
+namespace devils_engine { namespace catalogue { class statistics_store; } } // perf-стат апдейта актора
 
 namespace tile_frontier {
 namespace core {
 
 // Статистика времени фаз апдейта актора (catalogue). Актор-сим и UI (visage) живут в ОДНОМ
 // потоке (оба зовутся из simulation::update), поэтому UI читает её напрямую — без broker.
-const devils_engine::catalogue::statistics_introspection& actor_perf_statistics() noexcept;
+const devils_engine::catalogue::statistics_store& actor_perf_statistics() noexcept;
 
 // First lightweight actor slice: tiny deterministic brains write move intents,
 // then a stable apply phase mutates aesthetics components.

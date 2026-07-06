@@ -101,25 +101,27 @@ using build_actor_batch_perf = actor_perf_domain::fn_traits<&actor_batch::build,
 using build_actor_batch_fn_t = build_actor_batch_perf::loc_fn_t;
 
 // Общий catalogue-стат: агрегаты (avg/min/max/last) + кольцо последних замеров на каждую
-// обёрнутую функцию (окно под будущий график в UI). Раньше тут был самодельный
-// introspection, логировавший КАЖДЫЙ вызов — теперь копим и дампим агрегаты периодически.
-static catalogue::statistics_introspection& actor_perf_stats() noexcept {
-  static catalogue::statistics_introspection intro(256); // окно 256 замеров/функцию ≈ 12.8с при 20fps
-  return intro;
+// обёрнутую функцию (окно под график в UI). Режим statistics (невиртуальный switch): в exit
+// пишется function_id+elapsed в store, без построения arg_views.
+static catalogue::statistics_store& actor_perf_stats() noexcept {
+  static catalogue::statistics_store store(256); // окно 256 замеров/функцию ≈ 12.8с при 20fps
+  return store;
 }
 
 static void ensure_actor_perf_introspection() noexcept {
-  actor_perf_domain::set_introspection(&actor_perf_stats());
+  static const catalogue::introspection cfg{
+    catalogue::introspection_mode::statistics, catalogue::log_domain::gameplay, &actor_perf_stats()};
+  actor_perf_domain::set_introspection(&cfg);
 }
 
 // Публичный доступ к perf-стату (для UI-биндинга в simulation.cpp; тот же поток).
-const catalogue::statistics_introspection& actor_perf_statistics() noexcept {
+const catalogue::statistics_store& actor_perf_statistics() noexcept {
   return actor_perf_stats();
 }
 
 // Периодический дамп агрегатов по всем обёрнутым функциям апдейта актора.
 static void dump_actor_perf_stats() {
-  actor_perf_stats().for_each([] (const catalogue::statistics_introspection::function_record& r) {
+  actor_perf_stats().for_each([] (const catalogue::statistics_store::function_record& r) {
     DE_LOG(catalogue::log_domain::gameplay, flow,
            "perf {}: avg {:.1f} us (min {} / max {} / last {}), n={}",
            r.name, r.average_mcs(), r.min_mcs, r.max_mcs, r.last_mcs, r.call_count);
