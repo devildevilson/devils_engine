@@ -1139,9 +1139,12 @@ static config_source make_demiurg_config_source(const demiurg::resource_system* 
     std::string id = prefix + name;
     const auto dot = id.rfind('.');
     if (dot != std::string::npos) id = id.substr(0, dot);
-    const auto* r = reg->get<render_config_source>(id);
+    auto* r = reg->get<render_config_source>(id);
     if (r == nullptr) { utils::warn("render config resource '{}' not found in engine registry", id); return {}; }
-    return r->text;
+    r->ensure_text_loaded();
+    std::string text = r->text;
+    r->drop_text();
+    return text;
   };
   src.read_folder = [reg, prefix](const std::string& name) -> std::vector<config_source::config_text> {
     std::vector<render_config_source*> arr;
@@ -1157,11 +1160,13 @@ static config_source make_demiurg_config_source(const demiurg::resource_system* 
     std::vector<config_source::config_text> out;
     out.reserve(arr.size());
     for (auto* r : arr) {
+      r->ensure_text_loaded();
       out.push_back(config_source::config_text{
         std::string(r->id),
         r->text,
         r->list_start_line > 0 ? r->list_start_line - 1 : 0
       });
+      r->drop_text();
     }
     return out;
   };

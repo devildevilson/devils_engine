@@ -18,6 +18,7 @@ gpu_texture_resource::gpu_texture_resource() {
   // GPU-ресурс: warm->hot делает рендер (не warm_and_hot_same).
   set_flag(demiurg::resource_flags::warm_and_hot_same, false);
   set_flag(demiurg::resource_flags::binary, true);
+  set_flag(demiurg::resource_flags::hot_unload_to_cold, true);
 }
 
 // База не знает, откуда байты — их наполняет подкласс (png-декод / MSDF-шаг).

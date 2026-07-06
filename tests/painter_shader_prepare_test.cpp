@@ -31,6 +31,11 @@ TEST_CASE("glsl_source_file caches prepared SPIR-V by shader stage [painter]") {
   const auto first_size = shader.spirv.size();
   CHECK(shader.prepare_spirv(nullptr, shaderc_vertex_shader, &error));
   CHECK(shader.spirv.size() == first_size);
+
+  shader.unload_warm(utils::safe_handle_t{});
+  CHECK(shader.memory.empty());
+  CHECK(shader.spirv.empty());
+  CHECK_FALSE(shader.prepared(shaderc_vertex_shader));
 }
 
 TEST_CASE("painter render config reads demiurg tavl list subresources [painter]") {
@@ -118,6 +123,20 @@ TEST_CASE("painter render config reads demiurg tavl list subresources [painter]"
   CHECK(storage.find_resource("albedo_res") != painter::INVALID_RESOURCE_SLOT);
   CHECK(storage.find_render_target("rt1") != painter::INVALID_RESOURCE_SLOT);
   CHECK(storage.find_render_graph("graphics1") != painter::INVALID_RESOURCE_SLOT);
+  CHECK(swapchain->state() == demiurg::state::warm);
+  CHECK(albedo->state() == demiurg::state::warm);
+  CHECK(swapchain->text.empty());
+  CHECK(albedo->text.empty());
+  CHECK(swapchain->list_section.empty());
+  CHECK(albedo->list_section.empty());
+
+  const auto storage2 = painter::build_render_config(&resources, "render_config/");
+  CHECK(storage2.find_resource("swapchain_image") != painter::INVALID_RESOURCE_SLOT);
+  CHECK(storage2.find_resource("albedo_res") != painter::INVALID_RESOURCE_SLOT);
+  CHECK(swapchain->state() == demiurg::state::warm);
+  CHECK(albedo->state() == demiurg::state::warm);
+  CHECK(swapchain->text.empty());
+  CHECK(albedo->text.empty());
 
   fs::remove_all(root);
 }

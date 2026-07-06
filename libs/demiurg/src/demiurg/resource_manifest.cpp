@@ -23,6 +23,8 @@ struct tavl_section_view {
   std::string_view content;
   uint32_t index = 0;
   uint32_t start_line = 0;
+  size_t offset = SIZE_MAX;
+  size_t size = 0;
 };
 
 std::string strip_inline_comment(std::string_view value) {
@@ -68,13 +70,15 @@ std::vector<tavl_section_view> split_tavl_sections(const std::string_view conten
     const size_t sep = content.find(separator, pos);
     const size_t end = sep == std::string_view::npos ? content.size() : sep;
     std::string_view raw = content.substr(pos, end - pos);
+    size_t raw_offset = pos;
     uint32_t start_line = static_cast<uint32_t>(line);
     while (!raw.empty() && (raw.front() == ' ' || raw.front() == '\t' || raw.front() == '\r' || raw.front() == '\n')) {
       if (raw.front() == '\n') start_line += 1;
       raw.remove_prefix(1);
+      raw_offset += 1;
     }
     raw = utils::string::trim(raw);
-    if (!raw.empty()) sections.push_back(tavl_section_view{raw, index, start_line});
+    if (!raw.empty()) sections.push_back(tavl_section_view{raw, index, start_line, raw_offset, raw.size()});
     if (sep == std::string_view::npos) break;
     line += count_newlines(content.substr(pos, sep + separator.size() - pos));
     pos = sep + separator.size();
@@ -99,6 +103,8 @@ bool append_tavl_list_candidates(
     candidate.aliases.clear();
     candidate.list_index = section.index;
     candidate.list_start_line = section.start_line;
+    candidate.list_offset = section.offset;
+    candidate.list_size = section.size;
     candidate.list_section = std::string(section.content);
     candidate.list_name = parse_name_field(section.content);
 

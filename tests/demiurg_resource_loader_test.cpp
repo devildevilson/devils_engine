@@ -101,6 +101,24 @@ public:
   void unload_hot(const utils::safe_handle_t&) override {}
 };
 
+class direct_cold_unload_resource final : public demiurg::resource_interface {
+public:
+  int load_cold_count = 0;
+  int load_warm_count = 0;
+  int unload_warm_count = 0;
+  int unload_hot_count = 0;
+
+  direct_cold_unload_resource() {
+    set_flag(demiurg::resource_flags::warm_and_hot_same, false);
+    set_flag(demiurg::resource_flags::hot_unload_to_cold, true);
+  }
+
+  void load_cold(const utils::safe_handle_t&) override { ++load_cold_count; }
+  void load_warm(const utils::safe_handle_t&) override { ++load_warm_count; }
+  void unload_warm(const utils::safe_handle_t&) override { ++unload_warm_count; }
+  void unload_hot(const utils::safe_handle_t&) override { ++unload_hot_count; }
+};
+
 }
 
 TEST_CASE("resource_system does not instantiate shadowed module resources [demiurg]") {
@@ -371,6 +389,25 @@ TEST_CASE("resource_loader keeps pipeline GPU commit as render-owned external st
   CHECK(loader.update(jobs) == 0);
   CHECK(jobs.empty());
   CHECK(loader.pending_count() == 0);
+}
+
+TEST_CASE("resource_interface can unload hot resources directly to cold [demiurg]") {
+  direct_cold_unload_resource res;
+
+  res.load(utils::safe_handle_t{});
+  res.load(utils::safe_handle_t{});
+  REQUIRE(res.state() == demiurg::state::hot);
+  CHECK(res.load_cold_count == 1);
+  CHECK(res.load_warm_count == 1);
+
+  res.unload(utils::safe_handle_t{});
+  CHECK(res.state() == demiurg::state::cold);
+  CHECK(res.unload_hot_count == 1);
+  CHECK(res.unload_warm_count == 1);
+
+  res.load(utils::safe_handle_t{});
+  CHECK(res.state() == demiurg::state::warm);
+  CHECK(res.load_cold_count == 2);
 }
 
 TEST_CASE("resource_loader waits for dependencies before CPU-heavy pipeline prepare [demiurg]") {
