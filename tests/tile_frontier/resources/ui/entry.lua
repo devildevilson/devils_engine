@@ -12,6 +12,8 @@ local resources = {
   grass = request("textures/grass"),
   grad2 = request("textures/grad2"),
   quad = request("textures/quad"),
+  -- шрифты — такие же demiurg-ресурсы: хендл уходит в nk.push_font{ font = ... }
+  italic = request("fonts/crimson.italic"),
   eating = request("sounds/eating/freesound_community-chomp-chew-bite-102031"),
   ambient = request("sounds/ambient/soundreality-ambient-spring-forest-323801"),
 }
@@ -35,7 +37,7 @@ end
 local function splash_screen()
   local flags = nk.panel_flags.border | nk.panel_flags.title
   if nk.begin("splash", {440, 280, 400, 150}, flags) then
-    nk.push_font({font = "italic", size = 40, bold = 0.08})
+    nk.push_font({font = resources.italic, size = 40, bold = 0.08})
     nk.layout.row_dynamic(52, 1)
     nk.label("devils_engine", nil, nk.text_align.centered)
     nk.pop_font()
@@ -49,7 +51,7 @@ end
 local function loading_screen()
   local flags = nk.panel_flags.border | nk.panel_flags.title
   if nk.begin("loading", {420, 300, 440, 160}, flags) then
-    nk.push_font({font = "italic", size = 30})
+    nk.push_font({font = resources.italic, size = 30})
     nk.layout.row_dynamic(40, 1)
     nk.label("Loading resources", nil, nk.text_align.centered)
     nk.pop_font()
@@ -85,8 +87,8 @@ local function game_ui(time, timestamp, rng)
     nk.label("BIG outline", nil, nk.text_align.left)
     nk.pop_font()
 
-    -- второй шрифт (шаг 2b): выбираем базовый шрифт по имени "italic"
-    nk.push_font({font = "italic", size = 26})
+    -- второй шрифт: базовый шрифт выбирается demiurg-хендлом ресурса, не строкой
+    nk.push_font({font = resources.italic, size = 26})
     nk.layout.row_dynamic(32, 1)
     nk.label("italic font", nil, nk.text_align.left)
     nk.pop_font()

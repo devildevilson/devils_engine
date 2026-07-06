@@ -36,7 +36,7 @@ struct resource_handle {
   T* get() const noexcept {
     constexpr size_t type_id = utils::type_id<T>();
     auto* ptr = get();
-    if (ptr == nullptr || ptr->loading_type_id != type_id) return nullptr;
+    if (ptr == nullptr || !ptr->is_type(type_id)) return nullptr;
     return static_cast<T*>(ptr);
   }
 
@@ -115,6 +115,7 @@ public:
       auto ptr = std::apply([&allocator] (auto&&... ctor_args) {
         return allocator.create<T>(std::forward<decltype(ctor_args)>(ctor_args)...);
       }, args);
+      ptr->type_id = utils::type_id<T>();
       ptr->loading_type_id = utils::type_id<T>();
       return ptr;
     };
@@ -134,7 +135,8 @@ public:
       auto ptr = std::apply([&allocator] (auto&&... ctor_args) {
         return allocator.create<T>(std::forward<decltype(ctor_args)>(ctor_args)...);
       }, args);
-      ptr->loading_type_id = utils::type_id<BaseT>();
+      ptr->type_id = utils::type_id<T>();          // точная идентичность (get<T> и пр.)
+      ptr->loading_type_id = utils::type_id<BaseT>(); // загрузчик работает через базу
       return ptr;
     };
 
@@ -157,7 +159,7 @@ public:
     constexpr size_t type_id = utils::type_id<T>();
 
     auto ptr = get(id);
-    if (ptr == nullptr || ptr->loading_type_id != type_id) return nullptr;
+    if (ptr == nullptr || !ptr->is_type(type_id)) return nullptr;
     return static_cast<T*>(ptr);
   }
 
@@ -172,7 +174,7 @@ public:
     const auto v = find(filter_str);
     size_t i = 0;
     for (; i < v.size(); ++i) { // arr.capacity() - arr.size()
-      if (!std::is_same_v<T, resource_interface> && v[i]->loading_type_id != type_id) continue;
+      if (!std::is_same_v<T, resource_interface> && !v[i]->is_type(type_id)) continue;
       auto ptr = v[i];
       arr.push_back(static_cast<T*>(ptr));
     }
@@ -188,7 +190,7 @@ public:
     size_t counter = 0;
     for (size_t i = 0; i < resources.size(); ++i) { // && arr.size() < arr.capacity()
       auto ptr = resources[i];
-      if (!std::is_same_v<T, resource_interface> && ptr->loading_type_id != type_id) continue;
+      if (!std::is_same_v<T, resource_interface> && !ptr->is_type(type_id)) continue;
       if (ptr->id.find(filter_str) == std::string_view::npos) continue;
 
       counter += 1;
@@ -204,7 +206,7 @@ public:
     if (itr == types.end()) return 0;
 
     constexpr size_t type_id = utils::type_id<T>();
-    if (itr->second->type_list == nullptr || itr->second->type_list->loading_type_id != type_id) return 0;
+    if (itr->second->type_list == nullptr || !itr->second->type_list->is_type(type_id)) return 0;
 
     size_t counter = 0;
     for (auto res = itr->second->type_list; res != nullptr; res = res->exemplary_next(itr->second->type_list)) {

@@ -67,7 +67,7 @@ struct resource_ref {
   template <typename T>
   T* get() const noexcept {
     if (auto* ptr = handle.template get<T>()) return ptr;
-    if (direct == nullptr || direct->loading_type_id != utils::type_id<T>()) return nullptr;
+    if (direct == nullptr || !direct->is_type(utils::type_id<T>())) return nullptr;
     return static_cast<T*>(direct);
   }
 };

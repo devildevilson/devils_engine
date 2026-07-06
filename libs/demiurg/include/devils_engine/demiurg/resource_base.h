@@ -106,6 +106,11 @@ namespace demiurg {
     std::string_view ext;
     std::string_view module_name;
     std::string_view type;
+    // Два id разводят РАЗНЫЕ вопросы: type_id — точная идентичность C++-типа (ставит register_type,
+    // по нему работает типизированный доступ get<T>/filter<T>); loading_type_id — ключ диспетчеризации
+    // ЗАГРУЗЧИКА (может быть базой, напр. visage::font_resource грузится как painter::gpu_texture_resource —
+    // см. register_type<BaseT, T>). Раньше поле было одно и точный тип терялся при маскараде под базу.
+    size_t type_id;
     size_t loading_type_id;
 
     const module_interface* module;
@@ -123,6 +128,7 @@ namespace demiurg {
     std::vector<resource_interface*> dependencies;
 
     inline resource_interface() noexcept :
+      type_id(0),
       loading_type_id(0),
       module(nullptr),
       raw_size(0),
@@ -136,6 +142,9 @@ namespace demiurg {
 
     void set(std::string path, const std::string_view &module_name, const std::string_view &id, const std::string_view &ext);
     bool is_list_entry() const noexcept { return list_index != invalid_list_index; }
+    // матч типизированного доступа: точный тип ИЛИ база загрузки (get<gpu_texture_resource>()
+    // достаёт и текстуру, и шрифт; get<font_resource>() — только шрифт)
+    bool is_type(const size_t tid) const noexcept { return type_id == tid || loading_type_id == tid; }
     uint32_t source_line(uint32_t local_line) const noexcept;
 
     inline void add_dependency(resource_interface* dep) {

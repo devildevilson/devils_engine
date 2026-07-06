@@ -64,10 +64,6 @@ public:
 
   system(const font_t* default_font);
   ~system() noexcept;
-  // Регистрация ДОПОЛНИТЕЛЬНОГО именованного шрифта (шаг 2b). default_font регистрируется в
-  // конструкторе под именем "default". Хост грузит N font_resource и вешает их сюда; lua выбирает
-  // базовый шрифт в push_font{ font="..." }. Все шрифты — MSDF-атласы, рисуются одинаково.
-  void add_font(const std::string& name, const font_t* f);
   void set_entry_point(const sol::object& value);
 
   // Порядок за кадр: input() -> update() -> convert(). input раздаёт ввод в nk,
@@ -99,15 +95,12 @@ private:
   // атлас/глифы (query/width/userdata) базового nkfont и отличаются только height. texture.id
   // освежается из nkfont при каждом вызове (атлас мог дойти до HOT уже после кэширования варианта).
   nk_user_font* sized_font(const font_t* base, float height);
-  // резолв базового шрифта по имени; nullptr/неизвестное имя ⇒ default_font.
-  const font_t* resolve_font(std::string_view name) const;
 
   sol::state lua;
   sol::environment env;
+  // дефолтный базовый шрифт. ДОПОЛНИТЕЛЬНЫЕ шрифты visage не хранит: lua выбирает их
+  // demiurg-хендлом в push_font{ font = handle } (метрики живут в font_resource у реестра).
   const font_t* default_font;
-  // зарегистрированные базовые шрифты (name → font_t*); [0] = "default". Стабильные указатели
-  // (font_t живёт у хоста всё время жизни UI). См. add_font/resolve_font.
-  std::vector<std::pair<std::string, const font_t*>> fonts_;
   std::unique_ptr<nk_context> ctx;
   // отдельный буфер draw-команд для nk_convert (НЕ ctx->memory: convert читает UI-команды
   // из ctx и пишет draw-команды сюда — это должны быть разные буферы)
