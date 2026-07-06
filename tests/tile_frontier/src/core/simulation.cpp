@@ -107,7 +107,7 @@ static void setup_logging(const logging_config& log_cfg) {
     std::filesystem::create_directories(std::filesystem::path(file).parent_path(), ec);
   }
   catalogue::init_logging(file, log_cfg.console);
-  catalogue::register_engine_domains();
+  catalogue::register_engine_domains(); 
 
   const auto apply = [] (const uint32_t id, const std::string& depth_str) {
     catalogue::log_depth d = catalogue::log_depth::off;

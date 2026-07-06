@@ -24,6 +24,7 @@
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/string_id.h"
 #include "devils_engine/utils/type_traits.h"
+#include "devils_engine/catalogue/logging.h" // лог-домены/уровни: trace-уровень домена авто-эскалирует интроспекцию
 
 namespace devils_engine {
 namespace catalogue {
@@ -203,26 +204,36 @@ std::string_view stringify_arg(argument_value_buffer& buffer, const T& value, bo
   }
 }
 
+// Эффективный режим = базовый (in.mode) ЭСКАЛИРОВАННЫЙ лог-уровнем домена: если лог-домен
+// на trace → минимум tracing (авто-связка логгирования и трассировки функций); dump (выше)
+// сохраняется. Так `app.set_log_level("gameplay","trace")` включает трассировку функций домена
+// поверх perf-статистики. Гейт — relaxed atomic load (near-zero cost).
+inline introspection_mode effective_mode(const introspection& in) noexcept {
+  const uint8_t base = static_cast<uint8_t>(in.mode);
+  const uint8_t floor = logs().enabled(in.log_domain, log_depth::trace) ? static_cast<uint8_t>(introspection_mode::tracing) : 0;
+  return static_cast<introspection_mode>(std::max(base, floor));
+}
+
 // emit по режиму (в .cpp): вход/выход. Невиртуальный switch вместо виртуалок. Для не-dump
 // info.arguments пуст (arg_views не строятся — см. fn_traits ниже).
-void emit_enter(const introspection& in, const call_info& info);
-void emit_exit(const introspection& in, const call_info& info, uint64_t elapsed_mcs);
+void emit_enter(const introspection& in, introspection_mode mode, const call_info& info);
+void emit_exit(const introspection& in, introspection_mode mode, const call_info& info, uint64_t elapsed_mcs);
 
 // Обёртка вызова: enter (no-op кроме tracing/dump) → таймер → invoke → exit (switch по режиму).
 template <typename Ret, typename Invoke>
-Ret run(const introspection& in, const call_info& info, Invoke&& invoke) {
+Ret run(const introspection& in, const introspection_mode mode, const call_info& info, Invoke&& invoke) {
   using clock = std::chrono::steady_clock;
-  emit_enter(in, info);
+  emit_enter(in, mode, info);
   const auto start = clock::now();
   if constexpr (std::is_void_v<Ret>) {
     std::forward<Invoke>(invoke)();
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(clock::now() - start).count();
-    emit_exit(in, info, static_cast<uint64_t>(elapsed));
+    emit_exit(in, mode, info, static_cast<uint64_t>(elapsed));
     return;
   } else {
     Ret ret = std::forward<Invoke>(invoke)();
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(clock::now() - start).count();
-    emit_exit(in, info, static_cast<uint64_t>(elapsed));
+    emit_exit(in, mode, info, static_cast<uint64_t>(elapsed));
     return ret;
   }
 }
@@ -338,19 +349,19 @@ struct domain {
     template <typename... Args>
     static return_t call_free_at(const std::source_location loc, Args&&... args) {
       const introspection* in = intro_i;
-      if (in == nullptr || in->mode == introspection_mode::off) {
-        return invoke_free(std::forward<Args>(args)...);
-      }
+      if (in == nullptr) return invoke_free(std::forward<Args>(args)...);
+      const introspection_mode mode = detail::effective_mode(*in);
+      if (mode == introspection_mode::off) return invoke_free(std::forward<Args>(args)...);
       auto invoke = [&]() -> return_t { return invoke_free(std::forward<Args>(args)...); };
       // arg_views строим ЛЕНИВО только для dump (дорогой stringify); остальным режимам — пустой span.
-      if (in->mode == introspection_mode::dump) {
+      if (mode == introspection_mode::dump) {
         auto arg_views = make_argument_views(args...);
         const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(),
           std::span<const argument_view>(arg_views.views.data(), arg_views.views.size()) };
-        return detail::run<return_t>(*in, info, invoke);
+        return detail::run<return_t>(*in, mode, info, invoke);
       }
       const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(), {} };
-      return detail::run<return_t>(*in, info, invoke);
+      return detail::run<return_t>(*in, mode, info, invoke);
     }
 
     template <typename Obj, typename... Args>
@@ -361,18 +372,18 @@ struct domain {
     template <typename Obj, typename... Args>
     static return_t call_member_at(const std::source_location loc, Obj&& obj, Args&&... args) {
       const introspection* in = intro_i;
-      if (in == nullptr || in->mode == introspection_mode::off) {
-        return invoke_member(std::forward<Obj>(obj), std::forward<Args>(args)...);
-      }
+      if (in == nullptr) return invoke_member(std::forward<Obj>(obj), std::forward<Args>(args)...);
+      const introspection_mode mode = detail::effective_mode(*in);
+      if (mode == introspection_mode::off) return invoke_member(std::forward<Obj>(obj), std::forward<Args>(args)...);
       auto invoke = [&]() -> return_t { return invoke_member(std::forward<Obj>(obj), std::forward<Args>(args)...); };
-      if (in->mode == introspection_mode::dump) {
+      if (mode == introspection_mode::dump) {
         auto arg_views = make_argument_views(obj, args...);
         const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(),
           std::span<const argument_view>(arg_views.views.data(), arg_views.views.size()) };
-        return detail::run<return_t>(*in, info, invoke);
+        return detail::run<return_t>(*in, mode, info, invoke);
       }
       const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(), {} };
-      return detail::run<return_t>(*in, info, invoke);
+      return detail::run<return_t>(*in, mode, info, invoke);
     }
 
     template <typename... Args>
@@ -383,18 +394,18 @@ struct domain {
     template <typename... Args>
     static return_t call_functor_at(const std::source_location loc, Args&&... args) {
       const introspection* in = intro_i;
-      if (in == nullptr || in->mode == introspection_mode::off) {
-        return invoke_functor(std::forward<Args>(args)...);
-      }
+      if (in == nullptr) return invoke_functor(std::forward<Args>(args)...);
+      const introspection_mode mode = detail::effective_mode(*in);
+      if (mode == introspection_mode::off) return invoke_functor(std::forward<Args>(args)...);
       auto invoke = [&]() -> return_t { return invoke_functor(std::forward<Args>(args)...); };
-      if (in->mode == introspection_mode::dump) {
+      if (mode == introspection_mode::dump) {
         auto arg_views = make_argument_views(args...);
         const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(),
           std::span<const argument_view>(arg_views.views.data(), arg_views.views.size()) };
-        return detail::run<return_t>(*in, info, invoke);
+        return detail::run<return_t>(*in, mode, info, invoke);
       }
       const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(), {} };
-      return detail::run<return_t>(*in, info, invoke);
+      return detail::run<return_t>(*in, mode, info, invoke);
     }
 
     template <typename T, typename = void>
