@@ -140,6 +140,32 @@ local function game_ui(time, timestamp, rng)
   end
   nk.fin()
 
+  -- perf-график фаз апдейта актора (catalogue::statistics_introspection). app.perf_stats() отдаёт
+  -- { name, avg, min, max, last, count, samples={...} }; samples — последние замеры для nk.plot.
+  local perf = app.perf_stats()
+  table.sort(perf, function(a, b) return a.name < b.name end) -- стабильный порядок (hash_map иначе прыгает)
+  local perf_flags = nk.panel_flags.border | nk.panel_flags.title | nk.panel_flags.movable | nk.panel_flags.scalable
+  if nk.begin("perf (us)", {980, 236, 300, 360}, perf_flags) then
+    nk.push_font(12)
+    if #perf == 0 then
+      nk.layout.row_dynamic(18, 1)
+      nk.label("no samples yet", nil, nk.text_align.left)
+    else
+      local prev_markers = nk.chart.show_markers(false) -- чистые линии без точек-маркеров
+      for _, e in ipairs(perf) do
+        nk.layout.row_dynamic(16, 1)
+        nk.label(string.format("%s  avg %.1f / max %.0f", e.name, e.avg, e.max), nil, nk.text_align.left)
+        if #e.samples > 0 then
+          nk.layout.row_dynamic(38, 1)
+          nk.plot(nk.chart_type.lines, e.samples, #e.samples, 0) -- nk.plot сам масштабирует по значениям
+        end
+      end
+      nk.chart.show_markers(prev_markers) -- восстановить для остального UI
+    end
+    nk.pop_font()
+  end
+  nk.fin()
+
   -- Демо-плеер эмбиента: весь API звука (play+start, state, stop). Очередь/повтор — на lua.
   local pflags = nk.panel_flags.border | nk.panel_flags.title | nk.panel_flags.movable
   if nk.begin("sound player", {50, 410, 340, 150}, pflags) then

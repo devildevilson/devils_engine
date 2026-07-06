@@ -37,8 +37,12 @@ atomic_pool::atomic_pool(const size_t thread_count) : stack_pool(MAXIMUM_TASK_SI
         }
 
         {
+          // Блокируемся, ПОКА нет работы И не просят остановиться. Предикат сам вычерпывает
+          // задачу (try_pop) — это же закрывает окно «задачу запушили, пока мы шли к wait».
+          // ВАЖНО: было `!stoken.stop_requested()` — предикат почти всегда true → wait возвращался
+          // мгновенно, воркер вечно спинил и жёг ядро. Должно быть `stop_requested()`.
           std::unique_lock lk(cv_mtx);
-          cv.wait(lk, [&] { return queue.try_pop(task) || !stoken.stop_requested(); });
+          cv.wait(lk, [&] { return queue.try_pop(task) || stoken.stop_requested(); });
         }
 
         spins = 0;
@@ -58,6 +62,9 @@ atomic_pool::atomic_pool(const size_t thread_count) : stack_pool(MAXIMUM_TASK_SI
 
 atomic_pool::~atomic_pool() noexcept {
   stop_source.request_stop();
+  // тот же барьер: гарантируем, что воркер, засыпающий прямо сейчас, увидит stop и не проспит
+  // notify_all (иначе jthread не завершится и join в векторе workers зависнет).
+  { std::lock_guard<std::mutex> lk(cv_mtx); }
   cv.notify_all();
 }
 
@@ -70,6 +77,10 @@ void atomic_pool::submitbase(task_interface* t) noexcept {
   if (stop_source.stop_requested()) return;
   pending.fetch_add(1ull, PUB_CONSUME); // считаем задачу «в полёте» ДО того, как она станет видна воркеру
   queue.push(t);
+  // Пустой захват cv_mtx = барьер против потери пробуждения: если воркер сейчас между
+  // «предикат вернул false» и собственно засыпанием (он держит cv_mtx), notify не потеряется —
+  // мы дождёмся, пока он реально заснёт (отпустит mtx внутри wait), и только тогда разбудим.
+  { std::lock_guard<std::mutex> lk(cv_mtx); }
   cv.notify_one();
 }
 

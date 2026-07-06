@@ -13,6 +13,7 @@
 #include <devils_engine/act/function.h>
 #include <devils_engine/acumen/astar.h>     // astar<>::container для find_solution
 #include <devils_engine/catalogue/introspection.h>
+#include <devils_engine/catalogue/logging.h> // DE_LOG — perf-дамп в домен gameplay
 #include <devils_engine/mood/runtime.h>     // mood::step / apply_transition — шаг FSM
 #include <devils_engine/thread/atomic_pool.h> // MT-пул (distribute/thread_index/wait)
 #include <devils_engine/utils/core.h>      // utils::error
@@ -95,28 +96,34 @@ namespace catalogue_domains {
 constexpr size_t actor_update_perf = 1;
 }
 
-class actor_update_perf_introspection final : public catalogue::introspection_interface {
-public:
-  catalogue::call_decision enter(const catalogue::call_info&) override {
-    return catalogue::call_decision::execute;
-  }
-
-  void exit(const catalogue::call_info& info, const uint64_t elapsed_mcs) override {
-    utils::info("perf {}: {} us", info.function_name, elapsed_mcs);
-  }
-
-  void skipped(const catalogue::call_info& info) override {
-    utils::info("perf {}: skipped", info.function_name);
-  }
-};
-
 using actor_perf_domain = catalogue::domain<catalogue_domains::actor_update_perf>;
 using build_actor_batch_perf = actor_perf_domain::fn_traits<&actor_batch::build, "build", "batch", "world", "tick">;
 using build_actor_batch_fn_t = build_actor_batch_perf::loc_fn_t;
 
+// Общий catalogue-стат: агрегаты (avg/min/max/last) + кольцо последних замеров на каждую
+// обёрнутую функцию (окно под будущий график в UI). Раньше тут был самодельный
+// introspection, логировавший КАЖДЫЙ вызов — теперь копим и дампим агрегаты периодически.
+static catalogue::statistics_introspection& actor_perf_stats() noexcept {
+  static catalogue::statistics_introspection intro(256); // окно 256 замеров/функцию ≈ 12.8с при 20fps
+  return intro;
+}
+
 static void ensure_actor_perf_introspection() noexcept {
-  static actor_update_perf_introspection intro;
-  actor_perf_domain::set_introspection(&intro);
+  actor_perf_domain::set_introspection(&actor_perf_stats());
+}
+
+// Публичный доступ к perf-стату (для UI-биндинга в simulation.cpp; тот же поток).
+const catalogue::statistics_introspection& actor_perf_statistics() noexcept {
+  return actor_perf_stats();
+}
+
+// Периодический дамп агрегатов по всем обёрнутым функциям апдейта актора.
+static void dump_actor_perf_stats() {
+  actor_perf_stats().for_each([] (const catalogue::statistics_introspection::function_record& r) {
+    DE_LOG(catalogue::log_domain::gameplay, flow,
+           "perf {}: avg {:.1f} us (min {} / max {} / last {}), n={}",
+           r.name, r.average_mcs(), r.min_mcs, r.max_mcs, r.last_mcs, r.call_count);
+  });
 }
 
 static uint32_t mix32(uint32_t x) noexcept {
@@ -536,6 +543,8 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
   maintain_food_fn_t{}(*this);
   build_actor_batch_fn_t{}(batch, world_, tick_);
 
+  if (tick_ % 100 == 0) dump_actor_perf_stats(); // периодический дамп агрегатов (≈ раз в 5с при 20fps)
+
   return actor_metrics{
     uint32_t(world_.count<actor_position>()),
     uint32_t(intents_.size()), // = сколько актороов реально думали в этот тик
@@ -640,6 +649,7 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
       });
     due_.resize(think_budget_);
   }
+  DE_TRACE(catalogue::log_domain::gameplay, "cognition tick={} due={} budget={}", tick, due_.size(), think_budget_);
   if (due_.empty()) return;
 
   // (2) per-thread scratch: слот = pool.thread_index (0=вызывающий, 1..size=воркеры). Размер

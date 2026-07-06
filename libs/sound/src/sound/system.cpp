@@ -1,3 +1,4 @@
+#include <devils_engine/catalogue/logging.h>
 #include "system.h"
 
 #include <algorithm>
@@ -12,6 +13,7 @@
 #include "al_helper.h"
 
 #include "devils_engine/utils/core.h"
+#include "devils_engine/utils/time-utils.hpp" // utils::global_time_resolution — µs-единица дедлайнов задач
 
 #include "mp3_decoder.h"
 #include "wav_decoder.h"
@@ -762,7 +764,7 @@ static void completely_stop_source(system::source &s) {
       ptr->frames_written_total.store(frameIndex, std::memory_order_release);
       ptr->current_cursor_pos = frameIndex;
 
-      utils::info("Data source seek");
+      //utils::info("Data source seek");
 
       return MA_SUCCESS;
     }
@@ -814,7 +816,7 @@ static void completely_stop_source(system::source &s) {
 
       *pCursor = ptr->cursor_pos.load(std::memory_order_acquire);
 
-      utils::info("Data source get_cursor");
+      DE_LOG(catalogue::log_domain::sound, trace, "Data source get_cursor");
 
       return MA_SUCCESS;
     }
@@ -828,7 +830,7 @@ static void completely_stop_source(system::source &s) {
 
       *pLength = ptr->frames_written_total.load(std::memory_order_acquire);
 
-      utils::info("Data source get_length");
+      DE_LOG(catalogue::log_domain::sound, trace, "Data source get_length");
 
       return MA_SUCCESS;
     }
@@ -857,8 +859,10 @@ static void completely_stop_source(system::source &s) {
       pMyDataSource->channels = channels;
       pMyDataSource->sample_rate = sample_rate;
 
-      const size_t buffer_size = seconds_to_bytes(buffer_seconds, pMyDataSource->sample_rate, pMyDataSource->channels, pMyDataSource->format);
-      pMyDataSource->buffer.resize(buffer_size, 0.0f);
+      // Кольцо НЕ выделяем здесь — ленивое выделение при первом реальном использовании голоса
+      // (ensure_stream_buffer). Иначе 320 предсозданных голосов держат сотни МБ вхолостую.
+      // (buffer_seconds сохранять не нужно: он один на систему = stream_buffer_seconds.)
+      (void)buffer_seconds;
       pMyDataSource->read_pos = 0;
       pMyDataSource->write_pos = 0;
 
@@ -871,6 +875,15 @@ static void completely_stop_source(system::source &s) {
 
     static ma_result standart_stereo_source_init(devils_engine_sound_data_source* pMyDataSource, const double buffer_seconds) {
       return standart_source_init(pMyDataSource, 48000, 2, format::f32, buffer_seconds);
+    }
+
+    // Ленивое выделение PCM-кольца голоса. ВАЖНО: buffer — vector<float>, а seconds_to_bytes даёт
+    // БАЙТЫ, поэтому число элементов = байты / sizeof(float) (раньше resize звался числом БАЙТ →
+    // кольцо было в 4× больше задуманного). Резайзим только если текущее меньше нужного.
+    static void ensure_stream_buffer(devils_engine_sound_data_source* ds, const double buffer_seconds) {
+      const size_t bytes = seconds_to_bytes(buffer_seconds, ds->sample_rate, ds->channels, ds->format);
+      const size_t elements = (bytes + sizeof(float) - 1) / sizeof(float);
+      if (ds->buffer.size() < elements) ds->buffer.resize(elements, 0.0f);
     }
 
 //    static ma_result sound_instance_init(system2::sound_instance* ptr, const uint32_t sample_rate, const uint32_t channels, const enum format format) {
@@ -1112,20 +1125,23 @@ static void completely_stop_source(system::source &s) {
       if (task.id == SIZE_MAX || task.res.data.empty() || task.res.type == data_type::undefined) return false;
       if (is_too_far(m_engine.get(), task)) return false;
       if (find_task_id(task.id) != SIZE_MAX) return false;
-      m_tasks.push_back({nullptr, task, cur_time, 0, 0, 0, 0, false, false, false, nullptr, nullptr});
+      // inst, task, timestamp, active_time, lifetime_budget, frames_decoded, stream_begin, stream_frames,
+      // source_frames, phase, started, decoder, converter
+      m_tasks.push_back({nullptr, task, cur_time, 0, 0, 0, 0, 0, 0, task_phase::waiting_voice, false, nullptr, nullptr});
       return true;
     }
 
     bool system2::remove_sound(const size_t task_id) {
       const size_t index = find_task_id(task_id);
       if (index == SIZE_MAX) return false;
-      auto& cur_task = m_tasks[index];
 
-      if (cur_task.inst != nullptr) {
-        auto* inst = cur_task.inst;
+      // единый путь освобождения: release_task вернёт/выгрузит голос (только если не разделён)
+      // и освободит декодер/конвертер. Задачи, ДЕЛЯЩИЕ этот голос (after-цепочка), тоже снимаем.
+      auto* inst = m_tasks[index].inst;
+      if (inst != nullptr) {
+        for (auto& t : m_tasks) { if (t.inst == inst) t.decoder.reset(), t.converter.reset(); }
         ma_sound_stop(&inst->sound);
         inst->data_source.reset_stream();
-
         if (inst->data_source.is_standart_mono()) {
           m_instances_mono_stack.push_back(inst);
         } else if (inst->data_source.is_standart_stereo()) {
@@ -1133,10 +1149,9 @@ static void completely_stop_source(system::source &s) {
         } else {
           ma_sound_uninit(&inst->sound);
           data_source_uninit(&inst->data_source);
-          auto itr = std::find_if(m_instances.begin(), m_instances.end(), [ptr = inst] (const auto &a) { return a.get() == ptr; });
+          auto itr = std::find_if(m_instances.begin(), m_instances.end(), [inst] (const auto &a) { return a.get() == inst; });
           if (itr != m_instances.end()) m_instances.erase(itr);
         }
-
         std::erase_if(m_tasks, [inst] (const auto &t) { return t.inst == inst; });
         return true;
       }
@@ -1250,8 +1265,9 @@ static void completely_stop_source(system::source &s) {
       cur_task.stream_begin_frame = 0;
       cur_task.stream_frames_count = 0;
       cur_task.source_frames_count = 0;
-      cur_task.initialized = false;
-      cur_task.segment_registered = false;
+      // назад в waiting_voice: голос ОСТАВЛЯЕМ (acquire_voice idempotent), init_decode пересоздаст
+      // декодер с новой стартовой позицией. started сбрасываем — ma_sound_start снова в active.
+      cur_task.phase = task_phase::waiting_voice;
       cur_task.started = false;
       cur_task.decoder.reset();
       cur_task.converter.reset();
@@ -1313,190 +1329,213 @@ static void completely_stop_source(system::source &s) {
       utils::error{}("Not implemented");
     }
 
+    // Выдать голос под задачу. idempotent: если голос уже есть (в т.ч. разделённый с prev
+    // для after) — просто true. Для after берём голос prev (gapless). Пул пуст → false (ждём).
+    bool system2::acquire_voice(sound_task& t) {
+      if (t.inst != nullptr) return true;
+
+      const auto pop = [] (std::vector<sound_instance*>& stack) -> sound_instance* {
+        if (stack.empty()) return nullptr;
+        auto* inst = stack.back();
+        stack.pop_back();
+        inst->data_source.reset_stream();
+        return inst;
+      };
+
+      if (t.task.after != SIZE_MAX) {
+        const size_t prev_index = find_task_id(t.task.after);
+        if (prev_index == SIZE_MAX) return false;          // цепочка оборвана — дропнется по таймауту
+        auto* prev = m_tasks[prev_index].inst;
+        if (prev == nullptr) return false;                 // prev ещё не получил голос — ждём
+        t.inst = prev;                                     // gapless: делим голос prev
+        return true;
+      }
+
+      if (t.task.type == type::sfx || t.task.type == type::talk_pos) {
+        t.inst = pop(m_instances_mono_stack);
+      } else if (t.task.type == type::ui_effect) {
+        t.inst = pop(m_instances_stereo_stack);
+      } else {
+        // неизвестный тип: нужен декодер, чтобы узнать число каналов (не pool-starved путь)
+        init_decode(t);
+        if (t.decoder->channels() == 1) {
+          t.inst = pop(m_instances_mono_stack);
+        } else if (t.decoder->channels() == 2) {
+          t.inst = pop(m_instances_stereo_stack);
+        } else {
+          m_instances.emplace_back(new sound_instance);
+          instance_init(m_instances.back().get(), playback_sample_rate, t.decoder->channels(), format::f32);
+          t.inst = m_instances.back().get();
+          t.inst->data_source.reset_stream();
+        }
+      }
+      return t.inst != nullptr;
+    }
+
+    // Создать декодер + конвертер и посчитать frames сегмента. idempotent. Тяжёлые ресурсы
+    // (в т.ч. КОПИЯ PCM в pcm_decoder) — создаём ТОЛЬКО отсюда, на входе в active (после голоса).
+    void system2::init_decode(sound_task& t) {
+      if (t.decoder) return;
+
+      // PCM-ветка: данные уже декодированы (короткий звук), метаданные в resource2 → passthrough.
+      if (t.task.res.type == data_type::pcm) {
+        const auto& r = t.task.res;
+        t.decoder = std::make_unique<pcm_decoder>(
+          r.data.data(), r.data.size(), r.sample_format, r.channels, r.sample_rate, r.frames_count);
+      } else {
+        t.decoder = make_decoder(t.task.res.type, t.task.res.id, t.task.res.data);
+      }
+      if (!t.decoder) utils::error{}("Could not create decoder for sound task '{}'", t.task.res.id);
+
+      t.source_frames_count = t.decoder->frames_count();
+      const size_t start_frame = std::min<size_t>(t.task.start * double(t.source_frames_count), t.source_frames_count);
+      if (start_frame != 0 && !t.decoder->seek(start_frame)) {
+        utils::error{}("Could not seek sound task '{}' to frame {}", t.task.res.id, start_frame);
+      }
+      t.stream_frames_count = t.source_frames_count - start_frame;
+
+      const uint32_t out_channels =
+        (t.task.type == type::sfx || t.task.type == type::talk_pos) ? 1 :
+        (t.task.type == type::ui_effect ? 2 : t.decoder->channels());
+
+      auto cfg = ma_data_converter_config_init(
+        static_cast<ma_format>(t.decoder->format()), ma_format_f32,
+        t.decoder->channels(), out_channels, t.decoder->sample_rate(), playback_sample_rate);
+      t.converter.reset(new miniaudio_data_converter);
+      auto res = ma_data_converter_init(&cfg, nullptr, t.converter.get());
+      if (res != MA_SUCCESS) utils::error{}("Could not initialize data converter for sound task '{}'", t.task.res.id);
+    }
+
+    // Терминал: единая точка очистки для ЛЮБОГО завершения (dropped/доиграл/дедлайн). Голос
+    // возвращается в пул / выгружается только если больше НИКТО его не держит (after-цепочка).
+    void system2::release_task(sound_task& t) {
+      auto* inst = t.inst;
+      if (inst != nullptr) {
+        const bool shared = std::any_of(m_tasks.begin(), m_tasks.end(),
+          [inst, &t] (const auto& o) { return &o != &t && o.inst == inst; });
+        if (!shared) {
+          ma_sound_stop(&inst->sound);
+          inst->data_source.reset_stream();
+          if (inst->data_source.is_standart_mono()) {
+            m_instances_mono_stack.push_back(inst);
+          } else if (inst->data_source.is_standart_stereo()) {
+            m_instances_stereo_stack.push_back(inst);
+          } else {
+            ma_sound_uninit(&inst->sound);
+            data_source_uninit(&inst->data_source);
+            auto it = std::find_if(m_instances.begin(), m_instances.end(),
+              [inst] (const auto& p) { return p.get() == inst; });
+            if (it != m_instances.end()) m_instances.erase(it);
+          }
+        }
+        t.inst = nullptr;
+      }
+      t.decoder.reset();     // освобождаем тяжёлые ресурсы (в т.ч. копию PCM)
+      t.converter.reset();
+    }
+
     void system2::update(const size_t time) {
       this->cur_time += time;
 
+      // Гарантии терминации (лекарство от утечки задач/голосов):
+      constexpr size_t voice_wait_timeout = utils::global_time_resolution / 10; // 100 мс без голоса → dropped (fire-and-forget)
+      constexpr size_t lifetime_margin    = utils::global_time_resolution;      // +1 с к длительности сегмента — страховочный дедлайн жизни
+
       for (auto& t : m_tasks) {
-        if (!t.initialized) {
-          // PCM-ветка: данные уже декодированы (короткий звук, sound_resource), метаданные в resource2 →
-          // pcm_decoder-passthrough. Остальные типы декодятся из сжатых байт через make_decoder.
-          if (t.task.res.type == data_type::pcm) {
-            const auto& r = t.task.res;
-            t.decoder = std::make_unique<pcm_decoder>(
-              r.data.data(), r.data.size(), r.sample_format, r.channels, r.sample_rate, r.frames_count);
-          } else {
-            t.decoder = make_decoder(t.task.res.type, t.task.res.id, t.task.res.data);
-          }
-          if (!t.decoder) {
-            utils::error{}("Could not create decoder for sound task '{}'", t.task.res.id);
-          }
-
-          t.source_frames_count = t.decoder->frames_count();
-          const size_t start_frame = std::min<size_t>(t.task.start * double(t.source_frames_count), t.source_frames_count);
-          if (start_frame != 0 && !t.decoder->seek(start_frame)) {
-            utils::error{}("Could not seek sound task '{}' to frame {}", t.task.res.id, start_frame);
-          }
-          t.stream_frames_count = t.source_frames_count - start_frame;
-
-          const uint32_t out_channels = 
-            (t.task.type == type::sfx || t.task.type == type::talk_pos ? 1 : 
-              (t.task.type == type::ui_effect ? 
-                2 : t.decoder->channels()
-              )
-            );
-
-          auto cfg = ma_data_converter_config_init(
-            static_cast<ma_format>(t.decoder->format()),
-            ma_format_f32,
-            t.decoder->channels(),
-            out_channels,
-            t.decoder->sample_rate(),
-            playback_sample_rate
-          );
-
-          t.converter.reset(new miniaudio_data_converter);
-          auto res = ma_data_converter_init(&cfg, nullptr, t.converter.get());
-          if (res != MA_SUCCESS) {
-            utils::error{}("Could not initialize data converter for sound task '{}'", t.task.res.id);
-          }
-
-          t.initialized = true;
-        }
-
-        if (t.inst == nullptr) {
-          if (t.task.after != SIZE_MAX) {
-            const size_t prev_index = find_task_id(t.task.after);
-            if (prev_index == SIZE_MAX || m_tasks[prev_index].inst == nullptr) continue;
-            t.inst = m_tasks[prev_index].inst;
-          } else if (t.task.type == type::sfx || t.task.type == type::talk_pos) {
-            if (!m_instances_mono_stack.empty()) {
-              t.inst = m_instances_mono_stack.back();
-              m_instances_mono_stack.pop_back();
-              t.inst->data_source.reset_stream();
+        switch (t.phase) {
+          case task_phase::waiting_voice: {
+            if (!acquire_voice(t)) {
+              // не смогли начать. after, ждущий ЖИВОГО prev, не дропаем (у prev свой дедлайн);
+              // остальные fire-and-forget — по таймауту, иначе безголосый backlog копится вечно.
+              const bool waiting_live_after =
+                (t.task.after != SIZE_MAX) && (find_task_id(t.task.after) != SIZE_MAX);
+              if (!waiting_live_after && cur_time - t.timestamp > voice_wait_timeout) {
+                t.phase = task_phase::finished; // dropped
+              }
+              break;
             }
-          } else if (t.task.type == type::ui_effect) {
-            if (!m_instances_stereo_stack.empty()) {
-              t.inst = m_instances_stereo_stack.back();
-              m_instances_stereo_stack.pop_back();
-              t.inst->data_source.reset_stream();
+
+            init_decode(t);                               // тяжёлые ресурсы — только теперь (голос есть)
+            ensure_stream_buffer(&t.inst->data_source, this->stream_buffer_seconds); // ленивое кольцо
+
+            // after: ждём, пока prev полностью декодирует свой сегмент (gapless на общем голосе)
+            if (t.task.after != SIZE_MAX) {
+              const size_t prev_index = find_task_id(t.task.after);
+              if (prev_index != SIZE_MAX) {
+                const auto& prev = m_tasks[prev_index];
+                if (prev.phase == task_phase::waiting_voice || prev.frames_decoded < prev.stream_frames_count) break;
+              }
             }
-          } else if (t.decoder->channels() == 1) {
-            if (!m_instances_mono_stack.empty()) {
-              t.inst = m_instances_mono_stack.back();
-              m_instances_mono_stack.pop_back();
-              t.inst->data_source.reset_stream();
-            }
-          } else if (t.decoder->channels() == 2) {
-            if (!m_instances_stereo_stack.empty()) {
-              t.inst = m_instances_stereo_stack.back();
-              m_instances_stereo_stack.pop_back();
-              t.inst->data_source.reset_stream();
-            }
-          } else {
-            m_instances.emplace_back(new sound_instance);
-            instance_init(m_instances.back().get(), playback_sample_rate, t.decoder->channels(), format::f32);
-            t.inst = m_instances.back().get();
-            t.inst->data_source.reset_stream();
+
+            ma_sound_set_volume(&t.inst->sound, t.task.volume);
+            ma_sound_set_pitch(&t.inst->sound, t.task.pitch);
+            ma_sound_set_position(&t.inst->sound, t.task.pos.x, t.task.pos.y, t.task.pos.z);
+            ma_sound_set_direction(&t.inst->sound, t.task.dir.x, t.task.dir.y, t.task.dir.z);
+            ma_sound_set_velocity(&t.inst->sound, t.task.vel.x, t.task.vel.y, t.task.vel.z);
+
+            t.stream_begin_frame = t.inst->data_source.frames_written_total.load(std::memory_order_acquire);
+            const size_t rate = t.decoder->sample_rate() != 0 ? t.decoder->sample_rate() : playback_sample_rate;
+            t.active_time = cur_time;
+            t.lifetime_budget = size_t(uint64_t(t.stream_frames_count) * utils::global_time_resolution / std::max<size_t>(rate, 1)) + lifetime_margin;
+            t.phase = task_phase::active;
+            [[fallthrough]]; // можно начать декод в этот же тик
           }
-        }
+          case task_phase::active: {
+            if (cur_time - t.active_time > t.lifetime_budget) { t.phase = task_phase::finished; break; } // страховка
 
-        if (t.inst == nullptr) continue;
-
-        if (!t.segment_registered) {
-          ma_sound_set_volume(&t.inst->sound, t.task.volume);
-          ma_sound_set_pitch(&t.inst->sound, t.task.pitch);
-          ma_sound_set_position(&t.inst->sound, t.task.pos.x, t.task.pos.y, t.task.pos.z);
-          ma_sound_set_direction(&t.inst->sound, t.task.dir.x, t.task.dir.y, t.task.dir.z);
-          ma_sound_set_velocity(&t.inst->sound, t.task.vel.x, t.task.vel.y, t.task.vel.z);
-        }
-
-        if (!t.segment_registered) {
-          if (t.task.after != SIZE_MAX) {
-            const size_t prev_index = find_task_id(t.task.after);
-            if (prev_index != SIZE_MAX) {
-              const auto& prev = m_tasks[prev_index];
-              if (!prev.segment_registered || prev.frames_decoded < prev.stream_frames_count) continue;
+            const bool was_start = t.frames_decoded == 0;
+            const size_t free_frames = t.inst->data_source.available_frames_to_write();
+            if (free_frames > 0 && t.frames_decoded < t.stream_frames_count) {
+              const size_t input_cache_frames = bytes_to_pcm_frames(cache1.size() * sizeof(cache1[0]), t.decoder->channels(), t.decoder->format());
+              const size_t output_cache_frames = bytes_to_pcm_frames(cache2.size() * sizeof(cache2[0]), t.inst->data_source.channels, t.inst->data_source.format);
+              const size_t frames_to_read = std::min({
+                free_frames, decode_frames_per_update, input_cache_frames, output_cache_frames,
+                t.stream_frames_count - t.frames_decoded
+              });
+              if (frames_to_read > 0) {
+                ma_uint64 frames = t.decoder->get_frames(cache1.data(), frames_to_read);
+                if (frames == 0) {
+                  // декодер исчерпан раньше оценки stream_frames_count (у сжатых форматов
+                  // frames_count() — оценка) → фиксируем реально произведённое, иначе не завершится.
+                  t.stream_frames_count = t.frames_decoded;
+                } else {
+                  ma_uint64 frames_out = frames;
+                  t.frames_decoded += frames;
+                  auto res = ma_data_converter_process_pcm_frames(t.converter.get(), cache1.data(), &frames, cache2.data(), &frames_out);
+                  if (res != MA_SUCCESS) utils::error{}("Could not convert {} frames data for resorce '{}'", frames, t.task.res.id);
+                  const size_t writed_frames = write_decoded_pcm_frames(&t.inst->data_source, cache2.data(), frames_out);
+                  assert(writed_frames == frames_out);
+                  (void)writed_frames;
+                }
+              }
             }
+
+            if (was_start && !t.started) {
+              const auto res = ma_sound_start(&t.inst->sound);
+              assert(res == MA_SUCCESS);
+              (void)res;
+              t.started = true;
+            }
+
+            if (t.frames_decoded >= t.stream_frames_count) t.phase = task_phase::draining;
+            break;
           }
-
-          t.stream_begin_frame = t.inst->data_source.frames_written_total.load(std::memory_order_acquire);
-          t.segment_registered = true;
-        }
-
-        const bool was_start = t.frames_decoded == 0;
-        const size_t free_frames = t.inst->data_source.available_frames_to_write();
-        // free_frames может стать чуть больше за это время
-        if (free_frames > 0 && t.frames_decoded < t.stream_frames_count) {
-          const size_t input_cache_frames = bytes_to_pcm_frames(cache1.size() * sizeof(cache1[0]), t.decoder->channels(), t.decoder->format());
-          const size_t output_cache_frames = bytes_to_pcm_frames(cache2.size() * sizeof(cache2[0]), t.inst->data_source.channels, t.inst->data_source.format);
-          // для каждой таски декодируем очередной кусок данных
-          const size_t frames_to_read = std::min({
-            free_frames,
-            decode_frames_per_update,
-            input_cache_frames,
-            output_cache_frames,
-            t.stream_frames_count - t.frames_decoded
-          });
-          if (frames_to_read == 0) continue;
-
-          ma_uint64 frames = t.decoder->get_frames(cache1.data(), frames_to_read);
-          ma_uint64 frames_out = frames;
-          t.frames_decoded += frames;
-
-          // возможно его преобразуем
-          auto res = ma_data_converter_process_pcm_frames(t.converter.get(), cache1.data(), &frames, cache2.data(), &frames_out);
-          if (res != MA_SUCCESS) {
-            utils::error{}("Could not convert {} frames data for resorce '{}'", frames, t.task.res.id);
+          case task_phase::draining: {
+            // штатно: кольцо вычитано callback'ом. Дедлайн — страховка от «неотыгранных» голосов
+            // (позиционный/приглушённый звук, который miniaudio может перестать читать).
+            const size_t frames_read = t.inst->data_source.frames_read_total.load(std::memory_order_acquire);
+            const bool fully_read = frames_read >= t.stream_begin_frame + t.stream_frames_count;
+            if (fully_read || cur_time - t.active_time > t.lifetime_budget) t.phase = task_phase::finished;
+            break;
           }
-
-          // и кладем получившееся в буфер
-          const size_t writed_frames = write_decoded_pcm_frames(&t.inst->data_source, cache2.data(), frames_out);
-          assert(writed_frames == frames_out);
-        }
-
-        if (was_start && !t.started) {
-          const auto res = ma_sound_start(&t.inst->sound);
-          assert(res == MA_SUCCESS);
-          t.started = true;
+          case task_phase::finished: break;
         }
       }
 
+      // ЕДИНАЯ точка очистки: любой finished → вернуть голос + освободить ресурсы + снять задачу.
       for (auto it = m_tasks.begin(); it != m_tasks.end();) {
-        auto& t = *it;
-        if (t.inst == nullptr || !t.segment_registered) {
-          ++it;
-          continue;
-        }
-
-        const size_t frames_read = t.inst->data_source.frames_read_total.load(std::memory_order_acquire);
-        const bool fully_decoded = t.frames_decoded >= t.stream_frames_count;
-        const bool fully_read = frames_read >= t.stream_begin_frame + t.stream_frames_count;
-        if (fully_decoded && fully_read) {
-          auto* inst = t.inst;
-          it = m_tasks.erase(it);
-          const bool has_more_tasks = std::any_of(m_tasks.begin(), m_tasks.end(), [inst] (const auto &other) {
-            return other.inst == inst;
-          });
-          if (!has_more_tasks) {
-            ma_sound_stop(&inst->sound);
-            inst->data_source.reset_stream();
-            if (inst->data_source.is_standart_mono()) {
-              m_instances_mono_stack.push_back(inst);
-            } else if (inst->data_source.is_standart_stereo()) {
-              m_instances_stereo_stack.push_back(inst);
-            } else {
-              ma_sound_uninit(&inst->sound);
-              data_source_uninit(&inst->data_source);
-              auto custom_it = std::find_if(m_instances.begin(), m_instances.end(), [inst] (const auto &ptr) {
-                return ptr.get() == inst;
-              });
-              if (custom_it != m_instances.end()) m_instances.erase(custom_it);
-            }
-          }
-          continue;
-        }
-
-        ++it;
+        if (it->phase == task_phase::finished) { release_task(*it); it = m_tasks.erase(it); }
+        else ++it;
       }
     }
 

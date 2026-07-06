@@ -53,11 +53,27 @@ struct metrics_config {
   uint32_t log_interval_ms = 1000;
 };
 
+// Политика логгирования. Базовый always-on слой (подсистемы/окно/устройства) идёт через
+// utils::info всегда. Домены (catalogue) по умолчанию OFF; здесь задаётся глубина на домен
+// (off/info/flow/trace) + файловый сток. Уровни можно менять и в рантайме (app.set_log_level).
+struct logging_config {
+  bool console = true;
+  std::string file = "logs/tile_frontier.log"; // пусто = без файла
+  std::string main = "off";
+  std::string assets = "off";
+  std::string sound = "off";
+  std::string render = "off";
+  std::string ui = "off";
+  std::string gameplay = "off";
+  std::string resource = "off";
+};
+
 struct app_config {
   window_config window;
   simulation_config simulation;
   render_config render;
   metrics_config metrics;
+  logging_config logging;
 };
 
 // Конфиг грузится как demiurg-ресурс (app_config_resource) из движкового реестра —

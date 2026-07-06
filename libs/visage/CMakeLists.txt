@@ -25,7 +25,7 @@ set(HDR_LIST
 )
 
 add_library(devils_visage ${SRC_LIST} ${HDR_LIST})
-target_link_libraries(devils_visage PRIVATE devils_engine::options Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp devils_engine::utils devils_engine::bindings devils_engine::painter devils_engine::demiurg msdfgen::msdfgen msdf-atlas-gen::msdf-atlas-gen glm::glm)
+target_link_libraries(devils_visage PRIVATE devils_engine::options Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp devils_engine::utils devils_engine::catalogue devils_engine::bindings devils_engine::painter devils_engine::demiurg msdfgen::msdfgen msdf-atlas-gen::msdf-atlas-gen glm::glm)
 target_include_directories(devils_visage INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_visage PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/visage>" "${FETCHCONTENT_BASE_DIR}/nuklear-src")
 target_link_directories(devils_visage PRIVATE ${FREETYPE_LIBRARY_DIR})

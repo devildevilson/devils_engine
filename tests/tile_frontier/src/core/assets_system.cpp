@@ -1,3 +1,4 @@
+#include <devils_engine/catalogue/logging.h>
 #include "assets_system.h"
 
 #include <vector>
@@ -52,7 +53,7 @@ void assets_simulation::init() {
   // (дедуп replacement/supplementary + сортировка) — после него реестр готов к get/find.
   container->resources->parse_resources(container->modules.get());
 
-  utils::info("assets: registry built from '{}', {} resources", modules_root, container->resources->resources_count());
+  DE_LOG(catalogue::log_domain::assets, flow, "assets: registry built from '{}', {} resources", modules_root, container->resources->resources_count());
 }
 
 bool assets_simulation::stop_predicate() const { return false; }
@@ -128,7 +129,7 @@ void assets_simulation::update(const size_t) {
         }
       }
 
-      utils::info("assets: prepared shaders prefix '{}' compiled={} failed={}", cmd.prefix, out.compiled, out.failed);
+      DE_LOG(catalogue::log_domain::assets, flow, "assets: prepared shaders prefix '{}' compiled={} failed={}", cmd.prefix, out.compiled, out.failed);
       br.shaders_prepared.write_slot() = out;
       br.shaders_prepared.publish();
     }

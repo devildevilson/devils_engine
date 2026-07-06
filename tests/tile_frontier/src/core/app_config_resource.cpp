@@ -1,3 +1,4 @@
+#include <devils_engine/catalogue/logging.h>
 #include "app_config_resource.h"
 
 #include <devils_engine/utils/core.h>
@@ -35,7 +36,7 @@ void app_config_resource::load_cold(const utils::safe_handle_t&) {
     }
   }
 
-  utils::info("app_config_resource '{}': parsed (window {}x{}, render config '{}')",
+  DE_LOG(catalogue::log_domain::resource, flow, "app_config_resource '{}': parsed (window {}x{}, render config '{}')",
     id, cfg.window.width, cfg.window.height, cfg.render.config_folder);
 }
 

@@ -18,6 +18,7 @@
 #include <devils_engine/painter/auxiliary.h>
 #include <devils_engine/painter/makers.h>
 #include <devils_engine/painter/system_info.h>
+#include <devils_engine/catalogue/logging.h> // доменные логи (render)
 #include <devils_engine/painter/glsl_source_file.h>
 #include <devils_engine/painter/shader_source_file.h>
 #include <devils_engine/demiurg/resource_system.h>
@@ -240,9 +241,9 @@ static void render_create_instance(render_simulation_init& c) {
   ici.enabledExtensionCount = exts.size();
   ici.ppEnabledExtensionNames = exts.data();
 
-  utils::info("tile_frontier: creating Vulkan instance");
+  DE_LOG(catalogue::log_domain::render, flow, "tile_frontier: creating Vulkan instance");
   c.instance = vk::createInstance(ici);
-  utils::info("tile_frontier: Vulkan instance created");
+  DE_LOG(catalogue::log_domain::render, flow, "tile_frontier: Vulkan instance created");
   painter::load_dispatcher2(c.instance);
   c.debug_messenger = painter::create_debug_messenger(c.instance);
   c.instance_ready = true;
@@ -377,7 +378,7 @@ static void render_create_tile_draw(render_simulation_init& c) {
   }
 
   c.tiles_ready = true;
-  utils::info("render tiles: registered tile quad draw pair");
+  DE_LOG(catalogue::log_domain::render, flow, "render tiles: registered tile quad draw pair");
 }
 
 static void render_create_actor_draw(render_simulation_init& c) {
@@ -424,7 +425,7 @@ static void render_create_actor_draw(render_simulation_init& c) {
   }
 
   c.actors_ready = true;
-  utils::info(
+  DE_LOG(catalogue::log_domain::render, flow, 
     "render actors: registered actor triangle draw pair {} (dg '{}', layout '{}', stride {}, max {})",
     c.actor_pair_index,
     c.base->draw_groups[dg_index].name,
@@ -526,7 +527,7 @@ static void render_bind_textures(render_simulation_init& c) {
   }
 
   vk::Device(c.device).updateDescriptorSets(writes, nullptr);
-  utils::info("render: bound {} sampled-image slots into descriptor 'textures' ({} sets)", n, writes.size());
+  DE_LOG(catalogue::log_domain::render, flow, "render: bound {} sampled-image slots into descriptor 'textures' ({} sets)", n, writes.size());
 }
 
 // Точечное обновление ОДНОГО слота дескриптор-массива 'textures' (dstArrayElement=slot, count=1) во
@@ -610,14 +611,14 @@ static void set_shader_sources_loaded(const demiurg::resource_system* reg, const
   };
   for (auto* r : glsl) apply(r);
   for (auto* r : spv)  apply(r);
-  utils::info("render: shader sources {} ({} glsl + {} spv)", load ? "loaded" : "unloaded", glsl.size(), spv.size());
+  DE_LOG(catalogue::log_domain::render, flow, "render: shader sources {} ({} glsl + {} spv)", load ? "loaded" : "unloaded", glsl.size(), spv.size());
 }
 
 static void render_request_shader_prepare(render_simulation_init& c) {
   if (c.shader_prepare_requested || c.shaders_prepared || c.shader_prepare_failed) return;
 
   if (c.br == nullptr) {
-    utils::info("render: shader prepare waits for broker");
+    DE_LOG(catalogue::log_domain::render, flow, "render: shader prepare waits for broker");
     return;
   }
 
@@ -626,7 +627,7 @@ static void render_request_shader_prepare(render_simulation_init& c) {
   cmd.prefix = c.config.shader_config_prefix;
   c.br->prepare_shaders.try_push(std::move(cmd));
   c.shader_prepare_requested = true;
-  utils::info("render: requested shader prepare for prefix '{}'", c.config.shader_config_prefix);
+  DE_LOG(catalogue::log_domain::render, flow, "render: requested shader prepare for prefix '{}'", c.config.shader_config_prefix);
 }
 
 static void render_try_create_graph(render_simulation_init& c) {
@@ -692,7 +693,7 @@ static void render_resize_swapchain(render_simulation_init& c, const uint32_t w,
   c.pending_graph_width = w;
   c.pending_graph_height = h;
   c.base->resize_viewport(w, h);
-  utils::info("render: resize swapchain {}x{}", w, h);
+  DE_LOG(catalogue::log_domain::render, flow, "resize swapchain {}x{}", w, h);
 }
 
 render_simulation::render_simulation(const size_t frame_time, render_simulation_config config) noexcept :
@@ -766,7 +767,7 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
     container->shader_prepare_requested = false;
     container->shader_prepare_failed = cmd->failed != 0;
     container->shaders_prepared = cmd->failed == 0;
-    utils::info("render: shader prepare result compiled={} failed={}", cmd->compiled, cmd->failed);
+    DE_LOG(catalogue::log_domain::render, flow, "render: shader prepare result compiled={} failed={}", cmd->compiled, cmd->failed);
     render_try_create_graph(*container);
   }
 
@@ -779,7 +780,7 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
         utils::warn("render: set_active_graph — граф '{}' не найден", cmd->name);
       } else if (idx != container->base->current_render_graph_index) {
         container->base->change_render_graph(idx);
-        utils::info("render: активный граф переключён на '{}'", cmd->name);
+        DE_LOG(catalogue::log_domain::render, flow, "active graph switched to '{}'", cmd->name);
       }
     }
   }

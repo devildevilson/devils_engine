@@ -1,3 +1,4 @@
+#include <devils_engine/catalogue/logging.h>
 #include "auxiliary.h"
 
 #include <gtl/phmap.hpp>
@@ -168,7 +169,7 @@ VkPhysicalDevice choose_physical_device(VkInstance inst) {
   if (cur_dev != VK_NULL_HANDLE) {
     const auto props = cur_dev.getProperties();
     const auto dev_type = vk::to_string(props.deviceType);
-    utils::info("Using device '{}', type '{}'", props.deviceName.data(), dev_type);
+    DE_LOG(catalogue::log_domain::render, trace, "Using device '{}', type '{}'", props.deviceName.data(), dev_type);
     return cur_dev;
   }
 
@@ -191,7 +192,7 @@ VkPhysicalDevice choose_physical_device(VkInstance inst) {
   if (cur_dev != VK_NULL_HANDLE) {
     const auto props = cur_dev.getProperties();
     const auto dev_type = vk::to_string(props.deviceType);
-    utils::info("Using device '{}', type '{}'", props.deviceName.data(), dev_type);
+    DE_LOG(catalogue::log_domain::render, trace, "Using device '{}', type '{}'", props.deviceName.data(), dev_type);
     return cur_dev;
   }
 
@@ -212,7 +213,7 @@ VkPhysicalDevice choose_physical_device(VkInstance inst) {
 
   const auto props = cur_dev.getProperties();
   const auto dev_type = vk::to_string(props.deviceType);
-  utils::info("Using device '{}', type '{}'", props.deviceName.data(), dev_type);
+  DE_LOG(catalogue::log_domain::render, trace, "Using device '{}', type '{}'", props.deviceName.data(), dev_type);
   return cur_dev;
 }
 

@@ -30,7 +30,11 @@ namespace thread {
 
 constexpr size_t MAXIMUM_TASK_SIZE = 128;
 constexpr size_t MAXIMUM_TASK_COUNT = DEVILS_THREAD_ATOMIC_QUEUE_CAPACITY;
-constexpr size_t WORKER_SPIN_COUNT = 3000;
+// Сколько раз воркер делает yield() при пустой очереди перед сном на cv. Спин перекрывает
+// короткие паузы ВНУТРИ батча (следующая задача вот-вот придёт) без дорогого cv-wakeup. После
+// батча — быстро засыпать (незачем жечь ядро: следующий dispatch на порядки позже). Баланс
+// латентность/энергопотребление; тюнить под самый частый паттерн dispatch.
+constexpr size_t WORKER_SPIN_COUNT = 256;
 
 class atomic_pool {
 public:

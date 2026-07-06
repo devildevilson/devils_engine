@@ -133,6 +133,17 @@ Batch of small closures across libs (see `ROADMAP.md` «Тех-долг»). Buil
 - **`libs/demiurg` loader**: `request()` now warns on a true dependency CYCLE (DFS `visiting_` path set; distinct from an already-queued independent request). NOT done: stricter zip-type-before-parse contract (existing path already warns+skips; deferred pending a concrete rule).
 - **tile_frontier config**: `simulation.sound_enabled` (topology toggle, restart-required like `render.enabled`); disabling render/sound frees a reserved core → `+1` worker thread (dynamic `worker_threads_reserved`).
 
+### Logging (catalogue domains, 2026-07-06)
+
+Domain-scoped logging lives in `libs/catalogue/logging.h` (`DE_LOG`/`DE_TRACE` macros + `catalogue::logs()` registry). Two orthogonal axes plus spdlog severity:
+- **Base always-on layer** = plain `utils::info`, reserved for a HANDFUL of lines only: `Using cpu …`, `Using sound device …` (libs/sound), `Using '<type>' device …, driver version` (painter `system_info.cpp`), `Using monitor …`. Everything else must NOT be `utils::info` — it belongs to a domain. `warn`/`error` (spdlog severity) stay always-on (importance, not depth).
+- **Domains** = `catalogue::log_domain::` **`constexpr` constants** (NOT an enum): `main/assets/sound/render/ui/gameplay/resource` + `engine_count`. New logging layer = new constant + `register_domain(id,name)`. Projects continue numbering past `engine_count`.
+- **Depth** (`catalogue::log_depth`): `off/info/flow/trace`. Default **off** (invisible). `flow` = important transitions + periodic slices; `trace` = full pipeline detail. `DE_LOG(domain, DEPTH, fmt, …)` gates on a relaxed atomic load — near-zero cost when off (release too). `DE_TRACE(domain, fmt, …)` = trace depth + captures call-site `file:line` (path compressed via `utils::make_sane_file_name`, like `utils::error{}`).
+- **Runtime toggle** (works in release): `app.set_log_level("sound","trace")` (lua/app) or `logging` section in `app.tavl` (per-domain `off/info/flow/trace` + `console`/`file`). `catalogue::init_logging(file, console)` sets up spdlog console + rotating file (5×8 MiB); called in `simulation::init` right after config load (base layer also hits the file).
+- **libs now dep `devils_engine::catalogue`** for `DE_LOG`: painter (strides→render/trace, graphics_base setup→render/flow, texture/mesh→resource/flow), visage (font→ui/flow), sound (sound_resource→resource/flow, data-source callbacks→sound/trace). No dep cycle (catalogue→utils/options only).
+- **Automatic function tracing**: `trace_introspection` (installed via `domain<D>::set_introspection`) logs enter/exit with compressed `file:line` + perf. Connecting log-domain level → auto-installing `trace_introspection` on that domain's functions is DEFERRED with the introspection refactor (align introspection NTTP with log-domain id + non-virtual mode switch).
+- **Debugging workflow**: enable a domain at runtime/config, run, read `logs/*.log` to inspect the flow you need — instead of adding throwaway prints.
+
 ## Subsystems
 
 - `libs/acumen`: GOAP planner. It uses `act` predicates to compute bitset state, A* over symbolic actions, and caller-owned scratch/cache; it returns plans but does not mutate world state.

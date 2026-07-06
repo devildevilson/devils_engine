@@ -51,7 +51,7 @@ set(HDR_LIST
   include/devils_engine/sound/sound_resource.h)
 
 add_library(devils_sound ${SRC_LIST} ${HDR_LIST})
-target_link_libraries(devils_sound PRIVATE devils_engine::options devils_engine::utils devils_engine::demiurg ${OPENAL_LIBRARY_NAME} miniaudio) # openal
+target_link_libraries(devils_sound PRIVATE devils_engine::options devils_engine::utils devils_engine::catalogue devils_engine::demiurg ${OPENAL_LIBRARY_NAME} miniaudio) # openal
 target_include_directories(devils_sound INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>") # ???
 target_include_directories(devils_sound PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/sound>")
 target_link_directories(devils_sound PUBLIC ${OPENAL_LIBRARY_DIR})
