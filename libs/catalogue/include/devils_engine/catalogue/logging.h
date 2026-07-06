@@ -32,7 +32,8 @@ namespace log_domain {
   inline constexpr uint32_t ui           = 4;
   inline constexpr uint32_t gameplay     = 5;
   inline constexpr uint32_t resource     = 6;
-  inline constexpr uint32_t engine_count = 7;
+  inline constexpr uint32_t demiurg      = 7;
+  inline constexpr uint32_t engine_count = 8;
 }
 
 // Рантайм-реестр уровней по домену. Атомики — уровень меняют из конфига/UI/любого потока;

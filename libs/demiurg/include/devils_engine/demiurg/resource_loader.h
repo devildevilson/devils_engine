@@ -72,6 +72,9 @@ private:
   std::vector<resource_interface*> visiting_;
 
   entry* find(resource_interface* res) noexcept;
+  void request_impl(resource_interface* res, int32_t target);
+  size_t update_impl(std::vector<external_job>& out);
+  void external_done_impl(resource_interface* res);
 };
 
 }

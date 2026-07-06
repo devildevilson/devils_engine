@@ -9,6 +9,7 @@
 #include "folder_module.h"
 #include "zip_module.h"
 #include "resource_system.h"
+#include "catalogue_domain.h"
 
 #include <filesystem>
 namespace fs = std::filesystem;
@@ -123,6 +124,12 @@ void module_system::close_modules() {
 }
 
 void module_system::discover_resources(std::vector<resource_candidate>& out) {
+  install_catalogue_introspection();
+  using discover_t = catalogue_domain::fn_traits<&module_system::discover_resources_impl, "module_system.discover_resources", "self", "out">;
+  discover_t::loc_fn_t{}(*this, out);
+}
+
+void module_system::discover_resources_impl(std::vector<resource_candidate>& out) {
   uint32_t priority = 0;
   for (const auto &ptr : modules) {
     ptr->resources_list(out, priority);

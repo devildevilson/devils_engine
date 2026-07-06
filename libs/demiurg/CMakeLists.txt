@@ -7,6 +7,7 @@ project(
 )
 
 set(SRC_LIST
+  src/demiurg/catalogue_domain.cpp
   src/demiurg/resource_system.cpp
   src/demiurg/folder_module.cpp 
   src/demiurg/modules_listing.cpp
@@ -16,6 +17,7 @@ set(SRC_LIST
 )
 
 set(HDR_LIST
+  include/devils_engine/demiurg/catalogue_domain.h
   include/devils_engine/demiurg/resource_base.h
   include/devils_engine/demiurg/resource_manifest.h
   include/devils_engine/demiurg/resource_system.h
@@ -28,7 +30,7 @@ set(HDR_LIST
   "include/devils_engine/demiurg/resource_loader.h")
 
 add_library(devils_demiurg ${SRC_LIST} ${HDR_LIST})
-target_link_libraries(devils_demiurg PRIVATE devils_engine::options devils_engine::utils minizip)
+target_link_libraries(devils_demiurg PRIVATE devils_engine::options devils_engine::utils devils_engine::catalogue minizip)
 target_include_directories(devils_demiurg INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_demiurg PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/demiurg>")
 

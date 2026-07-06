@@ -219,6 +219,8 @@ private:
   resource_system::type *find_proper_type(const std::string_view &id, const std::string_view &extension) const;
   std::vector<manifest_entry> resolve_manifest(const std::vector<resource_candidate>& candidates) const;
   void instantiate_manifest(const std::vector<manifest_entry>& manifest, std::vector<resource_interface*>* pending = nullptr);
+  void parse_resources_impl(module_system* sys);
+  void append_resources_impl(module_system* sys);
   static void sort_active_resources(std::vector<resource_interface*>& resources);
   std::span<resource_interface * const> raw_find(const std::string_view &filter) const;
 };
