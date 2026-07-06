@@ -8,6 +8,8 @@
 #include "module_interface.h"
 #include "module_system.h"
 #include "folder_module.h"
+#include "catalogue_domain.h"
+#include "devils_engine/catalogue/logging.h"
 #include "devils_engine/utils/time-utils.hpp"
 #include "devils_engine/utils/string-utils.hpp"
 #include "devils_engine/utils/named_serializer.h"
@@ -251,6 +253,12 @@ namespace devils_engine {
     }
 
     void resource_system::parse_resources(module_system* sys) {
+      install_catalogue_introspection();
+      using parse_t = catalogue_domain::fn_traits<&resource_system::parse_resources_impl, "resource_system.parse_resources", "self", "modules">;
+      parse_t::loc_fn_t{}(*this, sys);
+    }
+
+    void resource_system::parse_resources_impl(module_system* sys) {
       clear();
 
       {
@@ -267,9 +275,16 @@ namespace devils_engine {
       }
 
       sort_active_resources(resources);
+      DE_LOG(catalogue::log_domain::demiurg, flow, "resource_system: parsed {} active resources ({} instantiated)", resources.size(), all_resources.size());
     }
 
     void resource_system::append_resources(module_system* sys) {
+      install_catalogue_introspection();
+      using append_t = catalogue_domain::fn_traits<&resource_system::append_resources_impl, "resource_system.append_resources", "self", "modules">;
+      append_t::loc_fn_t{}(*this, sys);
+    }
+
+    void resource_system::append_resources_impl(module_system* sys) {
       std::vector<resource_interface*> pending;
 
       {
@@ -297,6 +312,7 @@ namespace devils_engine {
 
       resources.insert(resources.end(), pending.begin(), pending.end());
       sort_active_resources(resources);
+      DE_LOG(catalogue::log_domain::demiurg, flow, "resource_system: appended {} active resources ({} instantiated total)", pending.size(), all_resources.size());
     }
 
     void resource_system::clear() {
@@ -439,6 +455,8 @@ namespace devils_engine {
       load_step(cur, handle);
       _state.fetch_add(1, std::memory_order_relaxed);
       thread::atomic_min(_state, final_state());
+      const int32_t next = _state.load(std::memory_order_relaxed);
+      DE_LOG(catalogue::log_domain::demiurg, flow, "resource loaded '{}' module '{}' type '{}' level {}->{}", id, module_name, type, cur, next);
     }
 
     void resource_interface::unload(const utils::safe_handle_t& handle) {
@@ -450,6 +468,8 @@ namespace devils_engine {
       }
       _state.fetch_add(-1, std::memory_order_relaxed);
       thread::atomic_max(_state, 0);
+      const int32_t next = _state.load(std::memory_order_relaxed);
+      DE_LOG(catalogue::log_domain::demiurg, flow, "resource unloaded '{}' module '{}' type '{}' level {}->{}", id, module_name, type, cur, next);
     }
 
     void resource_interface::force_unload(const utils::safe_handle_t& handle) {
@@ -458,6 +478,8 @@ namespace devils_engine {
       unload_step(cur, handle);
       _state.fetch_add(-1, std::memory_order_relaxed);
       thread::atomic_max(_state, 0);
+      const int32_t next = _state.load(std::memory_order_relaxed);
+      DE_LOG(catalogue::log_domain::demiurg, flow, "resource force-unloaded '{}' module '{}' type '{}' level {}->{}", id, module_name, type, cur, next);
     }
 
     int32_t resource_interface::state() const {

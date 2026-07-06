@@ -47,4 +47,5 @@ logging = {
   ui = "off"
   gameplay = "off"
   resource = "off"
+  demiurg = "off"
 }

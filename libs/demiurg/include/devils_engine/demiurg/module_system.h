@@ -35,6 +35,8 @@ public:
   void close_modules();
   void discover_resources(std::vector<resource_candidate>& out);
 private:
+  void discover_resources_impl(std::vector<resource_candidate>& out);
+
   std::string _path;
   std::string modules_list_name;
   std::vector<std::unique_ptr<module_interface>> modules;

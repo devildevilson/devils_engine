@@ -66,6 +66,7 @@ struct logging_config {
   std::string ui = "off";
   std::string gameplay = "off";
   std::string resource = "off";
+  std::string demiurg = "off";
 };
 
 struct app_config {

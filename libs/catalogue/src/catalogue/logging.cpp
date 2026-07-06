@@ -47,6 +47,7 @@ void register_engine_domains() noexcept {
   r.register_domain(log_domain::ui, "ui");
   r.register_domain(log_domain::gameplay, "gameplay");
   r.register_domain(log_domain::resource, "resource");
+  r.register_domain(log_domain::demiurg, "demiurg");
 }
 
 bool parse_log_depth(const std::string_view s, log_depth& out) noexcept {

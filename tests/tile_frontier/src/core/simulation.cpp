@@ -122,6 +122,7 @@ static void setup_logging(const logging_config& log_cfg) {
   apply(ld::ui, log_cfg.ui);
   apply(ld::gameplay, log_cfg.gameplay);
   apply(ld::resource, log_cfg.resource);
+  apply(ld::demiurg, log_cfg.demiurg);
 }
 
 // Резидентная память процесса (RSS) из /proc/self/statm (2-е поле = резидентные страницы).
@@ -980,7 +981,7 @@ void simulation::init() {
     app.set_function("loading_progress", [this]() -> double { return loading_progress(*container); });
 
     // рантайм-переключение глубины логгирования домена (работает и в release): app.set_log_level("sound","trace").
-    // Домены: main/assets/sound/render/ui/gameplay/resource; глубина: off/info/flow/trace.
+    // Домены: main/assets/sound/render/ui/gameplay/resource/demiurg; глубина: off/info/flow/trace.
     app.set_function("set_log_level", [](const std::string& domain, const std::string& depth) -> bool {
       catalogue::log_depth d = catalogue::log_depth::off;
       if (!catalogue::parse_log_depth(depth, d)) { utils::warn("set_log_level: bad depth '{}'", depth); return false; }
