@@ -1026,10 +1026,10 @@ static void parse_render_graph2(
 // tavl: каждый top-level блок/строка в файле = один инстанс T (см. deserialize_next).
 // один и тот же цикл читает и одиночную запись, и "list" файл из нескольких записей.
 template <typename T>
-static std::vector<T> parse_config_content(const std::string& content, const std::string& label) {
+static std::vector<T> parse_config_content(const std::string_view content, const std::string& label, const uint32_t line_offset = 0) {
   tavl::parser p;
   p.add_default_operator();
-  p.flush(content);
+  p.flush(std::string(content));
   p.finish();
 
   tavl::ct_context ctx;
@@ -1042,8 +1042,9 @@ static std::vector<T> parse_config_content(const std::string& content, const std
 
   for (const auto& d : ctx.diagnostics) {
     if (!d.error.is_critical()) continue;
+    const uint32_t line = d.error.span.line == 0 ? 0 : static_cast<uint32_t>(d.error.span.line) + line_offset;
     utils::warn("Could not parse config '{}' as type '{}': error '{}' at {}:{} field '{}'",
-      label, utils::type_name<T>(), tavl::to_string(d.error.type), d.error.span.line, d.error.span.column, d.field);
+      label, utils::type_name<T>(), tavl::to_string(d.error.type), line, d.error.span.column, d.field);
   }
 
   return arr;
@@ -1086,16 +1087,22 @@ std::vector<T> parse_folder(const std::string &folder) {
 //   read_file("declare_values.tavl") -> текст одиночного файла ("" если нет)
 //   read_folder("constants/")        -> тексты всех файлов категории
 struct config_source {
+  struct config_text {
+    std::string label;
+    std::string content;
+    uint32_t line_offset = 0;
+  };
+
   std::function<std::string(const std::string&)> read_file;
-  std::function<std::vector<std::string>(const std::string&)> read_folder;
+  std::function<std::vector<config_text>(const std::string&)> read_folder;
 };
 
 // распарсить все тексты одной категории в vector<T>
 template <typename T>
-static std::vector<T> parse_texts(const std::vector<std::string>& texts, const std::string& label) {
+static std::vector<T> parse_texts(const std::vector<config_source::config_text>& texts, const std::string& label) {
   std::vector<T> arr;
-  for (const auto& content : texts) {
-    auto local = parse_config_content<T>(content, label);
+  for (const auto& text : texts) {
+    auto local = parse_config_content<T>(text.content, text.label.empty() ? label : text.label, text.line_offset);
     for (auto& el : local) { arr.emplace_back(std::move(el)); }
   }
   return arr;
@@ -1109,13 +1116,14 @@ static config_source make_fs_config_source(std::string path) {
     if (!file_io::exists(file)) { utils::warn("File '{}' not found", file); return {}; }
     return file_io::read(file);
   };
-  src.read_folder = [path](const std::string& name) -> std::vector<std::string> {
-    std::vector<std::string> out;
+  src.read_folder = [path](const std::string& name) -> std::vector<config_source::config_text> {
+    std::vector<config_source::config_text> out;
     const auto folder = path + name;
     if (!fs::exists(folder) || !fs::is_directory(folder)) return out; // категории может не быть
     for (const auto& entry : fs::directory_iterator(folder)) {
       if (!entry.is_regular_file()) { utils::warn("Ignore '{}'", entry.path().generic_string()); continue; }
-      out.emplace_back(file_io::read(entry.path().generic_string()));
+      const auto file = entry.path().generic_string();
+      out.push_back(config_source::config_text{file, file_io::read(file), 0});
     }
     return out;
   };
@@ -1135,12 +1143,26 @@ static config_source make_demiurg_config_source(const demiurg::resource_system* 
     if (r == nullptr) { utils::warn("render config resource '{}' not found in engine registry", id); return {}; }
     return r->text;
   };
-  src.read_folder = [reg, prefix](const std::string& name) -> std::vector<std::string> {
+  src.read_folder = [reg, prefix](const std::string& name) -> std::vector<config_source::config_text> {
     std::vector<render_config_source*> arr;
     reg->find<render_config_source>(prefix + name, arr); // префиксный поиск по id
-    std::vector<std::string> out;
+    std::sort(arr.begin(), arr.end(), [] (const auto* a, const auto* b) {
+      std::less<std::string_view> less;
+      if (less(a->path, b->path)) return true;
+      if (less(b->path, a->path)) return false;
+      if (a->list_index != b->list_index) return a->list_index < b->list_index;
+      return less(a->id, b->id);
+    });
+
+    std::vector<config_source::config_text> out;
     out.reserve(arr.size());
-    for (auto* r : arr) out.emplace_back(r->text);
+    for (auto* r : arr) {
+      out.push_back(config_source::config_text{
+        std::string(r->id),
+        r->text,
+        r->list_start_line > 0 ? r->list_start_line - 1 : 0
+      });
+    }
     return out;
   };
   return src;
