@@ -11,7 +11,7 @@ render_config_source::render_config_source() {
 }
 
 void render_config_source::load_cold(const utils::safe_handle_t&) {
-  text = module->load_text(path);
+  text = is_list_entry() && !list_section.empty() ? list_section : module->load_text(path);
 }
 
 void render_config_source::load_warm(const utils::safe_handle_t&) {}
