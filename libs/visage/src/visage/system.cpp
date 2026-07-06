@@ -8,8 +8,10 @@
 #include "devils_engine/utils/time-utils.hpp"
 #include "devils_engine/bindings/env.h"
 #include "devils_engine/bindings/nuklear_bindings.h"
+#include "devils_engine/demiurg/resource_system.h"
 #include "header.h"
 #include "font.h"
+#include "font_resource.h"
 #include "image.h"
 
 namespace devils_engine {
@@ -158,7 +160,6 @@ static struct nk_rect image_placement_rect(const struct nk_rect& b, const float 
 }
 
 system::system(const font_t* default_font) : default_font(default_font), effect_arena(64 * 1024, 16) {
-  fonts_.emplace_back("default", default_font); // базовый шрифт под именем "default" (шаг 2b)
   lua.open_libraries(
     //sol::lib::debug,
     sol::lib::base, 
@@ -196,7 +197,7 @@ system::system(const font_t* default_font) : default_font(default_font), effect_
   // bindings не может зависеть от visage (циклическая зависимость). Мапится на встроенный
   // стек шрифтов nuklear; один атлас годится для всех размеров (MSDF масштабируется в шейдере).
   // lua обязан балансировать push/pop в пределах кадра.
-  // push_font(arg): arg = число (только размер) или таблица {size=, bold=, softness=, outline={color={r,g,b,a}, width=}}.
+  // push_font(arg): arg = число (только размер) или таблица {font=, size=, bold=, softness=, outline={color={r,g,b,a}, width=}}.
   // Меняет и размер (nk_style_push_font), и SDF-эффекты (через userdata = offset в effect_arena).
   sol::table nk_tbl = env["nk"];
   nk_tbl.set_function("push_font", [this](const sol::object arg) {
@@ -208,9 +209,22 @@ system::system(const font_t* default_font) : default_font(default_font), effect_
       size = float(arg.as<double>());
     } else if (arg.is<sol::table>()) {
       const sol::table t = arg.as<sol::table>();
-      // выбор базового шрифта по имени (шаг 2b). Неизвестное имя ⇒ default (resolve_font).
-      const sol::optional<std::string> font_name = t["font"];
-      if (font_name.has_value()) base = this->resolve_font(font_name.value());
+      // выбор базового шрифта demiurg-хендлом: lua берёт его из request("fonts/...").
+      // Пока CPU-уровни font_resource не пройдены (font() == nullptr) — молча дефолт
+      // (транзиентное состояние); не-хендл/не-шрифт в поле font — ошибка скрипта, один warn.
+      const sol::object font_obj = t["font"];
+      if (font_obj.valid() && font_obj != sol::nil) {
+        const font_t* picked = nullptr;
+        if (font_obj.is<demiurg::resource_handle>()) {
+          const auto h = font_obj.as<demiurg::resource_handle>();
+          if (auto* fr = h.get<font_resource>()) picked = fr->font();
+          else { static bool warned = false; if (!warned) { warned = true; utils::warn("nk.push_font: 'font' handle does not resolve to a font resource"); } }
+        } else {
+          static bool warned = false;
+          if (!warned) { warned = true; utils::warn("nk.push_font: 'font' must be a demiurg resource handle (see request('fonts/...'))"); }
+        }
+        if (picked != nullptr) base = picked;
+      }
       size = float(t.get_or("size", double(base->nkfont->height)));
       eff.boldness = float(t.get_or("bold", 0.0));
       eff.softness = float(t.get_or("softness", 0.0));
@@ -370,17 +384,6 @@ system::~system() noexcept {
   bindings::setup_nk_context(nullptr);
   if (cmds) nk_buffer_free(cmds.get());
   if (ctx) nk_free(ctx.get());
-}
-
-void system::add_font(const std::string& name, const font_t* f) {
-  if (f == nullptr) return;
-  for (auto& [n, ptr] : fonts_) if (n == name) { ptr = f; return; } // перерегистрация имени
-  fonts_.emplace_back(name, f);
-}
-
-const font_t* system::resolve_font(std::string_view name) const {
-  for (const auto& [n, ptr] : fonts_) if (n == name) return ptr;
-  return default_font;
 }
 
 void system::set_entry_point(const sol::object& value) {

@@ -4,8 +4,8 @@
 #include <utility>
 
 #include <devils_engine/utils/core.h>
-#include <devils_engine/utils/fileio.h>
 #include <devils_engine/utils/safe_handle.h>
+#include <devils_engine/demiurg/module_interface.h>
 
 #include "font.h"
 #include "font_atlas_packer.h"
@@ -13,10 +13,8 @@
 namespace devils_engine {
 namespace visage {
 
-font_resource::font_resource(std::string ttf_path) : ttf_path(std::move(ttf_path)) {
-  path = "font/atlas"; // синтетический id (шрифт пока не в demiurg-реестре)
-  id = path;
-  loading_type_id = utils::type_id<painter::gpu_texture_resource>(); // рендер льёт как обычную текстуру
+font_resource::font_resource() {
+  set_flag(demiurg::resource_flags::binary, true);
 }
 
 int32_t font_resource::top_state() const {
@@ -29,9 +27,10 @@ bool font_resource::is_external_step(const int32_t from) const {
 
 void font_resource::load_step(const int32_t from, const utils::safe_handle_t& handle) {
   switch (from) {
-    case 0: { // ttf → память
-      ttf_bytes = file_io::read<uint8_t>(ttf_path);
-      if (ttf_bytes.empty()) utils::error{}("font_resource: could not read ttf '{}'", ttf_path);
+    case 0: { // ttf → память (через модуль реестра, как любой demiurg-ресурс)
+      if (module == nullptr) utils::error{}("font_resource '{}': no demiurg module (resource must come from a registry)", id);
+      ttf_bytes = module->load_binary(path);
+      if (ttf_bytes.empty()) utils::error{}("font_resource '{}': could not read ttf '{}'", id, path);
     } break;
 
     case 1: { // MSDF: атлас (RGBA) + метрики глифов

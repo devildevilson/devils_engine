@@ -40,7 +40,6 @@
 #include <devils_engine/visage/system.h>
 #include <devils_engine/visage/font.h>
 #include <devils_engine/visage/image.h>
-#include <devils_engine/visage/font_atlas_packer.h>
 
 #include "config.h"
 #include "lua_script_resource.h"
@@ -326,12 +325,12 @@ struct simulation_init {
   utils::xoshiro256starstar::state ui_rng = utils::xoshiro256starstar::init(utils::string_hash("visage_ui"));
   uint64_t ui_timestamp = 0;
 
-  // шрифт как многошаговый ресурс: CPU-шаги (ttf/MSDF) — синхронно в setup_visage, GPU — асинхронно
-  std::unique_ptr<visage::font_resource> ui_font_res;
-  bool ui_font_logged = false;
-  // второй именованный шрифт (шаг 2b) — тот же путь, регистрируется в visage как "italic"
-  std::unique_ptr<visage::font_resource> ui_font_italic_res;
-  bool ui_font_italic_logged = false;
+  // Шрифты — demiurg-ресурсы ассетного реестра ("fonts/*", многошаговые ttf→MSDF→GPU).
+  // CPU-уровни всех шрифтов проходим синхронно в setup_visage (метрики нужны nk_convert сразу),
+  // GPU-шаг — асинхронно через load_resource. ui_font_h — дефолтный шрифт (метрики отдаются в
+  // visage::system), ui_fonts — все шрифты реестра (+флаг «залогировали usable»).
+  demiurg::resource_handle ui_font_h;
+  std::vector<std::pair<demiurg::resource_handle, bool>> ui_fonts;
 
   // Звуки — demiurg-ресурсы в потоке ассетов. main держит name_hash → stable handle (для резолва в
   // command_sound_play из UI/геймплея) и запрашивает их до warm. Сам звук-актор ресурсы не хранит.
@@ -536,34 +535,36 @@ simulation::~simulation() noexcept {
   sactor = nullptr;
 }
 
-// Поднимаем интерфейс в главном потоке. Шрифт — многошаговый ресурс (font_resource):
-// CPU-шаги ttf→MSDF (уровни 0→1→2) гоняем ЗДЕСЬ синхронно, т.к. visage::system нужны метрики
-// глифов сразу для nk_convert; GPU-заливка (2→3) уйдёт штатным асинхронным путём ассетов из init().
-// Это переносит генерацию MSDF из ad-hoc кода в FSM-шаг ресурса (demiurg 1a срез 3, первый 4-state).
+// Поднимаем интерфейс в главном потоке. Шрифты — demiurg-ресурсы ассетного реестра
+// (resources/modules/core/fonts/*.ttf, многошаговый font_resource): CPU-шаги ttf→MSDF (уровни
+// 0→1→2) гоняем ЗДЕСЬ синхронно для ВСЕХ шрифтов, т.к. visage::system нужны метрики глифов сразу
+// для nk_convert (и lua может выбрать любой шрифт с первого кадра); GPU-заливка (2→3) уйдёт
+// штатным асинхронным путём ассетов из init(). lua выбирает шрифт хендлом:
+// nk.push_font{ font = request("fonts/crimson.italic") } — строковых имён в visage больше нет.
 static void setup_visage(simulation_init& c) {
-  c.ui_font_res = std::make_unique<visage::font_resource>(utils::project_folder() + "resources/fonts/crimson.roman.ttf");
-  c.ui_font_res->load(utils::safe_handle_t{}); // 0→1: читаем ttf (CPU, главный поток)
-  c.ui_font_res->load(utils::safe_handle_t{}); // 1→2: MSDF-атлас + метрики глифов (CPU)
+  constexpr std::string_view default_font_id = "fonts/crimson.roman";
 
-  auto* font = c.ui_font_res->font();
-  if (font == nullptr) utils::error{}("visage: font_resource produced no font metrics");
+  auto* reg = c.assets_sim != nullptr ? c.assets_sim->resources() : nullptr;
+  if (reg == nullptr) utils::error{}("visage: assets registry is not initialized (fonts live there)");
 
-  c.ui.reset(new visage::system(font)); // visage заимствует метрики; байты атласа ждут GPU-шага
-
-  // Второй именованный шрифт (шаг 2b): тот же многошаговый ресурс, CPU-шаги синхронно, GPU — асинхронно.
-  // Регистрируем в visage под именем "italic"; lua выбирает его в nk.push_font{ font="italic" }.
-  c.ui_font_italic_res = std::make_unique<visage::font_resource>(utils::project_folder() + "resources/fonts/crimson.italic.ttf");
-  c.ui_font_italic_res->load(utils::safe_handle_t{}); // 0→1: ttf
-  c.ui_font_italic_res->load(utils::safe_handle_t{}); // 1→2: MSDF + метрики
-  if (auto* italic = c.ui_font_italic_res->font()) {
-    c.ui->add_font("italic", italic);
-    DE_LOG(catalogue::log_domain::ui, flow, "visage: registered extra font 'italic'");
-  } else {
-    utils::warn("visage: italic font_resource produced no metrics; skipping");
-    c.ui_font_italic_res.reset();
+  const auto v = reg->find("fonts/");
+  for (auto* res : v) {
+    if (res == nullptr) continue;
+    const auto h = reg->handle(res->id);
+    auto* fr = h.get<visage::font_resource>();
+    if (fr == nullptr) { utils::warn("visage: resource '{}' under fonts/ is not a font_resource; skipping", res->id); continue; }
+    while (fr->state() < 2) fr->load(utils::safe_handle_t{}); // 0→1: ttf, 1→2: MSDF-атлас + метрики (CPU, главный поток)
+    if (fr->font() == nullptr) utils::error{}("visage: font resource '{}' produced no font metrics", res->id);
+    c.ui_fonts.emplace_back(h, false);
+    DE_LOG(catalogue::log_domain::ui, flow, "visage: font '{}' CPU-ready ({} glyphs)", res->id, fr->font()->glyphs.size());
   }
 
-  DE_LOG(catalogue::log_domain::ui, flow, "visage: system created");
+  c.ui_font_h = reg->handle(default_font_id);
+  auto* def = c.ui_font_h.get<visage::font_resource>();
+  if (def == nullptr || def->font() == nullptr) utils::error{}("visage: default ui font '{}' not found in assets registry", default_font_id);
+
+  c.ui.reset(new visage::system(def->font())); // visage заимствует метрики; байты атласа ждут GPU-шага
+  DE_LOG(catalogue::log_domain::ui, flow, "visage: system created (default font '{}', {} fonts total)", default_font_id, c.ui_fonts.size());
 }
 
 static demiurg::resource_handle lookup_resource_handle(const simulation_init& c, const std::string_view id) {
@@ -621,7 +622,8 @@ static std::string absolute_resource_path(const std::string_view current_module,
     size_t end = p.find('/', pos);
     if (end == std::string::npos) end = p.size();
     std::string_view segment(p.data() + pos, end - pos);
-    pos = end + (end < p.size() ? 1 : 0);
+    pos = end + 1; // ВСЕГДА двигаем позицию за разделитель: end==size на последнем сегменте, и
+                   // pos обязан выйти за size, иначе пустой хвост зацикливает while (pos <= size)
 
     if (segment.empty() || segment == ".") continue;
     if (segment == "..") {
@@ -1249,21 +1251,19 @@ void simulation::init() {
     DE_LOG(catalogue::log_domain::ui, flow, "visage: entry point loaded from demiurg resource 'ui/entry'");
   }
 
-  // атлас шрифта → GPU тем же путём, что и текстуры: просим ассеты довести до hot.
-  // Слот определится динамически (после grass-текстур); main прочитает gpu_index по hot.
-  if (container->ui_font_res && aactor != nullptr) {
+  // атласы шрифтов → GPU тем же путём, что и текстуры: просим ассеты довести до final_state.
+  // Слоты определятся динамически (после grass-текстур); main прочитает gpu_index по hot.
+  if (aactor != nullptr) {
+    for (const auto& [h, logged] : container->ui_fonts) {
+      auto* fr = h.get<visage::font_resource>();
+      if (fr == nullptr) continue;
     // final_state() = 3 (font_resource много-шаговый); CPU-уровни (0..2) уже пройдены в setup_visage,
     // ассетам остаётся довести 2→3 (GPU). target=final_state(), не state::hot (иначе стоп на MSDF).
-    const resource_ref font_ref = resource_ref::from_direct(container->ui_font_res.get());
-    container->br->load_resource.try_push(command_load_resource{font_ref, container->ui_font_res->final_state()});
+      const resource_ref font_ref = resource_ref::from_handle(h);
+      container->br->load_resource.try_push(command_load_resource{font_ref, fr->final_state()});
     container->startup_resources.push_back(font_ref);
-    DE_LOG(catalogue::log_domain::ui, flow, "main: requested font atlas -> ready (level {})", container->ui_font_res->final_state());
+      DE_LOG(catalogue::log_domain::ui, flow, "main: requested font atlas '{}' -> ready (level {})", fr->id, fr->final_state());
   }
-  if (container->ui_font_italic_res && aactor != nullptr) {
-    const resource_ref font_ref = resource_ref::from_direct(container->ui_font_italic_res.get());
-    container->br->load_resource.try_push(command_load_resource{font_ref, container->ui_font_italic_res->final_state()});
-    container->startup_resources.push_back(font_ref);
-    DE_LOG(catalogue::log_domain::ui, flow, "main: requested italic font atlas -> ready (level {})", container->ui_font_italic_res->final_state());
   }
 }
 
@@ -1287,7 +1287,8 @@ void simulation::update(const size_t time) {
   if (container != nullptr) {
     switch (container->state) {
       case app_state::boot: {
-        const bool font_ready = !container->ui_font_res || container->ui_font_res->usable();
+        auto* boot_font = container->ui_font_h.get<visage::font_resource>();
+        const bool font_ready = boot_font == nullptr || boot_font->usable();
         const bool no_render = (gactor == nullptr); // без рендера splash не нужен — не залипаем в boot
         if (font_ready || no_render) {
           container->state = app_state::loading;
@@ -1421,17 +1422,16 @@ void simulation::update(const size_t time) {
 
   // атлас шрифта доехал на GPU: фиксируем слот в шрифте (nuklear зашьёт его в texture.id
   // draw-команд текста; шейдер UI по нему сэмплит атлас). gpu_index записан рендером.
-  if (container && container->ui_font_res && !container->ui_font_logged && container->ui_font_res->usable()) {
-    const uint32_t slot = container->ui_font_res->gpu_index;
-    if (auto* font = container->ui_font_res->font()) font->set_texture_id(slot);
-    DE_LOG(catalogue::log_domain::ui, flow, "main: font atlas reached GPU (usable), texture slot={}", slot);
-    container->ui_font_logged = true;
-  }
-  if (container && container->ui_font_italic_res && !container->ui_font_italic_logged && container->ui_font_italic_res->usable()) {
-    const uint32_t slot = container->ui_font_italic_res->gpu_index;
-    if (auto* font = container->ui_font_italic_res->font()) font->set_texture_id(slot);
-    DE_LOG(catalogue::log_domain::ui, flow, "main: italic font atlas reached GPU (usable), texture slot={}", slot);
-    container->ui_font_italic_logged = true;
+  if (container) {
+    for (auto& [h, done] : container->ui_fonts) {
+      if (done) continue;
+      auto* fr = h.get<visage::font_resource>();
+      if (fr == nullptr || !fr->usable()) continue;
+      const uint32_t slot = fr->gpu_index;
+      if (auto* font = fr->font()) font->set_texture_id(slot);
+      DE_LOG(catalogue::log_domain::ui, flow, "main: font atlas '{}' reached GPU (usable), texture slot={}", fr->id, slot);
+      done = true;
+    }
   }
 
   if (container && container->br) {
