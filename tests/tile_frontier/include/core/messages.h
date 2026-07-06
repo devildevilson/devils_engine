@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include <devils_engine/demiurg/resource_system.h>
+
 #include "actors.h"
 
 // Контракты между системами: структуры, которые ходят через диспетчер сообщений.
@@ -18,7 +20,7 @@ struct GLFWwindow;
 struct GLFWmonitor;
 
 namespace devils_engine { namespace thread { class atomic_pool; } }
-namespace devils_engine { namespace demiurg { class resource_interface; class resource_system; } }
+namespace devils_engine { namespace demiurg { class resource_system; } }
 
 namespace tile_frontier {
 namespace core {
@@ -33,15 +35,52 @@ struct resource_status {
   // ???
 };
 
+struct resource_ref {
+  demiurg::resource_handle handle;
+  demiurg::resource_interface* direct = nullptr;
+
+  static resource_ref from_handle(const demiurg::resource_handle h) noexcept {
+    resource_ref ref;
+    ref.handle = h;
+    return ref;
+  }
+
+  static resource_ref from_direct(demiurg::resource_interface* const ptr) noexcept {
+    resource_ref ref;
+    ref.direct = ptr;
+    return ref;
+  }
+
+  static resource_ref from_system(const demiurg::resource_system* const system, demiurg::resource_interface* const ptr) noexcept {
+    if (system != nullptr && ptr != nullptr) {
+      const demiurg::resource_handle h = system->handle(ptr->id);
+      if (h.get() == ptr) return from_handle(h);
+    }
+    return from_direct(ptr);
+  }
+
+  demiurg::resource_interface* get() const noexcept {
+    if (auto* ptr = handle.get()) return ptr;
+    return direct;
+  }
+
+  template <typename T>
+  T* get() const noexcept {
+    if (auto* ptr = handle.template get<T>()) return ptr;
+    if (direct == nullptr || direct->loading_type_id != utils::type_id<T>()) return nullptr;
+    return static_cast<T*>(direct);
+  }
+};
+
 // main → sound: проиграть предзагруженный звук. taskid генерит main, чтобы СРАЗУ вернуть
-// хэндл в lua (актор берёт его как id задачи). name — хеш имени (в будущем — handle ресурса
-// demiurg). start — [0,1] откуда играть. after — секвенсинг (SIZE_MAX = сразу).
+// хэндл в lua (актор берёт его как id задачи). res — стабильный demiurg handle ресурса.
+// start — [0,1] откуда играть. after — секвенсинг (SIZE_MAX = сразу).
 struct command_sound_play {
   size_t taskid;
   size_t after = SIZE_MAX;
-  // demiurg-хендл звук-ресурса (sound::sound_resource*), управляемого потоком ассетов. Звуковая
-  // система читает из него (view()) и НЕ хранит ресурсы. main резолвит имя→ресурс и шлёт указатель.
-  demiurg::resource_interface* res = nullptr;
+  // demiurg-хендл звук-ресурса, управляемого потоком ассетов. Звуковая система читает из него
+  // (view()) и НЕ хранит ресурсный указатель.
+  resource_ref res;
   double start = 0.0;
   // категория звука (sound::type: music/talk/talk_pos/ui_effect/sfx). Держим как uint32, чтобы не
   // тянуть sound-хедер сюда; UINT32_MAX = не задано → актор возьмёт sfx. Раньше актор хардкодил sfx.
@@ -159,11 +198,11 @@ struct command_current_loading_state {
 };
 
 // main → assets: «доведи ресурс до состояния target».
-// Валюта контракта — указатель на resource_interface из реестра ассетов
-// (реестр строится один раз в init и потом только читается, поэтому указатель стабилен).
+// Валюта контракта — stable handle ресурса из реестра ассетов. direct fallback остаётся только для
+// synthetic ресурсов, которые пока создаются вне registry (например, UI font_resource).
 // target — это demiurg::state::values (cold=0/warm=1/hot=2); храним int чтобы не тянуть demiurg в хедер.
 struct command_load_resource {
-  demiurg::resource_interface* res;
+  resource_ref res;
   int32_t target;
 };
 
@@ -187,13 +226,13 @@ struct command_chunk_loaded {
 
 // assets → render: «ресурс в памяти, подготовь его на GPU» (warm→hot) либо выгрузи (hot→warm).
 struct command_gpu_transition {
-  demiurg::resource_interface* res;
+  resource_ref res;
   bool load; // true: warm→hot (load_warm); false: hot→warm (unload_hot)
 };
 
 // render → assets: «GPU-переход завершён» (рендер уже флипнул _state и записал gpu_index в ресурс).
 struct command_gpu_done {
-  demiurg::resource_interface* res;
+  resource_ref res;
 };
 
 // render → assets: подготовить CPU-heavy shader payload для render graph. Assets thread грузит

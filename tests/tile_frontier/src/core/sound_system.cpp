@@ -28,7 +28,7 @@ struct sound_simulation_init {
   std::vector<sound::task_status> snapshot_status_cache; // буфер под публикацию состояния
 
   // Звуковой актор НЕ хранит звук-ресурсы: играет из demiurg-хендла (command_sound_play.res),
-  // которым владеет поток ассетов. main резолвит имя→ресурс и шлёт указатель.
+  // которым владеет поток ассетов. main резолвит имя→handle.
 };
 
 sound_simulation::sound_simulation(const size_t frame_time) noexcept : simul::advancer(frame_time) {}
@@ -37,7 +37,7 @@ sound_simulation::~sound_simulation() noexcept = default;
 void sound_simulation::init() {
   container.reset(new sound_simulation_init);
   container->s.reset(new sound::system2);
-  // Звуки грузит поток АССЕТОВ (demiurg): main запрашивает их до warm и шлёт указатель в
+  // Звуки грузит поток АССЕТОВ (demiurg): main запрашивает их до warm и шлёт handle в
   // command_sound_play. Актор ничего не предзагружает и не хранит. Каналы — в broker (set_broker).
 }
 
@@ -82,7 +82,7 @@ void sound_simulation::update(const size_t time) {
     command_sound_play cmd{};
     while (br.sound_play.try_pop(cmd)) {
       // Звук берём из demiurg-хендла (владеет поток ассетов); НЕ храним. Читаем данные через view().
-      auto* sres = static_cast<sound::sound_resource*>(cmd.res);
+      auto* sres = cmd.res.get<sound::sound_resource>();
       if (sres == nullptr) { utils::warn("sound: play task {} with null resource", cmd.taskid); continue; }
       const auto view = sres->view();
       if (view.data.empty() || view.type == sound::data_type::undefined) {

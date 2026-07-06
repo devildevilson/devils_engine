@@ -219,9 +219,9 @@ sample_result library::sample(
     if (image_count != 0) {
       const uint32_t img_index = directional_image_index(ctx.angle_rad, image_count);
       const image_ref& img = st.images[img_index];
-      out.sprite = sprite_sample{img.image, img.mirror_state, pb.uv, img.image != nullptr};
+      out.sprite = sprite_sample{img.image, img.mirror_state, pb.uv, img.image.get() != nullptr};
     } else {
-      out.sprite = sprite_sample{nullptr, mirror::none, pb.uv, false};
+      out.sprite = sprite_sample{{}, mirror::none, pb.uv, false};
     }
 
     if (pb.elapsed_mcs < st.duration_mcs) break;
@@ -267,18 +267,18 @@ image_ref parse_image_ref(const std::string_view token, const demiurg::resource_
   // `tex/img2:3:u` keeps selector `:3` as part of the resource query for now.
   // The atlas/sub-image contract lives outside flow; if demiurg does not know
   // selectors yet, fallback to the base id before the selector.
-  const demiurg::resource_interface* res = nullptr;
+  demiurg::resource_handle res;
   if (resources != nullptr && !without_mirror.empty()) {
-    res = resources->get(without_mirror);
-    if (res == nullptr) {
+    res = resources->handle(without_mirror);
+    if (res.get() == nullptr) {
       const size_t selector_colon = find_last_colon(without_mirror);
       if (selector_colon != std::string_view::npos) {
-        res = resources->get(without_mirror.substr(0, selector_colon));
+        res = resources->handle(without_mirror.substr(0, selector_colon));
       }
     }
   }
 
-  if (res == nullptr && resources != nullptr) {
+  if (res.get() == nullptr && resources != nullptr) {
     utils::warn("flow: image resource '{}' was not found", token);
   }
 

@@ -331,13 +331,13 @@ struct simulation_init {
   std::unique_ptr<visage::font_resource> ui_font_italic_res;
   bool ui_font_italic_logged = false;
 
-  // Звуки — demiurg-ресурсы в потоке ассетов. main держит name_hash → указатель (для резолва в
+  // Звуки — demiurg-ресурсы в потоке ассетов. main держит name_hash → stable handle (для резолва в
   // command_sound_play из UI/геймплея) и запрашивает их до warm. Сам звук-актор ресурсы не хранит.
-  gtl::flat_hash_map<uint64_t, sound::sound_resource*> sound_by_name;
+  gtl::flat_hash_map<uint64_t, demiurg::resource_handle> sound_by_name;
 
-  // Именованные картинки для UI: name_hash → текстура (gpu_index + размер). Хост-мост к demiurg:
+  // Именованные картинки для UI: name_hash → stable handle текстуры (gpu_index + размер). Хост-мост к demiurg:
   // app.image(name) строит visage::image из usable()-текстуры. Позже заменится на demiurg require.
-  gtl::flat_hash_map<uint64_t, painter::gpu_texture_resource*> image_by_name;
+  gtl::flat_hash_map<uint64_t, demiurg::resource_handle> image_by_name;
 
   // Единый broker всех межпоточных каналов. Владелец — main; создаётся в init ДО подсистем и
   // раздаётся им указателем (set_broker) до старта потоков. Заменяет actor_ref/message_dispatcher.
@@ -374,10 +374,10 @@ struct simulation_init {
   std::chrono::steady_clock::time_point metrics_last_log = std::chrono::steady_clock::now();
 
   // FSM состояний движка (шаг 3). Стартовый набор ресурсов, от usable() которого зависит переход
-  // loading→game (main держит эти указатели, поэтому прогресс считается прямо тут, без публикации
+  // loading→game (main держит stable handles, поэтому прогресс считается прямо тут, без публикации
   // из ассетов). Заполняется в init по мере запросов текстур/шрифтов.
   app_state state = app_state::boot;
-  std::vector<demiurg::resource_interface*> startup_resources;
+  std::vector<resource_ref> startup_resources;
 
   std::vector<std::string> sound_devices;
   std::atomic_bool sound_devices_ready = false;
@@ -486,19 +486,25 @@ static void apply_fullscreen(simulation_init& c, const bool enable) {
 }
 
 // Прогресс загрузки стартового набора [0,1]: доля usable()-ресурсов + применённых mock-чанков.
-// main держит указатели на стартовый набор, поэтому прогресс считается локально (без публикации
+// main держит resource_ref на стартовый набор, поэтому прогресс считается локально (без публикации
 // из ассетов — см. водораздел; ассетный push-слепок оставлен на будущее).
 static double loading_progress(const simulation_init& c) {
   const size_t total = c.startup_resources.size() + c.chunks_loaded.size();
   if (total == 0) return 1.0;
   size_t done = c.chunks_loaded_count;
-  for (const auto* r : c.startup_resources) if (r != nullptr && r->usable()) ++done;
+  for (const auto& ref : c.startup_resources) {
+    auto* r = ref.get();
+    if (r != nullptr && r->usable()) ++done;
+  }
   return double(done) / double(total);
 }
 
 // «Загрузка завершена» = ВЕСЬ стартовый набор ресурсов usable() И все mock-чанки применены.
 static bool loading_complete(const simulation_init& c) {
-  for (const auto* r : c.startup_resources) if (r == nullptr || !r->usable()) return false;
+  for (const auto& ref : c.startup_resources) {
+    auto* r = ref.get();
+    if (r == nullptr || !r->usable()) return false;
+  }
   return c.chunks_loaded_count == c.chunks_loaded.size();
 }
 
@@ -748,10 +754,12 @@ void simulation::init() {
     { "quad",   "textures/quad" },
   };
   for (const auto& [friendly, res_id] : textures_named) {
-    if (auto* tex = container->assets_sim->resources()->get<painter::gpu_texture_resource>(res_id)) {
-      container->br->load_resource.try_push(command_load_resource{tex, static_cast<int32_t>(demiurg::state::hot)});
-      container->startup_resources.push_back(tex); // стартовый набор: от него зависит переход loading→game
-      container->image_by_name.emplace(utils::string_hash(friendly), tex); // для app.image (UI)
+    const auto tex_handle = container->assets_sim->resources()->handle(res_id);
+    if (auto* tex = tex_handle.get<painter::gpu_texture_resource>()) {
+      (void)tex;
+      container->br->load_resource.try_push(command_load_resource{resource_ref::from_handle(tex_handle), static_cast<int32_t>(demiurg::state::hot)});
+      container->startup_resources.push_back(resource_ref::from_handle(tex_handle)); // стартовый набор: от него зависит переход loading→game
+      container->image_by_name.emplace(utils::string_hash(friendly), tex_handle); // для app.image (UI)
       DE_LOG(catalogue::log_domain::resource, flow, "main: requested texture '{}' -> hot", res_id);
     } else {
       utils::warn("main: texture resource '{}' not found in registry", res_id);
@@ -759,7 +767,7 @@ void simulation::init() {
   }
 
   // Звуки: резолвим короткое имя → demiurg-ресурс (поток ассетов), запрашиваем до warm и держим
-  // указатель в sound_by_name. UI/геймплей ссылаются по string_hash(имя), звук-актор получит res*.
+  // handle в sound_by_name. UI/геймплей ссылаются по string_hash(имя), звук-актор получит handle.
   {
     const std::pair<const char*, const char*> named[] = {
       { "eating",  "sounds/eating/freesound_community-chomp-chew-bite-102031" },
@@ -768,10 +776,11 @@ void simulation::init() {
       { "ambient", "sounds/ambient/soundreality-ambient-spring-forest-323801" },
     };
     for (const auto& [name, res_id] : named) {
-      auto* snd = container->assets_sim->resources()->get<sound::sound_resource>(res_id);
+      const auto snd_handle = container->assets_sim->resources()->handle(res_id);
+      auto* snd = snd_handle.get<sound::sound_resource>();
       if (snd == nullptr) { utils::warn("main: sound resource '{}' not found in registry", res_id); continue; }
-      container->br->load_resource.try_push(command_load_resource{snd, static_cast<int32_t>(demiurg::state::warm)});
-      container->sound_by_name.emplace(utils::string_hash(name), snd);
+      container->br->load_resource.try_push(command_load_resource{resource_ref::from_handle(snd_handle), static_cast<int32_t>(demiurg::state::warm)});
+      container->sound_by_name.emplace(utils::string_hash(name), snd_handle);
     }
     DE_LOG(catalogue::log_domain::resource, flow, "main: requested {} sounds -> warm", container->sound_by_name.size());
   }
@@ -876,10 +885,10 @@ void simulation::init() {
           const sol::optional<sound_handle> after = (*opts)["after"];
           if (after && after->valid()) play.after = after->value; // хэндл → секвенсинг
         }
-        // резолв имя → demiurg-ресурс (main держит name_hash → sound_resource*). Неизвестное имя — тихо.
+        // резолв имя → demiurg-handle. Неизвестное имя — тихо.
         const auto snd_it = container->sound_by_name.find(utils::string_hash(name));
         if (snd_it == container->sound_by_name.end()) return sound_handle{};
-        play.res = snd_it->second;
+        play.res = resource_ref::from_handle(snd_it->second);
         container->br->sound_play.try_push(play);
         // оптимистичная запись в ту же таблицу: пока play не доедет в публикацию (latency
         // 1-2 кадра), app.sound_state по ней вернёт 0, а не nil (deadline = окно старта).
@@ -955,7 +964,7 @@ void simulation::init() {
       auto& lua = container->ui->script_state();
       const auto it = container->image_by_name.find(utils::string_hash(name));
       if (it == container->image_by_name.end()) return sol::nil;
-      auto* tex = it->second;
+      auto* tex = it->second.get<painter::gpu_texture_resource>();
       if (tex == nullptr || !tex->usable()) return sol::nil; // ещё не на GPU
       visage::image img{};
       img.texture_id = tex->gpu_index;
@@ -1023,13 +1032,15 @@ void simulation::init() {
   if (container->ui_font_res && aactor != nullptr) {
     // final_state() = 3 (font_resource много-шаговый); CPU-уровни (0..2) уже пройдены в setup_visage,
     // ассетам остаётся довести 2→3 (GPU). target=final_state(), не state::hot (иначе стоп на MSDF).
-    container->br->load_resource.try_push(command_load_resource{container->ui_font_res.get(), container->ui_font_res->final_state()});
-    container->startup_resources.push_back(container->ui_font_res.get());
+    const resource_ref font_ref = resource_ref::from_direct(container->ui_font_res.get());
+    container->br->load_resource.try_push(command_load_resource{font_ref, container->ui_font_res->final_state()});
+    container->startup_resources.push_back(font_ref);
     DE_LOG(catalogue::log_domain::ui, flow, "main: requested font atlas -> ready (level {})", container->ui_font_res->final_state());
   }
   if (container->ui_font_italic_res && aactor != nullptr) {
-    container->br->load_resource.try_push(command_load_resource{container->ui_font_italic_res.get(), container->ui_font_italic_res->final_state()});
-    container->startup_resources.push_back(container->ui_font_italic_res.get());
+    const resource_ref font_ref = resource_ref::from_direct(container->ui_font_italic_res.get());
+    container->br->load_resource.try_push(command_load_resource{font_ref, container->ui_font_italic_res->final_state()});
+    container->startup_resources.push_back(font_ref);
     DE_LOG(catalogue::log_domain::ui, flow, "main: requested italic font atlas -> ready (level {})", container->ui_font_italic_res->final_state());
   }
 }
@@ -1341,7 +1352,7 @@ void simulation::update(const size_t time) {
         command_sound_play play{};
         play.taskid = generate_task_id();
         play.after = SIZE_MAX; // без секвенсинга
-        play.res = snd_it->second;
+        play.res = resource_ref::from_handle(snd_it->second);
         play.start = 0.0;
         container->br->sound_play.try_push(play);
         ++sent;
