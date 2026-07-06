@@ -17,12 +17,31 @@
 #include "resource_manifest.h"
 #include "devils_engine/utils/block_allocator.h"
 #include "devils_engine/utils/memory_pool.h"
+#include "devils_engine/utils/string_id.h"
 #include "devils_engine/utils/type_traits.h"
 #include <gtl/phmap.hpp>
 
 namespace devils_engine {
 namespace demiurg {
 class module_system;
+class resource_system;
+
+struct resource_handle {
+  const resource_system* system = nullptr;
+  utils::id hash = utils::invalid_id;
+
+  resource_interface* get() const noexcept;
+
+  template <typename T>
+  T* get() const noexcept {
+    constexpr size_t type_id = utils::type_id<T>();
+    auto* ptr = get();
+    if (ptr == nullptr || ptr->loading_type_id != type_id) return nullptr;
+    return static_cast<T*>(ptr);
+  }
+
+  explicit operator bool() const noexcept { return get() != nullptr; }
+};
 
 // тут нужно проверить попадаем ли мы в тип в который пытаемся это дело преобразовать?
 template <typename T = resource_interface>
@@ -127,6 +146,11 @@ public:
   resource_interface *create(const std::string_view &id, const std::string_view &extension);
 
   resource_interface* get(const std::string_view& id) const;
+  resource_interface* get(utils::id hash) const noexcept;
+
+  static utils::id resource_hash(const std::string_view& id) noexcept;
+  resource_handle handle(const std::string_view& id) const noexcept;
+  resource_handle handle(utils::id hash) const noexcept;
 
   template <typename T>
   T* get(const std::string_view& id) const {
@@ -224,16 +248,27 @@ private:
   std::vector<resource_interface *> all_resources;
   std::deque<std::string> alias_storage;
   gtl::flat_hash_map<std::string_view, resource_interface*> aliases;
+  struct hashed_resource {
+    std::string_view id;
+    resource_interface* res;
+  };
+  gtl::flat_hash_map<utils::id, hashed_resource> resources_by_hash;
 
   resource_system::type *find_proper_type(const std::string_view &id, const std::string_view &extension) const;
   std::vector<manifest_entry> resolve_manifest(const std::vector<resource_candidate>& candidates) const;
   void instantiate_manifest(const std::vector<manifest_entry>& manifest, std::vector<resource_interface*>* pending = nullptr);
   void register_alias(std::string alias, resource_interface* res);
+  void rebuild_hash_index();
+  void register_hash_key(std::string_view id, resource_interface* res);
   void parse_resources_impl(module_system* sys);
   void append_resources_impl(module_system* sys);
   static void sort_active_resources(std::vector<resource_interface*>& resources);
   std::span<resource_interface * const> raw_find(const std::string_view &filter) const;
 };
+
+inline resource_interface* resource_handle::get() const noexcept {
+  return system != nullptr ? system->get(hash) : nullptr;
+}
 }
 }
 

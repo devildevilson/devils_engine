@@ -128,6 +128,26 @@ namespace devils_engine {
       return alias_itr->second;
     }
 
+    resource_interface* resource_system::get(const utils::id hash) const noexcept {
+      if (hash == utils::invalid_id) return nullptr;
+      const auto itr = resources_by_hash.find(hash);
+      if (itr == resources_by_hash.end()) return nullptr;
+      return itr->second.res;
+    }
+
+    utils::id resource_system::resource_hash(const std::string_view& id) noexcept {
+      if (id.empty()) return utils::invalid_id;
+      return utils::string_hash(id);
+    }
+
+    resource_handle resource_system::handle(const std::string_view& id) const noexcept {
+      return resource_handle{this, resource_hash(id)};
+    }
+
+    resource_handle resource_system::handle(const utils::id hash) const noexcept {
+      return resource_handle{this, hash};
+    }
+
     static bool lazy_compare(const std::string_view &a, const std::string_view &b) {
       return a.substr(0, b.size()) == b;
     }
@@ -316,6 +336,44 @@ namespace devils_engine {
       aliases[std::string_view(alias_storage.back())] = res;
     }
 
+    void resource_system::register_hash_key(const std::string_view id, resource_interface* res) {
+      if (id.empty() || res == nullptr) return;
+      const auto hash = resource_hash(id);
+      if (hash == utils::invalid_id) {
+        utils::error{}("demiurg: resource id '{}' produced invalid hash value", id);
+      }
+
+      const auto [itr, inserted] = resources_by_hash.emplace(hash, hashed_resource{id, res});
+      if (inserted) return;
+
+      if (itr->second.id != id) {
+        utils::error{}(
+          "demiurg: resource id hash collision: '{}' and '{}' both hash to {}",
+          itr->second.id,
+          id,
+          hash
+        );
+      }
+
+      if (itr->second.res != res) {
+        utils::warn("demiurg: duplicate resource hash key '{}' points to both '{}' and '{}'; keeping first", id, itr->second.res->id, res->id);
+      }
+    }
+
+    void resource_system::rebuild_hash_index() {
+      resources_by_hash.clear();
+      resources_by_hash.reserve(resources.size() + aliases.size());
+
+      for (auto* res : resources) {
+        if (res == nullptr) continue;
+        register_hash_key(res->id, res);
+      }
+
+      for (const auto& [alias, res] : aliases) {
+        register_hash_key(alias, res);
+      }
+    }
+
     void resource_system::parse_resources(module_system* sys) {
       install_catalogue_introspection();
       using parse_t = catalogue_domain::fn_traits<&resource_system::parse_resources_impl, "resource_system.parse_resources", "self", "modules">;
@@ -339,6 +397,7 @@ namespace devils_engine {
       }
 
       sort_active_resources(resources);
+      rebuild_hash_index();
       DE_LOG(catalogue::log_domain::demiurg, flow, "resource_system: parsed {} active resources ({} instantiated)", resources.size(), all_resources.size());
     }
 
@@ -376,6 +435,7 @@ namespace devils_engine {
 
       resources.insert(resources.end(), pending.begin(), pending.end());
       sort_active_resources(resources);
+      rebuild_hash_index();
       DE_LOG(catalogue::log_domain::demiurg, flow, "resource_system: appended {} active resources ({} instantiated total)", pending.size(), all_resources.size());
     }
 
@@ -389,6 +449,7 @@ namespace devils_engine {
       all_resources.clear();
       aliases.clear();
       alias_storage.clear();
+      resources_by_hash.clear();
     }
 
     size_t resource_system::resources_count() const noexcept { return resources.size(); }

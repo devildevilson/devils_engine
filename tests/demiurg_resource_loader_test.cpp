@@ -212,6 +212,55 @@ TEST_CASE("resource_system expands tavl list resources and aliases indices [demi
   fs::remove_all(root);
 }
 
+TEST_CASE("resource_system resolves stable resource handles by hashed logical id [demiurg]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_demiurg_handle_test";
+  fs::remove_all(root);
+  fs::create_directories(root / "core" / "configs");
+
+  {
+    std::ofstream out(root / "core" / "configs" / "abc.tavl");
+    out << "name = abc1\n";
+    out << "data = 123\n";
+    out << "//---\n";
+    out << "name = abc2\n";
+    out << "data = 456\n";
+  }
+
+  demiurg::module_system modules((root.generic_string() + "/"));
+  modules.load_modules({demiurg::module_system::list_entry{"core/", "", ""}});
+
+  demiurg::resource_system resources;
+  resources.register_type<list_test_resource>("configs", "tavl");
+  resources.parse_resources(&modules);
+
+  const auto abc1_handle = resources.handle("configs/abc:abc1");
+  const auto abc1_alias_handle = resources.handle("configs/abc:0");
+  const auto missing_handle = resources.handle("configs/abc:missing");
+
+  auto* abc1 = resources.get<list_test_resource>("configs/abc:abc1");
+  REQUIRE(abc1 != nullptr);
+  CHECK(abc1_handle.get() == abc1);
+  CHECK(abc1_handle.get<list_test_resource>() == abc1);
+  CHECK(abc1_alias_handle.get() == abc1);
+  CHECK_FALSE(missing_handle);
+  CHECK(resources.get(demiurg::resource_system::resource_hash("configs/abc:abc1")) == abc1);
+  CHECK(resources.get(demiurg::resource_system::resource_hash("configs/abc:0")) == abc1);
+  CHECK(resources.get(utils::invalid_id) == nullptr);
+
+  resources.clear();
+  CHECK(abc1_handle.get() == nullptr);
+
+  resources.parse_resources(&modules);
+  auto* abc1_again = resources.get<list_test_resource>("configs/abc:abc1");
+  REQUIRE(abc1_again != nullptr);
+  CHECK(abc1_handle.get() == abc1_again);
+  CHECK(abc1_alias_handle.get() == abc1_again);
+
+  fs::remove_all(root);
+}
+
 TEST_CASE("resource_system applies tavl list partial overrides by name without moving index aliases [demiurg]") {
   namespace fs = std::filesystem;
 
