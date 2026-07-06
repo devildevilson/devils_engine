@@ -22,8 +22,8 @@ std::string format_arguments(const std::span<const argument_view> args) {
 namespace detail {
 
 // enter: значим только для tracing/dump (вход + место вызова; dump — ещё аргументы).
-void emit_enter(const introspection& in, const call_info& info) {
-  switch (in.mode) {
+void emit_enter(const introspection& in, const introspection_mode mode, const call_info& info) {
+  switch (mode) {
     case introspection_mode::tracing:
       spdlog::info("[{}][trace] {}:{}: enter '{}'", logs().name(in.log_domain),
                    utils::make_sane_file_name(info.file), info.line, info.function_name);
@@ -39,8 +39,8 @@ void emit_enter(const introspection& in, const call_info& info) {
 }
 
 // exit: невиртуальный switch по режиму — каждый берёт РОВНО что нужно (см. introspection_mode).
-void emit_exit(const introspection& in, const call_info& info, const uint64_t elapsed_mcs) {
-  switch (in.mode) {
+void emit_exit(const introspection& in, const introspection_mode mode, const call_info& info, const uint64_t elapsed_mcs) {
+  switch (mode) {
     case introspection_mode::logging:
       spdlog::info("[{}][log] '{}' {} us", logs().name(in.log_domain), info.function_name, elapsed_mcs);
       break;

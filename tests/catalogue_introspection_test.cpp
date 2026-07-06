@@ -251,3 +251,27 @@ TEST_CASE("catalogue statistics introspection ring buffer wraps and keeps aggreg
 
   catalogue::domain<domains::service>::set_introspection(nullptr);
 }
+
+TEST_CASE("catalogue trace log-level escalates domain introspection to tracing") {
+  using reset_t = catalogue::domain<domains::service>::fn_traits<&reset_gold, "reset_gold">;
+  constexpr auto reset_fn = reset_t::fn_ptr;
+
+  catalogue::logs().register_domain(catalogue::log_domain::gameplay, "gameplay");
+  catalogue::statistics_store store(4);
+  // базовый режим statistics, привязка к лог-домену gameplay
+  const catalogue::introspection cfg{catalogue::introspection_mode::statistics, catalogue::log_domain::gameplay, &store};
+  catalogue::domain<domains::service>::set_introspection(&cfg);
+
+  // домен НЕ на trace → эффективный режим = statistics: замер пишется в store
+  catalogue::logs().set_level(catalogue::log_domain::gameplay, catalogue::log_depth::off);
+  reset_fn();
+  CHECK(store.count() == 1);
+
+  // домен НА trace → эскалация до tracing: статистика больше НЕ пишется (наблюдаемый признак смены режима)
+  catalogue::logs().set_level(catalogue::log_domain::gameplay, catalogue::log_depth::trace);
+  reset_fn();
+  CHECK(store.count() == 1); // не изменилось — режим стал tracing
+
+  catalogue::logs().set_level(catalogue::log_domain::gameplay, catalogue::log_depth::off);
+  catalogue::domain<domains::service>::set_introspection(nullptr);
+}
