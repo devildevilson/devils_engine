@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <vector>
 #include <string>
+#include "resource_manifest.h"
 
 namespace devils_engine {
 namespace demiurg {
@@ -23,8 +24,7 @@ namespace demiurg {
     virtual void open() = 0;
     virtual void close() = 0;
     virtual bool is_openned() const = 0;
-    //virtual void resources_list(std::vector<resource_interface*> &arr) const = 0;
-    virtual void resources_list(resource_system* system) const = 0;
+    virtual void resources_list(std::vector<resource_candidate>& out, uint32_t module_priority) const = 0;
     // может быть потребуется индекс, нет индекс не потребуется
     // нужно заменить на обычный стринг, в минизипе нужно указать c_str
     // в этой строке нужно отправлять относительный путь до файла, но с именем файла и расширением

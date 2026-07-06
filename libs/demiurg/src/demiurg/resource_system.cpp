@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <cassert>
+#include <limits>
 #include "module_interface.h"
 #include "module_system.h"
 #include "folder_module.h"
@@ -18,6 +19,18 @@ namespace fs = std::filesystem;
 
 namespace devils_engine {
   namespace demiurg {
+    namespace {
+      resource_interface* instantiate_resource(resource_system& sys, const resource_candidate& candidate) {
+        auto* res = sys.create(candidate.id, candidate.ext);
+        if (res == nullptr) return nullptr;
+
+        res->set(candidate.path, candidate.module_name, candidate.id, candidate.ext);
+        res->module = candidate.module;
+        res->raw_size = candidate.raw_size;
+        return res;
+      }
+    }
+
     resource_system::type::type(
       std::string name,
       std::string ext,
@@ -118,102 +131,173 @@ namespace devils_engine {
       return std::span(prev, end);
     }
 
-void resource_system::parse_resources(module_system* sys) {
-  clear();
+    std::vector<resource_system::manifest_entry> resource_system::resolve_manifest(
+      const std::vector<resource_candidate>& candidates
+    ) const {
+      std::vector<typed_candidate> typed;
+      typed.reserve(candidates.size());
 
-  sys->open_modules();
-  sys->parse_resources(this);
-  sys->close_modules();
+      for (size_t i = 0; i < candidates.size(); ++i) {
+        const auto& candidate = candidates[i];
+        auto* type = find_proper_type(candidate.id, candidate.ext);
+        if (type == nullptr) {
+          utils::warn("Could not find proper type for resource '{}' extension '{}'. Skip", candidate.id, candidate.ext);
+          continue;
+        }
 
-  gtl::flat_hash_map<std::string_view, resource_interface *> loaded;
-  for (const auto &res : all_resources) {
-    auto t = find_proper_type(res->id, res->ext);
-    if (t == nullptr) {
-      utils::warn("Could not find proper type for resource '{}' extension '{}'. Skip", res->id, res->ext);
-      continue;
-    }
+        typed.push_back(typed_candidate{
+          &candidate,
+          type,
+          type->find_ext(candidate.ext),
+          i
+        });
+      }
 
-    // проверим загружали ли мы уже вещи
-    auto itr = loaded.find(res->id);
-    if (itr == loaded.end()) {
-      loaded[res->id] = res;
-      resources.push_back(res);
-    } else {
-      auto other_ptr = itr->second;
-      for (; other_ptr != nullptr &&
-            other_ptr->module_name != res->module_name;
-          other_ptr = other_ptr->replacement_next(itr->second)) {}
+      std::sort(typed.begin(), typed.end(), [] (const typed_candidate& a, const typed_candidate& b) {
+        std::less<std::string_view> less;
+        if (less(a.candidate->id, b.candidate->id)) return true;
+        if (less(b.candidate->id, a.candidate->id)) return false;
+        if (a.candidate->module_priority != b.candidate->module_priority) {
+          return a.candidate->module_priority < b.candidate->module_priority;
+        }
+        if (a.ext_index != b.ext_index) return a.ext_index < b.ext_index;
+        return a.order < b.order;
+      });
 
-      // тут мы реплейсмент меняем и с ним уходит сапплиментари
-      if (other_ptr != nullptr) {
-        // модули совпали, найдем у кого меньший индекс среди расширений
-        // умрем на expr,exp например
-        //const size_t other_place = t->ext.find(other_ptr->ext);
-        //const size_t res_place = t->ext.find(res->ext);
-        const size_t other_place = t->find_ext(other_ptr->ext);
-        const size_t res_place = t->find_ext(res->ext);
-        if (res_place < other_place) {
-          if (other_ptr == itr->second) {
-            auto arr_itr = std::find(resources.begin(), resources.end(), other_ptr);
-            (*arr_itr) = res;
+      std::vector<manifest_entry> manifest;
+      for (size_t i = 0; i < typed.size();) {
+        size_t end = i + 1;
+        while (end < typed.size() && typed[end].candidate->id == typed[i].candidate->id) {
+          end += 1;
+        }
+
+        uint32_t winner_priority = std::numeric_limits<uint32_t>::max();
+        for (size_t j = i; j < end; ++j) {
+          winner_priority = std::min(winner_priority, typed[j].candidate->module_priority);
+        }
+
+        size_t primary_index = SIZE_MAX;
+        for (size_t j = i; j < end; ++j) {
+          if (typed[j].candidate->module_priority != winner_priority) continue;
+          if (primary_index == SIZE_MAX || typed[j].ext_index < typed[primary_index].ext_index) {
+            primary_index = j;
+          }
+        }
+
+        if (primary_index == SIZE_MAX) {
+          i = end;
+          continue;
+        }
+
+        manifest_entry entry{typed[primary_index], {}};
+        for (size_t j = i; j < end; ++j) {
+          if (j == primary_index) continue;
+          if (typed[j].candidate->module_priority != winner_priority) continue;
+          if (typed[j].resource_type != entry.primary.resource_type) {
+            utils::warn(
+              "Resource '{}' file '{}' has type '{}' but primary file '{}' has type '{}'. Skip supplementary",
+              typed[j].candidate->id,
+              typed[j].candidate->path,
+              typed[j].resource_type->name,
+              entry.primary.candidate->path,
+              entry.primary.resource_type->name
+            );
+            continue;
           }
 
-          auto old_repl = other_ptr->replacement_next(other_ptr);
-          other_ptr->replacement_remove();
-          res->replacement_radd(old_repl);
-
-          res->supplementary_radd(other_ptr);
-
-          // забыл поменять указатель в хеш мапе
-          itr->second = res;
-        } else {
-          other_ptr->supplementary_radd(res);
+          entry.supplementary.push_back(typed[j]);
         }
-      } else {
-        // новый ресурс по модулю
-        // тут теперь нужно определить у кого меньший индекс 
-        // примерно так же как и в случае с расширениями
-        itr->second->replacement_radd(res);
+
+        manifest.push_back(std::move(entry));
+        i = end;
+      }
+
+      return manifest;
+    }
+
+    void resource_system::sort_active_resources(std::vector<resource_interface*>& resources) {
+      std::sort(resources.begin(), resources.end(), [] (auto a, auto b) {
+        std::less<std::string_view> l;
+        return l(a->id, b->id);
+      });
+    }
+
+    void resource_system::instantiate_manifest(
+      const std::vector<manifest_entry>& manifest,
+      std::vector<resource_interface*>* pending
+    ) {
+      for (const auto& entry : manifest) {
+        const auto& primary_candidate = *entry.primary.candidate;
+        auto* primary = instantiate_resource(*this, primary_candidate);
+        if (primary == nullptr) {
+          utils::warn("Could not create resource '{}' extension '{}'. Skip", primary_candidate.id, primary_candidate.ext);
+          continue;
+        }
+
+        if (pending != nullptr) pending->push_back(primary);
+        else resources.push_back(primary);
+
+        for (const auto& supplementary : entry.supplementary) {
+          const auto& candidate = *supplementary.candidate;
+          auto* res = instantiate_resource(*this, candidate);
+          if (res == nullptr) {
+            utils::warn("Could not create supplementary resource '{}' extension '{}'. Skip", candidate.id, candidate.ext);
+            continue;
+          }
+
+          primary->supplementary_radd(res);
+        }
       }
     }
-  }
 
-  std::sort(resources.begin(), resources.end(), [] (auto a, auto b) {
-    std::less<std::string_view> l;
-    return l(a->id, b->id);
-  });
-}
+    void resource_system::parse_resources(module_system* sys) {
+      clear();
 
-void resource_system::append_resources(module_system* sys) {
-  const size_t before = all_resources.size();
+      {
+        std::vector<resource_candidate> candidates;
+        sys->open_modules();
+        sys->discover_resources(candidates);
+        sys->close_modules();
 
-  sys->open_modules();
-  sys->parse_resources(this); // дописывает ресурсы модуля(ей) в all_resources
-  sys->close_modules();
+        auto manifest = resolve_manifest(candidates);
+        instantiate_manifest(manifest);
 
-  // Вносим ТОЛЬКО новые ресурсы (индексы [before, end)). Коллизию с уже загруженными ловим через
-  // get() (реестр `resources` на этот момент ещё полностью отсортирован — проверки идут ДО вставки).
-  // Override/ring-цепочки НЕ трогаем: append для непересекающихся под-реестров (см. хедер).
-  std::vector<resource_interface*> pending;
-  for (size_t i = before; i < all_resources.size(); ++i) {
-    auto* res = all_resources[i];
-    if (find_proper_type(res->id, res->ext) == nullptr) {
-      utils::warn("Could not find proper type for resource '{}' extension '{}'. Skip", res->id, res->ext);
-      continue;
+        manifest.clear();
+        candidates.clear();
+      }
+
+      sort_active_resources(resources);
     }
-    if (get(res->id) != nullptr) {
-      utils::warn("append_resources: resource id '{}' already registered — override не поддержан в append, пропуск", res->id);
-      continue;
-    }
-    pending.push_back(res);
-  }
 
-  resources.insert(resources.end(), pending.begin(), pending.end());
-  std::sort(resources.begin(), resources.end(), [] (auto a, auto b) {
-    std::less<std::string_view> l;
-    return l(a->id, b->id);
-  });
-}
+    void resource_system::append_resources(module_system* sys) {
+      std::vector<resource_interface*> pending;
+
+      {
+        std::vector<resource_candidate> candidates;
+        sys->open_modules();
+        sys->discover_resources(candidates);
+        sys->close_modules();
+
+        auto manifest = resolve_manifest(candidates);
+        for (auto itr = manifest.begin(); itr != manifest.end();) {
+          const auto& id = itr->primary.candidate->id;
+          if (get(id) != nullptr) {
+            utils::warn("append_resources: resource id '{}' already registered — override не поддержан в append, пропуск", id);
+            itr = manifest.erase(itr);
+          } else {
+            ++itr;
+          }
+        }
+
+        instantiate_manifest(manifest, &pending);
+
+        manifest.clear();
+        candidates.clear();
+      }
+
+      resources.insert(resources.end(), pending.begin(), pending.end());
+      sort_active_resources(resources);
+    }
 
     void resource_system::clear() {
       for (auto ptr : all_resources) {

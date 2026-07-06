@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include "resource_manifest.h"
 
 namespace devils_engine {
 namespace demiurg {
@@ -32,7 +33,7 @@ public:
   void load_default_modules();
   void open_modules();
   void close_modules();
-  void parse_resources(resource_system* sys);
+  void discover_resources(std::vector<resource_candidate>& out);
 private:
   std::string _path;
   std::string modules_list_name;

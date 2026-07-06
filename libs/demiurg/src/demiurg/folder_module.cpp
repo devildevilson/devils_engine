@@ -76,7 +76,7 @@ namespace demiurg {
   // так нам нужно еще сделать что то вроде require_list("abc/def/asd"), в нем указываем неполный путь
   // require_list вернет массив объектов и должен автоматом преобразовать их в нужные юзертипы
 
-  void folder_module::resources_list(resource_system* s) const {
+  void folder_module::resources_list(std::vector<resource_candidate>& out, const uint32_t module_priority) const {
     for (const auto &entry : fs::recursive_directory_iterator(_path)) {
       if (!entry.is_regular_file()) continue;
       std::string entry_path = entry.path().generic_string();
@@ -86,15 +86,15 @@ namespace demiurg {
       const auto [ id, name, ext ] = parse_path(file_path);
       if (name == "." || name == "..") continue;
 
-      auto res = s->create(id, ext);
-      if (res == nullptr) {
-        utils::warn("Could not find proper resource type for file '{}'. Skip", entry_path);
-        continue;
-      }
-
-      res->set(std::move(file_path), module_name, id, ext);
-      res->module = this;
-      res->raw_size = entry.file_size();
+      out.push_back(resource_candidate{
+        std::move(file_path),
+        std::string(id),
+        std::string(ext),
+        module_name,
+        this,
+        entry.file_size(),
+        module_priority
+      });
     }
   }
 
