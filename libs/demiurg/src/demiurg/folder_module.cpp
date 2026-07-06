@@ -85,16 +85,28 @@ namespace demiurg {
       // module_name мы теперь знаем и тут он нам не нужен
       const auto [ id, name, ext ] = parse_path(file_path);
       if (name == "." || name == "..") continue;
+      std::string id_str(id);
+      std::string ext_str(ext);
 
-      out.push_back(resource_candidate{
+      resource_candidate candidate{
         std::move(file_path),
-        std::string(id),
-        std::string(ext),
+        std::move(id_str),
+        std::move(ext_str),
+        {},
+        {},
+        {},
         module_name,
         this,
         entry.file_size(),
         module_priority
-      });
+      };
+
+      if (ext == "tavl") {
+        const std::string content = load_text(candidate.path);
+        if (append_tavl_list_candidates(out, candidate, content)) continue;
+      }
+
+      out.push_back(std::move(candidate));
     }
   }
 

@@ -82,6 +82,19 @@ public:
 
 class manifest_test_resource final : public demiurg::resource_interface {
 public:
+  std::string loaded_section;
+
+  void load_cold(const utils::safe_handle_t&) override {
+    loaded_section = list_section;
+  }
+
+  void load_warm(const utils::safe_handle_t&) override {}
+  void unload_warm(const utils::safe_handle_t&) override {}
+  void unload_hot(const utils::safe_handle_t&) override {}
+};
+
+class list_test_resource final : public demiurg::resource_interface {
+public:
   void load_cold(const utils::safe_handle_t&) override {}
   void load_warm(const utils::safe_handle_t&) override {}
   void unload_warm(const utils::safe_handle_t&) override {}
@@ -127,6 +140,193 @@ TEST_CASE("resource_system does not instantiate shadowed module resources [demiu
   CHECK(supplementary->path == "textures/grass.meta");
   CHECK(supplementary->module == grass->module);
   CHECK(supplementary->supplementary_next(grass) == nullptr);
+
+  fs::remove_all(root);
+}
+
+TEST_CASE("resource_system expands tavl list resources and aliases indices [demiurg]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_demiurg_list_test";
+  fs::remove_all(root);
+  fs::create_directories(root / "core" / "configs");
+
+  {
+    std::ofstream out(root / "core" / "configs" / "abc.tavl");
+    out << "name = abc1\n";
+    out << "data = 123\n";
+    out << "//---\n";
+    out << "name = abc2\n";
+    out << "data = 456\n";
+  }
+
+  demiurg::module_system modules((root.generic_string() + "/"));
+  modules.load_modules({demiurg::module_system::list_entry{"core/", "", ""}});
+
+  demiurg::resource_system resources;
+  resources.register_type<list_test_resource>("configs", "tavl");
+  resources.parse_resources(&modules);
+
+  auto* abc1 = resources.get<list_test_resource>("configs/abc:abc1");
+  auto* abc2 = resources.get<list_test_resource>("configs/abc:abc2");
+  REQUIRE(abc1 != nullptr);
+  REQUIRE(abc2 != nullptr);
+  CHECK(resources.get("configs/abc:0") == abc1);
+  CHECK(resources.get("configs/abc:1") == abc2);
+  CHECK(resources.get("configs/abc") == nullptr);
+  CHECK(resources.resources_count() == 2);
+  CHECK(resources.all_resources_count() == 2);
+
+  CHECK(abc1->path == "configs/abc.tavl");
+  CHECK(abc1->id == "configs/abc:abc1");
+  CHECK(abc1->ext == "tavl");
+  CHECK(abc1->is_list_entry());
+  CHECK(abc1->list_index == 0);
+  CHECK(abc1->list_start_line == 1);
+  CHECK(abc1->list_name == "abc1");
+  CHECK(abc1->list_section.find("data = 123") != std::string::npos);
+
+  CHECK(abc2->list_index == 1);
+  CHECK(abc2->list_start_line == 4);
+  CHECK(abc2->list_name == "abc2");
+  CHECK(abc2->list_section.find("data = 456") != std::string::npos);
+
+  fs::remove_all(root);
+}
+
+TEST_CASE("resource_system applies tavl list partial overrides by name without moving index aliases [demiurg]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_demiurg_list_override_test";
+  fs::remove_all(root);
+  fs::create_directories(root / "high" / "configs");
+  fs::create_directories(root / "low" / "configs");
+
+  {
+    std::ofstream out(root / "low" / "configs" / "abc.tavl");
+    out << "name = abc1\n";
+    out << "data = 123\n";
+    out << "//---\n";
+    out << "name = abc2\n";
+    out << "data = 456\n";
+  }
+
+  {
+    std::ofstream out(root / "high" / "configs" / "abc.tavl");
+    out << "name = abc2\n";
+    out << "data = 999\n";
+    out << "//---\n";
+  }
+
+  demiurg::module_system modules((root.generic_string() + "/"));
+  modules.load_modules({
+    demiurg::module_system::list_entry{"high/", "", ""},
+    demiurg::module_system::list_entry{"low/", "", ""}
+  });
+
+  demiurg::resource_system resources;
+  resources.register_type<list_test_resource>("configs", "tavl");
+  resources.parse_resources(&modules);
+
+  auto* abc1 = resources.get<list_test_resource>("configs/abc:abc1");
+  auto* abc2 = resources.get<list_test_resource>("configs/abc:abc2");
+  REQUIRE(abc1 != nullptr);
+  REQUIRE(abc2 != nullptr);
+
+  CHECK(resources.get("configs/abc:0") == abc1);
+  CHECK(resources.get("configs/abc:1") == abc2);
+  CHECK(abc1->module->path().find("/low/") != std::string_view::npos);
+  CHECK(abc2->module->path().find("/high/") != std::string_view::npos);
+  CHECK(abc2->list_index == 1);
+  CHECK(abc2->list_start_line == 1);
+  CHECK(abc2->list_name == "abc2");
+  CHECK(abc2->list_section.find("data = 999") != std::string::npos);
+  CHECK(resources.resources_count() == 2);
+  CHECK(resources.all_resources_count() == 2);
+
+  fs::remove_all(root);
+}
+
+TEST_CASE("resource_system uses empty tavl list sections as index holes [demiurg]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_demiurg_list_holes_test";
+  fs::remove_all(root);
+  fs::create_directories(root / "high" / "configs");
+  fs::create_directories(root / "low" / "configs");
+
+  {
+    std::ofstream out(root / "low" / "configs" / "abc.tavl");
+    out << "data = 111\n";
+    out << "//---\n";
+    out << "data = 222\n";
+    out << "//---\n";
+    out << "data = 333\n";
+  }
+
+  {
+    std::ofstream out(root / "high" / "configs" / "abc.tavl");
+    out << "//---\n";
+    out << "//---\n";
+    out << "data = 999\n";
+  }
+
+  demiurg::module_system modules((root.generic_string() + "/"));
+  modules.load_modules({
+    demiurg::module_system::list_entry{"high/", "", ""},
+    demiurg::module_system::list_entry{"low/", "", ""}
+  });
+
+  demiurg::resource_system resources;
+  resources.register_type<list_test_resource>("configs", "tavl");
+  resources.parse_resources(&modules);
+
+  auto* abc0 = resources.get<list_test_resource>("configs/abc:0");
+  auto* abc1 = resources.get<list_test_resource>("configs/abc:1");
+  auto* abc2 = resources.get<list_test_resource>("configs/abc:2");
+  REQUIRE(abc0 != nullptr);
+  REQUIRE(abc1 != nullptr);
+  REQUIRE(abc2 != nullptr);
+
+  CHECK(abc0->module->path().find("/low/") != std::string_view::npos);
+  CHECK(abc1->module->path().find("/low/") != std::string_view::npos);
+  CHECK(abc2->module->path().find("/high/") != std::string_view::npos);
+  CHECK(abc2->list_index == 2);
+  CHECK(abc2->list_start_line == 3);
+  CHECK(abc2->list_name.empty());
+  CHECK(abc2->list_section.find("data = 999") != std::string::npos);
+  CHECK(resources.get("configs/abc") == nullptr);
+  CHECK(resources.resources_count() == 3);
+  CHECK(resources.all_resources_count() == 3);
+
+  fs::remove_all(root);
+}
+
+TEST_CASE("resource_system treats all-empty tavl list as list file without base resource [demiurg]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_demiurg_empty_list_test";
+  fs::remove_all(root);
+  fs::create_directories(root / "core" / "configs");
+
+  {
+    std::ofstream out(root / "core" / "configs" / "abc.tavl");
+    out << "//---\n";
+    out << "//---\n";
+    out << "//---\n";
+  }
+
+  demiurg::module_system modules((root.generic_string() + "/"));
+  modules.load_modules({demiurg::module_system::list_entry{"core/", "", ""}});
+
+  demiurg::resource_system resources;
+  resources.register_type<list_test_resource>("configs", "tavl");
+  resources.parse_resources(&modules);
+
+  CHECK(resources.get("configs/abc") == nullptr);
+  CHECK(resources.get("configs/abc:0") == nullptr);
+  CHECK(resources.resources_count() == 0);
+  CHECK(resources.all_resources_count() == 0);
 
   fs::remove_all(root);
 }

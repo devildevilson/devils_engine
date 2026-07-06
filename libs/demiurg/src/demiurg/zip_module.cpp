@@ -117,16 +117,32 @@ void zip_module::resources_list(std::vector<resource_candidate>& out, const uint
       err = mz_zip_reader_goto_next_entry(native_handle);
       continue;
     }
+    std::string id_str(id);
+    std::string ext_str(ext);
 
-    out.push_back(resource_candidate{
+    resource_candidate candidate{
       std::move(file_path),
-      std::string(id),
-      std::string(ext),
+      std::move(id_str),
+      std::move(ext_str),
+      {},
+      {},
+      {},
       module_name,
       this,
       static_cast<size_t>(file_info->uncompressed_size),
       module_priority
-    });
+    };
+
+    if (ext == "tavl") {
+      std::string content;
+      load_text(candidate.path, content);
+      if (append_tavl_list_candidates(out, candidate, content)) {
+        err = mz_zip_reader_goto_next_entry(native_handle);
+        continue;
+      }
+    }
+
+    out.push_back(std::move(candidate));
 
     err = mz_zip_reader_goto_next_entry(native_handle);
   }

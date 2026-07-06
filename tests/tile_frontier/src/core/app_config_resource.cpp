@@ -32,7 +32,8 @@ void app_config_resource::load_cold(const utils::safe_handle_t&) {
   if (!ctx.diagnostics.empty()) {
     utils::warn("app_config_resource '{}': {} tavl diagnostics", id, ctx.diagnostics.size());
     for (const auto& d : ctx.diagnostics) {
-      utils::warn("  tavl diagnostic {}, field '{}'", static_cast<size_t>(d.error.type), d.field);
+      utils::warn("  tavl diagnostic '{}' at {}:{} field '{}'",
+        tavl::to_string(d.error.type), source_line(static_cast<uint32_t>(d.error.span.line)), d.error.span.column, d.field);
     }
   }
 

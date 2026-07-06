@@ -1,6 +1,13 @@
 #include <doctest/doctest.h>
 
+#include <filesystem>
+#include <fstream>
+
+#include "devils_engine/demiurg/module_system.h"
+#include "devils_engine/demiurg/resource_system.h"
 #include "devils_engine/flow/system.h"
+#include "devils_engine/flow/animation_resource.h"
+#include "devils_engine/utils/safe_handle.h"
 
 using namespace devils_engine;
 
@@ -150,4 +157,58 @@ TEST_CASE("flow parses state tavl") {
   CHECK(states[0].uv.x == doctest::Approx(0.25f));
   CHECK(states[0].uv.y == doctest::Approx(0.5f));
   CHECK(states[1].action == utils::invalid_id);
+}
+
+TEST_CASE("flow animation_resource uses demiurg tavl list subresources") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_flow_list_test";
+  fs::remove_all(root);
+  fs::create_directories(root / "core" / "anim");
+
+  {
+    std::ofstream out(root / "core" / "anim" / "walk.tavl");
+    out << "name = idle\n";
+    out << "duration = 100\n";
+    out << "next = \"anim/walk:run\"\n";
+    out << "images = []\n";
+    out << "action = null\n";
+    out << "uv = [ 0.0, 0.0 ]\n";
+    out << "//---\n";
+    out << "name = run\n";
+    out << "duration = 200\n";
+    out << "next = null\n";
+    out << "images = []\n";
+    out << "action = null\n";
+    out << "uv = [ 0.0, 0.0 ]\n";
+  }
+
+  demiurg::module_system modules((root.generic_string() + "/"));
+  modules.load_modules({demiurg::module_system::list_entry{"core/", "", ""}});
+
+  flow::library lib;
+  demiurg::resource_system resources;
+  resources.register_type<flow::animation_resource>("anim", "tavl", &lib, &resources);
+  resources.parse_resources(&modules);
+
+  auto* idle = resources.get<flow::animation_resource>("anim/walk:idle");
+  auto* run = resources.get<flow::animation_resource>("anim/walk:run");
+  REQUIRE(idle != nullptr);
+  REQUIRE(run != nullptr);
+  CHECK(resources.get("anim/walk:0") == idle);
+  CHECK(resources.get("anim/walk:1") == run);
+
+  idle->load(utils::safe_handle_t(idle));
+  run->load(utils::safe_handle_t(run));
+
+  const uint32_t idle_index = lib.find_state("anim/walk:idle");
+  const uint32_t run_index = lib.find_state("anim/walk:run");
+  REQUIRE(idle_index != flow::invalid_state);
+  REQUIRE(run_index != flow::invalid_state);
+  REQUIRE(lib.get(idle_index) != nullptr);
+  CHECK(lib.get(idle_index)->next == run_index);
+  CHECK(idle->state_indices().size() == 1);
+  CHECK(run->state_indices().size() == 1);
+
+  fs::remove_all(root);
 }

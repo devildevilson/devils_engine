@@ -79,6 +79,7 @@ struct sample_result {
 
 struct parse_options {
   bool warn_on_odd_direction_count = true;
+  uint32_t line_offset = 0;
 };
 
 class library {

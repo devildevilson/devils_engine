@@ -58,6 +58,7 @@
 namespace devils_engine {
 namespace demiurg {
   class module_interface;
+  static constexpr uint32_t invalid_list_index = UINT32_MAX;
 
   namespace state {
     enum values {
@@ -96,6 +97,10 @@ namespace demiurg {
   {
   public:
     std::string path;
+    std::string id_storage;
+    std::string ext_storage;
+    std::string list_name;
+    std::string list_section;
     std::string_view id;
     std::string_view ext;
     std::string_view module_name;
@@ -105,6 +110,8 @@ namespace demiurg {
     const module_interface* module;
 
     size_t raw_size;
+    uint32_t list_index;
+    uint32_t list_start_line;
 
     // Зависимости ресурса (напр. pipeline зависит от shader-модулей). Загрузчик доводит их до
     // usable ПРЕЖДЕ чем продвигать этот ресурс вверх. Плоский список — ring-list (replacement/
@@ -116,11 +123,15 @@ namespace demiurg {
       loading_type_id(0),
       module(nullptr),
       raw_size(0),
+      list_index(invalid_list_index),
+      list_start_line(0),
       _state(0)
     {}
     virtual ~resource_interface() noexcept = default;
 
     void set(std::string path, const std::string_view &module_name, const std::string_view &id, const std::string_view &ext);
+    bool is_list_entry() const noexcept { return list_index != invalid_list_index; }
+    uint32_t source_line(uint32_t local_line) const noexcept;
 
     inline void add_dependency(resource_interface* dep) {
       if (dep != nullptr && dep != this) dependencies.push_back(dep);

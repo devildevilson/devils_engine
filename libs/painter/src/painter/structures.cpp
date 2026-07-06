@@ -1042,7 +1042,8 @@ static std::vector<T> parse_config_content(const std::string& content, const std
 
   for (const auto& d : ctx.diagnostics) {
     if (!d.error.is_critical()) continue;
-    utils::warn("Could not parse config '{}' as type '{}': error '{}' at field '{}'", label, utils::type_name<T>(), tavl::to_string(d.error.type), d.field);
+    utils::warn("Could not parse config '{}' as type '{}': error '{}' at {}:{} field '{}'",
+      label, utils::type_name<T>(), tavl::to_string(d.error.type), d.error.span.line, d.error.span.column, d.field);
   }
 
   return arr;

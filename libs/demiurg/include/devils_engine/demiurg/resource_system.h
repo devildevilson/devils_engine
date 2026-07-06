@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cassert>
+#include <deque>
 #include <type_traits>
 #include <utility>
 #include <string>
@@ -92,7 +93,9 @@ public:
     auto constructor = [args = std::make_tuple(std::forward<Args>(args)...)](
             utils::block_allocator &allocator
     ) -> resource_interface * {
-      auto ptr = std::apply(&utils::block_allocator::create<T>, std::tuple_cat(std::make_tuple(std::ref(allocator)), args));
+      auto ptr = std::apply([&allocator] (auto&&... ctor_args) {
+        return allocator.create<T>(std::forward<decltype(ctor_args)>(ctor_args)...);
+      }, args);
       ptr->loading_type_id = utils::type_id<T>();
       return ptr;
     };
@@ -109,7 +112,9 @@ public:
     auto constructor = [args = std::make_tuple(std::forward<Args>(args)...)](
             utils::block_allocator &allocator
     ) -> resource_interface * {
-      auto ptr = std::apply(&utils::block_allocator::create<T>, std::tuple_cat(std::make_tuple(std::ref(allocator)), args));
+      auto ptr = std::apply([&allocator] (auto&&... ctor_args) {
+        return allocator.create<T>(std::forward<decltype(ctor_args)>(ctor_args)...);
+      }, args);
       ptr->loading_type_id = utils::type_id<BaseT>();
       return ptr;
     };
@@ -209,16 +214,21 @@ private:
   struct manifest_entry {
     typed_candidate primary;
     std::vector<typed_candidate> supplementary;
+    std::vector<std::string> aliases;
+    uint32_t list_index_override = invalid_list_index;
   };
 
   utils::memory_pool<type, sizeof(type)*16> types_pool;
   gtl::flat_hash_map<std::string_view, type*> types;
   std::vector<resource_interface *> resources;
   std::vector<resource_interface *> all_resources;
+  std::deque<std::string> alias_storage;
+  gtl::flat_hash_map<std::string_view, resource_interface*> aliases;
 
   resource_system::type *find_proper_type(const std::string_view &id, const std::string_view &extension) const;
   std::vector<manifest_entry> resolve_manifest(const std::vector<resource_candidate>& candidates) const;
   void instantiate_manifest(const std::vector<manifest_entry>& manifest, std::vector<resource_interface*>* pending = nullptr);
+  void register_alias(std::string alias, resource_interface* res);
   void parse_resources_impl(module_system* sys);
   void append_resources_impl(module_system* sys);
   static void sort_active_resources(std::vector<resource_interface*>& resources);
