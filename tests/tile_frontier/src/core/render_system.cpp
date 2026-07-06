@@ -805,17 +805,19 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
   if (container->base_ready) {
     command_gpu_transition cmd{};
     while (br.gpu_transition.try_pop(cmd)) {
+      auto* res = cmd.res.get();
+      if (res == nullptr) { utils::warn("render: gpu_transition with unresolved resource handle"); continue; }
       painter::gpu_load_context ctx{ container->assets.get(), container->base.get() };
       const utils::safe_handle_t handle(&ctx);
       if (cmd.load) {
-        cmd.res->load(handle);  // warm→hot: load_warm (upload+gpu_index) — полиморфно
+        res->load(handle);  // warm→hot: load_warm (upload+gpu_index) — полиморфно
         // как только меш на GPU и граф готов — регистрируем его на отрисовку (только меши!)
-        if (cmd.res->loading_type_id == utils::type_id<painter::gpu_texture_resource>()) {
+        if (res->loading_type_id == utils::type_id<painter::gpu_texture_resource>()) {
           // текстура на GPU — точечно обновляем ЕЁ слот в дескриптор-массиве (не весь массив)
-          render_bind_texture_slot(*container, static_cast<painter::gpu_texture_resource*>(cmd.res)->gpu_index);
+          render_bind_texture_slot(*container, static_cast<painter::gpu_texture_resource*>(res)->gpu_index);
         }
       } else {
-        cmd.res->unload(handle); // hot→warm: unload_hot
+        res->unload(handle); // hot→warm: unload_hot
       }
       br.gpu_done.try_push(command_gpu_done{cmd.res}); // ack ассетам
     }

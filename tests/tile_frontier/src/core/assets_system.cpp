@@ -65,14 +65,20 @@ void assets_simulation::update(const size_t) {
   // ack'и от рендера: GPU-переход завершён
   {
     command_gpu_done cmd{};
-    while (br.gpu_done.try_pop(cmd)) container->loader.external_done(cmd.res);
+    while (br.gpu_done.try_pop(cmd)) {
+      auto* res = cmd.res.get();
+      if (res == nullptr) { utils::warn("assets: gpu_done with unresolved resource handle"); continue; }
+      container->loader.external_done(res);
+    }
   }
 
   // запросы от main: довести ресурс до target
   {
     command_load_resource cmd{};
     while (br.load_resource.try_pop(cmd)) {
-      container->loader.request(cmd.res, cmd.target); // target — уровень FSM (int), клампится в request
+      auto* res = cmd.res.get();
+      if (res == nullptr) { utils::warn("assets: load_resource with unresolved resource handle"); continue; }
+      container->loader.request(res, cmd.target); // target — уровень FSM (int), клампится в request
     }
   }
 
@@ -140,7 +146,7 @@ void assets_simulation::update(const size_t) {
   container->loader.update(container->gpu_jobs);
 
   for (const auto& job : container->gpu_jobs) {
-    br.gpu_transition.try_push(command_gpu_transition{job.res, job.load});
+    br.gpu_transition.try_push(command_gpu_transition{resource_ref::from_system(container->resources.get(), job.res), job.load});
   }
 }
 

@@ -6,13 +6,10 @@
 #include <string_view>
 #include <vector>
 
+#include "devils_engine/demiurg/resource_system.h"
 #include "devils_engine/utils/string_id.h"
 
 namespace devils_engine {
-namespace demiurg {
-class resource_interface;
-class resource_system;
-}
 
 namespace flow {
 
@@ -34,7 +31,7 @@ struct vec2 {
 };
 
 struct image_ref {
-  const demiurg::resource_interface* image = nullptr;
+  demiurg::resource_handle image;
   uint8_t mirror_state = mirror::none;
 };
 
@@ -61,7 +58,7 @@ struct sample_context {
 };
 
 struct sprite_sample {
-  const demiurg::resource_interface* image = nullptr;
+  demiurg::resource_handle image;
   uint8_t mirror_state = mirror::none;
   vec2 uv = {};
   bool visible = false;
