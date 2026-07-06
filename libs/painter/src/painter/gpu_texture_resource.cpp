@@ -1,3 +1,4 @@
+#include <devils_engine/catalogue/logging.h>
 #include "gpu_texture_resource.h"
 
 #include <span>
@@ -39,7 +40,7 @@ void gpu_texture_resource::load_warm(const utils::safe_handle_t& handle) {
   memory.clear();
   memory.shrink_to_fit();
 
-  utils::info("gpu_texture_resource '{}': uploaded to GPU, gpu_index(slot)={}", id, gpu_index);
+  DE_LOG(catalogue::log_domain::resource, flow, "gpu_texture_resource '{}': uploaded to GPU, gpu_index(slot)={}", id, gpu_index);
 }
 
 void gpu_texture_resource::unload_hot(const utils::safe_handle_t&) {

@@ -1,3 +1,4 @@
+#include <devils_engine/catalogue/logging.h>
 #include "graphics_base.h"
 
 #include "vulkan_header.h"
@@ -161,9 +162,9 @@ void graphics_base::get_or_create_pipeline_cache(const demiurg::resource_system*
   if (res != nullptr && !res->memory.empty()) {
     pcci.initialDataSize = res->memory.size();
     pcci.pInitialData = res->memory.data();
-    utils::info("graphics_base: pipeline cache seeded from resource '{}' ({} bytes)", id, res->memory.size());
+    DE_LOG(catalogue::log_domain::render, flow, "graphics_base: pipeline cache seeded from resource '{}' ({} bytes)", id, res->memory.size());
   } else {
-    utils::info("graphics_base: pipeline cache resource '{}' not present, creating empty", id);
+    DE_LOG(catalogue::log_domain::render, flow, "graphics_base: pipeline cache resource '{}' not present, creating empty", id);
   }
 
   cache = vk::Device(device).createPipelineCache(pcci);
@@ -1209,7 +1210,7 @@ int32_t graphics_base::commit_parsed_resources(render_config_storage& storage) {
   per_update_counter_index = storage.per_update_counter_index;
   swapchain_slot = storage.swapchain_slot;
 
-  utils::info(
+  DE_LOG(catalogue::log_domain::render, flow,
     "graphics_base: parsed resources={}, graphs={}, swapchain_slot={}",
     resources.size(),
     graphs.size(),
@@ -1396,7 +1397,7 @@ void graphics_base::create_samplers() {
     sm.mipmapMode(vk::SamplerMipmapMode(s.mipmap_mode));
     sm.addressMode(vk::SamplerAddressMode(s.address_u), vk::SamplerAddressMode(s.address_v), vk::SamplerAddressMode(s.address_w));
     s.handle = sm.create(s.name);
-    utils::info("graphics_base: created sampler '{}'", s.name);
+    DE_LOG(catalogue::log_domain::render, flow, "graphics_base: created sampler '{}'", s.name);
   }
 }
 
@@ -1522,7 +1523,7 @@ void graphics_base::compute_active_masks(const std::vector<uint32_t>& graph_indi
     for (const auto& [slot, usage, sampler_index, stages] : descriptors[d].layout) mark_res(slot);
   }
 
-  utils::info(
+  DE_LOG(catalogue::log_domain::render, flow,
     "graphics_base: {} resident graph(s) use {}/{} resources, {}/{} descriptors",
     graph_active_mask_.count(), resource_active_mask_.count(), resources.size(), descriptor_active_mask_.count(), descriptors.size()
   );

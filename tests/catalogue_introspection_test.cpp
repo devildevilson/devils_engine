@@ -247,14 +247,55 @@ TEST_CASE("catalogue statistics introspection records rolling timings") {
   using reset_t = catalogue::domain<domains::service>::fn_traits<&reset_gold, "reset_gold">;
   constexpr auto reset_fn = reset_t::fn_ptr;
 
-  catalogue::statistics_introspection<4> stats;
+  catalogue::statistics_introspection stats(4);
   catalogue::domain<domains::service>::set_introspection(&stats);
 
   reset_fn();
   reset_fn();
 
   CHECK(stats.count() == 2);
+  CHECK(stats.function_count() == 1);
   CHECK(stats.average_mcs(reset_t::function_id) >= 0.0);
+
+  const auto* rec = stats.find(reset_t::function_id);
+  REQUIRE(rec != nullptr);
+  CHECK(rec->call_count == 2);
+  CHECK(rec->name == "reset_gold");
+  CHECK(rec->filled == 2);
+  CHECK(rec->recent_average_mcs() >= 0.0);
+
+  std::vector<uint64_t> ordered;
+  rec->ordered_samples(ordered);
+  CHECK(ordered.size() == 2);
+
+  catalogue::domain<domains::service>::set_introspection(nullptr);
+}
+
+TEST_CASE("catalogue statistics introspection ring buffer wraps and keeps aggregates") {
+  using reset_t = catalogue::domain<domains::service>::fn_traits<&reset_gold, "reset_gold">;
+  constexpr auto reset_fn = reset_t::fn_ptr;
+
+  catalogue::statistics_introspection stats(2); // окно из 2 замеров
+  catalogue::domain<domains::service>::set_introspection(&stats);
+
+  reset_fn();
+  reset_fn();
+  reset_fn(); // 3 вызова, окно 2 → буфер завёрнут, filled == 2
+
+  const auto* rec = stats.find(reset_t::function_id);
+  REQUIRE(rec != nullptr);
+  CHECK(rec->call_count == 3);   // агрегат считает все вызовы
+  CHECK(rec->filled == 2);       // а кольцо держит только последние 2
+  CHECK(stats.count() == 3);
+
+  std::vector<uint64_t> ordered;
+  rec->ordered_samples(ordered);
+  CHECK(ordered.size() == 2);
+
+  stats.reset();
+  CHECK(stats.count() == 0);
+  CHECK(stats.function_count() == 0);
+  CHECK(stats.find(reset_t::function_id) == nullptr);
 
   catalogue::domain<domains::service>::set_introspection(nullptr);
 }

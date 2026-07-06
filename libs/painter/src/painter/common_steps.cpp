@@ -1,3 +1,4 @@
+#include <devils_engine/catalogue/logging.h>
 #include "common_steps.h"
 
 #include "graphics_base.h"
@@ -317,7 +318,7 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
     for (uint32_t i = 0; i < geo.vertex_layout.size(); ++i) {
       const auto f = geo.vertex_layout[i];
       const auto format = static_cast<vk::Format>(format::to_vulkan_format(f));
-      utils::info("Vertex stride for '{}' location {}, offset {}, format '{}'", material.name, location_offset + i, offset, vk::to_string(format));
+      DE_LOG(catalogue::log_domain::render, trace, "Vertex stride for '{}' location {}, offset {}, format '{}'", material.name, location_offset + i, offset, vk::to_string(format));
       const auto el_size = format_element_size(static_cast<uint32_t>(format));
       pm.vertexAttribute(location_offset + i, 0, format, offset);
       offset += el_size;
@@ -334,7 +335,7 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
       for (uint32_t i = 0; i < draw_group.instance_layout.size(); ++i) {
         const auto f = draw_group.instance_layout[i];
         const auto format = static_cast<vk::Format>(format::to_vulkan_format(f));
-        utils::info("Instance stride for '{}' location {}, offset {}, format '{}'", material.name, location_offset + i, offset, vk::to_string(format));
+        DE_LOG(catalogue::log_domain::render, trace, "Instance stride for '{}' location {}, offset {}, format '{}'", material.name, location_offset + i, offset, vk::to_string(format));
         const auto el_size = format_element_size(static_cast<uint32_t>(format));
         pm.vertexAttribute(location_offset + i, 1, format, offset);
         offset += el_size;

@@ -1,3 +1,4 @@
+#include <devils_engine/catalogue/logging.h>
 #include "texture_resource.h"
 
 #include <vector>
@@ -28,7 +29,7 @@ void texture_resource::load_cold(const utils::safe_handle_t&) {
   memory.assign(pixels, pixels + bytes);
   stbi_image_free(pixels);
 
-  utils::info("texture_resource '{}': decoded {}x{} ({} bytes RGBA)", id, width, height, memory.size());
+  DE_LOG(catalogue::log_domain::resource, flow, "texture_resource '{}': decoded {}x{} ({} bytes RGBA)", id, width, height, memory.size());
 }
 
 }

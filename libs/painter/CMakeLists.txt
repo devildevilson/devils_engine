@@ -73,7 +73,7 @@ set(HDR_LIST
  "include/devils_engine/painter/device_features.h")
 
 add_library(devils_painter ${SRC_LIST} ${HDR_LIST})
-target_link_libraries(devils_painter PRIVATE devils_engine::options ${SHADERC_LIBRARY_NAME} Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp devils_engine::input devils_engine::demiurg devils_engine::utils sul::dynamic_bitset tavl)
+target_link_libraries(devils_painter PRIVATE devils_engine::options ${SHADERC_LIBRARY_NAME} Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp devils_engine::input devils_engine::demiurg devils_engine::utils devils_engine::catalogue sul::dynamic_bitset tavl)
 target_include_directories(devils_painter INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_painter PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/painter>")
 target_include_directories(devils_painter PRIVATE "${FETCHCONTENT_BASE_DIR}/stb-src") # stb_image.h для texture_resource

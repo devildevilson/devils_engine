@@ -244,6 +244,25 @@ TEST_CASE("atomic_pool can distribute contiguous work ranges [thread::atomic_poo
   }
 }
 
+TEST_CASE("atomic_pool workers sleep between rounds and wake on submit [thread::atomic_pool]") {
+  // Много раундов submit→wait: между раундами очередь пуста, воркеры должны ЗАСНУТЬ на cv,
+  // а следующий submit — их корректно разбудить (notify под барьером). Регрессия предиката
+  // (wait возвращался мгновенно) прошла бы тест, но жгла бы CPU; регрессия lost-wakeup
+  // (notify мимо засыпающего воркера) — ПОВЕСИЛА бы wait() здесь. Так что тест ловит второе.
+  thread::atomic_pool pool(4);
+  std::atomic<int> counter = 0;
+
+  for (int round = 0; round < 200; ++round) {
+    for (int i = 0; i < 8; ++i) {
+      pool.submit([&counter] { counter.fetch_add(1, std::memory_order_relaxed); });
+    }
+    pool.wait(); // повиснет, если задача застряла из-за потерянного пробуждения
+    CHECK(pool.working_count() == 0);
+  }
+
+  CHECK(counter.load(std::memory_order_relaxed) == 200 * 8);
+}
+
 TEST_CASE("atomic_pool supports explicit main-thread compute with zero workers [thread::atomic_pool]") {
   thread::atomic_pool pool(0);
   std::atomic<int> counter = 0;

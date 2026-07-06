@@ -3,10 +3,14 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <span>
 #include <thread>
 #include <stop_token>
+#include <unistd.h>
+
+#include <lua.hpp> // lua_gc — метрика памяти lua в memory-probe
 
 #include <devils_engine/input/core.h>
 #include <devils_engine/input/events.h>
@@ -26,7 +30,11 @@
 #include <devils_engine/painter/glsl_source_file.h>
 #include <devils_engine/painter/shader_source_file.h>
 #include <devils_engine/painter/pipeline_cache_resource.h>
+#include <devils_engine/catalogue/introspection.h> // catalogue::statistics_introspection (perf UI)
+#include <devils_engine/catalogue/logging.h>        // доменное логгирование (DE_LOG) + init_logging
 #include <devils_engine/utils/fileio.h>
+
+#include <filesystem>
 
 #include <devils_engine/visage/system.h>
 #include <devils_engine/visage/font.h>
@@ -88,6 +96,46 @@ static void error_callback(int, const char* msg) noexcept {
 // без атомиков (одно окно/один UI). Позицию мыши опрашиваем напрямую (input::cursor_pos), а
 // дискретные события (кнопки/колесо/текст/клавиши) копим тут.
 namespace {
+// Настройка логгирования из конфига: файловый сток + консоль + уровни доменов. Зовётся сразу
+// после загрузки app.tavl, ДО создания подсистем — чтобы базовые always-on сообщения (устройства,
+// подсистемы, окно) тоже попали в файл. Домены по умолчанию off; включаются здесь или в рантайме.
+static void setup_logging(const logging_config& log_cfg) {
+  std::string file;
+  if (!log_cfg.file.empty()) {
+    file = utils::project_folder() + log_cfg.file;
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(file).parent_path(), ec);
+  }
+  catalogue::init_logging(file, log_cfg.console);
+  catalogue::register_engine_domains();
+
+  const auto apply = [] (const uint32_t id, const std::string& depth_str) {
+    catalogue::log_depth d = catalogue::log_depth::off;
+    if (catalogue::parse_log_depth(depth_str, d)) catalogue::logs().set_level(id, d);
+    else utils::warn("logging: unknown depth '{}' for domain '{}'", depth_str, catalogue::logs().name(id));
+  };
+  namespace ld = catalogue::log_domain;
+  apply(ld::main, log_cfg.main);
+  apply(ld::assets, log_cfg.assets);
+  apply(ld::sound, log_cfg.sound);
+  apply(ld::render, log_cfg.render);
+  apply(ld::ui, log_cfg.ui);
+  apply(ld::gameplay, log_cfg.gameplay);
+  apply(ld::resource, log_cfg.resource);
+}
+
+// Резидентная память процесса (RSS) из /proc/self/statm (2-е поле = резидентные страницы).
+// Для аудита бюджета памяти — грубо, но без сторонних тулов.
+static size_t read_rss_bytes() {
+  std::FILE* f = std::fopen("/proc/self/statm", "r");
+  if (f == nullptr) return 0;
+  long total = 0, resident = 0;
+  const int got = std::fscanf(f, "%ld %ld", &total, &resident);
+  std::fclose(f);
+  if (got != 2) return 0;
+  return size_t(resident) * size_t(::sysconf(_SC_PAGESIZE));
+}
+
 // Lua-ОБЁРТКА id звуковой задачи. Живёт ТОЛЬКО здесь, на границе биндинга — в контракте
 // сообщений (command_sound) ходит голый size_t, чтобы не тащить лишний тип по всем хедерам.
 // Смысл обёртки чисто lua-шный: usertype без арифметических метаметодов, поэтому скрипт не
@@ -426,13 +474,13 @@ static void apply_fullscreen(simulation_init& c, const bool enable) {
     const auto [mw, mh, refresh] = input::primary_video_mode(m);
     input::set_window_monitor(c.window, m, 0, 0, mw, mh, int32_t(refresh));
     c.is_fullscreen = true;
-    utils::info("main: fullscreen on ({}x{}@{})", mw, mh, refresh);
+    DE_LOG(catalogue::log_domain::main, flow, "main: fullscreen on ({}x{}@{})", mw, mh, refresh);
   } else if (!enable && c.is_fullscreen) {
     const uint32_t w = c.windowed_w != 0 ? c.windowed_w : c.config.window.width;
     const uint32_t h = c.windowed_h != 0 ? c.windowed_h : c.config.window.height;
     input::set_window_monitor(c.window, nullptr, c.windowed_x, c.windowed_y, w, h, DEVILS_ENGINE_INPUT_DONT_CARE);
     c.is_fullscreen = false;
-    utils::info("main: fullscreen off ({}x{})", w, h);
+    DE_LOG(catalogue::log_domain::main, flow, "main: fullscreen off ({}x{})", w, h);
   }
 }
 
@@ -504,14 +552,14 @@ static void setup_visage(simulation_init& c) {
   c.ui_font_italic_res->load(utils::safe_handle_t{}); // 1→2: MSDF + метрики
   if (auto* italic = c.ui_font_italic_res->font()) {
     c.ui->add_font("italic", italic);
-    utils::info("visage: registered extra font 'italic'");
+    DE_LOG(catalogue::log_domain::ui, flow, "visage: registered extra font 'italic'");
   } else {
     utils::warn("visage: italic font_resource produced no metrics; skipping");
     c.ui_font_italic_res.reset();
   }
 
   c.ui->load_entry_point(utils::project_folder() + "resources/ui/entry.lua");
-  utils::info("visage: system created, entry point loaded");
+  DE_LOG(catalogue::log_domain::ui, flow, "visage: system created, entry point loaded");
 }
 
 void simulation::init() {
@@ -542,7 +590,7 @@ void simulation::init() {
     std::vector<painter::render_config_source*> rc;
     container->engine_resources->find<painter::render_config_source>("render_config", rc);
     for (auto* r : rc) r->load(utils::safe_handle_t{});
-    utils::info("engine registry: preloaded {} render-config sources", rc.size());
+    DE_LOG(catalogue::log_domain::resource, flow, "engine registry: preloaded {} render-config sources", rc.size());
   }
 
   // Шейдер-исходники НЕ preload'им здесь: их lifecycle («загрузить→скомпилировать→выгрузить»)
@@ -555,6 +603,11 @@ void simulation::init() {
   } else {
     utils::warn("engine registry: 'config/app' not found, using app_config defaults");
   }
+
+  // логгирование настраиваем СРАЗУ после конфига (до подсистем): файл+консоль, уровни доменов.
+  // Базовый always-on слой (utils::info ниже) уже попадёт в файл.
+  setup_logging(container->config.logging);
+
   set_frame_time(frame_time_from_fps(container->config.simulation.main_fps));
 
   // стартовый размер фреймбуфера = размер из конфига (до создания окна); коллбэк ресайза уточнит.
@@ -575,7 +628,7 @@ void simulation::init() {
 
   const auto cpu_name = utils::get_cpu_name();
   utils::info("Using cpu '{}', cores: {}, worker threads: {}", cpu_name, hw_threads, thread_count);
-  utils::info(
+  DE_LOG(catalogue::log_domain::main, flow,
     "Loaded app config '{}': window {}x{}, render config '{}', GPU preference '{}' / index {}",
     config_path,
     container->config.window.width,
@@ -600,7 +653,7 @@ void simulation::init() {
     container->sound_sim->set_broker(container->br.get());
     sactor = container->sound_sim->get_actor();
   } else {
-    utils::info("main: sound disabled (sound_enabled=false), skipping sound subsystem");
+    DE_LOG(catalogue::log_domain::main, flow, "main: sound disabled (sound_enabled=false), skipping sound subsystem");
   }
 
   if (container->config.render.enabled) {
@@ -622,7 +675,7 @@ void simulation::init() {
     container->engine_resources->append_resources(container->cache_modules.get());
     if (auto* pc = container->engine_resources->get<painter::pipeline_cache_resource>(pipeline_cache_id)) {
       pc->load(utils::safe_handle_t{}); // cold→warm: читает блоб через модуль (CPU, главный поток)
-      utils::info("engine registry: pipeline cache '{}' preloaded", pipeline_cache_id);
+      DE_LOG(catalogue::log_domain::resource, flow, "engine registry: pipeline cache '{}' preloaded", pipeline_cache_id);
     }
 
     render_simulation_config render_cfg;
@@ -674,7 +727,7 @@ void simulation::init() {
     devices.ready = &container->sound_devices_ready;
     container->br->sound_devices.try_push(devices);
     container->sound_devices_requested = true;
-    utils::info("main: requested sound playback devices");
+    DE_LOG(catalogue::log_domain::sound, flow, "main: requested sound playback devices");
   }
 
   // Окно - поздний ресурс. Render thread должен жить и без него, а это событие
@@ -698,7 +751,7 @@ void simulation::init() {
       container->br->load_resource.try_push(command_load_resource{tex, static_cast<int32_t>(demiurg::state::hot)});
       container->startup_resources.push_back(tex); // стартовый набор: от него зависит переход loading→game
       container->image_by_name.emplace(utils::string_hash(friendly), tex); // для app.image (UI)
-      utils::info("main: requested texture '{}' -> hot", res_id);
+      DE_LOG(catalogue::log_domain::resource, flow, "main: requested texture '{}' -> hot", res_id);
     } else {
       utils::warn("main: texture resource '{}' not found in registry", res_id);
     }
@@ -719,7 +772,7 @@ void simulation::init() {
       container->br->load_resource.try_push(command_load_resource{snd, static_cast<int32_t>(demiurg::state::warm)});
       container->sound_by_name.emplace(utils::string_hash(name), snd);
     }
-    utils::info("main: requested {} sounds -> warm", container->sound_by_name.size());
+    DE_LOG(catalogue::log_domain::resource, flow, "main: requested {} sounds -> warm", container->sound_by_name.size());
   }
 
   // --- модель тайловой карты ---
@@ -727,7 +780,7 @@ void simulation::init() {
   // "textures/grass" их исключает: 'textures/grad*'/'textures/quad' её не содержат). Позже маски уедут
   // в отдельный тип (textures/mask/).
   const uint32_t tex_count = container->textures.gather(*container->assets_sim->resources(), "textures/grass");
-  utils::info("main: gathered {} tile textures by 'textures/grass'", tex_count);
+  DE_LOG(catalogue::log_domain::resource, flow, "main: gathered {} tile textures by 'textures/grass'", tex_count);
 
   // Квадратная сетка чанков 4x4 по 16 тайлов. Стартово всё заполнено текстурой 0, затем assets
   // thread вернёт mock CPU payload для каждого чанка и main применит его к grid.
@@ -749,7 +802,7 @@ void simulation::init() {
         container->chunks_requested[idx] = true;
       }
     }
-    utils::info("main: requested {} mock world chunks via assets", container->chunks_requested.size());
+    DE_LOG(catalogue::log_domain::gameplay, flow, "main: requested {} mock world chunks via assets", container->chunks_requested.size());
   }
 
   // Камера смотрит в центр карты; половина ширины обзора = 8 тайлов.
@@ -776,7 +829,7 @@ void simulation::init() {
     std::max(tex_count, 1u)
   );
   container->metrics_last_log = std::chrono::steady_clock::now();
-  utils::info("main: spawned {} lightweight actors in aesthetics world", initial_actor_count);
+  DE_LOG(catalogue::log_domain::gameplay, flow, "main: spawned {} lightweight actors in aesthetics world", initial_actor_count);
 
   // интерфейс (visage) в главном потоке
   setup_visage(*container);
@@ -925,6 +978,43 @@ void simulation::init() {
       return "game";
     });
     app.set_function("loading_progress", [this]() -> double { return loading_progress(*container); });
+
+    // рантайм-переключение глубины логгирования домена (работает и в release): app.set_log_level("sound","trace").
+    // Домены: main/assets/sound/render/ui/gameplay/resource; глубина: off/info/flow/trace.
+    app.set_function("set_log_level", [](const std::string& domain, const std::string& depth) -> bool {
+      catalogue::log_depth d = catalogue::log_depth::off;
+      if (!catalogue::parse_log_depth(depth, d)) { utils::warn("set_log_level: bad depth '{}'", depth); return false; }
+      if (!catalogue::logs().set_level(domain, d)) { utils::warn("set_log_level: unknown domain '{}'", domain); return false; }
+      utils::info("log domain '{}' -> {}", domain, depth);
+      return true;
+    });
+
+    // perf-статистика фаз апдейта актора (catalogue). Актор-сим и UI — один поток, читаем напрямую.
+    // Возвращает массив { name, avg, min, max, last, count, samples={...} }; samples — последние
+    // замеры в хроно-порядке (для nk.plot). Round-trip значений в lua при 20fps main дешёв (~1%),
+    // отдельного C++-пути рисования не нужно.
+    app.set_function("perf_stats", [this]() -> sol::table {
+      auto& lua = container->ui->script_state();
+      sol::table out = lua.create_table();
+      std::vector<uint64_t> samples;
+      int32_t i = 0;
+      core::actor_perf_statistics().for_each(
+        [&] (const catalogue::statistics_introspection::function_record& r) {
+          sol::table e = lua.create_table();
+          e["name"]  = std::string(r.name);
+          e["avg"]   = r.average_mcs();
+          e["min"]   = double(r.min_mcs);
+          e["max"]   = double(r.max_mcs);
+          e["last"]  = double(r.last_mcs);
+          e["count"] = double(r.call_count);
+          r.ordered_samples(samples);
+          sol::table s = lua.create_table(int32_t(samples.size()), 0);
+          for (size_t k = 0; k < samples.size(); ++k) s[k + 1] = double(samples[k]);
+          e["samples"] = s;
+          out[++i] = e;
+        });
+      return out;
+    });
   }
 
   // атлас шрифта → GPU тем же путём, что и текстуры: просим ассеты довести до hot.
@@ -934,12 +1024,12 @@ void simulation::init() {
     // ассетам остаётся довести 2→3 (GPU). target=final_state(), не state::hot (иначе стоп на MSDF).
     container->br->load_resource.try_push(command_load_resource{container->ui_font_res.get(), container->ui_font_res->final_state()});
     container->startup_resources.push_back(container->ui_font_res.get());
-    utils::info("main: requested font atlas -> ready (level {})", container->ui_font_res->final_state());
+    DE_LOG(catalogue::log_domain::ui, flow, "main: requested font atlas -> ready (level {})", container->ui_font_res->final_state());
   }
   if (container->ui_font_italic_res && aactor != nullptr) {
     container->br->load_resource.try_push(command_load_resource{container->ui_font_italic_res.get(), container->ui_font_italic_res->final_state()});
     container->startup_resources.push_back(container->ui_font_italic_res.get());
-    utils::info("main: requested italic font atlas -> ready (level {})", container->ui_font_italic_res->final_state());
+    DE_LOG(catalogue::log_domain::ui, flow, "main: requested italic font atlas -> ready (level {})", container->ui_font_italic_res->final_state());
   }
 }
 
@@ -967,14 +1057,14 @@ void simulation::update(const size_t time) {
         const bool no_render = (gactor == nullptr); // без рендера splash не нужен — не залипаем в boot
         if (font_ready || no_render) {
           container->state = app_state::loading;
-          utils::info("app_state: boot -> loading (ui font {})", font_ready ? "ready" : "n/a");
+          DE_LOG(catalogue::log_domain::main, flow, "app_state: boot -> loading (ui font {})", font_ready ? "ready" : "n/a");
         }
         break;
       }
       case app_state::loading:
         if (loading_complete(*container)) {
           container->state = app_state::game;
-          utils::info("app_state: loading -> game (startup resources ready)");
+          DE_LOG(catalogue::log_domain::main, flow, "app_state: loading -> game (startup resources ready)");
         }
         break;
       case app_state::game:
@@ -1051,7 +1141,7 @@ void simulation::update(const size_t time) {
           container->br->window_resize.write_slot() = command_window_resize{container->fb_width, container->fb_height};
           container->br->window_resize.publish();
         }
-        utils::info("main: window resized to {}x{}", container->fb_width, container->fb_height);
+        DE_LOG(catalogue::log_domain::main, flow, "main: window resized to {}x{}", container->fb_width, container->fb_height);
       }
     }
 
@@ -1074,7 +1164,8 @@ void simulation::update(const size_t time) {
         container->br->render_set_active.write_slot() = command_render_set_active{draw};
         container->br->render_set_active.publish();
       }
-      utils::info("main: window focus={} iconified={} -> draw={} master_gain={:.2f}", focused, iconified, draw, gain);
+      // фокус/сворачивание — частые события (alt-tab) → flow-домен, не спамим базовый лог.
+      DE_LOG(catalogue::log_domain::main, flow, "window focus={} iconified={} -> draw={} master_gain={:.2f}", focused, iconified, draw, gain);
     }
   }
 
@@ -1084,9 +1175,9 @@ void simulation::update(const size_t time) {
     !container->sound_devices_logged &&
     container->sound_devices_ready.load(std::memory_order_acquire)
   ) {
-    utils::info("main: sound playback devices count {}", container->sound_devices.size());
+    DE_LOG(catalogue::log_domain::sound, flow, "main: sound playback devices count {}", container->sound_devices.size());
     for (size_t i = 0; i < container->sound_devices.size(); ++i) {
-      utils::info("main: sound device[{}] '{}'", i, container->sound_devices[i]);
+      DE_LOG(catalogue::log_domain::sound, flow, "main: sound device[{}] '{}'", i, container->sound_devices[i]);
     }
     container->sound_devices_logged = true;
   }
@@ -1099,13 +1190,13 @@ void simulation::update(const size_t time) {
   if (container && container->ui_font_res && !container->ui_font_logged && container->ui_font_res->usable()) {
     const uint32_t slot = container->ui_font_res->gpu_index;
     if (auto* font = container->ui_font_res->font()) font->set_texture_id(slot);
-    utils::info("main: font atlas reached GPU (usable), texture slot={}", slot);
+    DE_LOG(catalogue::log_domain::ui, flow, "main: font atlas reached GPU (usable), texture slot={}", slot);
     container->ui_font_logged = true;
   }
   if (container && container->ui_font_italic_res && !container->ui_font_italic_logged && container->ui_font_italic_res->usable()) {
     const uint32_t slot = container->ui_font_italic_res->gpu_index;
     if (auto* font = container->ui_font_italic_res->font()) font->set_texture_id(slot);
-    utils::info("main: italic font atlas reached GPU (usable), texture slot={}", slot);
+    DE_LOG(catalogue::log_domain::ui, flow, "main: italic font atlas reached GPU (usable), texture slot={}", slot);
     container->ui_font_italic_logged = true;
   }
 
@@ -1130,7 +1221,7 @@ void simulation::update(const size_t time) {
     }
 
     if (!container->chunks_logged && container->chunks_loaded_count == container->chunks_loaded.size()) {
-      utils::info("main: all {} mock world chunks loaded", container->chunks_loaded_count);
+      DE_LOG(catalogue::log_domain::gameplay, flow, "main: all {} mock world chunks loaded", container->chunks_loaded_count);
       container->chunks_logged = true;
     }
   }
@@ -1181,8 +1272,8 @@ void simulation::update(const size_t time) {
       container->batch.blit(std::span<uint8_t>(slot.bytes));
 
       if (!container->tiles_logged) {
-        utils::info(
-          "main: tile slice [{},{})x[{},{}) = {} instances, {} B/inst, {} B payload",
+        DE_TRACE(catalogue::log_domain::gameplay,
+          "tile slice [{},{})x[{},{}) = {} instances, {} B/inst, {} B payload",
           span.x0, span.x1, span.y0, span.y1, slot.count, slot.stride, slot.bytes.size());
         container->tiles_logged = true;
       }
@@ -1215,8 +1306,8 @@ void simulation::update(const size_t time) {
       slot.ids.assign(container->actors_batch.ids().begin(), container->actors_batch.ids().end());
 
       if (!container->actors_logged) {
-        utils::info(
-          "main: actor slice {} actors, {} intents, {} instances, {} B/inst, {} B payload",
+        DE_TRACE(catalogue::log_domain::gameplay,
+          "actor slice {} actors, {} intents, {} instances, {} B/inst, {} B payload",
           container->actors_last_metrics.actors,
           container->actors_last_metrics.intents,
           slot.count,
@@ -1253,7 +1344,9 @@ void simulation::update(const size_t time) {
         play.start = 0.0;
         container->br->sound_play.try_push(play);
         ++sent;
+        DE_TRACE(catalogue::log_domain::sound, "sim-sound send task={} at ({:.1f},{:.1f})", play.taskid, e.pos.x, e.pos.y);
       }
+      if (sent > 0) DE_LOG(catalogue::log_domain::sound, flow, "sim-sounds sent {} (of {} emits)", sent, emits.size());
     }
 
     container->metrics_frames += 1;
@@ -1275,7 +1368,7 @@ void simulation::update(const size_t time) {
         container->ui_intents_per_sec = intent_rate;
         container->ui_instances_per_sec = instance_rate;
         container->ui_actor_update_avg_us = avg_actor_us;
-        utils::info(
+        DE_LOG(catalogue::log_domain::main, flow,
           "metrics: main_fps={:.1f}, actors={}, intents/s={:.0f}, actor_instances/s={:.0f}, actor_update_avg_us={:.1f}",
           fps,
           container->actors_last_metrics.actors,
@@ -1359,6 +1452,24 @@ void simulation::update(const size_t time) {
     container->ui->update(time, container->ui_timestamp, utils::xoshiro256starstar::value(container->ui_rng));
     container->ui->convert();
 
+    // memory-probe: раз в ~1с логируем RSS + lua-heap с дельтами. Отделяет рост lua от C++:
+    // если растёт lua KiB — дело в скриптах (GC/утечка ссылок), иначе — в нативной части.
+    {
+      static uint64_t probe_tick = 0;
+      if (++probe_tick % 20 == 0) { // main_fps=20 → ~раз в секунду
+        lua_State* L = container->ui->script_state().lua_state();
+        const int64_t lua_kib = int64_t(lua_gc(L, LUA_GCCOUNT, 0));
+        const int64_t rss_kib = int64_t(read_rss_bytes() / 1024);
+        static int64_t prev_rss = 0, prev_lua = 0;
+        // память — движковый flow-домен (по умолчанию off; включить: logging.main="flow").
+        DE_LOG(catalogue::log_domain::main, flow,
+               "mem: RSS {} MiB (d{:+.2f}) | lua {} KiB (d{:+}) | sound_tasks {}",
+               rss_kib / 1024, double(rss_kib - prev_rss) / 1024.0,
+               lua_kib, lua_kib - prev_lua, container->sound_state.size());
+        prev_rss = rss_kib; prev_lua = lua_kib;
+      }
+    }
+
     // потребляем накопленные за кадр события (уровневые состояния кнопок/клавиш оставляем)
     g_ui_input.scroll_x = 0.0f;
     g_ui_input.scroll_y = 0.0f;
@@ -1388,7 +1499,7 @@ void simulation::update(const size_t time) {
     }
 
     if (!container->ui_logged) {
-      utils::info("visage: ui buffers — {} vtx bytes, {} idx bytes, {} draw commands",
+      DE_LOG(catalogue::log_domain::ui, flow, "visage: ui buffers — {} vtx bytes, {} idx bytes, {} draw commands",
         container->ui->vertices().size(), container->ui->indices().size(), container->ui->commands().size());
       container->ui_logged = true;
     }

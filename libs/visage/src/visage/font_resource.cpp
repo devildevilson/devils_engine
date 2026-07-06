@@ -1,3 +1,4 @@
+#include <devils_engine/catalogue/logging.h>
 #include "font_resource.h"
 
 #include <utility>
@@ -56,7 +57,7 @@ void font_resource::load_step(const int32_t from, const utils::safe_handle_t& ha
       memory = std::move(img.bytes); // gpu_texture_resource::memory — зальётся на GPU в шаге 2→3
       ttf_bytes.clear(); ttf_bytes.shrink_to_fit();
 
-      utils::info("font_resource: MSDF atlas {}x{}x{}ch, {} glyphs", width, height, img.channels, font_ptr->glyphs.size());
+      DE_LOG(catalogue::log_domain::ui, flow, "font_resource: MSDF atlas {}x{}x{}ch, {} glyphs", width, height, img.channels, font_ptr->glyphs.size());
     } break;
 
     case 2: // GPU-заливка (переиспользуем базу)

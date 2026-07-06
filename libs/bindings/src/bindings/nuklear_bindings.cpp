@@ -1100,6 +1100,14 @@ struct nk {
     nk_chart_end(ctx_ptr);
   }
 
+  // Включить/выключить маркеры-точки на линиях графика (style.chart.show_markers).
+  // Возвращает предыдущее значение — удобно восстановить после локальной отрисовки.
+  static bool chart_show_markers(const bool show) {
+    const bool prev = ctx_ptr->style.chart.show_markers != 0;
+    ctx_ptr->style.chart.show_markers = show ? nk_true : nk_false;
+    return prev;
+  }
+
   static float get_plot_value_from_table(void* user, int32_t index) {
     const auto t_p = reinterpret_cast<sol::table*>(user);
     return float((*t_p)[DEVILS_ENGINE_TO_LUA_INDEX(index)]);
@@ -1825,6 +1833,7 @@ void nk_functions(sol::table t) {
     b.set_function("push", &nk::chart_push);
     b.set_function("push_slot", &nk::chart_push_slot);
     b.set_function("fin", &nk::chart_end);
+    b.set_function("show_markers", &nk::chart_show_markers);
     b.set_function(sol::meta_function::new_index, sol::detail::fail_on_newindex);
   }
   {

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <source_location>
 #include <span>
 #include <string>
@@ -16,6 +17,9 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <vector>
+
+#include <gtl/phmap.hpp>
 
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/string_id.h"
@@ -76,42 +80,65 @@ public:
   void skipped(const call_info& info) override;
 };
 
-template <size_t Capacity = 128>
+// Собирает статистику ПО КАЖДОЙ функции (ключ = function_id): агрегаты за всё время
+// (count/total/min/max/last) + кольцевой буфер последних N замеров для построения графика.
+// Размер окна задаётся в конструкторе (НЕ шаблонный параметр) — новая функция заводит свою
+// запись с буфером на `window` замеров. Рассчитан на один поток (домен вызывается с одного
+// потока-актора); чтение статистики для UI-графика — отдельная задача (SERVICE-канал).
 class statistics_introspection final : public introspection_interface {
 public:
-  struct entry {
+  struct function_record {
     utils::id function = utils::invalid_id;
     std::string_view name;
-    uint64_t elapsed_mcs = 0;
+    std::string_view file;
+    uint32_t line = 0;
+
+    uint64_t call_count = 0;
+    uint64_t total_mcs = 0;
+    uint64_t min_mcs = std::numeric_limits<uint64_t>::max();
+    uint64_t max_mcs = 0;
+    uint64_t last_mcs = 0;
+
+    // кольцевой буфер последних замеров (размер == окно); cursor указывает на следующую
+    // позицию записи, filled — сколько всего замеров реально лежит (<= размера буфера).
+    std::vector<uint64_t> samples;
+    size_t cursor = 0;
+    size_t filled = 0;
+
+    double average_mcs() const noexcept {
+      return call_count != 0 ? double(total_mcs) / double(call_count) : 0.0;
+    }
+
+    // среднее по кольцевому буферу (последние `filled` замеров)
+    double recent_average_mcs() const noexcept;
+
+    // последние `filled` замеров в ХРОНОЛОГИЧЕСКОМ порядке (старый→новый) — для графика
+    void ordered_samples(std::vector<uint64_t>& out) const;
   };
 
-  call_decision enter(const call_info&) override { return call_decision::execute; }
+  explicit statistics_introspection(size_t window = 128) noexcept;
 
-  void exit(const call_info& info, const uint64_t elapsed_mcs) override {
-    entries_[cursor_] = entry{info.function, info.function_name, elapsed_mcs};
-    cursor_ = (cursor_ + 1) % Capacity;
-    if (count_ < Capacity) ++count_;
-  }
+  call_decision enter(const call_info&) override;
+  void exit(const call_info& info, uint64_t elapsed_mcs) override;
+  void skipped(const call_info&) override;
 
-  void skipped(const call_info&) override {}
+  const function_record* find(utils::id function) const noexcept;
+  double average_mcs(utils::id function) const noexcept; // 0, если функция не встречалась
+  size_t function_count() const noexcept { return records_.size(); }
+  size_t count() const noexcept { return total_calls_; } // всего замеров по всем функциям
+  size_t window() const noexcept { return window_; }
+  void reset() noexcept;
 
-  size_t count() const noexcept { return count_; }
-
-  double average_mcs(const utils::id fn) const noexcept {
-    uint64_t sum = 0;
-    size_t n = 0;
-    for (size_t i = 0; i < count_; ++i) {
-      if (entries_[i].function != fn) continue;
-      sum += entries_[i].elapsed_mcs;
-      ++n;
-    }
-    return n != 0 ? double(sum) / double(n) : 0.0;
+  // f(const function_record&) по каждой известной функции
+  template <typename F>
+  void for_each(F&& f) const {
+    for (const auto& [id, rec] : records_) f(rec);
   }
 
 private:
-  std::array<entry, Capacity> entries_{};
-  size_t cursor_ = 0;
-  size_t count_ = 0;
+  size_t window_;
+  size_t total_calls_ = 0;
+  gtl::flat_hash_map<utils::id, function_record> records_;
 };
 
 namespace detail {

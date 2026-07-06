@@ -10,6 +10,7 @@ set(SRC_LIST
   src/catalogue/core.cpp
   src/catalogue/demo.cpp
   src/catalogue/introspection.cpp
+  src/catalogue/logging.cpp
 )
 
 set(HDR_LIST
@@ -20,6 +21,7 @@ set(HDR_LIST
   include/devils_engine/catalogue/registry.h
   include/devils_engine/catalogue/demo.h
   include/devils_engine/catalogue/introspection.h
+  include/devils_engine/catalogue/logging.h
 )
 
 add_library(devils_catalogue ${SRC_LIST} ${HDR_LIST})

@@ -33,3 +33,18 @@ metrics = {
   enabled = true
   log_interval_ms = 1000
 }
+
+logging = {
+  console = true
+  file = "logs/tile_frontier.log"
+  // глубина на домен: off / info / flow / trace (по умолчанию off). Меняется и в рантайме
+  // через app.set_log_level(domain, depth). Базовый always-on слой (подсистемы/окно/устройства)
+  // идёт всегда, независимо от этих уровней.
+  main = "off"
+  assets = "off"
+  sound = "off"
+  render = "off"
+  ui = "off"
+  gameplay = "off"
+  resource = "off"
+}

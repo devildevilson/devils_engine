@@ -244,16 +244,27 @@ namespace devils_engine {
 
       void update(const size_t time);
     private:
+      // Явная FSM жизненного цикла задачи. Гарантирует терминацию из ЛЮБОГО состояния
+      // (таймаут ожидания голоса + дедлайн жизни голоса) и единую точку очистки → нет утечек
+      // задач/голосов/декодеров. Тяжёлые ресурсы (decoder/converter) создаются на входе в active.
+      enum class task_phase : uint8_t {
+        waiting_voice, // голоса нет: ждём свободный (или голос prev для after); дедлайн ожидания → dropped
+        active,        // голос есть, декодер создан, декодируем сегмент в кольцо
+        draining,      // декод закончен, ждём вычитки кольца; дедлайн жизни → finished (страховка)
+        finished       // терминал: единая точка очистки (release_task) — вернуть голос, освободить ресурсы
+      };
+
       struct sound_task {
         sound_instance* inst;
         struct task task;
-        size_t timestamp;
+        size_t timestamp;        // cur_time создания — база дедлайна ОЖИДАНИЯ голоса
+        size_t active_time;      // cur_time входа в active — база дедлайна ЖИЗНИ голоса
+        size_t lifetime_budget;  // макс. µs в active+draining (длительность сегмента + запас)
         size_t frames_decoded;
         size_t stream_begin_frame;
         size_t stream_frames_count;
         size_t source_frames_count;
-        bool initialized;
-        bool segment_registered;
+        task_phase phase;
         bool started;
         std::unique_ptr<sound::decoder> decoder;
         std::unique_ptr<miniaudio_data_converter> converter;
@@ -280,6 +291,11 @@ namespace devils_engine {
       size_t find_task_id(const size_t task_id) const;
       struct task_status make_status(const sound_task &task) const;
       uint32_t instance_init(sound_instance* inst, const uint32_t sample_rate, const uint32_t channels, const enum format format) const;
+
+      // FSM-хелперы жизненного цикла задачи (см. task_phase):
+      bool acquire_voice(sound_task &task);  // выдать/разделить голос; false если пул пуст (idempotent при уже выданном)
+      void init_decode(sound_task &task);    // создать decoder+converter, посчитать frames (idempotent) — на входе в active
+      void release_task(sound_task &task);   // терминал: вернуть/выгрузить голос (если не разделён), освободить ресурсы
     };
   }
 }

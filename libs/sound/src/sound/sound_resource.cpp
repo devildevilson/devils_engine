@@ -1,3 +1,4 @@
+#include <devils_engine/catalogue/logging.h>
 #include "sound_resource.h"
 
 #include <string_view>
@@ -67,10 +68,10 @@ void sound_resource::load_cold(const utils::safe_handle_t&) {
     data = std::move(pcm);
     frames_count = got;
     type = data_type::pcm;
-    utils::info("sound_resource '{}': decoded to PCM ({} frames, {} ch, {} Hz, fmt {}, {} bytes)",
+    DE_LOG(catalogue::log_domain::resource, flow, "sound_resource '{}': decoded to PCM ({} frames, {} ch, {} Hz, fmt {}, {} bytes)",
       id, frames_count, channels, sample_rate, size_t(sample_format), data.size());
   } else {
-    utils::info("sound_resource '{}': loaded {} bytes (type {}, {} frames, {} ch, {} Hz)",
+    DE_LOG(catalogue::log_domain::resource, flow, "sound_resource '{}': loaded {} bytes (type {}, {} frames, {} ch, {} Hz)",
       id, data.size(), size_t(type), frames_count, channels, sample_rate);
   }
 }
