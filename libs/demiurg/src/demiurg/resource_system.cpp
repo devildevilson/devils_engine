@@ -1,6 +1,7 @@
 #include "resource_system.h"
 
 #include <algorithm>
+#include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <cassert>
@@ -29,7 +30,28 @@ namespace devils_engine {
         res->set(candidate.path, candidate.module_name, candidate.id, candidate.ext);
         res->module = candidate.module;
         res->raw_size = candidate.raw_size;
+        res->list_index = candidate.list_index;
+        res->list_start_line = candidate.list_start_line;
+        res->list_name = candidate.list_name;
+        res->list_section = candidate.list_section;
         return res;
+      }
+
+      uint32_t parse_index_alias(const std::string_view id, const std::string_view alias) {
+        const size_t colon = id.rfind(':');
+        if (colon == std::string_view::npos) return invalid_list_index;
+        const std::string_view prefix = id.substr(0, colon + 1);
+        if (alias.substr(0, prefix.size()) != prefix) return invalid_list_index;
+
+        const std::string_view value = alias.substr(prefix.size());
+        if (value.empty()) return invalid_list_index;
+
+        uint32_t index = invalid_list_index;
+        const auto* begin = value.data();
+        const auto* end = value.data() + value.size();
+        const auto res = std::from_chars(begin, end, index);
+        if (res.ec != std::errc{} || res.ptr != end) return invalid_list_index;
+        return index;
       }
     }
 
@@ -97,8 +119,11 @@ namespace devils_engine {
       if (id == "") return nullptr;
 
       const auto itr = std::lower_bound(resources.begin(), resources.end(), id, &get_f);
-      if (itr == resources.end() || (*itr)->id != id) return nullptr;
-      return (*itr);
+      if (itr != resources.end() && (*itr)->id == id) return (*itr);
+
+      const auto alias_itr = aliases.find(id);
+      if (alias_itr == aliases.end()) return nullptr;
+      return alias_itr->second;
     }
 
     static bool lazy_compare(const std::string_view &a, const std::string_view &b) {
@@ -191,7 +216,25 @@ namespace devils_engine {
           continue;
         }
 
-        manifest_entry entry{typed[primary_index], {}};
+        manifest_entry entry{typed[primary_index], {}, {}, invalid_list_index};
+        bool inherited_aliases = false;
+        for (size_t j = i; j < end; ++j) {
+          if (typed[j].candidate->module_priority == winner_priority) continue;
+          for (const auto& alias : typed[j].candidate->aliases) {
+            entry.aliases.push_back(alias);
+            inherited_aliases = true;
+            if (entry.list_index_override == invalid_list_index) {
+              entry.list_index_override = parse_index_alias(typed[primary_index].candidate->id, alias);
+            }
+          }
+        }
+
+        if (!inherited_aliases) {
+          for (const auto& alias : typed[primary_index].candidate->aliases) {
+            entry.aliases.push_back(alias);
+          }
+        }
+
         for (size_t j = i; j < end; ++j) {
           if (j == primary_index) continue;
           if (typed[j].candidate->module_priority != winner_priority) continue;
@@ -235,9 +278,14 @@ namespace devils_engine {
           utils::warn("Could not create resource '{}' extension '{}'. Skip", primary_candidate.id, primary_candidate.ext);
           continue;
         }
+        if (entry.list_index_override != invalid_list_index) primary->list_index = entry.list_index_override;
 
         if (pending != nullptr) pending->push_back(primary);
         else resources.push_back(primary);
+
+        for (const auto& alias : entry.aliases) {
+          register_alias(alias, primary);
+        }
 
         for (const auto& supplementary : entry.supplementary) {
           const auto& candidate = *supplementary.candidate;
@@ -250,6 +298,20 @@ namespace devils_engine {
           primary->supplementary_radd(res);
         }
       }
+    }
+
+    void resource_system::register_alias(std::string alias, resource_interface* res) {
+      if (alias.empty() || res == nullptr || alias == res->id) return;
+      const auto active_itr = std::find_if(resources.begin(), resources.end(), [&] (const resource_interface* cur) {
+        return cur != nullptr && cur->id == alias;
+      });
+      if (active_itr != resources.end() || aliases.find(alias) != aliases.end()) {
+        utils::warn("demiurg: resource alias '{}' for '{}' conflicts with an existing resource id/alias; skip", alias, res->id);
+        return;
+      }
+
+      alias_storage.push_back(std::move(alias));
+      aliases[std::string_view(alias_storage.back())] = res;
     }
 
     void resource_system::parse_resources(module_system* sys) {
@@ -323,6 +385,8 @@ namespace devils_engine {
       }
       resources.clear();
       all_resources.clear();
+      aliases.clear();
+      alias_storage.clear();
     }
 
     size_t resource_system::resources_count() const noexcept { return resources.size(); }
@@ -363,12 +427,20 @@ namespace devils_engine {
       return std::make_tuple(id, name, ext);
     }
 
-    void resource_interface::set(std::string path, const std::string_view &module_name, const std::string_view &, const std::string_view &) {
+    void resource_interface::set(std::string path, const std::string_view &module_name, const std::string_view &id, const std::string_view &ext) {
       this->path = std::move(path);
       this->module_name = module_name;
       const auto [ local_id, local_name, local_ext ] = parse_path(this->path);
-      this->id = local_id;
-      this->ext = local_ext;
+      id_storage = !id.empty() ? std::string(id) : std::string(local_id);
+      ext_storage = !ext.empty() ? std::string(ext) : std::string(local_ext);
+      this->id = id_storage;
+      this->ext = ext_storage;
+    }
+
+    uint32_t resource_interface::source_line(const uint32_t local_line) const noexcept {
+      if (local_line == 0) return 0;
+      if (!is_list_entry() || list_start_line == 0) return local_line;
+      return list_start_line + local_line - 1;
     }
 
     resource_interface *resource_interface::replacement_next(const resource_interface *ptr) const {

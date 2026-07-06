@@ -330,8 +330,9 @@ std::vector<state> parse_state_text(
 
   for (const auto& d : ctx.diagnostics) {
     if (!d.error.is_critical()) continue;
-    utils::warn("flow: could not parse '{}' as animation states: error '{}' at field '{}'",
-      label, tavl::to_string(d.error.type), d.field);
+    const uint32_t line = d.error.span.line == 0 ? 0 : static_cast<uint32_t>(d.error.span.line) + options.line_offset;
+    utils::warn("flow: could not parse '{}' as animation states: error '{}' at {}:{} field '{}'",
+      label, tavl::to_string(d.error.type), line, d.error.span.column, d.field);
   }
 
   if (next_names != nullptr) *next_names = std::move(local_next);

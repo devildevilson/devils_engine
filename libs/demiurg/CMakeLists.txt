@@ -8,6 +8,7 @@ project(
 
 set(SRC_LIST
   src/demiurg/catalogue_domain.cpp
+  src/demiurg/resource_manifest.cpp
   src/demiurg/resource_system.cpp
   src/demiurg/folder_module.cpp 
   src/demiurg/modules_listing.cpp

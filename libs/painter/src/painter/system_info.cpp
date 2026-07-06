@@ -396,7 +396,8 @@ bool system_info::try_load_cached_data(VkInstance instance, physical_device_data
     if (!ctx.diagnostics.empty()) {
       utils::warn("Could not load cached device data from file '{}'", file_path);
       for (const auto& d : ctx.diagnostics) {
-        utils::warn("  tavl diagnostic {}, field '{}'", static_cast<size_t>(d.error.type), d.field);
+        utils::warn("  tavl diagnostic '{}' at {}:{} field '{}'",
+          tavl::to_string(d.error.type), d.error.span.line, d.error.span.column, d.field);
       }
       return false;
     }

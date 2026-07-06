@@ -21,15 +21,25 @@ void animation_resource::load_cold(const utils::safe_handle_t&) {
     return;
   }
 
-  const std::string content = module->load_text(path);
+  const std::string content = is_list_entry() && !list_section.empty() ? list_section : module->load_text(path);
   std::vector<std::string> next_names;
-  const auto parsed = parse_state_text(content, id, resources_, &next_names);
-  const uint32_t first = lib_->append_resource_states(id, parsed, next_names);
+  parse_options options{};
+  if (is_list_entry() && list_start_line > 0) options.line_offset = list_start_line - 1;
+  const auto parsed = parse_state_text(content, id, resources_, &next_names, options);
 
   indices_.clear();
-  indices_.reserve(parsed.size());
-  for (uint32_t i = 0; i < parsed.size(); ++i) {
-    indices_.push_back(first + i);
+
+  if (is_list_entry() && parsed.size() == 1) {
+    const uint32_t index = lib_->add_state(std::string(id), parsed[0]);
+    indices_.push_back(index);
+    if (!next_names.empty() && !next_names[0].empty()) lib_->set_next(index, next_names[0]);
+    lib_->resolve_pending_links(false);
+  } else {
+    const uint32_t first = lib_->append_resource_states(id, parsed, next_names);
+    indices_.reserve(parsed.size());
+    for (uint32_t i = 0; i < parsed.size(); ++i) {
+      indices_.push_back(first + i);
+    }
   }
 
   utils::info("flow animation_resource '{}': parsed {} states", id, parsed.size());
