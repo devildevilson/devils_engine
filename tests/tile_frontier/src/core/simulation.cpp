@@ -30,7 +30,7 @@
 #include <devils_engine/painter/glsl_source_file.h>
 #include <devils_engine/painter/shader_source_file.h>
 #include <devils_engine/painter/pipeline_cache_resource.h>
-#include <devils_engine/catalogue/introspection.h> // catalogue::statistics_introspection (perf UI)
+#include <devils_engine/catalogue/introspection.h> // catalogue::statistics_store (perf UI)
 #include <devils_engine/catalogue/logging.h>        // доменное логгирование (DE_LOG) + init_logging
 #include <devils_engine/utils/fileio.h>
 
@@ -999,7 +999,7 @@ void simulation::init() {
       std::vector<uint64_t> samples;
       int32_t i = 0;
       core::actor_perf_statistics().for_each(
-        [&] (const catalogue::statistics_introspection::function_record& r) {
+        [&] (const catalogue::statistics_store::function_record& r) {
           sol::table e = lua.create_table();
           e["name"]  = std::string(r.name);
           e["avg"]   = r.average_mcs();

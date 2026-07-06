@@ -58,36 +58,10 @@ struct multiply_functor {
 
 constexpr multiply_functor multiply{};
 
-struct recording_intro final : catalogue::introspection_interface {
-  size_t enter_count = 0;
-  size_t exit_count = 0;
-  size_t skipped_count = 0;
-  std::string_view last_name;
-  std::string_view last_file;
-  uint32_t last_line = 0;
-  std::vector<std::string> last_arg_values;
-  catalogue::call_decision decision = catalogue::call_decision::execute;
-
-  catalogue::call_decision enter(const catalogue::call_info& info) override {
-    ++enter_count;
-    last_name = info.function_name;
-    last_file = info.file;
-    last_line = info.line;
-    last_arg_values.clear();
-    for (const auto& arg : info.arguments) {
-      last_arg_values.emplace_back(!arg.value.empty() ? arg.value : std::string_view{"<opaque>"});
-    }
-    return decision;
-  }
-
-  void exit(const catalogue::call_info&, uint64_t) override {
-    ++exit_count;
-  }
-
-  void skipped(const catalogue::call_info&) override {
-    ++skipped_count;
-  }
-};
+// Хелпер: сконфигурировать домен на режим statistics с заданным store (невиртуальный switch).
+static catalogue::introspection stats_cfg(catalogue::statistics_store& store) {
+  return catalogue::introspection{catalogue::introspection_mode::statistics, 0, &store};
+}
 
 }
 
@@ -99,20 +73,20 @@ TEST_CASE("catalogue wraps free functions with mirrored arguments") {
   static_assert(add_gold_t::function_id == utils::murmur_hash64A("add_gold"));
   static_assert(std::is_same_v<decltype(add_gold_fn), int(* const)(int, int)>);
 
-  recording_intro intro;
-  catalogue::domain<domains::gameplay>::set_introspection(&intro);
+  catalogue::statistics_store store(4);
+  const auto cfg = stats_cfg(store);
+  catalogue::domain<domains::gameplay>::set_introspection(&cfg);
   g_gold = 0;
 
   const int res = add_gold_fn(5, 3);
 
   CHECK(res == 15);
   CHECK(g_gold == 15);
-  CHECK(intro.enter_count == 1);
-  CHECK(intro.exit_count == 1);
-  CHECK(intro.last_name == "add_gold");
-  REQUIRE(intro.last_arg_values.size() == 2);
-  CHECK(intro.last_arg_values[0] == "5");
-  CHECK(intro.last_arg_values[1] == "3");
+  CHECK(store.count() == 1);
+  const auto* rec = store.find(add_gold_t::function_id);
+  REQUIRE(rec != nullptr);
+  CHECK(rec->call_count == 1);
+  CHECK(rec->name == "add_gold");
 
   catalogue::domain<domains::gameplay>::set_introspection(nullptr);
 }
@@ -143,40 +117,37 @@ TEST_CASE("catalogue wrapper is a direct call when introspection is not set") {
   CHECK(g_gold == 8);
 }
 
-TEST_CASE("catalogue loc_fn_t records call site") {
+TEST_CASE("catalogue off mode is a direct call") {
+  using add_gold_t = catalogue::domain<domains::gameplay>::fn_traits<&add_gold, "add_gold", "amount", "multiplier">;
+  constexpr auto add_gold_fn = add_gold_t::fn_ptr;
+
+  const catalogue::introspection cfg{}; // mode == off по умолчанию
+  catalogue::domain<domains::gameplay>::set_introspection(&cfg);
+  g_gold = 0;
+
+  CHECK(add_gold_fn(4, 2) == 8);
+  CHECK(g_gold == 8);
+
+  catalogue::domain<domains::gameplay>::set_introspection(nullptr);
+}
+
+TEST_CASE("catalogue loc_fn_t records call site into statistics") {
   using add_gold_t = catalogue::domain<domains::gameplay>::fn_traits<&add_gold, "add_gold", "amount", "multiplier">;
   using add_gold_loc_fn_t = add_gold_t::loc_fn_t;
 
-  recording_intro intro;
-  catalogue::domain<domains::gameplay>::set_introspection(&intro);
+  catalogue::statistics_store store(4);
+  const auto cfg = stats_cfg(store);
+  catalogue::domain<domains::gameplay>::set_introspection(&cfg);
   g_gold = 0;
 
   const uint32_t expected_line = __LINE__ + 1;
   const int res = add_gold_loc_fn_t{}(2, 4);
 
   CHECK(res == 8);
-  CHECK(intro.last_line == expected_line);
-  CHECK(intro.last_file.find("catalogue_introspection_test.cpp") != std::string_view::npos);
-
-  catalogue::domain<domains::gameplay>::set_introspection(nullptr);
-}
-
-TEST_CASE("catalogue dry-run skips wrapped free functions") {
-  using add_gold_t = catalogue::domain<domains::gameplay>::fn_traits<&add_gold, "add_gold", "amount", "multiplier">;
-  constexpr auto add_gold_fn = add_gold_t::fn_ptr;
-
-  recording_intro intro;
-  intro.decision = catalogue::call_decision::skip;
-  catalogue::domain<domains::gameplay>::set_introspection(&intro);
-  g_gold = 0;
-
-  const int res = add_gold_fn(5, 3);
-
-  CHECK(res == 0);
-  CHECK(g_gold == 0);
-  CHECK(intro.enter_count == 1);
-  CHECK(intro.exit_count == 0);
-  CHECK(intro.skipped_count == 1);
+  const auto* rec = store.find(add_gold_t::function_id);
+  REQUIRE(rec != nullptr);
+  CHECK(rec->line == expected_line);
+  CHECK(rec->file.find("catalogue_introspection_test.cpp") != std::string_view::npos);
 
   catalogue::domain<domains::gameplay>::set_introspection(nullptr);
 }
@@ -187,41 +158,20 @@ TEST_CASE("catalogue wraps member functions") {
 
   static_assert(std::is_same_v<decltype(add_fn), int(* const)(wallet&, int)>);
 
-  recording_intro intro;
-  catalogue::domain<domains::gameplay>::set_introspection(&intro);
+  catalogue::statistics_store store(4);
+  const auto cfg = stats_cfg(store);
+  catalogue::domain<domains::gameplay>::set_introspection(&cfg);
 
   wallet w;
   const int res = add_fn(w, 7);
 
   CHECK(res == 7);
   CHECK(w.gold == 7);
-  CHECK(intro.enter_count == 1);
-  REQUIRE(intro.last_arg_values.size() == 2);
-  CHECK(intro.last_arg_values[0].front() == '<');
-  CHECK(intro.last_arg_values[0].back() == '>');
-  CHECK(intro.last_arg_values[0].find("wallet") != std::string::npos);
-  CHECK(intro.last_arg_values[1] == "7");
+  const auto* rec = store.find(add_t::function_id);
+  REQUIRE(rec != nullptr);
+  CHECK(rec->call_count == 1);
 
   catalogue::domain<domains::gameplay>::set_introspection(nullptr);
-}
-
-TEST_CASE("catalogue complex argument placeholders are bounded") {
-  using inspect_t = catalogue::domain<domains::service>::fn_traits<&inspect_long_type, "inspect_long_type", "value">;
-  constexpr auto inspect_fn = inspect_t::fn_ptr;
-
-  recording_intro intro;
-  catalogue::domain<domains::service>::set_introspection(&intro);
-
-  devils_engine::catalogue_test_types::very_long_argument_type_name_that_should_not_fit_into_catalogue_value_buffer value{};
-  inspect_fn(value);
-
-  REQUIRE(intro.last_arg_values.size() == 1);
-  CHECK(intro.last_arg_values[0].size() <= 64);
-  CHECK(intro.last_arg_values[0].front() == '<');
-  CHECK(intro.last_arg_values[0].back() == '>');
-  CHECK(intro.last_arg_values[0].find("devils_engine::") == std::string::npos);
-
-  catalogue::domain<domains::service>::set_introspection(nullptr);
 }
 
 TEST_CASE("catalogue wraps const member functions") {
@@ -247,8 +197,9 @@ TEST_CASE("catalogue statistics introspection records rolling timings") {
   using reset_t = catalogue::domain<domains::service>::fn_traits<&reset_gold, "reset_gold">;
   constexpr auto reset_fn = reset_t::fn_ptr;
 
-  catalogue::statistics_introspection stats(4);
-  catalogue::domain<domains::service>::set_introspection(&stats);
+  catalogue::statistics_store stats(4);
+  const auto cfg = stats_cfg(stats);
+  catalogue::domain<domains::service>::set_introspection(&cfg);
 
   reset_fn();
   reset_fn();
@@ -275,8 +226,9 @@ TEST_CASE("catalogue statistics introspection ring buffer wraps and keeps aggreg
   using reset_t = catalogue::domain<domains::service>::fn_traits<&reset_gold, "reset_gold">;
   constexpr auto reset_fn = reset_t::fn_ptr;
 
-  catalogue::statistics_introspection stats(2); // окно из 2 замеров
-  catalogue::domain<domains::service>::set_introspection(&stats);
+  catalogue::statistics_store stats(2); // окно из 2 замеров
+  const auto cfg = stats_cfg(stats);
+  catalogue::domain<domains::service>::set_introspection(&cfg);
 
   reset_fn();
   reset_fn();

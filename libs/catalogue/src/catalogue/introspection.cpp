@@ -1,12 +1,12 @@
 #include "devils_engine/catalogue/introspection.h"
 
-#include <sstream>
+#include "devils_engine/catalogue/logging.h" // logs().name() для префикса домена
 
 namespace devils_engine {
 namespace catalogue {
 namespace {
 
-static std::string format_arguments(const std::span<const argument_view> args) {
+std::string format_arguments(const std::span<const argument_view> args) {
   std::string out;
   for (size_t i = 0; i < args.size(); ++i) {
     if (i != 0) out += ", ";
@@ -19,60 +19,62 @@ static std::string format_arguments(const std::span<const argument_view> args) {
 
 }
 
-// Трассировка функций: вход/выход + место вызова (file:line, путь сжат до 2 сегментов как
-// в utils::error{}) + perf на выходе. file/line берутся из call_info (их пишет loc_fn_t по
-// std::source_location места вызова). Совпадает по формату с DE_TRACE.
-call_decision trace_introspection::enter(const call_info& info) {
-  utils::info("[trace] {}:{}: enter '{}'", utils::make_sane_file_name(info.file), info.line, info.function_name);
-  return call_decision::execute;
+namespace detail {
+
+// enter: значим только для tracing/dump (вход + место вызова; dump — ещё аргументы).
+void emit_enter(const introspection& in, const call_info& info) {
+  switch (in.mode) {
+    case introspection_mode::tracing:
+      spdlog::info("[{}][trace] {}:{}: enter '{}'", logs().name(in.log_domain),
+                   utils::make_sane_file_name(info.file), info.line, info.function_name);
+      break;
+    case introspection_mode::dump:
+      spdlog::info("[{}][dump] {}:{}: enter '{}' ({})", logs().name(in.log_domain),
+                   utils::make_sane_file_name(info.file), info.line, info.function_name,
+                   format_arguments(info.arguments));
+      break;
+    default:
+      break;
+  }
 }
 
-void trace_introspection::exit(const call_info& info, const uint64_t elapsed_mcs) {
-  utils::info("[trace] {}:{}: exit '{}' ({} us)", utils::make_sane_file_name(info.file), info.line, info.function_name, elapsed_mcs);
+// exit: невиртуальный switch по режиму — каждый берёт РОВНО что нужно (см. introspection_mode).
+void emit_exit(const introspection& in, const call_info& info, const uint64_t elapsed_mcs) {
+  switch (in.mode) {
+    case introspection_mode::logging:
+      spdlog::info("[{}][log] '{}' {} us", logs().name(in.log_domain), info.function_name, elapsed_mcs);
+      break;
+    case introspection_mode::statistics:
+      if (in.stats != nullptr) in.stats->record(info.function, info.function_name, info.file, info.line, elapsed_mcs);
+      break;
+    case introspection_mode::tracing:
+      spdlog::info("[{}][trace] {}:{}: exit '{}' ({} us)", logs().name(in.log_domain),
+                   utils::make_sane_file_name(info.file), info.line, info.function_name, elapsed_mcs);
+      break;
+    case introspection_mode::dump:
+      spdlog::info("[{}][dump] {}:{}: exit '{}' ({} us) ({})", logs().name(in.log_domain),
+                   utils::make_sane_file_name(info.file), info.line, info.function_name, elapsed_mcs,
+                   format_arguments(info.arguments));
+      break;
+    default:
+      break;
+  }
 }
 
-void trace_introspection::skipped(const call_info& info) {
-  utils::info("[trace] {}:{}: skipped '{}'", utils::make_sane_file_name(info.file), info.line, info.function_name);
 }
 
-call_decision timing_introspection::enter(const call_info&) {
-  return call_decision::execute;
-}
-
-void timing_introspection::exit(const call_info& info, const uint64_t elapsed_mcs) {
-  const std::string args = format_arguments(info.arguments);
-  utils::info("'{}' took {} mcs ({})", info.function_name, elapsed_mcs, args);
-}
-
-void timing_introspection::skipped(const call_info& info) {
-  utils::info("'{}' skipped", info.function_name);
-}
-
-call_decision dry_run_introspection::enter(const call_info& info) {
-  utils::info("dry-run '{}'", info.function_name);
-  return call_decision::skip;
-}
-
-void dry_run_introspection::exit(const call_info&, uint64_t) {}
-
-void dry_run_introspection::skipped(const call_info& info) {
-  const std::string args = format_arguments(info.arguments);
-  utils::info("dry-run skipped '{}' ({})", info.function_name, args);
-}
-
-double statistics_introspection::function_record::recent_average_mcs() const noexcept {
+double statistics_store::function_record::recent_average_mcs() const noexcept {
   if (filled == 0) return 0.0;
   uint64_t sum = 0;
   for (size_t i = 0; i < filled; ++i) sum += samples[i];
   return double(sum) / double(filled);
 }
 
-void statistics_introspection::function_record::ordered_samples(std::vector<uint64_t>& out) const {
+void statistics_store::function_record::ordered_samples(std::vector<uint64_t>& out) const {
   out.clear();
   if (filled == 0) return;
   out.reserve(filled);
-  // буфер ещё не полон: замеры лежат в [0, filled) уже по порядку;
-  // буфер полон (filled == размера): самый старый — в cursor, дальше по кругу.
+  // буфер не полон: [0, filled) уже по порядку; полон: самый старый в cursor, дальше по кругу.
   const size_t cap = samples.size();
   if (filled < cap) {
     for (size_t i = 0; i < filled; ++i) out.push_back(samples[i]);
@@ -81,24 +83,21 @@ void statistics_introspection::function_record::ordered_samples(std::vector<uint
   }
 }
 
-statistics_introspection::statistics_introspection(const size_t window) noexcept : window_(window) {}
+statistics_store::statistics_store(const size_t window) noexcept : window_(window) {}
 
-call_decision statistics_introspection::enter(const call_info&) {
-  return call_decision::execute;
-}
-
-void statistics_introspection::exit(const call_info& info, const uint64_t elapsed_mcs) {
+void statistics_store::record(const utils::id function, const std::string_view name,
+                              const std::string_view file, const uint32_t line, const uint64_t elapsed_mcs) {
   ++total_calls_;
 
-  auto [it, inserted] = records_.try_emplace(info.function);
+  auto [it, inserted] = records_.try_emplace(function);
   function_record& rec = it->second;
   if (inserted) {
-    rec.function = info.function;
-    rec.name = info.function_name;
-    rec.file = info.file;
-    rec.line = info.line;
+    rec.function = function;
+    rec.name = name;
     if (window_ != 0) rec.samples.resize(window_, 0);
   }
+  rec.file = file; // место последнего вызова
+  rec.line = line;
 
   ++rec.call_count;
   rec.total_mcs += elapsed_mcs;
@@ -113,19 +112,17 @@ void statistics_introspection::exit(const call_info& info, const uint64_t elapse
   }
 }
 
-void statistics_introspection::skipped(const call_info&) {}
-
-const statistics_introspection::function_record* statistics_introspection::find(const utils::id function) const noexcept {
+const statistics_store::function_record* statistics_store::find(const utils::id function) const noexcept {
   const auto it = records_.find(function);
   return it != records_.end() ? &it->second : nullptr;
 }
 
-double statistics_introspection::average_mcs(const utils::id function) const noexcept {
+double statistics_store::average_mcs(const utils::id function) const noexcept {
   const function_record* rec = find(function);
   return rec != nullptr ? rec->average_mcs() : 0.0;
 }
 
-void statistics_introspection::reset() noexcept {
+void statistics_store::reset() noexcept {
   total_calls_ = 0;
   records_.clear();
 }

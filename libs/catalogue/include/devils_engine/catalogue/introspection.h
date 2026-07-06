@@ -45,100 +45,67 @@ struct call_info {
   std::span<const argument_view> arguments;
 };
 
-enum class call_decision : uint8_t {
-  execute,
-  skip
+// Режим интроспекции — задаёт, СКОЛЬКО работы делать на вызов. Заменяет виртуальный
+// introspection_interface: разное поведение — невиртуальный switch (см. detail::run/emit_*),
+// а тяжёлые arg_views строятся ЛЕНИВО только для dump.
+enum class introspection_mode : uint8_t {
+  off,        // ничего (быстрый путь, как без интроспекции)
+  logging,    // на выходе: имя функции + elapsed (без call_info-args, без file:line)
+  statistics, // function_id + elapsed → statistics_store (без вывода, без args)
+  tracing,    // enter/exit + file:line + elapsed (без args)
+  dump        // ВСЁ: enter/exit + file:line + аргументы (дорого, редко)
 };
 
-class introspection_interface {
-public:
-  virtual ~introspection_interface() noexcept = default;
-
-  virtual call_decision enter(const call_info& info) = 0;
-  virtual void exit(const call_info& info, uint64_t elapsed_mcs) = 0;
-  virtual void skipped(const call_info& info) = 0;
-};
-
-class trace_introspection final : public introspection_interface {
-public:
-  call_decision enter(const call_info& info) override;
-  void exit(const call_info& info, uint64_t elapsed_mcs) override;
-  void skipped(const call_info& info) override;
-};
-
-class timing_introspection final : public introspection_interface {
-public:
-  call_decision enter(const call_info& info) override;
-  void exit(const call_info& info, uint64_t elapsed_mcs) override;
-  void skipped(const call_info& info) override;
-};
-
-class dry_run_introspection final : public introspection_interface {
-public:
-  call_decision enter(const call_info& info) override;
-  void exit(const call_info& info, uint64_t elapsed_mcs) override;
-  void skipped(const call_info& info) override;
-};
-
-// Собирает статистику ПО КАЖДОЙ функции (ключ = function_id): агрегаты за всё время
-// (count/total/min/max/last) + кольцевой буфер последних N замеров для построения графика.
-// Размер окна задаётся в конструкторе (НЕ шаблонный параметр) — новая функция заводит свою
-// запись с буфером на `window` замеров. Рассчитан на один поток (домен вызывается с одного
-// потока-актора); чтение статистики для UI-графика — отдельная задача (SERVICE-канал).
-class statistics_introspection final : public introspection_interface {
+// Накопитель статистики ПО ФУНКЦИИ (ключ = function_id): агрегаты за всё время
+// (count/total/min/max/last) + кольцо последних N замеров (окно — в конструкторе) для графика.
+// Один поток (домен вызывается с одного потока-актора). Раньше был statistics_introspection
+// (виртуальный) — теперь просто хранилище, в которое пишет режим statistics.
+class statistics_store {
 public:
   struct function_record {
     utils::id function = utils::invalid_id;
     std::string_view name;
-    std::string_view file;
+    std::string_view file; // место последнего вызова (для «прыжка к источнику»)
     uint32_t line = 0;
-
     uint64_t call_count = 0;
     uint64_t total_mcs = 0;
     uint64_t min_mcs = std::numeric_limits<uint64_t>::max();
     uint64_t max_mcs = 0;
     uint64_t last_mcs = 0;
-
-    // кольцевой буфер последних замеров (размер == окно); cursor указывает на следующую
-    // позицию записи, filled — сколько всего замеров реально лежит (<= размера буфера).
-    std::vector<uint64_t> samples;
+    std::vector<uint64_t> samples; // кольцо; cursor — следующая позиция, filled — сколько реально лежит
     size_t cursor = 0;
     size_t filled = 0;
 
-    double average_mcs() const noexcept {
-      return call_count != 0 ? double(total_mcs) / double(call_count) : 0.0;
-    }
-
-    // среднее по кольцевому буферу (последние `filled` замеров)
-    double recent_average_mcs() const noexcept;
-
-    // последние `filled` замеров в ХРОНОЛОГИЧЕСКОМ порядке (старый→новый) — для графика
-    void ordered_samples(std::vector<uint64_t>& out) const;
+    double average_mcs() const noexcept { return call_count != 0 ? double(total_mcs) / double(call_count) : 0.0; }
+    double recent_average_mcs() const noexcept;                 // среднее по кольцу
+    void ordered_samples(std::vector<uint64_t>& out) const;     // последние filled в хроно-порядке (для графика)
   };
 
-  explicit statistics_introspection(size_t window = 128) noexcept;
-
-  call_decision enter(const call_info&) override;
-  void exit(const call_info& info, uint64_t elapsed_mcs) override;
-  void skipped(const call_info&) override;
+  explicit statistics_store(size_t window = 128) noexcept;
+  void record(utils::id function, std::string_view name, std::string_view file, uint32_t line, uint64_t elapsed_mcs);
 
   const function_record* find(utils::id function) const noexcept;
-  double average_mcs(utils::id function) const noexcept; // 0, если функция не встречалась
+  double average_mcs(utils::id function) const noexcept;
   size_t function_count() const noexcept { return records_.size(); }
-  size_t count() const noexcept { return total_calls_; } // всего замеров по всем функциям
+  size_t count() const noexcept { return total_calls_; }
   size_t window() const noexcept { return window_; }
   void reset() noexcept;
 
-  // f(const function_record&) по каждой известной функции
   template <typename F>
-  void for_each(F&& f) const {
-    for (const auto& [id, rec] : records_) f(rec);
-  }
+  void for_each(F&& f) const { for (const auto& [id, rec] : records_) f(rec); }
 
 private:
   size_t window_;
   size_t total_calls_ = 0;
   gtl::flat_hash_map<utils::id, function_record> records_;
+};
+
+// Конфиг интроспекции домена: режим + лог-домен (префикс/маршрут для logging/tracing/dump) +
+// накопитель (для statistics). Ставится в domain<D>::set_introspection; владеет им вызывающий.
+struct introspection {
+  introspection_mode mode = introspection_mode::off;
+  uint32_t log_domain = 0;
+  statistics_store* stats = nullptr;
 };
 
 namespace detail {
@@ -236,45 +203,26 @@ std::string_view stringify_arg(argument_value_buffer& buffer, const T& value, bo
   }
 }
 
-template <typename Ret>
-Ret skipped_return() {
-  if constexpr (std::is_void_v<Ret>) {
-    return;
-  } else {
-    static_assert(std::is_default_constructible_v<Ret>, "dry-run skipped non-void functions require default-constructible return type");
-    return Ret{};
-  }
-}
+// emit по режиму (в .cpp): вход/выход. Невиртуальный switch вместо виртуалок. Для не-dump
+// info.arguments пуст (arg_views не строятся — см. fn_traits ниже).
+void emit_enter(const introspection& in, const call_info& info);
+void emit_exit(const introspection& in, const call_info& info, uint64_t elapsed_mcs);
 
+// Обёртка вызова: enter (no-op кроме tracing/dump) → таймер → invoke → exit (switch по режиму).
 template <typename Ret, typename Invoke>
-Ret invoke_with_introspection(const call_info& info, introspection_interface* intro, Invoke&& invoke) {
+Ret run(const introspection& in, const call_info& info, Invoke&& invoke) {
   using clock = std::chrono::steady_clock;
-
-  if (intro == nullptr) {
-    if constexpr (std::is_void_v<Ret>) {
-      std::forward<Invoke>(invoke)();
-      return;
-    } else {
-      return std::forward<Invoke>(invoke)();
-    }
-  }
-
-  const call_decision decision = intro->enter(info);
-  if (decision == call_decision::skip) {
-    intro->skipped(info);
-    return skipped_return<Ret>();
-  }
-
+  emit_enter(in, info);
   const auto start = clock::now();
   if constexpr (std::is_void_v<Ret>) {
     std::forward<Invoke>(invoke)();
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(clock::now() - start).count();
-    intro->exit(info, static_cast<uint64_t>(elapsed));
+    emit_exit(in, info, static_cast<uint64_t>(elapsed));
     return;
   } else {
     Ret ret = std::forward<Invoke>(invoke)();
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(clock::now() - start).count();
-    intro->exit(info, static_cast<uint64_t>(elapsed));
+    emit_exit(in, info, static_cast<uint64_t>(elapsed));
     return ret;
   }
 }
@@ -293,13 +241,13 @@ using member_object_t = std::conditional_t<callable_traits<T>::is_const, const t
 
 template <auto Domain>
 struct domain {
-  inline static introspection_interface* intro_i = nullptr;
+  inline static const introspection* intro_i = nullptr;
 
-  static void set_introspection(introspection_interface* ptr) noexcept {
+  static void set_introspection(const introspection* ptr) noexcept {
     intro_i = ptr;
   }
 
-  static introspection_interface* introspection() noexcept {
+  static const introspection* introspection_config() noexcept {
     return intro_i;
   }
 
@@ -389,25 +337,20 @@ struct domain {
 
     template <typename... Args>
     static return_t call_free_at(const std::source_location loc, Args&&... args) {
-      introspection_interface* intro = intro_i;
-      if (intro == nullptr) {
+      const introspection* in = intro_i;
+      if (in == nullptr || in->mode == introspection_mode::off) {
         return invoke_free(std::forward<Args>(args)...);
       }
-
-      auto arg_views = make_argument_views(args...);
-      const call_info info{
-        domain_id,
-        function_id,
-        name,
-        utils::type_name<return_t>(),
-        loc.file_name(),
-        loc.line(),
-        std::span<const argument_view>(arg_views.views.data(), arg_views.views.size())
-      };
-
-      return detail::invoke_with_introspection<return_t>(info, intro, [&]() -> return_t {
-        return invoke_free(std::forward<Args>(args)...);
-      });
+      auto invoke = [&]() -> return_t { return invoke_free(std::forward<Args>(args)...); };
+      // arg_views строим ЛЕНИВО только для dump (дорогой stringify); остальным режимам — пустой span.
+      if (in->mode == introspection_mode::dump) {
+        auto arg_views = make_argument_views(args...);
+        const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(),
+          std::span<const argument_view>(arg_views.views.data(), arg_views.views.size()) };
+        return detail::run<return_t>(*in, info, invoke);
+      }
+      const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(), {} };
+      return detail::run<return_t>(*in, info, invoke);
     }
 
     template <typename Obj, typename... Args>
@@ -417,25 +360,19 @@ struct domain {
 
     template <typename Obj, typename... Args>
     static return_t call_member_at(const std::source_location loc, Obj&& obj, Args&&... args) {
-      introspection_interface* intro = intro_i;
-      if (intro == nullptr) {
+      const introspection* in = intro_i;
+      if (in == nullptr || in->mode == introspection_mode::off) {
         return invoke_member(std::forward<Obj>(obj), std::forward<Args>(args)...);
       }
-
-      auto arg_views = make_argument_views(obj, args...);
-      const call_info info{
-        domain_id,
-        function_id,
-        name,
-        utils::type_name<return_t>(),
-        loc.file_name(),
-        loc.line(),
-        std::span<const argument_view>(arg_views.views.data(), arg_views.views.size())
-      };
-
-      return detail::invoke_with_introspection<return_t>(info, intro, [&]() -> return_t {
-        return invoke_member(std::forward<Obj>(obj), std::forward<Args>(args)...);
-      });
+      auto invoke = [&]() -> return_t { return invoke_member(std::forward<Obj>(obj), std::forward<Args>(args)...); };
+      if (in->mode == introspection_mode::dump) {
+        auto arg_views = make_argument_views(obj, args...);
+        const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(),
+          std::span<const argument_view>(arg_views.views.data(), arg_views.views.size()) };
+        return detail::run<return_t>(*in, info, invoke);
+      }
+      const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(), {} };
+      return detail::run<return_t>(*in, info, invoke);
     }
 
     template <typename... Args>
@@ -445,25 +382,19 @@ struct domain {
 
     template <typename... Args>
     static return_t call_functor_at(const std::source_location loc, Args&&... args) {
-      introspection_interface* intro = intro_i;
-      if (intro == nullptr) {
+      const introspection* in = intro_i;
+      if (in == nullptr || in->mode == introspection_mode::off) {
         return invoke_functor(std::forward<Args>(args)...);
       }
-
-      auto arg_views = make_argument_views(args...);
-      const call_info info{
-        domain_id,
-        function_id,
-        name,
-        utils::type_name<return_t>(),
-        loc.file_name(),
-        loc.line(),
-        std::span<const argument_view>(arg_views.views.data(), arg_views.views.size())
-      };
-
-      return detail::invoke_with_introspection<return_t>(info, intro, [&]() -> return_t {
-        return invoke_functor(std::forward<Args>(args)...);
-      });
+      auto invoke = [&]() -> return_t { return invoke_functor(std::forward<Args>(args)...); };
+      if (in->mode == introspection_mode::dump) {
+        auto arg_views = make_argument_views(args...);
+        const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(),
+          std::span<const argument_view>(arg_views.views.data(), arg_views.views.size()) };
+        return detail::run<return_t>(*in, info, invoke);
+      }
+      const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(), {} };
+      return detail::run<return_t>(*in, info, invoke);
     }
 
     template <typename T, typename = void>
