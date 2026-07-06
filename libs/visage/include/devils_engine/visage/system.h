@@ -64,12 +64,11 @@ public:
 
   system(const font_t* default_font);
   ~system() noexcept;
-  void load_entry_point(const std::string &path); // resource
-
   // Регистрация ДОПОЛНИТЕЛЬНОГО именованного шрифта (шаг 2b). default_font регистрируется в
   // конструкторе под именем "default". Хост грузит N font_resource и вешает их сюда; lua выбирает
   // базовый шрифт в push_font{ font="..." }. Все шрифты — MSDF-атласы, рисуются одинаково.
   void add_font(const std::string& name, const font_t* f);
+  void set_entry_point(const sol::object& value);
 
   // Порядок за кадр: input() -> update() -> convert(). input раздаёт ввод в nk,
   // update гоняет lua entry (строит UI), convert гонит nk_convert в host-буферы ниже.

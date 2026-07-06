@@ -15,6 +15,7 @@ set(PROJECT_EXTERNAL_DEPENDENCY_DIR ${CMAKE_CURRENT_LIST_DIR}/external)
 set(HDR_LIST
   include/core/actors.h
   include/core/config.h
+  include/core/lua_script_resource.h
   include/core/messages.h
   include/core/message_dispatcher.h
   include/core/instance_layout.h
@@ -34,6 +35,7 @@ set(SRC_LIST
   main.cpp
   src/core/config.cpp
   src/core/app_config_resource.cpp
+  src/core/lua_script_resource.cpp
   src/core/sound_system.cpp
   src/core/render_system.cpp
   src/core/assets_system.cpp
@@ -120,6 +122,13 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory 
     ${CMAKE_CURRENT_LIST_DIR}/resources 
     ${PROJECT_OUTPUT_DIRECTORY}/resources
+)
+
+# UI lua scripts are also exposed through the engine demiurg registry as resources/engine/ui/*.lua.
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_LIST_DIR}/resources/ui
+    ${PROJECT_OUTPUT_DIRECTORY}/resources/engine/ui
 )
 
 # render-graph описание грузится через движковый demiurg-реестр (resources/engine/render_config/),
