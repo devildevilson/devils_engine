@@ -5,11 +5,15 @@
 handles на эти ресурсы и управлять staged загрузкой/выгрузкой через общий
 resource loader.
 
-В текущей архитектуре `demiurg::resource_interface*` уже используется как
-resource handle для других систем. Ресурсная система строит registry один раз на
-старте или при загрузке набора модулей, а gameplay/render/sound слои дальше
-держат указатели на конкретные ресурсы и запрашивают их состояние через
-`resource_loader`.
+В текущей архитектуре durable-валюта ресурса - `resource_handle` (пара
+`{const resource_system*, utils::id hash}`, где hash - это хеш логического id, а
+не указатель). Handle резолвится через `system->get(hash)` и переживает
+пересборку registry: тот же id снова резолвится в новый объект. Сырой
+`resource_interface*` по-прежнему ок для одномоментного чтения в одном потоке,
+но межпоточные сообщения и хранимые ссылки должны держать `resource_handle`.
+Ресурсная система строит registry один раз на старте или при загрузке набора
+модулей, а gameplay/render/sound слои дальше держат handles и запрашивают
+состояние через `resource_loader`.
 
 ## Основные Понятия
 
@@ -158,8 +162,10 @@ test.mesh
 - `register_type<T>(name, ext)`;
 - `parse_resources(module_system*)`;
 - `append_resources(module_system*)`;
-- `get(id)`;
+- `get(id)` / `get(utils::id hash)`;
 - `get<T>(id)`;
+- `handle(id)` / `handle(utils::id hash)` -> `resource_handle`;
+- `resource_hash(id)` (static) -> `utils::id`;
 - `find(prefix)`;
 - `filter(substring)`;
 - `filter_typed(type_name, out)`;
@@ -181,6 +187,32 @@ supplementary entries.
 пересчета override-цепочек. Это рассчитано на отдельные подреестры без
 пересекающихся id, например writable cache module. При коллизии id новый ресурс
 пропускается с warning.
+
+## Resource Handle
+
+`resource_handle` - стабильный handle на ресурс:
+
+```cpp
+struct resource_handle {
+  const resource_system* system;
+  utils::id hash; // хеш логического id, не указатель
+
+  resource_interface* get() const noexcept;    // system->get(hash)
+  template <typename T> T* get() const noexcept; // + проверка loading_type_id
+  explicit operator bool() const noexcept;
+};
+```
+
+Ключевая идея: handle хранит ХЕШ логического id, а не указатель, поэтому
+переживает `clear()` + повторный `parse_resources()` - тот же id снова
+резолвится в свежесозданный объект. Внутри `resource_system` за это отвечает
+`resources_by_hash` (индекс `utils::id -> resource`), который перестраивается в
+конце `parse_resources()`/`append_resources()` (`rebuild_hash_index`).
+Коллизия разных id с одним хешем - `utils::error`.
+
+Handle создаётся через `resource_system::handle(id)` / `handle(hash)`; хеш можно
+посчитать заранее статикой `resource_hash(id)`. Потребители (`flow`,
+межпоточные сообщения `tile_frontier`) держат handle вместо сырого указателя.
 
 ## Resource Interface
 
@@ -336,7 +368,10 @@ External job сейчас означает переход, который loader
 - поддерживать 3-state и custom N-step resource FSM;
 - загружать/выгружать ресурсы через `resource_loader`;
 - отдавать external jobs для render/GPU-owned шагов;
-- использовать `resource_interface*` как handle между системами.
+- давать стабильный `resource_handle` (по хешу id), переживающий rebuild registry;
+- разворачивать `.tavl` list-файлы (`//---`) в отдельные суб-ресурсы `path:name` / `path:index`;
+- диагностировать циклы dependency graph при `request()`;
+- быть источником lua resource API (`request`/`require`/`find`/`filter` в UI-sandbox, host-side).
 
 Текущие реальные потребители:
 
@@ -355,17 +390,15 @@ External job сейчас означает переход, который loader
 
 - полноценный первый запуск/asset manager, который строит полный registry
   проекта и сохраняет/переиспользует результаты;
-- окончательный контракт list pattern: несколько ресурсов из одного файла
-  через `path:name`;
+- import-rule таблица «type IS the path» (longest-segment match) - сейчас тип
+  выводится через `find_proper_type` по сегменту пути;
+- lua `find` пока prefix-, не by-kind (по типу); `:name` для lua-модулей не определён;
 - более строгая политика override порядка модулей и priorities;
 - migration/versioning metadata для ресурсов;
 - фоновая загрузка с thread pool и per-tick budget;
 - cancellation/priority для pending loader requests;
-- явная диагностика циклов dependency graph;
 - более строгий контракт для zip resources, когда тип не зарегистрирован до
-  parse;
-- stable serialization/handles поверх `resource_interface*`, если указатель
-  должен переживать rebuild registry.
+  parse.
 
 Граница библиотеки сейчас такая: `demiurg` отвечает за discovery ресурсов из
 модулей, построение registry, typed resource handles и staged load/unload FSM.

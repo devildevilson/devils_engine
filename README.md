@@ -294,7 +294,7 @@ threads, stop, join.
 - понять, какой resource type соответствует файлу;
 - создать typed resource object;
 - собрать registry ресурсов;
-- дать стабильный `resource_interface*`;
+- дать стабильный handle на ресурс (`resource_handle`);
 - двигать ресурс по staged loading state machine.
 
 Основные понятия:
@@ -324,6 +324,18 @@ cold -> warm -> hot
 3. получить `resource_interface*`;
 4. попросить `resource_loader` довести ресурс до `final_state()`;
 5. external jobs отправлять владельцу внешнего состояния, например renderer.
+
+Стабильные handles: `resource_handle` хранит не указатель, а хеш логического id
+и указатель на `resource_system`, поэтому переживает пересборку registry - тот же
+id снова резолвится в новый объект. Это durable-валюта для межпоточных сообщений
+и хранимых ссылок; сырой `resource_interface*` остаётся ок для одномоментного
+чтения в одном потоке.
+
+Lua-доступ к ресурсам: движок регистрирует четыре глобала в UI-sandbox -
+`request(id)` (один handle), `require(id)` (загрузить lua-скрипт-ресурс как модуль),
+`find(prefix)` и `filter(substring)` (коллекции handles). `require` полностью
+принадлежит движку (без `package.searchers`), потому что все скрипты приходят из
+demiurg/модов.
 
 Как об этом думать: `demiurg` - это не конкретный декодер png/mesh/sound, а
 общий механизм discovery, registry и staged lifecycle.
@@ -543,12 +555,14 @@ constexpr auto add_gold_fn = add_gold_t::fn_ptr; // int (*)(int, int)
 ```
 
 У каждого `catalogue::domain<...>` есть runtime-подключаемый
-`introspection_interface*`. Поэтому можно включить трассировку только для
-выбранной области:
+`introspection` - НЕвиртуальный mode-switch (после рефакторинга, был virtual
+`introspection_interface`). Режимы: `off/logging/statistics/tracing/dump`.
+Конфиг несёт `{mode, log_domain, statistics_store* stats}`, ставится через
+`domain<D>::set_introspection(const introspection*)`:
 
 ```cpp
-catalogue::trace_introspection trace;
-catalogue::domain<domain::gameplay>::set_introspection(&trace);
+catalogue::introspection intro{ .mode = ..., .log_domain = ..., .stats = ... };
+catalogue::domain<domain::gameplay>::set_introspection(&intro);
 ```
 
 Если introspection pointer не задан (`nullptr`), wrapper не собирает `call_info`
@@ -556,14 +570,12 @@ catalogue::domain<domain::gameplay>::set_introspection(&trace);
 через `utils::murmur_hash64A`. Параметр `domain<...>` оставлен `auto`, поэтому
 домен можно задавать и enum-значением, и `constexpr size_t`.
 
-Текущий набор готовых политик:
+Эффективный режим = `max(base mode, tracing-если-домен-на-trace)` - то есть
+включение доменного лога на `trace` (см. logging ниже) само поднимает
+обёрнутые функции этого домена в `tracing` поверх базового режима (напр. perf
+`statistics`). `arg_views` строятся лениво - только для `dump`.
 
-- `trace_introspection` - пишет вход/выход через `utils::info`;
-- `timing_introspection` - пишет время выполнения и printable-аргументы;
-- `dry_run_introspection` - не исполняет оригинальную функцию;
-- `statistics_introspection<N>` - хранит последние N замеров и считает среднее.
-
-Сейчас поддерживаются:
+Поддерживаются:
 
 - свободные функции;
 - `noexcept` свободные функции, но `noexcept` не сохраняется в wrapper pointer;
@@ -571,9 +583,26 @@ catalogue::domain<domain::gameplay>::set_introspection(&trace);
 - `const` методы, где объект становится первым аргументом `const T&`;
 - structural functor с обычным неперегруженным `operator()`.
 
-Аргументы в строку превращаются только для базовых типов, enum и строк. Сложные
-структуры намеренно показываются как `<opaque>`, потому что первый срез
-`catalogue` - это не serializer.
+Аргументы в строку превращаются для базовых типов, enum и строк. Сложные
+структуры показываются как `<type_name>`-плейсхолдер (bounded до локального
+буфера), потому что первый срез `catalogue` - это не serializer.
+
+### Доменное логирование
+
+`catalogue/logging.h` даёт доменно-скоупленный лог: макросы `DE_LOG`/`DE_TRACE`
++ реестр `catalogue::logs()`. Две ортогональные оси поверх severity spdlog:
+
+- **Base always-on** = обычный `utils::info`, зарезервирован под горстку строк
+  (`Using cpu …`, `Using sound device …` и т.п.); всё остальное - в домен.
+  `warn`/`error` всегда видны.
+- **Домены** = `constexpr`-константы `catalogue::log_domain::` (`main/assets/`
+  `sound/render/ui/gameplay/resource` + `engine_count`; проекты нумеруют дальше).
+- **Глубина** (`log_depth`): `off/info/flow/trace`, по умолчанию `off`.
+  `DE_LOG(domain, DEPTH, fmt, …)` гейтится relaxed-атомиком (near-zero когда off,
+  и в release); `DE_TRACE` = глубина trace + захват `file:line`.
+- **Runtime-переключение** (работает в release): `app.set_log_level("sound","trace")`
+  из lua/app или секция `logging` в `app.tavl`. `catalogue::init_logging(file, console)`
+  поднимает spdlog console + rotating file.
 
 Старый buffer/registry/channel/RPC/demo прототип все еще лежит в библиотеке, но
 сейчас считается legacy/deferred. К сериализации для RPC стоит вернуться позже,
