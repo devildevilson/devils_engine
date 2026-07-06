@@ -32,6 +32,8 @@ namespace devils_engine {
         res->raw_size = candidate.raw_size;
         res->list_index = candidate.list_index;
         res->list_start_line = candidate.list_start_line;
+        res->list_offset = candidate.list_offset;
+        res->list_size = candidate.list_size;
         res->list_name = candidate.list_name;
         res->list_section = candidate.list_section;
         return res;
@@ -534,11 +536,17 @@ namespace devils_engine {
     void resource_interface::unload(const utils::safe_handle_t& handle) {
       const int32_t cur = _state.load(std::memory_order_relaxed);
       if (cur <= static_cast<int32_t>(state::cold)) return;
+      const bool direct_hot_to_cold = cur == static_cast<int32_t>(state::hot) && flag(resource_flags::hot_unload_to_cold);
       // force_unload_warm (сейчас нигде не ставится) — исторически пропускал выгрузку с warm
       if (!(cur == static_cast<int32_t>(state::warm) && flag(resource_flags::force_unload_warm))) {
         unload_step(cur, handle);
       }
-      _state.fetch_add(-1, std::memory_order_relaxed);
+      if (direct_hot_to_cold) {
+        if (!flag(resource_flags::force_unload_warm)) unload_step(static_cast<int32_t>(state::warm), handle);
+        _state.store(static_cast<int32_t>(state::cold), std::memory_order_relaxed);
+      } else {
+        _state.fetch_add(-1, std::memory_order_relaxed);
+      }
       thread::atomic_max(_state, 0);
       const int32_t next = _state.load(std::memory_order_relaxed);
       DE_LOG(catalogue::log_domain::demiurg, flow, "resource unloaded '{}' module '{}' type '{}' level {}->{}", id, module_name, type, cur, next);
@@ -547,8 +555,14 @@ namespace devils_engine {
     void resource_interface::force_unload(const utils::safe_handle_t& handle) {
       const int32_t cur = _state.load(std::memory_order_relaxed);
       if (cur <= static_cast<int32_t>(state::cold)) return;
+      const bool direct_hot_to_cold = cur == static_cast<int32_t>(state::hot) && flag(resource_flags::hot_unload_to_cold);
       unload_step(cur, handle);
-      _state.fetch_add(-1, std::memory_order_relaxed);
+      if (direct_hot_to_cold) {
+        unload_step(static_cast<int32_t>(state::warm), handle);
+        _state.store(static_cast<int32_t>(state::cold), std::memory_order_relaxed);
+      } else {
+        _state.fetch_add(-1, std::memory_order_relaxed);
+      }
       thread::atomic_max(_state, 0);
       const int32_t next = _state.load(std::memory_order_relaxed);
       DE_LOG(catalogue::log_domain::demiurg, flow, "resource force-unloaded '{}' module '{}' type '{}' level {}->{}", id, module_name, type, cur, next);

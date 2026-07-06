@@ -17,6 +17,7 @@ mesh_resource::mesh_resource() {
   // НЕ warm_and_hot_same: это GPU-ресурс, переход warm->hot делает рендер.
   set_flag(demiurg::resource_flags::warm_and_hot_same, false);
   set_flag(demiurg::resource_flags::binary, true);
+  set_flag(demiurg::resource_flags::hot_unload_to_cold, true);
 }
 
 void mesh_resource::load_cold(const utils::safe_handle_t&) {

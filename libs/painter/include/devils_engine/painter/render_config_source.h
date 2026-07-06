@@ -16,6 +16,9 @@ public:
 
   render_config_source();
 
+  void ensure_text_loaded();
+  void drop_text();
+
   void load_cold(const utils::safe_handle_t& handle) override;
   void load_warm(const utils::safe_handle_t& handle) override;
   void unload_hot(const utils::safe_handle_t& handle) override;

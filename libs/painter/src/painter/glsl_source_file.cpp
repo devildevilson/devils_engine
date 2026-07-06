@@ -41,6 +41,12 @@ void glsl_source_file::load_cold(const utils::safe_handle_t &) {
 
 void glsl_source_file::load_warm(const utils::safe_handle_t &) {}
 void glsl_source_file::unload_hot(const utils::safe_handle_t &) {}
-void glsl_source_file::unload_warm(const utils::safe_handle_t&) { memory.clear(); memory.shrink_to_fit(); }
+void glsl_source_file::unload_warm(const utils::safe_handle_t&) {
+  memory.clear();
+  memory.shrink_to_fit();
+  spirv.clear();
+  spirv.shrink_to_fit();
+  spirv_shader_kind = UINT32_MAX;
+}
 }
 }

@@ -24,6 +24,8 @@ struct resource_candidate {
   uint32_t module_priority;
   uint32_t list_index = UINT32_MAX;
   uint32_t list_start_line = 0;
+  size_t list_offset = SIZE_MAX;
+  size_t list_size = 0;
 };
 
 bool append_tavl_list_candidates(

@@ -52,6 +52,7 @@
   X(binary)                         \
   X(warm_and_hot_same)              \
   X(force_unload_warm)              \
+  X(hot_unload_to_cold)             \
 
 // для чего?
 
@@ -112,6 +113,8 @@ namespace demiurg {
     size_t raw_size;
     uint32_t list_index;
     uint32_t list_start_line;
+    size_t list_offset;
+    size_t list_size;
 
     // Зависимости ресурса (напр. pipeline зависит от shader-модулей). Загрузчик доводит их до
     // usable ПРЕЖДЕ чем продвигать этот ресурс вверх. Плоский список — ring-list (replacement/
@@ -125,6 +128,8 @@ namespace demiurg {
       raw_size(0),
       list_index(invalid_list_index),
       list_start_line(0),
+      list_offset(SIZE_MAX),
+      list_size(0),
       _state(0)
     {}
     virtual ~resource_interface() noexcept = default;
