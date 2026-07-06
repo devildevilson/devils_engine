@@ -383,6 +383,11 @@ const font_t* system::resolve_font(std::string_view name) const {
   return default_font;
 }
 
+void system::set_entry_point(const sol::object& value) {
+  if (!value.is<sol::function>()) utils::error{}("visage: entry point must be a lua function");
+  entry = value.as<sol::function>();
+}
+
 
 nk_user_font* system::sized_font(const font_t* base, float height) {
   if (base == nullptr) base = default_font;
@@ -396,14 +401,6 @@ nk_user_font* system::sized_font(const font_t* base, float height) {
   nk_user_font* ptr = uf.get();
   sized_fonts_.emplace_back(base, height, std::move(uf));
   return ptr;
-}
-
-void system::load_entry_point(const std::string &path) {
-  // ВАЖНО: гоняем скрипт в песочнице env, а не в глобальном стейте — иначе скрипт
-  // не увидит ни nk, ни basic_functions (они зарегистрированы именно в env).
-  const auto ret = lua.script_file(path, env);
-  sol_lua_check_error(ret);
-  entry = ret;
 }
 
 void system::input(const input_snapshot_t& in) {

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <span>
 #include <thread>
 #include <stop_token>
@@ -42,6 +43,7 @@
 #include <devils_engine/visage/font_atlas_packer.h>
 
 #include "config.h"
+#include "lua_script_resource.h"
 
 #include "messages.h"
 #include "broker.h"
@@ -335,10 +337,6 @@ struct simulation_init {
   // command_sound_play из UI/геймплея) и запрашивает их до warm. Сам звук-актор ресурсы не хранит.
   gtl::flat_hash_map<uint64_t, demiurg::resource_handle> sound_by_name;
 
-  // Именованные картинки для UI: name_hash → stable handle текстуры (gpu_index + размер). Хост-мост к demiurg:
-  // app.image(name) строит visage::image из usable()-текстуры. Позже заменится на demiurg require.
-  gtl::flat_hash_map<uint64_t, demiurg::resource_handle> image_by_name;
-
   // Единый broker всех межпоточных каналов. Владелец — main; создаётся в init ДО подсистем и
   // раздаётся им указателем (set_broker) до старта потоков. Заменяет actor_ref/message_dispatcher.
   std::unique_ptr<broker> br;
@@ -565,8 +563,103 @@ static void setup_visage(simulation_init& c) {
     c.ui_font_italic_res.reset();
   }
 
-  c.ui->load_entry_point(utils::project_folder() + "resources/ui/entry.lua");
-  DE_LOG(catalogue::log_domain::ui, flow, "visage: system created, entry point loaded");
+  DE_LOG(catalogue::log_domain::ui, flow, "visage: system created");
+}
+
+static demiurg::resource_handle lookup_resource_handle(const simulation_init& c, const std::string_view id) {
+  if (c.engine_resources) {
+    const auto h = c.engine_resources->handle(id);
+    if (h.get() != nullptr) return h;
+  }
+
+  if (c.assets_sim != nullptr && c.assets_sim->resources() != nullptr) {
+    const auto h = c.assets_sim->resources()->handle(id);
+    if (h.get() != nullptr) return h;
+  }
+
+  return {};
+}
+
+static std::string resource_parent_path(const std::string_view id) {
+  const size_t slash = id.rfind('/');
+  if (slash == std::string_view::npos) return {};
+  return std::string(id.substr(0, slash));
+}
+
+static std::string absolute_resource_path(const std::string_view current_module, std::string_view path) {
+  while (!path.empty() && (path.front() == ' ' || path.front() == '\t' || path.front() == '\n' || path.front() == '\r')) path.remove_prefix(1);
+  while (!path.empty() && (path.back() == ' ' || path.back() == '\t' || path.back() == '\n' || path.back() == '\r')) path.remove_suffix(1);
+  if (path.empty()) return {};
+
+  std::string p(path);
+  std::replace(p.begin(), p.end(), '\\', '/');
+
+  std::string selector;
+  const size_t colon = p.rfind(':');
+  if (colon != std::string::npos) {
+    selector = p.substr(colon);
+    p.resize(colon);
+  }
+
+  const bool explicit_root = !p.empty() && p.front() == '/';
+  while (!p.empty() && p.front() == '/') p.erase(p.begin());
+
+  if (!explicit_root && p.starts_with(".")) {
+    const std::string parent = resource_parent_path(current_module);
+    if (!parent.empty()) p = parent + "/" + p;
+  }
+
+  const size_t slash = p.rfind('/');
+  const size_t dot = p.rfind('.');
+  if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
+    p.resize(dot);
+  }
+
+  std::vector<std::string_view> segments;
+  size_t pos = 0;
+  while (pos <= p.size()) {
+    size_t end = p.find('/', pos);
+    if (end == std::string::npos) end = p.size();
+    std::string_view segment(p.data() + pos, end - pos);
+    pos = end + (end < p.size() ? 1 : 0);
+
+    if (segment.empty() || segment == ".") continue;
+    if (segment == "..") {
+      if (segments.empty()) return {};
+      segments.pop_back();
+      continue;
+    }
+    segments.push_back(segment);
+  }
+
+  std::string out;
+  for (const auto segment : segments) {
+    if (!out.empty()) out += '/';
+    out += segment;
+  }
+
+  if (out.empty()) return {};
+  out += selector;
+  return out;
+}
+
+static void append_find_handles(sol::table& out, int& index, const demiurg::resource_system* const reg, const std::string_view prefix) {
+  if (reg == nullptr) return;
+  const auto view = reg->find(prefix);
+  for (auto* res : view) {
+    if (res == nullptr) continue;
+    out[++index] = reg->handle(res->id);
+  }
+}
+
+static void append_filter_handles(sol::table& out, int& index, const demiurg::resource_system* const reg, const std::string_view filter) {
+  if (reg == nullptr) return;
+  std::vector<demiurg::resource_interface*> resources;
+  reg->filter<demiurg::resource_interface>(filter, resources);
+  for (auto* res : resources) {
+    if (res == nullptr) continue;
+    out[++index] = reg->handle(res->id);
+  }
 }
 
 void simulation::init() {
@@ -578,6 +671,7 @@ void simulation::init() {
   // Новый demiurg-API не нужен — module_system::load_modules умеет директорию как модуль.
   container->engine_resources = std::make_unique<demiurg::resource_system>();
   container->engine_resources->register_type<app_config_resource>("config", "tavl");
+  container->engine_resources->register_type<lua_script_resource>("ui", "lua");
   container->engine_resources->register_type<painter::render_config_source>("render_config", "tavl");
   // Шейдеры (Фаза 1): GLSL под папкой shaders/ (тип "shaders"), SPIR-V под shaders/spv/
   // (тип "spv" — сегмент пути). Компиляция/загрузка выбирается по расширению в create_pipeline.
@@ -744,22 +838,20 @@ void simulation::init() {
   }
 
   // три grass-текстуры → texture_slots 0,1,2 (порядок запроса = порядок слотов, т.к. assets грузит по очереди)
-  // (friendly-имя для UI-картинок, id ресурса в реестре)
-  const std::pair<const char*, const char*> textures_named[] = {
-    { "grass",  "textures/grass" },
-    { "grass1", "textures/grass1_0" },
-    { "grass3", "textures/grass3" },
-    { "grad1",  "textures/grad1" }, // градиент-маски + 4-цветная маска для стенсил-эффектов (Стадия 2)
-    { "grad2",  "textures/grad2" },
-    { "quad",   "textures/quad" },
+  const char* texture_resources[] = {
+    "textures/grass",
+    "textures/grass1_0",
+    "textures/grass3",
+    "textures/grad1", // градиент-маски + 4-цветная маска для стенсил-эффектов (Стадия 2)
+    "textures/grad2",
+    "textures/quad",
   };
-  for (const auto& [friendly, res_id] : textures_named) {
+  for (const char* res_id : texture_resources) {
     const auto tex_handle = container->assets_sim->resources()->handle(res_id);
     if (auto* tex = tex_handle.get<painter::gpu_texture_resource>()) {
       (void)tex;
       container->br->load_resource.try_push(command_load_resource{resource_ref::from_handle(tex_handle), static_cast<int32_t>(demiurg::state::hot)});
       container->startup_resources.push_back(resource_ref::from_handle(tex_handle)); // стартовый набор: от него зависит переход loading→game
-      container->image_by_name.emplace(utils::string_hash(friendly), tex_handle); // для app.image (UI)
       DE_LOG(catalogue::log_domain::resource, flow, "main: requested texture '{}' -> hot", res_id);
     } else {
       utils::warn("main: texture resource '{}' not found in registry", res_id);
@@ -848,8 +940,8 @@ void simulation::init() {
   // в lua-песочнице UI. Каждый — "обычный message на звуковой тред" (presentation→sound
   // напрямую, в лог реплея НЕ попадает — см. водораздел звука). Живут в namespace `app`
   // (общая точка для хост-биндингов; старый префикс tf_ выводим из обихода). Набор для плеера:
-  //   app.play_sound(name [, {start=0..1, after=handle}]) -> sound_handle
-  //   app.play_sound{ name="...", start=0..1, after=handle } -> sound_handle  (один аргумент-таблица)
+  //   app.play_sound(resource_handle [, {start=0..1, after=sound_handle}]) -> sound_handle
+  //   app.play_sound{ resource=handle, start=0..1, after=sound_handle } -> sound_handle
   //   app.stop_sound(handle)                                  -- остановить и освободить голос
   //   app.sound_state(handle) -> progress(0..1) | nil         -- nil = задачи нет (играет ⇔ вернули число)
   // Очередь/кроссфейд плеер собирает сам на lua, опрашивая state и запуская следующий трек.
@@ -863,18 +955,138 @@ void simulation::init() {
     sol::environment env = container->ui->script_env();
     sol::table app = env["app"].get_or_create<sol::table>(); // общий namespace хост-биндингов
 
-    // первый аргумент — sol::object (строка-имя ИЛИ таблица-опции с полем name), второй —
-    // необязательная таблица-опции (когда имя задано строкой). sol::object у НЕпоследнего
+    L.new_usertype<demiurg::resource_handle>("resource_handle",
+      sol::no_constructor,
+      "valid", [](const demiurg::resource_handle& h) -> bool { return h.get() != nullptr; },
+      "id", [](sol::this_state s, const demiurg::resource_handle& h) -> sol::object {
+        auto* res = h.get();
+        if (res == nullptr) return sol::nil;
+        return sol::make_object(s, std::string(res->id));
+      },
+      "hash", [](const demiurg::resource_handle& h) -> uint64_t { return h.hash; },
+      "state", [](sol::this_state s, const demiurg::resource_handle& h) -> sol::object {
+        auto* res = h.get();
+        if (res == nullptr) return sol::nil;
+        return sol::make_object(s, res->state());
+      },
+      "usable", [](const demiurg::resource_handle& h) -> bool {
+        auto* res = h.get();
+        return res != nullptr && res->usable();
+      },
+      "final_state", [](sol::this_state s, const demiurg::resource_handle& h) -> sol::object {
+        auto* res = h.get();
+        if (res == nullptr) return sol::nil;
+        return sol::make_object(s, res->final_state());
+      },
+      "top_state", [](sol::this_state s, const demiurg::resource_handle& h) -> sol::object {
+        auto* res = h.get();
+        if (res == nullptr) return sol::nil;
+        return sol::make_object(s, res->top_state());
+      });
+
+    sol::table require_cache = L.create_table();
+    auto require_stack = std::make_shared<std::vector<std::string>>();
+
+    env.set_function("request", [this, require_stack](sol::this_state s, const std::string& id) -> sol::object {
+      const std::string current = require_stack->empty() ? std::string{} : require_stack->back();
+      const std::string abs_id = absolute_resource_path(current, id);
+      if (abs_id.empty()) return sol::nil;
+      const auto h = lookup_resource_handle(*container, abs_id);
+      if (h.get() == nullptr) return sol::nil;
+      return sol::make_object(s, h);
+    });
+
+    env.set_function("find", [this, require_stack](sol::this_state s, const std::string& prefix) -> sol::table {
+      sol::state_view lua(s);
+      sol::table out = lua.create_table();
+      const std::string current = require_stack->empty() ? std::string{} : require_stack->back();
+      const std::string abs_prefix = absolute_resource_path(current, prefix);
+      if (abs_prefix.empty()) return out;
+      int index = 0;
+      append_find_handles(out, index, container->engine_resources.get(), abs_prefix);
+      append_find_handles(out, index, container->assets_sim != nullptr ? container->assets_sim->resources() : nullptr, abs_prefix);
+      return out;
+    });
+
+    env.set_function("filter", [this, require_stack](sol::this_state s, const std::string& text) -> sol::table {
+      sol::state_view lua(s);
+      sol::table out = lua.create_table();
+      const std::string current = require_stack->empty() ? std::string{} : require_stack->back();
+      const std::string abs_text = absolute_resource_path(current, text);
+      if (abs_text.empty()) return out;
+      int index = 0;
+      append_filter_handles(out, index, container->engine_resources.get(), abs_text);
+      append_filter_handles(out, index, container->assets_sim != nullptr ? container->assets_sim->resources() : nullptr, abs_text);
+      return out;
+    });
+
+    env.set_function("require", [this, env, require_cache, require_stack](sol::this_state s, const std::string& id) mutable -> sol::object {
+      sol::state_view lua(s);
+      const std::string current = require_stack->empty() ? std::string{} : require_stack->back();
+      const std::string abs_id = absolute_resource_path(current, id);
+      if (abs_id.empty()) {
+        luaL_error(s, "require('%s') failed: invalid demiurg resource path", id.c_str());
+        return sol::nil;
+      }
+
+      sol::object cached = require_cache[abs_id];
+      if (cached.valid() && cached != sol::nil) return cached;
+
+      const auto h = lookup_resource_handle(*container, abs_id);
+      auto* base = h.get();
+      if (base == nullptr) {
+        luaL_error(s, "require('%s') failed: demiurg resource '%s' was not found", id.c_str(), abs_id.c_str());
+        return sol::nil;
+      }
+
+      auto* script = h.get<lua_script_resource>();
+      if (script == nullptr) {
+        const std::string resource_id(base->id);
+        luaL_error(s, "require('%s') failed: resource '%s' is not a lua script", id.c_str(), resource_id.c_str());
+        return sol::nil;
+      }
+
+      if (!script->usable()) script->load(utils::safe_handle_t{});
+      require_cache[abs_id] = true; // Lua-compatible cycle guard.
+
+      const std::string script_id(script->id);
+      const std::string chunk_name = "@" + script_id;
+      require_stack->push_back(script_id);
+      auto ret = lua.safe_script(script->text, env, sol::script_pass_on_error, chunk_name);
+      require_stack->pop_back();
+      if (!ret.valid()) {
+        require_cache[abs_id] = sol::nil;
+        const sol::error err = ret;
+        luaL_error(s, "require('%s') failed while loading lua module '%s': %s", id.c_str(), script_id.c_str(), err.what());
+        return sol::nil;
+      }
+
+      sol::object result = ret.return_count() > 0 ? ret.get<sol::object>() : sol::make_object(lua, true);
+      if (!result.valid() || result == sol::nil) result = sol::make_object(lua, true);
+      require_cache[abs_id] = result;
+      return result;
+    });
+
+    // первый аргумент — sol::object (resource_handle ИЛИ таблица-опции с полем resource/res), второй —
+    // необязательная таблица-опции (когда ресурс задан первым аргументом). sol::object у НЕпоследнего
     // параметра безопаснее sol::optional (тот съедает не тот слот стека при nil).
     app.set_function("play_sound",
       [this](sol::object a, sol::optional<sol::table> b) -> sound_handle {
         if (sactor == nullptr) return sound_handle{};
 
-        std::string name;
+        demiurg::resource_handle sound_res;
         sol::optional<sol::table> opts;
-        if (a.is<sol::table>()) { opts = a.as<sol::table>(); name = opts->get_or("name", std::string{}); }
-        else if (a.is<std::string>()) { name = a.as<std::string>(); opts = b; }
-        if (name.empty()) return sound_handle{};
+        if (a.is<sol::table>()) {
+          opts = a.as<sol::table>();
+          const sol::optional<demiurg::resource_handle> resource = (*opts)["resource"];
+          const sol::optional<demiurg::resource_handle> res = (*opts)["res"];
+          if (resource) sound_res = *resource;
+          else if (res) sound_res = *res;
+        } else if (a.is<demiurg::resource_handle>()) {
+          sound_res = a.as<demiurg::resource_handle>();
+          opts = b;
+        }
+        if (sound_res.get() == nullptr) return sound_handle{};
 
         command_sound_play play{};
         play.taskid = generate_task_id();
@@ -885,10 +1097,7 @@ void simulation::init() {
           const sol::optional<sound_handle> after = (*opts)["after"];
           if (after && after->valid()) play.after = after->value; // хэндл → секвенсинг
         }
-        // резолв имя → demiurg-handle. Неизвестное имя — тихо.
-        const auto snd_it = container->sound_by_name.find(utils::string_hash(name));
-        if (snd_it == container->sound_by_name.end()) return sound_handle{};
-        play.res = resource_ref::from_handle(snd_it->second);
+        play.res = resource_ref::from_handle(sound_res);
         container->br->sound_play.try_push(play);
         // оптимистичная запись в ту же таблицу: пока play не доедет в публикацию (latency
         // 1-2 кадра), app.sound_state по ней вернёт 0, а не nil (deadline = окно старта).
@@ -957,14 +1166,13 @@ void simulation::init() {
       return input::events::check_event(std::string_view(name), input::event_state::click_mask);
     });
 
-    // картинка для UI (хост-мост к demiurg): app.image(name [, {region={x,y,w,h}}]) -> visage::image | nil.
-    // Резолвит имя → gpu_texture_resource; строит хендл из gpu_index+размера когда текстура usable() (на GPU),
-    // иначе nil. Позже заменится на demiurg require/request — сигнатура/возврат подобраны так, чтобы lua не менять.
-    app.set_function("image", [this](const std::string& name, sol::optional<sol::table> opts) -> sol::object {
+    // картинка для UI (хост-мост к demiurg): app.image(resource_handle [, {region={x,y,w,h}}]) -> visage::image | nil.
+    // Строит хендл из gpu_index+размера когда текстура usable() (на GPU), иначе nil.
+    app.set_function("image", [this](sol::object resource, sol::optional<sol::table> opts) -> sol::object {
       auto& lua = container->ui->script_state();
-      const auto it = container->image_by_name.find(utils::string_hash(name));
-      if (it == container->image_by_name.end()) return sol::nil;
-      auto* tex = it->second.get<painter::gpu_texture_resource>();
+      if (!resource.is<demiurg::resource_handle>()) return sol::nil;
+      const auto handle = resource.as<demiurg::resource_handle>();
+      auto* tex = handle.get<painter::gpu_texture_resource>();
       if (tex == nullptr || !tex->usable()) return sol::nil; // ещё не на GPU
       visage::image img{};
       img.texture_id = tex->gpu_index;
@@ -1025,6 +1233,20 @@ void simulation::init() {
         });
       return out;
     });
+  }
+
+  {
+    sol::environment env = container->ui->script_env();
+    sol::protected_function require = env["require"];
+    const auto ret = require("ui/entry");
+    if (!ret.valid()) {
+      const sol::error err = ret;
+      utils::error{}("visage: could not require entry module 'ui/entry': {}", err.what());
+    }
+
+    sol::object entry = ret.return_count() > 0 ? ret.get<sol::object>() : sol::nil;
+    container->ui->set_entry_point(entry);
+    DE_LOG(catalogue::log_domain::ui, flow, "visage: entry point loaded from demiurg resource 'ui/entry'");
   }
 
   // атлас шрифта → GPU тем же путём, что и текстуры: просим ассеты довести до hot.

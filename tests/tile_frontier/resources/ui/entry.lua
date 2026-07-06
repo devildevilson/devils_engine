@@ -8,6 +8,13 @@
 -- play(+start)/state/stop, а очередь/повтор плеер держит сам на lua.
 local player = { handle = nil, loop = false }
 local styled = false
+local resources = {
+  grass = request("textures/grass"),
+  grad2 = request("textures/grad2"),
+  quad = request("textures/quad"),
+  eating = request("sounds/eating/freesound_community-chomp-chew-bite-102031"),
+  ambient = request("sounds/ambient/soundreality-ambient-spring-forest-323801"),
+}
 
 -- Тема Nuklear (шаг 2c). Применяем один раз: nk.style_from_table задаёт цвета во все под-стили.
 local function apply_theme()
@@ -91,7 +98,7 @@ local function game_ui(time, timestamp, rng)
 
     -- картинка: вписать с сохранением пропорций и отцентровать (шаг image + placement)
     -- + вторая копия с зеркальным флипом по u (mirror закодирован в id текстуры)
-    local img = app.image("grass")
+    local img = app.image(resources.grass)
     if img then
       nk.layout.row_dynamic(64, 2)
       nk.image(img, nk.placement.scale_ratio | nk.placement.center)
@@ -99,8 +106,8 @@ local function game_ui(time, timestamp, rng)
     end
 
     -- Стадия 2: cooldown (заливка по градиент-маске) + 4-blend (смешение по каналам quad-маски)
-    local grad = app.image("grad2")
-    local quad = app.image("quad")
+    local grad = app.image(resources.grad2)
+    local quad = app.image(resources.quad)
     if img and grad then
       nk.layout.row_dynamic(64, 1)
       nk.image_gradient{ img = img, mask = grad, fill = 0.5 }
@@ -112,7 +119,7 @@ local function game_ui(time, timestamp, rng)
 
     nk.layout.row_dynamic(30, 1)
     if nk.button("Play sound") then
-      app.play_sound("eating")
+      app.play_sound(resources.eating)
     end
 
     -- управление игрой (шаг 2a/1f): полноэкранный режим + выход
@@ -172,11 +179,11 @@ local function game_ui(time, timestamp, rng)
     nk.layout.row_dynamic(28, 3)
     if nk.button("Play") then
       if player.handle then app.stop_sound(player.handle) end
-      player.handle = app.play_sound("ambient")
+      player.handle = app.play_sound(resources.ambient)
     end
     if nk.button("From 50%") then
       if player.handle then app.stop_sound(player.handle) end
-      player.handle = app.play_sound{ name = "ambient", start = 0.5 }
+      player.handle = app.play_sound{ resource = resources.ambient, start = 0.5 }
     end
     if nk.button("Stop") then
       if player.handle then app.stop_sound(player.handle) end
@@ -194,7 +201,7 @@ local function game_ui(time, timestamp, rng)
       if progress then
         nk.label(string.format("playing  %.0f%%", progress * 100), nil, nk.text_align.left)
       elseif player.loop then
-        player.handle = app.play_sound("ambient")
+        player.handle = app.play_sound(resources.ambient)
       else
         player.handle = nil
         nk.label("finished", nil, nk.text_align.left)
