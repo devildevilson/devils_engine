@@ -17,6 +17,7 @@ set(SRC_LIST
 
 set(HDR_LIST
   include/devils_engine/demiurg/resource_base.h
+  include/devils_engine/demiurg/resource_manifest.h
   include/devils_engine/demiurg/resource_system.h
   include/devils_engine/demiurg/module_interface.h 
   include/devils_engine/demiurg/folder_module.h 

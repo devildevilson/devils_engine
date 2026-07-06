@@ -122,10 +122,11 @@ void module_system::close_modules() {
   for (const auto &ptr : modules) { ptr->close(); }
 }
 
-void module_system::parse_resources(resource_system* sys) {
-  // тут запускаем новую функцию resources_list
+void module_system::discover_resources(std::vector<resource_candidate>& out) {
+  uint32_t priority = 0;
   for (const auto &ptr : modules) {
-    ptr->resources_list(sys);
+    ptr->resources_list(out, priority);
+    priority += 1;
   }
 }
 }

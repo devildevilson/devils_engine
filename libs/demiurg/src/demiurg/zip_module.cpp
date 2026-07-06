@@ -94,7 +94,7 @@ static std::tuple<std::string_view, std::string_view, std::string_view> parse_pa
 //  }
 //}
 
-void zip_module::resources_list(resource_system* s) const {
+void zip_module::resources_list(std::vector<resource_candidate>& out, const uint32_t module_priority) const {
   int32_t err = MZ_OK;
   err = mz_zip_reader_goto_first_entry(native_handle);
   while (err == MZ_OK) {
@@ -113,12 +113,20 @@ void zip_module::resources_list(resource_system* s) const {
     std::string file_path = file_info->filename;
 
     const auto [ id, name, ext ] = parse_path(file_path);
-    if (name == "." || name == "..") continue;
+    if (name == "." || name == "..") {
+      err = mz_zip_reader_goto_next_entry(native_handle);
+      continue;
+    }
 
-    auto res = s->create(id, ext);
-    res->set(std::move(file_path), module_name, id, ext);
-    res->module = this;
-    res->raw_size = file_info->uncompressed_size;
+    out.push_back(resource_candidate{
+      std::move(file_path),
+      std::string(id),
+      std::string(ext),
+      module_name,
+      this,
+      static_cast<size_t>(file_info->uncompressed_size),
+      module_priority
+    });
 
     err = mz_zip_reader_goto_next_entry(native_handle);
   }

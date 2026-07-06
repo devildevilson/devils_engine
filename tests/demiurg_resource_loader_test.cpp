@@ -1,10 +1,15 @@
 #include <doctest/doctest.h>
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 #include "devils_engine/demiurg/resource_base.h"
 #include "devils_engine/demiurg/resource_loader.h"
+#include "devils_engine/demiurg/resource_system.h"
+#include "devils_engine/demiurg/module_system.h"
+#include "devils_engine/demiurg/module_interface.h"
 #include "devils_engine/utils/safe_handle.h"
 
 using namespace devils_engine;
@@ -75,6 +80,55 @@ public:
   void unload_hot(const utils::safe_handle_t&) override {}
 };
 
+class manifest_test_resource final : public demiurg::resource_interface {
+public:
+  void load_cold(const utils::safe_handle_t&) override {}
+  void load_warm(const utils::safe_handle_t&) override {}
+  void unload_warm(const utils::safe_handle_t&) override {}
+  void unload_hot(const utils::safe_handle_t&) override {}
+};
+
+}
+
+TEST_CASE("resource_system does not instantiate shadowed module resources [demiurg]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_demiurg_shadow_test";
+  fs::remove_all(root);
+  fs::create_directories(root / "high" / "textures");
+  fs::create_directories(root / "low" / "textures");
+
+  {
+    std::ofstream(root / "high" / "textures" / "grass.png").put('h');
+    std::ofstream(root / "high" / "textures" / "grass.meta").put('m');
+    std::ofstream(root / "low" / "textures" / "grass.png").put('l');
+  }
+
+  demiurg::module_system modules((root.generic_string() + "/"));
+  modules.load_modules({
+    demiurg::module_system::list_entry{"high/", "", ""},
+    demiurg::module_system::list_entry{"low/", "", ""}
+  });
+
+  demiurg::resource_system resources;
+  resources.register_type<manifest_test_resource>("textures", "png,meta");
+  resources.parse_resources(&modules);
+
+  auto* grass = resources.get("textures/grass");
+  REQUIRE(grass != nullptr);
+  CHECK(resources.resources_count() == 1);
+  CHECK(resources.all_resources_count() == 2);
+  CHECK(grass->path == "textures/grass.png");
+  REQUIRE(grass->module != nullptr);
+  CHECK(grass->module->path().find("/high/") != std::string_view::npos);
+
+  auto* supplementary = grass->supplementary_next(grass);
+  REQUIRE(supplementary != nullptr);
+  CHECK(supplementary->path == "textures/grass.meta");
+  CHECK(supplementary->module == grass->module);
+  CHECK(supplementary->supplementary_next(grass) == nullptr);
+
+  fs::remove_all(root);
 }
 
 TEST_CASE("resource_loader keeps pipeline GPU commit as render-owned external step [demiurg]") {

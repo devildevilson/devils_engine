@@ -13,6 +13,7 @@
 #include <functional>
 #include <concepts>
 #include "resource_base.h"
+#include "resource_manifest.h"
 #include "devils_engine/utils/block_allocator.h"
 #include "devils_engine/utils/memory_pool.h"
 #include "devils_engine/utils/type_traits.h"
@@ -198,12 +199,27 @@ public:
   size_t resources_count() const noexcept;
   size_t all_resources_count() const noexcept;
 private:
+  struct typed_candidate {
+    const resource_candidate* candidate;
+    type* resource_type;
+    size_t ext_index;
+    size_t order;
+  };
+
+  struct manifest_entry {
+    typed_candidate primary;
+    std::vector<typed_candidate> supplementary;
+  };
+
   utils::memory_pool<type, sizeof(type)*16> types_pool;
   gtl::flat_hash_map<std::string_view, type*> types;
   std::vector<resource_interface *> resources;
   std::vector<resource_interface *> all_resources;
 
   resource_system::type *find_proper_type(const std::string_view &id, const std::string_view &extension) const;
+  std::vector<manifest_entry> resolve_manifest(const std::vector<resource_candidate>& candidates) const;
+  void instantiate_manifest(const std::vector<manifest_entry>& manifest, std::vector<resource_interface*>* pending = nullptr);
+  static void sort_active_resources(std::vector<resource_interface*>& resources);
   std::span<resource_interface * const> raw_find(const std::string_view &filter) const;
 };
 }
