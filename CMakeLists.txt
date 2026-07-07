@@ -475,9 +475,9 @@ target_link_libraries(devils_engine INTERFACE devils_engine::catalogue devils_en
 add_library(devils_engine::devils_plane ALIAS devils_engine)
 
 if (DEVILS_ENGINE_BUILD_TESTS)
-  add_subdirectory(tests/)
+  add_subdirectory(subprojects/tests "${CMAKE_BINARY_DIR}/cmake/subprojects/tests")
 endif()
-add_subdirectory(tests/tile_frontier/)
+add_subdirectory(subprojects/tile_frontier "${CMAKE_BINARY_DIR}/cmake/subprojects/tile_frontier")
 
 if (DEVILS_ENGINE_BUILD_TESTS)
   add_custom_target(devils_engine_test
@@ -526,7 +526,7 @@ add_executable(${FAST_TEST_TARGET} main.cpp)
 target_link_libraries(${FAST_TEST_TARGET} devils_engine::devils_plane ${SHADERC_LIBRARY_NAME} Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp)
 set_target_properties(${FAST_TEST_TARGET} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${FAST_TEST_OUTPUT_DIRECTORY}/bin")
 
-set(GRAPHICS_TEST_CONFIG_LOCATION ${CMAKE_CURRENT_LIST_DIR}/tests/)
+set(GRAPHICS_TEST_CONFIG_LOCATION ${CMAKE_CURRENT_LIST_DIR}/subprojects/tests/)
 
 add_custom_command(TARGET ${FAST_TEST_TARGET} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory 
