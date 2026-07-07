@@ -96,6 +96,7 @@ double compute_base_priority(const enum type type) noexcept; // [0,1]
   X(flac) \
   X(wav)  \
   X(ogg)  \
+  X(opus) \
   X(pcm)  \
 
 enum class data_type {

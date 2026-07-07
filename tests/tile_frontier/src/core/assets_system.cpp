@@ -48,7 +48,7 @@ void assets_simulation::init() {
   // текстуру), точный тип достаётся через handle.get<visage::font_resource>() (lua/push_font).
   container->resources->register_type<painter::gpu_texture_resource, visage::font_resource>("fonts", "ttf");
   // Звуки — игровой контент (resources/modules/core/sounds/); тип матчится на сегмент "sounds".
-  container->resources->register_type<sound::sound_resource>("sounds", "mp3,flac,wav,ogg");
+  container->resources->register_type<sound::sound_resource>("sounds", "mp3,flac,wav,ogg,opus");
 
   // Реестр строим один раз здесь (init вызывается на главном потоке до старта потока ассетов).
   const auto modules_root = utils::project_folder() + "resources/modules/";

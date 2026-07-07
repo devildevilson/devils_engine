@@ -46,6 +46,7 @@ typedef struct ma_context ma_context;
   X(flac) \
   X(wav)  \
   X(ogg)  \
+  X(opus) \
   X(pcm)  \
 
 namespace devils_engine {
