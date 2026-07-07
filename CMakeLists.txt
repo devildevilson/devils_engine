@@ -55,6 +55,9 @@ endif()
 
 set(BUILD_TESTING ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "Build tests for third-party dependencies" FORCE)
 
+set(FETCHCONTENT_FULLY_DISCONNECTED OFF)
+set(CMAKE_SKIP_INSTALL_ALL_DEPENDENCY ON)
+
 set(ZLIB_BUILD_EXAMPLES OFF)
 set(ZLIB_BUILD_TESTING OFF)
 set(ZLIB_ENABLE_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
@@ -112,6 +115,21 @@ set(MINIAUDIO_NO_LIBOPUS ON)
 set(TAVL_BUILD_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
 set(DS_BUILD_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
 set(DS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+
+set(INSTALL_DOCS OFF)
+set(INSTALL_PKG_CONFIG_MODULE OFF)
+set(INSTALL_CMAKE_PACKAGE_MODULE OFF)
+
+set(OP_DISABLE_HTTP ON CACHE BOOL "" FORCE)
+set(OP_DISABLE_EXAMPLES ON CACHE BOOL "" FORCE)
+set(OP_DISABLE_DOCS ON CACHE BOOL "" FORCE)
+
+set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+
+set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
+
+#set(BUILD_SHARED_LIBS ON)
 
 FetchContent_Declare(
   glaze
@@ -193,6 +211,13 @@ FetchContent_Declare(
   GIT_TAG        4.12.7
   GIT_PROGRESS   TRUE
   SOURCE_SUBDIR somePathThatNeverExistsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa
+)
+
+FetchContent_Declare(
+  freetype
+  GIT_REPOSITORY https://github.com/freetype/freetype.git
+  GIT_TAG        VER-2-14-3
+  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
@@ -345,6 +370,28 @@ FetchContent_Declare(
   OVERRIDE_FIND_PACKAGE
 )
 
+FetchContent_Declare(
+  ogg
+  GIT_REPOSITORY https://github.com/xiph/ogg.git
+  GIT_TAG        v1.3.6
+  OVERRIDE_FIND_PACKAGE
+)
+
+FetchContent_Declare(
+  opus
+  GIT_REPOSITORY https://github.com/xiph/opus.git
+  GIT_TAG        v1.6.1
+  OVERRIDE_FIND_PACKAGE
+)
+
+FetchContent_Declare(
+  opusfile
+  GIT_REPOSITORY https://github.com/xiph/opusfile.git
+  GIT_TAG        6dfd29e7adb87f2e193575fc3fa88cbf1a0b27df
+  OVERRIDE_FIND_PACKAGE
+  EXCLUDE_FROM_ALL
+)
+
 FetchContent_MakeAvailable(ZLIB)
 
 # workarounds for zlib-ng
@@ -352,7 +399,16 @@ add_library(ZLIB::ZLIB ALIAS zlib)
 set(ZLIB_INCLUDE_DIR "${FETCHCONTENT_BASE_DIR}/zlib-build/")
 set(ZLIB_INCLUDE_DIRS "${FETCHCONTENT_BASE_DIR}/zlib-build/")
 
-FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng PNG atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect) # RE-flex
+FetchContent_MakeAvailable(PNG)
+
+# workarounds for other libs
+add_library(PNG::PNG ALIAS png_shared)
+
+FetchContent_MakeAvailable(freetype)
+
+add_library(Freetype::Freetype ALIAS freetype-interface)
+
+FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus) # RE-flex
 
 add_library(VulkanMemoryAllocator-Hpp INTERFACE)
 add_library(VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp ALIAS VulkanMemoryAllocator-Hpp)
@@ -365,8 +421,9 @@ target_link_libraries(VulkanMemoryAllocator-Hpp INTERFACE Vulkan::Headers GPUOpe
 
 find_package(Threads REQUIRED)
 
-# workarounds for other libs
-add_library(PNG::PNG ALIAS png_shared)
+install(TARGETS ogg opus EXPORT OpusFileTargets)
+
+FetchContent_MakeAvailable(opusfile)
 
 if (DEVILS_ENGINE_BUILD_TESTS OR DEVILS_ENGINE_BUILD_VENDOR_TESTS)
   enable_testing()

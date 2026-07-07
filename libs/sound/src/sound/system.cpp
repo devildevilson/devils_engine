@@ -19,6 +19,7 @@
 #include "wav_decoder.h"
 #include "flac_decoder.h"
 #include "ogg_decoder.h"
+#include "opus_decoder.h"
 #include "pcm_decoder.h"
 
 #define NOMINMAX
@@ -87,6 +88,7 @@ static void completely_stop_source(system::source &s) {
         case data_type::wav:  return std::make_unique<wav_decoder>(name, data.data(), data.size());
         case data_type::flac: return std::make_unique<flac_decoder>(name, data.data(), data.size());
         case data_type::ogg:  return std::make_unique<ogg_decoder>(name, data.data(), data.size());
+        case data_type::opus: return std::make_unique<opus_decoder>(name, data.data(), data.size());
         //case data_type::pcm:  return std::make_unique<pcm_decoder>(name, data.data(), data.size());
         case data_type::pcm:  return std::unique_ptr<decoder>();
         case data_type::undefined: return std::unique_ptr<decoder>();

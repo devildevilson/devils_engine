@@ -6,6 +6,7 @@
 #include "ogg_decoder.h"
 #include "wav_decoder.h"
 #include "flac_decoder.h"
+#include "opus_decoder.h"
 #include "pcm_decoder.h"
 #include "devils_engine/utils/core.h"
 
@@ -36,6 +37,8 @@ resource::resource(std::string id, enum type type, std::vector<char> buffer) :
     sound.reset(new  wav_decoder(this->id, this->buffer.data(), this->buffer.size()));
   } else if (type == type::ogg) {
     sound.reset(new  ogg_decoder(this->id, this->buffer.data(), this->buffer.size()));
+  } else if (type == type::opus) {
+    sound.reset(new opus_decoder(this->id, this->buffer.data(), this->buffer.size()));
   } else if (type == type::flac) {
     sound.reset(new flac_decoder(this->id, this->buffer.data(), this->buffer.size()));
   } else {

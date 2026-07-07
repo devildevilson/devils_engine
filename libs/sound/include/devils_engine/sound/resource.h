@@ -22,6 +22,7 @@ namespace sound {
   X(flac) \
   X(wav)  \
   X(ogg)  \
+  X(opus) \
   X(pcm)  \
 
 struct resource {

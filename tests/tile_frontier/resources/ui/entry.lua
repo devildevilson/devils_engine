@@ -66,7 +66,7 @@ local function loading_screen()
 end
 
 -- game: обычный игровой UI (демо шрифтов/эффектов + звук + статистика + управление игрой).
--- rng — непрозрачный rng_state (сид кадра от хоста), timestamp — монотонная метка времени.
+-- rng - непрозрачный rng_state (сид кадра от хоста), timestamp — монотонная метка времени.
 local function game_ui(time, timestamp, rng)
   local flags = nk.panel_flags.border | nk.panel_flags.title | nk.panel_flags.movable
   if nk.begin("hello", {50, 50, 340, 372}, flags) then
