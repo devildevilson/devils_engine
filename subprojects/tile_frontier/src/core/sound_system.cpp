@@ -31,7 +31,7 @@ struct sound_simulation_init {
   // которым владеет поток ассетов. main резолвит имя→handle.
 };
 
-sound_simulation::sound_simulation(const size_t frame_time) noexcept : simul::advancer(frame_time) {}
+sound_simulation::sound_simulation(const size_t frame_time) noexcept : simul::sound_system<::tile_frontier::core::broker>(frame_time) {}
 sound_simulation::~sound_simulation() noexcept = default;
 
 void sound_simulation::init() {
@@ -52,7 +52,7 @@ void sound_simulation::update(const size_t time) {
   // на самом деле тут тоже будет пост инит, где мы бы хотели передать звуковое устройство
   // звуки тоже поддаются настройке: дропаем систему и заново ее собираем? очень похоже на то
   if (container->br == nullptr) return; // broker ещё не задан
-  broker& br = *container->br;
+  auto& br = *container->br;
 
   {
     command_sound_devices cmd{};
@@ -138,7 +138,10 @@ void sound_simulation::update(const size_t time) {
 }
 
 sound_actor* sound_simulation::get_actor() { return &actor; }
-void sound_simulation::set_broker(broker* b) { if (container) container->br = b; }
+void sound_simulation::set_broker(struct broker* b) {
+  simul::sound_system<::tile_frontier::core::broker>::set_broker(b);
+  if (container) container->br = b;
+}
 
 }
 }

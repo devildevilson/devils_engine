@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <memory>
 
-#include <devils_engine/simul/interface.h>
+#include <devils_engine/simul/systems.h>
 
 #include "actors.h"
 
@@ -15,7 +15,7 @@ struct sound_simulation_init;
 struct broker;
 
 // звук делает что?
-class sound_simulation : public simul::advancer {
+class sound_simulation : public simul::sound_system<broker> {
 public:
   sound_simulation(const size_t frame_time) noexcept;
   ~sound_simulation() noexcept;
@@ -25,7 +25,7 @@ public:
 
   sound_actor* get_actor();
   // Единый broker всех каналов (main владеет). Задаётся до старта потока.
-  void set_broker(broker* b);
+  void set_broker(struct broker* b);
 private:
   std::unique_ptr<sound_simulation_init> container;
   sound_actor actor;

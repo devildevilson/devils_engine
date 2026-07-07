@@ -32,7 +32,7 @@ struct assets_simulation_init {
   std::vector<demiurg::resource_loader::external_job> gpu_jobs;
 };
 
-assets_simulation::assets_simulation(const size_t frame_time) noexcept : simul::advancer(frame_time) {}
+assets_simulation::assets_simulation(const size_t frame_time) noexcept : simul::assets_system<::tile_frontier::core::broker>(frame_time) {}
 assets_simulation::~assets_simulation() noexcept = default;
 
 void assets_simulation::init() {
@@ -65,7 +65,7 @@ bool assets_simulation::stop_predicate() const { return false; }
 
 void assets_simulation::update(const size_t) {
   if (container->br == nullptr) return; // broker ещё не задан
-  broker& br = *container->br;
+  auto& br = *container->br;
 
   // ack'и от рендера: GPU-переход завершён
   {
@@ -161,7 +161,8 @@ demiurg::resource_system* assets_simulation::resources() {
   return container ? container->resources.get() : nullptr;
 }
 
-void assets_simulation::set_broker(broker* b) {
+void assets_simulation::set_broker(struct broker* b) {
+  simul::assets_system<::tile_frontier::core::broker>::set_broker(b);
   if (container) container->br = b;
 }
 

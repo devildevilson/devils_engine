@@ -5,7 +5,7 @@
 #include <windows.h>
 #endif
 
-#include "simulation.h"
+#include "runtime.h"
 
 using namespace tile_frontier;
 
@@ -26,8 +26,6 @@ int main() {
   SetConsoleCP(CP_UTF8);
 #endif
 
-  core::simulation s;
-  s.init();
-  s.run(0);
-  return 0;
+  core::runtime app;
+  return app.run();
 }

@@ -139,7 +139,7 @@ static uint32_t mix32(uint32_t x) noexcept {
 
 static glm::vec2 direction_from_hash(const uint32_t h) noexcept {
   constexpr float diag = 0.70710678118f;
-  static constexpr glm::vec2 dirs[] = {
+  static const glm::vec2 dirs[] = {
     { 1.0f, 0.0f }, { -1.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, -1.0f },
     { diag, diag }, { -diag, diag }, { diag, -diag }, { -diag, -diag }
   };

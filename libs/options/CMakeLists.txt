@@ -23,17 +23,38 @@ target_compile_features(devils_engine_options INTERFACE cxx_std_23)
 #target_compile_features(devils_engine_options INTERFACE c_std_11)
 
 # --- target architecture ------------------------------------------------------
-# Factored out so an external project can substitute its own target arch before
-# add_subdirectory(libs/options), e.g.
-#   set(DEVILS_ENGINE_ARCH_FLAGS_GNU  -march=native)
-#   set(DEVILS_ENGINE_ARCH_FLAGS_MSVC /arch:AVX2)
-# or pass them on the command line with -D...=... . Use a CMake list (semicolon
-# separated) when you need more than one flag.
-if (NOT DEFINED DEVILS_ENGINE_ARCH_FLAGS_MSVC)
-  set(DEVILS_ENGINE_ARCH_FLAGS_MSVC /arch:AVX CACHE STRING "MSVC target architecture flags")
+# Normally defined by the root CMakeLists before dependencies are configured.
+# Kept here as a standalone fallback for embedding just libs/options.
+if (NOT DEFINED DEVILS_ENGINE_ARCH)
+  set(DEVILS_ENGINE_ARCH "AVX" CACHE STRING "Target ISA baseline: OFF, AVX, AVX2, NATIVE")
+  set_property(CACHE DEVILS_ENGINE_ARCH PROPERTY STRINGS OFF AVX AVX2 NATIVE)
 endif()
-if (NOT DEFINED DEVILS_ENGINE_ARCH_FLAGS_GNU)
-  set(DEVILS_ENGINE_ARCH_FLAGS_GNU -mavx CACHE STRING "GCC/Clang target architecture flags")
+if (NOT DEFINED DEVILS_ENGINE_ARCH_FLAGS_AUTO)
+  option(DEVILS_ENGINE_ARCH_FLAGS_AUTO "Derive compiler architecture flags from DEVILS_ENGINE_ARCH" ON)
+endif()
+
+if (DEVILS_ENGINE_ARCH_FLAGS_AUTO OR NOT DEFINED DEVILS_ENGINE_ARCH_FLAGS_MSVC OR NOT DEFINED DEVILS_ENGINE_ARCH_FLAGS_GNU)
+  set(_DEVILS_ENGINE_ARCH_FLAGS_MSVC "")
+  set(_DEVILS_ENGINE_ARCH_FLAGS_GNU "")
+
+  if (DEVILS_ENGINE_ARCH STREQUAL "AVX")
+    set(_DEVILS_ENGINE_ARCH_FLAGS_MSVC /arch:AVX)
+    set(_DEVILS_ENGINE_ARCH_FLAGS_GNU -mavx)
+  elseif (DEVILS_ENGINE_ARCH STREQUAL "AVX2")
+    set(_DEVILS_ENGINE_ARCH_FLAGS_MSVC /arch:AVX2)
+    set(_DEVILS_ENGINE_ARCH_FLAGS_GNU -mavx2)
+  elseif (DEVILS_ENGINE_ARCH STREQUAL "NATIVE")
+    set(_DEVILS_ENGINE_ARCH_FLAGS_GNU -march=native)
+  elseif (NOT DEVILS_ENGINE_ARCH STREQUAL "OFF")
+    message(FATAL_ERROR "Unsupported DEVILS_ENGINE_ARCH='${DEVILS_ENGINE_ARCH}'. Expected OFF, AVX, AVX2, or NATIVE.")
+  endif()
+
+  if (DEVILS_ENGINE_ARCH_FLAGS_AUTO OR NOT DEFINED DEVILS_ENGINE_ARCH_FLAGS_MSVC)
+    set(DEVILS_ENGINE_ARCH_FLAGS_MSVC ${_DEVILS_ENGINE_ARCH_FLAGS_MSVC} CACHE STRING "MSVC target architecture flags" FORCE)
+  endif()
+  if (DEVILS_ENGINE_ARCH_FLAGS_AUTO OR NOT DEFINED DEVILS_ENGINE_ARCH_FLAGS_GNU)
+    set(DEVILS_ENGINE_ARCH_FLAGS_GNU ${_DEVILS_ENGINE_ARCH_FLAGS_GNU} CACHE STRING "GCC/Clang target architecture flags" FORCE)
+  endif()
 endif()
 
 # --- MSVC runtime library -----------------------------------------------------
@@ -61,6 +82,10 @@ target_compile_options(devils_engine_options INTERFACE
 target_compile_definitions(devils_engine_options INTERFACE
   $<$<CONFIG:Release>:NDEBUG _NDEBUG>
   $<$<CONFIG:MinSizeRel>:NDEBUG _NDEBUG>
+  $<$<STREQUAL:${DEVILS_ENGINE_ARCH},AVX>:GLM_FORCE_AVX>
+  $<$<STREQUAL:${DEVILS_ENGINE_ARCH},AVX2>:GLM_FORCE_AVX2>
+  $<$<STREQUAL:${DEVILS_ENGINE_ARCH},NATIVE>:GLM_FORCE_INTRINSICS>
+  $<$<STREQUAL:${DEVILS_ENGINE_ARCH},OFF>:GLM_FORCE_PURE>
   DEVILS_ENGINE_PROJECT_NAME="${PROJECT_NAME}"
   DEVILS_ENGINE_ENGINE_NAME="${DEVILS_ENGINE_NAME}"
 )

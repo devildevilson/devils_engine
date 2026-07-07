@@ -9,6 +9,11 @@ project(
 add_library(devils_simul
   src/simul/interface.cpp
   include/devils_engine/simul/interface.h
+  include/devils_engine/simul/app_runtime.h
+  include/devils_engine/simul/messages.h
+  include/devils_engine/simul/standard_broker.h
+  include/devils_engine/simul/systems.h
+  include/devils_engine/simul/write_buffer_channel.h
 )
 
 target_include_directories(devils_simul
@@ -17,8 +22,7 @@ target_include_directories(devils_simul
 )
 
 target_link_libraries(devils_simul
-  PUBLIC devils_engine::options
-  PRIVATE devils_engine::utils
+  PUBLIC devils_engine::options devils_engine::utils devils_engine::demiurg
 )
 
 add_library(devils_engine::simul ALIAS devils_simul)

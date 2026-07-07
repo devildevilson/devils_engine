@@ -39,6 +39,41 @@ set(PROJECT_EXTERNAL_DEPENDENCY_DIR ${CMAKE_CURRENT_LIST_DIR}/external)
 option(DEVILS_ENGINE_BUILD_TESTS "Build devils_engine tests" ON)
 option(DEVILS_ENGINE_BUILD_VENDOR_TESTS "Build tests provided by third-party dependencies" OFF)
 
+# --- target architecture ------------------------------------------------------
+# Single project-level ISA selector. AVX is the current baseline; override with:
+#   -DDEVILS_ENGINE_ARCH=AVX2
+#   -DDEVILS_ENGINE_ARCH=NATIVE
+#   -DDEVILS_ENGINE_ARCH=OFF
+# The concrete compiler flag variables remain overridable for toolchains that
+# need a custom spelling.
+set(DEVILS_ENGINE_ARCH "AVX" CACHE STRING "Target ISA baseline: OFF, AVX, AVX2, NATIVE")
+set_property(CACHE DEVILS_ENGINE_ARCH PROPERTY STRINGS OFF AVX AVX2 NATIVE)
+option(DEVILS_ENGINE_ARCH_FLAGS_AUTO "Derive compiler architecture flags from DEVILS_ENGINE_ARCH" ON)
+
+if (DEVILS_ENGINE_ARCH_FLAGS_AUTO OR NOT DEFINED DEVILS_ENGINE_ARCH_FLAGS_MSVC OR NOT DEFINED DEVILS_ENGINE_ARCH_FLAGS_GNU)
+  set(_DEVILS_ENGINE_ARCH_FLAGS_MSVC "")
+  set(_DEVILS_ENGINE_ARCH_FLAGS_GNU "")
+
+  if (DEVILS_ENGINE_ARCH STREQUAL "AVX")
+    set(_DEVILS_ENGINE_ARCH_FLAGS_MSVC /arch:AVX)
+    set(_DEVILS_ENGINE_ARCH_FLAGS_GNU -mavx)
+  elseif (DEVILS_ENGINE_ARCH STREQUAL "AVX2")
+    set(_DEVILS_ENGINE_ARCH_FLAGS_MSVC /arch:AVX2)
+    set(_DEVILS_ENGINE_ARCH_FLAGS_GNU -mavx2)
+  elseif (DEVILS_ENGINE_ARCH STREQUAL "NATIVE")
+    set(_DEVILS_ENGINE_ARCH_FLAGS_GNU -march=native)
+  elseif (NOT DEVILS_ENGINE_ARCH STREQUAL "OFF")
+    message(FATAL_ERROR "Unsupported DEVILS_ENGINE_ARCH='${DEVILS_ENGINE_ARCH}'. Expected OFF, AVX, AVX2, or NATIVE.")
+  endif()
+
+  if (DEVILS_ENGINE_ARCH_FLAGS_AUTO OR NOT DEFINED DEVILS_ENGINE_ARCH_FLAGS_MSVC)
+    set(DEVILS_ENGINE_ARCH_FLAGS_MSVC ${_DEVILS_ENGINE_ARCH_FLAGS_MSVC} CACHE STRING "MSVC target architecture flags" FORCE)
+  endif()
+  if (DEVILS_ENGINE_ARCH_FLAGS_AUTO OR NOT DEFINED DEVILS_ENGINE_ARCH_FLAGS_GNU)
+    set(DEVILS_ENGINE_ARCH_FLAGS_GNU ${_DEVILS_ENGINE_ARCH_FLAGS_GNU} CACHE STRING "GCC/Clang target architecture flags" FORCE)
+  endif()
+endif()
+
 # 3 dependencies for user to deal with
 if (WIN32) # freetype has proper cmake support
   set(FREETYPE_LIBRARY ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/freetype/freetype.lib)
@@ -102,7 +137,11 @@ set(VMA_BUILD_SAMPLES OFF)
 
 set(GLM_BUILD_LIBRARY OFF)
 set(GLM_ENABLE_CXX_20 ON)
-set(GLM_ENABLE_SIMD_AVX ON)
+if (DEVILS_ENGINE_ARCH STREQUAL "OFF")
+  set(GLM_ENABLE_SIMD_AVX OFF CACHE BOOL "" FORCE)
+else()
+  set(GLM_ENABLE_SIMD_AVX ON CACHE BOOL "" FORCE)
+endif()
 
 set(MINIAUDIO_USE_STDINT ON)
 set(MINIAUDIO_INSTALL OFF)
@@ -113,8 +152,15 @@ set(MINIAUDIO_NO_LIBVORBIS ON)
 set(MINIAUDIO_NO_LIBOPUS ON)
 
 set(TAVL_BUILD_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
+set(TAVL_ARCH ${DEVILS_ENGINE_ARCH} CACHE STRING "ISA baseline for tavl sources: OFF, AVX, AVX2, NATIVE" FORCE)
+set(DS_ARCH ${DEVILS_ENGINE_ARCH} CACHE STRING "ISA baseline for devils_script sources: OFF, AVX, AVX2, NATIVE" FORCE)
 set(DS_BUILD_TESTS ${DEVILS_ENGINE_BUILD_VENDOR_TESTS} CACHE BOOL "" FORCE)
 set(DS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+
+set(MZ_OPENSSL OFF CACHE BOOL "Disable OpenSSL dependency in minizip-ng" FORCE)
+set(MZ_PKCRYPT OFF CACHE BOOL "Disable PKWARE traditional encryption in minizip-ng" FORCE)
+set(MZ_WZAES OFF CACHE BOOL "Disable WinZIP AES encryption in minizip-ng" FORCE)
+set(MZ_LIBBSD OFF CACHE BOOL "Disable libbsd crypto-random dependency in minizip-ng" FORCE)
 
 set(INSTALL_DOCS OFF)
 set(INSTALL_PKG_CONFIG_MODULE OFF)
@@ -137,7 +183,7 @@ FetchContent_Declare(
   GIT_TAG        v5.2.0 # version 5.1.2
   GIT_SHALLOW    TRUE
   GIT_PROGRESS   TRUE
-  FIND_PACKAGE_ARGS
+  OVERRIDE_FIND_PACKAGE
 )
 
 #FetchContent_Declare(
@@ -171,7 +217,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/gabime/spdlog.git
   GIT_TAG        v1.x
   GIT_PROGRESS   TRUE
-  FIND_PACKAGE_ARGS
+  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
@@ -195,7 +241,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/zlib-ng/minizip-ng.git
   GIT_TAG        4.0.10
   GIT_PROGRESS   TRUE
-  FIND_PACKAGE_ARGS
+  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
@@ -272,7 +318,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/ThePhD/sol2.git
   GIT_TAG        v3.5.0
   GIT_PROGRESS   TRUE
-  FIND_PACKAGE_ARGS
+  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
@@ -305,7 +351,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/pinam45/dynamic_bitset.git
   GIT_TAG        v1.3.2
   GIT_PROGRESS   TRUE
-  FIND_PACKAGE_ARGS
+  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
@@ -313,7 +359,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/g-truc/glm.git
   GIT_TAG        1.0.1
   GIT_PROGRESS   TRUE
-  FIND_PACKAGE_ARGS
+  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
@@ -321,7 +367,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/doctest/doctest.git
   GIT_TAG        v2.5.2
   GIT_PROGRESS   TRUE
-  FIND_PACKAGE_ARGS
+  OVERRIDE_FIND_PACKAGE
 )
 
 #FetchContent_Declare(
@@ -329,7 +375,7 @@ FetchContent_Declare(
 #  GIT_REPOSITORY https://github.com/Genivia/RE-flex.git
 #  GIT_TAG        v6.0.0
 #  GIT_PROGRESS   TRUE
-#  FIND_PACKAGE_ARGS
+#  OVERRIDE_FIND_PACKAGE
 #)
 
 FetchContent_Declare(
@@ -337,7 +383,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/pytorch/cpuinfo.git
   GIT_TAG        c4b4f4bf08c0cf486fc3111d0244ebf2a48ad01b
   GIT_PROGRESS   TRUE
-  FIND_PACKAGE_ARGS
+  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
@@ -345,7 +391,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/mackron/miniaudio.git
   GIT_TAG        0.11.25
   GIT_PROGRESS   TRUE
-  FIND_PACKAGE_ARGS
+  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
@@ -353,7 +399,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/Nicoshev/rapidhash.git
   GIT_TAG        rapidhash_v3
   GIT_PROGRESS   TRUE
-  FIND_PACKAGE_ARGS
+  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
@@ -410,6 +456,13 @@ add_library(Freetype::Freetype ALIAS freetype-interface)
 
 FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus) # RE-flex
 
+if (TARGET minizip)
+  target_compile_options(minizip PRIVATE
+    $<$<COMPILE_LANG_AND_ID:C,GNU,Clang>:${DEVILS_ENGINE_ARCH_FLAGS_GNU}>
+    $<$<COMPILE_LANG_AND_ID:C,MSVC>:${DEVILS_ENGINE_ARCH_FLAGS_MSVC}>
+  )
+endif()
+
 add_library(VulkanMemoryAllocator-Hpp INTERFACE)
 add_library(VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp ALIAS VulkanMemoryAllocator-Hpp)
 target_include_directories(VulkanMemoryAllocator-Hpp INTERFACE "${vulkanmemoryallocator-hpp_SOURCE_DIR}/include")
@@ -455,20 +508,20 @@ endif()
 # Link each target with other targets or add options, etc.
 add_subdirectory(libs/options/)
 add_subdirectory(libs/utils/)
+add_subdirectory(libs/catalogue/)
 # act идёт ДО mood/acumen: они линкуют devils_engine::act PUBLIC (alias должен уже существовать)
 add_subdirectory(libs/act/)
 add_subdirectory(libs/mood/)
+add_subdirectory(libs/demiurg/)
 add_subdirectory(libs/simul/)
 add_subdirectory(libs/flow/)
 add_subdirectory(libs/aesthetics/)
 add_subdirectory(libs/sound/)
-add_subdirectory(libs/demiurg/)
 add_subdirectory(libs/input/)
 add_subdirectory(libs/painter/)
 add_subdirectory(libs/visage/)
 add_subdirectory(libs/bindings/)
 add_subdirectory(libs/acumen/)
-add_subdirectory(libs/catalogue/)
 
 add_library(devils_engine INTERFACE)
 target_link_libraries(devils_engine INTERFACE devils_engine::catalogue devils_engine::acumen devils_engine::act devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::utils devils_engine::mood devils_engine::simul devils_engine::flow devils_engine::aesthetics devils_engine::visage devils_engine::options)
