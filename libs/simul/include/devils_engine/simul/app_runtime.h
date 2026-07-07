@@ -20,6 +20,7 @@ public:
   using render_type = typename Traits::render_type;
   using assets_type = typename Traits::assets_type;
   using sound_type = typename Traits::sound_type;
+  using bootstrap_type = typename Traits::bootstrap_type;
 
   app_runtime() = default;
   app_runtime(const app_runtime&) = delete;
@@ -28,15 +29,18 @@ public:
   ~app_runtime() noexcept { shutdown_workers(); }
 
   int run() {
-    broker_ = Traits::make_broker();
-    main_ = Traits::make_main();
+    bootstrap_ = Traits::make_bootstrap();
+    Traits::init_bootstrap(*bootstrap_);
+
+    broker_ = Traits::make_broker(*bootstrap_);
+    main_ = Traits::make_main(*bootstrap_);
 
     Traits::set_broker(*main_, *broker_);
     main_->init();
 
-    sound_ = Traits::make_sound(*main_);
-    render_ = Traits::make_render(*main_);
-    assets_ = Traits::make_assets(*main_);
+    sound_ = Traits::make_sound(*bootstrap_);
+    render_ = Traits::make_render(*bootstrap_);
+    assets_ = Traits::make_assets(*bootstrap_);
 
     if (sound_) {
       sound_->init();
@@ -51,7 +55,7 @@ public:
       Traits::set_broker(*assets_, *broker_);
     }
 
-    Traits::bind_systems(*main_, sound_.get(), render_.get(), assets_.get());
+    Traits::bind_systems(*main_, *bootstrap_, sound_.get(), render_.get(), assets_.get());
     start_workers();
     Traits::after_workers_started(*main_);
     main_->run(Traits::main_wait_mcs(*main_));
@@ -60,6 +64,7 @@ public:
   }
 
   broker_type* broker() noexcept { return broker_.get(); }
+  bootstrap_type* bootstrap() noexcept { return bootstrap_.get(); }
   main_type* main_system() noexcept { return main_.get(); }
   render_type* render_system() noexcept { return render_.get(); }
   assets_type* assets_system() noexcept { return assets_.get(); }
@@ -68,15 +73,15 @@ public:
 private:
   void start_workers() {
     if (sound_) {
-      const size_t wait = Traits::sound_wait_mcs(*main_, *sound_);
+      const size_t wait = Traits::sound_wait_mcs(*bootstrap_, *sound_);
       sound_thread_ = std::jthread([sys = sound_.get(), wait](std::stop_token st) { sys->run(st, wait); });
     }
     if (render_) {
-      const size_t wait = Traits::render_wait_mcs(*main_, *render_);
+      const size_t wait = Traits::render_wait_mcs(*bootstrap_, *render_);
       render_thread_ = std::jthread([sys = render_.get(), wait](std::stop_token st) { sys->run(st, wait); });
     }
     if (assets_) {
-      const size_t wait = Traits::assets_wait_mcs(*main_, *assets_);
+      const size_t wait = Traits::assets_wait_mcs(*bootstrap_, *assets_);
       assets_thread_ = std::jthread([sys = assets_.get(), wait](std::stop_token st) { sys->run(st, wait); });
     }
   }
@@ -94,6 +99,7 @@ private:
   }
 
   std::unique_ptr<broker_type> broker_;
+  std::unique_ptr<bootstrap_type> bootstrap_;
   std::unique_ptr<main_type> main_;
   std::unique_ptr<render_type> render_;
   std::unique_ptr<assets_type> assets_;

@@ -1,4 +1,4 @@
-#include "simulation.h"
+#include "runtime.h"
 
 #include <algorithm>
 #include <atomic>
@@ -272,20 +272,7 @@ enum class app_state { boot, loading, game };
 // тут что? все другие системы + потоки для них + тред пул
 // кеш?
 struct simulation_init {
-  app_config config;
-
-  // Движковый (незаменяемый) реестр ресурсов: config/shaders/render-graph. Отдельный
-  // resource_system, изолированный от игрового (моды живут в assets). См. demiurg 1a (Q2).
-  std::unique_ptr<demiurg::module_system> engine_modules;
-  std::unique_ptr<demiurg::resource_system> engine_resources;
-
-  // Pipeline cache (Фаза 2): ОТДЕЛЬНЫЙ demiurg-модуль над writable cache-папкой (не бандлится).
-  // Ресурсы модуля дописываются в общий engine_resources (append_resources) — своего resource_system
-  // у кэша нет. Модуль держим живым здесь: pipeline_cache_resource::load_cold читает через него.
-  std::unique_ptr<demiurg::module_system> cache_modules;
-
-  std::unique_ptr<thread::atomic_pool> pool_container;
-  thread::atomic_pool* pool;
+  runtime_bootstrap* boot = nullptr;
 
   sound_simulation* sound_sim = nullptr;
   render_simulation* render_sim = nullptr;
@@ -386,7 +373,7 @@ struct simulation_init {
   std::vector<ui_sound_state_entry> sound_state_next;
   size_t sound_frame = 0; // счётчик main-кадров (для дедлайна оптимистичных записей)
 
-  simulation_init() : pool(nullptr), window(nullptr), monitor(nullptr) {}
+  simulation_init() : window(nullptr), monitor(nullptr) {}
 };
 
 static void create_window_and_notify_render(simulation_init& c) {
@@ -395,13 +382,13 @@ static void create_window_and_notify_render(simulation_init& c) {
   if (!c.in) c.in = std::make_unique<input::init>(&error_callback);
 
   c.monitor = input::primary_monitor();
-  c.window = input::create_window(c.config.window.width, c.config.window.height, c.config.window.title);
+  c.window = input::create_window(c.boot->config.window.width, c.boot->config.window.height, c.boot->config.window.title);
   if (c.window == nullptr) {
     utils::error{}(
       "Could not create window '{}' {}x{}",
-      c.config.window.title,
-      c.config.window.width,
-      c.config.window.height
+      c.boot->config.window.title,
+      c.boot->config.window.width,
+      c.boot->config.window.height
     );
   }
 
@@ -449,7 +436,7 @@ static void create_window_and_notify_render(simulation_init& c) {
 
   if (c.br) {
     c.br->window_recreation.write_slot() = command_window_recreation{
-      c.window, c.monitor, c.config.window.width, c.config.window.height
+      c.window, c.monitor, c.boot->config.window.width, c.boot->config.window.height
     };
     c.br->window_recreation.publish();
   }
@@ -470,8 +457,8 @@ static void apply_fullscreen(simulation_init& c, const bool enable) {
     c.is_fullscreen = true;
     DE_LOG(catalogue::log_domain::main, flow, "main: fullscreen on ({}x{}@{})", mw, mh, refresh);
   } else if (!enable && c.is_fullscreen) {
-    const uint32_t w = c.windowed_w != 0 ? c.windowed_w : c.config.window.width;
-    const uint32_t h = c.windowed_h != 0 ? c.windowed_h : c.config.window.height;
+    const uint32_t w = c.windowed_w != 0 ? c.windowed_w : c.boot->config.window.width;
+    const uint32_t h = c.windowed_h != 0 ? c.windowed_h : c.boot->config.window.height;
     input::set_window_monitor(c.window, nullptr, c.windowed_x, c.windowed_y, w, h, DEVILS_ENGINE_INPUT_DONT_CARE);
     c.is_fullscreen = false;
     DE_LOG(catalogue::log_domain::main, flow, "main: fullscreen off ({}x{})", w, h);
@@ -501,7 +488,7 @@ static bool loading_complete(const simulation_init& c) {
   return c.chunks_loaded_count == c.chunks_loaded.size();
 }
 
-simulation::simulation() noexcept : simul::main_system<::tile_frontier::core::broker>(main_frame_time), sactor(nullptr), gactor(nullptr), aactor(nullptr) {}
+simulation::simulation(runtime_bootstrap* boot) noexcept : simul::main_system<::tile_frontier::core::broker>(main_frame_time), bootstrap_(boot) {}
 
 simulation::~simulation() noexcept {
   if (!container) return;
@@ -513,9 +500,6 @@ simulation::~simulation() noexcept {
   container->monitor = nullptr;
   container->in.reset();
 
-  aactor = nullptr;
-  gactor = nullptr;
-  sactor = nullptr;
 }
 
 void simulation::set_broker(struct broker* b) {
@@ -555,8 +539,8 @@ static void setup_visage(simulation_init& c) {
 }
 
 static demiurg::resource_handle lookup_resource_handle(const simulation_init& c, const std::string_view id) {
-  if (c.engine_resources) {
-    const auto h = c.engine_resources->handle(id);
+  if (c.boot->engine_resources) {
+    const auto h = c.boot->engine_resources->handle(id);
     if (h.get() != nullptr) return h;
   }
 
@@ -651,40 +635,30 @@ static void append_filter_handles(sol::table& out, int& index, const demiurg::re
   }
 }
 
-void simulation::init() {
-  container.reset(new simulation_init);
-  // Единый broker создаётся ДО подсистем; раздаётся каждой (set_broker) до старта их потоков.
-  // Если runtime уже поставил broker через стандартный контракт, используем его.
-  if (broker_ != nullptr) {
-    container->br = broker_;
-  } else {
-    container->owned_br = std::make_unique<::tile_frontier::core::broker>();
-    container->br = container->owned_br.get();
-  }
-
+void runtime_traits::init_bootstrap(bootstrap_type& boot) {
   // Движковый реестр: engine-module = папка resources/engine/ (не перебивается модами).
   // Новый demiurg-API не нужен — module_system::load_modules умеет директорию как модуль.
-  container->engine_resources = std::make_unique<demiurg::resource_system>();
-  container->engine_resources->register_type<app_config_resource>("config", "tavl");
-  container->engine_resources->register_type<lua_script_resource>("ui", "lua");
-  container->engine_resources->register_type<painter::render_config_source>("render_config", "tavl");
+  boot.engine_resources = std::make_unique<demiurg::resource_system>();
+  boot.engine_resources->register_type<app_config_resource>("config", "tavl");
+  boot.engine_resources->register_type<lua_script_resource>("ui", "lua");
+  boot.engine_resources->register_type<painter::render_config_source>("render_config", "tavl");
   // Шейдеры (Фаза 1): GLSL под папкой shaders/ (тип "shaders"), SPIR-V под shaders/spv/
   // (тип "spv" — сегмент пути). Компиляция/загрузка выбирается по расширению в create_pipeline.
-  container->engine_resources->register_type<painter::glsl_source_file>("shaders", "glsl");
-  container->engine_resources->register_type<painter::shader_source_file>("spv", "spv");
+  boot.engine_resources->register_type<painter::glsl_source_file>("shaders", "glsl");
+  boot.engine_resources->register_type<painter::shader_source_file>("spv", "spv");
   // Pipeline cache (Фаза 2) живёт в ТОМ ЖЕ движковом реестре — отдельный resource_system не нужен.
   // Его МОДУЛЬ (отдельная cache-папка) дописывается в engine_resources позже (append_resources),
   // когда из конфига известен cache_folder. Тип регистрируем сразу.
-  container->engine_resources->register_type<painter::pipeline_cache_resource>("pipeline_cache", "bin");
-  container->engine_modules = std::make_unique<demiurg::module_system>(utils::project_folder() + "resources/");
-  container->engine_modules->load_modules({ demiurg::module_system::list_entry{"engine", "", ""} });
-  container->engine_resources->parse_resources(container->engine_modules.get());
+  boot.engine_resources->register_type<painter::pipeline_cache_resource>("pipeline_cache", "bin");
+  boot.engine_modules = std::make_unique<demiurg::module_system>(utils::project_folder() + "resources/");
+  boot.engine_modules->load_modules({ demiurg::module_system::list_entry{"engine", "", ""} });
+  boot.engine_resources->parse_resources(boot.engine_modules.get());
 
   // Доводим все файлы описания render-graph до warm (текст в памяти) ЗДЕСЬ, на главном
   // потоке до старта рендера — дальше поток рендера читает их только на чтение (parse_data).
   {
     std::vector<painter::render_config_source*> rc;
-    container->engine_resources->find<painter::render_config_source>("render_config", rc);
+    boot.engine_resources->find<painter::render_config_source>("render_config", rc);
     for (auto* r : rc) r->load(utils::safe_handle_t{});
     DE_LOG(catalogue::log_domain::resource, flow, "engine registry: preloaded {} render-config sources", rc.size());
   }
@@ -693,30 +667,24 @@ void simulation::init() {
   // живёт в рендер-потоке вокруг сборки пайплайнов (см. render_system set_shader_sources_loaded, п.1).
 
   const auto config_path = utils::project_folder() + "resources/engine/config/app.tavl"; // для лога
-  if (auto* cfg_res = container->engine_resources->get<app_config_resource>("config/app")) {
+  if (auto* cfg_res = boot.engine_resources->get<app_config_resource>("config/app")) {
     cfg_res->load(utils::safe_handle_t{}); // cold→warm: читает + парсит tavl (CPU, главный поток)
-    container->config = cfg_res->config();
+    boot.config = cfg_res->config();
   } else {
     utils::warn("engine registry: 'config/app' not found, using app_config defaults");
   }
 
   // логгирование настраиваем СРАЗУ после конфига (до подсистем): файл+консоль, уровни доменов.
   // Базовый always-on слой (utils::info ниже) уже попадёт в файл.
-  setup_logging(container->config.logging);
-
-  set_frame_time(frame_time_from_fps(container->config.simulation.main_fps));
-
-  // стартовый размер фреймбуфера = размер из конфига (до создания окна); коллбэк ресайза уточнит.
-  container->fb_width = std::max(container->config.window.width, 1u);
-  container->fb_height = std::max(container->config.window.height, 1u);
+  setup_logging(boot.config.logging);
 
   const uint32_t hw_threads = std::max(std::thread::hardware_concurrency(), 1u);
   // reserved считаем ДИНАМИЧЕСКИ: выключенный движковый поток (render/sound) освобождает ядро под
   // worker'ов (топологическая настройка — применяется при старте движка). См. ROADMAP A-4.
-  uint32_t reserved_threads = container->config.simulation.worker_threads_reserved;
-  if (!container->config.render.enabled && reserved_threads > 0) reserved_threads -= 1;
-  if (!container->config.simulation.sound_enabled && reserved_threads > 0) reserved_threads -= 1;
-  const uint32_t min_worker_threads = std::max(container->config.simulation.min_worker_threads, 1u);
+  uint32_t reserved_threads = boot.config.simulation.worker_threads_reserved;
+  if (!boot.config.render.enabled && reserved_threads > 0) reserved_threads -= 1;
+  if (!boot.config.simulation.sound_enabled && reserved_threads > 0) reserved_threads -= 1;
+  const uint32_t min_worker_threads = std::max(boot.config.simulation.min_worker_threads, 1u);
   const uint32_t thread_count = std::max(
     hw_threads > reserved_threads ? hw_threads - reserved_threads : min_worker_threads,
     min_worker_threads
@@ -727,78 +695,131 @@ void simulation::init() {
   DE_LOG(catalogue::log_domain::main, flow,
     "Loaded app config '{}': window {}x{}, render config '{}', GPU preference '{}' / index {}",
     config_path,
-    container->config.window.width,
-    container->config.window.height,
-    container->config.render.config_folder,
-    container->config.render.preferred_gpu,
-    container->config.render.preferred_gpu_index
+    boot.config.window.width,
+    boot.config.window.height,
+    boot.config.render.config_folder,
+    boot.config.render.preferred_gpu,
+    boot.config.render.preferred_gpu_index
   );
 
-  container->pool_container.reset(new thread::atomic_pool(thread_count));
-  container->pool = container->pool_container.get();
+  boot.pool_container.reset(new thread::atomic_pool(thread_count));
+  boot.pool = boot.pool_container.get();
 }
 
-std::unique_ptr<sound_simulation> simulation::create_sound_system() {
-  if (container == nullptr) return nullptr;
-  const auto sound_ft = frame_time_from_fps(container->config.simulation.sound_fps);
-  if (container->config.simulation.sound_enabled) {
-    return std::make_unique<sound_simulation>(sound_ft);
+void simulation::init() {
+  if (bootstrap_ == nullptr) utils::error{}("simulation: runtime_bootstrap is not set");
+  container.reset(new simulation_init);
+  container->boot = bootstrap_;
+  // Единый broker создаётся ДО подсистем; раздаётся каждой (set_broker) до старта их потоков.
+  // Если runtime уже поставил broker через стандартный контракт, используем его.
+  if (broker_ != nullptr) {
+    container->br = broker_;
+  } else {
+    container->owned_br = std::make_unique<::tile_frontier::core::broker>();
+    container->br = container->owned_br.get();
+  }
+
+  set_frame_time(frame_time_from_fps(bootstrap_->config.simulation.main_fps));
+
+  // стартовый размер фреймбуфера = размер из конфига (до создания окна); коллбэк ресайза уточнит.
+  container->fb_width = std::max(bootstrap_->config.window.width, 1u);
+  container->fb_height = std::max(bootstrap_->config.window.height, 1u);
+}
+
+std::unique_ptr<runtime_traits::bootstrap_type> runtime_traits::make_bootstrap() {
+  return std::make_unique<bootstrap_type>();
+}
+
+std::unique_ptr<runtime_traits::broker_type> runtime_traits::make_broker(bootstrap_type&) {
+  return std::make_unique<broker_type>();
+}
+
+std::unique_ptr<runtime_traits::main_type> runtime_traits::make_main(bootstrap_type& boot) {
+  return std::make_unique<main_type>(&boot);
+}
+
+std::unique_ptr<runtime_traits::sound_type> runtime_traits::make_sound(bootstrap_type& boot) {
+  const auto sound_ft = frame_time_from_fps(boot.config.simulation.sound_fps);
+  if (boot.config.simulation.sound_enabled) {
+    return std::make_unique<sound_type>(sound_ft);
   }
   DE_LOG(catalogue::log_domain::main, flow, "main: sound disabled (sound_enabled=false), skipping sound subsystem");
   return nullptr;
 }
 
-std::unique_ptr<render_simulation> simulation::create_render_system() {
-  if (container == nullptr) return nullptr;
-  if (container->config.render.enabled) {
-    const auto render_ft = frame_time_from_fps(container->config.simulation.render_fps);
+std::unique_ptr<runtime_traits::render_type> runtime_traits::make_render(bootstrap_type& boot) {
+  if (boot.config.render.enabled) {
+    const auto render_ft = frame_time_from_fps(boot.config.simulation.render_fps);
     // Pipeline cache — ОТДЕЛЬНЫЙ demiurg-модуль над выделенной cache-подпапкой (Фаза 2). Раздаёт
     // кэш на load; dump пишет на диск напрямую — round-trip через ре-скан модуля на каждом init.
     // Модуль = <cache_folder>/painter/ (ИЗОЛИРОВАН: system_info кладёт main_device.tavl прямо в
     // <cache_folder>/ — не хотим, чтобы он попадал под скан). Файл = painter/pipeline_cache/main.bin,
     // id (относительно модуля) = "pipeline_cache/main", тип матчится на сегмент "pipeline_cache".
-    const std::string cache_module = container->config.render.cache_folder + "/painter";
+    const std::string cache_module = boot.config.render.cache_folder + "/painter";
     const std::string pipeline_cache_id = "pipeline_cache/main";
     const std::string pipeline_cache_path = make_project_path(cache_module + "/pipeline_cache/main.bin");
-    file_io::create_directory(make_project_path(container->config.render.cache_folder)); // <cache_folder>/
+    file_io::create_directory(make_project_path(boot.config.render.cache_folder)); // <cache_folder>/
     file_io::create_directory(make_project_path(cache_module));                          // .../painter/
     file_io::create_directory(make_project_path(cache_module + "/pipeline_cache"));       // .../painter/pipeline_cache/
     // Cache-МОДУЛЬ отдельный (свой корень-папка), но его ресурсы дописываем в ОБЩИЙ engine_resources
     // (append_resources — без clear, id не пересекаются с движковыми). Отдельный resource_system не нужен.
-    container->cache_modules = std::make_unique<demiurg::module_system>(utils::project_folder());
-    container->cache_modules->load_modules({ demiurg::module_system::list_entry{cache_module, "", ""} });
-    container->engine_resources->append_resources(container->cache_modules.get());
-    if (auto* pc = container->engine_resources->get<painter::pipeline_cache_resource>(pipeline_cache_id)) {
+    boot.cache_modules = std::make_unique<demiurg::module_system>(utils::project_folder());
+    boot.cache_modules->load_modules({ demiurg::module_system::list_entry{cache_module, "", ""} });
+    boot.engine_resources->append_resources(boot.cache_modules.get());
+    if (auto* pc = boot.engine_resources->get<painter::pipeline_cache_resource>(pipeline_cache_id)) {
       pc->load(utils::safe_handle_t{}); // cold→warm: читает блоб через модуль (CPU, главный поток)
       DE_LOG(catalogue::log_domain::resource, flow, "engine registry: pipeline cache '{}' preloaded", pipeline_cache_id);
     }
 
     render_simulation_config render_cfg;
-    render_cfg.engine_registry = container->engine_resources.get();
+    render_cfg.engine_registry = boot.engine_resources.get();
     // config.config_folder ("render_config") — теперь ПРЕФИКС в движковом реестре, не путь на диске
-    render_cfg.render_config_prefix = container->config.render.config_folder + "/";
-    render_cfg.shader_config_prefix = container->config.render.shader_folder + "/";
-    render_cfg.cache_registry = container->engine_resources.get(); // тот же реестр, что engine_registry
+    render_cfg.render_config_prefix = boot.config.render.config_folder + "/";
+    render_cfg.shader_config_prefix = boot.config.render.shader_folder + "/";
+    render_cfg.cache_registry = boot.engine_resources.get(); // тот же реестр, что engine_registry
     render_cfg.pipeline_cache_id = pipeline_cache_id;
     render_cfg.pipeline_cache_path = pipeline_cache_path;
-    render_cfg.graph_name = container->config.render.graph;
-    render_cfg.menu_graph_name = container->config.render.menu_graph;
-    render_cfg.headless = container->config.render.headless;
-    render_cfg.create_vulkan_on_init = container->config.window.create_on_start || container->config.render.headless;
+    render_cfg.graph_name = boot.config.render.graph;
+    render_cfg.menu_graph_name = boot.config.render.menu_graph;
+    render_cfg.headless = boot.config.render.headless;
+    render_cfg.create_vulkan_on_init = boot.config.window.create_on_start || boot.config.render.headless;
 
-    if (container->config.window.create_on_start && !container->config.render.headless && !container->in) {
-      container->in = std::make_unique<input::init>(&error_callback);
-    }
-
-    return std::make_unique<render_simulation>(render_ft, std::move(render_cfg));
+    return std::make_unique<render_type>(render_ft, std::move(render_cfg));
   }
   return nullptr;
 }
 
-std::unique_ptr<assets_simulation> simulation::create_assets_system() {
-  if (container == nullptr) return nullptr;
-  const auto assets_ft = frame_time_from_fps(container->config.simulation.assets_fps);
-  return std::make_unique<assets_simulation>(assets_ft);
+std::unique_ptr<runtime_traits::assets_type> runtime_traits::make_assets(bootstrap_type& boot) {
+  const auto assets_ft = frame_time_from_fps(boot.config.simulation.assets_fps);
+  return std::make_unique<assets_type>(assets_ft);
+}
+
+void runtime_traits::bind_systems(main_type& main, bootstrap_type&, sound_type* sound, render_type* render, assets_type* assets) {
+  main.bind_systems(sound, render, assets);
+}
+
+void runtime_traits::after_workers_started(main_type& main) {
+  main.after_workers_started();
+}
+
+size_t runtime_traits::main_wait_mcs(const main_type&) {
+  return 0;
+}
+
+size_t runtime_traits::sound_wait_mcs(const bootstrap_type& boot, const sound_type& sound) {
+  return thread_start_gap(sound.frame_time(), boot.config.simulation.thread_start_gap_divisor);
+}
+
+size_t runtime_traits::render_wait_mcs(const bootstrap_type& boot, const render_type& render) {
+  return thread_start_gap(render.frame_time(), boot.config.simulation.thread_start_gap_divisor);
+}
+
+size_t runtime_traits::assets_wait_mcs(const bootstrap_type& boot, const assets_type& assets) {
+  return thread_start_gap(assets.frame_time(), boot.config.simulation.thread_start_gap_divisor);
+}
+
+int runtime_traits::exit_code(const main_type& main) {
+  return main.exit_code();
 }
 
 void simulation::bind_systems(sound_simulation* sound, render_simulation* render, assets_simulation* assets) {
@@ -806,21 +827,9 @@ void simulation::bind_systems(sound_simulation* sound, render_simulation* render
   container->sound_sim = sound;
   container->render_sim = render;
   container->assets_sim = assets;
-  sactor = sound != nullptr ? sound->get_actor() : nullptr;
-  gactor = render != nullptr ? render->get_actor() : nullptr;
-  aactor = assets != nullptr ? assets->get_actor() : nullptr;
-}
-
-size_t simulation::sound_thread_wait(const sound_simulation& sound) const {
-  return container != nullptr ? thread_start_gap(sound.frame_time(), container->config.simulation.thread_start_gap_divisor) : 0;
-}
-
-size_t simulation::render_thread_wait(const render_simulation& render) const {
-  return container != nullptr ? thread_start_gap(render.frame_time(), container->config.simulation.thread_start_gap_divisor) : 0;
-}
-
-size_t simulation::assets_thread_wait(const assets_simulation& assets) const {
-  return container != nullptr ? thread_start_gap(assets.frame_time(), container->config.simulation.thread_start_gap_divisor) : 0;
+  systems.sound = sound != nullptr;
+  systems.render = render != nullptr;
+  systems.assets = assets != nullptr;
 }
 
 int simulation::exit_code() const noexcept {
@@ -831,7 +840,7 @@ void simulation::after_workers_started() {
   if (container == nullptr) return;
   if (container->assets_sim == nullptr) utils::error{}("main: assets subsystem is required before startup resource binding");
 
-  if (sactor != nullptr) {
+  if (systems.sound) {
     command_sound_devices devices;
     devices.request_id = generate_task_id();
     devices.out = &container->sound_devices;
@@ -843,7 +852,7 @@ void simulation::after_workers_started() {
 
   // Окно - поздний ресурс. Render thread должен жить и без него, а это событие
   // может прийти сейчас, после загрузки ассетов или после полного пересоздания окна.
-  if (container->config.window.create_on_start && container->render_sim && !container->config.render.headless) {
+  if (bootstrap_->config.window.create_on_start && systems.render && !bootstrap_->config.render.headless) {
     create_window_and_notify_render(*container);
   }
 
@@ -901,7 +910,7 @@ void simulation::after_workers_started() {
   container->chunks_requested.assign(size_t(container->chunks_x) * container->chunks_y, false);
   container->chunks_loaded.assign(size_t(container->chunks_x) * container->chunks_y, false);
 
-  if (aactor != nullptr) {
+  if (systems.assets) {
     for (uint32_t cy = 0; cy < container->chunks_y; ++cy) {
       for (uint32_t cx = 0; cx < container->chunks_x; ++cx) {
         const size_t idx = size_t(cy) * container->chunks_x + cx;
@@ -921,7 +930,7 @@ void simulation::after_workers_started() {
   const glm::vec2 extent = container->grid.world_extent();
   container->cam.center = extent * 0.5f;
   container->cam.half_width = 8.0f;
-  container->cam.aspect = float(container->config.window.width) / float(std::max(container->config.window.height, 1u));
+  container->cam.aspect = float(bootstrap_->config.window.width) / float(std::max(bootstrap_->config.window.height, 1u));
 
   // Валидируем раскладку tile_instance против layout "v2ui1" один раз.
   if (const auto r = container->batch.bind("v2ui1"); !r) {
@@ -1013,7 +1022,7 @@ void simulation::after_workers_started() {
       const std::string abs_prefix = absolute_resource_path(current, prefix);
       if (abs_prefix.empty()) return out;
       int index = 0;
-      append_find_handles(out, index, container->engine_resources.get(), abs_prefix);
+      append_find_handles(out, index, bootstrap_->engine_resources.get(), abs_prefix);
       append_find_handles(out, index, container->assets_sim != nullptr ? container->assets_sim->resources() : nullptr, abs_prefix);
       return out;
     });
@@ -1025,7 +1034,7 @@ void simulation::after_workers_started() {
       const std::string abs_text = absolute_resource_path(current, text);
       if (abs_text.empty()) return out;
       int index = 0;
-      append_filter_handles(out, index, container->engine_resources.get(), abs_text);
+      append_filter_handles(out, index, bootstrap_->engine_resources.get(), abs_text);
       append_filter_handles(out, index, container->assets_sim != nullptr ? container->assets_sim->resources() : nullptr, abs_text);
       return out;
     });
@@ -1082,7 +1091,7 @@ void simulation::after_workers_started() {
     // параметра безопаснее sol::optional (тот съедает не тот слот стека при nil).
     app.set_function("play_sound",
       [this](sol::object a, sol::optional<sol::table> b) -> sound_handle {
-        if (sactor == nullptr) return sound_handle{};
+        if (!systems.sound) return sound_handle{};
 
         demiurg::resource_handle sound_res;
         sol::optional<sol::table> opts;
@@ -1117,7 +1126,7 @@ void simulation::after_workers_started() {
       });
 
     app.set_function("stop_sound", [this](const sound_handle& h) {
-      if (sactor == nullptr || !h.valid()) return;
+      if (!systems.sound || !h.valid()) return;
       command_sound_stop stop{};
       stop.taskid = h.value;
       container->br->sound_stop.try_push(stop);
@@ -1147,7 +1156,7 @@ void simulation::after_workers_started() {
 
     // мастер-громкость [0,1] напрямую (UI-ползунок). Отдельно от политики фокуса — это явная настройка.
     app.set_function("set_master_volume", [this](double v) {
-      if (sactor == nullptr || container->br == nullptr) return;
+      if (!systems.sound || container->br == nullptr) return;
       const float gain = float(std::clamp(v, 0.0, 1.0));
       container->policy.focused_master_gain = gain; // чтобы возврат фокуса не сбросил громкость
       container->br->sound_master_gain.try_push(command_sound_set_master_gain{gain});
@@ -1157,13 +1166,13 @@ void simulation::after_workers_started() {
     // Смена разрешения: меняем окно; GLFW пришлёт framebuffer_size → штатный путь ресайза (1c).
     app.set_function("set_resolution", [this](int w, int h) {
       if (container->window == nullptr || w <= 0 || h <= 0) return;
-      container->config.window.width = uint32_t(w);
-      container->config.window.height = uint32_t(h);
+      bootstrap_->config.window.width = uint32_t(w);
+      bootstrap_->config.window.height = uint32_t(h);
       input::set_window_size(container->window, uint32_t(w), uint32_t(h));
     });
     // Смена звукового устройства: пере-создаём system2 через уже существующий канал recreate.
     app.set_function("set_sound_device", [this](const std::string& name) {
-      if (sactor == nullptr || container->br == nullptr) return;
+      if (!systems.sound || container->br == nullptr) return;
       container->br->recreate_sound.try_push(command_recreate_sound_system{name});
     });
 
@@ -1261,7 +1270,7 @@ void simulation::after_workers_started() {
 
   // атласы шрифтов → GPU тем же путём, что и текстуры: просим ассеты довести до final_state.
   // Слоты определятся динамически (после grass-текстур); main прочитает gpu_index по hot.
-  if (aactor != nullptr) {
+  if (systems.assets) {
     for (const auto& [h, logged] : container->ui_fonts) {
       auto* fr = h.get<visage::font_resource>();
       if (fr == nullptr) continue;
@@ -1297,7 +1306,7 @@ void simulation::update(const size_t time) {
       case app_state::boot: {
         auto* boot_font = container->ui_font_h.get<visage::font_resource>();
         const bool font_ready = boot_font == nullptr || boot_font->usable();
-        const bool no_render = (gactor == nullptr); // без рендера splash не нужен — не залипаем в boot
+        const bool no_render = (!systems.render); // без рендера splash не нужен — не залипаем в boot
         if (font_ready || no_render) {
           container->state = app_state::loading;
           DE_LOG(catalogue::log_domain::main, flow, "app_state: boot -> loading (ui font {})", font_ready ? "ready" : "n/a");
@@ -1317,11 +1326,11 @@ void simulation::update(const size_t time) {
 
   // Демо п.2/п.3: периодически переключаем активный render graph graph<->menu_graph, чтобы проверить
   // мгновенный своп без пересоздания ресурсов. Управляется render.demo_graph_toggle_ms (0 ⇒ выкл).
-  if (container != nullptr && gactor != nullptr) {
-    const auto& rc = container->config.render;
+  if (container != nullptr && systems.render) {
+    const auto& rc = bootstrap_->config.render;
     if (rc.demo_graph_toggle_ms > 0 && !rc.menu_graph.empty() && rc.menu_graph != rc.graph) {
       const uint64_t period = std::max<uint64_t>(1,
-        uint64_t(rc.demo_graph_toggle_ms) * uint64_t(container->config.simulation.main_fps) / 1000ull);
+        uint64_t(rc.demo_graph_toggle_ms) * uint64_t(bootstrap_->config.simulation.main_fps) / 1000ull);
       if (container->tick % period == 0) {
         const bool to_menu = (container->tick / period) % 2 == 1;
         if (container->br) {
@@ -1400,10 +1409,10 @@ void simulation::update(const size_t time) {
       const float gain = (active || !pol.mute_when_unfocused) ? pol.focused_master_gain : pol.unfocused_master_gain;
       const bool draw = active ? true : (iconified ? pol.draw_when_minimized : pol.draw_when_unfocused);
 
-      if (sactor != nullptr && container->br) {
+      if (systems.sound && container->br) {
         container->br->sound_master_gain.try_push(command_sound_set_master_gain{gain});
       }
-      if (gactor != nullptr && container->br) {
+      if (systems.render && container->br) {
         container->br->render_set_active.write_slot() = command_render_set_active{draw};
         container->br->render_set_active.publish();
       }
@@ -1476,7 +1485,7 @@ void simulation::update(const size_t time) {
     // Контракт записи в буфер: шлём общий UBO (view_proj + ui_proj + misc) в host-visible
     // camera_buffer. ВСЕГДА (не только в game): ui_proj нужен UI на splash/loading тоже.
     // ui_proj — ortho «пиксели окна -> clip» (Vulkan: y вниз, начало слева-сверху). misc=screen_size/px_range.
-    if (gactor != nullptr) {
+    if (systems.render) {
       // ЖИВОЙ размер фреймбуфера, а не статичный config (иначе проекция искажается на реальном
       // размере окна). cam.aspect уже обновлён коллбэком ресайза, так что и view_proj корректен.
       const float w = float(std::max(container->fb_width, 1u));
@@ -1502,7 +1511,7 @@ void simulation::update(const size_t time) {
     // Тайлы карты публикуем ТОЛЬКО в game (шаг 3d): на splash/loading карта не рисуется, поэтому
     // ничего не мигает и null-текстуры не вылезают (стартовый набор уже usable() к моменту game).
     // Срез сетки строим тут же (только когда реально публикуем — не тратим CPU на splash/loading).
-    if (container->state == app_state::game && gactor != nullptr && container->br) {
+    if (container->state == app_state::game && systems.render && container->br) {
       const tile_span span = visible_tiles(container->cam, container->grid, 1.0f);
       container->batch.build(container->grid, span);
 
@@ -1531,14 +1540,14 @@ void simulation::update(const size_t time) {
     container->actors_last_metrics = container->actors.update(
       float(time) / float(utils::global_time_resolution),
       container->actors_batch,
-      *container->pool
+      *bootstrap_->pool
     );
     const auto t1 = std::chrono::steady_clock::now();
     const uint64_t update_us = uint64_t(std::max<int64_t>(utils::count_mcs(t0, t1), 0));
 
     // Снапшот акторов — latest-wins мейлбокс: заполняем слот-продюсер НА МЕСТЕ (bytes/ids
     // переиспользуют ёмкость между кадрами), затем publish. Строим только когда рендер включён.
-    if (gactor != nullptr && container->br) {
+    if (systems.render && container->br) {
       auto& slot = container->br->draw_actors.write_slot();
       slot.count = container->actors_batch.count();
       slot.stride = actor_batch::stride();
@@ -1565,7 +1574,7 @@ void simulation::update(const size_t time) {
     // презентационный мост sim→sound: эмиты звука (вход в состояние FSM) → звуковой актор.
     // Куллинг по близости к слушателю (камере) + кап на тик (ограничение голосов). Звук
     // эфемерен и НЕ реплицируется — здесь решается лишь что РЕАЛЬНО проиграть.
-    if (sactor != nullptr) {
+    if (systems.sound) {
       const auto emits = container->actors.sound_events();
       const glm::vec2 listener = container->cam.center;
       const float audible = container->cam.half_width * 1.5f;
@@ -1597,10 +1606,10 @@ void simulation::update(const size_t time) {
     container->metrics_instances += container->actors_last_metrics.instances;
     container->metrics_actor_update_us += update_us;
 
-    if (container->config.metrics.enabled) {
+    if (bootstrap_->config.metrics.enabled) {
       const auto now = std::chrono::steady_clock::now();
       const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - container->metrics_last_log).count();
-      if (elapsed_ms >= container->config.metrics.log_interval_ms && container->metrics_frames != 0) {
+      if (elapsed_ms >= bootstrap_->config.metrics.log_interval_ms && container->metrics_frames != 0) {
         const double seconds = double(elapsed_ms) / 1000.0;
         const double fps = double(container->metrics_frames) / seconds;
         const double intent_rate = double(container->metrics_intents) / seconds;
@@ -1720,7 +1729,7 @@ void simulation::update(const size_t time) {
     // отправляем буферы UI в рендер (контракт записи в host-visible ресурсы). Шаг draw_ui
     // забиндит ui_vertices/ui_indices и проитерирует ui_commands. Буфер команд самоописывающийся:
     // [uint32 count][gui_draw_command_t...].
-    if (gactor != nullptr) {
+    if (systems.render) {
       const auto verts = container->ui->vertices();
       const auto inds = container->ui->indices();
       const auto cmds = container->ui->commands();

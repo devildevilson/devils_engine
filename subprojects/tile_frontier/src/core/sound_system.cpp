@@ -137,7 +137,6 @@ void sound_simulation::update(const size_t time) {
   }
 }
 
-sound_actor* sound_simulation::get_actor() { return &actor; }
 void sound_simulation::set_broker(struct broker* b) {
   simul::sound_system<::tile_frontier::core::broker>::set_broker(b);
   if (container) container->br = b;
