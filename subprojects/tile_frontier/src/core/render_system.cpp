@@ -874,8 +874,6 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
   }
 }
 
-graphics_actor* render_simulation::get_actor() { return &actor; }
-
 void render_simulation::set_broker(struct broker* b) {
   simul::render_system<::tile_frontier::core::broker>::set_broker(b);
   if (!container) return;

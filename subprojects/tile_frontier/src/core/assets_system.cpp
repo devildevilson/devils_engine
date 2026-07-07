@@ -155,8 +155,6 @@ void assets_simulation::update(const size_t) {
   }
 }
 
-assets_actor* assets_simulation::get_actor() { return &actor; }
-
 demiurg::resource_system* assets_simulation::resources() {
   return container ? container->resources.get() : nullptr;
 }

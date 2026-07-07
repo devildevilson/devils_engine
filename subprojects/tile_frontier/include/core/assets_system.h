@@ -6,8 +6,6 @@
 
 #include <devils_engine/simul/systems.h>
 
-#include "actors.h"
-
 namespace devils_engine { namespace demiurg { class resource_system; } }
 
 namespace tile_frontier {
@@ -20,7 +18,7 @@ struct broker;
 // demiurg::resource_loader (внутри container). assets владеет реестром ресурсов
 // (resource_system + module_system), строит его в init() и далее только читает.
 // Локальные переходы cold↔warm делает сам, GPU-переходы warm↔hot форвардит рендеру.
-class assets_simulation : public simul::assets_system<broker> {
+class assets_simulation : public devils_engine::simul::assets_system<broker> {
 public:
   assets_simulation(const size_t frame_time) noexcept;
   ~assets_simulation() noexcept;
@@ -28,16 +26,13 @@ public:
   bool stop_predicate() const override;
   void update(const size_t time) override;
 
-  assets_actor* get_actor();
-
   // Реестр ресурсов: строится в init() (на главном потоке), потом стабилен и читается main'ом.
-  demiurg::resource_system* resources();
+  devils_engine::demiurg::resource_system* resources();
 
-  // Единый broker всех каналов (main владеет). Задаётся до старта потока.
+  // Единый broker всех каналов (runtime владеет). Задаётся до старта потока.
   void set_broker(struct broker* b);
 private:
   std::unique_ptr<assets_simulation_init> container;
-  assets_actor actor;
 };
 
 }
