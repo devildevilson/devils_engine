@@ -8,7 +8,6 @@
 #include <memory>
 #include <span>
 #include <thread>
-#include <stop_token>
 #include <unistd.h>
 
 #include <lua.hpp> // lua_gc — метрика памяти lua в memory-probe
@@ -288,13 +287,9 @@ struct simulation_init {
   std::unique_ptr<thread::atomic_pool> pool_container;
   thread::atomic_pool* pool;
 
-  std::unique_ptr<sound_simulation> sound_sim;
-  std::unique_ptr<render_simulation> render_sim;
-  std::unique_ptr<assets_simulation> assets_sim;
-
-  std::unique_ptr<std::jthread> sound_thread;
-  std::unique_ptr<std::jthread> render_thread;
-  std::unique_ptr<std::jthread> assets_thread;
+  sound_simulation* sound_sim = nullptr;
+  render_simulation* render_sim = nullptr;
+  assets_simulation* assets_sim = nullptr;
 
   GLFWwindow* window;
   GLFWmonitor* monitor;
@@ -336,9 +331,10 @@ struct simulation_init {
   // command_sound_play из UI/геймплея) и запрашивает их до warm. Сам звук-актор ресурсы не хранит.
   gtl::flat_hash_map<uint64_t, demiurg::resource_handle> sound_by_name;
 
-  // Единый broker всех межпоточных каналов. Владелец — main; создаётся в init ДО подсистем и
-  // раздаётся им указателем (set_broker) до старта потоков. Заменяет actor_ref/message_dispatcher.
-  std::unique_ptr<broker> br;
+  // Единый broker всех межпоточных каналов. В обычном старом запуске main владеет owned_br; при
+  // запуске через simul::app_runtime broker приходит извне через set_broker() и br только заимствует.
+  std::unique_ptr<broker> owned_br;
+  broker* br = nullptr;
 
   // модель тайловой карты (главная сторона)
   texture_set textures;     // текстуры карты, собранные по префиксу пути
@@ -505,20 +501,10 @@ static bool loading_complete(const simulation_init& c) {
   return c.chunks_loaded_count == c.chunks_loaded.size();
 }
 
-simulation::simulation() noexcept : simul::advancer(main_frame_time), sactor(nullptr), gactor(nullptr), aactor(nullptr) {}
+simulation::simulation() noexcept : simul::main_system<::tile_frontier::core::broker>(main_frame_time), sactor(nullptr), gactor(nullptr), aactor(nullptr) {}
 
 simulation::~simulation() noexcept {
   if (!container) return;
-
-  if (container->sound_sim)  container->sound_sim->stop();
-  if (container->render_sim) container->render_sim->stop();
-  if (container->assets_sim) container->assets_sim->stop();
-
-  container->sound_thread.reset();
-  container->render_thread.reset();
-  container->assets_thread.reset();
-
-  container->render_sim.reset();
 
   if (container->window != nullptr) {
     input::destroy(container->window);
@@ -527,12 +513,13 @@ simulation::~simulation() noexcept {
   container->monitor = nullptr;
   container->in.reset();
 
-  container->sound_sim.reset();
-  container->assets_sim.reset();
-
   aactor = nullptr;
   gactor = nullptr;
   sactor = nullptr;
+}
+
+void simulation::set_broker(struct broker* b) {
+  simul::main_system<::tile_frontier::core::broker>::set_broker(b);
 }
 
 // Поднимаем интерфейс в главном потоке. Шрифты — demiurg-ресурсы ассетного реестра
@@ -667,7 +654,13 @@ static void append_filter_handles(sol::table& out, int& index, const demiurg::re
 void simulation::init() {
   container.reset(new simulation_init);
   // Единый broker создаётся ДО подсистем; раздаётся каждой (set_broker) до старта их потоков.
-  container->br = std::make_unique<broker>();
+  // Если runtime уже поставил broker через стандартный контракт, используем его.
+  if (broker_ != nullptr) {
+    container->br = broker_;
+  } else {
+    container->owned_br = std::make_unique<::tile_frontier::core::broker>();
+    container->br = container->owned_br.get();
+  }
 
   // Движковый реестр: engine-module = папка resources/engine/ (не перебивается модами).
   // Новый demiurg-API не нужен — module_system::load_modules умеет директорию как модуль.
@@ -743,23 +736,22 @@ void simulation::init() {
 
   container->pool_container.reset(new thread::atomic_pool(thread_count));
   container->pool = container->pool_container.get();
+}
 
+std::unique_ptr<sound_simulation> simulation::create_sound_system() {
+  if (container == nullptr) return nullptr;
   const auto sound_ft = frame_time_from_fps(container->config.simulation.sound_fps);
-  const auto render_ft = frame_time_from_fps(container->config.simulation.render_fps);
-  const auto assets_ft = frame_time_from_fps(container->config.simulation.assets_fps);
-
-  // Звуковой поток — опциональная подсистема (sound_enabled). Если выключен, sound_sim не создаётся,
-  // sactor остаётся nullptr (все обращения к звуку уже защищены проверкой sactor != nullptr).
   if (container->config.simulation.sound_enabled) {
-    container->sound_sim.reset(new sound_simulation(sound_ft));
-    container->sound_sim->init();
-    container->sound_sim->set_broker(container->br.get());
-    sactor = container->sound_sim->get_actor();
-  } else {
-    DE_LOG(catalogue::log_domain::main, flow, "main: sound disabled (sound_enabled=false), skipping sound subsystem");
+    return std::make_unique<sound_simulation>(sound_ft);
   }
+  DE_LOG(catalogue::log_domain::main, flow, "main: sound disabled (sound_enabled=false), skipping sound subsystem");
+  return nullptr;
+}
 
+std::unique_ptr<render_simulation> simulation::create_render_system() {
+  if (container == nullptr) return nullptr;
   if (container->config.render.enabled) {
+    const auto render_ft = frame_time_from_fps(container->config.simulation.render_fps);
     // Pipeline cache — ОТДЕЛЬНЫЙ demiurg-модуль над выделенной cache-подпапкой (Фаза 2). Раздаёт
     // кэш на load; dump пишет на диск напрямую — round-trip через ре-скан модуля на каждом init.
     // Модуль = <cache_folder>/painter/ (ИЗОЛИРОВАН: system_info кладёт main_device.tavl прямо в
@@ -798,30 +790,46 @@ void simulation::init() {
       container->in = std::make_unique<input::init>(&error_callback);
     }
 
-    container->render_sim.reset(new render_simulation(render_ft, std::move(render_cfg)));
-    container->render_sim->init();
-    container->render_sim->set_broker(container->br.get()); // заодно триггерит попытку сборки графа
-    gactor = container->render_sim->get_actor();
+    return std::make_unique<render_simulation>(render_ft, std::move(render_cfg));
   }
+  return nullptr;
+}
 
-  container->assets_sim.reset(new assets_simulation(assets_ft));
-  container->assets_sim->init();
-  container->assets_sim->set_broker(container->br.get());
-  aactor = container->assets_sim->get_actor();
+std::unique_ptr<assets_simulation> simulation::create_assets_system() {
+  if (container == nullptr) return nullptr;
+  const auto assets_ft = frame_time_from_fps(container->config.simulation.assets_fps);
+  return std::make_unique<assets_simulation>(assets_ft);
+}
 
-  const auto gap_divisor = container->config.simulation.thread_start_gap_divisor;
-  const auto sound_gap = thread_start_gap(sound_ft, gap_divisor);
-  const auto render_gap = thread_start_gap(render_ft, gap_divisor);
-  const auto assets_gap = thread_start_gap(assets_ft, gap_divisor);
+void simulation::bind_systems(sound_simulation* sound, render_simulation* render, assets_simulation* assets) {
+  if (container == nullptr) return;
+  container->sound_sim = sound;
+  container->render_sim = render;
+  container->assets_sim = assets;
+  sactor = sound != nullptr ? sound->get_actor() : nullptr;
+  gactor = render != nullptr ? render->get_actor() : nullptr;
+  aactor = assets != nullptr ? assets->get_actor() : nullptr;
+}
 
-  // жлямбды берут std::stop_token: разрушение jthread кооперативно останавливает run (см. advancer::run)
-  if (container->sound_sim) {
-    container->sound_thread.reset(new std::jthread([sys = container->sound_sim.get(), sound_gap](std::stop_token st){ sys->run(st, sound_gap); }));
-  }
-  if (container->render_sim) {
-    container->render_thread.reset(new std::jthread([sys = container->render_sim.get(), render_gap](std::stop_token st){ sys->run(st, render_gap); }));
-  }
-  container->assets_thread.reset(new std::jthread([sys = container->assets_sim.get(), assets_gap](std::stop_token st){ sys->run(st, assets_gap); }));
+size_t simulation::sound_thread_wait(const sound_simulation& sound) const {
+  return container != nullptr ? thread_start_gap(sound.frame_time(), container->config.simulation.thread_start_gap_divisor) : 0;
+}
+
+size_t simulation::render_thread_wait(const render_simulation& render) const {
+  return container != nullptr ? thread_start_gap(render.frame_time(), container->config.simulation.thread_start_gap_divisor) : 0;
+}
+
+size_t simulation::assets_thread_wait(const assets_simulation& assets) const {
+  return container != nullptr ? thread_start_gap(assets.frame_time(), container->config.simulation.thread_start_gap_divisor) : 0;
+}
+
+int simulation::exit_code() const noexcept {
+  return 0;
+}
+
+void simulation::after_workers_started() {
+  if (container == nullptr) return;
+  if (container->assets_sim == nullptr) utils::error{}("main: assets subsystem is required before startup resource binding");
 
   if (sactor != nullptr) {
     command_sound_devices devices;

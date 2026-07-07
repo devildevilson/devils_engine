@@ -5,7 +5,7 @@
 #include <memory>
 #include <string>
 
-#include <devils_engine/simul/interface.h>
+#include <devils_engine/simul/systems.h>
 
 #include "actors.h"
 
@@ -40,7 +40,7 @@ struct render_simulation_config {
   bool headless = false;
 };
 
-class render_simulation : public simul::advancer {
+class render_simulation : public simul::render_system<broker> {
 public:
   render_simulation(const size_t frame_time, render_simulation_config config) noexcept;
   ~render_simulation() noexcept;
@@ -52,7 +52,7 @@ public:
 
   // Единый broker всех каналов (main владеет). Задаётся до старта потока; заодно триггерит попытку
   // сборки графа (как раньше делал set_assets_actor).
-  void set_broker(broker* b);
+  void set_broker(struct broker* b);
 private:
   std::unique_ptr<render_simulation_init> container;
   graphics_actor actor;

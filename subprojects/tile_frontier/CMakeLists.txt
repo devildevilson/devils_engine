@@ -22,6 +22,7 @@ set(HDR_LIST
   include/core/draw_intent.h
   include/core/sound_system.h
   include/core/render_system.h
+  include/core/runtime.h
   include/core/assets_system.h
   include/core/global_ubo.h
   include/core/texture_set.h

@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <memory>
 
-#include <devils_engine/simul/interface.h>
+#include <devils_engine/simul/systems.h>
 
 #include "actors.h"
 
@@ -20,7 +20,7 @@ struct broker;
 // demiurg::resource_loader (внутри container). assets владеет реестром ресурсов
 // (resource_system + module_system), строит его в init() и далее только читает.
 // Локальные переходы cold↔warm делает сам, GPU-переходы warm↔hot форвардит рендеру.
-class assets_simulation : public simul::advancer {
+class assets_simulation : public simul::assets_system<broker> {
 public:
   assets_simulation(const size_t frame_time) noexcept;
   ~assets_simulation() noexcept;
@@ -34,7 +34,7 @@ public:
   demiurg::resource_system* resources();
 
   // Единый broker всех каналов (main владеет). Задаётся до старта потока.
-  void set_broker(broker* b);
+  void set_broker(struct broker* b);
 private:
   std::unique_ptr<assets_simulation_init> container;
   assets_actor actor;

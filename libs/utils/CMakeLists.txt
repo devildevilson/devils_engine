@@ -86,12 +86,12 @@ add_library(devils_utils ${SRC_LIST} ${HDR_LIST})
 add_library(engine_c_part1 src/utils/sha256.c include/devils_engine/utils/sha256cpp.h)
 target_compile_features(engine_c_part1 PRIVATE c_std_11)
 target_compile_options(engine_c_part1 PRIVATE 
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /wd5045 /wd4820 /Zc:preprocessor /arch:AVX>>
-  $<$<CONFIG:DEBUG>:$<$<CXX_COMPILER_ID:GNU,Clang>:-g -Wall -Wextra -mavx>>
+  $<$<CONFIG:DEBUG>:$<$<C_COMPILER_ID:MSVC>:${DEVILS_ENGINE_ARCH_FLAGS_MSVC} /Wall /wd5045 /wd4820 /Zc:preprocessor>>
+  $<$<CONFIG:DEBUG>:$<$<C_COMPILER_ID:GNU,Clang>:${DEVILS_ENGINE_ARCH_FLAGS_GNU} -g -Wall -Wextra>>
 )
 target_compile_options(engine_c_part1 PRIVATE 
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:MSVC>:/Wall /O2 /Zc:preprocessor /arch:AVX>>
-  $<$<CONFIG:RELEASE>:$<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -Wall -Wextra -mavx>>
+  $<$<CONFIG:RELEASE>:$<$<C_COMPILER_ID:MSVC>:${DEVILS_ENGINE_ARCH_FLAGS_MSVC} /Wall /O2 /Zc:preprocessor>>
+  $<$<CONFIG:RELEASE>:$<$<C_COMPILER_ID:GNU,Clang>:${DEVILS_ENGINE_ARCH_FLAGS_GNU} -O3 -Wall -Wextra>>
 )
 
 target_link_libraries(devils_utils 

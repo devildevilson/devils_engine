@@ -697,7 +697,7 @@ static void render_resize_swapchain(render_simulation_init& c, const uint32_t w,
 }
 
 render_simulation::render_simulation(const size_t frame_time, render_simulation_config config) noexcept :
-  simul::advancer(frame_time),
+  simul::render_system<::tile_frontier::core::broker>(frame_time),
   container(std::make_unique<render_simulation_init>())
 {
   container->config = std::move(config);
@@ -746,7 +746,7 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
   // в конце заходим в рендер граф и рисуем все подряд
 
   if (container->br == nullptr) return; // broker ещё не задан — нечего обрабатывать/рисовать
-  broker& br = *container->br;
+  auto& br = *container->br;
 
   // ловим событие пересоздания окна
   if (const command_window_recreation* cmd = br.window_recreation.consume()) {
@@ -876,7 +876,8 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
 
 graphics_actor* render_simulation::get_actor() { return &actor; }
 
-void render_simulation::set_broker(broker* b) {
+void render_simulation::set_broker(struct broker* b) {
+  simul::render_system<::tile_frontier::core::broker>::set_broker(b);
   if (!container) return;
   container->br = b;
   render_try_create_graph(*container); // триггер сборки графа (как раньше делал set_assets_actor)

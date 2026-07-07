@@ -8,16 +8,13 @@
 #include <string>
 #include <vector>
 
-#include <devils_engine/demiurg/resource_system.h>
+#include <devils_engine/simul/messages.h>
 
 #include "actors.h"
 
 // Контракты между системами: структуры, которые ходят через диспетчер сообщений.
 // Это намеренно "тупые" POD-подобные сообщения без логики и без тяжёлых зависимостей
 // (окно/пул объявлены вперёд), чтобы хедер был дешёвым для включения отовсюду.
-
-struct GLFWwindow;
-struct GLFWmonitor;
 
 namespace devils_engine { namespace thread { class atomic_pool; } }
 namespace devils_engine { namespace demiurg { class resource_system; } }
@@ -35,85 +32,12 @@ struct resource_status {
   // ???
 };
 
-struct resource_ref {
-  demiurg::resource_handle handle;
-  demiurg::resource_interface* direct = nullptr;
-
-  static resource_ref from_handle(const demiurg::resource_handle h) noexcept {
-    resource_ref ref;
-    ref.handle = h;
-    return ref;
-  }
-
-  static resource_ref from_direct(demiurg::resource_interface* const ptr) noexcept {
-    resource_ref ref;
-    ref.direct = ptr;
-    return ref;
-  }
-
-  static resource_ref from_system(const demiurg::resource_system* const system, demiurg::resource_interface* const ptr) noexcept {
-    if (system != nullptr && ptr != nullptr) {
-      const demiurg::resource_handle h = system->handle(ptr->id);
-      if (h.get() == ptr) return from_handle(h);
-    }
-    return from_direct(ptr);
-  }
-
-  demiurg::resource_interface* get() const noexcept {
-    if (auto* ptr = handle.get()) return ptr;
-    return direct;
-  }
-
-  template <typename T>
-  T* get() const noexcept {
-    if (auto* ptr = handle.template get<T>()) return ptr;
-    if (direct == nullptr || !direct->is_type(utils::type_id<T>())) return nullptr;
-    return static_cast<T*>(direct);
-  }
-};
-
-// main → sound: проиграть предзагруженный звук. taskid генерит main, чтобы СРАЗУ вернуть
-// хэндл в lua (актор берёт его как id задачи). res — стабильный demiurg handle ресурса.
-// start — [0,1] откуда играть. after — секвенсинг (SIZE_MAX = сразу).
-struct command_sound_play {
-  size_t taskid;
-  size_t after = SIZE_MAX;
-  // demiurg-хендл звук-ресурса, управляемого потоком ассетов. Звуковая система читает из него
-  // (view()) и НЕ хранит ресурсный указатель.
-  resource_ref res;
-  double start = 0.0;
-  // категория звука (sound::type: music/talk/talk_pos/ui_effect/sfx). Держим как uint32, чтобы не
-  // тянуть sound-хедер сюда; UINT32_MAX = не задано → актор возьмёт sfx. Раньше актор хардкодил sfx.
-  uint32_t type = UINT32_MAX;
-};
-
-// main → sound: завершить задачу (remove_sound). Отдельное сообщение — без поля-команды-энума.
-struct command_sound_stop {
-  size_t taskid;
-};
-
-// main → sound: обновить позиционные параметры живой задачи (3D-листенер — позже).
-struct command_sound_update {
-  size_t taskid;
-  float pos[3];
-  float dir[3];
-  float vel[3];
-};
-
-// sound → main: упрощённое состояние ОДНОГО звука в обработке (для UI «здесь и сейчас»).
-struct sound_state_entry {
-  size_t taskid;
-  double progress; // [0,1]
-};
-
-// sound → main: ПОЛНЫЙ слепок состояния звуковой системы, публикуется периодически самим
-// звуковым потоком. main держит последний (consume_last) и читает из него app.sound_state.
-// Это «двойная буферизация через сообщение»: у звука своя живая копия задач, у main — её
-// снимок для UI; никаких сырых указателей/atomic наружу. Тот же паттерн пойдёт ассетам
-// (публиковать список ресурсов в обработке → прогресс-бар загрузки на экране).
-struct command_sound_state {
-  std::vector<sound_state_entry> sounds;
-};
+using resource_ref = simul::resource_ref;
+using command_sound_play = simul::command_sound_play;
+using command_sound_stop = simul::command_sound_stop;
+using command_sound_update = simul::command_sound_update;
+using sound_state_entry = simul::sound_state_entry;
+using command_sound_state = simul::command_sound_state;
 
 struct command_update_ui {
   std::vector<uint32_t> vertices;
@@ -122,50 +46,13 @@ struct command_update_ui {
   // ... ?
 };
 
-// тут по идее нужно указать выбранное звуковое устройство
-struct command_recreate_sound_system {
-  std::string device_name;
-};
-
-struct command_sound_devices {
-  size_t request_id;
-  std::vector<std::string>* out;
-  std::atomic_bool* ready;
-};
-
-struct command_window_recreation {
-  GLFWwindow* w;
-  GLFWmonitor* m;
-  uint32_t width, height;
-};
-
-// main → render: изменился размер фреймбуфера (ресайз/фуллскрин). Продюсер — main при событии
-// framebuffer size от GLFW. Рендер пересоздаёт ТОЛЬКО свопчейн (surface/device/graph не трогает),
-// в отличие от тяжёлого command_window_recreation. Нулевые размеры (сворачивание) сюда не шлём.
-struct command_window_resize {
-  uint32_t width = 0, height = 0;
-};
-
-// main → render: включить/выключить блок отрисовки. Продюсер — main по window_policy (потеря фокуса
-// со свёрнутым окном ⇒ не крутим кадры). Свёрнутое окно и так не рисуется (свопчейн 0×0), это
-// оптимизация «не гонять рендер-граф вхолостую».
-struct command_render_set_active {
-  bool draw = true;
-};
-
-// main → sound: мастер-громкость [0,1] финального микса (приглушение при потере фокуса и т.п.).
-// Звуковой актор зовёт system2::set_master_volume. НЕ реплицируется (презентация).
-struct command_sound_set_master_gain {
-  float gain = 1.0f;
-};
-
-// main → render: обновить именованную render-graph КОНСТАНТУ новыми байтами (напр. clear-цвет для
-// шага clear берётся из константы). Рендер резолвит name→find_constant, пишет write_constant_data и
-// публикует через update_constant_memory. bytes должны совпадать по размеру/раскладке с константой.
-struct command_update_constant {
-  std::string name;
-  std::vector<uint8_t> bytes;
-};
+using command_recreate_sound_system = simul::command_recreate_sound_system;
+using command_sound_devices = simul::command_sound_devices;
+using command_window_recreation = simul::command_window_recreation;
+using command_window_resize = simul::command_window_resize;
+using command_render_set_active = simul::command_render_set_active;
+using command_sound_set_master_gain = simul::command_sound_set_master_gain;
+using command_update_constant = simul::command_render_update_constant;
 
 // обратно должны вернуть id для ресурса
 struct command_register_asset {
@@ -197,14 +84,7 @@ struct command_current_loading_state {
   // размеры?
 };
 
-// main → assets: «доведи ресурс до состояния target».
-// Валюта контракта — stable handle ресурса из реестра ассетов. direct fallback остаётся только для
-// synthetic ресурсов, которые пока создаются вне registry (например, UI font_resource).
-// target — это demiurg::state::values (cold=0/warm=1/hot=2); храним int чтобы не тянуть demiurg в хедер.
-struct command_load_resource {
-  resource_ref res;
-  int32_t target;
-};
+using command_load_resource = simul::command_load_resource;
 
 // main → assets: запросить CPU-чанк мира. Это mock-ассетный путь для первого world slice:
 // assets thread детерминированно генерирует payload и отвечает command_chunk_loaded в reply_to.
@@ -224,36 +104,11 @@ struct command_chunk_loaded {
   std::vector<uint32_t> textures;
 };
 
-// assets → render: «ресурс в памяти, подготовь его на GPU» (warm→hot) либо выгрузи (hot→warm).
-struct command_gpu_transition {
-  resource_ref res;
-  bool load; // true: warm→hot (load_warm); false: hot→warm (unload_hot)
-};
-
-// render → assets: «GPU-переход завершён» (рендер уже флипнул _state и записал gpu_index в ресурс).
-struct command_gpu_done {
-  resource_ref res;
-};
-
-// render → assets: подготовить CPU-heavy shader payload для render graph. Assets thread грузит
-// GLSL из engine registry, компилирует в SPIR-V cache внутри glsl_source_file и отвечает render.
-struct command_prepare_shaders {
-  const demiurg::resource_system* registry = nullptr;
-  std::string prefix;
-};
-
-// assets → render: shader prepare завершён. failed > 0 означает, что render не должен собирать graph.
-struct command_shaders_prepared {
-  uint32_t compiled = 0;
-  uint32_t failed = 0;
-};
-
-// main → render: сменить активный render graph (п.2/п.3). Целевой граф должен входить в resident-набор
-// (иначе его GPU-ресурсы не созданы). Своп мгновенный: ресурсы/дескрипторы НЕ пересоздаются, строится
-// только graph-local инстанс (пайплайны из подготовленного SPIR-V), синхронизация — по fence кадров.
-struct command_set_active_graph {
-  std::string name;
-};
+using command_gpu_transition = simul::command_gpu_transition;
+using command_gpu_done = simul::command_gpu_done;
+using command_prepare_shaders = simul::command_prepare_shaders;
+using command_shaders_prepared = simul::command_shaders_prepared;
+using command_set_active_graph = simul::command_render_set_graph;
 
 // main → render: срез ВИДИМЫХ тайлов на отрисовку. ВОТ ОНО — «сообщение в рендер тред».
 // Метаданные (как трансформировать + сколько инстансов + страйд) + СЫРЫЕ БАЙТЫ инстансов в
