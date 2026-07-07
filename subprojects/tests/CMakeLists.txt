@@ -6,7 +6,7 @@ project(
   LANGUAGES CXX C
 )
 
-set(TEST_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/devils_engine/tests")
+set(TEST_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/tests")
 
 function(devils_add_doctest target)
   add_executable(${target} doctest_main.cpp ${ARGN})

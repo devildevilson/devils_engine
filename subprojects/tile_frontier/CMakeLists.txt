@@ -6,7 +6,7 @@ project(
   LANGUAGES CXX C
 )
 
-set(PROJECT_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}")
+set(PROJECT_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/${PROJECT_NAME}")
 
 set(PROJECT_EXTERNAL_DEPENDENCY_DIR ${CMAKE_CURRENT_LIST_DIR}/external)
 
@@ -136,19 +136,19 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 # копируем его в движковое дерево ПОСЛЕ копирования resources/ (порядок POST_BUILD сохраняется).
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/tests/test_render_config
+    ${CMAKE_SOURCE_DIR}/subprojects/tests/test_render_config
     ${PROJECT_OUTPUT_DIRECTORY}/resources/engine/render_config
 )
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/tests/shaders
+    ${CMAKE_SOURCE_DIR}/subprojects/tests/shaders
     ${PROJECT_OUTPUT_DIRECTORY}/shaders
 )
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/tests/shaders
+    ${CMAKE_SOURCE_DIR}/subprojects/tests/shaders
     ${PROJECT_OUTPUT_DIRECTORY}/tests/shaders
 )
 
@@ -156,6 +156,6 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 # Копии выше (shaders/, tests/shaders/) держит fs-fallback painter'а и корневой main.cpp — не трогаем.
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/tests/shaders
+    ${CMAKE_SOURCE_DIR}/subprojects/tests/shaders
     ${PROJECT_OUTPUT_DIRECTORY}/resources/engine/shaders
 )
