@@ -458,35 +458,6 @@ static void render_bind_texture_slot(render_simulation_init& c, const uint32_t s
   vk::Device(c.device).updateDescriptorSets(writes, nullptr);
 }
 
-// Контракт записи в буфер: пишем сырые байты в host-visible буфер-ресурс по имени, во ВСЕ
-// per_update-копии (смену активной копии делает событие update). Аналог draw_group host_visible,
-// но для произвольного буфера. Требует готового графа (ресурсы созданы).
-// Построить карту имя-хеш→индекс ресурса один раз на graph-ready (ресурсы созданы в commit).
-static void render_build_wb_name_map(render_simulation_init& c) {
-  c.wb_name_to_res.clear();
-  for (uint32_t i = 0; i < c.base->resources.size(); ++i) {
-    c.wb_name_to_res.emplace(utils::string_hash(c.base->resources[i].name), i);
-  }
-}
-
-// Запись сырых байт в host-visible буфер по имени-хешу (payload — span из арены канала).
-static void render_write_buffer_bytes(render_simulation_init& c, const uint64_t name_hash, const std::span<const std::byte> payload) {
-  const auto it = c.wb_name_to_res.find(name_hash);
-  if (it == c.wb_name_to_res.end()) { utils::warn("write_buffer: resource hash {} not found", name_hash); return; }
-  const uint32_t ri = it->second;
-
-  const auto& res = c.base->resources[ri];
-  const auto [frame_size, ext] = res.compute_frame_size(c.base.get()); // размер ОДНОЙ копии в байтах
-  const uint32_t buffering = res.compute_buffering(c.base.get());
-  const size_t n = std::min(payload.size(), size_t(frame_size));
-
-  for (uint32_t off = 0; off < buffering; ++off) {
-    const auto bf = c.base->get_current_buffer_resource_frame(ri, off);
-    if (bf.mapped == nullptr) { utils::warn("write_buffer: resource {} is not host-visible", ri); return; }
-    std::memcpy(static_cast<uint8_t*>(bf.mapped) + bf.sub.offset, payload.data(), n);
-  }
-}
-
 // п.1: загрузить/выгрузить CPU-исходники шейдеров движкового реестра (glsl + spv). Хост владеет
 // lifecycle ресурсов (graphics_base их НЕ грузит — см. п.7); шейдеры живут в памяти только на
 // время сборки пайплайнов. force_unload у warm_and_hot_same-ресурса возвращает его в cold
@@ -545,7 +516,7 @@ static void render_try_create_graph(render_simulation_init& c) {
   c.base->dump_cache_on_disk(c.config.pipeline_cache_path);
 
   c.graph_ready = true;
-  render_build_wb_name_map(c); // имя-хеш→ресурс для канала записи буферов
+  simul::standard_render_build_wb_name_map(c); // имя-хеш→ресурс для канала записи буферов
   // Инициализируем дескриптор-массив 'textures' placeholder'ом ДО первой отрисовки: тайлы/акторы
   // рисуются сразу, а контентные текстуры приходят асинхронно позже (иначе VUID-...-08114 на
   // первых кадрах — null-view). При загрузке текстур render_bind_textures перезапишет слоты.
@@ -573,19 +544,6 @@ static void render_attach_window(render_simulation_init& c, const command_window
   c.pending_graph_width = cmd.width;
   c.pending_graph_height = cmd.height;
   render_try_create_graph(c);
-}
-
-// Лёгкий путь ресайза: НЕ трогаем surface/device/graph, пересоздаём только свопчейн + screensize-ресурсы
-// + вьюпорт графа (resize_viewport делает всё это разом). В отличие от render_attach_window. Нулевые
-// размеры (свёрнутое окно) недопустимы — recreate_swapchain ассертит extent!=0, поэтому пропускаем.
-static void render_resize_swapchain(render_simulation_init& c, const uint32_t w, const uint32_t h) {
-  if (c.config.headless || !c.base || !c.graph_ready || !c.surface_ready) return;
-  if (w == 0 || h == 0) return;
-  c.base->wait_all_fences();
-  c.pending_graph_width = w;
-  c.pending_graph_height = h;
-  c.base->resize_viewport(w, h);
-  DE_LOG(catalogue::log_domain::render, flow, "resize swapchain {}x{}", w, h);
 }
 
 render_simulation::render_simulation(const size_t frame_time, render_simulation_config config) noexcept :
@@ -640,88 +598,13 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
   if (container->br == nullptr) return; // broker ещё не задан — нечего обрабатывать/рисовать
   auto& br = *container->br;
 
-  // ловим событие пересоздания окна
-  if (const command_window_recreation* cmd = br.window_recreation.consume()) {
-    render_attach_window(*container, *cmd);
-  }
-
-  // ресайз/фуллскрин: пересоздаём только свопчейн (легче полного пересоздания окна)
-  if (const command_window_resize* cmd = br.window_resize.consume()) {
-    render_resize_swapchain(*container, cmd->width, cmd->height);
-  }
-
-  // гейт отрисовки (потеря фокуса/сворачивание по window_policy)
-  if (const command_render_set_active* cmd = br.render_set_active.consume()) {
-    container->draw_active = cmd->draw;
-  }
-
-  if (const command_shaders_prepared* cmd = br.shaders_prepared.consume()) {
-    container->shader_prepare_requested = false;
-    container->shader_prepare_failed = cmd->failed != 0;
-    container->shaders_prepared = cmd->failed == 0;
-    DE_LOG(catalogue::log_domain::render, flow, "render: shader prepare result compiled={} failed={}", cmd->compiled, cmd->failed);
-    render_try_create_graph(*container);
-  }
-
-  // п.2/п.3: смена активного render graph. Только когда граф уже собран (иначе первичная сборка
-  // выберет стартовый граф сама). Своп строит целевой инстанс и чистит старый — ресурсы не трогает.
-  if (container->graph_ready && container->base) {
-    if (const command_set_active_graph* cmd = br.set_active_graph.consume()) {
-      const uint32_t idx = container->base->find_render_graph(cmd->name);
-      if (idx == painter::INVALID_RESOURCE_SLOT) {
-        utils::warn("render: set_active_graph — граф '{}' не найден", cmd->name);
-      } else if (idx != container->base->current_render_graph_index) {
-        container->base->change_render_graph(idx);
-        DE_LOG(catalogue::log_domain::render, flow, "active graph switched to '{}'", cmd->name);
-      }
-    }
-  }
-
-  // обновление render-graph констант извне (напр. clear-цвет для шага clear). Нужны созданные
-  // ресурсы/константы (base_ready). name→find_constant, write_constant_data, публикация update_constant_memory.
-  if (container->base_ready && container->base) {
-    command_update_constant cmd;
-    while (br.update_constant.try_pop(cmd)) {
-      const uint32_t idx = container->base->find_constant(cmd.name);
-      if (idx == painter::INVALID_RESOURCE_SLOT) {
-        utils::warn("render: update_constant — константа '{}' не найдена", cmd.name);
-        continue;
-      }
-      container->base->write_constant_data(idx, cmd.bytes.data(), cmd.bytes.size());
-      container->base->update_constant_memory();
-    }
-  }
-
-  // GPU-переходы ресурсов (warm↔hot) — их исполняет рендер на своём потоке.
-  // Берём только когда GPU-ресурсы готовы; иначе команды копятся в очереди до готовности.
-  if (container->base_ready) {
-    command_gpu_transition cmd{};
-    while (br.gpu_transition.try_pop(cmd)) {
-      auto* res = cmd.res.get();
-      if (res == nullptr) { utils::warn("render: gpu_transition with unresolved resource handle"); continue; }
-      painter::gpu_load_context ctx{ container->assets.get(), container->base.get() };
-      const utils::safe_handle_t handle(&ctx);
-      if (cmd.load) {
-        res->load(handle);  // warm→hot: load_warm (upload+gpu_index) — полиморфно
-        // как только меш на GPU и граф готов — регистрируем его на отрисовку (только меши!)
-        if (res->loading_type_id == utils::type_id<painter::gpu_texture_resource>()) {
-          // текстура на GPU — точечно обновляем ЕЁ слот в дескриптор-массиве (не весь массив)
-          render_bind_texture_slot(*container, static_cast<painter::gpu_texture_resource*>(res)->gpu_index);
-        }
-      } else {
-        res->unload(handle); // hot→warm: unload_hot
-      }
-      br.gpu_done.try_push(command_gpu_done{cmd.res}); // ack ассетам
-    }
-  }
-
-  // Контракт записи в буферы (камера и т.п.) — нужен готовый граф (ресурсы созданы). Дренаж
-  // SPSC-канала: POD-сообщение {hash,pos,size} → байты из арены → буфер, затем release (курсор).
-  if (container->graph_ready) {
-    br.write_buffer.drain([this] (const wb_msg& m, const std::span<const std::byte> payload) {
-      render_write_buffer_bytes(*container, m.name_hash, payload);
-    });
-  }
+  simul::standard_render_drain_commands(
+    *container,
+    br,
+    [this] (const command_window_recreation& cmd) { render_attach_window(*container, cmd); },
+    [this] { render_try_create_graph(*container); },
+    [this] (const uint32_t slot) { render_bind_texture_slot(*container, slot); }
+  );
 
   if (container->graph_ready) {
     if (const command_draw_tiles* cmd = br.draw_tiles.consume()) {
