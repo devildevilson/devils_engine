@@ -9,6 +9,7 @@
 #include <utility>
 
 #include <devils_engine/input/core.h>
+#include <devils_engine/simul/render_runtime.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/time-utils.hpp>
 #include <devils_engine/utils/safe_handle.h>
@@ -23,7 +24,6 @@
 #include <devils_engine/painter/shader_source_file.h>
 #include <devils_engine/demiurg/resource_system.h>
 
-#include <gtl/phmap.hpp>
 #include <devils_engine/utils/string_id.h>
 
 #include "messages.h"
@@ -68,40 +68,9 @@ struct blend_traits<actor_instance> {
   }
 };
 
-struct render_simulation_init {
-  // Все межпоточные каналы — в общем broker (владелец main); указатель ставится set_broker до старта.
-  broker* br = nullptr;
-  // карта имя-хеш→индекс ресурса для канала записи буферов (строится на graph-ready).
-  gtl::flat_hash_map<uint64_t, uint32_t> wb_name_to_res;
-
-  render_simulation_config config;
-
-  VkInstance instance = VK_NULL_HANDLE;
-  VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
-  VkDevice device = VK_NULL_HANDLE;
-  VkSurfaceKHR surface = VK_NULL_HANDLE;
-  painter::physical_device_data physical_device_data;
-
-  VkQueue graphics_queue = VK_NULL_HANDLE;
-  VkQueue transfer_queue = VK_NULL_HANDLE;
-
-  std::unique_ptr<painter::graphics_base> base;
-  std::unique_ptr<painter::assets_base> assets;
-  painter::graphics_ctx ctx;
-
+struct render_simulation_init : simul::standard_render_state<broker> {
   uint32_t tile_pair_index = painter::INVALID_RESOURCE_SLOT;
   uint32_t actor_pair_index = painter::INVALID_RESOURCE_SLOT;
-  bool instance_ready = false;
-  bool device_ready = false;
-  bool base_ready = false;
-  bool surface_ready = false;
-  bool graph_ready = false;
-  bool draw_active = true; // гейт отрисовки (main крутит по фокусу/сворачиванию, command_render_set_active)
-  bool shader_prepare_requested = false;
-  bool shaders_prepared = false;
-  bool shader_prepare_failed = false;
-  uint32_t pending_graph_width = 0;
-  uint32_t pending_graph_height = 0;
   bool tiles_ready = false;
   bool actors_ready = false;
   bool actor_draw_ready = false;
@@ -110,59 +79,15 @@ struct render_simulation_init {
   std::chrono::steady_clock::time_point actor_draw_last_tp{}; // для РЕАЛЬНОГО wall-time между кадрами (п.①)
   bool actor_draw_tp_valid = false;
 
-  ~render_simulation_init() noexcept {
-    // Best-effort fallback. Normal shutdown should go through render_shutdown().
-    if (device != VK_NULL_HANDLE) vk::Device(device).waitIdle();
-    ctx = painter::graphics_ctx{};
-    assets.reset();
-    base.reset();
-    if (instance != VK_NULL_HANDLE && surface != VK_NULL_HANDLE) vk::Instance(instance).destroy(surface);
-    if (device != VK_NULL_HANDLE) vk::Device(device).destroy();
-    if (instance != VK_NULL_HANDLE && debug_messenger != VK_NULL_HANDLE) painter::destroy_debug_messenger(instance, debug_messenger);
-    if (instance != VK_NULL_HANDLE) vk::Instance(instance).destroy();
-  }
+  ~render_simulation_init() noexcept = default;
 };
 
 static void render_drain(render_simulation_init& c) {
-  if (c.device == VK_NULL_HANDLE) return;
-
-  painter::load_dispatcher3(c.device);
-  if (c.base) c.base->wait_all_fences();
-  if (c.graphics_queue != VK_NULL_HANDLE) vk::Queue(c.graphics_queue).waitIdle();
-}
-
-static void render_destroy_swapchain(render_simulation_init& c) {
-  if (!c.base || c.base->swapchain == VK_NULL_HANDLE) return;
-
-  render_drain(c);
-
-  vk::Device dev(c.device);
-  if (c.base->swapchain_slot != painter::INVALID_RESOURCE_SLOT) {
-    auto& res = DS_ASSERT_ARRAY_GET(c.base->resources, c.base->swapchain_slot);
-    for (size_t i = 0; i < c.base->swapchain_images.size(); ++i) {
-      if (res.handles[i].view != VK_NULL_HANDLE) {
-        dev.destroy(res.handles[i].view);
-        res.handles[i].view = VK_NULL_HANDLE;
-      }
-    }
-  }
-
-  c.base->swapchain_images.clear();
-  dev.destroy(c.base->swapchain);
-  c.base->swapchain = VK_NULL_HANDLE;
+  simul::standard_render_drain(c);
 }
 
 static void render_detach_window(render_simulation_init& c) {
-  render_destroy_swapchain(c);
-
-  if (c.instance != VK_NULL_HANDLE && c.surface != VK_NULL_HANDLE) {
-    vk::Instance(c.instance).destroy(c.surface);
-    c.surface = VK_NULL_HANDLE;
-  }
-
-  if (c.base) c.base->surface = VK_NULL_HANDLE;
-  c.surface_ready = false;
-  c.graph_ready = false;
+  simul::standard_render_detach_window(c);
   c.tiles_ready = false;
   c.actors_ready = false;
   c.actor_draw_ready = false;
@@ -172,40 +97,7 @@ static void render_detach_window(render_simulation_init& c) {
 }
 
 static void render_shutdown(render_simulation_init& c) {
-  render_drain(c);
-
-  c.ctx = painter::graphics_ctx{};
-  c.assets.reset();
-  c.base.reset();
-
-  if (c.instance != VK_NULL_HANDLE && c.surface != VK_NULL_HANDLE) {
-    vk::Instance(c.instance).destroy(c.surface);
-    c.surface = VK_NULL_HANDLE;
-  }
-
-  if (c.device != VK_NULL_HANDLE) {
-    vk::Device(c.device).destroy();
-    c.device = VK_NULL_HANDLE;
-  }
-
-  if (c.instance != VK_NULL_HANDLE) {
-    if (c.debug_messenger != VK_NULL_HANDLE) {
-      painter::destroy_debug_messenger(c.instance, c.debug_messenger);
-      c.debug_messenger = VK_NULL_HANDLE;
-    }
-
-    vk::Instance(c.instance).destroy();
-    c.instance = VK_NULL_HANDLE;
-  }
-
-  c.graphics_queue = VK_NULL_HANDLE;
-  c.transfer_queue = VK_NULL_HANDLE;
-  c.physical_device_data = painter::physical_device_data{};
-  c.instance_ready = false;
-  c.device_ready = false;
-  c.base_ready = false;
-  c.surface_ready = false;
-  c.graph_ready = false;
+  simul::standard_render_shutdown(c);
   c.tiles_ready = false;
   c.actors_ready = false;
   c.actor_draw_ready = false;
