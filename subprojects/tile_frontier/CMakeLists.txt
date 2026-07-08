@@ -20,7 +20,6 @@ set(HDR_LIST
   include/core/message_dispatcher.h
   include/core/instance_layout.h
   include/core/draw_intent.h
-  include/core/sound_system.h
   include/core/render_system.h
   include/core/runtime.h
   include/core/assets_system.h

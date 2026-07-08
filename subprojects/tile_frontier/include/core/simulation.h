@@ -6,6 +6,7 @@
 #include <atomic>
 
 #include <devils_engine/simul/systems.h>
+#include <devils_engine/simul/standard_sound_system.h>
 
 /*
 что тут? тут мы наверное хотим определить систему которую запустим в main.cpp
@@ -20,9 +21,10 @@ struct simulation_init;
 struct broker;
 struct runtime_bootstrap;
 struct runtime_traits;
-class sound_simulation;
 class render_simulation;
 class assets_simulation;
+
+using sound_simulation = devils_engine::simul::standard_sound_system<broker>;
 
 struct system_presence {
   bool sound = false;
