@@ -523,6 +523,9 @@ add_subdirectory(libs/visage/)
 add_subdirectory(libs/bindings/)
 add_subdirectory(libs/acumen/)
 
+# Header-only standard systems in libs/simul expose sound/painter types in their public API.
+target_link_libraries(devils_simul PUBLIC devils_engine::sound devils_engine::painter)
+
 add_library(devils_engine INTERFACE)
 target_link_libraries(devils_engine INTERFACE devils_engine::catalogue devils_engine::acumen devils_engine::act devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::utils devils_engine::mood devils_engine::simul devils_engine::flow devils_engine::aesthetics devils_engine::visage devils_engine::options)
 add_library(devils_engine::devils_plane ALIAS devils_engine)

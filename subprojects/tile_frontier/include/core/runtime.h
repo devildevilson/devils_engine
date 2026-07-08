@@ -15,7 +15,6 @@
 #include "config.h"
 #include "render_system.h"
 #include "simulation.h"
-#include "sound_system.h"
 
 namespace tile_frontier {
 namespace core {
@@ -38,7 +37,7 @@ struct runtime_traits {
   using main_type = simulation;
   using render_type = render_simulation;
   using assets_type = assets_simulation;
-  using sound_type = sound_simulation;
+  using sound_type = devils_engine::simul::standard_sound_system<broker>;
   using boot_config_type = devils_engine::simul::engine_boot_config;
   using settings_type = app_config;
 

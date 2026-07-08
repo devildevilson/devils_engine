@@ -48,7 +48,6 @@
 
 #include "messages.h"
 #include "broker.h"
-#include "sound_system.h"
 #include "render_system.h"
 #include "assets_system.h"
 #include <devils_engine/painter/gpu_texture_resource.h>
