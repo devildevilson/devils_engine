@@ -13,6 +13,7 @@ add_library(devils_simul
   include/devils_engine/simul/app_runtime.h
   include/devils_engine/simul/messages.h
   include/devils_engine/simul/render_config.h
+  include/devils_engine/simul/render_runtime.h
   include/devils_engine/simul/standard_broker.h
   include/devils_engine/simul/standard_assets_system.h
   include/devils_engine/simul/standard_sound_system.h
