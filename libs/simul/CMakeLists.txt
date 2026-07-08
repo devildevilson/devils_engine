@@ -9,9 +9,11 @@ project(
 add_library(devils_simul
   src/simul/interface.cpp
   include/devils_engine/simul/interface.h
+  include/devils_engine/simul/boot_config.h
   include/devils_engine/simul/app_runtime.h
   include/devils_engine/simul/messages.h
   include/devils_engine/simul/standard_broker.h
+  include/devils_engine/simul/standard_sound_system.h
   include/devils_engine/simul/systems.h
   include/devils_engine/simul/write_buffer_channel.h
 )

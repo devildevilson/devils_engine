@@ -36,6 +36,9 @@
 
 #include <filesystem>
 
+#include <tavl/deserialize.h>
+#include <tavl/serialize.h>
+
 #include <devils_engine/visage/system.h>
 #include <devils_engine/visage/font.h>
 #include <devils_engine/visage/image.h>
@@ -82,6 +85,10 @@ static size_t thread_start_gap(const size_t frame_time, const uint32_t divisor) 
   return utils::round(double(frame_time) / double(valid_divisor));
 }
 
+static std::string source_line(const uint32_t line) {
+  return line == UINT32_MAX ? std::string{"unknown"} : std::to_string(line);
+}
+
 constexpr size_t main_frame_time = utils::round(double(utils::global_time_resolution) * (1.0/20.0));
 constexpr uint32_t initial_actor_count = 4096;
 //constexpr uint32_t initial_actor_count = 64000;
@@ -123,6 +130,49 @@ static void setup_logging(const logging_config& log_cfg) {
   apply(ld::gameplay, log_cfg.gameplay);
   apply(ld::resource, log_cfg.resource);
   apply(ld::demiurg, log_cfg.demiurg);
+}
+
+static std::string settings_path(const runtime_bootstrap& boot) {
+  if (boot.engine.settings_file.empty()) return utils::project_folder() + "settings.tavl";
+  if (boot.engine.settings_file.front() == '/') return boot.engine.settings_file;
+  return utils::project_folder() + boot.engine.settings_file;
+}
+
+static void sync_engine_boot_config(runtime_bootstrap& boot) {
+  boot.engine.render_enabled = boot.settings.render.enabled;
+  boot.engine.sound_enabled = boot.settings.simulation.sound_enabled;
+  boot.engine.headless = boot.settings.render.headless;
+  boot.engine.main_fps = boot.settings.simulation.main_fps;
+  boot.engine.render_fps = boot.settings.simulation.render_fps;
+  boot.engine.sound_fps = boot.settings.simulation.sound_fps;
+  boot.engine.assets_fps = boot.settings.simulation.assets_fps;
+  boot.engine.worker_threads_reserved = boot.settings.simulation.worker_threads_reserved;
+  boot.engine.min_worker_threads = boot.settings.simulation.min_worker_threads;
+  boot.engine.thread_start_gap_divisor = boot.settings.simulation.thread_start_gap_divisor;
+  boot.engine.cache_root = boot.settings.render.cache_folder;
+}
+
+static bool deserialize_settings_file(runtime_bootstrap& boot, const std::string& path) {
+  if (!file_io::exists(path)) return false;
+
+  tavl::parser parser;
+  const auto content = file_io::read(path);
+  parser.add_default_operator();
+  parser.flush(content);
+  parser.finish();
+
+  tavl::ct_context ctx;
+  tavl::deserialize(parser, ctx, boot.settings);
+  if (!ctx.diagnostics.empty()) {
+    utils::warn("settings '{}': {} tavl diagnostics", path, ctx.diagnostics.size());
+    for (const auto& d : ctx.diagnostics) {
+      utils::warn("  tavl diagnostic '{}' at {}:{} field '{}'",
+        tavl::to_string(d.error.type), source_line(static_cast<uint32_t>(d.error.span.line)), d.error.span.column, d.field);
+    }
+  }
+
+  sync_engine_boot_config(boot);
+  return true;
 }
 
 // Резидентная память процесса (RSS) из /proc/self/statm (2-е поле = резидентные страницы).
@@ -382,13 +432,13 @@ static void create_window_and_notify_render(simulation_init& c) {
   if (!c.in) c.in = std::make_unique<input::init>(&error_callback);
 
   c.monitor = input::primary_monitor();
-  c.window = input::create_window(c.boot->config.window.width, c.boot->config.window.height, c.boot->config.window.title);
+  c.window = input::create_window(c.boot->settings.window.width, c.boot->settings.window.height, c.boot->settings.window.title);
   if (c.window == nullptr) {
     utils::error{}(
       "Could not create window '{}' {}x{}",
-      c.boot->config.window.title,
-      c.boot->config.window.width,
-      c.boot->config.window.height
+      c.boot->settings.window.title,
+      c.boot->settings.window.width,
+      c.boot->settings.window.height
     );
   }
 
@@ -436,7 +486,7 @@ static void create_window_and_notify_render(simulation_init& c) {
 
   if (c.br) {
     c.br->window_recreation.write_slot() = command_window_recreation{
-      c.window, c.monitor, c.boot->config.window.width, c.boot->config.window.height
+      c.window, c.monitor, c.boot->settings.window.width, c.boot->settings.window.height
     };
     c.br->window_recreation.publish();
   }
@@ -457,8 +507,8 @@ static void apply_fullscreen(simulation_init& c, const bool enable) {
     c.is_fullscreen = true;
     DE_LOG(catalogue::log_domain::main, flow, "main: fullscreen on ({}x{}@{})", mw, mh, refresh);
   } else if (!enable && c.is_fullscreen) {
-    const uint32_t w = c.windowed_w != 0 ? c.windowed_w : c.boot->config.window.width;
-    const uint32_t h = c.windowed_h != 0 ? c.windowed_h : c.boot->config.window.height;
+    const uint32_t w = c.windowed_w != 0 ? c.windowed_w : c.boot->settings.window.width;
+    const uint32_t h = c.windowed_h != 0 ? c.windowed_h : c.boot->settings.window.height;
     input::set_window_monitor(c.window, nullptr, c.windowed_x, c.windowed_y, w, h, DEVILS_ENGINE_INPUT_DONT_CARE);
     c.is_fullscreen = false;
     DE_LOG(catalogue::log_domain::main, flow, "main: fullscreen off ({}x{})", w, h);
@@ -650,8 +700,8 @@ void runtime_traits::init_bootstrap(bootstrap_type& boot) {
   // Его МОДУЛЬ (отдельная cache-папка) дописывается в engine_resources позже (append_resources),
   // когда из конфига известен cache_folder. Тип регистрируем сразу.
   boot.engine_resources->register_type<painter::pipeline_cache_resource>("pipeline_cache", "bin");
-  boot.engine_modules = std::make_unique<demiurg::module_system>(utils::project_folder() + "resources/");
-  boot.engine_modules->load_modules({ demiurg::module_system::list_entry{"engine", "", ""} });
+  boot.engine_modules = std::make_unique<demiurg::module_system>(utils::project_folder() + boot.engine.resource_root);
+  boot.engine_modules->load_modules({ demiurg::module_system::list_entry{boot.engine.engine_module, "", ""} });
   boot.engine_resources->parse_resources(boot.engine_modules.get());
 
   // Доводим все файлы описания render-graph до warm (текст в памяти) ЗДЕСЬ, на главном
@@ -666,25 +716,30 @@ void runtime_traits::init_bootstrap(bootstrap_type& boot) {
   // Шейдер-исходники НЕ preload'им здесь: их lifecycle («загрузить→скомпилировать→выгрузить»)
   // живёт в рендер-потоке вокруг сборки пайплайнов (см. render_system set_shader_sources_loaded, п.1).
 
-  const auto config_path = utils::project_folder() + "resources/engine/config/app.tavl"; // для лога
-  if (auto* cfg_res = boot.engine_resources->get<app_config_resource>("config/app")) {
+  const auto config_path = utils::project_folder() + boot.engine.resource_root + boot.engine.engine_module + "/config/app.tavl"; // для лога
+  if (auto* cfg_res = boot.engine_resources->get<app_config_resource>(boot.engine.app_config_id)) {
     cfg_res->load(utils::safe_handle_t{}); // cold→warm: читает + парсит tavl (CPU, главный поток)
-    boot.config = cfg_res->config();
+    boot.settings = cfg_res->config();
   } else {
-    utils::warn("engine registry: 'config/app' not found, using app_config defaults");
+    utils::warn("engine registry: '{}' not found, using app_config defaults", boot.engine.app_config_id);
+  }
+  sync_engine_boot_config(boot);
+  const auto user_settings_path = settings_path(boot);
+  if (deserialize_settings_file(boot, user_settings_path)) {
+    DE_LOG(catalogue::log_domain::main, flow, "Loaded user settings '{}'", user_settings_path);
   }
 
   // логгирование настраиваем СРАЗУ после конфига (до подсистем): файл+консоль, уровни доменов.
   // Базовый always-on слой (utils::info ниже) уже попадёт в файл.
-  setup_logging(boot.config.logging);
+  setup_logging(boot.settings.logging);
 
   const uint32_t hw_threads = std::max(std::thread::hardware_concurrency(), 1u);
   // reserved считаем ДИНАМИЧЕСКИ: выключенный движковый поток (render/sound) освобождает ядро под
   // worker'ов (топологическая настройка — применяется при старте движка). См. ROADMAP A-4.
-  uint32_t reserved_threads = boot.config.simulation.worker_threads_reserved;
-  if (!boot.config.render.enabled && reserved_threads > 0) reserved_threads -= 1;
-  if (!boot.config.simulation.sound_enabled && reserved_threads > 0) reserved_threads -= 1;
-  const uint32_t min_worker_threads = std::max(boot.config.simulation.min_worker_threads, 1u);
+  uint32_t reserved_threads = boot.engine.worker_threads_reserved;
+  if (!boot.engine.render_enabled && reserved_threads > 0) reserved_threads -= 1;
+  if (!boot.engine.sound_enabled && reserved_threads > 0) reserved_threads -= 1;
+  const uint32_t min_worker_threads = std::max(boot.engine.min_worker_threads, 1u);
   const uint32_t thread_count = std::max(
     hw_threads > reserved_threads ? hw_threads - reserved_threads : min_worker_threads,
     min_worker_threads
@@ -695,11 +750,11 @@ void runtime_traits::init_bootstrap(bootstrap_type& boot) {
   DE_LOG(catalogue::log_domain::main, flow,
     "Loaded app config '{}': window {}x{}, render config '{}', GPU preference '{}' / index {}",
     config_path,
-    boot.config.window.width,
-    boot.config.window.height,
-    boot.config.render.config_folder,
-    boot.config.render.preferred_gpu,
-    boot.config.render.preferred_gpu_index
+    boot.settings.window.width,
+    boot.settings.window.height,
+    boot.settings.render.config_folder,
+    boot.settings.render.preferred_gpu,
+    boot.settings.render.preferred_gpu_index
   );
 
   boot.pool_container.reset(new thread::atomic_pool(thread_count));
@@ -719,11 +774,11 @@ void simulation::init() {
     container->br = container->owned_br.get();
   }
 
-  set_frame_time(frame_time_from_fps(bootstrap_->config.simulation.main_fps));
+  set_frame_time(frame_time_from_fps(bootstrap_->engine.main_fps));
 
   // стартовый размер фреймбуфера = размер из конфига (до создания окна); коллбэк ресайза уточнит.
-  container->fb_width = std::max(bootstrap_->config.window.width, 1u);
-  container->fb_height = std::max(bootstrap_->config.window.height, 1u);
+  container->fb_width = std::max(bootstrap_->settings.window.width, 1u);
+  container->fb_height = std::max(bootstrap_->settings.window.height, 1u);
 }
 
 std::unique_ptr<runtime_traits::bootstrap_type> runtime_traits::make_bootstrap() {
@@ -739,8 +794,8 @@ std::unique_ptr<runtime_traits::main_type> runtime_traits::make_main(bootstrap_t
 }
 
 std::unique_ptr<runtime_traits::sound_type> runtime_traits::make_sound(bootstrap_type& boot) {
-  const auto sound_ft = frame_time_from_fps(boot.config.simulation.sound_fps);
-  if (boot.config.simulation.sound_enabled) {
+  const auto sound_ft = frame_time_from_fps(boot.engine.sound_fps);
+  if (boot.engine.sound_enabled) {
     return std::make_unique<sound_type>(sound_ft);
   }
   DE_LOG(catalogue::log_domain::main, flow, "main: sound disabled (sound_enabled=false), skipping sound subsystem");
@@ -748,17 +803,17 @@ std::unique_ptr<runtime_traits::sound_type> runtime_traits::make_sound(bootstrap
 }
 
 std::unique_ptr<runtime_traits::render_type> runtime_traits::make_render(bootstrap_type& boot) {
-  if (boot.config.render.enabled) {
-    const auto render_ft = frame_time_from_fps(boot.config.simulation.render_fps);
+  if (boot.engine.render_enabled) {
+    const auto render_ft = frame_time_from_fps(boot.engine.render_fps);
     // Pipeline cache — ОТДЕЛЬНЫЙ demiurg-модуль над выделенной cache-подпапкой (Фаза 2). Раздаёт
     // кэш на load; dump пишет на диск напрямую — round-trip через ре-скан модуля на каждом init.
     // Модуль = <cache_folder>/painter/ (ИЗОЛИРОВАН: system_info кладёт main_device.tavl прямо в
     // <cache_folder>/ — не хотим, чтобы он попадал под скан). Файл = painter/pipeline_cache/main.bin,
     // id (относительно модуля) = "pipeline_cache/main", тип матчится на сегмент "pipeline_cache".
-    const std::string cache_module = boot.config.render.cache_folder + "/painter";
+    const std::string cache_module = boot.settings.render.cache_folder + "/painter";
     const std::string pipeline_cache_id = "pipeline_cache/main";
     const std::string pipeline_cache_path = make_project_path(cache_module + "/pipeline_cache/main.bin");
-    file_io::create_directory(make_project_path(boot.config.render.cache_folder)); // <cache_folder>/
+    file_io::create_directory(make_project_path(boot.settings.render.cache_folder)); // <cache_folder>/
     file_io::create_directory(make_project_path(cache_module));                          // .../painter/
     file_io::create_directory(make_project_path(cache_module + "/pipeline_cache"));       // .../painter/pipeline_cache/
     // Cache-МОДУЛЬ отдельный (свой корень-папка), но его ресурсы дописываем в ОБЩИЙ engine_resources
@@ -774,15 +829,15 @@ std::unique_ptr<runtime_traits::render_type> runtime_traits::make_render(bootstr
     render_simulation_config render_cfg;
     render_cfg.engine_registry = boot.engine_resources.get();
     // config.config_folder ("render_config") — теперь ПРЕФИКС в движковом реестре, не путь на диске
-    render_cfg.render_config_prefix = boot.config.render.config_folder + "/";
-    render_cfg.shader_config_prefix = boot.config.render.shader_folder + "/";
+    render_cfg.render_config_prefix = boot.settings.render.config_folder + "/";
+    render_cfg.shader_config_prefix = boot.settings.render.shader_folder + "/";
     render_cfg.cache_registry = boot.engine_resources.get(); // тот же реестр, что engine_registry
     render_cfg.pipeline_cache_id = pipeline_cache_id;
     render_cfg.pipeline_cache_path = pipeline_cache_path;
-    render_cfg.graph_name = boot.config.render.graph;
-    render_cfg.menu_graph_name = boot.config.render.menu_graph;
-    render_cfg.headless = boot.config.render.headless;
-    render_cfg.create_vulkan_on_init = boot.config.window.create_on_start || boot.config.render.headless;
+    render_cfg.graph_name = boot.settings.render.graph;
+    render_cfg.menu_graph_name = boot.settings.render.menu_graph;
+    render_cfg.headless = boot.engine.headless;
+    render_cfg.create_vulkan_on_init = boot.settings.window.create_on_start || boot.engine.headless;
 
     return std::make_unique<render_type>(render_ft, std::move(render_cfg));
   }
@@ -790,12 +845,49 @@ std::unique_ptr<runtime_traits::render_type> runtime_traits::make_render(bootstr
 }
 
 std::unique_ptr<runtime_traits::assets_type> runtime_traits::make_assets(bootstrap_type& boot) {
-  const auto assets_ft = frame_time_from_fps(boot.config.simulation.assets_fps);
+  const auto assets_ft = frame_time_from_fps(boot.engine.assets_fps);
   return std::make_unique<assets_type>(assets_ft);
 }
 
 void runtime_traits::bind_systems(main_type& main, bootstrap_type&, sound_type* sound, render_type* render, assets_type* assets) {
   main.bind_systems(sound, render, assets);
+}
+
+runtime_traits::boot_config_type& runtime_traits::boot_config(bootstrap_type& boot) noexcept {
+  return boot.engine;
+}
+
+runtime_traits::settings_type& runtime_traits::settings(bootstrap_type& boot) noexcept {
+  return boot.settings;
+}
+
+bool runtime_traits::save_settings(bootstrap_type& boot) {
+  const auto path = settings_path(boot);
+  std::string tavl_data;
+  if (!tavl::serialize(boot.settings, tavl_data)) {
+    utils::warn("settings: could not serialize settings to tavl");
+    return false;
+  }
+
+  const bool written = file_io::write(tavl_data, path);
+  if (!written) utils::warn("settings: could not write '{}'", path);
+  else DE_LOG(catalogue::log_domain::main, flow, "Saved settings '{}'", path);
+  return written;
+}
+
+bool runtime_traits::reload_settings(bootstrap_type& boot) {
+  const auto path = settings_path(boot);
+  if (!deserialize_settings_file(boot, path)) {
+    utils::warn("settings: '{}' not found, keeping current settings", path);
+    return false;
+  }
+  DE_LOG(catalogue::log_domain::main, flow, "Reloaded settings '{}'", path);
+  return true;
+}
+
+void runtime_traits::settings_reloaded(main_type& main, bootstrap_type& boot) {
+  setup_logging(boot.settings.logging);
+  main.set_frame_time(frame_time_from_fps(boot.engine.main_fps));
 }
 
 void runtime_traits::after_workers_started(main_type& main) {
@@ -807,15 +899,15 @@ size_t runtime_traits::main_wait_mcs(const main_type&) {
 }
 
 size_t runtime_traits::sound_wait_mcs(const bootstrap_type& boot, const sound_type& sound) {
-  return thread_start_gap(sound.frame_time(), boot.config.simulation.thread_start_gap_divisor);
+  return thread_start_gap(sound.frame_time(), boot.engine.thread_start_gap_divisor);
 }
 
 size_t runtime_traits::render_wait_mcs(const bootstrap_type& boot, const render_type& render) {
-  return thread_start_gap(render.frame_time(), boot.config.simulation.thread_start_gap_divisor);
+  return thread_start_gap(render.frame_time(), boot.engine.thread_start_gap_divisor);
 }
 
 size_t runtime_traits::assets_wait_mcs(const bootstrap_type& boot, const assets_type& assets) {
-  return thread_start_gap(assets.frame_time(), boot.config.simulation.thread_start_gap_divisor);
+  return thread_start_gap(assets.frame_time(), boot.engine.thread_start_gap_divisor);
 }
 
 int runtime_traits::exit_code(const main_type& main) {
@@ -852,7 +944,7 @@ void simulation::after_workers_started() {
 
   // Окно - поздний ресурс. Render thread должен жить и без него, а это событие
   // может прийти сейчас, после загрузки ассетов или после полного пересоздания окна.
-  if (bootstrap_->config.window.create_on_start && systems.render && !bootstrap_->config.render.headless) {
+  if (bootstrap_->settings.window.create_on_start && systems.render && !bootstrap_->settings.render.headless) {
     create_window_and_notify_render(*container);
   }
 
@@ -930,7 +1022,7 @@ void simulation::after_workers_started() {
   const glm::vec2 extent = container->grid.world_extent();
   container->cam.center = extent * 0.5f;
   container->cam.half_width = 8.0f;
-  container->cam.aspect = float(bootstrap_->config.window.width) / float(std::max(bootstrap_->config.window.height, 1u));
+  container->cam.aspect = float(bootstrap_->settings.window.width) / float(std::max(bootstrap_->settings.window.height, 1u));
 
   // Валидируем раскладку tile_instance против layout "v2ui1" один раз.
   if (const auto r = container->batch.bind("v2ui1"); !r) {
@@ -1166,8 +1258,8 @@ void simulation::after_workers_started() {
     // Смена разрешения: меняем окно; GLFW пришлёт framebuffer_size → штатный путь ресайза (1c).
     app.set_function("set_resolution", [this](int w, int h) {
       if (container->window == nullptr || w <= 0 || h <= 0) return;
-      bootstrap_->config.window.width = uint32_t(w);
-      bootstrap_->config.window.height = uint32_t(h);
+      bootstrap_->settings.window.width = uint32_t(w);
+      bootstrap_->settings.window.height = uint32_t(h);
       input::set_window_size(container->window, uint32_t(w), uint32_t(h));
     });
     // Смена звукового устройства: пере-создаём system2 через уже существующий канал recreate.
@@ -1327,10 +1419,10 @@ void simulation::update(const size_t time) {
   // Демо п.2/п.3: периодически переключаем активный render graph graph<->menu_graph, чтобы проверить
   // мгновенный своп без пересоздания ресурсов. Управляется render.demo_graph_toggle_ms (0 ⇒ выкл).
   if (container != nullptr && systems.render) {
-    const auto& rc = bootstrap_->config.render;
+    const auto& rc = bootstrap_->settings.render;
     if (rc.demo_graph_toggle_ms > 0 && !rc.menu_graph.empty() && rc.menu_graph != rc.graph) {
       const uint64_t period = std::max<uint64_t>(1,
-        uint64_t(rc.demo_graph_toggle_ms) * uint64_t(bootstrap_->config.simulation.main_fps) / 1000ull);
+        uint64_t(rc.demo_graph_toggle_ms) * uint64_t(bootstrap_->settings.simulation.main_fps) / 1000ull);
       if (container->tick % period == 0) {
         const bool to_menu = (container->tick / period) % 2 == 1;
         if (container->br) {
@@ -1606,10 +1698,10 @@ void simulation::update(const size_t time) {
     container->metrics_instances += container->actors_last_metrics.instances;
     container->metrics_actor_update_us += update_us;
 
-    if (bootstrap_->config.metrics.enabled) {
+    if (bootstrap_->settings.metrics.enabled) {
       const auto now = std::chrono::steady_clock::now();
       const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - container->metrics_last_log).count();
-      if (elapsed_ms >= bootstrap_->config.metrics.log_interval_ms && container->metrics_frames != 0) {
+      if (elapsed_ms >= bootstrap_->settings.metrics.log_interval_ms && container->metrics_frames != 0) {
         const double seconds = double(elapsed_ms) / 1000.0;
         const double fps = double(container->metrics_frames) / seconds;
         const double intent_rate = double(container->metrics_intents) / seconds;

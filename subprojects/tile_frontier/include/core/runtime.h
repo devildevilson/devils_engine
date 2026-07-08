@@ -5,6 +5,7 @@
 #include <memory>
 
 #include <devils_engine/simul/app_runtime.h>
+#include <devils_engine/simul/boot_config.h>
 #include <devils_engine/demiurg/module_system.h>
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/thread/atomic_pool.h>
@@ -20,7 +21,8 @@ namespace tile_frontier {
 namespace core {
 
 struct runtime_bootstrap {
-  app_config config;
+  devils_engine::simul::engine_boot_config engine;
+  app_config settings;
 
   std::unique_ptr<devils_engine::demiurg::module_system> engine_modules;
   std::unique_ptr<devils_engine::demiurg::resource_system> engine_resources;
@@ -37,6 +39,8 @@ struct runtime_traits {
   using render_type = render_simulation;
   using assets_type = assets_simulation;
   using sound_type = sound_simulation;
+  using boot_config_type = devils_engine::simul::engine_boot_config;
+  using settings_type = app_config;
 
   static std::unique_ptr<bootstrap_type> make_bootstrap();
   static void init_bootstrap(bootstrap_type& boot);
@@ -52,6 +56,11 @@ struct runtime_traits {
   }
 
   static void bind_systems(main_type& main, bootstrap_type& boot, sound_type* sound, render_type* render, assets_type* assets);
+  static boot_config_type& boot_config(bootstrap_type& boot) noexcept;
+  static settings_type& settings(bootstrap_type& boot) noexcept;
+  static bool save_settings(bootstrap_type& boot);
+  static bool reload_settings(bootstrap_type& boot);
+  static void settings_reloaded(main_type& main, bootstrap_type& boot);
   static void after_workers_started(main_type& main);
   static size_t main_wait_mcs(const main_type& main);
   static size_t sound_wait_mcs(const bootstrap_type& boot, const sound_type& sound);

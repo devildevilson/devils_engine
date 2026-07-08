@@ -21,6 +21,8 @@ public:
   using assets_type = typename Traits::assets_type;
   using sound_type = typename Traits::sound_type;
   using bootstrap_type = typename Traits::bootstrap_type;
+  using boot_config_type = typename Traits::boot_config_type;
+  using settings_type = typename Traits::settings_type;
 
   app_runtime() = default;
   app_runtime(const app_runtime&) = delete;
@@ -63,8 +65,22 @@ public:
     return Traits::exit_code(*main_);
   }
 
+  bool save_settings() {
+    if (bootstrap_ == nullptr) return false;
+    return Traits::save_settings(*bootstrap_);
+  }
+
+  bool reload_settings() {
+    if (bootstrap_ == nullptr) return false;
+    const bool loaded = Traits::reload_settings(*bootstrap_);
+    if (loaded && main_) Traits::settings_reloaded(*main_, *bootstrap_);
+    return loaded;
+  }
+
   broker_type* broker() noexcept { return broker_.get(); }
   bootstrap_type* bootstrap() noexcept { return bootstrap_.get(); }
+  boot_config_type* boot_config() noexcept { return bootstrap_ != nullptr ? &Traits::boot_config(*bootstrap_) : nullptr; }
+  settings_type* settings() noexcept { return bootstrap_ != nullptr ? &Traits::settings(*bootstrap_) : nullptr; }
   main_type* main_system() noexcept { return main_.get(); }
   render_type* render_system() noexcept { return render_.get(); }
   assets_type* assets_system() noexcept { return assets_.get(); }
