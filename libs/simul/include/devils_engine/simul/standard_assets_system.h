@@ -15,7 +15,11 @@
 #include <devils_engine/demiurg/resource_loader.h>
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/painter/glsl_source_file.h>
+#include <devils_engine/painter/mesh_resource.h>
+#include <devils_engine/painter/texture_resource.h>
+#include <devils_engine/sound/sound_resource.h>
 #include <devils_engine/utils/core.h>
+#include <devils_engine/visage/font_resource.h>
 
 #include "messages.h"
 #include "systems.h"
@@ -35,7 +39,8 @@ public:
     container.reset(new state);
 
     container->resources = std::make_unique<demiurg::resource_system>();
-    register_resource_types(*container->resources);
+    register_standard_resource_types(*container->resources);
+    register_project_resource_types(*container->resources);
 
     const auto root = modules_root();
     container->modules = std::make_unique<demiurg::module_system>(root);
@@ -72,7 +77,7 @@ public:
   }
 
 protected:
-  virtual void register_resource_types(demiurg::resource_system& resources) = 0;
+  virtual void register_project_resource_types(demiurg::resource_system&) {}
 
   virtual std::string modules_root() const {
     return utils::project_folder() + "resources/modules/";
@@ -83,6 +88,15 @@ protected:
   }
 
   virtual void update_project(const size_t, Broker&) {}
+
+  static void register_standard_resource_types(demiurg::resource_system& resources) {
+    resources.register_type<painter::mesh_resource>("mesh", "mesh");
+    // Consumers usually need only gpu_index, so texture/font concrete loaders are registered under
+    // the common gpu_texture_resource loading type.
+    resources.register_type<painter::gpu_texture_resource, painter::texture_resource>("textures", "png");
+    resources.register_type<painter::gpu_texture_resource, visage::font_resource>("fonts", "ttf");
+    resources.register_type<sound::sound_resource>("sounds", "mp3,flac,wav,ogg,opus");
+  }
 
 private:
   struct state {

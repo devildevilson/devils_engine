@@ -6,9 +6,7 @@
 
 #include <devils_engine/simul/app_runtime.h>
 #include <devils_engine/simul/boot_config.h>
-#include <devils_engine/demiurg/module_system.h>
-#include <devils_engine/demiurg/resource_system.h>
-#include <devils_engine/thread/atomic_pool.h>
+#include <devils_engine/simul/main_runtime.h>
 
 #include "assets_system.h"
 #include "broker.h"
@@ -19,17 +17,7 @@
 namespace tile_frontier {
 namespace core {
 
-struct runtime_bootstrap {
-  devils_engine::simul::engine_boot_config engine;
-  app_config settings;
-
-  std::unique_ptr<devils_engine::demiurg::module_system> engine_modules;
-  std::unique_ptr<devils_engine::demiurg::resource_system> engine_resources;
-  std::unique_ptr<devils_engine::demiurg::module_system> cache_modules;
-
-  std::unique_ptr<devils_engine::thread::atomic_pool> pool_container;
-  devils_engine::thread::atomic_pool* pool = nullptr;
-};
+struct runtime_bootstrap : devils_engine::simul::standard_runtime_bootstrap<app_config> {};
 
 struct runtime_traits {
   using bootstrap_type = runtime_bootstrap;

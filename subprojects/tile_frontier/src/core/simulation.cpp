@@ -14,37 +14,26 @@
 
 #include <devils_engine/input/core.h>
 #include <devils_engine/input/events.h>
-#include <devils_engine/thread/atomic_pool.h>
+#include <devils_engine/simul/lua_resource_bindings.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/string_id.h>
 #include <devils_engine/utils/time-utils.hpp>
 #include <devils_engine/utils/prng.h>
 
 #include <devils_engine/demiurg/resource_system.h>
-#include <devils_engine/demiurg/module_system.h>
 
 #include <gtl/phmap.hpp>
 #include <devils_engine/sound/sound_resource.h>
 
-#include <devils_engine/painter/render_config_source.h>
-#include <devils_engine/painter/glsl_source_file.h>
-#include <devils_engine/painter/shader_source_file.h>
-#include <devils_engine/painter/pipeline_cache_resource.h>
 #include <devils_engine/catalogue/introspection.h> // catalogue::statistics_store (perf UI)
 #include <devils_engine/catalogue/logging.h>        // доменное логгирование (DE_LOG) + init_logging
-#include <devils_engine/utils/fileio.h>
-
-#include <filesystem>
-
-#include <tavl/deserialize.h>
-#include <tavl/serialize.h>
 
 #include <devils_engine/visage/system.h>
 #include <devils_engine/visage/font.h>
 #include <devils_engine/visage/image.h>
 
 #include "config.h"
-#include "lua_script_resource.h"
+#include <devils_engine/simul/lua_script_resource.h>
 
 #include "messages.h"
 #include "broker.h"
@@ -74,20 +63,6 @@ namespace core {
 
 using namespace devils_engine;
 
-static size_t frame_time_from_fps(const uint32_t fps) noexcept {
-  const auto valid_fps = std::max(fps, 1u);
-  return utils::round(double(utils::global_time_resolution) / double(valid_fps));
-}
-
-static size_t thread_start_gap(const size_t frame_time, const uint32_t divisor) noexcept {
-  const auto valid_divisor = std::max(divisor, 1u);
-  return utils::round(double(frame_time) / double(valid_divisor));
-}
-
-static std::string source_line(const uint32_t line) {
-  return line == UINT32_MAX ? std::string{"unknown"} : std::to_string(line);
-}
-
 constexpr size_t main_frame_time = utils::round(double(utils::global_time_resolution) * (1.0/20.0));
 constexpr uint32_t initial_actor_count = 4096;
 //constexpr uint32_t initial_actor_count = 64000;
@@ -102,78 +77,6 @@ static void error_callback(int, const char* msg) noexcept {
 // без атомиков (одно окно/один UI). Позицию мыши опрашиваем напрямую (input::cursor_pos), а
 // дискретные события (кнопки/колесо/текст/клавиши) копим тут.
 namespace {
-// Настройка логгирования из конфига: файловый сток + консоль + уровни доменов. Зовётся сразу
-// после загрузки app.tavl, ДО создания подсистем — чтобы базовые always-on сообщения (устройства,
-// подсистемы, окно) тоже попали в файл. Домены по умолчанию off; включаются здесь или в рантайме.
-static void setup_logging(const logging_config& log_cfg) {
-  std::string file;
-  if (!log_cfg.file.empty()) {
-    file = utils::project_folder() + log_cfg.file;
-    std::error_code ec;
-    std::filesystem::create_directories(std::filesystem::path(file).parent_path(), ec);
-  }
-  catalogue::init_logging(file, log_cfg.console);
-  catalogue::register_engine_domains(); 
-
-  const auto apply = [] (const uint32_t id, const std::string& depth_str) {
-    catalogue::log_depth d = catalogue::log_depth::off;
-    if (catalogue::parse_log_depth(depth_str, d)) catalogue::logs().set_level(id, d);
-    else utils::warn("logging: unknown depth '{}' for domain '{}'", depth_str, catalogue::logs().name(id));
-  };
-  namespace ld = catalogue::log_domain;
-  apply(ld::main, log_cfg.main);
-  apply(ld::assets, log_cfg.assets);
-  apply(ld::sound, log_cfg.sound);
-  apply(ld::render, log_cfg.render);
-  apply(ld::ui, log_cfg.ui);
-  apply(ld::gameplay, log_cfg.gameplay);
-  apply(ld::resource, log_cfg.resource);
-  apply(ld::demiurg, log_cfg.demiurg);
-}
-
-static std::string settings_path(const runtime_bootstrap& boot) {
-  if (boot.engine.settings_file.empty()) return utils::project_folder() + "settings.tavl";
-  if (boot.engine.settings_file.front() == '/') return boot.engine.settings_file;
-  return utils::project_folder() + boot.engine.settings_file;
-}
-
-static void sync_engine_boot_config(runtime_bootstrap& boot) {
-  boot.engine.render_enabled = boot.settings.render.enabled;
-  boot.engine.sound_enabled = boot.settings.simulation.sound_enabled;
-  boot.engine.headless = boot.settings.render.headless;
-  boot.engine.main_fps = boot.settings.simulation.main_fps;
-  boot.engine.render_fps = boot.settings.simulation.render_fps;
-  boot.engine.sound_fps = boot.settings.simulation.sound_fps;
-  boot.engine.assets_fps = boot.settings.simulation.assets_fps;
-  boot.engine.worker_threads_reserved = boot.settings.simulation.worker_threads_reserved;
-  boot.engine.min_worker_threads = boot.settings.simulation.min_worker_threads;
-  boot.engine.thread_start_gap_divisor = boot.settings.simulation.thread_start_gap_divisor;
-  boot.engine.cache_root = boot.settings.render.cache_folder;
-}
-
-static bool deserialize_settings_file(runtime_bootstrap& boot, const std::string& path) {
-  if (!file_io::exists(path)) return false;
-
-  tavl::parser parser;
-  const auto content = file_io::read(path);
-  parser.add_default_operator();
-  parser.flush(content);
-  parser.finish();
-
-  tavl::ct_context ctx;
-  tavl::deserialize(parser, ctx, boot.settings);
-  if (!ctx.diagnostics.empty()) {
-    utils::warn("settings '{}': {} tavl diagnostics", path, ctx.diagnostics.size());
-    for (const auto& d : ctx.diagnostics) {
-      utils::warn("  tavl diagnostic '{}' at {}:{} field '{}'",
-        tavl::to_string(d.error.type), source_line(static_cast<uint32_t>(d.error.span.line)), d.error.span.column, d.field);
-    }
-  }
-
-  sync_engine_boot_config(boot);
-  return true;
-}
-
 // Резидентная память процесса (RSS) из /proc/self/statm (2-е поле = резидентные страницы).
 // Для аудита бюджета памяти — грубо, но без сторонних тулов.
 static size_t read_rss_bytes() {
@@ -587,177 +490,8 @@ static void setup_visage(simulation_init& c) {
   DE_LOG(catalogue::log_domain::ui, flow, "visage: system created (default font '{}', {} fonts total)", default_font_id, c.ui_fonts.size());
 }
 
-static demiurg::resource_handle lookup_resource_handle(const simulation_init& c, const std::string_view id) {
-  if (c.boot->engine_resources) {
-    const auto h = c.boot->engine_resources->handle(id);
-    if (h.get() != nullptr) return h;
-  }
-
-  if (c.assets_sim != nullptr && c.assets_sim->resources() != nullptr) {
-    const auto h = c.assets_sim->resources()->handle(id);
-    if (h.get() != nullptr) return h;
-  }
-
-  return {};
-}
-
-static std::string resource_parent_path(const std::string_view id) {
-  const size_t slash = id.rfind('/');
-  if (slash == std::string_view::npos) return {};
-  return std::string(id.substr(0, slash));
-}
-
-static std::string absolute_resource_path(const std::string_view current_module, std::string_view path) {
-  while (!path.empty() && (path.front() == ' ' || path.front() == '\t' || path.front() == '\n' || path.front() == '\r')) path.remove_prefix(1);
-  while (!path.empty() && (path.back() == ' ' || path.back() == '\t' || path.back() == '\n' || path.back() == '\r')) path.remove_suffix(1);
-  if (path.empty()) return {};
-
-  std::string p(path);
-  std::replace(p.begin(), p.end(), '\\', '/');
-
-  std::string selector;
-  const size_t colon = p.rfind(':');
-  if (colon != std::string::npos) {
-    selector = p.substr(colon);
-    p.resize(colon);
-  }
-
-  const bool explicit_root = !p.empty() && p.front() == '/';
-  while (!p.empty() && p.front() == '/') p.erase(p.begin());
-
-  if (!explicit_root && p.starts_with(".")) {
-    const std::string parent = resource_parent_path(current_module);
-    if (!parent.empty()) p = parent + "/" + p;
-  }
-
-  const size_t slash = p.rfind('/');
-  const size_t dot = p.rfind('.');
-  if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
-    p.resize(dot);
-  }
-
-  std::vector<std::string_view> segments;
-  size_t pos = 0;
-  while (pos <= p.size()) {
-    size_t end = p.find('/', pos);
-    if (end == std::string::npos) end = p.size();
-    std::string_view segment(p.data() + pos, end - pos);
-    pos = end + 1; // ВСЕГДА двигаем позицию за разделитель: end==size на последнем сегменте, и
-                   // pos обязан выйти за size, иначе пустой хвост зацикливает while (pos <= size)
-
-    if (segment.empty() || segment == ".") continue;
-    if (segment == "..") {
-      if (segments.empty()) return {};
-      segments.pop_back();
-      continue;
-    }
-    segments.push_back(segment);
-  }
-
-  std::string out;
-  for (const auto segment : segments) {
-    if (!out.empty()) out += '/';
-    out += segment;
-  }
-
-  if (out.empty()) return {};
-  out += selector;
-  return out;
-}
-
-static void append_find_handles(sol::table& out, int& index, const demiurg::resource_system* const reg, const std::string_view prefix) {
-  if (reg == nullptr) return;
-  const auto view = reg->find(prefix);
-  for (auto* res : view) {
-    if (res == nullptr) continue;
-    out[++index] = reg->handle(res->id);
-  }
-}
-
-static void append_filter_handles(sol::table& out, int& index, const demiurg::resource_system* const reg, const std::string_view filter) {
-  if (reg == nullptr) return;
-  std::vector<demiurg::resource_interface*> resources;
-  reg->filter<demiurg::resource_interface>(filter, resources);
-  for (auto* res : resources) {
-    if (res == nullptr) continue;
-    out[++index] = reg->handle(res->id);
-  }
-}
-
 void runtime_traits::init_bootstrap(bootstrap_type& boot) {
-  // Движковый реестр: engine-module = папка resources/engine/ (не перебивается модами).
-  // Новый demiurg-API не нужен — module_system::load_modules умеет директорию как модуль.
-  boot.engine_resources = std::make_unique<demiurg::resource_system>();
-  boot.engine_resources->register_type<app_config_resource>("config", "tavl");
-  boot.engine_resources->register_type<lua_script_resource>("ui", "lua");
-  boot.engine_resources->register_type<painter::render_config_source>("render_config", "tavl");
-  // Шейдеры (Фаза 1): GLSL под папкой shaders/ (тип "shaders"), SPIR-V под shaders/spv/
-  // (тип "spv" — сегмент пути). Компиляция/загрузка выбирается по расширению в create_pipeline.
-  boot.engine_resources->register_type<painter::glsl_source_file>("shaders", "glsl");
-  boot.engine_resources->register_type<painter::shader_source_file>("spv", "spv");
-  // Pipeline cache (Фаза 2) живёт в ТОМ ЖЕ движковом реестре — отдельный resource_system не нужен.
-  // Его МОДУЛЬ (отдельная cache-папка) дописывается в engine_resources позже (append_resources),
-  // когда из конфига известен cache_folder. Тип регистрируем сразу.
-  boot.engine_resources->register_type<painter::pipeline_cache_resource>("pipeline_cache", "bin");
-  boot.engine_modules = std::make_unique<demiurg::module_system>(utils::project_folder() + boot.engine.resource_root);
-  boot.engine_modules->load_modules({ demiurg::module_system::list_entry{boot.engine.engine_module, "", ""} });
-  boot.engine_resources->parse_resources(boot.engine_modules.get());
-
-  // Доводим все файлы описания render-graph до warm (текст в памяти) ЗДЕСЬ, на главном
-  // потоке до старта рендера — дальше поток рендера читает их только на чтение (parse_data).
-  {
-    std::vector<painter::render_config_source*> rc;
-    boot.engine_resources->find<painter::render_config_source>("render_config", rc);
-    for (auto* r : rc) r->load(utils::safe_handle_t{});
-    DE_LOG(catalogue::log_domain::resource, flow, "engine registry: preloaded {} render-config sources", rc.size());
-  }
-
-  // Шейдер-исходники НЕ preload'им здесь: их lifecycle («загрузить→скомпилировать→выгрузить»)
-  // живёт в рендер-потоке вокруг сборки пайплайнов (см. render_system set_shader_sources_loaded, п.1).
-
-  const auto config_path = utils::project_folder() + boot.engine.resource_root + boot.engine.engine_module + "/config/app.tavl"; // для лога
-  if (auto* cfg_res = boot.engine_resources->get<app_config_resource>(boot.engine.app_config_id)) {
-    cfg_res->load(utils::safe_handle_t{}); // cold→warm: читает + парсит tavl (CPU, главный поток)
-    boot.settings = cfg_res->config();
-  } else {
-    utils::warn("engine registry: '{}' not found, using app_config defaults", boot.engine.app_config_id);
-  }
-  sync_engine_boot_config(boot);
-  const auto user_settings_path = settings_path(boot);
-  if (deserialize_settings_file(boot, user_settings_path)) {
-    DE_LOG(catalogue::log_domain::main, flow, "Loaded user settings '{}'", user_settings_path);
-  }
-
-  // логгирование настраиваем СРАЗУ после конфига (до подсистем): файл+консоль, уровни доменов.
-  // Базовый always-on слой (utils::info ниже) уже попадёт в файл.
-  setup_logging(boot.settings.logging);
-
-  const uint32_t hw_threads = std::max(std::thread::hardware_concurrency(), 1u);
-  // reserved считаем ДИНАМИЧЕСКИ: выключенный движковый поток (render/sound) освобождает ядро под
-  // worker'ов (топологическая настройка — применяется при старте движка). См. ROADMAP A-4.
-  uint32_t reserved_threads = boot.engine.worker_threads_reserved;
-  if (!boot.engine.render_enabled && reserved_threads > 0) reserved_threads -= 1;
-  if (!boot.engine.sound_enabled && reserved_threads > 0) reserved_threads -= 1;
-  const uint32_t min_worker_threads = std::max(boot.engine.min_worker_threads, 1u);
-  const uint32_t thread_count = std::max(
-    hw_threads > reserved_threads ? hw_threads - reserved_threads : min_worker_threads,
-    min_worker_threads
-  );
-
-  const auto cpu_name = utils::get_cpu_name();
-  utils::info("Using cpu '{}', cores: {}, worker threads: {}", cpu_name, hw_threads, thread_count);
-  DE_LOG(catalogue::log_domain::main, flow,
-    "Loaded app config '{}': window {}x{}, render config '{}', GPU preference '{}' / index {}",
-    config_path,
-    boot.settings.window.width,
-    boot.settings.window.height,
-    boot.settings.render.config_folder,
-    boot.settings.render.preferred_gpu,
-    boot.settings.render.preferred_gpu_index
-  );
-
-  boot.pool_container.reset(new thread::atomic_pool(thread_count));
-  boot.pool = boot.pool_container.get();
+  simul::init_standard_bootstrap<app_config_resource>(boot);
 }
 
 void simulation::init() {
@@ -773,7 +507,7 @@ void simulation::init() {
     container->br = container->owned_br.get();
   }
 
-  set_frame_time(frame_time_from_fps(bootstrap_->engine.main_fps));
+  set_frame_time(simul::frame_time_from_fps(bootstrap_->engine.main_fps));
 
   // стартовый размер фреймбуфера = размер из конфига (до создания окна); коллбэк ресайза уточнит.
   container->fb_width = std::max(bootstrap_->settings.window.width, 1u);
@@ -793,7 +527,7 @@ std::unique_ptr<runtime_traits::main_type> runtime_traits::make_main(bootstrap_t
 }
 
 std::unique_ptr<runtime_traits::sound_type> runtime_traits::make_sound(bootstrap_type& boot) {
-  const auto sound_ft = frame_time_from_fps(boot.engine.sound_fps);
+  const auto sound_ft = simul::frame_time_from_fps(boot.engine.sound_fps);
   if (boot.engine.sound_enabled) {
     return std::make_unique<sound_type>(sound_ft);
   }
@@ -802,52 +536,11 @@ std::unique_ptr<runtime_traits::sound_type> runtime_traits::make_sound(bootstrap
 }
 
 std::unique_ptr<runtime_traits::render_type> runtime_traits::make_render(bootstrap_type& boot) {
-  if (boot.engine.render_enabled) {
-    const auto render_ft = frame_time_from_fps(boot.engine.render_fps);
-    // Pipeline cache — ОТДЕЛЬНЫЙ demiurg-модуль над выделенной cache-подпапкой (Фаза 2). Раздаёт
-    // кэш на load; dump пишет на диск напрямую — round-trip через ре-скан модуля на каждом init.
-    // Модуль = <cache_folder>/painter/ (ИЗОЛИРОВАН: system_info кладёт main_device.tavl прямо в
-    // <cache_folder>/ — не хотим, чтобы он попадал под скан). Файл = painter/pipeline_cache/main.bin,
-    // id (относительно модуля) = "pipeline_cache/main", тип матчится на сегмент "pipeline_cache".
-    const std::string cache_module = boot.settings.render.cache_folder + "/painter";
-    const std::string pipeline_cache_id = "pipeline_cache/main";
-    const std::string pipeline_cache_path = make_project_path(cache_module + "/pipeline_cache/main.bin");
-    file_io::create_directory(make_project_path(boot.settings.render.cache_folder)); // <cache_folder>/
-    file_io::create_directory(make_project_path(cache_module));                          // .../painter/
-    file_io::create_directory(make_project_path(cache_module + "/pipeline_cache"));       // .../painter/pipeline_cache/
-    // Cache-МОДУЛЬ отдельный (свой корень-папка), но его ресурсы дописываем в ОБЩИЙ engine_resources
-    // (append_resources — без clear, id не пересекаются с движковыми). Отдельный resource_system не нужен.
-    boot.cache_modules = std::make_unique<demiurg::module_system>(utils::project_folder());
-    boot.cache_modules->load_modules({ demiurg::module_system::list_entry{cache_module, "", ""} });
-    boot.engine_resources->append_resources(boot.cache_modules.get());
-    if (auto* pc = boot.engine_resources->get<painter::pipeline_cache_resource>(pipeline_cache_id)) {
-      pc->load(utils::safe_handle_t{}); // cold→warm: читает блоб через модуль (CPU, главный поток)
-      DE_LOG(catalogue::log_domain::resource, flow, "engine registry: pipeline cache '{}' preloaded", pipeline_cache_id);
-    }
-
-    render_simulation_config render_cfg;
-    render_cfg.engine_registry = boot.engine_resources.get();
-    // config.config_folder ("render_config") — теперь ПРЕФИКС в движковом реестре, не путь на диске
-    render_cfg.render_config_prefix = boot.settings.render.config_folder + "/";
-    render_cfg.shader_config_prefix = boot.settings.render.shader_folder + "/";
-    render_cfg.cache_registry = boot.engine_resources.get(); // тот же реестр, что engine_registry
-    render_cfg.pipeline_cache_id = pipeline_cache_id;
-    render_cfg.pipeline_cache_path = pipeline_cache_path;
-    render_cfg.graph_name = boot.settings.render.graph;
-    render_cfg.menu_graph_name = boot.settings.render.menu_graph;
-    render_cfg.app_name = "tile_frontier";
-    render_cfg.headless = boot.engine.headless;
-    // Windowed Vulkan bootstrap touches GLFW for surface extensions/proc addr, so it must wait
-    // until main creates input/window and publishes command_window_recreation.
-    render_cfg.create_vulkan_on_init = boot.engine.headless;
-
-    return std::make_unique<render_type>(render_ft, std::move(render_cfg));
-  }
-  return nullptr;
+  return simul::make_standard_render<render_type>(boot, "tile_frontier");
 }
 
 std::unique_ptr<runtime_traits::assets_type> runtime_traits::make_assets(bootstrap_type& boot) {
-  const auto assets_ft = frame_time_from_fps(boot.engine.assets_fps);
+  const auto assets_ft = simul::frame_time_from_fps(boot.engine.assets_fps);
   return std::make_unique<assets_type>(assets_ft);
 }
 
@@ -864,32 +557,16 @@ runtime_traits::settings_type& runtime_traits::settings(bootstrap_type& boot) no
 }
 
 bool runtime_traits::save_settings(bootstrap_type& boot) {
-  const auto path = settings_path(boot);
-  std::string tavl_data;
-  if (!tavl::serialize(boot.settings, tavl_data)) {
-    utils::warn("settings: could not serialize settings to tavl");
-    return false;
-  }
-
-  const bool written = file_io::write(tavl_data, path);
-  if (!written) utils::warn("settings: could not write '{}'", path);
-  else DE_LOG(catalogue::log_domain::main, flow, "Saved settings '{}'", path);
-  return written;
+  return simul::save_settings(boot);
 }
 
 bool runtime_traits::reload_settings(bootstrap_type& boot) {
-  const auto path = settings_path(boot);
-  if (!deserialize_settings_file(boot, path)) {
-    utils::warn("settings: '{}' not found, keeping current settings", path);
-    return false;
-  }
-  DE_LOG(catalogue::log_domain::main, flow, "Reloaded settings '{}'", path);
-  return true;
+  return simul::reload_settings(boot);
 }
 
 void runtime_traits::settings_reloaded(main_type& main, bootstrap_type& boot) {
-  setup_logging(boot.settings.logging);
-  main.set_frame_time(frame_time_from_fps(boot.engine.main_fps));
+  simul::setup_logging(boot.settings.logging);
+  main.set_frame_time(simul::frame_time_from_fps(boot.engine.main_fps));
 }
 
 void runtime_traits::after_workers_started(main_type& main) {
@@ -901,15 +578,15 @@ size_t runtime_traits::main_wait_mcs(const main_type&) {
 }
 
 size_t runtime_traits::sound_wait_mcs(const bootstrap_type& boot, const sound_type& sound) {
-  return thread_start_gap(sound.frame_time(), boot.engine.thread_start_gap_divisor);
+  return simul::thread_start_gap(sound.frame_time(), boot.engine.thread_start_gap_divisor);
 }
 
 size_t runtime_traits::render_wait_mcs(const bootstrap_type& boot, const render_type& render) {
-  return thread_start_gap(render.frame_time(), boot.engine.thread_start_gap_divisor);
+  return simul::thread_start_gap(render.frame_time(), boot.engine.thread_start_gap_divisor);
 }
 
 size_t runtime_traits::assets_wait_mcs(const bootstrap_type& boot, const assets_type& assets) {
-  return thread_start_gap(assets.frame_time(), boot.engine.thread_start_gap_divisor);
+  return simul::thread_start_gap(assets.frame_time(), boot.engine.thread_start_gap_divisor);
 }
 
 int runtime_traits::exit_code(const main_type& main) {
@@ -1068,117 +745,12 @@ void simulation::after_workers_started() {
     sol::environment env = container->ui->script_env();
     sol::table app = env["app"].get_or_create<sol::table>(); // общий namespace хост-биндингов
 
-    L.new_usertype<demiurg::resource_handle>("resource_handle",
-      sol::no_constructor,
-      "valid", [](const demiurg::resource_handle& h) -> bool { return h.get() != nullptr; },
-      "id", [](sol::this_state s, const demiurg::resource_handle& h) -> sol::object {
-        auto* res = h.get();
-        if (res == nullptr) return sol::nil;
-        return sol::make_object(s, std::string(res->id));
-      },
-      "hash", [](const demiurg::resource_handle& h) -> uint64_t { return h.hash; },
-      "state", [](sol::this_state s, const demiurg::resource_handle& h) -> sol::object {
-        auto* res = h.get();
-        if (res == nullptr) return sol::nil;
-        return sol::make_object(s, res->state());
-      },
-      "usable", [](const demiurg::resource_handle& h) -> bool {
-        auto* res = h.get();
-        return res != nullptr && res->usable();
-      },
-      "final_state", [](sol::this_state s, const demiurg::resource_handle& h) -> sol::object {
-        auto* res = h.get();
-        if (res == nullptr) return sol::nil;
-        return sol::make_object(s, res->final_state());
-      },
-      "top_state", [](sol::this_state s, const demiurg::resource_handle& h) -> sol::object {
-        auto* res = h.get();
-        if (res == nullptr) return sol::nil;
-        return sol::make_object(s, res->top_state());
-      });
-
-    sol::table require_cache = L.create_table();
-    auto require_stack = std::make_shared<std::vector<std::string>>();
-
-    env.set_function("request", [this, require_stack](sol::this_state s, const std::string& id) -> sol::object {
-      const std::string current = require_stack->empty() ? std::string{} : require_stack->back();
-      const std::string abs_id = absolute_resource_path(current, id);
-      if (abs_id.empty()) return sol::nil;
-      const auto h = lookup_resource_handle(*container, abs_id);
-      if (h.get() == nullptr) return sol::nil;
-      return sol::make_object(s, h);
-    });
-
-    env.set_function("find", [this, require_stack](sol::this_state s, const std::string& prefix) -> sol::table {
-      sol::state_view lua(s);
-      sol::table out = lua.create_table();
-      const std::string current = require_stack->empty() ? std::string{} : require_stack->back();
-      const std::string abs_prefix = absolute_resource_path(current, prefix);
-      if (abs_prefix.empty()) return out;
-      int index = 0;
-      append_find_handles(out, index, bootstrap_->engine_resources.get(), abs_prefix);
-      append_find_handles(out, index, container->assets_sim != nullptr ? container->assets_sim->resources() : nullptr, abs_prefix);
-      return out;
-    });
-
-    env.set_function("filter", [this, require_stack](sol::this_state s, const std::string& text) -> sol::table {
-      sol::state_view lua(s);
-      sol::table out = lua.create_table();
-      const std::string current = require_stack->empty() ? std::string{} : require_stack->back();
-      const std::string abs_text = absolute_resource_path(current, text);
-      if (abs_text.empty()) return out;
-      int index = 0;
-      append_filter_handles(out, index, bootstrap_->engine_resources.get(), abs_text);
-      append_filter_handles(out, index, container->assets_sim != nullptr ? container->assets_sim->resources() : nullptr, abs_text);
-      return out;
-    });
-
-    env.set_function("require", [this, env, require_cache, require_stack](sol::this_state s, const std::string& id) mutable -> sol::object {
-      sol::state_view lua(s);
-      const std::string current = require_stack->empty() ? std::string{} : require_stack->back();
-      const std::string abs_id = absolute_resource_path(current, id);
-      if (abs_id.empty()) {
-        luaL_error(s, "require('%s') failed: invalid demiurg resource path", id.c_str());
-        return sol::nil;
-      }
-
-      sol::object cached = require_cache[abs_id];
-      if (cached.valid() && cached != sol::nil) return cached;
-
-      const auto h = lookup_resource_handle(*container, abs_id);
-      auto* base = h.get();
-      if (base == nullptr) {
-        luaL_error(s, "require('%s') failed: demiurg resource '%s' was not found", id.c_str(), abs_id.c_str());
-        return sol::nil;
-      }
-
-      auto* script = h.get<lua_script_resource>();
-      if (script == nullptr) {
-        const std::string resource_id(base->id);
-        luaL_error(s, "require('%s') failed: resource '%s' is not a lua script", id.c_str(), resource_id.c_str());
-        return sol::nil;
-      }
-
-      if (!script->usable()) script->load(utils::safe_handle_t{});
-      require_cache[abs_id] = true; // Lua-compatible cycle guard.
-
-      const std::string script_id(script->id);
-      const std::string chunk_name = "@" + script_id;
-      require_stack->push_back(script_id);
-      auto ret = lua.safe_script(script->text, env, sol::script_pass_on_error, chunk_name);
-      require_stack->pop_back();
-      if (!ret.valid()) {
-        require_cache[abs_id] = sol::nil;
-        const sol::error err = ret;
-        luaL_error(s, "require('%s') failed while loading lua module '%s': %s", id.c_str(), script_id.c_str(), err.what());
-        return sol::nil;
-      }
-
-      sol::object result = ret.return_count() > 0 ? ret.get<sol::object>() : sol::make_object(lua, true);
-      if (!result.valid() || result == sol::nil) result = sol::make_object(lua, true);
-      require_cache[abs_id] = result;
-      return result;
-    });
+    simul::install_resource_lua_bindings(
+      L,
+      env,
+      bootstrap_->engine_resources.get(),
+      container->assets_sim != nullptr ? container->assets_sim->resources() : nullptr
+    );
 
     // первый аргумент — sol::object (resource_handle ИЛИ таблица-опции с полем resource/res), второй —
     // необязательная таблица-опции (когда ресурс задан первым аргументом). sol::object у НЕпоследнего

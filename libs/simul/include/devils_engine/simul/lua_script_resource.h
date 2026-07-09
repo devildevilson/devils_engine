@@ -1,14 +1,12 @@
-#ifndef TILE_FRONTIER_CORE_LUA_SCRIPT_RESOURCE_H
-#define TILE_FRONTIER_CORE_LUA_SCRIPT_RESOURCE_H
+#ifndef DEVILS_ENGINE_SIMUL_LUA_SCRIPT_RESOURCE_H
+#define DEVILS_ENGINE_SIMUL_LUA_SCRIPT_RESOURCE_H
 
 #include <string>
 
 #include <devils_engine/demiurg/resource_base.h>
 
-namespace tile_frontier {
-namespace core {
-
-using namespace devils_engine;
+namespace devils_engine {
+namespace simul {
 
 class lua_script_resource : public demiurg::resource_interface {
 public:

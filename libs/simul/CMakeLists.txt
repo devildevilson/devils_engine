@@ -8,9 +8,13 @@ project(
 
 add_library(devils_simul
   src/simul/interface.cpp
+  src/simul/lua_script_resource.cpp
   include/devils_engine/simul/interface.h
   include/devils_engine/simul/boot_config.h
   include/devils_engine/simul/app_runtime.h
+  include/devils_engine/simul/lua_script_resource.h
+  include/devils_engine/simul/lua_resource_bindings.h
+  include/devils_engine/simul/main_runtime.h
   include/devils_engine/simul/messages.h
   include/devils_engine/simul/render_config.h
   include/devils_engine/simul/render_runtime.h
