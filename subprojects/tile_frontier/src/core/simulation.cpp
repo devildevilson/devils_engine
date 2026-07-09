@@ -3,18 +3,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <span>
-#include <thread>
-#include <unistd.h>
-
-#include <lua.hpp> // lua_gc — метрика памяти lua в memory-probe
 
 #include <devils_engine/input/core.h>
-#include <devils_engine/input/events.h>
 #include <devils_engine/simul/lua_resource_bindings.h>
+#include <devils_engine/simul/window_runtime.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/string_id.h>
 #include <devils_engine/utils/time-utils.hpp>
@@ -67,28 +62,7 @@ constexpr size_t main_frame_time = utils::round(double(utils::global_time_resolu
 constexpr uint32_t initial_actor_count = 4096;
 //constexpr uint32_t initial_actor_count = 64000;
 
-static void error_callback(int, const char* msg) noexcept {
-  utils::warn("GLFW error: {}", msg);
-}
-
-// --- ввод для интерфейса (visage), шаг 1.1 ---
-// GLFW-коллбэки не имеют захватов (это C-указатели на функции) и срабатывают в input::poll_events
-// на главном потоке, в том же кадре до сборки снапшота. Поэтому аккумулируем в файловую структуру
-// без атомиков (одно окно/один UI). Позицию мыши опрашиваем напрямую (input::cursor_pos), а
-// дискретные события (кнопки/колесо/текст/клавиши) копим тут.
 namespace {
-// Резидентная память процесса (RSS) из /proc/self/statm (2-е поле = резидентные страницы).
-// Для аудита бюджета памяти — грубо, но без сторонних тулов.
-static size_t read_rss_bytes() {
-  std::FILE* f = std::fopen("/proc/self/statm", "r");
-  if (f == nullptr) return 0;
-  long total = 0, resident = 0;
-  const int got = std::fscanf(f, "%ld %ld", &total, &resident);
-  std::fclose(f);
-  if (got != 2) return 0;
-  return size_t(resident) * size_t(::sysconf(_SC_PAGESIZE));
-}
-
 // Lua-ОБЁРТКА id звуковой задачи. Живёт ТОЛЬКО здесь, на границе биндинга — в контракте
 // сообщений (command_sound) ходит голый size_t, чтобы не тащить лишний тип по всем хедерам.
 // Смысл обёртки чисто lua-шный: usertype без арифметических метаметодов, поэтому скрипт не
@@ -107,119 +81,7 @@ struct ui_sound_state_entry {
   double progress;
   size_t deadline;
 };
-
-// Зеркало стабильных констант GLFW (публичный ABI, не меняется). input-обёртка их наружу не
-// отдаёт, а коллбэки приходят с сырыми int-кодами, поэтому держим нужный минимум здесь.
-namespace glfw_const {
-  enum { release = 0, press = 1, repeat = 2 };
-  enum { mouse_left = 0, mouse_right = 1, mouse_middle = 2 };
-  enum { mod_shift = 0x0001, mod_control = 0x0002 };
-  enum {
-    key_enter = 257, key_tab = 258, key_backspace = 259, key_delete = 261,
-    key_right = 262, key_left = 263, key_down = 264, key_up = 265
-  };
-}
-
-struct ui_input_t {
-  bool mouse_left = false, mouse_middle = false, mouse_right = false;
-  float scroll_x = 0.0f, scroll_y = 0.0f;   // накапливается между кадрами, обнуляется при consume
-  std::vector<uint32_t> text;                // utf32-кодпоинты, введённые между кадрами
-  bool shift = false, ctrl = false;
-  bool backspace = false, del = false, enter = false, tab = false;
-  bool left = false, right = false, up = false, down = false;
-};
-ui_input_t g_ui_input;
-
-void ui_mouse_button_cb(GLFWwindow*, int button, int action, int) noexcept {
-  const bool down = (action != glfw_const::release);
-  switch (button) {
-    case glfw_const::mouse_left:   g_ui_input.mouse_left = down; break;
-    case glfw_const::mouse_right:  g_ui_input.mouse_right = down; break;
-    case glfw_const::mouse_middle: g_ui_input.mouse_middle = down; break;
-    default: break;
-  }
-  // кнопки мыши как first-class действия input::events (GLFW press=1/release=0 == key_state)
-  input::events::update_mouse_button(button, action);
-}
-
-void ui_scroll_cb(GLFWwindow*, double x, double y) noexcept {
-  g_ui_input.scroll_x += float(x);
-  g_ui_input.scroll_y += float(y);
-}
-
-void ui_char_cb(GLFWwindow*, unsigned int codepoint) noexcept {
-  g_ui_input.text.push_back(uint32_t(codepoint));
-}
-
-void ui_key_cb(GLFWwindow*, int key, int scancode, int action, int mods) noexcept {
-  const bool down = (action != glfw_const::release);
-  g_ui_input.shift = (mods & glfw_const::mod_shift) != 0;
-  g_ui_input.ctrl  = (mods & glfw_const::mod_control) != 0;
-  // именованные действия (шаг 2d): runtime-состояние клавиш в input::events кейится сканкодом.
-  // GLFW action (0/1/2) совпадает с input::key_state (release/press/repeated).
-  input::events::update_key(scancode, action);
-  switch (key) {
-    case glfw_const::key_backspace: g_ui_input.backspace = down; break;
-    case glfw_const::key_delete:    g_ui_input.del = down; break;
-    case glfw_const::key_enter:     g_ui_input.enter = down; break;
-    case glfw_const::key_tab:       g_ui_input.tab = down; break;
-    case glfw_const::key_left:      g_ui_input.left = down; break;
-    case glfw_const::key_right:     g_ui_input.right = down; break;
-    case glfw_const::key_up:        g_ui_input.up = down; break;
-    case glfw_const::key_down:      g_ui_input.down = down; break;
-    default: break;
-  }
-}
-
-// --- оконные события (шаг 1b) ---
-// Тот же паттерн, что g_ui_input: GLFW-коллбэки без захватов срабатывают на главном потоке в
-// input::poll_events, поэтому копим их в file-local структуру без атомиков (одно окно/один main).
-// update() разбирает накопленное: ресайз → пересоздание свопчейна + проекция; фокус/сворачивание
-// → реакции по window_policy. Сворачивание трактуем как потерю фокуса (active = focused && !iconified).
-struct window_events_t {
-  bool resized = false;
-  uint32_t fb_w = 0, fb_h = 0;
-  bool focused = true;
-  bool iconified = false;
-  bool state_changed = false; // фокус/сворачивание изменились с прошлого разбора
-};
-window_events_t g_window_events;
-
-void window_framebuffer_size_cb(GLFWwindow*, int w, int h) noexcept {
-  g_window_events.fb_w = w < 0 ? 0u : uint32_t(w);
-  g_window_events.fb_h = h < 0 ? 0u : uint32_t(h);
-  g_window_events.resized = true;
-}
-
-void window_focus_cb(GLFWwindow*, int focused) noexcept {
-  g_window_events.focused = (focused != 0);
-  g_window_events.state_changed = true;
-}
-
-void window_iconify_cb(GLFWwindow*, int iconified) noexcept {
-  g_window_events.iconified = (iconified != 0);
-  g_window_events.state_changed = true;
-}
 } // namespace
-
-// Политика реакций окна — крутится в C++ (см. план, шаг 1b). Не в фокусе → по умолчанию всё ещё
-// рисуем (частичная видимость), но глушим звук; свёрнутое окно трактуем как потерю фокуса и по
-// умолчанию НЕ рисуем (нет смысла гонять рендер-граф вхолостую, к тому же свопчейн 0×0).
-struct window_policy {
-  bool draw_when_unfocused = true;
-  bool draw_when_minimized = false;
-  bool mute_when_unfocused = true;
-  float focused_master_gain = 1.0f;
-  float unfocused_master_gain = 0.0f;
-};
-
-// FSM состояний движка (шаг 3). Лёгкий выделенный автомат (не mood — тот per-entity/act):
-//   boot    — движок только поднялся; поверх экрана splash (UI), карта/акторы НЕ рисуются;
-//   loading — ассеты грузят стартовый набор; на экране прогресс (usable()-ресурсов);
-//   game    — стартовый набор usable(); публикуем тайлы/акторов, splash снят, картинка без миганий.
-// Переход boot→loading — сразу (потоки/граф уже стартовали в init); loading→game — когда весь
-// стартовый набор ресурсов usable() и mock-чанки применены. Синглтон-состояние приложения.
-enum class app_state { boot, loading, game };
 
 // тут что? все другие системы + потоки для них + тред пул
 // кеш?
@@ -238,7 +100,7 @@ struct simulation_init {
   // (иначе картинка искажается на любом реальном размере окна — это был баг).
   uint32_t fb_width = 1;
   uint32_t fb_height = 1;
-  window_policy policy;
+  simul::window_policy policy;
   bool window_active = true; // focused && !iconified — последнее применённое состояние
 
   // сохранённый оконный прямоугольник для возврата из фуллскрина (glfwSetWindowMonitor)
@@ -308,7 +170,7 @@ struct simulation_init {
   // FSM состояний движка (шаг 3). Стартовый набор ресурсов, от usable() которого зависит переход
   // loading→game (main держит stable handles, поэтому прогресс считается прямо тут, без публикации
   // из ассетов). Заполняется в init по мере запросов текстур/шрифтов.
-  app_state state = app_state::boot;
+  simul::app_state state = simul::app_state::boot;
   std::vector<resource_ref> startup_resources;
 
   std::vector<std::string> sound_devices;
@@ -327,95 +189,6 @@ struct simulation_init {
 
   simulation_init() : window(nullptr), monitor(nullptr) {}
 };
-
-static void create_window_and_notify_render(simulation_init& c) {
-  if (c.window != nullptr) return;
-
-  if (!c.in) c.in = std::make_unique<input::init>(&error_callback);
-
-  c.monitor = input::primary_monitor();
-  c.window = input::create_window(c.boot->settings.window.width, c.boot->settings.window.height, c.boot->settings.window.title);
-  if (c.window == nullptr) {
-    utils::error{}(
-      "Could not create window '{}' {}x{}",
-      c.boot->settings.window.title,
-      c.boot->settings.window.width,
-      c.boot->settings.window.height
-    );
-  }
-
-  if (c.monitor != nullptr) {
-    const auto monitor_name = input::monitor_name(c.monitor);
-    utils::info("Using monitor '{}'", monitor_name);
-  }
-
-  // ввод для интерфейса: позицию курсора опрашиваем в update через input::cursor_pos,
-  // а дискретные события копим коллбэками (срабатывают в input::poll_events).
-  input::set_window_callback(c.window, &ui_mouse_button_cb);
-  input::set_window_callback(c.window, &ui_scroll_cb);
-  input::set_window_callback(c.window, &ui_char_cb);
-  input::set_window_callback(c.window, &ui_key_cb);
-
-  // оконные события: ресайз (в пикселях фреймбуфера), фокус, сворачивание (шаг 1b).
-  input::set_framebuffer_size_callback(c.window, &window_framebuffer_size_cb);
-  input::set_window_focus_callback(c.window, &window_focus_cb);
-  input::set_window_iconify_callback(c.window, &window_iconify_cb);
-
-  // именованные действия (шаг 2d): input::events — слой абстракции «клавиша → действие».
-  // GLFW уже инициализирован (in создан), поэтому key_from_canonical даёт валидные сканкоды.
-  input::events::init();
-  input::events::set_engine_tick_time(main_frame_time);
-  input::events::set_long_press_duration(utils::round(double(utils::global_time_resolution) * 0.3));
-  input::events::set_double_press_duration(utils::round(double(utils::global_time_resolution) * 0.25));
-  const auto bind_action = [](const char* action, const char* canonical) {
-    const auto [glfw_key, scancode] = input::key_from_canonical(canonical);
-    if (scancode >= 0) input::events::set_key(std::string_view(action), scancode, glfw_key, 0);
-    else utils::warn("main: could not bind action '{}' to key '{}'", action, canonical);
-  };
-  bind_action("quit", "escape");       // Esc → действие quit (lua решает, что делать)
-  bind_action("toggle_menu", "f1");    // F1 → переключить меню
-
-  // синхронизируем стартовое состояние с реальным окном (коллбэки могли ещё не сработать)
-  {
-    const auto [fw, fh] = input::framebuffer_size(c.window);
-    if (fw != 0 && fh != 0) { c.fb_width = fw; c.fb_height = fh; }
-    g_window_events.fb_w = c.fb_width;
-    g_window_events.fb_h = c.fb_height;
-    g_window_events.focused = input::window_focused(c.window);
-    g_window_events.iconified = input::window_iconified(c.window);
-    c.window_active = g_window_events.focused && !g_window_events.iconified;
-  }
-
-  if (c.br) {
-    c.br->window_recreation.write_slot() = command_window_recreation{
-      c.window, c.monitor, c.boot->settings.window.width, c.boot->settings.window.height
-    };
-    c.br->window_recreation.publish();
-  }
-}
-
-// Полноэкранный режим / возврат в окно (шаг 1f). glfwSetWindowMonitor. При смене режима GLFW
-// сам пришлёт framebuffer_size → штатный путь ресайза (1c) пересоздаст свопчейн под новый размер.
-static void apply_fullscreen(simulation_init& c, const bool enable) {
-  if (c.window == nullptr) return;
-  if (enable && !c.is_fullscreen) {
-    const auto [x, y] = input::window_pos(c.window);
-    const auto [w, h] = input::window_size(c.window);
-    c.windowed_x = x; c.windowed_y = y; c.windowed_w = w; c.windowed_h = h;
-    GLFWmonitor* m = c.monitor != nullptr ? c.monitor : input::primary_monitor();
-    if (m == nullptr) { utils::warn("main: no monitor for fullscreen"); return; }
-    const auto [mw, mh, refresh] = input::primary_video_mode(m);
-    input::set_window_monitor(c.window, m, 0, 0, mw, mh, int32_t(refresh));
-    c.is_fullscreen = true;
-    DE_LOG(catalogue::log_domain::main, flow, "main: fullscreen on ({}x{}@{})", mw, mh, refresh);
-  } else if (!enable && c.is_fullscreen) {
-    const uint32_t w = c.windowed_w != 0 ? c.windowed_w : c.boot->settings.window.width;
-    const uint32_t h = c.windowed_h != 0 ? c.windowed_h : c.boot->settings.window.height;
-    input::set_window_monitor(c.window, nullptr, c.windowed_x, c.windowed_y, w, h, DEVILS_ENGINE_INPUT_DONT_CARE);
-    c.is_fullscreen = false;
-    DE_LOG(catalogue::log_domain::main, flow, "main: fullscreen off ({}x{})", w, h);
-  }
-}
 
 // Прогресс загрузки стартового набора [0,1]: доля usable()-ресурсов + применённых mock-чанков.
 // main держит resource_ref на стартовый набор, поэтому прогресс считается локально (без публикации
@@ -444,14 +217,7 @@ simulation::simulation(runtime_bootstrap* boot) noexcept : simul::main_system<::
 
 simulation::~simulation() noexcept {
   if (!container) return;
-
-  if (container->window != nullptr) {
-    input::destroy(container->window);
-    container->window = nullptr;
-  }
-  container->monitor = nullptr;
-  container->in.reset();
-
+  simul::destroy_window_runtime(*container);
 }
 
 void simulation::set_broker(struct broker* b) {
@@ -624,7 +390,7 @@ void simulation::after_workers_started() {
   // Окно - поздний ресурс. Render thread должен жить и без него, а это событие
   // может прийти сейчас, после загрузки ассетов или после полного пересоздания окна.
   if (bootstrap_->settings.window.create_on_start && systems.render && !bootstrap_->settings.render.headless) {
-    create_window_and_notify_render(*container);
+    simul::create_window_and_notify_render(*container, bootstrap_->settings, main_frame_time);
   }
 
   // три grass-текстуры → texture_slots 0,1,2 (порядок запроса = порядок слотов, т.к. assets грузит по очереди)
@@ -812,43 +578,19 @@ void simulation::after_workers_started() {
       return sol::nil;
     });
 
-    // --- общий API управления игрой (шаг 2a/1f/2e) ---
-    // quit_game — единственная точка выхода из UI: выставляет флаг, читаемый в stop_predicate.
-    app.set_function("quit_game", [this]() { quit_requested.store(true, std::memory_order_release); });
-    app.set_function("maximize", [this]() { if (container->window != nullptr) input::maximize_window(container->window); });
-    app.set_function("restore",  [this]() { if (container->window != nullptr) input::restore_window(container->window); });
-    app.set_function("set_fullscreen", [this](bool enable) { apply_fullscreen(*container, enable); });
-    app.set_function("is_fullscreen", [this]() -> bool { return container->is_fullscreen; });
+    // Общий API управления окном/вводом: quit_game/maximize/restore/fullscreen/resolution/actions.
+    simul::install_window_lua_bindings(
+      app,
+      *container,
+      bootstrap_->settings,
+      systems.sound,
+      [this]() { quit_requested.store(true, std::memory_order_release); }
+    );
 
-    // мастер-громкость [0,1] напрямую (UI-ползунок). Отдельно от политики фокуса — это явная настройка.
-    app.set_function("set_master_volume", [this](double v) {
-      if (!systems.sound || container->br == nullptr) return;
-      const float gain = float(std::clamp(v, 0.0, 1.0));
-      container->policy.focused_master_gain = gain; // чтобы возврат фокуса не сбросил громкость
-      container->br->sound_master_gain.try_push(command_sound_set_master_gain{gain});
-    });
-
-    // poke настроек → реконфигурация систем (шаг 2e, паттерн diff→message).
-    // Смена разрешения: меняем окно; GLFW пришлёт framebuffer_size → штатный путь ресайза (1c).
-    app.set_function("set_resolution", [this](int w, int h) {
-      if (container->window == nullptr || w <= 0 || h <= 0) return;
-      bootstrap_->settings.window.width = uint32_t(w);
-      bootstrap_->settings.window.height = uint32_t(h);
-      input::set_window_size(container->window, uint32_t(w), uint32_t(h));
-    });
     // Смена звукового устройства: пере-создаём system2 через уже существующий канал recreate.
     app.set_function("set_sound_device", [this](const std::string& name) {
       if (!systems.sound || container->br == nullptr) return;
       container->br->recreate_sound.try_push(command_recreate_sound_system{name});
-    });
-
-    // именованные действия (шаг 2d): lua опрашивает состояние действия по имени. pressed — сейчас
-    // нажато (press/long/double); clicked — завершённое нажатие в этом кадре (click/long/double_click).
-    app.set_function("action_pressed", [](const std::string& name) -> bool {
-      return input::events::check_event(std::string_view(name), input::event_state::press_mask);
-    });
-    app.set_function("action_clicked", [](const std::string& name) -> bool {
-      return input::events::check_event(std::string_view(name), input::event_state::click_mask);
     });
 
     // картинка для UI (хост-мост к demiurg): app.image(resource_handle [, {region={x,y,w,h}}]) -> visage::image | nil.
@@ -873,12 +615,7 @@ void simulation::after_workers_started() {
     // состояние движка для UI (шаг 3a): lua рисует splash/loading/game по app.state(),
     // прогресс-бар — по app.loading_progress() [0,1].
     app.set_function("state", [this]() -> std::string {
-      switch (container->state) {
-        case app_state::boot:    return "boot";
-        case app_state::loading: return "loading";
-        case app_state::game:    return "game";
-      }
-      return "game";
+      return std::string(simul::to_string(container->state));
     });
     app.set_function("loading_progress", [this]() -> double { return loading_progress(*container); });
 
@@ -959,35 +696,20 @@ bool simulation::stop_predicate() const {
 
 void simulation::update(const size_t time) {
   if (container) {
-    container->tick += 1;
-  }
-
-  // --- FSM состояний движка (шаг 3) ---
-  // boot: движок поднимается; ждём готовности UI-шрифта (пока атлас не на GPU, текст не рисуется —
-  //   splash это просто заливка/лого). Как только шрифт usable() → loading (можно рисовать текст).
-  // loading: ассеты тянут стартовый набор; на экране прогресс. usable() всего набора → game.
-  // game: рисуем карту/акторов. (Рендер без окна/headless шрифта не грузит — тогда сразу дальше.)
-  if (container != nullptr) {
-    switch (container->state) {
-      case app_state::boot: {
+    simul::begin_main_frame(
+      *container,
+      time,
+      systems.sound,
+      systems.render,
+      [this]() {
         auto* boot_font = container->ui_font_h.get<visage::font_resource>();
-        const bool font_ready = boot_font == nullptr || boot_font->usable();
-        const bool no_render = (!systems.render); // без рендера splash не нужен — не залипаем в boot
-        if (font_ready || no_render) {
-          container->state = app_state::loading;
-          DE_LOG(catalogue::log_domain::main, flow, "app_state: boot -> loading (ui font {})", font_ready ? "ready" : "n/a");
-        }
-        break;
+        return boot_font == nullptr || boot_font->usable();
+      },
+      [this]() { return loading_complete(*container); },
+      [this](const uint32_t w, const uint32_t h) {
+        container->cam.aspect = float(w) / float(std::max(h, 1u));
       }
-      case app_state::loading:
-        if (loading_complete(*container)) {
-          container->state = app_state::game;
-          DE_LOG(catalogue::log_domain::main, flow, "app_state: loading -> game (startup resources ready)");
-        }
-        break;
-      case app_state::game:
-        break;
-    }
+    );
   }
 
   // Демо п.2/п.3: периодически переключаем активный render graph graph<->menu_graph, чтобы проверить
@@ -1040,52 +762,6 @@ void simulation::update(const size_t time) {
   // вызов функции в луа проверяем на зону отвественности (запрещаем менять состояния неподконтрольных сущностей)
   // для интерфейса существуют функции собственно интерфейса (наклир)
   // для разных игр разные АПИ функции
-
-  if (container && container->in) input::poll_events();
-  // продвигаем стейт-машину именованных действий (шаг 2d) до сборки UI, чтобы app.action_* были свежими
-  if (container && container->window != nullptr) input::events::update(time);
-
-  // --- разбор оконных событий (шаг 1b/1c/1e): ресайз, фокус, сворачивание ---
-  if (container && container->window != nullptr) {
-    // ресайз фреймбуфера → пересоздать свопчейн + пересчитать проекцию. Нулевой размер (свёрнуто)
-    // не шлём рендеру (свопчейн 0×0 недопустим); подхватим корректный размер при разворачивании.
-    if (g_window_events.resized) {
-      g_window_events.resized = false;
-      if (g_window_events.fb_w != 0 && g_window_events.fb_h != 0) {
-        container->fb_width = g_window_events.fb_w;
-        container->fb_height = g_window_events.fb_h;
-        container->cam.aspect = float(container->fb_width) / float(std::max(container->fb_height, 1u));
-        if (container->br) {
-          container->br->window_resize.write_slot() = command_window_resize{container->fb_width, container->fb_height};
-          container->br->window_resize.publish();
-        }
-        DE_LOG(catalogue::log_domain::main, flow, "main: window resized to {}x{}", container->fb_width, container->fb_height);
-      }
-    }
-
-    // фокус/сворачивание → реакции по window_policy. Сворачивание = потеря фокуса.
-    if (g_window_events.state_changed) {
-      g_window_events.state_changed = false;
-      const bool focused = g_window_events.focused;
-      const bool iconified = g_window_events.iconified;
-      const bool active = focused && !iconified;
-      container->window_active = active;
-
-      const auto& pol = container->policy;
-      const float gain = (active || !pol.mute_when_unfocused) ? pol.focused_master_gain : pol.unfocused_master_gain;
-      const bool draw = active ? true : (iconified ? pol.draw_when_minimized : pol.draw_when_unfocused);
-
-      if (systems.sound && container->br) {
-        container->br->sound_master_gain.try_push(command_sound_set_master_gain{gain});
-      }
-      if (systems.render && container->br) {
-        container->br->render_set_active.write_slot() = command_render_set_active{draw};
-        container->br->render_set_active.publish();
-      }
-      // фокус/сворачивание — частые события (alt-tab) → flow-домен, не спамим базовый лог.
-      DE_LOG(catalogue::log_domain::main, flow, "window focus={} iconified={} -> draw={} master_gain={:.2f}", focused, iconified, draw, gain);
-    }
-  }
 
   if (
     container &&
@@ -1177,7 +853,7 @@ void simulation::update(const size_t time) {
     // Тайлы карты публикуем ТОЛЬКО в game (шаг 3d): на splash/loading карта не рисуется, поэтому
     // ничего не мигает и null-текстуры не вылезают (стартовый набор уже usable() к моменту game).
     // Срез сетки строим тут же (только когда реально публикуем — не тратим CPU на splash/loading).
-    if (container->state == app_state::game && systems.render && container->br) {
+    if (container->state == simul::app_state::game && systems.render && container->br) {
       const tile_span span = visible_tiles(container->cam, container->grid, 1.0f);
       container->batch.build(container->grid, span);
 
@@ -1201,7 +877,7 @@ void simulation::update(const size_t time) {
 
   // --- actor simulation slice: simple AI -> move intents -> aesthetics components -> GPU batch ---
   // Только в game (шаг 3d): на splash/loading акторов не считаем и не публикуем.
-  if (container && container->state == app_state::game && container->actors_batch.valid()) {
+  if (container && container->state == simul::app_state::game && container->actors_batch.valid()) {
     const auto t0 = std::chrono::steady_clock::now();
     container->actors_last_metrics = container->actors.update(
       float(time) / float(utils::global_time_resolution),
@@ -1304,122 +980,35 @@ void simulation::update(const size_t time) {
     }
   }
 
-  // --- интерфейс (visage): главный поток раздаёт ввод, строит UI и гонит nk_convert в буферы ---
-  // Порядок строгий: input() -> update() -> convert(). Отправку буферов в рендер (через
-  // command_update_ui + шаг draw_ui) подключим на шаге 4; пока только производим и логируем.
-  if (container && container->ui) {
-    // собираем снапшот ввода: позиция мыши — опросом, остальное — из аккумулятора коллбэков
-    visage::input_snapshot_t snap;
-    if (container->window != nullptr) {
-      const auto [mx, my] = input::cursor_pos(container->window);
-      snap.mouse_x = float(mx);
-      snap.mouse_y = float(my);
-    }
-    snap.mouse_left = g_ui_input.mouse_left;
-    snap.mouse_middle = g_ui_input.mouse_middle;
-    snap.mouse_right = g_ui_input.mouse_right;
-    snap.scroll_x = g_ui_input.scroll_x;
-    snap.scroll_y = g_ui_input.scroll_y;
-    snap.text = g_ui_input.text.data();
-    snap.text_count = g_ui_input.text.size();
-    snap.key_shift = g_ui_input.shift;
-    snap.key_ctrl = g_ui_input.ctrl;
-    snap.key_backspace = g_ui_input.backspace;
-    snap.key_delete = g_ui_input.del;
-    snap.key_enter = g_ui_input.enter;
-    snap.key_tab = g_ui_input.tab;
-    snap.key_left = g_ui_input.left;
-    snap.key_right = g_ui_input.right;
-    snap.key_up = g_ui_input.up;
-    snap.key_down = g_ui_input.down;
+  if (container) {
+    simul::run_visage_frame(*container, time, systems.render, [this]() {
+      container->ui->set_env_number("tf_main_fps", container->ui_main_fps);
+      container->ui->set_env_number("tf_actor_count", double(container->actors_last_metrics.actors));
+      container->ui->set_env_number("tf_actor_intents", double(container->actors_last_metrics.intents));
+      container->ui->set_env_number("tf_actor_instances", double(container->actors_last_metrics.instances));
+      container->ui->set_env_number("tf_actor_ticks", double(container->actors_last_metrics.ticks));
+      container->ui->set_env_number("tf_intents_per_sec", container->ui_intents_per_sec);
+      container->ui->set_env_number("tf_instances_per_sec", container->ui_instances_per_sec);
+      container->ui->set_env_number("tf_actor_update_avg_us", container->ui_actor_update_avg_us);
 
-    container->ui->input(snap); // читает snap.text — должен отработать до clear ниже
-    container->ui->set_env_number("tf_main_fps", container->ui_main_fps);
-    container->ui->set_env_number("tf_actor_count", double(container->actors_last_metrics.actors));
-    container->ui->set_env_number("tf_actor_intents", double(container->actors_last_metrics.intents));
-    container->ui->set_env_number("tf_actor_instances", double(container->actors_last_metrics.instances));
-    container->ui->set_env_number("tf_actor_ticks", double(container->actors_last_metrics.ticks));
-    container->ui->set_env_number("tf_intents_per_sec", container->ui_intents_per_sec);
-    container->ui->set_env_number("tf_instances_per_sec", container->ui_instances_per_sec);
-    container->ui->set_env_number("tf_actor_update_avg_us", container->ui_actor_update_avg_us);
-
-    // забираем последний слепок состояния звука (звук пушит его сам) и СЛИВАЕМ его с
-    // оптимистичными записями из app.play_sound: публикация — подтверждённые (deadline 0),
-    // плюс ещё-живые оптимистичные, которых публикация пока не знает (latency старта).
-    // Подтверждённая запись, исчезнувшая из публикации = звук закончился → выпадает сама.
-    container->sound_frame += 1;
-    if (const command_sound_state* msg = container->br ? container->br->sound_state.consume() : nullptr) {
-      auto& cur = container->sound_state;
-      auto& next = container->sound_state_next;
-      next.clear();
-      for (const auto& s : msg->sounds) next.push_back({s.taskid, s.progress, 0});
-      for (const auto& e : cur) {
-        if (e.deadline == 0) continue;                     // была подтверждена, но публикации больше нет → конец
-        if (e.deadline < container->sound_frame) continue; // окно старта вышло → считаем завершённой
-        bool in_pub = false;
-        for (const auto& s : msg->sounds) if (s.taskid == e.taskid) { in_pub = true; break; }
-        if (!in_pub) next.push_back(e); // оптимистичная, ещё не доехала — оставляем
+      // sound-state merge пока остаётся здесь: это API звукового плеера tile_frontier,
+      // а не базовая обработка visage кадра.
+      container->sound_frame += 1;
+      if (const command_sound_state* msg = container->br ? container->br->sound_state.consume() : nullptr) {
+        auto& cur = container->sound_state;
+        auto& next = container->sound_state_next;
+        next.clear();
+        for (const auto& s : msg->sounds) next.push_back({s.taskid, s.progress, 0});
+        for (const auto& e : cur) {
+          if (e.deadline == 0) continue;
+          if (e.deadline < container->sound_frame) continue;
+          bool in_pub = false;
+          for (const auto& s : msg->sounds) if (s.taskid == e.taskid) { in_pub = true; break; }
+          if (!in_pub) next.push_back(e);
+        }
+        std::swap(cur, next);
       }
-      std::swap(cur, next);
-    }
-
-    // продвигаем UI-prng на кадр и накапливаем метку времени; отдаём в lua (time, timestamp, rng_state).
-    container->ui_rng = utils::xoshiro256starstar::next(container->ui_rng);
-    container->ui_timestamp += time;
-    container->ui->update(time, container->ui_timestamp, utils::xoshiro256starstar::value(container->ui_rng));
-    container->ui->convert();
-
-    // memory-probe: раз в ~1с логируем RSS + lua-heap с дельтами. Отделяет рост lua от C++:
-    // если растёт lua KiB — дело в скриптах (GC/утечка ссылок), иначе — в нативной части.
-    {
-      static uint64_t probe_tick = 0;
-      if (++probe_tick % 20 == 0) { // main_fps=20 → ~раз в секунду
-        lua_State* L = container->ui->script_state().lua_state();
-        const int64_t lua_kib = int64_t(lua_gc(L, LUA_GCCOUNT, 0));
-        const int64_t rss_kib = int64_t(read_rss_bytes() / 1024);
-        static int64_t prev_rss = 0, prev_lua = 0;
-        // память — движковый flow-домен (по умолчанию off; включить: logging.main="flow").
-        DE_LOG(catalogue::log_domain::main, flow,
-               "mem: RSS {} MiB (d{:+.2f}) | lua {} KiB (d{:+}) | sound_tasks {}",
-               rss_kib / 1024, double(rss_kib - prev_rss) / 1024.0,
-               lua_kib, lua_kib - prev_lua, container->sound_state.size());
-        prev_rss = rss_kib; prev_lua = lua_kib;
-      }
-    }
-
-    // потребляем накопленные за кадр события (уровневые состояния кнопок/клавиш оставляем)
-    g_ui_input.scroll_x = 0.0f;
-    g_ui_input.scroll_y = 0.0f;
-    g_ui_input.text.clear();
-
-    // отправляем буферы UI в рендер (контракт записи в host-visible ресурсы). Шаг draw_ui
-    // забиндит ui_vertices/ui_indices и проитерирует ui_commands. Буфер команд самоописывающийся:
-    // [uint32 count][gui_draw_command_t...].
-    if (systems.render) {
-      const auto verts = container->ui->vertices();
-      const auto inds = container->ui->indices();
-      const auto cmds = container->ui->commands();
-
-      static const uint64_t ui_vertices_hash = utils::string_hash("ui_vertices");
-      static const uint64_t ui_indices_hash  = utils::string_hash("ui_indices");
-      static const uint64_t ui_commands_hash = utils::string_hash("ui_commands");
-      if (container->br) {
-        container->br->write_buffer.write(ui_vertices_hash, verts); // span<const uint8_t> напрямую
-        container->br->write_buffer.write(ui_indices_hash, inds);
-
-        // ui_commands самоописывающийся: [uint32 count]‖[тело] — scatter-запись без temp-буфера
-        const uint32_t count = uint32_t(cmds.size());
-        container->br->write_buffer.write(ui_commands_hash,
-          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&count), sizeof(uint32_t)),
-          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(cmds.data()), cmds.size() * sizeof(visage::gui_draw_command_t)));
-      }
-    }
-
-    if (!container->ui_logged) {
-      DE_LOG(catalogue::log_domain::ui, flow, "visage: ui buffers — {} vtx bytes, {} idx bytes, {} draw commands",
-        container->ui->vertices().size(), container->ui->indices().size(), container->ui->commands().size());
-      container->ui_logged = true;
-    }
+    });
   }
 
   // app.send_event требует функцию которая
