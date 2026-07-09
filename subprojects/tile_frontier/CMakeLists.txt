@@ -15,7 +15,6 @@ set(PROJECT_EXTERNAL_DEPENDENCY_DIR ${CMAKE_CURRENT_LIST_DIR}/external)
 set(HDR_LIST
   include/core/actors.h
   include/core/config.h
-  include/core/lua_script_resource.h
   include/core/messages.h
   include/core/message_dispatcher.h
   include/core/instance_layout.h
@@ -35,7 +34,6 @@ set(SRC_LIST
   main.cpp
   src/core/config.cpp
   src/core/app_config_resource.cpp
-  src/core/lua_script_resource.cpp
   src/core/render_system.cpp
   src/core/assets_system.cpp
   src/core/texture_set.cpp

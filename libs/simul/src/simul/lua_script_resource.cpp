@@ -1,11 +1,11 @@
-#include "lua_script_resource.h"
+#include "devils_engine/simul/lua_script_resource.h"
 
 #include <algorithm>
 
 #include <devils_engine/demiurg/module_interface.h>
 
-namespace tile_frontier {
-namespace core {
+namespace devils_engine {
+namespace simul {
 
 lua_script_resource::lua_script_resource() {
   set_flag(demiurg::resource_flags::warm_and_hot_same, true);

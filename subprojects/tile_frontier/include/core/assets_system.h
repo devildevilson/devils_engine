@@ -21,7 +21,6 @@ public:
   assets_simulation(const size_t frame_time) noexcept;
 
 protected:
-  void register_resource_types(devils_engine::demiurg::resource_system& resources) override;
   void update_project(const size_t time, ::tile_frontier::core::broker& br) override;
 };
 
