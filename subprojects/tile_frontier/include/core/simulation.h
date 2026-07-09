@@ -48,6 +48,8 @@ private:
   void bind_systems(sound_simulation* sound, render_simulation* render, assets_simulation* assets);
   void after_workers_started();
   int exit_code() const noexcept;
+  simulation_init& state();
+  const simulation_init& state() const;
 
   std::unique_ptr<simulation_init> container;
   runtime_bootstrap* bootstrap_ = nullptr;

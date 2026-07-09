@@ -220,6 +220,16 @@ simulation::~simulation() noexcept {
   simul::destroy_window_runtime(*container);
 }
 
+simulation_init& simulation::state() {
+  if (!container) utils::error{}("simulation: state accessed before init()");
+  return *container;
+}
+
+const simulation_init& simulation::state() const {
+  if (!container) utils::error{}("simulation: state accessed before init()");
+  return *container;
+}
+
 void simulation::set_broker(struct broker* b) {
   simul::main_system<::tile_frontier::core::broker>::set_broker(b);
 }
@@ -263,21 +273,22 @@ void runtime_traits::init_bootstrap(bootstrap_type& boot) {
 void simulation::init() {
   if (bootstrap_ == nullptr) utils::error{}("simulation: runtime_bootstrap is not set");
   container.reset(new simulation_init);
-  container->boot = bootstrap_;
+  auto& c = *container;
+  c.boot = bootstrap_;
   // Единый broker создаётся ДО подсистем; раздаётся каждой (set_broker) до старта их потоков.
   // Если runtime уже поставил broker через стандартный контракт, используем его.
   if (broker_ != nullptr) {
-    container->br = broker_;
+    c.br = broker_;
   } else {
-    container->owned_br = std::make_unique<::tile_frontier::core::broker>();
-    container->br = container->owned_br.get();
+    c.owned_br = std::make_unique<::tile_frontier::core::broker>();
+    c.br = c.owned_br.get();
   }
 
   set_frame_time(simul::frame_time_from_fps(bootstrap_->engine.main_fps));
 
   // стартовый размер фреймбуфера = размер из конфига (до создания окна); коллбэк ресайза уточнит.
-  container->fb_width = std::max(bootstrap_->settings.window.width, 1u);
-  container->fb_height = std::max(bootstrap_->settings.window.height, 1u);
+  c.fb_width = std::max(bootstrap_->settings.window.width, 1u);
+  c.fb_height = std::max(bootstrap_->settings.window.height, 1u);
 }
 
 std::unique_ptr<runtime_traits::bootstrap_type> runtime_traits::make_bootstrap() {
@@ -360,10 +371,10 @@ int runtime_traits::exit_code(const main_type& main) {
 }
 
 void simulation::bind_systems(sound_simulation* sound, render_simulation* render, assets_simulation* assets) {
-  if (container == nullptr) return;
-  container->sound_sim = sound;
-  container->render_sim = render;
-  container->assets_sim = assets;
+  auto& c = state();
+  c.sound_sim = sound;
+  c.render_sim = render;
+  c.assets_sim = assets;
   systems.sound = sound != nullptr;
   systems.render = render != nullptr;
   systems.assets = assets != nullptr;
@@ -374,23 +385,23 @@ int simulation::exit_code() const noexcept {
 }
 
 void simulation::after_workers_started() {
-  if (container == nullptr) return;
-  if (container->assets_sim == nullptr) utils::error{}("main: assets subsystem is required before startup resource binding");
+  auto& c = state();
+  if (c.assets_sim == nullptr) utils::error{}("main: assets subsystem is required before startup resource binding");
 
   if (systems.sound) {
     command_sound_devices devices;
     devices.request_id = generate_task_id();
-    devices.out = &container->sound_devices;
-    devices.ready = &container->sound_devices_ready;
-    container->br->sound_devices.try_push(devices);
-    container->sound_devices_requested = true;
+    devices.out = &c.sound_devices;
+    devices.ready = &c.sound_devices_ready;
+    c.br->sound_devices.try_push(devices);
+    c.sound_devices_requested = true;
     DE_LOG(catalogue::log_domain::sound, flow, "main: requested sound playback devices");
   }
 
   // Окно - поздний ресурс. Render thread должен жить и без него, а это событие
   // может прийти сейчас, после загрузки ассетов или после полного пересоздания окна.
   if (bootstrap_->settings.window.create_on_start && systems.render && !bootstrap_->settings.render.headless) {
-    simul::create_window_and_notify_render(*container, bootstrap_->settings, main_frame_time);
+    simul::create_window_and_notify_render(c, bootstrap_->settings, main_frame_time);
   }
 
   // три grass-текстуры → texture_slots 0,1,2 (порядок запроса = порядок слотов, т.к. assets грузит по очереди)
@@ -403,11 +414,11 @@ void simulation::after_workers_started() {
     "textures/quad",
   };
   for (const char* res_id : texture_resources) {
-    const auto tex_handle = container->assets_sim->resources()->handle(res_id);
+    const auto tex_handle = c.assets_sim->resources()->handle(res_id);
     if (auto* tex = tex_handle.get<painter::gpu_texture_resource>()) {
       (void)tex;
-      container->br->load_resource.try_push(command_load_resource{resource_ref::from_handle(tex_handle), static_cast<int32_t>(demiurg::state::hot)});
-      container->startup_resources.push_back(resource_ref::from_handle(tex_handle)); // стартовый набор: от него зависит переход loading→game
+      c.br->load_resource.try_push(command_load_resource{resource_ref::from_handle(tex_handle), static_cast<int32_t>(demiurg::state::hot)});
+      c.startup_resources.push_back(resource_ref::from_handle(tex_handle)); // стартовый набор: от него зависит переход loading→game
       DE_LOG(catalogue::log_domain::resource, flow, "main: requested texture '{}' -> hot", res_id);
     } else {
       utils::warn("main: texture resource '{}' not found in registry", res_id);
@@ -424,73 +435,73 @@ void simulation::after_workers_started() {
       { "ambient", "sounds/ambient/soundreality-ambient-spring-forest-323801" },
     };
     for (const auto& [name, res_id] : named) {
-      const auto snd_handle = container->assets_sim->resources()->handle(res_id);
+      const auto snd_handle = c.assets_sim->resources()->handle(res_id);
       auto* snd = snd_handle.get<sound::sound_resource>();
       if (snd == nullptr) { utils::warn("main: sound resource '{}' not found in registry", res_id); continue; }
-      container->br->load_resource.try_push(command_load_resource{resource_ref::from_handle(snd_handle), static_cast<int32_t>(demiurg::state::warm)});
-      container->sound_by_name.emplace(utils::string_hash(name), snd_handle);
+      c.br->load_resource.try_push(command_load_resource{resource_ref::from_handle(snd_handle), static_cast<int32_t>(demiurg::state::warm)});
+      c.sound_by_name.emplace(utils::string_hash(name), snd_handle);
     }
-    DE_LOG(catalogue::log_domain::resource, flow, "main: requested {} sounds -> warm", container->sound_by_name.size());
+    DE_LOG(catalogue::log_domain::resource, flow, "main: requested {} sounds -> warm", c.sound_by_name.size());
   }
 
   // --- модель тайловой карты ---
   // Набор ТАЙЛОВЫХ текстур = только grass (маски grad/quad НЕ должны попадать в террейн — подстрока
   // "textures/grass" их исключает: 'textures/grad*'/'textures/quad' её не содержат). Позже маски уедут
   // в отдельный тип (textures/mask/).
-  const uint32_t tex_count = container->textures.gather(*container->assets_sim->resources(), "textures/grass");
+  const uint32_t tex_count = c.textures.gather(*c.assets_sim->resources(), "textures/grass");
   DE_LOG(catalogue::log_domain::resource, flow, "main: gathered {} tile textures by 'textures/grass'", tex_count);
 
   // Квадратная сетка чанков 4x4 по 16 тайлов. Стартово всё заполнено текстурой 0, затем assets
   // thread вернёт mock CPU payload для каждого чанка и main применит его к grid.
-  container->grid.tile_size = 1.0f;
-  container->grid.resize(container->chunks_x * container->chunk_size, container->chunks_y * container->chunk_size);
-  container->chunks_requested.assign(size_t(container->chunks_x) * container->chunks_y, false);
-  container->chunks_loaded.assign(size_t(container->chunks_x) * container->chunks_y, false);
+  c.grid.tile_size = 1.0f;
+  c.grid.resize(c.chunks_x * c.chunk_size, c.chunks_y * c.chunk_size);
+  c.chunks_requested.assign(size_t(c.chunks_x) * c.chunks_y, false);
+  c.chunks_loaded.assign(size_t(c.chunks_x) * c.chunks_y, false);
 
   if (systems.assets) {
-    for (uint32_t cy = 0; cy < container->chunks_y; ++cy) {
-      for (uint32_t cx = 0; cx < container->chunks_x; ++cx) {
-        const size_t idx = size_t(cy) * container->chunks_x + cx;
+    for (uint32_t cy = 0; cy < c.chunks_y; ++cy) {
+      for (uint32_t cx = 0; cx < c.chunks_x; ++cx) {
+        const size_t idx = size_t(cy) * c.chunks_x + cx;
         command_load_chunk cmd;
         cmd.x = int32_t(cx);
         cmd.y = int32_t(cy);
-        cmd.size = container->chunk_size;
+        cmd.size = c.chunk_size;
         cmd.texture_count = std::max(tex_count, 1u);
-        container->br->load_chunk.try_push(cmd);
-        container->chunks_requested[idx] = true;
+        c.br->load_chunk.try_push(cmd);
+        c.chunks_requested[idx] = true;
       }
     }
-    DE_LOG(catalogue::log_domain::gameplay, flow, "main: requested {} mock world chunks via assets", container->chunks_requested.size());
+    DE_LOG(catalogue::log_domain::gameplay, flow, "main: requested {} mock world chunks via assets", c.chunks_requested.size());
   }
 
   // Камера смотрит в центр карты; половина ширины обзора = 8 тайлов.
-  const glm::vec2 extent = container->grid.world_extent();
-  container->cam.center = extent * 0.5f;
-  container->cam.half_width = 8.0f;
-  container->cam.aspect = float(bootstrap_->settings.window.width) / float(std::max(bootstrap_->settings.window.height, 1u));
+  const glm::vec2 extent = c.grid.world_extent();
+  c.cam.center = extent * 0.5f;
+  c.cam.half_width = 8.0f;
+  c.cam.aspect = float(bootstrap_->settings.window.width) / float(std::max(bootstrap_->settings.window.height, 1u));
 
   // Валидируем раскладку tile_instance против layout "v2ui1" один раз.
-  if (const auto r = container->batch.bind("v2ui1"); !r) {
+  if (const auto r = c.batch.bind("v2ui1"); !r) {
     utils::error{}("tile_instance layout mismatch vs 'v2ui1': {} (attr {}, expected {}, actual {})",
       instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
   }
 
-  if (const auto r = container->actors_batch.bind("v2ui1c4v1"); !r) {
+  if (const auto r = c.actors_batch.bind("v2ui1c4v1"); !r) {
     utils::error{}("actor_instance layout mismatch vs 'v2ui1c4v1': {} (attr {}, expected {}, actual {})",
       instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
   }
 
-  container->actors.init(
+  c.actors.init(
     initial_actor_count,
     glm::vec2{0.5f, 0.5f},
     glm::max(extent - glm::vec2{0.5f, 0.5f}, glm::vec2{0.5f, 0.5f}),
     std::max(tex_count, 1u)
   );
-  container->metrics_last_log = std::chrono::steady_clock::now();
+  c.metrics_last_log = std::chrono::steady_clock::now();
   DE_LOG(catalogue::log_domain::gameplay, flow, "main: spawned {} lightweight actors in aesthetics world", initial_actor_count);
 
   // интерфейс (visage) в главном потоке
-  setup_visage(*container);
+  setup_visage(c);
 
   // UI-биндинги звука. visage — чисто UI и про звук не знает, поэтому их регистрирует ХОСТ
   // в lua-песочнице UI. Каждый — "обычный message на звуковой тред" (presentation→sound
@@ -503,26 +514,28 @@ void simulation::after_workers_started() {
   // Очередь/кроссфейд плеер собирает сам на lua, опрашивая state и запуская следующий трек.
   // sound_handle — непрозрачный usertype без арифметики: скрипт не считает id и не суёт число.
   {
-    auto& L = container->ui->script_state();
+    auto* cptr = &c;
+    auto& L = c.ui->script_state();
     L.new_usertype<sound_handle>("sound_handle",
       sol::no_constructor,
       "valid", &sound_handle::valid);
 
-    sol::environment env = container->ui->script_env();
+    sol::environment env = c.ui->script_env();
     sol::table app = env["app"].get_or_create<sol::table>(); // общий namespace хост-биндингов
 
     simul::install_resource_lua_bindings(
       L,
       env,
       bootstrap_->engine_resources.get(),
-      container->assets_sim != nullptr ? container->assets_sim->resources() : nullptr
+      c.assets_sim != nullptr ? c.assets_sim->resources() : nullptr
     );
 
     // первый аргумент — sol::object (resource_handle ИЛИ таблица-опции с полем resource/res), второй —
     // необязательная таблица-опции (когда ресурс задан первым аргументом). sol::object у НЕпоследнего
     // параметра безопаснее sol::optional (тот съедает не тот слот стека при nil).
     app.set_function("play_sound",
-      [this](sol::object a, sol::optional<sol::table> b) -> sound_handle {
+      [this, cptr](sol::object a, sol::optional<sol::table> b) -> sound_handle {
+        auto& c = *cptr;
         if (!systems.sound) return sound_handle{};
 
         demiurg::resource_handle sound_res;
@@ -549,30 +562,32 @@ void simulation::after_workers_started() {
           if (after && after->valid()) play.after = after->value; // хэндл → секвенсинг
         }
         play.res = resource_ref::from_handle(sound_res);
-        container->br->sound_play.try_push(play);
+        c.br->sound_play.try_push(play);
         // оптимистичная запись в ту же таблицу: пока play не доедет в публикацию (latency
         // 1-2 кадра), app.sound_state по ней вернёт 0, а не nil (deadline = окно старта).
         constexpr size_t startup_grace_frames = 30;
-        container->sound_state.push_back({play.taskid, 0.0, container->sound_frame + startup_grace_frames});
+        c.sound_state.push_back({play.taskid, 0.0, c.sound_frame + startup_grace_frames});
         return sound_handle{play.taskid};
       });
 
-    app.set_function("stop_sound", [this](const sound_handle& h) {
+    app.set_function("stop_sound", [this, cptr](const sound_handle& h) {
+      auto& c = *cptr;
       if (!systems.sound || !h.valid()) return;
       command_sound_stop stop{};
       stop.taskid = h.value;
-      container->br->sound_stop.try_push(stop);
+      c.br->sound_stop.try_push(stop);
     });
 
     // ищет id в единой таблице sound_state. Возвращает прогресс [0,1] или nil. Раз вернули
     // число — звук в обработке (играет/в очереди/только что запрошен); nil — задачи уже нет.
     // Оптимистичная запись с истёкшим окном старта (так и не доехала) трактуется как nil.
-    app.set_function("sound_state", [this](const sound_handle& h) -> sol::object {
-      auto& lua = container->ui->script_state();
+    app.set_function("sound_state", [cptr](const sound_handle& h) -> sol::object {
+      auto& c = *cptr;
+      auto& lua = c.ui->script_state();
       if (!h.valid()) return sol::nil;
-      for (const auto& s : container->sound_state) {
+      for (const auto& s : c.sound_state) {
         if (s.taskid != h.value) continue;
-        if (s.deadline != 0 && container->sound_frame > s.deadline) return sol::nil; // окно вышло
+        if (s.deadline != 0 && c.sound_frame > s.deadline) return sol::nil; // окно вышло
         return sol::make_object(lua, s.progress);
       }
       return sol::nil;
@@ -581,22 +596,24 @@ void simulation::after_workers_started() {
     // Общий API управления окном/вводом: quit_game/maximize/restore/fullscreen/resolution/actions.
     simul::install_window_lua_bindings(
       app,
-      *container,
+      c,
       bootstrap_->settings,
       systems.sound,
       [this]() { quit_requested.store(true, std::memory_order_release); }
     );
 
     // Смена звукового устройства: пере-создаём system2 через уже существующий канал recreate.
-    app.set_function("set_sound_device", [this](const std::string& name) {
-      if (!systems.sound || container->br == nullptr) return;
-      container->br->recreate_sound.try_push(command_recreate_sound_system{name});
+    app.set_function("set_sound_device", [this, cptr](const std::string& name) {
+      auto& c = *cptr;
+      if (!systems.sound || c.br == nullptr) return;
+      c.br->recreate_sound.try_push(command_recreate_sound_system{name});
     });
 
     // картинка для UI (хост-мост к demiurg): app.image(resource_handle [, {region={x,y,w,h}}]) -> visage::image | nil.
     // Строит хендл из gpu_index+размера когда текстура usable() (на GPU), иначе nil.
-    app.set_function("image", [this](sol::object resource, sol::optional<sol::table> opts) -> sol::object {
-      auto& lua = container->ui->script_state();
+    app.set_function("image", [cptr](sol::object resource, sol::optional<sol::table> opts) -> sol::object {
+      auto& c = *cptr;
+      auto& lua = c.ui->script_state();
       if (!resource.is<demiurg::resource_handle>()) return sol::nil;
       const auto handle = resource.as<demiurg::resource_handle>();
       auto* tex = handle.get<painter::gpu_texture_resource>();
@@ -614,10 +631,11 @@ void simulation::after_workers_started() {
 
     // состояние движка для UI (шаг 3a): lua рисует splash/loading/game по app.state(),
     // прогресс-бар — по app.loading_progress() [0,1].
-    app.set_function("state", [this]() -> std::string {
-      return std::string(simul::to_string(container->state));
+    app.set_function("state", [cptr]() -> std::string {
+      const auto& c = *cptr;
+      return std::string(simul::to_string(c.state));
     });
-    app.set_function("loading_progress", [this]() -> double { return loading_progress(*container); });
+    app.set_function("loading_progress", [cptr]() -> double { return loading_progress(*cptr); });
 
     // рантайм-переключение глубины логгирования домена (работает и в release): app.set_log_level("sound","trace").
     // Домены: main/assets/sound/render/ui/gameplay/resource/demiurg; глубина: off/info/flow/trace.
@@ -633,8 +651,9 @@ void simulation::after_workers_started() {
     // Возвращает массив { name, avg, min, max, last, count, samples={...} }; samples — последние
     // замеры в хроно-порядке (для nk.plot). Round-trip значений в lua при 20fps main дешёв (~1%),
     // отдельного C++-пути рисования не нужно.
-    app.set_function("perf_stats", [this]() -> sol::table {
-      auto& lua = container->ui->script_state();
+    app.set_function("perf_stats", [cptr]() -> sol::table {
+      auto& c = *cptr;
+      auto& lua = c.ui->script_state();
       sol::table out = lua.create_table();
       std::vector<uint64_t> samples;
       int32_t i = 0;
@@ -658,7 +677,7 @@ void simulation::after_workers_started() {
   }
 
   {
-    sol::environment env = container->ui->script_env();
+    sol::environment env = c.ui->script_env();
     sol::protected_function require = env["require"];
     const auto ret = require("ui/entry");
     if (!ret.valid()) {
@@ -667,63 +686,63 @@ void simulation::after_workers_started() {
     }
 
     sol::object entry = ret.return_count() > 0 ? ret.get<sol::object>() : sol::nil;
-    container->ui->set_entry_point(entry);
+    c.ui->set_entry_point(entry);
     DE_LOG(catalogue::log_domain::ui, flow, "visage: entry point loaded from demiurg resource 'ui/entry'");
   }
 
   // атласы шрифтов → GPU тем же путём, что и текстуры: просим ассеты довести до final_state.
   // Слоты определятся динамически (после grass-текстур); main прочитает gpu_index по hot.
   if (systems.assets) {
-    for (const auto& [h, logged] : container->ui_fonts) {
+    for (const auto& [h, logged] : c.ui_fonts) {
       auto* fr = h.get<visage::font_resource>();
       if (fr == nullptr) continue;
-    // final_state() = 3 (font_resource много-шаговый); CPU-уровни (0..2) уже пройдены в setup_visage,
-    // ассетам остаётся довести 2→3 (GPU). target=final_state(), не state::hot (иначе стоп на MSDF).
+      // final_state() = 3 (font_resource много-шаговый); CPU-уровни (0..2) уже пройдены в setup_visage,
+      // ассетам остаётся довести 2→3 (GPU). target=final_state(), не state::hot (иначе стоп на MSDF).
       const resource_ref font_ref = resource_ref::from_handle(h);
-      container->br->load_resource.try_push(command_load_resource{font_ref, fr->final_state()});
-    container->startup_resources.push_back(font_ref);
+      c.br->load_resource.try_push(command_load_resource{font_ref, fr->final_state()});
+      c.startup_resources.push_back(font_ref);
       DE_LOG(catalogue::log_domain::ui, flow, "main: requested font atlas '{}' -> ready (level {})", fr->id, fr->final_state());
-  }
+    }
   }
 }
 
 bool simulation::stop_predicate() const {
   // Выход: запрос из UI (app.quit_game) ИЛИ пользователь закрыл окно (крестик/Alt-F4).
   if (quit_requested.load(std::memory_order_acquire)) return true;
-  if (container && container->window != nullptr && input::should_close(container->window)) return true;
+  const auto& c = state();
+  if (c.window != nullptr && input::should_close(c.window)) return true;
   return false;
 }
 
 void simulation::update(const size_t time) {
-  if (container) {
-    simul::begin_main_frame(
-      *container,
-      time,
-      systems.sound,
-      systems.render,
-      [this]() {
-        auto* boot_font = container->ui_font_h.get<visage::font_resource>();
-        return boot_font == nullptr || boot_font->usable();
-      },
-      [this]() { return loading_complete(*container); },
-      [this](const uint32_t w, const uint32_t h) {
-        container->cam.aspect = float(w) / float(std::max(h, 1u));
-      }
-    );
-  }
+  auto& c = state();
+  simul::begin_main_frame(
+    c,
+    time,
+    systems.sound,
+    systems.render,
+    [&c]() {
+      auto* boot_font = c.ui_font_h.get<visage::font_resource>();
+      return boot_font == nullptr || boot_font->usable();
+    },
+    [&c]() { return loading_complete(c); },
+    [&c](const uint32_t w, const uint32_t h) {
+      c.cam.aspect = float(w) / float(std::max(h, 1u));
+    }
+  );
 
   // Демо п.2/п.3: периодически переключаем активный render graph graph<->menu_graph, чтобы проверить
   // мгновенный своп без пересоздания ресурсов. Управляется render.demo_graph_toggle_ms (0 ⇒ выкл).
-  if (container != nullptr && systems.render) {
+  if (systems.render) {
     const auto& rc = bootstrap_->settings.render;
     if (rc.demo_graph_toggle_ms > 0 && !rc.menu_graph.empty() && rc.menu_graph != rc.graph) {
       const uint64_t period = std::max<uint64_t>(1,
         uint64_t(rc.demo_graph_toggle_ms) * uint64_t(bootstrap_->settings.simulation.main_fps) / 1000ull);
-      if (container->tick % period == 0) {
-        const bool to_menu = (container->tick / period) % 2 == 1;
-        if (container->br) {
-          container->br->set_active_graph.write_slot().name = to_menu ? rc.menu_graph : rc.graph;
-          container->br->set_active_graph.publish();
+      if (c.tick % period == 0) {
+        const bool to_menu = (c.tick / period) % 2 == 1;
+        if (c.br) {
+          c.br->set_active_graph.write_slot().name = to_menu ? rc.menu_graph : rc.graph;
+          c.br->set_active_graph.publish();
         }
       }
     }
@@ -764,16 +783,15 @@ void simulation::update(const size_t time) {
   // для разных игр разные АПИ функции
 
   if (
-    container &&
-    container->sound_devices_requested &&
-    !container->sound_devices_logged &&
-    container->sound_devices_ready.load(std::memory_order_acquire)
+    c.sound_devices_requested &&
+    !c.sound_devices_logged &&
+    c.sound_devices_ready.load(std::memory_order_acquire)
   ) {
-    DE_LOG(catalogue::log_domain::sound, flow, "main: sound playback devices count {}", container->sound_devices.size());
-    for (size_t i = 0; i < container->sound_devices.size(); ++i) {
-      DE_LOG(catalogue::log_domain::sound, flow, "main: sound device[{}] '{}'", i, container->sound_devices[i]);
+    DE_LOG(catalogue::log_domain::sound, flow, "main: sound playback devices count {}", c.sound_devices.size());
+    for (size_t i = 0; i < c.sound_devices.size(); ++i) {
+      DE_LOG(catalogue::log_domain::sound, flow, "main: sound device[{}] '{}'", i, c.sound_devices[i]);
     }
-    container->sound_devices_logged = true;
+    c.sound_devices_logged = true;
   }
 
   // (бывший тест test.mp3 удалён: test.mp3 больше нет, звук теперь грузится именованным набором
@@ -781,48 +799,46 @@ void simulation::update(const size_t time) {
 
   // атлас шрифта доехал на GPU: фиксируем слот в шрифте (nuklear зашьёт его в texture.id
   // draw-команд текста; шейдер UI по нему сэмплит атлас). gpu_index записан рендером.
-  if (container) {
-    for (auto& [h, done] : container->ui_fonts) {
-      if (done) continue;
-      auto* fr = h.get<visage::font_resource>();
-      if (fr == nullptr || !fr->usable()) continue;
-      const uint32_t slot = fr->gpu_index;
-      if (auto* font = fr->font()) font->set_texture_id(slot);
-      DE_LOG(catalogue::log_domain::ui, flow, "main: font atlas '{}' reached GPU (usable), texture slot={}", fr->id, slot);
-      done = true;
-    }
+  for (auto& [h, done] : c.ui_fonts) {
+    if (done) continue;
+    auto* fr = h.get<visage::font_resource>();
+    if (fr == nullptr || !fr->usable()) continue;
+    const uint32_t slot = fr->gpu_index;
+    if (auto* font = fr->font()) font->set_texture_id(slot);
+    DE_LOG(catalogue::log_domain::ui, flow, "main: font atlas '{}' reached GPU (usable), texture slot={}", fr->id, slot);
+    done = true;
   }
 
-  if (container && container->br) {
+  if (c.br) {
     command_chunk_loaded cmd{};
-    while (container->br->chunk_loaded.try_pop(cmd)) {
+    while (c.br->chunk_loaded.try_pop(cmd)) {
       tile_chunk chunk;
       chunk.coord = chunk_coord{cmd.x, cmd.y};
       chunk.size = cmd.size;
       chunk.tiles.resize(cmd.textures.size());
       for (size_t i = 0; i < cmd.textures.size(); ++i) chunk.tiles[i].texture = cmd.textures[i];
 
-      apply_chunk(container->grid, chunk);
+      apply_chunk(c.grid, chunk);
 
-      if (cmd.x >= 0 && cmd.y >= 0 && uint32_t(cmd.x) < container->chunks_x && uint32_t(cmd.y) < container->chunks_y) {
-        const size_t idx = size_t(cmd.y) * container->chunks_x + size_t(cmd.x);
-        if (!container->chunks_loaded[idx]) {
-          container->chunks_loaded[idx] = true;
-          container->chunks_loaded_count += 1;
+      if (cmd.x >= 0 && cmd.y >= 0 && uint32_t(cmd.x) < c.chunks_x && uint32_t(cmd.y) < c.chunks_y) {
+        const size_t idx = size_t(cmd.y) * c.chunks_x + size_t(cmd.x);
+        if (!c.chunks_loaded[idx]) {
+          c.chunks_loaded[idx] = true;
+          c.chunks_loaded_count += 1;
         }
       }
     }
 
-    if (!container->chunks_logged && container->chunks_loaded_count == container->chunks_loaded.size()) {
-      DE_LOG(catalogue::log_domain::gameplay, flow, "main: all {} mock world chunks loaded", container->chunks_loaded_count);
-      container->chunks_logged = true;
+    if (!c.chunks_logged && c.chunks_loaded_count == c.chunks_loaded.size()) {
+      DE_LOG(catalogue::log_domain::gameplay, flow, "main: all {} mock world chunks loaded", c.chunks_loaded_count);
+      c.chunks_logged = true;
     }
   }
 
   // --- пайплайн тайловой карты: фрустум камеры -> срез сетки -> инстансы -> сообщение ---
-  if (container && container->batch.valid()) {
+  if (c.batch.valid()) {
     // собираем сообщение в рендер: метаданные + упакованные байты инстансов ("v2ui1").
-    const glm::mat4 vp = container->cam.view_proj();
+    const glm::mat4 vp = c.cam.view_proj();
 
     // Контракт записи в буфер: шлём общий UBO (view_proj + ui_proj + misc) в host-visible
     // camera_buffer. ВСЕГДА (не только в game): ui_proj нужен UI на splash/loading тоже.
@@ -830,8 +846,8 @@ void simulation::update(const size_t time) {
     if (systems.render) {
       // ЖИВОЙ размер фреймбуфера, а не статичный config (иначе проекция искажается на реальном
       // размере окна). cam.aspect уже обновлён коллбэком ресайза, так что и view_proj корректен.
-      const float w = float(std::max(container->fb_width, 1u));
-      const float h = float(std::max(container->fb_height, 1u));
+      const float w = float(std::max(c.fb_width, 1u));
+      const float h = float(std::max(c.fb_height, 1u));
 
       global_ubo_t ubo{};
       ubo.view_proj = vp;
@@ -844,8 +860,8 @@ void simulation::update(const size_t time) {
       ubo.misc = glm::vec4(w, h, 4.0f /* sdf px_range, = font_atlas_packer pixel_range */, 0.0f);
 
       static const uint64_t camera_buffer_hash = utils::string_hash("camera_buffer");
-      if (container->br) {
-        container->br->write_buffer.write(camera_buffer_hash,
+      if (c.br) {
+        c.br->write_buffer.write(camera_buffer_hash,
           std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&ubo), sizeof(global_ubo_t)));
       }
     }
@@ -853,35 +869,35 @@ void simulation::update(const size_t time) {
     // Тайлы карты публикуем ТОЛЬКО в game (шаг 3d): на splash/loading карта не рисуется, поэтому
     // ничего не мигает и null-текстуры не вылезают (стартовый набор уже usable() к моменту game).
     // Срез сетки строим тут же (только когда реально публикуем — не тратим CPU на splash/loading).
-    if (container->state == simul::app_state::game && systems.render && container->br) {
-      const tile_span span = visible_tiles(container->cam, container->grid, 1.0f);
-      container->batch.build(container->grid, span);
+    if (c.state == simul::app_state::game && systems.render && c.br) {
+      const tile_span span = visible_tiles(c.cam, c.grid, 1.0f);
+      c.batch.build(c.grid, span);
 
-      auto& slot = container->br->draw_tiles.write_slot();
+      auto& slot = c.br->draw_tiles.write_slot();
       std::memcpy(slot.view_proj.data(), &vp[0][0], sizeof(float) * 16);
-      slot.count = container->batch.count();
+      slot.count = c.batch.count();
       slot.stride = tile_batch::stride();
       slot.bytes.resize(size_t(slot.count) * slot.stride);
-      container->batch.blit(std::span<uint8_t>(slot.bytes));
+      c.batch.blit(std::span<uint8_t>(slot.bytes));
 
-      if (!container->tiles_logged) {
+      if (!c.tiles_logged) {
         DE_TRACE(catalogue::log_domain::gameplay,
           "tile slice [{},{})x[{},{}) = {} instances, {} B/inst, {} B payload",
           span.x0, span.x1, span.y0, span.y1, slot.count, slot.stride, slot.bytes.size());
-        container->tiles_logged = true;
+        c.tiles_logged = true;
       }
 
-      container->br->draw_tiles.publish();
+      c.br->draw_tiles.publish();
     }
   }
 
   // --- actor simulation slice: simple AI -> move intents -> aesthetics components -> GPU batch ---
   // Только в game (шаг 3d): на splash/loading акторов не считаем и не публикуем.
-  if (container && container->state == simul::app_state::game && container->actors_batch.valid()) {
+  if (c.state == simul::app_state::game && c.actors_batch.valid()) {
     const auto t0 = std::chrono::steady_clock::now();
-    container->actors_last_metrics = container->actors.update(
+    c.actors_last_metrics = c.actors.update(
       float(time) / float(utils::global_time_resolution),
-      container->actors_batch,
+      c.actors_batch,
       *bootstrap_->pool
     );
     const auto t1 = std::chrono::steady_clock::now();
@@ -889,37 +905,37 @@ void simulation::update(const size_t time) {
 
     // Снапшот акторов — latest-wins мейлбокс: заполняем слот-продюсер НА МЕСТЕ (bytes/ids
     // переиспользуют ёмкость между кадрами), затем publish. Строим только когда рендер включён.
-    if (systems.render && container->br) {
-      auto& slot = container->br->draw_actors.write_slot();
-      slot.count = container->actors_batch.count();
+    if (systems.render && c.br) {
+      auto& slot = c.br->draw_actors.write_slot();
+      slot.count = c.actors_batch.count();
       slot.stride = actor_batch::stride();
       slot.sim_frame_time = time;
       slot.bytes.resize(size_t(slot.count) * slot.stride);
-      container->actors_batch.blit(std::span<uint8_t>(slot.bytes));
-      slot.ids.assign(container->actors_batch.ids().begin(), container->actors_batch.ids().end());
+      c.actors_batch.blit(std::span<uint8_t>(slot.bytes));
+      slot.ids.assign(c.actors_batch.ids().begin(), c.actors_batch.ids().end());
 
-      if (!container->actors_logged) {
+      if (!c.actors_logged) {
         DE_TRACE(catalogue::log_domain::gameplay,
           "actor slice {} actors, {} intents, {} instances, {} B/inst, {} B payload",
-          container->actors_last_metrics.actors,
-          container->actors_last_metrics.intents,
+          c.actors_last_metrics.actors,
+          c.actors_last_metrics.intents,
           slot.count,
           slot.stride,
           slot.bytes.size()
         );
-        container->actors_logged = true;
+        c.actors_logged = true;
       }
 
-      container->br->draw_actors.publish();
+      c.br->draw_actors.publish();
     }
 
     // презентационный мост sim→sound: эмиты звука (вход в состояние FSM) → звуковой актор.
     // Куллинг по близости к слушателю (камере) + кап на тик (ограничение голосов). Звук
     // эфемерен и НЕ реплицируется — здесь решается лишь что РЕАЛЬНО проиграть.
     if (systems.sound) {
-      const auto emits = container->actors.sound_events();
-      const glm::vec2 listener = container->cam.center;
-      const float audible = container->cam.half_width * 1.5f;
+      const auto emits = c.actors.sound_events();
+      const glm::vec2 listener = c.cam.center;
+      const float audible = c.cam.half_width * 1.5f;
       const float audible2 = audible * audible;
       constexpr uint32_t max_sounds_per_tick = 8;
       uint32_t sent = 0;
@@ -928,88 +944,86 @@ void simulation::update(const size_t time) {
         const glm::vec2 d = e.pos - listener;
         if (d.x * d.x + d.y * d.y > audible2) continue;
         // резолв хеш-имя события → demiurg-ресурс; неизвестный звук пропускаем
-        const auto snd_it = container->sound_by_name.find(e.name);
-        if (snd_it == container->sound_by_name.end()) continue;
+        const auto snd_it = c.sound_by_name.find(e.name);
+        if (snd_it == c.sound_by_name.end()) continue;
         command_sound_play play{};
         play.taskid = generate_task_id();
         play.after = SIZE_MAX; // без секвенсинга
         play.res = resource_ref::from_handle(snd_it->second);
         play.start = 0.0;
-        container->br->sound_play.try_push(play);
+        c.br->sound_play.try_push(play);
         ++sent;
         DE_TRACE(catalogue::log_domain::sound, "sim-sound send task={} at ({:.1f},{:.1f})", play.taskid, e.pos.x, e.pos.y);
       }
       if (sent > 0) DE_LOG(catalogue::log_domain::sound, flow, "sim-sounds sent {} (of {} emits)", sent, emits.size());
     }
 
-    container->metrics_frames += 1;
-    container->metrics_actor_ticks += 1;
-    container->metrics_intents += container->actors_last_metrics.intents;
-    container->metrics_instances += container->actors_last_metrics.instances;
-    container->metrics_actor_update_us += update_us;
+    c.metrics_frames += 1;
+    c.metrics_actor_ticks += 1;
+    c.metrics_intents += c.actors_last_metrics.intents;
+    c.metrics_instances += c.actors_last_metrics.instances;
+    c.metrics_actor_update_us += update_us;
 
     if (bootstrap_->settings.metrics.enabled) {
       const auto now = std::chrono::steady_clock::now();
-      const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - container->metrics_last_log).count();
-      if (elapsed_ms >= bootstrap_->settings.metrics.log_interval_ms && container->metrics_frames != 0) {
+      const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - c.metrics_last_log).count();
+      if (elapsed_ms >= bootstrap_->settings.metrics.log_interval_ms && c.metrics_frames != 0) {
         const double seconds = double(elapsed_ms) / 1000.0;
-        const double fps = double(container->metrics_frames) / seconds;
-        const double intent_rate = double(container->metrics_intents) / seconds;
-        const double instance_rate = double(container->metrics_instances) / seconds;
-        const double avg_actor_us = double(container->metrics_actor_update_us) / double(container->metrics_actor_ticks);
-        container->ui_main_fps = fps;
-        container->ui_intents_per_sec = intent_rate;
-        container->ui_instances_per_sec = instance_rate;
-        container->ui_actor_update_avg_us = avg_actor_us;
+        const double fps = double(c.metrics_frames) / seconds;
+        const double intent_rate = double(c.metrics_intents) / seconds;
+        const double instance_rate = double(c.metrics_instances) / seconds;
+        const double avg_actor_us = double(c.metrics_actor_update_us) / double(c.metrics_actor_ticks);
+        c.ui_main_fps = fps;
+        c.ui_intents_per_sec = intent_rate;
+        c.ui_instances_per_sec = instance_rate;
+        c.ui_actor_update_avg_us = avg_actor_us;
         DE_LOG(catalogue::log_domain::main, flow,
           "metrics: main_fps={:.1f}, actors={}, intents/s={:.0f}, actor_instances/s={:.0f}, actor_update_avg_us={:.1f}",
           fps,
-          container->actors_last_metrics.actors,
+          c.actors_last_metrics.actors,
           intent_rate,
           instance_rate,
           avg_actor_us
         );
 
-        container->metrics_last_log = now;
-        container->metrics_frames = 0;
-        container->metrics_actor_ticks = 0;
-        container->metrics_intents = 0;
-        container->metrics_instances = 0;
-        container->metrics_actor_update_us = 0;
+        c.metrics_last_log = now;
+        c.metrics_frames = 0;
+        c.metrics_actor_ticks = 0;
+        c.metrics_intents = 0;
+        c.metrics_instances = 0;
+        c.metrics_actor_update_us = 0;
       }
     }
   }
 
-  if (container) {
-    simul::run_visage_frame(*container, time, systems.render, [this]() {
-      container->ui->set_env_number("tf_main_fps", container->ui_main_fps);
-      container->ui->set_env_number("tf_actor_count", double(container->actors_last_metrics.actors));
-      container->ui->set_env_number("tf_actor_intents", double(container->actors_last_metrics.intents));
-      container->ui->set_env_number("tf_actor_instances", double(container->actors_last_metrics.instances));
-      container->ui->set_env_number("tf_actor_ticks", double(container->actors_last_metrics.ticks));
-      container->ui->set_env_number("tf_intents_per_sec", container->ui_intents_per_sec);
-      container->ui->set_env_number("tf_instances_per_sec", container->ui_instances_per_sec);
-      container->ui->set_env_number("tf_actor_update_avg_us", container->ui_actor_update_avg_us);
+  simul::run_visage_frame(c, time, systems.render, [&c]() {
+      c.ui->set_env_number("tf_main_fps", c.ui_main_fps);
+      c.ui->set_env_number("tf_actor_count", double(c.actors_last_metrics.actors));
+      c.ui->set_env_number("tf_actor_intents", double(c.actors_last_metrics.intents));
+      c.ui->set_env_number("tf_actor_instances", double(c.actors_last_metrics.instances));
+      c.ui->set_env_number("tf_actor_ticks", double(c.actors_last_metrics.ticks));
+      c.ui->set_env_number("tf_intents_per_sec", c.ui_intents_per_sec);
+      c.ui->set_env_number("tf_instances_per_sec", c.ui_instances_per_sec);
+      c.ui->set_env_number("tf_actor_update_avg_us", c.ui_actor_update_avg_us);
 
       // sound-state merge пока остаётся здесь: это API звукового плеера tile_frontier,
       // а не базовая обработка visage кадра.
-      container->sound_frame += 1;
-      if (const command_sound_state* msg = container->br ? container->br->sound_state.consume() : nullptr) {
-        auto& cur = container->sound_state;
-        auto& next = container->sound_state_next;
+      c.sound_frame += 1;
+      if (const command_sound_state* msg = c.br ? c.br->sound_state.consume() : nullptr) {
+        auto& cur = c.sound_state;
+        auto& next = c.sound_state_next;
         next.clear();
         for (const auto& s : msg->sounds) next.push_back({s.taskid, s.progress, 0});
         for (const auto& e : cur) {
           if (e.deadline == 0) continue;
-          if (e.deadline < container->sound_frame) continue;
+          if (e.deadline < c.sound_frame) continue;
           bool in_pub = false;
           for (const auto& s : msg->sounds) if (s.taskid == e.taskid) { in_pub = true; break; }
           if (!in_pub) next.push_back(e);
         }
         std::swap(cur, next);
       }
-    });
-  }
+  });
 
   // app.send_event требует функцию которая
   // получит тип системы и вернет id
