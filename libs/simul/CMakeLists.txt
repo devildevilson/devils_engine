@@ -22,6 +22,7 @@ add_library(devils_simul
   include/devils_engine/simul/standard_assets_system.h
   include/devils_engine/simul/standard_sound_system.h
   include/devils_engine/simul/systems.h
+  include/devils_engine/simul/window_runtime.h
   include/devils_engine/simul/write_buffer_channel.h
 )
 
