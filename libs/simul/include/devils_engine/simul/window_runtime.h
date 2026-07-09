@@ -415,24 +415,26 @@ void install_window_lua_bindings(
   const bool sound_enabled,
   QuitFn&& quit
 ) {
+  auto* cptr = &c;
+  auto* settings_ptr = &settings;
   app.set_function("quit_game", std::forward<QuitFn>(quit));
-  app.set_function("maximize", [&c]() { if (c.window != nullptr) input::maximize_window(c.window); });
-  app.set_function("restore",  [&c]() { if (c.window != nullptr) input::restore_window(c.window); });
-  app.set_function("set_fullscreen", [&c, &settings](bool enable) { apply_fullscreen(c, settings, enable); });
-  app.set_function("is_fullscreen", [&c]() -> bool { return c.is_fullscreen; });
+  app.set_function("maximize", [cptr]() { if (cptr->window != nullptr) input::maximize_window(cptr->window); });
+  app.set_function("restore",  [cptr]() { if (cptr->window != nullptr) input::restore_window(cptr->window); });
+  app.set_function("set_fullscreen", [cptr, settings_ptr](bool enable) { apply_fullscreen(*cptr, *settings_ptr, enable); });
+  app.set_function("is_fullscreen", [cptr]() -> bool { return cptr->is_fullscreen; });
 
-  app.set_function("set_master_volume", [&c, sound_enabled](double v) {
-    if (!sound_enabled || c.br == nullptr) return;
+  app.set_function("set_master_volume", [cptr, sound_enabled](double v) {
+    if (!sound_enabled || cptr->br == nullptr) return;
     const float gain = float(std::clamp(v, 0.0, 1.0));
-    c.policy.focused_master_gain = gain;
-    c.br->sound_master_gain.try_push(command_sound_set_master_gain{gain});
+    cptr->policy.focused_master_gain = gain;
+    cptr->br->sound_master_gain.try_push(command_sound_set_master_gain{gain});
   });
 
-  app.set_function("set_resolution", [&c, &settings](int w, int h) {
-    if (c.window == nullptr || w <= 0 || h <= 0) return;
-    settings.window.width = uint32_t(w);
-    settings.window.height = uint32_t(h);
-    input::set_window_size(c.window, uint32_t(w), uint32_t(h));
+  app.set_function("set_resolution", [cptr, settings_ptr](int w, int h) {
+    if (cptr->window == nullptr || w <= 0 || h <= 0) return;
+    settings_ptr->window.width = uint32_t(w);
+    settings_ptr->window.height = uint32_t(h);
+    input::set_window_size(cptr->window, uint32_t(w), uint32_t(h));
   });
 
   app.set_function("action_pressed", [](const std::string& name) -> bool {
