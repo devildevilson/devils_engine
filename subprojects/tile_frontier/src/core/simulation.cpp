@@ -835,8 +835,11 @@ std::unique_ptr<runtime_traits::render_type> runtime_traits::make_render(bootstr
     render_cfg.pipeline_cache_path = pipeline_cache_path;
     render_cfg.graph_name = boot.settings.render.graph;
     render_cfg.menu_graph_name = boot.settings.render.menu_graph;
+    render_cfg.app_name = "tile_frontier";
     render_cfg.headless = boot.engine.headless;
-    render_cfg.create_vulkan_on_init = boot.settings.window.create_on_start || boot.engine.headless;
+    // Windowed Vulkan bootstrap touches GLFW for surface extensions/proc addr, so it must wait
+    // until main creates input/window and publishes command_window_recreation.
+    render_cfg.create_vulkan_on_init = boot.engine.headless;
 
     return std::make_unique<render_type>(render_ft, std::move(render_cfg));
   }

@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <devils_engine/utils/shared.h>
 
 // Лёгкий контракт вывода интерфейса: POD-структуры без зависимостей от lua/nuklear/vulkan.
 // Главный поток (visage::system) производит эти данные, рендер-поток (шаг draw_ui) их читает.
@@ -27,12 +28,12 @@ using gui_index_t = uint16_t;
 // шрифта (msdf), всё прочее — обычная картинка.
 namespace gui_draw_mode {
 enum values : uint32_t {
-  solid     = 0, // фигуры (фон окна, рамки, кнопки) — чистый цвет, без сэмпла
-  msdf      = 1, // текст из mtsdf-атласа шрифта
-  image     = 2, // nk_image — сэмпл текстуры * цвет
-  composite = 3, // РЕЗЕРВ: составная картинка (геральдика — несколько слоёв); пока не реализовано
-  cooldown  = 4, // картинка проявляется по градиент-маске на долю fill (эффект перезарядки)
-  mix       = 5, // 4-blend: до 4 компонентов (картинки/цвета) по каналам маски
+  solid     = utils::shared::UI_DRAW_SOLID, // фигуры (фон окна, рамки, кнопки) — чистый цвет, без сэмпла
+  msdf      = utils::shared::UI_DRAW_MSDF, // текст из mtsdf-атласа шрифта
+  image     = utils::shared::UI_DRAW_IMAGE, // nk_image — сэмпл текстуры * цвет
+  composite = utils::shared::UI_DRAW_COMPOSITE, // РЕЗЕРВ: составная картинка (геральдика — несколько слоёв); пока не реализовано
+  cooldown  = utils::shared::UI_DRAW_COOLDOWN, // картинка проявляется по градиент-маске на долю fill (эффект перезарядки)
+  mix       = utils::shared::UI_DRAW_MIX, // 4-blend: до 4 компонентов (картинки/цвета) по каналам маски
 };
 }
 
@@ -42,28 +43,24 @@ enum values : uint32_t {
 //   [0..13] index (14 бит, 0..16383) | [14] mirror U | [15] mirror V | [16..19] type (4 бита) |
 //   [20..23] sampler_id (4 бита, индекс в sampler-пуле) | [24..30] free (7 бит) | [31] не используем
 namespace tex_id {
-  inline constexpr uint32_t index_bits    = 14;
-  inline constexpr uint32_t index_mask    = (1u << index_bits) - 1u; // 0x3FFF
-  inline constexpr uint32_t mirror_u_bit  = 1u << 14;
-  inline constexpr uint32_t mirror_v_bit  = 1u << 15;
-  inline constexpr uint32_t type_shift    = 16;
-  inline constexpr uint32_t type_mask     = 0xFu;                    // 4 бита
-  inline constexpr uint32_t sampler_shift = 20;
-  inline constexpr uint32_t sampler_mask  = 0xFu;                    // 4 бита (до 16 семплеров)
+  inline constexpr uint32_t index_bits    = utils::shared::TEX_INDEX_BITS;
+  inline constexpr uint32_t index_mask    = utils::shared::TEX_INDEX_MASK; // 0x3FFF
+  inline constexpr uint32_t mirror_u_bit  = utils::shared::TEX_MIRROR_U;
+  inline constexpr uint32_t mirror_v_bit  = utils::shared::TEX_MIRROR_V;
+  inline constexpr uint32_t type_shift    = utils::shared::TEX_TYPE_SHIFT;
+  inline constexpr uint32_t type_mask     = utils::shared::TEX_TYPE_MASK;  // 4 бита
+  inline constexpr uint32_t sampler_shift = utils::shared::TEX_SAMPLER_SHIFT;
+  inline constexpr uint32_t sampler_mask  = utils::shared::TEX_SAMPLER_MASK; // 4 бита (до 16 семплеров)
 
-  inline constexpr uint32_t pack(const uint32_t type, const uint32_t index,
+  inline uint32_t pack(const uint32_t type, const uint32_t index,
       const bool mirror_u = false, const bool mirror_v = false, const uint32_t sampler_id = 0) {
-    return (index & index_mask)
-      | (mirror_u ? mirror_u_bit : 0u)
-      | (mirror_v ? mirror_v_bit : 0u)
-      | ((type & type_mask) << type_shift)
-      | ((sampler_id & sampler_mask) << sampler_shift);
+    return utils::shared::tex_pack(type, index, mirror_u, mirror_v, sampler_id);
   }
-  inline constexpr uint32_t index_of(const uint32_t id)    { return id & index_mask; }
-  inline constexpr uint32_t type_of(const uint32_t id)     { return (id >> type_shift) & type_mask; }
-  inline constexpr uint32_t sampler_of(const uint32_t id)  { return (id >> sampler_shift) & sampler_mask; }
-  inline constexpr bool     mirror_u_of(const uint32_t id) { return (id & mirror_u_bit) != 0u; }
-  inline constexpr bool     mirror_v_of(const uint32_t id) { return (id & mirror_v_bit) != 0u; }
+  inline uint32_t index_of(const uint32_t id)    { return utils::shared::tex_index_of(id); }
+  inline uint32_t type_of(const uint32_t id)     { return utils::shared::tex_type_of(id); }
+  inline uint32_t sampler_of(const uint32_t id)  { return utils::shared::tex_sampler_of(id); }
+  inline bool     mirror_u_of(const uint32_t id) { return utils::shared::tex_mirror_u_of(id); }
+  inline bool     mirror_v_of(const uint32_t id) { return utils::shared::tex_mirror_v_of(id); }
 }
 
 // Одна draw-команда после nk_convert: сколько идущих подряд индексов рисовать, прямоугольник

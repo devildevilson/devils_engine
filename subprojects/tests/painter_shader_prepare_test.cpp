@@ -38,6 +38,42 @@ TEST_CASE("glsl_source_file caches prepared SPIR-V by shader stage [painter]") {
   CHECK_FALSE(shader.prepared(shaderc_vertex_shader));
 }
 
+TEST_CASE("shader_crafter serves utils shared header from generated memory include [painter]") {
+  painter::glsl_source_file shader;
+  shader.memory =
+    "#version 450\n"
+    "#include <utils/shared.h>\n"
+    "layout(location = 0) out vec4 out_color;\n"
+    "void main() {\n"
+    "  const uint id = tex_pack(UI_DRAW_IMAGE, 3u, true, false, SAMPLER_LINEAR);\n"
+    "  const float v = valid_gpu_index(tex_index_of(id)) && tex_mirror_u_of(id) ? median3(0.25, 0.5, 0.75) : 0.0;\n"
+    "  out_color = get_color(make_color(v, float(tex_type_of(id)) / 8.0, float(tex_sampler_of(id)), 1.0));\n"
+    "}\n";
+
+  std::string error;
+  CHECK(shader.prepare_spirv(nullptr, shaderc_fragment_shader, &error));
+  CHECK(error.empty());
+  CHECK(shader.prepared(shaderc_fragment_shader));
+  CHECK_FALSE(shader.spirv.empty());
+}
+
+TEST_CASE("shader_crafter keeps legacy bindings shared include alias [painter]") {
+  painter::glsl_source_file shader;
+  shader.memory =
+    "#version 450\n"
+    "#include <bindings/shared.h>\n"
+    "layout(location = 0) out vec4 out_color;\n"
+    "void main() {\n"
+    "  out_color = vec4(prng_normalize(prng(1u)), 0.0, 0.0, 1.0);\n"
+    "}\n";
+
+  std::string error;
+  CHECK(shader.prepare_spirv(nullptr, shaderc_fragment_shader, &error));
+  CHECK(error.empty());
+  CHECK(shader.prepared(shaderc_fragment_shader));
+  CHECK_FALSE(shader.spirv.empty());
+}
+
 TEST_CASE("painter render config reads demiurg tavl list subresources [painter]") {
   namespace fs = std::filesystem;
 

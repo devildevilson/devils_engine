@@ -1,0 +1,23 @@
+if (NOT DEFINED INPUT_FILE)
+  message(FATAL_ERROR "INPUT_FILE is required")
+endif()
+
+if (NOT DEFINED OUTPUT_FILE)
+  message(FATAL_ERROR "OUTPUT_FILE is required")
+endif()
+
+file(READ "${INPUT_FILE}" DEVILS_EMBED_TEXT)
+get_filename_component(DEVILS_EMBED_OUTPUT_DIR "${OUTPUT_FILE}" DIRECTORY)
+file(MAKE_DIRECTORY "${DEVILS_EMBED_OUTPUT_DIR}")
+
+file(WRITE "${OUTPUT_FILE}" "#ifndef DEVILS_ENGINE_PAINTER_BINDINGS_SHARED_INCLUDE_TEXT_H\n")
+file(APPEND "${OUTPUT_FILE}" "#define DEVILS_ENGINE_PAINTER_BINDINGS_SHARED_INCLUDE_TEXT_H\n\n")
+file(APPEND "${OUTPUT_FILE}" "#include <string_view>\n\n")
+file(APPEND "${OUTPUT_FILE}" "namespace devils_engine {\n")
+file(APPEND "${OUTPUT_FILE}" "namespace painter {\n\n")
+file(APPEND "${OUTPUT_FILE}" "inline constexpr std::string_view bindings_shared_include_text = R\"DESHADER(\n")
+file(APPEND "${OUTPUT_FILE}" "${DEVILS_EMBED_TEXT}")
+file(APPEND "${OUTPUT_FILE}" "\n)DESHADER\";\n\n")
+file(APPEND "${OUTPUT_FILE}" "}\n")
+file(APPEND "${OUTPUT_FILE}" "}\n\n")
+file(APPEND "${OUTPUT_FILE}" "#endif\n")
