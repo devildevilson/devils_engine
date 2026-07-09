@@ -29,7 +29,6 @@ set(HDR_LIST
   include/devils_engine/bindings/generic.h
   include/devils_engine/bindings/lua_header.h
   "include/devils_engine/bindings/nuklear_bindings.h"
-  include/devils_engine/bindings/shared.h
 )
 
 add_library(devils_bindings ${SRC_LIST} ${HDR_LIST})

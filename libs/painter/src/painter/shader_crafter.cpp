@@ -1,7 +1,10 @@
 #include "shader_crafter.h"
 
+#include <cstring>
 #include <memory>
+#include <string_view>
 #include <shaderc/shaderc.hpp>
+#include "devils_engine/painter/bindings_shared_include_text.h"
 #include "devils_engine/demiurg/resource_system.h"
 #include "glsl_source_file.h"
 
@@ -9,6 +12,19 @@
 
 namespace devils_engine {
 namespace painter {
+
+namespace {
+
+constexpr std::string_view utils_shared_include_name = "utils/shared.h";
+constexpr std::string_view legacy_bindings_shared_include_name = "bindings/shared.h";
+
+shaderc_include_result* make_empty_include_result() {
+  auto* result = new shaderc_include_result;
+  std::memset(result, 0, sizeof(shaderc_include_result));
+  return result;
+}
+
+}
 
 class simple_shader_includer : public shaderc::CompileOptions::IncluderInterface {
 public:
@@ -31,16 +47,22 @@ public:
 
     utils::println("requested_source", file_name, "requesting_source", requesting_source, "include_depth", include_depth);
 
-    // + у нас могут быть несколько уникальных include 
-    // например core_structures, укажем их типа #include <core>
-    // их надо каким то образом положить в программу как текст
+    if (file_name == utils_shared_include_name || file_name == legacy_bindings_shared_include_name) {
+      auto* result = make_empty_include_result();
+      result->source_name = requested_source;
+      result->source_name_length = std::strlen(requested_source);
+      result->content = bindings_shared_include_text.data();
+      result->content_length = bindings_shared_include_text.size();
+      return result;
+    }
 
     std::vector<glsl_source_file*> files;
     files.reserve(2);
 
     // я всегда должен возвращать валидную память
-    auto result = new shaderc_include_result;
-    memset(result, 0, sizeof(shaderc_include_result));
+    auto result = make_empty_include_result();
+
+    if (_sys == nullptr) return result;
 
     // мы указываем поиск во всех системах "добавления" исходного кода
     // предполагается что пользователь знает точный путь до файла и должен его указать
@@ -99,13 +121,13 @@ std::vector<uint32_t> shader_crafter::compile(const std::string &source_name, co
     options.AddMacroDefinition(name, value);
   }
 
-  if (_sys != nullptr) options.SetIncluder(std::make_unique<simple_shader_includer>(_sys));
   options.SetTargetEnvironment(shaderc_target_env_vulkan, 0);
   //options.SetTargetSpirv(shaderc_spirv_version_1_6);
   options.SetTargetSpirv(shaderc_spirv_version_1_0);
   if (_opt)
     options.SetOptimizationLevel(shaderc_optimization_level_performance);
 
+  options.SetIncluder(std::make_unique<simple_shader_includer>(_sys));
   const auto kind = static_cast<shaderc_shader_kind>(_type);
   const auto preprocess_result = compiler.PreprocessGlsl(source, kind, source_name.c_str(), options);
   if (preprocess_result.GetCompilationStatus() != shaderc_compilation_status_success) {

@@ -117,6 +117,14 @@ if (WIN32)
   )
 endif()
 
+# Базовые движковые ресурсы: default config, общие шейдеры и прочее, что не должно жить в проекте.
+# Проектные resources/ копируются ниже и могут точечно перекрыть дефолты.
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/resources
+    ${PROJECT_OUTPUT_DIRECTORY}/resources
+)
+
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory 
     ${CMAKE_CURRENT_LIST_DIR}/resources 
@@ -156,5 +164,11 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${CMAKE_SOURCE_DIR}/subprojects/tests/shaders
+    ${PROJECT_OUTPUT_DIRECTORY}/resources/engine/shaders
+)
+
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/resources/engine/shaders
     ${PROJECT_OUTPUT_DIRECTORY}/resources/engine/shaders
 )

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "devils_engine/demiurg/resource_base.h"
+#include "devils_engine/utils/shared.h"
 
 namespace devils_engine {
 namespace painter {
@@ -16,7 +17,7 @@ namespace painter {
 // исполняет поток рендера (не warm_and_hot_same). Всё, что нужно потребителю — gpu_index.
 class gpu_texture_resource : public demiurg::resource_interface {
 public:
-  static constexpr uint32_t invalid_gpu_index = ~uint32_t(0);
+  static constexpr uint32_t invalid_gpu_index = utils::shared::INVALID_GPU_INDEX;
 
   std::vector<uint8_t> memory; // RGBA8-байты (width*height*4)
   uint32_t width = 0;

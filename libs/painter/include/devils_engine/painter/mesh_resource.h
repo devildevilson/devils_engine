@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <devils_engine/demiurg/resource_base.h>
+#include <devils_engine/utils/shared.h>
 
 namespace devils_engine {
 namespace painter {
@@ -14,7 +15,7 @@ namespace painter {
 //   warm->hot  (load_warm, поток рендера): заливает в GPU, пишет gpu_index, освобождает CPU-копию.
 class mesh_resource : public demiurg::resource_interface {
 public:
-  static constexpr uint32_t invalid_gpu_index = ~uint32_t(0);
+  static constexpr uint32_t invalid_gpu_index = utils::shared::INVALID_GPU_INDEX;
   static constexpr uint32_t vertex_stride = 16; // float3 + uint32 rgba (как у тест-треугольника)
 
   std::vector<uint8_t> memory;

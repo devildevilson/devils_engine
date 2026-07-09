@@ -48,6 +48,20 @@ set(SRC_LIST
   src/painter/stb_image_impl.cpp
 )
 
+get_filename_component(DEVILS_ENGINE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+set(DEVILS_SHARED_SHADER_HEADER "${DEVILS_ENGINE_ROOT}/libs/utils/include/devils_engine/utils/shared.h")
+set(DEVILS_SHARED_SHADER_INCLUDE_TEXT "${CMAKE_CURRENT_BINARY_DIR}/generated/devils_engine/painter/bindings_shared_include_text.h")
+
+add_custom_command(
+  OUTPUT "${DEVILS_SHARED_SHADER_INCLUDE_TEXT}"
+  COMMAND ${CMAKE_COMMAND}
+    -DINPUT_FILE=${DEVILS_SHARED_SHADER_HEADER}
+    -DOUTPUT_FILE=${DEVILS_SHARED_SHADER_INCLUDE_TEXT}
+    -P "${DEVILS_ENGINE_ROOT}/cmake/devils_embed_text_header.cmake"
+  DEPENDS "${DEVILS_SHARED_SHADER_HEADER}" "${DEVILS_ENGINE_ROOT}/cmake/devils_embed_text_header.cmake"
+  VERBATIM
+)
+
 set(HDR_LIST
   include/devils_engine/painter/auxiliary.h
   include/devils_engine/painter/glsl_source_file.h
@@ -70,12 +84,14 @@ set(HDR_LIST
   include/devils_engine/painter/graphics_base.h
   include/devils_engine/painter/graphics_simul.h
   include/devils_engine/painter/assets_base.h
+  "${DEVILS_SHARED_SHADER_INCLUDE_TEXT}"
  "include/devils_engine/painter/device_features.h")
 
 add_library(devils_painter ${SRC_LIST} ${HDR_LIST})
 target_link_libraries(devils_painter PRIVATE devils_engine::options ${SHADERC_LIBRARY_NAME} Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp devils_engine::input devils_engine::demiurg devils_engine::utils devils_engine::catalogue sul::dynamic_bitset tavl)
 target_include_directories(devils_painter INTERFACE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/>")
 target_include_directories(devils_painter PRIVATE "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/devils_engine/painter>")
+target_include_directories(devils_painter PRIVATE "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>")
 target_include_directories(devils_painter PRIVATE "${FETCHCONTENT_BASE_DIR}/stb-src") # stb_image.h для texture_resource
 
 if (MSVC)

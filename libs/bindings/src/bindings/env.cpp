@@ -7,10 +7,12 @@
 #include "devils_engine/utils/dice.h"
 #include "devils_engine/utils/time-utils.hpp"
 #include "devils_engine/utils/core.h"
-#include "shared.h"
+#include "devils_engine/utils/shared.h"
 
 namespace devils_engine {
 namespace bindings {
+namespace shared = utils::shared;
+
 constexpr auto whitelisted = {
   "assert",
   "error",

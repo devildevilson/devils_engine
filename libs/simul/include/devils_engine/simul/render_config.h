@@ -1,7 +1,9 @@
 #ifndef DEVILS_ENGINE_SIMUL_RENDER_CONFIG_H
 #define DEVILS_ENGINE_SIMUL_RENDER_CONFIG_H
 
+#include <cstdint>
 #include <string>
+#include <vulkan/vulkan_core.h>
 
 namespace devils_engine {
 namespace demiurg {
@@ -21,6 +23,11 @@ struct render_system_config {
 
   std::string graph_name = "graphics1";
   std::string menu_graph_name;
+  std::string texture_descriptor_name = "textures";
+  std::string app_name = "devils_app";
+  std::string engine_name = "devils_engine";
+  uint32_t app_version = VK_MAKE_VERSION(0, 1, 1);
+  uint32_t engine_version = VK_MAKE_VERSION(0, 1, 1);
   bool create_vulkan_on_init = true;
   bool headless = false;
 };
