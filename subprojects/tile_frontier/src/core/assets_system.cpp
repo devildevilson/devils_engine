@@ -15,8 +15,8 @@ void assets_simulation::update_project(const size_t, ::tile_frontier::core::brok
   // mock world streaming: CPU-чанк генерируется на assets thread и возвращается main через broker.
   command_load_chunk cmd{};
   while (br.load_chunk.try_pop(cmd)) {
-    if (cmd.size == 0) continue;
-    const tile_chunk chunk = generate_mock_chunk(chunk_coord{cmd.x, cmd.y}, cmd.size, cmd.texture_count);
+    if (cmd.size == 0 || cmd.textures.empty()) continue;
+    const tile_chunk chunk = generate_mock_chunk(chunk_coord{cmd.x, cmd.y}, cmd.size, cmd.textures);
     command_chunk_loaded out;
     out.x = chunk.coord.x;
     out.y = chunk.coord.y;

@@ -2,16 +2,18 @@
 #define TILE_FRONTIER_CORE_TILE_MAP_H
 
 #include <cstdint>
+#include <span>
 #include <string_view>
 #include <vector>
 
+#include <devils_engine/demiurg/resource_system.h>
 #include <glm/glm.hpp>
 
 // Главная (геймплейная) сторона: модель мира под рендер тайловой карты.
-//  - tile        : одна клетка (пока хранит только индекс текстуры)
+//  - tile        : одна клетка со stable handle своей текстуры
 //  - tile_grid   : плоская квадратная сетка W x H, row-major, мировые координаты
 //  - tile_chunk  : CPU payload одного чанка; пока генерируется mock-ассетами
-//  - texture_set : набор текстур, собранный из реестра ассетов по префиксу пути
+//  - texture_set : palette stable handles, собранный из реестра ассетов по префиксу пути
 //  - camera2d    : ортографическая top-down камера; её "фрустум" = мировой прямоугольник
 //  - tile_span   : прямоугольный срез сетки (пересечение view rect с сеткой)
 //  - tile_instance : то, что уедет на GPU одним инстансом (layout "v2ui1")
@@ -22,9 +24,10 @@
 namespace tile_frontier {
 namespace core {
 
-// Одна клетка карты. Пока для рендера нужен только индекс текстуры в texture_set.
+// Одна клетка карты хранит stable logical resource handle. GPU slot является render-owned
+// деталью и вычисляется только при сборке tile_instance.
 struct tile {
-  uint32_t texture = 0;
+  devils_engine::demiurg::resource_handle texture;
 };
 
 // Плоская квадратная сетка тайлов. Тайл (x,y), x в [0,width), y в [0,height).
@@ -67,7 +70,11 @@ struct tile_chunk {
 
 // Mock "asset load": детерминированно генерирует содержимое чанка на CPU. Реальная версия позже
 // заменит тело на чтение/декод demiurg-ресурса, но contract останется тем же: coord -> tile_chunk.
-tile_chunk generate_mock_chunk(chunk_coord coord, uint32_t chunk_size, uint32_t texture_count);
+tile_chunk generate_mock_chunk(
+  chunk_coord coord,
+  uint32_t chunk_size,
+  std::span<const devils_engine::demiurg::resource_handle> textures
+);
 
 // Скопировать чанк в глобальную сетку. Часть чанка за границей grid молча отбрасывается.
 void apply_chunk(tile_grid& grid, const tile_chunk& chunk);

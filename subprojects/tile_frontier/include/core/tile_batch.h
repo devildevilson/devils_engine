@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "tile_map.h"
+#include "texture_set.h"
 #include "draw_intent.h"
 
 namespace tile_frontier {
@@ -24,13 +25,14 @@ public:
   }
   bool valid() const noexcept { return intent_.valid(); }
 
-  // собрать инстансы из среза span сетки grid: tile(x,y) -> {мировой центр, индекс текстуры}
-  void build(const tile_grid& grid, const tile_span& span) {
+  // собрать инстансы: stable texture handle тайла разрешается в текущий bindless GPU slot.
+  void build(const tile_grid& grid, const tile_span& span, const texture_set& textures) {
     instances_.clear();
     instances_.reserve(span.count());
     for (uint32_t y = span.y0; y < span.y1; ++y) {
       for (uint32_t x = span.x0; x < span.x1; ++x) {
-        instances_.push_back(tile_instance{grid.world_center(x, y), grid.at(x, y).texture});
+        const auto texture = textures.gpu_index(grid.at(x, y).texture);
+        instances_.push_back(tile_instance{grid.world_center(x, y), texture});
       }
     }
   }
