@@ -21,7 +21,6 @@
 #include <devils_engine/painter/render_config_source.h>
 #include <devils_engine/painter/shader_source_file.h>
 #include <devils_engine/simul/boot_config.h>
-#include <devils_engine/simul/lua_script_resource.h>
 #include <devils_engine/simul/render_config.h>
 #include <devils_engine/thread/atomic_pool.h>
 #include <devils_engine/utils/core.h>
@@ -173,7 +172,6 @@ bool reload_settings(Bootstrap& boot) {
 template <typename AppConfigResource, typename Bootstrap>
 void register_standard_engine_resources(Bootstrap& boot) {
   boot.engine_resources->template register_type<AppConfigResource>("config", "tavl");
-  boot.engine_resources->template register_type<lua_script_resource>("ui", "lua");
   boot.engine_resources->template register_type<painter::render_config_source>("render_config", "tavl");
   boot.engine_resources->template register_type<painter::glsl_source_file>("shaders", "glsl");
   boot.engine_resources->template register_type<painter::shader_source_file>("spv", "spv");

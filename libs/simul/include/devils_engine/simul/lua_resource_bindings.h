@@ -18,19 +18,46 @@
 namespace devils_engine {
 namespace simul {
 
+class resource_access_scope {
+public:
+  void grant(const demiurg::resource_handle handle) {
+    if (handle.get() == nullptr || contains(handle)) return;
+    handles_.push_back(handle);
+  }
+
+  void clear() { handles_.clear(); }
+
+  bool contains(const demiurg::resource_handle handle) const noexcept {
+    return std::find_if(handles_.begin(), handles_.end(), [handle](const demiurg::resource_handle cur) {
+      return cur.system == handle.system && cur.hash == handle.hash;
+    }) != handles_.end();
+  }
+
+private:
+  std::vector<demiurg::resource_handle> handles_;
+};
+
+inline bool resource_is_visible(
+  const std::shared_ptr<const resource_access_scope>& scope,
+  const demiurg::resource_handle handle
+) noexcept {
+  return scope == nullptr || scope->contains(handle);
+}
+
 inline demiurg::resource_handle lookup_resource_handle(
   const demiurg::resource_system* engine_registry,
   const demiurg::resource_system* assets_registry,
-  const std::string_view id
+  const std::string_view id,
+  const std::shared_ptr<const resource_access_scope>& scope = {}
 ) {
   if (engine_registry != nullptr) {
     const auto h = engine_registry->handle(id);
-    if (h.get() != nullptr) return h;
+    if (h.get() != nullptr && resource_is_visible(scope, h)) return h;
   }
 
   if (assets_registry != nullptr) {
     const auto h = assets_registry->handle(id);
-    if (h.get() != nullptr) return h;
+    if (h.get() != nullptr && resource_is_visible(scope, h)) return h;
   }
 
   return {};
@@ -99,22 +126,36 @@ inline std::string absolute_resource_path(const std::string_view current_module,
   return out;
 }
 
-inline void append_find_handles(sol::table& out, int& index, const demiurg::resource_system* const reg, const std::string_view prefix) {
+inline void append_find_handles(
+  sol::table& out,
+  int& index,
+  const demiurg::resource_system* const reg,
+  const std::string_view prefix,
+  const std::shared_ptr<const resource_access_scope>& scope
+) {
   if (reg == nullptr) return;
   const auto view = reg->find(prefix);
   for (auto* res : view) {
     if (res == nullptr) continue;
-    out[++index] = reg->handle(res->id);
+    const auto handle = reg->handle(res->id);
+    if (resource_is_visible(scope, handle)) out[++index] = handle;
   }
 }
 
-inline void append_filter_handles(sol::table& out, int& index, const demiurg::resource_system* const reg, const std::string_view filter) {
+inline void append_filter_handles(
+  sol::table& out,
+  int& index,
+  const demiurg::resource_system* const reg,
+  const std::string_view filter,
+  const std::shared_ptr<const resource_access_scope>& scope
+) {
   if (reg == nullptr) return;
   std::vector<demiurg::resource_interface*> resources;
   reg->filter<demiurg::resource_interface>(filter, resources);
   for (auto* res : resources) {
     if (res == nullptr) continue;
-    out[++index] = reg->handle(res->id);
+    const auto handle = reg->handle(res->id);
+    if (resource_is_visible(scope, handle)) out[++index] = handle;
   }
 }
 
@@ -122,7 +163,8 @@ inline void install_resource_lua_bindings(
   sol::state& lua,
   sol::environment env,
   const demiurg::resource_system* engine_registry,
-  const demiurg::resource_system* assets_registry
+  const demiurg::resource_system* assets_registry,
+  std::shared_ptr<const resource_access_scope> scope = {}
 ) {
   lua.new_usertype<demiurg::resource_handle>("resource_handle",
     sol::no_constructor,
@@ -156,40 +198,42 @@ inline void install_resource_lua_bindings(
   sol::table require_cache = lua.create_table();
   auto require_stack = std::make_shared<std::vector<std::string>>();
 
-  env.set_function("request", [engine_registry, assets_registry, require_stack](sol::this_state s, const std::string& id) -> sol::object {
+  const auto resolve_resource = [engine_registry, assets_registry, require_stack, scope](sol::this_state s, const std::string& id) -> sol::object {
     const std::string current = require_stack->empty() ? std::string{} : require_stack->back();
     const std::string abs_id = absolute_resource_path(current, id);
     if (abs_id.empty()) return sol::nil;
-    const auto h = lookup_resource_handle(engine_registry, assets_registry, abs_id);
+    const auto h = lookup_resource_handle(engine_registry, assets_registry, abs_id, scope);
     if (h.get() == nullptr) return sol::nil;
     return sol::make_object(s, h);
-  });
+  };
+  env.set_function("resource", resolve_resource);
+  env.set_function("request", resolve_resource); // compatibility alias; this function never loads.
 
-  env.set_function("find", [engine_registry, assets_registry, require_stack](sol::this_state s, const std::string& prefix) -> sol::table {
+  env.set_function("find", [engine_registry, assets_registry, require_stack, scope](sol::this_state s, const std::string& prefix) -> sol::table {
     sol::state_view lua_view(s);
     sol::table out = lua_view.create_table();
     const std::string current = require_stack->empty() ? std::string{} : require_stack->back();
     const std::string abs_prefix = absolute_resource_path(current, prefix);
     if (abs_prefix.empty()) return out;
     int index = 0;
-    append_find_handles(out, index, engine_registry, abs_prefix);
-    append_find_handles(out, index, assets_registry, abs_prefix);
+    append_find_handles(out, index, engine_registry, abs_prefix, scope);
+    append_find_handles(out, index, assets_registry, abs_prefix, scope);
     return out;
   });
 
-  env.set_function("filter", [engine_registry, assets_registry, require_stack](sol::this_state s, const std::string& text) -> sol::table {
+  env.set_function("filter", [engine_registry, assets_registry, require_stack, scope](sol::this_state s, const std::string& text) -> sol::table {
     sol::state_view lua_view(s);
     sol::table out = lua_view.create_table();
     const std::string current = require_stack->empty() ? std::string{} : require_stack->back();
     const std::string abs_text = absolute_resource_path(current, text);
     if (abs_text.empty()) return out;
     int index = 0;
-    append_filter_handles(out, index, engine_registry, abs_text);
-    append_filter_handles(out, index, assets_registry, abs_text);
+    append_filter_handles(out, index, engine_registry, abs_text, scope);
+    append_filter_handles(out, index, assets_registry, abs_text, scope);
     return out;
   });
 
-  env.set_function("require", [engine_registry, assets_registry, env, require_cache, require_stack](sol::this_state s, const std::string& id) mutable -> sol::object {
+  env.set_function("require", [engine_registry, assets_registry, env, require_cache, require_stack, scope](sol::this_state s, const std::string& id) mutable -> sol::object {
     sol::state_view lua_view(s);
     const std::string current = require_stack->empty() ? std::string{} : require_stack->back();
     const std::string abs_id = absolute_resource_path(current, id);
@@ -201,7 +245,7 @@ inline void install_resource_lua_bindings(
     sol::object cached = require_cache[abs_id];
     if (cached.valid() && cached != sol::nil) return cached;
 
-    const auto h = lookup_resource_handle(engine_registry, assets_registry, abs_id);
+    const auto h = lookup_resource_handle(engine_registry, assets_registry, abs_id, scope);
     auto* base = h.get();
     if (base == nullptr) {
       luaL_error(s, "require('%s') failed: demiurg resource '%s' was not found", id.c_str(), abs_id.c_str());
@@ -215,7 +259,10 @@ inline void install_resource_lua_bindings(
       return sol::nil;
     }
 
-    if (!script->usable()) script->load(utils::safe_handle_t{});
+    if (!script->usable()) {
+      luaL_error(s, "require('%s') failed: script '%s' is allowed but not loaded", id.c_str(), abs_id.c_str());
+      return sol::nil;
+    }
     require_cache[abs_id] = true;
 
     const std::string script_id(script->id);
