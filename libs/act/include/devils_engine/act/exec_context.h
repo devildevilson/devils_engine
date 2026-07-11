@@ -5,10 +5,13 @@
 #include "devils_engine/utils/prng.h" // utils::mix (counter-based)
 #include "common.h"
 
-namespace ds { class context; } // backend scratchpad forward decl
+namespace devils_script { struct context; } // backend scratchpad (devils_script), fwd decl
 
 namespace devils_engine {
 namespace act {
+
+// act исторически ссылается на бэкенд-скретчпад как ds::* — держим короткий алиас на devils_script.
+namespace ds = ::devils_script;
 
 struct effect_sink; // effect_sink.h
 class world;        // forward: aesthetics::world или его срез

@@ -26,6 +26,9 @@ set(HDR_LIST
   include/core/tile_map.h
   include/core/tile_batch.h
   include/core/actor_simulation.h
+  include/core/entity_scope.h
+  include/core/script_environment.h
+  include/core/script_resource.h
   include/core/simulation.h
 )
 
@@ -38,6 +41,8 @@ set(SRC_LIST
   src/core/texture_set.cpp
   src/core/tile_map.cpp
   src/core/actor_simulation.cpp
+  src/core/script_environment.cpp
+  src/core/script_resource.cpp
   src/core/simulation.cpp
 )
 

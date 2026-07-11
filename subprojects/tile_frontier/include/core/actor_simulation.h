@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -10,6 +11,7 @@
 
 #include <glm/glm.hpp>
 
+#include <devils_script/context.h> // devils_script::context — пер-воркер vm-пул для скрипт-предикатов
 #include <devils_engine/aesthetics/world.h>
 #include <devils_engine/aesthetics/sink.h>   // serial::sink_policy/seal/unseal — save/load слайса
 #include <devils_engine/act/registry.h>     // act::registry + function<RetT>
@@ -23,6 +25,7 @@
 
 namespace devils_engine { namespace thread { class atomic_pool; } } // MT-пул для cognition
 namespace devils_engine { namespace catalogue { class statistics_store; } } // perf-стат апдейта актора
+namespace devils_script { struct container; } // скомпилированный скрипт-предикат (заимствуется)
 
 namespace tile_frontier {
 namespace core {
@@ -175,7 +178,10 @@ private:
 
 class actor_world_slice {
 public:
-  void init(uint32_t count, glm::vec2 min_bound, glm::vec2 max_bound, uint32_t texture_count);
+  // is_hungry_program — опц. скомпилированный скрипт-предикат для "actor.is_hungry" (загружается
+  // из tavl). nullptr ⇒ нативный фолбэк (тесты/резюме без ассетов). Заимствуется (владелец — реестр).
+  void init(uint32_t count, glm::vec2 min_bound, glm::vec2 max_bound, uint32_t texture_count,
+            const devils_script::container* is_hungry_program = nullptr);
   actor_metrics update(float dt_seconds, actor_batch& batch, devils_engine::thread::atomic_pool& pool);
 
   devils_engine::aesthetics::world& ecs() noexcept { return world_; }
@@ -209,6 +215,7 @@ private:
   void decide_actor(devils_engine::aesthetics::entityid_t id, uint64_t tick,
                     devils_engine::astar<devils_engine::acumen::astar_data>::container& scratch,
                     devils_engine::acumen::solution_cache& cache,
+                    devils_script::context& vm,
                     std::vector<devils_engine::act::intent>& out);
   void apply(float dt_seconds);
   // Завершает поедание у хищников, чей срок истёк: сбрасывает голод, снимает actor_eating,
@@ -240,6 +247,12 @@ private:
   std::vector<devils_engine::acumen::solution_cache> plan_caches_;
   // выходные буферы интентов на поток → конкатенируются в intents_ и сортируются по id.
   std::vector<std::vector<devils_engine::act::intent>> intent_buffers_;
+  // пер-воркер ds::context (скретчпад скрипт-предикатов): слот = pool.thread_index, эксклюзивен на
+  // поток. deque — стабильные элементы без move при росте (context держит стеки). Пуст, пока нет
+  // скрипт-функций (нативный фолбэк vm не трогает). Размер синхронен с plan_containers_.
+  std::deque<devils_script::context> vm_pool_;
+  // скомпилированный скрипт-предикат "actor.is_hungry" (из tavl); nullptr ⇒ нативный фолбэк.
+  const devils_script::container* is_hungry_program_ = nullptr;
 
   // ── планировщик когниции ──
   // окно коммита: актор держится своего решения K тиков (стенд-ин для длительности

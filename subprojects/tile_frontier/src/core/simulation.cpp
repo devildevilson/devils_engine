@@ -38,6 +38,7 @@
 #include "assets_system.h"
 #include <devils_engine/painter/gpu_texture_resource.h>
 #include "app_config_resource.h"
+#include "script_resource.h" // script_resource::program() для скрипт-предиката actor.is_hungry
 #include <devils_engine/visage/font_resource.h>
 #include "global_ubo.h"
 #include "texture_set.h"
@@ -748,11 +749,26 @@ void simulation::begin_loading() {
       instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
   }
 
+  // Скрипт-предикат actor.is_hungry из tavl (scripts/actor_is_hungry): синхронно доводим до usable
+  // (как startup/entry в begin_boot) и передаём скомпилированный container в слайс. Нет ресурса ⇒
+  // nullptr ⇒ нативный фолбэк (поведение идентично).
+  const devils_script::container* is_hungry_program = nullptr;
+  if (auto* reg = c.assets_sim != nullptr ? c.assets_sim->resources() : nullptr) {
+    if (auto* sr = reg->get<script_resource>("scripts/actor_is_hungry")) {
+      while (!sr->usable()) sr->load(utils::safe_handle_t{});
+      is_hungry_program = sr->program();
+      DE_LOG(catalogue::log_domain::gameplay, flow, "main: actor.is_hungry <- скрипт 'scripts/actor_is_hungry'");
+    } else {
+      utils::warn("main: скрипт 'scripts/actor_is_hungry' не найден в реестре — нативный is_hungry");
+    }
+  }
+
   c.actors.init(
     initial_actor_count,
     glm::vec2{0.5f, 0.5f},
     glm::max(extent - glm::vec2{0.5f, 0.5f}, glm::vec2{0.5f, 0.5f}),
-    std::max(tex_count, 1u)
+    std::max(tex_count, 1u),
+    is_hungry_program
   );
   c.metrics_last_log = std::chrono::steady_clock::now();
   DE_LOG(catalogue::log_domain::gameplay, flow, "main: spawned {} lightweight actors in aesthetics world", initial_actor_count);
