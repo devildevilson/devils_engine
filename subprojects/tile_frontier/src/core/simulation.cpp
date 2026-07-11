@@ -770,9 +770,12 @@ void simulation::begin_loading() {
     for (uint32_t cy = 0; cy < c.chunks_y; ++cy) {
       for (uint32_t cx = 0; cx < c.chunks_x; ++cx) {
         const size_t idx = size_t(cy) * c.chunks_x + cx;
-        c.br->load_chunk.try_push(command_load_chunk{
-          int32_t(cx), int32_t(cy), c.chunk_size, std::max(tex_count, 1u)
-        });
+        command_load_chunk cmd;
+        cmd.x = int32_t(cx);
+        cmd.y = int32_t(cy);
+        cmd.size = c.chunk_size;
+        cmd.textures.assign(c.textures.handles().begin(), c.textures.handles().end());
+        c.br->load_chunk.try_push(std::move(cmd));
         c.chunks_requested[idx] = true;
       }
     }
@@ -964,7 +967,7 @@ void simulation::update(const size_t time) {
     // Срез сетки строим тут же (только когда реально публикуем — не тратим CPU на splash/loading).
     if (c.lifecycle.phase() == simul::app_state::game && systems.render && c.br) {
       const tile_span span = visible_tiles(c.cam, c.grid, 1.0f);
-      c.batch.build(c.grid, span);
+      c.batch.build(c.grid, span, c.textures);
 
       auto& slot = c.br->draw_tiles.write_slot();
       std::memcpy(slot.view_proj.data(), &vp[0][0], sizeof(float) * 16);

@@ -14,13 +14,18 @@ void tile_grid::resize(const uint32_t w, const uint32_t h) {
   tiles.assign(size_t(w) * size_t(h), tile{});
 }
 
-tile_chunk generate_mock_chunk(const chunk_coord coord, const uint32_t chunk_size, const uint32_t texture_count) {
+tile_chunk generate_mock_chunk(
+  const chunk_coord coord,
+  const uint32_t chunk_size,
+  const std::span<const devils_engine::demiurg::resource_handle> textures
+) {
   tile_chunk chunk;
   chunk.coord = coord;
   chunk.size = chunk_size;
   chunk.tiles.assign(size_t(chunk_size) * chunk_size, tile{});
 
-  const uint32_t tex_count = std::max(texture_count, 1u);
+  if (textures.empty()) return chunk;
+  const uint32_t tex_count = uint32_t(textures.size());
   const int32_t base_x = coord.x * int32_t(chunk_size);
   const int32_t base_y = coord.y * int32_t(chunk_size);
 
@@ -36,7 +41,7 @@ tile_chunk generate_mock_chunk(const chunk_coord coord, const uint32_t chunk_siz
       const uint32_t ucx = uint32_t(coord.x);
       const uint32_t ucy = uint32_t(coord.y);
       const uint32_t noise = (ucx * 73856093u) ^ (ucy * 19349663u) ^ (ux * 83492791u) ^ (uy * 2654435761u);
-      chunk.at(x, y).texture = (bands + (noise >> 29)) % tex_count;
+      chunk.at(x, y).texture = textures[(bands + (noise >> 29)) % tex_count];
     }
   }
 

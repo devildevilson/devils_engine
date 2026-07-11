@@ -86,22 +86,22 @@ struct command_current_loading_state {
 
 using command_load_resource = simul::command_load_resource;
 
-// main → assets: запросить CPU-чанк мира. Это mock-ассетный путь для первого world slice:
-// assets thread детерминированно генерирует payload и отвечает command_chunk_loaded в reply_to.
+// main → assets: запросить CPU-чанк мира. textures — конкретный palette stable handles;
+// assets выбирает для каждой клетки ресурс из него, не предполагая ничего о GPU slots.
 // Позже coord/size останутся ключом запроса, а генератор заменится на demiurg-backed ресурс.
 struct command_load_chunk {
   int32_t x = 0;
   int32_t y = 0;
   uint32_t size = 0;
-  uint32_t texture_count = 0;
+  std::vector<demiurg::resource_handle> textures;
 };
 
-// assets → main: готовый CPU payload чанка. textures.size() == size*size, row-major.
+// assets → main: готовые texture handles клеток. textures.size() == size*size, row-major.
 struct command_chunk_loaded {
   int32_t x = 0;
   int32_t y = 0;
   uint32_t size = 0;
-  std::vector<uint32_t> textures;
+  std::vector<demiurg::resource_handle> textures;
 };
 
 using command_gpu_transition = simul::command_gpu_transition;
