@@ -17,6 +17,8 @@
 #include <devils_engine/painter/glsl_source_file.h>
 #include <devils_engine/painter/mesh_resource.h>
 #include <devils_engine/painter/texture_resource.h>
+#include <devils_engine/simul/lua_script_resource.h>
+#include <devils_engine/simul/startup_resources.h>
 #include <devils_engine/sound/sound_resource.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/visage/font_resource.h>
@@ -96,6 +98,9 @@ protected:
     resources.register_type<painter::gpu_texture_resource, painter::texture_resource>("textures", "png");
     resources.register_type<painter::gpu_texture_resource, visage::font_resource>("fonts", "ttf");
     resources.register_type<sound::sound_resource>("sounds", "mp3,flac,wav,ogg,opus");
+    resources.register_type<lua_script_resource>("ui", "lua");
+    resources.register_type<startup_entry_resource>("startup", "tavl");
+    resources.register_type<ui_state_resource>("ui_states", "tavl");
   }
 
 private:

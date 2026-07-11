@@ -129,11 +129,12 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     ${PROJECT_OUTPUT_DIRECTORY}/resources
 )
 
-# UI lua scripts are also exposed through the engine demiurg registry as resources/engine/ui/*.lua.
+# UI scripts are ordinary overridable module resources. The first module in the active module list
+# has the highest priority, just like startup/entry and ui_states/*.
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${CMAKE_CURRENT_LIST_DIR}/resources/ui
-    ${PROJECT_OUTPUT_DIRECTORY}/resources/engine/ui
+    ${PROJECT_OUTPUT_DIRECTORY}/resources/modules/core/ui
 )
 
 # render-graph описание грузится через движковый demiurg-реестр (resources/engine/render_config/),

@@ -9,6 +9,7 @@
 
 #include <devils_engine/input/core.h>
 #include <devils_engine/simul/lua_resource_bindings.h>
+#include <devils_engine/simul/startup_resources.h>
 #include <devils_engine/simul/window_runtime.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/string_id.h>
@@ -172,6 +173,12 @@ struct simulation_init {
   // из ассетов). Только lifecycle_controller меняет текущую фазу.
   simul::lifecycle_controller lifecycle;
   std::vector<resource_ref> startup_resources;
+  std::vector<resource_ref> ui_resources;
+  std::vector<std::pair<resource_ref, int32_t>> ui_boot_targets;
+  std::shared_ptr<simul::resource_access_scope> ui_resource_scope = std::make_shared<simul::resource_access_scope>();
+  std::string ui_entry_script;
+  std::string startup_scene;
+  bool ui_started = false;
 
   std::vector<std::string> sound_devices;
   std::atomic_bool sound_devices_ready = false;
@@ -205,12 +212,37 @@ static double loading_progress(const simulation_init& c) {
 }
 
 // «Загрузка завершена» = ВЕСЬ стартовый набор ресурсов usable() И все mock-чанки применены.
-static bool loading_complete(const simulation_init& c) {
+static bool resource_ready(const resource_ref& ref, const bool external_steps_available) {
+  auto* r = ref.get();
+  if (r == nullptr) return false;
+  if (r->usable()) return true;
+  return !external_steps_available && r->is_external_step(r->state());
+}
+
+static bool loading_complete(const simulation_init& c, const bool external_steps_available) {
   for (const auto& ref : c.startup_resources) {
-    auto* r = ref.get();
-    if (r == nullptr || !r->usable()) return false;
+    if (!resource_ready(ref, external_steps_available)) return false;
   }
   return c.chunks_loaded_count == c.chunks_loaded.size();
+}
+
+static bool ui_resources_ready(const simulation_init& c, const bool external_steps_available) {
+  return std::all_of(c.ui_resources.begin(), c.ui_resources.end(), [external_steps_available](const resource_ref& ref) {
+    return resource_ready(ref, external_steps_available);
+  });
+}
+
+static bool ui_boot_resources_prepared(const simulation_init& c) {
+  return std::all_of(c.ui_boot_targets.begin(), c.ui_boot_targets.end(), [](const auto& entry) {
+    auto* resource = entry.first.get();
+    return resource != nullptr && resource->state() >= entry.second;
+  });
+}
+
+static int32_t pre_external_target(const demiurg::resource_interface& resource) {
+  int32_t target = 0;
+  while (target < resource.final_state() && !resource.is_external_step(target)) target += 1;
+  return target;
 }
 
 simulation::simulation(runtime_bootstrap* boot) noexcept : simul::main_system<::tile_frontier::core::broker>(main_frame_time), bootstrap_(boot) {}
@@ -234,28 +266,21 @@ void simulation::set_broker(struct broker* b) {
   simul::main_system<::tile_frontier::core::broker>::set_broker(b);
 }
 
-// Поднимаем интерфейс в главном потоке. Шрифты — demiurg-ресурсы ассетного реестра
-// (resources/modules/core/fonts/*.ttf, многошаговый font_resource): CPU-шаги ttf→MSDF (уровни
-// 0→1→2) гоняем ЗДЕСЬ синхронно для ВСЕХ шрифтов, т.к. visage::system нужны метрики глифов сразу
-// для nk_convert (и lua может выбрать любой шрифт с первого кадра); GPU-заливка (2→3) уйдёт
-// штатным асинхронным путём ассетов из init(). lua выбирает шрифт хендлом:
-// nk.push_font{ font = request("fonts/crimson.italic") } — строковых имён в visage больше нет.
+// Visage получает только шрифты из активного ui_state.resources. К этому моменту assets loader
+// уже подготовил их метрики; main не запускает ресурсные переходы напрямую.
 static void setup_visage(simulation_init& c) {
   constexpr std::string_view default_font_id = "fonts/crimson.roman";
 
   auto* reg = c.assets_sim != nullptr ? c.assets_sim->resources() : nullptr;
   if (reg == nullptr) utils::error{}("visage: assets registry is not initialized (fonts live there)");
 
-  const auto v = reg->find("fonts/");
-  for (auto* res : v) {
-    if (res == nullptr) continue;
-    const auto h = reg->handle(res->id);
+  for (const auto& ref : c.ui_resources) {
+    const auto h = ref.handle;
     auto* fr = h.get<visage::font_resource>();
-    if (fr == nullptr) { utils::warn("visage: resource '{}' under fonts/ is not a font_resource; skipping", res->id); continue; }
-    while (fr->state() < 2) fr->load(utils::safe_handle_t{}); // 0→1: ttf, 1→2: MSDF-атлас + метрики (CPU, главный поток)
-    if (fr->font() == nullptr) utils::error{}("visage: font resource '{}' produced no font metrics", res->id);
+    if (fr == nullptr) continue;
+    if (fr->font() == nullptr) utils::error{}("visage: font resource '{}' produced no font metrics", fr->id);
     c.ui_fonts.emplace_back(h, false);
-    DE_LOG(catalogue::log_domain::ui, flow, "visage: font '{}' CPU-ready ({} glyphs)", res->id, fr->font()->glyphs.size());
+    DE_LOG(catalogue::log_domain::ui, flow, "visage: font '{}' CPU-ready ({} glyphs)", fr->id, fr->font()->glyphs.size());
   }
 
   c.ui_font_h = reg->handle(default_font_id);
@@ -397,16 +422,19 @@ void simulation::on_lifecycle_enter(const simul::app_state phase) {
   }
 }
 
-void simulation::on_lifecycle_tick(const simul::app_state, const size_t) {}
+void simulation::on_lifecycle_tick(const simul::app_state phase, const size_t) {
+  auto& c = state();
+  if (phase == simul::app_state::loading && !c.ui_started && ui_resources_ready(c, systems.render)) {
+    start_ui();
+    c.ui_started = true;
+  }
+}
 
 bool simulation::lifecycle_phase_complete(const simul::app_state phase) const {
   const auto& c = state();
   switch (phase) {
-    case simul::app_state::boot: {
-      auto* boot_font = c.ui_font_h.get<visage::font_resource>();
-      return boot_font == nullptr || boot_font->font() != nullptr;
-    }
-    case simul::app_state::loading: return loading_complete(c);
+    case simul::app_state::boot: return ui_boot_resources_prepared(c);
+    case simul::app_state::loading: return c.ui_started && loading_complete(c, systems.render);
     case simul::app_state::game: return false;
   }
   return false;
@@ -429,6 +457,50 @@ void simulation::begin_boot() {
     c.sound_devices_requested = true;
     DE_LOG(catalogue::log_domain::sound, flow, "main: requested sound playback devices");
   }
+
+  auto* registry = c.assets_sim->resources();
+  auto* entry = registry != nullptr ? registry->get<simul::startup_entry_resource>("startup/entry") : nullptr;
+  if (entry == nullptr) utils::error{}("startup: required entry resource 'startup/entry' was not found");
+  while (!entry->usable()) entry->load(utils::safe_handle_t{});
+
+  const auto& entry_cfg = entry->config();
+  if (entry_cfg.ui_state.empty()) utils::error{}("startup/entry: ui_state is empty");
+  c.startup_scene = entry_cfg.scene;
+
+  auto* ui_state = registry->get<simul::ui_state_resource>(entry_cfg.ui_state);
+  if (ui_state == nullptr) utils::error{}("startup/entry: ui_state resource '{}' was not found", entry_cfg.ui_state);
+  while (!ui_state->usable()) ui_state->load(utils::safe_handle_t{});
+
+  const auto& ui_cfg = ui_state->config();
+  if (ui_cfg.script.empty()) utils::error{}("ui state '{}': script is empty", entry_cfg.ui_state);
+  if (std::find(ui_cfg.resources.begin(), ui_cfg.resources.end(), ui_cfg.script) == ui_cfg.resources.end()) {
+    utils::error{}("ui state '{}': entry script '{}' is not present in resources allowlist", entry_cfg.ui_state, ui_cfg.script);
+  }
+
+  c.ui_entry_script = ui_cfg.script;
+  for (const auto& id : ui_cfg.resources) {
+    const auto handle = registry->handle(id);
+    auto* resource = handle.get();
+    if (resource == nullptr) utils::error{}("ui state '{}': resource '{}' was not found", entry_cfg.ui_state, id);
+    if (c.ui_resource_scope->contains(handle)) continue;
+
+    c.ui_resource_scope->grant(handle);
+    const resource_ref ref = resource_ref::from_handle(handle);
+    c.ui_resources.push_back(ref);
+    c.startup_resources.push_back(ref);
+    const int32_t target = pre_external_target(*resource);
+    c.ui_boot_targets.emplace_back(ref, target);
+    if (!c.br->load_resource.try_push(command_load_resource{ref, target})) {
+      utils::error{}("ui state '{}': load_resource queue overflow while requesting '{}'", entry_cfg.ui_state, id);
+    }
+  }
+  DE_LOG(catalogue::log_domain::ui, flow,
+    "startup: ui_state='{}' script='{}' resources={} scene='{}'",
+    entry_cfg.ui_state, c.ui_entry_script, c.ui_resources.size(), c.startup_scene);
+}
+
+void simulation::start_ui() {
+  auto& c = state();
 
   // интерфейс (visage) в главном потоке
   setup_visage(c);
@@ -456,8 +528,9 @@ void simulation::begin_boot() {
     simul::install_resource_lua_bindings(
       L,
       env,
-      bootstrap_->engine_resources.get(),
-      c.assets_sim != nullptr ? c.assets_sim->resources() : nullptr
+      nullptr,
+      c.assets_sim != nullptr ? c.assets_sim->resources() : nullptr,
+      c.ui_resource_scope
     );
 
     // первый аргумент — sol::object (resource_handle ИЛИ таблица-опции с полем resource/res), второй —
@@ -546,6 +619,7 @@ void simulation::begin_boot() {
       auto& lua = c.ui->script_state();
       if (!resource.is<demiurg::resource_handle>()) return sol::nil;
       const auto handle = resource.as<demiurg::resource_handle>();
+      if (!c.ui_resource_scope->contains(handle)) return sol::nil;
       auto* tex = handle.get<painter::gpu_texture_resource>();
       if (tex == nullptr || !tex->usable()) return sol::nil; // ещё не на GPU
       visage::image img{};
@@ -609,30 +683,15 @@ void simulation::begin_boot() {
   {
     sol::environment env = c.ui->script_env();
     sol::protected_function require = env["require"];
-    const auto ret = require("ui/entry");
+    const auto ret = require(c.ui_entry_script);
     if (!ret.valid()) {
       const sol::error err = ret;
-      utils::error{}("visage: could not require entry module 'ui/entry': {}", err.what());
+      utils::error{}("visage: could not require entry module '{}': {}", c.ui_entry_script, err.what());
     }
 
     sol::object entry = ret.return_count() > 0 ? ret.get<sol::object>() : sol::nil;
     c.ui->set_entry_point(entry);
-    DE_LOG(catalogue::log_domain::ui, flow, "visage: entry point loaded from demiurg resource 'ui/entry'");
-  }
-
-  // атласы шрифтов → GPU тем же путём, что и текстуры: просим ассеты довести до final_state.
-  // Слоты определятся динамически (после grass-текстур); main прочитает gpu_index по hot.
-  if (systems.assets && systems.render) {
-    for (const auto& [h, logged] : c.ui_fonts) {
-      auto* fr = h.get<visage::font_resource>();
-      if (fr == nullptr) continue;
-      // final_state() = 3 (font_resource много-шаговый); CPU-уровни (0..2) уже пройдены в setup_visage,
-      // ассетам остаётся довести 2→3 (GPU). target=final_state(), не state::hot (иначе стоп на MSDF).
-      const resource_ref font_ref = resource_ref::from_handle(h);
-      c.br->load_resource.try_push(command_load_resource{font_ref, fr->final_state()});
-      c.startup_resources.push_back(font_ref);
-      DE_LOG(catalogue::log_domain::ui, flow, "main: requested font atlas '{}' -> ready (level {})", fr->id, fr->final_state());
-    }
+    DE_LOG(catalogue::log_domain::ui, flow, "visage: entry point loaded from demiurg resource '{}'", c.ui_entry_script);
   }
 }
 
@@ -643,6 +702,16 @@ void simulation::begin_loading() {
   // шрифт готовы, поэтому первый видимый кадр уже может показать экран загрузки.
   if (bootstrap_->settings.window.create_on_start && systems.render && !bootstrap_->settings.render.headless) {
     simul::create_window_and_notify_render(c, bootstrap_->settings, main_frame_time);
+  }
+
+  // Тот же allowlist теперь доводится до полной готовности. UI script не исполняется, пока
+  // каждый ресурс не достиг final_state() (или первой external-ступени при отключенном render).
+  for (const auto& ref : c.ui_resources) {
+    auto* resource = ref.get();
+    if (resource == nullptr) continue;
+    if (!c.br->load_resource.try_push(command_load_resource{ref, resource->final_state()})) {
+      utils::error{}("loading: load_resource queue overflow while finalizing UI resource '{}'", resource->id);
+    }
   }
 
   const char* texture_resources[] = {
@@ -656,6 +725,8 @@ void simulation::begin_loading() {
   for (const char* res_id : texture_resources) {
     const auto tex_handle = c.assets_sim->resources()->handle(res_id);
     if (tex_handle.get<painter::gpu_texture_resource>() != nullptr) {
+      // Временный mock-scene manifest: scene-ресурсы видимы UI сразу, readiness проверяет сам UI.
+      c.ui_resource_scope->grant(tex_handle);
       if (systems.render) {
         const resource_ref ref = resource_ref::from_handle(tex_handle);
         c.br->load_resource.try_push(command_load_resource{ref, static_cast<int32_t>(demiurg::state::hot)});
@@ -679,6 +750,7 @@ void simulation::begin_loading() {
       utils::warn("main: sound resource '{}' not found in registry", res_id);
       continue;
     }
+    c.ui_resource_scope->grant(snd_handle);
     c.br->load_resource.try_push(command_load_resource{
       resource_ref::from_handle(snd_handle), static_cast<int32_t>(demiurg::state::warm)
     });

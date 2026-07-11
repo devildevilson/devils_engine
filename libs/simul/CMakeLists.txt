@@ -9,6 +9,7 @@ project(
 add_library(devils_simul
   src/simul/interface.cpp
   src/simul/lua_script_resource.cpp
+  src/simul/startup_resources.cpp
   include/devils_engine/simul/interface.h
   include/devils_engine/simul/boot_config.h
   include/devils_engine/simul/app_runtime.h
@@ -22,6 +23,7 @@ add_library(devils_simul
   include/devils_engine/simul/standard_broker.h
   include/devils_engine/simul/standard_assets_system.h
   include/devils_engine/simul/standard_sound_system.h
+  include/devils_engine/simul/startup_resources.h
   include/devils_engine/simul/systems.h
   include/devils_engine/simul/window_runtime.h
   include/devils_engine/simul/write_buffer_channel.h
@@ -34,6 +36,7 @@ target_include_directories(devils_simul
 
 target_link_libraries(devils_simul
   PUBLIC devils_engine::options devils_engine::utils devils_engine::demiurg
+  PRIVATE tavl
 )
 
 add_library(devils_engine::simul ALIAS devils_simul)

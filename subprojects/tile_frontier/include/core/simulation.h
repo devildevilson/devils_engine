@@ -54,6 +54,7 @@ private:
   bool lifecycle_phase_complete(devils_engine::simul::app_state phase) const;
   void on_lifecycle_leave(devils_engine::simul::app_state phase);
   void begin_boot();
+  void start_ui();
   void begin_loading();
   int exit_code() const noexcept;
   simulation_init& state();

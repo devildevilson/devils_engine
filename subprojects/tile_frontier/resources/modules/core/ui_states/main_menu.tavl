@@ -1,0 +1,11 @@
+script = "ui/entry"
+
+// This is both the initial residency set and the complete resource allowlist for this UI state.
+// Every entry reaches final_state() before ui/entry is executed.
+resources = [
+  "ui/entry"
+  "fonts/crimson.roman"
+  "fonts/crimson.italic"
+  "textures/grad2"
+  "textures/quad"
+]
