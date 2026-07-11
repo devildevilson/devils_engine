@@ -167,10 +167,10 @@ struct simulation_init {
   double ui_actor_update_avg_us = 0.0;
   std::chrono::steady_clock::time_point metrics_last_log = std::chrono::steady_clock::now();
 
-  // FSM состояний движка (шаг 3). Стартовый набор ресурсов, от usable() которого зависит переход
+  // Явный lifecycle движка. Стартовый набор ресурсов, от usable() которого зависит переход
   // loading→game (main держит stable handles, поэтому прогресс считается прямо тут, без публикации
-  // из ассетов). Заполняется в init по мере запросов текстур/шрифтов.
-  simul::app_state state = simul::app_state::boot;
+  // из ассетов). Только lifecycle_controller меняет текущую фазу.
+  simul::lifecycle_controller lifecycle;
   std::vector<resource_ref> startup_resources;
 
   std::vector<std::string> sound_devices;
@@ -385,6 +385,38 @@ int simulation::exit_code() const noexcept {
 }
 
 void simulation::after_workers_started() {
+  state().lifecycle.start(*this);
+}
+
+void simulation::on_lifecycle_enter(const simul::app_state phase) {
+  DE_LOG(catalogue::log_domain::main, flow, "lifecycle: enter {}", simul::to_string(phase));
+  switch (phase) {
+    case simul::app_state::boot: begin_boot(); break;
+    case simul::app_state::loading: begin_loading(); break;
+    case simul::app_state::game: break;
+  }
+}
+
+void simulation::on_lifecycle_tick(const simul::app_state, const size_t) {}
+
+bool simulation::lifecycle_phase_complete(const simul::app_state phase) const {
+  const auto& c = state();
+  switch (phase) {
+    case simul::app_state::boot: {
+      auto* boot_font = c.ui_font_h.get<visage::font_resource>();
+      return boot_font == nullptr || boot_font->font() != nullptr;
+    }
+    case simul::app_state::loading: return loading_complete(c);
+    case simul::app_state::game: return false;
+  }
+  return false;
+}
+
+void simulation::on_lifecycle_leave(const simul::app_state phase) {
+  DE_LOG(catalogue::log_domain::main, flow, "lifecycle: leave {}", simul::to_string(phase));
+}
+
+void simulation::begin_boot() {
   auto& c = state();
   if (c.assets_sim == nullptr) utils::error{}("main: assets subsystem is required before startup resource binding");
 
@@ -397,108 +429,6 @@ void simulation::after_workers_started() {
     c.sound_devices_requested = true;
     DE_LOG(catalogue::log_domain::sound, flow, "main: requested sound playback devices");
   }
-
-  // Окно - поздний ресурс. Render thread должен жить и без него, а это событие
-  // может прийти сейчас, после загрузки ассетов или после полного пересоздания окна.
-  if (bootstrap_->settings.window.create_on_start && systems.render && !bootstrap_->settings.render.headless) {
-    simul::create_window_and_notify_render(c, bootstrap_->settings, main_frame_time);
-  }
-
-  // три grass-текстуры → texture_slots 0,1,2 (порядок запроса = порядок слотов, т.к. assets грузит по очереди)
-  const char* texture_resources[] = {
-    "textures/grass",
-    "textures/grass1_0",
-    "textures/grass3",
-    "textures/grad1", // градиент-маски + 4-цветная маска для стенсил-эффектов (Стадия 2)
-    "textures/grad2",
-    "textures/quad",
-  };
-  for (const char* res_id : texture_resources) {
-    const auto tex_handle = c.assets_sim->resources()->handle(res_id);
-    if (auto* tex = tex_handle.get<painter::gpu_texture_resource>()) {
-      (void)tex;
-      c.br->load_resource.try_push(command_load_resource{resource_ref::from_handle(tex_handle), static_cast<int32_t>(demiurg::state::hot)});
-      c.startup_resources.push_back(resource_ref::from_handle(tex_handle)); // стартовый набор: от него зависит переход loading→game
-      DE_LOG(catalogue::log_domain::resource, flow, "main: requested texture '{}' -> hot", res_id);
-    } else {
-      utils::warn("main: texture resource '{}' not found in registry", res_id);
-    }
-  }
-
-  // Звуки: резолвим короткое имя → demiurg-ресурс (поток ассетов), запрашиваем до warm и держим
-  // handle в sound_by_name. UI/геймплей ссылаются по string_hash(имя), звук-актор получит handle.
-  {
-    const std::pair<const char*, const char*> named[] = {
-      { "eating",  "sounds/eating/freesound_community-chomp-chew-bite-102031" },
-      { "fleeing", "sounds/fleeing/freesound_community-escaping-downstairs-104907" },
-      { "walking", "sounds/walking/freesound_community-walking-46245" },
-      { "ambient", "sounds/ambient/soundreality-ambient-spring-forest-323801" },
-    };
-    for (const auto& [name, res_id] : named) {
-      const auto snd_handle = c.assets_sim->resources()->handle(res_id);
-      auto* snd = snd_handle.get<sound::sound_resource>();
-      if (snd == nullptr) { utils::warn("main: sound resource '{}' not found in registry", res_id); continue; }
-      c.br->load_resource.try_push(command_load_resource{resource_ref::from_handle(snd_handle), static_cast<int32_t>(demiurg::state::warm)});
-      c.sound_by_name.emplace(utils::string_hash(name), snd_handle);
-    }
-    DE_LOG(catalogue::log_domain::resource, flow, "main: requested {} sounds -> warm", c.sound_by_name.size());
-  }
-
-  // --- модель тайловой карты ---
-  // Набор ТАЙЛОВЫХ текстур = только grass (маски grad/quad НЕ должны попадать в террейн — подстрока
-  // "textures/grass" их исключает: 'textures/grad*'/'textures/quad' её не содержат). Позже маски уедут
-  // в отдельный тип (textures/mask/).
-  const uint32_t tex_count = c.textures.gather(*c.assets_sim->resources(), "textures/grass");
-  DE_LOG(catalogue::log_domain::resource, flow, "main: gathered {} tile textures by 'textures/grass'", tex_count);
-
-  // Квадратная сетка чанков 4x4 по 16 тайлов. Стартово всё заполнено текстурой 0, затем assets
-  // thread вернёт mock CPU payload для каждого чанка и main применит его к grid.
-  c.grid.tile_size = 1.0f;
-  c.grid.resize(c.chunks_x * c.chunk_size, c.chunks_y * c.chunk_size);
-  c.chunks_requested.assign(size_t(c.chunks_x) * c.chunks_y, false);
-  c.chunks_loaded.assign(size_t(c.chunks_x) * c.chunks_y, false);
-
-  if (systems.assets) {
-    for (uint32_t cy = 0; cy < c.chunks_y; ++cy) {
-      for (uint32_t cx = 0; cx < c.chunks_x; ++cx) {
-        const size_t idx = size_t(cy) * c.chunks_x + cx;
-        command_load_chunk cmd;
-        cmd.x = int32_t(cx);
-        cmd.y = int32_t(cy);
-        cmd.size = c.chunk_size;
-        cmd.texture_count = std::max(tex_count, 1u);
-        c.br->load_chunk.try_push(cmd);
-        c.chunks_requested[idx] = true;
-      }
-    }
-    DE_LOG(catalogue::log_domain::gameplay, flow, "main: requested {} mock world chunks via assets", c.chunks_requested.size());
-  }
-
-  // Камера смотрит в центр карты; половина ширины обзора = 8 тайлов.
-  const glm::vec2 extent = c.grid.world_extent();
-  c.cam.center = extent * 0.5f;
-  c.cam.half_width = 8.0f;
-  c.cam.aspect = float(bootstrap_->settings.window.width) / float(std::max(bootstrap_->settings.window.height, 1u));
-
-  // Валидируем раскладку tile_instance против layout "v2ui1" один раз.
-  if (const auto r = c.batch.bind("v2ui1"); !r) {
-    utils::error{}("tile_instance layout mismatch vs 'v2ui1': {} (attr {}, expected {}, actual {})",
-      instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
-  }
-
-  if (const auto r = c.actors_batch.bind("v2ui1c4v1"); !r) {
-    utils::error{}("actor_instance layout mismatch vs 'v2ui1c4v1': {} (attr {}, expected {}, actual {})",
-      instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
-  }
-
-  c.actors.init(
-    initial_actor_count,
-    glm::vec2{0.5f, 0.5f},
-    glm::max(extent - glm::vec2{0.5f, 0.5f}, glm::vec2{0.5f, 0.5f}),
-    std::max(tex_count, 1u)
-  );
-  c.metrics_last_log = std::chrono::steady_clock::now();
-  DE_LOG(catalogue::log_domain::gameplay, flow, "main: spawned {} lightweight actors in aesthetics world", initial_actor_count);
 
   // интерфейс (visage) в главном потоке
   setup_visage(c);
@@ -633,7 +563,7 @@ void simulation::after_workers_started() {
     // прогресс-бар — по app.loading_progress() [0,1].
     app.set_function("state", [cptr]() -> std::string {
       const auto& c = *cptr;
-      return std::string(simul::to_string(c.state));
+      return std::string(simul::to_string(c.lifecycle.phase()));
     });
     app.set_function("loading_progress", [cptr]() -> double { return loading_progress(*cptr); });
 
@@ -692,7 +622,7 @@ void simulation::after_workers_started() {
 
   // атласы шрифтов → GPU тем же путём, что и текстуры: просим ассеты довести до final_state.
   // Слоты определятся динамически (после grass-текстур); main прочитает gpu_index по hot.
-  if (systems.assets) {
+  if (systems.assets && systems.render) {
     for (const auto& [h, logged] : c.ui_fonts) {
       auto* fr = h.get<visage::font_resource>();
       if (fr == nullptr) continue;
@@ -706,6 +636,101 @@ void simulation::after_workers_started() {
   }
 }
 
+void simulation::begin_loading() {
+  auto& c = state();
+
+  // Окно появляется только после минимального boot-набора. К этому моменту UI и первый
+  // шрифт готовы, поэтому первый видимый кадр уже может показать экран загрузки.
+  if (bootstrap_->settings.window.create_on_start && systems.render && !bootstrap_->settings.render.headless) {
+    simul::create_window_and_notify_render(c, bootstrap_->settings, main_frame_time);
+  }
+
+  const char* texture_resources[] = {
+    "textures/grass",
+    "textures/grass1_0",
+    "textures/grass3",
+    "textures/grad1",
+    "textures/grad2",
+    "textures/quad",
+  };
+  for (const char* res_id : texture_resources) {
+    const auto tex_handle = c.assets_sim->resources()->handle(res_id);
+    if (tex_handle.get<painter::gpu_texture_resource>() != nullptr) {
+      if (systems.render) {
+        const resource_ref ref = resource_ref::from_handle(tex_handle);
+        c.br->load_resource.try_push(command_load_resource{ref, static_cast<int32_t>(demiurg::state::hot)});
+        c.startup_resources.push_back(ref);
+        DE_LOG(catalogue::log_domain::resource, flow, "main: requested texture '{}' -> hot", res_id);
+      }
+    } else {
+      utils::warn("main: texture resource '{}' not found in registry", res_id);
+    }
+  }
+
+  const std::pair<const char*, const char*> named_sounds[] = {
+    { "eating",  "sounds/eating/freesound_community-chomp-chew-bite-102031" },
+    { "fleeing", "sounds/fleeing/freesound_community-escaping-downstairs-104907" },
+    { "walking", "sounds/walking/freesound_community-walking-46245" },
+    { "ambient", "sounds/ambient/soundreality-ambient-spring-forest-323801" },
+  };
+  for (const auto& [name, res_id] : named_sounds) {
+    const auto snd_handle = c.assets_sim->resources()->handle(res_id);
+    if (snd_handle.get<sound::sound_resource>() == nullptr) {
+      utils::warn("main: sound resource '{}' not found in registry", res_id);
+      continue;
+    }
+    c.br->load_resource.try_push(command_load_resource{
+      resource_ref::from_handle(snd_handle), static_cast<int32_t>(demiurg::state::warm)
+    });
+    c.sound_by_name.emplace(utils::string_hash(name), snd_handle);
+  }
+  DE_LOG(catalogue::log_domain::resource, flow, "main: requested {} sounds -> warm", c.sound_by_name.size());
+
+  const uint32_t tex_count = c.textures.gather(*c.assets_sim->resources(), "textures/grass");
+  DE_LOG(catalogue::log_domain::resource, flow, "main: gathered {} tile textures by 'textures/grass'", tex_count);
+
+  c.grid.tile_size = 1.0f;
+  c.grid.resize(c.chunks_x * c.chunk_size, c.chunks_y * c.chunk_size);
+  c.chunks_requested.assign(size_t(c.chunks_x) * c.chunks_y, false);
+  c.chunks_loaded.assign(size_t(c.chunks_x) * c.chunks_y, false);
+
+  if (systems.assets) {
+    for (uint32_t cy = 0; cy < c.chunks_y; ++cy) {
+      for (uint32_t cx = 0; cx < c.chunks_x; ++cx) {
+        const size_t idx = size_t(cy) * c.chunks_x + cx;
+        c.br->load_chunk.try_push(command_load_chunk{
+          int32_t(cx), int32_t(cy), c.chunk_size, std::max(tex_count, 1u)
+        });
+        c.chunks_requested[idx] = true;
+      }
+    }
+    DE_LOG(catalogue::log_domain::gameplay, flow, "main: requested {} mock world chunks via assets", c.chunks_requested.size());
+  }
+
+  const glm::vec2 extent = c.grid.world_extent();
+  c.cam.center = extent * 0.5f;
+  c.cam.half_width = 8.0f;
+  c.cam.aspect = float(bootstrap_->settings.window.width) / float(std::max(bootstrap_->settings.window.height, 1u));
+
+  if (const auto r = c.batch.bind("v2ui1"); !r) {
+    utils::error{}("tile_instance layout mismatch vs 'v2ui1': {} (attr {}, expected {}, actual {})",
+      instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
+  }
+  if (const auto r = c.actors_batch.bind("v2ui1c4v1"); !r) {
+    utils::error{}("actor_instance layout mismatch vs 'v2ui1c4v1': {} (attr {}, expected {}, actual {})",
+      instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
+  }
+
+  c.actors.init(
+    initial_actor_count,
+    glm::vec2{0.5f, 0.5f},
+    glm::max(extent - glm::vec2{0.5f, 0.5f}, glm::vec2{0.5f, 0.5f}),
+    std::max(tex_count, 1u)
+  );
+  c.metrics_last_log = std::chrono::steady_clock::now();
+  DE_LOG(catalogue::log_domain::gameplay, flow, "main: spawned {} lightweight actors in aesthetics world", initial_actor_count);
+}
+
 bool simulation::stop_predicate() const {
   // Выход: запрос из UI (app.quit_game) ИЛИ пользователь закрыл окно (крестик/Alt-F4).
   if (quit_requested.load(std::memory_order_acquire)) return true;
@@ -716,16 +741,12 @@ bool simulation::stop_predicate() const {
 
 void simulation::update(const size_t time) {
   auto& c = state();
+  c.lifecycle.update(*this, time);
   simul::begin_main_frame(
     c,
     time,
     systems.sound,
     systems.render,
-    [&c]() {
-      auto* boot_font = c.ui_font_h.get<visage::font_resource>();
-      return boot_font == nullptr || boot_font->usable();
-    },
-    [&c]() { return loading_complete(c); },
     [&c](const uint32_t w, const uint32_t h) {
       c.cam.aspect = float(w) / float(std::max(h, 1u));
     }
@@ -869,7 +890,7 @@ void simulation::update(const size_t time) {
     // Тайлы карты публикуем ТОЛЬКО в game (шаг 3d): на splash/loading карта не рисуется, поэтому
     // ничего не мигает и null-текстуры не вылезают (стартовый набор уже usable() к моменту game).
     // Срез сетки строим тут же (только когда реально публикуем — не тратим CPU на splash/loading).
-    if (c.state == simul::app_state::game && systems.render && c.br) {
+    if (c.lifecycle.phase() == simul::app_state::game && systems.render && c.br) {
       const tile_span span = visible_tiles(c.cam, c.grid, 1.0f);
       c.batch.build(c.grid, span);
 
@@ -893,7 +914,7 @@ void simulation::update(const size_t time) {
 
   // --- actor simulation slice: simple AI -> move intents -> aesthetics components -> GPU batch ---
   // Только в game (шаг 3d): на splash/loading акторов не считаем и не публикуем.
-  if (c.state == simul::app_state::game && c.actors_batch.valid()) {
+  if (c.lifecycle.phase() == simul::app_state::game && c.actors_batch.valid()) {
     const auto t0 = std::chrono::steady_clock::now();
     c.actors_last_metrics = c.actors.update(
       float(time) / float(utils::global_time_resolution),

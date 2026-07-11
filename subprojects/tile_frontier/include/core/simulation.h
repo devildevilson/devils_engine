@@ -6,6 +6,7 @@
 #include <atomic>
 
 #include <devils_engine/simul/systems.h>
+#include <devils_engine/simul/lifecycle.h>
 #include <devils_engine/simul/standard_sound_system.h>
 
 /*
@@ -44,9 +45,16 @@ public:
   void update(const size_t time) override;
 private:
   friend struct runtime_traits;
+  friend class devils_engine::simul::lifecycle_controller;
 
   void bind_systems(sound_simulation* sound, render_simulation* render, assets_simulation* assets);
   void after_workers_started();
+  void on_lifecycle_enter(devils_engine::simul::app_state phase);
+  void on_lifecycle_tick(devils_engine::simul::app_state phase, size_t time);
+  bool lifecycle_phase_complete(devils_engine::simul::app_state phase) const;
+  void on_lifecycle_leave(devils_engine::simul::app_state phase);
+  void begin_boot();
+  void begin_loading();
   int exit_code() const noexcept;
   simulation_init& state();
   const simulation_init& state() const;
