@@ -12,37 +12,12 @@
 #include <devils_engine/bindings/lua_header.h>
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/simul/lua_script_resource.h>
+#include <devils_engine/simul/resource_access_scope.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/safe_handle.h>
 
 namespace devils_engine {
 namespace simul {
-
-class resource_access_scope {
-public:
-  void grant(const demiurg::resource_handle handle) {
-    if (handle.get() == nullptr || contains(handle)) return;
-    handles_.push_back(handle);
-  }
-
-  void clear() { handles_.clear(); }
-
-  bool contains(const demiurg::resource_handle handle) const noexcept {
-    return std::find_if(handles_.begin(), handles_.end(), [handle](const demiurg::resource_handle cur) {
-      return cur.system == handle.system && cur.hash == handle.hash;
-    }) != handles_.end();
-  }
-
-private:
-  std::vector<demiurg::resource_handle> handles_;
-};
-
-inline bool resource_is_visible(
-  const std::shared_ptr<const resource_access_scope>& scope,
-  const demiurg::resource_handle handle
-) noexcept {
-  return scope == nullptr || scope->contains(handle);
-}
 
 inline demiurg::resource_handle lookup_resource_handle(
   const demiurg::resource_system* engine_registry,

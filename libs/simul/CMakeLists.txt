@@ -16,6 +16,8 @@ add_library(devils_simul
   include/devils_engine/simul/lua_script_resource.h
   include/devils_engine/simul/lua_resource_bindings.h
   include/devils_engine/simul/lifecycle.h
+  include/devils_engine/simul/loading_runtime.h
+  include/devils_engine/simul/resource_access_scope.h
   include/devils_engine/simul/instance_layout.h
   include/devils_engine/simul/draw_intent.h
   include/devils_engine/simul/interpolation.h
