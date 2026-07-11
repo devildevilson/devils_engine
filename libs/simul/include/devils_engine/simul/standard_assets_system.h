@@ -55,8 +55,8 @@ public:
   bool stop_predicate() const override { return false; }
 
   void update(const size_t time) override {
-    if (container == nullptr || container->br == nullptr) return;
-    auto& br = *container->br;
+    if (container == nullptr || this->broker_ == nullptr) return;
+    auto& br = *this->broker_;
 
     drain_gpu_done(br);
     drain_load_resource(br);
@@ -71,11 +71,6 @@ public:
 
   const demiurg::resource_system* resources() const {
     return container ? container->resources.get() : nullptr;
-  }
-
-  void set_broker(Broker* b) override {
-    base_type::set_broker(b);
-    if (container) container->br = b;
   }
 
 protected:
@@ -108,7 +103,6 @@ private:
     std::unique_ptr<demiurg::resource_system> resources;
     std::unique_ptr<demiurg::module_system> modules;
     demiurg::resource_loader loader;
-    Broker* br = nullptr;
     std::vector<demiurg::resource_loader::external_job> gpu_jobs;
   };
 

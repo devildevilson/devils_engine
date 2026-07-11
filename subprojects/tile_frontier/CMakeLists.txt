@@ -118,6 +118,10 @@ endif()
 # Базовые движковые ресурсы: default config, общие шейдеры и прочее, что не должно жить в проекте.
 # Проектные resources/ копируются ниже и могут точечно перекрыть дефолты.
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+  # Миграция UI из non-replaceable engine registry в modules/core. copy_directory сам не удаляет
+  # старые файлы, поэтому без этой очистки прежний engine/ui/entry.lua остается в build output.
+  COMMAND ${CMAKE_COMMAND} -E rm -rf
+    ${PROJECT_OUTPUT_DIRECTORY}/resources/engine/ui
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${CMAKE_SOURCE_DIR}/resources
     ${PROJECT_OUTPUT_DIRECTORY}/resources
