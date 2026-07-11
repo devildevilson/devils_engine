@@ -16,7 +16,6 @@ set(HDR_LIST
   include/core/actors.h
   include/core/config.h
   include/core/messages.h
-  include/core/message_dispatcher.h
   include/core/instance_layout.h
   include/core/draw_intent.h
   include/core/render_system.h

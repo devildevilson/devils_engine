@@ -25,24 +25,17 @@
 #include "tile_batch.h"
 #include "actor_simulation.h"
 
-namespace tile_frontier {
-namespace core {
-
-using namespace devils_engine;
-
-static uint32_t make_color(const float r, const float g, const float b, const float a) {
-  const auto pack = [] (const float v) {
-    return uint32_t(std::round(std::clamp(v, 0.0f, 1.0f) * 255.0f));
-  };
-  return (pack(r) << 0) | (pack(g) << 8) | (pack(b) << 16) | (pack(a) << 24);
-}
-
-// Политика смешивания инстанса актёра (см. blend_traits в interpolation.h). Позиция и размер —
+// Политика смешивания инстанса актёра (см. blend_traits в simul/interpolation.h). Позиция и размер —
 // непрерывные (лерп), texture/color — дискретные (снап к новейшему b). teleport-guard выключен
 // (snap_dist2 == 0): актёры движутся плавно; выставь порог, чтобы варп/телепорт не «ехал через
-// экран», а прыгал мгновенно.
+// экран», а прыгал мгновенно. Специализация живёт в namespace движка: специализировать шаблон
+// через using-алиас (core::blend_traits) нельзя.
+namespace devils_engine {
+namespace simul {
+
 template <>
-struct blend_traits<actor_instance> {
+struct blend_traits<::tile_frontier::core::actor_instance> {
+  using actor_instance = ::tile_frontier::core::actor_instance;
   static constexpr float snap_dist2 = 0.0f; // 0 = guard выключен
   static actor_instance mix(const actor_instance& a, const actor_instance& b, const float t) noexcept {
     actor_instance o = b; // discrete: texture, color берём у новейшего снапшота
@@ -55,6 +48,21 @@ struct blend_traits<actor_instance> {
     return o;
   }
 };
+
+}
+}
+
+namespace tile_frontier {
+namespace core {
+
+using namespace devils_engine;
+
+static uint32_t make_color(const float r, const float g, const float b, const float a) {
+  const auto pack = [] (const float v) {
+    return uint32_t(std::round(std::clamp(v, 0.0f, 1.0f) * 255.0f));
+  };
+  return (pack(r) << 0) | (pack(g) << 8) | (pack(b) << 16) | (pack(a) << 24);
+}
 
 struct render_simulation_init : simul::standard_render_state<broker> {
   uint32_t tile_pair_index = painter::INVALID_RESOURCE_SLOT;
