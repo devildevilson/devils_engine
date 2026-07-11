@@ -90,6 +90,7 @@ using command_load_resource = simul::command_load_resource;
 // assets выбирает для каждой клетки ресурс из него, не предполагая ничего о GPU slots.
 // Позже coord/size останутся ключом запроса, а генератор заменится на demiurg-backed ресурс.
 struct command_load_chunk {
+  uint64_t generation = 0;
   int32_t x = 0;
   int32_t y = 0;
   uint32_t size = 0;
@@ -98,6 +99,7 @@ struct command_load_chunk {
 
 // assets → main: готовые texture handles клеток. textures.size() == size*size, row-major.
 struct command_chunk_loaded {
+  uint64_t generation = 0;
   int32_t x = 0;
   int32_t y = 0;
   uint32_t size = 0;

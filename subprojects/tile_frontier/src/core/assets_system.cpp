@@ -18,6 +18,7 @@ void assets_simulation::update_project(const size_t, ::tile_frontier::core::brok
     if (cmd.size == 0 || cmd.textures.empty()) continue;
     const tile_chunk chunk = generate_mock_chunk(chunk_coord{cmd.x, cmd.y}, cmd.size, cmd.textures);
     command_chunk_loaded out;
+    out.generation = cmd.generation;
     out.x = chunk.coord.x;
     out.y = chunk.coord.y;
     out.size = chunk.size;

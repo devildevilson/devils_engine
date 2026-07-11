@@ -1,2 +1,1 @@
-ui_state = "ui_states/main_menu"
-scene = "scenes/tile_frontier"
+state = "states/main_menu"

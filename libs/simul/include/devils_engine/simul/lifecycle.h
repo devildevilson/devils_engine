@@ -51,6 +51,13 @@ class lifecycle_controller {
 public:
   app_state phase() const noexcept { return phase_; }
   bool started() const noexcept { return started_; }
+  bool loading_requested() const noexcept { return loading_requested_; }
+
+  bool request_loading() noexcept {
+    if (!started_ || phase_ != app_state::game || loading_requested_) return false;
+    loading_requested_ = true;
+    return true;
+  }
 
   template <typename Host>
   void start(Host& host) {
@@ -63,18 +70,30 @@ public:
   void update(Host& host, const size_t time) {
     if (!started_) start(host);
     host.on_lifecycle_tick(phase_, time);
-    if (phase_ == app_state::game || !host.lifecycle_phase_complete(phase_)) return;
 
-    const app_state old = phase_;
-    const app_state next = old == app_state::boot ? app_state::loading : app_state::game;
-    host.on_lifecycle_leave(old);
-    phase_ = next;
-    host.on_lifecycle_enter(next);
+    if (phase_ == app_state::game) {
+      if (!loading_requested_) return;
+      loading_requested_ = false;
+      transition(host, app_state::loading);
+      return;
+    }
+
+    if (!host.lifecycle_phase_complete(phase_)) return;
+
+    transition(host, phase_ == app_state::boot ? app_state::loading : app_state::game);
   }
 
 private:
+  template <typename Host>
+  void transition(Host& host, const app_state next) {
+    host.on_lifecycle_leave(phase_);
+    phase_ = next;
+    host.on_lifecycle_enter(phase_);
+  }
+
   app_state phase_ = app_state::boot;
   bool started_ = false;
+  bool loading_requested_ = false;
 };
 
 }

@@ -49,7 +49,8 @@ Lifecycle разделен на два уровня.
 переопределяются существующими `make_*`, `init_bootstrap`, `bind_systems` и timing-функциями.
 Broker передается каждой системе до ее `init()`.
 
-`lifecycle_controller` задает асинхронные фазы main-loop: `boot -> loading -> game`. Хост реализует:
+`lifecycle_controller` задает асинхронные фазы main-loop: начальный
+`boot -> loading -> game` и последующие переходы `game -> loading -> game`. Хост реализует:
 
 - `on_lifecycle_enter(phase)` — одноразовая работа при входе;
 - `on_lifecycle_tick(phase, time)` — работа текущей фазы каждый main-тик;
@@ -57,24 +58,34 @@ Broker передается каждой системе до ее `init()`.
 - `on_lifecycle_leave(phase)` — одноразовая работа перед переходом.
 
 Контроллер один владеет текущей фазой и выполняет переход в порядке `leave(old)`, смена фазы,
-`enter(next)`. В текущем переходном варианте `tile_frontier` boot читает дисковую startup entry и
-готовит ее UI resource set до первой external/GPU-ступени. При входе в loading создается окно,
-UI-набор доводится до `final_state()`, запрашиваются проектные текстуры/звуки/чанки и создается
-actor world. Первый UI script запускается только после готовности всего UI-набора. Переход в game
-происходит после готовности остальных стартовых ресурсов и чанков; gameplay update до этого не идет.
+`enter(next)`. Переход из game запрашивается через `request_loading()`: контроллер применяет его на
+следующем lifecycle tick, а loading снова завершается обычным `lifecycle_phase_complete()`.
+
+В текущем переходном варианте `tile_frontier` boot читает дисковую startup entry и готовит resource
+set начального runtime-state до первой external/GPU-ступени. При входе в loading создается окно,
+набор состояния доводится до `final_state()`, запрашиваются проектные текстуры/звуки/чанки и
+создается actor world. Первый UI script запускается только после готовности всего UI-набора. Переход
+в game происходит после готовности остальных стартовых ресурсов и чанков; gameplay update до этого
+не идет. Последующие runtime-переходы оставляют старый UI как loading screen до готовности нового.
 
 Текущий дисковый startup-срез использует два стандартных типа ресурсов:
 
-- активный `startup/entry` задает logical id начального `ui_state` и будущей `scene`;
-- `ui_states/*` задает entry `script` и единый список `resources`.
+- активный `startup/entry` задает logical id начального `state`;
+- `states/*` задает entry `script`, единый список `resources` и optional `scene`.
 
 Первый модуль в module list имеет наивысший приоритет, поэтому мод может заменить
-`startup/entry` или выбранный `ui_state`, если стоит перед `core`. Все ресурсы из
-`ui_state.resources` запрашиваются до `final_state()` до первого исполнения UI script. Этот же
+`startup/entry` или выбранный runtime-state, если стоит перед `core`. Все ресурсы из
+`state.resources` запрашиваются до `final_state()` до первого исполнения UI script. Этот же
 список является allowlist: Lua может получать handles, исполнять `require` и перечислять только
 разрешенные ресурсы, но не может запускать load/unload. `require` принимает только уже usable
 script resource. Ресурсы активной scene добавляются в UI scope сразу и могут быть еще не готовы;
 скрипт видит их `state()`/`usable()` для отображения прогресса и диагностики.
+
+`tile_frontier` хранит `current` и `target` runtime-state. Lua может запросить переход через
+`app.request_state(id)`, после чего локальные чанки и actors пересоздаются для новой generation;
+запоздавшие ответы старой generation отбрасываются. Долгоживущие engine-системы и их глобальное
+состояние в переходе не пересоздаются. Политика выгрузки более не нужных ресурсов пока не оформлена:
+старые ресурсы могут оставаться resident после смены состояния.
 
 Дисковый boot является переходным вариантом. Целевой boot bundle (splash, подготовленный font и
 минимальный UI) будет задаваться compile-time Traits и встраиваться в бинарник; модульные registry,

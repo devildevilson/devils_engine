@@ -61,9 +61,19 @@ TEST_CASE("lifecycle controller enters phases in strict order") {
   lifecycle.update(host, 1);
   CHECK(lifecycle.phase() == app_state::game);
   CHECK(host.entered.size() == 3);
+
+  REQUIRE(lifecycle.request_loading());
+  CHECK_FALSE(lifecycle.request_loading());
+  lifecycle.update(host, 1);
+  CHECK(lifecycle.phase() == app_state::loading);
+  CHECK(host.entered.back() == app_state::loading);
+
+  lifecycle.update(host, 1);
+  CHECK(lifecycle.phase() == app_state::game);
+  CHECK(host.entered.back() == app_state::game);
 }
 
-TEST_CASE("startup entry and ui state come from the first module") {
+TEST_CASE("startup entry and runtime state come from the first module") {
   namespace fs = std::filesystem;
   namespace demiurg = devils_engine::demiurg;
   namespace simul = devils_engine::simul;
@@ -71,23 +81,22 @@ TEST_CASE("startup entry and ui state come from the first module") {
   const auto root = fs::temp_directory_path() / "devils_engine_simul_startup_test";
   fs::remove_all(root);
   fs::create_directories(root / "mod" / "startup");
-  fs::create_directories(root / "mod" / "ui_states");
+  fs::create_directories(root / "mod" / "states");
   fs::create_directories(root / "core" / "startup");
 
   {
     std::ofstream out(root / "mod" / "startup" / "entry.tavl");
-    out << "ui_state = \"ui_states/mod_menu\"\n";
+    out << "state = \"states/mod_menu\"\n";
+  }
+  {
+    std::ofstream out(root / "mod" / "states" / "mod_menu.tavl");
+    out << "script = \"ui/mod_entry\"\n";
+    out << "resources = [\"ui/mod_entry\", \"fonts/mod\", \"textures/mod_bg\"]\n";
     out << "scene = \"scenes/mod_scene\"\n";
   }
   {
-    std::ofstream out(root / "mod" / "ui_states" / "mod_menu.tavl");
-    out << "script = \"ui/mod_entry\"\n";
-    out << "resources = [\"ui/mod_entry\", \"fonts/mod\", \"textures/mod_bg\"]\n";
-  }
-  {
     std::ofstream out(root / "core" / "startup" / "entry.tavl");
-    out << "ui_state = \"ui_states/core_menu\"\n";
-    out << "scene = \"scenes/core_scene\"\n";
+    out << "state = \"states/core_menu\"\n";
   }
 
   demiurg::module_system modules(root.generic_string() + "/");
@@ -98,22 +107,22 @@ TEST_CASE("startup entry and ui state come from the first module") {
 
   demiurg::resource_system resources;
   resources.register_type<simul::startup_entry_resource>("startup", "tavl");
-  resources.register_type<simul::ui_state_resource>("ui_states", "tavl");
+  resources.register_type<simul::runtime_state_resource>("states", "tavl");
   resources.parse_resources(&modules);
 
   auto* entry = resources.get<simul::startup_entry_resource>("startup/entry");
   REQUIRE(entry != nullptr);
   entry->load(devils_engine::utils::safe_handle_t{});
-  CHECK(entry->config().ui_state == "ui_states/mod_menu");
-  CHECK(entry->config().scene == "scenes/mod_scene");
+  CHECK(entry->config().state == "states/mod_menu");
 
-  auto* ui = resources.get<simul::ui_state_resource>(entry->config().ui_state);
+  auto* ui = resources.get<simul::runtime_state_resource>(entry->config().state);
   REQUIRE(ui != nullptr);
   ui->load(devils_engine::utils::safe_handle_t{});
   CHECK(ui->config().script == "ui/mod_entry");
   CHECK(ui->config().resources == std::vector<std::string>{
     "ui/mod_entry", "fonts/mod", "textures/mod_bg"
   });
+  CHECK(ui->config().scene == "scenes/mod_scene");
 
   fs::remove_all(root);
 }

@@ -10,13 +10,13 @@ namespace devils_engine {
 namespace simul {
 
 struct startup_entry_config {
-  std::string ui_state;
-  std::string scene;
+  std::string state;
 };
 
-struct ui_state_config {
+struct runtime_state_config {
   std::string script;
   std::vector<std::string> resources;
+  std::string scene;
 };
 
 class startup_entry_resource : public demiurg::resource_interface {
@@ -33,10 +33,10 @@ private:
   startup_entry_config config_;
 };
 
-class ui_state_resource : public demiurg::resource_interface {
+class runtime_state_resource : public demiurg::resource_interface {
 public:
-  ui_state_resource();
-  const ui_state_config& config() const noexcept { return config_; }
+  runtime_state_resource();
+  const runtime_state_config& config() const noexcept { return config_; }
 
   void load_cold(const utils::safe_handle_t& handle) override;
   void load_warm(const utils::safe_handle_t& handle) override;
@@ -44,7 +44,7 @@ public:
   void unload_warm(const utils::safe_handle_t& handle) override;
 
 private:
-  ui_state_config config_;
+  runtime_state_config config_;
 };
 
 }

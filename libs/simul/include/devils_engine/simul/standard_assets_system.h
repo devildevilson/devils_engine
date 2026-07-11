@@ -95,7 +95,7 @@ protected:
     resources.register_type<sound::sound_resource>("sounds", "mp3,flac,wav,ogg,opus");
     resources.register_type<lua_script_resource>("ui", "lua");
     resources.register_type<startup_entry_resource>("startup", "tavl");
-    resources.register_type<ui_state_resource>("ui_states", "tavl");
+    resources.register_type<runtime_state_resource>("states", "tavl");
   }
 
 private:

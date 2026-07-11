@@ -51,15 +51,15 @@ void startup_entry_resource::load_warm(const utils::safe_handle_t&) {}
 void startup_entry_resource::unload_hot(const utils::safe_handle_t&) {}
 void startup_entry_resource::unload_warm(const utils::safe_handle_t&) { config_ = {}; }
 
-ui_state_resource::ui_state_resource() { configure_cpu_resource(*this); }
+runtime_state_resource::runtime_state_resource() { configure_cpu_resource(*this); }
 
-void ui_state_resource::load_cold(const utils::safe_handle_t&) {
+void runtime_state_resource::load_cold(const utils::safe_handle_t&) {
   parse_config_resource(*this, config_);
 }
 
-void ui_state_resource::load_warm(const utils::safe_handle_t&) {}
-void ui_state_resource::unload_hot(const utils::safe_handle_t&) {}
-void ui_state_resource::unload_warm(const utils::safe_handle_t&) { config_ = {}; }
+void runtime_state_resource::load_warm(const utils::safe_handle_t&) {}
+void runtime_state_resource::unload_hot(const utils::safe_handle_t&) {}
+void runtime_state_resource::unload_warm(const utils::safe_handle_t&) { config_ = {}; }
 
 }
 }
