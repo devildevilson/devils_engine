@@ -33,8 +33,8 @@ public:
   bool stop_predicate() const override { return false; }
 
   void update(const size_t time) override {
-    if (container == nullptr || container->br == nullptr) return;
-    auto& br = *container->br;
+    if (container == nullptr || this->broker_ == nullptr) return;
+    auto& br = *this->broker_;
 
     {
       command_sound_devices cmd{};
@@ -119,15 +119,9 @@ public:
     }
   }
 
-  void set_broker(Broker* b) override {
-    base_type::set_broker(b);
-    if (container) container->br = b;
-  }
-
 private:
   struct state {
     std::unique_ptr<sound::system2> s;
-    Broker* br = nullptr;
     float master_gain = 1.0f;
     std::vector<sound::task_status> snapshot_status_cache;
   };
