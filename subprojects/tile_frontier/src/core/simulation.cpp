@@ -39,6 +39,8 @@
 #include <devils_engine/painter/gpu_texture_resource.h>
 #include "app_config_resource.h"
 #include "script_resource.h" // script_resource::program() для скрипт-предиката actor.is_hungry
+#include "fsm_resource.h"     // fsm_resource::transitions() для mood FSM из конфига
+#include "goap_resource.h"    // goap_resource::config() для GOAP из конфига
 #include <devils_engine/visage/font_resource.h>
 #include "global_ubo.h"
 #include "texture_set.h"
@@ -749,17 +751,31 @@ void simulation::begin_loading() {
       instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
   }
 
-  // Скрипт-предикат actor.is_hungry из tavl (scripts/actor_is_hungry): синхронно доводим до usable
-  // (как startup/entry в begin_boot) и передаём скомпилированный container в слайс. Нет ресурса ⇒
-  // nullptr ⇒ нативный фолбэк (поведение идентично).
-  const devils_script::container* is_hungry_program = nullptr;
+  // Конфиги «мозга» актора из tavl: синхронно доводим до usable (как startup/entry в begin_boot) и
+  // передаём в слайс. Отсутствие ресурса ⇒ соответствующее поле nullptr ⇒ нативный/хардкод фолбэк.
+  core::brain_config brains;
   if (auto* reg = c.assets_sim != nullptr ? c.assets_sim->resources() : nullptr) {
     if (auto* sr = reg->get<script_resource>("scripts/actor_is_hungry")) {
       while (!sr->usable()) sr->load(utils::safe_handle_t{});
-      is_hungry_program = sr->program();
+      brains.is_hungry_program = sr->program();
       DE_LOG(catalogue::log_domain::gameplay, flow, "main: actor.is_hungry <- скрипт 'scripts/actor_is_hungry'");
     } else {
       utils::warn("main: скрипт 'scripts/actor_is_hungry' не найден в реестре — нативный is_hungry");
+    }
+    if (auto* fr = reg->get<fsm_resource>("fsm/actor")) {
+      while (!fr->usable()) fr->load(utils::safe_handle_t{});
+      brains.fsm_transitions = &fr->transitions();
+      DE_LOG(catalogue::log_domain::gameplay, flow, "main: mood FSM <- конфиг 'fsm/actor' ({} переходов)", fr->transitions().size());
+    } else {
+      utils::warn("main: конфиг 'fsm/actor' не найден в реестре — хардкод FSM");
+    }
+    if (auto* gr = reg->get<goap_resource>("goap/actor")) {
+      while (!gr->usable()) gr->load(utils::safe_handle_t{});
+      brains.goap = &gr->config();
+      DE_LOG(catalogue::log_domain::gameplay, flow, "main: GOAP <- конфиг 'goap/actor' ({} метрик, {} действий)",
+        gr->config().metrics.size(), gr->config().actions.size());
+    } else {
+      utils::warn("main: конфиг 'goap/actor' не найден в реестре — хардкод GOAP");
     }
   }
 
@@ -768,7 +784,7 @@ void simulation::begin_loading() {
     glm::vec2{0.5f, 0.5f},
     glm::max(extent - glm::vec2{0.5f, 0.5f}, glm::vec2{0.5f, 0.5f}),
     std::max(tex_count, 1u),
-    is_hungry_program
+    brains
   );
   c.metrics_last_log = std::chrono::steady_clock::now();
   DE_LOG(catalogue::log_domain::gameplay, flow, "main: spawned {} lightweight actors in aesthetics world", initial_actor_count);

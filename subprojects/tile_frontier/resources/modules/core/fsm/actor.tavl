@@ -1,0 +1,8 @@
+transitions = [
+  "any_state + flee = flee"
+  "any_state + eat [is_eating] = eating"
+  "any_state + chase = chase"
+  "any_state + seek_food = seek_food"
+  "any_state + wander = wander"
+  "any_state + think = think"
+]
