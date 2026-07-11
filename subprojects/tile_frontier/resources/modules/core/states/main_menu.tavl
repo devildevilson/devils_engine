@@ -9,3 +9,5 @@ resources = [
   "textures/grad2"
   "textures/quad"
 ]
+
+scene = "scenes/tile_frontier"

@@ -1,0 +1,9 @@
+script = "ui/entry"
+resources = [
+  "ui/entry"
+  "fonts/crimson.roman"
+  "fonts/crimson.italic"
+  "textures/grad2"
+  "textures/quad"
+]
+scene = "scenes/world"

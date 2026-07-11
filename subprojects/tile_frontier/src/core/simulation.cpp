@@ -173,12 +173,23 @@ struct simulation_init {
   // из ассетов). Только lifecycle_controller меняет текущую фазу.
   simul::lifecycle_controller lifecycle;
   std::vector<resource_ref> startup_resources;
+
+  demiurg::resource_handle current_runtime_state;
+  demiurg::resource_handle target_runtime_state;
+  uint64_t state_generation = 0;
+
   std::vector<resource_ref> ui_resources;
-  std::vector<std::pair<resource_ref, int32_t>> ui_boot_targets;
   std::shared_ptr<simul::resource_access_scope> ui_resource_scope = std::make_shared<simul::resource_access_scope>();
   std::string ui_entry_script;
-  std::string startup_scene;
-  bool ui_started = false;
+  std::string current_scene;
+
+  std::vector<resource_ref> pending_ui_resources;
+  std::vector<std::pair<resource_ref, int32_t>> pending_boot_targets;
+  std::shared_ptr<simul::resource_access_scope> pending_ui_scope;
+  std::string pending_ui_entry_script;
+  std::string pending_scene;
+  bool target_prepared = false;
+  bool target_ui_committed = false;
 
   std::vector<std::string> sound_devices;
   std::atomic_bool sound_devices_ready = false;
@@ -227,13 +238,13 @@ static bool loading_complete(const simulation_init& c, const bool external_steps
 }
 
 static bool ui_resources_ready(const simulation_init& c, const bool external_steps_available) {
-  return std::all_of(c.ui_resources.begin(), c.ui_resources.end(), [external_steps_available](const resource_ref& ref) {
+  return std::all_of(c.pending_ui_resources.begin(), c.pending_ui_resources.end(), [external_steps_available](const resource_ref& ref) {
     return resource_ready(ref, external_steps_available);
   });
 }
 
 static bool ui_boot_resources_prepared(const simulation_init& c) {
-  return std::all_of(c.ui_boot_targets.begin(), c.ui_boot_targets.end(), [](const auto& entry) {
+  return std::all_of(c.pending_boot_targets.begin(), c.pending_boot_targets.end(), [](const auto& entry) {
     auto* resource = entry.first.get();
     return resource != nullptr && resource->state() >= entry.second;
   });
@@ -266,7 +277,7 @@ void simulation::set_broker(struct broker* b) {
   simul::main_system<::tile_frontier::core::broker>::set_broker(b);
 }
 
-// Visage получает только шрифты из активного ui_state.resources. К этому моменту assets loader
+// Visage получает только шрифты из активного runtime state resources. К этому моменту assets loader
 // уже подготовил их метрики; main не запускает ресурсные переходы напрямую.
 static void setup_visage(simulation_init& c) {
   constexpr std::string_view default_font_id = "fonts/crimson.roman";
@@ -424,9 +435,9 @@ void simulation::on_lifecycle_enter(const simul::app_state phase) {
 
 void simulation::on_lifecycle_tick(const simul::app_state phase, const size_t) {
   auto& c = state();
-  if (phase == simul::app_state::loading && !c.ui_started && ui_resources_ready(c, systems.render)) {
+  if (phase == simul::app_state::loading && !c.target_ui_committed && ui_resources_ready(c, systems.render)) {
     start_ui();
-    c.ui_started = true;
+    c.target_ui_committed = true;
   }
 }
 
@@ -434,7 +445,7 @@ bool simulation::lifecycle_phase_complete(const simul::app_state phase) const {
   const auto& c = state();
   switch (phase) {
     case simul::app_state::boot: return ui_boot_resources_prepared(c);
-    case simul::app_state::loading: return c.ui_started && loading_complete(c, systems.render);
+    case simul::app_state::loading: return c.target_ui_committed && loading_complete(c, systems.render);
     case simul::app_state::game: return false;
   }
   return false;
@@ -464,43 +475,81 @@ void simulation::begin_boot() {
   while (!entry->usable()) entry->load(utils::safe_handle_t{});
 
   const auto& entry_cfg = entry->config();
-  if (entry_cfg.ui_state.empty()) utils::error{}("startup/entry: ui_state is empty");
-  c.startup_scene = entry_cfg.scene;
+  if (entry_cfg.state.empty()) utils::error{}("startup/entry: state is empty");
+  const auto initial_state = registry->handle(entry_cfg.state);
+  if (initial_state.get<simul::runtime_state_resource>() == nullptr) {
+    utils::error{}("startup/entry: runtime state '{}' was not found", entry_cfg.state);
+  }
+  prepare_runtime_state(initial_state, true);
+}
 
-  auto* ui_state = registry->get<simul::ui_state_resource>(entry_cfg.ui_state);
-  if (ui_state == nullptr) utils::error{}("startup/entry: ui_state resource '{}' was not found", entry_cfg.ui_state);
-  while (!ui_state->usable()) ui_state->load(utils::safe_handle_t{});
+void simulation::prepare_runtime_state(const demiurg::resource_handle state_handle, const bool pre_external_only) {
+  auto& c = state();
+  auto* registry = c.assets_sim != nullptr ? c.assets_sim->resources() : nullptr;
+  auto* runtime_state = state_handle.get<simul::runtime_state_resource>();
+  if (registry == nullptr || runtime_state == nullptr) utils::error{}("runtime state: invalid target handle");
+  while (!runtime_state->usable()) runtime_state->load(utils::safe_handle_t{});
 
-  const auto& ui_cfg = ui_state->config();
-  if (ui_cfg.script.empty()) utils::error{}("ui state '{}': script is empty", entry_cfg.ui_state);
-  if (std::find(ui_cfg.resources.begin(), ui_cfg.resources.end(), ui_cfg.script) == ui_cfg.resources.end()) {
-    utils::error{}("ui state '{}': entry script '{}' is not present in resources allowlist", entry_cfg.ui_state, ui_cfg.script);
+  const auto& cfg = runtime_state->config();
+  if (cfg.script.empty()) utils::error{}("runtime state '{}': script is empty", runtime_state->id);
+  if (std::find(cfg.resources.begin(), cfg.resources.end(), cfg.script) == cfg.resources.end()) {
+    utils::error{}("runtime state '{}': entry script '{}' is not present in resources allowlist", runtime_state->id, cfg.script);
   }
 
-  c.ui_entry_script = ui_cfg.script;
-  for (const auto& id : ui_cfg.resources) {
+  c.target_runtime_state = state_handle;
+  c.pending_ui_resources.clear();
+  c.pending_boot_targets.clear();
+  c.pending_ui_scope = std::make_shared<simul::resource_access_scope>();
+  c.pending_ui_entry_script = cfg.script;
+  c.pending_scene = cfg.scene;
+  c.target_prepared = true;
+
+  for (const auto& id : cfg.resources) {
     const auto handle = registry->handle(id);
     auto* resource = handle.get();
-    if (resource == nullptr) utils::error{}("ui state '{}': resource '{}' was not found", entry_cfg.ui_state, id);
-    if (c.ui_resource_scope->contains(handle)) continue;
+    if (resource == nullptr) utils::error{}("runtime state '{}': resource '{}' was not found", runtime_state->id, id);
+    if (c.pending_ui_scope->contains(handle)) continue;
 
-    c.ui_resource_scope->grant(handle);
+    c.pending_ui_scope->grant(handle);
     const resource_ref ref = resource_ref::from_handle(handle);
-    c.ui_resources.push_back(ref);
-    c.startup_resources.push_back(ref);
-    const int32_t target = pre_external_target(*resource);
-    c.ui_boot_targets.emplace_back(ref, target);
+    c.pending_ui_resources.push_back(ref);
+    const int32_t target = pre_external_only ? pre_external_target(*resource) : resource->final_state();
+    if (pre_external_only) c.pending_boot_targets.emplace_back(ref, target);
     if (!c.br->load_resource.try_push(command_load_resource{ref, target})) {
-      utils::error{}("ui state '{}': load_resource queue overflow while requesting '{}'", entry_cfg.ui_state, id);
+      utils::error{}("runtime state '{}': load_resource queue overflow while requesting '{}'", runtime_state->id, id);
     }
   }
   DE_LOG(catalogue::log_domain::ui, flow,
-    "startup: ui_state='{}' script='{}' resources={} scene='{}'",
-    entry_cfg.ui_state, c.ui_entry_script, c.ui_resources.size(), c.startup_scene);
+    "runtime state target='{}' script='{}' resources={} scene='{}' pre_external_only={}",
+    runtime_state->id, c.pending_ui_entry_script, c.pending_ui_resources.size(), c.pending_scene, pre_external_only);
+}
+
+bool simulation::request_runtime_state(const std::string& id) {
+  auto& c = state();
+  if (c.lifecycle.phase() != simul::app_state::game || c.assets_sim == nullptr) return false;
+
+  const auto handle = c.assets_sim->resources()->handle(id);
+  if (handle.get<simul::runtime_state_resource>() == nullptr) return false;
+  if (handle.system == c.current_runtime_state.system && handle.hash == c.current_runtime_state.hash) return false;
+
+  if (!c.lifecycle.request_loading()) return false;
+  c.target_runtime_state = handle;
+  return true;
 }
 
 void simulation::start_ui() {
   auto& c = state();
+
+  c.ui_resources = std::move(c.pending_ui_resources);
+  c.ui_resource_scope = std::move(c.pending_ui_scope);
+  c.ui_entry_script = std::move(c.pending_ui_entry_script);
+  c.current_scene = std::move(c.pending_scene);
+  c.ui_fonts.clear();
+  c.ui_font_h = {};
+
+  c.current_runtime_state = c.target_runtime_state;
+  c.target_runtime_state = {};
+  c.target_prepared = false;
 
   // интерфейс (visage) в главном потоке
   setup_visage(c);
@@ -639,6 +688,13 @@ void simulation::start_ui() {
       const auto& c = *cptr;
       return std::string(simul::to_string(c.lifecycle.phase()));
     });
+    app.set_function("runtime_state", [cptr]() -> std::string {
+      auto* state = cptr->current_runtime_state.get();
+      return state != nullptr ? std::string(state->id) : std::string{};
+    });
+    app.set_function("request_state", [this](const std::string& id) -> bool {
+      return request_runtime_state(id);
+    });
     app.set_function("loading_progress", [cptr]() -> double { return loading_progress(*cptr); });
 
     // рантайм-переключение глубины логгирования домена (работает и в release): app.set_log_level("sound","trace").
@@ -697,6 +753,18 @@ void simulation::start_ui() {
 
 void simulation::begin_loading() {
   auto& c = state();
+  c.state_generation += 1;
+  c.target_ui_committed = false;
+  c.startup_resources.clear();
+  c.sound_by_name.clear();
+
+  const bool needs_final_request = c.target_prepared;
+  if (!c.target_prepared) {
+    if (c.target_runtime_state.get<simul::runtime_state_resource>() == nullptr) {
+      utils::error{}("loading: no valid target runtime state");
+    }
+    prepare_runtime_state(c.target_runtime_state, false);
+  }
 
   // Окно появляется только после минимального boot-набора. К этому моменту UI и первый
   // шрифт готовы, поэтому первый видимый кадр уже может показать экран загрузки.
@@ -706,10 +774,11 @@ void simulation::begin_loading() {
 
   // Тот же allowlist теперь доводится до полной готовности. UI script не исполняется, пока
   // каждый ресурс не достиг final_state() (или первой external-ступени при отключенном render).
-  for (const auto& ref : c.ui_resources) {
+  for (const auto& ref : c.pending_ui_resources) {
     auto* resource = ref.get();
     if (resource == nullptr) continue;
-    if (!c.br->load_resource.try_push(command_load_resource{ref, resource->final_state()})) {
+    c.startup_resources.push_back(ref);
+    if (needs_final_request && !c.br->load_resource.try_push(command_load_resource{ref, resource->final_state()})) {
       utils::error{}("loading: load_resource queue overflow while finalizing UI resource '{}'", resource->id);
     }
   }
@@ -726,7 +795,7 @@ void simulation::begin_loading() {
     const auto tex_handle = c.assets_sim->resources()->handle(res_id);
     if (tex_handle.get<painter::gpu_texture_resource>() != nullptr) {
       // Временный mock-scene manifest: scene-ресурсы видимы UI сразу, readiness проверяет сам UI.
-      c.ui_resource_scope->grant(tex_handle);
+      c.pending_ui_scope->grant(tex_handle);
       if (systems.render) {
         const resource_ref ref = resource_ref::from_handle(tex_handle);
         c.br->load_resource.try_push(command_load_resource{ref, static_cast<int32_t>(demiurg::state::hot)});
@@ -750,7 +819,7 @@ void simulation::begin_loading() {
       utils::warn("main: sound resource '{}' not found in registry", res_id);
       continue;
     }
-    c.ui_resource_scope->grant(snd_handle);
+    c.pending_ui_scope->grant(snd_handle);
     c.br->load_resource.try_push(command_load_resource{
       resource_ref::from_handle(snd_handle), static_cast<int32_t>(demiurg::state::warm)
     });
@@ -765,12 +834,17 @@ void simulation::begin_loading() {
   c.grid.resize(c.chunks_x * c.chunk_size, c.chunks_y * c.chunk_size);
   c.chunks_requested.assign(size_t(c.chunks_x) * c.chunks_y, false);
   c.chunks_loaded.assign(size_t(c.chunks_x) * c.chunks_y, false);
+  c.chunks_loaded_count = 0;
+  c.chunks_logged = false;
+  c.tiles_logged = false;
+  c.actors_logged = false;
 
   if (systems.assets) {
     for (uint32_t cy = 0; cy < c.chunks_y; ++cy) {
       for (uint32_t cx = 0; cx < c.chunks_x; ++cx) {
         const size_t idx = size_t(cy) * c.chunks_x + cx;
         command_load_chunk cmd;
+        cmd.generation = c.state_generation;
         cmd.x = int32_t(cx);
         cmd.y = int32_t(cy);
         cmd.size = c.chunk_size;
@@ -908,6 +982,12 @@ void simulation::update(const size_t time) {
   if (c.br) {
     command_chunk_loaded cmd{};
     while (c.br->chunk_loaded.try_pop(cmd)) {
+      if (cmd.generation != c.state_generation) {
+        DE_LOG(catalogue::log_domain::gameplay, flow,
+          "main: dropped stale chunk ({},{}) generation={} current={}",
+          cmd.x, cmd.y, cmd.generation, c.state_generation);
+        continue;
+      }
       tile_chunk chunk;
       chunk.coord = chunk_coord{cmd.x, cmd.y};
       chunk.size = cmd.size;

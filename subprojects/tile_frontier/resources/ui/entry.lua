@@ -124,6 +124,15 @@ local function game_ui(time, timestamp, rng)
       app.play_sound(resources.eating)
     end
 
+    local runtime_state = app.runtime_state()
+    local next_state = runtime_state == "states/main_menu" and "states/world"
+      or runtime_state == "states/world" and "states/house1"
+      or "states/main_menu"
+    nk.layout.row_dynamic(30, 1)
+    if nk.button("State: " .. runtime_state .. " -> " .. next_state) then
+      app.request_state(next_state)
+    end
+
     -- управление игрой (шаг 2a/1f): полноэкранный режим + выход
     nk.layout.row_dynamic(30, 2)
     if nk.button(app.is_fullscreen() and "Windowed" or "Fullscreen") then

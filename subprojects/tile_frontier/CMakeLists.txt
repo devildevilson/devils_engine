@@ -122,6 +122,8 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   # старые файлы, поэтому без этой очистки прежний engine/ui/entry.lua остается в build output.
   COMMAND ${CMAKE_COMMAND} -E rm -rf
     ${PROJECT_OUTPUT_DIRECTORY}/resources/engine/ui
+  COMMAND ${CMAKE_COMMAND} -E rm -rf
+    ${PROJECT_OUTPUT_DIRECTORY}/resources/modules/core/ui_states
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${CMAKE_SOURCE_DIR}/resources
     ${PROJECT_OUTPUT_DIRECTORY}/resources
@@ -134,7 +136,7 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 )
 
 # UI scripts are ordinary overridable module resources. The first module in the active module list
-# has the highest priority, just like startup/entry and ui_states/*.
+# has the highest priority, just like startup/entry and states/*.
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${CMAKE_CURRENT_LIST_DIR}/resources/ui
