@@ -56,7 +56,6 @@ private:
   bool lifecycle_phase_complete(devils_engine::simul::app_state phase) const;
   void on_lifecycle_leave(devils_engine::simul::app_state phase);
   void begin_boot();
-  void prepare_runtime_state(devils_engine::demiurg::resource_handle state, bool pre_external_only);
   bool request_runtime_state(const std::string& id);
   void start_ui();
   void begin_loading();
