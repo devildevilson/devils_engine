@@ -39,6 +39,9 @@ target_link_libraries(utils_contract_test PRIVATE devils_engine::utils)
 devils_add_doctest(thread_general_test thread_general_test.cpp)
 target_link_libraries(thread_general_test PRIVATE devils_engine::thread)
 
+devils_add_doctest(simul_lifecycle_test simul_lifecycle_test.cpp)
+target_link_libraries(simul_lifecycle_test PRIVATE devils_engine::simul)
+
 devils_add_doctest(aesthetics_world_test aesthetics_world_test.cpp)
 target_link_libraries(aesthetics_world_test PRIVATE devils_engine::aesthetics)
 

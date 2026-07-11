@@ -8,6 +8,8 @@
 #include <type_traits>
 #include <utility>
 
+#include <devils_engine/simul/lifecycle.h>
+
 namespace devils_engine {
 namespace simul {
 
@@ -33,35 +35,41 @@ public:
   int run() {
     bootstrap_ = Traits::make_bootstrap();
     Traits::init_bootstrap(*bootstrap_);
+    notify_stage(runtime_stage::bootstrap_ready);
 
     broker_ = Traits::make_broker(*bootstrap_);
     main_ = Traits::make_main(*bootstrap_);
-
-    Traits::set_broker(*main_, *broker_);
-    main_->init();
-
     sound_ = Traits::make_sound(*bootstrap_);
     render_ = Traits::make_render(*bootstrap_);
     assets_ = Traits::make_assets(*bootstrap_);
+    notify_stage(runtime_stage::systems_created);
+
+    Traits::set_broker(*main_, *broker_);
+    if (sound_) Traits::set_broker(*sound_, *broker_);
+    if (render_) Traits::set_broker(*render_, *broker_);
+    if (assets_) Traits::set_broker(*assets_, *broker_);
+
+    main_->init();
 
     if (sound_) {
       sound_->init();
-      Traits::set_broker(*sound_, *broker_);
     }
     if (render_) {
       render_->init();
-      Traits::set_broker(*render_, *broker_);
     }
     if (assets_) {
       assets_->init();
-      Traits::set_broker(*assets_, *broker_);
     }
 
     Traits::bind_systems(*main_, *bootstrap_, sound_.get(), render_.get(), assets_.get());
+    notify_stage(runtime_stage::systems_initialized);
     start_workers();
+    notify_stage(runtime_stage::workers_started);
     Traits::after_workers_started(*main_);
+    notify_stage(runtime_stage::main_loop);
     main_->run(Traits::main_wait_mcs(*main_));
     shutdown_workers();
+    notify_stage(runtime_stage::workers_stopped);
     return Traits::exit_code(*main_);
   }
 
@@ -87,6 +95,12 @@ public:
   sound_type* sound_system() noexcept { return sound_.get(); }
 
 private:
+  void notify_stage(const runtime_stage stage) {
+    if constexpr (requires { Traits::runtime_stage_changed(stage, *this); }) {
+      Traits::runtime_stage_changed(stage, *this);
+    }
+  }
+
   void start_workers() {
     if (sound_) {
       const size_t wait = Traits::sound_wait_mcs(*bootstrap_, *sound_);

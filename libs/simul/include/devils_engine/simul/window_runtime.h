@@ -16,6 +16,7 @@
 #include <devils_engine/catalogue/logging.h>
 #include <devils_engine/input/core.h>
 #include <devils_engine/input/events.h>
+#include <devils_engine/simul/lifecycle.h>
 #include <devils_engine/simul/messages.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/prng.h>
@@ -25,17 +26,6 @@
 
 namespace devils_engine {
 namespace simul {
-
-enum class app_state { boot, loading, game };
-
-inline std::string_view to_string(const app_state state) noexcept {
-  switch (state) {
-    case app_state::boot: return "boot";
-    case app_state::loading: return "loading";
-    case app_state::game: return "game";
-  }
-  return "game";
-}
 
 struct window_policy {
   bool draw_when_unfocused = true;
@@ -275,46 +265,15 @@ inline void poll_window_events(GLFWwindow* window, const size_t time) {
   }
 }
 
-template <typename State, typename IsBootReady, typename IsLoadingComplete>
-void advance_engine_state(
-  State& c,
-  const bool render_enabled,
-  IsBootReady&& is_boot_ready,
-  IsLoadingComplete&& is_loading_complete
-) {
-  switch (c.state) {
-    case app_state::boot: {
-      const bool ready = bool(is_boot_ready());
-      const bool no_render = !render_enabled;
-      if (ready || no_render) {
-        c.state = app_state::loading;
-        DE_LOG(catalogue::log_domain::main, flow, "app_state: boot -> loading (ui font {})", ready ? "ready" : "n/a");
-      }
-      break;
-    }
-    case app_state::loading:
-      if (bool(is_loading_complete())) {
-        c.state = app_state::game;
-        DE_LOG(catalogue::log_domain::main, flow, "app_state: loading -> game (startup resources ready)");
-      }
-      break;
-    case app_state::game:
-      break;
-  }
-}
-
-template <typename State, typename IsBootReady, typename IsLoadingComplete, typename OnResize>
+template <typename State, typename OnResize>
 void begin_main_frame(
   State& c,
   const size_t time,
   const bool sound_enabled,
   const bool render_enabled,
-  IsBootReady&& is_boot_ready,
-  IsLoadingComplete&& is_loading_complete,
   OnResize&& on_resize
 ) {
   c.tick += 1;
-  advance_engine_state(c, render_enabled, std::forward<IsBootReady>(is_boot_ready), std::forward<IsLoadingComplete>(is_loading_complete));
   poll_window_events(c.window, time);
   drain_window_events(c, sound_enabled, render_enabled, std::forward<OnResize>(on_resize));
 }
