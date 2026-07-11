@@ -27,6 +27,8 @@ namespace devils_engine { namespace thread { class atomic_pool; } } // MT-пул
 namespace devils_engine { namespace catalogue { class statistics_store; } } // perf-стат апдейта актора
 namespace devils_script { struct container; } // скомпилированный скрипт-предикат (заимствуется)
 
+namespace tile_frontier { namespace core { struct goap_config; } } // GOAP-описание из tavl (goap_resource.h)
+
 namespace tile_frontier {
 namespace core {
 
@@ -176,12 +178,19 @@ private:
   std::vector<uint32_t> ids_;
 };
 
+// Проектные описания «мозга» актора, загруженные из tavl (заимствуются — владелец реестр ассетов).
+// Каждое поле опционально: nullptr ⇒ нативный/хардкод фолбэк (тесты/резюме без ассетов). Растёт по
+// мере переезда gameplay-данных в конфиг (GOAP-метрики/действия — следующими).
+struct brain_config {
+  const devils_script::container* is_hungry_program = nullptr; // скрипт-предикат "actor.is_hungry"
+  const std::vector<std::string>* fsm_transitions = nullptr;   // строки переходов mood FSM
+  const goap_config* goap = nullptr;                           // GOAP: метрики/действия/цели (по ключам)
+};
+
 class actor_world_slice {
 public:
-  // is_hungry_program — опц. скомпилированный скрипт-предикат для "actor.is_hungry" (загружается
-  // из tavl). nullptr ⇒ нативный фолбэк (тесты/резюме без ассетов). Заимствуется (владелец — реестр).
   void init(uint32_t count, glm::vec2 min_bound, glm::vec2 max_bound, uint32_t texture_count,
-            const devils_script::container* is_hungry_program = nullptr);
+            const brain_config& brains = {});
   actor_metrics update(float dt_seconds, actor_batch& batch, devils_engine::thread::atomic_pool& pool);
 
   devils_engine::aesthetics::world& ecs() noexcept { return world_; }
@@ -205,6 +214,9 @@ private:
   // Регистрирует нативные геймплейные функции (предикаты-метрики + эффекты-действия)
   // в act::registry и собирает GOAP-систему acumen (резолв по имени — одноразовый).
   void setup_brain_registry();
+  // Собирает acumen::system из tavl-конфига: метрики (порядок=биты), действия/цели по ключам
+  // (префикс !/not = инвертированный бит; символические биты типа "resolved" индексируются после метрик).
+  void build_goap_from_config(const goap_config& cfg);
   // Строит kD-дерево восприятия над ВСЕМИ акторами (позиции меняются каждый тик).
   void build_sense_tree();
   // Планировщик когниции: выбирает «созревших» акторов в пределах бюджета (приоритет —
@@ -251,8 +263,8 @@ private:
   // поток. deque — стабильные элементы без move при росте (context держит стеки). Пуст, пока нет
   // скрипт-функций (нативный фолбэк vm не трогает). Размер синхронен с plan_containers_.
   std::deque<devils_script::context> vm_pool_;
-  // скомпилированный скрипт-предикат "actor.is_hungry" (из tavl); nullptr ⇒ нативный фолбэк.
-  const devils_script::container* is_hungry_program_ = nullptr;
+  // Проектные конфиги мозга (из tavl); поля nullptr ⇒ нативный/хардкод фолбэк. Задаются в init.
+  brain_config brains_;
 
   // ── планировщик когниции ──
   // окно коммита: актор держится своего решения K тиков (стенд-ин для длительности

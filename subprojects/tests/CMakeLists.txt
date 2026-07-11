@@ -54,6 +54,9 @@ target_link_libraries(sound_system_test PRIVATE devils_engine::sound devils_engi
 devils_add_doctest(acumen_test acumen_test.cpp)
 target_link_libraries(acumen_test PRIVATE devils_engine::acumen devils_engine::act)
 
+devils_add_doctest(acumen_script_test acumen_script_test.cpp)
+target_link_libraries(acumen_script_test PRIVATE devils_engine::acumen devils_engine::act devils_script tavl)
+
 devils_add_doctest(demiurg_resource_loader_test demiurg_resource_loader_test.cpp)
 target_link_libraries(demiurg_resource_loader_test PRIVATE devils_engine::demiurg devils_engine::utils)
 

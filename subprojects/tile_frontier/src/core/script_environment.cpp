@@ -36,6 +36,25 @@ static bool scope_threat_present(entity_scope s) {
   return per != nullptr && per->has_threat;
 }
 
+static bool scope_prey_present(entity_scope s) {
+  if (s.w == nullptr) return false;
+  const auto* per = s.w->get<actor_perception>(aesthetics::entityid_t(s.id));
+  return per != nullptr && per->has_prey;
+}
+
+// Добыча в радиусе хвата. Логика зеркалит нативный predicate_prey_in_range; eat_radius ДОЛЖЕН
+// совпадать с actor_simulation.cpp (0.9). Дублирование константы — временно (до общего заголовка).
+static bool scope_prey_in_range(entity_scope s) {
+  if (s.w == nullptr) return false;
+  const auto id = aesthetics::entityid_t(s.id);
+  const auto* per = s.w->get<actor_perception>(id);
+  const auto* pos = s.w->get<actor_position>(id);
+  if (per == nullptr || pos == nullptr || !per->has_prey) return false;
+  const glm::vec2 d = per->prey_pos - pos->value;
+  constexpr float eat_radius = 0.9f;
+  return (d.x * d.x + d.y * d.y) <= eat_radius * eat_radius;
+}
+
 static devils_script::system::options make_options() {
   devils_script::system::options opts;
   opts.error   = [](const std::string& m) { utils::warn("devils_script error: {}", m); };
@@ -50,6 +69,8 @@ script_environment::script_environment() : sys(make_options()) {
   sys.register_function<&scope_hunger>("hunger");
   sys.register_function<&scope_boredom>("boredom");
   sys.register_function<&scope_threat_present>("threat_present");
+  sys.register_function<&scope_prey_present>("prey_present");
+  sys.register_function<&scope_prey_in_range>("prey_in_range");
 }
 
 }

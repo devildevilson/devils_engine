@@ -24,7 +24,8 @@
 // Включён здесь, а не только в тестах, чтобы игровой бинарь сам умел save/load (регистрации линкуются
 // в этот TU) и чтобы сторонний дампер скаляров (sim_globals с glm::vec2) видел adapter<glm::vec2>.
 #include "core/actor_snapshot.h"
-#include "entity_scope.h" // seed_entity_scope — засев root-скоупа скрипт-предикатов
+#include "entity_scope.h"  // seed_entity_scope — засев root-скоупа скрипт-предикатов
+#include "goap_resource.h" // goap_config — GOAP-описание из tavl
 
 namespace tile_frontier {
 namespace core {
@@ -383,9 +384,9 @@ void actor_world_slice::setup_brain_registry() {
   // is_hungry: скрипт-предикат из tavl (hunger >= 0.5), если загружен; иначе нативный фолбэк
   // (тесты/резюме без ассетов). Скрипт исполняется на пер-воркер ctx.vm; засев root-скоупа —
   // seed_entity_scope. Поведение идентично нативному (тот же порог, та же семантика отсутствия drives).
-  if (is_hungry_program_ != nullptr) {
+  if (brains_.is_hungry_program != nullptr) {
     registry_.reg("actor.is_hungry", std::make_unique<act::script_function<bool>>(
-      is_hungry_program_, &seed_entity_scope));
+      brains_.is_hungry_program, &seed_entity_scope));
   } else {
     registry_.reg("actor.is_hungry", std::make_unique<act::native_function<bool>>(
       &predicate_is_hungry, "голод выше порога"));
@@ -406,65 +407,134 @@ void actor_world_slice::setup_brain_registry() {
   registry_.reg("wander",    std::make_unique<act::native_function<void>>(&effect_wander,    "блуждать (от скуки)"));
   registry_.reg("think",     std::make_unique<act::native_function<void>>(&effect_think,     "стоять и думать (копит скуку)"));
 
-  // метрики (бит = индекс): 0 threat, 1 prey, 2 hungry, 3 bored, 4 prey_in_range. resolved(5) — действия.
-  std::vector<acumen::state_metric> metrics = {
-    acumen::state_metric("actor.threat_present"),
-    acumen::state_metric("actor.prey_present"),
-    acumen::state_metric("actor.is_hungry"),
-    acumen::state_metric("actor.is_bored"),
-    acumen::state_metric("actor.prey_in_range"),
-  };
+  // GOAP-система: из tavl-конфига (goap/actor) если загружен, иначе хардкод-фолбэк (тесты/резюме).
+  if (brains_.goap != nullptr) {
+    build_goap_from_config(*brains_.goap);
+  } else {
+    // метрики (бит = индекс): 0 threat, 1 prey, 2 hungry, 3 bored, 4 prey_in_range. resolved(5) — действия.
+    std::vector<acumen::state_metric> metrics = {
+      acumen::state_metric("actor.threat_present"),
+      acumen::state_metric("actor.prey_present"),
+      acumen::state_metric("actor.is_hungry"),
+      acumen::state_metric("actor.is_bored"),
+      acumen::state_metric("actor.prey_in_range"),
+    };
 
-  // Приоритетная лестница (угроза доминирует; дальше чистое разбиение по hungry → prey →
-  // in_range / bored ⇒ ровно одно действие на состояние, план в 1 шаг). Каждое ставит resolved.
-  //   threat                                  → flee
-  //   !threat & hungry & prey & in_range      → eat (схватить)
-  //   !threat & hungry & prey & !in_range     → chase (гнаться)
-  //   !threat & hungry & !prey                → seek_food (рыскать)
-  //   !threat & !hungry & bored               → wander
-  //   !threat & !hungry & !bored              → think (копит скуку → bored → wander → спад → think)
-  acumen::scoped_state flee_req;  flee_req.set(flags::threat_present, true);
-  acumen::scoped_state eat_req;   eat_req.set(flags::threat_present, false);   eat_req.set(flags::hungry, true);   eat_req.set(flags::prey_present, true); eat_req.set(flags::prey_in_range, true);
-  acumen::scoped_state chase_req; chase_req.set(flags::threat_present, false); chase_req.set(flags::hungry, true); chase_req.set(flags::prey_present, true); chase_req.set(flags::prey_in_range, false);
-  acumen::scoped_state seek_req;  seek_req.set(flags::threat_present, false);  seek_req.set(flags::hungry, true);  seek_req.set(flags::prey_present, false);
-  acumen::scoped_state wander_req; wander_req.set(flags::threat_present, false); wander_req.set(flags::hungry, false); wander_req.set(flags::bored, true);
-  acumen::scoped_state think_req;  think_req.set(flags::threat_present, false);  think_req.set(flags::hungry, false); think_req.set(flags::bored, false);
-  acumen::scoped_state done;      done.set(flags::resolved, true);
+    // Приоритетная лестница (угроза доминирует; дальше чистое разбиение по hungry → prey →
+    // in_range / bored ⇒ ровно одно действие на состояние, план в 1 шаг). Каждое ставит resolved.
+    acumen::scoped_state flee_req;  flee_req.set(flags::threat_present, true);
+    acumen::scoped_state eat_req;   eat_req.set(flags::threat_present, false);   eat_req.set(flags::hungry, true);   eat_req.set(flags::prey_present, true); eat_req.set(flags::prey_in_range, true);
+    acumen::scoped_state chase_req; chase_req.set(flags::threat_present, false); chase_req.set(flags::hungry, true); chase_req.set(flags::prey_present, true); chase_req.set(flags::prey_in_range, false);
+    acumen::scoped_state seek_req;  seek_req.set(flags::threat_present, false);  seek_req.set(flags::hungry, true);  seek_req.set(flags::prey_present, false);
+    acumen::scoped_state wander_req; wander_req.set(flags::threat_present, false); wander_req.set(flags::hungry, false); wander_req.set(flags::bored, true);
+    acumen::scoped_state think_req;  think_req.set(flags::threat_present, false);  think_req.set(flags::hungry, false); think_req.set(flags::bored, false);
+    acumen::scoped_state done;      done.set(flags::resolved, true);
 
-  std::vector<acumen::action> actions = {
-    acumen::action("flee",      flee_req,   done, acumen::scoped_state{}),
-    acumen::action("eat",       eat_req,    done, acumen::scoped_state{}),
-    acumen::action("chase",     chase_req,  done, acumen::scoped_state{}),
-    acumen::action("seek_food", seek_req,   done, acumen::scoped_state{}),
-    acumen::action("wander",    wander_req, done, acumen::scoped_state{}),
-    acumen::action("think",     think_req,  done, acumen::scoped_state{}),
-  };
+    std::vector<acumen::action> actions = {
+      acumen::action("flee",      flee_req,   done, acumen::scoped_state{}),
+      acumen::action("eat",       eat_req,    done, acumen::scoped_state{}),
+      acumen::action("chase",     chase_req,  done, acumen::scoped_state{}),
+      acumen::action("seek_food", seek_req,   done, acumen::scoped_state{}),
+      acumen::action("wander",    wander_req, done, acumen::scoped_state{}),
+      acumen::action("think",     think_req,  done, acumen::scoped_state{}),
+    };
 
-  acumen::scoped_state goal_state; goal_state.set(flags::resolved, true);
-  std::vector<acumen::goal> goals = { acumen::goal{ "resolved", acumen::scoped_state{}, goal_state } };
+    acumen::scoped_state goal_state; goal_state.set(flags::resolved, true);
+    std::vector<acumen::goal> goals = { acumen::goal{ "resolved", acumen::scoped_state{}, goal_state } };
 
-  // конструктор резолвит предикаты/эффекты по именам и кидает при промахе.
-  goap_.emplace(&registry_, std::move(metrics), std::move(goals), std::move(actions));
+    // конструктор резолвит предикаты/эффекты по именам и кидает при промахе.
+    goap_.emplace(&registry_, std::move(metrics), std::move(goals), std::move(actions));
+  }
 
   // FSM-исполнитель (mood): событие = выбранное GOAP действие, ведёт в одноимённое состояние из
   // ЛЮБОГО (any_state — wildcard). Движение остаётся эффектом GOAP в apply; FSM держит состояние
   // (выбор анимации в рендере) и даёт точку для on_entry-эффектов: звук — фаза D, поедание (guard
   // «добыча в радиусе» → состояние eating с длительностью) — фаза C. Пока чистые рёбра без эффектов.
-  std::vector<std::string> fsm_lines = {
-    "any_state + flee = flee",
-    "any_state + eat [is_eating] = eating", // только если хват реально удался (guard; имя dot-free для парсера mood)
-    "any_state + chase = chase",
-    "any_state + seek_food = seek_food",
-    "any_state + wander = wander",
-    "any_state + think = think",
+  // Переходы FSM из tavl-конфига (fsm/actor), если загружены; иначе хардкод-фолбэк (тесты/резюме без
+  // ассетов). Гварды/действия в строках — имена функций из registry_ (нативки/скрипты), резолвит mood.
+  if (brains_.fsm_transitions != nullptr) {
+    fsm_.emplace(&registry_, *brains_.fsm_transitions);
+  } else {
+    std::vector<std::string> fsm_lines = {
+      "any_state + flee = flee",
+      "any_state + eat [is_eating] = eating", // только если хват реально удался (guard; имя dot-free для парсера mood)
+      "any_state + chase = chase",
+      "any_state + seek_food = seek_food",
+      "any_state + wander = wander",
+      "any_state + think = think",
+    };
+    fsm_.emplace(&registry_, std::move(fsm_lines));
+  }
+}
+
+void actor_world_slice::build_goap_from_config(const goap_config& cfg) {
+  // Метрики ОПРЕДЕЛЯЮТ свои предикаты инлайн-скриптами: регистрируем каждый как script_function<bool>
+  // под ключом метрики в registry_ (перед сборкой acumen — он резолвит метрики по имени). Скрипт
+  // исполняется на пер-воркер ctx.vm; засев root-скоупа — seed_entity_scope. Контейнеры живут в
+  // goap_config (в реестре ассетов), поэтому заимствование &m.program валидно на всё время слайса.
+  for (const auto& m : cfg.metrics) {
+    registry_.reg(m.key, std::make_unique<act::script_function<bool>>(&m.program, &seed_entity_scope));
+  }
+
+  // Единое пространство имён битов: метрики (0..N-1, порядок = конфиг) + символические биты
+  // (next_state/goal, напр. "resolved") получают индексы ≥N при первой встрече. Линейный поиск — N крошечно.
+  std::vector<std::string> bit_names;
+  bit_names.reserve(cfg.metrics.size() + 4);
+  for (const auto& m : cfg.metrics) bit_names.push_back(m.key);
+
+  const auto bit_of = [&bit_names](const std::string& key) -> size_t {
+    for (size_t i = 0; i < bit_names.size(); ++i) if (bit_names[i] == key) return i;
+    bit_names.push_back(key);
+    return bit_names.size() - 1;
   };
-  fsm_.emplace(&registry_, std::move(fsm_lines));
+
+  // "key" / "!key" / "not key" -> (ключ, значение бита). Пробелы обрезаем.
+  const auto parse_bit = [](std::string_view s) -> std::pair<std::string, bool> {
+    const auto trim = [](std::string_view v) {
+      while (!v.empty() && v.front() == ' ') v.remove_prefix(1);
+      while (!v.empty() && v.back()  == ' ') v.remove_suffix(1);
+      return v;
+    };
+    s = trim(s);
+    bool value = true;
+    if (s.starts_with("!"))         { value = false; s = trim(s.substr(1)); }
+    else if (s.starts_with("not ")) { value = false; s = trim(s.substr(4)); }
+    return { std::string(s), value };
+  };
+
+  const auto build_ss = [&](const std::vector<std::string>& keys) {
+    acumen::scoped_state ss;
+    for (const auto& raw : keys) {
+      const auto [key, value] = parse_bit(raw);
+      ss.set(bit_of(key), value);
+    }
+    return ss;
+  };
+
+  std::vector<acumen::state_metric> metrics;
+  metrics.reserve(cfg.metrics.size());
+  for (const auto& m : cfg.metrics) metrics.emplace_back(m.key);
+
+  std::vector<acumen::action> actions;
+  actions.reserve(cfg.actions.size());
+  for (const auto& a : cfg.actions) {
+    actions.emplace_back(a.name, build_ss(a.requirements), build_ss(a.next_state), build_ss(a.weight_state));
+  }
+
+  std::vector<acumen::goal> goals;
+  goals.reserve(cfg.goals.size());
+  for (const auto& g : cfg.goals) {
+    goals.push_back(acumen::goal{ g.name, build_ss(g.requirements), build_ss(g.goal) });
+  }
+
+  // резолвит предикаты (метрики) и эффекты (действия) по имени из registry_, кидает при промахе.
+  goap_.emplace(&registry_, std::move(metrics), std::move(goals), std::move(actions));
 }
 
 void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, const glm::vec2 max_bound, const uint32_t texture_count,
-                             const devils_script::container* is_hungry_program) {
+                             const brain_config& brains) {
   world_ = aesthetics::world{};
-  is_hungry_program_ = is_hungry_program; // до setup_brain_registry: выбирает скрипт vs натив
+  brains_ = brains; // до setup_brain_registry: выбирает скрипт/конфиг vs натив/хардкод
   setup_brain_registry();
   intents_.clear();
   intents_.reserve(count);
