@@ -24,6 +24,7 @@
 // Включён здесь, а не только в тестах, чтобы игровой бинарь сам умел save/load (регистрации линкуются
 // в этот TU) и чтобы сторонний дампер скаляров (sim_globals с glm::vec2) видел adapter<glm::vec2>.
 #include "core/actor_snapshot.h"
+#include "entity_scope.h" // seed_entity_scope — засев root-скоупа скрипт-предикатов
 
 namespace tile_frontier {
 namespace core {
@@ -43,7 +44,8 @@ static const aesthetics::world& world_of(const act::exec_context& ctx) noexcept 
 // (планирование/think не мутирует мир). entity_id round-trip'ит полный packed id.
 static act::exec_context make_ctx(
   const aesthetics::world& world, const aesthetics::entityid_t id,
-  const uint64_t seed, const uint64_t tick, act::effect_sink* sink = nullptr) noexcept
+  const uint64_t seed, const uint64_t tick, act::effect_sink* sink = nullptr,
+  devils_script::context* vm = nullptr) noexcept
 {
   act::exec_context ctx;
   ctx.scope[0] = act::entity_id{ uint32_t(id) };
@@ -53,6 +55,7 @@ static act::exec_context make_ctx(
   ctx.rng_entity = aesthetics::get_entityid_index(id);
   ctx.rng_tick = tick;
   ctx.sink = sink;
+  ctx.vm = vm; // скретчпад скрипт-функций (nullptr для нативных путей — они его не трогают)
   return ctx;
 }
 
@@ -377,8 +380,16 @@ void actor_world_slice::setup_brain_registry() {
     &predicate_threat_present, "рядом есть актор крупнее"));
   registry_.reg("actor.prey_present", std::make_unique<act::native_function<bool>>(
     &predicate_prey_present, "рядом есть актор мельче"));
-  registry_.reg("actor.is_hungry", std::make_unique<act::native_function<bool>>(
-    &predicate_is_hungry, "голод выше порога"));
+  // is_hungry: скрипт-предикат из tavl (hunger >= 0.5), если загружен; иначе нативный фолбэк
+  // (тесты/резюме без ассетов). Скрипт исполняется на пер-воркер ctx.vm; засев root-скоупа —
+  // seed_entity_scope. Поведение идентично нативному (тот же порог, та же семантика отсутствия drives).
+  if (is_hungry_program_ != nullptr) {
+    registry_.reg("actor.is_hungry", std::make_unique<act::script_function<bool>>(
+      is_hungry_program_, &seed_entity_scope));
+  } else {
+    registry_.reg("actor.is_hungry", std::make_unique<act::native_function<bool>>(
+      &predicate_is_hungry, "голод выше порога"));
+  }
   registry_.reg("actor.is_bored", std::make_unique<act::native_function<bool>>(
     &predicate_is_bored, "скука выше порога"));
   registry_.reg("actor.prey_in_range", std::make_unique<act::native_function<bool>>(
@@ -450,8 +461,10 @@ void actor_world_slice::setup_brain_registry() {
   fsm_.emplace(&registry_, std::move(fsm_lines));
 }
 
-void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, const glm::vec2 max_bound, const uint32_t texture_count) {
+void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, const glm::vec2 max_bound, const uint32_t texture_count,
+                             const devils_script::container* is_hungry_program) {
   world_ = aesthetics::world{};
+  is_hungry_program_ = is_hungry_program; // до setup_brain_registry: выбирает скрипт vs натив
   setup_brain_registry();
   intents_.clear();
   intents_.reserve(count);
@@ -577,6 +590,7 @@ void actor_world_slice::build_sense_tree() {
 void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint64_t tick,
                                      astar<acumen::astar_data>::container& scratch,
                                      acumen::solution_cache& cache,
+                                     devils_script::context& vm,
                                      std::vector<act::intent>& out) {
   using kd = utils::kd_tree<perception_target>;
   auto* pos   = world_.get<actor_position>(id);
@@ -601,7 +615,7 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
   // GOAP: dry-run ctx → decide (hit кеша ⇒ без A*) → первое действие плана → intent.
   const auto& goal_state = goap_->get_goals().front().goal;
   const uint64_t goal_id = utils::string_hash("resolved");
-  const auto ctx = make_ctx(world_, id, brain->seed, tick);
+  const auto ctx = make_ctx(world_, id, brain->seed, tick, nullptr, &vm); // vm: скрипт-предикаты (is_hungry)
   const acumen::state start = goap_->compute_state(ctx);
   std::array<const acumen::action*, 4> plan{};
   acumen::decide_params dp;
@@ -662,6 +676,9 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
     plan_caches_.resize(slots);
     intent_buffers_.resize(slots);
   }
+  // vm-пул синхронен со scratch (decide_actor всегда получает vm-ссылку; на нативном пути она не
+  // используется, но должна быть валидной). deque — стабильные элементы без move при росте.
+  if (vm_pool_.size() != slots) vm_pool_.resize(slots);
   for (auto& b : intent_buffers_) b.clear();
 
   // (3) раскидать отобранных по потокам. Лямбда — lvalue (distribute копирует её на каждый
@@ -670,8 +687,9 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
     const uint32_t slot = pool.thread_index(std::this_thread::get_id());
     auto& scratch = plan_containers_[slot];
     auto& cache   = plan_caches_[slot];
+    auto& vm      = vm_pool_[slot];
     auto& out     = intent_buffers_[slot];
-    for (size_t i = start; i < start + count; ++i) decide_actor(due_[i].actor, tick, scratch, cache, out);
+    for (size_t i = start; i < start + count; ++i) decide_actor(due_[i].actor, tick, scratch, cache, vm, out);
   };
   pool.distribute(due_.size(), job);
   pool.wait(); // ждём опустошения очереди И завершения задач в работе

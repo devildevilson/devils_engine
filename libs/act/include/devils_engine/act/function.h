@@ -8,9 +8,11 @@
 #include "devils_engine/utils/core.h"      // utils::error
 #include "devils_engine/utils/string_id.h" // utils::id
 #include "common.h"
-#include "exec_context.h"
+#include "exec_context.h"       // + алиас namespace ds = ::devils_script
 
-namespace ds { class container; }
+#include <devils_script/container.h> // ds::container (process/describe/max_lists) — invoke зовёт методы
+#include <devils_script/context.h>   // ds::context (clear/set_arg/get_return/create_lists/userptr)
+
 struct lua_State;
 
 namespace devils_engine {
@@ -83,18 +85,49 @@ struct native_function final : public function<RetT> {
   }
 };
 
-// ── devils_script: скомпилированный container исполняется на ctx.vm ── ЗАГЛУШКА ──
+// ── devils_script: скомпилированный container исполняется на ctx.vm (пер-воркер скретчпад) ──
+// seed — ПРОЕКТНЫЙ засев root-скоупа (и опц. именованных аргументов) из exec_context в ds::context.
+// act остаётся ECS-agnostic: как из exec_context получить scope-значение, знает только проект
+// (reinterpret-seam над ctx.w + primary()). nullptr ⇒ scope-less скрипт. Реестр однороден —
+// function<RetT>*, категория бэкенда роли не играет для acumen/mood.
 template <typename RetT>
 struct script_function final : public function<RetT> {
+  using seed_fn = void (*)(const exec_context&, ds::context*);
   const ds::container* program = nullptr;
-  explicit script_function(const ds::container* p) noexcept
-    : function<RetT>(detail::category_of<RetT>()), program(p) {}
-  RetT invoke(const exec_context&) const override {
-    utils::error{}("act::script_function::invoke не реализован (бэкенд devils_script ещё не подключён)");
-    if constexpr (!std::is_void_v<RetT>) return RetT{};
+  seed_fn seed = nullptr;
+
+  explicit script_function(const ds::container* p, const seed_fn s = nullptr) noexcept
+    : function<RetT>(detail::category_of<RetT>()), program(p), seed(s) {}
+
+  RetT invoke(const exec_context& ctx) const override {
+    ds::context* vm = ctx.vm;
+    if (vm == nullptr) utils::error{}("act::script_function::invoke: exec_context.vm не задан (нужен пер-воркер ds::context)");
+    vm->clear();
+    vm->userptr = const_cast<exec_context*>(&ctx); // задел под effect_sink: эффекты читают ctx через userptr
+    if (program->max_lists != 0) vm->create_lists(program);
+    if (seed != nullptr) seed(ctx, vm);            // set_arg(0, root_scope) + опц. именованные аргументы
+    program->process(vm);
+    if constexpr (std::is_void_v<RetT>) {
+      return; // effect: process() уже применил эффект
+    } else if constexpr (std::is_same_v<RetT, bool>) {
+      return vm->is_return<bool>() ? vm->get_return<bool>() : false;
+    } else if constexpr (std::is_same_v<RetT, real_t>) {
+      return static_cast<real_t>(vm->get_return<double>());
+    } else {
+      // string (utils::id) и object (entity_id): маршалинг возврата ещё не определён — см. план (Risk 1).
+      utils::error{}("act::script_function::invoke: маршалинг этой категории возврата ещё не реализован");
+      return RetT{};
+    }
   }
-  void describe(const exec_context&, const describe_callback&) const override {
-    utils::error{}("act::script_function::describe не реализован (бэкенд devils_script ещё не подключён)");
+
+  void describe(const exec_context& ctx, const describe_callback& out) const override {
+    ds::context* vm = ctx.vm;
+    if (vm == nullptr) return;
+    vm->clear();
+    if (seed != nullptr) seed(ctx, vm);
+    program->describe(vm, [&out](const ds::container::description_entry& e) {
+      if (out) out(e.name); // минимум: стримим имена узлов; payload уточним при созревании describe
+    });
   }
 };
 

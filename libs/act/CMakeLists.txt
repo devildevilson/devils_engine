@@ -28,9 +28,10 @@ target_include_directories(devils_act
 )
 
 # gtl PUBLIC: registry хранит gtl::flat_hash_map в публичном заголовке.
-# devils_script подключим позже, когда будем реализовывать script_function.
+# devils_script PUBLIC: script_function<RetT> (header-only) инстанцируется у потребителей и зовёт
+# devils_script::container/context — им нужны его символы и include-каталоги (тянет tavl PUBLIC).
 target_link_libraries(devils_act
-  PUBLIC devils_engine::options devils_engine::utils gtl
+  PUBLIC devils_engine::options devils_engine::utils gtl devils_script
 )
 
 add_library(devils_engine::act ALIAS devils_act)

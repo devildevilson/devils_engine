@@ -1,8 +1,11 @@
 #include "assets_system.h"
 
+#include <devils_engine/demiurg/resource_system.h>
+
 #include "messages.h"
 #include "broker.h"
 #include "tile_map.h"
+#include "script_resource.h"
 
 namespace tile_frontier {
 namespace core {
@@ -10,6 +13,11 @@ namespace core {
 using namespace devils_engine;
 
 assets_simulation::assets_simulation(const size_t frame_time) noexcept : simul::standard_assets_system<::tile_frontier::core::broker>(frame_time) {}
+
+void assets_simulation::register_project_resource_types(demiurg::resource_system& resources) {
+  // scripts/*.tavl → script_resource, компилируется через script_env_.sys (натив-функции уже в нём).
+  resources.register_type<script_resource>("scripts", "tavl", &script_env_.sys);
+}
 
 void assets_simulation::update_project(const size_t, ::tile_frontier::core::broker& br) {
   // mock world streaming: CPU-чанк генерируется на assets thread и возвращается main через broker.
