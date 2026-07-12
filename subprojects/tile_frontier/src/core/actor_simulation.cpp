@@ -465,6 +465,19 @@ void actor_world_slice::setup_brain_registry() {
     };
     fsm_.emplace(&registry_, std::move(fsm_lines));
   }
+
+  // Префабы слайса (перестраиваются вместе с реестром — общая точка init/load). Пока «food»:
+  // data-компонент food_item из конфига; визуал (зелёный, food_size) и позиция — DERIVED в
+  // on_construct (визуал = кодовые константы, позиция = точка спавна из spawn_args). spawn_food
+  // спавнит через prefab_.spawn("food", world, spawn_args{ p }). demiurg-ресурс префаба — позже.
+  prefab_ = devils_engine::prefab::prefab_registry<spawn_args>{};
+  prefab_.data<food_item>("food_item");
+  prefab_.on_construct([](aesthetics::entityid_t id, aesthetics::world& w, const spawn_args& a) {
+    w.create<actor_position>(id, a.pos);
+    w.create<actor_visual>(id, 0u, food_color(), food_size);
+  });
+  prefab_.add_prefab("food", "food_item = { nutrition = 1.0 }\n",
+                     devils_engine::prefab::prefab_load_context{ &registry_ });
 }
 
 void actor_world_slice::build_goap_from_config(const goap_config& cfg) {
@@ -869,10 +882,8 @@ void actor_world_slice::spawn_food() {
   const float fy = float(h2 & 0xffffffu) / float(0xffffffu);
   const glm::vec2 p{ spawn_min_.x + (spawn_max_.x - spawn_min_.x) * fx,
                      spawn_min_.y + (spawn_max_.y - spawn_min_.y) * fy };
-  const auto id = world_.gen_entityid();
-  world_.create<actor_position>(id, p);
-  world_.create<actor_visual>(id, 0u, food_color(), food_size);
-  world_.create<food_item>(id);
+  // Через префаб: food_item из конфига, позиция/визуал — derived в on_construct (см. setup_brain_registry).
+  prefab_.spawn("food", world_, spawn_args{ p });
 }
 
 // maintain_food — допополнить еду до целевого числа. Кап на тик, чтобы не было всплеска при

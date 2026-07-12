@@ -18,6 +18,7 @@
 #include <devils_engine/act/intent.h>       // act::intent — обобщённый буфер интентов
 #include <devils_engine/acumen/system.h>    // acumen::system — GOAP над act::registry
 #include <devils_engine/mood/system.h>      // mood::system — FSM-исполнитель (состояние/анимация/звук)
+#include <devils_engine/prefab/prefab_registry.h> // prefab::prefab_registry — рецепт сборки энтити (spawn_at)
 #include <devils_engine/utils/kd_tree.h>    // utils::kd_tree — пространственный акселератор sense
 
 #include "draw_intent.h"
@@ -40,6 +41,12 @@ const devils_engine::catalogue::statistics_store& actor_perf_statistics() noexce
 // then a stable apply phase mutates aesthetics components.
 struct actor_position {
   glm::vec2 value{0.0f, 0.0f};
+};
+
+// Аргументы спавна префаба: точка в мире. on_construct-хук префаба кладёт её в actor_position →
+// prefab_.spawn("food", world, spawn_args{ p }) спавнит в точке p (см. spawn_food).
+struct spawn_args {
+  glm::vec2 pos{0.0f, 0.0f};
 };
 
 struct actor_velocity {
@@ -269,6 +276,11 @@ private:
   std::deque<devils_script::context> vm_pool_;
   // Проектные конфиги мозга (из tavl); поля nullptr ⇒ нативный/хардкод фолбэк. Задаются в init.
   brain_config brains_;
+
+  // Реестр префабов слайса: рецепты сборки энтити из компонентов. Пока — «food» (data food_item +
+  // derived visual/position через on_construct); spawn_at через prefab_.spawn(name, world, {pos}).
+  // Регистрируется в setup_brain_registry (общая точка init/load). Растёт по мере переезда спавна в него.
+  devils_engine::prefab::prefab_registry<spawn_args> prefab_;
 
   // ── планировщик когниции ──
   // окно коммита: актор держится своего решения K тиков (стенд-ин для длительности
