@@ -14,19 +14,18 @@
 
 // Generic-компонент ХАРАКТЕРИСТИК (пункт (д) engine-usage-model): плоский POD чисел (int/float), из
 // которого статической рефлексией автогенерируются ds-аксессоры — по паре на поле: чтение (имя поля)
-// и прибавление ("add_"+имя). Скрипты тогда пишут `strength + luck`, `add_strength(5)` без ручной
-// регистрации предикатов. Тот же плоский POD идеально ложится на сериализацию (структуру нужно лишь
-// верифицировать — ничего лишнего). Метаинформация (что считать положительным, для UI) — отдельно.
+// и прибавление ("add_"+имя, эффект, логируется в catalogue). Скрипты тогда пишут `hunger > 0.5`,
+// `add_strength(5)` без ручной регистрации. Тот же плоский POD идеально ложится на сериализацию.
 //
-// Механизм полностью generic (reflect + devils_script, без ECS): scope = {entity, StatsT*}; НАВИГАЦИЯ
-// entity->StatsT (получение компонента из мира) — проектная и регистрируется отдельно. Кандидат на
-// вынос в движок после стабилизации.
+// Аксессоры регистрируются НАД ЗАДАННЫМ scope-типом (Scope) через getter Scope -> StatsT* — так они
+// работают ПРЯМО на скоупе проекта (напр. entity_scope), без промежуточной ds-навигации: getter
+// достаёт компонент из мира. null-безопасно (нет компонента ⇒ дефолт при чтении, no-op при add).
+// Механизм generic (reflect + ds), кандидат на вынос в движок.
 
 namespace tile_frontier {
 namespace core {
 
-// Скоуп характеристик для devils_script: сущность + указатель на её компонент статов. Value-скоуп
-// (≤16 байт, trivially destructible, с valid()) — как handle<person> в примерах ds.
+// Простой scope над указателем на компонент — удобный Scope по умолчанию (тесты/прямой доступ).
 template <typename StatsT>
 struct stat_scope {
   uint32_t id = UINT32_MAX;
@@ -34,21 +33,25 @@ struct stat_scope {
   bool valid() const noexcept { return ptr != nullptr; }
 };
 
+template <typename StatsT>
+StatsT* stat_scope_getter(stat_scope<StatsT> s) noexcept { return s.ptr; }
+
 namespace detail {
 
 template <typename StatsT, std::size_t I>
 using stat_field_t = std::remove_cvref_t<decltype(reflect::get<I>(std::declval<StatsT&>()))>;
 
-// чтение поля I (число) — value-функция ds
-template <typename StatsT, std::size_t I>
-stat_field_t<StatsT, I> read_stat(stat_scope<StatsT> s) {
-  return reflect::get<I>(*s.ptr);
+// чтение поля I (число) — value-функция ds; getter достаёт StatsT из скоупа (null ⇒ дефолт).
+template <typename StatsT, typename Scope, auto Getter, std::size_t I>
+stat_field_t<StatsT, I> read_stat(Scope s) {
+  StatsT* p = Getter(s);
+  return p != nullptr ? reflect::get<I>(*p) : stat_field_t<StatsT, I>{};
 }
 
-// прибавление к полю I — эффект ds (мутирует компонент через scope.ptr)
-template <typename StatsT, std::size_t I>
-void add_stat(stat_scope<StatsT> s, const stat_field_t<StatsT, I> v) {
-  reflect::get<I>(*s.ptr) += v;
+// прибавление к полю I — эффект ds (мутирует компонент; null ⇒ no-op).
+template <typename StatsT, typename Scope, auto Getter, std::size_t I>
+void add_stat(Scope s, const stat_field_t<StatsT, I> v) {
+  if (StatsT* p = Getter(s)) reflect::get<I>(*p) += v;
 }
 
 // compile-time имя эффекта "add_<field>" как template-строка (для NTTP catalogue fn_traits).
@@ -62,23 +65,20 @@ consteval auto add_stat_name() {
 
 } // namespace detail
 
-// Зарегистрировать в ds::system по паре функций на каждое поле StatsT: `<field>` (чтение, чистая),
-// `add_<field>` (прибавление, ЭФФЕКТ). Эффект оборачивается через catalogue::domain<Domain> — его
-// вызовы попадают в лог интроспекции/реплея (когда introspection настроен; иначе просто инвок).
-// Имена полей и имя эффекта выводятся статической рефлексией + compile-time конкатом.
-template <typename StatsT, auto Domain>
+// Зарегистрировать в ds::system аксессоры полей StatsT над скоупом Scope (getter: Scope -> StatsT*):
+// `<field>` (чтение, чистая) и `add_<field>` (прибавление, ЭФФЕКТ — оборачивается через
+// catalogue::domain<Domain> для лога реплея). Имена полей — статической рефлексией.
+template <typename StatsT, typename Scope, auto Getter, auto Domain>
 void register_stat_accessors(devils_script::system& sys) {
   reflect::for_each<StatsT>([&](auto Idx) {
     constexpr std::size_t I = decltype(Idx)::value;
     const std::string name(reflect::member_name<I, StatsT>());
 
-    sys.register_function<&detail::read_stat<StatsT, I>>(name);
+    sys.register_function<&detail::read_stat<StatsT, Scope, Getter, I>>(name);
 
-    // add_<field>: fn_traits несёт домен + имя + имена аргументов; его `fn_ptr` = by-value обёртка с
-    // ТОЧНОЙ сигнатурой оригинала (maker::call), роутящая вызов через catalogue (лог реплея, когда
-    // introspection настроен; иначе просто инвок). ds видит чистую сигнатуру.
+    // add_<field> через catalogue: fn_ptr — by-value обёртка с точной сигнатурой оригинала (maker::call).
     using traits = typename devils_engine::catalogue::domain<Domain>::template fn_traits<
-      &detail::add_stat<StatsT, I>, detail::add_stat_name<StatsT, I>(),
+      &detail::add_stat<StatsT, Scope, Getter, I>, detail::add_stat_name<StatsT, I>(),
       devils_engine::utils::template_string_t("scope"), devils_engine::utils::template_string_t("value")>;
     sys.register_function<traits::fn_ptr>("add_" + name);
   });

@@ -26,7 +26,7 @@ int main() {
   w.create<tf::actor_brain>(predator, tf::actor_brain{ 12345u, 7u, 2.0f });
   w.create<tf::actor_visual>(predator, tf::actor_visual{ 3u, { 0xff00ff00u }, 1.25f });
   w.create<tf::actor_cognition>(predator, tf::actor_cognition{ 999u });
-  w.create<tf::actor_drives>(predator, tf::actor_drives{ 0.8f, 0.1f });
+  w.create<tf::stats>(predator, tf::stats{ 0.8f, 0.1f, 0 });
   w.create<tf::actor_state>(predator, tf::actor_state{ 0xDEADBEEFULL });
   {
     auto* p = w.create<tf::actor_perception>(predator);
@@ -38,7 +38,7 @@ int main() {
 
   // --- жертва ---
   w.create<tf::actor_position>(prey, tf::actor_position{ glm::vec2{10.0f, 20.0f} });
-  w.create<tf::actor_drives>(prey, tf::actor_drives{ 0.2f, 0.9f });
+  w.create<tf::stats>(prey, tf::stats{ 0.2f, 0.9f, 0 });
   w.create<tf::actor_grabbed>(prey, tf::actor_grabbed{ predator }); // схвачена хищником
 
   // --- еда + препятствие ---
@@ -61,7 +61,7 @@ int main() {
   CHECK(w2.get<tf::actor_brain>(predator)->seed == 12345u);
   CHECK(w2.get<tf::actor_brain>(predator)->speed == 2.0f);
   CHECK(w2.get<tf::actor_visual>(predator)->color.value == 0xff00ff00u);
-  CHECK(std::abs(w2.get<tf::actor_drives>(predator)->hunger - 0.8f) < 1e-6f);
+  CHECK(std::abs(w2.get<tf::stats>(predator)->hunger - 0.8f) < 1e-6f);
   CHECK(w2.get<tf::actor_state>(predator)->state == 0xDEADBEEFULL);
 
   // межсущностные ссылки (полный id с версией)
