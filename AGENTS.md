@@ -22,6 +22,40 @@ This repository is the author's experimental game engine / framework. It is a la
 - Root CMake defaults single-config generators to `CMAKE_BUILD_TYPE=Debug` when the user does not specify a build type. It also enables `CMAKE_POSITION_INDEPENDENT_CODE` globally so static third-party dependencies can link into shared libraries in Debug.
 - New resource/render-prep contract tests: `tests/demiurg_resource_loader_test.cpp` covers CPU prepare vs external GPU commit and dependency gating; `tests/painter_shader_prepare_test.cpp` covers `glsl_source_file` SPIR-V preparation cache. Useful checks: `ctest --test-dir build-debug -R "(painter_shader_prepare_test|demiurg_resource_loader_test)" --output-on-failure` and `cmake --build build-debug --target tile_frontier`.
 
+### Prefab & spawn (tile_frontier ↔ `libs/prefab`, 2026-07-12)
+
+- `libs/prefab` (`devils_engine::prefab`, header-only): engine mechanism `prefab_registry<SpawnArgs>` = recipe
+  of components. Forms: `data<C>` (tavl-deserialize, field-level inheritance via `base`), `list<C,Item>`,
+  `callback<C>` (name→`act` fn hash), `reference<C>` (name→component via project resolver — fsm/goap by name),
+  `custom` (project builder sees raw value text — inline-ds, custom list-inserters). Global + per-prefab
+  `on_construct(name, fn)` for DERIVED components; `spawn(name, world, args)` = spawn_at (args → construct).
+- tile_frontier: `food` and `actor` both spawn through the registry. Prefab TEXT comes from disk via
+  `prefab_resource` (`prefab/*.tavl`; `filter<prefab_resource>("prefab/")` in `simulation.cpp` → `brain_config.prefabs`);
+  C++ registers component specs + construct in `setup_brain_registry` (shared init/load point), fallback hardcoded
+  text for tests/resume. `actor_tuning` (data component, NOT serialized) carries config knobs (speed/hunger/strength
+  ranges); construct derives seed-based brain/visual/stats. Determinism: `SERIALIZABLE_COMPONENT` pins type_ids at
+  static-init so the extra unregistered `actor_tuning` neither shifts registered ids nor enters `dump_world`.
+- **GOTCHA:** a `//​---` literal in a `prefab/*.tavl` comment triggers demiurg's list splitter (`resource_manifest`
+  splits `.tavl` on `//​---`) — the file breaks into sections and the prefab name becomes `name:0`. Never write
+  three dashes after `//` in tavl comments.
+- Primitive `spawn_at` is registered in `devils_script`: native `spawn_at(prefab, x, y)` over `spawn_scope`
+  (carries a mutable `spawn_sink`, implemented by `actor_world_slice::spawn_prefab`). Bareword prefab → `string_view`.
+  `tests/spawn_script_test.cpp` covers it via a mock sink. Seeding `spawn_scope` into live event/trigger scripts
+  comes with the spawner work below.
+- **TECH DEBT (deferred, author-confirmed 2026-07-12 — build later):**
+  1. **per-entity brain** — GOAP/FSM are slice-level (one `acumen`/`mood` system for all actors). Make them
+     per-entity: `brain_ref{goap_id,fsm_id}` component (filled by prefab `reference<>`) + a pool of goap/fsm systems
+     keyed by config name + `decide_actor`/`apply` look up the actor's systems. Unlocks multi-type worlds
+     (predator/prey/hero with different brains described in their prefabs). The prefab `reference<>` already exists;
+     the slice's monolithic brain is what blocks it.
+  2. **spawner entities + query** — real spawn "where" = spawner ECS entities (static designer points OR dynamic
+     rules), many of them, queried spatially (reuse `kd_tree` like perception) + predicate-filtered (tags, cooldown,
+     capacity). `spawn_at(point)` stays the primitive; a selection/placement layer resolves intent → point.
+     Determinism: spawn = catalogue effect on sim rng+state; "off-camera" is presentation (MP: sim must not read a
+     local camera — use a replicated region/all-players notion).
+  3. **ds `spawn`/`filter`/`pick`** — ergonomic script composition (`spawn(horse, pick(filter(spawners, mount, off_camera)))`);
+     triggers = per-entity reference-list of spawners + on-enter ds script; dynamic spawner = point source is a ds/native fn.
+
 ### Message broker (inter-actor channels)
 
 - All inter-thread messaging goes through one `core::broker` (`broker.h`), owned by main, created in `simulation::init` BEFORE subsystems and handed to each via `set_broker(br)` BEFORE its thread starts (ordering: create → set_broker×3 → threads). Each channel is strictly 1-producer/1-consumer. Primitives live in `libs/utils/include/devils_engine/thread/`:

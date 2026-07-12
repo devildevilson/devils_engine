@@ -9,6 +9,7 @@
 
 #include "actor_simulation.h" // компоненты stats / actor_perception
 #include "stat_accessors.h"   // register_stat_accessors / stat_scope
+#include "spawn_scope.h"      // spawn_scope / scope_spawn_at — примитивный ds-спавн
 
 namespace tile_frontier {
 namespace core {
@@ -76,6 +77,10 @@ script_environment::script_environment() : sys(make_options()) {
   sys.register_function<&scope_threat_present>("threat_present");
   sys.register_function<&scope_prey_present>("prey_present");
   sys.register_function<&scope_prey_in_range>("prey_in_range");
+
+  // Примитивный спавн: spawn_at(prefab, x, y) над spawn_scope (несёт мутабельный sink). Скрипт-спавнеры
+  // (события/триггеры), запросы filter/pick и динамические точки — тех-долг (ROADMAP/AGENTS).
+  sys.register_function<&scope_spawn_at>("spawn_at");
 }
 
 }
