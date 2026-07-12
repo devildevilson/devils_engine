@@ -55,6 +55,7 @@ target_link_libraries(
   ${PROJECT_NAME}
   devils_engine::devils_plane
   devils_engine::mood
+  devils_engine::prefab
   glm::glm
   devils_engine::options
   tavl
@@ -73,6 +74,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 add_executable(tile_frontier_snapshot_smoke snapshot_smoke.cpp)
 target_link_libraries(tile_frontier_snapshot_smoke
   devils_engine::devils_plane
+  devils_engine::prefab
   glm::glm
   tavl
   Vulkan::Headers
@@ -91,6 +93,7 @@ set_target_properties(tile_frontier_snapshot_smoke PROPERTIES RUNTIME_OUTPUT_DIR
 add_executable(tile_frontier_resume_smoke resume_smoke.cpp src/core/actor_simulation.cpp)
 target_link_libraries(tile_frontier_resume_smoke
   devils_engine::devils_plane
+  devils_engine::prefab
   glm::glm
   tavl
   Vulkan::Headers

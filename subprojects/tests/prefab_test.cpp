@@ -11,9 +11,11 @@
 
 #include <devils_engine/prefab/prefab_registry.h>
 
-// Обкатка prefab_registry (движковый механизм): три формы компонента (data/list/callback) +
-// on_construct-хук + спавн в мир + FIELD-LEVEL наследование (наследник перекрывает только заданные
-// поля data-компонента; list/callback заменяются целиком).
+// Обкатка prefab_registry (движковый механизм): формы компонента (data/list/callback/reference/custom)
+// + on_construct-хук (получает SpawnArgs → spawn_at в точке) + FIELD-LEVEL наследование (наследник
+// перекрывает только заданные поля data-компонента; list/callback/reference заменяются целиком).
+// Второй кейс — что реестр СПОСОБЕН описать простого актора: GOAP по имени (reference) и inline-ds/имя
+// (custom), проверяем без затягивания demiurg/ds — резолверы замыкают заглушки проекта.
 
 using namespace devils_engine;
 using namespace devils_engine::prefab;
@@ -25,17 +27,26 @@ struct t_on_pickup { uint64_t fn = 0; };                       // callback
 struct t_spawned { bool ok = false; };                         // derived (construct-хук)
 
 void effect_grab(const act::exec_context&) {}                  // натив для резолва callback-имени
+
+// «актор»: GOAP по имени (reference) + мысль-скрипт inline-ds ИЛИ по имени (custom).
+struct t_goap_ref { uint64_t config = 0; };                    // reference: имя → id конфига (заглушка)
+struct t_think { std::string source; bool is_inline = false; uint64_t fn = 0; }; // custom: блок vs имя
+struct t_pos { float x = 0.0f, y = 0.0f; };                    // derived: точка спавна (из SpawnArgs)
+
+struct spawn_at_args { float x = 0.0f, y = 0.0f; };            // проектный SpawnArgs (точка спавна)
 }
 
 TEST_CASE("prefab_registry: data/list/callback + construct + наследование [prefab]") {
   act::registry fns;
   fns.reg("grab", std::make_unique<act::native_function<void>>(&effect_grab));
 
-  prefab_registry reg;
+  prefab_registry<> reg;
   reg.data<t_stats>("stats", component_flag::required);
   reg.list<t_flags, std::string>("flags");
   reg.callback<t_on_pickup>("on_pickup");
-  reg.on_construct([](aesthetics::entityid_t id, aesthetics::world& w) { w.create<t_spawned>(id, t_spawned{ true }); });
+  reg.on_construct([](aesthetics::entityid_t id, aesthetics::world& w, const no_spawn_args&) {
+    w.create<t_spawned>(id, t_spawned{ true });
+  });
 
   prefab_load_context lc{ &fns };
 
@@ -68,4 +79,74 @@ TEST_CASE("prefab_registry: data/list/callback + construct + наследова�
   const auto* sp = w.get<t_spawned>(id);
   REQUIRE(sp != nullptr);              // добавлен on_construct-хуком
   CHECK(sp->ok == true);
+}
+
+TEST_CASE("prefab_registry: описание актора — reference(GOAP)/inline-ds + spawn_at [prefab]") {
+  prefab_registry<spawn_at_args> reg;
+  reg.data<t_stats>("stats");
+
+  // reference: имя GOAP-конфига → id (в реальном проекте — handle из resource_system; здесь заглушка).
+  reg.reference<t_goap_ref>("goap", [](std::string_view name, const prefab_load_context&) {
+    return t_goap_ref{ utils::string_hash(name) };
+  });
+
+  // custom (inline-ds): builder видит сырой текст. Блок `{ ... }` → это инлайн-скрипт (проект компилирует
+  // через ds), иначе имя → callback. Наследник заменяет целиком (chain.back()).
+  reg.custom("think", [](const std::vector<std::string_view>& chain, const prefab_load_context&) {
+    std::string_view raw = chain.back();
+    t_think t{};
+    if (raw.size() >= 2 && raw.front() == '{' && raw.back() == '}') {
+      t.is_inline = true;
+      t.source = std::string(raw.substr(1, raw.size() - 2)); // тело скрипта (в проекте → ds::parse)
+    } else {
+      t.fn = utils::string_hash(raw);
+    }
+    return [t](aesthetics::entityid_t id, aesthetics::world& w) { w.create<t_think>(id, t); };
+  });
+
+  // spawn_at: on_construct кладёт позицию из SpawnArgs (в tile_frontier — actor_position).
+  reg.on_construct([](aesthetics::entityid_t id, aesthetics::world& w, const spawn_at_args& a) {
+    w.create<t_pos>(id, t_pos{ a.x, a.y }); // derived-компонент: доказываем, что args доходят до хука
+  });
+
+  prefab_load_context lc{ nullptr };
+  REQUIRE(reg.add_prefab("predator",
+    "stats = { hp = 5, atk = 1 }\n"
+    "goap = hunt\n"                                  // reference по имени
+    "think = { if hungry then seek else wander }\n", // inline-ds (блок)
+    lc));
+  REQUIRE(reg.add_prefab("grazer",
+    "base = predator\n"
+    "think = wander\n", lc));                        // whole-value override: имя вместо инлайна
+
+  aesthetics::world w;
+
+  const auto pred = reg.spawn("predator", w, spawn_at_args{ 7.0f, 9.0f });
+  const auto* gr = w.get<t_goap_ref>(pred);
+  REQUIRE(gr != nullptr);
+  CHECK(gr->config == utils::string_hash("hunt")); // GOAP разрешён по имени
+
+  const auto* th = w.get<t_think>(pred);
+  REQUIRE(th != nullptr);
+  CHECK(th->is_inline == true);                     // inline-ds распознан (сырой блок доехал до билдера)
+  CHECK(th->source.find("hungry") != std::string::npos);
+
+  // spawn_at: construct-хук получил точку спавна (derived-компонент t_pos из args).
+  const auto* ps = w.get<t_pos>(pred);
+  REQUIRE(ps != nullptr);
+  CHECK(ps->x == 7.0f);
+  CHECK(ps->y == 9.0f);
+  const auto* st = w.get<t_stats>(pred);
+  REQUIRE(st != nullptr);
+  CHECK(st->hp == 5);   // data-компонент из конфига (не тронут хуком)
+  CHECK(st->atk == 1);
+
+  const auto graz = reg.spawn("grazer", w, spawn_at_args{ 1.0f, 2.0f });
+  const auto* th2 = w.get<t_think>(graz);
+  REQUIRE(th2 != nullptr);
+  CHECK(th2->is_inline == false);                   // наследник заменил инлайн именем
+  CHECK(th2->fn == utils::string_hash("wander"));
+  const auto* gr2 = w.get<t_goap_ref>(graz);
+  REQUIRE(gr2 != nullptr);                           // reference унаследован от predator
+  CHECK(gr2->config == utils::string_hash("hunt"));
 }

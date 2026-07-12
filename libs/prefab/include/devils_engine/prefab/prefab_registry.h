@@ -19,18 +19,27 @@
 #include <devils_engine/utils/string_id.h>  // utils::string_hash / utils::id
 
 // prefab_registry — движковый механизм «рецепта сборки энтити из компонентов» (шаг 6). САМ механизм в
-// devils_engine; КОНКРЕТНЫЕ типы компонентов регистрирует внешний проект. Три формы задания в конфиге:
-//   data<C>      — POD, tavl-deserialize по полям:      stats = { hunger = 0.2 }
-//   list<C,Item> — контейнер элементов одного типа:      flags = [ hostile, grabbable ]
-//   callback<C>  — имя act-функции (инлайн ds — позже):  on_pickup = pickup_gold
-// + on_construct-хук достраивает DERIVED-компоненты (perception/transform — не с диска).
+// devils_engine; КОНКРЕТНЫЕ типы компонентов регистрирует внешний проект. Формы задания в конфиге:
+//   data<C>        — POD, tavl-deserialize по полям:      stats = { hunger = 0.2 }
+//   list<C,Item>   — контейнер элементов одного типа:      flags = [ hostile, grabbable ]
+//   callback<C>    — имя act-функции:                       on_pickup = pickup_gold
+//   reference<C>   — имя ресурса → компонент через РЕЗОЛВЕР проекта (fsm/goap по имени → handle):
+//                                                           goap = predator
+//   custom         — escape-hatch: проектный builder (замыкает resource_system/ds::system) — инлайн-ds,
+//                    кастомные list-инсертеры (фракции/пул) и всё, что движок знать не должен.
+// + on_construct-хук достраивает DERIVED-компоненты (perception/transform — не с диска), получая
+//   SpawnArgs (например точку спавна) → так работает spawn_at(name, world, {pos}).
 // Наследование (`base = ...`) FIELD-LEVEL для data (слоёный deserialize base→наследник: наследник
-// перекрывает только заданные поля), whole-value для list/callback (наследник заменяет целиком).
+// перекрывает только заданные поля), whole-value для list/callback/reference (наследник заменяет целиком).
 
 namespace devils_engine {
 namespace prefab {
 
 namespace aes = aesthetics;
+
+// Аргументы спавна по умолчанию (spawn без пейлоада). Проект задаёт свой тип (напр. { glm::vec2 pos; })
+// и параметризует prefab_registry<SpawnArgs>; on_construct получает его → spawn_at в точке.
+struct no_spawn_args {};
 
 enum class component_flag : uint32_t { none = 0, required = 1 };
 inline component_flag operator|(component_flag a, component_flag b) noexcept {
@@ -40,7 +49,8 @@ inline bool has_flag(component_flag v, component_flag f) noexcept {
   return (uint32_t(v) & uint32_t(f)) != 0;
 }
 
-// Контекст загрузки: резолв имён (callback → act-функция). Ссылки на ресурсы — позже.
+// Контекст загрузки: резолв имён (callback → act-функция). Проектные reference/custom-билдеры
+// замыкают свои системы (resource_system/ds::system) сами — движок про них не знает.
 struct prefab_load_context {
   const act::registry* functions = nullptr;
 };
@@ -51,11 +61,13 @@ namespace detail {
 template <typename T> struct value_field { T value; };
 }
 
+template <typename SpawnArgs = no_spawn_args>
 class prefab_registry {
 public:
   using applier = std::function<void(aes::entityid_t, aes::world&)>;
   // build: собрать applier из ЦЕПОЧКИ сырых текстов значения компонента (база→наследник).
   using builder = std::function<applier(const std::vector<std::string_view>&, const prefab_load_context&)>;
+  using construct_fn = std::function<void(aes::entityid_t, aes::world&, const SpawnArgs&)>;
 
   // data<C>: значение = tavl-блок. Наследование field-level: слоями deserialize в один C
   // (tavl заполняет только присутствующие поля ⇒ наследник перекрывает заданные, остальное от базы).
@@ -99,7 +111,26 @@ public:
     });
   }
 
-  void on_construct(std::function<void(aes::entityid_t, aes::world&)> fn) { construct_ = std::move(fn); }
+  // reference<C>: значение = имя ресурса; РЕЗОЛВЕР проекта (замыкает resource_system) отдаёт готовый
+  // компонент C (fsm/goap по имени → handle/pointer). Наследник заменяет целиком (chain.back()).
+  template <typename C>
+  void reference(std::string name, std::function<C(std::string_view, const prefab_load_context&)> resolve,
+                 const component_flag flags = component_flag::none) {
+    add_spec(std::move(name), flags,
+      [resolve = std::move(resolve)](const std::vector<std::string_view>& chain, const prefab_load_context& lc) -> applier {
+        C c = resolve(chain.back(), lc);
+        return [c](const aes::entityid_t id, aes::world& w) { w.create<C>(id, c); };
+      });
+  }
+
+  // custom: escape-hatch для проектных компонентов, которые движок описать не может (инлайн-ds:
+  // builder видит сырой текст значения — блок `{ ... }` компилирует через ds, имя резолвит как
+  // callback; кастомные list-инсертеры и т.п.). Билдер замыкает нужные ему системы при регистрации.
+  void custom(std::string name, builder b, const component_flag flags = component_flag::none) {
+    add_spec(std::move(name), flags, std::move(b));
+  }
+
+  void on_construct(construct_fn fn) { construct_ = std::move(fn); }
   void on_destruct(std::function<void(aes::entityid_t, aes::world&)> fn) { destruct_ = std::move(fn); }
 
   // Разобрать текст префаба (один документ). Драйвит tavl-парсер построчно: `base` или компонент;
@@ -131,12 +162,14 @@ public:
     return true;
   }
 
-  aes::entityid_t spawn(const std::string& name, aes::world& w) {
+  // spawn_at: собрать энтити по имени префаба; args прокидывается в on_construct-хук (точка спавна и
+  // прочие per-spawn данные). spawn(name, world) = spawn с дефолтными аргументами.
+  aes::entityid_t spawn(const std::string& name, aes::world& w, const SpawnArgs& args = SpawnArgs{}) {
     const auto id = w.gen_entityid();
     if (auto* lp = build(name)) {
       for (const auto& ap : lp->appliers) ap(id, w);
     }
-    if (construct_) construct_(id, w);
+    if (construct_) construct_(id, w, args);
     return id;
   }
 
@@ -223,7 +256,7 @@ private:
 
   std::unordered_map<std::string, component_spec> specs_;
   std::unordered_map<std::string, loaded_prefab> prefabs_;
-  std::function<void(aes::entityid_t, aes::world&)> construct_;
+  construct_fn construct_;
   std::function<void(aes::entityid_t, aes::world&)> destruct_;
 };
 
