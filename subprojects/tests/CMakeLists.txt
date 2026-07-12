@@ -64,6 +64,10 @@ target_include_directories(stats_script_test PRIVATE "${CMAKE_SOURCE_DIR}/subpro
 devils_add_doctest(prefab_test prefab_test.cpp)
 target_link_libraries(prefab_test PRIVATE devils_engine::prefab)
 
+devils_add_doctest(spawn_script_test spawn_script_test.cpp)
+target_link_libraries(spawn_script_test PRIVATE devils_script tavl glm::glm devils_engine::aesthetics devils_engine::utils)
+target_include_directories(spawn_script_test PRIVATE "${CMAKE_SOURCE_DIR}/subprojects/tile_frontier/include")
+
 devils_add_doctest(demiurg_resource_loader_test demiurg_resource_loader_test.cpp)
 target_link_libraries(demiurg_resource_loader_test PRIVATE devils_engine::demiurg devils_engine::utils)
 

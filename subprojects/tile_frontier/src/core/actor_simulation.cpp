@@ -902,6 +902,12 @@ void actor_world_slice::spawn_food() {
   prefab_.spawn("food", world_, spawn_args{ p });
 }
 
+// spawn_sink: примитивный спавн префаба по имени в точке (ds-натив spawn_at → сюда). Тот же путь, что
+// spawn_food. Спавнеры-энтити/запросы/динамические точки — тех-долг.
+aesthetics::entityid_t actor_world_slice::spawn_prefab(const std::string_view name, const glm::vec2 pos) {
+  return prefab_.spawn(std::string(name), world_, spawn_args{ pos });
+}
+
 // maintain_food — допополнить еду до целевого числа. Кап на тик, чтобы не было всплеска при
 // массовом выедании. Детерминированно (spawn_food завязан на tick_ + счётчик).
 void actor_world_slice::maintain_food() {

@@ -24,6 +24,7 @@
 
 #include "draw_intent.h"
 #include "tile_map.h"
+#include "spawn_scope.h" // spawn_sink — слайс = мутабельная способность спавна для ds-натива spawn_at
 
 namespace devils_engine { namespace thread { class atomic_pool; } } // MT-пул для cognition
 namespace devils_engine { namespace catalogue { class statistics_store; } } // perf-стат апдейта актора
@@ -223,10 +224,14 @@ struct brain_config {
   const std::vector<prefab_def>* prefabs = nullptr;            // префабы из prefab/*.tavl (иначе хардкод food)
 };
 
-class actor_world_slice {
+class actor_world_slice : public spawn_sink {
 public:
   void init(uint32_t count, glm::vec2 min_bound, glm::vec2 max_bound, uint32_t texture_count,
             const brain_config& brains = {});
+
+  // spawn_sink: спавн префаба по имени в точке (для ds-натива spawn_at). Тот же путь, что spawn_food —
+  // prefab_.spawn(name, world, {pos}). Возвращает id новой сущности.
+  devils_engine::aesthetics::entityid_t spawn_prefab(std::string_view name, glm::vec2 pos) override;
   actor_metrics update(float dt_seconds, actor_batch& batch, devils_engine::thread::atomic_pool& pool);
 
   devils_engine::aesthetics::world& ecs() noexcept { return world_; }
