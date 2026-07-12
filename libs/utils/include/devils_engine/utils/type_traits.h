@@ -573,10 +573,12 @@ namespace devils_engine {
 
       template <size_t N>
       struct template_string_impl {
-        char value[N];
+        char value[N] = {};
+        constexpr template_string_impl() noexcept = default;
         constexpr template_string_impl(const char(&str)[N]) noexcept {
           std::copy_n(str, N, value);
         }
+        static constexpr size_t size() noexcept { return N - 1; } // без завершающего '\0'
         constexpr std::string_view sv() const noexcept { return std::string_view(value, N-1); }
         auto operator<=>(const template_string_impl&) const = default;
         bool operator==(const template_string_impl&) const = default;
@@ -666,6 +668,27 @@ namespace devils_engine {
 
     template <size_t N>
     using template_string_t = detail::template_string_impl<N>;
+
+    // Compile-time конкатенация двух template-строк в одну (для NTTP-имён: `templated_str("add_", name)`).
+    // Размер результата = NA+NB-1 (склеиваем содержимое, один завершающий '\0'). consteval → годится в NTTP.
+    template <size_t NA, size_t NB>
+    consteval detail::template_string_impl<NA + NB - 1> template_string_concat(
+        const detail::template_string_impl<NA>& a, const detail::template_string_impl<NB>& b) noexcept {
+      detail::template_string_impl<NA + NB - 1> out{};
+      size_t k = 0;
+      for (size_t i = 0; i + 1 < NA; ++i) out.value[k++] = a.value[i];
+      for (size_t i = 0; i + 1 < NB; ++i) out.value[k++] = b.value[i];
+      return out; // out.value[k] уже '\0' из дефолт-инициализации
+    }
+
+    // Вариадический конкат: template_string_cat(a, b, c, ...) — сворачивает влево.
+    template <size_t NA, size_t NB, size_t... NRest>
+    consteval auto template_string_cat(
+        const detail::template_string_impl<NA>& a, const detail::template_string_impl<NB>& b,
+        const detail::template_string_impl<NRest>&... rest) noexcept {
+      if constexpr (sizeof...(NRest) == 0) return template_string_concat(a, b);
+      else return template_string_cat(template_string_concat(a, b), rest...);
+    }
 
     template <typename T>
     constexpr std::string_view type_name() { return detail::get_type_name<T>(); }

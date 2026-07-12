@@ -12,6 +12,7 @@
 #include "devils_engine/utils/grid.h"
 #include "devils_engine/utils/aabb_tree.h"
 #include "devils_engine/utils/geometry.h"
+#include "devils_engine/utils/type_traits.h" // template_string_concat / template_string_cat
 
 #include <memory>
 #include <vector>
@@ -29,6 +30,20 @@ struct list_test_1_t : public utils::ring::list<list_test_1_t, list_type_1> {};
 struct list_test_2_t : public utils::ring::list<list_test_2_t, list_type_2>, public utils::ring::list<list_test_2_t, list_type_3> {};
 
 struct list_test4_t : public utils::forw::list<list_test4_t, list_type_1> {};
+
+TEST_CASE("template_string compile-time concat [utils][template_string]") {
+  using namespace devils_engine;
+  // consteval конкат — проверяем в constant-expression (годность для NTTP).
+  constexpr auto ab = utils::template_string_concat(utils::template_string_t("add_"), utils::template_string_t("strength"));
+  static_assert(ab.sv() == std::string_view("add_strength"));
+  static_assert(ab.size() == 12);
+
+  constexpr auto three = utils::template_string_cat(
+    utils::template_string_t("a"), utils::template_string_t("bc"), utils::template_string_t("def"));
+  static_assert(three.sv() == std::string_view("abcdef"));
+  CHECK(ab.sv() == "add_strength");
+  CHECK(three.sv() == "abcdef");
+}
 
 TEST_CASE("Single and double linked lists [list]") {
   SUBCASE("ring list usage") {
