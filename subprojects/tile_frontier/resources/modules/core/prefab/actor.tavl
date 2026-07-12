@@ -1,0 +1,10 @@
+// Prefab of a lightweight actor. actor_tuning is a data component parsed from here; the slice on_construct
+// derives per-instance brain/visual/stats from a deterministic seed using these ranges (speed = base + u*var,
+// starting hunger = u*hunger_scale, strength = hash % strength_mod). Behaviour (GOAP arbiter, mood FSM) stays
+// slice-level and is wired from goap/actor + fsm/actor, not per-entity here.
+actor_tuning = {
+  speed_base = 0.65
+  speed_var = 1.35
+  hunger_scale = 0.4
+  strength_mod = 11
+}
