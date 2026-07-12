@@ -1,35 +1,35 @@
 #include "script_environment.h"
 
+#include <cstdint>
 #include <string>
 
 #include <devils_engine/aesthetics/world.h>
 #include <devils_engine/aesthetics/common.h> // entityid_t
 #include <devils_engine/utils/core.h>        // utils::warn
 
-#include "actor_simulation.h" // компоненты actor_drives / actor_perception
+#include "actor_simulation.h" // компоненты stats / actor_perception
+#include "stat_accessors.h"   // register_stat_accessors / stat_scope
 
 namespace tile_frontier {
 namespace core {
 
 using namespace devils_engine;
 
-// ── нативные аксессоры над root-скоупом entity_scope ──
-// Возвращают дефолт при отсутствии компонента — паритет с нативными предикатами
-// (predicate_is_hungry: нет actor_drives ⇒ голода нет). Скрипт вида `hunger >= 0.5` навигирует
-// `hunger` на root (см. entity_scope).
+namespace {
+// Домен catalogue для эффектов stats (add_<field>). Значение — стабильный id домена интроспекции/реплея.
+enum class stat_domain : uint32_t { actor_stats = 1 };
+} // namespace
 
-static double scope_hunger(entity_scope s) {
-  if (s.w == nullptr) return 0.0;
-  const auto* dr = s.w->get<actor_drives>(aesthetics::entityid_t(s.id));
-  return dr != nullptr ? double(dr->hunger) : 0.0;
+// getter entity_scope -> stats*: достаёт компонент характеристик из мира для шаблонных аксессоров
+// (hunger/boredom/strength регистрируются ПРЯМО на entity_scope, без ds-навигации). const_cast: мир
+// реально мутабелен (эффект add_<field> пишет), const на entity_scope.w — лишь контракт чтения (как
+// mutable_world_of). null ⇒ read вернёт дефолт, add — no-op (паритет с прежним scope_hunger).
+static stats* get_actor_stats(entity_scope s) noexcept {
+  if (s.w == nullptr) return nullptr;
+  return const_cast<stats*>(s.w->get<stats>(aesthetics::entityid_t(s.id)));
 }
 
-static double scope_boredom(entity_scope s) {
-  if (s.w == nullptr) return 0.0;
-  const auto* dr = s.w->get<actor_drives>(aesthetics::entityid_t(s.id));
-  return dr != nullptr ? double(dr->boredom) : 0.0;
-}
-
+// ── нативные bool-аксессоры над entity_scope (перцепция — не плоские числа, остаются ручными) ──
 static bool scope_threat_present(entity_scope s) {
   if (s.w == nullptr) return false;
   const auto* per = s.w->get<actor_perception>(aesthetics::entityid_t(s.id));
@@ -65,9 +65,14 @@ static devils_script::system::options make_options() {
 script_environment::script_environment() : sys(make_options()) {
   sys.init_basic_functions();
   sys.init_math();
-  // scope авто-выводится из первого аргумента = entity_scope (value-скоуп, как handle<person>).
-  sys.register_function<&scope_hunger>("hunger");
-  sys.register_function<&scope_boredom>("boredom");
+
+  // Характеристики: аксессоры чтения (hunger/boredom/strength) и add_<field> (эффект, в catalogue)
+  // АВТОГЕНЕРИРУЮТСЯ рефлексией по полям stats — вместо ручных scope_hunger/scope_boredom. Скоуп =
+  // entity_scope, getter = get_actor_stats (достаёт компонент из мира). Скрипты пишут бареовые
+  // `hunger`, `strength` (как перцепция), без ds-навигации.
+  register_stat_accessors<stats, entity_scope, &get_actor_stats, stat_domain::actor_stats>(sys);
+
+  // Перцепция (bool, не плоские числа) — остаётся ручными аксессорами над entity_scope.
   sys.register_function<&scope_threat_present>("threat_present");
   sys.register_function<&scope_prey_present>("prey_present");
   sys.register_function<&scope_prey_in_range>("prey_in_range");

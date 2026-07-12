@@ -8,8 +8,9 @@
 
 #include "core/stat_accessors.h"
 
-// Обкатка generic-характеристик: register_stat_accessors<StatsT> статической рефлексией
-// автогенерирует ds-аксессоры чтения (<field>) и прибавления (add_<field>) на каждое поле.
+// Обкатка generic-характеристик: register_stat_accessors<StatsT, Scope, Getter, Domain> статической
+// рефлексией автогенерирует ds-аксессоры чтения (<field>) и прибавления (add_<field>) на каждое поле.
+// Скоуп по умолчанию — stat_scope<StatsT> (getter = stat_scope_getter, отдаёт .ptr).
 
 using namespace tile_frontier::core;
 
@@ -21,13 +22,18 @@ struct test_stats {
 };
 
 enum class stat_test_domain : uint32_t { stats = 1 }; // домен catalogue для эффектов add_<field>
+
+void register_test_stats(devils_script::system& sys) {
+  register_stat_accessors<test_stats, stat_scope<test_stats>,
+                          &stat_scope_getter<test_stats>, stat_test_domain::stats>(sys);
+}
 }
 
 TEST_CASE("stat_accessors: рефлексия генерирует ds-чтение полей [stats][devils_script]") {
   devils_script::system sys;
   sys.init_basic_functions();
   sys.init_math();
-  register_stat_accessors<test_stats, stat_test_domain::stats>(sys);
+  register_test_stats(sys);
 
   test_stats st{ 10, 2.0f, 5 };
   const stat_scope<test_stats> scope{ 0, &st };
@@ -43,7 +49,7 @@ TEST_CASE("stat_accessors: add_<field> мутирует компонент [stat
   devils_script::system sys;
   sys.init_basic_functions();
   sys.init_math();
-  register_stat_accessors<test_stats, stat_test_domain::stats>(sys);
+  register_test_stats(sys);
 
   test_stats st{ 10, 2.0f, 5 };
   const stat_scope<test_stats> scope{ 0, &st };

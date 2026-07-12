@@ -10,6 +10,7 @@ metrics = [
   is_hungry      = hunger > 0.5
   is_bored       = boredom > 0.5
   prey_in_range  = prey_in_range
+  is_strong      = strength > 5
 ]
 
 // Приоритетная лестница: ровно одно действие на состояние, план в 1 шаг; каждое ставит "resolved".

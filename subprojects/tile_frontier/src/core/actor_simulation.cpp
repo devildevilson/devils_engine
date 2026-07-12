@@ -240,12 +240,12 @@ static bool predicate_prey_present(const act::exec_context& ctx) noexcept {
 }
 
 static bool predicate_is_hungry(const act::exec_context& ctx) noexcept {
-  const auto* dr = world_of(ctx).get<actor_drives>(aesthetics::entityid_t(ctx.primary().id));
+  const auto* dr = world_of(ctx).get<stats>(aesthetics::entityid_t(ctx.primary().id));
   return dr != nullptr && dr->hunger >= hungry_threshold;
 }
 
 static bool predicate_is_bored(const act::exec_context& ctx) noexcept {
-  const auto* dr = world_of(ctx).get<actor_drives>(aesthetics::entityid_t(ctx.primary().id));
+  const auto* dr = world_of(ctx).get<stats>(aesthetics::entityid_t(ctx.primary().id));
   return dr != nullptr && dr->boredom >= bored_threshold;
 }
 
@@ -579,8 +579,11 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
     world_.create<actor_visual>(id, (i + 1u) % tex_count, actor_color(i), actor_size(seed));
     world_.create<actor_perception>(id);
     world_.create<actor_cognition>(id); // last_think=0 ⇒ все «созрели» на старте, бюджет раскатает по тикам
-    // стартовый голод разный (из хэша сида) → акторы не синхронно проголодаются; скука с нуля.
-    world_.create<actor_drives>(id, unit_from_hash(mix32(seed ^ 0xf00du)) * 0.4f, 0.0f);
+    // стартовый голод разный (из хэша сида) → акторы не синхронно проголодаются; скука с нуля;
+    // strength — детерминированная характеристика 0..10 (демонстрация generic-статов, читается
+    // GOAP-метрикой stats.strength через шаблонные ds-аксессоры).
+    world_.create<stats>(id, unit_from_hash(mix32(seed ^ 0xf00du)) * 0.4f, 0.0f,
+                         int64_t(mix32(seed ^ 0x57ab00du) % 11u));
     world_.create<actor_state>(id, utils::string_hash("think")); // стартуем «думающими»
   }
 
@@ -829,7 +832,7 @@ void actor_world_slice::apply(const float dt_seconds) {
   // Пассивная динамика мотиваций (ВСЕ акторы, каждый тик — дёшево, O(N), плавно независимо
   // от каденса обдумывания). hunger копится всегда; boredom растёт пока стоит (думает), быстро
   // спадает в движении. Решения по drives примутся на следующем созревании актора.
-  for (auto [id, dr, vel] : world_.view<actor_drives, actor_velocity>()) {
+  for (auto [id, dr, vel] : world_.view<stats, actor_velocity>()) {
     (void)id;
     dr->hunger = std::clamp(dr->hunger + hunger_rate * dt_seconds, 0.0f, 1.0f);
     const float speed2 = vel->value.x * vel->value.x + vel->value.y * vel->value.y;
@@ -847,7 +850,7 @@ void actor_world_slice::resolve_eating(const uint64_t tick) {
   std::vector<aesthetics::entityid_t> kill;     // съеденные жертвы на удаление
   for (auto [id, eat] : world_.view<actor_eating>()) {
     if (tick < eat->until_tick) continue;
-    if (auto* dr = world_.get<actor_drives>(id); dr != nullptr) dr->hunger = 0.0f; // наелся
+    if (auto* dr = world_.get<stats>(id); dr != nullptr) dr->hunger = 0.0f; // наелся
     finished.push_back(id);
     kill.push_back(eat->target);
   }
