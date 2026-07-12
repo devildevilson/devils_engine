@@ -81,6 +81,10 @@ add_executable(aesthetics_serialization_benchmark aesthetics_serialization_bench
 target_link_libraries(aesthetics_serialization_benchmark PRIVATE devils_engine::options devils_engine::aesthetics)
 set_target_properties(aesthetics_serialization_benchmark PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_OUTPUT_DIRECTORY}/bin")
 
+add_executable(script_vs_native_benchmark script_vs_native_benchmark.cpp)
+target_link_libraries(script_vs_native_benchmark PRIVATE devils_engine::options devils_script tavl)
+set_target_properties(script_vs_native_benchmark PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_OUTPUT_DIRECTORY}/bin")
+
 add_custom_command(TARGET utils_general_test POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${CMAKE_CURRENT_LIST_DIR}/test_render_config
