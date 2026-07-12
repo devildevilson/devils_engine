@@ -41,6 +41,7 @@
 #include "script_resource.h" // script_resource::program() для скрипт-предиката actor.is_hungry
 #include "fsm_resource.h"     // fsm_resource::transitions() для mood FSM из конфига
 #include "goap_resource.h"    // goap_resource::config() для GOAP из конфига
+#include "prefab_resource.h"  // prefab_resource::text() для префабов из конфига
 #include <devils_engine/visage/font_resource.h>
 #include "global_ubo.h"
 #include "texture_set.h"
@@ -754,6 +755,7 @@ void simulation::begin_loading() {
   // Конфиги «мозга» актора из tavl: синхронно доводим до usable (как startup/entry в begin_boot) и
   // передаём в слайс. Отсутствие ресурса ⇒ соответствующее поле nullptr ⇒ нативный/хардкод фолбэк.
   core::brain_config brains;
+  std::vector<core::prefab_def> prefab_defs; // владелец текстов префабов на время init (brains.prefabs → сюда)
   if (auto* reg = c.assets_sim != nullptr ? c.assets_sim->resources() : nullptr) {
     if (auto* sr = reg->get<script_resource>("scripts/actor_is_hungry")) {
       while (!sr->usable()) sr->load(utils::safe_handle_t{});
@@ -776,6 +778,21 @@ void simulation::begin_loading() {
         gr->config().metrics.size(), gr->config().actions.size());
     } else {
       utils::warn("main: конфиг 'goap/actor' не найден в реестре — хардкод GOAP");
+    }
+    // Префабы из prefab/*.tavl: собираем имя+текст всех prefab_resource → в brain_config (слайс
+    // регистрирует специи компонентов в C++ и скармливает текст в prefab_registry). Потребляется в
+    // init (текст копируется), поэтому prefab_defs может жить локально до конца init.
+    std::vector<core::prefab_resource*> prefab_res;
+    reg->filter<core::prefab_resource>("prefab/", prefab_res);
+    for (auto* pr : prefab_res) {
+      while (!pr->usable()) pr->load(utils::safe_handle_t{});
+      prefab_defs.push_back(core::prefab_def{ std::string(pr->prefab_name()), std::string(pr->text()) });
+    }
+    if (!prefab_defs.empty()) {
+      brains.prefabs = &prefab_defs;
+      DE_LOG(catalogue::log_domain::gameplay, flow, "main: prefab <- {} префабов из prefab/*.tavl", prefab_defs.size());
+    } else {
+      utils::warn("main: префабы 'prefab/*' не найдены в реестре — хардкод food");
     }
   }
 

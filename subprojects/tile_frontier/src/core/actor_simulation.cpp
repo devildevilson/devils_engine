@@ -466,18 +466,43 @@ void actor_world_slice::setup_brain_registry() {
     fsm_.emplace(&registry_, std::move(fsm_lines));
   }
 
-  // Префабы слайса (перестраиваются вместе с реестром — общая точка init/load). Пока «food»:
-  // data-компонент food_item из конфига; визуал (зелёный, food_size) и позиция — DERIVED в
-  // on_construct (визуал = кодовые константы, позиция = точка спавна из spawn_args). spawn_food
-  // спавнит через prefab_.spawn("food", world, spawn_args{ p }). demiurg-ресурс префаба — позже.
+  // Префабы слайса (перестраиваются вместе с реестром — общая точка init/load). C++-специи компонентов
+  // (какие типы бывают + per-prefab on_construct для DERIVED) регистрируются ЗДЕСЬ; тексты префабов
+  // приходят из конфига (prefab/*.tavl через brain_config.prefabs), иначе хардкод-фолбэк (тесты/резюме).
+  //   food:  data food_item из конфига; визуал (зелёный, food_size) + позиция — derived в construct.
+  //   actor: data actor_tuning (разброс скорости/голода/силы) из конфига; brain/visual/stats/… — derived
+  //          в construct из per-instance зерна (spawn_args). GOAP/FSM остаются slice-level (не per-entity).
   prefab_ = devils_engine::prefab::prefab_registry<spawn_args>{};
   prefab_.data<food_item>("food_item");
-  prefab_.on_construct([](aesthetics::entityid_t id, aesthetics::world& w, const spawn_args& a) {
+  prefab_.data<actor_tuning>("actor_tuning");
+  prefab_.on_construct("food", [](aesthetics::entityid_t id, aesthetics::world& w, const spawn_args& a) {
     w.create<actor_position>(id, a.pos);
     w.create<actor_visual>(id, 0u, food_color(), food_size);
   });
-  prefab_.add_prefab("food", "food_item = { nutrition = 1.0 }\n",
-                     devils_engine::prefab::prefab_load_context{ &registry_ });
+  prefab_.on_construct("actor", [](aesthetics::entityid_t id, aesthetics::world& w, const spawn_args& a) {
+    // DERIVED per-instance из зерна + тюнинга (формулы = историческому init-циклу, побайтовый паритет).
+    const auto* tp = w.get<actor_tuning>(id);
+    const actor_tuning t = tp != nullptr ? *tp : actor_tuning{};
+    const uint32_t tex = std::max(a.tex_count, 1u);
+    w.create<actor_position>(id, a.pos);
+    w.create<actor_velocity>(id, glm::vec2{0.0f, 0.0f});
+    w.create<actor_brain>(id, a.seed, a.seed % 31u, t.speed_base + unit_from_hash(a.seed) * t.speed_var);
+    w.create<actor_visual>(id, (a.index + 1u) % tex, actor_color(a.index), actor_size(a.seed));
+    w.create<actor_perception>(id);
+    w.create<actor_cognition>(id); // last_think=0 ⇒ все «созрели» на старте
+    w.create<stats>(id, unit_from_hash(mix32(a.seed ^ 0xf00du)) * t.hunger_scale, 0.0f,
+                    int64_t(mix32(a.seed ^ 0x57ab00du) % uint32_t(t.strength_mod)));
+    w.create<actor_state>(id, utils::string_hash("think")); // стартуем «думающими»
+  });
+  const auto prefab_lc = devils_engine::prefab::prefab_load_context{ &registry_ };
+  if (brains_.prefabs != nullptr && !brains_.prefabs->empty()) {
+    for (const auto& d : *brains_.prefabs) prefab_.add_prefab(d.name, d.text, prefab_lc);
+  } else {
+    prefab_.add_prefab("food", "food_item = { nutrition = 1.0 }\n", prefab_lc);
+    prefab_.add_prefab("actor",
+      "actor_tuning = { speed_base = 0.65, speed_var = 1.35, hunger_scale = 0.4, strength_mod = 11 }\n",
+      prefab_lc);
+  }
 }
 
 void actor_world_slice::build_goap_from_config(const goap_config& cfg) {
@@ -573,8 +598,10 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   const uint32_t columns = std::max<uint32_t>(uint32_t(std::ceil(std::sqrt(float(std::max(count, 1u))))), 1u);
   const uint32_t rows = std::max<uint32_t>((count + columns - 1u) / columns, 1u);
 
+  // Спавн акторов через префаб «actor» (prefab/actor.tavl или фолбэк): data-компонент actor_tuning из
+  // конфига задаёт разброс, on_construct лепит seed-производные компоненты. Раскладка/зерно/индекс —
+  // per-instance (сетка+джиттер) → в spawn_args. gen_entityid зовётся внутри spawn (порядок id сохранён).
   for (uint32_t i = 0; i < count; ++i) {
-    const auto id = world_.gen_entityid();
     const uint32_t x = i % columns;
     const uint32_t y = i / columns;
     const float fx = (float(x) + 0.5f) / float(columns);
@@ -582,22 +609,11 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
     const uint32_t seed = mix32(i + 0x1234u);
     const float jitter_x = (unit_from_hash(mix32(seed ^ 0xa5a5u)) - 0.5f) * 0.35f;
     const float jitter_y = (unit_from_hash(mix32(seed ^ 0x5a5au)) - 0.5f) * 0.35f;
-
-    world_.create<actor_position>(id, glm::vec2{
+    const glm::vec2 pos{
       min_bound.x + extent.x * fx + jitter_x,
       min_bound.y + extent.y * fy + jitter_y
-    });
-    world_.create<actor_velocity>(id, glm::vec2{0.0f, 0.0f});
-    world_.create<actor_brain>(id, seed, seed % 31u, 0.65f + unit_from_hash(seed) * 1.35f);
-    world_.create<actor_visual>(id, (i + 1u) % tex_count, actor_color(i), actor_size(seed));
-    world_.create<actor_perception>(id);
-    world_.create<actor_cognition>(id); // last_think=0 ⇒ все «созрели» на старте, бюджет раскатает по тикам
-    // стартовый голод разный (из хэша сида) → акторы не синхронно проголодаются; скука с нуля;
-    // strength — детерминированная характеристика 0..10 (демонстрация generic-статов, читается
-    // GOAP-метрикой stats.strength через шаблонные ds-аксессоры).
-    world_.create<stats>(id, unit_from_hash(mix32(seed ^ 0xf00du)) * 0.4f, 0.0f,
-                         int64_t(mix32(seed ^ 0x57ab00du) % 11u));
-    world_.create<actor_state>(id, utils::string_hash("think")); // стартуем «думающими»
+    };
+    prefab_.spawn("actor", world_, spawn_args{ pos, seed, i, tex_count });
   }
 
   // Препятствия: статичные диски в детерминированных точках. Из восприятия исключены

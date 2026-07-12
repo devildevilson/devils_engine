@@ -6,6 +6,7 @@
 #include <deque>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -43,10 +44,14 @@ struct actor_position {
   glm::vec2 value{0.0f, 0.0f};
 };
 
-// Аргументы спавна префаба: точка в мире. on_construct-хук префаба кладёт её в actor_position →
-// prefab_.spawn("food", world, spawn_args{ p }) спавнит в точке p (см. spawn_food).
+// Аргументы спавна префаба (per-instance, НЕ из конфига): точка в мире + детерминированное зерно и
+// индекс/число текстур. on_construct-хук префаба лепит из них DERIVED-компоненты (food — позиция+визуал;
+// actor — seed-производные brain/visual/stats). Еда использует только pos (остальное дефолт).
 struct spawn_args {
   glm::vec2 pos{0.0f, 0.0f};
+  uint32_t seed = 0;       // зерно per-instance разброса (actor: brain/stats/size)
+  uint32_t index = 0;      // порядковый номер (actor: палитра цвета + слот текстуры)
+  uint32_t tex_count = 1;  // число текстур (actor: (index+1) % tex_count)
 };
 
 struct actor_velocity {
@@ -102,6 +107,17 @@ struct stats {
   float hunger = 0.0f;
   float boredom = 0.0f;
   int64_t strength = 0;
+};
+
+// Тюнинг-параметры актора из конфига (prefab/actor.tavl → data-компонент). Задают РАЗБРОС per-instance
+// величин, которые on_construct считает из зерна: скорость (base + u·var), стартовый голод (u·scale),
+// сила (hash % mod). Дефолты = историческим хардкод-константам (фолбэк тестов/резюме). НЕ сериализуется
+// (uniform, потребляется только в on_construct на спавне; load не спавнит — восстанавливает компоненты).
+struct actor_tuning {
+  float speed_base = 0.65f;
+  float speed_var = 1.35f;
+  float hunger_scale = 0.4f;
+  int64_t strength_mod = 11;
 };
 
 // Текущее состояние FSM-исполнителя (mood) — хеш имени состояния (think/wander/seek_food/
@@ -192,10 +208,19 @@ private:
 // Проектные описания «мозга» актора, загруженные из tavl (заимствуются — владелец реестр ассетов).
 // Каждое поле опционально: nullptr ⇒ нативный/хардкод фолбэк (тесты/резюме без ассетов). Растёт по
 // мере переезда gameplay-данных в конфиг (GOAP-метрики/действия — следующими).
+// Определение префаба из конфига: логическое имя + сырой tavl-текст. Слайс регистрирует C++-специи
+// компонентов и скармливает текст в prefab_registry.add_prefab. Потребляется ЦЕЛИКОМ в init (текст
+// копируется в реестр), поэтому вектор может быть временным у вызывающего.
+struct prefab_def {
+  std::string name;
+  std::string text;
+};
+
 struct brain_config {
   const devils_script::container* is_hungry_program = nullptr; // скрипт-предикат "actor.is_hungry"
   const std::vector<std::string>* fsm_transitions = nullptr;   // строки переходов mood FSM
   const goap_config* goap = nullptr;                           // GOAP: метрики/действия/цели (по ключам)
+  const std::vector<prefab_def>* prefabs = nullptr;            // префабы из prefab/*.tavl (иначе хардкод food)
 };
 
 class actor_world_slice {

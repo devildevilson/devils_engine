@@ -8,6 +8,7 @@
 #include "script_resource.h"
 #include "fsm_resource.h"
 #include "goap_resource.h"
+#include "prefab_resource.h"
 
 namespace tile_frontier {
 namespace core {
@@ -24,6 +25,9 @@ void assets_simulation::register_project_resource_types(demiurg::resource_system
   // goap/*.tavl → goap_resource: метрики инлайн-компилируются через script_env_.sys (co-parse);
   // действия/цели ссылаются на метрики по ключу. Резолв ключ→функция/бит — в setup_brain_registry.
   resources.register_type<goap_resource>("goap", "tavl", &script_env_.sys);
+  // prefab/*.tavl → prefab_resource: сырой текст префаба (форму компонентов + on_construct регистрирует
+  // слайс в C++, текст скармливается в prefab_registry.add_prefab). Один файл = один префаб или список //---.
+  resources.register_type<prefab_resource>("prefab", "tavl");
 }
 
 void assets_simulation::update_project(const size_t, ::tile_frontier::core::broker& br) {

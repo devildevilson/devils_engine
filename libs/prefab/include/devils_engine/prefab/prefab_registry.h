@@ -130,7 +130,11 @@ public:
     add_spec(std::move(name), flags, std::move(b));
   }
 
+  // Глобальный construct-хук: DERIVED-компоненты для ВСЕХ префабов (напр. общий transform из args).
   void on_construct(construct_fn fn) { construct_ = std::move(fn); }
+  // Per-prefab construct-хук: DERIVED только для конкретного префаба (напр. actor лепит seed-производные
+  // компоненты иначе, чем food). Запускается ПОСЛЕ глобального. Ключ = имя префаба (как в spawn/add_prefab).
+  void on_construct(std::string name, construct_fn fn) { named_construct_.insert_or_assign(std::move(name), std::move(fn)); }
   void on_destruct(std::function<void(aes::entityid_t, aes::world&)> fn) { destruct_ = std::move(fn); }
 
   // Разобрать текст префаба (один документ). Драйвит tavl-парсер построчно: `base` или компонент;
@@ -155,6 +159,7 @@ public:
       p.poll_event(); // '=' (op)
       const std::string_view raw = capture_value(p, text);
       if (key == "base") lp.base = std::string(raw);
+      else if (key == "name") { /* имя list-секции демиурга (//--- / path:name) — не компонент */ }
       else if (specs_.contains(key)) lp.raw.emplace(key, std::string(raw));
       else utils::warn("prefab '{}': неизвестный компонент '{}', пропущен", name, key);
     }
@@ -170,6 +175,7 @@ public:
       for (const auto& ap : lp->appliers) ap(id, w);
     }
     if (construct_) construct_(id, w, args);
+    if (const auto it = named_construct_.find(name); it != named_construct_.end()) it->second(id, w, args);
     return id;
   }
 
@@ -257,6 +263,7 @@ private:
   std::unordered_map<std::string, component_spec> specs_;
   std::unordered_map<std::string, loaded_prefab> prefabs_;
   construct_fn construct_;
+  std::unordered_map<std::string, construct_fn> named_construct_; // per-prefab DERIVED-хуки
   std::function<void(aes::entityid_t, aes::world&)> destruct_;
 };
 
