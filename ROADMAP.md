@@ -202,7 +202,8 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
      field-level inheritance и derived-компоненты через `on_construct`; tile_frontier грузит actor/food
      из `prefab/*.tavl` через demiurg.
    - Низовой script-примитив `spawn_at(prefab,x,y)` готов и покрыт тестом. Выбор места, spawner-entity,
-     filter/pick и живые trigger/event scripts — отдельный, пока отложенный дизайн (п.15).
+     filter/pick и живые trigger/event scripts — отдельный отложенный дизайн (п.15); автор повторно
+     подтвердил 2026-07-13, что ECS-spawners и DS-композицию пока не начинаем.
 
 6. ✅ **B-д — generic stats над проектным агрегатом** — **[необходимо, базовый механизм готов
    2026-07-13]**. Проект объявляет предельно простой агрегат:
@@ -211,8 +212,10 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
    - `act::numeric_stats_aggregate` проверяет: тип является aggregate, поля рефлексируются, каждое поле
      принадлежит разрешённому набору числовых типов; отдельно решить требования standard-layout /
      trivially-copyable там, где они реально нужны save/network, а не запрещать полезный агрегат молча.
-   - `make_stats`/`initialize_stats` и `register_stats` дают инициализацию + scope getter + read/add без
-     ручного дублирования полей; механизм вынесен из tile_frontier в `libs/act`.
+   - `initialize_stats<T>()` сохраняет C++ default member initializers плоского агрегата; overload с
+     callback проходит `reflect::for_each` и задаёт каждое поле. Конечный проект явно выбирает удобный
+     режим без пользовательского конструктора. `make_stats`/`register_stats` дают aggregate init + scope
+     getter + read/add без ручного дублирования полей; механизм вынесен из tile_frontier в `libs/act`.
    - Префиксов нет: `stats.abc`, `stats = { add_abc }`, `combat_stats.abc`. Одинаковые имена полей
      перегружаются ds по типу возвращённого `stat_scope<T>`; два агрегата проверены одновременно.
    - Metadata (display/loc key, unit, «положительное» направление для UI) держать как опциональную
@@ -231,6 +234,10 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
      gameplay получает уже масштабированную дельту game clock.
    - **Turn** — ортогональная дискретная координата (`turn_index/duration/deadline`): влияет на пошаговые
      эффекты, но не двигает анимации.
+   - **Calendar** — отдельный тип timestamp/deadline и неизменяемый после project startup
+     `calendar_clock`. `time.calendar.source = game_time|turn` выбирает только источник даты, не удаляя
+     вторую координату. Для turn-source настраивается `seconds/days/months/years_per_turn`; month/year
+     используют календарную арифметику, короткий месяц clamp-ит день, каждый результат считается от epoch.
    - **Конвенция конфигов:** duration без явного игрового/turn-квалификатора означает nominal real
      (`engine_duration`); gameplay-loader конвертирует её через project `game_time_scale`. Явные
      calendar/game duration и `turns` остаются в своих доменах.
@@ -238,12 +245,12 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
      нормализация использует `hours_per_day`. Секунда/минута/час остаются duration-единицами, а
      day/month/year — календарной проекцией. Так проект может использовать только 24-часовой цикл,
      только дату day/month/year или обе части без обязательного «земного» календаря.
-   - `calendar_policy` задаётся проектом: `hours_per_day`, число/список `days_in_month`, число месяцев
-     в году (естественно следует из списка месяцев; для равных месяцев допустим компактный вариант).
-     Нужны преобразования `game_time ↔ {second,minute,hour,day,month,year}` и явное поведение на границах.
+   - `calendar_policy` задаётся проектом: `hours_per_day`, список `days_in_month`, epoch и источник.
+     Преобразования `calendar_timestamp ↔ {second,minute,hour,day,month,year}` и границы реализованы;
+     пустой список месяцев оставляет только absolute day + time-of-day.
    - `simul::pause_state` разделяет gameplay/presentation pause; компоненты не «паузятся», scheduler
      просто не запускает мутирующие gameplay-фазы. tile_frontier экспонирует `app.set_paused/paused`.
-   - Timestamp/duration/deadline типизированы clock-domain (`engine`, `presentation`, `game`), поэтому разные шкалы
+   - Timestamp/duration/deadline типизированы clock-domain (`engine`, `presentation`, `game`, `calendar`), поэтому разные шкалы
      нельзя случайно сравнить/сложить. `calendar_policy` реализует day+seconds и опциональную month/year
      проекцию. Следующий зависимый срез — очередь отложенных эффектов и expiry для п.8.
 
@@ -309,9 +316,10 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
 
 1. ✅ **act↔ds call contract foundation:** fixed 8 scalar args + lists в reusable `execution_scratch`;
    `acumen::execution_scratch` показывает композицию subsystem scratch. Далее — registration/effects.
-2. ✅ **generic stats:** template/concept/init + scope getters без префиксов; два агрегата проверены.
-3. ✅ **time/calendar/pause:** engine/presentation/game + rational duration mapping + turn coordinate,
-   typed deadlines, calendar projection и gameplay/presentation pause готовы.
+2. ✅ **generic stats:** template/concept/init + scope getters без префиксов; C++ default member
+   initializers и reflected callback являются явными альтернативами, два агрегата проверены.
+3. ✅ **time/calendar/pause:** engine/presentation/game/turn + project calendar source game_time|turn,
+   rational duration mapping, typed deadlines, calendar projection и gameplay/presentation pause готовы.
 4. ✅ **первый multi-system AI foundation:** независимые `acumen::registry`/`mood::registry`; GOAP-конфиг
    имеет single `base`, deterministic overlay/disable и flatten перед компиляцией. Compatibility и
    runtime GOAP switch остаются long-running.

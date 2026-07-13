@@ -33,6 +33,26 @@ time = {
   // Игровых секунд за real_seconds реальных. Например, 60/1 = игровая минута за секунду.
   game_seconds = 1
   real_seconds = 1
+
+  // source = game_time: календарь идёт по gameplay timeline.
+  // source = turn: календарь идёт только при advance_turns(), с шагом *_per_turn.
+  // Выбор является настройкой проекта и требует рестарта.
+  calendar = {
+    source = game_time
+    hours_per_day = 24
+    days_in_month = [ 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 ]
+    start_absolute_day = 0
+    start_year = 0
+    start_month = 1
+    start_day = 1
+    start_hour = 0
+    start_minute = 0
+    start_second = 0
+    seconds_per_turn = 0
+    days_per_turn = 1
+    months_per_turn = 0
+    years_per_turn = 0
+  }
 }
 
 metrics = {

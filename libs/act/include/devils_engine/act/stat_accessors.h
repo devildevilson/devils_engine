@@ -86,8 +86,16 @@ constexpr StatsT make_stats(Args&&... args) noexcept(noexcept(StatsT{std::forwar
   return StatsT{std::forward<Args>(args)...};
 }
 
+// Выбирает C++ default member initializers агрегата (`int32_t health = 100;`). Это всё ещё
+// aggregate initialization, пользовательский конструктор не нужен.
+template <numeric_stats_aggregate StatsT>
+constexpr StatsT initialize_stats() noexcept(noexcept(StatsT{})) {
+  return StatsT{};
+}
+
 // Инициализатор вызывается как init(index_constant, field_name) и возвращает число,
-// приводимое к конкретному типу поля. Начальный StatsT{} гарантирует инициализацию всех полей.
+// приводимое к конкретному типу поля. Этот overload намеренно задаёт КАЖДОЕ поле заново;
+// no-arg overload выше выбирает C++ defaults.
 template <numeric_stats_aggregate StatsT, typename Initializer>
 constexpr StatsT initialize_stats(Initializer&& init) {
   StatsT out{};

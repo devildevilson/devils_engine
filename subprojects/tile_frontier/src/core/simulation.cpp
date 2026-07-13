@@ -129,6 +129,7 @@ struct simulation_init : simul::standard_loading_state {
   // game clock идёт только в app_state::game (те же ворота, что actor/gameplay systems).
   utils::xoshiro256starstar::state ui_rng = utils::xoshiro256starstar::init(utils::string_hash("visage_ui"));
   utils::timelines clocks;
+  utils::calendar_clock calendar;
   simul::pause_state pause;
 
   // Шрифты — demiurg-ресурсы ассетного реестра ("fonts/*", многошаговые ttf→MSDF→GPU).
@@ -288,6 +289,7 @@ void simulation::init() {
     bootstrap_->settings.time.game_seconds,
     bootstrap_->settings.time.real_seconds
   ));
+  c.calendar = make_calendar_clock(bootstrap_->settings.time);
 
   // стартовый размер фреймбуфера = размер из конфига (до создания окна); коллбэк ресайза уточнит.
   c.fb_width = std::max(bootstrap_->settings.window.width, 1u);
@@ -351,6 +353,7 @@ void runtime_traits::settings_reloaded(main_type& main, bootstrap_type& boot) {
     boot.settings.time.game_seconds,
     boot.settings.time.real_seconds
   ));
+  // calendar source/policy — проектная топология: runtime reload намеренно её не заменяет.
 }
 
 void runtime_traits::after_workers_started(main_type& main) {

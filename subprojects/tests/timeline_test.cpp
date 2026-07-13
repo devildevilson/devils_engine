@@ -8,6 +8,7 @@ using namespace devils_engine::utils;
 
 static_assert(!std::is_same_v<engine_timestamp, game_timestamp>);
 static_assert(!std::is_same_v<engine_duration, game_duration>);
+static_assert(!std::is_same_v<game_timestamp, calendar_timestamp>);
 
 TEST_CASE("timelines keep engine running while game is paused [time]") {
   timelines clocks;
@@ -88,4 +89,48 @@ TEST_CASE("calendar can expose only absolute day without months [time][calendar]
   CHECK(fields.hour == 6);
   CHECK(fields.minute == 30);
   CHECK_THROWS(day_cycle.compose_calendar(0, 1, 1));
+}
+
+TEST_CASE("project calendar can be driven by scaled game time [time][calendar]") {
+  calendar_policy policy(24, {30, 30});
+  const calendar_clock calendar(
+    calendar_source::game_time, policy, policy.compose_calendar(2, 1, 1));
+
+  timelines clocks;
+  clocks.set_game_scale(game_time_scale::from_seconds(60, 1));
+  clocks.advance(engine_duration::from_minutes(24).ticks); // one 24-hour game day
+  clocks.advance_turns({10});                              // irrelevant to this calendar
+
+  const auto date = calendar.date(clocks);
+  CHECK(date.year == 2);
+  CHECK(date.month == 1);
+  CHECK(date.day == 2);
+}
+
+TEST_CASE("project calendar can be driven by turns with calendar-sized steps [time][calendar][turn]") {
+  calendar_policy policy(24, {31, 28, 31});
+  const calendar_clock calendar(
+    calendar_source::turn, policy, policy.compose_calendar(4, 1, 31),
+    calendar_step{.months = 1});
+
+  timelines clocks;
+  clocks.advance(game_duration::from_hours(12).ticks); // irrelevant to a turn-driven calendar
+  clocks.set_turn({1});
+  auto date = calendar.date(clocks);
+  CHECK(date.year == 4);
+  CHECK(date.month == 2);
+  CHECK(date.day == 28); // clamp Jan 31 -> shorter target month
+
+  clocks.set_turn({2});
+  date = calendar.date(clocks);
+  CHECK(date.month == 3);
+  CHECK(date.day == 31); // direct projection from the epoch, no accumulated clamp
+}
+
+TEST_CASE("turn-driven calendar validates its one-time project policy [time][calendar][turn]") {
+  CHECK(parse_calendar_source("game_time") == calendar_source::game_time);
+  CHECK(parse_calendar_source("turn") == calendar_source::turn);
+  CHECK_THROWS(parse_calendar_source("frames"));
+  CHECK_THROWS(calendar_clock(calendar_source::turn));
+  CHECK_THROWS(calendar_clock(calendar_source::turn, calendar_policy(24), {}, calendar_step{.months = 1}));
 }
