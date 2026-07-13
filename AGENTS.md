@@ -22,6 +22,33 @@ This repository is the author's experimental game engine / framework. It is a la
 - Root CMake defaults single-config generators to `CMAKE_BUILD_TYPE=Debug` when the user does not specify a build type. It also enables `CMAKE_POSITION_INDEPENDENT_CODE` globally so static third-party dependencies can link into shared libraries in Debug.
 - New resource/render-prep contract tests: `tests/demiurg_resource_loader_test.cpp` covers CPU prepare vs external GPU commit and dependency gating; `tests/painter_shader_prepare_test.cpp` covers `glsl_source_file` SPIR-V preparation cache. Useful checks: `ctest --test-dir build-debug -R "(painter_shader_prepare_test|demiurg_resource_loader_test)" --output-on-failure` and `cmake --build build-debug --target tile_frontier`.
 
+### Act call context, generic stats, and timelines (2026-07-13)
+
+- `libs/act` now separates immutable `exec_context` (world/scopes/rng/tick/sink/per-worker ds VM) from
+  mutable `call_context` (`call_context.h`): named in/out `value`s, typed result, and named reusable
+  `vector<value>` lists. Both `native_function` and `script_function` accept the same call object; the
+  legacy `invoke(ctx)` overload remains for acumen/mood hot paths. Script invocation binds matching names
+  into ds `ctx:arg`/`ctx:list` before `process()` and collects modified args/lists afterward. `clear()`
+  preserves names and nested list capacity for worker reuse; `clear_schema()` is the load/rebind reset.
+  Basic bool/integer/number/entity-id conversion works. String/object policy remains pending; `act::vec3`
+  is 24 bytes with double components and cannot fit ds's current 16-byte stack slot (revisit with fixed-point).
+  Tests: `subprojects/tests/act_call_context_test.cpp` covers one native and one ds function with scalar
+  in/out + list output.
+- Generic numeric aggregate stats moved from tile_frontier into `libs/act/stat_accessors.h`.
+  `numeric_stats_aggregate<T>` requires a reflected aggregate whose fields are non-bool integral or
+  floating-point; `make_stats` supports direct aggregate init, `initialize_stats` fills fields by
+  `(index,name)`, and `register_stat_accessors` generates read/add ds functions. Its optional prefix
+  (`primary_`, `needs_`) prevents name collisions when multiple stats components share one ds scope;
+  separate Getter/Domain parameters preserve component lookup and catalogue provenance. The stats test
+  exercises two aggregates simultaneously. tile_frontier includes the engine header directly.
+- `libs/utils/timeline.h` is the new clean time layer beside legacy `time-utils.hpp`: strongly distinct
+  engine/game timestamp, duration, and deadline types; `timelines::advance(delta)` always advances engine
+  time and advances game time only when not paused. `calendar_policy(hours_per_day, days_in_month)` splits
+  game time into absolute day + seconds-of-day and optionally projects to year/month/day; empty months is
+  a supported day/time-only project. tile_frontier owns `utils::timelines`, pauses game time outside
+  `simul::app_state::game`, advances both in main update, and passes engine time to visage as UI timestamp.
+  Deferred-effect/expiry queues are not built yet. Tests: `subprojects/tests/timeline_test.cpp`.
+
 ### Prefab & spawn (tile_frontier ↔ `libs/prefab`, 2026-07-12)
 
 - `libs/prefab` (`devils_engine::prefab`, header-only): engine mechanism `prefab_registry<SpawnArgs>` = recipe

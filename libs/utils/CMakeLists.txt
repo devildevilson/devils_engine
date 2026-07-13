@@ -63,6 +63,7 @@ set(HDR_LIST
   include/devils_engine/utils/named_serializer.h
   include/devils_engine/utils/fileio.h
   include/devils_engine/utils/time-utils.hpp
+  include/devils_engine/utils/timeline.h
   include/devils_engine/utils/sha256.h
   include/devils_engine/utf/utf.hpp
   include/devils_engine/utils/compression.h

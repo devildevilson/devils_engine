@@ -9,6 +9,8 @@ project(
 set(HDR_LIST
   include/devils_engine/act/common.h
   include/devils_engine/act/value.h
+  include/devils_engine/act/call_context.h
+  include/devils_engine/act/stat_accessors.h
   include/devils_engine/act/intent.h
   include/devils_engine/act/effect_sink.h
   include/devils_engine/act/exec_context.h
@@ -31,7 +33,7 @@ target_include_directories(devils_act
 # devils_script PUBLIC: script_function<RetT> (header-only) инстанцируется у потребителей и зовёт
 # devils_script::container/context — им нужны его символы и include-каталоги (тянет tavl PUBLIC).
 target_link_libraries(devils_act
-  PUBLIC devils_engine::options devils_engine::utils gtl devils_script
+  PUBLIC devils_engine::options devils_engine::utils devils_engine::catalogue gtl devils_script
 )
 
 add_library(devils_engine::act ALIAS devils_act)

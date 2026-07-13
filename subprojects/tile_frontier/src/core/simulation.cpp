@@ -124,10 +124,10 @@ struct simulation_init : simul::standard_loading_state {
   bool ui_logged = false;
 
   // prng-состояние UI (visage): 256-бит поток (xoshiro256starstar), продвигается каждый кадр;
-  // value() уходит в ui->update как rng_state-сид. Отвязывает случайность UI от реальной математики.
-  // ui_timestamp — монотонная метка времени (пока с нуля) для фиксации начала UI-анимаций.
+  // value() уходит в ui->update как rng_state-сид. Engine clock идёт всегда и является UI timestamp;
+  // game clock идёт только в app_state::game (те же ворота, что actor/gameplay systems).
   utils::xoshiro256starstar::state ui_rng = utils::xoshiro256starstar::init(utils::string_hash("visage_ui"));
-  uint64_t ui_timestamp = 0;
+  utils::timelines clocks;
 
   // Шрифты — demiurg-ресурсы ассетного реестра ("fonts/*", многошаговые ttf→MSDF→GPU).
   // CPU-уровни всех шрифтов проходим синхронно в setup_visage (метрики нужны nk_convert сразу),
@@ -818,6 +818,8 @@ bool simulation::stop_predicate() const {
 void simulation::update(const size_t time) {
   auto& c = state();
   c.lifecycle.update(*this, time);
+  c.clocks.set_game_paused(c.lifecycle.phase() != simul::app_state::game);
+  c.clocks.advance(time);
   simul::begin_main_frame(
     c,
     time,

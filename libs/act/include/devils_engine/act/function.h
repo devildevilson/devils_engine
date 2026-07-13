@@ -5,9 +5,11 @@
 #include <string>
 #include <string_view>
 #include <functional>
+#include <type_traits>
 #include "devils_engine/utils/core.h"      // utils::error
 #include "devils_engine/utils/string_id.h" // utils::id
 #include "common.h"
+#include "call_context.h"
 #include "exec_context.h"       // + алиас namespace ds = ::devils_script
 
 #include <devils_script/container.h> // ds::container (process/describe/max_lists) — invoke зовёт методы
@@ -49,7 +51,14 @@ struct function_base {
 template <typename RetT>
 struct function : public function_base {
   using function_base::function_base;
-  virtual RetT invoke(const exec_context& ctx) const = 0;
+  virtual RetT invoke(const exec_context& ctx, call_context& call) const = 0;
+
+  // Совместимый короткий путь для существующих predicate/effect consumers без аргументов.
+  RetT invoke(const exec_context& ctx) const {
+    call_context call;
+    if constexpr (std::is_void_v<RetT>) invoke(ctx, call);
+    else return invoke(ctx, call);
+  }
 };
 
 using effect_function    = function<void>;
@@ -67,19 +76,136 @@ template <> constexpr category category_of<bool>()      { return category::predi
 template <> constexpr category category_of<real_t>()    { return category::number; }
 template <> constexpr category category_of<utils::id>() { return category::string; }
 template <> constexpr category category_of<entity_id>() { return category::object; }
+
+inline value to_value(const bool v) noexcept { return value::of(v); }
+inline value to_value(const real_t v) noexcept { return value::of(v); }
+inline value to_value(const utils::id v) noexcept { return value::strv(v); }
+inline value to_value(const entity_id v) noexcept { return value::of(v); }
+
+inline bool ds_type(const std::string_view type, const std::string_view expected) noexcept {
+  return type == expected;
+}
+
+template <typename Set>
+bool value_to_ds(const value& v, const std::string_view expected, Set&& set) {
+  switch (v.kind) {
+    case value_kind::boolean:
+      if (ds::type_is_bool(expected)) { set(v.bln); return true; }
+      break;
+    case value_kind::integer:
+      if (expected == utils::type_name<int8_t>())   { set(static_cast<int8_t>(v.inum)); return true; }
+      if (expected == utils::type_name<int16_t>())  { set(static_cast<int16_t>(v.inum)); return true; }
+      if (expected == utils::type_name<int32_t>())  { set(static_cast<int32_t>(v.inum)); return true; }
+      if (expected == utils::type_name<int64_t>())  { set(v.inum); return true; }
+      if (expected == utils::type_name<uint8_t>())  { set(static_cast<uint8_t>(v.inum)); return true; }
+      if (expected == utils::type_name<uint16_t>()) { set(static_cast<uint16_t>(v.inum)); return true; }
+      if (expected == utils::type_name<uint32_t>()) { set(static_cast<uint32_t>(v.inum)); return true; }
+      if (expected == utils::type_name<uint64_t>()) { set(static_cast<uint64_t>(v.inum)); return true; }
+      if (ds::type_is_floating_point(expected))     { set(static_cast<double>(v.inum)); return true; }
+      break;
+    case value_kind::number:
+      if (expected == utils::type_name<float>())  { set(static_cast<float>(v.num)); return true; }
+      if (expected == utils::type_name<double>()) { set(static_cast<double>(v.num)); return true; }
+      break;
+    case value_kind::handle:
+      if (expected == utils::type_name<entity_id>()) { set(entity_id{static_cast<uint32_t>(v.hnd)}); return true; }
+      if (expected == utils::type_name<uint64_t>())  { set(v.hnd); return true; }
+      break;
+    case value_kind::string:
+      // act string — стабильный loc/id hash, не заимствованный string_view.
+      if (expected == utils::type_name<utils::id>()) { set(v.str); return true; }
+      break;
+    // act::vec3 = 24 bytes (double x3), а ds stack slot сейчас 16 bytes: bridge намеренно
+    // не делает lossy-конверсию. Для vector нужен отдельный compact/fixed тип при fixed-point pass.
+    case value_kind::vector: break;
+    case value_kind::none: break;
+  }
+  return false;
+}
+
+inline bool value_from_ds(const std::string_view type, const ds::stack_element& el, value& out) {
+  if (type == utils::type_name<bool>())     { out = value::of(el.get<bool>()); return true; }
+  if (type == utils::type_name<int8_t>())   { out = value::of(int64_t(el.get<int8_t>())); return true; }
+  if (type == utils::type_name<int16_t>())  { out = value::of(int64_t(el.get<int16_t>())); return true; }
+  if (type == utils::type_name<int32_t>())  { out = value::of(int64_t(el.get<int32_t>())); return true; }
+  if (type == utils::type_name<int64_t>())  { out = value::of(el.get<int64_t>()); return true; }
+  if (type == utils::type_name<uint8_t>())  { out = value::of(int64_t(el.get<uint8_t>())); return true; }
+  if (type == utils::type_name<uint16_t>()) { out = value::of(int64_t(el.get<uint16_t>())); return true; }
+  if (type == utils::type_name<uint32_t>()) { out = value::of(int64_t(el.get<uint32_t>())); return true; }
+  if (type == utils::type_name<uint64_t>()) { out = value::of(int64_t(el.get<uint64_t>())); return true; }
+  if (type == utils::type_name<float>())    { out = value::of(real_t(el.get<float>())); return true; }
+  if (type == utils::type_name<double>())   { out = value::of(real_t(el.get<double>())); return true; }
+  if (type == utils::type_name<entity_id>()){ out = value::of(el.get<entity_id>()); return true; }
+  return false;
+}
+
+inline void bind_call(const ds::script_container& program, const call_context& call, ds::context* vm) {
+  for (const auto& a : call.arguments()) {
+    for (size_t i = 0; i < program.args.size(); ++i) {
+      if (utils::string_hash(program.get_arg_name(i)) != a.name) continue;
+      value_to_ds(a.data, program.args[i].type, [vm, i](const auto& v) { vm->set_arg(i, v); });
+      break;
+    }
+  }
+
+  for (const auto& l : call.lists()) {
+    for (size_t i = 0; i < program.lists.size(); ++i) {
+      if (utils::string_hash(program.get_list_name(i)) != l.name || i >= vm->lists.size()) continue;
+      auto& dst = vm->lists[i];
+      dst.clear();
+      dst.reserve(l.values.size());
+      for (const auto& v : l.values) {
+        ds::stack_element el{};
+        if (value_to_ds(v, program.lists[i].type, [&el](const auto& x) { el.set(x); })) dst.push_back(el);
+      }
+      break;
+    }
+  }
+}
+
+inline void collect_call(const ds::script_container& program, call_context& call, const ds::context* vm) {
+  for (size_t i = 0; i < program.args.size(); ++i) {
+    value out;
+    if (value_from_ds(vm->arg_type(i), vm->args_stack.element(i), out)) call.argument(program.get_arg_name(i)) = out;
+  }
+
+  for (size_t i = 0; i < program.lists.size() && i < vm->lists.size(); ++i) {
+    auto& dst = call.list(program.get_list_name(i)).values;
+    dst.clear();
+    dst.reserve(vm->lists[i].size());
+    for (const auto& el : vm->lists[i]) {
+      value out;
+      if (value_from_ds(program.lists[i].type, el, out)) dst.push_back(out);
+    }
+  }
+}
 }
 
 // ── нативная C++-функция: сырой указатель, без std::function (горячий путь A*) ──
 template <typename RetT>
 struct native_function final : public function<RetT> {
-  using fn_t = RetT (*)(const exec_context&);
+  using legacy_fn_t = RetT (*)(const exec_context&);
+  using fn_t = RetT (*)(const exec_context&, call_context&);
+  legacy_fn_t legacy_fn = nullptr;
   fn_t fn = nullptr;
   std::string desc; // опциональное человекочитаемое описание для describe
 
+  explicit native_function(const legacy_fn_t f, std::string d = {}) noexcept
+    : function<RetT>(detail::category_of<RetT>()), legacy_fn(f), desc(std::move(d)) {}
   explicit native_function(const fn_t f, std::string d = {}) noexcept
     : function<RetT>(detail::category_of<RetT>()), fn(f), desc(std::move(d)) {}
 
-  RetT invoke(const exec_context& ctx) const override { return fn(ctx); }
+  using function<RetT>::invoke;
+  RetT invoke(const exec_context& ctx, call_context& call) const override {
+    if constexpr (std::is_void_v<RetT>) {
+      if (fn != nullptr) fn(ctx, call); else legacy_fn(ctx);
+      call.result = value{};
+    } else {
+      const RetT ret = fn != nullptr ? fn(ctx, call) : legacy_fn(ctx);
+      call.result = detail::to_value(ret);
+      return ret;
+    }
+  }
   void describe(const exec_context&, const describe_callback& out) const override {
     if (!desc.empty() && out) out(desc);
   }
@@ -99,20 +225,28 @@ struct script_function final : public function<RetT> {
   explicit script_function(const ds::container* p, const seed_fn s = nullptr) noexcept
     : function<RetT>(detail::category_of<RetT>()), program(p), seed(s) {}
 
-  RetT invoke(const exec_context& ctx) const override {
+  using function<RetT>::invoke;
+  RetT invoke(const exec_context& ctx, call_context& call) const override {
     ds::context* vm = ctx.vm;
     if (vm == nullptr) utils::error{}("act::script_function::invoke: exec_context.vm не задан (нужен пер-воркер ds::context)");
     vm->clear();
     vm->userptr = const_cast<exec_context*>(&ctx); // задел под effect_sink: эффекты читают ctx через userptr
     if (program->max_lists != 0) vm->create_lists(program);
     if (seed != nullptr) seed(ctx, vm);            // set_arg(0, root_scope) + опц. именованные аргументы
+    detail::bind_call(*program, call, vm);
     program->process(vm);
+    detail::collect_call(*program, call, vm);
     if constexpr (std::is_void_v<RetT>) {
+      call.result = value{};
       return; // effect: process() уже применил эффект
     } else if constexpr (std::is_same_v<RetT, bool>) {
-      return vm->is_return<bool>() ? vm->get_return<bool>() : false;
+      const bool ret = vm->is_return<bool>() ? vm->get_return<bool>() : false;
+      call.result = value::of(ret);
+      return ret;
     } else if constexpr (std::is_same_v<RetT, real_t>) {
-      return static_cast<real_t>(vm->get_return<double>());
+      const real_t ret = static_cast<real_t>(vm->get_return<double>());
+      call.result = value::of(ret);
+      return ret;
     } else {
       // string (utils::id) и object (entity_id): маршалинг возврата ещё не определён — см. план (Risk 1).
       utils::error{}("act::script_function::invoke: маршалинг этой категории возврата ещё не реализован");
@@ -137,7 +271,8 @@ struct lua_function final : public function<RetT> {
   lua_State* L = nullptr; int ref = 0;
   lua_function(lua_State* l, const int r) noexcept
     : function<RetT>(detail::category_of<RetT>()), L(l), ref(r) {}
-  RetT invoke(const exec_context&) const override {
+  using function<RetT>::invoke;
+  RetT invoke(const exec_context&, call_context&) const override {
     utils::error{}("act::lua_function::invoke не реализован (бэкенд lua ещё не подключён)");
     if constexpr (!std::is_void_v<RetT>) return RetT{};
   }

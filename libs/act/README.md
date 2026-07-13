@@ -40,7 +40,8 @@ native C++, будущим `devils_script`, Lua или другим слоем.
 ```cpp
 template <typename RetT>
 struct function : function_base {
-  virtual RetT invoke(const exec_context& ctx) const = 0;
+  virtual RetT invoke(const exec_context& ctx, call_context& call) const = 0;
+  RetT invoke(const exec_context& ctx) const; // совместимый вызов без args/lists
 };
 ```
 
@@ -56,10 +57,11 @@ struct function : function_base {
 
 Реализованный backend сегодня - `native_function<RetT>`.
 
-Он хранит сырой function pointer:
+Он хранит один из двух сырых function pointer:
 
 ```cpp
-using fn_t = RetT (*)(const exec_context&);
+using legacy_fn_t = RetT (*)(const exec_context&);
+using fn_t = RetT (*)(const exec_context&, call_context&);
 ```
 
 Это сделано без `std::function`, потому что часть вызовов находится в горячем
@@ -73,16 +75,16 @@ tooltip'ы, объяснение "почему нельзя", предпросм
 
 ## Script и Lua Backends
 
-В коде уже есть классы:
+В коде есть классы:
 
 - `script_function<RetT>`;
 - `lua_function<RetT>`.
 
-Сейчас это заглушки: `invoke` и `describe` вызывают `utils::error`.
-
-Назначение будущего `script_function` - исполнять скомпилированный
-`devils_script` container на `exec_context`. Это основной путь для описания
-gameplay-функций из конфигов и модулей.
+`script_function<bool/real_t/void>` исполняет скомпилированный `devils_script`
+container на per-worker `exec_context::vm`. Именованные значения и списки из
+`call_context` связываются с `ctx:arg`/`ctx:list` до process и забираются обратно
+после него. String/object/vector marshalling пока не завершён. `lua_function`
+остаётся заглушкой.
 
 Lua backend отмечен как guest/UI-слой. Он не должен стать основным backend'ом
 для mutating simulation effects: эффекты симуляции должны оставаться
@@ -257,10 +259,12 @@ GOAP, FSM или script не обязаны мутировать мир сраз
 - описывать gameplay-функции по категории возврата;
 - хранить generic `function_base`;
 - вызывать typed `function<RetT>::invoke(ctx)`;
+- передавать общий mutable `call_context` с named in/out args, result и lists в native и ds backend;
 - регистрировать native C++ functions;
+- исполнять `script_function<bool/real_t/void>` поверх devils_script;
 - отдавать typed lookup из `registry`;
 - хранить optional description и вызывать `describe`;
-- передавать immutable `exec_context`;
+- отделять immutable `exec_context` от mutable данных конкретного вызова;
 - задавать deterministic counter-free random через `ctx.random(purpose)`;
 - различать dry-run и effect mode через `exec_context::sink`;
 - описывать generic effect arguments через `act::value`;
@@ -271,7 +275,8 @@ GOAP, FSM или script не обязаны мутировать мир сраз
 Основной каркас готов, но большая часть ценности `act` появится после следующих
 шагов:
 
-- реализовать `script_function<RetT>` поверх `devils_script`;
+- завершить string/object/vector marshalling `call_context` ↔ devils_script;
+- консолидировать регистрацию native building blocks в ds при сохранении act как фасада источников;
 - определить формат конфигов, которые регистрируют gameplay-функции в
   `act::registry`;
 - добавить загрузку этих функций из модулей/ресурсов;
