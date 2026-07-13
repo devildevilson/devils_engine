@@ -375,7 +375,7 @@ External job сейчас означает переход, который loader
 
 Текущие реальные потребители:
 
-- `tests/tile_frontier` строит engine registry для config/render_config/shaders
+- `subprojects/tile_frontier` строит engine registry для config/render_config/shaders
   и отдельный assets registry для game resources;
 - `painter` использует demiurg resources для shader sources, render config
   source, pipeline cache, mesh/texture resources;

@@ -29,14 +29,9 @@ set(SRC_LIST
   src/painter/pipeline_cache_resource.cpp
   src/painter/makers.cpp
   src/painter/shader_crafter.cpp
-  #src/painter/system.cpp
   src/painter/system_info.cpp
   src/painter/vulkan_header.cpp
-  #src/painter/image_pool.cpp
-  #src/painter/hierarchical_image_container.cpp
-  #src/painter/arbitrary_image_container.cpp
   src/painter/shader_source_file.cpp
-  #src/painter/execution_pass.cpp
   src/painter/common.cpp 
   src/painter/structures.cpp
   src/painter/graphics_base.cpp
@@ -68,21 +63,14 @@ set(HDR_LIST
   include/devils_engine/painter/render_config_source.h
   include/devils_engine/painter/makers.h
   include/devils_engine/painter/shader_crafter.h
-  #include/devils_engine/painter/system.h
   include/devils_engine/painter/system_info.h
   include/devils_engine/painter/vulkan_header.h
-  include/devils_engine/painter/shader_guru.h
   include/devils_engine/painter/vulkan_minimal.h
-  #include/devils_engine/painter/image_pool.h
-  #include/devils_engine/painter/arbitrary_image_container.h
-  #include/devils_engine/painter/hierarchical_image_container.cpp
   include/devils_engine/painter/shader_source_file.h
-  #include/devils_engine/painter/execution_pass.h 
   include/devils_engine/painter/common.h
   include/devils_engine/painter/common_steps.h
   include/devils_engine/painter/structures.h
   include/devils_engine/painter/graphics_base.h
-  include/devils_engine/painter/graphics_simul.h
   include/devils_engine/painter/assets_base.h
   "${DEVILS_SHARED_SHADER_INCLUDE_TEXT}"
  "include/devils_engine/painter/device_features.h")

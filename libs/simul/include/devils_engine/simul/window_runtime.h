@@ -10,7 +10,10 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#if defined(__linux__)
 #include <unistd.h>
+#endif
 
 #include <devils_engine/bindings/lua_header.h>
 #include <devils_engine/catalogue/logging.h>
@@ -61,6 +64,7 @@ inline void default_window_error_callback(int, const char* msg) noexcept {
 }
 
 inline size_t read_process_rss_bytes() {
+#if defined(__linux__)
   std::FILE* f = std::fopen("/proc/self/statm", "r");
   if (f == nullptr) return 0;
   long total = 0, resident = 0;
@@ -68,6 +72,9 @@ inline size_t read_process_rss_bytes() {
   std::fclose(f);
   if (got != 2) return 0;
   return size_t(resident) * size_t(::sysconf(_SC_PAGESIZE));
+#else
+  return 0;
+#endif
 }
 
 namespace glfw_const {

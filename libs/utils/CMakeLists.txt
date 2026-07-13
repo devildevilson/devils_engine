@@ -69,18 +69,12 @@ set(HDR_LIST
   include/devils_engine/utils/compression.h
   include/devils_engine/utils/load_stage.h 
   include/devils_engine/utils/loader.h 
-  include/devils_engine/utils/prng_string.h 
   include/devils_engine/utils/locale-utils.hpp
-  include/devils_engine/utils/shared_data_system.h 
-  include/devils_engine/utils/serializable.h
   include/devils_engine/utils/event_dispatcher.h
   include/devils_engine/utils/event_consumer.h
-  include/devils_engine/utils/context_stack.h
   include/devils_engine/utils/shared.h
   include/devils_engine/utils/kd_tree.h
-  include/devils_engine/utils/perf.h
-  #include/devils_engine/utils/patterns.h
- "include/devils_engine/utils/actor_ref.h" "include/devils_engine/utils/string_id.h")
+ "include/devils_engine/utils/string_id.h")
 
 # mess, why do I made this?
 add_library(devils_utils ${SRC_LIST} ${HDR_LIST})

@@ -305,7 +305,7 @@ Durations настраиваются через:
 
 - `painter` использует Vulkan/GLFW helpers для instance extensions,
   presentation support и surface creation;
-- `tests/tile_frontier` использует window creation, callbacks, cursor position,
+- `subprojects/tile_frontier` использует window creation, callbacks, cursor position,
   framebuffer size и poll events;
 - render thread получает уже созданный `GLFWwindow*` и создает surface через
   `input::create_window_surface`.

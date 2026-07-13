@@ -13,7 +13,6 @@ set(PROJECT_EXTERNAL_DEPENDENCY_DIR ${CMAKE_CURRENT_LIST_DIR}/external)
 #add_subdirectory(../)
 
 set(HDR_LIST
-  include/core/actors.h
   include/core/config.h
   include/core/messages.h
   include/core/instance_layout.h

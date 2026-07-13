@@ -10,8 +10,6 @@
 
 #include <devils_engine/simul/messages.h>
 
-#include "actors.h"
-
 // Контракты между системами: структуры, которые ходят через диспетчер сообщений.
 // Это намеренно "тупые" POD-подобные сообщения без логики и без тяжёлых зависимостей
 // (окно/пул объявлены вперёд), чтобы хедер был дешёвым для включения отовсюду.
@@ -23,6 +21,14 @@ namespace tile_frontier {
 namespace core {
 
 using namespace devils_engine;
+
+// Уникальный id задачи НА КАЖДЫЙ вызов. Это не actor/type id: sound::system2
+// дедуплицирует задачи по taskid, поэтому всем сообщениям нужен монотонный id.
+// Счётчик atomic, потому что id раздают sim/main потоки.
+inline size_t generate_task_id() noexcept {
+  static std::atomic<size_t> counter{0};
+  return counter.fetch_add(1, std::memory_order_relaxed);
+}
 
 // все равно придется делить по типам ресурсов
 // помоему только за звуком нужно вот так следить

@@ -172,22 +172,11 @@ public:
 `world::create_system<T>(...)` создает объект во внутреннем arbitrary container
 мира и подписывает его на `update_event`. `remove_system` отписывает и удаляет.
 
-В `simple_systems.h` есть два шаблона:
-
-- `template_system<Comp_T...>`;
-- `template_system_mt<Comp_T...>`.
-
-`template_system` держит `world::query_t<Comp_T...>` и на каждом update вызывает
-`process(tuple)` для всех сущностей query.
-
-`template_system_mt` делает то же самое через `thread::atomic_pool`: делит
-индексы query по worker'ам, вызывает `process(query[i])`, затем делает
-`compute()` и `wait()`.
-
-Это текущая общая форма gameplay systems в `libs/aesthetics`: система получает
-готовый список сущностей/компонентов, пробегает его и вычисляет gameplay. Явного
-дополнительного слоя очереди здесь не требуется: пользователь быстро проходит
-по уже материализованному `query_t`.
+Ранний `simple_systems.h` (`template_system`/`template_system_mt`) перенесён в
+корневой `exclude/`: живых потребителей у него не было, а простой
+query→`process()` wrapper не выражает нужный контракт фаз, intent и
+детерминированного apply. Новый декларативный system pipeline следует строить
+поверх явных `view/query` и scratch/batch границ, не возрождая этот API случайно.
 
 ## Многопоточность
 
@@ -201,7 +190,7 @@ thread-safe контейнером.
 - worker'ы пишут в непересекающиеся компоненты или в thread-local output;
 - apply-фаза сортирует/сливает результаты детерминированно.
 
-Такой паттерн используется в `tests/tile_frontier`: cognition выбирает акторов
+Такой паттерн используется в `subprojects/tile_frontier`: cognition выбирает акторов
 по бюджету, worker'ы считают решения и intents, затем apply-фаза стабильно
 меняет компоненты.
 
