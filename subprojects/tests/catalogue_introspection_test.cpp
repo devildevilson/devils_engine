@@ -35,7 +35,7 @@ void reset_gold() noexcept {
   g_gold = 0;
 }
 
-void inspect_long_type(const devils_engine::catalogue_test_types::very_long_argument_type_name_that_should_not_fit_into_catalogue_value_buffer&) {}
+[[maybe_unused]] void inspect_long_type(const devils_engine::catalogue_test_types::very_long_argument_type_name_that_should_not_fit_into_catalogue_value_buffer&) {}
 
 struct wallet {
   int gold = 0;

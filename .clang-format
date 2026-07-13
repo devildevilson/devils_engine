@@ -22,7 +22,7 @@ BreakBeforeTernaryOperators: true
 AllowShortBlocksOnASingleLine: Never
 AllowShortFunctionsOnASingleLine: Empty
 AllowShortIfStatementsOnASingleLine: WithoutElse
-AllowShortLoopsOnASingleLine: true
+AllowShortLoopsOnASingleLine: false
 AllowShortCaseLabelsOnASingleLine: true
 AllowShortLambdasOnASingleLine: Empty
 
@@ -42,4 +42,3 @@ KeepEmptyLinesAtTheStartOfBlocks: false
 # Formatting is applied to touched project code, not blindly to the whole tree.
 DisableFormat: false
 ...
-
