@@ -52,6 +52,11 @@ void advancer::run(std::stop_token st, const size_t wait_mcs) {
     clock_t::time_point next_tp;
     {
       std::unique_lock l(mutex);
+      stop = stop_predicate() || _stop || st.stop_requested();
+      if (stop) {
+        break;
+      }
+
       if (_frame_time != new_frame_time) {
         _frame_time = new_frame_time;
         _start = clock_t::now();

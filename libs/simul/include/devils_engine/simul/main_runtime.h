@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include <devils_engine/catalogue/logging.h>
@@ -21,6 +22,7 @@
 #include <devils_engine/painter/shader_source_file.h>
 #include <devils_engine/simul/boot_config.h>
 #include <devils_engine/simul/render_config.h>
+#include <devils_engine/simul/systems.h>
 #include <devils_engine/thread/atomic_pool.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/fileio.h>
@@ -65,6 +67,9 @@ template <typename Settings>
 void sync_engine_boot_config(engine_boot_config& engine, const Settings& settings) {
   engine.render_enabled = settings.render.enabled;
   engine.sound_enabled = settings.simulation.sound_enabled;
+  if constexpr (requires { settings.simulation.assets_enabled; }) {
+    engine.assets_enabled = settings.simulation.assets_enabled;
+  }
   engine.headless = settings.render.headless;
   engine.main_fps = settings.simulation.main_fps;
   engine.render_fps = settings.simulation.render_fps;
@@ -214,6 +219,9 @@ void init_standard_bootstrap(Bootstrap& boot) {
   if (!boot.engine.sound_enabled && reserved_threads > 0) {
     reserved_threads -= 1;
   }
+  if (!boot.engine.assets_enabled && reserved_threads > 0) {
+    reserved_threads -= 1;
+  }
   const uint32_t min_worker_threads = std::max(boot.engine.min_worker_threads, 1u);
   const uint32_t thread_count = std::max(
     hw_threads > reserved_threads ? hw_threads - reserved_threads : min_worker_threads,
@@ -233,6 +241,54 @@ void init_standard_bootstrap(Bootstrap& boot) {
   boot.pool_container.reset(new thread::atomic_pool(thread_count));
   boot.pool = boot.pool_container.get();
 }
+
+template <typename Bootstrap>
+void configure_standard_worker_pool(Bootstrap& boot, const size_t worker_count) {
+  constexpr int64_t standard_worker_slots = 3;
+  const int64_t configured = int64_t(boot.engine.worker_threads_reserved);
+  const int64_t topology_delta = int64_t(worker_count) - standard_worker_slots;
+  const uint32_t reserved_threads = uint32_t(std::max<int64_t>(configured + topology_delta, 1));
+  const uint32_t hw_threads = std::max(std::thread::hardware_concurrency(), 1u);
+  const uint32_t min_worker_threads = std::max(boot.engine.min_worker_threads, 1u);
+  const uint32_t thread_count = std::max(
+    hw_threads > reserved_threads ? hw_threads - reserved_threads : min_worker_threads,
+    min_worker_threads);
+
+  if (boot.pool_container != nullptr && boot.pool_container->size() == thread_count) {
+    return;
+  }
+
+  DE_LOG(catalogue::log_domain::main, flow,
+         "Runtime topology: {} worker systems, {} reserved threads, {} pool threads",
+         worker_count,
+         reserved_threads,
+         thread_count);
+  boot.pool_container = std::make_unique<thread::atomic_pool>(thread_count);
+  boot.pool = boot.pool_container.get();
+}
+
+template <typename AppConfigResource>
+struct standard_app_runtime_traits {
+  template <typename Bootstrap>
+  static void init_bootstrap(Bootstrap& boot) {
+    init_standard_bootstrap<AppConfigResource>(boot);
+  }
+
+  template <typename Bootstrap>
+  static bool save_settings(Bootstrap& boot) {
+    return simul::save_settings(boot);
+  }
+
+  template <typename Bootstrap>
+  static bool reload_settings(Bootstrap& boot) {
+    return simul::reload_settings(boot);
+  }
+
+  template <typename Bootstrap, typename Workers>
+  static void configure_topology(Bootstrap& boot, const Workers& workers) {
+    configure_standard_worker_pool(boot, workers.size());
+  }
+};
 
 template <typename Bootstrap>
 void prepare_pipeline_cache(Bootstrap& boot, const std::string& pipeline_cache_id) {
@@ -275,6 +331,41 @@ std::unique_ptr<RenderType> make_standard_render(Bootstrap& boot, std::string ap
   render_cfg.create_vulkan_on_init = boot.engine.headless;
 
   return std::make_unique<RenderType>(render_ft, std::move(render_cfg));
+}
+
+template <typename RenderType, typename AssetsType, typename SoundType, typename Bootstrap>
+auto make_standard_workers(Bootstrap& boot, std::string app_name) {
+  using broker_type = typename RenderType::broker_type;
+  static_assert(std::is_same_v<broker_type, typename AssetsType::broker_type>);
+  static_assert(std::is_same_v<broker_type, typename SoundType::broker_type>);
+
+  worker_systems<broker_type> workers;
+  const auto start_gap = [&boot](const auto& system) {
+    return thread_start_gap(system.frame_time(), boot.engine.thread_start_gap_divisor);
+  };
+
+  if (boot.engine.sound_enabled) {
+    auto sound = std::make_unique<SoundType>(frame_time_from_fps(boot.engine.sound_fps));
+    const auto wait = start_gap(*sound);
+    workers.add(std::move(sound), wait, 2);
+  } else {
+    DE_LOG(catalogue::log_domain::main, flow, "main: sound disabled, skipping sound subsystem");
+  }
+
+  if (auto render = make_standard_render<RenderType>(boot, std::move(app_name))) {
+    const auto wait = start_gap(*render);
+    workers.add(std::move(render), wait, 0);
+  }
+
+  if (boot.engine.assets_enabled) {
+    auto assets = std::make_unique<AssetsType>(frame_time_from_fps(boot.engine.assets_fps));
+    const auto wait = start_gap(*assets);
+    workers.add(std::move(assets), wait, 1);
+  } else {
+    DE_LOG(catalogue::log_domain::main, flow, "main: assets disabled, skipping assets subsystem");
+  }
+
+  return workers;
 }
 
 } // namespace simul
