@@ -11,6 +11,7 @@
 #include <devils_engine/input/core.h>
 #include <devils_engine/painter/gpu_texture_resource.h>
 #include <devils_engine/simul/loading_runtime.h>
+#include <devils_engine/simul/lua_app_bindings.h> // движковые app-биндинги: звук/image/lifecycle
 #include <devils_engine/simul/lua_resource_bindings.h>
 #include <devils_engine/simul/lua_script_resource.h>
 #include <devils_engine/simul/pause.h>
@@ -63,28 +64,7 @@ constexpr size_t main_frame_time = utils::round(double(utils::global_time_resolu
 constexpr uint32_t initial_actor_count = 4096;
 //constexpr uint32_t initial_actor_count = 64000;
 
-namespace {
-// Lua-ОБЁРТКА id звуковой задачи. Живёт ТОЛЬКО здесь, на границе биндинга — в контракте
-// сообщений (command_sound) ходит голый size_t, чтобы не тащить лишний тип по всем хедерам.
-// Смысл обёртки чисто lua-шный: usertype без арифметических метаметодов, поэтому скрипт не
-// сделает над id вычислений и не передаст случайное число в поле after (секвенсинг).
-struct sound_handle {
-  size_t value = SIZE_MAX;
-  bool valid() const noexcept {
-    return value != SIZE_MAX;
-  }
-};
-
-// Main-локальная запись таблицы состояния звука. = wire-запись (taskid/progress) + deadline:
-// 0 — ПОДТВЕРЖДЕНА последней публикацией звука; >0 — ОПТИМИСТИЧНАЯ (только что запрошен play,
-// ещё не доехал в публикацию), живёт до этого main-кадра. Срок отличает «ещё не стартовал»
-// (вернём 0) от «уже закончился» (nil), убирая отдельный pending-контейнер.
-struct ui_sound_state_entry {
-  size_t taskid;
-  double progress;
-  size_t deadline;
-};
-} // namespace
+// sound_handle и ui_sound_state_entry — движковые типы звукового плеера (simul::lua_app_bindings.h).
 
 // тут что? все другие системы + потоки для них + тред пул
 // кеш?
@@ -186,8 +166,8 @@ struct simulation_init : public simul::standard_loading_state {
   // Единая таблица состояния звука для UI (app.sound_state). Звуковой поток ПУШИТ полный слепок
   // (command_sound_state, latest-wins мейлбокс); consume в update СЛИВАЕТ его с оптимистичными
   // записями, добавленными в app.play_sound (см. ui_sound_state_entry.deadline).
-  std::vector<ui_sound_state_entry> sound_state;
-  std::vector<ui_sound_state_entry> sound_state_next;
+  std::vector<simul::ui_sound_state_entry> sound_state;
+  std::vector<simul::ui_sound_state_entry> sound_state_next;
   size_t sound_frame = 0; // счётчик main-кадров (для дедлайна оптимистичных записей)
 
   simulation_init() : window(nullptr), monitor(nullptr) {}
@@ -335,187 +315,25 @@ void simulation::start_project_ui() {
   {
     auto* cptr = &c;
     auto& L = c.ui->script_state();
-    L.new_usertype<sound_handle>("sound_handle",
-                                 sol::no_constructor,
-                                 "valid", &sound_handle::valid);
-
     sol::environment env = c.ui->script_env();
     sol::table app = env["app"].get_or_create<sol::table>(); // общий namespace хост-биндингов
 
+    // Движковые биндинги регистрирует ДВИЖОК через simul-хелперы: ресурсы, звук, окно/ввод, картинка,
+    // lifecycle/pause/logging. Проектные (loading_progress по чанкам, perf_stats) — ниже.
     simul::install_resource_lua_bindings(
       L,
       env,
       nullptr,
       c.assets_sim != nullptr ? c.assets_sim->resources() : nullptr,
       c.ui_resource_scope);
+    simul::install_sound_lua_bindings(app, c, systems().sound);
+    simul::install_window_lua_bindings(app, c, bootstrap()->settings, systems().sound, [this]() { request_quit(); });
+    simul::install_image_lua_binding(app, c);
+    simul::install_app_lifecycle_bindings(app, *this);
 
-    // первый аргумент — sol::object (resource_handle ИЛИ таблица-опции с полем resource/res), второй —
-    // необязательная таблица-опции (когда ресурс задан первым аргументом). sol::object у НЕпоследнего
-    // параметра безопаснее sol::optional (тот съедает не тот слот стека при nil).
-    app.set_function("play_sound",
-                     [this, cptr](sol::object a, sol::optional<sol::table> b) -> sound_handle {
-                       auto& c = *cptr;
-                       if (!systems().sound) {
-                         return sound_handle{};
-                       }
-
-                       demiurg::resource_handle sound_res;
-                       sol::optional<sol::table> opts;
-                       if (a.is<sol::table>()) {
-                         opts = a.as<sol::table>();
-                         const sol::optional<demiurg::resource_handle> resource = (*opts)["resource"];
-                         const sol::optional<demiurg::resource_handle> res = (*opts)["res"];
-                         if (resource) {
-                           sound_res = *resource;
-                         } else if (res) {
-                           sound_res = *res;
-                         }
-                       } else if (a.is<demiurg::resource_handle>()) {
-                         sound_res = a.as<demiurg::resource_handle>();
-                         opts = b;
-                       }
-                       if (sound_res.get() == nullptr) {
-                         return sound_handle{};
-                       }
-
-                       command_sound_play play{};
-                       play.taskid = generate_task_id();
-                       play.after = SIZE_MAX;
-                       play.start = 0.0;
-                       if (opts) {
-                         play.start = std::clamp(opts->get_or("start", 0.0), 0.0, 1.0);
-                         const sol::optional<sound_handle> after = (*opts)["after"];
-                         if (after && after->valid()) {
-                           play.after = after->value; // хэндл → секвенсинг
-                         }
-                       }
-                       play.res = resource_ref::from_handle(sound_res);
-                       c.br->sound_play.try_push(play);
-                       // оптимистичная запись в ту же таблицу: пока play не доедет в публикацию (latency
-                       // 1-2 кадра), app.sound_state по ней вернёт 0, а не nil (deadline = окно старта).
-                       constexpr size_t startup_grace_frames = 30;
-                       c.sound_state.push_back({play.taskid, 0.0, c.sound_frame + startup_grace_frames});
-                       return sound_handle{play.taskid};
-                     });
-
-    app.set_function("stop_sound", [this, cptr](const sound_handle& h) {
-      auto& c = *cptr;
-      if (!systems().sound || !h.valid()) {
-        return;
-      }
-      command_sound_stop stop{};
-      stop.taskid = h.value;
-      c.br->sound_stop.try_push(stop);
-    });
-
-    // ищет id в единой таблице sound_state. Возвращает прогресс [0,1] или nil. Раз вернули
-    // число — звук в обработке (играет/в очереди/только что запрошен); nil — задачи уже нет.
-    // Оптимистичная запись с истёкшим окном старта (так и не доехала) трактуется как nil.
-    app.set_function("sound_state", [cptr](const sound_handle& h) -> sol::object {
-      auto& c = *cptr;
-      auto& lua = c.ui->script_state();
-      if (!h.valid()) {
-        return sol::nil;
-      }
-      for (const auto& s : c.sound_state) {
-        if (s.taskid != h.value) {
-          continue;
-        }
-        if (s.deadline != 0 && c.sound_frame > s.deadline) {
-          return sol::nil; // окно вышло
-        }
-        return sol::make_object(lua, s.progress);
-      }
-      return sol::nil;
-    });
-
-    // Общий API управления окном/вводом: quit_game/maximize/restore/fullscreen/resolution/actions.
-    simul::install_window_lua_bindings(
-      app,
-      c,
-      bootstrap()->settings,
-      systems().sound,
-      [this]() {
-        request_quit();
-      });
-
-    // Смена звукового устройства: пере-создаём system2 через уже существующий канал recreate.
-    app.set_function("set_sound_device", [this, cptr](const std::string& name) {
-      auto& c = *cptr;
-      if (!systems().sound || c.br == nullptr) {
-        return;
-      }
-      c.br->recreate_sound.try_push(command_recreate_sound_system{name});
-    });
-
-    // картинка для UI (хост-мост к demiurg): app.image(resource_handle [, {region={x,y,w,h}}]) -> visage::image | nil.
-    // Строит хендл из gpu_index+размера когда текстура usable() (на GPU), иначе nil.
-    app.set_function("image", [cptr](sol::object resource, sol::optional<sol::table> opts) -> sol::object {
-      auto& c = *cptr;
-      auto& lua = c.ui->script_state();
-      if (!resource.is<demiurg::resource_handle>()) {
-        return sol::nil;
-      }
-      const auto handle = resource.as<demiurg::resource_handle>();
-      if (!c.ui_resource_scope->contains(handle)) {
-        return sol::nil;
-      }
-      auto* tex = handle.get<painter::gpu_texture_resource>();
-      if (tex == nullptr || !tex->usable()) {
-        return sol::nil; // ещё не на GPU
-      }
-      visage::image img{};
-      img.texture_id = tex->gpu_index;
-      img.w = uint16_t(tex->width);
-      img.h = uint16_t(tex->height);
-      if (opts) {
-        const sol::optional<sol::table> region = (*opts)["region"];
-        if (region) {
-          for (int i = 0; i < 4; ++i) {
-            img.region[i] = uint16_t(region->get_or(i + 1, 0));
-          }
-        }
-      }
-      return sol::make_object(lua, img);
-    });
-
-    // состояние движка для UI (шаг 3a): lua рисует splash/loading/game по app.state(),
-    // прогресс-бар — по app.loading_progress() [0,1].
-    app.set_function("state", [cptr]() -> std::string {
-      const auto& c = *cptr;
-      return std::string(simul::to_string(c.lifecycle.phase()));
-    });
-    app.set_function("runtime_state", [cptr]() -> std::string {
-      auto* state = cptr->current_runtime_state.get();
-      return state != nullptr ? std::string(state->id) : std::string{};
-    });
-    app.set_function("request_state", [this](const std::string& id) -> bool {
-      return request_runtime_state(id);
-    });
+    // Проектный биндинг: прогресс загрузки (зависит от чанков мира — считается локально в проекте).
     app.set_function("loading_progress", [cptr]() -> double {
       return loading_progress(*cptr);
-    });
-    app.set_function("set_paused", [cptr](const bool value) {
-      cptr->pause.set_world(value);
-    });
-    app.set_function("paused", [cptr]() {
-      return cptr->pause.paused(simul::pause_domain::gameplay);
-    });
-
-    // рантайм-переключение глубины логгирования домена (работает и в release): app.set_log_level("sound","trace").
-    // Домены: main/assets/sound/render/ui/gameplay/resource/demiurg; глубина: off/info/flow/trace.
-    app.set_function("set_log_level", [](const std::string& domain, const std::string& depth) -> bool {
-      catalogue::log_depth d = catalogue::log_depth::off;
-      if (!catalogue::parse_log_depth(depth, d)) {
-        utils::warn("set_log_level: bad depth '{}'", depth);
-        return false;
-      }
-      if (!catalogue::logs().set_level(domain, d)) {
-        utils::warn("set_log_level: unknown domain '{}'", domain);
-        return false;
-      }
-      utils::info("log domain '{}' -> {}", domain, depth);
-      return true;
     });
 
     // perf-статистика фаз апдейта актора (catalogue). Актор-сим и UI — один поток, читаем напрямую.
@@ -1034,34 +852,8 @@ void simulation::on_visage_before_update() {
   c.ui->set_env_number("tf_instances_per_sec", c.ui_instances_per_sec);
   c.ui->set_env_number("tf_actor_update_avg_us", c.ui_actor_update_avg_us);
 
-  c.sound_frame += 1;
-  if (const command_sound_state* msg = c.br ? c.br->sound_state.consume() : nullptr) {
-    auto& cur = c.sound_state;
-    auto& next = c.sound_state_next;
-    next.clear();
-    for (const auto& s : msg->sounds) {
-      next.push_back({s.taskid, s.progress, 0});
-    }
-    for (const auto& e : cur) {
-      if (e.deadline == 0) {
-        continue;
-      }
-      if (e.deadline < c.sound_frame) {
-        continue;
-      }
-      bool in_pub = false;
-      for (const auto& s : msg->sounds) {
-        if (s.taskid == e.taskid) {
-          in_pub = true;
-          break;
-        }
-      }
-      if (!in_pub) {
-        next.push_back(e);
-      }
-    }
-    std::swap(cur, next);
-  }
+  // Движковое слияние оптимистичного sound_state с публикацией звукового треда.
+  simul::advance_sound_state(c);
 }
 
 } // namespace core
