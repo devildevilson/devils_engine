@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_DEMIURG_CATALOGUE_DOMAIN_H
 #define DEVILS_ENGINE_DEMIURG_CATALOGUE_DOMAIN_H
 
+// Catalogue instrumentation domain for resource discovery and loading work.
+
 #include "devils_engine/catalogue/introspection.h"
 #include "devils_engine/catalogue/logging.h"
 
@@ -15,7 +17,7 @@ using catalogue_domain = catalogue::domain<catalogue_domains::demiurg>;
 
 void install_catalogue_introspection() noexcept;
 
-}
-}
+} // namespace demiurg
+} // namespace devils_engine
 
 #endif

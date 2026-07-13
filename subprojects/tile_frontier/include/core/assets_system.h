@@ -7,7 +7,11 @@
 
 #include "script_environment.h" // проектный devils_script::system + нативки (владеет assets)
 
-namespace devils_engine { namespace demiurg { class resource_system; } }
+namespace devils_engine {
+namespace demiurg {
+class resource_system;
+}
+} // namespace devils_engine
 
 namespace tile_frontier {
 namespace core {
@@ -32,7 +36,7 @@ private:
   script_environment script_env_; // владелец ds::system (парс-тайм); живёт на время приложения
 };
 
-}
-}
+} // namespace core
+} // namespace tile_frontier
 
 #endif

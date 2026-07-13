@@ -30,7 +30,9 @@ public:
   app_runtime(const app_runtime&) = delete;
   app_runtime& operator=(const app_runtime&) = delete;
 
-  ~app_runtime() noexcept { shutdown_workers(); }
+  ~app_runtime() noexcept {
+    shutdown_workers();
+  }
 
   int run() {
     bootstrap_ = Traits::make_bootstrap();
@@ -45,9 +47,15 @@ public:
     notify_stage(runtime_stage::systems_created);
 
     Traits::set_broker(*main_, *broker_);
-    if (sound_) Traits::set_broker(*sound_, *broker_);
-    if (render_) Traits::set_broker(*render_, *broker_);
-    if (assets_) Traits::set_broker(*assets_, *broker_);
+    if (sound_) {
+      Traits::set_broker(*sound_, *broker_);
+    }
+    if (render_) {
+      Traits::set_broker(*render_, *broker_);
+    }
+    if (assets_) {
+      Traits::set_broker(*assets_, *broker_);
+    }
 
     main_->init();
 
@@ -74,25 +82,47 @@ public:
   }
 
   bool save_settings() {
-    if (bootstrap_ == nullptr) return false;
+    if (bootstrap_ == nullptr) {
+      return false;
+    }
     return Traits::save_settings(*bootstrap_);
   }
 
   bool reload_settings() {
-    if (bootstrap_ == nullptr) return false;
+    if (bootstrap_ == nullptr) {
+      return false;
+    }
     const bool loaded = Traits::reload_settings(*bootstrap_);
-    if (loaded && main_) Traits::settings_reloaded(*main_, *bootstrap_);
+    if (loaded && main_) {
+      Traits::settings_reloaded(*main_, *bootstrap_);
+    }
     return loaded;
   }
 
-  broker_type* broker() noexcept { return broker_.get(); }
-  bootstrap_type* bootstrap() noexcept { return bootstrap_.get(); }
-  boot_config_type* boot_config() noexcept { return bootstrap_ != nullptr ? &Traits::boot_config(*bootstrap_) : nullptr; }
-  settings_type* settings() noexcept { return bootstrap_ != nullptr ? &Traits::settings(*bootstrap_) : nullptr; }
-  main_type* main_system() noexcept { return main_.get(); }
-  render_type* render_system() noexcept { return render_.get(); }
-  assets_type* assets_system() noexcept { return assets_.get(); }
-  sound_type* sound_system() noexcept { return sound_.get(); }
+  broker_type* broker() noexcept {
+    return broker_.get();
+  }
+  bootstrap_type* bootstrap() noexcept {
+    return bootstrap_.get();
+  }
+  boot_config_type* boot_config() noexcept {
+    return bootstrap_ != nullptr ? &Traits::boot_config(*bootstrap_) : nullptr;
+  }
+  settings_type* settings() noexcept {
+    return bootstrap_ != nullptr ? &Traits::settings(*bootstrap_) : nullptr;
+  }
+  main_type* main_system() noexcept {
+    return main_.get();
+  }
+  render_type* render_system() noexcept {
+    return render_.get();
+  }
+  assets_type* assets_system() noexcept {
+    return assets_.get();
+  }
+  sound_type* sound_system() noexcept {
+    return sound_.get();
+  }
 
 private:
   void notify_stage(const runtime_stage stage) {
@@ -104,22 +134,34 @@ private:
   void start_workers() {
     if (sound_) {
       const size_t wait = Traits::sound_wait_mcs(*bootstrap_, *sound_);
-      sound_thread_ = std::jthread([sys = sound_.get(), wait](std::stop_token st) { sys->run(st, wait); });
+      sound_thread_ = std::jthread([sys = sound_.get(), wait](std::stop_token st) {
+        sys->run(st, wait);
+      });
     }
     if (render_) {
       const size_t wait = Traits::render_wait_mcs(*bootstrap_, *render_);
-      render_thread_ = std::jthread([sys = render_.get(), wait](std::stop_token st) { sys->run(st, wait); });
+      render_thread_ = std::jthread([sys = render_.get(), wait](std::stop_token st) {
+        sys->run(st, wait);
+      });
     }
     if (assets_) {
       const size_t wait = Traits::assets_wait_mcs(*bootstrap_, *assets_);
-      assets_thread_ = std::jthread([sys = assets_.get(), wait](std::stop_token st) { sys->run(st, wait); });
+      assets_thread_ = std::jthread([sys = assets_.get(), wait](std::stop_token st) {
+        sys->run(st, wait);
+      });
     }
   }
 
   void shutdown_workers() noexcept {
-    if (sound_) sound_->stop();
-    if (render_) render_->stop();
-    if (assets_) assets_->stop();
+    if (sound_) {
+      sound_->stop();
+    }
+    if (render_) {
+      render_->stop();
+    }
+    if (assets_) {
+      assets_->stop();
+    }
 
     // Render joins before window/input destruction in the main system. std::jthread reset requests
     // stop then joins.
@@ -140,7 +182,7 @@ private:
   std::jthread sound_thread_;
 };
 
-}
-}
+} // namespace simul
+} // namespace devils_engine
 
 #endif

@@ -1,64 +1,41 @@
-#include "devils_engine/painter/vulkan_header.h"
-#include "devils_engine/painter/graphics_base.h"
-#include "devils_engine/painter/assets_base.h"
-#include "devils_engine/painter/makers.h"
-#include "devils_engine/painter/auxiliary.h"
-#include "devils_engine/painter/system_info.h"
-#include "devils_engine/utils/core.h"
-#include "devils_engine/input/core.h"
-#include "devils_engine/utils/time-utils.hpp"
-
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "devils_engine/input/core.h"
+#include "devils_engine/painter/assets_base.h"
+#include "devils_engine/painter/auxiliary.h"
+#include "devils_engine/painter/graphics_base.h"
+#include "devils_engine/painter/makers.h"
+#include "devils_engine/painter/system_info.h"
+#include "devils_engine/painter/vulkan_header.h"
+#include "devils_engine/utils/core.h"
+#include "devils_engine/utils/time-utils.hpp"
 
 using namespace devils_engine;
 
 const char* app_name = "fast_test";
 const char* engine_name = "fast_test";
-const uint32_t app_version = VK_MAKE_VERSION(0,0,1);
+const uint32_t app_version = VK_MAKE_VERSION(0, 0, 1);
 const uint32_t engine_version = VK_MAKE_VERSION(0, 0, 1);
 const uint32_t api_version = VK_API_VERSION_1_0;
 
 const uint32_t g_width = 800;
 const uint32_t g_height = 600;
 
-static std::string join_arr(const std::span<const std::string>& arr, const std::string_view& token) {
-  std::string str;
-
-  size_t capacity = 0;
-  for (const auto& s : arr) { capacity += s.size() + token.size(); }
-
-  str.reserve(capacity);
-  for (size_t i = 0; i < arr.size()-1; ++i) {
-    str += arr[i];
-    str += std::string(token);
-  }
-
-  str += arr.back();
-  return str;
-}
-
-static std::string join_arr(const std::span<const std::string_view>& arr, const std::string_view& token) {
-  std::string str;
-
-  size_t capacity = 0;
-  for (const auto& s : arr) { capacity += s.size() + token.size(); }
-
-  str.reserve(capacity);
-  for (size_t i = 0; i < arr.size() - 1; ++i) {
-    str += arr[i];
-    str += std::string(token);
-  }
-
-  str += arr.back();
-  return str;
-}
-
 static std::string join_arr(const std::span<const char* const>& arr, const std::string_view& token) {
   std::string str;
 
   size_t capacity = 0;
-  for (const auto& s : arr) { capacity += strlen(s) + token.size(); }
+  for (const auto& s : arr) {
+    capacity += strlen(s) + token.size();
+  }
 
   str.reserve(capacity);
   for (size_t i = 0; i < arr.size() - 1; ++i) {
@@ -75,7 +52,9 @@ struct input_init : public input::init {
 
   input_init(const input::error_callback cb) noexcept : input::init(cb), w(nullptr) {}
   ~input_init() noexcept {
-    if (w != nullptr) input::destroy(w);
+    if (w != nullptr) {
+      input::destroy(w);
+    }
   }
 };
 
@@ -97,7 +76,7 @@ struct vulkan_init {
     ai.engineVersion = engine_version;
     ai.apiVersion = api_version;
 
-    std::vector<const char*> exts = { "VK_EXT_debug_utils" };
+    std::vector<const char*> exts = {"VK_EXT_debug_utils"};
 
     vk::InstanceCreateInfo ici{};
     ici.pApplicationInfo = &ai;
@@ -105,7 +84,9 @@ struct vulkan_init {
     ici.ppEnabledLayerNames = painter::default_validation_layers.data();
     uint32_t count = 0;
     const auto ptrs = input::get_required_instance_extensions(&count);
-    for (uint32_t i = 0; i < count; ++i) { exts.push_back(ptrs[i]); }
+    for (uint32_t i = 0; i < count; ++i) {
+      exts.push_back(ptrs[i]);
+    }
     ici.enabledExtensionCount = exts.size();
     ici.ppEnabledExtensionNames = exts.data();
 
@@ -154,12 +135,14 @@ struct vulkan_init {
 };
 
 static void error_callback(int err, const char* msg) noexcept {
-  utils::info("Error: {}", msg);
+  utils::info("Error {}: {}", err, msg);
 }
 
 static void print_vec(const std::span<const uint32_t>& arr) {
   utils::print("{ ");
-  for (const auto val : arr) { utils::print(val, " "); }
+  for (const auto val : arr) {
+    utils::print(val, " ");
+  }
   utils::println("}");
 }
 
@@ -186,6 +169,7 @@ int main() {
   auto transfer_queue = dev.getQueue(vk.p_data.transfer_queue, 0);
 
   painter::set_name(dev, graphics_queue, "main_graphics_queue");
+  painter::set_name(dev, compute_queue, "main_compute_queue");
 
   // если по итогу мне нужны треугольники, то нужно сделать что?
   // нужно задать файлики описаний ресурсов, создаю папку тест рендер граф получается
@@ -240,7 +224,9 @@ int main() {
 
   // теперь нужно создать рендер граф
   const uint32_t graph_index = base.find_render_graph("graphics1");
-  if (graph_index == painter::INVALID_RESOURCE_SLOT) utils::error{}("Could not find render graph 'graphics1'");
+  if (graph_index == painter::invalid_resource_slot) {
+    utils::error{}("Could not find render graph 'graphics1'");
+  }
 
   base.populate_constant_default_values();
   base.change_render_graph(graph_index);
@@ -256,13 +242,16 @@ int main() {
   assets.set_graphics_base(&base);
 
   // зададим ресурс для треугольника
-  uint32_t pair_index = painter::INVALID_RESOURCE_SLOT;
+  uint32_t pair_index = painter::invalid_resource_slot;
   {
     const auto tri_h = assets.register_buffer_storage("triangle");
-    painter::buffer_create_info bci{ "g1", 3, 0 };
+    painter::buffer_create_info bci{"g1", 3, 0};
     assets.create_buffer_storage(tri_h, bci);
-    struct buffer_data { float x, y, z; uint32_t c; };
-    const buffer_data buffer_mem[] = { { -1, -1, 0, make_color(1,0,0,1) }, { 1, -1, 0, make_color(0,1,0,1) }, { 0, 1, 0, make_color(0,0,1,1) } };
+    struct buffer_data {
+      float x, y, z;
+      uint32_t c;
+    };
+    const buffer_data buffer_mem[] = {{-1, -1, 0, make_color(1, 0, 0, 1)}, {1, -1, 0, make_color(0, 1, 0, 1)}, {0, 1, 0, make_color(0, 0, 1, 1)}};
     const size_t buffer_mem_size = sizeof(buffer_mem);
     assets.populate_buffer_storage(tri_h, std::span(reinterpret_cast<const uint8_t*>(&buffer_mem[0]), buffer_mem_size), std::span<const uint8_t>());
 
@@ -283,13 +272,15 @@ int main() {
     utils::info("Instance buffer: name '{}', format '{}', offset '{}', stride '{}', role '{}'", inst.name, inst.format, inst.sub.offset, inst.stride, painter::role::to_string(inst.role));
     utils::info("Indirect buffer: name '{}', format '{}', offset '{}', stride '{}', role '{}'", indi.name, indi.format, indi.sub.offset, indi.stride, painter::role::to_string(indi.role));
 
-    struct vec4 { float x,y,z,w; };
+    struct vec4 {
+      float x, y, z, w;
+    };
     auto ptr = reinterpret_cast<vec4*>(&reinterpret_cast<uint8_t*>(inst.mapped)[inst.sub.offset]);
     auto com_ptr = reinterpret_cast<VkDrawIndirectCommand*>(&reinterpret_cast<uint8_t*>(indi.mapped)[indi.sub.offset]);
 
-    ptr[0] = vec4{ 0, 0.5, 0, 0};
-    ptr[1] = vec4{ 0.5, 0, 0, 0};
-    ptr[2] = vec4{ 0,-0.5, 0, 0};
+    ptr[0] = vec4{0, 0.5, 0, 0};
+    ptr[1] = vec4{0.5, 0, 0, 0};
+    ptr[2] = vec4{0, -0.5, 0, 0};
     ptr[3] = vec4{-0.5, 0, 0, 0};
 
     com_ptr[0].vertexCount = 3;

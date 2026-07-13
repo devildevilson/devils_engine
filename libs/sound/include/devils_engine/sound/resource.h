@@ -4,10 +4,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
-#include <span>
+
 #include "common.h"
 #include "decoder.h"
 
@@ -18,12 +19,12 @@ namespace sound {
 // ну или придумать как то иначе, чтобы не хранить лишние строки
 
 #define SOUND_SYSTEM_EXTENSION_LIST \
-  X(mp3)  \
-  X(flac) \
-  X(wav)  \
-  X(ogg)  \
-  X(opus) \
-  X(pcm)  \
+  X(mp3)                            \
+  X(flac)                           \
+  X(wav)                            \
+  X(ogg)                            \
+  X(opus)                           \
+  X(pcm)
 
 struct resource {
   enum class type {
@@ -31,7 +32,7 @@ struct resource {
     SOUND_SYSTEM_EXTENSION_LIST
 #undef X
 
-    undefined
+      undefined
   };
 
   static std::string_view type_to_string(const size_t index);
@@ -62,7 +63,7 @@ struct resource2 {
   uint32_t sample_rate = 0;
   size_t frames_count = 0;
 };
-}
-}
+} // namespace sound
+} // namespace devils_engine
 
 #endif

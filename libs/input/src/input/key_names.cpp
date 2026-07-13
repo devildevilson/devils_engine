@@ -1,13 +1,12 @@
-#include "key_names.h"
-
 #include <array>
 #include <cstdlib>
 
 #include "GLFW/glfw3.h"
+#include "key_names.h"
 
 #ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
+#  define WIN32_LEAN_AND_MEAN
+#  include <Windows.h>
 #endif
 
 namespace devils_engine {
@@ -148,39 +147,53 @@ constexpr std::array key_names = {
 };
 
 const key_name_entry* find_key_name_entry(const int32_t scancode) noexcept {
-  if (scancode == GLFW_KEY_UNKNOWN) return nullptr;
+  if (scancode == GLFW_KEY_UNKNOWN) {
+    return nullptr;
+  }
 
   for (const auto& entry : key_names) {
     const int32_t entry_scancode = glfwGetKeyScancode(entry.glfw_key);
-    if (entry_scancode != GLFW_KEY_UNKNOWN && entry_scancode == scancode) return &entry;
+    if (entry_scancode != GLFW_KEY_UNKNOWN && entry_scancode == scancode) {
+      return &entry;
+    }
   }
 
   return nullptr;
 }
 
 const key_name_entry* find_glfw_key_name_entry(const int32_t key) noexcept {
-  if (key == GLFW_KEY_UNKNOWN) return nullptr;
+  if (key == GLFW_KEY_UNKNOWN) {
+    return nullptr;
+  }
 
   for (const auto& entry : key_names) {
-    if (entry.glfw_key == key) return &entry;
+    if (entry.glfw_key == key) {
+      return &entry;
+    }
   }
 
   return nullptr;
 }
 
-const key_name_entry* find_canonical_key_name_entry(const std::string_view &name) noexcept {
-  if (name.empty()) return nullptr;
+const key_name_entry* find_canonical_key_name_entry(const std::string_view& name) noexcept {
+  if (name.empty()) {
+    return nullptr;
+  }
 
   for (const auto& entry : key_names) {
-    if (entry.canonical == name) return &entry;
+    if (entry.canonical == name) {
+      return &entry;
+    }
   }
 
   return nullptr;
 }
-}
+} // namespace
 
 size_t get_key_name(const int32_t scancode, char* buffer, const size_t max_size) {
-  if (buffer == nullptr || max_size == 0) return 0;
+  if (buffer == nullptr || max_size == 0) {
+    return 0;
+  }
 
 #ifdef _WIN32
   const size_t wchar_buf_size = 256;
@@ -189,7 +202,7 @@ size_t get_key_name(const int32_t scancode, char* buffer, const size_t max_size)
   //const auto err = _wcslwr_s(buf, wchar_buf_size); // переводим в нижний регистр, нужно ли?
   return wcstombs(buffer, buf, max_size);
 #else
-  (void)scancode;
+  static_cast<void>(scancode);
   // On Linux, local layout names currently come from glfwGetKeyName() in
   // get_key_name_local(). A native fallback would need backend-specific state.
   buffer[0] = '\0';
@@ -202,7 +215,7 @@ size_t get_key_name(const int32_t scancode, key_name_buffer& buffer) {
 }
 
 std::string get_key_name(const int32_t scancode) {
-  char buf[512] {};
+  char buf[512]{};
   const size_t count = get_key_name(scancode, buf, 512);
   return std::string(buf, count);
 }
@@ -219,7 +232,9 @@ std::string_view get_key_name_us_layout(const int32_t scancode) noexcept {
 
 std::string get_key_name_local(const int32_t scancode) {
   const char* glfw_name = glfwGetKeyName(GLFW_KEY_UNKNOWN, scancode);
-  if (glfw_name != nullptr) return std::string(glfw_name);
+  if (glfw_name != nullptr) {
+    return std::string(glfw_name);
+  }
 
   return get_key_name(scancode);
 }
@@ -236,22 +251,26 @@ std::string_view get_glfw_key_name_us_layout(const int32_t key) noexcept {
 
 std::string get_glfw_key_name_local(const int32_t key) {
   const char* glfw_name = glfwGetKeyName(key, GLFW_KEY_UNKNOWN);
-  if (glfw_name != nullptr) return std::string(glfw_name);
+  if (glfw_name != nullptr) {
+    return std::string(glfw_name);
+  }
 
   const int32_t scancode = glfwGetKeyScancode(key);
   return scancode == GLFW_KEY_UNKNOWN ? std::string() : get_key_name(scancode);
 }
 
-int32_t get_glfw_key_from_canonical(const std::string_view &name) noexcept {
+int32_t get_glfw_key_from_canonical(const std::string_view& name) noexcept {
   const auto entry = find_canonical_key_name_entry(name);
   return entry == nullptr ? GLFW_KEY_UNKNOWN : entry->glfw_key;
 }
 
-std::tuple<int32_t, int32_t> get_key_from_canonical(const std::string_view &name) noexcept {
+std::tuple<int32_t, int32_t> get_key_from_canonical(const std::string_view& name) noexcept {
   const auto entry = find_canonical_key_name_entry(name);
-  if (entry == nullptr) return std::make_tuple(GLFW_KEY_UNKNOWN, GLFW_KEY_UNKNOWN);
+  if (entry == nullptr) {
+    return std::make_tuple(GLFW_KEY_UNKNOWN, GLFW_KEY_UNKNOWN);
+  }
 
   return std::make_tuple(entry->glfw_key, glfwGetKeyScancode(entry->glfw_key));
 }
-}
-}
+} // namespace input
+} // namespace devils_engine

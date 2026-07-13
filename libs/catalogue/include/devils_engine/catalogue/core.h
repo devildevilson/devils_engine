@@ -1,18 +1,20 @@
 #ifndef DEVILS_ENGINE_CATALOGUE_CORE_H
 #define DEVILS_ENGINE_CATALOGUE_CORE_H
 
-#include <cstdint>
-#include <cstddef>
-#include <memory>
-#include <vector>
-#include <string_view>
-#include <string>
-#include <span>
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <iostream>
+#include <memory>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
 #include <gtl/phmap.hpp>
-#include "devils_engine/utils/type_traits.h"
+
 #include "devils_engine/utils/hash.h" // murmur_hash3_32
+#include "devils_engine/utils/type_traits.h"
 #include "zpp_bits.h"
 
 // какая цель этой штуки? создать список важных функций определяющих геймплей
@@ -56,7 +58,7 @@ namespace devils_engine {
 namespace catalogue {
 
 // тут наверное zpp out ?
-inline void default_invoke(const std::span<uint8_t> &) {}
+inline void default_invoke(const std::span<uint8_t>&) {}
 
 struct registry {
   struct info {
@@ -66,12 +68,14 @@ struct registry {
     std::string_view name;
     const invoke_fn fn;
 
-    friend bool operator==(const info& a, const info& b) noexcept { return a.name == b.name; }
+    friend bool operator==(const info& a, const info& b) noexcept {
+      return a.name == b.name;
+    }
   };
 
   gtl::flat_hash_map<size_t, info> funcs;
 
-  void reg(const size_t id, const std::string_view &name, const info::invoke_fn fn);
+  void reg(const size_t id, const std::string_view& name, const info::invoke_fn fn);
 };
 
 struct tick_buffer_header {
@@ -115,23 +119,22 @@ struct rpc_function {
   //using traits = utils::detail::function_traits_v2<decltype(f)>;
   using fn_t = decltype(f);
   using read_fn_t = registry::info::invoke_fn;
-  using reg_fn_t = void(*)();
+  using reg_fn_t = void (*)();
   static constexpr auto name = Name.sv();
   static constexpr uint32_t id = utils::murmur_hash3_32(name);
 
   template <auto fn>
   struct internal;
 
-  template <typename... Args, void(*fn)(Args...)>
+  template <typename... Args, void (*fn)(Args...)>
   struct internal<fn> {
     static void read(const std::span<uint8_t>&) {
-
     }
 
     static void write(Args... args) {
       // возьмем core и туда запишем id функции и все аргументы
       // нет, id наверное только запишем в function_buffer_header
-      channel_t::buffer.headers.push_back({ 1u, id, uint32_t(channel_t::buffer.payload.size()) });
+      channel_t::buffer.headers.push_back({1u, id, uint32_t(channel_t::buffer.payload.size())});
       zpp::bits::size_varint{};
     }
 
@@ -169,10 +172,10 @@ constexpr auto id1 = add_gold_fn_t::id;
 constexpr auto id2 = send_message_rpc_t::id;
 static_assert("add_gold" == add_gold_fn_t::name);
 
-inline void reg_fns() {
+void reg_fns() {
   add_gold_fn_t::reg();
 }
-}
-}
+} // namespace catalogue
+} // namespace devils_engine
 
 #endif

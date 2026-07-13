@@ -1,14 +1,17 @@
 #ifndef DEVILS_ENGINE_CATALOGUE_CHANNEL_DATA_H
 #define DEVILS_ENGINE_CATALOGUE_CHANNEL_DATA_H
 
-#include <cstdint>
-#include <cstddef>
+// Per-channel catalogue storage connecting registered functions with call buffers.
+
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
+
 #include "common.h"
-#include "registry.h"
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/type_traits.h"
+#include "registry.h"
 
 namespace devils_engine {
 namespace catalogue {
@@ -39,16 +42,12 @@ using mutator_channed_data = channel_data<MUTATOR_CHANNEL_ID>;
 using meta_channed_data = channel_data<META_CHANNEL_ID>;
 using service_channed_data = channel_data<SERVICE_CHANNEL_ID>;
 
-
-
-
-
 template <size_t id>
 struct registry* channel_data<id>::registry = nullptr;
 template <size_t id>
 struct buffer channel_data<id>::buffer;
 template <size_t id>
-std::array<consumer*, channel_data<id>::max_consumer_count> channel_data<id>::consumers = { nullptr };
+std::array<consumer*, channel_data<id>::max_consumer_count> channel_data<id>::consumers = {nullptr};
 
 template <size_t id>
 void channel_data<id>::init(struct registry* registry) {
@@ -59,8 +58,12 @@ void channel_data<id>::init(struct registry* registry) {
 template <size_t id>
 void channel_data<id>::add_consumer(consumer* c) {
   size_t index = 0;
-  while (index < channel_data<id>::max_consumer_count && consumers[index] != nullptr) { index += 1; }
-  if (index >= channel_data<id>::max_consumer_count) utils::error{}("Could not add new consumer to '{}'", utils::type_name<channel_data<id>>());
+  while (index < channel_data<id>::max_consumer_count && consumers[index] != nullptr) {
+    index += 1;
+  }
+  if (index >= channel_data<id>::max_consumer_count) {
+    utils::error{}("Could not add new consumer to '{}'", utils::type_name<channel_data<id>>());
+  }
   consumers[index] = c;
 }
 
@@ -77,7 +80,7 @@ void channel_data<id>::clear_buffer() {
   buffer.payload.clear();
 }
 
-}
-}
+} // namespace catalogue
+} // namespace devils_engine
 
 #endif

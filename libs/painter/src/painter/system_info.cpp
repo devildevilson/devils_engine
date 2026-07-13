@@ -1,19 +1,28 @@
-#include "system_info.h"
+#include <ranges>
 
 #include <gtl/phmap.hpp>
-#include <ranges>
-namespace rv = std::ranges::views;
-#include "vulkan_header.h"
+#include <tavl/deserialize.h>
+#include <tavl/serialize.h>
 
 #include "auxiliary.h"
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/fileio.h"
+#include "system_info.h"
+#include "vulkan_header.h"
 
-#include <tavl/deserialize.h>
-#include <tavl/serialize.h>
+namespace rv = std::ranges::views;
 
 namespace devils_engine {
 namespace painter {
+
+physical_device_data::physical_device_data() noexcept
+  : handle(VK_NULL_HANDLE),
+    desirable_present_mode(UINT32_MAX),
+    fallback_present_mode(UINT32_MAX),
+    graphics_queue(UINT32_MAX),
+    compute_queue(UINT32_MAX),
+    transfer_queue(UINT32_MAX),
+    present_queue(UINT32_MAX) {}
 
 static_assert(static_cast<uint32_t>(vk::PhysicalDeviceType::eCpu) == static_cast<uint32_t>(physical_device_type::cpu));
 static_assert(static_cast<uint32_t>(vk::PhysicalDeviceType::eDiscreteGpu) == static_cast<uint32_t>(physical_device_type::discrete_gpu));
@@ -31,7 +40,7 @@ static_assert(static_cast<uint32_t>(vk::PresentModeKHR::eSharedContinuousRefresh
 namespace device_features {
 
 const std::string_view names[] = {
-#define X(name, vulkan_name) #name ,
+#define X(name, vulkan_name) #name,
   DEVILS_ENGINE_PAINTER_FEATURES_10_LIST
 #undef X
 };
@@ -43,22 +52,27 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 };
 
 std::string_view to_string(const enum values val) noexcept {
-  if (val >= values::count) return std::string_view();
+  if (val >= values::count) {
+    return std::string_view();
+  }
   return names[val];
 }
 
 values from_string(const std::string_view& str) noexcept {
   const auto itr = map.find(str);
-  if (itr == map.end()) return values::count;
+  if (itr == map.end()) {
+    return values::count;
+  }
   return itr->second;
 }
 
-}
+} // namespace device_features
 
 namespace physical_device_type {
 std::string_view to_string(const enum values val) noexcept {
   switch (val) {
-#define X(name) case values::name: return #name ;
+#define X(name) \
+  case values::name: return #name;
     DEVILS_ENGINE_PHYSICAL_DEVICE_TYPE_LIST
 #undef X
     default: break;
@@ -68,17 +82,19 @@ std::string_view to_string(const enum values val) noexcept {
 }
 
 values from_string(const std::string_view& str) noexcept {
-#define X(name) if (str == #name) return values::name;
+#define X(name) \
+  if (str == #name) return values::name;
   DEVILS_ENGINE_PHYSICAL_DEVICE_TYPE_LIST
 #undef X
   return values::count;
 }
-}
+} // namespace physical_device_type
 
 namespace physical_device_present_mode {
 std::string_view to_string(const enum values val) noexcept {
   switch (val) {
-#define X(name, value) case values::name: return #name ;
+#define X(name, value) \
+  case values::name: return #name;
     DEVILS_ENGINE_PHYSICAL_DEVICE_PRESENT_MODE_LIST
 #undef X
     default: break;
@@ -88,20 +104,27 @@ std::string_view to_string(const enum values val) noexcept {
 }
 
 values from_string(const std::string_view& str) noexcept {
-#define X(name, value) if (str == #name) return values::name;
+#define X(name, value) \
+  if (str == #name) return values::name;
   DEVILS_ENGINE_PHYSICAL_DEVICE_PRESENT_MODE_LIST
 #undef X
   return values::count;
 }
-}
+} // namespace physical_device_present_mode
 
 system_info::physical_device::physical_device() : handle(VK_NULL_HANDLE), memory(0), id(UINT32_MAX), vendor_id(UINT32_MAX), type(physical_device_type::values::count), queue_family_index_surface_support(UINT32_MAX) {}
 
-system_info::system_info() : instance_owner(true), instance(VK_NULL_HANDLE) { init(); }
-system_info::system_info(VkInstance i) : instance_owner(false), instance(i) { init(); }
+system_info::system_info() : instance_owner(true), instance(VK_NULL_HANDLE) {
+  init();
+}
+system_info::system_info(VkInstance i) : instance_owner(false), instance(i) {
+  init();
+}
 
 system_info::~system_info() noexcept {
-  if (instance_owner) vk::Instance(instance).destroy();
+  if (instance_owner) {
+    vk::Instance(instance).destroy();
+  }
   instance = VK_NULL_HANDLE;
 }
 
@@ -144,12 +167,11 @@ void system_info::init() {
     devices[i].id = props.deviceID;
     devices[i].vendor_id = props.vendorID;
     devices[i].type = static_cast<enum physical_device_type::values>(props.deviceType);
-    for (const auto &fam_prop : fams) {
+    for (const auto& fam_prop : fams) {
       devices[i].queue_families.push_back(physical_device::queue_properties_t{
         static_cast<VkFlags>(fam_prop.queueFlags),
         fam_prop.queueCount,
-        fam_prop.timestampValidBits
-      });
+        fam_prop.timestampValidBits});
     }
 
     for (size_t j = 0; j < mem_props.memoryHeapCount; ++j) {
@@ -161,14 +183,14 @@ void system_info::init() {
       }
     }
 
-#define X(name, vulkan_name) devices[i].features.set(device_features:: name , (bool) feats. vulkan_name );
+#define X(name, vulkan_name) devices[i].features.set(device_features::name, static_cast<bool>(feats.vulkan_name));
     DEVILS_ENGINE_PAINTER_FEATURES_10_LIST
 #undef X
   }
 }
 
 void system_info::check_devices_surface_capability(const VkSurfaceKHR s) {
-  for (auto &info : devices) {
+  for (auto& info : devices) {
     auto dev = vk::PhysicalDevice(info.handle);
     const auto modes = dev.getSurfacePresentModesKHR(s);
     info.present_modes.resize(modes.size());
@@ -177,7 +199,10 @@ void system_info::check_devices_surface_capability(const VkSurfaceKHR s) {
 
     for (uint32_t i = 0; i < info.queue_families.size(); ++i) {
       const bool supp = physical_device_presentation_support(instance, dev, i);
-      if (supp) { info.queue_family_index_surface_support = i; break; }
+      if (supp) {
+        info.queue_family_index_surface_support = i;
+        break;
+      }
     }
   }
 }
@@ -186,9 +211,13 @@ void system_info::check_devices_surface_capability(const VkSurfaceKHR s) {
 static uint32_t find_queue(const std::vector<system_info::physical_device::queue_properties_t>& families, const vk::QueueFlags& flags, const std::initializer_list<uint32_t>& ignore_queue) {
   for (int32_t count = int32_t(ignore_queue.size()); count >= 0; --count) {
     for (uint32_t i = 0; i < families.size(); ++i) {
-      if ((vk::QueueFlags(families[i].flags) & flags) != flags) continue;
+      if ((vk::QueueFlags(families[i].flags) & flags) != flags) {
+        continue;
+      }
       const auto end = ignore_queue.begin() + count;
-      if (std::find(ignore_queue.begin(), end, i) != end) continue;
+      if (std::find(ignore_queue.begin(), end, i) != end) {
+        continue;
+      }
       return i;
     }
   }
@@ -197,29 +226,38 @@ static uint32_t find_queue(const std::vector<system_info::physical_device::queue
 }
 
 static std::pair<physical_device_present_mode::values, physical_device_present_mode::values> find_present_modes(
-  const std::vector<physical_device_present_mode::values>& modes
-) {
+  const std::vector<physical_device_present_mode::values>& modes) {
   auto main = physical_device_present_mode::values::count;
   for (const auto& mode : modes) {
-    if (mode == physical_device_present_mode::values::mailbox) main = mode;
+    if (mode == physical_device_present_mode::values::mailbox) {
+      main = mode;
+    }
   }
 
   auto secondary = physical_device_present_mode::values::immediate;
   for (const auto& mode : modes) {
-    if (mode == physical_device_present_mode::values::fifo) secondary = mode;
+    if (mode == physical_device_present_mode::values::fifo) {
+      secondary = mode;
+    }
   }
 
-  if (main == physical_device_present_mode::values::mailbox) return std::make_pair(main, secondary);
+  if (main == physical_device_present_mode::values::mailbox) {
+    return std::make_pair(main, secondary);
+  }
   return std::make_pair(secondary, physical_device_present_mode::values::immediate);
 }
 
 static void fill_queue_indices(physical_device_data& p_data, const system_info::physical_device& info) {
   p_data.graphics_queue = find_queue(info.queue_families, vk::QueueFlagBits::eGraphics, {});
-  p_data.compute_queue = find_queue(info.queue_families, vk::QueueFlagBits::eCompute, { p_data.graphics_queue });
-  p_data.transfer_queue = find_queue(info.queue_families, vk::QueueFlagBits::eTransfer, { p_data.graphics_queue, p_data.compute_queue });
+  p_data.compute_queue = find_queue(info.queue_families, vk::QueueFlagBits::eCompute, {p_data.graphics_queue});
+  p_data.transfer_queue = find_queue(info.queue_families, vk::QueueFlagBits::eTransfer, {p_data.graphics_queue, p_data.compute_queue});
 
-  if (p_data.compute_queue == UINT32_MAX) p_data.compute_queue = p_data.graphics_queue;
-  if (p_data.transfer_queue == UINT32_MAX) p_data.transfer_queue = p_data.graphics_queue;
+  if (p_data.compute_queue == UINT32_MAX) {
+    p_data.compute_queue = p_data.graphics_queue;
+  }
+  if (p_data.transfer_queue == UINT32_MAX) {
+    p_data.transfer_queue = p_data.graphics_queue;
+  }
 
   assert(p_data.graphics_queue != UINT32_MAX);
   assert(p_data.compute_queue != UINT32_MAX);
@@ -239,8 +277,12 @@ physical_device_data system_info::choose_physical_device() const {
   for (index = 0; index < devices.size(); ++index) {
     const auto& info = devices[index];
 
-    if (info.queue_family_index_surface_support == UINT32_MAX) continue;
-    if (info.type != physical_device_type::values::discrete_gpu) continue;
+    if (info.queue_family_index_surface_support == UINT32_MAX) {
+      continue;
+    }
+    if (info.type != physical_device_type::values::discrete_gpu) {
+      continue;
+    }
 
     if (max_mem < info.memory) {
       p_data.handle = info.handle;
@@ -258,8 +300,8 @@ physical_device_data system_info::choose_physical_device() const {
     p_data.features = info.features;
 
     p_data.graphics_queue = find_queue(info.queue_families, vk::QueueFlagBits::eGraphics, {});
-    p_data.compute_queue = find_queue(info.queue_families, vk::QueueFlagBits::eCompute, { p_data.graphics_queue });
-    p_data.transfer_queue = find_queue(info.queue_families, vk::QueueFlagBits::eTransfer, { p_data.graphics_queue, p_data.compute_queue });
+    p_data.compute_queue = find_queue(info.queue_families, vk::QueueFlagBits::eCompute, {p_data.graphics_queue});
+    p_data.transfer_queue = find_queue(info.queue_families, vk::QueueFlagBits::eTransfer, {p_data.graphics_queue, p_data.compute_queue});
     assert(p_data.graphics_queue != UINT32_MAX);
     assert(p_data.compute_queue != UINT32_MAX);
     assert(p_data.transfer_queue != UINT32_MAX);
@@ -271,8 +313,12 @@ physical_device_data system_info::choose_physical_device() const {
   for (index = 0; index < devices.size(); ++index) {
     const auto& info = devices[index];
 
-    if (info.queue_family_index_surface_support == UINT32_MAX) continue;
-    if (info.type != physical_device_type::values::integrated_gpu) continue;
+    if (info.queue_family_index_surface_support == UINT32_MAX) {
+      continue;
+    }
+    if (info.type != physical_device_type::values::integrated_gpu) {
+      continue;
+    }
 
     if (max_mem < info.memory) {
       p_data.handle = info.handle;
@@ -290,8 +336,8 @@ physical_device_data system_info::choose_physical_device() const {
     p_data.features = info.features;
 
     p_data.graphics_queue = find_queue(info.queue_families, vk::QueueFlagBits::eGraphics, {});
-    p_data.compute_queue = find_queue(info.queue_families, vk::QueueFlagBits::eCompute, { p_data.graphics_queue });
-    p_data.transfer_queue = find_queue(info.queue_families, vk::QueueFlagBits::eTransfer, { p_data.graphics_queue, p_data.compute_queue });
+    p_data.compute_queue = find_queue(info.queue_families, vk::QueueFlagBits::eCompute, {p_data.graphics_queue});
+    p_data.transfer_queue = find_queue(info.queue_families, vk::QueueFlagBits::eTransfer, {p_data.graphics_queue, p_data.compute_queue});
     assert(p_data.graphics_queue != UINT32_MAX);
     assert(p_data.compute_queue != UINT32_MAX);
     assert(p_data.transfer_queue != UINT32_MAX);
@@ -303,7 +349,9 @@ physical_device_data system_info::choose_physical_device() const {
   for (index = 0; index < devices.size(); ++index) {
     const auto& info = devices[index];
 
-    if (info.queue_family_index_surface_support == UINT32_MAX) continue;
+    if (info.queue_family_index_surface_support == UINT32_MAX) {
+      continue;
+    }
 
     if (max_mem < info.memory) {
       p_data.handle = info.handle;
@@ -320,8 +368,8 @@ physical_device_data system_info::choose_physical_device() const {
   p_data.features = info.features;
 
   p_data.graphics_queue = find_queue(info.queue_families, vk::QueueFlagBits::eGraphics, {});
-  p_data.compute_queue = find_queue(info.queue_families, vk::QueueFlagBits::eCompute, { p_data.graphics_queue });
-  p_data.transfer_queue = find_queue(info.queue_families, vk::QueueFlagBits::eTransfer, { p_data.graphics_queue, p_data.compute_queue });
+  p_data.compute_queue = find_queue(info.queue_families, vk::QueueFlagBits::eCompute, {p_data.graphics_queue});
+  p_data.transfer_queue = find_queue(info.queue_families, vk::QueueFlagBits::eTransfer, {p_data.graphics_queue, p_data.compute_queue});
   assert(p_data.graphics_queue != UINT32_MAX);
   assert(p_data.compute_queue != UINT32_MAX);
   assert(p_data.transfer_queue != UINT32_MAX);
@@ -335,11 +383,15 @@ physical_device_data system_info::choose_physical_device_headless() const {
   size_t max_mem = 0;
   uint32_t dev_index = UINT32_MAX;
 
-  const auto choose = [&] (const physical_device_type::values type) {
+  const auto choose = [&](const physical_device_type::values type) {
     for (uint32_t index = 0; index < devices.size(); ++index) {
       const auto& info = devices[index];
-      if (info.type != type) continue;
-      if (find_queue(info.queue_families, vk::QueueFlagBits::eGraphics, {}) == UINT32_MAX) continue;
+      if (info.type != type) {
+        continue;
+      }
+      if (find_queue(info.queue_families, vk::QueueFlagBits::eGraphics, {}) == UINT32_MAX) {
+        continue;
+      }
 
       if (max_mem < info.memory) {
         p_data.handle = info.handle;
@@ -350,11 +402,15 @@ physical_device_data system_info::choose_physical_device_headless() const {
   };
 
   choose(physical_device_type::values::discrete_gpu);
-  if (p_data.handle == VK_NULL_HANDLE) choose(physical_device_type::values::integrated_gpu);
+  if (p_data.handle == VK_NULL_HANDLE) {
+    choose(physical_device_type::values::integrated_gpu);
+  }
   if (p_data.handle == VK_NULL_HANDLE) {
     for (uint32_t index = 0; index < devices.size(); ++index) {
       const auto& info = devices[index];
-      if (find_queue(info.queue_families, vk::QueueFlagBits::eGraphics, {}) == UINT32_MAX) continue;
+      if (find_queue(info.queue_families, vk::QueueFlagBits::eGraphics, {}) == UINT32_MAX) {
+        continue;
+      }
 
       if (max_mem < info.memory) {
         p_data.handle = info.handle;
@@ -364,7 +420,9 @@ physical_device_data system_info::choose_physical_device_headless() const {
     }
   }
 
-  if (p_data.handle == VK_NULL_HANDLE || dev_index == UINT32_MAX) utils::error{}("Could not find a headless-capable Vulkan physical device");
+  if (p_data.handle == VK_NULL_HANDLE || dev_index == UINT32_MAX) {
+    utils::error{}("Could not find a headless-capable Vulkan physical device");
+  }
 
   const auto& info = devices[dev_index];
   p_data.features = info.features;
@@ -378,9 +436,13 @@ physical_device_data system_info::choose_physical_device_headless() const {
 
 bool system_info::try_load_cached_data(VkInstance instance, physical_device_data* phys_data, cached_system_data* cached_data) {
   const auto directory_path = utils::cache_folder();
-  if (!file_io::exists(directory_path)) return false;
+  if (!file_io::exists(directory_path)) {
+    return false;
+  }
   const auto file_path = directory_path + "main_device.tavl";
-  if (!file_io::exists(file_path)) return false;
+  if (!file_io::exists(file_path)) {
+    return false;
+  }
 
   cached_system_data cur_data;
   {
@@ -397,7 +459,7 @@ bool system_info::try_load_cached_data(VkInstance instance, physical_device_data
       utils::warn("Could not load cached device data from file '{}'", file_path);
       for (const auto& d : ctx.diagnostics) {
         utils::warn("  tavl diagnostic '{}' at {}:{} field '{}'",
-          tavl::to_string(d.error.type), d.error.span.line, d.error.span.column, d.field);
+                    tavl::to_string(d.error.type), d.error.span.line, d.error.span.column, d.field);
       }
       return false;
     }
@@ -407,7 +469,9 @@ bool system_info::try_load_cached_data(VkInstance instance, physical_device_data
   const auto devs = vk::Instance(instance).enumeratePhysicalDevices();
   for (const auto& h : devs) {
     const auto p = h.getProperties();
-    if (p.deviceID == cur_data.device_id) dev = h;
+    if (p.deviceID == cur_data.device_id) {
+      dev = h;
+    }
   }
 
   if (dev == VK_NULL_HANDLE) {
@@ -415,7 +479,9 @@ bool system_info::try_load_cached_data(VkInstance instance, physical_device_data
     return false;
   }
 
-  if (cached_data != nullptr) *cached_data = cur_data;
+  if (cached_data != nullptr) {
+    *cached_data = cur_data;
+  }
 
   physical_device_data d;
   d.handle = dev;
@@ -436,7 +502,9 @@ bool system_info::try_load_cached_data(VkInstance instance, physical_device_data
   d.transfer_queue = cur_data.transfer_queue;
   d.present_queue = cur_data.present_queue;
 
-  if (phys_data != nullptr) *phys_data = d;
+  if (phys_data != nullptr) {
+    *phys_data = d;
+  }
 
   return true;
 }
@@ -450,8 +518,10 @@ void system_info::print_choosed_device(VkPhysicalDevice device) noexcept {
 void system_info::dump_cache_to_disk(VkPhysicalDevice dev, cached_system_data* cached_data) {
   cached_system_data data;
 
-  for (const auto &info : devices) {
-    if (dev != info.handle) continue;
+  for (const auto& info : devices) {
+    if (dev != info.handle) {
+      continue;
+    }
 
     const auto [m1, m2] = find_present_modes(info.present_modes);
 
@@ -460,8 +530,8 @@ void system_info::dump_cache_to_disk(VkPhysicalDevice dev, cached_system_data* c
     data.device_id = info.id;
     data.vendor_id = info.vendor_id;
     data.graphics_queue = find_queue(info.queue_families, vk::QueueFlagBits::eGraphics, {});
-    data.compute_queue = find_queue(info.queue_families, vk::QueueFlagBits::eCompute, { data.graphics_queue });
-    data.transfer_queue = find_queue(info.queue_families, vk::QueueFlagBits::eTransfer, { data.graphics_queue, data.compute_queue });
+    data.compute_queue = find_queue(info.queue_families, vk::QueueFlagBits::eCompute, {data.graphics_queue});
+    data.transfer_queue = find_queue(info.queue_families, vk::QueueFlagBits::eTransfer, {data.graphics_queue, data.compute_queue});
     assert(data.graphics_queue != UINT32_MAX);
     assert(data.compute_queue != UINT32_MAX);
     assert(data.transfer_queue != UINT32_MAX);
@@ -474,15 +544,25 @@ void system_info::dump_cache_to_disk(VkPhysicalDevice dev, cached_system_data* c
       data.features.emplace_back(std::string(feat));
     }
 
-    std::transform(data.device_type.begin(), data.device_type.end(), data.device_type.begin(), [] (const char c) { return std::tolower(c); });
-    std::transform(data.desirable_present_mode.begin(), data.desirable_present_mode.end(), data.desirable_present_mode.begin(), [] (const char c) { return std::tolower(c); });
-    std::transform(data.fallback_present_mode.begin(), data.fallback_present_mode.end(), data.fallback_present_mode.begin(), [] (const char c) { return std::tolower(c); });
+    std::transform(data.device_type.begin(), data.device_type.end(), data.device_type.begin(), [](const char c) {
+      return std::tolower(c);
+    });
+    std::transform(data.desirable_present_mode.begin(), data.desirable_present_mode.end(), data.desirable_present_mode.begin(), [](const char c) {
+      return std::tolower(c);
+    });
+    std::transform(data.fallback_present_mode.begin(), data.fallback_present_mode.end(), data.fallback_present_mode.begin(), [](const char c) {
+      return std::tolower(c);
+    });
   }
 
-  if (data.device_name.empty()) utils::error{}("Trying to dump data for invalid physical device");
+  if (data.device_name.empty()) {
+    utils::error{}("Trying to dump data for invalid physical device");
+  }
 
   const auto directory_path = utils::cache_folder();
-  if (!file_io::exists(directory_path)) file_io::create_directory(directory_path);
+  if (!file_io::exists(directory_path)) {
+    file_io::create_directory(directory_path);
+  }
 
   const auto file_path = directory_path + "main_device.tavl";
   std::string tavl_data;
@@ -493,9 +573,13 @@ void system_info::dump_cache_to_disk(VkPhysicalDevice dev, cached_system_data* c
   }
 
   const bool res = file_io::write(tavl_data, file_path);
-  if (!res) utils::warn("Could not write file '{}'", file_path);
+  if (!res) {
+    utils::warn("Could not write file '{}'", file_path);
+  }
 
-  if (cached_data != nullptr) *cached_data = data;
+  if (cached_data != nullptr) {
+    *cached_data = data;
+  }
 }
-}
-}
+} // namespace painter
+} // namespace devils_engine

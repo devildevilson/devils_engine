@@ -1,14 +1,16 @@
 #ifndef DEVILS_ENGINE_SIMUL_STANDARD_SOUND_SYSTEM_H
 #define DEVILS_ENGINE_SIMUL_STANDARD_SOUND_SYSTEM_H
 
-#include <cstddef>
+// Broker-driven sound-system implementation shared by standard applications.
+
 #include <atomic>
+#include <cstddef>
 #include <memory>
 #include <vector>
 
-#include <devils_engine/sound/system.h>
 #include <devils_engine/sound/resource.h>
 #include <devils_engine/sound/sound_resource.h>
+#include <devils_engine/sound/system.h>
 #include <devils_engine/utils/core.h>
 
 #include "messages.h"
@@ -30,17 +32,25 @@ public:
     container->s.reset(new sound::system2);
   }
 
-  bool stop_predicate() const override { return false; }
+  bool stop_predicate() const override {
+    return false;
+  }
 
   void update(const size_t time) override {
-    if (container == nullptr || this->broker_ == nullptr) return;
+    if (container == nullptr || this->broker_ == nullptr) {
+      return;
+    }
     auto& br = *this->broker_;
 
     {
       command_sound_devices cmd{};
       while (br.sound_devices.try_pop(cmd)) {
-        if (cmd.out != nullptr) sound::system2::playback_devices(*cmd.out);
-        if (cmd.ready != nullptr) cmd.ready->store(true, std::memory_order_release);
+        if (cmd.out != nullptr) {
+          sound::system2::playback_devices(*cmd.out);
+        }
+        if (cmd.ready != nullptr) {
+          cmd.ready->store(true, std::memory_order_release);
+        }
       }
     }
 
@@ -48,7 +58,9 @@ public:
       command_recreate_sound_system cmd{};
       while (br.recreate_sound.try_pop(cmd)) {
         container->s.reset(new sound::system2(cmd.device_name));
-        if (container->s) container->s->set_master_volume(container->master_gain);
+        if (container->s) {
+          container->s->set_master_volume(container->master_gain);
+        }
       }
     }
 
@@ -59,7 +71,9 @@ public:
         container->master_gain = cmd.gain;
         changed = true;
       }
-      if (changed && container->s) container->s->set_master_volume(container->master_gain);
+      if (changed && container->s) {
+        container->s->set_master_volume(container->master_gain);
+      }
     }
 
     if (container->s) {
@@ -82,7 +96,8 @@ public:
         t.after = cmd.after;
         t.res = view;
         t.type = cmd.type < static_cast<uint32_t>(sound::type::count)
-          ? static_cast<sound::type>(cmd.type) : sound::type::sfx;
+                   ? static_cast<sound::type>(cmd.type)
+                   : sound::type::sfx;
         t.command = sound::task::command::play;
         t.pitch = 1.0f;
         t.volume = 1.0f;
@@ -92,7 +107,9 @@ public:
       }
 
       command_sound_stop stop{};
-      while (br.sound_stop.try_pop(stop)) container->s->remove_sound(stop.taskid);
+      while (br.sound_stop.try_pop(stop)) {
+        container->s->remove_sound(stop.taskid);
+      }
 
       command_sound_update upd{};
       while (br.sound_update.try_pop(upd)) {
@@ -105,7 +122,9 @@ public:
       }
     }
 
-    if (container->s) container->s->update(time);
+    if (container->s) {
+      container->s->update(time);
+    }
 
     if (container->s) {
       container->s->snapshot(container->snapshot_status_cache);
@@ -134,7 +153,7 @@ private:
   std::unique_ptr<state> container;
 };
 
-}
-}
+} // namespace simul
+} // namespace devils_engine
 
 #endif

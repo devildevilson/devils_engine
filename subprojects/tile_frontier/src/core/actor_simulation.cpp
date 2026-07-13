@@ -1,5 +1,3 @@
-#include "actor_simulation.h"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -8,17 +6,19 @@
 #include <thread>
 #include <utility>
 
-#include <devils_engine/aesthetics/common.h>
 #include <devils_engine/act/exec_context.h>
 #include <devils_engine/act/function.h>
-#include <devils_engine/acumen/astar.h>     // astar<>::container для find_solution
+#include <devils_engine/acumen/astar.h> // astar<>::container для find_solution
+#include <devils_engine/aesthetics/common.h>
 #include <devils_engine/catalogue/introspection.h>
-#include <devils_engine/catalogue/logging.h> // DE_LOG — perf-дамп в домен gameplay
-#include <devils_engine/mood/runtime.h>     // mood::step / apply_transition — шаг FSM
+#include <devils_engine/catalogue/logging.h>  // DE_LOG — perf-дамп в домен gameplay
+#include <devils_engine/mood/runtime.h>       // mood::step / apply_transition — шаг FSM
 #include <devils_engine/thread/atomic_pool.h> // MT-пул (distribute/thread_index/wait)
-#include <devils_engine/utils/core.h>      // utils::error
-#include <devils_engine/utils/prng.h>      // utils::mix
-#include <devils_engine/utils/string_id.h> // utils::string_hash
+#include <devils_engine/utils/core.h>         // utils::error
+#include <devils_engine/utils/prng.h>         // utils::mix
+#include <devils_engine/utils/string_id.h>    // utils::string_hash
+
+#include "actor_simulation.h"
 
 // glm-адаптеры сериализации + регистрация ВСЕХ компонентов в реестр serial (SERIALIZABLE_COMPONENT).
 // Включён здесь, а не только в тестах, чтобы игровой бинарь сам умел save/load (регистрации линкуются
@@ -46,10 +46,9 @@ static const aesthetics::world& world_of(const act::exec_context& ctx) noexcept 
 static act::exec_context make_ctx(
   const aesthetics::world& world, const aesthetics::entityid_t id,
   const uint64_t seed, const uint64_t tick, act::effect_sink* sink = nullptr,
-  act::execution_scratch* scratch = nullptr) noexcept
-{
+  act::execution_scratch* scratch = nullptr) noexcept {
   act::exec_context ctx;
-  ctx.scope[0] = act::entity_id{ uint32_t(id) };
+  ctx.scope[0] = act::entity_id{uint32_t(id)};
   ctx.scope_count = 1;
   ctx.w = reinterpret_cast<const act::world*>(&world);
   ctx.rng_seed = seed;
@@ -70,25 +69,30 @@ static aesthetics::world& mutable_world_of(const act::exec_context& ctx) noexcep
 
 // purpose-метка для counter-RNG (utils::mix) — разводит потоки случайности.
 static constexpr uint64_t purpose_wander = 0x77616e646572ull; // "wander"
-static constexpr uint64_t purpose_seek   = 0x7365656bull;     // "seek"
+static constexpr uint64_t purpose_seek = 0x7365656bull;       // "seek"
 
 // Биты GOAP-стейта (= индекс метрики; resolved ставят действия, метрики его не считают).
 namespace flags {
-enum : size_t { threat_present = 0, prey_present = 1, hungry = 2, bored = 3, prey_in_range = 4, resolved = 5 };
+enum : size_t { threat_present = 0,
+                prey_present = 1,
+                hungry = 2,
+                bored = 3,
+                prey_in_range = 4,
+                resolved = 5 };
 }
 
 // ── тюнинг мотиваций (drives) ──────────────────────────────────────────────
 // Скорости в единицах/секунду; пороги в 0..1. hunger копится всегда; boredom копится пока
 // актор стоит (думает), быстро спадает в движении → колебание think⇄wander. Значения
 // подобраны на глаз для main_fps≈20 (dt≈0.05). Все крутилки — кандидаты в config позже.
-static constexpr float hunger_rate     = 0.08f; // голод/сек (≈12с до сытого→голодного)
-static constexpr float bored_rate      = 0.14f; // скука/сек пока стоит (думает)
-static constexpr float bored_relief    = 0.30f; // спад скуки/сек в движении
+static constexpr float hunger_rate = 0.08f;  // голод/сек (≈12с до сытого→голодного)
+static constexpr float bored_rate = 0.14f;   // скука/сек пока стоит (думает)
+static constexpr float bored_relief = 0.30f; // спад скуки/сек в движении
 static constexpr float hungry_threshold = 0.50f;
-static constexpr float bored_threshold  = 0.50f;
-static constexpr float still_speed2      = 0.01f; // |vel|^2 ниже — считаем «стоит»
-static constexpr float eat_radius        = 0.9f;  // дистанция хвата добычи (≈ размер треуг. + запас)
-static constexpr uint64_t eat_duration   = 18;    // тиков длится поедание (≈0.9с при 20fps) = окно коммита
+static constexpr float bored_threshold = 0.50f;
+static constexpr float still_speed2 = 0.01f; // |vel|^2 ниже — считаем «стоит»
+static constexpr float eat_radius = 0.9f;    // дистанция хвата добычи (≈ размер треуг. + запас)
+static constexpr uint64_t eat_duration = 18; // тиков длится поедание (≈0.9с при 20fps) = окно коммита
 
 // Радиус восприятия для kD-запроса (мировые единицы, tile_size=1, шаг спавна ~1).
 // Ограничивает поиск «ближайшего крупнее/мельче» (иначе предикат-NN без кандидата
@@ -125,7 +129,7 @@ const catalogue::statistics_store& actor_perf_statistics() noexcept {
 
 // Периодический дамп агрегатов по всем обёрнутым функциям апдейта актора.
 static void dump_actor_perf_stats() {
-  actor_perf_stats().for_each([] (const catalogue::statistics_store::function_record& r) {
+  actor_perf_stats().for_each([](const catalogue::statistics_store::function_record& r) {
     DE_LOG(catalogue::log_domain::gameplay, flow,
            "perf {}: avg {:.1f} us (min {} / max {} / last {}), n={}",
            r.name, r.average_mcs(), r.min_mcs, r.max_mcs, r.last_mcs, r.call_count);
@@ -144,9 +148,7 @@ static uint32_t mix32(uint32_t x) noexcept {
 static glm::vec2 direction_from_hash(const uint32_t h) noexcept {
   constexpr float diag = 0.70710678118f;
   static const glm::vec2 dirs[] = {
-    { 1.0f, 0.0f }, { -1.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, -1.0f },
-    { diag, diag }, { -diag, diag }, { diag, -diag }, { -diag, -diag }
-  };
+    {1.0f, 0.0f}, {-1.0f, 0.0f}, {0.0f, 1.0f}, {0.0f, -1.0f}, {diag, diag}, {-diag, diag}, {diag, -diag}, {-diag, -diag}};
   return dirs[h & 7u];
 }
 
@@ -155,24 +157,23 @@ static float unit_from_hash(const uint32_t h) noexcept {
 }
 
 static instance_layout::rgba8_color actor_color(const uint32_t index) noexcept {
-  const auto pack = [] (const float v) {
+  const auto pack = [](const float v) {
     return uint32_t(std::round(std::clamp(v, 0.0f, 1.0f) * 255.0f));
   };
 
   static constexpr float colors[][4] = {
-    { 0.05f, 0.30f, 1.00f, 1.0f }, // blue
-    { 1.00f, 0.08f, 0.05f, 1.0f }, // red
-    { 0.62f, 0.16f, 1.00f, 1.0f }, // purple
-    { 0.05f, 0.85f, 0.25f, 1.0f }, // green
-    { 1.00f, 0.85f, 0.05f, 1.0f }, // yellow
-    { 1.00f, 0.35f, 0.03f, 1.0f }, // orange
-    { 0.00f, 0.85f, 0.95f, 1.0f }, // cyan
-    { 1.00f, 0.12f, 0.62f, 1.0f }, // magenta
+    {0.05f, 0.30f, 1.00f, 1.0f}, // blue
+    {1.00f, 0.08f, 0.05f, 1.0f}, // red
+    {0.62f, 0.16f, 1.00f, 1.0f}, // purple
+    {0.05f, 0.85f, 0.25f, 1.0f}, // green
+    {1.00f, 0.85f, 0.05f, 1.0f}, // yellow
+    {1.00f, 0.35f, 0.03f, 1.0f}, // orange
+    {0.00f, 0.85f, 0.95f, 1.0f}, // cyan
+    {1.00f, 0.12f, 0.62f, 1.0f}, // magenta
   };
   const auto& c = colors[index % std::size(colors)];
   return instance_layout::rgba8_color{
-    (pack(c[0]) << 0) | (pack(c[1]) << 8) | (pack(c[2]) << 16) | (pack(c[3]) << 24)
-  };
+    (pack(c[0]) << 0) | (pack(c[1]) << 8) | (pack(c[2]) << 16) | (pack(c[3]) << 24)};
 }
 
 static float actor_size(const uint32_t seed) noexcept {
@@ -180,14 +181,20 @@ static float actor_size(const uint32_t seed) noexcept {
 }
 
 static instance_layout::rgba8_color pack_rgba(const float r, const float g, const float b, const float a) noexcept {
-  const auto p = [] (const float v) { return uint32_t(std::round(std::clamp(v, 0.0f, 1.0f) * 255.0f)); };
-  return instance_layout::rgba8_color{ (p(r) << 0) | (p(g) << 8) | (p(b) << 16) | (p(a) << 24) };
+  const auto p = [](const float v) {
+    return uint32_t(std::round(std::clamp(v, 0.0f, 1.0f) * 255.0f));
+  };
+  return instance_layout::rgba8_color{(p(r) << 0) | (p(g) << 8) | (p(b) << 16) | (p(a) << 24)};
 }
 
 // ── еда и препятствия (C2) ─────────────────────────────────────────────────
-static constexpr float food_size = 0.2f;   // < минимального актора (0.34) ⇒ еда всем «добыча»
-static instance_layout::rgba8_color food_color() noexcept { return pack_rgba(0.20f, 0.95f, 0.35f, 1.0f); }     // ярко-зелёный
-static instance_layout::rgba8_color obstacle_color() noexcept { return pack_rgba(0.38f, 0.38f, 0.44f, 1.0f); } // серый
+static constexpr float food_size = 0.2f; // < минимального актора (0.34) ⇒ еда всем «добыча»
+static instance_layout::rgba8_color food_color() noexcept {
+  return pack_rgba(0.20f, 0.95f, 0.35f, 1.0f);
+} // ярко-зелёный
+static instance_layout::rgba8_color obstacle_color() noexcept {
+  return pack_rgba(0.38f, 0.38f, 0.44f, 1.0f);
+} // серый
 
 // Анимация масштаба = синусоида, частота/амплитуда зависят от состояния FSM. ВЫВОДИМАЯ
 // величина (из state + tick + пер-акторной фазы) — НЕ хранится, не пишется в save. Частота в
@@ -203,13 +210,32 @@ static float animation_scale(const uint64_t state, const uint64_t tick, const ui
   static const uint64_t h_eaten = utils::string_hash("eaten");
 
   float freq = 0.05f, amp = 0.10f; // дефолт
-  if      (state == h_think)  { freq = 0.03f; amp = 0.12f; } // медленное «дыхание» раздумья
-  else if (state == h_wander) { freq = 0.07f; amp = 0.10f; }
-  else if (state == h_seek)   { freq = 0.12f; amp = 0.12f; }
-  else if (state == h_chase)  { freq = 0.20f; amp = 0.16f; } // возбуждённо
-  else if (state == h_flee)   { freq = 0.28f; amp = 0.18f; } // паника
-  else if (state == h_eating) { freq = 0.40f; amp = 0.22f; } // быстрая синусоида — кушаем
-  else if (state == h_eaten)  { freq = 0.55f; amp = 0.30f; } // жертва бьётся в захвате
+  if (state == h_think) {
+    freq = 0.03f;
+    amp = 0.12f;
+  } // медленное «дыхание» раздумья
+  else if (state == h_wander) {
+    freq = 0.07f;
+    amp = 0.10f;
+  } else if (state == h_seek) {
+    freq = 0.12f;
+    amp = 0.12f;
+  } else if (state == h_chase) {
+    freq = 0.20f;
+    amp = 0.16f;
+  } // возбуждённо
+  else if (state == h_flee) {
+    freq = 0.28f;
+    amp = 0.18f;
+  } // паника
+  else if (state == h_eating) {
+    freq = 0.40f;
+    amp = 0.22f;
+  } // быстрая синусоида — кушаем
+  else if (state == h_eaten) {
+    freq = 0.55f;
+    amp = 0.30f;
+  } // жертва бьётся в захвате
 
   const float t = float(tick + uint64_t(phase));
   return 1.0f + amp * std::sin(6.28318530718f * freq * t);
@@ -219,9 +245,13 @@ static float animation_scale(const uint64_t state, const uint64_t tick, const ui
 // только пунктовые события — eating (чавк) и flee (тревога). walking/ambient зарезервированы.
 static uint64_t sound_for_state(const uint64_t state) noexcept {
   static const uint64_t h_eating = utils::string_hash("eating");
-  static const uint64_t h_flee   = utils::string_hash("flee");
-  if (state == h_eating) return utils::string_hash("eating");
-  if (state == h_flee)   return utils::string_hash("fleeing");
+  static const uint64_t h_flee = utils::string_hash("flee");
+  if (state == h_eating) {
+    return utils::string_hash("eating");
+  }
+  if (state == h_flee) {
+    return utils::string_hash("fleeing");
+  }
   return 0;
 }
 
@@ -255,7 +285,9 @@ static bool predicate_prey_in_range(const act::exec_context& ctx) noexcept {
   const auto& w = world_of(ctx);
   const auto* per = w.get<actor_perception>(self);
   const auto* pos = w.get<actor_position>(self);
-  if (per == nullptr || pos == nullptr || !per->has_prey) return false;
+  if (per == nullptr || pos == nullptr || !per->has_prey) {
+    return false;
+  }
   const glm::vec2 d = per->prey_pos - pos->value;
   return (d.x * d.x + d.y * d.y) <= eat_radius * eat_radius;
 }
@@ -270,7 +302,9 @@ static bool predicate_is_eating(const act::exec_context& ctx) noexcept {
 static void set_velocity(aesthetics::world& world, const aesthetics::entityid_t self, glm::vec2 dir) noexcept {
   auto* vel = world.get<actor_velocity>(self);
   const auto* brain = world.get<actor_brain>(self);
-  if (vel == nullptr || brain == nullptr) return;
+  if (vel == nullptr || brain == nullptr) {
+    return;
+  }
   const float len2 = dir.x * dir.x + dir.y * dir.y;
   dir = len2 > 1e-12f ? dir * (1.0f / std::sqrt(len2)) : glm::vec2{0.0f, 0.0f};
   vel->value = dir * brain->speed;
@@ -281,7 +315,9 @@ static void effect_flee(const act::exec_context& ctx) noexcept {
   const auto self = aesthetics::entityid_t(ctx.primary().id);
   const auto* pos = world.get<actor_position>(self);
   const auto* per = world.get<actor_perception>(self);
-  if (pos == nullptr || per == nullptr) return;
+  if (pos == nullptr || per == nullptr) {
+    return;
+  }
   set_velocity(world, self, pos->value - per->threat_pos); // прочь от угрозы
 }
 
@@ -290,7 +326,9 @@ static void effect_chase(const act::exec_context& ctx) noexcept {
   const auto self = aesthetics::entityid_t(ctx.primary().id);
   const auto* pos = world.get<actor_position>(self);
   const auto* per = world.get<actor_perception>(self);
-  if (pos == nullptr || per == nullptr) return;
+  if (pos == nullptr || per == nullptr) {
+    return;
+  }
   set_velocity(world, self, per->prey_pos - pos->value); // к добыче
 }
 
@@ -302,26 +340,42 @@ static void effect_chase(const act::exec_context& ctx) noexcept {
 static void effect_eat(const act::exec_context& ctx) noexcept {
   auto& world = mutable_world_of(ctx);
   const auto self = aesthetics::entityid_t(ctx.primary().id);
-  if (world.get<actor_eating>(self) != nullptr) return; // уже ем (защитно)
+  if (world.get<actor_eating>(self) != nullptr) {
+    return; // уже ем (защитно)
+  }
   const auto* per = world.get<actor_perception>(self);
   const auto* pos = world.get<actor_position>(self);
-  if (per == nullptr || pos == nullptr || !per->has_prey) return;
+  if (per == nullptr || pos == nullptr || !per->has_prey) {
+    return;
+  }
 
   const auto prey = per->prey_id;
-  if (aesthetics::is_invalid_entityid(prey) || !world.exists(prey)) return; // жертва исчезла
-  if (world.get<actor_grabbed>(prey) != nullptr) return;                    // уже схвачена (id-порядок)
-  if (world.get<actor_eating>(prey) != nullptr) return;                     // сама ест — не трогаем
+  if (aesthetics::is_invalid_entityid(prey) || !world.exists(prey)) {
+    return; // жертва исчезла
+  }
+  if (world.get<actor_grabbed>(prey) != nullptr) {
+    return; // уже схвачена (id-порядок)
+  }
+  if (world.get<actor_eating>(prey) != nullptr) {
+    return; // сама ест — не трогаем
+  }
   const auto* ppos = world.get<actor_position>(prey);
-  if (ppos == nullptr) return;
+  if (ppos == nullptr) {
+    return;
+  }
   const glm::vec2 d = ppos->value - pos->value;
-  if ((d.x * d.x + d.y * d.y) > eat_radius * eat_radius) return;            // вышла из радиуса
+  if ((d.x * d.x + d.y * d.y) > eat_radius * eat_radius) {
+    return; // вышла из радиуса
+  }
 
   // хват: оба замирают, помечаем связь, жертва визуально «съедаемая».
   world.create<actor_eating>(self, prey, ctx.rng_tick + eat_duration);
   world.create<actor_grabbed>(prey, self);
   set_velocity(world, self, glm::vec2{0.0f, 0.0f});
   set_velocity(world, prey, glm::vec2{0.0f, 0.0f});
-  if (auto* bs = world.get<actor_state>(prey); bs != nullptr) bs->state = utils::string_hash("eaten");
+  if (auto* bs = world.get<actor_state>(prey); bs != nullptr) {
+    bs->state = utils::string_hash("eaten");
+  }
 }
 
 // Сидит на месте и «думает» — скорость в ноль. Накопление скуки — пассивно в apply
@@ -382,34 +436,34 @@ void actor_world_slice::setup_brain_registry() {
   goap_ = nullptr;
   fsm_ = nullptr;
   registry_.reg("actor.threat_present", std::make_unique<act::native_function<bool>>(
-    &predicate_threat_present, "рядом есть актор крупнее"));
+                                          &predicate_threat_present, "рядом есть актор крупнее"));
   registry_.reg("actor.prey_present", std::make_unique<act::native_function<bool>>(
-    &predicate_prey_present, "рядом есть актор мельче"));
+                                        &predicate_prey_present, "рядом есть актор мельче"));
   // is_hungry: скрипт-предикат из tavl (hunger >= 0.5), если загружен; иначе нативный фолбэк
   // (тесты/резюме без ассетов). Скрипт исполняется на per-worker execution_scratch; засев root-скоупа —
   // seed_entity_scope. Поведение идентично нативному (тот же порог, та же семантика отсутствия drives).
   if (brains_.is_hungry_program != nullptr) {
     registry_.reg("actor.is_hungry", std::make_unique<act::script_function<bool>>(
-      brains_.is_hungry_program, &seed_entity_scope));
+                                       brains_.is_hungry_program, &seed_entity_scope));
   } else {
     registry_.reg("actor.is_hungry", std::make_unique<act::native_function<bool>>(
-      &predicate_is_hungry, "голод выше порога"));
+                                       &predicate_is_hungry, "голод выше порога"));
   }
   registry_.reg("actor.is_bored", std::make_unique<act::native_function<bool>>(
-    &predicate_is_bored, "скука выше порога"));
+                                    &predicate_is_bored, "скука выше порога"));
   registry_.reg("actor.prey_in_range", std::make_unique<act::native_function<bool>>(
-    &predicate_prey_in_range, "добыча в радиусе хвата"));
+                                         &predicate_prey_in_range, "добыча в радиусе хвата"));
   // ВАЖНО: на это имя ссылается СТРОКА FSM (mood) как гвард — парсер mood не допускает точку
   // в идентификаторах, поэтому имя dot-free (в отличие от acumen-метрик "actor.*", которые в
   // парсер mood не попадают и резолвятся по полному хешу строки).
   registry_.reg("is_eating", std::make_unique<act::native_function<bool>>(
-    &predicate_is_eating, "актор уже ест (хват удался)"));
-  registry_.reg("flee",      std::make_unique<act::native_function<void>>(&effect_flee,      "бежать от ближайшей угрозы"));
-  registry_.reg("chase",     std::make_unique<act::native_function<void>>(&effect_chase,     "гнаться за добычей"));
-  registry_.reg("eat",       std::make_unique<act::native_function<void>>(&effect_eat,       "схватить добычу и начать есть"));
+                               &predicate_is_eating, "актор уже ест (хват удался)"));
+  registry_.reg("flee", std::make_unique<act::native_function<void>>(&effect_flee, "бежать от ближайшей угрозы"));
+  registry_.reg("chase", std::make_unique<act::native_function<void>>(&effect_chase, "гнаться за добычей"));
+  registry_.reg("eat", std::make_unique<act::native_function<void>>(&effect_eat, "схватить добычу и начать есть"));
   registry_.reg("seek_food", std::make_unique<act::native_function<void>>(&effect_seek_food, "искать еду — рыскать пока голоден"));
-  registry_.reg("wander",    std::make_unique<act::native_function<void>>(&effect_wander,    "блуждать (от скуки)"));
-  registry_.reg("think",     std::make_unique<act::native_function<void>>(&effect_think,     "стоять и думать (копит скуку)"));
+  registry_.reg("wander", std::make_unique<act::native_function<void>>(&effect_wander, "блуждать (от скуки)"));
+  registry_.reg("think", std::make_unique<act::native_function<void>>(&effect_think, "стоять и думать (копит скуку)"));
 
   // GOAP-система: из tavl-конфига (goap/actor) если загружен, иначе хардкод-фолбэк (тесты/резюме).
   if (brains_.goap != nullptr) {
@@ -426,25 +480,45 @@ void actor_world_slice::setup_brain_registry() {
 
     // Приоритетная лестница (угроза доминирует; дальше чистое разбиение по hungry → prey →
     // in_range / bored ⇒ ровно одно действие на состояние, план в 1 шаг). Каждое ставит resolved.
-    acumen::scoped_state flee_req;  flee_req.set(flags::threat_present, true);
-    acumen::scoped_state eat_req;   eat_req.set(flags::threat_present, false);   eat_req.set(flags::hungry, true);   eat_req.set(flags::prey_present, true); eat_req.set(flags::prey_in_range, true);
-    acumen::scoped_state chase_req; chase_req.set(flags::threat_present, false); chase_req.set(flags::hungry, true); chase_req.set(flags::prey_present, true); chase_req.set(flags::prey_in_range, false);
-    acumen::scoped_state seek_req;  seek_req.set(flags::threat_present, false);  seek_req.set(flags::hungry, true);  seek_req.set(flags::prey_present, false);
-    acumen::scoped_state wander_req; wander_req.set(flags::threat_present, false); wander_req.set(flags::hungry, false); wander_req.set(flags::bored, true);
-    acumen::scoped_state think_req;  think_req.set(flags::threat_present, false);  think_req.set(flags::hungry, false); think_req.set(flags::bored, false);
-    acumen::scoped_state done;      done.set(flags::resolved, true);
+    acumen::scoped_state flee_req;
+    flee_req.set(flags::threat_present, true);
+    acumen::scoped_state eat_req;
+    eat_req.set(flags::threat_present, false);
+    eat_req.set(flags::hungry, true);
+    eat_req.set(flags::prey_present, true);
+    eat_req.set(flags::prey_in_range, true);
+    acumen::scoped_state chase_req;
+    chase_req.set(flags::threat_present, false);
+    chase_req.set(flags::hungry, true);
+    chase_req.set(flags::prey_present, true);
+    chase_req.set(flags::prey_in_range, false);
+    acumen::scoped_state seek_req;
+    seek_req.set(flags::threat_present, false);
+    seek_req.set(flags::hungry, true);
+    seek_req.set(flags::prey_present, false);
+    acumen::scoped_state wander_req;
+    wander_req.set(flags::threat_present, false);
+    wander_req.set(flags::hungry, false);
+    wander_req.set(flags::bored, true);
+    acumen::scoped_state think_req;
+    think_req.set(flags::threat_present, false);
+    think_req.set(flags::hungry, false);
+    think_req.set(flags::bored, false);
+    acumen::scoped_state done;
+    done.set(flags::resolved, true);
 
     std::vector<acumen::action> actions = {
-      acumen::action("flee",      flee_req,   done, acumen::scoped_state{}),
-      acumen::action("eat",       eat_req,    done, acumen::scoped_state{}),
-      acumen::action("chase",     chase_req,  done, acumen::scoped_state{}),
-      acumen::action("seek_food", seek_req,   done, acumen::scoped_state{}),
-      acumen::action("wander",    wander_req, done, acumen::scoped_state{}),
-      acumen::action("think",     think_req,  done, acumen::scoped_state{}),
+      acumen::action("flee", flee_req, done, acumen::scoped_state{}),
+      acumen::action("eat", eat_req, done, acumen::scoped_state{}),
+      acumen::action("chase", chase_req, done, acumen::scoped_state{}),
+      acumen::action("seek_food", seek_req, done, acumen::scoped_state{}),
+      acumen::action("wander", wander_req, done, acumen::scoped_state{}),
+      acumen::action("think", think_req, done, acumen::scoped_state{}),
     };
 
-    acumen::scoped_state goal_state; goal_state.set(flags::resolved, true);
-    std::vector<acumen::goal> goals = { acumen::goal{ "resolved", acumen::scoped_state{}, goal_state } };
+    acumen::scoped_state goal_state;
+    goal_state.set(flags::resolved, true);
+    std::vector<acumen::goal> goals = {acumen::goal{"resolved", acumen::scoped_state{}, goal_state}};
 
     // конструктор резолвит предикаты/эффекты по именам и кидает при промахе.
     goap_registry_.add("actor", acumen::system(&registry_, std::move(metrics), std::move(goals), std::move(actions)));
@@ -500,14 +574,16 @@ void actor_world_slice::setup_brain_registry() {
                     int64_t(mix32(a.seed ^ 0x57ab00du) % uint32_t(t.strength_mod)));
     w.create<actor_state>(id, utils::string_hash("think")); // стартуем «думающими»
   });
-  const auto prefab_lc = devils_engine::prefab::prefab_load_context{ &registry_ };
+  const auto prefab_lc = devils_engine::prefab::prefab_load_context{&registry_};
   if (brains_.prefabs != nullptr && !brains_.prefabs->empty()) {
-    for (const auto& d : *brains_.prefabs) prefab_.add_prefab(d.name, d.text, prefab_lc);
+    for (const auto& d : *brains_.prefabs) {
+      prefab_.add_prefab(d.name, d.text, prefab_lc);
+    }
   } else {
     prefab_.add_prefab("food", "food_item = { nutrition = 1.0 }\n", prefab_lc);
     prefab_.add_prefab("actor",
-      "actor_tuning = { speed_base = 0.65, speed_var = 1.35, hunger_scale = 0.4, strength_mod = 11 }\n",
-      prefab_lc);
+                       "actor_tuning = { speed_base = 0.65, speed_var = 1.35, hunger_scale = 0.4, strength_mod = 11 }\n",
+                       prefab_lc);
   }
 }
 
@@ -524,10 +600,16 @@ void actor_world_slice::build_goap_from_config(const goap_config& cfg) {
   // (next_state/goal, напр. "resolved") получают индексы ≥N при первой встрече. Линейный поиск — N крошечно.
   std::vector<std::string> bit_names;
   bit_names.reserve(cfg.metrics.size() + 4);
-  for (const auto& m : cfg.metrics) bit_names.push_back(m.key);
+  for (const auto& m : cfg.metrics) {
+    bit_names.push_back(m.key);
+  }
 
   const auto bit_of = [&bit_names](const std::string& key) -> size_t {
-    for (size_t i = 0; i < bit_names.size(); ++i) if (bit_names[i] == key) return i;
+    for (size_t i = 0; i < bit_names.size(); ++i) {
+      if (bit_names[i] == key) {
+        return i;
+      }
+    }
     bit_names.push_back(key);
     return bit_names.size() - 1;
   };
@@ -535,15 +617,24 @@ void actor_world_slice::build_goap_from_config(const goap_config& cfg) {
   // "key" / "!key" / "not key" -> (ключ, значение бита). Пробелы обрезаем.
   const auto parse_bit = [](std::string_view s) -> std::pair<std::string, bool> {
     const auto trim = [](std::string_view v) {
-      while (!v.empty() && v.front() == ' ') v.remove_prefix(1);
-      while (!v.empty() && v.back()  == ' ') v.remove_suffix(1);
+      while (!v.empty() && v.front() == ' ') {
+        v.remove_prefix(1);
+      }
+      while (!v.empty() && v.back() == ' ') {
+        v.remove_suffix(1);
+      }
       return v;
     };
     s = trim(s);
     bool value = true;
-    if (s.starts_with("!"))         { value = false; s = trim(s.substr(1)); }
-    else if (s.starts_with("not ")) { value = false; s = trim(s.substr(4)); }
-    return { std::string(s), value };
+    if (s.starts_with("!")) {
+      value = false;
+      s = trim(s.substr(1));
+    } else if (s.starts_with("not ")) {
+      value = false;
+      s = trim(s.substr(4));
+    }
+    return {std::string(s), value};
   };
 
   const auto build_ss = [&](const std::vector<std::string>& keys) {
@@ -557,7 +648,9 @@ void actor_world_slice::build_goap_from_config(const goap_config& cfg) {
 
   std::vector<acumen::state_metric> metrics;
   metrics.reserve(cfg.metrics.size());
-  for (const auto& m : cfg.metrics) metrics.emplace_back(m.key);
+  for (const auto& m : cfg.metrics) {
+    metrics.emplace_back(m.key);
+  }
 
   std::vector<acumen::action> actions;
   actions.reserve(cfg.actions.size());
@@ -568,7 +661,7 @@ void actor_world_slice::build_goap_from_config(const goap_config& cfg) {
   std::vector<acumen::goal> goals;
   goals.reserve(cfg.goals.size());
   for (const auto& g : cfg.goals) {
-    goals.push_back(acumen::goal{ g.name, build_ss(g.requirements), build_ss(g.goal) });
+    goals.push_back(acumen::goal{g.name, build_ss(g.requirements), build_ss(g.goal)});
   }
 
   // резолвит предикаты (метрики) и эффекты (действия) по имени из registry_, кидает при промахе.
@@ -589,8 +682,8 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   // (в resolve_eating) кидает, если аллокатора нет, а компоненты появляются лишь при первом
   // хвате; (2) component_type_id — sequential_type_id (присваивается при первом обращении),
   // фиксируем его до любого MT-доступа. block_size как в world::create (sizeof(T)*250).
-  (void)world_.get_or_create_allocator<actor_eating>(sizeof(actor_eating) * 250);
-  (void)world_.get_or_create_allocator<actor_grabbed>(sizeof(actor_grabbed) * 250);
+  static_cast<void>(world_.get_or_create_allocator<actor_eating>(sizeof(actor_eating) * 250));
+  static_cast<void>(world_.get_or_create_allocator<actor_grabbed>(sizeof(actor_grabbed) * 250));
 
   // C2: границы для респавна еды, целевое число еды, кэш препятствий.
   spawn_min_ = min_bound;
@@ -618,9 +711,8 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
     const float jitter_y = (unit_from_hash(mix32(seed ^ 0x5a5au)) - 0.5f) * 0.35f;
     const glm::vec2 pos{
       min_bound.x + extent.x * fx + jitter_x,
-      min_bound.y + extent.y * fy + jitter_y
-    };
-    prefab_.spawn("actor", world_, spawn_args{ pos, seed, i, tex_count });
+      min_bound.y + extent.y * fy + jitter_y};
+    prefab_.spawn("actor", world_, spawn_args{pos, seed, i, tex_count});
   }
 
   // Препятствия: статичные диски в детерминированных точках. Из восприятия исключены
@@ -633,16 +725,18 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
     const float fx = unit_from_hash(os);
     const float fy = unit_from_hash(mix32(os ^ 0x5bd1e995u));
     const float radius = 1.0f + unit_from_hash(mix32(os ^ 0xa53cu)) * 1.5f; // 1.0..2.5
-    const glm::vec2 p{ min_bound.x + extent.x * fx, min_bound.y + extent.y * fy };
+    const glm::vec2 p{min_bound.x + extent.x * fx, min_bound.y + extent.y * fy};
     const auto id = world_.gen_entityid();
     world_.create<actor_position>(id, p);
     world_.create<actor_visual>(id, 0u, obstacle_color(), radius); // визуальный размер ≈ радиус
     world_.create<obstacle>(id, radius);
-    obstacles_.push_back(obstacle_disc{ p, radius });
+    obstacles_.push_back(obstacle_disc{p, radius});
   }
 
   // Стартовая еда до целевого числа (дальше поддерживается maintain_food каждый тик).
-  for (uint32_t i = 0; i < food_target_; ++i) spawn_food();
+  for (uint32_t i = 0; i < food_target_; ++i) {
+    spawn_food();
+  }
 }
 
 actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& batch, thread::atomic_pool& pool) {
@@ -667,14 +761,15 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
   maintain_food_fn_t{}(*this);
   build_actor_batch_fn_t{}(batch, world_, tick_);
 
-  if (tick_ % 100 == 0) dump_actor_perf_stats(); // периодический дамп агрегатов (≈ раз в 5с при 20fps)
+  if (tick_ % 100 == 0) {
+    dump_actor_perf_stats(); // периодический дамп агрегатов (≈ раз в 5с при 20fps)
+  }
 
   return actor_metrics{
     uint32_t(world_.count<actor_position>()),
     uint32_t(intents_.size()), // = сколько актороов реально думали в этот тик
     batch.count(),
-    tick_
-  };
+    tick_};
 }
 
 // build_sense_tree — kD-дерево над ВСЕМИ акторами (даже не думающие — потенциальные цели).
@@ -683,10 +778,14 @@ void actor_world_slice::build_sense_tree() {
   using kd = utils::kd_tree<perception_target>;
   sense_tree_.clear();
   for (auto [id, pos, vis] : world_.view<actor_position, actor_visual>()) {
-    if (world_.get<actor_grabbed>(id) != nullptr) continue; // схваченную добычу никто не таргетит
-    if (world_.get<obstacle>(id) != nullptr) continue;      // препятствие — не добыча/не угроза
-    sense_tree_.insert(kd::point{ pos->value.x, pos->value.y },
-                       perception_target{ vis->size, id });
+    if (world_.get<actor_grabbed>(id) != nullptr) {
+      continue; // схваченную добычу никто не таргетит
+    }
+    if (world_.get<obstacle>(id) != nullptr) {
+      continue; // препятствие — не добыча/не угроза
+    }
+    sense_tree_.insert(kd::point{pos->value.x, pos->value.y},
+                       perception_target{vis->size, id});
   }
   sense_tree_.build();
 }
@@ -700,24 +799,34 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
                                      acumen::execution_scratch& scratch,
                                      std::vector<act::intent>& out) {
   using kd = utils::kd_tree<perception_target>;
-  auto* pos   = world_.get<actor_position>(id);
-  auto* vis   = world_.get<actor_visual>(id);
-  auto* per   = world_.get<actor_perception>(id);
+  auto* pos = world_.get<actor_position>(id);
+  auto* vis = world_.get<actor_visual>(id);
+  auto* per = world_.get<actor_perception>(id);
   auto* brain = world_.get<actor_brain>(id);
-  auto* cog   = world_.get<actor_cognition>(id);
-  if (pos == nullptr || vis == nullptr || per == nullptr || brain == nullptr || cog == nullptr) return;
+  auto* cog = world_.get<actor_cognition>(id);
+  if (pos == nullptr || vis == nullptr || per == nullptr || brain == nullptr || cog == nullptr) {
+    return;
+  }
 
   // восприятие: ближайший крупнее (угроза) + мельче (добыча) за один обход.
   const float s = vis->size;
   const uint32_t self = uint32_t(aesthetics::get_entityid_index(id));
-  const kd::point q{ pos->value.x, pos->value.y };
-  const auto [threat, prey] = sense_tree_.nearest2(q, perception_radius,
-    [s, self](const perception_target& t) { return uint32_t(aesthetics::get_entityid_index(t.id)) != self && t.size > s; },
-    [s, self](const perception_target& t) { return uint32_t(aesthetics::get_entityid_index(t.id)) != self && t.size < s; });
+  const kd::point q{pos->value.x, pos->value.y};
+  const auto [threat, prey] = sense_tree_.nearest2(q, perception_radius, [s, self](const perception_target& t) {
+    return uint32_t(aesthetics::get_entityid_index(t.id)) != self && t.size > s;
+  },
+                                                   [s, self](const perception_target& t) {
+                                                     return uint32_t(aesthetics::get_entityid_index(t.id)) != self && t.size < s;
+                                                   });
   per->has_threat = threat != nullptr;
-  per->has_prey   = prey != nullptr;
-  if (threat != nullptr) per->threat_pos = glm::vec2(threat->pos[0], threat->pos[1]);
-  if (prey   != nullptr) { per->prey_pos = glm::vec2(prey->pos[0], prey->pos[1]); per->prey_id = prey->payload.id; }
+  per->has_prey = prey != nullptr;
+  if (threat != nullptr) {
+    per->threat_pos = glm::vec2(threat->pos[0], threat->pos[1]);
+  }
+  if (prey != nullptr) {
+    per->prey_pos = glm::vec2(prey->pos[0], prey->pos[1]);
+    per->prey_id = prey->payload.id;
+  }
 
   // GOAP: dry-run ctx → decide (hit кеша ⇒ без A*) → первое действие плана → intent.
   const auto& goal_state = goap_->get_goals().front().goal;
@@ -733,11 +842,13 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
   dp.cache = &scratch.cache;
   const size_t n = goap_->decide(dp, plan);
   cog->last_think = tick; // решение принято (даже если план пуст — переобдумаем по расписанию)
-  if (n == 0 || plan[0] == nullptr) return;
+  if (n == 0 || plan[0] == nullptr) {
+    return;
+  }
 
   act::intent in;
   in.kind = act::intent_kind::call_function;
-  in.actor = act::entity_id{ uint32_t(id) };
+  in.actor = act::entity_id{uint32_t(id)};
   in.payload.call.fn = utils::string_hash(plan[0]->name);
   in.source_action = in.payload.call.fn;
   out.push_back(in);
@@ -759,43 +870,59 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
   for (auto [id, cog] : world_.view<actor_cognition>()) {
     // едящие (закоммичены до конца поедания) и схваченные (заморожены, скоро удалятся) —
     // не думают. Это и есть «коммит длительностью действия» вместо чистого commit_ticks.
-    if (world_.get<actor_eating>(id) != nullptr || world_.get<actor_grabbed>(id) != nullptr) continue;
+    if (world_.get<actor_eating>(id) != nullptr || world_.get<actor_grabbed>(id) != nullptr) {
+      continue;
+    }
     if (cog->last_think == 0 || tick - cog->last_think >= commit_ticks_) {
-      due_.push_back(think_request{ tick - cog->last_think, id });
+      due_.push_back(think_request{tick - cog->last_think, id});
     }
   }
   if (due_.size() > think_budget_) {
     std::nth_element(due_.begin(), due_.begin() + think_budget_, due_.end(),
-      [] (const think_request& a, const think_request& b) {
-        if (a.overdue != b.overdue) return a.overdue > b.overdue;                       // дольше ждал — раньше
-        return aesthetics::get_entityid_index(a.actor) < aesthetics::get_entityid_index(b.actor); // детерм. тай-брейк
-      });
+                     [](const think_request& a, const think_request& b) {
+                       if (a.overdue != b.overdue) {
+                         return a.overdue > b.overdue; // дольше ждал — раньше
+                       }
+                       return aesthetics::get_entityid_index(a.actor) < aesthetics::get_entityid_index(b.actor); // детерм. тай-брейк
+                     });
     due_.resize(think_budget_);
   }
   DE_TRACE(catalogue::log_domain::gameplay, "cognition tick={} due={} budget={}", tick, due_.size(), think_budget_);
-  if (due_.empty()) return;
+  if (due_.empty()) {
+    return;
+  }
 
   // (2) per-thread scratch: слот = pool.thread_index (0=вызывающий, 1..size=воркеры). Размер
   //     pool.size()+1; реаллокация только при смене числа потоков (обычно один раз).
   const size_t slots = pool.size() + 1;
-  if (cognition_scratch_.size() != slots) cognition_scratch_.resize(slots);
-  if (intent_buffers_.size() != slots) intent_buffers_.resize(slots);
-  for (auto& b : intent_buffers_) b.clear();
+  if (cognition_scratch_.size() != slots) {
+    cognition_scratch_.resize(slots);
+  }
+  if (intent_buffers_.size() != slots) {
+    intent_buffers_.resize(slots);
+  }
+  for (auto& b : intent_buffers_) {
+    b.clear();
+  }
 
   // (3) раскидать отобранных по потокам. Лямбда — lvalue (distribute копирует её на каждый
   //     чанк; именованная не даст случайного move). Чанк зовётся как f(start, job_count).
-  auto job = [this, tick, &pool] (const size_t start, const size_t count) {
+  auto job = [this, tick, &pool](const size_t start, const size_t count) {
     const uint32_t slot = pool.thread_index(std::this_thread::get_id());
     auto& scratch = cognition_scratch_[slot];
-    auto& out     = intent_buffers_[slot];
-    for (size_t i = start; i < start + count; ++i) decide_actor(due_[i].actor, tick, scratch, out);
+    auto& out = intent_buffers_[slot];
+    for (size_t i = start; i < start + count; ++i) {
+      decide_actor(due_[i].actor, tick, scratch, out);
+    }
   };
   pool.distribute(due_.size(), job);
   pool.wait(); // ждём опустошения очереди И завершения задач в работе
 
   // (4) слить выходы потоков и упорядочить детерминированно (sort by entity index).
-  for (auto& b : intent_buffers_) intents_.insert(intents_.end(), b.begin(), b.end());
-  std::sort(intents_.begin(), intents_.end(), [] (const act::intent& a, const act::intent& b) {
+  for (auto& b : intent_buffers_) {
+    intents_.insert(intents_.end(), b.begin(), b.end());
+  }
+  std::sort(intents_.begin(), intents_.end(), [](const act::intent& a, const act::intent& b) {
     return aesthetics::get_entityid_index(a.actor.id) < aesthetics::get_entityid_index(b.actor.id);
   });
 }
@@ -808,14 +935,20 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
 void actor_world_slice::apply(const float dt_seconds) {
   sound_emits_.clear(); // sim-звуки этого тика собираем заново
   for (const auto& in : intents_) {
-    if (in.kind != act::intent_kind::call_function) continue;
+    if (in.kind != act::intent_kind::call_function) {
+      continue;
+    }
     const auto* effect = registry_.effect(in.payload.call.fn);
-    if (effect == nullptr) continue;
+    if (effect == nullptr) {
+      continue;
+    }
 
     const auto id = aesthetics::entityid_t(in.actor.id);
     // Актора схватили В ЭТОМ ЖЕ apply (хищник с меньшим id отработал раньше) → его собственный
     // интент гасим, иначе движение перебьёт заморозку. Детерминированно (id-порядок).
-    if (world_.get<actor_grabbed>(id) != nullptr) continue;
+    if (world_.get<actor_grabbed>(id) != nullptr) {
+      continue;
+    }
     const auto* brain = world_.get<actor_brain>(id);
     const uint64_t seed = brain != nullptr ? brain->seed : 0u;
     // cognition уже завершён: caller lane 0 можно безопасно переиспользовать для apply/FSM.
@@ -833,15 +966,16 @@ void actor_world_slice::apply(const float dt_seconds) {
         // sim-звук на ВХОД в состояние (eating→чавк, flee→тревога). Позиция актора — для
         // куллинга по слушателю в презентационном мосте. Эфемерно, не реплицируется.
         if (const uint64_t snd = sound_for_state(st->state); snd != 0) {
-          if (const auto* p = world_.get<actor_position>(id); p != nullptr)
-            sound_emits_.push_back(sound_emit{ snd, p->value });
+          if (const auto* p = world_.get<actor_position>(id); p != nullptr) {
+            sound_emits_.push_back(sound_emit{snd, p->value});
+          }
         }
       }
     }
   }
 
   for (auto [id, pos, vel] : world_.view<actor_position, actor_velocity>()) {
-    (void)id;
+    static_cast<void>(id);
     pos->value += vel->value * dt_seconds;
     // Жёсткая коллизия с препятствиями: оказался внутри диска → вытолкнуть на границу. Простое
     // позиционное разрешение (без стиринга): актор «скользит» вдоль препятствия. O(M), M мало.
@@ -860,7 +994,7 @@ void actor_world_slice::apply(const float dt_seconds) {
   // от каденса обдумывания). hunger копится всегда; boredom растёт пока стоит (думает), быстро
   // спадает в движении. Решения по drives примутся на следующем созревании актора.
   for (auto [id, dr, vel] : world_.view<stats, actor_velocity>()) {
-    (void)id;
+    static_cast<void>(id);
     dr->hunger = std::clamp(dr->hunger + hunger_rate * dt_seconds, 0.0f, 1.0f);
     const float speed2 = vel->value.x * vel->value.x + vel->value.y * vel->value.y;
     const float db = (speed2 <= still_speed2 ? bored_rate : -bored_relief) * dt_seconds;
@@ -876,13 +1010,23 @@ void actor_world_slice::resolve_eating(const uint64_t tick) {
   std::vector<aesthetics::entityid_t> finished; // хищники, закончившие есть
   std::vector<aesthetics::entityid_t> kill;     // съеденные жертвы на удаление
   for (auto [id, eat] : world_.view<actor_eating>()) {
-    if (tick < eat->until_tick) continue;
-    if (auto* dr = world_.get<stats>(id); dr != nullptr) dr->hunger = 0.0f; // наелся
+    if (tick < eat->until_tick) {
+      continue;
+    }
+    if (auto* dr = world_.get<stats>(id); dr != nullptr) {
+      dr->hunger = 0.0f; // наелся
+    }
     finished.push_back(id);
     kill.push_back(eat->target);
   }
-  for (const auto pid : finished) world_.remove<actor_eating>(pid);
-  for (const auto bid : kill) if (world_.exists(bid)) world_.remove_entity(bid);
+  for (const auto pid : finished) {
+    world_.remove<actor_eating>(pid);
+  }
+  for (const auto bid : kill) {
+    if (world_.exists(bid)) {
+      world_.remove_entity(bid);
+    }
+  }
 }
 
 // spawn_food — одна еда-сущность в детерминированной точке в пределах bounds. Маленький размер
@@ -894,25 +1038,29 @@ void actor_world_slice::spawn_food() {
   ++food_spawn_seq_;
   const float fx = float(h1 & 0xffffffu) / float(0xffffffu);
   const float fy = float(h2 & 0xffffffu) / float(0xffffffu);
-  const glm::vec2 p{ spawn_min_.x + (spawn_max_.x - spawn_min_.x) * fx,
-                     spawn_min_.y + (spawn_max_.y - spawn_min_.y) * fy };
+  const glm::vec2 p{spawn_min_.x + (spawn_max_.x - spawn_min_.x) * fx,
+                    spawn_min_.y + (spawn_max_.y - spawn_min_.y) * fy};
   // Через префаб: food_item из конфига, позиция/визуал — derived в on_construct (см. setup_brain_registry).
-  prefab_.spawn("food", world_, spawn_args{ p });
+  prefab_.spawn("food", world_, spawn_args{p});
 }
 
 // spawn_sink: примитивный спавн префаба по имени в точке (ds-натив spawn_at → сюда). Тот же путь, что
 // spawn_food. Спавнеры-энтити/запросы/динамические точки — тех-долг.
 aesthetics::entityid_t actor_world_slice::spawn_prefab(const std::string_view name, const glm::vec2 pos) {
-  return prefab_.spawn(std::string(name), world_, spawn_args{ pos });
+  return prefab_.spawn(std::string(name), world_, spawn_args{pos});
 }
 
 // maintain_food — допополнить еду до целевого числа. Кап на тик, чтобы не было всплеска при
 // массовом выедании. Детерминированно (spawn_food завязан на tick_ + счётчик).
 void actor_world_slice::maintain_food() {
   const size_t have = world_.count<food_item>();
-  if (have >= food_target_) return;
+  if (have >= food_target_) {
+    return;
+  }
   size_t need = std::min<size_t>(food_target_ - have, 64); // не больше 64 спавнов/тик
-  for (size_t i = 0; i < need; ++i) spawn_food();
+  for (size_t i = 0; i < need; ++i) {
+    spawn_food();
+  }
 }
 
 // ── save/load ──────────────────────────────────────────────────────────────
@@ -921,22 +1069,22 @@ void actor_world_slice::maintain_food() {
 // ⇒ сериализуется тем же ядром serialize<T>; glm::vec2 — через adapter (см. actor_snapshot.h).
 namespace {
 struct sim_globals {
-  uint64_t  tick;
-  uint64_t  food_spawn_seq;
+  uint64_t tick;
+  uint64_t food_spawn_seq;
   glm::vec2 spawn_min;
   glm::vec2 spawn_max;
-  uint32_t  food_target;
-  uint32_t  texture_count;
-  uint32_t  commit_ticks;
-  uint32_t  think_budget;
+  uint32_t food_target;
+  uint32_t texture_count;
+  uint32_t commit_ticks;
+  uint32_t think_budget;
 };
 } // namespace
 
 void actor_world_slice::rebuild_obstacle_cache() {
   obstacles_.clear();
   for (auto [id, obs, pos] : world_.view<obstacle, actor_position>()) {
-    (void)id;
-    obstacles_.push_back(obstacle_disc{ pos->value, obs->radius });
+    static_cast<void>(id);
+    obstacles_.push_back(obstacle_disc{pos->value, obs->radius});
   }
 }
 
@@ -946,10 +1094,10 @@ std::vector<uint8_t> actor_world_slice::save(const aesthetics::serial::sink_poli
   // на sim_globals ⇒ запись линейным memcpy, ensure() почти не срабатывает; усекаем по pos().
   std::vector<std::byte> raw;
   raw.resize(serial::estimate_size(&world_) + 128);
-  serial::writer wr{ raw };
+  serial::writer wr{raw};
   serial::dump_world(&world_, wr);
-  const sim_globals g{ tick_, food_spawn_seq_, spawn_min_, spawn_max_,
-                       food_target_, texture_count_, commit_ticks_, think_budget_ };
+  const sim_globals g{tick_, food_spawn_seq_, spawn_min_, spawn_max_,
+                      food_target_, texture_count_, commit_ticks_, think_budget_};
   serial::serialize(wr, g);
   raw.resize(wr.pos());
   return serial::seal(raw, policy); // header + checksum + компрессия (+ скриншот — тут не задаём)
@@ -963,25 +1111,32 @@ bool actor_world_slice::load(const std::span<const uint8_t> packet) {
   intents_.clear();
   // как в init: аллокаторы пулов поедания заранее на главном потоке (view<> не кинет; type-id
   // фиксируется до MT). load_world и так тронет все зарегистрированные типы, но порядок важен.
-  (void)world_.get_or_create_allocator<actor_eating>(sizeof(actor_eating) * 250);
-  (void)world_.get_or_create_allocator<actor_grabbed>(sizeof(actor_grabbed) * 250);
+  static_cast<void>(world_.get_or_create_allocator<actor_eating>(sizeof(actor_eating) * 250));
+  static_cast<void>(world_.get_or_create_allocator<actor_grabbed>(sizeof(actor_grabbed) * 250));
 
   std::vector<std::byte> raw;
-  if (!serial::unseal(packet, raw)) return false;              // битый контейнер/checksum
-  serial::reader r{ raw };
-  if (!serial::load_world(&world_, r)) return false;           // magic/схема/обрыв → false
+  if (!serial::unseal(packet, raw)) {
+    return false; // битый контейнер/checksum
+  }
+  serial::reader r{raw};
+  if (!serial::load_world(&world_, r)) {
+    return false; // magic/схема/обрыв → false
+  }
   sim_globals g{};
   serial::deserialize(r, g);
-  if (!r.ok) { utils::warn("slice load: truncated sim_globals"); return false; }
+  if (!r.ok) {
+    utils::warn("slice load: truncated sim_globals");
+    return false;
+  }
 
-  tick_          = g.tick;
-  food_spawn_seq_= g.food_spawn_seq;
-  spawn_min_     = g.spawn_min;
-  spawn_max_     = g.spawn_max;
-  food_target_   = g.food_target;
+  tick_ = g.tick;
+  food_spawn_seq_ = g.food_spawn_seq;
+  spawn_min_ = g.spawn_min;
+  spawn_max_ = g.spawn_max;
+  food_target_ = g.food_target;
   texture_count_ = g.texture_count;
-  commit_ticks_  = g.commit_ticks;
-  think_budget_  = g.think_budget;
+  commit_ticks_ = g.commit_ticks;
+  think_budget_ = g.think_budget;
 
   rebuild_obstacle_cache(); // кэш выводим из мира, не хранится в снапшоте
   return true;

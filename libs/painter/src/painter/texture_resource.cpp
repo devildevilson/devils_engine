@@ -1,13 +1,12 @@
-#include <devils_engine/catalogue/logging.h>
-#include "texture_resource.h"
-
 #include <vector>
 
-#include <stb_image.h>
-
+#include <devils_engine/catalogue/logging.h>
+#include <devils_engine/demiurg/module_interface.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/safe_handle.h>
-#include <devils_engine/demiurg/module_interface.h>
+#include <stb_image.h>
+
+#include "texture_resource.h"
 
 namespace devils_engine {
 namespace painter {
@@ -32,5 +31,5 @@ void texture_resource::load_cold(const utils::safe_handle_t&) {
   DE_LOG(catalogue::log_domain::resource, flow, "texture_resource '{}': decoded {}x{} ({} bytes RGBA)", id, width, height, memory.size());
 }
 
-}
-}
+} // namespace painter
+} // namespace devils_engine

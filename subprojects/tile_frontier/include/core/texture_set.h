@@ -20,8 +20,12 @@ using namespace devils_engine;
 struct texture_set {
   std::vector<demiurg::resource_handle> textures;
 
-  uint32_t count() const noexcept { return uint32_t(textures.size()); }
-  std::span<const demiurg::resource_handle> handles() const noexcept { return textures; }
+  uint32_t count() const noexcept {
+    return uint32_t(textures.size());
+  }
+  std::span<const demiurg::resource_handle> handles() const noexcept {
+    return textures;
+  }
 
   // Собрать все texture_resource, чей id содержит prefix как подстроку (напр. "textures/"),
   // через resource_system::filter ("по части пути"). Возвращает число найденных. Перезаписывает.

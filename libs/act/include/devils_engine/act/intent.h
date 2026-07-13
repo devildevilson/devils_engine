@@ -2,8 +2,9 @@
 #define DEVILS_ENGINE_ACT_INTENT_H
 
 #include <cstdint>
-#include "devils_engine/utils/string_id.h" // utils::id
+
 #include "common.h"
+#include "devils_engine/utils/string_id.h" // utils::id
 
 namespace devils_engine {
 namespace act {
@@ -18,24 +19,28 @@ namespace act {
 
 enum class intent_kind : uint16_t {
   none,
-  move_to,        // payload.target — точка назначения
-  turn_to,        // payload.target — направление/цель поворота
-  call_function,  // payload.call.fn — fn_id геймплейной функции (эффекта)
-  fsm_event,      // payload.fsm.event — событие для mood-FSM актора
+  move_to,       // payload.target — точка назначения
+  turn_to,       // payload.target — направление/цель поворота
+  call_function, // payload.call.fn — fn_id геймплейной функции (эффекта)
+  fsm_event,     // payload.fsm.event — событие для mood-FSM актора
 };
 
 struct intent {
   intent_kind kind = intent_kind::none;
-  entity_id   actor;
+  entity_id actor;
   union {
     vec3 target;
-    struct { utils::id fn; }    call;
-    struct { utils::id event; } fsm;
+    struct {
+      utils::id fn;
+    } call;
+    struct {
+      utils::id event;
+    } fsm;
   } payload = {};
   utils::id source_action = 0; // provenance: GOAP action, породивший интенцию
 };
 
-}
-}
+} // namespace act
+} // namespace devils_engine
 
 #endif

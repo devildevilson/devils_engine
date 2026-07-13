@@ -1,10 +1,12 @@
 #ifndef DEVILS_ENGINE_CATALOGUE_REGISTRY_H
 #define DEVILS_ENGINE_CATALOGUE_REGISTRY_H
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <span>
+
 #include <gtl/phmap.hpp>
+
 #include "common.h"
 
 namespace devils_engine {
@@ -20,15 +22,15 @@ struct registry {
     std::string_view name;
     const invoke_fn fn;
 
-    friend inline bool operator==(const info& a, const info& b) noexcept { return a.name == b.name; }
-    friend inline bool operator!=(const info& a, const info& b) noexcept { return !(a.name == b.name); }
+    friend bool operator==(const info& a, const info& b) noexcept;
+    friend bool operator!=(const info& a, const info& b) noexcept;
   };
 
   gtl::flat_hash_map<size_t, info> funcs;
 
-  void reg(const size_t id, const std::string_view &name, const info::invoke_fn fn);
+  void reg(const size_t id, const std::string_view& name, const info::invoke_fn fn);
 };
-}
-}
+} // namespace catalogue
+} // namespace devils_engine
 
 #endif

@@ -11,6 +11,7 @@ set(SRC_LIST
   src/catalogue/demo.cpp
   src/catalogue/introspection.cpp
   src/catalogue/logging.cpp
+  src/catalogue/registry.cpp
 )
 
 set(HDR_LIST

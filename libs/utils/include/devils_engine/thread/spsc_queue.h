@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_THREAD_SPSC_QUEUE_H
 #define DEVILS_ENGINE_THREAD_SPSC_QUEUE_H
 
+// Fixed-capacity single-producer/single-consumer queue with caller-visible overflow.
+
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
@@ -18,10 +20,14 @@ template <typename T>
 class spsc_queue {
 public:
   explicit spsc_queue(const size_t capacity_) : buffer(capacity_) {
-    if (capacity_ == 0) throw std::invalid_argument("spsc_queue capacity must be greater than zero");
+    if (capacity_ == 0) {
+      throw std::invalid_argument("spsc_queue capacity must be greater than zero");
+    }
   }
 
-  ~spsc_queue() noexcept { clear(); }
+  ~spsc_queue() noexcept {
+    clear();
+  }
 
   spsc_queue(const spsc_queue&) = delete;
   spsc_queue(spsc_queue&&) = delete;
@@ -35,7 +41,9 @@ public:
   bool try_push(T&& value) {
     const uint64_t tail_pos = tail.load(std::memory_order_relaxed);
     const uint64_t head_pos = head.load(std::memory_order_acquire);
-    if (tail_pos - head_pos >= buffer.size()) return false;
+    if (tail_pos - head_pos >= buffer.size()) {
+      return false;
+    }
 
     new (slot(tail_pos)) T(std::move(value));
     tail.store(tail_pos + 1, std::memory_order_release);
@@ -47,7 +55,9 @@ public:
     const uint64_t head_pos = head.load(std::memory_order_acquire);
     const size_t available = buffer.size() - static_cast<size_t>(tail_pos - head_pos);
     const size_t count = std::min(values.size(), available);
-    if (count == 0) return 0;
+    if (count == 0) {
+      return 0;
+    }
 
     const size_t first_index = static_cast<size_t>(tail_pos % buffer.size());
     const size_t first_count = std::min(count, buffer.size() - first_index);
@@ -66,7 +76,9 @@ public:
   bool emplace(Args&&... args) {
     const uint64_t tail_pos = tail.load(std::memory_order_relaxed);
     const uint64_t head_pos = head.load(std::memory_order_acquire);
-    if (tail_pos - head_pos >= buffer.size()) return false;
+    if (tail_pos - head_pos >= buffer.size()) {
+      return false;
+    }
 
     new (slot(tail_pos)) T(std::forward<Args>(args)...);
     tail.store(tail_pos + 1, std::memory_order_release);
@@ -82,7 +94,9 @@ public:
     const uint64_t tail_pos = tail.load(std::memory_order_acquire);
     const size_t available = static_cast<size_t>(tail_pos - head_pos);
     const size_t count = std::min(out.size(), available);
-    if (count == 0) return 0;
+    if (count == 0) {
+      return 0;
+    }
 
     const size_t first_index = static_cast<size_t>(head_pos % buffer.size());
     const size_t first_count = std::min(count, buffer.size() - first_index);
@@ -124,7 +138,9 @@ public:
     return static_cast<size_t>(tail_pos - head_pos);
   }
 
-  size_t capacity() const noexcept { return buffer.size(); }
+  size_t capacity() const noexcept {
+    return buffer.size();
+  }
 
 private:
   struct storage_t {
@@ -158,7 +174,7 @@ private:
   alignas(64) std::atomic<uint64_t> tail = 0;
 };
 
-}
-}
+} // namespace thread
+} // namespace devils_engine
 
 #endif

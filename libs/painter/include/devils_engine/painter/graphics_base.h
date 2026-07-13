@@ -1,15 +1,16 @@
 #ifndef DEVILS_ENGINE_PAINTER_GRAPHICS_BASE_H
 #define DEVILS_ENGINE_PAINTER_GRAPHICS_BASE_H
 
-#include <cstdint>
-#include <cstddef>
-#include <vector>
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <tuple>
-#include "vulkan_minimal.h"
-#include "structures.h"
+#include <vector>
+
 #include "common_steps.h"
 #include "devils_engine/utils/core.h"
+#include "structures.h"
+#include "vulkan_minimal.h"
 
 /*
 тут еще непонятно откуда брать дескриптор текстурок...
@@ -22,7 +23,9 @@
 */
 
 namespace devils_engine {
-namespace demiurg { class resource_system; }
+namespace demiurg {
+class resource_system;
+}
 namespace painter {
 
 struct assets_base;
@@ -39,12 +42,13 @@ struct vk_queue {
   VkQueue queue;
   std::mutex mutex;
 
-  inline vk_queue(VkQueue queue) noexcept : queue(queue) {}
+  vk_queue(VkQueue queue) noexcept;
   void wait_idle();
   uint32_t submit();
 };
 
-enum class presentation_engine_type { main, no_present };
+enum class presentation_engine_type { main,
+                                      no_present };
 
 struct graphics_base {
   VkInstance instance;
@@ -100,9 +104,9 @@ struct graphics_base {
   // совместимость: fs-путь fast_test/main.cpp, где resident-графы не заданы).
   std::string startup_graph_;
   std::vector<std::string> resident_graphs_;
-  bool graph_filtered_ = false;              // включена ли фильтрация по used-set
+  bool graph_filtered_ = false; // включена ли фильтрация по used-set
   resource_usage_t graph_active_mask_;
-  resource_usage_t resource_active_mask_;    // bitset<MAXIMUM_RENDERING_RESOURCES_COUNT>, значим при graph_filtered_
+  resource_usage_t resource_active_mask_; // bitset<maximum_rendering_resources_count>, значим при graph_filtered_
   resource_usage_t descriptor_active_mask_;
 
   // сырые данные для constants? как мы задаем их?
@@ -142,22 +146,15 @@ struct graphics_base {
   void get_or_create_pipeline_cache(const demiurg::resource_system* reg, const std::string& id);
   void dump_cache_on_disk(const std::string& path) const;
   // Задаёт demiurg-источник шейдеров (Фаза 1). Вызывать до change_render_graph.
-  inline void set_shader_source(const demiurg::resource_system* reg, std::string prefix) {
-    config_reg_ = reg;
-    shader_prefix_ = std::move(prefix);
-  }
+  void set_shader_source(const demiurg::resource_system* reg, std::string prefix);
   // Фаза 3: задать графы, которые должны жить одновременно. Вызывать ДО commit_parsed_resources.
   // Пустой resident-набор ⇒ создаём все ресурсы (обратная совместимость).
-  inline void set_startup_graph(std::string name) {
-    startup_graph_ = std::move(name);
-    resident_graphs_.clear();
-    if (!startup_graph_.empty()) resident_graphs_.push_back(startup_graph_);
-  }
-  inline void add_resident_graph(std::string name) { if (!name.empty()) resident_graphs_.push_back(std::move(name)); }
-  inline void set_resident_graphs(std::vector<std::string> names) { resident_graphs_ = std::move(names); }
-  inline bool is_graph_active(const uint32_t i) const { return !graph_filtered_ || graph_active_mask_.test(i); }
-  inline bool is_resource_active(const uint32_t i) const { return !graph_filtered_ || resource_active_mask_.test(i); }
-  inline bool is_descriptor_active(const uint32_t i) const { return !graph_filtered_ || descriptor_active_mask_.test(i); }
+  void set_startup_graph(std::string name);
+  void add_resident_graph(std::string name);
+  void set_resident_graphs(std::vector<std::string> names);
+  bool is_graph_active(uint32_t i) const;
+  bool is_resource_active(uint32_t i) const;
+  bool is_descriptor_active(uint32_t i) const;
   void set_surface(VkSurfaceKHR surface, const uint32_t width, const uint32_t height);
   void populate_constant_default_values();
 
@@ -176,9 +173,9 @@ struct graphics_base {
   // draw будет не тут наверное, а в контексте
   // внутри кадра у нас должна быть еще подготовка
   // ну или подготовку вынести наружу
-  void draw(); // обновим каунтеры, зайдем в render_graph, запишем команды, передадим их в queue
+  void draw();          // обновим каунтеры, зайдем в render_graph, запишем команды, передадим их в queue
   void prepare_frame(); // чисто подготовим все что нужно со стороны graphics_base
-  void submit_frame(); // тут отправим что подготовили в очередь, present когда?
+  void submit_frame();  // тут отправим что подготовили в очередь, present когда?
   void update_frame();
   void update_event(); // обновим память + обновим per_update индекс
 
@@ -224,14 +221,13 @@ struct graphics_base {
   void* get_constant_data(const uint32_t index);
   const void* get_constant_data(const uint32_t index) const;
   template <typename T>
-    requires(std::is_trivially_copyable_v<T>&& alignof(T) <= alignof(float))
+    requires(std::is_trivially_copyable_v<T> && alignof(T) <= alignof(float))
   T get_constant_data(const uint32_t index) const;
 
   void write_constant_data(const uint32_t slot, const void* data, const size_t size);
   template <typename T>
-    requires(std::is_trivially_copyable_v<T>&& alignof(T) <= alignof(float))
+    requires(std::is_trivially_copyable_v<T> && alignof(T) <= alignof(float))
   void write_constant_data(const uint32_t slot, const T& data);
-
 
   // Устанавливает распарсенное описание render-graph (п.7): забирает конфиг из storage
   // (парсинг живёт снаружи — см. painter::build_render_config), пересоздаёт GPU-ресурсы под
@@ -276,7 +272,7 @@ struct graphics_base {
   void recreate_descriptor_pool();
   void create_resources();
   void create_descriptor_sets();
-  void revalidate_pairs(const std::vector<std::string> &prev_drav_group_names);
+  void revalidate_pairs(const std::vector<std::string>& prev_drav_group_names);
 
   void update_all_descriptors(); // ?
   render_graph_instance create_render_graph_instance(const uint32_t index);
@@ -301,7 +297,9 @@ struct resource_inst {
   };
 
   VkImageView view;
-  struct { uint32_t x, y; } extent;
+  struct {
+    uint32_t x, y;
+  } extent;
 
   role::values role;
 
@@ -347,18 +345,18 @@ struct graphics_ctx {
   std::vector<image_memory_barrier> image_barriers;
   std::vector<VkDescriptorSet> descriptors_cache;
 
-  inline graphics_ctx() noexcept : base(nullptr), assets(nullptr) {}
+  graphics_ctx() noexcept;
   void prepare();
   void draw();
 };
 
-
-
 template <typename T>
-  requires(std::is_trivially_copyable_v<T>&& alignof(T) <= alignof(float))
+  requires(std::is_trivially_copyable_v<T> && alignof(T) <= alignof(float))
 T graphics_base::get_constant_data(const uint32_t index) const {
   const auto& c = DS_ASSERT_ARRAY_GET(constants, index);
-  if (c.size < sizeof(T)) utils::error{}("Could not get type '{}' from constant '{}', size of type {} is bigger then constant size {}", utils::type_name<T>(), c.name, sizeof(T), c.size);
+  if (c.size < sizeof(T)) {
+    utils::error{}("Could not get type '{}' from constant '{}', size of type {} is bigger then constant size {}", utils::type_name<T>(), c.name, sizeof(T), c.size);
+  }
   auto ptr = get_constant_data(index);
   auto t_ptr = reinterpret_cast<const T*>(ptr);
   return T(*t_ptr);
@@ -388,7 +386,7 @@ T* graphics_base::create_render_step(render_graph_instance& graph, Args&&... arg
   return ptr_raw;
 }
 
-}
-}
+} // namespace painter
+} // namespace devils_engine
 
 #endif

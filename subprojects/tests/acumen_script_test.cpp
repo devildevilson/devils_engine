@@ -1,18 +1,17 @@
-#include <doctest/doctest.h>
-
 #include <string>
 #include <utility>
 #include <vector>
 
-#include <devils_script/system.h>
-#include <devils_script/context.h>
 #include <devils_script/container.h>
+#include <devils_script/context.h>
+#include <devils_script/system.h>
+#include <doctest/doctest.h>
 #include <tavl/parser.h>
 
-#include "devils_engine/acumen/system.h"
-#include "devils_engine/act/registry.h"
-#include "devils_engine/act/function.h"
 #include "devils_engine/act/exec_context.h"
+#include "devils_engine/act/function.h"
+#include "devils_engine/act/registry.h"
+#include "devils_engine/acumen/system.h"
 
 // Обкатка co-parse GOAP-метрик (devils_script в tavl-потоке) + интеграция с acumen — контракт, на
 // котором строится goap_resource. Метрика = "ключ = <ds-выражение>": tavl снимает ключ + '=', затем
@@ -30,11 +29,17 @@ namespace {
 struct test_scope {
   double hunger = 0.0;
   double boredom = 0.0;
-  bool valid() const noexcept { return true; }
+  bool valid() const noexcept {
+    return true;
+  }
 };
 
-double s_hunger(test_scope s)  { return s.hunger; }
-double s_boredom(test_scope s) { return s.boredom; }
+double s_hunger(test_scope s) {
+  return s.hunger;
+}
+double s_boredom(test_scope s) {
+  return s.boredom;
+}
 
 void seed_test_scope(const act::exec_context& ctx, devils_script::context* vm) {
   vm->set_arg(0, *reinterpret_cast<const test_scope*>(ctx.w));
@@ -69,16 +74,27 @@ std::vector<parsed_metric> co_parse_metrics(const devils_script::system& sys, ta
   // до открытия массива
   for (;;) {
     const auto ev = p.peek();
-    if (ev.type == tavl::event_type::array_begin) { p.poll_event(); break; }
-    if (ev.type == tavl::event_type::eof || ev.type == tavl::event_type::not_enought_data) return out;
+    if (ev.type == tavl::event_type::array_begin) {
+      p.poll_event();
+      break;
+    }
+    if (ev.type == tavl::event_type::eof || ev.type == tavl::event_type::not_enought_data) {
+      return out;
+    }
     p.poll_event();
   }
 
   // элементы до закрытия массива
   for (;;) {
     const auto ev = p.peek();
-    if (ev.type == tavl::event_type::array_end || ev.type == tavl::event_type::eof) { p.poll_event(); break; }
-    if (ev.type == tavl::event_type::row_begin || ev.type == tavl::event_type::row_end) { p.poll_event(); continue; }
+    if (ev.type == tavl::event_type::array_end || ev.type == tavl::event_type::eof) {
+      p.poll_event();
+      break;
+    }
+    if (ev.type == tavl::event_type::row_begin || ev.type == tavl::event_type::row_end) {
+      p.poll_event();
+      continue;
+    }
 
     const auto [key_ev, key_err] = p.poll_event(); // got_token: ключ метрики
     parsed_metric m;
@@ -118,7 +134,7 @@ TEST_CASE("ds stops at row boundary — two expressions from one parser [devils_
   devils_script::container c0, c1;
   devils_script::system::parse_context ctx0, ctx1;
   sys.parse<bool, test_scope>("is_hungry", p, ctx0, c0);
-  sys.parse<bool, test_scope>("is_bored",  p, ctx1, c1);
+  sys.parse<bool, test_scope>("is_bored", p, ctx1, c1);
 
   CHECK(eval(c0, test_scope{0.7, 0.0}) == true);
   CHECK(eval(c0, test_scope{0.3, 0.0}) == false);
@@ -160,8 +176,9 @@ TEST_CASE("co-parsed metrics drive acumen compute_state [acumen][devils_script]"
   }
 
   // тривиальный goal, чтобы собрать систему (проверяем compute_state, не план).
-  acumen::scoped_state goal_state; goal_state.set(0, true);
-  std::vector<acumen::goal> goals = { acumen::goal{ "g", acumen::scoped_state{}, goal_state } };
+  acumen::scoped_state goal_state;
+  goal_state.set(0, true);
+  std::vector<acumen::goal> goals = {acumen::goal{"g", acumen::scoped_state{}, goal_state}};
   acumen::system goap(&reg, std::move(metrics), std::move(goals), std::vector<acumen::action>{});
 
   act::execution_scratch scratch;

@@ -37,7 +37,8 @@ std::uint64_t consume_range(const Range_T& range) {
     sum += aesthetics::get_entityid_index(std::get<0>(tuple));
     std::apply([&sum](const auto, const auto*... ptrs) {
       ((sum += ptrs != nullptr ? static_cast<std::uint64_t>(ptrs->x + 1) : 0), ...);
-    }, tuple);
+    },
+               tuple);
   }
   return sum;
 }
@@ -73,8 +74,12 @@ std::vector<aesthetics::entityid_t> make_ids(const size_t entity_count) {
 void populate(aesthetics::world& world, const std::vector<aesthetics::entityid_t>& ids) {
   for (size_t i = 0; i < ids.size(); ++i) {
     world.create<position>(ids[i], static_cast<int>(i), static_cast<int>(i * 2));
-    if ((i % 2) == 0) world.create<velocity>(ids[i], static_cast<int>(i + 1), static_cast<int>(i + 2));
-    if ((i % 3) == 0) world.create<renderable>(ids[i], static_cast<int>(i % 7));
+    if ((i % 2) == 0) {
+      world.create<velocity>(ids[i], static_cast<int>(i + 1), static_cast<int>(i + 2));
+    }
+    if ((i % 3) == 0) {
+      world.create<renderable>(ids[i], static_cast<int>(i % 7));
+    }
   }
 }
 
@@ -123,7 +128,7 @@ void bench_measured_phase(const std::string_view name, const size_t iterations, 
   std::cout << name << ": " << per_iter_us << " us/iteration, checksum=" << local << '\n';
 }
 
-}
+} // namespace
 
 int main(int argc, char** argv) {
   const size_t entity_count = argc > 1 ? static_cast<size_t>(std::stoull(argv[1])) : 100000;
@@ -196,8 +201,7 @@ int main(int argc, char** argv) {
       },
       [&local_world]() {
         local_world.reset();
-      }
-    );
+      });
   }
 
   {
@@ -213,8 +217,7 @@ int main(int argc, char** argv) {
       },
       [&warm_world, &mutation_ids]() {
         remove_positions_reverse(warm_world, mutation_ids);
-      }
-    );
+      });
   }
 
   {
@@ -231,8 +234,7 @@ int main(int argc, char** argv) {
       },
       [&local_world]() {
         local_world.reset();
-      }
-    );
+      });
   }
 
   {
@@ -249,8 +251,7 @@ int main(int argc, char** argv) {
       },
       [&local_world]() {
         local_world.reset();
-      }
-    );
+      });
   }
 
   {
@@ -266,8 +267,7 @@ int main(int argc, char** argv) {
         return remove_positions_forward(warm_world, mutation_ids);
       },
       []() {
-      }
-    );
+      });
   }
 
   {
@@ -283,8 +283,7 @@ int main(int argc, char** argv) {
         return remove_positions_reverse(warm_world, mutation_ids);
       },
       []() {
-      }
-    );
+      });
   }
 
   return sink == 0 ? 1 : 0;

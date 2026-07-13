@@ -7,9 +7,9 @@
 #include <string_view>
 #include <vector>
 
-#include "tile_map.h"
-#include "texture_set.h"
 #include "draw_intent.h"
+#include "texture_set.h"
+#include "tile_map.h"
 
 namespace tile_frontier {
 namespace core {
@@ -23,7 +23,9 @@ public:
   instance_layout::match_result bind(const std::string_view& layout = "v2ui1") {
     return intent_.bind(layout);
   }
-  bool valid() const noexcept { return intent_.valid(); }
+  bool valid() const noexcept {
+    return intent_.valid();
+  }
 
   // собрать инстансы: stable texture handle тайла разрешается в текущий bindless GPU slot.
   void build(const tile_grid& grid, const tile_span& span, const texture_set& textures) {
@@ -37,9 +39,15 @@ public:
     }
   }
 
-  std::span<const tile_instance> instances() const noexcept { return instances_; }
-  uint32_t count() const noexcept { return uint32_t(instances_.size()); }
-  static constexpr uint32_t stride() noexcept { return draw_intent<tile_instance>::stride(); }
+  std::span<const tile_instance> instances() const noexcept {
+    return instances_;
+  }
+  uint32_t count() const noexcept {
+    return uint32_t(instances_.size());
+  }
+  static constexpr uint32_t stride() noexcept {
+    return draw_intent<tile_instance>::stride();
+  }
 
   // упаковать собранные инстансы в буфер вызывающего (payload сообщения); intent не аллоцирует.
   std::size_t blit(const std::span<uint8_t>& dst) const {

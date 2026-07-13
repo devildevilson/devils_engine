@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <vector>
+
 #include "devils_engine/demiurg/resource_base.h"
 
 namespace devils_engine {
@@ -24,7 +25,7 @@ public:
   void unload_warm(const utils::safe_handle_t& handle) override;
 };
 
-}
-}
+} // namespace painter
+} // namespace devils_engine
 
 #endif

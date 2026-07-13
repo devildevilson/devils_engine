@@ -31,46 +31,24 @@ namespace thread {
 // сообщения. Нужен дольше — скопируй наружу перед release.
 class byte_ring {
 public:
-  explicit byte_ring(const size_t capacity) : buffer(capacity) {}
+  explicit byte_ring(const size_t capacity);
 
-  size_t capacity() const noexcept { return buffer.size(); }
+  size_t capacity() const noexcept;
 
   // ПРОДЮСЕР. Зарезервировать n contiguous байт. Успех: возвращает монотонную позицию (>=0) и пишет
   // в out доступную для записи область. Неудача (overflow / n > capacity): возвращает -1, out пуст.
   // Политику на overflow решает вызывающий (drop / grow / spill).
-  int64_t alloc(const size_t n, std::span<std::byte>& out) noexcept {
-    out = {};
-    const uint64_t cap = buffer.size();
-    if (n == 0 || n > cap) return -1;
-
-    const uint64_t tail = tail_.load(std::memory_order_acquire);
-    const uint64_t idx = head_ % cap;
-    const uint64_t pad = (idx + n > cap) ? (cap - idx) : 0; // хвост не вмещает contiguous → до начала
-    const uint64_t need = pad + n;
-    if ((head_ + need) - tail > cap) return -1; // затрёт неотданное — overflow
-
-    const uint64_t pos = head_ + pad;
-    out = std::span<std::byte>(buffer.data() + static_cast<size_t>(pos % cap), n);
-    head_ = pos + n;
-    return static_cast<int64_t>(pos);
-  }
+  int64_t alloc(const size_t size, std::span<std::byte>& out) noexcept;
 
   // КОНСЬЮМЕР. Область payload'а по (pos, n) из сообщения. Всегда contiguous (гарантировано alloc).
-  std::span<const std::byte> at(const int64_t pos, const size_t n) const noexcept {
-    const size_t idx = static_cast<size_t>(static_cast<uint64_t>(pos) % buffer.size());
-    return std::span<const std::byte>(buffer.data() + idx, n);
-  }
+  std::span<const std::byte> at(const int64_t pos, const size_t size) const noexcept;
 
   // КОНСЬЮМЕР. Освободить всё вплоть до конца обработанного сообщения (передавать pos + n).
   // Монотонно (сообщения потребляются по порядку). Заодно реклеймит паддинг перед payload'ом.
-  void release(const int64_t pos_end) noexcept {
-    tail_.store(static_cast<uint64_t>(pos_end), std::memory_order_release);
-  }
+  void release(const int64_t pos_end) noexcept;
 
   // Диагностика (приблизительно): сколько байт занято (не реклеймнуто).
-  size_t used_approx() const noexcept {
-    return static_cast<size_t>(head_ - tail_.load(std::memory_order_acquire));
-  }
+  size_t used_approx() const noexcept;
 
 private:
   std::vector<std::byte> buffer;
@@ -78,7 +56,7 @@ private:
   alignas(64) std::atomic<uint64_t> tail_ = 0; // consumer publishes, producer reads
 };
 
-}
-}
+} // namespace thread
+} // namespace devils_engine
 
 #endif

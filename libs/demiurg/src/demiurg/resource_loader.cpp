@@ -1,10 +1,9 @@
-#include "resource_loader.h"
-
 #include <algorithm>
 
 #include "catalogue_domain.h"
 #include "devils_engine/catalogue/logging.h"
 #include "devils_engine/utils/safe_handle.h"
+#include "resource_loader.h"
 
 namespace devils_engine {
 namespace demiurg {
@@ -14,7 +13,9 @@ resource_loader::~resource_loader() noexcept = default;
 
 resource_loader::entry* resource_loader::find(resource_interface* res) noexcept {
   for (auto& e : entries) {
-    if (e.res == res) return &e;
+    if (e.res == res) {
+      return &e;
+    }
   }
   return nullptr;
 }
@@ -26,7 +27,9 @@ void resource_loader::request(resource_interface* res, int32_t target) {
 }
 
 void resource_loader::request_impl(resource_interface* res, int32_t target) {
-  if (res == nullptr) return;
+  if (res == nullptr) {
+    return;
+  }
 
   // target не может превышать эффективный потолок ресурса (учёт warm_and_hot_same / top_state)
   target = std::min(std::max(target, 0), res->final_state());
@@ -48,7 +51,9 @@ void resource_loader::request_impl(resource_interface* res, int32_t target) {
 
   // Уже в нужном состоянии и ничего не делаем — нет смысла заводить запись.
   // (его зависимости к этому моменту тоже usable — иначе он бы сюда не добрался.)
-  if (res->state() == target) return;
+  if (res->state() == target) {
+    return;
+  }
 
   entries.push_back(entry{res, target, false});
   DE_LOG(catalogue::log_domain::demiurg, flow, "resource_loader: request '{}' level {} -> {}", res->id, res->state(), target);
@@ -57,7 +62,9 @@ void resource_loader::request_impl(resource_interface* res, int32_t target) {
   // DFS (для детекции цикла выше); pop после обхода. Рекурсия также завершается на уже заведённых
   // записях (find выше) — предполагается DAG.
   visiting_.push_back(res);
-  for (auto* dep : res->dependencies) request(dep, dep->final_state());
+  for (auto* dep : res->dependencies) {
+    request(dep, dep->final_state());
+  }
   visiting_.pop_back();
 }
 
@@ -82,7 +89,10 @@ size_t resource_loader::update_impl(std::vector<external_job>& out) {
 
     still_pending += 1;
 
-    if (e.in_flight) { ++i; continue; } // ждём, пока рендер завершит внешний переход
+    if (e.in_flight) {
+      ++i;
+      continue;
+    } // ждём, пока рендер завершит внешний переход
 
     const utils::safe_handle_t handle(e.res);
 
@@ -90,8 +100,16 @@ size_t resource_loader::update_impl(std::vector<external_job>& out) {
       // движемся вверх: зависимости должны быть usable ПРЕЖДЕ продвижения (over-approx: гейтим
       // ресурс целиком, а не конкретный шаг). Зависимости крутятся в этом же loader'е и дойдут сами.
       bool deps_ready = true;
-      for (auto* dep : e.res->dependencies) { if (!dep->usable()) { deps_ready = false; break; } }
-      if (!deps_ready) { ++i; continue; } // ждём зависимости — ресурс остаётся pending
+      for (auto* dep : e.res->dependencies) {
+        if (!dep->usable()) {
+          deps_ready = false;
+          break;
+        }
+      }
+      if (!deps_ready) {
+        ++i;
+        continue;
+      } // ждём зависимости — ресурс остаётся pending
 
       // движемся вверх: переход cur -> cur+1
       if (e.res->is_external_step(cur)) {
@@ -132,9 +150,13 @@ void resource_loader::external_done_impl(resource_interface* res) {
   }
 }
 
-size_t resource_loader::pending_count() const noexcept { return entries.size(); }
-
-void resource_loader::clear() noexcept { entries.clear(); }
-
+size_t resource_loader::pending_count() const noexcept {
+  return entries.size();
 }
+
+void resource_loader::clear() noexcept {
+  entries.clear();
 }
+
+} // namespace demiurg
+} // namespace devils_engine

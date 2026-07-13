@@ -1,12 +1,13 @@
 #ifndef DEVILS_ENGINE_VISAGE_FONT_ATLAS_PACKER_H
 #define DEVILS_ENGINE_VISAGE_FONT_ATLAS_PACKER_H
 
-#include <cstdint>
 #include <cstddef>
-#include <span>
-#include <vector>
-#include <string>
+#include <cstdint>
 #include <memory>
+#include <span>
+#include <string>
+#include <vector>
+
 #include "devils_engine/utils/locale-utils.hpp"
 #include "font.h"
 
@@ -49,11 +50,12 @@ public:
   void setup_font(std::string path);
   void setup_font(std::vector<uint8_t> data, std::string hint);
 
-  std::tuple<std::vector<std::unique_ptr<font_t>>, font_image_t> load_fonts(const config &cfg);
+  std::tuple<std::vector<std::unique_ptr<font_t>>, font_image_t> load_fonts(const config& cfg);
+
 private:
   std::vector<std::pair<std::vector<uint8_t>, std::string>> fonts_data;
 };
-}
-}
+} // namespace visage
+} // namespace devils_engine
 
 #endif

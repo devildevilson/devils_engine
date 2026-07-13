@@ -1,26 +1,81 @@
-#include <devils_engine/catalogue/logging.h>
-#include "common_steps.h"
+#include <algorithm>
 
-#include "graphics_base.h"
-#include "vulkan_header.h"
-#include "makers.h"
+#include <devils_engine/catalogue/logging.h>
+
+#include "assets_base.h"
+#include "auxiliary.h"
+#include "common_steps.h"
+#include "devils_engine/demiurg/resource_system.h"
 #include "devils_engine/utils/fileio.h"
 #include "devils_engine/utils/string-utils.hpp"
-#include "auxiliary.h"
-#include "assets_base.h"
+#include "glsl_source_file.h"
+#include "graphics_base.h"
+#include "makers.h"
 #include "shader_crafter.h"
 #include "shader_source_file.h"
-#include "glsl_source_file.h"
-#include "devils_engine/demiurg/resource_system.h"
 #include "shaderc/shaderc.h"
-
-#include <algorithm>
+#include "vulkan_header.h"
 
 // у нас тут будет удобный способ брать текущее состояние ресурсов
 // и запишем туда текущий usage
 
 namespace devils_engine {
 namespace painter {
+
+step_interface::step_interface() noexcept : type(type::invalid), super(UINT32_MAX) {}
+
+step_interface::step_interface(const enum type type, const uint32_t super) noexcept
+  : type(type), super(super) {}
+
+graphics_step_instance::graphics_step_instance() noexcept
+  : renderpass(VK_NULL_HANDLE),
+    subpass_index(0),
+    render_target_index(UINT32_MAX),
+    device(VK_NULL_HANDLE),
+    pipeline_layout(VK_NULL_HANDLE),
+    pipeline(VK_NULL_HANDLE) {}
+
+graphics_step_instance::graphics_step_instance(
+  const uint32_t super,
+  VkDevice device,
+  VkRenderPass renderpass,
+  const uint32_t subpass_index,
+  const uint32_t render_target_index) noexcept
+  : step_interface(step_interface::type::step, super),
+    renderpass(renderpass),
+    subpass_index(subpass_index),
+    render_target_index(render_target_index),
+    device(device),
+    pipeline_layout(VK_NULL_HANDLE),
+    pipeline(VK_NULL_HANDLE) {}
+
+compute_step_instance::compute_step_instance() noexcept
+  : device(VK_NULL_HANDLE), pipeline_layout(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE) {}
+
+compute_step_instance::compute_step_instance(const uint32_t super, VkDevice device) noexcept
+  : step_interface(step_interface::type::step, super),
+    device(device),
+    pipeline_layout(VK_NULL_HANDLE),
+    pipeline(VK_NULL_HANDLE) {}
+
+transfer_step_instance::transfer_step_instance() noexcept = default;
+
+transfer_step_instance::transfer_step_instance(const uint32_t super) noexcept
+  : step_interface(step_interface::type::step, super) {}
+
+execution_pass_instance::execution_pass_instance() noexcept
+  : device(VK_NULL_HANDLE), renderpass(VK_NULL_HANDLE), width(0), height(0) {}
+
+subpass_next::subpass_next() noexcept : renderpass(VK_NULL_HANDLE) {}
+
+execution_group::frame::frame() noexcept : buffer(VK_NULL_HANDLE) {}
+
+execution_group::execution_group() noexcept : device(VK_NULL_HANDLE), pool(VK_NULL_HANDLE) {}
+
+render_graph_instance::semaphore::semaphore() noexcept {
+  memset(handles.data(), 0, sizeof(handles));
+}
+
 // bit_cast конечно супер удобен жесть
 
 // sanity check for bit_cast
@@ -91,7 +146,9 @@ static void make_barriers1(graphics_ctx* ctx, VkCommandBuffer buf, const std::ve
   vk::PipelineStageFlags dst_stages{};
   for (const auto& [index, usage] : barriers) {
     auto& res = DS_ASSERT_ARRAY_GET(ctx->resources, index);
-    if (res.usage == usage) continue;
+    if (res.usage == usage) {
+      continue;
+    }
 
     src_stages = src_stages | convertps(res.usage);
     dst_stages = dst_stages | convertps(usage);
@@ -125,7 +182,9 @@ static void make_barriers1(graphics_ctx* ctx, VkCommandBuffer buf, const std::ve
     res.usage = usage;
   }
 
-  if (ctx->image_barriers.empty() && ctx->buffer_barriers.empty()) return;
+  if (ctx->image_barriers.empty() && ctx->buffer_barriers.empty()) {
+    return;
+  }
 
   const auto img_ptr = reinterpret_cast<const vk::ImageMemoryBarrier*>(ctx->image_barriers.data());
   const auto buf_ptr = reinterpret_cast<const vk::BufferMemoryBarrier*>(ctx->buffer_barriers.data());
@@ -133,8 +192,7 @@ static void make_barriers1(graphics_ctx* ctx, VkCommandBuffer buf, const std::ve
     src_stages, dst_stages, vk::DependencyFlagBits::eByRegion,
     0u, nullptr,
     uint32_t(ctx->buffer_barriers.size()), buf_ptr,
-    uint32_t(ctx->image_barriers.size()), img_ptr
-  );
+    uint32_t(ctx->image_barriers.size()), img_ptr);
 
   ctx->image_barriers.clear();
   ctx->buffer_barriers.clear();
@@ -147,7 +205,9 @@ static void make_barriers2(graphics_ctx* ctx, VkCommandBuffer buf, const std::ve
   vk::PipelineStageFlags dst_stages{};
   for (const auto& ri : barriers) {
     auto& res = DS_ASSERT_ARRAY_GET(ctx->resources, ri.slot);
-    if (res.usage == ri.usage) continue;
+    if (res.usage == ri.usage) {
+      continue;
+    }
 
     src_stages = src_stages | convertps(res.usage);
     dst_stages = dst_stages | convertps(ri.usage);
@@ -181,7 +241,9 @@ static void make_barriers2(graphics_ctx* ctx, VkCommandBuffer buf, const std::ve
     res.usage = ri.usage;
   }
 
-  if (ctx->image_barriers.empty() && ctx->buffer_barriers.empty()) return;
+  if (ctx->image_barriers.empty() && ctx->buffer_barriers.empty()) {
+    return;
+  }
 
   const auto img_ptr = reinterpret_cast<const vk::ImageMemoryBarrier*>(ctx->image_barriers.data());
   const auto buf_ptr = reinterpret_cast<const vk::BufferMemoryBarrier*>(ctx->buffer_barriers.data());
@@ -189,8 +251,7 @@ static void make_barriers2(graphics_ctx* ctx, VkCommandBuffer buf, const std::ve
     src_stages, dst_stages, vk::DependencyFlagBits::eByRegion,
     0u, nullptr,
     uint32_t(ctx->buffer_barriers.size()), buf_ptr,
-    uint32_t(ctx->image_barriers.size()), img_ptr
-  );
+    uint32_t(ctx->image_barriers.size()), img_ptr);
 
   ctx->image_barriers.clear();
   ctx->buffer_barriers.clear();
@@ -259,12 +320,16 @@ static vk::UniqueShaderModule load_shader_module(const graphics_base* ctx, const
 
     if (is_spv) {
       auto* res = ctx->config_reg_->get<shader_source_file>(id);
-      if (res == nullptr) utils::error{}("Shader resource '{}' (spv) not found in engine registry", id);
+      if (res == nullptr) {
+        utils::error{}("Shader resource '{}' (spv) not found in engine registry", id);
+      }
       return make_module(res->memory.data(), res->memory.size());
     }
 
     auto* res = ctx->config_reg_->get<glsl_source_file>(id);
-    if (res == nullptr) utils::error{}("Shader resource '{}' (glsl) not found in engine registry", id);
+    if (res == nullptr) {
+      utils::error{}("Shader resource '{}' (glsl) not found in engine registry", id);
+    }
 
     if (!res->prepared(shader_kind)) {
       std::string err;
@@ -279,14 +344,18 @@ static vk::UniqueShaderModule load_shader_module(const graphics_base* ctx, const
 
   // fs-fallback
   const auto full_path = utils::project_folder() + "tests/shaders/" + shader_path;
-  if (!file_io::exists(full_path)) utils::error{}("Shader file '{}' not found", full_path);
+  if (!file_io::exists(full_path)) {
+    utils::error{}("Shader file '{}' not found", full_path);
+  }
   const auto content = file_io::read(full_path);
   shader_crafter sc(nullptr);
   sc.set_optimization(true);
   sc.set_shader_entry_point("main");
   sc.set_shader_type(shader_kind);
   const auto spv = sc.compile(full_path, content);
-  if (spv.empty()) utils::error{}("Shader '{}' compilation failed\nError: {}", full_path, sc.err_msg());
+  if (spv.empty()) {
+    utils::error{}("Shader '{}' compilation failed\nError: {}", full_path, sc.err_msg());
+  }
   return make_module(spv.data(), spv.size() * sizeof(spv[0]));
 }
 
@@ -301,10 +370,12 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
   const auto& material = DS_ASSERT_ARRAY_GET(ctx->materials, step.material);
 
   {
-    if (!material.shaders.vertex.empty())
+    if (!material.shaders.vertex.empty()) {
       usm_vertex = load_shader_module(ctx, material.shaders.vertex, shaderc_vertex_shader);
-    if (!material.shaders.fragment.empty())
+    }
+    if (!material.shaders.fragment.empty()) {
       usm_fragment = load_shader_module(ctx, material.shaders.fragment, shaderc_fragment_shader);
+    }
 
     pm.addShader(vk::ShaderStageFlagBits::eVertex, usm_vertex.get());
     pm.addShader(vk::ShaderStageFlagBits::eFragment, usm_fragment.get());
@@ -327,7 +398,7 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
     location_offset += geo.vertex_layout.size();
   }
 
-  if (step.draw_group != INVALID_RESOURCE_SLOT) {
+  if (step.draw_group != invalid_resource_slot) {
     const auto& draw_group = DS_ASSERT_ARRAY_GET(ctx->draw_groups, step.draw_group);
     if (draw_group.stride != 0) {
       pm.vertexBinding(1, draw_group.stride, vk::VertexInputRate::eInstance);
@@ -381,7 +452,9 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
   for (const auto& [res_index, blend] : step.blending) {
     const uint32_t id = rt.resource_index(res_index);
     const auto& res = DS_ASSERT_ARRAY_GET(ctx->resources, res_index);
-    if (id >= rt.resources.size()) utils::error{}("Could not find resource '{}' among render target '{}' resources", res.name, rt.name);
+    if (id >= rt.resources.size()) {
+      utils::error{}("Could not find resource '{}' among render target '{}' resources", res.name, rt.name);
+    }
     blending[id] = blend;
   }
 
@@ -395,8 +468,7 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
     pipeline_layout,
     renderpass,
     subpass_index,
-    pipeline
-  );
+    pipeline);
 
   if (pipeline != VK_NULL_HANDLE) {
     vk::Device(device).destroy(pipeline);
@@ -452,7 +524,7 @@ void execution_pass_instance::process(graphics_ctx* ctx, VkCommandBuffer buf) co
   const auto& pass = DS_ASSERT_ARRAY_GET(ctx->base->passes, super);
   make_barriers2(ctx, buf, pass.barriers[0]);
 
-  if (pass.render_target != INVALID_RESOURCE_SLOT) {
+  if (pass.render_target != invalid_resource_slot) {
     const auto& rt = DS_ASSERT_ARRAY_GET(ctx->base->render_targets, pass.render_target);
 
     // здесь мы должны:
@@ -463,7 +535,7 @@ void execution_pass_instance::process(graphics_ctx* ctx, VkCommandBuffer buf) co
     const uint32_t f_index = compute_frame_index(ctx->base);
 
     vk::Rect2D area{};
-    area.offset = vk::Offset2D{ 0,0 };
+    area.offset = vk::Offset2D{0, 0};
     area.extent = vk::Extent2D(this->width, this->height);
 
     std::array<vk::ClearValue, 16> cvs{};
@@ -505,7 +577,9 @@ void execution_pass_instance::create_related_primitives(const graphics_base* ctx
 
 void execution_pass_instance::create_render_pass(const graphics_base* ctx) {
   const auto& pass = DS_ASSERT_ARRAY_GET(ctx->passes, super);
-  if (pass.render_target == INVALID_RESOURCE_SLOT) return;
+  if (pass.render_target == invalid_resource_slot) {
+    return;
+  }
   const auto& rt = DS_ASSERT_ARRAY_GET(ctx->render_targets, pass.render_target);
 
   const auto& start = pass.subpasses.front();
@@ -550,7 +624,9 @@ void execution_pass_instance::create_render_pass(const graphics_base* ctx) {
 
       if (info.usage == usage::input_attachment) {
         auto layout = vk::ImageLayout::eShaderReadOnlyOptimal;
-        if (is_depth) layout = vk::ImageLayout::eDepthStencilReadOnlyOptimal;
+        if (is_depth) {
+          layout = vk::ImageLayout::eDepthStencilReadOnlyOptimal;
+        }
         rpm.subpassInputAttachment(i, layout);
       }
 
@@ -639,14 +715,16 @@ void execution_pass_instance::create_render_pass(const graphics_base* ctx) {
 
 void execution_pass_instance::create_framebuffers(const graphics_base* ctx) {
   const auto& pass = DS_ASSERT_ARRAY_GET(ctx->passes, super);
-  if (pass.render_target == INVALID_RESOURCE_SLOT) return;
+  if (pass.render_target == invalid_resource_slot) {
+    return;
+  }
   const auto& rt = DS_ASSERT_ARRAY_GET(ctx->render_targets, pass.render_target);
 
   // frameindex = i1 * (c2 * c3) + i2 * (c3) + i3
   strides.clear();
   strides.resize(rt.resources.size(), 1);
   uint32_t cur_stride = 1;
-  for (int32_t i = rt.resources.size()-1; i >= 0; --i) {
+  for (int32_t i = rt.resources.size() - 1; i >= 0; --i) {
     const auto& [res_index, usage] = rt.resources[i];
     const auto& res = DS_ASSERT_ARRAY_GET(ctx->resources, res_index);
 
@@ -677,8 +755,12 @@ void execution_pass_instance::create_framebuffers(const graphics_base* ctx) {
       const auto [size, img_ext] = res.compute_frame_size(ctx);
       const auto [img_width, img_height] = img_ext;
 
-      if (this->width == 0) this->width = img_width;
-      if (this->height == 0) this->height = img_height;
+      if (this->width == 0) {
+        this->width = img_width;
+      }
+      if (this->height == 0) {
+        this->height = img_height;
+      }
 
       if (this->width != img_width || this->height != img_height) {
         std::string names;
@@ -715,7 +797,9 @@ void execution_pass_instance::clear_framebuffers() {
 
 uint32_t execution_pass_instance::compute_frame_index(const graphics_base* ctx) const {
   const auto& pass = DS_ASSERT_ARRAY_GET(ctx->passes, super);
-  if (pass.render_target == INVALID_RESOURCE_SLOT) return INVALID_RESOURCE_SLOT;
+  if (pass.render_target == invalid_resource_slot) {
+    return invalid_resource_slot;
+  }
   const auto& rt = DS_ASSERT_ARRAY_GET(ctx->render_targets, pass.render_target);
 
   uint32_t frameindex = 0;
@@ -732,7 +816,7 @@ uint32_t execution_pass_instance::compute_frame_index(const graphics_base* ctx) 
 
 void subpass_next::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   const auto& pass = DS_ASSERT_ARRAY_GET(ctx->base->passes, super);
-  if (pass.render_target != INVALID_RESOURCE_SLOT) {
+  if (pass.render_target != invalid_resource_slot) {
     vk::CommandBuffer task(buf);
     task.nextSubpass(vk::SubpassContents::eInline);
   }
@@ -740,7 +824,7 @@ void subpass_next::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   const auto& barriers = DS_ASSERT_ARRAY_GET(pass.barriers, index + 1);
   make_barriers2(ctx, buf, barriers);
 
-  if (pass.render_target != INVALID_RESOURCE_SLOT) {
+  if (pass.render_target != invalid_resource_slot) {
     const auto& subpasses = DS_ASSERT_ARRAY_GET(pass.subpasses, index + 1);
     change_usages(ctx, subpasses);
   }
@@ -748,7 +832,7 @@ void subpass_next::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
 
 void execution_pass_end_instance::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   const auto& pass = DS_ASSERT_ARRAY_GET(ctx->base->passes, super);
-  if (pass.render_target != INVALID_RESOURCE_SLOT) {
+  if (pass.render_target != invalid_resource_slot) {
     vk::CommandBuffer task(buf);
     task.endRenderPass();
     change_usages(ctx, pass.subpasses.back());
@@ -787,15 +871,21 @@ void execution_group::populate_command_buffers() {
 }
 
 void render_graph_instance::process(graphics_ctx* ctx, VkCommandBuffer) const {
-  for (const auto& g : groups) { g.process(ctx); }
+  for (const auto& g : groups) {
+    g.process(ctx);
+  }
 }
 
 void render_graph_instance::recreate_pipeline(const graphics_base* ctx) {
-  for (auto ptr : pipeline_steps) { ptr->recreate_pipeline(ctx); }
+  for (auto ptr : pipeline_steps) {
+    ptr->recreate_pipeline(ctx);
+  }
 }
 
 void render_graph_instance::resize_viewport(const graphics_base* ctx, const uint32_t width, const uint32_t height) {
-  for (auto ptr : viewport_steps) { ptr->resize_viewport(ctx, width, height); }
+  for (auto ptr : viewport_steps) {
+    ptr->resize_viewport(ctx, width, height);
+  }
 }
 
 void render_graph_instance::clear() {
@@ -806,7 +896,9 @@ void render_graph_instance::clear() {
     std::vector<vk::CommandBuffer> buffers;
     buffers.reserve(group.frames.size());
     for (auto& frame : group.frames) {
-      if (frame.buffer == VK_NULL_HANDLE) continue;
+      if (frame.buffer == VK_NULL_HANDLE) {
+        continue;
+      }
       buffers.emplace_back(frame.buffer);
       frame.buffer = VK_NULL_HANDLE;
     }
@@ -841,15 +933,16 @@ void render_graph_instance::submit(const graphics_base* ctx, VkQueue q, VkSemaph
     std::copy_n(
       reinterpret_cast<const vk::Semaphore*>(cur_frame.signal.data()),
       cur_frame.signal.size(),
-      finish_semaphores.data()
-    );
-    if (i == groups.size()-1) finish_semaphores[cur_frame.signal.size()] = finish;
+      finish_semaphores.data());
+    if (i == groups.size() - 1) {
+      finish_semaphores[cur_frame.signal.size()] = finish;
+    }
 
     infos[i].waitSemaphoreCount = cur_frame.wait_for.size();
     infos[i].pWaitSemaphores = reinterpret_cast<const vk::Semaphore*>(cur_frame.wait_for.data());
     //for (const auto sem : cur_frame.wait_for) { utils::info("Current wait for semaphore {:p}", (const void*)sem); }
     infos[i].pWaitDstStageMask = reinterpret_cast<const vk::PipelineStageFlags*>(cur_frame.wait_for_stages.data());
-    infos[i].signalSemaphoreCount = cur_frame.signal.size() + size_t(i == groups.size()-1 && finish != VK_NULL_HANDLE);
+    infos[i].signalSemaphoreCount = cur_frame.signal.size() + size_t(i == groups.size() - 1 && finish != VK_NULL_HANDLE);
     infos[i].pSignalSemaphores = finish_semaphores.data();
     infos[i].commandBufferCount = 1;
     infos[i].pCommandBuffers = reinterpret_cast<const vk::CommandBuffer*>(&cur_frame.buffer);
@@ -864,7 +957,9 @@ void render_graph_instance::submit(const graphics_base* ctx, VkQueue q, VkSemaph
 
 uint32_t render_graph_instance::create_semaphore(std::string name, const uint32_t count) {
   const uint32_t index = find_semaphore(name);
-  if (index != INVALID_RESOURCE_SLOT) utils::error{}("Semaphore with name '{}' is already exists", name);
+  if (index != invalid_resource_slot) {
+    utils::error{}("Semaphore with name '{}' is already exists", name);
+  }
 
   const uint32_t ret_index = local_semaphores.size();
   local_semaphores.emplace_back();
@@ -878,14 +973,18 @@ uint32_t render_graph_instance::create_semaphore(std::string name, const uint32_
 
 uint32_t render_graph_instance::find_semaphore(const std::string_view& name) const {
   for (uint32_t i = 0; i < local_semaphores.size(); ++i) {
-    if (local_semaphores[i].name == name) return i;
+    if (local_semaphores[i].name == name) {
+      return i;
+    }
   }
 
-  return INVALID_RESOURCE_SLOT;
+  return invalid_resource_slot;
 }
 
-static void bind_descriptor_sets(graphics_ctx* ctx, VkCommandBuffer buf, VkPipelineLayout pipeline_layout, const std::vector<uint32_t> &sets) {
-  if (sets.empty()) return;
+static void bind_descriptor_sets(graphics_ctx* ctx, VkCommandBuffer buf, VkPipelineLayout pipeline_layout, const std::vector<uint32_t>& sets) {
+  if (sets.empty()) {
+    return;
+  }
   vk::CommandBuffer task(buf);
 
   for (const auto desc : sets) {
@@ -909,9 +1008,7 @@ static void push_constants(graphics_ctx* ctx, VkCommandBuffer buf, VkPipelineLay
   }
 }
 
-graphics_draw::graphics_draw(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept :
-  graphics_step_instance(super, device, renderpass, subpass_index, render_target_index)
-{}
+graphics_draw::graphics_draw(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept : graphics_step_instance(super, device, renderpass, subpass_index, render_target_index) {}
 
 // просто капец
 void graphics_draw::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
@@ -929,7 +1026,7 @@ void graphics_draw::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
 
   task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
 
-  if (step.geometry != INVALID_RESOURCE_SLOT) {
+  if (step.geometry != invalid_resource_slot) {
     for (const auto pair_index : draw_group.pairs) {
       const auto& pair = DS_ASSERT_ARRAY_GET(ctx->base->pairs, pair_index);
       const auto& mesh = DS_ASSERT_ARRAY_GET(ctx->assets->buffer_slots, pair.mesh);
@@ -956,15 +1053,15 @@ void graphics_draw::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   }
 }
 
-graphics_draw_indexed::graphics_draw_indexed(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept :
-  graphics_step_instance(super, device, renderpass, subpass_index, render_target_index)
-{}
+graphics_draw_indexed::graphics_draw_indexed(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept : graphics_step_instance(super, device, renderpass, subpass_index, render_target_index) {}
 
 void graphics_draw_indexed::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, super);
   const auto& draw_group = DS_ASSERT_ARRAY_GET(ctx->base->draw_groups, step.draw_group);
 
-  if (step.geometry != INVALID_RESOURCE_SLOT && draw_group.pairs.empty()) return;
+  if (step.geometry != invalid_resource_slot && draw_group.pairs.empty()) {
+    return;
+  }
 
   vk::CommandBuffer task(buf);
 
@@ -979,7 +1076,7 @@ void graphics_draw_indexed::process(graphics_ctx* ctx, VkCommandBuffer buf) cons
 
   uint32_t vertex_bind = 0;
 
-  if (step.geometry != INVALID_RESOURCE_SLOT) {
+  if (step.geometry != invalid_resource_slot) {
     const auto& geo = DS_ASSERT_ARRAY_GET(ctx->base->geometries, step.geometry);
     for (const auto pair_index : draw_group.pairs) {
       const auto& pair = DS_ASSERT_ARRAY_GET(ctx->base->pairs, pair_index);
@@ -993,8 +1090,12 @@ void graphics_draw_indexed::process(graphics_ctx* ctx, VkCommandBuffer buf) cons
       }
 
       auto type = vk::IndexType::eUint32;
-      if (geo.index_type == geometry::index_type::u16) type = vk::IndexType::eUint16;
-      if (geo.index_type == geometry::index_type::u8)  type = vk::IndexType::eUint8;
+      if (geo.index_type == geometry::index_type::u16) {
+        type = vk::IndexType::eUint16;
+      }
+      if (geo.index_type == geometry::index_type::u8) {
+        type = vk::IndexType::eUint8;
+      }
       task.bindIndexBuffer(mesh.index_storage, 0, type);
 
       const size_t offset = inst_buf.subbuf.offset + pair.instance_offset;
@@ -1013,9 +1114,7 @@ void graphics_draw_indexed::process(graphics_ctx* ctx, VkCommandBuffer buf) cons
   }
 }
 
-graphics_draw_constant::graphics_draw_constant(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept :
-  graphics_step_instance(super, device, renderpass, subpass_index, render_target_index)
-{}
+graphics_draw_constant::graphics_draw_constant(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept : graphics_step_instance(super, device, renderpass, subpass_index, render_target_index) {}
 
 void graphics_draw_constant::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, super);
@@ -1037,7 +1136,7 @@ void graphics_draw_constant::process(graphics_ctx* ctx, VkCommandBuffer buf) con
   // геометрия тут нужна для того чтобы задать примитив ассембли в материале
   // без геометрии как? определять ассембли в материале и в геометрии его переопределять
   // наверное тут должен быть скорее дополнительный тип объектов - компут генератед меш...
-  if (step.geometry != INVALID_RESOURCE_SLOT) {
+  if (step.geometry != invalid_resource_slot) {
     const auto& geo = DS_ASSERT_ARRAY_GET(ctx->base->geometries, step.geometry);
     if (!geo.vertex_layout.empty()) {
       // откуда брать буфер?
@@ -1048,7 +1147,7 @@ void graphics_draw_constant::process(graphics_ctx* ctx, VkCommandBuffer buf) con
     }
   }
 
-  if (step.draw_group != INVALID_RESOURCE_SLOT) {
+  if (step.draw_group != invalid_resource_slot) {
     const auto& draw_group = DS_ASSERT_ARRAY_GET(ctx->base->draw_groups, step.draw_group);
     const auto& inst_buf = DS_ASSERT_ARRAY_GET(ctx->resources, draw_group.instances_buffer);
     const size_t offset = inst_buf.subbuf.offset;
@@ -1060,9 +1159,7 @@ void graphics_draw_constant::process(graphics_ctx* ctx, VkCommandBuffer buf) con
   task.draw(cmd.vertexCount, cmd.instanceCount, cmd.firstVertex, cmd.firstInstance);
 }
 
-graphics_draw_indexed_constant::graphics_draw_indexed_constant(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept :
-  graphics_step_instance(super, device, renderpass, subpass_index, render_target_index)
-{}
+graphics_draw_indexed_constant::graphics_draw_indexed_constant(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept : graphics_step_instance(super, device, renderpass, subpass_index, render_target_index) {}
 
 void graphics_draw_indexed_constant::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, super);
@@ -1084,7 +1181,7 @@ void graphics_draw_indexed_constant::process(graphics_ctx* ctx, VkCommandBuffer 
   // геометрия тут нужна для того чтобы задать примитив ассембли в материале
   // без геометрии как? определять ассембли в материале и в геометрии его переопределять
   // наверное тут должен быть скорее дополнительный тип объектов - компут генератед меш...
-  if (step.geometry != INVALID_RESOURCE_SLOT) {
+  if (step.geometry != invalid_resource_slot) {
     const auto& geo = DS_ASSERT_ARRAY_GET(ctx->base->geometries, step.geometry);
     if (!geo.vertex_layout.empty()) {
       // откуда брать буфер?
@@ -1095,7 +1192,7 @@ void graphics_draw_indexed_constant::process(graphics_ctx* ctx, VkCommandBuffer 
     }
   }
 
-  if (step.draw_group != INVALID_RESOURCE_SLOT) {
+  if (step.draw_group != invalid_resource_slot) {
     const auto& draw_group = DS_ASSERT_ARRAY_GET(ctx->base->draw_groups, step.draw_group);
     const auto& inst_buf = DS_ASSERT_ARRAY_GET(ctx->resources, draw_group.instances_buffer);
     const size_t offset = inst_buf.subbuf.offset;
@@ -1107,9 +1204,7 @@ void graphics_draw_indexed_constant::process(graphics_ctx* ctx, VkCommandBuffer 
   task.drawIndexed(cmd.indexCount, cmd.instanceCount, cmd.firstIndex, cmd.vertexOffset, cmd.firstInstance);
 }
 
-graphics_draw_indirect::graphics_draw_indirect(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept :
-  graphics_step_instance(super, device, renderpass, subpass_index, render_target_index)
-{}
+graphics_draw_indirect::graphics_draw_indirect(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept : graphics_step_instance(super, device, renderpass, subpass_index, render_target_index) {}
 
 void graphics_draw_indirect::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, super);
@@ -1131,7 +1226,7 @@ void graphics_draw_indirect::process(graphics_ctx* ctx, VkCommandBuffer buf) con
   // геометрия тут нужна для того чтобы задать примитив ассембли в материале
   // без геометрии как? определять ассембли в материале и в геометрии его переопределять
   // наверное тут должен быть скорее дополнительный тип объектов - компут генератед меш...
-  if (step.geometry != INVALID_RESOURCE_SLOT) {
+  if (step.geometry != invalid_resource_slot) {
     const auto& geo = DS_ASSERT_ARRAY_GET(ctx->base->geometries, step.geometry);
     if (!geo.vertex_layout.empty()) {
       // откуда брать буфер?
@@ -1142,7 +1237,7 @@ void graphics_draw_indirect::process(graphics_ctx* ctx, VkCommandBuffer buf) con
     }
   }
 
-  if (step.draw_group != INVALID_RESOURCE_SLOT) {
+  if (step.draw_group != invalid_resource_slot) {
     const auto& draw_group = DS_ASSERT_ARRAY_GET(ctx->base->draw_groups, step.draw_group);
     const auto& inst_buf = DS_ASSERT_ARRAY_GET(ctx->resources, draw_group.instances_buffer);
     const size_t offset = inst_buf.subbuf.offset;
@@ -1153,9 +1248,7 @@ void graphics_draw_indirect::process(graphics_ctx* ctx, VkCommandBuffer buf) con
   task.drawIndirect(res.buf, res.subbuf.offset, 1, res.subbuf.size);
 }
 
-graphics_draw_indexed_indirect::graphics_draw_indexed_indirect(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept :
-  graphics_step_instance(super, device, renderpass, subpass_index, render_target_index)
-{}
+graphics_draw_indexed_indirect::graphics_draw_indexed_indirect(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept : graphics_step_instance(super, device, renderpass, subpass_index, render_target_index) {}
 
 void graphics_draw_indexed_indirect::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, super);
@@ -1177,7 +1270,7 @@ void graphics_draw_indexed_indirect::process(graphics_ctx* ctx, VkCommandBuffer 
   // геометрия тут нужна для того чтобы задать примитив ассембли в материале
   // без геометрии как? определять ассембли в материале и в геометрии его переопределять
   // наверное тут должен быть скорее дополнительный тип объектов - компут генератед меш...
-  if (step.geometry != INVALID_RESOURCE_SLOT) {
+  if (step.geometry != invalid_resource_slot) {
     const auto& geo = DS_ASSERT_ARRAY_GET(ctx->base->geometries, step.geometry);
     if (!geo.vertex_layout.empty()) {
       // откуда брать буфер?
@@ -1188,7 +1281,7 @@ void graphics_draw_indexed_indirect::process(graphics_ctx* ctx, VkCommandBuffer 
     }
   }
 
-  if (step.draw_group != INVALID_RESOURCE_SLOT) {
+  if (step.draw_group != invalid_resource_slot) {
     const auto& draw_group = DS_ASSERT_ARRAY_GET(ctx->base->draw_groups, step.draw_group);
     const auto& inst_buf = DS_ASSERT_ARRAY_GET(ctx->resources, draw_group.instances_buffer);
     const size_t offset = inst_buf.subbuf.offset;
@@ -1199,9 +1292,7 @@ void graphics_draw_indexed_indirect::process(graphics_ctx* ctx, VkCommandBuffer 
   task.drawIndexedIndirect(res.buf, res.subbuf.offset, 1, res.subbuf.size);
 }
 
-graphics_draw_ui::graphics_draw_ui(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept :
-  graphics_step_instance(super, device, renderpass, subpass_index, render_target_index)
-{}
+graphics_draw_ui::graphics_draw_ui(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept : graphics_step_instance(super, device, renderpass, subpass_index, render_target_index) {}
 
 // Зеркало visage::gui_draw_command_t (render_output.h) — байтовый контракт main->render.
 // Должно совпадать поле-в-поле (48 байт, всё по 4 байта). Буфер команд: [uint32 count][массив].
@@ -1221,7 +1312,7 @@ struct ui_push_t {
   uint32_t tex_id;
   uint32_t payload[6];
 };
-}
+} // namespace
 
 void graphics_draw_ui::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, super);
@@ -1243,7 +1334,9 @@ void graphics_draw_ui::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   const auto vtx = ctx->base->get_current_buffer_resource_frame(vtx_i);
   const auto idx = ctx->base->get_current_buffer_resource_frame(idx_i);
   const auto cmds = ctx->base->get_current_buffer_resource_frame(cmd_i);
-  if (cmds.mapped == nullptr) return; // буфер команд обязан быть host-visible
+  if (cmds.mapped == nullptr) {
+    return; // буфер команд обязан быть host-visible
+  }
 
   task.bindVertexBuffers(0, vk::Buffer(vtx.handle), vk::DeviceSize(vtx.sub.offset));
   task.bindIndexBuffer(idx.handle, idx.sub.offset, vk::IndexType::eUint16); // nuklear: 16-бит индексы
@@ -1268,7 +1361,7 @@ void graphics_draw_ui::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
     scissor.extent = vk::Extent2D(uint32_t(x1 > x0 ? x1 - x0 : 0.0f), uint32_t(y1 > y0 ? y1 - y0 : 0.0f));
     task.setScissor(0, scissor);
 
-    const ui_push_t pc{ c.texture_id, { c.payload[0], c.payload[1], c.payload[2], c.payload[3], c.payload[4], c.payload[5] } };
+    const ui_push_t pc{c.texture_id, {c.payload[0], c.payload[1], c.payload[2], c.payload[3], c.payload[4], c.payload[5]}};
     task.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eAll, 0, sizeof(pc), &pc);
 
     task.drawIndexed(c.elem_count, 1, first_index, 0, 0);
@@ -1276,9 +1369,7 @@ void graphics_draw_ui::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   }
 }
 
-compute_dispatch_constant::compute_dispatch_constant(const uint32_t super, VkDevice device) noexcept :
-  compute_step_instance(super, device)
-{}
+compute_dispatch_constant::compute_dispatch_constant(const uint32_t super, VkDevice device) noexcept : compute_step_instance(super, device) {}
 
 void compute_dispatch_constant::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, super);
@@ -1293,20 +1384,18 @@ void compute_dispatch_constant::process(graphics_ctx* ctx, VkCommandBuffer buf) 
   task.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
 
   // тут геометрии не должно быть
-  if (step.geometry != INVALID_RESOURCE_SLOT) {
+  if (step.geometry != invalid_resource_slot) {
     utils::error{}("How it would looks like?");
   }
 
-  if (step.draw_group != INVALID_RESOURCE_SLOT) {
+  if (step.draw_group != invalid_resource_slot) {
     utils::error{}("How it would looks like?");
   }
 
   task.dispatch(cmd.x, cmd.y, cmd.z);
 }
 
-compute_dispatch_indirect::compute_dispatch_indirect(const uint32_t super, VkDevice device) noexcept :
-  compute_step_instance(super, device)
-{}
+compute_dispatch_indirect::compute_dispatch_indirect(const uint32_t super, VkDevice device) noexcept : compute_step_instance(super, device) {}
 
 void compute_dispatch_indirect::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, super);
@@ -1323,11 +1412,11 @@ void compute_dispatch_indirect::process(graphics_ctx* ctx, VkCommandBuffer buf) 
 
   // стоп геометрия будет скорее всего, а значит и меш тоже наверное будет
   // следить за тем чтобы тут был только один меш?
-  if (step.geometry != INVALID_RESOURCE_SLOT) {
+  if (step.geometry != invalid_resource_slot) {
     utils::error{}("How it would looks like?");
   }
 
-  if (step.draw_group != INVALID_RESOURCE_SLOT) {
+  if (step.draw_group != invalid_resource_slot) {
     utils::error{}("How it would looks like?");
   }
 
@@ -1358,7 +1447,7 @@ void transfer_copy_buffer::process(graphics_ctx* ctx, VkCommandBuffer buf) const
   task.copyBuffer(res1.buf, res2.buf, c);
 }
 
-static vk::ImageSubresourceLayers convert_to_isl(const vk::ImageSubresourceRange &isr, const uint32_t mip_level = UINT32_MAX) {
+static vk::ImageSubresourceLayers convert_to_isl(const vk::ImageSubresourceRange& isr, const uint32_t mip_level = UINT32_MAX) {
   vk::ImageSubresourceLayers isl{};
   isl.aspectMask = isr.aspectMask;
   isl.mipLevel = mip_level != UINT32_MAX ? mip_level : isr.baseMipLevel;
@@ -1388,9 +1477,9 @@ void transfer_copy_image::process(graphics_ctx* ctx, VkCommandBuffer buf) const 
 
   vk::ImageCopy c{};
   c.srcSubresource = convert_to_isl(std::bit_cast<vk::ImageSubresourceRange>(res1.subimg));
-  c.srcOffset = vk::Offset3D{0,0,0};
+  c.srcOffset = vk::Offset3D{0, 0, 0};
   c.dstSubresource = convert_to_isl(std::bit_cast<vk::ImageSubresourceRange>(res2.subimg));
-  c.dstOffset = vk::Offset3D{0,0,0};
+  c.dstOffset = vk::Offset3D{0, 0, 0};
   // тут мы вынуждены копировать только подходящие картинки
   c.extent = vk::Extent3D{std::min(res1.extent.x, res2.extent.x), std::min(res1.extent.y, res2.extent.y), 1};
   task.copyImage(res1.img, vk::ImageLayout::eTransferSrcOptimal, res2.img, vk::ImageLayout::eTransferDstOptimal, c);
@@ -1420,8 +1509,8 @@ void transfer_copy_buffer_image::process(graphics_ctx* ctx, VkCommandBuffer buf)
   c.bufferRowLength = 0;
   c.bufferImageHeight = 0;
   c.imageSubresource = convert_to_isl(std::bit_cast<vk::ImageSubresourceRange>(res2.subimg));
-  c.imageOffset = vk::Offset3D{ 0,0,0 };
-  c.imageExtent = vk::Extent3D{ res2.extent.x, res2.extent.y, 1 };
+  c.imageOffset = vk::Offset3D{0, 0, 0};
+  c.imageExtent = vk::Extent3D{res2.extent.x, res2.extent.y, 1};
   task.copyBufferToImage(res1.buf, res2.img, vk::ImageLayout::eTransferDstOptimal, c);
 }
 
@@ -1449,8 +1538,8 @@ void transfer_copy_image_buffer::process(graphics_ctx* ctx, VkCommandBuffer buf)
   c.bufferRowLength = 0;
   c.bufferImageHeight = 0;
   c.imageSubresource = convert_to_isl(std::bit_cast<vk::ImageSubresourceRange>(res1.subimg));
-  c.imageOffset = vk::Offset3D{ 0,0,0 };
-  c.imageExtent = vk::Extent3D{ res1.extent.x, res1.extent.y, 1 };
+  c.imageOffset = vk::Offset3D{0, 0, 0};
+  c.imageExtent = vk::Extent3D{res1.extent.x, res1.extent.y, 1};
   task.copyImageToBuffer(res1.img, vk::ImageLayout::eTransferSrcOptimal, res2.buf, c);
 }
 
@@ -1473,11 +1562,11 @@ void transfer_blit_linear::process(graphics_ctx* ctx, VkCommandBuffer buf) const
 
   vk::ImageBlit b{};
   b.srcSubresource = convert_to_isl(std::bit_cast<vk::ImageSubresourceRange>(res1.subimg));
-  b.srcOffsets[0] = vk::Offset3D{ 0,0,0 };
-  b.srcOffsets[1] = vk::Offset3D( res1.extent.x, res1.extent.y, 1 );
+  b.srcOffsets[0] = vk::Offset3D{0, 0, 0};
+  b.srcOffsets[1] = vk::Offset3D(res1.extent.x, res1.extent.y, 1);
   b.dstSubresource = convert_to_isl(std::bit_cast<vk::ImageSubresourceRange>(res2.subimg));
-  b.dstOffsets[0] = vk::Offset3D{ 0,0,0 };
-  b.dstOffsets[1] = vk::Offset3D( res2.extent.x, res2.extent.y, 1 );
+  b.dstOffsets[0] = vk::Offset3D{0, 0, 0};
+  b.dstOffsets[1] = vk::Offset3D(res2.extent.x, res2.extent.y, 1);
   task.blitImage(res1.img, vk::ImageLayout::eTransferSrcOptimal, res2.img, vk::ImageLayout::eTransferDstOptimal, b, vk::Filter::eLinear);
 }
 
@@ -1500,11 +1589,11 @@ void transfer_blit_nearest::process(graphics_ctx* ctx, VkCommandBuffer buf) cons
 
   vk::ImageBlit b{};
   b.srcSubresource = convert_to_isl(std::bit_cast<vk::ImageSubresourceRange>(res1.subimg));
-  b.srcOffsets[0] = vk::Offset3D{ 0,0,0 };
-  b.srcOffsets[1] = vk::Offset3D( res1.extent.x, res1.extent.y, 1 );
+  b.srcOffsets[0] = vk::Offset3D{0, 0, 0};
+  b.srcOffsets[1] = vk::Offset3D(res1.extent.x, res1.extent.y, 1);
   b.dstSubresource = convert_to_isl(std::bit_cast<vk::ImageSubresourceRange>(res2.subimg));
-  b.dstOffsets[0] = vk::Offset3D{ 0,0,0 };
-  b.dstOffsets[1] = vk::Offset3D( res2.extent.x, res2.extent.y, 1 );
+  b.dstOffsets[0] = vk::Offset3D{0, 0, 0};
+  b.dstOffsets[1] = vk::Offset3D(res2.extent.x, res2.extent.y, 1);
   task.blitImage(res1.img, vk::ImageLayout::eTransferSrcOptimal, res2.img, vk::ImageLayout::eTransferDstOptimal, b, vk::Filter::eNearest);
 }
 
@@ -1530,7 +1619,9 @@ void transfer_clear_color::process(graphics_ctx* ctx, VkCommandBuffer buf) const
   const uint32_t elem = format_element_size(vk_fmt, format::to_vulkan_aspect(f0));
   const uint32_t scalar = channels != 0 ? elem / channels : 4u;
   if (scalar == 1) {
-    for (uint32_t i = 0; i < channels; ++i) cv.float32[i] = float(raw[i]) / 255.0f; // 8-бит unorm -> [0,1]
+    for (uint32_t i = 0; i < channels; ++i) {
+      cv.float32[i] = float(raw[i]) / 255.0f; // 8-бит unorm -> [0,1]
+    }
   } else {
     memcpy(&cv, raw, std::min<size_t>(c.size, sizeof(cv))); // 32-бит: байты уже совпадают с union
   }
@@ -1556,9 +1647,12 @@ void transfer_clear_depth::process(graphics_ctx* ctx, VkCommandBuffer buf) const
 
   vk::ClearDepthStencilValue dsv{};
   dsv.depth = 1.0f;
-  if (c.size >= sizeof(float)) memcpy(&dsv.depth, raw, sizeof(float));
+  if (c.size >= sizeof(float)) {
+    memcpy(&dsv.depth, raw, sizeof(float));
+  }
   dsv.stencil = c.size >= sizeof(float) + sizeof(uint32_t)
-    ? *reinterpret_cast<const uint32_t*>(raw + sizeof(float)) : 0u;
+                  ? *reinterpret_cast<const uint32_t*>(raw + sizeof(float))
+                  : 0u;
 
   vk::CommandBuffer task(buf);
   make_barriers1(ctx, buf, step.barriers); // перевод в transfer_dst
@@ -1566,5 +1660,5 @@ void transfer_clear_depth::process(graphics_ctx* ctx, VkCommandBuffer buf) const
   task.clearDepthStencilImage(res.img, vk::ImageLayout::eTransferDstOptimal, dsv, range);
 }
 
-}
-}
+} // namespace painter
+} // namespace devils_engine

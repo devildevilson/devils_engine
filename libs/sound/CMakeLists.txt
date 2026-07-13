@@ -24,6 +24,7 @@ endif()
 
 set(SRC_LIST
   src/sound/al_helper.cpp
+  src/sound/decoder.cpp
   src/sound/mp3_decoder.cpp
   src/sound/flac_decoder.cpp
   src/sound/wav_decoder.cpp

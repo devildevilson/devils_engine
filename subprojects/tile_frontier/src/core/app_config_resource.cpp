@@ -1,10 +1,9 @@
 #include <devils_engine/catalogue/logging.h>
-#include "app_config_resource.h"
-
-#include <devils_engine/utils/core.h>
 #include <devils_engine/demiurg/module_interface.h>
-
+#include <devils_engine/utils/core.h>
 #include <tavl/deserialize.h>
+
+#include "app_config_resource.h"
 
 namespace tile_frontier {
 namespace core {
@@ -33,17 +32,19 @@ void app_config_resource::load_cold(const utils::safe_handle_t&) {
     utils::warn("app_config_resource '{}': {} tavl diagnostics", id, ctx.diagnostics.size());
     for (const auto& d : ctx.diagnostics) {
       utils::warn("  tavl diagnostic '{}' at {}:{} field '{}'",
-        tavl::to_string(d.error.type), source_line(static_cast<uint32_t>(d.error.span.line)), d.error.span.column, d.field);
+                  tavl::to_string(d.error.type), source_line(static_cast<uint32_t>(d.error.span.line)), d.error.span.column, d.field);
     }
   }
 
   DE_LOG(catalogue::log_domain::resource, flow, "app_config_resource '{}': parsed (window {}x{}, render config '{}')",
-    id, cfg.window.width, cfg.window.height, cfg.render.config_folder);
+         id, cfg.window.width, cfg.window.height, cfg.render.config_folder);
 }
 
 void app_config_resource::load_warm(const utils::safe_handle_t&) {}
 void app_config_resource::unload_hot(const utils::safe_handle_t&) {}
-void app_config_resource::unload_warm(const utils::safe_handle_t&) { cfg = app_config{}; }
+void app_config_resource::unload_warm(const utils::safe_handle_t&) {
+  cfg = app_config{};
+}
 
-}
-}
+} // namespace core
+} // namespace tile_frontier

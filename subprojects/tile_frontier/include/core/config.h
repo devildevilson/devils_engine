@@ -5,7 +5,11 @@
 #include <string>
 #include <vector>
 
-namespace devils_engine { namespace utils { class calendar_clock; } }
+namespace devils_engine {
+namespace utils {
+class calendar_clock;
+}
+} // namespace devils_engine
 
 // Рантайм-конфиг приложения (resources/config/app.tavl).
 // Структуры намеренно остаются агрегатами — их читает tavl через рефлексию.
@@ -125,7 +129,7 @@ std::string make_project_path(std::string path);
 // То же, но гарантирует завершающий '/' (нужно парсеру render-конфига).
 std::string make_project_folder_path(std::string path);
 
-}
-}
+} // namespace core
+} // namespace tile_frontier
 
 #endif

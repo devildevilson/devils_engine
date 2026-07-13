@@ -14,7 +14,7 @@ public:
   void load_cold(const utils::safe_handle_t& handle) override;
 };
 
-}
-}
+} // namespace painter
+} // namespace devils_engine
 
 #endif

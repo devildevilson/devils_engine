@@ -1,6 +1,5 @@
-#include "shader_source_file.h"
-
 #include "devils_engine/demiurg/module_interface.h"
+#include "shader_source_file.h"
 
 namespace devils_engine {
 namespace painter {
@@ -16,7 +15,10 @@ void shader_source_file::load_cold(const utils::safe_handle_t&) {
 
 void shader_source_file::load_warm(const utils::safe_handle_t&) {}
 void shader_source_file::unload_hot(const utils::safe_handle_t&) {}
-void shader_source_file::unload_warm(const utils::safe_handle_t&) { memory.clear(); memory.shrink_to_fit(); }
+void shader_source_file::unload_warm(const utils::safe_handle_t&) {
+  memory.clear();
+  memory.shrink_to_fit();
+}
 
-}
-}
+} // namespace painter
+} // namespace devils_engine

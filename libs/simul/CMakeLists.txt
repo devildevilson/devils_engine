@@ -8,6 +8,7 @@ project(
 
 add_library(devils_simul
   src/simul/interface.cpp
+  src/simul/runtime.cpp
   src/simul/lua_script_resource.cpp
   src/simul/startup_resources.cpp
   include/devils_engine/simul/interface.h
@@ -41,7 +42,7 @@ target_include_directories(devils_simul
 )
 
 target_link_libraries(devils_simul
-  PUBLIC devils_engine::options devils_engine::utils devils_engine::demiurg
+  PUBLIC devils_engine::options devils_engine::utils devils_engine::catalogue devils_engine::demiurg
   PRIVATE tavl
 )
 

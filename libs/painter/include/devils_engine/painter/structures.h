@@ -1,28 +1,33 @@
 #ifndef DEVILS_ENGINE_PAINTER_STRUCTURES_H
 #define DEVILS_ENGINE_PAINTER_STRUCTURES_H
 
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <atomic>
-#include <vector>
-#include <array>
 #include <tuple>
+#include <vector>
 
 #include "common.h"
 #include "vulkan_minimal.h"
 
 namespace devils_engine {
-namespace demiurg { class resource_system; }
+namespace demiurg {
+class resource_system;
+}
 namespace painter {
 
 #ifndef _NDEBUG
-#define DS_ASSERT_ARRAY_GET(arr, index) ([&]() -> decltype((arr)[(index)]) { if ((index) >= (arr).size()) utils::error{}("Assert failed: "#arr".size() ({}) < index ({})", (arr).size(), (index)); return (arr)[(index)]; }())
+#  define DS_ASSERT_ARRAY_GET(arr, index) ([&]() -> decltype((arr)[(index)]) {                                              \
+    if ((index) >= (arr).size()) utils::error{}("Assert failed: " #arr ".size() ({}) < index ({})", (arr).size(), (index)); \
+    return (arr)[(index)];                                                                                                  \
+  }())
 #else
-#define DS_ASSERT_ARRAY_GET(arr, index) ((arr)[(index)])
+#  define DS_ASSERT_ARRAY_GET(arr, index) ((arr)[(index)])
 #endif
 
 struct graphics_base;
-constexpr size_t INDIRECT_BUFFER_SIZE = sizeof(std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>) * 2;
+constexpr size_t indirect_buffer_size = sizeof(std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>) * 2;
 
 struct constant_value {
   using value_t = std::tuple<uint32_t, uint32_t, uint32_t>;
@@ -65,14 +70,18 @@ struct counter {
   void set_value(const uint32_t val) noexcept;
 };
 
-struct extent { uint32_t x,y,z; };
+struct extent {
+  uint32_t x, y, z;
+};
 
 // нужно добавить тип памяти при аллокации
 struct resource_container {
   std::string name;
   VmaAllocation alloc;
   size_t handle;
-  struct { uint32_t x,y; } extent;
+  struct {
+    uint32_t x, y;
+  } extent;
   size_t size;
 
   uint32_t format;
@@ -83,8 +92,8 @@ struct resource_container {
 
   void* mem_ptr;
 
-  inline bool is_image() const noexcept { return layers >= 1; }
-  inline bool host_visible() const noexcept { return mem_ptr != nullptr; }
+  bool is_image() const noexcept;
+  bool host_visible() const noexcept;
   void create_container(VmaAllocator alc, const uint32_t host_visible);
 };
 
@@ -114,14 +123,14 @@ struct resource {
   std::string name;
   std::string format;
   uint32_t format_hint; // VkFormat
-  uint32_t size_hint; // 1 data element size
-  uint32_t size; // constant_value index
+  uint32_t size_hint;   // 1 data element size
+  uint32_t size;        // constant_value index
   enum role::values role;
   enum type::values type;
   uint32_t swap; // counter index
   uint32_t usage_mask;
 
-  std::array<frame, MAX_FRAMES_IN_FLIGHT> handles;
+  std::array<frame, max_frames_in_flight> handles;
 
   resource() noexcept;
   std::tuple<size_t, std::tuple<uint32_t, uint32_t>> compute_frame_size(const graphics_base* base) const;
@@ -193,12 +202,12 @@ struct render_target {
 // поля под доращивание (lod/anisotropy/border/...). VkSampler создаётся в create_samplers().
 struct sampler {
   std::string name;
-  uint32_t mag_filter;   // VkFilter
-  uint32_t min_filter;   // VkFilter
-  uint32_t address_u;    // VkSamplerAddressMode
+  uint32_t mag_filter; // VkFilter
+  uint32_t min_filter; // VkFilter
+  uint32_t address_u;  // VkSamplerAddressMode
   uint32_t address_v;
   uint32_t address_w;
-  uint32_t mipmap_mode;  // VkSamplerMipmapMode
+  uint32_t mipmap_mode; // VkSamplerMipmapMode
   VkSampler handle;
 
   sampler() noexcept;
@@ -217,10 +226,10 @@ struct descriptor {
   // L = layout.size(). texture_count: 0 => нет asset-текстур.
   uint32_t texture_count;
   std::vector<uint32_t> texture_samplers; // пул семплеров (immutable); индекс = sampler_id в tex_id
-  uint32_t texture_stage;     // VkShaderStageFlags
+  uint32_t texture_stage;                 // VkShaderStageFlags
 
   VkDescriptorSetLayout setlayout;
-  std::array<VkDescriptorSet, MAX_FRAMES_IN_FLIGHT> sets; // per_frame
+  std::array<VkDescriptorSet, max_frames_in_flight> sets; // per_frame
 
   descriptor() noexcept;
 };
@@ -281,7 +290,10 @@ struct material {
 };
 
 struct geometry {
-  enum class index_type { none, u32, u16, u8 };
+  enum class index_type { none,
+                          u32,
+                          u16,
+                          u8 };
 
   std::string name;
   std::string layout_str;
@@ -297,7 +309,8 @@ struct geometry {
 };
 
 struct draw_group {
-  enum class type { device_local, host_visible };
+  enum class type { device_local,
+                    host_visible };
 
   std::string name;
   std::string layout_str;
@@ -334,7 +347,7 @@ struct mesh_draw_group_pair {
   uint32_t indirect_offset;
   uint32_t instance_offset;
 
-  inline mesh_draw_group_pair() noexcept : mesh(UINT32_MAX), draw_group(UINT32_MAX), max_size(0), indirect_offset(0), instance_offset(0) {}
+  mesh_draw_group_pair() noexcept;
 };
 
 // как распарсить? парсим мы в структуру и в общем то способ один и порядок тоже
@@ -378,7 +391,7 @@ struct step_base {
   resource_usage_t read; // в инстансы? там они особо не нужны
   resource_usage_t write;
 
-  inline step_base() noexcept : descriptor(INVALID_RESOURCE_SLOT), material(INVALID_RESOURCE_SLOT), geometry(INVALID_RESOURCE_SLOT), draw_group(INVALID_RESOURCE_SLOT) {}
+  step_base() noexcept;
   step_type::values type() const;
 };
 
@@ -412,10 +425,10 @@ struct execution_pass_base {
   resource_usage_t read; // сборная солянка всех steps
   resource_usage_t write;
 
-  inline execution_pass_base() noexcept : render_target(INVALID_RESOURCE_SLOT) {}
-  inline bool is_graphics_pass() const noexcept { return render_target != INVALID_RESOURCE_SLOT; }
-  inline bool has_step_type(const step_type::values t) const noexcept { return step_mask.test(static_cast<uint32_t>(t)); }
-  inline void set_step_type(const step_type::values t) noexcept { step_mask.set(static_cast<uint32_t>(t), true); }
+  execution_pass_base() noexcept;
+  bool is_graphics_pass() const noexcept;
+  bool has_step_type(step_type::values t) const noexcept;
+  void set_step_type(step_type::values t) noexcept;
 };
 
 // наверное мы при переходе от render_graph к render_graph
@@ -429,12 +442,12 @@ struct render_graph_base {
   resource_usage_t read;
   resource_usage_t write;
 
-  inline render_graph_base() noexcept : present_source(UINT32_MAX) {}
+  render_graph_base() noexcept;
 };
 
 struct semaphore {
   std::string name;
-  std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> handles;
+  std::array<VkSemaphore, max_frames_in_flight> handles;
 
   semaphore() noexcept;
 };
@@ -459,17 +472,13 @@ struct render_config_storage {
   std::vector<render_graph_base> graphs;
 
   // скалярные результаты парсинга
-  uint32_t swapchain_slot = INVALID_RESOURCE_SLOT;
-  uint32_t swapchain_counter_index = INVALID_RESOURCE_SLOT;
-  uint32_t per_frame_counter_index = INVALID_RESOURCE_SLOT;
-  uint32_t per_update_counter_index = INVALID_RESOURCE_SLOT;
+  uint32_t swapchain_slot = invalid_resource_slot;
+  uint32_t swapchain_counter_index = invalid_resource_slot;
+  uint32_t per_frame_counter_index = invalid_resource_slot;
+  uint32_t per_update_counter_index = invalid_resource_slot;
 
   // символьная таблица (линейный поиск по имени; parse-time). find_semaphore тут нет — семафоры рантайм.
-#define DE_PAINTER_FIND(fn, vec) \
-  inline uint32_t fn(const std::string_view& name) const { \
-    uint32_t i = 0; for (; i < vec.size() && vec[i].name != name; ++i) {} \
-    return i >= vec.size() ? INVALID_RESOURCE_SLOT : i; \
-  }
+#define DE_PAINTER_FIND(fn, vec) uint32_t fn(const std::string_view& name) const;
   DE_PAINTER_FIND(find_constant_value, constant_values)
   DE_PAINTER_FIND(find_resource, resources)
   DE_PAINTER_FIND(find_counter, counters)
@@ -494,7 +503,7 @@ render_config_storage build_render_config(std::string path); // источник
 render_config_storage build_render_config(const demiurg::resource_system* reg, std::string prefix);
 command_params parse_command(render_config_storage* ctx, const step_base& step, const std::string_view& command_str);
 
-}
-}
+} // namespace painter
+} // namespace devils_engine
 
 #endif

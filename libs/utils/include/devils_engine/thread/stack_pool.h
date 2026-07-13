@@ -1,12 +1,13 @@
 #ifndef DEVILS_ENGINE_THREAD_STACK_POOL_H
 #define DEVILS_ENGINE_THREAD_STACK_POOL_H
 
-#include <cstdint>
 #include <cstddef>
-#include <queue>
-#include <mutex>
+#include <cstdint>
 #include <future>
+#include <mutex>
+#include <queue>
 #include <type_traits>
+
 #include "devils_engine/utils/stack_allocator.h"
 
 namespace devils_engine {
@@ -34,9 +35,13 @@ public:
     requires(std::derived_from<T, arbitrary_job>)
   void submit(Args&&... args) {
     std::unique_lock l(mutex);
-    if (stop) return;
+    if (stop) {
+      return;
+    }
     auto ptr = stack.allocate(sizeof(T));
-    if (ptr == nullptr) utils::error{}("Could not allocate {} bytes from stack. Allocated already {}. Forgot to reset?", sizeof(T), stack.size());
+    if (ptr == nullptr) {
+      utils::error{}("Could not allocate {} bytes from stack. Allocated already {}. Forgot to reset?", sizeof(T), stack.size());
+    }
     auto final_ptr = new (ptr) T(std::forward<Args>(args)...);
     queue.push(final_ptr);
   }
@@ -75,9 +80,9 @@ public:
       std::promise<typename std::invoke_result_t<F>> promise;
       func_job(F f) noexcept : f(std::move(f)) {}
       func_job(func_job&& move) noexcept = default;
-      func_job & operator=(func_job&& move) noexcept = default;
-      func_job(const func_job &copy) noexcept = delete;
-      func_job & operator=(const func_job& copy) noexcept = delete;
+      func_job& operator=(func_job&& move) noexcept = default;
+      func_job(const func_job& copy) noexcept = delete;
+      func_job& operator=(const func_job& copy) noexcept = delete;
       void execute() const override {
         if constexpr (std::is_void_v<std::invoke_result_t<F>>) {
           std::invoke(std::move(f));
@@ -102,9 +107,9 @@ public:
       std::promise<typename std::invoke_result_t<F, Args&&...>> promise;
       func_job(F f, Args&&... args) noexcept : f(std::move(f)), args(std::forward<Args>(args)...) {}
       func_job(func_job&& move) noexcept = default;
-      func_job & operator=(func_job&& move) noexcept = default;
-      func_job(const func_job &copy) noexcept = delete;
-      func_job & operator=(const func_job& copy) noexcept = delete;
+      func_job& operator=(func_job&& move) noexcept = default;
+      func_job(const func_job& copy) noexcept = delete;
+      func_job& operator=(const func_job& copy) noexcept = delete;
       void execute() const override {
         if constexpr (std::is_void_v<typename std::invoke_result_t<F, Args&&...>>) {
           std::apply(std::move(f), std::move(args));
@@ -134,6 +139,7 @@ public:
   size_t size() const noexcept;
   size_t tasks_count() const noexcept;
   size_t busy_workers_count() const noexcept;
+
 private:
   mutable std::mutex mutex;
   utils::stack_allocator stack; // все равно желательно ринг буфер
@@ -144,7 +150,7 @@ private:
   size_t busy_count;
   bool stop;
 };
-}
-}
+} // namespace thread
+} // namespace devils_engine
 
 #endif

@@ -17,7 +17,7 @@ using devils_engine::simul::interpolation_track;
 using devils_engine::simul::nominal_clock;
 using devils_engine::simul::snapshot_interpolator;
 
-}
-}
+} // namespace core
+} // namespace tile_frontier
 
 #endif

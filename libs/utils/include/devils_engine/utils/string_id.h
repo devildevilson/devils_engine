@@ -3,13 +3,12 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
-#include <vector>
 #include <string_view>
+#include <vector>
+
 #include <gtl/phmap.hpp>
 
 #include "core.h"
-#include "rapidhash.h"
 
 namespace devils_engine {
 namespace utils {
@@ -31,13 +30,8 @@ constexpr id invalid_id = UINT64_MAX;
 
 // --- 1. непоследовательный хеш ---
 
-[[nodiscard]] inline id string_hash(const std::string_view& str) noexcept {
-  return rapidhash(str.data(), str.size());
-}
-
-[[nodiscard]] inline id string_hash(const std::string_view& str, const uint64_t seed) noexcept {
-  return rapidhash_withSeed(str.data(), str.size(), seed);
-}
+[[nodiscard]] id string_hash(const std::string_view& str) noexcept;
+[[nodiscard]] id string_hash(const std::string_view& str, const uint64_t seed) noexcept;
 
 // --- 2. последовательный пул строк ---
 
@@ -49,7 +43,9 @@ public:
   // НЕ потокобезопасно - звать только в однопоточной фазе загрузки.
   id reg(const std::string_view& str) {
     // offset/size в entry это uint32_t - страхуемся заранее, чтобы обскурный баг не всплыл потом
-    if (str.size() >= UINT32_MAX) utils::error{}("string_pool: string is too long ({} bytes), max is {}", str.size(), UINT32_MAX);
+    if (str.size() >= UINT32_MAX) {
+      utils::error{}("string_pool: string is too long ({} bytes), max is {}", str.size(), UINT32_MAX);
+    }
 
     const auto hash = string_hash(str);
     const auto itr = m_lookup.find(hash);
@@ -65,7 +61,7 @@ public:
     m_memory.push_back('\0');
 
     const id index = m_entries.size();
-    m_entries.emplace_back(entry{ offset, static_cast<uint32_t>(str.size()) });
+    m_entries.emplace_back(entry{offset, static_cast<uint32_t>(str.size())});
     m_lookup.emplace(hash, index);
     return index;
   }
@@ -74,7 +70,9 @@ public:
   [[nodiscard]] id lookup(const std::string_view& str) const {
     const auto hash = string_hash(str);
     const auto itr = m_lookup.find(hash);
-    if (itr == m_lookup.end()) return invalid_id;
+    if (itr == m_lookup.end()) {
+      return invalid_id;
+    }
     if (str != view(itr->second)) {
       utils::error{}("String hash collision in string_pool: '{}' vs '{}'. You are winner =)", str, view(itr->second));
     }
@@ -83,21 +81,33 @@ public:
 
   // потокобезопасно после завершения регистрации. пустой view если id невалиден.
   [[nodiscard]] std::string_view name(const id val) const {
-    if (val >= m_entries.size()) return std::string_view();
+    if (val >= m_entries.size()) {
+      return std::string_view();
+    }
     return view(val);
   }
 
-  [[nodiscard]] bool contains(const std::string_view& str) const { return lookup(str) != invalid_id; }
-  [[nodiscard]] size_t size() const noexcept { return m_entries.size(); }
-  [[nodiscard]] bool empty() const noexcept { return m_entries.empty(); }
+  [[nodiscard]] bool contains(const std::string_view& str) const {
+    return lookup(str) != invalid_id;
+  }
+  [[nodiscard]] size_t size() const noexcept {
+    return m_entries.size();
+  }
+  [[nodiscard]] bool empty() const noexcept {
+    return m_entries.empty();
+  }
 
   void clear() noexcept {
     m_lookup.clear();
     m_entries.clear();
     m_memory.clear();
   }
+
 private:
-  struct entry { uint32_t offset; uint32_t size; };
+  struct entry {
+    uint32_t offset;
+    uint32_t size;
+  };
 
   [[nodiscard]] std::string_view view(const id index) const noexcept {
     const auto& e = m_entries[index];
@@ -109,7 +119,7 @@ private:
   std::vector<char> m_memory;
 };
 
-}
-}
+} // namespace utils
+} // namespace devils_engine
 
 #endif

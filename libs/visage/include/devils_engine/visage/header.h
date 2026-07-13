@@ -4,8 +4,8 @@
 #define NK_INCLUDE_COMMAND_USERDATA
 #include <nuklear.h>
 
-nk_uint *nk_add_value_g(struct nk_context *ctx, struct nk_window *win, nk_hash name, nk_uint value);
-nk_uint *nk_find_value_g(struct nk_window *win, nk_hash name);
+nk_uint* nk_add_value_g(struct nk_context* ctx, struct nk_window* win, nk_hash name, nk_uint value);
+nk_uint* nk_find_value_g(struct nk_window* win, nk_hash name);
 
 // итак интейрфейс
 // у нас по большому счету будет 3 типа того

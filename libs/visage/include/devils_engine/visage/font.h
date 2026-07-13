@@ -22,8 +22,10 @@ struct font_t {
   struct config_t {
     double size;
     uint32_t coord_type;
-    struct { double x, y; } spacing;
-    const uint32_t *range;
+    struct {
+      double x, y;
+    } spacing;
+    const uint32_t* range;
     // font
     uint32_t fallback_glyph;
   };
@@ -36,9 +38,9 @@ struct font_t {
     double scale;
     double gscale;
     int index;
-    int x,y,w,h; // rect
-    double al,ab,ar,at; // atlas
-    double pl,pb,pr,pt; // plane
+    int x, y, w, h;        // rect
+    double al, ab, ar, at; // atlas
+    double pl, pb, pr, pt; // plane
   };
 
   struct metrics_t {
@@ -55,11 +57,11 @@ struct font_t {
   double scale;
   struct metrics_t metrics;
   std::vector<glyph_t> glyphs;
-  const struct glyph_t *fallback;
+  const struct glyph_t* fallback;
   uint32_t fallback_codepoint;
   int32_t width, height;
   void* texture;
-  struct config *config; // конфиг тут хранить?
+  struct config* config;                // конфиг тут хранить?
   std::unique_ptr<nk_user_font> nkfont; // базовый (дефолтный размер)
 
   // деструктор объявлен и определён в font.cpp: nkfont — unique_ptr<nk_user_font> (неполный
@@ -67,9 +69,9 @@ struct font_t {
   font_t() = default;
   ~font_t();
 
-  const glyph_t *find_glyph(const uint32_t codepoint) const;
-  void query_font_glyph(float font_height, struct nk_user_font_glyph *glyph, nk_rune codepoint, nk_rune next_codepoint) const;
-  double text_width(double height, const std::string_view &txt) const;
+  const glyph_t* find_glyph(const uint32_t codepoint) const;
+  void query_font_glyph(float font_height, struct nk_user_font_glyph* glyph, nk_rune codepoint, nk_rune next_codepoint) const;
+  double text_width(double height, const std::string_view& txt) const;
 
   // индекс GPU-слота атласа этого шрифта: nuklear зашивает его в texture.id draw-команд текста,
   // а шейдер UI по нему сэмплит нужную текстуру. Определён в font.cpp (nk_user_font там полный).
@@ -78,7 +80,7 @@ struct font_t {
 };
 
 // Загрузка/генерация атласа шрифта: см. font_atlas_packer (заменил легаси load_font).
-}
-}
+} // namespace visage
+} // namespace devils_engine
 
 #endif

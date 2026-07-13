@@ -1,5 +1,3 @@
-#include "devils_engine/flow/system.h"
-
 #include <algorithm>
 #include <cmath>
 #include <optional>
@@ -7,6 +5,7 @@
 #include <tavl/deserialize.h>
 
 #include "devils_engine/demiurg/resource_system.h"
+#include "devils_engine/flow/system.h"
 #include "devils_engine/utils/core.h"
 
 namespace devils_engine {
@@ -37,8 +36,7 @@ static state convert_state(
   const demiurg::resource_system* resources,
   const std::string_view label,
   const size_t index,
-  const parse_options& options
-) {
+  const parse_options& options) {
   state out;
   out.duration_mcs = src.duration;
 
@@ -71,7 +69,9 @@ static state convert_state(
 }
 
 static void emit_action_once(const state& st, const uint32_t state_index, playback& pb, sample_result& out) {
-  if (pb.action_emitted || st.action == utils::invalid_id) return;
+  if (pb.action_emitted || st.action == utils::invalid_id) {
+    return;
+  }
   out.actions.push_back(action_event{state_index, st.action});
   pb.action_emitted = true;
 }
@@ -83,7 +83,7 @@ static void enter_state(playback& pb, const uint32_t next) {
   pb.finished = next == invalid_state;
 }
 
-}
+} // namespace
 
 uint32_t library::add_state(std::string name, state st) {
   const uint32_t existing = find_state(name);
@@ -101,7 +101,9 @@ uint32_t library::add_state(std::string name, state st) {
 
 uint32_t library::find_state(const std::string_view name) const noexcept {
   for (uint32_t i = 0; i < states_.size(); ++i) {
-    if (states_[i].name == name) return i;
+    if (states_[i].name == name) {
+      return i;
+    }
   }
   return invalid_state;
 }
@@ -119,7 +121,9 @@ size_t library::size() const noexcept {
 }
 
 bool library::set_next(const uint32_t index, const std::string_view next_name) {
-  if (index >= states_.size() || next_name.empty()) return false;
+  if (index >= states_.size() || next_name.empty()) {
+    return false;
+  }
 
   const uint32_t next_index = find_state(next_name);
   if (next_index != invalid_state) {
@@ -134,8 +138,7 @@ bool library::set_next(const uint32_t index, const std::string_view next_name) {
 uint32_t library::append_resource_states(
   const std::string_view resource_id,
   const std::vector<state>& states,
-  const std::vector<std::string>& next_names
-) {
+  const std::vector<std::string>& next_names) {
   const uint32_t first = static_cast<uint32_t>(states_.size());
 
   for (size_t i = 0; i < states.size(); ++i) {
@@ -143,7 +146,9 @@ uint32_t library::append_resource_states(
   }
 
   for (size_t i = 0; i < next_names.size() && i < states.size(); ++i) {
-    if (next_names[i].empty()) continue;
+    if (next_names[i].empty()) {
+      continue;
+    }
     set_next(first + static_cast<uint32_t>(i), next_names[i]);
   }
 
@@ -155,7 +160,9 @@ void library::resolve_pending_links(const bool warn_unresolved) {
   size_t write = 0;
   for (size_t i = 0; i < pending_.size(); ++i) {
     const auto& p = pending_[i];
-    if (p.from >= states_.size()) continue;
+    if (p.from >= states_.size()) {
+      continue;
+    }
 
     const uint32_t next_index = find_state(p.next);
     if (next_index != invalid_state) {
@@ -175,8 +182,7 @@ sample_result library::sample(
   playback& pb,
   const uint64_t dt_mcs,
   const sample_context& ctx,
-  const uint32_t zero_duration_step_limit
-) const {
+  const uint32_t zero_duration_step_limit) const {
   sample_result out;
   if (pb.current == invalid_state || pb.current >= states_.size()) {
     pb.finished = true;
@@ -224,7 +230,9 @@ sample_result library::sample(
       out.sprite = sprite_sample{{}, mirror::none, pb.uv, false};
     }
 
-    if (pb.elapsed_mcs < st.duration_mcs) break;
+    if (pb.elapsed_mcs < st.duration_mcs) {
+      break;
+    }
 
     if (st.next == invalid_state) {
       pb.finished = true;
@@ -250,13 +258,19 @@ uint8_t parse_mirror_suffix(const std::string_view token, std::string_view* with
   if (last_colon != std::string_view::npos) {
     const std::string_view suffix = base.substr(last_colon + 1);
     if (is_mirror_token(suffix)) {
-      if (suffix.find('u') != std::string_view::npos) mirror_state |= mirror::u;
-      if (suffix.find('v') != std::string_view::npos) mirror_state |= mirror::v;
+      if (suffix.find('u') != std::string_view::npos) {
+        mirror_state |= mirror::u;
+      }
+      if (suffix.find('v') != std::string_view::npos) {
+        mirror_state |= mirror::v;
+      }
       base = base.substr(0, last_colon);
     }
   }
 
-  if (without_suffix != nullptr) *without_suffix = base;
+  if (without_suffix != nullptr) {
+    *without_suffix = base;
+  }
   return mirror_state;
 }
 
@@ -286,10 +300,14 @@ image_ref parse_image_ref(const std::string_view token, const demiurg::resource_
 }
 
 uint32_t directional_image_index(const float angle_rad, const uint32_t image_count) noexcept {
-  if (image_count <= 1) return 0;
+  if (image_count <= 1) {
+    return 0;
+  }
 
   float a = std::fmod(angle_rad, tau_v);
-  if (a < 0.0f) a += tau_v;
+  if (a < 0.0f) {
+    a += tau_v;
+  }
 
   const float sector = tau_v / static_cast<float>(image_count);
   return static_cast<uint32_t>(std::floor((a + sector * 0.5f) / sector)) % image_count;
@@ -298,7 +316,9 @@ uint32_t directional_image_index(const float angle_rad, const uint32_t image_cou
 vec2 truncate_uv(const vec2 value) noexcept {
   const auto trunc_one = [](float v) noexcept {
     v = std::fmod(v, 1.0f);
-    if (v < 0.0f) v += 1.0f;
+    if (v < 0.0f) {
+      v += 1.0f;
+    }
     return v;
   };
 
@@ -310,8 +330,7 @@ std::vector<state> parse_state_text(
   const std::string_view label,
   const demiurg::resource_system* resources,
   std::vector<std::string>* next_names,
-  const parse_options options
-) {
+  const parse_options options) {
   tavl::parser p;
   p.add_default_operator();
   p.flush(std::string(content));
@@ -329,15 +348,19 @@ std::vector<state> parse_state_text(
   }
 
   for (const auto& d : ctx.diagnostics) {
-    if (!d.error.is_critical()) continue;
+    if (!d.error.is_critical()) {
+      continue;
+    }
     const uint32_t line = d.error.span.line == 0 ? 0 : static_cast<uint32_t>(d.error.span.line) + options.line_offset;
     utils::warn("flow: could not parse '{}' as animation states: error '{}' at {}:{} field '{}'",
-      label, tavl::to_string(d.error.type), line, d.error.span.column, d.field);
+                label, tavl::to_string(d.error.type), line, d.error.span.column, d.field);
   }
 
-  if (next_names != nullptr) *next_names = std::move(local_next);
+  if (next_names != nullptr) {
+    *next_names = std::move(local_next);
+  }
   return states;
 }
 
-}
-}
+} // namespace flow
+} // namespace devils_engine

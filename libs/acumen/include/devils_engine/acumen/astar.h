@@ -1,9 +1,10 @@
 #ifndef DEVILS_ENGINE_ACUMEN_ASTAR_H
 #define DEVILS_ENGINE_ACUMEN_ASTAR_H
 
-#include <vector>
-#include <functional>
 #include <cstdint>
+#include <functional>
+#include <vector>
+
 #include "devils_engine/utils/memory_pool.h"
 
 #define ASTAR_SEARCH_NODE_DEFAULT_SIZE 100
@@ -44,8 +45,8 @@ struct astar {
 
     T data;
 
-    inline node() : parent(nullptr), child(nullptr), g(0.0), h(0.0), f(0.0) {}
-    inline node(T data) : parent(nullptr), child(nullptr), g(0.0), h(0.0), f(0.0), data(std::move(data)) {}
+    node();
+    node(T data);
   };
 
   struct container {
@@ -76,6 +77,7 @@ struct astar {
     float_t solution_cost() const noexcept;
 
     node* goal_node() noexcept;
+
   private:
     container* c;
     const interface* i;
@@ -90,12 +92,21 @@ struct astar {
     size_t steps;
   };
 };
-}
+} // namespace devils_engine
 
 namespace devils_engine {
+// Template implementation
+
+template <typename T>
+astar<T>::node::node() : parent(nullptr), child(nullptr), g(0.0), h(0.0), f(0.0) {}
+
+template <typename T>
+astar<T>::node::node(T data)
+  : parent(nullptr), child(nullptr), g(0.0), h(0.0), f(0.0), data(std::move(data)) {}
+
 template <typename T>
 struct node_compare {
-  bool operator() (const astar<T>::node* first, const astar<T>::node* second) const noexcept {
+  bool operator()(const astar<T>::node* first, const astar<T>::node* second) const noexcept {
     return first->f > second->f;
   }
 };
@@ -120,8 +131,7 @@ void astar<T>::container::free_solution(node* start, node* goal) noexcept {
     } while (n != goal);
 
     node_pool.destroy(n); // Delete the goal
-  }
-  else {
+  } else {
     node_pool.destroy(start);
     node_pool.destroy(goal);
   }
@@ -149,7 +159,9 @@ void astar<T>::container::free_all(node* start, node*) noexcept {
   }
   closedlist.clear();
 
-  if (start != nullptr) node_pool.destroy(start);
+  if (start != nullptr) {
+    node_pool.destroy(start);
+  }
   // по идее goal тоже отсутствует в openlist или closedlist
 
   start = nullptr;
@@ -158,20 +170,22 @@ void astar<T>::container::free_all(node* start, node*) noexcept {
 template <typename T>
 void astar<T>::container::free_unused() noexcept {
   for (size_t i = 0; i < openlist.size(); ++i) {
-    if (openlist[i]->child == nullptr) node_pool.destroy(openlist[i]);
+    if (openlist[i]->child == nullptr) {
+      node_pool.destroy(openlist[i]);
+    }
   }
   openlist.clear();
 
   for (size_t i = 0; i < closedlist.size(); ++i) {
-    if (closedlist[i]->child == nullptr) node_pool.destroy(closedlist[i]);
+    if (closedlist[i]->child == nullptr) {
+      node_pool.destroy(closedlist[i]);
+    }
   }
   closedlist.clear();
 }
 
 template <typename T>
-astar<T>::algorithm::algorithm(astar<T>::container* c, const astar<T>::interface* i, T start, T end, const void* p) noexcept :
-  c(c), i(i), p(p), start(nullptr), current(nullptr), goal(nullptr), canceled(false), current_state(state::searching), steps(0)
-{
+astar<T>::algorithm::algorithm(astar<T>::container* c, const astar<T>::interface* i, T start, T end, const void* p) noexcept : c(c), i(i), p(p), start(nullptr), current(nullptr), goal(nullptr), canceled(false), current_state(state::searching), steps(0) {
   this->start = c->node_pool.create(std::move(start));
   this->goal = c->node_pool.create(std::move(end));
 
@@ -184,11 +198,15 @@ astar<T>::algorithm::algorithm(astar<T>::container* c, const astar<T>::interface
 }
 
 template <typename T>
-void astar<T>::algorithm::cancel() noexcept { canceled = true; }
+void astar<T>::algorithm::cancel() noexcept {
+  canceled = true;
+}
 template <typename T>
 astar<T>::state astar<T>::algorithm::step() noexcept {
   // Next I want it to be safe to do a searchstep once the search has succeeded...
-  if (current_state == state::succeeded || current_state == state::failed) return current_state;
+  if (current_state == state::succeeded || current_state == state::failed) {
+    return current_state;
+  }
 
   // Failure is defined as emptying the open list as there is nothing left to search...
   // New: Allow user abort
@@ -243,8 +261,7 @@ astar<T>::state astar<T>::algorithm::step() noexcept {
     c->free_unused();
     current_state = state::succeeded;
     return current_state;
-  }
-  else { // not goal
+  } else { // not goal
 
     // We now need to generate the successors of this node
     // The user helps us to do this, and we keep the new nodes in
@@ -269,7 +286,9 @@ astar<T>::state astar<T>::algorithm::step() noexcept {
       // First linear search of open list to find node
       auto openlist_result = c->openlist.begin();
       for (; openlist_result != c->openlist.end(); ++openlist_result) {
-        if (i->is_same((*openlist_result)->data, (*successor)->data, p)) break;
+        if (i->is_same((*openlist_result)->data, (*successor)->data, p)) {
+          break;
+        }
       }
 
       if (openlist_result != c->openlist.end()) {
@@ -286,7 +305,9 @@ astar<T>::state astar<T>::algorithm::step() noexcept {
 
       auto closedlist_result = c->closedlist.begin();
       for (; closedlist_result != c->closedlist.end(); ++closedlist_result) {
-        if (i->is_same((*closedlist_result)->data, (*successor)->data, p)) break;
+        if (i->is_same((*closedlist_result)->data, (*successor)->data, p)) {
+          break;
+        }
       }
 
       if (closedlist_result != c->closedlist.end()) {
@@ -337,8 +358,7 @@ astar<T>::state astar<T>::algorithm::step() noexcept {
         // Greg Douglas <gregdouglasmail@gmail.com>
         // who noticed that this code path was incorrect
         // Here we have found a new state which is already CLOSED
-      }
-      else if (openlist_result != c->openlist.end()) {
+      } else if (openlist_result != c->openlist.end()) {
         // Successor in open list
         // 1 - Update old version of this node in open list
         // 2 - sort heap again in open list
@@ -355,8 +375,7 @@ astar<T>::state astar<T>::algorithm::step() noexcept {
         // thanks to Mike Ryynanen for pointing this out and then explaining
         // it in detail. sort_heap called on an invalid heap does not work
         std::make_heap(c->openlist.begin(), c->openlist.end(), node_compare<T>());
-      }
-      else {
+      } else {
         // New successor
         // 1 - Move it from successors to open list
         // 2 - sort heap again in open list
@@ -378,7 +397,9 @@ astar<T>::state astar<T>::algorithm::step() noexcept {
 }
 
 template <typename T>
-size_t astar<T>::algorithm::step_count() const noexcept { return steps; }
+size_t astar<T>::algorithm::step_count() const noexcept {
+  return steps;
+}
 
 template <typename T>
 void astar<T>::algorithm::free_solution() noexcept {
@@ -389,7 +410,9 @@ void astar<T>::algorithm::free_solution() noexcept {
 
 template <typename T>
 std::vector<typename astar<T>::node*> astar<T>::algorithm::solution() noexcept {
-  if (i->is_same(start->data, goal->data, p)) return { start };
+  if (i->is_same(start->data, goal->data, p)) {
+    return {start};
+  }
 
   std::vector<node*> sol;
 
@@ -405,7 +428,9 @@ std::vector<typename astar<T>::node*> astar<T>::algorithm::solution() noexcept {
 
 template <typename T>
 size_t astar<T>::algorithm::solution(astar<T>::node** nodes, const size_t max_nodes) noexcept {
-  if (max_nodes == 0) return 0;
+  if (max_nodes == 0) {
+    return 0;
+  }
 
   if (i->is_same(start->data, goal->data, p)) {
     nodes[0] = start;
@@ -440,7 +465,9 @@ astar<T>::float_t astar<T>::algorithm::solution_cost() const noexcept {
 }
 
 template <typename T>
-astar<T>::node* astar<T>::algorithm::goal_node() noexcept { return goal; }
+astar<T>::node* astar<T>::algorithm::goal_node() noexcept {
+  return goal;
 }
+} // namespace devils_engine
 
 #endif

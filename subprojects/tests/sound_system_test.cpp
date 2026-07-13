@@ -1,10 +1,10 @@
-#include <doctest/doctest.h>
-
 #include <cmath>
 #include <cstddef>
 #include <span>
 #include <string>
 #include <vector>
+
+#include <doctest/doctest.h>
 
 #include "devils_engine/sound/common.h"
 #include "devils_engine/sound/resource.h"

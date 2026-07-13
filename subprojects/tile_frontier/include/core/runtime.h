@@ -1,6 +1,8 @@
 #ifndef TILE_FRONTIER_CORE_RUNTIME_H
 #define TILE_FRONTIER_CORE_RUNTIME_H
 
+// Собирает project-specific bootstrap state поверх общего simul runtime.
+
 #include <cstddef>
 #include <memory>
 
@@ -58,7 +60,7 @@ struct runtime_traits {
 
 using runtime = devils_engine::simul::app_runtime<runtime_traits>;
 
-}
-}
+} // namespace core
+} // namespace tile_frontier
 
 #endif

@@ -7,8 +7,14 @@
 #include <devils_engine/demiurg/resource_base.h>
 #include <devils_script/container.h>
 
-namespace devils_script { struct system; }
-namespace devils_engine { namespace demiurg { class resource_system; } }
+namespace devils_script {
+struct system;
+}
+namespace devils_engine {
+namespace demiurg {
+class resource_system;
+}
+} // namespace devils_engine
 
 // Дисковый конфиг GOAP-арбитра (acumen), парсится РУЧНЫМ проездом tavl-парсера (не deserialize —
 // это не строгий агрегат). Формат:
@@ -30,15 +36,15 @@ namespace tile_frontier {
 namespace core {
 
 struct goap_metric {
-  std::string key;                    // имя предиката-метрики (регистрируется в act::registry, = бит)
-  devils_script::container program;   // скомпилированный ds-скрипт, вычисляющий метрику
+  std::string key;                  // имя предиката-метрики (регистрируется в act::registry, = бит)
+  devils_script::container program; // скомпилированный ds-скрипт, вычисляющий метрику
 };
 
 struct goap_action_config {
-  std::string name;                       // имя эффект-функции в act::registry
-  std::vector<std::string> requirements;  // ключи метрик (префикс !/not = инвертированный бит)
-  std::vector<std::string> next_state;    // биты, которые ставит действие
-  std::vector<std::string> weight_state;  // биты веса (опц.)
+  std::string name;                      // имя эффект-функции в act::registry
+  std::vector<std::string> requirements; // ключи метрик (префикс !/not = инвертированный бит)
+  std::vector<std::string> next_state;   // биты, которые ставит действие
+  std::vector<std::string> weight_state; // биты веса (опц.)
 };
 
 struct goap_goal_config {
@@ -66,7 +72,9 @@ goap_config resolve_goap_config(devils_engine::demiurg::resource_system& resourc
 class goap_resource : public devils_engine::demiurg::resource_interface {
 public:
   explicit goap_resource(devils_script::system* sys);
-  const goap_config& config() const noexcept { return config_; }
+  const goap_config& config() const noexcept {
+    return config_;
+  }
 
   void load_cold(const devils_engine::utils::safe_handle_t& handle) override;
   void load_warm(const devils_engine::utils::safe_handle_t& handle) override;
@@ -78,7 +86,7 @@ private:
   goap_config config_;
 };
 
-}
-}
+} // namespace core
+} // namespace tile_frontier
 
 #endif

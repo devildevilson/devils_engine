@@ -43,11 +43,7 @@ private:
 
 // alpha из прошедшего времени и длительности интервала снапшота (оба в ОДНИХ единицах —
 // utils::global_time_resolution). Клэмп [0,1]: экстраполяции нет, underflow замирает на cur.
-inline float interpolation_alpha(const size_t elapsed, const size_t frame_time) noexcept {
-  if (frame_time == 0) return 1.0f;
-  const float alpha = float(elapsed) / float(frame_time);
-  return alpha < 0.0f ? 0.0f : (alpha > 1.0f ? 1.0f : alpha);
-}
+float interpolation_alpha(size_t elapsed, size_t frame_time) noexcept;
 
 // ── (1) timing: «два снапшота + часы -> alpha». nominal_clock копит РЕАЛЬНОЕ прошедшее
 // время (корми advance() wall-clock дельтой рендер-кадра, НЕ номинальным шагом) — так джиттер
@@ -57,9 +53,16 @@ inline float interpolation_alpha(const size_t elapsed, const size_t frame_time) 
 struct nominal_clock {
   size_t elapsed = 0;
   size_t frame_time = 0;
-  void on_snapshot(const size_t snap_frame_time) noexcept { elapsed = 0; frame_time = snap_frame_time; }
-  void advance(const size_t real_elapsed) noexcept { elapsed += real_elapsed; }
-  float alpha() const noexcept { return interpolation_alpha(elapsed, frame_time); }
+  void on_snapshot(const size_t snap_frame_time) noexcept {
+    elapsed = 0;
+    frame_time = snap_frame_time;
+  }
+  void advance(const size_t real_elapsed) noexcept {
+    elapsed += real_elapsed;
+  }
+  float alpha() const noexcept {
+    return interpolation_alpha(elapsed, frame_time);
+  }
 };
 
 // ── (3) blend: как смешать ОДИН инстанс. Первичный шаблон намеренно БЕЗ определения — забыл
@@ -76,6 +79,7 @@ struct blend_traits;
 template <typename Instance, typename Key = uint32_t, typename Clock = nominal_clock>
 class snapshot_interpolator {
   static_assert(std::is_trivially_copyable_v<Instance>, "Instance must be trivially copyable (decode/encode == memcpy)");
+
 public:
   // Принять новый снапшот: cur -> prev, декодировать байты в cur, переиндексировать prev.
   // snap_frame_time — длительность до СЛЕДУЮЩЕГО снапшота (единицы global_time_resolution).
@@ -89,20 +93,32 @@ public:
   }
 
   // Продвинуть часы на РЕАЛЬНО прошедшее время рендер-кадра (единицы global_time_resolution).
-  void advance(const size_t real_elapsed) noexcept { clock_.advance(real_elapsed); }
+  void advance(const size_t real_elapsed) noexcept {
+    clock_.advance(real_elapsed);
+  }
 
-  bool has_data() const noexcept { return have_cur_; }
-  uint32_t count() const noexcept { return uint32_t(cur_.instances.size()); }
-  float alpha() const noexcept { return clock_.alpha(); }
+  bool has_data() const noexcept {
+    return have_cur_;
+  }
+  uint32_t count() const noexcept {
+    return uint32_t(cur_.instances.size());
+  }
+  float alpha() const noexcept {
+    return clock_.alpha();
+  }
 
   // Записать интерполированные инстансы текущего снапшота в out (байты, плотный Instance).
   // Нет prev -> сырой cur (fallback). Возврат — число инстансов.
   uint32_t resolve(std::vector<uint8_t>& out) const {
     const uint32_t n = uint32_t(cur_.instances.size());
     out.resize(size_t(n) * sizeof(Instance));
-    if (n == 0) return 0;
+    if (n == 0) {
+      return 0;
+    }
     std::memcpy(out.data(), cur_.instances.data(), size_t(n) * sizeof(Instance));
-    if (!have_prev_) return n; // первый снапшот: интерполировать не с чем
+    if (!have_prev_) {
+      return n; // первый снапшот: интерполировать не с чем
+    }
 
     const float t = clock_.alpha();
     auto* const dst = reinterpret_cast<Instance*>(out.data());
@@ -125,7 +141,9 @@ private:
     const size_t by_bytes = bytes.size() / sizeof(Instance);
     const size_t n = std::min(ids.size(), by_bytes);
     out.instances.resize(n);
-    if (n != 0) std::memcpy(out.instances.data(), bytes.data(), n * sizeof(Instance));
+    if (n != 0) {
+      std::memcpy(out.instances.data(), bytes.data(), n * sizeof(Instance));
+    }
     out.ids.assign(ids.begin(), ids.begin() + n);
   }
 

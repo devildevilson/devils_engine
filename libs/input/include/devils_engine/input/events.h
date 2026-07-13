@@ -1,16 +1,16 @@
 #ifndef DEVILS_ENGINE_INPUT_EVENTS_H
 #define DEVILS_ENGINE_INPUT_EVENTS_H
 
-#include <cstdint>
-#include <cstddef>
-#include <string>
-#include <string_view>
 #include <array>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <span>
+#include <string>
+#include <string_view>
 //#include <utils/flat_hash_map.hpp>
-#include "gtl/phmap.hpp"
 #include "devils_engine/utils/string_id.h"
+#include "gtl/phmap.hpp"
 
 namespace devils_engine {
 namespace input {
@@ -23,8 +23,7 @@ namespace input {
 // заданы по умолчанию мной + пришедшие из модов
 
 #define DEVILS_ENGINE_INPUT_DEFAULT_EVENTS_LIST \
-  X(action_key) \
-
+  X(action_key)
 
 namespace default_events {
 enum values {
@@ -32,7 +31,7 @@ enum values {
   DEVILS_ENGINE_INPUT_DEFAULT_EVENTS_LIST
 #undef X
 
-  count
+    count
 };
 
 constexpr std::string_view names[] = {
@@ -41,8 +40,8 @@ constexpr std::string_view names[] = {
 #undef X
 };
 
-inline std::string_view to_string(const values v) { return static_cast<size_t>(v) < values::count ? names[static_cast<size_t>(v)] : std::string_view(); }
-}
+std::string_view to_string(values v);
+} // namespace default_events
 
 namespace key_state {
 enum values {
@@ -52,16 +51,16 @@ enum values {
 };
 
 std::string_view to_string(const values v);
-}
+} // namespace key_state
 
 // приоритет от большего к меньшему
 namespace event_state {
 enum values {
-  release      = 0,
-  press        = 0b000001,
-  long_press   = 0b000010,
-  click        = 0b000100,
-  long_click   = 0b001000,
+  release = 0,
+  press = 0b000001,
+  long_press = 0b000010,
+  click = 0b000100,
+  long_click = 0b001000,
   double_press = 0b010000,
   double_click = 0b100000,
 };
@@ -70,7 +69,7 @@ std::string_view to_string(const values v);
 
 constexpr uint32_t press_mask = static_cast<uint32_t>(press) | static_cast<uint32_t>(long_press) | static_cast<uint32_t>(double_press);
 constexpr uint32_t click_mask = static_cast<uint32_t>(click) | static_cast<uint32_t>(long_click) | static_cast<uint32_t>(double_click);
-}
+} // namespace event_state
 
 // так тут еще как минимум есть инпут маппинг
 // то есть несколько таблиц инпутов для разных ситуаций
@@ -93,13 +92,15 @@ public:
   // положительные, поэтому кнопкам мыши отдаём заведомо непересекающийся синтетический диапазон.
   // Тогда весь механизм set_key/update_key/check_event работает над ними без спец-веток.
   static constexpr int32_t mouse_button_scancode_base = 1 << 30;
-  static constexpr int32_t mouse_button_scancode(const int32_t button) noexcept { return mouse_button_scancode_base + button; }
+  static constexpr int32_t mouse_button_scancode(const int32_t button) noexcept {
+    return mouse_button_scancode_base + button;
+  }
 
   struct event_map {
     std::string name;
     std::array<int32_t, event_key_slots_count> keys;
 
-    inline event_map() noexcept { keys.fill(-1); }
+    event_map() noexcept;
   };
 
   struct key_data {
@@ -112,9 +113,7 @@ public:
     std::array<event_id, key_event_slots_count> events;
     int32_t glfw_key;
 
-    inline key_data() : current(event_state::values::release), prev(event_state::values::release), state(key_state::values::release), press_event_time(0), click_event_time(0), key_time(0), glfw_key(-1) {
-      events.fill(invalid_event_id);
-    }
+    key_data();
   };
 
   struct auxiliary {
@@ -129,72 +128,73 @@ public:
     int32_t click_pos_x, click_pos_y;
     float fb_scale_x, fb_scale_y;
 
-    inline auxiliary() : mouse_wheel(0.0f), current_text(0), text{0}, last_frame_time(0), click_pos_x(0), click_pos_y(0), fb_scale_x(0.0f), fb_scale_y(0.0f) {}
+    auxiliary();
   };
 
   static void init();
   static void update(const size_t time);
   static void update_key(const int32_t scancode, const int32_t state);
   static void set_key(const event_id id, const int32_t scancode, const int32_t key = -1, const uint8_t slot = 0);
-  static void set_key(const std::string_view &id, const int32_t scancode, const int32_t key = -1, const uint8_t slot = 0);
+  static void set_key(const std::string_view& id, const int32_t scancode, const int32_t key = -1, const uint8_t slot = 0);
   // кнопки мыши first-class: те же события, но привязка/обновление по номеру кнопки (GLFW 0..7)
   static void update_mouse_button(const int32_t button, const int32_t state);
   static void set_mouse_button(const event_id id, const int32_t button, const uint8_t slot = 0);
-  static void set_mouse_button(const std::string_view &id, const int32_t button, const uint8_t slot = 0);
+  static void set_mouse_button(const std::string_view& id, const int32_t button, const uint8_t slot = 0);
 
   static bool is_pressed(const event_id id);
-  static bool is_pressed(const std::string_view &id);
+  static bool is_pressed(const std::string_view& id);
   static bool is_released(const event_id id);
-  static bool is_released(const std::string_view &id);
+  static bool is_released(const std::string_view& id);
 
   static std::string_view key_name(const int32_t key, const int32_t scancode);
   static std::string_view key_name(const event_id id, const uint8_t slot);
-  static std::string_view key_name(const std::string_view &id, const uint8_t slot);
+  static std::string_view key_name(const std::string_view& id, const uint8_t slot);
   static std::string_view key_name_canonical(const int32_t scancode);
   static std::string_view key_name_canonical(const event_id id, const uint8_t slot);
-  static std::string_view key_name_canonical(const std::string_view &id, const uint8_t slot);
+  static std::string_view key_name_canonical(const std::string_view& id, const uint8_t slot);
   static std::string_view key_name_us_layout(const int32_t scancode);
   static std::string_view key_name_us_layout(const event_id id, const uint8_t slot);
-  static std::string_view key_name_us_layout(const std::string_view &id, const uint8_t slot);
+  static std::string_view key_name_us_layout(const std::string_view& id, const uint8_t slot);
   static std::string key_name_local(const int32_t scancode);
   static std::string key_name_local(const event_id id, const uint8_t slot);
-  static std::string key_name_local(const std::string_view &id, const uint8_t slot);
+  static std::string key_name_local(const std::string_view& id, const uint8_t slot);
   static std::string key_name_native(const int32_t key, const int32_t scancode);
   static std::string key_name_native(const event_id id, const uint8_t slot);
-  static std::string key_name_native(const std::string_view &id, const uint8_t slot);
+  static std::string key_name_native(const std::string_view& id, const uint8_t slot);
   static std::span<const event_id> mapping(const int32_t scancode);
   // current_key_state ? наверное нет
   static event_state::values current_event_state(const int32_t scancode);
   // тут все в кучу собираем? есть небольшая вероятность что будет нажато
   // несколько кнопок принадлежащих одному ивенту
   static uint32_t current_event_state(const event_id id);
-  static uint32_t current_event_state(const std::string_view &id);
+  static uint32_t current_event_state(const std::string_view& id);
   static event_state::values max_event_state(const event_id id);
-  static event_state::values max_event_state(const std::string_view &id);
+  static event_state::values max_event_state(const std::string_view& id);
   static bool check_key(const int32_t scancode, const uint32_t states);
   static bool timed_check_key(const int32_t scancode, const uint32_t states, const size_t wait, const size_t period);
   static bool check_event(const event_id event, const uint32_t states);
-  static bool check_event(const std::string_view &event, const uint32_t states);
+  static bool check_event(const std::string_view& event, const uint32_t states);
   static bool timed_check_event(const event_id event, const uint32_t states, const size_t wait, const size_t period);
-  static bool timed_check_event(const std::string_view &event, const uint32_t states, const size_t wait, const size_t period);
+  static bool timed_check_event(const std::string_view& event, const uint32_t states, const size_t wait, const size_t period);
 
   static void set_long_press_duration(const size_t dur);
   static void set_double_press_duration(const size_t dur);
   static void set_engine_tick_time(const size_t time);
 
-  static event_id make_event_id(const std::string_view &id) noexcept;
+  static event_id make_event_id(const std::string_view& id) noexcept;
 
-  static struct auxiliary &auxiliary_data();
- private:
+  static struct auxiliary& auxiliary_data();
+
+private:
   static size_t time;
   static size_t long_press_duration;
   static size_t double_press_duration;
   static size_t engine_tick_time;
   static struct auxiliary auxiliary;
   static gtl::flat_hash_map<event_id, event_map> event_mapping;
-  static gtl::flat_hash_map<int32_t, key_data> key_mapping;  // scancodes
+  static gtl::flat_hash_map<int32_t, key_data> key_mapping; // scancodes
 };
-}
-}
+} // namespace input
+} // namespace devils_engine
 
 #endif

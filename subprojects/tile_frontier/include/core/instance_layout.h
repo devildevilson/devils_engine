@@ -12,6 +12,6 @@ namespace core {
 namespace instance_layout = devils_engine::simul::instance_layout;
 
 }
-}
+} // namespace tile_frontier
 
 #endif

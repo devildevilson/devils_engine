@@ -1,12 +1,13 @@
 #include "devils_engine/act/registry.h"
-
 #include "devils_engine/utils/core.h"
 
 namespace devils_engine {
 namespace act {
 
 fn_id registry::reg(const std::string_view& name, std::unique_ptr<function_base> f) {
-  if (f == nullptr) utils::error{}("act::registry::reg: попытка зарегистрировать nullptr (имя '{}')", name);
+  if (f == nullptr) {
+    utils::error{}("act::registry::reg: попытка зарегистрировать nullptr (имя '{}')", name);
+  }
   const fn_id id = utils::string_hash(name);
   const auto [itr, inserted] = functions.emplace(id, std::move(f));
   if (!inserted) {
@@ -29,5 +30,29 @@ const function_base* registry::get(const fn_id id) const noexcept {
   return itr != functions.end() ? itr->second.get() : nullptr;
 }
 
+bool registry::has(const fn_id id) const noexcept {
+  return get(id) != nullptr;
 }
+
+const predicate_function* registry::predicate(const fn_id id) const noexcept {
+  return get_typed<bool>(id);
 }
+
+const number_function* registry::number(const fn_id id) const noexcept {
+  return get_typed<real_t>(id);
+}
+
+const effect_function* registry::effect(const fn_id id) const noexcept {
+  return get_typed<void>(id);
+}
+
+const string_function* registry::string_fn(const fn_id id) const noexcept {
+  return get_typed<utils::id>(id);
+}
+
+const object_function* registry::object(const fn_id id) const noexcept {
+  return get_typed<entity_id>(id);
+}
+
+} // namespace act
+} // namespace devils_engine

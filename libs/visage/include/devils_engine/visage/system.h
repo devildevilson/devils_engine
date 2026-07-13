@@ -1,16 +1,17 @@
 #ifndef DEVILS_ENGINE_VISAGE_SYSTEM_H
 #define DEVILS_ENGINE_VISAGE_SYSTEM_H
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <chrono>
+#include <memory>
 #include <span>
-#include <vector>
-#include <utility>
-#include <tuple>
 #include <string>
 #include <string_view>
-#include <memory>
+#include <tuple>
+#include <utility>
+#include <vector>
+
 #include "devils_engine/bindings/lua_header.h"
 #include "devils_engine/utils/stack_allocator.h"
 #include "render_output.h"
@@ -79,16 +80,17 @@ public:
   // Доступ к lua-стейту/песочнице UI для ХОСТА: visage не знает про геймплейные системы
   // (звук/мир и т.п.), но хост может зарегистрировать свои usertype'ы в стейте и функции
   // в env (напр. "сыграй звук" → message в звуковой тред). Так visage остаётся чисто UI.
-  sol::state& script_state() noexcept { return lua; }
-  sol::environment& script_env() noexcept { return env; }
+  sol::state& script_state() noexcept;
+  sol::environment& script_env() noexcept;
 
   // Результат последнего convert(): сырые байты вершин, 16-бит индексы и список draw-команд.
-  std::span<const uint8_t> vertices() const noexcept { return vertices_; }
-  std::span<const uint8_t> indices() const noexcept { return indices_; }
-  std::span<const gui_draw_command_t> commands() const noexcept { return commands_; }
+  std::span<const uint8_t> vertices() const noexcept;
+  std::span<const uint8_t> indices() const noexcept;
+  std::span<const gui_draw_command_t> commands() const noexcept;
 
   nk_context* ctx_native() const noexcept;
   nk_buffer* cmds_native() const noexcept;
+
 private:
   // nk_user_font под (базовый шрифт, размер в пикселях) для nk_style_push_font. Кэшируется по
   // паре (base, height): MSDF масштабируется в шейдере, поэтому варианты одного шрифта делят
@@ -122,7 +124,7 @@ private:
   // держит указатели на варианты в стеке стиля и draw-командах, поэтому хранилище стабильно.
   std::vector<std::tuple<const font_t*, float, std::unique_ptr<nk_user_font>>> sized_fonts_;
 };
-}
-}
+} // namespace visage
+} // namespace devils_engine
 
 #endif

@@ -15,7 +15,7 @@ struct execution_scratch {
   call_context call;
 };
 
-}
-}
+} // namespace act
+} // namespace devils_engine
 
 #endif

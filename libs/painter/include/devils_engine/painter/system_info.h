@@ -5,8 +5,9 @@
 #include <cstdint>
 #include <string>
 #include <vector>
-#include "vulkan_minimal.h"
+
 #include "device_features.h"
+#include "vulkan_minimal.h"
 
 /*
 на счет разных фич устройства: к сожалению простого способа понять что мне нужно а что нет
@@ -16,8 +17,6 @@
 
 тут нужно предусмотреть наличие на диске кешированного устройства
 */
-
-
 
 namespace devils_engine {
 namespace painter {
@@ -47,15 +46,7 @@ struct physical_device_data {
   uint32_t transfer_queue;
   uint32_t present_queue;
 
-  inline physical_device_data() noexcept :
-    handle(VK_NULL_HANDLE),
-    desirable_present_mode(UINT32_MAX),
-    fallback_present_mode(UINT32_MAX),
-    graphics_queue(UINT32_MAX),
-    compute_queue(UINT32_MAX),
-    transfer_queue(UINT32_MAX),
-    present_queue(UINT32_MAX)
-  {}
+  physical_device_data() noexcept;
 };
 
 struct system_info {
@@ -104,7 +95,7 @@ struct system_info {
   void dump_cache_to_disk(VkPhysicalDevice dev, cached_system_data* cached_data = nullptr);
 };
 
-}
-}
+} // namespace painter
+} // namespace devils_engine
 
 #endif

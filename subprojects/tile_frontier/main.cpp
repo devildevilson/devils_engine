@@ -2,7 +2,7 @@
 #include <locale>
 
 #ifdef _WIN32
-#include <windows.h>
+#  include <windows.h>
 #endif
 
 #include "runtime.h"
@@ -16,7 +16,7 @@ int main() {
   // Поэтому ставим классическую "C" локаль (она ничего не конвертирует) и НЕ imbue'им
   // именованную локаль вроде ".UTF8" — это Windows-only имя, на Linux std::locale(".UTF8")
   // бросает std::runtime_error.
-  std::setlocale(LC_ALL, "C");              // C-локаль (printf и пр.)
+  std::setlocale(LC_ALL, "C");                 // C-локаль (printf и пр.)
   std::locale::global(std::locale::classic()); // C++-локаль (iostreams)
 
 #ifdef _WIN32

@@ -1,15 +1,13 @@
-#include <devils_engine/catalogue/logging.h>
-#include "gpu_texture_resource.h"
-
 #include <span>
 
+#include <devils_engine/catalogue/logging.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/safe_handle.h>
+#include <vulkan/vulkan_core.h>
 
 #include "assets_base.h"
 #include "gpu_load_context.h"
-
-#include <vulkan/vulkan_core.h>
+#include "gpu_texture_resource.h"
 
 namespace devils_engine {
 namespace painter {
@@ -29,7 +27,7 @@ void gpu_texture_resource::load_warm(const utils::safe_handle_t& handle) {
 
   const auto h = ctx->assets->register_texture_storage(path);
   texture_create_info tci{};
-  tci.extents = { width, height, 1 };
+  tci.extents = {width, height, 1};
   tci.format = VK_FORMAT_R8G8B8A8_UNORM;
   ctx->assets->create_texture_storage(h, tci);
   ctx->assets->populate_texture_storage(h, std::span<const uint8_t>(memory));
@@ -54,5 +52,5 @@ void gpu_texture_resource::unload_warm(const utils::safe_handle_t&) {
   memory.shrink_to_fit();
 }
 
-}
-}
+} // namespace painter
+} // namespace devils_engine

@@ -1,7 +1,7 @@
-#include "prefab_resource.h"
-
 #include <devils_engine/demiurg/module_interface.h>
 #include <devils_engine/utils/core.h> // utils::warn
+
+#include "prefab_resource.h"
 
 namespace tile_frontier {
 namespace core {
@@ -26,12 +26,17 @@ void prefab_resource::load_cold(const utils::safe_handle_t&) {
     name_ = std::string(slash == std::string_view::npos ? sid : sid.substr(slash + 1));
   }
 
-  if (text_.empty()) utils::warn("prefab resource '{}': пустой текст префаба", id);
+  if (text_.empty()) {
+    utils::warn("prefab resource '{}': пустой текст префаба", id);
+  }
 }
 
 void prefab_resource::load_warm(const utils::safe_handle_t&) {}
 void prefab_resource::unload_hot(const utils::safe_handle_t&) {}
-void prefab_resource::unload_warm(const utils::safe_handle_t&) { text_.clear(); name_.clear(); }
+void prefab_resource::unload_warm(const utils::safe_handle_t&) {
+  text_.clear();
+  name_.clear();
+}
 
-}
-}
+} // namespace core
+} // namespace tile_frontier

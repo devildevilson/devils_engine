@@ -1,47 +1,47 @@
 #include "assets_base.h"
-
-#include "devils_engine/utils/core.h"
-#include "vulkan_header.h"
 #include "auxiliary.h"
+#include "devils_engine/utils/core.h"
 #include "graphics_base.h"
+#include "vulkan_header.h"
 
 namespace devils_engine {
-namespace painter  {
-buffer_slot::buffer_slot() noexcept :
-  state(asset_state::empty),
-  forbid_after_frame(0),
-  geometry(INVALID_RESOURCE_SLOT),
-  vertex_count(0),
-  first_vertex(0),
-  vertex_offset(0),
-  index_count(0),
-  first_index(0),
-  vertex_alc(VK_NULL_HANDLE),
-  vertex_storage(VK_NULL_HANDLE),
-  index_alc(VK_NULL_HANDLE),
-  index_storage(VK_NULL_HANDLE),
-  vertex_size(0),
-  index_size(0)
-{}
+namespace painter {
 
-buffer_slot::buffer_slot(const buffer_slot& copy) noexcept :
-  name(copy.name),
-  geometry_name(copy.geometry_name),
-  state(copy.state),
-  forbid_after_frame(copy.forbid_after_frame),
-  geometry(copy.geometry),
-  vertex_count(copy.vertex_count),
-  first_vertex(copy.first_vertex),
-  vertex_offset(copy.vertex_offset),
-  index_count(copy.index_count),
-  first_index(copy.first_index),
-  vertex_alc(copy.vertex_alc),
-  vertex_storage(copy.vertex_storage),
-  index_alc(copy.index_alc),
-  index_storage(copy.index_storage),
-  vertex_size(copy.vertex_size),
-  index_size(copy.index_size)
-{}
+VkImageView assets_base::default_texture_view() const noexcept {
+  return default_texture.view;
+}
+
+buffer_slot::buffer_slot() noexcept : state(asset_state::empty),
+                                      forbid_after_frame(0),
+                                      geometry(invalid_resource_slot),
+                                      vertex_count(0),
+                                      first_vertex(0),
+                                      vertex_offset(0),
+                                      index_count(0),
+                                      first_index(0),
+                                      vertex_alc(VK_NULL_HANDLE),
+                                      vertex_storage(VK_NULL_HANDLE),
+                                      index_alc(VK_NULL_HANDLE),
+                                      index_storage(VK_NULL_HANDLE),
+                                      vertex_size(0),
+                                      index_size(0) {}
+
+buffer_slot::buffer_slot(const buffer_slot& copy) noexcept : name(copy.name),
+                                                             geometry_name(copy.geometry_name),
+                                                             state(copy.state),
+                                                             forbid_after_frame(copy.forbid_after_frame),
+                                                             geometry(copy.geometry),
+                                                             vertex_count(copy.vertex_count),
+                                                             first_vertex(copy.first_vertex),
+                                                             vertex_offset(copy.vertex_offset),
+                                                             index_count(copy.index_count),
+                                                             first_index(copy.first_index),
+                                                             vertex_alc(copy.vertex_alc),
+                                                             vertex_storage(copy.vertex_storage),
+                                                             index_alc(copy.index_alc),
+                                                             index_storage(copy.index_storage),
+                                                             vertex_size(copy.vertex_size),
+                                                             index_size(copy.index_size) {}
 
 buffer_slot& buffer_slot::operator=(const buffer_slot& copy) noexcept {
   name = copy.name;
@@ -63,24 +63,22 @@ buffer_slot& buffer_slot::operator=(const buffer_slot& copy) noexcept {
   return *this;
 }
 
-buffer_slot::buffer_slot(buffer_slot&& move) noexcept :
-  name(std::move(move.name)),
-  geometry_name(std::move(move.geometry_name)),
-  state(move.state),
-  forbid_after_frame(move.forbid_after_frame),
-  geometry(move.geometry),
-  vertex_count(move.vertex_count),
-  first_vertex(move.first_vertex),
-  vertex_offset(move.vertex_offset),
-  index_count(move.index_count),
-  first_index(move.first_index),
-  vertex_alc(move.vertex_alc),
-  vertex_storage(move.vertex_storage),
-  index_alc(move.index_alc),
-  index_storage(move.index_storage),
-  vertex_size(move.vertex_size),
-  index_size(move.index_size)
-{}
+buffer_slot::buffer_slot(buffer_slot&& move) noexcept : name(std::move(move.name)),
+                                                        geometry_name(std::move(move.geometry_name)),
+                                                        state(move.state),
+                                                        forbid_after_frame(move.forbid_after_frame),
+                                                        geometry(move.geometry),
+                                                        vertex_count(move.vertex_count),
+                                                        first_vertex(move.first_vertex),
+                                                        vertex_offset(move.vertex_offset),
+                                                        index_count(move.index_count),
+                                                        first_index(move.first_index),
+                                                        vertex_alc(move.vertex_alc),
+                                                        vertex_storage(move.vertex_storage),
+                                                        index_alc(move.index_alc),
+                                                        index_storage(move.index_storage),
+                                                        vertex_size(move.vertex_size),
+                                                        index_size(move.index_size) {}
 
 buffer_slot& buffer_slot::operator=(buffer_slot&& move) noexcept {
   name = std::move(move.name);
@@ -102,26 +100,22 @@ buffer_slot& buffer_slot::operator=(buffer_slot&& move) noexcept {
   return *this;
 }
 
-texture_slot::texture_slot() noexcept :
-  state(asset_state::empty),
-  forbid_after_frame(0),
-  format(0),
-  extents{0,0,0},
-  alc(VK_NULL_HANDLE),
-  storage(VK_NULL_HANDLE),
-  view(VK_NULL_HANDLE)
-{}
+texture_slot::texture_slot() noexcept : state(asset_state::empty),
+                                        forbid_after_frame(0),
+                                        format(0),
+                                        extents{0, 0, 0},
+                                        alc(VK_NULL_HANDLE),
+                                        storage(VK_NULL_HANDLE),
+                                        view(VK_NULL_HANDLE) {}
 
-texture_slot::texture_slot(const texture_slot& copy) noexcept :
-  name(copy.name),
-  state(copy.state),
-  forbid_after_frame(copy.forbid_after_frame),
-  format(copy.format),
-  extents(copy.extents),
-  alc(copy.alc),
-  storage(copy.storage),
-  view(copy.view)
-{}
+texture_slot::texture_slot(const texture_slot& copy) noexcept : name(copy.name),
+                                                                state(copy.state),
+                                                                forbid_after_frame(copy.forbid_after_frame),
+                                                                format(copy.format),
+                                                                extents(copy.extents),
+                                                                alc(copy.alc),
+                                                                storage(copy.storage),
+                                                                view(copy.view) {}
 
 texture_slot& texture_slot::operator=(const texture_slot& copy) noexcept {
   name = copy.name;
@@ -135,16 +129,14 @@ texture_slot& texture_slot::operator=(const texture_slot& copy) noexcept {
   return *this;
 }
 
-texture_slot::texture_slot(texture_slot&& move) noexcept :
-  name(std::move(move.name)),
-  state(move.state),
-  forbid_after_frame(move.forbid_after_frame),
-  format(move.format),
-  extents(move.extents),
-  alc(move.alc),
-  storage(move.storage),
-  view(move.view)
-{}
+texture_slot::texture_slot(texture_slot&& move) noexcept : name(std::move(move.name)),
+                                                           state(move.state),
+                                                           forbid_after_frame(move.forbid_after_frame),
+                                                           format(move.format),
+                                                           extents(move.extents),
+                                                           alc(move.alc),
+                                                           storage(move.storage),
+                                                           view(move.view) {}
 
 texture_slot& texture_slot::operator=(texture_slot&& move) noexcept {
   name = std::move(move.name);
@@ -158,24 +150,28 @@ texture_slot& texture_slot::operator=(texture_slot&& move) noexcept {
   return *this;
 }
 
-assets_base::assets_base(VkDevice device, VkPhysicalDevice physical_device) noexcept :
-  device(device),
-  physical_device(physical_device),
-  transfer(VK_NULL_HANDLE),
-  command_pool(VK_NULL_HANDLE),
-  command_buffer(VK_NULL_HANDLE),
-  allocator(VK_NULL_HANDLE),
-  base(nullptr)
-{
-  buffer_slots.resize(MAX_BUFFER_SLOTS);
-  texture_slots.resize(MAX_TEXTURE_SLOTS);
+assets_base::assets_base(VkDevice device, VkPhysicalDevice physical_device) noexcept : device(device),
+                                                                                       physical_device(physical_device),
+                                                                                       transfer(VK_NULL_HANDLE),
+                                                                                       command_pool(VK_NULL_HANDLE),
+                                                                                       command_buffer(VK_NULL_HANDLE),
+                                                                                       allocator(VK_NULL_HANDLE),
+                                                                                       base(nullptr) {
+  buffer_slots.resize(max_buffer_slots);
+  texture_slots.resize(max_texture_slots);
 }
 
 assets_base::~assets_base() noexcept {
-  if (device == VK_NULL_HANDLE) return;
-  if (allocator == VK_NULL_HANDLE) return;
+  if (device == VK_NULL_HANDLE) {
+    return;
+  }
+  if (allocator == VK_NULL_HANDLE) {
+    return;
+  }
 
-  if (base != nullptr) base->wait_all_fences();
+  if (base != nullptr) {
+    base->wait_all_fences();
+  }
 
   vk::Device dev(device);
   vma::Allocator a(allocator);
@@ -237,7 +233,9 @@ buffer_asset_handle assets_base::register_buffer_storage(std::string name) {
   uint32_t i = 0;
   for (; i < buffer_slots.size(); ++i) {
     auto& slot = buffer_slots[i];
-    if (slot.state != asset_state::empty) continue;
+    if (slot.state != asset_state::empty) {
+      continue;
+    }
     slot.state = asset_state::reserved;
 
     slot.name = std::move(name);
@@ -253,7 +251,9 @@ texture_asset_handle assets_base::register_texture_storage(std::string name) {
   uint32_t i = 0;
   for (; i < texture_slots.size(); ++i) {
     auto& slot = texture_slots[i];
-    if (slot.state != asset_state::empty) continue;
+    if (slot.state != asset_state::empty) {
+      continue;
+    }
     slot.state = asset_state::reserved;
 
     slot.name = std::move(name);
@@ -266,10 +266,14 @@ texture_asset_handle assets_base::register_texture_storage(std::string name) {
 }
 
 void assets_base::clear_buffer_storage(const buffer_asset_handle& h) {
-  if (h >= buffer_slots.size()) utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
+  if (h >= buffer_slots.size()) {
+    utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
+  }
 
   const auto s = buffer_slots[h].state;
-  if (s != asset_state::pending_remove) return;
+  if (s != asset_state::pending_remove) {
+    return;
+  }
 
   // проверим текущий кадр
 
@@ -284,7 +288,7 @@ void assets_base::clear_buffer_storage(const buffer_asset_handle& h) {
   buf.vertex_storage = VK_NULL_HANDLE;
   buf.vertex_alc = VK_NULL_HANDLE;
 
-  buf.geometry = INVALID_RESOURCE_SLOT;
+  buf.geometry = invalid_resource_slot;
 
   buf.vertex_size = 0;
   buf.index_size = 0;
@@ -296,10 +300,14 @@ void assets_base::clear_buffer_storage(const buffer_asset_handle& h) {
 }
 
 void assets_base::clear_texture_storage(const texture_asset_handle& h) {
-  if (h >= texture_slots.size()) utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
+  if (h >= texture_slots.size()) {
+    utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
+  }
 
   const auto s = texture_slots[h].state;
-  if (s != asset_state::pending_remove) return;
+  if (s != asset_state::pending_remove) {
+    return;
+  }
 
   // проверим текущий кадр
 
@@ -326,7 +334,9 @@ buffer_asset_handle assets_base::find_buffer_storage(const std::string_view& nam
 
   for (uint32_t i = 0; i < buffer_slots.size(); ++i) {
     const auto s = buffer_slots[i].state;
-    if (s == asset_state::ready && buffer_slots[i].name == name) return i;
+    if (s == asset_state::ready && buffer_slots[i].name == name) {
+      return i;
+    }
   }
 
   return UINT32_MAX;
@@ -335,22 +345,30 @@ buffer_asset_handle assets_base::find_buffer_storage(const std::string_view& nam
 texture_asset_handle assets_base::find_texture_storage(const std::string_view& name) const {
   for (uint32_t i = 0; i < texture_slots.size(); ++i) {
     const auto s = texture_slots[i].state;
-    if (s == asset_state::ready && texture_slots[i].name == name) return i;
+    if (s == asset_state::ready && texture_slots[i].name == name) {
+      return i;
+    }
   }
 
   return UINT32_MAX;
 }
 
 void assets_base::create_buffer_storage(const buffer_asset_handle& h, const buffer_create_info& info) {
-  if (h >= buffer_slots.size()) utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
+  if (h >= buffer_slots.size()) {
+    utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
+  }
 
   // тут мы просто проверим если состояние reserved то создадим ГПУ ресурсы
   const auto s = buffer_slots[h].state;
-  if (s != asset_state::reserved) return;
+  if (s != asset_state::reserved) {
+    return;
+  }
 
   // тут нужно найти геометрию
   const uint32_t index = base->find_geometry(info.geometry_name);
-  if (index == INVALID_RESOURCE_SLOT) utils::error{}("Could not find geometry '{}' for buffer '{}'", info.geometry_name, buffer_slots[h].name);
+  if (index == invalid_resource_slot) {
+    utils::error{}("Could not find geometry '{}' for buffer '{}'", info.geometry_name, buffer_slots[h].name);
+  }
 
   const auto& geo = DS_ASSERT_ARRAY_GET(base->geometries, index);
 
@@ -375,7 +393,9 @@ void assets_base::create_buffer_storage(const buffer_asset_handle& h, const buff
   const auto& [i_buf, i_alc] = index_size != 0 ? a.createBuffer(bci, aci, &i_ai) : std::make_pair(vk::Buffer{}, vma::Allocation{});
 
   set_name(dev, v_buf, buffer_slots[h].name + "_vertex");
-  if (index_size != 0) set_name(dev, i_buf, buffer_slots[h].name + "_index");
+  if (index_size != 0) {
+    set_name(dev, i_buf, buffer_slots[h].name + "_index");
+  }
 
   //buffer_slots[h].name = info.name;
   buffer_slots[h].geometry_name = info.geometry_name;
@@ -390,11 +410,15 @@ void assets_base::create_buffer_storage(const buffer_asset_handle& h, const buff
 }
 
 void assets_base::create_texture_storage(const texture_asset_handle& h, const texture_create_info& info) {
-  if (h >= texture_slots.size()) utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
+  if (h >= texture_slots.size()) {
+    utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
+  }
 
   // тут мы просто проверим если состояние reserved то создадим ГПУ ресурсы
   const auto s = texture_slots[h].state;
-  if (s != asset_state::reserved) return;
+  if (s != asset_state::reserved) {
+    return;
+  }
 
   vk::Device dev(device);
   vma::Allocator a(allocator);
@@ -402,7 +426,7 @@ void assets_base::create_texture_storage(const texture_asset_handle& h, const te
   vk::ImageCreateInfo ici{};
   ici.format = static_cast<vk::Format>(info.format);
   ici.imageType = vk::ImageType::e2D; // пока работаем только с 2д картинками
-  ici.extent = vk::Extent3D{ info.extents.x, info.extents.y, 1 };
+  ici.extent = vk::Extent3D{info.extents.x, info.extents.y, 1};
   ici.mipLevels = 1;
   ici.arrayLayers = 1;
   ici.samples = vk::SampleCountFlagBits::e1;
@@ -418,7 +442,7 @@ void assets_base::create_texture_storage(const texture_asset_handle& h, const te
   ivci.image = image;
   ivci.viewType = vk::ImageViewType::e2D;
   ivci.format = ici.format;
-  ivci.subresourceRange = vk::ImageSubresourceRange{ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+  ivci.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 
   auto view = dev.createImageView(ivci);
 
@@ -430,12 +454,16 @@ void assets_base::create_texture_storage(const texture_asset_handle& h, const te
   texture_slots[h].storage = image;
   texture_slots[h].view = view;
   texture_slots[h].format = info.format;
-  texture_slots[h].extents = { info.extents.x, info.extents.y, 1 };
+  texture_slots[h].extents = {info.extents.x, info.extents.y, 1};
 }
 
 void assets_base::create_default_texture() {
-  if (device == VK_NULL_HANDLE || allocator == VK_NULL_HANDLE) return;
-  if (default_texture.view != VK_NULL_HANDLE) return; // идемпотентно
+  if (device == VK_NULL_HANDLE || allocator == VK_NULL_HANDLE) {
+    return;
+  }
+  if (default_texture.view != VK_NULL_HANDLE) {
+    return; // идемпотентно
+  }
 
   vk::Device dev(device);
   vma::Allocator a(allocator);
@@ -445,7 +473,7 @@ void assets_base::create_default_texture() {
   vk::ImageCreateInfo ici{};
   ici.format = static_cast<vk::Format>(format);
   ici.imageType = vk::ImageType::e2D;
-  ici.extent = vk::Extent3D{ 1, 1, 1 };
+  ici.extent = vk::Extent3D{1, 1, 1};
   ici.mipLevels = 1;
   ici.arrayLayers = 1;
   ici.samples = vk::SampleCountFlagBits::e1;
@@ -461,7 +489,7 @@ void assets_base::create_default_texture() {
   ivci.image = image;
   ivci.viewType = vk::ImageViewType::e2D;
   ivci.format = ici.format;
-  ivci.subresourceRange = vk::ImageSubresourceRange{ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
+  ivci.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
   auto view = dev.createImageView(ivci);
 
   set_name(dev, image, "default_texture_storage");
@@ -472,11 +500,11 @@ void assets_base::create_default_texture() {
   default_texture.storage = image;
   default_texture.view = view;
   default_texture.format = format;
-  default_texture.extents = { 1, 1, 1 };
+  default_texture.extents = {1, 1, 1};
 
   // залить один magenta-пиксель (видимый признак «текстура не загрузилась») + перевести в
   // ShaderReadOnlyOptimal. Путь копирования/барьеров — как в populate_texture_storage.
-  const uint8_t pixel[4] = { 255, 0, 255, 255 };
+  const uint8_t pixel[4] = {255, 0, 255, 255};
 
   vk::BufferCreateInfo bci{};
   bci.size = sizeof(pixel);
@@ -489,11 +517,11 @@ void assets_base::create_default_texture() {
   memcpy(bai.pMappedData, pixel, sizeof(pixel));
   a.flushAllocation(balloc, 0, sizeof(pixel));
 
-  const auto range1 = vk::ImageSubresourceRange{ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
-  const auto range2 = vk::ImageSubresourceLayers{ vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+  const auto range1 = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+  const auto range2 = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
   vk::ImageMemoryBarrier bar1(vk::AccessFlags{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, range1);
   vk::ImageMemoryBarrier bar2(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, range1);
-  vk::BufferImageCopy bic(0, 1, 1, range2, { 0,0,0 }, { 1, 1, 1 });
+  vk::BufferImageCopy bic(0, 1, 1, range2, {0, 0, 0}, {1, 1, 1});
 
   do_command(device, transfer, fence, command_buffer, [&](VkCommandBuffer cb) {
     vk::CommandBuffer task(cb);
@@ -507,11 +535,15 @@ void assets_base::create_default_texture() {
 }
 
 void assets_base::populate_buffer_storage(const buffer_asset_handle& h, const std::span<const uint8_t>& vertex_data, const std::span<const uint8_t>& index_data) {
-  if (h >= buffer_slots.size()) utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
+  if (h >= buffer_slots.size()) {
+    utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
+  }
 
   // тут мы просто проверим если состояние reserved то создадим ГПУ ресурсы
   const auto s = buffer_slots[h].state;
-  if (s != asset_state::reserved) return;
+  if (s != asset_state::reserved) {
+    return;
+  }
 
   // вот тут нужны стаджинг буферы
   // мы их тут создаем? вообще может быть и нет
@@ -540,28 +572,40 @@ void assets_base::populate_buffer_storage(const buffer_asset_handle& h, const st
   const auto& [i_buf, i_alc] = !index_data.empty() ? a.createBuffer(bci, aci, &i_ai) : std::make_pair(vk::Buffer{}, vma::Allocation{});
 
   memcpy(v_ai.pMappedData, vertex_data.data(), vertex_data.size());
-  if (!index_data.empty()) memcpy(i_ai.pMappedData, index_data.data(), index_data.size());
+  if (!index_data.empty()) {
+    memcpy(i_ai.pMappedData, index_data.data(), index_data.size());
+  }
 
   a.flushAllocation(v_alc, 0, vertex_data.size());
-  if (!index_data.empty()) a.flushAllocation(i_alc, 0, index_data.size());
+  if (!index_data.empty()) {
+    a.flushAllocation(i_alc, 0, index_data.size());
+  }
 
   const vk::BufferCopy v_c(0, 0, vertex_data.size());
   const vk::BufferCopy i_c(0, 0, index_data.size());
   do_command(device, transfer, fence, command_buffer, [&](VkCommandBuffer cb) {
     vk::CommandBuffer task(cb);
     task.copyBuffer(v_buf, slot.vertex_storage, v_c);
-    if (!index_data.empty()) task.copyBuffer(i_buf, slot.index_storage, i_c);
+    if (!index_data.empty()) {
+      task.copyBuffer(i_buf, slot.index_storage, i_c);
+    }
   });
 
   a.destroyBuffer(v_buf, v_alc);
-  if (!index_data.empty()) a.destroyBuffer(i_buf, i_alc);
+  if (!index_data.empty()) {
+    a.destroyBuffer(i_buf, i_alc);
+  }
 }
 
 void assets_base::populate_texture_storage(const texture_asset_handle& h, const std::span<const uint8_t>& data) {
-  if (h >= texture_slots.size()) utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
+  if (h >= texture_slots.size()) {
+    utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
+  }
 
   const auto s = texture_slots[h].state;
-  if (s != asset_state::reserved) return;
+  if (s != asset_state::reserved) {
+    return;
+  }
 
   const auto& slot = texture_slots[h];
 
@@ -586,19 +630,18 @@ void assets_base::populate_texture_storage(const texture_asset_handle& h, const 
 
   a.flushAllocation(allocation, 0, data.size());
 
-  const auto range1 = vk::ImageSubresourceRange{ vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 };
-  const auto range2 = vk::ImageSubresourceLayers{ vk::ImageAspectFlagBits::eColor, 0, 0, 1 };
+  const auto range1 = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+  const auto range2 = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
 
   vk::ImageMemoryBarrier bar1(vk::AccessFlags{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, slot.storage, range1);
   vk::ImageMemoryBarrier bar2(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, slot.storage, range1);
-  vk::BufferImageCopy bic(0, slot.extents.x, slot.extents.y, range2, { 0,0,0 }, { slot.extents.x, slot.extents.y, 1 });
+  vk::BufferImageCopy bic(0, slot.extents.x, slot.extents.y, range2, {0, 0, 0}, {slot.extents.x, slot.extents.y, 1});
 
   do_command(device, transfer, fence, command_buffer, [&](VkCommandBuffer cb) {
     vk::CommandBuffer task(cb);
     task.pipelineBarrier(
       vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion,
-      nullptr, nullptr, bar1
-    );
+      nullptr, nullptr, bar1);
 
     task.copyBufferToImage(buf, slot.storage, vk::ImageLayout::eTransferDstOptimal, bic);
 
@@ -607,8 +650,7 @@ void assets_base::populate_texture_storage(const texture_asset_handle& h, const 
     // понадобится queue ownership transfer.
     task.pipelineBarrier(
       vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, vk::DependencyFlagBits::eByRegion,
-      nullptr, nullptr, bar2
-    );
+      nullptr, nullptr, bar2);
   });
 
   a.destroyBuffer(buf, allocation);
@@ -617,19 +659,25 @@ void assets_base::populate_texture_storage(const texture_asset_handle& h, const 
 }
 
 void assets_base::mark_ready_buffer_slot(const buffer_asset_handle& h) {
-  if (h >= buffer_slots.size()) utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
+  if (h >= buffer_slots.size()) {
+    utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
+  }
 
   buffer_slots[h].state = asset_state::ready;
 }
 
 void assets_base::mark_ready_texture_slot(const texture_asset_handle& h) {
-  if (h >= texture_slots.size()) utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
+  if (h >= texture_slots.size()) {
+    utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
+  }
 
   texture_slots[h].state = asset_state::ready;
 }
 
 void assets_base::mark_remove_buffer_slot(const buffer_asset_handle& h) {
-  if (h >= buffer_slots.size()) utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
+  if (h >= buffer_slots.size()) {
+    utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
+  }
 
   // тут пока ничего удалять не будем а просто пометим слот к удалению
   buffer_slots[h].forbid_after_frame = base->current_frame_index() + base->frames_in_flight() + 1;
@@ -637,12 +685,14 @@ void assets_base::mark_remove_buffer_slot(const buffer_asset_handle& h) {
 }
 
 void assets_base::mark_remove_texture_slot(const texture_asset_handle& h) {
-  if (h >= texture_slots.size()) utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
+  if (h >= texture_slots.size()) {
+    utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
+  }
 
   // тут пока ничего удалять не будем а просто пометим слот к удалению
   texture_slots[h].forbid_after_frame = base->current_frame_index() + base->frames_in_flight() + 1;
   texture_slots[h].state = asset_state::pending_remove;
 }
 
-}
-}
+} // namespace painter
+} // namespace devils_engine

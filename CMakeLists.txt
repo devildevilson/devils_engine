@@ -525,7 +525,8 @@ add_subdirectory(libs/acumen/)
 add_subdirectory(libs/prefab/) # после aesthetics + act (зависит от их alias'ов)
 
 # Header-only standard systems in libs/simul expose sound/painter/visage/lua binding types in their public API.
-target_link_libraries(devils_simul PUBLIC devils_engine::sound devils_engine::painter devils_engine::visage devils_engine::bindings)
+target_link_libraries(devils_simul PUBLIC devils_engine::sound devils_engine::input devils_engine::painter devils_engine::visage devils_engine::bindings)
+target_link_libraries(devils_simul PRIVATE Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp)
 
 add_library(devils_engine INTERFACE)
 target_link_libraries(devils_engine INTERFACE devils_engine::catalogue devils_engine::acumen devils_engine::act devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::utils devils_engine::mood devils_engine::simul devils_engine::flow devils_engine::aesthetics devils_engine::visage devils_engine::options)

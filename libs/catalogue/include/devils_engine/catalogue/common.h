@@ -1,8 +1,8 @@
 #ifndef DEVILS_ENGINE_CATALOGUE_COMMON_H
 #define DEVILS_ENGINE_CATALOGUE_COMMON_H
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace devils_engine {
@@ -30,7 +30,7 @@ public:
   virtual ~consumer() noexcept = default;
   virtual void consume(const buffer&) = 0;
 };
-}
-}
+} // namespace catalogue
+} // namespace devils_engine
 
 #endif

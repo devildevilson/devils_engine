@@ -11,6 +11,7 @@ project(
 set(SRC_LIST
   src/visage/font.cpp
   src/visage/header.cpp
+  src/visage/render_output.cpp
   src/visage/system.cpp
   src/visage/font_atlas_packer.cpp
   src/visage/font_resource.cpp

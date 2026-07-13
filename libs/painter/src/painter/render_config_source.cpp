@@ -1,6 +1,5 @@
-#include "render_config_source.h"
-
 #include "devils_engine/demiurg/module_interface.h"
+#include "render_config_source.h"
 
 namespace devils_engine {
 namespace painter {
@@ -11,7 +10,9 @@ render_config_source::render_config_source() {
 }
 
 void render_config_source::ensure_text_loaded() {
-  if (!text.empty()) return;
+  if (!text.empty()) {
+    return;
+  }
 
   if (is_list_entry()) {
     if (!list_section.empty()) {
@@ -44,7 +45,9 @@ void render_config_source::load_cold(const utils::safe_handle_t&) {
 
 void render_config_source::load_warm(const utils::safe_handle_t&) {}
 void render_config_source::unload_hot(const utils::safe_handle_t&) {}
-void render_config_source::unload_warm(const utils::safe_handle_t&) { drop_text(); }
+void render_config_source::unload_warm(const utils::safe_handle_t&) {
+  drop_text();
+}
 
-}
-}
+} // namespace painter
+} // namespace devils_engine

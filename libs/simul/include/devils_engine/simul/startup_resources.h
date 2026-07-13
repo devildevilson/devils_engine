@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_SIMUL_STARTUP_RESOURCES_H
 #define DEVILS_ENGINE_SIMUL_STARTUP_RESOURCES_H
 
+// Resource types describing the startup entry and switchable runtime states.
+
 #include <string>
 #include <vector>
 
@@ -22,7 +24,9 @@ struct runtime_state_config {
 class startup_entry_resource : public demiurg::resource_interface {
 public:
   startup_entry_resource();
-  const startup_entry_config& config() const noexcept { return config_; }
+  const startup_entry_config& config() const noexcept {
+    return config_;
+  }
 
   void load_cold(const utils::safe_handle_t& handle) override;
   void load_warm(const utils::safe_handle_t& handle) override;
@@ -36,7 +40,9 @@ private:
 class runtime_state_resource : public demiurg::resource_interface {
 public:
   runtime_state_resource();
-  const runtime_state_config& config() const noexcept { return config_; }
+  const runtime_state_config& config() const noexcept {
+    return config_;
+  }
 
   void load_cold(const utils::safe_handle_t& handle) override;
   void load_warm(const utils::safe_handle_t& handle) override;
@@ -47,7 +53,7 @@ private:
   runtime_state_config config_;
 };
 
-}
-}
+} // namespace simul
+} // namespace devils_engine
 
 #endif

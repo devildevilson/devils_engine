@@ -3,12 +3,13 @@
 
 #ifdef __cplusplus
 
-#include <cstdint>
-#include <cstddef>
-#include <glm/glm.hpp>
+#  include <cstddef>
+#  include <cstdint>
 
-#define INLINE inline
-#define INOUT(type) type&
+#  include <glm/glm.hpp>
+
+#  define INLINE inline
+#  define INOUT(type) type&
 
 namespace devils_engine {
 namespace utils {
@@ -18,84 +19,80 @@ using vec4 = glm::vec4;
 using vec3 = glm::vec3;
 using vec2 = glm::vec2;
 
-using glm::floatBitsToUint;
-using glm::uintBitsToFloat;
 using glm::abs;
 using glm::dot;
-using glm::min;
+using glm::floatBitsToUint;
 using glm::max;
-using glm::unpackUnorm4x8;
+using glm::min;
 using glm::packUnorm4x8;
+using glm::uintBitsToFloat;
+using glm::unpackUnorm4x8;
 
 #else
 
-#define INLINE
-#define INOUT(type) inout type
+#  define INLINE
+#  define INOUT(type) inout type
 
 #endif
 
 #define DEVILS_ENGINE_GPU_UINT_MAX 0xffffffffu
-#define DEVILS_ENGINE_GPU_INT_MAX  0x7fffffff
+#define DEVILS_ENGINE_GPU_INT_MAX 0x7fffffff
 
-const uint INVALID_GPU_INDEX = DEVILS_ENGINE_GPU_UINT_MAX;
+const uint invalid_gpu_index = DEVILS_ENGINE_GPU_UINT_MAX;
 
-const uint UI_DRAW_SOLID     = 0u;
-const uint UI_DRAW_MSDF      = 1u;
-const uint UI_DRAW_IMAGE     = 2u;
-const uint UI_DRAW_COMPOSITE = 3u;
-const uint UI_DRAW_COOLDOWN  = 4u;
-const uint UI_DRAW_MIX       = 5u;
+const uint ui_draw_solid = 0u;
+const uint ui_draw_msdf = 1u;
+const uint ui_draw_image = 2u;
+const uint ui_draw_composite = 3u;
+const uint ui_draw_cooldown = 4u;
+const uint ui_draw_mix = 5u;
 
-const uint TEX_INDEX_BITS    = 14u;
-const uint TEX_INDEX_MASK    = (1u << TEX_INDEX_BITS) - 1u;
-const uint TEX_MIRROR_U      = 1u << 14u;
-const uint TEX_MIRROR_V      = 1u << 15u;
-const uint TEX_TYPE_SHIFT    = 16u;
-const uint TEX_TYPE_MASK     = 0xFu;
-const uint TEX_SAMPLER_SHIFT = 20u;
-const uint TEX_SAMPLER_MASK  = 0xFu;
+const uint tex_index_bits = 14u;
+const uint tex_index_mask = (1u << tex_index_bits) - 1u;
+const uint tex_mirror_u = 1u << 14u;
+const uint tex_mirror_v = 1u << 15u;
+const uint tex_type_shift = 16u;
+const uint tex_type_mask = 0xFu;
+const uint tex_sampler_shift = 20u;
+const uint tex_sampler_mask = 0xFu;
 
-const uint SAMPLER_LINEAR    = 0u;
-const uint SAMPLER_NEAREST   = 1u;
+const uint sampler_linear = 0u;
+const uint sampler_nearest = 1u;
 
 INLINE bool valid_gpu_index(const uint index) {
-  return index != INVALID_GPU_INDEX;
+  return index != invalid_gpu_index;
 }
 
 INLINE uint tex_pack(const uint type, const uint index, const bool mirror_u, const bool mirror_v, const uint sampler_id) {
-  return (index & TEX_INDEX_MASK)
-    | (mirror_u ? TEX_MIRROR_U : 0u)
-    | (mirror_v ? TEX_MIRROR_V : 0u)
-    | ((type & TEX_TYPE_MASK) << TEX_TYPE_SHIFT)
-    | ((sampler_id & TEX_SAMPLER_MASK) << TEX_SAMPLER_SHIFT);
+  return (index & tex_index_mask) | (mirror_u ? tex_mirror_u : 0u) | (mirror_v ? tex_mirror_v : 0u) | ((type & tex_type_mask) << tex_type_shift) | ((sampler_id & tex_sampler_mask) << tex_sampler_shift);
 }
 
 INLINE uint tex_index_of(const uint id) {
-  return id & TEX_INDEX_MASK;
+  return id & tex_index_mask;
 }
 
 INLINE uint tex_type_of(const uint id) {
-  return (id >> TEX_TYPE_SHIFT) & TEX_TYPE_MASK;
+  return (id >> tex_type_shift) & tex_type_mask;
 }
 
 INLINE uint tex_sampler_of(const uint id) {
-  return (id >> TEX_SAMPLER_SHIFT) & TEX_SAMPLER_MASK;
+  return (id >> tex_sampler_shift) & tex_sampler_mask;
 }
 
 INLINE bool tex_mirror_u_of(const uint id) {
-  return (id & TEX_MIRROR_U) != 0u;
+  return (id & tex_mirror_u) != 0u;
 }
 
 INLINE bool tex_mirror_v_of(const uint id) {
-  return (id & TEX_MIRROR_V) != 0u;
+  return (id & tex_mirror_v) != 0u;
 }
 
 struct color_t {
   uint container;
 
 #ifdef __cplusplus
-  inline color_t() : container(0) {}
-  inline color_t(const uint container) : container(container) {}
+  color_t() : container(0) {}
+  color_t(const uint container) : container(container) {}
 #endif
 };
 
@@ -146,13 +143,13 @@ INLINE float prng_normalize(const uint state) {
 // нужно выбрать подходящую степень разбиения и нарисовать кривую
 INLINE vec4 quadratic_bezier(const vec4 p1, const vec4 p2, const vec4 p3, const float t) {
   const float inv_t = float(1.0) - t;
-  return inv_t*inv_t*p1 + float(2.0)*inv_t*t*p2 + t*t*p3;
+  return inv_t * inv_t * p1 + float(2.0) * inv_t * t * p2 + t * t * p3;
 }
 
 // две контрольных точки, 0 <= t <= 1
 INLINE vec4 cubic_bezier(const vec4 p1, const vec4 p2, const vec4 p3, const vec4 p4, const float t) {
   const float inv_t = float(1.0) - t;
-  return inv_t*inv_t*inv_t*p1 + float(3.0)*inv_t*inv_t*t*p2 + float(3.0)*inv_t*t*t*p3 + t*t*t*p4;
+  return inv_t * inv_t * inv_t * p1 + float(3.0) * inv_t * inv_t * t * p2 + float(3.0) * inv_t * t * t * p3 + t * t * t * p4;
 }
 
 #ifdef __cplusplus

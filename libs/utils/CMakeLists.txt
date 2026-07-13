@@ -28,11 +28,16 @@ set(SRC_LIST
   src/utils/block_allocator.cpp
   src/utils/stack_allocator.cpp
   src/thread/pool.cpp
+  src/thread/byte_ring.cpp
+  src/thread/lock.cpp
   src/thread/stack_pool.cpp
   src/thread/atomic_pool.cpp
   src/utils/prng.cpp
   src/utils/fileio.cpp
   src/utils/time.cpp
+  src/utils/timeline.cpp
+  src/utils/string_id.cpp
+  src/utils/safe_handle.cpp
   #src/utils/sha256.c
   src/utils/sha256cpp.cpp
   src/utf/utf.cpp

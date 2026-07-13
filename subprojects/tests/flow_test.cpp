@@ -1,12 +1,12 @@
-#include <doctest/doctest.h>
-
 #include <filesystem>
 #include <fstream>
 
+#include <doctest/doctest.h>
+
 #include "devils_engine/demiurg/module_system.h"
 #include "devils_engine/demiurg/resource_system.h"
-#include "devils_engine/flow/system.h"
 #include "devils_engine/flow/animation_resource.h"
+#include "devils_engine/flow/system.h"
 #include "devils_engine/utils/safe_handle.h"
 
 using namespace devils_engine;

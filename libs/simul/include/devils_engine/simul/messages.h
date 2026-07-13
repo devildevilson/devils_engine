@@ -1,9 +1,11 @@
 #ifndef DEVILS_ENGINE_SIMUL_MESSAGES_H
 #define DEVILS_ENGINE_SIMUL_MESSAGES_H
 
+// POD-like commands exchanged by the standard simulation broker channels.
+
 #include <atomic>
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -35,20 +37,28 @@ struct resource_ref {
   static resource_ref from_system(const demiurg::resource_system* const system, demiurg::resource_interface* const ptr) noexcept {
     if (system != nullptr && ptr != nullptr) {
       const demiurg::resource_handle h = system->handle(ptr->id);
-      if (h.get() == ptr) return from_handle(h);
+      if (h.get() == ptr) {
+        return from_handle(h);
+      }
     }
     return from_direct(ptr);
   }
 
   demiurg::resource_interface* get() const noexcept {
-    if (auto* ptr = handle.get()) return ptr;
+    if (auto* ptr = handle.get()) {
+      return ptr;
+    }
     return direct;
   }
 
   template <typename T>
   T* get() const noexcept {
-    if (auto* ptr = handle.template get<T>()) return ptr;
-    if (direct == nullptr || !direct->is_type(utils::type_id<T>())) return nullptr;
+    if (auto* ptr = handle.template get<T>()) {
+      return ptr;
+    }
+    if (direct == nullptr || !direct->is_type(utils::type_id<T>())) {
+      return nullptr;
+    }
     return static_cast<T*>(direct);
   }
 };
@@ -144,7 +154,7 @@ struct command_sound_state {
   std::vector<sound_state_entry> sounds;
 };
 
-}
-}
+} // namespace simul
+} // namespace devils_engine
 
 #endif

@@ -6,19 +6,19 @@
 
 #ifndef VULKAN_CORE_H_
 
-#define VK_NULL_HANDLE nullptr
+#  define VK_NULL_HANDLE nullptr
 
 // from vulkan_core.h
-#define VK_DEFINE_HANDLE(object) typedef struct object##_T* object;
+#  define VK_DEFINE_HANDLE(object) typedef struct object##_T* object;
 // lets assume that this code would not be compiled in x86
-#define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef struct object##_T *object;
+#  define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef struct object##_T* object;
 
-#define VK_MAKE_API_VERSION(variant, major, minor, patch) ((((uint32_t)(variant)) << 29U) | (((uint32_t)(major)) << 22U) | (((uint32_t)(minor)) << 12U) | ((uint32_t)(patch)))
+#  define VK_MAKE_API_VERSION(variant, major, minor, patch) ((((uint32_t)(variant)) << 29U) | (((uint32_t)(major)) << 22U) | (((uint32_t)(minor)) << 12U) | ((uint32_t)(patch)))
 
-#define VK_API_VERSION_1_0 VK_MAKE_API_VERSION(0, 1, 0, 0) // Patch version should always be set to 0
-#define VK_API_VERSION_1_1 VK_MAKE_API_VERSION(0, 1, 1, 0)
-#define VK_API_VERSION_1_2 VK_MAKE_API_VERSION(0, 1, 2, 0)
-#define VK_API_VERSION_1_3 VK_MAKE_API_VERSION(0, 1, 3, 0)
+#  define VK_API_VERSION_1_0 VK_MAKE_API_VERSION(0, 1, 0, 0) // Patch version should always be set to 0
+#  define VK_API_VERSION_1_1 VK_MAKE_API_VERSION(0, 1, 1, 0)
+#  define VK_API_VERSION_1_2 VK_MAKE_API_VERSION(0, 1, 2, 0)
+#  define VK_API_VERSION_1_3 VK_MAKE_API_VERSION(0, 1, 3, 0)
 
 typedef uint32_t VkBool32;
 typedef uint64_t VkDeviceAddress;
@@ -65,25 +65,30 @@ VK_DEFINE_HANDLE(VmaAllocation)
 VK_DEFINE_HANDLE(VmaDefragmentationContext)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VmaVirtualAllocation)
 VK_DEFINE_HANDLE(VmaVirtualBlock)
-#define VK_ATTACHMENT_UNUSED              (~0U)
-#define VK_FALSE                          0U
-#define VK_LOD_CLAMP_NONE                 1000.0F
-#define VK_QUEUE_FAMILY_IGNORED           (~0U)
-#define VK_REMAINING_ARRAY_LAYERS         (~0U)
-#define VK_REMAINING_MIP_LEVELS           (~0U)
-#define VK_SUBPASS_EXTERNAL               (~0U)
-#define VK_TRUE                           1U
-#define VK_WHOLE_SIZE                     (~0ULL)
-#define VK_MAX_MEMORY_TYPES               32U
-#define VK_MAX_PHYSICAL_DEVICE_NAME_SIZE  256U
-#define VK_UUID_SIZE                      16U
-#define VK_MAX_EXTENSION_NAME_SIZE        256U
-#define VK_MAX_DESCRIPTION_SIZE           256U
-#define VK_MAX_MEMORY_HEAPS               16U
+#  define VK_ATTACHMENT_UNUSED (~0U)
+#  define VK_FALSE 0U
+#  define VK_LOD_CLAMP_NONE 1000.0F
+#  define VK_QUEUE_FAMILY_IGNORED (~0U)
+#  define VK_REMAINING_ARRAY_LAYERS (~0U)
+#  define VK_REMAINING_MIP_LEVELS (~0U)
+#  define VK_SUBPASS_EXTERNAL (~0U)
+#  define VK_TRUE 1U
+#  define VK_WHOLE_SIZE (~0ULL)
+#  define VK_MAX_MEMORY_TYPES 32U
+#  define VK_MAX_PHYSICAL_DEVICE_NAME_SIZE 256U
+#  define VK_UUID_SIZE 16U
+#  define VK_MAX_EXTENSION_NAME_SIZE 256U
+#  define VK_MAX_DESCRIPTION_SIZE 256U
+#  define VK_MAX_MEMORY_HEAPS 16U
 
 // VkResult ?
 
 #endif
+
+// VMA handles are independent of whether vulkan_core.h was included first.
+// Keep them opaque here; implementation files include the complete VMA declarations.
+typedef struct VmaAllocator_T* VmaAllocator;
+typedef struct VmaAllocation_T* VmaAllocation;
 
 // это имеет смысл сделать в рантайме
 #ifdef _NDEBUG

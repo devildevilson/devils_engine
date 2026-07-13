@@ -1,14 +1,13 @@
-#include "assets_system.h"
-
 #include <devils_engine/demiurg/resource_system.h>
 
-#include "messages.h"
+#include "assets_system.h"
 #include "broker.h"
-#include "tile_map.h"
-#include "script_resource.h"
 #include "fsm_resource.h"
 #include "goap_resource.h"
+#include "messages.h"
 #include "prefab_resource.h"
+#include "script_resource.h"
+#include "tile_map.h"
 
 namespace tile_frontier {
 namespace core {
@@ -34,7 +33,9 @@ void assets_simulation::update_project(const size_t, ::tile_frontier::core::brok
   // mock world streaming: CPU-чанк генерируется на assets thread и возвращается main через broker.
   command_load_chunk cmd{};
   while (br.load_chunk.try_pop(cmd)) {
-    if (cmd.size == 0 || cmd.textures.empty()) continue;
+    if (cmd.size == 0 || cmd.textures.empty()) {
+      continue;
+    }
     const tile_chunk chunk = generate_mock_chunk(chunk_coord{cmd.x, cmd.y}, cmd.size, cmd.textures);
     command_chunk_loaded out;
     out.generation = cmd.generation;
@@ -42,10 +43,12 @@ void assets_simulation::update_project(const size_t, ::tile_frontier::core::brok
     out.y = chunk.coord.y;
     out.size = chunk.size;
     out.textures.reserve(chunk.tiles.size());
-    for (const auto& t : chunk.tiles) out.textures.push_back(t.texture);
+    for (const auto& t : chunk.tiles) {
+      out.textures.push_back(t.texture);
+    }
     br.chunk_loaded.try_push(std::move(out));
   }
 }
 
-}
-}
+} // namespace core
+} // namespace tile_frontier

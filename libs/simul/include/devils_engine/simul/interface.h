@@ -1,9 +1,9 @@
 #ifndef DEVILS_ENGINE_SIMUL_INTERFACE_H
 #define DEVILS_ENGINE_SIMUL_INTERFACE_H
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <chrono>
 #include <mutex>
 #include <stop_token>
 
@@ -98,7 +98,8 @@ public:
   void reset_counter();
   void stop();
 
-  inline std::mutex & acquire_sync_object() { return mutex; }
+  std::mutex& acquire_sync_object() noexcept;
+
 protected:
   mutable std::mutex mutex; // is it necessary????
   size_t _frame_time;
@@ -107,7 +108,7 @@ protected:
   clock_t::time_point _start;
   bool _stop;
 };
-}
-}
+} // namespace simul
+} // namespace devils_engine
 
 #endif

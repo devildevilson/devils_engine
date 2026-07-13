@@ -19,7 +19,9 @@ class app_config_resource : public demiurg::resource_interface {
 public:
   app_config_resource();
 
-  const app_config& config() const noexcept { return cfg; }
+  const app_config& config() const noexcept {
+    return cfg;
+  }
 
   void load_cold(const utils::safe_handle_t& handle) override;
   void load_warm(const utils::safe_handle_t& handle) override;
@@ -30,7 +32,7 @@ private:
   app_config cfg;
 };
 
-}
-}
+} // namespace core
+} // namespace tile_frontier
 
 #endif

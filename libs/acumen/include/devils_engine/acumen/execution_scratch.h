@@ -17,7 +17,7 @@ struct execution_scratch {
   act::execution_scratch act;
 };
 
-}
-}
+} // namespace acumen
+} // namespace devils_engine
 
 #endif

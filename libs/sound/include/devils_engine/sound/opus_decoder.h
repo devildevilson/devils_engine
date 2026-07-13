@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_SOUND_OPUS_DECODER_H
 #define DEVILS_ENGINE_SOUND_OPUS_DECODER_H
 
+// In-memory Opus decoder implementing the common streaming decoder contract.
+
 #include <string_view>
 #include <vector>
 
@@ -9,25 +11,25 @@
 struct OggOpusFile;
 
 namespace devils_engine {
-  namespace sound {
-    class opus_decoder : public decoder {
-    public:
-      opus_decoder(const std::string_view& name, const void* memory, const size_t memory_size);
-      ~opus_decoder() noexcept;
+namespace sound {
+class opus_decoder : public decoder {
+public:
+  opus_decoder(const std::string_view& name, const void* memory, const size_t memory_size);
+  ~opus_decoder() noexcept;
 
-      bool seek(const size_t seek_size) override;
-      size_t get_frames(void* memory, const size_t frames_count, const uint16_t channels_override = 0) override;
-      size_t get_frames(
-        const uint32_t al_buffer,
-        const size_t frames_count,
-        const uint16_t channels_override = 0,
-        const uint32_t sample_rate_override = 0
-      ) override;
-    private:
-      OggOpusFile* data;
-      std::vector<float> buffer;
-    };
-  }
-}
+  bool seek(const size_t seek_size) override;
+  size_t get_frames(void* memory, const size_t frames_count, const uint16_t channels_override = 0) override;
+  size_t get_frames(
+    const uint32_t al_buffer,
+    const size_t frames_count,
+    const uint16_t channels_override = 0,
+    const uint32_t sample_rate_override = 0) override;
+
+private:
+  OggOpusFile* data;
+  std::vector<float> buffer;
+};
+} // namespace sound
+} // namespace devils_engine
 
 #endif

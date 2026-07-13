@@ -1,19 +1,57 @@
-#include <devils_engine/catalogue/logging.h>
-#include "graphics_base.h"
-
-#include "vulkan_header.h"
-#include "makers.h"
-#include "auxiliary.h"
-
-#include "devils_engine/utils/fileio.h"
-#include "devils_engine/demiurg/resource_system.h"
-#include "pipeline_cache_resource.h"
-
 #include <cmath>
 #include <limits>
 
+#include <devils_engine/catalogue/logging.h>
+
+#include "auxiliary.h"
+#include "devils_engine/demiurg/resource_system.h"
+#include "devils_engine/utils/fileio.h"
+#include "graphics_base.h"
+#include "makers.h"
+#include "pipeline_cache_resource.h"
+#include "vulkan_header.h"
+
 namespace devils_engine {
 namespace painter {
+
+vk_queue::vk_queue(const VkQueue queue) noexcept : queue(queue) {}
+
+void graphics_base::set_shader_source(const demiurg::resource_system* reg, std::string prefix) {
+  config_reg_ = reg;
+  shader_prefix_ = std::move(prefix);
+}
+
+void graphics_base::set_startup_graph(std::string name) {
+  startup_graph_ = std::move(name);
+  resident_graphs_.clear();
+  if (!startup_graph_.empty()) {
+    resident_graphs_.push_back(startup_graph_);
+  }
+}
+
+void graphics_base::add_resident_graph(std::string name) {
+  if (!name.empty()) {
+    resident_graphs_.push_back(std::move(name));
+  }
+}
+
+void graphics_base::set_resident_graphs(std::vector<std::string> names) {
+  resident_graphs_ = std::move(names);
+}
+
+bool graphics_base::is_graph_active(const uint32_t i) const {
+  return !graph_filtered_ || graph_active_mask_.test(i);
+}
+
+bool graphics_base::is_resource_active(const uint32_t i) const {
+  return !graph_filtered_ || resource_active_mask_.test(i);
+}
+
+bool graphics_base::is_descriptor_active(const uint32_t i) const {
+  return !graph_filtered_ || descriptor_active_mask_.test(i);
+}
+
+graphics_ctx::graphics_ctx() noexcept : base(nullptr), assets(nullptr) {}
 
 // resource::usage_mask хранит Vulkan usage как uint32_t (сюда кастятся vk::Buffer/ImageUsageFlags
 // в create_resources). Ловим момент, когда базовые usage-флаги перестанут влезать в 32 бита
@@ -22,7 +60,9 @@ static_assert(sizeof(VkImageUsageFlags) == 4, "VkImageUsageFlags больше 32
 static_assert(sizeof(VkBufferUsageFlags) == 4, "VkBufferUsageFlags больше 32 бит — расширить resource::usage_mask");
 
 static size_t buffer_suballocation_alignment(const VkPhysicalDevice physical_device, const uint32_t usage_mask) {
-  if (physical_device == VK_NULL_HANDLE) return 1;
+  if (physical_device == VK_NULL_HANDLE) {
+    return 1;
+  }
 
   const auto props = vk::PhysicalDevice(physical_device).getProperties();
   size_t alignment = 1;
@@ -44,34 +84,34 @@ static size_t buffer_suballocation_alignment(const VkPhysicalDevice physical_dev
   return std::max<size_t>(alignment, 1);
 }
 
-graphics_base::graphics_base(VkInstance instance, VkDevice device, VkPhysicalDevice physical_device, enum presentation_engine_type presentation_engine_type) noexcept :
-  instance(instance),
-  device(device),
-  physical_device(physical_device),
-  surface(VK_NULL_HANDLE),
-  cache(VK_NULL_HANDLE),
-  graphics(VK_NULL_HANDLE),
-  transfer(VK_NULL_HANDLE),
-  command_pool(VK_NULL_HANDLE),
-  descriptor_pool(VK_NULL_HANDLE),
-  swapchain(VK_NULL_HANDLE),
-  allocator(VK_NULL_HANDLE),
-  presentation_engine_type(presentation_engine_type),
-  current_presentable_state(static_cast<uint32_t>(vk::Result::eSuccess)),
-  swapchain_slot(INVALID_RESOURCE_SLOT),
-  swapchain_counter_index(INVALID_RESOURCE_SLOT),
-  per_frame_counter_index(INVALID_RESOURCE_SLOT),
-  per_update_counter_index(INVALID_RESOURCE_SLOT),
-  frames_in_flight_constant_value_index(INVALID_RESOURCE_SLOT),
-  current_render_graph_index(INVALID_RESOURCE_SLOT),
-  swapchain_image_semaphore(INVALID_RESOURCE_SLOT),
-  finish_rendering_semaphore(INVALID_RESOURCE_SLOT),
-  computed_current_frame_index(INVALID_RESOURCE_SLOT),
-  swapchain_image_size(std::make_tuple(640, 480))
-{}
+graphics_base::graphics_base(VkInstance instance, VkDevice device, VkPhysicalDevice physical_device, enum presentation_engine_type presentation_engine_type) noexcept : instance(instance),
+                                                                                                                                                                        device(device),
+                                                                                                                                                                        physical_device(physical_device),
+                                                                                                                                                                        surface(VK_NULL_HANDLE),
+                                                                                                                                                                        cache(VK_NULL_HANDLE),
+                                                                                                                                                                        graphics(VK_NULL_HANDLE),
+                                                                                                                                                                        transfer(VK_NULL_HANDLE),
+                                                                                                                                                                        command_pool(VK_NULL_HANDLE),
+                                                                                                                                                                        descriptor_pool(VK_NULL_HANDLE),
+                                                                                                                                                                        swapchain(VK_NULL_HANDLE),
+                                                                                                                                                                        allocator(VK_NULL_HANDLE),
+                                                                                                                                                                        presentation_engine_type(presentation_engine_type),
+                                                                                                                                                                        current_presentable_state(static_cast<uint32_t>(vk::Result::eSuccess)),
+                                                                                                                                                                        swapchain_slot(invalid_resource_slot),
+                                                                                                                                                                        swapchain_counter_index(invalid_resource_slot),
+                                                                                                                                                                        per_frame_counter_index(invalid_resource_slot),
+                                                                                                                                                                        per_update_counter_index(invalid_resource_slot),
+                                                                                                                                                                        frames_in_flight_constant_value_index(invalid_resource_slot),
+                                                                                                                                                                        current_render_graph_index(invalid_resource_slot),
+                                                                                                                                                                        swapchain_image_semaphore(invalid_resource_slot),
+                                                                                                                                                                        finish_rendering_semaphore(invalid_resource_slot),
+                                                                                                                                                                        computed_current_frame_index(invalid_resource_slot),
+                                                                                                                                                                        swapchain_image_size(std::make_tuple(640, 480)) {}
 
 graphics_base::~graphics_base() noexcept {
-  if (device == VK_NULL_HANDLE) return;
+  if (device == VK_NULL_HANDLE) {
+    return;
+  }
 
   vk::Device dev(device);
   //dev.waitIdle();
@@ -87,11 +127,21 @@ graphics_base::~graphics_base() noexcept {
   }
   clear_semaphores();
 
-  for (auto& f : fences) { dev.destroy(f); }
-  if (command_pool != VK_NULL_HANDLE) dev.destroy(command_pool);
-  if (descriptor_pool != VK_NULL_HANDLE) dev.destroy(descriptor_pool);
-  if (swapchain != VK_NULL_HANDLE) dev.destroy(swapchain);
-  if (cache != VK_NULL_HANDLE) dev.destroy(cache);
+  for (auto& f : fences) {
+    dev.destroy(f);
+  }
+  if (command_pool != VK_NULL_HANDLE) {
+    dev.destroy(command_pool);
+  }
+  if (descriptor_pool != VK_NULL_HANDLE) {
+    dev.destroy(descriptor_pool);
+  }
+  if (swapchain != VK_NULL_HANDLE) {
+    dev.destroy(swapchain);
+  }
+  if (cache != VK_NULL_HANDLE) {
+    dev.destroy(cache);
+  }
 }
 
 void graphics_base::create_allocator(const size_t preferred_heap_block) {
@@ -171,11 +221,15 @@ void graphics_base::get_or_create_pipeline_cache(const demiurg::resource_system*
 }
 
 void graphics_base::dump_cache_on_disk(const std::string& path) const {
-  if (cache == VK_NULL_HANDLE) return;
+  if (cache == VK_NULL_HANDLE) {
+    return;
+  }
 
   const auto data = vk::Device(device).getPipelineCacheData(cache);
   const bool res = file_io::write(data, path);
-  if (!res) utils::warn("Could not write pipeline cache '{}' on disk", path);
+  if (!res) {
+    utils::warn("Could not write pipeline cache '{}' on disk", path);
+  }
 }
 
 void graphics_base::set_surface(VkSurfaceKHR surface, const uint32_t width, const uint32_t height) {
@@ -199,12 +253,12 @@ static uint16_t float2half_rn(float a) {
       ir |= 0x7e00 | ((ia >> (24 - 11)) & 0x1ff); /* NaN, quietened */
     }
   } else if ((ia & 0x7f800000) >= 0x33000000) {
-    int shift = (int)((ia >> 23) & 0xff) - 127;
+    const auto shift = static_cast<int>((ia >> 23) & 0xff) - 127;
     if (shift > 15) {
       ir |= 0x7c00; /* infinity */
     } else {
       ia = (ia & 0x007fffff) | 0x00800000; /* extract mantissa */
-      if (shift < -14) { /* denormal */
+      if (shift < -14) {                   /* denormal */
         ir |= ia >> (-1 - shift);
         ia = ia << (32 - (-1 - shift));
       } else { /* normal */
@@ -214,7 +268,7 @@ static uint16_t float2half_rn(float a) {
       }
       /* IEEE-754 round to nearest of even */
       if ((ia > 0x80000000) || ((ia == 0x80000000) && (ir & 1))) {
-        ir++;
+        ++ir;
       }
     }
   }
@@ -225,7 +279,7 @@ static std::tuple<size_t, size_t> populate_dispatch3(const std::span<uint32_t>& 
   memory[0] = 0 < values.size() ? uint32_t(values[0]) : 0u;
   memory[1] = 1 < values.size() ? uint32_t(values[1]) : 0u;
   memory[2] = 2 < values.size() ? uint32_t(values[2]) : 0u;
-  return std::make_tuple(3 * sizeof(uint32_t),3);
+  return std::make_tuple(3 * sizeof(uint32_t), 3);
 }
 
 static std::tuple<size_t, size_t> populate_draw4(const std::span<uint32_t>& memory, const std::span<const double>& values) {
@@ -250,7 +304,7 @@ static std::tuple<size_t, size_t> populate_d32s8(const std::span<uint32_t>& memo
   const uint32_t stencil = 1 < values.size() ? uint32_t(values[1]) : 0u;
   memory[0] = std::bit_cast<uint32_t>(depth);
   memory[1] = stencil;
-  return std::make_tuple(2 * sizeof(uint32_t),2);
+  return std::make_tuple(2 * sizeof(uint32_t), 2);
 }
 
 static std::tuple<size_t, size_t> populate_d24s8(const std::span<uint32_t>& memory, const std::span<const double>& values) {
@@ -271,14 +325,16 @@ static std::tuple<size_t, size_t> populate_d16s8(const std::span<uint32_t>& memo
   return std::make_tuple(1 * sizeof(uint32_t), 2);
 }
 
-static std::tuple<size_t, size_t> put_values(const std::span<uint32_t> &memory, const std::span<const format::values> &layout, const std::span<const double>& values) {
+static std::tuple<size_t, size_t> put_values(const std::span<uint32_t>& memory, const std::span<const format::values>& layout, const std::span<const double>& values) {
   size_t offset = 0;
   size_t counter = 0;
   auto cur_memory = memory;
   for (const auto fmt : layout) {
-    if (counter >= values.size()) break;
+    if (counter >= values.size()) {
+      break;
+    }
 
-    cur_memory = std::span(memory.begin() + (offset/sizeof(uint32_t)), memory.end());
+    cur_memory = std::span(memory.begin() + (offset / sizeof(uint32_t)), memory.end());
 
     if (fmt == format::pad1) {
       offset += 1 * sizeof(uint32_t);
@@ -512,20 +568,24 @@ static std::tuple<size_t, size_t> put_values(const std::span<uint32_t> &memory, 
 // и запихиваю правильные данные в память как я это делаю здесь
 void graphics_base::populate_constant_default_values() {
   for (const auto& c : constants) {
-    auto spn = std::span(constants_memory[1].begin() + (c.offset/sizeof(uint32_t)), constants_memory[1].end());
+    auto spn = std::span(constants_memory[1].begin() + (c.offset / sizeof(uint32_t)), constants_memory[1].end());
     put_values(spn, c.layout, c.value);
   }
 }
 
 buffer_frame graphics_base::get_current_buffer_resource_frame(const uint32_t res_index, const uint32_t counter_offset) const {
-  if (res_index >= resources.size()) return buffer_frame();
+  if (res_index >= resources.size()) {
+    return buffer_frame();
+  }
   const auto& res = resources[res_index];
-  if (role::is_image(res.role)) return buffer_frame();
+  if (role::is_image(res.role)) {
+    return buffer_frame();
+  }
 
   const auto& counter = DS_ASSERT_ARRAY_GET(counters, res.swap);
   const uint32_t cur_index = counter.get_value();
   const uint32_t buffering = res.compute_buffering(this);
-  const auto& frame = res.handles[(cur_index+counter_offset) % buffering];
+  const auto& frame = res.handles[(cur_index + counter_offset) % buffering];
 
   const auto& res_cont = DS_ASSERT_ARRAY_GET(resource_containers, frame.index);
 
@@ -542,14 +602,18 @@ buffer_frame graphics_base::get_current_buffer_resource_frame(const uint32_t res
 }
 
 image_frame graphics_base::get_current_image_resource_frame(const uint32_t res_index, const uint32_t counter_offset) const {
-  if (res_index >= resources.size()) return image_frame();
+  if (res_index >= resources.size()) {
+    return image_frame();
+  }
   const auto& res = resources[res_index];
-  if (!role::is_image(res.role)) return image_frame();
+  if (!role::is_image(res.role)) {
+    return image_frame();
+  }
 
   const auto& counter = DS_ASSERT_ARRAY_GET(counters, res.swap);
   const uint32_t cur_index = counter.get_value();
   const uint32_t buffering = res.compute_buffering(this);
-  const auto& frame = res.handles[(cur_index+counter_offset) % buffering];
+  const auto& frame = res.handles[(cur_index + counter_offset) % buffering];
 
   VkImage img = VK_NULL_HANDLE;
   void* mem_ptr = nullptr;
@@ -574,7 +638,9 @@ image_frame graphics_base::get_current_image_resource_frame(const uint32_t res_i
 }
 
 buffer_frame graphics_base::get_current_instance_resource_frame(const uint32_t pair_index, const uint32_t counter_offset) const {
-  if (pair_index >= pairs.size()) return buffer_frame();
+  if (pair_index >= pairs.size()) {
+    return buffer_frame();
+  }
 
   const auto& pair = pairs[pair_index];
   const auto& dg = DS_ASSERT_ARRAY_GET(draw_groups, pair.draw_group);
@@ -586,7 +652,9 @@ buffer_frame graphics_base::get_current_instance_resource_frame(const uint32_t p
 }
 
 buffer_frame graphics_base::get_current_indirect_resource_frame(const uint32_t pair_index, const uint32_t counter_offset) const {
-  if (pair_index >= pairs.size()) return buffer_frame();
+  if (pair_index >= pairs.size()) {
+    return buffer_frame();
+  }
 
   const auto& pair = pairs[pair_index];
   const auto& dg = DS_ASSERT_ARRAY_GET(draw_groups, pair.draw_group);
@@ -626,7 +694,6 @@ void graphics_base::recreate_pipelines() {
 
 // ?
 void graphics_base::recreate_render_graph() {
-
 }
 
 void graphics_base::clear_render_graph() {
@@ -638,7 +705,9 @@ void graphics_base::clear_resources() {
   vma::Allocator alc(allocator);
 
   for (auto& res : resources) {
-    if (!role::is_image(res.role)) continue;
+    if (!role::is_image(res.role)) {
+      continue;
+    }
 
     const uint32_t buffering = res.compute_buffering(this);
     for (uint32_t i = 0; i < buffering; ++i) {
@@ -647,7 +716,9 @@ void graphics_base::clear_resources() {
   }
 
   for (auto& res_c : resource_containers) {
-    if (res_c.mem_ptr != nullptr) alc.unmapMemory(res_c.alloc);
+    if (res_c.mem_ptr != nullptr) {
+      alc.unmapMemory(res_c.alloc);
+    }
 
     if (res_c.is_image()) {
       alc.destroyImage(std::bit_cast<VkImage>(res_c.handle), res_c.alloc);
@@ -664,7 +735,7 @@ void graphics_base::clear_semaphores() {
   vk::Device dev(device);
 
   // Уничтожаем ВЕСЬ массив хэндлов, а не frames_in_flight: present-wait семафор (finish_rendering)
-  // создаётся на все MAX_FRAMES_IN_FLIGHT слотов (индексация по образу свопчейна), и обрезка по
+  // создаётся на все max_frames_in_flight слотов (индексация по образу свопчейна), и обрезка по
   // frames_in_flight оставляла бы хвост неосвобождённым (VUID-vkDestroyDevice). destroy(null) безопасен.
   for (auto& sem : semaphores) {
     for (auto& s : sem.handles) {
@@ -684,7 +755,9 @@ void graphics_base::clear_descriptors() {
   }
 
   for (auto& s : samplers) {
-    if (s.handle != VK_NULL_HANDLE) dev.destroy(vk::Sampler(s.handle));
+    if (s.handle != VK_NULL_HANDLE) {
+      dev.destroy(vk::Sampler(s.handle));
+    }
     s.handle = VK_NULL_HANDLE;
   }
 
@@ -710,16 +783,22 @@ void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t
   indices.reserve(resource_containers.size());
 
   for (auto& res : resources) {
-    if (res.role == role::present) continue;
+    if (res.role == role::present) {
+      continue;
+    }
     const auto& cv = DS_ASSERT_ARRAY_GET(constant_values, res.size);
-    if (cv.type != value_type::screensize) continue;
+    if (cv.type != value_type::screensize) {
+      continue;
+    }
 
     const bool is_image = role::is_image(res.role);
 
     const auto [size, exts] = res.compute_frame_size(this);
     const uint32_t buffering = res.compute_buffering(this);
     for (uint32_t i = 0; i < buffering; ++i) {
-      if (is_image) dev.destroy(res.handles[i].view);
+      if (is_image) {
+        dev.destroy(res.handles[i].view);
+      }
 
       const auto itr = std::find(indices.begin(), indices.end(), res.handles[i].index);
       if (itr == indices.end()) {
@@ -728,7 +807,7 @@ void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t
         // определять что картинка или нет по другим метрикам (например по мип уровням)
         auto& cont = DS_ASSERT_ARRAY_GET(resource_containers, res.handles[i].index);
         cont.size = size * buffering;
-        cont.extent = { std::get<0>(exts), std::get<1>(exts) };
+        cont.extent = {std::get<0>(exts), std::get<1>(exts)};
       }
     }
   }
@@ -747,9 +826,13 @@ void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t
   }
 
   for (auto& res : resources) {
-    if (res.role == role::present) continue;
+    if (res.role == role::present) {
+      continue;
+    }
     const auto& cv = DS_ASSERT_ARRAY_GET(constant_values, res.size);
-    if (cv.type != value_type::screensize) continue;
+    if (cv.type != value_type::screensize) {
+      continue;
+    }
 
     const bool is_image = role::is_image(res.role);
 
@@ -777,7 +860,9 @@ void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t
 
 void graphics_base::create_fences() {
   vk::Device dev(device);
-  for (auto& f : fences) { dev.destroy(f); }
+  for (auto& f : fences) {
+    dev.destroy(f);
+  }
   fences.clear();
   fences.resize(frames_in_flight(), VK_NULL_HANDLE);
   for (uint32_t i = 0; i < fences.size(); ++i) {
@@ -793,7 +878,7 @@ void graphics_base::create_global_semaphores() {
 
   {
     uint32_t sem_index = find_semaphore("swapchain_image");
-    if (sem_index == INVALID_RESOURCE_SLOT) {
+    if (sem_index == invalid_resource_slot) {
       sem_index = semaphores.size();
       semaphores.emplace_back().name = "swapchain_image";
     } else {
@@ -814,11 +899,10 @@ void graphics_base::create_global_semaphores() {
 
   {
     uint32_t sem_index = find_semaphore("finish_rendering");
-    if (sem_index == INVALID_RESOURCE_SLOT) {
+    if (sem_index == invalid_resource_slot) {
       sem_index = semaphores.size();
       semaphores.emplace_back().name = "finish_rendering";
-    }
-    else {
+    } else {
       auto& sem = DS_ASSERT_ARRAY_GET(semaphores, sem_index);
       for (auto& s : sem.handles) {
         dev.destroy(s);
@@ -829,9 +913,9 @@ void graphics_base::create_global_semaphores() {
     // finish_rendering — present-wait семафор: его держит vkQueuePresentKHR до показа образа,
     // поэтому он индексируется по ИНДЕКСУ ОБРАЗА свопчейна (см. submit_frame), а не по frame-in-flight.
     // Число образов на момент вызова ещё неизвестно (свопчейн создаётся позже), а движок и так
-    // ограничивает образы MAX_FRAMES_IN_FLIGHT — поэтому создаём хэндлы на все слоты.
+    // ограничивает образы max_frames_in_flight — поэтому создаём хэндлы на все слоты.
     auto& sem = DS_ASSERT_ARRAY_GET(semaphores, sem_index);
-    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+    for (uint32_t i = 0; i < max_frames_in_flight; ++i) {
       sem.handles[i] = dev.createSemaphore(vk::SemaphoreCreateInfo{});
     }
 
@@ -840,7 +924,6 @@ void graphics_base::create_global_semaphores() {
 }
 
 void graphics_base::draw() {
-
 }
 
 // ожидание фрейма лучше отдельно сделать
@@ -865,7 +948,9 @@ void graphics_base::prepare_frame() {
 }
 
 void graphics_base::submit_frame() {
-  if (!can_draw()) return;
+  if (!can_draw()) {
+    return;
+  }
 
   //const uint32_t frames_count = frames_in_flight();
   //const uint32_t cur_frame = current_frame_index();
@@ -888,7 +973,9 @@ void graphics_base::submit_frame() {
 
   execution_graph.submit(this, graphics, finish_rendering, f);
 
-  if (presentation_engine_type != presentation_engine_type::main) return;
+  if (presentation_engine_type != presentation_engine_type::main) {
+    return;
+  }
 
   const auto handle = vk::Semaphore(finish_rendering);
   vk::SwapchainKHR sw(swapchain);
@@ -936,8 +1023,12 @@ void graphics_base::update_counters() {
 }
 
 void graphics_base::image_acquire() {
-  if (presentation_engine_type != presentation_engine_type::main) return;
-  if (!can_draw()) return;
+  if (presentation_engine_type != presentation_engine_type::main) {
+    return;
+  }
+  if (!can_draw()) {
+    return;
+  }
 
   if (surface == VK_NULL_HANDLE) {
     utils::error{}("No surface?");
@@ -988,7 +1079,9 @@ uint32_t graphics_base::current_update_index() const {
 }
 
 uint32_t graphics_base::frames_in_flight() const {
-  if (frames_in_flight_constant_value_index == INVALID_RESOURCE_SLOT) return default_frames_in_flight;
+  if (frames_in_flight_constant_value_index == invalid_resource_slot) {
+    return default_frames_in_flight;
+  }
   const auto& c_value = DS_ASSERT_ARRAY_GET(constant_values, frames_in_flight_constant_value_index);
   return c_value.reduce_value();
 }
@@ -1007,103 +1100,121 @@ std::tuple<uint32_t, uint32_t> graphics_base::swapchain_extent() const {
 
 uint32_t graphics_base::find_constant_value(const std::string_view& name) const {
   uint32_t i = 0;
-  for (; i < constant_values.size() && constant_values[i].name != name; ++i) {}
-  return i >= constant_values.size() ? INVALID_RESOURCE_SLOT : i;
+  for (; i < constant_values.size() && constant_values[i].name != name; ++i) {
+  }
+  return i >= constant_values.size() ? invalid_resource_slot : i;
 }
 
 uint32_t graphics_base::find_resource(const std::string_view& name) const {
   uint32_t i = 0;
-  for (; i < resources.size() && resources[i].name != name; ++i) {}
-  return i >= resources.size() ? INVALID_RESOURCE_SLOT : i;
+  for (; i < resources.size() && resources[i].name != name; ++i) {
+  }
+  return i >= resources.size() ? invalid_resource_slot : i;
 }
 
 uint32_t graphics_base::find_counter(const std::string_view& name) const {
   uint32_t i = 0;
-  for (; i < counters.size() && counters[i].name != name; ++i) {}
-  return i >= counters.size() ? INVALID_RESOURCE_SLOT : i;
+  for (; i < counters.size() && counters[i].name != name; ++i) {
+  }
+  return i >= counters.size() ? invalid_resource_slot : i;
 }
 
 uint32_t graphics_base::find_constant(const std::string_view& name) const {
   uint32_t i = 0;
-  for (; i < constants.size() && constants[i].name != name; ++i) {}
-  return i >= constants.size() ? INVALID_RESOURCE_SLOT : i;
+  for (; i < constants.size() && constants[i].name != name; ++i) {
+  }
+  return i >= constants.size() ? invalid_resource_slot : i;
 }
 
 uint32_t graphics_base::find_render_target(const std::string_view& name) const {
   uint32_t i = 0;
-  for (; i < render_targets.size() && render_targets[i].name != name; ++i) {}
-  return i >= render_targets.size() ? INVALID_RESOURCE_SLOT : i;
+  for (; i < render_targets.size() && render_targets[i].name != name; ++i) {
+  }
+  return i >= render_targets.size() ? invalid_resource_slot : i;
 }
 
 uint32_t graphics_base::find_descriptor(const std::string_view& name) const {
   uint32_t i = 0;
-  for (; i < descriptors.size() && descriptors[i].name != name; ++i) {}
-  return i >= descriptors.size() ? INVALID_RESOURCE_SLOT : i;
+  for (; i < descriptors.size() && descriptors[i].name != name; ++i) {
+  }
+  return i >= descriptors.size() ? invalid_resource_slot : i;
 }
 
 uint32_t graphics_base::find_sampler(const std::string_view& name) const {
   uint32_t i = 0;
-  for (; i < samplers.size() && samplers[i].name != name; ++i) {}
-  return i >= samplers.size() ? INVALID_RESOURCE_SLOT : i;
+  for (; i < samplers.size() && samplers[i].name != name; ++i) {
+  }
+  return i >= samplers.size() ? invalid_resource_slot : i;
 }
 
 uint32_t graphics_base::find_material(const std::string_view& name) const {
   uint32_t i = 0;
-  for (; i < materials.size() && materials[i].name != name; ++i) {}
-  return i >= materials.size() ? INVALID_RESOURCE_SLOT : i;
+  for (; i < materials.size() && materials[i].name != name; ++i) {
+  }
+  return i >= materials.size() ? invalid_resource_slot : i;
 }
 
 uint32_t graphics_base::find_geometry(const std::string_view& name) const {
   uint32_t i = 0;
-  for (; i < geometries.size() && geometries[i].name != name; ++i) {}
-  return i >= geometries.size() ? INVALID_RESOURCE_SLOT : i;
+  for (; i < geometries.size() && geometries[i].name != name; ++i) {
+  }
+  return i >= geometries.size() ? invalid_resource_slot : i;
 }
 
 //uint32_t painter_base::find_geometry_instance(const std::string_view& name) const {
 //  uint32_t i = 0;
 //  for (; i < geometry_instances.size() && geometry_instances[i].name != name; ++i) {}
-//  return i >= geometry_instances.size() ? INVALID_RESOURCE_SLOT : i;
+//  return i >= geometry_instances.size() ? invalid_resource_slot : i;
 //}
 
 uint32_t graphics_base::find_draw_group(const std::string_view& name) const {
   uint32_t i = 0;
-  for (; i < draw_groups.size() && draw_groups[i].name != name; ++i) {}
-  return i >= draw_groups.size() ? INVALID_RESOURCE_SLOT : i;
+  for (; i < draw_groups.size() && draw_groups[i].name != name; ++i) {
+  }
+  return i >= draw_groups.size() ? invalid_resource_slot : i;
 }
 
 uint32_t graphics_base::find_execution_step(const std::string_view& name) const {
   uint32_t i = 0;
-  for (; i < steps.size() && steps[i].name != name; ++i) {}
-  return i >= steps.size() ? INVALID_RESOURCE_SLOT : i;
+  for (; i < steps.size() && steps[i].name != name; ++i) {
+  }
+  return i >= steps.size() ? invalid_resource_slot : i;
 }
 
 uint32_t graphics_base::find_execution_pass(const std::string_view& name) const {
   uint32_t i = 0;
-  for (; i < passes.size() && passes[i].name != name; ++i) {}
-  return i >= passes.size() ? INVALID_RESOURCE_SLOT : i;
+  for (; i < passes.size() && passes[i].name != name; ++i) {
+  }
+  return i >= passes.size() ? invalid_resource_slot : i;
 }
 
 uint32_t graphics_base::find_render_graph(const std::string_view& name) const {
   uint32_t i = 0;
-  for (; i < graphs.size() && graphs[i].name != name; ++i) {}
-  return i >= graphs.size() ? INVALID_RESOURCE_SLOT : i;
+  for (; i < graphs.size() && graphs[i].name != name; ++i) {
+  }
+  return i >= graphs.size() ? invalid_resource_slot : i;
 }
 
 uint32_t graphics_base::find_semaphore(const std::string_view& name) const {
   uint32_t i = 0;
-  for (; i < semaphores.size() && semaphores[i].name != name; ++i) {}
-  return i >= semaphores.size() ? INVALID_RESOURCE_SLOT : i;
+  for (; i < semaphores.size() && semaphores[i].name != name; ++i) {
+  }
+  return i >= semaphores.size() ? invalid_resource_slot : i;
 }
 
 uint32_t graphics_base::register_pair(const uint32_t draw_group, const uint32_t mesh, const uint32_t max_count) {
   auto& group = DS_ASSERT_ARRAY_GET(draw_groups, draw_group);
 
   const uint32_t check = find_pair(draw_group, mesh);
-  if (check != INVALID_RESOURCE_SLOT) utils::error{}("Draw group '{}' already has pair with mesh {}", group.name, mesh);
+  if (check != invalid_resource_slot) {
+    utils::error{}("Draw group '{}' already has pair with mesh {}", group.name, mesh);
+  }
 
   uint32_t index = pairs.size();
   mesh_draw_group_pair* cur_pair = nullptr;
-  const auto itr = std::find_if(pairs.begin(), pairs.end(), [](const auto& pair) { return pair.draw_group == INVALID_RESOURCE_SLOT && pair.mesh == INVALID_RESOURCE_SLOT; });
+  const auto itr = std::find_if(pairs.begin(), pairs.end(), [](const auto& pair) {
+    return pair.draw_group == invalid_resource_slot && pair.mesh == invalid_resource_slot;
+  });
   if (itr != pairs.end()) {
     cur_pair = &(*itr);
     index = std::distance(pairs.begin(), itr);
@@ -1125,7 +1236,7 @@ uint32_t graphics_base::register_pair(const uint32_t draw_group, const uint32_t 
     const uint32_t last_pair_index = group.pairs.back();
     const auto& last_pair = DS_ASSERT_ARRAY_GET(pairs, last_pair_index);
     cur_pair->instance_offset = last_pair.instance_offset + last_pair.max_size * group.stride;
-    cur_pair->indirect_offset = last_pair.indirect_offset + last_pair.max_size * INDIRECT_BUFFER_SIZE;
+    cur_pair->indirect_offset = last_pair.indirect_offset + last_pair.max_size * indirect_buffer_size;
   }
 
   const auto& budget_cv = DS_ASSERT_ARRAY_GET(constant_values, group.budget_constant);
@@ -1152,37 +1263,45 @@ const void* graphics_base::get_constant_data(const uint32_t index) const {
 
 void graphics_base::write_constant_data(const uint32_t slot, const void* data, const size_t size) {
   const auto& constant = DS_ASSERT_ARRAY_GET(constants, slot);
-  if (constant.size < size) utils::error{}("Trying to copy object more size than constant '{}'", constant.name);
+  if (constant.size < size) {
+    utils::error{}("Trying to copy object more size than constant '{}'", constant.name);
+  }
   auto ptr = reinterpret_cast<void*>(constants_memory[1].data() + constant.offset);
   memcpy(ptr, data, size);
 }
 
 void graphics_base::unregister_pair(const uint32_t draw_group, const uint32_t mesh) {
   const uint32_t pair_index = find_pair(draw_group, mesh);
-  if (pair_index == INVALID_RESOURCE_SLOT) return;
+  if (pair_index == invalid_resource_slot) {
+    return;
+  }
 
   auto& group = DS_ASSERT_ARRAY_GET(draw_groups, draw_group);
   const auto itr = std::find(group.pairs.begin(), group.pairs.end(), pair_index);
   group.pairs.erase(itr);
 
   pairs[pair_index].draw_group_name.clear();
-  pairs[pair_index].draw_group = INVALID_RESOURCE_SLOT;
-  pairs[pair_index].mesh = INVALID_RESOURCE_SLOT;
+  pairs[pair_index].draw_group = invalid_resource_slot;
+  pairs[pair_index].mesh = invalid_resource_slot;
 }
 
 uint32_t graphics_base::find_pair(const uint32_t draw_group, const uint32_t mesh) const {
   for (uint32_t i = 0; i < pairs.size(); ++i) {
-    if (pairs[i].draw_group == draw_group && pairs[i].mesh == mesh) return i;
+    if (pairs[i].draw_group == draw_group && pairs[i].mesh == mesh) {
+      return i;
+    }
   }
 
-  return INVALID_RESOURCE_SLOT;
+  return invalid_resource_slot;
 }
 
 int32_t graphics_base::commit_parsed_resources(render_config_storage& storage) {
   // если дошли до этой точки то все связи уже в порядке (парсинг сделан снаружи, п.7)
 
   std::vector<std::string> draw_group_names(draw_groups.size());
-  for (uint32_t i = 0; i < draw_groups.size(); ++i) { draw_group_names[i] = draw_groups[i].name; }
+  for (uint32_t i = 0; i < draw_groups.size(); ++i) {
+    draw_group_names[i] = draw_groups[i].name;
+  }
 
   // на фоне может происходить несвязная работа
   vk::Queue(graphics).waitIdle();
@@ -1211,11 +1330,10 @@ int32_t graphics_base::commit_parsed_resources(render_config_storage& storage) {
   swapchain_slot = storage.swapchain_slot;
 
   DE_LOG(catalogue::log_domain::render, flow,
-    "graphics_base: parsed resources={}, graphs={}, swapchain_slot={}",
-    resources.size(),
-    graphs.size(),
-    swapchain_slot
-  );
+         "graphics_base: parsed resources={}, graphs={}, swapchain_slot={}",
+         resources.size(),
+         graphs.size(),
+         swapchain_slot);
 
   size_t offset = 0;
   for (auto& c : constants) {
@@ -1226,8 +1344,8 @@ int32_t graphics_base::commit_parsed_resources(render_config_storage& storage) {
   constants_memory[0].clear();
   constants_memory[1].clear();
 
-  constants_memory[0].resize(offset/sizeof(uint32_t), 0);
-  constants_memory[1].resize(offset/sizeof(uint32_t), 0);
+  constants_memory[0].resize(offset / sizeof(uint32_t), 0);
+  constants_memory[1].resize(offset / sizeof(uint32_t), 0);
 
   // Фаза 3: если заданы resident-графы — считаем объединённый used-set и создаём ТОЛЬКО
   // их ресурсы/дескрипторы. Иначе graph_filtered_ остаётся false ⇒ создаём всё
@@ -1238,15 +1356,18 @@ int32_t graphics_base::commit_parsed_resources(render_config_storage& storage) {
     graph_indices.reserve(resident_graphs_.size());
     for (const auto& graph_name : resident_graphs_) {
       const uint32_t gi = find_render_graph(graph_name);
-      if (gi == INVALID_RESOURCE_SLOT) {
+      if (gi == invalid_resource_slot) {
         utils::warn("graphics_base: resident graph '{}' not found — пропускаем", graph_name);
         continue;
       }
       graph_indices.push_back(gi);
     }
 
-    if (!graph_indices.empty()) compute_active_masks(graph_indices);
-    else utils::warn("graphics_base: no resident graphs found — создаём все ресурсы");
+    if (!graph_indices.empty()) {
+      compute_active_masks(graph_indices);
+    } else {
+      utils::warn("graphics_base: no resident graphs found — создаём все ресурсы");
+    }
   }
 
   // начинаем создавать все подряд
@@ -1266,16 +1387,19 @@ int32_t graphics_base::commit_parsed_resources(render_config_storage& storage) {
 }
 
 void graphics_base::recreate_swapchain(const uint32_t width, const uint32_t height) {
-  if (presentation_engine_type != presentation_engine_type::main) return;
+  if (presentation_engine_type != presentation_engine_type::main) {
+    return;
+  }
 
-  if (surface == VK_NULL_HANDLE) utils::error{}("Could not recreate swapchain: no surface");
+  if (surface == VK_NULL_HANDLE) {
+    utils::error{}("Could not recreate swapchain: no surface");
+  }
 
-  if (swapchain_slot == INVALID_RESOURCE_SLOT) {
+  if (swapchain_slot == invalid_resource_slot) {
     utils::error{}(
       "Could not recreate swapchain: resource with role 'present' was not created, resources={}, graphs={}",
       resources.size(),
-      graphs.size()
-    );
+      graphs.size());
   }
   auto& res = DS_ASSERT_ARRAY_GET(resources, swapchain_slot);
 
@@ -1343,12 +1467,15 @@ void graphics_base::recreate_swapchain(const uint32_t width, const uint32_t heig
   range.layerCount = 1;
 
   for (uint32_t i = 0; i < swapchain_images.size(); ++i) {
-    res.handles[i].index = INVALID_RESOURCE_SLOT;
+    res.handles[i].index = invalid_resource_slot;
     res.handles[i].subimage = std::bit_cast<subresource_image>(range);
 
     set_name(device, vk::Image(swapchain_images[i]), res.name + ".image" + std::to_string(i));
 
-    if (!needs_view) { res.handles[i].view = VK_NULL_HANDLE; continue; }
+    if (!needs_view) {
+      res.handles[i].view = VK_NULL_HANDLE;
+      continue;
+    }
 
     vk::ImageViewCreateInfo ivci{};
     ivci.image = swapchain_images[i];
@@ -1392,7 +1519,7 @@ void graphics_base::clear_prev_resources() {
 
 void graphics_base::create_samplers() {
   for (auto& s : samplers) {
-    sampler_maker sm{ vk::Device(device) };
+    sampler_maker sm{vk::Device(device)};
     sm.filter(vk::Filter(s.min_filter), vk::Filter(s.mag_filter));
     sm.mipmapMode(vk::SamplerMipmapMode(s.mipmap_mode));
     sm.addressMode(vk::SamplerAddressMode(s.address_u), vk::SamplerAddressMode(s.address_v), vk::SamplerAddressMode(s.address_w));
@@ -1403,7 +1530,9 @@ void graphics_base::create_samplers() {
 
 void graphics_base::create_descriptor_set_layouts() {
   for (uint32_t di = 0; di < descriptors.size(); ++di) {
-    if (!is_descriptor_active(di)) continue; // Фаза 3: дескриптор не нужен resident-графам
+    if (!is_descriptor_active(di)) {
+      continue; // Фаза 3: дескриптор не нужен resident-графам
+    }
     auto& desc = descriptors[di];
     descriptor_set_layout_maker dslm(device);
     // combined() хранит pImmutableSamplers = samplers.data(); держим эти векторы живыми до create()
@@ -1414,7 +1543,7 @@ void graphics_base::create_descriptor_set_layouts() {
       const auto& res = resources[slot];
       const uint32_t buffers_count = res.compute_buffering(this);
       const auto stage = vk::ShaderStageFlags(stages);
-      if (sampler_index != INVALID_RESOURCE_SLOT) {
+      if (sampler_index != invalid_resource_slot) {
         // sampled + sampler => combinedImageSampler с immutable-сэмплером (по одному на элемент массива)
         imm_keep.emplace_back(buffers_count, vk::Sampler(samplers[sampler_index].handle));
         dslm.combined(i, vk::DescriptorType::eCombinedImageSampler, stage, imm_keep.back());
@@ -1440,7 +1569,9 @@ void graphics_base::create_descriptor_set_layouts() {
       if (!desc.texture_samplers.empty()) {
         std::vector<vk::Sampler> pool;
         pool.reserve(desc.texture_samplers.size());
-        for (const uint32_t si : desc.texture_samplers) pool.push_back(vk::Sampler(samplers[si].handle));
+        for (const uint32_t si : desc.texture_samplers) {
+          pool.push_back(vk::Sampler(samplers[si].handle));
+        }
         imm_keep.push_back(std::move(pool));
         dslm.combined(img_binding + 1, vk::DescriptorType::eSampler, tex_stage, imm_keep.back());
       }
@@ -1455,14 +1586,17 @@ void graphics_base::create_descriptor_set_layouts() {
 // cmd-ресурсы и subpass/pass-барьеры (см. parse_execution_step2/parse_execution_pass2). Отдельно
 // доносим то, что read/write НЕ покрывает: буферы draw_group и ресурсы дескрипторов из step.sets.
 void graphics_base::compute_active_masks(const std::vector<uint32_t>& graph_indices) {
-  // Маски — bitset<MAXIMUM_RENDERING_RESOURCES_COUNT>; больше 256 графов/ресурсов/дескрипторов сейчас
+  // Маски — bitset<maximum_rendering_resources_count>; больше 256 графов/ресурсов/дескрипторов сейчас
   // неразумно — падаем громко (позже придумаем динамику).
-  if (graphs.size() > MAXIMUM_RENDERING_RESOURCES_COUNT)
-    utils::error{}("graphics_base: graphs={} exceed mask capacity {}", graphs.size(), MAXIMUM_RENDERING_RESOURCES_COUNT);
-  if (resources.size() > MAXIMUM_RENDERING_RESOURCES_COUNT)
-    utils::error{}("graphics_base: resources={} exceed mask capacity {}", resources.size(), MAXIMUM_RENDERING_RESOURCES_COUNT);
-  if (descriptors.size() > MAXIMUM_RENDERING_RESOURCES_COUNT)
-    utils::error{}("graphics_base: descriptors={} exceed mask capacity {}", descriptors.size(), MAXIMUM_RENDERING_RESOURCES_COUNT);
+  if (graphs.size() > maximum_rendering_resources_count) {
+    utils::error{}("graphics_base: graphs={} exceed mask capacity {}", graphs.size(), maximum_rendering_resources_count);
+  }
+  if (resources.size() > maximum_rendering_resources_count) {
+    utils::error{}("graphics_base: resources={} exceed mask capacity {}", resources.size(), maximum_rendering_resources_count);
+  }
+  if (descriptors.size() > maximum_rendering_resources_count) {
+    utils::error{}("graphics_base: descriptors={} exceed mask capacity {}", descriptors.size(), maximum_rendering_resources_count);
+  }
 
   graph_active_mask_.reset();
   resource_active_mask_.reset();
@@ -1470,14 +1604,20 @@ void graphics_base::compute_active_masks(const std::vector<uint32_t>& graph_indi
   graph_filtered_ = true;
 
   const auto mark_res = [&](const uint32_t idx) {
-    if (idx != INVALID_RESOURCE_SLOT && idx < resources.size()) resource_active_mask_.set(idx);
+    if (idx != invalid_resource_slot && idx < resources.size()) {
+      resource_active_mask_.set(idx);
+    }
   };
   const auto mark_desc = [&](const uint32_t idx) {
-    if (idx != INVALID_RESOURCE_SLOT && idx < descriptors.size()) descriptor_active_mask_.set(idx);
+    if (idx != invalid_resource_slot && idx < descriptors.size()) {
+      descriptor_active_mask_.set(idx);
+    }
   };
 
   for (const uint32_t graph_index : graph_indices) {
-    if (graph_index >= graphs.size()) continue;
+    if (graph_index >= graphs.size()) {
+      continue;
+    }
     graph_active_mask_.set(graph_index);
 
     const auto& graph = DS_ASSERT_ARRAY_GET(graphs, graph_index);
@@ -1487,27 +1627,45 @@ void graphics_base::compute_active_masks(const std::vector<uint32_t>& graph_indi
       const auto& pass = DS_ASSERT_ARRAY_GET(passes, pass_index);
 
       // pass-level барьеры и subpass-вложения (все слоты; read/write НЕ покрывает transfer_dst/upload и т.п.)
-      for (const auto& group : pass.barriers)  for (const auto& info : group) mark_res(info.slot);
-      for (const auto& group : pass.subpasses) for (const auto& info : group) mark_res(info.slot);
+      for (const auto& group : pass.barriers) {
+        for (const auto& info : group) {
+          mark_res(info.slot);
+        }
+      }
+      for (const auto& group : pass.subpasses) {
+        for (const auto& info : group) {
+          mark_res(info.slot);
+        }
+      }
 
-      if (pass.render_target != INVALID_RESOURCE_SLOT) {
+      if (pass.render_target != invalid_resource_slot) {
         const auto& rt = DS_ASSERT_ARRAY_GET(render_targets, pass.render_target);
-        for (const auto& [res_idx, usage] : rt.resources) mark_res(res_idx);
+        for (const auto& [res_idx, usage] : rt.resources) {
+          mark_res(res_idx);
+        }
       }
 
       for (const uint32_t step_index : pass.steps) {
-        if (step_index == UINT32_MAX) continue; // маркер next_subpass
+        if (step_index == UINT32_MAX) {
+          continue; // маркер next_subpass
+        }
         const auto& step = DS_ASSERT_ARRAY_GET(steps, step_index);
 
         // step.barriers уже вбирает barriers + step.resources (local-descr) + cmd_params.resources
         // (см. parse_execution_step2), но берём ещё и cmd_params явно — над-аппроксимация безопасна.
-        for (const auto& [res_idx, usage] : step.barriers) mark_res(res_idx);
-        for (const auto& [res_idx, usage] : step.cmd_params.resources) mark_res(res_idx);
+        for (const auto& [res_idx, usage] : step.barriers) {
+          mark_res(res_idx);
+        }
+        for (const auto& [res_idx, usage] : step.cmd_params.resources) {
+          mark_res(res_idx);
+        }
 
         mark_desc(step.descriptor);
-        for (const uint32_t d : step.sets) mark_desc(d);
+        for (const uint32_t d : step.sets) {
+          mark_desc(d);
+        }
 
-        if (step.draw_group != INVALID_RESOURCE_SLOT) {
+        if (step.draw_group != invalid_resource_slot) {
           const auto& dg = DS_ASSERT_ARRAY_GET(draw_groups, step.draw_group);
           mark_res(dg.instances_buffer);
           mark_res(dg.indirect_buffer);
@@ -1519,14 +1677,17 @@ void graphics_base::compute_active_masks(const std::vector<uint32_t>& graph_indi
 
   // used-дескрипторы → их layout-ресурсы (ресурсы из sets, не попавшие в pass.read/write)
   for (uint32_t d = 0; d < descriptors.size(); ++d) {
-    if (!descriptor_active_mask_[d]) continue;
-    for (const auto& [slot, usage, sampler_index, stages] : descriptors[d].layout) mark_res(slot);
+    if (!descriptor_active_mask_[d]) {
+      continue;
+    }
+    for (const auto& [slot, usage, sampler_index, stages] : descriptors[d].layout) {
+      mark_res(slot);
+    }
   }
 
   DE_LOG(catalogue::log_domain::render, flow,
-    "graphics_base: {} resident graph(s) use {}/{} resources, {}/{} descriptors",
-    graph_active_mask_.count(), resource_active_mask_.count(), resources.size(), descriptor_active_mask_.count(), descriptors.size()
-  );
+         "graphics_base: {} resident graph(s) use {}/{} resources, {}/{} descriptors",
+         graph_active_mask_.count(), resource_active_mask_.count(), resources.size(), descriptor_active_mask_.count(), descriptors.size());
 }
 
 void graphics_base::create_resources() {
@@ -1568,24 +1729,34 @@ void graphics_base::create_resources() {
 
   if (graph_filtered_) {
     for (uint32_t gi = 0; gi < graphs.size(); ++gi) {
-      if (!is_graph_active(gi)) continue;
+      if (!is_graph_active(gi)) {
+        continue;
+      }
       const auto& graph = graphs[gi];
       for (const uint32_t pass_index : graph.passes) {
         const auto& pass = DS_ASSERT_ARRAY_GET(passes, pass_index);
         for (const uint32_t step_index : pass.steps) {
-          if (step_index == UINT32_MAX) continue;
+          if (step_index == UINT32_MAX) {
+            continue;
+          }
           consume_step(DS_ASSERT_ARRAY_GET(steps, step_index));
         }
         consume_pass(pass);
       }
     }
   } else {
-    for (const auto& step : steps) consume_step(step);
-    for (const auto& pass : passes) consume_pass(pass);
+    for (const auto& step : steps) {
+      consume_step(step);
+    }
+    for (const auto& pass : passes) {
+      consume_pass(pass);
+    }
   }
 
   for (uint32_t di = 0; di < descriptors.size(); ++di) {
-    if (!is_descriptor_active(di)) continue;
+    if (!is_descriptor_active(di)) {
+      continue;
+    }
     for (const auto& [res_index, usage, sampler_index, stages] : descriptors[di].layout) {
       add_usage(res_index, usage);
     }
@@ -1597,7 +1768,9 @@ void graphics_base::create_resources() {
 
   // имя?
   struct matching_resources {
-    struct { uint32_t x, y; } extent;
+    struct {
+      uint32_t x, y;
+    } extent;
     uint32_t format;
     uint32_t usage_mask;
     uint32_t mips;
@@ -1632,8 +1805,12 @@ void graphics_base::create_resources() {
       res.usage_mask = res.usage_mask | static_cast<uint32_t>(buffer_flags[i]);
     }
 
-    if (res.role == role::present) continue;
-    if (!is_resource_active(i)) continue; // Фаза 3: ресурс не нужен активному графу — не создаём контейнер
+    if (res.role == role::present) {
+      continue;
+    }
+    if (!is_resource_active(i)) {
+      continue; // Фаза 3: ресурс не нужен активному графу — не создаём контейнер
+    }
 
     const bool is_buffer = role::is_buffer(res.role);
     //const auto& size_value = DS_ASSERT_ARRAY_GET(constant_values, res.size);
@@ -1649,11 +1826,11 @@ void graphics_base::create_resources() {
 
     auto [buffer_size, img_ext] = res.compute_frame_size(this);
     const uint32_t buffering = res.compute_buffering(this);
-    auto image_extent = vk::Extent2D{ std::get<0>(img_ext), std::get<1>(img_ext) };
+    auto image_extent = vk::Extent2D{std::get<0>(img_ext), std::get<1>(img_ext)};
     const size_t frame_size = buffer_size;
     const size_t frame_stride = is_buffer
-      ? utils::align_to(frame_size, buffer_suballocation_alignment(physical_device, res.usage_mask))
-      : frame_size;
+                                  ? utils::align_to(frame_size, buffer_suballocation_alignment(physical_device, res.usage_mask))
+                                  : frame_size;
     frame_sizes[i] = frame_size;
     frame_strides[i] = frame_stride;
 
@@ -1701,10 +1878,13 @@ void graphics_base::create_resources() {
     //  buffer_size = sizeof(vk::DrawIndirectCommand) * 2;
     //}
 
-
     auto itr = std::find_if(matching.begin(), matching.end(), [&](const auto& data) -> bool {
-      if (is_buffer != data.is_buffer) return false;
-      if (is_host_resource != data.is_host_resource) return false;
+      if (is_buffer != data.is_buffer) {
+        return false;
+      }
+      if (is_host_resource != data.is_host_resource) {
+        return false;
+      }
 
       if (is_buffer && data.is_buffer) {
         return res.usage_mask == data.usage_mask;
@@ -1719,7 +1899,7 @@ void graphics_base::create_resources() {
 
     if (itr == matching.end()) {
       matching.emplace_back();
-      matching.back().extent = { image_extent.width, image_extent.height };
+      matching.back().extent = {image_extent.width, image_extent.height};
       matching.back().format = res.format_hint;
       matching.back().usage_mask = res.usage_mask;
       matching.back().mips = res_mips;
@@ -1731,16 +1911,21 @@ void graphics_base::create_resources() {
       matching.back().size = 0;
       matching.back().layer_size = frame_stride;
 
-      itr = matching.begin() + (matching.size()-1);
+      itr = matching.begin() + (matching.size() - 1);
     }
 
     // буферизация присутствует для всех, но по слоям она только у картинок
     // на хосте никаких layers наверное не будет и нужно несколько ресурсов городить
     // не будет, да надо в принципе отказаться от host visible картинок в этом контексте
-    if (!is_buffer) itr->layers += buffering;
+    if (!is_buffer) {
+      itr->layers += buffering;
+    }
     itr->size += frame_stride * buffering;
-    if (itr->name.empty()) itr->name = res.name;
-    else itr->name += " | " + res.name;
+    if (itr->name.empty()) {
+      itr->name = res.name;
+    } else {
+      itr->name += " | " + res.name;
+    }
 
     container_table[i] = std::distance(matching.begin(), itr);
   }
@@ -1752,7 +1937,7 @@ void graphics_base::create_resources() {
     cont.layers = data.layers;
     cont.mips = data.mips;
     cont.usage_mask = data.usage_mask;
-    cont.extent = { data.extent.x, data.extent.y };
+    cont.extent = {data.extent.x, data.extent.y};
     cont.size = data.size;
     cont.mem_ptr = nullptr;
 
@@ -1765,8 +1950,12 @@ void graphics_base::create_resources() {
   for (uint32_t i = 0; i < resources.size(); ++i) {
     auto& res = resources[i];
 
-    if (res.role == role::present) continue; // swapchain создаётся отдельно в recreate_swapchain()
-    if (!is_resource_active(i)) continue; // Фаза 3: пропускаем неактивные
+    if (res.role == role::present) {
+      continue; // swapchain создаётся отдельно в recreate_swapchain()
+    }
+    if (!is_resource_active(i)) {
+      continue; // Фаза 3: пропускаем неактивные
+    }
 
     const uint32_t cont_index = container_table[i];
 
@@ -1786,11 +1975,21 @@ void graphics_base::create_resources() {
 
         const auto fmt = static_cast<vk::Format>(res.format_hint);
         vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor;
-        if (fmt == vk::Format::eD16Unorm) aspect = vk::ImageAspectFlagBits::eDepth;
-        if (fmt == vk::Format::eD32Sfloat) aspect = vk::ImageAspectFlagBits::eDepth;
-        if (fmt == vk::Format::eD16UnormS8Uint) aspect = vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
-        if (fmt == vk::Format::eD24UnormS8Uint) aspect = vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
-        if (fmt == vk::Format::eD32SfloatS8Uint) aspect = vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
+        if (fmt == vk::Format::eD16Unorm) {
+          aspect = vk::ImageAspectFlagBits::eDepth;
+        }
+        if (fmt == vk::Format::eD32Sfloat) {
+          aspect = vk::ImageAspectFlagBits::eDepth;
+        }
+        if (fmt == vk::Format::eD16UnormS8Uint) {
+          aspect = vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
+        }
+        if (fmt == vk::Format::eD24UnormS8Uint) {
+          aspect = vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
+        }
+        if (fmt == vk::Format::eD32SfloatS8Uint) {
+          aspect = vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
+        }
 
         vk::ImageViewCreateInfo ivci{};
         ivci.image = img_handle;
@@ -1829,33 +2028,54 @@ void graphics_base::recreate_descriptor_pool() {
   const uint32_t frames = frames_in_flight();
   std::vector<std::pair<vk::DescriptorType, uint32_t>> counts;
   const auto add = [&](const vk::DescriptorType t, const uint32_t c) {
-    for (auto& [tt, cc] : counts) { if (tt == t) { cc += c; return; } }
+    for (auto& [tt, cc] : counts) {
+      if (tt == t) {
+        cc += c;
+        return;
+      }
+    }
     counts.emplace_back(t, c);
   };
 
   uint32_t sets_total = 0;
   for (uint32_t di = 0; di < descriptors.size(); ++di) {
-    if (!is_descriptor_active(di)) continue;
+    if (!is_descriptor_active(di)) {
+      continue;
+    }
     const auto& d = descriptors[di];
     for (const auto& [slot, usage, sampler_index, stages] : d.layout) {
       const uint32_t buffering = resources[slot].compute_buffering(this);
-      if (sampler_index != INVALID_RESOURCE_SLOT) add(vk::DescriptorType::eCombinedImageSampler, buffering);
-      else add(convertdt(usage), buffering);
+      if (sampler_index != invalid_resource_slot) {
+        add(vk::DescriptorType::eCombinedImageSampler, buffering);
+      } else {
+        add(convertdt(usage), buffering);
+      }
     }
     if (d.texture_count > 0) {
-      add(vk::DescriptorType::eSampledImage, d.texture_count);          // массив картинок (пишется)
-      if (!d.texture_samplers.empty()) add(vk::DescriptorType::eSampler, uint32_t(d.texture_samplers.size())); // immutable пул
+      add(vk::DescriptorType::eSampledImage, d.texture_count); // массив картинок (пишется)
+      if (!d.texture_samplers.empty()) {
+        add(vk::DescriptorType::eSampler, uint32_t(d.texture_samplers.size())); // immutable пул
+      }
     }
     sets_total += frames;
   }
 
   std::vector<vk::DescriptorPoolSize> sizes;
   sizes.reserve(counts.size());
-  for (const auto& [t, c] : counts) if (c > 0) sizes.emplace_back(t, c * frames);
-  if (sizes.empty()) sizes.emplace_back(vk::DescriptorType::eUniformBuffer, 1); // пустой пул создавать нельзя
+  for (const auto& [t, c] : counts) {
+    if (c > 0) {
+      sizes.emplace_back(t, c * frames);
+    }
+  }
+  if (sizes.empty()) {
+    sizes.emplace_back(vk::DescriptorType::eUniformBuffer, 1); // пустой пул создавать нельзя
+  }
 
   vk::Device dev(device);
-  if (descriptor_pool != VK_NULL_HANDLE) { dev.destroy(descriptor_pool); descriptor_pool = VK_NULL_HANDLE; }
+  if (descriptor_pool != VK_NULL_HANDLE) {
+    dev.destroy(descriptor_pool);
+    descriptor_pool = VK_NULL_HANDLE;
+  }
 
   vk::DescriptorPoolCreateInfo dpci{};
   dpci.maxSets = std::max(256u, sets_total);
@@ -1867,7 +2087,9 @@ void graphics_base::recreate_descriptor_pool() {
 
 void graphics_base::create_descriptor_sets() {
   for (uint32_t di = 0; di < descriptors.size(); ++di) {
-    if (!is_descriptor_active(di)) continue; // Фаза 3: дескриптор не нужен активному графу
+    if (!is_descriptor_active(di)) {
+      continue; // Фаза 3: дескриптор не нужен активному графу
+    }
     auto& d = descriptors[di];
     descriptor_set_maker dsm(device);
     for (uint32_t i = 0; i < frames_in_flight(); ++i) {
@@ -1899,7 +2121,9 @@ void graphics_base::update_descriptors() {
   const uint32_t current_set_index = cur_frame_index % frames_in_flight_count;
 
   for (uint32_t i = 0; i < descriptors.size(); ++i) {
-    if (!is_descriptor_active(i)) continue; // Фаза 3: пропускаем дескрипторы вне активного графа
+    if (!is_descriptor_active(i)) {
+      continue; // Фаза 3: пропускаем дескрипторы вне активного графа
+    }
     const auto& d = descriptors[i];
     const auto set = d.sets[current_set_index];
 
@@ -1908,7 +2132,7 @@ void graphics_base::update_descriptors() {
       const auto& res = resources[res_index];
       const uint32_t buffering = res.compute_buffering(this);
       const bool is_image = role::is_image(res.role);
-      const bool combined = sampler_index != INVALID_RESOURCE_SLOT;
+      const bool combined = sampler_index != invalid_resource_slot;
 
       writes.emplace_back();
       writes.back().dstSet = set;
@@ -2022,17 +2246,23 @@ void graphics_base::update_descriptors() {
 }
 
 void graphics_base::wait_fence() {
-  if (!can_draw()) return;
+  if (!can_draw()) {
+    return;
+  }
 
   auto f = fences[computed_current_frame_index];
   const size_t sec1 = size_t(1000) * size_t(1000) * size_t(1000);
   const auto res = vk::Device(device).waitForFences(vk::Fence(f), true, sec1);
-  if (res != vk::Result::eSuccess) utils::error{}("waitForFences failed for current frame {}", current_frame_index());
+  if (res != vk::Result::eSuccess) {
+    utils::error{}("waitForFences failed for current frame {}", current_frame_index());
+  }
   vk::Device(device).resetFences(vk::Fence(f));
 }
 
 render_graph_instance graphics_base::create_render_graph_instance(const uint32_t index) {
-  if (index >= graphs.size()) utils::error{}("Try to get graph with index {}, but array has {} graphs", index, graphs.size());
+  if (index >= graphs.size()) {
+    utils::error{}("Try to get graph with index {}, but array has {} graphs", index, graphs.size());
+  }
 
   const auto& graph = DS_ASSERT_ARRAY_GET(graphs, index);
 
@@ -2089,27 +2319,29 @@ render_graph_instance graphics_base::create_render_graph_instance(const uint32_t
 
       step_interface* cur_step = nullptr;
       switch (step.cmd_params.type) {
-        case command::values::draw                 : cur_step = create_render_step<graphics_draw>                 (out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
-        case command::values::draw_indexed         : cur_step = create_render_step<graphics_draw_indexed>         (out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
-        case command::values::draw_indirect        : cur_step = create_render_step<graphics_draw_indirect>        (out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
+        case command::values::draw: cur_step = create_render_step<graphics_draw>(out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
+        case command::values::draw_indexed: cur_step = create_render_step<graphics_draw_indexed>(out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
+        case command::values::draw_indirect: cur_step = create_render_step<graphics_draw_indirect>(out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
         case command::values::draw_indexed_indirect: cur_step = create_render_step<graphics_draw_indexed_indirect>(out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
-        case command::values::draw_constant        : cur_step = create_render_step<graphics_draw_constant>        (out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
+        case command::values::draw_constant: cur_step = create_render_step<graphics_draw_constant>(out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
         case command::values::draw_indexed_constant: cur_step = create_render_step<graphics_draw_indexed_constant>(out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
-        case command::values::draw_ui               : cur_step = create_render_step<graphics_draw_ui>              (out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
-        case command::values::dispatch_indirect    : cur_step = create_render_step<compute_dispatch_indirect>     (out, step_index, device); break;
-        case command::values::dispatch_constant    : cur_step = create_render_step<compute_dispatch_constant>     (out, step_index, device); break;
-        case command::values::copy_buffer          : cur_step = create_render_step<transfer_copy_buffer>          (out, step_index); break;
-        case command::values::copy_image           : cur_step = create_render_step<transfer_copy_image>           (out, step_index); break;
-        case command::values::copy_buffer_image    : cur_step = create_render_step<transfer_copy_buffer_image>    (out, step_index); break;
-        case command::values::copy_image_buffer    : cur_step = create_render_step<transfer_copy_image_buffer>    (out, step_index); break;
-        case command::values::blit_linear          : cur_step = create_render_step<transfer_blit_linear>          (out, step_index); break;
-        case command::values::blit_nearest         : cur_step = create_render_step<transfer_blit_nearest>         (out, step_index); break;
-        case command::values::clear_color          : cur_step = create_render_step<transfer_clear_color>          (out, step_index); break;
-        case command::values::clear_depth          : cur_step = create_render_step<transfer_clear_depth>          (out, step_index); break;
+        case command::values::draw_ui: cur_step = create_render_step<graphics_draw_ui>(out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
+        case command::values::dispatch_indirect: cur_step = create_render_step<compute_dispatch_indirect>(out, step_index, device); break;
+        case command::values::dispatch_constant: cur_step = create_render_step<compute_dispatch_constant>(out, step_index, device); break;
+        case command::values::copy_buffer: cur_step = create_render_step<transfer_copy_buffer>(out, step_index); break;
+        case command::values::copy_image: cur_step = create_render_step<transfer_copy_image>(out, step_index); break;
+        case command::values::copy_buffer_image: cur_step = create_render_step<transfer_copy_buffer_image>(out, step_index); break;
+        case command::values::copy_image_buffer: cur_step = create_render_step<transfer_copy_image_buffer>(out, step_index); break;
+        case command::values::blit_linear: cur_step = create_render_step<transfer_blit_linear>(out, step_index); break;
+        case command::values::blit_nearest: cur_step = create_render_step<transfer_blit_nearest>(out, step_index); break;
+        case command::values::clear_color: cur_step = create_render_step<transfer_clear_color>(out, step_index); break;
+        case command::values::clear_depth: cur_step = create_render_step<transfer_clear_depth>(out, step_index); break;
         default: break;
       }
 
-      if (cur_step == nullptr) utils::error{}("Invalid command parameter {}", static_cast<uint32_t>(step.cmd_params.type));
+      if (cur_step == nullptr) {
+        utils::error{}("Invalid command parameter {}", static_cast<uint32_t>(step.cmd_params.type));
+      }
 
       group.steps.push_back(cur_step);
     }
@@ -2144,9 +2376,15 @@ render_graph_instance graphics_base::create_render_graph_instance(const uint32_t
     const uint32_t pass_index = graph.passes[i];
     const auto& pass = DS_ASSERT_ARRAY_GET(passes, pass_index);
     vk::PipelineStageFlags wait_for_stages{};
-    if (pass.has_step_type(step_type::graphics)) wait_for_stages = wait_for_stages | vk::PipelineStageFlagBits::eAllGraphics;
-    if (pass.has_step_type(step_type::compute)) wait_for_stages = wait_for_stages | vk::PipelineStageFlagBits::eComputeShader;
-    if (pass.has_step_type(step_type::transfer)) wait_for_stages = wait_for_stages | vk::PipelineStageFlagBits::eTransfer;
+    if (pass.has_step_type(step_type::graphics)) {
+      wait_for_stages = wait_for_stages | vk::PipelineStageFlagBits::eAllGraphics;
+    }
+    if (pass.has_step_type(step_type::compute)) {
+      wait_for_stages = wait_for_stages | vk::PipelineStageFlagBits::eComputeShader;
+    }
+    if (pass.has_step_type(step_type::transfer)) {
+      wait_for_stages = wait_for_stages | vk::PipelineStageFlagBits::eTransfer;
+    }
 
     static_assert(step_type::count == 3);
 
@@ -2154,7 +2392,7 @@ render_graph_instance graphics_base::create_render_graph_instance(const uint32_t
     auto& group = DS_ASSERT_ARRAY_GET(out.groups, i);
     for (const auto& name : pass.wait_for) {
       const uint32_t global_index = find_semaphore(name);
-      if (global_index != INVALID_RESOURCE_SLOT) {
+      if (global_index != invalid_resource_slot) {
         const auto& sem = DS_ASSERT_ARRAY_GET(semaphores, global_index);
         for (uint32_t j = 0; j < group.frames.size(); ++j) {
           const uint32_t sem_index = j; // тот же кадр
@@ -2166,10 +2404,10 @@ render_graph_instance graphics_base::create_render_graph_instance(const uint32_t
       }
 
       const uint32_t local_index = out.find_semaphore(name);
-      if (local_index != INVALID_RESOURCE_SLOT) {
+      if (local_index != invalid_resource_slot) {
         const auto& sem = DS_ASSERT_ARRAY_GET(out.local_semaphores, local_index);
         for (uint32_t j = 0; j < group.frames.size(); ++j) {
-          const uint32_t sem_index = j == 0 ? group.frames.size()-1 : j-1; // предыдущий кадр
+          const uint32_t sem_index = j == 0 ? group.frames.size() - 1 : j - 1; // предыдущий кадр
           group.frames[j].wait_for.push_back(sem.handles[sem_index]);
           group.frames[j].wait_for_stages.push_back(static_cast<uint32_t>(wait_for_stages));
         }
@@ -2194,7 +2432,7 @@ void graphics_base::change_render_graph(const uint32_t index) {
   // command buffers/local semaphores). Пайплайны собираются из подготовленного assets-потоком SPIR-V.
   if (graph_filtered_ && index < graphs.size() && !is_graph_active(index)) {
     utils::warn("change_render_graph: graph '{}' не входит в resident-набор — его ресурсы могли не создаться",
-      DS_ASSERT_ARRAY_GET(graphs, index).name);
+                DS_ASSERT_ARRAY_GET(graphs, index).name);
   }
 
   auto next_graph = create_render_graph_instance(index);
@@ -2214,7 +2452,7 @@ void graphics_base::change_render_graph(const uint32_t index) {
 
 bool graphics_base::presentable_state_stable() const {
   return presentation_engine_type != presentation_engine_type::main ||
-    (presentation_engine_type == presentation_engine_type::main && current_presentable_state == static_cast<uint32_t>(vk::Result::eSuccess));
+         (presentation_engine_type == presentation_engine_type::main && current_presentable_state == static_cast<uint32_t>(vk::Result::eSuccess));
 }
 
 bool graphics_base::presentable_state_suboptimal() const {
@@ -2248,7 +2486,7 @@ void graphics_ctx::prepare() {
       resources[i].subimg = cur_handle.subimage;
       resources[i].view = cur_handle.view;
       const auto [x, y] = base->swapchain_extent();
-      resources[i].extent = { x, y };
+      resources[i].extent = {x, y};
       resources[i].role = base_res.role;
       resources[i].usage = usage::undefined;
       continue;
@@ -2260,14 +2498,14 @@ void graphics_ctx::prepare() {
       resources[i].img = std::bit_cast<VkImage>(base_res_container.handle);
       resources[i].subimg = cur_handle.subimage;
       resources[i].view = cur_handle.view;
-      resources[i].extent = { base_res_container.extent.x, base_res_container.extent.y };
+      resources[i].extent = {base_res_container.extent.x, base_res_container.extent.y};
       resources[i].role = base_res.role;
       resources[i].usage = usage::undefined;
     } else {
       resources[i].buf = std::bit_cast<VkBuffer>(base_res_container.handle);
       resources[i].subbuf = cur_handle.subbuffer;
       resources[i].view = VK_NULL_HANDLE;
-      resources[i].extent = { base_res_container.extent.x, base_res_container.extent.y };
+      resources[i].extent = {base_res_container.extent.x, base_res_container.extent.y};
       resources[i].role = base_res.role;
       resources[i].usage = usage::undefined;
     }
@@ -2285,9 +2523,11 @@ void graphics_ctx::prepare() {
 }
 
 void graphics_ctx::draw() {
-  if (!base->can_draw()) return;
+  if (!base->can_draw()) {
+    return;
+  }
   base->execution_graph.process(this, VK_NULL_HANDLE);
 }
 
-}
-}
+} // namespace painter
+} // namespace devils_engine

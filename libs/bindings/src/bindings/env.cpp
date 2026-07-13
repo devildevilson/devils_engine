@@ -1,13 +1,12 @@
-#include "env.h"
-
 #include <queue>
 #include <vector>
 
-#include "devils_engine/utils/prng.h"
-#include "devils_engine/utils/dice.h"
-#include "devils_engine/utils/time-utils.hpp"
 #include "devils_engine/utils/core.h"
+#include "devils_engine/utils/dice.h"
+#include "devils_engine/utils/prng.h"
 #include "devils_engine/utils/shared.h"
+#include "devils_engine/utils/time-utils.hpp"
+#include "env.h"
 
 namespace devils_engine {
 namespace bindings {
@@ -54,14 +53,14 @@ sol::environment create_env(sol::state_view s) {
   env["_G"] = env;
   s["security_env"] = env;
 
-  for (const auto &name : whitelisted) {
+  for (const auto& name : whitelisted) {
     env[name] = s[name];
   }
 
-  for (const auto &name : safe_libraries) {
+  for (const auto& name : safe_libraries) {
     sol::table copy(s, sol::create);
     const sol::table t = s[name];
-    for (const auto &pair : t) {
+    for (const auto& pair : t) {
       copy[pair.first] = pair.second;
     }
     env[name] = copy;
@@ -81,34 +80,52 @@ sol::environment create_env(sol::state_view s) {
 }
 
 static constexpr double pack_u32f32(const uint32_t a, const float b) {
-  struct s { uint32_t u32; float f32; };
+  struct s {
+    uint32_t u32;
+    float f32;
+  };
   return std::bit_cast<double>(s{a, b});
 }
 
 static constexpr double pack_u32u32(const uint32_t a, const uint32_t b) {
-  struct s { uint32_t u32_1; uint32_t u32_2; };
+  struct s {
+    uint32_t u32_1;
+    uint32_t u32_2;
+  };
   return std::bit_cast<double>(s{a, b});
 }
 
 static constexpr double pack_f32f32(const float a, const float b) {
-  struct s { float f32_1; float f32_2; };
+  struct s {
+    float f32_1;
+    float f32_2;
+  };
   return std::bit_cast<double>(s{a, b});
 }
 
 static constexpr std::tuple<uint32_t, float> unpack_u32f32(const double cont) {
-  struct s { uint32_t u32; float f32; };
+  struct s {
+    uint32_t u32;
+    float f32;
+  };
   const auto s1 = std::bit_cast<s>(cont);
   return std::make_tuple(s1.u32, s1.f32);
 }
 
 static constexpr std::tuple<uint32_t, uint32_t> unpack_u32u32(const double cont) {
-  struct s { uint32_t u32_1; uint32_t u32_2; };
+  struct s {
+    uint32_t u32_1;
+    uint32_t u32_2;
+  };
   const auto s1 = std::bit_cast<s>(cont);
   return std::make_tuple(s1.u32_1, s1.u32_2);
 }
 
 static constexpr std::tuple<float, float> unpack_f32f32(const double cont) {
-  struct s { float f32_1; float f32_2; };
+  struct s {
+    float f32_1;
+    float f32_2;
+  };
   const auto s1 = std::bit_cast<s>(cont);
   return std::make_tuple(s1.f32_1, s1.f32_2);
 }
@@ -156,39 +173,55 @@ static double prng64_normalize(const int64_t value) {
 // --- rng_state: непрозрачная обёртка prng-состояния для lua (см. env.h) ---
 // Следующее состояние = splitmix-хеш текущего (тот же шаг, что prng64(int) выше). Цепочка
 // prng64(prng64(s)) даёт детерминированный поток, отвязанный от обычной математики скрипта.
-static rng_state prng64_next(const rng_state& s) noexcept { return rng_state{ prng64_raw(s.s) }; }
+static rng_state prng64_next(const rng_state& s) noexcept {
+  return rng_state{prng64_raw(s.s)};
+}
 
 // value(s) -> [0,1): нормализуем состояние. Состояние уже хорошо перемешано (пришло из prng64/микса).
-static double value_normalize(const rng_state& s) noexcept { return utils::prng_normalize(s.s); }
+static double value_normalize(const rng_state& s) noexcept {
+  return utils::prng_normalize(s.s);
+}
 
 // value(s, n, m) -> целое [n, m] включительно. Равномерно из нормализованного состояния.
 static int64_t value_interval(const rng_state& s, const int64_t n, const int64_t m) noexcept {
-  if (m <= n) return n;
+  if (m <= n) {
+    return n;
+  }
   const uint64_t range = uint64_t(m - n) + 1ull;
   int64_t v = n + int64_t(utils::prng_normalize(s.s) * double(range));
-  if (v > m) v = m; // страховка на случай нормализации, близкой к 1.0
+  if (v > m) {
+    v = m; // страховка на случай нормализации, близкой к 1.0
+  }
   return v;
 }
 
 // смешивание двух состояний (метаметод '+' и как обычная функция): mix — не сложение, а хеш-микс.
-static rng_state rng_mix(const rng_state& a, const rng_state& b) noexcept { return rng_state{ utils::mix(a.s, b.s) }; }
+static rng_state rng_mix(const rng_state& a, const rng_state& b) noexcept {
+  return rng_state{utils::mix(a.s, b.s)};
+}
 
 // 'rng_state + int' — прокрутить состояние N раз вперёд (N<=0 → без изменений). Тот же шаг, что prng64/next.
 static rng_state rng_advance(const rng_state& s, const int64_t n) noexcept {
   uint64_t v = s.s;
   const uint64_t count = n <= 0 ? 0ull : static_cast<uint64_t>(n);
-  for (uint64_t i = 0; i < count; ++i) v = prng64_raw(v);
-  return rng_state{ v };
+  for (uint64_t i = 0; i < count; ++i) {
+    v = prng64_raw(v);
+  }
+  return rng_state{v};
 }
 
 // сид -> начальное состояние (хешируем, чтобы даже соседние сиды давали разные потоки).
-static rng_state rng_from_seed(const double seed) noexcept { return rng_state{ prng64_raw(s64_to_u64(int64_t(seed))) }; }
+static rng_state rng_from_seed(const double seed) noexcept {
+  return rng_state{prng64_raw(s64_to_u64(int64_t(seed)))};
+}
 
-static sol::table create_array(const double num, const sol::object &obj, sol::this_state, sol::this_environment e) {
+static sol::table create_array(const double num, const sol::object& obj, sol::this_state, sol::this_environment e) {
   const size_t size = num;
   sol::environment env = e;
   auto t = env.create(size, 0);
-  if (!obj.valid()) return t;
+  if (!obj.valid()) {
+    return t;
+  }
 
   if (obj.get_type() == sol::type::table) {
     for (size_t i = 0; i < size; ++i) {
@@ -213,12 +246,18 @@ static sol::table create_table(const sol::object arr_size, const sol::object has
 }
 
 static void num_queue(const double first_count, const sol::function prepare_function, const sol::function queue_function, sol::this_state s) {
-  if (first_count < 0) utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
-  if (std::abs(first_count) < utils::epsilon) return;
+  if (first_count < 0) {
+    utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
+  }
+  if (std::abs(first_count) < utils::epsilon) {
+    return;
+  }
 
   sol::state_view lua = s;
   std::queue<double> queue;
-  const auto push_func = [&queue] (const double data) { queue.push(data); };
+  const auto push_func = [&queue](const double data) {
+    queue.push(data);
+  };
   sol::object lua_push_func = sol::make_object(lua, push_func);
 
   const size_t size = first_count;
@@ -235,12 +274,18 @@ static void num_queue(const double first_count, const sol::function prepare_func
 }
 
 static void queue(const double first_count, const sol::function prepare_function, const sol::function queue_function, sol::this_state s) {
-  if (first_count < 0) utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
-  if (std::abs(first_count) < utils::epsilon) return;
+  if (first_count < 0) {
+    utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
+  }
+  if (std::abs(first_count) < utils::epsilon) {
+    return;
+  }
 
   sol::state_view lua = s;
   std::queue<sol::object> queue;
-  const auto push_func = [&queue] (const sol::object data) { queue.push(data); };
+  const auto push_func = [&queue](const sol::object data) {
+    queue.push(data);
+  };
   sol::object lua_push_func = sol::make_object(lua, push_func);
 
   const size_t size = first_count;
@@ -257,13 +302,19 @@ static void queue(const double first_count, const sol::function prepare_function
 }
 
 static void num_random_queue(const int64_t seed, const double first_count, const sol::function prepare_function, const sol::function queue_function, sol::this_state s) {
-  if (first_count < 0) utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
-  if (std::abs(first_count) < utils::epsilon) return;
+  if (first_count < 0) {
+    utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
+  }
+  if (std::abs(first_count) < utils::epsilon) {
+    return;
+  }
 
   sol::state_view lua = s;
   std::vector<double> queue;
   queue.reserve(first_count * 2);
-  const auto push_func = [&queue] (const double data) { queue.push_back(data); };
+  const auto push_func = [&queue](const double data) {
+    queue.push_back(data);
+  };
   sol::object lua_push_func = sol::make_object(lua, push_func);
   auto rnd_state = utils::xoshiro256starstar::init(s64_to_u64(seed));
 
@@ -282,13 +333,19 @@ static void num_random_queue(const int64_t seed, const double first_count, const
 }
 
 static void random_queue(const int64_t seed, const double first_count, const sol::function prepare_function, const sol::function queue_function, sol::this_state s) {
-  if (first_count < 0) utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
-  if (std::abs(first_count) < utils::epsilon) return;
+  if (first_count < 0) {
+    utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
+  }
+  if (std::abs(first_count) < utils::epsilon) {
+    return;
+  }
 
   sol::state_view lua = s;
   std::vector<sol::object> queue;
   queue.reserve(first_count * 2);
-  const auto push_func = [&queue] (const sol::object data) { queue.push_back(data); };
+  const auto push_func = [&queue](const sol::object data) {
+    queue.push_back(data);
+  };
   sol::object lua_push_func = sol::make_object(lua, push_func);
   auto rnd_state = utils::xoshiro256starstar::init(s64_to_u64(seed));
 
@@ -318,7 +375,7 @@ static std::string_view project() {
   return std::string_view(DEVILS_ENGINE_PROJECT_NAME);
 }
 
-static sol::variadic_results perf(const sol::function &f, const sol::variadic_args &args, sol::this_state s) {
+static sol::variadic_results perf(const sol::function& f, const sol::variadic_args& args, sol::this_state s) {
   const auto t = std::chrono::steady_clock::now();
   const auto res = f(sol::as_args(args));
   const auto dur = std::chrono::steady_clock::now() - t;
@@ -370,7 +427,7 @@ static sol::table script_stack(sol::this_state s) {
     }
     tbl["source"] = source_str;
     tbl["currentline"] = info.currentline;
-    const char *name = info.name ? info.name : "<unknown>";
+    const char* name = info.name ? info.name : "<unknown>";
     tbl["name"] = std::string(name);
     tbl["what"] = std::string(info.what);
 
@@ -385,7 +442,9 @@ static sol::table script_stack(sol::this_state s) {
 
 void basic_functions(sol::table t) {
   sol::table base = t.get_or("base", sol::nil);
-  if (!base.valid()) base = t.create_named("base");
+  if (!base.valid()) {
+    base = t.create_named("base");
+  }
   base.set_function("pack_u32f32", &pack_u32f32);
   base.set_function("pack_u32u32", &pack_u32u32);
   base.set_function("pack_f32f32", &pack_f32f32);
@@ -395,18 +454,18 @@ void basic_functions(sol::table t) {
   // rng_state — обёртка prng-состояния (см. env.h). Метаметод '+' = хеш-микс двух состояний
   // ('local s3 = s1 + s2'); методы :next()/:value() дублируют одноимённые свободные функции.
   base.new_usertype<rng_state>("rng_state",
-    sol::no_constructor,
-    // '+': (rng,rng) = хеш-микс; (rng,int) = прокрутить состояние N раз вперёд
-    sol::meta_function::addition, sol::overload(&rng_mix, &rng_advance),
-    "next", &prng64_next,
-    "value", sol::overload(&value_normalize, &value_interval));
+                               sol::no_constructor,
+                               // '+': (rng,rng) = хеш-микс; (rng,int) = прокрутить состояние N раз вперёд
+                               sol::meta_function::addition, sol::overload(&rng_mix, &rng_advance),
+                               "next", &prng64_next,
+                               "value", sol::overload(&value_normalize, &value_interval));
 
   // prng64: поддерживает и старую форму (int64 -> int64), и новую (rng_state -> rng_state).
   base.set_function("prng64", sol::overload(&prng64, &prng64_next));
   // value(s) -> [0,1); value(s, n, m) -> целое [n, m]. Единая точка «состояние -> число».
   base.set_function("value", sol::overload(&value_normalize, &value_interval));
-  base.set_function("rng", &rng_from_seed);   // сид (число) -> rng_state
-  base.set_function("rng_mix", &rng_mix);     // явный микс (то же, что '+')
+  base.set_function("rng", &rng_from_seed); // сид (число) -> rng_state
+  base.set_function("rng_mix", &rng_mix);   // явный микс (то же, что '+')
   base.set_function("prng64_2", &prng64_2);
   base.set_function("prng64_normalize", &prng64_normalize);
   base.set_function("interval", &interval);
@@ -429,45 +488,57 @@ void basic_functions(sol::table t) {
   // какой ресурс загружен, какой модуль загружен, список загруженный модулей,
   //
 }
-}
-}
+} // namespace bindings
+} // namespace devils_engine
 
-void sol_lua_check_error(sol::this_state s, const sol::unsafe_function_result &res) {
-  if (res.status() == sol::call_status::ok) return;
+void sol_lua_check_error(sol::this_state s, const sol::unsafe_function_result& res) {
+  if (res.status() == sol::call_status::ok) {
+    return;
+  }
   sol::error err = res;
   //utils::error{}("{}\n", err.what());
   devils_engine::utils::println(err.what());
   luaL_error(s, "Catched lua error");
 }
 
-void sol_lua_check_error(sol::this_state s, const sol::protected_function_result &res) {
-  if (res.status() == sol::call_status::ok) return;
+void sol_lua_check_error(sol::this_state s, const sol::protected_function_result& res) {
+  if (res.status() == sol::call_status::ok) {
+    return;
+  }
   sol::error err = res;
   //utils::error{}("{}\n", err.what());
   devils_engine::utils::println(err.what());
   luaL_error(s, "Catched lua error");
 }
 
-void sol_lua_check_error(const sol::unsafe_function_result &res) {
-  if (res.status() == sol::call_status::ok) return;
+void sol_lua_check_error(const sol::unsafe_function_result& res) {
+  if (res.status() == sol::call_status::ok) {
+    return;
+  }
   sol::error err = res;
   devils_engine::utils::error{}("{}\n", err.what());
 }
 
-void sol_lua_check_error(const sol::protected_function_result &res) {
-  if (res.status() == sol::call_status::ok) return;
+void sol_lua_check_error(const sol::protected_function_result& res) {
+  if (res.status() == sol::call_status::ok) {
+    return;
+  }
   sol::error err = res;
   devils_engine::utils::error{}("{}\n", err.what());
 }
 
-void sol_lua_warn_error(const sol::protected_function_result &res) {
-  if (res.status() == sol::call_status::ok) return;
+void sol_lua_warn_error(const sol::protected_function_result& res) {
+  if (res.status() == sol::call_status::ok) {
+    return;
+  }
   sol::error err = res;
   devils_engine::utils::warn("{}\n", err.what());
 }
 
-void sol_lua_warn_error(const sol::unsafe_function_result &res) {
-  if (res.status() == sol::call_status::ok) return;
+void sol_lua_warn_error(const sol::unsafe_function_result& res) {
+  if (res.status() == sol::call_status::ok) {
+    return;
+  }
   sol::error err = res;
   devils_engine::utils::warn("{}\n", err.what());
 }

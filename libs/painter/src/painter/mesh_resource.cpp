@@ -1,14 +1,13 @@
-#include <devils_engine/catalogue/logging.h>
-#include "mesh_resource.h"
-
 #include <span>
 
+#include <devils_engine/catalogue/logging.h>
+#include <devils_engine/demiurg/module_interface.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/safe_handle.h>
-#include <devils_engine/demiurg/module_interface.h>
 
 #include "assets_base.h"
 #include "gpu_load_context.h"
+#include "mesh_resource.h"
 
 namespace devils_engine {
 namespace painter {
@@ -30,7 +29,7 @@ void mesh_resource::load_warm(const utils::safe_handle_t& handle) {
   auto* ctx = handle.get<gpu_load_context>();
 
   const auto h = ctx->assets->register_buffer_storage(path);
-  buffer_create_info bci{ "g1", vertex_count, 0 };
+  buffer_create_info bci{"g1", vertex_count, 0};
   ctx->assets->create_buffer_storage(h, bci);
   ctx->assets->populate_buffer_storage(h, std::span<const uint8_t>(memory), std::span<const uint8_t>());
   ctx->assets->mark_ready_buffer_slot(h);
@@ -54,5 +53,5 @@ void mesh_resource::unload_warm(const utils::safe_handle_t&) {
   memory.shrink_to_fit();
 }
 
-}
-}
+} // namespace painter
+} // namespace devils_engine

@@ -14,6 +14,6 @@ namespace core {
 using devils_engine::simul::draw_intent;
 
 }
-}
+} // namespace tile_frontier
 
 #endif

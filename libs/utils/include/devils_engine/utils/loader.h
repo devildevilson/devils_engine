@@ -3,10 +3,11 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <vector>
-#include <string>
 #include <memory>
 #include <mutex>
+#include <string>
+#include <vector>
+
 #include "devils_engine/thread/lock.h"
 #include "load_stage.h"
 
@@ -54,6 +55,7 @@ public:
   void reset() override;
   thread::semaphore_state::values state() const override;
   bool wait_until(tp t, const size_t tolerance_in_ns = 1) const override;
+
 protected:
   // unfortunately looks very ugly
   mutable std::atomic<size_t> _counter;
@@ -84,13 +86,14 @@ public:
   size_t size() const noexcept;
   bool finished() const noexcept;
   std::string_view stage_name() const noexcept;
+
 protected:
   mutable std::mutex _mutex;
   load_stage* _stage;
   size_t _counter;
   std::vector<std::unique_ptr<load_stage>> _stages;
 };
-}
-}
+} // namespace utils
+} // namespace devils_engine
 
 #endif

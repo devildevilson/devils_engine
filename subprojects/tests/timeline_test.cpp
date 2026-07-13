@@ -1,8 +1,7 @@
-#include <doctest/doctest.h>
-
 #include <type_traits>
 
 #include <devils_engine/utils/timeline.h>
+#include <doctest/doctest.h>
 
 using namespace devils_engine::utils;
 

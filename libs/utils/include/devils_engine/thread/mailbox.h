@@ -20,7 +20,9 @@ public:
   mailbox() = default;
 
   // ПРОДЮСЕР. Ссылка на слот для заполнения НА МЕСТЕ (переиспользует ёмкость). Валидна до publish().
-  T& write_slot() noexcept { return slots_[producer_idx_]; }
+  T& write_slot() noexcept {
+    return slots_[producer_idx_];
+  }
 
   // ПРОДЮСЕР. Опубликовать заполненный write_slot как самый свежий.
   void publish() noexcept {
@@ -31,14 +33,16 @@ public:
   // КОНСЬЮМЕР. Указатель на самое свежее опубликованное значение, либо nullptr — если с прошлого
   // consume() ничего нового не публиковалось. Возвращённый указатель валиден до следующего consume().
   const T* consume() noexcept {
-    if ((shared_.load(std::memory_order_acquire) & fresh_bit) == 0) return nullptr;
+    if ((shared_.load(std::memory_order_acquire) & fresh_bit) == 0) {
+      return nullptr;
+    }
     const uint32_t prev = shared_.exchange(consumer_idx_, std::memory_order_acquire);
     consumer_idx_ = prev & idx_mask;
     return &slots_[consumer_idx_];
   }
 
 private:
-  static constexpr uint32_t idx_mask  = 0x3;
+  static constexpr uint32_t idx_mask = 0x3;
   static constexpr uint32_t fresh_bit = 0x4;
 
   T slots_[3];
@@ -47,7 +51,7 @@ private:
   alignas(64) std::atomic<uint32_t> shared_ = 2; // индекс 2 в общем слоте, флаг fresh снят
 };
 
-}
-}
+} // namespace thread
+} // namespace devils_engine
 
 #endif

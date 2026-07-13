@@ -1,6 +1,5 @@
-#include "pipeline_cache_resource.h"
-
 #include "devils_engine/demiurg/module_interface.h"
+#include "pipeline_cache_resource.h"
 
 namespace devils_engine {
 namespace painter {
@@ -16,7 +15,10 @@ void pipeline_cache_resource::load_cold(const utils::safe_handle_t&) {
 
 void pipeline_cache_resource::load_warm(const utils::safe_handle_t&) {}
 void pipeline_cache_resource::unload_hot(const utils::safe_handle_t&) {}
-void pipeline_cache_resource::unload_warm(const utils::safe_handle_t&) { memory.clear(); memory.shrink_to_fit(); }
+void pipeline_cache_resource::unload_warm(const utils::safe_handle_t&) {
+  memory.clear();
+  memory.shrink_to_fit();
+}
 
-}
-}
+} // namespace painter
+} // namespace devils_engine

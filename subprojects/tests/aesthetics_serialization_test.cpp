@@ -1,24 +1,31 @@
-#include <doctest/doctest.h>
-
-#include <cstdint>
-#include <vector>
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
+#include <doctest/doctest.h>
 #include <gtl/phmap.hpp>
 
-#include "devils_engine/aesthetics/world.h"
 #include "devils_engine/aesthetics/serialization.h"
 #include "devils_engine/aesthetics/sink.h"
+#include "devils_engine/aesthetics/world.h"
 
 using namespace devils_engine;
 
 namespace {
 
-struct pos { int32_t x = 0; int32_t y = 0; };
-struct vel { float dx = 0.0f; float dy = 0.0f; };
-struct link { aesthetics::entityid_t target = aesthetics::invalid_entityid; }; // ссылка на другую энтити
+struct pos {
+  int32_t x = 0;
+  int32_t y = 0;
+};
+struct vel {
+  float dx = 0.0f;
+  float dy = 0.0f;
+};
+struct link {
+  aesthetics::entityid_t target = aesthetics::invalid_entityid;
+}; // ссылка на другую энтити
 
 // сложный агрегат: контейнеры/строка/фикс-массив/владеющий указатель/хеш-мапа
 struct rich {
@@ -45,20 +52,34 @@ struct vec3f {
 } // namespace
 
 namespace devils_engine::aesthetics::serial {
-template <> struct adapter<vec3f> {
+template <>
+struct adapter<vec3f> {
   static constexpr std::string_view name = "test.vec3f"; // кросс-компиляторный тег
-  static void write(writer& w, const vec3f& v) { w.f32(v.x); w.f32(v.y); w.f32(v.z); }
-  static void read(reader& r, vec3f& v) { v.x = r.f32(); v.y = r.f32(); v.z = r.f32(); }
+  static void write(writer& w, const vec3f& v) {
+    w.f32(v.x);
+    w.f32(v.y);
+    w.f32(v.z);
+  }
+  static void read(reader& r, vec3f& v) {
+    v.x = r.f32();
+    v.y = r.f32();
+    v.z = r.f32();
+  }
 };
 } // namespace devils_engine::aesthetics::serial
 
 namespace {
 
-struct transform { vec3f pos; float scale = 1.0f; }; // агрегат, содержащий адаптируемый тип
+struct transform {
+  vec3f pos;
+  float scale = 1.0f;
+}; // агрегат, содержащий адаптируемый тип
 
 struct load_watcher : public aesthetics::basic_reciever<aesthetics::serial::snapshot_loaded_event> {
   int fired = 0;
-  void receive(const aesthetics::serial::snapshot_loaded_event&) override { ++fired; }
+  void receive(const aesthetics::serial::snapshot_loaded_event&) override {
+    ++fired;
+  }
 };
 
 } // namespace
@@ -231,7 +252,10 @@ TEST_CASE("hash-map serializes deterministically regardless of capacity/order [a
   gtl::flat_hash_map<int32_t, int32_t> a;
   gtl::flat_hash_map<int32_t, int32_t> b;
   b.reserve(1024);
-  for (int32_t i = 0; i < 100; ++i) { a[i] = i * 7; b[i] = i * 7; }
+  for (int32_t i = 0; i < 100; ++i) {
+    a[i] = i * 7;
+    b[i] = i * 7;
+  }
 
   std::vector<std::byte> ba, bb;
   aesthetics::serial::writer oa{ba};

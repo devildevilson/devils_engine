@@ -1,8 +1,8 @@
 #ifndef DEVILS_ENGINE_INPUT_KEY_NAMES_H
 #define DEVILS_ENGINE_INPUT_KEY_NAMES_H
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -24,9 +24,9 @@ std::string_view get_glfw_key_name_canonical(const int32_t key) noexcept;
 std::string_view get_glfw_key_name_us_layout(const int32_t key) noexcept;
 std::string get_glfw_key_name_local(const int32_t key);
 
-int32_t get_glfw_key_from_canonical(const std::string_view &name) noexcept;
-std::tuple<int32_t, int32_t> get_key_from_canonical(const std::string_view &name) noexcept;
-}
-}
+int32_t get_glfw_key_from_canonical(const std::string_view& name) noexcept;
+std::tuple<int32_t, int32_t> get_key_from_canonical(const std::string_view& name) noexcept;
+} // namespace input
+} // namespace devils_engine
 
 #endif
