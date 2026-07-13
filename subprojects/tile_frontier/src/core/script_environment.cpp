@@ -5,10 +5,10 @@
 
 #include <devils_engine/aesthetics/world.h>
 #include <devils_engine/aesthetics/common.h> // entityid_t
+#include <devils_engine/act/stat_accessors.h>
 #include <devils_engine/utils/core.h>        // utils::warn
 
 #include "actor_simulation.h" // компоненты stats / actor_perception
-#include "stat_accessors.h"   // register_stat_accessors / stat_scope
 #include "spawn_scope.h"      // spawn_scope / scope_spawn_at — примитивный ds-спавн
 
 namespace tile_frontier {
@@ -71,7 +71,7 @@ script_environment::script_environment() : sys(make_options()) {
   // АВТОГЕНЕРИРУЮТСЯ рефлексией по полям stats — вместо ручных scope_hunger/scope_boredom. Скоуп =
   // entity_scope, getter = get_actor_stats (достаёт компонент из мира). Скрипты пишут бареовые
   // `hunger`, `strength` (как перцепция), без ds-навигации.
-  register_stat_accessors<stats, entity_scope, &get_actor_stats, stat_domain::actor_stats>(sys);
+  act::register_stat_accessors<stats, entity_scope, &get_actor_stats, stat_domain::actor_stats>(sys);
 
   // Перцепция (bool, не плоские числа) — остаётся ручными аксессорами над entity_scope.
   sys.register_function<&scope_threat_present>("threat_present");

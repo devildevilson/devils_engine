@@ -22,6 +22,7 @@
 #include <devils_engine/utils/prng.h>
 #include <devils_engine/utils/string_id.h>
 #include <devils_engine/utils/time-utils.hpp>
+#include <devils_engine/utils/timeline.h>
 #include <devils_engine/visage/system.h>
 
 namespace devils_engine {
@@ -320,8 +321,16 @@ void run_visage_frame(State& c, const size_t time, const bool render_enabled, Be
   before_update();
 
   c.ui_rng = utils::xoshiro256starstar::next(c.ui_rng);
-  c.ui_timestamp += time;
-  c.ui->update(time, c.ui_timestamp, utils::xoshiro256starstar::value(c.ui_rng));
+  uint64_t ui_timestamp = 0;
+  if constexpr (requires { c.clocks.engine_now(); }) {
+    // Engine timeline продвигается главным update даже без UI и не зависит от gameplay pause.
+    ui_timestamp = c.clocks.engine_now().ticks;
+  } else {
+    // Совместимость для project-state, ещё не мигрировавших на utils::timelines.
+    c.ui_timestamp += time;
+    ui_timestamp = c.ui_timestamp;
+  }
+  c.ui->update(time, ui_timestamp, utils::xoshiro256starstar::value(c.ui_rng));
   c.ui->convert();
 
   {

@@ -38,12 +38,12 @@
   обкатаны; у catalogue остаётся большой replay/binary-format слой;
 - config/data-first вертикальный срез СОБРАН: FSM и GOAP загружаются из tavl через demiurg, GOAP-метрики
   содержат inline-ds выражения, `libs/prefab` умеет data/list/callback/reference/custom + наследование,
-  а tile_frontier создаёт actor и food из `prefab/*.tavl`. Следующий пробел здесь — не ещё один формат,
-  а перенос уже найденных проектных механизмов (stats/system pipeline/app-shell) в общие библиотеки;
+  tile_frontier создаёт actor и food из `prefab/*.tavl`, а generic stats-accessors уже вынесены в
+  `libs/act`. Следующий пробел здесь — не ещё один формат, а перенос system pipeline/app-shell;
 - devils_script подключён: `act::script_function<bool/number/void>` работает, есть per-worker ds-context,
-  рефлексивные stats-accessors, конфиговый GOAP-срез и натив `spawn_at`. Не закончены: полная модель
-  аргументов/результатов/списков act в форме ds, string/object-маршалинг, effects→catalogue и окончательная
-  консолидация регистрации нативок. Lua остаётся UI/guest backend, не mutating backend симуляции.
+  `act::call_context` переносит именованные in/out args и списки между native и ds, есть конфиговый
+  GOAP-срез и натив `spawn_at`. Не закончены: string/object/vector-маршалинг, effects→catalogue и
+  окончательная консолидация регистрации нативок. Lua остаётся UI/guest backend, не mutating backend.
 
 **Решение по devils_script ↔ act (уточнено 2026-07-13).** `libs/act` НЕ удаляется: это стабильный
 типизированный фасад, который скрывает источник функции (прежде всего native ↔ devils_script) от
@@ -58,21 +58,20 @@ script-in-script и `container::describe`. Отсюда:
 - **act = фасад источников + проверенный контракт вызова**: имя → категория/сигнатура → native или ds
   implementation; load-time проверки («guard обязан быть предикатом») и кэширование типизированных
   указателей для acumen/mood сохраняются;
-- **контекст разделить на две части**: immutable execution context (world/scopes, deterministic RNG
+- ✅ **контекст разделён на две части (2026-07-13)**: immutable execution context (world/scopes, deterministic RNG
   inputs, tick, effect sink, per-worker VM) и отдельный mutable набор аргументов/результатов вызова.
-  Mutable-часть должна поддержать ds-модель: входные аргументы, out/in-out значения и создаваемые
-  функцией списки, а не только единственный return. До реализации отдельно зафиксировать ownership и
-  lifetime списков (предпочтительно память per-worker context/arena), правила typed conversion и
-  отсутствие скрытых аллокаций на горячем пути;
+  `act::call_context` поддерживает именованные input/out/in-out values, result и списки; caller владеет
+  контейнером и переиспользует capacity на worker-е. `script_function` bind/collect-ит ds args/lists,
+  native получает тот же объект. Работают bool/integer/number/entity-id основы; string/object policy и
+  `vec3` (>16-byte ds stack slot при double) остаются частью fixed-point/marshalling pass;
 - `intent`/`effect_sink` переживают эту переделку: это граница детерминированной мутации, а не деталь
   конкретного script backend. `describe` должен проходить через тот же фасад независимо от источника;
 - **GOAP из конфига = три поля**: состояния (predicate-скрипты), как получить состояние, реакция на
   выбранное решение (effect-скрипты) + приоритеты/стоимости числовыми скриптами (формулы уезжают из
   C++). tavl — парсер и конфигов, и ds → скрипт в конфиге = просто ещё одно поле документа;
-- **статус интеграции:** ds подключён, `script_function` и вертикальный GOAP-предикат из tavl готовы;
-  FSM и структура GOAP также читаются из ресурсов. Следующий срез: спроектировать mutable args/lists,
-  провести через него одну native и одну ds-функцию, затем убрать двойную регистрацию и перевести
-  оставшиеся guards/effects/cost formulas на общий путь;
+- **статус интеграции:** ds подключён, `script_function`, вертикальный GOAP-предикат и mutable
+  args/lists bridge готовы и покрыты native+ds тестом; FSM/GOAP читаются из ресурсов. Следующий срез —
+  убрать двойную регистрацию и перевести guards/effects/cost formulas на общий путь;
 - **флаг на горизонте:** ds считает в double (`init_math`, включая тригонометрию); архитектура
   детерминизма требует fixed-point — механизм кастомных арифметических типов в ds уже есть, но
   проверить пригодность встроенной математики надо ДО того, как на ds напишется сотня скриптов.
@@ -202,23 +201,22 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
    - Низовой script-примитив `spawn_at(prefab,x,y)` готов и покрыт тестом. Выбор места, spawner-entity,
      filter/pick и живые trigger/event scripts — отдельный, пока отложенный дизайн (п.15).
 
-6. **B-д — generic stats над проектным агрегатом** — **[необходимо]** · **прототип работает в
-   tile_frontier, обобщение в движок — ближайшая задача**. Проект объявляет предельно простой агрегат:
+6. ✅ **B-д — generic stats над проектным агрегатом** — **[необходимо, базовый механизм готов
+   2026-07-13]**. Проект объявляет предельно простой агрегат:
    `struct stats { int32_t a; float b; int64_t c; double d; ...; };`; движок даёт шаблонную надстройку,
    а не навязывает универсальный динамический контейнер.
-   - Ввести compile-time concept/diagnostic: тип является aggregate, поля рефлексируются, каждое поле
+   - `act::numeric_stats_aggregate` проверяет: тип является aggregate, поля рефлексируются, каждое поле
      принадлежит разрешённому набору числовых типов; отдельно решить требования standard-layout /
      trivially-copyable там, где они реально нужны save/network, а не запрещать полезный агрегат молча.
-   - Шаблонно инициализировать весь агрегат (нули/defaults/проектный initializer) и генерировать
-     get/add/set-accessors без ручного дублирования каждого поля.
-   - Проверить реальный сценарий НЕСКОЛЬКИХ stats-агрегатов на одной сущности/в одном скриптовом scope:
-     независимые component getters, домены/namespace имён без коллизий, одновременное чтение и эффекты
-     над двумя агрегатами. Нужен отдельный тест, а затем перенос `stat_accessors.h` из tile_frontier в lib.
+   - `make_stats`/`initialize_stats` и `register_stat_accessors` дают инициализацию + read/add без ручного
+     дублирования полей; механизм вынесен из tile_frontier в `libs/act`.
+   - Сценарий НЕСКОЛЬКИХ stats-агрегатов проверен: отдельные getters/domains + prefix имён позволяют
+     одновременно читать и менять два компонента в одном ds scope.
    - Metadata (display/loc key, unit, «положительное» направление для UI) держать как опциональную
      надстройку над полями, не смешивать с самим POD-подобным агрегатом.
 
 7. **Две шкалы времени + настраиваемый игровой календарь + отложенные эффекты** (B-ж) —
-   **[необходимо]** · **ближайшая задача, дизайн уточнён 2026-07-13**.
+   **[необходимо]** · **clock/calendar основа готова 2026-07-13; очередь эффектов pending**.
    - **Engine time** — непрерывная движковая шкала, не паузится вместе с gameplay; это же timestamp,
      доступный UI/анимациям/служебным системам.
    - **Game time** — шкала симуляции, останавливается ровно тогда, когда поставлены на паузу игровые
@@ -230,9 +228,11 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
    - `calendar_policy` задаётся проектом: `hours_per_day`, число/список `days_in_month`, число месяцев
      в году (естественно следует из списка месяцев; для равных месяцев допустим компактный вариант).
      Нужны преобразования `game_time ↔ {second,minute,hour,day,month,year}` и явное поведение на границах.
-   - Deadline/duration обязаны нести clock-domain (`engine` или `game`), чтобы значения разных шкал
-     нельзя было случайно сравнить/сложить. После минимального clock+calendar API строить очередь
-     отложенных эффектов и expiry для п.8.
+   - `utils::timelines` продвигает engine всегда, game только вне pause; tile_frontier передаёт engine
+     timestamp в UI и использует те же `app_state::game` ворота для game clock и gameplay systems.
+   - Timestamp/duration/deadline типизированы clock-domain (`engine` или `game`), поэтому разные шкалы
+     нельзя случайно сравнить/сложить. `calendar_policy` реализует day+seconds и опциональную month/year
+     проекцию. Следующий зависимый срез — очередь отложенных эффектов и expiry для п.8.
 
 8. **B-е — состояния/флаги энтити + expiration** — **[необходимо]** *(спроектировано, не построено)*.
    Компонент флагов/модификаторов; флаги с доп-данными хранить `(date, hash)` сортированно. Требует
@@ -264,11 +264,10 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
     INPUT), связи/отношения энтити (`exec_context.scope[8]`; референсная целостность в serial уже есть),
     экспонирование в UI-lua + loc-ключи (seam visage уже есть; loc = `string`-функции act).
 
-14. **Завершить интеграцию devils_script ↔ act** — **[необходимо]** · **центральный ближайший столб**.
-    `script_function`, per-worker VM, один GOAP-предикат и целые FSM/GOAP-конфиги уже работают. Теперь:
-    mutable args/out/lists рядом с immutable execution context → одна native и одна ds-функция через
-    новый контракт → единая регистрация building blocks в `ds::system` при сохранении `act` как фасада
-    источников → string/object-маршалинг → effect_sink/catalogue → остальные formulas/describe.
+14. **Завершить интеграцию devils_script ↔ act** — **[необходимо]** · **центральный оставшийся столб**.
+    `script_function`, per-worker VM, GOAP/FSM-конфиги и mutable `call_context` args/out/lists уже
+    работают. Осталось: единая регистрация building blocks в `ds::system` при сохранении `act` как
+    фасада источников → string/object/vector policy → effect_sink/catalogue → formulas/describe.
 
 15. **Спавн-архитектура + per-entity brain** — **[необходимо, но НЕ следующий implementation slice]** ·
     сначала отдельная дизайн-сессия; тех-долг зафиксирован 2026-07-12
@@ -293,14 +292,13 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
 
 ---
 
-## Актуальный ближайший порядок (согласовано 2026-07-13)
+## Срез 2026-07-13 и следующий порядок
 
-1. **act↔ds contract:** отделить mutable args/out/lists от immutable execution context, проверить новый
-   путь на одной native и одной ds-функции, затем консолидировать регистрацию и эффекты.
-2. **generic stats:** оформить template/concept над простыми числовыми агрегатами, генерацию init/accessors
-   и тест нескольких stats-компонентов; после проверки вынести прототип из tile_frontier в lib.
-3. **time/calendar:** engine clock + pausable game clock, представление seconds/day и настраиваемая
-   календарная проекция; затем deadline queue и flags/expiration (п.8).
+1. ✅ **act↔ds call contract foundation:** immutable `exec_context` + mutable `call_context`; одна native
+   и одна ds-функция проверены с in/out scalar и list. Далее — registration/effect consolidation.
+2. ✅ **generic stats:** template/concept, init/accessors и два stats-компонента вынесены/проверены.
+3. ✅ **time/calendar foundation:** engine clock + pausable game clock + typed deadlines + day/seconds и
+   calendar projection готовы. Далее — deferred-effect queue и flags/expiration (п.8).
 
 Только после этих трёх срезов — отдельное проектирование **per-entity brain + spawner entities +
 ds filter/pick/spawn** (п.15). Perf service-channel/UI-графики (п.4), system pipeline и app-shell

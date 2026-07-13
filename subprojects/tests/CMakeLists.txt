@@ -36,6 +36,9 @@ target_link_libraries(utils_general_test PRIVATE devils_engine::utils devils_eng
 devils_add_doctest(utils_contract_test utils_contract_test.cpp)
 target_link_libraries(utils_contract_test PRIVATE devils_engine::utils)
 
+devils_add_doctest(timeline_test timeline_test.cpp)
+target_link_libraries(timeline_test PRIVATE devils_engine::utils)
+
 devils_add_doctest(thread_general_test thread_general_test.cpp)
 target_link_libraries(thread_general_test PRIVATE devils_engine::thread)
 
@@ -57,9 +60,11 @@ target_link_libraries(acumen_test PRIVATE devils_engine::acumen devils_engine::a
 devils_add_doctest(acumen_script_test acumen_script_test.cpp)
 target_link_libraries(acumen_script_test PRIVATE devils_engine::acumen devils_engine::act devils_script tavl)
 
+devils_add_doctest(act_call_context_test act_call_context_test.cpp)
+target_link_libraries(act_call_context_test PRIVATE devils_engine::act devils_script)
+
 devils_add_doctest(stats_script_test stats_script_test.cpp)
-target_link_libraries(stats_script_test PRIVATE devils_script tavl glm::glm devils_engine::catalogue devils_engine::utils)
-target_include_directories(stats_script_test PRIVATE "${CMAKE_SOURCE_DIR}/subprojects/tile_frontier/include")
+target_link_libraries(stats_script_test PRIVATE devils_engine::act)
 
 devils_add_doctest(prefab_test prefab_test.cpp)
 target_link_libraries(prefab_test PRIVATE devils_engine::prefab)
