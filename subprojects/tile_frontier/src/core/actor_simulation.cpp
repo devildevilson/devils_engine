@@ -46,7 +46,7 @@ static const aesthetics::world& world_of(const act::exec_context& ctx) noexcept 
 static act::exec_context make_ctx(
   const aesthetics::world& world, const aesthetics::entityid_t id,
   const uint64_t seed, const uint64_t tick, act::effect_sink* sink = nullptr,
-  devils_script::context* vm = nullptr) noexcept
+  act::execution_scratch* scratch = nullptr) noexcept
 {
   act::exec_context ctx;
   ctx.scope[0] = act::entity_id{ uint32_t(id) };
@@ -56,7 +56,7 @@ static act::exec_context make_ctx(
   ctx.rng_entity = aesthetics::get_entityid_index(id);
   ctx.rng_tick = tick;
   ctx.sink = sink;
-  ctx.vm = vm; // скретчпад скрипт-функций (nullptr для нативных путей — они его не трогают)
+  ctx.scratch = scratch;
   return ctx;
 }
 
@@ -377,12 +377,16 @@ void actor_world_slice::setup_brain_registry() {
   // пересоздаём реестр с нуля: reg() ассертит на повторную регистрацию имени,
   // а init() может вызываться многократно.
   registry_ = act::registry{};
+  goap_registry_ = acumen::registry{};
+  fsm_registry_ = mood::registry{};
+  goap_ = nullptr;
+  fsm_ = nullptr;
   registry_.reg("actor.threat_present", std::make_unique<act::native_function<bool>>(
     &predicate_threat_present, "рядом есть актор крупнее"));
   registry_.reg("actor.prey_present", std::make_unique<act::native_function<bool>>(
     &predicate_prey_present, "рядом есть актор мельче"));
   // is_hungry: скрипт-предикат из tavl (hunger >= 0.5), если загружен; иначе нативный фолбэк
-  // (тесты/резюме без ассетов). Скрипт исполняется на пер-воркер ctx.vm; засев root-скоупа —
+  // (тесты/резюме без ассетов). Скрипт исполняется на per-worker execution_scratch; засев root-скоупа —
   // seed_entity_scope. Поведение идентично нативному (тот же порог, та же семантика отсутствия drives).
   if (brains_.is_hungry_program != nullptr) {
     registry_.reg("actor.is_hungry", std::make_unique<act::script_function<bool>>(
@@ -443,7 +447,8 @@ void actor_world_slice::setup_brain_registry() {
     std::vector<acumen::goal> goals = { acumen::goal{ "resolved", acumen::scoped_state{}, goal_state } };
 
     // конструктор резолвит предикаты/эффекты по именам и кидает при промахе.
-    goap_.emplace(&registry_, std::move(metrics), std::move(goals), std::move(actions));
+    goap_registry_.add("actor", acumen::system(&registry_, std::move(metrics), std::move(goals), std::move(actions)));
+    goap_ = goap_registry_.get("actor");
   }
 
   // FSM-исполнитель (mood): событие = выбранное GOAP действие, ведёт в одноимённое состояние из
@@ -453,7 +458,7 @@ void actor_world_slice::setup_brain_registry() {
   // Переходы FSM из tavl-конфига (fsm/actor), если загружены; иначе хардкод-фолбэк (тесты/резюме без
   // ассетов). Гварды/действия в строках — имена функций из registry_ (нативки/скрипты), резолвит mood.
   if (brains_.fsm_transitions != nullptr) {
-    fsm_.emplace(&registry_, *brains_.fsm_transitions);
+    fsm_registry_.add("actor", mood::system(&registry_, *brains_.fsm_transitions));
   } else {
     std::vector<std::string> fsm_lines = {
       "any_state + flee = flee",
@@ -463,8 +468,9 @@ void actor_world_slice::setup_brain_registry() {
       "any_state + wander = wander",
       "any_state + think = think",
     };
-    fsm_.emplace(&registry_, std::move(fsm_lines));
+    fsm_registry_.add("actor", mood::system(&registry_, std::move(fsm_lines)));
   }
+  fsm_ = fsm_registry_.get("actor");
 
   // Префабы слайса (перестраиваются вместе с реестром — общая точка init/load). C++-специи компонентов
   // (какие типы бывают + per-prefab on_construct для DERIVED) регистрируются ЗДЕСЬ; тексты префабов
@@ -508,7 +514,7 @@ void actor_world_slice::setup_brain_registry() {
 void actor_world_slice::build_goap_from_config(const goap_config& cfg) {
   // Метрики ОПРЕДЕЛЯЮТ свои предикаты инлайн-скриптами: регистрируем каждый как script_function<bool>
   // под ключом метрики в registry_ (перед сборкой acumen — он резолвит метрики по имени). Скрипт
-  // исполняется на пер-воркер ctx.vm; засев root-скоупа — seed_entity_scope. Контейнеры живут в
+  // исполняется на per-worker execution_scratch; засев root-скоупа — seed_entity_scope. Контейнеры живут в
   // goap_config (в реестре ассетов), поэтому заимствование &m.program валидно на всё время слайса.
   for (const auto& m : cfg.metrics) {
     registry_.reg(m.key, std::make_unique<act::script_function<bool>>(&m.program, &seed_entity_scope));
@@ -566,7 +572,8 @@ void actor_world_slice::build_goap_from_config(const goap_config& cfg) {
   }
 
   // резолвит предикаты (метрики) и эффекты (действия) по имени из registry_, кидает при промахе.
-  goap_.emplace(&registry_, std::move(metrics), std::move(goals), std::move(actions));
+  goap_registry_.add("actor", acumen::system(&registry_, std::move(metrics), std::move(goals), std::move(actions)));
+  goap_ = goap_registry_.get("actor");
 }
 
 void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, const glm::vec2 max_bound, const uint32_t texture_count,
@@ -690,9 +697,7 @@ void actor_world_slice::build_sense_tree() {
 // goap_->decide/compute_state и sense_tree_.nearest2 — const (чтение), мир читается + пишутся
 // ТОЛЬКО поля этого актора (непересекающаяся память) ⇒ гонок нет.
 void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint64_t tick,
-                                     astar<acumen::astar_data>::container& scratch,
-                                     acumen::solution_cache& cache,
-                                     devils_script::context& vm,
+                                     acumen::execution_scratch& scratch,
                                      std::vector<act::intent>& out) {
   using kd = utils::kd_tree<perception_target>;
   auto* pos   = world_.get<actor_position>(id);
@@ -717,15 +722,15 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
   // GOAP: dry-run ctx → decide (hit кеша ⇒ без A*) → первое действие плана → intent.
   const auto& goal_state = goap_->get_goals().front().goal;
   const uint64_t goal_id = utils::string_hash("resolved");
-  const auto ctx = make_ctx(world_, id, brain->seed, tick, nullptr, &vm); // vm: скрипт-предикаты (is_hungry)
+  const auto ctx = make_ctx(world_, id, brain->seed, tick, nullptr, &scratch.act);
   const acumen::state start = goap_->compute_state(ctx);
   std::array<const acumen::action*, 4> plan{};
   acumen::decide_params dp;
   dp.start = start;
   dp.goal = goal_state;
   dp.goal_id = goal_id;
-  dp.scratch = &scratch;
-  dp.cache = &cache;
+  dp.scratch = &scratch.planner;
+  dp.cache = &scratch.cache;
   const size_t n = goap_->decide(dp, plan);
   cog->last_think = tick; // решение принято (даже если план пуст — переобдумаем по расписанию)
   if (n == 0 || plan[0] == nullptr) return;
@@ -773,25 +778,17 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
   // (2) per-thread scratch: слот = pool.thread_index (0=вызывающий, 1..size=воркеры). Размер
   //     pool.size()+1; реаллокация только при смене числа потоков (обычно один раз).
   const size_t slots = pool.size() + 1;
-  if (plan_containers_.size() != slots) {
-    plan_containers_.resize(slots);
-    plan_caches_.resize(slots);
-    intent_buffers_.resize(slots);
-  }
-  // vm-пул синхронен со scratch (decide_actor всегда получает vm-ссылку; на нативном пути она не
-  // используется, но должна быть валидной). deque — стабильные элементы без move при росте.
-  if (vm_pool_.size() != slots) vm_pool_.resize(slots);
+  if (cognition_scratch_.size() != slots) cognition_scratch_.resize(slots);
+  if (intent_buffers_.size() != slots) intent_buffers_.resize(slots);
   for (auto& b : intent_buffers_) b.clear();
 
   // (3) раскидать отобранных по потокам. Лямбда — lvalue (distribute копирует её на каждый
   //     чанк; именованная не даст случайного move). Чанк зовётся как f(start, job_count).
   auto job = [this, tick, &pool] (const size_t start, const size_t count) {
     const uint32_t slot = pool.thread_index(std::this_thread::get_id());
-    auto& scratch = plan_containers_[slot];
-    auto& cache   = plan_caches_[slot];
-    auto& vm      = vm_pool_[slot];
+    auto& scratch = cognition_scratch_[slot];
     auto& out     = intent_buffers_[slot];
-    for (size_t i = start; i < start + count; ++i) decide_actor(due_[i].actor, tick, scratch, cache, vm, out);
+    for (size_t i = start; i < start + count; ++i) decide_actor(due_[i].actor, tick, scratch, out);
   };
   pool.distribute(due_.size(), job);
   pool.wait(); // ждём опустошения очереди И завершения задач в работе
@@ -821,7 +818,8 @@ void actor_world_slice::apply(const float dt_seconds) {
     if (world_.get<actor_grabbed>(id) != nullptr) continue;
     const auto* brain = world_.get<actor_brain>(id);
     const uint64_t seed = brain != nullptr ? brain->seed : 0u;
-    const auto ctx = make_ctx(world_, id, seed, tick_); // эффект сам кастует мир в мутабельный
+    // cognition уже завершён: caller lane 0 можно безопасно переиспользовать для apply/FSM.
+    const auto ctx = make_ctx(world_, id, seed, tick_, nullptr, &cognition_scratch_.front().act);
     effect->invoke(ctx); // движение (скорость + плейсхолдер укуса) — арбитраж GOAP
 
     // FSM-исполнитель: событие = выбранное действие (его хеш уже лежит в intent.payload.call.fn,

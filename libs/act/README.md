@@ -81,7 +81,7 @@ tooltip'ы, объяснение "почему нельзя", предпросм
 - `lua_function<RetT>`.
 
 `script_function<bool/real_t/void>` исполняет скомпилированный `devils_script`
-container на per-worker `exec_context::vm`. Именованные значения и списки из
+container на per-worker `exec_context::scratch->vm`. Именованные значения и списки из
 `call_context` связываются с `ctx:arg`/`ctx:list` до process и забираются обратно
 после него. String/object/vector marshalling пока не завершён. `lua_function`
 остаётся заглушкой.
@@ -141,7 +141,7 @@ const effect_function* e = reg.effect(id);
 - `w` - opaque pointer на мир или его срез;
 - `rng_seed`, `rng_entity`, `rng_tick`;
 - `sink` - optional `effect_sink`;
-- `vm` - backend scratchpad для будущего script runtime.
+- `scratch` - ссылка на принадлежащий executor/worker `act::execution_scratch`.
 
 `scope[0]` обычно означает primary actor, `scope[1]` - target. Есть helpers:
 
@@ -163,6 +163,12 @@ utils::mix(rng_seed, rng_entity, rng_tick, purpose)
 
 Это делает результат независимым от порядка и количества вызовов случайности:
 добавление одного draw/predicate не сдвигает остальные случайные значения.
+
+`execution_scratch` объединяет reusable `devils_script::context` и `call_context`. Scalar-аргументы
+`call_context` занимают фиксированные 8 inline slots — столько же, сколько стандартный стек аргументов
+ds; списки сохраняют динамическую capacity между вызовами. Глобального/TLS pool нет: подсистема
+встраивает этот блок в собственный per-worker scratch. Например, `acumen::execution_scratch` добавляет
+A*-контейнер и solution cache.
 
 ## Effect Sink
 
@@ -260,6 +266,8 @@ GOAP, FSM или script не обязаны мутировать мир сраз
 - хранить generic `function_base`;
 - вызывать typed `function<RetT>::invoke(ctx)`;
 - передавать общий mutable `call_context` с named in/out args, result и lists в native и ds backend;
+- переиспользовать per-worker `execution_scratch` без локального call-frame в hot path;
+- регистрировать numeric aggregate через scope API (`stats.abc`, `stats = { add_abc }`) без префиксов;
 - регистрировать native C++ functions;
 - исполнять `script_function<bool/real_t/void>` поверх devils_script;
 - отдавать typed lookup из `registry`;

@@ -72,6 +72,15 @@ struct stat_scope {
 template <numeric_stats_aggregate StatsT>
 StatsT* stat_scope_getter(const stat_scope<StatsT> s) noexcept { return s.ptr; }
 
+namespace stats_detail {
+template <numeric_stats_aggregate StatsT, typename ParentScope, auto Getter>
+stat_scope<StatsT> enter(ParentScope s) noexcept {
+  uint32_t id = UINT32_MAX;
+  if constexpr (requires { s.id; }) id = static_cast<uint32_t>(s.id);
+  return stat_scope<StatsT>{id, Getter(s)};
+}
+}
+
 template <numeric_stats_aggregate StatsT, typename... Args>
 constexpr StatsT make_stats(Args&&... args) noexcept(noexcept(StatsT{std::forward<Args>(args)...})) {
   return StatsT{std::forward<Args>(args)...};
@@ -91,21 +100,28 @@ constexpr StatsT initialize_stats(Initializer&& init) {
   return out;
 }
 
-// prefix разделяет несколько агрегатов в одном ds::system/scope:
-// prefix="combat_" => combat_strength / add_combat_strength.
-template <numeric_stats_aggregate StatsT, typename Scope, auto Getter, auto Domain>
-void register_stat_accessors(devils_script::system& sys, const std::string_view prefix = {}) {
+// Регистрирует локальные функции типа stats-scope. Одинаковые имена полей разных агрегатов
+// корректно перегружаются devils_script по типу текущего scope.
+template <numeric_stats_aggregate StatsT, auto Domain>
+void register_stat_accessors(devils_script::system& sys) {
   reflect::for_each<StatsT>([&](auto Idx) {
     constexpr std::size_t I = decltype(Idx)::value;
     const std::string field(reflect::member_name<I, StatsT>());
-    const std::string name = std::string(prefix) + field;
-    sys.register_function<&stats_detail::read<StatsT, Scope, Getter, I>>(name);
+    sys.register_function<&stats_detail::read<StatsT, stat_scope<StatsT>, &stat_scope_getter<StatsT>, I>>(field);
 
     using traits = typename catalogue::domain<Domain>::template fn_traits<
-      &stats_detail::add<StatsT, Scope, Getter, I>, stats_detail::add_name<StatsT, I>(),
+      &stats_detail::add<StatsT, stat_scope<StatsT>, &stat_scope_getter<StatsT>, I>, stats_detail::add_name<StatsT, I>(),
       utils::template_string_t("scope"), utils::template_string_t("value")>;
-    sys.register_function<traits::fn_ptr>("add_" + name);
+    sys.register_function<traits::fn_ptr>("add_" + field);
   });
+}
+
+// Полная регистрация одного проектного stats-компонента: ParentScope --scope_name--> stat_scope<T>,
+// затем field/add_field уже живут внутри возвращённого типизированного scope.
+template <numeric_stats_aggregate StatsT, typename ParentScope, auto Getter, auto Domain>
+void register_stats(devils_script::system& sys, const std::string_view scope_name) {
+  sys.register_function<&stats_detail::enter<StatsT, ParentScope, Getter>>(std::string(scope_name));
+  register_stat_accessors<StatsT, Domain>(sys);
 }
 
 }

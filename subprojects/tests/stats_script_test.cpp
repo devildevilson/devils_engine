@@ -8,9 +8,7 @@
 
 #include <devils_engine/act/stat_accessors.h>
 
-// Обкатка generic-характеристик: register_stat_accessors<StatsT, Scope, Getter, Domain> статической
-// рефлексией автогенерирует ds-аксессоры чтения (<field>) и прибавления (add_<field>) на каждое поле.
-// Скоуп по умолчанию — stat_scope<StatsT> (getter = stat_scope_getter, отдаёт .ptr).
+// register_stats статической рефлексией генерирует scope getter + локальные field/add_field функции.
 
 using namespace devils_engine::act;
 
@@ -22,11 +20,6 @@ struct test_stats {
 };
 
 enum class stat_test_domain : uint32_t { stats = 1 }; // домен catalogue для эффектов add_<field>
-
-void register_test_stats(devils_script::system& sys) {
-  register_stat_accessors<test_stats, stat_scope<test_stats>,
-                          &stat_scope_getter<test_stats>, stat_test_domain::stats>(sys);
-}
 
 struct needs_stats {
   int32_t morale = 0;
@@ -43,6 +36,10 @@ test_stats* get_primary(combined_scope s) noexcept { return s.primary; }
 needs_stats* get_needs(combined_scope s) noexcept { return s.needs; }
 
 enum class multi_stat_domain : uint32_t { primary = 11, needs = 12 };
+
+void register_test_stats(devils_script::system& sys) {
+  register_stats<test_stats, combined_scope, &get_primary, stat_test_domain::stats>(sys, "stats");
+}
 }
 
 static_assert(numeric_stats_aggregate<test_stats>);
@@ -56,9 +53,9 @@ TEST_CASE("stat_accessors: рефлексия генерирует ds-чтени
   register_test_stats(sys);
 
   test_stats st{ 10, 2.0f, 5 };
-  const stat_scope<test_stats> scope{ 0, &st };
+  const combined_scope scope{&st, nullptr};
 
-  const auto c = sys.parse<int64_t, stat_scope<test_stats>>("s", "strength + luck");
+  const auto c = sys.parse<int64_t, combined_scope>("s", "stats.strength + stats.luck");
   devils_script::context vm;
   vm.set_arg(0, scope);
   c.process(&vm);
@@ -72,9 +69,9 @@ TEST_CASE("stat_accessors: add_<field> мутирует компонент [stat
   register_test_stats(sys);
 
   test_stats st{ 10, 2.0f, 5 };
-  const stat_scope<test_stats> scope{ 0, &st };
+  const combined_scope scope{&st, nullptr};
 
-  const auto c = sys.parse<void, stat_scope<test_stats>>("a", "add_strength(5)");
+  const auto c = sys.parse<void, combined_scope>("a", "stats = { add_strength(5) }");
   devils_script::context vm;
   vm.set_arg(0, scope);
   c.process(&vm);
@@ -98,23 +95,28 @@ TEST_CASE("two stats aggregates coexist in one ds scope [stats][devils_script]")
   devils_script::system sys;
   sys.init_basic_functions();
   sys.init_math();
-  register_stat_accessors<test_stats, combined_scope, &get_primary, multi_stat_domain::primary>(sys, "primary_");
-  register_stat_accessors<needs_stats, combined_scope, &get_needs, multi_stat_domain::needs>(sys, "needs_");
+  register_stats<test_stats, combined_scope, &get_primary, multi_stat_domain::primary>(sys, "stats");
+  register_stats<needs_stats, combined_scope, &get_needs, multi_stat_domain::needs>(sys, "combat_stats");
 
   test_stats primary{10, 2.0f, 5};
   needs_stats needs{3, 8.0};
   const combined_scope scope{&primary, &needs};
 
-  const auto read = sys.parse<double, combined_scope>("read_two", "primary_strength + needs_energy");
+  const auto read = sys.parse<double, combined_scope>("read_two", "stats.strength + combat_stats.energy");
   devils_script::context vm;
   vm.set_arg(read.find_arg("root"), scope);
   read.process(&vm);
   CHECK(vm.get_return<double>() == doctest::Approx(18.0));
 
-  const auto add = sys.parse<void, combined_scope>("add_two", "{ add_primary_strength(2), add_needs_morale(4) }");
+  const auto add = sys.parse<void, combined_scope>("add_stats", "stats = { add_strength(2) }");
   vm.clear();
   vm.set_arg(add.find_arg("root"), scope);
   add.process(&vm);
+
+  const auto add_combat = sys.parse<void, combined_scope>("add_combat", "combat_stats = { add_morale(4) }");
+  vm.clear();
+  vm.set_arg(add_combat.find_arg("root"), scope);
+  add_combat.process(&vm);
   CHECK(primary.strength == 12);
   CHECK(needs.morale == 7);
 }

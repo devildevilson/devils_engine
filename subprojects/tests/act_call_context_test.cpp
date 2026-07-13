@@ -47,9 +47,9 @@ TEST_CASE("act call_context binds ds in-out arguments and lists [act][devils_scr
     "{ ctx_set = { total = ctx:arg:total + 2.0 }, "
     "ctx:list:values = { add_to = 3.0, add_to = 4.0 }, ctx:arg:total }");
 
-  devils_script::context vm;
+  act::execution_scratch scratch;
   act::exec_context exec;
-  exec.vm = &vm;
+  exec.scratch = &scratch;
   act::call_context call;
   call.reserve(2, 1);
   call.set("total", act::value::of(5.0));

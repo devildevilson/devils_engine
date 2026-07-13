@@ -13,11 +13,13 @@ TEST_CASE("timelines keep engine running while game is paused [time]") {
   timelines clocks;
   clocks.advance(timeline_ticks_per_second);
   CHECK(clocks.engine_now().ticks == timeline_ticks_per_second);
+  CHECK(clocks.presentation_now().ticks == timeline_ticks_per_second);
   CHECK(clocks.game_now().ticks == timeline_ticks_per_second);
 
   clocks.set_game_paused(true);
   clocks.advance(3 * timeline_ticks_per_second);
   CHECK(clocks.engine_now().ticks == 4 * timeline_ticks_per_second);
+  CHECK(clocks.presentation_now().ticks == 4 * timeline_ticks_per_second);
   CHECK(clocks.game_now().ticks == timeline_ticks_per_second);
 
   clocks.set_game_paused(false);
@@ -29,6 +31,35 @@ TEST_CASE("timelines keep engine running while game is paused [time]") {
   CHECK_FALSE(deadline.elapsed(clocks.game_now()));
   clocks.advance(2 * timeline_ticks_per_second);
   CHECK(deadline.elapsed(clocks.game_now()));
+}
+
+TEST_CASE("game time scale maps nominal real durations without coupling absolute timestamps [time]") {
+  const game_time_scale gta_like = game_time_scale::from_seconds(60, 1);
+  CHECK(gta_like.to_game(engine_duration::from_seconds(10)).ticks == game_duration::from_minutes(10).ticks);
+  CHECK(gta_like.to_engine(game_duration::from_hours(1)).ticks == engine_duration::from_minutes(1).ticks);
+
+  timelines clocks;
+  clocks.set_game_scale(gta_like);
+  clocks.advance(engine_duration::from_seconds(2).ticks);
+  CHECK(clocks.engine_now().ticks == engine_duration::from_seconds(2).ticks);
+  CHECK(clocks.presentation_now().ticks == presentation_duration::from_seconds(2).ticks);
+  CHECK(clocks.game_now().ticks == game_duration::from_minutes(2).ticks);
+}
+
+TEST_CASE("presentation and turns are orthogonal gameplay coordinates [time][turn]") {
+  timelines clocks;
+  clocks.advance_turns({2});
+  clocks.set_game_paused(true);
+  clocks.advance_turns();
+  clocks.advance(engine_duration::from_seconds(1).ticks);
+  CHECK(clocks.turn_now().value == 2);
+  CHECK(clocks.presentation_now().ticks == presentation_duration::from_seconds(1).ticks);
+  CHECK(clocks.game_now().ticks == 0);
+
+  clocks.set_presentation_paused(true);
+  clocks.advance(engine_duration::from_seconds(1).ticks);
+  CHECK(clocks.engine_now().ticks == engine_duration::from_seconds(2).ticks);
+  CHECK(clocks.presentation_now().ticks == presentation_duration::from_seconds(1).ticks);
 }
 
 TEST_CASE("calendar projects configurable days and time of day [time][calendar]") {

@@ -13,7 +13,7 @@ namespace utils {
 
 inline constexpr uint64_t timeline_ticks_per_second = UINT64_C(1000000); // microseconds
 
-enum class clock_domain : uint8_t { engine, game };
+enum class clock_domain : uint8_t { engine, presentation, game };
 
 template <clock_domain Domain>
 struct basic_timestamp {
@@ -38,8 +38,10 @@ struct basic_duration {
 };
 
 using engine_timestamp = basic_timestamp<clock_domain::engine>;
+using presentation_timestamp = basic_timestamp<clock_domain::presentation>;
 using game_timestamp = basic_timestamp<clock_domain::game>;
 using engine_duration = basic_duration<clock_domain::engine>;
+using presentation_duration = basic_duration<clock_domain::presentation>;
 using game_duration = basic_duration<clock_domain::game>;
 
 template <clock_domain Domain>
@@ -54,27 +56,111 @@ struct basic_deadline {
 };
 
 using engine_deadline = basic_deadline<clock_domain::engine>;
+using presentation_deadline = basic_deadline<clock_domain::presentation>;
 using game_deadline = basic_deadline<clock_domain::game>;
 
-// Обе шкалы получают один engine delta. Engine идёт всегда; game не накапливает delta на паузе.
+// Nominal project mapping between user/engine durations and in-world durations. Config convention:
+// an unqualified duration is an engine/nominal-real duration; gameplay loaders convert it here,
+// while explicitly typed game/calendar/turn values remain in their domain. It is deliberately
+// a duration mapping, not timestamp conversion: pauses/rate changes make absolute mapping ambiguous.
+class game_time_scale {
+public:
+  constexpr explicit game_time_scale(const uint32_t game_ticks = 1,
+                                     const uint32_t engine_ticks = 1)
+    : game_ticks_(game_ticks), engine_ticks_(engine_ticks) {
+    if (game_ticks == 0 || engine_ticks == 0) {
+      throw std::invalid_argument("game_time_scale: ratio terms must be positive");
+    }
+  }
+
+  static constexpr game_time_scale from_seconds(const uint32_t game_seconds,
+                                                const uint32_t engine_seconds = 1) {
+    return game_time_scale(game_seconds, engine_seconds);
+  }
+
+  constexpr game_duration to_game(const engine_duration value) const noexcept {
+    return {scale(value.ticks, game_ticks_, engine_ticks_)};
+  }
+  constexpr engine_duration to_engine(const game_duration value) const noexcept {
+    return {scale(value.ticks, engine_ticks_, game_ticks_)};
+  }
+
+  constexpr uint32_t game_ticks() const noexcept { return game_ticks_; }
+  constexpr uint32_t engine_ticks() const noexcept { return engine_ticks_; }
+
+private:
+  static constexpr uint64_t scale(const uint64_t value, const uint64_t mul,
+                                  const uint64_t div) noexcept {
+    return (value / div) * mul + ((value % div) * mul) / div;
+  }
+
+  uint32_t game_ticks_ = 1;
+  uint32_t engine_ticks_ = 1;
+};
+
+struct turn_index {
+  uint64_t value = 0;
+  constexpr auto operator<=>(const turn_index&) const noexcept = default;
+};
+
+struct turn_duration { uint64_t turns = 0; };
+constexpr turn_index operator+(const turn_index t, const turn_duration d) noexcept { return {t.value + d.turns}; }
+
+struct turn_deadline {
+  turn_index at{};
+  constexpr bool elapsed(const turn_index now) const noexcept { return now >= at; }
+};
+
+// Engine always advances. Presentation is real-rate but pausable (world animation). Game is both
+// pausable and scaled. Turns are an orthogonal discrete gameplay coordinate.
 class timelines {
 public:
   constexpr engine_timestamp engine_now() const noexcept { return {engine_ticks_}; }
+  constexpr presentation_timestamp presentation_now() const noexcept { return {presentation_ticks_}; }
   constexpr game_timestamp game_now() const noexcept { return {game_ticks_}; }
+  constexpr turn_index turn_now() const noexcept { return {turn_}; }
 
   constexpr void advance(const uint64_t delta_ticks) noexcept {
     engine_ticks_ += delta_ticks;
-    if (!game_paused_) game_ticks_ += delta_ticks;
+    if (!presentation_paused_) presentation_ticks_ += delta_ticks;
+    if (!game_paused_) {
+      game_ticks_ += (delta_ticks / scale_.engine_ticks()) * scale_.game_ticks();
+      const uint64_t scaled_remainder = (delta_ticks % scale_.engine_ticks()) * scale_.game_ticks() + game_remainder_;
+      game_ticks_ += scaled_remainder / scale_.engine_ticks();
+      game_remainder_ = scaled_remainder % scale_.engine_ticks();
+    }
   }
 
   constexpr void set_game_paused(const bool value) noexcept { game_paused_ = value; }
   constexpr bool game_paused() const noexcept { return game_paused_; }
+  constexpr void set_presentation_paused(const bool value) noexcept { presentation_paused_ = value; }
+  constexpr bool presentation_paused() const noexcept { return presentation_paused_; }
+  constexpr void set_world_paused(const bool value) noexcept {
+    game_paused_ = value;
+    presentation_paused_ = value;
+  }
+
+  constexpr void set_game_scale(const game_time_scale value) noexcept {
+    scale_ = value;
+    game_remainder_ = 0;
+  }
+  constexpr game_time_scale game_scale() const noexcept { return scale_; }
+
   constexpr void set_game_time(const game_timestamp value) noexcept { game_ticks_ = value.ticks; }
+  constexpr void advance_turns(const turn_duration value = {1}) noexcept {
+    if (!game_paused_) turn_ += value.turns;
+  }
+  constexpr void set_turn(const turn_index value) noexcept { turn_ = value.value; }
 
 private:
   uint64_t engine_ticks_ = 0;
+  uint64_t presentation_ticks_ = 0;
   uint64_t game_ticks_ = 0;
+  uint64_t turn_ = 0;
+  uint64_t game_remainder_ = 0;
+  game_time_scale scale_{};
   bool game_paused_ = false;
+  bool presentation_paused_ = false;
 };
 
 struct game_time_parts {

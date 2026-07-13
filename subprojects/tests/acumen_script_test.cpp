@@ -164,11 +164,11 @@ TEST_CASE("co-parsed metrics drive acumen compute_state [acumen][devils_script]"
   std::vector<acumen::goal> goals = { acumen::goal{ "g", acumen::scoped_state{}, goal_state } };
   acumen::system goap(&reg, std::move(metrics), std::move(goals), std::vector<acumen::action>{});
 
-  devils_script::context vm;
+  act::execution_scratch scratch;
   const auto run = [&](const test_scope& s) {
     act::exec_context ctx{};
     ctx.w = reinterpret_cast<const act::world*>(&s);
-    ctx.vm = &vm;
+    ctx.scratch = &scratch;
     return goap.compute_state(ctx);
   };
 

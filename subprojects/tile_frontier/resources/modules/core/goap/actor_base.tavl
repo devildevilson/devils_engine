@@ -1,0 +1,58 @@
+// Базовое GOAP-описание актора. Derived-профили компилируются в отдельные плоские acumen::system:
+// runtime-обхода иерархии нет, порядок base entries сохраняется.
+
+metrics = [
+  threat_present = threat_present
+  prey_present   = prey_present
+  is_hungry      = stats.hunger > 0.5
+  is_bored       = stats.boredom > 0.5
+  prey_in_range  = prey_in_range
+  is_strong      = stats.strength > 5
+]
+
+actions = [
+  {
+    name = flee
+    requirements = [ threat_present ]
+    next_state = [ resolved ]
+    weight_state = [ ]
+  }
+  {
+    name = eat
+    requirements = [ !threat_present, is_hungry, prey_present, prey_in_range ]
+    next_state = [ resolved ]
+    weight_state = [ ]
+  }
+  {
+    name = chase
+    requirements = [ !threat_present, is_hungry, prey_present, !prey_in_range ]
+    next_state = [ resolved ]
+    weight_state = [ ]
+  }
+  {
+    name = seek_food
+    requirements = [ !threat_present, is_hungry, !prey_present ]
+    next_state = [ resolved ]
+    weight_state = [ ]
+  }
+  {
+    name = wander
+    requirements = [ !threat_present, !is_hungry, is_bored ]
+    next_state = [ resolved ]
+    weight_state = [ ]
+  }
+  {
+    name = think
+    requirements = [ !threat_present, !is_hungry, !is_bored ]
+    next_state = [ resolved ]
+    weight_state = [ ]
+  }
+]
+
+goals = [
+  {
+    name = resolved
+    requirements = [ ]
+    goal = [ resolved ]
+  }
+]

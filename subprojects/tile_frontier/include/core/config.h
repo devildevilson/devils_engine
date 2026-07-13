@@ -53,6 +53,14 @@ struct metrics_config {
   uint32_t log_interval_ms = 1000;
 };
 
+// Масштаб gameplay timeline: game_seconds игровых секунд проходят за real_seconds
+// номинальных реальных секунд. Неквалифицированные длительности в конфигах считаются
+// реальными; игровые/календарные/turn-длительности должны быть названы явно.
+struct time_config {
+  uint32_t game_seconds = 1;
+  uint32_t real_seconds = 1;
+};
+
 // Политика логгирования. Базовый always-on слой (подсистемы/окно/устройства) идёт через
 // utils::info всегда. Домены (catalogue) по умолчанию OFF; здесь задаётся глубина на домен
 // (off/info/flow/trace) + файловый сток. Уровни можно менять и в рантайме (app.set_log_level).
@@ -73,6 +81,7 @@ struct app_config {
   window_config window;
   simulation_config simulation;
   render_config render;
+  time_config time;
   metrics_config metrics;
   logging_config logging;
 };

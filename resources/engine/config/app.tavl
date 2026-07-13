@@ -29,6 +29,12 @@ render = {
   demo_graph_toggle_ms = 0
 }
 
+time = {
+  // Игровых секунд за real_seconds реальных. Например, 60/1 = игровая минута за секунду.
+  game_seconds = 1
+  real_seconds = 1
+}
+
 metrics = {
   enabled = true
   log_interval_ms = 1000

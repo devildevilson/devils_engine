@@ -10,6 +10,7 @@
 #include <devils_engine/input/core.h>
 #include <devils_engine/simul/loading_runtime.h>
 #include <devils_engine/simul/lua_resource_bindings.h>
+#include <devils_engine/simul/pause.h>
 #include <devils_engine/simul/startup_resources.h>
 #include <devils_engine/simul/window_runtime.h>
 #include <devils_engine/utils/core.h>
@@ -128,6 +129,7 @@ struct simulation_init : simul::standard_loading_state {
   // game clock идёт только в app_state::game (те же ворота, что actor/gameplay systems).
   utils::xoshiro256starstar::state ui_rng = utils::xoshiro256starstar::init(utils::string_hash("visage_ui"));
   utils::timelines clocks;
+  simul::pause_state pause;
 
   // Шрифты — demiurg-ресурсы ассетного реестра ("fonts/*", многошаговые ttf→MSDF→GPU).
   // CPU-уровни всех шрифтов проходим синхронно в setup_visage (метрики нужны nk_convert сразу),
@@ -282,6 +284,10 @@ void simulation::init() {
   }
 
   set_frame_time(simul::frame_time_from_fps(bootstrap_->engine.main_fps));
+  c.clocks.set_game_scale(utils::game_time_scale::from_seconds(
+    bootstrap_->settings.time.game_seconds,
+    bootstrap_->settings.time.real_seconds
+  ));
 
   // стартовый размер фреймбуфера = размер из конфига (до создания окна); коллбэк ресайза уточнит.
   c.fb_width = std::max(bootstrap_->settings.window.width, 1u);
@@ -341,6 +347,10 @@ bool runtime_traits::reload_settings(bootstrap_type& boot) {
 void runtime_traits::settings_reloaded(main_type& main, bootstrap_type& boot) {
   simul::setup_logging(boot.settings.logging);
   main.set_frame_time(simul::frame_time_from_fps(boot.engine.main_fps));
+  main.state().clocks.set_game_scale(utils::game_time_scale::from_seconds(
+    boot.settings.time.game_seconds,
+    boot.settings.time.real_seconds
+  ));
 }
 
 void runtime_traits::after_workers_started(main_type& main) {
@@ -595,6 +605,8 @@ void simulation::start_ui() {
       return request_runtime_state(id);
     });
     app.set_function("loading_progress", [cptr]() -> double { return loading_progress(*cptr); });
+    app.set_function("set_paused", [cptr](const bool value) { cptr->pause.set_world(value); });
+    app.set_function("paused", [cptr]() { return cptr->pause.paused(simul::pause_domain::gameplay); });
 
     // рантайм-переключение глубины логгирования домена (работает и в release): app.set_log_level("sound","trace").
     // Домены: main/assets/sound/render/ui/gameplay/resource/demiurg; глубина: off/info/flow/trace.
@@ -771,11 +783,10 @@ void simulation::begin_loading() {
     } else {
       utils::warn("main: конфиг 'fsm/actor' не найден в реестре — хардкод FSM");
     }
-    if (auto* gr = reg->get<goap_resource>("goap/actor")) {
-      while (!gr->usable()) gr->load(utils::safe_handle_t{});
-      brains.goap = &gr->config();
+    if (reg->get<goap_resource>("goap/actor") != nullptr) {
+      brains.goap = std::make_shared<goap_config>(resolve_goap_config(*reg, "goap/actor"));
       DE_LOG(catalogue::log_domain::gameplay, flow, "main: GOAP <- конфиг 'goap/actor' ({} метрик, {} действий)",
-        gr->config().metrics.size(), gr->config().actions.size());
+        brains.goap->metrics.size(), brains.goap->actions.size());
     } else {
       utils::warn("main: конфиг 'goap/actor' не найден в реестре — хардкод GOAP");
     }
@@ -818,8 +829,12 @@ bool simulation::stop_predicate() const {
 void simulation::update(const size_t time) {
   auto& c = state();
   c.lifecycle.update(*this, time);
-  c.clocks.set_game_paused(c.lifecycle.phase() != simul::app_state::game);
+  const bool outside_game = c.lifecycle.phase() != simul::app_state::game;
+  c.clocks.set_game_paused(outside_game || c.pause.paused(simul::pause_domain::gameplay));
+  c.clocks.set_presentation_paused(outside_game || c.pause.paused(simul::pause_domain::presentation));
+  const auto game_before = c.clocks.game_now();
   c.clocks.advance(time);
+  const uint64_t game_delta_ticks = c.clocks.game_now().ticks - game_before.ticks;
   simul::begin_main_frame(
     c,
     time,
@@ -998,10 +1013,11 @@ void simulation::update(const size_t time) {
 
   // --- actor simulation slice: simple AI -> move intents -> aesthetics components -> GPU batch ---
   // Только в game (шаг 3d): на splash/loading акторов не считаем и не публикуем.
-  if (c.lifecycle.phase() == simul::app_state::game && c.actors_batch.valid()) {
+  if (c.lifecycle.phase() == simul::app_state::game &&
+      !c.pause.paused(simul::pause_domain::gameplay) && c.actors_batch.valid()) {
     const auto t0 = std::chrono::steady_clock::now();
     c.actors_last_metrics = c.actors.update(
-      float(time) / float(utils::global_time_resolution),
+      float(game_delta_ticks) / float(utils::global_time_resolution),
       c.actors_batch,
       *bootstrap_->pool
     );
