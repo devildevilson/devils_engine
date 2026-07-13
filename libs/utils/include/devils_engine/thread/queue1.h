@@ -1,10 +1,10 @@
 #ifndef DEVILS_ENGINE_THREAD_ATOMIC_QUEUE_H
 #define DEVILS_ENGINE_THREAD_ATOMIC_QUEUE_H
 
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <atomic>
-#include <array>
 
 namespace devils_engine {
 namespace thread {
@@ -16,6 +16,7 @@ public:
   // может быть лишняя копия, но так мы можем потерять value если вдруг вернется false
   bool enqueue(const T& value) noexcept;
   bool dequeue(T& value) noexcept;
+
 private:
   struct cell_t {
     std::atomic<uint64_t> seq;
@@ -48,7 +49,9 @@ bool queue1<T, N>::enqueue(const T& v) noexcept {
     uint64_t seq = cell.seq.load(std::memory_order_acquire);
     auto dif = int64_t(seq) - int64_t(pos);
 
-    if (dif < 0) return false; // полная очередь
+    if (dif < 0) {
+      return false; // полная очередь
+    }
 
     if (dif > 0) {
       pos = tail.load(std::memory_order_relaxed);
@@ -57,9 +60,7 @@ bool queue1<T, N>::enqueue(const T& v) noexcept {
         tail.compare_exchange_weak(
           pos, pos + 1,
           std::memory_order_relaxed,
-          std::memory_order_relaxed
-        )
-        ) {
+          std::memory_order_relaxed)) {
         cell.data = v;
         cell.seq.store(pos + 1, std::memory_order_release);
         return true;
@@ -80,18 +81,18 @@ bool queue1<T, N>::dequeue(T& v) noexcept {
     uint64_t seq = cell.seq.load(std::memory_order_acquire);
     auto dif = int64_t(seq) - int64_t(pos + 1);
 
-    if (dif < 0) return false; // пустая очередь
+    if (dif < 0) {
+      return false; // пустая очередь
+    }
 
     if (dif > 0) {
       pos = head.load(std::memory_order_relaxed);
     } else {
       if (
-          head.compare_exchange_weak(
+        head.compare_exchange_weak(
           pos, pos + 1,
           std::memory_order_relaxed,
-          std::memory_order_relaxed
-        )
-        ) {
+          std::memory_order_relaxed)) {
         v = std::move(cell.data);
         cell.seq.store(pos + buffer.size(), std::memory_order_release);
         return true;
@@ -101,7 +102,7 @@ bool queue1<T, N>::dequeue(T& v) noexcept {
 
   return false;
 }
-}
-}
+} // namespace thread
+} // namespace devils_engine
 
 #endif

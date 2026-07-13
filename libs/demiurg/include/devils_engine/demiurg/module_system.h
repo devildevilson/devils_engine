@@ -1,11 +1,14 @@
 #ifndef DEVILS_ENGINE_DEMIURG_MODULE_SYSTEM_H
 #define DEVILS_ENGINE_DEMIURG_MODULE_SYSTEM_H
 
-#include <cstdint>
+// Owns the ordered set of resource modules and their override lookup context.
+
 #include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
-#include <memory>
+
 #include "resource_manifest.h"
 
 namespace devils_engine {
@@ -28,12 +31,13 @@ public:
   std::string_view modules_list() const;
   void set_modules_list(std::string modules_list);
 
-  std::vector<list_entry> load_list(const std::string_view &list_name) const;
+  std::vector<list_entry> load_list(const std::string_view& list_name) const;
   void load_modules(std::vector<list_entry> paths);
   void load_default_modules();
   void open_modules();
   void close_modules();
   void discover_resources(std::vector<resource_candidate>& out);
+
 private:
   void discover_resources_impl(std::vector<resource_candidate>& out);
 
@@ -41,7 +45,7 @@ private:
   std::string modules_list_name;
   std::vector<std::unique_ptr<module_interface>> modules;
 };
-}
-}
+} // namespace demiurg
+} // namespace devils_engine
 
 #endif

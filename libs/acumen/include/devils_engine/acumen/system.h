@@ -3,33 +3,29 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <vector>
 #include <span>
+#include <vector>
 
-#include "common.h"
 #include "astar.h"
 #include "cache.h"
+#include "common.h"
 
 namespace devils_engine {
-namespace act { class registry; } // резолв функций метрик/действий в конструкторе system
+namespace act {
+class registry;
+} // namespace act
 
 namespace acumen {
-struct astar_data {
-  scoped_state state;
-  double weight;
-  const struct action* action;
-};
-
 // Входные параметры решения (свёрнуты из плоского списка аргументов decide). Только ВХОД —
 // переиспользуемы между вызовами (выход out передаётся отдельным аргументом, он у каждого
 // вызова свой). scratch ОБЯЗАТЕЛЕН (переиспользуемый A*-контейнер на поток исполнения). cache
 // ОПЦИОНАЛЕН: nullptr ⇒ без мемоизации (всегда живой A*); иначе hit ⇒ копия плана, miss ⇒ поиск + insert.
 struct decide_params {
-  state start;                                       // стартовое состояние (значащие биты → ключ)
-  scoped_state goal;                                 // целевое состояние
-  uint64_t goal_id = 0;                              // дешёвый идентификатор цели от вызывающего
-  astar<astar_data>::container* scratch = nullptr;   // обязателен
-  solution_cache* cache = nullptr;                   // опционально (nullptr игнорируется)
+  state start;                                     // стартовое состояние (значащие биты → ключ)
+  scoped_state goal;                               // целевое состояние
+  uint64_t goal_id = 0;                            // дешёвый идентификатор цели от вызывающего
+  astar<astar_data>::container* scratch = nullptr; // обязателен
+  solution_cache* cache = nullptr;                 // опционально (nullptr игнорируется)
 };
 
 class system {
@@ -64,6 +60,7 @@ public:
   // стеке), отдельный аргумент (у каждого вызова свой). Возвращает ПОЛНУЮ длину плана; out
   // заполняется до min(out.size(), max_plan).
   size_t decide(const decide_params& params, std::span<const action*> out) const;
+
 private:
   std::vector<state_metric> metrics;
   std::vector<goal> goals;
@@ -82,11 +79,12 @@ public:
   float_t goal_cost(const astar_data&, const astar_data&, const void*) const override;
   bool is_same(const astar_data&, const astar_data&, const void*) const override;
   void fill_successors(container*, const astar_data&, const void*) const override;
+
 private:
   const class system* system;
 };
 
-}
-}
+} // namespace acumen
+} // namespace devils_engine
 
 #endif

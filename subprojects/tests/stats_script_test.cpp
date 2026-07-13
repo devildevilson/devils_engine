@@ -1,12 +1,10 @@
-#include <doctest/doctest.h>
-
 #include <cstdint>
 
-#include <devils_script/system.h>
-#include <devils_script/context.h>
-#include <devils_script/container.h>
-
 #include <devils_engine/act/stat_accessors.h>
+#include <devils_script/container.h>
+#include <devils_script/context.h>
+#include <devils_script/system.h>
+#include <doctest/doctest.h>
 
 // register_stats статической рефлексией генерирует scope getter + локальные field/add_field функции.
 
@@ -15,8 +13,8 @@ using namespace devils_engine::act;
 namespace {
 struct test_stats {
   int64_t strength = 0;
-  float   agility  = 0.0f;
-  int32_t luck     = 0;
+  float agility = 0.0f;
+  int32_t luck = 0;
 };
 
 enum class stat_test_domain : uint32_t { stats = 1 }; // домен catalogue для эффектов add_<field>
@@ -35,18 +33,25 @@ struct defaulted_stats {
 struct combined_scope {
   test_stats* primary = nullptr;
   needs_stats* needs = nullptr;
-  bool valid() const noexcept { return primary != nullptr || needs != nullptr; }
+  bool valid() const noexcept {
+    return primary != nullptr || needs != nullptr;
+  }
 };
 
-test_stats* get_primary(combined_scope s) noexcept { return s.primary; }
-needs_stats* get_needs(combined_scope s) noexcept { return s.needs; }
+test_stats* get_primary(combined_scope s) noexcept {
+  return s.primary;
+}
+needs_stats* get_needs(combined_scope s) noexcept {
+  return s.needs;
+}
 
-enum class multi_stat_domain : uint32_t { primary = 11, needs = 12 };
+enum class multi_stat_domain : uint32_t { primary = 11,
+                                          needs = 12 };
 
 void register_test_stats(devils_script::system& sys) {
   register_stats<test_stats, combined_scope, &get_primary, stat_test_domain::stats>(sys, "stats");
 }
-}
+} // namespace
 
 static_assert(numeric_stats_aggregate<test_stats>);
 static_assert(numeric_stats_aggregate<needs_stats>);
@@ -59,7 +64,7 @@ TEST_CASE("stat_accessors: рефлексия генерирует ds-чтени
   sys.init_math();
   register_test_stats(sys);
 
-  test_stats st{ 10, 2.0f, 5 };
+  test_stats st{10, 2.0f, 5};
   const combined_scope scope{&st, nullptr};
 
   const auto c = sys.parse<int64_t, combined_scope>("s", "stats.strength + stats.luck");
@@ -75,7 +80,7 @@ TEST_CASE("stat_accessors: add_<field> мутирует компонент [stat
   sys.init_math();
   register_test_stats(sys);
 
-  test_stats st{ 10, 2.0f, 5 };
+  test_stats st{10, 2.0f, 5};
   const combined_scope scope{&st, nullptr};
 
   const auto c = sys.parse<void, combined_scope>("a", "stats = { add_strength(5) }");

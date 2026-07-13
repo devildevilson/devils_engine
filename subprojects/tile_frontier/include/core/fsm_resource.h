@@ -20,7 +20,9 @@ struct fsm_config {
 class fsm_resource : public devils_engine::demiurg::resource_interface {
 public:
   fsm_resource();
-  const std::vector<std::string>& transitions() const noexcept { return config_.transitions; }
+  const std::vector<std::string>& transitions() const noexcept {
+    return config_.transitions;
+  }
 
   void load_cold(const devils_engine::utils::safe_handle_t& handle) override;
   void load_warm(const devils_engine::utils::safe_handle_t& handle) override;
@@ -31,7 +33,7 @@ private:
   fsm_config config_;
 };
 
-}
-}
+} // namespace core
+} // namespace tile_frontier
 
 #endif

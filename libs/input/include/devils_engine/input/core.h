@@ -1,42 +1,46 @@
 #ifndef DEVILS_ENGINE_INPUT_CORE_H
 #define DEVILS_ENGINE_INPUT_CORE_H
 
-#include <cstdint>
 #include <cstddef>
-#include <tuple>
+#include <cstdint>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #if defined(_WIN32)
-  // On Windows, Vulkan commands use the stdcall convention
-  #define VKAPI_ATTR
-  #define VKAPI_CALL __stdcall
-  #define VKAPI_PTR  VKAPI_CALL
+// On Windows, Vulkan commands use the stdcall convention
+#  define VKAPI_ATTR
+#  define VKAPI_CALL __stdcall
+#  define VKAPI_PTR VKAPI_CALL
 #elif defined(__ANDROID__) && defined(__ARM_ARCH) && __ARM_ARCH < 7
-  #error "Vulkan is not supported for the 'armeabi' NDK ABI"
+#  error "Vulkan is not supported for the 'armeabi' NDK ABI"
 #elif defined(__ANDROID__) && defined(__ARM_ARCH) && __ARM_ARCH >= 7 && defined(__ARM_32BIT_STATE)
-  // On Android 32-bit ARM targets, Vulkan functions use the "hardfloat"
-  // calling convention, i.e. float parameters are passed in registers. This
-  // is true even if the rest of the application passes floats on the stack,
-  // as it does by default when compiling for the armeabi-v7a NDK ABI.
-  #define VKAPI_ATTR __attribute__((pcs("aapcs-vfp")))
-  #define VKAPI_CALL
-  #define VKAPI_PTR  VKAPI_ATTR
+// On Android 32-bit ARM targets, Vulkan functions use the "hardfloat"
+// calling convention, i.e. float parameters are passed in registers. This
+// is true even if the rest of the application passes floats on the stack,
+// as it does by default when compiling for the armeabi-v7a NDK ABI.
+#  define VKAPI_ATTR __attribute__((pcs("aapcs-vfp")))
+#  define VKAPI_CALL
+#  define VKAPI_PTR VKAPI_ATTR
 #else
-  // On other platforms, use the default calling convention
-  #define VKAPI_ATTR
-  #define VKAPI_CALL
-  #define VKAPI_PTR
+// On other platforms, use the default calling convention
+#  define VKAPI_ATTR
+#  define VKAPI_CALL
+#  define VKAPI_PTR
 #endif
 
-#define VK_DEFINE_HANDLE(object) typedef struct object##_T* object;
-#define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef struct object##_T *object;
+#ifndef VK_DEFINE_HANDLE
+#  define VK_DEFINE_HANDLE(object) typedef struct object##_T* object;
+#endif
+#ifndef VK_DEFINE_NON_DISPATCHABLE_HANDLE
+#  define VK_DEFINE_NON_DISPATCHABLE_HANDLE(object) typedef struct object##_T* object;
+#endif
 VK_DEFINE_HANDLE(VkInstance)
 VK_DEFINE_HANDLE(VkPhysicalDevice)
 VK_DEFINE_NON_DISPATCHABLE_HANDLE(VkSurfaceKHR)
 
-typedef void (VKAPI_PTR* PFN_vkVoidFunction)(void);
+typedef void(VKAPI_PTR* PFN_vkVoidFunction)(void);
 typedef PFN_vkVoidFunction(VKAPI_PTR* PFN_vkGetInstanceProcAddr)(VkInstance instance, const char* pName);
 
 // здесь отстутствует создание поверхности окна
@@ -102,7 +106,7 @@ void init_vulkan_loader(PFN_vkGetInstanceProcAddr fn) noexcept;
 uint32_t get_physical_device_presentation_support(VkInstance i, VkPhysicalDevice p, uint32_t index) noexcept;
 uint32_t create_window_surface(VkInstance i, GLFWwindow* w, const void* ptr, VkSurfaceKHR* s) noexcept;
 
-GLFWwindow* create_window(const uint32_t width, const uint32_t height, const std::string &name, GLFWmonitor* m = nullptr, GLFWwindow* share = nullptr);
+GLFWwindow* create_window(const uint32_t width, const uint32_t height, const std::string& name, GLFWmonitor* m = nullptr, GLFWwindow* share = nullptr);
 void destroy(GLFWwindow* w);
 // glfwSetWindowMonitor
 void hide(GLFWwindow* w);
@@ -153,15 +157,15 @@ std::string key_name_local(const int32_t scancode);
 std::string_view glfw_key_name_canonical(const int32_t key) noexcept;
 std::string_view glfw_key_name_us_layout(const int32_t key) noexcept;
 std::string glfw_key_name_local(const int32_t key);
-int32_t glfw_key_from_canonical(const std::string_view &name) noexcept;
-std::tuple<int32_t, int32_t> key_from_canonical(const std::string_view &name) noexcept;
+int32_t glfw_key_from_canonical(const std::string_view& name) noexcept;
+std::tuple<int32_t, int32_t> key_from_canonical(const std::string_view& name) noexcept;
 std::string key_name_native(const int32_t key, const int32_t scancode);
 std::tuple<double, double> cursor_pos(GLFWwindow* m);
 void set_cursor_input_mode(GLFWwindow* m, const int32_t mode);
 void set_raw_mouse_motion(GLFWwindow* m);
 
 // настройки курсора, их может быть несколько, например это вполне нормально менять курсор во время игры в зависимости от ситуации
-GLFWcursor* create_cursor(const icon_t &icon, const int32_t xhot, const int32_t yhot);
+GLFWcursor* create_cursor(const icon_t& icon, const int32_t xhot, const int32_t yhot);
 // посмотреть id курсора тут https://www.glfw.org/docs/latest/group__shapes.html
 GLFWcursor* create_default_cursor(const int32_t id);
 
@@ -174,8 +178,8 @@ void set_cursor(GLFWwindow* m, GLFWcursor* cursor = nullptr);
 std::string_view clipboard_string(GLFWwindow* w) noexcept;
 void set_clipboard_string(GLFWwindow* w, const std::string& str) noexcept;
 
-void open_internet_url(const std::string &str);
-}
-}
+void open_internet_url(const std::string& str);
+} // namespace input
+} // namespace devils_engine
 
 #endif

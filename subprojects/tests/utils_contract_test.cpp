@@ -1,5 +1,3 @@
-#include <doctest/doctest.h>
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -7,6 +5,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <doctest/doctest.h>
 
 #include "devils_engine/utils/event_dispatcher.h"
 #include "devils_engine/utils/memory_pool.h"
@@ -31,8 +31,12 @@ struct pooled_node {
   int value;
   void* free_list_storage;
 
-  explicit pooled_node(const int value_) noexcept : value(value_), free_list_storage(nullptr) { ++alive_count; }
-  ~pooled_node() noexcept { --alive_count; }
+  explicit pooled_node(const int value_) noexcept : value(value_), free_list_storage(nullptr) {
+    ++alive_count;
+  }
+  ~pooled_node() noexcept {
+    --alive_count;
+  }
 };
 
 struct alignas(64) over_aligned_node {
@@ -52,7 +56,7 @@ struct alignas(32) fixed_pool_over_aligned_object {
   int value;
 };
 
-}
+} // namespace
 
 TEST_CASE("string_pool keeps stable dense ids and supports lookup [utils::string_id]") {
   utils::string_pool<1002> pool;
@@ -83,9 +87,11 @@ TEST_CASE("event_dispatcher2 stores independent typed event batches [utils::even
   CHECK(dispatcher.read<event_a>().empty());
 
   dispatcher.submit(event_a{3}, event_a{1}, event_a{2});
-  dispatcher.submit(std::vector<event_b>{ event_b{"first"}, event_b{"second"} });
+  dispatcher.submit(std::vector<event_b>{event_b{"first"}, event_b{"second"}});
 
-  dispatcher.sort<event_a>([](const event_a& l, const event_a& r) { return l.value < r.value; });
+  dispatcher.sort<event_a>([](const event_a& l, const event_a& r) {
+    return l.value < r.value;
+  });
 
   auto events_a = dispatcher.read<event_a>();
   REQUIRE(events_a.size() == 3);
@@ -144,7 +150,9 @@ TEST_CASE("memory_pool reports the real per-block capacity [utils::memory_pool]"
   nodes.push_back(pool.create(99));
   CHECK(pool.blocks_allocated() == 2);
 
-  for (auto* node : nodes) pool.destroy(node);
+  for (auto* node : nodes) {
+    pool.destroy(node);
+  }
 }
 
 TEST_CASE("memory_pool supports over-aligned object types [utils::memory_pool]") {
@@ -210,7 +218,9 @@ TEST_CASE("fixed_pool_mt returns nullptr when exhausted and reuses freed blocks 
   REQUIRE(reused != nullptr);
   blocks.push_back(reused);
 
-  for (auto* block : blocks) pool.free(block);
+  for (auto* block : blocks) {
+    pool.free(block);
+  }
 }
 
 TEST_CASE("fixed_pool_mt create rejects objects that do not fit the block contract [utils::fixed_pool_mt]") {

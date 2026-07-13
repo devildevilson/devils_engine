@@ -14,7 +14,7 @@ struct gpu_load_context {
   graphics_base* base;
 };
 
-}
-}
+} // namespace painter
+} // namespace devils_engine
 
 #endif

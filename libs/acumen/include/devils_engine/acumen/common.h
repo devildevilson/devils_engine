@@ -1,13 +1,13 @@
 #ifndef DEVILS_ENGINE_ACUMEN_COMMON_H
 #define DEVILS_ENGINE_ACUMEN_COMMON_H
 
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
-#include <bitset>
 #include <string>
 
-#include "devils_engine/act/function.h"      // act::predicate_function / act::effect_function
-#include "devils_engine/act/exec_context.h"  // act::exec_context
+#include "devils_engine/act/exec_context.h" // act::exec_context
+#include "devils_engine/act/function.h"     // act::predicate_function / act::effect_function
 
 #ifndef DEVILS_ENGINE_ACUMEN_STATE_SIZE
 #  define DEVILS_ENGINE_ACUMEN_STATE_SIZE 256
@@ -38,7 +38,7 @@ inline constexpr size_t state_words = (DEVILS_ENGINE_ACUMEN_STATE_SIZE + 63) / 6
 // compute_state ставит s[i] = metrics[i].compute(ctx)).
 struct state_metric {
   std::string name;
-  double weight = 1.0; // вес наверное нужен только для того чтобы сортировать goal
+  double weight = 1.0;                                   // вес наверное нужен только для того чтобы сортировать goal
   const act::predicate_function* compute_func = nullptr; // резолвится system'ом из act::registry по name
 
   state_metric() noexcept;
@@ -85,7 +85,14 @@ struct action {
   action(std::string name, scoped_state requirements, scoped_state next_state, scoped_state weight_state) noexcept;
   double compute_weight(const state& current_state) const noexcept;
 };
-}
-}
+
+// Per-node data shared by the A* planner interface and reusable execution scratch.
+struct astar_data {
+  scoped_state state;
+  double weight;
+  const struct action* action;
+};
+} // namespace acumen
+} // namespace devils_engine
 
 #endif

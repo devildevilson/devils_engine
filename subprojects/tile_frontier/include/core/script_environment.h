@@ -19,7 +19,7 @@ struct script_environment {
   script_environment();
 };
 
-}
-}
+} // namespace core
+} // namespace tile_frontier
 
 #endif

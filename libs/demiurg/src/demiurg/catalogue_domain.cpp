@@ -1,5 +1,4 @@
 #include "catalogue_domain.h"
-
 #include "devils_engine/catalogue/logging.h"
 
 namespace devils_engine {
@@ -9,10 +8,9 @@ void install_catalogue_introspection() noexcept {
   static const catalogue::introspection cfg{
     catalogue::introspection_mode::off,
     catalogue::log_domain::demiurg,
-    nullptr
-  };
+    nullptr};
   catalogue_domain::set_introspection(&cfg);
 }
 
-}
-}
+} // namespace demiurg
+} // namespace devils_engine

@@ -8,8 +8,6 @@
 #include <string_view>
 #include <vector>
 
-#include <shaderc/shaderc.h>
-
 #include <devils_engine/catalogue/logging.h>
 #include <devils_engine/demiurg/module_system.h>
 #include <devils_engine/demiurg/resource_loader.h>
@@ -22,6 +20,7 @@
 #include <devils_engine/sound/sound_resource.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/visage/font_resource.h>
+#include <shaderc/shaderc.h>
 
 #include "messages.h"
 #include "systems.h"
@@ -52,10 +51,14 @@ public:
     DE_LOG(catalogue::log_domain::assets, flow, "assets: registry built from '{}', {} resources", root, container->resources->resources_count());
   }
 
-  bool stop_predicate() const override { return false; }
+  bool stop_predicate() const override {
+    return false;
+  }
 
   void update(const size_t time) override {
-    if (container == nullptr || this->broker_ == nullptr) return;
+    if (container == nullptr || this->broker_ == nullptr) {
+      return;
+    }
     auto& br = *this->broker_;
 
     drain_gpu_done(br);
@@ -144,7 +147,9 @@ private:
       cmd.registry->template find<painter::glsl_source_file>(cmd.prefix, shaders);
 
       for (auto* shader : shaders) {
-        if (shader == nullptr) continue;
+        if (shader == nullptr) {
+          continue;
+        }
         const uint32_t kind = infer_shader_kind(shader->id);
         if (kind == UINT32_MAX) {
           utils::warn("assets: skip shader '{}' - cannot infer shader stage from id", shader->id);
@@ -173,25 +178,36 @@ private:
     for (const auto& job : container->gpu_jobs) {
       br.gpu_transition.try_push(command_gpu_transition{
         resource_ref::from_system(container->resources.get(), job.res),
-        job.load
-      });
+        job.load});
     }
   }
 
   static uint32_t infer_shader_kind(const std::string_view id) {
-    if (id.ends_with(".vert")) return shaderc_vertex_shader;
-    if (id.ends_with(".frag")) return shaderc_fragment_shader;
-    if (id.ends_with(".comp")) return shaderc_compute_shader;
-    if (id.ends_with(".geom")) return shaderc_geometry_shader;
-    if (id.ends_with(".tesc")) return shaderc_tess_control_shader;
-    if (id.ends_with(".tese")) return shaderc_tess_evaluation_shader;
+    if (id.ends_with(".vert")) {
+      return shaderc_vertex_shader;
+    }
+    if (id.ends_with(".frag")) {
+      return shaderc_fragment_shader;
+    }
+    if (id.ends_with(".comp")) {
+      return shaderc_compute_shader;
+    }
+    if (id.ends_with(".geom")) {
+      return shaderc_geometry_shader;
+    }
+    if (id.ends_with(".tesc")) {
+      return shaderc_tess_control_shader;
+    }
+    if (id.ends_with(".tese")) {
+      return shaderc_tess_evaluation_shader;
+    }
     return UINT32_MAX;
   }
 
   std::unique_ptr<state> container;
 };
 
-}
-}
+} // namespace simul
+} // namespace devils_engine
 
 #endif

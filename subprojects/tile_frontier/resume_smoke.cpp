@@ -4,14 +4,13 @@
 // dump_world(A) == dump_world(B) ⇔ миры идентичны во всех компонентах. Это доказывает, что снапшот
 // (а) round-trip'ит всё состояние и (б) захватывает ДОСТАТОЧНО, чтобы продолжить один-в-один.
 // Плоский main (без doctest): печатает результат, код возврата 0/1.
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 
-#include <spdlog/spdlog.h>
-
-#include <devils_engine/thread/atomic_pool.h>
 #include <devils_engine/aesthetics/serialization.h> // dump_world — оракул равенства
+#include <devils_engine/thread/atomic_pool.h>
+#include <spdlog/spdlog.h>
 
 #include "core/actor_simulation.h"
 
@@ -19,7 +18,13 @@ using namespace devils_engine;
 namespace tf = tile_frontier::core;
 
 static int failures = 0;
-#define CHECK(cond) do { if (!(cond)) { std::printf("  FAIL: %s (line %d)\n", #cond, __LINE__); ++failures; } } while (0)
+#define CHECK(cond)                                           \
+  do {                                                        \
+    if (!(cond)) {                                            \
+      std::printf("  FAIL: %s (line %d)\n", #cond, __LINE__); \
+      ++failures;                                             \
+    }                                                         \
+  } while (0)
 
 static std::vector<std::byte> dump(const tf::actor_world_slice& s) {
   return aesthetics::serial::dump_world(&s.ecs());
@@ -44,14 +49,19 @@ int main() {
   // --- warmup: настоящий геймплей до момента снапшота (поедание/респавн/FSM успели наработать) ---
   tf::actor_world_slice a;
   a.init(count, mn, mx, tex);
-  for (int i = 0; i < 60; ++i) a.update(dt, batch_a, pool);
+  for (int i = 0; i < 60; ++i) {
+    a.update(dt, batch_a, pool);
+  }
 
   // --- save → load в чистый слайс ---
   const auto packet = a.save();
   std::printf("saved packet: %zu bytes (world + sim scalars, sealed)\n", packet.size());
 
   tf::actor_world_slice b;
-  if (!b.load(packet)) { std::printf("RESUME FAILED: load returned false\n"); return 1; }
+  if (!b.load(packet)) {
+    std::printf("RESUME FAILED: load returned false\n");
+    return 1;
+  }
 
   // --- сразу после load миры должны быть побайтово равны ---
   const bool equal_after_load = dump(a) == dump(b);
@@ -63,13 +73,21 @@ int main() {
   for (int i = 1; i <= 120 && diverged_at < 0; ++i) {
     const auto ma = a.update(dt, batch_a, pool);
     const auto mb = b.update(dt, batch_b, pool);
-    if (ma.actors != mb.actors || ma.ticks != mb.ticks || dump(a) != dump(b)) diverged_at = i;
+    if (ma.actors != mb.actors || ma.ticks != mb.ticks || dump(a) != dump(b)) {
+      diverged_at = i;
+    }
   }
   CHECK(diverged_at < 0);
-  if (diverged_at >= 0) std::printf("DIVERGED at resumed tick %d\n", diverged_at);
-  else                  std::printf("120 resumed ticks: A and B bit-identical\n");
+  if (diverged_at >= 0) {
+    std::printf("DIVERGED at resumed tick %d\n", diverged_at);
+  } else {
+    std::printf("120 resumed ticks: A and B bit-identical\n");
+  }
 
-  if (failures) { std::printf("RESUME FAILED: %d check(s)\n", failures); return 1; }
+  if (failures) {
+    std::printf("RESUME FAILED: %d check(s)\n", failures);
+    return 1;
+  }
   std::printf("RESUME OK: gameplay save/load round-trips + deterministically resumes\n");
   return 0;
 }

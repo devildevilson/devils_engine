@@ -37,7 +37,7 @@ float screen_px_range(uint index, uint sid) {
 
 // компонент mix: картинка (сэмпл слота через samp[sid]) или цвет (RGBA8)
 vec4 mix_comp(uint raw, bool is_image, vec2 s, uint sid) {
-  if (is_image) return texture(S(raw & TEX_INDEX_MASK, sid), s);
+  if (is_image) return texture(S(raw & tex_index_mask, sid), s);
   return unpackUnorm4x8(raw);
 }
 
@@ -51,7 +51,7 @@ void main() {
   if (tex_mirror_u_of(pc.tex_id)) s.x = 1.0 - s.x;
   if (tex_mirror_v_of(pc.tex_id)) s.y = 1.0 - s.y;
 
-  if (mode == UI_DRAW_MSDF) {
+  if (mode == ui_draw_msdf) {
     // MSDF: payload = boldness / outline_width / outline_color / softness
     const float boldness      = uintBitsToFloat(pc.payload[0]);
     const float outline_width = uintBitsToFloat(pc.payload[1]);
@@ -72,22 +72,22 @@ void main() {
     } else {
       frag_color = vec4(color.rgb, color.a * fill);
     }
-  } else if (mode == UI_DRAW_IMAGE) {
+  } else if (mode == ui_draw_image) {
     frag_color = texture(S(index, sid), s) * color;
-  } else if (mode == UI_DRAW_COOLDOWN) {
+  } else if (mode == ui_draw_cooldown) {
     // COOLDOWN: main = tex[index], mask.r <= fill => проявлено; иначе затемнено. Градиент-маска — linear.
-    const uint  mask_index = pc.payload[0] & TEX_INDEX_MASK;
+    const uint  mask_index = pc.payload[0] & tex_index_mask;
     const float fill       = uintBitsToFloat(pc.payload[1]);
-    const float m   = texture(S(mask_index, SAMPLER_LINEAR), s).r;
+    const float m   = texture(S(mask_index, sampler_linear), s).r;
     const float rev = step(m, fill);
     const vec4  c   = texture(S(index, sid), s);
     frag_color = vec4(c.rgb * mix(0.35, 1.0, rev), c.a) * color;
-  } else if (mode == UI_DRAW_MIX) {
+  } else if (mode == ui_draw_mix) {
     // MIX: веса из каналов маски (R/G/B = comp0..2, comp3 = 1-R-G-B), альфа = непрозрачность.
     // Region-маска — NEAREST (резкие зоны без бида); компоненты-картинки — по sampler_id (обычно linear).
-    const uint mask_index = pc.payload[0] & TEX_INDEX_MASK;
+    const uint mask_index = pc.payload[0] & tex_index_mask;
     const uint is_img     = pc.payload[5];
-    const vec4 mk = texture(S(mask_index, SAMPLER_NEAREST), uv);
+    const vec4 mk = texture(S(mask_index, sampler_nearest), uv);
     const float w0 = mk.r, w1 = mk.g, w2 = mk.b;
     const float w3 = clamp(1.0 - (w0 + w1 + w2), 0.0, 1.0);
     const vec4 c0 = mix_comp(pc.payload[1], (is_img & 1u) != 0u, uv, sid);

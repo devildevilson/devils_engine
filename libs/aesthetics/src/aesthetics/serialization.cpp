@@ -1,6 +1,6 @@
-#include "devils_engine/aesthetics/serialization.h"
-
 #include <algorithm>
+
+#include "devils_engine/aesthetics/serialization.h"
 
 namespace devils_engine {
 namespace aesthetics {
@@ -16,7 +16,7 @@ uint32_t component_registry::fingerprint() noexcept {
   static const uint32_t fp = [] {
     uint32_t acc = detail::fnv_offset;
     for (const auto& e : table()) {
-      acc = (acc ^ e.hash)   * detail::fnv_prime;
+      acc = (acc ^ e.hash) * detail::fnv_prime;
       acc = (acc ^ e.layout) * detail::fnv_prime;
     }
     return acc;
@@ -26,16 +26,18 @@ uint32_t component_registry::fingerprint() noexcept {
 
 std::size_t estimate_size(const world* w) {
   std::size_t total = 64; // заголовок + gen_state
-  for (const auto& e : component_registry::table()) total += 8 + e.est(w); // +8: hash+len блока
+  for (const auto& e : component_registry::table()) {
+    total += 8 + e.est(w); // +8: hash+len блока
+  }
   return total;
 }
 
 std::vector<std::byte> dump_world(const world* w) {
   std::vector<std::byte> buf;
   buf.resize(estimate_size(w)); // ПРЕД-resize: запись = чистый memcpy, ensure() почти не срабатывает
-  writer wr{ buf };
+  writer wr{buf};
   dump_world(w, wr);
-  buf.resize(wr.pos());         // усечь до фактически записанного
+  buf.resize(wr.pos()); // усечь до фактически записанного
   return buf;
 }
 
@@ -46,7 +48,9 @@ void dump_world(const world* w, writer& wr) {
   const auto st = w->save_state();
   wr.u64(uint64_t(st.cur_index));
   wr.u64(uint64_t(st.removed_entities.size()));
-  for (const auto id : st.removed_entities) wr.u32(id);
+  for (const auto id : st.removed_entities) {
+    wr.u32(id);
+  }
 
   const auto& table = component_registry::table();
   wr.u32(uint32_t(table.size()));
@@ -80,8 +84,13 @@ bool load_world(world* w, reader& r) {
   st.cur_index = std::size_t(r.u64());
   const uint64_t removed = r.u64();
   st.removed_entities.reserve(removed < r.b.size() ? removed : 0); // защита от мусорного размера
-  for (uint64_t i = 0; i < removed && r.ok; ++i) st.removed_entities.push_back(r.u32());
-  if (!r.ok) { utils::warn("snapshot: truncated generator state"); return false; }
+  for (uint64_t i = 0; i < removed && r.ok; ++i) {
+    st.removed_entities.push_back(r.u32());
+  }
+  if (!r.ok) {
+    utils::warn("snapshot: truncated generator state");
+    return false;
+  }
   w->load_state(st);
 
   const uint32_t block_count = r.u32();
@@ -92,13 +101,24 @@ bool load_world(world* w, reader& r) {
     const std::size_t next = r.pos + len;
 
     const auto it = std::lower_bound(table.begin(), table.end(), hash,
-      [](const component_registry::entry& e, const uint32_t v) { return e.hash < v; });
-    if (it != table.end() && it->hash == hash) it->load(w, r);
+                                     [](const component_registry::entry& e, const uint32_t v) {
+                                       return e.hash < v;
+                                     });
+    if (it != table.end() && it->hash == hash) {
+      it->load(w, r);
+    }
     // страховка: даже при найденном типе встаём на границу блока (рассинхрон длины / unknown-тип).
-    if (next <= r.b.size()) r.pos = next; else r.ok = false;
+    if (next <= r.b.size()) {
+      r.pos = next;
+    } else {
+      r.ok = false;
+    }
   }
 
-  if (!r.ok) { utils::warn("snapshot: truncated / corrupt payload"); return false; }
+  if (!r.ok) {
+    utils::warn("snapshot: truncated / corrupt payload");
+    return false;
+  }
 
   // мир целиком построен -> будим системы: пусть пересоберут query/кэши.
   w->emit(snapshot_loaded_event{});

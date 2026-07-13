@@ -1,14 +1,15 @@
 #ifndef DEVILS_ENGINE_PAINTER_COMMON_STEPS_H
 #define DEVILS_ENGINE_PAINTER_COMMON_STEPS_H
 
-#include <cstdint>
-#include <cstddef>
-#include <vector>
 #include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <memory>
 #include <string>
-#include <cstring>
 #include <string_view>
+#include <vector>
+
 #include "vulkan_minimal.h"
 
 /*
@@ -24,12 +25,15 @@ struct graphics_base;
 
 class step_interface {
 public:
-  enum class type { invalid, step, execution_pass, render_graph };
+  enum class type { invalid,
+                    step,
+                    execution_pass,
+                    render_graph };
   enum type type;
   uint32_t super;
 
-  inline step_interface() noexcept : type(type::invalid), super(UINT32_MAX) {}
-  inline step_interface(const enum type type, const uint32_t super) noexcept : type(type), super(super) {}
+  step_interface() noexcept;
+  step_interface(enum type type, uint32_t super) noexcept;
   virtual ~step_interface() noexcept = default;
   virtual void process(graphics_ctx*, VkCommandBuffer) const = 0;
   virtual void create_related_primitives(const graphics_base*) {}
@@ -63,15 +67,9 @@ public:
   // мы тут должны сказать что сейчас запускается эта пачка пар
   // пары укажем в собственно в draw_group
 
-  inline graphics_step_instance() noexcept :
-    renderpass(VK_NULL_HANDLE), subpass_index(0), render_target_index(UINT32_MAX),
-    device(VK_NULL_HANDLE), pipeline_layout(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE)
-  {}
-
-  inline graphics_step_instance(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept :
-    step_interface(step_interface::type::step, super), renderpass(renderpass), subpass_index(subpass_index),
-    render_target_index(render_target_index), device(device), pipeline_layout(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE)
-  {}
+  graphics_step_instance() noexcept;
+  graphics_step_instance(uint32_t super, VkDevice device, VkRenderPass renderpass,
+                         uint32_t subpass_index, uint32_t render_target_index) noexcept;
 
   ~graphics_step_instance() noexcept;
   void recreate_pipeline(const graphics_base*) override;
@@ -87,11 +85,8 @@ public:
   VkPipelineLayout pipeline_layout;
   VkPipeline pipeline;
 
-  inline compute_step_instance() noexcept : device(VK_NULL_HANDLE), pipeline_layout(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE) {}
-  inline compute_step_instance(const uint32_t super, VkDevice device) noexcept :
-    step_interface(step_interface::type::step, super), device(device),
-    pipeline_layout(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE)
-  {}
+  compute_step_instance() noexcept;
+  compute_step_instance(uint32_t super, VkDevice device) noexcept;
 
   ~compute_step_instance() noexcept;
   void recreate_pipeline(const graphics_base*) override;
@@ -103,8 +98,8 @@ public:
 
 class transfer_step_instance : public step_interface {
 public:
-  inline transfer_step_instance() noexcept {}
-  inline transfer_step_instance(const uint32_t super) noexcept : step_interface(step_interface::type::step, super) {}
+  transfer_step_instance() noexcept;
+  transfer_step_instance(uint32_t super) noexcept;
 };
 
 class execution_pass_instance : public step_interface, public viewport_resizer {
@@ -117,7 +112,7 @@ public:
   // размеры вьюпорта? ну и динамический ли он?
   uint32_t width, height;
 
-  inline execution_pass_instance() noexcept : device(VK_NULL_HANDLE), renderpass(VK_NULL_HANDLE), width(0), height(0) {}
+  execution_pass_instance() noexcept;
   ~execution_pass_instance() noexcept;
   void process(graphics_ctx*, VkCommandBuffer) const override;
   void resize_viewport(const graphics_base*, const uint32_t width, const uint32_t height) override;
@@ -135,7 +130,7 @@ public:
   VkRenderPass renderpass;
   uint32_t index;
 
-  inline subpass_next() noexcept : renderpass(VK_NULL_HANDLE) {}
+  subpass_next() noexcept;
   void process(graphics_ctx*, VkCommandBuffer) const override;
 };
 
@@ -148,11 +143,11 @@ public:
 struct execution_group {
   struct frame {
     VkCommandBuffer buffer;
-    std::vector<VkSemaphore> wait_for;  // previos execution_groups
+    std::vector<VkSemaphore> wait_for; // previos execution_groups
     std::vector<uint32_t> wait_for_stages;
     std::vector<VkSemaphore> signal; // next execution_groups
 
-    inline frame() noexcept : buffer(VK_NULL_HANDLE) {}
+    frame() noexcept;
   };
 
   std::vector<step_interface*> steps;
@@ -161,7 +156,7 @@ struct execution_group {
   VkDevice device;
   VkCommandPool pool;
 
-  inline execution_group() noexcept : device(VK_NULL_HANDLE), pool(VK_NULL_HANDLE) {}
+  execution_group() noexcept;
   ~execution_group() noexcept;
   void process(graphics_ctx*) const;
   void populate_command_buffers();
@@ -172,12 +167,12 @@ struct execution_group {
 class render_graph_instance : public step_interface, public pipeline_recreation, public viewport_resizer {
 public:
   struct semaphore {
-    static constexpr size_t MAX_FRAMES_IN_FLIGHT = 8;
+    static constexpr size_t max_frames_in_flight = 8;
 
     std::string name;
-    std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> handles;
+    std::array<VkSemaphore, max_frames_in_flight> handles;
 
-    inline semaphore() noexcept { memset(handles.data(), 0, sizeof(handles)); }
+    semaphore() noexcept;
   };
 
   VkDevice device;
@@ -310,7 +305,7 @@ public:
   void process(graphics_ctx*, VkCommandBuffer) const override;
 };
 
-}
-}
+} // namespace painter
+} // namespace devils_engine
 
 #endif

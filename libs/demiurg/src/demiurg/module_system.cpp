@@ -1,17 +1,16 @@
-#include "module_system.h"
-
-#include "devils_engine/utils/core.h"
-#include "devils_engine/utils/time-utils.hpp"
-#include "devils_engine/utils/fileio.h"
-#include "devils_engine/utils/sha256cpp.h"
-#include "devils_engine/utils/named_serializer.h"
-#include "module_interface.h"
-#include "folder_module.h"
-#include "zip_module.h"
-#include "resource_system.h"
-#include "catalogue_domain.h"
-
 #include <filesystem>
+
+#include "catalogue_domain.h"
+#include "devils_engine/utils/core.h"
+#include "devils_engine/utils/fileio.h"
+#include "devils_engine/utils/named_serializer.h"
+#include "devils_engine/utils/sha256cpp.h"
+#include "devils_engine/utils/time-utils.hpp"
+#include "folder_module.h"
+#include "module_interface.h"
+#include "module_system.h"
+#include "resource_system.h"
+#include "zip_module.h"
 namespace fs = std::filesystem;
 
 namespace devils_engine {
@@ -31,23 +30,23 @@ void module_system::set_modules_list(std::string modules_list) {
   modules_list_name = std::move(modules_list);
 }
 
-static std::tuple<std::string_view, std::string_view> get_name_ext(const std::string_view &path) {
+static std::tuple<std::string_view, std::string_view> get_name_ext(const std::string_view& path) {
   const auto ext = path.substr(path.rfind('.'));
-  const auto name = path.substr(0, path.rfind('.')).substr(path.rfind('/')+1);
+  const auto name = path.substr(0, path.rfind('.')).substr(path.rfind('/') + 1);
   return std::make_tuple(name, ext);
 }
 
-std::vector<module_system::list_entry> module_system::load_list(const std::string_view &list_name) const {
+std::vector<module_system::list_entry> module_system::load_list(const std::string_view& list_name) const {
   // лист по умолчанию (чист релизная папка или архив)
   // нужно проверить... что берем по умолчанию? наверное файлик core.zip что то такое
   if (list_name.empty()) {
     const auto core_file = "core.zip";
     const auto core_folder = "core/";
     if (file_io::exists(path() + core_file)) {
-      std::vector<list_entry> e{ list_entry{ core_file, "", "" } };
+      std::vector<list_entry> e{list_entry{core_file, "", ""}};
       return e;
     } else if (file_io::exists(path() + core_folder)) {
-      std::vector<list_entry> e{ list_entry{ core_folder, "", "" } };
+      std::vector<list_entry> e{list_entry{core_folder, "", ""}};
       return e;
     }
 
@@ -55,7 +54,9 @@ std::vector<module_system::list_entry> module_system::load_list(const std::strin
   }
 
   const auto list_path = std::string(list_name) + ".json";
-  if (!file_io::exists(path() + list_path)) utils::error{}("File '{}' not exists", list_path);
+  if (!file_io::exists(path() + list_path)) {
+    utils::error{}("File '{}' not exists", list_path);
+  }
 
   const auto cont = file_io::read(path() + list_path);
   std::vector<list_entry> list_entries;
@@ -71,7 +72,7 @@ void module_system::load_modules(std::vector<list_entry> paths) {
   modules.clear();
 
   // как быть с путями
-  for (const auto &entry : paths) {
+  for (const auto& entry : paths) {
     const auto full_entry_path = path() + entry.path;
     const auto e = fs::directory_entry(full_entry_path);
     if (!e.exists()) {
@@ -116,11 +117,15 @@ void module_system::load_default_modules() {
 }
 
 void module_system::open_modules() {
-  for (const auto &ptr : modules) { ptr->open(); }
+  for (const auto& ptr : modules) {
+    ptr->open();
+  }
 }
 
 void module_system::close_modules() {
-  for (const auto &ptr : modules) { ptr->close(); }
+  for (const auto& ptr : modules) {
+    ptr->close();
+  }
 }
 
 void module_system::discover_resources(std::vector<resource_candidate>& out) {
@@ -131,10 +136,10 @@ void module_system::discover_resources(std::vector<resource_candidate>& out) {
 
 void module_system::discover_resources_impl(std::vector<resource_candidate>& out) {
   uint32_t priority = 0;
-  for (const auto &ptr : modules) {
+  for (const auto& ptr : modules) {
     ptr->resources_list(out, priority);
     priority += 1;
   }
 }
-}
-}
+} // namespace demiurg
+} // namespace devils_engine

@@ -19,8 +19,12 @@ class prefab_resource : public devils_engine::demiurg::resource_interface {
 public:
   prefab_resource();
 
-  std::string_view prefab_name() const noexcept { return name_; }
-  std::string_view text() const noexcept { return text_; }
+  std::string_view prefab_name() const noexcept {
+    return name_;
+  }
+  std::string_view text() const noexcept {
+    return text_;
+  }
 
   void load_cold(const devils_engine::utils::safe_handle_t& handle) override;
   void load_warm(const devils_engine::utils::safe_handle_t& handle) override;
@@ -32,7 +36,7 @@ private:
   std::string text_; // сырой tavl-текст префаба (list-секция или весь файл)
 };
 
-}
-}
+} // namespace core
+} // namespace tile_frontier
 
 #endif

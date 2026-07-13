@@ -6,17 +6,16 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <reflect>
 #include <span>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <utility>
 
-#include <glm/glm.hpp>
-
-#include <reflect>
-#include <devils_engine/utils/core.h>
 #include <devils_engine/painter/common.h>
+#include <devils_engine/utils/core.h>
+#include <glm/glm.hpp>
 
 // Сопоставление C++-агрегата с layout-строкой draw_group (грамматика painter::format,
 // напр. "v4", "v3c4", "v4ui1"). Идея: layout инстанса data-driven (живёт в конфиге
@@ -50,14 +49,21 @@ struct atom {
 
 namespace detail {
 
-template <typename> inline constexpr bool always_false = false;
+template <typename>
+inline constexpr bool always_false = false;
 
 // скаляр C++ → тип элемента painter
-template <typename U> consteval painter::format_element_type::values scalar_element_type() {
-  if constexpr (std::is_same_v<U, float>) return painter::format_element_type::SFLOAT;
-  else if constexpr (std::is_same_v<U, uint32_t>) return painter::format_element_type::UINT;
-  else if constexpr (std::is_same_v<U, int32_t>) return painter::format_element_type::SINT;
-  else static_assert(always_false<U>, "scalar element must be float / uint32_t / int32_t");
+template <typename U>
+consteval painter::format_element_type::values scalar_element_type() {
+  if constexpr (std::is_same_v<U, float>) {
+    return painter::format_element_type::SFLOAT;
+  } else if constexpr (std::is_same_v<U, uint32_t>) {
+    return painter::format_element_type::UINT;
+  } else if constexpr (std::is_same_v<U, int32_t>) {
+    return painter::format_element_type::SINT;
+  } else {
+    static_assert(always_false<U>, "scalar element must be float / uint32_t / int32_t");
+  }
 }
 
 // тип поля агрегата T под индексом N (без default-конструирования T)
@@ -68,30 +74,53 @@ using field_type_t = std::remove_cvref_t<decltype(reflect::get<N>(std::declval<c
 
 // --- листовые типы (одно поле = один атрибут) ---
 
-template <typename T> struct is_leaf : std::false_type {};
-template <> struct is_leaf<float> : std::true_type {};
-template <> struct is_leaf<uint32_t> : std::true_type {};
-template <> struct is_leaf<int32_t> : std::true_type {};
-template <> struct is_leaf<rgba8_color> : std::true_type {};
-template <glm::length_t L, typename U, glm::qualifier Q> struct is_leaf<glm::vec<L, U, Q>> : std::true_type {};
-template <typename U, std::size_t N> struct is_leaf<std::array<U, N>> : std::true_type {};
+template <typename T>
+struct is_leaf : std::false_type {};
+template <>
+struct is_leaf<float> : std::true_type {};
+template <>
+struct is_leaf<uint32_t> : std::true_type {};
+template <>
+struct is_leaf<int32_t> : std::true_type {};
+template <>
+struct is_leaf<rgba8_color> : std::true_type {};
+template <glm::length_t L, typename U, glm::qualifier Q>
+struct is_leaf<glm::vec<L, U, Q>> : std::true_type {};
+template <typename U, std::size_t N>
+struct is_leaf<std::array<U, N>> : std::true_type {};
 
-template <typename T> struct leaf_traits;
-template <> struct leaf_traits<float> { static constexpr atom value{painter::format_element_type::SFLOAT, 1, 4}; };
-template <> struct leaf_traits<uint32_t> { static constexpr atom value{painter::format_element_type::UINT, 1, 4}; };
-template <> struct leaf_traits<int32_t> { static constexpr atom value{painter::format_element_type::SINT, 1, 4}; };
-template <> struct leaf_traits<rgba8_color> { static constexpr atom value{painter::format_element_type::UNORM, 4, 4}; };
-template <glm::length_t L, typename U, glm::qualifier Q> struct leaf_traits<glm::vec<L, U, Q>> {
+template <typename T>
+struct leaf_traits;
+template <>
+struct leaf_traits<float> {
+  static constexpr atom value{painter::format_element_type::SFLOAT, 1, 4};
+};
+template <>
+struct leaf_traits<uint32_t> {
+  static constexpr atom value{painter::format_element_type::UINT, 1, 4};
+};
+template <>
+struct leaf_traits<int32_t> {
+  static constexpr atom value{painter::format_element_type::SINT, 1, 4};
+};
+template <>
+struct leaf_traits<rgba8_color> {
+  static constexpr atom value{painter::format_element_type::UNORM, 4, 4};
+};
+template <glm::length_t L, typename U, glm::qualifier Q>
+struct leaf_traits<glm::vec<L, U, Q>> {
   static constexpr atom value{detail::scalar_element_type<U>(), uint32_t(L), uint32_t(uint32_t(L) * sizeof(U))};
 };
-template <typename U, std::size_t N> struct leaf_traits<std::array<U, N>> {
+template <typename U, std::size_t N>
+struct leaf_traits<std::array<U, N>> {
   static constexpr atom value{detail::scalar_element_type<U>(), uint32_t(N), uint32_t(N * sizeof(U))};
 };
 
 // --- разложение агрегата в плоскую последовательность атомов ---
 // std::array — агрегат, но мы трактуем его как лист, поэтому ветка is_leaf идёт ПЕРВОЙ.
 
-template <typename T> consteval uint32_t count_atoms() {
+template <typename T>
+consteval uint32_t count_atoms() {
   if constexpr (is_leaf<T>::value) {
     return 1;
   } else if constexpr (std::is_aggregate_v<T>) {
@@ -102,7 +131,7 @@ template <typename T> consteval uint32_t count_atoms() {
     return n;
   } else {
     static_assert(detail::always_false<T>,
-      "instance field must be float/uint32_t/int32_t/glm::vec/std::array or an aggregate of these");
+                  "instance field must be float/uint32_t/int32_t/glm::vec/std::array or an aggregate of these");
     return 0;
   }
 }
@@ -121,7 +150,8 @@ consteval void fill_atoms(std::array<atom, Cap>& out, uint32_t& idx) {
 }
 
 // последовательность атомов агрегата T (compile-time)
-template <typename T> consteval auto flatten() {
+template <typename T>
+consteval auto flatten() {
   std::array<atom, count_atoms<T>()> out{};
   uint32_t idx = 0;
   fill_atoms<T>(out, idx);
@@ -129,7 +159,10 @@ template <typename T> consteval auto flatten() {
 }
 
 // размер одного инстанса T в байтах (= stride)
-template <typename T> constexpr uint32_t stride_of() noexcept { return uint32_t(sizeof(T)); }
+template <typename T>
+constexpr uint32_t stride_of() noexcept {
+  return uint32_t(sizeof(T));
+}
 
 // --- layout-строка → атомы (тот же токенайзер, что painter::structures::parse_layout) ---
 //
@@ -147,61 +180,38 @@ template <typename T> constexpr uint32_t stride_of() noexcept { return uint32_t(
 //
 // Остановки: буфер заполнен (remain — хвост), строка кончилась (remain пуст), либо встречен
 // нераспознанный токен (remain начинается с этого токена, count = атомов до него).
-inline std::tuple<std::string_view, std::size_t>
-parse_layout_atoms(const std::string_view& str, const std::span<atom>& out) {
-  if (str.empty() || std::isdigit(static_cast<unsigned char>(str[0]))) return {std::string_view{}, 0};
-
-  std::size_t i = 0;
-  std::size_t n = 0;
-  while (i < str.size() && n < out.size()) {
-    const std::size_t start = i;
-    for (; i < str.size() && !std::isdigit(static_cast<unsigned char>(str[i])); ++i) {}
-    for (; i < str.size() && std::isdigit(static_cast<unsigned char>(str[i])); ++i) {}
-
-    const auto part = str.substr(start, i - start);
-    const auto fmt = painter::format::from_string(part);
-    if (fmt >= painter::format::count) return {str.substr(start), n}; // нераспознанный токен — стоп
-    out[n++] = atom{painter::format::element_type(fmt), painter::format::el_count(fmt), painter::format::size(fmt)};
-  }
-
-  return {str.substr(i), n};
-}
+std::tuple<std::string_view, std::size_t>
+parse_layout_atoms(const std::string_view& str, const std::span<atom>& out);
 
 // --- результат сверки ---
 // БЕЗ СТРОК: только код проблемы + числовой контекст. Текст пусть пишет внешний код.
 
 namespace match_error {
 enum values : uint32_t {
-  ok,                        // совпало
-  empty_layout,              // layout пуст / не распарсился ни в один атрибут
-  parse_error,               // нераспознанный токен в layout-строке (where = индекс атома)
-  attribute_count_mismatch,  // разное число атрибутов (expected = у структуры, actual = у layout)
-  attribute_mismatch,        // атрибут #where отличается (тип/число компонент/размер)
-  stride_mismatch,           // sizeof(T) != GPU-страйд (expected = sizeof(T), actual = страйд)
+  ok,                       // совпало
+  empty_layout,             // layout пуст / не распарсился ни в один атрибут
+  parse_error,              // нераспознанный токен в layout-строке (where = индекс атома)
+  attribute_count_mismatch, // разное число атрибутов (expected = у структуры, actual = у layout)
+  attribute_mismatch,       // атрибут #where отличается (тип/число компонент/размер)
+  stride_mismatch,          // sizeof(T) != GPU-страйд (expected = sizeof(T), actual = страйд)
   count
 };
 
-inline std::string_view to_string(const values v) noexcept {
-  switch (v) {
-    case ok:                       return "ok";
-    case empty_layout:             return "empty_layout";
-    case parse_error:              return "parse_error";
-    case attribute_count_mismatch: return "attribute_count_mismatch";
-    case attribute_mismatch:       return "attribute_mismatch";
-    case stride_mismatch:          return "stride_mismatch";
-    default:                       return "unknown";
-  }
-}
+std::string_view to_string(values v) noexcept;
 } // namespace match_error
 
 struct match_result {
   match_error::values error = match_error::ok;
-  uint32_t where = 0;     // индекс атрибута (для *_mismatch / parse_error)
-  uint32_t expected = 0;  // ожидалось (число атрибутов / страйд)
-  uint32_t actual = 0;    // по факту (число атрибутов / страйд)
+  uint32_t where = 0;    // индекс атрибута (для *_mismatch / parse_error)
+  uint32_t expected = 0; // ожидалось (число атрибутов / страйд)
+  uint32_t actual = 0;   // по факту (число атрибутов / страйд)
 
-  bool ok() const noexcept { return error == match_error::ok; }
-  explicit operator bool() const noexcept { return ok(); }
+  bool ok() const noexcept {
+    return error == match_error::ok;
+  }
+  explicit operator bool() const noexcept {
+    return ok();
+  }
 };
 
 // размер атрибута на GPU = align_to(max(size, 4), 4) — РОВНО правило painter::compute_size
@@ -218,30 +228,38 @@ constexpr uint32_t gpu_atom_size(const uint32_t tight_size) noexcept {
 template <typename T>
 match_result check(const std::string_view& layout) {
   static constexpr auto fields = flatten<T>();
-  if (layout.empty()) return {match_error::empty_layout};
+  if (layout.empty()) {
+    return {match_error::empty_layout};
+  }
 
   std::array<atom, 16> buf{};
   std::string_view cur = layout;
-  std::size_t idx = 0;        // сколько атрибутов layout уже сверили
+  std::size_t idx = 0; // сколько атрибутов layout уже сверили
   uint32_t gpu_stride = 0;
 
   while (!cur.empty()) {
     const auto [remain, n] = parse_layout_atoms(cur, std::span<atom>(buf));
-    if (n == 0) return {match_error::parse_error, uint32_t(idx)};  // нераспознанный токен / нет прогресса
+    if (n == 0) {
+      return {match_error::parse_error, uint32_t(idx)}; // нераспознанный токен / нет прогресса
+    }
     for (std::size_t i = 0; i < n; ++i, ++idx) {
-      if (idx >= fields.size())                                    // в layout атрибутов больше, чем в T
+      if (idx >= fields.size()) { // в layout атрибутов больше, чем в T
         return {match_error::attribute_count_mismatch, uint32_t(idx), uint32_t(fields.size()), uint32_t(idx) + 1};
-      if (!(fields[idx] == buf[i]))
+      }
+      if (!(fields[idx] == buf[i])) {
         return {match_error::attribute_mismatch, uint32_t(idx)};
+      }
       gpu_stride += gpu_atom_size(buf[i].size);
     }
     cur = remain;
   }
 
-  if (idx != fields.size())                                        // в layout атрибутов меньше, чем в T
+  if (idx != fields.size()) { // в layout атрибутов меньше, чем в T
     return {match_error::attribute_count_mismatch, uint32_t(idx), uint32_t(fields.size()), uint32_t(idx)};
-  if (stride_of<T>() != gpu_stride)
+  }
+  if (stride_of<T>() != gpu_stride) {
     return {match_error::stride_mismatch, 0, stride_of<T>(), gpu_stride};
+  }
 
   return {};
 }
@@ -251,20 +269,28 @@ match_result check(const std::string_view& layout) {
 template <typename T>
 match_result check(const std::span<const painter::format::values>& layout, const uint32_t gpu_stride) {
   static constexpr auto fields = flatten<T>();
-  if (layout.empty()) return {match_error::empty_layout};
+  if (layout.empty()) {
+    return {match_error::empty_layout};
+  }
 
-  if (layout.size() != fields.size())
+  if (layout.size() != fields.size()) {
     return {match_error::attribute_count_mismatch, 0, uint32_t(fields.size()), uint32_t(layout.size())};
+  }
 
   for (std::size_t i = 0; i < layout.size(); ++i) {
     const auto fmt = layout[i];
-    if (fmt >= painter::format::count) return {match_error::parse_error, uint32_t(i)};
+    if (fmt >= painter::format::count) {
+      return {match_error::parse_error, uint32_t(i)};
+    }
     const atom a{painter::format::element_type(fmt), painter::format::el_count(fmt), painter::format::size(fmt)};
-    if (!(fields[i] == a)) return {match_error::attribute_mismatch, uint32_t(i)};
+    if (!(fields[i] == a)) {
+      return {match_error::attribute_mismatch, uint32_t(i)};
+    }
   }
 
-  if (stride_of<T>() != gpu_stride)
+  if (stride_of<T>() != gpu_stride) {
     return {match_error::stride_mismatch, 0, stride_of<T>(), gpu_stride};
+  }
 
   return {};
 }

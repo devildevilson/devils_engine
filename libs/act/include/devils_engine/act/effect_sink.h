@@ -2,6 +2,7 @@
 #define DEVILS_ENGINE_ACT_EFFECT_SINK_H
 
 #include <span>
+
 #include "devils_engine/utils/string_id.h" // utils::id
 #include "value.h"
 
@@ -25,7 +26,7 @@ struct effect_sink {
   virtual void emit(utils::id effect_id, std::span<const value> args) = 0;
 };
 
-}
-}
+} // namespace act
+} // namespace devils_engine
 
 #endif

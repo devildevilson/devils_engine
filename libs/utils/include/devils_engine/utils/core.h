@@ -2,8 +2,8 @@
 #define DEVILS_ENGINE_UTILS_CORE_H
 
 #include <bit>
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <print>
 #include <source_location>
@@ -21,9 +21,11 @@ namespace devils_engine {
 namespace utils {
 inline constexpr double epsilon = 0.000001;
 
-constexpr std::string_view make_sane_file_name(const std::string_view &str) {
+constexpr std::string_view make_sane_file_name(const std::string_view& str) {
   const size_t slash1_index = str.rfind("/");
-  if (slash1_index == std::string_view::npos) return str;
+  if (slash1_index == std::string_view::npos) {
+    return str;
+  }
 
   const auto str2 = str.substr(0, slash1_index);
   const size_t slash2_index = str2.rfind("/");
@@ -43,38 +45,40 @@ struct error {
       make_sane_file_name(location.file_name()),
       location.line(),
       location.function_name(),
-      message
-    );
+      message);
     spdlog::error("{}", full_message);
     throw std::runtime_error(full_message);
   }
 };
 
 template <typename... Args>
-constexpr void info(const std::format_string<Args...> &format, Args&&... args) {
+constexpr void info(const std::format_string<Args...>& format, Args&&... args) {
   spdlog::info(format, std::forward<Args>(args)...);
 }
 
 template <typename... Args>
-constexpr void warn(const std::format_string<Args...> &format, Args&&... args) {
+constexpr void warn(const std::format_string<Args...>& format, Args&&... args) {
   spdlog::warn(format, std::forward<Args>(args)...);
 }
 
-
 template <typename T>
-constexpr const T& max(const T &a) { return a; }
+constexpr const T& max(const T& a) {
+  return a;
+}
 
 template <typename T, typename... Ts>
-constexpr const T& max(const T &a, const T &b, Ts&&... args) {
+constexpr const T& max(const T& a, const T& b, Ts&&... args) {
   const T& m = max(b, std::forward<Ts>(args)...);
   return a >= m ? a : m;
 }
 
 template <typename T>
-constexpr const T& min(const T &a) { return a; }
+constexpr const T& min(const T& a) {
+  return a;
+}
 
 template <typename T, typename... Ts>
-constexpr const T& min(const T &a, const T &b, Ts&&... args) {
+constexpr const T& min(const T& a, const T& b, Ts&&... args) {
   const T& m = max(b, std::forward<Ts>(args)...);
   return a < m ? a : m;
 }
@@ -148,31 +152,33 @@ public:
   tracer(std::source_location loc = std::source_location::current()) noexcept;
   ~tracer() noexcept;
 
-  tracer(const tracer &copy) noexcept = delete;
-  tracer(tracer &&move) noexcept = delete;
-  tracer & operator=(const tracer &copy) noexcept = delete;
-  tracer & operator=(tracer &&move) noexcept = delete;
+  tracer(const tracer& copy) noexcept = delete;
+  tracer(tracer&& move) noexcept = delete;
+  tracer& operator=(const tracer& copy) noexcept = delete;
+  tracer& operator=(tracer&& move) noexcept = delete;
 };
 
 template <typename T>
 constexpr size_t count_significant(T v) {
-  if constexpr (std::is_enum_v<T>) { return count_significant(static_cast<int64_t>(v)); }
-  else {
+  if constexpr (std::is_enum_v<T>) {
+    return count_significant(static_cast<int64_t>(v));
+  } else {
     size_t i = 0;
-    for (; v != 0; v >>= 1, ++i) {}
+    for (; v != 0; v >>= 1, ++i) {
+    }
     return i;
   }
 }
 
 // https://stackoverflow.com/questions/466204/rounding-up-to-next-power-of-2
 constexpr uint32_t next_power_of_2(uint32_t v) {
-  v--;
+  --v;
   v |= v >> 1;
   v |= v >> 2;
   v |= v >> 4;
   v |= v >> 8;
   v |= v >> 16;
-  v++;
+  ++v;
 
   return v;
 }
@@ -183,12 +189,12 @@ static_assert(count_significant(3) == 2);
 static_assert(count_significant(4) == 3);
 
 // пригодятся юникод строки
-std::string cast(const std::wstring &str) noexcept;
-std::string cast(const std::u16string_view &str) noexcept;
-std::string cast(const std::u32string_view &str) noexcept;
-std::wstring cast(const std::string &str) noexcept;
-std::u16string cast16(const std::string_view &str) noexcept;
-std::u32string cast32(const std::string_view &str) noexcept;
+std::string cast(const std::wstring& str) noexcept;
+std::string cast(const std::u16string_view& str) noexcept;
+std::string cast(const std::u32string_view& str) noexcept;
+std::wstring cast(const std::string& str) noexcept;
+std::u16string cast16(const std::string_view& str) noexcept;
+std::u32string cast32(const std::string_view& str) noexcept;
 
 // windows, unix, macos
 std::string app_path() noexcept;
@@ -198,12 +204,12 @@ std::string cache_folder() noexcept;
 std::string get_cpu_name() noexcept;
 
 uint32_t crc32c(const uint8_t* data, const size_t len) noexcept;
-uint32_t crc32c(const std::span<const uint8_t> &data) noexcept;
-uint32_t crc32c(const std::span<const char> &data) noexcept;
-uint32_t crc32c(const std::span<uint8_t> &data) noexcept;
-uint32_t crc32c(const std::span<char> &data) noexcept;
-uint32_t crc32c(const std::string_view &data) noexcept;
-}
-}
+uint32_t crc32c(const std::span<const uint8_t>& data) noexcept;
+uint32_t crc32c(const std::span<const char>& data) noexcept;
+uint32_t crc32c(const std::span<uint8_t>& data) noexcept;
+uint32_t crc32c(const std::span<char>& data) noexcept;
+uint32_t crc32c(const std::string_view& data) noexcept;
+} // namespace utils
+} // namespace devils_engine
 
 #endif

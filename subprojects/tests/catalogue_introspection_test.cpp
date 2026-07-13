@@ -1,6 +1,6 @@
-#include <doctest/doctest.h>
-
 #include <vector>
+
+#include <doctest/doctest.h>
 
 #include "devils_engine/catalogue/introspection.h"
 
@@ -10,14 +10,14 @@ namespace devils_engine::catalogue_test_types {
 struct very_long_argument_type_name_that_should_not_fit_into_catalogue_value_buffer {
   int value = 0;
 };
-}
+} // namespace devils_engine::catalogue_test_types
 
 namespace {
 
 namespace domains {
 constexpr size_t gameplay = 1;
 constexpr size_t service = 2;
-}
+} // namespace domains
 
 enum class enum_domain : uint64_t {
   gameplay = 11,
@@ -63,7 +63,7 @@ static catalogue::introspection stats_cfg(catalogue::statistics_store& store) {
   return catalogue::introspection{catalogue::introspection_mode::statistics, 0, &store};
 }
 
-}
+} // namespace
 
 TEST_CASE("catalogue wraps free functions with mirrored arguments") {
   using add_gold_t = catalogue::domain<domains::gameplay>::fn_traits<&add_gold, "add_gold", "amount", "multiplier">;
@@ -71,7 +71,7 @@ TEST_CASE("catalogue wraps free functions with mirrored arguments") {
 
   static_assert(add_gold_t::argument_count == 2);
   static_assert(add_gold_t::function_id == utils::murmur_hash64A("add_gold"));
-  static_assert(std::is_same_v<decltype(add_gold_fn), int(* const)(int, int)>);
+  static_assert(std::is_same_v<decltype(add_gold_fn), int (*const)(int, int)>);
 
   catalogue::statistics_store store(4);
   const auto cfg = stats_cfg(store);
@@ -97,7 +97,7 @@ TEST_CASE("catalogue domain accepts enum values") {
 
   static_assert(reset_t::domain_id == static_cast<utils::id>(enum_domain::service));
   static_assert(reset_t::function_id == utils::murmur_hash64A("reset_gold"));
-  static_assert(std::is_same_v<decltype(reset_fn), void(* const)()>);
+  static_assert(std::is_same_v<decltype(reset_fn), void (*const)()>);
 
   g_gold = 42;
   reset_fn();
@@ -156,7 +156,7 @@ TEST_CASE("catalogue wraps member functions") {
   using add_t = catalogue::domain<domains::gameplay>::fn_traits<&wallet::add, "wallet.add", "self", "amount">;
   constexpr auto add_fn = add_t::fn_ptr;
 
-  static_assert(std::is_same_v<decltype(add_fn), int(* const)(wallet&, int)>);
+  static_assert(std::is_same_v<decltype(add_fn), int (*const)(wallet&, int)>);
 
   catalogue::statistics_store store(4);
   const auto cfg = stats_cfg(store);
@@ -178,7 +178,7 @@ TEST_CASE("catalogue wraps const member functions") {
   using get_t = catalogue::domain<domains::gameplay>::fn_traits<&wallet::get, "wallet.get", "self">;
   constexpr auto get_fn = get_t::fn_ptr;
 
-  static_assert(std::is_same_v<decltype(get_fn), int(* const)(const wallet&)>);
+  static_assert(std::is_same_v<decltype(get_fn), int (*const)(const wallet&)>);
 
   wallet w;
   w.gold = 9;
@@ -189,7 +189,7 @@ TEST_CASE("catalogue wraps structural functors") {
   using mult_t = catalogue::domain<domains::service>::fn_traits<multiply, "multiply", "a", "b">;
   constexpr auto mult_fn = mult_t::fn_ptr;
 
-  static_assert(std::is_same_v<decltype(mult_fn), int(* const)(int, int)>);
+  static_assert(std::is_same_v<decltype(mult_fn), int (*const)(int, int)>);
   CHECK(mult_fn(6, 7) == 42);
 }
 
@@ -236,8 +236,8 @@ TEST_CASE("catalogue statistics introspection ring buffer wraps and keeps aggreg
 
   const auto* rec = stats.find(reset_t::function_id);
   REQUIRE(rec != nullptr);
-  CHECK(rec->call_count == 3);   // агрегат считает все вызовы
-  CHECK(rec->filled == 2);       // а кольцо держит только последние 2
+  CHECK(rec->call_count == 3); // агрегат считает все вызовы
+  CHECK(rec->filled == 2);     // а кольцо держит только последние 2
   CHECK(stats.count() == 3);
 
   std::vector<uint64_t> ordered;

@@ -1,29 +1,28 @@
 #ifndef DEVILS_ENGINE_AESTHETICS_SERIALIZATION_H
 #define DEVILS_ENGINE_AESTHETICS_SERIALIZATION_H
 
+#include <algorithm>
+#include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <bit>
 #include <limits>
-#include <vector>
-#include <array>
 #include <memory>
 #include <optional>
+#include <reflect>
+#include <span>
 #include <string>
 #include <string_view>
-#include <span>
 #include <tuple>
-#include <variant>
 #include <type_traits>
 #include <utility>
-#include <algorithm>
+#include <variant>
+#include <vector>
 
-#include <reflect>
-
+#include "devils_engine/utils/core.h"
 #include "devils_engine/utils/hash.h"
 #include "devils_engine/utils/type_traits.h"
-#include "devils_engine/utils/core.h"
 #include "world.h"
 
 // Собственный бинарный сериализатор поверх qlibs/reflect (zpp_bits убран — мы и так делали
@@ -64,16 +63,55 @@ struct writer {
   std::vector<std::byte>& b;
   std::size_t p = 0;
 
-  std::size_t pos() const noexcept { return p; }
-  void ensure(const std::size_t n) { if (p + n > b.size()) b.resize(p + n > b.size() * 2 ? p + n : b.size() * 2 + 64); }
-  void raw(const void* src, const std::size_t n) { ensure(n); std::memcpy(b.data() + p, src, n); p += n; }
-  void u8(const uint8_t v) { ensure(1); b[p++] = std::byte(v); }
-  void u16(const uint16_t v) { ensure(2); for (int i = 0; i < 2; ++i) b[p + i] = std::byte(uint8_t(v >> (8 * i))); p += 2; }
-  void u32(const uint32_t v) { ensure(4); for (int i = 0; i < 4; ++i) b[p + i] = std::byte(uint8_t(v >> (8 * i))); p += 4; }
-  void u64(const uint64_t v) { ensure(8); for (int i = 0; i < 8; ++i) b[p + i] = std::byte(uint8_t(v >> (8 * i))); p += 8; }
-  void f32(const float v) { u32(std::bit_cast<uint32_t>(v)); }
-  void f64(const double v) { u64(std::bit_cast<uint64_t>(v)); }
-  void patch_u32(const std::size_t at, const uint32_t v) { for (int i = 0; i < 4; ++i) b[at + i] = std::byte(uint8_t(v >> (8 * i))); }
+  std::size_t pos() const noexcept {
+    return p;
+  }
+  void ensure(const std::size_t n) {
+    if (p + n > b.size()) {
+      b.resize(p + n > b.size() * 2 ? p + n : b.size() * 2 + 64);
+    }
+  }
+  void raw(const void* src, const std::size_t n) {
+    ensure(n);
+    std::memcpy(b.data() + p, src, n);
+    p += n;
+  }
+  void u8(const uint8_t v) {
+    ensure(1);
+    b[p++] = std::byte(v);
+  }
+  void u16(const uint16_t v) {
+    ensure(2);
+    for (int i = 0; i < 2; ++i) {
+      b[p + i] = std::byte(uint8_t(v >> (8 * i)));
+    }
+    p += 2;
+  }
+  void u32(const uint32_t v) {
+    ensure(4);
+    for (int i = 0; i < 4; ++i) {
+      b[p + i] = std::byte(uint8_t(v >> (8 * i)));
+    }
+    p += 4;
+  }
+  void u64(const uint64_t v) {
+    ensure(8);
+    for (int i = 0; i < 8; ++i) {
+      b[p + i] = std::byte(uint8_t(v >> (8 * i)));
+    }
+    p += 8;
+  }
+  void f32(const float v) {
+    u32(std::bit_cast<uint32_t>(v));
+  }
+  void f64(const double v) {
+    u64(std::bit_cast<uint64_t>(v));
+  }
+  void patch_u32(const std::size_t at, const uint32_t v) {
+    for (int i = 0; i < 4; ++i) {
+      b[at + i] = std::byte(uint8_t(v >> (8 * i)));
+    }
+  }
 };
 
 // reader из span; выход за границы -> ok=false (guard, без исключений). Проверка ёмкости раз на значение.
@@ -82,19 +120,75 @@ struct reader {
   std::size_t pos = 0;
   bool ok = true;
 
-  bool need(const std::size_t n) noexcept { if (pos + n > b.size()) { ok = false; return false; } return true; }
-  uint8_t u8() { if (!need(1)) return 0; return uint8_t(b[pos++]); }
-  uint16_t u16() { if (!need(2)) return 0; uint16_t v = 0; for (int i = 0; i < 2; ++i) v |= uint16_t(uint8_t(b[pos + i])) << (8 * i); pos += 2; return v; }
-  uint32_t u32() { if (!need(4)) return 0; uint32_t v = 0; for (int i = 0; i < 4; ++i) v |= uint32_t(uint8_t(b[pos + i])) << (8 * i); pos += 4; return v; }
-  uint64_t u64() { if (!need(8)) return 0; uint64_t v = 0; for (int i = 0; i < 8; ++i) v |= uint64_t(uint8_t(b[pos + i])) << (8 * i); pos += 8; return v; }
-  float f32() { return std::bit_cast<float>(u32()); }
-  double f64() { return std::bit_cast<double>(u64()); }
-  std::span<const std::byte> take(const std::size_t n) { if (!need(n)) return {}; auto s = b.subspan(pos, n); pos += n; return s; }
-  void skip(const std::size_t n) { if (need(n)) pos += n; }
+  bool need(const std::size_t n) noexcept {
+    if (pos + n > b.size()) {
+      ok = false;
+      return false;
+    }
+    return true;
+  }
+  uint8_t u8() {
+    if (!need(1)) {
+      return 0;
+    }
+    return uint8_t(b[pos++]);
+  }
+  uint16_t u16() {
+    if (!need(2)) {
+      return 0;
+    }
+    uint16_t v = 0;
+    for (int i = 0; i < 2; ++i) {
+      v |= uint16_t(uint8_t(b[pos + i])) << (8 * i);
+    }
+    pos += 2;
+    return v;
+  }
+  uint32_t u32() {
+    if (!need(4)) {
+      return 0;
+    }
+    uint32_t v = 0;
+    for (int i = 0; i < 4; ++i) {
+      v |= uint32_t(uint8_t(b[pos + i])) << (8 * i);
+    }
+    pos += 4;
+    return v;
+  }
+  uint64_t u64() {
+    if (!need(8)) {
+      return 0;
+    }
+    uint64_t v = 0;
+    for (int i = 0; i < 8; ++i) {
+      v |= uint64_t(uint8_t(b[pos + i])) << (8 * i);
+    }
+    pos += 8;
+    return v;
+  }
+  float f32() {
+    return std::bit_cast<float>(u32());
+  }
+  double f64() {
+    return std::bit_cast<double>(u64());
+  }
+  std::span<const std::byte> take(const std::size_t n) {
+    if (!need(n)) {
+      return {};
+    }
+    auto s = b.subspan(pos, n);
+    pos += n;
+    return s;
+  }
+  void skip(const std::size_t n) {
+    if (need(n)) {
+      pos += n;
+    }
+  }
 };
 
 using out_t = writer; // совместимость имён в сигнатурах
-using in_t  = reader;
+using in_t = reader;
 
 // Точка расширения для ВНЕШНИХ не-агрегатных типов (glm::vec и т.п.) — чтобы не тащить их
 // зависимости в aesthetics. Специализируй serial::adapter<T> в СВОЁМ модуле:
@@ -104,65 +198,125 @@ using in_t  = reader;
 //     static void read (reader& r,       glm::vec3& v) { v.x = r.f32(); v.y = r.f32(); v.z = r.f32(); }
 //   };
 // Тип с адаптером — ЛИСТ: canon = name, сериализация = write/read; reflect его не трогает.
-template <typename T> struct adapter;
+template <typename T>
+struct adapter;
 
 // --- compile-time отпечаток layout ------------------------------------------
 
 namespace detail {
 constexpr uint32_t fnv_offset = UINT32_C(2166136261);
-constexpr uint32_t fnv_prime  = UINT32_C(16777619);
+constexpr uint32_t fnv_prime = UINT32_C(16777619);
 constexpr std::size_t max_recursion = 16; // страховка от рекурсивных структур (unique_ptr<Self>, vector<Self>)
 
 consteval uint32_t hash_str(uint32_t h, const std::string_view s) noexcept {
-  for (const char c : s) h = (h ^ uint32_t(uint8_t(c))) * fnv_prime;
+  for (const char c : s) {
+    h = (h ^ uint32_t(uint8_t(c))) * fnv_prime;
+  }
   return h;
 }
-consteval uint32_t mix32(const uint32_t h, const uint32_t v) noexcept { return (h ^ v) * fnv_prime; }
+consteval uint32_t mix32(const uint32_t h, const uint32_t v) noexcept {
+  return (h ^ v) * fnv_prime;
+}
 
 // --- распознавание типов -----------------------------------------------------
-template <typename> struct is_std_array : std::false_type {};
-template <typename T, std::size_t N> struct is_std_array<std::array<T, N>> : std::true_type {};
-template <typename> struct is_unique_ptr : std::false_type {};
-template <typename T, typename D> struct is_unique_ptr<std::unique_ptr<T, D>> : std::true_type {};
-template <typename> struct is_shared_ptr : std::false_type {};
-template <typename T> struct is_shared_ptr<std::shared_ptr<T>> : std::true_type {};
-template <typename> struct is_optional : std::false_type {};
-template <typename T> struct is_optional<std::optional<T>> : std::true_type {};
-template <typename> struct is_string_view : std::false_type {};
-template <typename C, typename Tr> struct is_string_view<std::basic_string_view<C, Tr>> : std::true_type {};
-template <typename> struct is_std_string : std::false_type {};
-template <typename C, typename Tr, typename A> struct is_std_string<std::basic_string<C, Tr, A>> : std::true_type {};
-template <typename> struct is_span : std::false_type {};
-template <typename T, std::size_t E> struct is_span<std::span<T, E>> : std::true_type {};
-template <typename> struct is_pair : std::false_type {};
-template <typename A, typename B> struct is_pair<std::pair<A, B>> : std::true_type {};
-template <typename> struct is_tuple : std::false_type {};
-template <typename... Ts> struct is_tuple<std::tuple<Ts...>> : std::true_type {};
-template <typename> struct is_variant : std::false_type {};
-template <typename... Ts> struct is_variant<std::variant<Ts...>> : std::true_type {};
+template <typename>
+struct is_std_array : std::false_type {};
+template <typename T, std::size_t N>
+struct is_std_array<std::array<T, N>> : std::true_type {};
+template <typename>
+struct is_unique_ptr : std::false_type {};
+template <typename T, typename D>
+struct is_unique_ptr<std::unique_ptr<T, D>> : std::true_type {};
+template <typename>
+struct is_shared_ptr : std::false_type {};
+template <typename T>
+struct is_shared_ptr<std::shared_ptr<T>> : std::true_type {};
+template <typename>
+struct is_optional : std::false_type {};
+template <typename T>
+struct is_optional<std::optional<T>> : std::true_type {};
+template <typename>
+struct is_string_view : std::false_type {};
+template <typename C, typename Tr>
+struct is_string_view<std::basic_string_view<C, Tr>> : std::true_type {};
+template <typename>
+struct is_std_string : std::false_type {};
+template <typename C, typename Tr, typename A>
+struct is_std_string<std::basic_string<C, Tr, A>> : std::true_type {};
+template <typename>
+struct is_span : std::false_type {};
+template <typename T, std::size_t E>
+struct is_span<std::span<T, E>> : std::true_type {};
+template <typename>
+struct is_pair : std::false_type {};
+template <typename A, typename B>
+struct is_pair<std::pair<A, B>> : std::true_type {};
+template <typename>
+struct is_tuple : std::false_type {};
+template <typename... Ts>
+struct is_tuple<std::tuple<Ts...>> : std::true_type {};
+template <typename>
+struct is_variant : std::false_type {};
+template <typename... Ts>
+struct is_variant<std::variant<Ts...>> : std::true_type {};
 
-template <typename T> concept map_like = requires { typename T::key_type; typename T::mapped_type; typename T::value_type; };
-template <typename T> concept seq_like = requires(T t) { typename T::value_type; t.begin(); t.end(); } && !map_like<T>;
+template <typename T>
+concept map_like = requires { typename T::key_type; typename T::mapped_type; typename T::value_type; };
+template <typename T>
+concept seq_like = requires(T t) { typename T::value_type; t.begin(); t.end(); } && !map_like<T>;
 // пользователь специализировал serial::adapter<T> (наличия name достаточно для canon).
-template <typename T> concept adapted = requires { { adapter<std::remove_cvref_t<T>>::name } -> std::convertible_to<std::string_view>; };
+template <typename T>
+concept adapted = requires { { adapter<std::remove_cvref_t<T>>::name } -> std::convertible_to<std::string_view>; };
 
 // каноничное СЕМАНТИЧЕСКОЕ имя скаляра — не зависит от компилятора
 // (uint64_t: gcc "unsigned long" vs msvc "unsigned __int64" -> оба дают "u64";
 //  ловит фундаментальные типы и ВНУТРИ контейнеров, где строковая правка type_name бессильна).
 template <typename U>
 consteval std::string_view scalar_tag() noexcept {
-  if constexpr (std::is_same_v<U, bool>) return "b";
-  else if constexpr (std::is_same_v<U, char>) return "c"; // char отделён от i8/u8: 1 байт вне зависимости от знаковости
-  else if constexpr (std::is_same_v<U, char8_t> || std::is_same_v<U, char16_t> || std::is_same_v<U, char32_t> || std::is_same_v<U, wchar_t>) {
-    if constexpr (sizeof(U) == 1) return "w8"; else if constexpr (sizeof(U) == 2) return "w16"; else return "w32";
+  if constexpr (std::is_same_v<U, bool>) {
+    return "b";
+  } else if constexpr (std::is_same_v<U, char>) {
+    return "c"; // char отделён от i8/u8: 1 байт вне зависимости от знаковости
+  } else if constexpr (std::is_same_v<U, char8_t> || std::is_same_v<U, char16_t> || std::is_same_v<U, char32_t> || std::is_same_v<U, wchar_t>) {
+    if constexpr (sizeof(U) == 1) {
+      return "w8";
+    } else if constexpr (sizeof(U) == 2) {
+      return "w16";
+    } else {
+      return "w32";
+    }
   } else if constexpr (std::is_floating_point_v<U>) {
-    if constexpr (sizeof(U) == 4) return "f32"; else if constexpr (sizeof(U) == 8) return "f64"; else return "fX";
+    if constexpr (sizeof(U) == 4) {
+      return "f32";
+    } else if constexpr (sizeof(U) == 8) {
+      return "f64";
+    } else {
+      return "fX";
+    }
   } else if constexpr (std::is_signed_v<U>) {
-    if constexpr (sizeof(U) == 1) return "i8"; else if constexpr (sizeof(U) == 2) return "i16";
-    else if constexpr (sizeof(U) == 4) return "i32"; else if constexpr (sizeof(U) == 8) return "i64"; else return "iX";
+    if constexpr (sizeof(U) == 1) {
+      return "i8";
+    } else if constexpr (sizeof(U) == 2) {
+      return "i16";
+    } else if constexpr (sizeof(U) == 4) {
+      return "i32";
+    } else if constexpr (sizeof(U) == 8) {
+      return "i64";
+    } else {
+      return "iX";
+    }
   } else {
-    if constexpr (sizeof(U) == 1) return "u8"; else if constexpr (sizeof(U) == 2) return "u16";
-    else if constexpr (sizeof(U) == 4) return "u32"; else if constexpr (sizeof(U) == 8) return "u64"; else return "uX";
+    if constexpr (sizeof(U) == 1) {
+      return "u8";
+    } else if constexpr (sizeof(U) == 2) {
+      return "u16";
+    } else if constexpr (sizeof(U) == 4) {
+      return "u32";
+    } else if constexpr (sizeof(U) == 8) {
+      return "u64";
+    } else {
+      return "uX";
+    }
   }
 }
 
@@ -171,13 +325,13 @@ template <typename T, std::size_t Depth = 0>
 consteval uint32_t canon(uint32_t h) {
   using U = std::remove_cvref_t<T>;
 
-  static_assert(!std::is_pointer_v<U>,     "serializable: сырой указатель не сериализуется — используй std::unique_ptr<T>");
-  static_assert(!std::is_array_v<U>,       "serializable: C-массив не сериализуется — используй std::array<T, N>");
+  static_assert(!std::is_pointer_v<U>, "serializable: сырой указатель не сериализуется — используй std::unique_ptr<T>");
+  static_assert(!std::is_array_v<U>, "serializable: C-массив не сериализуется — используй std::array<T, N>");
   static_assert(!is_string_view<U>::value, "serializable: std::string_view невладеющий — храни std::string");
-  static_assert(!is_span<U>::value,        "serializable: std::span невладеющий — храни владеющий контейнер");
+  static_assert(!is_span<U>::value, "serializable: std::span невладеющий — храни владеющий контейнер");
 
   if constexpr (adapted<U>) {
-    return hash_str(h, adapter<U>::name);      // внешний тип (glm и т.п.) -> кросс-компиляторный тег
+    return hash_str(h, adapter<U>::name); // внешний тип (glm и т.п.) -> кросс-компиляторный тег
   } else if constexpr (Depth > max_recursion) {
     return hash_str(h, utils::type_name<U>()); // страховка от бесконечной рекурсии
   } else if constexpr (std::is_enum_v<U>) {
@@ -223,7 +377,9 @@ consteval uint32_t canon(uint32_t h) {
 }
 
 template <typename T>
-consteval uint32_t layout_hash() noexcept { return canon<T, 0>(fnv_offset); }
+consteval uint32_t layout_hash() noexcept {
+  return canon<T, 0>(fnv_offset);
+}
 } // namespace detail
 
 // --- рекурсивная бинарная сериализация ---------------------------------------
@@ -232,19 +388,29 @@ consteval uint32_t layout_hash() noexcept { return canon<T, 0>(fnv_offset); }
 
 template <typename C, typename E>
 void det_insert(C& c, E&& e) {
-  if constexpr (requires { c.push_back(std::forward<E>(e)); }) c.push_back(std::forward<E>(e));
-  else c.insert(std::forward<E>(e));
+  if constexpr (requires { c.push_back(std::forward<E>(e)); }) {
+    c.push_back(std::forward<E>(e));
+  } else {
+    c.insert(std::forward<E>(e));
+  }
 }
 
-template <typename T> void serialize(writer& w, const T& v);
-template <typename T> void deserialize(reader& r, T& v);
+template <typename T>
+void serialize(writer& w, const T& v);
+template <typename T>
+void deserialize(reader& r, T& v);
 
 namespace detail {
 template <typename V, std::size_t I = 0>
 void variant_set(reader& r, V& v, const std::size_t idx) {
   if constexpr (I < std::variant_size_v<V>) {
-    if (idx == I) { std::variant_alternative_t<I, V> alt{}; deserialize(r, alt); v = std::move(alt); }
-    else variant_set<V, I + 1>(r, v, idx);
+    if (idx == I) {
+      std::variant_alternative_t<I, V> alt{};
+      deserialize(r, alt);
+      v = std::move(alt);
+    } else {
+      variant_set<V, I + 1>(r, v, idx);
+    }
   }
 }
 } // namespace detail
@@ -259,42 +425,75 @@ void serialize(writer& w, const T& v) {
   } else if constexpr (std::is_enum_v<U>) {
     serialize(w, static_cast<std::underlying_type_t<U>>(v));
   } else if constexpr (std::is_integral_v<U>) {
-    if constexpr (sizeof(U) == 1) w.u8(uint8_t(v));
-    else if constexpr (sizeof(U) == 2) w.u16(uint16_t(v));
-    else if constexpr (sizeof(U) == 4) w.u32(uint32_t(v));
-    else w.u64(uint64_t(v));
+    if constexpr (sizeof(U) == 1) {
+      w.u8(uint8_t(v));
+    } else if constexpr (sizeof(U) == 2) {
+      w.u16(uint16_t(v));
+    } else if constexpr (sizeof(U) == 4) {
+      w.u32(uint32_t(v));
+    } else {
+      w.u64(uint64_t(v));
+    }
   } else if constexpr (std::is_floating_point_v<U>) {
-    if constexpr (sizeof(U) == 4) w.f32(v); else w.f64(v);
+    if constexpr (sizeof(U) == 4) {
+      w.f32(v);
+    } else {
+      w.f64(v);
+    }
   } else if constexpr (detail::is_std_string<U>::value) {
     w.u64(v.size());
     w.raw(v.data(), v.size());
   } else if constexpr (detail::is_std_array<U>::value) {
-    for (const auto& e : v) serialize(w, e); // размер фиксирован типом
+    for (const auto& e : v) {
+      serialize(w, e); // размер фиксирован типом
+    }
   } else if constexpr (detail::is_unique_ptr<U>::value || detail::is_shared_ptr<U>::value) {
     w.u8(v ? 1 : 0);
-    if (v) serialize(w, *v);
+    if (v) {
+      serialize(w, *v);
+    }
   } else if constexpr (detail::is_optional<U>::value) {
     w.u8(v.has_value() ? 1 : 0);
-    if (v.has_value()) serialize(w, *v);
+    if (v.has_value()) {
+      serialize(w, *v);
+    }
   } else if constexpr (detail::is_pair<U>::value) {
-    serialize(w, v.first); serialize(w, v.second);
+    serialize(w, v.first);
+    serialize(w, v.second);
   } else if constexpr (detail::is_tuple<U>::value) {
-    std::apply([&](const auto&... es) { (serialize(w, es), ...); }, v);
+    std::apply([&](const auto&... es) {
+      (serialize(w, es), ...);
+    },
+               v);
   } else if constexpr (detail::is_variant<U>::value) {
     w.u32(uint32_t(v.index()));
-    std::visit([&](const auto& x) { serialize(w, x); }, v);
+    std::visit([&](const auto& x) {
+      serialize(w, x);
+    },
+               v);
   } else if constexpr (detail::map_like<U>) {
     std::vector<const typename U::value_type*> ordered; // сортировка по ключу -> детерминизм
     ordered.reserve(v.size());
-    for (const auto& kv : v) ordered.push_back(std::addressof(kv));
-    std::sort(ordered.begin(), ordered.end(), [](const auto* a, const auto* b) { return a->first < b->first; });
+    for (const auto& kv : v) {
+      ordered.push_back(std::addressof(kv));
+    }
+    std::sort(ordered.begin(), ordered.end(), [](const auto* a, const auto* b) {
+      return a->first < b->first;
+    });
     w.u64(ordered.size());
-    for (const auto* kv : ordered) { serialize(w, kv->first); serialize(w, kv->second); }
+    for (const auto* kv : ordered) {
+      serialize(w, kv->first);
+      serialize(w, kv->second);
+    }
   } else if constexpr (detail::seq_like<U>) {
     w.u64(v.size());
-    for (const auto& e : v) serialize(w, e);
+    for (const auto& e : v) {
+      serialize(w, e);
+    }
   } else if constexpr (std::is_aggregate_v<U>) {
-    [&]<std::size_t... I>(std::index_sequence<I...>) { (serialize(w, reflect::get<I>(v)), ...); }(std::make_index_sequence<reflect::size<U>()>());
+    [&]<std::size_t... I>(std::index_sequence<I...>) {
+      (serialize(w, reflect::get<I>(v)), ...);
+    }(std::make_index_sequence<reflect::size<U>()>());
   } else {
     static_assert(sizeof(U) == 0, "serializable: неподдерживаемый тип (не-агрегат без adapter<T>)");
   }
@@ -308,12 +507,19 @@ void deserialize(reader& r, T& v) {
   } else if constexpr (std::is_same_v<U, bool>) {
     v = r.u8() != 0;
   } else if constexpr (std::is_enum_v<U>) {
-    std::underlying_type_t<U> u{}; deserialize(r, u); v = U(u);
+    std::underlying_type_t<U> u{};
+    deserialize(r, u);
+    v = U(u);
   } else if constexpr (std::is_integral_v<U>) {
-    if constexpr (sizeof(U) == 1) v = U(r.u8());
-    else if constexpr (sizeof(U) == 2) v = U(r.u16());
-    else if constexpr (sizeof(U) == 4) v = U(r.u32());
-    else v = U(r.u64());
+    if constexpr (sizeof(U) == 1) {
+      v = U(r.u8());
+    } else if constexpr (sizeof(U) == 2) {
+      v = U(r.u16());
+    } else if constexpr (sizeof(U) == 4) {
+      v = U(r.u32());
+    } else {
+      v = U(r.u64());
+    }
   } else if constexpr (std::is_floating_point_v<U>) {
     v = (sizeof(U) == 4) ? U(r.f32()) : U(r.f64());
   } else if constexpr (detail::is_std_string<U>::value) {
@@ -321,36 +527,67 @@ void deserialize(reader& r, T& v) {
     const auto s = r.take(n);
     v.assign(reinterpret_cast<const char*>(s.data()), s.size());
   } else if constexpr (detail::is_std_array<U>::value) {
-    for (auto& e : v) deserialize(r, e);
+    for (auto& e : v) {
+      deserialize(r, e);
+    }
   } else if constexpr (detail::is_unique_ptr<U>::value) {
-    if (r.u8()) { v = std::make_unique<typename U::element_type>(); deserialize(r, *v); } else v.reset();
+    if (r.u8()) {
+      v = std::make_unique<typename U::element_type>();
+      deserialize(r, *v);
+    } else {
+      v.reset();
+    }
   } else if constexpr (detail::is_shared_ptr<U>::value) {
-    if (r.u8()) { v = std::make_shared<typename U::element_type>(); deserialize(r, *v); } else v.reset();
+    if (r.u8()) {
+      v = std::make_shared<typename U::element_type>();
+      deserialize(r, *v);
+    } else {
+      v.reset();
+    }
   } else if constexpr (detail::is_optional<U>::value) {
-    if (r.u8()) { v.emplace(); deserialize(r, *v); } else v.reset();
+    if (r.u8()) {
+      v.emplace();
+      deserialize(r, *v);
+    } else {
+      v.reset();
+    }
   } else if constexpr (detail::is_pair<U>::value) {
-    deserialize(r, v.first); deserialize(r, v.second);
+    deserialize(r, v.first);
+    deserialize(r, v.second);
   } else if constexpr (detail::is_tuple<U>::value) {
-    std::apply([&](auto&... es) { (deserialize(r, es), ...); }, v);
+    std::apply([&](auto&... es) {
+      (deserialize(r, es), ...);
+    },
+               v);
   } else if constexpr (detail::is_variant<U>::value) {
     const uint32_t idx = r.u32();
-    if (idx < std::variant_size_v<U>) detail::variant_set<U>(r, v, idx);
-    else r.ok = false;
+    if (idx < std::variant_size_v<U>) {
+      detail::variant_set<U>(r, v, idx);
+    } else {
+      r.ok = false;
+    }
   } else if constexpr (detail::map_like<U>) {
     const uint64_t n = r.u64();
     v.clear();
     for (uint64_t i = 0; i < n && r.ok; ++i) {
       typename U::key_type k{};
       typename U::mapped_type val{};
-      deserialize(r, k); deserialize(r, val);
+      deserialize(r, k);
+      deserialize(r, val);
       v.emplace(std::move(k), std::move(val));
     }
   } else if constexpr (detail::seq_like<U>) {
     const uint64_t n = r.u64();
     v.clear();
-    for (uint64_t i = 0; i < n && r.ok; ++i) { typename U::value_type e{}; deserialize(r, e); det_insert(v, std::move(e)); }
+    for (uint64_t i = 0; i < n && r.ok; ++i) {
+      typename U::value_type e{};
+      deserialize(r, e);
+      det_insert(v, std::move(e));
+    }
   } else if constexpr (std::is_aggregate_v<U>) {
-    [&]<std::size_t... I>(std::index_sequence<I...>) { (deserialize(r, reflect::get<I>(v)), ...); }(std::make_index_sequence<reflect::size<U>()>());
+    [&]<std::size_t... I>(std::index_sequence<I...>) {
+      (deserialize(r, reflect::get<I>(v)), ...);
+    }(std::make_index_sequence<reflect::size<U>()>());
   } else {
     static_assert(sizeof(U) == 0, "serializable: неподдерживаемый тип (не-агрегат без adapter<T>)");
   }
@@ -372,12 +609,16 @@ void dump_one(const world* w, writer& wr) {
   const auto* stor = w->get_allocator<T>();
   const uint32_t count = stor != nullptr ? uint32_t(stor->components.size()) : 0;
   wr.u32(count);
-  if (stor == nullptr) return;
+  if (stor == nullptr) {
+    return;
+  }
 
   // позиционный проход по sparce_set (O(n)); entity_at_dense_index O(n) -> не годится.
   const auto& ss = stor->sparce_set;
   for (std::size_t i = 0; i < ss.size(); ++i) {
-    if (is_invalid_entityid(ss[i])) continue;
+    if (is_invalid_entityid(ss[i])) {
+      continue;
+    }
     const entityid_t id = make_entityid(i, get_entityid_version(ss[i]));
     const std::size_t dense = get_entityid_index(ss[i]);
     serialize(wr, id);
@@ -396,7 +637,9 @@ void load_one(world* w, reader& r) {
     deserialize(r, id);
     T tmp{};
     deserialize(r, tmp); // всегда вычитываем -> выравнивание не рушится на дубле
-    if (auto* slot = stor->create_comp(id)) *slot = std::move(tmp);
+    if (auto* slot = stor->create_comp(id)) {
+      *slot = std::move(tmp);
+    }
   }
 }
 
@@ -429,12 +672,15 @@ public:
 
     auto& t = table();
     const auto it = std::lower_bound(t.begin(), t.end(), h,
-      [](const entry& e, const uint32_t v) { return e.hash < v; });
+                                     [](const entry& e, const uint32_t v) {
+                                       return e.hash < v;
+                                     });
 
-    if (it != t.end() && it->hash == h) // тихая коллизия -> громкая ошибка
+    if (it != t.end() && it->hash == h) { // тихая коллизия -> громкая ошибка
       utils::error{}("component hash collision (murmur32=0x{:08x}): '{}' vs '{}'", h, it->name, name);
+    }
 
-    t.insert(it, entry{ h, detail::layout_hash<T>(), name, &dump_one<T>, &load_one<T>, &estimate_one<T> });
+    t.insert(it, entry{h, detail::layout_hash<T>(), name, &dump_one<T>, &load_one<T>, &estimate_one<T>});
     aesthetics::component_type_id<T>(); // прибиваем монотонный runtime-индекс на старте
     return true;
   }

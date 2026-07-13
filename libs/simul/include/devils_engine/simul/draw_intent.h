@@ -47,15 +47,23 @@ public:
     return match_;
   }
 
-  bool valid() const noexcept { return match_.ok(); }
-  const instance_layout::match_result& result() const noexcept { return match_; }
-  static constexpr uint32_t stride() noexcept { return uint32_t(sizeof(T)); }
+  bool valid() const noexcept {
+    return match_.ok();
+  }
+  const instance_layout::match_result& result() const noexcept {
+    return match_;
+  }
+  static constexpr uint32_t stride() noexcept {
+    return uint32_t(sizeof(T));
+  }
 
   // упаковать инстансы прямо в маппнутую GPU-память (instance frame) по байтовому оффсету.
   // вызывающий гарантирует ёмкость (max_count * stride). Возврат — сколько байт записано.
   std::size_t blit(const std::span<const T>& src, void* mapped, const std::size_t byte_offset) const {
     const std::size_t bytes = src.size_bytes();
-    if (bytes != 0) std::memcpy(static_cast<uint8_t*>(mapped) + byte_offset, src.data(), bytes);
+    if (bytes != 0) {
+      std::memcpy(static_cast<uint8_t*>(mapped) + byte_offset, src.data(), bytes);
+    }
     return bytes;
   }
 
@@ -63,7 +71,9 @@ public:
   // пишет min(src, dst) байт, чтобы не вылезти за dst. Возврат — сколько байт записано.
   std::size_t blit(const std::span<const T>& src, const std::span<uint8_t>& dst) const {
     const std::size_t bytes = std::min(src.size_bytes(), dst.size());
-    if (bytes != 0) std::memcpy(dst.data(), src.data(), bytes);
+    if (bytes != 0) {
+      std::memcpy(dst.data(), src.data(), bytes);
+    }
     return bytes;
   }
 

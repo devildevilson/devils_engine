@@ -1,6 +1,5 @@
-#include "registry.h"
-
 #include "devils_engine/utils/core.h"
+#include "registry.h"
 
 namespace devils_engine {
 namespace acumen {
@@ -22,5 +21,13 @@ const system* registry::get(const system_id id) const noexcept {
   return it != systems_.end() ? it->second.get() : nullptr;
 }
 
+const system* registry::get(const std::string_view name) const noexcept {
+  return get(utils::string_hash(name));
 }
+
+size_t registry::size() const noexcept {
+  return systems_.size();
 }
+
+} // namespace acumen
+} // namespace devils_engine

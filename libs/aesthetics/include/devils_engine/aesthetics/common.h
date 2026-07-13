@@ -4,22 +4,23 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+
 #include "devils_engine/utils/type_traits.h"
 
 #ifndef DEVILS_ENGINE_AESTHETICS_VERSION_BITS
-#define DEVILS_ENGINE_AESTHETICS_VERSION_BITS 10
+#  define DEVILS_ENGINE_AESTHETICS_VERSION_BITS 10
 #endif
 
 #ifndef DEVILS_ENGINE_AESTHETICS_ENTITY_ID_SIZE
-#define DEVILS_ENGINE_AESTHETICS_ENTITY_ID_SIZE uint32_t
+#  define DEVILS_ENGINE_AESTHETICS_ENTITY_ID_SIZE uint32_t
 #endif
 
 #ifndef DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_COMPONENTS_TYPE_ID
-#define DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_COMPONENTS_TYPE_ID UINT64_C(0xae000001)
+#  define DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_COMPONENTS_TYPE_ID UINT64_C(0xae000001)
 #endif
 
 #ifndef DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_EVENTS_TYPE_ID
-#define DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_EVENTS_TYPE_ID UINT64_C(0xae000002)
+#  define DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_EVENTS_TYPE_ID UINT64_C(0xae000002)
 #endif
 
 namespace devils_engine {
@@ -29,7 +30,9 @@ constexpr size_t seq_events_type_id = DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_EVENTS
 
 constexpr size_t make_mask(const size_t bits) noexcept {
   size_t mask = 0;
-  for (size_t i = 0; i < bits; ++i) { mask = mask | (size_t(0x1) << i); }
+  for (size_t i = 0; i < bits; ++i) {
+    mask = mask | (size_t(0x1) << i);
+  }
   return mask;
 }
 
@@ -94,7 +97,9 @@ struct remove_component_event {
   T* component;
 };
 
-struct update_event { size_t time; };
+struct update_event {
+  size_t time;
+};
 
 class accurate_remover {
 public:
@@ -112,24 +117,30 @@ public:
 class basic_system : public basic_reciever<update_event> {
 public:
   virtual ~basic_system() noexcept = default;
-  inline void receive(const update_event& event) override { update(event.time); }
+  void receive(const update_event& event) override;
   virtual void update(const size_t time) = 0;
 };
 
-inline bool all_of_not_null() { return true; }
+bool all_of_not_null();
 
 template <typename T, typename... Comp_T>
 bool all_of_not_null(const T& val, const Comp_T&... values) {
-  if constexpr (!std::is_pointer_v<T>) return all_of_not_null(values...);
-  else return val != nullptr && all_of_not_null(values...);
+  if constexpr (!std::is_pointer_v<T>) {
+    return all_of_not_null(values...);
+  } else {
+    return val != nullptr && all_of_not_null(values...);
+  }
 }
 
-inline bool all_of_is_null() { return true; }
+bool all_of_is_null();
 
 template <typename T, typename... Comp_T>
 bool all_of_is_null(const T& val, const Comp_T&... values) {
-  if constexpr (!std::is_pointer_v<T>) return all_of_is_null(values...);
-  else return val == nullptr && all_of_is_null(values...);
+  if constexpr (!std::is_pointer_v<T>) {
+    return all_of_is_null(values...);
+  } else {
+    return val == nullptr && all_of_is_null(values...);
+  }
 }
 
 // грязный хак, но зато очень удобно - легко создавать любые классы без наследования лишних базовых классов
@@ -144,7 +155,9 @@ public:
   template <typename... Args>
   class_container(Args&&... args) noexcept : obj(std::forward<Args>(args)...) {}
 
-  T* get_ptr() { return std::addressof(obj); }
+  T* get_ptr() {
+    return std::addressof(obj);
+  }
 
   T obj;
 };
@@ -152,10 +165,10 @@ public:
 template <typename T>
 class_container<T>* make_container_ptr(T* ptr) {
   constexpr size_t offset = offsetof(class_container<T>, class_container<T>::obj);
-  return reinterpret_cast<class_container<T>*>(reinterpret_cast<char*>(ptr)-offset);
+  return reinterpret_cast<class_container<T>*>(reinterpret_cast<char*>(ptr) - offset);
 }
 
-}
-}
+} // namespace aesthetics
+} // namespace devils_engine
 
 #endif

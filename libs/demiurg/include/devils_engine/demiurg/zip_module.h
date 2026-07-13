@@ -1,10 +1,11 @@
 #ifndef DEVILS_ENGINE_DEMIURG_ZIP_MODULE_H
 #define DEVILS_ENGINE_DEMIURG_ZIP_MODULE_H
 
-#include <cstdint>
 #include <cstddef>
-#include <vector>
+#include <cstdint>
 #include <string>
+#include <vector>
+
 #include "module_interface.h"
 
 namespace devils_engine {
@@ -21,14 +22,15 @@ public:
   bool is_openned() const override;
   // просто пройдем все файлики в папке и добавим их в список
   void resources_list(std::vector<resource_candidate>& out, uint32_t module_priority) const override;
-  void load_binary(const std::string &path, std::vector<uint8_t> &mem) const override;
-  void load_binary(const std::string &path, std::vector<char> &mem) const override;
-  void load_text(const std::string &path, std::string &mem) const override;
+  void load_binary(const std::string& path, std::vector<uint8_t>& mem) const override;
+  void load_binary(const std::string& path, std::vector<char>& mem) const override;
+  void load_text(const std::string& path, std::string& mem) const override;
+
 private:
-  void *native_handle;
+  void* native_handle;
   std::string_view module_name;
 };
-}
-}
+} // namespace demiurg
+} // namespace devils_engine
 
 #endif

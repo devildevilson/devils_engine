@@ -39,8 +39,12 @@ public:
 
   // Сбрасывает значения, но сохраняет схему имён и capacity вложенных списков: обычный per-worker reuse.
   void clear() noexcept {
-    for (auto& a : arguments()) a.data = value{};
-    for (auto& l : lists_) l.values.clear();
+    for (auto& a : arguments()) {
+      a.data = value{};
+    }
+    for (auto& l : lists_) {
+      l.values.clear();
+    }
     result = value{};
   }
 
@@ -52,52 +56,98 @@ public:
   }
 
   void reserve(const size_t argument_count, const size_t list_count) {
-    if (argument_count > max_arguments) throw std::length_error("act::call_context: too many scalar arguments");
+    if (argument_count > max_arguments) {
+      throw std::length_error("act::call_context: too many scalar arguments");
+    }
     lists_.reserve(list_count);
   }
 
   value* find_argument(const utils::id name) noexcept {
-    for (auto& a : arguments()) if (a.name == name) return &a.data;
+    for (auto& a : arguments()) {
+      if (a.name == name) {
+        return &a.data;
+      }
+    }
     return nullptr;
   }
   const value* find_argument(const utils::id name) const noexcept {
-    for (const auto& a : arguments()) if (a.name == name) return &a.data;
+    for (const auto& a : arguments()) {
+      if (a.name == name) {
+        return &a.data;
+      }
+    }
     return nullptr;
   }
-  value* find_argument(const std::string_view name) noexcept { return find_argument(utils::string_hash(name)); }
-  const value* find_argument(const std::string_view name) const noexcept { return find_argument(utils::string_hash(name)); }
+  value* find_argument(const std::string_view name) noexcept {
+    return find_argument(utils::string_hash(name));
+  }
+  const value* find_argument(const std::string_view name) const noexcept {
+    return find_argument(utils::string_hash(name));
+  }
 
   value& argument(const utils::id name) {
-    if (auto* v = find_argument(name); v != nullptr) return *v;
-    if (argument_count_ == max_arguments) throw std::length_error("act::call_context: scalar argument stack is full");
+    if (auto* v = find_argument(name); v != nullptr) {
+      return *v;
+    }
+    if (argument_count_ == max_arguments) {
+      throw std::length_error("act::call_context: scalar argument stack is full");
+    }
     auto& out = arguments_[argument_count_++];
     out = named_value{name, value{}};
     return out.data;
   }
-  value& argument(const std::string_view name) { return argument(utils::string_hash(name)); }
-  void set(const std::string_view name, const value v) { argument(name) = v; }
+  value& argument(const std::string_view name) {
+    return argument(utils::string_hash(name));
+  }
+  void set(const std::string_view name, const value v) {
+    argument(name) = v;
+  }
 
   named_list* find_list(const utils::id name) noexcept {
-    for (auto& l : lists_) if (l.name == name) return &l;
+    for (auto& l : lists_) {
+      if (l.name == name) {
+        return &l;
+      }
+    }
     return nullptr;
   }
   const named_list* find_list(const utils::id name) const noexcept {
-    for (const auto& l : lists_) if (l.name == name) return &l;
+    for (const auto& l : lists_) {
+      if (l.name == name) {
+        return &l;
+      }
+    }
     return nullptr;
   }
-  named_list* find_list(const std::string_view name) noexcept { return find_list(utils::string_hash(name)); }
-  const named_list* find_list(const std::string_view name) const noexcept { return find_list(utils::string_hash(name)); }
+  named_list* find_list(const std::string_view name) noexcept {
+    return find_list(utils::string_hash(name));
+  }
+  const named_list* find_list(const std::string_view name) const noexcept {
+    return find_list(utils::string_hash(name));
+  }
 
   named_list& list(const utils::id name) {
-    if (auto* l = find_list(name); l != nullptr) return *l;
+    if (auto* l = find_list(name); l != nullptr) {
+      return *l;
+    }
     return lists_.emplace_back(named_list{name, {}});
   }
-  named_list& list(const std::string_view name) { return list(utils::string_hash(name)); }
+  named_list& list(const std::string_view name) {
+    return list(utils::string_hash(name));
+  }
 
-  std::span<named_value> arguments() noexcept { return {arguments_.data(), argument_count_}; }
-  std::span<const named_value> arguments() const noexcept { return {arguments_.data(), argument_count_}; }
-  std::vector<named_list>& lists() noexcept { return lists_; }
-  const std::vector<named_list>& lists() const noexcept { return lists_; }
+  std::span<named_value> arguments() noexcept {
+    return {arguments_.data(), argument_count_};
+  }
+  std::span<const named_value> arguments() const noexcept {
+    return {arguments_.data(), argument_count_};
+  }
+  std::vector<named_list>& lists() noexcept {
+    return lists_;
+  }
+  const std::vector<named_list>& lists() const noexcept {
+    return lists_;
+  }
 
 private:
   std::array<named_value, max_arguments> arguments_{};
@@ -105,7 +155,7 @@ private:
   std::vector<named_list> lists_;
 };
 
-}
-}
+} // namespace act
+} // namespace devils_engine
 
 #endif

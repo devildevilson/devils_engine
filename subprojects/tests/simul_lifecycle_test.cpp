@@ -1,5 +1,3 @@
-#include <doctest/doctest.h>
-
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +9,7 @@
 #include <devils_engine/simul/pause.h>
 #include <devils_engine/simul/startup_resources.h>
 #include <devils_engine/utils/safe_handle.h>
+#include <doctest/doctest.h>
 
 namespace {
 
@@ -23,17 +22,27 @@ struct lifecycle_host {
   bool boot_ready = false;
   bool loading_ready = false;
 
-  void on_lifecycle_enter(const app_state phase) { entered.push_back(phase); }
-  void on_lifecycle_tick(const app_state phase, const size_t) { ticked.push_back(phase); }
+  void on_lifecycle_enter(const app_state phase) {
+    entered.push_back(phase);
+  }
+  void on_lifecycle_tick(const app_state phase, const size_t) {
+    ticked.push_back(phase);
+  }
   bool lifecycle_phase_complete(const app_state phase) const {
-    if (phase == app_state::boot) return boot_ready;
-    if (phase == app_state::loading) return loading_ready;
+    if (phase == app_state::boot) {
+      return boot_ready;
+    }
+    if (phase == app_state::loading) {
+      return loading_ready;
+    }
     return false;
   }
-  void on_lifecycle_leave(const app_state phase) { left.push_back(phase); }
+  void on_lifecycle_leave(const app_state phase) {
+    left.push_back(phase);
+  }
 };
 
-}
+} // namespace
 
 TEST_CASE("pause_state keeps gameplay and presentation as independent engine domains") {
   using namespace devils_engine::simul;
@@ -116,10 +125,8 @@ TEST_CASE("startup entry and runtime state come from the first module") {
   }
 
   demiurg::module_system modules(root.generic_string() + "/");
-  modules.load_modules({
-    demiurg::module_system::list_entry{"mod/", "", ""},
-    demiurg::module_system::list_entry{"core/", "", ""}
-  });
+  modules.load_modules({demiurg::module_system::list_entry{"mod/", "", ""},
+                        demiurg::module_system::list_entry{"core/", "", ""}});
 
   demiurg::resource_system resources;
   resources.register_type<simul::startup_entry_resource>("startup", "tavl");
@@ -136,8 +143,7 @@ TEST_CASE("startup entry and runtime state come from the first module") {
   ui->load(devils_engine::utils::safe_handle_t{});
   CHECK(ui->config().script == "ui/mod_entry");
   CHECK(ui->config().resources == std::vector<std::string>{
-    "ui/mod_entry", "fonts/mod", "textures/mod_bg"
-  });
+                                    "ui/mod_entry", "fonts/mod", "textures/mod_bg"});
   CHECK(ui->config().scene == "scenes/mod_scene");
 
   fs::remove_all(root);

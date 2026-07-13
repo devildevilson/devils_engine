@@ -124,7 +124,7 @@ std::vector<state> parse_state_text(
   std::vector<std::string>* next_names = nullptr,
   parse_options options = {});
 
-}
-}
+} // namespace flow
+} // namespace devils_engine
 
 #endif

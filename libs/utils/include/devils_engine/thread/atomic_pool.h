@@ -1,18 +1,18 @@
 #ifndef DEVILS_ENGINE_THREAD_ATOMIC_POOL_H
 #define DEVILS_ENGINE_THREAD_ATOMIC_POOL_H
 
+#include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <atomic>
-#include <stop_token>
-#include <thread>
-#include <vector>
 #include <functional>
 #include <future>
 #include <memory>
-#include <cmath>
+#include <stop_token>
+#include <thread>
 #include <tuple>
 #include <type_traits>
+#include <vector>
 
 #include "atomic_queue/atomic_queue.h"
 #include "devils_engine/utils/stack_allocator.h"
@@ -22,19 +22,19 @@
 // с другой стороны лучше если в течении работы приложения они всегда будут чем то заняты
 
 #ifndef DEVILS_THREAD_ATOMIC_QUEUE_CAPACITY
-  #define DEVILS_THREAD_ATOMIC_QUEUE_CAPACITY 256
+#  define DEVILS_THREAD_ATOMIC_QUEUE_CAPACITY 256
 #endif
 
 namespace devils_engine {
 namespace thread {
 
-constexpr size_t MAXIMUM_TASK_SIZE = 128;
-constexpr size_t MAXIMUM_TASK_COUNT = DEVILS_THREAD_ATOMIC_QUEUE_CAPACITY;
+constexpr size_t maximum_task_size = 128;
+constexpr size_t maximum_task_count = DEVILS_THREAD_ATOMIC_QUEUE_CAPACITY;
 // Сколько раз воркер делает yield() при пустой очереди перед сном на cv. Спин перекрывает
 // короткие паузы ВНУТРИ батча (следующая задача вот-вот придёт) без дорогого cv-wakeup. После
 // батча — быстро засыпать (незачем жечь ядро: следующий dispatch на порядки позже). Баланс
 // латентность/энергопотребление; тюнить под самый частый паттерн dispatch.
-constexpr size_t WORKER_SPIN_COUNT = 256;
+constexpr size_t worker_spin_count = 256;
 
 class atomic_pool {
 public:
@@ -69,23 +69,27 @@ public:
 
   void submitbase(task_interface* t) noexcept;
 
-  template<class F, class... Args>
+  template <class F, class... Args>
   void submit(F&& f, Args&&... args) noexcept {
     using local_task_t = task_t<std::decay_t<F>, std::tuple<std::decay_t<Args>...>>;
-    static_assert(sizeof(local_task_t) <= MAXIMUM_TASK_SIZE);
+    static_assert(sizeof(local_task_t) <= maximum_task_size);
     auto ptr = stack_pool.create<local_task_t>(std::forward<F>(f), std::forward<Args>(args)...);
     submitbase(ptr);
   }
 
-  template<class F, class... Args>
+  template <class F, class... Args>
   void distribute(const size_t count, F&& f, Args&&... args) noexcept {
-    if (count == 0 || stop_source.stop_requested()) return;
+    if (count == 0 || stop_source.stop_requested()) {
+      return;
+    }
 
     const size_t work_count = std::ceil(double(count) / double(size()));
     size_t start = 0;
     for (size_t i = 0; i < size(); ++i) {
-      const size_t job_count = std::min(work_count, count-start);
-      if (job_count == 0) break;
+      const size_t job_count = std::min(work_count, count - start);
+      if (job_count == 0) {
+        break;
+      }
 
       submit(std::forward<F>(f), start, job_count, std::forward<Args>(args)...);
 
@@ -93,15 +97,19 @@ public:
     }
   }
 
-  template<class F, class... Args>
+  template <class F, class... Args>
   void distribute1(const size_t count, F&& f, Args&&... args) noexcept {
-    if (count == 0 || stop_source.stop_requested()) return;
+    if (count == 0 || stop_source.stop_requested()) {
+      return;
+    }
 
-    const size_t work_count = std::ceil(double(count) / double(size()+1));
+    const size_t work_count = std::ceil(double(count) / double(size() + 1));
     size_t start = 0;
-    for (size_t i = 0; i < size()+1; ++i) {
-      const size_t job_count = std::min(work_count, count-start);
-      if (job_count == 0) break;
+    for (size_t i = 0; i < size() + 1; ++i) {
+      const size_t job_count = std::min(work_count, count - start);
+      if (job_count == 0) {
+        break;
+      }
 
       submit(std::forward<F>(f), start, job_count, std::forward<Args>(args)...);
 
@@ -120,6 +128,7 @@ public:
   size_t tasks_count() const noexcept;
   size_t working_count() const noexcept;
   size_t queue_capacity() const noexcept;
+
 private:
   std::stop_source stop_source;
   std::vector<std::jthread> workers;
@@ -134,7 +143,7 @@ private:
   std::mutex cv_mtx;
 };
 
-}
-}
+} // namespace thread
+} // namespace devils_engine
 
 #endif

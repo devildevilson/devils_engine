@@ -1,11 +1,11 @@
 #ifndef DEVILS_ENGINE_UTILS_KD_TREE_H
 #define DEVILS_ENGINE_UTILS_KD_TREE_H
 
+#include <algorithm>
 #include <array>
-#include <vector>
 #include <cstddef>
 #include <utility>
-#include <algorithm>
+#include <vector>
 
 #include "geometry.h"
 
@@ -45,19 +45,35 @@ public:
     T payload;
   };
 
-  void reserve(const size_t n) { nodes_.reserve(n); }
-  void clear() noexcept { nodes_.clear(); }          // сохраняет capacity (арена)
-  size_t size() const noexcept { return nodes_.size(); }
-  bool empty() const noexcept { return nodes_.empty(); }
+  void reserve(const size_t n) {
+    nodes_.reserve(n);
+  }
+  void clear() noexcept {
+    nodes_.clear();
+  } // сохраняет capacity (арена)
+  size_t size() const noexcept {
+    return nodes_.size();
+  }
+  bool empty() const noexcept {
+    return nodes_.empty();
+  }
 
-  void insert(const point& p, const T& payload) { nodes_.push_back(node{ p, payload }); }
-  void insert(const point& p, T&& payload) { nodes_.push_back(node{ p, std::move(payload) }); }
+  void insert(const point& p, const T& payload) {
+    nodes_.push_back(node{p, payload});
+  }
+  void insert(const point& p, T&& payload) {
+    nodes_.push_back(node{p, std::move(payload)});
+  }
 
   // Балансирующее построение: медианное разбиение по чередующимся осям, на месте.
   void build() {
     bounds_ = aabb::empty();
-    for (const auto& n : nodes_) bounds_.expand(n.pos);
-    if (!nodes_.empty()) build_rec(0, nodes_.size(), 0);
+    for (const auto& n : nodes_) {
+      bounds_.expand(n.pos);
+    }
+    if (!nodes_.empty()) {
+      build_rec(0, nodes_.size(), 0);
+    }
   }
 
   // Унифицированный запрос: обойти все точки, лежащие ВНУТРИ формы shape.
@@ -67,8 +83,12 @@ public:
   // (*) ray по точкам вырожден (мера ноль) — используйте cylinder (луч с радиусом).
   template <typename Shape, typename Visit>
   void query(const Shape& shape, Visit&& visit) const {
-    if (nodes_.empty()) return;
-    if (!geom::test_overlaps<UpAxis>(shape, bounds_)) return;
+    if (nodes_.empty()) {
+      return;
+    }
+    if (!geom::test_overlaps<UpAxis>(shape, bounds_)) {
+      return;
+    }
     query_rec(0, nodes_.size(), 0, bounds_, shape, visit);
   }
 
@@ -76,7 +96,9 @@ public:
   // pred: (const T&) -> bool. max_radius ОБЯЗАТЕЛЕН (см. шапку).
   template <typename Pred>
   const node* nearest(const point& q, const scalar max_radius, Pred&& pred) const {
-    if (nodes_.empty()) return nullptr;
+    if (nodes_.empty()) {
+      return nullptr;
+    }
     const node* best = nullptr;
     scalar best_d2 = max_radius * max_radius;
     nearest_rec(0, nodes_.size(), 0, q, pred, best, best_d2);
@@ -93,29 +115,40 @@ public:
     const node* bb = nullptr;
     scalar da = max_radius * max_radius;
     scalar db = da;
-    if (!nodes_.empty()) nearest2_rec(0, nodes_.size(), 0, q, pa, pb, ba, da, bb, db);
-    return { ba, bb };
+    if (!nodes_.empty()) {
+      nearest2_rec(0, nodes_.size(), 0, q, pa, pb, ba, da, bb, db);
+    }
+    return {ba, bb};
   }
 
   // Обойти все узлы в радиусе r, чей payload проходит pred: visit(const node&).
   template <typename Pred, typename Visit>
   void radius(const point& q, const scalar r, Pred&& pred, Visit&& visit) const {
-    if (nodes_.empty()) return;
+    if (nodes_.empty()) {
+      return;
+    }
     radius_rec(0, nodes_.size(), 0, q, r * r, pred, visit);
   }
 
 private:
   static scalar dist2(const point& a, const point& b) noexcept {
     scalar s = 0;
-    for (int i = 0; i < Dim; ++i) { const scalar d = a[i] - b[i]; s += d * d; }
+    for (int i = 0; i < Dim; ++i) {
+      const scalar d = a[i] - b[i];
+      s += d * d;
+    }
     return s;
   }
 
   void build_rec(const size_t lo, const size_t hi, const int axis) {
-    if (hi - lo <= 1) return;
+    if (hi - lo <= 1) {
+      return;
+    }
     const size_t mid = lo + (hi - lo) / 2;
     std::nth_element(nodes_.begin() + lo, nodes_.begin() + mid, nodes_.begin() + hi,
-      [axis](const node& a, const node& b) { return a.pos[axis] < b.pos[axis]; });
+                     [axis](const node& a, const node& b) {
+                       return a.pos[axis] < b.pos[axis];
+                     });
     const int next = (axis + 1) % Dim;
     build_rec(lo, mid, next);
     build_rec(mid + 1, hi, next);
@@ -124,23 +157,32 @@ private:
   template <typename Pred>
   void nearest_rec(const size_t lo, const size_t hi, const int axis, const point& q,
                    Pred& pred, const node*& best, scalar& best_d2) const {
-    if (hi <= lo) return;
+    if (hi <= lo) {
+      return;
+    }
     const size_t mid = lo + (hi - lo) / 2;
     const node& n = nodes_[mid];
 
     if (pred(n.payload)) {
       const scalar d2 = dist2(n.pos, q);
-      if (d2 < best_d2) { best_d2 = d2; best = &n; }
+      if (d2 < best_d2) {
+        best_d2 = d2;
+        best = &n;
+      }
     }
 
     const scalar diff = q[axis] - n.pos[axis];
     const int next = (axis + 1) % Dim;
-    if (diff < scalar(0)) {                              // ближняя сторона — слева
+    if (diff < scalar(0)) { // ближняя сторона — слева
       nearest_rec(lo, mid, next, q, pred, best, best_d2);
-      if (diff * diff < best_d2) nearest_rec(mid + 1, hi, next, q, pred, best, best_d2);
+      if (diff * diff < best_d2) {
+        nearest_rec(mid + 1, hi, next, q, pred, best, best_d2);
+      }
     } else {
       nearest_rec(mid + 1, hi, next, q, pred, best, best_d2);
-      if (diff * diff < best_d2) nearest_rec(lo, mid, next, q, pred, best, best_d2);
+      if (diff * diff < best_d2) {
+        nearest_rec(lo, mid, next, q, pred, best, best_d2);
+      }
     }
   }
 
@@ -148,68 +190,106 @@ private:
   void nearest2_rec(const size_t lo, const size_t hi, const int axis, const point& q,
                     PredA& pa, PredB& pb, const node*& ba, scalar& da,
                     const node*& bb, scalar& db) const {
-    if (hi <= lo) return;
+    if (hi <= lo) {
+      return;
+    }
     const size_t mid = lo + (hi - lo) / 2;
     const node& n = nodes_[mid];
 
     scalar d2 = scalar(-1); // считаем дистанцию максимум один раз на узел
-    if (pa(n.payload)) { d2 = dist2(n.pos, q); if (d2 < da) { da = d2; ba = &n; } }
-    if (pb(n.payload)) { if (d2 < scalar(0)) d2 = dist2(n.pos, q); if (d2 < db) { db = d2; bb = &n; } }
+    if (pa(n.payload)) {
+      d2 = dist2(n.pos, q);
+      if (d2 < da) {
+        da = d2;
+        ba = &n;
+      }
+    }
+    if (pb(n.payload)) {
+      if (d2 < scalar(0)) {
+        d2 = dist2(n.pos, q);
+      }
+      if (d2 < db) {
+        db = d2;
+        bb = &n;
+      }
+    }
 
     const scalar diff = q[axis] - n.pos[axis];
     const int next = (axis + 1) % Dim;
     if (diff < scalar(0)) {
       nearest2_rec(lo, mid, next, q, pa, pb, ba, da, bb, db);
-      if (diff * diff < (da > db ? da : db)) nearest2_rec(mid + 1, hi, next, q, pa, pb, ba, da, bb, db);
+      if (diff * diff < (da > db ? da : db)) {
+        nearest2_rec(mid + 1, hi, next, q, pa, pb, ba, da, bb, db);
+      }
     } else {
       nearest2_rec(mid + 1, hi, next, q, pa, pb, ba, da, bb, db);
-      if (diff * diff < (da > db ? da : db)) nearest2_rec(lo, mid, next, q, pa, pb, ba, da, bb, db);
+      if (diff * diff < (da > db ? da : db)) {
+        nearest2_rec(lo, mid, next, q, pa, pb, ba, da, bb, db);
+      }
     }
   }
 
   template <typename Shape, typename Visit>
   void query_rec(const size_t lo, const size_t hi, const int axis, aabb region,
                  const Shape& shape, Visit& visit) const {
-    if (hi <= lo) return;
+    if (hi <= lo) {
+      return;
+    }
     const size_t mid = lo + (hi - lo) / 2;
     const node& n = nodes_[mid];
 
-    if (geom::test_contains<UpAxis>(shape, n.pos)) visit(n.payload);
+    if (geom::test_contains<UpAxis>(shape, n.pos)) {
+      visit(n.payload);
+    }
 
     const scalar split = n.pos[axis];
     const int next = (axis + 1) % Dim;
     // левое поддерево: координаты по axis <= split; правое: >= split.
-    aabb left = region;  left.max[axis] = split;
-    aabb right = region; right.min[axis] = split;
-    if (geom::test_overlaps<UpAxis>(shape, left))  query_rec(lo, mid, next, left, shape, visit);
-    if (geom::test_overlaps<UpAxis>(shape, right)) query_rec(mid + 1, hi, next, right, shape, visit);
+    aabb left = region;
+    left.max[axis] = split;
+    aabb right = region;
+    right.min[axis] = split;
+    if (geom::test_overlaps<UpAxis>(shape, left)) {
+      query_rec(lo, mid, next, left, shape, visit);
+    }
+    if (geom::test_overlaps<UpAxis>(shape, right)) {
+      query_rec(mid + 1, hi, next, right, shape, visit);
+    }
   }
 
   template <typename Pred, typename Visit>
   void radius_rec(const size_t lo, const size_t hi, const int axis, const point& q,
                   const scalar r2, Pred& pred, Visit& visit) const {
-    if (hi <= lo) return;
+    if (hi <= lo) {
+      return;
+    }
     const size_t mid = lo + (hi - lo) / 2;
     const node& n = nodes_[mid];
 
-    if (pred(n.payload) && dist2(n.pos, q) <= r2) visit(n);
+    if (pred(n.payload) && dist2(n.pos, q) <= r2) {
+      visit(n);
+    }
 
     const scalar diff = q[axis] - n.pos[axis];
     const int next = (axis + 1) % Dim;
     if (diff < scalar(0)) {
       radius_rec(lo, mid, next, q, r2, pred, visit);
-      if (diff * diff <= r2) radius_rec(mid + 1, hi, next, q, r2, pred, visit);
+      if (diff * diff <= r2) {
+        radius_rec(mid + 1, hi, next, q, r2, pred, visit);
+      }
     } else {
       radius_rec(mid + 1, hi, next, q, r2, pred, visit);
-      if (diff * diff <= r2) radius_rec(lo, mid, next, q, r2, pred, visit);
+      if (diff * diff <= r2) {
+        radius_rec(lo, mid, next, q, r2, pred, visit);
+      }
     }
   }
 
-  std::vector<node> nodes_;   // переиспользуемая арена точек (= неявное дерево после build)
+  std::vector<node> nodes_;     // переиспользуемая арена точек (= неявное дерево после build)
   aabb bounds_ = aabb::empty(); // общий bbox всех точек (корневой регион для query-прунинга)
 };
 
-}
-}
+} // namespace utils
+} // namespace devils_engine
 
 #endif

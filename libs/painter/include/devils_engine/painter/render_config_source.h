@@ -2,6 +2,7 @@
 #define DEVILS_ENGINE_PAINTER_RENDER_CONFIG_SOURCE_H
 
 #include <string>
+
 #include "devils_engine/demiurg/resource_base.h"
 
 namespace devils_engine {
@@ -25,7 +26,7 @@ public:
   void unload_warm(const utils::safe_handle_t& handle) override;
 };
 
-}
-}
+} // namespace painter
+} // namespace devils_engine
 
 #endif

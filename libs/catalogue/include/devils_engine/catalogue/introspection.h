@@ -21,10 +21,10 @@
 
 #include <gtl/phmap.hpp>
 
+#include "devils_engine/catalogue/logging.h" // лог-домены/уровни: trace-уровень домена авто-эскалирует интроспекцию
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/string_id.h"
 #include "devils_engine/utils/type_traits.h"
-#include "devils_engine/catalogue/logging.h" // лог-домены/уровни: trace-уровень домена авто-эскалирует интроспекцию
 
 namespace devils_engine {
 namespace catalogue {
@@ -77,9 +77,11 @@ public:
     size_t cursor = 0;
     size_t filled = 0;
 
-    double average_mcs() const noexcept { return call_count != 0 ? double(total_mcs) / double(call_count) : 0.0; }
-    double recent_average_mcs() const noexcept;                 // среднее по кольцу
-    void ordered_samples(std::vector<uint64_t>& out) const;     // последние filled в хроно-порядке (для графика)
+    double average_mcs() const noexcept {
+      return call_count != 0 ? double(total_mcs) / double(call_count) : 0.0;
+    }
+    double recent_average_mcs() const noexcept;             // среднее по кольцу
+    void ordered_samples(std::vector<uint64_t>& out) const; // последние filled в хроно-порядке (для графика)
   };
 
   explicit statistics_store(size_t window = 128) noexcept;
@@ -87,13 +89,23 @@ public:
 
   const function_record* find(utils::id function) const noexcept;
   double average_mcs(utils::id function) const noexcept;
-  size_t function_count() const noexcept { return records_.size(); }
-  size_t count() const noexcept { return total_calls_; }
-  size_t window() const noexcept { return window_; }
+  size_t function_count() const noexcept {
+    return records_.size();
+  }
+  size_t count() const noexcept {
+    return total_calls_;
+  }
+  size_t window() const noexcept {
+    return window_;
+  }
   void reset() noexcept;
 
   template <typename F>
-  void for_each(F&& f) const { for (const auto& [id, rec] : records_) f(rec); }
+  void for_each(F&& f) const {
+    for (const auto& [id, rec] : records_) {
+      f(rec);
+    }
+  }
 
 private:
   size_t window_;
@@ -115,57 +127,7 @@ struct argument_value_buffer {
   std::array<char, 64> chars{};
 };
 
-inline std::string_view shrink_placeholder(argument_value_buffer& buffer, const std::string_view type) {
-  constexpr std::string_view prefix = "devils_engine::";
-  constexpr std::string_view dots = "...";
-  constexpr size_t capacity = std::tuple_size_v<decltype(buffer.chars)>;
-
-  const auto write_wrapped = [&] (const std::string_view src) -> std::string_view {
-    if (src.size() + 2 > capacity) return {};
-    char* out = buffer.chars.data();
-    *out++ = '<';
-    for (const char c : src) *out++ = c;
-    *out++ = '>';
-    return std::string_view(buffer.chars.data(), size_t(out - buffer.chars.data()));
-  };
-
-  if (const auto full = write_wrapped(type); !full.empty()) return full;
-
-  char* out = buffer.chars.data();
-  size_t pos = 0;
-  while (pos < type.size()) {
-    if (type.substr(pos, prefix.size()) == prefix) {
-      pos += prefix.size();
-      continue;
-    }
-
-    if (out == buffer.chars.data() + capacity) break;
-    *out++ = type[pos++];
-  }
-
-  const size_t without_engine_size = size_t(out - buffer.chars.data());
-  if (without_engine_size + 2 <= capacity) {
-    for (size_t i = without_engine_size; i > 0; --i) {
-      buffer.chars[i] = buffer.chars[i - 1];
-    }
-    buffer.chars[0] = '<';
-    buffer.chars[without_engine_size + 1] = '>';
-    return std::string_view(buffer.chars.data(), without_engine_size + 2);
-  }
-
-  constexpr size_t payload_capacity = capacity - 2;
-  constexpr size_t prefix_capacity = payload_capacity - dots.size();
-  const size_t copy_count = std::min(without_engine_size, prefix_capacity);
-  for (size_t i = copy_count; i > 0; --i) {
-    buffer.chars[i] = buffer.chars[i - 1];
-  }
-  out = buffer.chars.data();
-  *out++ = '<';
-  out += copy_count;
-  for (const char c : dots) *out++ = c;
-  *out++ = '>';
-  return std::string_view(buffer.chars.data(), size_t(out - buffer.chars.data()));
-}
+std::string_view shrink_placeholder(argument_value_buffer& buffer, std::string_view type);
 
 template <typename T>
 std::string_view buffered_number(argument_value_buffer& buffer, const T value, bool& printable) {
@@ -208,11 +170,7 @@ std::string_view stringify_arg(argument_value_buffer& buffer, const T& value, bo
 // на trace → минимум tracing (авто-связка логгирования и трассировки функций); dump (выше)
 // сохраняется. Так `app.set_log_level("gameplay","trace")` включает трассировку функций домена
 // поверх perf-статистики. Гейт — relaxed atomic load (near-zero cost).
-inline introspection_mode effective_mode(const introspection& in) noexcept {
-  const uint8_t base = static_cast<uint8_t>(in.mode);
-  const uint8_t floor = logs().enabled(in.log_domain, log_depth::trace) ? static_cast<uint8_t>(introspection_mode::tracing) : 0;
-  return static_cast<introspection_mode>(std::max(base, floor));
-}
+introspection_mode effective_mode(const introspection& in) noexcept;
 
 // emit по режиму (в .cpp): вход/выход. Невиртуальный switch вместо виртуалок. Для не-dump
 // info.arguments пуст (arg_views не строятся — см. fn_traits ниже).
@@ -248,7 +206,7 @@ struct callable_traits<T> : public utils::detail::function_traits_v2<decltype(&T
 template <typename T>
 using member_object_t = std::conditional_t<callable_traits<T>::is_const, const typename callable_traits<T>::member_of&, typename callable_traits<T>::member_of&>;
 
-}
+} // namespace detail
 
 template <auto Domain>
 struct domain {
@@ -283,8 +241,11 @@ struct domain {
 
     template <size_t I>
     static consteval std::string_view argument_name() {
-      if constexpr (I < argument_names.size()) return argument_names[I];
-      else return {};
+      if constexpr (I < argument_names.size()) {
+        return argument_names[I];
+      } else {
+        return {};
+      }
     }
 
     template <size_t I, typename T, size_t N>
@@ -295,8 +256,7 @@ struct domain {
         argument_name<I>(),
         utils::type_name<std::remove_cvref_t<T>>(),
         str,
-        printable
-      };
+        printable};
     }
 
     template <typename... Args, size_t... I>
@@ -349,18 +309,24 @@ struct domain {
     template <typename... Args>
     static return_t call_free_at(const std::source_location loc, Args&&... args) {
       const introspection* in = intro_i;
-      if (in == nullptr) return invoke_free(std::forward<Args>(args)...);
+      if (in == nullptr) {
+        return invoke_free(std::forward<Args>(args)...);
+      }
       const introspection_mode mode = detail::effective_mode(*in);
-      if (mode == introspection_mode::off) return invoke_free(std::forward<Args>(args)...);
-      auto invoke = [&]() -> return_t { return invoke_free(std::forward<Args>(args)...); };
+      if (mode == introspection_mode::off) {
+        return invoke_free(std::forward<Args>(args)...);
+      }
+      auto invoke = [&]() -> return_t {
+        return invoke_free(std::forward<Args>(args)...);
+      };
       // arg_views строим ЛЕНИВО только для dump (дорогой stringify); остальным режимам — пустой span.
       if (mode == introspection_mode::dump) {
         auto arg_views = make_argument_views(args...);
-        const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(),
-          std::span<const argument_view>(arg_views.views.data(), arg_views.views.size()) };
+        const call_info info{domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(),
+                             std::span<const argument_view>(arg_views.views.data(), arg_views.views.size())};
         return detail::run<return_t>(*in, mode, info, invoke);
       }
-      const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(), {} };
+      const call_info info{domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(), {}};
       return detail::run<return_t>(*in, mode, info, invoke);
     }
 
@@ -372,17 +338,23 @@ struct domain {
     template <typename Obj, typename... Args>
     static return_t call_member_at(const std::source_location loc, Obj&& obj, Args&&... args) {
       const introspection* in = intro_i;
-      if (in == nullptr) return invoke_member(std::forward<Obj>(obj), std::forward<Args>(args)...);
+      if (in == nullptr) {
+        return invoke_member(std::forward<Obj>(obj), std::forward<Args>(args)...);
+      }
       const introspection_mode mode = detail::effective_mode(*in);
-      if (mode == introspection_mode::off) return invoke_member(std::forward<Obj>(obj), std::forward<Args>(args)...);
-      auto invoke = [&]() -> return_t { return invoke_member(std::forward<Obj>(obj), std::forward<Args>(args)...); };
+      if (mode == introspection_mode::off) {
+        return invoke_member(std::forward<Obj>(obj), std::forward<Args>(args)...);
+      }
+      auto invoke = [&]() -> return_t {
+        return invoke_member(std::forward<Obj>(obj), std::forward<Args>(args)...);
+      };
       if (mode == introspection_mode::dump) {
         auto arg_views = make_argument_views(obj, args...);
-        const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(),
-          std::span<const argument_view>(arg_views.views.data(), arg_views.views.size()) };
+        const call_info info{domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(),
+                             std::span<const argument_view>(arg_views.views.data(), arg_views.views.size())};
         return detail::run<return_t>(*in, mode, info, invoke);
       }
-      const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(), {} };
+      const call_info info{domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(), {}};
       return detail::run<return_t>(*in, mode, info, invoke);
     }
 
@@ -394,17 +366,23 @@ struct domain {
     template <typename... Args>
     static return_t call_functor_at(const std::source_location loc, Args&&... args) {
       const introspection* in = intro_i;
-      if (in == nullptr) return invoke_functor(std::forward<Args>(args)...);
+      if (in == nullptr) {
+        return invoke_functor(std::forward<Args>(args)...);
+      }
       const introspection_mode mode = detail::effective_mode(*in);
-      if (mode == introspection_mode::off) return invoke_functor(std::forward<Args>(args)...);
-      auto invoke = [&]() -> return_t { return invoke_functor(std::forward<Args>(args)...); };
+      if (mode == introspection_mode::off) {
+        return invoke_functor(std::forward<Args>(args)...);
+      }
+      auto invoke = [&]() -> return_t {
+        return invoke_functor(std::forward<Args>(args)...);
+      };
       if (mode == introspection_mode::dump) {
         auto arg_views = make_argument_views(args...);
-        const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(),
-          std::span<const argument_view>(arg_views.views.data(), arg_views.views.size()) };
+        const call_info info{domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(),
+                             std::span<const argument_view>(arg_views.views.data(), arg_views.views.size())};
         return detail::run<return_t>(*in, mode, info, invoke);
       }
-      const call_info info{ domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(), {} };
+      const call_info info{domain_id, function_id, name, utils::type_name<return_t>(), loc.file_name(), loc.line(), {}};
       return detail::run<return_t>(*in, mode, info, invoke);
     }
 
@@ -526,7 +504,7 @@ struct domain {
     };
 
     template <typename T>
-      requires (!std::is_pointer_v<T> && !std::is_member_function_pointer_v<T> && requires { &T::operator(); })
+      requires(!std::is_pointer_v<T> && !std::is_member_function_pointer_v<T> && requires { &T::operator(); })
     struct maker<T> {
       template <typename Sig>
       struct impl;
@@ -606,7 +584,7 @@ struct domain {
   };
 };
 
-}
-}
+} // namespace catalogue
+} // namespace devils_engine
 
 #endif

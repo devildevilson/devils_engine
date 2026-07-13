@@ -1,24 +1,23 @@
-#include <doctest/doctest.h>
-
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
+#include <doctest/doctest.h>
+
 #include "devils_engine/thread/atomic.h"
 #include "devils_engine/thread/atomic_pool.h"
+#include "devils_engine/thread/byte_ring.h"
 #include "devils_engine/thread/lock.h"
+#include "devils_engine/thread/mailbox.h"
+#include "devils_engine/thread/payload_channel.h"
 #include "devils_engine/thread/queue1.h"
 #include "devils_engine/thread/spsc_queue.h"
-#include "devils_engine/thread/byte_ring.h"
-#include "devils_engine/thread/payload_channel.h"
-#include "devils_engine/thread/mailbox.h"
-
-#include <cstring>
-#include <string>
 
 using namespace devils_engine;
 
@@ -34,7 +33,7 @@ struct non_default_constructible {
   non_default_constructible& operator=(non_default_constructible&&) noexcept = default;
 };
 
-}
+} // namespace
 
 TEST_CASE("atomic_min and atomic_max update only in the requested direction [thread::atomic]") {
   std::atomic<int> value = 10;
@@ -198,7 +197,9 @@ TEST_CASE("spin_mutex serializes concurrent updates [thread::spin_mutex]") {
     });
   }
 
-  for (auto& worker : workers) worker.join();
+  for (auto& worker : workers) {
+    worker.join();
+  }
   CHECK(counter == 4000);
 }
 
@@ -231,7 +232,7 @@ TEST_CASE("atomic_pool can distribute contiguous work ranges [thread::atomic_poo
   thread::atomic_pool pool(3);
   std::vector<std::atomic<int>> visits(25);
 
-  pool.distribute(visits.size(), [&visits] (const size_t start, const size_t count) {
+  pool.distribute(visits.size(), [&visits](const size_t start, const size_t count) {
     for (size_t i = start; i < start + count; ++i) {
       visits[i].fetch_add(1, std::memory_order_relaxed);
     }
@@ -254,7 +255,9 @@ TEST_CASE("atomic_pool workers sleep between rounds and wake on submit [thread::
 
   for (int round = 0; round < 200; ++round) {
     for (int i = 0; i < 8; ++i) {
-      pool.submit([&counter] { counter.fetch_add(1, std::memory_order_relaxed); });
+      pool.submit([&counter] {
+        counter.fetch_add(1, std::memory_order_relaxed);
+      });
     }
     pool.wait(); // повиснет, если задача застряла из-за потерянного пробуждения
     CHECK(pool.working_count() == 0);
@@ -282,30 +285,38 @@ TEST_CASE("atomic_pool supports explicit main-thread compute with zero workers [
 // ── byte_ring (SPSC байт-арена под payload сообщений) ──────────────────────────
 
 namespace {
-struct payload_msg { int64_t pos; uint32_t size; uint32_t tag; };
+struct payload_msg {
+  int64_t pos;
+  uint32_t size;
+  uint32_t tag;
+};
 
 // записать байты в выданную область
 static void fill(std::span<std::byte> region, const uint8_t value) {
   std::memset(region.data(), value, region.size());
 }
 static bool all_equal(std::span<const std::byte> region, const uint8_t value) {
-  for (auto b : region) if (std::to_integer<uint8_t>(b) != value) return false;
+  for (auto b : region) {
+    if (std::to_integer<uint8_t>(b) != value) {
+      return false;
+    }
+  }
   return true;
 }
-}
+} // namespace
 
 TEST_CASE("byte_ring FIFO round-trip paired with spsc_queue [thread::byte_ring]") {
   thread::byte_ring arena(64);
   thread::spsc_queue<payload_msg> q(8);
 
   // продюсер: три payload'а разного размера
-  const std::pair<uint32_t, uint8_t> items[] = { {10, 0xAA}, {20, 0xBB}, {8, 0xCC} };
+  const std::pair<uint32_t, uint8_t> items[] = {{10, 0xAA}, {20, 0xBB}, {8, 0xCC}};
   for (uint32_t i = 0; i < 3; ++i) {
     std::span<std::byte> region;
     const int64_t pos = arena.alloc(items[i].first, region);
     REQUIRE(pos >= 0);
     fill(region, items[i].second);
-    REQUIRE(q.try_push(payload_msg{ pos, items[i].first, i }));
+    REQUIRE(q.try_push(payload_msg{pos, items[i].first, i}));
   }
 
   // консьюмер: читает в порядке отправки, проверяет данные, реклеймит
@@ -324,8 +335,12 @@ TEST_CASE("byte_ring wraps with padding, positions stay monotonic [thread::byte_
   thread::byte_ring arena(16);
 
   std::span<std::byte> r;
-  const int64_t p0 = arena.alloc(6, r); REQUIRE(p0 == 0); fill(r, 1);
-  const int64_t p1 = arena.alloc(6, r); REQUIRE(p1 == 6); fill(r, 2);
+  const int64_t p0 = arena.alloc(6, r);
+  REQUIRE(p0 == 0);
+  fill(r, 1);
+  const int64_t p1 = arena.alloc(6, r);
+  REQUIRE(p1 == 6);
+  fill(r, 2);
 
   // хвоста (idx 12, осталось 4) не хватает под 6 contiguous, пока не реклеймнем
   std::span<std::byte> r2;
@@ -337,7 +352,7 @@ TEST_CASE("byte_ring wraps with padding, positions stay monotonic [thread::byte_
 
   // теперь alloc заворачивается: позиция монотонна (16 = 12 + паддинг 4), память с начала
   const int64_t p2 = arena.alloc(6, r2);
-  REQUIRE(p2 == 16);                       // монотонно, НЕ 0
+  REQUIRE(p2 == 16);                                      // монотонно, НЕ 0
   CHECK(arena.at(p2, 6).data() == arena.at(0, 6).data()); // физически с начала буфера (idx 0)
   fill(r2, 3);
   CHECK(all_equal(arena.at(p2, 6), 3));
@@ -349,31 +364,35 @@ TEST_CASE("byte_ring overflow returns -1, frees after release [thread::byte_ring
   thread::byte_ring arena(8);
 
   std::span<std::byte> r;
-  CHECK(arena.alloc(0, r) == -1);   // нулевой размер
-  CHECK(arena.alloc(9, r) == -1);   // больше ёмкости — никогда не влезет
+  CHECK(arena.alloc(0, r) == -1); // нулевой размер
+  CHECK(arena.alloc(9, r) == -1); // больше ёмкости — никогда не влезет
   CHECK(r.empty());
 
-  REQUIRE(arena.alloc(5, r) >= 0);  // заняли 5/8
-  CHECK(arena.alloc(4, r) == -1);   // не хватает (5 + паддинг/4)
+  REQUIRE(arena.alloc(5, r) >= 0); // заняли 5/8
+  CHECK(arena.alloc(4, r) == -1);  // не хватает (5 + паддинг/4)
 
-  arena.release(5);                 // освободили
-  CHECK(arena.alloc(4, r) >= 0);    // теперь влезает (с заворотом)
+  arena.release(5);              // освободили
+  CHECK(arena.alloc(4, r) >= 0); // теперь влезает (с заворотом)
 }
 
 // ── payload_channel (spsc_queue<Msg> + byte_ring) ──────────────────────────────
 
 namespace {
-struct pc_msg { uint64_t tag; int64_t pos; uint32_t size; }; // pos/size — контракт payload_channel
-}
+struct pc_msg {
+  uint64_t tag;
+  int64_t pos;
+  uint32_t size;
+}; // pos/size — контракт payload_channel
+} // namespace
 
 TEST_CASE("payload_channel writes payload via fill and drains in FIFO order [thread::payload_channel]") {
   thread::payload_channel<pc_msg> ch(8, 256);
 
-  const std::pair<uint64_t, uint8_t> items[] = { {100, 0x11}, {200, 0x22}, {300, 0x33} };
+  const std::pair<uint64_t, uint8_t> items[] = {{100, 0x11}, {200, 0x22}, {300, 0x33}};
   for (const auto& [tag, val] : items) {
     const bool ok = ch.write(16, [&](std::span<std::byte> region, int64_t pos) {
       std::memset(region.data(), val, region.size());
-      return pc_msg{ tag, pos, static_cast<uint32_t>(region.size()) };
+      return pc_msg{tag, pos, static_cast<uint32_t>(region.size())};
     });
     REQUIRE(ok);
   }
@@ -394,7 +413,8 @@ TEST_CASE("payload_channel write returns false on arena overflow [thread::payloa
 
   int written = 0;
   while (ch.write(16, [](std::span<std::byte> r, int64_t pos) {
-    return pc_msg{ 0, pos, static_cast<uint32_t>(r.size()) }; })) {
+    return pc_msg{0, pos, static_cast<uint32_t>(r.size())};
+  })) {
     ++written;
   }
   CHECK(written == 2); // 32 / 16
@@ -402,7 +422,8 @@ TEST_CASE("payload_channel write returns false on arena overflow [thread::payloa
   // после дренажа снова можно писать
   ch.drain([](const pc_msg&, std::span<const std::byte>) {});
   CHECK(ch.write(16, [](std::span<std::byte> r, int64_t pos) {
-    return pc_msg{ 0, pos, static_cast<uint32_t>(r.size()) }; }));
+    return pc_msg{0, pos, static_cast<uint32_t>(r.size())};
+  }));
 }
 
 // ── mailbox (latest-wins triple-buffer) ────────────────────────────────────────
@@ -414,14 +435,25 @@ TEST_CASE("mailbox delivers latest value and drops older, reuses slots [thread::
 
   mb.write_slot() = "first";
   mb.publish();
-  { const std::string* v = mb.consume(); REQUIRE(v != nullptr); CHECK(*v == "first"); }
+  {
+    const std::string* v = mb.consume();
+    REQUIRE(v != nullptr);
+    CHECK(*v == "first");
+  }
   CHECK(mb.consume() == nullptr); // с прошлого consume нового нет
 
   // три публикации без чтения — консьюмер получит ТОЛЬКО последнюю (drop-oldest)
-  mb.write_slot() = "a"; mb.publish();
-  mb.write_slot() = "b"; mb.publish();
-  mb.write_slot() = "c"; mb.publish();
-  { const std::string* v = mb.consume(); REQUIRE(v != nullptr); CHECK(*v == "c"); }
+  mb.write_slot() = "a";
+  mb.publish();
+  mb.write_slot() = "b";
+  mb.publish();
+  mb.write_slot() = "c";
+  mb.publish();
+  {
+    const std::string* v = mb.consume();
+    REQUIRE(v != nullptr);
+    CHECK(*v == "c");
+  }
   CHECK(mb.consume() == nullptr);
 }
 

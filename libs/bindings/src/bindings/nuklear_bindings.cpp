@@ -1,7 +1,6 @@
-#include "nuklear_bindings.h"
-
-#include "devils_engine/visage/header.h"
 #include "devils_engine/utils/core.h"
+#include "devils_engine/visage/header.h"
+#include "nuklear_bindings.h"
 
 // как сюда передать контекст?
 // по идее у нас для этого есть общий сол стейт
@@ -33,7 +32,7 @@ struct nk {
   // либо цвет задан как 255,255,255,255
   // либо как 1.0f, 1.0f, 1.0f, 1.0f
   // имеет смысл выбрать что то одно
-  static struct nk_color to_color(const sol::table &t) {
+  static struct nk_color to_color(const sol::table& t) {
     struct nk_color c = {};
     c.r = nk_byte(float(t.get_or(1, 0.0f)) * 255.0f);
     c.g = nk_byte(float(t.get_or(2, 0.0f)) * 255.0f);
@@ -42,7 +41,7 @@ struct nk {
     return c;
   }
 
-  static struct nk_colorf to_colorf(const sol::table &t) {
+  static struct nk_colorf to_colorf(const sol::table& t) {
     struct nk_colorf c = {};
     c.r = t.get_or(1, 0.0f);
     c.g = t.get_or(2, 0.0f);
@@ -51,7 +50,7 @@ struct nk {
     return c;
   }
 
-  static struct nk_rect to_rect(const sol::table &t) {
+  static struct nk_rect to_rect(const sol::table& t) {
     struct nk_rect c = {};
     c.x = t.get_or(1, 0.0f);
     c.y = t.get_or(2, 0.0f);
@@ -60,19 +59,19 @@ struct nk {
     return c;
   }
 
-  static struct nk_vec2 to_vec2(const sol::table &t) {
+  static struct nk_vec2 to_vec2(const sol::table& t) {
     struct nk_vec2 c = {};
     c.x = t.get_or(1, 0.0f);
     c.y = t.get_or(2, 0.0f);
     return c;
   }
 
-  static bool begin(const char* title, const sol::table &rect, const uint32_t flags) {
+  static bool begin(const char* title, const sol::table& rect, const uint32_t flags) {
     const auto r = to_rect(rect);
     return nk_begin(ctx_ptr, title, r, flags);
   }
 
-  static bool begin_titled(const char* name, const char* title, const sol::table &rect, const uint32_t flags) {
+  static bool begin_titled(const char* name, const char* title, const sol::table& rect, const uint32_t flags) {
     const auto r = to_rect(rect);
     return nk_begin_titled(ctx_ptr, name, title, r, flags);
   }
@@ -85,17 +84,17 @@ struct nk {
   // window
 
   static auto window_get_bounds() {
-    const auto &r = nk_window_get_bounds(ctx_ptr);
+    const auto& r = nk_window_get_bounds(ctx_ptr);
     return sol::as_table(std::initializer_list{r.x, r.y, r.w, r.h});
   }
 
   static auto window_get_position() {
-    const auto &p = nk_window_get_position(ctx_ptr);
+    const auto& p = nk_window_get_position(ctx_ptr);
     return sol::as_table(std::initializer_list{p.x, p.y});
   }
 
   static auto window_get_size() {
-    const auto &p = nk_window_get_size(ctx_ptr);
+    const auto& p = nk_window_get_size(ctx_ptr);
     return sol::as_table(std::initializer_list{p.x, p.y});
   }
 
@@ -110,22 +109,22 @@ struct nk {
   //nk_window_get_panel
 
   static auto window_get_content_region() {
-    const auto &r = nk_window_get_content_region(ctx_ptr);
+    const auto& r = nk_window_get_content_region(ctx_ptr);
     return sol::as_table(std::initializer_list{r.x, r.y, r.w, r.h});
   }
 
   static auto window_get_content_region_min() {
-    const auto &p = nk_window_get_content_region_min(ctx_ptr);
+    const auto& p = nk_window_get_content_region_min(ctx_ptr);
     return sol::as_table(std::initializer_list{p.x, p.y});
   }
 
   static auto window_get_content_region_max() {
-    const auto &p = nk_window_get_content_region_max(ctx_ptr);
+    const auto& p = nk_window_get_content_region_max(ctx_ptr);
     return sol::as_table(std::initializer_list{p.x, p.y});
   }
 
   static auto window_get_content_region_size() {
-    const auto &p = nk_window_get_content_region_size(ctx_ptr);
+    const auto& p = nk_window_get_content_region_size(ctx_ptr);
     return sol::as_table(std::initializer_list{p.x, p.y});
   }
 
@@ -169,17 +168,17 @@ struct nk {
     return nk_window_is_active(ctx_ptr, name);
   }
 
-  static void window_set_bounds(const char* name, const sol::table &rect) {
+  static void window_set_bounds(const char* name, const sol::table& rect) {
     const auto r = to_rect(rect);
     nk_window_set_bounds(ctx_ptr, name, r);
   }
 
-  static void window_set_position(const char* name, const sol::table &rect) {
+  static void window_set_position(const char* name, const sol::table& rect) {
     const auto r = to_vec2(rect);
     nk_window_set_position(ctx_ptr, name, r);
   }
 
-  static void window_set_size(const char* name, const sol::table &rect) {
+  static void window_set_size(const char* name, const sol::table& rect) {
     const auto r = to_vec2(rect);
     nk_window_set_size(ctx_ptr, name, r);
   }
@@ -192,27 +191,27 @@ struct nk {
     nk_window_set_scroll(ctx_ptr, x, y);
   }
 
-  static void window_close(const char *name) {
+  static void window_close(const char* name) {
     nk_window_close(ctx_ptr, name);
   }
 
-  static void window_collapse(const char *name, const int32_t state) {
+  static void window_collapse(const char* name, const int32_t state) {
     nk_window_collapse(ctx_ptr, name, nk_collapse_states(state));
   }
 
-  static void window_collapse_if(const char *name, const int32_t state, const bool cond) {
+  static void window_collapse_if(const char* name, const int32_t state, const bool cond) {
     nk_window_collapse_if(ctx_ptr, name, nk_collapse_states(state), cond);
   }
 
-  static void window_show(const char *name, const int32_t state, const bool) {
+  static void window_show(const char* name, const int32_t state, const bool) {
     nk_window_show(ctx_ptr, name, nk_show_states(state));
   }
 
-  static void window_show_if(const char *name, const int32_t state, const bool cond) {
+  static void window_show_if(const char* name, const int32_t state, const bool cond) {
     nk_window_show_if(ctx_ptr, name, nk_show_states(state), cond);
   }
 
-  static void rule_horizontal(const sol::table &color, const bool rounding) {
+  static void rule_horizontal(const sol::table& color, const bool rounding) {
     const auto c = to_color(color);
     nk_rule_horizontal(ctx_ptr, c, rounding);
   }
@@ -228,7 +227,7 @@ struct nk {
   }
 
   static auto layout_widget_bounds() {
-    const auto &r = nk_layout_widget_bounds(ctx_ptr);
+    const auto& r = nk_layout_widget_bounds(ctx_ptr);
     return sol::as_table(std::initializer_list{r.x, r.y, r.w, r.h});
   }
 
@@ -256,10 +255,10 @@ struct nk {
     nk_layout_row_end(ctx_ptr);
   }
 
-  static void layout_row(const int32_t fmt, const float height, const sol::table &ratios) {
+  static void layout_row(const int32_t fmt, const float height, const sol::table& ratios) {
     float ratios_buffer[64]{0.0f};
     int32_t counter = 0;
-    for (const auto &[key, value] : ratios) {
+    for (const auto& [key, value] : ratios) {
       if (key.is<int>() && value.is<float>() && key.as<int>() == DEVILS_ENGINE_TO_LUA_INDEX(counter) && counter < 64) {
         ratios_buffer[counter] = value.as<float>();
         counter += 1;
@@ -293,7 +292,7 @@ struct nk {
     nk_layout_space_begin(ctx_ptr, nk_layout_format(fmt), height, widget_count);
   }
 
-  static void layout_space_push(const sol::table &rect) {
+  static void layout_space_push(const sol::table& rect) {
     struct nk_rect r = {};
     r.x = rect.get_or(1, 0.0f);
     r.y = rect.get_or(2, 0.0f);
@@ -308,31 +307,31 @@ struct nk {
   }
 
   static auto layout_space_bounds() {
-    const auto &r = nk_layout_space_bounds(ctx_ptr);
+    const auto& r = nk_layout_space_bounds(ctx_ptr);
     return sol::as_table(std::initializer_list{r.x, r.y, r.w, r.h});
   }
 
-  static auto layout_space_to_screen(const sol::table &vec) {
+  static auto layout_space_to_screen(const sol::table& vec) {
     const auto v = to_vec2(vec);
-    const auto &p = nk_layout_space_to_screen(ctx_ptr, v);
+    const auto& p = nk_layout_space_to_screen(ctx_ptr, v);
     return sol::as_table(std::initializer_list{p.x, p.y});
   }
 
-  static auto layout_space_to_local(const sol::table &vec) {
+  static auto layout_space_to_local(const sol::table& vec) {
     const auto v = to_vec2(vec);
-    const auto &p = nk_layout_space_to_local(ctx_ptr, v);
+    const auto& p = nk_layout_space_to_local(ctx_ptr, v);
     return sol::as_table(std::initializer_list{p.x, p.y});
   }
 
-  static auto layout_space_rect_to_screen(const sol::table &rect) {
+  static auto layout_space_rect_to_screen(const sol::table& rect) {
     const auto r = to_rect(rect);
-    const auto &p = nk_layout_space_rect_to_screen(ctx_ptr, r);
+    const auto& p = nk_layout_space_rect_to_screen(ctx_ptr, r);
     return sol::as_table(std::initializer_list{p.x, p.y, p.w, p.h});
   }
 
-  static auto layout_space_rect_to_local(const sol::table &rect) {
+  static auto layout_space_rect_to_local(const sol::table& rect) {
     const auto r = to_rect(rect);
-    const auto &p = nk_layout_space_rect_to_local(ctx_ptr, r);
+    const auto& p = nk_layout_space_rect_to_local(ctx_ptr, r);
     return sol::as_table(std::initializer_list{p.x, p.y, p.w, p.h});
   }
 
@@ -354,26 +353,32 @@ struct nk {
     nk_group_end(ctx_ptr);
   }
 
-  static std::tuple<uint32_t*, uint32_t*> get_or_create_scroll(const char* id, const nk_scroll &scroll) {
+  static std::tuple<uint32_t*, uint32_t*> get_or_create_scroll(const char* id, const nk_scroll& scroll) {
     auto win = ctx_ptr->current;
     const int32_t id_len = nk_strlen(id);
     const nk_hash id_hash = nk_murmur_hash(id, id_len, NK_PANEL_GROUP);
     uint32_t* x_offset = nk_find_value_g(win, id_hash);
     uint32_t* y_offset = nullptr;
     if (!x_offset) {
-        x_offset = nk_add_value_g(ctx_ptr, win, id_hash, scroll.x);
-        y_offset = nk_add_value_g(ctx_ptr, win, id_hash+1, scroll.y);
-        if (x_offset == nullptr || y_offset == nullptr) utils::error{}("Could not create scroll memory by id '{}'", id);
-        if (x_offset == nullptr || y_offset == nullptr) return std::make_tuple(nullptr, nullptr);
-        *x_offset = scroll.x; // ???
-        *y_offset = scroll.y;
-    } else y_offset = nk_find_value_g(win, id_hash+1);
+      x_offset = nk_add_value_g(ctx_ptr, win, id_hash, scroll.x);
+      y_offset = nk_add_value_g(ctx_ptr, win, id_hash + 1, scroll.y);
+      if (x_offset == nullptr || y_offset == nullptr) {
+        utils::error{}("Could not create scroll memory by id '{}'", id);
+      }
+      if (x_offset == nullptr || y_offset == nullptr) {
+        return std::make_tuple(nullptr, nullptr);
+      }
+      *x_offset = scroll.x; // ???
+      *y_offset = scroll.y;
+    } else {
+      y_offset = nk_find_value_g(win, id_hash + 1);
+    }
 
     return std::make_tuple(x_offset, y_offset);
   }
 
   // эта функция нужна чтобы указать значения по умолчанию для полос прокрутки
-  static bool group_scrolled_begin(const char* title, const sol::table &t, const uint32_t flags) {
+  static bool group_scrolled_begin(const char* title, const sol::table& t, const uint32_t flags) {
     struct nk_scroll r = {};
     r.x = t.get_or(1, 0u);
     r.y = t.get_or(2, 0u);
@@ -386,12 +391,12 @@ struct nk {
   }
 
   static std::tuple<uint32_t, uint32_t> group_get_scroll(const char* title) {
-    uint32_t x = 0,y = 0;
+    uint32_t x = 0, y = 0;
     nk_group_get_scroll(ctx_ptr, title, &x, &y);
     return std::make_tuple(x, y);
   }
 
-  static void group_set_scroll(const char* id, const sol::table &t) {
+  static void group_set_scroll(const char* id, const sol::table& t) {
     struct nk_scroll r = {};
     r.x = t.get_or(1, 0u);
     r.y = t.get_or(2, 0u);
@@ -545,7 +550,7 @@ struct nk {
   //nk_widget_layout_states
   // widget
 
-  static sol::table widget_state(sol::this_state s, const sol::table &rect) {
+  static sol::table widget_state(sol::this_state s, const sol::table& rect) {
     sol::state_view lua(s);
     auto r = to_rect(rect);
     const auto ls = nk_widget(&r, ctx_ptr);
@@ -557,7 +562,7 @@ struct nk {
     return table;
   }
 
-  static sol::table widget_fitting_state(sol::this_state s, const sol::table &rect, const sol::table &vec) {
+  static sol::table widget_fitting_state(sol::this_state s, const sol::table& rect, const sol::table& vec) {
     sol::state_view lua(s);
     auto r = to_rect(rect);
     const auto v = to_vec2(vec);
@@ -622,7 +627,7 @@ struct nk {
 
   // цвет — sol::object (НЕ sol::optional): опциональный аргумент в средней позиции при nil из lua
   // не занимает слот стека -> flags читается неверно. См. sol-optional-middle-arg-gotcha.
-  static void text(const char* txt, const sol::object &color, const uint32_t flags) {
+  static void text(const char* txt, const sol::object& color, const uint32_t flags) {
     if (color.is<sol::table>()) {
       const auto c = to_color(color.as<sol::table>());
       nk_text_colored(ctx_ptr, txt, strlen(txt), flags, c);
@@ -631,7 +636,7 @@ struct nk {
     }
   }
 
-  static void text_wrap(const char* txt, const sol::optional<sol::table> &opt_color) {
+  static void text_wrap(const char* txt, const sol::optional<sol::table>& opt_color) {
     if (opt_color.has_value()) {
       auto t = opt_color.value();
       const auto c = to_color(t);
@@ -644,7 +649,7 @@ struct nk {
   // ВАЖНО: цвет — sol::object, а НЕ sol::optional<sol::table>. Опциональный аргумент в СРЕДНЕЙ
   // позиции при передаче nil из lua НЕ занимает слот стека -> следующий аргумент (flags) читается
   // неверно (=0), из-за чего nk_label с align 0 ничего не рисует. sol::object всегда занимает слот.
-  static void label(const char* txt, const sol::object &color, const uint32_t flags) {
+  static void label(const char* txt, const sol::object& color, const uint32_t flags) {
     if (color.is<sol::table>()) {
       const auto c = to_color(color.as<sol::table>());
       nk_label_colored(ctx_ptr, txt, flags, c);
@@ -653,7 +658,7 @@ struct nk {
     }
   }
 
-  static void label_wrap(const char* txt, const sol::optional<sol::table> &opt_color) {
+  static void label_wrap(const char* txt, const sol::optional<sol::table>& opt_color) {
     if (opt_color.has_value()) {
       auto t = opt_color.value();
       const auto c = to_color(t);
@@ -663,7 +668,7 @@ struct nk {
     }
   }
 
-  static void image(const struct nk_image* img, const sol::optional<sol::table> &opt_color) {
+  static void image(const struct nk_image* img, const sol::optional<sol::table>& opt_color) {
     if (opt_color.has_value()) {
       auto t = opt_color.value();
       const auto c = to_color(t);
@@ -700,7 +705,7 @@ struct nk {
     return ret;
   }
 
-  static bool button(sol::table, sol::object o, const std::string_view &txt, const uint32_t flags) {
+  static bool button(sol::table, sol::object o, const std::string_view& txt, const uint32_t flags) {
     bool ret = false;
     if (!o.valid()) {
       ret = nk_button_text(ctx_ptr, txt.data(), txt.size());
@@ -727,7 +732,7 @@ struct nk {
     return nk_button_label(ctx_ptr, txt);
   }*/
 
-  static bool button_color(const sol::table &t) {
+  static bool button_color(const sol::table& t) {
     const auto c = to_color(t);
     return nk_button_color(ctx_ptr, c);
   }
@@ -843,7 +848,7 @@ struct nk {
     return nk_select_symbol_text(ctx_ptr, nk_symbol_type(symb), txt, strlen(txt), align, value);
   }
 
-  static bool select2(const sol::object &o, const char* txt, const uint32_t align, const bool value) {
+  static bool select2(const sol::object& o, const char* txt, const uint32_t align, const bool value) {
     bool ret = false;
     if (o.valid()) {
       if (o.is<uint32_t>()) {
@@ -861,7 +866,7 @@ struct nk {
     return ret;
   }
 
-  static bool selectable(const sol::object &o, const char* txt, const uint32_t align, sol::table val) {
+  static bool selectable(const sol::object& o, const char* txt, const uint32_t align, sol::table val) {
     nk_bool value = val.get_or(1, false);
     bool ret = false;
     if (o.valid()) {
@@ -910,13 +915,13 @@ struct nk {
 
   static float knob_float(const float min, float val, const float max, const float step, const uint32_t zero_direction, const float dead_zone_degrees) {
     const bool ret = nk_knob_float(ctx_ptr, min, &val, max, step, nk_heading(zero_direction), dead_zone_degrees);
-    (void)ret; // че делать с этим?
+    static_cast<void>(ret); // че делать с этим?
     return val;
   }
 
   static int32_t knob_int(const int32_t min, int32_t val, const int32_t max, const int32_t step, const uint32_t zero_direction, const float dead_zone_degrees) {
     const bool ret = nk_knob_int(ctx_ptr, min, &val, max, step, nk_heading(zero_direction), dead_zone_degrees);
-    (void)ret; // че делать с этим?
+    static_cast<void>(ret); // че делать с этим?
     return val;
   }
 
@@ -996,14 +1001,23 @@ struct nk {
       f = &nk_filter_default;
     } else if (filter.is<std::string_view>()) {
       const auto name = filter.as<std::string_view>();
-           if (name == "default") f = &nk_filter_default;
-      else if (name == "ascii") f = &nk_filter_ascii;
-      else if (name == "float") f = &nk_filter_float;
-      else if (name == "decimal") f = &nk_filter_decimal;
-      else if (name == "hex") f = &nk_filter_hex;
-      else if (name == "oct") f = &nk_filter_oct;
-      else if (name == "binary") f = &nk_filter_binary;
-      else utils::error{}("Could not find filter by name '{}'", name);
+      if (name == "default") {
+        f = &nk_filter_default;
+      } else if (name == "ascii") {
+        f = &nk_filter_ascii;
+      } else if (name == "float") {
+        f = &nk_filter_float;
+      } else if (name == "decimal") {
+        f = &nk_filter_decimal;
+      } else if (name == "hex") {
+        f = &nk_filter_hex;
+      } else if (name == "oct") {
+        f = &nk_filter_oct;
+      } else if (name == "binary") {
+        f = &nk_filter_binary;
+      } else {
+        utils::error{}("Could not find filter by name '{}'", name);
+      }
     } else if (filter.is<sol::function>()) {
       const auto fil = filter.as<sol::function>();
       text_edit_filter = fil;
@@ -1025,21 +1039,32 @@ struct nk {
     //str.resize(std::max(str.size(), max));
     auto str = t.get_or(1, std::string_view());
     default_text_editor_buffer.resize(max, '\0');
-    if (!str.empty()) memcpy(default_text_editor_buffer.data(), str.data(), str.size());
+    if (!str.empty()) {
+      memcpy(default_text_editor_buffer.data(), str.data(), str.size());
+    }
 
     nk_plugin_filter f = nullptr;
     if (!filter.valid()) {
       f = &nk_filter_default;
     } else if (filter.is<std::string_view>()) {
       const auto name = filter.as<std::string_view>();
-           if (name == "default") f = &nk_filter_default;
-      else if (name == "ascii") f = &nk_filter_ascii;
-      else if (name == "float") f = &nk_filter_float;
-      else if (name == "decimal") f = &nk_filter_decimal;
-      else if (name == "hex") f = &nk_filter_hex;
-      else if (name == "oct") f = &nk_filter_oct;
-      else if (name == "binary") f = &nk_filter_binary;
-      else utils::error{}("Could not find filter by name '{}'", name);
+      if (name == "default") {
+        f = &nk_filter_default;
+      } else if (name == "ascii") {
+        f = &nk_filter_ascii;
+      } else if (name == "float") {
+        f = &nk_filter_float;
+      } else if (name == "decimal") {
+        f = &nk_filter_decimal;
+      } else if (name == "hex") {
+        f = &nk_filter_hex;
+      } else if (name == "oct") {
+        f = &nk_filter_oct;
+      } else if (name == "binary") {
+        f = &nk_filter_binary;
+      } else {
+        utils::error{}("Could not find filter by name '{}'", name);
+      }
     } else if (filter.is<sol::function>()) {
       const auto fil = filter.as<sol::function>();
       text_edit_filter = fil;
@@ -1134,7 +1159,7 @@ struct nk {
 
   // popup
 
-  static bool popup_begin(const uint32_t type, const char* title, const uint32_t flags, const sol::table &rect) {
+  static bool popup_begin(const uint32_t type, const char* title, const uint32_t flags, const sol::table& rect) {
     const auto r = to_rect(rect);
     return nk_popup_begin(ctx_ptr, nk_popup_type(type), title, flags, r);
   }
@@ -1148,7 +1173,7 @@ struct nk {
   }
 
   static std::tuple<uint32_t, uint32_t> popup_get_scroll() {
-    uint32_t x=0,y=0;
+    uint32_t x = 0, y = 0;
     nk_popup_get_scroll(ctx_ptr, &x, &y);
     return std::make_tuple(x, y);
   }
@@ -1175,7 +1200,7 @@ struct nk {
     *ptr = str;
   }
 
-  static int32_t combobox(const sol::object &o, const int32_t count, const int32_t selected, const int32_t item_size, const sol::table &vec) {
+  static int32_t combobox(const sol::object& o, const int32_t count, const int32_t selected, const int32_t item_size, const sol::table& vec) {
     int32_t ret = 0;
     const auto v = to_vec2(vec);
     if (o.is<sol::table>()) {
@@ -1195,7 +1220,7 @@ struct nk {
 
   // name — sol::object (НЕ sol::optional): опциональный аргумент НЕ в конце при nil из lua не
   // занимает слот стека -> следующие аргументы читаются неверно. См. sol-optional-middle-arg-gotcha.
-  static bool combo_begin(const sol::object &name, const sol::object &symbol_or_img, const sol::table &vec) {
+  static bool combo_begin(const sol::object& name, const sol::object& symbol_or_img, const sol::table& vec) {
     bool ret = false;
     const auto v = to_vec2(vec);
     const bool has_name = name.is<const char*>();
@@ -1242,7 +1267,7 @@ struct nk {
     return ret;
   }*/
 
-  static bool combo_item(const sol::object &symbol_or_img, const char* name, const uint32_t flags) {
+  static bool combo_item(const sol::object& symbol_or_img, const char* name, const uint32_t flags) {
     bool ret = false;
     if (symbol_or_img.valid()) {
       if (symbol_or_img.is<const struct nk_image*>()) {
@@ -1271,13 +1296,13 @@ struct nk {
 
   // contextual
 
-  static bool contextual_begin(const uint32_t flags, const sol::table &size, const sol::table &trigger_bounds) {
+  static bool contextual_begin(const uint32_t flags, const sol::table& size, const sol::table& trigger_bounds) {
     const auto v1 = to_vec2(size);
     const auto v2 = to_rect(trigger_bounds);
     return nk_contextual_begin(ctx_ptr, flags, v1, v2);
   }
 
-  static bool contextual_item(const sol::object &symbol_or_img, const char* name, const uint32_t aligment) {
+  static bool contextual_item(const sol::object& symbol_or_img, const char* name, const uint32_t aligment) {
     bool ret = false;
     if (symbol_or_img.valid()) {
       if (symbol_or_img.is<const struct nk_image*>()) {
@@ -1328,7 +1353,7 @@ struct nk {
     nk_menubar_end(ctx_ptr);
   }
 
-  static bool menu_begin_text(const char* name, const sol::object &symbol_or_img, const uint32_t align, const sol::table &vec) {
+  static bool menu_begin_text(const char* name, const sol::object& symbol_or_img, const uint32_t align, const sol::table& vec) {
     bool ret = false;
     const auto v1 = to_vec2(vec);
     if (symbol_or_img.valid()) {
@@ -1348,7 +1373,7 @@ struct nk {
     return ret;
   }
 
-  static bool menu_begin(const char* name, const sol::object &symbol_or_img, const sol::table &vec) {
+  static bool menu_begin(const char* name, const sol::object& symbol_or_img, const sol::table& vec) {
     bool ret = false;
     const auto v1 = to_vec2(vec);
     if (symbol_or_img.is<const struct nk_image*>()) {
@@ -1364,7 +1389,7 @@ struct nk {
     return ret;
   }
 
-  static bool menu_item(const char* name, const sol::object &symbol_or_img, const uint32_t align) {
+  static bool menu_item(const char* name, const sol::object& symbol_or_img, const uint32_t align) {
     bool ret = false;
     if (symbol_or_img.valid()) {
       if (symbol_or_img.is<const struct nk_image*>()) {
@@ -1802,8 +1827,8 @@ void nk_functions(sol::table t) {
     // __call метатаблицы передаёт сам объект как первый аргумент (self), поэтому nk::button
     // принимает ведущую таблицу и игнорирует её. Перегрузка разрешается по числу аргументов:
     // `nk.button("txt")` -> (self, txt); `nk.button(symbol_or_image, "txt", flags)` -> (self, obj, txt, flags).
-    using bf1_t = bool(*)(sol::table, sol::object);
-    using bf2_t = bool(*)(sol::table, sol::object, const std::string_view &, const uint32_t);
+    using bf1_t = bool (*)(sol::table, sol::object);
+    using bf2_t = bool (*)(sol::table, sol::object, const std::string_view&, const uint32_t);
     bf1_t f1 = &nk::button;
     bf2_t f2 = &nk::button;
     auto b = nk.create_named("button");
@@ -1878,5 +1903,5 @@ void nk_functions(sol::table t) {
 
   nk.set_function(sol::meta_function::new_index, sol::detail::fail_on_newindex);
 }
-}
-}
+} // namespace bindings
+} // namespace devils_engine

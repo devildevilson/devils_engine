@@ -1,15 +1,15 @@
 #ifndef TILE_FRONTIER_CORE_SIMULATION_H
 #define TILE_FRONTIER_CORE_SIMULATION_H
 
+#include <atomic>
 #include <cstddef>
 #include <memory>
-#include <atomic>
 #include <string>
 
 #include <devils_engine/demiurg/resource_system.h>
-#include <devils_engine/simul/systems.h>
 #include <devils_engine/simul/lifecycle.h>
 #include <devils_engine/simul/standard_sound_system.h>
+#include <devils_engine/simul/systems.h>
 
 namespace tile_frontier {
 namespace core {
@@ -39,6 +39,7 @@ public:
   void set_broker(struct broker* b) override;
   bool stop_predicate() const override;
   void update(const size_t time) override;
+
 private:
   friend struct runtime_traits;
   friend class devils_engine::simul::lifecycle_controller;
@@ -66,7 +67,7 @@ private:
   std::atomic_bool quit_requested{false};
 };
 
-}
-}
+} // namespace core
+} // namespace tile_frontier
 
 #endif

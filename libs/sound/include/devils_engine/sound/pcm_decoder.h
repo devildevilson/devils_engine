@@ -1,41 +1,42 @@
 #ifndef DEVILS_ENGINE_SOUND_PCM_DECODER_H
 #define DEVILS_ENGINE_SOUND_PCM_DECODER_H
 
-#include <vector>
+// PCM decoder and adapter for already-decoded sample buffers.
+
 #include <string_view>
+#include <vector>
 
 #include "common.h"
 #include "decoder.h"
 
 namespace devils_engine {
-  namespace sound {
-    class pcm_decoder : public decoder {
-    public:
-      pcm_decoder(
-        const void* memory,
-        const size_t memory_size,
-        const enum format format,
-        const uint16_t channels,
-        const uint32_t sample_rate,
-        const size_t frames_count
-      );
+namespace sound {
+class pcm_decoder : public decoder {
+public:
+  pcm_decoder(
+    const void* memory,
+    const size_t memory_size,
+    const enum format format,
+    const uint16_t channels,
+    const uint32_t sample_rate,
+    const size_t frames_count);
 
-      pcm_decoder(decoder* parent);
-      ~pcm_decoder() noexcept;
+  pcm_decoder(decoder* parent);
+  ~pcm_decoder() noexcept;
 
-      bool seek(const size_t seek_size) override;
-      size_t get_frames(void* memory, const size_t frames_count, const uint16_t channels_override = 0) override;
-      size_t get_frames(
-        const uint32_t al_buffer,
-        const size_t frames_count,
-        const uint16_t channels_override = 0,
-        const uint32_t sample_rate_override = 0
-      ) override;
-    private:
-      size_t current_index;
-      std::vector<uint8_t> buffer;
-    };
-  }
-}
+  bool seek(const size_t seek_size) override;
+  size_t get_frames(void* memory, const size_t frames_count, const uint16_t channels_override = 0) override;
+  size_t get_frames(
+    const uint32_t al_buffer,
+    const size_t frames_count,
+    const uint16_t channels_override = 0,
+    const uint32_t sample_rate_override = 0) override;
+
+private:
+  size_t current_index;
+  std::vector<uint8_t> buffer;
+};
+} // namespace sound
+} // namespace devils_engine
 
 #endif

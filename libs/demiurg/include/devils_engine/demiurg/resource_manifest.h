@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_DEMIURG_RESOURCE_MANIFEST_H
 #define DEVILS_ENGINE_DEMIURG_RESOURCE_MANIFEST_H
 
+// Converts module entries and multi-section TAVL files into resource candidates.
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -31,9 +33,8 @@ struct resource_candidate {
 bool append_tavl_list_candidates(
   std::vector<resource_candidate>& out,
   const resource_candidate& base,
-  std::string_view content
-);
-}
-}
+  std::string_view content);
+} // namespace demiurg
+} // namespace devils_engine
 
 #endif

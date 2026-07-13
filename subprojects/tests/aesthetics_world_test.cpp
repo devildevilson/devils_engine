@@ -1,8 +1,8 @@
-#include <doctest/doctest.h>
-
 #include <algorithm>
 #include <tuple>
 #include <vector>
+
+#include <doctest/doctest.h>
 
 #include "devils_engine/aesthetics/world.h"
 
@@ -34,7 +34,7 @@ std::vector<aesthetics::entityid_t> collect_ids(const View_T& view) {
   return ids;
 }
 
-}
+} // namespace
 
 TEST_CASE("world view iterates sparse storage without a separate dense entity list [aesthetics::world]") {
   aesthetics::world world;

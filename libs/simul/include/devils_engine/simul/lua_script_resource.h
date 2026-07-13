@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_SIMUL_LUA_SCRIPT_RESOURCE_H
 #define DEVILS_ENGINE_SIMUL_LUA_SCRIPT_RESOURCE_H
 
+// Demiurg resource owning Lua source text and its resolved module-relative identity.
+
 #include <string>
 
 #include <devils_engine/demiurg/resource_base.h>
@@ -23,7 +25,7 @@ public:
   void unload_warm(const utils::safe_handle_t& handle) override;
 };
 
-}
-}
+} // namespace simul
+} // namespace devils_engine
 
 #endif

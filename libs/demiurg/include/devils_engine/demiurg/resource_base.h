@@ -1,13 +1,14 @@
 #ifndef DEVILS_ENGINE_DEMIURG_RESOURCE_BASE_H
 #define DEVILS_ENGINE_DEMIURG_RESOURCE_BASE_H
 
+#include <atomic>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
-#include <bitset>
-#include <atomic>
+
 #include "devils_engine/utils/list.h"
 #include "devils_engine/utils/safe_handle.h"
 //#include <boost/sml.hpp>
@@ -22,9 +23,9 @@
 // парсинга читаем файл и создаём несколько суб-ресурсов вида level1/monsters/config:mon1,
 // level1/monsters/config:mon2 (см. config-file-convention: path:name).
 #define DEMIURG_STATES_LIST \
-  X(cold)                  \
-  X(warm)                  \
-  X(hot)                   \
+  X(cold)                   \
+  X(warm)                   \
+  X(hot)
 
 // по сути состояния у ресурса 3: ресурс на диске, ресурс в памяти, ресурс готов к использованию
 // для большинства ресурсов "ресурс в памяти" и "ресурс готов к использованию" это одно и тоже
@@ -41,168 +42,163 @@
 // сам по себе ресурс ну никак не может понять от чего он зависит - тут как будто нужна помощь со стороны
 // разработчика для каждого типа ресурса определить ресурсы зависимости
 // по идее сам ресурс должен хранить информацию о текущем состоянии
-#define DEMIURG_ACTIONS_LIST  \
-  X(load_cold)                \
-  X(load_warm)                \
-  X(unload_warm)              \
-  X(unload_hot)               \
+#define DEMIURG_ACTIONS_LIST \
+  X(load_cold)               \
+  X(load_warm)               \
+  X(unload_warm)             \
+  X(unload_hot)
 
 #define DEMIURG_RESOURCE_FLAGS_LIST \
   X(underlying_owner_of_raw_memory) \
   X(binary)                         \
   X(warm_and_hot_same)              \
   X(force_unload_warm)              \
-  X(hot_unload_to_cold)             \
+  X(hot_unload_to_cold)
 
 // для чего?
 
 namespace devils_engine {
 namespace demiurg {
-  class module_interface;
-  static constexpr uint32_t invalid_list_index = UINT32_MAX;
+class module_interface;
+static constexpr uint32_t invalid_list_index = UINT32_MAX;
 
-  namespace state {
-    enum values {
+namespace state {
+enum values {
 #define X(name) name,
-      DEMIURG_STATES_LIST
+  DEMIURG_STATES_LIST
 #undef X
 
-      count
-    };
-  }
+    count
+};
+} // namespace state
 
-  namespace resource_flags {
-    enum values {
+namespace resource_flags {
+enum values {
 #define X(name) name,
-      DEMIURG_RESOURCE_FLAGS_LIST
+  DEMIURG_RESOURCE_FLAGS_LIST
 #undef X
 
-      count
-    };
-  }
+    count
+};
+} // namespace resource_flags
 
-  namespace list_type {
-    enum values {
-      replacement,
-      supplementary,
-      exemplary,
-      count
-    };
-  }
+namespace list_type {
+enum values {
+  replacement,
+  supplementary,
+  exemplary,
+  count
+};
+}
 
-  // как бы мы хотели передать ресурс в другое место?
-  class resource_interface :
-    public utils::ring::list<resource_interface, list_type::replacement>,
-    public utils::ring::list<resource_interface, list_type::supplementary>,
-    public utils::ring::list<resource_interface, list_type::exemplary>
-  {
-  public:
-    std::string path;
-    std::string id_storage;
-    std::string ext_storage;
-    std::string list_name;
-    std::string list_section;
-    std::string_view id;
-    std::string_view ext;
-    std::string_view module_name;
-    std::string_view type;
-    // Два id разводят РАЗНЫЕ вопросы: type_id — точная идентичность C++-типа (ставит register_type,
-    // по нему работает типизированный доступ get<T>/filter<T>); loading_type_id — ключ диспетчеризации
-    // ЗАГРУЗЧИКА (может быть базой, напр. visage::font_resource грузится как painter::gpu_texture_resource —
-    // см. register_type<BaseT, T>). Раньше поле было одно и точный тип терялся при маскараде под базу.
-    size_t type_id;
-    size_t loading_type_id;
+// как бы мы хотели передать ресурс в другое место?
+class resource_interface : public utils::ring::list<resource_interface, list_type::replacement>,
+                           public utils::ring::list<resource_interface, list_type::supplementary>,
+                           public utils::ring::list<resource_interface, list_type::exemplary> {
+public:
+  std::string path;
+  std::string id_storage;
+  std::string ext_storage;
+  std::string list_name;
+  std::string list_section;
+  std::string_view id;
+  std::string_view ext;
+  std::string_view module_name;
+  std::string_view type;
+  // Два id разводят РАЗНЫЕ вопросы: type_id — точная идентичность C++-типа (ставит register_type,
+  // по нему работает типизированный доступ get<T>/filter<T>); loading_type_id — ключ диспетчеризации
+  // ЗАГРУЗЧИКА (может быть базой, напр. visage::font_resource грузится как painter::gpu_texture_resource —
+  // см. register_type<BaseT, T>). Раньше поле было одно и точный тип терялся при маскараде под базу.
+  size_t type_id;
+  size_t loading_type_id;
 
-    const module_interface* module;
+  const module_interface* module;
 
-    size_t raw_size;
-    uint32_t list_index;
-    uint32_t list_start_line;
-    size_t list_offset;
-    size_t list_size;
+  size_t raw_size;
+  uint32_t list_index;
+  uint32_t list_start_line;
+  size_t list_offset;
+  size_t list_size;
 
-    // Зависимости ресурса (напр. pipeline зависит от shader-модулей). Загрузчик доводит их до
-    // usable ПРЕЖДЕ чем продвигать этот ресурс вверх. Плоский список — ring-list (replacement/
-    // supplementary/exemplary) занят override-цепочками модов и под зависимости не годится.
-    // Предполагается DAG (циклы не поддерживаются). Заполняет тип/настройка ресурса.
-    std::vector<resource_interface*> dependencies;
+  // Зависимости ресурса (напр. pipeline зависит от shader-модулей). Загрузчик доводит их до
+  // usable ПРЕЖДЕ чем продвигать этот ресурс вверх. Плоский список — ring-list (replacement/
+  // supplementary/exemplary) занят override-цепочками модов и под зависимости не годится.
+  // Предполагается DAG (циклы не поддерживаются). Заполняет тип/настройка ресурса.
+  std::vector<resource_interface*> dependencies;
 
-    inline resource_interface() noexcept :
-      type_id(0),
-      loading_type_id(0),
-      module(nullptr),
-      raw_size(0),
-      list_index(invalid_list_index),
-      list_start_line(0),
-      list_offset(SIZE_MAX),
-      list_size(0),
-      _state(0)
-    {}
-    virtual ~resource_interface() noexcept = default;
+  resource_interface() noexcept;
+  virtual ~resource_interface() noexcept = default;
 
-    void set(std::string path, const std::string_view &module_name, const std::string_view &id, const std::string_view &ext);
-    bool is_list_entry() const noexcept { return list_index != invalid_list_index; }
-    // матч типизированного доступа: точный тип ИЛИ база загрузки (get<gpu_texture_resource>()
-    // достаёт и текстуру, и шрифт; get<font_resource>() — только шрифт)
-    bool is_type(const size_t tid) const noexcept { return type_id == tid || loading_type_id == tid; }
-    uint32_t source_line(uint32_t local_line) const noexcept;
+  void set(std::string path, const std::string_view& module_name, const std::string_view& id, const std::string_view& ext);
+  bool is_list_entry() const noexcept;
+  // матч типизированного доступа: точный тип ИЛИ база загрузки (get<gpu_texture_resource>()
+  // достаёт и текстуру, и шрифт; get<font_resource>() — только шрифт)
+  bool is_type(const size_t type_id) const noexcept;
+  uint32_t source_line(uint32_t local_line) const noexcept;
 
-    inline void add_dependency(resource_interface* dep) {
-      if (dep != nullptr && dep != this) dependencies.push_back(dep);
-    }
+  void add_dependency(resource_interface* dep);
 
-    resource_interface* replacement_next(const resource_interface* ptr) const;
-    resource_interface* supplementary_next(const resource_interface* ptr) const;
-    resource_interface* exemplary_next(const resource_interface* ptr) const;
+  resource_interface* replacement_next(const resource_interface* ptr) const;
+  resource_interface* supplementary_next(const resource_interface* ptr) const;
+  resource_interface* exemplary_next(const resource_interface* ptr) const;
 
-    void replacement_add(resource_interface* ptr);
-    void supplementary_add(resource_interface* ptr);
-    void exemplary_add(resource_interface* ptr);
+  void replacement_add(resource_interface* ptr);
+  void supplementary_add(resource_interface* ptr);
+  void exemplary_add(resource_interface* ptr);
 
-    void replacement_radd(resource_interface* ptr);
-    void supplementary_radd(resource_interface* ptr);
-    void exemplary_radd(resource_interface* ptr);
+  void replacement_radd(resource_interface* ptr);
+  void supplementary_radd(resource_interface* ptr);
+  void exemplary_radd(resource_interface* ptr);
 
-    void replacement_remove();
-    void supplementary_remove();
-    void exemplary_remove();
+  void replacement_remove();
+  void supplementary_remove();
+  void exemplary_remove();
 
-    template <typename T>
-    bool flag(const T &index) const {
-      return flags.test(static_cast<size_t>(index));
-    }
+  template <typename T>
+  bool flag(const T& index) const;
 
-    template <typename T>
-    void set_flag(const T &index, const bool val) {
-      flags.set(static_cast<size_t>(index), val);
-    }
+  template <typename T>
+  void set_flag(const T& index, const bool val);
 
-#define X(name) virtual void name(const utils::safe_handle_t &handle) = 0;
-    DEMIURG_ACTIONS_LIST
+#define X(name) virtual void name(const utils::safe_handle_t& handle) = 0;
+  DEMIURG_ACTIONS_LIST
 #undef X
 
-    // Обобщённый FSM (demiurg 1a срез 3): состояние ресурса — уровень 0..top_state().
-    // Базово это cold(0)/warm(1)/hot(2). Многошаговые ресурсы (напр. шрифт: ttf→MSDF→GPU,
-    // top_state=3) переопределяют методы ниже; 3-state ресурсы используют дефолты —
-    // load_step/unload_step раскладываются на именованные load_cold/load_warm/unload_*.
-    virtual int32_t top_state() const;                                          // верхний достижимый уровень (деф. hot)
-    virtual void load_step(int32_t from, const utils::safe_handle_t& handle);   // переход from -> from+1
-    virtual void unload_step(int32_t from, const utils::safe_handle_t& handle); // переход from -> from-1
-    virtual bool is_external_step(int32_t from) const;                          // переход from->from+1 внешний (поток рендера/GPU)?
-    int32_t final_state() const; // верхний ЭФФЕКТИВНЫЙ уровень (учитывает warm_and_hot_same)
+  // Обобщённый FSM (demiurg 1a срез 3): состояние ресурса — уровень 0..top_state().
+  // Базово это cold(0)/warm(1)/hot(2). Многошаговые ресурсы (напр. шрифт: ttf→MSDF→GPU,
+  // top_state=3) переопределяют методы ниже; 3-state ресурсы используют дефолты —
+  // load_step/unload_step раскладываются на именованные load_cold/load_warm/unload_*.
+  virtual int32_t top_state() const;                                          // верхний достижимый уровень (деф. hot)
+  virtual void load_step(int32_t from, const utils::safe_handle_t& handle);   // переход from -> from+1
+  virtual void unload_step(int32_t from, const utils::safe_handle_t& handle); // переход from -> from-1
+  virtual bool is_external_step(int32_t from) const;                          // переход from->from+1 внешний (поток рендера/GPU)?
+  int32_t final_state() const;                                                // верхний ЭФФЕКТИВНЫЙ уровень (учитывает warm_and_hot_same)
 
-    void load(const utils::safe_handle_t& handle);
-    void unload(const utils::safe_handle_t& handle);
-    void force_unload(const utils::safe_handle_t& handle);
+  void load(const utils::safe_handle_t& handle);
+  void unload(const utils::safe_handle_t& handle);
+  void force_unload(const utils::safe_handle_t& handle);
 
-    int32_t state() const;
-    bool usable() const;
-  protected:
-    // по любому будет много флагов у нас для файла, нужно битовое поле
-    std::bitset<64> flags;
-    std::atomic<int32_t> _state; // атомик? имеет смысл
-  };
+  int32_t state() const;
+  bool usable() const;
+
+protected:
+  // по любому будет много флагов у нас для файла, нужно битовое поле
+  std::bitset<64> flags;
+  std::atomic<int32_t> _state; // атомик? имеет смысл
+};
+
+// Template implementation
+
+template <typename T>
+bool resource_interface::flag(const T& index) const {
+  return flags.test(static_cast<size_t>(index));
 }
+
+template <typename T>
+void resource_interface::set_flag(const T& index, const bool val) {
+  flags.set(static_cast<size_t>(index), val);
 }
+} // namespace demiurg
+} // namespace devils_engine
 
 #endif

@@ -1,21 +1,20 @@
 #ifndef DEVILS_ENGINE_SIMUL_RENDER_RUNTIME_H
 #define DEVILS_ENGINE_SIMUL_RENDER_RUNTIME_H
 
+// Reusable renderer bootstrap and frame helpers for the standard render system.
+
 #include <algorithm>
 #include <cassert>
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
-#include <span>
 #include <memory>
+#include <span>
 #include <utility>
-
-#include <gtl/phmap.hpp>
 
 #include <devils_engine/catalogue/logging.h>
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/input/core.h>
-#include <devils_engine/painter/vulkan_header.h>
 #include <devils_engine/painter/assets_base.h>
 #include <devils_engine/painter/auxiliary.h>
 #include <devils_engine/painter/glsl_source_file.h>
@@ -24,11 +23,13 @@
 #include <devils_engine/painter/graphics_base.h>
 #include <devils_engine/painter/makers.h>
 #include <devils_engine/painter/shader_source_file.h>
-#include <devils_engine/painter/system_info.h>
 #include <devils_engine/painter/structures.h>
+#include <devils_engine/painter/system_info.h>
+#include <devils_engine/painter/vulkan_header.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/safe_handle.h>
 #include <devils_engine/utils/string_id.h>
+#include <gtl/phmap.hpp>
 
 #include "messages.h"
 #include "render_config.h"
@@ -70,34 +71,52 @@ struct standard_render_state {
   uint32_t pending_graph_height = 0;
 
   ~standard_render_state() noexcept {
-    if (device != VK_NULL_HANDLE) vk::Device(device).waitIdle();
+    if (device != VK_NULL_HANDLE) {
+      vk::Device(device).waitIdle();
+    }
     ctx = painter::graphics_ctx{};
     assets.reset();
     base.reset();
-    if (instance != VK_NULL_HANDLE && surface != VK_NULL_HANDLE) vk::Instance(instance).destroy(surface);
-    if (device != VK_NULL_HANDLE) vk::Device(device).destroy();
-    if (instance != VK_NULL_HANDLE && debug_messenger != VK_NULL_HANDLE) painter::destroy_debug_messenger(instance, debug_messenger);
-    if (instance != VK_NULL_HANDLE) vk::Instance(instance).destroy();
+    if (instance != VK_NULL_HANDLE && surface != VK_NULL_HANDLE) {
+      vk::Instance(instance).destroy(surface);
+    }
+    if (device != VK_NULL_HANDLE) {
+      vk::Device(device).destroy();
+    }
+    if (instance != VK_NULL_HANDLE && debug_messenger != VK_NULL_HANDLE) {
+      painter::destroy_debug_messenger(instance, debug_messenger);
+    }
+    if (instance != VK_NULL_HANDLE) {
+      vk::Instance(instance).destroy();
+    }
   }
 };
 
 template <typename State>
 void standard_render_drain(State& c) {
-  if (c.device == VK_NULL_HANDLE) return;
+  if (c.device == VK_NULL_HANDLE) {
+    return;
+  }
 
   painter::load_dispatcher3(c.device);
-  if (c.base) c.base->wait_all_fences();
-  if (c.graphics_queue != VK_NULL_HANDLE) vk::Queue(c.graphics_queue).waitIdle();
+  if (c.base) {
+    c.base->wait_all_fences();
+  }
+  if (c.graphics_queue != VK_NULL_HANDLE) {
+    vk::Queue(c.graphics_queue).waitIdle();
+  }
 }
 
 template <typename State>
 void standard_render_destroy_swapchain(State& c) {
-  if (!c.base || c.base->swapchain == VK_NULL_HANDLE) return;
+  if (!c.base || c.base->swapchain == VK_NULL_HANDLE) {
+    return;
+  }
 
   standard_render_drain(c);
 
   vk::Device dev(c.device);
-  if (c.base->swapchain_slot != painter::INVALID_RESOURCE_SLOT) {
+  if (c.base->swapchain_slot != painter::invalid_resource_slot) {
     auto& res = DS_ASSERT_ARRAY_GET(c.base->resources, c.base->swapchain_slot);
     for (size_t i = 0; i < c.base->swapchain_images.size(); ++i) {
       if (res.handles[i].view != VK_NULL_HANDLE) {
@@ -121,7 +140,9 @@ void standard_render_detach_window(State& c) {
     c.surface = VK_NULL_HANDLE;
   }
 
-  if (c.base) c.base->surface = VK_NULL_HANDLE;
+  if (c.base) {
+    c.base->surface = VK_NULL_HANDLE;
+  }
   c.surface_ready = false;
   c.graph_ready = false;
 }
@@ -166,7 +187,9 @@ void standard_render_shutdown(State& c) {
 
 template <typename State>
 void standard_render_create_instance(State& c) {
-  if (c.instance_ready) return;
+  if (c.instance_ready) {
+    return;
+  }
 
   painter::load_dispatcher1(!c.config.headless);
 
@@ -201,7 +224,9 @@ void standard_render_create_instance(State& c) {
 
 template <typename State>
 void standard_render_create_device(State& c, const command_window_recreation* window = nullptr) {
-  if (c.device_ready) return;
+  if (c.device_ready) {
+    return;
+  }
 
   bool cached = painter::system_info::try_load_cached_data(c.instance, &c.physical_device_data, nullptr);
   if (!cached) {
@@ -227,8 +252,11 @@ void standard_render_create_device(State& c, const command_window_recreation* wi
   dm.beginDevice(c.physical_device_data.handle);
   dm.createQueues(1);
   dm.features(vk::PhysicalDevice(c.physical_device_data.handle).getFeatures());
-  if (c.config.headless) dm.setExtensions({});
-  else dm.setExtensions(painter::default_device_extensions);
+  if (c.config.headless) {
+    dm.setExtensions({});
+  } else {
+    dm.setExtensions(painter::default_device_extensions);
+  }
 
   c.device = dm.create({}, c.config.app_name + ".device");
   painter::load_dispatcher3(c.device);
@@ -243,21 +271,24 @@ void standard_render_create_device(State& c, const command_window_recreation* wi
 
 template <typename State>
 void standard_render_create_base_resources(State& c) {
-  if (c.base_ready || !c.device_ready) return;
+  if (c.base_ready || !c.device_ready) {
+    return;
+  }
 
   c.base = std::make_unique<painter::graphics_base>(
     c.instance,
     c.device,
     c.physical_device_data.handle,
-    c.config.headless ? painter::presentation_engine_type::no_present : painter::presentation_engine_type::main
-  );
+    c.config.headless ? painter::presentation_engine_type::no_present : painter::presentation_engine_type::main);
 
   c.base->create_allocator();
   c.base->create_command_pool(c.physical_device_data.graphics_queue, c.graphics_queue);
   c.base->create_descriptor_pool();
   c.base->get_or_create_pipeline_cache(c.config.cache_registry, c.config.pipeline_cache_id);
 
-  if (c.config.engine_registry == nullptr) utils::error{}("render: engine registry is null (render-graph source)");
+  if (c.config.engine_registry == nullptr) {
+    utils::error{}("render: engine registry is null (render-graph source)");
+  }
   c.base->set_startup_graph(c.config.graph_name);
   if (!c.config.menu_graph_name.empty() && c.config.menu_graph_name != c.config.graph_name) {
     c.base->add_resident_graph(c.config.menu_graph_name);
@@ -265,7 +296,9 @@ void standard_render_create_base_resources(State& c) {
 
   auto render_cfg_data = painter::build_render_config(c.config.engine_registry, c.config.render_config_prefix);
   const auto res = c.base->commit_parsed_resources(render_cfg_data);
-  if (res != 0) utils::error{}("Could not commit render config from engine registry prefix '{}'", c.config.render_config_prefix);
+  if (res != 0) {
+    utils::error{}("Could not commit render config from engine registry prefix '{}'", c.config.render_config_prefix);
+  }
   c.base->set_shader_source(c.config.engine_registry, c.config.shader_config_prefix);
 
   c.assets = std::make_unique<painter::assets_base>(c.device, c.physical_device_data.handle);
@@ -280,24 +313,13 @@ void standard_render_create_base_resources(State& c) {
   c.base_ready = true;
 }
 
-inline void standard_render_set_shader_sources_loaded(const demiurg::resource_system* reg, const bool load) {
-  if (reg == nullptr) return;
-  std::vector<painter::glsl_source_file*> glsl;
-  reg->find<painter::glsl_source_file>("shaders", glsl);
-  std::vector<painter::shader_source_file*> spv;
-  reg->find<painter::shader_source_file>("shaders/spv", spv);
-  const auto apply = [load](demiurg::resource_interface* r) {
-    if (load) r->load(utils::safe_handle_t{});
-    else r->force_unload(utils::safe_handle_t{});
-  };
-  for (auto* r : glsl) apply(r);
-  for (auto* r : spv) apply(r);
-  DE_LOG(catalogue::log_domain::render, flow, "render: shader sources {} ({} glsl + {} spv)", load ? "loaded" : "unloaded", glsl.size(), spv.size());
-}
+void standard_render_set_shader_sources_loaded(const demiurg::resource_system* reg, bool load);
 
 template <typename State>
 void standard_render_request_shader_prepare(State& c) {
-  if (c.shader_prepare_requested || c.shaders_prepared || c.shader_prepare_failed) return;
+  if (c.shader_prepare_requested || c.shaders_prepared || c.shader_prepare_failed) {
+    return;
+  }
 
   if (c.br == nullptr) {
     DE_LOG(catalogue::log_domain::render, flow, "render: shader prepare waits for broker");
@@ -315,15 +337,25 @@ void standard_render_request_shader_prepare(State& c) {
 template <typename State>
 void standard_render_bind_texture_slot(State& c, const uint32_t slot) {
   const uint32_t di = c.base->find_descriptor(c.config.texture_descriptor_name);
-  if (di == painter::INVALID_RESOURCE_SLOT) return;
+  if (di == painter::invalid_resource_slot) {
+    return;
+  }
 
   auto& d = c.base->descriptors[di];
-  if (d.texture_count == 0 || slot >= d.texture_count) return;
-  if (slot >= c.assets->texture_slots.size()) return;
+  if (d.texture_count == 0 || slot >= d.texture_count) {
+    return;
+  }
+  if (slot >= c.assets->texture_slots.size()) {
+    return;
+  }
 
   vk::ImageView v(c.assets->texture_slots[slot].view);
-  if (!v) v = vk::ImageView(c.assets->default_texture_view());
-  if (!v) return;
+  if (!v) {
+    v = vk::ImageView(c.assets->default_texture_view());
+  }
+  if (!v) {
+    return;
+  }
 
   standard_render_drain(c);
 
@@ -332,7 +364,9 @@ void standard_render_bind_texture_slot(State& c, const uint32_t slot) {
 
   std::vector<vk::WriteDescriptorSet> writes;
   for (const auto set : d.sets) {
-    if (set == VK_NULL_HANDLE) continue;
+    if (set == VK_NULL_HANDLE) {
+      continue;
+    }
     vk::WriteDescriptorSet w;
     w.dstSet = set;
     w.dstBinding = binding;
@@ -349,13 +383,15 @@ void standard_render_bind_texture_slot(State& c, const uint32_t slot) {
 template <typename State>
 void standard_render_bind_textures(State& c) {
   const uint32_t di = c.base->find_descriptor(c.config.texture_descriptor_name);
-  if (di == painter::INVALID_RESOURCE_SLOT) {
+  if (di == painter::invalid_resource_slot) {
     utils::warn("render: descriptor '{}' not found", c.config.texture_descriptor_name);
     return;
   }
 
   auto& d = c.base->descriptors[di];
-  if (d.texture_count == 0) return;
+  if (d.texture_count == 0) {
+    return;
+  }
 
   const vk::ImageView fallback(c.assets->default_texture_view());
   if (!fallback) {
@@ -370,13 +406,17 @@ void standard_render_bind_textures(State& c) {
   std::vector<vk::DescriptorImageInfo> infos(n);
   for (uint32_t i = 0; i < n; ++i) {
     vk::ImageView v = (i < c.assets->texture_slots.size()) ? vk::ImageView(c.assets->texture_slots[i].view) : vk::ImageView{};
-    if (!v) v = fallback;
+    if (!v) {
+      v = fallback;
+    }
     infos[i] = vk::DescriptorImageInfo(vk::Sampler{}, v, vk::ImageLayout::eShaderReadOnlyOptimal);
   }
 
   std::vector<vk::WriteDescriptorSet> writes;
   for (const auto set : d.sets) {
-    if (set == VK_NULL_HANDLE) continue;
+    if (set == VK_NULL_HANDLE) {
+      continue;
+    }
     vk::WriteDescriptorSet w;
     w.dstSet = set;
     w.dstBinding = binding;
@@ -393,8 +433,12 @@ void standard_render_bind_textures(State& c) {
 
 template <typename State, typename OnGraphReady>
 void standard_render_try_create_graph(State& c, OnGraphReady&& on_graph_ready) {
-  if (c.graph_ready || !c.base_ready || c.shader_prepare_failed) return;
-  if (!c.config.headless && !c.surface_ready) return;
+  if (c.graph_ready || !c.base_ready || c.shader_prepare_failed) {
+    return;
+  }
+  if (!c.config.headless && !c.surface_ready) {
+    return;
+  }
   if (!c.shaders_prepared) {
     standard_render_request_shader_prepare(c);
     return;
@@ -405,7 +449,9 @@ void standard_render_try_create_graph(State& c, OnGraphReady&& on_graph_ready) {
   }
 
   const uint32_t graph_index = c.base->find_render_graph(c.config.graph_name);
-  if (graph_index == painter::INVALID_RESOURCE_SLOT) utils::error{}("Could not find render graph '{}'", c.config.graph_name);
+  if (graph_index == painter::invalid_resource_slot) {
+    utils::error{}("Could not find render graph '{}'", c.config.graph_name);
+  }
 
   c.base->populate_constant_default_values();
   c.base->change_render_graph(graph_index);
@@ -420,8 +466,12 @@ void standard_render_try_create_graph(State& c, OnGraphReady&& on_graph_ready) {
 
 template <typename State, typename OnDetach, typename OnGraphReady>
 void standard_render_attach_window(State& c, const command_window_recreation& cmd, OnDetach&& on_detach, OnGraphReady&& on_graph_ready) {
-  if (c.config.headless) return;
-  if (!c.instance_ready) standard_render_create_instance(c);
+  if (c.config.headless) {
+    return;
+  }
+  if (!c.instance_ready) {
+    standard_render_create_instance(c);
+  }
 
   if (c.surface != VK_NULL_HANDLE) {
     standard_render_detach_window(c);
@@ -445,8 +495,12 @@ void standard_render_attach_window(State& c, const command_window_recreation& cm
 
 template <typename State>
 void standard_render_resize_swapchain(State& c, const uint32_t w, const uint32_t h) {
-  if (c.config.headless || !c.base || !c.graph_ready || !c.surface_ready) return;
-  if (w == 0 || h == 0) return;
+  if (c.config.headless || !c.base || !c.graph_ready || !c.surface_ready) {
+    return;
+  }
+  if (w == 0 || h == 0) {
+    return;
+  }
   c.base->wait_all_fences();
   c.pending_graph_width = w;
   c.pending_graph_height = h;
@@ -488,19 +542,23 @@ void standard_render_write_buffer_bytes(State& c, const uint64_t name_hash, cons
 
 template <typename State, typename Broker>
 void standard_render_drain_write_buffer(State& c, Broker& br) {
-  if (!c.graph_ready) return;
-  br.write_buffer.drain([&c] (const wb_msg& m, const std::span<const std::byte> payload) {
+  if (!c.graph_ready) {
+    return;
+  }
+  br.write_buffer.drain([&c](const wb_msg& m, const std::span<const std::byte> payload) {
     standard_render_write_buffer_bytes(c, m.name_hash, payload);
   });
 }
 
 template <typename State, typename Broker>
 void standard_render_drain_graph_switch(State& c, Broker& br) {
-  if (!c.graph_ready || !c.base) return;
+  if (!c.graph_ready || !c.base) {
+    return;
+  }
 
   if (const command_render_set_graph* cmd = br.set_active_graph.consume()) {
     const uint32_t idx = c.base->find_render_graph(cmd->name);
-    if (idx == painter::INVALID_RESOURCE_SLOT) {
+    if (idx == painter::invalid_resource_slot) {
       utils::warn("render: set_active_graph — граф '{}' не найден", cmd->name);
     } else if (idx != c.base->current_render_graph_index) {
       c.base->change_render_graph(idx);
@@ -511,12 +569,14 @@ void standard_render_drain_graph_switch(State& c, Broker& br) {
 
 template <typename State, typename Broker>
 void standard_render_drain_update_constants(State& c, Broker& br) {
-  if (!c.base_ready || !c.base) return;
+  if (!c.base_ready || !c.base) {
+    return;
+  }
 
   command_render_update_constant cmd;
   while (br.update_constant.try_pop(cmd)) {
     const uint32_t idx = c.base->find_constant(cmd.name);
-    if (idx == painter::INVALID_RESOURCE_SLOT) {
+    if (idx == painter::invalid_resource_slot) {
       utils::warn("render: update_constant — константа '{}' не найдена", cmd.name);
       continue;
     }
@@ -527,7 +587,9 @@ void standard_render_drain_update_constants(State& c, Broker& br) {
 
 template <typename State, typename Broker>
 void standard_render_drain_gpu_transitions(State& c, Broker& br) {
-  if (!c.base_ready) return;
+  if (!c.base_ready) {
+    return;
+  }
 
   command_gpu_transition cmd{};
   while (br.gpu_transition.try_pop(cmd)) {
@@ -557,8 +619,7 @@ void standard_render_drain_commands(
   State& c,
   Broker& br,
   AttachWindow&& attach_window,
-  TryCreateGraph&& try_create_graph
-) {
+  TryCreateGraph&& try_create_graph) {
   if (const command_window_recreation* cmd = br.window_recreation.consume()) {
     attach_window(*cmd);
   }
@@ -585,7 +646,7 @@ void standard_render_drain_commands(
   standard_render_drain_write_buffer(c, br);
 }
 
-}
-}
+} // namespace simul
+} // namespace devils_engine
 
 #endif

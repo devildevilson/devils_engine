@@ -1,10 +1,10 @@
 #ifndef DEVILS_ENGINE_PAINTER_SHADER_CRAFTER_H
 #define DEVILS_ENGINE_PAINTER_SHADER_CRAFTER_H
 
-#include <cstdint>
 #include <cstddef>
-#include <vector>
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace devils_engine {
 namespace demiurg {
@@ -25,10 +25,11 @@ public:
   void set_optimization(const bool opt);
   void set_shader_type(const uint32_t type);
   void set_shader_entry_point(std::string entry_point);
-  std::vector<uint32_t> compile(const std::string &source_name, const std::string &source);
+  std::vector<uint32_t> compile(const std::string& source_name, const std::string& source);
   // было бы неплохо схранить статус ошибки где нибудь
   uint32_t err_type() const;
-  const std::string & err_msg() const;
+  const std::string& err_msg() const;
+
 private:
   const demiurg::resource_system* _sys;
   bool _opt;
@@ -38,7 +39,7 @@ private:
   std::vector<std::pair<std::string, std::string>> _definitions;
   std::string _err;
 };
-}
-}
+} // namespace painter
+} // namespace devils_engine
 
 #endif

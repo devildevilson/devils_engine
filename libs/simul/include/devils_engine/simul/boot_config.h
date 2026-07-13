@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_SIMUL_BOOT_CONFIG_H
 #define DEVILS_ENGINE_SIMUL_BOOT_CONFIG_H
 
+// Engine bootstrap configuration independent of any project's settings schema.
+
 #include <cstdint>
 #include <string>
 
@@ -29,7 +31,7 @@ struct engine_boot_config {
   uint32_t thread_start_gap_divisor = 4;
 };
 
-}
-}
+} // namespace simul
+} // namespace devils_engine
 
 #endif

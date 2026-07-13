@@ -1,13 +1,13 @@
 #ifndef DEVILS_ENGINE_PAINTER_AUXILIARY_H
 #define DEVILS_ENGINE_PAINTER_AUXILIARY_H
 
-#include <cstdint>
 #include <cstddef>
-#include <vector>
-#include <string_view>
+#include <cstdint>
 #include <functional>
-#include <tuple>
 #include <string>
+#include <string_view>
+#include <tuple>
+#include <vector>
 //#include "common.h"
 #include "vulkan_minimal.h"
 
@@ -18,11 +18,11 @@ namespace painter {
 
 struct cached_system_data;
 
-const std::vector<const char*> default_validation_layers = { "VK_LAYER_KHRONOS_validation" };
-const std::vector<const char*> default_device_extensions = { "VK_KHR_swapchain" };
+const std::vector<const char*> default_validation_layers = {"VK_LAYER_KHRONOS_validation"};
+const std::vector<const char*> default_device_extensions = {"VK_KHR_swapchain"};
 
-bool check_validation_layer_support(const std::vector<const char *> &layers);
-std::vector<const char *> get_required_extensions(bool require_surface = true);
+bool check_validation_layer_support(const std::vector<const char*>& layers);
+std::vector<const char*> get_required_extensions(bool require_surface = true);
 
 void load_dispatcher1();
 void load_dispatcher1(bool require_glfw_surface);
@@ -202,7 +202,7 @@ uint32_t get_plane_index(uint32_t aspect);
 uint32_t find_multiplane_compatible_format(uint32_t fmt, uint32_t plane_aspect);
 std::tuple<uint32_t, uint32_t> find_multiplane_extent_divisors(uint32_t mp_fmt, uint32_t plane_aspect);
 
-}
-}
+} // namespace painter
+} // namespace devils_engine
 
 #endif

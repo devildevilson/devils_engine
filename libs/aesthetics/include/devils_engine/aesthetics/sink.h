@@ -3,12 +3,12 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <vector>
 #include <span>
 #include <string>
+#include <vector>
 
 #include "devils_engine/utils/compression.h" // compression_level
-#include "serialization.h"                    // world, writer/reader, dump_world/load_world
+#include "serialization.h"                   // world, writer/reader, dump_world/load_world
 
 // Sink = ВЕРХНИЙ слой сериализации: тупое ядро (serialize<T>) пишет агрегаты в writer-буфер,
 // обёртки-дамперы (dump_world + сторонние структуры) складывают свои данные в ОДИН payload,
@@ -31,7 +31,7 @@ namespace devils_engine {
 namespace aesthetics {
 namespace serial {
 
-constexpr uint32_t container_magic   = UINT32_C(0xDE5AC001); // 'DE' snapshot container v01
+constexpr uint32_t container_magic = UINT32_C(0xDE5AC001); // 'DE' snapshot container v01
 constexpr uint16_t container_version = 1;
 
 struct sink_policy {
@@ -40,8 +40,8 @@ struct sink_policy {
 };
 // на замерах zstd: level>1 почти не улучшает ratio, а best(19) даёт +~20% ценой ~x200 времени
 // (100k: fast ~14мс vs best ~3.2с). Поэтому дефолты умеренные; best — осознанный knob для архива/async.
-inline constexpr sink_policy disk_policy{ utils::compression_level::normal, true };    // zstd 3 + скриншот
-inline constexpr sink_policy network_policy{ utils::compression_level::fast, false };  // zstd 1
+inline constexpr sink_policy disk_policy{utils::compression_level::normal, true};   // zstd 3 + скриншот
+inline constexpr sink_policy network_policy{utils::compression_level::fast, false}; // zstd 1
 
 // --- packet-обёртка (работает над УЖЕ собранным payload, не знает про world) ------
 // seal: сырой payload -> сжатый контейнер с checksum (+ опц. скриншот). screenshot — уже готовые

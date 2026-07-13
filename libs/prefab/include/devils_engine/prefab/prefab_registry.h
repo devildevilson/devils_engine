@@ -9,14 +9,13 @@
 #include <unordered_map>
 #include <vector>
 
-#include <tavl/parser.h>
-#include <tavl/deserialize.h>
-
-#include <devils_engine/aesthetics/world.h>
+#include <devils_engine/act/registry.h> // act::registry (резолв callback-имён)
 #include <devils_engine/aesthetics/common.h>
-#include <devils_engine/act/registry.h>     // act::registry (резолв callback-имён)
-#include <devils_engine/utils/core.h>       // utils::warn
-#include <devils_engine/utils/string_id.h>  // utils::string_hash / utils::id
+#include <devils_engine/aesthetics/world.h>
+#include <devils_engine/utils/core.h>      // utils::warn
+#include <devils_engine/utils/string_id.h> // utils::string_hash / utils::id
+#include <tavl/deserialize.h>
+#include <tavl/parser.h>
 
 // prefab_registry — движковый механизм «рецепта сборки энтити из компонентов» (шаг 6). САМ механизм в
 // devils_engine; КОНКРЕТНЫЕ типы компонентов регистрирует внешний проект. Формы задания в конфиге:
@@ -41,7 +40,8 @@ namespace aes = aesthetics;
 // и параметризует prefab_registry<SpawnArgs>; on_construct получает его → spawn_at в точке.
 struct no_spawn_args {};
 
-enum class component_flag : uint32_t { none = 0, required = 1 };
+enum class component_flag : uint32_t { none = 0,
+                                       required = 1 };
 inline component_flag operator|(component_flag a, component_flag b) noexcept {
   return component_flag(uint32_t(a) | uint32_t(b));
 }
@@ -58,8 +58,11 @@ struct prefab_load_context {
 namespace detail {
 // Обёртка «одно поле value» — чтобы список парсился как нормальная строка `value = [...]` (tavl на
 // верхнем уровне ждёт `поле = значение`, а не голый блок/массив).
-template <typename T> struct value_field { T value; };
-}
+template <typename T>
+struct value_field {
+  T value;
+};
+} // namespace detail
 
 template <typename SpawnArgs = no_spawn_args>
 class prefab_registry {
@@ -77,11 +80,19 @@ public:
       C c{};
       for (auto text : chain) {
         // снимаем внешние { } → верхнеуровневые поля `hp = 10, atk = 3` (паттерн deserialize_all).
-        if (text.size() >= 2 && text.front() == '{' && text.back() == '}') text = text.substr(1, text.size() - 2);
-        tavl::parser sp; sp.add_default_operator(); sp.flush(text); sp.finish();
-        tavl::ct_context ctx; tavl::deserialize(sp, ctx, c); // слой поверх — перекрывает заданные поля
+        if (text.size() >= 2 && text.front() == '{' && text.back() == '}') {
+          text = text.substr(1, text.size() - 2);
+        }
+        tavl::parser sp;
+        sp.add_default_operator();
+        sp.flush(text);
+        sp.finish();
+        tavl::ct_context ctx;
+        tavl::deserialize(sp, ctx, c); // слой поверх — перекрывает заданные поля
       }
-      return [c](const aes::entityid_t id, aes::world& w) { w.create<C>(id, c); };
+      return [c](const aes::entityid_t id, aes::world& w) {
+        w.create<C>(id, c);
+      };
     });
   }
 
@@ -91,10 +102,16 @@ public:
     add_spec(std::move(name), flags, [](const std::vector<std::string_view>& chain, const prefab_load_context&) -> applier {
       detail::value_field<std::vector<Item>> wrap{};
       const std::string doc = "value = " + std::string(chain.back());
-      tavl::parser sp; sp.add_default_operator(); sp.flush(doc); sp.finish();
-      tavl::ct_context ctx; tavl::deserialize(sp, ctx, wrap);
+      tavl::parser sp;
+      sp.add_default_operator();
+      sp.flush(doc);
+      sp.finish();
+      tavl::ct_context ctx;
+      tavl::deserialize(sp, ctx, wrap);
       auto items = std::move(wrap.value);
-      return [items](const aes::entityid_t id, aes::world& w) { w.create<C>(id, C{items}); };
+      return [items](const aes::entityid_t id, aes::world& w) {
+        w.create<C>(id, C{items});
+      };
     });
   }
 
@@ -107,7 +124,9 @@ public:
       if (lc.functions != nullptr && !lc.functions->has(fid)) {
         utils::warn("prefab callback '{}': функция не найдена в реестре", fn_name);
       }
-      return [fid](const aes::entityid_t id, aes::world& w) { w.create<C>(id, C{ fid }); };
+      return [fid](const aes::entityid_t id, aes::world& w) {
+        w.create<C>(id, C{fid});
+      };
     });
   }
 
@@ -117,10 +136,12 @@ public:
   void reference(std::string name, std::function<C(std::string_view, const prefab_load_context&)> resolve,
                  const component_flag flags = component_flag::none) {
     add_spec(std::move(name), flags,
-      [resolve = std::move(resolve)](const std::vector<std::string_view>& chain, const prefab_load_context& lc) -> applier {
-        C c = resolve(chain.back(), lc);
-        return [c](const aes::entityid_t id, aes::world& w) { w.create<C>(id, c); };
-      });
+             [resolve = std::move(resolve)](const std::vector<std::string_view>& chain, const prefab_load_context& lc) -> applier {
+               C c = resolve(chain.back(), lc);
+               return [c](const aes::entityid_t id, aes::world& w) {
+                 w.create<C>(id, c);
+               };
+             });
   }
 
   // custom: escape-hatch для проектных компонентов, которые движок описать не может (инлайн-ds:
@@ -131,11 +152,17 @@ public:
   }
 
   // Глобальный construct-хук: DERIVED-компоненты для ВСЕХ префабов (напр. общий transform из args).
-  void on_construct(construct_fn fn) { construct_ = std::move(fn); }
+  void on_construct(construct_fn fn) {
+    construct_ = std::move(fn);
+  }
   // Per-prefab construct-хук: DERIVED только для конкретного префаба (напр. actor лепит seed-производные
   // компоненты иначе, чем food). Запускается ПОСЛЕ глобального. Ключ = имя префаба (как в spawn/add_prefab).
-  void on_construct(std::string name, construct_fn fn) { named_construct_.insert_or_assign(std::move(name), std::move(fn)); }
-  void on_destruct(std::function<void(aes::entityid_t, aes::world&)> fn) { destruct_ = std::move(fn); }
+  void on_construct(std::string name, construct_fn fn) {
+    named_construct_.insert_or_assign(std::move(name), std::move(fn));
+  }
+  void on_destruct(std::function<void(aes::entityid_t, aes::world&)> fn) {
+    destruct_ = std::move(fn);
+  }
 
   // Разобрать текст префаба (один документ). Драйвит tavl-парсер построчно: `base` или компонент;
   // сырое ЗНАЧЕНИЕ компонента копируется (для field-level слоёв на finalize). Само построение —
@@ -151,17 +178,27 @@ public:
     lp.ctx = lc;
     for (;;) {
       const auto e = p.peek();
-      if (e.type == ev_t::eof || e.type == ev_t::not_enought_data) { p.poll_event(); break; }
-      if (e.type != ev_t::got_token && e.type != ev_t::got_row_identifier) { p.poll_event(); continue; }
+      if (e.type == ev_t::eof || e.type == ev_t::not_enought_data) {
+        p.poll_event();
+        break;
+      }
+      if (e.type != ev_t::got_token && e.type != ev_t::got_row_identifier) {
+        p.poll_event();
+        continue;
+      }
 
       const auto [kev, kerr] = p.poll_event();
       const std::string key = p.to_string(kev.token);
       p.poll_event(); // '=' (op)
       const std::string_view raw = capture_value(p, text);
-      if (key == "base") lp.base = std::string(raw);
-      else if (key == "name") { /* имя list-секции демиурга (//--- / path:name) — не компонент */ }
-      else if (specs_.contains(key)) lp.raw.emplace(key, std::string(raw));
-      else utils::warn("prefab '{}': неизвестный компонент '{}', пропущен", name, key);
+      if (key == "base") {
+        lp.base = std::string(raw);
+      } else if (key == "name") { /* имя list-секции демиурга (//--- / path:name) — не компонент */
+      } else if (specs_.contains(key)) {
+        lp.raw.emplace(key, std::string(raw));
+      } else {
+        utils::warn("prefab '{}': неизвестный компонент '{}', пропущен", name, key);
+      }
     }
     prefabs_.insert_or_assign(std::move(name), std::move(lp));
     return true;
@@ -172,21 +209,34 @@ public:
   aes::entityid_t spawn(const std::string& name, aes::world& w, const SpawnArgs& args = SpawnArgs{}) {
     const auto id = w.gen_entityid();
     if (auto* lp = build(name)) {
-      for (const auto& ap : lp->appliers) ap(id, w);
+      for (const auto& ap : lp->appliers) {
+        ap(id, w);
+      }
     }
-    if (construct_) construct_(id, w, args);
-    if (const auto it = named_construct_.find(name); it != named_construct_.end()) it->second(id, w, args);
+    if (construct_) {
+      construct_(id, w, args);
+    }
+    if (const auto it = named_construct_.find(name); it != named_construct_.end()) {
+      it->second(id, w, args);
+    }
     return id;
   }
 
   void despawn(const aes::entityid_t id, aes::world& w) const {
-    if (destruct_) destruct_(id, w);
+    if (destruct_) {
+      destruct_(id, w);
+    }
   }
 
-  bool has_prefab(const std::string& name) const { return prefabs_.contains(name); }
+  bool has_prefab(const std::string& name) const {
+    return prefabs_.contains(name);
+  }
 
 private:
-  struct component_spec { component_flag flags; builder build_fn; };
+  struct component_spec {
+    component_flag flags;
+    builder build_fn;
+  };
   struct loaded_prefab {
     std::string base;
     std::unordered_map<std::string, std::string> raw; // component -> сырой текст значения
@@ -196,14 +246,18 @@ private:
   };
 
   void add_spec(std::string name, const component_flag flags, builder b) {
-    specs_.insert_or_assign(std::move(name), component_spec{ flags, std::move(b) });
+    specs_.insert_or_assign(std::move(name), component_spec{flags, std::move(b)});
   }
 
   // Сырое значение (блок/массив/токен) с текущей позиции: возвращаем срез исходника.
   std::string_view capture_value(tavl::parser& p, std::string_view text) {
     using ev_t = tavl::event_type;
-    const auto is_open  = [](ev_t t) { return t == ev_t::object_begin || t == ev_t::array_begin || t == ev_t::tuple_begin; };
-    const auto is_close = [](ev_t t) { return t == ev_t::object_end   || t == ev_t::array_end   || t == ev_t::tuple_end; };
+    const auto is_open = [](ev_t t) {
+      return t == ev_t::object_begin || t == ev_t::array_begin || t == ev_t::tuple_begin;
+    };
+    const auto is_close = [](ev_t t) {
+      return t == ev_t::object_end || t == ev_t::array_end || t == ev_t::tuple_end;
+    };
 
     const auto e = p.peek();
     if (is_open(e.type)) {
@@ -213,9 +267,15 @@ private:
       tavl::token last = oev.token;
       while (nest > 0) {
         const auto [ce, cerr] = p.poll_event();
-        if (ce.type == ev_t::eof || ce.type == ev_t::not_enought_data) break;
-        if (is_open(ce.type)) ++nest;
-        else if (is_close(ce.type)) { --nest; last = ce.token; }
+        if (ce.type == ev_t::eof || ce.type == ev_t::not_enought_data) {
+          break;
+        }
+        if (is_open(ce.type)) {
+          ++nest;
+        } else if (is_close(ce.type)) {
+          --nest;
+          last = ce.token;
+        }
       }
       const std::size_t stop = last.span.offset + last.span.size;
       return text.substr(start, stop - start);
@@ -228,24 +288,38 @@ private:
   // цепочку сырых текстов (база→наследник) в порядке появления.
   loaded_prefab* build(const std::string& name) {
     const auto it = prefabs_.find(name);
-    if (it == prefabs_.end()) { utils::warn("prefab '{}' не найден", name); return nullptr; }
+    if (it == prefabs_.end()) {
+      utils::warn("prefab '{}' не найден", name);
+      return nullptr;
+    }
     loaded_prefab& lp = it->second;
-    if (lp.built) return &lp;
+    if (lp.built) {
+      return &lp;
+    }
 
     std::vector<const loaded_prefab*> chain; // от корня-базы к наследнику
     collect_chain(name, chain, 0);
 
-    std::vector<std::string> order;                                    // компоненты в порядке появления
-    for (const auto* pf : chain)
-      for (const auto& [comp, _] : pf->raw)
-        if (std::find(order.begin(), order.end(), comp) == order.end()) order.push_back(comp);
+    std::vector<std::string> order; // компоненты в порядке появления
+    for (const auto* pf : chain) {
+      for (const auto& [comp, _] : pf->raw) {
+        if (std::find(order.begin(), order.end(), comp) == order.end()) {
+          order.push_back(comp);
+        }
+      }
+    }
 
     for (const auto& comp : order) {
       std::vector<std::string_view> texts; // база→наследник, только где задан
-      for (const auto* pf : chain)
-        if (const auto ri = pf->raw.find(comp); ri != pf->raw.end()) texts.push_back(ri->second);
+      for (const auto* pf : chain) {
+        if (const auto ri = pf->raw.find(comp); ri != pf->raw.end()) {
+          texts.push_back(ri->second);
+        }
+      }
       const auto si = specs_.find(comp);
-      if (si == specs_.end() || texts.empty()) continue;
+      if (si == specs_.end() || texts.empty()) {
+        continue;
+      }
       lp.appliers.push_back(si->second.build_fn(texts, lp.ctx));
     }
     lp.built = true;
@@ -253,10 +327,18 @@ private:
   }
 
   void collect_chain(const std::string& name, std::vector<const loaded_prefab*>& out, int depth) {
-    if (depth > 32) { utils::warn("prefab '{}': слишком глубокая цепочка base (цикл?)", name); return; }
+    if (depth > 32) {
+      utils::warn("prefab '{}': слишком глубокая цепочка base (цикл?)", name);
+      return;
+    }
     const auto it = prefabs_.find(name);
-    if (it == prefabs_.end()) { utils::warn("prefab base '{}' не найден", name); return; }
-    if (!it->second.base.empty()) collect_chain(it->second.base, out, depth + 1);
+    if (it == prefabs_.end()) {
+      utils::warn("prefab base '{}' не найден", name);
+      return;
+    }
+    if (!it->second.base.empty()) {
+      collect_chain(it->second.base, out, depth + 1);
+    }
     out.push_back(&it->second);
   }
 
@@ -267,7 +349,7 @@ private:
   std::function<void(aes::entityid_t, aes::world&)> destruct_;
 };
 
-}
-}
+} // namespace prefab
+} // namespace devils_engine
 
 #endif

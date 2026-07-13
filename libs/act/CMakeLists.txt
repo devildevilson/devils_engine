@@ -20,6 +20,7 @@ set(HDR_LIST
 )
 
 set(SRC_LIST
+  src/act/function.cpp
   src/act/registry.cpp
 )
 

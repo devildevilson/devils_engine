@@ -2,8 +2,9 @@
 #define DEVILS_ENGINE_ACT_EXEC_CONTEXT_H
 
 #include <cstdint>
-#include "devils_engine/utils/prng.h" // utils::mix (counter-based)
+
 #include "common.h"
+#include "devils_engine/utils/prng.h" // utils::mix (counter-based)
 
 namespace devils_engine {
 namespace act {
@@ -25,7 +26,7 @@ struct exec_context {
 
   // scope: фикс-стек сущностей без аллокаций. [0]=this, [1]=target, [2]=контейнер...
   entity_id scope[max_scope];
-  uint32_t  scope_count = 0;
+  uint32_t scope_count = 0;
 
   const world* w = nullptr; // только чтение; мутация мира — кодом эффекта через sink
 
@@ -36,15 +37,21 @@ struct exec_context {
   }
 
   effect_sink* sink = nullptr; // nullptr ⇒ dry-run
-  bool dry_run() const noexcept { return sink == nullptr; }
+  bool dry_run() const noexcept {
+    return sink == nullptr;
+  }
 
   execution_scratch* scratch = nullptr;
 
-  entity_id primary()   const noexcept { return scope_count > 0 ? scope[0] : entity_id{}; }
-  entity_id secondary() const noexcept { return scope_count > 1 ? scope[1] : entity_id{}; }
+  entity_id primary() const noexcept {
+    return scope_count > 0 ? scope[0] : entity_id{};
+  }
+  entity_id secondary() const noexcept {
+    return scope_count > 1 ? scope[1] : entity_id{};
+  }
 };
 
-}
-}
+} // namespace act
+} // namespace devils_engine
 
 #endif

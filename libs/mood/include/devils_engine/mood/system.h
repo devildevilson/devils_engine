@@ -1,19 +1,20 @@
 #ifndef DEVILS_ENGINE_MOOD_SYSTEM_H
 #define DEVILS_ENGINE_MOOD_SYSTEM_H
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
-#include <array>
-#include <span>
+
 #include <gtl/phmap.hpp>
 
-#include "devils_engine/utils/string_id.h"   // utils::id / string_hash (предпосчёт хешей)
-#include "devils_engine/act/registry.h"      // act::registry (бывшая mood::table)
-#include "devils_engine/act/function.h"      // act::predicate_function / act::effect_function
-#include "devils_engine/act/exec_context.h"  // act::exec_context
+#include "devils_engine/act/exec_context.h" // act::exec_context
+#include "devils_engine/act/function.h"     // act::predicate_function / act::effect_function
+#include "devils_engine/act/registry.h"     // act::registry (бывшая mood::table)
+#include "devils_engine/utils/string_id.h"  // utils::id / string_hash (предпосчёт хешей)
 
 // реально думаю что у нас скорее всего будет общий реестр функций, более того
 // наверное будет общий реестр базовых геймплейных функций + реестр функций которые мы составим из них
@@ -61,8 +62,8 @@ public:
 
     // предпосчитанные хеши — рантайм сравнивает/ищет по ним, не по строкам.
     utils::id current_hash = utils::invalid_id;
-    utils::id event_hash   = utils::invalid_id;
-    utils::id next_hash    = utils::invalid_id; // invalid_id если next_state пуст (чистый эффект)
+    utils::id event_hash = utils::invalid_id;
+    utils::id next_hash = utils::invalid_id; // invalid_id если next_state пуст (чистый эффект)
 
     std::array<const act::predicate_function*, 8> guards_ptr{};
     std::array<const act::effect_function*, 8> actions_ptr{};
@@ -74,7 +75,10 @@ public:
   };
 
   // диапазон в m_transitions для одной (state, event) группы (группа непрерывна).
-  struct range { uint32_t offset = 0; uint32_t count = 0; };
+  struct range {
+    uint32_t offset = 0;
+    uint32_t count = 0;
+  };
 
   // НЕ noexcept: кидает utils::error на ошибке парсинга строки, дубле или отсутствующей
   // функции guard/action в реестре (ошибка загрузки).
@@ -86,13 +90,14 @@ public:
   // обёртки: хешируют и форвардят (парсинг/тесты/диагностика).
   std::span<const transition> find_transitions(const std::string_view& current_state, const std::string_view& event) const;
   std::span<const transition> transitions() const;
+
 private:
   const act::registry* registry;
   std::vector<transition> m_transitions;
   gtl::flat_hash_map<uint64_t, range> m_index; // mix(state_hash, event_hash) -> диапазон
   std::vector<std::string> m_memory;
 };
-}
-}
+} // namespace mood
+} // namespace devils_engine
 
 #endif

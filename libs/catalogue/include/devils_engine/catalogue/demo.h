@@ -1,9 +1,10 @@
 #ifndef DEVILS_ENGINE_CATALOGUE_DEMO_H
 #define DEVILS_ENGINE_CATALOGUE_DEMO_H
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <string>
+
 #include "common.h"
 
 namespace devils_engine {
@@ -58,11 +59,11 @@ struct demo {
 
   demo(const consume_type t = consume_type::all) noexcept;
 
-  bool write_to_disk(const std::string &path) const;
+  bool write_to_disk(const std::string& path) const;
   bool load_from_disk(const std::string& path);
 };
 
-}
-}
+} // namespace catalogue
+} // namespace devils_engine
 
 #endif

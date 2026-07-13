@@ -1,15 +1,15 @@
-#include <doctest/doctest.h>
-
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <vector>
 
+#include <doctest/doctest.h>
+
+#include "devils_engine/demiurg/module_interface.h"
+#include "devils_engine/demiurg/module_system.h"
 #include "devils_engine/demiurg/resource_base.h"
 #include "devils_engine/demiurg/resource_loader.h"
 #include "devils_engine/demiurg/resource_system.h"
-#include "devils_engine/demiurg/module_system.h"
-#include "devils_engine/demiurg/module_interface.h"
 #include "devils_engine/utils/safe_handle.h"
 
 using namespace devils_engine;
@@ -28,7 +28,9 @@ public:
     set_flag(demiurg::resource_flags::warm_and_hot_same, false);
   }
 
-  int32_t top_state() const override { return 3; }
+  int32_t top_state() const override {
+    return 3;
+  }
 
   bool is_external_step(const int32_t from) const override {
     return from == 2;
@@ -74,9 +76,13 @@ public:
     set_flag(demiurg::resource_flags::warm_and_hot_same, true);
   }
 
-  void load_cold(const utils::safe_handle_t&) override { ++load_count; }
+  void load_cold(const utils::safe_handle_t&) override {
+    ++load_count;
+  }
   void load_warm(const utils::safe_handle_t&) override {}
-  void unload_warm(const utils::safe_handle_t&) override { ++unload_count; }
+  void unload_warm(const utils::safe_handle_t&) override {
+    ++unload_count;
+  }
   void unload_hot(const utils::safe_handle_t&) override {}
 };
 
@@ -113,13 +119,21 @@ public:
     set_flag(demiurg::resource_flags::hot_unload_to_cold, true);
   }
 
-  void load_cold(const utils::safe_handle_t&) override { ++load_cold_count; }
-  void load_warm(const utils::safe_handle_t&) override { ++load_warm_count; }
-  void unload_warm(const utils::safe_handle_t&) override { ++unload_warm_count; }
-  void unload_hot(const utils::safe_handle_t&) override { ++unload_hot_count; }
+  void load_cold(const utils::safe_handle_t&) override {
+    ++load_cold_count;
+  }
+  void load_warm(const utils::safe_handle_t&) override {
+    ++load_warm_count;
+  }
+  void unload_warm(const utils::safe_handle_t&) override {
+    ++unload_warm_count;
+  }
+  void unload_hot(const utils::safe_handle_t&) override {
+    ++unload_hot_count;
+  }
 };
 
-}
+} // namespace
 
 TEST_CASE("resource_system does not instantiate shadowed module resources [demiurg]") {
   namespace fs = std::filesystem;
@@ -136,10 +150,8 @@ TEST_CASE("resource_system does not instantiate shadowed module resources [demiu
   }
 
   demiurg::module_system modules((root.generic_string() + "/"));
-  modules.load_modules({
-    demiurg::module_system::list_entry{"high/", "", ""},
-    demiurg::module_system::list_entry{"low/", "", ""}
-  });
+  modules.load_modules({demiurg::module_system::list_entry{"high/", "", ""},
+                        demiurg::module_system::list_entry{"low/", "", ""}});
 
   demiurg::resource_system resources;
   resources.register_type<manifest_test_resource>("textures", "png,meta");
@@ -286,10 +298,8 @@ TEST_CASE("resource_system applies tavl list partial overrides by name without m
   }
 
   demiurg::module_system modules((root.generic_string() + "/"));
-  modules.load_modules({
-    demiurg::module_system::list_entry{"high/", "", ""},
-    demiurg::module_system::list_entry{"low/", "", ""}
-  });
+  modules.load_modules({demiurg::module_system::list_entry{"high/", "", ""},
+                        demiurg::module_system::list_entry{"low/", "", ""}});
 
   demiurg::resource_system resources;
   resources.register_type<list_test_resource>("configs", "tavl");
@@ -339,10 +349,8 @@ TEST_CASE("resource_system uses empty tavl list sections as index holes [demiurg
   }
 
   demiurg::module_system modules((root.generic_string() + "/"));
-  modules.load_modules({
-    demiurg::module_system::list_entry{"high/", "", ""},
-    demiurg::module_system::list_entry{"low/", "", ""}
-  });
+  modules.load_modules({demiurg::module_system::list_entry{"high/", "", ""},
+                        demiurg::module_system::list_entry{"low/", "", ""}});
 
   demiurg::resource_system resources;
   resources.register_type<list_test_resource>("configs", "tavl");

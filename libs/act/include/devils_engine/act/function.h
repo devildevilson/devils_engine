@@ -2,19 +2,20 @@
 #define DEVILS_ENGINE_ACT_FUNCTION_H
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
-#include <functional>
 #include <type_traits>
-#include "devils_engine/utils/core.h"      // utils::error
-#include "devils_engine/utils/string_id.h" // utils::id
-#include "common.h"
-#include "call_context.h"
-#include "execution_scratch.h"
-#include "exec_context.h"       // + алиас namespace ds = ::devils_script
 
 #include <devils_script/container.h> // ds::container (process/describe/max_lists) — invoke зовёт методы
 #include <devils_script/context.h>   // ds::context (clear/set_arg/get_return/create_lists/userptr)
+
+#include "call_context.h"
+#include "common.h"
+#include "devils_engine/utils/core.h"      // utils::error
+#include "devils_engine/utils/string_id.h" // utils::id
+#include "exec_context.h"                  // + алиас namespace ds = ::devils_script
+#include "execution_scratch.h"
 
 struct lua_State;
 
@@ -31,7 +32,11 @@ namespace ds = ::devils_script;
 // Эти функции зовутся НЕ только в детерминированном симе, но и из Lua-UI (напр.
 // строковая функция → ключ локализации по условию) — поэтому реестр и контекст общие.
 
-enum class category : uint8_t { effect, predicate, number, string, object };
+enum class category : uint8_t { effect,
+                                predicate,
+                                number,
+                                string,
+                                object };
 
 // describe — пробежать функцию без применения эффектов и ОТДАВАТЬ данные в коллбек (для
 // UI: тултип "почему нельзя"/"+5 от X, −2 от Y", превью эффекта, разбор предиката/числа).
@@ -62,64 +67,126 @@ struct function : public function_base {
     }
     auto& call = ctx.scratch->call;
     call.clear_schema(); // short path has no caller-owned args/out schema; do not leak it across functions
-    if constexpr (std::is_void_v<RetT>) invoke(ctx, call);
-    else return invoke(ctx, call);
+    if constexpr (std::is_void_v<RetT>) {
+      invoke(ctx, call);
+    } else {
+      return invoke(ctx, call);
+    }
   }
 };
 
-using effect_function    = function<void>;
+using effect_function = function<void>;
 using predicate_function = function<bool>;
-using number_function    = function<real_t>;
-using string_function    = function<utils::id>;
-using object_function    = function<entity_id>;
+using number_function = function<real_t>;
+using string_function = function<utils::id>;
+using object_function = function<entity_id>;
 // ОТКРЫТО: number_function можно доп. типизировать по СМЫСЛУ возврата (деньги/угол/%/
 // дистанция) опц. unit-тегом, чтобы UI форматировал и складывал совместимое.
 
 namespace detail {
-template <typename RetT> constexpr category category_of();
-template <> constexpr category category_of<void>()      { return category::effect; }
-template <> constexpr category category_of<bool>()      { return category::predicate; }
-template <> constexpr category category_of<real_t>()    { return category::number; }
-template <> constexpr category category_of<utils::id>() { return category::string; }
-template <> constexpr category category_of<entity_id>() { return category::object; }
-
-inline value to_value(const bool v) noexcept { return value::of(v); }
-inline value to_value(const real_t v) noexcept { return value::of(v); }
-inline value to_value(const utils::id v) noexcept { return value::strv(v); }
-inline value to_value(const entity_id v) noexcept { return value::of(v); }
-
-inline bool ds_type(const std::string_view type, const std::string_view expected) noexcept {
-  return type == expected;
+template <typename RetT>
+constexpr category category_of();
+template <>
+constexpr category category_of<void>() {
+  return category::effect;
 }
+template <>
+constexpr category category_of<bool>() {
+  return category::predicate;
+}
+template <>
+constexpr category category_of<real_t>() {
+  return category::number;
+}
+template <>
+constexpr category category_of<utils::id>() {
+  return category::string;
+}
+template <>
+constexpr category category_of<entity_id>() {
+  return category::object;
+}
+
+value to_value(bool v) noexcept;
+value to_value(real_t v) noexcept;
+value to_value(utils::id v) noexcept;
+value to_value(entity_id v) noexcept;
+
+bool ds_type(std::string_view type, std::string_view expected) noexcept;
 
 template <typename Set>
 bool value_to_ds(const value& v, const std::string_view expected, Set&& set) {
   switch (v.kind) {
     case value_kind::boolean:
-      if (ds::type_is_bool(expected)) { set(v.bln); return true; }
+      if (ds::type_is_bool(expected)) {
+        set(v.bln);
+        return true;
+      }
       break;
     case value_kind::integer:
-      if (expected == utils::type_name<int8_t>())   { set(static_cast<int8_t>(v.inum)); return true; }
-      if (expected == utils::type_name<int16_t>())  { set(static_cast<int16_t>(v.inum)); return true; }
-      if (expected == utils::type_name<int32_t>())  { set(static_cast<int32_t>(v.inum)); return true; }
-      if (expected == utils::type_name<int64_t>())  { set(v.inum); return true; }
-      if (expected == utils::type_name<uint8_t>())  { set(static_cast<uint8_t>(v.inum)); return true; }
-      if (expected == utils::type_name<uint16_t>()) { set(static_cast<uint16_t>(v.inum)); return true; }
-      if (expected == utils::type_name<uint32_t>()) { set(static_cast<uint32_t>(v.inum)); return true; }
-      if (expected == utils::type_name<uint64_t>()) { set(static_cast<uint64_t>(v.inum)); return true; }
-      if (ds::type_is_floating_point(expected))     { set(static_cast<double>(v.inum)); return true; }
+      if (expected == utils::type_name<int8_t>()) {
+        set(static_cast<int8_t>(v.inum));
+        return true;
+      }
+      if (expected == utils::type_name<int16_t>()) {
+        set(static_cast<int16_t>(v.inum));
+        return true;
+      }
+      if (expected == utils::type_name<int32_t>()) {
+        set(static_cast<int32_t>(v.inum));
+        return true;
+      }
+      if (expected == utils::type_name<int64_t>()) {
+        set(v.inum);
+        return true;
+      }
+      if (expected == utils::type_name<uint8_t>()) {
+        set(static_cast<uint8_t>(v.inum));
+        return true;
+      }
+      if (expected == utils::type_name<uint16_t>()) {
+        set(static_cast<uint16_t>(v.inum));
+        return true;
+      }
+      if (expected == utils::type_name<uint32_t>()) {
+        set(static_cast<uint32_t>(v.inum));
+        return true;
+      }
+      if (expected == utils::type_name<uint64_t>()) {
+        set(static_cast<uint64_t>(v.inum));
+        return true;
+      }
+      if (ds::type_is_floating_point(expected)) {
+        set(static_cast<double>(v.inum));
+        return true;
+      }
       break;
     case value_kind::number:
-      if (expected == utils::type_name<float>())  { set(static_cast<float>(v.num)); return true; }
-      if (expected == utils::type_name<double>()) { set(static_cast<double>(v.num)); return true; }
+      if (expected == utils::type_name<float>()) {
+        set(static_cast<float>(v.num));
+        return true;
+      }
+      if (expected == utils::type_name<double>()) {
+        set(static_cast<double>(v.num));
+        return true;
+      }
       break;
     case value_kind::handle:
-      if (expected == utils::type_name<entity_id>()) { set(entity_id{static_cast<uint32_t>(v.hnd)}); return true; }
-      if (expected == utils::type_name<uint64_t>())  { set(v.hnd); return true; }
+      if (expected == utils::type_name<entity_id>()) {
+        set(entity_id{static_cast<uint32_t>(v.hnd)});
+        return true;
+      }
+      if (expected == utils::type_name<uint64_t>()) {
+        set(v.hnd);
+        return true;
+      }
       break;
     case value_kind::string:
       // act string — стабильный loc/id hash, не заимствованный string_view.
-      if (expected == utils::type_name<utils::id>()) { set(v.str); return true; }
+      if (expected == utils::type_name<utils::id>()) {
+        set(v.str);
+        return true;
+      }
       break;
     // act::vec3 = 24 bytes (double x3), а ds stack slot сейчас 16 bytes: bridge намеренно
     // не делает lossy-конверсию. Для vector нужен отдельный compact/fixed тип при fixed-point pass.
@@ -129,63 +196,10 @@ bool value_to_ds(const value& v, const std::string_view expected, Set&& set) {
   return false;
 }
 
-inline bool value_from_ds(const std::string_view type, const ds::stack_element& el, value& out) {
-  if (type == utils::type_name<bool>())     { out = value::of(el.get<bool>()); return true; }
-  if (type == utils::type_name<int8_t>())   { out = value::of(int64_t(el.get<int8_t>())); return true; }
-  if (type == utils::type_name<int16_t>())  { out = value::of(int64_t(el.get<int16_t>())); return true; }
-  if (type == utils::type_name<int32_t>())  { out = value::of(int64_t(el.get<int32_t>())); return true; }
-  if (type == utils::type_name<int64_t>())  { out = value::of(el.get<int64_t>()); return true; }
-  if (type == utils::type_name<uint8_t>())  { out = value::of(int64_t(el.get<uint8_t>())); return true; }
-  if (type == utils::type_name<uint16_t>()) { out = value::of(int64_t(el.get<uint16_t>())); return true; }
-  if (type == utils::type_name<uint32_t>()) { out = value::of(int64_t(el.get<uint32_t>())); return true; }
-  if (type == utils::type_name<uint64_t>()) { out = value::of(int64_t(el.get<uint64_t>())); return true; }
-  if (type == utils::type_name<float>())    { out = value::of(real_t(el.get<float>())); return true; }
-  if (type == utils::type_name<double>())   { out = value::of(real_t(el.get<double>())); return true; }
-  if (type == utils::type_name<entity_id>()){ out = value::of(el.get<entity_id>()); return true; }
-  return false;
-}
-
-inline void bind_call(const ds::script_container& program, const call_context& call, ds::context* vm) {
-  for (const auto& a : call.arguments()) {
-    for (size_t i = 0; i < program.args.size(); ++i) {
-      if (utils::string_hash(program.get_arg_name(i)) != a.name) continue;
-      value_to_ds(a.data, program.args[i].type, [vm, i](const auto& v) { vm->set_arg(i, v); });
-      break;
-    }
-  }
-
-  for (const auto& l : call.lists()) {
-    for (size_t i = 0; i < program.lists.size(); ++i) {
-      if (utils::string_hash(program.get_list_name(i)) != l.name || i >= vm->lists.size()) continue;
-      auto& dst = vm->lists[i];
-      dst.clear();
-      dst.reserve(l.values.size());
-      for (const auto& v : l.values) {
-        ds::stack_element el{};
-        if (value_to_ds(v, program.lists[i].type, [&el](const auto& x) { el.set(x); })) dst.push_back(el);
-      }
-      break;
-    }
-  }
-}
-
-inline void collect_call(const ds::script_container& program, call_context& call, const ds::context* vm) {
-  for (size_t i = 0; i < program.args.size(); ++i) {
-    value out;
-    if (value_from_ds(vm->arg_type(i), vm->args_stack.element(i), out)) call.argument(program.get_arg_name(i)) = out;
-  }
-
-  for (size_t i = 0; i < program.lists.size() && i < vm->lists.size(); ++i) {
-    auto& dst = call.list(program.get_list_name(i)).values;
-    dst.clear();
-    dst.reserve(vm->lists[i].size());
-    for (const auto& el : vm->lists[i]) {
-      value out;
-      if (value_from_ds(program.lists[i].type, el, out)) dst.push_back(out);
-    }
-  }
-}
-}
+bool value_from_ds(std::string_view type, const ds::stack_element& el, value& out);
+void bind_call(const ds::script_container& program, const call_context& call, ds::context* vm);
+void collect_call(const ds::script_container& program, call_context& call, const ds::context* vm);
+} // namespace detail
 
 // ── нативная C++-функция: сырой указатель, без std::function (горячий путь A*) ──
 template <typename RetT>
@@ -204,7 +218,11 @@ struct native_function final : public function<RetT> {
   using function<RetT>::invoke;
   RetT invoke(const exec_context& ctx, call_context& call) const override {
     if constexpr (std::is_void_v<RetT>) {
-      if (fn != nullptr) fn(ctx, call); else legacy_fn(ctx);
+      if (fn != nullptr) {
+        fn(ctx, call);
+      } else {
+        legacy_fn(ctx);
+      }
       call.result = value{};
     } else {
       const RetT ret = fn != nullptr ? fn(ctx, call) : legacy_fn(ctx);
@@ -213,7 +231,9 @@ struct native_function final : public function<RetT> {
     }
   }
   void describe(const exec_context&, const describe_callback& out) const override {
-    if (!desc.empty() && out) out(desc);
+    if (!desc.empty() && out) {
+      out(desc);
+    }
   }
 };
 
@@ -234,11 +254,17 @@ struct script_function final : public function<RetT> {
   using function<RetT>::invoke;
   RetT invoke(const exec_context& ctx, call_context& call) const override {
     ds::context* vm = ctx.scratch != nullptr ? &ctx.scratch->vm : nullptr;
-    if (vm == nullptr) utils::error{}("act::script_function::invoke: exec_context.scratch не задан");
+    if (vm == nullptr) {
+      utils::error{}("act::script_function::invoke: exec_context.scratch не задан");
+    }
     vm->clear();
     vm->userptr = const_cast<exec_context*>(&ctx); // задел под effect_sink: эффекты читают ctx через userptr
-    if (program->max_lists != 0) vm->create_lists(program);
-    if (seed != nullptr) seed(ctx, vm);            // set_arg(0, root_scope) + опц. именованные аргументы
+    if (program->max_lists != 0) {
+      vm->create_lists(program);
+    }
+    if (seed != nullptr) {
+      seed(ctx, vm); // set_arg(0, root_scope) + опц. именованные аргументы
+    }
     detail::bind_call(*program, call, vm);
     program->process(vm);
     detail::collect_call(*program, call, vm);
@@ -262,11 +288,17 @@ struct script_function final : public function<RetT> {
 
   void describe(const exec_context& ctx, const describe_callback& out) const override {
     ds::context* vm = ctx.scratch != nullptr ? &ctx.scratch->vm : nullptr;
-    if (vm == nullptr) return;
+    if (vm == nullptr) {
+      return;
+    }
     vm->clear();
-    if (seed != nullptr) seed(ctx, vm);
+    if (seed != nullptr) {
+      seed(ctx, vm);
+    }
     program->describe(vm, [&out](const ds::container::description_entry& e) {
-      if (out) out(e.name); // минимум: стримим имена узлов; payload уточним при созревании describe
+      if (out) {
+        out(e.name); // минимум: стримим имена узлов; payload уточним при созревании describe
+      }
     });
   }
 };
@@ -274,20 +306,23 @@ struct script_function final : public function<RetT> {
 // ── lua: ГОСТЬ — глобальное/UI, НЕ эффекты сима ── ЗАГЛУШКА ──
 template <typename RetT>
 struct lua_function final : public function<RetT> {
-  lua_State* L = nullptr; int ref = 0;
+  lua_State* L = nullptr;
+  int ref = 0;
   lua_function(lua_State* l, const int r) noexcept
     : function<RetT>(detail::category_of<RetT>()), L(l), ref(r) {}
   using function<RetT>::invoke;
   RetT invoke(const exec_context&, call_context&) const override {
     utils::error{}("act::lua_function::invoke не реализован (бэкенд lua ещё не подключён)");
-    if constexpr (!std::is_void_v<RetT>) return RetT{};
+    if constexpr (!std::is_void_v<RetT>) {
+      return RetT{};
+    }
   }
   void describe(const exec_context&, const describe_callback&) const override {
     utils::error{}("act::lua_function::describe не реализован (бэкенд lua ещё не подключён)");
   }
 };
 
-}
-}
+} // namespace act
+} // namespace devils_engine
 
 #endif

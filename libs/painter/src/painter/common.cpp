@@ -1,12 +1,12 @@
-#include "common.h"
-
 #include <vector>
+
 #include <gtl/phmap.hpp>
-#include "vulkan_header.h"
-#include "devils_engine/utils/core.h"
-#include "graphics_base.h"
 
 #include "auxiliary.h"
+#include "common.h"
+#include "devils_engine/utils/core.h"
+#include "graphics_base.h"
+#include "vulkan_header.h"
 
 namespace devils_engine {
 namespace painter {
@@ -24,15 +24,18 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 #undef X
 };
 
-
 std::string_view to_string(const enum values u) noexcept {
-  if (static_cast<uint32_t>(u) >= count) return std::string_view();
+  if (static_cast<uint32_t>(u) >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 enum values from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return values::count;
+  if (itr == map.end()) {
+    return values::count;
+  }
   return itr->second;
 }
 
@@ -152,7 +155,7 @@ bool is_write(const enum values u) noexcept {
   return false;
 }
 
-}
+} // namespace usage
 
 namespace role {
 constexpr std::string_view names[] = {
@@ -168,13 +171,17 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 };
 
 std::string_view to_string(const enum values u) noexcept {
-  if (static_cast<uint32_t>(u) >= count) return std::string_view();
+  if (static_cast<uint32_t>(u) >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 enum values from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return values::count;
+  if (itr == map.end()) {
+    return values::count;
+  }
   return itr->second;
 }
 
@@ -306,7 +313,7 @@ bool is_host_visible(const enum values u) noexcept {
   return false;
 }
 
-}
+} // namespace role
 
 namespace size {
 constexpr std::string_view names[] = {
@@ -322,16 +329,20 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 };
 
 std::string_view to_string(const enum values u) noexcept {
-  if (static_cast<uint32_t>(u) >= count) return std::string_view();
+  if (static_cast<uint32_t>(u) >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 enum values from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return values::count;
+  if (itr == map.end()) {
+    return values::count;
+  }
   return itr->second;
 }
-}
+} // namespace size
 
 namespace type {
 constexpr std::string_view names[] = {
@@ -347,13 +358,17 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 };
 
 std::string_view to_string(const enum values u) noexcept {
-  if (static_cast<uint32_t>(u) >= count) return std::string_view();
+  if (static_cast<uint32_t>(u) >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 enum values from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return values::count;
+  if (itr == map.end()) {
+    return values::count;
+  }
   return itr->second;
 }
 
@@ -369,15 +384,15 @@ uint32_t compute_buffering(const uint32_t frames_count, const uint32_t swapchain
     case values::quadbuffer: return 4;
     case values::rampagebuffer: return 5;
     case values::swapchain: return swapchain_count;
-    case values::swapchain_plus_one: return swapchain_count+1;
+    case values::swapchain_plus_one: return swapchain_count + 1;
     case values::frames_in_flight: return frames_count;
-    case values::frames_in_flight_plus_one: return frames_count+1;
+    case values::frames_in_flight_plus_one: return frames_count + 1;
     default: break;
   }
 
   return 0;
 }
-}
+} // namespace type
 
 namespace store_op {
 constexpr std::string_view names[] = {
@@ -393,16 +408,20 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 };
 
 std::string_view to_string(const enum values u) noexcept {
-  if (static_cast<uint32_t>(u) >= count) return std::string_view();
+  if (static_cast<uint32_t>(u) >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 enum values from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return values::count;
+  if (itr == map.end()) {
+    return values::count;
+  }
   return itr->second;
 }
-}
+} // namespace store_op
 
 namespace step_type {
 constexpr std::string_view names[] = {
@@ -418,16 +437,20 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 };
 
 std::string_view to_string(const enum values u) noexcept {
-  if (static_cast<uint32_t>(u) >= count) return std::string_view();
+  if (static_cast<uint32_t>(u) >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 enum values from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return values::count;
+  if (itr == map.end()) {
+    return values::count;
+  }
   return itr->second;
 }
-}
+} // namespace step_type
 
 namespace value_type {
 constexpr std::string_view names[] = {
@@ -443,16 +466,20 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 };
 
 std::string_view to_string(const enum values u) noexcept {
-  if (static_cast<uint32_t>(u) >= count) return std::string_view();
+  if (static_cast<uint32_t>(u) >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 enum values from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return values::count;
+  if (itr == map.end()) {
+    return values::count;
+  }
   return itr->second;
 }
-}
+} // namespace value_type
 
 namespace preset {
 constexpr std::string_view names[] = {
@@ -468,16 +495,20 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 };
 
 std::string_view to_string(const enum values u) noexcept {
-  if (static_cast<uint32_t>(u) >= count) return std::string_view();
+  if (static_cast<uint32_t>(u) >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 enum values from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return values::count;
+  if (itr == map.end()) {
+    return values::count;
+  }
   return itr->second;
 }
-}
+} // namespace preset
 
 namespace command {
 constexpr std::string_view command_names[] = {
@@ -516,13 +547,17 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 //}
 
 std::string_view to_string(const values u) noexcept {
-  if (u >= values::count) return std::string_view();
+  if (u >= values::count) {
+    return std::string_view();
+  }
   return command_type_names[u];
 }
 
 values from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return values::count;
+  if (itr == map.end()) {
+    return values::count;
+  }
   return itr->second;
 }
 
@@ -593,20 +628,26 @@ bool is_transfer(const values u) noexcept {
 }
 
 step_type::values convert(const values u) noexcept {
-  if (is_graphics(u)) return step_type::graphics;
-  if (is_compute(u))  return step_type::compute;
-  if (is_transfer(u)) return step_type::transfer;
+  if (is_graphics(u)) {
+    return step_type::graphics;
+  }
+  if (is_compute(u)) {
+    return step_type::compute;
+  }
+  if (is_transfer(u)) {
+    return step_type::transfer;
+  }
   return step_type::count;
 }
 
-}
+} // namespace command
 
 namespace primitive_topology {
 enum values : uint32_t {
 #define X(name, vulkan_value) name = vulkan_value,
   DEVILS_ENGINE_PAINTER_PRIMITIVE_TOPOLOGY_LIST
 #undef X
-  count
+    count
 };
 
 constexpr std::string_view names[] = {
@@ -622,23 +663,27 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 };
 
 std::string_view to_string(const uint32_t u) noexcept {
-  if (u >= count) return std::string_view();
+  if (u >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 uint32_t from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return UINT32_MAX;
+  if (itr == map.end()) {
+    return UINT32_MAX;
+  }
   return itr->second;
 }
-}
+} // namespace primitive_topology
 
 namespace blend_factor {
 enum values : uint32_t {
 #define X(name, vulkan_value) name = vulkan_value,
   DEVILS_ENGINE_PAINTER_BLEND_FACTOR_LIST
 #undef X
-  count
+    count
 };
 
 constexpr std::string_view names[] = {
@@ -654,23 +699,27 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 };
 
 std::string_view to_string(const uint32_t u) noexcept {
-  if (u >= count) return std::string_view();
+  if (u >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 uint32_t from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return UINT32_MAX;
+  if (itr == map.end()) {
+    return UINT32_MAX;
+  }
   return itr->second;
 }
-}
+} // namespace blend_factor
 
 namespace blend_op {
 enum values : uint32_t {
 #define X(name, vulkan_value) name = vulkan_value,
   DEVILS_ENGINE_PAINTER_BLEND_OP_LIST
 #undef X
-  count
+    count
 };
 
 constexpr std::string_view names[] = {
@@ -683,29 +732,33 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 #define X(name, vulkan_value) std::make_pair(#name, values::name),
   DEVILS_ENGINE_PAINTER_BLEND_OP_LIST
 #undef X
-  std::make_pair("+", values::add),
+    std::make_pair("+", values::add),
   std::make_pair("-", values::sub),
   std::make_pair("@-", values::reverse_subtract),
 };
 
 std::string_view to_string(const uint32_t u) noexcept {
-  if (u >= count) return std::string_view();
+  if (u >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 uint32_t from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return UINT32_MAX;
+  if (itr == map.end()) {
+    return UINT32_MAX;
+  }
   return itr->second;
 }
-}
+} // namespace blend_op
 
 namespace compare_op {
 enum values : uint32_t {
 #define X(name, vulkan_value) name = vulkan_value,
   DEVILS_ENGINE_PAINTER_COMPARE_OP_LIST
 #undef X
-  count
+    count
 };
 
 constexpr std::string_view names[] = {
@@ -721,23 +774,27 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 };
 
 std::string_view to_string(const uint32_t u) noexcept {
-  if (u >= count) return std::string_view();
+  if (u >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 uint32_t from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return UINT32_MAX;
+  if (itr == map.end()) {
+    return UINT32_MAX;
+  }
   return itr->second;
 }
-}
+} // namespace compare_op
 
 namespace stencil_op {
 enum values : uint32_t {
 #define X(name, vulkan_value) name = vulkan_value,
   DEVILS_ENGINE_PAINTER_STENCIL_OP_LIST
 #undef X
-  count
+    count
 };
 
 constexpr std::string_view names[] = {
@@ -753,23 +810,27 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 };
 
 std::string_view to_string(const uint32_t u) noexcept {
-  if (u >= count) return std::string_view();
+  if (u >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 uint32_t from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return UINT32_MAX;
+  if (itr == map.end()) {
+    return UINT32_MAX;
+  }
   return itr->second;
 }
-}
+} // namespace stencil_op
 
 namespace polygon_mode {
 enum values : uint32_t {
 #define X(name, vulkan_value) name = vulkan_value,
   DEVILS_ENGINE_PAINTER_POLYGON_MODE_LIST
 #undef X
-  count
+    count
 };
 
 constexpr std::string_view names[] = {
@@ -785,23 +846,27 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 };
 
 std::string_view to_string(const uint32_t u) noexcept {
-  if (u >= count) return std::string_view();
+  if (u >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 uint32_t from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return UINT32_MAX;
+  if (itr == map.end()) {
+    return UINT32_MAX;
+  }
   return itr->second;
 }
-}
+} // namespace polygon_mode
 
 namespace cull_mode {
 enum values : uint32_t {
 #define X(name, vulkan_value) name = vulkan_value,
   DEVILS_ENGINE_PAINTER_CULL_MODE_LIST
 #undef X
-  count
+    count
 };
 
 constexpr std::string_view names[] = {
@@ -817,23 +882,27 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 };
 
 std::string_view to_string(const uint32_t u) noexcept {
-  if (u >= count) return std::string_view();
+  if (u >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 uint32_t from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return UINT32_MAX;
+  if (itr == map.end()) {
+    return UINT32_MAX;
+  }
   return itr->second;
 }
-}
+} // namespace cull_mode
 
 namespace front_face {
 enum values : uint32_t {
 #define X(name, vulkan_value) name = vulkan_value,
   DEVILS_ENGINE_PAINTER_FRONT_FACE_LIST
 #undef X
-  count
+    count
 };
 
 constexpr std::string_view names[] = {
@@ -843,22 +912,26 @@ constexpr std::string_view names[] = {
 };
 
 const gtl::flat_hash_map<std::string_view, values> map = {
-#define X(name, vulkan_value) std::make_pair( #name , values::name),
+#define X(name, vulkan_value) std::make_pair(#name, values::name),
   DEVILS_ENGINE_PAINTER_FRONT_FACE_LIST
 #undef X
 };
 
 std::string_view to_string(const uint32_t u) noexcept {
-  if (u >= count) return std::string_view();
+  if (u >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 uint32_t from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return UINT32_MAX;
+  if (itr == map.end()) {
+    return UINT32_MAX;
+  }
   return itr->second;
 }
-}
+} // namespace front_face
 
 namespace format {
 constexpr std::string_view names[] = {
@@ -886,39 +959,68 @@ const gtl::flat_hash_map<std::string_view, values> map = {
 };
 
 std::string_view to_string(const values u) noexcept {
-  if (u >= count) return std::string_view();
+  if (u >= count) {
+    return std::string_view();
+  }
   return names[u];
 }
 
 values from_string(const std::string_view& name) noexcept {
   const auto itr = map.find(name);
-  if (itr == map.end()) return values::count;
+  if (itr == map.end()) {
+    return values::count;
+  }
   return itr->second;
 }
 
 uint32_t size(const values u) noexcept {
-  if (u >= count) return 0;
-  if (u == format::dispatch3) return sizeof(VkDispatchIndirectCommand);
-  if (u == format::draw4) return sizeof(VkDrawIndirectCommand);
-  if (u == format::indexed5) return sizeof(VkDrawIndexedIndirectCommand);
-  if (u == format::mat4 || u == format::mat44) return 4 * format::size(format::v4);
-  if (u == format::swapchain4) return 0;
+  if (u >= count) {
+    return 0;
+  }
+  if (u == format::dispatch3) {
+    return sizeof(VkDispatchIndirectCommand);
+  }
+  if (u == format::draw4) {
+    return sizeof(VkDrawIndirectCommand);
+  }
+  if (u == format::indexed5) {
+    return sizeof(VkDrawIndexedIndirectCommand);
+  }
+  if (u == format::mat4 || u == format::mat44) {
+    return 4 * format::size(format::v4);
+  }
+  if (u == format::swapchain4) {
+    return 0;
+  }
   return format_element_size(to_vulkan_format(u), to_vulkan_aspect(u));
 }
 
 uint32_t el_count(const values u) noexcept {
-  if (u >= count) return 0;
-  if (u == format::dispatch3) return sizeof(VkDispatchIndirectCommand) / sizeof(uint32_t);
-  if (u == format::draw4) return sizeof(VkDrawIndirectCommand) / sizeof(uint32_t);
-  if (u == format::indexed5) return sizeof(VkDrawIndexedIndirectCommand) / sizeof(uint32_t);
-  if (u == format::mat4 || u == format::mat44) return 16;
-  if (u == format::swapchain4) return 0;
+  if (u >= count) {
+    return 0;
+  }
+  if (u == format::dispatch3) {
+    return sizeof(VkDispatchIndirectCommand) / sizeof(uint32_t);
+  }
+  if (u == format::draw4) {
+    return sizeof(VkDrawIndirectCommand) / sizeof(uint32_t);
+  }
+  if (u == format::indexed5) {
+    return sizeof(VkDrawIndexedIndirectCommand) / sizeof(uint32_t);
+  }
+  if (u == format::mat4 || u == format::mat44) {
+    return 16;
+  }
+  if (u == format::swapchain4) {
+    return 0;
+  }
   return format_channel_count(to_vulkan_format(u));
 }
 
 format_element_type::values element_type(const values u) noexcept {
   switch (u) {
-#define X(name, aspect, vulkan_value, element_type) case values::name : return format_element_type::element_type;
+#define X(name, aspect, vulkan_value, element_type) \
+  case values::name: return format_element_type::element_type;
     DEVILS_ENGINE_PAINTER_FORMAT_NAME_LIST
 #undef X
     default: break;
@@ -928,28 +1030,32 @@ format_element_type::values element_type(const values u) noexcept {
 }
 
 uint32_t to_vulkan_format(const values u) noexcept {
-  if (u >= count) return 0;
+  if (u >= count) {
+    return 0;
+  }
   return format_map[u];
 }
 
 uint32_t to_vulkan_aspect(const values u) noexcept {
-  if (u >= count) return 0;
+  if (u >= count) {
+    return 0;
+  }
   return aspect_map[u];
 }
 
 bool is_depth_vk_format(const uint32_t fmt) noexcept {
   const auto vk_fmt = static_cast<vk::Format>(fmt);
   return vk_fmt == vk::Format::eD16Unorm ||
-    vk_fmt == vk::Format::eD16UnormS8Uint ||
-    vk_fmt == vk::Format::eD24UnormS8Uint ||
-    vk_fmt == vk::Format::eD32Sfloat ||
-    vk_fmt == vk::Format::eD32SfloatS8Uint ||
-    vk_fmt == vk::Format::eX8D24UnormPack32;
+         vk_fmt == vk::Format::eD16UnormS8Uint ||
+         vk_fmt == vk::Format::eD24UnormS8Uint ||
+         vk_fmt == vk::Format::eD32Sfloat ||
+         vk_fmt == vk::Format::eD32SfloatS8Uint ||
+         vk_fmt == vk::Format::eX8D24UnormPack32;
 }
-}
+} // namespace format
 
 uint32_t check(const uint32_t index, const std::string_view& type_hint, const std::string_view& hint, const std::string_view& name_hint) {
-  if (index == INVALID_RESOURCE_SLOT) {
+  if (index == invalid_resource_slot) {
     utils::error{}("Could not find {} '{}', context: {}", type_hint, hint, name_hint);
   }
   return index;
@@ -967,7 +1073,6 @@ size::values check(const size::values index, const std::string_view& hint, const
     utils::error{}("Could not find size '{}', context: {}", hint, name_hint);
   }
   return index;
-
 }
 
 type::values check(const type::values index, const std::string_view& hint, const std::string_view& name_hint) {
@@ -1019,5 +1124,5 @@ command::values check(const command::values index, const std::string_view& hint,
 //  return index;
 //}
 
-}
-}
+} // namespace painter
+} // namespace devils_engine

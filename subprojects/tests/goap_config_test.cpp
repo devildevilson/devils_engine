@@ -1,11 +1,10 @@
-#include <doctest/doctest.h>
-
 #include <filesystem>
 #include <fstream>
 
-#include <devils_script/system.h>
 #include <devils_engine/demiurg/module_system.h>
 #include <devils_engine/demiurg/resource_system.h>
+#include <devils_script/system.h>
+#include <doctest/doctest.h>
 
 #include "core/goap_resource.h"
 

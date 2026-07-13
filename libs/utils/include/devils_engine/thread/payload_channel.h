@@ -6,8 +6,8 @@
 #include <span>
 #include <utility>
 
-#include "spsc_queue.h"
 #include "byte_ring.h"
+#include "spsc_queue.h"
 
 namespace devils_engine {
 namespace thread {
@@ -31,10 +31,14 @@ public:
   // fill может делать несколько memcpy в region (scatter) — layout payload'а на усмотрение вызова.
   template <typename Fill>
   bool write(const size_t size, Fill&& fill) {
-    if (queue_.full()) return false;
+    if (queue_.full()) {
+      return false;
+    }
     std::span<std::byte> region;
     const int64_t pos = arena_.alloc(size, region);
-    if (pos < 0) return false;
+    if (pos < 0) {
+      return false;
+    }
     Msg msg = fill(region, pos);
     return queue_.try_push(std::move(msg));
   }
@@ -51,15 +55,19 @@ public:
     }
   }
 
-  size_t arena_used_approx() const noexcept { return arena_.used_approx(); }
-  size_t queue_size_approx() const noexcept { return queue_.size_approx(); }
+  size_t arena_used_approx() const noexcept {
+    return arena_.used_approx();
+  }
+  size_t queue_size_approx() const noexcept {
+    return queue_.size_approx();
+  }
 
 private:
   spsc_queue<Msg> queue_;
   byte_ring arena_;
 };
 
-}
-}
+} // namespace thread
+} // namespace devils_engine
 
 #endif

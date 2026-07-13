@@ -1,13 +1,11 @@
-#include <doctest/doctest.h>
-
 #include <string>
 #include <string_view>
 
-#include <glm/glm.hpp>
-
-#include <devils_script/system.h>
 #include <devils_script/container.h>
 #include <devils_script/context.h>
+#include <devils_script/system.h>
+#include <doctest/doctest.h>
+#include <glm/glm.hpp>
 
 #include "core/spawn_scope.h"
 
@@ -30,7 +28,7 @@ struct mock_sink : public spawn_sink {
     return devils_engine::aesthetics::entityid_t(42);
   }
 };
-}
+} // namespace
 
 TEST_CASE("devils_script: spawn_at натив спавнит через sink [prefab]") {
   ds::system sys;
@@ -43,7 +41,7 @@ TEST_CASE("devils_script: spawn_at натив спавнит через sink [pr
 
   mock_sink sink;
   ds::context ctx;
-  ctx.set_arg(0, spawn_scope{ &sink }); // root-скоуп несёт способность спавна
+  ctx.set_arg(0, spawn_scope{&sink}); // root-скоуп несёт способность спавна
   cont.process(&ctx);
 
   CHECK(sink.calls == 1);

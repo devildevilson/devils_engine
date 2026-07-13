@@ -1,8 +1,8 @@
-#include "devils_engine/simul/lua_script_resource.h"
-
 #include <algorithm>
 
 #include <devils_engine/demiurg/module_interface.h>
+
+#include "devils_engine/simul/lua_script_resource.h"
 
 namespace devils_engine {
 namespace simul {
@@ -13,7 +13,9 @@ lua_script_resource::lua_script_resource() {
 }
 
 void lua_script_resource::ensure_text_loaded() {
-  if (!text.empty()) return;
+  if (!text.empty()) {
+    return;
+  }
 
   if (is_list_entry()) {
     if (!list_section.empty()) {
@@ -46,7 +48,9 @@ void lua_script_resource::load_cold(const utils::safe_handle_t&) {
 
 void lua_script_resource::load_warm(const utils::safe_handle_t&) {}
 void lua_script_resource::unload_hot(const utils::safe_handle_t&) {}
-void lua_script_resource::unload_warm(const utils::safe_handle_t&) { drop_text(); }
+void lua_script_resource::unload_warm(const utils::safe_handle_t&) {
+  drop_text();
+}
 
-}
-}
+} // namespace simul
+} // namespace devils_engine

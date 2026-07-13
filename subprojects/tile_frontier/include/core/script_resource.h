@@ -3,11 +3,13 @@
 
 #include <string>
 
-#include <devils_engine/demiurg/resource_base.h>
 #include <devils_engine/act/function.h> // act::category
+#include <devils_engine/demiurg/resource_base.h>
 #include <devils_script/container.h>
 
-namespace devils_script { struct system; }
+namespace devils_script {
+struct system;
+}
 
 namespace tile_frontier {
 namespace core {
@@ -27,8 +29,12 @@ class script_resource : public devils_engine::demiurg::resource_interface {
 public:
   explicit script_resource(devils_script::system* sys);
 
-  const devils_script::container* program() const noexcept { return &program_; }
-  devils_engine::act::category category() const noexcept { return category_; }
+  const devils_script::container* program() const noexcept {
+    return &program_;
+  }
+  devils_engine::act::category category() const noexcept {
+    return category_;
+  }
 
   void load_cold(const devils_engine::utils::safe_handle_t& handle) override;
   void load_warm(const devils_engine::utils::safe_handle_t& handle) override;
@@ -41,7 +47,7 @@ private:
   devils_engine::act::category category_ = devils_engine::act::category::predicate;
 };
 
-}
-}
+} // namespace core
+} // namespace tile_frontier
 
 #endif

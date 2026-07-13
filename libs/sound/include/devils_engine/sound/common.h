@@ -1,20 +1,25 @@
 #ifndef DEVILS_ENGINE_SOUND_COMMON_H
 #define DEVILS_ENGINE_SOUND_COMMON_H
 
-#include <cstdint>
-#include <cstddef>
 #include <climits>
+#include <cstddef>
+#include <cstdint>
 
 namespace devils_engine {
 namespace sound {
 
 enum class format {
-  unknown, u8, s16, s24, s32, f32
+  unknown,
+  u8,
+  s16,
+  s24,
+  s32,
+  f32
 };
 
 constexpr format bits_per_sample_to_format(const size_t bits, const bool isfloat = true) noexcept {
   switch (bits) {
-    case 8 : return format::u8;
+    case 8: return format::u8;
     case 16: return format::s16;
     case 24: return format::s24;
     case 32: return isfloat ? format::f32 : format::s32;
@@ -30,7 +35,7 @@ constexpr size_t format_to_bytes(const enum format format) noexcept {
     case format::s16: sample_size = sizeof(int16_t); break;
     case format::s24: sample_size = sizeof(int16_t) + sizeof(int8_t); break;
     case format::s32: sample_size = sizeof(int32_t); break;
-    case format::u8 : sample_size = sizeof(uint8_t); break;
+    case format::u8: sample_size = sizeof(uint8_t); break;
     case format::unknown: break;
   }
 
@@ -66,7 +71,7 @@ constexpr size_t bytes_to_pcm_frames(const size_t bytes, const uint32_t channels
 }
 
 struct vec3 {
-  float x,y,z;
+  float x, y, z;
 
   vec3() noexcept;
   vec3(const float x, const float y, const float z) noexcept;
@@ -74,10 +79,10 @@ struct vec3 {
   // ???
 };
 
-vec3 operator-(const vec3 &a, const vec3 &b) noexcept;
-float dot2(const vec3 &a, const vec3 &b) noexcept;
-float distance2(const vec3 &a, const vec3 &b) noexcept;
-vec3 normalize(const vec3 &a) noexcept;
+vec3 operator-(const vec3& a, const vec3& b) noexcept;
+float dot2(const vec3& a, const vec3& b) noexcept;
+float distance2(const vec3& a, const vec3& b) noexcept;
+vec3 normalize(const vec3& a) noexcept;
 
 enum class type {
   music,
@@ -92,21 +97,21 @@ enum class type {
 double compute_base_priority(const enum type type) noexcept; // [0,1]
 
 #define SOUND_SYSTEM_EXTENSION_LIST \
-  X(mp3)  \
-  X(flac) \
-  X(wav)  \
-  X(ogg)  \
-  X(opus) \
-  X(pcm)  \
+  X(mp3)                            \
+  X(flac)                           \
+  X(wav)                            \
+  X(ogg)                            \
+  X(opus)                           \
+  X(pcm)
 
 enum class data_type {
 #define X(name) name,
   SOUND_SYSTEM_EXTENSION_LIST
 #undef X
 
-  undefined
+    undefined
 };
-}
-}
+} // namespace sound
+} // namespace devils_engine
 
 #endif

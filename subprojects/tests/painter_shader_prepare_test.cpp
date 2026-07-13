@@ -1,15 +1,15 @@
-#include <doctest/doctest.h>
-
 #include <filesystem>
 #include <fstream>
-#include <shaderc/shaderc.h>
 #include <vector>
 
+#include <doctest/doctest.h>
+#include <shaderc/shaderc.h>
+
+#include "devils_engine/demiurg/module_system.h"
+#include "devils_engine/demiurg/resource_system.h"
 #include "devils_engine/painter/glsl_source_file.h"
 #include "devils_engine/painter/render_config_source.h"
 #include "devils_engine/painter/structures.h"
-#include "devils_engine/demiurg/module_system.h"
-#include "devils_engine/demiurg/resource_system.h"
 
 using namespace devils_engine;
 
@@ -45,7 +45,7 @@ TEST_CASE("shader_crafter serves utils shared header from generated memory inclu
     "#include <utils/shared.h>\n"
     "layout(location = 0) out vec4 out_color;\n"
     "void main() {\n"
-    "  const uint id = tex_pack(UI_DRAW_IMAGE, 3u, true, false, SAMPLER_LINEAR);\n"
+    "  const uint id = tex_pack(ui_draw_image, 3u, true, false, sampler_linear);\n"
     "  const float v = valid_gpu_index(tex_index_of(id)) && tex_mirror_u_of(id) ? median3(0.25, 0.5, 0.75) : 0.0;\n"
     "  out_color = get_color(make_color(v, float(tex_type_of(id)) / 8.0, float(tex_sampler_of(id)), 1.0));\n"
     "}\n";
@@ -152,13 +152,15 @@ TEST_CASE("painter render config reads demiurg tavl list subresources [painter]"
 
   std::vector<painter::render_config_source*> sources;
   resources.find<painter::render_config_source>("render_config", sources);
-  for (auto* src : sources) src->load(utils::safe_handle_t{});
+  for (auto* src : sources) {
+    src->load(utils::safe_handle_t{});
+  }
 
   const auto storage = painter::build_render_config(&resources, "render_config/");
-  CHECK(storage.find_resource("swapchain_image") != painter::INVALID_RESOURCE_SLOT);
-  CHECK(storage.find_resource("albedo_res") != painter::INVALID_RESOURCE_SLOT);
-  CHECK(storage.find_render_target("rt1") != painter::INVALID_RESOURCE_SLOT);
-  CHECK(storage.find_render_graph("graphics1") != painter::INVALID_RESOURCE_SLOT);
+  CHECK(storage.find_resource("swapchain_image") != painter::invalid_resource_slot);
+  CHECK(storage.find_resource("albedo_res") != painter::invalid_resource_slot);
+  CHECK(storage.find_render_target("rt1") != painter::invalid_resource_slot);
+  CHECK(storage.find_render_graph("graphics1") != painter::invalid_resource_slot);
   CHECK(swapchain->state() == demiurg::state::warm);
   CHECK(albedo->state() == demiurg::state::warm);
   CHECK(swapchain->text.empty());
@@ -167,8 +169,8 @@ TEST_CASE("painter render config reads demiurg tavl list subresources [painter]"
   CHECK(albedo->list_section.empty());
 
   const auto storage2 = painter::build_render_config(&resources, "render_config/");
-  CHECK(storage2.find_resource("swapchain_image") != painter::INVALID_RESOURCE_SLOT);
-  CHECK(storage2.find_resource("albedo_res") != painter::INVALID_RESOURCE_SLOT);
+  CHECK(storage2.find_resource("swapchain_image") != painter::invalid_resource_slot);
+  CHECK(storage2.find_resource("albedo_res") != painter::invalid_resource_slot);
   CHECK(swapchain->state() == demiurg::state::warm);
   CHECK(albedo->state() == demiurg::state::warm);
   CHECK(swapchain->text.empty());

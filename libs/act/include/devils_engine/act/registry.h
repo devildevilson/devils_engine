@@ -4,7 +4,9 @@
 #include <memory>
 #include <string>
 #include <string_view>
+
 #include <gtl/phmap.hpp>
+
 #include "devils_engine/utils/string_id.h" // utils::id, string_hash
 #include "function.h"
 
@@ -28,21 +30,22 @@ public:
 
   // generic-доступ (nullptr если нет).
   const function_base* get(const fn_id id) const noexcept;
-  bool has(const fn_id id) const noexcept { return get(id) != nullptr; }
+  bool has(const fn_id id) const noexcept;
 
   // типизированный доступ с проверкой категории (nullptr при несовпадении категории).
   template <typename RetT>
   const function<RetT>* get_typed(const fn_id id) const noexcept {
     const auto* f = get(id);
     return (f != nullptr && f->cat == detail::category_of<RetT>())
-      ? static_cast<const function<RetT>*>(f) : nullptr;
+             ? static_cast<const function<RetT>*>(f)
+             : nullptr;
   }
 
-  const predicate_function* predicate(const fn_id id) const noexcept { return get_typed<bool>(id); }
-  const number_function*    number(const fn_id id)    const noexcept { return get_typed<real_t>(id); }
-  const effect_function*    effect(const fn_id id)    const noexcept { return get_typed<void>(id); }
-  const string_function*    string_fn(const fn_id id) const noexcept { return get_typed<utils::id>(id); }
-  const object_function*    object(const fn_id id)    const noexcept { return get_typed<entity_id>(id); }
+  const predicate_function* predicate(const fn_id id) const noexcept;
+  const number_function* number(const fn_id id) const noexcept;
+  const effect_function* effect(const fn_id id) const noexcept;
+  const string_function* string_fn(const fn_id id) const noexcept;
+  const object_function* object(const fn_id id) const noexcept;
 
 private:
   gtl::flat_hash_map<fn_id, std::unique_ptr<function_base>> functions;
@@ -51,7 +54,7 @@ private:
   gtl::flat_hash_map<fn_id, std::string> names_;
 };
 
-}
-}
+} // namespace act
+} // namespace devils_engine
 
 #endif

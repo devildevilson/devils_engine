@@ -1,14 +1,14 @@
-#include "shader_crafter.h"
-
 #include <cstring>
 #include <memory>
 #include <string_view>
-#include <shaderc/shaderc.hpp>
-#include "devils_engine/painter/bindings_shared_include_text.h"
-#include "devils_engine/demiurg/resource_system.h"
-#include "glsl_source_file.h"
 
+#include <shaderc/shaderc.hpp>
+
+#include "devils_engine/demiurg/resource_system.h"
+#include "devils_engine/painter/bindings_shared_include_text.h"
 #include "devils_engine/utils/core.h"
+#include "glsl_source_file.h"
+#include "shader_crafter.h"
 
 namespace devils_engine {
 namespace painter {
@@ -24,7 +24,7 @@ shaderc_include_result* make_empty_include_result() {
   return result;
 }
 
-}
+} // namespace
 
 class simple_shader_includer : public shaderc::CompileOptions::IncluderInterface {
 public:
@@ -34,8 +34,7 @@ public:
     const char* requested_source, // запрашиваемый файл
     shaderc_include_type,
     const char* requesting_source, // файл который запрашивает
-    size_t include_depth
-  ) override {
+    size_t include_depth) override {
     // со стороны шейдера к нам приходит запрос на включение файлов
     // скорее всего мы все пути будем обрабатывать одинаково
     // откуда берет инклюдер пути? из демиурга
@@ -62,14 +61,20 @@ public:
     // я всегда должен возвращать валидную память
     auto result = make_empty_include_result();
 
-    if (_sys == nullptr) return result;
+    if (_sys == nullptr) {
+      return result;
+    }
 
     // мы указываем поиск во всех системах "добавления" исходного кода
     // предполагается что пользователь знает точный путь до файла и должен его указать
     // + даже при этом удобно искать именно список
     const size_t count = _sys->find<glsl_source_file>(file_name, files);
-    if (count > 1) return result;
-    if (count == 0) return result;
+    if (count > 1) {
+      return result;
+    }
+    if (count == 0) {
+      return result;
+    }
 
     auto file = files[0];
 
@@ -113,19 +118,20 @@ void shader_crafter::set_shader_entry_point(std::string entry_point) {
   _entry_point = std::move(entry_point);
 }
 
-std::vector<uint32_t> shader_crafter::compile(const std::string &source_name, const std::string &source) {
+std::vector<uint32_t> shader_crafter::compile(const std::string& source_name, const std::string& source) {
   shaderc::Compiler compiler;
   shaderc::CompileOptions options;
 
-  for (const auto &[name, value] : _definitions) {
+  for (const auto& [name, value] : _definitions) {
     options.AddMacroDefinition(name, value);
   }
 
   options.SetTargetEnvironment(shaderc_target_env_vulkan, 0);
   //options.SetTargetSpirv(shaderc_spirv_version_1_6);
   options.SetTargetSpirv(shaderc_spirv_version_1_0);
-  if (_opt)
+  if (_opt) {
     options.SetOptimizationLevel(shaderc_optimization_level_performance);
+  }
 
   options.SetIncluder(std::make_unique<simple_shader_includer>(_sys));
   const auto kind = static_cast<shaderc_shader_kind>(_type);
@@ -149,8 +155,12 @@ std::vector<uint32_t> shader_crafter::compile(const std::string &source_name, co
 }
 
 // было бы неплохо схранить статус ошибки где нибудь
-uint32_t shader_crafter::err_type() const { return _err_type; }
-const std::string& shader_crafter::err_msg() const { return _err; }
+uint32_t shader_crafter::err_type() const {
+  return _err_type;
+}
+const std::string& shader_crafter::err_msg() const {
+  return _err;
+}
 
-}
-}
+} // namespace painter
+} // namespace devils_engine

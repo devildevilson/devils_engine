@@ -1,19 +1,20 @@
 #include "atomic_pool.h"
 
-constexpr auto ATOMIC_ONLY = std::memory_order_relaxed;
-constexpr auto PUBLISH = std::memory_order_release;
-constexpr auto CONSUME = std::memory_order_acquire;
-constexpr auto PUB_CONSUME = std::memory_order_acq_rel;
+constexpr auto consume = std::memory_order_acquire;
+constexpr auto publish_consume = std::memory_order_acq_rel;
 
 // MSVC alignof(std::max_align_t) == alignof(double), WTF dude?
-constexpr size_t standart_aligment = 16;
+constexpr size_t standard_alignment = 16;
 
 namespace devils_engine {
 namespace thread {
 
-atomic_pool::atomic_pool(const size_t thread_count) : stack_pool(MAXIMUM_TASK_SIZE * MAXIMUM_TASK_COUNT, MAXIMUM_TASK_SIZE, standart_aligment), busy_count(0), pending(0) {
+atomic_pool::atomic_pool(const size_t thread_count)
+  : stack_pool(maximum_task_size * maximum_task_count, maximum_task_size, standard_alignment),
+    busy_count(0),
+    pending(0) {
   for (size_t i = 0; i < thread_count; ++i) {
-    workers.emplace_back([this] (std::stop_token stoken) {
+    workers.emplace_back([this](std::stop_token stoken) {
       size_t spins = 0;
 
       while (!stoken.stop_requested()) {
@@ -22,15 +23,15 @@ atomic_pool::atomic_pool(const size_t thread_count) : stack_pool(MAXIMUM_TASK_SI
         if (queue.try_pop(task)) {
           assert(task != nullptr);
           spins = 0;
-          busy_count.fetch_add(1ull, PUB_CONSUME);
+          busy_count.fetch_add(1ull, publish_consume);
           task->process();
           stack_pool.destroy(task); // вернем память
-          busy_count.fetch_sub(1ull, PUB_CONSUME);
-          pending.fetch_sub(1ull, PUB_CONSUME); // задача завершена — снять «в полёте»
+          busy_count.fetch_sub(1ull, publish_consume);
+          pending.fetch_sub(1ull, publish_consume); // задача завершена — снять «в полёте»
           continue;
         }
 
-        if (spins < WORKER_SPIN_COUNT) {
+        if (spins < worker_spin_count) {
           spins += 1;
           std::this_thread::yield();
           continue;
@@ -42,21 +43,24 @@ atomic_pool::atomic_pool(const size_t thread_count) : stack_pool(MAXIMUM_TASK_SI
           // ВАЖНО: было `!stoken.stop_requested()` — предикат почти всегда true → wait возвращался
           // мгновенно, воркер вечно спинил и жёг ядро. Должно быть `stop_requested()`.
           std::unique_lock lk(cv_mtx);
-          cv.wait(lk, [&] { return queue.try_pop(task) || stoken.stop_requested(); });
+          cv.wait(lk, [&] {
+            return queue.try_pop(task) || stoken.stop_requested();
+          });
         }
 
         spins = 0;
 
         if (task != nullptr) {
-          busy_count.fetch_add(1ull, PUB_CONSUME);
+          busy_count.fetch_add(1ull, publish_consume);
           task->process();
           stack_pool.destroy(task); // вернем память
-          busy_count.fetch_sub(1ull, PUB_CONSUME);
-          pending.fetch_sub(1ull, PUB_CONSUME); // задача завершена — снять «в полёте»
+          busy_count.fetch_sub(1ull, publish_consume);
+          pending.fetch_sub(1ull, publish_consume); // задача завершена — снять «в полёте»
           continue;
         }
       }
-    }, stop_source.get_token());
+    },
+                         stop_source.get_token());
   }
 }
 
@@ -64,7 +68,9 @@ atomic_pool::~atomic_pool() noexcept {
   stop_source.request_stop();
   // тот же барьер: гарантируем, что воркер, засыпающий прямо сейчас, увидит stop и не проспит
   // notify_all (иначе jthread не завершится и join в векторе workers зависнет).
-  { std::lock_guard<std::mutex> lk(cv_mtx); }
+  {
+    std::lock_guard<std::mutex> lk(cv_mtx);
+  }
   cv.notify_all();
 }
 
@@ -74,13 +80,17 @@ atomic_pool::~atomic_pool() noexcept {
 //}
 
 void atomic_pool::submitbase(task_interface* t) noexcept {
-  if (stop_source.stop_requested()) return;
-  pending.fetch_add(1ull, PUB_CONSUME); // считаем задачу «в полёте» ДО того, как она станет видна воркеру
+  if (stop_source.stop_requested()) {
+    return;
+  }
+  pending.fetch_add(1ull, publish_consume); // считаем задачу «в полёте» ДО того, как она станет видна воркеру
   queue.push(t);
   // Пустой захват cv_mtx = барьер против потери пробуждения: если воркер сейчас между
   // «предикат вернул false» и собственно засыпанием (он держит cv_mtx), notify не потеряется —
   // мы дождёмся, пока он реально заснёт (отпустит mtx внутри wait), и только тогда разбудим.
-  { std::lock_guard<std::mutex> lk(cv_mtx); }
+  {
+    std::lock_guard<std::mutex> lk(cv_mtx);
+  }
   cv.notify_one();
 }
 
@@ -95,11 +105,11 @@ void atomic_pool::compute() {
       spins = 0;
       task->process();
       stack_pool.destroy(task);
-      pending.fetch_sub(1ull, PUB_CONSUME); // caller-drain: тоже снять «в полёте»
+      pending.fetch_sub(1ull, publish_consume); // caller-drain: тоже снять «в полёте»
       continue;
     }
 
-    if (spins < WORKER_SPIN_COUNT) {
+    if (spins < worker_spin_count) {
       spins += 1;
       std::this_thread::yield();
       continue;
@@ -118,11 +128,11 @@ void atomic_pool::compute(const size_t count) {
       spins = 0;
       task->process();
       stack_pool.destroy(task);
-      pending.fetch_sub(1ull, PUB_CONSUME); // caller-drain: тоже снять «в полёте»
+      pending.fetch_sub(1ull, publish_consume); // caller-drain: тоже снять «в полёте»
       continue;
     }
 
-    if (spins < WORKER_SPIN_COUNT) {
+    if (spins < worker_spin_count) {
       spins += 1;
       std::this_thread::yield();
       continue;
@@ -133,7 +143,7 @@ void atomic_pool::compute(const size_t count) {
 void atomic_pool::wait() noexcept {
   // pending = субмитнутые-но-не-завершённые (очередь + в работе), считается атомарно с submitbase,
   // без окна между «вынул из очереди» и «отметил занятым» → wait() не вернётся раньше времени.
-  while (pending.load(CONSUME) != 0) {
+  while (pending.load(consume) != 0) {
     std::this_thread::sleep_for(std::chrono::microseconds(1));
   }
 }
@@ -145,16 +155,26 @@ bool atomic_pool::is_dependent(const std::thread::id id) const noexcept {
 uint32_t atomic_pool::thread_index(const std::thread::id id) const noexcept {
   uint32_t i = 0;
   for (; i < workers.size(); ++i) {
-    if (id == workers[i].get_id()) return i + 1;
+    if (id == workers[i].get_id()) {
+      return i + 1;
+    }
   }
 
   return 0;
 }
 
-size_t atomic_pool::size() const noexcept { return workers.size(); }
-size_t atomic_pool::tasks_count() const noexcept { return queue.was_size(); }
-size_t atomic_pool::working_count() const noexcept { return busy_count.load(CONSUME); }
-size_t atomic_pool::queue_capacity() const noexcept { return queue.capacity(); }
+size_t atomic_pool::size() const noexcept {
+  return workers.size();
+}
+size_t atomic_pool::tasks_count() const noexcept {
+  return queue.was_size();
+}
+size_t atomic_pool::working_count() const noexcept {
+  return busy_count.load(consume);
+}
+size_t atomic_pool::queue_capacity() const noexcept {
+  return queue.capacity();
+}
 
-}
-}
+} // namespace thread
+} // namespace devils_engine

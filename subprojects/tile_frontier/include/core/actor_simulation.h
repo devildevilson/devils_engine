@@ -10,29 +10,42 @@
 #include <string_view>
 #include <vector>
 
-#include <glm/glm.hpp>
-
-#include <devils_engine/aesthetics/world.h>
-#include <devils_engine/aesthetics/sink.h>   // serial::sink_policy/seal/unseal — save/load слайса
-#include <devils_engine/act/registry.h>     // act::registry + function<RetT>
-#include <devils_engine/act/intent.h>       // act::intent — обобщённый буфер интентов
-#include <devils_engine/acumen/system.h>    // acumen::system — GOAP над act::registry
+#include <devils_engine/act/intent.h>   // act::intent — обобщённый буфер интентов
+#include <devils_engine/act/registry.h> // act::registry + function<RetT>
 #include <devils_engine/acumen/execution_scratch.h>
 #include <devils_engine/acumen/registry.h>
-#include <devils_engine/mood/system.h>      // mood::system — FSM-исполнитель (состояние/анимация/звук)
+#include <devils_engine/acumen/system.h>   // acumen::system — GOAP над act::registry
+#include <devils_engine/aesthetics/sink.h> // serial::sink_policy/seal/unseal — save/load слайса
+#include <devils_engine/aesthetics/world.h>
 #include <devils_engine/mood/registry.h>
+#include <devils_engine/mood/system.h>            // mood::system — FSM-исполнитель (состояние/анимация/звук)
 #include <devils_engine/prefab/prefab_registry.h> // prefab::prefab_registry — рецепт сборки энтити (spawn_at)
-#include <devils_engine/utils/kd_tree.h>    // utils::kd_tree — пространственный акселератор sense
+#include <devils_engine/utils/kd_tree.h>          // utils::kd_tree — пространственный акселератор sense
+#include <glm/glm.hpp>
 
 #include "draw_intent.h"
-#include "tile_map.h"
 #include "spawn_scope.h" // spawn_sink — слайс = мутабельная способность спавна для ds-натива spawn_at
+#include "tile_map.h"
 
-namespace devils_engine { namespace thread { class atomic_pool; } } // MT-пул для cognition
-namespace devils_engine { namespace catalogue { class statistics_store; } } // perf-стат апдейта актора
-namespace devils_script { struct container; } // скомпилированный скрипт-предикат (заимствуется)
+namespace devils_engine {
+namespace thread {
+class atomic_pool;
+}
+} // namespace devils_engine
+namespace devils_engine {
+namespace catalogue {
+class statistics_store;
+}
+} // namespace devils_engine
+namespace devils_script {
+struct container;
+} // namespace devils_script
 
-namespace tile_frontier { namespace core { struct goap_config; } } // GOAP-описание из tavl (goap_resource.h)
+namespace tile_frontier {
+namespace core {
+struct goap_config;
+}
+} // namespace tile_frontier
 
 namespace tile_frontier {
 namespace core {
@@ -52,9 +65,9 @@ struct actor_position {
 // actor — seed-производные brain/visual/stats). Еда использует только pos (остальное дефолт).
 struct spawn_args {
   glm::vec2 pos{0.0f, 0.0f};
-  uint32_t seed = 0;       // зерно per-instance разброса (actor: brain/stats/size)
-  uint32_t index = 0;      // порядковый номер (actor: палитра цвета + слот текстуры)
-  uint32_t tex_count = 1;  // число текстур (actor: (index+1) % tex_count)
+  uint32_t seed = 0;      // зерно per-instance разброса (actor: brain/stats/size)
+  uint32_t index = 0;     // порядковый номер (actor: палитра цвета + слот текстуры)
+  uint32_t tex_count = 1; // число текстур (actor: (index+1) % tex_count)
 };
 
 struct actor_velocity {
@@ -188,15 +201,25 @@ public:
   instance_layout::match_result bind(const std::string_view& layout = "v2ui1c4v1") {
     return intent_.bind(layout);
   }
-  bool valid() const noexcept { return intent_.valid(); }
+  bool valid() const noexcept {
+    return intent_.valid();
+  }
 
   // tick нужен для анимации (синусоида масштаба по текущему состоянию FSM, выводимая, не хранимая).
   void build(const devils_engine::aesthetics::world& world, uint64_t tick);
 
-  std::span<const actor_instance> instances() const noexcept { return instances_; }
-  std::span<const uint32_t> ids() const noexcept { return ids_; }
-  uint32_t count() const noexcept { return uint32_t(instances_.size()); }
-  static constexpr uint32_t stride() noexcept { return draw_intent<actor_instance>::stride(); }
+  std::span<const actor_instance> instances() const noexcept {
+    return instances_;
+  }
+  std::span<const uint32_t> ids() const noexcept {
+    return ids_;
+  }
+  uint32_t count() const noexcept {
+    return uint32_t(instances_.size());
+  }
+  static constexpr uint32_t stride() noexcept {
+    return draw_intent<actor_instance>::stride();
+  }
 
   std::size_t blit(const std::span<uint8_t>& dst) const {
     return intent_.blit(std::span<const actor_instance>(instances_), dst);
@@ -236,8 +259,12 @@ public:
   devils_engine::aesthetics::entityid_t spawn_prefab(std::string_view name, glm::vec2 pos) override;
   actor_metrics update(float dt_seconds, actor_batch& batch, devils_engine::thread::atomic_pool& pool);
 
-  devils_engine::aesthetics::world& ecs() noexcept { return world_; }
-  const devils_engine::aesthetics::world& ecs() const noexcept { return world_; }
+  devils_engine::aesthetics::world& ecs() noexcept {
+    return world_;
+  }
+  const devils_engine::aesthetics::world& ecs() const noexcept {
+    return world_;
+  }
 
   // ── save/load полного состояния слайса (мир + не-ECS скаляры) ──
   // Слоистая схема сериализатора: dump_world кладёт компоненты, следом свой дампер кладёт
@@ -251,7 +278,9 @@ public:
   bool load(std::span<const uint8_t> packet);
 
   // sim-звуки этого тика (вход в состояние FSM). Презентационный мост дренажит после update().
-  std::span<const sound_emit> sound_events() const noexcept { return sound_emits_; }
+  std::span<const sound_emit> sound_events() const noexcept {
+    return sound_emits_;
+  }
 
 private:
   // Регистрирует нативные геймплейные функции (предикаты-метрики + эффекты-действия)
@@ -284,7 +313,7 @@ private:
   void rebuild_obstacle_cache();
 
   devils_engine::aesthetics::world world_;
-  devils_engine::act::registry registry_;        // общий реестр геймплейных функций (см. libs/act)
+  devils_engine::act::registry registry_; // общий реестр геймплейных функций (см. libs/act)
   devils_engine::acumen::registry goap_registry_;
   devils_engine::mood::registry fsm_registry_;
   const devils_engine::acumen::system* goap_ = nullptr; // выбранный профиль слайса (per-entity ref позже)
@@ -292,8 +321,8 @@ private:
   // kD-дерево слоя восприятия: перестраивается раз за тик, отвечает на «ближайший
   // крупнее/мельче в радиусе» с прунингом. Арена реюзится. Читается воркерами конкурентно.
   devils_engine::utils::kd_tree<perception_target> sense_tree_;
-  std::vector<devils_engine::act::intent> intents_;   // обобщённый буфер интентов (sort by actor id)
-  std::vector<sound_emit> sound_emits_;               // sim-звуки тика (вход в состояние FSM)
+  std::vector<devils_engine::act::intent> intents_; // обобщённый буфер интентов (sort by actor id)
+  std::vector<sound_emit> sound_emits_;             // sim-звуки тика (вход в состояние FSM)
 
   // ── per-thread scratch для MT-cognition (индекс = pool.thread_index: 0=вызывающий, 1..=воркеры) ──
   // Полный GOAP worker scratch: A*, cache и act execution_scratch (ds VM + mutable call frame).
@@ -316,18 +345,24 @@ private:
   // бюджет: потолок обдумываний/тик (спайк-сейфти). ДОЛЖЕН быть ≥ спроса (N/commit), иначе
   // узким местом станет бюджет, а не коммит, и лаг вернётся к N/budget. count-budget → детерм.
   uint32_t think_budget_ = 2048;
-  struct think_request { uint64_t overdue; devils_engine::aesthetics::entityid_t actor; };
+  struct think_request {
+    uint64_t overdue;
+    devils_engine::aesthetics::entityid_t actor;
+  };
   std::vector<think_request> due_; // переиспользуемый скретч отбора
 
   uint64_t tick_ = 0;
 
   // ── еда и препятствия (C2) ──
-  glm::vec2 spawn_min_{0.0f, 0.0f};   // границы спавна (для респавна еды), заданы в init
+  glm::vec2 spawn_min_{0.0f, 0.0f}; // границы спавна (для респавна еды), заданы в init
   glm::vec2 spawn_max_{0.0f, 0.0f};
-  uint32_t  food_target_ = 0;         // целевое число еды на карте (поддерживается респавном)
-  uint64_t  food_spawn_seq_ = 0;      // счётчик спавнов — детерминированный поток позиций еды
-  uint32_t  texture_count_ = 1;       // запомненное число текстур (для визуала еды/спавна)
-  struct obstacle_disc { glm::vec2 pos; float radius; }; // плоский кэш препятствий для коллизии
+  uint32_t food_target_ = 0;    // целевое число еды на карте (поддерживается респавном)
+  uint64_t food_spawn_seq_ = 0; // счётчик спавнов — детерминированный поток позиций еды
+  uint32_t texture_count_ = 1;  // запомненное число текстур (для визуала еды/спавна)
+  struct obstacle_disc {
+    glm::vec2 pos;
+    float radius;
+  }; // плоский кэш препятствий для коллизии
   std::vector<obstacle_disc> obstacles_;
 };
 

@@ -2,11 +2,10 @@
 #define DEVILS_ENGINE_SOUND_SOUND_RESOURCE_H
 
 #include <cstdint>
-#include <vector>
 #include <span>
+#include <vector>
 
 #include "devils_engine/demiurg/resource_base.h"
-
 #include "resource.h" // resource2 + data_type (через common.h)
 
 namespace devils_engine {
@@ -36,12 +35,10 @@ public:
   void unload_hot(const utils::safe_handle_t& handle) override;
   void unload_warm(const utils::safe_handle_t& handle) override;
 
-  resource2 view() const noexcept {
-    return resource2{ id, type, std::span<const char>(data), sample_format, channels, sample_rate, frames_count };
-  }
+  resource2 view() const noexcept;
 };
 
-}
-}
+} // namespace sound
+} // namespace devils_engine
 
 #endif

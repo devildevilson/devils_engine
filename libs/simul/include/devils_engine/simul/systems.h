@@ -1,6 +1,8 @@
 #ifndef DEVILS_ENGINE_SIMUL_SYSTEMS_H
 #define DEVILS_ENGINE_SIMUL_SYSTEMS_H
 
+// Generic main/render/sound/assets system interfaces parameterized by a broker.
+
 #include <cstddef>
 
 #include <devils_engine/simul/interface.h>
@@ -16,9 +18,15 @@ public:
   brokered_advancer() noexcept = default;
   explicit brokered_advancer(const size_t frame_time) noexcept : advancer(frame_time) {}
 
-  virtual void set_broker(Broker* b) { broker_ = b; }
-  Broker* broker() noexcept { return broker_; }
-  const Broker* broker() const noexcept { return broker_; }
+  virtual void set_broker(Broker* b) {
+    broker_ = b;
+  }
+  Broker* broker() noexcept {
+    return broker_;
+  }
+  const Broker* broker() const noexcept {
+    return broker_;
+  }
 
 protected:
   Broker* broker_ = nullptr;
@@ -48,7 +56,7 @@ public:
   using brokered_advancer<Broker>::brokered_advancer;
 };
 
-}
-}
+} // namespace simul
+} // namespace devils_engine
 
 #endif

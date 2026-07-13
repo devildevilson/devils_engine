@@ -1,8 +1,11 @@
 #ifndef DEVILS_ENGINE_SIMUL_RENDER_CONFIG_H
 #define DEVILS_ENGINE_SIMUL_RENDER_CONFIG_H
 
+// Project-facing configuration values consumed by the standard render runtime.
+
 #include <cstdint>
 #include <string>
+
 #include <vulkan/vulkan_core.h>
 
 namespace devils_engine {
@@ -32,7 +35,7 @@ struct render_system_config {
   bool headless = false;
 };
 
-}
-}
+} // namespace simul
+} // namespace devils_engine
 
 #endif

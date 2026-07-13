@@ -39,15 +39,23 @@ struct tile_grid {
   std::vector<tile> tiles; // row-major, размер = width*height
 
   void resize(const uint32_t w, const uint32_t h);
-  bool in_bounds(const uint32_t x, const uint32_t y) const noexcept { return x < width && y < height; }
-  tile& at(const uint32_t x, const uint32_t y) noexcept { return tiles[size_t(y) * width + x]; }
-  const tile& at(const uint32_t x, const uint32_t y) const noexcept { return tiles[size_t(y) * width + x]; }
+  bool in_bounds(const uint32_t x, const uint32_t y) const noexcept {
+    return x < width && y < height;
+  }
+  tile& at(const uint32_t x, const uint32_t y) noexcept {
+    return tiles[size_t(y) * width + x];
+  }
+  const tile& at(const uint32_t x, const uint32_t y) const noexcept {
+    return tiles[size_t(y) * width + x];
+  }
 
   glm::vec2 world_center(const uint32_t x, const uint32_t y) const noexcept {
     return glm::vec2((float(x) + 0.5f) * tile_size, (float(y) + 0.5f) * tile_size);
   }
   // мировой размер всей карты
-  glm::vec2 world_extent() const noexcept { return glm::vec2(float(width), float(height)) * tile_size; }
+  glm::vec2 world_extent() const noexcept {
+    return glm::vec2(float(width), float(height)) * tile_size;
+  }
 };
 
 struct chunk_coord {
@@ -63,9 +71,15 @@ struct tile_chunk {
   uint32_t size = 0;
   std::vector<tile> tiles;
 
-  bool valid() const noexcept { return size != 0 && tiles.size() == size_t(size) * size; }
-  tile& at(const uint32_t x, const uint32_t y) noexcept { return tiles[size_t(y) * size + x]; }
-  const tile& at(const uint32_t x, const uint32_t y) const noexcept { return tiles[size_t(y) * size + x]; }
+  bool valid() const noexcept {
+    return size != 0 && tiles.size() == size_t(size) * size;
+  }
+  tile& at(const uint32_t x, const uint32_t y) noexcept {
+    return tiles[size_t(y) * size + x];
+  }
+  const tile& at(const uint32_t x, const uint32_t y) const noexcept {
+    return tiles[size_t(y) * size + x];
+  }
 };
 
 // Mock "asset load": детерминированно генерирует содержимое чанка на CPU. Реальная версия позже
@@ -73,8 +87,7 @@ struct tile_chunk {
 tile_chunk generate_mock_chunk(
   chunk_coord coord,
   uint32_t chunk_size,
-  std::span<const devils_engine::demiurg::resource_handle> textures
-);
+  std::span<const devils_engine::demiurg::resource_handle> textures);
 
 // Скопировать чанк в глобальную сетку. Часть чанка за границей grid молча отбрасывается.
 void apply_chunk(tile_grid& grid, const tile_chunk& chunk);
@@ -82,10 +95,18 @@ void apply_chunk(tile_grid& grid, const tile_chunk& chunk);
 // Прямоугольный срез сетки: полуоткрытый диапазон [x0,x1) x [y0,y1).
 struct tile_span {
   uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-  uint32_t width() const noexcept { return x1 - x0; }
-  uint32_t height() const noexcept { return y1 - y0; }
-  uint32_t count() const noexcept { return width() * height(); }
-  bool empty() const noexcept { return x1 <= x0 || y1 <= y0; }
+  uint32_t width() const noexcept {
+    return x1 - x0;
+  }
+  uint32_t height() const noexcept {
+    return y1 - y0;
+  }
+  uint32_t count() const noexcept {
+    return width() * height();
+  }
+  bool empty() const noexcept {
+    return x1 <= x0 || y1 <= y0;
+  }
 };
 
 // Ортографическая top-down камера. center — точка в мире, на которую смотрим;
@@ -95,11 +116,17 @@ struct camera2d {
   float half_width = 8.0f;
   float aspect = 16.0f / 9.0f; // width/height вьюпорта
 
-  float half_height() const noexcept { return half_width / aspect; }
+  float half_height() const noexcept {
+    return half_width / aspect;
+  }
 
   // Видимая область как мировой AABB. min = левый-нижний угол, max = правый-верхний.
-  glm::vec2 view_min() const noexcept { return center - glm::vec2(half_width, half_height()); }
-  glm::vec2 view_max() const noexcept { return center + glm::vec2(half_width, half_height()); }
+  glm::vec2 view_min() const noexcept {
+    return center - glm::vec2(half_width, half_height());
+  }
+  glm::vec2 view_max() const noexcept {
+    return center + glm::vec2(half_width, half_height());
+  }
 
   // Матрица world(xy) -> clip. Понадобится render-стороне (шейдер трансформирует tile_instance.pos).
   glm::mat4 view_proj() const;

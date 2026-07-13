@@ -1,17 +1,16 @@
 #ifndef DEVILS_ENGINE_SIMUL_MAIN_RUNTIME_H
 #define DEVILS_ENGINE_SIMUL_MAIN_RUNTIME_H
 
+// Shared bootstrap helpers for project main loops and engine registries.
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <thread>
 #include <vector>
-#include <filesystem>
-
-#include <tavl/deserialize.h>
-#include <tavl/serialize.h>
 
 #include <devils_engine/catalogue/logging.h>
 #include <devils_engine/demiurg/module_system.h>
@@ -26,6 +25,8 @@
 #include <devils_engine/utils/core.h>
 #include <devils_engine/utils/fileio.h>
 #include <devils_engine/utils/time-utils.hpp>
+#include <tavl/deserialize.h>
+#include <tavl/serialize.h>
 
 namespace devils_engine {
 namespace simul {
@@ -43,32 +44,22 @@ struct standard_runtime_bootstrap {
   thread::atomic_pool* pool = nullptr;
 };
 
-inline size_t frame_time_from_fps(const uint32_t fps) noexcept {
-  const auto valid_fps = std::max(fps, 1u);
-  return utils::round(double(utils::global_time_resolution) / double(valid_fps));
-}
-
-inline size_t thread_start_gap(const size_t frame_time, const uint32_t divisor) noexcept {
-  const auto valid_divisor = std::max(divisor, 1u);
-  return utils::round(double(frame_time) / double(valid_divisor));
-}
-
-inline std::string project_path(std::string path) {
-  if (path.empty()) return utils::project_folder();
-  if (path.front() == '/') return path;
-  return utils::project_folder() + path;
-}
+size_t frame_time_from_fps(uint32_t fps) noexcept;
+size_t thread_start_gap(size_t frame_time, uint32_t divisor) noexcept;
+std::string project_path(std::string path);
 
 template <typename Bootstrap>
 std::string settings_path(const Bootstrap& boot) {
-  if (boot.engine.settings_file.empty()) return utils::project_folder() + "settings.tavl";
-  if (boot.engine.settings_file.front() == '/') return boot.engine.settings_file;
+  if (boot.engine.settings_file.empty()) {
+    return utils::project_folder() + "settings.tavl";
+  }
+  if (boot.engine.settings_file.front() == '/') {
+    return boot.engine.settings_file;
+  }
   return utils::project_folder() + boot.engine.settings_file;
 }
 
-inline std::string source_line(const uint32_t line) {
-  return line == UINT32_MAX ? std::string{"unknown"} : std::to_string(line);
-}
+std::string source_line(uint32_t line);
 
 template <typename Settings>
 void sync_engine_boot_config(engine_boot_config& engine, const Settings& settings) {
@@ -102,10 +93,13 @@ void setup_logging(const LoggingConfig& log_cfg) {
   catalogue::init_logging(file, log_cfg.console);
   catalogue::register_engine_domains();
 
-  const auto apply = [] (const uint32_t id, const std::string& depth_str) {
+  const auto apply = [](const uint32_t id, const std::string& depth_str) {
     catalogue::log_depth d = catalogue::log_depth::off;
-    if (catalogue::parse_log_depth(depth_str, d)) catalogue::logs().set_level(id, d);
-    else utils::warn("logging: unknown depth '{}' for domain '{}'", depth_str, catalogue::logs().name(id));
+    if (catalogue::parse_log_depth(depth_str, d)) {
+      catalogue::logs().set_level(id, d);
+    } else {
+      utils::warn("logging: unknown depth '{}' for domain '{}'", depth_str, catalogue::logs().name(id));
+    }
   };
 
   namespace ld = catalogue::log_domain;
@@ -121,7 +115,9 @@ void setup_logging(const LoggingConfig& log_cfg) {
 
 template <typename Bootstrap>
 bool deserialize_settings_file(Bootstrap& boot, const std::string& path) {
-  if (!file_io::exists(path)) return false;
+  if (!file_io::exists(path)) {
+    return false;
+  }
 
   tavl::parser parser;
   const auto content = file_io::read(path);
@@ -135,7 +131,7 @@ bool deserialize_settings_file(Bootstrap& boot, const std::string& path) {
     utils::warn("settings '{}': {} tavl diagnostics", path, ctx.diagnostics.size());
     for (const auto& d : ctx.diagnostics) {
       utils::warn("  tavl diagnostic '{}' at {}:{} field '{}'",
-        tavl::to_string(d.error.type), source_line(static_cast<uint32_t>(d.error.span.line)), d.error.span.column, d.field);
+                  tavl::to_string(d.error.type), source_line(static_cast<uint32_t>(d.error.span.line)), d.error.span.column, d.field);
     }
   }
 
@@ -153,8 +149,11 @@ bool save_settings(Bootstrap& boot) {
   }
 
   const bool written = file_io::write(tavl_data, path);
-  if (!written) utils::warn("settings: could not write '{}'", path);
-  else DE_LOG(catalogue::log_domain::main, flow, "Saved settings '{}'", path);
+  if (!written) {
+    utils::warn("settings: could not write '{}'", path);
+  } else {
+    DE_LOG(catalogue::log_domain::main, flow, "Saved settings '{}'", path);
+  }
   return written;
 }
 
@@ -178,12 +177,7 @@ void register_standard_engine_resources(Bootstrap& boot) {
   boot.engine_resources->template register_type<painter::pipeline_cache_resource>("pipeline_cache", "bin");
 }
 
-inline void preload_render_config_sources(demiurg::resource_system& resources) {
-  std::vector<painter::render_config_source*> rc;
-  resources.find<painter::render_config_source>("render_config", rc);
-  for (auto* r : rc) r->load(utils::safe_handle_t{});
-  DE_LOG(catalogue::log_domain::resource, flow, "engine registry: preloaded {} render-config sources", rc.size());
-}
+void preload_render_config_sources(demiurg::resource_system& resources);
 
 template <typename AppConfigResource, typename Bootstrap>
 void init_standard_bootstrap(Bootstrap& boot) {
@@ -191,7 +185,7 @@ void init_standard_bootstrap(Bootstrap& boot) {
   register_standard_engine_resources<AppConfigResource>(boot);
 
   boot.engine_modules = std::make_unique<demiurg::module_system>(utils::project_folder() + boot.engine.resource_root);
-  boot.engine_modules->load_modules({ demiurg::module_system::list_entry{boot.engine.engine_module, "", ""} });
+  boot.engine_modules->load_modules({demiurg::module_system::list_entry{boot.engine.engine_module, "", ""}});
   boot.engine_resources->parse_resources(boot.engine_modules.get());
 
   preload_render_config_sources(*boot.engine_resources);
@@ -214,25 +208,27 @@ void init_standard_bootstrap(Bootstrap& boot) {
 
   const uint32_t hw_threads = std::max(std::thread::hardware_concurrency(), 1u);
   uint32_t reserved_threads = boot.engine.worker_threads_reserved;
-  if (!boot.engine.render_enabled && reserved_threads > 0) reserved_threads -= 1;
-  if (!boot.engine.sound_enabled && reserved_threads > 0) reserved_threads -= 1;
+  if (!boot.engine.render_enabled && reserved_threads > 0) {
+    reserved_threads -= 1;
+  }
+  if (!boot.engine.sound_enabled && reserved_threads > 0) {
+    reserved_threads -= 1;
+  }
   const uint32_t min_worker_threads = std::max(boot.engine.min_worker_threads, 1u);
   const uint32_t thread_count = std::max(
     hw_threads > reserved_threads ? hw_threads - reserved_threads : min_worker_threads,
-    min_worker_threads
-  );
+    min_worker_threads);
 
   const auto cpu_name = utils::get_cpu_name();
   utils::info("Using cpu '{}', cores: {}, worker threads: {}", cpu_name, hw_threads, thread_count);
   DE_LOG(catalogue::log_domain::main, flow,
-    "Loaded app config '{}': window {}x{}, render config '{}', GPU preference '{}' / index {}",
-    config_path,
-    boot.settings.window.width,
-    boot.settings.window.height,
-    boot.settings.render.config_folder,
-    boot.settings.render.preferred_gpu,
-    boot.settings.render.preferred_gpu_index
-  );
+         "Loaded app config '{}': window {}x{}, render config '{}', GPU preference '{}' / index {}",
+         config_path,
+         boot.settings.window.width,
+         boot.settings.window.height,
+         boot.settings.render.config_folder,
+         boot.settings.render.preferred_gpu,
+         boot.settings.render.preferred_gpu_index);
 
   boot.pool_container.reset(new thread::atomic_pool(thread_count));
   boot.pool = boot.pool_container.get();
@@ -246,7 +242,7 @@ void prepare_pipeline_cache(Bootstrap& boot, const std::string& pipeline_cache_i
   file_io::create_directory(project_path(cache_module + "/pipeline_cache"));
 
   boot.cache_modules = std::make_unique<demiurg::module_system>(utils::project_folder());
-  boot.cache_modules->load_modules({ demiurg::module_system::list_entry{cache_module, "", ""} });
+  boot.cache_modules->load_modules({demiurg::module_system::list_entry{cache_module, "", ""}});
   boot.engine_resources->append_resources(boot.cache_modules.get());
   if (auto* pc = boot.engine_resources->template get<painter::pipeline_cache_resource>(pipeline_cache_id)) {
     pc->load(utils::safe_handle_t{});
@@ -256,7 +252,9 @@ void prepare_pipeline_cache(Bootstrap& boot, const std::string& pipeline_cache_i
 
 template <typename RenderType, typename Bootstrap>
 std::unique_ptr<RenderType> make_standard_render(Bootstrap& boot, std::string app_name) {
-  if (!boot.engine.render_enabled) return nullptr;
+  if (!boot.engine.render_enabled) {
+    return nullptr;
+  }
 
   const auto render_ft = frame_time_from_fps(boot.engine.render_fps);
   const std::string pipeline_cache_id = "pipeline_cache/main";
@@ -279,7 +277,7 @@ std::unique_ptr<RenderType> make_standard_render(Bootstrap& boot, std::string ap
   return std::make_unique<RenderType>(render_ft, std::move(render_cfg));
 }
 
-}
-}
+} // namespace simul
+} // namespace devils_engine
 
 #endif

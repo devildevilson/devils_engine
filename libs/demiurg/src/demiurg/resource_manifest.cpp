@@ -1,7 +1,6 @@
-#include "resource_manifest.h"
-
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/string-utils.hpp"
+#include "resource_manifest.h"
 
 namespace devils_engine {
 namespace demiurg {
@@ -14,7 +13,9 @@ std::string trim_copy(const std::string_view value) {
 size_t count_newlines(const std::string_view value) {
   size_t count = 0;
   for (const char c : value) {
-    if (c == '\n') count += 1;
+    if (c == '\n') {
+      count += 1;
+    }
   }
   return count;
 }
@@ -29,7 +30,9 @@ struct tavl_section_view {
 
 std::string strip_inline_comment(std::string_view value) {
   const size_t comment = value.find("//");
-  if (comment != std::string_view::npos) value = value.substr(0, comment);
+  if (comment != std::string_view::npos) {
+    value = value.substr(0, comment);
+  }
   return trim_copy(value);
 }
 
@@ -37,17 +40,25 @@ std::string parse_name_field(const std::string_view section) {
   size_t pos = 0;
   while (pos < section.size()) {
     size_t end = section.find('\n', pos);
-    if (end == std::string_view::npos) end = section.size();
+    if (end == std::string_view::npos) {
+      end = section.size();
+    }
 
     std::string_view line = utils::string::trim(section.substr(pos, end - pos));
     pos = end + (end < section.size() ? 1 : 0);
 
-    if (line.empty() || line.starts_with("//")) continue;
-    if (!line.starts_with("name")) continue;
+    if (line.empty() || line.starts_with("//")) {
+      continue;
+    }
+    if (!line.starts_with("name")) {
+      continue;
+    }
 
     line.remove_prefix(4);
     line = utils::string::trim(line);
-    if (line.empty() || line.front() != '=') continue;
+    if (line.empty() || line.front() != '=') {
+      continue;
+    }
     line.remove_prefix(1);
     std::string value = strip_inline_comment(line);
     if (value.size() >= 2 && ((value.front() == '"' && value.back() == '"') || (value.front() == '\'' && value.back() == '\''))) {
@@ -73,13 +84,19 @@ std::vector<tavl_section_view> split_tavl_sections(const std::string_view conten
     size_t raw_offset = pos;
     uint32_t start_line = static_cast<uint32_t>(line);
     while (!raw.empty() && (raw.front() == ' ' || raw.front() == '\t' || raw.front() == '\r' || raw.front() == '\n')) {
-      if (raw.front() == '\n') start_line += 1;
+      if (raw.front() == '\n') {
+        start_line += 1;
+      }
       raw.remove_prefix(1);
       raw_offset += 1;
     }
     raw = utils::string::trim(raw);
-    if (!raw.empty()) sections.push_back(tavl_section_view{raw, index, start_line, raw_offset, raw.size()});
-    if (sep == std::string_view::npos) break;
+    if (!raw.empty()) {
+      sections.push_back(tavl_section_view{raw, index, start_line, raw_offset, raw.size()});
+    }
+    if (sep == std::string_view::npos) {
+      break;
+    }
     line += count_newlines(content.substr(pos, sep + separator.size() - pos));
     pos = sep + separator.size();
     index += 1;
@@ -87,14 +104,15 @@ std::vector<tavl_section_view> split_tavl_sections(const std::string_view conten
   return sections;
 }
 
-}
+} // namespace
 
 bool append_tavl_list_candidates(
   std::vector<resource_candidate>& out,
   const resource_candidate& base,
-  const std::string_view content
-) {
-  if (base.ext != "tavl" || content.find("//---") == std::string_view::npos) return false;
+  const std::string_view content) {
+  if (base.ext != "tavl" || content.find("//---") == std::string_view::npos) {
+    return false;
+  }
 
   const auto sections = split_tavl_sections(content);
 
@@ -111,7 +129,9 @@ bool append_tavl_list_candidates(
     const std::string index_id = base.id + ":" + std::to_string(section.index);
     if (!candidate.list_name.empty()) {
       candidate.id = base.id + ":" + candidate.list_name;
-      if (candidate.id != index_id) candidate.aliases.push_back(index_id);
+      if (candidate.id != index_id) {
+        candidate.aliases.push_back(index_id);
+      }
     } else {
       candidate.id = index_id;
     }
@@ -122,5 +142,5 @@ bool append_tavl_list_candidates(
   return true;
 }
 
-}
-}
+} // namespace demiurg
+} // namespace devils_engine

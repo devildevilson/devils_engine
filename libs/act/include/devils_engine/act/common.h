@@ -11,7 +11,9 @@ namespace act {
 
 struct entity_id {
   uint32_t id = 0xffffffff;
-  bool valid() const noexcept { return id != 0xffffffff; }
+  bool valid() const noexcept {
+    return id != 0xffffffff;
+  }
   bool operator==(const entity_id&) const noexcept = default;
 };
 
@@ -19,9 +21,11 @@ struct entity_id {
 // (devils_script уже умеет кастомный арифметический тип). Один typedef — одна правка.
 using real_t = double;
 
-struct vec3 { real_t x = 0, y = 0, z = 0; };
+struct vec3 {
+  real_t x = 0, y = 0, z = 0;
+};
 
-}
-}
+} // namespace act
+} // namespace devils_engine
 
 #endif

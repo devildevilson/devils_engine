@@ -17,7 +17,7 @@ namespace painter {
 // исполняет поток рендера (не warm_and_hot_same). Всё, что нужно потребителю — gpu_index.
 class gpu_texture_resource : public demiurg::resource_interface {
 public:
-  static constexpr uint32_t invalid_gpu_index = utils::shared::INVALID_GPU_INDEX;
+  static constexpr uint32_t invalid_gpu_index = utils::shared::invalid_gpu_index;
 
   std::vector<uint8_t> memory; // RGBA8-байты (width*height*4)
   uint32_t width = 0;
@@ -32,7 +32,7 @@ public:
   void unload_warm(const utils::safe_handle_t& handle) override;
 };
 
-}
-}
+} // namespace painter
+} // namespace devils_engine
 
 #endif

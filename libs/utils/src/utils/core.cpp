@@ -1,134 +1,157 @@
-#include "core.h"
-
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 
-#include "utf.hpp"
-
 #ifdef _WIN32
-#include <windows.h>    //GetModuleFileNameW
+#  include <windows.h> //GetModuleFileNameW
 #else
-#include <limits.h>
-#include <unistd.h>     //readlink
-#include <cpuid.h>
-#include <immintrin.h>
+#  include <cpuid.h>
+#  include <immintrin.h>
+#  include <limits.h>
+#  include <unistd.h> //readlink
 #endif
 
 #include <cpuinfo.h>
 
+#include "core.h"
+#include "utf.hpp"
+
 namespace fs = std::filesystem;
 
 namespace devils_engine {
-  namespace utils {
-    tracer::tracer(const std::source_location loc) noexcept : location(loc) {
-      spdlog::log(spdlog::level::trace, "in  {}:{} `{}`", make_sane_file_name(location.file_name()), location.line(), location.function_name());
-    }
-
-    tracer::~tracer() noexcept {
-      spdlog::log(spdlog::level::trace, "out {}:{} `{}`", make_sane_file_name(location.file_name()), location.line(), location.function_name());
-    }
-
-    std::string cast(const std::wstring &str) noexcept {
-      const size_t s = wcstombs(nullptr, str.c_str(), 0);
-      if (s == SIZE_MAX) return std::string();
-      std::string ret(s, '\0');
-      wcstombs(ret.data(), str.c_str(), ret.size());
-      return ret;
-    }
-
-    std::string cast(const std::u16string_view &str) noexcept { return utf::as_str8(str); }
-    std::string cast(const std::u32string_view &str) noexcept { return utf::as_str8(str); }
-
-    std::wstring cast(const std::string &str) noexcept {
-      const size_t s = mbstowcs(nullptr, str.c_str(), 0);
-      if (s == SIZE_MAX) return std::wstring();
-      std::wstring ret(s, '\0');
-      mbstowcs(ret.data(), str.c_str(), ret.size());
-      return ret;
-    }
-
-    std::u16string cast16(const std::string_view& str) noexcept { return utf::as_u16(str); }
-    std::u32string cast32(const std::string_view& str) noexcept { return utf::as_u32(str); }
-
-    std::string app_path() noexcept {
-#ifdef _WIN32
-      wchar_t path[MAX_PATH] = { 0 };
-      GetModuleFileNameW(NULL, path, MAX_PATH);
-      const size_t s = wcstombs(nullptr, path, 0);
-      if (s == SIZE_MAX) return std::string();
-      std::string ret(s, '\0');
-      wcstombs(ret.data(), path, ret.size());
-      return fs::path(ret).generic_string();
-#else
-      char result[PATH_MAX];
-      ssize_t count = readlink("/proc/self/exe", result, PATH_MAX);
-      return std::string(result, (count > 0) ? count : 0);
-#endif
-    }
-
-    std::string project_folder() noexcept {
-      const auto str = app_path();
-      // по идее уберем название файла + уберем папку bin
-      const size_t first_slash = str.rfind('/');
-      const auto bin_dir = std::string_view(str).substr(0, first_slash);
-      return std::string(bin_dir.substr(0, bin_dir.rfind('/')+1));
-    }
-
-    std::string cache_folder() noexcept {
-      return project_folder() + "cache/";
-    }
-
-    std::string get_cpu_name() noexcept {
-      std::string proc_name;
-      cpuinfo_initialize();
-
-      const auto ptr = cpuinfo_get_current_processor();
-      if (ptr == nullptr) {
-        const uint32_t count = cpuinfo_get_packages_count();
-        if (count > 0) {
-          const auto pack = cpuinfo_get_package(0);
-          proc_name = pack->name;
-        }
-      } else {
-        proc_name = ptr->package->name;
-      }
-
-      cpuinfo_deinitialize();
-      return proc_name;
-    }
-
-    uint32_t crc32c(const uint8_t* data, const size_t len) noexcept {
-      uint64_t crc = 0xffffffffu;
-      size_t i = 0;
-
-      // 8 байт
-      for (; i + sizeof(uint64_t) <= len; i += sizeof(uint64_t)) {
-        uint64_t chunk = 0;
-        memcpy(&chunk, data + i, sizeof(uint64_t));
-        crc = _mm_crc32_u64(crc, chunk);
-      }
-
-      // 4 байт
-      if (i + sizeof(uint32_t) <= len) {
-        uint32_t chunk = 0;
-        std::memcpy(&chunk, data + i, sizeof(uint32_t));
-        crc = _mm_crc32_u32(crc, chunk);
-        i += sizeof(uint32_t);
-      }
-
-      // 1 байт
-      for (; i < len; ++i) {
-        crc = _mm_crc32_u8(crc, data[i]);
-      }
-
-      return static_cast<uint32_t>(crc ^ 0xffffffffu); // финальный XOR
-    }
-
-    uint32_t crc32c(const std::span<const uint8_t>& data) noexcept { return crc32c(data.data(), data.size()); }
-    uint32_t crc32c(const std::span<const char>& data) noexcept { return crc32c(reinterpret_cast<const uint8_t*>(data.data()), data.size()); }
-    uint32_t crc32c(const std::span<uint8_t>& data) noexcept { return crc32c(data.data(), data.size()); }
-    uint32_t crc32c(const std::span<char>& data) noexcept { return crc32c(reinterpret_cast<const uint8_t*>(data.data()), data.size()); }
-    uint32_t crc32c(const std::string_view& data) noexcept { return crc32c(reinterpret_cast<const uint8_t*>(data.data()), data.size()); }
-  }
+namespace utils {
+tracer::tracer(const std::source_location loc) noexcept : location(loc) {
+  spdlog::log(spdlog::level::trace, "in  {}:{} `{}`", make_sane_file_name(location.file_name()), location.line(), location.function_name());
 }
+
+tracer::~tracer() noexcept {
+  spdlog::log(spdlog::level::trace, "out {}:{} `{}`", make_sane_file_name(location.file_name()), location.line(), location.function_name());
+}
+
+std::string cast(const std::wstring& str) noexcept {
+  const size_t s = wcstombs(nullptr, str.c_str(), 0);
+  if (s == SIZE_MAX) {
+    return std::string();
+  }
+  std::string ret(s, '\0');
+  wcstombs(ret.data(), str.c_str(), ret.size());
+  return ret;
+}
+
+std::string cast(const std::u16string_view& str) noexcept {
+  return utf::as_str8(str);
+}
+std::string cast(const std::u32string_view& str) noexcept {
+  return utf::as_str8(str);
+}
+
+std::wstring cast(const std::string& str) noexcept {
+  const size_t s = mbstowcs(nullptr, str.c_str(), 0);
+  if (s == SIZE_MAX) {
+    return std::wstring();
+  }
+  std::wstring ret(s, '\0');
+  mbstowcs(ret.data(), str.c_str(), ret.size());
+  return ret;
+}
+
+std::u16string cast16(const std::string_view& str) noexcept {
+  return utf::as_u16(str);
+}
+std::u32string cast32(const std::string_view& str) noexcept {
+  return utf::as_u32(str);
+}
+
+std::string app_path() noexcept {
+#ifdef _WIN32
+  wchar_t path[MAX_PATH] = {0};
+  GetModuleFileNameW(nullptr, path, MAX_PATH);
+  const size_t s = wcstombs(nullptr, path, 0);
+  if (s == SIZE_MAX) {
+    return std::string();
+  }
+  std::string ret(s, '\0');
+  wcstombs(ret.data(), path, ret.size());
+  return fs::path(ret).generic_string();
+#else
+  char result[PATH_MAX];
+  ssize_t count = readlink("/proc/self/exe", result, PATH_MAX);
+  return std::string(result, (count > 0) ? count : 0);
+#endif
+}
+
+std::string project_folder() noexcept {
+  const auto str = app_path();
+  // по идее уберем название файла + уберем папку bin
+  const size_t first_slash = str.rfind('/');
+  const auto bin_dir = std::string_view(str).substr(0, first_slash);
+  return std::string(bin_dir.substr(0, bin_dir.rfind('/') + 1));
+}
+
+std::string cache_folder() noexcept {
+  return project_folder() + "cache/";
+}
+
+std::string get_cpu_name() noexcept {
+  std::string proc_name;
+  cpuinfo_initialize();
+
+  const auto ptr = cpuinfo_get_current_processor();
+  if (ptr == nullptr) {
+    const uint32_t count = cpuinfo_get_packages_count();
+    if (count > 0) {
+      const auto pack = cpuinfo_get_package(0);
+      proc_name = pack->name;
+    }
+  } else {
+    proc_name = ptr->package->name;
+  }
+
+  cpuinfo_deinitialize();
+  return proc_name;
+}
+
+uint32_t crc32c(const uint8_t* data, const size_t len) noexcept {
+  uint64_t crc = 0xffffffffu;
+  size_t i = 0;
+
+  // 8 байт
+  for (; i + sizeof(uint64_t) <= len; i += sizeof(uint64_t)) {
+    uint64_t chunk = 0;
+    memcpy(&chunk, data + i, sizeof(uint64_t));
+    crc = _mm_crc32_u64(crc, chunk);
+  }
+
+  // 4 байт
+  if (i + sizeof(uint32_t) <= len) {
+    uint32_t chunk = 0;
+    std::memcpy(&chunk, data + i, sizeof(uint32_t));
+    crc = _mm_crc32_u32(crc, chunk);
+    i += sizeof(uint32_t);
+  }
+
+  // 1 байт
+  for (; i < len; ++i) {
+    crc = _mm_crc32_u8(crc, data[i]);
+  }
+
+  return static_cast<uint32_t>(crc ^ 0xffffffffu); // финальный XOR
+}
+
+uint32_t crc32c(const std::span<const uint8_t>& data) noexcept {
+  return crc32c(data.data(), data.size());
+}
+uint32_t crc32c(const std::span<const char>& data) noexcept {
+  return crc32c(reinterpret_cast<const uint8_t*>(data.data()), data.size());
+}
+uint32_t crc32c(const std::span<uint8_t>& data) noexcept {
+  return crc32c(data.data(), data.size());
+}
+uint32_t crc32c(const std::span<char>& data) noexcept {
+  return crc32c(reinterpret_cast<const uint8_t*>(data.data()), data.size());
+}
+uint32_t crc32c(const std::string_view& data) noexcept {
+  return crc32c(reinterpret_cast<const uint8_t*>(data.data()), data.size());
+}
+} // namespace utils
+} // namespace devils_engine

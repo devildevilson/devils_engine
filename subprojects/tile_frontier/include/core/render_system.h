@@ -7,7 +7,11 @@
 #include <devils_engine/simul/render_config.h>
 #include <devils_engine/simul/systems.h>
 
-namespace devils_engine { namespace demiurg { class resource_system; } }
+namespace devils_engine {
+namespace demiurg {
+class resource_system;
+}
+} // namespace devils_engine
 
 namespace tile_frontier {
 namespace core {
@@ -30,11 +34,12 @@ public:
   // Единый broker всех каналов (runtime владеет). Задаётся до старта потока; заодно триггерит
   // попытку сборки графа.
   void set_broker(struct broker* b);
+
 private:
   std::unique_ptr<render_simulation_init> container;
 };
 
-}
-}
+} // namespace core
+} // namespace tile_frontier
 
 #endif

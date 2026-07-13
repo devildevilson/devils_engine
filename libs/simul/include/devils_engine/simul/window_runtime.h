@@ -12,7 +12,7 @@
 #include <vector>
 
 #if defined(__linux__)
-#include <unistd.h>
+#  include <unistd.h>
 #endif
 
 #include <devils_engine/bindings/lua_header.h>
@@ -66,11 +66,15 @@ inline void default_window_error_callback(int, const char* msg) noexcept {
 inline size_t read_process_rss_bytes() {
 #if defined(__linux__)
   std::FILE* f = std::fopen("/proc/self/statm", "r");
-  if (f == nullptr) return 0;
+  if (f == nullptr) {
+    return 0;
+  }
   long total = 0, resident = 0;
   const int got = std::fscanf(f, "%ld %ld", &total, &resident);
   std::fclose(f);
-  if (got != 2) return 0;
+  if (got != 2) {
+    return 0;
+  }
   return size_t(resident) * size_t(::sysconf(_SC_PAGESIZE));
 #else
   return 0;
@@ -78,20 +82,31 @@ inline size_t read_process_rss_bytes() {
 }
 
 namespace glfw_const {
-  enum { release = 0, press = 1, repeat = 2 };
-  enum { mouse_left = 0, mouse_right = 1, mouse_middle = 2 };
-  enum { mod_shift = 0x0001, mod_control = 0x0002 };
-  enum {
-    key_enter = 257, key_tab = 258, key_backspace = 259, key_delete = 261,
-    key_right = 262, key_left = 263, key_down = 264, key_up = 265
-  };
-}
+enum { release = 0,
+       press = 1,
+       repeat = 2 };
+enum { mouse_left = 0,
+       mouse_right = 1,
+       mouse_middle = 2 };
+enum { mod_shift = 0x0001,
+       mod_control = 0x0002 };
+enum {
+  key_enter = 257,
+  key_tab = 258,
+  key_backspace = 259,
+  key_delete = 261,
+  key_right = 262,
+  key_left = 263,
+  key_down = 264,
+  key_up = 265
+};
+} // namespace glfw_const
 
 inline void ui_mouse_button_cb(GLFWwindow*, int button, int action, int) noexcept {
   const bool down = (action != glfw_const::release);
   switch (button) {
-    case glfw_const::mouse_left:   g_ui_input.mouse_left = down; break;
-    case glfw_const::mouse_right:  g_ui_input.mouse_right = down; break;
+    case glfw_const::mouse_left: g_ui_input.mouse_left = down; break;
+    case glfw_const::mouse_right: g_ui_input.mouse_right = down; break;
     case glfw_const::mouse_middle: g_ui_input.mouse_middle = down; break;
     default: break;
   }
@@ -110,17 +125,17 @@ inline void ui_char_cb(GLFWwindow*, unsigned int codepoint) noexcept {
 inline void ui_key_cb(GLFWwindow*, int key, int scancode, int action, int mods) noexcept {
   const bool down = (action != glfw_const::release);
   g_ui_input.shift = (mods & glfw_const::mod_shift) != 0;
-  g_ui_input.ctrl  = (mods & glfw_const::mod_control) != 0;
+  g_ui_input.ctrl = (mods & glfw_const::mod_control) != 0;
   input::events::update_key(scancode, action);
   switch (key) {
     case glfw_const::key_backspace: g_ui_input.backspace = down; break;
-    case glfw_const::key_delete:    g_ui_input.del = down; break;
-    case glfw_const::key_enter:     g_ui_input.enter = down; break;
-    case glfw_const::key_tab:       g_ui_input.tab = down; break;
-    case glfw_const::key_left:      g_ui_input.left = down; break;
-    case glfw_const::key_right:     g_ui_input.right = down; break;
-    case glfw_const::key_up:        g_ui_input.up = down; break;
-    case glfw_const::key_down:      g_ui_input.down = down; break;
+    case glfw_const::key_delete: g_ui_input.del = down; break;
+    case glfw_const::key_enter: g_ui_input.enter = down; break;
+    case glfw_const::key_tab: g_ui_input.tab = down; break;
+    case glfw_const::key_left: g_ui_input.left = down; break;
+    case glfw_const::key_right: g_ui_input.right = down; break;
+    case glfw_const::key_up: g_ui_input.up = down; break;
+    case glfw_const::key_down: g_ui_input.down = down; break;
     default: break;
   }
 }
@@ -148,8 +163,11 @@ inline void bind_default_actions(const size_t main_frame_time) {
   input::events::set_double_press_duration(utils::round(double(utils::global_time_resolution) * 0.25));
   const auto bind_action = [](const char* action, const char* canonical) {
     const auto [glfw_key, scancode] = input::key_from_canonical(canonical);
-    if (scancode >= 0) input::events::set_key(std::string_view(action), scancode, glfw_key, 0);
-    else utils::warn("main: could not bind action '{}' to key '{}'", action, canonical);
+    if (scancode >= 0) {
+      input::events::set_key(std::string_view(action), scancode, glfw_key, 0);
+    } else {
+      utils::warn("main: could not bind action '{}' to key '{}'", action, canonical);
+    }
   };
   bind_action("quit", "escape");
   bind_action("toggle_menu", "f1");
@@ -157,9 +175,13 @@ inline void bind_default_actions(const size_t main_frame_time) {
 
 template <typename State, typename Settings>
 void create_window_and_notify_render(State& c, const Settings& settings, const size_t main_frame_time) {
-  if (c.window != nullptr) return;
+  if (c.window != nullptr) {
+    return;
+  }
 
-  if (!c.in) c.in = std::make_unique<input::init>(&default_window_error_callback);
+  if (!c.in) {
+    c.in = std::make_unique<input::init>(&default_window_error_callback);
+  }
 
   c.monitor = input::primary_monitor();
   c.window = input::create_window(settings.window.width, settings.window.height, settings.window.title);
@@ -168,8 +190,7 @@ void create_window_and_notify_render(State& c, const Settings& settings, const s
       "Could not create window '{}' {}x{}",
       settings.window.title,
       settings.window.width,
-      settings.window.height
-    );
+      settings.window.height);
   }
 
   if (c.monitor != nullptr) {
@@ -189,7 +210,10 @@ void create_window_and_notify_render(State& c, const Settings& settings, const s
   bind_default_actions(main_frame_time);
 
   const auto [fw, fh] = input::framebuffer_size(c.window);
-  if (fw != 0 && fh != 0) { c.fb_width = fw; c.fb_height = fh; }
+  if (fw != 0 && fh != 0) {
+    c.fb_width = fw;
+    c.fb_height = fh;
+  }
   g_window_events.fb_w = c.fb_width;
   g_window_events.fb_h = c.fb_height;
   g_window_events.focused = input::window_focused(c.window);
@@ -198,21 +222,28 @@ void create_window_and_notify_render(State& c, const Settings& settings, const s
 
   if (c.br) {
     c.br->window_recreation.write_slot() = command_window_recreation{
-      c.window, c.monitor, settings.window.width, settings.window.height
-    };
+      c.window, c.monitor, settings.window.width, settings.window.height};
     c.br->window_recreation.publish();
   }
 }
 
 template <typename State, typename Settings>
 void apply_fullscreen(State& c, const Settings& settings, const bool enable) {
-  if (c.window == nullptr) return;
+  if (c.window == nullptr) {
+    return;
+  }
   if (enable && !c.is_fullscreen) {
     const auto [x, y] = input::window_pos(c.window);
     const auto [w, h] = input::window_size(c.window);
-    c.windowed_x = x; c.windowed_y = y; c.windowed_w = w; c.windowed_h = h;
+    c.windowed_x = x;
+    c.windowed_y = y;
+    c.windowed_w = w;
+    c.windowed_h = h;
     GLFWmonitor* m = c.monitor != nullptr ? c.monitor : input::primary_monitor();
-    if (m == nullptr) { utils::warn("main: no monitor for fullscreen"); return; }
+    if (m == nullptr) {
+      utils::warn("main: no monitor for fullscreen");
+      return;
+    }
     const auto [mw, mh, refresh] = input::primary_video_mode(m);
     input::set_window_monitor(c.window, m, 0, 0, mw, mh, int32_t(refresh));
     c.is_fullscreen = true;
@@ -228,7 +259,9 @@ void apply_fullscreen(State& c, const Settings& settings, const bool enable) {
 
 template <typename State, typename OnResize>
 void drain_window_events(State& c, const bool sound_enabled, const bool render_enabled, OnResize&& on_resize) {
-  if (c.window == nullptr) return;
+  if (c.window == nullptr) {
+    return;
+  }
 
   if (g_window_events.resized) {
     g_window_events.resized = false;
@@ -279,8 +312,7 @@ void begin_main_frame(
   const size_t time,
   const bool sound_enabled,
   const bool render_enabled,
-  OnResize&& on_resize
-) {
+  OnResize&& on_resize) {
   c.tick += 1;
   poll_window_events(c.window, time);
   drain_window_events(c, sound_enabled, render_enabled, std::forward<OnResize>(on_resize));
@@ -319,7 +351,9 @@ inline void consume_ui_input_frame() {
 
 template <typename State, typename BeforeUpdate>
 void run_visage_frame(State& c, const size_t time, const bool render_enabled, BeforeUpdate&& before_update) {
-  if (!c.ui) return;
+  if (!c.ui) {
+    return;
+  }
 
   visage::input_snapshot_t snap;
   fill_ui_input_snapshot(c.window, snap);
@@ -364,20 +398,20 @@ void run_visage_frame(State& c, const size_t time, const bool render_enabled, Be
     const auto cmds = c.ui->commands();
 
     static const uint64_t ui_vertices_hash = utils::string_hash("ui_vertices");
-    static const uint64_t ui_indices_hash  = utils::string_hash("ui_indices");
+    static const uint64_t ui_indices_hash = utils::string_hash("ui_indices");
     static const uint64_t ui_commands_hash = utils::string_hash("ui_commands");
     c.br->write_buffer.write(ui_vertices_hash, verts);
     c.br->write_buffer.write(ui_indices_hash, inds);
 
     const uint32_t count = uint32_t(cmds.size());
     c.br->write_buffer.write(ui_commands_hash,
-      std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&count), sizeof(uint32_t)),
-      std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(cmds.data()), cmds.size() * sizeof(visage::gui_draw_command_t)));
+                             std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&count), sizeof(uint32_t)),
+                             std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(cmds.data()), cmds.size() * sizeof(visage::gui_draw_command_t)));
   }
 
   if (!c.ui_logged) {
     DE_LOG(catalogue::log_domain::ui, flow, "visage: ui buffers — {} vtx bytes, {} idx bytes, {} draw commands",
-      c.ui->vertices().size(), c.ui->indices().size(), c.ui->commands().size());
+           c.ui->vertices().size(), c.ui->indices().size(), c.ui->commands().size());
     c.ui_logged = true;
   }
 }
@@ -388,25 +422,40 @@ void install_window_lua_bindings(
   State& c,
   Settings& settings,
   const bool sound_enabled,
-  QuitFn&& quit
-) {
+  QuitFn&& quit) {
   auto* cptr = &c;
   auto* settings_ptr = &settings;
   app.set_function("quit_game", std::forward<QuitFn>(quit));
-  app.set_function("maximize", [cptr]() { if (cptr->window != nullptr) input::maximize_window(cptr->window); });
-  app.set_function("restore",  [cptr]() { if (cptr->window != nullptr) input::restore_window(cptr->window); });
-  app.set_function("set_fullscreen", [cptr, settings_ptr](bool enable) { apply_fullscreen(*cptr, *settings_ptr, enable); });
-  app.set_function("is_fullscreen", [cptr]() -> bool { return cptr->is_fullscreen; });
+  app.set_function("maximize", [cptr]() {
+    if (cptr->window != nullptr) {
+      input::maximize_window(cptr->window);
+    }
+  });
+  app.set_function("restore", [cptr]() {
+    if (cptr->window != nullptr) {
+      input::restore_window(cptr->window);
+    }
+  });
+  app.set_function("set_fullscreen", [cptr, settings_ptr](bool enable) {
+    apply_fullscreen(*cptr, *settings_ptr, enable);
+  });
+  app.set_function("is_fullscreen", [cptr]() -> bool {
+    return cptr->is_fullscreen;
+  });
 
   app.set_function("set_master_volume", [cptr, sound_enabled](double v) {
-    if (!sound_enabled || cptr->br == nullptr) return;
+    if (!sound_enabled || cptr->br == nullptr) {
+      return;
+    }
     const float gain = float(std::clamp(v, 0.0, 1.0));
     cptr->policy.focused_master_gain = gain;
     cptr->br->sound_master_gain.try_push(command_sound_set_master_gain{gain});
   });
 
   app.set_function("set_resolution", [cptr, settings_ptr](int w, int h) {
-    if (cptr->window == nullptr || w <= 0 || h <= 0) return;
+    if (cptr->window == nullptr || w <= 0 || h <= 0) {
+      return;
+    }
     settings_ptr->window.width = uint32_t(w);
     settings_ptr->window.height = uint32_t(h);
     input::set_window_size(cptr->window, uint32_t(w), uint32_t(h));
@@ -430,7 +479,7 @@ void destroy_window_runtime(State& c) noexcept {
   c.in.reset();
 }
 
-}
-}
+} // namespace simul
+} // namespace devils_engine
 
 #endif

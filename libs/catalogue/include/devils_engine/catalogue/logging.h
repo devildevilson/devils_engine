@@ -19,22 +19,25 @@ namespace catalogue {
 //   info  — редкие сообщения домена (не путать с базовым always-on utils::info);
 //   flow  — важные переходы + периодические срезы («что происходит»);
 //   trace — полная трассировка пайплайна (плотно).
-enum class log_depth : uint8_t { off = 0, info = 1, flow = 2, trace = 3 };
+enum class log_depth : uint8_t { off = 0,
+                                 info = 1,
+                                 flow = 2,
+                                 trace = 3 };
 
 // Открытый набор доменов: id = индекс в фикс. таблице уровней. Домены — НЕ enum, а constexpr
 // константы: новый слой логгирования = новая константа (+ регистрация имени в register_*_domains).
 // Движковые домены занимают [0, engine_count); проектные продолжают нумерацию дальше.
 namespace log_domain {
-  inline constexpr uint32_t main         = 0;
-  inline constexpr uint32_t assets       = 1;
-  inline constexpr uint32_t sound        = 2;
-  inline constexpr uint32_t render       = 3;
-  inline constexpr uint32_t ui           = 4;
-  inline constexpr uint32_t gameplay     = 5;
-  inline constexpr uint32_t resource     = 6;
-  inline constexpr uint32_t demiurg      = 7;
-  inline constexpr uint32_t engine_count = 8;
-}
+inline constexpr uint32_t main = 0;
+inline constexpr uint32_t assets = 1;
+inline constexpr uint32_t sound = 2;
+inline constexpr uint32_t render = 3;
+inline constexpr uint32_t ui = 4;
+inline constexpr uint32_t gameplay = 5;
+inline constexpr uint32_t resource = 6;
+inline constexpr uint32_t demiurg = 7;
+inline constexpr uint32_t engine_count = 8;
+} // namespace log_domain
 
 // Рантайм-реестр уровней по домену. Атомики — уровень меняют из конфига/UI/любого потока;
 // hot-path чтение (гейт) — relaxed (логам строгий порядок не нужен).
@@ -58,8 +61,8 @@ private:
   std::array<std::string_view, capacity> names_{};
 };
 
-log_registry& logs() noexcept;                     // singleton
-void register_engine_domains() noexcept;           // имена базового набора
+log_registry& logs() noexcept;                                     // singleton
+void register_engine_domains() noexcept;                           // имена базового набора
 bool parse_log_depth(std::string_view s, log_depth& out) noexcept; // "off/info/flow/trace"
 std::string_view log_depth_name(log_depth d) noexcept;
 
@@ -84,25 +87,25 @@ void trace_line(const uint32_t domain, const std::source_location loc,
                std::format(fmt, std::forward<Args>(args)...));
 }
 
-}
-}
+} // namespace catalogue
+} // namespace devils_engine
 
 // Гейт-then-emit: аргументы форматируются ТОЛЬКО если домен включён на нужную глубину →
 // near-zero cost когда выключено (в release тоже). DEPTH — имя уровня: info / flow / trace.
 //   DE_LOG(catalogue::log_domain::sound, flow, "play {}", id);
-#define DE_LOG(DOMAIN, DEPTH, ...)                                                              \
-  do {                                                                                          \
-    if (::devils_engine::catalogue::logs().enabled((DOMAIN), ::devils_engine::catalogue::log_depth::DEPTH)) \
+#define DE_LOG(DOMAIN, DEPTH, ...)                                                                               \
+  do {                                                                                                           \
+    if (::devils_engine::catalogue::logs().enabled((DOMAIN), ::devils_engine::catalogue::log_depth::DEPTH))      \
       ::devils_engine::catalogue::log_line((DOMAIN), ::devils_engine::catalogue::log_depth::DEPTH, __VA_ARGS__); \
   } while (0)
 
 // trace-тир: полная трассировка пайплайна. Фиксирует место вызова (file:line, путь сжат).
 // Гейт на trace-глубине домена → в info/flow/off не стоит ничего (аргументы не форматируются).
 //   DE_TRACE(catalogue::log_domain::gameplay, "cognition batch: {} due", n);
-#define DE_TRACE(DOMAIN, ...)                                                                    \
-  do {                                                                                           \
+#define DE_TRACE(DOMAIN, ...)                                                                               \
+  do {                                                                                                      \
     if (::devils_engine::catalogue::logs().enabled((DOMAIN), ::devils_engine::catalogue::log_depth::trace)) \
-      ::devils_engine::catalogue::trace_line((DOMAIN), ::std::source_location::current(), __VA_ARGS__); \
+      ::devils_engine::catalogue::trace_line((DOMAIN), ::std::source_location::current(), __VA_ARGS__);     \
   } while (0)
 
 #endif

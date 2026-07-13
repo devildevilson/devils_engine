@@ -1,19 +1,17 @@
-#include "font_atlas_packer.h"
-
-#include "devils_engine/utils/fileio.h"
 #include "devils_engine/utils/core.h"
-
+#include "devils_engine/utils/fileio.h"
+#include "font_atlas_packer.h"
 #include "header.h"
 
 #define MSDFGEN_PUBLIC
 #if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-function"
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wunused-function"
 #endif
-#include "msdfgen.h"
 #include "msdf-atlas-gen/msdf-atlas-gen.h"
+#include "msdfgen.h"
 #if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
+#  pragma GCC diagnostic pop
 #endif
 
 namespace devils_engine {
@@ -22,7 +20,9 @@ struct freetype_raii {
   msdfgen::FreetypeHandle* ft;
 
   freetype_raii() : ft(msdfgen::initializeFreetype()) {
-    if (ft == nullptr) utils::error{}("Could not init freetype");
+    if (ft == nullptr) {
+      utils::error{}("Could not init freetype");
+    }
   }
   ~freetype_raii() noexcept {
     msdfgen::deinitializeFreetype(ft);
@@ -32,10 +32,10 @@ struct freetype_raii {
 struct font_raii {
   msdfgen::FontHandle* fh;
 
-  font_raii(msdfgen::FreetypeHandle* ft, const msdfgen::byte* data, const size_t length, const std::string_view& hint) :
-    fh(msdfgen::loadFontData(ft, data, length))
-  {
-    if (fh == nullptr) utils::error{}("Could not load font '{}'", hint);
+  font_raii(msdfgen::FreetypeHandle* ft, const msdfgen::byte* data, const size_t length, const std::string_view& hint) : fh(msdfgen::loadFontData(ft, data, length)) {
+    if (fh == nullptr) {
+      utils::error{}("Could not load font '{}'", hint);
+    }
   }
 
   ~font_raii() {
@@ -79,8 +79,10 @@ std::tuple<std::vector<std::unique_ptr<font_t>>, font_atlas_packer::font_image_t
       font_raii fraii(ftraii.ft, data.first.data(), data.first.size(), data.second);
 
       msdf_atlas::Charset set;
-      for (const auto &pair : cfg.charsets) {
-        if (pair.first > pair.second) utils::error{}("Bad charset ({}, {})", pair.first, pair.second);
+      for (const auto& pair : cfg.charsets) {
+        if (pair.first > pair.second) {
+          utils::error{}("Bad charset ({}, {})", pair.first, pair.second);
+        }
         for (uint32_t i = pair.first; i < pair.second; ++i) {
           set.add(i);
         }
@@ -124,18 +126,21 @@ std::tuple<std::vector<std::unique_ptr<font_t>>, font_atlas_packer::font_image_t
     const size_t color_channels = 3;
 
     msdf_atlas::ImmediateAtlasGenerator<
-      float, // pixel type of buffer for individual glyphs depends on generator function
-      color_channels,     // number of atlas color channels
-      msdf_atlas::msdfGenerator, // function to generate bitmaps for individual glyphs
+      float,                                                           // pixel type of buffer for individual glyphs depends on generator function
+      color_channels,                                                  // number of atlas color channels
+      msdf_atlas::msdfGenerator,                                       // function to generate bitmaps for individual glyphs
       msdf_atlas::BitmapAtlasStorage<msdf_atlas::byte, color_channels> // storage
-    > generator(width, height);
+      >
+      generator(width, height);
 
     msdf_atlas::GeneratorAttributes attributes; // ???
     generator.setAttributes(attributes);
     generator.setThreadCount(cfg.thread_count);
     generator.generate(glyphs.data(), glyphs.size());
     const msdfgen::BitmapConstRef<msdf_atlas::byte, color_channels>& atlas_storage = generator.atlasStorage();
-    if (cfg.save_png) msdfgen::savePng(atlas_storage, "font.png");
+    if (cfg.save_png) {
+      msdfgen::savePng(atlas_storage, "font.png");
+    }
     const size_t size = size_t(width) * size_t(height) * color_channels * sizeof(msdf_atlas::byte);
 
     img.bytes.resize(size, 0);
@@ -147,18 +152,21 @@ std::tuple<std::vector<std::unique_ptr<font_t>>, font_atlas_packer::font_image_t
     const size_t color_channels = 4;
 
     msdf_atlas::ImmediateAtlasGenerator<
-      float, // pixel type of buffer for individual glyphs depends on generator function
-      color_channels,     // number of atlas color channels
-      msdf_atlas::mtsdfGenerator, // function to generate bitmaps for individual glyphs
+      float,                                                           // pixel type of buffer for individual glyphs depends on generator function
+      color_channels,                                                  // number of atlas color channels
+      msdf_atlas::mtsdfGenerator,                                      // function to generate bitmaps for individual glyphs
       msdf_atlas::BitmapAtlasStorage<msdf_atlas::byte, color_channels> // storage
-    > generator(width, height);
+      >
+      generator(width, height);
 
     msdf_atlas::GeneratorAttributes attributes; // ???
     generator.setAttributes(attributes);
     generator.setThreadCount(cfg.thread_count);
     generator.generate(glyphs.data(), glyphs.size());
     const msdfgen::BitmapConstRef<msdf_atlas::byte, color_channels>& atlas_storage = generator.atlasStorage();
-    if (cfg.save_png) msdfgen::savePng(atlas_storage, "font.png");
+    if (cfg.save_png) {
+      msdfgen::savePng(atlas_storage, "font.png");
+    }
     const size_t size = size_t(width) * size_t(height) * color_channels * sizeof(msdf_atlas::byte);
 
     img.bytes.resize(size, 0);
@@ -166,7 +174,9 @@ std::tuple<std::vector<std::unique_ptr<font_t>>, font_atlas_packer::font_image_t
     img.height = height;
     img.channels = color_channels;
     memcpy(img.bytes.data(), atlas_storage.pixels, size);
-  } else utils::error{}("Unsupported color channels count {}", cfg.color_channels);
+  } else {
+    utils::error{}("Unsupported color channels count {}", cfg.color_channels);
+  }
 
   size_t offset = 0;
   std::vector<std::unique_ptr<font_t>> fonts;
@@ -221,9 +231,13 @@ std::tuple<std::vector<std::unique_ptr<font_t>>, font_atlas_packer::font_image_t
     // text_width/query_font_glyph разыменовывали неинициализированный указатель -> segfault.
     // Предпочитаем пробел, затем '?', иначе первый доступный глиф.
     f->fallback = nullptr;
-    if (const auto* g = f->find_glyph(0x20); g != nullptr) f->fallback = g;
-    else if (const auto* g = f->find_glyph('?'); g != nullptr) f->fallback = g;
-    else if (!f->glyphs.empty()) f->fallback = &f->glyphs.front();
+    if (const auto* g = f->find_glyph(0x20); g != nullptr) {
+      f->fallback = g;
+    } else if (const auto* g = f->find_glyph('?'); g != nullptr) {
+      f->fallback = g;
+    } else if (!f->glyphs.empty()) {
+      f->fallback = &f->glyphs.front();
+    }
     f->fallback_codepoint = f->fallback != nullptr ? f->fallback->codepoint : 0;
 
     f->nkfont.reset(new nk_user_font);
@@ -242,5 +256,5 @@ std::tuple<std::vector<std::unique_ptr<font_t>>, font_atlas_packer::font_image_t
 
   return std::make_tuple(std::move(fonts), std::move(img));
 }
-}
-}
+} // namespace visage
+} // namespace devils_engine

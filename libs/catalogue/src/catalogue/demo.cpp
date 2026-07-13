@@ -1,6 +1,5 @@
-#include "demo.h"
-
 #include "channel_data.h"
+#include "demo.h"
 
 namespace devils_engine {
 namespace catalogue {
@@ -36,5 +35,5 @@ bool demo::write_to_disk(const std::string&) const {
 bool demo::load_from_disk(const std::string&) {
   return false;
 }
-}
-}
+} // namespace catalogue
+} // namespace devils_engine

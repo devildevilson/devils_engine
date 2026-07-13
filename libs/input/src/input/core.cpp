@@ -1,13 +1,11 @@
-#include "core.h"
-
 #include <cstdlib>
 
+#include "core.h"
 #include "devils_engine/utils/core.h"
 
 #define GLFW_INCLUDE_VULKAN
 //#include "painter/vulkan_header.h"
 #include "GLFW/glfw3.h"
-
 #include "key_names.h"
 
 namespace {
@@ -18,9 +16,9 @@ constexpr std::string_view open_url_command_prefix = "open ";
 #elif __linux__
 constexpr std::string_view open_url_command_prefix = "xdg-open ";
 #else
-#error "Unknown compiler"
+#  error "Unknown compiler"
 #endif
-}
+} // namespace
 
 namespace devils_engine {
 namespace input {
@@ -28,15 +26,21 @@ static_assert(sizeof(icon_t) == sizeof(GLFWimage));
 static_assert(alignof(icon_t) == alignof(GLFWimage));
 
 init::init(error_callback callback) {
-  if (!glfwInit()) utils::error{}("Could not init GLFW");
+  if (!glfwInit()) {
+    utils::error{}("Could not init GLFW");
+  }
   glfwSetErrorCallback(callback);
-  if (!glfwVulkanSupported()) utils::error{}("Vulkan is not supported by this system");
+  if (!glfwVulkanSupported()) {
+    utils::error{}("Vulkan is not supported by this system");
+  }
 }
 init::~init() noexcept {
   glfwTerminate();
 }
 
-GLFWmonitor* primary_monitor() noexcept { return glfwGetPrimaryMonitor(); }
+GLFWmonitor* primary_monitor() noexcept {
+  return glfwGetPrimaryMonitor();
+}
 
 std::vector<GLFWmonitor*> monitors() noexcept {
   int count = 0;
@@ -54,12 +58,12 @@ std::tuple<uint32_t, uint32_t, uint32_t> primary_video_mode(GLFWmonitor* m) noex
   return std::make_tuple(mode->width, mode->height, mode->refreshRate);
 }
 
-std::vector<std::tuple<uint32_t, uint32_t, uint32_t>> video_modes(GLFWmonitor *m) noexcept {
+std::vector<std::tuple<uint32_t, uint32_t, uint32_t>> video_modes(GLFWmonitor* m) noexcept {
   int count = 0;
   const auto modes = glfwGetVideoModes(m, &count);
   std::vector<std::tuple<uint32_t, uint32_t, uint32_t>> v(count);
   for (int i = 0; i < count; ++i) {
-  const auto &mode = modes[i];
+    const auto& mode = modes[i];
     v.push_back(std::make_tuple(mode.width, mode.height, mode.refreshRate));
   }
 
@@ -78,7 +82,7 @@ std::tuple<float, float> monitor_content_scale(GLFWmonitor* m) noexcept {
   return std::make_tuple(w, h);
 }
 
-std::tuple<int32_t, int32_t> monitor_pos(GLFWmonitor *m) noexcept {
+std::tuple<int32_t, int32_t> monitor_pos(GLFWmonitor* m) noexcept {
   int x = 0, y = 0;
   glfwGetMonitorPos(m, &x, &y);
   return std::make_tuple(x, y);
@@ -90,57 +94,89 @@ std::tuple<int32_t, int32_t, int32_t, int32_t> monitor_workarea(GLFWmonitor* m) 
   return std::make_tuple(x, y, w, h);
 }
 
-std::string_view monitor_name(GLFWmonitor *m) noexcept {
+std::string_view monitor_name(GLFWmonitor* m) noexcept {
   return std::string_view(glfwGetMonitorName(m));
 }
 
-bool vulkan_supported() noexcept { return glfwVulkanSupported(); }
-const char** get_required_instance_extensions(uint32_t* count) noexcept { return glfwGetRequiredInstanceExtensions(count); }
+bool vulkan_supported() noexcept {
+  return glfwVulkanSupported();
+}
+const char** get_required_instance_extensions(uint32_t* count) noexcept {
+  return glfwGetRequiredInstanceExtensions(count);
+}
 PFN_vkGetInstanceProcAddr get_instance_proc_addr() noexcept {
   return reinterpret_cast<PFN_vkGetInstanceProcAddr>(glfwGetInstanceProcAddress(nullptr, "vkGetInstanceProcAddr"));
 }
-void init_vulkan_loader(PFN_vkGetInstanceProcAddr fn) noexcept { glfwInitVulkanLoader(fn); }
-uint32_t get_physical_device_presentation_support(VkInstance i, VkPhysicalDevice p, uint32_t index) noexcept { return glfwGetPhysicalDevicePresentationSupport(i, p, index); }
-uint32_t create_window_surface(VkInstance i, GLFWwindow* w, const void* ptr, VkSurfaceKHR* s) noexcept { return glfwCreateWindowSurface(i, w, (const VkAllocationCallbacks*)ptr, s); }
+void init_vulkan_loader(PFN_vkGetInstanceProcAddr fn) noexcept {
+  glfwInitVulkanLoader(fn);
+}
+uint32_t get_physical_device_presentation_support(VkInstance i, VkPhysicalDevice p, uint32_t index) noexcept {
+  return glfwGetPhysicalDevicePresentationSupport(i, p, index);
+}
+uint32_t create_window_surface(VkInstance i, GLFWwindow* w, const void* ptr, VkSurfaceKHR* s) noexcept {
+  return glfwCreateWindowSurface(i, w, (const VkAllocationCallbacks*)ptr, s);
+}
 
 GLFWwindow* create_window(const uint32_t width, const uint32_t height, const std::string& name, GLFWmonitor* m, GLFWwindow* share) {
-  if (m != nullptr) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+  if (m != nullptr) {
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+  }
   glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_TRUE);
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
   return glfwCreateWindow(width, height, name.c_str(), m, share);
 }
 
-void destroy(GLFWwindow* w) { glfwDestroyWindow(w); }
+void destroy(GLFWwindow* w) {
+  glfwDestroyWindow(w);
+}
 // glfwSetWindowMonitor
-void hide(GLFWwindow* w) { glfwHideWindow(w); }
-void show(GLFWwindow* w) { glfwShowWindow(w); }
-bool should_close(GLFWwindow* w) noexcept { return glfwWindowShouldClose(w); }
-void set_should_close(GLFWwindow* w, const bool value) noexcept { glfwSetWindowShouldClose(w, value ? GLFW_TRUE : GLFW_FALSE); }
+void hide(GLFWwindow* w) {
+  glfwHideWindow(w);
+}
+void show(GLFWwindow* w) {
+  glfwShowWindow(w);
+}
+bool should_close(GLFWwindow* w) noexcept {
+  return glfwWindowShouldClose(w);
+}
+void set_should_close(GLFWwindow* w, const bool value) noexcept {
+  glfwSetWindowShouldClose(w, value ? GLFW_TRUE : GLFW_FALSE);
+}
 std::tuple<uint32_t, uint32_t> window_size(GLFWwindow* m) noexcept {
-  int w=0,h=0;
+  int w = 0, h = 0;
   glfwGetWindowSize(m, &w, &h);
-  return std::make_tuple(w,h);
+  return std::make_tuple(w, h);
 }
 
-void set_window_size(GLFWwindow* m, const uint32_t width, const uint32_t height) noexcept { glfwSetWindowSize(m, int(width), int(height)); }
+void set_window_size(GLFWwindow* m, const uint32_t width, const uint32_t height) noexcept {
+  glfwSetWindowSize(m, int(width), int(height));
+}
 
 std::tuple<uint32_t, uint32_t> framebuffer_size(GLFWwindow* m) noexcept {
-  int w=0,h=0;
+  int w = 0, h = 0;
   glfwGetFramebufferSize(m, &w, &h);
   return std::make_tuple(w < 0 ? 0u : uint32_t(w), h < 0 ? 0u : uint32_t(h));
 }
 
-bool window_focused(GLFWwindow* m) noexcept { return glfwGetWindowAttrib(m, GLFW_FOCUSED) != 0; }
-bool window_iconified(GLFWwindow* m) noexcept { return glfwGetWindowAttrib(m, GLFW_ICONIFIED) != 0; }
-void maximize_window(GLFWwindow* w) noexcept { glfwMaximizeWindow(w); }
-void restore_window(GLFWwindow* w) noexcept { glfwRestoreWindow(w); }
+bool window_focused(GLFWwindow* m) noexcept {
+  return glfwGetWindowAttrib(m, GLFW_FOCUSED) != 0;
+}
+bool window_iconified(GLFWwindow* m) noexcept {
+  return glfwGetWindowAttrib(m, GLFW_ICONIFIED) != 0;
+}
+void maximize_window(GLFWwindow* w) noexcept {
+  glfwMaximizeWindow(w);
+}
+void restore_window(GLFWwindow* w) noexcept {
+  glfwRestoreWindow(w);
+}
 
 void set_window_monitor(GLFWwindow* w, GLFWmonitor* m, const int32_t xpos, const int32_t ypos, const uint32_t width, const uint32_t height, const int32_t refresh_rate) noexcept {
   glfwSetWindowMonitor(w, m, xpos, ypos, int(width), int(height), refresh_rate);
 }
 
 std::tuple<int32_t, int32_t> window_pos(GLFWwindow* m) noexcept {
-  int x=0,y=0;
+  int x = 0, y = 0;
   glfwGetWindowPos(m, &x, &y);
   return std::make_tuple(int32_t(x), int32_t(y));
 }
@@ -151,7 +187,7 @@ std::tuple<float, float> window_content_scale(GLFWwindow* m) noexcept {
   return std::make_tuple(w, h);
 }
 
-std::string_view window_title(GLFWwindow *m) noexcept {
+std::string_view window_title(GLFWwindow* m) noexcept {
   return std::string_view(glfwGetWindowTitle(m));
 }
 
@@ -159,7 +195,7 @@ GLFWmonitor* window_monitor(GLFWwindow* m) noexcept {
   return glfwGetWindowMonitor(m);
 }
 
-void set_icon(GLFWwindow *m, const size_t count, const icon_t *icons) {
+void set_icon(GLFWwindow* m, const size_t count, const icon_t* icons) {
   glfwSetWindowIcon(m, count, reinterpret_cast<const GLFWimage*>(icons));
 }
 
@@ -215,12 +251,16 @@ void set_window_callback(GLFWwindow* w, scroll_callback callback) {
   glfwSetScrollCallback(w, callback);
 }
 
-void set_window_callback(GLFWwindow *w, drop_callback callback) {
+void set_window_callback(GLFWwindow* w, drop_callback callback) {
   glfwSetDropCallback(w, callback);
 }
 
-void poll_events() { glfwPollEvents(); }
-int32_t key_scancode(const int32_t key) { return glfwGetKeyScancode(key); }
+void poll_events() {
+  glfwPollEvents();
+}
+int32_t key_scancode(const int32_t key) {
+  return glfwGetKeyScancode(key);
+}
 std::string_view key_name(const int32_t key, const int32_t scancode) {
   auto str = glfwGetKeyName(key, scancode);
   return std::string_view(str == nullptr ? "" : str);
@@ -250,11 +290,11 @@ std::string glfw_key_name_local(const int32_t key) {
   return get_glfw_key_name_local(key);
 }
 
-int32_t glfw_key_from_canonical(const std::string_view &name) noexcept {
+int32_t glfw_key_from_canonical(const std::string_view& name) noexcept {
   return get_glfw_key_from_canonical(name);
 }
 
-std::tuple<int32_t, int32_t> key_from_canonical(const std::string_view &name) noexcept {
+std::tuple<int32_t, int32_t> key_from_canonical(const std::string_view& name) noexcept {
   return get_key_from_canonical(name);
 }
 
@@ -280,7 +320,7 @@ void set_raw_mouse_motion(GLFWwindow* m) {
 
 // настройки курсора, их может быть несколько, например это вполне нормально
 // менять курсор во время игры в зависимости от ситуации
-GLFWcursor *create_cursor(const icon_t &icon, const int32_t xhot, const int32_t yhot) {
+GLFWcursor* create_cursor(const icon_t& icon, const int32_t xhot, const int32_t yhot) {
   return glfwCreateCursor(reinterpret_cast<const GLFWimage*>(&icon), xhot, yhot);
 }
 
@@ -292,7 +332,7 @@ void destroy_cursor(GLFWcursor* cursor) {
   glfwDestroyCursor(cursor);
 }
 
-void set_cursor(GLFWwindow *m, GLFWcursor *cursor) {
+void set_cursor(GLFWwindow* m, GLFWcursor* cursor) {
   glfwSetCursor(m, cursor);
 }
 
@@ -306,9 +346,9 @@ void set_clipboard_string(GLFWwindow* w, const std::string& str) noexcept {
   glfwSetClipboardString(w, str.c_str());
 }
 
-void open_internet_url(const std::string &str) {
+void open_internet_url(const std::string& str) {
   const std::string final_str = std::string(open_url_command_prefix) + str;
   std::system(final_str.c_str());
 }
-}
-}
+} // namespace input
+} // namespace devils_engine

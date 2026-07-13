@@ -17,8 +17,11 @@ class pause_state {
 public:
   constexpr void set(const pause_domain domain, const bool value) noexcept {
     const uint8_t bit = static_cast<uint8_t>(domain);
-    if (value) mask_ |= bit;
-    else mask_ &= uint8_t(~bit);
+    if (value) {
+      mask_ |= bit;
+    } else {
+      mask_ &= uint8_t(~bit);
+    }
   }
   constexpr bool paused(const pause_domain domain) const noexcept {
     return (mask_ & static_cast<uint8_t>(domain)) != 0;
@@ -35,7 +38,7 @@ private:
   uint8_t mask_ = 0;
 };
 
-}
-}
+} // namespace simul
+} // namespace devils_engine
 
 #endif

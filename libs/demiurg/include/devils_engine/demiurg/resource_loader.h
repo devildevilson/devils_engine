@@ -77,7 +77,7 @@ private:
   void external_done_impl(resource_interface* res);
 };
 
-}
-}
+} // namespace demiurg
+} // namespace devils_engine
 
 #endif

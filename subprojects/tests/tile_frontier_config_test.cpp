@@ -1,9 +1,7 @@
+#include <devils_engine/utils/timeline.h>
 #include <doctest/doctest.h>
-
 #include <tavl/deserialize.h>
 #include <tavl/parser.h>
-
-#include <devils_engine/utils/timeline.h>
 
 #include "core/config.h"
 

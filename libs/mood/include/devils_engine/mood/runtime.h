@@ -4,8 +4,8 @@
 #include <cstdint>
 #include <span>
 
-#include "devils_engine/utils/string_id.h"   // utils::id / string_hash
-#include "devils_engine/act/exec_context.h"  // act::exec_context
+#include "devils_engine/act/exec_context.h" // act::exec_context
+#include "devils_engine/utils/string_id.h"  // utils::id / string_hash
 #include "system.h"
 
 // runtime — СЛОЙ КОНВЕНЦИЙ над тупым хранилищем mood::system. Именно здесь живут стандартные
@@ -24,26 +24,26 @@ namespace mood {
 // стандартные имена-конвенции как готовые хеши (считаются один раз при инициализации модуля).
 namespace conv {
 inline const utils::id any_state = utils::string_hash("any_state");
-inline const utils::id idle      = utils::string_hash("idle");
-inline const utils::id on_entry  = utils::string_hash("on_entry");
-inline const utils::id on_exit   = utils::string_hash("on_exit");
-}
+inline const utils::id idle = utils::string_hash("idle");
+inline const utils::id on_entry = utils::string_hash("on_entry");
+inline const utils::id on_exit = utils::string_hash("on_exit");
+} // namespace conv
 
 enum class step_result : uint8_t {
-  transitioned,  // нашёлся переход, его гварды прошли — out.next_state/out.taken валидны
-  blocked,       // переходы по событию ЕСТЬ, но все отсеяны гвардами (нормальный геймплей)
-  no_transition  // перехода по (state, event) нет даже через any_state (скорее опечатка/баг)
+  transitioned, // нашёлся переход, его гварды прошли — out.next_state/out.taken валидны
+  blocked,      // переходы по событию ЕСТЬ, но все отсеяны гвардами (нормальный геймплей)
+  no_transition // перехода по (state, event) нет даже через any_state (скорее опечатка/баг)
 };
 
 // поля отсортированы по убыванию размера/выравнивания, чтобы минимизировать паддинг
 // (правило проекта). Иначе step_result (1 байт) первым давал бы 7 байт дыры + 4 хвостовых
 // => 32 байта; так — 24 без внутренних дыр.
 struct step_outcome {
-  utils::id    next_state = utils::invalid_id;          // 8: валиден при transitioned (invalid_id => остаёмся)
-  const system::transition* taken = nullptr;            // 8: какая строка сработала (для process/диагностики)
-  uint16_t     candidates = 0;                          // 2: сколько кандидатов было у (state, event)
-  uint16_t     blocked    = 0;                          // 2: сколько из них отсеяли гварды
-  step_result  result = step_result::no_transition;     // 1: исход шага (см. step_result)
+  utils::id next_state = utils::invalid_id;        // 8: валиден при transitioned (invalid_id => остаёмся)
+  const system::transition* taken = nullptr;       // 8: какая строка сработала (для process/диагностики)
+  uint16_t candidates = 0;                         // 2: сколько кандидатов было у (state, event)
+  uint16_t blocked = 0;                            // 2: сколько из них отсеяли гварды
+  step_result result = step_result::no_transition; // 1: исход шага (см. step_result)
 };
 static_assert(sizeof(step_outcome) == 24, "step_outcome: проверь порядок полей (минимизация паддинга)");
 
@@ -82,7 +82,7 @@ utils::id settle(const system& sys, const utils::id cur_state, const utils::id e
 // wildcard учтена (он не считается недостижимым). Однократная диагностика, звать в debug/на загрузке.
 void validate(const system& sys);
 
-}
-}
+} // namespace mood
+} // namespace devils_engine
 
 #endif

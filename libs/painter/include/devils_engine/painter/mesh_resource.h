@@ -15,7 +15,7 @@ namespace painter {
 //   warm->hot  (load_warm, поток рендера): заливает в GPU, пишет gpu_index, освобождает CPU-копию.
 class mesh_resource : public demiurg::resource_interface {
 public:
-  static constexpr uint32_t invalid_gpu_index = utils::shared::INVALID_GPU_INDEX;
+  static constexpr uint32_t invalid_gpu_index = utils::shared::invalid_gpu_index;
   static constexpr uint32_t vertex_stride = 16; // float3 + uint32 rgba (как у тест-треугольника)
 
   std::vector<uint8_t> memory;
@@ -30,7 +30,7 @@ public:
   void unload_warm(const utils::safe_handle_t& handle) override;
 };
 
-}
-}
+} // namespace painter
+} // namespace devils_engine
 
 #endif

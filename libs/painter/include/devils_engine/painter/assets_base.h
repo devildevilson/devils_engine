@@ -1,24 +1,28 @@
 #ifndef DEVILS_ENGINE_PAINTER_ASSETS_BASE_H
 #define DEVILS_ENGINE_PAINTER_ASSETS_BASE_H
 
-#include <cstdint>
 #include <cstddef>
-#include <vector>
-#include <string>
+#include <cstdint>
 #include <span>
+#include <string>
+#include <vector>
+
 #include "vulkan_minimal.h"
 
 namespace devils_engine {
 namespace painter {
 
-constexpr size_t MAX_BUFFER_SLOTS = 512;
-constexpr size_t MAX_TEXTURE_SLOTS = 4098;
+constexpr size_t max_buffer_slots = 512;
+constexpr size_t max_texture_slots = 4098;
 
 //struct buffer_asset_handle { uint32_t slot, generation; };
 //struct texture_asset_handle { uint32_t slot, generation; };
 using buffer_asset_handle = uint32_t;
 using texture_asset_handle = uint32_t;
-enum class asset_state { empty, reserved, ready, pending_remove };
+enum class asset_state { empty,
+                         reserved,
+                         ready,
+                         pending_remove };
 
 // необходимый минимум для слота какой?
 // должен быть host_visible меш для UI например
@@ -27,7 +31,7 @@ enum class asset_state { empty, reserved, ready, pending_remove };
 struct buffer_slot {
   std::string name;
   std::string geometry_name;
-  asset_state state; // assets_base живёт строго на render-потоке; кросс-поточная публикация индекса идёт через demiurg::resource::_state, атомик тут не нужен
+  asset_state state;           // assets_base живёт строго на render-потоке; кросс-поточная публикация индекса идёт через demiurg::resource::_state, атомик тут не нужен
   uint32_t forbid_after_frame; // нам просто нужно записать раньше чем поменяем состояние
 
   // остается вопрос с заполнением инстанс буфера с цпу
@@ -67,7 +71,9 @@ struct texture_slot {
   uint32_t forbid_after_frame;
 
   uint32_t format;
-  struct { uint32_t x, y, z; } extents;
+  struct {
+    uint32_t x, y, z;
+  } extents;
 
   VmaAllocation alc;
   VkImage storage;
@@ -82,7 +88,9 @@ struct texture_slot {
 
 struct texture_create_info {
   //std::string name;
-  struct { uint32_t x, y, z; } extents;
+  struct {
+    uint32_t x, y, z;
+  } extents;
   uint32_t format;
 };
 
@@ -140,13 +148,13 @@ struct assets_base {
   buffer_asset_handle find_buffer_storage(const std::string_view& name) const;
   texture_asset_handle find_texture_storage(const std::string_view& name) const;
 
-  void create_buffer_storage(const buffer_asset_handle& h, const buffer_create_info &info);
-  void create_texture_storage(const texture_asset_handle& h, const texture_create_info &info);
+  void create_buffer_storage(const buffer_asset_handle& h, const buffer_create_info& info);
+  void create_texture_storage(const texture_asset_handle& h, const texture_create_info& info);
 
   // Создать placeholder-текстуру (см. default_texture). Идемпотентно. Зовётся один раз на потоке
   // рендера после создания assets_base, ДО первой отрисовки графа.
   void create_default_texture();
-  VkImageView default_texture_view() const noexcept { return default_texture.view; }
+  VkImageView default_texture_view() const noexcept;
 
   // как бы оформить батч копи? то есть это надо предсоздать стаджинг буферы
   // потом закинуть, вообще для батч копи нужно создать много буферов
@@ -159,7 +167,7 @@ struct assets_base {
   void mark_remove_texture_slot(const texture_asset_handle& h);
 };
 
-}
-}
+} // namespace painter
+} // namespace devils_engine
 
 #endif

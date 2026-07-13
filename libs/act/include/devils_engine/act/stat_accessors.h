@@ -4,16 +4,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <reflect>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
 
-#include <reflect>
-#include <devils_script/system.h>
-
 #include <devils_engine/catalogue/introspection.h>
 #include <devils_engine/utils/type_traits.h>
+#include <devils_script/system.h>
 
 namespace devils_engine {
 namespace act {
@@ -22,8 +21,9 @@ namespace stats_detail {
 
 template <typename T>
 consteval bool valid_aggregate() {
-  if constexpr (!std::is_aggregate_v<T>) return false;
-  else {
+  if constexpr (!std::is_aggregate_v<T>) {
+    return false;
+  } else {
     bool valid = true;
     reflect::for_each<T>([&](auto Idx) {
       using field_t = std::remove_cvref_t<decltype(reflect::get<decltype(Idx)::value>(std::declval<T&>()))>;
@@ -45,18 +45,22 @@ field_t<StatsT, I> read(Scope s) {
 
 template <typename StatsT, typename Scope, auto Getter, std::size_t I>
 void add(Scope s, const field_t<StatsT, I> v) {
-  if (StatsT* p = Getter(s)) reflect::get<I>(*p) += v;
+  if (StatsT* p = Getter(s)) {
+    reflect::get<I>(*p) += v;
+  }
 }
 
 template <typename StatsT, std::size_t I>
 consteval auto add_name() {
   constexpr std::string_view f = reflect::member_name<I, StatsT>();
   utils::template_string_t<f.size() + 1> field{};
-  for (std::size_t i = 0; i < f.size(); ++i) field.value[i] = f[i];
+  for (std::size_t i = 0; i < f.size(); ++i) {
+    field.value[i] = f[i];
+  }
   return utils::template_string_concat(utils::template_string_t("add_"), field);
 }
 
-}
+} // namespace stats_detail
 
 template <typename T>
 concept numeric_stats_aggregate = stats_detail::valid_aggregate<T>();
@@ -66,20 +70,26 @@ template <numeric_stats_aggregate StatsT>
 struct stat_scope {
   uint32_t id = UINT32_MAX;
   StatsT* ptr = nullptr;
-  bool valid() const noexcept { return ptr != nullptr; }
+  bool valid() const noexcept {
+    return ptr != nullptr;
+  }
 };
 
 template <numeric_stats_aggregate StatsT>
-StatsT* stat_scope_getter(const stat_scope<StatsT> s) noexcept { return s.ptr; }
+StatsT* stat_scope_getter(const stat_scope<StatsT> s) noexcept {
+  return s.ptr;
+}
 
 namespace stats_detail {
 template <numeric_stats_aggregate StatsT, typename ParentScope, auto Getter>
 stat_scope<StatsT> enter(ParentScope s) noexcept {
   uint32_t id = UINT32_MAX;
-  if constexpr (requires { s.id; }) id = static_cast<uint32_t>(s.id);
+  if constexpr (requires { s.id; }) {
+    id = static_cast<uint32_t>(s.id);
+  }
   return stat_scope<StatsT>{id, Getter(s)};
 }
-}
+} // namespace stats_detail
 
 template <numeric_stats_aggregate StatsT, typename... Args>
 constexpr StatsT make_stats(Args&&... args) noexcept(noexcept(StatsT{std::forward<Args>(args)...})) {
@@ -132,7 +142,7 @@ void register_stats(devils_script::system& sys, const std::string_view scope_nam
   register_stat_accessors<StatsT, Domain>(sys);
 }
 
-}
-}
+} // namespace act
+} // namespace devils_engine
 
 #endif

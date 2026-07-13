@@ -25,7 +25,7 @@ class font_resource : public painter::gpu_texture_resource {
 public:
   font_resource();
 
-  font_t* font() const noexcept { return font_ptr.get(); }
+  font_t* font() const noexcept;
 
   int32_t top_state() const override;
   bool is_external_step(int32_t from) const override;
@@ -37,7 +37,7 @@ private:
   std::unique_ptr<font_t> font_ptr;
 };
 
-}
-}
+} // namespace visage
+} // namespace devils_engine
 
 #endif

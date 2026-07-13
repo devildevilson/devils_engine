@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+
 #include <gtl/phmap.hpp>
 
 #include "common.h"
@@ -78,7 +79,7 @@ private:
   mutable size_t miss_count = 0;
 };
 
-}
-}
+} // namespace acumen
+} // namespace devils_engine
 
 #endif

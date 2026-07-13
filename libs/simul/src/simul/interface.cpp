@@ -1,17 +1,18 @@
-#include "interface.h"
-
 #include <thread>
-#include "devils_engine/utils/time-utils.hpp"
+
 #include <immintrin.h>
+
+#include "devils_engine/utils/time-utils.hpp"
+#include "interface.h"
 
 namespace devils_engine {
 namespace simul {
-static inline void cpu_relax() {
+static void cpu_relax() {
   _mm_pause();
 }
 
 template <typename T>
-void spin_sleep_for(const T &dur) {
+void spin_sleep_for(const T& dur) {
   const size_t amount = std::chrono::duration_cast<std::chrono::nanoseconds>(dur).count();
   const auto tp = std::chrono::high_resolution_clock::now();
   size_t ns = 0;
@@ -27,6 +28,11 @@ constexpr size_t default_30fps = double(utils::global_time_resolution) / 30.0;
 
 advancer::advancer() noexcept : _frame_time(default_30fps), new_frame_time(default_30fps), _counter(0), _stop(false) {}
 advancer::advancer(const size_t frame_time) noexcept : _frame_time(frame_time), new_frame_time(frame_time), _counter(0), _stop(false) {}
+
+std::mutex& advancer::acquire_sync_object() noexcept {
+  return mutex;
+}
+
 void advancer::run(const size_t wait_mcs) {
   run(std::stop_token{}, wait_mcs); // пустой токен никогда не stop_requested → прежнее поведение
 }
@@ -72,9 +78,18 @@ void advancer::set_frame_time(const size_t frame_time) {
   new_frame_time = frame_time;
 }
 
-size_t advancer::frame_time() const { std::unique_lock l(mutex); return _frame_time; }
-size_t advancer::counter() const { std::unique_lock l(mutex); return _counter; }
-advancer::clock_t::time_point advancer::start() const { std::unique_lock l(mutex); return _start; }
+size_t advancer::frame_time() const {
+  std::unique_lock l(mutex);
+  return _frame_time;
+}
+size_t advancer::counter() const {
+  std::unique_lock l(mutex);
+  return _counter;
+}
+advancer::clock_t::time_point advancer::start() const {
+  std::unique_lock l(mutex);
+  return _start;
+}
 double advancer::compute_fps() const {
   std::unique_lock l(mutex);
   auto tp = clock_t::now();
@@ -93,5 +108,5 @@ void advancer::stop() {
   std::unique_lock l(mutex);
   _stop = true;
 }
-}
-}
+} // namespace simul
+} // namespace devils_engine

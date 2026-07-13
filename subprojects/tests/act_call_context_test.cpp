@@ -1,10 +1,8 @@
-#include <doctest/doctest.h>
-
-#include <devils_script/context.h>
-#include <devils_script/system.h>
-
 #include <devils_engine/act/call_context.h>
 #include <devils_engine/act/function.h>
+#include <devils_script/context.h>
+#include <devils_script/system.h>
+#include <doctest/doctest.h>
 
 using namespace devils_engine;
 
@@ -18,7 +16,7 @@ act::real_t native_accumulate(const act::exec_context&, act::call_context& call)
   return 9.0;
 }
 
-}
+} // namespace
 
 TEST_CASE("act call_context is shared with native functions [act]") {
   act::native_function<act::real_t> fn(&native_accumulate);

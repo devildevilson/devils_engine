@@ -17,30 +17,31 @@ namespace simul {
 class resource_access_scope {
 public:
   void grant(const demiurg::resource_handle handle) {
-    if (handle.get() == nullptr || contains(handle)) return;
+    if (handle.get() == nullptr || contains(handle)) {
+      return;
+    }
     handles_.push_back(handle);
   }
 
-  void clear() { handles_.clear(); }
+  void clear() {
+    handles_.clear();
+  }
 
   bool contains(const demiurg::resource_handle handle) const noexcept {
     return std::find_if(handles_.begin(), handles_.end(), [handle](const demiurg::resource_handle cur) {
-      return cur.system == handle.system && cur.hash == handle.hash;
-    }) != handles_.end();
+             return cur.system == handle.system && cur.hash == handle.hash;
+           }) != handles_.end();
   }
 
 private:
   std::vector<demiurg::resource_handle> handles_;
 };
 
-inline bool resource_is_visible(
+bool resource_is_visible(
   const std::shared_ptr<const resource_access_scope>& scope,
-  const demiurg::resource_handle handle
-) noexcept {
-  return scope == nullptr || scope->contains(handle);
-}
+  demiurg::resource_handle handle) noexcept;
 
-}
-}
+} // namespace simul
+} // namespace devils_engine
 
 #endif

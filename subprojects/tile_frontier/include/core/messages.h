@@ -3,8 +3,8 @@
 
 #include <array>
 #include <atomic>
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -14,8 +14,16 @@
 // Это намеренно "тупые" POD-подобные сообщения без логики и без тяжёлых зависимостей
 // (окно/пул объявлены вперёд), чтобы хедер был дешёвым для включения отовсюду.
 
-namespace devils_engine { namespace thread { class atomic_pool; } }
-namespace devils_engine { namespace demiurg { class resource_system; } }
+namespace devils_engine {
+namespace thread {
+class atomic_pool;
+}
+} // namespace devils_engine
+namespace devils_engine {
+namespace demiurg {
+class resource_system;
+}
+} // namespace devils_engine
 
 namespace tile_frontier {
 namespace core {
@@ -139,15 +147,15 @@ struct command_draw_tiles {
 struct command_draw_actors {
   uint32_t count = 0;
   uint32_t stride = 0;
-  size_t sim_frame_time = 0;          // time between simulation snapshots, in utils::global_time_resolution units
+  size_t sim_frame_time = 0; // time between simulation snapshots, in utils::global_time_resolution units
   std::vector<uint8_t> bytes;
-  std::vector<uint32_t> ids;          // stable ids aligned with bytes/current instances
+  std::vector<uint32_t> ids; // stable ids aligned with bytes/current instances
 };
 
 // (command_write_buffer удалён — запись буферов переведена на SPSC write_buffer_channel:
 //  POD-сообщение {name_hash,pos,size} + byte_ring под payload, см. write_buffer_channel.h.)
 
-}
-}
+} // namespace core
+} // namespace tile_frontier
 
 #endif
