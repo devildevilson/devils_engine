@@ -32,7 +32,7 @@ set(SRC_LIST
   src/painter/system_info.cpp
   src/painter/vulkan_header.cpp
   src/painter/shader_source_file.cpp
-  src/painter/common.cpp 
+  src/painter/common.cpp
   src/painter/structures.cpp
   src/painter/graphics_base.cpp
   src/painter/common_steps.cpp

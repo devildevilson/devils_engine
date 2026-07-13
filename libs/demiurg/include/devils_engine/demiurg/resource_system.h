@@ -121,7 +121,7 @@ public:
     };
 
     auto type = types_pool.create(std::move(name), std::move(ext), sizeof(T) * 100, sizeof(T), alignof(T), std::move(constructor));
-        
+
     types[type->name] = type;
   }
 
@@ -141,7 +141,7 @@ public:
     };
 
     auto type = types_pool.create(std::move(name), std::move(ext), sizeof(T) * 100, sizeof(T), alignof(T), std::move(constructor));
-        
+
     types[type->name] = type;
   }
 

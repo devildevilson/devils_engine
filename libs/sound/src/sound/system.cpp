@@ -109,7 +109,7 @@ static void completely_stop_source(system::source &s) {
       after(SIZE_MAX)
     {}
 
-    system::system(const size_t queue_size) : 
+    system::system(const size_t queue_size) :
       device(nullptr), ctx(nullptr), counter(1), queue_size(queue_size), sources_offset(1)//, background(nullptr)
     {
       ALCenum error = AL_NO_ERROR;
@@ -230,7 +230,7 @@ static void completely_stop_source(system::source &s) {
     //  const auto [source_index, queue_index] = find_source_id(source_id);
     //  if (source_index == SIZE_MAX) return false;
 
-    //  ALint ret; 
+    //  ALint ret;
     //  al_call(alGetSourcei, sources[source_index].source.handle, AL_SOURCE_STATE, &ret);
     //  if (ret == AL_PLAYING) return true;
     //  al_call(alSourcePlay, sources[source_index].source.handle);
@@ -379,7 +379,7 @@ static void completely_stop_source(system::source &s) {
       //  }
       //}
 
-      // надо раскидать сорсы 
+      // надо раскидать сорсы
 
       //for (auto m : menu_sources) {
       //  // нет стоп
@@ -427,7 +427,7 @@ static void completely_stop_source(system::source &s) {
     /*background_source *system::create_background_source() {
       auto s = create<background_source>();
       s->type_volume = &volume.source[0];
-      
+
       auto sorc = sources.back();
       sources.pop_back();
       s->setup_source(sorc);
@@ -466,7 +466,7 @@ static void completely_stop_source(system::source &s) {
       return sources.size();
     }
 
-    //size_t system::get_new_id() { 
+    //size_t system::get_new_id() {
     //  const size_t id = counter;
     //  counter += 1;
     //  counter += size_t(counter == 0);
@@ -517,7 +517,7 @@ static void completely_stop_source(system::source &s) {
     //  this->loaded_frames = 0;
     //}
 
-    //void system::sound_processing_data::reset() noexcept { 
+    //void system::sound_processing_data::reset() noexcept {
     //  init(0, nullptr, settings());
     //}
 
@@ -535,7 +535,7 @@ static void completely_stop_source(system::source &s) {
     //  return frames;
     //}
 
-    //system::source_data::source_data(const struct source &source, sound_processing_data *queue) noexcept 
+    //system::source_data::source_data(const struct source &source, sound_processing_data *queue) noexcept
     //  : source(source), queue(queue)
     //{}
 
@@ -587,7 +587,7 @@ static void completely_stop_source(system::source &s) {
     //  al_call(alSourceQueueBuffers, source.handle, 1, &buffer);
     //}
 
-    
+
 
     // как то вот так...
     struct devils_engine_sound_data_source {
@@ -603,7 +603,7 @@ static void completely_stop_source(system::source &s) {
 
       size_t current_cursor_pos;
 
-      // never change once initialized 
+      // never change once initialized
       uint32_t sample_rate;
       uint32_t channels;
       enum format format;
@@ -661,7 +661,7 @@ static void completely_stop_source(system::source &s) {
     static_assert(offsetof(devils_engine_sound_data_source, base) == 0);
 
     // надо все переделать на фреймы ...........
-    
+
     static ma_result my_data_source_read(ma_data_source* pDataSource, void* pFramesOut, ma_uint64 frameCount, ma_uint64* pFramesRead) {
       auto ptr = reinterpret_cast<devils_engine_sound_data_source*>(pDataSource);
       auto out_buffer = reinterpret_cast<uint8_t*>(pFramesOut);
@@ -889,7 +889,7 @@ static void completely_stop_source(system::source &s) {
     }
 
 //    static ma_result sound_instance_init(system2::sound_instance* ptr, const uint32_t sample_rate, const uint32_t channels, const enum format format) {
-//      
+//
 //    }
 
     static void data_source_uninit(devils_engine_sound_data_source* pMyDataSource) {
@@ -1023,7 +1023,7 @@ static void completely_stop_source(system::source &s) {
         playback_channels = m_device->playback.channels;
         playback_sample_rate = m_device->sampleRate;
       }
-      
+
       {
         for (size_t i = 0; i < default_mono_sounds_count; ++i) {
           m_instances_mono.emplace_back(new sound_instance);
@@ -1036,7 +1036,7 @@ static void completely_stop_source(system::source &s) {
           if (result != MA_SUCCESS) {
             utils::error{}("Could not initialize data source");
           }
-          
+
           // нужно заранее продумать звуковые группы
           result = ma_sound_init_from_data_source(m_engine.get(), ds, 0, nullptr, s);
           if (result != MA_SUCCESS) {
@@ -1065,7 +1065,7 @@ static void completely_stop_source(system::source &s) {
           if (result != MA_SUCCESS) {
             utils::error{}("Could not initialize data source");
           }
-          
+
           // нужно заранее продумать звуковые группы
           result = ma_sound_init_from_data_source(m_engine.get(), ds, MA_SOUND_FLAG_NO_SPATIALIZATION, nullptr, s);
           if (result != MA_SUCCESS) {
@@ -1549,7 +1549,7 @@ static void completely_stop_source(system::source &s) {
       return SIZE_MAX;
     }
 
-    // останавливать ma_device когда создаем/удаляем инстанс? 
+    // останавливать ma_device когда создаем/удаляем инстанс?
     // похоже что это пока что костыль, но что то подобное делать придется
     uint32_t system2::instance_init(sound_instance* inst, const uint32_t sample_rate, const uint32_t channels, const enum format format) const {
       auto s = &inst->sound;
@@ -1564,7 +1564,7 @@ static void completely_stop_source(system::source &s) {
       if (channels > 1) {
         flags = MA_SOUND_FLAG_NO_SPATIALIZATION;
       }
-          
+
       // нужно заранее продумать звуковые группы
       result = ma_sound_init_from_data_source(m_engine.get(), ds, flags, nullptr, s);
       if (result != MA_SUCCESS) {

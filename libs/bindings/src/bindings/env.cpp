@@ -42,9 +42,9 @@ constexpr auto whitelisted = {
 };
 
 constexpr auto safe_libraries = {
-  "coroutine", 
-  "string", 
-  "table", 
+  "coroutine",
+  "string",
+  "table",
   "math",
   "utf8",
 };
@@ -214,7 +214,7 @@ static sol::table create_table(const sol::object arr_size, const sol::object has
 
 static void num_queue(const double first_count, const sol::function prepare_function, const sol::function queue_function, sol::this_state s) {
   if (first_count < 0) utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
-  if (std::abs(first_count) < DEVILS_ENGINE_EPSILON) return;
+  if (std::abs(first_count) < utils::epsilon) return;
 
   sol::state_view lua = s;
   std::queue<double> queue;
@@ -229,14 +229,14 @@ static void num_queue(const double first_count, const sol::function prepare_func
   while (!queue.empty()) {
     const double data = queue.front();
     queue.pop();
-          
+
     queue_function(data, lua_push_func);
   }
 }
 
 static void queue(const double first_count, const sol::function prepare_function, const sol::function queue_function, sol::this_state s) {
   if (first_count < 0) utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
-  if (std::abs(first_count) < DEVILS_ENGINE_EPSILON) return;
+  if (std::abs(first_count) < utils::epsilon) return;
 
   sol::state_view lua = s;
   std::queue<sol::object> queue;
@@ -251,57 +251,57 @@ static void queue(const double first_count, const sol::function prepare_function
   while (!queue.empty()) {
     const sol::object data = queue.front();
     queue.pop();
-          
+
     queue_function(data, lua_push_func);
   }
 }
 
 static void num_random_queue(const int64_t seed, const double first_count, const sol::function prepare_function, const sol::function queue_function, sol::this_state s) {
   if (first_count < 0) utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
-  if (std::abs(first_count) < DEVILS_ENGINE_EPSILON) return;
-        
+  if (std::abs(first_count) < utils::epsilon) return;
+
   sol::state_view lua = s;
   std::vector<double> queue;
   queue.reserve(first_count * 2);
   const auto push_func = [&queue] (const double data) { queue.push_back(data); };
   sol::object lua_push_func = sol::make_object(lua, push_func);
   auto rnd_state = utils::xoshiro256starstar::init(s64_to_u64(seed));
-        
+
   for (size_t i = 0; i < first_count; ++i) {
     prepare_function(DEVILS_ENGINE_TO_LUA_INDEX(i), lua_push_func);
   }
-        
+
   while (!queue.empty()) {
     const size_t rand_index = utils::interval(queue.size(), rnd_state);
     const double data = queue[rand_index];
     queue[rand_index] = queue.back();
     queue.pop_back();
-          
+
     queue_function(data, lua_push_func);
   }
 }
 
 static void random_queue(const int64_t seed, const double first_count, const sol::function prepare_function, const sol::function queue_function, sol::this_state s) {
   if (first_count < 0) utils::error{}("Bad count value {}, function: {}", first_count, "num_queue");
-  if (std::abs(first_count) < DEVILS_ENGINE_EPSILON) return;
-        
+  if (std::abs(first_count) < utils::epsilon) return;
+
   sol::state_view lua = s;
   std::vector<sol::object> queue;
   queue.reserve(first_count * 2);
   const auto push_func = [&queue] (const sol::object data) { queue.push_back(data); };
   sol::object lua_push_func = sol::make_object(lua, push_func);
   auto rnd_state = utils::xoshiro256starstar::init(s64_to_u64(seed));
-        
+
   for (size_t i = 0; i < first_count; ++i) {
     prepare_function(DEVILS_ENGINE_TO_LUA_INDEX(i), lua_push_func);
   }
-        
+
   while (!queue.empty()) {
     const size_t rand_index = utils::interval(queue.size(), rnd_state);
     const sol::object data = queue[rand_index];
     queue[rand_index] = queue.back();
     queue.pop_back();
-          
+
     queue_function(data, lua_push_func);
   }
 }
@@ -387,7 +387,7 @@ void basic_functions(sol::table t) {
   sol::table base = t.get_or("base", sol::nil);
   if (!base.valid()) base = t.create_named("base");
   base.set_function("pack_u32f32", &pack_u32f32);
-  base.set_function("pack_u32u32", &pack_u32u32); 
+  base.set_function("pack_u32u32", &pack_u32u32);
   base.set_function("pack_f32f32", &pack_f32f32);
   base.set_function("unpack_u32f32", &unpack_u32f32);
   base.set_function("unpack_u32u32", &unpack_u32u32);
@@ -425,9 +425,9 @@ void basic_functions(sol::table t) {
   base.set("platform", platform());
   base.set("project", project());
 
-  // тут нужно еще добавить функции: найти и загрузить ресурс, найти список ресурсов, 
+  // тут нужно еще добавить функции: найти и загрузить ресурс, найти список ресурсов,
   // какой ресурс загружен, какой модуль загружен, список загруженный модулей,
-  // 
+  //
 }
 }
 }

@@ -21,34 +21,12 @@ namespace fs = std::filesystem;
 
 namespace devils_engine {
   namespace utils {
-    void assert_failed_detail(
-      const std::string_view &cond_str,
-      const std::string_view &file_name,
-      const std::string_view &func_name,
-      const size_t line
-    ) {
-      spdlog::error("{}:{}: {}: Assertion `{}` failed", make_sane_file_name(file_name), line, func_name, cond_str);
-      throw std::runtime_error("Assertion failed");
-    }
-
-    void assert_failed_detail(
-      const std::string_view &cond_str,
-      const std::string_view &file_name,
-      const std::string_view &func_name,
-      const size_t line,
-      const std::string_view &comm
-    ) {
-      spdlog::error("{}:{}: {}: Assertion `{}` failed", make_sane_file_name(file_name), line, func_name, cond_str);
-      spdlog::info(comm);
-      throw std::runtime_error("Assertion failed");
-    }
-
-    tracer::tracer(std::source_location loc) noexcept : l(std::move(loc)) {
-      spdlog::log(spdlog::level::trace, "in  {}:{} `{}`", make_sane_file_name(l.file_name()), l.line(), l.function_name());
+    tracer::tracer(const std::source_location loc) noexcept : location(loc) {
+      spdlog::log(spdlog::level::trace, "in  {}:{} `{}`", make_sane_file_name(location.file_name()), location.line(), location.function_name());
     }
 
     tracer::~tracer() noexcept {
-      spdlog::log(spdlog::level::trace, "out {}:{} `{}`", make_sane_file_name(l.file_name()), l.line(), l.function_name());
+      spdlog::log(spdlog::level::trace, "out {}:{} `{}`", make_sane_file_name(location.file_name()), location.line(), location.function_name());
     }
 
     std::string cast(const std::wstring &str) noexcept {
@@ -140,7 +118,7 @@ namespace devils_engine {
       }
 
       // 1 байт
-      for (; i < len; i++) {
+      for (; i < len; ++i) {
         crc = _mm_crc32_u8(crc, data[i]);
       }
 

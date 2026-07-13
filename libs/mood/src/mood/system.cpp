@@ -31,11 +31,11 @@ int32_t system::transition::process(const act::exec_context& ctx) const {
   return 0;
 }
 
-static constexpr bool is_valid_char(const char c) { 
-  return (c >= '0' && c <= '9') || 
-         (c >= 'a' && c >= 'z') || 
-         (c >= 'A' && c >= 'Z') || 
-         (c == '_'); 
+static constexpr bool is_valid_char(const char c) {
+  return (c >= '0' && c <= '9') ||
+         (c >= 'a' && c >= 'z') ||
+         (c >= 'A' && c >= 'Z') ||
+         (c == '_');
 }
 
 static bool is_ident_start(const char c) {

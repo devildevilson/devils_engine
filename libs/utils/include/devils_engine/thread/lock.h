@@ -33,18 +33,18 @@ inline void cpu_relax() noexcept { _mm_pause(); }
 inline void light_cpu_relax() noexcept { std::this_thread::yield(); }
 
 class spin_mutex {
-public: 
+public:
   static constexpr int max_backoff = 64;
 
   inline spin_mutex() noexcept : val(false) {}
   inline bool try_lock() noexcept { return !val.exchange(true, std::memory_order_acquire); }
-  inline void lock() noexcept { 
+  inline void lock() noexcept {
     int backoff = 1;
 
     for (;;) {
-      while (val.load(std::memory_order_relaxed)) { 
-        for (int i = 0; i < backoff; ++i) cpu_relax(); 
-      } 
+      while (val.load(std::memory_order_relaxed)) {
+        for (int i = 0; i < backoff; ++i) cpu_relax();
+      }
 
       if (try_lock()) return;
 
@@ -58,7 +58,7 @@ private:
 };
 
 class light_spin_mutex {
-public: 
+public:
   inline light_spin_mutex() noexcept : val(false) {}
   inline bool try_lock() noexcept { return !val.exchange(true, std::memory_order_acquire); }
   inline void lock() noexcept {

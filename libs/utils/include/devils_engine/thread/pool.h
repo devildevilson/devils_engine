@@ -35,7 +35,7 @@ public:
   template<class F, class... Args>
   auto submit_future(F&& f, Args&&... args) noexcept -> std::future<typename std::invoke_result_t<F(Args...)>> {
     using return_type = typename std::invoke_result_t<F(Args...)>;
-      
+
     // тут лучше не придумали
     auto task = std::make_unique<std::packaged_task<return_type()>>(
       [f = std::move(f), largs = std::make_tuple(std::forward<Args>(args)...)] () mutable {
@@ -59,7 +59,7 @@ public:
     for (size_t i = 0; i < size(); ++i) {
       const size_t job_count = std::min(work_count, count-start);
       if (job_count == 0) break;
-      
+
       task_t task = [f, arg = std::make_tuple(start, job_count, args...)]() {
         std::apply(std::move(f), std::move(arg));
       };

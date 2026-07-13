@@ -80,17 +80,17 @@ struct texture_slot {
   texture_slot& operator=(texture_slot&& move) noexcept;
 };
 
-struct texture_create_info { 
+struct texture_create_info {
   //std::string name;
-  struct { uint32_t x, y, z; } extents; 
-  uint32_t format; 
+  struct { uint32_t x, y, z; } extents;
+  uint32_t format;
 };
 
-struct buffer_create_info { 
+struct buffer_create_info {
   //std::string name;
   std::string geometry_name;
 
-  uint32_t vertex_count; 
+  uint32_t vertex_count;
   uint32_t index_count;
 };
 
@@ -110,10 +110,10 @@ struct assets_base {
   const graphics_base* base; // нужно чтобы геометрию найти
 
   // первый слот это всегда пустой буфер или картинка
-  // что такое пустой буфер? маленький буфер со специальной топологией 
-  // ну вообще если мы хотим нарисовать empty mesh то это скорее 
-  // мы хотим взять топологию такую что мы сами в вершинном буфере сгенерируем интерсующие нас данные 
-  // например топология гексагонального цилиндра - нам не нужны точки, мы их и так знаем 
+  // что такое пустой буфер? маленький буфер со специальной топологией
+  // ну вообще если мы хотим нарисовать empty mesh то это скорее
+  // мы хотим взять топологию такую что мы сами в вершинном буфере сгенерируем интерсующие нас данные
+  // например топология гексагонального цилиндра - нам не нужны точки, мы их и так знаем
   std::vector<buffer_slot> buffer_slots;
   std::vector<texture_slot> texture_slots;
 

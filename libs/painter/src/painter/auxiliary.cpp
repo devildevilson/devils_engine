@@ -1593,7 +1593,7 @@ std::tuple<uint32_t, uint32_t> find_multiplane_extent_divisors(uint32_t mp_fmt, 
 bool format_sizes_are_equal(uint32_t srcFormat, uint32_t dstFormat, uint32_t region_count, const VkImageCopy *regions) {
     size_t srcSize = 0, dstSize = 0;
     if (format_is_multiplane(srcFormat) || format_is_multiplane(dstFormat)) {
-        for (uint32_t i = 0; i < region_count; i++) {
+        for (uint32_t i = 0; i < region_count; ++i) {
             if (format_is_multiplane(srcFormat)) {
                 uint32_t planeFormat = find_multiplane_compatible_format(srcFormat, regions[i].srcSubresource.aspectMask);
                 srcSize = format_element_size(planeFormat);

@@ -348,7 +348,7 @@ void assets_base::create_buffer_storage(const buffer_asset_handle& h, const buff
   const auto s = buffer_slots[h].state;
   if (s != asset_state::reserved) return;
 
-  // тут нужно найти геометрию 
+  // тут нужно найти геометрию
   const uint32_t index = base->find_geometry(info.geometry_name);
   if (index == INVALID_RESOURCE_SLOT) utils::error{}("Could not find geometry '{}' for buffer '{}'", info.geometry_name, buffer_slots[h].name);
 
@@ -581,7 +581,7 @@ void assets_base::populate_texture_storage(const texture_asset_handle& h, const 
 
   vma::AllocationInfo ai{};
   const auto& [buf, allocation] = a.createBuffer(bci, aci, &ai);
-  
+
   memcpy(ai.pMappedData, data.data(), data.size());
 
   a.flushAllocation(allocation, 0, data.size());

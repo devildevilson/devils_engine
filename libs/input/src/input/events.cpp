@@ -39,7 +39,7 @@ std::string_view to_string(const values v) {
 
 void events::init() {
   // что тут? тут следует подгрузить клавиши из настроек
-  // + к этому их обратно туда записать 
+  // + к этому их обратно туда записать
 }
 
 constexpr uint32_t click_mask = event_state::click | event_state::long_click;
@@ -60,7 +60,7 @@ void events::update(const size_t time) {
       d.prev = d.current;
       d.key_time = 0;
     }
-    
+
     const bool press = d.state != key_state::release;
     switch (d.current) {
       case event_state::release: {

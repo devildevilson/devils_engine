@@ -25,7 +25,7 @@ namespace devils_engine {
       T* create(Args&&... args) {
         static_assert(std::is_trivially_destructible_v<T>, "Must sutisfy is_trivially_destructible_v");
         auto ptr = allocate(sizeof(T));
-        utils_assertf(ptr != nullptr, "Could not allocate memory for '{}', size: {} allocated: {}", utils::type_name<T>(), m_size, m_allocated);
+        if (ptr == nullptr) utils::error{}("Could not allocate memory for '{}', size: {} allocated: {}", utils::type_name<T>(), m_size, m_allocated);
         return new (ptr) T(std::forward<Args>(args)...);
       }
 
@@ -65,7 +65,7 @@ namespace devils_engine {
       T* create(Args&&... args) {
         static_assert(std::is_trivially_destructible_v<T>, "Must sutisfy is_trivially_destructible_v");
         auto ptr = allocate(sizeof(T));
-        utils_assertf(ptr != nullptr, "Could not allocate memory for '{}', size: {} allocated: {}", utils::type_name<T>(), m_size, m_allocated);
+        if (ptr == nullptr) utils::error{}("Could not allocate memory for '{}', size: {} allocated: {}", utils::type_name<T>(), m_size, m_allocated);
         return new (ptr) T(std::forward<Args>(args)...);
       }
 
@@ -98,10 +98,10 @@ namespace devils_engine {
 
       template <typename T, typename... Args>
       T* create(Args&&... args) {
-        utils_assertf(sizeof(T) <= m_block_size, "Object '{}' size {} is bigger than fixed_pool_mt block size {}", utils::type_name<T>(), sizeof(T), m_block_size);
-        utils_assertf(m_aligment % alignof(T) == 0, "Object '{}' alignment {} is not compatible with fixed_pool_mt alignment {}", utils::type_name<T>(), alignof(T), m_aligment);
+        if (sizeof(T) > m_block_size) utils::error{}("Object '{}' size {} is bigger than fixed_pool_mt block size {}", utils::type_name<T>(), sizeof(T), m_block_size);
+        if (m_aligment % alignof(T) != 0) utils::error{}("Object '{}' alignment {} is not compatible with fixed_pool_mt alignment {}", utils::type_name<T>(), alignof(T), m_aligment);
         auto ptr = allocate();
-        utils_assertf(ptr != nullptr, "Could not allocate memory for '{}', size: {}", utils::type_name<T>(), m_size);
+        if (ptr == nullptr) utils::error{}("Could not allocate memory for '{}', size: {}", utils::type_name<T>(), m_size);
         return new (ptr) T(std::forward<Args>(args)...);
       }
 

@@ -35,7 +35,7 @@ struct resource {
   };
 
   static std::string_view type_to_string(const size_t index);
-  
+
   std::string id;
   enum type type;
   std::unique_ptr<sound::decoder> sound;

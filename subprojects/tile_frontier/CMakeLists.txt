@@ -142,8 +142,8 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 )
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory 
-    ${CMAKE_CURRENT_LIST_DIR}/resources 
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_LIST_DIR}/resources
     ${PROJECT_OUTPUT_DIRECTORY}/resources
 )
 

@@ -174,7 +174,7 @@ void set_cursor(GLFWwindow* m, GLFWcursor* cursor = nullptr);
 std::string_view clipboard_string(GLFWwindow* w) noexcept;
 void set_clipboard_string(GLFWwindow* w, const std::string& str) noexcept;
 
-void open_internet_URL(const std::string &str);
+void open_internet_url(const std::string &str);
 }
 }
 

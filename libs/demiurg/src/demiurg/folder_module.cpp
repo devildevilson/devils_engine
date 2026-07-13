@@ -15,7 +15,7 @@ namespace demiurg {
     const size_t last_slash = path.rfind('/');
     const size_t last_dot = path.rfind('.');
     // здесь не должна приходить папка, должно ли у файлов быть какое то разрешение в принципе?
-    // да именно по разрешению мы понимаем что к чему относится 
+    // да именно по разрешению мы понимаем что к чему относится
     const auto ext = last_dot != std::string_view::npos ? path.substr(last_dot+1) : std::string_view();
     const auto id = path.substr(0, last_dot);
     const auto name = path.substr(last_slash+1).substr(0, last_dot);
@@ -113,11 +113,11 @@ namespace demiurg {
   void folder_module::load_binary(const std::string &path, std::vector<uint8_t> &mem) const {
     mem = file_io::read<uint8_t>(_path+path);
   }
-  
+
   void folder_module::load_binary(const std::string &path, std::vector<char> &mem) const {
     mem = file_io::read<char>(_path+path);
   }
-  
+
   void folder_module::load_text(const std::string &path, std::string &mem) const {
     mem = file_io::read(_path+path);
   }
@@ -125,7 +125,7 @@ namespace demiurg {
   std::vector<uint8_t> folder_module::load_binary(const std::string &path) const {
     return file_io::read<uint8_t>(_path+path);
   }
-  
+
   std::string folder_module::load_text(const std::string &path) const {
     return file_io::read(_path+path);
   }

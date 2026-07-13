@@ -1,0 +1,30 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{c,cc,cpp,cxx,h,hh,hpp,inl,ipp,cmake,tavl,lua,glsl,json,yaml,yml,txt}]
+indent_style = space
+indent_size = 2
+tab_width = 2
+
+[CMakeLists.txt]
+indent_style = space
+indent_size = 2
+tab_width = 2
+
+[*.md]
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = false
+
+# Vendored Unicode conversion code keeps its upstream indentation and naming.
+[libs/utils/src/utf/utf.cpp]
+indent_style = tab
+
+[libs/utils/include/devils_engine/utf/utf.hpp]
+indent_style = tab
+

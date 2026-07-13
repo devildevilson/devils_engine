@@ -239,11 +239,11 @@ Ret run(const introspection& in, const introspection_mode mode, const call_info&
 }
 
 template <typename T>
-struct callable_traits : utils::detail::function_traits_v2<T> {};
+struct callable_traits : public utils::detail::function_traits_v2<T> {};
 
 template <typename T>
   requires requires { &T::operator(); }
-struct callable_traits<T> : utils::detail::function_traits_v2<decltype(&T::operator())> {};
+struct callable_traits<T> : public utils::detail::function_traits_v2<decltype(&T::operator())> {};
 
 template <typename T>
 using member_object_t = std::conditional_t<callable_traits<T>::is_const, const typename callable_traits<T>::member_of&, typename callable_traits<T>::member_of&>;

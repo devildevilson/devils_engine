@@ -53,7 +53,7 @@ void loader::process() const {
     waiters[i]->wait_for(std::chrono::seconds(2 * 60 * 60), 1000000); // 1ms
   }
 
-  _tp.store(mcs_epoch<clock>(clock::now()), std::memory_order_relaxed); 
+  _tp.store(mcs_epoch<clock>(clock::now()), std::memory_order_relaxed);
 
   for (size_t i = 0; i < _stages.size(); ++i) {
     _counter.store(i, std::memory_order_relaxed); // здесь мы можем использовать самый простой мемори ордер

@@ -149,10 +149,10 @@ namespace devils_engine {
     fixed_pool_mt& fixed_pool_mt::operator=(fixed_pool_mt&& move) noexcept {
       operator delete(m_memory, std::align_val_t{ m_aligment });
 
-      m_aligment = move.m_aligment; 
-      m_block_size = move.m_block_size; 
-      m_size = move.m_size; 
-      m_memory = move.m_memory; 
+      m_aligment = move.m_aligment;
+      m_block_size = move.m_block_size;
+      m_size = move.m_size;
+      m_memory = move.m_memory;
       m_stack.store(move.m_stack.exchange(nullptr));
 
       move.m_memory = reinterpret_cast<char*>(operator new(m_size, std::align_val_t{ m_aligment }));

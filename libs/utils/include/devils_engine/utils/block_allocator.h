@@ -24,7 +24,7 @@ namespace devils_engine {
 
       template <typename T, typename... Args>
       T* create(Args&&... args) {
-        utils::assertf(sizeof(T) <= allocation_size(), "Type size {} must be lesser or equal than allocation size {}", sizeof(T), allocation_size());
+        if (sizeof(T) > allocation_size()) utils::error{}("Type size {} must be less than or equal to allocation size {}", sizeof(T), allocation_size());
         auto ptr = allocate();
         return new (ptr) T(std::forward<Args>(args)...);
       }
@@ -67,7 +67,7 @@ namespace devils_engine {
 
       template <typename T, typename... Args>
       T* create(Args&&... args) {
-        utils::assertf(sizeof(T) <= allocation_size(), "Type size {} must be lesser or equal than allocation size {}", sizeof(T), allocation_size());
+        if (sizeof(T) > allocation_size()) utils::error{}("Type size {} must be less than or equal to allocation size {}", sizeof(T), allocation_size());
         auto ptr = allocate();
         return new (ptr) T(std::forward<Args>(args)...);
       }

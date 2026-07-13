@@ -201,7 +201,7 @@ std::span<uint8_t> write(const T& tuple, const std::span<uint8_t>& cur_buffer) {
 }
 
 // тут наверное еще tuple и индекс
-// даже не еще 
+// даже не еще
 //template <typename>
 //std::span<const uint8_t> read<double>(const std::span<const uint8_t>& cur_buffer) {
 //  if (cur_buffer.size() < sizeof(double)) return std::span();

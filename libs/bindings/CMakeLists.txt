@@ -31,7 +31,7 @@ set(HDR_LIST
 )
 
 add_library(devils_bindings ${SRC_LIST} ${HDR_LIST})
-target_link_libraries(devils_bindings 
+target_link_libraries(devils_bindings
   PUBLIC sol2::sol2 ${DEVILS_LUA_LIBRARIES}
   PRIVATE devils_engine::options devils_engine::utils devils_engine::visage glm::glm
 )

@@ -420,7 +420,7 @@ struct nk {
   }
 
   // как передать картинку? есть два типа картинок: просто какое то изображение
-  // и регион картинки - тут нужно задать размеры + подрегион 
+  // и регион картинки - тут нужно задать размеры + подрегион
   // в общем то в моем случае практически всегда хватает просто подрегиона в нормализованных координатах
   // короч тут нужно подумать... скорее всего будет несколько функций принимающих ресурс + размеры
   // из которых будет составлена структура для гпу
@@ -487,12 +487,12 @@ struct nk {
   static void tree_state_pop() {
     nk_tree_state_pop(ctx_ptr);
   }
-  
+
   static std::tuple<bool, bool> tree_element_push(sol::this_state s, const char* title, const int32_t type, const int32_t init_state, nk_bool sel) {
     lua_Debug ar;
     lua_getstack(s.L, 1, &ar); // where function was called
     lua_getinfo(s.L, "nSl", &ar);
-    
+
     const auto ret = nk_tree_element_push_hashed(ctx_ptr, nk_tree_type(type), title, nk_collapse_states(init_state), &sel, ar.source, ar.srclen, ar.currentline);
     return std::make_tuple(ret, sel);
   }
@@ -635,9 +635,9 @@ struct nk {
     if (opt_color.has_value()) {
       auto t = opt_color.value();
       const auto c = to_color(t);
-      nk_text_wrap_colored(ctx_ptr, txt, strlen(txt), c); 
+      nk_text_wrap_colored(ctx_ptr, txt, strlen(txt), c);
     } else {
-      nk_text_wrap(ctx_ptr, txt, strlen(txt)); 
+      nk_text_wrap(ctx_ptr, txt, strlen(txt));
     }
   }
 
@@ -657,7 +657,7 @@ struct nk {
     if (opt_color.has_value()) {
       auto t = opt_color.value();
       const auto c = to_color(t);
-      nk_label_colored_wrap(ctx_ptr, txt, c); 
+      nk_label_colored_wrap(ctx_ptr, txt, c);
     } else {
       nk_label_wrap(ctx_ptr, txt);
     }
@@ -667,7 +667,7 @@ struct nk {
     if (opt_color.has_value()) {
       auto t = opt_color.value();
       const auto c = to_color(t);
-      nk_image_color(ctx_ptr, *img, c); 
+      nk_image_color(ctx_ptr, *img, c);
     } else {
       nk_image(ctx_ptr, *img);
     }
@@ -882,7 +882,7 @@ struct nk {
   }
 
   // slider
-  
+
   // нужен ли мне еще один слайдер?
   static double slider_float(const double min, const double val, const double max, const double step) {
     return nk_slide_float(ctx_ptr, min, val, max, step);
@@ -951,7 +951,7 @@ struct nk {
   }
 
   // color_picker
-  
+
   static bool color_picker(sol::table t, const uint32_t frm) {
     nk_colorf c = {};
     c.r = t.get_or(1, 0.0f);
@@ -1067,7 +1067,7 @@ struct nk {
   }
 
   // chart
-  
+
   static bool chart_begin(const uint32_t type, const int32_t count, const float min, const float max) {
     return nk_chart_begin(ctx_ptr, nk_chart_type(type), count, min, max);
   }
@@ -1391,7 +1391,7 @@ struct nk {
     nk_menu_end(ctx_ptr);
   }
 
-  // после чего стили ... 
+  // после чего стили ...
 };
 
 nk_context* nk::ctx_ptr = nullptr;

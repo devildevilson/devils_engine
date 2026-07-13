@@ -528,22 +528,22 @@ values from_string(const std::string_view& name) noexcept {
 
 //name_values convert_to_name(const values u) noexcept {
 //  switch (u) {
-//    case values::draw: 
+//    case values::draw:
 //    case values::draw_indexed:
 //    case values::draw_indirect:
-//    case values::draw_indexed_indirect: 
+//    case values::draw_indexed_indirect:
 //    case values::draw_constant:
 //    case values::draw_indexed_constant: return name_values::draw;
 //    case values::dispatch:
-//    case values::dispatch_indirect: 
+//    case values::dispatch_indirect:
 //    case values::dispatch_constant: return name_values::dispatch;
-//    case values::copy_buffer: 
+//    case values::copy_buffer:
 //    case values::copy_image:
 //    case values::copy_buffer_image:
 //    case values::copy_image_buffer: return name_values::copy;
-//    case values::blit_linear: 
+//    case values::blit_linear:
 //    case values::blit_nearest: return name_values::blit;
-//    case values::clear_color: 
+//    case values::clear_color:
 //    case values::clear_depth: return name_values::clear;
 //  }
 //
@@ -552,10 +552,10 @@ values from_string(const std::string_view& name) noexcept {
 
 bool is_graphics(const values u) noexcept {
   switch (u) {
-    case values::draw: 
+    case values::draw:
     case values::draw_indexed:
     case values::draw_indirect:
-    case values::draw_indexed_indirect: 
+    case values::draw_indexed_indirect:
     case values::draw_constant:
     case values::draw_indexed_constant:
     case values::draw_ui: return true;
@@ -568,7 +568,7 @@ bool is_graphics(const values u) noexcept {
 bool is_compute(const values u) noexcept {
   switch (u) {
     case values::dispatch:
-    case values::dispatch_indirect: 
+    case values::dispatch_indirect:
     case values::dispatch_constant: return true;
     default: break;
   }
@@ -578,13 +578,13 @@ bool is_compute(const values u) noexcept {
 
 bool is_transfer(const values u) noexcept {
   switch (u) {
-    case values::copy_buffer: 
+    case values::copy_buffer:
     case values::copy_image:
     case values::copy_buffer_image:
     case values::copy_image_buffer:
-    case values::blit_linear: 
+    case values::blit_linear:
     case values::blit_nearest:
-    case values::clear_color: 
+    case values::clear_color:
     case values::clear_depth: return true;
     default: break;
   }
@@ -967,7 +967,7 @@ size::values check(const size::values index, const std::string_view& hint, const
     utils::error{}("Could not find size '{}', context: {}", hint, name_hint);
   }
   return index;
-  
+
 }
 
 type::values check(const type::values index, const std::string_view& hint, const std::string_view& name_hint) {

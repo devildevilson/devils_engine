@@ -64,12 +64,12 @@ public:
   // пары укажем в собственно в draw_group
 
   inline graphics_step_instance() noexcept :
-    renderpass(VK_NULL_HANDLE), subpass_index(0), render_target_index(UINT32_MAX), 
+    renderpass(VK_NULL_HANDLE), subpass_index(0), render_target_index(UINT32_MAX),
     device(VK_NULL_HANDLE), pipeline_layout(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE)
   {}
 
   inline graphics_step_instance(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept :
-    step_interface(step_interface::type::step, super), renderpass(renderpass), subpass_index(subpass_index), 
+    step_interface(step_interface::type::step, super), renderpass(renderpass), subpass_index(subpass_index),
     render_target_index(render_target_index), device(device), pipeline_layout(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE)
   {}
 
@@ -88,9 +88,9 @@ public:
   VkPipeline pipeline;
 
   inline compute_step_instance() noexcept : device(VK_NULL_HANDLE), pipeline_layout(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE) {}
-  inline compute_step_instance(const uint32_t super, VkDevice device) noexcept : 
-    step_interface(step_interface::type::step, super), device(device), 
-    pipeline_layout(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE) 
+  inline compute_step_instance(const uint32_t super, VkDevice device) noexcept :
+    step_interface(step_interface::type::step, super), device(device),
+    pipeline_layout(VK_NULL_HANDLE), pipeline(VK_NULL_HANDLE)
   {}
 
   ~compute_step_instance() noexcept;
@@ -150,7 +150,7 @@ struct execution_group {
     VkCommandBuffer buffer;
     std::vector<VkSemaphore> wait_for;  // previos execution_groups
     std::vector<uint32_t> wait_for_stages;
-    std::vector<VkSemaphore> signal; // next execution_groups 
+    std::vector<VkSemaphore> signal; // next execution_groups
 
     inline frame() noexcept : buffer(VK_NULL_HANDLE) {}
   };

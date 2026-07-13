@@ -59,7 +59,7 @@ set(HDR_LIST
   include/devils_engine/utils/safe_handle.h
   include/devils_engine/utils/prng.h
   include/devils_engine/utils/dice.h
-  
+
   include/devils_engine/utils/named_serializer.h
   include/devils_engine/utils/fileio.h
   include/devils_engine/utils/time-utils.hpp
@@ -67,8 +67,8 @@ set(HDR_LIST
   include/devils_engine/utils/sha256.h
   include/devils_engine/utf/utf.hpp
   include/devils_engine/utils/compression.h
-  include/devils_engine/utils/load_stage.h 
-  include/devils_engine/utils/loader.h 
+  include/devils_engine/utils/load_stage.h
+  include/devils_engine/utils/loader.h
   include/devils_engine/utils/locale-utils.hpp
   include/devils_engine/utils/event_dispatcher.h
   include/devils_engine/utils/event_consumer.h
@@ -81,16 +81,16 @@ add_library(devils_utils ${SRC_LIST} ${HDR_LIST})
 
 add_library(engine_c_part1 src/utils/sha256.c include/devils_engine/utils/sha256cpp.h)
 target_compile_features(engine_c_part1 PRIVATE c_std_11)
-target_compile_options(engine_c_part1 PRIVATE 
+target_compile_options(engine_c_part1 PRIVATE
   $<$<CONFIG:DEBUG>:$<$<C_COMPILER_ID:MSVC>:${DEVILS_ENGINE_ARCH_FLAGS_MSVC} /Wall /wd5045 /wd4820 /Zc:preprocessor>>
   $<$<CONFIG:DEBUG>:$<$<C_COMPILER_ID:GNU,Clang>:${DEVILS_ENGINE_ARCH_FLAGS_GNU} -g -Wall -Wextra>>
 )
-target_compile_options(engine_c_part1 PRIVATE 
+target_compile_options(engine_c_part1 PRIVATE
   $<$<CONFIG:RELEASE>:$<$<C_COMPILER_ID:MSVC>:${DEVILS_ENGINE_ARCH_FLAGS_MSVC} /Wall /O2 /Zc:preprocessor>>
   $<$<CONFIG:RELEASE>:$<$<C_COMPILER_ID:GNU,Clang>:${DEVILS_ENGINE_ARCH_FLAGS_GNU} -O3 -Wall -Wextra>>
 )
 
-target_link_libraries(devils_utils 
+target_link_libraries(devils_utils
   PUBLIC max0x7ba::atomic_queue Threads::Threads spdlog::spdlog glaze::glaze gtl #ReflexLibStatic #alpaca::alpaca
   PRIVATE engine_c_part1 ${ZSTD_TARGET} ZLIB::ZLIB devils_engine::options cpuinfo
 )

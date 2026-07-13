@@ -162,7 +162,7 @@ void event_dispatcher::unsubscribe(T* ptr) {
   auto itr = consumers.find(type_id);
   if (itr == consumers.end()) return;
 
-  
+
   auto basic_ptr = static_cast<event_consumer<Event_T>*>(ptr);
   basic_ptr->unsubscribe();
 }

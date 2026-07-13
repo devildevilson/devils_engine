@@ -39,7 +39,7 @@ struct constant_value {
 
   value_t current_value;
   scale_t current_scale;
- 
+
   constant_value() noexcept;
   value_t compute_value() const;
   size_t reduce_value() const;
@@ -274,7 +274,7 @@ struct material {
   struct shaders shaders;
   struct raster raster;
   struct depth depth;
-  
+
   // вьюпорт? было бы неплохо задать его для шедоу мап
 
   material() noexcept;
@@ -305,8 +305,8 @@ struct draw_group {
   uint32_t budget_constant;
   uint32_t types_constant;
   enum type type; // host_visible - хост напрямую пишет сюда
-  
-  // пойдем со стороны большой таблицы соответствия 
+
+  // пойдем со стороны большой таблицы соответствия
   // то есть mesh_draw_group_pair вернет индекс indirect_buffer внутри draw_group
   uint32_t instances_buffer;
   uint32_t indirect_buffer;
@@ -314,7 +314,7 @@ struct draw_group {
 
   size_t stride;
 
-  // у драв группы есть 2 режима работы: 
+  // у драв группы есть 2 режима работы:
   // host visible и gpu local
   // host visible - позволяет писать напрямую в draw_group, буферы меняются per_update
   // gpu local - draw_group заполняется из ГПУ шейдера, буферы меняются per_frame
@@ -348,7 +348,7 @@ struct command_params {
 
 // как то отдельно зарегаем ui step
 // там будет все очень похожим образом выглядеть, но в качестве команды будет
-// draw ui 
+// draw ui
 // еще вещи которые довольно сильно отличаются это
 // Post-process / Fullscreen effects - но тут compute шаг с константным dispatch
 // Compute-driven системы (партиклы) - тут могут быть сгенерированы вершинные буферы (хотя может и нет...)
@@ -361,7 +361,7 @@ struct step_base {
   std::vector<uint32_t> sets;
   std::vector<uint32_t> push_constants;
   // эта команда подскажет какой instance мы создаем
-  // например draw ui - нам нужен инстанс 
+  // например draw ui - нам нужен инстанс
   // который подхватит данные из nuklear и правильно их интерпретирует
   // это пока что не объясняет откуда мы возьмем вершинные и индексные буферы
   // записать их в команду? довольно элегантно... что с драв группой?
@@ -394,7 +394,7 @@ struct execution_pass_base {
     resource_info(const uint32_t slot, const usage::values usage, const store_op::values action) noexcept;
   };
 
-  // wait_for, signal - но по идее это не тут должно быть указано 
+  // wait_for, signal - но по идее это не тут должно быть указано
   // а должно быть указано в render_graph_base
   // но у меня пока render_graph_base и эта структуры связаны
 

@@ -33,7 +33,7 @@ void get_features(size_t &counter, vulkan_features_bitset &bitset, const T &obj)
 
     const bool val = reflect::get<I>(obj);
     bitset.set(counter, val);
-    
+
     counter += 1;
   }, obj);
 }
@@ -157,21 +157,21 @@ vk::Format find_supported_format(vk::PhysicalDevice phys, const std::vector<vk::
 }
 
 vk::ImageCreateInfo texture2D(
-  const vk::Extent2D &size, 
-  const vk::ImageUsageFlags &usage, 
-  const vk::Format &format, 
+  const vk::Extent2D &size,
+  const vk::ImageUsageFlags &usage,
+  const vk::Format &format,
   const uint32_t &arrayLayers,
   const uint32_t &mipLevels,
   const vk::SampleCountFlagBits &samples,
   const vk::ImageCreateFlags &flags
 ) {
   return vk::ImageCreateInfo(
-    flags, 
-    vk::ImageType::e2D, 
-    format, 
-    {size.width, size.height, 1}, 
+    flags,
+    vk::ImageType::e2D,
+    format,
+    {size.width, size.height, 1},
     mipLevels, arrayLayers,
-    samples, 
+    samples,
     vk::ImageTiling::eOptimal,
     usage,
     vk::SharingMode::eExclusive,
@@ -179,7 +179,7 @@ vk::ImageCreateInfo texture2D(
     vk::ImageLayout::eUndefined
   );
 }
-    
+
 vk::ImageCreateInfo texture2D_staging(
   const vk::Extent2D &size,
   const vk::ImageUsageFlags &usage,
@@ -187,12 +187,12 @@ vk::ImageCreateInfo texture2D_staging(
   const vk::ImageCreateFlags &flags
 ) {
   return vk::ImageCreateInfo(
-    flags, 
-    vk::ImageType::e2D, 
-    format, 
-    {size.width, size.height, 1}, 
+    flags,
+    vk::ImageType::e2D,
+    format,
+    {size.width, size.height, 1},
     1, 1,
-    vk::SampleCountFlagBits::e1, 
+    vk::SampleCountFlagBits::e1,
     vk::ImageTiling::eLinear,
     usage,
     vk::SharingMode::eExclusive,
@@ -206,7 +206,7 @@ vk::ImageViewCreateInfo view_info(
 ) {
   return vk::ImageViewCreateInfo({}, img, type, format, cm, r);
 }
-    
+
 vk::ImageViewCreateInfo make_view_info(
   vk::Image            image,
   vk::Format           format,
@@ -217,16 +217,16 @@ vk::ImageViewCreateInfo make_view_info(
 ) {
   return vk::ImageViewCreateInfo(flags, image, viewType, format, components, subresourceRange);
 }
-    
+
 vk::BufferCreateInfo buffer_info(const vk::DeviceSize &size, const vk::BufferUsageFlags &usage, const vk::BufferCreateFlags &flags) {
   return vk::BufferCreateInfo(flags, size, usage, vk::SharingMode::eExclusive, nullptr);
 }
 
 std::tuple<vk::BufferCreateInfo, vma::AllocationCreateInfo> dedicated_buffer(const size_t size, const vk::BufferUsageFlags usage, const vma::MemoryUsage memusage, const vk::BufferCreateFlags &flags) {
-  const auto memflags = 
+  const auto memflags =
     memusage == vma::MemoryUsage::eCpuOnly ||
     memusage == vma::MemoryUsage::eCpuToGpu ||
-    memusage == vma::MemoryUsage::eCpuCopy 
+    memusage == vma::MemoryUsage::eCpuCopy
   ? vma::AllocationCreateFlagBits::eMapped : vma::AllocationCreateFlags{};
   return std::make_tuple(
     vk::BufferCreateInfo(flags, size, usage, vk::SharingMode::eExclusive, nullptr),
@@ -251,7 +251,7 @@ vk::ImageUsageFlags main_attachment_usage_from_format(vk::Format format) {
 }
 
 std::tuple<vk::Image, vma::Allocation> create_image(
-  vma::Allocator allocator, 
+  vma::Allocator allocator,
   const vk::ImageCreateInfo &info,
   const vma::MemoryUsage &mem_usage,
   void** pData,
@@ -273,12 +273,12 @@ std::tuple<vk::Image, vma::Allocation> create_image(
   return std::make_tuple(p.first, p.second);
 }
 
-std::tuple<vk::AccessFlags, vk::AccessFlags, vk::PipelineStageFlags, vk::PipelineStageFlags> 
-  make_barrier_data(const vk::ImageLayout &old, const vk::ImageLayout &New) 
+std::tuple<vk::AccessFlags, vk::AccessFlags, vk::PipelineStageFlags, vk::PipelineStageFlags>
+  make_barrier_data(const vk::ImageLayout &old, const vk::ImageLayout &New)
 {
-  vk::AccessFlags srcFlags, dstFlags; 
+  vk::AccessFlags srcFlags, dstFlags;
   vk::PipelineStageFlags srcStage, dstStage;
-      
+
   switch (old) {
     case vk::ImageLayout::eUndefined:
       srcFlags = vk::AccessFlags(0);
@@ -371,7 +371,7 @@ std::tuple<vk::AccessFlags, vk::AccessFlags, vk::PipelineStageFlags, vk::Pipelin
       break;
     default: utils::error{}("The layout '{}' is not supported yet", vk::to_string(New)); break;
   }
-      
+
   return std::make_tuple(srcFlags, dstFlags, srcStage, dstStage);
 }
 
@@ -382,18 +382,18 @@ std::tuple<vk::ImageMemoryBarrier, vk::PipelineStageFlags, vk::PipelineStageFlag
   const auto [srcFlags, dstFlags, srcStage, dstStage] = make_barrier_data(old_layout, new_layout);
   b.srcAccessMask = srcFlags;
   b.dstAccessMask = dstFlags;
-      
+
   return std::make_tuple(b, srcStage, dstStage);
 }
 
 void change_image_layout(
-  vk::Device device, 
-  vk::Image image, 
-  vk::CommandPool transfer_pool, 
-  vk::Queue transfer_queue, 
-  vk::Fence fence, 
-  const vk::ImageLayout &old_layout, 
-  const vk::ImageLayout &new_layout, 
+  vk::Device device,
+  vk::Image image,
+  vk::CommandPool transfer_pool,
+  vk::Queue transfer_queue,
+  vk::Fence fence,
+  const vk::ImageLayout &old_layout,
+  const vk::ImageLayout &new_layout,
   const vk::ImageSubresourceRange &range
 ) {
   do_command(device, transfer_pool, transfer_queue, fence, [&] (VkCommandBuffer t) {
@@ -448,7 +448,7 @@ vk::ComponentMapping to_rgba(vk::Format format) {
   switch (format) {
     case vk::Format::eB5G6R5UnormPack16:
     case vk::Format::eB5G5R5A1UnormPack16:
-    case vk::Format::eB4G4R4A4UnormPack16: 
+    case vk::Format::eB4G4R4A4UnormPack16:
     case vk::Format::eB8G8R8Unorm:
     case vk::Format::eB8G8R8Snorm:
     case vk::Format::eB8G8R8Uscaled:
@@ -464,8 +464,8 @@ vk::ComponentMapping to_rgba(vk::Format format) {
     case vk::Format::eB8G8R8A8Sint:
     case vk::Format::eB8G8R8A8Srgb:
     case vk::Format::eB10G11R11UfloatPack32:
-      r = vk::ComponentSwizzle::eB; 
-      b = vk::ComponentSwizzle::eR; 
+      r = vk::ComponentSwizzle::eB;
+      b = vk::ComponentSwizzle::eR;
       break;
 
     case vk::Format::eA8B8G8R8UnormPack32:
@@ -502,7 +502,7 @@ vk::ComponentMapping to_rgba(vk::Format format) {
       b = vk::ComponentSwizzle::eA;
       a = vk::ComponentSwizzle::eR;
       break;
-    
+
     case vk::Format::eR4G4UnormPack8:
     case vk::Format::eR4G4B4A4UnormPack16:
     case vk::Format::eR5G6B5UnormPack16:

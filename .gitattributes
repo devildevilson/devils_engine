@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+*.mp3 binary
+*.png binary
+*.ttf binary
+*.mesh binary
+*.spv binary
+*.zip binary
+
