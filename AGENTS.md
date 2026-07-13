@@ -22,32 +22,30 @@ This repository is the author's experimental game engine / framework. It is a la
 - Root CMake defaults single-config generators to `CMAKE_BUILD_TYPE=Debug` when the user does not specify a build type. It also enables `CMAKE_POSITION_INDEPENDENT_CODE` globally so static third-party dependencies can link into shared libraries in Debug.
 - New resource/render-prep contract tests: `tests/demiurg_resource_loader_test.cpp` covers CPU prepare vs external GPU commit and dependency gating; `tests/painter_shader_prepare_test.cpp` covers `glsl_source_file` SPIR-V preparation cache. Useful checks: `ctest --test-dir build-debug -R "(painter_shader_prepare_test|demiurg_resource_loader_test)" --output-on-failure` and `cmake --build build-debug --target tile_frontier`.
 
-### Act call context, generic stats, and timelines (2026-07-13)
+### Act scratch, generic stats, timelines/pause, and AI registries (2026-07-13)
 
-- `libs/act` now separates immutable `exec_context` (world/scopes/rng/tick/sink/per-worker ds VM) from
-  mutable `call_context` (`call_context.h`): named in/out `value`s, typed result, and named reusable
-  `vector<value>` lists. Both `native_function` and `script_function` accept the same call object; the
-  legacy `invoke(ctx)` overload remains for acumen/mood hot paths. Script invocation binds matching names
-  into ds `ctx:arg`/`ctx:list` before `process()` and collects modified args/lists afterward. `clear()`
-  preserves names and nested list capacity for worker reuse; `clear_schema()` is the load/rebind reset.
-  Basic bool/integer/number/entity-id conversion works. String/object policy remains pending; `act::vec3`
-  is 24 bytes with double components and cannot fit ds's current 16-byte stack slot (revisit with fixed-point).
-  Tests: `subprojects/tests/act_call_context_test.cpp` covers one native and one ds function with scalar
-  in/out + list output.
-- Generic numeric aggregate stats moved from tile_frontier into `libs/act/stat_accessors.h`.
-  `numeric_stats_aggregate<T>` requires a reflected aggregate whose fields are non-bool integral or
-  floating-point; `make_stats` supports direct aggregate init, `initialize_stats` fills fields by
-  `(index,name)`, and `register_stat_accessors` generates read/add ds functions. Its optional prefix
-  (`primary_`, `needs_`) prevents name collisions when multiple stats components share one ds scope;
-  separate Getter/Domain parameters preserve component lookup and catalogue provenance. The stats test
-  exercises two aggregates simultaneously. tile_frontier includes the engine header directly.
-- `libs/utils/timeline.h` is the new clean time layer beside legacy `time-utils.hpp`: strongly distinct
-  engine/game timestamp, duration, and deadline types; `timelines::advance(delta)` always advances engine
-  time and advances game time only when not paused. `calendar_policy(hours_per_day, days_in_month)` splits
-  game time into absolute day + seconds-of-day and optionally projects to year/month/day; empty months is
-  a supported day/time-only project. tile_frontier owns `utils::timelines`, pauses game time outside
-  `simul::app_state::game`, advances both in main update, and passes engine time to visage as UI timestamp.
-  Deferred-effect/expiry queues are not built yet. Tests: `subprojects/tests/timeline_test.cpp`.
+- `act::call_context` has exactly ds's standard 8 scalar argument slots inline (`static_assert == 8`),
+  plus reusable named lists/result. `act::execution_scratch` owns one ds VM + call frame and is embedded
+  per worker rather than allocated locally or distributed globally/TLS. `acumen::execution_scratch`
+  composes it with A* container + solution cache; tile_frontier holds one stable deque lane per pool slot.
+  Script bind/collect works for bool/integer/number/entity basics; string/object/vector policy is pending.
+- Generic numeric aggregate stats use real ds scopes, not prefixes. `register_stats<T,Parent,Getter,Domain>`
+  registers the named scope getter and reflected local `field`/`add_field` functions. Scripts use
+  `stats.hunger`, `stats = { add_hunger(…) }`, `combat_stats.abc`; ds overloads identical field names by
+  returned `stat_scope<T>`. `stats_script_test` covers two aggregates.
+- Time has four orthogonal coordinates: engine (never paused), presentation (real-rate world animation,
+  pausable), game (pausable + rationally scaled), and turn (discrete). `game_time_scale` maps DURATIONS
+  only; absolute timestamp conversion is intentionally absent because pause is non-bijective. Config
+  convention: unqualified duration means nominal real/engine time; gameplay loaders convert through the
+  project scale, while explicit game/calendar/turn values keep their domain. `simul::pause_state` owns
+  gameplay/presentation masks; tile_frontier exposes Lua `app.set_paused/paused`, configures the ratio as
+  `time.game_seconds / time.real_seconds`, and feeds actor systems the scaled game-clock delta.
+- `acumen::registry` and `mood::registry` independently own stable immutable systems. There is no combined
+  `brain_ref`: FSM may exist without GOAP and GOAP without FSM. tile_frontier GOAP resources support a
+  single `base`, same-key replace-in-place, append, `disable_metrics/actions/goals`, cycle detection and
+  flatten before `acumen::system` construction; `goap/actor` now inherits `goap/actor_base`. Compatibility
+  contracts and runtime GOAP profile switching remain long-running. Tests: `act_call_context_test`,
+  `stats_script_test`, `timeline_test`, `simul_lifecycle_test`, `goap_config_test`, `acumen_test`.
 
 ### Prefab & spawn (tile_frontier ↔ `libs/prefab`, 2026-07-12)
 
@@ -70,11 +68,11 @@ This repository is the author's experimental game engine / framework. It is a la
   `tests/spawn_script_test.cpp` covers it via a mock sink. Seeding `spawn_scope` into live event/trigger scripts
   comes with the spawner work below.
 - **TECH DEBT (deferred, author-confirmed 2026-07-12 — build later):**
-  1. **per-entity brain** — GOAP/FSM are slice-level (one `acumen`/`mood` system for all actors). Make them
-     per-entity: `brain_ref{goap_id,fsm_id}` component (filled by prefab `reference<>`) + a pool of goap/fsm systems
-     keyed by config name + `decide_actor`/`apply` look up the actor's systems. Unlocks multi-type worlds
-     (predator/prey/hero with different brains described in their prefabs). The prefab `reference<>` already exists;
-     the slice's monolithic brain is what blocks it.
+  1. **per-entity system refs** — common independent acumen/mood registries are ready, but tile_frontier
+     still selects one GOAP and one FSM for the whole slice. Do NOT introduce a combined brain_ref: use
+     independent optional goap_ref/fsm_ref only where needed. FSM is normally fixed by entity type; GOAP may
+     also belong to a squad/abstract thinker with no FSM. Compatibility validation + runtime GOAP switching
+     (including per-profile caches/action indices) are a separate long-running task.
   2. **spawner entities + query** — real spawn "where" = spawner ECS entities (static designer points OR dynamic
      rules), many of them, queried spatially (reuse `kd_tree` like perception) + predicate-filtered (tags, cooldown,
      capacity). `spawn_at(point)` stays the primitive; a selection/placement layer resolves intent → point.

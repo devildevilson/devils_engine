@@ -8,6 +8,7 @@
 #include <devils_script/container.h>
 
 namespace devils_script { struct system; }
+namespace devils_engine { namespace demiurg { class resource_system; } }
 
 // Дисковый конфиг GOAP-арбитра (acumen), парсится РУЧНЫМ проездом tavl-парсера (не deserialize —
 // это не строгий агрегат). Формат:
@@ -47,10 +48,20 @@ struct goap_goal_config {
 };
 
 struct goap_config {
+  // Single-parent source inheritance. Merge is flattened before acumen::system construction:
+  // base order is preserved, same-name entries replace in place, new entries append.
+  std::string base;
   std::vector<goap_metric> metrics;
   std::vector<goap_action_config> actions;
   std::vector<goap_goal_config> goals;
+  std::vector<std::string> disable_metrics;
+  std::vector<std::string> disable_actions;
+  std::vector<std::string> disable_goals;
 };
+
+goap_config merge_goap_config(const goap_config& base, const goap_config& derived);
+goap_config resolve_goap_config(devils_engine::demiurg::resource_system& resources,
+                                std::string_view id);
 
 class goap_resource : public devils_engine::demiurg::resource_interface {
 public:

@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <optional>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -12,13 +12,15 @@
 
 #include <glm/glm.hpp>
 
-#include <devils_script/context.h> // devils_script::context — пер-воркер vm-пул для скрипт-предикатов
 #include <devils_engine/aesthetics/world.h>
 #include <devils_engine/aesthetics/sink.h>   // serial::sink_policy/seal/unseal — save/load слайса
 #include <devils_engine/act/registry.h>     // act::registry + function<RetT>
 #include <devils_engine/act/intent.h>       // act::intent — обобщённый буфер интентов
 #include <devils_engine/acumen/system.h>    // acumen::system — GOAP над act::registry
+#include <devils_engine/acumen/execution_scratch.h>
+#include <devils_engine/acumen/registry.h>
 #include <devils_engine/mood/system.h>      // mood::system — FSM-исполнитель (состояние/анимация/звук)
+#include <devils_engine/mood/registry.h>
 #include <devils_engine/prefab/prefab_registry.h> // prefab::prefab_registry — рецепт сборки энтити (spawn_at)
 #include <devils_engine/utils/kd_tree.h>    // utils::kd_tree — пространственный акселератор sense
 
@@ -220,7 +222,7 @@ struct prefab_def {
 struct brain_config {
   const devils_script::container* is_hungry_program = nullptr; // скрипт-предикат "actor.is_hungry"
   const std::vector<std::string>* fsm_transitions = nullptr;   // строки переходов mood FSM
-  const goap_config* goap = nullptr;                           // GOAP: метрики/действия/цели (по ключам)
+  std::shared_ptr<const goap_config> goap;                     // flattened GOAP config; owns script containers
   const std::vector<prefab_def>* prefabs = nullptr;            // префабы из prefab/*.tavl (иначе хардкод food)
 };
 
@@ -266,9 +268,7 @@ private:
   void cognition(uint64_t tick, devils_engine::thread::atomic_pool& pool);
   // Восприятие (kD-запрос) + GOAP для ОДНОГО актора, в свой scratch/cache/буфер (на поток).
   void decide_actor(devils_engine::aesthetics::entityid_t id, uint64_t tick,
-                    devils_engine::astar<devils_engine::acumen::astar_data>::container& scratch,
-                    devils_engine::acumen::solution_cache& cache,
-                    devils_script::context& vm,
+                    devils_engine::acumen::execution_scratch& scratch,
                     std::vector<devils_engine::act::intent>& out);
   void apply(float dt_seconds);
   // Завершает поедание у хищников, чей срок истёк: сбрасывает голод, снимает actor_eating,
@@ -285,8 +285,10 @@ private:
 
   devils_engine::aesthetics::world world_;
   devils_engine::act::registry registry_;        // общий реестр геймплейных функций (см. libs/act)
-  std::optional<devils_engine::acumen::system> goap_; // GOAP-арбитр: выбирает действие по приоритету
-  std::optional<devils_engine::mood::system> fsm_;    // mood-исполнитель: действие→состояние→анимация/звук
+  devils_engine::acumen::registry goap_registry_;
+  devils_engine::mood::registry fsm_registry_;
+  const devils_engine::acumen::system* goap_ = nullptr; // выбранный профиль слайса (per-entity ref позже)
+  const devils_engine::mood::system* fsm_ = nullptr;    // FSM независима от GOAP; для actor-типа фиксирована
   // kD-дерево слоя восприятия: перестраивается раз за тик, отвечает на «ближайший
   // крупнее/мельче в радиусе» с прунингом. Арена реюзится. Читается воркерами конкурентно.
   devils_engine::utils::kd_tree<perception_target> sense_tree_;
@@ -294,16 +296,11 @@ private:
   std::vector<sound_emit> sound_emits_;               // sim-звуки тика (вход в состояние FSM)
 
   // ── per-thread scratch для MT-cognition (индекс = pool.thread_index: 0=вызывающий, 1..=воркеры) ──
-  // A*-контейнер на поток: find_solution чистит узлы решения в пул → переиспользуем без аллокаций.
-  std::vector<devils_engine::astar<devils_engine::acumen::astar_data>::container> plan_containers_;
-  // мемоизация GOAP на поток (без шаринга — крошечное пространство состояний, дупликация копеечная).
-  std::vector<devils_engine::acumen::solution_cache> plan_caches_;
+  // Полный GOAP worker scratch: A*, cache и act execution_scratch (ds VM + mutable call frame).
+  // deque нужен из-за стабильных/non-movable VM-контекстов.
+  std::deque<devils_engine::acumen::execution_scratch> cognition_scratch_;
   // выходные буферы интентов на поток → конкатенируются в intents_ и сортируются по id.
   std::vector<std::vector<devils_engine::act::intent>> intent_buffers_;
-  // пер-воркер ds::context (скретчпад скрипт-предикатов): слот = pool.thread_index, эксклюзивен на
-  // поток. deque — стабильные элементы без move при росте (context держит стеки). Пуст, пока нет
-  // скрипт-функций (нативный фолбэк vm не трогает). Размер синхронен с plan_containers_.
-  std::deque<devils_script::context> vm_pool_;
   // Проектные конфиги мозга (из tavl); поля nullptr ⇒ нативный/хардкод фолбэк. Задаются в init.
   brain_config brains_;
 

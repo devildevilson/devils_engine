@@ -5,6 +5,7 @@
 #include <array>
 
 #include "devils_engine/acumen/system.h"
+#include "devils_engine/acumen/registry.h"
 #include "devils_engine/act/registry.h"
 #include "devils_engine/act/function.h"
 
@@ -50,9 +51,20 @@ TEST_CASE("Acumen GOAP under act registry [acumen::system]") {
   std::vector<acumen::goal> goals = { acumen::goal{ "kill", acumen::scoped_state{}, goal_state } };
 
   acumen::system sys(&reg, metrics, goals, actions);
+  act::execution_scratch execution;
+
+  SUBCASE("registry owns immutable systems behind stable ids") {
+    acumen::registry systems;
+    const auto id = systems.add("soldier", acumen::system(&reg, metrics, goals, actions));
+    CHECK(id == utils::string_hash("soldier"));
+    CHECK(systems.get(id) != nullptr);
+    CHECK(systems.get("soldier")->get_actions().size() == 2);
+    CHECK_THROWS(systems.add("soldier", acumen::system(&reg, metrics, goals, actions)));
+  }
 
   SUBCASE("compute_state runs registry predicates into bits") {
-    const act::exec_context ctx{};
+    act::exec_context ctx{};
+    ctx.scratch = &execution;
     const auto s = sys.compute_state(ctx);
     REQUIRE(s.test(has_weapon) == false);
     REQUIRE(s.test(enemy_dead) == false);
@@ -61,7 +73,8 @@ TEST_CASE("Acumen GOAP under act registry [acumen::system]") {
 
   // decide без кеша (params.cache == nullptr) — живой A* напрямую.
   SUBCASE("decide without cache reaches the goal and uses the prerequisite action") {
-    const act::exec_context ctx{};
+    act::exec_context ctx{};
+    ctx.scratch = &execution;
     const auto start = sys.compute_state(ctx); // has_weapon/enemy_dead false, enemy_near true
 
     astar<acumen::astar_data>::container c;
@@ -89,7 +102,8 @@ TEST_CASE("Acumen GOAP under act registry [acumen::system]") {
   }
 
   SUBCASE("undersized buffer: full length returned, prefix written, no overflow") {
-    const act::exec_context ctx{};
+    act::exec_context ctx{};
+    ctx.scratch = &execution;
     const auto start = sys.compute_state(ctx);
     astar<acumen::astar_data>::container c;
     std::array<const acumen::action*, 1> small{};

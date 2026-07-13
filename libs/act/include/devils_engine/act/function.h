@@ -10,6 +10,7 @@
 #include "devils_engine/utils/string_id.h" // utils::id
 #include "common.h"
 #include "call_context.h"
+#include "execution_scratch.h"
 #include "exec_context.h"       // + алиас namespace ds = ::devils_script
 
 #include <devils_script/container.h> // ds::container (process/describe/max_lists) — invoke зовёт методы
@@ -19,6 +20,7 @@ struct lua_State;
 
 namespace devils_engine {
 namespace act {
+namespace ds = ::devils_script;
 // Геймплейные функции РАЗДЕЛЕНЫ ПО ТИПУ ВОЗВРАТА (как user_function_type в
 // devils_script) — это явный контракт, и он же кодирует чистоту (effect=mutating,
 // остальные=pure), поэтому отдельных метаданных purity/signature НЕ нужно.
@@ -55,7 +57,11 @@ struct function : public function_base {
 
   // Совместимый короткий путь для существующих predicate/effect consumers без аргументов.
   RetT invoke(const exec_context& ctx) const {
-    call_context call;
+    if (ctx.scratch == nullptr) {
+      utils::error{}("act::function::invoke: exec_context.scratch не задан (нужен per-worker execution_scratch)");
+    }
+    auto& call = ctx.scratch->call;
+    call.clear_schema(); // short path has no caller-owned args/out schema; do not leak it across functions
     if constexpr (std::is_void_v<RetT>) invoke(ctx, call);
     else return invoke(ctx, call);
   }
@@ -211,7 +217,7 @@ struct native_function final : public function<RetT> {
   }
 };
 
-// ── devils_script: скомпилированный container исполняется на ctx.vm (пер-воркер скретчпад) ──
+// ── devils_script: скомпилированный container исполняется на ctx.scratch->vm ──
 // seed — ПРОЕКТНЫЙ засев root-скоупа (и опц. именованных аргументов) из exec_context в ds::context.
 // act остаётся ECS-agnostic: как из exec_context получить scope-значение, знает только проект
 // (reinterpret-seam над ctx.w + primary()). nullptr ⇒ scope-less скрипт. Реестр однороден —
@@ -227,8 +233,8 @@ struct script_function final : public function<RetT> {
 
   using function<RetT>::invoke;
   RetT invoke(const exec_context& ctx, call_context& call) const override {
-    ds::context* vm = ctx.vm;
-    if (vm == nullptr) utils::error{}("act::script_function::invoke: exec_context.vm не задан (нужен пер-воркер ds::context)");
+    ds::context* vm = ctx.scratch != nullptr ? &ctx.scratch->vm : nullptr;
+    if (vm == nullptr) utils::error{}("act::script_function::invoke: exec_context.scratch не задан");
     vm->clear();
     vm->userptr = const_cast<exec_context*>(&ctx); // задел под effect_sink: эффекты читают ctx через userptr
     if (program->max_lists != 0) vm->create_lists(program);
@@ -255,7 +261,7 @@ struct script_function final : public function<RetT> {
   }
 
   void describe(const exec_context& ctx, const describe_callback& out) const override {
-    ds::context* vm = ctx.vm;
+    ds::context* vm = ctx.scratch != nullptr ? &ctx.scratch->vm : nullptr;
     if (vm == nullptr) return;
     vm->clear();
     if (seed != nullptr) seed(ctx, vm);

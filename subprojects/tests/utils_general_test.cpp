@@ -5,6 +5,7 @@
 #include "devils_engine/utils/block_allocator.h"
 #include "devils_engine/utils/string-utils.hpp"
 #include "devils_engine/mood/system.h"
+#include "devils_engine/mood/registry.h"
 #include "devils_engine/mood/runtime.h"
 #include "devils_engine/act/registry.h"
 #include "devils_engine/act/function.h"
@@ -239,6 +240,10 @@ TEST_CASE("Mood system tests [mood::system]") {
   };
 
   mood::system s(&t, lines);
+  mood::registry fsms;
+  const auto fsm_id = fsms.add("combat", mood::system(&t, lines));
+  REQUIRE(fsms.get(fsm_id) != nullptr);
+  REQUIRE(fsms.get("combat")->transitions().size() == s.transitions().size());
 
   const auto trans1 = s.find_transitions("begin", "idle"); // find transition from state 'begin' thru event 'idle'
   REQUIRE(trans1.size() == 1); // 1 transition
@@ -281,7 +286,9 @@ TEST_CASE("Mood system tests [mood::system]") {
   REQUIRE(s.find_transitions(utils::string_hash("melee_attack_end"), utils::string_hash("attack")).size() == 4);
 
   // helper-слой: шаг автомата. Все зарегистрированные гварды возвращают true.
-  const act::exec_context ctx{}; // sink == nullptr => dry-run; гварды ctx не используют
+  act::execution_scratch execution;
+  act::exec_context ctx{}; // sink == nullptr => dry-run; гварды ctx не используют
+  ctx.scratch = &execution;
   const auto st1 = mood::step(s, "melee_ready", "attack", ctx);
   REQUIRE(st1.result == mood::step_result::transitioned);
   REQUIRE(st1.next_state == utils::string_hash("melee_attack"));
@@ -320,7 +327,9 @@ TEST_CASE("Mood runtime: blocked / internal / settle / limits [mood]") {
     "y + idle = x",
   };
   mood::system s(&t, lines);
-  const act::exec_context ctx{}; // dry-run ctx; эффекты в тесте no-op/счётчик
+  act::execution_scratch execution;
+  act::exec_context ctx{}; // dry-run ctx; эффекты в тесте no-op/счётчик
+  ctx.scratch = &execution;
 
   // blocked: переход по (s0, go) ЕСТЬ, но гвард 'never' его отсеял
   const auto b = mood::step(s, "s0", "go", ctx);

@@ -8,6 +8,7 @@
 #include <devils_engine/demiurg/module_system.h>
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/simul/lifecycle.h>
+#include <devils_engine/simul/pause.h>
 #include <devils_engine/simul/startup_resources.h>
 #include <devils_engine/utils/safe_handle.h>
 
@@ -32,6 +33,21 @@ struct lifecycle_host {
   void on_lifecycle_leave(const app_state phase) { left.push_back(phase); }
 };
 
+}
+
+TEST_CASE("pause_state keeps gameplay and presentation as independent engine domains") {
+  using namespace devils_engine::simul;
+  pause_state pause;
+  CHECK_FALSE(pause.paused(pause_domain::gameplay));
+  CHECK_FALSE(pause.paused(pause_domain::presentation));
+  pause.set(pause_domain::gameplay, true);
+  CHECK(pause.paused(pause_domain::gameplay));
+  CHECK_FALSE(pause.paused(pause_domain::presentation));
+  pause.set_world(true);
+  CHECK(pause.world_paused());
+  pause.set(pause_domain::presentation, false);
+  CHECK_FALSE(pause.world_paused());
+  CHECK(pause.paused(pause_domain::gameplay));
 }
 
 TEST_CASE("lifecycle controller enters phases in strict order") {

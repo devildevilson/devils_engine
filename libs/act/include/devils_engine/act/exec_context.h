@@ -5,21 +5,16 @@
 #include "devils_engine/utils/prng.h" // utils::mix (counter-based)
 #include "common.h"
 
-namespace devils_script { struct context; } // backend scratchpad (devils_script), fwd decl
-
 namespace devils_engine {
 namespace act {
 
-// act исторически ссылается на бэкенд-скретчпад как ds::* — держим короткий алиас на devils_script.
-namespace ds = ::devils_script;
-
 struct effect_sink; // effect_sink.h
 class world;        // forward: aesthetics::world или его срез
+struct execution_scratch;
 
 // exec_context — ИММУТАБЕЛЬНЫЙ игровой контекст вызова. Свои поля не меняются между
 // вызовами; течёт по ССЫЛКЕ в invoke, НИКОГДА не глобал (глобал = молчаливые гонки под
-// актор-моделью). Отличать от бэкенд-скретчпада (ds::context) — он stateless между
-// вызовами и лежит здесь как указатель `vm` (pointee мутируется бэкендом, поле — нет).
+// актор-моделью). Mutable VM/call state лежит отдельно в per-worker execution_scratch.
 //
 // PRNG-СОСТОЯНИЕ ВНУТРИ НЕ ДЕРЖИМ: immutable-входы (seed/entity/tick) дают внешние
 // системы (текущий кадр/тик + entity + сид), а каждый вызов задаёт `purpose` ЯВНО.
@@ -43,7 +38,7 @@ struct exec_context {
   effect_sink* sink = nullptr; // nullptr ⇒ dry-run
   bool dry_run() const noexcept { return sink == nullptr; }
 
-  ds::context* vm = nullptr;   // скретчпад пер-воркер; userptr → этот ctx
+  execution_scratch* scratch = nullptr;
 
   entity_id primary()   const noexcept { return scope_count > 0 ? scope[0] : entity_id{}; }
   entity_id secondary() const noexcept { return scope_count > 1 ? scope[1] : entity_id{}; }

@@ -10,6 +10,7 @@ set(HDR_LIST
   include/devils_engine/act/common.h
   include/devils_engine/act/value.h
   include/devils_engine/act/call_context.h
+  include/devils_engine/act/execution_scratch.h
   include/devils_engine/act/stat_accessors.h
   include/devils_engine/act/intent.h
   include/devils_engine/act/effect_sink.h

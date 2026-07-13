@@ -9,6 +9,7 @@ project(
 set(SRC_LIST
   src/acumen/system.cpp
   src/acumen/cache.cpp
+  src/acumen/registry.cpp
 )
 
 set(HDR_LIST
@@ -16,6 +17,8 @@ set(HDR_LIST
   include/devils_engine/acumen/system.h
   include/devils_engine/acumen/astar.h
   include/devils_engine/acumen/cache.h
+  include/devils_engine/acumen/execution_scratch.h
+  include/devils_engine/acumen/registry.h
 )
 
 add_library(devils_acumen ${SRC_LIST} ${HDR_LIST})

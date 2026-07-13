@@ -1,12 +1,14 @@
 #include "goap_resource.h"
 
 #include <string>
+#include <algorithm>
 #include <utility>
 #include <vector>
 
 #include <tavl/parser.h>
 
 #include <devils_engine/demiurg/module_interface.h>
+#include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/utils/core.h> // utils::warn / utils::error
 #include <devils_script/system.h>
 
@@ -131,14 +133,83 @@ void parse_goap(const devils_script::system& sys, tavl::parser& p, goap_config& 
     const auto [sev, serr] = p.poll_event();
     const std::string section = p.to_string(sev.token);
     p.poll_event(); // '='
-    if (section == "metrics")      parse_metrics(sys, p, cfg);
+    if (section == "base") {
+      const auto [v, err] = p.poll_event();
+      cfg.base = p.to_string(v.token);
+    }
+    else if (section == "metrics")      parse_metrics(sys, p, cfg);
     else if (section == "actions") parse_actions(p, cfg.actions);
     else if (section == "goals")   parse_goals(p, cfg.goals);
+    else if (section == "disable_metrics") cfg.disable_metrics = read_key_list(p);
+    else if (section == "disable_actions") cfg.disable_actions = read_key_list(p);
+    else if (section == "disable_goals")   cfg.disable_goals = read_key_list(p);
     // неизвестная секция: значение (массив) будет пропущено обычным ходом цикла
   }
 }
 
 } // namespace
+
+namespace {
+template <typename T, typename Key>
+void erase_named(std::vector<T>& values, const std::vector<std::string>& disabled, const Key& key) {
+  values.erase(std::remove_if(values.begin(), values.end(), [&](const T& value) {
+    return std::find(disabled.begin(), disabled.end(), key(value)) != disabled.end();
+  }), values.end());
+}
+
+template <typename T, typename Key>
+void overlay_named(std::vector<T>& values, const std::vector<T>& overlay, const Key& key) {
+  for (const auto& value : overlay) {
+    const auto it = std::find_if(values.begin(), values.end(), [&](const T& old) { return key(old) == key(value); });
+    if (it != values.end()) *it = value;
+    else values.push_back(value);
+  }
+}
+
+std::string normalize_goap_id(std::string id) {
+  if (!id.starts_with("goap/")) id = "goap/" + id;
+  return id;
+}
+
+goap_config resolve_impl(demiurg::resource_system& resources, const std::string& id,
+                         std::vector<std::string>& stack) {
+  if (std::find(stack.begin(), stack.end(), id) != stack.end()) {
+    utils::error{}("GOAP config inheritance cycle at '{}'", id);
+  }
+  auto* resource = resources.get<goap_resource>(id);
+  if (resource == nullptr) utils::error{}("GOAP config '{}' not found", id);
+  while (!resource->usable()) resource->load(utils::safe_handle_t{});
+
+  stack.push_back(id);
+  goap_config out;
+  if (!resource->config().base.empty()) {
+    out = resolve_impl(resources, normalize_goap_id(resource->config().base), stack);
+  }
+  out = merge_goap_config(out, resource->config());
+  stack.pop_back();
+  return out;
+}
+}
+
+goap_config merge_goap_config(const goap_config& base, const goap_config& derived) {
+  goap_config out = base;
+  out.base.clear();
+  erase_named(out.metrics, derived.disable_metrics, [](const goap_metric& v) -> const std::string& { return v.key; });
+  erase_named(out.actions, derived.disable_actions, [](const goap_action_config& v) -> const std::string& { return v.name; });
+  erase_named(out.goals, derived.disable_goals, [](const goap_goal_config& v) -> const std::string& { return v.name; });
+  overlay_named(out.metrics, derived.metrics, [](const goap_metric& v) -> const std::string& { return v.key; });
+  overlay_named(out.actions, derived.actions, [](const goap_action_config& v) -> const std::string& { return v.name; });
+  overlay_named(out.goals, derived.goals, [](const goap_goal_config& v) -> const std::string& { return v.name; });
+  out.disable_metrics.clear();
+  out.disable_actions.clear();
+  out.disable_goals.clear();
+  return out;
+}
+
+goap_config resolve_goap_config(demiurg::resource_system& resources, const std::string_view id) {
+  std::vector<std::string> stack;
+  return resolve_impl(resources, normalize_goap_id(std::string(id)), stack);
+}
 
 goap_resource::goap_resource(devils_script::system* sys) : sys_(sys) {
   set_flag(demiurg::resource_flags::warm_and_hot_same, true);
@@ -159,7 +230,9 @@ void goap_resource::load_cold(const utils::safe_handle_t&) {
 
   config_ = goap_config{};
   parse_goap(*sys_, p, config_);
-  if (config_.metrics.empty()) utils::warn("goap resource '{}': не разобрано ни одной метрики", id);
+  if (config_.metrics.empty() && config_.base.empty()) {
+    utils::warn("goap resource '{}': нет ни base, ни одной метрики", id);
+  }
 }
 
 void goap_resource::load_warm(const utils::safe_handle_t&) {}

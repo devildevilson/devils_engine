@@ -1,3 +1,3 @@
 ret = "bool"
 scope = "actor"
-expr = "hunger >= 0.5"
+expr = "stats.hunger >= 0.5"

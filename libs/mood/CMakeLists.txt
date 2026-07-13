@@ -9,8 +9,10 @@ project(
 add_library(devils_mood
   src/mood/system.cpp
   src/mood/runtime.cpp
+  src/mood/registry.cpp
   include/devils_engine/mood/system.h
   include/devils_engine/mood/runtime.h
+  include/devils_engine/mood/registry.h
 )
 
 target_include_directories(devils_mood

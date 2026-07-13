@@ -21,8 +21,8 @@ namespace {
 enum class stat_domain : uint32_t { actor_stats = 1 };
 } // namespace
 
-// getter entity_scope -> stats*: достаёт компонент характеристик из мира для шаблонных аксессоров
-// (hunger/boredom/strength регистрируются ПРЯМО на entity_scope, без ds-навигации). const_cast: мир
+// getter entity_scope -> stats*: scope-функция `stats` возвращает типизированный толстый указатель.
+// const_cast: мир
 // реально мутабелен (эффект add_<field> пишет), const на entity_scope.w — лишь контракт чтения (как
 // mutable_world_of). null ⇒ read вернёт дефолт, add — no-op (паритет с прежним scope_hunger).
 static stats* get_actor_stats(entity_scope s) noexcept {
@@ -67,11 +67,8 @@ script_environment::script_environment() : sys(make_options()) {
   sys.init_basic_functions();
   sys.init_math();
 
-  // Характеристики: аксессоры чтения (hunger/boredom/strength) и add_<field> (эффект, в catalogue)
-  // АВТОГЕНЕРИРУЮТСЯ рефлексией по полям stats — вместо ручных scope_hunger/scope_boredom. Скоуп =
-  // entity_scope, getter = get_actor_stats (достаёт компонент из мира). Скрипты пишут бареовые
-  // `hunger`, `strength` (как перцепция), без ds-навигации.
-  act::register_stat_accessors<stats, entity_scope, &get_actor_stats, stat_domain::actor_stats>(sys);
+  // `stats` меняет ds-scope; внутри него рефлексией доступны hunger/boredom/strength и add_<field>.
+  act::register_stats<stats, entity_scope, &get_actor_stats, stat_domain::actor_stats>(sys, "stats");
 
   // Перцепция (bool, не плоские числа) — остаётся ручными аксессорами над entity_scope.
   sys.register_function<&scope_threat_present>("threat_present");

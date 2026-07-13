@@ -60,6 +60,13 @@ target_link_libraries(acumen_test PRIVATE devils_engine::acumen devils_engine::a
 devils_add_doctest(acumen_script_test acumen_script_test.cpp)
 target_link_libraries(acumen_script_test PRIVATE devils_engine::acumen devils_engine::act devils_script tavl)
 
+devils_add_doctest(goap_config_test goap_config_test.cpp ../tile_frontier/src/core/goap_resource.cpp)
+target_link_libraries(goap_config_test PRIVATE devils_engine::acumen devils_engine::act devils_engine::demiurg devils_script tavl)
+target_include_directories(goap_config_test PRIVATE
+  "${CMAKE_SOURCE_DIR}/subprojects/tile_frontier/include"
+  "${CMAKE_SOURCE_DIR}/subprojects/tile_frontier/include/core"
+)
+
 devils_add_doctest(act_call_context_test act_call_context_test.cpp)
 target_link_libraries(act_call_context_test PRIVATE devils_engine::act devils_script)
 
