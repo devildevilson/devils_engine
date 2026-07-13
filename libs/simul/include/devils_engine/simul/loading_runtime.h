@@ -206,6 +206,23 @@ inline void standard_commit_runtime_state(standard_loading_state& s) {
   s.target_prepared = false;
 }
 
+// Запросить ресурс сцены: пустить в активный UI-scope (grant), запросить загрузку до target_state и
+// (опционально) добавить в стартовый allowlist, от usable() которого зависит переход loading->game.
+// Состав сцены (какие ресурсы, до какого уровня, что трекать) — проектный; сам механизм — движковый.
+inline void request_scene_resource(
+  standard_loading_state& s,
+  standard_broker& br,
+  const demiurg::resource_handle handle,
+  const int32_t target_state,
+  const bool track_startup) {
+  s.pending_ui_scope->grant(handle);
+  const resource_ref ref = resource_ref::from_handle(handle);
+  br.load_resource.try_push(command_load_resource{ref, target_state});
+  if (track_startup) {
+    s.startup_resources.push_back(ref);
+  }
+}
+
 // game -> loading по смене состояния. target уже резолвнут вызывающим (из своего реестра). Возврат
 // false, если фаза не game / handle не runtime-состояние / состояние то же / loading уже запрошен.
 inline bool standard_request_runtime_state(standard_loading_state& s, const demiurg::resource_handle target) {
