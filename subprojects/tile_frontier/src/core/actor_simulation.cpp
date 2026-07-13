@@ -863,68 +863,32 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
 // Стоимость восприятия+GOAP ∝ бюджету/числу_потоков. Отбор — O(N)-скан (на миллионах заменить
 // на timing-wheel). sense_tree_ строится ДО (build_sense_tree) и только читается воркерами.
 void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool) {
-  intents_.clear();
-
-  // (1) отбор созревших + обрезка бюджетом.
-  due_.clear();
-  for (auto [id, cog] : world_.view<actor_cognition>()) {
-    // едящие (закоммичены до конца поедания) и схваченные (заморожены, скоро удалятся) —
-    // не думают. Это и есть «коммит длительностью действия» вместо чистого commit_ticks.
-    if (world_.get<actor_eating>(id) != nullptr || world_.get<actor_grabbed>(id) != nullptr) {
-      continue;
-    }
-    if (cog->last_think == 0 || tick - cog->last_think >= commit_ticks_) {
-      due_.push_back(think_request{tick - cog->last_think, id});
-    }
-  }
-  if (due_.size() > think_budget_) {
-    std::nth_element(due_.begin(), due_.begin() + think_budget_, due_.end(),
-                     [](const think_request& a, const think_request& b) {
-                       if (a.overdue != b.overdue) {
-                         return a.overdue > b.overdue; // дольше ждал — раньше
-                       }
-                       return aesthetics::get_entityid_index(a.actor) < aesthetics::get_entityid_index(b.actor); // детерм. тай-брейк
-                     });
-    due_.resize(think_budget_);
-  }
-  DE_TRACE(catalogue::log_domain::gameplay, "cognition tick={} due={} budget={}", tick, due_.size(), think_budget_);
-  if (due_.empty()) {
-    return;
-  }
-
-  // (2) per-thread scratch: слот = pool.thread_index (0=вызывающий, 1..size=воркеры). Размер
-  //     pool.size()+1; реаллокация только при смене числа потоков (обычно один раз).
-  const size_t slots = pool.size() + 1;
-  if (cognition_scratch_.size() != slots) {
-    cognition_scratch_.resize(slots);
-  }
-  if (intent_buffers_.size() != slots) {
-    intent_buffers_.resize(slots);
-  }
-  for (auto& b : intent_buffers_) {
-    b.clear();
-  }
-
-  // (3) раскидать отобранных по потокам. Лямбда — lvalue (distribute копирует её на каждый
-  //     чанк; именованная не даст случайного move). Чанк зовётся как f(start, job_count).
-  auto job = [this, tick, &pool](const size_t start, const size_t count) {
-    const uint32_t slot = pool.thread_index(std::this_thread::get_id());
-    auto& scratch = cognition_scratch_[slot];
-    auto& out = intent_buffers_[slot];
-    for (size_t i = start; i < start + count; ++i) {
-      decide_actor(due_[i].actor, tick, scratch, out);
-    }
-  };
-  pool.distribute(due_.size(), job);
-  pool.wait(); // ждём опустошения очереди И завершения задач в работе
-
-  // (4) слить выходы потоков и упорядочить детерминированно (sort by entity index).
-  for (auto& b : intent_buffers_) {
-    intents_.insert(intents_.end(), b.begin(), b.end());
-  }
-  std::sort(intents_.begin(), intents_.end(), [](const act::intent& a, const act::intent& b) {
-    return aesthetics::get_entityid_index(a.actor.id) < aesthetics::get_entityid_index(b.actor.id);
-  });
+  using request = decltype(scheduler_)::request;
+  // generic-планировщик (libs/simul) держит budget-clamp, per-thread lanes, distribute/wait и
+  // детерминированный merge. Проект поставляет только знание сущности:
+  scheduler_.run(
+    tick, pool,
+    // enumerate: созревшие (skip едящих/схваченных — «коммит длительностью действия») + давность.
+    [this, tick](std::vector<request>& due) {
+      for (auto [id, cog] : world_.view<actor_cognition>()) {
+        if (world_.get<actor_eating>(id) != nullptr || world_.get<actor_grabbed>(id) != nullptr) {
+          continue;
+        }
+        if (scheduler_.matured(cog->last_think, tick)) {
+          due.push_back(request{tick - cog->last_think, id});
+        }
+      }
+    },
+    // decide: восприятие (kD-запрос) + GOAP одной сущности в свой per-thread scratch.
+    [this, tick](const aesthetics::entityid_t id, acumen::execution_scratch& scratch, std::vector<act::intent>& out) {
+      decide_actor(id, tick, scratch, out);
+    },
+    // index_of: детерминированный тай-брейк бюджета по индексу сущности.
+    [](const aesthetics::entityid_t id) -> uint64_t { return aesthetics::get_entityid_index(id); },
+    // intent_key: финальная сортировка выхода по индексу актора интента.
+    [](const act::intent& in) -> uint64_t { return aesthetics::get_entityid_index(in.actor.id); },
+    intents_);
+  DE_TRACE(catalogue::log_domain::gameplay, "cognition tick={} intents={} budget={}", tick, intents_.size(), scheduler_.think_budget);
 }
 
 // apply — ДЕТЕРМИНИРОВАННЫЙ барьер в двух фазах.
@@ -951,8 +915,8 @@ void actor_world_slice::apply(const float dt_seconds) {
     }
     const auto* brain = world_.get<actor_brain>(id);
     const uint64_t seed = brain != nullptr ? brain->seed : 0u;
-    // cognition уже завершён: caller lane 0 можно безопасно переиспользовать для apply/FSM.
-    const auto ctx = make_ctx(world_, id, seed, tick_, nullptr, &cognition_scratch_.front().act);
+    // cognition уже завершён: caller lane 0 планировщика можно безопасно переиспользовать для apply/FSM.
+    const auto ctx = make_ctx(world_, id, seed, tick_, nullptr, &scheduler_.lanes().front().act);
     effect->invoke(ctx); // движение (скорость + плейсхолдер укуса) — арбитраж GOAP
 
     // FSM-исполнитель: событие = выбранное действие (его хеш уже лежит в intent.payload.call.fn,
@@ -1097,7 +1061,8 @@ std::vector<uint8_t> actor_world_slice::save(const aesthetics::serial::sink_poli
   serial::writer wr{raw};
   serial::dump_world(&world_, wr);
   const sim_globals g{tick_, food_spawn_seq_, spawn_min_, spawn_max_,
-                      food_target_, texture_count_, commit_ticks_, think_budget_};
+                      food_target_, texture_count_,
+                      uint32_t(scheduler_.commit_ticks), uint32_t(scheduler_.think_budget)};
   serial::serialize(wr, g);
   raw.resize(wr.pos());
   return serial::seal(raw, policy); // header + checksum + компрессия (+ скриншот — тут не задаём)
@@ -1135,8 +1100,8 @@ bool actor_world_slice::load(const std::span<const uint8_t> packet) {
   spawn_max_ = g.spawn_max;
   food_target_ = g.food_target;
   texture_count_ = g.texture_count;
-  commit_ticks_ = g.commit_ticks;
-  think_budget_ = g.think_budget;
+  scheduler_.commit_ticks = g.commit_ticks;
+  scheduler_.think_budget = g.think_budget;
 
   rebuild_obstacle_cache(); // кэш выводим из мира, не хранится в снапшоте
   return true;

@@ -8,11 +8,16 @@
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/simul/app_runtime.h>
 #include <devils_engine/simul/boot_config.h>
+#include <devils_engine/simul/cognition_scheduler.h>
 #include <devils_engine/simul/lifecycle.h>
 #include <devils_engine/simul/pause.h>
 #include <devils_engine/simul/startup_resources.h>
+#include <devils_engine/thread/atomic_pool.h>
 #include <devils_engine/utils/safe_handle.h>
 #include <doctest/doctest.h>
+
+#include <algorithm>
+#include <cstdint>
 
 namespace {
 
@@ -265,4 +270,106 @@ TEST_CASE("startup entry and runtime state come from the first module") {
   CHECK(ui->config().scene == "scenes/mod_scene");
 
   fs::remove_all(root);
+}
+
+namespace {
+
+// Минимальная инстанциация generic-планировщика: сущность=id, scratch=заглушка, интент=id
+// произведшей его сущности. decide кладёт id в буфер, ключи — тождественные.
+using test_scheduler = devils_engine::simul::cognition_scheduler<uint32_t, int, uint32_t>;
+
+// Прогнать один run() над списком (last_think, id) и вернуть отсортированный выход.
+std::vector<uint32_t> run_scheduler(
+  test_scheduler& sched,
+  devils_engine::thread::atomic_pool& pool,
+  const uint64_t tick,
+  const std::vector<std::pair<uint64_t, uint32_t>>& entities) {
+  std::vector<uint32_t> out;
+  sched.run(
+    tick, pool,
+    [&](std::vector<test_scheduler::request>& due) {
+      for (const auto& [last_think, id] : entities) {
+        if (sched.matured(last_think, tick)) {
+          due.push_back(test_scheduler::request{tick - last_think, id});
+        }
+      }
+    },
+    [](const uint32_t id, int&, std::vector<uint32_t>& buf) { buf.push_back(id); },
+    [](const uint32_t id) -> uint64_t { return id; },
+    [](const uint32_t in) -> uint64_t { return in; },
+    out);
+  return out;
+}
+
+} // namespace
+
+TEST_CASE("cognition_scheduler matured() gates on the commit window") {
+  test_scheduler sched; // commit_ticks == 3
+  CHECK(sched.matured(0, 5));       // ещё не думал ⇒ всегда созрел
+  CHECK(sched.matured(2, 5));       // прошло 3 ≥ commit ⇒ созрел
+  CHECK_FALSE(sched.matured(3, 5)); // прошло 2 < commit
+  CHECK_FALSE(sched.matured(5, 5)); // только что думал
+}
+
+TEST_CASE("cognition_scheduler processes every matured entity, output id-sorted regardless of threads") {
+  devils_engine::thread::atomic_pool pool(4);
+  test_scheduler sched;
+
+  // 100 сущностей в перемешанном порядке (i*37+13 mod 100 — перестановка), все «созрели» (last_think=0).
+  std::vector<std::pair<uint64_t, uint32_t>> ents;
+  for (uint32_t i = 0; i < 100; ++i) {
+    ents.push_back({0, (i * 37u + 13u) % 100u});
+  }
+
+  const auto out = run_scheduler(sched, pool, 10, ents);
+
+  std::vector<uint32_t> expected(100);
+  for (uint32_t i = 0; i < 100; ++i) {
+    expected[i] = i;
+  }
+  CHECK(out == expected); // все обработаны и слиты детерминированно по id независимо от раскладки
+}
+
+TEST_CASE("cognition_scheduler clamps to think_budget by overdue priority") {
+  devils_engine::thread::atomic_pool pool(4);
+  test_scheduler sched;
+  sched.think_budget = 4;
+
+  // overdue = id+10 (10..19, все ≥ commit), бюджет 4 ⇒ выбираются 4 самых «просроченных»: id 6..9.
+  std::vector<std::pair<uint64_t, uint32_t>> ents;
+  for (uint32_t i = 0; i < 10; ++i) {
+    ents.push_back({100u - (i + 10u), i});
+  }
+
+  const auto out = run_scheduler(sched, pool, 100, ents);
+  CHECK(out == std::vector<uint32_t>{6, 7, 8, 9});
+}
+
+TEST_CASE("cognition_scheduler breaks budget ties by entity index deterministically") {
+  devils_engine::thread::atomic_pool pool(4);
+  test_scheduler sched;
+  sched.think_budget = 3;
+
+  // одинаковый overdue (=10) у всех ⇒ тай-брейк по index: выбираются наименьшие id 0,1,2.
+  std::vector<std::pair<uint64_t, uint32_t>> ents;
+  for (uint32_t i = 0; i < 10; ++i) {
+    ents.push_back({90u, i});
+  }
+
+  const auto out = run_scheduler(sched, pool, 100, ents);
+  CHECK(out == std::vector<uint32_t>{0, 1, 2});
+}
+
+TEST_CASE("cognition_scheduler with no matured entities yields an empty result") {
+  devils_engine::thread::atomic_pool pool(2);
+  test_scheduler sched;
+
+  // все думали только что (overdue 0 < commit) ⇒ никто не созрел.
+  std::vector<std::pair<uint64_t, uint32_t>> ents;
+  for (uint32_t i = 0; i < 8; ++i) {
+    ents.push_back({50u, i});
+  }
+
+  const auto out = run_scheduler(sched, pool, 50, ents);
+  CHECK(out.empty());
 }

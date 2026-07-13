@@ -91,8 +91,6 @@ struct ui_sound_state_entry {
 // Наследует движковый simul::standard_loading_state: lifecycle + машина runtime-состояния (allowlist,
 // pending/committed вид, generation) живут в базе, а проектные поля (мир/сцена/чанки/актёры) — здесь.
 struct simulation_init : public simul::standard_loading_state {
-  runtime_bootstrap* boot = nullptr;
-
   sound_simulation* sound_sim = nullptr;
   render_simulation* render_sim = nullptr;
   assets_simulation* assets_sim = nullptr;
@@ -213,13 +211,8 @@ static double loading_progress(const simulation_init& c) {
   return double(done) / double(total);
 }
 
-// «Загрузка завершена» = ВЕСЬ стартовый набор ресурсов usable() (движковый предикат) И все mock-чанки
-// применены (проектное условие мира AND-ится к движковому).
-static bool loading_complete(const simulation_init& c, const bool external_steps_available) {
-  return simul::standard_startup_resources_ready(c, external_steps_available) && c.chunks_loaded_count == c.chunks_loaded.size();
-}
-
-simulation::simulation(runtime_bootstrap* boot) noexcept : simul::main_system<::tile_frontier::core::broker>(main_frame_time), bootstrap_(boot) {}
+simulation::simulation(runtime_bootstrap* boot) noexcept
+  : simul::game_host<simulation, runtime_bootstrap, ::tile_frontier::core::broker>(boot, main_frame_time) {}
 
 simulation::~simulation() noexcept {
   if (!container) {
@@ -240,6 +233,24 @@ const simulation_init& simulation::state() const {
     utils::error{}("simulation: state accessed before init()");
   }
   return *container;
+}
+
+// main_system/advancer виртуали — тонкие форвардеры в generic game_host (определены в этом TU, где
+// simulation_init полный, поэтому inline-логика host_* инстанцируется тут; см. simulation.h).
+void simulation::init() {
+  host_init();
+}
+bool simulation::stop_predicate() const {
+  return host_stop_predicate();
+}
+void simulation::update(const size_t time) {
+  host_update(time);
+}
+void simulation::workers_started() {
+  host_workers_started();
+}
+void simulation::runtime_settings_reloaded() {
+  host_runtime_settings_reloaded();
 }
 
 // Visage получает только шрифты из активного runtime state resources. К этому моменту assets loader
@@ -275,132 +286,33 @@ static void setup_visage(simulation_init& c) {
   DE_LOG(catalogue::log_domain::ui, flow, "visage: system created (default font '{}', {} fonts total)", default_font_id, c.ui_fonts.size());
 }
 
-void simulation::init() {
-  if (bootstrap_ == nullptr) {
-    utils::error{}("simulation: runtime_bootstrap is not set");
-  }
+// project_init зовётся движковым game_host в начале init(): аллоцирует проектное состояние (его тип
+// известен только тут), резолвит конкретные worker-подсистемы и ставит проектный календарь. Broker,
+// frame_time, game_scale, presence и стартовый fb-размер настраивает сам game_host после этого хука.
+void simulation::project_init() {
   container.reset(new simulation_init);
   auto& c = *container;
-  c.boot = bootstrap_;
-  // Единый broker создаётся ДО подсистем; раздаётся каждой (set_broker) до старта их потоков.
-  // Если runtime уже поставил broker через стандартный контракт, используем его.
-  if (broker_ != nullptr) {
-    c.br = broker_;
-  } else {
-    c.owned_br = std::make_unique<::tile_frontier::core::broker>();
-    c.br = c.owned_br.get();
-  }
-
-  set_frame_time(simul::frame_time_from_fps(bootstrap_->engine.main_fps));
-  c.clocks.set_game_scale(utils::game_time_scale::from_seconds(
-    bootstrap_->settings.time.game_seconds,
-    bootstrap_->settings.time.real_seconds));
-  c.calendar = make_calendar_clock(bootstrap_->settings.time);
-
   c.sound_sim = runtime_system<sound_simulation>();
   c.render_sim = runtime_system<render_simulation>();
   c.assets_sim = runtime_system<assets_simulation>();
-  systems.sound = c.sound_sim != nullptr;
-  systems.render = c.render_sim != nullptr;
-  systems.assets = c.assets_sim != nullptr;
+  c.calendar = make_calendar_clock(bootstrap()->settings.time);
+}
 
-  // стартовый размер фреймбуфера = размер из конфига (до создания окна); коллбэк ресайза уточнит.
-  c.fb_width = std::max(bootstrap_->settings.window.width, 1u);
-  c.fb_height = std::max(bootstrap_->settings.window.height, 1u);
+devils_engine::demiurg::resource_system* simulation::asset_registry() {
+  auto& c = state();
+  return c.assets_sim != nullptr ? c.assets_sim->resources() : nullptr;
 }
 
 simul::worker_systems<runtime_traits::broker_type> runtime_traits::make_workers(bootstrap_type& boot) {
   return simul::make_standard_workers<render_simulation, assets_simulation, sound_simulation>(boot, "tile_frontier");
 }
 
-int simulation::exit_code() const noexcept {
-  return app_exit_code;
+void simulation::project_settings_reloaded() {
+  // setup_logging / frame_time / game_scale уже выполнил движковый game_host; проектных настроек,
+  // требующих реакции на runtime reload, пока нет (calendar source/policy намеренно не трогаем).
 }
 
-void simulation::workers_started() {
-  if (!systems.assets) {
-    utils::warn("tile_frontier: assets subsystem is disabled, but gameplay boot requires it");
-    app_exit_code = 1;
-    quit_requested.store(true, std::memory_order_release);
-    return;
-  }
-  state().lifecycle.start(*this);
-}
-
-void simulation::runtime_settings_reloaded() {
-  simul::setup_logging(bootstrap_->settings.logging);
-  set_frame_time(simul::frame_time_from_fps(bootstrap_->engine.main_fps));
-  state().clocks.set_game_scale(utils::game_time_scale::from_seconds(
-    bootstrap_->settings.time.game_seconds,
-    bootstrap_->settings.time.real_seconds));
-  // calendar source/policy — проектная топология: runtime reload намеренно её не заменяет.
-}
-
-void simulation::on_lifecycle_enter(const simul::app_state phase) {
-  DE_LOG(catalogue::log_domain::main, flow, "lifecycle: enter {}", simul::to_string(phase));
-  switch (phase) {
-    case simul::app_state::boot: begin_boot(); break;
-    case simul::app_state::loading: begin_loading(); break;
-    case simul::app_state::game: break;
-  }
-}
-
-void simulation::on_lifecycle_tick(const simul::app_state phase, const size_t) {
-  auto& c = state();
-  if (phase == simul::app_state::loading && !c.target_ui_committed && simul::standard_ui_resources_ready(c, systems.render)) {
-    start_ui();
-    c.target_ui_committed = true;
-  }
-}
-
-bool simulation::lifecycle_phase_complete(const simul::app_state phase) const {
-  const auto& c = state();
-  switch (phase) {
-    case simul::app_state::boot: return simul::standard_ui_boot_resources_prepared(c);
-    case simul::app_state::loading: return c.target_ui_committed && loading_complete(c, systems.render);
-    case simul::app_state::game: return false;
-  }
-  return false;
-}
-
-void simulation::on_lifecycle_leave(const simul::app_state phase) {
-  DE_LOG(catalogue::log_domain::main, flow, "lifecycle: leave {}", simul::to_string(phase));
-}
-
-void simulation::begin_boot() {
-  auto& c = state();
-  if (c.assets_sim == nullptr) {
-    utils::error{}("main: assets subsystem is required before startup resource binding");
-  }
-
-  if (systems.sound) {
-    command_sound_devices devices;
-    devices.request_id = generate_task_id();
-    devices.out = &c.sound_devices;
-    devices.ready = &c.sound_devices_ready;
-    c.br->sound_devices.try_push(devices);
-    c.sound_devices_requested = true;
-    DE_LOG(catalogue::log_domain::sound, flow, "main: requested sound playback devices");
-  }
-
-  auto* registry = c.assets_sim->resources();
-  if (registry == nullptr) {
-    utils::error{}("startup: assets registry is not initialized");
-  }
-  const auto initial_state = simul::standard_boot_initial_state(*registry);
-  simul::standard_prepare_runtime_state(c, *registry, *c.br, initial_state, true);
-}
-
-bool simulation::request_runtime_state(const std::string& id) {
-  auto& c = state();
-  if (c.assets_sim == nullptr) {
-    return false;
-  }
-  const auto handle = c.assets_sim->resources()->handle(id);
-  return simul::standard_request_runtime_state(c, handle);
-}
-
-void simulation::start_ui() {
+void simulation::start_project_ui() {
   auto& c = state();
 
   simul::standard_commit_runtime_state(c); // pending(target) -> committed(active) вид
@@ -443,7 +355,7 @@ void simulation::start_ui() {
     app.set_function("play_sound",
                      [this, cptr](sol::object a, sol::optional<sol::table> b) -> sound_handle {
                        auto& c = *cptr;
-                       if (!systems.sound) {
+                       if (!systems().sound) {
                          return sound_handle{};
                        }
 
@@ -488,7 +400,7 @@ void simulation::start_ui() {
 
     app.set_function("stop_sound", [this, cptr](const sound_handle& h) {
       auto& c = *cptr;
-      if (!systems.sound || !h.valid()) {
+      if (!systems().sound || !h.valid()) {
         return;
       }
       command_sound_stop stop{};
@@ -521,16 +433,16 @@ void simulation::start_ui() {
     simul::install_window_lua_bindings(
       app,
       c,
-      bootstrap_->settings,
-      systems.sound,
+      bootstrap()->settings,
+      systems().sound,
       [this]() {
-        quit_requested.store(true, std::memory_order_release);
+        request_quit();
       });
 
     // Смена звукового устройства: пере-создаём system2 через уже существующий канал recreate.
     app.set_function("set_sound_device", [this, cptr](const std::string& name) {
       auto& c = *cptr;
-      if (!systems.sound || c.br == nullptr) {
+      if (!systems().sound || c.br == nullptr) {
         return;
       }
       c.br->recreate_sound.try_push(command_recreate_sound_system{name});
@@ -652,20 +564,11 @@ void simulation::start_ui() {
   }
 }
 
-void simulation::begin_loading() {
+// begin_project_loading зовётся движковым game_host после standard_begin_loading + создания окна:
+// сюда — только проектная сцена (текстуры/звуки/чанки/сетка/камера/батчи/мозги/актёры).
+void simulation::begin_project_loading() {
   auto& c = state();
-
-  // Движковый каркас: новая generation, сброс gate, подготовка target до final_state, доведение
-  // UI-allowlist. Проектная специфика (мир/сцена/чанки) — ниже.
-  auto* registry = c.assets_sim->resources();
-  simul::standard_begin_loading(c, *registry, *c.br);
   c.sound_by_name.clear();
-
-  // Окно появляется только после минимального boot-набора. К этому моменту UI и первый
-  // шрифт готовы, поэтому первый видимый кадр уже может показать экран загрузки.
-  if (bootstrap_->settings.window.create_on_start && systems.render && !bootstrap_->settings.render.headless) {
-    simul::create_window_and_notify_render(c, bootstrap_->settings, main_frame_time);
-  }
 
   const char* texture_resources[] = {
     "textures/grass",
@@ -680,7 +583,7 @@ void simulation::begin_loading() {
     if (tex_handle.get<painter::gpu_texture_resource>() != nullptr) {
       // Временный mock-scene manifest: scene-ресурсы видимы UI сразу, readiness проверяет сам UI.
       c.pending_ui_scope->grant(tex_handle);
-      if (systems.render) {
+      if (systems().render) {
         const resource_ref ref = resource_ref::from_handle(tex_handle);
         c.br->load_resource.try_push(command_load_resource{ref, static_cast<int32_t>(demiurg::state::hot)});
         c.startup_resources.push_back(ref);
@@ -722,7 +625,7 @@ void simulation::begin_loading() {
   c.tiles_logged = false;
   c.actors_logged = false;
 
-  if (systems.assets) {
+  if (systems().assets) {
     for (uint32_t cy = 0; cy < c.chunks_y; ++cy) {
       for (uint32_t cx = 0; cx < c.chunks_x; ++cx) {
         const size_t idx = size_t(cy) * c.chunks_x + cx;
@@ -742,7 +645,7 @@ void simulation::begin_loading() {
   const glm::vec2 extent = c.grid.world_extent();
   c.cam.center = extent * 0.5f;
   c.cam.half_width = 8.0f;
-  c.cam.aspect = float(bootstrap_->settings.window.width) / float(std::max(bootstrap_->settings.window.height, 1u));
+  c.cam.aspect = float(bootstrap()->settings.window.width) / float(std::max(bootstrap()->settings.window.height, 1u));
 
   if (const auto r = c.batch.bind("v2ui1"); !r) {
     utils::error{}("tile_instance layout mismatch vs 'v2ui1': {} (attr {}, expected {}, actual {})",
@@ -812,43 +715,32 @@ void simulation::begin_loading() {
   DE_LOG(catalogue::log_domain::gameplay, flow, "main: spawned {} lightweight actors in aesthetics world", initial_actor_count);
 }
 
-bool simulation::stop_predicate() const {
-  // Выход: запрос из UI (app.quit_game) ИЛИ пользователь закрыл окно (крестик/Alt-F4).
-  if (quit_requested.load(std::memory_order_acquire)) {
-    return true;
-  }
-  const auto& c = state();
-  if (c.window != nullptr && input::should_close(c.window)) {
-    return true;
-  }
-  return false;
+// on_framebuffer_resize — коллбэк ресайза окна от движкового begin_main_frame: проекция/aspect
+// считаются от ЖИВОГО размера фреймбуфера (иначе картинка искажается на реальном размере окна).
+void simulation::on_framebuffer_resize(const uint32_t w, const uint32_t h) {
+  state().cam.aspect = float(w) / float(std::max(h, 1u));
 }
 
-void simulation::update(const size_t time) {
+// project_loading_complete — проектное условие готовности (AND-ится движком к готовности startup-набора):
+// все mock-чанки мира применены.
+bool simulation::project_loading_complete() const {
+  const auto& c = state();
+  return c.chunks_loaded_count == c.chunks_loaded.size();
+}
+
+// update_gameplay — середина кадра. Движковый game_host уже сделал lifecycle tick, часы (pause/advance),
+// begin_main_frame (окно/ввод/ресайз) и передал масштабированную дельту game-часов game_delta_ticks;
+// run_visage_frame он вызовет после. Внутренние проверки фазы/паузы пока остаются здесь (шаг 4 их вынесет).
+void simulation::update_gameplay(const size_t time, const uint64_t game_delta_ticks) {
   auto& c = state();
-  c.lifecycle.update(*this, time);
-  const bool outside_game = c.lifecycle.phase() != simul::app_state::game;
-  c.clocks.set_game_paused(outside_game || c.pause.paused(simul::pause_domain::gameplay));
-  c.clocks.set_presentation_paused(outside_game || c.pause.paused(simul::pause_domain::presentation));
-  const auto game_before = c.clocks.game_now();
-  c.clocks.advance(time);
-  const uint64_t game_delta_ticks = c.clocks.game_now().ticks - game_before.ticks;
-  simul::begin_main_frame(
-    c,
-    time,
-    systems.sound,
-    systems.render,
-    [&c](const uint32_t w, const uint32_t h) {
-      c.cam.aspect = float(w) / float(std::max(h, 1u));
-    });
 
   // Демо п.2/п.3: периодически переключаем активный render graph graph<->menu_graph, чтобы проверить
   // мгновенный своп без пересоздания ресурсов. Управляется render.demo_graph_toggle_ms (0 ⇒ выкл).
-  if (systems.render) {
-    const auto& rc = bootstrap_->settings.render;
+  if (systems().render) {
+    const auto& rc = bootstrap()->settings.render;
     if (rc.demo_graph_toggle_ms > 0 && !rc.menu_graph.empty() && rc.menu_graph != rc.graph) {
       const uint64_t period = std::max<uint64_t>(1,
-                                                 uint64_t(rc.demo_graph_toggle_ms) * uint64_t(bootstrap_->settings.simulation.main_fps) / 1000ull);
+                                                 uint64_t(rc.demo_graph_toggle_ms) * uint64_t(bootstrap()->settings.simulation.main_fps) / 1000ull);
       if (c.tick % period == 0) {
         const bool to_menu = (c.tick / period) % 2 == 1;
         if (c.br) {
@@ -967,7 +859,7 @@ void simulation::update(const size_t time) {
     // Контракт записи в буфер: шлём общий UBO (view_proj + ui_proj + misc) в host-visible
     // camera_buffer. ВСЕГДА (не только в game): ui_proj нужен UI на splash/loading тоже.
     // ui_proj — ortho «пиксели окна -> clip» (Vulkan: y вниз, начало слева-сверху). misc=screen_size/px_range.
-    if (systems.render) {
+    if (systems().render) {
       // ЖИВОЙ размер фреймбуфера, а не статичный config (иначе проекция искажается на реальном
       // размере окна). cam.aspect уже обновлён коллбэком ресайза, так что и view_proj корректен.
       const float w = float(std::max(c.fb_width, 1u));
@@ -993,7 +885,7 @@ void simulation::update(const size_t time) {
     // Тайлы карты публикуем ТОЛЬКО в game (шаг 3d): на splash/loading карта не рисуется, поэтому
     // ничего не мигает и null-текстуры не вылезают (стартовый набор уже usable() к моменту game).
     // Срез сетки строим тут же (только когда реально публикуем — не тратим CPU на splash/loading).
-    if (c.lifecycle.phase() == simul::app_state::game && systems.render && c.br) {
+    if (c.lifecycle.phase() == simul::app_state::game && systems().render && c.br) {
       const tile_span span = visible_tiles(c.cam, c.grid, 1.0f);
       c.batch.build(c.grid, span, c.textures);
 
@@ -1023,13 +915,13 @@ void simulation::update(const size_t time) {
     c.actors_last_metrics = c.actors.update(
       float(game_delta_ticks) / float(utils::global_time_resolution),
       c.actors_batch,
-      *bootstrap_->pool);
+      *bootstrap()->pool);
     const auto t1 = std::chrono::steady_clock::now();
     const uint64_t update_us = uint64_t(std::max<int64_t>(utils::count_mcs(t0, t1), 0));
 
     // Снапшот акторов — latest-wins мейлбокс: заполняем слот-продюсер НА МЕСТЕ (bytes/ids
     // переиспользуют ёмкость между кадрами), затем publish. Строим только когда рендер включён.
-    if (systems.render && c.br) {
+    if (systems().render && c.br) {
       auto& slot = c.br->draw_actors.write_slot();
       slot.count = c.actors_batch.count();
       slot.stride = actor_batch::stride();
@@ -1055,7 +947,7 @@ void simulation::update(const size_t time) {
     // презентационный мост sim→sound: эмиты звука (вход в состояние FSM) → звуковой актор.
     // Куллинг по близости к слушателю (камере) + кап на тик (ограничение голосов). Звук
     // эфемерен и НЕ реплицируется — здесь решается лишь что РЕАЛЬНО проиграть.
-    if (systems.sound) {
+    if (systems().sound) {
       const auto emits = c.actors.sound_events();
       const glm::vec2 listener = c.cam.center;
       const float audible = c.cam.half_width * 1.5f;
@@ -1095,10 +987,10 @@ void simulation::update(const size_t time) {
     c.metrics_instances += c.actors_last_metrics.instances;
     c.metrics_actor_update_us += update_us;
 
-    if (bootstrap_->settings.metrics.enabled) {
+    if (bootstrap()->settings.metrics.enabled) {
       const auto now = std::chrono::steady_clock::now();
       const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - c.metrics_last_log).count();
-      if (elapsed_ms >= bootstrap_->settings.metrics.log_interval_ms && c.metrics_frames != 0) {
+      if (elapsed_ms >= bootstrap()->settings.metrics.log_interval_ms && c.metrics_frames != 0) {
         const double seconds = double(elapsed_ms) / 1000.0;
         const double fps = double(c.metrics_frames) / seconds;
         const double intent_rate = double(c.metrics_intents) / seconds;
@@ -1126,51 +1018,50 @@ void simulation::update(const size_t time) {
     }
   }
 
-  simul::run_visage_frame(c, time, systems.render, [&c]() {
-    c.ui->set_env_number("tf_main_fps", c.ui_main_fps);
-    c.ui->set_env_number("tf_actor_count", double(c.actors_last_metrics.actors));
-    c.ui->set_env_number("tf_actor_intents", double(c.actors_last_metrics.intents));
-    c.ui->set_env_number("tf_actor_instances", double(c.actors_last_metrics.instances));
-    c.ui->set_env_number("tf_actor_ticks", double(c.actors_last_metrics.ticks));
-    c.ui->set_env_number("tf_intents_per_sec", c.ui_intents_per_sec);
-    c.ui->set_env_number("tf_instances_per_sec", c.ui_instances_per_sec);
-    c.ui->set_env_number("tf_actor_update_avg_us", c.ui_actor_update_avg_us);
+}
 
-    // sound-state merge пока остаётся здесь: это API звукового плеера tile_frontier,
-    // а не базовая обработка visage кадра.
-    c.sound_frame += 1;
-    if (const command_sound_state* msg = c.br ? c.br->sound_state.consume() : nullptr) {
-      auto& cur = c.sound_state;
-      auto& next = c.sound_state_next;
-      next.clear();
-      for (const auto& s : msg->sounds) {
-        next.push_back({s.taskid, s.progress, 0});
-      }
-      for (const auto& e : cur) {
-        if (e.deadline == 0) {
-          continue;
-        }
-        if (e.deadline < c.sound_frame) {
-          continue;
-        }
-        bool in_pub = false;
-        for (const auto& s : msg->sounds) {
-          if (s.taskid == e.taskid) {
-            in_pub = true;
-            break;
-          }
-        }
-        if (!in_pub) {
-          next.push_back(e);
-        }
-      }
-      std::swap(cur, next);
+// on_visage_before_update — before_update-хук визажа (движковый game_host сам зовёт run_visage_frame):
+// проектные env-числа UI + слияние оптимистичного sound_state перед кадром интерфейса. sound-state
+// merge остаётся тут: это API звукового плеера tile_frontier, а не базовая обработка visage кадра.
+void simulation::on_visage_before_update() {
+  auto& c = state();
+  c.ui->set_env_number("tf_main_fps", c.ui_main_fps);
+  c.ui->set_env_number("tf_actor_count", double(c.actors_last_metrics.actors));
+  c.ui->set_env_number("tf_actor_intents", double(c.actors_last_metrics.intents));
+  c.ui->set_env_number("tf_actor_instances", double(c.actors_last_metrics.instances));
+  c.ui->set_env_number("tf_actor_ticks", double(c.actors_last_metrics.ticks));
+  c.ui->set_env_number("tf_intents_per_sec", c.ui_intents_per_sec);
+  c.ui->set_env_number("tf_instances_per_sec", c.ui_instances_per_sec);
+  c.ui->set_env_number("tf_actor_update_avg_us", c.ui_actor_update_avg_us);
+
+  c.sound_frame += 1;
+  if (const command_sound_state* msg = c.br ? c.br->sound_state.consume() : nullptr) {
+    auto& cur = c.sound_state;
+    auto& next = c.sound_state_next;
+    next.clear();
+    for (const auto& s : msg->sounds) {
+      next.push_back({s.taskid, s.progress, 0});
     }
-  });
-
-  // app.send_event требует функцию которая
-  // получит тип системы и вернет id
-  // этот id передается в системы и используется потом чтобы понять что происходит
+    for (const auto& e : cur) {
+      if (e.deadline == 0) {
+        continue;
+      }
+      if (e.deadline < c.sound_frame) {
+        continue;
+      }
+      bool in_pub = false;
+      for (const auto& s : msg->sounds) {
+        if (s.taskid == e.taskid) {
+          in_pub = true;
+          break;
+        }
+      }
+      if (!in_pub) {
+        next.push_back(e);
+      }
+    }
+    std::swap(cur, next);
+  }
 }
 
 } // namespace core

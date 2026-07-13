@@ -276,6 +276,15 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
 11. **B-в — декларативный пайплайн систем** — **[необходимо]**. Список систем + действия над
     компонентами как упорядоченные фазы над view/query. Сейчас think→apply + intent-буфер +
     cognition-scheduler ПРОТОТИПИРОВАНЫ в tile_frontier; поднять в либу.
+    **⚠️ Согласованный дизайн (2026-07-13, сделать в ближайшем будущем):** целевая форма —
+    `process query_t<> → message_buffer → process query_t<> → …`. Примитивы в **`libs/aesthetics`**
+    (не simul; simul = только порядок фаз + гейтинг): оживить `template_system_mt` из `exclude/` как
+    map-примитив (`query_t`→`process`, `distribute1/compute/wait`) + `message_buffer<Msg>` indexed by
+    (message_type, entityid) (плотный массив по entity-index ⇒ lock-free непересекающиеся записи,
+    детерминированный обход без sort; intent = один тип сообщения) + отдельный select/work-list шаг для
+    бюджетируемых систем (cognition = reduce-select → map-think → message → map-apply). Текущий
+    `simul::cognition_scheduler` — ПРОВИЗОРНЫЙ (уже переведён на distribute1/compute/wait), растворится в
+    этой модели. Детали: `docs/simul-extraction-design.md` (шаг 1, блок «отложенный редизайн»).
 
 12. ✅ **A-3 / A-4 — окно + настройки → общий devils_engine (app-shell слой)** — **[необходимо,
     готово 2026-07-13]**.

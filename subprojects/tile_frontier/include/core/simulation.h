@@ -1,15 +1,14 @@
 #ifndef TILE_FRONTIER_CORE_SIMULATION_H
 #define TILE_FRONTIER_CORE_SIMULATION_H
 
-#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 
 #include <devils_engine/demiurg/resource_system.h>
-#include <devils_engine/simul/lifecycle.h>
+#include <devils_engine/simul/game_host.h>
 #include <devils_engine/simul/standard_sound_system.h>
-#include <devils_engine/simul/systems.h>
 
 namespace tile_frontier {
 namespace core {
@@ -23,48 +22,41 @@ class assets_simulation;
 
 using sound_simulation = devils_engine::simul::standard_sound_system<broker>;
 
-struct system_presence {
-  bool sound = false;
-  bool render = false;
-  bool assets = false;
-};
-
-// Главная/gameplay система. Runtime создаёт остальные системы и thread pool,
-// а main владеет окном как поздним ресурсом и публикует данные через broker.
-class simulation : public devils_engine::simul::main_system<broker> {
+// Главная/gameplay система. Движковый lifecycle/loop-скелет живёт в simul::game_host; проект
+// реализует набор хуков (проектная сцена/актёры/биндинги/публикация кадра) и владеет состоянием.
+//
+// main_system/advancer виртуали — ТОНКИЕ out-of-line форвардеры в host_* хелперы game_host (init →
+// host_init и т.д.). Так vtable и инстанцирование трогающих state методов остаются в этом .cpp, где
+// simulation_init полный (иначе inline-виртуали шаблона инстанцировались бы в TU пользователя при
+// forward-declared состоянии).
+class simulation : public devils_engine::simul::game_host<simulation, runtime_bootstrap, broker> {
 public:
   explicit simulation(runtime_bootstrap* boot = nullptr) noexcept;
   ~simulation() noexcept;
+
   void init() override;
   bool stop_predicate() const override;
-  void update(const size_t time) override;
-
-private:
-  friend struct runtime_traits;
-  friend class devils_engine::simul::lifecycle_controller;
-
+  void update(size_t time) override;
   void workers_started() override;
   void runtime_settings_reloaded() override;
-  void on_lifecycle_enter(devils_engine::simul::app_state phase);
-  void on_lifecycle_tick(devils_engine::simul::app_state phase, size_t time);
-  bool lifecycle_phase_complete(devils_engine::simul::app_state phase) const;
-  void on_lifecycle_leave(devils_engine::simul::app_state phase);
-  void begin_boot();
-  bool request_runtime_state(const std::string& id);
-  void start_ui();
-  void begin_loading();
-  int exit_code() const noexcept override;
+
   simulation_init& state();
   const simulation_init& state() const;
 
-  std::unique_ptr<simulation_init> container;
-  runtime_bootstrap* bootstrap_ = nullptr;
-  system_presence systems;
+  // ── проектные хуки game_host (дёргаются движковым host через derived(); публичны, чтобы не
+  //    завязываться на friend — внутри тела класса имя `broker` затеняется методом брокера) ──
+  void project_init();                                        // аллоцирует состояние + резолвит подсистемы + календарь
+  devils_engine::demiurg::resource_system* asset_registry();  // реестр ассетов (шрифты/сцена/скрипты)
+  void begin_project_loading();                               // проектная сцена (текстуры/звуки/чанки/актёры)
+  bool project_loading_complete() const;                      // все mock-чанки применены
+  void start_project_ui();                                    // визаж + lua-биндинги + entry (движковый split — шаг 3)
+  void on_framebuffer_resize(uint32_t w, uint32_t h);         // cam.aspect от живого размера
+  void update_gameplay(size_t time, uint64_t game_dt_ticks);  // середина кадра (тайлы/актёры/звук/метрики)
+  void on_visage_before_update();                             // tf_* env + слияние sound_state перед visage
+  void project_settings_reloaded();                           // проектная реакция на reload настроек
 
-  // выход из игры (app.quit_game из UI). stop_predicate() читает его вместо тестовой заглушки.
-  // atomic на случай, если позже флаг начнут выставлять не из main-потока (сейчас — из UI в main).
-  std::atomic_bool quit_requested{false};
-  int app_exit_code = 0;
+private:
+  std::unique_ptr<simulation_init> container;
 };
 
 } // namespace core

@@ -3,7 +3,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <memory>
 #include <span>
 #include <string>
@@ -20,6 +19,7 @@
 #include <devils_engine/mood/registry.h>
 #include <devils_engine/mood/system.h>            // mood::system — FSM-исполнитель (состояние/анимация/звук)
 #include <devils_engine/prefab/prefab_registry.h> // prefab::prefab_registry — рецепт сборки энтити (spawn_at)
+#include <devils_engine/simul/cognition_scheduler.h> // simul::cognition_scheduler — generic think-планировщик
 #include <devils_engine/utils/kd_tree.h>          // utils::kd_tree — пространственный акселератор sense
 #include <glm/glm.hpp>
 
@@ -324,12 +324,15 @@ private:
   std::vector<devils_engine::act::intent> intents_; // обобщённый буфер интентов (sort by actor id)
   std::vector<sound_emit> sound_emits_;             // sim-звуки тика (вход в состояние FSM)
 
-  // ── per-thread scratch для MT-cognition (индекс = pool.thread_index: 0=вызывающий, 1..=воркеры) ──
-  // Полный GOAP worker scratch: A*, cache и act execution_scratch (ds VM + mutable call frame).
-  // deque нужен из-за стабильных/non-movable VM-контекстов.
-  std::deque<devils_engine::acumen::execution_scratch> cognition_scratch_;
-  // выходные буферы интентов на поток → конкатенируются в intents_ и сортируются по id.
-  std::vector<std::vector<devils_engine::act::intent>> intent_buffers_;
+  // Планировщик think-фазы (generic, libs/simul): budget/priority-отбор, per-thread scratch-полосы
+  // (lane = acumen::execution_scratch: A*+cache+ds VM), distribute/wait и детерминированный merge в
+  // intents_. Проект даёт лишь skip/maturity (enumerate), сам think (decide) и ключи сортировки.
+  // Слот 0 полос переиспользуется apply-фазой. commit_ticks/think_budget — поля планировщика.
+  devils_engine::simul::cognition_scheduler<
+    devils_engine::aesthetics::entityid_t,
+    devils_engine::acumen::execution_scratch,
+    devils_engine::act::intent>
+    scheduler_;
   // Проектные конфиги мозга (из tavl); поля nullptr ⇒ нативный/хардкод фолбэк. Задаются в init.
   brain_config brains_;
 
@@ -337,19 +340,6 @@ private:
   // derived visual/position через on_construct); spawn_at через prefab_.spawn(name, world, {pos}).
   // Регистрируется в setup_brain_registry (общая точка init/load). Растёт по мере переезда спавна в него.
   devils_engine::prefab::prefab_registry<spawn_args> prefab_;
-
-  // ── планировщик когниции ──
-  // окно коммита: актор держится своего решения K тиков (стенд-ин для длительности
-  // действия/анимации) и переобдумывает не чаще. Спрос ≈ N/commit, лаг ≈ commit (~60мс при 3).
-  uint32_t commit_ticks_ = 3;
-  // бюджет: потолок обдумываний/тик (спайк-сейфти). ДОЛЖЕН быть ≥ спроса (N/commit), иначе
-  // узким местом станет бюджет, а не коммит, и лаг вернётся к N/budget. count-budget → детерм.
-  uint32_t think_budget_ = 2048;
-  struct think_request {
-    uint64_t overdue;
-    devils_engine::aesthetics::entityid_t actor;
-  };
-  std::vector<think_request> due_; // переиспользуемый скретч отбора
 
   uint64_t tick_ = 0;
 
