@@ -73,10 +73,10 @@ target_compile_options(devils_engine_options INTERFACE
   $<$<CONFIG:MinSizeRel>:$<$<CXX_COMPILER_ID:MSVC>:${DEVILS_ENGINE_ARCH_FLAGS_MSVC} /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>
   $<$<CONFIG:RelWithDebInfo>:$<$<CXX_COMPILER_ID:MSVC>:${DEVILS_ENGINE_ARCH_FLAGS_MSVC} /ZI /Wall /wd5045 /wd4820 /O2 /GR- /permissive- /Zc:preprocessor>>
 
-  $<$<CONFIG:Debug>:$<$<CXX_COMPILER_ID:GNU,Clang>:${DEVILS_ENGINE_ARCH_FLAGS_GNU} -g -Wall -Wextra -fno-rtti -fno-inline>>
-  $<$<CONFIG:Release>:$<$<CXX_COMPILER_ID:GNU,Clang>:${DEVILS_ENGINE_ARCH_FLAGS_GNU} -O3 -Wall -Wextra -fno-rtti -pipe>>
-  $<$<CONFIG:MinSizeRel>:$<$<CXX_COMPILER_ID:GNU,Clang>:${DEVILS_ENGINE_ARCH_FLAGS_GNU} -O3 -Wall -Wextra -fno-rtti -pipe -s>>
-  $<$<CONFIG:RelWithDebInfo>:$<$<CXX_COMPILER_ID:GNU,Clang>:${DEVILS_ENGINE_ARCH_FLAGS_GNU} -O3 -g -Wall -Wextra -fno-rtti -pipe>>
+  $<$<CONFIG:Debug>:$<$<CXX_COMPILER_ID:GNU,Clang>:${DEVILS_ENGINE_ARCH_FLAGS_GNU} -g -Wall -Wextra -Wpedantic -fno-rtti -fno-inline>>
+  $<$<CONFIG:Release>:$<$<CXX_COMPILER_ID:GNU,Clang>:${DEVILS_ENGINE_ARCH_FLAGS_GNU} -O3 -Wall -Wextra -Wpedantic -fno-rtti -pipe>>
+  $<$<CONFIG:MinSizeRel>:$<$<CXX_COMPILER_ID:GNU,Clang>:${DEVILS_ENGINE_ARCH_FLAGS_GNU} -O3 -Wall -Wextra -Wpedantic -fno-rtti -pipe -s>>
+  $<$<CONFIG:RelWithDebInfo>:$<$<CXX_COMPILER_ID:GNU,Clang>:${DEVILS_ENGINE_ARCH_FLAGS_GNU} -O3 -g -Wall -Wextra -Wpedantic -fno-rtti -pipe>>
 )
 
 target_compile_definitions(devils_engine_options INTERFACE

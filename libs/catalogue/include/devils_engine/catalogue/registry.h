@@ -10,7 +10,7 @@
 namespace devils_engine {
 namespace catalogue {
 // заголовок поди потребуется
-inline void default_invoke(const function_buffer_header& header, const std::span<uint8_t> &) {}
+inline void default_invoke(const function_buffer_header&, const std::span<uint8_t>&) {}
 
 struct registry {
   struct info {
