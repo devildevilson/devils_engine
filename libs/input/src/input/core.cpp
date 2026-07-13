@@ -2,16 +2,6 @@
 
 #include <cstdlib>
 
-#if defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__NT__)
-#define system_open_url_command(url_str) ("start "+(url_str))
-#elif __APPLE__
-#define system_open_url_command(url_str) ("open "+(url_str))
-#elif __linux__
-#define system_open_url_command(url_str) ("xdg-open "+(url_str))
-#else
-#error "Unknown compiler"
-#endif
-
 #include "devils_engine/utils/core.h"
 
 #define GLFW_INCLUDE_VULKAN
@@ -19,6 +9,18 @@
 #include "GLFW/glfw3.h"
 
 #include "key_names.h"
+
+namespace {
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__NT__)
+constexpr std::string_view open_url_command_prefix = "start ";
+#elif __APPLE__
+constexpr std::string_view open_url_command_prefix = "open ";
+#elif __linux__
+constexpr std::string_view open_url_command_prefix = "xdg-open ";
+#else
+#error "Unknown compiler"
+#endif
+}
 
 namespace devils_engine {
 namespace input {
@@ -161,8 +163,8 @@ void set_icon(GLFWwindow *m, const size_t count, const icon_t *icons) {
   glfwSetWindowIcon(m, count, reinterpret_cast<const GLFWimage*>(icons));
 }
 
-void set_window_callback(GLFWwindow* w, window_size_callback callback) { 
-  glfwSetWindowSizeCallback(w, callback); 
+void set_window_callback(GLFWwindow* w, window_size_callback callback) {
+  glfwSetWindowSizeCallback(w, callback);
 }
 
 void set_window_callback(GLFWwindow* w, window_content_scale_callback callback) {
@@ -304,8 +306,8 @@ void set_clipboard_string(GLFWwindow* w, const std::string& str) noexcept {
   glfwSetClipboardString(w, str.c_str());
 }
 
-void open_internet_URL(const std::string &str) {
-  const auto final_str = system_open_url_command(str);
+void open_internet_url(const std::string &str) {
+  const std::string final_str = std::string(open_url_command_prefix) + str;
   std::system(final_str.c_str());
 }
 }

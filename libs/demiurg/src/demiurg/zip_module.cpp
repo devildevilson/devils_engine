@@ -46,7 +46,7 @@ static std::tuple<std::string_view, std::string_view, std::string_view> parse_pa
   const size_t last_slash = path.rfind('/');
   const size_t last_dot = path.rfind('.');
   // здесь не должна приходить папка, должно ли у файлов быть какое то разрешение в принципе?
-  // да именно по разрешению мы понимаем что к чему относится 
+  // да именно по разрешению мы понимаем что к чему относится
   const auto ext = last_dot != std::string_view::npos ? path.substr(last_dot+1) : std::string_view();
   const auto id = path.substr(0, last_dot);
   const auto name = path.substr(last_slash+1).substr(0, last_dot);

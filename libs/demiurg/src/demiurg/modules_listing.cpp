@@ -36,7 +36,7 @@ void modules_listing::reload() {
 
     if (!entry.is_directory()) {
       // это мод в зипе
-      //if (ext == ".mod" || ext == ".zip") 
+      //if (ext == ".mod" || ext == ".zip")
         load_mod(entry);
       //else {
       //  utils::warn("Extension '{}' is not supported", ext);

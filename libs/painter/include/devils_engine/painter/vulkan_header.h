@@ -53,15 +53,15 @@ bool check_swapchain_present_mode(const std::vector<vk::PresentModeKHR> &modes, 
 vk::Format find_supported_format(vk::PhysicalDevice phys, const std::vector<vk::Format> &candidates, const vk::ImageTiling tiling, const vk::FormatFeatureFlags features);
 
 vk::ImageCreateInfo texture2D(
-  const vk::Extent2D &size, 
-  const vk::ImageUsageFlags &usage, 
-  const vk::Format &format = vk::Format::eR8G8B8A8Unorm, 
+  const vk::Extent2D &size,
+  const vk::ImageUsageFlags &usage,
+  const vk::Format &format = vk::Format::eR8G8B8A8Unorm,
   const uint32_t &arrayLayers = 1,
   const uint32_t &mipLevels = 1,
   const vk::SampleCountFlagBits &samples = vk::SampleCountFlagBits::e1,
   const vk::ImageCreateFlags &flags = {}
 );
-    
+
 vk::ImageCreateInfo texture2D_staging(
   const vk::Extent2D &size,
   const vk::ImageUsageFlags &usage = vk::ImageUsageFlagBits::eTransferSrc,
@@ -70,13 +70,13 @@ vk::ImageCreateInfo texture2D_staging(
 );
 
 vk::ImageViewCreateInfo view_info(
-  vk::Image img, 
-  vk::Format format, 
-  vk::ImageViewType type = vk::ImageViewType::e2D, 
-  const vk::ImageSubresourceRange &r = vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1), 
+  vk::Image img,
+  vk::Format format,
+  vk::ImageViewType type = vk::ImageViewType::e2D,
+  const vk::ImageSubresourceRange &r = vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1),
   const vk::ComponentMapping &cm = { vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity }
 );
-    
+
 vk::ImageViewCreateInfo make_view_info(
   vk::Image            image,
   vk::Format           format    = vk::Format::eR8G8B8A8Unorm,
@@ -85,14 +85,14 @@ vk::ImageViewCreateInfo make_view_info(
   vk::ComponentMapping components            = {},
   vk::ImageViewCreateFlags flags = {}
 );
-    
+
 vk::BufferCreateInfo buffer_info(const vk::DeviceSize &size, const vk::BufferUsageFlags &usage, const vk::BufferCreateFlags &flags = {});
 std::tuple<vk::BufferCreateInfo, vma::AllocationCreateInfo> dedicated_buffer(const size_t size, const vk::BufferUsageFlags usage, const vma::MemoryUsage memusage, const vk::BufferCreateFlags &flags = {});
 
 vk::ImageUsageFlags main_attachment_usage_from_format(vk::Format format);
 
 std::tuple<vk::Image, vma::Allocation> create_image(
-  vma::Allocator allocator, 
+  vma::Allocator allocator,
   const vk::ImageCreateInfo &info,
   const vma::MemoryUsage &mem_usage,
   void** pData = nullptr,
@@ -106,13 +106,13 @@ std::tuple<vk::ImageMemoryBarrier, vk::PipelineStageFlags, vk::PipelineStageFlag
 );
 
 void change_image_layout(
-  vk::Device device, 
-  vk::Image image, 
-  vk::CommandPool transfer_pool, 
-  vk::Queue transfer_queue, 
-  vk::Fence fence, 
-  const vk::ImageLayout &old_layout, 
-  const vk::ImageLayout &new_layout, 
+  vk::Device device,
+  vk::Image image,
+  vk::CommandPool transfer_pool,
+  vk::Queue transfer_queue,
+  vk::Fence fence,
+  const vk::ImageLayout &old_layout,
+  const vk::ImageLayout &new_layout,
   const vk::ImageSubresourceRange &range
 );
 

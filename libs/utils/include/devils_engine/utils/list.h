@@ -83,19 +83,19 @@ namespace devils_engine {
           ptr = list_next<t>(ptr);
         }
       }
-      
+
       template <size_t t, typename T>
       bool list_empty(const T* cur) noexcept {
         const list<T, t>* l = cur;
         return l->empty();
       }
-      
+
       template <size_t t, typename T>
       void list_invalidate(T* cur) noexcept {
         list<T, t>* l = cur;
         l->invalidate();
       }
-      
+
       template <size_t t, typename T>
       size_t list_count(T* cur) noexcept {
         size_t counter = 0;
@@ -137,15 +137,15 @@ namespace devils_engine {
         return cur_obj;
       }
     }
-    
+
     namespace ring {
       template <typename T, size_t t>
       struct list {
         using current_list_p = list<T, t>*;
-        
+
         T* m_next;
         T* m_prev;
-        
+
         // использовать this плохая идея для контейнеров вроде std vector
         // хотя в этом случае вся структура не имеет смысла
         // переопределим move и запретим copy?
@@ -179,7 +179,7 @@ namespace devils_engine {
           return *this;
         }
 
-    
+
         void add(T* obj) noexcept {
           static_assert(std::is_base_of_v<list<T, t>, T>);
           current_list_p l = obj;
@@ -192,7 +192,7 @@ namespace devils_engine {
           m_next = obj;
           n->m_prev = obj;
         }
-        
+
         void radd(T* obj) noexcept {
           static_assert(std::is_base_of_v<list<T, t>, T>);
           current_list_p l = obj;
@@ -205,7 +205,7 @@ namespace devils_engine {
           m_prev = obj;
           n->m_next = obj;
         }
-        
+
         void remove() noexcept {
           static_assert(std::is_base_of_v<list<T, t>, T>);
           auto l_next = static_cast<current_list_p>(m_next);
@@ -215,18 +215,18 @@ namespace devils_engine {
           m_prev = static_cast<T*>(this);
           m_next = static_cast<T*>(this);
         }
-        
+
         void invalidate() noexcept { m_next = static_cast<T*>(this); m_prev = static_cast<T*>(this); }
         bool empty() const noexcept { return m_next == static_cast<const T*>(this) && m_prev == static_cast<const T*>(this); }
       };
-    
+
       template <size_t t, typename T>
       void list_add(T* cur, T* obj) noexcept {
         if (obj == nullptr) return;
         list<T, t>* l = cur;
         l->add(obj);
       }
-      
+
       template <size_t t, typename T>
       void list_radd(T* cur, T* obj) noexcept {
         if (obj == nullptr) return;
@@ -251,19 +251,19 @@ namespace devils_engine {
         const list<T, t>* l = cur;
         return cur != nullptr && l->m_prev != ref ? l->m_prev : nullptr;
       }
-      
+
       template <size_t t, typename T>
       bool list_empty(const T* cur) noexcept {
         const list<T, t>* l = cur;
         return l->empty();
       }
-      
+
       template <size_t t, typename T>
       void list_invalidate(T* cur) noexcept {
         list<T, t>* l = cur;
         l->invalidate();
       }
-      
+
       template <size_t t, typename T>
       size_t list_count(T* cur) noexcept {
         size_t counter = 0;

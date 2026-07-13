@@ -17,7 +17,7 @@
 нужен доступ к каждому текущему ресурсу в обход graphics_ctx
 оттуда получим например указатель
 прежде это для того чтобы взять per_update ресурсы и заполнить их из хоста
-для чего еще может быть полезно? копировать что то извне? наверное, 
+для чего еще может быть полезно? копировать что то извне? наверное,
 но тогда это нужно делать в потоке графики...
 */
 
@@ -76,7 +76,7 @@ struct graphics_base {
   std::vector<material> materials;
   std::vector<geometry> geometries;
   std::vector<draw_group> draw_groups;
-  
+
   std::vector<step_base> steps;
   std::vector<execution_pass_base> passes;
   std::vector<render_graph_base> graphs;
@@ -174,7 +174,7 @@ struct graphics_base {
   void recreate_pipelines();
   void clear();
   // draw будет не тут наверное, а в контексте
-  // внутри кадра у нас должна быть еще подготовка 
+  // внутри кадра у нас должна быть еще подготовка
   // ну или подготовку вынести наружу
   void draw(); // обновим каунтеры, зайдем в render_graph, запишем команды, передадим их в queue
   void prepare_frame(); // чисто подготовим все что нужно со стороны graphics_base
@@ -240,7 +240,7 @@ struct graphics_base {
 
   // PRIVATE
 
-  // resize_viewport 
+  // resize_viewport
   void recreate_swapchain(const uint32_t width, const uint32_t height); // свопчеин частично состоит из ресурса который мы задали
   void recreate_screensize_resources(const uint32_t width, const uint32_t height);
 

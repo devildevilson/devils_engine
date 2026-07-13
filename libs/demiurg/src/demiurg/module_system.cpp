@@ -49,8 +49,8 @@ std::vector<module_system::list_entry> module_system::load_list(const std::strin
     } else if (file_io::exists(path() + core_folder)) {
       std::vector<list_entry> e{ list_entry{ core_folder, "", "" } };
       return e;
-    } 
-        
+    }
+
     utils::error{}("'{}' is not exist???", core_file);
   }
 

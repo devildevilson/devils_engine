@@ -43,7 +43,7 @@ constexpr size_t split(const std::string_view& input, const std::string_view& to
   return split(input, token, ans);
 }
 
-// должен возвращать размер массива + SIZE_MAX если больше max_arr, 
+// должен возвращать размер массива + SIZE_MAX если больше max_arr,
 // если SIZE_MAX то последним аргументом должна быть оставшаяся строка
 constexpr size_t split2(const std::string_view &input, const std::string_view &token, std::string_view *arr, const size_t max_arr) {
   size_t count = 0;

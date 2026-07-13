@@ -71,7 +71,7 @@ struct global_index {
 };
 
 // это будет работать если world будет сторого один на весь проект
-// точнее работать то будет всегда, просто будет много лишней фигни 
+// точнее работать то будет всегда, просто будет много лишней фигни
 template <typename T>
 size_t component_type_id() noexcept {
   return utils::sequential_type_id<seq_components_type_id, T>();

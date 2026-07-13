@@ -57,7 +57,7 @@ namespace devils_engine {
     constexpr uint32_t default_sound_sample_rate = 48000;
 
     // тип звука? музыка, высказывание, бекграунд, эффект
-    // сильно зависит от приоритета и от того относительно чего звук воспроизводится 
+    // сильно зависит от приоритета и от того относительно чего звук воспроизводится
     struct task {
       // update only for pitch and volume?
       enum class command { play, stop, update };

@@ -94,7 +94,7 @@ struct ui_sound_state_entry {
 // кеш?
 // Наследует движковый simul::standard_loading_state: lifecycle + машина runtime-состояния (allowlist,
 // pending/committed вид, generation) живут в базе, а проектные поля (мир/сцена/чанки/актёры) — здесь.
-struct simulation_init : simul::standard_loading_state {
+struct simulation_init : public simul::standard_loading_state {
   runtime_bootstrap* boot = nullptr;
 
   sound_simulation* sound_sim = nullptr;

@@ -1,0 +1,45 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: Latest
+
+IndentWidth: 2
+ContinuationIndentWidth: 2
+ConstructorInitializerIndentWidth: 2
+TabWidth: 2
+UseTab: Never
+NamespaceIndentation: None
+AccessModifierOffset: -2
+IndentCaseLabels: true
+IndentPPDirectives: AfterHash
+PPIndentWidth: 2
+
+ColumnLimit: 0
+BreakBeforeBraces: Attach
+BreakBeforeBinaryOperators: None
+BreakBeforeTernaryOperators: true
+
+AllowShortBlocksOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortLambdasOnASingleLine: Empty
+
+PointerAlignment: Left
+ReferenceAlignment: Pointer
+DerivePointerAlignment: false
+QualifierAlignment: Left
+SpaceBeforeParens: ControlStatements
+
+SortIncludes: Never
+IncludeBlocks: Preserve
+ReflowComments: false
+BreakStringLiterals: false
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+
+# Formatting is applied to touched project code, not blindly to the whole tree.
+DisableFormat: false
+...
+

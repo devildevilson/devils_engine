@@ -179,7 +179,7 @@ struct calendar_time_parts {
 
 using game_time_parts = calendar_time_parts; // compatibility name; new code should use calendar_time_parts
 
-struct calendar_fields : calendar_time_parts {
+struct calendar_fields : public calendar_time_parts {
   // year начинается с 0; month/day — с 1. has_calendar=false означает, что проект использует
   // только absolute_day и/или time-of-day и не задавал месяцы.
   uint64_t year = 0;

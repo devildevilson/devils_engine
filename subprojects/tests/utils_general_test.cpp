@@ -63,7 +63,7 @@ TEST_CASE("Single and double linked lists [list]") {
     REQUIRE(utils::ring::list_empty<list_type_1>(&lt1));
 
     // there is 2 elements, they are pointing on each other
-    utils::ring::list_add<list_type_1>(&lt1, &lt2); // lt2 added AFTER lt1 
+    utils::ring::list_add<list_type_1>(&lt1, &lt2); // lt2 added AFTER lt1
     REQUIRE(lt1_p->m_next == &lt2);
     REQUIRE(lt1_p->m_prev == &lt2);
     REQUIRE(!utils::ring::list_empty<list_type_1>(&lt1)); // not empty any more
@@ -366,7 +366,7 @@ TEST_CASE("String utility tests [utils::string]") {
     REQUIRE(ret1 == SIZE_MAX); // arr size too small for this string
     REQUIRE(arr1[0] == "abc");
     REQUIRE(arr1[1] == "ab");
-    REQUIRE(arr1[2] == "rtetr.bac.wert"); // last one holds remainder of original string 
+    REQUIRE(arr1[2] == "rtetr.bac.wert"); // last one holds remainder of original string
 
     std::array<std::string_view, 6> arr2;
     const size_t ret2 = utils::string::split(test1, ".", arr2.data(), arr2.size()); // can be used without span
@@ -378,7 +378,7 @@ TEST_CASE("String utility tests [utils::string]") {
     REQUIRE(arr2[4] == "wert");
     REQUIRE(arr2[5] == ""); // no data
   }
-  
+
   SUBCASE("split test abnormal usage 'qwertyuiop', 'asd.....asd.....asd', ''") {
     const std::string_view test1 = "qwertyuiop";
     const std::string_view test2 = "asd.....asd.....asd";

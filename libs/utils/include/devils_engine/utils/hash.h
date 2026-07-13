@@ -96,7 +96,7 @@ namespace detail {
     const uint32_t c2 = 0x1b873593U;
 
     // body
-    for (uint32_t i = 0; i < nblocks; i++) {
+    for (uint32_t i = 0; i < nblocks; ++i) {
       uint32_t k1 = get_block(key, i);
 
       k1 *= c1;

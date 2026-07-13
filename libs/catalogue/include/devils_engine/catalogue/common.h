@@ -7,7 +7,7 @@
 
 namespace devils_engine {
 namespace catalogue {
-// наверное будет где то ближе к реализации 
+// наверное будет где то ближе к реализации
 //struct tick_buffer_header {
 //  uint32_t tick;
 //  uint32_t checksum;

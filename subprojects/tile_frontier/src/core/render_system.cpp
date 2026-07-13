@@ -64,7 +64,7 @@ static uint32_t make_color(const float r, const float g, const float b, const fl
   return (pack(r) << 0) | (pack(g) << 8) | (pack(b) << 16) | (pack(a) << 24);
 }
 
-struct render_simulation_init : simul::standard_render_state<broker> {
+struct render_simulation_init : public simul::standard_render_state<broker> {
   uint32_t tile_pair_index = painter::INVALID_RESOURCE_SLOT;
   uint32_t actor_pair_index = painter::INVALID_RESOURCE_SLOT;
   bool tiles_ready = false;
@@ -182,7 +182,7 @@ static void render_create_actor_draw(render_simulation_init& c) {
   }
 
   c.actors_ready = true;
-  DE_LOG(catalogue::log_domain::render, flow, 
+  DE_LOG(catalogue::log_domain::render, flow,
     "render actors: registered actor triangle draw pair {} (dg '{}', layout '{}', stride {}, max {})",
     c.actor_pair_index,
     c.base->draw_groups[dg_index].name,

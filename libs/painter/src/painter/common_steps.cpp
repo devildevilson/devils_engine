@@ -641,7 +641,7 @@ void execution_pass_instance::create_framebuffers(const graphics_base* ctx) {
   const auto& pass = DS_ASSERT_ARRAY_GET(ctx->passes, super);
   if (pass.render_target == INVALID_RESOURCE_SLOT) return;
   const auto& rt = DS_ASSERT_ARRAY_GET(ctx->render_targets, pass.render_target);
-  
+
   // frameindex = i1 * (c2 * c3) + i2 * (c3) + i3
   strides.clear();
   strides.resize(rt.resources.size(), 1);
@@ -1107,7 +1107,7 @@ void graphics_draw_indexed_constant::process(graphics_ctx* ctx, VkCommandBuffer 
   task.drawIndexed(cmd.indexCount, cmd.instanceCount, cmd.firstIndex, cmd.vertexOffset, cmd.firstInstance);
 }
 
-graphics_draw_indirect::graphics_draw_indirect(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept : 
+graphics_draw_indirect::graphics_draw_indirect(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept :
   graphics_step_instance(super, device, renderpass, subpass_index, render_target_index)
 {}
 
@@ -1413,7 +1413,7 @@ void transfer_copy_buffer_image::process(graphics_ctx* ctx, VkCommandBuffer buf)
 
   make_barriers1(ctx, buf, step.barriers);
 
-  // если у нас буфер специально сделан по картинке, 
+  // если у нас буфер специально сделан по картинке,
   // то можно указать bufferRowLength и bufferImageHeight == 0
   vk::BufferImageCopy c{};
   c.bufferOffset = res1.subbuf.offset;
@@ -1442,7 +1442,7 @@ void transfer_copy_image_buffer::process(graphics_ctx* ctx, VkCommandBuffer buf)
 
   make_barriers1(ctx, buf, step.barriers);
 
-  // если у нас буфер специально сделан по картинке, 
+  // если у нас буфер специально сделан по картинке,
   // то можно указать bufferRowLength и bufferImageHeight == 0
   vk::BufferImageCopy c{};
   c.bufferOffset = res2.subbuf.offset;

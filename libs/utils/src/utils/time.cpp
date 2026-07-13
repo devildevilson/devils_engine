@@ -12,7 +12,7 @@ namespace utils {
 
   void time_log::update_tp() { tp = std::chrono::steady_clock::now(); }
 
-  trace_time_log::trace_time_log(const std::string_view& str, std::source_location loc) noexcept : 
+  trace_time_log::trace_time_log(const std::string_view& str, std::source_location loc) noexcept :
     str(str), tp(std::chrono::steady_clock::now()), l(loc)
   {
     spdlog::log(spdlog::level::trace, "in  {}:{} `{}`.", make_sane_file_name(l.file_name()), l.line(), l.function_name());
@@ -34,7 +34,7 @@ namespace utils {
   unix_timestamp_t file_timestamp(const fs::directory_entry &e) noexcept {
     if (!e.exists()) return 0;
     const auto tp = e.last_write_time();
-    const auto tp2 = std::chrono::clock_cast<std::chrono::system_clock>(tp); 
+    const auto tp2 = std::chrono::clock_cast<std::chrono::system_clock>(tp);
     return std::chrono::duration_cast<std::chrono::seconds>(tp2.time_since_epoch()).count();
   }
 
@@ -90,15 +90,15 @@ namespace utils {
   }
 
   date::date() noexcept : year(0), month(0), day(0), hour(0), minute(0), second(0), week_day(0) {}
-  date::date(const int32_t year, const uint32_t month, const uint32_t day, const uint32_t hour, const uint32_t minute, const uint32_t second, const uint32_t week_day) noexcept 
+  date::date(const int32_t year, const uint32_t month, const uint32_t day, const uint32_t hour, const uint32_t minute, const uint32_t second, const uint32_t week_day) noexcept
     : year(year), month(month), day(day), hour(hour), minute(minute), second(second), week_day(week_day)
   {}
 
-  date::date(const int32_t year, const uint32_t month, const uint32_t day, const uint32_t week_day) noexcept 
+  date::date(const int32_t year, const uint32_t month, const uint32_t day, const uint32_t week_day) noexcept
     : date(year, month, day, 0, 0, 0, week_day)
   {}
 
-  date::date(const int32_t year, const uint32_t week_day) noexcept 
+  date::date(const int32_t year, const uint32_t week_day) noexcept
     : date(year, 0, 0, week_day)
   {}
 
@@ -148,7 +148,7 @@ namespace utils {
     return true;
   }
 
-  // каст надо переписать полностью, я так понимаю сначала нужно 
+  // каст надо переписать полностью, я так понимаю сначала нужно
   // 1) добавить дни до 1 января следующего года
   // 2) пройтись по годам до дейт год -1
   // 3) пройтись по месяцам до месяца -1
@@ -202,7 +202,7 @@ namespace utils {
     days += d.day;
 
     seconds += current_day_seconds(d);
-    
+
     const timestamp_t t = (days * day_seconds() + seconds) * app_clock::resolution();
     //utils::info("date_to_t s {} add_days {}", (days * day_seconds() + seconds), days);
     return t;
@@ -329,7 +329,7 @@ namespace utils {
     while (days != 0) {
       const auto s = sign(days);
       const int32_t abs_days = std::abs(days);
-      
+
       // берем предыдущий месяц М
       const int32_t m_year = s > 0 ? cur_date.year : (cur_date.month != 0 ? cur_date.year : cur_date.year - 1);
       const int32_t m_month = s > 0 ? cur_date.month : (cur_date.month != 0 ? cur_date.month - 1 : this->months.size()-1);
@@ -373,7 +373,7 @@ namespace utils {
     count += d.day+1;
     return count;
   }
-  
+
   size_t date_system::week_number(const date &d) const {
     return date_count_days(d) / week.size();
   }

@@ -64,7 +64,7 @@ namespace devils_engine {
       const size_t block_size,
       const size_t allocator_align,
       resource_producer create
-    ) noexcept : 
+    ) noexcept :
       name(std::move(name)),
       ext(std::move(ext)),
       type_list(nullptr),
@@ -76,7 +76,7 @@ namespace devils_engine {
       if (count == SIZE_MAX) utils::error{}("Found to many extensions in str '{}' when creating demiurg resource type '{}'", this->ext, this->name);
     }
 
-    resource_interface *resource_system::type::create() { 
+    resource_interface *resource_system::type::create() {
       auto ptr = createf(allocator);
       ptr->type = name;
       if (type_list == nullptr) type_list = ptr;
@@ -97,7 +97,7 @@ namespace devils_engine {
 
     resource_system::resource_system() noexcept {}
 
-    resource_system::~resource_system() noexcept { 
+    resource_system::~resource_system() noexcept {
       clear();
       for (auto & [name, ptr] : types) {
         types_pool.destroy(ptr);

@@ -19,7 +19,7 @@ using namespace tile_frontier::core;
 namespace ds = devils_script;
 
 namespace {
-struct mock_sink : spawn_sink {
+struct mock_sink : public spawn_sink {
   std::string last_name;
   glm::vec2 last_pos{0.0f, 0.0f};
   int calls = 0;

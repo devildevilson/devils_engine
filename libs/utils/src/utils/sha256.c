@@ -62,16 +62,16 @@ static void sha256_calc_chunk(struct sha256_buff* buff, const uint8_t* chunk) {
         w[i] = (uint32_t) chunk[0] << 24 | (uint32_t) chunk[1] << 16 | (uint32_t) chunk[2] << 8 | (uint32_t) chunk[3];
         chunk += 4;
     }
-    
+
     for (i=16; i<64; ++i){
         uint32_t s0 = rotate_r(w[i-15], 7) ^ rotate_r(w[i-15], 18) ^ (w[i-15] >> 3);
         uint32_t s1 = rotate_r(w[i-2], 17) ^ rotate_r(w[i-2], 19) ^ (w[i-2] >> 10);
         w[i] = w[i-16] + s0 + w[i-7] + s1;
     }
-    
+
     for (i = 0; i < 8; ++i)
         tv[i] = buff->h[i];
-    
+
     for (i=0; i<64; ++i){
         uint32_t S1 = rotate_r(tv[4], 6) ^ rotate_r(tv[4], 11) ^ rotate_r(tv[4], 25);
         uint32_t ch = (tv[4] & tv[5]) ^ (~tv[4] & tv[6]);
@@ -79,7 +79,7 @@ static void sha256_calc_chunk(struct sha256_buff* buff, const uint8_t* chunk) {
         uint32_t S0 = rotate_r(tv[0], 2) ^ rotate_r(tv[0], 13) ^ rotate_r(tv[0], 22);
         uint32_t maj = (tv[0] & tv[1]) ^ (tv[0] & tv[2]) ^ (tv[1] & tv[2]);
         uint32_t temp2 = S0 + maj;
-        
+
         tv[7] = tv[6];
         tv[6] = tv[5];
         tv[5] = tv[4];
@@ -111,9 +111,9 @@ void sha256_update(struct sha256_buff* buff, const void* data, size_t size) {
     while (size  >= 64) {
         sha256_calc_chunk(buff, ptr);
         ptr += 64;
-        size -= 64; 
+        size -= 64;
     }
-    
+
     /* Save remaining data in buff, will be reused on next call or finalize */
     memcpy(buff->last_chunk + buff->chunk_size, ptr, size);
     buff->chunk_size += size;

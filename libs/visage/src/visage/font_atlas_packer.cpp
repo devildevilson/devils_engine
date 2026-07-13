@@ -87,7 +87,7 @@ std::tuple<std::vector<std::unique_ptr<font_t>>, font_atlas_packer::font_image_t
       }
 
       // чарсеты локализации ?
-      
+
       //fontGeometry.loadCharset(fraii.fh, 1.0, msdf_atlas::Charset::ASCII);
       //fontGeometry.loadCharset(fraii.fh, 1.0, set);
       load_sizes[i] += geometries[i].loadCharset(fraii.fh, 1.0, msdf_atlas::Charset::ASCII);
@@ -96,7 +96,7 @@ std::tuple<std::vector<std::unique_ptr<font_t>>, font_atlas_packer::font_image_t
       // loadCharset возвращает количество загруженных символов
       // вполне возможно что не во всех шрифтах есть все интересующие нас символы
       // блин было бы неплохо это все дело как то заранее еще проверить
-      // но только что мы можем сделать? по идее надо бы хотя бы сообщить о том 
+      // но только что мы можем сделать? по идее надо бы хотя бы сообщить о том
       // что мы не можем загрузить все символы из заданного чарсета
     }
   }
@@ -167,7 +167,7 @@ std::tuple<std::vector<std::unique_ptr<font_t>>, font_atlas_packer::font_image_t
     img.channels = color_channels;
     memcpy(img.bytes.data(), atlas_storage.pixels, size);
   } else utils::error{}("Unsupported color channels count {}", cfg.color_channels);
-  
+
   size_t offset = 0;
   std::vector<std::unique_ptr<font_t>> fonts;
   for (size_t i = 0; i < fonts_data.size(); ++i) {
@@ -239,7 +239,7 @@ std::tuple<std::vector<std::unique_ptr<font_t>>, font_atlas_packer::font_image_t
     fonts.push_back(std::move(f));
     offset += load_sizes[i];
   }
-  
+
   return std::make_tuple(std::move(fonts), std::move(img));
 }
 }

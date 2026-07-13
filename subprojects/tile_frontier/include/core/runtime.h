@@ -17,7 +17,7 @@
 namespace tile_frontier {
 namespace core {
 
-struct runtime_bootstrap : devils_engine::simul::standard_runtime_bootstrap<app_config> {};
+struct runtime_bootstrap : public devils_engine::simul::standard_runtime_bootstrap<app_config> {};
 
 struct runtime_traits {
   using bootstrap_type = runtime_bootstrap;

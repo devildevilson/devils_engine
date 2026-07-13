@@ -10,7 +10,7 @@ project(
   LANGUAGES CXX
 )
 
-if (WIN32) 
+if (WIN32)
   set(OPENAL_LIBRARY ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/openal/OpenAL32.lib)
   set(OPENAL_LIBRARY_DIR ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/openal)
   set(OPENAL_INCLUDE_DIRS ${PROJECT_EXTERNAL_DEPENDENCY_DIR}/openal/include)
@@ -45,7 +45,7 @@ set(HDR_LIST
   include/devils_engine/sound/pcm_decoder.h
   include/devils_engine/sound/decoder.h
   include/devils_engine/sound/system.h
-  include/devils_engine/sound/resource.h 
+  include/devils_engine/sound/resource.h
  "include/devils_engine/sound/common.h"
   include/devils_engine/sound/sound_resource.h)
 

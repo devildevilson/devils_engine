@@ -1,0 +1,6 @@
+# Imported implementations retain their upstream layout and identifiers.
+libs/utils/include/devils_engine/utf/utf.hpp
+libs/utils/src/utf/utf.cpp
+libs/utils/src/utils/sha256.c
+libs/utils/src/utils/sha256.h
+

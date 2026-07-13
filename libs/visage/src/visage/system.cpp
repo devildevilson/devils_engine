@@ -162,13 +162,13 @@ static struct nk_rect image_placement_rect(const struct nk_rect& b, const float 
 system::system(const font_t* default_font) : default_font(default_font), effect_arena(64 * 1024, 16) {
   lua.open_libraries(
     //sol::lib::debug,
-    sol::lib::base, 
-    sol::lib::bit32, 
-    sol::lib::coroutine, 
-    sol::lib::math, 
-    //sol::lib::package, 
-    sol::lib::string, 
-    sol::lib::table, 
+    sol::lib::base,
+    sol::lib::bit32,
+    sol::lib::coroutine,
+    sol::lib::math,
+    //sol::lib::package,
+    sol::lib::string,
+    sol::lib::table,
     sol::lib::utf8,
     sol::lib::os
   );
@@ -177,7 +177,7 @@ system::system(const font_t* default_font) : default_font(default_font), effect_
 
   env = bindings::create_env(lua);
   bindings::basic_functions(env);
-  
+
   ctx.reset(new nk_context);
 
   nk_allocator a;

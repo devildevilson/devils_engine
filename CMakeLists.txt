@@ -192,7 +192,7 @@ FetchContent_Declare(
 #  GIT_TAG        83a592f0c3807500f1aaf3b07fd48105a01e2780 # Oct 1, 2024
 #  GIT_SHALLOW    TRUE
 #  GIT_PROGRESS   TRUE
-#  OVERRIDE_FIND_PACKAGE 
+#  OVERRIDE_FIND_PACKAGE
 #)
 
 FetchContent_Declare(
@@ -209,7 +209,7 @@ FetchContent_Declare(
   #GIT_TAG        v1.2.0
   GIT_TAG        e302ad9e3b6810bcc1ba2419eb5aaf5f32056823
   GIT_PROGRESS   TRUE
-  OVERRIDE_FIND_PACKAGE 
+  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
@@ -225,7 +225,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/zlib-ng/zlib-ng.git
   GIT_TAG        2.2.4
   GIT_PROGRESS   TRUE
-  OVERRIDE_FIND_PACKAGE 
+  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
@@ -233,7 +233,7 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/pnggroup/libpng.git
   GIT_TAG        v1.6.48
   GIT_PROGRESS   TRUE
-  OVERRIDE_FIND_PACKAGE 
+  OVERRIDE_FIND_PACKAGE
 )
 
 FetchContent_Declare(
@@ -314,7 +314,7 @@ FetchContent_Declare(
 )
 
 FetchContent_Declare(
-  sol2 
+  sol2
   GIT_REPOSITORY https://github.com/ThePhD/sol2.git
   GIT_TAG        v3.5.0
   GIT_PROGRESS   TRUE
@@ -468,7 +468,7 @@ add_library(VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp ALIAS VulkanMem
 target_include_directories(VulkanMemoryAllocator-Hpp INTERFACE "${vulkanmemoryallocator-hpp_SOURCE_DIR}/include")
 target_link_libraries(VulkanMemoryAllocator-Hpp INTERFACE Vulkan::Headers GPUOpen::VulkanMemoryAllocator)
 
-#target_compile_options(spdlog 
+#target_compile_options(spdlog
 #  PRIVATE /fsanitize=address
 #)
 
@@ -498,7 +498,7 @@ if(MSVC)
   )
 else()
   set(DYN_LIBRARIES_LIST
-    
+
   )
 endif()
 
@@ -559,10 +559,10 @@ else()
 endif()
 
 #foreach (library_path IN LISTS DYN_LIBRARIES_LIST)
-#  add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD 
-#    COMMAND "${CMAKE_COMMAND}" -E copy 
+#  add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+#    COMMAND "${CMAKE_COMMAND}" -E copy
 #        "${CMAKE_SOURCE_DIR}/${library_path}"
-#        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/" 
+#        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/"
 #    COMMENT "Copy libs")
 #endforeach()
 
@@ -586,14 +586,14 @@ set_target_properties(${FAST_TEST_TARGET} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "$
 set(GRAPHICS_TEST_CONFIG_LOCATION ${CMAKE_CURRENT_LIST_DIR}/subprojects/tests/)
 
 add_custom_command(TARGET ${FAST_TEST_TARGET} POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory 
-    ${GRAPHICS_TEST_CONFIG_LOCATION}/test_render_config 
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${GRAPHICS_TEST_CONFIG_LOCATION}/test_render_config
     ${FAST_TEST_OUTPUT_DIRECTORY}/tests/render_config
 )
 
 add_custom_command(TARGET ${FAST_TEST_TARGET} POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory 
-    ${GRAPHICS_TEST_CONFIG_LOCATION}/shaders 
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${GRAPHICS_TEST_CONFIG_LOCATION}/shaders
     ${FAST_TEST_OUTPUT_DIRECTORY}/tests/shaders
 )
 

@@ -48,7 +48,7 @@ namespace devils_engine {
 
       template <typename T>
       T* get() const {
-        utils_assertf(is<T>(), "Handle type is not '{}' ({} != {})", utils::type_name<T>(), type, utils::type_id<T>());
+        if (!is<T>()) utils::error{}("Handle type is not '{}' ({} != {})", utils::type_name<T>(), type, utils::type_id<T>());
         return reinterpret_cast<T*>(ptr);
       }
 

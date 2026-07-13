@@ -19,7 +19,7 @@ public:
   // здесь бы мы хотели принять на вход текст шейдера
   // и получить на выход бинарник готовый к употреблению
   // при этом: должны работать include и кастомные define
-  // 
+  //
 
   void add_definition(std::string name, std::string value);
   void set_optimization(const bool opt);

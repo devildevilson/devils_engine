@@ -151,7 +151,7 @@ void graphics_base::get_or_create_pipeline_cache(const std::string& path) {
   vk::PipelineCacheCreateInfo pcci{};
   pcci.initialDataSize = initial_mem.size();
   pcci.pInitialData = initial_mem.data();
-  
+
   cache = vk::Device(device).createPipelineCache(pcci);
 }
 
@@ -204,7 +204,7 @@ static uint16_t float2half_rn(float a) {
       ir |= 0x7c00; /* infinity */
     } else {
       ia = (ia & 0x007fffff) | 0x00800000; /* extract mantissa */
-      if (shift < -14) { /* denormal */  
+      if (shift < -14) { /* denormal */
         ir |= ia >> (-1 - shift);
         ia = ia << (32 - (-1 - shift));
       } else { /* normal */
@@ -347,9 +347,9 @@ static std::tuple<size_t, size_t> put_values(const std::span<uint32_t> &memory, 
     // alignof(vec4) == 16, alignof(vec3) == 16, alignof(vec2) == 8, alignof(vec1) == 4
     //const uint32_t final_elem_size = elem_size == 12 ? 16 : std::max(elem_size, 4u);
     //const uint32_t local_aligment = (elem_size / channels) < 4 ? 1 : final_elem_size;
-      
+
     // тут укладываем байт за байтом придерживаясь алигмента
-    // с1с1с1с1 - должен попасть в отдельный uint ... нет для простоты пусть минимум будет 4 байта, то есть тут 4 uint =( 
+    // с1с1с1с1 - должен попасть в отдельный uint ... нет для простоты пусть минимум будет 4 байта, то есть тут 4 uint =(
     // а с4с1с4с1 - попадут в 4 отдельных uint
     // а с4с1с2с1 - это 2 uint....
 
@@ -496,7 +496,7 @@ static std::tuple<size_t, size_t> put_values(const std::span<uint32_t> &memory, 
         default: utils::error{}("Invalid format element type {} for {} byte element", static_cast<uint32_t>(el_type), elem_size / channels);
       }
 
-      offset += channels * sizeof(uint32_t);  
+      offset += channels * sizeof(uint32_t);
       continue;
     }
 
@@ -508,7 +508,7 @@ static std::tuple<size_t, size_t> put_values(const std::span<uint32_t> &memory, 
 
 // вроде бы почти все сделал, нужно добавить тип pad
 // нужно распределить на отдельные функции это дело
-// + нужно сделать общую функцию где я принимаю на вход std::span<double> 
+// + нужно сделать общую функцию где я принимаю на вход std::span<double>
 // и запихиваю правильные данные в память как я это делаю здесь
 void graphics_base::populate_constant_default_values() {
   for (const auto& c : constants) {
@@ -599,11 +599,11 @@ buffer_frame graphics_base::get_current_indirect_resource_frame(const uint32_t p
 
 bool graphics_base::wait_all_fences(const size_t timeout) const {
   const auto res = vk::Device(device).waitForFences(fences.size(), reinterpret_cast<const vk::Fence*>(fences.data()), true, timeout);
-  switch (res) { 
-    case vk::Result::eErrorDeviceLost: 
-    case vk::Result::eErrorOutOfDeviceMemory: 
-    case vk::Result::eErrorOutOfHostMemory: 
-    case vk::Result::eErrorUnknown: 
+  switch (res) {
+    case vk::Result::eErrorDeviceLost:
+    case vk::Result::eErrorOutOfDeviceMemory:
+    case vk::Result::eErrorOutOfHostMemory:
+    case vk::Result::eErrorUnknown:
     case vk::Result::eErrorValidationFailedEXT: utils::warn("'vkWaitForFences' returns '{}' in 'graphics_base'", vk::to_string(res)); break;
     default: break;
   }
@@ -720,7 +720,7 @@ void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t
     const uint32_t buffering = res.compute_buffering(this);
     for (uint32_t i = 0; i < buffering; ++i) {
       if (is_image) dev.destroy(res.handles[i].view);
-      
+
       const auto itr = std::find(indices.begin(), indices.end(), res.handles[i].index);
       if (itr == indices.end()) {
         indices.push_back(res.handles[i].index);
@@ -782,8 +782,8 @@ void graphics_base::create_fences() {
   fences.resize(frames_in_flight(), VK_NULL_HANDLE);
   for (uint32_t i = 0; i < fences.size(); ++i) {
     auto& f = fences[i];
-    f = dev.createFence(vk::FenceCreateInfo(vk::FenceCreateFlagBits::eSignaled)); 
-    set_name(device, vk::Fence(f), "frame_fence_" + std::to_string(i)); 
+    f = dev.createFence(vk::FenceCreateInfo(vk::FenceCreateFlagBits::eSignaled));
+    set_name(device, vk::Fence(f), "frame_fence_" + std::to_string(i));
   }
 }
 
@@ -840,7 +840,7 @@ void graphics_base::create_global_semaphores() {
 }
 
 void graphics_base::draw() {
-  
+
 }
 
 // ожидание фрейма лучше отдельно сделать
@@ -852,7 +852,7 @@ void graphics_base::prepare_frame() {
   image_acquire();
   //update_constant_memory(); // слишком часто
   update_descriptors(); // тут перевыделения памяти, лучше убрать отсюда
-  
+
   //if (!can_draw()) return;
 
   /*auto f = fences[computed_current_frame_index];
@@ -1642,7 +1642,7 @@ void graphics_base::create_resources() {
     const bool is_host_resource = role::is_host_visible(res.role);
 
     // тут бы мы хотели еще как то сгруппировать ресурсы
-    // наверное придется ввести маленькую предварительную структуру 
+    // наверное придется ввести маленькую предварительную структуру
 
     // размеры буферов так то должны быть aligned к 16
     // и размеры картинок тоже поди нужно алигнуть к чему то
@@ -1687,7 +1687,7 @@ void graphics_base::create_resources() {
     //  image_extent = vk::Extent2D(x * xs, y * ys);
 
     //  if (!is_buffer) utils::error{}("Not implemented");
-    //} 
+    //}
     //
     //// наверное указать что за глобальная юниформа? а сколько их бывает то
     //if (res.role == role::global_uniform) {
@@ -1697,11 +1697,11 @@ void graphics_base::create_resources() {
     //  // константа (счетчик фреймов + время + ???)
     //  buffer_size = res.size_hint; // ???
     //} else if (res.role == role::indirect) {
-    //  // размер одного буфера фиксирован 
+    //  // размер одного буфера фиксирован
     //  buffer_size = sizeof(vk::DrawIndirectCommand) * 2;
     //}
 
-    
+
     auto itr = std::find_if(matching.begin(), matching.end(), [&](const auto& data) -> bool {
       if (is_buffer != data.is_buffer) return false;
       if (is_host_resource != data.is_host_resource) return false;
@@ -2110,7 +2110,7 @@ render_graph_instance graphics_base::create_render_graph_instance(const uint32_t
       }
 
       if (cur_step == nullptr) utils::error{}("Invalid command parameter {}", static_cast<uint32_t>(step.cmd_params.type));
-      
+
       group.steps.push_back(cur_step);
     }
 
@@ -2164,7 +2164,7 @@ render_graph_instance graphics_base::create_render_graph_instance(const uint32_t
 
         continue;
       }
-      
+
       const uint32_t local_index = out.find_semaphore(name);
       if (local_index != INVALID_RESOURCE_SLOT) {
         const auto& sem = DS_ASSERT_ARRAY_GET(out.local_semaphores, local_index);
@@ -2213,7 +2213,7 @@ void graphics_base::change_render_graph(const uint32_t index) {
 }
 
 bool graphics_base::presentable_state_stable() const {
-  return presentation_engine_type != presentation_engine_type::main || 
+  return presentation_engine_type != presentation_engine_type::main ||
     (presentation_engine_type == presentation_engine_type::main && current_presentable_state == static_cast<uint32_t>(vk::Result::eSuccess));
 }
 

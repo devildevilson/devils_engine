@@ -56,7 +56,7 @@ namespace {
 
 struct transform { vec3f pos; float scale = 1.0f; }; // агрегат, содержащий адаптируемый тип
 
-struct load_watcher : aesthetics::basic_reciever<aesthetics::serial::snapshot_loaded_event> {
+struct load_watcher : public aesthetics::basic_reciever<aesthetics::serial::snapshot_loaded_event> {
   int fired = 0;
   void receive(const aesthetics::serial::snapshot_loaded_event&) override { ++fired; }
 };

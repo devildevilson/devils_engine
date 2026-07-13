@@ -796,6 +796,10 @@ hook) because every script comes from demiurg/mods (there is no plain-lua-from-d
 - Root CMake builds an interface aggregate target `devils_engine::devils_plane`.
 - Public includes are under `include/devils_engine/...` inside each `libs/*` directory.
 - The root target and `subprojects/tile_frontier` use C++23 via `devils_engine::options`.
+- `CODE_STYLE.md` is the canonical project style guide. Text uses UTF-8/LF, own code uses
+  2-space indentation and snake_case, macros use SCREAMING_SNAKE_CASE, and third-party naming/layout
+  is preserved. `.gitattributes`, `.editorconfig` and `.clang-format` encode the mechanical subset;
+  do not run whole-tree formatting together with behavior changes.
 - Dependencies are mostly fetched via CMake `FetchContent`, including `tavl`, `devils_script`, `miniaudio`, Vulkan-related libraries, Nuklear, msdfgen, glm, Catch2, etc.
 - Root `README.md` was replaced on 2026-07-05 with a human-oriented map of `libs/` only. It is intentionally organized as separate sections per library: role, current shape, relationships, and status. Keep future `tests/` documentation separate unless explicitly asked.
 - Documentation split requested by the author: root `README.md` should stay Russian for now and serve as a human-oriented overview for the author; `AGENTS.md` is the place for agent memory, technical gotchas, exact contracts, shutdown/order notes, and implementation details. Future README may become English later, but do not preemptively switch it.

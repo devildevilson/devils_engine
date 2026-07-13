@@ -17,7 +17,7 @@ namespace utils {
 // их можно расположить в цепочку которая буфет считывать данные с семафоры
 // в том числе можно так же оформить дозагрузку контента во время игры
 // по максимуму использовать лоадеры в разных потоках
-// лоадеры поди должны представлять собой очереди 
+// лоадеры поди должны представлять собой очереди
 // где текущий считает состояние предыдущего и только тогда запустит вычисления
 
 class loader : public load_stage, public thread::semaphore_interface {
@@ -26,7 +26,7 @@ public:
 
   loader(std::string name) noexcept;
   virtual ~loader() noexcept = default;
-  
+
   // NOT THREAD SYNC
   template <typename T, typename... Args>
   T* add(Args&&... args) {
@@ -37,7 +37,7 @@ public:
   }
 
   // NOT THREAD SYNC
-  // когда функция закончит вычисления для этого loader, 
+  // когда функция закончит вычисления для этого loader,
   // то он разрушится и естественно указателю тоже придет конец
   // возвращать отсюда булевы флаги?
   void add_waiter(thread::semaphore_interface* inter);
@@ -68,10 +68,10 @@ public:
   using lock = std::unique_lock<std::mutex>;
 
   std::string name;
-  
+
   loader2(std::string name) noexcept;
   ~loader2() noexcept = default;
-  
+
   template <typename T, typename... Args>
   T* add(Args&&... args) {
     lock l(_mutex);

@@ -31,8 +31,8 @@ counter::counter() noexcept : value(0), next_value(0) {}
 counter::counter(const counter& copy) noexcept : name(copy.name), value(copy.value.load(std::memory_order_acquire)), next_value(copy.next_value.load(std::memory_order_acquire)) {}
 counter::counter(counter&& move) noexcept : name(std::move(move.name)), value(move.value.load(std::memory_order_acquire)), next_value(move.next_value.load(std::memory_order_acquire)) {}
 counter& counter::operator=(const counter& copy) noexcept {
-  name = copy.name; 
-  value.store(copy.value.load(std::memory_order_acquire), std::memory_order_release); 
+  name = copy.name;
+  value.store(copy.value.load(std::memory_order_acquire), std::memory_order_release);
   next_value.store(copy.next_value.load(std::memory_order_acquire), std::memory_order_release);
   return *this;
 }
@@ -181,8 +181,8 @@ std::tuple<size_t, std::tuple<uint32_t, uint32_t>> resource::compute_frame_size(
     const auto& [xs, ys, zs] = size_value.current_scale;
     buffer_size = size_t(x*xs) * size_t(y*ys) * size_t(z*zs) * size_t(size_hint);
     image_extent = vk::Extent2D(x * xs, y * ys);
-  } 
-    
+  }
+
   // наверное указать что за глобальная юниформа? а сколько их бывает то
   if (role == role::global_uniform) {
     // константа (данные камеры)
@@ -191,7 +191,7 @@ std::tuple<size_t, std::tuple<uint32_t, uint32_t>> resource::compute_frame_size(
     // константа (счетчик фреймов + время + ???)
     buffer_size = size_hint; // ???
   } else if (role::is_indirect(role)) {
-    // размер одного буфера фиксирован 
+    // размер одного буфера фиксирован
     buffer_size = INDIRECT_BUFFER_SIZE * size_hint;
   }
 
@@ -1310,7 +1310,7 @@ static void parse_data_impl(render_config_storage& lctx, const config_source& sr
       lctx.resources.emplace_back(std::move(r));
     }
 
-    // формат зависит от геометрии .... =( 
+    // формат зависит от геометрии .... =(
     // а драв группа понятно дело может использоваться хоть где
     // можем ввести дополнительный флаг, а можем ничего не вводить и оставить как есть
     {
@@ -1556,7 +1556,7 @@ command_params parse_command(render_config_storage* ctx, const step_base& step, 
 
     p.resources[0] = std::make_tuple(res_index1, usage::transfer_src);
     p.resources[1] = std::make_tuple(res_index2, usage::transfer_dst);
-    
+
 
     const bool res1_is_image = role::is_image(res1.role);
     const bool res2_is_image = role::is_image(res2.role);

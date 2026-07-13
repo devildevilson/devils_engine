@@ -1,27 +1,25 @@
 #ifndef DEVILS_ENGINE_UTILS_CORE_H
 #define DEVILS_ENGINE_UTILS_CORE_H
 
-#include <cstddef>
+#include <bit>
 #include <cstdint>
-#include <string_view>
-#include <stdexcept>
-#include <iostream>
-#include <source_location>
+#include <cstddef>
 #include <format>
 #include <print>
-//#include <fmt/base.h>
+#include <source_location>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+
 #include <spdlog/spdlog.h>
+
 #include "type_traits.h"
 
 namespace devils_engine {
 namespace utils {
-#   ifdef _MSC_VER
-#     define utils_pretty_function __FUNCSIG__
-#   else
-#     define utils_pretty_function __PRETTY_FUNCTION__
-#   endif
-
-#   define DEVILS_ENGINE_EPSILON 0.000001
+inline constexpr double epsilon = 0.000001;
 
 constexpr std::string_view make_sane_file_name(const std::string_view &str) {
   const size_t slash1_index = str.rfind("/");
@@ -33,20 +31,24 @@ constexpr std::string_view make_sane_file_name(const std::string_view &str) {
 }
 
 struct error {
-  std::source_location loc;
-  explicit constexpr error(std::source_location l = std::source_location::current()) noexcept : loc(l) {}
+  std::source_location location;
+
+  explicit constexpr error(const std::source_location location = std::source_location::current()) noexcept : location(location) {}
+
   template <typename... Args>
-  constexpr void operator()(const std::format_string<Args...>& format, Args&&... args) const {
-    spdlog::error(format, std::forward<Args>(args)...);
-    throw std::runtime_error(std::format("{}:{}: {}: Got runtime error", make_sane_file_name(loc.file_name()), loc.line(), loc.function_name()));
+  [[noreturn]] void operator()(const std::format_string<Args...>& format, Args&&... args) const {
+    const std::string message = std::format(format, std::forward<Args>(args)...);
+    const std::string full_message = std::format(
+      "{}:{}: {}: {}",
+      make_sane_file_name(location.file_name()),
+      location.line(),
+      location.function_name(),
+      message
+    );
+    spdlog::error("{}", full_message);
+    throw std::runtime_error(full_message);
   }
 };
-
-//template <typename... Args>
-//void error(const std::format_string<Args...> &format, Args&&... args, std::source_location loc = std::source_location::current()) {
-//  spdlog::error(format, std::forward<Args>(args)...);
-//  throw std::runtime_error(std::format("{}:{}: {}: Got runtime error", make_sane_file_name(loc.file_name()), loc.line(), loc.function_name()));
-//}
 
 template <typename... Args>
 constexpr void info(const std::format_string<Args...> &format, Args&&... args) {
@@ -58,46 +60,6 @@ constexpr void warn(const std::format_string<Args...> &format, Args&&... args) {
   spdlog::warn(format, std::forward<Args>(args)...);
 }
 
-template <typename... Args>
-void assertf(const bool cond, const std::format_string<Args...> &format, Args&&... args) {
-  if (!cond) {
-    spdlog::error(format, std::forward<Args>(args)...);
-    throw std::runtime_error("Assertion failed");
-  }
-}
-
-template <typename... Args>
-void assertf_failed_detail(
-  const std::string_view &cond_str,
-  const std::string_view &file_name,
-  const std::string_view &func_name,
-  const size_t line,
-  const std::format_string<Args...> &format,
-  Args&&... args
-) {
-  spdlog::error("{}:{}: {}: Assertion `{}` failed", make_sane_file_name(file_name), line, func_name, cond_str);
-  spdlog::info(format, std::forward<Args>(args)...);
-  throw std::runtime_error("Assertion failed");
-}
-
-void assert_failed_detail(
-  const std::string_view &cond_str,
-  const std::string_view &file_name,
-  const std::string_view &func_name,
-  const size_t line
-);
-
-void assert_failed_detail(
-  const std::string_view &cond_str,
-  const std::string_view &file_name,
-  const std::string_view &func_name,
-  const size_t line,
-  const std::string_view &comm
-);
-
-#   define utils_assertf(cond, fmt, ...) {if (!(cond)) {devils_engine::utils::assertf_failed_detail(#cond, __FILE__, utils_pretty_function, __LINE__, fmt, __VA_ARGS__);}}
-#   define utils_assert(cond) {if (!(cond)) {devils_engine::utils::assert_failed_detail(#cond, __FILE__, utils_pretty_function, __LINE__);}}
-#   define utils_assertc(cond, comm) {if (!(cond)) {devils_engine::utils::assert_failed_detail(#cond, __FILE__, utils_pretty_function, __LINE__, comm);}}
 
 template <typename T>
 constexpr const T& max(const T &a) { return a; }
@@ -181,7 +143,7 @@ void println(Args&&... args) {
 
 class tracer {
 public:
-  std::source_location l;
+  std::source_location location;
 
   tracer(std::source_location loc = std::source_location::current()) noexcept;
   ~tracer() noexcept;
@@ -191,14 +153,6 @@ public:
   tracer & operator=(const tracer &copy) noexcept = delete;
   tracer & operator=(tracer &&move) noexcept = delete;
 };
-
-#ifdef DEBUGTRACE
-#define DS_TRACEOBJ devils_engine::utils::tracer __trace_obj;
-#else
-#define DS_TRACEOBJ
-#endif
-
-#define FORCE_DS_TRACEOBJ devils_engine::utils::tracer __trace_obj;
 
 template <typename T>
 constexpr size_t count_significant(T v) {

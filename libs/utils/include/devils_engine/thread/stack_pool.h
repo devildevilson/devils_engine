@@ -13,7 +13,7 @@ namespace devils_engine {
 namespace thread {
 
 // решаем проблемный кейс связанный с std function
-// гарантируем что не будем вызывать выделение памяти 
+// гарантируем что не будем вызывать выделение памяти
 // (аргументы мы все равно можем захотеть передать как значение)
 // сложность только одна: правильно выбрать размер стака
 // неидеальное решение ... какое решение лучше?
@@ -136,7 +136,7 @@ public:
   size_t busy_workers_count() const noexcept;
 private:
   mutable std::mutex mutex;
-  utils::stack_allocator stack; // все равно желательно ринг буфер 
+  utils::stack_allocator stack; // все равно желательно ринг буфер
   std::queue<arbitrary_job*> queue;
   std::vector<std::thread> workers;
   std::condition_variable condition;

@@ -17,7 +17,7 @@ namespace devils_engine {
       vk::DescriptorPool create(const std::string &name = "");
     protected:
       vk::DescriptorPoolCreateFlags f;
-      
+
       vk::Device device;
       std::vector<vk::DescriptorPoolSize> sizes;
     };
@@ -51,7 +51,7 @@ namespace devils_engine {
       descriptor_set_updater & begin(const uint32_t binding, const uint32_t arrayElement, vk::DescriptorType type);
 
       descriptor_set_updater & image(vk::ImageView image, const vk::ImageLayout layout, vk::Sampler sampler = vk::Sampler(nullptr));
-      
+
       descriptor_set_updater & sampler(vk::Sampler sampler);
 
       descriptor_set_updater & buffer(vk::Buffer buffer, const size_t offset = 0, const size_t size = VK_WHOLE_SIZE);
@@ -59,8 +59,8 @@ namespace devils_engine {
 
       descriptor_set_updater & texelBuffer(vk::BufferView buffer);
 
-      descriptor_set_updater & copy(vk::DescriptorSet srcSet, const uint32_t srcBinding, const uint32_t srcArrayElement, 
-                                    vk::DescriptorSet dstSet, const uint32_t dstBinding, const uint32_t dstArrayElement, 
+      descriptor_set_updater & copy(vk::DescriptorSet srcSet, const uint32_t srcBinding, const uint32_t srcArrayElement,
+                                    vk::DescriptorSet dstSet, const uint32_t dstBinding, const uint32_t dstArrayElement,
                                     const uint32_t count);
 
       void update();
@@ -71,7 +71,7 @@ namespace devils_engine {
         std::vector<vk::DescriptorImageInfo> images;
         std::vector<vk::BufferView> bufferViews;
       };
-      
+
       std::vector<Write> writes;
       std::vector<vk::WriteDescriptorSet> infos;
       std::vector<vk::CopyDescriptorSet> copies;
@@ -79,16 +79,16 @@ namespace devils_engine {
       vk::DescriptorSet current;
       vk::Device device;
     };
-    
+
     class framebuffer_maker {
     public:
       framebuffer_maker(vk::Device device);
-      
+
       framebuffer_maker & renderpass(vk::RenderPass pass);
       framebuffer_maker & addAttachment(vk::ImageView view);
       framebuffer_maker & dimensions(const uint32_t width, const uint32_t height);
       framebuffer_maker & layers(const uint32_t layerCount);
-      
+
       vk::Framebuffer create(const std::string &name);
     protected:
       vk::RenderPass pass;
@@ -96,7 +96,7 @@ namespace devils_engine {
       uint32_t width;
       uint32_t height;
       uint32_t layerCount;
-      
+
       vk::Device device;
     };
 
@@ -201,7 +201,7 @@ namespace devils_engine {
       pipeline_maker & dstAlpha(const vk::BlendFactor value);
       pipeline_maker & alphaOp(const vk::BlendOp value);
       pipeline_maker & colorWriteMask(const vk::ColorComponentFlags flags = DEFAULT_COLOR_WRITE_MASK);
-  
+
       vk::GraphicsPipelineCreateInfo get_info(
         vk::PipelineLayout layout,
         vk::RenderPass renderPass,
@@ -209,7 +209,7 @@ namespace devils_engine {
         vk::Pipeline base = vk::Pipeline(nullptr),
         const int32_t baseIndex = -1
       );
-      
+
       vk::Pipeline create(
         const std::string &name,
         vk::PipelineCache cache,
@@ -251,23 +251,23 @@ namespace devils_engine {
       std::vector<vk::PipelineColorBlendAttachmentState> colorBlends;
       std::vector<vk::DynamicState> dynStates;
     };
-    
+
     class compute_pipeline_maker {
     public:
       compute_pipeline_maker(vk::Device device);
-      
+
       //compute_pipeline_maker & shader(const VkShaderStageFlagBits &flag, const std::string &path, const char* name = nullptr);
       compute_pipeline_maker & shader(const vk::ShaderModule module, const char* name = nullptr);
       compute_pipeline_maker & addSpecializationEntry(const uint32_t constantID, const uint32_t offset, const size_t size);
       compute_pipeline_maker & addData(const size_t size, void* data);
-      
+
       vk::Pipeline create(const std::string &name,
                       vk::PipelineLayout layout,
                       vk::Pipeline base = vk::Pipeline(nullptr),
                       const int32_t baseIndex = -1);
     protected:
       vk::Device device = nullptr;
-      
+
       size_t dataSize = 0;
       void* data = nullptr;
       vk::PipelineShaderStageCreateInfo shaderInfo;
@@ -311,14 +311,14 @@ namespace devils_engine {
       struct subpass_description {
         vk::SubpassDescriptionFlags flags;
         vk::PipelineBindPoint pipelineBindPoint;
-        
+
         std::vector<vk::AttachmentReference> input; // уникальный
         std::vector<vk::AttachmentReference> color;
         std::vector<vk::AttachmentReference> resolve;
         vk::AttachmentReference stensil = {0, {}};
         std::vector<uint32_t> preservedAttachments;
       };
-      
+
       vk::Device device;
       std::vector<vk::AttachmentDescription> attachments;
       std::vector<vk::SubpassDependency> dependencies;
@@ -343,9 +343,9 @@ namespace devils_engine {
         uint32_t count;
         vk::QueueFlags flags;
       };
-      
+
       bool printExtensionInfo;
-      
+
       vk::Instance inst;
       vk::PhysicalDevice phys;
 

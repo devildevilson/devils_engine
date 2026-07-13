@@ -623,33 +623,33 @@ namespace devils_engine {
     constexpr bool is_std_function_v = detail::function_traits_v2<T>::is_std_function;
 
     template <typename Container>
-    struct is_container : std::false_type {};
+    struct is_container : public std::false_type {};
     template <typename... Ts>
-    struct is_container<std::array<Ts...>> : std::true_type {};
+    struct is_container<std::array<Ts...>> : public std::true_type {};
     template <typename... Ts>
-    struct is_container<std::span<Ts...>> : std::true_type {};
+    struct is_container<std::span<Ts...>> : public std::true_type {};
     template <typename T, size_t N>
-    struct is_container<std::array<T, N>> : std::true_type {};
+    struct is_container<std::array<T, N>> : public std::true_type {};
     template <typename T, size_t N>
-    struct is_container<std::span<T, N>> : std::true_type {};
+    struct is_container<std::span<T, N>> : public std::true_type {};
     template <typename... Ts>
-    struct is_container<std::vector<Ts...>> : std::true_type {};
+    struct is_container<std::vector<Ts...>> : public std::true_type {};
     template <typename... Ts>
-    struct is_container<std::list<Ts...>> : std::true_type {};
+    struct is_container<std::list<Ts...>> : public std::true_type {};
     template <typename... Ts>
-    struct is_container<std::unordered_set<Ts...>> : std::true_type {};
+    struct is_container<std::unordered_set<Ts...>> : public std::true_type {};
     template <typename... Ts>
-    struct is_container<std::set<Ts...>> : std::true_type {};
+    struct is_container<std::set<Ts...>> : public std::true_type {};
 
     template <typename... Ts>
     constexpr bool is_container_v = is_container<Ts...>::value;
 
     template <typename Container>
-    struct is_map : std::false_type {};
+    struct is_map : public std::false_type {};
     template <typename... Ts>
-    struct is_map<std::unordered_map<Ts...>> : std::true_type {};
+    struct is_map<std::unordered_map<Ts...>> : public std::true_type {};
     template <typename... Ts>
-    struct is_map<std::map<Ts...>> : std::true_type {};
+    struct is_map<std::map<Ts...>> : public std::true_type {};
 
     template <typename... Ts>
     constexpr bool is_map_v = is_map<Ts...>::value;
