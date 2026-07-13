@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/simul/game_host.h>
@@ -49,9 +50,11 @@ public:
   devils_engine::demiurg::resource_system* asset_registry();  // реестр ассетов (шрифты/сцена/скрипты)
   void begin_project_loading();                               // проектная сцена (текстуры/звуки/чанки/актёры)
   bool project_loading_complete() const;                      // все mock-чанки применены
+  std::pair<std::size_t, std::size_t> project_loading_progress() const; // вклад чанков {done,total} в прогресс
   void start_project_ui();                                    // визаж + lua-биндинги + entry (движковый split — шаг 3)
   void on_framebuffer_resize(uint32_t w, uint32_t h);         // cam.aspect от живого размера
-  void update_gameplay(size_t time, uint64_t game_dt_ticks);  // середина кадра (тайлы/актёры/звук/метрики)
+  void update_gameplay(size_t time, uint64_t game_dt_ticks,
+                       const devils_engine::simul::phase_gate& gate); // середина кадра (тайлы/актёры/звук/метрики)
   void on_visage_before_update();                             // tf_* env + слияние sound_state перед visage
   void project_settings_reloaded();                           // проектная реакция на reload настроек
 

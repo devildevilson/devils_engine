@@ -235,6 +235,9 @@ void install_app_lifecycle_bindings(sol::table app, Host& host) {
   app.set_function("request_state", [hptr](const std::string& id) -> bool {
     return hptr->request_runtime_state(id);
   });
+  app.set_function("loading_progress", [hptr]() -> double {
+    return hptr->loading_progress();
+  });
   app.set_function("set_paused", [hptr](const bool value) {
     hptr->state().pause.set_world(value);
   });

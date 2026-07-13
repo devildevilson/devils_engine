@@ -3,6 +3,8 @@
 
 #include <cstdint>
 
+#include "lifecycle.h" // app_state — источник ворот фаз
+
 namespace devils_engine {
 namespace simul {
 
@@ -37,6 +39,26 @@ public:
 private:
   uint8_t mask_ = 0;
 };
+
+// Ворота фаз кадра, вычисляемые движком из (app_state, pause_state). Проектные системы НЕ
+// пересчитывают `phase==game && !paused(...)` у себя — они получают уже готовое решение от host:
+//   in_game          — фаза game (мировая презентация: карта/сцена рисуется независимо от паузы);
+//   run_gameplay     — game И gameplay не на паузе (мутирующие sim-фазы: мышление/движение/эффекты);
+//   run_presentation — game И presentation не на паузе (world-анимации; UI идёт всегда, вне ворот).
+struct phase_gate {
+  bool in_game = false;
+  bool run_gameplay = false;
+  bool run_presentation = false;
+};
+
+inline phase_gate compute_phase_gate(const app_state phase, const pause_state& pause) noexcept {
+  const bool in_game = phase == app_state::game;
+  return phase_gate{
+    in_game,
+    in_game && !pause.paused(pause_domain::gameplay),
+    in_game && !pause.paused(pause_domain::presentation),
+  };
+}
 
 } // namespace simul
 } // namespace devils_engine

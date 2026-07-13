@@ -173,24 +173,6 @@ struct simulation_init : public simul::standard_loading_state {
   simulation_init() : window(nullptr), monitor(nullptr) {}
 };
 
-// Прогресс загрузки стартового набора [0,1]: доля usable()-ресурсов + применённых mock-чанков.
-// main держит resource_ref на стартовый набор, поэтому прогресс считается локально (без публикации
-// из ассетов — см. водораздел; ассетный push-слепок оставлен на будущее).
-static double loading_progress(const simulation_init& c) {
-  const size_t total = c.startup_resources.size() + c.chunks_loaded.size();
-  if (total == 0) {
-    return 1.0;
-  }
-  size_t done = c.chunks_loaded_count;
-  for (const auto& ref : c.startup_resources) {
-    auto* r = ref.get();
-    if (r != nullptr && r->usable()) {
-      ++done;
-    }
-  }
-  return double(done) / double(total);
-}
-
 simulation::simulation(runtime_bootstrap* boot) noexcept
   : simul::game_host<simulation, runtime_bootstrap, ::tile_frontier::core::broker>(boot, main_frame_time) {}
 
@@ -331,12 +313,7 @@ void simulation::start_project_ui() {
     simul::install_image_lua_binding(app, c);
     simul::install_app_lifecycle_bindings(app, *this);
 
-    // Проектный биндинг: прогресс загрузки (зависит от чанков мира — считается локально в проекте).
-    app.set_function("loading_progress", [cptr]() -> double {
-      return loading_progress(*cptr);
-    });
-
-    // perf-статистика фаз апдейта актора (catalogue). Актор-сим и UI — один поток, читаем напрямую.
+    // Проектный биндинг: perf-статистика фаз апдейта актора (catalogue). Актор-сим и UI — один поток, читаем напрямую.
     // Возвращает массив { name, avg, min, max, last, count, samples={...} }; samples — последние
     // замеры в хроно-порядке (для nk.plot). Round-trip значений в lua при 20fps main дешёв (~1%),
     // отдельного C++-пути рисования не нужно.
@@ -400,12 +377,13 @@ void simulation::begin_project_loading() {
     const auto tex_handle = c.assets_sim->resources()->handle(res_id);
     if (tex_handle.get<painter::gpu_texture_resource>() != nullptr) {
       // Временный mock-scene manifest: scene-ресурсы видимы UI сразу, readiness проверяет сам UI.
-      c.pending_ui_scope->grant(tex_handle);
+      // Без render — только grant (грузить/трекать нечего); с render — движковый request_scene_resource
+      // (grant + load до hot + добавить в startup allowlist перехода loading→game).
       if (systems().render) {
-        const resource_ref ref = resource_ref::from_handle(tex_handle);
-        c.br->load_resource.try_push(command_load_resource{ref, static_cast<int32_t>(demiurg::state::hot)});
-        c.startup_resources.push_back(ref);
+        simul::request_scene_resource(c, *c.br, tex_handle, static_cast<int32_t>(demiurg::state::hot), true);
         DE_LOG(catalogue::log_domain::resource, flow, "main: requested texture '{}' -> hot", res_id);
+      } else {
+        c.pending_ui_scope->grant(tex_handle);
       }
     } else {
       utils::warn("main: texture resource '{}' not found in registry", res_id);
@@ -424,9 +402,8 @@ void simulation::begin_project_loading() {
       utils::warn("main: sound resource '{}' not found in registry", res_id);
       continue;
     }
-    c.pending_ui_scope->grant(snd_handle);
-    c.br->load_resource.try_push(command_load_resource{
-      resource_ref::from_handle(snd_handle), static_cast<int32_t>(demiurg::state::warm)});
+    // Звуки грузим до warm (CPU-декод), без трекинга в startup allowlist (не блокируют переход в game).
+    simul::request_scene_resource(c, *c.br, snd_handle, static_cast<int32_t>(demiurg::state::warm), false);
     c.sound_by_name.emplace(utils::string_hash(name), snd_handle);
   }
   DE_LOG(catalogue::log_domain::resource, flow, "main: requested {} sounds -> warm", c.sound_by_name.size());
@@ -546,10 +523,16 @@ bool simulation::project_loading_complete() const {
   return c.chunks_loaded_count == c.chunks_loaded.size();
 }
 
+// Вклад проекта в общий прогресс загрузки: mock-чанки мира (движок добавит долю startup-ресурсов).
+std::pair<std::size_t, std::size_t> simulation::project_loading_progress() const {
+  const auto& c = state();
+  return {c.chunks_loaded_count, c.chunks_loaded.size()};
+}
+
 // update_gameplay — середина кадра. Движковый game_host уже сделал lifecycle tick, часы (pause/advance),
 // begin_main_frame (окно/ввод/ресайз) и передал масштабированную дельту game-часов game_delta_ticks;
 // run_visage_frame он вызовет после. Внутренние проверки фазы/паузы пока остаются здесь (шаг 4 их вынесет).
-void simulation::update_gameplay(const size_t time, const uint64_t game_delta_ticks) {
+void simulation::update_gameplay(const size_t time, const uint64_t game_delta_ticks, const simul::phase_gate& gate) {
   auto& c = state();
 
   // Демо п.2/п.3: периодически переключаем активный render graph graph<->menu_graph, чтобы проверить
@@ -700,10 +683,10 @@ void simulation::update_gameplay(const size_t time, const uint64_t game_delta_ti
       }
     }
 
-    // Тайлы карты публикуем ТОЛЬКО в game (шаг 3d): на splash/loading карта не рисуется, поэтому
-    // ничего не мигает и null-текстуры не вылезают (стартовый набор уже usable() к моменту game).
+    // Тайлы карты публикуем ТОЛЬКО в game (ворота от движка): на splash/loading карта не рисуется,
+    // поэтому ничего не мигает и null-текстуры не вылезают (стартовый набор уже usable() к моменту game).
     // Срез сетки строим тут же (только когда реально публикуем — не тратим CPU на splash/loading).
-    if (c.lifecycle.phase() == simul::app_state::game && systems().render && c.br) {
+    if (gate.in_game && systems().render && c.br) {
       const tile_span span = visible_tiles(c.cam, c.grid, 1.0f);
       c.batch.build(c.grid, span, c.textures);
 
@@ -726,9 +709,8 @@ void simulation::update_gameplay(const size_t time, const uint64_t game_delta_ti
   }
 
   // --- actor simulation slice: simple AI -> move intents -> aesthetics components -> GPU batch ---
-  // Только в game (шаг 3d): на splash/loading акторов не считаем и не публикуем.
-  if (c.lifecycle.phase() == simul::app_state::game &&
-      !c.pause.paused(simul::pause_domain::gameplay) && c.actors_batch.valid()) {
+  // Мутирующая gameplay-фаза: только когда движок открыл ворота run_gameplay (game И не на паузе).
+  if (gate.run_gameplay && c.actors_batch.valid()) {
     const auto t0 = std::chrono::steady_clock::now();
     c.actors_last_metrics = c.actors.update(
       float(game_delta_ticks) / float(utils::global_time_resolution),

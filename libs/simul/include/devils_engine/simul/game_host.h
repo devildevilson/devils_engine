@@ -124,9 +124,10 @@ public:
   void host_update(const size_t time) {
     auto& c = derived().state();
     c.lifecycle.update(*this, time);
-    const bool outside_game = c.lifecycle.phase() != app_state::game;
-    c.clocks.set_game_paused(outside_game || c.pause.paused(pause_domain::gameplay));
-    c.clocks.set_presentation_paused(outside_game || c.pause.paused(pause_domain::presentation));
+    // Движок централизованно решает ворота фаз (game/pause) — проект их не пересчитывает.
+    const phase_gate gate = compute_phase_gate(c.lifecycle.phase(), c.pause);
+    c.clocks.set_game_paused(!gate.run_gameplay);
+    c.clocks.set_presentation_paused(!gate.run_presentation);
     const auto game_before = c.clocks.game_now();
     c.clocks.advance(time);
     const uint64_t game_dt = c.clocks.game_now().ticks - game_before.ticks;
@@ -134,7 +135,7 @@ public:
     begin_main_frame(c, time, systems_.sound, systems_.render,
                      [this](const uint32_t w, const uint32_t h) { derived().on_framebuffer_resize(w, h); });
 
-    derived().update_gameplay(time, game_dt);
+    derived().update_gameplay(time, game_dt, gate);
 
     run_visage_frame(c, time, systems_.render, [this]() { derived().on_visage_before_update(); });
   }
@@ -171,6 +172,25 @@ public:
   }
   void on_lifecycle_leave(const app_state phase) {
     DE_LOG(catalogue::log_domain::main, flow, "lifecycle: leave {}", simul::to_string(phase));
+  }
+
+  // Прогресс загрузки [0,1] для UI: доля usable() стартового allowlist + проектный вклад
+  // (напр. mock-чанки) через хук project_loading_progress() -> {done, total}.
+  double loading_progress() const {
+    const auto& c = derived().state();
+    const std::pair<size_t, size_t> project = derived().project_loading_progress();
+    const size_t total = c.startup_resources.size() + project.second;
+    if (total == 0) {
+      return 1.0;
+    }
+    size_t done = project.first;
+    for (const auto& ref : c.startup_resources) {
+      auto* r = ref.get();
+      if (r != nullptr && r->usable()) {
+        ++done;
+      }
+    }
+    return double(done) / double(total);
   }
 
   // game→loading по смене runtime-состояния (из UI-биндинга). target резолвится из assets-реестра.
