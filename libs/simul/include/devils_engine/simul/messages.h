@@ -18,6 +18,14 @@ struct GLFWmonitor;
 namespace devils_engine {
 namespace simul {
 
+// Уникальный монотонный id задачи НА КАЖДЫЙ вызов (не actor/type id). Broker-консьюмеры
+// (напр. sound::system2) дедуплицируют задачи по нему, поэтому всем сообщениям нужен монотонный
+// источник; счётчик atomic, т.к. id раздают sim/main потоки.
+inline size_t generate_task_id() noexcept {
+  static std::atomic<size_t> counter{0};
+  return counter.fetch_add(1, std::memory_order_relaxed);
+}
+
 struct resource_ref {
   demiurg::resource_handle handle;
   demiurg::resource_interface* direct = nullptr;
