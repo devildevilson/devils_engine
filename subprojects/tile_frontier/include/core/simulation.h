@@ -11,12 +11,6 @@
 #include <devils_engine/simul/lifecycle.h>
 #include <devils_engine/simul/standard_sound_system.h>
 
-/*
-что тут? тут мы наверное хотим определить систему которую запустим в main.cpp
-для этой системы будет определен actor_ref и где то он должен быть глобально доступен
-как же это все соединить
-*/
-
 namespace tile_frontier {
 namespace core {
 

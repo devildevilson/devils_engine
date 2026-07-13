@@ -25,7 +25,6 @@ set(HDR_LIST
   include/devils_engine/demiurg/module_interface.h 
   include/devils_engine/demiurg/folder_module.h 
   include/devils_engine/demiurg/modules_listing.h
-  include/devils_engine/demiurg/settings.h 
   include/devils_engine/demiurg/zip_module.h
   include/devils_engine/demiurg/module_system.h
   "include/devils_engine/demiurg/resource_loader.h")

@@ -82,7 +82,7 @@ has_effect(fear) && enemy_is_nearby
 переход из одного битового состояния в другое. На выходе вызывающий код
 получает список `const action*` и сам решает, как его исполнять.
 
-В текущем `tests/tile_frontier` используется такая схема:
+В текущем `subprojects/tile_frontier` используется такая схема:
 
 ```text
 имя GOAP action -> id act-функции -> act::intent -> поздняя apply-фаза
@@ -195,7 +195,7 @@ caller-owned `astar<astar_data>::container` в `decide_params::scratch`.
 - поведение при заполненном бюджете кеша;
 - merge нескольких кешей.
 
-Первый крупный потребитель - `tests/tile_frontier/src/core/actor_simulation.cpp`.
+Первый крупный потребитель - `subprojects/tile_frontier/src/core/actor_simulation.cpp`.
 Там `acumen` работает как cognition-арбитр для акторов: predicate-функции
 описывают восприятие и внутреннее состояние, GOAP выбирает ближайшее
 высокоуровневое действие, а выбранное действие превращается в `act::intent` для

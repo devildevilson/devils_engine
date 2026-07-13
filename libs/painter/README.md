@@ -2,7 +2,7 @@
 
 `libs/painter` - основной слой отрисовки движка. Сейчас это Vulkan-обертка вокруг декларативного render graph, таблицы GPU-ассетов и набора низкоуровневых утилит для создания Vulkan-объектов. Библиотека должна позволять собрать несколько независимых `graphics_base` в разных местах приложения и запускать в них разные пайплайны, не завязывая весь рендер на один глобальный объект.
 
-Текущая реализация еще экспериментальная: часть старого кода осталась рядом с новым путем, а рабочий путь сейчас строится вокруг `graphics_base`, `render_config_storage`, `common_steps` и `assets_base`.
+Текущая реализация еще экспериментальная, но рабочий путь уже однозначно строится вокруг `graphics_base`, `render_config_storage`, `common_steps` и `assets_base`. Старые `painter::system`, `painter_base`/`execution_pass` и image-container прототипы перенесены в корневой `exclude/`.
 
 ## Основная идея
 
@@ -163,14 +163,14 @@ Descriptor pool сейчас считается по фактическому с
 - использовать pipeline cache и сохранять его обратно на диск;
 - подготавливать GLSL через shaderc с поддержкой demiurg include resolution.
 
-В `tests/tile_frontier` это уже используется для отрисовки тайлов, акторов, UI, загрузки текстур, подготовки шейдеров на assets-потоке и runtime-переключения между resident render graphs.
+В `subprojects/tile_frontier` это уже используется для отрисовки тайлов, акторов, UI, загрузки текстур, подготовки шейдеров на assets-потоке и runtime-переключения между resident render graphs.
 
 ## Техдолг И Направления
 
 - Дореализовать и проверить все draw/dispatch/transfer команды. Сейчас часть команд есть как заготовка, часть используется только в узком сценарии.
 - Разобрать queue model. Сейчас код фактически предполагает один основной `VkQueue`/queue family для graphics+transfer. Нужно поддержать отдельную transfer queue family, queue ownership transfers и fallback-бюджет загрузок, если доступна только одна очередь.
 - Убрать `vkQueueWaitIdle`/`vkDeviceWaitIdle` из lifecycle операций конкретного `graphics_base`. Сейчас `graphics_base::commit_parsed_resources()` вызывает `vk::Queue(graphics).waitIdle()` перед пересозданием runtime-ресурсов. Любое ожидание завершения работ, принадлежащих этому `graphics_base`, должно идти только через систему `VkFence` этого `graphics_base` (`wait_all_fences()`/ожидание frame fence), без остановки всей очереди или устройства.
-- Навести порядок после серии быстрых интеграционных правок: отделить живой `graphics_base` путь от старого `painter_base`/`execution_pass`, убрать мертвые include/source или явно пометить legacy.
+- ✅ Живой `graphics_base` путь отделён от старого `painter_base`/`execution_pass`: мёртвые renderer/image-container файлы перенесены в корневой `exclude/` (2026-07-13).
 - Стабилизировать внешний data model для проектов: описать минимальный набор `.tavl` сущностей, схемы валидации, ошибки и примеры без необходимости читать реализацию `structures.cpp`.
 - Улучшить модель освобождения GPU-ассетов. `unload_hot()` у mesh/texture ресурсов сейчас сбрасывает `gpu_index`, но полноценное освобождение слота через render API еще не завершено.
 - Довести device-local draw groups и GPU-generated indirect data до рабочего контура.

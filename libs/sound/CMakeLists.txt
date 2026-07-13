@@ -33,7 +33,6 @@ set(SRC_LIST
   src/sound/system.cpp
   src/sound/resource.cpp
   src/sound/sound_resource.cpp
-  #src/sound/basic_sources.cpp
 )
 
 set(HDR_LIST
@@ -46,9 +45,7 @@ set(HDR_LIST
   include/devils_engine/sound/pcm_decoder.h
   include/devils_engine/sound/decoder.h
   include/devils_engine/sound/system.h
-  include/devils_engine/sound/virtual_source.h 
   include/devils_engine/sound/resource.h 
-  include/devils_engine/sound/basic_sources.h
  "include/devils_engine/sound/common.h"
   include/devils_engine/sound/sound_resource.h)
 

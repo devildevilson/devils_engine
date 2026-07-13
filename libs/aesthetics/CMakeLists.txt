@@ -11,7 +11,6 @@ add_library(devils_aesthetics
   src/aesthetics/serialization.cpp
   src/aesthetics/sink.cpp
   include/devils_engine/aesthetics/common.h
-  include/devils_engine/aesthetics/simple_systems.h
   include/devils_engine/aesthetics/world.h
   include/devils_engine/aesthetics/serialization.h
   include/devils_engine/aesthetics/sink.h

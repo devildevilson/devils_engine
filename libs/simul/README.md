@@ -1,6 +1,6 @@
 # libs/simul
 
-`libs/simul` - заготовка общего слоя для крупных движковых симуляций, которые крутят вычисления в отдельных циклах и часто в отдельных потоках. Сейчас библиотека дает минимальный контракт `interface`/`advancer`, а большая часть реального actor-паттерна пока живет в `tests/tile_frontier`.
+`libs/simul` - общий app/runtime слой для крупных движковых симуляций, которые крутят вычисления в отдельных циклах и часто в отдельных потоках. Помимо `interface`/`advancer`, библиотека уже владеет стандартным broker-контрактом, lifecycle, optional worker topology, window/settings/loading/render/sound/assets runtime helpers; проект добавляет traits, локальные каналы и gameplay-фазы.
 
 Целевое назначение библиотеки - собрать в одном месте правила многопоточного взаимодействия больших подсистем: main/gameplay, assets, render, sound и будущие проектные симуляции.
 
@@ -142,26 +142,27 @@ script resource. Ресурсы активной scene добавляются в
 - останавливать цикл через `stop()`;
 - использовать один и тот же базовый класс для main, render, assets и sound симуляций в `tile_frontier`.
 
-Библиотека пока не содержит:
+Библиотека уже содержит общий broker, стандартные сообщения/системы,
+`app_runtime<Traits>` с владением `std::jthread`, optional render/sound topology,
+shutdown/join policy и общие window/settings/loading helpers. Пока не содержит:
 
-- общего broker;
-- описания каналов сообщений;
-- стандартного класса actor;
-- владения `std::jthread`;
-- схемы optional симуляций;
-- политики shutdown/join;
-- декларативного описания topology между симуляциями.
+- декларативного произвольного списка систем (runtime всё ещё знает фиксированные
+  main/render/assets/sound slots);
+- общего scheduler-а фаз над ECS view/query;
+- runtime-роста каналов и универсальной политики backpressure;
+- полностью независимого standalone CMake-контракта для всех header-only runtime
+  зависимостей вне корневого aggregate target.
 
 ## Техдолг И Направления
 
-- Перенести из `tile_frontier` общий broker/message topology в `libs/simul`, оставив проекту только свои типы сообщений и локальные каналы.
-- Описать базовый lifecycle: create broker, construct simulations, `init()`, wire channels, start threads, publish late platform events, stop, join, destroy platform resources.
-- Разделить движковые события и проектные расширения. Например, window/GLFW lifecycle должен быть частью движкового контракта, а не переписываться каждым проектом.
-- Добавить механизм optional simulations: render/sound/assets должны отключаться конфигом без поломки остальных подсистем.
+- ✅ Общий broker/message topology вынесен; проект наследует `standard_broker` и добавляет локальные каналы.
+- ✅ Базовый lifecycle create→wire→init→threads→stop/join и late window events вынесен в `app_runtime`/runtime helpers.
+- ✅ Window/GLFW lifecycle, live resize/fullscreen, loading и settings helpers вынесены; проектными остаются bindings/gameplay policy.
+- Optional simulations: render/sound уже отключаются без создания потоков; assets-флаг есть в boot config, но project factory пока всегда создаёт assets system.
 - Уточнить модель синхронизации `advancer`: сейчас `update()` выполняется под mutex, но межсимуляционное общение должно идти через lock-free channels/snapshots, а не через общий lock на тик.
-- Поддержать stop token / `std::jthread`-friendly API, чтобы остановка не зависела только от ручного `stop()`.
+- ✅ `stop_token` / `std::jthread`-friendly API используется `app_runtime`.
 - Формализовать бюджеты каналов и политику переполнения: latest-wins, reliable FIFO, lossy FIFO, payload arena.
-- Добавить базовые тесты на lifecycle, остановку, пропуск optional симуляций и delivery гарантий broker'а.
+- Базовые lifecycle/stop/optional тесты есть; расширить delivery/backpressure и partial-init/shutdown сценарии.
 - Решить, остается ли `advancer` владельцем timing loop или нужен отдельный scheduler, который управляет несколькими симуляциями единообразно.
 
 ## Design Note 2026-07-08: Runtime Bootstrap And Settings

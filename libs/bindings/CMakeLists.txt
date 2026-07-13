@@ -26,7 +26,6 @@ set(SRC_LIST
 
 set(HDR_LIST
   include/devils_engine/bindings/env.h
-  include/devils_engine/bindings/generic.h
   include/devils_engine/bindings/lua_header.h
   "include/devils_engine/bindings/nuklear_bindings.h"
 )

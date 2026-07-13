@@ -4,8 +4,6 @@
 #include "devils_engine/utils/string-utils.hpp"
 #include "devils_engine/utils/string_id.h" // utils::string_hash для резолва имён в act::registry
 #include "devils_engine/utils/prng.h"      // utils::mix — ключ хеш-индекса (state,event)
-#include "devils_engine/utils/patterns.h"
-
 #include <algorithm>
 #include <cctype>
 #include <array>

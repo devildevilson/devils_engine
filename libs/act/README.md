@@ -241,7 +241,7 @@ GOAP, FSM или script не обязаны мутировать мир сраз
 - payload;
 - `source_action` - provenance, то есть id действия, которое породило intent.
 
-В `tests/tile_frontier` GOAP выбирает `acumen::action`, затем первый action
+В `subprojects/tile_frontier` GOAP выбирает `acumen::action`, затем первый action
 плана превращается в `act::intent_kind::call_function`, сортируется по actor id
 и исполняется в apply-фазе через `registry_.effect(fn)`.
 
@@ -260,7 +260,7 @@ GOAP, FSM или script не обязаны мутировать мир сраз
 - FSM action резолвится в `effect_function`;
 - runtime step вызывает их через общий `exec_context`.
 
-`tests/tile_frontier` использует один `act::registry` для actor simulation:
+`subprojects/tile_frontier` использует один `act::registry` для actor simulation:
 
 - регистрирует perception predicates;
 - регистрирует effects вроде `flee`, `chase`, `eat`, `wander`;
