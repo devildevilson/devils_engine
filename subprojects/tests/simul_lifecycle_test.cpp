@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -5,6 +6,8 @@
 
 #include <devils_engine/demiurg/module_system.h>
 #include <devils_engine/demiurg/resource_system.h>
+#include <devils_engine/simul/app_runtime.h>
+#include <devils_engine/simul/boot_config.h>
 #include <devils_engine/simul/lifecycle.h>
 #include <devils_engine/simul/pause.h>
 #include <devils_engine/simul/startup_resources.h>
@@ -42,7 +45,122 @@ struct lifecycle_host {
   }
 };
 
+struct runtime_test_broker {};
+
+struct runtime_test_state {
+  std::vector<devils_engine::simul::runtime_stage> stages;
+  bool main_initialized = false;
+  bool worker_initialized = false;
+  bool worker_discovered = false;
+  bool optional_worker_absent = false;
+  bool workers_started = false;
+  std::atomic_size_t main_updates = 0;
+};
+
+struct runtime_test_bootstrap {
+  devils_engine::simul::engine_boot_config engine;
+  struct settings_type {} settings;
+  runtime_test_state state;
+};
+
+class runtime_test_worker : public devils_engine::simul::brokered_advancer<runtime_test_broker> {
+public:
+  explicit runtime_test_worker(runtime_test_state* state) : state_(state) {}
+
+  void init() override {
+    state_->worker_initialized = broker() != nullptr;
+  }
+  bool stop_predicate() const override {
+    return false;
+  }
+  void update(const size_t) override {}
+
+private:
+  runtime_test_state* state_;
+};
+
+class omitted_runtime_worker : public devils_engine::simul::brokered_advancer<runtime_test_broker> {
+public:
+  void init() override {}
+  bool stop_predicate() const override {
+    return false;
+  }
+  void update(const size_t) override {}
+};
+
+class runtime_test_main : public devils_engine::simul::main_system<runtime_test_broker> {
+public:
+  explicit runtime_test_main(runtime_test_bootstrap* boot) : boot_(boot) {}
+
+  void init() override {
+    auto& state = boot_->state;
+    state.main_initialized = broker() != nullptr;
+    state.worker_discovered = runtime_system<runtime_test_worker>() != nullptr;
+    state.optional_worker_absent = runtime_system<omitted_runtime_worker>() == nullptr;
+  }
+  bool stop_predicate() const override {
+    return stop_requested_;
+  }
+  void update(const size_t) override {
+    boot_->state.main_updates.fetch_add(1, std::memory_order_relaxed);
+  }
+  void workers_started() override {
+    boot_->state.workers_started = true;
+    stop_requested_ = true;
+  }
+  int exit_code() const noexcept override {
+    return 17;
+  }
+
+private:
+  runtime_test_bootstrap* boot_;
+  bool stop_requested_ = false;
+};
+
+struct runtime_test_traits {
+  using bootstrap_type = runtime_test_bootstrap;
+  using broker_type = runtime_test_broker;
+  using main_type = runtime_test_main;
+
+  static void init_bootstrap(bootstrap_type&) {}
+
+  static devils_engine::simul::worker_systems<broker_type> make_workers(bootstrap_type& boot) {
+    devils_engine::simul::worker_systems<broker_type> workers;
+    workers.add(std::make_unique<runtime_test_worker>(&boot.state));
+    return workers;
+  }
+
+  static void runtime_stage_changed(
+    const devils_engine::simul::runtime_stage stage,
+    devils_engine::simul::app_runtime<runtime_test_traits>& runtime) {
+    runtime.bootstrap()->state.stages.push_back(stage);
+  }
+};
+
 } // namespace
+
+TEST_CASE("app_runtime wires an extensible optional worker set") {
+  using devils_engine::simul::runtime_stage;
+
+  devils_engine::simul::app_runtime<runtime_test_traits> runtime;
+  CHECK(runtime.run() == 17);
+
+  const auto& state = runtime.bootstrap()->state;
+  CHECK(state.main_initialized);
+  CHECK(state.worker_initialized);
+  CHECK(state.worker_discovered);
+  CHECK(state.optional_worker_absent);
+  CHECK(state.workers_started);
+  CHECK(state.main_updates.load(std::memory_order_relaxed) == 0);
+  CHECK(state.stages == std::vector<runtime_stage>{
+                          runtime_stage::bootstrap_ready,
+                          runtime_stage::systems_created,
+                          runtime_stage::systems_initialized,
+                          runtime_stage::workers_started,
+                          runtime_stage::main_loop,
+                          runtime_stage::workers_stopped,
+                        });
+}
 
 TEST_CASE("pause_state keeps gameplay and presentation as independent engine domains") {
   using namespace devils_engine::simul;

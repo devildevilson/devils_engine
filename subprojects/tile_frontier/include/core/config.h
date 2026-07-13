@@ -32,6 +32,9 @@ struct simulation_config {
   // Тумблер звукового потока (топологическая настройка → требует перезапуска движка, как render.enabled).
   // Выключение освобождает зарезервированное ядро под worker-потоки (см. init).
   bool sound_enabled = true;
+  // Ассетный поток является частью топологии runtime. tile_frontier требует его для обычного
+  // gameplay boot, но app-shell корректно не создаёт объект/поток при выключенном флаге.
+  bool assets_enabled = true;
   uint32_t worker_threads_reserved = 4;
   uint32_t min_worker_threads = 1;
   uint32_t thread_start_gap_divisor = 4;

@@ -242,10 +242,6 @@ const simulation_init& simulation::state() const {
   return *container;
 }
 
-void simulation::set_broker(struct broker* b) {
-  simul::main_system<::tile_frontier::core::broker>::set_broker(b);
-}
-
 // Visage получает только шрифты из активного runtime state resources. К этому моменту assets loader
 // уже подготовил их метрики; main не запускает ресурсные переходы напрямую.
 static void setup_visage(simulation_init& c) {
@@ -279,10 +275,6 @@ static void setup_visage(simulation_init& c) {
   DE_LOG(catalogue::log_domain::ui, flow, "visage: system created (default font '{}', {} fonts total)", default_font_id, c.ui_fonts.size());
 }
 
-void runtime_traits::init_bootstrap(bootstrap_type& boot) {
-  simul::init_standard_bootstrap<app_config_resource>(boot);
-}
-
 void simulation::init() {
   if (bootstrap_ == nullptr) {
     utils::error{}("simulation: runtime_bootstrap is not set");
@@ -305,110 +297,43 @@ void simulation::init() {
     bootstrap_->settings.time.real_seconds));
   c.calendar = make_calendar_clock(bootstrap_->settings.time);
 
+  c.sound_sim = runtime_system<sound_simulation>();
+  c.render_sim = runtime_system<render_simulation>();
+  c.assets_sim = runtime_system<assets_simulation>();
+  systems.sound = c.sound_sim != nullptr;
+  systems.render = c.render_sim != nullptr;
+  systems.assets = c.assets_sim != nullptr;
+
   // стартовый размер фреймбуфера = размер из конфига (до создания окна); коллбэк ресайза уточнит.
   c.fb_width = std::max(bootstrap_->settings.window.width, 1u);
   c.fb_height = std::max(bootstrap_->settings.window.height, 1u);
 }
 
-std::unique_ptr<runtime_traits::bootstrap_type> runtime_traits::make_bootstrap() {
-  return std::make_unique<bootstrap_type>();
-}
-
-std::unique_ptr<runtime_traits::broker_type> runtime_traits::make_broker(bootstrap_type&) {
-  return std::make_unique<broker_type>();
-}
-
-std::unique_ptr<runtime_traits::main_type> runtime_traits::make_main(bootstrap_type& boot) {
-  return std::make_unique<main_type>(&boot);
-}
-
-std::unique_ptr<runtime_traits::sound_type> runtime_traits::make_sound(bootstrap_type& boot) {
-  const auto sound_ft = simul::frame_time_from_fps(boot.engine.sound_fps);
-  if (boot.engine.sound_enabled) {
-    return std::make_unique<sound_type>(sound_ft);
-  }
-  DE_LOG(catalogue::log_domain::main, flow, "main: sound disabled (sound_enabled=false), skipping sound subsystem");
-  return nullptr;
-}
-
-std::unique_ptr<runtime_traits::render_type> runtime_traits::make_render(bootstrap_type& boot) {
-  return simul::make_standard_render<render_type>(boot, "tile_frontier");
-}
-
-std::unique_ptr<runtime_traits::assets_type> runtime_traits::make_assets(bootstrap_type& boot) {
-  const auto assets_ft = simul::frame_time_from_fps(boot.engine.assets_fps);
-  return std::make_unique<assets_type>(assets_ft);
-}
-
-void runtime_traits::bind_systems(main_type& main, bootstrap_type&, sound_type* sound, render_type* render, assets_type* assets) {
-  main.bind_systems(sound, render, assets);
-}
-
-runtime_traits::boot_config_type& runtime_traits::boot_config(bootstrap_type& boot) noexcept {
-  return boot.engine;
-}
-
-runtime_traits::settings_type& runtime_traits::settings(bootstrap_type& boot) noexcept {
-  return boot.settings;
-}
-
-bool runtime_traits::save_settings(bootstrap_type& boot) {
-  return simul::save_settings(boot);
-}
-
-bool runtime_traits::reload_settings(bootstrap_type& boot) {
-  return simul::reload_settings(boot);
-}
-
-void runtime_traits::settings_reloaded(main_type& main, bootstrap_type& boot) {
-  simul::setup_logging(boot.settings.logging);
-  main.set_frame_time(simul::frame_time_from_fps(boot.engine.main_fps));
-  main.state().clocks.set_game_scale(utils::game_time_scale::from_seconds(
-    boot.settings.time.game_seconds,
-    boot.settings.time.real_seconds));
-  // calendar source/policy — проектная топология: runtime reload намеренно её не заменяет.
-}
-
-void runtime_traits::after_workers_started(main_type& main) {
-  main.after_workers_started();
-}
-
-size_t runtime_traits::main_wait_mcs(const main_type&) {
-  return 0;
-}
-
-size_t runtime_traits::sound_wait_mcs(const bootstrap_type& boot, const sound_type& sound) {
-  return simul::thread_start_gap(sound.frame_time(), boot.engine.thread_start_gap_divisor);
-}
-
-size_t runtime_traits::render_wait_mcs(const bootstrap_type& boot, const render_type& render) {
-  return simul::thread_start_gap(render.frame_time(), boot.engine.thread_start_gap_divisor);
-}
-
-size_t runtime_traits::assets_wait_mcs(const bootstrap_type& boot, const assets_type& assets) {
-  return simul::thread_start_gap(assets.frame_time(), boot.engine.thread_start_gap_divisor);
-}
-
-int runtime_traits::exit_code(const main_type& main) {
-  return main.exit_code();
-}
-
-void simulation::bind_systems(sound_simulation* sound, render_simulation* render, assets_simulation* assets) {
-  auto& c = state();
-  c.sound_sim = sound;
-  c.render_sim = render;
-  c.assets_sim = assets;
-  systems.sound = sound != nullptr;
-  systems.render = render != nullptr;
-  systems.assets = assets != nullptr;
+simul::worker_systems<runtime_traits::broker_type> runtime_traits::make_workers(bootstrap_type& boot) {
+  return simul::make_standard_workers<render_simulation, assets_simulation, sound_simulation>(boot, "tile_frontier");
 }
 
 int simulation::exit_code() const noexcept {
-  return 0;
+  return app_exit_code;
 }
 
-void simulation::after_workers_started() {
+void simulation::workers_started() {
+  if (!systems.assets) {
+    utils::warn("tile_frontier: assets subsystem is disabled, but gameplay boot requires it");
+    app_exit_code = 1;
+    quit_requested.store(true, std::memory_order_release);
+    return;
+  }
   state().lifecycle.start(*this);
+}
+
+void simulation::runtime_settings_reloaded() {
+  simul::setup_logging(bootstrap_->settings.logging);
+  set_frame_time(simul::frame_time_from_fps(bootstrap_->engine.main_fps));
+  state().clocks.set_game_scale(utils::game_time_scale::from_seconds(
+    bootstrap_->settings.time.game_seconds,
+    bootstrap_->settings.time.real_seconds));
+  // calendar source/policy — проектная топология: runtime reload намеренно её не заменяет.
 }
 
 void simulation::on_lifecycle_enter(const simul::app_state phase) {
