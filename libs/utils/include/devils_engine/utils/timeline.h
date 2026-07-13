@@ -1,10 +1,13 @@
 #ifndef DEVILS_ENGINE_UTILS_TIMELINE_H
 #define DEVILS_ENGINE_UTILS_TIMELINE_H
 
+#include <algorithm>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -13,7 +16,7 @@ namespace utils {
 
 inline constexpr uint64_t timeline_ticks_per_second = UINT64_C(1000000); // microseconds
 
-enum class clock_domain : uint8_t { engine, presentation, game };
+enum class clock_domain : uint8_t { engine, presentation, game, calendar };
 
 template <clock_domain Domain>
 struct basic_timestamp {
@@ -40,9 +43,11 @@ struct basic_duration {
 using engine_timestamp = basic_timestamp<clock_domain::engine>;
 using presentation_timestamp = basic_timestamp<clock_domain::presentation>;
 using game_timestamp = basic_timestamp<clock_domain::game>;
+using calendar_timestamp = basic_timestamp<clock_domain::calendar>;
 using engine_duration = basic_duration<clock_domain::engine>;
 using presentation_duration = basic_duration<clock_domain::presentation>;
 using game_duration = basic_duration<clock_domain::game>;
+using calendar_duration = basic_duration<clock_domain::calendar>;
 
 template <clock_domain Domain>
 constexpr basic_timestamp<Domain> operator+(const basic_timestamp<Domain> t, const basic_duration<Domain> d) noexcept {
@@ -58,6 +63,7 @@ struct basic_deadline {
 using engine_deadline = basic_deadline<clock_domain::engine>;
 using presentation_deadline = basic_deadline<clock_domain::presentation>;
 using game_deadline = basic_deadline<clock_domain::game>;
+using calendar_deadline = basic_deadline<clock_domain::calendar>;
 
 // Nominal project mapping between user/engine durations and in-world durations. Config convention:
 // an unqualified duration is an engine/nominal-real duration; gameplay loaders convert it here,
@@ -163,7 +169,7 @@ private:
   bool presentation_paused_ = false;
 };
 
-struct game_time_parts {
+struct calendar_time_parts {
   uint64_t absolute_day = 0;
   uint32_t hour = 0;
   uint32_t minute = 0;
@@ -171,7 +177,9 @@ struct game_time_parts {
   uint32_t subsecond_ticks = 0;
 };
 
-struct calendar_fields : game_time_parts {
+using game_time_parts = calendar_time_parts; // compatibility name; new code should use calendar_time_parts
+
+struct calendar_fields : calendar_time_parts {
   // year начинается с 0; month/day — с 1. has_calendar=false означает, что проект использует
   // только absolute_day и/или time-of-day и не задавал месяцы.
   uint64_t year = 0;
@@ -194,14 +202,18 @@ public:
 
   uint32_t hours_per_day() const noexcept { return hours_per_day_; }
   uint32_t months_per_year() const noexcept { return static_cast<uint32_t>(days_in_month_.size()); }
+  uint32_t days_in_month(const uint32_t month) const {
+    if (month == 0 || month > days_in_month_.size()) throw std::out_of_range("calendar_policy: invalid month");
+    return days_in_month_[month - 1];
+  }
   uint64_t seconds_per_day() const noexcept { return uint64_t(hours_per_day_) * 60u * 60u; }
   uint64_t days_per_year() const noexcept { return days_per_year_; }
   bool has_calendar() const noexcept { return !days_in_month_.empty(); }
 
-  game_time_parts split(const game_timestamp stamp) const noexcept {
+  calendar_time_parts split(const calendar_timestamp stamp) const noexcept {
     const uint64_t whole_seconds = stamp.ticks / timeline_ticks_per_second;
     uint64_t in_day = whole_seconds % seconds_per_day();
-    game_time_parts out;
+    calendar_time_parts out;
     out.absolute_day = whole_seconds / seconds_per_day();
     out.hour = static_cast<uint32_t>(in_day / 3600u);
     in_day %= 3600u;
@@ -211,10 +223,10 @@ public:
     return out;
   }
 
-  calendar_fields project(const game_timestamp stamp) const noexcept {
+  calendar_fields project(const calendar_timestamp stamp) const noexcept {
     const auto parts = split(stamp);
     calendar_fields out;
-    static_cast<game_time_parts&>(out) = parts;
+    static_cast<calendar_time_parts&>(out) = parts;
     if (!has_calendar()) return out;
 
     out.has_calendar = true;
@@ -231,18 +243,18 @@ public:
     return out;
   }
 
-  game_timestamp compose(const uint64_t absolute_day, const uint32_t hour = 0,
-                         const uint32_t minute = 0, const uint32_t second = 0,
-                         const uint32_t subsecond_ticks = 0) const {
+  calendar_timestamp compose(const uint64_t absolute_day, const uint32_t hour = 0,
+                             const uint32_t minute = 0, const uint32_t second = 0,
+                             const uint32_t subsecond_ticks = 0) const {
     validate_time(hour, minute, second, subsecond_ticks);
     const uint64_t whole_seconds = absolute_day * seconds_per_day() +
       uint64_t(hour) * 3600u + uint64_t(minute) * 60u + second;
     return {whole_seconds * timeline_ticks_per_second + subsecond_ticks};
   }
 
-  game_timestamp compose_calendar(const uint64_t year, const uint32_t month, const uint32_t day,
-                                  const uint32_t hour = 0, const uint32_t minute = 0,
-                                  const uint32_t second = 0, const uint32_t subsecond_ticks = 0) const {
+  calendar_timestamp compose_calendar(const uint64_t year, const uint32_t month, const uint32_t day,
+                                      const uint32_t hour = 0, const uint32_t minute = 0,
+                                      const uint32_t second = 0, const uint32_t subsecond_ticks = 0) const {
     if (!has_calendar()) throw std::logic_error("calendar_policy: no months configured");
     if (month == 0 || month > days_in_month_.size()) throw std::out_of_range("calendar_policy: invalid month");
     if (day == 0 || day > days_in_month_[month - 1]) throw std::out_of_range("calendar_policy: invalid day");
@@ -264,6 +276,102 @@ private:
   uint32_t hours_per_day_ = 24;
   std::vector<uint32_t> days_in_month_;
   uint64_t days_per_year_ = 0;
+};
+
+enum class calendar_source : uint8_t { game_time, turn };
+
+inline calendar_source parse_calendar_source(const std::string_view value) {
+  if (value == "game_time") return calendar_source::game_time;
+  if (value == "turn") return calendar_source::turn;
+  throw std::invalid_argument("calendar source must be 'game_time' or 'turn'");
+}
+
+// Calendar amount contributed by one turn. Seconds/days are linear; months/years use the
+// configured calendar and clamp the origin day when a target month is shorter.
+struct calendar_step {
+  uint64_t seconds = 0;
+  uint64_t days = 0;
+  uint64_t months = 0;
+  uint64_t years = 0;
+
+  constexpr bool empty() const noexcept {
+    return seconds == 0 && days == 0 && months == 0 && years == 0;
+  }
+};
+
+// Immutable project-level calendar adapter. Both game time and turns remain available; this
+// object only selects which one drives the project date. Construct once during project startup.
+class calendar_clock {
+public:
+  explicit calendar_clock(calendar_source source = calendar_source::game_time,
+                          calendar_policy policy = calendar_policy{}, calendar_timestamp epoch = {},
+                          calendar_step per_turn = {})
+    : source_(source), policy_(std::move(policy)), epoch_(epoch), per_turn_(per_turn) {
+    if (source_ == calendar_source::turn && per_turn_.empty()) {
+      throw std::invalid_argument("calendar_clock: turn source requires a non-zero per-turn step");
+    }
+    if ((per_turn_.months != 0 || per_turn_.years != 0) && !policy_.has_calendar()) {
+      throw std::invalid_argument("calendar_clock: month/year turn step requires configured months");
+    }
+  }
+
+  calendar_timestamp now(const timelines& clocks) const {
+    if (source_ == calendar_source::game_time) {
+      return {checked_add(epoch_.ticks, clocks.game_now().ticks)};
+    }
+    return advance_from_epoch(clocks.turn_now().value);
+  }
+
+  calendar_fields date(const timelines& clocks) const { return policy_.project(now(clocks)); }
+  calendar_source source() const noexcept { return source_; }
+  const calendar_policy& policy() const noexcept { return policy_; }
+  calendar_timestamp epoch() const noexcept { return epoch_; }
+  calendar_step per_turn() const noexcept { return per_turn_; }
+
+private:
+  static uint64_t checked_add(const uint64_t a, const uint64_t b) {
+    if (b > std::numeric_limits<uint64_t>::max() - a) {
+      throw std::overflow_error("calendar_clock: timestamp overflow");
+    }
+    return a + b;
+  }
+
+  static uint64_t checked_mul(const uint64_t a, const uint64_t b) {
+    if (a != 0 && b > std::numeric_limits<uint64_t>::max() / a) {
+      throw std::overflow_error("calendar_clock: timestamp overflow");
+    }
+    return a * b;
+  }
+
+  calendar_timestamp advance_from_epoch(const uint64_t turns) const {
+    calendar_timestamp out = epoch_;
+
+    if (per_turn_.months != 0 || per_turn_.years != 0) {
+      const auto origin = policy_.project(epoch_);
+      const uint64_t months_per_year = policy_.months_per_year();
+      const uint64_t months_each = checked_add(checked_mul(per_turn_.years, months_per_year), per_turn_.months);
+      const uint64_t origin_month = checked_add(checked_mul(origin.year, months_per_year), origin.month - 1u);
+      const uint64_t target_month = checked_add(origin_month, checked_mul(months_each, turns));
+      const uint64_t year = target_month / months_per_year;
+      const uint32_t month = static_cast<uint32_t>(target_month % months_per_year) + 1u;
+
+      const uint32_t day = std::min(origin.day, policy_.days_in_month(month));
+      out = policy_.compose_calendar(year, month, day, origin.hour, origin.minute,
+                                     origin.second, origin.subsecond_ticks);
+    }
+
+    const uint64_t seconds_each = checked_add(
+      checked_mul(per_turn_.days, policy_.seconds_per_day()), per_turn_.seconds);
+    const uint64_t delta_ticks = checked_mul(
+      checked_mul(seconds_each, turns), timeline_ticks_per_second);
+    out.ticks = checked_add(out.ticks, delta_ticks);
+    return out;
+  }
+
+  calendar_source source_ = calendar_source::game_time;
+  calendar_policy policy_;
+  calendar_timestamp epoch_{};
+  calendar_step per_turn_{};
 };
 
 }

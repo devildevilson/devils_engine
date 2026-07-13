@@ -26,6 +26,12 @@ struct needs_stats {
   double energy = 0.0;
 };
 
+struct defaulted_stats {
+  int32_t health = 100;
+  float stamina = 25.0f;
+  int64_t reputation = -3;
+};
+
 struct combined_scope {
   test_stats* primary = nullptr;
   needs_stats* needs = nullptr;
@@ -44,6 +50,7 @@ void register_test_stats(devils_script::system& sys) {
 
 static_assert(numeric_stats_aggregate<test_stats>);
 static_assert(numeric_stats_aggregate<needs_stats>);
+static_assert(numeric_stats_aggregate<defaulted_stats>);
 static_assert(!numeric_stats_aggregate<std::string>);
 
 TEST_CASE("stat_accessors: рефлексия генерирует ds-чтение полей [stats][devils_script]") {
@@ -89,6 +96,20 @@ TEST_CASE("generic stats initialize every numeric aggregate field [stats]") {
   const auto direct = make_stats<needs_stats>(7, 3.5);
   CHECK(direct.morale == 7);
   CHECK(direct.energy == doctest::Approx(3.5));
+}
+
+TEST_CASE("generic stats let projects choose C++ defaults or reflected initialization [stats]") {
+  const auto defaults = initialize_stats<defaulted_stats>();
+  CHECK(defaults.health == 100);
+  CHECK(defaults.stamina == doctest::Approx(25.0f));
+  CHECK(defaults.reputation == -3);
+
+  const auto reflected = initialize_stats<defaulted_stats>([](auto Index, std::string_view) {
+    return double(decltype(Index)::value + 1) * 10.0;
+  });
+  CHECK(reflected.health == 10);
+  CHECK(reflected.stamina == doctest::Approx(20.0f));
+  CHECK(reflected.reputation == 30);
 }
 
 TEST_CASE("two stats aggregates coexist in one ds scope [stats][devils_script]") {

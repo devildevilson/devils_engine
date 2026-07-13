@@ -32,14 +32,17 @@ This repository is the author's experimental game engine / framework. It is a la
 - Generic numeric aggregate stats use real ds scopes, not prefixes. `register_stats<T,Parent,Getter,Domain>`
   registers the named scope getter and reflected local `field`/`add_field` functions. Scripts use
   `stats.hunger`, `stats = { add_hunger(…) }`, `combat_stats.abc`; ds overloads identical field names by
-  returned `stat_scope<T>`. `stats_script_test` covers two aggregates.
+  returned `stat_scope<T>`. `initialize_stats<T>()` selects C++ default member initializers; its callback
+  overload assigns every reflected numeric field. `stats_script_test` covers both modes and two aggregates.
 - Time has four orthogonal coordinates: engine (never paused), presentation (real-rate world animation,
   pausable), game (pausable + rationally scaled), and turn (discrete). `game_time_scale` maps DURATIONS
   only; absolute timestamp conversion is intentionally absent because pause is non-bijective. Config
   convention: unqualified duration means nominal real/engine time; gameplay loaders convert through the
   project scale, while explicit game/calendar/turn values keep their domain. `simul::pause_state` owns
   gameplay/presentation masks; tile_frontier exposes Lua `app.set_paused/paused`, configures the ratio as
-  `time.game_seconds / time.real_seconds`, and feeds actor systems the scaled game-clock delta.
+  `time.game_seconds / time.real_seconds`, and feeds actor systems the scaled game-clock delta. Calendar is
+  a separate typed domain: immutable `calendar_clock` selects `time.calendar.source = game_time|turn` once
+  at project startup; turn steps support seconds/days/months/years and are derived from the configured epoch.
 - `acumen::registry` and `mood::registry` independently own stable immutable systems. There is no combined
   `brain_ref`: FSM may exist without GOAP and GOAP without FSM. tile_frontier GOAP resources support a
   single `base`, same-key replace-in-place, append, `disable_metrics/actions/goals`, cycle detection and
@@ -73,7 +76,7 @@ This repository is the author's experimental game engine / framework. It is a la
      independent optional goap_ref/fsm_ref only where needed. FSM is normally fixed by entity type; GOAP may
      also belong to a squad/abstract thinker with no FSM. Compatibility validation + runtime GOAP switching
      (including per-profile caches/action indices) are a separate long-running task.
-  2. **spawner entities + query** — real spawn "where" = spawner ECS entities (static designer points OR dynamic
+  2. **spawner entities + query (explicitly deferred again 2026-07-13)** — real spawn "where" = spawner ECS entities (static designer points OR dynamic
      rules), many of them, queried spatially (reuse `kd_tree` like perception) + predicate-filtered (tags, cooldown,
      capacity). `spawn_at(point)` stays the primitive; a selection/placement layer resolves intent → point.
      Determinism: spawn = catalogue effect on sim rng+state; "off-camera" is presentation (MP: sim must not read a

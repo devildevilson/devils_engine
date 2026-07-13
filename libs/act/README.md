@@ -170,6 +170,16 @@ ds; списки сохраняют динамическую capacity между
 встраивает этот блок в собственный per-worker scratch. Например, `acumen::execution_scratch` добавляет
 A*-контейнер и solution cache.
 
+## Generic stats initialization
+
+Плоский numeric aggregate не требует конструктора. Проект выбирает один из двух явных путей:
+
+- `initialize_stats<stats>()` делает `stats{}` и сохраняет C++ default member initializers;
+- `initialize_stats<stats>(callback)` проходит отражённые поля и задаёт каждое значение callback-ом.
+
+`make_stats<stats>(...)` остаётся обычной aggregate initialization, а `register_stats` независимо от
+способа создания публикует типизированный ds-scope (`stats.health`, `stats = { add_health(…) }`).
+
 ## Effect Sink
 
 `effect_sink` - временный интерфейс для приема mutating effects:
