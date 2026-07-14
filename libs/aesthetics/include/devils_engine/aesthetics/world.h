@@ -461,6 +461,12 @@ public:
   world& operator=(world&& move) noexcept = default;
   entityid_t gen_entityid();
 
+  // Верхняя граница индексов сущностей (следующий свежий индекс). Монотонно не убывает; покрывает
+  // все живые сущности (переиспользованные из free-list индексы < этой величины). Дёшево — без
+  // копии, в отличие от save_state(): нужно, чтобы засайзить плотные per-entity структуры
+  // (message_buffer) на главном потоке до параллельной фазы.
+  size_t index_capacity() const noexcept { return cur_index; }
+
   snapshot_state save_state() const; // определены в impl-блоке ниже
   void load_state(const snapshot_state& s);
   void remove_entity(const entityid_t id);

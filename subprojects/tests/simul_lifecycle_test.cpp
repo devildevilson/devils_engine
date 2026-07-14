@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <filesystem>
@@ -274,17 +275,25 @@ TEST_CASE("startup entry and runtime state come from the first module") {
 
 namespace {
 
-// Минимальная инстанциация generic-планировщика: сущность=id, scratch=заглушка, интент=id
-// произведшей его сущности. decide кладёт id в буфер, ключи — тождественные.
-using test_scheduler = devils_engine::simul::cognition_scheduler<uint32_t, int, uint32_t>;
+// Минимальная инстанциация generic-планировщика: сущность=id, scratch=заглушка. Планировщик выхода
+// не собирает — decide сам пишет в плотный по-индексу буфер (модель message_buffer: слот=id,
+// непересекающиеся записи из воркеров), а порядок даёт обход буфера по индексу — без сортировки.
+using test_scheduler = devils_engine::simul::cognition_scheduler<uint32_t, int>;
 
-// Прогнать один run() над списком (last_think, id) и вернуть отсортированный выход.
+// Прогнать один run() над списком (last_think, id) и вернуть выход в порядке возрастания индекса.
 std::vector<uint32_t> run_scheduler(
   test_scheduler& sched,
   devils_engine::thread::atomic_pool& pool,
   const uint64_t tick,
   const std::vector<std::pair<uint64_t, uint32_t>>& entities) {
-  std::vector<uint32_t> out;
+  // ёмкость плотного буфера = max(id)+1; сайзим ДО параллельной фазы, чтобы store не реаллоцировал.
+  uint32_t cap = 0;
+  for (const auto& [last_think, id] : entities) {
+    cap = std::max(cap, id + 1u);
+  }
+  std::vector<uint8_t> present(cap, 0);
+  std::vector<uint32_t> vals(cap, 0);
+
   sched.run(
     tick, pool,
     [&](std::vector<test_scheduler::request>& due) {
@@ -294,10 +303,19 @@ std::vector<uint32_t> run_scheduler(
         }
       }
     },
-    [](const uint32_t id, int&, std::vector<uint32_t>& buf) { buf.push_back(id); },
-    [](const uint32_t id) -> uint64_t { return id; },
-    [](const uint32_t in) -> uint64_t { return in; },
-    out);
+    // decide: пишет «свой» слот (id уникален среди due ⇒ гонок нет по разным элементам вектора).
+    [&](const uint32_t id, int&) {
+      present[id] = 1;
+      vals[id] = id;
+    },
+    [](const uint32_t id) -> uint64_t { return id; });
+
+  std::vector<uint32_t> out;
+  for (uint32_t i = 0; i < cap; ++i) {
+    if (present[i]) {
+      out.push_back(vals[i]);
+    }
+  }
   return out;
 }
 
