@@ -13,6 +13,8 @@ add_library(devils_aesthetics
   include/devils_engine/aesthetics/common.h
   include/devils_engine/aesthetics/world.h
   include/devils_engine/aesthetics/message_buffer.h
+  include/devils_engine/aesthetics/message_registry.h
+  include/devils_engine/aesthetics/template_system.h
   include/devils_engine/aesthetics/serialization.h
   include/devils_engine/aesthetics/sink.h
 )
