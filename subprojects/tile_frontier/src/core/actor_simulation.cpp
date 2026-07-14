@@ -674,8 +674,7 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   world_ = aesthetics::world{};
   brains_ = brains; // до setup_brain_registry: выбирает скрипт/конфиг vs натив/хардкод
   setup_brain_registry();
-  intents_.clear();
-  intents_.reserve(count);
+  intents_.reset(count); // предварительная ёмкость по числу актороов; растёт в cognition до index_capacity
   tick_ = 0;
 
   // СОЗДАЁМ аллокаторы пулов поедания заранее на ГЛАВНОМ потоке. Две причины: (1) view<>
@@ -796,8 +795,7 @@ void actor_world_slice::build_sense_tree() {
 // goap_->decide/compute_state и sense_tree_.nearest2 — const (чтение), мир читается + пишутся
 // ТОЛЬКО поля этого актора (непересекающаяся память) ⇒ гонок нет.
 void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint64_t tick,
-                                     acumen::execution_scratch& scratch,
-                                     std::vector<act::intent>& out) {
+                                     acumen::execution_scratch& scratch) {
   using kd = utils::kd_tree<perception_target>;
   auto* pos = world_.get<actor_position>(id);
   auto* vis = world_.get<actor_visual>(id);
@@ -851,21 +849,26 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
   in.actor = act::entity_id{uint32_t(id)};
   in.payload.call.fn = utils::string_hash(plan[0]->name);
   in.source_action = in.payload.call.fn;
-  out.push_back(in);
+  // Слот адресуется индексом ЭТОГО актора (id уникален среди отобранных ⇒ поток пишет свой слот).
+  intents_.store(id, in);
 }
 
 // cognition — ПЛАНИРОВЩИК + MT-перебор отобранных.
 //   1) отбор (ОДНОПОТОЧНО, дёшево): «созревшие» (ещё не думал ИЛИ истёк commit) → приоритет
 //      по давности (дольше ждал — раньше; тай-брейк по id), обрезка бюджетом think_budget_.
-//   2) MT: due_ раскидывается по потокам пула (distribute), каждый чанк в СВОЙ scratch/cache/
-//      буфер (слот = pool.thread_index, эксклюзивен на поток) зовёт decide_actor.
-//   3) merge буферов → intents_, sort by id → детерминированный apply независимо от раскладки.
+//   2) MT: due_ раскидывается по потокам пула (distribute), каждый чанк в СВОЙ scratch/cache
+//      (слот = pool.thread_index, эксклюзивен на поток) зовёт decide_actor.
+//   3) decide_actor пишет intent в СВОЙ слот intents_ (по индексу актора) — записи непересекающиеся,
+//      без локов; apply обходит буфер по индексу ⇒ детерминизм без merge и без sort.
 // Стоимость восприятия+GOAP ∝ бюджету/числу_потоков. Отбор — O(N)-скан (на миллионах заменить
 // на timing-wheel). sense_tree_ строится ДО (build_sense_tree) и только читается воркерами.
 void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool) {
   using request = decltype(scheduler_)::request;
-  // generic-планировщик (libs/simul) держит budget-clamp, per-thread lanes, distribute/wait и
-  // детерминированный merge. Проект поставляет только знание сущности:
+  // Засайзить буфер интентов до ёмкости индексов мира НА ГЛАВНОМ потоке — покрывает всех живых
+  // акторов, чтобы параллельный store не реаллоцировал (записи в непересекающиеся слоты безопасны).
+  intents_.reset(world_.index_capacity());
+  // generic-планировщик (libs/simul) держит budget-clamp, per-thread lanes, distribute/wait. Проект
+  // поставляет знание сущности; выход планировщик не собирает — decide пишет intent в intents_:
   scheduler_.run(
     tick, pool,
     // enumerate: созревшие (skip едящих/схваченных — «коммит длительностью действия») + давность.
@@ -879,15 +882,13 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
         }
       }
     },
-    // decide: восприятие (kD-запрос) + GOAP одной сущности в свой per-thread scratch.
-    [this, tick](const aesthetics::entityid_t id, acumen::execution_scratch& scratch, std::vector<act::intent>& out) {
-      decide_actor(id, tick, scratch, out);
+    // decide: восприятие (kD-запрос) + GOAP одной сущности в свой per-thread scratch; пишет intent
+    // в свой слот intents_ (см. decide_actor).
+    [this, tick](const aesthetics::entityid_t id, acumen::execution_scratch& scratch) {
+      decide_actor(id, tick, scratch);
     },
     // index_of: детерминированный тай-брейк бюджета по индексу сущности.
-    [](const aesthetics::entityid_t id) -> uint64_t { return aesthetics::get_entityid_index(id); },
-    // intent_key: финальная сортировка выхода по индексу актора интента.
-    [](const act::intent& in) -> uint64_t { return aesthetics::get_entityid_index(in.actor.id); },
-    intents_);
+    [](const aesthetics::entityid_t id) -> uint64_t { return aesthetics::get_entityid_index(id); });
   DE_TRACE(catalogue::log_domain::gameplay, "cognition tick={} intents={} budget={}", tick, intents_.size(), scheduler_.think_budget);
 }
 
@@ -898,20 +899,22 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
 // Эффект мутирует напрямую (effect_sink подключится вторым консьюмером с catalogue).
 void actor_world_slice::apply(const float dt_seconds) {
   sound_emits_.clear(); // sim-звуки этого тика собираем заново
-  for (const auto& in : intents_) {
+  // Обход буфера интентов в порядке возрастания индекса актора (= прежний sort by id) —
+  // детерминированный apply без явной сортировки. Пустые слоты пропускаются самим for_each.
+  intents_.for_each([this](const aesthetics::entityid_t /*key*/, const act::intent& in) {
     if (in.kind != act::intent_kind::call_function) {
-      continue;
+      return;
     }
     const auto* effect = registry_.effect(in.payload.call.fn);
     if (effect == nullptr) {
-      continue;
+      return;
     }
 
     const auto id = aesthetics::entityid_t(in.actor.id);
     // Актора схватили В ЭТОМ ЖЕ apply (хищник с меньшим id отработал раньше) → его собственный
     // интент гасим, иначе движение перебьёт заморозку. Детерминированно (id-порядок).
     if (world_.get<actor_grabbed>(id) != nullptr) {
-      continue;
+      return;
     }
     const auto* brain = world_.get<actor_brain>(id);
     const uint64_t seed = brain != nullptr ? brain->seed : 0u;
@@ -936,7 +939,7 @@ void actor_world_slice::apply(const float dt_seconds) {
         }
       }
     }
-  }
+  });
 
   for (auto [id, pos, vel] : world_.view<actor_position, actor_velocity>()) {
     static_cast<void>(id);

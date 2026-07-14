@@ -55,6 +55,9 @@ target_link_libraries(simul_lifecycle_test PRIVATE devils_engine::simul)
 devils_add_doctest(aesthetics_world_test aesthetics_world_test.cpp)
 target_link_libraries(aesthetics_world_test PRIVATE devils_engine::aesthetics)
 
+devils_add_doctest(aesthetics_message_buffer_test aesthetics_message_buffer_test.cpp)
+target_link_libraries(aesthetics_message_buffer_test PRIVATE devils_engine::aesthetics devils_engine::thread)
+
 devils_add_doctest(aesthetics_serialization_test aesthetics_serialization_test.cpp)
 target_link_libraries(aesthetics_serialization_test PRIVATE devils_engine::aesthetics)
 

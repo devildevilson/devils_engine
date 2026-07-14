@@ -14,7 +14,8 @@
 #include <devils_engine/acumen/execution_scratch.h>
 #include <devils_engine/acumen/registry.h>
 #include <devils_engine/acumen/system.h>   // acumen::system — GOAP над act::registry
-#include <devils_engine/aesthetics/sink.h> // serial::sink_policy/seal/unseal — save/load слайса
+#include <devils_engine/aesthetics/message_buffer.h> // message_buffer — плотный per-entity буфер интентов
+#include <devils_engine/aesthetics/sink.h>           // serial::sink_policy/seal/unseal — save/load слайса
 #include <devils_engine/aesthetics/world.h>
 #include <devils_engine/mood/registry.h>
 #include <devils_engine/mood/system.h>            // mood::system — FSM-исполнитель (состояние/анимация/звук)
@@ -297,8 +298,7 @@ private:
   void cognition(uint64_t tick, devils_engine::thread::atomic_pool& pool);
   // Восприятие (kD-запрос) + GOAP для ОДНОГО актора, в свой scratch/cache/буфер (на поток).
   void decide_actor(devils_engine::aesthetics::entityid_t id, uint64_t tick,
-                    devils_engine::acumen::execution_scratch& scratch,
-                    std::vector<devils_engine::act::intent>& out);
+                    devils_engine::acumen::execution_scratch& scratch);
   void apply(float dt_seconds);
   // Завершает поедание у хищников, чей срок истёк: сбрасывает голод, снимает actor_eating,
   // удаляет съеденную жертву из мира (kill-list, удаление ПОСЛЕ обхода). Зовётся после apply.
@@ -321,17 +321,18 @@ private:
   // kD-дерево слоя восприятия: перестраивается раз за тик, отвечает на «ближайший
   // крупнее/мельче в радиусе» с прунингом. Арена реюзится. Читается воркерами конкурентно.
   devils_engine::utils::kd_tree<perception_target> sense_tree_;
-  std::vector<devils_engine::act::intent> intents_; // обобщённый буфер интентов (sort by actor id)
-  std::vector<sound_emit> sound_emits_;             // sim-звуки тика (вход в состояние FSM)
+  // Плотный per-entity буфер интентов (слот = индекс актора). think-фаза пишет непересекающиеся
+  // слоты из воркеров без локов; apply обходит его в порядке индекса ⇒ детерминизм без сортировки.
+  devils_engine::aesthetics::message_buffer<devils_engine::act::intent> intents_;
+  std::vector<sound_emit> sound_emits_; // sim-звуки тика (вход в состояние FSM)
 
   // Планировщик think-фазы (generic, libs/simul): budget/priority-отбор, per-thread scratch-полосы
-  // (lane = acumen::execution_scratch: A*+cache+ds VM), distribute/wait и детерминированный merge в
-  // intents_. Проект даёт лишь skip/maturity (enumerate), сам think (decide) и ключи сортировки.
-  // Слот 0 полос переиспользуется apply-фазой. commit_ticks/think_budget — поля планировщика.
+  // (lane = acumen::execution_scratch: A*+cache+ds VM), distribute/wait. Проект даёт лишь skip/maturity
+  // (enumerate) и сам think (decide, пишет intent в intents_ по слоту актора). Выход планировщик не
+  // собирает — порядок даёт обход intents_. Слот 0 полос переиспользуется apply-фазой.
   devils_engine::simul::cognition_scheduler<
     devils_engine::aesthetics::entityid_t,
-    devils_engine::acumen::execution_scratch,
-    devils_engine::act::intent>
+    devils_engine::acumen::execution_scratch>
     scheduler_;
   // Проектные конфиги мозга (из tavl); поля nullptr ⇒ нативный/хардкод фолбэк. Задаются в init.
   brain_config brains_;
