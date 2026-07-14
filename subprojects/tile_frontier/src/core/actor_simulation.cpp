@@ -10,6 +10,7 @@
 #include <devils_engine/act/function.h>
 #include <devils_engine/acumen/astar.h> // astar<>::container для find_solution
 #include <devils_engine/aesthetics/common.h>
+#include <devils_engine/aesthetics/template_system.h> // template_system_mt — map-примитив фаз
 #include <devils_engine/catalogue/introspection.h>
 #include <devils_engine/catalogue/logging.h>  // DE_LOG — perf-дамп в домен gameplay
 #include <devils_engine/mood/runtime.h>       // mood::step / apply_transition — шаг FSM
@@ -669,9 +670,59 @@ void actor_world_slice::build_goap_from_config(const goap_config& cfg) {
   goap_ = goap_registry_.get("actor");
 }
 
+// ── map-фазы на общем примитиве template_system_mt (libs/aesthetics/template_system.h) ──
+// Параллельный обход запроса; process мутирует ТОЛЬКО «свою» сущность (обстоятельства — read-only)
+// ⇒ потоки трогают непересекающуюся память, локов нет. dt ставится слайсом перед проходом.
+
+// Движение позиции по скорости + жёсткое позиционное расталкивание препятствиями (как было в apply).
+struct integration_system : devils_engine::aesthetics::template_system_mt<actor_position, actor_velocity> {
+  float dt = 0.0f;
+  const std::vector<actor_world_slice::obstacle_disc>* obstacles = nullptr;
+  integration_system(thread::atomic_pool* pool, aesthetics::world* w) noexcept
+    : template_system_mt(pool, w) {}
+  void process(const query_tuple_t& t) override {
+    auto* pos = std::get<1>(t);
+    const auto* vel = std::get<2>(t);
+    pos->value += vel->value * dt;
+    if (obstacles == nullptr) {
+      return;
+    }
+    for (const auto& o : *obstacles) {
+      const glm::vec2 d = pos->value - o.pos;
+      const float d2 = d.x * d.x + d.y * d.y;
+      if (d2 < o.radius * o.radius) {
+        const float len = std::sqrt(d2);
+        const glm::vec2 n = len > 1e-6f ? d * (1.0f / len) : glm::vec2{1.0f, 0.0f};
+        pos->value = o.pos + n * o.radius;
+      }
+    }
+  }
+};
+
+// Пассивная динамика мотиваций: голод копится всегда, скука растёт в простое / спадает в движении.
+struct drives_system : devils_engine::aesthetics::template_system_mt<stats, actor_velocity> {
+  float dt = 0.0f;
+  drives_system(thread::atomic_pool* pool, aesthetics::world* w) noexcept
+    : template_system_mt(pool, w) {}
+  void process(const query_tuple_t& t) override {
+    auto* dr = std::get<1>(t);
+    const auto* vel = std::get<2>(t);
+    dr->hunger = std::clamp(dr->hunger + hunger_rate * dt, 0.0f, 1.0f);
+    const float speed2 = vel->value.x * vel->value.x + vel->value.y * vel->value.y;
+    const float db = (speed2 <= still_speed2 ? bored_rate : -bored_relief) * dt;
+    dr->boredom = std::clamp(dr->boredom + db, 0.0f, 1.0f);
+  }
+};
+
+actor_world_slice::actor_world_slice() noexcept = default;
+actor_world_slice::~actor_world_slice() = default;
+
 void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, const glm::vec2 max_bound, const uint32_t texture_count,
                              const brain_config& brains) {
   world_ = aesthetics::world{};
+  // Кэш-системы держат query, подписанный на СТАРЫЙ world — сбросить, пересоздадутся против нового.
+  integration_sys_.reset();
+  drives_sys_.reset();
   brains_ = brains; // до setup_brain_registry: выбирает скрипт/конфиг vs натив/хардкод
   setup_brain_registry();
   intents_.reset(count); // предварительная ёмкость по числу актороов; растёт в cognition до index_capacity
@@ -741,13 +792,17 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
 actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& batch, thread::atomic_pool& pool) {
   using build_sense_tree_perf = actor_perf_domain::fn_traits<&actor_world_slice::build_sense_tree, "sense.tree", "self">;
   using cognition_perf = actor_perf_domain::fn_traits<&actor_world_slice::cognition, "cognition", "self", "tick", "pool">;
-  using apply_perf = actor_perf_domain::fn_traits<&actor_world_slice::apply, "apply", "self", "dt_seconds">;
+  using apply_perf = actor_perf_domain::fn_traits<&actor_world_slice::apply, "apply", "self">;
+  using integrate_perf = actor_perf_domain::fn_traits<&actor_world_slice::integrate, "integrate", "self", "dt_seconds", "pool">;
+  using drives_perf = actor_perf_domain::fn_traits<&actor_world_slice::update_drives, "drives", "self", "dt_seconds", "pool">;
   using resolve_eating_perf = actor_perf_domain::fn_traits<&actor_world_slice::resolve_eating, "eating", "self", "tick">;
   using maintain_food_perf = actor_perf_domain::fn_traits<&actor_world_slice::maintain_food, "food", "self">;
 
   using build_sense_tree_fn_t = build_sense_tree_perf::loc_fn_t;
   using cognition_fn_t = cognition_perf::loc_fn_t;
   using apply_fn_t = apply_perf::loc_fn_t;
+  using integrate_fn_t = integrate_perf::loc_fn_t;
+  using drives_fn_t = drives_perf::loc_fn_t;
   using resolve_eating_fn_t = resolve_eating_perf::loc_fn_t;
   using maintain_food_fn_t = maintain_food_perf::loc_fn_t;
 
@@ -755,7 +810,9 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
   ensure_actor_perf_introspection();
   build_sense_tree_fn_t{}(*this);
   cognition_fn_t{}(*this, tick_, pool);
-  apply_fn_t{}(*this, dt_seconds);
+  apply_fn_t{}(*this);                     // эффекты выбранных действий + FSM/звук (без интеграции)
+  integrate_fn_t{}(*this, dt_seconds, pool); // движение по скорости + расталкивание (map-фаза)
+  drives_fn_t{}(*this, dt_seconds, pool);    // пассивная динамика мотиваций (map-фаза)
   resolve_eating_fn_t{}(*this, tick_);
   maintain_food_fn_t{}(*this);
   build_actor_batch_fn_t{}(batch, world_, tick_);
@@ -897,7 +954,7 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
 //      эффекты читают позиции ДО интеграции → решения по согласованному снимку тика.
 //   2) проинтегрировать позиции (движение НЕ ограничено — без отскоков/клампа).
 // Эффект мутирует напрямую (effect_sink подключится вторым консьюмером с catalogue).
-void actor_world_slice::apply(const float dt_seconds) {
+void actor_world_slice::apply() {
   sound_emits_.clear(); // sim-звуки этого тика собираем заново
   // Обход буфера интентов в порядке возрастания индекса актора (= прежний sort by id) —
   // детерминированный apply без явной сортировки. Пустые слоты пропускаются самим for_each.
@@ -940,33 +997,28 @@ void actor_world_slice::apply(const float dt_seconds) {
       }
     }
   });
+}
 
-  for (auto [id, pos, vel] : world_.view<actor_position, actor_velocity>()) {
-    static_cast<void>(id);
-    pos->value += vel->value * dt_seconds;
-    // Жёсткая коллизия с препятствиями: оказался внутри диска → вытолкнуть на границу. Простое
-    // позиционное разрешение (без стиринга): актор «скользит» вдоль препятствия. O(M), M мало.
-    for (const auto& o : obstacles_) {
-      const glm::vec2 d = pos->value - o.pos;
-      const float d2 = d.x * d.x + d.y * d.y;
-      if (d2 < o.radius * o.radius) {
-        const float len = std::sqrt(d2);
-        const glm::vec2 n = len > 1e-6f ? d * (1.0f / len) : glm::vec2{1.0f, 0.0f};
-        pos->value = o.pos + n * o.radius;
-      }
-    }
+// integrate — map-фаза интеграции позиций (integration_system): движение по скорости + расталкивание.
+// Система создаётся лениво на первом апдейте (пул известен только здесь) и переиспользуется; dt и
+// указатель на кэш препятствий ставятся перед проходом. Все эффекты apply уже применены (скорость).
+void actor_world_slice::integrate(const float dt_seconds, thread::atomic_pool& pool) {
+  if (!integration_sys_) {
+    integration_sys_ = std::make_unique<integration_system>(&pool, &world_);
   }
+  integration_sys_->dt = dt_seconds;
+  integration_sys_->obstacles = &obstacles_;
+  integration_sys_->update(tick_);
+}
 
-  // Пассивная динамика мотиваций (ВСЕ акторы, каждый тик — дёшево, O(N), плавно независимо
-  // от каденса обдумывания). hunger копится всегда; boredom растёт пока стоит (думает), быстро
-  // спадает в движении. Решения по drives примутся на следующем созревании актора.
-  for (auto [id, dr, vel] : world_.view<stats, actor_velocity>()) {
-    static_cast<void>(id);
-    dr->hunger = std::clamp(dr->hunger + hunger_rate * dt_seconds, 0.0f, 1.0f);
-    const float speed2 = vel->value.x * vel->value.x + vel->value.y * vel->value.y;
-    const float db = (speed2 <= still_speed2 ? bored_rate : -bored_relief) * dt_seconds;
-    dr->boredom = std::clamp(dr->boredom + db, 0.0f, 1.0f);
+// update_drives — map-фаза пассивной динамики мотиваций (drives_system): голод копится, скука от
+// простоя. Дёшево, каждый тик, независимо от каденса обдумывания; решения примутся на созревании.
+void actor_world_slice::update_drives(const float dt_seconds, thread::atomic_pool& pool) {
+  if (!drives_sys_) {
+    drives_sys_ = std::make_unique<drives_system>(&pool, &world_);
   }
+  drives_sys_->dt = dt_seconds;
+  drives_sys_->update(tick_);
 }
 
 // resolve_eating — завершить поедание у хищников с истёкшим сроком: наелся (голод в ноль),
@@ -1075,6 +1127,9 @@ bool actor_world_slice::load(const std::span<const uint8_t> packet) {
   namespace serial = aesthetics::serial;
   // чистый слайс: пересобираем реестр функций + GOAP/FSM (как init), но БЕЗ спавна сущностей.
   world_ = aesthetics::world{};
+  // Кэш-системы держат query на старом world — сбросить (пересоздадутся против загруженного мира).
+  integration_sys_.reset();
+  drives_sys_.reset();
   setup_brain_registry();
   intents_.clear();
   // как в init: аллокаторы пулов поедания заранее на главном потоке (view<> не кинет; type-id

@@ -75,6 +75,11 @@ public:
     component_storage(const std::string_view& type_name, size_t type_index) noexcept;
     virtual ~component_storage() noexcept = default;
     virtual bool remove(const entityid_t id) noexcept = 0; // придется делать виртуальной?
+    // Эмитит remove_component_event<T>, если компонент присутствует — уведомить query/подписчиков
+    // ПЕРЕД фактическим удалением (компонент ещё жив в момент нотификации). Нужен type-erased-пути
+    // удаления (clear/remove_entity), чтобы запросы не держали мёртвые id (per-component remove<T>
+    // эмитит сам).
+    virtual void emit_remove(class world* w, const entityid_t id) noexcept = 0;
     virtual void* rawget(const entityid_t id) noexcept = 0;
     virtual const void* rawget(const entityid_t id) const noexcept = 0;
   };
@@ -115,6 +120,7 @@ public:
 
     sparce_dence_set() noexcept;
     bool remove(const entityid_t id) noexcept override;
+    void emit_remove(class world* w, const entityid_t id) noexcept override;
     void* rawget(const entityid_t id) noexcept override;
     const void* rawget(const entityid_t id) const noexcept override;
 
@@ -1658,6 +1664,14 @@ const world::sparce_dence_set<T>* world::get_allocator() const {
 //}
 
 template <typename T>
+void world::sparce_dence_set<T>::emit_remove(class world* w, const entityid_t id) noexcept {
+  auto* ptr = get_comp(id);
+  if (ptr != nullptr) {
+    w->emit(remove_component_event<T>{id, ptr});
+  }
+}
+
+template <typename T>
 bool world::sparce_dence_set<T>::remove(const entityid_t id) noexcept {
   const size_t ent_index = get_entityid_index(id);
   if (sparce_set.size() <= ent_index) {
@@ -2098,8 +2112,12 @@ bool world::raw_remove(const entityid_t id, const size_t type_id) {
 }
 
 void world::clear(const entityid_t id) {
+  // Сначала уведомить подписчиков (query/lazy_query) о каждом присутствующем компоненте, ПОТОМ
+  // удалить его: в момент нотификации компонент ещё жив, поэтому query_remover видит согласованный
+  // набор и корректно исключает сущность (иначе whole-entity remove оставлял бы мёртвые id в запросах).
   for (auto& up : containers) {
     if (up != nullptr) {
+      up->emit_remove(this, id);
       up->remove(id);
     }
   }

@@ -250,8 +250,22 @@ struct brain_config {
   const std::vector<prefab_def>* prefabs = nullptr;            // префабы из prefab/*.tavl (иначе хардкод food)
 };
 
+// Проектные map-фазы актора на общем примитиве aesthetics::template_system_mt (параллельный обход
+// запроса, виртуальный process). Определения в .cpp — здесь только forward-decl под unique_ptr-члены.
+struct integration_system; // движение позиции по скорости + расталкивание препятствиями
+struct drives_system;      // пассивная динамика мотиваций (голод/скука)
+
 class actor_world_slice : public spawn_sink {
 public:
+  // Плоский кэш препятствия для коллизии (публичен — читается integration_system при обходе).
+  struct obstacle_disc {
+    glm::vec2 pos;
+    float radius;
+  };
+
+  actor_world_slice() noexcept;
+  ~actor_world_slice(); // out-of-line: unique_ptr на неполные *_system (pimpl-идиома)
+
   void init(uint32_t count, glm::vec2 min_bound, glm::vec2 max_bound, uint32_t texture_count,
             const brain_config& brains = {});
 
@@ -299,7 +313,12 @@ private:
   // Восприятие (kD-запрос) + GOAP для ОДНОГО актора, в свой scratch/cache/буфер (на поток).
   void decide_actor(devils_engine::aesthetics::entityid_t id, uint64_t tick,
                     devils_engine::acumen::execution_scratch& scratch);
-  void apply(float dt_seconds);
+  void apply();
+  // Интеграция позиций (движение по скорости + расталкивание препятствиями) — параллельный map-фаза
+  // на integration_system. Ленивое создание системы на первом апдейте (пул известен только тут).
+  void integrate(float dt_seconds, devils_engine::thread::atomic_pool& pool);
+  // Пассивная динамика мотиваций (голод копится, скука от простоя) — map-фаза на drives_system.
+  void update_drives(float dt_seconds, devils_engine::thread::atomic_pool& pool);
   // Завершает поедание у хищников, чей срок истёк: сбрасывает голод, снимает actor_eating,
   // удаляет съеденную жертву из мира (kill-list, удаление ПОСЛЕ обхода). Зовётся после apply.
   void resolve_eating(uint64_t tick);
@@ -334,6 +353,10 @@ private:
     devils_engine::aesthetics::entityid_t,
     devils_engine::acumen::execution_scratch>
     scheduler_;
+  // Map-фазы на общем примитиве template_system_mt (владеет слайс; лениво создаются на 1-м апдейте,
+  // когда известен пул). Неполные типы ⇒ out-of-line дтор слайса.
+  std::unique_ptr<integration_system> integration_sys_;
+  std::unique_ptr<drives_system> drives_sys_;
   // Проектные конфиги мозга (из tavl); поля nullptr ⇒ нативный/хардкод фолбэк. Задаются в init.
   brain_config brains_;
 
@@ -350,11 +373,7 @@ private:
   uint32_t food_target_ = 0;    // целевое число еды на карте (поддерживается респавном)
   uint64_t food_spawn_seq_ = 0; // счётчик спавнов — детерминированный поток позиций еды
   uint32_t texture_count_ = 1;  // запомненное число текстур (для визуала еды/спавна)
-  struct obstacle_disc {
-    glm::vec2 pos;
-    float radius;
-  }; // плоский кэш препятствий для коллизии
-  std::vector<obstacle_disc> obstacles_;
+  std::vector<obstacle_disc> obstacles_; // плоский кэш препятствий для коллизии (тип — публичный выше)
 };
 
 } // namespace core
