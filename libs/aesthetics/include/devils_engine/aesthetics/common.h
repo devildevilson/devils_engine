@@ -23,10 +23,15 @@
 #  define DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_EVENTS_TYPE_ID UINT64_C(0xae000002)
 #endif
 
+#ifndef DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_MESSAGES_TYPE_ID
+#  define DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_MESSAGES_TYPE_ID UINT64_C(0xae000003)
+#endif
+
 namespace devils_engine {
 namespace aesthetics {
 constexpr size_t seq_components_type_id = DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_COMPONENTS_TYPE_ID;
 constexpr size_t seq_events_type_id = DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_EVENTS_TYPE_ID;
+constexpr size_t seq_messages_type_id = DEVILS_ENGINE_AESTHETICS_SEQUENTIAL_MESSAGES_TYPE_ID;
 
 constexpr size_t make_mask(const size_t bits) noexcept {
   size_t mask = 0;
@@ -83,6 +88,13 @@ size_t component_type_id() noexcept {
 template <typename T>
 size_t event_type_id() noexcept {
   return utils::sequential_type_id<seq_events_type_id, T>();
+}
+
+// Монотонный id типа сообщения (своё пространство, независимо от компонентов/событий) — ключ канала
+// в message_registry. Плотный по всем типам сообщений процесса, как component_type_id.
+template <typename T>
+size_t message_type_id() noexcept {
+  return utils::sequential_type_id<seq_messages_type_id, T>();
 }
 
 template <typename T>
