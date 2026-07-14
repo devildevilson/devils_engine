@@ -20,7 +20,6 @@
 #include <devils_engine/mood/registry.h>
 #include <devils_engine/mood/system.h>            // mood::system — FSM-исполнитель (состояние/анимация/звук)
 #include <devils_engine/prefab/prefab_registry.h> // prefab::prefab_registry — рецепт сборки энтити (spawn_at)
-#include <devils_engine/simul/cognition_scheduler.h> // simul::cognition_scheduler — generic think-планировщик
 #include <devils_engine/utils/kd_tree.h>          // utils::kd_tree — пространственный акселератор sense
 #include <glm/glm.hpp>
 
@@ -254,8 +253,10 @@ struct brain_config {
 // запроса, виртуальный process). Определения в .cpp — здесь только forward-decl под unique_ptr-члены.
 struct integration_system; // движение позиции по скорости + расталкивание препятствиями
 struct drives_system;      // пассивная динамика мотиваций (голод/скука)
+struct cognition_system;   // think-фаза: worklist_system над «созревшими», пишет intents
 
 class actor_world_slice : public spawn_sink {
+  friend struct cognition_system; // worklist_system::process зовёт приватный decide_actor
 public:
   // Плоский кэш препятствия для коллизии (публичен — читается integration_system при обходе).
   struct obstacle_disc {
@@ -306,11 +307,17 @@ private:
   void build_goap_from_config(const goap_config& cfg);
   // Строит kD-дерево восприятия над ВСЕМИ акторами (позиции меняются каждый тик).
   void build_sense_tree();
+  // «Созрел» = ещё не думал (last_think==0) ИЛИ истёк commit_ticks_. Отбор в enumerate.
+  bool matured(const uint64_t last_think, const uint64_t tick) const noexcept {
+    return last_think == 0 || (tick - last_think) >= commit_ticks_;
+  }
   // Планировщик когниции: выбирает «созревших» акторов в пределах бюджета (приоритет —
   // давность решения), и только им обновляет восприятие + гоняет GOAP → intent. Остальные
-  // коастят на прошлом решении. Тяжёлый перебор отобранных раскидан по потокам пула.
+  // коастят на прошлом решении. Тяжёлый перебор отобранных раскидан по потокам пула через
+  // cognition_system (worklist_system над отобранными).
   void cognition(uint64_t tick, devils_engine::thread::atomic_pool& pool);
-  // Восприятие (kD-запрос) + GOAP для ОДНОГО актора, в свой scratch/cache/буфер (на поток).
+  // Восприятие (kD-запрос) + GOAP для ОДНОГО актора, в свой scratch/cache/буфер (на поток). Зовётся
+  // из cognition_system::process на своей scratch-полосе (оттого friend).
   void decide_actor(devils_engine::aesthetics::entityid_t id, uint64_t tick,
                     devils_engine::acumen::execution_scratch& scratch);
   void apply();
@@ -345,18 +352,17 @@ private:
   devils_engine::aesthetics::message_buffer<devils_engine::act::intent> intents_;
   std::vector<sound_emit> sound_emits_; // sim-звуки тика (вход в состояние FSM)
 
-  // Планировщик think-фазы (generic, libs/simul): budget/priority-отбор, per-thread scratch-полосы
-  // (lane = acumen::execution_scratch: A*+cache+ds VM), distribute/wait. Проект даёт лишь skip/maturity
-  // (enumerate) и сам think (decide, пишет intent в intents_ по слоту актора). Выход планировщик не
-  // собирает — порядок даёт обход intents_. Слот 0 полос переиспользуется apply-фазой.
-  devils_engine::simul::cognition_scheduler<
-    devils_engine::aesthetics::entityid_t,
-    devils_engine::acumen::execution_scratch>
-    scheduler_;
-  // Map-фазы на общем примитиве template_system_mt (владеет слайс; лениво создаются на 1-м апдейте,
-  // когда известен пул). Неполные типы ⇒ out-of-line дтор слайса.
+  // Политика think-фазы (были поля cognition_scheduler; сериализуются как commit_ticks/think_budget).
+  // commit_ticks: сущность держится решения N тиков (спрос ≈ N_actors/commit_ticks). think_budget:
+  // потолок обдумываний за тик (спайк-сейфти, count-budget ⇒ детерминированно).
+  size_t commit_ticks_ = 3;
+  size_t think_budget_ = 2048;
+  // Map-фазы на общих примитивах aesthetics (владеет слайс; лениво создаются на 1-м апдейте, когда
+  // известен пул). cognition_system = worklist_system над «созревшими» (per-thread scratch = A*+cache
+  // +ds VM), пишет intent в свой слот intents_. Неполные типы ⇒ out-of-line дтор слайса.
   std::unique_ptr<integration_system> integration_sys_;
   std::unique_ptr<drives_system> drives_sys_;
+  std::unique_ptr<cognition_system> cognition_sys_;
   // Проектные конфиги мозга (из tavl); поля nullptr ⇒ нативный/хардкод фолбэк. Задаются в init.
   brain_config brains_;
 

@@ -35,14 +35,14 @@ public:
   template_system(class world* world) noexcept : m_world(world), query(world->query<Comp_T...>()) {}
 
   void update(const size_t time) override {
-    static_cast<void>(time);
     for (const auto& t : query) {
-      process(t);
+      process(t, time);
     }
   }
 
-  // Обработать одну сущность: t = (entityid_t, Comp_T*...). Реализует подкласс.
-  virtual void process(const query_tuple_t& t) = 0;
+  // Обработать одну сущность: t = (entityid_t, Comp_T*...), time = текущее время/тик (прокинут из
+  // update). Реализует подкласс.
+  virtual void process(const query_tuple_t& t, size_t time) = 0;
 
   // Число сущностей в запросе (авто-поддерживается событиями компонентов).
   size_t size() const noexcept {
@@ -63,17 +63,17 @@ public:
     : template_system<Comp_T...>(world), pool(pool) {}
 
   void update(const size_t time) override {
-    static_cast<void>(time);
-    // Каждый чанк [start, start+count) обходит свои сущности; query передаётся аргументом (лямбда
-    // копируется на чанк). process пишет только «свою» сущность ⇒ параллельная запись без гонок.
+    // Каждый чанк [start, start+count) обходит свои сущности; query передаётся аргументом, time —
+    // захватом по значению (лямбда копируется на чанк). process пишет только «свою» сущность ⇒
+    // параллельная запись без гонок.
     pool->distribute1(
       this->query.size(),
-      [this](const size_t start, const size_t count, const query_t& q) {
+      [this](const size_t start, const size_t count, const query_t& q, const size_t time) {
         for (size_t i = start; i < start + count; ++i) {
-          this->process(q[i]);
+          this->process(q[i], time);
         }
       },
-      std::ref(this->query));
+      std::ref(this->query), time);
     pool->compute(); // вызывающий поток берёт свой чанк, а не простаивает
     pool->wait();
   }
