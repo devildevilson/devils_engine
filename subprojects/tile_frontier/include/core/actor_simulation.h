@@ -9,13 +9,13 @@
 #include <string_view>
 #include <vector>
 
-#include <devils_engine/act/intent.h>   // act::intent — обобщённый буфер интентов
-#include <devils_engine/act/registry.h> // act::registry + function<RetT>
+#include <devils_engine/act/interaction.h> // act::interaction — дескриптор арбитража эффекта-взаимодействия
+#include <devils_engine/act/registry.h>    // act::registry + function<RetT>
+#include <devils_engine/catalogue/call_log.h> // catalogue::call_log — контейнер отложенных вызовов (record/replay)
 #include <devils_engine/acumen/execution_scratch.h>
 #include <devils_engine/acumen/registry.h>
 #include <devils_engine/acumen/system.h>   // acumen::system — GOAP над act::registry
-#include <devils_engine/aesthetics/elect_buffer.h>     // elect_buffer — арбитраж взаимодействий (atomic-min победитель)
-#include <devils_engine/aesthetics/message_registry.h> // message_registry — шина каналов сообщений между фазами
+#include <devils_engine/aesthetics/interaction_arena.h> // interaction_arena — reduce арбитража (elect + self-claim)
 #include <devils_engine/aesthetics/sink.h>           // serial::sink_policy/seal/unseal — save/load слайса
 #include <devils_engine/aesthetics/world.h>
 #include <devils_engine/mood/registry.h>
@@ -47,16 +47,6 @@ namespace core {
 struct goap_config;
 }
 } // namespace tile_frontier
-
-namespace devils_engine {
-namespace aesthetics {
-// Актор может выдать несколько intent'ов за кадр (мульти-действие) — бакет канала до 4 на сущность.
-template <>
-struct message_capacity<devils_engine::act::intent> {
-  static constexpr size_t value = 4;
-};
-} // namespace aesthetics
-} // namespace devils_engine
 
 namespace tile_frontier {
 namespace core {
@@ -332,9 +322,6 @@ private:
   void decide_actor(devils_engine::aesthetics::entityid_t id, uint64_t tick,
                     devils_engine::acumen::execution_scratch& scratch);
   void apply();
-  // Победил ли self право съесть prey на commit-фазе: наименьший претендент elect И prey сама
-  // не инициатор в этот тик (правило «intent бьёт grab», снимает каскад/симметрию). См. ROADMAP п.16.
-  bool eat_won(devils_engine::aesthetics::entityid_t prey, devils_engine::aesthetics::entityid_t self) const noexcept;
   // Интеграция позиций (движение по скорости + расталкивание препятствиями) — параллельный map-фаза
   // на integration_system. Ленивое создание системы на первом апдейте (пул известен только тут).
   void integrate(float dt_seconds, devils_engine::thread::atomic_pool& pool);
@@ -351,13 +338,6 @@ private:
   // после load: кэш выводим из мира, поэтому в снапшот не пишется. Порядок = dense-порядок
   // (= порядок id), совпадает с исходным спавном ⇒ детерминизм коллизии сохраняется.
   void rebuild_obstacle_cache();
-  // Канал act::intent в шине messages_ (get-or-create; ссылка стабильна). Единая точка доступа для
-  // think-продюсера и apply-консюмера. Канал пред-создаётся на главном потоке (reset в cognition) до
-  // параллельной записи, поэтому store из воркеров безопасен.
-  devils_engine::aesthetics::message_buffer<devils_engine::act::intent>& intents() noexcept {
-    return messages_.channel<devils_engine::act::intent>();
-  }
-
   devils_engine::aesthetics::world world_;
   devils_engine::act::registry registry_; // общий реестр геймплейных функций (см. libs/act)
   devils_engine::acumen::registry goap_registry_;
@@ -367,21 +347,16 @@ private:
   // kD-дерево слоя восприятия: перестраивается раз за тик, отвечает на «ближайший
   // крупнее/мельче в радиусе» с прунингом. Арена реюзится. Читается воркерами конкурентно.
   devils_engine::utils::kd_tree<perception_target> sense_tree_;
-  // Шина сообщений между фазами (см. aesthetics::message_registry): think-фаза = продюсер канала
-  // act::intent (пишет непересекающиеся слоты по индексу актора без локов), apply = консюмер (обходит
-  // канал по индексу ⇒ детерминизм без сортировки). Пока один канал (intent), но именно реестр —
-  // объект-шина, передаваемый между системами; новые типы сообщений добавятся своими каналами.
-  devils_engine::aesthetics::message_registry messages_;
+  // Контейнер отложенных вызовов (catalogue::call_log): think-фаза записывает выбранные действия
+  // (record по индексу актора, без локов), commit-фаза (apply) проигрывает их в порядке индекса.
+  // Заменяет прежний intent-буфер — catalogue = «сложить вызов + проиграть позже» (ROADMAP п.16).
+  devils_engine::catalogue::call_log calls_;
+  // Reduce-слой арбитража взаимодействий (aesthetics::interaction_arena): elect на тип взаимодействия +
+  // общий self-claim. record-time (decide_actor, MT) — claim по дескриптору эффекта; commit-time (apply)
+  // — won() = победитель elect И цель не инициатор («intent бьёт grab»). Сайзится в cognition до
+  // параллельной фазы; типы взаимодействий регистрируются (ensure) в setup_brain_registry.
+  devils_engine::aesthetics::interaction_arena arena_;
   std::vector<sound_emit> sound_emits_; // sim-звуки тика (вход в состояние FSM)
-
-  // Арбитраж взаимодействия «eat» (ROADMAP п.16, converged-модель entity-interaction-model). На
-  // record-time (decide_actor, MT): хищник заявляет eat_elect_.claim(prey, self) + self-claim
-  // (намерен хватать в этот тик). На commit-time (apply, однопоточно): добычу получает лишь
-  // победитель elect, если сама добыча не инициатор («intent бьёт grab»). Сайзятся в cognition
-  // до параллельной фазы (reset/assign до claim из воркеров). Оба lock-free: elect = atomic-min
-  // many→one, self-claim = disjoint запись по индексу инициатора.
-  devils_engine::aesthetics::elect_buffer eat_elect_;
-  std::vector<uint8_t> eat_self_claim_; // индекс актора → он сам намерен хватать в этот тик (0/1)
 
   // Политика think-фазы (были поля cognition_scheduler; сериализуются как commit_ticks/think_budget).
   // commit_ticks: сущность держится решения N тиков (спрос ≈ N_actors/commit_ticks). think_budget:
