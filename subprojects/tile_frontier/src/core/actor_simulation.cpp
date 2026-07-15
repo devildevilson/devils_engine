@@ -738,7 +738,7 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   drives_sys_.reset();
   brains_ = brains; // до setup_brain_registry: выбирает скрипт/конфиг vs натив/хардкод
   setup_brain_registry();
-  intents_.reset(count); // предварительная ёмкость по числу актороов; растёт в cognition до index_capacity
+  intents().reset(count); // предварительная ёмкость по числу актороов; растёт в cognition до index_capacity
   tick_ = 0;
 
   // СОЗДАЁМ аллокаторы пулов поедания заранее на ГЛАВНОМ потоке. Две причины: (1) view<>
@@ -836,7 +836,7 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
 
   return actor_metrics{
     uint32_t(world_.count<actor_position>()),
-    uint32_t(intents_.size()), // = сколько актороов реально думали в этот тик
+    uint32_t(intents().size()), // = сколько актороов реально думали в этот тик
     batch.count(),
     tick_};
 }
@@ -919,8 +919,9 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
   in.actor = act::entity_id{uint32_t(id)};
   in.payload.call.fn = utils::string_hash(plan[0]->name);
   in.source_action = in.payload.call.fn;
-  // Слот адресуется индексом ЭТОГО актора (id уникален среди отобранных ⇒ поток пишет свой слот).
-  intents_.store(id, in);
+  // Бакет адресуется индексом ЭТОГО актора (id уникален среди отобранных ⇒ поток пишет свой бакет).
+  // push дописывает — актор может выдать несколько intent'ов за кадр (до Cap канала).
+  intents().push(id, in);
 }
 
 // cognition — SELECT (однопоточно) + THINK (MT map по отобранным).
@@ -938,7 +939,7 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
   }
   // Засайзить буфер интентов до ёмкости индексов мира НА ГЛАВНОМ потоке — покрывает всех живых
   // акторов, чтобы параллельный store не реаллоцировал (записи в непересекающиеся слоты безопасны).
-  intents_.reset(world_.index_capacity());
+  intents().reset(world_.index_capacity());
 
   // select: созревшие (skip едящих/схваченных — «коммит длительностью действия») + давность.
   struct candidate {
@@ -970,7 +971,7 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
     wl.push_back(c.entity);
   }
   cognition_sys_->run(tick);
-  DE_TRACE(catalogue::log_domain::gameplay, "cognition tick={} intents={} budget={}", tick, intents_.size(), think_budget_);
+  DE_TRACE(catalogue::log_domain::gameplay, "cognition tick={} intents={} budget={}", tick, intents().size(), think_budget_);
 }
 
 // apply — ДЕТЕРМИНИРОВАННЫЙ барьер в двух фазах.
@@ -982,7 +983,7 @@ void actor_world_slice::apply() {
   sound_emits_.clear(); // sim-звуки этого тика собираем заново
   // Обход буфера интентов в порядке возрастания индекса актора (= прежний sort by id) —
   // детерминированный apply без явной сортировки. Пустые слоты пропускаются самим for_each.
-  intents_.for_each([this](const aesthetics::entityid_t /*key*/, const act::intent& in) {
+  intents().for_each([this](const aesthetics::entityid_t /*key*/, const act::intent& in) {
     if (in.kind != act::intent_kind::call_function) {
       return;
     }
@@ -1156,7 +1157,7 @@ bool actor_world_slice::load(const std::span<const uint8_t> packet) {
   integration_sys_.reset();
   drives_sys_.reset();
   setup_brain_registry();
-  intents_.clear();
+  intents().clear();
   // как в init: аллокаторы пулов поедания заранее на главном потоке (view<> не кинет; type-id
   // фиксируется до MT). load_world и так тронет все зарегистрированные типы, но порядок важен.
   static_cast<void>(world_.get_or_create_allocator<actor_eating>(sizeof(actor_eating) * 250));
