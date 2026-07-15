@@ -14,6 +14,7 @@
 #include <devils_engine/acumen/execution_scratch.h>
 #include <devils_engine/acumen/registry.h>
 #include <devils_engine/acumen/system.h>   // acumen::system — GOAP над act::registry
+#include <devils_engine/aesthetics/elect_buffer.h>     // elect_buffer — арбитраж взаимодействий (atomic-min победитель)
 #include <devils_engine/aesthetics/message_registry.h> // message_registry — шина каналов сообщений между фазами
 #include <devils_engine/aesthetics/sink.h>           // serial::sink_policy/seal/unseal — save/load слайса
 #include <devils_engine/aesthetics/world.h>
@@ -331,6 +332,9 @@ private:
   void decide_actor(devils_engine::aesthetics::entityid_t id, uint64_t tick,
                     devils_engine::acumen::execution_scratch& scratch);
   void apply();
+  // Победил ли self право съесть prey на commit-фазе: наименьший претендент elect И prey сама
+  // не инициатор в этот тик (правило «intent бьёт grab», снимает каскад/симметрию). См. ROADMAP п.16.
+  bool eat_won(devils_engine::aesthetics::entityid_t prey, devils_engine::aesthetics::entityid_t self) const noexcept;
   // Интеграция позиций (движение по скорости + расталкивание препятствиями) — параллельный map-фаза
   // на integration_system. Ленивое создание системы на первом апдейте (пул известен только тут).
   void integrate(float dt_seconds, devils_engine::thread::atomic_pool& pool);
@@ -369,6 +373,15 @@ private:
   // объект-шина, передаваемый между системами; новые типы сообщений добавятся своими каналами.
   devils_engine::aesthetics::message_registry messages_;
   std::vector<sound_emit> sound_emits_; // sim-звуки тика (вход в состояние FSM)
+
+  // Арбитраж взаимодействия «eat» (ROADMAP п.16, converged-модель entity-interaction-model). На
+  // record-time (decide_actor, MT): хищник заявляет eat_elect_.claim(prey, self) + self-claim
+  // (намерен хватать в этот тик). На commit-time (apply, однопоточно): добычу получает лишь
+  // победитель elect, если сама добыча не инициатор («intent бьёт grab»). Сайзятся в cognition
+  // до параллельной фазы (reset/assign до claim из воркеров). Оба lock-free: elect = atomic-min
+  // many→one, self-claim = disjoint запись по индексу инициатора.
+  devils_engine::aesthetics::elect_buffer eat_elect_;
+  std::vector<uint8_t> eat_self_claim_; // индекс актора → он сам намерен хватать в этот тик (0/1)
 
   // Политика think-фазы (были поля cognition_scheduler; сериализуются как commit_ticks/think_budget).
   // commit_ticks: сущность держится решения N тиков (спрос ≈ N_actors/commit_ticks). think_budget:
