@@ -20,6 +20,7 @@ set(HDR_LIST
   include/devils_engine/catalogue/rpc_function.h
   include/devils_engine/catalogue/channel_data.h
   include/devils_engine/catalogue/registry.h
+  include/devils_engine/catalogue/call_log.h
   include/devils_engine/catalogue/demo.h
   include/devils_engine/catalogue/introspection.h
   include/devils_engine/catalogue/logging.h

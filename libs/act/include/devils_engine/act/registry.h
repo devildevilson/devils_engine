@@ -9,6 +9,7 @@
 
 #include "devils_engine/utils/string_id.h" // utils::id, string_hash
 #include "function.h"
+#include "interaction.h"
 
 namespace devils_engine {
 namespace act {
@@ -47,8 +48,15 @@ public:
   const string_function* string_fn(const fn_id id) const noexcept;
   const object_function* object(const fn_id id) const noexcept;
 
+  // Тег взаимодействия для эффекта: как арбитрить конкуренцию (см. interaction.h, ROADMAP п.16).
+  // Регистрируется отдельно от самой функции (не всякий эффект — взаимодействие). Однопоточно на загрузке.
+  void reg_interaction(const fn_id id, const interaction& desc);
+  // Дескриптор взаимодействия эффекта или nullptr, если эффект не тегирован как взаимодействие.
+  const interaction* interaction_of(const fn_id id) const noexcept;
+
 private:
   gtl::flat_hash_map<fn_id, std::unique_ptr<function_base>> functions;
+  gtl::flat_hash_map<fn_id, interaction> interactions_; // теги взаимодействий (подмножество эффектов)
   // имена по fn_id — только для ДИАГНОСТИКИ на загрузке: отличить повторную регистрацию того же
   // имени от настоящей хеш-коллизии двух РАЗНЫХ имён (см. reg()). Не используется в рантайме.
   gtl::flat_hash_map<fn_id, std::string> names_;

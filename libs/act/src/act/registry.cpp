@@ -54,5 +54,14 @@ const object_function* registry::object(const fn_id id) const noexcept {
   return get_typed<entity_id>(id);
 }
 
+void registry::reg_interaction(const fn_id id, const interaction& desc) {
+  interactions_.insert_or_assign(id, desc);
+}
+
+const interaction* registry::interaction_of(const fn_id id) const noexcept {
+  const auto itr = interactions_.find(id);
+  return itr != interactions_.end() ? &itr->second : nullptr;
+}
+
 } // namespace act
 } // namespace devils_engine

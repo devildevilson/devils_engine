@@ -336,7 +336,7 @@ static void effect_chase(const act::exec_context& ctx) noexcept {
 
 // Поедание — ЧИСТАЯ МУТАЦИЯ пары (хищник = scope[0], добыча = scope[1]). Контенция и eligibility
 // решены ДО этого вызова (ROADMAP п.16): elect выбрал единственного победителя на добычу, а apply
-// гейтит вызов по eat_won (elect.won + «intent бьёт grab»). Поэтому здесь НЕТ guard'ов конкуренции —
+// гейтит вызов по arena_.won (elect.won + «intent бьёт grab»). Поэтому здесь НЕТ guard'ов конкуренции —
 // только структурная запись заведомо бесконфликтной пары: оба замирают, метим связь, добыча «съедаемая».
 static void effect_eat(const act::exec_context& ctx) noexcept {
   auto& world = mutable_world_of(ctx);
@@ -437,6 +437,10 @@ void actor_world_slice::setup_brain_registry() {
   registry_.reg("flee", std::make_unique<act::native_function<void>>(&effect_flee, "бежать от ближайшей угрозы"));
   registry_.reg("chase", std::make_unique<act::native_function<void>>(&effect_chase, "гнаться за добычей"));
   registry_.reg("eat", std::make_unique<act::native_function<void>>(&effect_eat, "схватить добычу и начать есть"));
+  // Тег взаимодействия: eat арбитрится эксклюзивно (elect на добычу = scope[1]) + self-claim. Снимает
+  // хардкод имени функции в decide/apply — gate/reduce драйвятся дескриптором. Заводим и elect-буфер arena.
+  registry_.reg_interaction(utils::string_hash("eat"), act::interaction{}); // rule=exclusive, target_scope=1, self_claim=true
+  arena_.ensure(utils::string_hash("eat"));
   registry_.reg("seek_food", std::make_unique<act::native_function<void>>(&effect_seek_food, "искать еду — рыскать пока голоден"));
   registry_.reg("wander", std::make_unique<act::native_function<void>>(&effect_wander, "блуждать (от скуки)"));
   registry_.reg("think", std::make_unique<act::native_function<void>>(&effect_think, "стоять и думать (копит скуку)"));
@@ -712,7 +716,7 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   drives_sys_.reset();
   brains_ = brains; // до setup_brain_registry: выбирает скрипт/конфиг vs натив/хардкод
   setup_brain_registry();
-  intents().reset(count); // предварительная ёмкость по числу актороов; растёт в cognition до index_capacity
+  calls_.reset(count); // предварительная ёмкость по числу акторов; растёт в cognition до index_capacity
   tick_ = 0;
 
   // СОЗДАЁМ аллокаторы пулов поедания заранее на ГЛАВНОМ потоке. Две причины: (1) view<>
@@ -810,7 +814,7 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
 
   return actor_metrics{
     uint32_t(world_.count<actor_position>()),
-    uint32_t(intents().size()), // = сколько актороов реально думали в этот тик
+    uint32_t(calls_.size()), // = сколько акторов реально думали в этот тик
     batch.count(),
     tick_};
 }
@@ -888,29 +892,27 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
     return;
   }
 
-  act::intent in;
-  in.kind = act::intent_kind::call_function;
-  in.actor = act::entity_id{uint32_t(id)};
-  in.payload.call.fn = utils::string_hash(plan[0]->name);
-  in.source_action = in.payload.call.fn;
+  const auto fn = utils::string_hash(plan[0]->name);
+  catalogue::call_record rec;
+  rec.fn = fn;
+  rec.primary = uint32_t(id);
+  rec.target = uint32_t(aesthetics::invalid_entityid);
 
-  // Взаимодействие «eat» — RECORD-TIME арбитраж (ROADMAP п.16). Явный аргумент prey едет в intent
-  // (на commit станет scope[1]). Заявляем elect на добычу (atomic-min победитель) + self-claim
-  // (я намерен хватать в этот тик — для правила «intent бьёт grab»). Оба lock-free: elect many→one,
-  // self-claim — запись своего слота. eligibility (prey_in_range) уже обеспечена выбором GOAP.
-  static const uint64_t h_eat = utils::string_hash("eat");
-  if (in.payload.call.fn == h_eat && per->has_prey) {
+  // RECORD-TIME арбитраж (ROADMAP п.16): если эффект тегирован как взаимодействие (дескриптор в
+  // реестре), заявляем elect на цель + self-claim. Правило арбитража и то, ЧТО оспаривается,
+  // задаёт дескриптор; ОТКУДА взять цель (perception) — знает проект. Имя функции в самом механизме
+  // не хардкодится: gate/reduce драйвятся дескриптором. Оба claim'а lock-free (elect many→one,
+  // self-claim — свой слот). eligibility (prey_in_range) уже обеспечена выбором GOAP.
+  if (const auto* desc = registry_.interaction_of(fn); desc != nullptr && per->has_prey) {
     const auto prey = per->prey_id;
     if (!aesthetics::is_invalid_entityid(prey) && world_.exists(prey)) {
-      in.payload.call.target = act::entity_id{uint32_t(prey)};
-      eat_elect_.claim(prey, id);
-      eat_self_claim_[aesthetics::get_entityid_index(id)] = 1;
+      rec.target = uint32_t(prey);
+      arena_.claim(fn, prey, id); // elect(target=prey) + self-claim(claimant=self)
     }
   }
 
-  // Бакет адресуется индексом ЭТОГО актора (id уникален среди отобранных ⇒ поток пишет свой бакет).
-  // push дописывает — актор может выдать несколько intent'ов за кадр (до Cap канала).
-  intents().push(id, in);
+  // Слот адресуется индексом ЭТОГО актора (id уникален среди отобранных ⇒ поток пишет свой слот).
+  calls_.record(aesthetics::get_entityid_index(id), rec);
 }
 
 // cognition — SELECT (однопоточно) + THINK (MT map по отобранным).
@@ -926,13 +928,12 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
   if (!cognition_sys_) {
     cognition_sys_ = std::make_unique<cognition_system>(&pool, this); // ленивое (пул известен тут)
   }
-  // Засайзить буферы фазы до ёмкости индексов мира НА ГЛАВНОМ потоке — покрывает всех живых
-  // акторов, чтобы параллельные записи не реаллоцировали. intents: непересекающиеся слоты;
-  // eat_elect_: atomic-min по индексу добычи; eat_self_claim_: запись по индексу инициатора.
+  // Засайзить буферы фазы до ёмкости индексов мира НА ГЛАВНОМ потоке — покрывает всех живых акторов,
+  // чтобы параллельные записи не реаллоцировали. calls_: слот на инициатора (record без локов);
+  // arena_: elect по индексу цели (atomic-min) + self-claim по индексу инициатора.
   const size_t cap = world_.index_capacity();
-  intents().reset(cap);
-  eat_elect_.reset(cap);
-  eat_self_claim_.assign(cap, 0);
+  calls_.reset(cap);
+  arena_.reset(cap);
 
   // select: созревшие (skip едящих/схваченных — «коммит длительностью действия») + давность.
   struct candidate {
@@ -964,79 +965,55 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
     wl.push_back(c.entity);
   }
   cognition_sys_->run(tick);
-  DE_TRACE(catalogue::log_domain::gameplay, "cognition tick={} intents={} budget={}", tick, intents().size(), think_budget_);
+  DE_TRACE(catalogue::log_domain::gameplay, "cognition tick={} calls={} budget={}", tick, calls_.size(), think_budget_);
 }
 
-// eat_won — итог арбитража eat на commit-фазе (ROADMAP п.16): self получает добычу, только если он
-// наименьший претендент elect И сама добыча не заявила себя инициатором в этот тик. Второе условие —
-// правило «intent бьёт grab»: оно снимает и каскад (A→B, B→C: B защищён, A пасует), и симметрию
-// (A↔B: оба пасуют), без приоритетов и без отдельного резолв-прохода. Проигрыш = условие ложно.
-bool actor_world_slice::eat_won(const aesthetics::entityid_t prey, const aesthetics::entityid_t self) const noexcept {
-  if (!eat_elect_.won(prey, self)) {
-    return false; // не наименьший претендент на эту добычу
-  }
-  const size_t pidx = aesthetics::get_entityid_index(prey);
-  if (pidx < eat_self_claim_.size() && eat_self_claim_[pidx] != 0) {
-    return false; // добыча сама инициатор в этот тик — «intent бьёт grab»
-  }
-  return true;
-}
-
-// apply — ДЕТЕРМИНИРОВАННЫЙ барьер в двух фазах.
-//   1) исполнить эффекты выбранных действий в id-порядке (мутируют скорость). Все
-//      эффекты читают позиции ДО интеграции → решения по согласованному снимку тика.
-//   2) проинтегрировать позиции (движение НЕ ограничено — без отскоков/клампа).
-// Эффект мутирует напрямую (effect_sink подключится вторым консьюмером с catalogue).
+// apply — COMMIT-фаза deferred-call механизма (ROADMAP п.16): проиграть записанные вызовы в
+// детерминированном порядке (индекс актора; пустые слоты пропускаются). Эффекты-взаимодействия
+// (тегированы дескриптором в реестре) применяются ТОЛЬКО у победителей arena_.won (elect + «intent
+// бьёт grab»); прочие действия — безусловно; затем FSM-переход по действию. Эффект мутирует мир
+// напрямую в commit'е (логирование/effect_sink подключатся вторым консьюмером позже). Все эффекты
+// читают позиции ДО integrate → решения по согласованному снимку тика.
 void actor_world_slice::apply() {
   sound_emits_.clear(); // sim-звуки этого тика собираем заново
-  // Обход буфера интентов в порядке возрастания индекса актора (= прежний sort by id) —
-  // детерминированный apply без явной сортировки. Пустые слоты пропускаются самим for_each.
-  intents().for_each([this](const aesthetics::entityid_t /*key*/, const act::intent& in) {
-    if (in.kind != act::intent_kind::call_function) {
-      return;
-    }
-    const auto* effect = registry_.effect(in.payload.call.fn);
-    if (effect == nullptr) {
-      return;
-    }
-
-    const auto id = aesthetics::entityid_t(in.actor.id);
-    // Актора схватили В ЭТОМ ЖЕ commit (однопоточно, детерминированный индекс-порядок) → его
-    // собственное действие гасим, иначе движение перебьёт заморозку и FSM перебьёт state="eaten".
+  calls_.replay([this](const catalogue::call_record& rec) {
+    const auto id = aesthetics::entityid_t(rec.primary);
+    // Актора схватили В ЭТОМ ЖЕ commit (однопоточно, индекс-порядок) → его действие гасим, иначе
+    // движение перебьёт заморозку, а FSM перебьёт state="eaten".
     if (world_.get<actor_grabbed>(id) != nullptr) {
+      return;
+    }
+    const auto* effect = registry_.effect(rec.fn);
+    if (effect == nullptr) {
       return;
     }
     const auto* brain = world_.get<actor_brain>(id);
     const uint64_t seed = brain != nullptr ? brain->seed : 0u;
-    // cognition уже завершён: caller-полосу 0 cognition_system можно безопасно переиспользовать для
-    // apply/FSM (лямбда for_each исполняется только при наличии интентов ⇒ полосы уже созданы).
+    // cognition уже завершён: caller-полосу 0 cognition_system можно переиспользовать для apply/FSM.
     auto ctx = make_ctx(world_, id, seed, tick_, nullptr, &cognition_sys_->lanes().front().act);
 
-    // «eat» — COMMIT-TIME (ROADMAP п.16): мутирует ТОЛЬКО победитель elect и лишь если добыча сама
-    // не инициатор в этот тик. Проигравший эффект не применяет (остаётся в chase → переобдумает; FSM
-    // без actor_eating в eating не перейдёт). Добыча едет как scope[1] для чистой мутации effect_eat.
-    static const uint64_t h_eat = utils::string_hash("eat");
+    // Взаимодействие: цель → scope[target_scope], гейт по arena_.won (победитель elect + «intent бьёт
+    // grab»). Проигравший эффект не применяет (остаётся в chase → переобдумает; FSM без actor_eating в
+    // eating не перейдёт). Не-взаимодействия (chase/wander/…) применяются безусловно.
     bool run_effect = true;
-    if (in.payload.call.fn == h_eat) {
-      const auto prey = aesthetics::entityid_t(in.payload.call.target.id);
-      ctx.scope[1] = in.payload.call.target;
-      ctx.scope_count = 2;
-      run_effect = eat_won(prey, id);
+    if (const auto* desc = registry_.interaction_of(rec.fn); desc != nullptr) {
+      const auto target = aesthetics::entityid_t(rec.target);
+      ctx.scope[desc->target_scope] = act::entity_id{rec.target};
+      ctx.scope_count = uint32_t(desc->target_scope) + 1; // цель = последний участник scope
+      run_effect = arena_.won(rec.fn, target, id);
     }
     if (run_effect) {
-      effect->invoke(ctx); // движение/эффект действия; для eat-победителя — хват пары
+      effect->invoke(ctx); // движение/эффект действия; для победителя взаимодействия — мутация пары
     }
 
-    // FSM-исполнитель: событие = выбранное действие (его хеш уже лежит в intent.payload.call.fn,
-    // как и event_hash в mood). Меняем состояние ТОЛЬКО при реальном переходе — самопереход
-    // (то же действие) не пере-входит (не дёргает on_exit/on_entry зря; звук в фазе D — раз на смену).
+    // FSM-исполнитель: событие = выбранное действие (rec.fn). Меняем состояние ТОЛЬКО при реальном
+    // переходе — самопереход (то же действие) не пере-входит (звук в фазе D — раз на смену состояния).
     if (auto* st = world_.get<actor_state>(id); st != nullptr) {
-      const auto outcome = mood::step(*fsm_, st->state, in.payload.call.fn, ctx);
+      const auto outcome = mood::step(*fsm_, st->state, rec.fn, ctx);
       if (outcome.result == mood::step_result::transitioned &&
           outcome.next_state != utils::invalid_id && outcome.next_state != st->state) {
         st->state = mood::apply_transition(*fsm_, st->state, *outcome.taken, ctx);
-        // sim-звук на ВХОД в состояние (eating→чавк, flee→тревога). Позиция актора — для
-        // куллинга по слушателю в презентационном мосте. Эфемерно, не реплицируется.
+        // sim-звук на ВХОД в состояние (eating→чавк, flee→тревога). Эфемерно, не реплицируется.
         if (const uint64_t snd = sound_for_state(st->state); snd != 0) {
           if (const auto* p = world_.get<actor_position>(id); p != nullptr) {
             sound_emits_.push_back(sound_emit{snd, p->value});
@@ -1179,7 +1156,7 @@ bool actor_world_slice::load(const std::span<const uint8_t> packet) {
   integration_sys_.reset();
   drives_sys_.reset();
   setup_brain_registry();
-  intents().clear();
+  calls_.clear();
   // как в init: аллокаторы пулов поедания заранее на главном потоке (view<> не кинет; type-id
   // фиксируется до MT). load_world и так тронет все зарегистрированные типы, но порядок важен.
   static_cast<void>(world_.get_or_create_allocator<actor_eating>(sizeof(actor_eating) * 250));
