@@ -334,43 +334,17 @@ static void effect_chase(const act::exec_context& ctx) noexcept {
   set_velocity(world, self, per->prey_pos - pos->value); // к добыче
 }
 
-// Поедание: схватить добычу. Бежит в apply (id-порядок) ⇒ при конкуренции за одну жертву
-// хищник с МЕНЬШИМ id хватает первым, остальные видят actor_grabbed/actor_eating и пасуют
-// (детерминированно). Успех помечается actor_eating на себе — guard actor.is_eating пускает
-// FSM в состояние eating; провал ⇒ guard ложен ⇒ остаёмся в chase. Жертва замораживается и
-// получает actor_grabbed (её собственный интент в этом же apply пропустится — см. apply()).
+// Поедание — ЧИСТАЯ МУТАЦИЯ пары (хищник = scope[0], добыча = scope[1]). Контенция и eligibility
+// решены ДО этого вызова (ROADMAP п.16): elect выбрал единственного победителя на добычу, а apply
+// гейтит вызов по eat_won (elect.won + «intent бьёт grab»). Поэтому здесь НЕТ guard'ов конкуренции —
+// только структурная запись заведомо бесконфликтной пары: оба замирают, метим связь, добыча «съедаемая».
 static void effect_eat(const act::exec_context& ctx) noexcept {
   auto& world = mutable_world_of(ctx);
   const auto self = aesthetics::entityid_t(ctx.primary().id);
-  if (world.get<actor_eating>(self) != nullptr) {
-    return; // уже ем (защитно)
-  }
-  const auto* per = world.get<actor_perception>(self);
-  const auto* pos = world.get<actor_position>(self);
-  if (per == nullptr || pos == nullptr || !per->has_prey) {
-    return;
-  }
-
-  const auto prey = per->prey_id;
+  const auto prey = aesthetics::entityid_t(ctx.secondary().id);
   if (aesthetics::is_invalid_entityid(prey) || !world.exists(prey)) {
-    return; // жертва исчезла
+    return; // добыча исчезла между claim (think) и commit (apply)
   }
-  if (world.get<actor_grabbed>(prey) != nullptr) {
-    return; // уже схвачена (id-порядок)
-  }
-  if (world.get<actor_eating>(prey) != nullptr) {
-    return; // сама ест — не трогаем
-  }
-  const auto* ppos = world.get<actor_position>(prey);
-  if (ppos == nullptr) {
-    return;
-  }
-  const glm::vec2 d = ppos->value - pos->value;
-  if ((d.x * d.x + d.y * d.y) > eat_radius * eat_radius) {
-    return; // вышла из радиуса
-  }
-
-  // хват: оба замирают, помечаем связь, жертва визуально «съедаемая».
   world.create<actor_eating>(self, prey, ctx.rng_tick + eat_duration);
   world.create<actor_grabbed>(prey, self);
   set_velocity(world, self, glm::vec2{0.0f, 0.0f});
@@ -919,6 +893,21 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
   in.actor = act::entity_id{uint32_t(id)};
   in.payload.call.fn = utils::string_hash(plan[0]->name);
   in.source_action = in.payload.call.fn;
+
+  // Взаимодействие «eat» — RECORD-TIME арбитраж (ROADMAP п.16). Явный аргумент prey едет в intent
+  // (на commit станет scope[1]). Заявляем elect на добычу (atomic-min победитель) + self-claim
+  // (я намерен хватать в этот тик — для правила «intent бьёт grab»). Оба lock-free: elect many→one,
+  // self-claim — запись своего слота. eligibility (prey_in_range) уже обеспечена выбором GOAP.
+  static const uint64_t h_eat = utils::string_hash("eat");
+  if (in.payload.call.fn == h_eat && per->has_prey) {
+    const auto prey = per->prey_id;
+    if (!aesthetics::is_invalid_entityid(prey) && world_.exists(prey)) {
+      in.payload.call.target = act::entity_id{uint32_t(prey)};
+      eat_elect_.claim(prey, id);
+      eat_self_claim_[aesthetics::get_entityid_index(id)] = 1;
+    }
+  }
+
   // Бакет адресуется индексом ЭТОГО актора (id уникален среди отобранных ⇒ поток пишет свой бакет).
   // push дописывает — актор может выдать несколько intent'ов за кадр (до Cap канала).
   intents().push(id, in);
@@ -937,9 +926,13 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
   if (!cognition_sys_) {
     cognition_sys_ = std::make_unique<cognition_system>(&pool, this); // ленивое (пул известен тут)
   }
-  // Засайзить буфер интентов до ёмкости индексов мира НА ГЛАВНОМ потоке — покрывает всех живых
-  // акторов, чтобы параллельный store не реаллоцировал (записи в непересекающиеся слоты безопасны).
-  intents().reset(world_.index_capacity());
+  // Засайзить буферы фазы до ёмкости индексов мира НА ГЛАВНОМ потоке — покрывает всех живых
+  // акторов, чтобы параллельные записи не реаллоцировали. intents: непересекающиеся слоты;
+  // eat_elect_: atomic-min по индексу добычи; eat_self_claim_: запись по индексу инициатора.
+  const size_t cap = world_.index_capacity();
+  intents().reset(cap);
+  eat_elect_.reset(cap);
+  eat_self_claim_.assign(cap, 0);
 
   // select: созревшие (skip едящих/схваченных — «коммит длительностью действия») + давность.
   struct candidate {
@@ -974,6 +967,21 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
   DE_TRACE(catalogue::log_domain::gameplay, "cognition tick={} intents={} budget={}", tick, intents().size(), think_budget_);
 }
 
+// eat_won — итог арбитража eat на commit-фазе (ROADMAP п.16): self получает добычу, только если он
+// наименьший претендент elect И сама добыча не заявила себя инициатором в этот тик. Второе условие —
+// правило «intent бьёт grab»: оно снимает и каскад (A→B, B→C: B защищён, A пасует), и симметрию
+// (A↔B: оба пасуют), без приоритетов и без отдельного резолв-прохода. Проигрыш = условие ложно.
+bool actor_world_slice::eat_won(const aesthetics::entityid_t prey, const aesthetics::entityid_t self) const noexcept {
+  if (!eat_elect_.won(prey, self)) {
+    return false; // не наименьший претендент на эту добычу
+  }
+  const size_t pidx = aesthetics::get_entityid_index(prey);
+  if (pidx < eat_self_claim_.size() && eat_self_claim_[pidx] != 0) {
+    return false; // добыча сама инициатор в этот тик — «intent бьёт grab»
+  }
+  return true;
+}
+
 // apply — ДЕТЕРМИНИРОВАННЫЙ барьер в двух фазах.
 //   1) исполнить эффекты выбранных действий в id-порядке (мутируют скорость). Все
 //      эффекты читают позиции ДО интеграции → решения по согласованному снимку тика.
@@ -993,8 +1001,8 @@ void actor_world_slice::apply() {
     }
 
     const auto id = aesthetics::entityid_t(in.actor.id);
-    // Актора схватили В ЭТОМ ЖЕ apply (хищник с меньшим id отработал раньше) → его собственный
-    // интент гасим, иначе движение перебьёт заморозку. Детерминированно (id-порядок).
+    // Актора схватили В ЭТОМ ЖЕ commit (однопоточно, детерминированный индекс-порядок) → его
+    // собственное действие гасим, иначе движение перебьёт заморозку и FSM перебьёт state="eaten".
     if (world_.get<actor_grabbed>(id) != nullptr) {
       return;
     }
@@ -1002,8 +1010,22 @@ void actor_world_slice::apply() {
     const uint64_t seed = brain != nullptr ? brain->seed : 0u;
     // cognition уже завершён: caller-полосу 0 cognition_system можно безопасно переиспользовать для
     // apply/FSM (лямбда for_each исполняется только при наличии интентов ⇒ полосы уже созданы).
-    const auto ctx = make_ctx(world_, id, seed, tick_, nullptr, &cognition_sys_->lanes().front().act);
-    effect->invoke(ctx); // движение (скорость + плейсхолдер укуса) — арбитраж GOAP
+    auto ctx = make_ctx(world_, id, seed, tick_, nullptr, &cognition_sys_->lanes().front().act);
+
+    // «eat» — COMMIT-TIME (ROADMAP п.16): мутирует ТОЛЬКО победитель elect и лишь если добыча сама
+    // не инициатор в этот тик. Проигравший эффект не применяет (остаётся в chase → переобдумает; FSM
+    // без actor_eating в eating не перейдёт). Добыча едет как scope[1] для чистой мутации effect_eat.
+    static const uint64_t h_eat = utils::string_hash("eat");
+    bool run_effect = true;
+    if (in.payload.call.fn == h_eat) {
+      const auto prey = aesthetics::entityid_t(in.payload.call.target.id);
+      ctx.scope[1] = in.payload.call.target;
+      ctx.scope_count = 2;
+      run_effect = eat_won(prey, id);
+    }
+    if (run_effect) {
+      effect->invoke(ctx); // движение/эффект действия; для eat-победителя — хват пары
+    }
 
     // FSM-исполнитель: событие = выбранное действие (его хеш уже лежит в intent.payload.call.fn,
     // как и event_hash в mood). Меняем состояние ТОЛЬКО при реальном переходе — самопереход

@@ -32,6 +32,7 @@ struct intent {
     vec3 target;
     struct {
       utils::id fn;
+      entity_id target; // вторичный участник для эффектов-взаимодействий (едет в scope[1]); {} если не нужен
     } call;
     struct {
       utils::id event;
