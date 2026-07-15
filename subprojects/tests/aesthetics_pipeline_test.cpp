@@ -42,8 +42,8 @@ TEST_CASE("message_registry keeps independent channels per message type") {
 
   const auto e1 = aesthetics::make_entityid(1, 0);
   const auto e2 = aesthetics::make_entityid(2, 0);
-  hot.store(e1, hot_msg{11});
-  oth.store(e2, other_msg{22});
+  hot.push(e1, hot_msg{11});
+  oth.push(e2, other_msg{22});
 
   CHECK(board.has<hot_msg>());
   CHECK(board.has<other_msg>());
@@ -64,8 +64,8 @@ TEST_CASE("message_registry reset_all and clear_all sweep every channel") {
   board.channel<hot_msg>().reset(4);
   board.channel<other_msg>().reset(4);
   const auto e = aesthetics::make_entityid(1, 0);
-  board.channel<hot_msg>().store(e, hot_msg{1});
-  board.channel<other_msg>().store(e, other_msg{2});
+  board.channel<hot_msg>().push(e, hot_msg{1});
+  board.channel<other_msg>().push(e, other_msg{2});
   REQUIRE(board.channel<hot_msg>().size() == 1);
   REQUIRE(board.channel<other_msg>().size() == 1);
 
@@ -74,7 +74,7 @@ TEST_CASE("message_registry reset_all and clear_all sweep every channel") {
   CHECK(board.channel<other_msg>().empty());
   CHECK(board.channel<hot_msg>().capacity() == 4); // ёмкость сохранена
 
-  board.channel<hot_msg>().store(e, hot_msg{1});
+  board.channel<hot_msg>().push(e, hot_msg{1});
   board.reset_all(16);
   CHECK(board.channel<hot_msg>().empty());
   CHECK(board.channel<hot_msg>().capacity() == 16); // reset_all сайзит все каналы
@@ -91,7 +91,7 @@ struct doubler : aesthetics::template_system_mt<heat> {
   void process(const query_tuple_t& t, const size_t /*time*/) override {
     const auto id = std::get<0>(t);
     const auto* h = std::get<1>(t);
-    board->channel<hot_msg>().store(id, hot_msg{h->v * 2});
+    board->channel<hot_msg>().push(id, hot_msg{h->v * 2});
   }
 };
 } // namespace
@@ -189,7 +189,7 @@ struct thinker : aesthetics::worklist_system<int> {
     : aesthetics::worklist_system<int>(pool), board(b) {}
   void process(const entityid_t id, int& scratch, const size_t time) override {
     scratch += 1; // per-thread scratch доступна и эксклюзивна
-    board->channel<think_msg>().store(id, think_msg{get_entityid_index(id), time});
+    board->channel<think_msg>().push(id, think_msg{get_entityid_index(id), time});
   }
 };
 } // namespace
