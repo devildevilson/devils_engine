@@ -296,8 +296,13 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
     **Таксономия задач эффектов по MT-безопасности** (память entity-interaction-model): (A) self-мутация→
     параллельный map; (B) contended claim→elect; (C) кумулятив к цели→collect; (D) структурное (create/
     remove компонента/сущности)→сбор запросов в MT + однопоточная поздняя фаза (resolve_eating=эталон D).
-    Осталось: build_actor_batch (gather в caller-batch), явный phase-list, ужать слайс; integration/drives
-    (dt) — вместе с phase-list.
+    **ЗАВЕРШЕНО (2026-07-17, решение автора):** phase-list = ЯВНАЯ traced-последовательность в `update()`
+    (compile-time fn_traits, zero-cost — это и есть проектная регистрация порядка фаз; runtime-`vector<
+    std::function>` отвергнут как маргинальный). `build_actor_batch` остаётся методом `actor_batch::build`
+    (когезия: batch строит себя из мира; sim→render marshalling, не world-система; нет тест-покрытия —
+    рисково конвертить). `maintain_food` (create) — шаг. integration/drives остаются subclass-системами
+    (per-frame dt членом); конверсия в лямбды опциональна. ИТОГ п.11: примитивы движковые
+    (elect/collect/message/worklist/template+лямбда-системы/commit_calls), 3 скана→системы, порядок фаз=код.
     **⚠️ Согласованный дизайн (2026-07-13, сделать в ближайшем будущем):** целевая форма —
     `process query_t<> → message_buffer → process query_t<> → …`. Примитивы в **`libs/aesthetics`**
     (не simul; simul = только порядок фаз + гейтинг): оживить `template_system_mt` из `exclude/` как
