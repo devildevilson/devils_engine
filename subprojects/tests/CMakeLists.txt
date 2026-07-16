@@ -67,6 +67,9 @@ target_link_libraries(aesthetics_elect_buffer_test PRIVATE devils_engine::aesthe
 devils_add_doctest(aesthetics_interaction_arena_test aesthetics_interaction_arena_test.cpp)
 target_link_libraries(aesthetics_interaction_arena_test PRIVATE devils_engine::aesthetics devils_engine::thread)
 
+devils_add_doctest(aesthetics_collect_buffer_test aesthetics_collect_buffer_test.cpp)
+target_link_libraries(aesthetics_collect_buffer_test PRIVATE devils_engine::aesthetics devils_engine::thread)
+
 devils_add_doctest(catalogue_call_log_test catalogue_call_log_test.cpp)
 target_link_libraries(catalogue_call_log_test PRIVATE devils_engine::catalogue devils_engine::thread)
 
