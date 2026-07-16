@@ -131,6 +131,54 @@ TEST_CASE("template_system_mt maps a query into a message_registry channel acros
   CHECK(ordered_and_correct);
 }
 
+TEST_CASE("make_map_system_mt runs a lambda over a query across threads (no subclass)") {
+  constexpr int32_t n = 1500;
+  aesthetics::world world;
+  for (int32_t i = 0; i < n; ++i) {
+    const auto id = world.gen_entityid();
+    REQUIRE(world.create<heat>(id, heat{i}) != nullptr); // heat.v == индекс сущности
+  }
+  message_registry board;
+  board.channel<hot_msg>().reset(world.index_capacity());
+
+  thread::atomic_pool pool(4);
+  // Система = лямбда, без struct-наследника: пишет в шину по слоту своей сущности (disjoint ⇒ без гонок).
+  auto sys = aesthetics::make_map_system_mt<heat>(
+    &pool, &world, [&board](const auto& t, const size_t /*time*/) {
+      board.channel<hot_msg>().push(std::get<0>(t), hot_msg{std::get<1>(t)->v * 2});
+    });
+  sys->update(0);
+
+  const auto* ch = board.find<hot_msg>();
+  REQUIRE(ch != nullptr);
+  CHECK(ch->size() == size_t(n));
+  bool ok = true;
+  ch->for_each([&](const entityid_t id, const hot_msg& m) {
+    ok = ok && m.doubled == int32_t(get_entityid_index(id)) * 2;
+  });
+  CHECK(ok);
+}
+
+TEST_CASE("make_map_system runs a lambda single-threaded (captured reduce/gather)") {
+  aesthetics::world world;
+  for (int32_t i = 0; i < 8; ++i) {
+    const auto id = world.gen_entityid();
+    REQUIRE(world.create<heat>(id, heat{i * 10}) != nullptr);
+  }
+  // Однопоточный обход: лямбда собирает в захваченный вектор (reduce/gather — безопасно без локов).
+  std::vector<int32_t> seen;
+  auto sys = aesthetics::make_map_system<heat>(&world, [&seen](const auto& t, const size_t /*time*/) {
+    seen.push_back(std::get<1>(t)->v);
+  });
+  sys->update(0);
+  REQUIRE(seen.size() == 8);
+  int32_t sum = 0;
+  for (const auto v : seen) {
+    sum += v;
+  }
+  CHECK(sum == (0 + 1 + 2 + 3 + 4 + 5 + 6 + 7) * 10);
+}
+
 TEST_CASE("budget_clamp keeps the highest-priority candidates with a deterministic tiebreak") {
   struct cand {
     uint64_t overdue;

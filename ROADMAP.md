@@ -276,6 +276,24 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
 11. **B-в — декларативный пайплайн систем** — **[необходимо]**. Список систем + действия над
     компонентами как упорядоченные фазы над view/query. Сейчас think→apply + intent-буфер +
     cognition-scheduler ПРОТОТИПИРОВАНЫ в tile_frontier; поднять в либу.
+    **ПРОГРЕСС 2026-07-16 — примитивы движковые:** `elect_buffer`/`collect_buffer`/`interaction_arena`/
+    `message_buffer`/`message_registry`/`worklist_system`/`budget_clamp`/`template_system[_mt]` — в
+    `libs/aesthetics`; commit-фаза — `simul::commit_calls`. Добавлены **лямбда-системы**
+    `aesthetics::make_map_system[_mt]<Comp...>(…, fn)` — map-система ИЗ ЛЯМБДЫ без подкласса (цель «проект
+    задаёт обработку в удобной форме»; single + MT; +2 теста в aesthetics_pipeline_test). ОСТАЁТСЯ: (а)
+    явный API «список фаз» (система-лист) — упирается в РАЗВИЛКУ per-frame контекста: `basic_system::
+    update(size_t time)` слишком узок (системам нужны dt/pool/board), решить `update(time)` + члены-входы
+    (текущий паттерн) vs `update(frame_context&)`; (б) обернуть НЕ-map сканы (build_sense_tree=reduce,
+    resolve_eating=delete, build_actor_batch=gather, maintain_food=create) — нужны иные shape'ы систем;
+    (в) ужать слайс на этих системах. cognition-«scheduler» уже растворён (budget_clamp+worklist_system).
+    ВЫВОД по shape'ам (2026-07-16): `make_map_system` (single) покрывает iterate/reduce/gather,
+    `make_map_system_mt` — параллельный map; отдельные примитивы не нужны, create/delete (maintain_food/
+    структурные) остаются шагами. Переведены на лямбда-системы: `build_sense_tree` (reduce→kd) и
+    `cognition`-SELECT (reduce→due_); resume bit-identical. **РАЗВИЛКА per-frame контекста РЕШЕНА:**
+    `frame_context` НЕ нужен — всё инъектируется в конструктор (лямбда=захват), per-frame (dt) через
+    захваченный указатель/член; `update(size_t time)` остаётся ⇒ phase-list = `vector<basic_system*>`+run.
+    Осталось: обернуть resolve_eating (скан+структурный хвост) и build_actor_batch (gather в caller-batch),
+    затем собрать явный phase-list и ужать слайс. integration/drives (dt) конвертируются вместе с phase-list.
     **⚠️ Согласованный дизайн (2026-07-13, сделать в ближайшем будущем):** целевая форма —
     `process query_t<> → message_buffer → process query_t<> → …`. Примитивы в **`libs/aesthetics`**
     (не simul; simul = только порядок фаз + гейтинг): оживить `template_system_mt` из `exclude/` как
@@ -306,8 +324,10 @@ App-shell закрывает топологию приложения, но не 
    cognition scheduling, фазовые барьеры и запуск фаз над ECS view/query. Проект регистрирует фазы и
    queries, но не реализует scheduler заново. Это основной implementation slice п.11.
    **Начато 2026-07-16:** commit-фаза (apply) поднята — `simul::commit_calls` (interaction_commit.h);
-   simul получил PUBLIC-deps `act`+`aesthetics` ⇒ дальнейшие переносы пайплайна (think/cognition/барьеры)
-   уже дешевле (deps на месте). Остаётся think/cognition scheduling + фазовые барьеры.
+   simul получил PUBLIC-deps `act`+`aesthetics`. cognition-scheduler уже растворён в примитивы
+   (budget_clamp+worklist_system, aesthetics). Добавлены лямбда-системы (`make_map_system[_mt]`) —
+   система из лямбды без подкласса. Остаётся: явный API «список фаз» (упирается в развилку per-frame
+   контекста, см. п.11), обёртывание не-map сканов в системы, ужатие слайса.
 2. **Разделить engine lifecycle и project gameplay в `tile_frontier::simulation`** — общий main host
    владеет boot → loading → game, startup/runtime-state resources, main-frame и runtime settings;
    проект подключается через callbacks наподобие `register_project_bindings`,

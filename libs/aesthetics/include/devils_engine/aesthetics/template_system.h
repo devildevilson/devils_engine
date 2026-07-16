@@ -2,6 +2,10 @@
 #define DEVILS_ENGINE_AESTHETICS_TEMPLATE_SYSTEM_H
 
 #include <cstddef>
+#include <functional> // std::ref
+#include <memory>     // std::unique_ptr
+#include <type_traits>
+#include <utility> // std::move
 
 #include "devils_engine/thread/atomic_pool.h"
 #include "world.h"
@@ -81,6 +85,70 @@ public:
 protected:
   thread::atomic_pool* pool;
 };
+
+// ── Лямбда-системы: map-система ИЗ ЛЯМБДЫ, без подкласса ──────────────────────────────────────────
+// «Проект задаёт обработку компонентов в удобной форме» (ROADMAP п.11, цель — минимум бойлерплейта):
+// вместо struct-наследника с process() — make_map_system[_mt]<Comp...>(…, fn), где fn(query_tuple_t, time)
+// исполняется на каждую сущность. Лямбда шаблонит систему по типу (прямой вызов, без per-entity virtual),
+// а базовый тип template_system<Comp...>/basic_system делает её полиморфно listable (для списка фаз).
+// Per-frame входы (dt, соседи, шина) лямбда берёт захватом (обычно [this] проекта) — примитив о них не знает.
+namespace detail {
+template <typename Fn, typename... Comp_T>
+class lambda_system final : public template_system<Comp_T...> {
+public:
+  using tuple_t = typename template_system<Comp_T...>::query_tuple_t;
+  lambda_system(class world* world, Fn fn) noexcept : template_system<Comp_T...>(world), fn_(std::move(fn)) {}
+  void update(const size_t time) override {
+    for (const auto& t : this->query) {
+      fn_(t, time); // прямой вызов лямбды (инлайнится), без per-entity виртуали
+    }
+  }
+  void process(const tuple_t& t, const size_t time) override {
+    fn_(t, time); // требуется абстрактной базой; update() её не использует
+  }
+
+private:
+  Fn fn_;
+};
+
+template <typename Fn, typename... Comp_T>
+class lambda_system_mt final : public template_system_mt<Comp_T...> {
+public:
+  using tuple_t = typename template_system<Comp_T...>::query_tuple_t;
+  using query_t = typename template_system_mt<Comp_T...>::query_t;
+  lambda_system_mt(thread::atomic_pool* pool, class world* world, Fn fn) noexcept
+    : template_system_mt<Comp_T...>(pool, world), fn_(std::move(fn)) {}
+  void update(const size_t time) override {
+    this->pool->distribute1(
+      this->query.size(),
+      [this](const size_t start, const size_t count, const query_t& q, const size_t time) {
+        for (size_t i = start; i < start + count; ++i) {
+          fn_(q[i], time);
+        }
+      },
+      std::ref(this->query), time);
+    this->pool->compute();
+    this->pool->wait();
+  }
+  void process(const tuple_t& t, const size_t time) override {
+    fn_(t, time);
+  }
+
+private:
+  Fn fn_;
+};
+} // namespace detail
+
+// Собрать map-систему из лямбды fn(query_tuple_t, time). Комп-типы задаются явно, тип лямбды выводится.
+// Возвращает полиморфную базу (template_system<Comp...> : basic_system) — годна для списка фаз.
+template <typename... Comp_T, typename Fn>
+std::unique_ptr<template_system<Comp_T...>> make_map_system(class world* world, Fn fn) {
+  return std::make_unique<detail::lambda_system<std::decay_t<Fn>, Comp_T...>>(world, std::move(fn));
+}
+template <typename... Comp_T, typename Fn>
+std::unique_ptr<template_system<Comp_T...>> make_map_system_mt(thread::atomic_pool* pool, class world* world, Fn fn) {
+  return std::make_unique<detail::lambda_system_mt<std::decay_t<Fn>, Comp_T...>>(pool, world, std::move(fn));
+}
 
 } // namespace aesthetics
 } // namespace devils_engine
