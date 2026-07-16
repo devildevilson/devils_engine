@@ -711,6 +711,7 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   drives_sys_.reset();
   sense_tree_sys_.reset();
   select_sys_.reset();
+  resolve_eating_sys_.reset();
   brains_ = brains; // до setup_brain_registry: выбирает скрипт/конфиг vs натив/хардкод
   setup_brain_registry();
   calls_.reset(count); // предварительная ёмкость по числу акторов; растёт в cognition до index_capacity
@@ -1043,26 +1044,32 @@ void actor_world_slice::update_drives(const float dt_seconds, thread::atomic_poo
 }
 
 // resolve_eating — завершить поедание у хищников с истёкшим сроком: наелся (голод в ноль),
-// снять actor_eating (хищник снова «созреет» и переобдумает), удалить съеденную жертву. Удаление
-// компонентов/сущностей — ПОСЛЕ обхода view (нельзя мутировать пул, по которому идём). Поеданий
-// за тик мало → локальные буферы дёшевы.
+// снять actor_eating (хищник снова «созреет» и переобдумает), удалить съеденную жертву. СКАН — лямбда-
+// система (reduce view<actor_eating> в eat_finished_/eat_kill_; мутация СВОЕГО stats disjoint). Структурное
+// удаление компонентов/сущностей — ПОСЛЕ прохода в обёртке (нельзя мутировать пул при обходе), однопоточно.
 void actor_world_slice::resolve_eating(const uint64_t tick) {
-  std::vector<aesthetics::entityid_t> finished; // хищники, закончившие есть
-  std::vector<aesthetics::entityid_t> kill;     // съеденные жертвы на удаление
-  for (auto [id, eat] : world_.view<actor_eating>()) {
-    if (tick < eat->until_tick) {
-      continue;
-    }
-    if (auto* dr = world_.get<stats>(id); dr != nullptr) {
-      dr->hunger = 0.0f; // наелся
-    }
-    finished.push_back(id);
-    kill.push_back(eat->target);
+  eat_finished_.clear();
+  eat_kill_.clear();
+  if (!resolve_eating_sys_) {
+    resolve_eating_sys_ = aesthetics::make_map_system<actor_eating>(
+      &world_, [this](const auto& t, const size_t time) {
+        const auto id = std::get<0>(t);
+        const auto* eat = std::get<1>(t);
+        if (time < eat->until_tick) {
+          return;
+        }
+        if (auto* dr = world_.get<stats>(id); dr != nullptr) {
+          dr->hunger = 0.0f; // наелся
+        }
+        eat_finished_.push_back(id);
+        eat_kill_.push_back(eat->target);
+      });
   }
-  for (const auto pid : finished) {
+  resolve_eating_sys_->update(tick);
+  for (const auto pid : eat_finished_) {
     world_.remove<actor_eating>(pid);
   }
-  for (const auto bid : kill) {
+  for (const auto bid : eat_kill_) {
     if (world_.exists(bid)) {
       world_.remove_entity(bid);
     }
@@ -1153,6 +1160,7 @@ bool actor_world_slice::load(const std::span<const uint8_t> packet) {
   drives_sys_.reset();
   sense_tree_sys_.reset();
   select_sys_.reset();
+  resolve_eating_sys_.reset();
   setup_brain_registry();
   calls_.clear();
   // как в init: аллокаторы пулов поедания заранее на главном потоке (view<> не кинет; type-id

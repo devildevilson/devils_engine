@@ -379,6 +379,11 @@ private:
   };
   std::unique_ptr<devils_engine::aesthetics::basic_system> select_sys_;
   std::vector<think_candidate> due_; // выход SELECT (переиспользуется/очищается за тик), вход budget_clamp
+  // resolve_eating: скан-часть — лямбда-система (reduce view<actor_eating> в буферы); структурное удаление
+  // (снять actor_eating, убить жертву) — ПОСЛЕ прохода в обёртке (нельзя мутировать пул при обходе).
+  std::unique_ptr<devils_engine::aesthetics::basic_system> resolve_eating_sys_;
+  std::vector<devils_engine::aesthetics::entityid_t> eat_finished_; // хищники с истёкшим поеданием (per-tick)
+  std::vector<devils_engine::aesthetics::entityid_t> eat_kill_;     // съеденные жертвы на удаление (per-tick)
   // Проектные конфиги мозга (из tavl); поля nullptr ⇒ нативный/хардкод фолбэк. Задаются в init.
   brain_config brains_;
 

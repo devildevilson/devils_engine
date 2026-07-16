@@ -288,12 +288,16 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
     (в) ужать слайс на этих системах. cognition-«scheduler» уже растворён (budget_clamp+worklist_system).
     ВЫВОД по shape'ам (2026-07-16): `make_map_system` (single) покрывает iterate/reduce/gather,
     `make_map_system_mt` — параллельный map; отдельные примитивы не нужны, create/delete (maintain_food/
-    структурные) остаются шагами. Переведены на лямбда-системы: `build_sense_tree` (reduce→kd) и
-    `cognition`-SELECT (reduce→due_); resume bit-identical. **РАЗВИЛКА per-frame контекста РЕШЕНА:**
-    `frame_context` НЕ нужен — всё инъектируется в конструктор (лямбда=захват), per-frame (dt) через
-    захваченный указатель/член; `update(size_t time)` остаётся ⇒ phase-list = `vector<basic_system*>`+run.
-    Осталось: обернуть resolve_eating (скан+структурный хвост) и build_actor_batch (gather в caller-batch),
-    затем собрать явный phase-list и ужать слайс. integration/drives (dt) конвертируются вместе с phase-list.
+    структурные) остаются шагами. Переведены на лямбда-системы: `build_sense_tree` (reduce→kd),
+    `cognition`-SELECT (reduce→due_), `resolve_eating` (скан→буферы, структурное удаление в обёртке); resume
+    bit-identical, eat 15/222. **РАЗВИЛКА per-frame контекста РЕШЕНА:** `frame_context` НЕ нужен — всё
+    инъектируется в конструктор (лямбда=захват), per-frame (dt) через захваченный указатель/член;
+    `update(size_t time)` остаётся ⇒ phase-list = `vector<basic_system*>`+run.
+    **Таксономия задач эффектов по MT-безопасности** (память entity-interaction-model): (A) self-мутация→
+    параллельный map; (B) contended claim→elect; (C) кумулятив к цели→collect; (D) структурное (create/
+    remove компонента/сущности)→сбор запросов в MT + однопоточная поздняя фаза (resolve_eating=эталон D).
+    Осталось: build_actor_batch (gather в caller-batch), явный phase-list, ужать слайс; integration/drives
+    (dt) — вместе с phase-list.
     **⚠️ Согласованный дизайн (2026-07-13, сделать в ближайшем будущем):** целевая форма —
     `process query_t<> → message_buffer → process query_t<> → …`. Примитивы в **`libs/aesthetics`**
     (не simul; simul = только порядок фаз + гейтинг): оживить `template_system_mt` из `exclude/` как
