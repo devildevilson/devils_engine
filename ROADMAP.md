@@ -363,7 +363,17 @@ tile/actor render draws намеренно остаются проектными
     спец-каст `h_eat` УБРАН. Дет-развилка: catalogue generic (ниже act, act ECS-агностичен), reduce→
     aesthetics, композиция в слайсе. build rc=0, 150/150 тестов, resume 120т bit-identical, eat идентично.
     Остаётся: `collect`; поднять commit-loop в simul; byte-serial (netcode/replay) ортогонально.
-    - **ТЕХДОЛГ — act call-packer + fat entity-handle (дизайн-набросок 2026-07-16, НЕ реализован):**
+    - ✅ **act call-packer + fat entity-handle + least-privilege + разнородные сигнатуры (СДЕЛАНО
+      2026-07-16):** `act::pack<&fn>()` (packer.h) адаптирует обычную C++-функцию в `act::function<Ret>`,
+      биндя аргументы по ТИПУ: `entity_handle{world*,entity_id}`←scope, `rng_source`←ctx (RNG/тик),
+      `const exec_context&`←ctx (спец-случай), plain←call_context. Все 12 brain-функций tile_frontier
+      переведены (эффекты+предикаты без exec_context); exec_context-путь сохранён. Модель блокировок
+      (goal 2/3): НЕ в упаковщике, а pipeline-шаг (interaction_arena по дескриптору); ключ контенции =
+      (interaction_id, target-entityid) — fn_id выбирает контест, entityid = слот; self-claim по
+      claimant-entityid. Out-of-scope (goal 5): внешние-к-ECS системы через handle локер не арбитрирует.
+      Тест act_packer_test (5), build rc=0, 155/155, resume bit-identical, eat идентично. Документировано
+      в libs/act/README.md. Follow-up: вернуть describe в pack (desc-arg). Исходный набросок ниже:
+    - **(исходный дизайн-набросок 2026-07-16):**
       обобщить ручную проводку взаимодействий в СИГНАТУРО-УПРАВЛЯЕМЫЙ упаковщик (прецедент TMP —
       `catalogue::fn_traits`). Эффект пишется обычной функцией от fat-handle'ов
       (`struct {world*, entityid_t}` — упаковка на ВРЕМЯ вызова, НЕ в лог: указатель непереносим),

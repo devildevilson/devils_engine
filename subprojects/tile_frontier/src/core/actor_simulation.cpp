@@ -8,6 +8,7 @@
 
 #include <devils_engine/act/exec_context.h>
 #include <devils_engine/act/function.h>
+#include <devils_engine/act/packer.h> // entity_handle/rng_source/pack — упаковщик обычных функций без exec_context
 #include <devils_engine/acumen/astar.h> // astar<>::container для find_solution
 #include <devils_engine/aesthetics/common.h>
 #include <devils_engine/aesthetics/template_system.h> // template_system_mt — map-примитив фаз
@@ -34,14 +35,10 @@ namespace core {
 
 using namespace devils_engine;
 
-// ── Мост act::exec_context ↔ aesthetics::world ─────────────────────────────
-// act намеренно ECS-агностичен: exec_context.w — НЕПРОЗРАЧНЫЙ тег (act::world
-// нигде не определён). Шов здесь, где видны оба мира: храним сырой указатель на
-// настоящий aesthetics::world и кастуем обратно одним хелпером. Горячий путь —
-// каст указателя, без виртуалок; act не зависит от aesthetics.
-static const aesthetics::world& world_of(const act::exec_context& ctx) noexcept {
-  return *reinterpret_cast<const aesthetics::world*>(ctx.w);
-}
+// ── Мост act ↔ aesthetics::world ───────────────────────────────────────────
+// act намеренно ECS-агностичен: exec_context.w / entity_handle.w — НЕПРОЗРАЧНЫЙ тег (act::world нигде
+// не определён). Шов здесь, где видны оба мира: сырой указатель кладёт make_ctx, достаёт world_of(handle)
+// одним кастом. Горячий путь — каст указателя, без виртуалок; act не зависит от aesthetics.
 
 // Строит контекст вызова для конкретной сущности. sink == nullptr ⇒ dry-run
 // (планирование/think не мутирует мир). entity_id round-trip'ит полный packed id.
@@ -61,12 +58,16 @@ static act::exec_context make_ctx(
   return ctx;
 }
 
-// Мутирующий вариант моста для apply-фазы. effect_sink ещё не подключён (приедет с
-// catalogue), поэтому на MVP эффект мутирует мир НАПРЯМУЮ. const_cast здесь определён:
-// объект (actor_world_slice::world_) реально мутабелен, const на ctx.w — лишь контракт
-// exec_context (мир «только чтение» для предикатов и dry-run-планирования).
-static aesthetics::world& mutable_world_of(const act::exec_context& ctx) noexcept {
-  return *const_cast<aesthetics::world*>(reinterpret_cast<const aesthetics::world*>(ctx.w));
+// Аксессоры fat-handle (act::entity_handle) — для функций, написанных БЕЗ exec_context (packer.h,
+// ROADMAP п.16). Реинтерпрет act::world → aesthetics::world (упаковщик уже снял const с ctx.w при сборке
+// handle) + распаковка id. Даёт эффекту ровно world+entity, без остальных внутренностей exec_context.
+// const_cast для мутации определён: actor_world_slice::world_ реально мутабелен (const на ctx.w — лишь
+// контракт exec_context для предикатов/dry-run; эффекты фазы commit мутируют мир напрямую до effect_sink).
+static aesthetics::world& world_of(const act::entity_handle h) noexcept {
+  return *reinterpret_cast<aesthetics::world*>(h.w);
+}
+static aesthetics::entityid_t ent(const act::entity_handle h) noexcept {
+  return aesthetics::entityid_t(h.id.id);
 }
 
 // purpose-метка для counter-RNG (utils::mix) — разводит потоки случайности.
@@ -261,32 +262,31 @@ static uint64_t sound_for_state(const uint64_t state) noexcept {
 // Предикаты ЧИСТЫЕ — читают actor_perception (наполнен sense-фазой) за O(1), их
 // свободно зовёт планировщик A*. Эффекты мутируют скорость на apply-фазе.
 
-static bool predicate_threat_present(const act::exec_context& ctx) noexcept {
-  const auto* per = world_of(ctx).get<actor_perception>(aesthetics::entityid_t(ctx.primary().id));
+static bool predicate_threat_present(const act::entity_handle self) noexcept {
+  const auto* per = world_of(self).get<actor_perception>(ent(self));
   return per != nullptr && per->has_threat;
 }
 
-static bool predicate_prey_present(const act::exec_context& ctx) noexcept {
-  const auto* per = world_of(ctx).get<actor_perception>(aesthetics::entityid_t(ctx.primary().id));
+static bool predicate_prey_present(const act::entity_handle self) noexcept {
+  const auto* per = world_of(self).get<actor_perception>(ent(self));
   return per != nullptr && per->has_prey;
 }
 
-static bool predicate_is_hungry(const act::exec_context& ctx) noexcept {
-  const auto* dr = world_of(ctx).get<stats>(aesthetics::entityid_t(ctx.primary().id));
+static bool predicate_is_hungry(const act::entity_handle self) noexcept {
+  const auto* dr = world_of(self).get<stats>(ent(self));
   return dr != nullptr && dr->hunger >= hungry_threshold;
 }
 
-static bool predicate_is_bored(const act::exec_context& ctx) noexcept {
-  const auto* dr = world_of(ctx).get<stats>(aesthetics::entityid_t(ctx.primary().id));
+static bool predicate_is_bored(const act::entity_handle self) noexcept {
+  const auto* dr = world_of(self).get<stats>(ent(self));
   return dr != nullptr && dr->boredom >= bored_threshold;
 }
 
 // Добыча есть И в радиусе хвата — разделяет chase (далеко) и eat (вплотную).
-static bool predicate_prey_in_range(const act::exec_context& ctx) noexcept {
-  const auto self = aesthetics::entityid_t(ctx.primary().id);
-  const auto& w = world_of(ctx);
-  const auto* per = w.get<actor_perception>(self);
-  const auto* pos = w.get<actor_position>(self);
+static bool predicate_prey_in_range(const act::entity_handle self) noexcept {
+  const auto& w = world_of(self);
+  const auto* per = w.get<actor_perception>(ent(self));
+  const auto* pos = w.get<actor_position>(ent(self));
   if (per == nullptr || pos == nullptr || !per->has_prey) {
     return false;
   }
@@ -296,8 +296,8 @@ static bool predicate_prey_in_range(const act::exec_context& ctx) noexcept {
 
 // Актор уже ест (есть actor_eating) — guard для перехода FSM в eating: транзит только если
 // хват реально удался (effect_eat выставил компонент). Иначе остаёмся в прежнем состоянии.
-static bool predicate_is_eating(const act::exec_context& ctx) noexcept {
-  return world_of(ctx).get<actor_eating>(aesthetics::entityid_t(ctx.primary().id)) != nullptr;
+static bool predicate_is_eating(const act::entity_handle self) noexcept {
+  return world_of(self).get<actor_eating>(ent(self)) != nullptr;
 }
 
 // Ставит скорость актора в направлении dir (нормализованном) * его speed.
@@ -312,40 +312,40 @@ static void set_velocity(aesthetics::world& world, const aesthetics::entityid_t 
   vel->value = dir * brain->speed;
 }
 
-static void effect_flee(const act::exec_context& ctx) noexcept {
-  auto& world = mutable_world_of(ctx);
-  const auto self = aesthetics::entityid_t(ctx.primary().id);
-  const auto* pos = world.get<actor_position>(self);
-  const auto* per = world.get<actor_perception>(self);
+static void effect_flee(const act::entity_handle self) noexcept {
+  auto& world = world_of(self);
+  const auto id = ent(self);
+  const auto* pos = world.get<actor_position>(id);
+  const auto* per = world.get<actor_perception>(id);
   if (pos == nullptr || per == nullptr) {
     return;
   }
-  set_velocity(world, self, pos->value - per->threat_pos); // прочь от угрозы
+  set_velocity(world, id, pos->value - per->threat_pos); // прочь от угрозы
 }
 
-static void effect_chase(const act::exec_context& ctx) noexcept {
-  auto& world = mutable_world_of(ctx);
-  const auto self = aesthetics::entityid_t(ctx.primary().id);
-  const auto* pos = world.get<actor_position>(self);
-  const auto* per = world.get<actor_perception>(self);
+static void effect_chase(const act::entity_handle self) noexcept {
+  auto& world = world_of(self);
+  const auto id = ent(self);
+  const auto* pos = world.get<actor_position>(id);
+  const auto* per = world.get<actor_perception>(id);
   if (pos == nullptr || per == nullptr) {
     return;
   }
-  set_velocity(world, self, per->prey_pos - pos->value); // к добыче
+  set_velocity(world, id, per->prey_pos - pos->value); // к добыче
 }
 
 // Поедание — ЧИСТАЯ МУТАЦИЯ пары (хищник = scope[0], добыча = scope[1]). Контенция и eligibility
 // решены ДО этого вызова (ROADMAP п.16): elect выбрал единственного победителя на добычу, а apply
 // гейтит вызов по arena_.won (elect.won + «intent бьёт grab»). Поэтому здесь НЕТ guard'ов конкуренции —
 // только структурная запись заведомо бесконфликтной пары: оба замирают, метим связь, добыча «съедаемая».
-static void effect_eat(const act::exec_context& ctx) noexcept {
-  auto& world = mutable_world_of(ctx);
-  const auto self = aesthetics::entityid_t(ctx.primary().id);
-  const auto prey = aesthetics::entityid_t(ctx.secondary().id);
+static void effect_eat(const act::entity_handle self_h, const act::entity_handle prey_h, const act::rng_source rng) noexcept {
+  auto& world = world_of(self_h);
+  const auto self = ent(self_h);
+  const auto prey = ent(prey_h);
   if (aesthetics::is_invalid_entityid(prey) || !world.exists(prey)) {
     return; // добыча исчезла между claim (think) и commit (apply)
   }
-  world.create<actor_eating>(self, prey, ctx.rng_tick + eat_duration);
+  world.create<actor_eating>(self, prey, rng.tick + eat_duration); // tick из детерминированного rng_source
   world.create<actor_grabbed>(prey, self);
   set_velocity(world, self, glm::vec2{0.0f, 0.0f});
   set_velocity(world, prey, glm::vec2{0.0f, 0.0f});
@@ -356,31 +356,31 @@ static void effect_eat(const act::exec_context& ctx) noexcept {
 
 // Сидит на месте и «думает» — скорость в ноль. Накопление скуки — пассивно в apply
 // (актор стоит ⇒ boredom растёт), так что эффект просто гасит движение.
-static void effect_think(const act::exec_context& ctx) noexcept {
-  set_velocity(mutable_world_of(ctx), aesthetics::entityid_t(ctx.primary().id), glm::vec2{0.0f, 0.0f});
+static void effect_think(const act::entity_handle self) noexcept {
+  set_velocity(world_of(self), ent(self), glm::vec2{0.0f, 0.0f});
 }
 
 // Ищет еду — то же случайное блуждание, что и wander, но со своим потоком RNG (provenance/
 // звук позже могут отличаться). Голоден, но добычи в поле зрения нет ⇒ обшариваем местность.
-static void effect_seek_food(const act::exec_context& ctx) noexcept {
-  auto& world = mutable_world_of(ctx);
-  const auto self = aesthetics::entityid_t(ctx.primary().id);
-  const auto* brain = world.get<actor_brain>(self);
+static void effect_seek_food(const act::entity_handle self, const act::rng_source rng) noexcept {
+  auto& world = world_of(self);
+  const auto id = ent(self);
+  const auto* brain = world.get<actor_brain>(id);
   const uint32_t phase = brain != nullptr ? brain->phase : 0u;
-  const uint64_t slot = (ctx.rng_tick + phase) / 12u; // меняем курс чаще, чем при wander
-  const uint64_t h = utils::mix(ctx.rng_seed, ctx.rng_entity, slot, purpose_seek);
-  set_velocity(world, self, direction_from_hash(uint32_t(h)));
+  const uint64_t slot = (rng.tick + phase) / 12u; // меняем курс чаще, чем при wander
+  const uint64_t h = utils::mix(rng.seed, rng.entity, slot, purpose_seek);
+  set_velocity(world, id, direction_from_hash(uint32_t(h)));
 }
 
-static void effect_wander(const act::exec_context& ctx) noexcept {
-  auto& world = mutable_world_of(ctx);
-  const auto self = aesthetics::entityid_t(ctx.primary().id);
-  const auto* brain = world.get<actor_brain>(self);
+static void effect_wander(const act::entity_handle self, const act::rng_source rng) noexcept {
+  auto& world = world_of(self);
+  const auto id = ent(self);
+  const auto* brain = world.get<actor_brain>(id);
   const uint32_t phase = brain != nullptr ? brain->phase : 0u;
   // медленная смена направления (~раз в 24 тика) с пер-акторной фазой.
-  const uint64_t slot = (ctx.rng_tick + phase) / 24u;
-  const uint64_t h = utils::mix(ctx.rng_seed, ctx.rng_entity, slot, purpose_wander);
-  set_velocity(world, self, direction_from_hash(uint32_t(h)));
+  const uint64_t slot = (rng.tick + phase) / 24u;
+  const uint64_t h = utils::mix(rng.seed, rng.entity, slot, purpose_wander);
+  set_velocity(world, id, direction_from_hash(uint32_t(h)));
 }
 
 void actor_batch::build(const aesthetics::world& world, const uint64_t tick) {
@@ -411,10 +411,8 @@ void actor_world_slice::setup_brain_registry() {
   fsm_registry_ = mood::registry{};
   goap_ = nullptr;
   fsm_ = nullptr;
-  registry_.reg("actor.threat_present", std::make_unique<act::native_function<bool>>(
-                                          &predicate_threat_present, "рядом есть актор крупнее"));
-  registry_.reg("actor.prey_present", std::make_unique<act::native_function<bool>>(
-                                        &predicate_prey_present, "рядом есть актор мельче"));
+  registry_.reg("actor.threat_present", act::pack<&predicate_threat_present>());
+  registry_.reg("actor.prey_present", act::pack<&predicate_prey_present>());
   // is_hungry: скрипт-предикат из tavl (hunger >= 0.5), если загружен; иначе нативный фолбэк
   // (тесты/резюме без ассетов). Скрипт исполняется на per-worker execution_scratch; засев root-скоупа —
   // seed_entity_scope. Поведение идентично нативному (тот же порог, та же семантика отсутствия drives).
@@ -422,28 +420,24 @@ void actor_world_slice::setup_brain_registry() {
     registry_.reg("actor.is_hungry", std::make_unique<act::script_function<bool>>(
                                        brains_.is_hungry_program, &seed_entity_scope));
   } else {
-    registry_.reg("actor.is_hungry", std::make_unique<act::native_function<bool>>(
-                                       &predicate_is_hungry, "голод выше порога"));
+    registry_.reg("actor.is_hungry", act::pack<&predicate_is_hungry>());
   }
-  registry_.reg("actor.is_bored", std::make_unique<act::native_function<bool>>(
-                                    &predicate_is_bored, "скука выше порога"));
-  registry_.reg("actor.prey_in_range", std::make_unique<act::native_function<bool>>(
-                                         &predicate_prey_in_range, "добыча в радиусе хвата"));
+  registry_.reg("actor.is_bored", act::pack<&predicate_is_bored>());
+  registry_.reg("actor.prey_in_range", act::pack<&predicate_prey_in_range>());
   // ВАЖНО: на это имя ссылается СТРОКА FSM (mood) как гвард — парсер mood не допускает точку
   // в идентификаторах, поэтому имя dot-free (в отличие от acumen-метрик "actor.*", которые в
   // парсер mood не попадают и резолвятся по полному хешу строки).
-  registry_.reg("is_eating", std::make_unique<act::native_function<bool>>(
-                               &predicate_is_eating, "актор уже ест (хват удался)"));
-  registry_.reg("flee", std::make_unique<act::native_function<void>>(&effect_flee, "бежать от ближайшей угрозы"));
-  registry_.reg("chase", std::make_unique<act::native_function<void>>(&effect_chase, "гнаться за добычей"));
-  registry_.reg("eat", std::make_unique<act::native_function<void>>(&effect_eat, "схватить добычу и начать есть"));
+  registry_.reg("is_eating", act::pack<&predicate_is_eating>());
+  registry_.reg("flee", act::pack<&effect_flee>());
+  registry_.reg("chase", act::pack<&effect_chase>());
+  registry_.reg("eat", act::pack<&effect_eat>());
   // Тег взаимодействия: eat арбитрится эксклюзивно (elect на добычу = scope[1]) + self-claim. Снимает
   // хардкод имени функции в decide/apply — gate/reduce драйвятся дескриптором. Заводим и elect-буфер arena.
   registry_.reg_interaction(utils::string_hash("eat"), act::interaction{}); // rule=exclusive, target_scope=1, self_claim=true
   arena_.ensure(utils::string_hash("eat"));
-  registry_.reg("seek_food", std::make_unique<act::native_function<void>>(&effect_seek_food, "искать еду — рыскать пока голоден"));
-  registry_.reg("wander", std::make_unique<act::native_function<void>>(&effect_wander, "блуждать (от скуки)"));
-  registry_.reg("think", std::make_unique<act::native_function<void>>(&effect_think, "стоять и думать (копит скуку)"));
+  registry_.reg("seek_food", act::pack<&effect_seek_food>());
+  registry_.reg("wander", act::pack<&effect_wander>());
+  registry_.reg("think", act::pack<&effect_think>());
 
   // GOAP-система: из tavl-конфига (goap/actor) если загружен, иначе хардкод-фолбэк (тесты/резюме).
   if (brains_.goap != nullptr) {
