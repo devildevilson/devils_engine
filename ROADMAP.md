@@ -362,7 +362,8 @@ tile/actor render draws намеренно остаются проектными
     дескриптору, apply=call_log.replay с generic-гейтом (arena.won), effect_eat=чистая мутация scope[1];
     спец-каст `h_eat` УБРАН. Дет-развилка: catalogue generic (ниже act, act ECS-агностичен), reduce→
     aesthetics, композиция в слайсе. build rc=0, 150/150 тестов, resume 120т bit-identical, eat идентично.
-    Остаётся: `collect`; поднять commit-loop в simul; byte-serial (netcode/replay) ортогонально.
+    Остаётся: ✅ `collect` примитив готов (вписать в arbitration когда появится потребитель); поднять
+    commit-loop в simul; byte-serial (netcode/replay) ортогонально.
     - ✅ **act call-packer + fat entity-handle + least-privilege + разнородные сигнатуры (СДЕЛАНО
       2026-07-16):** `act::pack<&fn>()` (packer.h) адаптирует обычную C++-функцию в `act::function<Ret>`,
       биндя аргументы по ТИПУ: `entity_handle{world*,entity_id}`←scope, `rng_source`←ctx (RNG/тик),
@@ -411,9 +412,12 @@ tile/actor render draws намеренно остаются проектными
       commit-тело); (2) reduce-хук в record-пути catalogue (`elect`/`collect`/self-claim); (3) deferred-commit
       проход (replay тел победителей); (4) рефактор `effect_eat` на явные scope-аргументы + тело=мутация.
       `rpc_function` уже ловит `Args...`/`write()` — новое = reduce-хук + перенос `call()` в commit-фазу.
-    - **Примитивы (в `libs/aesthetics`, п.11):** `elect` (atomic min/max, Cap 1) + `collect` (atomic_fetch_add
-      до Cap, несёт payload+источник, drain sorted-by-source-id, hard-error на overflow). `join` (взаимное
-      согласие) = та же 2-фазная схема + `choice[]` reciprocity, НЕ новый примитив; в tile_frontier пока не нужен.
+    - **Примитивы (в `libs/aesthetics`, п.11):** ✅ `elect_buffer` (atomic min/max, Cap 1) + ✅ `collect_buffer`
+      (СДЕЛАН 2026-07-16): ПЛОСКИЙ конкурентный буфер на тип (atomic fetch_add, НЕ per-entity), детерминизм
+      отдельным `sort(cmp)` + `for_each_group` скользящим окном; переполнение = ГРОМКАЯ ОШИБКА (не дроп).
+      Тест aesthetics_collect_buffer_test (5). Потребителя (урон/атака) в tile_frontier пока нет ⇒ в arena
+      не вписан (cumulative-интеракции = type-erased collect per fn + `arbitration::cumulative` — future).
+      `join` (взаимное согласие) = та же 2-фазная схема + `choice[]` reciprocity, НЕ новый примитив; пока не нужен.
 
 ---
 
