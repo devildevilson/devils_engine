@@ -356,7 +356,29 @@ tile/actor render draws намеренно остаются проектными
     не цементировать API вокруг текущего slice-level мозга или локальной камеры.
 
 16. **Меж-энтити взаимодействия — deferred-call эффекта через `catalogue`** — **[необходимо]** ·
-    *дизайн согласован 2026-07-15, не построен*. Зависит от reduce-примитивов п.11 (`elect`/`collect`) и
+    ✅ **МЕХАНИЗМ ПОСТРОЕН (in-memory, 2026-07-16):** `elect_buffer`+`interaction_arena` (aesthetics reduce)
+    + `catalogue::call_log` (generic контейнер «сложить вызов → проиграть позже») + `act::interaction`
+    дескриптор (`reg_interaction`/`interaction_of`). tile_frontier eat: decide_actor=record+claim по
+    дескриптору, apply=call_log.replay с generic-гейтом (arena.won), effect_eat=чистая мутация scope[1];
+    спец-каст `h_eat` УБРАН. Дет-развилка: catalogue generic (ниже act, act ECS-агностичен), reduce→
+    aesthetics, композиция в слайсе. build rc=0, 150/150 тестов, resume 120т bit-identical, eat идентично.
+    Остаётся: `collect`; поднять commit-loop в simul; byte-serial (netcode/replay) ортогонально.
+    - **ТЕХДОЛГ — act call-packer + fat entity-handle (дизайн-набросок 2026-07-16, НЕ реализован):**
+      обобщить ручную проводку взаимодействий в СИГНАТУРО-УПРАВЛЯЕМЫЙ упаковщик (прецедент TMP —
+      `catalogue::fn_traits`). Эффект пишется обычной функцией от fat-handle'ов
+      (`struct {world*, entityid_t}` — упаковка на ВРЕМЯ вызова, НЕ в лог: указатель непереносим),
+      напр. `effect_eat(entity_handle self, entity_handle prey)`. Упаковщик по числу entity-аргументов
+      (2/3/4) выводит арность взаимодействия и сам: (record) достаёт участников из контекста + ставит
+      барьеры (self-claim + `elect.claim` на target-аргументы — «сколько entityid забирает функция,
+      столько барьеров»); (commit) реконструирует handle'ы (id из `call_log` + текущий world) и
+      вызывает. `exec_context` НЕ исчезает — становится ПРИВАТНЫМ субстратом упаковщика; эффект в
+      сигнатуре объявляет только нужное (least-privilege: не видит rng/sink/scratch, если не просил —
+      те инжектятся по сигнатуре). Хранение в `call_log` = `fn_id` + entity-id (данные, сериализуемо).
+      Сюда же — **поддержка разнородных сигнатур** геймплейных функций (первые N аргументов = entityid,
+      дальше — скаляры/handle), чтобы не ограничивать эффекты фикс-формой `{primary,target}`. Скриптовые
+      эффекты по-прежнему через act-фасад (упаковщик абстрагирует источник native↔ds). Мотив: снять
+      разбросанную по decide_actor/apply обвязку и сузить поверхность, которую эффект видит.
+    *Дизайн согласован 2026-07-15.* Зависит от reduce-примитивов п.11 (`elect`/`collect`) и
     шва effect_sink→catalogue п.14; это ПЕРВЫЙ потребитель и acceptance-тест `effect_sink`. Полная
     осмысленная модель — память `entity-interaction-model`. Драйвер: `effect_eat` (actor_simulation.cpp)
     смешивает eligibility + контенцию + cross-entity CRUD в одной нативке.

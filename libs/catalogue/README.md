@@ -8,17 +8,37 @@
 имена аргументов, типы, домен трассировки и может передать эти данные в
 runtime-подключаемый `introspection_interface`.
 
-Старые идеи про binary buffer, replay и RPC остаются в проекте как legacy
-prototype. Они не являются текущим основным направлением. Сначала библиотека
-должна стать удобным инструментом для:
+Сейчас в библиотеке два живых слоя:
 
-- трассировки входа/выхода из выбранных функций;
-- debug-замера времени выполнения;
-- dry-run режима, где вызов описывается, но оригинальная функция не исполняется;
-- сбора статистики по последним вызовам.
+- **introspection** — constexpr-обёртка над обычной функцией для трассировки
+  входа/выхода, debug-замера времени, dry-run и статистики по последним вызовам
+  (см. ниже);
+- **`call_log`** — generic контейнер отложенных вызовов («сложить вызов →
+  проиграть позже»), ядро deferred-call механизма взаимодействий (ROADMAP п.16).
 
-RPC/serialization стоит вернуться позже, когда станет ясно, какие именно вызовы
-и данные реально нужно переносить между процессами или писать в replay.
+Ранний byte-buffer/replay/RPC прототип (`common.h`, `core.{h,cpp}`,
+`channel_data.h`, `registry.{h,cpp}`, `rpc_function.h`, `demo.{h,cpp}`) **перенесён
+в `exclude/libs/catalogue/`** (2026-07-16): он тянул уже выпиленный из движка
+`zpp_bits`, не имел живых потребителей и путал с настоящим направлением.
+Serialization/RPC вернутся отдельным треком, когда станет ясно, какие именно
+вызовы и в каком формате писать в replay/сеть — и, вероятно, поверх `call_log`
+как источника лога вызовов.
+
+## call_log — контейнер отложенных вызовов
+
+`call_log` (`catalogue/call_log.h`, header-only) делает ровно две вещи: (а)
+записать вызов (`call_record{fn, primary, target}`) в слот по индексу инициатора
+и (б) проиграть контейнер позже (`replay(fn)` в порядке возрастания индекса).
+
+- **Плотный per-index store** ⇒ MT-запись без локов (разные инициаторы — разные
+  слоты, инвариант map-фазы) + детерминированный обход без сортировки.
+- **Generic и без зависимостей на act/ECS** (catalogue ниже них по зависимостям):
+  участники приезжают сырыми `uint`, их смысл (`entity_id`/скаляр) задаёт
+  вызывающий слой. Гейт победителей и сам reduce живут выше (в tile_frontier —
+  `aesthetics::interaction_arena` + `act::interaction` дескриптор).
+- Так реализован deferred-call взаимодействий: think-фаза `record`-ит выбранные
+  действия, commit-фаза их `replay`-ит с гейтом (только победители elect). См.
+  память `entity-interaction-model` и ROADMAP п.16.
 
 ## Новый Introspection API
 
@@ -319,7 +339,6 @@ const double avg = stats.average_mcs(add_gold_wrap::function_id);
 - Аргументы форматируются только для базовых типов; сложные структуры
   deliberately opaque.
 - `file`/`line` в `call_info` зарезервированы, но пока не заполняются.
-- Старый RPC/buffer код остается рядом и не является стабильным public API.
 
 ## Техдолг
 
@@ -327,29 +346,16 @@ const double avg = stats.average_mcs(add_gold_wrap::function_id);
   перечислять доступные wrapped-функции, искать метаданные по id и позже
   использовать это для debug UI/RPC/replay.
 
-## Старый RPC / Replay Прототип
+## Старый RPC / Replay прототип (перенесён в exclude/)
 
-В библиотеке все еще есть файлы:
-
-- `common.h`;
-- `core.h`;
-- `channel_data.h`;
-- `registry.h`;
-- `rpc_function.h`;
-- `demo.h`.
-
-Они описывают ранний подход:
-
-- buffer из headers + payload;
-- registry для поиска function reader по id;
-- статические channels;
-- consumers для demo/debug/network;
-- `rpc_function` с `call/write/log/read/reg`.
-
-Эта линия не удалена, потому что часть идей пригодится позже для replay/RPC.
-Но текущий фокус другой: сначала нужен надежный seamless wrapper для обычных
-функций, методов и простых functor'ов, а уже затем можно решать, какие вызовы
-сериализовать и в каком формате.
+Ранний byte-buffer/replay/RPC подход жил в `common.h`, `core.{h,cpp}`,
+`channel_data.h`, `registry.{h,cpp}`, `rpc_function.h`, `demo.{h,cpp}`: buffer из
+headers + payload, registry для поиска reader по id, статические channels,
+consumers, `rpc_function` с `call/write/log/read/reg`. Он опирался на `zpp_bits`
+(уже удалён из движка) и не имел живых потребителей, поэтому **перенесён в
+`exclude/libs/catalogue/`** (см. `exclude/README.md`). Идеи пригодятся для
+replay/RPC позже — но поверх нынешнего `call_log` как лога вызовов, а не как этот
+compile-time channel-прототип.
 
 ## Как Об Этом Думать
 

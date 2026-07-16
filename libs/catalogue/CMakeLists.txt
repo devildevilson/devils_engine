@@ -7,21 +7,12 @@ project(
 )
 
 set(SRC_LIST
-  src/catalogue/core.cpp
-  src/catalogue/demo.cpp
   src/catalogue/introspection.cpp
   src/catalogue/logging.cpp
-  src/catalogue/registry.cpp
 )
 
 set(HDR_LIST
-  include/devils_engine/catalogue/core.h
-  include/devils_engine/catalogue/common.h
-  include/devils_engine/catalogue/rpc_function.h
-  include/devils_engine/catalogue/channel_data.h
-  include/devils_engine/catalogue/registry.h
   include/devils_engine/catalogue/call_log.h
-  include/devils_engine/catalogue/demo.h
   include/devils_engine/catalogue/introspection.h
   include/devils_engine/catalogue/logging.h
 )
