@@ -92,6 +92,9 @@ target_include_directories(goap_config_test PRIVATE
 devils_add_doctest(act_call_context_test act_call_context_test.cpp)
 target_link_libraries(act_call_context_test PRIVATE devils_engine::act devils_script)
 
+devils_add_doctest(act_packer_test act_packer_test.cpp)
+target_link_libraries(act_packer_test PRIVATE devils_engine::act devils_script)
+
 devils_add_doctest(stats_script_test stats_script_test.cpp)
 target_link_libraries(stats_script_test PRIVATE devils_engine::act)
 
