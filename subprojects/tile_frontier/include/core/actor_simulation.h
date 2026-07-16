@@ -369,6 +369,16 @@ private:
   std::unique_ptr<integration_system> integration_sys_;
   std::unique_ptr<drives_system> drives_sys_;
   std::unique_ptr<cognition_system> cognition_sys_;
+  // build_sense_tree как лямбда-система (aesthetics::make_map_system): reduce query<pos,vis> → kd-дерево.
+  // Базой basic_system (комп-типы скрыты); лениво создаётся, сбрасывается на init/load (держит query на world).
+  std::unique_ptr<devils_engine::aesthetics::basic_system> sense_tree_sys_;
+  // cognition-SELECT как лямбда-система: reduce view<actor_cognition> → кандидаты (созревшие, не занятые).
+  struct think_candidate {
+    uint64_t overdue;
+    devils_engine::aesthetics::entityid_t entity;
+  };
+  std::unique_ptr<devils_engine::aesthetics::basic_system> select_sys_;
+  std::vector<think_candidate> due_; // выход SELECT (переиспользуется/очищается за тик), вход budget_clamp
   // Проектные конфиги мозга (из tavl); поля nullptr ⇒ нативный/хардкод фолбэк. Задаются в init.
   brain_config brains_;
 

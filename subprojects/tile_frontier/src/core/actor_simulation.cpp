@@ -709,6 +709,8 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   // Кэш-системы держат query, подписанный на СТАРЫЙ world — сбросить, пересоздадутся против нового.
   integration_sys_.reset();
   drives_sys_.reset();
+  sense_tree_sys_.reset();
+  select_sys_.reset();
   brains_ = brains; // до setup_brain_registry: выбирает скрипт/конфиг vs натив/хардкод
   setup_brain_registry();
   calls_.reset(count); // предварительная ёмкость по числу акторов; растёт в cognition до index_capacity
@@ -819,16 +821,22 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
 void actor_world_slice::build_sense_tree() {
   using kd = utils::kd_tree<perception_target>;
   sense_tree_.clear();
-  for (auto [id, pos, vis] : world_.view<actor_position, actor_visual>()) {
-    if (world_.get<actor_grabbed>(id) != nullptr) {
-      continue; // схваченную добычу никто не таргетит
-    }
-    if (world_.get<obstacle>(id) != nullptr) {
-      continue; // препятствие — не добыча/не угроза
-    }
-    sense_tree_.insert(kd::point{pos->value.x, pos->value.y},
-                       perception_target{vis->size, id});
+  // Скан-фаза как ЛЯМБДА-СИСТЕМА (ROADMAP п.11): reduce query<pos,vis> в общий kd-дерево. Однопоточно
+  // ⇒ insert в захваченное дерево безопасен; фильтр (схваченные/препятствия) — в теле лямбды. clear/build
+  // обрамляют проход (система делает только обход). Порядок query == порядок view (dense) ⇒ дерево то же.
+  if (!sense_tree_sys_) {
+    sense_tree_sys_ = aesthetics::make_map_system<actor_position, actor_visual>(
+      &world_, [this](const auto& t, const size_t /*time*/) {
+        const auto id = std::get<0>(t);
+        if (world_.get<actor_grabbed>(id) != nullptr || world_.get<obstacle>(id) != nullptr) {
+          return; // схваченную добычу / препятствие никто не таргетит
+        }
+        const auto* pos = std::get<1>(t);
+        const auto* vis = std::get<2>(t);
+        sense_tree_.insert(kd::point{pos->value.x, pos->value.y}, perception_target{vis->size, id});
+      });
   }
+  sense_tree_sys_->update(0);
   sense_tree_.build();
 }
 
@@ -930,22 +938,27 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
   calls_.reset(cap);
   arena_.reset(cap);
 
-  // select: созревшие (skip едящих/схваченных — «коммит длительностью действия») + давность.
-  struct candidate {
-    uint64_t overdue;
-    aesthetics::entityid_t entity;
-  };
-  std::vector<candidate> due;
-  for (auto [id, cog] : world_.view<actor_cognition>()) {
-    if (world_.get<actor_eating>(id) != nullptr || world_.get<actor_grabbed>(id) != nullptr) {
-      continue;
-    }
-    if (matured(cog->last_think, tick)) {
-      due.push_back(candidate{tick - cog->last_think, id});
-    }
+  // select: созревшие (skip едящих/схваченных — «коммит длительностью действия») + давность. Reduce
+  // view<actor_cognition> в due_ ЛЯМБДА-СИСТЕМОЙ (ROADMAP п.11): однопоточно, лямбда захватывает this и
+  // пишет в захваченный буфер due_ (порядок query == view ⇒ детерминированный отбор). time = tick.
+  due_.clear();
+  if (!select_sys_) {
+    select_sys_ = aesthetics::make_map_system<actor_cognition>(
+      &world_, [this](const auto& t, const size_t time) {
+        const auto id = std::get<0>(t);
+        if (world_.get<actor_eating>(id) != nullptr || world_.get<actor_grabbed>(id) != nullptr) {
+          return; // едящих/схваченных не переобдумываем (держатся действия)
+        }
+        const auto* cog = std::get<1>(t);
+        if (matured(cog->last_think, time)) {
+          due_.push_back(think_candidate{time - cog->last_think, id});
+        }
+      });
   }
+  select_sys_->update(tick);
+
   // budget-clamp: дольше ждавшие впереди, тай-брейк по индексу сущности (детерминированно).
-  aesthetics::budget_clamp(due, think_budget_, [](const candidate& a, const candidate& b) {
+  aesthetics::budget_clamp(due_, think_budget_, [](const think_candidate& a, const think_candidate& b) {
     if (a.overdue != b.overdue) {
       return a.overdue > b.overdue;
     }
@@ -955,8 +968,8 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
   // think: work-list = отобранные; run раскидывает по потокам, decide_actor пишет intents_ (time=tick).
   auto& wl = cognition_sys_->worklist();
   wl.clear();
-  wl.reserve(due.size());
-  for (const auto& c : due) {
+  wl.reserve(due_.size());
+  for (const auto& c : due_) {
     wl.push_back(c.entity);
   }
   cognition_sys_->run(tick);
@@ -1138,6 +1151,8 @@ bool actor_world_slice::load(const std::span<const uint8_t> packet) {
   // Кэш-системы держат query на старом world — сбросить (пересоздадутся против загруженного мира).
   integration_sys_.reset();
   drives_sys_.reset();
+  sense_tree_sys_.reset();
+  select_sys_.reset();
   setup_brain_registry();
   calls_.clear();
   // как в init: аллокаторы пулов поедания заранее на главном потоке (view<> не кинет; type-id
