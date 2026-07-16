@@ -305,6 +305,9 @@ App-shell закрывает топологию приложения, но не 
 1. **Поднять общий system pipeline в `libs/simul`** — вынести think → intent → apply,
    cognition scheduling, фазовые барьеры и запуск фаз над ECS view/query. Проект регистрирует фазы и
    queries, но не реализует scheduler заново. Это основной implementation slice п.11.
+   **Начато 2026-07-16:** commit-фаза (apply) поднята — `simul::commit_calls` (interaction_commit.h);
+   simul получил PUBLIC-deps `act`+`aesthetics` ⇒ дальнейшие переносы пайплайна (think/cognition/барьеры)
+   уже дешевле (deps на месте). Остаётся think/cognition scheduling + фазовые барьеры.
 2. **Разделить engine lifecycle и project gameplay в `tile_frontier::simulation`** — общий main host
    владеет boot → loading → game, startup/runtime-state resources, main-frame и runtime settings;
    проект подключается через callbacks наподобие `register_project_bindings`,
@@ -362,8 +365,10 @@ tile/actor render draws намеренно остаются проектными
     дескриптору, apply=call_log.replay с generic-гейтом (arena.won), effect_eat=чистая мутация scope[1];
     спец-каст `h_eat` УБРАН. Дет-развилка: catalogue generic (ниже act, act ECS-агностичен), reduce→
     aesthetics, композиция в слайсе. build rc=0, 150/150 тестов, resume 120т bit-identical, eat идентично.
-    Остаётся: ✅ `collect` примитив готов (вписать в arbitration когда появится потребитель); поднять
-    commit-loop в simul; byte-serial (netcode/replay) ортогонально.
+    Остаётся: ✅ `collect` примитив готов (вписать в arbitration когда появится потребитель);
+    ✅ generic commit-loop поднят в simul (`simul::commit_calls`, interaction_commit.h — replay+дескриптор-гейт+
+    invoke; проекту 3 хука skip/make_ctx/after; simul обрёл deps act+aesthetics); byte-serial (netcode/replay)
+    ортогонально.
     - ✅ **act call-packer + fat entity-handle + least-privilege + разнородные сигнатуры (СДЕЛАНО
       2026-07-16):** `act::pack<&fn>()` (packer.h) адаптирует обычную C++-функцию в `act::function<Ret>`,
       биндя аргументы по ТИПУ: `entity_handle{world*,entity_id}`←scope, `rng_source`←ctx (RNG/тик),

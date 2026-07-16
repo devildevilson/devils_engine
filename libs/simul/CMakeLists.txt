@@ -32,6 +32,7 @@ add_library(devils_simul
   include/devils_engine/simul/standard_sound_system.h
   include/devils_engine/simul/startup_resources.h
   include/devils_engine/simul/systems.h
+  include/devils_engine/simul/interaction_commit.h
   include/devils_engine/simul/window_runtime.h
   include/devils_engine/simul/write_buffer_channel.h
 )
@@ -42,7 +43,10 @@ target_include_directories(devils_simul
 )
 
 target_link_libraries(devils_simul
+  # act + aesthetics — для generic system-pipeline (interaction_commit.h; ROADMAP п.11/п.16). act тянет
+  # devils_script транзитивно: осознанно, simul становится слоем, где живёт геймплейный пайплайн.
   PUBLIC devils_engine::options devils_engine::utils devils_engine::catalogue devils_engine::demiurg
+         devils_engine::act devils_engine::aesthetics
   PRIVATE tavl
 )
 

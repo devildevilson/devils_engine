@@ -15,8 +15,9 @@
 #include <devils_engine/aesthetics/worklist_system.h> // worklist_system + budget_clamp — think-фаза
 #include <devils_engine/catalogue/introspection.h>
 #include <devils_engine/catalogue/logging.h>  // DE_LOG — perf-дамп в домен gameplay
-#include <devils_engine/mood/runtime.h>       // mood::step / apply_transition — шаг FSM
-#include <devils_engine/thread/atomic_pool.h> // MT-пул (distribute/thread_index/wait)
+#include <devils_engine/mood/runtime.h>                  // mood::step / apply_transition — шаг FSM
+#include <devils_engine/simul/interaction_commit.h>      // simul::commit_calls — generic commit-фаза (ROADMAP п.16)
+#include <devils_engine/thread/atomic_pool.h>            // MT-пул (distribute/thread_index/wait)
 #include <devils_engine/utils/core.h>         // utils::error
 #include <devils_engine/utils/prng.h>         // utils::mix
 #include <devils_engine/utils/string_id.h>    // utils::string_hash
@@ -970,39 +971,28 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
 // читают позиции ДО integrate → решения по согласованному снимку тика.
 void actor_world_slice::apply() {
   sound_emits_.clear(); // sim-звуки этого тика собираем заново
-  calls_.replay([this](const catalogue::call_record& rec) {
-    const auto id = aesthetics::entityid_t(rec.primary);
-    // Актора схватили В ЭТОМ ЖЕ commit (однопоточно, индекс-порядок) → его действие гасим, иначе
-    // движение перебьёт заморозку, а FSM перебьёт state="eaten".
-    if (world_.get<actor_grabbed>(id) != nullptr) {
-      return;
-    }
-    const auto* effect = registry_.effect(rec.fn);
-    if (effect == nullptr) {
-      return;
-    }
-    const auto* brain = world_.get<actor_brain>(id);
-    const uint64_t seed = brain != nullptr ? brain->seed : 0u;
-    // cognition уже завершён: caller-полосу 0 cognition_system можно переиспользовать для apply/FSM.
-    auto ctx = make_ctx(world_, id, seed, tick_, nullptr, &cognition_sys_->lanes().front().act);
-
-    // Взаимодействие: цель → scope[target_scope], гейт по arena_.won (победитель elect + «intent бьёт
-    // grab»). Проигравший эффект не применяет (остаётся в chase → переобдумает; FSM без actor_eating в
-    // eating не перейдёт). Не-взаимодействия (chase/wander/…) применяются безусловно.
-    bool run_effect = true;
-    if (const auto* desc = registry_.interaction_of(rec.fn); desc != nullptr) {
-      const auto target = aesthetics::entityid_t(rec.target);
-      ctx.scope[desc->target_scope] = act::entity_id{rec.target};
-      ctx.scope_count = uint32_t(desc->target_scope) + 1; // цель = последний участник scope
-      run_effect = arena_.won(rec.fn, target, id);
-    }
-    if (run_effect) {
-      effect->invoke(ctx); // движение/эффект действия; для победителя взаимодействия — мутация пары
-    }
-
-    // FSM-исполнитель: событие = выбранное действие (rec.fn). Меняем состояние ТОЛЬКО при реальном
-    // переходе — самопереход (то же действие) не пере-входит (звук в фазе D — раз на смену состояния).
-    if (auto* st = world_.get<actor_state>(id); st != nullptr) {
+  // Generic-ядро commit'а (replay + дескриптор-гейт + invoke) — движковое (simul::commit_calls). Проекту
+  // остаются три хука: skip (схваченного гасим), make_ctx (seed/scratch), after (FSM-переход + sim-звук).
+  simul::commit_calls(
+    calls_, registry_, arena_,
+    [this](const catalogue::call_record&, const aesthetics::entityid_t id) {
+      // Схваченного В ЭТОМ ЖЕ commit гасим (движение не перебьёт заморозку, FSM — state="eaten").
+      return world_.get<actor_grabbed>(id) != nullptr;
+    },
+    [this](const catalogue::call_record&, const aesthetics::entityid_t id) {
+      const auto* brain = world_.get<actor_brain>(id);
+      const uint64_t seed = brain != nullptr ? brain->seed : 0u;
+      // cognition завершён: caller-полосу 0 cognition_system можно переиспользовать для commit/FSM.
+      return make_ctx(world_, id, seed, tick_, nullptr, &cognition_sys_->lanes().front().act);
+    },
+    [this](const catalogue::call_record& rec, const aesthetics::entityid_t id,
+           const act::exec_context& ctx, const bool /*ran*/) {
+      // FSM-исполнитель: событие = выбранное действие (rec.fn). Переход ТОЛЬКО при реальной смене —
+      // самопереход (то же действие) не пере-входит (звук — раз на смену состояния).
+      auto* st = world_.get<actor_state>(id);
+      if (st == nullptr) {
+        return;
+      }
       const auto outcome = mood::step(*fsm_, st->state, rec.fn, ctx);
       if (outcome.result == mood::step_result::transitioned &&
           outcome.next_state != utils::invalid_id && outcome.next_state != st->state) {
@@ -1014,8 +1004,7 @@ void actor_world_slice::apply() {
           }
         }
       }
-    }
-  });
+    });
 }
 
 // integrate — map-фаза интеграции позиций (integration_system): движение по скорости + расталкивание.
