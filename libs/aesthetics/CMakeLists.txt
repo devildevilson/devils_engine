@@ -17,6 +17,7 @@ add_library(devils_aesthetics
   include/devils_engine/aesthetics/elect_buffer.h
   include/devils_engine/aesthetics/interaction_arena.h
   include/devils_engine/aesthetics/collect_buffer.h
+  include/devils_engine/aesthetics/system_runner.h
   include/devils_engine/aesthetics/template_system.h
   include/devils_engine/aesthetics/worklist_system.h
   include/devils_engine/aesthetics/serialization.h

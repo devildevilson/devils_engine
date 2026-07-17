@@ -8,17 +8,19 @@
 #include <utility> // std::move
 
 #include "devils_engine/thread/atomic_pool.h"
+#include "system_runner.h"
 #include "world.h"
 
 // template_system / template_system_mt — map-примитив декларативного пайплайна: система над запросом
 // `world::query_t<Comp_T...>`, которая на КАЖДУЮ подходящую сущность вызывает виртуальный
 // process(tuple). Подкласс реализует process и владеет своей политикой; сам примитив держит только
-// query (авто-поддерживается событиями create/remove компонентов) и обход.
+// query (авто-поддерживается событиями create/remove компонентов) и range-обход.
 //   - template_system — однопоточный обход query.
-//   - template_system_mt — тот же обход, распределённый по atomic_pool (distribute1/compute/wait):
-//     вызывающий поток тоже берёт свой чанк. process ДОЛЖЕН быть потокобезопасен по записи — обычно
-//     он пишет ТОЛЬКО «свою» сущность (её слот в message_registry/компонент этой же сущности), тогда
-//     потоки трогают непересекающуюся память и локов не нужно.
+//   - aesthetics::run(pool, time, systems...) снаружи распределяет один или несколько range-обходов
+//     и ставит ОДИН общий barrier. process ДОЛЖЕН быть потокобезопасен по записи — обычно он пишет
+//     ТОЛЬКО «свою» сущность, тогда потоки трогают непересекающуюся память и локов не нужно.
+//   - template_system_mt — совместимый фасад старого API; его update() делегирует run(). Новый код,
+//     которому нужны совместные фазы, наследуется от template_system и передаёт систему в run().
 //
 // Коммуникация между системами — через `message_registry` (шина каналов по типу): продюсер в process
 // пишет `board.channel<Msg>().store(id, msg)` по слоту обрабатываемой сущности, консюмер в отдельной
@@ -53,6 +55,14 @@ public:
     return query.size();
   }
 
+  // Range seam для system_runner. Здесь нет submit/compute/wait: система описывает только свою
+  // минимальную единицу вычисления, а форму и barrier фазы задаёт внешний run().
+  void process_range(const size_t start, const size_t count, const size_t time) {
+    for (size_t i = start; i < start + count; ++i) {
+      process(query[i], time);
+    }
+  }
+
 protected:
   class world* m_world;
   query_t query;
@@ -67,19 +77,7 @@ public:
     : template_system<Comp_T...>(world), pool(pool) {}
 
   void update(const size_t time) override {
-    // Каждый чанк [start, start+count) обходит свои сущности; query передаётся аргументом, time —
-    // захватом по значению (лямбда копируется на чанк). process пишет только «свою» сущность ⇒
-    // параллельная запись без гонок.
-    pool->distribute1(
-      this->query.size(),
-      [this](const size_t start, const size_t count, const query_t& q, const size_t time) {
-        for (size_t i = start; i < start + count; ++i) {
-          this->process(q[i], time);
-        }
-      },
-      std::ref(this->query), time);
-    pool->compute(); // вызывающий поток берёт свой чанк, а не простаивает
-    pool->wait();
+    aesthetics::run(*pool, time, *this);
   }
 
 protected:
@@ -118,17 +116,18 @@ public:
   using query_t = typename template_system_mt<Comp_T...>::query_t;
   lambda_system_mt(thread::atomic_pool* pool, class world* world, Fn fn) noexcept
     : template_system_mt<Comp_T...>(pool, world), fn_(std::move(fn)) {}
-  void update(const size_t time) override {
-    this->pool->distribute1(
+  void enqueue(thread::atomic_pool& target_pool, const size_t time) {
+    target_pool.distribute1(
       this->query.size(),
-      [this](const size_t start, const size_t count, const query_t& q, const size_t time) {
+      [](const size_t start, const size_t count, lambda_system_mt* self, const size_t tick) {
         for (size_t i = start; i < start + count; ++i) {
-          fn_(q[i], time);
+          self->fn_(self->query[i], tick);
         }
       },
-      std::ref(this->query), time);
-    this->pool->compute();
-    this->pool->wait();
+      this, time);
+  }
+  void update(const size_t time) override {
+    aesthetics::run(*this->pool, time, *this);
   }
   void process(const tuple_t& t, const size_t time) override {
     fn_(t, time);

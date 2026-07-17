@@ -52,20 +52,21 @@ void eat_prey(gameplay_scope scope, const int64_t target) {
   scope.state->events.push_back(event{event_kind::prey, scope.id, target, 0});
 }
 
-struct strength_strategy : mt::collect<
-                             mt::key::entity_arg<1>,
-                             mt::order::source_then_sequence,
-                             mt::commit::parallel_groups> {};
+using strength_strategy = mt::preset::parallel_collect<1>;
+using prey_strategy = mt::preset::serial_elect<1, mt::conflict::target_not_source>;
 
-struct prey_strategy : mt::elect<
-                         mt::key::entity_arg<1>,
-                         mt::order::source_then_sequence,
-                         mt::commit::serial,
-                         mt::conflict::target_not_source> {};
+struct strength_domain_id {};
+struct secondary_strength_domain_id {};
+struct prey_domain_id {};
+using strength_domain = mt::domain<strength_domain_id, strength_strategy>;
+using secondary_strength_domain = mt::domain<secondary_strength_domain_id, strength_strategy>;
+using prey_domain = mt::domain<prey_domain_id, prey_strategy>;
 
-using strength_traits = mt::domain<strength_strategy>::fn_traits<
+using strength_traits = strength_domain::fn_traits<
   &add_strength, "add_strength", "scope", "target", "value">;
-using prey_traits = mt::domain<prey_strategy>::fn_traits<
+using secondary_strength_traits = secondary_strength_domain::fn_traits<
+  &add_strength, "add_strength", "scope", "target", "value">;
+using prey_traits = prey_domain::fn_traits<
   &eat_prey, "eat_prey", "scope", "target">;
 
 enum class trace_domain : uint64_t {
@@ -74,18 +75,20 @@ enum class trace_domain : uint64_t {
 
 using traced_strength_traits = catalogue::domain<trace_domain::gameplay>::fn_traits<
   &add_strength, "add_strength", "scope", "target", "value">;
-using deferred_traced_strength_traits = mt::domain<strength_strategy>::fn_traits<
+using deferred_traced_strength_traits = strength_domain::fn_traits<
   traced_strength_traits::fn_ptr, "add_strength", "scope", "target", "value">;
 
-template <typename Strategy>
+template <typename Domain>
 class executor_binding {
 public:
-  explicit executor_binding(mt::executor<Strategy>& executor) {
-    mt::domain<Strategy>::set_executor(&executor);
+  using strategy_type = typename Domain::strategy_type;
+
+  explicit executor_binding(mt::executor<strategy_type>& executor) {
+    Domain::set_executor(&executor);
   }
 
   ~executor_binding() {
-    mt::domain<Strategy>::set_executor(nullptr);
+    Domain::set_executor(nullptr);
   }
 
   executor_binding(const executor_binding&) = delete;
@@ -101,12 +104,11 @@ void increment_group(counter_scope scope, const uint32_t target) {
   (*scope.counters)[target].fetch_add(1, std::memory_order_relaxed);
 }
 
-struct parallel_strategy : mt::collect<
-                             mt::key::entity_arg<1>,
-                             mt::order::source_then_sequence,
-                             mt::commit::parallel_groups> {};
+using parallel_strategy = mt::preset::parallel_collect<1>;
+struct parallel_domain_id {};
+using parallel_domain = mt::domain<parallel_domain_id, parallel_strategy>;
 
-using parallel_traits = mt::domain<parallel_strategy>::fn_traits<
+using parallel_traits = parallel_domain::fn_traits<
   &increment_group, "increment_group", "scope", "target">;
 
 } // namespace
@@ -117,7 +119,7 @@ TEST_CASE("catalogue deferred pointer mirrors an effect and records multiple cal
   static_assert(mt::deferred_payload_size == 128);
 
   mt::executor<strength_strategy> executor;
-  executor_binding binding(executor);
+  executor_binding<strength_domain> binding(executor);
   executor.begin_record(1, 4, 2);
   CHECK(executor.call_capacity() == 2);
 
@@ -144,10 +146,46 @@ TEST_CASE("catalogue deferred pointer mirrors an effect and records multiple cal
   CHECK(state.events[1].value == 3);
 }
 
+TEST_CASE("catalogue domain identity isolates executors that reuse one strategy policy") {
+  static_assert(std::is_same_v<typename strength_domain::strategy_type,
+                               typename secondary_strength_domain::strategy_type>);
+  static_assert(!std::is_same_v<typename strength_domain::identity_type,
+                                typename secondary_strength_domain::identity_type>);
+
+  mt::executor<strength_strategy> first_executor;
+  mt::executor<strength_strategy> second_executor;
+  executor_binding<strength_domain> first_binding(first_executor);
+  executor_binding<secondary_strength_domain> second_binding(second_executor);
+  first_executor.begin_record(1, 2, 1);
+  second_executor.begin_record(1, 2, 1);
+
+  test_state first_state;
+  test_state second_state;
+  {
+    mt::record_scope source(10, 0);
+    strength_traits::fn_deferred_ptr(gameplay_scope{10, &first_state}, 1, 11);
+  }
+  {
+    mt::record_scope source(20, 0);
+    secondary_strength_traits::fn_deferred_ptr(gameplay_scope{20, &second_state}, 2, 22);
+  }
+
+  first_executor.seal();
+  second_executor.seal();
+  first_executor.commit();
+  second_executor.commit();
+  REQUIRE(first_state.events.size() == 1);
+  REQUIRE(second_state.events.size() == 1);
+  CHECK(first_state.events[0].source == 10);
+  CHECK(first_state.events[0].value == 11);
+  CHECK(second_state.events[0].source == 20);
+  CHECK(second_state.events[0].value == 22);
+}
+
 TEST_CASE("catalogue collect restores deterministic source order after parallel recording") {
   constexpr size_t count = 256;
   mt::executor<strength_strategy> executor;
-  executor_binding binding(executor);
+  executor_binding<strength_domain> binding(executor);
   executor.begin_record(count, 2, count);
 
   test_state state;
@@ -172,7 +210,7 @@ TEST_CASE("catalogue collect restores deterministic source order after parallel 
 
 TEST_CASE("catalogue dense journal capacity is independent from sparse source indices") {
   mt::executor<strength_strategy> executor;
-  executor_binding binding(executor);
+  executor_binding<strength_domain> binding(executor);
   executor.begin_record(1'000'000, 16, 2);
 
   test_state state;
@@ -198,7 +236,7 @@ TEST_CASE("catalogue dense journal capacity is independent from sparse source in
 
 TEST_CASE("catalogue elect commits the lowest deterministic source for each key") {
   mt::executor<prey_strategy> executor;
-  executor_binding binding(executor);
+  executor_binding<prey_domain> binding(executor);
   executor.begin_record(3, 3, 3);
 
   test_state state;
@@ -228,7 +266,7 @@ TEST_CASE("catalogue elect commits the lowest deterministic source for each key"
 
 TEST_CASE("catalogue elect can protect targets that are themselves interaction sources") {
   mt::executor<prey_strategy> executor;
-  executor_binding binding(executor);
+  executor_binding<prey_domain> binding(executor);
   executor.begin_record(2, 2, 2);
 
   test_state state;
@@ -254,7 +292,7 @@ TEST_CASE("catalogue elect can protect targets that are themselves interaction s
 
 TEST_CASE("catalogue parallel_groups exposes independent groups for worker commit") {
   mt::executor<parallel_strategy> executor;
-  executor_binding binding(executor);
+  executor_binding<parallel_domain> binding(executor);
   executor.begin_record(64, 2, 64);
 
   std::array<std::atomic<uint32_t>, 4> counters{};
@@ -282,7 +320,7 @@ TEST_CASE("catalogue parallel_groups exposes independent groups for worker commi
 
 TEST_CASE("catalogue trace domain stays independent and observes deferred commit") {
   mt::executor<strength_strategy> executor;
-  executor_binding binding(executor);
+  executor_binding<strength_domain> binding(executor);
   executor.begin_record(1, 2, 1);
 
   catalogue::statistics_store statistics(4);
@@ -310,8 +348,8 @@ TEST_CASE("catalogue trace domain stays independent and observes deferred commit
 TEST_CASE("devils_script records independent collect and elect effects through deferred pointers") {
   mt::executor<strength_strategy> strength_executor;
   mt::executor<prey_strategy> prey_executor;
-  executor_binding strength_binding(strength_executor);
-  executor_binding prey_binding(prey_executor);
+  executor_binding<strength_domain> strength_binding(strength_executor);
+  executor_binding<prey_domain> prey_binding(prey_executor);
   strength_executor.begin_record(1, 4, 1);
   prey_executor.begin_record(1, 4, 1);
 
@@ -350,11 +388,11 @@ TEST_CASE("devils_script records independent collect and elect effects through d
 }
 
 TEST_CASE("catalogue deferred calls fail loudly without executor, scope, or capacity") {
-  mt::domain<strength_strategy>::set_executor(nullptr);
+  strength_domain::set_executor(nullptr);
   CHECK_THROWS(strength_traits::fn_deferred_ptr(gameplay_scope{}, 0, 0));
 
   mt::executor<strength_strategy> executor;
-  executor_binding binding(executor);
+  executor_binding<strength_domain> binding(executor);
   executor.begin_record(1, 2, 1);
   CHECK_THROWS(strength_traits::fn_deferred_ptr(gameplay_scope{}, 0, 0));
   test_state state;

@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cstdint>
 #include <tuple>
 #include <vector>
@@ -8,6 +9,7 @@
 
 #include <devils_engine/aesthetics/common.h>
 #include <devils_engine/aesthetics/message_registry.h>
+#include <devils_engine/aesthetics/system_runner.h>
 #include <devils_engine/aesthetics/template_system.h>
 #include <devils_engine/aesthetics/world.h>
 #include <devils_engine/aesthetics/worklist_system.h>
@@ -28,7 +30,76 @@ struct hot_msg {
 struct other_msg {
   int32_t tag = 0;
 };
+struct position_value {
+  int32_t v = 0;
+};
+struct drive_value {
+  int32_t v = 0;
+};
+
+struct position_step : aesthetics::template_system<position_value> {
+  explicit position_step(aesthetics::world* w) noexcept : template_system(w) {}
+  void process(const query_tuple_t& t, const size_t time) override {
+    std::get<1>(t)->v += int32_t(time);
+  }
+};
+
+struct drive_step : aesthetics::template_system<drive_value> {
+  explicit drive_step(aesthetics::world* w) noexcept : template_system(w) {}
+  void process(const query_tuple_t& t, const size_t time) override {
+    std::get<1>(t)->v += int32_t(time * 2);
+  }
+};
+
+struct serial_step : aesthetics::basic_system {
+  std::atomic_uint32_t* runs = nullptr;
+  size_t observed_time = 0;
+  explicit serial_step(std::atomic_uint32_t* runs) noexcept : runs(runs) {}
+  void update(const size_t time) override {
+    observed_time = time;
+    runs->fetch_add(1, std::memory_order_relaxed);
+  }
+};
 } // namespace
+
+TEST_CASE("run executes independent range systems and single tasks behind one phase barrier") {
+  constexpr int32_t n = 1500;
+  aesthetics::world world;
+  for (int32_t i = 0; i < n; ++i) {
+    const auto id = world.gen_entityid();
+    REQUIRE(world.create<position_value>(id, position_value{i}) != nullptr);
+    REQUIRE(world.create<drive_value>(id, drive_value{i * 3}) != nullptr);
+  }
+
+  position_step positions(&world);
+  drive_step drives(&world);
+  std::atomic_uint32_t single_runs = 0;
+  std::atomic_uint32_t serial_runs = 0;
+  serial_step serial{&serial_runs};
+  size_t lambda_time = 0;
+  thread::atomic_pool pool(4);
+
+  aesthetics::run(
+    pool, 7, positions, drives, serial,
+    aesthetics::single([&single_runs] {
+      single_runs.fetch_add(1, std::memory_order_relaxed);
+    }),
+    aesthetics::single([&lambda_time](const size_t time) {
+      lambda_time = time;
+    }));
+
+  CHECK(single_runs.load(std::memory_order_relaxed) == 1);
+  CHECK(serial_runs.load(std::memory_order_relaxed) == 1);
+  CHECK(serial.observed_time == 7);
+  CHECK(lambda_time == 7);
+  for (size_t i = 0; i < size_t(n); ++i) {
+    const auto id = aesthetics::make_entityid(i, 0);
+    REQUIRE(world.get<position_value>(id) != nullptr);
+    REQUIRE(world.get<drive_value>(id) != nullptr);
+    CHECK(world.get<position_value>(id)->v == int32_t(i) + 7);
+    CHECK(world.get<drive_value>(id)->v == int32_t(i) * 3 + 14);
+  }
+}
 
 TEST_CASE("message_registry keeps independent channels per message type") {
   message_registry board;
@@ -254,7 +325,7 @@ TEST_CASE("worklist_system maps an explicit work-list across threads into a chan
   }
   board.channel<think_msg>().reset(n); // канал сайзим ДО параллельной фазы
 
-  sys.run(777); // time прокидывается в process
+  aesthetics::run(pool, 777, sys); // worklist enqueue-ится в тот же внешний runner
 
   const auto* ch = board.find<think_msg>();
   REQUIRE(ch != nullptr);

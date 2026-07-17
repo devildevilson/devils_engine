@@ -249,8 +249,8 @@ struct brain_config {
   const std::vector<prefab_def>* prefabs = nullptr;            // префабы из prefab/*.tavl (иначе хардкод food)
 };
 
-// Проектные map-фазы актора на общем примитиве aesthetics::template_system_mt (параллельный обход
-// запроса, виртуальный process). Определения в .cpp — здесь только forward-decl под unique_ptr-члены.
+// Проектные map-фазы актора на общем примитиве aesthetics::template_system. Параллельную форму и
+// общий barrier задаёт внешний aesthetics::run. Определения в .cpp — только forward-decl здесь.
 struct integration_system; // движение позиции по скорости + расталкивание препятствиями
 struct drives_system;      // пассивная динамика мотиваций (голод/скука)
 struct cognition_system;   // think-фаза: worklist_system над «созревшими», record'ит effects
@@ -322,11 +322,9 @@ private:
   void decide_actor(devils_engine::aesthetics::entityid_t id, uint64_t tick,
                     devils_engine::acumen::execution_scratch& scratch);
   void apply(devils_engine::thread::atomic_pool& pool);
-  // Интеграция позиций (движение по скорости + расталкивание препятствиями) — параллельный map-фаза
-  // на integration_system. Ленивое создание системы на первом апдейте (пул известен только тут).
-  void integrate(float dt_seconds, devils_engine::thread::atomic_pool& pool);
-  // Пассивная динамика мотиваций (голод копится, скука от простоя) — map-фаза на drives_system.
-  void update_drives(float dt_seconds, devils_engine::thread::atomic_pool& pool);
+  // Две независимые map-системы: integration пишет position, drives пишет stats; обе читают velocity.
+  // Внешний run сначала ставит чанки ОБЕИХ систем в пул, затем делает один общий barrier.
+  void integrate_and_update_drives(float dt_seconds, devils_engine::thread::atomic_pool& pool);
   // Завершает поедание у хищников, чей срок истёк: сбрасывает голод, снимает actor_eating,
   // удаляет съеденную жертву из мира (kill-list, удаление ПОСЛЕ обхода). Зовётся после apply.
   void resolve_eating(uint64_t tick);
