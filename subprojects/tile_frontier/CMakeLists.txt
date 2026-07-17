@@ -25,6 +25,7 @@ set(HDR_LIST
   include/core/tile_map.h
   include/core/tile_batch.h
   include/core/actor_simulation.h
+  include/core/brain_config_loader.h
   include/core/entity_scope.h
   include/core/script_environment.h
   include/core/world_scene_resource.h
@@ -40,6 +41,7 @@ set(SRC_LIST
   src/core/texture_set.cpp
   src/core/tile_map.cpp
   src/core/actor_simulation.cpp
+  src/core/brain_config_loader.cpp
   src/core/script_environment.cpp
   src/core/world_scene_resource.cpp
   src/core/simulation.cpp
@@ -85,9 +87,18 @@ set_target_properties(tile_frontier_snapshot_smoke PROPERTIES RUNTIME_OUTPUT_DIR
 # Resume-детерминизм: прогоняет РЕАЛЬНУЮ симуляцию слайса, save->load в чистый слайс, гоняет оба
 # синхронно и сверяет состояние побайтово через dump_world. Линкует actor_simulation.cpp (импл
 # слайса + регистрация компонентов через actor_snapshot.h) поверх devils_plane.
-add_executable(tile_frontier_resume_smoke resume_smoke.cpp src/core/actor_simulation.cpp)
+set(TILE_FRONTIER_BRAIN_TEST_SOURCES
+  src/core/actor_simulation.cpp
+  src/core/brain_config_loader.cpp
+  src/core/script_environment.cpp
+  test_brain_fixture.cpp
+  test_brain_fixture.h
+)
+
+add_executable(tile_frontier_resume_smoke resume_smoke.cpp ${TILE_FRONTIER_BRAIN_TEST_SOURCES})
 target_link_libraries(tile_frontier_resume_smoke
   devils_engine::devils_plane
+  devils_engine::demiurg
   devils_engine::prefab
   glm::glm
   tavl
@@ -99,13 +110,16 @@ target_include_directories(tile_frontier_resume_smoke PRIVATE
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/core>"
 )
+target_compile_definitions(tile_frontier_resume_smoke PRIVATE
+  TILE_FRONTIER_SOURCE_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/modules/")
 set_target_properties(tile_frontier_resume_smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
 
 # Full actor-pipeline scaling benchmark. Not registered in ctest: it is an explicit performance run,
 # but it fails non-zero unless 1/2/4/8 workers produce the same world hash and serialized bytes.
-add_executable(tile_frontier_mt_benchmark mt_benchmark.cpp src/core/actor_simulation.cpp)
+add_executable(tile_frontier_mt_benchmark mt_benchmark.cpp ${TILE_FRONTIER_BRAIN_TEST_SOURCES})
 target_link_libraries(tile_frontier_mt_benchmark
   devils_engine::devils_plane
+  devils_engine::demiurg
   devils_engine::prefab
   glm::glm
   tavl
@@ -117,6 +131,8 @@ target_include_directories(tile_frontier_mt_benchmark PRIVATE
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/core>"
 )
+target_compile_definitions(tile_frontier_mt_benchmark PRIVATE
+  TILE_FRONTIER_SOURCE_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/modules/")
 set_target_properties(tile_frontier_mt_benchmark PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
 
@@ -124,8 +140,7 @@ set_target_properties(tile_frontier_mt_benchmark PROPERTIES
 # catalogue deferred record/commit. Kept headless and independent of the application/render stack.
 add_executable(tile_frontier_config_effect_smoke
   config_effect_smoke.cpp
-  src/core/actor_simulation.cpp
-  src/core/script_environment.cpp
+  ${TILE_FRONTIER_BRAIN_TEST_SOURCES}
 )
 target_link_libraries(tile_frontier_config_effect_smoke
   devils_engine::devils_plane

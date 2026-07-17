@@ -5,14 +5,10 @@
 #include <span>
 
 #include <devils_engine/bindings/lua_header.h>
-#include <devils_engine/acumen/goap_resource.h>
-#include <devils_engine/act/script_resource.h>
 #include <devils_engine/catalogue/introspection.h> // catalogue::statistics_store (perf UI)
 #include <devils_engine/catalogue/logging.h>       // доменное логгирование (DE_LOG) + init_logging
 #include <devils_engine/demiurg/resource_system.h>
-#include <devils_engine/mood/fsm_resource.h>
 #include <devils_engine/painter/gpu_texture_resource.h>
-#include <devils_engine/prefab/resource.h>
 #include <devils_engine/simul/loading_runtime.h>
 #include <devils_engine/simul/window_runtime.h>
 #include <devils_engine/sound/sound_resource.h>
@@ -24,6 +20,7 @@
 #include "actor_simulation.h"
 #include "app_config_resource.h"
 #include "assets_system.h"
+#include "brain_config_loader.h"
 #include "broker.h"
 #include "config.h"
 #include "global_ubo.h"
@@ -272,54 +269,16 @@ void simulation::begin_project_loading() {
                    instance_layout::match_error::to_string(r.error), r.where, r.expected, r.actual);
   }
 
-  // Конфиги «мозга» актора из tavl: синхронно доводим до usable (как startup/entry в begin_boot) и
-  // передаём в слайс. Отсутствие ресурса ⇒ соответствующее поле nullptr ⇒ нативный/хардкод фолбэк.
-  core::brain_config brains;
-  std::vector<core::prefab_def> prefab_defs; // владелец текстов префабов на время init (brains.prefabs → сюда)
-  if (auto* reg = c.assets_sim != nullptr ? c.assets_sim->resources() : nullptr) {
-    if (auto* sr = reg->get<act::script_resource>(scene.actor_script)) {
-      while (!sr->usable()) {
-        sr->load(utils::safe_handle_t{});
-      }
-      brains.is_hungry_program = sr->program();
-      DE_LOG(catalogue::log_domain::gameplay, flow, "main: actor.is_hungry <- script '{}'", scene.actor_script);
-    } else {
-      utils::warn("main: script '{}' was not found in the registry; using native is_hungry", scene.actor_script);
-    }
-    if (auto* fr = reg->get<mood::fsm_resource>(scene.actor_fsm)) {
-      while (!fr->usable()) {
-        fr->load(utils::safe_handle_t{});
-      }
-      brains.fsm_transitions = &fr->transitions();
-      DE_LOG(catalogue::log_domain::gameplay, flow, "main: mood FSM <- config '{}' ({} transitions)", scene.actor_fsm, fr->transitions().size());
-    } else {
-      utils::warn("main: config '{}' was not found in the registry; using the built-in FSM", scene.actor_fsm);
-    }
-    if (reg->get<acumen::goap_resource>(scene.actor_goap) != nullptr) {
-      brains.goap = std::make_shared<acumen::goap_config>(acumen::resolve_goap_config(*reg, scene.actor_goap));
-      DE_LOG(catalogue::log_domain::gameplay, flow, "main: GOAP <- config '{}' ({} metrics, {} actions)",
-             scene.actor_goap, brains.goap->metrics.size(), brains.goap->actions.size());
-    } else {
-      utils::warn("main: config '{}' was not found in the registry; using the built-in GOAP", scene.actor_goap);
-    }
-    // Префабы из prefab/*.tavl: собираем имя+текст всех prefab_resource → в brain_config (слайс
-    // регистрирует специи компонентов в C++ и скармливает текст в prefab_registry). Потребляется в
-    // init (текст копируется), поэтому prefab_defs может жить локально до конца init.
-    std::vector<prefab::prefab_resource*> prefab_res;
-    reg->filter<prefab::prefab_resource>(scene.prefab_prefix, prefab_res);
-    for (auto* pr : prefab_res) {
-      while (!pr->usable()) {
-        pr->load(utils::safe_handle_t{});
-      }
-      prefab_defs.push_back(core::prefab_def{std::string(pr->prefab_name()), std::string(pr->text())});
-    }
-    if (!prefab_defs.empty()) {
-      brains.prefabs = &prefab_defs;
-      DE_LOG(catalogue::log_domain::gameplay, flow, "main: prefab <- {} definitions from '{}'", prefab_defs.size(), scene.prefab_prefix);
-    } else {
-      utils::warn("main: no prefabs matching '{}' were found in the registry; using built-in food", scene.prefab_prefix);
-    }
+  if (c.assets_sim == nullptr || c.assets_sim->resources() == nullptr) {
+    utils::error{}("tile_frontier: gameplay config requires the assets subsystem");
   }
+  auto brains = core::load_required_brain_config(
+    *c.assets_sim->resources(), scene.actor_script, scene.actor_fsm,
+    scene.actor_goap, scene.prefab_prefix);
+  DE_LOG(catalogue::log_domain::gameplay, flow,
+         "main: required brain config <- script '{}', FSM '{}' ({} transitions), GOAP '{}' ({} metrics, {} actions), {} prefabs",
+         scene.actor_script, scene.actor_fsm, brains.fsm_transitions->size(), scene.actor_goap,
+         brains.goap->metrics.size(), brains.goap->actions.size(), brains.prefabs.size());
 
   c.actors.init(
     scene.actor_count,

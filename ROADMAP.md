@@ -388,9 +388,13 @@ App-shell закрывает топологию приложения, но не 
    Общий type-erased `act::script_compiler` оставляет `(ret,scope) → parse<Ret,RootScope>` в проекте:
    `tile_frontier::script_environment` реализует `entity_scope`, а owner-библиотеки не знают об ECS.
    `assets_simulation` теперь только регистрирует owner-типы и передаёт этот compiler adapter.
-4. **Удалить config-дублирование.** Для приложения FSM/GOAP/prefab/script configs становятся обязательными;
-   hardcoded fallback остаётся только в явных test fixtures/builders. Одна native-функция регистрируется
-   в ds, а `act` получает проверенный facade native/script без второй ручной таблицы тех же имён.
+4. ✅ **Удалить config-дублирование (2026-07-18).** FSM/GOAP/prefab/script и все поля `worlds/*`
+   обязательны: `load_required_brain_config` валидирует resource set, а `actor_world_slice::init/load`
+   больше не собирают hardcoded графы, переходы и prefab-тексты. Resume/config/MT tests используют
+   явный `test_brain_fixture`, который грузит те же shipped resources. GOAP metrics/actions получают
+   `act::script_function` facades из скомпилированных config-программ; прежняя параллельная таблица
+   native predicates и fallback actions удалена. Нативные `eat/seek_food/wander` остаются разрешёнными
+   building blocks до согласованного ds-контракта target scope/RNG, как оговорено ниже.
 5. **Свернуть проектную сцену, не таща её в engine.** Chunk receive/apply, camera UBO, tile/actor publish,
    actor update, presentation-sound policy и project metrics собрать в `tile_frontier_game`/`world_scene`.
    `simulation.cpp` остаётся коротким набором host callbacks; компоненты/effects/prefab specs, actor phase

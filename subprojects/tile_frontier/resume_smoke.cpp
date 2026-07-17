@@ -13,6 +13,7 @@
 #include <spdlog/spdlog.h>
 
 #include "core/actor_simulation.h"
+#include "test_brain_fixture.h"
 
 using namespace devils_engine;
 namespace tf = tile_frontier::core;
@@ -33,6 +34,9 @@ static std::vector<std::byte> dump(const tf::actor_world_slice& s) {
 int main() {
   spdlog::set_level(spdlog::level::warn); // приглушить per-tick info из update()
 
+  test_brain_fixture fixture(TILE_FRONTIER_SOURCE_RESOURCE_ROOT);
+  const auto& brains = fixture.config();
+
   const uint32_t count = 2000;
   const glm::vec2 mn{0.5f, 0.5f}, mx{64.0f, 64.0f};
   const uint32_t tex = 4;
@@ -51,8 +55,8 @@ int main() {
   // физически, seal сортирует по semantic key, elect выбирает по стабильному source id.
   {
     tf::actor_world_slice one_worker, four_workers;
-    one_worker.init(512, mn, mx, tex);
-    four_workers.init(512, mn, mx, tex);
+    one_worker.init(512, mn, mx, tex, brains);
+    four_workers.init(512, mn, mx, tex, brains);
     int worker_count_diverged_at = -1;
     for (int i = 1; i <= 45 && worker_count_diverged_at < 0; ++i) {
       one_worker.update(dt, batch_a, single_pool);
@@ -68,7 +72,7 @@ int main() {
 
   // --- warmup: настоящий геймплей до момента снапшота (поедание/респавн/FSM успели наработать) ---
   tf::actor_world_slice a;
-  a.init(count, mn, mx, tex);
+  a.init(count, mn, mx, tex, brains);
   for (int i = 0; i < 60; ++i) {
     a.update(dt, batch_a, pool);
   }
@@ -78,7 +82,7 @@ int main() {
   std::printf("saved packet: %zu bytes (world + sim scalars, sealed)\n", packet.size());
 
   tf::actor_world_slice b;
-  if (!b.load(packet)) {
+  if (!b.load(packet, brains)) {
     std::printf("RESUME FAILED: load returned false\n");
     return 1;
   }

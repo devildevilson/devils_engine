@@ -29,6 +29,14 @@ void world_scene_resource::load_cold(const utils::safe_handle_t&) {
   if (config_.chunk_size == 0 || config_.chunks_x == 0 || config_.chunks_y == 0 || config_.actor_count == 0) {
     utils::error{}("world scene resource '{}': chunk/grid/actor counts must be non-zero", id);
   }
+  if (config_.tile_size <= 0.0f || config_.camera_half_width <= 0.0f) {
+    utils::error{}("world scene resource '{}': tile_size and camera_half_width must be positive", id);
+  }
+  if (config_.tile_texture_group.empty() || config_.sound_group.empty() ||
+      config_.actor_script.empty() || config_.actor_fsm.empty() ||
+      config_.actor_goap.empty() || config_.prefab_prefix.empty()) {
+    utils::error{}("world scene resource '{}': resource groups and actor config ids are required", id);
+  }
 }
 
 void world_scene_resource::load_warm(const utils::safe_handle_t&) {}

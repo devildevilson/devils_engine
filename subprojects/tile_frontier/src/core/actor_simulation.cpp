@@ -83,16 +83,6 @@ static aesthetics::entityid_t ent(const entity_scope h) noexcept {
 static constexpr uint64_t purpose_wander = 0x77616e646572ull; // "wander"
 static constexpr uint64_t purpose_seek = 0x7365656bull;       // "seek"
 
-// Биты GOAP-стейта (= индекс метрики; resolved ставят действия, метрики его не считают).
-namespace flags {
-enum : size_t { threat_present = 0,
-                prey_present = 1,
-                hungry = 2,
-                bored = 3,
-                prey_in_range = 4,
-                resolved = 5 };
-}
-
 // ── тюнинг мотиваций (drives) ──────────────────────────────────────────────
 // Скорости в единицах/секунду; пороги в 0..1. hunger копится всегда; boredom копится пока
 // актор стоит (думает), быстро спадает в движении → колебание think⇄wander. Значения
@@ -100,10 +90,7 @@ enum : size_t { threat_present = 0,
 static constexpr float hunger_rate = 0.08f;  // голод/сек (≈12с до сытого→голодного)
 static constexpr float bored_rate = 0.14f;   // скука/сек пока стоит (думает)
 static constexpr float bored_relief = 0.30f; // спад скуки/сек в движении
-static constexpr float hungry_threshold = 0.50f;
-static constexpr float bored_threshold = 0.50f;
 static constexpr float still_speed2 = 0.01f; // |vel|^2 ниже — считаем «стоит»
-static constexpr float eat_radius = 0.9f;    // дистанция хвата добычи (≈ размер треуг. + запас)
 static constexpr uint64_t eat_duration = 18; // тиков длится поедание (≈0.9с при 20fps) = окно коммита
 
 // Радиус восприятия для kD-запроса (мировые единицы, tile_size=1, шаг спавна ~1).
@@ -275,38 +262,6 @@ static uint64_t sound_for_state(const uint64_t state) noexcept {
 // Предикаты ЧИСТЫЕ — читают actor_perception (наполнен sense-фазой) за O(1), их
 // свободно зовёт планировщик A*. Эффекты мутируют скорость на apply-фазе.
 
-static bool predicate_threat_present(const act::entity_handle self) noexcept {
-  const auto* per = world_of(self).get<actor_perception>(ent(self));
-  return per != nullptr && per->has_threat;
-}
-
-static bool predicate_prey_present(const act::entity_handle self) noexcept {
-  const auto* per = world_of(self).get<actor_perception>(ent(self));
-  return per != nullptr && per->has_prey;
-}
-
-static bool predicate_is_hungry(const act::entity_handle self) noexcept {
-  const auto* dr = world_of(self).get<stats>(ent(self));
-  return dr != nullptr && dr->hunger >= hungry_threshold;
-}
-
-static bool predicate_is_bored(const act::entity_handle self) noexcept {
-  const auto* dr = world_of(self).get<stats>(ent(self));
-  return dr != nullptr && dr->boredom >= bored_threshold;
-}
-
-// Добыча есть И в радиусе хвата — разделяет chase (далеко) и eat (вплотную).
-static bool predicate_prey_in_range(const act::entity_handle self) noexcept {
-  const auto& w = world_of(self);
-  const auto* per = w.get<actor_perception>(ent(self));
-  const auto* pos = w.get<actor_position>(ent(self));
-  if (per == nullptr || pos == nullptr || !per->has_prey) {
-    return false;
-  }
-  const glm::vec2 d = per->prey_pos - pos->value;
-  return (d.x * d.x + d.y * d.y) <= eat_radius * eat_radius;
-}
-
 // Актор уже ест (есть actor_eating) — guard для перехода FSM в eating: транзит только если
 // хват реально удался (effect_eat выставил компонент). Иначе остаёмся в прежнем состоянии.
 static bool predicate_is_eating(const act::entity_handle self) noexcept {
@@ -323,28 +278,6 @@ static void set_velocity(aesthetics::world& world, const aesthetics::entityid_t 
   const float len2 = dir.x * dir.x + dir.y * dir.y;
   dir = len2 > 1e-12f ? dir * (1.0f / std::sqrt(len2)) : glm::vec2{0.0f, 0.0f};
   vel->value = dir * brain->speed;
-}
-
-static void effect_flee(const act::entity_handle self) noexcept {
-  auto& world = world_of(self);
-  const auto id = ent(self);
-  const auto* pos = world.get<actor_position>(id);
-  const auto* per = world.get<actor_perception>(id);
-  if (pos == nullptr || per == nullptr) {
-    return;
-  }
-  set_velocity(world, id, pos->value - per->threat_pos); // прочь от угрозы
-}
-
-static void effect_chase(const act::entity_handle self) noexcept {
-  auto& world = world_of(self);
-  const auto id = ent(self);
-  const auto* pos = world.get<actor_position>(id);
-  const auto* per = world.get<actor_perception>(id);
-  if (pos == nullptr || per == nullptr) {
-    return;
-  }
-  set_velocity(world, id, per->prey_pos - pos->value); // к добыче
 }
 
 // Поедание — ЧИСТАЯ МУТАЦИЯ пары (хищник = scope[0], добыча = scope[1]). Контенция решена до тела:
@@ -364,12 +297,6 @@ static void effect_eat(const act::entity_handle self_h, const act::entity_handle
   if (auto* bs = world.get<actor_state>(prey); bs != nullptr) {
     bs->state = utils::string_hash("eaten");
   }
-}
-
-// Сидит на месте и «думает» — скорость в ноль. Накопление скуки — пассивно в apply
-// (актор стоит ⇒ boredom растёт), так что эффект просто гасит движение.
-static void effect_think(const act::entity_handle self) noexcept {
-  set_velocity(world_of(self), ent(self), glm::vec2{0.0f, 0.0f});
 }
 
 // Ищет еду — то же случайное блуждание, что и wander, но со своим потоком RNG (provenance/
@@ -440,16 +367,10 @@ using actor_local_effect_domain = catalogue::mt::domain<
 using actor_eat_effect_domain = catalogue::mt::domain<
   actor_eat_effect_domain_id, actor_eat_effect_strategy>;
 
-using flee_deferred = actor_local_effect_domain::fn_traits<
-  &effect_flee, "flee", "self">;
-using chase_deferred = actor_local_effect_domain::fn_traits<
-  &effect_chase, "chase", "self">;
 using seek_food_deferred = actor_local_effect_domain::fn_traits<
   &effect_seek_food, "seek_food", "self", "rng">;
 using wander_deferred = actor_local_effect_domain::fn_traits<
   &effect_wander, "wander", "self", "rng">;
-using think_deferred = actor_local_effect_domain::fn_traits<
-  &effect_think, "think", "self">;
 using eat_deferred = actor_eat_effect_domain::fn_traits<
   &effect_eat, "eat", "self", "prey", "rng">;
 using flee_script_deferred = actor_local_effect_domain::fn_traits<
@@ -510,6 +431,11 @@ void actor_batch::build(const aesthetics::world& world, const uint64_t tick) {
 }
 
 void actor_world_slice::setup_brain_registry() {
+  if (brains_.is_hungry_program == nullptr || brains_.fsm_transitions == nullptr ||
+      brains_.goap == nullptr || brains_.prefabs.empty()) {
+    utils::error{}("tile_frontier: actor_world_slice requires script, FSM, GOAP, and prefab config");
+  }
+
   // пересоздаём реестр с нуля: reg() ассертит на повторную регистрацию имени,
   // а init() может вызываться многократно.
   registry_ = act::registry{};
@@ -517,39 +443,19 @@ void actor_world_slice::setup_brain_registry() {
   fsm_registry_ = mood::registry{};
   goap_ = nullptr;
   fsm_ = nullptr;
-  registry_.reg("actor.threat_present", act::pack<&predicate_threat_present>());
-  registry_.reg("actor.prey_present", act::pack<&predicate_prey_present>());
-  // is_hungry: скрипт-предикат из tavl (hunger >= 0.5), если загружен; иначе нативный фолбэк
-  // (тесты/резюме без ассетов). Скрипт исполняется на per-worker execution_scratch; засев root-скоупа —
-  // seed_entity_scope. Поведение идентично нативному (тот же порог, та же семантика отсутствия drives).
-  if (brains_.is_hungry_program != nullptr) {
-    registry_.reg("actor.is_hungry", std::make_unique<act::script_function<bool>>(
-                                       brains_.is_hungry_program, &seed_entity_scope));
-  } else {
-    registry_.reg("actor.is_hungry", act::pack<&predicate_is_hungry>());
-  }
-  registry_.reg("actor.is_bored", act::pack<&predicate_is_bored>());
-  registry_.reg("actor.prey_in_range", act::pack<&predicate_prey_in_range>());
+  registry_.reg("actor.is_hungry", std::make_unique<act::script_function<bool>>(
+                                     brains_.is_hungry_program, &seed_entity_scope));
   // ВАЖНО: на это имя ссылается СТРОКА FSM (mood) как гвард — парсер mood не допускает точку
   // в идентификаторах, поэтому имя dot-free (в отличие от acumen-метрик "actor.*", которые в
   // парсер mood не попадают и резолвятся по полному хешу строки).
   registry_.reg("is_eating", act::pack<&predicate_is_eating>());
   const auto scripted_action = [this](const std::string_view name) {
-    if (brains_.goap == nullptr) {
-      return false;
-    }
     const auto& actions = brains_.goap->actions;
     const auto it = std::find_if(actions.begin(), actions.end(), [name](const acumen::goap_action_config& a) {
       return a.name == name;
     });
     return it != actions.end() && it->has_effect_program;
   };
-  if (!scripted_action("flee")) {
-    registry_.reg("flee", act::pack<flee_deferred::fn_deferred_ptr>());
-  }
-  if (!scripted_action("chase")) {
-    registry_.reg("chase", act::pack<chase_deferred::fn_deferred_ptr>());
-  }
   if (!scripted_action("eat")) {
     registry_.reg("eat", act::pack<eat_deferred::fn_deferred_ptr>());
   }
@@ -563,94 +469,19 @@ void actor_world_slice::setup_brain_registry() {
   if (!scripted_action("wander")) {
     registry_.reg("wander", act::pack<wander_deferred::fn_deferred_ptr>());
   }
-  if (!scripted_action("think")) {
-    registry_.reg("think", act::pack<think_deferred::fn_deferred_ptr>());
-  }
-
-  // GOAP-система: из tavl-конфига (goap/actor) если загружен, иначе хардкод-фолбэк (тесты/резюме).
-  if (brains_.goap != nullptr) {
-    build_goap_from_config(*brains_.goap);
-  } else {
-    // метрики (бит = индекс): 0 threat, 1 prey, 2 hungry, 3 bored, 4 prey_in_range. resolved(5) — действия.
-    std::vector<acumen::state_metric> metrics = {
-      acumen::state_metric("actor.threat_present"),
-      acumen::state_metric("actor.prey_present"),
-      acumen::state_metric("actor.is_hungry"),
-      acumen::state_metric("actor.is_bored"),
-      acumen::state_metric("actor.prey_in_range"),
-    };
-
-    // Приоритетная лестница (угроза доминирует; дальше чистое разбиение по hungry → prey →
-    // in_range / bored ⇒ ровно одно действие на состояние, план в 1 шаг). Каждое ставит resolved.
-    acumen::scoped_state flee_req;
-    flee_req.set(flags::threat_present, true);
-    acumen::scoped_state eat_req;
-    eat_req.set(flags::threat_present, false);
-    eat_req.set(flags::hungry, true);
-    eat_req.set(flags::prey_present, true);
-    eat_req.set(flags::prey_in_range, true);
-    acumen::scoped_state chase_req;
-    chase_req.set(flags::threat_present, false);
-    chase_req.set(flags::hungry, true);
-    chase_req.set(flags::prey_present, true);
-    chase_req.set(flags::prey_in_range, false);
-    acumen::scoped_state seek_req;
-    seek_req.set(flags::threat_present, false);
-    seek_req.set(flags::hungry, true);
-    seek_req.set(flags::prey_present, false);
-    acumen::scoped_state wander_req;
-    wander_req.set(flags::threat_present, false);
-    wander_req.set(flags::hungry, false);
-    wander_req.set(flags::bored, true);
-    acumen::scoped_state think_req;
-    think_req.set(flags::threat_present, false);
-    think_req.set(flags::hungry, false);
-    think_req.set(flags::bored, false);
-    acumen::scoped_state done;
-    done.set(flags::resolved, true);
-
-    std::vector<acumen::action> actions = {
-      acumen::action("flee", flee_req, done, acumen::scoped_state{}),
-      acumen::action("eat", eat_req, done, acumen::scoped_state{}),
-      acumen::action("chase", chase_req, done, acumen::scoped_state{}),
-      acumen::action("seek_food", seek_req, done, acumen::scoped_state{}),
-      acumen::action("wander", wander_req, done, acumen::scoped_state{}),
-      acumen::action("think", think_req, done, acumen::scoped_state{}),
-    };
-
-    acumen::scoped_state goal_state;
-    goal_state.set(flags::resolved, true);
-    std::vector<acumen::goal> goals = {acumen::goal{"resolved", acumen::scoped_state{}, goal_state}};
-
-    // конструктор резолвит предикаты/эффекты по именам и кидает при промахе.
-    goap_registry_.add("actor", acumen::system(&registry_, std::move(metrics), std::move(goals), std::move(actions)));
-    goap_ = goap_registry_.get("actor");
-  }
+  build_goap_from_config(*brains_.goap);
 
   // FSM-исполнитель (mood): событие = выбранное GOAP действие, ведёт в одноимённое состояние из
   // ЛЮБОГО (any_state — wildcard). Движение остаётся эффектом GOAP в apply; FSM держит состояние
   // (выбор анимации в рендере) и даёт точку для on_entry-эффектов: звук — фаза D, поедание (guard
   // «добыча в радиусе» → состояние eating с длительностью) — фаза C. Пока чистые рёбра без эффектов.
-  // Переходы FSM из tavl-конфига (fsm/actor), если загружены; иначе хардкод-фолбэк (тесты/резюме без
-  // ассетов). Гварды/действия в строках — имена функций из registry_ (нативки/скрипты), резолвит mood.
-  if (brains_.fsm_transitions != nullptr) {
-    fsm_registry_.add("actor", mood::system(&registry_, *brains_.fsm_transitions));
-  } else {
-    std::vector<std::string> fsm_lines = {
-      "any_state + flee = flee",
-      "any_state + eat [is_eating] = eating", // только если хват реально удался (guard; имя dot-free для парсера mood)
-      "any_state + chase = chase",
-      "any_state + seek_food = seek_food",
-      "any_state + wander = wander",
-      "any_state + think = think",
-    };
-    fsm_registry_.add("actor", mood::system(&registry_, std::move(fsm_lines)));
-  }
+  // Гварды/действия в строках — имена функций из registry_; mood резолвит их при сборке.
+  fsm_registry_.add("actor", mood::system(&registry_, *brains_.fsm_transitions));
   fsm_ = fsm_registry_.get("actor");
 
   // Префабы слайса (перестраиваются вместе с реестром — общая точка init/load). C++-специи компонентов
   // (какие типы бывают + per-prefab on_construct для DERIVED) регистрируются ЗДЕСЬ; тексты префабов
-  // приходят из конфига (prefab/*.tavl через brain_config.prefabs), иначе хардкод-фолбэк (тесты/резюме).
+  // приходят из обязательного конфига (prefab/*.tavl через brain_config.prefabs).
   //   food:  data food_item из конфига; визуал (зелёный, food_size) + позиция — derived в construct.
   //   actor: data actor_tuning (разброс скорости/голода/силы) из конфига; brain/visual/stats/… — derived
   //          в construct из per-instance зерна (spawn_args). GOAP/FSM остаются slice-level (не per-entity).
@@ -658,13 +489,19 @@ void actor_world_slice::setup_brain_registry() {
   prefab_.data<food_item>("food_item");
   prefab_.data<actor_tuning>("actor_tuning");
   prefab_.on_construct("food", [](aesthetics::entityid_t id, aesthetics::world& w, const spawn_args& a) {
+    if (w.get<food_item>(id) == nullptr) {
+      utils::error{}("tile_frontier: required food_item is missing from prefab 'food'");
+    }
     w.create<actor_position>(id, a.pos);
     w.create<actor_visual>(id, 0u, food_color(), food_size);
   });
   prefab_.on_construct("actor", [](aesthetics::entityid_t id, aesthetics::world& w, const spawn_args& a) {
     // DERIVED per-instance из зерна + тюнинга (формулы = историческому init-циклу, побайтовый паритет).
     const auto* tp = w.get<actor_tuning>(id);
-    const actor_tuning t = tp != nullptr ? *tp : actor_tuning{};
+    if (tp == nullptr) {
+      utils::error{}("tile_frontier: required actor_tuning is missing from prefab 'actor'");
+    }
+    const actor_tuning t = *tp;
     const uint32_t tex = std::max(a.tex_count, 1u);
     w.create<actor_position>(id, a.pos);
     w.create<actor_velocity>(id, glm::vec2{0.0f, 0.0f});
@@ -677,15 +514,8 @@ void actor_world_slice::setup_brain_registry() {
     w.create<actor_state>(id, utils::string_hash("think")); // стартуем «думающими»
   });
   const auto prefab_lc = devils_engine::prefab::prefab_load_context{&registry_};
-  if (brains_.prefabs != nullptr && !brains_.prefabs->empty()) {
-    for (const auto& d : *brains_.prefabs) {
-      prefab_.add_prefab(d.name, d.text, prefab_lc);
-    }
-  } else {
-    prefab_.add_prefab("food", "food_item = { nutrition = 1.0 }\n", prefab_lc);
-    prefab_.add_prefab("actor",
-                       "actor_tuning = { speed_base = 0.65, speed_var = 1.35, hunger_scale = 0.4, strength_mod = 11 }\n",
-                       prefab_lc);
+  for (const auto& d : brains_.prefabs) {
+    prefab_.add_prefab(d.name, d.text, prefab_lc);
   }
 }
 
@@ -849,7 +679,7 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   select_sys_.reset();
   resolve_eating_sys_.reset();
   deferred_.reset();
-  brains_ = brains; // до setup_brain_registry: выбирает скрипт/конфиг vs натив/хардкод
+  brains_ = brains;
   setup_brain_registry();
   calls_.reset(count); // предварительная ёмкость по числу акторов; растёт в cognition до index_capacity
   tick_ = 0;
@@ -874,7 +704,7 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   const uint32_t columns = std::max<uint32_t>(uint32_t(std::ceil(std::sqrt(float(std::max(count, 1u))))), 1u);
   const uint32_t rows = std::max<uint32_t>((count + columns - 1u) / columns, 1u);
 
-  // Спавн акторов через префаб «actor» (prefab/actor.tavl или фолбэк): data-компонент actor_tuning из
+  // Спавн акторов через обязательный префаб «actor»: data-компонент actor_tuning из
   // конфига задаёт разброс, on_construct лепит seed-производные компоненты. Раскладка/зерно/индекс —
   // per-instance (сетка+джиттер) → в spawn_args. gen_entityid зовётся внутри spawn (порядок id сохранён).
   for (uint32_t i = 0; i < count; ++i) {
@@ -1350,7 +1180,7 @@ std::vector<uint8_t> actor_world_slice::save(const aesthetics::serial::sink_poli
   return serial::seal(raw, policy); // header + checksum + компрессия (+ скриншот — тут не задаём)
 }
 
-bool actor_world_slice::load(const std::span<const uint8_t> packet) {
+bool actor_world_slice::load(const std::span<const uint8_t> packet, const brain_config& brains) {
   namespace serial = aesthetics::serial;
   // чистый слайс: пересобираем реестр функций + GOAP/FSM (как init), но БЕЗ спавна сущностей.
   world_ = aesthetics::world{};
@@ -1362,6 +1192,7 @@ bool actor_world_slice::load(const std::span<const uint8_t> packet) {
   select_sys_.reset();
   resolve_eating_sys_.reset();
   deferred_.reset();
+  brains_ = brains;
   setup_brain_registry();
   calls_.clear();
   // как в init: аллокаторы пулов поедания заранее на главном потоке (view<> не кинет; type-id

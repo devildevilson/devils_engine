@@ -509,10 +509,11 @@ endif()
 add_subdirectory(libs/options/)
 add_subdirectory(libs/utils/)
 add_subdirectory(libs/catalogue/)
-# act идёт ДО mood/acumen: они линкуют devils_engine::act PUBLIC (alias должен уже существовать)
+# Generic config resources in act/mood/acumen/prefab inherit demiurg::resource_interface.
+add_subdirectory(libs/demiurg/)
+# act goes before mood/acumen: both expose act types in their public APIs.
 add_subdirectory(libs/act/)
 add_subdirectory(libs/mood/)
-add_subdirectory(libs/demiurg/)
 add_subdirectory(libs/simul/)
 add_subdirectory(libs/flow/)
 add_subdirectory(libs/aesthetics/)
