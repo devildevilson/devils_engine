@@ -22,6 +22,7 @@
 #include <spdlog/spdlog.h>
 
 #include "core/actor_simulation.h"
+#include "test_brain_fixture.h"
 
 using namespace devils_engine;
 namespace tf = tile_frontier::core;
@@ -54,7 +55,8 @@ uint64_t hash_bytes(const std::vector<std::byte>& bytes) noexcept {
 }
 
 run_result run(const size_t workers, const uint32_t entity_count,
-               const size_t warmup_ticks, const size_t measured_ticks) {
+               const size_t warmup_ticks, const size_t measured_ticks,
+               const tf::brain_config& brains) {
   const glm::vec2 min_bound{0.5f, 0.5f};
   const glm::vec2 max_bound{64.0f, 64.0f};
   constexpr uint32_t texture_count = 4;
@@ -67,7 +69,7 @@ run_result run(const size_t workers, const uint32_t entity_count,
   if (!batch.valid()) {
     throw std::runtime_error("tile_frontier benchmark actor batch layout is invalid");
   }
-  slice.init(entity_count, min_bound, max_bound, texture_count);
+  slice.init(entity_count, min_bound, max_bound, texture_count, brains);
 
   for (size_t i = 0; i < warmup_ticks; ++i) {
     slice.update(dt, batch, pool);
@@ -108,6 +110,8 @@ const run_result::phase_result* find_phase(const run_result& result, const std::
 int main(int argc, char** argv) {
   spdlog::set_level(spdlog::level::warn);
 
+  test_brain_fixture fixture(TILE_FRONTIER_SOURCE_RESOURCE_ROOT);
+
   const uint32_t entity_count = argc > 1 ? uint32_t(std::stoul(argv[1])) : 4096u;
   const size_t measured_ticks = argc > 2 ? size_t(std::stoull(argv[2])) : 120u;
   const size_t warmup_ticks = argc > 3 ? size_t(std::stoull(argv[3])) : 30u;
@@ -120,7 +124,7 @@ int main(int argc, char** argv) {
   std::vector<run_result> results;
   results.reserve(worker_counts.size());
   for (const size_t workers : worker_counts) {
-    results.push_back(run(workers, entity_count, warmup_ticks, measured_ticks));
+    results.push_back(run(workers, entity_count, warmup_ticks, measured_ticks, fixture.config()));
   }
 
   const auto& baseline = results.front();

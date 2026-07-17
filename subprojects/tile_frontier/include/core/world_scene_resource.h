@@ -12,18 +12,18 @@ namespace core {
 // Project-owned часть scene manifest. simul грузит этот CPU-only descriptor до вызова
 // begin_project_loading(), но смысл полей (чанки, actor slice, brain ids) знает только игра.
 struct world_scene_config {
-  std::string tile_texture_group = "tile_textures";
-  std::string sound_group = "sounds";
-  float tile_size = 1.0f;
-  uint32_t chunk_size = 16;
-  uint32_t chunks_x = 4;
-  uint32_t chunks_y = 4;
-  uint32_t actor_count = 4096;
-  float camera_half_width = 8.0f;
-  std::string actor_script = "scripts/actor_is_hungry";
-  std::string actor_fsm = "fsm/actor";
-  std::string actor_goap = "goap/actor";
-  std::string prefab_prefix = "prefab/";
+  std::string tile_texture_group;
+  std::string sound_group;
+  float tile_size = 0.0f;
+  uint32_t chunk_size = 0;
+  uint32_t chunks_x = 0;
+  uint32_t chunks_y = 0;
+  uint32_t actor_count = 0;
+  float camera_half_width = 0.0f;
+  std::string actor_script;
+  std::string actor_fsm;
+  std::string actor_goap;
+  std::string prefab_prefix;
 };
 
 class world_scene_resource : public devils_engine::demiurg::resource_interface {

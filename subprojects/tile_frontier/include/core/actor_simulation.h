@@ -130,7 +130,8 @@ struct stats {
 
 // Тюнинг-параметры актора из конфига (prefab/actor.tavl → data-компонент). Задают РАЗБРОС per-instance
 // величин, которые on_construct считает из зерна: скорость (base + u·var), стартовый голод (u·scale),
-// сила (hash % mod). Дефолты = историческим хардкод-константам (фолбэк тестов/резюме). НЕ сериализуется
+// сила (hash % mod). Member defaults support field-level prefab inheritance; the actor prefab itself
+// is required and there is no C++ prefab fallback. НЕ сериализуется
 // (uniform, потребляется только в on_construct на спавне; load не спавнит — восстанавливает компоненты).
 struct actor_tuning {
   float speed_base = 0.65f;
@@ -234,12 +235,9 @@ private:
   std::vector<uint32_t> ids_;
 };
 
-// Проектные описания «мозга» актора, загруженные из tavl (заимствуются — владелец реестр ассетов).
-// Каждое поле опционально: nullptr ⇒ нативный/хардкод фолбэк (тесты/резюме без ассетов). Растёт по
-// мере переезда gameplay-данных в конфиг (GOAP-метрики/действия — следующими).
+// Required actor gameplay config assembled from owner-level resources before slice initialization.
 // Определение префаба из конфига: логическое имя + сырой tavl-текст. Слайс регистрирует C++-специи
-// компонентов и скармливает текст в prefab_registry.add_prefab. Потребляется ЦЕЛИКОМ в init (текст
-// копируется в реестр), поэтому вектор может быть временным у вызывающего.
+// компонентов и скармливает текст в prefab_registry.add_prefab.
 struct prefab_def {
   std::string name;
   std::string text;
@@ -249,7 +247,7 @@ struct brain_config {
   const devils_script::container* is_hungry_program = nullptr; // скрипт-предикат "actor.is_hungry"
   const std::vector<devils_engine::mood::transition_config>* fsm_transitions = nullptr;
   std::shared_ptr<const devils_engine::acumen::goap_config> goap; // flattened GOAP config; owns script containers
-  const std::vector<prefab_def>* prefabs = nullptr;            // префабы из prefab/*.tavl (иначе хардкод food)
+  std::vector<prefab_def> prefabs;
 };
 
 // Проектные map-фазы актора на общем примитиве aesthetics::template_system. Параллельную форму и
@@ -272,7 +270,7 @@ public:
   ~actor_world_slice(); // out-of-line: unique_ptr на неполные *_system (pimpl-идиома)
 
   void init(uint32_t count, glm::vec2 min_bound, glm::vec2 max_bound, uint32_t texture_count,
-            const brain_config& brains = {});
+            const brain_config& brains);
 
   // spawn_sink: спавн префаба по имени в точке (для ds-натива spawn_at). Тот же путь, что spawn_food —
   // prefab_.spawn(name, world, {pos}). Возвращает id новой сущности.
@@ -295,7 +293,7 @@ public:
   // load: пакет -> ЧИСТЫЙ слайс (пересобирает registry/GOAP/FSM, грузит мир и скаляры,
   // перестраивает кэш препятствий). false при битом пакете/несовпадении схемы. Кэши/скретч
   // MT перестраиваются лениво в update; obstacles_ восстанавливается здесь из компонентов.
-  bool load(std::span<const uint8_t> packet);
+  bool load(std::span<const uint8_t> packet, const brain_config& brains);
 
   // sim-звуки этого тика (вход в состояние FSM). Презентационный мост дренажит после update().
   std::span<const sound_emit> sound_events() const noexcept {
@@ -387,7 +385,7 @@ private:
   std::unique_ptr<devils_engine::aesthetics::basic_system> resolve_eating_sys_;
   std::vector<devils_engine::aesthetics::entityid_t> eat_finished_; // хищники с истёкшим поеданием (per-tick)
   std::vector<devils_engine::aesthetics::entityid_t> eat_kill_;     // съеденные жертвы на удаление (per-tick)
-  // Проектные конфиги мозга (из tavl); поля nullptr ⇒ нативный/хардкод фолбэк. Задаются в init.
+  // Required project gameplay config. Resource-backed program/transition pointers must outlive slice.
   brain_config brains_;
 
   // Реестр префабов слайса: рецепты сборки энтити из компонентов. Пока — «food» (data food_item +
