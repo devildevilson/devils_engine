@@ -28,10 +28,10 @@
 9. описание GOAP AI (acumen);
 10. интерфейс на lua (visage).
 
-**Критерий готовности:** в tile_frontier `simulation.cpp` (и вся проводка потоков/окна/реестров,
-~3 из 4 тыс. строк core/) уходит в devils_engine, проекту остаётся `actor_simulation.cpp`-подобный
-файл регистраций + конфиги. Сейчас соотношение boilerplate:специфика ≈ 3:1 — целевая модель его
-инвертирует.
+**Критерий готовности:** generic lifecycle/потоки/окно/реестры живут в devils_engine, а
+`tile_frontier/simulation.cpp` остаётся тонким host-adapter. Проектная сцена не переносится в engine:
+map/actor/draw/sound policy сворачивается за project-фасадом `tile_frontier_game` рядом с регистрациями
+и конфигами. Целевая модель инвертирует прежнее соотношение boilerplate:специфика ≈ 3:1.
 
 **Актуальная оценка на 2026-07-13 (три слоя):**
 - реестры по концернам (act/acumen/mood/aesthetics-serial/demiurg/catalogue) — каркасы готовы и
@@ -395,10 +395,12 @@ App-shell закрывает топологию приложения, но не 
    `act::script_function` facades из скомпилированных config-программ; прежняя параллельная таблица
    native predicates и fallback actions удалена. Нативные `eat/seek_food/wander` остаются разрешёнными
    building blocks до согласованного ds-контракта target scope/RNG, как оговорено ниже.
-5. **Свернуть проектную сцену, не таща её в engine.** Chunk receive/apply, camera UBO, tile/actor publish,
-   actor update, presentation-sound policy и project metrics собрать в `tile_frontier_game`/`world_scene`.
-   `simulation.cpp` остаётся коротким набором host callbacks; компоненты/effects/prefab specs, actor phase
-   order, tile map и конкретные draw/sound policies намеренно остаются игровым кодом.
+5. ✅ **Свернуть проектную сцену, не таща её в engine (2026-07-18).** `tile_frontier_game` теперь
+   владеет chunk request/receive/apply, map/camera, camera UBO, tile/actor snapshots, actor update,
+   presentation-sound policy, project metrics и UI perf facade. Он потребляет уже готовые generic
+   host-выходы (`scene_binding`, `phase_gate`, framebuffer/subsystem presence), но целиком остаётся в
+   `subprojects/tile_frontier`. `simulation.cpp` сокращён до state/worker wiring и тонких host callbacks;
+   компоненты/effects/prefab specs, actor phase order, tile map и draw/sound policies остались игровым кодом.
 
 Config-loaded void effects уже живы для `flee/chase/think`. Для `eat/seek_food/wander` не надо протаскивать
 искусственный `act::rng_source` как обязательный аргумент скрипта: devils_script имеет собственный
@@ -455,10 +457,9 @@ worklist и `single`-работы под одним barrier. `integration + driv
 Multi-participant `reserve`/`write-set` снят с ближайшей последовательности и перенесён в дальний backlog
 `libs/catalogue`: текущий single-key collect/elect сначала должен получить реальные ограничения из gameplay.
 
-После пяти пунктов переноса app-shell, перечисленных перед MT-последовательностью, повторно оценить
-критерий готовности: `simulation.cpp` должен стать тонким
-набором project callbacks/регистраций, тогда как tile map, actor gameplay, prefab policy и
-tile/actor render draws намеренно остаются проектными.
+✅ После пяти пунктов переноса app-shell критерий достигнут: `simulation.cpp` — тонкий набор project
+callbacks/регистраций, а tile map, actor gameplay, prefab policy и tile/actor render draws остаются
+проектными за фасадом `tile_frontier_game`.
 
 13. **B-ж — формализация контрактов** — **[необходимо]**. События/триггеры (на `intent`/catalogue
     INPUT), связи/отношения энтити (`exec_context.scope[8]`; референсная целостность в serial уже есть),

@@ -24,8 +24,8 @@ class assets_simulation;
 
 using sound_simulation = devils_engine::simul::standard_sound_system<broker>;
 
-// Главная/gameplay система. Движковый lifecycle/loop-скелет живёт в simul::game_host; проект
-// реализует набор хуков (проектная сцена/актёры/биндинги/публикация кадра) и владеет состоянием.
+// Тонкий project adapter над simul::game_host. Движковый lifecycle/loop-скелет живёт в host,
+// а вся проектная сцена/actor pipeline/render+sound publication/metrics свёрнута в tile_frontier_game.
 //
 // main_system/advancer виртуали — ТОНКИЕ out-of-line форвардеры в host_* хелперы game_host (init →
 // host_init и т.д.). Так vtable и инстанцирование трогающих state методов остаются в этом .cpp, где
@@ -47,7 +47,7 @@ public:
 
   // ── проектные хуки game_host (дёргаются движковым host через derived(); публичны, чтобы не
   //    завязываться на friend — внутри тела класса имя `broker` затеняется методом брокера) ──
-  void project_init();                                        // аллоцирует состояние + резолвит подсистемы + календарь
+  void project_init();                                        // аллоцирует host state + project game facade
   devils_engine::demiurg::resource_system* asset_registry();  // реестр ассетов (шрифты/сцена/скрипты)
   void begin_project_loading();                               // проектная сцена (текстуры/звуки/чанки/актёры)
   bool project_loading_complete() const;                      // все mock-чанки применены
