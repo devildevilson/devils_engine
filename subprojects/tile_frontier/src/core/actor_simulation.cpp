@@ -2,22 +2,23 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <thread>
 #include <utility>
 
 #include <devils_engine/act/exec_context.h>
 #include <devils_engine/act/function.h>
-#include <devils_engine/act/packer.h> // entity_handle/rng_source/pack — упаковщик обычных функций без exec_context
+#include <devils_engine/act/packer.h>   // entity_handle/rng_source/pack — упаковщик обычных функций без exec_context
 #include <devils_engine/acumen/astar.h> // astar<>::container для find_solution
 #include <devils_engine/aesthetics/common.h>
 #include <devils_engine/aesthetics/template_system.h> // template_system_mt — map-примитив фаз
 #include <devils_engine/aesthetics/worklist_system.h> // worklist_system + budget_clamp — think-фаза
-#include <devils_engine/catalogue/deferred.h>     // fn_deferred_ptr + collect/elect executors
+#include <devils_engine/catalogue/deferred.h>         // fn_deferred_ptr + collect/elect executors
 #include <devils_engine/catalogue/introspection.h>
 #include <devils_engine/catalogue/logging.h>  // DE_LOG — perf-дамп в домен gameplay
-#include <devils_engine/mood/runtime.h>                  // mood::step / apply_transition — шаг FSM
-#include <devils_engine/thread/atomic_pool.h>            // MT-пул (distribute/thread_index/wait)
+#include <devils_engine/mood/runtime.h>       // mood::step / apply_transition — шаг FSM
+#include <devils_engine/thread/atomic_pool.h> // MT-пул (distribute/thread_index/wait)
 #include <devils_engine/utils/core.h>         // utils::error
 #include <devils_engine/utils/prng.h>         // utils::mix
 #include <devils_engine/utils/string_id.h>    // utils::string_hash
@@ -390,15 +391,15 @@ static void effect_wander(const act::entity_handle self, const act::rng_source r
 // (если prey сама пытается eat — её не хватают), а тело идёт в serial_structural lane.
 namespace {
 struct actor_local_effect_strategy : catalogue::mt::collect<
-  catalogue::mt::key::entity_arg<0>,
-  catalogue::mt::order::source_then_sequence,
-  catalogue::mt::commit::parallel_groups> {};
+                                       catalogue::mt::key::entity_arg<0>,
+                                       catalogue::mt::order::source_then_sequence,
+                                       catalogue::mt::commit::parallel_groups> {};
 
 struct actor_eat_effect_strategy : catalogue::mt::elect<
-  catalogue::mt::key::entity_arg<1>,
-  catalogue::mt::order::source_then_sequence,
-  catalogue::mt::commit::serial_structural,
-  catalogue::mt::conflict::target_not_source> {};
+                                     catalogue::mt::key::entity_arg<1>,
+                                     catalogue::mt::order::source_then_sequence,
+                                     catalogue::mt::commit::serial_structural,
+                                     catalogue::mt::conflict::target_not_source> {};
 
 using flee_deferred = catalogue::mt::domain<actor_local_effect_strategy>::fn_traits<
   &effect_flee, "flee", "self">;
@@ -427,11 +428,11 @@ struct deferred_effects {
     if (eat_domain::executor_instance() == &eat) eat_domain::set_executor(nullptr);
   }
 
-  void begin_record(const size_t source_capacity) {
+  void begin_record(const size_t source_capacity, const size_t call_capacity) {
     catalogue::mt::domain<actor_local_effect_strategy>::set_executor(&local);
     catalogue::mt::domain<actor_eat_effect_strategy>::set_executor(&eat);
-    local.begin_record(source_capacity, max_deferred_effects_per_actor);
-    eat.begin_record(source_capacity, max_deferred_effects_per_actor);
+    local.begin_record(source_capacity, max_deferred_effects_per_actor, call_capacity);
+    eat.begin_record(source_capacity, max_deferred_effects_per_actor, call_capacity);
   }
 };
 
@@ -851,7 +852,7 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
   ensure_actor_perf_introspection();
   build_sense_tree_fn_t{}(*this);
   cognition_fn_t{}(*this, tick_, pool);
-  apply_fn_t{}(*this, pool);                // collect MT + elect ST, затем FSM/звук
+  apply_fn_t{}(*this, pool);                 // collect MT + elect ST, затем FSM/звук
   integrate_fn_t{}(*this, dt_seconds, pool); // движение по скорости + расталкивание (map-фаза)
   drives_fn_t{}(*this, dt_seconds, pool);    // пассивная динамика мотиваций (map-фаза)
   resolve_eating_fn_t{}(*this, tick_);
@@ -1001,14 +1002,13 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
   if (!cognition_sys_) {
     cognition_sys_ = std::make_unique<cognition_system>(&pool, this); // ленивое (пул известен тут)
   }
-  // Всю память record-фазы готовим на главном потоке. Каждый worker затем пишет только в слоты
-  // своего source_index: calls_ — action journal, deferred_ — typed effect calls collect/elect.
+  // Всю память record-фазы готовим на главном потоке. calls_ остаётся индексным action journal;
+  // typed collect/elect calls append-ятся в dense journal с ёмкостью от фактического think-budget.
   const size_t cap = world_.index_capacity();
   calls_.reset(cap);
   if (!deferred_) {
     deferred_ = std::make_unique<deferred_effects>();
   }
-  deferred_->begin_record(cap);
 
   // select: созревшие (skip едящих/схваченных — «коммит длительностью действия») + давность. Reduce
   // view<actor_cognition> в due_ ЛЯМБДА-СИСТЕМОЙ (ROADMAP п.11): однопоточно, лямбда захватывает this и
@@ -1037,8 +1037,15 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
     return aesthetics::get_entityid_index(a.entity) < aesthetics::get_entityid_index(b.entity);
   });
 
+  if (due_.size() > std::numeric_limits<size_t>::max() / max_deferred_effects_per_actor) {
+    utils::error{}("actor deferred call budget overflow: {} sources * {} effects", due_.size(),
+                   max_deferred_effects_per_actor);
+  }
+  const size_t deferred_call_capacity = due_.size() * max_deferred_effects_per_actor;
+  deferred_->begin_record(cap, deferred_call_capacity);
+
   // think: work-list = отобранные; run раскидывает по потокам, decide_actor вызывает act::effect,
-  // а fn_deferred_ptr пишет в слот (source_index, local_sequence), не мутируя world.
+  // а fn_deferred_ptr append-ит inline payload + metadata, не мутируя world.
   auto& wl = cognition_sys_->worklist();
   wl.clear();
   wl.reserve(due_.size());

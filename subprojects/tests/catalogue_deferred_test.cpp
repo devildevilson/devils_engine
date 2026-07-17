@@ -53,15 +53,15 @@ void eat_prey(gameplay_scope scope, const int64_t target) {
 }
 
 struct strength_strategy : mt::collect<
-  mt::key::entity_arg<1>,
-  mt::order::source_then_sequence,
-  mt::commit::parallel_groups> {};
+                             mt::key::entity_arg<1>,
+                             mt::order::source_then_sequence,
+                             mt::commit::parallel_groups> {};
 
 struct prey_strategy : mt::elect<
-  mt::key::entity_arg<1>,
-  mt::order::source_then_sequence,
-  mt::commit::serial,
-  mt::conflict::target_not_source> {};
+                         mt::key::entity_arg<1>,
+                         mt::order::source_then_sequence,
+                         mt::commit::serial,
+                         mt::conflict::target_not_source> {};
 
 using strength_traits = mt::domain<strength_strategy>::fn_traits<
   &add_strength, "add_strength", "scope", "target", "value">;
@@ -102,9 +102,9 @@ void increment_group(counter_scope scope, const uint32_t target) {
 }
 
 struct parallel_strategy : mt::collect<
-  mt::key::entity_arg<1>,
-  mt::order::source_then_sequence,
-  mt::commit::parallel_groups> {};
+                             mt::key::entity_arg<1>,
+                             mt::order::source_then_sequence,
+                             mt::commit::parallel_groups> {};
 
 using parallel_traits = mt::domain<parallel_strategy>::fn_traits<
   &increment_group, "increment_group", "scope", "target">;
@@ -114,10 +114,12 @@ using parallel_traits = mt::domain<parallel_strategy>::fn_traits<
 TEST_CASE("catalogue deferred pointer mirrors an effect and records multiple calls per source") {
   static_assert(std::is_same_v<decltype(strength_traits::fn_deferred_ptr),
                                void (*const)(gameplay_scope, int64_t, int64_t)>);
+  static_assert(mt::deferred_payload_size == 128);
 
   mt::executor<strength_strategy> executor;
   executor_binding binding(executor);
-  executor.begin_record(1, 4);
+  executor.begin_record(1, 4, 2);
+  CHECK(executor.call_capacity() == 2);
 
   test_state state;
   const gameplay_scope scope{42, &state};
@@ -146,7 +148,7 @@ TEST_CASE("catalogue collect restores deterministic source order after parallel 
   constexpr size_t count = 256;
   mt::executor<strength_strategy> executor;
   executor_binding binding(executor);
-  executor.begin_record(count, 2);
+  executor.begin_record(count, 2, count);
 
   test_state state;
   devils_engine::thread::atomic_pool pool(4);
@@ -168,10 +170,53 @@ TEST_CASE("catalogue collect restores deterministic source order after parallel 
   }
 }
 
+TEST_CASE("catalogue dense journal capacity is independent from sparse source indices") {
+  mt::executor<strength_strategy> executor;
+  executor_binding binding(executor);
+  executor.begin_record(1'000'000, 16, 2);
+
+  test_state state;
+  {
+    mt::record_scope source(20, 999'999);
+    strength_traits::fn_deferred_ptr(gameplay_scope{20, &state}, 11, 20);
+  }
+  {
+    mt::record_scope source(10, 123'456);
+    strength_traits::fn_deferred_ptr(gameplay_scope{10, &state}, 11, 10);
+  }
+
+  CHECK(executor.source_capacity() == 1'000'000);
+  CHECK(executor.call_capacity() == 2);
+  executor.seal();
+  executor.commit();
+  REQUIRE(state.events.size() == 2);
+  CHECK(state.events[0].source == 10);
+  CHECK(state.events[1].source == 20);
+}
+
+TEST_CASE("catalogue dense journal rejects duplicate source sequence at seal") {
+  mt::executor<strength_strategy> executor;
+  executor_binding binding(executor);
+  executor.begin_record(1, 1, 2);
+
+  test_state state;
+  {
+    mt::record_scope source(10, 0);
+    strength_traits::fn_deferred_ptr(gameplay_scope{10, &state}, 11, 10);
+  }
+  {
+    mt::record_scope duplicate_source(10, 0);
+    strength_traits::fn_deferred_ptr(gameplay_scope{10, &state}, 11, 20);
+  }
+
+  CHECK_THROWS(executor.seal());
+  CHECK(state.events.empty());
+}
+
 TEST_CASE("catalogue elect commits the lowest deterministic source for each key") {
   mt::executor<prey_strategy> executor;
   executor_binding binding(executor);
-  executor.begin_record(3, 3);
+  executor.begin_record(3, 3, 3);
 
   test_state state;
   {
@@ -201,7 +246,7 @@ TEST_CASE("catalogue elect commits the lowest deterministic source for each key"
 TEST_CASE("catalogue elect can protect targets that are themselves interaction sources") {
   mt::executor<prey_strategy> executor;
   executor_binding binding(executor);
-  executor.begin_record(2, 2);
+  executor.begin_record(2, 2, 2);
 
   test_state state;
   {
@@ -227,7 +272,7 @@ TEST_CASE("catalogue elect can protect targets that are themselves interaction s
 TEST_CASE("catalogue parallel_groups exposes independent groups for worker commit") {
   mt::executor<parallel_strategy> executor;
   executor_binding binding(executor);
-  executor.begin_record(64, 2);
+  executor.begin_record(64, 2, 64);
 
   std::array<std::atomic<uint32_t>, 4> counters{};
   for (size_t i = 0; i < 64; ++i) {
@@ -240,20 +285,22 @@ TEST_CASE("catalogue parallel_groups exposes independent groups for worker commi
 
   devils_engine::thread::atomic_pool pool(4);
   pool.distribute1(executor.group_count(), [&executor](const size_t start, const size_t count) {
-    for (size_t i = start; i < start + count; ++i) executor.dispatch_group(i);
+    for (size_t i = start; i < start + count; ++i)
+      executor.dispatch_group(i);
   });
   pool.compute();
   pool.wait();
   executor.finish_commit();
 
   CHECK(executor.phase() == mt::executor_phase::committed);
-  for (const auto& counter : counters) CHECK(counter.load(std::memory_order_relaxed) == 16);
+  for (const auto& counter : counters)
+    CHECK(counter.load(std::memory_order_relaxed) == 16);
 }
 
 TEST_CASE("catalogue trace domain stays independent and observes deferred commit") {
   mt::executor<strength_strategy> executor;
   executor_binding binding(executor);
-  executor.begin_record(1, 2);
+  executor.begin_record(1, 2, 1);
 
   catalogue::statistics_store statistics(4);
   const catalogue::introspection trace{
@@ -282,8 +329,8 @@ TEST_CASE("devils_script records independent collect and elect effects through d
   mt::executor<prey_strategy> prey_executor;
   executor_binding strength_binding(strength_executor);
   executor_binding prey_binding(prey_executor);
-  strength_executor.begin_record(1, 4);
-  prey_executor.begin_record(1, 4);
+  strength_executor.begin_record(1, 4, 1);
+  prey_executor.begin_record(1, 4, 1);
 
   ds::system system;
   system.init_basic_functions();
@@ -325,7 +372,7 @@ TEST_CASE("catalogue deferred calls fail loudly without executor, scope, or capa
 
   mt::executor<strength_strategy> executor;
   executor_binding binding(executor);
-  executor.begin_record(1, 1);
+  executor.begin_record(1, 2, 1);
   CHECK_THROWS(strength_traits::fn_deferred_ptr(gameplay_scope{}, 0, 0));
   test_state state;
   {

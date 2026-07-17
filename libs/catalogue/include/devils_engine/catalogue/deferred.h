@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -23,21 +24,22 @@
 //
 // The native function stays an ordinary `void(Args...)`. `fn_deferred_ptr` mirrors that signature,
 // but records owned arguments into the executor bound to its strategy domain. The body runs only
-// after `seal()` in deterministic `(key, source, local_sequence)` order.
+// after `seal()` in deterministic `(key, source, local_sequence, function)` order.
 //
 // Record-time invariants:
-// - `begin_record()` sizes all storage before workers start;
+// - `begin_record()` sizes the dense call journal before workers start;
 // - one worker owns one source_index for the whole record_scope;
 // - record_scope is per-worker ambient metadata only (source id/index + local sequence), not world state;
 // - set_executor() is changed only outside a record/commit phase.
 //
-// The first slice deliberately uses one heap allocation per recorded typed call. The surrounding
-// per-source slot table is stable and lock-free to write; a byte arena/SBO can replace call_model later
-// without changing the public wrapper/strategy contract.
+// Each call owns a fixed 128-byte inline payload. A signature that cannot fit is a compile-time error;
+// there is no oversized runtime path or per-call allocation for the type-erased call object.
 
 namespace devils_engine {
 namespace catalogue {
 namespace mt {
+
+inline constexpr size_t deferred_payload_size = 128;
 
 enum class arbitration : uint8_t {
   collect,
@@ -60,8 +62,8 @@ struct target_not_source {};
 struct call_metadata {
   uint64_t key = 0;
   uint64_t source = 0;
-  uint64_t function = 0;
   uint32_t local_sequence = 0;
+  uint64_t function = 0;
   size_t source_index = 0;
 };
 
@@ -133,33 +135,19 @@ decltype(auto) materialize_arg(Stored& value) {
   }
 }
 
-class call_base {
-public:
-  explicit call_base(const call_metadata metadata) noexcept : metadata_(metadata) {}
-  virtual ~call_base() noexcept = default;
-
-  const call_metadata& metadata() const noexcept {
-    return metadata_;
-  }
-
-  virtual void invoke() = 0;
-
-private:
-  call_metadata metadata_;
-};
-
 template <auto Fn, typename... Args>
-class call_model final : public call_base {
+class call_payload {
 public:
   static_assert((!std::is_reference_v<Args> && ...),
                 "catalogue::mt first slice requires value arguments; pass stable handles/ids by value");
   static_assert((std::is_copy_constructible_v<stored_arg_t<Args>> && ...),
                 "catalogue::mt first slice requires copyable owned arguments");
+  static_assert((std::is_nothrow_destructible_v<stored_arg_t<Args>> && ...),
+                "catalogue::mt deferred owned arguments must be nothrow destructible");
 
-  call_model(const call_metadata metadata, const Args&... args)
-      : call_base(metadata), args_(capture_arg<Args>(args)...) {}
+  explicit call_payload(const Args&... args) : args_(capture_arg<Args>(args)...) {}
 
-  void invoke() override {
+  void invoke() {
     invoke_impl(std::index_sequence_for<Args...>{});
   }
 
@@ -172,6 +160,66 @@ private:
   std::tuple<stored_arg_t<Args>...> args_;
 };
 
+class call_slot {
+public:
+  call_slot() noexcept = default;
+
+  ~call_slot() noexcept {
+    reset();
+  }
+
+  call_slot(const call_slot&) = delete;
+  call_slot(call_slot&&) = delete;
+  call_slot& operator=(const call_slot&) = delete;
+  call_slot& operator=(call_slot&&) = delete;
+
+  bool occupied() const noexcept {
+    return invoke_ != nullptr;
+  }
+
+  const call_metadata& metadata() const noexcept {
+    return metadata_;
+  }
+
+  template <auto Fn, typename... Args>
+  void emplace(const call_metadata metadata, const Args&... args) {
+    using payload_t = call_payload<Fn, Args...>;
+    static_assert(sizeof(payload_t) <= deferred_payload_size,
+                  "catalogue::mt deferred call payload exceeds the fixed 128-byte journal ABI");
+    static_assert(alignof(payload_t) <= alignof(std::max_align_t),
+                  "catalogue::mt deferred call payload requires unsupported over-alignment");
+
+    reset();
+    metadata_ = metadata;
+    std::construct_at(reinterpret_cast<payload_t*>(payload_.data()), args...);
+    invoke_ = [](void* memory) {
+      std::launder(reinterpret_cast<payload_t*>(memory))->invoke();
+    };
+    destroy_ = [](void* memory) noexcept {
+      std::destroy_at(std::launder(reinterpret_cast<payload_t*>(memory)));
+    };
+  }
+
+  void invoke() {
+    invoke_(payload_.data());
+  }
+
+  void reset() noexcept {
+    if (destroy_ != nullptr) destroy_(payload_.data());
+    invoke_ = nullptr;
+    destroy_ = nullptr;
+  }
+
+private:
+  using invoke_fn = void (*)(void*);
+  using destroy_fn = void (*)(void*) noexcept;
+
+  call_metadata metadata_{};
+  invoke_fn invoke_ = nullptr;
+  destroy_fn destroy_ = nullptr;
+  alignas(std::max_align_t) std::array<std::byte, deferred_payload_size> payload_{};
+};
+
 template <typename T>
 struct callable_traits : public utils::detail::function_traits_v2<T> {};
 
@@ -182,7 +230,7 @@ struct callable_traits : public utils::detail::function_traits_v2<T> {};
 class record_scope {
 public:
   record_scope(const uint64_t source, const size_t source_index) noexcept
-      : previous_(detail::current_record_context), context_{source, source_index, 0} {
+    : previous_(detail::current_record_context), context_{source, source_index, 0} {
     detail::current_record_context = &context_;
   }
 
@@ -286,6 +334,10 @@ public:
     return sequence_capacity_;
   }
 
+  size_t call_capacity() const noexcept {
+    return call_capacity_;
+  }
+
   size_t size() const noexcept {
     return sealed_indices_.size();
   }
@@ -299,29 +351,35 @@ public:
   }
 
   const call_metadata& metadata(const size_t sealed_index) const {
-    return slots_.at(sealed_indices_.at(sealed_index))->metadata();
+    return slots_[sealed_indices_.at(sealed_index)].metadata();
   }
 
-  // Allocates/grows storage and opens a new record phase. sequence_capacity is the maximum number of
-  // effect positions in one source script pass, not merely calls routed to this one strategy.
-  void begin_record(const size_t source_capacity, const uint32_t sequence_capacity) {
+  // Allocates/grows the dense journal and opens a new record phase. sequence_capacity is the maximum
+  // number of effect positions in one source script pass; call_capacity is this strategy's actual
+  // per-pass budget and does not multiply source_capacity by sequence_capacity.
+  void begin_record(const size_t source_capacity, const uint32_t sequence_capacity,
+                    const size_t call_capacity) {
     if (phase_ == executor_phase::recording || phase_ == executor_phase::sealed) {
       utils::error{}("catalogue::mt executor begin_record called before the previous phase was committed");
     }
     if (sequence_capacity == 0 && source_capacity != 0) {
       utils::error{}("catalogue::mt executor sequence_capacity must be non-zero when sources are present");
     }
-    if (sequence_capacity != 0 && source_capacity > std::numeric_limits<size_t>::max() / sequence_capacity) {
-      utils::error{}("catalogue::mt executor capacity overflow: {} sources * {} sequences", source_capacity,
-                     sequence_capacity);
+    if (source_capacity == 0 && call_capacity != 0) {
+      utils::error{}("catalogue::mt executor cannot budget {} calls without sources", call_capacity);
     }
 
-    const size_t required = source_capacity * size_t(sequence_capacity);
-    for (auto& slot : slots_) slot.reset();
-    if (slots_.size() < required) slots_.resize(required);
+    const size_t previous_count = record_count_.load(std::memory_order_relaxed);
+    for (size_t i = 0; i < previous_count; ++i)
+      slots_[i].reset();
+    if (storage_capacity_ < call_capacity) {
+      slots_ = std::make_unique<detail::call_slot[]>(call_capacity);
+      storage_capacity_ = call_capacity;
+    }
     source_capacity_ = source_capacity;
     sequence_capacity_ = sequence_capacity;
-    active_slot_count_ = required;
+    call_capacity_ = call_capacity;
+    record_count_.store(0, std::memory_order_relaxed);
     sealed_indices_.clear();
     groups_.clear();
     sources_.clear();
@@ -345,14 +403,16 @@ public:
                      sequence_capacity_);
     }
 
-    const size_t index = context.source_index * size_t(sequence_capacity_) + local_sequence;
-    if (slots_[index] != nullptr) {
-      utils::error{}("catalogue::mt duplicate deferred slot: source index {}, local_sequence {}",
-                     context.source_index, local_sequence);
+    size_t index = record_count_.load(std::memory_order_relaxed);
+    while (true) {
+      if (index >= call_capacity_) {
+        utils::error{}("catalogue::mt dense journal capacity {} exceeded", call_capacity_);
+      }
+      if (record_count_.compare_exchange_weak(index, index + 1, std::memory_order_relaxed)) break;
     }
     const uint64_t group_key = Strategy::key_policy::get(args...);
-    const call_metadata metadata{group_key, context.source, function, local_sequence, context.source_index};
-    slots_[index] = std::make_unique<detail::call_model<Fn, Args...>>(metadata, args...);
+    const call_metadata metadata{group_key, context.source, local_sequence, function, context.source_index};
+    slots_[index].template emplace<Fn>(metadata, args...);
   }
 
   // Barrier-side deterministic preparation. No worker may record after this call.
@@ -361,14 +421,33 @@ public:
       utils::error{}("catalogue::mt executor seal called outside the recording phase");
     }
 
+    const size_t recorded_count = record_count_.load(std::memory_order_acquire);
     sealed_indices_.clear();
-    for (size_t i = 0; i < active_slot_count_; ++i) {
-      if (slots_[i] != nullptr) sealed_indices_.push_back(i);
+    sealed_indices_.reserve(recorded_count);
+    for (size_t i = 0; i < recorded_count; ++i) {
+      if (slots_[i].occupied()) sealed_indices_.push_back(i);
+    }
+
+    source_order_indices_ = sealed_indices_;
+    std::sort(source_order_indices_.begin(), source_order_indices_.end(), [this](const size_t a, const size_t b) {
+      const call_metadata& ma = slots_[a].metadata();
+      const call_metadata& mb = slots_[b].metadata();
+      if (ma.source_index != mb.source_index) return ma.source_index < mb.source_index;
+      return ma.local_sequence < mb.local_sequence;
+    });
+    for (size_t i = 1; i < source_order_indices_.size(); ++i) {
+      const call_metadata& previous = slots_[source_order_indices_[i - 1]].metadata();
+      const call_metadata& current = slots_[source_order_indices_[i]].metadata();
+      if (previous.source_index == current.source_index &&
+          previous.local_sequence == current.local_sequence) {
+        utils::error{}("catalogue::mt duplicate deferred source slot: source index {}, local_sequence {}",
+                       current.source_index, current.local_sequence);
+      }
     }
 
     std::sort(sealed_indices_.begin(), sealed_indices_.end(), [this](const size_t a, const size_t b) {
-      const call_metadata& ma = slots_[a]->metadata();
-      const call_metadata& mb = slots_[b]->metadata();
+      const call_metadata& ma = slots_[a].metadata();
+      const call_metadata& mb = slots_[b].metadata();
       if (ma.key != mb.key) return ma.key < mb.key;
       return Strategy::order_policy::less(ma, mb);
     });
@@ -376,7 +455,8 @@ public:
     if constexpr (Strategy::arbitration_policy == arbitration::elect &&
                   std::is_same_v<typename Strategy::conflict_policy, conflict::target_not_source>) {
       sources_.reserve(sealed_indices_.size());
-      for (const size_t index : sealed_indices_) sources_.push_back(slots_[index]->metadata().source);
+      for (const size_t index : sealed_indices_)
+        sources_.push_back(slots_[index].metadata().source);
       std::sort(sources_.begin(), sources_.end());
       sources_.erase(std::unique(sources_.begin(), sources_.end()), sources_.end());
     }
@@ -384,9 +464,9 @@ public:
     groups_.clear();
     size_t begin = 0;
     while (begin < sealed_indices_.size()) {
-      const uint64_t group_key = slots_[sealed_indices_[begin]]->metadata().key;
+      const uint64_t group_key = slots_[sealed_indices_[begin]].metadata().key;
       size_t end = begin + 1;
-      while (end < sealed_indices_.size() && slots_[sealed_indices_[end]]->metadata().key == group_key) {
+      while (end < sealed_indices_.size() && slots_[sealed_indices_[end]].metadata().key == group_key) {
         ++end;
       }
       bool eligible = true;
@@ -409,10 +489,10 @@ public:
     const group_view& g = groups_.at(group_index);
     if (!g.eligible) return;
     if constexpr (Strategy::arbitration_policy == arbitration::elect) {
-      slots_[sealed_indices_[g.begin]]->invoke(); // first = lowest source/local_sequence by total order
+      slots_[sealed_indices_[g.begin]].invoke(); // first = lowest source/local_sequence by total order
     } else {
       for (size_t i = g.begin; i < g.end; ++i) {
-        slots_[sealed_indices_[i]]->invoke();
+        slots_[sealed_indices_[i]].invoke();
       }
     }
   }
@@ -423,7 +503,8 @@ public:
     if (phase_ != executor_phase::sealed) {
       utils::error{}("catalogue::mt executor commit called before seal");
     }
-    for (size_t i = 0; i < groups_.size(); ++i) dispatch_group(i);
+    for (size_t i = 0; i < groups_.size(); ++i)
+      dispatch_group(i);
     phase_ = executor_phase::committed;
   }
 
@@ -436,12 +517,15 @@ public:
   }
 
 private:
-  std::vector<std::unique_ptr<detail::call_base>> slots_;
+  std::unique_ptr<detail::call_slot[]> slots_;
   std::vector<size_t> sealed_indices_;
+  std::vector<size_t> source_order_indices_;
   std::vector<group_view> groups_;
   std::vector<uint64_t> sources_;
+  std::atomic_size_t record_count_ = 0;
   size_t source_capacity_ = 0;
-  size_t active_slot_count_ = 0;
+  size_t call_capacity_ = 0;
+  size_t storage_capacity_ = 0;
   uint32_t sequence_capacity_ = 0;
   executor_phase phase_ = executor_phase::idle;
 };
