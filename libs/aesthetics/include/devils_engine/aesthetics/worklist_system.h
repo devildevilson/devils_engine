@@ -10,11 +10,12 @@
 
 #include "common.h"
 #include "devils_engine/thread/atomic_pool.h"
+#include "system_runner.h"
 
 // worklist_system — параллельный map по ЯВНОМУ списку сущностей (work-list) с per-thread scratch.
 // В отличие от template_system (обход всего query по компонентам) обходит произвольное ПОДМНОЖЕСТВО,
 // заранее отобранное вызывающим (select/budget-шаг). Это think-примитив бюджетируемых систем:
-// [select → worklist] → [worklist_system.run → сообщения]. Каждому потоку — своя scratch-полоса
+// [select → worklist] → [aesthetics::run → сообщения]. Каждому потоку — своя scratch-полоса
 // (slot = pool.thread_index; 0 = вызывающий поток, он тоже берёт чанк), полосы переиспользуются между
 // тиками (реаллокация лишь при смене числа потоков). process пишет ТОЛЬКО «свою» сущность (её слот в
 // message_buffer / её компонент) ⇒ потоки трогают непересекающуюся память, локов нет. Детерминизм
@@ -60,27 +61,31 @@ public:
     return lanes_;
   }
 
-  // Прогнать work-list по потокам: каждый элемент → process(entity, своя scratch-полоса, time).
-  void run(const size_t time) {
+  // Добавить work-list в общую фазу без barrier. Вызывается aesthetics::run; публичен также как seam
+  // для других внешних phase runners. Каждый элемент → process(entity, своя scratch-полоса, time).
+  void enqueue(thread::atomic_pool& target_pool, const size_t time) {
     if (worklist_.empty()) {
       return;
     }
-    const size_t slots = pool_->size() + 1;
+    const size_t slots = target_pool.size() + 1;
     if (lanes_.size() != slots) {
       lanes_.resize(slots);
     }
-    pool_->distribute1(
+    target_pool.distribute1(
       worklist_.size(),
-      [this](const size_t start, const size_t count, const size_t time) {
-        const uint32_t slot = pool_->thread_index(std::this_thread::get_id());
-        auto& scratch = lanes_[slot];
+      [this, &target_pool](const size_t start, const size_t count, const size_t tick) {
+        const uint32_t slot = target_pool.thread_index(std::this_thread::get_id());
+        auto& scratch = lanes_[size_t(slot)];
         for (size_t i = start; i < start + count; ++i) {
-          process(worklist_[i], scratch, time);
+          process(worklist_[i], scratch, tick);
         }
       },
       time);
-    pool_->compute(); // вызывающий поток обрабатывает свой чанк (слот 0), не простаивает
-    pool_->wait();
+  }
+
+  // Совместимость старого одиночного вызова: lifecycle всё равно принадлежит общему runner.
+  void run(const size_t time) {
+    aesthetics::run(*pool_, time, *this);
   }
 
   // Обработать одну сущность в свою per-thread scratch-полосу. Реализует подкласс.

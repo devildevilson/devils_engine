@@ -172,11 +172,34 @@ public:
 `world::create_system<T>(...)` создает объект во внутреннем arbitrary container
 мира и подписывает его на `update_event`. `remove_system` отписывает и удаляет.
 
-Ранний `simple_systems.h` (`template_system`/`template_system_mt`) перенесён в
-корневой `exclude/`: живых потребителей у него не было, а простой
-query→`process()` wrapper не выражает нужный контракт фаз, intent и
-детерминированного apply. Новый декларативный system pipeline следует строить
-поверх явных `view/query` и scratch/batch границ, не возрождая этот API случайно.
+`template_system<Comp...>` — range-map над стабильным ECS query. Система описывает
+только `process(tuple,time)`; разбиение на задачи и barrier принадлежат внешнему
+`aesthetics::run` из `system_runner.h`:
+
+```cpp
+integration.dt = dt;
+drives.dt = dt;
+aesthetics::run(pool, tick, integration, drives);
+```
+
+Runner сначала submit-ит чанки независимых систем в один pool phase, вызывающий
+поток участвует в обработке, затем ставится ровно один общий `wait`. Worker'ы могут
+начать первый submit ещё при формировании фазы, поэтому все аргументы одного `run`
+должны быть независимы без предположений о взаимном порядке.
+
+Поддерживаются три формы работы:
+
+- `template_system` — range-query, автоматически режется через `distribute1`;
+- `worklist_system` — explicit work-list с per-thread scratch, только enqueue без
+  внутреннего barrier;
+- обычный `basic_system::update(time)` — одна неделимая pool-задача, поэтому несколько
+  независимых ST build/gather-систем могут исполняться одновременно;
+- `single(fn)` — одна неделимая задача в пуле; несколько независимых serial gather
+  могут исполняться параллельно друг другу.
+
+`template_system_mt` и его `update()` сохранены как compatibility facade и сами
+делегируют `run`; новый код для общей фазы использует обычный `template_system`.
+Структурные create/remove/commit остаются отдельными шагами после barrier.
 
 ## Многопоточность
 
@@ -194,8 +217,11 @@ thread-safe контейнером.
 по бюджету, worker'ы считают решения и intents, затем apply-фаза стабильно
 меняет компоненты.
 
-`template_system_mt` дает базовый helper для распараллеливания query, но
-ответственность за отсутствие data races в `process()` остается на системе.
+`run` не выводит зависимости из типов компонентов и не строит job graph. В частности,
+переданный как неделимый `update(time)` не должен сам делать pool dispatch/wait:
+ответственность за отсутствие data races между переданными системами остаётся на
+проектном pipeline. В `tile_frontier` первая живая группа — `integration + drives`:
+обе читают velocity, но пишут соответственно position и stats.
 
 ## Сериализация
 

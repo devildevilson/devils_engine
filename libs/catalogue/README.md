@@ -49,13 +49,11 @@ Gameplay-effect остаётся обычной C++-функцией. Для dev
 ```cpp
 void add_strength(entity_id actor, int amount);
 
-using strength_strategy = catalogue::mt::collect<
-  catalogue::mt::key::entity_arg<0>,
-  catalogue::mt::order::source_then_sequence,
-  catalogue::mt::commit::parallel_groups
->;
+using strength_strategy = catalogue::mt::preset::parallel_collect<0>;
+struct strength_effects;
+using strength_domain = catalogue::mt::domain<strength_effects, strength_strategy>;
 
-using add_strength_deferred = catalogue::mt::domain<strength_strategy>::fn_traits<
+using add_strength_deferred = strength_domain::fn_traits<
   &add_strength,
   "add_strength",
   "actor",
@@ -63,7 +61,7 @@ using add_strength_deferred = catalogue::mt::domain<strength_strategy>::fn_trait
 >;
 
 catalogue::mt::executor<strength_strategy> executor;
-catalogue::mt::domain<strength_strategy>::set_executor(&executor);
+strength_domain::set_executor(&executor);
 system.register_function<add_strength_deferred::fn_deferred_ptr>("add_strength");
 
 executor.begin_record(source_capacity, max_effects_per_source, deferred_call_budget);
@@ -77,16 +75,21 @@ executor.seal();
 executor.commit(); // or dispatch independent groups through the pool + finish_commit()
 ```
 
-Реализованные имена — `mt::domain<Strategy>` и `fn_deferred_ptr`. Отдельный
-namespace нужен: существующий `catalogue::domain<auto>` — value-domain
-интроспекции, а MT strategy — policy type. Контракт:
+Реализованные имена — `mt::domain<IdentityTag, Strategy>` и `fn_deferred_ptr`.
+`IdentityTag` определяет независимый static executor binding/lifecycle, `Strategy`
+является переиспользуемой policy. Поэтому несколько gameplay-доменов могут применять
+один `preset::parallel_collect<0>`, не разделяя executor. Нейтральные presets:
+`parallel_collect<KeyArg>`, `serial_elect<KeyArg, Conflict>` и
+`structural_elect<KeyArg, Conflict>`; нестандартная комбинация по-прежнему задаётся
+напрямую через `collect`/`elect`. Отдельный namespace нужен: существующий
+`catalogue::domain<auto>` — value-domain интроспекции. Контракт:
 
 - wrapper в record-фазе копирует функцию и owned представление аргументов в
   executor стратегии, не вызывает gameplay-тело и не мутирует `world`;
 - executor устанавливается до параллельного прохода, стабилен до barrier и
   проходит фазы `begin_record → record → seal/barrier → commit`;
 - отсутствие executor-а/неверная фаза — громкая ошибка, не immediate fallback;
-- trace-domain и strategy-domain — ортогональные оси. Одна и та же deferred
+- trace-domain и deferred execution-domain — ортогональные оси. Одна и та же deferred
   функция может независимо трассироваться; trace не выбирает MT-поведение;
 - `collect` группирует по ключу. Независимые key-группы можно commit-ить
   параллельно, внутри группы вызовы идут последовательно в стабильном порядке;
@@ -102,7 +105,7 @@ namespace нужен: существующий `catalogue::domain<auto>` — val
 контекст текущего worker-вызова с `{source_id, dense_source_index,
 next_local_ordinal}`. Он не содержит world/executor и восстанавливается RAII при
 выходе. Благодаря этому wrapper сохраняет исходную C++-сигнатуру, а ordinal
-общий для эффектов ВСЕХ strategy-domain внутри одного script pass.
+общий для эффектов ВСЕХ execution-domain внутри одного script pass.
 
 Детерминированный порядок не зависит от worker scheduling. Atomic ticket используется
 только как физический append-index плотного journal-а и не имеет gameplay-семантики.

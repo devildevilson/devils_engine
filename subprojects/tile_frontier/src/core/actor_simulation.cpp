@@ -12,7 +12,8 @@
 #include <devils_engine/act/packer.h>   // entity_handle/rng_source/pack — упаковщик обычных функций без exec_context
 #include <devils_engine/acumen/astar.h> // astar<>::container для find_solution
 #include <devils_engine/aesthetics/common.h>
-#include <devils_engine/aesthetics/template_system.h> // template_system_mt — map-примитив фаз
+#include <devils_engine/aesthetics/system_runner.h>   // run — общий barrier независимых систем
+#include <devils_engine/aesthetics/template_system.h> // template_system — range map-примитив фаз
 #include <devils_engine/aesthetics/worklist_system.h> // worklist_system + budget_clamp — think-фаза
 #include <devils_engine/catalogue/deferred.h>         // fn_deferred_ptr + collect/elect executors
 #include <devils_engine/catalogue/introspection.h>
@@ -390,28 +391,28 @@ static void effect_wander(const act::entity_handle self, const act::rng_source r
 // elect выбирает младший source на prey, target_not_source сохраняет старое «intent beats grab»
 // (если prey сама пытается eat — её не хватают), а тело идёт в serial_structural lane.
 namespace {
-struct actor_local_effect_strategy : catalogue::mt::collect<
-                                       catalogue::mt::key::entity_arg<0>,
-                                       catalogue::mt::order::source_then_sequence,
-                                       catalogue::mt::commit::parallel_groups> {};
+using actor_local_effect_strategy = catalogue::mt::preset::parallel_collect<0>;
+using actor_eat_effect_strategy = catalogue::mt::preset::structural_elect<
+  1, catalogue::mt::conflict::target_not_source>;
 
-struct actor_eat_effect_strategy : catalogue::mt::elect<
-                                     catalogue::mt::key::entity_arg<1>,
-                                     catalogue::mt::order::source_then_sequence,
-                                     catalogue::mt::commit::serial_structural,
-                                     catalogue::mt::conflict::target_not_source> {};
+struct actor_local_effect_domain_id {};
+struct actor_eat_effect_domain_id {};
+using actor_local_effect_domain = catalogue::mt::domain<
+  actor_local_effect_domain_id, actor_local_effect_strategy>;
+using actor_eat_effect_domain = catalogue::mt::domain<
+  actor_eat_effect_domain_id, actor_eat_effect_strategy>;
 
-using flee_deferred = catalogue::mt::domain<actor_local_effect_strategy>::fn_traits<
+using flee_deferred = actor_local_effect_domain::fn_traits<
   &effect_flee, "flee", "self">;
-using chase_deferred = catalogue::mt::domain<actor_local_effect_strategy>::fn_traits<
+using chase_deferred = actor_local_effect_domain::fn_traits<
   &effect_chase, "chase", "self">;
-using seek_food_deferred = catalogue::mt::domain<actor_local_effect_strategy>::fn_traits<
+using seek_food_deferred = actor_local_effect_domain::fn_traits<
   &effect_seek_food, "seek_food", "self", "rng">;
-using wander_deferred = catalogue::mt::domain<actor_local_effect_strategy>::fn_traits<
+using wander_deferred = actor_local_effect_domain::fn_traits<
   &effect_wander, "wander", "self", "rng">;
-using think_deferred = catalogue::mt::domain<actor_local_effect_strategy>::fn_traits<
+using think_deferred = actor_local_effect_domain::fn_traits<
   &effect_think, "think", "self">;
-using eat_deferred = catalogue::mt::domain<actor_eat_effect_strategy>::fn_traits<
+using eat_deferred = actor_eat_effect_domain::fn_traits<
   &effect_eat, "eat", "self", "prey", "rng">;
 
 constexpr uint32_t max_deferred_effects_per_actor = 16;
@@ -422,15 +423,17 @@ struct deferred_effects {
   catalogue::mt::executor<actor_eat_effect_strategy> eat;
 
   ~deferred_effects() {
-    using local_domain = catalogue::mt::domain<actor_local_effect_strategy>;
-    using eat_domain = catalogue::mt::domain<actor_eat_effect_strategy>;
-    if (local_domain::executor_instance() == &local) local_domain::set_executor(nullptr);
-    if (eat_domain::executor_instance() == &eat) eat_domain::set_executor(nullptr);
+    if (actor_local_effect_domain::executor_instance() == &local) {
+      actor_local_effect_domain::set_executor(nullptr);
+    }
+    if (actor_eat_effect_domain::executor_instance() == &eat) {
+      actor_eat_effect_domain::set_executor(nullptr);
+    }
   }
 
   void begin_record(const size_t source_capacity, const size_t call_capacity) {
-    catalogue::mt::domain<actor_local_effect_strategy>::set_executor(&local);
-    catalogue::mt::domain<actor_eat_effect_strategy>::set_executor(&eat);
+    actor_local_effect_domain::set_executor(&local);
+    actor_eat_effect_domain::set_executor(&eat);
     local.begin_record(source_capacity, max_deferred_effects_per_actor, call_capacity);
     eat.begin_record(source_capacity, max_deferred_effects_per_actor, call_capacity);
   }
@@ -696,16 +699,15 @@ void actor_world_slice::build_goap_from_config(const goap_config& cfg) {
   goap_ = goap_registry_.get("actor");
 }
 
-// ── map-фазы на общем примитиве template_system_mt (libs/aesthetics/template_system.h) ──
+// ── map-фазы на общем примитиве template_system + внешний run ──
 // Параллельный обход запроса; process мутирует ТОЛЬКО «свою» сущность (обстоятельства — read-only)
 // ⇒ потоки трогают непересекающуюся память, локов нет. dt ставится слайсом перед проходом.
 
 // Движение позиции по скорости + жёсткое позиционное расталкивание препятствиями (как было в apply).
-struct integration_system : devils_engine::aesthetics::template_system_mt<actor_position, actor_velocity> {
+struct integration_system : devils_engine::aesthetics::template_system<actor_position, actor_velocity> {
   float dt = 0.0f;
   const std::vector<actor_world_slice::obstacle_disc>* obstacles = nullptr;
-  integration_system(thread::atomic_pool* pool, aesthetics::world* w) noexcept
-    : template_system_mt(pool, w) {}
+  explicit integration_system(aesthetics::world* w) noexcept : template_system(w) {}
   void process(const query_tuple_t& t, const size_t /*time*/) override {
     auto* pos = std::get<1>(t);
     const auto* vel = std::get<2>(t);
@@ -726,10 +728,9 @@ struct integration_system : devils_engine::aesthetics::template_system_mt<actor_
 };
 
 // Пассивная динамика мотиваций: голод копится всегда, скука растёт в простое / спадает в движении.
-struct drives_system : devils_engine::aesthetics::template_system_mt<stats, actor_velocity> {
+struct drives_system : devils_engine::aesthetics::template_system<stats, actor_velocity> {
   float dt = 0.0f;
-  drives_system(thread::atomic_pool* pool, aesthetics::world* w) noexcept
-    : template_system_mt(pool, w) {}
+  explicit drives_system(aesthetics::world* w) noexcept : template_system(w) {}
   void process(const query_tuple_t& t, const size_t /*time*/) override {
     auto* dr = std::get<1>(t);
     const auto* vel = std::get<2>(t);
@@ -835,16 +836,15 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
   using build_sense_tree_perf = actor_perf_domain::fn_traits<&actor_world_slice::build_sense_tree, "sense.tree", "self">;
   using cognition_perf = actor_perf_domain::fn_traits<&actor_world_slice::cognition, "cognition", "self", "tick", "pool">;
   using apply_perf = actor_perf_domain::fn_traits<&actor_world_slice::apply, "apply", "self", "pool">;
-  using integrate_perf = actor_perf_domain::fn_traits<&actor_world_slice::integrate, "integrate", "self", "dt_seconds", "pool">;
-  using drives_perf = actor_perf_domain::fn_traits<&actor_world_slice::update_drives, "drives", "self", "dt_seconds", "pool">;
+  using maps_perf = actor_perf_domain::fn_traits<
+    &actor_world_slice::integrate_and_update_drives, "integration+drives", "self", "dt_seconds", "pool">;
   using resolve_eating_perf = actor_perf_domain::fn_traits<&actor_world_slice::resolve_eating, "eating", "self", "tick">;
   using maintain_food_perf = actor_perf_domain::fn_traits<&actor_world_slice::maintain_food, "food", "self">;
 
   using build_sense_tree_fn_t = build_sense_tree_perf::loc_fn_t;
   using cognition_fn_t = cognition_perf::loc_fn_t;
   using apply_fn_t = apply_perf::loc_fn_t;
-  using integrate_fn_t = integrate_perf::loc_fn_t;
-  using drives_fn_t = drives_perf::loc_fn_t;
+  using maps_fn_t = maps_perf::loc_fn_t;
   using resolve_eating_fn_t = resolve_eating_perf::loc_fn_t;
   using maintain_food_fn_t = maintain_food_perf::loc_fn_t;
 
@@ -852,9 +852,8 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
   ensure_actor_perf_introspection();
   build_sense_tree_fn_t{}(*this);
   cognition_fn_t{}(*this, tick_, pool);
-  apply_fn_t{}(*this, pool);                 // collect MT + elect ST, затем FSM/звук
-  integrate_fn_t{}(*this, dt_seconds, pool); // движение по скорости + расталкивание (map-фаза)
-  drives_fn_t{}(*this, dt_seconds, pool);    // пассивная динамика мотиваций (map-фаза)
+  apply_fn_t{}(*this, pool);            // collect MT + elect ST, затем FSM/звук
+  maps_fn_t{}(*this, dt_seconds, pool); // две независимые map-системы, один общий barrier
   resolve_eating_fn_t{}(*this, tick_);
   maintain_food_fn_t{}(*this);
   build_actor_batch_fn_t{}(batch, world_, tick_);
@@ -1107,26 +1106,20 @@ void actor_world_slice::apply(thread::atomic_pool& pool) {
   });
 }
 
-// integrate — map-фаза интеграции позиций (integration_system): движение по скорости + расталкивание.
-// Система создаётся лениво на первом апдейте (пул известен только здесь) и переиспользуется; dt и
-// указатель на кэш препятствий ставятся перед проходом. Все эффекты apply уже применены (скорость).
-void actor_world_slice::integrate(const float dt_seconds, thread::atomic_pool& pool) {
+// integration + drives независимы после apply: обе читают velocity, первая пишет position, вторая
+// stats. Сначала enqueue чанков обеих систем, затем ОДИН compute/wait в aesthetics::run.
+void actor_world_slice::integrate_and_update_drives(const float dt_seconds, thread::atomic_pool& pool) {
   if (!integration_sys_) {
-    integration_sys_ = std::make_unique<integration_system>(&pool, &world_);
+    integration_sys_ = std::make_unique<integration_system>(&world_);
   }
+  if (!drives_sys_) {
+    drives_sys_ = std::make_unique<drives_system>(&world_);
+  }
+
   integration_sys_->dt = dt_seconds;
   integration_sys_->obstacles = &obstacles_;
-  integration_sys_->update(tick_);
-}
-
-// update_drives — map-фаза пассивной динамики мотиваций (drives_system): голод копится, скука от
-// простоя. Дёшево, каждый тик, независимо от каденса обдумывания; решения примутся на созревании.
-void actor_world_slice::update_drives(const float dt_seconds, thread::atomic_pool& pool) {
-  if (!drives_sys_) {
-    drives_sys_ = std::make_unique<drives_system>(&pool, &world_);
-  }
   drives_sys_->dt = dt_seconds;
-  drives_sys_->update(tick_);
+  aesthetics::run(pool, tick_, *integration_sys_, *drives_sys_);
 }
 
 // resolve_eating — завершить поедание у хищников с истёкшим сроком: наелся (голод в ноль),

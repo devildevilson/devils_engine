@@ -298,6 +298,24 @@ struct elect {
   static constexpr arbitration arbitration_policy = arbitration::elect;
 };
 
+// Reusable strategy policies with no project/domain identity. Projects can use these aliases directly
+// or spell out collect/elect when a different key/order/commit/conflict combination is required.
+namespace preset {
+
+template <size_t KeyArg>
+using parallel_collect = collect<key::entity_arg<KeyArg>, order::source_then_sequence,
+                                 commit::parallel_groups>;
+
+template <size_t KeyArg, typename Conflict = conflict::none>
+using serial_elect = elect<key::entity_arg<KeyArg>, order::source_then_sequence,
+                           commit::serial, Conflict>;
+
+template <size_t KeyArg, typename Conflict = conflict::none>
+using structural_elect = elect<key::entity_arg<KeyArg>, order::source_then_sequence,
+                               commit::serial_structural, Conflict>;
+
+} // namespace preset
+
 enum class executor_phase : uint8_t {
   idle,
   recording,
@@ -520,8 +538,12 @@ private:
   executor_phase phase_ = executor_phase::idle;
 };
 
-template <typename Strategy>
+template <typename Identity, typename Strategy>
 struct domain {
+  using identity_type = Identity;
+  using strategy_type = Strategy;
+  using executor_type = executor<Strategy>;
+
   inline static executor<Strategy>* executor_i = nullptr;
 
   static void set_executor(executor<Strategy>* ptr) noexcept {

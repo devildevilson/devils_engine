@@ -107,6 +107,25 @@ target_include_directories(tile_frontier_resume_smoke PRIVATE
 )
 set_target_properties(tile_frontier_resume_smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
 
+# Full actor-pipeline scaling benchmark. Not registered in ctest: it is an explicit performance run,
+# but it fails non-zero unless 1/2/4/8 workers produce the same world hash and serialized bytes.
+add_executable(tile_frontier_mt_benchmark mt_benchmark.cpp src/core/actor_simulation.cpp)
+target_link_libraries(tile_frontier_mt_benchmark
+  devils_engine::devils_plane
+  devils_engine::prefab
+  glm::glm
+  tavl
+  Vulkan::Headers
+  GPUOpen::VulkanMemoryAllocator
+  VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp
+)
+target_include_directories(tile_frontier_mt_benchmark PRIVATE
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/core>"
+)
+set_target_properties(tile_frontier_mt_benchmark PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
+
 # Регистрация в ctest под меткой devils_engine (ctest -L devils_engine). Плоский main → код
 # возврата 0/1 = pass/fail, без doctest-дискавери. Метка ставит их в один прогон с остальными.
 if (DEVILS_ENGINE_BUILD_TESTS)
