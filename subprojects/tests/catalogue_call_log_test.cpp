@@ -11,10 +11,10 @@ using devils_engine::catalogue::call_log;
 using devils_engine::catalogue::call_record;
 
 namespace {
-// Собрать (primary, fn) всех проигранных вызовов в порядке replay (= возрастание индекса слота).
+// Собрать (primary, fn) всех вызовов в порядке dispatch (= возрастание индекса слота).
 std::vector<std::pair<uint32_t, uint64_t>> drain(const call_log& l) {
   std::vector<std::pair<uint32_t, uint64_t>> out;
-  l.replay([&](const call_record& r) { out.push_back({r.primary, r.fn}); });
+  l.dispatch([&](const call_record& r) { out.push_back({r.primary, r.fn}); });
   return out;
 }
 } // namespace
@@ -31,7 +31,7 @@ TEST_CASE("call_log starts empty and reports capacity") {
   CHECK_FALSE(l.has(3));
 }
 
-TEST_CASE("call_log records sparsely and replays in ascending slot order") {
+TEST_CASE("call_log records sparsely and dispatches in ascending slot order") {
   call_log l;
   l.reset(16);
 
@@ -100,5 +100,5 @@ TEST_CASE("call_log accepts lock-free disjoint records from a thread pool") {
   for (size_t i = 0; i < n; ++i) {
     ok = ok && out[i].first == uint32_t(i) && out[i].second == uint64_t(i * 10);
   }
-  CHECK(ok); // все записаны, порядок replay = возрастание индекса
+  CHECK(ok); // все записаны, порядок dispatch = возрастание индекса
 }

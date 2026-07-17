@@ -11,11 +11,10 @@
 
 #include <devils_engine/act/interaction.h> // act::interaction — дескриптор арбитража эффекта-взаимодействия
 #include <devils_engine/act/registry.h>    // act::registry + function<RetT>
-#include <devils_engine/catalogue/call_log.h> // catalogue::call_log — контейнер отложенных вызовов (record/replay)
+#include <devils_engine/catalogue/call_log.h> // catalogue::call_log — контейнер отложенных вызовов (record/dispatch)
 #include <devils_engine/acumen/execution_scratch.h>
 #include <devils_engine/acumen/registry.h>
 #include <devils_engine/acumen/system.h>   // acumen::system — GOAP над act::registry
-#include <devils_engine/aesthetics/interaction_arena.h> // interaction_arena — reduce арбитража (elect + self-claim)
 #include <devils_engine/aesthetics/sink.h>           // serial::sink_policy/seal/unseal — save/load слайса
 #include <devils_engine/aesthetics/world.h>
 #include <devils_engine/mood/registry.h>
@@ -55,8 +54,8 @@ namespace core {
 // потоке (оба зовутся из simulation::update), поэтому UI читает её напрямую — без broker.
 const devils_engine::catalogue::statistics_store& actor_perf_statistics() noexcept;
 
-// First lightweight actor slice: tiny deterministic brains write move intents,
-// then a stable apply phase mutates aesthetics components.
+// Actor gameplay slice: deterministic MT cognition records catalogue effects, then explicit
+// collect/elect commit lanes mutate aesthetics components before integration.
 struct actor_position {
   glm::vec2 value{0.0f, 0.0f};
 };
@@ -254,7 +253,8 @@ struct brain_config {
 // запроса, виртуальный process). Определения в .cpp — здесь только forward-decl под unique_ptr-члены.
 struct integration_system; // движение позиции по скорости + расталкивание препятствиями
 struct drives_system;      // пассивная динамика мотиваций (голод/скука)
-struct cognition_system;   // think-фаза: worklist_system над «созревшими», пишет intents
+struct cognition_system;   // think-фаза: worklist_system над «созревшими», record'ит effects
+struct deferred_effects;   // catalogue collect/elect executors (определены рядом с gameplay functions)
 
 class actor_world_slice : public spawn_sink {
   friend struct cognition_system; // worklist_system::process зовёт приватный decide_actor
@@ -313,7 +313,7 @@ private:
     return last_think == 0 || (tick - last_think) >= commit_ticks_;
   }
   // Планировщик когниции: выбирает «созревших» акторов в пределах бюджета (приоритет —
-  // давность решения), и только им обновляет восприятие + гоняет GOAP → intent. Остальные
+  // давность решения), и только им обновляет восприятие + гоняет GOAP → deferred effect. Остальные
   // коастят на прошлом решении. Тяжёлый перебор отобранных раскидан по потокам пула через
   // cognition_system (worklist_system над отобранными).
   void cognition(uint64_t tick, devils_engine::thread::atomic_pool& pool);
@@ -321,7 +321,7 @@ private:
   // из cognition_system::process на своей scratch-полосе (оттого friend).
   void decide_actor(devils_engine::aesthetics::entityid_t id, uint64_t tick,
                     devils_engine::acumen::execution_scratch& scratch);
-  void apply();
+  void apply(devils_engine::thread::atomic_pool& pool);
   // Интеграция позиций (движение по скорости + расталкивание препятствиями) — параллельный map-фаза
   // на integration_system. Ленивое создание системы на первом апдейте (пул известен только тут).
   void integrate(float dt_seconds, devils_engine::thread::atomic_pool& pool);
@@ -347,15 +347,13 @@ private:
   // kD-дерево слоя восприятия: перестраивается раз за тик, отвечает на «ближайший
   // крупнее/мельче в радиусе» с прунингом. Арена реюзится. Читается воркерами конкурентно.
   devils_engine::utils::kd_tree<perception_target> sense_tree_;
-  // Контейнер отложенных вызовов (catalogue::call_log): think-фаза записывает выбранные действия
-  // (record по индексу актора, без локов), commit-фаза (apply) проигрывает их в порядке индекса.
-  // Заменяет прежний intent-буфер — catalogue = «сложить вызов + проиграть позже» (ROADMAP п.16).
+  // Детерминированный журнал ВЫБРАННОГО action на source (для FSM/звука после effect commit).
+  // Тела эффектов здесь больше не хранятся/не вызываются: cognition зовёт act::effect, чья
+  // fn_deferred_ptr-обёртка пишет typed args в deferred_->local/eat.
   devils_engine::catalogue::call_log calls_;
-  // Reduce-слой арбитража взаимодействий (aesthetics::interaction_arena): elect на тип взаимодействия +
-  // общий self-claim. record-time (decide_actor, MT) — claim по дескриптору эффекта; commit-time (apply)
-  // — won() = победитель elect И цель не инициатор («intent бьёт grab»). Сайзится в cognition до
-  // параллельной фазы; типы взаимодействий регистрируются (ensure) в setup_brain_registry.
-  devils_engine::aesthetics::interaction_arena arena_;
+  // Typed catalogue executors: local collect (parallel key-groups) + eat elect (ST structural).
+  // Pimpl оставляет strategy-типы рядом с нативными функциями в .cpp.
+  std::unique_ptr<deferred_effects> deferred_;
   std::vector<sound_emit> sound_emits_; // sim-звуки тика (вход в состояние FSM)
 
   // Политика think-фазы (были поля cognition_scheduler; сериализуются как commit_ticks/think_budget).
@@ -365,7 +363,7 @@ private:
   size_t think_budget_ = 2048;
   // Map-фазы на общих примитивах aesthetics (владеет слайс; лениво создаются на 1-м апдейте, когда
   // известен пул). cognition_system = worklist_system над «созревшими» (per-thread scratch = A*+cache
-  // +ds VM), пишет intent в свой слот intents_. Неполные типы ⇒ out-of-line дтор слайса.
+  // +ds VM), пишет typed calls в per-source deferred slots. Неполные типы ⇒ out-of-line дтор слайса.
   std::unique_ptr<integration_system> integration_sys_;
   std::unique_ptr<drives_system> drives_sys_;
   std::unique_ptr<cognition_system> cognition_sys_;

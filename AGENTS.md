@@ -9,6 +9,8 @@ This repository is the author's experimental game engine / framework. It is a la
 - The cross-actor contract question (main/gameplay, render, sound, assets) is now ANSWERED: a single lock-free **broker** holds every inter-thread channel (see "Message broker" below). The old `utils::actor_ref` / `actors.h` path was archived under root `exclude/` on 2026-07-13; `message_dispatcher<T>` and advancer `actor`/`get_actor()` remnants are no longer present in the live tree.
 - `tile_frontier` core is split by concern under `subprojects/tile_frontier/{include,src}/core/`: project-specific `config`, `messages`, `render_system`, `assets_system`, `actor_simulation`, resources and `simulation`; shared broker/topology/runtime pieces now live under `libs/simul`. `main.cpp` includes `simulation.h`.
 - `tile_frontier` actor update phase timing now uses `libs/catalogue` instead of `utils::perf`: `actor_simulation.cpp` defines `catalogue_domains::actor_update_perf`, wraps `build_sense_tree`/`cognition`/`apply`/`resolve_eating`/`maintain_food`/`actor_batch::build` with `catalogue::domain<...>::fn_traits`, and installs a tiny `actor_update_perf_introspection` that logs elapsed microseconds in `exit()`. Private `actor_world_slice` member wrappers are declared inside `actor_world_slice::update()` so access control stays valid.
+- Catalogue MT effects (first slice + live tile pipeline implemented 2026-07-17 in `catalogue/deferred.h`): gameplay effects remain ordinary free `void(Args...)` C++ functions; devils_script/act register `catalogue::mt::domain<STRATEGY>::fn_traits<&fn,...>::fn_deferred_ptr`, a same-signature pointer that only records. Existing `catalogue::domain<auto>` remains the orthogonal trace value-domain. `mt::executor<Strategy>` binds through `set_executor`, phases are `begin_record → MT record → seal → commit` or parallel `dispatch_group` + `finish_commit`. A short RAII `mt::record_scope(source_id,dense_index)` owns TLS provenance and a local sequence shared across all strategies in that script pass; executor storage is pre-sized by `(source_index, local_sequence)`, so multiple true effects never overwrite each other and no arrival/global atomic order is used. Implemented strategies: `collect<Key,Order,Commit>` and deterministic lowest-source `elect<Key,Order,Commit,Conflict>`; `conflict::target_not_source` models “an interaction source cannot also be its target”. Commit tags: `parallel_groups`, `serial`, `serial_structural`. In `actor_world_slice`, MT cognition invokes the chosen `act::effect` under `record_scope`; local movement effects record into collect(self), commit as parallel entity groups, then eat records into elect(prey)+`target_not_source` and commits in an explicit ST structural lane before FSM/sound. The old `interaction_arena`/`simul::commit_calls` path is no longer used by tile_frontier; `call_log` remains only a one-action-per-source FSM journal. `tile_frontier_resume_smoke` checks 1-worker vs 4-worker bit identity plus 120 resumed ticks. First argument contract: free void functions, copyable value args, `string_view` copied to owned string, references rejected; payload currently allocates one type-erased object per call, arena/SBO is follow-up. Missing executor/scope, wrong phase and overflow throw loudly. Catalogue is NOT replay/RPC/netcode/on-disk serialization.
+- Deferred ds-effect semantics (agreed 2026-07-17): each true effect branch records independently and routes by that function's strategy; a collect `add_strength` still commits if a neighboring `eat_prey` loses elect. Multi-effect atomic/all-or-nothing groups are future explicit syntax, never inferred from neighboring ds blocks. `devils_script::on_effect` is a gameplay reaction to the recorded call, not an MT hook and not proof of successful commit; it may enqueue later work. Success-dependent reactions inspect actual post-commit components/state in a later gameplay step. `on_effect` itself may use a catalogue strategy wrapper.
 - `tile_frontier` lifecycle rule: main `simulation::init()` loads `resources/engine/config/app.tavl` (via engine demiurg registry), creates the broker, creates subsystem objects, wires `set_broker(br)` on each BEFORE starting their `std::jthread`s (no window required). Window creation is a late platform event controlled by `window.create_on_start`; when a window exists, main publishes `command_window_recreation` into the broker. Shutdown stops subsystem advancers, joins threads, destroys the window before GLFW termination, tolerates partial init.
 - First render slice in `tile_frontier`: `render_simulation` owns Vulkan instance/device, `graphics_base`, `assets_base`, and `graphics_ctx`. It can bootstrap instance/device/basic render resources before a window if `main_device.tavl` exists; otherwise it waits for `command_window_recreation`, creates a surface, chooses/caches a physical device, creates swapchain/render graph, registers a test triangle mesh, fills instance/indirect buffers, and draws four test triangles using the same render config/shaders as root `main.cpp`.
 - `graphics_base::recreate_basic_resources()` expects its config folder argument to end with `/` because parser paths are built as `path + "resources/"`, `path + "render_graphs/"`, etc. `tile_frontier` normalizes `render.config_folder` with a trailing slash before passing it to painter.
@@ -212,7 +214,7 @@ Domain-scoped logging lives in `libs/catalogue/logging.h` (`DE_LOG`/`DE_TRACE` m
 - `libs/acumen`: GOAP planner. It uses `act` predicates to compute bitset state, A* over symbolic actions, and caller-owned scratch/cache; it returns plans but does not mutate world state.
 - `libs/act`: shared gameplay-function registry (`devils_engine::act`) — typed-by-return functions (effect/predicate/number/string/object), immutable `exec_context`, `intent` seam, `registry`. See "Gameplay function layer" section. Skeleton built; `native_function` complete, script/lua stubs. `acumen` and `mood` now consume it (see below).
 - `libs/bindings`: Lua/sol2 binding layer for sandbox env, `base` utilities, deterministic `rng_state`, reflect-based table conversion, and large Nuklear bindings. No local README yet; root README summarizes it from code/CMake.
-- `libs/catalogue`: active focus is now function-call introspection/tracing/timing/dry-run/statistics via `catalogue/introspection.h`; older recording/replay/RPC/channel headers are legacy/deferred and not stable netcode.
+- `libs/catalogue`: active code is function-call introspection/tracing/timing/dry-run/statistics, the older in-memory `call_log`, and typed deterministic MT strategy wrappers/executors in `deferred.h`. The first live ECS integration is tile_frontier's cognition→collect/elect→structural/FSM pipeline. Next focus is config-loaded void scripts over the same deferred building blocks plus arena/SBO payload storage. Older recording/replay/RPC/channel files are archived under `exclude/` and are not to be revived as catalogue's direction. Replay/network persistence, if ever needed, belongs to a separate layer.
 - `libs/demiurg`: module/resource registry and staged resource loader. The durable cross-system handle is now `demiurg::resource_handle` (hash of logical id, survives registry rebuild — see "Assets / resource pipeline" and "Demiurg ↔ Lua resource API"); raw `resource_interface*` is fine only for same-lifetime same-thread reads. Loaders must honor dependency gating and external render/GPU steps. tavl list-pattern (`path:name`/`path:index`) and dependency-cycle diagnostics are done.
 - `libs/flow`: first active 2D/2.5D/UV animation slice. It is now a CMake target `devils_engine::flow` with `flow::library`, `flow::state`, `flow::playback`, `flow::animation_resource`, directional image selection, action events, and UV accumulation/truncation. 3D/skeletal/blending remain future work.
 - `libs/input`: GLFW window/input wrapper, Vulkan surface/proc helpers, key-name registry, and abstract input-event state machine.
@@ -295,16 +297,15 @@ The skeleton is built and wired into `devils_plane`; `native_function` is comple
   deletes `value`'s default ctor; an explicit `value() : kind(none), inum(0) {}` fixes it and zeroes
   the union (no uninitialized bytes → friendly to deterministic checksums). `number`/`vec3` ride
   `using real_t = double` — float→fixed is a one-line change when determinism is taken up.
-- **`effect_sink`** — `nullptr` ⇒ dry-run (planner preview / predictive UI); a real sink ⇒ live tick,
-  call logged (INPUT/MUTATOR channel). Hard contract: an effect mutates ONLY via `exec_context`
-  (world/sink), never backend-private state (this is why Lua is a guest, not the effect backend).
-  Currently a stub interface in `act`; will move to `libs/catalogue` (its real impl is a channel
-  consumer). In the GOAP layer effects are NOT executed — the action emits an `intent`; the sink runs
-  in the intent-consuming systems on the apply phase.
+- **`effect_sink`** — `nullptr` historically means dry-run (planner preview / predictive UI); the real
+  implementation is still a stub. The chosen typed MT direction is catalogue's deferred function
+  wrapper + strategy executor, so decide whether `effect_sink` remains a generic act seam or is replaced
+  for registered ds effects. Do not turn it into a replay channel. In the GOAP layer effects are NOT
+  executed — the action emits an `intent`; mutation runs in deterministic apply/commit phases.
 - **`intent`** = the thinker→ECS seam. GOAP/FSM/script do NOT mutate the world; they emit a compact
   `intent` of base verbs (`move_to`/`turn_to`/`call_function`/`fsm_event`, extensible) that ECS systems
-  consume in a DETERMINISTIC apply phase (sort by `actor.id`, not message-arrival order). One
-  serialization point (lockstep INPUT channel of catalogue) instead of millions of scattered mutations.
+  consume in a DETERMINISTIC apply phase (sort by `actor.id`, not message-arrival order). One typed
+  command seam instead of millions of scattered mutations; persistent serialization is a separate concern.
   Carries `source_action` provenance ("why", not just "what").
 - **`registry`** — one `gtl::flat_hash_map<fn_id, unique_ptr<function_base>>`; `fn_id = string_hash(name)`
   (function names need no dense index). Typed checked accessors `predicate(id)`/`number(id)`/`effect(id)`/
@@ -649,9 +650,9 @@ Validated facts grounding the design:
 - **The cursor-advance model works because `aesthetics::world` iterates in ASCENDING id order**: `raw_itr`
   walks `sparce_set` (sparse index == entity index == id), skipping invalid. So an id-sorted intent buffer
   and the ECS view advance in lockstep — one pass, no per-entity lookup needed.
-- **The MVP has ONE intent consumer (the apply system).** The `effect_sink` "second consumer" is a FUTURE
-  catalogue consumer (INPUT/MUTATOR logging for replay); `effect_sink` is still a stub. Wire it when
-  catalogue matures.
+- **The MVP has ONE intent consumer (the apply system).** `effect_sink` is still a stub; reconcile it
+  with the typed catalogue strategy executor only when that wrapper is built. Replay is not a catalogue
+  consumer responsibility.
 - think reads the world (pure predicates) ⇒ parallelizable; apply mutates in fixed id order ⇒ the
   deterministic barrier. Matches the "think in any order, apply in fixed order" rule.
 
@@ -664,17 +665,19 @@ OPEN QUESTIONS / forks (author to decide before building):
 - **C. Where to build:** in tile_frontier's `actor_world_slice` first (recommended — library-first
   prototype), formalize into a lib later.
 
-## Intent/replay logging & determinism (design, not yet implemented)
+## Intent persistence/replay notes (superseded ownership; historical design)
 
-Two linked planning sessions. Goal: be able to "see which decisions led to which results" even with
-millions of scripts/actors, and keep the sim reproducible for debug/replay (and maybe netcode later).
+The notes below predate the 2026-07-17 boundary decision. Their determinism advice (stable apply order,
+per-entity RNG, fixed timestep, checksums) remains useful, but catalogue is no longer the owner of
+replay/RPC/binary persistence. If persistence becomes real work, move those responsibilities into a
+separate library and reassess the old channel design rather than restoring it into live catalogue.
 
 **Intent as the thinker→ECS seam.** GOAP output is funneled through one compact `intent` struct of
 base actions ECS systems consume (turn toward, move, call script, send FSM event, ...). This is the
 deterministic-command / Quake-`usercmd` pattern: the single struct type is what makes observability
 *tractable* — one serialization point instead of millions of scattered scripts. Hold onto this seam.
 
-**It's a catalogue consumer, not a new system.** catalogue already has the bones:
+**Historical proposal only (superseded):** catalogue once had the following bones:
 `INPUT_CHANNEL_ID / MUTATOR_CHANNEL_ID / META / SERVICE` (`channel_data.h`), an abstract `consumer`
 (≤8 per channel), `rpc_function`/`mutator` wrappers.
 - `intent` → INPUT channel (this is "the input" in catalogue's "log inputs, replay the rest" model).
@@ -804,7 +807,7 @@ hook) because every script comes from demiurg/mods (there is no plain-lua-from-d
 - Root `README.md` was replaced on 2026-07-05 with a human-oriented map of `libs/` only. It is intentionally organized as separate sections per library: role, current shape, relationships, and status. Keep future `tests/` documentation separate unless explicitly asked.
 - Documentation split requested by the author: root `README.md` should stay Russian for now and serve as a human-oriented overview for the author; `AGENTS.md` is the place for agent memory, technical gotchas, exact contracts, shutdown/order notes, and implementation details. Future README may become English later, but do not preemptively switch it.
 - `libs/flow` is now an active CMake target. Current contract: animation = chain/graph of states; state has `duration_mcs`, `next` index, `images` as `demiurg::resource_handle + mirror_state` (migrated from raw `resource_interface*` in `8ce23c1`), `action` as `utils::id` (`invalid_id` = none), and `uv` delta. Runtime emits action messages; it must not call `act` effects directly from render/flow thread. `libs/bindings` has a CMake target but no local README, so its root README section is reconstructed from headers/sources.
-- `libs/catalogue` current contract: use it as a small utility wrapper around selected function calls, not as `act` replacement or serializer. Public first-slice API is `devils_engine/catalogue/introspection.h`; tests live in `tests/catalogue_introspection_test.cpp`. Old `core.h`/`registry.h`/`channel_data.h`/`rpc_function.h`/`demo.h` are still present but should be treated as older RPC/replay experiments until deliberately revived.
+- `libs/catalogue` current contract: use it as a small utility wrapper around selected function calls, not as `act` replacement, serializer or replay engine. Public active pieces are `devils_engine/catalogue/introspection.h`, logging, `call_log` and `deferred.h` (`mt::executor`, `record_scope`, collect/elect, `fn_deferred_ptr`). Old `core.h`/`registry.h`/`channel_data.h`/`rpc_function.h`/`demo.h` are archived under ignored `exclude/` and must not be revived into catalogue merely to add replay.
 - Current `libs/` layering from CMake: `options` is the common interface build contract; `utils` is the low-level base; `act` feeds `mood` and `acumen`; `demiurg` feeds resource-backed `sound`/`painter`/`visage`; `input` feeds Vulkan/GLFW integration for `painter`; `bindings` and `visage` are tightly coupled for Lua/Nuklear UI.
 - Be explicit about legacy/prototype code in docs and changes: `utils::actor_ref`, old painter renderer/image-container files and abandoned sound source classes are archived under ignored `exclude/`; `sound` still links/includes the mixed old OpenAL path next to current miniaudio `system2`; `catalogue` is still a prototype, not stable netcode.
 - Linux portable runtime bundling is handled by `cmake/devils_portable_runtime.cmake`: it sets local RPATH to `$ORIGIN` and runs `file(GET_RUNTIME_DEPENDENCIES)` after build. The dependency copy script writes resolved `.so` files into the executable's `bin/`, removes stale/symlink `.so*` entries, names copied libraries by SONAME when available, and deliberately excludes the ELF loader plus core glibc-family libraries (`ld-linux`, `libc`, `libm`, `libdl`, `libpthread`, etc.).

@@ -13,6 +13,7 @@ set(SRC_LIST
 
 set(HDR_LIST
   include/devils_engine/catalogue/call_log.h
+  include/devils_engine/catalogue/deferred.h
   include/devils_engine/catalogue/introspection.h
   include/devils_engine/catalogue/logging.h
 )
