@@ -62,7 +62,7 @@ struct target_not_source {};
 struct call_metadata {
   uint64_t key = 0;
   uint64_t source = 0;
-  uint32_t local_sequence = 0;
+  uint64_t local_sequence = 0;
   uint64_t function = 0;
   size_t source_index = 0;
 };
@@ -87,7 +87,7 @@ uint64_t stable_key(const T& value) {
 struct record_context {
   uint64_t source = 0;
   size_t source_index = 0;
-  uint32_t next_sequence = 0;
+  uint32_t next_local_ordinal = 0;
 };
 
 inline thread_local record_context* current_record_context = nullptr;
@@ -225,8 +225,9 @@ struct callable_traits : public utils::detail::function_traits_v2<T> {};
 
 } // namespace detail
 
-// Binds stable source provenance to every deferred call made by the current worker. local_sequence is
-// shared across ALL strategy domains used by this scope, so neighbouring effects retain script order.
+// Binds stable source provenance to every deferred call made by the current worker. The local ordinal is
+// shared across ALL strategy domains used by this scope; executor maps it to the deterministic global id
+// `source_index * sequence_capacity + local_ordinal`.
 class record_scope {
 public:
   record_scope(const uint64_t source, const size_t source_index) noexcept
@@ -243,8 +244,8 @@ public:
   record_scope& operator=(const record_scope&) = delete;
   record_scope& operator=(record_scope&&) = delete;
 
-  uint32_t next_sequence() const noexcept {
-    return context_.next_sequence;
+  uint32_t next_local_ordinal() const noexcept {
+    return context_.next_local_ordinal;
   }
 
 private:
@@ -388,7 +389,7 @@ public:
 
   template <auto Fn, typename... Args>
   void record(const uint64_t function, const detail::record_context& context,
-              const uint32_t local_sequence, const Args&... args) {
+              const uint32_t local_ordinal, const Args&... args) {
     static_assert(std::is_void_v<typename detail::callable_traits<decltype(Fn)>::result_type>,
                   "catalogue::mt deferred functions must return void");
     if (phase_ != executor_phase::recording) {
@@ -398,10 +399,17 @@ public:
       utils::error{}("catalogue::mt source index {} is outside executor capacity {}", context.source_index,
                      source_capacity_);
     }
-    if (local_sequence >= sequence_capacity_) {
-      utils::error{}("catalogue::mt local_sequence {} exceeds per-source capacity {}", local_sequence,
+    if (local_ordinal >= sequence_capacity_) {
+      utils::error{}("catalogue::mt local ordinal {} exceeds per-source capacity {}", local_ordinal,
                      sequence_capacity_);
     }
+    if (uint64_t(context.source_index) >
+        (std::numeric_limits<uint64_t>::max() - local_ordinal) / sequence_capacity_) {
+      utils::error{}("catalogue::mt global sequence overflow: source index {}, local ordinal {}",
+                     context.source_index, local_ordinal);
+    }
+    const uint64_t global_sequence =
+      uint64_t(context.source_index) * uint64_t(sequence_capacity_) + local_ordinal;
 
     size_t index = record_count_.load(std::memory_order_relaxed);
     while (true) {
@@ -411,7 +419,7 @@ public:
       if (record_count_.compare_exchange_weak(index, index + 1, std::memory_order_relaxed)) break;
     }
     const uint64_t group_key = Strategy::key_policy::get(args...);
-    const call_metadata metadata{group_key, context.source, local_sequence, function, context.source_index};
+    const call_metadata metadata{group_key, context.source, global_sequence, function, context.source_index};
     slots_[index].template emplace<Fn>(metadata, args...);
   }
 
@@ -426,23 +434,6 @@ public:
     sealed_indices_.reserve(recorded_count);
     for (size_t i = 0; i < recorded_count; ++i) {
       if (slots_[i].occupied()) sealed_indices_.push_back(i);
-    }
-
-    source_order_indices_ = sealed_indices_;
-    std::sort(source_order_indices_.begin(), source_order_indices_.end(), [this](const size_t a, const size_t b) {
-      const call_metadata& ma = slots_[a].metadata();
-      const call_metadata& mb = slots_[b].metadata();
-      if (ma.source_index != mb.source_index) return ma.source_index < mb.source_index;
-      return ma.local_sequence < mb.local_sequence;
-    });
-    for (size_t i = 1; i < source_order_indices_.size(); ++i) {
-      const call_metadata& previous = slots_[source_order_indices_[i - 1]].metadata();
-      const call_metadata& current = slots_[source_order_indices_[i]].metadata();
-      if (previous.source_index == current.source_index &&
-          previous.local_sequence == current.local_sequence) {
-        utils::error{}("catalogue::mt duplicate deferred source slot: source index {}, local_sequence {}",
-                       current.source_index, current.local_sequence);
-      }
     }
 
     std::sort(sealed_indices_.begin(), sealed_indices_.end(), [this](const size_t a, const size_t b) {
@@ -519,7 +510,6 @@ public:
 private:
   std::unique_ptr<detail::call_slot[]> slots_;
   std::vector<size_t> sealed_indices_;
-  std::vector<size_t> source_order_indices_;
   std::vector<group_view> groups_;
   std::vector<uint64_t> sources_;
   std::atomic_size_t record_count_ = 0;
@@ -570,11 +560,11 @@ struct domain {
           utils::error{}("catalogue::mt deferred function '{}' called without a strategy executor", name);
         }
         detail::record_context& context = detail::require_record_context();
-        if (context.next_sequence == std::numeric_limits<uint32_t>::max()) {
-          utils::error{}("catalogue::mt local_sequence overflow for source {}", context.source);
+        if (context.next_local_ordinal == std::numeric_limits<uint32_t>::max()) {
+          utils::error{}("catalogue::mt local ordinal overflow for source {}", context.source);
         }
-        const uint32_t sequence = context.next_sequence++;
-        ex->template record<Fn>(function_id, context, sequence, args...);
+        const uint32_t local_ordinal = context.next_local_ordinal++;
+        ex->template record<Fn>(function_id, context, local_ordinal, args...);
       }
     };
 

@@ -742,7 +742,7 @@ struct drives_system : devils_engine::aesthetics::template_system_mt<stats, acto
 
 // think-фаза: worklist_system над «созревшими» акторами (отобранными select+budget_clamp). process
 // зовёт decide_actor слайса на своей per-thread scratch-полосе (A*+cache+ds VM); тот под record_scope
-// вызывает act::effect, чья deferred-обёртка пишет в непересекающиеся per-source slots.
+// вызывает act::effect, чья deferred-обёртка append-ит вызов в dense journal.
 struct cognition_system : devils_engine::aesthetics::worklist_system<acumen::execution_scratch> {
   actor_world_slice* slice;
   cognition_system(thread::atomic_pool* pool, actor_world_slice* s) noexcept
@@ -994,8 +994,9 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
 //      overdue (давность решения). budget_clamp усекает до think_budget_ самых просроченных
 //      (детерминированный тай-брейк по индексу). Общий примитив aesthetics::budget_clamp.
 //   2) think: cognition_system (worklist_system) раскидывает отобранных по потокам, каждый — в свою
-//      scratch-полосу (A*+cache+ds VM), зовёт decide_actor → тот record'ит effects в СВОИ
-//      `(source_index, local_sequence)` slots. seal восстанавливает total order независимо от scheduling.
+//      scratch-полосу (A*+cache+ds VM), зовёт decide_actor → тот append'ит effects в dense journal.
+//      Глобальный sequence id выводится из source_index + локального script ordinal; seal восстанавливает
+//      total order независимо от scheduling.
 // Стоимость восприятия+GOAP ∝ бюджету/числу_потоков. Отбор — O(N)-скан (на миллионах заменить
 // на timing-wheel). sense_tree_ строится ДО (build_sense_tree) и только читается воркерами.
 void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool) {

@@ -47,8 +47,8 @@ int main() {
   CHECK(batch_a.valid());
   CHECK(batch_b.valid());
 
-  // Один и тот же deferred-effect pipeline не должен зависеть от числа worker-ов: record идёт в
-  // (source_index, local_sequence), collect сортирует группы, elect выбирает по стабильному source id.
+  // Один и тот же deferred-effect pipeline не должен зависеть от числа worker-ов: record append-ится
+  // физически, seal сортирует по semantic key, elect выбирает по стабильному source id.
   {
     tf::actor_world_slice one_worker, four_workers;
     one_worker.init(512, mn, mx, tex);
