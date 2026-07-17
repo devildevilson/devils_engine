@@ -126,6 +126,33 @@ target_include_directories(tile_frontier_mt_benchmark PRIVATE
 set_target_properties(tile_frontier_mt_benchmark PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
 
+# Config-loaded void action acceptance: tavl -> devils_script -> act::script_function<void> ->
+# catalogue deferred record/commit. Kept headless and independent of the application/render stack.
+add_executable(tile_frontier_config_effect_smoke
+  config_effect_smoke.cpp
+  src/core/actor_simulation.cpp
+  src/core/goap_resource.cpp
+  src/core/script_environment.cpp
+)
+target_link_libraries(tile_frontier_config_effect_smoke
+  devils_engine::devils_plane
+  devils_engine::prefab
+  devils_engine::demiurg
+  glm::glm
+  tavl
+  Vulkan::Headers
+  GPUOpen::VulkanMemoryAllocator
+  VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp
+)
+target_include_directories(tile_frontier_config_effect_smoke PRIVATE
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/core>"
+)
+target_compile_definitions(tile_frontier_config_effect_smoke PRIVATE
+  TILE_FRONTIER_SOURCE_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/modules/")
+set_target_properties(tile_frontier_config_effect_smoke PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
+
 # Регистрация в ctest под меткой devils_engine (ctest -L devils_engine). Плоский main → код
 # возврата 0/1 = pass/fail, без doctest-дискавери. Метка ставит их в один прогон с остальными.
 if (DEVILS_ENGINE_BUILD_TESTS)
@@ -133,6 +160,8 @@ if (DEVILS_ENGINE_BUILD_TESTS)
   set_tests_properties(tile_frontier_snapshot_smoke PROPERTIES LABELS devils_engine)
   add_test(NAME tile_frontier_resume_smoke COMMAND tile_frontier_resume_smoke)
   set_tests_properties(tile_frontier_resume_smoke PROPERTIES LABELS devils_engine)
+  add_test(NAME tile_frontier_config_effect_smoke COMMAND tile_frontier_config_effect_smoke)
+  set_tests_properties(tile_frontier_config_effect_smoke PROPERTIES LABELS devils_engine)
 endif()
 include("${CMAKE_SOURCE_DIR}/cmake/devils_portable_runtime.cmake")
 devils_bundle_runtime_dependencies(${PROJECT_NAME})

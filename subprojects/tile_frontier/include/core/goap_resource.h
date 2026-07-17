@@ -24,7 +24,7 @@ class resource_system;
 //     threat_present = threat_present //   остаток строки доедает devils_script::system → container
 //   ]
 //   actions = [
-//     { name = eat  requirements = [ !threat_present, is_hungry ]  next_state = [ resolved ]  weight_state = [ ] }
+//     { name = think  effect = think  requirements = [ !is_hungry ]  next_state = [ resolved ]  weight_state = [ ] }
 //   ]
 //   goals = [ { name = resolved  requirements = [ ]  goal = [ resolved ] } ]
 //
@@ -45,6 +45,11 @@ struct goap_action_config {
   std::vector<std::string> requirements; // ключи метрик (префикс !/not = инвертированный бит)
   std::vector<std::string> next_state;   // биты, которые ставит действие
   std::vector<std::string> weight_state; // биты веса (опц.)
+  // Optional inline void devils_script program. When present, actor_simulation registers an
+  // act::script_function<void> under `name`; its native building blocks are the same catalogue
+  // fn_deferred_ptr functions used by direct C++ actions.
+  devils_script::container effect_program;
+  bool has_effect_program = false;
 };
 
 struct goap_goal_config {

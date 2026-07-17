@@ -148,9 +148,10 @@ catalogue strategy. Она не гарантирует, что elect-вызов 
 5. После мутаций однослотовый action journal двигает FSM и эмитит звук.
 
 `tile_frontier_resume_smoke` проверяет байтовое равенство world при 1 и 4 worker-ах, а также
-save/load continuation. Следующий вертикальный срез — загружаемый `act::script_function<void>`,
-который вызывает эти же deferred building blocks. Текущий executor уже сохраняет несколько
-effect-вызовов одного source/script pass.
+save/load continuation. Загружаемый `act::script_function<void>` теперь тоже вызывает эти же deferred
+building blocks: GOAP action co-parse'ит optional `effect = <ds>`, shipped `flee/chase/think` идут этим
+путём, а `tile_frontier_config_effect_smoke` проверяет resource-load и 1-vs-4 identity. Executor
+сохраняет несколько effect-вызовов одного source/script pass.
 
 Аргументный storage executor-а живёт только до commit текущего шага и не является
 serializer/replay format. Каждый journal slot содержит 128-byte inline payload;

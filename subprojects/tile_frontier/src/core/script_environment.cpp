@@ -80,6 +80,10 @@ script_environment::script_environment() : sys(make_options()) {
   sys.init_basic_functions();
   sys.init_math();
 
+  // Effects used by config-loaded GOAP action scripts. These are generated catalogue deferred
+  // pointers, so a script pass only records typed calls; actor_world_slice::apply owns commit.
+  register_actor_effect_building_blocks(sys);
+
   // `stats` меняет ds-scope; внутри него рефлексией доступны hunger/boredom/strength и add_<field>.
   act::register_stats<stats, entity_scope, &get_actor_stats, stat_domain::actor_stats>(sys, "stats");
 

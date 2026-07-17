@@ -4,6 +4,7 @@
 //
 //   ./tile_frontier_mt_benchmark [entities] [measured_ticks] [warmup_ticks]
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -12,9 +13,11 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <devils_engine/aesthetics/serialization.h>
+#include <devils_engine/catalogue/introspection.h>
 #include <devils_engine/thread/atomic_pool.h>
 #include <spdlog/spdlog.h>
 
@@ -26,10 +29,19 @@ namespace tf = tile_frontier::core;
 namespace {
 
 struct run_result {
+  struct phase_result {
+    std::string name;
+    double average_us = 0.0;
+    uint64_t min_us = 0;
+    uint64_t max_us = 0;
+    uint64_t calls = 0;
+  };
+
   size_t workers = 0;
   double elapsed_ms = 0.0;
   std::vector<std::byte> world;
   uint64_t world_hash = 0;
+  std::vector<phase_result> phases;
 };
 
 uint64_t hash_bytes(const std::vector<std::byte>& bytes) noexcept {
@@ -60,6 +72,7 @@ run_result run(const size_t workers, const uint32_t entity_count,
   for (size_t i = 0; i < warmup_ticks; ++i) {
     slice.update(dt, batch, pool);
   }
+  tf::reset_actor_perf_statistics();
 
   const auto begin = std::chrono::steady_clock::now();
   for (size_t i = 0; i < measured_ticks; ++i) {
@@ -72,7 +85,22 @@ run_result run(const size_t workers, const uint32_t entity_count,
   result.elapsed_ms = std::chrono::duration<double, std::milli>(end - begin).count();
   result.world = aesthetics::serial::dump_world(&slice.ecs());
   result.world_hash = hash_bytes(result.world);
+  tf::actor_perf_statistics().for_each(
+    [&result](const catalogue::statistics_store::function_record& rec) {
+      result.phases.push_back(run_result::phase_result{
+        std::string(rec.name), rec.average_mcs(), rec.min_mcs, rec.max_mcs, rec.call_count});
+    });
+  std::sort(result.phases.begin(), result.phases.end(), [](const auto& a, const auto& b) {
+    return a.name < b.name;
+  });
   return result;
+}
+
+const run_result::phase_result* find_phase(const run_result& result, const std::string_view name) {
+  const auto it = std::find_if(result.phases.begin(), result.phases.end(), [name](const auto& phase) {
+    return phase.name == name;
+  });
+  return it != result.phases.end() ? &*it : nullptr;
 }
 
 } // namespace
@@ -112,6 +140,50 @@ int main(int argc, char** argv) {
               << std::setw(7) << baseline_ms / result.elapsed_ms << "  "
               << "0x" << std::hex << std::setw(16) << std::setfill('0') << result.world_hash
               << std::dec << std::setfill(' ') << "  " << (identical ? "yes" : "NO") << '\n';
+  }
+
+  constexpr std::array<std::string_view, 8> phase_names{
+    "sense.gather", "tail.sense+batch", "cognition", "apply",
+    "integration+drives", "eating", "food", "build"};
+  std::cout << "\nphase average (us/tick; min..max over measured ticks)\n";
+  std::cout << std::left << std::setw(20) << "phase";
+  for (const auto& result : results) {
+    std::cout << std::right << std::setw(18) << (std::to_string(result.workers) + " workers");
+  }
+  std::cout << '\n';
+  for (const std::string_view name : phase_names) {
+    std::cout << std::left << std::setw(20) << name;
+    for (const auto& result : results) {
+      const auto* phase = find_phase(result, name);
+      if (phase == nullptr) {
+        std::cout << std::right << std::setw(18) << "n/a";
+        continue;
+      }
+      const std::string cell = std::to_string(uint64_t(phase->average_us + 0.5)) + " (" +
+                               std::to_string(phase->min_us) + ".." +
+                               std::to_string(phase->max_us) + ")";
+      std::cout << std::right << std::setw(18) << cell;
+    }
+    std::cout << '\n';
+  }
+  std::cout << "note: tail.sense+batch is the shared barrier elapsed time; actor batch runs inside "
+               "that interval, so overlapping shares are not additive\n";
+
+  std::cout << "\nphase share of wall-clock tick\n";
+  std::cout << std::left << std::setw(20) << "phase";
+  for (const auto& result : results) {
+    std::cout << std::right << std::setw(12) << (std::to_string(result.workers) + "w");
+  }
+  std::cout << '\n';
+  for (const std::string_view name : phase_names) {
+    std::cout << std::left << std::setw(20) << name;
+    for (const auto& result : results) {
+      const auto* phase = find_phase(result, name);
+      const double wall_us = result.elapsed_ms * 1000.0 / double(measured_ticks);
+      const double share = phase != nullptr && wall_us != 0.0 ? 100.0 * phase->average_us / wall_us : 0.0;
+      std::cout << std::right << std::fixed << std::setprecision(1) << std::setw(11) << share << '%';
+    }
+    std::cout << '\n';
   }
 
   if (!deterministic) {

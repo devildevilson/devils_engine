@@ -638,6 +638,36 @@ TEST_CASE("kd_tree nearest/radius with predicate [utils::kd_tree]") {
       }
     }
   }
+
+  SUBCASE("parallel build preserves serial tree query results") {
+    utils::kd_tree<pl> serial;
+    utils::kd_tree<pl> parallel;
+    constexpr uint32_t count = 2048;
+    for (uint32_t i = 0; i < count; ++i) {
+      const float x = float((i * 37u) % 997u) + float(i) * 0.00001f;
+      const float y = float((i * 101u) % 991u) + float(i) * 0.00002f;
+      const pl payload{i, 0.5f + float(i % 17u)};
+      serial.insert({x, y}, payload);
+      parallel.insert({x, y}, payload);
+    }
+    serial.build();
+    thread::atomic_pool pool(4);
+    parallel.build_parallel(pool, 1);
+
+    for (uint32_t i = 0; i < 128; ++i) {
+      const utils::kd_tree<pl>::point q{
+        float((i * 53u) % 997u) + 0.123f,
+        float((i * 89u) % 991u) + 0.456f};
+      const auto pred = [i](const pl& value) {
+        return value.id != i;
+      };
+      const auto* a = serial.nearest(q, 2000.0f, pred);
+      const auto* b = parallel.nearest(q, 2000.0f, pred);
+      REQUIRE(a != nullptr);
+      REQUIRE(b != nullptr);
+      CHECK(a->payload.id == b->payload.id);
+    }
+  }
 }
 
 TEST_CASE("geometry primitive predicates [utils::geom]") {

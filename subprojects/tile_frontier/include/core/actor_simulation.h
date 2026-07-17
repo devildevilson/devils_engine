@@ -39,6 +39,7 @@ class statistics_store;
 } // namespace devils_engine
 namespace devils_script {
 struct container;
+struct system;
 } // namespace devils_script
 
 namespace tile_frontier {
@@ -53,6 +54,13 @@ namespace core {
 // Статистика времени фаз апдейта актора (catalogue). Актор-сим и UI (visage) живут в ОДНОМ
 // потоке (оба зовутся из simulation::update), поэтому UI читает её напрямую — без broker.
 const devils_engine::catalogue::statistics_store& actor_perf_statistics() noexcept;
+void reset_actor_perf_statistics() noexcept;
+
+// Registers project gameplay building blocks in the one devils_script parser registry. The
+// registered pointers are catalogue deferred wrappers: parsing a void action script preserves the
+// normal C++ signature, while execution records into the actor pipeline instead of mutating ECS in
+// the cognition worker.
+void register_actor_effect_building_blocks(devils_script::system& sys);
 
 // Actor gameplay slice: deterministic MT cognition records catalogue effects, then explicit
 // collect/elect commit lanes mutate aesthetics components before integration.
@@ -307,7 +315,9 @@ private:
   // (префикс !/not = инвертированный бит; символические биты типа "resolved" индексируются после метрик).
   void build_goap_from_config(const goap_config& cfg);
   // Строит kD-дерево восприятия над ВСЕМИ акторами (позиции меняются каждый тик).
-  void build_sense_tree();
+  void build_sense_tree(devils_engine::thread::atomic_pool& pool);
+  void gather_sense_tree();
+  void finalize_sense_tree(devils_engine::thread::atomic_pool& pool);
   // «Созрел» = ещё не думал (last_think==0) ИЛИ истёк commit_ticks_. Отбор в enumerate.
   bool matured(const uint64_t last_think, const uint64_t tick) const noexcept {
     return last_think == 0 || (tick - last_think) >= commit_ticks_;
@@ -345,6 +355,7 @@ private:
   // kD-дерево слоя восприятия: перестраивается раз за тик, отвечает на «ближайший
   // крупнее/мельче в радиусе» с прунингом. Арена реюзится. Читается воркерами конкурентно.
   devils_engine::utils::kd_tree<perception_target> sense_tree_;
+  bool sense_tree_ready_ = false; // false only after init/load; normal ticks prepare next snapshot at their tail
   // Детерминированный журнал ВЫБРАННОГО action на source (для FSM/звука после effect commit).
   // Тела эффектов здесь больше не хранятся/не вызываются: cognition зовёт act::effect, чья
   // fn_deferred_ptr-обёртка пишет typed args в deferred_->local/eat.
@@ -365,8 +376,9 @@ private:
   std::unique_ptr<integration_system> integration_sys_;
   std::unique_ptr<drives_system> drives_sys_;
   std::unique_ptr<cognition_system> cognition_sys_;
-  // build_sense_tree как лямбда-система (aesthetics::make_map_system): reduce query<pos,vis> → kd-дерево.
-  // Базой basic_system (комп-типы скрыты); лениво создаётся, сбрасывается на init/load (держит query на world).
+  // gather_sense_tree как лямбда-система (aesthetics::make_map_system): reduce query<pos,vis> → точки kd.
+  // Сам median build идёт отдельной параллельной tail-фазой. Базой basic_system (комп-типы скрыты);
+  // лениво создаётся, сбрасывается на init/load (держит query на world).
   std::unique_ptr<devils_engine::aesthetics::basic_system> sense_tree_sys_;
   // cognition-SELECT как лямбда-система: reduce view<actor_cognition> → кандидаты (созревшие, не занятые).
   struct think_candidate {
