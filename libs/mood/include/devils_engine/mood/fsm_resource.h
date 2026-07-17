@@ -1,5 +1,5 @@
-#ifndef TILE_FRONTIER_CORE_FSM_RESOURCE_H
-#define TILE_FRONTIER_CORE_FSM_RESOURCE_H
+#ifndef DEVILS_ENGINE_MOOD_FSM_RESOURCE_H
+#define DEVILS_ENGINE_MOOD_FSM_RESOURCE_H
 
 #include <vector>
 
@@ -11,17 +11,17 @@
 // Parentheses around actions make the action list an unambiguous TAVL tuple. The resource produces
 // structured mood::transition_config values; mood does not reparse synthetic quoted strings.
 
-namespace tile_frontier {
-namespace core {
+namespace devils_engine {
+namespace mood {
 
 struct fsm_config {
-  std::vector<devils_engine::mood::transition_config> transitions;
+  std::vector<transition_config> transitions;
 };
 
 class fsm_resource : public devils_engine::demiurg::resource_interface {
 public:
   fsm_resource();
-  const std::vector<devils_engine::mood::transition_config>& transitions() const noexcept {
+  const std::vector<transition_config>& transitions() const noexcept {
     return config_.transitions;
   }
 
@@ -34,7 +34,7 @@ private:
   fsm_config config_;
 };
 
-} // namespace core
-} // namespace tile_frontier
+} // namespace mood
+} // namespace devils_engine
 
 #endif

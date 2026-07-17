@@ -6,15 +6,13 @@
 #include <devils_engine/act/registry.h>
 #include <devils_engine/demiurg/module_system.h>
 #include <devils_engine/demiurg/resource_system.h>
+#include <devils_engine/mood/fsm_resource.h>
 #include <devils_engine/mood/system.h>
 #include <devils_engine/utils/safe_handle.h>
 #include <doctest/doctest.h>
 
-#include "fsm_resource.h"
-
 TEST_CASE("FSM resource parses native TAVL transition rows and parenthesized actions") {
   namespace fs = std::filesystem;
-  namespace tf = tile_frontier::core;
   using namespace devils_engine;
 
   const auto root = fs::temp_directory_path() / "devils_engine_fsm_config_test";
@@ -31,10 +29,10 @@ TEST_CASE("FSM resource parses native TAVL transition rows and parenthesized act
   demiurg::module_system modules(root.generic_string() + "/");
   modules.load_default_modules();
   demiurg::resource_system resources;
-  resources.register_type<tf::fsm_resource>("fsm", "tavl");
+  resources.register_type<mood::fsm_resource>("fsm", "tavl");
   resources.parse_resources(&modules);
 
-  auto* resource = resources.get<tf::fsm_resource>("fsm/combat");
+  auto* resource = resources.get<mood::fsm_resource>("fsm/combat");
   REQUIRE(resource != nullptr);
   resource->load(utils::safe_handle_t{});
   REQUIRE(resource->transitions().size() == 2);

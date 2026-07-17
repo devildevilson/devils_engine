@@ -1,23 +1,20 @@
-#ifndef TILE_FRONTIER_CORE_GOAP_RESOURCE_H
-#define TILE_FRONTIER_CORE_GOAP_RESOURCE_H
+#ifndef DEVILS_ENGINE_ACUMEN_GOAP_RESOURCE_H
+#define DEVILS_ENGINE_ACUMEN_GOAP_RESOURCE_H
 
 #include <string>
 #include <vector>
 
+#include <devils_engine/act/script_compiler.h>
 #include <devils_engine/demiurg/resource_base.h>
 #include <devils_script/container.h>
-
-namespace devils_script {
-struct system;
-}
 namespace devils_engine {
 namespace demiurg {
 class resource_system;
 }
 } // namespace devils_engine
 
-// Дисковый конфиг GOAP-арбитра (acumen), парсится РУЧНЫМ проездом tavl-парсера (не deserialize —
-// это не строгий агрегат). Формат:
+// Generic disk config for acumen. It is parsed as a TAVL event stream because metric/effect rows
+// contain embedded devils_script expressions consumed by the injected act::script_compiler.
 //
 //   metrics = [                     // порядок = индекс бита состояния
 //     is_hungry = hunger > 0.5      // ключ = ds-выражение; tavl снимает 'is_hungry' и '=',
@@ -32,8 +29,8 @@ class resource_system;
 // регистрировать предикаты отдельно в C++). В requirements/next_state префикс "!" / "not " = инверт.
 // бит. Символические биты (не-метрики, напр. "resolved") индексируются после метрик.
 
-namespace tile_frontier {
-namespace core {
+namespace devils_engine {
+namespace acumen {
 
 struct goap_metric {
   std::string key;                  // имя предиката-метрики (регистрируется в act::registry, = бит)
@@ -45,9 +42,8 @@ struct goap_action_config {
   std::vector<std::string> requirements; // ключи метрик (префикс !/not = инвертированный бит)
   std::vector<std::string> next_state;   // биты, которые ставит действие
   std::vector<std::string> weight_state; // биты веса (опц.)
-  // Optional inline void devils_script program. When present, actor_simulation registers an
-  // act::script_function<void> under `name`; its native building blocks are the same catalogue
-  // fn_deferred_ptr functions used by direct C++ actions.
+  // Optional inline void devils_script program. The consumer registers an act::script_function<void>
+  // under `name`; the resource only owns the compiled program and symbolic GOAP data.
   devils_script::container effect_program;
   bool has_effect_program = false;
 };
@@ -76,7 +72,7 @@ goap_config resolve_goap_config(devils_engine::demiurg::resource_system& resourc
 
 class goap_resource : public devils_engine::demiurg::resource_interface {
 public:
-  explicit goap_resource(devils_script::system* sys);
+  explicit goap_resource(const act::script_compiler* compiler);
   const goap_config& config() const noexcept {
     return config_;
   }
@@ -87,11 +83,11 @@ public:
   void unload_warm(const devils_engine::utils::safe_handle_t& handle) override;
 
 private:
-  devils_script::system* sys_ = nullptr; // заимствован (владелец — assets script_environment)
+  const act::script_compiler* compiler_ = nullptr;
   goap_config config_;
 };
 
-} // namespace core
-} // namespace tile_frontier
+} // namespace acumen
+} // namespace devils_engine
 
 #endif

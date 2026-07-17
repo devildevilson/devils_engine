@@ -1,4 +1,6 @@
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -6,7 +8,10 @@
 #include <devils_engine/act/function.h>
 #include <devils_engine/act/registry.h>
 #include <devils_engine/aesthetics/world.h>
+#include <devils_engine/demiurg/module_system.h>
+#include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/prefab/prefab_registry.h>
+#include <devils_engine/prefab/resource.h>
 #include <doctest/doctest.h>
 
 // Обкатка prefab_registry (движковый механизм): формы компонента (data/list/callback/reference/custom)
@@ -98,6 +103,31 @@ TEST_CASE("prefab_registry: data/list/callback + construct + наследова�
   const auto* sp = w.get<t_spawned>(id);
   REQUIRE(sp != nullptr); // добавлен on_construct-хуком
   CHECK(sp->ok == true);
+}
+
+TEST_CASE("prefab resource exposes a generic logical name and raw TAVL text [prefab][config][demiurg]") {
+  namespace fs = std::filesystem;
+  const auto root = fs::temp_directory_path() / "devils_engine_prefab_resource_test";
+  fs::remove_all(root);
+  fs::create_directories(root / "core" / "prefab");
+  {
+    std::ofstream config(root / "core" / "prefab" / "food.tavl");
+    config << "stats = { hp = 5 }\n";
+  }
+
+  demiurg::module_system modules(root.generic_string() + "/");
+  modules.load_modules({demiurg::module_system::list_entry{"core/", "", ""}});
+  demiurg::resource_system resources;
+  resources.register_type<prefab_resource>("prefab", "tavl");
+  resources.parse_resources(&modules);
+
+  auto* resource = resources.get<prefab_resource>("prefab/food");
+  REQUIRE(resource != nullptr);
+  resource->load(utils::safe_handle_t{});
+  CHECK(resource->prefab_name() == "food");
+  CHECK(resource->text().find("hp = 5") != std::string_view::npos);
+
+  fs::remove_all(root);
 }
 
 TEST_CASE("prefab_registry: описание актора — reference(GOAP)/inline-ds + spawn_at [prefab]") {

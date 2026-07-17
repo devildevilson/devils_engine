@@ -97,5 +97,41 @@ script_environment::script_environment() : sys(make_options()) {
   sys.register_function<&scope_spawn_at>("spawn_at");
 }
 
+void script_environment::configure_parser(tavl::parser& parser) const {
+  sys.configure_parser(parser);
+}
+
+act::compiled_script script_environment::compile(
+  const std::string_view name,
+  const std::string_view return_type,
+  const std::string_view scope,
+  const std::string_view expression) const {
+  if (scope != "actor") {
+    utils::error{}("script '{}': scope '{}' is not supported by tile_frontier", name, scope);
+  }
+  if (return_type == "bool") {
+    return act::compiled_script{sys.parse<bool, entity_scope>(name, expression), act::category::predicate};
+  }
+  utils::error{}("script '{}': return type '{}' is not supported by tile_frontier", name, return_type);
+}
+
+devils_script::container script_environment::compile_predicate(
+  const std::string_view name,
+  tavl::parser& parser) const {
+  devils_script::container program;
+  devils_script::system::parse_context ctx;
+  sys.parse<bool, entity_scope>(name, parser, ctx, program);
+  return program;
+}
+
+devils_script::container script_environment::compile_effect(
+  const std::string_view name,
+  tavl::parser& parser) const {
+  devils_script::container program;
+  devils_script::system::parse_context ctx;
+  sys.parse<void, entity_scope>(name, parser, ctx, program);
+  return program;
+}
+
 } // namespace core
 } // namespace tile_frontier

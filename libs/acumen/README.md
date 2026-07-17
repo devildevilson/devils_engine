@@ -12,6 +12,7 @@
 - A* поиск по символическим переходам состояния;
 - переиспользуемый scratch/аллокатор для поиска;
 - точная мемоизация найденных планов.
+- owner-level `goap_resource`: TAVL parse, single-base merge/flatten и inline script programs.
 
 ## Модель Состояния
 
@@ -41,9 +42,9 @@
 has_effect(fear) && enemy_is_nearby
 ```
 
-В текущем C++-срезе такое условие представлено predicate-функцией,
-зарегистрированной в `act::registry`. Скриптовый язык и конфиги для описания
-таких функций пока находятся за пределами `libs/acumen`.
+В C++-срезе такое условие представлено predicate-функцией, зарегистрированной в `act::registry`.
+`acumen::goap_resource` также умеет co-parse devils_script-выражение метрики и inline void effect.
+Конкретный root scope не входит в acumen: проект передаёт `act::script_compiler`.
 
 ## Scoped State
 
@@ -182,6 +183,8 @@ caller-owned `astar<astar_data>::container` в `decide_params::scratch`.
 - кешировать короткие планы точной мемоизацией;
 - работать в многопоточном сценарии при scratch/cache на каждый worker thread;
 - интегрироваться с общей gameplay-function прослойкой `libs/act`.
+- загружать metrics/actions/goals из TAVL, наследовать один `base`, отключать/замещать записи и
+  возвращать flattened `goap_config` перед построением `acumen::system`.
 
 Покрытие в `tests/acumen_test.cpp` проверяет:
 
@@ -203,11 +206,8 @@ caller-owned `astar<astar_data>::container` в `decide_params::scratch`.
 
 ## Что Еще Не Сделано
 
-Общий вид уже собран, но следующие части пока находятся вне `libs/acumen` или
-не реализованы:
+Общий вид уже собран, но следующие части пока не реализованы:
 
-- описание metrics/goals/actions через конфиги;
-- скриптовый язык или expression layer для predicate/effect-функций;
 - встроенная политика выбора цели из списка `system::get_goals()`;
 - встроенное бюджетирование перевычисления state metrics;
 - глобальная или persistent-политика кеша поверх ручных per-thread кешей;
@@ -216,6 +216,6 @@ caller-owned `astar<astar_data>::container` в `decide_params::scratch`.
 - динамический размер состояния или более плотное runtime-defined
   представление флагов.
 
-Пока границу библиотеки лучше держать узкой: `libs/acumen` отвечает за GOAP
-ядро и поиск плана. Загрузка данных, скрипты, scheduling акторов и реальные
-изменения мира должны жить уровнем выше.
+Граница библиотеки: `libs/acumen` отвечает за GOAP-ядро, поиск плана и свой generic config resource.
+Регистрация native/script functions, concrete root scope, scheduling акторов и реальные изменения
+мира остаются уровнем выше.

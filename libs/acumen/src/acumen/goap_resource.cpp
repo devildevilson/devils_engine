@@ -6,16 +6,12 @@
 #include <devils_engine/demiurg/module_interface.h>
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/utils/core.h> // utils::warn / utils::error
-#include <devils_script/system.h>
 #include <tavl/parser.h>
 
-#include "entity_scope.h" // root-скоуп parse<bool, entity_scope>
-#include "goap_resource.h"
+#include "devils_engine/acumen/goap_resource.h"
 
-namespace tile_frontier {
-namespace core {
-
-using namespace devils_engine;
+namespace devils_engine {
+namespace acumen {
 
 namespace {
 
@@ -77,7 +73,7 @@ std::vector<std::string> read_key_list(tavl::parser& p) {
 }
 
 // metrics = [ key = <ds expr>, ... ] — co-parse: снимаем key + '=', остаток строки доедает ds.
-void parse_metrics(const devils_script::system& sys, tavl::parser& p, goap_config& cfg) {
+void parse_metrics(const act::script_compiler& compiler, tavl::parser& p, goap_config& cfg) {
   if (!enter_block(p, ev_t::array_begin)) {
     return;
   }
@@ -95,8 +91,7 @@ void parse_metrics(const devils_script::system& sys, tavl::parser& p, goap_confi
     goap_metric m;
     m.key = p.to_string(kev.token);
     p.poll_event(); // '='
-    devils_script::system::parse_context ctx;
-    sys.parse<bool, entity_scope>(m.key, p, ctx, m.program); // ds доедает выражение до row_end
+    m.program = compiler.compile_predicate(m.key, p); // ds consumes the expression through row_end
     cfg.metrics.push_back(std::move(m));
   }
 }
@@ -125,7 +120,7 @@ void parse_object(tavl::parser& p, const Consume& consume_field) {
   }
 }
 
-void parse_actions(const devils_script::system& sys, tavl::parser& p,
+void parse_actions(const act::script_compiler& compiler, tavl::parser& p,
                    std::vector<goap_action_config>& out) {
   if (!enter_block(p, ev_t::array_begin)) {
     return;
@@ -146,9 +141,9 @@ void parse_actions(const devils_script::system& sys, tavl::parser& p,
         const auto [v, err] = p.poll_event();
         a.name = p.to_string(v.token);
       } else if (field == "effect") {
-        devils_script::system::parse_context ctx;
-        sys.parse<void, entity_scope>(a.name.empty() ? "goap.action.effect" : a.name,
-                                      p, ctx, a.effect_program);
+        const std::string_view effect_name = a.name.empty() ? std::string_view("goap.action.effect")
+                                                            : std::string_view(a.name);
+        a.effect_program = compiler.compile_effect(effect_name, p);
         a.has_effect_program = true;
       } else if (field == "requirements") {
         a.requirements = read_key_list(p);
@@ -192,7 +187,7 @@ void parse_goals(tavl::parser& p, std::vector<goap_goal_config>& out) {
 }
 
 // Верхний уровень: строки `section = [ ... ]` (metrics/actions/goals), диспетчер по имени секции.
-void parse_goap(const devils_script::system& sys, tavl::parser& p, goap_config& cfg) {
+void parse_goap(const act::script_compiler& compiler, tavl::parser& p, goap_config& cfg) {
   for (;;) {
     const auto e = p.peek();
     if (e.type == ev_t::eof || e.type == ev_t::not_enought_data) {
@@ -210,9 +205,9 @@ void parse_goap(const devils_script::system& sys, tavl::parser& p, goap_config& 
       const auto [v, err] = p.poll_event();
       cfg.base = p.to_string(v.token);
     } else if (section == "metrics") {
-      parse_metrics(sys, p, cfg);
+      parse_metrics(compiler, p, cfg);
     } else if (section == "actions") {
-      parse_actions(sys, p, cfg.actions);
+      parse_actions(compiler, p, cfg.actions);
     } else if (section == "goals") {
       parse_goals(p, cfg.goals);
     } else if (section == "disable_metrics") {
@@ -314,14 +309,14 @@ goap_config resolve_goap_config(demiurg::resource_system& resources, const std::
   return resolve_impl(resources, normalize_goap_id(std::string(id)), stack);
 }
 
-goap_resource::goap_resource(devils_script::system* sys) : sys_(sys) {
+goap_resource::goap_resource(const act::script_compiler* compiler) : compiler_(compiler) {
   set_flag(demiurg::resource_flags::warm_and_hot_same, true);
   set_flag(demiurg::resource_flags::binary, false);
 }
 
 void goap_resource::load_cold(const utils::safe_handle_t&) {
-  if (sys_ == nullptr) {
-    utils::error{}("goap resource '{}': devils_script::system was not injected", id);
+  if (compiler_ == nullptr) {
+    utils::error{}("goap resource '{}': act::script_compiler was not injected", id);
   }
 
   const std::string content = is_list_entry() && !list_section.empty()
@@ -329,12 +324,12 @@ void goap_resource::load_cold(const utils::safe_handle_t&) {
                                 : module->load_text(path);
 
   tavl::parser p;
-  sys_->configure_parser(p); // ds-операторы (=, математика) в tavl-парсер — для выражений метрик
+  compiler_->configure_parser(p);
   p.flush(content);
   p.finish();
 
   config_ = goap_config{};
-  parse_goap(*sys_, p, config_);
+  parse_goap(*compiler_, p, config_);
   if (config_.metrics.empty() && config_.base.empty()) {
     utils::warn("goap resource '{}': neither a base nor any metrics were provided", id);
   }
@@ -346,5 +341,5 @@ void goap_resource::unload_warm(const utils::safe_handle_t&) {
   config_ = goap_config{};
 }
 
-} // namespace core
-} // namespace tile_frontier
+} // namespace acumen
+} // namespace devils_engine

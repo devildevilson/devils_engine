@@ -382,13 +382,12 @@ App-shell закрывает топологию приложения, но не 
    готовые manifest bindings, а размеры чанков/мира, actor count и ссылки на brain/prefab configs — из
    CPU-only `worlds/*` descriptor. `tile_texture_group` содержит только три grass-текстуры; auxiliary
    `grad*`/`quad` не попадают в terrain palette. Проект по-прежнему владеет созданием мира и chunk readiness.
-3. **Generic config-resource adapters по owner-библиотекам.** `fsm_resource` → `mood`, общий GOAP
-   parse/merge/flatten → `acumen` (project передаёт тип root-scope/factory), `prefab_resource` → `prefab`,
-   typed `script_resource` → `act`/devils_script. `assets_simulation` проекта должен только регистрировать
-   свои resource types и native building blocks.
-   Первый FSM-шаг уже сделан: `mood::transition_config` является структурной границей, а tile TAVL
-   parser читает некавыченные строки `state + event [guards] / (actions) = next_state` прямо в неё;
-   перенос самого disk-resource adapter из проекта в `mood` остаётся частью этого пункта.
+3. ✅ **Generic config-resource adapters по owner-библиотекам (2026-07-17).** `mood::fsm_resource`
+   владеет native-TAVL FSM parser, `acumen::goap_resource` — GOAP parse/merge/flatten,
+   `prefab::prefab_resource` — raw prefab carrier, `act::script_resource` — typed script document.
+   Общий type-erased `act::script_compiler` оставляет `(ret,scope) → parse<Ret,RootScope>` в проекте:
+   `tile_frontier::script_environment` реализует `entity_scope`, а owner-библиотеки не знают об ECS.
+   `assets_simulation` теперь только регистрирует owner-типы и передаёт этот compiler adapter.
 4. **Удалить config-дублирование.** Для приложения FSM/GOAP/prefab/script configs становятся обязательными;
    hardcoded fallback остаётся только в явных test fixtures/builders. Одна native-функция регистрируется
    в ds, а `act` получает проверенный facade native/script без второй ручной таблицы тех же имён.

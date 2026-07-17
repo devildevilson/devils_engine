@@ -10,9 +10,11 @@ add_library(devils_mood
   src/mood/system.cpp
   src/mood/runtime.cpp
   src/mood/registry.cpp
+  src/mood/fsm_resource.cpp
   include/devils_engine/mood/system.h
   include/devils_engine/mood/runtime.h
   include/devils_engine/mood/registry.h
+  include/devils_engine/mood/fsm_resource.h
 )
 
 target_include_directories(devils_mood
@@ -24,8 +26,8 @@ target_include_directories(devils_mood
 # system принимает const act::registry*, методы — act::exec_context (всё в публичном
 # заголовке). act тянет utils+gtl PUBLIC, поэтому отдельный gtl тут больше не нужен.
 target_link_libraries(devils_mood
-  PUBLIC devils_engine::options devils_engine::act
-  PRIVATE devils_engine::utils
+  PUBLIC devils_engine::options devils_engine::act devils_engine::demiurg
+  PRIVATE devils_engine::utils tavl
 )
 
 add_library(devils_engine::mood ALIAS devils_mood)

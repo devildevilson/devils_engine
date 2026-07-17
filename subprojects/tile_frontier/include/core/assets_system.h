@@ -5,7 +5,7 @@
 
 #include <devils_engine/simul/standard_assets_system.h>
 
-#include "script_environment.h" // проектный devils_script::system + нативки (владеет assets)
+#include "script_environment.h" // project devils_script system + entity_scope compiler adapter
 
 namespace devils_engine {
 namespace demiurg {
@@ -28,12 +28,12 @@ public:
 
 protected:
   void update_project(const size_t time, ::tile_frontier::core::broker& br) override;
-  // Регистрирует проектные дисковые типы ресурсов (scripts + world descriptors). Впрыскивает
-  // в него devils_script::system из script_env_ (натив-функции уже зарегистрированы его ctor'ом).
+  // Registers owner-level gameplay resources plus project world descriptors and injects the
+  // project script compiler into act/acumen resources.
   void register_project_resource_types(devils_engine::demiurg::resource_system& resources) override;
 
 private:
-  script_environment script_env_; // владелец ds::system (парс-тайм); живёт на время приложения
+  script_environment script_env_; // owns ds::system and the parse-time root-scope adapter
 };
 
 } // namespace core

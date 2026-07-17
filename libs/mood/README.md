@@ -268,11 +268,13 @@ guards/actions.
 - `no_transition`;
 - вызов `validate()`.
 
+`tests/fsm_config_test.cpp` отдельно проверяет owner-level `mood::fsm_resource`: native TAVL rows,
+guards, parenthesized actions и прямое построение структурированного `mood::system`.
+
 ## Что Еще Не Сделано
 
 Система уже закрывает свою основную задачу. Возможные будущие улучшения:
 
-- вынести project-specific `fsm_resource` adapter в owner-библиотеку `mood`;
 - добавить более явные ошибки/лимиты для переполнения 8 guards/actions;
 - добавить тесты на `blocked`, `on_exit`/`on_entry` guards и internal
   transitions без `next_state`;
