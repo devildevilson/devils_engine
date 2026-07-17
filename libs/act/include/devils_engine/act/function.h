@@ -63,7 +63,7 @@ struct function : public function_base {
   // Совместимый короткий путь для существующих predicate/effect consumers без аргументов.
   RetT invoke(const exec_context& ctx) const {
     if (ctx.scratch == nullptr) {
-      utils::error{}("act::function::invoke: exec_context.scratch не задан (нужен per-worker execution_scratch)");
+      utils::error{}("act::function::invoke: exec_context.scratch is not set (per-worker execution_scratch is required)");
     }
     auto& call = ctx.scratch->call;
     call.clear_schema(); // short path has no caller-owned args/out schema; do not leak it across functions
@@ -255,7 +255,7 @@ struct script_function final : public function<RetT> {
   RetT invoke(const exec_context& ctx, call_context& call) const override {
     ds::context* vm = ctx.scratch != nullptr ? &ctx.scratch->vm : nullptr;
     if (vm == nullptr) {
-      utils::error{}("act::script_function::invoke: exec_context.scratch не задан");
+      utils::error{}("act::script_function::invoke: exec_context.scratch is not set");
     }
     vm->clear();
     vm->userptr = const_cast<exec_context*>(&ctx); // задел под effect_sink: эффекты читают ctx через userptr
@@ -281,7 +281,7 @@ struct script_function final : public function<RetT> {
       return ret;
     } else {
       // string (utils::id) и object (entity_id): маршалинг возврата ещё не определён — см. план (Risk 1).
-      utils::error{}("act::script_function::invoke: маршалинг этой категории возврата ещё не реализован");
+      utils::error{}("act::script_function::invoke: marshalling for this return category is not implemented yet");
       return RetT{};
     }
   }
@@ -312,13 +312,13 @@ struct lua_function final : public function<RetT> {
     : function<RetT>(detail::category_of<RetT>()), L(l), ref(r) {}
   using function<RetT>::invoke;
   RetT invoke(const exec_context&, call_context&) const override {
-    utils::error{}("act::lua_function::invoke не реализован (бэкенд lua ещё не подключён)");
+    utils::error{}("act::lua_function::invoke is not implemented (the Lua backend is not connected yet)");
     if constexpr (!std::is_void_v<RetT>) {
       return RetT{};
     }
   }
   void describe(const exec_context&, const describe_callback&) const override {
-    utils::error{}("act::lua_function::describe не реализован (бэкенд lua ещё не подключён)");
+    utils::error{}("act::lua_function::describe is not implemented (the Lua backend is not connected yet)");
   }
 };
 

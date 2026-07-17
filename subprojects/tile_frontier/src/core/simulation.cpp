@@ -282,25 +282,25 @@ void simulation::begin_project_loading() {
         sr->load(utils::safe_handle_t{});
       }
       brains.is_hungry_program = sr->program();
-      DE_LOG(catalogue::log_domain::gameplay, flow, "main: actor.is_hungry <- скрипт '{}'", scene.actor_script);
+      DE_LOG(catalogue::log_domain::gameplay, flow, "main: actor.is_hungry <- script '{}'", scene.actor_script);
     } else {
-      utils::warn("main: скрипт '{}' не найден в реестре — нативный is_hungry", scene.actor_script);
+      utils::warn("main: script '{}' was not found in the registry; using native is_hungry", scene.actor_script);
     }
     if (auto* fr = reg->get<fsm_resource>(scene.actor_fsm)) {
       while (!fr->usable()) {
         fr->load(utils::safe_handle_t{});
       }
       brains.fsm_transitions = &fr->transitions();
-      DE_LOG(catalogue::log_domain::gameplay, flow, "main: mood FSM <- конфиг '{}' ({} переходов)", scene.actor_fsm, fr->transitions().size());
+      DE_LOG(catalogue::log_domain::gameplay, flow, "main: mood FSM <- config '{}' ({} transitions)", scene.actor_fsm, fr->transitions().size());
     } else {
-      utils::warn("main: конфиг '{}' не найден в реестре — хардкод FSM", scene.actor_fsm);
+      utils::warn("main: config '{}' was not found in the registry; using the built-in FSM", scene.actor_fsm);
     }
     if (reg->get<goap_resource>(scene.actor_goap) != nullptr) {
       brains.goap = std::make_shared<goap_config>(resolve_goap_config(*reg, scene.actor_goap));
-      DE_LOG(catalogue::log_domain::gameplay, flow, "main: GOAP <- конфиг '{}' ({} метрик, {} действий)",
+      DE_LOG(catalogue::log_domain::gameplay, flow, "main: GOAP <- config '{}' ({} metrics, {} actions)",
              scene.actor_goap, brains.goap->metrics.size(), brains.goap->actions.size());
     } else {
-      utils::warn("main: конфиг '{}' не найден в реестре — хардкод GOAP", scene.actor_goap);
+      utils::warn("main: config '{}' was not found in the registry; using the built-in GOAP", scene.actor_goap);
     }
     // Префабы из prefab/*.tavl: собираем имя+текст всех prefab_resource → в brain_config (слайс
     // регистрирует специи компонентов в C++ и скармливает текст в prefab_registry). Потребляется в
@@ -315,9 +315,9 @@ void simulation::begin_project_loading() {
     }
     if (!prefab_defs.empty()) {
       brains.prefabs = &prefab_defs;
-      DE_LOG(catalogue::log_domain::gameplay, flow, "main: prefab <- {} префабов из '{}'", prefab_defs.size(), scene.prefab_prefix);
+      DE_LOG(catalogue::log_domain::gameplay, flow, "main: prefab <- {} definitions from '{}'", prefab_defs.size(), scene.prefab_prefix);
     } else {
-      utils::warn("main: префабы '{}' не найдены в реестре — хардкод food", scene.prefab_prefix);
+      utils::warn("main: no prefabs matching '{}' were found in the registry; using built-in food", scene.prefab_prefix);
     }
   }
 

@@ -1,6 +1,4 @@
-// Live acceptance for config-loaded void GOAP actions. A tavl resource co-parses `effect = think`
-// into devils_script, actor_simulation exposes `think` as a catalogue fn_deferred_ptr building
-// block, and cognition must record/commit the script on both one and four workers identically.
+// Live acceptance for config-loaded GOAP actions and structured TAVL FSM transitions.
 
 #include <cstddef>
 #include <cstdint>
@@ -15,6 +13,7 @@
 #include <spdlog/spdlog.h>
 
 #include "core/actor_simulation.h"
+#include "core/fsm_resource.h"
 #include "core/goap_resource.h"
 #include "core/script_environment.h"
 
@@ -37,6 +36,7 @@ int main() {
   modules.load_modules({demiurg::module_system::list_entry{"core/", "", ""}});
   demiurg::resource_system resources;
   resources.register_type<tf::goap_resource>("goap", "tavl", &scripts.sys);
+  resources.register_type<tf::fsm_resource>("fsm", "tavl");
   resources.parse_resources(&modules);
 
   auto goap = std::make_shared<tf::goap_config>(tf::resolve_goap_config(resources, "actor"));
@@ -50,8 +50,22 @@ int main() {
     return 1;
   }
 
+  auto* fsm = resources.get<tf::fsm_resource>("fsm/actor");
+  if (fsm == nullptr) {
+    std::cerr << "FAILED: shipped fsm/actor resource was not found\n";
+    return 1;
+  }
+  while (!fsm->usable()) {
+    fsm->load(utils::safe_handle_t{});
+  }
+  if (fsm->transitions().size() != 6 || fsm->transitions()[1].guards != std::vector<std::string>{"is_eating"}) {
+    std::cerr << "FAILED: shipped fsm/actor did not produce six structured TAVL transitions\n";
+    return 1;
+  }
+
   tf::brain_config brains;
   brains.goap = goap;
+  brains.fsm_transitions = &fsm->transitions();
   tf::actor_world_slice one_worker;
   tf::actor_world_slice four_workers;
   one_worker.init(512, {0.5f, 0.5f}, {64.0f, 64.0f}, 4, brains);
@@ -75,7 +89,8 @@ int main() {
   }
 
   std::cout << "OK: shipped goap/actor has " << scripted_actions
-            << " tavl void actions -> act::script_function<void> -> catalogue deferred commit; "
+            << " tavl void actions and fsm/actor has " << fsm->transitions().size()
+            << " structured TAVL transitions; "
                "1/4 workers bit-identical for 30 ticks\n";
   return 0;
 }

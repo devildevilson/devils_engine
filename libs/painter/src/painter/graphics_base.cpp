@@ -1357,7 +1357,7 @@ int32_t graphics_base::commit_parsed_resources(render_config_storage& storage) {
     for (const auto& graph_name : resident_graphs_) {
       const uint32_t gi = find_render_graph(graph_name);
       if (gi == invalid_resource_slot) {
-        utils::warn("graphics_base: resident graph '{}' not found — пропускаем", graph_name);
+        utils::warn("graphics_base: resident graph '{}' was not found, skipping", graph_name);
         continue;
       }
       graph_indices.push_back(gi);
@@ -1366,7 +1366,7 @@ int32_t graphics_base::commit_parsed_resources(render_config_storage& storage) {
     if (!graph_indices.empty()) {
       compute_active_masks(graph_indices);
     } else {
-      utils::warn("graphics_base: no resident graphs found — создаём все ресурсы");
+      utils::warn("graphics_base: no resident graphs found; creating all resources");
     }
   }
 
@@ -2431,7 +2431,7 @@ void graphics_base::change_render_graph(const uint32_t index) {
   // ресурсы/дескрипторы — только graph-local Vulkan-объекты (pipelines/renderpasses/framebuffers/
   // command buffers/local semaphores). Пайплайны собираются из подготовленного assets-потоком SPIR-V.
   if (graph_filtered_ && index < graphs.size() && !is_graph_active(index)) {
-    utils::warn("change_render_graph: graph '{}' не входит в resident-набор — его ресурсы могли не создаться",
+    utils::warn("change_render_graph: graph '{}' is not resident; its resources may not have been created",
                 DS_ASSERT_ARRAY_GET(graphs, index).name);
   }
 

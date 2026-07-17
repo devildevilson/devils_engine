@@ -36,6 +36,18 @@
 
 namespace devils_engine {
 namespace mood {
+
+// Structured, config-loader-facing transition. Resource formats parse their native syntax into
+// this shape; mood::system then builds the same indexed runtime without reparsing synthetic lines.
+struct transition_config {
+  std::string current_state;
+  std::string event;
+  std::vector<std::string> guards;
+  std::vector<std::string> actions;
+  std::string next_state;
+  std::string source; // optional original/canonical text used only in diagnostics
+};
+
 // ТА САМАЯ "общая таблица функций между системами", о которой речь выше, теперь
 // существует как act::registry (devils_engine::act): guard = act::predicate_function
 // (bool), action = act::effect_function (void). mood больше не держит свой набор
@@ -83,6 +95,7 @@ public:
   // НЕ noexcept: кидает utils::error на ошибке парсинга строки, дубле или отсутствующей
   // функции guard/action в реестре (ошибка загрузки).
   system(const act::registry* registry, std::vector<std::string> lines);
+  system(const act::registry* registry, std::vector<transition_config> transitions);
 
   // основной доступ — по хешам (горячий путь). Порядок внутри группы = порядок исходных
   // строк (АРХИВАЖНО для top-down проверки гвардов).
@@ -96,6 +109,9 @@ private:
   std::vector<transition> m_transitions;
   gtl::flat_hash_map<uint64_t, range> m_index; // mix(state_hash, event_hash) -> диапазон
   std::vector<std::string> m_memory;
+  std::vector<transition_config> m_config_memory;
+
+  void finish_build();
 };
 } // namespace mood
 } // namespace devils_engine

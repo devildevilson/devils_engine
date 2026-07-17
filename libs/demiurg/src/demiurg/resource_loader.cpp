@@ -38,7 +38,7 @@ void resource_loader::request_impl(resource_interface* res, int32_t target) {
   // запись в entries — это НЕ цикл, а независимый более ранний запрос; она ловится find() ниже.)
   for (auto* v : visiting_) {
     if (v == res) {
-      utils::warn("demiurg: обнаружен ЦИКЛ зависимостей на ресурсе '{}' — граф зависимостей должен быть DAG; ветка пропущена", res->id);
+      utils::warn("demiurg: dependency cycle detected at resource '{}'; the dependency graph must be a DAG, branch skipped", res->id);
       return;
     }
   }

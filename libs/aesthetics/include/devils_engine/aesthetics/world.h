@@ -1477,7 +1477,7 @@ world::view_t<Comp_T...> world::view() const {
   // view() КОНСТ (auto-create тут невозможен): аллокаторы каждого компонента должны быть созданы
   // заранее — вызови world::get_or_create_allocator<T>() для КАЖДОГО T до горячего пути с view.
   if (!is_allocators_exist<Comp_T...>()) {
-    utils::error{}("Could not create view '{}': не созданы аллокаторы всех компонентов — вызови get_or_create_allocator<T>() для каждого T заранее (view() const, авто-создание невозможно)", utils::type_name<view_t<Comp_T...>>());
+    utils::error{}("Could not create view '{}': not all component allocators exist; call get_or_create_allocator<T>() for every T first (view() const cannot create them)", utils::type_name<view_t<Comp_T...>>());
   }
   return view_t<Comp_T...>(this);
 }
@@ -1485,7 +1485,7 @@ world::view_t<Comp_T...> world::view() const {
 template <typename... Comp_T>
 world::lazy_view_t<Comp_T...> world::lazy_view() const {
   if (!is_allocators_exist<Comp_T...>()) {
-    utils::error{}("Could not create view '{}': не созданы аллокаторы всех компонентов — вызови get_or_create_allocator<T>() для каждого T заранее (view() const, авто-создание невозможно)", utils::type_name<lazy_view_t<Comp_T...>>());
+    utils::error{}("Could not create view '{}': not all component allocators exist; call get_or_create_allocator<T>() for every T first (view() const cannot create them)", utils::type_name<lazy_view_t<Comp_T...>>());
   }
   return lazy_view_t<Comp_T...>(this);
 }
