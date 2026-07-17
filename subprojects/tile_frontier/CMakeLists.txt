@@ -24,6 +24,7 @@ set(HDR_LIST
   include/core/texture_set.h
   include/core/tile_map.h
   include/core/tile_batch.h
+  include/core/tile_frontier_game.h
   include/core/actor_simulation.h
   include/core/brain_config_loader.h
   include/core/entity_scope.h
@@ -40,6 +41,7 @@ set(SRC_LIST
   src/core/assets_system.cpp
   src/core/texture_set.cpp
   src/core/tile_map.cpp
+  src/core/tile_frontier_game.cpp
   src/core/actor_simulation.cpp
   src/core/brain_config_loader.cpp
   src/core/script_environment.cpp
