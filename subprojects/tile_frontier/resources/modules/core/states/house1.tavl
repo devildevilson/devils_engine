@@ -1,4 +1,5 @@
 script = "ui/entry"
+default_font = "fonts/crimson.roman"
 resources = [
   "ui/entry"
   "fonts/crimson.roman"

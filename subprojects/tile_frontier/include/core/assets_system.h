@@ -28,7 +28,7 @@ public:
 
 protected:
   void update_project(const size_t time, ::tile_frontier::core::broker& br) override;
-  // Регистрирует проектные дисковые типы ресурсов (scripts/tavl → script_resource). Впрыскивает
+  // Регистрирует проектные дисковые типы ресурсов (scripts + world descriptors). Впрыскивает
   // в него devils_script::system из script_env_ (натив-функции уже зарегистрированы его ctor'ом).
   void register_project_resource_types(devils_engine::demiurg::resource_system& resources) override;
 

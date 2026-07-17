@@ -2,9 +2,11 @@
 #define DEVILS_ENGINE_SIMUL_LOADING_RUNTIME_H
 
 #include <algorithm>
+#include <charconv>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -35,9 +37,10 @@ struct standard_loading_state {
   // Явный lifecycle движка (boot->loading->game + повторные game->loading->game).
   lifecycle_controller lifecycle;
 
-  // Стартовый allowlist, от usable() которого зависит переход loading->game. Движок засевает его
-  // UI-набором активного состояния; проект доклеивает свои мировые ресурсы.
+  // Стартовый allowlist + требуемые ступени, от которых зависит переход loading->game. Движок
+  // засевает его UI-набором и startup=true entries активного scene manifest.
   std::vector<resource_ref> startup_resources;
+  std::vector<int32_t> startup_targets;
 
   demiurg::resource_handle current_runtime_state;
   demiurg::resource_handle target_runtime_state;
@@ -47,14 +50,28 @@ struct standard_loading_state {
   std::vector<resource_ref> ui_resources;
   std::shared_ptr<resource_access_scope> ui_resource_scope = std::make_shared<resource_access_scope>();
   std::string ui_entry_script;
+  std::string ui_default_font;
   std::string current_scene;
+
+  struct scene_binding {
+    resource_ref resource;
+    std::string group;
+    std::string alias;
+    int32_t target = 0;
+    bool startup = false;
+  };
+  std::vector<scene_binding> scene_resources;
+  demiurg::resource_handle project_scene;
 
   // pending (целевой) вид, который сейчас готовится
   std::vector<resource_ref> pending_ui_resources;
   std::vector<std::pair<resource_ref, int32_t>> pending_boot_targets;
   std::shared_ptr<resource_access_scope> pending_ui_scope;
   std::string pending_ui_entry_script;
+  std::string pending_ui_default_font;
   std::string pending_scene;
+  std::vector<scene_binding> pending_scene_resources;
+  demiurg::resource_handle pending_project_scene;
   bool target_prepared = false;
   bool target_ui_committed = false;
 };
@@ -79,6 +96,48 @@ inline bool resource_ready(const resource_ref& ref, const bool external_steps_av
     return true;
   }
   return !external_steps_available && r->is_external_step(r->state());
+}
+
+inline int32_t scene_request_target(
+  const scene_resource_request& request,
+  const demiurg::resource_interface& resource) {
+  const std::string_view text = request.target.empty() ? std::string_view{"final"} : std::string_view{request.target};
+  int32_t target = resource.final_state();
+  if (text == "cold") {
+    target = static_cast<int32_t>(demiurg::state::cold);
+  } else if (text == "warm") {
+    target = static_cast<int32_t>(demiurg::state::warm);
+  } else if (text == "hot") {
+    target = static_cast<int32_t>(demiurg::state::hot);
+  } else if (text != "final") {
+    const auto* begin = text.data();
+    const auto* end = begin + text.size();
+    const auto parsed = std::from_chars(begin, end, target);
+    if (parsed.ec != std::errc{} || parsed.ptr != end || target < 0) {
+      utils::error{}("scene manifest: resource '{}' has invalid target '{}'", request.id, request.target);
+    }
+  }
+  return std::min(target, resource.final_state());
+}
+
+inline bool resource_reached(const resource_ref& ref, const int32_t target) {
+  auto* resource = ref.get();
+  return resource != nullptr && resource->state() >= target;
+}
+
+inline void track_startup_resource(
+  standard_loading_state& s,
+  const resource_ref ref,
+  const int32_t target) {
+  auto* resource = ref.get();
+  for (size_t i = 0; i < s.startup_resources.size(); ++i) {
+    if (s.startup_resources[i].get() == resource) {
+      s.startup_targets[i] = std::max(s.startup_targets[i], target);
+      return;
+    }
+  }
+  s.startup_resources.push_back(ref);
+  s.startup_targets.push_back(target);
 }
 
 // boot: прочитать активный startup/entry и вернуть handle начального runtime-состояния.
@@ -126,13 +185,21 @@ inline void standard_prepare_runtime_state(
   if (std::find(cfg.resources.begin(), cfg.resources.end(), cfg.script) == cfg.resources.end()) {
     utils::error{}("runtime state '{}': entry script '{}' is not present in resources allowlist", runtime_state->id, cfg.script);
   }
+  if (!cfg.default_font.empty() &&
+      std::find(cfg.resources.begin(), cfg.resources.end(), cfg.default_font) == cfg.resources.end()) {
+    utils::error{}("runtime state '{}': default font '{}' is not present in resources allowlist",
+                   runtime_state->id, cfg.default_font);
+  }
 
   s.target_runtime_state = state_handle;
   s.pending_ui_resources.clear();
   s.pending_boot_targets.clear();
   s.pending_ui_scope = std::make_shared<resource_access_scope>();
   s.pending_ui_entry_script = cfg.script;
+  s.pending_ui_default_font = cfg.default_font;
   s.pending_scene = cfg.scene;
+  s.pending_scene_resources.clear();
+  s.pending_project_scene = {};
   s.target_prepared = true;
 
   for (const auto& id : cfg.resources) {
@@ -156,9 +223,61 @@ inline void standard_prepare_runtime_state(
       utils::error{}("runtime state '{}': load_resource queue overflow while requesting '{}'", runtime_state->id, id);
     }
   }
+
+  if (!cfg.scene.empty()) {
+    const auto manifest_handle = registry.handle(cfg.scene);
+    auto* manifest = manifest_handle.get<scene_manifest_resource>();
+    if (manifest == nullptr) {
+      utils::error{}("runtime state '{}': scene manifest '{}' was not found", runtime_state->id, cfg.scene);
+    }
+    while (!manifest->usable()) {
+      manifest->load(utils::safe_handle_t{});
+    }
+    s.pending_ui_scope->grant(manifest_handle);
+
+    const auto& scene_cfg = manifest->config();
+    if (!scene_cfg.project.empty()) {
+      const auto project_handle = registry.handle(scene_cfg.project);
+      auto* project = project_handle.get();
+      if (project == nullptr) {
+        utils::error{}("scene manifest '{}': project descriptor '{}' was not found", manifest->id, scene_cfg.project);
+      }
+      if (pre_external_target(*project) != project->final_state()) {
+        utils::error{}("scene manifest '{}': project descriptor '{}' must be a CPU-only resource",
+                       manifest->id, scene_cfg.project);
+      }
+      while (!project->usable()) {
+        project->load(utils::safe_handle_t{});
+      }
+      s.pending_project_scene = project_handle;
+      s.pending_ui_scope->grant(project_handle);
+    }
+
+    for (const auto& request : scene_cfg.resources) {
+      if (request.id.empty()) {
+        utils::error{}("scene manifest '{}': resource id is empty", manifest->id);
+      }
+      const auto handle = registry.handle(request.id);
+      auto* resource = handle.get();
+      if (resource == nullptr) {
+        utils::error{}("scene manifest '{}': resource '{}' was not found", manifest->id, request.id);
+      }
+      if (std::any_of(s.pending_scene_resources.begin(), s.pending_scene_resources.end(),
+                      [resource](const standard_loading_state::scene_binding& binding) {
+                        return binding.resource.get() == resource;
+                      })) {
+        utils::error{}("scene manifest '{}': resource '{}' is requested more than once", manifest->id, request.id);
+      }
+      s.pending_ui_scope->grant(handle);
+      s.pending_scene_resources.push_back(standard_loading_state::scene_binding{
+        resource_ref::from_handle(handle), request.group, request.alias,
+        scene_request_target(request, *resource), request.startup});
+    }
+  }
   DE_LOG(catalogue::log_domain::ui, flow,
-         "runtime state target='{}' script='{}' resources={} scene='{}' pre_external_only={}",
-         runtime_state->id, s.pending_ui_entry_script, s.pending_ui_resources.size(), s.pending_scene, pre_external_only);
+         "runtime state target='{}' script='{}' resources={} scene='{}' scene_resources={} pre_external_only={}",
+         runtime_state->id, s.pending_ui_entry_script, s.pending_ui_resources.size(), s.pending_scene,
+         s.pending_scene_resources.size(), pre_external_only);
 }
 
 // Вход в loading: новая generation, сброс gate/commit, подготовка target (если ещё не готов) до
@@ -166,10 +285,12 @@ inline void standard_prepare_runtime_state(
 inline void standard_begin_loading(
   standard_loading_state& s,
   demiurg::resource_system& registry,
-  standard_broker& br) {
+  standard_broker& br,
+  const bool external_steps_available) {
   s.state_generation += 1;
   s.target_ui_committed = false;
   s.startup_resources.clear();
+  s.startup_targets.clear();
 
   const bool needs_final_request = s.target_prepared;
   if (!s.target_prepared) {
@@ -186,9 +307,27 @@ inline void standard_begin_loading(
     if (resource == nullptr) {
       continue;
     }
-    s.startup_resources.push_back(ref);
-    if (needs_final_request && !br.load_resource.try_push(command_load_resource{ref, resource->final_state()})) {
+    const int32_t target = external_steps_available ? resource->final_state() : pre_external_target(*resource);
+    track_startup_resource(s, ref, target);
+    if (needs_final_request && !br.load_resource.try_push(command_load_resource{ref, target})) {
       utils::error{}("loading: load_resource queue overflow while finalizing UI resource '{}'", resource->id);
+    }
+  }
+
+
+  for (const auto& binding : s.pending_scene_resources) {
+    auto* resource = binding.resource.get();
+    if (resource == nullptr) {
+      continue;
+    }
+    const int32_t target = external_steps_available
+                             ? binding.target
+                             : std::min(binding.target, pre_external_target(*resource));
+    if (!br.load_resource.try_push(command_load_resource{binding.resource, target})) {
+      utils::error{}("loading: load_resource queue overflow while requesting scene resource '{}'", resource->id);
+    }
+    if (binding.startup) {
+      track_startup_resource(s, binding.resource, target);
     }
   }
 }
@@ -199,28 +338,14 @@ inline void standard_commit_runtime_state(standard_loading_state& s) {
   s.ui_resources = std::move(s.pending_ui_resources);
   s.ui_resource_scope = std::move(s.pending_ui_scope);
   s.ui_entry_script = std::move(s.pending_ui_entry_script);
+  s.ui_default_font = std::move(s.pending_ui_default_font);
   s.current_scene = std::move(s.pending_scene);
+  s.scene_resources = std::move(s.pending_scene_resources);
+  s.project_scene = s.pending_project_scene;
 
   s.current_runtime_state = s.target_runtime_state;
   s.target_runtime_state = {};
   s.target_prepared = false;
-}
-
-// Запросить ресурс сцены: пустить в активный UI-scope (grant), запросить загрузку до target_state и
-// (опционально) добавить в стартовый allowlist, от usable() которого зависит переход loading->game.
-// Состав сцены (какие ресурсы, до какого уровня, что трекать) — проектный; сам механизм — движковый.
-inline void request_scene_resource(
-  standard_loading_state& s,
-  standard_broker& br,
-  const demiurg::resource_handle handle,
-  const int32_t target_state,
-  const bool track_startup) {
-  s.pending_ui_scope->grant(handle);
-  const resource_ref ref = resource_ref::from_handle(handle);
-  br.load_resource.try_push(command_load_resource{ref, target_state});
-  if (track_startup) {
-    s.startup_resources.push_back(ref);
-  }
 }
 
 // game -> loading по смене состояния. target уже резолвнут вызывающим (из своего реестра). Возврат
@@ -261,12 +386,23 @@ inline bool standard_ui_boot_resources_prepared(const standard_loading_state& s)
   });
 }
 
-// Весь стартовый allowlist usable (ресурсная часть loading->game gate; проект добавляет чанки/мир).
+// Весь стартовый allowlist достиг manifest target (ресурсная часть loading->game gate).
 inline bool standard_startup_resources_ready(const standard_loading_state& s, const bool external_steps_available) {
-  return std::all_of(s.startup_resources.begin(), s.startup_resources.end(),
-                     [external_steps_available](const resource_ref& ref) {
-                       return resource_ready(ref, external_steps_available);
-                     });
+  (void)external_steps_available;
+  for (size_t i = 0; i < s.startup_resources.size(); ++i) {
+    if (!resource_reached(s.startup_resources[i], s.startup_targets[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+inline size_t standard_startup_resources_done(const standard_loading_state& s) {
+  size_t done = 0;
+  for (size_t i = 0; i < s.startup_resources.size(); ++i) {
+    done += resource_reached(s.startup_resources[i], s.startup_targets[i]) ? 1u : 0u;
+  }
+  return done;
 }
 
 } // namespace simul

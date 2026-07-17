@@ -1,0 +1,15 @@
+project = "worlds/house1"
+
+resources = [
+  { id = "textures/grass",    target = "final", group = "tile_textures", alias = "grass",    startup = true }
+  { id = "textures/grass1_0", target = "final", group = "tile_textures", alias = "grass1_0", startup = true }
+  { id = "textures/grass3",   target = "final", group = "tile_textures", alias = "grass3",   startup = true }
+  { id = "textures/grad1",    target = "final", group = "tile_textures", alias = "grad1",    startup = true }
+  { id = "textures/grad2",    target = "final", group = "tile_textures", alias = "grad2",    startup = true }
+  { id = "textures/quad",     target = "final", group = "tile_textures", alias = "quad",     startup = true }
+
+  { id = "sounds/eating/freesound_community-chomp-chew-bite-102031", target = "warm", group = "sounds", alias = "eating", startup = false }
+  { id = "sounds/fleeing/freesound_community-escaping-downstairs-104907", target = "warm", group = "sounds", alias = "fleeing", startup = false }
+  { id = "sounds/walking/freesound_community-walking-46245", target = "warm", group = "sounds", alias = "walking", startup = false }
+  { id = "sounds/ambient/soundreality-ambient-spring-forest-323801", target = "warm", group = "sounds", alias = "ambient", startup = false }
+]

@@ -31,6 +31,7 @@ set(HDR_LIST
   include/core/fsm_resource.h
   include/core/goap_resource.h
   include/core/prefab_resource.h
+  include/core/world_scene_resource.h
   include/core/simulation.h
 )
 
@@ -48,6 +49,7 @@ set(SRC_LIST
   src/core/fsm_resource.cpp
   src/core/goap_resource.cpp
   src/core/prefab_resource.cpp
+  src/core/world_scene_resource.cpp
   src/core/simulation.cpp
 )
 

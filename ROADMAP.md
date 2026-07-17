@@ -47,7 +47,7 @@
 - devils_script подключён: `act::script_function<bool/number/void>` работает, есть per-worker ds-context,
   `act::call_context` переносит именованные in/out args и списки между native и ds через reusable
   per-worker `execution_scratch`; есть конфиговый GOAP-срез и натив `spawn_at`. Не закончены:
-  string/object/vector-маршалинг, effects→catalogue и
+  string/object/vector-маршалинг и
   окончательная консолидация регистрации нативок. Lua остаётся UI/guest backend, не mutating backend.
 
 **Решение по devils_script ↔ act (уточнено 2026-07-13).** `libs/act` НЕ удаляется: это стабильный
@@ -361,6 +361,48 @@ App-shell закрывает топологию приложения, но не 
 5. **Дочистить стандартную resource/loading orchestration** — общий слой управляет resource-set
    transitions, запросами startup-наборов и базовой readiness; состав сцены, чанки и дополнительные
    project-условия загрузки остаются в `tile_frontier`.
+
+### Согласованный остаток до минимальной игровой обвязки (2026-07-17)
+
+`game_host` уже забрал lifecycle `boot → loading → game`, часы, pause gates, окно и главный frame loop;
+стандартные Lua API ресурсов/звука/окна/lifecycle уже движковые. Поэтому пункты 2 и 4 плана выше
+фактически закрыты, пункт 3 близок к завершению, а главный оставшийся общий boilerplate такой:
+
+1. ✅ **Стандартное состояние host + UI lifecycle (2026-07-17).** Вынесены из `tile_frontier::simulation_init` в
+   `simul::standard_game_state<Broker>` окно/input, framebuffer/window policy, clocks/calendar/pause,
+   broker ownership, visage/font state и sound-device/UI-sound state. `game_host` теперь сам создаёт
+   visage из активного runtime-state, доводит font atlas до GPU-view, ставит стандартные Lua bindings,
+   загружает UI entry, логирует devices и сливает sound-state. Проект оставляет hook регистрации
+   gameplay/UI API (`perf_stats` в первом живом потребителе).
+2. ✅ **Config-driven scene/resource manifest (2026-07-17).** `states/*` задаёт UI entry/default font и
+   ссылку на `scenes/*`; стандартный `simul::scene_manifest_resource` хранит типонезависимые
+   `{id,target,group,alias,startup}` transitions. `game_host` разворачивает их в scope/load requests,
+   target-aware startup readiness/progress и корректно обрезает external targets без render.
+   `tile_frontier::begin_project_loading` больше не содержит списков texture/sound ids: он читает
+   готовые manifest bindings, а размеры чанков/мира, actor count и ссылки на brain/prefab configs — из
+   CPU-only `worlds/*` descriptor. Проект по-прежнему владеет созданием мира и chunk readiness.
+3. **Generic config-resource adapters по owner-библиотекам.** `fsm_resource` → `mood`, общий GOAP
+   parse/merge/flatten → `acumen` (project передаёт тип root-scope/factory), `prefab_resource` → `prefab`,
+   typed `script_resource` → `act`/devils_script. `assets_simulation` проекта должен только регистрировать
+   свои resource types и native building blocks.
+4. **Удалить config-дублирование.** Для приложения FSM/GOAP/prefab/script configs становятся обязательными;
+   hardcoded fallback остаётся только в явных test fixtures/builders. Одна native-функция регистрируется
+   в ds, а `act` получает проверенный facade native/script без второй ручной таблицы тех же имён.
+5. **Свернуть проектную сцену, не таща её в engine.** Chunk receive/apply, camera UBO, tile/actor publish,
+   actor update, presentation-sound policy и project metrics собрать в `tile_frontier_game`/`world_scene`.
+   `simulation.cpp` остаётся коротким набором host callbacks; компоненты/effects/prefab specs, actor phase
+   order, tile map и конкретные draw/sound policies намеренно остаются игровым кодом.
+
+Config-loaded void effects уже живы для `flee/chase/think`. Для `eat/seek_food/wander` не надо протаскивать
+искусственный `act::rng_source` как обязательный аргумент скрипта: devils_script имеет собственный
+детерминированный RNG, его и следует экспонировать config-эффектам. `act::rng_source` остаётся удобным
+нативным carrier-ом execution provenance там, где он действительно нужен, но не должен диктовать форму ds.
+Дополнительные entity scopes (`prey`/target) всё ещё требуют явного script-call контракта. Полный перевод
+этих трёх actions в config-композицию желателен, но не блокирует минимальную обвязку: C++ building blocks
+разрешены целевой моделью проекта.
+
+Ownership catalogue executors и compile-time порядок actor phases пока НЕ выносить: это игровая специфика,
+а общий typed owner имеет смысл выделять только после второго живого gameplay-потребителя.
 
 ### Отложенная последовательность MT-обобщения gameplay pipeline
 
