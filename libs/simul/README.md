@@ -28,9 +28,11 @@
 
 ## Как Это Используется Сейчас
 
-В `tile_frontier` от `simul::advancer` наследуются:
+В `tile_frontier` runtime собирается так:
 
-- main `simulation` - владеет жизненным циклом приложения, ресурсными реестрами, окном, UI, thread pool и дочерними симуляциями;
+- main `simulation` наследует `game_host`, а его project-state — `standard_game_state<Broker>`;
+  host владеет lifecycle/окном/UI/часами/pause и стандартными Lua/sound/font services, проект добавляет
+  карту, акторов и короткие callbacks;
 - `assets_simulation` - строит demiurg registry, обслуживает загрузку ресурсов и пересылает GPU-переходы render-потоку;
 - `render_simulation` - владеет Vulkan/render graph runtime и обрабатывает render-команды;
 - `sound_simulation` - владеет звуковой системой и обслуживает sound-команды.
@@ -72,10 +74,13 @@ set начального runtime-state до первой external/GPU-ступе
 в game происходит после готовности остальных стартовых ресурсов и чанков; gameplay update до этого
 не идет. Последующие runtime-переходы оставляют старый UI как loading screen до готовности нового.
 
-Текущий дисковый startup-срез использует два стандартных типа ресурсов:
+Текущий дисковый startup-срез использует три стандартных типа ресурсов:
 
 - активный `startup/entry` задает logical id начального `state`;
-- `states/*` задает entry `script`, единый список `resources` и optional `scene`.
+- `states/*` задает entry `script`, `default_font`, единый UI-список `resources` и optional `scene`;
+- `scenes/*` задаёт optional CPU-only `project` descriptor и resource transitions
+  `{id,target,group,alias,startup}`. `target` — `cold/warm/hot/final` либо номер generic level;
+  `group/alias` движок сохраняет для проекта, но сам не интерпретирует.
 
 Первый модуль в module list имеет наивысший приоритет, поэтому мод может заменить
 `startup/entry` или выбранный runtime-state, если стоит перед `core`. Все ресурсы из
@@ -83,7 +88,10 @@ set начального runtime-state до первой external/GPU-ступе
 список является allowlist: Lua может получать handles, исполнять `require` и перечислять только
 разрешенные ресурсы, но не может запускать load/unload. `require` принимает только уже usable
 script resource. Ресурсы активной scene добавляются в UI scope сразу и могут быть еще не готовы;
-скрипт видит их `state()`/`usable()` для отображения прогресса и диагностики.
+движок сам отправляет transitions и включает entries с `startup=true` в target-aware loading
+gate/progress. Без render external target обрезается до первой external-ступени. Скрипт видит их
+`state()`/`usable()` для отображения прогресса и диагностики. `scene.project` host доводит до usable
+до `begin_project_loading()`, а смысл его полей остаётся полностью проектным.
 
 `tile_frontier` хранит `current` и `target` runtime-state. Lua может запросить переход через
 `app.request_state(id)`, после чего локальные чанки и actors пересоздаются для новой generation;

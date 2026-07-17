@@ -8,6 +8,7 @@
 #include "prefab_resource.h"
 #include "script_resource.h"
 #include "tile_map.h"
+#include "world_scene_resource.h"
 
 namespace tile_frontier {
 namespace core {
@@ -27,6 +28,7 @@ void assets_simulation::register_project_resource_types(demiurg::resource_system
   // prefab/*.tavl → prefab_resource: сырой текст префаба (форму компонентов + on_construct регистрирует
   // слайс в C++, текст скармливается в prefab_registry.add_prefab). Один файл = один префаб или список //---.
   resources.register_type<prefab_resource>("prefab", "tavl");
+  resources.register_type<world_scene_resource>("worlds", "tavl");
 }
 
 void assets_simulation::update_project(const size_t, ::tile_frontier::core::broker& br) {

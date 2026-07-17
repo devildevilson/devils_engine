@@ -99,6 +99,7 @@ protected:
     resources.register_type<lua_script_resource>("ui", "lua");
     resources.register_type<startup_entry_resource>("startup", "tavl");
     resources.register_type<runtime_state_resource>("states", "tavl");
+    resources.register_type<scene_manifest_resource>("scenes", "tavl");
   }
 
 private:

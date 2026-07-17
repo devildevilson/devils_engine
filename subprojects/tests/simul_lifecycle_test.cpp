@@ -9,6 +9,7 @@
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/simul/app_runtime.h>
 #include <devils_engine/simul/boot_config.h>
+#include <devils_engine/simul/game_state.h>
 #include <devils_engine/simul/lifecycle.h>
 #include <devils_engine/simul/pause.h>
 #include <devils_engine/simul/startup_resources.h>
@@ -212,6 +213,25 @@ TEST_CASE("pause_state keeps gameplay and presentation as independent engine dom
   CHECK(pause.paused(pause_domain::gameplay));
 }
 
+TEST_CASE("standard_game_state owns engine runtime fields and leaves project state extensible") {
+  struct project_state : devils_engine::simul::standard_game_state<runtime_test_broker> {
+    uint32_t world_marker = 17;
+  } state;
+
+  CHECK(state.window == nullptr);
+  CHECK(state.monitor == nullptr);
+  CHECK(state.fb_width == 1);
+  CHECK(state.fb_height == 1);
+  CHECK(state.br == nullptr);
+  CHECK(state.owned_br == nullptr);
+  CHECK(state.ui == nullptr);
+  CHECK(state.ui_fonts.empty());
+  CHECK(state.sound_devices.empty());
+  CHECK(state.sound_state.empty());
+  CHECK_FALSE(state.pause.world_paused());
+  CHECK(state.world_marker == 17);
+}
+
 TEST_CASE("lifecycle controller enters phases in strict order") {
   devils_engine::simul::lifecycle_controller lifecycle;
   lifecycle_host host;
@@ -260,6 +280,7 @@ TEST_CASE("startup entry and runtime state come from the first module") {
   fs::remove_all(root);
   fs::create_directories(root / "mod" / "startup");
   fs::create_directories(root / "mod" / "states");
+  fs::create_directories(root / "mod" / "scenes");
   fs::create_directories(root / "core" / "startup");
 
   {
@@ -269,8 +290,17 @@ TEST_CASE("startup entry and runtime state come from the first module") {
   {
     std::ofstream out(root / "mod" / "states" / "mod_menu.tavl");
     out << "script = \"ui/mod_entry\"\n";
+    out << "default_font = \"fonts/mod\"\n";
     out << "resources = [\"ui/mod_entry\", \"fonts/mod\", \"textures/mod_bg\"]\n";
     out << "scene = \"scenes/mod_scene\"\n";
+  }
+  {
+    std::ofstream out(root / "mod" / "scenes" / "mod_scene.tavl");
+    out << "project = \"worlds/mod_scene\"\n";
+    out << "resources = [\n";
+    out << "  { id = \"textures/mod_bg\", target = \"final\", group = \"backgrounds\", alias = \"menu\", startup = true }\n";
+    out << "  { id = \"sounds/click\", target = \"warm\", group = \"sounds\", alias = \"click\", startup = false }\n";
+    out << "]\n";
   }
   {
     std::ofstream out(root / "core" / "startup" / "entry.tavl");
@@ -284,6 +314,7 @@ TEST_CASE("startup entry and runtime state come from the first module") {
   demiurg::resource_system resources;
   resources.register_type<simul::startup_entry_resource>("startup", "tavl");
   resources.register_type<simul::runtime_state_resource>("states", "tavl");
+  resources.register_type<simul::scene_manifest_resource>("scenes", "tavl");
   resources.parse_resources(&modules);
 
   auto* entry = resources.get<simul::startup_entry_resource>("startup/entry");
@@ -295,9 +326,21 @@ TEST_CASE("startup entry and runtime state come from the first module") {
   REQUIRE(ui != nullptr);
   ui->load(devils_engine::utils::safe_handle_t{});
   CHECK(ui->config().script == "ui/mod_entry");
+  CHECK(ui->config().default_font == "fonts/mod");
   CHECK(ui->config().resources == std::vector<std::string>{
                                     "ui/mod_entry", "fonts/mod", "textures/mod_bg"});
   CHECK(ui->config().scene == "scenes/mod_scene");
+
+  auto* scene = resources.get<simul::scene_manifest_resource>(ui->config().scene);
+  REQUIRE(scene != nullptr);
+  scene->load(devils_engine::utils::safe_handle_t{});
+  CHECK(scene->config().project == "worlds/mod_scene");
+  REQUIRE(scene->config().resources.size() == 2);
+  CHECK(scene->config().resources[0].id == "textures/mod_bg");
+  CHECK(scene->config().resources[0].group == "backgrounds");
+  CHECK(scene->config().resources[0].alias == "menu");
+  CHECK(scene->config().resources[0].startup);
+  CHECK(scene->config().resources[1].target == "warm");
 
   fs::remove_all(root);
 }

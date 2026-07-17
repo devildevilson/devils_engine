@@ -1,4 +1,5 @@
 script = "ui/entry"
+default_font = "fonts/crimson.roman"
 
 // This is both the initial residency set and the complete resource allowlist for this UI state.
 // Every entry reaches final_state() before ui/entry is executed.

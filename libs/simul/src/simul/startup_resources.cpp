@@ -68,5 +68,19 @@ void runtime_state_resource::unload_warm(const utils::safe_handle_t&) {
   config_ = {};
 }
 
+scene_manifest_resource::scene_manifest_resource() {
+  configure_cpu_resource(*this);
+}
+
+void scene_manifest_resource::load_cold(const utils::safe_handle_t&) {
+  parse_config_resource(*this, config_);
+}
+
+void scene_manifest_resource::load_warm(const utils::safe_handle_t&) {}
+void scene_manifest_resource::unload_hot(const utils::safe_handle_t&) {}
+void scene_manifest_resource::unload_warm(const utils::safe_handle_t&) {
+  config_ = {};
+}
+
 } // namespace simul
 } // namespace devils_engine

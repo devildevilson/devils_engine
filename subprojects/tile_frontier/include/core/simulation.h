@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <devils_engine/demiurg/resource_system.h>
@@ -51,7 +52,7 @@ public:
   void begin_project_loading();                               // проектная сцена (текстуры/звуки/чанки/актёры)
   bool project_loading_complete() const;                      // все mock-чанки применены
   std::pair<std::size_t, std::size_t> project_loading_progress() const; // вклад чанков {done,total} в прогресс
-  void start_project_ui();                                    // визаж + lua-биндинги + entry (движковый split — шаг 3)
+  void register_project_ui_bindings();                        // только gameplay/UI API; engine bindings ставит host
   void on_framebuffer_resize(uint32_t w, uint32_t h);         // cam.aspect от живого размера
   void update_gameplay(size_t time, uint64_t game_dt_ticks,
                        const devils_engine::simul::phase_gate& gate); // середина кадра (тайлы/актёры/звук/метрики)

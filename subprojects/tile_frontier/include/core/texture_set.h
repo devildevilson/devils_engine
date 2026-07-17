@@ -31,6 +31,9 @@ struct texture_set {
   // через resource_system::filter ("по части пути"). Возвращает число найденных. Перезаписывает.
   uint32_t gather(demiurg::resource_system& reg, const std::string_view& prefix);
 
+  // Manifest path: сохранить явно перечисленную palette, отбрасывая не-текстуры.
+  uint32_t assign(std::span<const demiurg::resource_handle> handles);
+
   // Разрешить logical handle тайла в bindless GPU slot. Чужой или неготовый ресурс invalid.
   uint32_t gpu_index(demiurg::resource_handle handle) const noexcept;
 };

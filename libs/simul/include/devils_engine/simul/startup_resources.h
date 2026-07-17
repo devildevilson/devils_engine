@@ -17,8 +17,27 @@ struct startup_entry_config {
 
 struct runtime_state_config {
   std::string script;
+  std::string default_font;
   std::vector<std::string> resources;
   std::string scene;
+};
+
+// Одна декларативная resource transition внутри scene manifest. target принимает имена
+// cold/warm/hot/final либо неотрицательный номер ступени. group/alias движок не интерпретирует:
+// это стабильные метаданные для project scene (например tile_textures и sounds/eating).
+struct scene_resource_request {
+  std::string id;
+  std::string target = "final";
+  std::string group;
+  std::string alias;
+  bool startup = false;
+};
+
+struct scene_manifest_config {
+  // Optional logical id CPU-only project descriptor. Движок гарантирует, что он usable до
+  // begin_project_loading(), но не знает его concrete type и содержимое.
+  std::string project;
+  std::vector<scene_resource_request> resources;
 };
 
 class startup_entry_resource : public demiurg::resource_interface {
@@ -51,6 +70,22 @@ public:
 
 private:
   runtime_state_config config_;
+};
+
+class scene_manifest_resource : public demiurg::resource_interface {
+public:
+  scene_manifest_resource();
+  const scene_manifest_config& config() const noexcept {
+    return config_;
+  }
+
+  void load_cold(const utils::safe_handle_t& handle) override;
+  void load_warm(const utils::safe_handle_t& handle) override;
+  void unload_hot(const utils::safe_handle_t& handle) override;
+  void unload_warm(const utils::safe_handle_t& handle) override;
+
+private:
+  scene_manifest_config config_;
 };
 
 } // namespace simul

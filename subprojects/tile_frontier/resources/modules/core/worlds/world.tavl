@@ -1,0 +1,12 @@
+tile_texture_group = "tile_textures"
+sound_group = "sounds"
+tile_size = 1.0
+chunk_size = 16
+chunks_x = 4
+chunks_y = 4
+actor_count = 4096
+camera_half_width = 8.0
+actor_script = "scripts/actor_is_hungry"
+actor_fsm = "fsm/actor"
+actor_goap = "goap/actor"
+prefab_prefix = "prefab/"

@@ -24,6 +24,17 @@ uint32_t texture_set::gather(demiurg::resource_system& reg, const std::string_vi
   return uint32_t(textures.size());
 }
 
+uint32_t texture_set::assign(const std::span<const demiurg::resource_handle> handles) {
+  textures.clear();
+  textures.reserve(handles.size());
+  for (const auto handle : handles) {
+    if (handle.get<painter::gpu_texture_resource>() != nullptr) {
+      textures.push_back(handle);
+    }
+  }
+  return uint32_t(textures.size());
+}
+
 uint32_t texture_set::gpu_index(const demiurg::resource_handle handle) const noexcept {
   const bool belongs_to_palette = std::find_if(textures.begin(), textures.end(), [handle](const auto cur) {
                                     return cur.system == handle.system && cur.hash == handle.hash;
