@@ -20,7 +20,7 @@ assets_simulation::assets_simulation(const size_t frame_time) noexcept : simul::
 void assets_simulation::register_project_resource_types(demiurg::resource_system& resources) {
   // scripts/*.tavl → script_resource, компилируется через script_env_.sys (натив-функции уже в нём).
   resources.register_type<script_resource>("scripts", "tavl", &script_env_.sys);
-  // fsm/*.tavl → fsm_resource (строки переходов mood; резолв гвардов/действий — в setup_brain_registry).
+  // fsm/*.tavl -> fsm_resource (native TAVL transition rows; guard/action resolution happens later).
   resources.register_type<fsm_resource>("fsm", "tavl");
   // goap/*.tavl → goap_resource: метрики инлайн-компилируются через script_env_.sys (co-parse);
   // действия/цели ссылаются на метрики по ключу. Резолв ключ→функция/бит — в setup_brain_registry.

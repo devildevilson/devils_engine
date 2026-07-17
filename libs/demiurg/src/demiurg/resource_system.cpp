@@ -530,7 +530,7 @@ void resource_system::append_resources_impl(module_system* sys) {
     for (auto itr = manifest.begin(); itr != manifest.end();) {
       const auto& id = itr->primary.candidate->id;
       if (get(id) != nullptr) {
-        utils::warn("append_resources: resource id '{}' already registered — override не поддержан в append, пропуск", id);
+        utils::warn("append_resources: resource id '{}' is already registered; append does not support overrides, skipping", id);
         itr = manifest.erase(itr);
       } else {
         ++itr;

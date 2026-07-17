@@ -6,7 +6,7 @@ namespace act {
 
 fn_id registry::reg(const std::string_view& name, std::unique_ptr<function_base> f) {
   if (f == nullptr) {
-    utils::error{}("act::registry::reg: попытка зарегистрировать nullptr (имя '{}')", name);
+    utils::error{}("act::registry::reg: attempted to register nullptr under name '{}'", name);
   }
   const fn_id id = utils::string_hash(name);
   const auto [itr, inserted] = functions.emplace(id, std::move(f));
@@ -16,9 +16,9 @@ fn_id registry::reg(const std::string_view& name, std::unique_ptr<function_base>
     const auto nitr = names_.find(id);
     const std::string_view prev = nitr != names_.end() ? std::string_view(nitr->second) : std::string_view("<unknown>");
     if (prev == name) {
-      utils::error{}("act::registry::reg: функция '{}' уже зарегистрирована (повторная регистрация)", name);
+      utils::error{}("act::registry::reg: function '{}' is already registered", name);
     } else {
-      utils::error{}("act::registry::reg: хеш-коллизия fn_id {:#x} между именами '{}' и '{}' — переименуй одну", id, prev, name);
+      utils::error{}("act::registry::reg: fn_id hash collision {:#x} between '{}' and '{}'; rename one of them", id, prev, name);
     }
   }
   names_.emplace(id, std::string(name));

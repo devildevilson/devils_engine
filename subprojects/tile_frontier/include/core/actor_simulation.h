@@ -252,7 +252,7 @@ struct prefab_def {
 
 struct brain_config {
   const devils_script::container* is_hungry_program = nullptr; // скрипт-предикат "actor.is_hungry"
-  const std::vector<std::string>* fsm_transitions = nullptr;   // строки переходов mood FSM
+  const std::vector<devils_engine::mood::transition_config>* fsm_transitions = nullptr;
   std::shared_ptr<const goap_config> goap;                     // flattened GOAP config; owns script containers
   const std::vector<prefab_def>* prefabs = nullptr;            // префабы из prefab/*.tavl (иначе хардкод food)
 };

@@ -321,7 +321,7 @@ goap_resource::goap_resource(devils_script::system* sys) : sys_(sys) {
 
 void goap_resource::load_cold(const utils::safe_handle_t&) {
   if (sys_ == nullptr) {
-    utils::error{}("goap resource '{}': devils_script::system не впрыснут", id);
+    utils::error{}("goap resource '{}': devils_script::system was not injected", id);
   }
 
   const std::string content = is_list_entry() && !list_section.empty()
@@ -336,7 +336,7 @@ void goap_resource::load_cold(const utils::safe_handle_t&) {
   config_ = goap_config{};
   parse_goap(*sys_, p, config_);
   if (config_.metrics.empty() && config_.base.empty()) {
-    utils::warn("goap resource '{}': нет ни base, ни одной метрики", id);
+    utils::warn("goap resource '{}': neither a base nor any metrics were provided", id);
   }
 }
 

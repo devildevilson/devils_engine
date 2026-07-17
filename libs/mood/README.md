@@ -1,6 +1,7 @@
 # mood
 
-`libs/mood` - маленькая FSM-система, описываемая текстовыми строками. Ее
+`libs/mood` - маленькая FSM-система, принимающая структурные `transition_config` либо legacy
+текстовые строки. Ее
 основная задача - разобрать список переходов, построить быстрый индекс и по
 паре `(state, event)` вернуть список переходов-кандидатов в исходном top-down
 порядке.
@@ -44,7 +45,7 @@ initial_state = prepare_weapon
 - `current_state` - из какого состояния переход;
 - `+ event` - событие, по которому переход ищется;
 - `[guards]` - predicate-функции из `act::registry`;
-- `/ actions` - effect-функции из `act::registry`;
+- `/ actions` - effect-функции из `act::registry` в legacy string syntax;
 - `= next_state` - новое состояние.
 
 Переход без `= next_state` считается внутренним: он может выполнить actions, но
@@ -55,6 +56,20 @@ initial_state = prepare_weapon
 точкой вроде `actor.is_hungry` в строках FSM не подходят; для `mood` нужны
 dot-free имена. Это уже видно в `tile_frontier`: guard называется `is_eating`,
 хотя GOAP-метрики могут иметь имена с точками.
+
+Resource/config loaders должны разбирать свой нативный формат сразу в
+`mood::transition_config{current_state,event,guards,actions,next_state}`. В TAVL строка перехода
+не заключена в кавычки, а actions оборачиваются в tuple, чтобы структура была однозначной:
+
+```tavl
+transitions = [
+  idle + see_enemy [can_see] / (remember_enemy, raise_alarm) = alert
+]
+```
+
+`mood::system(const act::registry*, std::vector<transition_config>)` строит runtime-индекс напрямую,
+не восстанавливая и не парся промежуточные строки. String-конструктор сохранён для C++ fixtures и
+совместимости.
 
 ## Transition
 
@@ -80,7 +95,8 @@ Guards и actions резолвятся один раз в конструктор
 
 ## System
 
-`mood::system` строится из `act::registry` и набора строк:
+`mood::system` строится из `act::registry` и структурных transitions; legacy набор строк также
+поддерживается:
 
 ```cpp
 std::vector<std::string> lines = {
@@ -94,7 +110,7 @@ mood::system fsm(&registry, std::move(lines));
 
 Конструктор делает несколько шагов:
 
-1. парсит строки в `transition`;
+1. валидирует structured config (либо парсит legacy строки) в `transition`;
 2. считает `utils::string_hash` для state/event/next;
 3. stable-sort'ит переходы по `(state_hash, event_hash)`;
 4. строит hash-index `m_index`;
@@ -226,7 +242,7 @@ guards/actions.
 
 На данный момент `libs/mood` умеет:
 
-- парсить FSM из набора текстовых строк;
+- принимать structured FSM transitions и legacy C++ строки;
 - хранить states/events/transitions;
 - хранить до 8 guards и до 8 actions на переход;
 - резолвить guards/actions через `act::registry`;
@@ -256,7 +272,7 @@ guards/actions.
 
 Система уже закрывает свою основную задачу. Возможные будущие улучшения:
 
-- вынести FSM-описания из C++ строк в resource/config pipeline;
+- вынести project-specific `fsm_resource` adapter в owner-библиотеку `mood`;
 - добавить более явные ошибки/лимиты для переполнения 8 guards/actions;
 - добавить тесты на `blocked`, `on_exit`/`on_entry` guards и internal
   transitions без `next_state`;

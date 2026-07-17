@@ -559,7 +559,7 @@ void standard_render_drain_graph_switch(State& c, Broker& br) {
   if (const command_render_set_graph* cmd = br.set_active_graph.consume()) {
     const uint32_t idx = c.base->find_render_graph(cmd->name);
     if (idx == painter::invalid_resource_slot) {
-      utils::warn("render: set_active_graph — граф '{}' не найден", cmd->name);
+      utils::warn("render: set_active_graph: graph '{}' was not found", cmd->name);
     } else if (idx != c.base->current_render_graph_index) {
       c.base->change_render_graph(idx);
       DE_LOG(catalogue::log_domain::render, flow, "active graph switched to '{}'", cmd->name);
@@ -577,7 +577,7 @@ void standard_render_drain_update_constants(State& c, Broker& br) {
   while (br.update_constant.try_pop(cmd)) {
     const uint32_t idx = c.base->find_constant(cmd.name);
     if (idx == painter::invalid_resource_slot) {
-      utils::warn("render: update_constant — константа '{}' не найдена", cmd.name);
+      utils::warn("render: update_constant: constant '{}' was not found", cmd.name);
       continue;
     }
     c.base->write_constant_data(idx, cmd.bytes.data(), cmd.bytes.size());

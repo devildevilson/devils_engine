@@ -33,8 +33,8 @@ int32_t system::transition::process(const act::exec_context& ctx) const {
 
 static constexpr bool is_valid_char(const char c) {
   return (c >= '0' && c <= '9') ||
-         (c >= 'a' && c >= 'z') ||
-         (c >= 'A' && c >= 'Z') ||
+         (c >= 'a' && c <= 'z') ||
+         (c >= 'A' && c <= 'Z') ||
          (c == '_');
 }
 
@@ -341,6 +341,79 @@ static system::transition parse_line(const std::string_view& line) {
   return t;
 }
 
+static std::string transition_source(const transition_config& config) {
+  std::string out = config.current_state;
+  if (!config.event.empty()) {
+    out += " + ";
+    out += config.event;
+  }
+  if (!config.guards.empty()) {
+    out += " [";
+    for (size_t i = 0; i < config.guards.size(); ++i) {
+      if (i != 0) out += ", ";
+      out += config.guards[i];
+    }
+    out += "]";
+  }
+  if (!config.actions.empty()) {
+    out += " / (";
+    for (size_t i = 0; i < config.actions.size(); ++i) {
+      if (i != 0) out += ", ";
+      out += config.actions[i];
+    }
+    out += ")";
+  }
+  if (!config.next_state.empty()) {
+    out += " = ";
+    out += config.next_state;
+  }
+  return out;
+}
+
+static void validate_config_identifier(
+  const std::string_view value,
+  const std::string_view role,
+  const std::string_view source,
+  const bool allow_empty = false) {
+  if (value.empty() && allow_empty) {
+    return;
+  }
+  if (value.empty() || !std::all_of(value.begin(), value.end(), &is_valid_char) || !is_ident_start(value.front())) {
+    utils::error{}("Invalid {} identifier '{}' in transition '{}'", role, value, source);
+  }
+}
+
+static system::transition build_transition(const transition_config& config) {
+  system::transition t;
+  t.full_line = config.source;
+  t.current_state = config.current_state;
+  t.event = config.event;
+  t.next_state = config.next_state;
+
+  validate_config_identifier(t.current_state, "current state", t.full_line);
+  validate_config_identifier(t.event, "event", t.full_line, true);
+  validate_config_identifier(t.next_state, "next state", t.full_line, true);
+  if (config.guards.size() > t.guards.size()) {
+    utils::error{}("Too many guards (max {}) in transition '{}'", t.guards.size(), t.full_line);
+  }
+  if (config.actions.size() > t.actions.size()) {
+    utils::error{}("Too many actions (max {}) in transition '{}'", t.actions.size(), t.full_line);
+  }
+  for (size_t i = 0; i < config.guards.size(); ++i) {
+    validate_config_identifier(config.guards[i], "guard", t.full_line);
+    t.guards[i] = config.guards[i];
+  }
+  for (size_t i = 0; i < config.actions.size(); ++i) {
+    validate_config_identifier(config.actions[i], "action", t.full_line);
+    t.actions[i] = config.actions[i];
+  }
+
+  t.current_hash = utils::string_hash(t.current_state);
+  t.event_hash = utils::string_hash(t.event);
+  t.next_hash = t.next_state.empty() ? utils::invalid_id : utils::string_hash(t.next_state);
+  return t;
+}
+
 // ключ хеш-индекса: смешиваем хеши состояния и события. Коллизия 64-бит пренебрежима и в
 // духе остального проекта (string_hash коллизии ловятся как ошибки на загрузке).
 static uint64_t group_key(const utils::id state_hash, const utils::id event_hash) noexcept {
@@ -357,6 +430,26 @@ system::system(const act::registry* registry, std::vector<std::string> lines) : 
     t.next_hash = t.next_state.empty() ? utils::invalid_id : utils::string_hash(t.next_state);
     m_transitions.push_back(std::move(t));
   }
+
+  finish_build();
+}
+
+system::system(const act::registry* registry, std::vector<transition_config> transitions)
+  : registry(registry), m_config_memory(std::move(transitions)) {
+  for (auto& config : m_config_memory) {
+    if (config.source.empty()) {
+      config.source = transition_source(config);
+    }
+  }
+  m_transitions.reserve(m_config_memory.size());
+  for (const auto& config : m_config_memory) {
+    m_transitions.push_back(build_transition(config));
+  }
+
+  finish_build();
+}
+
+void system::finish_build() {
 
   // 2. сгруппировать (state, event) непрерывно. stable_sort СОХРАНЯЕТ порядок исходных строк
   //    внутри группы (равные ключи) — это и есть тот самый top-down порядок гвардов.

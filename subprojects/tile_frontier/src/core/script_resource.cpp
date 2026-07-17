@@ -43,14 +43,14 @@ script_resource::script_resource(devils_script::system* sys) : sys_(sys) {
 
 void script_resource::load_cold(const utils::safe_handle_t&) {
   if (sys_ == nullptr) {
-    utils::error{}("script resource '{}': devils_script::system не впрыснут", id);
+    utils::error{}("script resource '{}': devils_script::system was not injected", id);
   }
 
   actor_script_config cfg;
   parse_script_config(*this, cfg);
 
   if (cfg.expr.empty()) {
-    utils::error{}("script resource '{}': пустой expr", id);
+    utils::error{}("script resource '{}': expr is empty", id);
   }
 
   // Срез: единственная поддержанная комбинация (ret,scope). Общий диспетчер — шаг 4.
@@ -58,7 +58,7 @@ void script_resource::load_cold(const utils::safe_handle_t&) {
     program_ = sys_->parse<bool, entity_scope>(id, cfg.expr);
     category_ = act::category::predicate;
   } else {
-    utils::error{}("script resource '{}': ret '{}' пока не поддержан (только \"bool\")", id, cfg.ret);
+    utils::error{}("script resource '{}': return type '{}' is not supported yet (only \"bool\")", id, cfg.ret);
   }
 }
 

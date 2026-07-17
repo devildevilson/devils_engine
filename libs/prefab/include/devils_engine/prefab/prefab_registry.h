@@ -122,7 +122,7 @@ public:
       const std::string_view fn_name = chain.back();
       const auto fid = utils::string_hash(fn_name);
       if (lc.functions != nullptr && !lc.functions->has(fid)) {
-        utils::warn("prefab callback '{}': функция не найдена в реестре", fn_name);
+        utils::warn("prefab callback '{}': function was not found in the registry", fn_name);
       }
       return [fid](const aes::entityid_t id, aes::world& w) {
         w.create<C>(id, C{fid});
@@ -197,7 +197,7 @@ public:
       } else if (specs_.contains(key)) {
         lp.raw.emplace(key, std::string(raw));
       } else {
-        utils::warn("prefab '{}': неизвестный компонент '{}', пропущен", name, key);
+        utils::warn("prefab '{}': unknown component '{}', skipping", name, key);
       }
     }
     prefabs_.insert_or_assign(std::move(name), std::move(lp));
@@ -289,7 +289,7 @@ private:
   loaded_prefab* build(const std::string& name) {
     const auto it = prefabs_.find(name);
     if (it == prefabs_.end()) {
-      utils::warn("prefab '{}' не найден", name);
+      utils::warn("prefab '{}' was not found", name);
       return nullptr;
     }
     loaded_prefab& lp = it->second;
@@ -328,12 +328,12 @@ private:
 
   void collect_chain(const std::string& name, std::vector<const loaded_prefab*>& out, int depth) {
     if (depth > 32) {
-      utils::warn("prefab '{}': слишком глубокая цепочка base (цикл?)", name);
+      utils::warn("prefab '{}': base chain is too deep (possible cycle)", name);
       return;
     }
     const auto it = prefabs_.find(name);
     if (it == prefabs_.end()) {
-      utils::warn("prefab base '{}' не найден", name);
+      utils::warn("prefab base '{}' was not found", name);
       return;
     }
     if (!it->second.base.empty()) {

@@ -1,26 +1,27 @@
 #ifndef TILE_FRONTIER_CORE_FSM_RESOURCE_H
 #define TILE_FRONTIER_CORE_FSM_RESOURCE_H
 
-#include <string>
 #include <vector>
 
 #include <devils_engine/demiurg/resource_base.h>
+#include <devils_engine/mood/system.h>
 
-// Дисковый конфиг FSM-исполнителя (mood): список строк-переходов "current + event [guards] = next".
-// Гварды/действия ссылаются по имени на функции act::registry (нативки/скрипты) — mood резолвит их
-// при построении. Здесь только данные; поведение остаётся в зарегистрированных функциях.
+// Disk config for a mood FSM. TAVL parses transition rows directly:
+//   state + event [guard0, guard1] / (action0, action1) = next_state
+// Parentheses around actions make the action list an unambiguous TAVL tuple. The resource produces
+// structured mood::transition_config values; mood does not reparse synthetic quoted strings.
 
 namespace tile_frontier {
 namespace core {
 
 struct fsm_config {
-  std::vector<std::string> transitions;
+  std::vector<devils_engine::mood::transition_config> transitions;
 };
 
 class fsm_resource : public devils_engine::demiurg::resource_interface {
 public:
   fsm_resource();
-  const std::vector<std::string>& transitions() const noexcept {
+  const std::vector<devils_engine::mood::transition_config>& transitions() const noexcept {
     return config_.transitions;
   }
 

@@ -27,7 +27,7 @@ void prefab_resource::load_cold(const utils::safe_handle_t&) {
   }
 
   if (text_.empty()) {
-    utils::warn("prefab resource '{}': пустой текст префаба", id);
+    utils::warn("prefab resource '{}': prefab text is empty", id);
   }
 }
 

@@ -133,6 +133,7 @@ set_target_properties(tile_frontier_mt_benchmark PROPERTIES
 add_executable(tile_frontier_config_effect_smoke
   config_effect_smoke.cpp
   src/core/actor_simulation.cpp
+  src/core/fsm_resource.cpp
   src/core/goap_resource.cpp
   src/core/script_environment.cpp
 )
