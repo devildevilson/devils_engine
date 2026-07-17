@@ -12,7 +12,7 @@
 #include "devils_engine/catalogue/call_log.h"           // call_log, call_record
 
 // commit_calls — ОБОБЩЁННАЯ commit-фаза deferred-call механизма взаимодействий (ROADMAP п.16). Движковое
-// generic-ядро: проиграть записанные вызовы (call_log) в детерминированном порядке и на каждый —
+// generic-ядро: исполнить записанные вызовы (call_log) в детерминированном порядке и на каждый —
 //   1) резолвить эффект по fn_id в act::registry (нет эффекта → пропуск);
 //   2) если эффект тегирован взаимодействием (дескриптор), поставить цель в scope[target_scope] и
 //      ГЕЙТить вызов через interaction_arena.won (победитель elect + «intent бьёт grab»); прочие эффекты
@@ -23,7 +23,7 @@
 //   make_ctx(rec, id) -> exec_context : собрать контекст (проект владеет seed/scratch/world-seam);
 //   after(rec, id, const ctx&, ran): пост-обработка (FSM-переход, звук…), вызывается и когда эффект не
 //                                     применился (ran==false) — напр. FSM всё равно получает событие.
-// Так движок владеет replay + дескриптор-гейтом + invoke, а проект — своей спецификой. Порядок replay
+// Так движок владеет dispatch + дескриптор-гейтом + invoke, а проект — своей спецификой. Порядок dispatch
 // детерминирован (индекс инициатора), фаза однопоточная (commit) — cross-entity мутации безопасны.
 
 namespace devils_engine {
@@ -33,7 +33,7 @@ template <typename Skip, typename MakeCtx, typename After>
 void commit_calls(const catalogue::call_log& log, const act::registry& registry,
                   const aesthetics::interaction_arena& arena,
                   Skip&& skip, MakeCtx&& make_ctx, After&& after) {
-  log.replay([&](const catalogue::call_record& rec) {
+  log.dispatch([&](const catalogue::call_record& rec) {
     const auto id = aesthetics::entityid_t(rec.primary);
     if (skip(rec, id)) {
       return;

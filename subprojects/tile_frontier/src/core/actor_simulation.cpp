@@ -13,10 +13,10 @@
 #include <devils_engine/aesthetics/common.h>
 #include <devils_engine/aesthetics/template_system.h> // template_system_mt — map-примитив фаз
 #include <devils_engine/aesthetics/worklist_system.h> // worklist_system + budget_clamp — think-фаза
+#include <devils_engine/catalogue/deferred.h>     // fn_deferred_ptr + collect/elect executors
 #include <devils_engine/catalogue/introspection.h>
 #include <devils_engine/catalogue/logging.h>  // DE_LOG — perf-дамп в домен gameplay
 #include <devils_engine/mood/runtime.h>                  // mood::step / apply_transition — шаг FSM
-#include <devils_engine/simul/interaction_commit.h>      // simul::commit_calls — generic commit-фаза (ROADMAP п.16)
 #include <devils_engine/thread/atomic_pool.h>            // MT-пул (distribute/thread_index/wait)
 #include <devils_engine/utils/core.h>         // utils::error
 #include <devils_engine/utils/prng.h>         // utils::mix
@@ -335,10 +335,9 @@ static void effect_chase(const act::entity_handle self) noexcept {
   set_velocity(world, id, per->prey_pos - pos->value); // к добыче
 }
 
-// Поедание — ЧИСТАЯ МУТАЦИЯ пары (хищник = scope[0], добыча = scope[1]). Контенция и eligibility
-// решены ДО этого вызова (ROADMAP п.16): elect выбрал единственного победителя на добычу, а apply
-// гейтит вызов по arena_.won (elect.won + «intent бьёт grab»). Поэтому здесь НЕТ guard'ов конкуренции —
-// только структурная запись заведомо бесконфликтной пары: оба замирают, метим связь, добыча «съедаемая».
+// Поедание — ЧИСТАЯ МУТАЦИЯ пары (хищник = scope[0], добыча = scope[1]). Контенция решена до тела:
+// actor_eat_effect_strategy elect'ит один source на target и гасит target, который сам является source. Тело идёт в
+// serial_structural commit lane, поэтому create компонентов не должен быть параллен и guard'ы конкуренции здесь не нужны.
 static void effect_eat(const act::entity_handle self_h, const act::entity_handle prey_h, const act::rng_source rng) noexcept {
   auto& world = world_of(self_h);
   const auto self = ent(self_h);
@@ -383,6 +382,58 @@ static void effect_wander(const act::entity_handle self, const act::rng_source r
   const uint64_t h = utils::mix(rng.seed, rng.entity, slot, purpose_wander);
   set_velocity(world, id, direction_from_hash(uint32_t(h)));
 }
+
+// ── Catalogue deferred strategies ──────────────────────────────────────────
+// Все локальные действия мутируют только source entity: collect группирует по self и позволяет
+// commit разных entity-групп через worker pool. eat меняет пару сущностей + создаёт компоненты:
+// elect выбирает младший source на prey, target_not_source сохраняет старое «intent beats grab»
+// (если prey сама пытается eat — её не хватают), а тело идёт в serial_structural lane.
+namespace {
+struct actor_local_effect_strategy : catalogue::mt::collect<
+  catalogue::mt::key::entity_arg<0>,
+  catalogue::mt::order::source_then_sequence,
+  catalogue::mt::commit::parallel_groups> {};
+
+struct actor_eat_effect_strategy : catalogue::mt::elect<
+  catalogue::mt::key::entity_arg<1>,
+  catalogue::mt::order::source_then_sequence,
+  catalogue::mt::commit::serial_structural,
+  catalogue::mt::conflict::target_not_source> {};
+
+using flee_deferred = catalogue::mt::domain<actor_local_effect_strategy>::fn_traits<
+  &effect_flee, "flee", "self">;
+using chase_deferred = catalogue::mt::domain<actor_local_effect_strategy>::fn_traits<
+  &effect_chase, "chase", "self">;
+using seek_food_deferred = catalogue::mt::domain<actor_local_effect_strategy>::fn_traits<
+  &effect_seek_food, "seek_food", "self", "rng">;
+using wander_deferred = catalogue::mt::domain<actor_local_effect_strategy>::fn_traits<
+  &effect_wander, "wander", "self", "rng">;
+using think_deferred = catalogue::mt::domain<actor_local_effect_strategy>::fn_traits<
+  &effect_think, "think", "self">;
+using eat_deferred = catalogue::mt::domain<actor_eat_effect_strategy>::fn_traits<
+  &effect_eat, "eat", "self", "prey", "rng">;
+
+constexpr uint32_t max_deferred_effects_per_actor = 16;
+} // namespace
+
+struct deferred_effects {
+  catalogue::mt::executor<actor_local_effect_strategy> local;
+  catalogue::mt::executor<actor_eat_effect_strategy> eat;
+
+  ~deferred_effects() {
+    using local_domain = catalogue::mt::domain<actor_local_effect_strategy>;
+    using eat_domain = catalogue::mt::domain<actor_eat_effect_strategy>;
+    if (local_domain::executor_instance() == &local) local_domain::set_executor(nullptr);
+    if (eat_domain::executor_instance() == &eat) eat_domain::set_executor(nullptr);
+  }
+
+  void begin_record(const size_t source_capacity) {
+    catalogue::mt::domain<actor_local_effect_strategy>::set_executor(&local);
+    catalogue::mt::domain<actor_eat_effect_strategy>::set_executor(&eat);
+    local.begin_record(source_capacity, max_deferred_effects_per_actor);
+    eat.begin_record(source_capacity, max_deferred_effects_per_actor);
+  }
+};
 
 void actor_batch::build(const aesthetics::world& world, const uint64_t tick) {
   instances_.clear();
@@ -429,16 +480,16 @@ void actor_world_slice::setup_brain_registry() {
   // в идентификаторах, поэтому имя dot-free (в отличие от acumen-метрик "actor.*", которые в
   // парсер mood не попадают и резолвятся по полному хешу строки).
   registry_.reg("is_eating", act::pack<&predicate_is_eating>());
-  registry_.reg("flee", act::pack<&effect_flee>());
-  registry_.reg("chase", act::pack<&effect_chase>());
-  registry_.reg("eat", act::pack<&effect_eat>());
+  registry_.reg("flee", act::pack<flee_deferred::fn_deferred_ptr>());
+  registry_.reg("chase", act::pack<chase_deferred::fn_deferred_ptr>());
+  registry_.reg("eat", act::pack<eat_deferred::fn_deferred_ptr>());
   // Тег взаимодействия: eat арбитрится эксклюзивно (elect на добычу = scope[1]) + self-claim. Снимает
-  // хардкод имени функции в decide/apply — gate/reduce драйвятся дескриптором. Заводим и elect-буфер arena.
+  // хардкод имени функции в decide_actor: дескриптор сообщает, какой scope заполнить target-ом.
+  // Сам elect задаёт actor_eat_effect_strategy.
   registry_.reg_interaction(utils::string_hash("eat"), act::interaction{}); // rule=exclusive, target_scope=1, self_claim=true
-  arena_.ensure(utils::string_hash("eat"));
-  registry_.reg("seek_food", act::pack<&effect_seek_food>());
-  registry_.reg("wander", act::pack<&effect_wander>());
-  registry_.reg("think", act::pack<&effect_think>());
+  registry_.reg("seek_food", act::pack<seek_food_deferred::fn_deferred_ptr>());
+  registry_.reg("wander", act::pack<wander_deferred::fn_deferred_ptr>());
+  registry_.reg("think", act::pack<think_deferred::fn_deferred_ptr>());
 
   // GOAP-система: из tavl-конфига (goap/actor) если загружен, иначе хардкод-фолбэк (тесты/резюме).
   if (brains_.goap != nullptr) {
@@ -689,8 +740,8 @@ struct drives_system : devils_engine::aesthetics::template_system_mt<stats, acto
 };
 
 // think-фаза: worklist_system над «созревшими» акторами (отобранными select+budget_clamp). process
-// зовёт decide_actor слайса на своей per-thread scratch-полосе (A*+cache+ds VM), тот пишет intent в
-// свой слот intents_ (непересекающиеся слоты ⇒ параллельно без локов).
+// зовёт decide_actor слайса на своей per-thread scratch-полосе (A*+cache+ds VM); тот под record_scope
+// вызывает act::effect, чья deferred-обёртка пишет в непересекающиеся per-source slots.
 struct cognition_system : devils_engine::aesthetics::worklist_system<acumen::execution_scratch> {
   actor_world_slice* slice;
   cognition_system(thread::atomic_pool* pool, actor_world_slice* s) noexcept
@@ -712,6 +763,7 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   sense_tree_sys_.reset();
   select_sys_.reset();
   resolve_eating_sys_.reset();
+  deferred_.reset();
   brains_ = brains; // до setup_brain_registry: выбирает скрипт/конфиг vs натив/хардкод
   setup_brain_registry();
   calls_.reset(count); // предварительная ёмкость по числу акторов; растёт в cognition до index_capacity
@@ -781,7 +833,7 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
 actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& batch, thread::atomic_pool& pool) {
   using build_sense_tree_perf = actor_perf_domain::fn_traits<&actor_world_slice::build_sense_tree, "sense.tree", "self">;
   using cognition_perf = actor_perf_domain::fn_traits<&actor_world_slice::cognition, "cognition", "self", "tick", "pool">;
-  using apply_perf = actor_perf_domain::fn_traits<&actor_world_slice::apply, "apply", "self">;
+  using apply_perf = actor_perf_domain::fn_traits<&actor_world_slice::apply, "apply", "self", "pool">;
   using integrate_perf = actor_perf_domain::fn_traits<&actor_world_slice::integrate, "integrate", "self", "dt_seconds", "pool">;
   using drives_perf = actor_perf_domain::fn_traits<&actor_world_slice::update_drives, "drives", "self", "dt_seconds", "pool">;
   using resolve_eating_perf = actor_perf_domain::fn_traits<&actor_world_slice::resolve_eating, "eating", "self", "tick">;
@@ -799,7 +851,7 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
   ensure_actor_perf_introspection();
   build_sense_tree_fn_t{}(*this);
   cognition_fn_t{}(*this, tick_, pool);
-  apply_fn_t{}(*this);                     // эффекты выбранных действий + FSM/звук (без интеграции)
+  apply_fn_t{}(*this, pool);                // collect MT + elect ST, затем FSM/звук
   integrate_fn_t{}(*this, dt_seconds, pool); // движение по скорости + расталкивание (map-фаза)
   drives_fn_t{}(*this, dt_seconds, pool);    // пассивная динамика мотиваций (map-фаза)
   resolve_eating_fn_t{}(*this, tick_);
@@ -878,7 +930,7 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
     per->prey_id = prey->payload.id;
   }
 
-  // GOAP: dry-run ctx → decide (hit кеша ⇒ без A*) → первое действие плана → intent.
+  // GOAP: dry-run ctx → decide (hit кеша ⇒ без A*) → первое действие плана → deferred effect.
   const auto& goal_state = goap_->get_goals().front().goal;
   const uint64_t goal_id = utils::string_hash("resolved");
   const auto ctx = make_ctx(world_, id, brain->seed, tick, nullptr, &scratch.act);
@@ -902,20 +954,37 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
   rec.primary = uint32_t(id);
   rec.target = uint32_t(aesthetics::invalid_entityid);
 
-  // RECORD-TIME арбитраж (ROADMAP п.16): если эффект тегирован как взаимодействие (дескриптор в
-  // реестре), заявляем elect на цель + self-claim. Правило арбитража и то, ЧТО оспаривается,
-  // задаёт дескриптор; ОТКУДА взять цель (perception) — знает проект. Имя функции в самом механизме
-  // не хардкодится: gate/reduce драйвятся дескриптором. Оба claim'а lock-free (elect many→one,
-  // self-claim — свой слот). eligibility (prey_in_range) уже обеспечена выбором GOAP.
-  if (const auto* desc = registry_.interaction_of(fn); desc != nullptr && per->has_prey) {
-    const auto prey = per->prey_id;
-    if (!aesthetics::is_invalid_entityid(prey) && world_.exists(prey)) {
-      rec.target = uint32_t(prey);
-      arena_.claim(fn, prey, id); // elect(target=prey) + self-claim(claimant=self)
+  const auto* effect = registry_.effect(fn);
+  if (effect == nullptr) {
+    return; // невалидное GOAP-действие: нечего писать в deferred pipeline
+  }
+
+  // Проект знает, откуда взять target; стратегия знает, как его арбитрить. Дескриптор act
+  // только заполняет scope; fn_deferred_ptr ниже запишет typed args в нужный executor.
+  act::exec_context effect_ctx = ctx;
+  bool has_required_scope = true;
+  if (const auto* desc = registry_.interaction_of(fn); desc != nullptr) {
+    has_required_scope = false;
+    if (desc->target_scope >= act::exec_context::max_scope) {
+      utils::error{}("actor interaction target_scope {} is outside act scope", desc->target_scope);
+    }
+    if (per->has_prey) {
+      const auto prey = per->prey_id;
+      if (!aesthetics::is_invalid_entityid(prey) && world_.exists(prey)) {
+        rec.target = uint32_t(prey);
+        effect_ctx.scope[desc->target_scope] = act::entity_id{uint32_t(prey)};
+        effect_ctx.scope_count = std::max(effect_ctx.scope_count, uint32_t(desc->target_scope) + 1u);
+        has_required_scope = true;
+      }
     }
   }
 
-  // Слот адресуется индексом ЭТОГО актора (id уникален среди отобранных ⇒ поток пишет свой слот).
+  if (has_required_scope) {
+    catalogue::mt::record_scope source(uint64_t(uint32_t(id)), aesthetics::get_entityid_index(id));
+    effect->invoke(effect_ctx); // MT-фаза: обёртка только пишет в предаллоцированный буфер
+  }
+
+  // Отдельный однослотовый journal нужен только для FSM/звука после commit.
   calls_.record(aesthetics::get_entityid_index(id), rec);
 }
 
@@ -924,20 +993,22 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
 //      overdue (давность решения). budget_clamp усекает до think_budget_ самых просроченных
 //      (детерминированный тай-брейк по индексу). Общий примитив aesthetics::budget_clamp.
 //   2) think: cognition_system (worklist_system) раскидывает отобранных по потокам, каждый — в свою
-//      scratch-полосу (A*+cache+ds VM), зовёт decide_actor → тот пишет intent в СВОЙ слот intents_
-//      (непересекающиеся ⇒ без локов). apply обходит буфер по индексу ⇒ детерминизм без merge/sort.
+//      scratch-полосу (A*+cache+ds VM), зовёт decide_actor → тот record'ит effects в СВОИ
+//      `(source_index, local_sequence)` slots. seal восстанавливает total order независимо от scheduling.
 // Стоимость восприятия+GOAP ∝ бюджету/числу_потоков. Отбор — O(N)-скан (на миллионах заменить
 // на timing-wheel). sense_tree_ строится ДО (build_sense_tree) и только читается воркерами.
 void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool) {
   if (!cognition_sys_) {
     cognition_sys_ = std::make_unique<cognition_system>(&pool, this); // ленивое (пул известен тут)
   }
-  // Засайзить буферы фазы до ёмкости индексов мира НА ГЛАВНОМ потоке — покрывает всех живых акторов,
-  // чтобы параллельные записи не реаллоцировали. calls_: слот на инициатора (record без локов);
-  // arena_: elect по индексу цели (atomic-min) + self-claim по индексу инициатора.
+  // Всю память record-фазы готовим на главном потоке. Каждый worker затем пишет только в слоты
+  // своего source_index: calls_ — action journal, deferred_ — typed effect calls collect/elect.
   const size_t cap = world_.index_capacity();
   calls_.reset(cap);
-  arena_.reset(cap);
+  if (!deferred_) {
+    deferred_ = std::make_unique<deferred_effects>();
+  }
+  deferred_->begin_record(cap);
 
   // select: созревшие (skip едящих/схваченных — «коммит длительностью действия») + давность. Reduce
   // view<actor_cognition> в due_ ЛЯМБДА-СИСТЕМОЙ (ROADMAP п.11): однопоточно, лямбда захватывает this и
@@ -966,7 +1037,8 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
     return aesthetics::get_entityid_index(a.entity) < aesthetics::get_entityid_index(b.entity);
   });
 
-  // think: work-list = отобранные; run раскидывает по потокам, decide_actor пишет intents_ (time=tick).
+  // think: work-list = отобранные; run раскидывает по потокам, decide_actor вызывает act::effect,
+  // а fn_deferred_ptr пишет в слот (source_index, local_sequence), не мутируя world.
   auto& wl = cognition_sys_->worklist();
   wl.clear();
   wl.reserve(due_.size());
@@ -977,48 +1049,54 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
   DE_TRACE(catalogue::log_domain::gameplay, "cognition tick={} calls={} budget={}", tick, calls_.size(), think_budget_);
 }
 
-// apply — COMMIT-фаза deferred-call механизма (ROADMAP п.16): проиграть записанные вызовы в
-// детерминированном порядке (индекс актора; пустые слоты пропускаются). Эффекты-взаимодействия
-// (тегированы дескриптором в реестре) применяются ТОЛЬКО у победителей arena_.won (elect + «intent
-// бьёт grab»); прочие действия — безусловно; затем FSM-переход по действию. Эффект мутирует мир
-// напрямую в commit'е (логирование/effect_sink подключатся вторым консьюмером позже). Все эффекты
-// читают позиции ДО integrate → решения по согласованному снимку тика.
-void actor_world_slice::apply() {
+// apply — три барьерных шага: (1) collect-группы по self параллельно, (2) structural elect
+// по target однопоточно, (3) action journal по source-index для FSM/звука. Внутри группы вызовы всегда
+// упорядочены (source, local_sequence); elect берёт первый. Все эффекты читают позиции ДО integrate.
+void actor_world_slice::apply(thread::atomic_pool& pool) {
   sound_emits_.clear(); // sim-звуки этого тика собираем заново
-  // Generic-ядро commit'а (replay + дескриптор-гейт + invoke) — движковое (simul::commit_calls). Проекту
-  // остаются три хука: skip (схваченного гасим), make_ctx (seed/scratch), after (FSM-переход + sim-звук).
-  simul::commit_calls(
-    calls_, registry_, arena_,
-    [this](const catalogue::call_record&, const aesthetics::entityid_t id) {
-      // Схваченного В ЭТОМ ЖЕ commit гасим (движение не перебьёт заморозку, FSM — state="eaten").
-      return world_.get<actor_grabbed>(id) != nullptr;
-    },
-    [this](const catalogue::call_record&, const aesthetics::entityid_t id) {
-      const auto* brain = world_.get<actor_brain>(id);
-      const uint64_t seed = brain != nullptr ? brain->seed : 0u;
-      // cognition завершён: caller-полосу 0 cognition_system можно переиспользовать для commit/FSM.
-      return make_ctx(world_, id, seed, tick_, nullptr, &cognition_sys_->lanes().front().act);
-    },
-    [this](const catalogue::call_record& rec, const aesthetics::entityid_t id,
-           const act::exec_context& ctx, const bool /*ran*/) {
-      // FSM-исполнитель: событие = выбранное действие (rec.fn). Переход ТОЛЬКО при реальной смене —
-      // самопереход (то же действие) не пере-входит (звук — раз на смену состояния).
-      auto* st = world_.get<actor_state>(id);
-      if (st == nullptr) {
-        return;
-      }
-      const auto outcome = mood::step(*fsm_, st->state, rec.fn, ctx);
-      if (outcome.result == mood::step_result::transitioned &&
-          outcome.next_state != utils::invalid_id && outcome.next_state != st->state) {
-        st->state = mood::apply_transition(*fsm_, st->state, *outcome.taken, ctx);
-        // sim-звук на ВХОД в состояние (eating→чавк, flee→тревога). Эфемерно, не реплицируется.
-        if (const uint64_t snd = sound_for_state(st->state); snd != 0) {
-          if (const auto* p = world_.get<actor_position>(id); p != nullptr) {
-            sound_emits_.push_back(sound_emit{snd, p->value});
-          }
+  if (!deferred_) {
+    utils::error{}("actor deferred executors are missing before apply");
+  }
+
+  deferred_->local.seal();
+  pool.distribute1(deferred_->local.group_count(), [this](const size_t start, const size_t count) {
+    for (size_t i = start; i < start + count; ++i) {
+      deferred_->local.dispatch_group(i);
+    }
+  });
+  pool.compute();
+  pool.wait();
+  deferred_->local.finish_commit();
+
+  // create/remove component остаются в явном ST-шаге. elect и target_not_source здесь уже sealed.
+  deferred_->eat.seal();
+  deferred_->eat.commit();
+
+  calls_.dispatch([this](const catalogue::call_record& rec) {
+    const auto id = aesthetics::entityid_t(rec.primary);
+    // Схваченного В ЭТОМ ЖЕ commit гасим: eat уже заморозил его и поставил state="eaten".
+    if (world_.get<actor_grabbed>(id) != nullptr) {
+      return;
+    }
+    const auto* brain = world_.get<actor_brain>(id);
+    const uint64_t seed = brain != nullptr ? brain->seed : 0u;
+    // cognition завершён: caller-полосу 0 можно переиспользовать для серийного FSM-шага.
+    const auto ctx = make_ctx(world_, id, seed, tick_, nullptr, &cognition_sys_->lanes().front().act);
+    auto* st = world_.get<actor_state>(id);
+    if (st == nullptr) {
+      return;
+    }
+    const auto outcome = mood::step(*fsm_, st->state, rec.fn, ctx);
+    if (outcome.result == mood::step_result::transitioned &&
+        outcome.next_state != utils::invalid_id && outcome.next_state != st->state) {
+      st->state = mood::apply_transition(*fsm_, st->state, *outcome.taken, ctx);
+      if (const uint64_t snd = sound_for_state(st->state); snd != 0) {
+        if (const auto* p = world_.get<actor_position>(id); p != nullptr) {
+          sound_emits_.push_back(sound_emit{snd, p->value});
         }
       }
-    });
+    }
+  });
 }
 
 // integrate — map-фаза интеграции позиций (integration_system): движение по скорости + расталкивание.
@@ -1161,6 +1239,7 @@ bool actor_world_slice::load(const std::span<const uint8_t> packet) {
   sense_tree_sys_.reset();
   select_sys_.reset();
   resolve_eating_sys_.reset();
+  deferred_.reset();
   setup_brain_registry();
   calls_.clear();
   // как в init: аллокаторы пулов поедания заранее на главном потоке (view<> не кинет; type-id

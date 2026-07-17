@@ -1,0 +1,509 @@
+#ifndef DEVILS_ENGINE_CATALOGUE_DEFERRED_H
+#define DEVILS_ENGINE_CATALOGUE_DEFERRED_H
+
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <limits>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+#include "devils_engine/utils/core.h"
+#include "devils_engine/utils/string_id.h"
+#include "devils_engine/utils/type_traits.h"
+
+// Typed deferred effects for MT gameplay evaluation.
+//
+// The native function stays an ordinary `void(Args...)`. `fn_deferred_ptr` mirrors that signature,
+// but records owned arguments into the executor bound to its strategy domain. The body runs only
+// after `seal()` in deterministic `(key, source, local_sequence)` order.
+//
+// Record-time invariants:
+// - `begin_record()` sizes all storage before workers start;
+// - one worker owns one source_index for the whole record_scope;
+// - record_scope is per-worker ambient metadata only (source id/index + local sequence), not world state;
+// - set_executor() is changed only outside a record/commit phase.
+//
+// The first slice deliberately uses one heap allocation per recorded typed call. The surrounding
+// per-source slot table is stable and lock-free to write; a byte arena/SBO can replace call_model later
+// without changing the public wrapper/strategy contract.
+
+namespace devils_engine {
+namespace catalogue {
+namespace mt {
+
+enum class arbitration : uint8_t {
+  collect,
+  elect
+};
+
+namespace commit {
+struct serial {};
+struct parallel_groups {};
+struct serial_structural {};
+} // namespace commit
+
+namespace conflict {
+struct none {};
+// Elect group is suppressed when its key is also a source in the same strategy pass. This models
+// symmetric/cascade interaction protection such as "an entity attempting to eat cannot be eaten".
+struct target_not_source {};
+} // namespace conflict
+
+struct call_metadata {
+  uint64_t key = 0;
+  uint64_t source = 0;
+  uint64_t function = 0;
+  uint32_t local_sequence = 0;
+  size_t source_index = 0;
+};
+
+namespace detail {
+
+template <typename T>
+uint64_t stable_key(const T& value) {
+  using U = std::remove_cvref_t<T>;
+  if constexpr (std::is_integral_v<U>) {
+    return static_cast<uint64_t>(value);
+  } else if constexpr (std::is_enum_v<U>) {
+    return static_cast<uint64_t>(static_cast<std::underlying_type_t<U>>(value));
+  } else if constexpr (requires { value.id; }) {
+    return stable_key(value.id);
+  } else {
+    static_assert(std::is_integral_v<U>,
+                  "catalogue::mt key must be integral, enum, or expose an integral/enum .id member");
+  }
+}
+
+struct record_context {
+  uint64_t source = 0;
+  size_t source_index = 0;
+  uint32_t next_sequence = 0;
+};
+
+inline thread_local record_context* current_record_context = nullptr;
+
+inline record_context& require_record_context() {
+  if (current_record_context == nullptr) {
+    utils::error{}("catalogue::mt deferred function called without an active record_scope");
+  }
+  return *current_record_context;
+}
+
+template <typename T>
+struct stored_arg {
+  using type = std::remove_cvref_t<T>;
+};
+
+template <>
+struct stored_arg<std::string_view> {
+  using type = std::string;
+};
+
+template <>
+struct stored_arg<const std::string_view> {
+  using type = std::string;
+};
+
+template <typename T>
+using stored_arg_t = typename stored_arg<T>::type;
+
+template <typename Formal>
+stored_arg_t<Formal> capture_arg(const Formal& value) {
+  if constexpr (std::is_same_v<std::remove_cv_t<Formal>, std::string_view>) {
+    return std::string(value);
+  } else {
+    return stored_arg_t<Formal>(value);
+  }
+}
+
+template <typename Formal, typename Stored>
+decltype(auto) materialize_arg(Stored& value) {
+  if constexpr (std::is_same_v<std::remove_cv_t<Formal>, std::string_view>) {
+    return std::string_view(value);
+  } else {
+    return std::remove_cv_t<Formal>(value);
+  }
+}
+
+class call_base {
+public:
+  explicit call_base(const call_metadata metadata) noexcept : metadata_(metadata) {}
+  virtual ~call_base() noexcept = default;
+
+  const call_metadata& metadata() const noexcept {
+    return metadata_;
+  }
+
+  virtual void invoke() = 0;
+
+private:
+  call_metadata metadata_;
+};
+
+template <auto Fn, typename... Args>
+class call_model final : public call_base {
+public:
+  static_assert((!std::is_reference_v<Args> && ...),
+                "catalogue::mt first slice requires value arguments; pass stable handles/ids by value");
+  static_assert((std::is_copy_constructible_v<stored_arg_t<Args>> && ...),
+                "catalogue::mt first slice requires copyable owned arguments");
+
+  call_model(const call_metadata metadata, const Args&... args)
+      : call_base(metadata), args_(capture_arg<Args>(args)...) {}
+
+  void invoke() override {
+    invoke_impl(std::index_sequence_for<Args...>{});
+  }
+
+private:
+  template <size_t... I>
+  void invoke_impl(std::index_sequence<I...>) {
+    std::invoke(Fn, materialize_arg<Args>(std::get<I>(args_))...);
+  }
+
+  std::tuple<stored_arg_t<Args>...> args_;
+};
+
+template <typename T>
+struct callable_traits : public utils::detail::function_traits_v2<T> {};
+
+} // namespace detail
+
+// Binds stable source provenance to every deferred call made by the current worker. local_sequence is
+// shared across ALL strategy domains used by this scope, so neighbouring effects retain script order.
+class record_scope {
+public:
+  record_scope(const uint64_t source, const size_t source_index) noexcept
+      : previous_(detail::current_record_context), context_{source, source_index, 0} {
+    detail::current_record_context = &context_;
+  }
+
+  ~record_scope() noexcept {
+    detail::current_record_context = previous_;
+  }
+
+  record_scope(const record_scope&) = delete;
+  record_scope(record_scope&&) = delete;
+  record_scope& operator=(const record_scope&) = delete;
+  record_scope& operator=(record_scope&&) = delete;
+
+  uint32_t next_sequence() const noexcept {
+    return context_.next_sequence;
+  }
+
+private:
+  detail::record_context* previous_;
+  detail::record_context context_;
+};
+
+namespace key {
+
+template <size_t I>
+struct entity_arg {
+  template <typename... Args>
+  static uint64_t get(const Args&... args) {
+    static_assert(I < sizeof...(Args), "catalogue::mt key argument index is out of range");
+    return detail::stable_key(std::get<I>(std::forward_as_tuple(args...)));
+  }
+};
+
+} // namespace key
+
+namespace order {
+
+struct source_then_sequence {
+  static bool less(const call_metadata& a, const call_metadata& b) noexcept {
+    if (a.source != b.source) return a.source < b.source;
+    if (a.local_sequence != b.local_sequence) return a.local_sequence < b.local_sequence;
+    return a.function < b.function;
+  }
+};
+
+} // namespace order
+
+template <typename Key, typename Order = order::source_then_sequence,
+          typename Commit = commit::parallel_groups>
+struct collect {
+  using key_policy = Key;
+  using order_policy = Order;
+  using commit_policy = Commit;
+  using conflict_policy = conflict::none;
+  static constexpr arbitration arbitration_policy = arbitration::collect;
+};
+
+template <typename Key, typename Order = order::source_then_sequence,
+          typename Commit = commit::serial, typename Conflict = conflict::none>
+struct elect {
+  using key_policy = Key;
+  using order_policy = Order;
+  using commit_policy = Commit;
+  using conflict_policy = Conflict;
+  static constexpr arbitration arbitration_policy = arbitration::elect;
+};
+
+enum class executor_phase : uint8_t {
+  idle,
+  recording,
+  sealed,
+  committed
+};
+
+template <typename Strategy>
+class executor {
+public:
+  struct group_view {
+    uint64_t key = 0;
+    size_t begin = 0;
+    size_t end = 0;
+    bool eligible = true;
+
+    size_t size() const noexcept {
+      return end - begin;
+    }
+  };
+
+  using strategy_type = Strategy;
+  using commit_policy = typename Strategy::commit_policy;
+  static constexpr bool parallel_groups = std::is_same_v<commit_policy, commit::parallel_groups>;
+
+  executor_phase phase() const noexcept {
+    return phase_;
+  }
+
+  size_t source_capacity() const noexcept {
+    return source_capacity_;
+  }
+
+  uint32_t sequence_capacity() const noexcept {
+    return sequence_capacity_;
+  }
+
+  size_t size() const noexcept {
+    return sealed_indices_.size();
+  }
+
+  size_t group_count() const noexcept {
+    return groups_.size();
+  }
+
+  const group_view& group(const size_t index) const {
+    return groups_.at(index);
+  }
+
+  const call_metadata& metadata(const size_t sealed_index) const {
+    return slots_.at(sealed_indices_.at(sealed_index))->metadata();
+  }
+
+  // Allocates/grows storage and opens a new record phase. sequence_capacity is the maximum number of
+  // effect positions in one source script pass, not merely calls routed to this one strategy.
+  void begin_record(const size_t source_capacity, const uint32_t sequence_capacity) {
+    if (phase_ == executor_phase::recording || phase_ == executor_phase::sealed) {
+      utils::error{}("catalogue::mt executor begin_record called before the previous phase was committed");
+    }
+    if (sequence_capacity == 0 && source_capacity != 0) {
+      utils::error{}("catalogue::mt executor sequence_capacity must be non-zero when sources are present");
+    }
+    if (sequence_capacity != 0 && source_capacity > std::numeric_limits<size_t>::max() / sequence_capacity) {
+      utils::error{}("catalogue::mt executor capacity overflow: {} sources * {} sequences", source_capacity,
+                     sequence_capacity);
+    }
+
+    const size_t required = source_capacity * size_t(sequence_capacity);
+    for (auto& slot : slots_) slot.reset();
+    if (slots_.size() < required) slots_.resize(required);
+    source_capacity_ = source_capacity;
+    sequence_capacity_ = sequence_capacity;
+    active_slot_count_ = required;
+    sealed_indices_.clear();
+    groups_.clear();
+    sources_.clear();
+    phase_ = executor_phase::recording;
+  }
+
+  template <auto Fn, typename... Args>
+  void record(const uint64_t function, const detail::record_context& context,
+              const uint32_t local_sequence, const Args&... args) {
+    static_assert(std::is_void_v<typename detail::callable_traits<decltype(Fn)>::result_type>,
+                  "catalogue::mt deferred functions must return void");
+    if (phase_ != executor_phase::recording) {
+      utils::error{}("catalogue::mt deferred function recorded outside begin_record/seal phase");
+    }
+    if (context.source_index >= source_capacity_) {
+      utils::error{}("catalogue::mt source index {} is outside executor capacity {}", context.source_index,
+                     source_capacity_);
+    }
+    if (local_sequence >= sequence_capacity_) {
+      utils::error{}("catalogue::mt local_sequence {} exceeds per-source capacity {}", local_sequence,
+                     sequence_capacity_);
+    }
+
+    const size_t index = context.source_index * size_t(sequence_capacity_) + local_sequence;
+    if (slots_[index] != nullptr) {
+      utils::error{}("catalogue::mt duplicate deferred slot: source index {}, local_sequence {}",
+                     context.source_index, local_sequence);
+    }
+    const uint64_t group_key = Strategy::key_policy::get(args...);
+    const call_metadata metadata{group_key, context.source, function, local_sequence, context.source_index};
+    slots_[index] = std::make_unique<detail::call_model<Fn, Args...>>(metadata, args...);
+  }
+
+  // Barrier-side deterministic preparation. No worker may record after this call.
+  void seal() {
+    if (phase_ != executor_phase::recording) {
+      utils::error{}("catalogue::mt executor seal called outside the recording phase");
+    }
+
+    sealed_indices_.clear();
+    for (size_t i = 0; i < active_slot_count_; ++i) {
+      if (slots_[i] != nullptr) sealed_indices_.push_back(i);
+    }
+
+    std::sort(sealed_indices_.begin(), sealed_indices_.end(), [this](const size_t a, const size_t b) {
+      const call_metadata& ma = slots_[a]->metadata();
+      const call_metadata& mb = slots_[b]->metadata();
+      if (ma.key != mb.key) return ma.key < mb.key;
+      return Strategy::order_policy::less(ma, mb);
+    });
+
+    if constexpr (Strategy::arbitration_policy == arbitration::elect &&
+                  std::is_same_v<typename Strategy::conflict_policy, conflict::target_not_source>) {
+      sources_.reserve(sealed_indices_.size());
+      for (const size_t index : sealed_indices_) sources_.push_back(slots_[index]->metadata().source);
+      std::sort(sources_.begin(), sources_.end());
+      sources_.erase(std::unique(sources_.begin(), sources_.end()), sources_.end());
+    }
+
+    groups_.clear();
+    size_t begin = 0;
+    while (begin < sealed_indices_.size()) {
+      const uint64_t group_key = slots_[sealed_indices_[begin]]->metadata().key;
+      size_t end = begin + 1;
+      while (end < sealed_indices_.size() && slots_[sealed_indices_[end]]->metadata().key == group_key) {
+        ++end;
+      }
+      bool eligible = true;
+      if constexpr (Strategy::arbitration_policy == arbitration::elect &&
+                    std::is_same_v<typename Strategy::conflict_policy, conflict::target_not_source>) {
+        eligible = !std::binary_search(sources_.begin(), sources_.end(), group_key);
+      }
+      groups_.push_back(group_view{group_key, begin, end, eligible});
+      begin = end;
+    }
+    phase_ = executor_phase::sealed;
+  }
+
+  // Executes one independent key-group. For commit::parallel_groups callers may distribute distinct
+  // group indices to workers, wait, then call finish_commit(). Calls inside one collect group stay serial.
+  void dispatch_group(const size_t group_index) {
+    if (phase_ != executor_phase::sealed) {
+      utils::error{}("catalogue::mt dispatch_group called before seal or after finish_commit");
+    }
+    const group_view& g = groups_.at(group_index);
+    if (!g.eligible) return;
+    if constexpr (Strategy::arbitration_policy == arbitration::elect) {
+      slots_[sealed_indices_[g.begin]]->invoke(); // first = lowest source/local_sequence by total order
+    } else {
+      for (size_t i = g.begin; i < g.end; ++i) {
+        slots_[sealed_indices_[i]]->invoke();
+      }
+    }
+  }
+
+  // Serial convenience path, mandatory for serial/serial_structural and useful as a deterministic
+  // fallback for parallel_groups.
+  void commit() {
+    if (phase_ != executor_phase::sealed) {
+      utils::error{}("catalogue::mt executor commit called before seal");
+    }
+    for (size_t i = 0; i < groups_.size(); ++i) dispatch_group(i);
+    phase_ = executor_phase::committed;
+  }
+
+  // Completes an externally parallelized group commit after the caller's worker barrier.
+  void finish_commit() {
+    if (phase_ != executor_phase::sealed) {
+      utils::error{}("catalogue::mt finish_commit called before seal or after commit");
+    }
+    phase_ = executor_phase::committed;
+  }
+
+private:
+  std::vector<std::unique_ptr<detail::call_base>> slots_;
+  std::vector<size_t> sealed_indices_;
+  std::vector<group_view> groups_;
+  std::vector<uint64_t> sources_;
+  size_t source_capacity_ = 0;
+  size_t active_slot_count_ = 0;
+  uint32_t sequence_capacity_ = 0;
+  executor_phase phase_ = executor_phase::idle;
+};
+
+template <typename Strategy>
+struct domain {
+  inline static executor<Strategy>* executor_i = nullptr;
+
+  static void set_executor(executor<Strategy>* ptr) noexcept {
+    executor_i = ptr;
+  }
+
+  static executor<Strategy>* executor_instance() noexcept {
+    return executor_i;
+  }
+
+  template <auto Fn, utils::template_string_t Name, utils::template_string_t... ArgNames>
+  struct fn_traits {
+    using fn_t = decltype(Fn);
+    using traits = detail::callable_traits<fn_t>;
+    using return_t = typename traits::result_type;
+
+    static_assert(std::is_pointer_v<fn_t> && std::is_function_v<std::remove_pointer_t<fn_t>>,
+                  "catalogue::mt first slice supports free function pointers");
+    static_assert(std::is_void_v<return_t>, "catalogue::mt fn_deferred_ptr is only valid for effect functions");
+
+    static constexpr std::string_view name = Name.sv();
+    static constexpr utils::id function_id = utils::murmur_hash64A(name);
+    static constexpr size_t argument_count = traits::argument_count;
+    static constexpr std::array<std::string_view, sizeof...(ArgNames)> argument_names{ArgNames.sv()...};
+
+    template <typename T>
+    struct maker;
+
+    template <typename... Args>
+    struct maker<void (*)(Args...)> {
+      using pointer_t = void (*)(Args...);
+
+      static void call(Args... args) {
+        executor<Strategy>* ex = executor_i;
+        if (ex == nullptr) {
+          utils::error{}("catalogue::mt deferred function '{}' called without a strategy executor", name);
+        }
+        detail::record_context& context = detail::require_record_context();
+        if (context.next_sequence == std::numeric_limits<uint32_t>::max()) {
+          utils::error{}("catalogue::mt local_sequence overflow for source {}", context.source);
+        }
+        const uint32_t sequence = context.next_sequence++;
+        ex->template record<Fn>(function_id, context, sequence, args...);
+      }
+    };
+
+    template <typename... Args>
+    struct maker<void (*)(Args...) noexcept> : maker<void (*)(Args...)> {};
+
+    using pointer_t = typename maker<fn_t>::pointer_t;
+    static constexpr pointer_t fn_deferred_ptr = &maker<fn_t>::call;
+  };
+};
+
+} // namespace mt
+} // namespace catalogue
+} // namespace devils_engine
+
+#endif

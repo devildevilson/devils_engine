@@ -38,6 +38,7 @@ int main() {
   const uint32_t tex = 4;
   const float dt = 1.0f / 60.0f;
 
+  thread::atomic_pool single_pool(1);
   thread::atomic_pool pool(4); // тем же пулом гоняем оба слайса ⇒ MT-детерминизм тоже под тестом
 
   tf::actor_batch batch_a, batch_b;
@@ -45,6 +46,25 @@ int main() {
   batch_b.bind("v2ui1c4v1");
   CHECK(batch_a.valid());
   CHECK(batch_b.valid());
+
+  // Один и тот же deferred-effect pipeline не должен зависеть от числа worker-ов: record идёт в
+  // (source_index, local_sequence), collect сортирует группы, elect выбирает по стабильному source id.
+  {
+    tf::actor_world_slice one_worker, four_workers;
+    one_worker.init(512, mn, mx, tex);
+    four_workers.init(512, mn, mx, tex);
+    int worker_count_diverged_at = -1;
+    for (int i = 1; i <= 45 && worker_count_diverged_at < 0; ++i) {
+      one_worker.update(dt, batch_a, single_pool);
+      four_workers.update(dt, batch_b, pool);
+      if (dump(one_worker) != dump(four_workers)) {
+        worker_count_diverged_at = i;
+      }
+    }
+    CHECK(worker_count_diverged_at < 0);
+    std::printf("1-worker vs 4-worker deferred pipeline: %s\n",
+                worker_count_diverged_at < 0 ? "45 ticks bit-identical" : "DIVERGED");
+  }
 
   // --- warmup: настоящий геймплей до момента снапшота (поедание/респавн/FSM успели наработать) ---
   tf::actor_world_slice a;

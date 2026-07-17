@@ -93,6 +93,27 @@ public:
   void update(const size_t) override {}
 };
 
+class reentrant_advancer_test : public devils_engine::simul::advancer {
+public:
+  explicit reentrant_advancer_test(const size_t frame_time) : advancer(frame_time) {}
+
+  void init() override {}
+  bool stop_predicate() const override {
+    return false;
+  }
+  void update(const size_t time) override {
+    observed_time = frame_time();
+    observed_counter = counter();
+    set_frame_time(time + 1);
+    stop();
+    updates += 1;
+  }
+
+  size_t observed_time = 0;
+  size_t observed_counter = 0;
+  size_t updates = 0;
+};
+
 class runtime_test_main : public devils_engine::simul::main_system<runtime_test_broker> {
 public:
   explicit runtime_test_main(runtime_test_bootstrap* boot) : boot_(boot) {}
@@ -143,6 +164,15 @@ struct runtime_test_traits {
 };
 
 } // namespace
+
+TEST_CASE("advancer callbacks may use synchronized advancer accessors") {
+  reentrant_advancer_test advancer(1000);
+  advancer.run(0);
+
+  CHECK(advancer.updates == 1);
+  CHECK(advancer.observed_time == 1000);
+  CHECK(advancer.observed_counter == 1);
+}
 
 TEST_CASE("app_runtime wires an extensible optional worker set") {
   using devils_engine::simul::runtime_stage;

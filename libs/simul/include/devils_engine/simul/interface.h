@@ -84,7 +84,9 @@ public:
   advancer(const size_t frame_time) noexcept;
   virtual ~advancer() noexcept = default;
 
-  virtual void run(const size_t wait_mcs); // interface functions under the mutex
+  // Scheduler fields are synchronized internally. Virtual stop_predicate()/update() callbacks run
+  // without mutex, so they may safely call frame_time(), counter(), set_frame_time(), stop(), etc.
+  virtual void run(const size_t wait_mcs);
   // jthread-friendly вариант: цикл дополнительно наблюдает stop_token, поэтому УНИЧТОЖЕНИЕ std::jthread
   // (его request_stop) кооперативно останавливает run без явного stop(). Старый run(wait_mcs) делегирует
   // сюда с пустым токеном (никогда не stop_requested) — поведение прежнее.
@@ -98,6 +100,7 @@ public:
   void reset_counter();
   void stop();
 
+  // Synchronizes advancer scheduler state only; it does not suspend a derived system's update().
   std::mutex& acquire_sync_object() noexcept;
 
 protected:

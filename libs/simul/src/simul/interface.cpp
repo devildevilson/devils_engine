@@ -49,10 +49,18 @@ void advancer::run(std::stop_token st, const size_t wait_mcs) {
 
   bool stop = false;
   while (!stop) {
+    // Virtual callbacks must not run under advancer::mutex. Besides making the whole system tick
+    // needlessly unavailable to observers, doing so self-deadlocks as soon as a callback uses one
+    // of advancer's synchronized accessors (frame_time(), counter(), stop(), ...).
+    if (stop_predicate()) {
+      break;
+    }
+
     clock_t::time_point next_tp;
+    size_t current_frame_time = 0;
     {
       std::unique_lock l(mutex);
-      stop = stop_predicate() || _stop || st.stop_requested();
+      stop = _stop || st.stop_requested();
       if (stop) {
         break;
       }
@@ -65,16 +73,25 @@ void advancer::run(std::stop_token st, const size_t wait_mcs) {
 
       _counter += 1;
       next_tp = _start + std::chrono::microseconds(_counter * _frame_time);
-      update(_frame_time);
-      // stop_token: кооперативная остановка при разрушении std::jthread (без явного stop())
-      stop = stop_predicate() || _stop || st.stop_requested();
+      current_frame_time = _frame_time;
     }
 
-    // update должен быть ПОД мьютексом? скорее да
+    update(current_frame_time);
+
+    // stop_token: кооперативная остановка при разрушении std::jthread (без явного stop()).
+    // Проверяем derived predicate также без mutex: predicate вправе пользоваться synchronized
+    // accessor-ами самого advancer.
+    stop = stop_predicate();
+    {
+      std::unique_lock l(mutex);
+      stop = stop || _stop || st.stop_requested();
+    }
 
     // нужно добавить проверку того что мы лагаем
     // это наверное до секунды разница с next_tp ?
-    std::this_thread::sleep_until(next_tp);
+    if (!stop) {
+      std::this_thread::sleep_until(next_tp);
+    }
   }
 }
 

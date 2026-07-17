@@ -73,6 +73,9 @@ target_link_libraries(aesthetics_collect_buffer_test PRIVATE devils_engine::aest
 devils_add_doctest(catalogue_call_log_test catalogue_call_log_test.cpp)
 target_link_libraries(catalogue_call_log_test PRIVATE devils_engine::catalogue devils_engine::thread)
 
+devils_add_doctest(catalogue_deferred_test catalogue_deferred_test.cpp)
+target_link_libraries(catalogue_deferred_test PRIVATE devils_engine::catalogue devils_engine::thread devils_script)
+
 devils_add_doctest(aesthetics_serialization_test aesthetics_serialization_test.cpp)
 target_link_libraries(aesthetics_serialization_test PRIVATE devils_engine::aesthetics)
 

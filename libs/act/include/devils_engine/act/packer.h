@@ -26,9 +26,9 @@
 // аргументов вызова роли не играет (никаких running-счётчиков). least-privilege: функция объявляет в
 // сигнатуре только то, что ей нужно; остального (rng/sink/scratch/полный scope) она не видит.
 //
-// БЛОКИРОВКИ (self-claim/elect) НЕ здесь: это pipeline-шаг (interaction_arena в aesthetics), драйвится
-// дескриптором act::interaction по арности entity-аргументов. Упаковщик оставляет act ECS-агностичным.
-// Хранение вызова (call_log) — fn_id + entity-id (данные), fat-handle сюда не попадает.
+// АРБИТРАЖ (elect/collect) НЕ здесь: `pack` лишь собирает C++-аргументы из act-контекста.
+// Если Fn = catalogue `fn_deferred_ptr`, сама generated-обёртка запишет typed arguments в strategy executor;
+// `seal/commit` выполнит вызвавший pipeline. act остаётся ECS- и MT-агностичным.
 
 namespace devils_engine {
 namespace act {
