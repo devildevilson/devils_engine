@@ -13,6 +13,7 @@
 #include <devils_engine/act/registry.h>    // act::registry + function<RetT>
 #include <devils_engine/catalogue/call_log.h> // catalogue::call_log — контейнер отложенных вызовов (record/dispatch)
 #include <devils_engine/acumen/execution_scratch.h>
+#include <devils_engine/acumen/goap_resource.h>
 #include <devils_engine/acumen/registry.h>
 #include <devils_engine/acumen/system.h>   // acumen::system — GOAP над act::registry
 #include <devils_engine/aesthetics/sink.h>           // serial::sink_policy/seal/unseal — save/load слайса
@@ -41,12 +42,6 @@ namespace devils_script {
 struct container;
 struct system;
 } // namespace devils_script
-
-namespace tile_frontier {
-namespace core {
-struct goap_config;
-}
-} // namespace tile_frontier
 
 namespace tile_frontier {
 namespace core {
@@ -253,7 +248,7 @@ struct prefab_def {
 struct brain_config {
   const devils_script::container* is_hungry_program = nullptr; // скрипт-предикат "actor.is_hungry"
   const std::vector<devils_engine::mood::transition_config>* fsm_transitions = nullptr;
-  std::shared_ptr<const goap_config> goap;                     // flattened GOAP config; owns script containers
+  std::shared_ptr<const devils_engine::acumen::goap_config> goap; // flattened GOAP config; owns script containers
   const std::vector<prefab_def>* prefabs = nullptr;            // префабы из prefab/*.tavl (иначе хардкод food)
 };
 
@@ -313,7 +308,7 @@ private:
   void setup_brain_registry();
   // Собирает acumen::system из tavl-конфига: метрики (порядок=биты), действия/цели по ключам
   // (префикс !/not = инвертированный бит; символические биты типа "resolved" индексируются после метрик).
-  void build_goap_from_config(const goap_config& cfg);
+  void build_goap_from_config(const devils_engine::acumen::goap_config& cfg);
   // Строит kD-дерево восприятия над ВСЕМИ акторами (позиции меняются каждый тик).
   void build_sense_tree(devils_engine::thread::atomic_pool& pool);
   void gather_sense_tree();

@@ -12,6 +12,8 @@ set(HDR_LIST
   include/devils_engine/act/call_context.h
   include/devils_engine/act/execution_scratch.h
   include/devils_engine/act/stat_accessors.h
+  include/devils_engine/act/script_compiler.h
+  include/devils_engine/act/script_resource.h
   include/devils_engine/act/intent.h
   include/devils_engine/act/interaction.h
   include/devils_engine/act/packer.h
@@ -24,6 +26,7 @@ set(HDR_LIST
 set(SRC_LIST
   src/act/function.cpp
   src/act/registry.cpp
+  src/act/script_resource.cpp
 )
 
 add_library(devils_act ${SRC_LIST} ${HDR_LIST})
@@ -37,7 +40,8 @@ target_include_directories(devils_act
 # devils_script PUBLIC: script_function<RetT> (header-only) инстанцируется у потребителей и зовёт
 # devils_script::container/context — им нужны его символы и include-каталоги (тянет tavl PUBLIC).
 target_link_libraries(devils_act
-  PUBLIC devils_engine::options devils_engine::utils devils_engine::catalogue gtl devils_script
+  PUBLIC devils_engine::options devils_engine::utils devils_engine::catalogue devils_engine::demiurg gtl devils_script
+  PRIVATE tavl
 )
 
 add_library(devils_engine::act ALIAS devils_act)

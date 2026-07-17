@@ -6,12 +6,10 @@
 #include <algorithm>
 #include <string_view>
 
-#include "fsm_resource.h"
+#include "devils_engine/mood/fsm_resource.h"
 
-namespace tile_frontier {
-namespace core {
-
-using namespace devils_engine;
+namespace devils_engine {
+namespace mood {
 
 namespace {
 
@@ -94,12 +92,12 @@ std::string source_row(const std::string_view content, const tavl::source_span s
   return std::string(utils::string::trim(content.substr(begin, end - begin)));
 }
 
-mood::transition_config parse_transition(
+transition_config parse_transition(
   tavl::parser& parser,
   const demiurg::resource_interface& resource,
   const std::string_view content,
   const tavl::event& first) {
-  mood::transition_config config;
+  transition_config config;
   config.source = source_row(content, first.token.span);
   expect_identifier(parser, resource, first, "current state", config.current_state);
 
@@ -209,5 +207,5 @@ void fsm_resource::unload_warm(const utils::safe_handle_t&) {
   config_ = {};
 }
 
-} // namespace core
-} // namespace tile_frontier
+} // namespace mood
+} // namespace devils_engine

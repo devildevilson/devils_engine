@@ -1,19 +1,17 @@
-#ifndef TILE_FRONTIER_CORE_PREFAB_RESOURCE_H
-#define TILE_FRONTIER_CORE_PREFAB_RESOURCE_H
+#ifndef DEVILS_ENGINE_PREFAB_RESOURCE_H
+#define DEVILS_ENGINE_PREFAB_RESOURCE_H
 
 #include <string>
 #include <string_view>
 
 #include <devils_engine/demiurg/resource_base.h>
 
-// demiurg-ресурс префаба: держит СЫРОЙ tavl-текст ОДНОГО префаба. Один файл prefab/*.tavl = либо один
-// префаб (имя = базовое имя файла), либо список через `//---` (имя = поле `name`, id = `path:name` —
-// см. config-file-convention). Слайс регистрирует C++-специи компонентов (data/reference/custom/…) и
-// скармливает text() в prefab_registry.add_prefab(prefab_name(), ...). Сам текст движок разбирает —
-// ресурс лишь дисковый носитель (парс форм — в prefab_registry, поведение — в act::registry).
+// Generic carrier for one prefab's raw TAVL text. A file may contain one prefab (logical name is the
+// file id tail) or demiurg `//---` list entries (logical name is list_name). Component specs and
+// construction behavior remain consumer-owned prefab_registry policy.
 
-namespace tile_frontier {
-namespace core {
+namespace devils_engine {
+namespace prefab {
 
 class prefab_resource : public devils_engine::demiurg::resource_interface {
 public:
@@ -36,7 +34,7 @@ private:
   std::string text_; // сырой tavl-текст префаба (list-секция или весь файл)
 };
 
-} // namespace core
-} // namespace tile_frontier
+} // namespace prefab
+} // namespace devils_engine
 
 #endif

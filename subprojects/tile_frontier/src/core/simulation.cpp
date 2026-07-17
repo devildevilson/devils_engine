@@ -5,10 +5,14 @@
 #include <span>
 
 #include <devils_engine/bindings/lua_header.h>
+#include <devils_engine/acumen/goap_resource.h>
+#include <devils_engine/act/script_resource.h>
 #include <devils_engine/catalogue/introspection.h> // catalogue::statistics_store (perf UI)
 #include <devils_engine/catalogue/logging.h>       // доменное логгирование (DE_LOG) + init_logging
 #include <devils_engine/demiurg/resource_system.h>
+#include <devils_engine/mood/fsm_resource.h>
 #include <devils_engine/painter/gpu_texture_resource.h>
+#include <devils_engine/prefab/resource.h>
 #include <devils_engine/simul/loading_runtime.h>
 #include <devils_engine/simul/window_runtime.h>
 #include <devils_engine/sound/sound_resource.h>
@@ -22,14 +26,10 @@
 #include "assets_system.h"
 #include "broker.h"
 #include "config.h"
-#include "fsm_resource.h" // fsm_resource::transitions() для mood FSM из конфига
 #include "global_ubo.h"
-#include "goap_resource.h" // goap_resource::config() для GOAP из конфига
 #include "messages.h"
-#include "prefab_resource.h" // prefab_resource::text() для префабов из конфига
 #include "render_system.h"
 #include "runtime.h"
-#include "script_resource.h" // script_resource::program() для скрипт-предиката actor.is_hungry
 #include "texture_set.h"
 #include "tile_batch.h"
 #include "tile_map.h"
@@ -277,7 +277,7 @@ void simulation::begin_project_loading() {
   core::brain_config brains;
   std::vector<core::prefab_def> prefab_defs; // владелец текстов префабов на время init (brains.prefabs → сюда)
   if (auto* reg = c.assets_sim != nullptr ? c.assets_sim->resources() : nullptr) {
-    if (auto* sr = reg->get<script_resource>(scene.actor_script)) {
+    if (auto* sr = reg->get<act::script_resource>(scene.actor_script)) {
       while (!sr->usable()) {
         sr->load(utils::safe_handle_t{});
       }
@@ -286,7 +286,7 @@ void simulation::begin_project_loading() {
     } else {
       utils::warn("main: script '{}' was not found in the registry; using native is_hungry", scene.actor_script);
     }
-    if (auto* fr = reg->get<fsm_resource>(scene.actor_fsm)) {
+    if (auto* fr = reg->get<mood::fsm_resource>(scene.actor_fsm)) {
       while (!fr->usable()) {
         fr->load(utils::safe_handle_t{});
       }
@@ -295,8 +295,8 @@ void simulation::begin_project_loading() {
     } else {
       utils::warn("main: config '{}' was not found in the registry; using the built-in FSM", scene.actor_fsm);
     }
-    if (reg->get<goap_resource>(scene.actor_goap) != nullptr) {
-      brains.goap = std::make_shared<goap_config>(resolve_goap_config(*reg, scene.actor_goap));
+    if (reg->get<acumen::goap_resource>(scene.actor_goap) != nullptr) {
+      brains.goap = std::make_shared<acumen::goap_config>(acumen::resolve_goap_config(*reg, scene.actor_goap));
       DE_LOG(catalogue::log_domain::gameplay, flow, "main: GOAP <- config '{}' ({} metrics, {} actions)",
              scene.actor_goap, brains.goap->metrics.size(), brains.goap->actions.size());
     } else {
@@ -305,8 +305,8 @@ void simulation::begin_project_loading() {
     // Префабы из prefab/*.tavl: собираем имя+текст всех prefab_resource → в brain_config (слайс
     // регистрирует специи компонентов в C++ и скармливает текст в prefab_registry). Потребляется в
     // init (текст копируется), поэтому prefab_defs может жить локально до конца init.
-    std::vector<core::prefab_resource*> prefab_res;
-    reg->filter<core::prefab_resource>(scene.prefab_prefix, prefab_res);
+    std::vector<prefab::prefab_resource*> prefab_res;
+    reg->filter<prefab::prefab_resource>(scene.prefab_prefix, prefab_res);
     for (auto* pr : prefab_res) {
       while (!pr->usable()) {
         pr->load(utils::safe_handle_t{});

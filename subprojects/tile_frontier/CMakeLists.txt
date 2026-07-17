@@ -27,10 +27,6 @@ set(HDR_LIST
   include/core/actor_simulation.h
   include/core/entity_scope.h
   include/core/script_environment.h
-  include/core/script_resource.h
-  include/core/fsm_resource.h
-  include/core/goap_resource.h
-  include/core/prefab_resource.h
   include/core/world_scene_resource.h
   include/core/simulation.h
 )
@@ -45,10 +41,6 @@ set(SRC_LIST
   src/core/tile_map.cpp
   src/core/actor_simulation.cpp
   src/core/script_environment.cpp
-  src/core/script_resource.cpp
-  src/core/fsm_resource.cpp
-  src/core/goap_resource.cpp
-  src/core/prefab_resource.cpp
   src/core/world_scene_resource.cpp
   src/core/simulation.cpp
 )
@@ -133,8 +125,6 @@ set_target_properties(tile_frontier_mt_benchmark PROPERTIES
 add_executable(tile_frontier_config_effect_smoke
   config_effect_smoke.cpp
   src/core/actor_simulation.cpp
-  src/core/fsm_resource.cpp
-  src/core/goap_resource.cpp
   src/core/script_environment.cpp
 )
 target_link_libraries(tile_frontier_config_effect_smoke

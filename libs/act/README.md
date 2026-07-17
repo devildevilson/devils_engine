@@ -119,6 +119,17 @@ Lua backend отмечен как guest/UI-слой. Он не должен ст
 для mutating simulation effects: эффекты симуляции должны оставаться
 пригодными для dry-run, наблюдения и deterministic deferred apply.
 
+## Config Script Resource
+
+`act::script_resource` владеет общим TAVL-документом `{ret, scope, expr}` и готовым
+`devils_script::container`, но не знает конкретный gameplay root scope. На загрузке он делегирует
+компиляцию внедрённому `act::script_compiler`.
+
+Тот же type-erased seam использует `acumen::goap_resource` для co-parse metric predicates и action
+effects прямо из TAVL event stream. Проект реализует только конкретные
+`parse<Ret, RootScope>`-инстанциации; в `tile_frontier` это `script_environment` + `entity_scope`.
+Таким образом схемы/ресурсы принадлежат owner-библиотекам, а доступ к ECS остаётся игровым кодом.
+
 ## Registry
 
 `act::registry` - таблица функций по `fn_id`.

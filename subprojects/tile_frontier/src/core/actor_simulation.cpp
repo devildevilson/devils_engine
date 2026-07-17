@@ -32,7 +32,6 @@
 // в этот TU) и чтобы сторонний дампер скаляров (sim_globals с glm::vec2) видел adapter<glm::vec2>.
 #include "core/actor_snapshot.h"
 #include "entity_scope.h"  // seed_entity_scope — засев root-скоупа скрипт-предикатов
-#include "goap_resource.h" // goap_config — GOAP-описание из tavl
 
 namespace tile_frontier {
 namespace core {
@@ -540,7 +539,7 @@ void actor_world_slice::setup_brain_registry() {
       return false;
     }
     const auto& actions = brains_.goap->actions;
-    const auto it = std::find_if(actions.begin(), actions.end(), [name](const goap_action_config& a) {
+    const auto it = std::find_if(actions.begin(), actions.end(), [name](const acumen::goap_action_config& a) {
       return a.name == name;
     });
     return it != actions.end() && it->has_effect_program;
@@ -690,7 +689,7 @@ void actor_world_slice::setup_brain_registry() {
   }
 }
 
-void actor_world_slice::build_goap_from_config(const goap_config& cfg) {
+void actor_world_slice::build_goap_from_config(const acumen::goap_config& cfg) {
   // Метрики ОПРЕДЕЛЯЮТ свои предикаты инлайн-скриптами: регистрируем каждый как script_function<bool>
   // под ключом метрики в registry_ (перед сборкой acumen — он резолвит метрики по имени). Скрипт
   // исполняется на per-worker execution_scratch; засев root-скоупа — seed_entity_scope. Контейнеры живут в

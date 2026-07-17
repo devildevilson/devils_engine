@@ -1,18 +1,65 @@
 #include <filesystem>
 #include <fstream>
 
+#include <devils_engine/acumen/goap_resource.h>
+#include <devils_engine/act/script_compiler.h>
+#include <devils_engine/act/script_resource.h>
 #include <devils_engine/demiurg/module_system.h>
 #include <devils_engine/demiurg/resource_system.h>
+#include <devils_engine/utils/core.h>
 #include <devils_script/system.h>
 #include <doctest/doctest.h>
+#include <tavl/parser.h>
 
-#include "core/goap_resource.h"
-#include "core/entity_scope.h"
-
-using namespace tile_frontier::core;
+using namespace devils_engine;
+using namespace devils_engine::acumen;
 
 namespace {
-void config_effect(entity_scope) noexcept {}
+struct test_scope {
+  bool valid() const noexcept { return true; }
+};
+
+void config_effect(test_scope) noexcept {}
+
+struct test_script_compiler final : act::script_compiler {
+  devils_script::system sys;
+
+  test_script_compiler() {
+    sys.init_basic_functions();
+    sys.init_math();
+    sys.register_function<&config_effect>("config_effect");
+  }
+
+  void configure_parser(tavl::parser& parser) const override {
+    sys.configure_parser(parser);
+  }
+
+  act::compiled_script compile(std::string_view name,
+                               std::string_view return_type,
+                               std::string_view scope,
+                               std::string_view expression) const override {
+    if (return_type == "bool" && scope == "test") {
+      return {sys.parse<bool, test_scope>(name, expression), act::category::predicate};
+    }
+    utils::error{}("unsupported test script signature ({}, {})", return_type, scope);
+  }
+
+  devils_script::container compile_predicate(std::string_view name,
+                                              tavl::parser& parser) const override {
+    devils_script::container program;
+    devils_script::system::parse_context ctx;
+    sys.parse<bool, test_scope>(name, parser, ctx, program);
+    return program;
+  }
+
+  devils_script::container compile_effect(std::string_view name,
+                                           tavl::parser& parser) const override {
+    devils_script::container program;
+    devils_script::system::parse_context ctx;
+    sys.parse<void, test_scope>(name, parser, ctx, program);
+    return program;
+  }
+};
 }
 
 TEST_CASE("GOAP config inheritance preserves base order and overlays by semantic key [goap][config]") {
@@ -43,6 +90,34 @@ TEST_CASE("GOAP config inheritance preserves base order and overlays by semantic
   CHECK(flat.goals[0].name == "done");
 }
 
+TEST_CASE("act script resource delegates return type and root scope to the injected compiler [act][config][demiurg]") {
+  namespace fs = std::filesystem;
+  const auto root = fs::temp_directory_path() / "devils_engine_script_resource_test";
+  fs::remove_all(root);
+  fs::create_directories(root / "core" / "scripts");
+  {
+    std::ofstream config(root / "core" / "scripts" / "ready.tavl");
+    config << "ret = \"bool\"\n";
+    config << "scope = \"test\"\n";
+    config << "expr = \"true\"\n";
+  }
+
+  test_script_compiler scripts;
+  demiurg::module_system modules(root.generic_string() + "/");
+  modules.load_modules({demiurg::module_system::list_entry{"core/", "", ""}});
+  demiurg::resource_system resources;
+  resources.register_type<act::script_resource>("scripts", "tavl", &scripts);
+  resources.parse_resources(&modules);
+
+  auto* resource = resources.get<act::script_resource>("scripts/ready");
+  REQUIRE(resource != nullptr);
+  resource->load(utils::safe_handle_t{});
+  CHECK(resource->category() == act::category::predicate);
+  CHECK_FALSE(resource->program()->cmds.empty());
+
+  fs::remove_all(root);
+}
+
 TEST_CASE("GOAP resource resolves a single-parent config chain [goap][config][demiurg]") {
   namespace fs = std::filesystem;
   const auto root = fs::temp_directory_path() / "devils_engine_goap_inheritance_test";
@@ -61,10 +136,7 @@ TEST_CASE("GOAP resource resolves a single-parent config chain [goap][config][de
     derived << "actions = [ { name = sleep requirements = [ alive ] next_state = [ done ] weight_state = [ ] } ]\n";
   }
 
-  devils_script::system scripts;
-  scripts.init_basic_functions();
-  scripts.init_math();
-  scripts.register_function<&config_effect>("config_effect");
+  test_script_compiler scripts;
   devils_engine::demiurg::module_system modules(root.generic_string() + "/");
   modules.load_modules({devils_engine::demiurg::module_system::list_entry{"core/", "", ""}});
   devils_engine::demiurg::resource_system resources;
@@ -94,10 +166,7 @@ TEST_CASE("GOAP action co-parses an inline void effect program [goap][config][de
     config << "goals = [ { name = done requirements = [ ] goal = [ done ] } ]\n";
   }
 
-  devils_script::system scripts;
-  scripts.init_basic_functions();
-  scripts.init_math();
-  scripts.register_function<&config_effect>("config_effect");
+  test_script_compiler scripts;
   devils_engine::demiurg::module_system modules(root.generic_string() + "/");
   modules.load_modules({devils_engine::demiurg::module_system::list_entry{"core/", "", ""}});
   devils_engine::demiurg::resource_system resources;

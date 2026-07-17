@@ -1,12 +1,10 @@
 #include <devils_engine/demiurg/module_interface.h>
 #include <devils_engine/utils/core.h> // utils::warn
 
-#include "prefab_resource.h"
+#include "devils_engine/prefab/resource.h"
 
-namespace tile_frontier {
-namespace core {
-
-using namespace devils_engine;
+namespace devils_engine {
+namespace prefab {
 
 prefab_resource::prefab_resource() {
   set_flag(demiurg::resource_flags::warm_and_hot_same, true);
@@ -38,5 +36,5 @@ void prefab_resource::unload_warm(const utils::safe_handle_t&) {
   name_.clear();
 }
 
-} // namespace core
-} // namespace tile_frontier
+} // namespace prefab
+} // namespace devils_engine
