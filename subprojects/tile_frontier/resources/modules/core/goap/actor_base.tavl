@@ -13,6 +13,7 @@ metrics = [
 actions = [
   {
     name = flee
+    effect = flee
     requirements = [ threat_present ]
     next_state = [ resolved ]
     weight_state = [ ]
@@ -25,6 +26,7 @@ actions = [
   }
   {
     name = chase
+    effect = chase
     requirements = [ !threat_present, is_hungry, prey_present, !prey_in_range ]
     next_state = [ resolved ]
     weight_state = [ ]
@@ -43,6 +45,7 @@ actions = [
   }
   {
     name = think
+    effect = think
     requirements = [ !threat_present, !is_hungry, !is_bored ]
     next_state = [ resolved ]
     weight_state = [ ]

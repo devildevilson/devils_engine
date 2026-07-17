@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "geometry.h"
+#include "devils_engine/thread/atomic_pool.h"
 
 namespace devils_engine {
 namespace utils {
@@ -67,13 +68,64 @@ public:
 
   // Балансирующее построение: медианное разбиение по чередующимся осям, на месте.
   void build() {
-    bounds_ = aabb::empty();
-    for (const auto& n : nodes_) {
-      bounds_.expand(n.pos);
-    }
+    rebuild_bounds();
     if (!nodes_.empty()) {
       build_rec(0, nodes_.size(), 0);
     }
+  }
+
+  // Deterministic parallel build. A small top frontier is partitioned on the caller, then each
+  // disjoint subtree executes the exact same recursive nth_element build in the pool. Partition
+  // order cannot affect another subtree because their ranges no longer overlap; the resulting node
+  // layout therefore matches build(). The caller owns this barrier — do not invoke from a pool task.
+  void build_parallel(thread::atomic_pool& pool, const size_t min_parallel_size = 1024) {
+    rebuild_bounds();
+    if (nodes_.empty()) {
+      return;
+    }
+    const size_t task_target = std::min(pool.size() + 1, pool.queue_capacity());
+    if (nodes_.size() < min_parallel_size || task_target <= 1) {
+      build_rec(0, nodes_.size(), 0);
+      return;
+    }
+
+    build_ranges_.clear();
+    build_ranges_.reserve(task_target);
+    build_ranges_.push_back(build_range{0, nodes_.size(), 0});
+    while (build_ranges_.size() < task_target) {
+      size_t largest = build_ranges_.size();
+      size_t largest_size = 1;
+      for (size_t i = 0; i < build_ranges_.size(); ++i) {
+        const size_t count = build_ranges_[i].hi - build_ranges_[i].lo;
+        if (count > largest_size) {
+          largest = i;
+          largest_size = count;
+        }
+      }
+      if (largest == build_ranges_.size()) {
+        break;
+      }
+
+      const build_range range = build_ranges_[largest];
+      const size_t mid = partition(range.lo, range.hi, range.axis);
+      const int next = (range.axis + 1) % Dim;
+      build_ranges_[largest] = build_range{range.lo, mid, next};
+      if (mid + 1 < range.hi) {
+        build_ranges_.push_back(build_range{mid + 1, range.hi, next});
+      }
+    }
+
+    pool.distribute1(
+      build_ranges_.size(),
+      [](const size_t start, const size_t count, kd_tree* tree) {
+        for (size_t i = start; i < start + count; ++i) {
+          const build_range range = tree->build_ranges_[i];
+          tree->build_rec(range.lo, range.hi, range.axis);
+        }
+      },
+      this);
+    pool.compute();
+    pool.wait();
   }
 
   // Унифицированный запрос: обойти все точки, лежащие ВНУТРИ формы shape.
@@ -131,6 +183,28 @@ public:
   }
 
 private:
+  struct build_range {
+    size_t lo;
+    size_t hi;
+    int axis;
+  };
+
+  void rebuild_bounds() {
+    bounds_ = aabb::empty();
+    for (const auto& n : nodes_) {
+      bounds_.expand(n.pos);
+    }
+  }
+
+  size_t partition(const size_t lo, const size_t hi, const int axis) {
+    const size_t mid = lo + (hi - lo) / 2;
+    std::nth_element(nodes_.begin() + lo, nodes_.begin() + mid, nodes_.begin() + hi,
+                     [axis](const node& a, const node& b) {
+                       return a.pos[axis] < b.pos[axis];
+                     });
+    return mid;
+  }
+
   static scalar dist2(const point& a, const point& b) noexcept {
     scalar s = 0;
     for (int i = 0; i < Dim; ++i) {
@@ -144,11 +218,7 @@ private:
     if (hi - lo <= 1) {
       return;
     }
-    const size_t mid = lo + (hi - lo) / 2;
-    std::nth_element(nodes_.begin() + lo, nodes_.begin() + mid, nodes_.begin() + hi,
-                     [axis](const node& a, const node& b) {
-                       return a.pos[axis] < b.pos[axis];
-                     });
+    const size_t mid = partition(lo, hi, axis);
     const int next = (axis + 1) % Dim;
     build_rec(lo, mid, next);
     build_rec(mid + 1, hi, next);
@@ -286,6 +356,7 @@ private:
   }
 
   std::vector<node> nodes_;     // переиспользуемая арена точек (= неявное дерево после build)
+  std::vector<build_range> build_ranges_; // reused parallel frontier; one range per pool participant
   aabb bounds_ = aabb::empty(); // общий bbox всех точек (корневой регион для query-прунинга)
 };
 

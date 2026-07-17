@@ -125,7 +125,8 @@ void parse_object(tavl::parser& p, const Consume& consume_field) {
   }
 }
 
-void parse_actions(tavl::parser& p, std::vector<goap_action_config>& out) {
+void parse_actions(const devils_script::system& sys, tavl::parser& p,
+                   std::vector<goap_action_config>& out) {
   if (!enter_block(p, ev_t::array_begin)) {
     return;
   }
@@ -144,6 +145,11 @@ void parse_actions(tavl::parser& p, std::vector<goap_action_config>& out) {
       if (field == "name") {
         const auto [v, err] = p.poll_event();
         a.name = p.to_string(v.token);
+      } else if (field == "effect") {
+        devils_script::system::parse_context ctx;
+        sys.parse<void, entity_scope>(a.name.empty() ? "goap.action.effect" : a.name,
+                                      p, ctx, a.effect_program);
+        a.has_effect_program = true;
       } else if (field == "requirements") {
         a.requirements = read_key_list(p);
       } else if (field == "next_state") {
@@ -206,7 +212,7 @@ void parse_goap(const devils_script::system& sys, tavl::parser& p, goap_config& 
     } else if (section == "metrics") {
       parse_metrics(sys, p, cfg);
     } else if (section == "actions") {
-      parse_actions(p, cfg.actions);
+      parse_actions(sys, p, cfg.actions);
     } else if (section == "goals") {
       parse_goals(p, cfg.goals);
     } else if (section == "disable_metrics") {

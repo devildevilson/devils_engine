@@ -23,6 +23,7 @@
 #include <devils_engine/utils/core.h>         // utils::error
 #include <devils_engine/utils/prng.h>         // utils::mix
 #include <devils_engine/utils/string_id.h>    // utils::string_hash
+#include <devils_script/system.h>
 
 #include "actor_simulation.h"
 
@@ -71,6 +72,12 @@ static aesthetics::world& world_of(const act::entity_handle h) noexcept {
 }
 static aesthetics::entityid_t ent(const act::entity_handle h) noexcept {
   return aesthetics::entityid_t(h.id.id);
+}
+static aesthetics::world& world_of(const entity_scope h) noexcept {
+  return *const_cast<aesthetics::world*>(h.w);
+}
+static aesthetics::entityid_t ent(const entity_scope h) noexcept {
+  return aesthetics::entityid_t(h.id);
 }
 
 // purpose-метка для counter-RNG (utils::mix) — разводит потоки случайности.
@@ -131,6 +138,10 @@ static void ensure_actor_perf_introspection() noexcept {
 // Публичный доступ к perf-стату (для UI-биндинга в simulation.cpp; тот же поток).
 const catalogue::statistics_store& actor_perf_statistics() noexcept {
   return actor_perf_stats();
+}
+
+void reset_actor_perf_statistics() noexcept {
+  actor_perf_stats().reset();
 }
 
 // Периодический дамп агрегатов по всем обёрнутым функциям апдейта актора.
@@ -385,6 +396,34 @@ static void effect_wander(const act::entity_handle self, const act::rng_source r
   set_velocity(world, id, direction_from_hash(uint32_t(h)));
 }
 
+// Script-facing forms keep the root scope as an owned value. Catalogue records that value during
+// cognition and dereferences the stable world/entity handle only at commit. This first config slice
+// covers local effects that need no extra scope or RNG; structural eat remains the direct typed
+// action until its script contract can expose prey+rng without borrowing VM state.
+static void effect_flee_script(const entity_scope self) noexcept {
+  auto& world = world_of(self);
+  const auto id = ent(self);
+  const auto* pos = world.get<actor_position>(id);
+  const auto* per = world.get<actor_perception>(id);
+  if (pos != nullptr && per != nullptr) {
+    set_velocity(world, id, pos->value - per->threat_pos);
+  }
+}
+
+static void effect_chase_script(const entity_scope self) noexcept {
+  auto& world = world_of(self);
+  const auto id = ent(self);
+  const auto* pos = world.get<actor_position>(id);
+  const auto* per = world.get<actor_perception>(id);
+  if (pos != nullptr && per != nullptr) {
+    set_velocity(world, id, per->prey_pos - pos->value);
+  }
+}
+
+static void effect_think_script(const entity_scope self) noexcept {
+  set_velocity(world_of(self), ent(self), glm::vec2{0.0f, 0.0f});
+}
+
 // ── Catalogue deferred strategies ──────────────────────────────────────────
 // Все локальные действия мутируют только source entity: collect группирует по self и позволяет
 // commit разных entity-групп через worker pool. eat меняет пару сущностей + создаёт компоненты:
@@ -414,9 +453,21 @@ using think_deferred = actor_local_effect_domain::fn_traits<
   &effect_think, "think", "self">;
 using eat_deferred = actor_eat_effect_domain::fn_traits<
   &effect_eat, "eat", "self", "prey", "rng">;
+using flee_script_deferred = actor_local_effect_domain::fn_traits<
+  &effect_flee_script, "flee", "self">;
+using chase_script_deferred = actor_local_effect_domain::fn_traits<
+  &effect_chase_script, "chase", "self">;
+using think_script_deferred = actor_local_effect_domain::fn_traits<
+  &effect_think_script, "think", "self">;
 
 constexpr uint32_t max_deferred_effects_per_actor = 16;
 } // namespace
+
+void register_actor_effect_building_blocks(devils_script::system& sys) {
+  sys.register_function<flee_script_deferred::fn_deferred_ptr>("flee");
+  sys.register_function<chase_script_deferred::fn_deferred_ptr>("chase");
+  sys.register_function<think_script_deferred::fn_deferred_ptr>("think");
+}
 
 struct deferred_effects {
   catalogue::mt::executor<actor_local_effect_strategy> local;
@@ -484,16 +535,38 @@ void actor_world_slice::setup_brain_registry() {
   // в идентификаторах, поэтому имя dot-free (в отличие от acumen-метрик "actor.*", которые в
   // парсер mood не попадают и резолвятся по полному хешу строки).
   registry_.reg("is_eating", act::pack<&predicate_is_eating>());
-  registry_.reg("flee", act::pack<flee_deferred::fn_deferred_ptr>());
-  registry_.reg("chase", act::pack<chase_deferred::fn_deferred_ptr>());
-  registry_.reg("eat", act::pack<eat_deferred::fn_deferred_ptr>());
+  const auto scripted_action = [this](const std::string_view name) {
+    if (brains_.goap == nullptr) {
+      return false;
+    }
+    const auto& actions = brains_.goap->actions;
+    const auto it = std::find_if(actions.begin(), actions.end(), [name](const goap_action_config& a) {
+      return a.name == name;
+    });
+    return it != actions.end() && it->has_effect_program;
+  };
+  if (!scripted_action("flee")) {
+    registry_.reg("flee", act::pack<flee_deferred::fn_deferred_ptr>());
+  }
+  if (!scripted_action("chase")) {
+    registry_.reg("chase", act::pack<chase_deferred::fn_deferred_ptr>());
+  }
+  if (!scripted_action("eat")) {
+    registry_.reg("eat", act::pack<eat_deferred::fn_deferred_ptr>());
+  }
   // Тег взаимодействия: eat арбитрится эксклюзивно (elect на добычу = scope[1]) + self-claim. Снимает
   // хардкод имени функции в decide_actor: дескриптор сообщает, какой scope заполнить target-ом.
   // Сам elect задаёт actor_eat_effect_strategy.
   registry_.reg_interaction(utils::string_hash("eat"), act::interaction{}); // rule=exclusive, target_scope=1, self_claim=true
-  registry_.reg("seek_food", act::pack<seek_food_deferred::fn_deferred_ptr>());
-  registry_.reg("wander", act::pack<wander_deferred::fn_deferred_ptr>());
-  registry_.reg("think", act::pack<think_deferred::fn_deferred_ptr>());
+  if (!scripted_action("seek_food")) {
+    registry_.reg("seek_food", act::pack<seek_food_deferred::fn_deferred_ptr>());
+  }
+  if (!scripted_action("wander")) {
+    registry_.reg("wander", act::pack<wander_deferred::fn_deferred_ptr>());
+  }
+  if (!scripted_action("think")) {
+    registry_.reg("think", act::pack<think_deferred::fn_deferred_ptr>());
+  }
 
   // GOAP-система: из tavl-конфига (goap/actor) если загружен, иначе хардкод-фолбэк (тесты/резюме).
   if (brains_.goap != nullptr) {
@@ -624,6 +697,16 @@ void actor_world_slice::build_goap_from_config(const goap_config& cfg) {
   // goap_config (в реестре ассетов), поэтому заимствование &m.program валидно на всё время слайса.
   for (const auto& m : cfg.metrics) {
     registry_.reg(m.key, std::make_unique<act::script_function<bool>>(&m.program, &seed_entity_scope));
+  }
+
+  // Script-backed actions keep the semantic action name in act/acumen/FSM. Their ds programs call
+  // fn_deferred_ptr building blocks, so cognition remains a record-only phase and apply still owns
+  // every collect/elect commit lane.
+  for (const auto& a : cfg.actions) {
+    if (a.has_effect_program) {
+      registry_.reg(a.name, std::make_unique<act::script_function<void>>(
+                              &a.effect_program, &seed_entity_scope));
+    }
   }
 
   // Единое пространство имён битов: метрики (0..N-1, порядок = конфиг) + символические биты
@@ -763,6 +846,7 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   integration_sys_.reset();
   drives_sys_.reset();
   sense_tree_sys_.reset();
+  sense_tree_ready_ = false;
   select_sys_.reset();
   resolve_eating_sys_.reset();
   deferred_.reset();
@@ -833,13 +917,18 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
 }
 
 actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& batch, thread::atomic_pool& pool) {
-  using build_sense_tree_perf = actor_perf_domain::fn_traits<&actor_world_slice::build_sense_tree, "sense.tree", "self">;
+  using build_sense_tree_perf = actor_perf_domain::fn_traits<
+    &actor_world_slice::build_sense_tree, "sense.tree", "self", "pool">;
   using cognition_perf = actor_perf_domain::fn_traits<&actor_world_slice::cognition, "cognition", "self", "tick", "pool">;
   using apply_perf = actor_perf_domain::fn_traits<&actor_world_slice::apply, "apply", "self", "pool">;
   using maps_perf = actor_perf_domain::fn_traits<
     &actor_world_slice::integrate_and_update_drives, "integration+drives", "self", "dt_seconds", "pool">;
   using resolve_eating_perf = actor_perf_domain::fn_traits<&actor_world_slice::resolve_eating, "eating", "self", "tick">;
   using maintain_food_perf = actor_perf_domain::fn_traits<&actor_world_slice::maintain_food, "food", "self">;
+  using gather_sense_tree_perf = actor_perf_domain::fn_traits<
+    &actor_world_slice::gather_sense_tree, "sense.gather", "self">;
+  using finalize_sense_tree_perf = actor_perf_domain::fn_traits<
+    &actor_world_slice::finalize_sense_tree, "tail.sense+batch", "self", "pool">;
 
   using build_sense_tree_fn_t = build_sense_tree_perf::loc_fn_t;
   using cognition_fn_t = cognition_perf::loc_fn_t;
@@ -847,16 +936,33 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
   using maps_fn_t = maps_perf::loc_fn_t;
   using resolve_eating_fn_t = resolve_eating_perf::loc_fn_t;
   using maintain_food_fn_t = maintain_food_perf::loc_fn_t;
+  using gather_sense_tree_fn_t = gather_sense_tree_perf::loc_fn_t;
+  using finalize_sense_tree_fn_t = finalize_sense_tree_perf::loc_fn_t;
 
   tick_ += 1;
   ensure_actor_perf_introspection();
-  build_sense_tree_fn_t{}(*this);
+  if (!sense_tree_ready_) {
+    build_sense_tree_fn_t{}(*this, pool); // init/load fallback; normal ticks consume tail-built snapshot
+    sense_tree_ready_ = true;
+  }
   cognition_fn_t{}(*this, tick_, pool);
   apply_fn_t{}(*this, pool);            // collect MT + elect ST, затем FSM/звук
   maps_fn_t{}(*this, dt_seconds, pool); // две независимые map-системы, один общий barrier
   resolve_eating_fn_t{}(*this, tick_);
   maintain_food_fn_t{}(*this);
-  build_actor_batch_fn_t{}(batch, world_, tick_);
+
+  // Snapshot semantics are unchanged: positions at the end of tick N are positions at the start of
+  // tick N+1. Gather after structural changes, then build the next sense tree concurrently with the
+  // independent sim->render actor batch. finalize_sense_tree owns the shared pool barrier and waits
+  // for both its subtree jobs and this already-submitted batch task.
+  gather_sense_tree_fn_t{}(*this);
+  pool.submit(
+    [](actor_batch* out, const aesthetics::world* world, const uint64_t tick) {
+      build_actor_batch_fn_t{}(*out, *world, tick);
+    },
+    &batch, &world_, tick_);
+  finalize_sense_tree_fn_t{}(*this, pool);
+  sense_tree_ready_ = true;
 
   if (tick_ % 100 == 0) {
     dump_actor_perf_stats(); // периодический дамп агрегатов (≈ раз в 5с при 20fps)
@@ -869,9 +975,21 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
     tick_};
 }
 
-// build_sense_tree — kD-дерево над ВСЕМИ акторами (даже не думающие — потенциальные цели).
-// Дёшево (O(N), build ~0.5ms на 4096); запросы по нему делает только cognition для отобранных.
-void actor_world_slice::build_sense_tree() {
+// build_sense_tree — init/load fallback для kD-дерева над ВСЕМИ таргетируемыми акторами.
+// Обычный тик использует раздельные gather/finalize в хвосте предыдущего тика, чтобы параллельный
+// O(N log N) median build перекрывался с actor_batch. Запросы делает cognition только для отобранных.
+void actor_world_slice::build_sense_tree(thread::atomic_pool& pool) {
+  using gather_perf = actor_perf_domain::fn_traits<
+    &actor_world_slice::gather_sense_tree, "sense.gather", "self">;
+  using build_perf = actor_perf_domain::fn_traits<
+    &actor_world_slice::finalize_sense_tree, "sense.build", "self", "pool">;
+  using gather_fn_t = gather_perf::loc_fn_t;
+  using build_fn_t = build_perf::loc_fn_t;
+  gather_fn_t{}(*this);
+  build_fn_t{}(*this, pool);
+}
+
+void actor_world_slice::gather_sense_tree() {
   using kd = utils::kd_tree<perception_target>;
   sense_tree_.clear();
   // Скан-фаза как ЛЯМБДА-СИСТЕМА (ROADMAP п.11): reduce query<pos,vis> в общий kd-дерево. Однопоточно
@@ -890,7 +1008,10 @@ void actor_world_slice::build_sense_tree() {
       });
   }
   sense_tree_sys_->update(0);
-  sense_tree_.build();
+}
+
+void actor_world_slice::finalize_sense_tree(thread::atomic_pool& pool) {
+  sense_tree_.build_parallel(pool);
 }
 
 // decide_actor — восприятие (kD-запрос) + GOAP для ОДНОГО актора. Пишет в actor_perception
@@ -997,7 +1118,7 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
 //      Глобальный sequence id выводится из source_index + локального script ordinal; seal восстанавливает
 //      total order независимо от scheduling.
 // Стоимость восприятия+GOAP ∝ бюджету/числу_потоков. Отбор — O(N)-скан (на миллионах заменить
-// на timing-wheel). sense_tree_ строится ДО (build_sense_tree) и только читается воркерами.
+// на timing-wheel). sense_tree_ подготовлено хвостом предыдущего тика и только читается воркерами.
 void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool) {
   if (!cognition_sys_) {
     cognition_sys_ = std::make_unique<cognition_system>(&pool, this); // ленивое (пул известен тут)
@@ -1238,6 +1359,7 @@ bool actor_world_slice::load(const std::span<const uint8_t> packet) {
   integration_sys_.reset();
   drives_sys_.reset();
   sense_tree_sys_.reset();
+  sense_tree_ready_ = false;
   select_sys_.reset();
   resolve_eating_sys_.reset();
   deferred_.reset();
