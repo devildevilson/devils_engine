@@ -363,7 +363,7 @@ private:
   size_t think_budget_ = 2048;
   // Map-фазы на общих примитивах aesthetics (владеет слайс; лениво создаются на 1-м апдейте, когда
   // известен пул). cognition_system = worklist_system над «созревшими» (per-thread scratch = A*+cache
-  // +ds VM), пишет typed calls в per-source deferred slots. Неполные типы ⇒ out-of-line дтор слайса.
+  // +ds VM), append-ит typed calls в dense deferred journal. Неполные типы ⇒ out-of-line дтор слайса.
   std::unique_ptr<integration_system> integration_sys_;
   std::unique_ptr<drives_system> drives_sys_;
   std::unique_ptr<cognition_system> cognition_sys_;

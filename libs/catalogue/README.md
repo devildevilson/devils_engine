@@ -100,14 +100,15 @@ namespace нужен: существующий `catalogue::domain<auto>` — val
 
 `record_scope` — единственная ambient часть: короткоживущий `thread_local`
 контекст текущего worker-вызова с `{source_id, dense_source_index,
-local_sequence}`. Он не содержит world/executor и восстанавливается RAII при
-выходе. Благодаря этому wrapper сохраняет исходную C++-сигнатуру, а sequence
-общая для эффектов ВСЕХ strategy-domain внутри одного script pass.
+next_local_ordinal}`. Он не содержит world/executor и восстанавливается RAII при
+выходе. Благодаря этому wrapper сохраняет исходную C++-сигнатуру, а ordinal
+общий для эффектов ВСЕХ strategy-domain внутри одного script pass.
 
 Детерминированный порядок не зависит от worker scheduling. Atomic ticket используется
 только как физический append-index плотного journal-а и не имеет gameplay-семантики.
-Каждый source несёт стабильный `source_id` и монотонный
-`local_sequence`, назначенный порядком обхода его script-call'ов. Базовый ключ
+Каждый вызов получает детерминированный глобальный sequence id
+`source_index * sequence_capacity + local_ordinal`; это монотонная нумерация
+логических source-слотов, не arrival order. Базовый ключ
 collect: `(group_key, source_id, local_sequence, function_id)`; дополнительные
 варианты порядка задаёт strategy. Переполнение sequence/journal — ошибка, не drop.
 
@@ -115,7 +116,9 @@ collect: `(group_key, source_id, local_sequence, function_id)`; дополнит
 в tile_frontier это только action journal для FSM/звука. `mt::executor` от него НЕ зависит:
 он заранее размеряет плотный journal по явному `deferred_call_budget`, append-ит только
 фактические вызовы и после barrier восстанавливает semantic order. Поэтому большой
-`world.index_capacity()`/разреженный `source_index` не умножается на `local_sequence`.
+`world.index_capacity()`/разреженный `source_index` участвует только в вычислении id
+и не умножает размер storage. Один source должен присутствовать в worklist ровно один
+раз; дубли исправляются в producer/scheduler, journal их не ищет и не дедуплицирует.
 
 Несколько истинных effect-веток одного ds-скрипта записываются независимо. Если
 `add_strength` попал в collect, а `eat_prey` проиграл elect, strength всё равно

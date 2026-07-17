@@ -127,7 +127,7 @@ TEST_CASE("catalogue deferred pointer mirrors an effect and records multiple cal
     mt::record_scope source(42, 0);
     strength_traits::fn_deferred_ptr(scope, 7, 5);
     strength_traits::fn_deferred_ptr(scope, 7, 3);
-    CHECK(source.next_sequence() == 2);
+    CHECK(source.next_local_ordinal() == 2);
   }
 
   CHECK(state.events.empty()); // native body is deferred
@@ -188,29 +188,12 @@ TEST_CASE("catalogue dense journal capacity is independent from sparse source in
   CHECK(executor.source_capacity() == 1'000'000);
   CHECK(executor.call_capacity() == 2);
   executor.seal();
+  CHECK(executor.metadata(0).local_sequence == 123'456ull * 16ull);
+  CHECK(executor.metadata(1).local_sequence == 999'999ull * 16ull);
   executor.commit();
   REQUIRE(state.events.size() == 2);
   CHECK(state.events[0].source == 10);
   CHECK(state.events[1].source == 20);
-}
-
-TEST_CASE("catalogue dense journal rejects duplicate source sequence at seal") {
-  mt::executor<strength_strategy> executor;
-  executor_binding binding(executor);
-  executor.begin_record(1, 1, 2);
-
-  test_state state;
-  {
-    mt::record_scope source(10, 0);
-    strength_traits::fn_deferred_ptr(gameplay_scope{10, &state}, 11, 10);
-  }
-  {
-    mt::record_scope duplicate_source(10, 0);
-    strength_traits::fn_deferred_ptr(gameplay_scope{10, &state}, 11, 20);
-  }
-
-  CHECK_THROWS(executor.seal());
-  CHECK(state.events.empty());
 }
 
 TEST_CASE("catalogue elect commits the lowest deterministic source for each key") {
