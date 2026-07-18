@@ -3,7 +3,9 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cmath> // llround — конверсия double-скорости в рационал на границе
 #include <cstdint>
+#include <numeric> // gcd — сокращение милли-рационала скорости
 #include <memory>
 #include <string>
 #include <string_view>
@@ -123,7 +125,8 @@ public:
   // Ускорение/замедление = deterministic input — game clock масштабируется, gameplay получает уже
   // отмасштабированный game_dt; ноль запрещён (остановка = pause, не скорость). Runtime settings
   // reload сбрасывает скорость к номиналу (set_game_scale выше).
-  bool set_game_speed(const uint32_t numerator, const uint32_t denominator = 1) {
+  // (без дефолта у denominator: одноаргументный вызов однозначно уходит в double-перегрузку ниже)
+  bool set_game_speed(const uint32_t numerator, const uint32_t denominator) {
     if (numerator == 0 || denominator == 0) {
       return false;
     }
@@ -134,6 +137,25 @@ public:
     }
     derived().state().clocks.set_game_scale(utils::game_time_scale(uint32_t(game), uint32_t(engine)));
     return true;
+  }
+
+  // Удобная форма для UI: double-множитель конвертируется в рационал ОДИН РАЗ на границе
+  // (милли-точность: 1.2 → 1200/1000 → 6/5), дальше вся тайм-математика целочисленная — float
+  // не попадает в игровые часы (детерминированное состояние) и не дрейфует округлением по кадрам.
+  bool set_game_speed(const double multiplier) {
+    if (!(multiplier > 0.0)) {
+      return false; // NaN/ноль/отрицательное: остановка времени = pause, не скорость
+    }
+    const double scaled = multiplier * 1000.0;
+    if (scaled >= double(UINT32_MAX)) {
+      return false;
+    }
+    const uint64_t raw = uint64_t(std::llround(scaled));
+    if (raw == 0) {
+      return false; // < 0.0005 — меньше милли-точности границы
+    }
+    const uint64_t g = std::gcd(raw, uint64_t(1000));
+    return set_game_speed(uint32_t(raw / g), uint32_t(1000 / g));
   }
 
   // Текущий множитель скорости относительно номинального mapping (1.0 = номинал), для UI.
