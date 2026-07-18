@@ -105,20 +105,20 @@ void tile_frontier_game::begin_scene(const scene_start_context& context) {
   }
 
   auto brains = load_required_brain_config(
-    context.asset_registry, context.config.actor_script, context.config.actor_fsm,
-    context.config.actor_goap, context.config.prefab_prefix);
+    context.asset_registry, context.config.actor_script, context.config.fsm_prefix,
+    context.config.goap_prefix, context.config.prefab_prefix);
   DE_LOG(catalogue::log_domain::gameplay, flow,
-         "main: required brain config <- script '{}', FSM '{}' ({} transitions), GOAP '{}' ({} metrics, {} actions), {} prefabs",
-         context.config.actor_script, context.config.actor_fsm, brains.fsm_transitions->size(),
-         context.config.actor_goap, brains.goap->metrics.size(), brains.goap->actions.size(),
-         brains.prefabs.size());
+         "main: required brain config <- script '{}', {} FSM brains ('{}'), {} GOAP brains ('{}'), {} prefabs",
+         context.config.actor_script, brains.fsms.size(), context.config.fsm_prefix,
+         brains.goaps.size(), context.config.goap_prefix, brains.prefabs.size());
 
   actors_.init(
     context.config.actor_count,
     glm::vec2{0.5f, 0.5f},
     glm::max(extent - glm::vec2{0.5f, 0.5f}, glm::vec2{0.5f, 0.5f}),
     texture_count,
-    brains);
+    brains,
+    context.config.actor_prefab_cycle);
   reset_metrics();
   DE_LOG(catalogue::log_domain::gameplay, flow,
          "main: spawned {} lightweight actors in aesthetics world", context.config.actor_count);
@@ -153,6 +153,7 @@ void tile_frontier_game::update(const frame_context& context) {
   drain_loaded_chunks(context.messages, context.generation);
   move_camera(context); // presentation-контрол: двигается и при gameplay-паузе
   publish_camera_and_tiles(context);
+  publish_sound_listener(context.messages, context.sound_available); // слушатель = камера, и на паузе
   if (context.gate.run_gameplay && actor_batch_.valid()) {
     update_actors(context);
   }
@@ -297,6 +298,19 @@ void tile_frontier_game::update_actors(const frame_context& context) {
   update_metrics(context.settings.metrics, update_us);
 }
 
+// Слушатель = точка камеры (top-down дефолтная ориентация из command_sound_listener: панорама
+// следует +x экрана). Публикуется каждый кадр (latest-wins) — работает и на gameplay-паузе.
+void tile_frontier_game::publish_sound_listener(broker& messages, const bool sound_available) {
+  if (!sound_available) {
+    return;
+  }
+  auto& slot = messages.sound_listener.write_slot();
+  slot = {};
+  slot.pos[0] = camera_.center.x;
+  slot.pos[1] = camera_.center.y;
+  messages.sound_listener.publish();
+}
+
 void tile_frontier_game::publish_actor_sounds(broker& messages, const bool sound_available) {
   if (!sound_available) {
     return;
@@ -304,6 +318,9 @@ void tile_frontier_game::publish_actor_sounds(broker& messages, const bool sound
 
   const auto emits = actors_.sound_events();
   const glm::vec2 listener = camera_.center;
+  // Радиус слышимости привязан к зуму; тот же радиус уходит в max_distance ⇒ отсечка ниже —
+  // просто бюджет (не слать заведомо неслышимое), а реальную громкость/панораму считает
+  // sound-система по позиции источника относительно слушателя (linear в [min, max]).
   const float audible = camera_.half_width * 1.5f;
   const float audible_squared = audible * audible;
   constexpr uint32_t max_sounds_per_tick = 8;
@@ -326,6 +343,10 @@ void tile_frontier_game::publish_actor_sounds(broker& messages, const bool sound
     play.after = SIZE_MAX;
     play.res = resource_ref::from_handle(sound->second);
     play.start = 0.0;
+    play.pos[0] = event.pos.x;
+    play.pos[1] = event.pos.y;
+    play.min_distance = audible * 0.25f; // внутри четверти радиуса — полная громкость
+    play.max_distance = audible;
     messages.sound_play.try_push(play);
     ++sent;
     DE_TRACE(catalogue::log_domain::sound,

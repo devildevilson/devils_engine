@@ -17,6 +17,7 @@
 
 #include <devils_engine/bindings/lua_header.h>
 #include <devils_engine/catalogue/logging.h>
+#include <devils_engine/input/bindings.h>
 #include <devils_engine/input/core.h>
 #include <devils_engine/input/events.h>
 #include <devils_engine/simul/lifecycle.h>
@@ -172,7 +173,8 @@ inline void bind_default_actions(const size_t main_frame_time) {
   bind_action("quit", "escape");
   bind_action("toggle_menu", "f1");
   // Стандартный словарь движения камеры (WASD); политика движения/клампа — проектная.
-  // Полноценные bindings из config — отдельный тех-долг libs/input.
+  // Это ДЕФОЛТЫ: пользовательский key-mapping из settings.input накатывается поверх
+  // (input::apply_bindings в create_window_and_notify_render / reload_settings).
   bind_action("camera_up", "key_w");
   bind_action("camera_left", "key_a");
   bind_action("camera_down", "key_s");
@@ -214,6 +216,11 @@ void create_window_and_notify_render(State& c, const Settings& settings, const s
   input::set_window_iconify_callback(c.window, &window_iconify_cb);
 
   bind_default_actions(main_frame_time);
+  // Пользовательский key-mapping поверх дефолтного словаря — если settings-схема проекта
+  // объявила секцию input (input::bindings_config).
+  if constexpr (requires { settings.input; }) {
+    input::apply_bindings(settings.input);
+  }
 
   const auto [fw, fh] = input::framebuffer_size(c.window);
   if (fw != 0 && fh != 0) {

@@ -32,29 +32,67 @@ T& require_resource(demiurg::resource_system& resources,
 }
 } // namespace
 
+namespace {
+// «actor» из «goap/actor»: короткое имя мозга = id без префикса; его пишут префабы в goap=/fsm=
+// и хешируют компоненты goap_ref/fsm_ref.
+std::string_view brain_name(const std::string_view id, const std::string_view prefix) {
+  auto name = id;
+  if (name.starts_with(prefix)) {
+    name.remove_prefix(prefix.size());
+  }
+  if (!name.empty() && name.front() == '/') {
+    name.remove_prefix(1);
+  }
+  return name;
+}
+} // namespace
+
 brain_config load_required_brain_config(
   demiurg::resource_system& resources,
   const std::string_view script_id,
-  const std::string_view fsm_id,
-  const std::string_view goap_id,
+  const std::string_view fsm_prefix,
+  const std::string_view goap_prefix,
   const std::string_view prefab_prefix) {
   auto& script = require_resource<act::script_resource>(resources, script_id, "script");
   if (script.category() != act::category::predicate) {
     utils::error{}("tile_frontier: required actor script '{}' must be a predicate", script_id);
   }
 
-  auto& fsm = require_resource<mood::fsm_resource>(resources, fsm_id, "FSM");
-  if (fsm.transitions().empty()) {
-    utils::error{}("tile_frontier: required FSM '{}' has no transitions", fsm_id);
+  brain_config config;
+  config.is_hungry_program = script.program();
+
+  // ВСЕ fsm/* — каждый ресурс = отдельный именованный FSM-мозг (per-entity fsm_ref).
+  std::vector<mood::fsm_resource*> fsm_resources;
+  resources.filter<mood::fsm_resource>(fsm_prefix, fsm_resources);
+  if (fsm_resources.empty()) {
+    utils::error{}("tile_frontier: required FSM set '{}' is empty", fsm_prefix);
+  }
+  for (auto* resource : fsm_resources) {
+    while (!resource->usable()) {
+      resource->load(utils::safe_handle_t{});
+    }
+    if (resource->transitions().empty()) {
+      utils::error{}("tile_frontier: required FSM '{}' has no transitions", resource->id);
+    }
+    config.fsms.push_back(named_fsm{
+      std::string(brain_name(resource->id, fsm_prefix)), &resource->transitions()});
   }
 
-  if (resources.get<acumen::goap_resource>(goap_id) == nullptr) {
-    utils::error{}("tile_frontier: required GOAP resource '{}' was not found", goap_id);
+  // ВСЕ goap/* — каждый flatten-ится (single-base overlay/disable) в отдельный именованный GOAP-мозг.
+  // Базовые конфиги (actor_base) тоже становятся выбираемыми мозгами — это фича, не побочка.
+  std::vector<acumen::goap_resource*> goap_resources;
+  resources.filter<acumen::goap_resource>(goap_prefix, goap_resources);
+  if (goap_resources.empty()) {
+    utils::error{}("tile_frontier: required GOAP set '{}' is empty", goap_prefix);
   }
-  auto goap = std::make_shared<acumen::goap_config>(
-    acumen::resolve_goap_config(resources, goap_id));
-  if (goap->metrics.empty() || goap->actions.empty() || goap->goals.empty()) {
-    utils::error{}("tile_frontier: required GOAP '{}' must define metrics, actions, and goals", goap_id);
+  for (auto* resource : goap_resources) {
+    auto goap = std::make_shared<acumen::goap_config>(
+      acumen::resolve_goap_config(resources, resource->id));
+    if (goap->metrics.empty() || goap->actions.empty() || goap->goals.empty()) {
+      utils::error{}("tile_frontier: required GOAP '{}' must define metrics, actions, and goals", resource->id);
+    }
+    config.goaps.push_back(named_goap{
+      std::string(brain_name(resource->id, goap_prefix)), std::move(goap)});
   }
 
   std::vector<prefab::prefab_resource*> prefab_resources;
@@ -63,10 +101,6 @@ brain_config load_required_brain_config(
     utils::error{}("tile_frontier: required prefab set '{}' is empty", prefab_prefix);
   }
 
-  brain_config config;
-  config.is_hungry_program = script.program();
-  config.fsm_transitions = &fsm.transitions();
-  config.goap = std::move(goap);
   config.prefabs.reserve(prefab_resources.size());
   for (auto* resource : prefab_resources) {
     while (!resource->usable()) {

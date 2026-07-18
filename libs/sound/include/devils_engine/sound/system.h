@@ -77,6 +77,12 @@ struct task {
   vec3 dir;
   vec3 vel;
 
+  // Позиционный контракт: max_distance > 0 ⇒ голос спатиализуется относительно слушателя
+  // (linear attenuation в [min_distance, max_distance]); иначе спатиализация ВЫКЛЮЧЕНА —
+  // UI/музыка звучат как есть, где бы ни находился слушатель. Применяется при выдаче голоса.
+  float min_distance;
+  float max_distance;
+
   task() noexcept;
   task(const size_t id, const resource2& res) noexcept;
 };

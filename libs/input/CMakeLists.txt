@@ -50,12 +50,14 @@ else()
 endif()
 
 set(SRC_LIST
+  src/input/bindings.cpp
   src/input/core.cpp
   src/input/events.cpp
   src/input/key_names.cpp
 )
 
 set(HDR_LIST
+  include/devils_engine/input/bindings.h
   include/devils_engine/input/core.h
   include/devils_engine/input/events.h
   include/devils_engine/input/key_names.h

@@ -18,6 +18,7 @@ test_brain_fixture::test_brain_fixture(std::string resource_root)
   resources_.register_type<acumen::goap_resource>("goap", "tavl", &scripts_);
   resources_.register_type<prefab::prefab_resource>("prefab", "tavl");
   resources_.parse_resources(&modules_);
+  // Префиксы наборов: подхватываются ВСЕ fsm/* и goap/* мозги (как в живом scene config).
   config_ = tile_frontier::core::load_required_brain_config(
-    resources_, "scripts/actor_is_hungry", "fsm/actor", "goap/actor", "prefab/");
+    resources_, "scripts/actor_is_hungry", "fsm", "goap", "prefab/");
 }

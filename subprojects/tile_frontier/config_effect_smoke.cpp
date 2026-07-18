@@ -30,7 +30,19 @@ int main() {
 
   test_brain_fixture fixture(TILE_FRONTIER_SOURCE_RESOURCE_ROOT);
   const auto& brains = fixture.config();
-  const auto& goap = brains.goap;
+  const auto find_goap = [&brains](const std::string_view name) -> const acumen::goap_config* {
+    for (const auto& g : brains.goaps) {
+      if (g.name == name) {
+        return g.config.get();
+      }
+    }
+    return nullptr;
+  };
+  const auto* goap = find_goap("actor");
+  if (goap == nullptr) {
+    std::cerr << "FAILED: multi-brain loader did not produce the 'actor' GOAP brain\n";
+    return 1;
+  }
   size_t scripted_actions = 0;
   for (const auto& action : goap->actions) {
     scripted_actions += action.has_effect_program ? 1u : 0u;
@@ -43,7 +55,36 @@ int main() {
     return 1;
   }
 
-  const auto& transitions = *brains.fsm_transitions;
+  // prey-мозг: наследник actor'а без хищных действий (chase/eat отключены, flee остаётся).
+  const auto* prey = find_goap("prey");
+  if (prey == nullptr) {
+    std::cerr << "FAILED: multi-brain loader did not produce the 'prey' GOAP brain\n";
+    return 1;
+  }
+  const auto has_action = [](const acumen::goap_config& cfg, const std::string_view name) {
+    for (const auto& a : cfg.actions) {
+      if (a.name == name) {
+        return true;
+      }
+    }
+    return false;
+  };
+  if (has_action(*prey, "chase") || has_action(*prey, "eat") || !has_action(*prey, "flee")) {
+    std::cerr << "FAILED: prey brain must disable chase/eat and keep flee\n";
+    return 1;
+  }
+
+  const tf::named_fsm* actor_fsm = nullptr;
+  for (const auto& f : brains.fsms) {
+    if (f.name == "actor") {
+      actor_fsm = &f;
+    }
+  }
+  if (actor_fsm == nullptr) {
+    std::cerr << "FAILED: multi-brain loader did not produce the 'actor' FSM brain\n";
+    return 1;
+  }
+  const auto& transitions = *actor_fsm->transitions;
   if (transitions.size() != 6 || transitions[1].guards != std::vector<std::string>{"is_eating"}) {
     std::cerr << "FAILED: shipped fsm/actor did not produce six structured TAVL transitions\n";
     return 1;
@@ -94,6 +135,35 @@ int main() {
         return 1;
       }
     }
+  }
+
+  // per-entity мозги (goap_ref/fsm_ref): prey-префаб живёт в общем мире с актёрами, ссылки
+  // независимы (свой GOAP без chase/eat + ОБЩИЙ fsm/actor), популяция смешанная — identity 1-vs-4
+  // обязана держаться и с двумя мозгами на одних per-thread solution_cache (system_salt в ключе).
+  const auto prey_a = one_worker.spawn_prefab("prey", {32.0f, 32.0f});
+  const auto prey_b = four_workers.spawn_prefab("prey", {32.0f, 32.0f});
+  if (prey_a != prey_b) {
+    std::cerr << "FAILED: prey spawn produced different entity ids across slices\n";
+    return 1;
+  }
+  const auto* pref = one_worker.ecs().get<tf::goap_ref>(prey_a);
+  const auto* fref = one_worker.ecs().get<tf::fsm_ref>(prey_a);
+  if (pref == nullptr || pref->value != devils_engine::utils::string_hash("prey") ||
+      fref == nullptr || fref->value != devils_engine::utils::string_hash("actor")) {
+    std::cerr << "FAILED: prey prefab did not resolve goap=prey / fsm=actor refs\n";
+    return 1;
+  }
+  for (size_t tick = 0; tick < 60; ++tick) {
+    one_worker.update(dt, batch_one, pool_one);
+    four_workers.update(dt, batch_four, pool_four);
+    if (dump(one_worker) != dump(four_workers)) {
+      std::cerr << "FAILED: mixed-brain population diverged at tick " << (tick + 1) << '\n';
+      return 1;
+    }
+  }
+  if (one_worker.ecs().get<tf::actor_eating>(prey_a) != nullptr) {
+    std::cerr << "FAILED: prey (no eat action) somehow started eating\n";
+    return 1;
   }
 
   // read-only UI-шов: pure act-вызовы по имени + describe-стрим узлов; effect через него недоступен.

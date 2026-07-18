@@ -110,6 +110,22 @@ public:
     derived().state().lifecycle.start(*this);
   }
 
+  // Живые save/reload настроек с main-потока (UI): save перед записью выгружает в settings
+  // эффективный key-mapping (см. simul::save_settings), reload накатывает файл и прогоняет
+  // всю runtime-реакцию (логгирование/частота/скорость/биндинги) через тот же хук, что и
+  // app_runtime::reload_settings.
+  bool host_save_settings() {
+    return simul::save_settings(*bootstrap_);
+  }
+
+  bool host_reload_settings() {
+    if (!simul::reload_settings(*bootstrap_)) {
+      return false;
+    }
+    this->runtime_settings_reloaded(); // виртуальный: проект форвардит в host_runtime_settings_reloaded
+    return true;
+  }
+
   void host_runtime_settings_reloaded() {
     simul::setup_logging(bootstrap_->settings.logging);
     this->set_frame_time(frame_time_from_fps(bootstrap_->engine.main_fps));

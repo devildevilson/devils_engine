@@ -666,6 +666,12 @@ buffer_frame graphics_base::get_current_indirect_resource_frame(const uint32_t p
 }
 
 bool graphics_base::wait_all_fences(const size_t timeout) const {
+  // До первичного commit/create_fences submitted-кадров ещё нет. Vulkan запрещает
+  // vkWaitForFences с fenceCount == 0; логически пустой набор уже полностью завершён.
+  if (fences.empty()) {
+    return true;
+  }
+
   const auto res = vk::Device(device).waitForFences(fences.size(), reinterpret_cast<const vk::Fence*>(fences.data()), true, timeout);
   switch (res) {
     case vk::Result::eErrorDeviceLost:
@@ -1303,8 +1309,10 @@ int32_t graphics_base::commit_parsed_resources(render_config_storage& storage) {
     draw_group_names[i] = draw_groups[i].name;
   }
 
-  // на фоне может происходить несвязная работа
-  vk::Queue(graphics).waitIdle();
+  // Меняются только объекты, используемые submitted-кадрами этого graphics_base. Present здесь
+  // не трогаем, поэтому достаточно его frame fences; queue waitIdle остаётся WSI-lifecycle мерой
+  // при пересоздании/уничтожении swapchain на уровне simul::render_runtime.
+  wait_all_fences();
 
   // уничтожим старое (в т.ч. resource_containers — их в storage нет, это рантайм GPU)
   clear_prev_resources();

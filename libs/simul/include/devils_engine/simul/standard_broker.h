@@ -42,9 +42,10 @@ struct standard_broker {
   thread::mailbox<command_sound_state> sound_state; // latest-wins snapshot
 
   // main → sound
-  thread::spsc_queue<command_sound_play> sound_play;       // lossy
-  thread::spsc_queue<command_sound_stop> sound_stop;       // lossy
-  thread::spsc_queue<command_sound_update> sound_update;   // lossy (latest-per-id)
+  thread::spsc_queue<command_sound_play> sound_play;         // lossy
+  thread::spsc_queue<command_sound_stop> sound_stop;         // lossy
+  thread::spsc_queue<command_sound_update> sound_update;     // lossy (latest-per-id)
+  thread::mailbox<command_sound_listener> sound_listener;    // latest-wins снапшот слушателя (камера)
   thread::spsc_queue<command_sound_devices> sound_devices; // handshake
   thread::spsc_queue<command_recreate_sound_system> recreate_sound;
   thread::spsc_queue<command_sound_set_master_gain> sound_master_gain; // lossy (latest-wins по смыслу)

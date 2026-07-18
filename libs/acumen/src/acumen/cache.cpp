@@ -6,6 +6,7 @@ namespace acumen {
 
 size_t plan_key_hash::operator()(const plan_key& k) const noexcept {
   uint64_t h = utils::hash_combine(0, k.goal_id);
+  h = utils::hash_combine(h, k.system_salt);
   for (const uint64_t w : k.bits) {
     h = utils::hash_combine(h, w);
   }

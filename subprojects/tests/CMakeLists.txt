@@ -40,7 +40,7 @@ devils_add_doctest(timeline_test timeline_test.cpp)
 target_link_libraries(timeline_test PRIVATE devils_engine::utils)
 
 devils_add_doctest(tile_frontier_config_test tile_frontier_config_test.cpp ../tile_frontier/src/core/config.cpp)
-target_link_libraries(tile_frontier_config_test PRIVATE devils_engine::utils tavl)
+target_link_libraries(tile_frontier_config_test PRIVATE devils_engine::utils devils_engine::input tavl)
 target_include_directories(tile_frontier_config_test PRIVATE
   "${CMAKE_SOURCE_DIR}/subprojects/tile_frontier/include"
   "${CMAKE_SOURCE_DIR}/subprojects/tile_frontier/include/core"
@@ -48,6 +48,9 @@ target_include_directories(tile_frontier_config_test PRIVATE
 
 devils_add_doctest(thread_general_test thread_general_test.cpp)
 target_link_libraries(thread_general_test PRIVATE devils_engine::thread)
+
+devils_add_doctest(input_bindings_test input_bindings_test.cpp)
+target_link_libraries(input_bindings_test PRIVATE devils_engine::input devils_engine::utils tavl)
 
 devils_add_doctest(simul_lifecycle_test simul_lifecycle_test.cpp)
 target_link_libraries(simul_lifecycle_test PRIVATE devils_engine::simul)

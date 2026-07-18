@@ -35,6 +35,10 @@ namespace acumen {
 struct goap_metric {
   std::string key;                  // имя предиката-метрики (регистрируется в act::registry, = бит)
   devils_script::container program; // скомпилированный ds-скрипт, вычисляющий метрику
+  // resource id, где элемент ОПРЕДЕЛЁН (при overlay origin следует за перекрывшим ресурсом).
+  // Потребителю с несколькими flatten-конфигами это даёт честный дедуп одноимённых регистраций:
+  // одинаковый origin ⇒ копии одного скомпилированного скрипта, разный ⇒ конфликт имён.
+  std::string origin;
 };
 
 struct goap_action_config {
@@ -46,6 +50,7 @@ struct goap_action_config {
   // under `name`; the resource only owns the compiled program and symbolic GOAP data.
   devils_script::container effect_program;
   bool has_effect_program = false;
+  std::string origin; // см. goap_metric::origin
 };
 
 struct goap_goal_config {

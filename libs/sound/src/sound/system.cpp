@@ -104,7 +104,9 @@ task::task(const size_t id, const resource2& res) noexcept : id(id),
                                                              pitch(1.0f),
                                                              volume(1.0f),
                                                              start(0.0),
-                                                             after(SIZE_MAX) {}
+                                                             after(SIZE_MAX),
+                                                             min_distance(0.0f),
+                                                             max_distance(0.0f) {}
 
 system::system(const size_t queue_size) : device(nullptr), ctx(nullptr), counter(1), queue_size(queue_size), sources_offset(1) //, background(nullptr)
 {
@@ -1550,6 +1552,15 @@ void system2::update(const size_t time) {
 
         ma_sound_set_volume(&t.inst->sound, t.task.volume);
         ma_sound_set_pitch(&t.inst->sound, t.task.pitch);
+        // Позиционность — свойство ЗАДАЧИ, а голос переиспользуется: выставляем ОБА направления
+        // на каждой выдаче, иначе прошлый жилец голоса протечёт в текущего.
+        if (t.task.max_distance > 0.0f) {
+          ma_sound_set_spatialization_enabled(&t.inst->sound, MA_TRUE);
+          ma_sound_set_min_distance(&t.inst->sound, std::max(t.task.min_distance, 0.0f));
+          ma_sound_set_max_distance(&t.inst->sound, t.task.max_distance);
+        } else {
+          ma_sound_set_spatialization_enabled(&t.inst->sound, MA_FALSE);
+        }
         ma_sound_set_position(&t.inst->sound, t.task.pos.x, t.task.pos.y, t.task.pos.z);
         ma_sound_set_direction(&t.inst->sound, t.task.dir.x, t.task.dir.y, t.task.dir.z);
         ma_sound_set_velocity(&t.inst->sound, t.task.vel.x, t.task.vel.y, t.task.vel.z);

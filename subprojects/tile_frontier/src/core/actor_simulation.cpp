@@ -565,9 +565,9 @@ void actor_batch::build(const aesthetics::world& world, const uint64_t tick) {
 }
 
 void actor_world_slice::setup_brain_registry() {
-  if (brains_.is_hungry_program == nullptr || brains_.fsm_transitions == nullptr ||
-      brains_.goap == nullptr || brains_.prefabs.empty()) {
-    utils::error{}("tile_frontier: actor_world_slice requires script, FSM, GOAP, and prefab config");
+  if (brains_.is_hungry_program == nullptr || brains_.fsms.empty() ||
+      brains_.goaps.empty() || brains_.prefabs.empty()) {
+    utils::error{}("tile_frontier: actor_world_slice requires script, FSM set, GOAP set, and prefab config");
   }
 
   // пересоздаём реестр с нуля: reg() ассертит на повторную регистрацию имени,
@@ -575,8 +575,7 @@ void actor_world_slice::setup_brain_registry() {
   registry_ = act::registry{};
   goap_registry_ = acumen::registry{};
   fsm_registry_ = mood::registry{};
-  goap_ = nullptr;
-  fsm_ = nullptr;
+  goap_origins_.clear();
   registry_.reg("actor.is_hungry", std::make_unique<act::script_function<bool>>(
                                      brains_.is_hungry_program, &seed_entity_scope));
   // ВАЖНО: на "is_eating" (внутри building blocks) ссылается СТРОКА FSM (mood) как гвард — парсер
@@ -585,38 +584,64 @@ void actor_world_slice::setup_brain_registry() {
   // Native-исключения + interaction-дескрипторы из декларативного списка; дубликат имени с
   // конфиг-скриптом упадёт громко в reg() (никаких тихих фолбэков).
   actor_building_blocks().install(registry_);
-  build_goap_from_config(*brains_.goap);
+  // Каждый goap/* конфиг = именованный мозг (per-entity goap_ref). Одноимённые метрики/действия
+  // разных мозгов дедупятся по origin внутри build_goap_from_config.
+  for (const auto& g : brains_.goaps) {
+    build_goap_from_config(g.name, *g.config);
+  }
 
   // FSM-исполнитель (mood): событие = выбранное GOAP действие, ведёт в одноимённое состояние из
   // ЛЮБОГО (any_state — wildcard). Движение остаётся эффектом GOAP в apply; FSM держит состояние
-  // (выбор анимации в рендере) и даёт точку для on_entry-эффектов: звук — фаза D, поедание (guard
-  // «добыча в радиусе» → состояние eating с длительностью) — фаза C. Пока чистые рёбра без эффектов.
+  // (выбор анимации в рендере) и даёт точку для on_entry-эффектов. Каждый fsm/* ресурс = именованный
+  // FSM-мозг (per-entity fsm_ref, независим от goap_ref — один FSM может обслуживать два GOAP).
   // Гварды/действия в строках — имена функций из registry_; mood резолвит их при сборке.
-  fsm_registry_.add("actor", mood::system(&registry_, *brains_.fsm_transitions));
-  fsm_ = fsm_registry_.get("actor");
+  for (const auto& f : brains_.fsms) {
+    fsm_registry_.add(f.name, mood::system(&registry_, *f.transitions));
+  }
 
   // Префабы слайса (перестраиваются вместе с реестром — общая точка init/load). C++-специи компонентов
-  // (какие типы бывают + per-prefab on_construct для DERIVED) регистрируются ЗДЕСЬ; тексты префабов
+  // (какие типы бывают + on_construct для DERIVED) регистрируются ЗДЕСЬ; тексты префабов
   // приходят из обязательного конфига (prefab/*.tavl через brain_config.prefabs).
   //   food:  data food_item из конфига; визуал (зелёный, food_size) + позиция — derived в construct.
-  //   actor: data actor_tuning (разброс скорости/голода/силы) из конфига; brain/visual/stats/… — derived
-  //          в construct из per-instance зерна (spawn_args). GOAP/FSM остаются slice-level (не per-entity).
+  //   actor: data actor_tuning (разброс скорости/голода/силы) + reference-строки goap=/fsm= (per-entity
+  //          мозг, см. goap_ref/fsm_ref); brain/visual/stats/… — derived в construct из зерна (spawn_args).
   prefab_ = devils_engine::prefab::prefab_registry<spawn_args>{};
   prefab_.data<food_item>("food_item");
   prefab_.data<actor_tuning>("actor_tuning");
-  prefab_.on_construct("food", [](aesthetics::entityid_t id, aesthetics::world& w, const spawn_args& a) {
-    if (w.get<food_item>(id) == nullptr) {
-      utils::error{}("tile_frontier: required food_item is missing from prefab 'food'");
+  // reference<C>: «goap = prey» в префабе → компонент с хешем имени; опечатка в имени мозга падает
+  // ГРОМКО здесь (на ленивом build первого спавна), а не тихим no-op в decide.
+  prefab_.reference<goap_ref>("goap", [this](std::string_view name, const devils_engine::prefab::prefab_load_context&) {
+    const auto hash = utils::string_hash(name);
+    if (goap_registry_.get(hash) == nullptr) {
+      utils::error{}("tile_frontier: prefab references unknown GOAP brain '{}'", name);
     }
-    w.create<actor_position>(id, a.pos);
-    w.create<actor_visual>(id, 0u, food_color(), food_size);
+    return goap_ref{hash};
   });
-  prefab_.on_construct("actor", [](aesthetics::entityid_t id, aesthetics::world& w, const spawn_args& a) {
-    // DERIVED per-instance из зерна + тюнинга (формулы = историческому init-циклу, побайтовый паритет).
+  prefab_.reference<fsm_ref>("fsm", [this](std::string_view name, const devils_engine::prefab::prefab_load_context&) {
+    const auto hash = utils::string_hash(name);
+    if (fsm_registry_.get(hash) == nullptr) {
+      utils::error{}("tile_frontier: prefab references unknown FSM brain '{}'", name);
+    }
+    return fsm_ref{hash};
+  });
+  // DERIVED-хук общий и data-driven (по наличию data-компонентов, НЕ по имени префаба): наследники
+  // actor'а (prey и будущие) получают ту же derive-логику без регистрации хука на каждое имя —
+  // per-prefab on_construct ищется только по спавн-имени и base-цепочку не видит.
+  prefab_.on_construct([](aesthetics::entityid_t id, aesthetics::world& w, const spawn_args& a) {
+    if (w.get<food_item>(id) != nullptr) {
+      w.create<actor_position>(id, a.pos);
+      w.create<actor_visual>(id, 0u, food_color(), food_size);
+      return;
+    }
     const auto* tp = w.get<actor_tuning>(id);
     if (tp == nullptr) {
-      utils::error{}("tile_frontier: required actor_tuning is missing from prefab 'actor'");
+      return; // не food и не actor-подобный префаб — нечего доращивать
     }
+    // Актор обязан знать свой мозг: refs приходят из reference-строк префаба (наследуются от базы).
+    if (w.get<goap_ref>(id) == nullptr || w.get<fsm_ref>(id) == nullptr) {
+      utils::error{}("tile_frontier: actor-like prefab must declare goap = ... and fsm = ...");
+    }
+    // DERIVED per-instance из зерна + тюнинга (формулы = историческому init-циклу, побайтовый паритет).
     const actor_tuning t = *tp;
     const uint32_t tex = std::max(a.tex_count, 1u);
     w.create<actor_position>(id, a.pos);
@@ -635,13 +660,35 @@ void actor_world_slice::setup_brain_registry() {
   }
 }
 
-void actor_world_slice::build_goap_from_config(const acumen::goap_config& cfg) {
+void actor_world_slice::build_goap_from_config(const std::string_view name, const acumen::goap_config& cfg) {
+  // Имена act-функций — ГЛОБАЛЬНОЕ пространство слайса; несколько мозгов обычно наследуют одну
+  // базу, поэтому одноимённые метрики/действия дедупятся по origin (resource id, где элемент
+  // определён): одинаковый origin ⇒ копии одного скомпилированного скрипта — регистрируем первый,
+  // разный origin ⇒ конфликт имён между мозгами — громкая ошибка.
+  const auto reg_deduped = [this](const std::string& key, const std::string& origin, auto make_fn) {
+    const uint64_t hash = utils::string_hash(key);
+    for (const auto& [known, known_origin] : goap_origins_) {
+      if (known == hash) {
+        if (known_origin != origin) {
+          utils::error{}("tile_frontier: GOAP name '{}' is defined by both '{}' and '{}' — "
+                         "brains share act namespace, rename one of them",
+                         key, known_origin, origin);
+        }
+        return; // тот же origin: копия того же скрипта, уже зарегистрирован
+      }
+    }
+    goap_origins_.emplace_back(hash, origin);
+    registry_.reg(key, make_fn());
+  };
+
   // Метрики ОПРЕДЕЛЯЮТ свои предикаты инлайн-скриптами: регистрируем каждый как script_function<bool>
   // под ключом метрики в registry_ (перед сборкой acumen — он резолвит метрики по имени). Скрипт
   // исполняется на per-worker execution_scratch; засев root-скоупа — seed_entity_scope. Контейнеры живут в
-  // goap_config (в реестре ассетов), поэтому заимствование &m.program валидно на всё время слайса.
+  // goap_config (shared_ptr в brains_.goaps), поэтому заимствование &m.program валидно на всё время слайса.
   for (const auto& m : cfg.metrics) {
-    registry_.reg(m.key, std::make_unique<act::script_function<bool>>(&m.program, &seed_entity_scope));
+    reg_deduped(m.key, m.origin, [&m] {
+      return std::make_unique<act::script_function<bool>>(&m.program, &seed_entity_scope);
+    });
   }
 
   // Script-backed actions keep the semantic action name in act/acumen/FSM. Their ds programs call
@@ -649,8 +696,9 @@ void actor_world_slice::build_goap_from_config(const acumen::goap_config& cfg) {
   // every collect/elect commit lane.
   for (const auto& a : cfg.actions) {
     if (a.has_effect_program) {
-      registry_.reg(a.name, std::make_unique<act::script_function<void>>(
-                              &a.effect_program, &seed_entity_scope));
+      reg_deduped(a.name, a.origin, [&a] {
+        return std::make_unique<act::script_function<void>>(&a.effect_program, &seed_entity_scope);
+      });
     }
   }
 
@@ -723,8 +771,7 @@ void actor_world_slice::build_goap_from_config(const acumen::goap_config& cfg) {
   }
 
   // резолвит предикаты (метрики) и эффекты (действия) по имени из registry_, кидает при промахе.
-  goap_registry_.add("actor", acumen::system(&registry_, std::move(metrics), std::move(goals), std::move(actions)));
-  goap_ = goap_registry_.get("actor");
+  goap_registry_.add(name, acumen::system(&registry_, std::move(metrics), std::move(goals), std::move(actions)));
 }
 
 // ── map-фазы на общем примитиве template_system + внешний run ──
@@ -794,7 +841,7 @@ actor_world_slice::actor_world_slice() noexcept = default;
 actor_world_slice::~actor_world_slice() = default;
 
 void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, const glm::vec2 max_bound, const uint32_t texture_count,
-                             const brain_config& brains) {
+                             const brain_config& brains, const std::vector<std::string>& prefab_cycle) {
   world_ = aesthetics::world{};
   // Кэш-системы держат query, подписанный на СТАРЫЙ world — сбросить, пересоздадутся против нового.
   integration_sys_.reset();
@@ -831,9 +878,11 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   const uint32_t columns = std::max<uint32_t>(uint32_t(std::ceil(std::sqrt(float(std::max(count, 1u))))), 1u);
   const uint32_t rows = std::max<uint32_t>((count + columns - 1u) / columns, 1u);
 
-  // Спавн акторов через обязательный префаб «actor»: data-компонент actor_tuning из
-  // конфига задаёт разброс, on_construct лепит seed-производные компоненты. Раскладка/зерно/индекс —
-  // per-instance (сетка+джиттер) → в spawn_args. gen_entityid зовётся внутри spawn (порядок id сохранён).
+  // Спавн акторов через префабы: data-компонент actor_tuning из конфига задаёт разброс, общий
+  // on_construct лепит seed-производные компоненты, reference-строки goap=/fsm= дают per-entity
+  // мозг. Микс префабов задаёт prefab_cycle (i-й актор = cycle[i % size], пусто ⇒ «actor») —
+  // детерминированно, порядок id сохранён (gen_entityid внутри spawn).
+  const std::string default_prefab = "actor";
   for (uint32_t i = 0; i < count; ++i) {
     const uint32_t x = i % columns;
     const uint32_t y = i / columns;
@@ -845,7 +894,9 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
     const glm::vec2 pos{
       min_bound.x + extent.x * fx + jitter_x,
       min_bound.y + extent.y * fy + jitter_y};
-    prefab_.spawn("actor", world_, spawn_args{pos, seed, i, tex_count});
+    const std::string& prefab_name =
+      prefab_cycle.empty() ? default_prefab : prefab_cycle[i % prefab_cycle.size()];
+    prefab_.spawn(prefab_name, world_, spawn_args{pos, seed, i, tex_count});
   }
 
   // Препятствия: статичные диски в детерминированных точках. Из восприятия исключены
@@ -997,6 +1048,17 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
     return;
   }
 
+  // per-entity мозг: goap_ref (хеш имени) → реестр. Промах — ошибка конфигурации, не тихий скип
+  // (спавн валидирует refs, so сюда попадает только рассинхрон реестра с сейвом/конфигом).
+  const auto* gref = world_.get<goap_ref>(id);
+  if (gref == nullptr) {
+    utils::error{}("tile_frontier: thinking actor {} has no goap_ref", uint32_t(id));
+  }
+  const acumen::system* goap = goap_registry_.get(gref->value);
+  if (goap == nullptr) {
+    utils::error{}("tile_frontier: actor {} references unknown GOAP brain {:#x}", uint32_t(id), gref->value);
+  }
+
   // восприятие: ближайший крупнее (угроза) + мельче (добыча) за один обход.
   const float s = vis->size;
   const uint32_t self = uint32_t(aesthetics::get_entityid_index(id));
@@ -1018,10 +1080,10 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
   }
 
   // GOAP: dry-run ctx → decide (hit кеша ⇒ без A*) → первое действие плана → deferred effect.
-  const auto& goal_state = goap_->get_goals().front().goal;
+  const auto& goal_state = goap->get_goals().front().goal;
   const uint64_t goal_id = utils::string_hash("resolved");
   const auto ctx = make_ctx(world_, id, brain->seed, tick, nullptr, &scratch.act);
-  const acumen::state start = goap_->compute_state(ctx);
+  const acumen::state start = goap->compute_state(ctx);
   std::array<const acumen::action*, 4> plan{};
   acumen::decide_params dp;
   dp.start = start;
@@ -1029,7 +1091,7 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
   dp.goal_id = goal_id;
   dp.scratch = &scratch.planner;
   dp.cache = &scratch.cache;
-  const size_t n = goap_->decide(dp, plan);
+  const size_t n = goap->decide(dp, plan);
   cog->last_think = game_ticks_; // решение принято (game-время; при пустом плане переобдумаем по расписанию)
   if (n == 0 || plan[0] == nullptr) {
     return;
@@ -1186,10 +1248,19 @@ void actor_world_slice::apply(thread::atomic_pool& pool) {
     if (st == nullptr) {
       return;
     }
-    const auto outcome = mood::step(*fsm_, st->state, rec.fn, ctx);
+    // per-entity FSM-мозг (независим от goap_ref): fsm_ref → реестр, промах — ошибка конфигурации.
+    const auto* fref = world_.get<fsm_ref>(id);
+    if (fref == nullptr) {
+      utils::error{}("tile_frontier: acting actor {} has no fsm_ref", uint32_t(id));
+    }
+    const mood::system* fsm = fsm_registry_.get(fref->value);
+    if (fsm == nullptr) {
+      utils::error{}("tile_frontier: actor {} references unknown FSM brain {:#x}", uint32_t(id), fref->value);
+    }
+    const auto outcome = mood::step(*fsm, st->state, rec.fn, ctx);
     if (outcome.result == mood::step_result::transitioned &&
         outcome.next_state != utils::invalid_id && outcome.next_state != st->state) {
-      st->state = mood::apply_transition(*fsm_, st->state, *outcome.taken, ctx);
+      st->state = mood::apply_transition(*fsm, st->state, *outcome.taken, ctx);
       if (const uint64_t snd = sound_for_state(st->state); snd != 0) {
         if (const auto* p = world_.get<actor_position>(id); p != nullptr) {
           sound_emits_.push_back(sound_emit{snd, p->value});

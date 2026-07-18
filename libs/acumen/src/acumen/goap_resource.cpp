@@ -330,6 +330,13 @@ void goap_resource::load_cold(const utils::safe_handle_t&) {
 
   config_ = goap_config{};
   parse_goap(*compiler_, p, config_);
+  // origin = этот ресурс: элемент определён (или перекрыт) здесь; merge копирует origin с элементом.
+  for (auto& m : config_.metrics) {
+    m.origin = id;
+  }
+  for (auto& a : config_.actions) {
+    a.origin = id;
+  }
   if (config_.metrics.empty() && config_.base.empty()) {
     utils::warn("goap resource '{}': neither a base nor any metrics were provided", id);
   }

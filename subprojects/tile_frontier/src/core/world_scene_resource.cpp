@@ -24,6 +24,11 @@ void world_scene_resource::load_cold(const utils::safe_handle_t&) {
   config_ = world_scene_config{};
   tavl::deserialize(parser, ctx, config_);
   if (!ctx.diagnostics.empty()) {
+    utils::warn("world scene resource '{}': {} tavl diagnostics", id, ctx.diagnostics.size());
+    for (const auto& d : ctx.diagnostics) {
+      utils::warn("  tavl diagnostic '{}' at {}:{} field '{}'",
+                  tavl::to_string(d.error.type), d.error.span.line, d.error.span.column, d.field);
+    }
     utils::error{}("world scene resource '{}': {} tavl diagnostics", id, ctx.diagnostics.size());
   }
   if (config_.chunk_size == 0 || config_.chunks_x == 0 || config_.chunks_y == 0 || config_.actor_count == 0) {
@@ -33,9 +38,9 @@ void world_scene_resource::load_cold(const utils::safe_handle_t&) {
     utils::error{}("world scene resource '{}': tile_size and camera_half_width must be positive", id);
   }
   if (config_.tile_texture_group.empty() || config_.sound_group.empty() ||
-      config_.actor_script.empty() || config_.actor_fsm.empty() ||
-      config_.actor_goap.empty() || config_.prefab_prefix.empty()) {
-    utils::error{}("world scene resource '{}': resource groups and actor config ids are required", id);
+      config_.actor_script.empty() || config_.fsm_prefix.empty() ||
+      config_.goap_prefix.empty() || config_.prefab_prefix.empty()) {
+    utils::error{}("world scene resource '{}': resource groups and actor config prefixes are required", id);
   }
 }
 

@@ -15,6 +15,8 @@
 
 #include <devils_engine/catalogue/logging.h>
 #include <devils_engine/demiurg/module_system.h>
+#include <devils_engine/input/bindings.h>
+#include <devils_engine/input/events.h>
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/painter/glsl_source_file.h>
 #include <devils_engine/painter/pipeline_cache_resource.h>
@@ -146,6 +148,15 @@ bool deserialize_settings_file(Bootstrap& boot, const std::string& path) {
 
 template <typename Bootstrap>
 bool save_settings(Bootstrap& boot) {
+  // Живой key-mapping выгружается в settings перед записью — если settings-схема проекта
+  // объявила секцию input. Guard has_bindings: в headless/до создания окна ввод пуст, секцию,
+  // загруженную из файла, затирать нечем.
+  if constexpr (requires { boot.settings.input; }) {
+    if (input::events::has_bindings()) {
+      boot.settings.input = input::collect_bindings();
+    }
+  }
+
   const auto path = settings_path(boot);
   std::string tavl_data;
   if (!tavl::serialize(boot.settings, tavl_data)) {
@@ -169,6 +180,15 @@ bool reload_settings(Bootstrap& boot) {
     utils::warn("settings: '{}' not found, keeping current settings", path);
     return false;
   }
+
+  // Live-переприменение key-mapping: только когда ввод уже инициализирован (дефолты навешены
+  // при создании окна) — до окна/в headless накатывать не на что, применит create_window.
+  if constexpr (requires { boot.settings.input; }) {
+    if (input::events::has_bindings()) {
+      input::apply_bindings(boot.settings.input);
+    }
+  }
+
   DE_LOG(catalogue::log_domain::main, flow, "Reloaded settings '{}'", path);
   return true;
 }

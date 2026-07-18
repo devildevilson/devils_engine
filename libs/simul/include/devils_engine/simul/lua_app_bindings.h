@@ -253,6 +253,15 @@ void install_app_lifecycle_bindings(sol::table app, Host& host) {
   app.set_function("game_speed", [hptr]() -> double {
     return hptr->game_speed();
   });
+  // Живые настройки из UI: save выгружает текущее состояние (включая эффективный key-mapping,
+  // если settings-схема проекта объявила input) в settings.tavl; reload перечитывает файл и
+  // применяет runtime-реакцию (логгирование/частота/скорость/биндинги).
+  app.set_function("save_settings", [hptr]() -> bool {
+    return hptr->host_save_settings();
+  });
+  app.set_function("reload_settings", [hptr]() -> bool {
+    return hptr->host_reload_settings();
+  });
   // рантайм-переключение глубины логгирования домена (работает и в release):
   // app.set_log_level("sound","trace"). Домены main/assets/sound/render/ui/gameplay/resource/demiurg;
   // глубина off/info/flow/trace.

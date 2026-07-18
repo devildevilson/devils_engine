@@ -141,6 +141,16 @@ public:
   static void set_mouse_button(const event_id id, const int32_t button, const uint8_t slot = 0);
   static void set_mouse_button(const std::string_view& id, const int32_t button, const uint8_t slot = 0);
 
+  // отвязать слот/событие целиком; осиротевшие key_data вычищаются той же логикой, что в set_key
+  static void clear_key(const event_id id, const uint8_t slot = 0);
+  static void clear_event(const event_id id);
+  static void clear_event(const std::string_view& id);
+  // есть ли хоть одно событие (≈ инициализирован ли ввод: дефолты навешиваются при создании окна)
+  static bool has_bindings();
+  // перечисление биндингов (выгрузка в конфиг, см. bindings.h): cb(user, имя события, слоты
+  // сканкодов, -1 = пустой слот). C-коллбек намеренно — не тянуть <functional> в этот хедер.
+  static void for_each_event(void (*cb)(void* user, const std::string_view name, const std::span<const int32_t> keys), void* user);
+
   static bool is_pressed(const event_id id);
   static bool is_pressed(const std::string_view& id);
   static bool is_released(const event_id id);
@@ -186,6 +196,9 @@ public:
   static struct auxiliary& auxiliary_data();
 
 private:
+  // снять событие со сканкода + удалить key_data, если на нём не осталось событий
+  static void detach_event(const event_id id, const int32_t scancode);
+
   static size_t time;
   static size_t long_press_duration;
   static size_t double_press_duration;

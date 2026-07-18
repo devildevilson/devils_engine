@@ -161,6 +161,7 @@ plan_key system::make_key(const state& start, const uint64_t goal_id) const noex
   // влияет на план. relevant_bits_.size() <= STATE_SIZE ⇒ b/64 < state_words (без OOB).
   plan_key k;
   k.goal_id = goal_id;
+  k.system_salt = cache_salt_;
   size_t b = 0;
   for (const uint16_t idx : relevant_bits_) {
     if (start.test(idx)) {

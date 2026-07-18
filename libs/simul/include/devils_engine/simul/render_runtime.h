@@ -357,7 +357,10 @@ void standard_render_bind_texture_slot(State& c, const uint32_t slot) {
     return;
   }
 
-  standard_render_drain(c);
+  // Descriptor contents are consumed by submitted frames, but have no presentation-engine
+  // lifetime. Frame fences are the narrow synchronization boundary here; queue waitIdle is
+  // reserved for swapchain recreation/teardown where vkQueuePresentKHR is not covered by them.
+  c.base->wait_all_fences();
 
   const uint32_t binding = uint32_t(d.layout.size());
   const vk::DescriptorImageInfo info(vk::Sampler{}, v, vk::ImageLayout::eShaderReadOnlyOptimal);
@@ -399,7 +402,7 @@ void standard_render_bind_textures(State& c) {
     return;
   }
 
-  standard_render_drain(c);
+  c.base->wait_all_fences();
 
   const uint32_t binding = uint32_t(d.layout.size());
   const uint32_t n = d.texture_count;
@@ -501,7 +504,10 @@ void standard_render_resize_swapchain(State& c, const uint32_t w, const uint32_t
   if (w == 0 || h == 0) {
     return;
   }
-  c.base->wait_all_fences();
+  // Frame fences cover graphics submission, not the presentation-engine use begun by
+  // vkQueuePresentKHR. The old swapchain is destroyed inside resize_viewport(), so this rare
+  // WSI lifecycle boundary must drain the queue that also performs presentation.
+  standard_render_drain(c);
   c.pending_graph_width = w;
   c.pending_graph_height = h;
   c.base->resize_viewport(w, h);

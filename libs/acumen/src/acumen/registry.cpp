@@ -12,6 +12,9 @@ system_id registry::add(const std::string_view name, system&& value) {
     const std::string_view prev_name = prev != names_.end() ? std::string_view(prev->second) : "<unknown>";
     utils::error{}("acumen::registry: duplicate/hash collision '{}' vs '{}' ({:#x})", prev_name, name, id);
   }
+  // соль кеша планов = system_id: несколько систем реестра могут разделять один solution_cache
+  // (per-entity мозги на общих per-thread кешах), план же хранит индексы действий своей системы.
+  it->second->set_cache_salt(id);
   names_.emplace(id, std::string(name));
   return id;
 }

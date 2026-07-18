@@ -22,8 +22,12 @@ namespace acumen {
 // (равенство по словам), коллизий-подмены плана нет.
 
 // Ключ мемоизации. bits — значащие биты состояния, упакованные в плотные младшие позиции.
+// system_salt — ТОЖДЕСТВО СИСТЕМЫ (см. system::set_cache_salt): план хранит индексы в
+// get_actions() конкретной системы, и проекция значащих бит у каждой системы своя ⇒ один
+// кеш, разделяемый несколькими системами (per-entity мозги), обязан различать их в ключе.
 struct plan_key {
   uint64_t goal_id = 0;
+  uint64_t system_salt = 0;
   std::array<uint64_t, state_words> bits{};
   bool operator==(const plan_key& o) const noexcept = default;
 };
