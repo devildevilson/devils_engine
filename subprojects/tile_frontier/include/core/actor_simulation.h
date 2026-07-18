@@ -440,7 +440,7 @@ private:
   devils_engine::act::execution_scratch ui_scratch_;
 
   // ── еда и препятствия (C2) ──
-  glm::vec2 spawn_min_{0.0f, 0.0f}; // границы спавна (для респавна еды), заданы в init
+  glm::vec2 spawn_min_{0.0f, 0.0f}; // мировой бокс: спавн/респавн еды + кламп движения акторов, задан в init
   glm::vec2 spawn_max_{0.0f, 0.0f};
   uint32_t food_target_ = 0;    // целевое число еды на карте (поддерживается респавном)
   uint64_t food_spawn_seq_ = 0; // счётчик спавнов — детерминированный поток позиций еды
