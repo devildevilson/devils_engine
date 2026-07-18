@@ -21,7 +21,9 @@
 #include <devils_engine/mood/registry.h>
 #include <devils_engine/mood/system.h>            // mood::system — FSM-исполнитель (состояние/анимация/звук)
 #include <devils_engine/prefab/prefab_registry.h> // prefab::prefab_registry — рецепт сборки энтити (spawn_at)
-#include <devils_engine/utils/kd_tree.h>          // utils::kd_tree — пространственный акселератор sense
+#include <devils_engine/aesthetics/flag_set.h> // generic флаги с countdown-сроком (компонент как есть)
+#include <devils_engine/utils/kd_tree.h>       // utils::kd_tree — пространственный акселератор sense
+#include <devils_engine/utils/timeline.h>      // utils::game_timestamp — игровое время слайса (deadlines/flags)
 #include <glm/glm.hpp>
 
 #include "draw_intent.h"
@@ -156,10 +158,10 @@ struct actor_state {
 // коммита (ретайрит commit_ticks для едящих). Снимается в resolve_eating по истечении.
 struct actor_eating {
   devils_engine::aesthetics::entityid_t target = devils_engine::aesthetics::invalid_entityid;
-  // Обратный отсчёт поедания в тиках (0 на входе resolve_eating = завершить). Относительная
-  // длительность вместо абсолютного дедлайна: телу eat не нужен tick ⇒ ds-сигнатура (self, prey)
-  // без rng-carrier'а. Typed absolute deadlines — отдельный слой (ROADMAP пп.7–8).
-  uint64_t ticks_left = 0;
+  // Остаток поедания в ИГРОВОМ времени (µs game-домена): resolve_eating вычитает game-дельту ⇒
+  // пауза (dt=0) и замедление/ускорение действуют автоматически. Обратный отсчёт вместо
+  // абсолютного дедлайна: телу eat не нужен tick ⇒ ds-сигнатура (self, prey) без rng-carrier'а.
+  devils_engine::utils::game_duration remaining{};
 };
 
 // Жертва, которую схватили: КТО ест. Пока есть — актор заморожен и пропущен cognition'ом,
@@ -167,6 +169,11 @@ struct actor_eating {
 struct actor_grabbed {
   devils_engine::aesthetics::entityid_t by = devils_engine::aesthetics::invalid_entityid;
 };
+
+// Generic-флаги движка как проектный компонент (сериализуется в actor_snapshot.h). Пишутся телами
+// ds-блоков set_flag/clear_flag (serial_structural lane: create-on-demand) и C++-геймплеем
+// (resolve_eating → sated); читаются ds-предикатом has_flag и системами (drives).
+using flag_set = devils_engine::aesthetics::flag_set;
 
 // Еда-предмет: статичная маленькая сущность. Тег. В дереве восприятия она — «добыча» (меньше
 // любого актора) и потребляется ТЕМ ЖЕ хэндшейком поедания (надёжно — еда не убегает).
@@ -282,7 +289,15 @@ public:
   // spawn_sink: спавн префаба по имени в точке (для ds-натива spawn_at). Тот же путь, что spawn_food —
   // prefab_.spawn(name, world, {pos}). Возвращает id новой сущности.
   devils_engine::aesthetics::entityid_t spawn_prefab(std::string_view name, glm::vec2 pos) override;
-  actor_metrics update(float dt_seconds, actor_batch& batch, devils_engine::thread::atomic_pool& pool);
+  // game_delta_ticks — уже отмасштабированный game-домен (µs игрового времени за кадр): пауза даёт 0,
+  // замедление/ускорение (game_time_scale) масштабируют его. Слайс сам аккумулирует game_now()
+  // (сериализуется ⇒ deadlines/flags переживают resume) и выводит dt секунд для интеграции/drives.
+  actor_metrics update(uint64_t game_delta_ticks, actor_batch& batch, devils_engine::thread::atomic_pool& pool);
+
+  // Текущее игровое время слайса (для deadlines/flag expiry; game-домен, стоит на паузе).
+  devils_engine::utils::game_timestamp game_now() const noexcept {
+    return {game_ticks_};
+  }
 
   devils_engine::aesthetics::world& ecs() noexcept {
     return world_;
@@ -318,9 +333,10 @@ private:
   void build_sense_tree(devils_engine::thread::atomic_pool& pool);
   void gather_sense_tree();
   void finalize_sense_tree(devils_engine::thread::atomic_pool& pool);
-  // «Созрел» = ещё не думал (last_think==0) ИЛИ истёк commit_ticks_. Отбор в enumerate.
-  bool matured(const uint64_t last_think, const uint64_t tick) const noexcept {
-    return last_think == 0 || (tick - last_think) >= commit_ticks_;
+  // «Созрел» = ещё не думал (last_think==0) ИЛИ прошло commit_game_ticks_ ИГРОВОГО времени с
+  // последнего решения. Каденция в game-домене: замедление времени замедляет и мышление.
+  bool matured(const uint64_t last_think, const uint64_t game_now) const noexcept {
+    return last_think == 0 || (game_now - last_think) >= commit_game_ticks_;
   }
   // Планировщик когниции: выбирает «созревших» акторов в пределах бюджета (приоритет —
   // давность решения), и только им обновляет восприятие + гоняет GOAP → deferred effect. Остальные
@@ -337,7 +353,9 @@ private:
   void integrate_and_update_drives(float dt_seconds, devils_engine::thread::atomic_pool& pool);
   // Завершает поедание у хищников, чей срок истёк: сбрасывает голод, снимает actor_eating,
   // удаляет съеденную жертву из мира (kill-list, удаление ПОСЛЕ обхода). Зовётся после apply.
-  void resolve_eating(uint64_t tick);
+  void resolve_eating(uint64_t game_delta_ticks);
+  // sweep флагов: вычесть game-дельту у всех flag_set, удалить исчерпанные записи (см. flag_set.h).
+  void expire_flags(uint64_t game_delta_ticks);
   // Допополняет еду до food_target_ (детерминированно по тику+счётчику). Зовётся раз за тик.
   void maintain_food();
   // Спавнит одну еду-сущность в случайной (детерминированной) точке в пределах bounds.
@@ -368,7 +386,8 @@ private:
   // Политика think-фазы (были поля cognition_scheduler; сериализуются как commit_ticks/think_budget).
   // commit_ticks: сущность держится решения N тиков (спрос ≈ N_actors/commit_ticks). think_budget:
   // потолок обдумываний за тик (спайк-сейфти, count-budget ⇒ детерминированно).
-  size_t commit_ticks_ = 3;
+  // Окно коммита решения в µs game-времени (150ms = прежние 3 тика при 20fps и номинальном scale).
+  uint64_t commit_game_ticks_ = 150000;
   size_t think_budget_ = 2048;
   // Map-фазы на общих примитивах aesthetics (владеет слайс; лениво создаются на 1-м апдейте, когда
   // известен пул). cognition_system = worklist_system над «созревшими» (per-thread scratch = A*+cache
@@ -401,6 +420,7 @@ private:
   devils_engine::prefab::prefab_registry<spawn_args> prefab_;
 
   uint64_t tick_ = 0;
+  uint64_t game_ticks_ = 0; // накопленное игровое время слайса (µs game-домена), сериализуется
 
   // ── еда и препятствия (C2) ──
   glm::vec2 spawn_min_{0.0f, 0.0f}; // границы спавна (для респавна еды), заданы в init

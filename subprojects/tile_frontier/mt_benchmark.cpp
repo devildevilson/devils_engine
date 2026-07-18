@@ -60,7 +60,7 @@ run_result run(const size_t workers, const uint32_t entity_count,
   const glm::vec2 min_bound{0.5f, 0.5f};
   const glm::vec2 max_bound{64.0f, 64.0f};
   constexpr uint32_t texture_count = 4;
-  constexpr float dt = 1.0f / 60.0f;
+  constexpr uint64_t dt = devils_engine::utils::timeline_ticks_per_second / 60; // µs game-времени за тик
 
   thread::atomic_pool pool(workers);
   tf::actor_world_slice slice;

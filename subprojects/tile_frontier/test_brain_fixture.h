@@ -19,6 +19,12 @@ public:
     return config_;
   }
 
+  // Прямой доступ к проектному ds::system — тесты проверяют компиляцию building blocks
+  // (сигнатуры/регистрацию) без полного record/commit пайплайна.
+  tile_frontier::core::script_environment& scripts() noexcept {
+    return scripts_;
+  }
+
 private:
   tile_frontier::core::script_environment scripts_;
   devils_engine::demiurg::module_system modules_;

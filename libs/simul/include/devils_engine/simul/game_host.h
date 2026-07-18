@@ -118,6 +118,32 @@ public:
     derived().project_settings_reloaded();
   }
 
+  // Живая параметрическая настройка скорости геймплея (водораздел live-vs-restart: рестарт не
+  // нужен): рациональный множитель ПОВЕРХ номинального world-time mapping из settings.time.
+  // Ускорение/замедление = deterministic input — game clock масштабируется, gameplay получает уже
+  // отмасштабированный game_dt; ноль запрещён (остановка = pause, не скорость). Runtime settings
+  // reload сбрасывает скорость к номиналу (set_game_scale выше).
+  bool set_game_speed(const uint32_t numerator, const uint32_t denominator = 1) {
+    if (numerator == 0 || denominator == 0) {
+      return false;
+    }
+    const uint64_t game = uint64_t(bootstrap_->settings.time.game_seconds) * numerator;
+    const uint64_t engine = uint64_t(bootstrap_->settings.time.real_seconds) * denominator;
+    if (game == 0 || engine == 0 || game > UINT32_MAX || engine > UINT32_MAX) {
+      return false;
+    }
+    derived().state().clocks.set_game_scale(utils::game_time_scale(uint32_t(game), uint32_t(engine)));
+    return true;
+  }
+
+  // Текущий множитель скорости относительно номинального mapping (1.0 = номинал), для UI.
+  double game_speed() const {
+    const auto scale = derived().state().clocks.game_scale();
+    const auto& t = bootstrap_->settings.time;
+    return (double(scale.game_ticks()) * double(t.real_seconds)) /
+           (double(scale.engine_ticks()) * double(t.game_seconds));
+  }
+
   bool host_stop_predicate() const {
     if (quit_requested_.load(std::memory_order_acquire)) {
       return true;

@@ -89,7 +89,9 @@ static constexpr float hunger_rate = 0.08f;  // голод/сек (≈12с до 
 static constexpr float bored_rate = 0.14f;   // скука/сек пока стоит (думает)
 static constexpr float bored_relief = 0.30f; // спад скуки/сек в движении
 static constexpr float still_speed2 = 0.01f; // |vel|^2 ниже — считаем «стоит»
-static constexpr uint64_t eat_duration = 18; // тиков длится поедание (≈0.9с при 20fps) = окно коммита
+// Длительность поедания в µs ИГРОВОГО времени (0.9с = прежние 18 тиков при 20fps, scale 1).
+static constexpr uint64_t eat_game_ticks = 900000;
+static constexpr uint64_t sated_seconds = 10; // игровых секунд сытости после еды (флаг sated, голод не растёт)
 
 // Радиус восприятия для kD-запроса (мировые единицы, tile_size=1, шаг спавна ~1).
 // Ограничивает поиск «ближайшего крупнее/мельче» (иначе предикат-NN без кандидата
@@ -292,7 +294,7 @@ static void effect_eat(const entity_scope self_s, const entity_scope prey_s) noe
   if (aesthetics::is_invalid_entityid(prey) || !world.exists(prey)) {
     return; // добыча исчезла между claim (think) и commit (apply)
   }
-  world.create<actor_eating>(self, prey, eat_duration); // обратный отсчёт: телу не нужен tick
+  world.create<actor_eating>(self, prey, utils::game_duration{eat_game_ticks}); // countdown: телу не нужен tick
   world.create<actor_grabbed>(prey, self);
   set_velocity(world, self, glm::vec2{0.0f, 0.0f});
   set_velocity(world, prey, glm::vec2{0.0f, 0.0f});
@@ -361,6 +363,55 @@ static bool scope_prey_present(const entity_scope s) {
   return per != nullptr && per->has_prey;
 }
 
+// ── generic-флаги (aesthetics::flag_set, countdown-модель) ─────────────────
+// Тела deferred-блоков исполняются на commit без контекста времени ⇒ duration записывается как
+// остаток, sweep (expire_flags) вычитает game-дельту. seconds — ИГРОВЫЕ секунды из скрипта;
+// seconds <= 0 означает бессрочный флаг. create-on-demand компонента ⇒ set/clear идут в
+// serial_structural lane (см. actor_flag_effect_strategy ниже).
+
+static utils::id sated_flag_id() {
+  static const utils::id id = utils::string_hash("sated");
+  return id;
+}
+
+static void effect_set_flag(const entity_scope self, const std::string_view name, const double seconds) {
+  if (self.w == nullptr) {
+    return;
+  }
+  auto& world = world_of(self);
+  const auto id = ent(self);
+  if (!world.exists(id)) {
+    return; // сущность исчезла между record (think) и commit (apply)
+  }
+  auto* flags = world.get<flag_set>(id);
+  if (flags == nullptr) {
+    flags = world.create<flag_set>(id);
+  }
+  const auto remaining = seconds <= 0.0
+    ? flag_set::no_expiry
+    : utils::game_duration{uint64_t(seconds * double(utils::timeline_ticks_per_second))};
+  flags->set(utils::string_hash(name), remaining);
+}
+
+static void effect_clear_flag(const entity_scope self, const std::string_view name) {
+  if (self.w == nullptr) {
+    return;
+  }
+  auto& world = world_of(self);
+  const auto id = ent(self);
+  if (auto* flags = world.exists(id) ? world.get<flag_set>(id) : nullptr; flags != nullptr) {
+    flags->remove(utils::string_hash(name));
+  }
+}
+
+static bool scope_has_flag(const entity_scope s, const std::string_view name) {
+  if (s.w == nullptr) {
+    return false;
+  }
+  const auto* flags = s.w->get<flag_set>(aesthetics::entityid_t(s.id));
+  return flags != nullptr && flags->has(utils::string_hash(name));
+}
+
 // Скоуп-функция «таргет из ближайших»: ближайшая добыча из восприятия как entity_scope. Скрипт
 // передаёт её аргументом эффекту (`eat = prey`); явный typed-аргумент нужен арбитражу — elect
 // видит prey в record-фазе, а не выкапывает её из компонентов внутри тела на commit.
@@ -404,16 +455,28 @@ namespace {
 using actor_local_effect_strategy = catalogue::mt::preset::parallel_collect<0>;
 using actor_eat_effect_strategy = catalogue::mt::preset::structural_elect<
   1, catalogue::mt::conflict::target_not_source>;
+// Флаги: collect (все вызовы, не победитель), но commit в ST structural lane — тело может
+// создавать компонент flag_set по требованию (create не MT-safe, категория D).
+using actor_flag_effect_strategy = catalogue::mt::collect<
+  catalogue::mt::key::entity_arg<0>, catalogue::mt::order::source_then_sequence,
+  catalogue::mt::commit::serial_structural>;
 
 struct actor_local_effect_domain_id {};
 struct actor_eat_effect_domain_id {};
+struct actor_flag_effect_domain_id {};
 using actor_local_effect_domain = catalogue::mt::domain<
   actor_local_effect_domain_id, actor_local_effect_strategy>;
 using actor_eat_effect_domain = catalogue::mt::domain<
   actor_eat_effect_domain_id, actor_eat_effect_strategy>;
+using actor_flag_effect_domain = catalogue::mt::domain<
+  actor_flag_effect_domain_id, actor_flag_effect_strategy>;
 
 using set_course_deferred = actor_local_effect_domain::fn_traits<
   &effect_set_course, "set_course", "self", "course">;
+using set_flag_deferred = actor_flag_effect_domain::fn_traits<
+  &effect_set_flag, "set_flag", "self", "flag", "seconds">;
+using clear_flag_deferred = actor_flag_effect_domain::fn_traits<
+  &effect_clear_flag, "clear_flag", "self", "flag">;
 using eat_deferred = actor_eat_effect_domain::fn_traits<
   &effect_eat, "eat", "self", "prey">;
 using flee_script_deferred = actor_local_effect_domain::fn_traits<
@@ -435,6 +498,9 @@ const act::building_blocks& actor_building_blocks() {
     b.effect<think_script_deferred>();
     b.effect<eat_deferred>();        // `eat = prey`: elect по prey-аргументу, тело в serial_structural lane
     b.effect<set_course_deferred>(); // `set_course = chance`: wander/seek_food из конфига
+    b.effect<set_flag_deferred>();   // `set_flag = { name, seconds }`: generic флаг с countdown-сроком
+    b.effect<clear_flag_deferred>(); // `clear_flag = name`: снять флаг досрочно
+    b.pure<&scope_has_flag>("has_flag");
     b.pure<&scope_threat_present>("threat_present");
     b.pure<&scope_prey_present>("prey_present");
     b.pure<&scope_prey_in_range>("prey_in_range");
@@ -454,6 +520,7 @@ const act::building_blocks& actor_building_blocks() {
 struct deferred_effects {
   catalogue::mt::executor<actor_local_effect_strategy> local;
   catalogue::mt::executor<actor_eat_effect_strategy> eat;
+  catalogue::mt::executor<actor_flag_effect_strategy> flags;
 
   ~deferred_effects() {
     if (actor_local_effect_domain::executor_instance() == &local) {
@@ -462,13 +529,18 @@ struct deferred_effects {
     if (actor_eat_effect_domain::executor_instance() == &eat) {
       actor_eat_effect_domain::set_executor(nullptr);
     }
+    if (actor_flag_effect_domain::executor_instance() == &flags) {
+      actor_flag_effect_domain::set_executor(nullptr);
+    }
   }
 
   void begin_record(const size_t source_capacity, const size_t call_capacity) {
     actor_local_effect_domain::set_executor(&local);
     actor_eat_effect_domain::set_executor(&eat);
+    actor_flag_effect_domain::set_executor(&flags);
     local.begin_record(source_capacity, max_deferred_effects_per_actor, call_capacity);
     eat.begin_record(source_capacity, max_deferred_effects_per_actor, call_capacity);
+    flags.begin_record(source_capacity, max_deferred_effects_per_actor, call_capacity);
   }
 };
 
@@ -686,11 +758,16 @@ struct integration_system : devils_engine::aesthetics::template_system<actor_pos
 // Пассивная динамика мотиваций: голод копится всегда, скука растёт в простое / спадает в движении.
 struct drives_system : devils_engine::aesthetics::template_system<stats, actor_velocity> {
   float dt = 0.0f;
-  explicit drives_system(aesthetics::world* w) noexcept : template_system(w) {}
+  aesthetics::world* w = nullptr;
+  explicit drives_system(aesthetics::world* world) noexcept : template_system(world), w(world) {}
   void process(const query_tuple_t& t, const size_t /*time*/) override {
     auto* dr = std::get<1>(t);
     const auto* vel = std::get<2>(t);
-    dr->hunger = std::clamp(dr->hunger + hunger_rate * dt, 0.0f, 1.0f);
+    // Сытость (флаг sated с countdown) замораживает рост голода — чтение СВОЕГО компонента, MT-safe.
+    const auto* flags = w->get<flag_set>(std::get<0>(t));
+    if (flags == nullptr || !flags->has(sated_flag_id())) {
+      dr->hunger = std::clamp(dr->hunger + hunger_rate * dt, 0.0f, 1.0f);
+    }
     const float speed2 = vel->value.x * vel->value.x + vel->value.y * vel->value.y;
     const float db = (speed2 <= still_speed2 ? bored_rate : -bored_relief) * dt;
     dr->boredom = std::clamp(dr->boredom + db, 0.0f, 1.0f);
@@ -727,12 +804,14 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   setup_brain_registry();
   calls_.reset(count); // предварительная ёмкость по числу акторов; растёт в cognition до index_capacity
   tick_ = 0;
+  game_ticks_ = 0;
 
   // СОЗДАЁМ аллокаторы пулов поедания заранее на ГЛАВНОМ потоке. Две причины: (1) view<>
   // (в resolve_eating) кидает, если аллокатора нет, а компоненты появляются лишь при первом
   // хвате; (2) component_type_id — sequential_type_id (присваивается при первом обращении),
   // фиксируем его до любого MT-доступа. block_size как в world::create (sizeof(T)*250).
   static_cast<void>(world_.get_or_create_allocator<actor_eating>(sizeof(actor_eating) * 250));
+  static_cast<void>(world_.get_or_create_allocator<flag_set>(sizeof(flag_set) * 250));
   static_cast<void>(world_.get_or_create_allocator<actor_grabbed>(sizeof(actor_grabbed) * 250));
 
   // C2: границы для респавна еды, целевое число еды, кэш препятствий.
@@ -789,14 +868,21 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   }
 }
 
-actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& batch, thread::atomic_pool& pool) {
+actor_metrics actor_world_slice::update(const uint64_t game_delta_ticks, actor_batch& batch, thread::atomic_pool& pool) {
+  // game-домен: аккумулируем игровое время слайса (deadlines/flags сравниваются с game_now()),
+  // dt секунд для интеграции/drives выводится из той же дельты. Пауза даёт 0, scale масштабирует.
+  game_ticks_ += game_delta_ticks;
+  const float dt_seconds = float(game_delta_ticks) / float(utils::timeline_ticks_per_second);
   using build_sense_tree_perf = actor_perf_domain::fn_traits<
     &actor_world_slice::build_sense_tree, "sense.tree", "self", "pool">;
   using cognition_perf = actor_perf_domain::fn_traits<&actor_world_slice::cognition, "cognition", "self", "tick", "pool">;
   using apply_perf = actor_perf_domain::fn_traits<&actor_world_slice::apply, "apply", "self", "pool">;
   using maps_perf = actor_perf_domain::fn_traits<
     &actor_world_slice::integrate_and_update_drives, "integration+drives", "self", "dt_seconds", "pool">;
-  using resolve_eating_perf = actor_perf_domain::fn_traits<&actor_world_slice::resolve_eating, "eating", "self", "tick">;
+  using resolve_eating_perf = actor_perf_domain::fn_traits<
+    &actor_world_slice::resolve_eating, "eating", "self", "game_delta_ticks">;
+  using expire_flags_perf = actor_perf_domain::fn_traits<
+    &actor_world_slice::expire_flags, "flags", "self", "game_delta_ticks">;
   using maintain_food_perf = actor_perf_domain::fn_traits<&actor_world_slice::maintain_food, "food", "self">;
   using gather_sense_tree_perf = actor_perf_domain::fn_traits<
     &actor_world_slice::gather_sense_tree, "sense.gather", "self">;
@@ -808,6 +894,7 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
   using apply_fn_t = apply_perf::loc_fn_t;
   using maps_fn_t = maps_perf::loc_fn_t;
   using resolve_eating_fn_t = resolve_eating_perf::loc_fn_t;
+  using expire_flags_fn_t = expire_flags_perf::loc_fn_t;
   using maintain_food_fn_t = maintain_food_perf::loc_fn_t;
   using gather_sense_tree_fn_t = gather_sense_tree_perf::loc_fn_t;
   using finalize_sense_tree_fn_t = finalize_sense_tree_perf::loc_fn_t;
@@ -821,7 +908,8 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
   cognition_fn_t{}(*this, tick_, pool);
   apply_fn_t{}(*this, pool);            // collect MT + elect ST, затем FSM/звук
   maps_fn_t{}(*this, dt_seconds, pool); // две независимые map-системы, один общий barrier
-  resolve_eating_fn_t{}(*this, tick_);
+  resolve_eating_fn_t{}(*this, game_delta_ticks);
+  expire_flags_fn_t{}(*this, game_delta_ticks); // сроки флагов тикают game-дельтой (пауза/scale учтены)
   maintain_food_fn_t{}(*this);
 
   // Snapshot semantics are unchanged: positions at the end of tick N are positions at the start of
@@ -938,7 +1026,7 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
   dp.scratch = &scratch.planner;
   dp.cache = &scratch.cache;
   const size_t n = goap_->decide(dp, plan);
-  cog->last_think = tick; // решение принято (даже если план пуст — переобдумаем по расписанию)
+  cog->last_think = game_ticks_; // решение принято (game-время; при пустом плане переобдумаем по расписанию)
   if (n == 0 || plan[0] == nullptr) {
     return;
   }
@@ -1017,8 +1105,10 @@ void actor_world_slice::cognition(const uint64_t tick, thread::atomic_pool& pool
           return; // едящих/схваченных не переобдумываем (держатся действия)
         }
         const auto* cog = std::get<1>(t);
-        if (matured(cog->last_think, time)) {
-          due_.push_back(think_candidate{time - cog->last_think, id});
+        static_cast<void>(time);
+        // Каденция в game-домене: overdue = сколько игрового времени актор ждёт решения.
+        if (matured(cog->last_think, game_ticks_)) {
+          due_.push_back(think_candidate{game_ticks_ - cog->last_think, id});
         }
       });
   }
@@ -1074,6 +1164,10 @@ void actor_world_slice::apply(thread::atomic_pool& pool) {
   deferred_->eat.seal();
   deferred_->eat.commit();
 
+  // флаги — тоже ST structural lane (create<flag_set> по требованию); порядок после eat стабилен.
+  deferred_->flags.seal();
+  deferred_->flags.commit();
+
   calls_.dispatch([this](const catalogue::call_record& rec) {
     const auto id = aesthetics::entityid_t(rec.primary);
     // Схваченного В ЭТОМ ЖЕ commit гасим: eat уже заморозил его и поставил state="eaten".
@@ -1121,18 +1215,20 @@ void actor_world_slice::integrate_and_update_drives(const float dt_seconds, thre
 // снять actor_eating (хищник снова «созреет» и переобдумает), удалить съеденную жертву. СКАН — лямбда-
 // система (reduce view<actor_eating> в eat_finished_/eat_kill_; мутация СВОЕГО stats disjoint). Структурное
 // удаление компонентов/сущностей — ПОСЛЕ прохода в обёртке (нельзя мутировать пул при обходе), однопоточно.
-void actor_world_slice::resolve_eating(const uint64_t tick) {
+void actor_world_slice::resolve_eating(const uint64_t game_delta_ticks) {
   eat_finished_.clear();
   eat_kill_.clear();
   if (!resolve_eating_sys_) {
     resolve_eating_sys_ = aesthetics::make_map_system<actor_eating>(
-      &world_, [this](const auto& t, const size_t) {
+      &world_, [this](const auto& t, const size_t time) {
         const auto id = std::get<0>(t);
         auto* eat = std::get<1>(t);
-        if (eat->ticks_left != 0) {
-          --eat->ticks_left; // self-мутация disjoint; тайминг = прежнему абсолютному until_tick
+        // time = game-дельта тика: остаток тает игровым временем (пауза/скорость учтены).
+        if (eat->remaining.ticks > time) {
+          eat->remaining.ticks -= time; // self-мутация disjoint
           return;
         }
+        eat->remaining.ticks = 0;
         if (auto* dr = world_.get<stats>(id); dr != nullptr) {
           dr->hunger = 0.0f; // наелся
         }
@@ -1140,14 +1236,32 @@ void actor_world_slice::resolve_eating(const uint64_t tick) {
         eat_kill_.push_back(eat->target);
       });
   }
-  resolve_eating_sys_->update(tick);
+  resolve_eating_sys_->update(game_delta_ticks);
   for (const auto pid : eat_finished_) {
+    // Сытость — живая демонстрация флагов: пока флаг жив, голод не растёт (см. drives_system).
+    // Ставится ЗДЕСЬ (post-commit факт доедания), а не в eat-скрипте: ветки составного скрипта
+    // записываются независимо, и проигравший elect не должен получить sated.
+    auto* flags = world_.get<flag_set>(pid);
+    if (flags == nullptr) {
+      flags = world_.create<flag_set>(pid);
+    }
+    flags->set(sated_flag_id(), utils::game_duration::from_seconds(sated_seconds));
     world_.remove<actor_eating>(pid);
   }
   for (const auto bid : eat_kill_) {
     if (world_.exists(bid)) {
       world_.remove_entity(bid);
     }
+  }
+}
+
+// Sweep флагов: вычесть прошедшую game-дельту у всех flag_set (self-мутация, порядок обхода
+// стабилен). Компонентов с флагами мало и записи крошечные — обычный ST-проход без пула.
+void actor_world_slice::expire_flags(const uint64_t game_delta_ticks) {
+  const utils::game_duration dt{game_delta_ticks};
+  for (auto [id, flags] : world_.view<flag_set>()) {
+    static_cast<void>(id);
+    flags->advance(dt);
   }
 }
 
@@ -1192,12 +1306,13 @@ void actor_world_slice::maintain_food() {
 namespace {
 struct sim_globals {
   uint64_t tick;
+  uint64_t game_ticks; // накопленное игровое время (µs) — resume продолжает те же deadlines
   uint64_t food_spawn_seq;
   glm::vec2 spawn_min;
   glm::vec2 spawn_max;
   uint32_t food_target;
   uint32_t texture_count;
-  uint32_t commit_ticks;
+  uint32_t commit_game_ticks; // µs game-времени (окно коммита решения)
   uint32_t think_budget;
 };
 } // namespace
@@ -1218,9 +1333,9 @@ std::vector<uint8_t> actor_world_slice::save(const aesthetics::serial::sink_poli
   raw.resize(serial::estimate_size(&world_) + 128);
   serial::writer wr{raw};
   serial::dump_world(&world_, wr);
-  const sim_globals g{tick_, food_spawn_seq_, spawn_min_, spawn_max_,
+  const sim_globals g{tick_, game_ticks_, food_spawn_seq_, spawn_min_, spawn_max_,
                       food_target_, texture_count_,
-                      uint32_t(commit_ticks_), uint32_t(think_budget_)};
+                      uint32_t(commit_game_ticks_), uint32_t(think_budget_)};
   serial::serialize(wr, g);
   raw.resize(wr.pos());
   return serial::seal(raw, policy); // header + checksum + компрессия (+ скриншот — тут не задаём)
@@ -1244,6 +1359,7 @@ bool actor_world_slice::load(const std::span<const uint8_t> packet, const brain_
   // как в init: аллокаторы пулов поедания заранее на главном потоке (view<> не кинет; type-id
   // фиксируется до MT). load_world и так тронет все зарегистрированные типы, но порядок важен.
   static_cast<void>(world_.get_or_create_allocator<actor_eating>(sizeof(actor_eating) * 250));
+  static_cast<void>(world_.get_or_create_allocator<flag_set>(sizeof(flag_set) * 250));
   static_cast<void>(world_.get_or_create_allocator<actor_grabbed>(sizeof(actor_grabbed) * 250));
 
   std::vector<std::byte> raw;
@@ -1262,12 +1378,13 @@ bool actor_world_slice::load(const std::span<const uint8_t> packet, const brain_
   }
 
   tick_ = g.tick;
+  game_ticks_ = g.game_ticks;
   food_spawn_seq_ = g.food_spawn_seq;
   spawn_min_ = g.spawn_min;
   spawn_max_ = g.spawn_max;
   food_target_ = g.food_target;
   texture_count_ = g.texture_count;
-  commit_ticks_ = g.commit_ticks;
+  commit_game_ticks_ = g.commit_game_ticks;
   think_budget_ = g.think_budget;
 
   rebuild_obstacle_cache(); // кэш выводим из мира, не хранится в снапшоте
