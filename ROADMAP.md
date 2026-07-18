@@ -506,7 +506,12 @@ Ownership catalogue executors и compile-time порядок actor phases пок
      `bind_default_actions` (движковый словарь), политика движения/клампа — проектная
      (`tile_frontier_game::move_camera`: скорость ∝ half_width, реальное время кадра — работает на
      gameplay-паузе; точка камеры клампится в бокс тайлового мира). Мир увеличен до 8×8 чанков
-     (128×128 тайлов).
+     (128×128 тайлов). Доводка по живому тесту (2026-07-19): верх экрана = -y мира (W/S
+     инвертированы); акторы клампятся в тот же мировой бокс в `integration_system` (границы =
+     spawn_min/max, уже сериализованы — resume не тронут); камера интерполируется на
+     рендер-потоке — main шлёт снапшот `command_draw_camera`, рендер лерпит prev→cur по
+     `nominal_clock` и сам собирает `camera_buffer`-UBO каждый рендер-кадр (лаг в один снапшот —
+     как у акторов, визуально синхронны).
    - ✅ **Read-only UI-шов к act (loc/string facade):** slice `ui_predicate/ui_number/ui_string/
      ui_describe` (dry-run ctx, отдельный `ui_scratch_`, main-thread) → Lua
      `app.act_predicate/act_number/act_string/act_describe(name, entityid [, cb])`. Effect-категория

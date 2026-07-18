@@ -148,6 +148,21 @@ struct command_draw_actors {
   std::vector<uint32_t> ids; // stable ids aligned with bytes/current instances
 };
 
+// main → render: снапшот 2D-камеры. Рендер интерполирует prev→cur по реальным часам (тот же
+// рецепт, что у акторов: nominal_clock + lerp) и САМ собирает global_ubo каждый рендер-кадр —
+// камера скользит плавно на любом fps рендера, а не шагает с частотой main-тика. Хедер лёгкий,
+// glm не тянем — плоские float. fb_* — размер фреймбуфера для ui_proj/misc (дискретен, снап
+// к новейшему снапшоту, как texture у акторов).
+struct command_draw_camera {
+  float center_x = 0.0f;
+  float center_y = 0.0f;
+  float half_width = 1.0f;
+  float aspect = 1.0f;
+  float fb_width = 1.0f;
+  float fb_height = 1.0f;
+  size_t frame_time = 0; // интервал до следующего снапшота, единицы utils::global_time_resolution
+};
+
 // (command_write_buffer удалён — запись буферов переведена на SPSC write_buffer_channel:
 //  POD-сообщение {name_hash,pos,size} + byte_ring под payload, см. write_buffer_channel.h.)
 

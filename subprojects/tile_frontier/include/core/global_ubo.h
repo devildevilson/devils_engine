@@ -7,8 +7,9 @@
 // Общий uniform-буфер (UBO), один на все шейдеры. std140-совместимая раскладка: mat4 и vec4
 // выровнены по 16 байт, поэтому C++-структура совпадает с std140 без доп. паддинга.
 // Зеркалит `global_ubo` в шейдерах (см. tests/shaders/ui.vert.glsl). Ресурс рендер-графа —
-// host-visible буфер "camera_buffer" (см. resources/res1.tavl), заполняется главным потоком
-// через command_write_buffer. Поля доращиваются по мере надобности (обратные матрицы и т.п.).
+// host-visible буфер "camera_buffer" (см. resources/res1.tavl); собирает его РЕНДЕР-поток из
+// снапшотов command_draw_camera с интерполяцией prev→cur (см. render_system.cpp) — каждый
+// рендер-кадр. Поля доращиваются по мере надобности (обратные матрицы и т.п.).
 
 namespace tile_frontier {
 namespace core {

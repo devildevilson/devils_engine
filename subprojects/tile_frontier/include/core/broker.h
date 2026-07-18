@@ -23,6 +23,7 @@ struct broker : public simul::standard_broker {
   // main → render (latest-wins)
   thread::mailbox<command_draw_tiles> draw_tiles;
   thread::mailbox<command_draw_actors> draw_actors;
+  thread::mailbox<command_draw_camera> draw_camera;
 
   // main → assets
   thread::spsc_queue<command_load_chunk> load_chunk; // reliable

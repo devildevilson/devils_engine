@@ -17,7 +17,6 @@
 
 #include "brain_config_loader.h"
 #include "broker.h"
-#include "global_ubo.h"
 #include "instance_layout.h"
 #include "messages.h"
 #include "tile_frontier_game.h"
@@ -172,10 +171,10 @@ void tile_frontier_game::move_camera(const frame_context& context) {
   static const auto down = input::events::make_event_id("camera_down");
   static const auto right = input::events::make_event_id("camera_right");
 
-  // ortho(bottom=mn.y, top=mx.y) ⇒ +y — вверх экрана.
+  // По живому тесту экранный «верх» = -y мира (Vulkan clip-Y направлен вниз, ortho это не компенсирует).
   glm::vec2 dir{0.0f, 0.0f};
-  dir.y += input::events::is_pressed(up) ? 1.0f : 0.0f;
-  dir.y -= input::events::is_pressed(down) ? 1.0f : 0.0f;
+  dir.y -= input::events::is_pressed(up) ? 1.0f : 0.0f;
+  dir.y += input::events::is_pressed(down) ? 1.0f : 0.0f;
   dir.x -= input::events::is_pressed(left) ? 1.0f : 0.0f;
   dir.x += input::events::is_pressed(right) ? 1.0f : 0.0f;
   if (dir.x == 0.0f && dir.y == 0.0f) {
@@ -230,25 +229,20 @@ void tile_frontier_game::publish_camera_and_tiles(const frame_context& context) 
     return;
   }
 
+  // Камера уезжает в рендер снапшотом состояния, а не готовой матрицей: global_ubo («camera_buffer»)
+  // собирает рендер-поток, интерполируя prev→cur по реальным часам (см. render_system.cpp) — иначе
+  // камера шагала бы с частотой main-тика на фоне плавных акторов.
   const glm::mat4 view_projection = camera_.view_proj();
   if (context.render_available) {
-    const float width = float(std::max(context.framebuffer_width, 1u));
-    const float height = float(std::max(context.framebuffer_height, 1u));
-
-    global_ubo_t ubo{};
-    ubo.view_proj = view_projection;
-    ubo.ui_proj = glm::mat4(1.0f);
-    ubo.ui_proj[0][0] = 2.0f / width;
-    ubo.ui_proj[1][1] = 2.0f / height;
-    ubo.ui_proj[2][2] = -1.0f;
-    ubo.ui_proj[3][0] = -1.0f;
-    ubo.ui_proj[3][1] = -1.0f;
-    ubo.misc = glm::vec4(width, height, 4.0f, 0.0f);
-
-    static const uint64_t camera_buffer_hash = utils::string_hash("camera_buffer");
-    context.messages.write_buffer.write(
-      camera_buffer_hash,
-      std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(&ubo), sizeof(global_ubo_t)));
+    auto& cam = context.messages.draw_camera.write_slot();
+    cam.center_x = camera_.center.x;
+    cam.center_y = camera_.center.y;
+    cam.half_width = camera_.half_width;
+    cam.aspect = camera_.aspect;
+    cam.fb_width = float(std::max(context.framebuffer_width, 1u));
+    cam.fb_height = float(std::max(context.framebuffer_height, 1u));
+    cam.frame_time = context.time;
+    context.messages.draw_camera.publish();
   }
 
   if (!context.gate.in_game || !context.render_available) {

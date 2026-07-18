@@ -731,27 +731,31 @@ void actor_world_slice::build_goap_from_config(const acumen::goap_config& cfg) {
 // Параллельный обход запроса; process мутирует ТОЛЬКО «свою» сущность (обстоятельства — read-only)
 // ⇒ потоки трогают непересекающуюся память, локов нет. dt ставится слайсом перед проходом.
 
-// Движение позиции по скорости + жёсткое позиционное расталкивание препятствиями (как было в apply).
+// Движение позиции по скорости + жёсткое позиционное расталкивание препятствиями (как было в apply)
+// + кламп в мировой бокс (min/max_bound = spawn-границы слайса): акторы не уходят за тайловый мир,
+// как и камера. Кламп последним — бокс есть жёсткое ограничение поверх расталкивания.
 struct integration_system : devils_engine::aesthetics::template_system<actor_position, actor_velocity> {
   float dt = 0.0f;
+  glm::vec2 min_bound{0.0f, 0.0f};
+  glm::vec2 max_bound{0.0f, 0.0f};
   const std::vector<actor_world_slice::obstacle_disc>* obstacles = nullptr;
   explicit integration_system(aesthetics::world* w) noexcept : template_system(w) {}
   void process(const query_tuple_t& t, const size_t /*time*/) override {
     auto* pos = std::get<1>(t);
     const auto* vel = std::get<2>(t);
     pos->value += vel->value * dt;
-    if (obstacles == nullptr) {
-      return;
-    }
-    for (const auto& o : *obstacles) {
-      const glm::vec2 d = pos->value - o.pos;
-      const float d2 = d.x * d.x + d.y * d.y;
-      if (d2 < o.radius * o.radius) {
-        const float len = std::sqrt(d2);
-        const glm::vec2 n = len > 1e-6f ? d * (1.0f / len) : glm::vec2{1.0f, 0.0f};
-        pos->value = o.pos + n * o.radius;
+    if (obstacles != nullptr) {
+      for (const auto& o : *obstacles) {
+        const glm::vec2 d = pos->value - o.pos;
+        const float d2 = d.x * d.x + d.y * d.y;
+        if (d2 < o.radius * o.radius) {
+          const float len = std::sqrt(d2);
+          const glm::vec2 n = len > 1e-6f ? d * (1.0f / len) : glm::vec2{1.0f, 0.0f};
+          pos->value = o.pos + n * o.radius;
+        }
       }
     }
+    pos->value = glm::clamp(pos->value, min_bound, max_bound);
   }
 };
 
@@ -1206,6 +1210,8 @@ void actor_world_slice::integrate_and_update_drives(const float dt_seconds, thre
   }
 
   integration_sys_->dt = dt_seconds;
+  integration_sys_->min_bound = spawn_min_;
+  integration_sys_->max_bound = spawn_max_;
   integration_sys_->obstacles = &obstacles_;
   drives_sys_->dt = dt_seconds;
   aesthetics::run(pool, tick_, *integration_sys_, *drives_sys_);

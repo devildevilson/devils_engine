@@ -15,6 +15,7 @@
 #include "actor_simulation.h"
 #include "broker.h"
 #include "draw_intent.h"
+#include "global_ubo.h"
 #include "interpolation.h"
 #include "messages.h"
 #include "render_system.h"
@@ -74,6 +75,14 @@ struct render_simulation_init : public simul::standard_render_state<broker> {
   std::chrono::steady_clock::time_point actor_draw_last_tp{}; // для РЕАЛЬНОГО wall-time между кадрами (п.①)
   bool actor_draw_tp_valid = false;
 
+  // Камера — тот же трёхконцерновый рецепт, что и акторы: timing = nominal_clock, identity
+  // тривиальна (снапшот один), blend локальный (center/half_width лерп, aspect/fb_* снап).
+  command_draw_camera cam_prev{}, cam_cur{};
+  bool cam_have_prev = false, cam_have_cur = false;
+  nominal_clock cam_clock;
+  std::chrono::steady_clock::time_point cam_last_tp{};
+  bool cam_tp_valid = false;
+
   ~render_simulation_init() noexcept = default;
 };
 
@@ -82,6 +91,8 @@ static void render_reset_project_draw_state(render_simulation_init& c) {
   c.actors_ready = false;
   c.actor_draw_ready = false;
   c.actor_draw_tp_valid = false; // сброс wall-clock базы: после detach/shutdown не считаем гигантский dt
+  c.cam_tp_valid = false;
+  c.cam_have_prev = false; // последний снапшот камеры оставляем (UBO перезапишется после пересборки графа)
   c.tile_pair_index = painter::invalid_resource_slot;
   c.actor_pair_index = painter::invalid_resource_slot;
 }
@@ -265,6 +276,39 @@ static void render_on_graph_ready(render_simulation_init& c) {
   render_create_actor_draw(c);
 }
 
+// Собрать global_ubo («camera_buffer») из интерполированного prev→cur состояния камеры — на КАЖДЫЙ
+// рендер-кадр, а не на main-тик. Камера рисуется с тем же лагом в один снапшот, что и акторы, поэтому
+// они визуально синхронны. aspect и размер фреймбуфера дискретны (resize) — снап к новейшему.
+static void render_update_camera(render_simulation_init& c) {
+  if (!c.graph_ready || !c.cam_have_cur) {
+    return;
+  }
+  const auto& a = c.cam_have_prev ? c.cam_prev : c.cam_cur;
+  const auto& b = c.cam_cur;
+  const float t = c.cam_clock.alpha();
+
+  camera2d cam;
+  cam.center = {a.center_x + (b.center_x - a.center_x) * t,
+                a.center_y + (b.center_y - a.center_y) * t};
+  cam.half_width = a.half_width + (b.half_width - a.half_width) * t;
+  cam.aspect = b.aspect;
+
+  global_ubo_t ubo{};
+  ubo.view_proj = cam.view_proj();
+  ubo.ui_proj = glm::mat4(1.0f);
+  ubo.ui_proj[0][0] = 2.0f / b.fb_width;
+  ubo.ui_proj[1][1] = 2.0f / b.fb_height;
+  ubo.ui_proj[2][2] = -1.0f;
+  ubo.ui_proj[3][0] = -1.0f;
+  ubo.ui_proj[3][1] = -1.0f;
+  ubo.misc = glm::vec4(b.fb_width, b.fb_height, 4.0f, 0.0f);
+
+  static const uint64_t camera_buffer_hash = utils::string_hash("camera_buffer");
+  simul::standard_render_write_buffer_bytes(
+    c, camera_buffer_hash,
+    std::span<const std::byte>(reinterpret_cast<const std::byte*>(&ubo), sizeof(ubo)));
+}
+
 render_simulation::render_simulation(const size_t frame_time, render_simulation_config config) noexcept : simul::render_system<::tile_frontier::core::broker>(frame_time),
                                                                                                           container(std::make_unique<render_simulation_init>()) {
   container->config = std::move(config);
@@ -340,6 +384,27 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
         render_on_graph_ready(*container);
       });
     });
+
+  // Снапшот камеры: prev <- cur, часы на ноль; между снапшотами alpha гоним по реальному wall-time
+  // рендер-кадра (та же дисциплина, что у акторов ниже). UBO пересобирается каждый рендер-кадр.
+  bool camera_snapshot = false;
+  if (const command_draw_camera* cmd = br.draw_camera.consume()) {
+    container->cam_prev = container->cam_cur;
+    container->cam_have_prev = container->cam_have_cur;
+    container->cam_cur = *cmd;
+    container->cam_have_cur = true;
+    container->cam_clock.on_snapshot(cmd->frame_time);
+    camera_snapshot = true;
+  }
+  if (container->cam_have_cur) {
+    const auto now = std::chrono::steady_clock::now();
+    if (!camera_snapshot && container->cam_tp_valid) {
+      container->cam_clock.advance(size_t(std::max<int64_t>(utils::count_mcs(container->cam_last_tp, now), 0)));
+    }
+    container->cam_last_tp = now;
+    container->cam_tp_valid = true;
+    render_update_camera(*container);
+  }
 
   if (container->graph_ready) {
     if (const command_draw_tiles* cmd = br.draw_tiles.consume()) {
