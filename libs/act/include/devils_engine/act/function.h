@@ -259,6 +259,10 @@ struct script_function final : public function<RetT> {
     }
     vm->clear();
     vm->userptr = const_cast<exec_context*>(&ctx); // задел под effect_sink: эффекты читают ctx через userptr
+    // Детерминированный RNG скрипта — собственный prng_state ds, ПОСЕЯННЫЙ из immutable act-входов.
+    // random/chance-блоки конфиг-скриптов получают детерминизм по (seed, entity, tick) без
+    // act::rng_source в сигнатурах; per-callsite state и container::prng_state ds домешивает сам.
+    vm->prng_state = utils::mix(ctx.rng_seed, ctx.rng_entity, ctx.rng_tick);
     if (program->max_lists != 0) {
       vm->create_lists(program);
     }
@@ -292,6 +296,7 @@ struct script_function final : public function<RetT> {
       return;
     }
     vm->clear();
+    vm->prng_state = utils::mix(ctx.rng_seed, ctx.rng_entity, ctx.rng_tick); // как в invoke: describe видит те же random-ветки
     if (seed != nullptr) {
       seed(ctx, vm);
     }

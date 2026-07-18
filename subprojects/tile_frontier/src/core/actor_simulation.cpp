@@ -7,6 +7,7 @@
 #include <thread>
 #include <utility>
 
+#include <devils_engine/act/building_blocks.h> // декларативная регистрация building blocks: ds + act replay
 #include <devils_engine/act/exec_context.h>
 #include <devils_engine/act/function.h>
 #include <devils_engine/act/packer.h>   // entity_handle/rng_source/pack — упаковщик обычных функций без exec_context
@@ -31,7 +32,8 @@
 // Включён здесь, а не только в тестах, чтобы игровой бинарь сам умел save/load (регистрации линкуются
 // в этот TU) и чтобы сторонний дампер скаляров (sim_globals с glm::vec2) видел adapter<glm::vec2>.
 #include "core/actor_snapshot.h"
-#include "entity_scope.h"  // seed_entity_scope — засев root-скоупа скрипт-предикатов
+#include "entity_scope.h" // seed_entity_scope — засев root-скоупа скрипт-предикатов
+#include "spawn_scope.h"  // scope_spawn_at — примитивный ds-спавн (регистрируется в building blocks)
 
 namespace tile_frontier {
 namespace core {
@@ -78,10 +80,6 @@ static aesthetics::world& world_of(const entity_scope h) noexcept {
 static aesthetics::entityid_t ent(const entity_scope h) noexcept {
   return aesthetics::entityid_t(h.id);
 }
-
-// purpose-метка для counter-RNG (utils::mix) — разводит потоки случайности.
-static constexpr uint64_t purpose_wander = 0x77616e646572ull; // "wander"
-static constexpr uint64_t purpose_seek = 0x7365656bull;       // "seek"
 
 // ── тюнинг мотиваций (drives) ──────────────────────────────────────────────
 // Скорости в единицах/секунду; пороги в 0..1. hunger копится всегда; boredom копится пока
@@ -280,17 +278,21 @@ static void set_velocity(aesthetics::world& world, const aesthetics::entityid_t 
   vel->value = dir * brain->speed;
 }
 
-// Поедание — ЧИСТАЯ МУТАЦИЯ пары (хищник = scope[0], добыча = scope[1]). Контенция решена до тела:
-// actor_eat_effect_strategy elect'ит один source на target и гасит target, который сам является source. Тело идёт в
-// serial_structural commit lane, поэтому create компонентов не должен быть параллен и guard'ы конкуренции здесь не нужны.
-static void effect_eat(const act::entity_handle self_h, const act::entity_handle prey_h, const act::rng_source rng) noexcept {
-  auto& world = world_of(self_h);
-  const auto self = ent(self_h);
-  const auto prey = ent(prey_h);
+// Поедание — ЧИСТАЯ МУТАЦИЯ пары (self = root scope, prey = ds-аргумент от функции `prey`).
+// Контенция решена до тела: actor_eat_effect_strategy elect'ит один source на prey и гасит prey,
+// которая сама является source. Тело идёт в serial_structural commit lane, поэтому create компонентов
+// не параллелится и guard'ы конкуренции здесь не нужны. Скрипт-форма: `eat = prey`.
+static void effect_eat(const entity_scope self_s, const entity_scope prey_s) noexcept {
+  if (self_s.w == nullptr) {
+    return;
+  }
+  auto& world = world_of(self_s);
+  const auto self = ent(self_s);
+  const auto prey = prey_s.valid() ? ent(prey_s) : aesthetics::invalid_entityid;
   if (aesthetics::is_invalid_entityid(prey) || !world.exists(prey)) {
     return; // добыча исчезла между claim (think) и commit (apply)
   }
-  world.create<actor_eating>(self, prey, rng.tick + eat_duration); // tick из детерминированного rng_source
+  world.create<actor_eating>(self, prey, eat_duration); // обратный отсчёт: телу не нужен tick
   world.create<actor_grabbed>(prey, self);
   set_velocity(world, self, glm::vec2{0.0f, 0.0f});
   set_velocity(world, prey, glm::vec2{0.0f, 0.0f});
@@ -299,27 +301,16 @@ static void effect_eat(const act::entity_handle self_h, const act::entity_handle
   }
 }
 
-// Ищет еду — то же случайное блуждание, что и wander, но со своим потоком RNG (provenance/
-// звук позже могут отличаться). Голоден, но добычи в поле зрения нет ⇒ обшариваем местность.
-static void effect_seek_food(const act::entity_handle self, const act::rng_source rng) noexcept {
-  auto& world = world_of(self);
-  const auto id = ent(self);
-  const auto* brain = world.get<actor_brain>(id);
-  const uint32_t phase = brain != nullptr ? brain->phase : 0u;
-  const uint64_t slot = (rng.tick + phase) / 12u; // меняем курс чаще, чем при wander
-  const uint64_t h = utils::mix(rng.seed, rng.entity, slot, purpose_seek);
-  set_velocity(world, id, direction_from_hash(uint32_t(h)));
-}
-
-static void effect_wander(const act::entity_handle self, const act::rng_source rng) noexcept {
-  auto& world = world_of(self);
-  const auto id = ent(self);
-  const auto* brain = world.get<actor_brain>(id);
-  const uint32_t phase = brain != nullptr ? brain->phase : 0u;
-  // медленная смена направления (~раз в 24 тика) с пер-акторной фазой.
-  const uint64_t slot = (rng.tick + phase) / 24u;
-  const uint64_t h = utils::mix(rng.seed, rng.entity, slot, purpose_wander);
-  set_velocity(world, id, direction_from_hash(uint32_t(h)));
+// Случайный курс из нормализованного броска [0,1) — один building block для wander/seek_food.
+// Бросок делает САМ скрипт через ds `chance` (детерминированный prng_state сеется в
+// act::script_function из seed/entity/tick, per-callsite соль различает скрипты) — курс
+// материализуется в record-фазе и едет в journal обычным double-аргументом; телу RNG не нужен.
+// Курс живёт до следующего think (прежние 12/24-тиковые slot-окна ушли вместе с act::rng_source).
+static void effect_set_course(const entity_scope self, const double roll) noexcept {
+  if (self.w == nullptr) {
+    return;
+  }
+  set_velocity(world_of(self), ent(self), direction_from_hash(uint32_t(roll * 8.0)));
 }
 
 // Script-facing forms keep the root scope as an owned value. Catalogue records that value during
@@ -350,6 +341,60 @@ static void effect_think_script(const entity_scope self) noexcept {
   set_velocity(world_of(self), ent(self), glm::vec2{0.0f, 0.0f});
 }
 
+// ── ds-аксессоры восприятия (bool building blocks для inline-метрик GOAP) ──
+// Читают actor_perception/positions за O(1); null-мир/мёртвый скоуп ⇒ false (паритет с нативами,
+// предикат не кидает). Регистрируются в ds через actor_building_blocks().
+
+static bool scope_threat_present(const entity_scope s) {
+  if (s.w == nullptr) {
+    return false;
+  }
+  const auto* per = s.w->get<actor_perception>(aesthetics::entityid_t(s.id));
+  return per != nullptr && per->has_threat;
+}
+
+static bool scope_prey_present(const entity_scope s) {
+  if (s.w == nullptr) {
+    return false;
+  }
+  const auto* per = s.w->get<actor_perception>(aesthetics::entityid_t(s.id));
+  return per != nullptr && per->has_prey;
+}
+
+// Скоуп-функция «таргет из ближайших»: ближайшая добыча из восприятия как entity_scope. Скрипт
+// передаёт её аргументом эффекту (`eat = prey`); явный typed-аргумент нужен арбитражу — elect
+// видит prey в record-фазе, а не выкапывает её из компонентов внутри тела на commit.
+static entity_scope scope_prey(const entity_scope s) {
+  if (s.w == nullptr) {
+    return entity_scope{};
+  }
+  const auto* per = s.w->get<actor_perception>(aesthetics::entityid_t(s.id));
+  if (per == nullptr || !per->has_prey) {
+    return entity_scope{};
+  }
+  const auto prey = per->prey_id;
+  if (aesthetics::is_invalid_entityid(prey) || !s.w->exists(prey)) {
+    return entity_scope{};
+  }
+  return entity_scope{s.w, uint32_t(prey)};
+}
+
+// Добыча в радиусе хвата (тот же eat_radius, что у хендшейка поедания).
+static bool scope_prey_in_range(const entity_scope s) {
+  if (s.w == nullptr) {
+    return false;
+  }
+  const auto id = aesthetics::entityid_t(s.id);
+  const auto* per = s.w->get<actor_perception>(id);
+  const auto* pos = s.w->get<actor_position>(id);
+  if (per == nullptr || pos == nullptr || !per->has_prey) {
+    return false;
+  }
+  const glm::vec2 d = per->prey_pos - pos->value;
+  constexpr float eat_radius = 0.9f;
+  return (d.x * d.x + d.y * d.y) <= eat_radius * eat_radius;
+}
+
 // ── Catalogue deferred strategies ──────────────────────────────────────────
 // Все локальные действия мутируют только source entity: collect группирует по self и позволяет
 // commit разных entity-групп через worker pool. eat меняет пару сущностей + создаёт компоненты:
@@ -367,12 +412,10 @@ using actor_local_effect_domain = catalogue::mt::domain<
 using actor_eat_effect_domain = catalogue::mt::domain<
   actor_eat_effect_domain_id, actor_eat_effect_strategy>;
 
-using seek_food_deferred = actor_local_effect_domain::fn_traits<
-  &effect_seek_food, "seek_food", "self", "rng">;
-using wander_deferred = actor_local_effect_domain::fn_traits<
-  &effect_wander, "wander", "self", "rng">;
+using set_course_deferred = actor_local_effect_domain::fn_traits<
+  &effect_set_course, "set_course", "self", "course">;
 using eat_deferred = actor_eat_effect_domain::fn_traits<
-  &effect_eat, "eat", "self", "prey", "rng">;
+  &effect_eat, "eat", "self", "prey">;
 using flee_script_deferred = actor_local_effect_domain::fn_traits<
   &effect_flee_script, "flee", "self">;
 using chase_script_deferred = actor_local_effect_domain::fn_traits<
@@ -383,10 +426,29 @@ using think_script_deferred = actor_local_effect_domain::fn_traits<
 constexpr uint32_t max_deferred_effects_per_actor = 16;
 } // namespace
 
-void register_actor_effect_building_blocks(devils_script::system& sys) {
-  sys.register_function<flee_script_deferred::fn_deferred_ptr>("flee");
-  sys.register_function<chase_script_deferred::fn_deferred_ptr>("chase");
-  sys.register_function<think_script_deferred::fn_deferred_ptr>("think");
+const act::building_blocks& actor_building_blocks() {
+  static const act::building_blocks blocks = [] {
+    act::building_blocks b;
+    // ds-словарь конфиг-скриптов: deferred-эффекты (record-only) + чистые аксессоры восприятия/spawn.
+    b.effect<flee_script_deferred>();
+    b.effect<chase_script_deferred>();
+    b.effect<think_script_deferred>();
+    b.effect<eat_deferred>();        // `eat = prey`: elect по prey-аргументу, тело в serial_structural lane
+    b.effect<set_course_deferred>(); // `set_course = chance`: wander/seek_food из конфига
+    b.pure<&scope_threat_present>("threat_present");
+    b.pure<&scope_prey_present>("prey_present");
+    b.pure<&scope_prey_in_range>("prey_in_range");
+    b.pure<&scope_prey>("prey");
+    b.pure<&scope_spawn_at>("spawn_at");
+    // Исключение в обход ds: is_eating — FSM-гвард, скриптам не нужен. Конфиг-скрипт с тем же
+    // именем упадёт громко на install() — фолбэков нет, конфликт решается удалением записи отсюда.
+    b.native<&predicate_is_eating>("is_eating");
+    // Арбитраж семантического имени: eat elect-ится эксклюзивно по target scope + self-claim
+    // («intent бьёт grab»); дескриптор живёт у ИМЕНИ и переживёт перевод eat на script backend.
+    b.reg_interaction("eat", act::interaction{});
+    return b;
+  }();
+  return blocks;
 }
 
 struct deferred_effects {
@@ -445,30 +507,12 @@ void actor_world_slice::setup_brain_registry() {
   fsm_ = nullptr;
   registry_.reg("actor.is_hungry", std::make_unique<act::script_function<bool>>(
                                      brains_.is_hungry_program, &seed_entity_scope));
-  // ВАЖНО: на это имя ссылается СТРОКА FSM (mood) как гвард — парсер mood не допускает точку
-  // в идентификаторах, поэтому имя dot-free (в отличие от acumen-метрик "actor.*", которые в
-  // парсер mood не попадают и резолвятся по полному хешу строки).
-  registry_.reg("is_eating", act::pack<&predicate_is_eating>());
-  const auto scripted_action = [this](const std::string_view name) {
-    const auto& actions = brains_.goap->actions;
-    const auto it = std::find_if(actions.begin(), actions.end(), [name](const acumen::goap_action_config& a) {
-      return a.name == name;
-    });
-    return it != actions.end() && it->has_effect_program;
-  };
-  if (!scripted_action("eat")) {
-    registry_.reg("eat", act::pack<eat_deferred::fn_deferred_ptr>());
-  }
-  // Тег взаимодействия: eat арбитрится эксклюзивно (elect на добычу = scope[1]) + self-claim. Снимает
-  // хардкод имени функции в decide_actor: дескриптор сообщает, какой scope заполнить target-ом.
-  // Сам elect задаёт actor_eat_effect_strategy.
-  registry_.reg_interaction(utils::string_hash("eat"), act::interaction{}); // rule=exclusive, target_scope=1, self_claim=true
-  if (!scripted_action("seek_food")) {
-    registry_.reg("seek_food", act::pack<seek_food_deferred::fn_deferred_ptr>());
-  }
-  if (!scripted_action("wander")) {
-    registry_.reg("wander", act::pack<wander_deferred::fn_deferred_ptr>());
-  }
+  // ВАЖНО: на "is_eating" (внутри building blocks) ссылается СТРОКА FSM (mood) как гвард — парсер
+  // mood не допускает точку в идентификаторах, поэтому имя dot-free (в отличие от acumen-метрик
+  // "actor.*", которые в парсер mood не попадают и резолвятся по полному хешу строки).
+  // Native-исключения + interaction-дескрипторы из декларативного списка; дубликат имени с
+  // конфиг-скриптом упадёт громко в reg() (никаких тихих фолбэков).
+  actor_building_blocks().install(registry_);
   build_goap_from_config(*brains_.goap);
 
   // FSM-исполнитель (mood): событие = выбранное GOAP действие, ведёт в одноимённое состояние из
@@ -801,6 +845,7 @@ actor_metrics actor_world_slice::update(const float dt_seconds, actor_batch& bat
     uint32_t(world_.count<actor_position>()),
     uint32_t(calls_.size()), // = сколько акторов реально думали в этот тик
     batch.count(),
+    uint32_t(world_.count<actor_eating>()),
     tick_};
 }
 
@@ -1081,10 +1126,11 @@ void actor_world_slice::resolve_eating(const uint64_t tick) {
   eat_kill_.clear();
   if (!resolve_eating_sys_) {
     resolve_eating_sys_ = aesthetics::make_map_system<actor_eating>(
-      &world_, [this](const auto& t, const size_t time) {
+      &world_, [this](const auto& t, const size_t) {
         const auto id = std::get<0>(t);
-        const auto* eat = std::get<1>(t);
-        if (time < eat->until_tick) {
+        auto* eat = std::get<1>(t);
+        if (eat->ticks_left != 0) {
+          --eat->ticks_left; // self-мутация disjoint; тайминг = прежнему абсолютному until_tick
           return;
         }
         if (auto* dr = world_.get<stats>(id); dr != nullptr) {

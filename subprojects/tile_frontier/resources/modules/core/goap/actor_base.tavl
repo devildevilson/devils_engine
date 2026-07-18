@@ -20,6 +20,7 @@ actions = [
   }
   {
     name = eat
+    effect = { eat = prey }
     requirements = [ !threat_present, is_hungry, prey_present, prey_in_range ]
     next_state = [ resolved ]
     weight_state = [ ]
@@ -33,12 +34,14 @@ actions = [
   }
   {
     name = seek_food
+    effect = { set_course = chance }
     requirements = [ !threat_present, is_hungry, !prey_present ]
     next_state = [ resolved ]
     weight_state = [ ]
   }
   {
     name = wander
+    effect = { set_course = chance }
     requirements = [ !threat_present, !is_hungry, is_bored ]
     next_state = [ resolved ]
     weight_state = [ ]

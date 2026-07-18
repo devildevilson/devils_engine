@@ -36,6 +36,37 @@ TEST_CASE("act call_context is shared with native functions [act]") {
   CHECK(call.result.num == doctest::Approx(9.0));
 }
 
+TEST_CASE("act script_function seeds the ds prng from deterministic context inputs [act][devils_script]") {
+  devils_script::system sys;
+  sys.init_basic_functions();
+  sys.init_math();
+  const auto program = sys.parse<double, void>(
+    "roll", "{ random = { { weight = 1, 3 }, { weight = 2, 6 }, { weight = 3, 9 } } }");
+
+  act::execution_scratch scratch;
+  act::exec_context exec;
+  exec.scratch = &scratch;
+  exec.rng_seed = 0x1234;
+  exec.rng_entity = 42;
+  exec.rng_tick = 7;
+  act::script_function<act::real_t> fn(&program);
+
+  // Один и тот же (seed, entity, tick) обязан давать один результат, даже если prng_state VM
+  // испорчен между вызовами: invoke сеет его заново из immutable act-входов.
+  const act::real_t first = fn.invoke(exec);
+  scratch.vm.prng_state = 0xdeadbeefULL;
+  CHECK(fn.invoke(exec) == first);
+
+  // Разные тики дают разные потоки: на 16 тиках выпадает больше одного исхода.
+  bool varies = false;
+  for (uint64_t tick = 0; tick < 16 && !varies; ++tick) {
+    act::exec_context other = exec;
+    other.rng_tick = tick;
+    varies = fn.invoke(other) != first;
+  }
+  CHECK(varies);
+}
+
 TEST_CASE("act call_context binds ds in-out arguments and lists [act][devils_script]") {
   devils_script::system sys;
   sys.init_basic_functions();
