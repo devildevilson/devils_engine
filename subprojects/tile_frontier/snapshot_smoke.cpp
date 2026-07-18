@@ -78,7 +78,7 @@ int main() {
   CHECK(w2.get<tf::actor_perception>(predator)->has_prey == true);
   CHECK(w2.get<tf::actor_perception>(predator)->prey_pos.y == 20.0f);
   CHECK(w2.get<tf::actor_eating>(predator)->target == prey);
-  CHECK(w2.get<tf::actor_eating>(predator)->until_tick == 500u);
+  CHECK(w2.get<tf::actor_eating>(predator)->ticks_left == 500u);
   CHECK(w2.get<tf::actor_grabbed>(prey)->by == predator);
   CHECK(w2.get<tf::actor_position>(w2.get<tf::actor_eating>(predator)->target) != nullptr); // ссылка разрешается в живую сущность
 

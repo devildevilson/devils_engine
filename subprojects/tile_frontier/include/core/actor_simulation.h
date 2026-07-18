@@ -37,6 +37,9 @@ namespace devils_engine {
 namespace catalogue {
 class statistics_store;
 }
+namespace act {
+class building_blocks;
+}
 } // namespace devils_engine
 namespace devils_script {
 struct container;
@@ -51,11 +54,11 @@ namespace core {
 const devils_engine::catalogue::statistics_store& actor_perf_statistics() noexcept;
 void reset_actor_perf_statistics() noexcept;
 
-// Registers project gameplay building blocks in the one devils_script parser registry. The
-// registered pointers are catalogue deferred wrappers: parsing a void action script preserves the
-// normal C++ signature, while execution records into the actor pipeline instead of mutating ECS in
-// the cognition worker.
-void register_actor_effect_building_blocks(devils_script::system& sys);
+// Декларативный список gameplay building blocks проекта (act::building_blocks, ROADMAP п.14):
+// ds-словарь (deferred-эффекты + чистые аксессоры восприятия/spawn) и act-only исключения
+// (is_eating; eat/seek_food/wander до их ds-контракта). Владелец ds::system зовёт register_ds()
+// один раз при построении; слайс зовёт install() при каждом пересоздании act::registry.
+const devils_engine::act::building_blocks& actor_building_blocks();
 
 // Actor gameplay slice: deterministic MT cognition records catalogue effects, then explicit
 // collect/elect commit lanes mutate aesthetics components before integration.
@@ -153,7 +156,10 @@ struct actor_state {
 // коммита (ретайрит commit_ticks для едящих). Снимается в resolve_eating по истечении.
 struct actor_eating {
   devils_engine::aesthetics::entityid_t target = devils_engine::aesthetics::invalid_entityid;
-  uint64_t until_tick = 0;
+  // Обратный отсчёт поедания в тиках (0 на входе resolve_eating = завершить). Относительная
+  // длительность вместо абсолютного дедлайна: телу eat не нужен tick ⇒ ds-сигнатура (self, prey)
+  // без rng-carrier'а. Typed absolute deadlines — отдельный слой (ROADMAP пп.7–8).
+  uint64_t ticks_left = 0;
 };
 
 // Жертва, которую схватили: КТО ест. Пока есть — актор заморожен и пропущен cognition'ом,
@@ -187,6 +193,7 @@ struct actor_metrics {
   uint32_t actors = 0;
   uint32_t intents = 0;
   uint32_t instances = 0;
+  uint32_t eating = 0; // текущее число активных actor_eating (живость eat-пайплайна)
   uint64_t ticks = 0;
 };
 

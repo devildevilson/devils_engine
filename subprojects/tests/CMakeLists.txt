@@ -100,6 +100,9 @@ target_link_libraries(act_call_context_test PRIVATE devils_engine::act devils_sc
 devils_add_doctest(act_packer_test act_packer_test.cpp)
 target_link_libraries(act_packer_test PRIVATE devils_engine::act devils_script)
 
+devils_add_doctest(act_building_blocks_test act_building_blocks_test.cpp)
+target_link_libraries(act_building_blocks_test PRIVATE devils_engine::act devils_engine::catalogue devils_script)
+
 devils_add_doctest(stats_script_test stats_script_test.cpp)
 target_link_libraries(stats_script_test PRIVATE devils_engine::act)
 
