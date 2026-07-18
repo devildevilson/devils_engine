@@ -485,12 +485,45 @@ Ownership catalogue executors и compile-time порядок actor phases пок
      пауза не двигает сроки (dt=0 ⇒ advance no-op).
    - ⏳ Отложено (по слову автора): очередь отложенных effect-вызовов, typed calendar/turn
      deadlines для событий календаря/ходов, абсолютная дата окончания в UI (= now + remaining).
+   - ⏳ **Локальный множитель времени (прикинуть отдельно, автор 2026-07-18):** per-entity /
+     per-system масштаб поверх глобального game clock — быстрая анимация конкретной сущности,
+     haste/slow-эффекты (юнит «живёт быстрее»: drives/cooldowns/анимация ×k). Наброски к дизайну:
+     локальный масштаб = обычный КОМПОНЕНТ (haste как флаг с payload-множителем — стыкуется с
+     остатком B-е «модификаторы с payload»); системы, потребляющие dt, умножают per-entity дельту
+     (map-фазы уже per-entity — точка врезки дешёвая); водораздел gameplay-haste (детерминированный,
+     реплицируемый, рациональный множитель) vs presentation-only ускорение анимации (float, не
+     реплицируется); countdown-сроки (flag_set/eat) при haste тают быстрее умножением dt ДО advance.
 
-3. **Формализовать events/triggers/relations contract (п.13).**
-   - Развести deterministic gameplay input/event, catalogue deferred effect и presentation event.
-   - Зафиксировать entity relations/reference integrity, scope slots и read-only UI projection.
-   - Добавить loc/string facade только поверх подтверждённого gameplay API; не превращать Lua UI в
-     mutating gameplay backend.
+3. **Формализовать events/triggers/relations contract (п.13)** — **водоразделы зафиксированы,
+   первый срез кода готов (2026-07-18).**
+   - ✅ **Водораздел событий (решение автора): отдельной сущности «событие» НЕТ.** Четыре формы:
+     (1) эффект → catalogue deferred call; (2) коммуникация систем ВНУТРИ тика →
+     `aesthetics::message_buffer`/`message_registry`; (3) gameplay input (игрок/сеть) →
+     `act::intent` — единственный replay-вход; (4) presentation side-output → паттерн `sound_emit`
+     (эфемерно, сим не читает, переэмитится при реплее). Cross-tick события = будущая очередь
+     отложенных вызовов (отложена в п.2).
+   - ✅ **Первый живой input-кейс:** WASD-камера — named actions `camera_*` в
+     `bind_default_actions` (движковый словарь), политика движения/клампа — проектная
+     (`tile_frontier_game::move_camera`: скорость ∝ half_width, реальное время кадра — работает на
+     gameplay-паузе; точка камеры клампится в бокс тайлового мира). Мир увеличен до 8×8 чанков
+     (128×128 тайлов).
+   - ✅ **Read-only UI-шов к act (loc/string facade):** slice `ui_predicate/ui_number/ui_string/
+     ui_describe` (dry-run ctx, отдельный `ui_scratch_`, main-thread) → Lua
+     `app.act_predicate/act_number/act_string/act_describe(name, entityid [, cb])`. Effect-категория
+     намеренно недоступна — Lua не mutating backend. `act_string` возвращает хеш loc-ключа
+     (64-битный Lua integer). `act_describe` с коллбеком стримит УЗЛЫ исполнения ds по одному
+     (замысел автора: Lua строит из узлов маленький граф исполнения для тултипов); без коллбека —
+     простая строка. Покрыто headless-проверкой в config_effect_smoke.
+   - ✅ **Правило relations (контейнеры отложены, автор):** связь = entityid-поле компонента
+     (ПОЛНЫЙ versioned id), читатель обязан `exists()`-проверять, автоочисток нет (версия делает
+     dangling id безопасным) — так живут `actor_eating.target`/`actor_grabbed.by`, serial уже
+     ресолвит ссылки после load. Generic-механизмы (энтити↔энтити, энтити→фракция→энтити ленивой
+     матрицей) — позже: простые отношения TES-типа = флаги у энтити (flag_set уже есть), CK3-тип =
+     своя матрица; конкретной игре всё равно нужны свои механизмы.
+   - ⏳ **UI intent-очередь (дизайн зафиксирован, строить с player entity):** кнопка действия
+     (атака) кладёт `act::intent` в очередь интенций игрока; анти-спам ОБЯЗАТЕЛЕН — dedup по типу
+     действия (повторный emit того же типа, пока предыдущий не потреблён симом, игнорируется).
+     Player entity появится позже — тогда же строить.
 
 4. **Довести catalogue perf service как поперечный инструмент (п.4).** Actor-local graphs уже живы;
    следующий результат — общий service consumer/budget API для sound/assets/render/visage без

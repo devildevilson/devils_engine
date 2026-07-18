@@ -6,6 +6,7 @@
 #include <devils_engine/bindings/lua_header.h>
 #include <devils_engine/catalogue/introspection.h>
 #include <devils_engine/catalogue/logging.h>
+#include <devils_engine/input/events.h> // named actions camera_* — WASD-движение камеры
 #include <devils_engine/painter/gpu_texture_resource.h>
 #include <devils_engine/sound/sound_resource.h>
 #include <devils_engine/thread/atomic_pool.h>
@@ -88,6 +89,7 @@ void tile_frontier_game::begin_scene(const scene_start_context& context) {
   }
 
   const glm::vec2 extent = grid_.world_extent();
+  world_extent_ = extent;
   camera_.center = extent * 0.5f;
   camera_.half_width = context.config.camera_half_width;
   camera_.aspect = float(context.viewport_width) / float(std::max(context.viewport_height, 1u));
@@ -150,10 +152,41 @@ void tile_frontier_game::update(const frame_context& context) {
   }
 
   drain_loaded_chunks(context.messages, context.generation);
+  move_camera(context); // presentation-контрол: двигается и при gameplay-паузе
   publish_camera_and_tiles(context);
   if (context.gate.run_gameplay && actor_batch_.valid()) {
     update_actors(context);
   }
+}
+
+// Первый живой player-input: named actions camera_* (WASD, словарь в bind_default_actions) двигают
+// камеру со скоростью, пропорциональной видимой полуширине (одинаково ощущается на любом зуме).
+// Presentation-плоскость: реальное время кадра (context.time), game pause/scale не влияют; точка
+// камеры не выходит за мировой бокс тайлов.
+void tile_frontier_game::move_camera(const frame_context& context) {
+  if (!context.gate.in_game) {
+    return;
+  }
+  static const auto up = input::events::make_event_id("camera_up");
+  static const auto left = input::events::make_event_id("camera_left");
+  static const auto down = input::events::make_event_id("camera_down");
+  static const auto right = input::events::make_event_id("camera_right");
+
+  // ortho(bottom=mn.y, top=mx.y) ⇒ +y — вверх экрана.
+  glm::vec2 dir{0.0f, 0.0f};
+  dir.y += input::events::is_pressed(up) ? 1.0f : 0.0f;
+  dir.y -= input::events::is_pressed(down) ? 1.0f : 0.0f;
+  dir.x -= input::events::is_pressed(left) ? 1.0f : 0.0f;
+  dir.x += input::events::is_pressed(right) ? 1.0f : 0.0f;
+  if (dir.x == 0.0f && dir.y == 0.0f) {
+    return;
+  }
+
+  const float len = std::sqrt(dir.x * dir.x + dir.y * dir.y);
+  const float dt = float(context.time) / float(utils::global_time_resolution);
+  const float speed = camera_.half_width * 1.5f; // мировых единиц/сек — полтора экрана-полуширины
+  camera_.center = glm::clamp(camera_.center + dir * (speed * dt / len),
+                              glm::vec2{0.0f, 0.0f}, world_extent_);
 }
 
 void tile_frontier_game::drain_loaded_chunks(broker& messages, const uint64_t generation) {
@@ -386,6 +419,49 @@ void tile_frontier_game::register_ui_bindings(visage::system& ui) {
         out[++index] = entry;
       });
     return out;
+  });
+
+  // ── read-only шов к act-функциям (UI-проекция игрового состояния, ROADMAP п.13) ──
+  // Lua зовёт pure-категории по имени над entityid; effect-категории здесь НЕТ — Lua не мутирует
+  // геймплей (будущая кнопка атаки пойдёт через очередь интенций с анти-спамом, не через act).
+  // nil = нет функции / не та категория / нет сущности.
+  app.set_function("act_predicate", [this](const std::string& name, const uint32_t id) -> sol::optional<bool> {
+    const auto v = actors_.ui_predicate(name, aesthetics::entityid_t(id));
+    return v.has_value() ? sol::optional<bool>(*v) : sol::optional<bool>(sol::nullopt);
+  });
+  app.set_function("act_number", [this](const std::string& name, const uint32_t id) -> sol::optional<double> {
+    const auto v = actors_.ui_number(name, aesthetics::entityid_t(id));
+    return v.has_value() ? sol::optional<double>(double(*v)) : sol::optional<double>(sol::nullopt);
+  });
+  // string-категория = хеш loc-ключа (utils::id); Lua 5.4 integer 64-битный, точности хватает.
+  app.set_function("act_string", [this](const std::string& name, const uint32_t id) -> sol::optional<int64_t> {
+    const auto v = actors_.ui_string(name, aesthetics::entityid_t(id));
+    return v.has_value() ? sol::optional<int64_t>(int64_t(*v)) : sol::optional<int64_t>(sol::nullopt);
+  });
+  // describe: с коллбеком — вызывается по каждому узлу исполнения (Lua строит граф/тултип);
+  // без коллбека — простая строка узлов через перевод строки. nil = функции/сущности нет.
+  app.set_function("act_describe", [this, ui_ptr](const std::string& name, const uint32_t id,
+                                                  sol::optional<sol::protected_function> callback) -> sol::object {
+    auto& lua = ui_ptr->script_state();
+    bool ok = false;
+    if (callback.has_value()) {
+      ok = actors_.ui_describe(name, aesthetics::entityid_t(id), [&](const std::string_view node) {
+        const auto result = (*callback)(std::string(node));
+        if (!result.valid()) {
+          const sol::error err = result;
+          utils::warn("act_describe callback error: {}", err.what());
+        }
+      });
+      return ok ? sol::make_object(lua, true) : sol::make_object(lua, sol::nil);
+    }
+    std::string text;
+    ok = actors_.ui_describe(name, aesthetics::entityid_t(id), [&](const std::string_view node) {
+      if (!text.empty()) {
+        text.push_back('\n');
+      }
+      text.append(node);
+    });
+    return ok ? sol::make_object(lua, text) : sol::make_object(lua, sol::nil);
   });
 }
 
