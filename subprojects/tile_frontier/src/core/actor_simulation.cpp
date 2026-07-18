@@ -1299,6 +1299,49 @@ void actor_world_slice::maintain_food() {
   }
 }
 
+// ── read-only UI-шов к act-функциям ────────────────────────────────────────
+// Вызовы идут на главном потоке между кадровыми фазами (visage update после update_gameplay),
+// поэтому MT-полосы не нужны: свой ui_scratch_. Контекст — dry-run make_ctx (sink=nullptr);
+// seed = brain актора (детерминированные random-ветки describe совпадают с симом этого тика).
+
+namespace {
+template <typename Ret, typename Fn>
+std::optional<Ret> ui_invoke(const Fn* fn, const aesthetics::world& world,
+                             const aesthetics::entityid_t id, const uint64_t tick,
+                             act::execution_scratch& scratch) {
+  if (fn == nullptr || !world.exists(id)) {
+    return std::nullopt;
+  }
+  const auto* brain = world.get<actor_brain>(id);
+  const auto ctx = make_ctx(world, id, brain != nullptr ? brain->seed : 0u, tick, nullptr, &scratch);
+  return fn->invoke(ctx);
+}
+} // namespace
+
+std::optional<bool> actor_world_slice::ui_predicate(const std::string_view name, const aesthetics::entityid_t id) {
+  return ui_invoke<bool>(registry_.predicate(utils::string_hash(name)), world_, id, tick_, ui_scratch_);
+}
+
+std::optional<act::real_t> actor_world_slice::ui_number(const std::string_view name, const aesthetics::entityid_t id) {
+  return ui_invoke<act::real_t>(registry_.number(utils::string_hash(name)), world_, id, tick_, ui_scratch_);
+}
+
+std::optional<utils::id> actor_world_slice::ui_string(const std::string_view name, const aesthetics::entityid_t id) {
+  return ui_invoke<utils::id>(registry_.string_fn(utils::string_hash(name)), world_, id, tick_, ui_scratch_);
+}
+
+bool actor_world_slice::ui_describe(const std::string_view name, const aesthetics::entityid_t id,
+                                    const act::describe_callback& out) {
+  const auto* fn = registry_.get(utils::string_hash(name));
+  if (fn == nullptr || !world_.exists(id)) {
+    return false;
+  }
+  const auto* brain = world_.get<actor_brain>(id);
+  const auto ctx = make_ctx(world_, id, brain != nullptr ? brain->seed : 0u, tick_, nullptr, &ui_scratch_);
+  fn->describe(ctx, out);
+  return true;
+}
+
 // ── save/load ──────────────────────────────────────────────────────────────
 // Сторонняя (не-ECS) структура состояния слайса: реплицируемые скаляры (tick/seq → детерминизм
 // RNG и респавна) + конфиг (bounds/target/knobs), нужные для идентичного resume. Плоский агрегат

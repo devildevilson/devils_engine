@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -299,6 +300,18 @@ public:
     return {game_ticks_};
   }
 
+  // ── read-only UI-шов к act-функциям (main-thread, ВНЕ MT-фаз) ──
+  // UI зовёт pure-категории по имени над сущностью в dry-run контексте; effect намеренно
+  // недоступен (Lua — не mutating gameplay backend). nullopt = нет функции / не та категория /
+  // нет сущности. string возвращает utils::id (хеш loc-ключа).
+  std::optional<bool> ui_predicate(std::string_view name, devils_engine::aesthetics::entityid_t id);
+  std::optional<devils_engine::act::real_t> ui_number(std::string_view name, devils_engine::aesthetics::entityid_t id);
+  std::optional<devils_engine::utils::id> ui_string(std::string_view name, devils_engine::aesthetics::entityid_t id);
+  // describe: стримит узлы исполнения (для script-бэкенда — узлы ds) в коллбек, false = функции нет.
+  // Замысел: Lua-коллбек строит из узлов маленький граф исполнения для тултипа.
+  bool ui_describe(std::string_view name, devils_engine::aesthetics::entityid_t id,
+                   const devils_engine::act::describe_callback& out);
+
   devils_engine::aesthetics::world& ecs() noexcept {
     return world_;
   }
@@ -421,6 +434,10 @@ private:
 
   uint64_t tick_ = 0;
   uint64_t game_ticks_ = 0; // накопленное игровое время слайса (µs game-домена), сериализуется
+
+  // Отдельный scratch для UI-вызовов act-функций (main-thread, между кадровыми фазами):
+  // не трогает per-worker полосы cognition и не требует живого пула.
+  devils_engine::act::execution_scratch ui_scratch_;
 
   // ── еда и препятствия (C2) ──
   glm::vec2 spawn_min_{0.0f, 0.0f}; // границы спавна (для респавна еды), заданы в init

@@ -96,6 +96,38 @@ int main() {
     }
   }
 
+  // read-only UI-шов: pure act-вызовы по имени + describe-стрим узлов; effect через него недоступен.
+  bool ui_seam_checked = false;
+  for (uint32_t raw = 0; raw < 512 && !ui_seam_checked; ++raw) {
+    const auto id = devils_engine::aesthetics::entityid_t(raw);
+    const auto probe = one_worker.ui_predicate("is_eating", id);
+    if (!probe.has_value()) {
+      continue; // сущность съедена/невалидна — ищем живую
+    }
+    ui_seam_checked = true;
+    if (one_worker.ui_predicate("eat", id).has_value()) {
+      std::cerr << "FAILED: effect category leaked through the read-only UI seam\n";
+      return 1;
+    }
+    if (one_worker.ui_predicate("no_such_fn", id).has_value()) {
+      std::cerr << "FAILED: unknown act name returned a value\n";
+      return 1;
+    }
+    size_t nodes = 0;
+    const bool described = one_worker.ui_describe("actor.is_hungry", id, [&nodes](const std::string_view) {
+      ++nodes;
+    });
+    if (!described || nodes == 0) {
+      std::cerr << "FAILED: describe did not stream ds nodes (described=" << described
+                << ", nodes=" << nodes << ")\n";
+      return 1;
+    }
+  }
+  if (!ui_seam_checked) {
+    std::cerr << "FAILED: no live actor found for the UI seam probe\n";
+    return 1;
+  }
+
   // building blocks флагов видны парсеру под обычными сигнатурами (исполнение через record/commit
   // покрывает sated-путь выше: resolve_eating ставит флаг, drives читает, sweep тикает).
   auto& sys = fixture.scripts().sys;

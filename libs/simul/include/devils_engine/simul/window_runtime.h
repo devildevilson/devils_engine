@@ -171,6 +171,12 @@ inline void bind_default_actions(const size_t main_frame_time) {
   };
   bind_action("quit", "escape");
   bind_action("toggle_menu", "f1");
+  // Стандартный словарь движения камеры (WASD); политика движения/клампа — проектная.
+  // Полноценные bindings из config — отдельный тех-долг libs/input.
+  bind_action("camera_up", "key_w");
+  bind_action("camera_left", "key_a");
+  bind_action("camera_down", "key_s");
+  bind_action("camera_right", "key_d");
 }
 
 template <typename State, typename Settings>

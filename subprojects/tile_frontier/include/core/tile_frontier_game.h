@@ -80,6 +80,9 @@ public:
 
 private:
   void drain_loaded_chunks(broker& messages, uint64_t generation);
+  // WASD-движение камеры (presentation: реальное время кадра, работает и на gameplay-паузе);
+  // точка камеры клампится в бокс тайлового мира [0, world_extent_].
+  void move_camera(const frame_context& context);
   void publish_camera_and_tiles(const frame_context& context);
   void update_actors(const frame_context& context);
   void publish_actor_sounds(broker& messages, bool sound_available);
@@ -97,6 +100,7 @@ private:
   std::vector<bool> chunks_loaded_;
   uint32_t chunks_loaded_count_ = 0;
   camera2d camera_;
+  glm::vec2 world_extent_{0.0f, 0.0f}; // бокс тайлового мира — кламп камеры
   tile_batch tile_batch_;
   bool tiles_logged_ = false;
   bool chunks_logged_ = false;
