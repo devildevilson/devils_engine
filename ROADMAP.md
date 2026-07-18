@@ -453,10 +453,14 @@ Ownership catalogue executors и compile-time порядок actor phases пок
    scope переопределён автором: НЕ строить систему эффектов, а дать пользоваться временем.**
    - ✅ **Модель скорости — ВАРИАНТ B (решение автора): переменный dt.** Тик остаётся 1/кадр,
      `game_delta_ticks` масштабируется game-часами; тиковая логика поштучно переводится на
-     game-время. Живая настройка: `game_host::set_game_speed(num, den)` + Lua
-     `app.set_game_speed(2)` / `(1,2)` / `app.game_speed()` — рациональный множитель ПОВЕРХ
-     номинального `settings.time`; runtime settings reload сбрасывает к номиналу; ноль запрещён
-     (остановка = pause). Смена скорости = deterministic input.
+     game-время. Живая настройка: Lua `app.set_game_speed(1.2)` / `app.game_speed()` — double
+     живёт ТОЛЬКО на границе UI, host конвертирует его в рационал с милли-точностью
+     (1.2 → 6/5, 0.8 → 4/5) и дальше вся тайм-математика целочисленная (remainder-carry в
+     timelines ⇒ игровые часы — точная пропорция engine-часов, без дрейфа округления по кадрам);
+     точная форма `game_host::set_game_speed(num, den)` доступна из C++. Множитель — ПОВЕРХ
+     номинального `settings.time`; runtime settings reload сбрасывает к номиналу; ноль/NaN
+     запрещены (остановка = pause). Смена скорости = deterministic input (записанный вход —
+     рационал, не float).
    - ✅ **Контракт слайса:** `actor_world_slice::update(uint64_t game_delta_ticks, …)` — слайс сам
      аккумулирует `game_now()` (µs game-домена, сериализуется в sim_globals ⇒ deadlines переживают
      resume); dt секунд для интеграции/drives выводится из той же дельты.

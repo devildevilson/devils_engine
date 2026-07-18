@@ -244,10 +244,11 @@ void install_app_lifecycle_bindings(sol::table app, Host& host) {
   app.set_function("paused", [hptr]() {
     return hptr->state().pause.paused(pause_domain::gameplay);
   });
-  // Живая скорость геймплея: рациональный множитель поверх номинального time mapping.
-  // app.set_game_speed(2) = ×2, app.set_game_speed(1, 2) = ×0.5; ноль/переполнение → false.
-  app.set_function("set_game_speed", [hptr](const uint32_t numerator, sol::optional<uint32_t> denominator) -> bool {
-    return hptr->set_game_speed(numerator, denominator.value_or(1u));
+  // Живая скорость геймплея: app.set_game_speed(1.2) / (0.8) / (2). Double живёт только на этой
+  // границе — host конвертирует его в рационал с милли-точностью, тайм-математика целочисленная.
+  // Ноль/NaN/переполнение → false (остановка времени = app.set_paused, не скорость).
+  app.set_function("set_game_speed", [hptr](const double multiplier) -> bool {
+    return hptr->set_game_speed(multiplier);
   });
   app.set_function("game_speed", [hptr]() -> double {
     return hptr->game_speed();
