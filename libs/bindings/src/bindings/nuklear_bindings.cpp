@@ -1428,6 +1428,12 @@ void setup_nk_context(nk_context* ptr) {
   nk::ctx_ptr = ptr;
 }
 
+void release_nk_context(nk_context* expected) {
+  if (nk::ctx_ptr == expected) {
+    nk::ctx_ptr = nullptr;
+  }
+}
+
 void nk_functions(sol::table t) {
   auto nk = t.create_named("nk");
   /*{

@@ -506,7 +506,9 @@ system::system(const font_t* default_font) : default_font(default_font), effect_
 }
 
 system::~system() noexcept {
-  bindings::setup_nk_context(nullptr);
+  // unique_ptr-присваивание UI при runtime-state reload конструирует новую system до уничтожения
+  // старой. Не сбрасываем bridge новой системы из деструктора прежней.
+  bindings::release_nk_context(ctx.get());
   if (cmds) {
     nk_buffer_free(cmds.get());
   }

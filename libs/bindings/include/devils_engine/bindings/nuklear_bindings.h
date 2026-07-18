@@ -14,6 +14,9 @@ namespace devils_engine {
 namespace bindings {
 void nk_functions(sol::table t);
 void setup_nk_context(nk_context* ptr);
+// Снимает глобальный bridge только если им всё ещё владеет expected. При замене visage::system
+// новая система успевает установить свой context до деструктора старой.
+void release_nk_context(nk_context* expected);
 } // namespace bindings
 } // namespace devils_engine
 

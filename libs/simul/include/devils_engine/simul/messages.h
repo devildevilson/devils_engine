@@ -126,6 +126,23 @@ struct command_sound_play {
   resource_ref res;
   double start = 0.0;
   uint32_t type = UINT32_MAX;
+  float volume = 1.0f;
+  float pitch = 1.0f;
+  // Позиционный звук: max_distance > 0 ⇒ спатиализация относительно слушателя
+  // (command_sound_listener), linear-затухание в [min_distance, max_distance] мировых единиц;
+  // 0 (дефолт) = НЕпозиционный звук (UI/музыка) — играет как есть, где бы ни был слушатель.
+  float pos[3] = {};
+  float min_distance = 0.0f;
+  float max_distance = 0.0f;
+};
+
+// main → sound: слушатель (обычно камера), latest-wins снапшот на кадр. dir — НАПРАВЛЕНИЕ
+// взгляда (не точка); дефолт = top-down на XY-плоскость: панорама лево/право следует +x мира.
+struct command_sound_listener {
+  float pos[3] = {};
+  float dir[3] = {0.0f, 0.0f, -1.0f};
+  float up[3] = {0.0f, 1.0f, 0.0f};
+  float vel[3] = {};
 };
 
 struct command_sound_stop {

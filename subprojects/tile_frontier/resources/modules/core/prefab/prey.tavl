@@ -1,0 +1,5 @@
+// Добыча: тот же тюнинг/derive, что и actor (field-level наследование data-компонентов),
+// но мозг без хищных действий (goap/prey отключает chase/eat) — FSM общий с актором,
+// демонстрация НЕЗАВИСИМОСТИ ссылок goap_ref/fsm_ref (два GOAP на один FSM).
+base = actor
+goap = prey

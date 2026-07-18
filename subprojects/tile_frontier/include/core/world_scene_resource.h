@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include <devils_engine/demiurg/resource_base.h>
 
@@ -21,9 +22,13 @@ struct world_scene_config {
   uint32_t actor_count = 0;
   float camera_half_width = 0.0f;
   std::string actor_script;
-  std::string actor_fsm;
-  std::string actor_goap;
+  // Префиксы НАБОРОВ мозгов: каждый ресурс под префиксом = именованный GOAP/FSM (per-entity refs
+  // через префабы: goap = prey). Прежние поля actor_fsm/actor_goap (один мозг на слайс) удалены.
+  std::string fsm_prefix;
+  std::string goap_prefix;
   std::string prefab_prefix;
+  // Микс актёрных префабов при стартовом спавне: i-й актор = cycle[i % size]. Пусто ⇒ все «actor».
+  std::vector<std::string> actor_prefab_cycle;
 };
 
 class world_scene_resource : public devils_engine::demiurg::resource_interface {

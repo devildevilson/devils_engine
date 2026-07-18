@@ -77,6 +77,15 @@ public:
     }
 
     if (container->s) {
+      // слушатель = latest-wins снапшот (камера); set_listener_ori ждёт ТОЧКУ взгляда — pos + dir
+      if (const command_sound_listener* lsn = br.sound_listener.consume()) {
+        container->s->set_listener_pos(sound::vec3(lsn->pos[0], lsn->pos[1], lsn->pos[2]));
+        container->s->set_listener_ori(
+          sound::vec3(lsn->pos[0] + lsn->dir[0], lsn->pos[1] + lsn->dir[1], lsn->pos[2] + lsn->dir[2]),
+          sound::vec3(lsn->up[0], lsn->up[1], lsn->up[2]));
+        container->s->set_listener_vel(sound::vec3(lsn->vel[0], lsn->vel[1], lsn->vel[2]));
+      }
+
       command_sound_play cmd{};
       while (br.sound_play.try_pop(cmd)) {
         auto* sres = cmd.res.template get<sound::sound_resource>();
@@ -99,10 +108,12 @@ public:
                    ? static_cast<sound::type>(cmd.type)
                    : sound::type::sfx;
         t.command = sound::task::command::play;
-        t.pitch = 1.0f;
-        t.volume = 1.0f;
+        t.pitch = cmd.pitch;
+        t.volume = cmd.volume;
         t.start = cmd.start;
-        t.pos = sound::vec3(0.0f, 0.0f, 0.0f);
+        t.pos = sound::vec3(cmd.pos[0], cmd.pos[1], cmd.pos[2]);
+        t.min_distance = cmd.min_distance;
+        t.max_distance = cmd.max_distance; // 0 = непозиционный (см. command_sound_play)
         container->s->setup_sound(t);
       }
 

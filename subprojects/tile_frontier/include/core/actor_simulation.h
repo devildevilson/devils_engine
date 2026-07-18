@@ -154,6 +154,20 @@ struct actor_state {
   uint64_t state = 0;
 };
 
+// ── per-entity ссылки на мозг (решение автора 2026-07-19): utils::id = хеш ИМЕНИ ресурса
+// («actor»/«prey»), назначаются при спавне через prefab reference<C> («goap = prey») и
+// НЕИЗМЕННЫ (runtime profile switch отложен — acumen-долг). Хеш имени: переживает resume и
+// пересборку реестров (реестры acumen/mood адресуются тем же string_hash), промах при lookup —
+// громкая ошибка. GOAP и FSM — ДВЕ независимые ссылки: можно смешивать (один FSM на два GOAP).
+// РЕПЛИЦИРУЕМЫЕ (плоский uint64_t, см. actor_snapshot.h).
+struct goap_ref {
+  uint64_t value = 0;
+};
+
+struct fsm_ref {
+  uint64_t value = 0;
+};
+
 // Хищник в процессе поедания: КОГО ест (полный id жертвы) и ДО какого тика. Пока компонент
 // есть — актор «закоммичен» (cognition его пропускает, скорость 0) → это НАСТОЯЩИЙ источник
 // коммита (ретайрит commit_ticks для едящих). Снимается в resolve_eating по истечении.
@@ -258,10 +272,22 @@ struct prefab_def {
   std::string text;
 };
 
+// Именованные мозги: name = имя ресурса без префикса («actor», «prey») — то же имя пишут префабы
+// в reference-строках goap=/fsm= и хешируют компоненты goap_ref/fsm_ref.
+struct named_goap {
+  std::string name;
+  std::shared_ptr<const devils_engine::acumen::goap_config> config; // flattened; owns script containers
+};
+
+struct named_fsm {
+  std::string name;
+  const std::vector<devils_engine::mood::transition_config>* transitions = nullptr;
+};
+
 struct brain_config {
   const devils_script::container* is_hungry_program = nullptr; // скрипт-предикат "actor.is_hungry"
-  const std::vector<devils_engine::mood::transition_config>* fsm_transitions = nullptr;
-  std::shared_ptr<const devils_engine::acumen::goap_config> goap; // flattened GOAP config; owns script containers
+  std::vector<named_fsm> fsms;   // все fsm/* ресурсы (префикс из scene config)
+  std::vector<named_goap> goaps; // все goap/* ресурсы, каждый flattened
   std::vector<prefab_def> prefabs;
 };
 
@@ -284,8 +310,10 @@ public:
   actor_world_slice() noexcept;
   ~actor_world_slice(); // out-of-line: unique_ptr на неполные *_system (pimpl-идиома)
 
+  // prefab_cycle — микс актёрных префабов стартового спавна: i-й актор = cycle[i % size]
+  // (детерминированно, порядок id сохранён); пустой список ⇒ все «actor».
   void init(uint32_t count, glm::vec2 min_bound, glm::vec2 max_bound, uint32_t texture_count,
-            const brain_config& brains);
+            const brain_config& brains, const std::vector<std::string>& prefab_cycle = {});
 
   // spawn_sink: спавн префаба по имени в точке (для ds-натива spawn_at). Тот же путь, что spawn_food —
   // prefab_.spawn(name, world, {pos}). Возвращает id новой сущности.
@@ -339,9 +367,12 @@ private:
   // Регистрирует нативные геймплейные функции (предикаты-метрики + эффекты-действия)
   // в act::registry и собирает GOAP-систему acumen (резолв по имени — одноразовый).
   void setup_brain_registry();
-  // Собирает acumen::system из tavl-конфига: метрики (порядок=биты), действия/цели по ключам
-  // (префикс !/not = инвертированный бит; символические биты типа "resolved" индексируются после метрик).
-  void build_goap_from_config(const devils_engine::acumen::goap_config& cfg);
+  // Собирает acumen::system с именем name из tavl-конфига: метрики (порядок=биты), действия/цели по
+  // ключам (префикс !/not = инвертированный бит; символические биты типа "resolved" — после метрик).
+  // Одноимённые метрики/действия РАЗНЫХ мозгов регистрируются в общий registry_ ОДИН раз с дедупом
+  // по goap_config origin: одинаковый origin (общая база) — копии одного скрипта, разный — громкая
+  // ошибка (имена act-функций — глобальное пространство слайса).
+  void build_goap_from_config(std::string_view name, const devils_engine::acumen::goap_config& cfg);
   // Строит kD-дерево восприятия над ВСЕМИ акторами (позиции меняются каждый тик).
   void build_sense_tree(devils_engine::thread::atomic_pool& pool);
   void gather_sense_tree();
@@ -379,10 +410,14 @@ private:
   void rebuild_obstacle_cache();
   devils_engine::aesthetics::world world_;
   devils_engine::act::registry registry_; // общий реестр геймплейных функций (см. libs/act)
+  // Мозги адресуются per-entity: goap_ref/fsm_ref (хеш имени) → registry.get(id). Слайсовых
+  // goap_/fsm_ указателей больше нет — резолв в decide_actor/apply, промах = громкая ошибка.
   devils_engine::acumen::registry goap_registry_;
   devils_engine::mood::registry fsm_registry_;
-  const devils_engine::acumen::system* goap_ = nullptr; // выбранный профиль слайса (per-entity ref позже)
-  const devils_engine::mood::system* fsm_ = nullptr;    // FSM независима от GOAP; для actor-типа фиксирована
+  // Дедуп act-регистраций между goap-конфигами: хеш имени метрики/действия → origin (resource id,
+  // где элемент определён). Одинаковый origin = копии одного скрипта (общая база) — пропускаем,
+  // разный = конфликт имён — громкая ошибка. Живёт только на время setup_brain_registry.
+  std::vector<std::pair<uint64_t, std::string>> goap_origins_;
   // kD-дерево слоя восприятия: перестраивается раз за тик, отвечает на «ближайший
   // крупнее/мельче в радиусе» с прунингом. Арена реюзится. Читается воркерами конкурентно.
   devils_engine::utils::kd_tree<perception_target> sense_tree_;

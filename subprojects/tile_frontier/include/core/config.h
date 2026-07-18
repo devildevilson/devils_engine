@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include <devils_engine/input/bindings.h> // input::bindings_config — секция key-mapping в settings
+
 namespace devils_engine {
 namespace utils {
 class calendar_clock;
@@ -122,6 +124,10 @@ struct app_config {
   time_config time;
   metrics_config metrics;
   logging_config logging;
+  // key-mapping поверх движковых дефолтов (bind_default_actions): в tavl
+  // `input = { actions = { camera_up = [key_w], ... } }`; пусто = только дефолты.
+  // Наличие поля включает движковые apply при создании окна/reload и выгрузку при save.
+  devils_engine::input::bindings_config input;
 };
 
 // Конфиг грузится как demiurg-ресурс (app_config_resource) из движкового реестра —

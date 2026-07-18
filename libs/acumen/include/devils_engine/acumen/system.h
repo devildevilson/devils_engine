@@ -54,6 +54,14 @@ public:
   // цели от вызывающего (одинаковая цель ⇒ одинаковый id; разные цели ⇒ разные id).
   plan_key make_key(const state& start, uint64_t goal_id) const noexcept;
 
+  // Тождество системы в ключе мемоизации: ОБЯЗАТЕЛЬНО уникально, когда один solution_cache
+  // обслуживает несколько систем (per-entity мозги) — план хранит индексы действий ЭТОЙ системы.
+  // registry::add ставит соль = system_id (хеш имени) автоматически; 0 (дефолт) корректен только
+  // для единственной системы на кеш.
+  void set_cache_salt(const uint64_t salt) noexcept {
+    cache_salt_ = salt;
+  }
+
   // Единственная точка входа решения. С cache: hit ⇒ копирует кешированный план; miss ⇒ живой
   // A* в params.scratch и кладёт в cache (если план ≤ max_plan). Без cache (params.cache == nullptr)
   // — просто живой A*. out — буфер вызывающего под план в порядке исполнения (напр. std::array на
@@ -67,6 +75,7 @@ private:
   std::vector<action> actions;
   state relevant_mask_;                 // ∪ масок действий/целей (значащие биты)
   std::vector<uint16_t> relevant_bits_; // индексы set-бит relevant_mask_ (для проекции ключа)
+  uint64_t cache_salt_ = 0;             // тождество системы в plan_key (см. set_cache_salt)
 };
 
 class planner final : public astar<astar_data>::interface {

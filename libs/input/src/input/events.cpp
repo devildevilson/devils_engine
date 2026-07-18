@@ -373,29 +373,70 @@ void events::set_key(const event_id id, const int32_t scancode, const int32_t ke
     }
   }
 
-  auto old_key_itr = key_mapping.find(old_scancode);
-  if (old_key_itr != key_mapping.end()) {
-    for (auto& name : old_key_itr->second.events) {
-      if (name == id) {
-        name = invalid_event_id;
-        break;
-      }
-    }
+  detach_event(id, old_scancode);
+}
 
-    bool empty = true;
-    for (const auto name : old_key_itr->second.events) {
-      if (name != invalid_event_id) {
-        empty = false;
-        break;
-      }
-    }
+void events::detach_event(const event_id id, const int32_t scancode) {
+  auto key_itr = key_mapping.find(scancode);
+  if (key_itr == key_mapping.end()) {
+    return;
+  }
 
-    if (empty) {
-      key_mapping.erase(old_key_itr);
+  for (auto& name : key_itr->second.events) {
+    if (name == id) {
+      name = invalid_event_id;
+      break;
     }
   }
 
-  // обновим настройки
+  bool empty = true;
+  for (const auto name : key_itr->second.events) {
+    if (name != invalid_event_id) {
+      empty = false;
+      break;
+    }
+  }
+
+  if (empty) {
+    key_mapping.erase(key_itr);
+  }
+}
+
+void events::clear_key(const event_id id, const uint8_t slot) {
+  const auto itr = event_mapping.find(id);
+  if (itr == event_mapping.end()) {
+    return;
+  }
+  if (slot >= itr->second.keys.size()) {
+    return;
+  }
+
+  const auto old_scancode = itr->second.keys[slot];
+  if (old_scancode == -1) {
+    return;
+  }
+  itr->second.keys[slot] = -1;
+  detach_event(id, old_scancode);
+}
+
+void events::clear_event(const event_id id) {
+  for (uint8_t slot = 0; slot < event_key_slots_count; ++slot) {
+    clear_key(id, slot);
+  }
+}
+
+void events::clear_event(const std::string_view& id) {
+  clear_event(make_event_id(id));
+}
+
+bool events::has_bindings() {
+  return !event_mapping.empty();
+}
+
+void events::for_each_event(void (*cb)(void* user, const std::string_view name, const std::span<const int32_t> keys), void* user) {
+  for (const auto& [id, map] : event_mapping) {
+    cb(user, std::string_view(map.name), std::span<const int32_t>(map.keys.data(), map.keys.size()));
+  }
 }
 
 void events::set_key(const std::string_view& id, const int32_t scancode, const int32_t key, const uint8_t slot) {

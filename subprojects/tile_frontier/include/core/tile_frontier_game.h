@@ -84,6 +84,7 @@ private:
   // точка камеры клампится в бокс тайлового мира [0, world_extent_].
   void move_camera(const frame_context& context);
   void publish_camera_and_tiles(const frame_context& context);
+  void publish_sound_listener(broker& messages, bool sound_available);
   void update_actors(const frame_context& context);
   void publish_actor_sounds(broker& messages, bool sound_available);
   void update_metrics(const metrics_config& config, uint64_t update_us);
