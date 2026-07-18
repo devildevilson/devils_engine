@@ -263,9 +263,12 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
      нельзя случайно сравнить/сложить. `calendar_policy` реализует day+seconds и опциональную month/year
      проекцию. Следующий зависимый срез — очередь отложенных эффектов и expiry для п.8.
 
-8. **B-е — состояния/флаги энтити + expiration** — **[необходимо]** *(спроектировано, не построено)*.
-   Компонент флагов/модификаторов; флаги с доп-данными хранить `(date, hash)` сортированно. Требует
-   системы времени (п.7). Ложится на act + aesthetics.
+8. ✅ **B-е — состояния/флаги энтити + expiration** — **[необходимо, ядро готово 2026-07-18]**.
+   `aesthetics::flag_set`: сортированный `(hash, remaining game_duration)` — COUNTDOWN вместо
+   абсолютной даты (телам ds-блоков и предикатам не нужен доступ ко времени; пауза/scale действуют
+   через game-дельту). ds-блоки `set_flag`/`clear_flag`/`has_flag`, sweep-фаза, сериализация,
+   живой потребитель sated. Детали — «Дела ближайших сессий» п.2. Остаток: модификаторы с payload,
+   calendar/turn-сроки.
 
 9. **A-1 — UI-состояние в save** — **[QoL]**.
    Durable = состояние `ui_rng` (4×uint64) + `ui_timestamp` в main + lua-upvalues. Нужен сериализатор
@@ -446,12 +449,38 @@ Ownership catalogue executors и compile-time порядок actor phases пок
    - ⏳ Остаток п.14: cost formulas/`describe` через тот же facade; string/object/vector marshalling по
      фактическим сигнатурам; судьба `effect_sink` seam (адаптировать к catalogue deferred или удалить).
 
-2. **Сделать очередь отложенных gameplay effects и entity expiration (пп.7–8).**
-   - Typed deadline в game/turn/calendar domain; никакого неявного преобразования абсолютных времён.
-   - Компонент flags/modifiers с детерминированным порядком и expiration; поздняя structural commit
-     фаза удаляет/применяет истёкшее.
-   - Save/load и pause/time-scale acceptance обязательны: resume должен продолжать тот же deadline,
-     gameplay pause не двигает game expiry, turn expiry меняется только с ходом.
+2. ✅ **Инструмент времени + generic-флаги с expiration (пп.7–8)** — **ядро готово 2026-07-18;
+   scope переопределён автором: НЕ строить систему эффектов, а дать пользоваться временем.**
+   - ✅ **Модель скорости — ВАРИАНТ B (решение автора): переменный dt.** Тик остаётся 1/кадр,
+     `game_delta_ticks` масштабируется game-часами; тиковая логика поштучно переводится на
+     game-время. Живая настройка: `game_host::set_game_speed(num, den)` + Lua
+     `app.set_game_speed(2)` / `(1,2)` / `app.game_speed()` — рациональный множитель ПОВЕРХ
+     номинального `settings.time`; runtime settings reload сбрасывает к номиналу; ноль запрещён
+     (остановка = pause). Смена скорости = deterministic input.
+   - ✅ **Контракт слайса:** `actor_world_slice::update(uint64_t game_delta_ticks, …)` — слайс сам
+     аккумулирует `game_now()` (µs game-домена, сериализуется в sim_globals ⇒ deadlines переживают
+     resume); dt секунд для интеграции/drives выводится из той же дельты.
+   - ✅ **`aesthetics::flag_set`** — generic per-entity флаги: агрегат с публичным сортированным
+     `entries` ({хеш имени, остаток game_duration}), set/has/remove/advance. **Countdown-модель, не
+     absolute deadline** (осознанно): тела ds-блоков исполняются на commit без контекста времени, а
+     читателю-предикату время тоже не нужно; пауза (dt=0) и scale действуют через дельту
+     автоматически. Тест `aesthetics_flag_set_test`.
+   - ✅ **ds building blocks:** `set_flag = { name, seconds }` (`seconds <= 0` = бессрочный) /
+     `clear_flag = name` — collect в serial_structural lane (create<flag_set> on demand) /
+     `has_flag(name)` предикат; через `act::building_blocks`. Sweep `expire_flags(game_dt)` — фаза
+     слайса после resolve_eating. Живой потребитель: **sated** — resolve_eating (post-commit факт
+     доедания, НЕ eat-скрипт — ветки записываются независимо) ставит флаг на 10 game-секунд,
+     drives замораживает рост голода, пока флаг жив.
+   - ✅ **Тиковая логика → game-время:** `actor_eating.remaining` (µs game) и cognition-каденция
+     `commit_game_ticks_` = 150ms game (= прежние 3 тика при 20fps/scale 1) — мышление и поедание
+     замедляются/ускоряются вместе со временем. `think_budget_` остаётся count/tick (CPU-бюджет, не
+     геймплей). Побочно: benchmark 4096×120 подешевел до 0.770/0.783/0.726/0.631 ms/tick (при dt
+     бенчмарка 1/60с каденция реже), hash `0x6314d39ac4e9f875` identical 1/2/4/8.
+   - ✅ **Acceptance:** config_effect_smoke — смена скорости мид-ран (×3 → пауза dt=0 → ×0.5) с
+     1-vs-4 identity; resume bit-identity (flag_set сериализуется — vector-поле через reflect);
+     пауза не двигает сроки (dt=0 ⇒ advance no-op).
+   - ⏳ Отложено (по слову автора): очередь отложенных effect-вызовов, typed calendar/turn
+     deadlines для событий календаря/ходов, абсолютная дата окончания в UI (= now + remaining).
 
 3. **Формализовать events/triggers/relations contract (п.13).**
    - Развести deterministic gameplay input/event, catalogue deferred effect и presentation event.

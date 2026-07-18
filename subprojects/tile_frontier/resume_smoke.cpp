@@ -40,7 +40,7 @@ int main() {
   const uint32_t count = 2000;
   const glm::vec2 mn{0.5f, 0.5f}, mx{64.0f, 64.0f};
   const uint32_t tex = 4;
-  const float dt = 1.0f / 60.0f;
+  const uint64_t dt = devils_engine::utils::timeline_ticks_per_second / 60; // µs game-времени за тик
 
   thread::atomic_pool single_pool(1);
   thread::atomic_pool pool(4); // тем же пулом гоняем оба слайса ⇒ MT-детерминизм тоже под тестом

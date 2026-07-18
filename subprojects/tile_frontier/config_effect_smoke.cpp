@@ -11,6 +11,7 @@
 #include <spdlog/spdlog.h>
 
 #include "core/actor_simulation.h"
+#include "core/entity_scope.h" // tf::entity_scope — root-скоуп парс-проверок building blocks
 #include "test_brain_fixture.h"
 
 using namespace devils_engine;
@@ -65,7 +66,7 @@ int main() {
   thread::atomic_pool pool_four(4);
 
   // 300 тиков: и bit-identity 1-vs-4, и живость config-eat (`eat = prey` реально хватает добычу).
-  constexpr float dt = 1.0f / 60.0f;
+  constexpr uint64_t dt = devils_engine::utils::timeline_ticks_per_second / 60; // µs game-времени за тик
   uint32_t eating_peak = 0;
   for (size_t tick = 0; tick < 300; ++tick) {
     const auto ma = one_worker.update(dt, batch_one, pool_one);
@@ -78,6 +79,31 @@ int main() {
   }
   if (eating_peak == 0) {
     std::cerr << "FAILED: config-loaded eat never grabbed prey in 300 ticks\n";
+    return 1;
+  }
+
+  // Смена скорости и пауза мид-ран — та же последовательность game-дельт обоим слайсам ⇒ identity
+  // обязана держаться: дельта = вход, флаги/сроки тикают только на game-дельту (пауза = 0).
+  const uint64_t phases[][2] = {{dt * 3, 45}, {0, 15}, {dt / 2, 45}};
+  for (const auto& [phase_dt, ticks] : phases) {
+    for (uint64_t t = 0; t < ticks; ++t) {
+      one_worker.update(phase_dt, batch_one, pool_one);
+      four_workers.update(phase_dt, batch_four, pool_four);
+      if (dump(one_worker) != dump(four_workers)) {
+        std::cerr << "FAILED: diverged under game speed change (dt=" << phase_dt << ")\n";
+        return 1;
+      }
+    }
+  }
+
+  // building blocks флагов видны парсеру под обычными сигнатурами (исполнение через record/commit
+  // покрывает sated-путь выше: resolve_eating ставит флаг, drives читает, sweep тикает).
+  auto& sys = fixture.scripts().sys;
+  const auto set_script = sys.parse<void, tf::entity_scope>("flags_set", "set_flag = { stunned, 2 }");
+  const auto clear_script = sys.parse<void, tf::entity_scope>("flags_clear", "clear_flag = stunned");
+  const auto has_script = sys.parse<bool, tf::entity_scope>("flags_has", "has_flag(stunned)");
+  if (set_script.cmds.empty() || clear_script.cmds.empty() || has_script.cmds.empty()) {
+    std::cerr << "FAILED: flag building blocks did not compile\n";
     return 1;
   }
 

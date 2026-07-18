@@ -40,7 +40,7 @@ int main() {
     p->prey_id = prey; // ССЫЛКА на другую сущность
     p->has_prey = true;
   }
-  w.create<tf::actor_eating>(predator, tf::actor_eating{prey, 500u}); // ест жертву
+  w.create<tf::actor_eating>(predator, tf::actor_eating{prey, {500u}}); // ест жертву (остаток 500µs game)
 
   // --- жертва ---
   w.create<tf::actor_position>(prey, tf::actor_position{glm::vec2{10.0f, 20.0f}});
@@ -78,7 +78,7 @@ int main() {
   CHECK(w2.get<tf::actor_perception>(predator)->has_prey == true);
   CHECK(w2.get<tf::actor_perception>(predator)->prey_pos.y == 20.0f);
   CHECK(w2.get<tf::actor_eating>(predator)->target == prey);
-  CHECK(w2.get<tf::actor_eating>(predator)->ticks_left == 500u);
+  CHECK(w2.get<tf::actor_eating>(predator)->remaining.ticks == 500u);
   CHECK(w2.get<tf::actor_grabbed>(prey)->by == predator);
   CHECK(w2.get<tf::actor_position>(w2.get<tf::actor_eating>(predator)->target) != nullptr); // ссылка разрешается в живую сущность
 

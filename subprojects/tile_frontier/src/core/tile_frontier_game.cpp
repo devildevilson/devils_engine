@@ -243,9 +243,7 @@ void tile_frontier_game::publish_camera_and_tiles(const frame_context& context) 
 
 void tile_frontier_game::update_actors(const frame_context& context) {
   const auto begin = std::chrono::steady_clock::now();
-  actors_last_metrics_ = actors_.update(
-    float(context.game_delta_ticks) / float(utils::global_time_resolution),
-    actor_batch_, context.pool);
+  actors_last_metrics_ = actors_.update(context.game_delta_ticks, actor_batch_, context.pool);
   const auto end = std::chrono::steady_clock::now();
   const uint64_t update_us = uint64_t(std::max<int64_t>(utils::count_mcs(begin, end), 0));
 
