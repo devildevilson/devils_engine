@@ -24,8 +24,9 @@ struct render_system_config {
   std::string pipeline_cache_id;
   std::string pipeline_cache_path;
 
-  std::string graph_name = "graphics1";
-  std::string menu_graph_name;
+  // Заполняется standard_render_create_base_resources именем первого графа из project
+  // render-config. Все объявленные там графы становятся resident.
+  std::string graph_name;
   std::string texture_descriptor_name = "textures";
   std::string app_name = "devils_app";
   std::string engine_name = "devils_engine";

@@ -10,10 +10,14 @@ namespace devils_engine {
 namespace simul {
 
 struct engine_boot_config {
+  std::string app_name = "devils_app";
   std::string resource_root = "resources/";
   std::string engine_module = "engine";
   std::string app_config_id = "config/app";
   std::string settings_file = "settings.tavl";
+  // Historical spelling is kept intentionally: this is the user-visible filename requested by
+  // tile_frontier and changing it would silently strand existing per-machine bindings.
+  std::string key_bindings_file = "key_bingings.tavl";
   std::string cache_root = "cache";
 
   bool render_enabled = true;

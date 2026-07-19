@@ -157,32 +157,36 @@ inline void window_iconify_cb(GLFWwindow*, int iconified) noexcept {
   g_window_events.state_changed = true;
 }
 
-inline void bind_default_actions(const size_t main_frame_time) {
+inline void initialize_input_events(const size_t main_frame_time) {
   input::events::init();
   input::events::set_engine_tick_time(main_frame_time);
   input::events::set_long_press_duration(utils::round(double(utils::global_time_resolution) * 0.3));
   input::events::set_double_press_duration(utils::round(double(utils::global_time_resolution) * 0.25));
-  const auto bind_action = [](const char* action, const char* canonical) {
-    const auto [glfw_key, scancode] = input::key_from_canonical(canonical);
-    if (scancode >= 0) {
-      input::events::set_key(std::string_view(action), scancode, glfw_key, 0);
-    } else {
-      utils::warn("main: could not bind action '{}' to key '{}'", action, canonical);
+}
+
+inline GLFWmonitor* resolve_monitor(const std::string_view requested) {
+  GLFWmonitor* primary = input::primary_monitor();
+  if (requested.empty()) {
+    return primary;
+  }
+  for (GLFWmonitor* monitor : input::monitors()) {
+    if (monitor != nullptr && input::monitor_name(monitor) == requested) {
+      return monitor;
     }
-  };
-  bind_action("quit", "escape");
-  bind_action("toggle_menu", "f1");
-  // Стандартный словарь движения камеры (WASD); политика движения/клампа — проектная.
-  // Это ДЕФОЛТЫ: пользовательский key-mapping из settings.input накатывается поверх
-  // (input::apply_bindings в create_window_and_notify_render / reload_settings).
-  bind_action("camera_up", "key_w");
-  bind_action("camera_left", "key_a");
-  bind_action("camera_down", "key_s");
-  bind_action("camera_right", "key_d");
+  }
+  utils::warn("window: monitor '{}' was not found; using primary monitor", requested);
+  return primary;
 }
 
 template <typename State, typename Settings>
-void create_window_and_notify_render(State& c, const Settings& settings, const size_t main_frame_time) {
+void apply_fullscreen(State& c, Settings& settings, bool enable);
+
+template <typename State, typename Settings>
+void create_window_and_notify_render(
+  State& c,
+  Settings& settings,
+  const std::string& app_name,
+  const size_t main_frame_time) {
   if (c.window != nullptr) {
     return;
   }
@@ -191,12 +195,13 @@ void create_window_and_notify_render(State& c, const Settings& settings, const s
     c.in = std::make_unique<input::init>(&default_window_error_callback);
   }
 
-  c.monitor = input::primary_monitor();
-  c.window = input::create_window(settings.window.width, settings.window.height, settings.window.title);
+  c.monitor = resolve_monitor(settings.window.monitor);
+  settings.window.monitor = std::string(input::monitor_name(c.monitor));
+  c.window = input::create_window(settings.window.width, settings.window.height, app_name);
   if (c.window == nullptr) {
     utils::error{}(
       "Could not create window '{}' {}x{}",
-      settings.window.title,
+      app_name,
       settings.window.width,
       settings.window.height);
   }
@@ -215,11 +220,9 @@ void create_window_and_notify_render(State& c, const Settings& settings, const s
   input::set_window_focus_callback(c.window, &window_focus_cb);
   input::set_window_iconify_callback(c.window, &window_iconify_cb);
 
-  bind_default_actions(main_frame_time);
-  // Пользовательский key-mapping поверх дефолтного словаря — если settings-схема проекта
-  // объявила секцию input (input::bindings_config).
-  if constexpr (requires { settings.input; }) {
-    input::apply_bindings(settings.input);
+  initialize_input_events(main_frame_time);
+  if (settings.window.fullscreen) {
+    apply_fullscreen(c, settings, true);
   }
 
   const auto [fw, fh] = input::framebuffer_size(c.window);
@@ -241,7 +244,7 @@ void create_window_and_notify_render(State& c, const Settings& settings, const s
 }
 
 template <typename State, typename Settings>
-void apply_fullscreen(State& c, const Settings& settings, const bool enable) {
+void apply_fullscreen(State& c, Settings& settings, const bool enable) {
   if (c.window == nullptr) {
     return;
   }
@@ -255,18 +258,55 @@ void apply_fullscreen(State& c, const Settings& settings, const bool enable) {
     GLFWmonitor* m = c.monitor != nullptr ? c.monitor : input::primary_monitor();
     if (m == nullptr) {
       utils::warn("main: no monitor for fullscreen");
+      settings.window.fullscreen = false;
       return;
     }
+    settings.window.monitor = std::string(input::monitor_name(m));
     const auto [mw, mh, refresh] = input::primary_video_mode(m);
     input::set_window_monitor(c.window, m, 0, 0, mw, mh, int32_t(refresh));
     c.is_fullscreen = true;
+    settings.window.fullscreen = true;
     DE_LOG(catalogue::log_domain::main, flow, "main: fullscreen on ({}x{}@{})", mw, mh, refresh);
   } else if (!enable && c.is_fullscreen) {
     const uint32_t w = c.windowed_w != 0 ? c.windowed_w : settings.window.width;
     const uint32_t h = c.windowed_h != 0 ? c.windowed_h : settings.window.height;
     input::set_window_monitor(c.window, nullptr, c.windowed_x, c.windowed_y, w, h, DEVILS_ENGINE_INPUT_DONT_CARE);
     c.is_fullscreen = false;
+    settings.window.fullscreen = false;
     DE_LOG(catalogue::log_domain::main, flow, "main: fullscreen off ({}x{})", w, h);
+  } else {
+    settings.window.fullscreen = c.is_fullscreen;
+  }
+}
+
+template <typename State, typename Settings>
+void apply_window_settings(State& c, Settings& settings) {
+  if (c.window == nullptr) {
+    return;
+  }
+
+  GLFWmonitor* desired_monitor = resolve_monitor(settings.window.monitor);
+  const bool monitor_changed = desired_monitor != nullptr && desired_monitor != c.monitor;
+  c.monitor = desired_monitor;
+  settings.window.monitor = std::string(input::monitor_name(c.monitor));
+
+  if (settings.window.fullscreen) {
+    if (!c.is_fullscreen) {
+      apply_fullscreen(c, settings, true);
+    } else if (monitor_changed) {
+      const auto [mw, mh, refresh] = input::primary_video_mode(c.monitor);
+      input::set_window_monitor(c.window, c.monitor, 0, 0, mw, mh, int32_t(refresh));
+      DE_LOG(catalogue::log_domain::main, flow,
+             "main: fullscreen monitor changed to '{}' ({}x{}@{})",
+             settings.window.monitor, mw, mh, refresh);
+    }
+    return;
+  }
+
+  if (c.is_fullscreen) {
+    apply_fullscreen(c, settings, false);
+  } else {
+    input::set_window_size(c.window, settings.window.width, settings.window.height);
   }
 }
 
@@ -456,11 +496,14 @@ void install_window_lua_bindings(
     return cptr->is_fullscreen;
   });
 
-  app.set_function("set_master_volume", [cptr, sound_enabled](double v) {
+  app.set_function("set_master_volume", [cptr, settings_ptr, sound_enabled](double v) {
     if (!sound_enabled || cptr->br == nullptr) {
       return;
     }
     const float gain = float(std::clamp(v, 0.0, 1.0));
+    if constexpr (requires { settings_ptr->sound.master; }) {
+      settings_ptr->sound.master = gain;
+    }
     cptr->policy.focused_master_gain = gain;
     cptr->br->sound_master_gain.try_push(command_sound_set_master_gain{gain});
   });

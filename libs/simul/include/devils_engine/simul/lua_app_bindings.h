@@ -2,6 +2,7 @@
 #define DEVILS_ENGINE_SIMUL_LUA_APP_BINDINGS_H
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -10,6 +11,7 @@
 #include <devils_engine/catalogue/logging.h>
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/painter/gpu_texture_resource.h>
+#include <devils_engine/sound/common.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/visage/image.h>
 #include <devils_engine/visage/system.h>
@@ -50,9 +52,14 @@ struct ui_sound_state_entry {
 // Звуковой плеер: app.play_sound / stop_sound / sound_state / set_sound_device. Каждый — обычное
 // сообщение на звуковой тред (presentation→sound, в лог реплея НЕ попадает). Очередь/кроссфейд плеер
 // собирает на lua, опрашивая state. sound_enabled=false ⇒ вызовы безопасно no-op.
-template <typename State>
-void install_sound_lua_bindings(sol::table app, State& c, const bool sound_enabled) {
+template <typename State, typename Settings>
+void install_sound_lua_bindings(
+  sol::table app,
+  State& c,
+  Settings& settings,
+  const bool sound_enabled) {
   auto* cptr = &c;
+  auto* settings_ptr = &settings;
   auto& L = c.ui->script_state();
   L.template new_usertype<sound_handle>("sound_handle",
                                         sol::no_constructor,
@@ -89,6 +96,7 @@ void install_sound_lua_bindings(sol::table app, State& c, const bool sound_enabl
                      command_sound_play play{};
                      play.taskid = generate_task_id();
                      play.after = SIZE_MAX;
+                     play.type = static_cast<uint32_t>(sound::type::ui_effect);
                      play.start = 0.0;
                      if (opts) {
                        play.start = std::clamp(opts->get_or("start", 0.0), 0.0, 1.0);
@@ -138,12 +146,23 @@ void install_sound_lua_bindings(sol::table app, State& c, const bool sound_enabl
   });
 
   // Смена звукового устройства: пере-создаём system2 через канал recreate.
-  app.set_function("set_sound_device", [cptr, sound_enabled](const std::string& name) {
+  app.set_function("set_sound_device", [cptr, settings_ptr, sound_enabled](const std::string& name) {
     auto& c = *cptr;
     if (!sound_enabled || c.br == nullptr) {
       return;
     }
-    c.br->recreate_sound.try_push(command_recreate_sound_system{name});
+    std::string selected = name;
+    if (!selected.empty() && c.sound_devices_ready.load(std::memory_order_acquire) &&
+        std::find(c.sound_devices.begin(), c.sound_devices.end(), selected) == c.sound_devices.end()) {
+      utils::warn("sound: requested output device '{}' is unavailable; using system default", selected);
+      selected.clear();
+    }
+    if constexpr (requires { settings_ptr->sound.device; }) {
+      settings_ptr->sound.device = selected;
+    }
+    c.sound_device_preference = selected;
+    c.sound_device_preference_applied = true;
+    c.br->recreate_sound.try_push(command_recreate_sound_system{selected});
   });
 }
 

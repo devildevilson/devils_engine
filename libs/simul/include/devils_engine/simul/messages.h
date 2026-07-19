@@ -160,6 +160,11 @@ struct command_sound_set_master_gain {
   float gain = 1.0f;
 };
 
+struct command_sound_set_source_gain {
+  uint32_t type = 0;
+  float gain = 1.0f;
+};
+
 struct command_recreate_sound_system {
   std::string device_name;
 };

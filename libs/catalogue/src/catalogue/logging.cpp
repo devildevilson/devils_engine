@@ -94,10 +94,8 @@ void init_logging(const std::string_view file_path, const bool console) {
     sinks.push_back(std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
       std::string(file_path), size_t(8) * 1024 * 1024, 5));
   }
-  if (sinks.empty()) {
-    return; // ничего не просили — оставляем дефолтный логгер spdlog
-  }
-
+  // Пустой список sink'ов намеренно создаёт silent logger. Иначе `console=false, file=""`
+  // неожиданно оставлял активным дефолтный консольный logger spdlog.
   auto logger = std::make_shared<spdlog::logger>("devils", sinks.begin(), sinks.end());
   logger->set_level(spdlog::level::info); // глубину контролирует НАШ доменный гейт, не spdlog
   logger->flush_on(spdlog::level::warn);

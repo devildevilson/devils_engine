@@ -429,6 +429,11 @@ void events::clear_event(const std::string_view& id) {
   clear_event(make_event_id(id));
 }
 
+void events::clear_bindings() {
+  event_mapping.clear();
+  key_mapping.clear();
+}
+
 bool events::has_bindings() {
   return !event_mapping.empty();
 }

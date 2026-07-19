@@ -145,6 +145,9 @@ public:
   static void clear_key(const event_id id, const uint8_t slot = 0);
   static void clear_event(const event_id id);
   static void clear_event(const std::string_view& id);
+  // Сбросить весь словарь событий и клавиш. Нужен для полного reload key-bindings: иначе
+  // действие, удалённое из файла, продолжило бы жить в старой runtime-карте.
+  static void clear_bindings();
   // есть ли хоть одно событие (≈ инициализирован ли ввод: дефолты навешиваются при создании окна)
   static bool has_bindings();
   // перечисление биндингов (выгрузка в конфиг, см. bindings.h): cb(user, имя события, слоты

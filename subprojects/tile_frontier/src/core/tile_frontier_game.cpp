@@ -137,19 +137,6 @@ std::pair<std::size_t, std::size_t> tile_frontier_game::loading_progress() const
 }
 
 void tile_frontier_game::update(const frame_context& context) {
-  const auto& render = context.settings.render;
-  if (context.render_available && render.demo_graph_toggle_ms > 0 &&
-      !render.menu_graph.empty() && render.menu_graph != render.graph) {
-    const uint64_t period = std::max<uint64_t>(
-      1, uint64_t(render.demo_graph_toggle_ms) *
-           uint64_t(context.settings.simulation.main_fps) / 1000ull);
-    if (context.host_tick % period == 0) {
-      const bool to_menu = (context.host_tick / period) % 2 == 1;
-      context.messages.set_active_graph.write_slot().name = to_menu ? render.menu_graph : render.graph;
-      context.messages.set_active_graph.publish();
-    }
-  }
-
   drain_loaded_chunks(context.messages, context.generation);
   move_camera(context); // presentation-контрол: двигается и при gameplay-паузе
   publish_camera_and_tiles(context);
@@ -159,7 +146,7 @@ void tile_frontier_game::update(const frame_context& context) {
   }
 }
 
-// Первый живой player-input: named actions camera_* (WASD, словарь в bind_default_actions) двигают
+// Первый живой player-input: named actions camera_* (WASD, standard key bindings) двигают
 // камеру со скоростью, пропорциональной видимой полуширине (одинаково ощущается на любом зуме).
 // Presentation-плоскость: реальное время кадра (context.time), game pause/scale не влияют; точка
 // камеры не выходит за мировой бокс тайлов.

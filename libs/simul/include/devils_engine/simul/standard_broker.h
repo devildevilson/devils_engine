@@ -49,9 +49,10 @@ struct standard_broker {
   thread::spsc_queue<command_sound_devices> sound_devices; // handshake
   thread::spsc_queue<command_recreate_sound_system> recreate_sound;
   thread::spsc_queue<command_sound_set_master_gain> sound_master_gain; // lossy (latest-wins по смыслу)
+  thread::spsc_queue<command_sound_set_source_gain> sound_source_gain;
 
   standard_broker()
-    : update_constant(64), write_buffer(64, size_t(1) << 20), gpu_transition(256), gpu_done(256), prepare_shaders(8), load_resource(256), sound_play(64), sound_stop(64), sound_update(64), sound_devices(8), recreate_sound(8), sound_master_gain(8) {}
+    : update_constant(64), write_buffer(64, size_t(1) << 20), gpu_transition(256), gpu_done(256), prepare_shaders(8), load_resource(256), sound_play(64), sound_stop(64), sound_update(64), sound_devices(8), recreate_sound(8), sound_master_gain(8), sound_source_gain(16) {}
 
   standard_broker(const standard_broker&) = delete;
   standard_broker& operator=(const standard_broker&) = delete;

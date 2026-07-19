@@ -131,6 +131,7 @@ TEST_CASE("painter render config reads demiurg tavl list subresources [painter]"
     std::ofstream out(root / "core" / "render_config" / "render_graphs" / "main.tavl");
     out << "{\n";
     out << "  name = graphics1\n";
+    out << "  startup = true\n";
     out << "  passes = [ { name = p1 render_target = rt1 subpasses = [ { albedo_res = (color_attachment, store) } ] } ]\n";
     out << "  present_source = swapchain_image\n";
     out << "}\n";
@@ -161,6 +162,8 @@ TEST_CASE("painter render config reads demiurg tavl list subresources [painter]"
   CHECK(storage.find_resource("albedo_res") != painter::invalid_resource_slot);
   CHECK(storage.find_render_target("rt1") != painter::invalid_resource_slot);
   CHECK(storage.find_render_graph("graphics1") != painter::invalid_resource_slot);
+  REQUIRE(storage.graphs.size() == 1);
+  CHECK(storage.graphs.front().startup);
   CHECK(swapchain->state() == demiurg::state::warm);
   CHECK(albedo->state() == demiurg::state::warm);
   CHECK(swapchain->text.empty());

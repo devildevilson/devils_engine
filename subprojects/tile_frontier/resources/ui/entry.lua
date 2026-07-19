@@ -137,6 +137,7 @@ local function game_ui(time, timestamp, rng)
     nk.layout.row_dynamic(30, 2)
     if nk.button(app.is_fullscreen() and "Windowed" or "Fullscreen") then
       app.set_fullscreen(not app.is_fullscreen())
+      app.save_settings()
     end
     if nk.button("Quit") then
       app.quit_game()

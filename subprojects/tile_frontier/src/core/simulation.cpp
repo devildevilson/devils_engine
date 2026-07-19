@@ -87,12 +87,12 @@ demiurg::resource_system* simulation::asset_registry() {
 simul::worker_systems<runtime_traits::broker_type> runtime_traits::make_workers(
   bootstrap_type& boot) {
   return simul::make_standard_workers<render_simulation, assets_simulation, sound_simulation>(
-    boot, "tile_frontier");
+    boot, boot.engine.app_name);
 }
 
 void simulation::project_settings_reloaded() {
-  // Frame time, logging and game scale are generic host settings. Calendar topology and the active
-  // world scene intentionally remain fixed until an explicit runtime-state transition.
+  // metrics читается непосредственно каждый frame; logging/window/sound применяет generic host.
+  // simulation/render/time и активная сцена остаются project topology.
 }
 
 void simulation::register_project_ui_bindings() {

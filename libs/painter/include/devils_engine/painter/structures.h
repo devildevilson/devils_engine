@@ -436,6 +436,7 @@ struct execution_pass_base {
 // мы должны еще выгрузить все ресурсы
 struct render_graph_base {
   std::string name;
+  bool startup = false;
   std::vector<uint32_t> passes;
   uint32_t present_source;
 
