@@ -12,7 +12,7 @@
 
 // message_buffer — плотный по-энтити канал сообщений одного типа: примитив коммуникации между
 // фазами декларативного пайплайна (process query_t<> → message_buffer → process query_t<> → …,
-// см. ROADMAP п.11 / docs/simul-extraction-design.md). Слот адресуется get_entityid_index(entity);
+// см. ROADMAP п.11). Слот адресуется get_entityid_index(entity);
 // на слот приходится МАЛЕНЬКИЙ ФИКС-БАКЕТ std::array<Msg, Cap> + счётчик, т.е. на одну сущность можно
 // сложить до Cap сообщений одного типа за проход (актор может выдать несколько intent'ов за кадр;
 // звук — основной + follow-up и т.п.). Отсюда свойства:

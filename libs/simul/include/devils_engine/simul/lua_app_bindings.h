@@ -24,8 +24,8 @@
 // каналы в standard_broker), мост картинки demiurg→visage и lifecycle/pause/logging. Регистрируются
 // хостом в общей таблице `app` UI-песочницы ДО проектных биндингов. Формы — свободные template-хелперы,
 // duck-typed по типу состояния/хоста (как window_runtime/lua_resource_bindings): состояние даёт ui/br/
-// sound_state/ui_resource_scope, хост — state()/request_runtime_state(). См. docs/simul-extraction-design.md
-// (шаг 3): «список функций» проекта = act-реестр, а эти движковые API — часть инструментария движка.
+// sound_state/ui_resource_scope, хост — state()/request_runtime_state(). Граница зафиксирована в
+// ROADMAP п.12: «список функций» проекта = act-реестр, а эти движковые API — инструментарий движка.
 
 namespace devils_engine {
 namespace simul {

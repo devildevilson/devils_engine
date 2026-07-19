@@ -324,15 +324,10 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
     (elect/collect/message/worklist/template+лямбда-системы/commit_calls + catalogue typed executors),
     3 скана→системы, порядок фаз=код. `simul::commit_calls` остался generic-примитивом;
     live actor effects теперь коммитятся catalogue collect/elect executor-ами (п.16).
-    **⚠️ Согласованный дизайн (2026-07-13, сделать в ближайшем будущем):** целевая форма —
-    `process query_t<> → message_buffer → process query_t<> → …`. Примитивы в **`libs/aesthetics`**
-    (не simul; simul = только порядок фаз + гейтинг): оживить `template_system_mt` из `exclude/` как
-    map-примитив (`query_t`→`process`, `distribute1/compute/wait`) + `message_buffer<Msg>` indexed by
-    (message_type, entityid) (плотный массив по entity-index ⇒ lock-free непересекающиеся записи,
-    детерминированный обход без sort; intent = один тип сообщения) + отдельный select/work-list шаг для
-    бюджетируемых систем (cognition = reduce-select → map-think → message → map-apply). Текущий
-    `simul::cognition_scheduler` — ПРОВИЗОРНЫЙ (уже переведён на distribute1/compute/wait), растворится в
-    этой модели. Детали: `docs/simul-extraction-design.md` (шаг 1, блок «отложенный редизайн»).
+    Исторический `simul::cognition_scheduler` уже растворён в `budget_clamp` + `worklist_system`, а
+    коммуникация/commit разложены по `aesthetics::message_buffer` и catalogue typed journals. Отдельный
+    runtime scheduler graph из этого больше не следует: compile-time порядок фаз остаётся проектным до
+    появления второго живого потребителя.
 
 12. ✅ **A-3 / A-4 — окно + настройки → общий devils_engine (app-shell слой)** — **[необходимо,
     готово 2026-07-13]**.
@@ -344,6 +339,12 @@ QoL-набор (пока только эти): A-1 (UI-стейт в save), A-2 
     optional render/sound/assets; отсутствие assets теперь действительно не создаёт объект/поток.
     Topology callback корректирует task-pool по фактическому числу стандартных и project workers.
     `tile_frontier` traits сведён к типам + одной worker factory, ручной `bind_systems` удалён.
+    **Поддерживаемая форма host:** `game_host` остаётся CRTP/shared-state каркасом поверх свободных и
+    шаблонных runtime helpers, без глубокой виртуальной иерархии. Конкретным state владеет проект
+    (его тип может быть неполным в публичном header), а виртуалы `main_system` остаются тонкими
+    out-of-line форвардерами в project TU — это не случайный boilerplate, а граница инстанцирования
+    host-шаблона. Generic UI startup/standard bindings принадлежат host; project добавляет только
+    gameplay hooks и своё policy-состояние.
 
 ### Перенос общей части из `tile_frontier`: текущий итог
 
@@ -731,6 +732,13 @@ callbacks/регистраций, а tile map, actor gameplay, prefab policy и 
     совместный/all-or-nothing вызов нескольких эффектов (effect group/compound call); НЕ выводить такую
     связь неявно из соседства блоков в ds. Зависимые gameplay-реакции часто лучше выражать отдельным
     последующим скриптом/системой (например passive skills после успешного `eat_prey`).
+    **Дальний data-driven follow-up из раннего claim-дизайна:** отдельный per-target `claim_buffer`
+    больше не нужен — его роль закрывает `catalogue::elect`. Если второй живой structural interaction
+    повторит форму eat/grab, рассмотреть декларативное описание результата победы (prefab-подобные
+    grant/remove/assign компонентов): скрипт записывает семантический вызов, strategy выбирает
+    победителя, ST structural commit применяет данные без project-specific CRUD-тела. Проигравшему
+    автоматическое событие не посылается; успех наблюдается по post-commit состоянию. До второго кейса
+    этот API не строить.
     ✅ Загружаемый `act::script_function<void>` для GOAP action готов: optional `effect = <ds>` co-parse'ится
     из tavl, semantic action name получает script backend в act, а ds building blocks — те же
     `fn_deferred_ptr`. Штатные `flee/chase/think` переведены; `tile_frontier_config_effect_smoke` грузит
