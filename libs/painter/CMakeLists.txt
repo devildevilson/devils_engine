@@ -27,6 +27,7 @@ set(SRC_LIST
   src/painter/glsl_source_file.cpp
   src/painter/render_config_source.cpp
   src/painter/pipeline_cache_resource.cpp
+  src/painter/queue.cpp
   src/painter/makers.cpp
   src/painter/shader_crafter.cpp
   src/painter/system_info.cpp
@@ -62,6 +63,7 @@ set(HDR_LIST
   include/devils_engine/painter/glsl_source_file.h
   include/devils_engine/painter/render_config_source.h
   include/devils_engine/painter/makers.h
+  include/devils_engine/painter/queue.h
   include/devils_engine/painter/shader_crafter.h
   include/devils_engine/painter/system_info.h
   include/devils_engine/painter/vulkan_header.h

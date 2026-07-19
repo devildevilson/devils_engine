@@ -316,6 +316,59 @@ bool do_command(VkDevice device, VkQueue queue, VkFence fence, VkCommandBuffer b
   return res == vk::Result::eSuccess;
 }
 
+bool do_transfer_command(
+  VkDevice device,
+  const transfer_queue& transfer,
+  const graphics_queue& graphics,
+  VkFence fence,
+  VkCommandBuffer transfer_buffer,
+  VkCommandBuffer graphics_buffer,
+  std::function<void(VkCommandBuffer)> transfer_action,
+  std::function<void(VkCommandBuffer)> graphics_acquire) {
+  vk::Device d(device);
+  vk::CommandBuffer transfer_task(transfer_buffer);
+  transfer_task.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+  transfer_action(transfer_buffer);
+  transfer_task.end();
+
+  vk::SubmitInfo transfer_submit;
+  transfer_submit.commandBufferCount = 1;
+  transfer_submit.pCommandBuffers = &transfer_task;
+  {
+    const auto queue_lock = transfer.lock();
+    const auto res = vk::Queue(transfer.handle()).submit(1, &transfer_submit, fence);
+    if (res != vk::Result::eSuccess) {
+      utils::error{}("Failed to submit transfer command, result: {}", vk::to_string(res));
+    }
+  }
+
+  auto res = d.waitForFences(vk::Fence(fence), VK_TRUE, SIZE_MAX);
+  d.resetFences(vk::Fence(fence));
+  if (res != vk::Result::eSuccess || !graphics_acquire) {
+    return res == vk::Result::eSuccess;
+  }
+
+  vk::CommandBuffer graphics_task(graphics_buffer);
+  graphics_task.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+  graphics_acquire(graphics_buffer);
+  graphics_task.end();
+
+  vk::SubmitInfo graphics_submit;
+  graphics_submit.commandBufferCount = 1;
+  graphics_submit.pCommandBuffers = &graphics_task;
+  {
+    const auto queue_lock = graphics.lock();
+    const auto res = vk::Queue(graphics.handle()).submit(1, &graphics_submit, fence);
+    if (res != vk::Result::eSuccess) {
+      utils::error{}("Failed to submit graphics acquire command, result: {}", vk::to_string(res));
+    }
+  }
+
+  res = d.waitForFences(vk::Fence(fence), VK_TRUE, SIZE_MAX);
+  d.resetFences(vk::Fence(fence));
+  return res == vk::Result::eSuccess;
+}
+
 void copy_buffer(VkDevice device, VkCommandPool pool, VkQueue queue, VkFence fence, VkBuffer src, VkBuffer dst, size_t srcoffset, size_t dstoffset, size_t size) {
   do_command(device, pool, queue, fence, [&](VkCommandBuffer buffer) {
     auto b = vk::CommandBuffer(buffer);

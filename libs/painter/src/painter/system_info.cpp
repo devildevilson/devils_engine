@@ -24,6 +24,21 @@ physical_device_data::physical_device_data() noexcept
     transfer_queue(UINT32_MAX),
     present_queue(UINT32_MAX) {}
 
+device_queue_plan make_device_queue_plan(const physical_device_data& device) {
+  if (device.handle == VK_NULL_HANDLE) {
+    utils::error{}("Could not build queue plan for a null physical device");
+  }
+
+  const auto properties = vk::PhysicalDevice(device.handle).getQueueFamilyProperties();
+  std::vector<uint32_t> counts;
+  counts.reserve(properties.size());
+  for (const auto& family : properties) {
+    counts.push_back(family.queueCount);
+  }
+
+  return make_device_queue_plan(counts, device.graphics_queue, device.transfer_queue, device.compute_queue);
+}
+
 static_assert(static_cast<uint32_t>(vk::PhysicalDeviceType::eCpu) == static_cast<uint32_t>(physical_device_type::cpu));
 static_assert(static_cast<uint32_t>(vk::PhysicalDeviceType::eDiscreteGpu) == static_cast<uint32_t>(physical_device_type::discrete_gpu));
 static_assert(static_cast<uint32_t>(vk::PhysicalDeviceType::eIntegratedGpu) == static_cast<uint32_t>(physical_device_type::integrated_gpu));

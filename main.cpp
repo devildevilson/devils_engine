@@ -62,6 +62,7 @@ struct vulkan_init {
   VkInstance instance;
   VkDebugUtilsMessengerEXT mess;
   painter::physical_device_data p_data;
+  painter::device_queue_plan queue_plan;
   VkDevice device;
   VkSurfaceKHR surface;
 
@@ -118,7 +119,11 @@ struct vulkan_init {
 
     painter::device_maker dm(instance);
     dm.beginDevice(p_data.handle);
-    dm.createQueues(1);
+    queue_plan = painter::make_device_queue_plan(p_data);
+    for (uint32_t i = 0; i < queue_plan.request_count; ++i) {
+      const auto& request = queue_plan.requests[i];
+      dm.createQueue(request.family, request.count);
+    }
     dm.features(vk::PhysicalDevice(p_data.handle).getFeatures());
     dm.setExtensions(painter::default_device_extensions);
     device = dm.create({}, "main_device");
@@ -162,14 +167,15 @@ int main() {
   vulkan_init vk;
   vk::Device dev(vk.device);
 
-  // получим queue, надо бы сделать еще проверку на несколько queue в одной семье
-  // к сожалению queue придется еще синхронизировать через мьютекс
-  auto graphics_queue = dev.getQueue(vk.p_data.graphics_queue, 0);
-  auto compute_queue = dev.getQueue(vk.p_data.compute_queue, 0);
-  auto transfer_queue = dev.getQueue(vk.p_data.transfer_queue, 0);
+  auto queues = painter::device_queues::get(vk.device, vk.queue_plan);
 
-  painter::set_name(dev, graphics_queue, "main_graphics_queue");
-  painter::set_name(dev, compute_queue, "main_compute_queue");
+  painter::set_name(dev, vk::Queue(queues.graphics.handle()), "main_graphics_queue");
+  if (!queues.transfer.aliases(queues.graphics)) {
+    painter::set_name(dev, vk::Queue(queues.transfer.handle()), "main_transfer_queue");
+  }
+  if (!queues.compute.aliases(queues.graphics) && !queues.compute.aliases(queues.transfer)) {
+    painter::set_name(dev, vk::Queue(queues.compute.handle()), "main_compute_queue");
+  }
 
   // если по итогу мне нужны треугольники, то нужно сделать что?
   // нужно задать файлики описаний ресурсов, создаю папку тест рендер граф получается
@@ -178,7 +184,7 @@ int main() {
 
   // создать аллокатор, дескриптор пул, комманд пул, фенсы
   base.create_allocator();
-  base.create_command_pool(vk.p_data.graphics_queue, graphics_queue);
+  base.create_command_pool(queues.graphics);
   base.create_descriptor_pool();
   // свопчеин зависит от пачки ресурсов с диска
   //base.recreate_swapchain(640, 480);
@@ -238,7 +244,7 @@ int main() {
   painter::assets_base assets(dev, vk.p_data.handle);
   assets.create_fence();
   assets.create_allocator(vk.instance);
-  assets.create_command_buffer(transfer_queue, vk.p_data.transfer_queue);
+  assets.create_command_buffer(queues.transfer, queues.graphics);
   assets.set_graphics_base(&base);
 
   // зададим ресурс для треугольника

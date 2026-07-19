@@ -9,6 +9,7 @@
 #include <tuple>
 #include <vector>
 //#include "common.h"
+#include "queue.h"
 #include "vulkan_minimal.h"
 
 typedef struct GLFWwindow GLFWwindow;
@@ -41,6 +42,15 @@ VkPhysicalDevice find_device_process(VkInstance instance, cached_system_data* ca
 
 bool do_command(VkDevice device, VkCommandPool pool, VkQueue queue, VkFence fence, std::function<void(VkCommandBuffer)> action);
 bool do_command(VkDevice device, VkQueue queue, VkFence fence, VkCommandBuffer buf, std::function<void(VkCommandBuffer)> action);
+bool do_transfer_command(
+  VkDevice device,
+  const transfer_queue& transfer,
+  const graphics_queue& graphics,
+  VkFence fence,
+  VkCommandBuffer transfer_buffer,
+  VkCommandBuffer graphics_buffer,
+  std::function<void(VkCommandBuffer)> transfer_action,
+  std::function<void(VkCommandBuffer)> graphics_acquire = {});
 void copy_buffer(VkDevice device, VkCommandPool pool, VkQueue queue, VkFence fence, VkBuffer src, VkBuffer dst, size_t srcoffset = 0, size_t dstoffset = 0, size_t size = VK_WHOLE_SIZE);
 //void copy_image(VkDevice device, VkCommandPool pool, VkQueue queue, VkFence fence, VkImage dst, VkImage src, );
 

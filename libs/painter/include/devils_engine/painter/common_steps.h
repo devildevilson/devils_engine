@@ -10,6 +10,7 @@
 #include <string_view>
 #include <vector>
 
+#include "queue.h"
 #include "vulkan_minimal.h"
 
 /*
@@ -190,7 +191,7 @@ public:
   void recreate_pipeline(const graphics_base*) override;
   void resize_viewport(const graphics_base*, const uint32_t width, const uint32_t height) override;
   void clear();
-  void submit(const graphics_base*, VkQueue q, VkSemaphore finish, VkFence f) const;
+  void submit(const graphics_base*, const graphics_queue& q, VkSemaphore finish, VkFence f) const;
 
   uint32_t create_semaphore(std::string name, const uint32_t count);
   uint32_t find_semaphore(const std::string_view& name) const;

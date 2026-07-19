@@ -51,9 +51,8 @@ struct standard_render_state {
   VkDevice device = VK_NULL_HANDLE;
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   painter::physical_device_data physical_device_data;
-
-  VkQueue graphics_queue = VK_NULL_HANDLE;
-  VkQueue transfer_queue = VK_NULL_HANDLE;
+  painter::device_queue_plan queue_plan;
+  painter::device_queues queues;
 
   std::unique_ptr<painter::graphics_base> base;
   std::unique_ptr<painter::assets_base> assets;
@@ -103,8 +102,9 @@ void standard_render_drain(State& c) {
   if (c.base) {
     c.base->wait_all_fences();
   }
-  if (c.graphics_queue != VK_NULL_HANDLE) {
-    vk::Queue(c.graphics_queue).waitIdle();
+  if (c.queues.graphics) {
+    const auto queue_lock = c.queues.graphics.lock();
+    vk::Queue(c.queues.graphics.handle()).waitIdle();
   }
 }
 
@@ -176,8 +176,8 @@ void standard_render_shutdown(State& c) {
     c.instance = VK_NULL_HANDLE;
   }
 
-  c.graphics_queue = VK_NULL_HANDLE;
-  c.transfer_queue = VK_NULL_HANDLE;
+  c.queue_plan = painter::device_queue_plan{};
+  c.queues = painter::device_queues{};
   c.physical_device_data = painter::physical_device_data{};
   c.instance_ready = false;
   c.device_ready = false;
@@ -251,7 +251,11 @@ void standard_render_create_device(State& c, const command_window_recreation* wi
 
   painter::device_maker dm(c.instance);
   dm.beginDevice(c.physical_device_data.handle);
-  dm.createQueues(1);
+  c.queue_plan = painter::make_device_queue_plan(c.physical_device_data);
+  for (uint32_t i = 0; i < c.queue_plan.request_count; ++i) {
+    const auto& request = c.queue_plan.requests[i];
+    dm.createQueue(request.family, request.count);
+  }
   dm.features(vk::PhysicalDevice(c.physical_device_data.handle).getFeatures());
   if (c.config.headless) {
     dm.setExtensions({});
@@ -263,9 +267,22 @@ void standard_render_create_device(State& c, const command_window_recreation* wi
   painter::load_dispatcher3(c.device);
 
   vk::Device dev(c.device);
-  c.graphics_queue = dev.getQueue(c.physical_device_data.graphics_queue, 0);
-  c.transfer_queue = dev.getQueue(c.physical_device_data.transfer_queue, 0);
-  painter::set_name(dev, vk::Queue(c.graphics_queue), c.config.app_name + ".graphics_queue");
+  c.queues = painter::device_queues::get(c.device, c.queue_plan);
+  painter::set_name(dev, vk::Queue(c.queues.graphics.handle()), c.config.app_name + ".graphics_queue");
+  if (!c.queues.transfer.aliases(c.queues.graphics)) {
+    painter::set_name(dev, vk::Queue(c.queues.transfer.handle()), c.config.app_name + ".transfer_queue");
+  }
+  if (!c.queues.compute.aliases(c.queues.graphics) && !c.queues.compute.aliases(c.queues.transfer)) {
+    painter::set_name(dev, vk::Queue(c.queues.compute.handle()), c.config.app_name + ".compute_queue");
+  }
+  DE_LOG(
+    catalogue::log_domain::render,
+    flow,
+    "{} queues: graphics={}:{}, transfer={}:{}, compute={}:{}",
+    c.config.app_name,
+    c.queues.graphics.family_index(), c.queues.graphics.queue_index(),
+    c.queues.transfer.family_index(), c.queues.transfer.queue_index(),
+    c.queues.compute.family_index(), c.queues.compute.queue_index());
 
   c.device_ready = true;
 }
@@ -283,7 +300,7 @@ void standard_render_create_base_resources(State& c) {
     c.config.headless ? painter::presentation_engine_type::no_present : painter::presentation_engine_type::main);
 
   c.base->create_allocator();
-  c.base->create_command_pool(c.physical_device_data.graphics_queue, c.graphics_queue);
+  c.base->create_command_pool(c.queues.graphics);
   c.base->create_descriptor_pool();
   c.base->get_or_create_pipeline_cache(c.config.cache_registry, c.config.pipeline_cache_id);
 
@@ -326,7 +343,7 @@ void standard_render_create_base_resources(State& c) {
   c.assets = std::make_unique<painter::assets_base>(c.device, c.physical_device_data.handle);
   c.assets->create_fence();
   c.assets->create_allocator(c.instance);
-  c.assets->create_command_buffer(c.transfer_queue, c.physical_device_data.transfer_queue);
+  c.assets->create_command_buffer(c.queues.transfer, c.queues.graphics);
   c.assets->set_graphics_base(c.base.get());
   c.assets->create_default_texture();
 

@@ -919,7 +919,7 @@ void render_graph_instance::clear() {
   local_semaphores.clear();
 }
 
-void render_graph_instance::submit(const graphics_base* ctx, VkQueue q, VkSemaphore finish, VkFence f) const {
+void render_graph_instance::submit(const graphics_base* ctx, const graphics_queue& q, VkSemaphore finish, VkFence f) const {
   std::array<vk::Semaphore, 16> finish_semaphores;
   std::array<vk::SubmitInfo, 16> infos;
   assert(groups.size() < 16);
@@ -948,8 +948,8 @@ void render_graph_instance::submit(const graphics_base* ctx, VkQueue q, VkSemaph
     infos[i].pCommandBuffers = reinterpret_cast<const vk::CommandBuffer*>(&cur_frame.buffer);
   }
 
-  // mutex
-  const auto res = vk::Queue(q).submit(groups.size(), infos.data(), f);
+  const auto queue_lock = q.lock();
+  const auto res = vk::Queue(q.handle()).submit(groups.size(), infos.data(), f);
   if (res != vk::Result::eSuccess) {
     utils::error{}("Failed to submit commads to queue, result: {}", vk::to_string(res));
   }

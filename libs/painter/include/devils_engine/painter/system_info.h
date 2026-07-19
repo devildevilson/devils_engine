@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "device_features.h"
+#include "queue.h"
 #include "vulkan_minimal.h"
 
 /*
@@ -48,6 +49,8 @@ struct physical_device_data {
 
   physical_device_data() noexcept;
 };
+
+device_queue_plan make_device_queue_plan(const physical_device_data& device);
 
 struct system_info {
   struct physical_device {
