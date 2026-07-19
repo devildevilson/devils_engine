@@ -1172,22 +1172,18 @@ device_maker& device_maker::beginDevice(const vk::PhysicalDevice phys) {
 device_maker& device_maker::createQueues(const uint32_t maxCount, const float* priority) {
   const auto& props = phys.getQueueFamilyProperties();
 
-  priorities = new float*[props.size()];
-
   for (size_t i = 0; i < props.size(); ++i) {
     const uint32_t queuesCount = std::min(maxCount, props[i].queueCount);
-
-    priorities[i] = new float[queuesCount];
-
+    queuePriorities.emplace_back(queuesCount);
     for (uint32_t j = 0; j < queuesCount; ++j) {
-      priorities[i][j] = priority == nullptr ? 1.0f : priority[j];
+      queuePriorities.back()[j] = priority == nullptr ? 1.0f : priority[j];
     }
 
     const vk::DeviceQueueCreateInfo info(
       {},
       static_cast<uint32_t>(i),
       queuesCount,
-      priorities[i]);
+      queuePriorities.back().data());
     queueInfos.push_back(info);
 
     familyProperties.emplace_back();
@@ -1208,19 +1204,23 @@ device_maker& device_maker::createQueue(const uint32_t queue_family_index, const
     utils::warn("Queue family does not provide this much {} queues, createing with {}", maxCount, queuesCount);
   }
 
-  if (priorities == nullptr) {
-    priorities = new float*[props.size()];
+  const auto duplicate = std::find_if(queueInfos.begin(), queueInfos.end(), [queue_family_index](const auto& info) {
+    return info.queueFamilyIndex == queue_family_index;
+  });
+  if (duplicate != queueInfos.end()) {
+    utils::error{}("Queue family {} was requested more than once", queue_family_index);
   }
-  priorities[queue_family_index] = new float[queuesCount];
+
+  queuePriorities.emplace_back(queuesCount);
   for (uint32_t j = 0; j < queuesCount; ++j) {
-    priorities[queue_family_index][j] = priority == nullptr ? 1.0f : priority[j];
+    queuePriorities.back()[j] = priority == nullptr ? 1.0f : priority[j];
   }
 
   const vk::DeviceQueueCreateInfo info(
     {},
     static_cast<uint32_t>(queue_family_index),
     queuesCount,
-    priorities[queue_family_index]);
+    queuePriorities.back().data());
 
   queueInfos.push_back(info);
 
@@ -1262,12 +1262,8 @@ vk::Device device_maker::create(const std::vector<const char*>& layers, const st
   auto dev = phys.createDevice(info);
   VULKAN_HPP_DEFAULT_DISPATCHER.init(dev);
 
-  for (uint32_t i = 0; i < queueInfos.size(); ++i) {
-    delete[] priorities[i];
-  }
-  delete[] priorities;
-
   queueInfos.clear();
+  queuePriorities.clear();
   extensions.clear();
 
   if (!name.empty()) {

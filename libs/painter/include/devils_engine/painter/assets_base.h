@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "queue.h"
 #include "vulkan_minimal.h"
 
 namespace devils_engine {
@@ -107,11 +108,14 @@ struct graphics_base;
 struct assets_base {
   VkDevice device;
   VkPhysicalDevice physical_device;
-  VkQueue transfer;
+  transfer_queue transfer;
+  graphics_queue graphics;
   VkFence fence;
   VkCommandPool command_pool;
+  VkCommandPool graphics_command_pool;
   //VkDescriptorPool descriptor_pool;
   VkCommandBuffer command_buffer;
+  VkCommandBuffer graphics_command_buffer;
 
   VmaAllocator allocator;
 
@@ -135,7 +139,7 @@ struct assets_base {
   ~assets_base() noexcept;
 
   void create_fence();
-  void create_command_buffer(VkQueue transfer, const uint32_t queue_family_index);
+  void create_command_buffer(transfer_queue transfer, graphics_queue graphics);
   void create_allocator(VkInstance inst, const size_t preferred_heap_block = 0);
   void set_graphics_base(const graphics_base* base);
 

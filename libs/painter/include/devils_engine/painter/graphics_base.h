@@ -9,6 +9,7 @@
 
 #include "common_steps.h"
 #include "devils_engine/utils/core.h"
+#include "queue.h"
 #include "structures.h"
 #include "vulkan_minimal.h"
 
@@ -38,15 +39,6 @@ struct graphics_options {
   // motion blur......
 };
 
-struct vk_queue {
-  VkQueue queue;
-  std::mutex mutex;
-
-  vk_queue(VkQueue queue) noexcept;
-  void wait_idle();
-  uint32_t submit();
-};
-
 enum class presentation_engine_type { main,
                                       no_present };
 
@@ -58,8 +50,8 @@ struct graphics_base {
 
   // внутренние ресурсы
   VkPipelineCache cache;
-  VkQueue graphics;
-  VkQueue transfer;
+  graphics_queue graphics;
+  transfer_queue transfer;
   VkCommandPool command_pool;
   VkDescriptorPool descriptor_pool;
   VkSwapchainKHR swapchain; // для свопчейна еще будут семафоры
@@ -137,7 +129,7 @@ struct graphics_base {
 
   // API
   void create_allocator(const size_t preferred_heap_block = 0);
-  void create_command_pool(const uint32_t queue_family_index, VkQueue graphics);
+  void create_command_pool(graphics_queue graphics);
   void create_descriptor_pool();
   void get_or_create_pipeline_cache(const std::string& path);
   // Оверлоад (Фаза 2): начальные данные кэша берём из demiurg-ресурса pipeline_cache_resource

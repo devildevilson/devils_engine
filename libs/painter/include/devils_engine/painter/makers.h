@@ -357,7 +357,7 @@ protected:
   vk::Instance inst;
   vk::PhysicalDevice phys;
 
-  float** priorities = nullptr;
+  std::vector<std::vector<float>> queuePriorities;
 
   std::vector<const char*> extensions;
   std::vector<vk::DeviceQueueCreateInfo> queueInfos;

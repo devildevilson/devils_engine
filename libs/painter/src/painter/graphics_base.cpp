@@ -14,8 +14,6 @@
 namespace devils_engine {
 namespace painter {
 
-vk_queue::vk_queue(const VkQueue queue) noexcept : queue(queue) {}
-
 void graphics_base::set_shader_source(const demiurg::resource_system* reg, std::string prefix) {
   config_reg_ = reg;
   shader_prefix_ = std::move(prefix);
@@ -89,8 +87,6 @@ graphics_base::graphics_base(VkInstance instance, VkDevice device, VkPhysicalDev
                                                                                                                                                                         physical_device(physical_device),
                                                                                                                                                                         surface(VK_NULL_HANDLE),
                                                                                                                                                                         cache(VK_NULL_HANDLE),
-                                                                                                                                                                        graphics(VK_NULL_HANDLE),
-                                                                                                                                                                        transfer(VK_NULL_HANDLE),
                                                                                                                                                                         command_pool(VK_NULL_HANDLE),
                                                                                                                                                                         descriptor_pool(VK_NULL_HANDLE),
                                                                                                                                                                         swapchain(VK_NULL_HANDLE),
@@ -159,12 +155,12 @@ void graphics_base::create_allocator(const size_t preferred_heap_block) {
   allocator = vma::createAllocator(aci);
 }
 
-void graphics_base::create_command_pool(const uint32_t queue_family_index, VkQueue graphics) {
-  this->graphics = graphics;
+void graphics_base::create_command_pool(graphics_queue graphics) {
+  this->graphics = std::move(graphics);
 
   vk::CommandPoolCreateInfo cpci{};
   cpci.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
-  cpci.queueFamilyIndex = queue_family_index;
+  cpci.queueFamilyIndex = this->graphics.family_index();
   command_pool = vk::Device(device).createCommandPool(cpci);
   set_name(device, vk::CommandPool(command_pool), "graphics_base.command_pool");
 }
@@ -992,7 +988,8 @@ void graphics_base::submit_frame() {
   pi.swapchainCount = 1;
   pi.pSwapchains = &sw;
   pi.pImageIndices = &current_index;
-  const auto res = vk::Queue(graphics).presentKHR(pi);
+  const auto queue_lock = graphics.lock();
+  const auto res = vk::Queue(graphics.handle()).presentKHR(pi);
   current_presentable_state = static_cast<uint32_t>(res);
 
   switch (res) {

@@ -152,9 +152,11 @@ texture_slot& texture_slot::operator=(texture_slot&& move) noexcept {
 
 assets_base::assets_base(VkDevice device, VkPhysicalDevice physical_device) noexcept : device(device),
                                                                                        physical_device(physical_device),
-                                                                                       transfer(VK_NULL_HANDLE),
+                                                                                       fence(VK_NULL_HANDLE),
                                                                                        command_pool(VK_NULL_HANDLE),
+                                                                                       graphics_command_pool(VK_NULL_HANDLE),
                                                                                        command_buffer(VK_NULL_HANDLE),
+                                                                                       graphics_command_buffer(VK_NULL_HANDLE),
                                                                                        allocator(VK_NULL_HANDLE),
                                                                                        base(nullptr) {
   buffer_slots.resize(max_buffer_slots);
@@ -193,6 +195,9 @@ assets_base::~assets_base() noexcept {
 
   a.destroy();
   dev.destroy(command_pool);
+  if (graphics_command_pool != VK_NULL_HANDLE) {
+    dev.destroy(graphics_command_pool);
+  }
   dev.destroy(fence);
 }
 
@@ -200,14 +205,22 @@ void assets_base::create_fence() {
   fence = vk::Device(device).createFence(vk::FenceCreateInfo{});
 }
 
-void assets_base::create_command_buffer(VkQueue transfer, const uint32_t queue_family_index) {
+void assets_base::create_command_buffer(transfer_queue transfer, graphics_queue graphics) {
+  this->transfer = std::move(transfer);
+  this->graphics = std::move(graphics);
+
   vk::CommandPoolCreateInfo cpci{};
-  cpci.queueFamilyIndex = queue_family_index;
+  cpci.queueFamilyIndex = this->transfer.family_index();
   cpci.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer | vk::CommandPoolCreateFlagBits::eTransient;
 
   command_pool = vk::Device(device).createCommandPool(cpci);
   command_buffer = vk::Device(device).allocateCommandBuffers(vk::CommandBufferAllocateInfo(command_pool, vk::CommandBufferLevel::ePrimary, 1))[0];
-  this->transfer = transfer;
+
+  if (this->transfer.family_index() != this->graphics.family_index()) {
+    cpci.queueFamilyIndex = this->graphics.family_index();
+    graphics_command_pool = vk::Device(device).createCommandPool(cpci);
+    graphics_command_buffer = vk::Device(device).allocateCommandBuffers(vk::CommandBufferAllocateInfo(graphics_command_pool, vk::CommandBufferLevel::ePrimary, 1))[0];
+  }
 }
 
 void assets_base::create_allocator(VkInstance inst, const size_t preferred_heap_block) {
@@ -520,15 +533,31 @@ void assets_base::create_default_texture() {
   const auto range1 = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
   const auto range2 = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
   vk::ImageMemoryBarrier bar1(vk::AccessFlags{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, range1);
-  vk::ImageMemoryBarrier bar2(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, image, range1);
+  const bool ownership_transfer = transfer.family_index() != graphics.family_index();
+  const uint32_t src_family = ownership_transfer ? transfer.family_index() : VK_QUEUE_FAMILY_IGNORED;
+  const uint32_t dst_family = ownership_transfer ? graphics.family_index() : VK_QUEUE_FAMILY_IGNORED;
+  vk::ImageMemoryBarrier bar2(vk::AccessFlagBits::eTransferWrite, vk::AccessFlags{}, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, src_family, dst_family, image, range1);
   vk::BufferImageCopy bic(0, 1, 1, range2, {0, 0, 0}, {1, 1, 1});
 
-  do_command(device, transfer, fence, command_buffer, [&](VkCommandBuffer cb) {
+  std::function<void(VkCommandBuffer)> acquire;
+  if (ownership_transfer) {
+    acquire = [&](VkCommandBuffer cb) {
+      const vk::ImageMemoryBarrier bar(
+        vk::AccessFlags{}, vk::AccessFlagBits::eShaderRead,
+        vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+        src_family, dst_family, image, range1);
+      vk::CommandBuffer(cb).pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eFragmentShader,
+        vk::DependencyFlagBits::eByRegion, nullptr, nullptr, bar);
+    };
+  }
+
+  do_transfer_command(device, transfer, graphics, fence, command_buffer, graphics_command_buffer, [&](VkCommandBuffer cb) {
     vk::CommandBuffer task(cb);
     task.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion, nullptr, nullptr, bar1);
     task.copyBufferToImage(buf, image, vk::ImageLayout::eTransferDstOptimal, bic);
-    task.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, vk::DependencyFlagBits::eByRegion, nullptr, nullptr, bar2);
-  });
+    task.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eBottomOfPipe, vk::DependencyFlagBits::eByRegion, nullptr, nullptr, bar2);
+  }, std::move(acquire));
 
   a.destroyBuffer(buf, balloc);
   default_texture.state = asset_state::ready;
@@ -583,13 +612,51 @@ void assets_base::populate_buffer_storage(const buffer_asset_handle& h, const st
 
   const vk::BufferCopy v_c(0, 0, vertex_data.size());
   const vk::BufferCopy i_c(0, 0, index_data.size());
-  do_command(device, transfer, fence, command_buffer, [&](VkCommandBuffer cb) {
+  const bool ownership_transfer = transfer.family_index() != graphics.family_index();
+  std::vector<vk::BufferMemoryBarrier> release_barriers;
+  std::vector<vk::BufferMemoryBarrier> acquire_barriers;
+  if (ownership_transfer) {
+    release_barriers.emplace_back(
+      vk::AccessFlagBits::eTransferWrite, vk::AccessFlags{},
+      transfer.family_index(), graphics.family_index(),
+      slot.vertex_storage, 0, vertex_data.size());
+    acquire_barriers.emplace_back(
+      vk::AccessFlags{}, vk::AccessFlagBits::eVertexAttributeRead,
+      transfer.family_index(), graphics.family_index(),
+      slot.vertex_storage, 0, vertex_data.size());
+    if (!index_data.empty()) {
+      release_barriers.emplace_back(
+        vk::AccessFlagBits::eTransferWrite, vk::AccessFlags{},
+        transfer.family_index(), graphics.family_index(),
+        slot.index_storage, 0, index_data.size());
+      acquire_barriers.emplace_back(
+        vk::AccessFlags{}, vk::AccessFlagBits::eIndexRead,
+        transfer.family_index(), graphics.family_index(),
+        slot.index_storage, 0, index_data.size());
+    }
+  }
+
+  std::function<void(VkCommandBuffer)> acquire;
+  if (ownership_transfer) {
+    acquire = [&](VkCommandBuffer cb) {
+      vk::CommandBuffer(cb).pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eVertexInput,
+        vk::DependencyFlags{}, nullptr, acquire_barriers, nullptr);
+    };
+  }
+
+  do_transfer_command(device, transfer, graphics, fence, command_buffer, graphics_command_buffer, [&](VkCommandBuffer cb) {
     vk::CommandBuffer task(cb);
     task.copyBuffer(v_buf, slot.vertex_storage, v_c);
     if (!index_data.empty()) {
       task.copyBuffer(i_buf, slot.index_storage, i_c);
     }
-  });
+    if (ownership_transfer) {
+      task.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eBottomOfPipe,
+        vk::DependencyFlags{}, nullptr, release_barriers, nullptr);
+    }
+  }, std::move(acquire));
 
   a.destroyBuffer(v_buf, v_alc);
   if (!index_data.empty()) {
@@ -634,10 +701,26 @@ void assets_base::populate_texture_storage(const texture_asset_handle& h, const 
   const auto range2 = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
 
   vk::ImageMemoryBarrier bar1(vk::AccessFlags{}, vk::AccessFlagBits::eTransferWrite, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, slot.storage, range1);
-  vk::ImageMemoryBarrier bar2(vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eShaderRead, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, slot.storage, range1);
+  const bool ownership_transfer = transfer.family_index() != graphics.family_index();
+  const uint32_t src_family = ownership_transfer ? transfer.family_index() : VK_QUEUE_FAMILY_IGNORED;
+  const uint32_t dst_family = ownership_transfer ? graphics.family_index() : VK_QUEUE_FAMILY_IGNORED;
+  vk::ImageMemoryBarrier bar2(vk::AccessFlagBits::eTransferWrite, vk::AccessFlags{}, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, src_family, dst_family, slot.storage, range1);
   vk::BufferImageCopy bic(0, slot.extents.x, slot.extents.y, range2, {0, 0, 0}, {slot.extents.x, slot.extents.y, 1});
 
-  do_command(device, transfer, fence, command_buffer, [&](VkCommandBuffer cb) {
+  std::function<void(VkCommandBuffer)> acquire;
+  if (ownership_transfer) {
+    acquire = [&](VkCommandBuffer cb) {
+      const vk::ImageMemoryBarrier bar(
+        vk::AccessFlags{}, vk::AccessFlagBits::eShaderRead,
+        vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+        src_family, dst_family, slot.storage, range1);
+      vk::CommandBuffer(cb).pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eFragmentShader,
+        vk::DependencyFlagBits::eByRegion, nullptr, nullptr, bar);
+    };
+  }
+
+  do_transfer_command(device, transfer, graphics, fence, command_buffer, graphics_command_buffer, [&](VkCommandBuffer cb) {
     vk::CommandBuffer task(cb);
     task.pipelineBarrier(
       vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion,
@@ -645,13 +728,11 @@ void assets_base::populate_texture_storage(const texture_asset_handle& h, const 
 
     task.copyBufferToImage(buf, slot.storage, vk::ImageLayout::eTransferDstOptimal, bic);
 
-    // dst = eAllCommands: bar2.dstAccessMask = ShaderRead не поддерживается стейджем Transfer (VUID-02820).
-    // Допустимо при общей очереди graphics+transfer (одно семейство); для выделенной transfer-очереди
-    // понадобится queue ownership transfer.
+    // Fence wait makes the upload visible; different families additionally release ownership here.
     task.pipelineBarrier(
-      vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, vk::DependencyFlagBits::eByRegion,
+      vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eBottomOfPipe, vk::DependencyFlagBits::eByRegion,
       nullptr, nullptr, bar2);
-  });
+  }, std::move(acquire));
 
   a.destroyBuffer(buf, allocation);
 
