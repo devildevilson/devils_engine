@@ -14,6 +14,7 @@
 
 #include "devils_engine/bindings/lua_header.h"
 #include "devils_engine/utils/stack_allocator.h"
+#include "budget.h"
 #include "render_output.h"
 
 struct nk_context;
@@ -57,15 +58,14 @@ struct input_snapshot_t {
 
 class system {
 public:
-  static constexpr int hook_after_instructions_count = 100000;
-  static constexpr size_t seconds10 = 10ull * 1000ull * 1000ull;
   using clock_t = std::chrono::steady_clock;
-  static clock_t::time_point start_tp;
-  static size_t instruction_counter;
 
   system(const font_t* default_font);
   ~system() noexcept;
   void set_entry_point(const sol::object& value);
+  void set_budgets(const budget_config& value) noexcept;
+  const budget_config& budgets() const noexcept;
+  bool disabled() const noexcept;
 
   // Порядок за кадр: input() -> update() -> convert(). input раздаёт ввод в nk,
   // update гоняет lua entry (строит UI), convert гонит nk_convert в host-буферы ниже.
@@ -74,8 +74,8 @@ public:
   // псевдослучайности (заворачивается в bindings::rng_state; хост продвигает его свой prng каждый кадр).
   void input(const input_snapshot_t& in);
   void set_env_number(const std::string& name, double value);
-  void update(const size_t time, const size_t timestamp, const uint64_t rng_state);
-  void convert();
+  bool update(const size_t time, const size_t timestamp, const uint64_t rng_state);
+  bool convert();
 
   // Доступ к lua-стейту/песочнице UI для ХОСТА: visage не знает про геймплейные системы
   // (звук/мир и т.п.), но хост может зарегистрировать свои usertype'ы в стейте и функции
@@ -92,6 +92,10 @@ public:
   nk_buffer* cmds_native() const noexcept;
 
 private:
+  static void lua_hook(lua_State* state, lua_Debug* debug);
+  void discard_frame() noexcept;
+  void register_failure(std::string_view reason);
+
   // nk_user_font под (базовый шрифт, размер в пикселях) для nk_style_push_font. Кэшируется по
   // паре (base, height): MSDF масштабируется в шейдере, поэтому варианты одного шрифта делят
   // атлас/глифы (query/width/userdata) базового nkfont и отличаются только height. texture.id
@@ -123,6 +127,13 @@ private:
   // кэш nk_user_font по (базовый шрифт, размер) (см. sized_font). Живёт всё время жизни system; nk
   // держит указатели на варианты в стеке стиля и draw-командах, поэтому хранилище стабильно.
   std::vector<std::tuple<const font_t*, float, std::unique_ptr<nk_user_font>>> sized_fonts_;
+
+  budget_config budgets_;
+  clock_t::time_point update_started_ = clock_t::now();
+  uint64_t instruction_counter_ = 0;
+  uint32_t hook_interval_ = 10000;
+  uint32_t consecutive_failures_ = 0;
+  bool disabled_ = false;
 };
 } // namespace visage
 } // namespace devils_engine

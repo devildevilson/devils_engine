@@ -16,6 +16,7 @@
 #endif
 
 #include <devils_engine/bindings/lua_header.h>
+#include <devils_engine/catalogue/introspection.h>
 #include <devils_engine/catalogue/logging.h>
 #include <devils_engine/input/bindings.h>
 #include <devils_engine/input/core.h>
@@ -59,6 +60,22 @@ struct window_events_state {
 
 inline ui_input_state g_ui_input;
 inline window_events_state g_window_events;
+
+inline constexpr utils::id standard_ui_perf_domain_id = utils::murmur_hash64A("simul.ui.perf");
+using standard_ui_perf_domain = catalogue::domain<standard_ui_perf_domain_id>;
+
+inline catalogue::statistics_store& standard_ui_perf_statistics() noexcept {
+  static catalogue::statistics_store store(256);
+  return store;
+}
+
+inline void ensure_standard_ui_perf_introspection() noexcept {
+  static const catalogue::introspection cfg{
+    catalogue::introspection_mode::statistics,
+    catalogue::log_domain::ui,
+    &standard_ui_perf_statistics()};
+  standard_ui_perf_domain::set_introspection(&cfg);
+}
 
 inline void default_window_error_callback(int, const char* msg) noexcept {
   utils::warn("GLFW error: {}", msg);
@@ -424,8 +441,18 @@ void run_visage_frame(State& c, const size_t time, const bool render_enabled, Be
     c.ui_timestamp += time;
     ui_timestamp = c.ui_timestamp;
   }
-  c.ui->update(time, ui_timestamp, utils::xoshiro256starstar::value(c.ui_rng));
-  c.ui->convert();
+  using update_perf = standard_ui_perf_domain::fn_traits<
+    &visage::system::update, "lua.update", "ui", "time", "timestamp", "rng_state">;
+  using convert_perf = standard_ui_perf_domain::fn_traits<
+    &visage::system::convert, "nuklear.convert", "ui">;
+  using update_fn_t = update_perf::loc_fn_t;
+  using convert_fn_t = convert_perf::loc_fn_t;
+  ensure_standard_ui_perf_introspection();
+  const bool updated = update_fn_t{}(
+    *c.ui, time, ui_timestamp, utils::xoshiro256starstar::value(c.ui_rng));
+  if (updated) {
+    convert_fn_t{}(*c.ui);
+  }
 
   {
     static uint64_t probe_tick = 0;

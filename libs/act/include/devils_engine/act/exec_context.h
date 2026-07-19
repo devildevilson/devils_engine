@@ -9,7 +9,6 @@
 namespace devils_engine {
 namespace act {
 
-struct effect_sink; // effect_sink.h
 class world;        // forward: aesthetics::world или его срез
 struct execution_scratch;
 
@@ -34,11 +33,6 @@ struct exec_context {
   uint64_t rng_seed = 0, rng_entity = 0, rng_tick = 0;
   uint64_t random(const uint64_t purpose) const noexcept {
     return utils::mix(rng_seed, rng_entity, rng_tick, purpose);
-  }
-
-  effect_sink* sink = nullptr; // nullptr ⇒ dry-run
-  bool dry_run() const noexcept {
-    return sink == nullptr;
   }
 
   execution_scratch* scratch = nullptr;

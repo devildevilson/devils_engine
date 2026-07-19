@@ -56,7 +56,7 @@ step_outcome step(const system& sys, const utils::id state, const utils::id even
 // удобная обёртка по именам (хеширует).
 step_outcome step(const system& sys, const std::string_view& state, const std::string_view& event, const act::exec_context& ctx);
 
-// выполнить выбранный переход ЦЕЛИКОМ (apply-фаза, ctx.sink боевой, НЕ dry-run):
+// выполнить выбранный переход ЦЕЛИКОМ (apply-фаза):
 //   если переход меняет состояние (есть '= next'): on_exit старого → эффекты перехода → on_entry нового;
 //   внутренний переход (без '='): только эффекты перехода (состояние не покидаем — exit/entry не зовём).
 // on_exit/on_entry — это группы (state, on_exit|on_entry); из каждой берётся ПЕРВЫЙ с прошедшими
@@ -73,7 +73,7 @@ utils::id apply_transition(const system& sys, const utils::id cur_state, const s
 // обработать пришедшее событие (step→apply_transition при transitioned), затем досчитать idle
 // (completion-transitions) до стабильного состояния, но не более max_idle_iters раз (защита от
 // зацикливания idle A→B→A с вечно-истинными гвардами; останов также на внутреннем переходе и
-// само-петле). ctx.sink должен быть боевым (не dry-run). Возвращает финальное состояние (хеш).
+// само-петле). Возвращает финальное состояние (хеш).
 utils::id settle(const system& sys, const utils::id cur_state, const utils::id event, const act::exec_context& ctx, const uint32_t max_idle_iters = 8);
 
 // валидация графа на загрузке: предупреждает (utils::warn) о тупиковых (next_state без исходящих

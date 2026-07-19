@@ -45,12 +45,11 @@ using namespace devils_engine;
 // не определён). Шов здесь, где видны оба мира: сырой указатель кладёт make_ctx, достаёт world_of(handle)
 // одним кастом. Горячий путь — каст указателя, без виртуалок; act не зависит от aesthetics.
 
-// Строит контекст вызова для конкретной сущности. sink == nullptr ⇒ dry-run
-// (планирование/think не мутирует мир). entity_id round-trip'ит полный packed id.
+// Строит контекст вызова для конкретной сущности.
+// entity_id round-trip'ит полный packed id.
 static act::exec_context make_ctx(
   const aesthetics::world& world, const aesthetics::entityid_t id,
-  const uint64_t seed, const uint64_t tick, act::effect_sink* sink = nullptr,
-  act::execution_scratch* scratch = nullptr) noexcept {
+  const uint64_t seed, const uint64_t tick, act::execution_scratch* scratch = nullptr) noexcept {
   act::exec_context ctx;
   ctx.scope[0] = act::entity_id{uint32_t(id)};
   ctx.scope_count = 1;
@@ -58,7 +57,6 @@ static act::exec_context make_ctx(
   ctx.rng_seed = seed;
   ctx.rng_entity = aesthetics::get_entityid_index(id);
   ctx.rng_tick = tick;
-  ctx.sink = sink;
   ctx.scratch = scratch;
   return ctx;
 }
@@ -67,7 +65,7 @@ static act::exec_context make_ctx(
 // ROADMAP п.16). Реинтерпрет act::world → aesthetics::world (упаковщик уже снял const с ctx.w при сборке
 // handle) + распаковка id. Даёт эффекту ровно world+entity, без остальных внутренностей exec_context.
 // const_cast для мутации определён: actor_world_slice::world_ реально мутабелен (const на ctx.w — лишь
-// контракт exec_context для предикатов/dry-run; эффекты фазы commit мутируют мир напрямую до effect_sink).
+// контракт exec_context для чтения; эффекты фазы commit мутируют мир через typed catalogue-вызовы).
 static aesthetics::world& world_of(const act::entity_handle h) noexcept {
   return *reinterpret_cast<aesthetics::world*>(h.w);
 }
@@ -505,6 +503,7 @@ const act::building_blocks& actor_building_blocks() {
     b.pure<&scope_prey_present>("prey_present");
     b.pure<&scope_prey_in_range>("prey_in_range");
     b.pure<&scope_prey>("prey");
+    b.pure<&scope_spawn>("spawn");
     b.pure<&scope_spawn_at>("spawn_at");
     // Исключение в обход ds: is_eating — FSM-гвард, скриптам не нужен. Конфиг-скрипт с тем же
     // именем упадёт громко на install() — фолбэков нет, конфликт решается удалением записи отсюда.
@@ -873,6 +872,10 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   food_spawn_seq_ = 0;
   obstacles_.clear();
 
+  player_entity_ = world_.gen_entityid();
+  world_.create<player_controller>(player_entity_);
+  world_.create<player_intent_queue>(player_entity_);
+
   const uint32_t tex_count = std::max(texture_count, 1u);
   const glm::vec2 extent = max_bound - min_bound; // только для стартовой раскладки
   const uint32_t columns = std::max<uint32_t>(uint32_t(std::ceil(std::sqrt(float(std::max(count, 1u))))), 1u);
@@ -917,6 +920,9 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
     obstacles_.push_back(obstacle_disc{p, radius});
   }
 
+  // Materialize semantic spawn points first; food and scripts resolve group "food" through them.
+  create_food_spawn_points();
+
   // Стартовая еда до целевого числа (дальше поддерживается maintain_food каждый тик).
   for (uint32_t i = 0; i < food_target_; ++i) {
     spawn_food();
@@ -955,6 +961,7 @@ actor_metrics actor_world_slice::update(const uint64_t game_delta_ticks, actor_b
   using finalize_sense_tree_fn_t = finalize_sense_tree_perf::loc_fn_t;
 
   tick_ += 1;
+  const uint32_t applied_player_intents = apply_player_intents();
   ensure_actor_perf_introspection();
   if (!sense_tree_ready_) {
     build_sense_tree_fn_t{}(*this, pool); // init/load fallback; normal ticks consume tail-built snapshot
@@ -986,7 +993,7 @@ actor_metrics actor_world_slice::update(const uint64_t game_delta_ticks, actor_b
 
   return actor_metrics{
     uint32_t(world_.count<actor_position>()),
-    uint32_t(calls_.size()), // = сколько акторов реально думали в этот тик
+    uint32_t(calls_.size()) + applied_player_intents,
     batch.count(),
     uint32_t(world_.count<actor_eating>()),
     tick_};
@@ -1079,10 +1086,10 @@ void actor_world_slice::decide_actor(const aesthetics::entityid_t id, const uint
     per->prey_id = prey->payload.id;
   }
 
-  // GOAP: dry-run ctx → decide (hit кеша ⇒ без A*) → первое действие плана → deferred effect.
+  // GOAP: read-only ctx → decide (hit кеша ⇒ без A*) → первое действие плана → deferred effect.
   const auto& goal_state = goap->get_goals().front().goal;
   const uint64_t goal_id = utils::string_hash("resolved");
-  const auto ctx = make_ctx(world_, id, brain->seed, tick, nullptr, &scratch.act);
+  const auto ctx = make_ctx(world_, id, brain->seed, tick, &scratch.act);
   const acumen::state start = goap->compute_state(ctx);
   std::array<const acumen::action*, 4> plan{};
   acumen::decide_params dp;
@@ -1243,7 +1250,7 @@ void actor_world_slice::apply(thread::atomic_pool& pool) {
     const auto* brain = world_.get<actor_brain>(id);
     const uint64_t seed = brain != nullptr ? brain->seed : 0u;
     // cognition завершён: caller-полосу 0 можно переиспользовать для серийного FSM-шага.
-    const auto ctx = make_ctx(world_, id, seed, tick_, nullptr, &cognition_sys_->lanes().front().act);
+    const auto ctx = make_ctx(world_, id, seed, tick_, &cognition_sys_->lanes().front().act);
     auto* st = world_.get<actor_state>(id);
     if (st == nullptr) {
       return;
@@ -1342,25 +1349,121 @@ void actor_world_slice::expire_flags(const uint64_t game_delta_ticks) {
   }
 }
 
-// spawn_food — одна еда-сущность в детерминированной точке в пределах bounds. Маленький размер
+void actor_world_slice::create_food_spawn_points() {
+  const glm::vec2 extent = spawn_max_ - spawn_min_;
+  for (uint32_t i = 0; i < food_target_; ++i) {
+    const uint64_t h1 = utils::mix(0x5f00du, uint64_t(i), 1u);
+    const uint64_t h2 = utils::mix(0x5f00du, uint64_t(i), 2u);
+    const float fx = float(h1 & 0xffffffu) / float(0xffffffu);
+    const float fy = float(h2 & 0xffffffu) / float(0xffffffu);
+    const auto id = world_.gen_entityid();
+    world_.create<actor_position>(id, spawn_min_ + extent * glm::vec2{fx, fy});
+    world_.create<spawn_point>(id, utils::string_hash("food"));
+  }
+}
+
+glm::vec2 actor_world_slice::resolve_spawn_point(const std::string_view point_group) {
+  const uint64_t group = utils::string_hash(point_group);
+  size_t count = 0;
+  for (auto [id, point, pos] : world_.view<spawn_point, actor_position>()) {
+    static_cast<void>(id);
+    static_cast<void>(pos);
+    count += point->group == group ? 1u : 0u;
+  }
+  if (count == 0) {
+    utils::error{}("No spawn points in group '{}'", point_group);
+  }
+
+  const size_t selected = size_t(food_spawn_seq_++ % count);
+  size_t index = 0;
+  for (auto [id, point, pos] : world_.view<spawn_point, actor_position>()) {
+    static_cast<void>(id);
+    if (point->group == group && index++ == selected) {
+      return pos->value;
+    }
+  }
+  utils::error{}("Could not resolve spawn point '{}' index {}", point_group, selected);
+}
+
+// spawn_food — одна еда-сущность в детерминированной semantic spawn point. Маленький размер
 // (< любого актора) ⇒ для всех «добыча»; своя яркая расцветка; без brain/cognition/velocity/state
 // ⇒ статична, не думает, не анимируется, в integration не двигается.
 void actor_world_slice::spawn_food() {
-  const uint64_t h1 = utils::mix(0xf00du, food_spawn_seq_, tick_, 1u);
-  const uint64_t h2 = utils::mix(0xf00du, food_spawn_seq_, tick_, 2u);
-  ++food_spawn_seq_;
-  const float fx = float(h1 & 0xffffffu) / float(0xffffffu);
-  const float fy = float(h2 & 0xffffffu) / float(0xffffffu);
-  const glm::vec2 p{spawn_min_.x + (spawn_max_.x - spawn_min_.x) * fx,
-                    spawn_min_.y + (spawn_max_.y - spawn_min_.y) * fy};
-  // Через префаб: food_item из конфига, позиция/визуал — derived в on_construct (см. setup_brain_registry).
-  prefab_.spawn("food", world_, spawn_args{p});
+  spawn_prefab_at_point("food", "food");
 }
 
 // spawn_sink: примитивный спавн префаба по имени в точке (ds-натив spawn_at → сюда). Тот же путь, что
 // spawn_food. Спавнеры-энтити/запросы/динамические точки — тех-долг.
 aesthetics::entityid_t actor_world_slice::spawn_prefab(const std::string_view name, const glm::vec2 pos) {
   return prefab_.spawn(std::string(name), world_, spawn_args{pos});
+}
+
+aesthetics::entityid_t actor_world_slice::spawn_prefab_at_point(
+  const std::string_view name, const std::string_view point_group) {
+  return spawn_prefab(name, resolve_spawn_point(point_group));
+}
+
+bool actor_world_slice::enqueue_player_intent(act::intent intent) {
+  if (!world_.exists(player_entity_) || intent.kind == act::intent_kind::none) {
+    return false;
+  }
+  auto* queue = world_.get<player_intent_queue>(player_entity_);
+  if (queue == nullptr) {
+    return false;
+  }
+  const auto duplicate = std::find_if(queue->pending.begin(), queue->pending.end(), [&](const auto& pending) {
+    return pending.kind == intent.kind;
+  });
+  if (duplicate != queue->pending.end()) {
+    return false;
+  }
+  intent.actor.id = player_entity_;
+  queue->pending.push_back(intent);
+  return true;
+}
+
+uint32_t actor_world_slice::apply_player_intents() {
+  auto* queue = world_.get<player_intent_queue>(player_entity_);
+  if (queue == nullptr) {
+    return 0;
+  }
+
+  uint32_t applied = 0;
+  for (const auto& intent : queue->pending) {
+    switch (intent.kind) {
+      case act::intent_kind::spawn_prefab: {
+        if (intent.payload.spawn.prefab != utils::string_hash("food")) {
+          utils::error{}("Player requested unknown prefab id 0x{:016x}", intent.payload.spawn.prefab);
+        }
+        const glm::vec2 target{
+          float(intent.payload.spawn.target.x),
+          float(intent.payload.spawn.target.y)};
+        spawn_prefab("food", glm::clamp(target, spawn_min_, spawn_max_));
+        applied += 1;
+        break;
+      }
+      case act::intent_kind::none: break;
+      default:
+        utils::error{}("Unsupported player intent kind {}", uint32_t(intent.kind));
+    }
+  }
+  queue->pending.clear();
+  return applied;
+}
+
+void actor_world_slice::restore_player_entity() {
+  player_entity_ = aesthetics::invalid_entityid;
+  for (auto [id, player] : world_.view<player_controller>()) {
+    static_cast<void>(player);
+    if (player_entity_ != aesthetics::invalid_entityid) {
+      utils::error{}("Snapshot contains more than one player_controller");
+    }
+    player_entity_ = id;
+  }
+  if (player_entity_ == aesthetics::invalid_entityid) {
+    utils::error{}("Snapshot does not contain player_controller");
+  }
+  world_.create<player_intent_queue>(player_entity_);
 }
 
 // maintain_food — допополнить еду до целевого числа. Кап на тик, чтобы не было всплеска при
@@ -1378,7 +1481,7 @@ void actor_world_slice::maintain_food() {
 
 // ── read-only UI-шов к act-функциям ────────────────────────────────────────
 // Вызовы идут на главном потоке между кадровыми фазами (visage update после update_gameplay),
-// поэтому MT-полосы не нужны: свой ui_scratch_. Контекст — dry-run make_ctx (sink=nullptr);
+// поэтому MT-полосы не нужны: свой ui_scratch_. Контекст только для чтения;
 // seed = brain актора (детерминированные random-ветки describe совпадают с симом этого тика).
 
 namespace {
@@ -1390,7 +1493,7 @@ std::optional<Ret> ui_invoke(const Fn* fn, const aesthetics::world& world,
     return std::nullopt;
   }
   const auto* brain = world.get<actor_brain>(id);
-  const auto ctx = make_ctx(world, id, brain != nullptr ? brain->seed : 0u, tick, nullptr, &scratch);
+  const auto ctx = make_ctx(world, id, brain != nullptr ? brain->seed : 0u, tick, &scratch);
   return fn->invoke(ctx);
 }
 } // namespace
@@ -1414,7 +1517,7 @@ bool actor_world_slice::ui_describe(const std::string_view name, const aesthetic
     return false;
   }
   const auto* brain = world_.get<actor_brain>(id);
-  const auto ctx = make_ctx(world_, id, brain != nullptr ? brain->seed : 0u, tick_, nullptr, &ui_scratch_);
+  const auto ctx = make_ctx(world_, id, brain != nullptr ? brain->seed : 0u, tick_, &ui_scratch_);
   fn->describe(ctx, out);
   return true;
 }
@@ -1507,6 +1610,7 @@ bool actor_world_slice::load(const std::span<const uint8_t> packet, const brain_
   commit_game_ticks_ = g.commit_game_ticks;
   think_budget_ = g.think_budget;
 
+  restore_player_entity();
   rebuild_obstacle_cache(); // кэш выводим из мира, не хранится в снапшоте
   return true;
 }

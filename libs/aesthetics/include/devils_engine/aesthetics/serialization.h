@@ -48,10 +48,9 @@ static_assert(std::numeric_limits<float>::is_iec559 && std::numeric_limits<doubl
 
 constexpr uint32_t snapshot_magic = UINT32_C(0xDE5A0001); // 'DE' snapshot v01
 
-// эмитится в КОНЦЕ load_world (мир уже целый) -> системы/акторы пересобирают свои
-// query/lazy_query и прочие кэши: загрузка пишет мимо world::create, create-события НЕ летят,
-// поэтому кэши query сами не обновятся. view/lazy_view пересборки не требуют (ленивые).
-struct snapshot_loaded_event {};
+// Compatibility spelling; the event lives in common.h so world::query_t can subscribe without a
+// serialization.h -> world.h include cycle.
+using snapshot_loaded_event = aesthetics::snapshot_loaded_event;
 
 // --- буфер: LE writer/reader (host-независимо через сдвиги/маски) -------------
 

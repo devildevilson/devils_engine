@@ -142,6 +142,12 @@ void simulation::update_gameplay(
   const uint64_t game_delta_ticks,
   const simul::phase_gate& gate) {
   auto& state = this->state();
+  const auto [window_width, window_height] = state.window != nullptr
+                                               ? input::window_size(state.window)
+                                               : std::tuple<uint32_t, uint32_t>{1u, 1u};
+  const auto [mouse_x, mouse_y] = state.window != nullptr
+                                    ? input::cursor_pos(state.window)
+                                    : std::tuple<double, double>{0.0, 0.0};
   state.game.update(tile_frontier_game::frame_context{
     .time = time,
     .game_delta_ticks = game_delta_ticks,
@@ -149,6 +155,10 @@ void simulation::update_gameplay(
     .generation = state.state_generation,
     .framebuffer_width = state.fb_width,
     .framebuffer_height = state.fb_height,
+    .window_width = window_width,
+    .window_height = window_height,
+    .mouse_x = float(mouse_x),
+    .mouse_y = float(mouse_y),
     .gate = gate,
     .settings = bootstrap()->settings,
     .messages = *state.br,

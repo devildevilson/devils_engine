@@ -84,3 +84,16 @@ sound = {
   ui_effect = 1.0
   sfx = 1.0
 }
+
+ui = {
+  // Ноль отключает соответствующий лимит/GC step. Ошибка или превышение пропускает текущий кадр;
+  // несколько ошибок подряд отключают UI до reload settings или пересоздания runtime state.
+  lua_instruction_limit = 10000000
+  lua_wall_time_us = 50000
+  lua_gc_step_kib = 64
+  convert_wall_time_us = 50000
+  max_vertex_bytes = 8388608
+  max_index_bytes = 4194304
+  max_draw_commands = 65536
+  disable_after_failures = 3
+}

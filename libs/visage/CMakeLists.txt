@@ -18,6 +18,7 @@ set(SRC_LIST
 )
 
 set(HDR_LIST
+  include/devils_engine/visage/budget.h
   include/devils_engine/visage/font.h
   include/devils_engine/visage/header.h
   include/devils_engine/visage/system.h

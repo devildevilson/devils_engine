@@ -238,7 +238,7 @@ void assets_base::create_allocator(VkInstance inst, const size_t preferred_heap_
   allocator = vma::createAllocator(aci);
 }
 
-void assets_base::set_graphics_base(const graphics_base* base) {
+void assets_base::set_graphics_base(graphics_base* base) {
   this->base = base;
 }
 
@@ -292,6 +292,10 @@ void assets_base::clear_buffer_storage(const buffer_asset_handle& h) {
 
   auto& buf = buffer_slots[h];
 
+  if (base != nullptr) {
+    base->unregister_mesh(h);
+  }
+
   vma::Allocator a(allocator);
   a.destroyBuffer(buf.index_storage, buf.index_alc);
   a.destroyBuffer(buf.vertex_storage, buf.vertex_alc);
@@ -308,6 +312,10 @@ void assets_base::clear_buffer_storage(const buffer_asset_handle& h) {
 
   buf.vertex_count = 0;
   buf.index_count = 0;
+
+  buf.name.clear();
+  buf.geometry_name.clear();
+  buf.forbid_after_frame = 0;
 
   buf.state = asset_state::empty;
 }
@@ -337,6 +345,9 @@ void assets_base::clear_texture_storage(const texture_asset_handle& h) {
 
   tex.format = 0;
   memset(&tex.extents, 0, sizeof(tex.extents));
+
+  tex.name.clear();
+  tex.forbid_after_frame = 0;
 
   tex.state = asset_state::empty;
 }
@@ -677,7 +688,9 @@ void assets_base::populate_texture_storage(const texture_asset_handle& h, const 
   const auto& slot = texture_slots[h];
 
   const size_t computed_size = size_t(slot.extents.x) * size_t(slot.extents.y) * size_t(format_element_size(slot.format));
-  assert(data.size() == computed_size);
+  if (data.size() != computed_size) {
+    utils::error{}("Texture slot {} upload size mismatch: got {}, expected {}", h, data.size(), computed_size);
+  }
 
   vk::Device dev(device);
   vma::Allocator a(allocator);
@@ -760,9 +773,14 @@ void assets_base::mark_remove_buffer_slot(const buffer_asset_handle& h) {
     utils::error{}("Assets buffer_slots must not change. Got buffer_asset_handle::slot {}", h);
   }
 
-  // тут пока ничего удалять не будем а просто пометим слот к удалению
-  buffer_slots[h].forbid_after_frame = base->current_frame_index() + base->frames_in_flight() + 1;
-  buffer_slots[h].state = asset_state::pending_remove;
+  auto& slot = buffer_slots[h];
+  if (slot.state == asset_state::empty || slot.state == asset_state::pending_remove) {
+    return;
+  }
+
+  // Фактическое удаление делает render runtime только после wait_all_fences().
+  slot.forbid_after_frame = 0;
+  slot.state = asset_state::pending_remove;
 }
 
 void assets_base::mark_remove_texture_slot(const texture_asset_handle& h) {
@@ -770,9 +788,14 @@ void assets_base::mark_remove_texture_slot(const texture_asset_handle& h) {
     utils::error{}("Assets texture_slots must not change. Got buffer_asset_handle::slot {}", h);
   }
 
-  // тут пока ничего удалять не будем а просто пометим слот к удалению
-  texture_slots[h].forbid_after_frame = base->current_frame_index() + base->frames_in_flight() + 1;
-  texture_slots[h].state = asset_state::pending_remove;
+  auto& slot = texture_slots[h];
+  if (slot.state == asset_state::empty || slot.state == asset_state::pending_remove) {
+    return;
+  }
+
+  // Descriptor сначала заменяется default texture, затем после wait_all_fences() storage удаляется.
+  slot.forbid_after_frame = 0;
+  slot.state = asset_state::pending_remove;
 }
 
 } // namespace painter

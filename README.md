@@ -126,7 +126,7 @@ FSM, скрипты, UI-preview или будущий replay/dry-run слой.
 
 - `act::registry` - таблица функций по id;
 - `act::exec_context` - immutable контекст вызова;
-- `act::effect_sink` - будущий шов для dry-run/log/replay effects;
+- catalogue typed deferred wrappers - mutating apply seam; replay остаётся отдельным owning слоем;
 - `act::intent` - компактный результат thinking-слоя для поздней apply-фазы;
 - `act::value` - универсальный payload для границ вроде replay/network/script.
 

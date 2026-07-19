@@ -180,7 +180,6 @@ const effect_function* e = reg.effect(id);
 - `scope_count`;
 - `w` - opaque pointer на мир или его срез;
 - `rng_seed`, `rng_entity`, `rng_tick`;
-- `sink` - optional `effect_sink`;
 - `scratch` - ссылка на принадлежащий executor/worker `act::execution_scratch`.
 
 `scope[0]` обычно означает primary actor, `scope[1]` - target. Есть helpers:
@@ -220,26 +219,13 @@ A*-контейнер и solution cache.
 `make_stats<stats>(...)` остаётся обычной aggregate initialization, а `register_stats` независимо от
 способа создания публикует типизированный ds-scope (`stats.health`, `stats = { add_health(…) }`).
 
-## Effect Sink
+## Deferred effects
 
-`effect_sink` - временный интерфейс для приема mutating effects:
-
-```cpp
-virtual void emit(utils::id effect_id, std::span<const value> args) = 0;
-```
-
-Если `exec_context::sink == nullptr`, вызов считается dry-run. Такой режим нужен
-GOAP-планировщику, UI-preview и любым предиктивным расчетам, где нельзя менять
-мир.
-
-Если sink задан, effect должен писать свои намерения/аргументы туда, а не
-мутировать скрытое состояние backend'а. Идея в том, чтобы эффекты можно было
-переносить в deterministic apply pipeline и наблюдать без скрытых мутаций.
-
-После решения 2026-07-17 первый typed MT-путь реализован через catalogue
-`fn_deferred_ptr` + strategy executor. Нужно решить, остаётся ли `effect_sink`
-generic act-сеамом рядом с ним или заменяется для зарегистрированных ds-effects.
-Catalogue при этом не является replay/serialization слоем.
+Mutating gameplay calls записываются typed `catalogue::fn_deferred_ptr` в
+журнал выбранной strategy, а затем применяются в commit-фазе. `exec_context`
+сам по себе read-only и не переключает режим исполнения. Устаревшая
+параллельная абстракция `effect_sink` удалена. Catalogue не является
+replay/serialization слоем.
 
 ## Value
 
@@ -249,7 +235,6 @@ Catalogue при этом не является replay/serialization слоем.
 типизированными через `function<RetT>`. `value` нужен там, где требуется
 универсальный payload:
 
-- аргументы эффекта в `effect_sink::emit`;
 - будущий маршалинг аргументов в script backend;
 - generic trace/debug границы.
 
@@ -330,7 +315,6 @@ GOAP, FSM или script не обязаны мутировать мир сраз
 - хранить optional description и вызывать `describe`;
 - отделять immutable `exec_context` от mutable данных конкретного вызова;
 - задавать deterministic counter-free random через `ctx.random(purpose)`;
-- различать dry-run и effect mode через `exec_context::sink`;
 - описывать generic effect arguments через `act::value`;
 - передавать thinking результат в apply-фазу через `act::intent`.
 
@@ -349,9 +333,7 @@ GOAP, FSM или script не обязаны мутировать мир сраз
   несовместимых числовых смыслов;
 - уточнить роль Lua: оставить UI/guest backend или дать ему ограниченный доступ
   к pure functions;
-- согласовать `effect_sink` с catalogue typed strategy executor и не дублировать
-  два механизма deferred apply;
-- определить typed marshalling для `intent` и `effect_sink` payload; стабильный
+- определить typed marshalling для `intent` payload; стабильный
   replay/network format вынести в отдельный слой при реальной потребности.
 
 Граница библиотеки сейчас такая: `act` отвечает за общий контракт

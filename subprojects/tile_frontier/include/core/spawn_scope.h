@@ -8,10 +8,9 @@
 #include <glm/glm.hpp>
 
 // Примитивный спавн из devils_script. spawn_scope — root-скоуп спавн-скриптов: несёт МУТАБЕЛЬНУЮ
-// способность спавна (spawn_sink), в отличие от entity_scope (const world для аксессоров). Натив
-// spawn_at(prefab, x, y) вызывает sink. Пока это примитив «префаб в точку»; спавнеры-энтити, запросы
-// (filter/pick) и динамический выбор точки — тех-долг (см. ROADMAP / AGENTS). Засев spawn_scope в
-// живые скрипты (события/триггеры) придёт вместе с ними — сейчас натив зарегистрирован и вызываем.
+// способность спавна (spawn_sink), в отличие от entity_scope (const world для аксессоров).
+// spawn(prefab, point_group) разрешает project-owned spawn point, spawn_at(prefab,x,y) оставляет
+// явный координатный escape hatch. Spatial filter/pick и динамические правила остаются будущим слоем.
 
 namespace tile_frontier {
 namespace core {
@@ -20,6 +19,8 @@ namespace core {
 // через мок. Форма минимальна намеренно (примитив): имя префаба + точка.
 struct spawn_sink {
   virtual devils_engine::aesthetics::entityid_t spawn_prefab(std::string_view name, glm::vec2 pos) = 0;
+  virtual devils_engine::aesthetics::entityid_t spawn_prefab_at_point(
+    std::string_view name, std::string_view point_group) = 0;
 
 protected:
   ~spawn_sink() = default;
@@ -39,6 +40,13 @@ struct spawn_scope {
 inline void scope_spawn_at(spawn_scope s, std::string_view prefab, double x, double y) {
   if (s.sink != nullptr) {
     s.sink->spawn_prefab(prefab, glm::vec2{float(x), float(y)});
+  }
+}
+
+// Script-facing путь по умолчанию: скрипт называет semantic point group, а проект выбирает точку.
+inline void scope_spawn(spawn_scope s, std::string_view prefab, std::string_view point_group) {
+  if (s.sink != nullptr) {
+    s.sink->spawn_prefab_at_point(prefab, point_group);
   }
 }
 

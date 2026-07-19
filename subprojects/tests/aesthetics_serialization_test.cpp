@@ -235,6 +235,30 @@ TEST_CASE("load_world emits snapshot_loaded_event (signal to rebuild queries) [a
   w2.unsubscribe<aesthetics::serial::snapshot_loaded_event>(&watcher);
 }
 
+TEST_CASE("materialized queries rebuild automatically after snapshot load [aesthetics::serial]") {
+  aesthetics::world source;
+  const auto both = source.gen_entityid();
+  source.create<pos>(both, pos{1, 2});
+  source.create<vel>(both, vel{3.0f, 4.0f});
+  source.create<pos>(source.gen_entityid(), pos{5, 6});
+
+  std::vector<std::byte> bytes;
+  aesthetics::serial::out_t out{bytes};
+  aesthetics::serial::dump_world(&source, out);
+
+  aesthetics::world loaded;
+  auto intersection = loaded.query<pos, vel>();
+  auto union_query = loaded.lazy_query<pos, vel>();
+  CHECK(intersection.size() == 0);
+  CHECK(union_query.size() == 0);
+
+  aesthetics::serial::in_t in{bytes};
+  REQUIRE(aesthetics::serial::load_world(&loaded, in));
+  CHECK(intersection.size() == 1);
+  CHECK(union_query.size() == 2);
+  CHECK(std::get<0>(intersection[0]) == both);
+}
+
 TEST_CASE("empty world round-trips [aesthetics::serial]") {
   aesthetics::world w;
   std::vector<std::byte> buf;

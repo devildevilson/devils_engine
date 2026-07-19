@@ -245,6 +245,15 @@ public:
       query_t<Comp_T...>* q;
     };
 
+    class snapshot_receiver : public basic_reciever<snapshot_loaded_event> {
+    public:
+      explicit snapshot_receiver(query_t<Comp_T...>* q) noexcept : q(q) {}
+      void receive(const snapshot_loaded_event&) override { q->rebuild(); }
+
+    private:
+      query_t<Comp_T...>* q;
+    };
+
     query_t(class world* world) noexcept;
     ~query_t() noexcept;
 
@@ -264,12 +273,14 @@ public:
 
     void add_entity(const entityid_t id);
     void remove_entity(const entityid_t id);
+    void rebuild();
 
   private:
     class world* world;
     container_t container;
     std::tuple<query_receiver<create_component_event<Comp_T>>...> receivers;
     std::tuple<query_remover<remove_component_event<Comp_T>>...> removers;
+    snapshot_receiver snapshot;
   };
 
   template <typename... Comp_T>
@@ -378,6 +389,15 @@ public:
       lazy_query_t<Comp_T...>* q;
     };
 
+    class snapshot_receiver : public basic_reciever<snapshot_loaded_event> {
+    public:
+      explicit snapshot_receiver(lazy_query_t<Comp_T...>* q) noexcept : q(q) {}
+      void receive(const snapshot_loaded_event&) override { q->rebuild(); }
+
+    private:
+      lazy_query_t<Comp_T...>* q;
+    };
+
     lazy_query_t(class world* world) noexcept;
     ~lazy_query_t() noexcept;
 
@@ -397,12 +417,14 @@ public:
 
     void add_entity(const entityid_t id);
     void remove_entity(const entityid_t id);
+    void rebuild();
 
   private:
     class world* world;
     container_t container;
     std::tuple<query_receiver<create_component_event<Comp_T>>...> receivers;
     std::tuple<query_remover<remove_component_event<Comp_T>>...> removers;
+    snapshot_receiver snapshot;
   };
 
   class entity {
@@ -854,16 +876,15 @@ world::query_t<Comp_T...>::iterator world::query_t<Comp_T...>::iterator::operato
 }
 
 template <typename... Comp_T>
-world::query_t<Comp_T...>::query_t(class world* world) noexcept : world(world), receivers(std::make_tuple(query_receiver<create_component_event<Comp_T>>(world, this)...)), removers(std::make_tuple(query_remover<remove_component_event<Comp_T>>(world, this)...)) {
+world::query_t<Comp_T...>::query_t(class world* world) noexcept
+  : world(world),
+    receivers(std::make_tuple(query_receiver<create_component_event<Comp_T>>(world, this)...)),
+    removers(std::make_tuple(query_remover<remove_component_event<Comp_T>>(world, this)...)),
+    snapshot(this) {
   subscribe_all<0>(world, receivers);
   subscribe_all<0>(world, removers);
-  if (!world->is_allocators_exist<Comp_T...>()) {
-    return;
-  }
-  const auto& view = world->view<Comp_T...>();
-  for (const auto& t : view) {
-    add_entity(std::get<0>(t));
-  }
+  world->subscribe<snapshot_loaded_event>(&snapshot);
+  rebuild();
 }
 template <typename... Comp_T>
 world::query_t<Comp_T...>::~query_t() noexcept {
@@ -873,6 +894,19 @@ world::query_t<Comp_T...>::~query_t() noexcept {
 
   unsubscribe_all<0>(world, receivers);
   unsubscribe_all<0>(world, removers);
+  world->unsubscribe<snapshot_loaded_event>(&snapshot);
+}
+
+template <typename... Comp_T>
+void world::query_t<Comp_T...>::rebuild() {
+  container.clear();
+  if (!world->is_allocators_exist<Comp_T...>()) {
+    return;
+  }
+  const auto view = world->view<Comp_T...>();
+  for (const auto& t : view) {
+    add_entity(std::get<0>(t));
+  }
 }
 
 template <typename... Comp_T>
@@ -1077,16 +1111,15 @@ void world::lazy_query_t<Comp_T...>::query_remover<T>::receive(const T& event) {
 }
 
 template <typename... Comp_T>
-world::lazy_query_t<Comp_T...>::lazy_query_t(class world* world) noexcept : world(world), receivers(std::make_tuple(query_receiver<create_component_event<Comp_T>>(world, this)...)), removers(std::make_tuple(query_remover<remove_component_event<Comp_T>>(world, this)...)) {
+world::lazy_query_t<Comp_T...>::lazy_query_t(class world* world) noexcept
+  : world(world),
+    receivers(std::make_tuple(query_receiver<create_component_event<Comp_T>>(world, this)...)),
+    removers(std::make_tuple(query_remover<remove_component_event<Comp_T>>(world, this)...)),
+    snapshot(this) {
   subscribe_all<0>(world, receivers);
   subscribe_all<0>(world, removers);
-  if (!world->is_allocators_exist<Comp_T...>()) {
-    return;
-  }
-  const auto view = world->lazy_view<Comp_T...>();
-  for (const auto& t : view) {
-    add_entity(std::get<0>(t));
-  }
+  world->subscribe<snapshot_loaded_event>(&snapshot);
+  rebuild();
 }
 
 template <typename... Comp_T>
@@ -1097,6 +1130,19 @@ world::lazy_query_t<Comp_T...>::~lazy_query_t() noexcept {
 
   unsubscribe_all<0>(world, receivers);
   unsubscribe_all<0>(world, removers);
+  world->unsubscribe<snapshot_loaded_event>(&snapshot);
+}
+
+template <typename... Comp_T>
+void world::lazy_query_t<Comp_T...>::rebuild() {
+  container.clear();
+  if (!world->is_allocators_exist<Comp_T...>()) {
+    return;
+  }
+  const auto view = world->lazy_view<Comp_T...>();
+  for (const auto& t : view) {
+    add_entity(std::get<0>(t));
+  }
 }
 
 template <typename... Comp_T>

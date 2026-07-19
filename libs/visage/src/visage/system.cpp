@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <bit>
 #include <cstring>
+#include <limits>
 
 #include "devils_engine/bindings/env.h"
 #include "devils_engine/bindings/nuklear_bindings.h"
@@ -178,19 +179,34 @@ static int nk_color_index_from_name(std::string_view n) {
   return -1;
 }
 
-static void simple_hook(lua_State* L, lua_Debug* ar) {
-  system::instruction_counter += system::hook_after_instructions_count;
-  auto cur_tp = std::chrono::steady_clock::now();
-  const auto mcs = utils::count_mcs(system::start_tp, cur_tp);
-  if (mcs < int64_t(system::seconds10)) {
+static char lua_system_registry_key;
+
+void system::lua_hook(lua_State* L, lua_Debug* ar) {
+  lua_rawgetp(L, LUA_REGISTRYINDEX, &lua_system_registry_key);
+  auto* self = static_cast<system*>(lua_touserdata(L, -1));
+  lua_pop(L, 1);
+  if (self == nullptr) {
     return;
   }
-  const double s = double(std::abs(mcs)) / double(utils::app_clock::resolution());
+
+  self->instruction_counter_ += self->hook_interval_;
+  const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+    clock_t::now() - self->update_started_).count();
+  const bool instructions_exceeded = self->budgets_.lua_instruction_limit != 0 &&
+                                     self->instruction_counter_ >= self->budgets_.lua_instruction_limit;
+  const bool time_exceeded = self->budgets_.lua_wall_time_us != 0 &&
+                             uint64_t(std::max<int64_t>(elapsed, 0)) >= self->budgets_.lua_wall_time_us;
+  if (!instructions_exceeded && !time_exceeded) {
+    return;
+  }
 
   lua_getinfo(L, "nSl", ar);
   std::string_view source(ar->source, ar->srclen);
   std::string_view name(ar->name ? ar->name : "<unknown>");
-  utils::error{}("Called Lua hook after {} instructions. Exit lua script after {} mcs ({} seconds). Context: {}:{}:{}", system::instruction_counter, mcs, s, source, name, ar->currentline);
+  utils::error{}(
+    "visage: Lua {} budget exceeded after {} instructions / {} us. Context: {}:{}:{}",
+    instructions_exceeded ? "instruction" : "wall-time",
+    self->instruction_counter_, elapsed, source, name, ar->currentline);
 }
 
 // placement/mirror-флаги картинки (битовая маска, зеркалит таблицу nk.placement ниже). mirror-биты
@@ -249,7 +265,9 @@ system::system(const font_t* default_font) : default_font(default_font), effect_
     sol::lib::utf8,
     sol::lib::os);
 
-  lua_sethook(lua.lua_state(), &simple_hook, LUA_MASKCOUNT, hook_after_instructions_count);
+  lua_pushlightuserdata(lua.lua_state(), this);
+  lua_rawsetp(lua.lua_state(), LUA_REGISTRYINDEX, &lua_system_registry_key);
+  set_budgets(budgets_);
 
   env = bindings::create_env(lua);
   bindings::basic_functions(env);
@@ -524,6 +542,49 @@ void system::set_entry_point(const sol::object& value) {
   entry = value.as<sol::function>();
 }
 
+void system::set_budgets(const budget_config& value) noexcept {
+  budgets_ = value;
+  consecutive_failures_ = 0;
+  disabled_ = false;
+  const uint64_t interval = budgets_.lua_instruction_limit == 0
+                              ? 10000u
+                              : std::min<uint64_t>(budgets_.lua_instruction_limit, 10000u);
+  hook_interval_ = uint32_t(std::max<uint64_t>(interval, 1u));
+  if (budgets_.lua_instruction_limit == 0 && budgets_.lua_wall_time_us == 0) {
+    lua_sethook(lua.lua_state(), nullptr, 0, 0);
+  } else {
+    lua_sethook(lua.lua_state(), &system::lua_hook, LUA_MASKCOUNT, int(hook_interval_));
+  }
+}
+
+const budget_config& system::budgets() const noexcept {
+  return budgets_;
+}
+
+bool system::disabled() const noexcept {
+  return disabled_;
+}
+
+void system::discard_frame() noexcept {
+  while (ctx->current != nullptr) {
+    nk_end(ctx.get());
+  }
+  nk_clear(ctx.get());
+  vertices_.clear();
+  indices_.clear();
+  commands_.clear();
+}
+
+void system::register_failure(const std::string_view reason) {
+  ++consecutive_failures_;
+  if (budgets_.disable_after_failures != 0 &&
+      consecutive_failures_ >= budgets_.disable_after_failures) {
+    disabled_ = true;
+    utils::warn("visage: UI disabled after {} consecutive failed frames (last: {})",
+                consecutive_failures_, reason);
+  }
+}
+
 nk_user_font* system::sized_font(const font_t* base, float height) {
   if (base == nullptr) {
     base = default_font;
@@ -577,9 +638,21 @@ void system::set_env_number(const std::string& name, const double value) {
   env[name] = value;
 }
 
-void system::update(const size_t time, const size_t timestamp, const uint64_t rng_state) {
-  instruction_counter = 0;
-  start_tp = clock_t::now();
+bool system::update(const size_t time, const size_t timestamp, const uint64_t rng_state) {
+  if (disabled_) {
+    vertices_.clear();
+    indices_.clear();
+    commands_.clear();
+    return false;
+  }
+
+  instruction_counter_ = 0;
+  update_started_ = clock_t::now();
+
+  if (budgets_.lua_gc_step_kib != 0) {
+    lua_gc(lua.lua_state(), LUA_GCSTEP,
+           int(std::min<uint32_t>(budgets_.lua_gc_step_kib, uint32_t(std::numeric_limits<int>::max()))));
+  }
 
   // сброс арены эффектов на кадр. offset 0 = дефолтный эффект (без жирности/контура): его берёт
   // весь текст без push_font (у него nk userdata.id = 0). Реальные push_font получают offset > 0.
@@ -597,14 +670,18 @@ void system::update(const size_t time, const size_t timestamp, const uint64_t rn
   if (!r.valid()) {
     const sol::error err = r;
     utils::warn("visage: entry error: {}", err.what());
-    // восстановление: закрываем окна, которые lua не успел закрыть до ошибки
-    while (ctx->current != nullptr) {
-      nk_end(ctx.get());
-    }
+    discard_frame();
+    register_failure("Lua entry");
+    return false;
   }
+  return true;
 }
 
-void system::convert() {
+bool system::convert() {
+  if (disabled_) {
+    return false;
+  }
+  const auto convert_started = clock_t::now();
   auto c = ctx.get();
 
   // layout вершины фиксирован под gui_vertex_t (см. render_output.h)
@@ -640,7 +717,12 @@ void system::convert() {
   nk_buffer_clear(cmds.get());
   const nk_flags flags = nk_convert(c, cmds.get(), &vbuf, &ebuf, &config);
   if (flags != 0) {
-    utils::error{}("nk_convert failed, flags = {}", uint32_t(flags));
+    utils::warn("visage: nk_convert failed, flags = {}; skipping UI frame", uint32_t(flags));
+    nk_buffer_free(&vbuf);
+    nk_buffer_free(&ebuf);
+    discard_frame();
+    register_failure("nk_convert");
+    return false;
   }
 
   vertices_.assign(static_cast<const uint8_t*>(vbuf.memory.ptr), static_cast<const uint8_t*>(vbuf.memory.ptr) + vbuf.allocated);
@@ -707,6 +789,30 @@ void system::convert() {
 
   // сброс контекста под следующий кадр (команды/память nk переиспользуются)
   nk_clear(c);
+
+  const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+    clock_t::now() - convert_started).count();
+  const bool time_exceeded = budgets_.convert_wall_time_us != 0 &&
+                             uint64_t(std::max<int64_t>(elapsed, 0)) > budgets_.convert_wall_time_us;
+  const bool vertices_exceeded = budgets_.max_vertex_bytes != 0 &&
+                                 vertices_.size() > budgets_.max_vertex_bytes;
+  const bool indices_exceeded = budgets_.max_index_bytes != 0 &&
+                                indices_.size() > budgets_.max_index_bytes;
+  const bool commands_exceeded = budgets_.max_draw_commands != 0 &&
+                                 commands_.size() > budgets_.max_draw_commands;
+  if (time_exceeded || vertices_exceeded || indices_exceeded || commands_exceeded) {
+    utils::warn(
+      "visage: convert budget exceeded ({} us, {} vertex bytes, {} index bytes, {} commands); skipping UI frame",
+      elapsed, vertices_.size(), indices_.size(), commands_.size());
+    vertices_.clear();
+    indices_.clear();
+    commands_.clear();
+    register_failure("convert budget");
+    return false;
+  }
+
+  consecutive_failures_ = 0;
+  return true;
 }
 
 nk_context* system::ctx_native() const noexcept {
@@ -716,7 +822,5 @@ nk_buffer* system::cmds_native() const noexcept {
   return cmds.get();
 }
 
-size_t system::instruction_counter = 0;
-system::clock_t::time_point system::start_tp = clock_t::now();
 } // namespace visage
 } // namespace devils_engine

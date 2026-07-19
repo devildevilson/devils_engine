@@ -1288,6 +1288,12 @@ void graphics_base::unregister_pair(const uint32_t draw_group, const uint32_t me
   pairs[pair_index].mesh = invalid_resource_slot;
 }
 
+void graphics_base::unregister_mesh(const uint32_t mesh) {
+  for (uint32_t draw_group = 0; draw_group < draw_groups.size(); ++draw_group) {
+    unregister_pair(draw_group, mesh);
+  }
+}
+
 uint32_t graphics_base::find_pair(const uint32_t draw_group, const uint32_t mesh) const {
   for (uint32_t i = 0; i < pairs.size(); ++i) {
     if (pairs[i].draw_group == draw_group && pairs[i].mesh == mesh) {

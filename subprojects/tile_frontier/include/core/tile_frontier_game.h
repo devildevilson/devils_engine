@@ -60,6 +60,10 @@ public:
     uint64_t generation = 0;
     uint32_t framebuffer_width = 1;
     uint32_t framebuffer_height = 1;
+    uint32_t window_width = 1;
+    uint32_t window_height = 1;
+    float mouse_x = 0.0f;
+    float mouse_y = 0.0f;
     devils_engine::simul::phase_gate gate;
     const app_config& settings;
     broker& messages;
@@ -83,6 +87,7 @@ private:
   // WASD-движение камеры (presentation: реальное время кадра, работает и на gameplay-паузе);
   // точка камеры клампится в бокс тайлового мира [0, world_extent_].
   void move_camera(const frame_context& context);
+  void collect_player_intents(const frame_context& context);
   void publish_camera_and_tiles(const frame_context& context);
   void publish_sound_listener(broker& messages, bool sound_available);
   void update_actors(const frame_context& context);
