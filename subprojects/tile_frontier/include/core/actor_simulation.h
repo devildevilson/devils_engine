@@ -17,6 +17,7 @@
 #include <devils_engine/acumen/goap_resource.h>
 #include <devils_engine/acumen/registry.h>
 #include <devils_engine/acumen/system.h>   // acumen::system — GOAP над act::registry
+#include <devils_engine/act/intent.h>
 #include <devils_engine/aesthetics/sink.h>           // serial::sink_policy/seal/unseal — save/load слайса
 #include <devils_engine/aesthetics/world.h>
 #include <devils_engine/mood/registry.h>
@@ -67,6 +68,22 @@ const devils_engine::act::building_blocks& actor_building_blocks();
 // collect/elect commit lanes mutate aesthetics components before integration.
 struct actor_position {
   glm::vec2 value{0.0f, 0.0f};
+};
+
+// Простая project-owned точка спавна. group — semantic hash (первый живой набор: "food").
+// Сама точка — entity с actor_position; spatial filter/cooldown/capacity пока намеренно отсутствуют.
+struct spawn_point {
+  uint64_t group = 0;
+};
+
+struct player_controller {
+  uint8_t index = 0;
+};
+
+// Ephemeral queue on the player entity. It is consumed at the gameplay tick boundary and is not
+// part of snapshots; replay owns the durable ordered input log separately.
+struct player_intent_queue {
+  std::vector<devils_engine::act::intent> pending;
 };
 
 // Аргументы спавна префаба (per-instance, НЕ из конфига): точка в мире + детерминированное зерно и
@@ -318,6 +335,10 @@ public:
   // spawn_sink: спавн префаба по имени в точке (для ds-натива spawn_at). Тот же путь, что spawn_food —
   // prefab_.spawn(name, world, {pos}). Возвращает id новой сущности.
   devils_engine::aesthetics::entityid_t spawn_prefab(std::string_view name, glm::vec2 pos) override;
+  devils_engine::aesthetics::entityid_t spawn_prefab_at_point(
+    std::string_view name, std::string_view point_group) override;
+  bool enqueue_player_intent(devils_engine::act::intent intent);
+  devils_engine::aesthetics::entityid_t player_entity() const noexcept { return player_entity_; }
   // game_delta_ticks — уже отмасштабированный game-домен (µs игрового времени за кадр): пауза даёт 0,
   // замедление/ускорение (game_time_scale) масштабируют его. Слайс сам аккумулирует game_now()
   // (сериализуется ⇒ deadlines/flags переживают resume) и выводит dt секунд для интеграции/drives.
@@ -329,7 +350,7 @@ public:
   }
 
   // ── read-only UI-шов к act-функциям (main-thread, ВНЕ MT-фаз) ──
-  // UI зовёт pure-категории по имени над сущностью в dry-run контексте; effect намеренно
+  // UI зовёт pure-категории по имени над сущностью в read-only контексте; effect намеренно
   // недоступен (Lua — не mutating gameplay backend). nullopt = нет функции / не та категория /
   // нет сущности. string возвращает utils::id (хеш loc-ключа).
   std::optional<bool> ui_predicate(std::string_view name, devils_engine::aesthetics::entityid_t id);
@@ -400,9 +421,13 @@ private:
   void resolve_eating(uint64_t game_delta_ticks);
   // sweep флагов: вычесть game-дельту у всех flag_set, удалить исчерпанные записи (см. flag_set.h).
   void expire_flags(uint64_t game_delta_ticks);
+  uint32_t apply_player_intents();
+  void restore_player_entity();
   // Допополняет еду до food_target_ (детерминированно по тику+счётчику). Зовётся раз за тик.
   void maintain_food();
-  // Спавнит одну еду-сущность в случайной (детерминированной) точке в пределах bounds.
+  void create_food_spawn_points();
+  glm::vec2 resolve_spawn_point(std::string_view point_group);
+  // Спавнит одну еду-сущность через semantic spawn-point group "food".
   void spawn_food();
   // Перестраивает плоский кэш obstacles_ из компонентов мира (obstacle+position). Зовётся
   // после load: кэш выводим из мира, поэтому в снапшот не пишется. Порядок = dense-порядок
@@ -479,6 +504,7 @@ private:
   glm::vec2 spawn_max_{0.0f, 0.0f};
   uint32_t food_target_ = 0;    // целевое число еды на карте (поддерживается респавном)
   uint64_t food_spawn_seq_ = 0; // счётчик спавнов — детерминированный поток позиций еды
+  devils_engine::aesthetics::entityid_t player_entity_ = devils_engine::aesthetics::invalid_entityid;
   uint32_t texture_count_ = 1;  // запомненное число текстур (для визуала еды/спавна)
   std::vector<obstacle_disc> obstacles_; // плоский кэш препятствий для коллизии (тип — публичный выше)
 };

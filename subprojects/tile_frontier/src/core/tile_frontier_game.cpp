@@ -139,11 +139,35 @@ std::pair<std::size_t, std::size_t> tile_frontier_game::loading_progress() const
 void tile_frontier_game::update(const frame_context& context) {
   drain_loaded_chunks(context.messages, context.generation);
   move_camera(context); // presentation-контрол: двигается и при gameplay-паузе
+  collect_player_intents(context);
   publish_camera_and_tiles(context);
   publish_sound_listener(context.messages, context.sound_available); // слушатель = камера, и на паузе
   if (context.gate.run_gameplay && actor_batch_.valid()) {
     update_actors(context);
   }
+}
+
+void tile_frontier_game::collect_player_intents(const frame_context& context) {
+  if (!context.gate.run_gameplay) {
+    return;
+  }
+  static const auto spawn_food = input::events::make_event_id("spawn_food");
+  if (!input::events::check_event(spawn_food, input::event_state::click_mask)) {
+    return;
+  }
+
+  const glm::vec2 point = glm::clamp(
+    screen_to_world(
+      camera_, glm::vec2{context.mouse_x, context.mouse_y},
+      glm::vec2{float(context.window_width), float(context.window_height)}),
+    glm::vec2{0.0f}, world_extent_);
+
+  act::intent intent;
+  intent.kind = act::intent_kind::spawn_prefab;
+  intent.payload.spawn.prefab = utils::string_hash("food");
+  intent.payload.spawn.target = act::vec3{point.x, point.y, 0.0};
+  intent.source_action = utils::string_hash("spawn_food");
+  static_cast<void>(actors_.enqueue_player_intent(intent));
 }
 
 // Первый живой player-input: named actions camera_* (WASD, standard key bindings) двигают

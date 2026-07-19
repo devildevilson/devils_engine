@@ -6,6 +6,11 @@ This repository is the author's experimental game engine / framework. It is a la
 
 - Main integration playground: `subprojects/tile_frontier`.
 - Goal for `tile_frontier`: draw a large tile map, support world/resource streaming, and run many AI actors to stress multithreading.
+- GPU asset lifetime (2026-07-19): hot texture unload waits the owning graphics frame fences, rewrites the bindless slot to the default/null texture, destroys VMA image/view and returns the slot to `empty`; mesh unload removes the slot from every draw-group pair before destroying buffers and returning it to reuse. `painter_asset_lifetime_test` covers state transitions and cross-group unregister.
+- Snapshot query repair (2026-07-19): `aesthetics::snapshot_loaded_event` is common, and both `world::query_t` and `lazy_query_t` subscribe and rebuild their cached entity containers after `load_world`. Queries created before a load immediately see the restored world.
+- First player/spawn slice (2026-07-19): `actor_world_slice` owns one serialized `player_controller` plus an ephemeral deduplicating `player_intent_queue`. `spawn_food` (default `mouse_right`) converts screen to world and emits typed `act::intent_kind::spawn_prefab`; gameplay consumes it at the next tick boundary. Food maintenance uses semantic `spawn_point` entities/group `food`; ds exposes `spawn(prefab, group)`, while `spawn_at` remains the coordinate escape hatch.
+- UI budgets (2026-07-19): app/user settings carry Lua instruction/wall-time, incremental GC, Nuklear convert time/output and consecutive-failure limits. `visage::system` skips a failed/over-budget frame and disables after the configured streak; settings reload resets it. `lua.update` and `nuklear.convert` feed a catalogue statistics domain.
+- Replay remains inactive until three prerequisites: ordered runtime module list/priority loading in demiurg, camera as its own intent provider with a replay-only presentation track (not necessarily network input), and exact per-tick `game_delta_ticks` recording. The eventual replay artifact is a versioned intent/input log plus checkpoint and resource/config/build fingerprint, not catalogue serialization.
 - The cross-actor contract question (main/gameplay, render, sound, assets) is now ANSWERED: a single lock-free **broker** holds every inter-thread channel (see "Message broker" below). The old `utils::actor_ref` / `actors.h` path was archived under root `exclude/` on 2026-07-13; `message_dispatcher<T>` and advancer `actor`/`get_actor()` remnants are no longer present in the live tree.
 - `tile_frontier` core is split by concern under `subprojects/tile_frontier/{include,src}/core/`: project-specific `config`, `messages`, `render_system`, `assets_system`, `actor_simulation`, resources and `tile_frontier_game`; shared broker/topology/runtime pieces live under `libs/simul`. `simulation.cpp` is now only the thin `game_host` adapter/state+worker wiring. `tile_frontier_game` owns chunk request/receive/apply, map/camera + UBO, tile/actor publication, actor update, presentation-sound culling and project metrics/UI values. It consumes generic host outputs (`scene_binding`, `phase_gate`, framebuffer/presence) without moving any game policy into engine.
 - Runtime scene composition is config-driven: `states/*` owns UI `script`/`default_font`/allowlist and points at a standard `scenes/*` manifest. `simul::scene_manifest_resource` expands `{id,target,group,alias,startup}` into scope grants, resource transitions and target-aware loading progress; without render, external targets stop at the pre-external level. `tile_frontier` interprets only manifest groups/aliases and reads chunk/grid/actor/brain settings from its CPU-only `worlds/*` descriptor. The texture/sound id arrays and default-font hook are gone from `simulation.cpp`.
@@ -231,7 +236,7 @@ Domain-scoped logging lives in `libs/catalogue/logging.h` (`DE_LOG`/`DE_TRACE` m
 - `libs/acumen`: GOAP planner plus `goap_resource` config parser/merge/flatten. It uses `act` predicates to compute bitset state, A* over symbolic actions, and caller-owned scratch/cache; it returns plans but does not mutate world state.
 - `libs/act`: shared gameplay-function registry (`devils_engine::act`) — typed-by-return functions (effect/predicate/number/string/object), immutable `exec_context`, `intent` seam, `registry`, and generic `script_resource`/`script_compiler` boundary. `native_function` and devils_script-backed `script_function` are live; Lua backend remains pending. `acumen` and `mood` consume act contracts.
 - `libs/bindings`: Lua/sol2 binding layer for sandbox env, `base` utilities, deterministic `rng_state`, reflect-based table conversion, and large Nuklear bindings. No local README yet; root README summarizes it from code/CMake.
-- `libs/catalogue`: active code is function-call introspection/tracing/timing/dry-run/statistics, the older in-memory `call_log`, and typed deterministic MT strategy wrappers/executors in `deferred.h`. The first live ECS integration is tile_frontier's cognition→collect/elect→structural/FSM pipeline, including config-loaded void actions over the same deferred building blocks. Dense 128-byte inline payload storage is live; remaining nearby work is old `effect_sink` compatibility, member/custom bounded codecs and executor ownership after a second consumer. Older recording/replay/RPC/channel files are archived under `exclude/` and are not to be revived as catalogue's direction. Replay/network persistence, if ever needed, belongs to a separate layer.
+- `libs/catalogue`: active code is function-call introspection/tracing/timing/statistics, the older in-memory `call_log`, and typed deterministic MT strategy wrappers/executors in `deferred.h`. The first live ECS integration is tile_frontier's cognition→collect/elect→structural/FSM pipeline, including config-loaded void actions over the same deferred building blocks. Dense 128-byte inline payload storage is live; remaining nearby work is member/custom bounded codecs and executor ownership after a second consumer. The obsolete `act::effect_sink` seam was deleted on 2026-07-19. Older recording/replay/RPC/channel files are archived under `exclude/` and are not to be revived as catalogue's direction. Replay/network persistence, if ever needed, belongs to a separate layer.
 - `libs/demiurg`: module/resource registry and staged resource loader. The durable cross-system handle is now `demiurg::resource_handle` (hash of logical id, survives registry rebuild — see "Assets / resource pipeline" and "Demiurg ↔ Lua resource API"); raw `resource_interface*` is fine only for same-lifetime same-thread reads. Loaders must honor dependency gating and external render/GPU steps. tavl list-pattern (`path:name`/`path:index`) and dependency-cycle diagnostics are done.
 - `libs/flow`: first active 2D/2.5D/UV animation slice. It is now a CMake target `devils_engine::flow` with `flow::library`, `flow::state`, `flow::playback`, `flow::animation_resource`, directional image selection, action events, and UV accumulation/truncation. 3D/skeletal/blending remain future work.
 - `libs/input`: GLFW window/input wrapper, Vulkan surface/proc helpers, key-name registry, and abstract input-event state machine.
@@ -297,11 +302,11 @@ Lua function backend remains pending. `script_compiler` is the type-erased confi
 - **`exec_context` is IMMUTABLE.** Concrete struct, same for all backends, flows by reference into
   `invoke` (`const exec_context&`), NEVER a global (global = silent races under the actor model).
   Fields: fixed `entity_id scope[8]` + count ([0]=this, [1]=target, …), `const world*`, immutable RNG
-  inputs (`rng_seed/entity/tick`), `effect_sink*`, `ds::context* vm`. **PRNG state is NOT held in the
+  inputs (`rng_seed/entity/tick`) and a caller-owned `execution_scratch*`. **PRNG state is NOT held in the
   context** — inputs come from external systems and each call passes a `purpose` explicitly:
   `random(purpose) = utils::mix(seed, entity, tick, purpose)`. This is more deterministic than an
-  auto-increment draw counter (order- and count-independent). `vm`/`sink` are pointers: pointee mutates
-  (backend scratchpad / effect application), the context's own fields do not.
+  auto-increment draw counter (order- and count-independent). Mutable VM/call data lives in scratch;
+  mutating effects use catalogue deferred wrappers rather than a mode bit in the context.
 - **No `fat_handle`.** Gameplay functions work over a finite entity set (essentially one `entity`);
   "type" is distinguished by ECS COMPONENTS, not a tag on the handle. Over disk/network it is a bare
   `entity_id` (uint32) or a context-dependent index. `value::handle` holds a raw uint64. (Note:
@@ -309,16 +314,14 @@ Lua function backend remains pending. `script_compiler` is the type-erased confi
   compiler, differs only across compilers — but handles don't need it.)
 - **`value`** = slim POD tagged union (none/boolean/integer/number/vector/handle/string), matching
   devils_script categories. NO LONGER the return type (returns are typed by the function class); it is
-  only for generic boundaries (`effect_sink::emit` args, devils_script arg marshalling). `string` is a
+  only for generic boundaries (devils_script arg marshalling and generic trace/debug). `string` is a
   hash, not inline. GOTCHA: `vec3` has member-initializers (non-trivial ctor) → as a union member it
   deletes `value`'s default ctor; an explicit `value() : kind(none), inum(0) {}` fixes it and zeroes
   the union (no uninitialized bytes → friendly to deterministic checksums). `number`/`vec3` ride
   `using real_t = double` — float→fixed is a one-line change when determinism is taken up.
-- **`effect_sink`** — `nullptr` historically means dry-run (planner preview / predictive UI); the real
-  implementation is still a stub. The chosen typed MT direction is catalogue's deferred function
-  wrapper + strategy executor, so decide whether `effect_sink` remains a generic act seam or is replaced
-  for registered ds effects. Do not turn it into a replay channel. In the GOAP layer effects are NOT
-  executed — the action emits an `intent`; mutation runs in deterministic apply/commit phases.
+- **`effect_sink` was removed (2026-07-19).** It had no implementation or emit calls. Pure/read-only
+  consumers resolve only pure act categories; mutating ds/native calls use catalogue deferred wrappers;
+  replay will use a separate owning input/log layer.
 - **`intent`** = the thinker→ECS seam. GOAP/FSM/script do NOT mutate the world; they emit a compact
   `intent` of base verbs (`move_to`/`turn_to`/`call_function`/`fsm_event`, extensible) that ECS systems
   consume in a DETERMINISTIC apply phase (sort by `actor.id`, not message-arrival order). One typed
@@ -371,7 +374,8 @@ after earlier lines fail. Order of the initial states does NOT matter. Author's 
   on_entry of the new state (each of on_exit/on_entry is itself a `(state, on_exit|on_entry)` group from
   which the first guard-passing line's effects run). For an internal transition (no `=`): runs ONLY the
   transition's effects (the state is not left, so no exit/entry). Returns `taken.next_hash` (`invalid_id`
-  ⇒ caller keeps `cur_state`). `ctx.sink` must be live (not dry-run) here.
+  ⇒ caller keeps `cur_state`). Mutating transition actions are deferred catalogue calls committed by
+  the owning gameplay pipeline.
 - **The per-entity apply loop (design): event then settle idle this same frame.** Consume the entity's
   `fsm_event` intent (else `conv::idle`), `step()`, and if `transitioned` call `apply_transition` and write
   `cur_state`. Then KEEP stepping `conv::idle` until it stops transitioning (UML completion transitions:
@@ -413,7 +417,7 @@ dry-run ctx (`sink==nullptr`), invokes the brain fn, emits an `intent_kind::move
 dir*speed as a VELOCITY vector for now, `source_action = string_hash("wander")`), sorts by
 `get_entityid_index(actor.id)`; `apply` walks the sorted buffer, switches on `kind`, and `move_to` mutates
 velocity/position + bounce. No CMake change (`devils_plane` already links `devils_engine::act`). TODO next:
-`call_function` intents with a live `effect_sink`; acumen/mood once actors gain real multi-state behavior;
+`call_function` intents through the typed catalogue commit pipeline; acumen/mood once actors gain real multi-state behavior;
 then `script_function`/catalogue. The original design below stays valid for those next layers.
 
 **ACUMEN BEHAVIOR LAYER ADDED (2026-06-29, build rc=0).** Actors now flee bigger actors / chase smaller
@@ -422,7 +426,7 @@ O(N²) pass filling a new `actor_perception` component (nearest-bigger = threat_
 nearest-smaller = prey_pos/has_prey; tie-break by entity index; **grid/quadtree is the obvious next step,
 N=4096**); (2) **act functions**: predicates `actor.threat_present`/`actor.prey_present` (read perception,
 O(1), pure) and effects `flee`/`chase`/`wander` (mutate velocity via a `mutable_world_of(ctx)` that
-`const_cast`s the world — the pre-`effect_sink` MVP shortcut); (3) a 1-step **acumen GOAP** (`std::optional
+`const_cast`s the world — a historical pre-catalogue MVP shortcut); (3) a 1-step **acumen GOAP** (`std::optional
 <acumen::system> goap_`): metrics = the two predicates (bits 0/1), a virtual `resolved` bit (2) set by every
 action, requirements encode priority (flee if threat; chase if prey & no threat; wander otherwise), goal =
 `resolved`. `think` runs `compute_state` + `find_solution` (fresh `astar::container` per actor) and emits a
@@ -670,16 +674,15 @@ Planned layers:
 - **intent buffer** = `std::vector<act::intent>` sorted by `actor.id` (the generalized `intents_`). This is
   the "fast event buffer" — a sorted-by-entity array with an advancing cursor.
 - **apply system** walks the buffer in id order and mutates each entity: `move_to`→velocity/position;
-  `fsm_event`→`mood::apply_transition`; `call_function`→invoke the effect with a LIVE sink (or, for the
-  MVP, direct mutation). Deterministic because the order is fixed.
+  `fsm_event`→`mood::apply_transition`; `call_function`→record/commit through the typed catalogue
+  pipeline. Deterministic because provenance and commit order are fixed.
 
 Validated facts grounding the design:
 - **The cursor-advance model works because `aesthetics::world` iterates in ASCENDING id order**: `raw_itr`
   walks `sparce_set` (sparse index == entity index == id), skipping invalid. So an id-sorted intent buffer
   and the ECS view advance in lockstep — one pass, no per-entity lookup needed.
-- **The MVP has ONE intent consumer (the apply system).** `effect_sink` is still a stub; reconcile it
-  with the typed catalogue strategy executor only when that wrapper is built. Replay is not a catalogue
-  consumer responsibility.
+- **The live pipeline has one gameplay intent consumer plus the player queue.** Typed catalogue strategy
+  executors own deferred gameplay effects; replay is not a catalogue consumer responsibility.
 - think reads the world (pure predicates) ⇒ parallelizable; apply mutates in fixed id order ⇒ the
   deterministic barrier. Matches the "think in any order, apply in fixed order" rule.
 

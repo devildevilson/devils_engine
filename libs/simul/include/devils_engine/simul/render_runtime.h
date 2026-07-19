@@ -23,6 +23,7 @@
 #include <devils_engine/painter/gpu_texture_resource.h>
 #include <devils_engine/painter/graphics_base.h>
 #include <devils_engine/painter/makers.h>
+#include <devils_engine/painter/mesh_resource.h>
 #include <devils_engine/painter/shader_source_file.h>
 #include <devils_engine/painter/structures.h>
 #include <devils_engine/painter/system_info.h>
@@ -376,7 +377,7 @@ void standard_render_request_shader_prepare(State& c) {
 }
 
 template <typename State>
-void standard_render_bind_texture_slot(State& c, const uint32_t slot) {
+void standard_render_write_texture_slot(State& c, const uint32_t slot, const bool force_default = false) {
   const uint32_t di = c.base->find_descriptor(c.config.texture_descriptor_name);
   if (di == painter::invalid_resource_slot) {
     return;
@@ -390,18 +391,13 @@ void standard_render_bind_texture_slot(State& c, const uint32_t slot) {
     return;
   }
 
-  vk::ImageView v(c.assets->texture_slots[slot].view);
+  vk::ImageView v = force_default ? vk::ImageView{} : vk::ImageView(c.assets->texture_slots[slot].view);
   if (!v) {
     v = vk::ImageView(c.assets->default_texture_view());
   }
   if (!v) {
     return;
   }
-
-  // Descriptor contents are consumed by submitted frames, but have no presentation-engine
-  // lifetime. Frame fences are the narrow synchronization boundary here; queue waitIdle is
-  // reserved for swapchain recreation/teardown where vkQueuePresentKHR is not covered by them.
-  c.base->wait_all_fences();
 
   const uint32_t binding = uint32_t(d.layout.size());
   const vk::DescriptorImageInfo info(vk::Sampler{}, v, vk::ImageLayout::eShaderReadOnlyOptimal);
@@ -422,6 +418,15 @@ void standard_render_bind_texture_slot(State& c, const uint32_t slot) {
   }
 
   vk::Device(c.device).updateDescriptorSets(writes, nullptr);
+}
+
+template <typename State>
+void standard_render_bind_texture_slot(State& c, const uint32_t slot) {
+  // Descriptor contents are consumed by submitted frames, but have no presentation-engine
+  // lifetime. Frame fences are the narrow synchronization boundary here; queue waitIdle is
+  // reserved for swapchain recreation/teardown where vkQueuePresentKHR is not covered by them.
+  c.base->wait_all_fences();
+  standard_render_write_texture_slot(c, slot);
 }
 
 template <typename State>
@@ -652,6 +657,25 @@ void standard_render_drain_gpu_transitions(State& c, Broker& br) {
       res->load(handle);
       if (res->loading_type_id == utils::type_id<painter::gpu_texture_resource>()) {
         standard_render_bind_texture_slot(c, static_cast<painter::gpu_texture_resource*>(res)->gpu_index);
+      }
+    } else if (res->loading_type_id == utils::type_id<painter::gpu_texture_resource>()) {
+      auto* texture = static_cast<painter::gpu_texture_resource*>(res);
+      const auto slot = texture->gpu_index;
+      res->unload(handle);
+      if (slot != painter::gpu_texture_resource::invalid_gpu_index) {
+        // После fences ни один submitted frame больше не читает старый descriptor/image.
+        c.base->wait_all_fences();
+        standard_render_write_texture_slot(c, slot, true);
+        c.assets->clear_texture_storage(slot);
+      }
+    } else if (res->loading_type_id == utils::type_id<painter::mesh_resource>()) {
+      auto* mesh = static_cast<painter::mesh_resource*>(res);
+      const auto slot = mesh->gpu_index;
+      res->unload(handle);
+      if (slot != painter::mesh_resource::invalid_gpu_index) {
+        // clear_buffer_storage сначала удаляет mesh из всех draw_group pairs.
+        c.base->wait_all_fences();
+        c.assets->clear_buffer_storage(slot);
       }
     } else {
       res->unload(handle);

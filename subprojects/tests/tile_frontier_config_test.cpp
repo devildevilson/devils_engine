@@ -61,6 +61,8 @@ TEST_CASE("tile_frontier user settings expose only player-facing sections") {
   CHECK(data.find("metrics") != std::string::npos);
   CHECK(data.find("logging") != std::string::npos);
   CHECK(data.find("vulkan_debug") != std::string::npos);
+  CHECK(data.find("lua_instruction_limit") != std::string::npos);
+  CHECK(data.find("convert_wall_time_us") != std::string::npos);
 
   CHECK(data.find("simulation = {") == std::string::npos);
   CHECK(data.find("render = {") == std::string::npos);

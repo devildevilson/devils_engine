@@ -99,6 +99,39 @@ int main() {
   one_worker.init(512, {0.5f, 0.5f}, {64.0f, 64.0f}, 4, brains);
   four_workers.init(512, {0.5f, 0.5f}, {64.0f, 64.0f}, 4, brains);
 
+  if (one_worker.ecs().count<tf::spawn_point>() != 64 ||
+      four_workers.ecs().count<tf::spawn_point>() != 64) {
+    std::cerr << "FAILED: food spawn-point set was not materialized\n";
+    return 1;
+  }
+  if (one_worker.ecs().get<tf::player_controller>(one_worker.player_entity()) == nullptr ||
+      four_workers.ecs().get<tf::player_controller>(four_workers.player_entity()) == nullptr) {
+    std::cerr << "FAILED: player entity was not created\n";
+    return 1;
+  }
+
+  act::intent place_food;
+  place_food.kind = act::intent_kind::spawn_prefab;
+  place_food.payload.spawn.prefab = utils::string_hash("food");
+  place_food.payload.spawn.target = act::vec3{10.0, 11.0, 0.0};
+  if (!one_worker.enqueue_player_intent(place_food) ||
+      !four_workers.enqueue_player_intent(place_food) ||
+      one_worker.enqueue_player_intent(place_food) ||
+      four_workers.enqueue_player_intent(place_food)) {
+    std::cerr << "FAILED: player intent queue did not deduplicate by action type\n";
+    return 1;
+  }
+
+  tf::camera2d probe_camera;
+  probe_camera.center = {10.0f, 10.0f};
+  probe_camera.half_width = 10.0f;
+  probe_camera.aspect = 2.0f;
+  const glm::vec2 probe_world = tf::screen_to_world(probe_camera, {200.0f, 100.0f}, {200.0f, 100.0f});
+  if (probe_world != glm::vec2{20.0f, 15.0f}) {
+    std::cerr << "FAILED: screen_to_world produced " << probe_world.x << ',' << probe_world.y << '\n';
+    return 1;
+  }
+
   tf::actor_batch batch_one;
   tf::actor_batch batch_four;
   batch_one.bind("v2ui1c4v1");
@@ -109,10 +142,15 @@ int main() {
   // 300 тиков: и bit-identity 1-vs-4, и живость config-eat (`eat = prey` реально хватает добычу).
   constexpr uint64_t dt = devils_engine::utils::timeline_ticks_per_second / 60; // µs game-времени за тик
   uint32_t eating_peak = 0;
+  const size_t food_before_player_intent = one_worker.ecs().count<tf::food_item>();
   for (size_t tick = 0; tick < 300; ++tick) {
     const auto ma = one_worker.update(dt, batch_one, pool_one);
     four_workers.update(dt, batch_four, pool_four);
     eating_peak = std::max(eating_peak, ma.eating);
+    if (tick == 0 && one_worker.ecs().count<tf::food_item>() != food_before_player_intent + 1) {
+      std::cerr << "FAILED: player spawn-food intent was not applied at the tick boundary\n";
+      return 1;
+    }
     if (dump(one_worker) != dump(four_workers)) {
       std::cerr << "FAILED: config-loaded effect diverged at tick " << (tick + 1) << '\n';
       return 1;

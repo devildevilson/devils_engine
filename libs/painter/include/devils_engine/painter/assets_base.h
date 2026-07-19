@@ -119,7 +119,7 @@ struct assets_base {
 
   VmaAllocator allocator;
 
-  const graphics_base* base; // нужно чтобы геометрию найти
+  graphics_base* base; // нужно чтобы геометрию найти и удалить mesh из draw_group при unload
 
   // первый слот это всегда пустой буфер или картинка
   // что такое пустой буфер? маленький буфер со специальной топологией
@@ -141,7 +141,7 @@ struct assets_base {
   void create_fence();
   void create_command_buffer(transfer_queue transfer, graphics_queue graphics);
   void create_allocator(VkInstance inst, const size_t preferred_heap_block = 0);
-  void set_graphics_base(const graphics_base* base);
+  void set_graphics_base(graphics_base* base);
 
   // это дело должно работать обособлено
   // рендеру интересно только тогда когда заполнен дескриптор или создана связка (mesh, draw_group)

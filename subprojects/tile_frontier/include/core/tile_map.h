@@ -132,6 +132,15 @@ struct camera2d {
   glm::mat4 view_proj() const;
 };
 
+// Window-space cursor (origin top-left) -> world point. Uses logical window dimensions, not
+// framebuffer pixels, so HiDPI cursor coordinates remain consistent.
+inline glm::vec2 screen_to_world(
+  const camera2d& cam, const glm::vec2 cursor, const glm::vec2 window_size) noexcept {
+  const glm::vec2 safe_size = glm::max(window_size, glm::vec2{1.0f, 1.0f});
+  const glm::vec2 unit = glm::clamp(cursor / safe_size, glm::vec2{0.0f}, glm::vec2{1.0f});
+  return cam.view_min() + unit * (cam.view_max() - cam.view_min());
+}
+
 // Срез сетки, попадающий во view rect камеры. margin_tiles — запас по краям (в тайлах),
 // чтобы тайлы, частично заехавшие в кадр, не пропадали. Результат клампится к границам сетки.
 tile_span visible_tiles(const camera2d& cam, const tile_grid& grid, const float margin_tiles = 1.0f);

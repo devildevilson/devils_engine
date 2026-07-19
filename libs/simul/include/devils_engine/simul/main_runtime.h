@@ -116,6 +116,7 @@ inline input::bindings_config standard_key_bindings() {
   out.actions["camera_left"] = {"key_a"};
   out.actions["camera_down"] = {"key_s"};
   out.actions["camera_right"] = {"key_d"};
+  out.actions["spawn_food"] = {"mouse_right"};
   return out;
 }
 

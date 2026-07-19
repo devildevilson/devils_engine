@@ -120,6 +120,19 @@ struct sound_config {
   float sfx = 1.0f;
 };
 
+// Per-frame UI safety limits. Zero disables a particular limit/GC step; repeated failed frames
+// eventually disable the UI state until settings are reloaded or the state is recreated.
+struct ui_config {
+  uint64_t lua_instruction_limit = 10000000;
+  uint64_t lua_wall_time_us = 50000;
+  uint32_t lua_gc_step_kib = 64;
+  uint64_t convert_wall_time_us = 50000;
+  uint64_t max_vertex_bytes = 8ull * 1024ull * 1024ull;
+  uint64_t max_index_bytes = 4ull * 1024ull * 1024ull;
+  uint32_t max_draw_commands = 65536;
+  uint32_t disable_after_failures = 3;
+};
+
 struct app_config {
   window_config window;
   simulation_config simulation;
@@ -128,6 +141,7 @@ struct app_config {
   metrics_config metrics;
   logging_config logging;
   sound_config sound;
+  ui_config ui;
 };
 
 // Единственная схема, которую standard runtime пишет в пользовательский settings.tavl.
@@ -144,6 +158,7 @@ struct user_settings {
   sound_config sound;
   metrics_config metrics;
   logging_config logging;
+  ui_config ui;
 };
 
 // Конфиг грузится как demiurg-ресурс (app_config_resource) из движкового реестра —

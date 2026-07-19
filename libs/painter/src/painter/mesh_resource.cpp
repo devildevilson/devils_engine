@@ -43,8 +43,11 @@ void mesh_resource::load_warm(const utils::safe_handle_t& handle) {
   DE_LOG(catalogue::log_domain::resource, flow, "mesh_resource '{}': uploaded to GPU, gpu_index={}", id, gpu_index);
 }
 
-void mesh_resource::unload_hot(const utils::safe_handle_t&) {
-  // TODO: реальное освобождение GPU-буфера через render API.
+void mesh_resource::unload_hot(const utils::safe_handle_t& handle) {
+  auto* ctx = handle.get<gpu_load_context>();
+  if (gpu_index != invalid_gpu_index) {
+    ctx->assets->mark_remove_buffer_slot(gpu_index);
+  }
   gpu_index = invalid_gpu_index;
 }
 

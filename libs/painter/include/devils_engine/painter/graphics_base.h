@@ -206,6 +206,7 @@ struct graphics_base {
   // хотя нафига...... соберем старые названия и попытаемся сопоставить их? ну звучит как план
   uint32_t register_pair(const uint32_t draw_group, const uint32_t mesh, const uint32_t max_count);
   void unregister_pair(const uint32_t draw_group, const uint32_t mesh);
+  void unregister_mesh(const uint32_t mesh);
 
   uint32_t find_pair(const uint32_t draw_group, const uint32_t mesh) const;
 

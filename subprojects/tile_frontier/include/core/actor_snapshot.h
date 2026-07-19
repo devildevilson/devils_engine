@@ -68,6 +68,8 @@ struct adapter<glm::vec4> {
 using namespace tile_frontier::core;
 
 SERIALIZABLE_COMPONENT(actor_position)
+SERIALIZABLE_COMPONENT(spawn_point)
+SERIALIZABLE_COMPONENT(player_controller)
 SERIALIZABLE_COMPONENT(actor_velocity)
 SERIALIZABLE_COMPONENT(actor_brain)
 SERIALIZABLE_COMPONENT(actor_visual)

@@ -23,6 +23,7 @@ enum class intent_kind : uint16_t {
   turn_to,       // payload.target — направление/цель поворота
   call_function, // payload.call.fn — fn_id геймплейной функции (эффекта)
   fsm_event,     // payload.fsm.event — событие для mood-FSM актора
+  spawn_prefab,  // payload.spawn — prefab id + уже разрешённая world-space позиция
 };
 
 struct intent {
@@ -37,6 +38,10 @@ struct intent {
     struct {
       utils::id event;
     } fsm;
+    struct {
+      utils::id prefab;
+      vec3 target;
+    } spawn;
   } payload = {};
   utils::id source_action = 0; // provenance: GOAP action, породивший интенцию
 };

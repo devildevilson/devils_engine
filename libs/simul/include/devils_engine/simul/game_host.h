@@ -62,6 +62,19 @@ struct system_presence {
   bool assets = false;
 };
 
+template <typename Config>
+visage::budget_config make_visage_budgets(const Config& c) noexcept {
+  return visage::budget_config{
+    c.lua_instruction_limit,
+    c.lua_wall_time_us,
+    c.lua_gc_step_kib,
+    c.convert_wall_time_us,
+    c.max_vertex_bytes,
+    c.max_index_bytes,
+    c.max_draw_commands,
+    c.disable_after_failures};
+}
+
 template <typename Derived, typename Bootstrap, typename Broker>
 class game_host : public main_system<Broker> {
 public:
@@ -135,6 +148,11 @@ public:
     auto& c = derived().state();
     apply_window_settings(c, bootstrap_->settings);
     apply_sound_settings();
+    if constexpr (requires { bootstrap_->settings.ui; }) {
+      if (c.ui) {
+        c.ui->set_budgets(make_visage_budgets(bootstrap_->settings.ui));
+      }
+    }
     // simulation/render/time/calendar — project topology: пользовательский reload их не заменяет.
     derived().project_settings_reloaded();
   }
@@ -377,6 +395,9 @@ private:
     }
 
     c.ui = std::make_unique<visage::system>(default_font->font());
+    if constexpr (requires { bootstrap_->settings.ui; }) {
+      c.ui->set_budgets(make_visage_budgets(bootstrap_->settings.ui));
+    }
     DE_LOG(catalogue::log_domain::ui, flow,
            "visage: system created (default font '{}', {} fonts total)",
            default_font->id,

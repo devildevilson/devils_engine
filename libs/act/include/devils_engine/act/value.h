@@ -10,7 +10,7 @@ namespace devils_engine {
 namespace act {
 // value — слим POD tagged union. НЕ тип возврата геймплейной функции (возврат
 // типизирован классом функции, см. function.h). Нужен только на generic-границах:
-// аргументы эффекта в effect_sink::emit (лог в catalogue) и маршалинг args в скрипт.
+// маршалинг аргументов на generic/script границах.
 // Набор типов узкий и фиксированный — дёшево кладётся на диск / уходит по сети.
 // Категории совпадают с devils_script::user_function_type. string = ХЕШ (не инлайн).
 

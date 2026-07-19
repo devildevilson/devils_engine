@@ -42,8 +42,11 @@ void gpu_texture_resource::load_warm(const utils::safe_handle_t& handle) {
   DE_LOG(catalogue::log_domain::resource, flow, "gpu_texture_resource '{}': uploaded to GPU, gpu_index(slot)={}", id, gpu_index);
 }
 
-void gpu_texture_resource::unload_hot(const utils::safe_handle_t&) {
-  // TODO: реальное освобождение GPU-текстуры через render API.
+void gpu_texture_resource::unload_hot(const utils::safe_handle_t& handle) {
+  auto* ctx = handle.get<gpu_load_context>();
+  if (gpu_index != invalid_gpu_index) {
+    ctx->assets->mark_remove_texture_slot(gpu_index);
+  }
   gpu_index = invalid_gpu_index;
 }
 

@@ -258,7 +258,7 @@ struct script_function final : public function<RetT> {
       utils::error{}("act::script_function::invoke: exec_context.scratch is not set");
     }
     vm->clear();
-    vm->userptr = const_cast<exec_context*>(&ctx); // задел под effect_sink: эффекты читают ctx через userptr
+    vm->userptr = const_cast<exec_context*>(&ctx); // native ds-блоки читают контекст вызова через userptr
     // Детерминированный RNG скрипта — собственный prng_state ds, ПОСЕЯННЫЙ из immutable act-входов.
     // random/chance-блоки конфиг-скриптов получают детерминизм по (seed, entity, tick) без
     // act::rng_source в сигнатурах; per-callsite state и container::prng_state ds домешивает сам.

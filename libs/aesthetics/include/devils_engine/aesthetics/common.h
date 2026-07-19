@@ -113,6 +113,10 @@ struct update_event {
   size_t time;
 };
 
+// Emitted after load_world has restored the complete world without per-component create events.
+// Materialized queries subscribe to it and rebuild their cached entity lists.
+struct snapshot_loaded_event {};
+
 class accurate_remover {
 public:
   virtual ~accurate_remover() noexcept = default;
