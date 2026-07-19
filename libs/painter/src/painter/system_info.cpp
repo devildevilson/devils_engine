@@ -149,13 +149,9 @@ void system_info::init() {
 
     vk::ApplicationInfo app_info(DEVILS_ENGINE_PROJECT_NAME, 0, "devils_engine", 0, VK_API_VERSION_1_3);
 
-    if (enable_validation_layers && !check_validation_layer_support(default_validation_layers)) {
-      utils::error{}("Could not find validation layers for Vulkan");
-    }
-
     const auto req_extensions = get_required_extensions();
 
-    vk::InstanceCreateInfo i({}, &app_info, default_validation_layers, req_extensions);
+    vk::InstanceCreateInfo i({}, &app_info, {}, req_extensions);
 
     auto instancepp = vk::createInstance(i);
     instance = instancepp;

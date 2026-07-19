@@ -24,6 +24,7 @@ struct engine_boot_config {
   bool sound_enabled = true;
   bool assets_enabled = true;
   bool headless = false;
+  bool vulkan_debug = false;
 
   uint32_t main_fps = 20;
   uint32_t render_fps = 60;

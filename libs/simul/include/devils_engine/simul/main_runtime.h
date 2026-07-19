@@ -190,6 +190,9 @@ void sync_engine_boot_config(engine_boot_config& engine, const Settings& setting
     engine.assets_enabled = settings.simulation.assets_enabled;
   }
   engine.headless = settings.render.headless;
+  if constexpr (requires { settings.logging.vulkan_debug; }) {
+    engine.vulkan_debug = settings.logging.vulkan_debug;
+  }
   engine.main_fps = settings.simulation.main_fps;
   engine.render_fps = settings.simulation.render_fps;
   engine.sound_fps = settings.simulation.sound_fps;
@@ -285,8 +288,13 @@ bool save_settings(Bootstrap& boot) {
 
 template <typename Bootstrap>
 bool reload_settings(Bootstrap& boot) {
+  const bool previous_vulkan_debug = boot.engine.vulkan_debug;
   const auto user_settings_path = settings_path(boot);
   const auto settings_status = deserialize_settings_file(boot, user_settings_path);
+  if (previous_vulkan_debug != boot.engine.vulkan_debug) {
+    utils::warn("logging.vulkan_debug changed to {}; Vulkan instance restart is required",
+                boot.engine.vulkan_debug);
+  }
   if (settings_status != config_file_status::loaded) {
     write_tavl_file(boot.persisted_settings, user_settings_path, "settings");
   }
@@ -480,6 +488,7 @@ std::unique_ptr<RenderType> make_standard_render(Bootstrap& boot, std::string ap
   render_cfg.pipeline_cache_path = pipeline_cache_path;
   render_cfg.app_name = std::move(app_name);
   render_cfg.headless = boot.engine.headless;
+  render_cfg.vulkan_debug = boot.engine.vulkan_debug;
   render_cfg.create_vulkan_on_init = boot.engine.headless;
 
   return std::make_unique<RenderType>(render_ft, std::move(render_cfg));

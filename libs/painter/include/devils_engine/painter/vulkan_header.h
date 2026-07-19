@@ -26,19 +26,12 @@ namespace painter {
 
 template <typename T>
 void set_name(vk::Device device, T handle, const std::string& name) {
-#  ifdef _NDEBUG
-  static_cast<void>(device);
-  static_cast<void>(handle);
-  static_cast<void>(name);
-  return;
-#  else
   if (VULKAN_HPP_DEFAULT_DISPATCHER.vkSetDebugUtilsObjectNameEXT == nullptr) {
     return;
   }
 
   vk::DebugUtilsObjectNameInfoEXT i(T::objectType, uint64_t(typename T::CType(handle)), name.c_str());
   device.setDebugUtilsObjectNameEXT(i);
-#  endif
 }
 
 using vulkan_features_bitset = std::bitset<256>;

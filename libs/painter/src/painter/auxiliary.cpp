@@ -61,7 +61,7 @@ static PFN_vkGetInstanceProcAddr load_system_instance_proc_addr() {
 #endif
 }
 
-std::vector<const char*> get_required_extensions(const bool require_surface) {
+std::vector<const char*> get_required_extensions(const bool require_surface, const bool debug_utils) {
   std::vector<const char*> extensions;
   if (require_surface) {
     uint32_t glfw_extension_count = 0;
@@ -69,7 +69,7 @@ std::vector<const char*> get_required_extensions(const bool require_surface) {
     extensions.assign(glfw_extensions, glfw_extensions + glfw_extension_count);
   }
 
-  if (enable_validation_layers) {
+  if (debug_utils) {
     extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
   }
 
@@ -119,9 +119,6 @@ void load_dispatcher3(VkDevice device) {
 }
 
 VkDebugUtilsMessengerEXT create_debug_messenger(VkInstance inst) {
-  if (!enable_validation_layers) {
-    return VK_NULL_HANDLE;
-  }
   if (VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateDebugUtilsMessengerEXT == nullptr) {
     utils::warn("Vulkan instance dispatcher is missing vkCreateDebugUtilsMessengerEXT; debug messenger is disabled");
     return VK_NULL_HANDLE;

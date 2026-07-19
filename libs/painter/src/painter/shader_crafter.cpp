@@ -33,18 +33,9 @@ public:
   shaderc_include_result* GetInclude(
     const char* requested_source, // запрашиваемый файл
     shaderc_include_type,
-    const char* requesting_source, // файл который запрашивает
-    size_t include_depth) override {
-    // со стороны шейдера к нам приходит запрос на включение файлов
-    // скорее всего мы все пути будем обрабатывать одинаково
-    // откуда берет инклюдер пути? из демиурга
-
-    // нужно отдать shaderc_include_result
-    // а в него положить имя файла и текст файла
-
+    const char*, // файл который запрашивает
+    size_t) override {
     const auto file_name = std::string_view(requested_source);
-
-    utils::println("requested_source", file_name, "requesting_source", requesting_source, "include_depth", include_depth);
 
     if (file_name == utils_shared_include_name || file_name == legacy_bindings_shared_include_name) {
       auto* result = make_empty_include_result();

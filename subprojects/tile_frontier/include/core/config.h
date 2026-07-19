@@ -96,6 +96,8 @@ devils_engine::utils::calendar_clock make_calendar_clock(const time_config& cfg)
 struct logging_config {
   bool console = true;
   std::string file; // пусто = без файла
+  // Startup/restart option: validation layer + VK_EXT_debug_utils + debug messenger.
+  bool vulkan_debug = false;
   std::string main = "off";
   std::string assets = "off";
   std::string sound = "off";
