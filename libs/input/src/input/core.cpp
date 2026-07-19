@@ -44,10 +44,11 @@ GLFWmonitor* primary_monitor() noexcept {
 
 std::vector<GLFWmonitor*> monitors() noexcept {
   int count = 0;
-  auto monitors = glfwGetMonitors(&count);
-  std::vector<GLFWmonitor*> v(count);
+  auto available = glfwGetMonitors(&count);
+  std::vector<GLFWmonitor*> v;
+  v.reserve(count > 0 ? size_t(count) : 0);
   for (int i = 0; i < count; ++i) {
-    v.push_back(monitors[i]);
+    v.push_back(available[i]);
   }
 
   return v;
@@ -95,7 +96,8 @@ std::tuple<int32_t, int32_t, int32_t, int32_t> monitor_workarea(GLFWmonitor* m) 
 }
 
 std::string_view monitor_name(GLFWmonitor* m) noexcept {
-  return std::string_view(glfwGetMonitorName(m));
+  const char* name = m != nullptr ? glfwGetMonitorName(m) : nullptr;
+  return std::string_view(name != nullptr ? name : "");
 }
 
 bool vulkan_supported() noexcept {

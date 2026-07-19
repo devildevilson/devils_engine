@@ -63,6 +63,8 @@ struct standard_game_state : standard_loading_state {
   std::atomic_bool sound_devices_ready = false;
   bool sound_devices_requested = false;
   bool sound_devices_logged = false;
+  std::string sound_device_preference;
+  bool sound_device_preference_applied = false;
   std::vector<ui_sound_state_entry> sound_state;
   std::vector<ui_sound_state_entry> sound_state_next;
   size_t sound_frame = 0;

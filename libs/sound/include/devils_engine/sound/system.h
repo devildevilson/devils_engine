@@ -284,6 +284,7 @@ private:
   uint32_t playback_sample_rate;
   double stream_buffer_seconds;
   size_t decode_frames_per_update;
+  std::array<float, static_cast<size_t>(type::count)> source_volume;
   std::unique_ptr<ma_context> m_context;
   std::unique_ptr<ma_engine> m_engine;
   std::unique_ptr<ma_device> m_device;

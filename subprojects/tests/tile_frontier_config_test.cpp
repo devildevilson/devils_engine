@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 #include <tavl/deserialize.h>
 #include <tavl/parser.h>
+#include <tavl/serialize.h>
 
 #include "core/config.h"
 
@@ -45,4 +46,24 @@ TEST_CASE("tile_frontier project config selects a turn-driven calendar [config][
   CHECK(date.year == 1);
   CHECK(date.month == 2);
   CHECK(date.day == 2); // third day clamps into the two-day target month
+}
+
+TEST_CASE("tile_frontier user settings expose only player-facing sections") {
+  user_settings settings;
+  std::string data;
+  REQUIRE(tavl::serialize(settings, data));
+
+  CHECK(data.find("window") != std::string::npos);
+  CHECK(data.find("fullscreen") != std::string::npos);
+  CHECK(data.find("monitor") != std::string::npos);
+  CHECK(data.find("sound") != std::string::npos);
+  CHECK(data.find("device") != std::string::npos);
+  CHECK(data.find("metrics") != std::string::npos);
+  CHECK(data.find("logging") != std::string::npos);
+
+  CHECK(data.find("simulation = {") == std::string::npos);
+  CHECK(data.find("render = {") == std::string::npos);
+  CHECK(data.find("time = {") == std::string::npos);
+  CHECK(data.find("title") == std::string::npos);
+  CHECK(data.find("create_on_start") == std::string::npos);
 }

@@ -6,11 +6,14 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <devils_engine/catalogue/logging.h>
@@ -35,10 +38,17 @@
 namespace devils_engine {
 namespace simul {
 
-template <typename Settings>
+template <typename Settings, typename PersistedSettings = Settings>
 struct standard_runtime_bootstrap {
   engine_boot_config engine;
   Settings settings;
+  Settings default_settings;
+  PersistedSettings persisted_settings;
+  PersistedSettings default_persisted_settings;
+
+  input::bindings_config bindings;
+  input::bindings_config default_bindings;
+  bool bindings_file_loaded = false;
 
   std::unique_ptr<demiurg::module_system> engine_modules;
   std::unique_ptr<demiurg::resource_system> engine_resources;
@@ -48,9 +58,33 @@ struct standard_runtime_bootstrap {
   thread::atomic_pool* pool = nullptr;
 };
 
+template <typename Bootstrap>
+void export_persisted_settings(Bootstrap& boot) {
+  using settings_type = std::remove_cvref_t<decltype(boot.settings)>;
+  using persisted_type = std::remove_cvref_t<decltype(boot.persisted_settings)>;
+  if constexpr (std::is_same_v<settings_type, persisted_type>) {
+    boot.persisted_settings = boot.settings;
+  } else {
+    boot.export_persisted_settings();
+  }
+}
+
+template <typename Bootstrap>
+void import_persisted_settings(Bootstrap& boot) {
+  using settings_type = std::remove_cvref_t<decltype(boot.settings)>;
+  using persisted_type = std::remove_cvref_t<decltype(boot.persisted_settings)>;
+  boot.settings = boot.default_settings;
+  if constexpr (std::is_same_v<settings_type, persisted_type>) {
+    boot.settings = boot.persisted_settings;
+  } else {
+    boot.import_persisted_settings();
+  }
+}
+
 size_t frame_time_from_fps(uint32_t fps) noexcept;
 size_t thread_start_gap(size_t frame_time, uint32_t divisor) noexcept;
 std::string project_path(std::string path);
+std::string source_line(uint32_t line);
 
 template <typename Bootstrap>
 std::string settings_path(const Bootstrap& boot) {
@@ -63,7 +97,90 @@ std::string settings_path(const Bootstrap& boot) {
   return utils::project_folder() + boot.engine.settings_file;
 }
 
-std::string source_line(uint32_t line);
+template <typename Bootstrap>
+std::string key_bindings_path(const Bootstrap& boot) {
+  if (boot.engine.key_bindings_file.empty()) {
+    return utils::project_folder() + "key_bingings.tavl";
+  }
+  if (boot.engine.key_bindings_file.front() == '/') {
+    return boot.engine.key_bindings_file;
+  }
+  return utils::project_folder() + boot.engine.key_bindings_file;
+}
+
+inline input::bindings_config standard_key_bindings() {
+  input::bindings_config out;
+  out.actions["quit"] = {"escape"};
+  out.actions["toggle_menu"] = {"f1"};
+  out.actions["camera_up"] = {"key_w"};
+  out.actions["camera_left"] = {"key_a"};
+  out.actions["camera_down"] = {"key_s"};
+  out.actions["camera_right"] = {"key_d"};
+  return out;
+}
+
+enum class config_file_status : uint8_t {
+  missing,
+  loaded,
+  invalid,
+};
+
+template <typename Value>
+config_file_status load_tavl_file(
+  const std::string& path,
+  const Value& fallback,
+  Value& out,
+  const std::string_view label) {
+  if (!file_io::exists(path)) {
+    out = fallback;
+    return config_file_status::missing;
+  }
+
+  try {
+    tavl::parser parser;
+    const auto content = file_io::read(path);
+    parser.add_default_operator();
+    parser.flush(content);
+    parser.finish();
+
+    Value candidate = fallback;
+    tavl::ct_context ctx;
+    tavl::deserialize(parser, ctx, candidate);
+    if (!ctx.diagnostics.empty()) {
+      utils::warn("{} '{}': {} tavl diagnostics; using defaults", label, path, ctx.diagnostics.size());
+      for (const auto& d : ctx.diagnostics) {
+        utils::warn("  tavl diagnostic '{}' at {}:{} field '{}'",
+                    tavl::to_string(d.error.type), source_line(static_cast<uint32_t>(d.error.span.line)), d.error.span.column, d.field);
+      }
+      out = fallback;
+      return config_file_status::invalid;
+    }
+
+    out = std::move(candidate);
+    return config_file_status::loaded;
+  } catch (const std::exception& e) {
+    utils::warn("{} '{}': could not parse ({}); using defaults", label, path, e.what());
+    out = fallback;
+    return config_file_status::invalid;
+  }
+}
+
+template <typename Value>
+bool write_tavl_file(const Value& value, const std::string& path, const std::string_view label) {
+  std::string tavl_data;
+  if (!tavl::serialize(value, tavl_data)) {
+    utils::warn("{}: could not serialize tavl", label);
+    return false;
+  }
+
+  const bool written = file_io::write(tavl_data, path);
+  if (!written) {
+    utils::warn("{}: could not write '{}'", label, path);
+  } else {
+    DE_LOG(catalogue::log_domain::main, flow, "Saved {} '{}'", label, path);
+  }
+  return written;
+}
 
 template <typename Settings>
 void sync_engine_boot_config(engine_boot_config& engine, const Settings& settings) {
@@ -121,75 +238,76 @@ void setup_logging(const LoggingConfig& log_cfg) {
 }
 
 template <typename Bootstrap>
-bool deserialize_settings_file(Bootstrap& boot, const std::string& path) {
-  if (!file_io::exists(path)) {
-    return false;
+config_file_status deserialize_settings_file(Bootstrap& boot, const std::string& path) {
+  const auto status = load_tavl_file(
+    path, boot.default_persisted_settings, boot.persisted_settings, "settings");
+  import_persisted_settings(boot);
+  sync_engine_boot_config(boot);
+  return status;
+}
+
+template <typename Bootstrap>
+bool save_key_bindings(Bootstrap& boot) {
+  if (input::events::has_bindings()) {
+    boot.bindings = input::collect_bindings();
   }
+  return write_tavl_file(boot.bindings, key_bindings_path(boot), "key bindings");
+}
 
-  tavl::parser parser;
-  const auto content = file_io::read(path);
-  parser.add_default_operator();
-  parser.flush(content);
-  parser.finish();
+template <typename Bootstrap>
+bool apply_runtime_bindings(Bootstrap& boot) {
+  input::events::clear_bindings();
+  input::apply_bindings(boot.default_bindings);
 
-  tavl::ct_context ctx;
-  tavl::deserialize(parser, ctx, boot.settings);
-  if (!ctx.diagnostics.empty()) {
-    utils::warn("settings '{}': {} tavl diagnostics", path, ctx.diagnostics.size());
-    for (const auto& d : ctx.diagnostics) {
-      utils::warn("  tavl diagnostic '{}' at {}:{} field '{}'",
-                  tavl::to_string(d.error.type), source_line(static_cast<uint32_t>(d.error.span.line)), d.error.span.column, d.field);
+  bool valid = true;
+  if (boot.bindings_file_loaded) {
+    valid = input::validate_bindings(boot.bindings);
+    if (valid) {
+      input::apply_bindings(boot.bindings);
+    } else {
+      utils::warn("key bindings '{}': invalid mapping; using defaults", key_bindings_path(boot));
+      boot.bindings_file_loaded = false;
     }
   }
 
-  sync_engine_boot_config(boot);
-  return true;
+  boot.bindings = input::collect_bindings();
+  return valid;
 }
 
 template <typename Bootstrap>
 bool save_settings(Bootstrap& boot) {
-  // Живой key-mapping выгружается в settings перед записью — если settings-схема проекта
-  // объявила секцию input. Guard has_bindings: в headless/до создания окна ввод пуст, секцию,
-  // загруженную из файла, затирать нечем.
-  if constexpr (requires { boot.settings.input; }) {
-    if (input::events::has_bindings()) {
-      boot.settings.input = input::collect_bindings();
-    }
-  }
-
-  const auto path = settings_path(boot);
-  std::string tavl_data;
-  if (!tavl::serialize(boot.settings, tavl_data)) {
-    utils::warn("settings: could not serialize settings to tavl");
-    return false;
-  }
-
-  const bool written = file_io::write(tavl_data, path);
-  if (!written) {
-    utils::warn("settings: could not write '{}'", path);
-  } else {
-    DE_LOG(catalogue::log_domain::main, flow, "Saved settings '{}'", path);
-  }
-  return written;
+  export_persisted_settings(boot);
+  const bool settings_written = write_tavl_file(
+    boot.persisted_settings, settings_path(boot), "settings");
+  const bool bindings_written = save_key_bindings(boot);
+  return settings_written && bindings_written;
 }
 
 template <typename Bootstrap>
 bool reload_settings(Bootstrap& boot) {
-  const auto path = settings_path(boot);
-  if (!deserialize_settings_file(boot, path)) {
-    utils::warn("settings: '{}' not found, keeping current settings", path);
-    return false;
+  const auto user_settings_path = settings_path(boot);
+  const auto settings_status = deserialize_settings_file(boot, user_settings_path);
+  if (settings_status != config_file_status::loaded) {
+    write_tavl_file(boot.persisted_settings, user_settings_path, "settings");
   }
 
-  // Live-переприменение key-mapping: только когда ввод уже инициализирован (дефолты навешены
-  // при создании окна) — до окна/в headless накатывать не на что, применит create_window.
-  if constexpr (requires { boot.settings.input; }) {
-    if (input::events::has_bindings()) {
-      input::apply_bindings(boot.settings.input);
-    }
-  }
+  const auto bindings_file = key_bindings_path(boot);
+  const auto bindings_status = load_tavl_file(
+    bindings_file, boot.default_bindings, boot.bindings, "key bindings");
+  boot.bindings_file_loaded = bindings_status == config_file_status::loaded;
 
-  DE_LOG(catalogue::log_domain::main, flow, "Reloaded settings '{}'", path);
+  // UI reload приходит после создания окна. В headless/до окна оставляем текстовый
+  // снимок до будущего create_window: canonical keyboard names требуют GLFW.
+  if (input::events::has_bindings()) {
+    apply_runtime_bindings(boot);
+  }
+  if (bindings_status != config_file_status::loaded || !boot.bindings_file_loaded) {
+    boot.bindings = input::events::has_bindings() ? input::collect_bindings() : boot.default_bindings;
+  }
+  save_key_bindings(boot);
+
+  DE_LOG(catalogue::log_domain::main, flow, "Reloaded settings '{}' and key bindings '{}'",
+         user_settings_path, bindings_file);
   return true;
 }
 
@@ -223,10 +341,28 @@ void init_standard_bootstrap(Bootstrap& boot) {
     utils::warn("engine registry: '{}' not found, using app_config defaults", boot.engine.app_config_id);
   }
 
+  boot.default_settings = boot.settings;
+  export_persisted_settings(boot);
+  boot.default_persisted_settings = boot.persisted_settings;
+  boot.default_bindings = standard_key_bindings();
+
   sync_engine_boot_config(boot);
   const auto user_settings_path = settings_path(boot);
-  if (deserialize_settings_file(boot, user_settings_path)) {
+  const auto settings_status = deserialize_settings_file(boot, user_settings_path);
+  if (settings_status == config_file_status::loaded) {
     DE_LOG(catalogue::log_domain::main, flow, "Loaded user settings '{}'", user_settings_path);
+  } else {
+    write_tavl_file(boot.persisted_settings, user_settings_path, "settings");
+  }
+
+  const auto bindings_file = key_bindings_path(boot);
+  const auto bindings_status = load_tavl_file(
+    bindings_file, boot.default_bindings, boot.bindings, "key bindings");
+  boot.bindings_file_loaded = bindings_status == config_file_status::loaded;
+  if (boot.bindings_file_loaded) {
+    DE_LOG(catalogue::log_domain::main, flow, "Loaded key bindings '{}'", bindings_file);
+  } else {
+    write_tavl_file(boot.bindings, bindings_file, "key bindings");
   }
 
   setup_logging(boot.settings.logging);
@@ -250,13 +386,11 @@ void init_standard_bootstrap(Bootstrap& boot) {
   const auto cpu_name = utils::get_cpu_name();
   utils::info("Using cpu '{}', cores: {}, worker threads: {}", cpu_name, hw_threads, thread_count);
   DE_LOG(catalogue::log_domain::main, flow,
-         "Loaded app config '{}': window {}x{}, render config '{}', GPU preference '{}' / index {}",
+         "Loaded app config '{}': window {}x{}, render config '{}'",
          config_path,
          boot.settings.window.width,
          boot.settings.window.height,
-         boot.settings.render.config_folder,
-         boot.settings.render.preferred_gpu,
-         boot.settings.render.preferred_gpu_index);
+         boot.settings.render.config_folder);
 
   boot.pool_container.reset(new thread::atomic_pool(thread_count));
   boot.pool = boot.pool_container.get();
@@ -344,8 +478,6 @@ std::unique_ptr<RenderType> make_standard_render(Bootstrap& boot, std::string ap
   render_cfg.cache_registry = boot.engine_resources.get();
   render_cfg.pipeline_cache_id = pipeline_cache_id;
   render_cfg.pipeline_cache_path = pipeline_cache_path;
-  render_cfg.graph_name = boot.settings.render.graph;
-  render_cfg.menu_graph_name = boot.settings.render.menu_graph;
   render_cfg.app_name = std::move(app_name);
   render_cfg.headless = boot.engine.headless;
   render_cfg.create_vulkan_on_init = boot.engine.headless;

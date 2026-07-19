@@ -966,6 +966,7 @@ system2::system2(const std::string_view device_name, const double stream_buffer_
                                                                                                                                   playback_sample_rate(0),
                                                                                                                                   stream_buffer_seconds(std::max(stream_buffer_seconds, 0.05)),
                                                                                                                                   decode_frames_per_update(decode_frames_per_update) {
+  source_volume.fill(1.0f);
   ma_result result = MA_SUCCESS;
 
   {
@@ -1386,9 +1387,20 @@ void system2::set_master_volume(const float val) {
   ma_engine_set_volume(m_engine.get(), val);
 }
 
-void system2::set_source_volume(const uint32_t, const float) {
-  // ...
-  utils::error{}("Not implemented");
+void system2::set_source_volume(const uint32_t type_index, const float val) {
+  if (type_index >= source_volume.size()) {
+    utils::warn("sound: source volume type {} is out of range", type_index);
+    return;
+  }
+  source_volume[type_index] = std::clamp(val, 0.0f, 1.0f);
+  for (auto& task : m_tasks) {
+    if (task.inst == nullptr || static_cast<uint32_t>(task.task.type) != type_index) {
+      continue;
+    }
+    ma_sound_set_volume(
+      &task.inst->sound,
+      task.task.volume * source_volume[type_index]);
+  }
 }
 
 // Выдать голос под задачу. idempotent: если голос уже есть (в т.ч. разделённый с prev
@@ -1550,7 +1562,9 @@ void system2::update(const size_t time) {
           }
         }
 
-        ma_sound_set_volume(&t.inst->sound, t.task.volume);
+        const auto type_index = static_cast<size_t>(t.task.type);
+        const float category_gain = type_index < source_volume.size() ? source_volume[type_index] : 1.0f;
+        ma_sound_set_volume(&t.inst->sound, t.task.volume * category_gain);
         ma_sound_set_pitch(&t.inst->sound, t.task.pitch);
         // Позиционность — свойство ЗАДАЧИ, а голос переиспользуется: выставляем ОБА направления
         // на каждой выдаче, иначе прошлый жилец голоса протечёт в текущего.

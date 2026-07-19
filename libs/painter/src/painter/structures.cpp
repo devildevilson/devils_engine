@@ -971,6 +971,7 @@ struct pass_step2_mirror {
 
 struct render_graph2_mirror {
   std::string name;
+  bool startup = false;
   std::vector<pass2_mirror> passes;
   std::string present_source;
 };
@@ -1192,6 +1193,7 @@ static void parse_render_graph2(
   }
 
   graph.name = data.name;
+  graph.startup = data.startup;
   for (const auto& pass : data.passes) {
     const uint32_t index = ctx.passes.size();
     ctx.passes.emplace_back();

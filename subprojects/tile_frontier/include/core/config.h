@@ -5,8 +5,6 @@
 #include <string>
 #include <vector>
 
-#include <devils_engine/input/bindings.h> // input::bindings_config — секция key-mapping в settings
-
 namespace devils_engine {
 namespace utils {
 class calendar_clock;
@@ -20,10 +18,11 @@ namespace tile_frontier {
 namespace core {
 
 struct window_config {
-  std::string title = "tile_frontier";
   uint32_t width = 1280;
   uint32_t height = 720;
   bool create_on_start = true;
+  bool fullscreen = false;
+  std::string monitor;
 };
 
 struct simulation_config {
@@ -48,16 +47,6 @@ struct render_config {
   std::string config_folder = "render_config";
   std::string shader_folder = "shaders"; // префикс шейдеров в движковом demiurg-реестре
   std::string cache_folder = "cache/render";
-  std::string pipeline_cache = "cache/render/pipeline_cache.bin";
-  std::string preferred_gpu;
-  uint32_t preferred_gpu_index = 0;
-  std::string graph = "graphics1";
-  // п.2/п.3: второй resident-граф (его ресурсы попадают в общий used-set, своп на него мгновенный).
-  // Пусто ⇒ резидентен только основной граф.
-  std::string menu_graph = "menu1";
-  // Демо интеграционного слоя: >0 ⇒ main периодически переключает активный граф graph<->menu_graph
-  // каждые N мс (проверяет мгновенный своп без пересоздания ресурсов). 0 ⇒ выключено.
-  uint32_t demo_graph_toggle_ms = 0;
 };
 
 struct metrics_config {
@@ -106,7 +95,7 @@ devils_engine::utils::calendar_clock make_calendar_clock(const time_config& cfg)
 // (off/info/flow/trace) + файловый сток. Уровни можно менять и в рантайме (app.set_log_level).
 struct logging_config {
   bool console = true;
-  std::string file = "logs/tile_frontier.log"; // пусто = без файла
+  std::string file; // пусто = без файла
   std::string main = "off";
   std::string assets = "off";
   std::string sound = "off";
@@ -117,6 +106,18 @@ struct logging_config {
   std::string demiurg = "off";
 };
 
+// Пользовательские уровни громкости. Имена категорий совпадают с sound::type; итоговый gain
+// голоса = master * category * volume конкретной задачи.
+struct sound_config {
+  std::string device;
+  float master = 1.0f;
+  float music = 1.0f;
+  float talk = 1.0f;
+  float talk_pos = 1.0f;
+  float ui_effect = 1.0f;
+  float sfx = 1.0f;
+};
+
 struct app_config {
   window_config window;
   simulation_config simulation;
@@ -124,10 +125,23 @@ struct app_config {
   time_config time;
   metrics_config metrics;
   logging_config logging;
-  // key-mapping поверх движковых дефолтов (bind_default_actions): в tavl
-  // `input = { actions = { camera_up = [key_w], ... } }`; пусто = только дефолты.
-  // Наличие поля включает движковые apply при создании окна/reload и выгрузку при save.
-  devils_engine::input::bindings_config input;
+  sound_config sound;
+};
+
+// Единственная схема, которую standard runtime пишет в пользовательский settings.tavl.
+// Project/engine topology (simulation/render/time/create_on_start) остаётся в bundled app.tavl.
+struct user_window_config {
+  uint32_t width = 1280;
+  uint32_t height = 720;
+  bool fullscreen = false;
+  std::string monitor;
+};
+
+struct user_settings {
+  user_window_config window;
+  sound_config sound;
+  metrics_config metrics;
+  logging_config logging;
 };
 
 // Конфиг грузится как demiurg-ресурс (app_config_resource) из движкового реестра —

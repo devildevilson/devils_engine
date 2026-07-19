@@ -59,6 +59,26 @@ std::string binding_name_from_scancode(const int32_t scancode) {
   return std::string(scancode_prefix) + std::to_string(scancode);
 }
 
+bool validate_bindings(const bindings_config& config) {
+  bool valid = true;
+  for (const auto& [action, keys] : config.actions) {
+    if (keys.size() > events::event_key_slots_count) {
+      utils::warn("input bindings: action '{}' lists {} keys, only {} slots are supported",
+                  action, keys.size(), events::event_key_slots_count);
+      valid = false;
+    }
+    for (const auto& key : keys) {
+      const auto [glfw_key, scancode] = binding_key_from_name(key);
+      static_cast<void>(glfw_key);
+      if (scancode < 0) {
+        utils::warn("input bindings: unknown key '{}' for action '{}'", key, action);
+        valid = false;
+      }
+    }
+  }
+  return valid;
+}
+
 void apply_bindings(const bindings_config& config) {
   for (const auto& [action, keys] : config.actions) {
     if (keys.size() > events::event_key_slots_count) {

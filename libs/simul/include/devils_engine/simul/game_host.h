@@ -1,6 +1,7 @@
 #ifndef DEVILS_ENGINE_SIMUL_GAME_HOST_H
 #define DEVILS_ENGINE_SIMUL_GAME_HOST_H
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cmath> // llround — конверсия double-скорости в рационал на границе
@@ -13,6 +14,7 @@
 
 #include <devils_engine/catalogue/logging.h>
 #include <devils_engine/input/core.h>
+#include <devils_engine/sound/common.h>
 #include <devils_engine/visage/font.h>
 #include <devils_engine/visage/font_resource.h>
 #include <devils_engine/utils/core.h>
@@ -95,6 +97,7 @@ public:
     systems_.sound = bootstrap_->engine.sound_enabled;
     systems_.render = bootstrap_->engine.render_enabled;
     systems_.assets = bootstrap_->engine.assets_enabled;
+    apply_sound_settings();
 
     // Стартовый размер фреймбуфера = из конфига (до создания окна); коллбэк ресайза уточнит.
     c.fb_width = std::max(bootstrap_->settings.window.width, 1u);
@@ -110,9 +113,9 @@ public:
     derived().state().lifecycle.start(*this);
   }
 
-  // Живые save/reload настроек с main-потока (UI): save перед записью выгружает в settings
-  // эффективный key-mapping (см. simul::save_settings), reload накатывает файл и прогоняет
-  // всю runtime-реакцию (логгирование/частота/скорость/биндинги) через тот же хук, что и
+  // Живые save/reload настроек с main-потока (UI): settings и key bindings живут в
+  // отдельных tavl-файлах; reload прогоняет всю runtime-реакцию
+  // (логгирование/частота/скорость/биндинги) через тот же хук, что и
   // app_runtime::reload_settings.
   bool host_save_settings() {
     return simul::save_settings(*bootstrap_);
@@ -123,16 +126,16 @@ public:
       return false;
     }
     this->runtime_settings_reloaded(); // виртуальный: проект форвардит в host_runtime_settings_reloaded
-    return true;
+    // Window/device fallback может нормализовать preference уже после TAVL parse.
+    return simul::save_settings(*bootstrap_);
   }
 
   void host_runtime_settings_reloaded() {
     simul::setup_logging(bootstrap_->settings.logging);
-    this->set_frame_time(frame_time_from_fps(bootstrap_->engine.main_fps));
-    derived().state().clocks.set_game_scale(utils::game_time_scale::from_seconds(
-      bootstrap_->settings.time.game_seconds,
-      bootstrap_->settings.time.real_seconds));
-    // calendar source/policy — проектная топология: runtime reload намеренно её не заменяет.
+    auto& c = derived().state();
+    apply_window_settings(c, bootstrap_->settings);
+    apply_sound_settings();
+    // simulation/render/time/calendar — project topology: пользовательский reload их не заменяет.
     derived().project_settings_reloaded();
   }
 
@@ -291,6 +294,50 @@ protected:
   }
 
 private:
+  void apply_sound_settings() {
+    if constexpr (requires {
+                    bootstrap_->settings.sound.master;
+                    bootstrap_->settings.sound.device;
+                    bootstrap_->settings.sound.music;
+                    bootstrap_->settings.sound.talk;
+                    bootstrap_->settings.sound.talk_pos;
+                    bootstrap_->settings.sound.ui_effect;
+                    bootstrap_->settings.sound.sfx;
+                  }) {
+      auto& c = derived().state();
+      const auto gain = [](const float value) { return std::clamp(value, 0.0f, 1.0f); };
+      const auto& sound_cfg = bootstrap_->settings.sound;
+      c.policy.focused_master_gain = gain(sound_cfg.master);
+      if (!systems_.sound || c.br == nullptr) {
+        return;
+      }
+
+      const bool device_changed = c.sound_device_preference_applied &&
+                                  c.sound_device_preference != sound_cfg.device;
+      const bool nondefault_startup = !c.sound_device_preference_applied &&
+                                      !sound_cfg.device.empty();
+      if (device_changed || nondefault_startup) {
+        c.br->recreate_sound.try_push(command_recreate_sound_system{sound_cfg.device});
+      }
+      c.sound_device_preference = sound_cfg.device;
+      c.sound_device_preference_applied = true;
+
+      const float live_master = (c.window_active || !c.policy.mute_when_unfocused)
+                                  ? c.policy.focused_master_gain
+                                  : c.policy.unfocused_master_gain;
+      c.br->sound_master_gain.try_push(command_sound_set_master_gain{live_master});
+      const auto source = [&c, &gain](const sound::type type, const float value) {
+        c.br->sound_source_gain.try_push(command_sound_set_source_gain{
+          static_cast<uint32_t>(type), gain(value)});
+      };
+      source(sound::type::music, sound_cfg.music);
+      source(sound::type::talk, sound_cfg.talk);
+      source(sound::type::talk_pos, sound_cfg.talk_pos);
+      source(sound::type::ui_effect, sound_cfg.ui_effect);
+      source(sound::type::sfx, sound_cfg.sfx);
+    }
+  }
+
   void start_standard_ui() {
     auto& c = derived().state();
     auto* reg = derived().asset_registry();
@@ -339,7 +386,7 @@ private:
     sol::environment env = c.ui->script_env();
     sol::table app = env["app"].get_or_create<sol::table>();
     install_resource_lua_bindings(lua, env, nullptr, reg, c.ui_resource_scope);
-    install_sound_lua_bindings(app, c, systems_.sound);
+    install_sound_lua_bindings(app, c, bootstrap_->settings, systems_.sound);
     install_window_lua_bindings(
       app,
       c,
@@ -374,6 +421,17 @@ private:
       for (size_t i = 0; i < c.sound_devices.size(); ++i) {
         DE_LOG(catalogue::log_domain::sound, flow,
                "main: sound device[{}] '{}'", i, c.sound_devices[i]);
+      }
+      if constexpr (requires { bootstrap_->settings.sound.device; }) {
+        auto& preference = bootstrap_->settings.sound.device;
+        if (!preference.empty() &&
+            std::find(c.sound_devices.begin(), c.sound_devices.end(), preference) == c.sound_devices.end()) {
+          utils::warn("sound: configured output device '{}' is unavailable; keeping system default",
+                      preference);
+          preference.clear();
+          c.sound_device_preference.clear();
+          save_settings(*bootstrap_);
+        }
       }
       c.sound_devices_logged = true;
     }
@@ -431,7 +489,12 @@ private:
 
     // Окно появляется только после минимального boot-набора (UI + первый шрифт готовы).
     if (bootstrap_->settings.window.create_on_start && systems_.render && !bootstrap_->settings.render.headless) {
-      create_window_and_notify_render(c, bootstrap_->settings, this->frame_time());
+      create_window_and_notify_render(
+        c, bootstrap_->settings, bootstrap_->engine.app_name, this->frame_time());
+      apply_runtime_bindings(*bootstrap_);
+      // После GLFW canonical-имена уже разрешены: фиксируем реальную эффективную
+      // карту. Это также перезапишет синтаксически верный, но семантически невалидный файл.
+      save_settings(*bootstrap_);
     }
 
     derived().begin_project_loading();

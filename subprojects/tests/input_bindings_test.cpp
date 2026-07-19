@@ -1,7 +1,6 @@
-// input key-mapping как данные: apply/collect bindings_config, перепривязка целиком, отвязка,
-// scancode_N-fallback и tavl-roundtrip. Клавиатурные canonical-имена требуют живого GLFW
-// (glfwGetKeyScancode), поэтому здесь только мышь (синтетические сканкоды) и raw-сканкоды —
-// клавиатурный путь покрывается вживую через bind_default_actions + settings.input.
+// input key-mapping как данные: apply/collect/validate bindings_config, перепривязка целиком,
+// полный reset, scancode_N-fallback и tavl-roundtrip. Клавиатурные canonical-имена требуют живого GLFW
+// (glfwGetKeyScancode), поэтому здесь только мышь (синтетические сканкоды) и raw-сканкоды.
 
 #include <doctest/doctest.h>
 
@@ -44,6 +43,7 @@ TEST_CASE("binding names round-trip without GLFW") {
 }
 
 TEST_CASE("apply/collect bindings against live events") {
+  events::clear_bindings();
   input::bindings_config cfg;
   cfg.actions["attack"] = {"mouse_left", "mouse_right"};
   cfg.actions["exotic"] = {"scancode_777"};
@@ -85,6 +85,25 @@ TEST_CASE("apply/collect bindings against live events") {
   CHECK(events::is_released(std::string_view("attack")));
   events::update_mouse_button(2, 0);
   CHECK(input::collect_bindings().actions.at("attack").empty());
+
+  events::clear_bindings();
+  CHECK_FALSE(events::has_bindings());
+  CHECK(input::collect_bindings().actions.empty());
+}
+
+TEST_CASE("bindings validation rejects the whole invalid snapshot") {
+  input::bindings_config valid;
+  valid.actions["attack"] = {"mouse_left", "scancode_777"};
+  CHECK(input::validate_bindings(valid));
+
+  input::bindings_config unknown = valid;
+  unknown.actions["attack"].push_back("no_such_key");
+  CHECK_FALSE(input::validate_bindings(unknown));
+
+  input::bindings_config too_many;
+  too_many.actions["attack"] = {
+    "mouse_left", "mouse_right", "mouse_middle", "mouse_4", "mouse_5"};
+  CHECK_FALSE(input::validate_bindings(too_many));
 }
 
 TEST_CASE("bindings_config survives tavl round-trip") {

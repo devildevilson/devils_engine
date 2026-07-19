@@ -3,6 +3,7 @@
 //               steps(vector<string>), wait_for(vector<string>), signal(vector<string>)
 {
   name = graphics1
+  startup = true
   passes = [
     {
       name = p1

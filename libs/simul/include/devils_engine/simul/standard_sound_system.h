@@ -4,6 +4,7 @@
 // Broker-driven sound-system implementation shared by standard applications.
 
 #include <atomic>
+#include <array>
 #include <cstddef>
 #include <memory>
 #include <vector>
@@ -60,6 +61,23 @@ public:
         container->s.reset(new sound::system2(cmd.device_name));
         if (container->s) {
           container->s->set_master_volume(container->master_gain);
+          for (uint32_t i = 0; i < container->source_gain.size(); ++i) {
+            container->s->set_source_volume(i, container->source_gain[i]);
+          }
+        }
+      }
+    }
+
+    {
+      command_sound_set_source_gain cmd{};
+      while (br.sound_source_gain.try_pop(cmd)) {
+        if (cmd.type >= container->source_gain.size()) {
+          utils::warn("sound: source gain type {} is out of range", cmd.type);
+          continue;
+        }
+        container->source_gain[cmd.type] = cmd.gain;
+        if (container->s) {
+          container->s->set_source_volume(cmd.type, cmd.gain);
         }
       }
     }
@@ -153,6 +171,7 @@ private:
   struct state {
     std::unique_ptr<sound::system2> s;
     float master_gain = 1.0f;
+    std::array<float, static_cast<size_t>(sound::type::count)> source_gain = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
     std::vector<sound::task_status> snapshot_status_cache;
   };
 

@@ -20,7 +20,32 @@
 namespace tile_frontier {
 namespace core {
 
-struct runtime_bootstrap : public devils_engine::simul::standard_runtime_bootstrap<app_config> {};
+struct runtime_bootstrap
+  : public devils_engine::simul::standard_runtime_bootstrap<app_config, user_settings> {
+  runtime_bootstrap() {
+    engine.app_name = "tile_frontier";
+  }
+
+  void export_persisted_settings() {
+    persisted_settings.window.width = settings.window.width;
+    persisted_settings.window.height = settings.window.height;
+    persisted_settings.window.fullscreen = settings.window.fullscreen;
+    persisted_settings.window.monitor = settings.window.monitor;
+    persisted_settings.sound = settings.sound;
+    persisted_settings.metrics = settings.metrics;
+    persisted_settings.logging = settings.logging;
+  }
+
+  void import_persisted_settings() {
+    settings.window.width = persisted_settings.window.width;
+    settings.window.height = persisted_settings.window.height;
+    settings.window.fullscreen = persisted_settings.window.fullscreen;
+    settings.window.monitor = persisted_settings.window.monitor;
+    settings.sound = persisted_settings.sound;
+    settings.metrics = persisted_settings.metrics;
+    settings.logging = persisted_settings.logging;
+  }
+};
 
 struct runtime_traits : public devils_engine::simul::standard_app_runtime_traits<app_config_resource> {
   using bootstrap_type = runtime_bootstrap;

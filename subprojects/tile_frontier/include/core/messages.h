@@ -62,6 +62,7 @@ using command_window_recreation = simul::command_window_recreation;
 using command_window_resize = simul::command_window_resize;
 using command_render_set_active = simul::command_render_set_active;
 using command_sound_set_master_gain = simul::command_sound_set_master_gain;
+using command_sound_set_source_gain = simul::command_sound_set_source_gain;
 using command_update_constant = simul::command_render_update_constant;
 
 // обратно должны вернуть id для ресурса

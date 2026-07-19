@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <memory>
 #include <span>
 #include <utility>
@@ -289,12 +290,33 @@ void standard_render_create_base_resources(State& c) {
   if (c.config.engine_registry == nullptr) {
     utils::error{}("render: engine registry is null (render-graph source)");
   }
-  c.base->set_startup_graph(c.config.graph_name);
-  if (!c.config.menu_graph_name.empty() && c.config.menu_graph_name != c.config.graph_name) {
-    c.base->add_resident_graph(c.config.menu_graph_name);
-  }
-
   auto render_cfg_data = painter::build_render_config(c.config.engine_registry, c.config.render_config_prefix);
+  if (render_cfg_data.graphs.empty()) {
+    utils::error{}("render: config prefix '{}' contains no render graphs", c.config.render_config_prefix);
+  }
+  const auto startup = std::find_if(
+    render_cfg_data.graphs.begin(), render_cfg_data.graphs.end(),
+    [](const auto& graph) { return graph.startup; });
+  if (startup == render_cfg_data.graphs.end()) {
+    utils::warn("render: no startup graph marked in '{}'; using first graph '{}'",
+                c.config.render_config_prefix, render_cfg_data.graphs.front().name);
+    c.config.graph_name = render_cfg_data.graphs.front().name;
+  } else {
+    const auto duplicate = std::find_if(
+      std::next(startup), render_cfg_data.graphs.end(),
+      [](const auto& graph) { return graph.startup; });
+    if (duplicate != render_cfg_data.graphs.end()) {
+      utils::error{}("render: multiple startup graphs '{}' and '{}'",
+                     startup->name, duplicate->name);
+    }
+    c.config.graph_name = startup->name;
+  }
+  c.base->set_startup_graph(c.config.graph_name);
+  for (const auto& graph : render_cfg_data.graphs) {
+    if (graph.name != c.config.graph_name) {
+      c.base->add_resident_graph(graph.name);
+    }
+  }
   const auto res = c.base->commit_parsed_resources(render_cfg_data);
   if (res != 0) {
     utils::error{}("Could not commit render config from engine registry prefix '{}'", c.config.render_config_prefix);
