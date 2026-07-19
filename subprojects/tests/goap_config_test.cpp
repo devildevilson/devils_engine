@@ -64,17 +64,17 @@ struct test_script_compiler final : act::script_compiler {
 
 TEST_CASE("GOAP config inheritance preserves base order and overlays by semantic key [goap][config]") {
   goap_config base;
-  base.metrics.push_back(goap_metric{"sense", {}});
-  base.metrics.push_back(goap_metric{"hungry", {}});
-  base.actions.push_back(goap_action_config{"walk", {}, {"done"}, {}, {}, false});
-  base.actions.push_back(goap_action_config{"eat", {"hungry"}, {"done"}, {}, {}, false});
+  base.metrics.push_back(goap_metric{"sense", {}, {}});
+  base.metrics.push_back(goap_metric{"hungry", {}, {}});
+  base.actions.push_back(goap_action_config{"walk", {}, {"done"}, {}, {}, false, {}});
+  base.actions.push_back(goap_action_config{"eat", {"hungry"}, {"done"}, {}, {}, false, {}});
   base.goals.push_back(goap_goal_config{"done", {}, {"done"}});
 
   goap_config derived;
   derived.base = "base";
-  derived.metrics.push_back(goap_metric{"hungry", {}}); // replace in place
-  derived.actions.push_back(goap_action_config{"eat", {"hungry", "sense"}, {"done"}, {}, {}, false});
-  derived.actions.push_back(goap_action_config{"sleep", {}, {"done"}, {}, {}, false});
+  derived.metrics.push_back(goap_metric{"hungry", {}, {}}); // replace in place
+  derived.actions.push_back(goap_action_config{"eat", {"hungry", "sense"}, {"done"}, {}, {}, false, {}});
+  derived.actions.push_back(goap_action_config{"sleep", {}, {"done"}, {}, {}, false, {}});
   derived.disable_actions.push_back("walk");
 
   const auto flat = merge_goap_config(base, derived);

@@ -65,8 +65,13 @@ struct vulkan_init {
   painter::device_queue_plan queue_plan;
   VkDevice device;
   VkSurfaceKHR surface;
+  bool vulkan_debug;
 
-  vulkan_init() : instance(VK_NULL_HANDLE), mess(VK_NULL_HANDLE), device(VK_NULL_HANDLE), surface(VK_NULL_HANDLE) {
+  explicit vulkan_init(const bool vulkan_debug = true) : instance(VK_NULL_HANDLE),
+                                                         mess(VK_NULL_HANDLE),
+                                                         device(VK_NULL_HANDLE),
+                                                         surface(VK_NULL_HANDLE),
+                                                         vulkan_debug(vulkan_debug) {
     painter::load_dispatcher1();
 
     // создадим инстанс и девайс
@@ -77,12 +82,20 @@ struct vulkan_init {
     ai.engineVersion = engine_version;
     ai.apiVersion = api_version;
 
-    std::vector<const char*> exts = {"VK_EXT_debug_utils"};
+    std::vector<const char*> exts;
+    if (vulkan_debug) {
+      exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
 
     vk::InstanceCreateInfo ici{};
     ici.pApplicationInfo = &ai;
-    ici.enabledLayerCount = painter::default_validation_layers.size();
-    ici.ppEnabledLayerNames = painter::default_validation_layers.data();
+    if (vulkan_debug) {
+      if (!painter::check_validation_layer_support(painter::default_validation_layers)) {
+        utils::error{}("Requested Vulkan validation layers are not available");
+      }
+      ici.enabledLayerCount = painter::default_validation_layers.size();
+      ici.ppEnabledLayerNames = painter::default_validation_layers.data();
+    }
     uint32_t count = 0;
     const auto ptrs = input::get_required_instance_extensions(&count);
     for (uint32_t i = 0; i < count; ++i) {
@@ -93,10 +106,12 @@ struct vulkan_init {
 
     instance = vk::createInstance(ici);
     painter::load_dispatcher2(instance);
-    mess = painter::create_debug_messenger(instance);
+    if (vulkan_debug) {
+      mess = painter::create_debug_messenger(instance);
+    }
 
     {
-      const auto layers_str = join_arr(painter::default_validation_layers, ", ");
+      const auto layers_str = vulkan_debug ? join_arr(painter::default_validation_layers, ", ") : std::string();
       const auto ext_str = join_arr(exts, ", ");
       utils::info("Created vulkan instance with layers '{}' and extensions '{}', api version {}", layers_str, ext_str, api_version);
     }

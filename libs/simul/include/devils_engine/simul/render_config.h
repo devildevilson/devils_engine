@@ -34,6 +34,7 @@ struct render_system_config {
   uint32_t engine_version = VK_MAKE_VERSION(0, 1, 1);
   bool create_vulkan_on_init = true;
   bool headless = false;
+  bool vulkan_debug = false;
 };
 
 } // namespace simul

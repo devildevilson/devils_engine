@@ -90,11 +90,4 @@ VK_DEFINE_HANDLE(VmaVirtualBlock)
 typedef struct VmaAllocator_T* VmaAllocator;
 typedef struct VmaAllocation_T* VmaAllocation;
 
-// это имеет смысл сделать в рантайме
-#ifdef _NDEBUG
-constexpr bool enable_validation_layers = false;
-#else
-constexpr bool enable_validation_layers = true;
-#endif
-
 #endif

@@ -23,7 +23,7 @@ const std::vector<const char*> default_validation_layers = {"VK_LAYER_KHRONOS_va
 const std::vector<const char*> default_device_extensions = {"VK_KHR_swapchain"};
 
 bool check_validation_layer_support(const std::vector<const char*>& layers);
-std::vector<const char*> get_required_extensions(bool require_surface = true);
+std::vector<const char*> get_required_extensions(bool require_surface = true, bool debug_utils = false);
 
 void load_dispatcher1();
 void load_dispatcher1(bool require_glfw_surface);

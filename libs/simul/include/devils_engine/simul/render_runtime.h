@@ -201,10 +201,10 @@ void standard_render_create_instance(State& c) {
   ai.engineVersion = c.config.engine_version;
   ai.apiVersion = VK_API_VERSION_1_0;
 
-  std::vector<const char*> exts = painter::get_required_extensions(!c.config.headless);
+  std::vector<const char*> exts = painter::get_required_extensions(!c.config.headless, c.config.vulkan_debug);
   vk::InstanceCreateInfo ici{};
   ici.pApplicationInfo = &ai;
-  if (::enable_validation_layers) {
+  if (c.config.vulkan_debug) {
     if (!painter::check_validation_layer_support(painter::default_validation_layers)) {
       utils::error{}("Requested Vulkan validation layers are not available");
     }
@@ -219,7 +219,9 @@ void standard_render_create_instance(State& c) {
   c.instance = vk::createInstance(ici);
   DE_LOG(catalogue::log_domain::render, flow, "{}: Vulkan instance created", c.config.app_name);
   painter::load_dispatcher2(c.instance);
-  c.debug_messenger = painter::create_debug_messenger(c.instance);
+  if (c.config.vulkan_debug) {
+    c.debug_messenger = painter::create_debug_messenger(c.instance);
+  }
   c.instance_ready = true;
 }
 

@@ -1,9 +1,11 @@
 #include <array>
+#include <string_view>
 #include <type_traits>
 
 #include <doctest/doctest.h>
 
 #include <devils_engine/painter/queue.h>
+#include <devils_engine/painter/auxiliary.h>
 
 using namespace devils_engine;
 
@@ -54,3 +56,12 @@ TEST_CASE("painter queue plan preserves transfer separation with two universal q
 
 static_assert(!std::is_same_v<painter::graphics_queue, painter::transfer_queue>);
 static_assert(!std::is_same_v<painter::graphics_queue, painter::compute_queue>);
+
+TEST_CASE("painter debug utils extension is selected at runtime") {
+  const auto plain = painter::get_required_extensions(false, false);
+  const auto debug = painter::get_required_extensions(false, true);
+
+  CHECK(plain.empty());
+  REQUIRE(debug.size() == 1);
+  CHECK(std::string_view(debug.front()) == "VK_EXT_debug_utils");
+}

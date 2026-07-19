@@ -60,6 +60,8 @@ metrics = {
 logging = {
   console = true
   file = ""
+  // Startup/restart option. Enables VK_LAYER_KHRONOS_validation and VK_EXT_debug_utils.
+  vulkan_debug = false
   // глубина на домен: off / info / flow / trace (по умолчанию off). Меняется и в рантайме
   // через app.set_log_level(domain, depth). Базовый always-on слой (подсистемы/окно/устройства)
   // идёт всегда, независимо от этих уровней.
