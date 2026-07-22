@@ -655,6 +655,7 @@ private:
   std::vector<presentation_command> presentation_outbox_;
   // Presentation task ids are derived and intentionally absent from snapshots.
   std::vector<simul::presentation_task_id> active_beat_tasks_;
+  simul::presentation_task_id active_response_task_ = 0;
   uint64_t next_presentation_task_ = 1;
   instance_id next_instance_ = 1;
   instance_id next_root_ = 1;

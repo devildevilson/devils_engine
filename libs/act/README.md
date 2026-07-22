@@ -218,6 +218,9 @@ A*-контейнер и solution cache.
 
 `make_stats<stats>(...)` остаётся обычной aggregate initialization, а `register_stats` независимо от
 способа создания публикует типизированный ds-scope (`stats.health`, `stats = { add_health(…) }`).
+Mutable API намеренно сохранён. Для pipeline-ов, где прямой `add_*` обошёл бы authoritative outcome,
+`register_stats_readonly` публикует тот же scope и reflected field readers, но не регистрирует writers;
+низкоуровневые `register_stat_readers`/`register_stat_writers` доступны для явной композиции.
 
 ## Deferred effects
 

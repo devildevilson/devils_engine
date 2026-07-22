@@ -118,20 +118,51 @@ constexpr StatsT initialize_stats(Initializer&& init) {
   return out;
 }
 
-// Регистрирует локальные функции типа stats-scope. Одинаковые имена полей разных агрегатов
-// корректно перегружаются devils_script по типу текущего scope.
-template <numeric_stats_aggregate StatsT, auto Domain>
-void register_stat_accessors(devils_script::system& sys) {
+// Регистрирует только локальные readers типа stats-scope. Это отдельная точка для pipeline-ов,
+// где прямое изменение компонента обошло бы authoritative outcome/commit слой.
+template <numeric_stats_aggregate StatsT>
+void register_stat_readers(devils_script::system& sys) {
   reflect::for_each<StatsT>([&](auto Idx) {
     constexpr std::size_t I = decltype(Idx)::value;
     const std::string field(reflect::member_name<I, StatsT>());
-    sys.register_function<&stats_detail::read<StatsT, stat_scope<StatsT>, &stat_scope_getter<StatsT>, I>>(field);
+    sys.register_function<
+      &stats_detail::read<StatsT, stat_scope<StatsT>, &stat_scope_getter<StatsT>, I>>(
+      field);
+  });
+}
+
+// Регистрирует только локальные add_<field> writers. Публичный register_stats ниже сохраняет
+// прежнее поведение readers+writes; разделение нужно не для его замены, а для явного opt-out.
+template <numeric_stats_aggregate StatsT, auto Domain>
+void register_stat_writers(devils_script::system& sys) {
+  reflect::for_each<StatsT>([&](auto Idx) {
+    constexpr std::size_t I = decltype(Idx)::value;
+    const std::string field(reflect::member_name<I, StatsT>());
 
     using traits = typename catalogue::domain<Domain>::template fn_traits<
-      &stats_detail::add<StatsT, stat_scope<StatsT>, &stat_scope_getter<StatsT>, I>, stats_detail::add_name<StatsT, I>(),
-      utils::template_string_t("scope"), utils::template_string_t("value")>;
+      &stats_detail::add<StatsT, stat_scope<StatsT>, &stat_scope_getter<StatsT>, I>,
+      stats_detail::add_name<StatsT, I>(), utils::template_string_t("scope"),
+      utils::template_string_t("value")>;
     sys.register_function<traits::fn_ptr>("add_" + field);
   });
+}
+
+// Регистрирует локальные readers и writers типа stats-scope. Одинаковые имена полей разных
+// агрегатов корректно перегружаются devils_script по типу текущего scope.
+template <numeric_stats_aggregate StatsT, auto Domain>
+void register_stat_accessors(devils_script::system& sys) {
+  register_stat_readers<StatsT>(sys);
+  register_stat_writers<StatsT, Domain>(sys);
+}
+
+// Полная read-only регистрация stats scope: scope getter + reflected field readers, без add_*.
+// Соседний register_stats намеренно остаётся mutable и сохраняет прежний API/семантику.
+template <numeric_stats_aggregate StatsT, typename ParentScope, auto Getter>
+void register_stats_readonly(devils_script::system& sys,
+                             const std::string_view scope_name) {
+  sys.register_function<&stats_detail::enter<StatsT, ParentScope, Getter>>(
+    std::string(scope_name));
+  register_stat_readers<StatsT>(sys);
 }
 
 // Полная регистрация одного проектного stats-компонента: ParentScope --scope_name--> stat_scope<T>,

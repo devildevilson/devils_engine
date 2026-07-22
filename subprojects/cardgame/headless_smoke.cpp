@@ -209,6 +209,27 @@ int main() {
   }
   mid_resolution.update(++mid_resolution_tick);
   mid_commands = mid_resolution.take_presentation_commands();
+  check(mid_commands.size() == 1 &&
+          mid_commands.front().kind == cg::presentation_command_kind::start &&
+          mid_commands.front().subject == cg::presentation_subject::returned_damage,
+        "retaliation did not open its own immediate authored attack cue");
+  const auto mid_retaliation_snapshot = mid_resolution.save();
+  const auto retaliation_task = mid_commands.front().task;
+  check(mid_resolution.notify_presentation(
+          retaliation_task, devils_engine::simul::presentation_event_kind::gameplay),
+        "could not deliver retaliation gameplay marker");
+  mid_resolution.update(++mid_resolution_tick);
+  mid_commands = mid_resolution.take_presentation_commands();
+  check(mid_commands.size() == 1 &&
+          mid_commands.front().kind == cg::presentation_command_kind::result &&
+          mid_commands.front().subject == cg::presentation_subject::returned_damage &&
+          mid_commands.front().results.size() == 1,
+        "retaliation did not publish its own immediate authored attack result");
+  check(mid_resolution.notify_presentation(
+          retaliation_task, devils_engine::simul::presentation_event_kind::finished),
+        "could not finish retaliation authored attack");
+  mid_resolution.update(++mid_resolution_tick);
+  mid_commands = mid_resolution.take_presentation_commands();
   check(mid_commands.size() == 2 &&
           std::all_of(mid_commands.begin(), mid_commands.end(), [](const auto& command) {
             return command.kind == cg::presentation_command_kind::result;
@@ -222,8 +243,8 @@ int main() {
     mid_commands.begin(), mid_commands.end(), [](const auto& command) {
       return command.subject == cg::presentation_subject::effect;
     });
-  check(attack_result != mid_commands.end() && attack_result->results.size() == 3,
-        "one attack animation did not aggregate primary/reaction/retaliation outcomes");
+  check(attack_result != mid_commands.end() && attack_result->results.size() == 2,
+        "outer attack result did not exclude the separately animated retaliation outcome");
   check(status_result != mid_commands.end() && status_result->results.size() == 1,
         "status animation did not receive its own outcome range");
   check(mid_resolution.state().enemy.hp == 96 && mid_resolution.state().player.hp == 29,
@@ -239,6 +260,14 @@ int main() {
         "mid-resolution resume lost or duplicated reaction/return/effect work");
   check(resumed_resolution.last_resolution() == elemental_headless.last_resolution(),
         "mid-resolution resume changed the materialized resolution trace");
+
+  cg::combat resumed_retaliation(cg::run_mode::headless);
+  resumed_retaliation.load(mid_retaliation_snapshot);
+  uint64_t resumed_retaliation_tick = 0;
+  drive_to_player(resumed_retaliation, resumed_retaliation_tick);
+  check(resumed_retaliation.state() == elemental_headless.state() &&
+          resumed_retaliation.last_resolution() == elemental_headless.last_resolution(),
+        "resume at retaliation cue lost or duplicated its authoritative attack commit");
 
   // Two attack instances create two return instances. Returned damage is marked non-recursive,
   // even when both combatants own thorns.

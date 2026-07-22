@@ -6,14 +6,17 @@ add_library(cardgame_core STATIC
   include/cardgame/effect_program.h
   include/cardgame/follow_up.h
   include/cardgame/combat.h
+  include/cardgame/combat_script.h
   src/effect_program.cpp
   src/follow_up.cpp
   src/combat.cpp
+  src/combat_script.cpp
 )
 add_library(cardgame::core ALIAS cardgame_core)
 target_link_libraries(cardgame_core PUBLIC
   devils_engine::resolve
   devils_engine::simul
+  devils_engine::act
   devils_engine::options
 )
 target_include_directories(cardgame_core PUBLIC
@@ -48,6 +51,13 @@ if (DEVILS_ENGINE_BUILD_TESTS)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
   add_test(NAME cardgame_typed_effect_test COMMAND cardgame_typed_effect_test)
   set_tests_properties(cardgame_typed_effect_test PROPERTIES LABELS devils_engine)
+
+  add_executable(cardgame_combat_script_test combat_script_test.cpp)
+  target_link_libraries(cardgame_combat_script_test PRIVATE cardgame::core devils_engine::options)
+  set_target_properties(cardgame_combat_script_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
+  add_test(NAME cardgame_combat_script_test COMMAND cardgame_combat_script_test)
+  set_tests_properties(cardgame_combat_script_test PROPERTIES LABELS devils_engine)
 
   add_executable(cardgame_headless_smoke headless_smoke.cpp)
   target_link_libraries(cardgame_headless_smoke PRIVATE cardgame::core devils_engine::options)
