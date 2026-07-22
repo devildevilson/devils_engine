@@ -1397,6 +1397,162 @@ fake-render и расширить таблицу реакций/стабильн
    корни (§7.9), положительные → снятие щитов → DoT → отрицательные, очистка стихийных меток, фиксация руки,
    списание/перенос инициативы → проверка итога → `turn_begin` или `battle_over`.
 
+**⚠ TODO — реализовать и проверить порядок как иерархию групп (рабочий контракт 2026-07-22;
+зафиксировать API только после scenario tests).** Перед расширением текущего `cardgame` ещё раз пройти весь расчёт урона и
+проверить порядок его внутренних стадий в контексте ПОЛНОГО пайплайна разыгранной карты. Текущий атомарный
+порядок `modifiers → shield/HP → elemental reaction → retaliation` доказывает работу `libs/resolve`, но не
+обязан быть окончательным gameplay-порядком. В частности, надо заново расставить gather/prepare/route,
+commit guards, elemental/status outcomes, listener scripts, retaliation и death boundary относительно
+следующего эффекта карты и следующих участников действия.
+
+Предпочтительная форма следующей ревизии — не плоско выбросить наружу все прежние §2.1–2.16, а сделать
+крупные сериализуемые **группы**, каждая из которых владеет своим маленьким упорядоченным степпером:
+
+1. **Начало хода.**
+2. **Ожидание действия игрока:** карта, конец хода, побег или другой project intent.
+3. **Начало действия игрока.**
+4. **Эффекты карты.**
+5. **Реакции союзников.**
+6. **Реакции противников.**
+7. **Реакции персонажа, использовавшего карту.**
+8. **Атака/заклинание противника.**
+9. **Реакции персонажей игрока на действие противника.**
+10. **Реакции стороны противников на действие противника.**
+11. **Реакции конкретного противника, выполнившего действие.**
+12. **Конец действия** — после разрешения ответа противника.
+13. **Конец хода.**
+
+Предполагаемое внутреннее содержание групп:
+
+- **Начало хода (1):** эффекты начала хода союзников → эффекты начала хода противников → добавить карты
+  в руку → вычислить/обновить ресурс действия.
+- **Начало действия (3):** validate/fix actor+card+targets/pay, затем replacement/intercept до исполнения.
+  Успешная кража означает, что карта фактически НЕ разыграна: группы 4, 5, 6 и follow-up часть 7
+  пропускаются. Но это всё ещё полное действие игрока: `ActorStateTick` выполняется, action countdown
+  продвигается и затем разрешается обычная очередь противников.
+- **Эффекты карты (4):** полностью и последовательно разрешать атомарные инструкции текста карты, например
+  `damage instance → damage instance → взять карту в руку`; не схлопывать multi-hit. Только после завершения
+  всей карты заморозить её `execution_report` для follow-up групп.
+- **Союзники / противники / использовавший карту (5–7):** это три последовательных follow-up pass над
+  ОДНИМ отчётом карты: player allies → enemies → actor. Каждый follow-up effect декларативно указывает,
+  какие категории отчёта его включают (`has attack`, `has elemental reaction`, `has stat change`, ...).
+  C++ вызывает подходящий script РОВНО ОДИН раз на rule, а script сам проходит стабильные списки всех атак,
+  реакций или stat changes и решает, сколько attack/heal/other instances создать. Work группы 5 полностью
+  разрешается до группы 6, затем группа 6 до группы 7; eligibility проверяется по живому состоянию.
+  Follow-up work не попадает обратно в исходный report и не может открыть follow-up-on-follow-up — это
+  такой же жёсткий запрет карточного проекта, как retaliation-on-retaliation в общем resolver-е. После
+  self-follow-up части группы 7 ровно один раз запускается отдельный
+  `ActorStateTick: DoT → negative → positive`; follow-up сам никогда не тикает состояния.
+- **Атака противника (8):** аналог группы эффектов карты, но источником является project-defined
+  последовательность ударов/заклинаний, а не обязательно объект карты.
+- **Ответные группы (9–11):** те же роли, что 5–7, но точкой отсчёта является действие противника:
+  сначала персонажи игрока, затем сторона противников, затем конкретный исполнитель атаки; после его
+  self-follow-up отдельно выполняется один `ActorStateTick`. Группы 8–11 повторяются на каждое готовое
+  конечное enemy execution, а не превращают его отдельные hits в действия.
+- **Конец действия (12):** эффекты, которые должны произойти только после завершения действия игрока и
+  связанного с ним ответа противника.
+- **Конец хода (13):** до локальных end-turn эффектов разыграть все оставшиеся готовые атаки противников,
+  разрешить корни и другие специальные эффекты, затем закончить ход.
+
+Для локального пайплайна состояний персонажа принят более предсказуемый для игрока порядок:
+**DoT → отрицательные эффекты → положительные эффекты**. Это намеренно заменяет старые строки выше
+(`positive → DoT → negative`); scenario tests должны проверить последствия, после чего надо синхронно
+исправить старый `combat_pipeline`, все границы действия/хода, preview и тесты.
+
+`execution_report` нужен как временный owning/snapshot-safe вход последующих групп, но не должен копировать
+все тяжёлые outcomes. Предпочтительная реализация: `resolution_work` владеет стабильными typed trace-массивами,
+а report содержит execution/card/actor, category mask и упорядоченные `effect_ref {kind,index}`/диапазоны
+записей, созданных ТОЛЬКО группой 4. Script scope даёт `each_attack`, `each_healing`,
+`each_elemental_reaction` или общий filter по kind. Для украденной карты допустим маленький отчёт
+`action committed + card stolen`, но follow-up window не открывается, потому что нет факта успешного
+`card executed`.
+
+Нужен общий pointer-free **effect instance/outcome envelope** с provenance и project kind, но payload и
+outcome остаются типизированными: `attack_instance`, `damage_instance`, `healing_instance`,
+`agility_damage_instance`, draw/status/... . Семантический kind и знак значения ОРТОГОНАЛЬНЫ:
+`attack(-5)` остаётся атакой и проходит attack/damage rules, а `healing(-5)` остаётся лечением и проходит
+healing effectiveness/resistance/cap rules; C++ не выводит тип эффекта из знака. `execution_report`
+перечисляет общие refs в semantic order, а ds легко фильтрует typed scopes и сам решает, сколько нового
+work породить.
+
+Точная проектная иерархия терминов:
+
+```text
+execution (карта / enemy ability / follow-up / status tick / pre-card effect)
+  → effect_program
+    → ordered beat[]
+      → authored effect[] одного semantic batch
+        → target_set
+        → один вызов effect script
+          → N typed effect/work instances
+            → N typed outcomes и intrinsic children
+```
+
+Формат программы эффектов задаётся вложенным списком, например
+`effects = [[eff1,eff2],[eff3],[eff4,eff5,eff6]]`. Внешний список строго последователен; каждый внутренний
+список — один beat/batch. Presentation запускает эффекты одного beat одновременно, затем следующий beat;
+gameplay всё равно вызывает `eff1..eff6` в стабильном порядке и не использует arrival order render-событий.
+Один authored effect имеет ОДНУ animation identity и ОДИН script call, даже если script породил три damage
+instances: presentation показывает один удар по цели, а после commit может вывести три отдельных числа по
+outcomes. Та же форма effect_program разрешена для карт, DoT/status ticks, follow-up и enemy executions.
+
+Death predicate вызывается после outcomes каждого instance и защёлкивает смерть сразу, но отмена действует
+на границе beat: все заранее materialized effects/targets текущего внутреннего списка доигрываются, а
+следующий beat для умершего required actor/target уже не запускается. Target sets всех authored effects beat
+фиксируются authoritative gameplay ДО cue. Поэтому AoE/случайные цели и animated/headless получают один
+результат независимо от физического порядка анимаций.
+
+Рабочие targeter-ы проекта: `target` (зафиксированная выбранная цель, включая self/ally/enemy),
+`random_target` (детерминированный выбор из eligible snapshot) и `all_targets` (AoE snapshot всех eligible
+целей в stable order). Все три создают один authored atomic effect и один script call; target set может иметь
+1 или N участников, а script порождает нужные per-target instances. Между beats targeter запускается заново:
+умершая выбранная цель делает следующий beat для неё недопустимым, random может выбрать другую, AoE получает
+новый snapshot. Внутри одного beat смерть не меняет уже зафиксированный target set.
+
+✅ **Target binding зафиксирован в коде (2026-07-22):** default — каждый authored effect независимо
+материализует target set в начале beat. Ненулевой явный `target_binding_id` связывает несколько effects и
+переиспользует ровно один snapshot/random choice; одинаковый key с отличающимся targeter, fixed target или
+eligible set является громкой ошибкой данных. `target` проверяет выбранную цель против eligible snapshot,
+`random_target` выбирает один раз на authored effect/binding, `all_targets` сохраняет весь stable-order
+snapshot. `cardgame_effect_program_test` проверяет independent/shared random selection, fixed target, AoE и
+fail-loud validation.
+
+✅ **Первый grouped effect-program slice жив (2026-07-22):** `subprojects/cardgame` хранит pointer-free
+`effect_program → effect_beat[] → authored_effect[] → effect_ref`; typed recipes отделены от emitted
+`effect_instance_ref`. Все target sets beat материализуются до cue, authored cues публикуются одним
+presentation batch, после общего gameplay barrier scripts исполняются последовательно, а затем один result
+на authored effect несёт его typed outcome range. `execution_report` сохраняет beat/effect identity,
+target snapshot и диапазоны emitted plan/damage/effect outcomes. `double_strike` доказывает один authored
+call с двумя attack instances, `fire_strike` — два authored effects одного beat, `combo_strike` — отмену
+следующего beat после latched death; animated/headless и resume остаются идентичны.
+
+Один `attack_instance` может породить N дочерних `damage_instance` под общей provenance. Damage по щиту и
+остаток по здоровью лучше фиксировать отдельными instances/outcomes: shield-child уничтожает/уменьшает щит,
+HP-child применяет остаток к здоровью. Это сохраняет наблюдаемые факты для скриптов, presentation и
+follow-up и не прячет несколько authoritative writes в одном агрегированном поле. Точная route policy для
+отрицательной атаки тоже выбирается семантикой attack/damage, а не неявным clamp до нуля.
+
+После КАЖДОГО committed effect instance вызывается project death predicate для затронутой сущности — в том
+числе после attack/damage, `healing(-N)`, follow-up attack/healing, каждого DoT и специального эффекта.
+Результат смерти защёлкивается немедленно, а фактическое structural удаление actor/entity может произойти на
+удобной явной boundary. Уже sealed/in-flight batch instances всё равно доигрываются (их анимации/cue уже
+запущены), но перед переходом к СЛЕДУЮЩЕМУ FSM-step проверяется liveness требуемого исполнителя/цели: новые
+card beats, follow-up pass или actor-state steps мёртвого участника больше не начинаются.
+Состав такого batch определяется authoritative gameplay ДО отправки cue и одинаков в animated/headless;
+render не может случайно решить, какие поздние instances переживут смерть, лишь потому что успел показать их.
+
+Открытые вопросы этой ревизии:
+
+- каким стабильным ключом упорядочиваются несколько союзников/противников: текущая гипотеза — player side
+  раньше enemy side, внутри стороны явно выделенный участник/босс, затем stable entity id, actor всегда в
+  отдельном последнем pass;
+- какой минимальный erased `effect_ref`/typed-store API нужен ds, чтобы report не стал толстым variant и
+  при этом snapshot/describe/filter не зависели от указателей;
+- в какой точке после latched death выполняется structural cleanup/free-slot и какие on-death scripts
+  получают ещё доступ к snapshot погибшего;
+- какие именно damage stages должны быть общими в `libs/resolve`, а какие останутся project continuation
+  stages карточного боя. Не расширять общий API, пока эта группировка не проверена на нескольких картах.
+
 **Детерминизм / headless / скорость (три режима, один sim-результат):**
 - Барьер `[ЖДУ]` влияет ТОЛЬКО на то, КОГДА запустится следующий `[SIM]`, а не на его результат: во время
   ожидания FSM заблокирован, sim-состояние не меняется → `commit` детерминирован.
@@ -1418,13 +1574,15 @@ fake-render и расширить таблицу реакций/стабильн
 engine_gaps «наиболее важные проверки» + technical_scope «Этап 1. Проверка боевой модели» задают
 естественный первый вертикальный срез, который проверяет самые рискованные допущения:
 
-1. ✅ **Первый CG-1/CG-3 kernel** — новый растянутый по кадрам FSM, два animation checkpoint, resume и
-   animated/headless identity уже проверены. Следом записать ds карты в project-owned beat list и подключить
-   реальный render/flow broker вместо fake render; CG-2 остаётся проектной надстройкой.
+1. ✅ **Первый CG-1/CG-3 kernel** — новый растянутый по кадрам FSM, grouped project-owned effect program,
+   batched animation checkpoints, target snapshots/bindings, execution report, resume и animated/headless
+   identity уже проверены. Следом заменить hard-coded typed recipes ds-картами и подключить реальный
+   render/flow broker вместо fake render; CG-2 остаётся проектной надстройкой.
 2. ✅ **Первый generic resolution kernel** — `libs/resolve`: bounded MT journal, semantic id/order,
-   target groups, host-paced frontier, retaliation-lineage и minimum-HP commit guard. Следом перенести на
-   него cardgame resolver и добавить реальный ECS stage adapter/stress на тысячи consequences, не перенося
-   project ordering/elements/effects policy.
+   target groups, host-paced frontier, retaliation-lineage и minimum-HP commit guard. Cardgame resolver уже
+   перенесён на work/frontier/damage-route/retaliation. Grouped card pipeline уже имеет pointer-free
+   effect/instance refs и scenario tests; следом расширить typed envelope healing/attribute work и добавлять реальный ECS stage adapter/stress на
+   тысячи consequences, не перенося project ordering/elements/effects policy.
 3. **CG-5** (ресурс + предпросмотр как параллельное S+1) — прямая ближайшая цель дизайна: сравнить ману vs
    две инициативы на одном наборе 30–40 карт.
 4. **CG-13 + CG-4** (переиспользуемый UI-list слева + инструментарий выделения/навигации + прокидка

@@ -48,9 +48,14 @@ checkpoint. Различается драйвер, но не правила ра
 `resolve_pipeline_test` проверяет identity при 1/4 workers, порядок внутри цели, overflow, frontier,
 неоднозначный provenance, retaliation и бессмертие без воскрешения.
 
-Это ещё не готовый универсальный `damage_system`. Следующий слой должен появиться вместе с переносом
-реального потребителя: typed stage registry/callbacks, outcome/child scratch, ECS adapter и структурный
-death/effect commit. Не стоит заранее вшивать в библиотеку карточную последовательность стадий.
+Первый реальный потребитель теперь находится в `subprojects/cardgame`: один primary hit начинает owned
+`frontier_state`, элементальная реакция становится child, thorns проходит через `retaliation_journal`, а
+authoritative outcome хранит общий `damage_route`. Project turn/presentation FSM по-прежнему задаёт порядок
+`hit → reaction subtree → retaliation → next hit` и сериализует barrier-state для resume.
+
+Это ещё не готовый универсальный `damage_system`. Следующие слои должны вырасти из следующего реального
+потребителя: typed stage registry/callbacks, outcome/child scratch, ECS adapter и структурный death/effect
+commit. Не стоит вшивать в библиотеку карточную последовательность стадий.
 
 ## Термины
 
@@ -304,6 +309,10 @@ Retaliation создаётся только из уже sealed trigger с вал
 не меняет id последующих children. Если несколько producer paths законно сообщают одну rule, их
 `local_ordinal` всё равно должны различаться: уникальность provenance сохраняется до дедупликации rule key.
 
+`retaliation_journal::seal_ordered()` оставляет deduplicated records без id, чтобы project continuation
+мог передать их в `frontier_state::advance()` и включить в общие frontier/total budgets. Обычный `seal()`
+остаётся convenience-путём для отдельной project stage и назначает id сам.
+
 ## Общая damage-модель
 
 `damage_payload<Scalar, Kind>` содержит минимально общие данные:
@@ -533,7 +542,7 @@ serializable aggregate. Нельзя сохранять указатели, span
 5. serial structural lane для death/effect-container changes;
 6. catalogue statistics для gather/prepare/group commit/merge/frontier;
 7. 1/2/4/8-worker stress с тысячами roots и несколькими поколениями consequences;
-8. перенос cardgame damage resolver на это ядро без переноса project FSM, elemental table и effect policy.
+8. второй live consumer и проверка, какие части cardgame stage adapter действительно обобщаются.
 
 API следует расширять от таких потребителей. Не нужно превращать `resolve` в универсальный event bus,
 dependency graph, scripting VM или готовую боевую систему со встроенными стихиями.

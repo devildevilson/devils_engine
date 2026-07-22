@@ -37,6 +37,8 @@ struct frontier_state {
   bool complete() const noexcept {
     return status == frontier_status::complete;
   }
+
+  bool operator==(const frontier_state&) const noexcept = default;
 };
 
 namespace detail {
