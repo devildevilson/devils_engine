@@ -180,6 +180,23 @@ void combat::begin_card_resolution(combat_cursor& cursor) {
       effect_ref{effect_store_kind::effect, index},
       targeter{targeter_kind::target, independent_target_binding}};
   };
+  const auto healing = [this](const int32_t amount) {
+    const size_t index = resolution_.healing_effects.size();
+    resolution_.healing_effects.push_back(healing_effect{player_entity, amount});
+    return authored_effect{
+      effect_ref{effect_store_kind::healing, index},
+      targeter{targeter_kind::target, independent_target_binding},
+      authored_effect::target_domain::self};
+  };
+  const auto attribute_damage = [this](const attribute_kind attribute,
+                                       const int32_t amount) {
+    const size_t index = resolution_.attribute_damage_effects.size();
+    resolution_.attribute_damage_effects.push_back(
+      attribute_damage_effect{player_entity, attribute, amount});
+    return authored_effect{
+      effect_ref{effect_store_kind::attribute_damage, index},
+      targeter{targeter_kind::target, independent_target_binding}};
+  };
 
   switch (cursor.active_card) {
     case card_kind::strike:
@@ -205,6 +222,20 @@ void combat::begin_card_resolution(combat_cursor& cursor) {
         effect_beat{{attack(element::none, 2, 1, false)}});
       resolution_.program.beats.push_back(
         effect_beat{{attack(element::none, 2, 1, false)}});
+      break;
+    case card_kind::inverse_strike:
+      resolution_.program.beats.push_back(
+        effect_beat{{attack(element::none, -5, 1, false)}});
+      break;
+    case card_kind::mend:
+      resolution_.program.beats.push_back(effect_beat{{healing(6)}});
+      break;
+    case card_kind::cursed_mend:
+      resolution_.program.beats.push_back(effect_beat{{healing(-7)}});
+      break;
+    case card_kind::cripple:
+      resolution_.program.beats.push_back(
+        effect_beat{{attribute_damage(attribute_kind::agility, 4)}});
       break;
   }
 }
@@ -247,9 +278,17 @@ void combat::begin_attack_frontier(const attack_instance& attack) {
   resolution_.responses.clear();
 }
 
-std::vector<entity_id> combat::eligible_targets(const entity_id source) const {
+std::vector<entity_id> combat::eligible_targets(
+  const entity_id source,
+  const authored_effect::target_domain domain) const {
   std::vector<entity_id> result;
-  const combatant_state* candidate = source == player_entity ? &state_.enemy : &state_.player;
+  const combatant_state* candidate = nullptr;
+  if (domain == authored_effect::target_domain::self) {
+    candidate = find_combatant(source);
+  } else {
+    candidate = source == player_entity ? &state_.enemy : &state_.player;
+  }
+  if (candidate == nullptr) return result;
   if (candidate->hp > 0) result.push_back(candidate->id);
   return result;
 }
@@ -268,6 +307,19 @@ void combat::materialize_beat(resolution_cursor& cursor) {
         }
         source = resolution_.attack_effects[effect.body.index].source;
         break;
+      case effect_store_kind::healing:
+        if (effect.body.index >= resolution_.healing_effects.size()) {
+          throw std::out_of_range("cardgame authored healing recipe index is invalid");
+        }
+        source = resolution_.healing_effects[effect.body.index].source;
+        break;
+      case effect_store_kind::attribute_damage:
+        if (effect.body.index >= resolution_.attribute_damage_effects.size()) {
+          throw std::out_of_range(
+            "cardgame authored attribute damage recipe index is invalid");
+        }
+        source = resolution_.attribute_damage_effects[effect.body.index].source;
+        break;
       case effect_store_kind::effect:
         if (effect.body.index >= resolution_.status_effects.size()) {
           throw std::out_of_range("cardgame authored status recipe index is invalid");
@@ -275,8 +327,12 @@ void combat::materialize_beat(resolution_cursor& cursor) {
         source = resolution_.status_effects[effect.body.index].source;
         break;
     }
+    const entity_id fixed_target =
+      effect.domain == authored_effect::target_domain::self
+        ? source
+        : resolution_.report.selected_target;
     queries.push_back(target_query{
-      effect.targets, resolution_.report.selected_target, eligible_targets(source)});
+      effect.targets, fixed_target, eligible_targets(source, effect.domain)});
   }
 
   const uint64_t entropy =
@@ -296,6 +352,9 @@ void combat::invoke_authored_effect(authored_effect_report& call) {
   call.plan_begin = resolution_.plan.size();
   call.damage_outcome_begin = resolution_.damage_trace.size();
   call.effect_outcome_begin = resolution_.effect_trace.size();
+  call.healing_outcome_begin = resolution_.healing_trace.size();
+  call.attribute_outcome_begin = resolution_.attribute_damage_trace.size();
+  call.outcome_begin = resolution_.outcomes.size();
 
   switch (call.body.kind) {
     case effect_store_kind::attack: {
@@ -315,6 +374,40 @@ void combat::invoke_authored_effect(authored_effect_report& call) {
       }
       if (resolution_.plan.size() != call.plan_begin) {
         add_category(resolution_.report.categories, execution_category::attack);
+      }
+      break;
+    }
+    case effect_store_kind::healing: {
+      const healing_effect& effect = resolution_.healing_effects.at(call.body.index);
+      for (const entity_id target : call.target_set.targets) {
+        const size_t index = resolution_.healings.size();
+        resolution_.healings.push_back(healing_instance{
+          0, resolution_.report.execution, effect.source, target, effect.amount});
+        resolution_.plan.push_back(
+          effect_instance_ref{effect_store_kind::healing, index});
+      }
+      if (resolution_.plan.size() != call.plan_begin) {
+        add_category(resolution_.report.categories, execution_category::healing);
+      }
+      break;
+    }
+    case effect_store_kind::attribute_damage: {
+      const attribute_damage_effect& effect =
+        resolution_.attribute_damage_effects.at(call.body.index);
+      for (const entity_id target : call.target_set.targets) {
+        const size_t index = resolution_.attribute_damages.size();
+        resolution_.attribute_damages.push_back(attribute_damage_instance{
+          0,
+          resolution_.report.execution,
+          effect.source,
+          target,
+          effect.attribute,
+          effect.amount});
+        resolution_.plan.push_back(
+          effect_instance_ref{effect_store_kind::attribute_damage, index});
+      }
+      if (resolution_.plan.size() != call.plan_begin) {
+        add_category(resolution_.report.categories, execution_category::attribute_change);
       }
       break;
     }
@@ -340,35 +433,76 @@ void combat::invoke_authored_effect(authored_effect_report& call) {
 void combat::finalize_authored_effect(authored_effect_report& call) {
   call.damage_outcome_count = resolution_.damage_trace.size() - call.damage_outcome_begin;
   call.effect_outcome_count = resolution_.effect_trace.size() - call.effect_outcome_begin;
+  call.healing_outcome_count = resolution_.healing_trace.size() - call.healing_outcome_begin;
+  call.attribute_outcome_count =
+    resolution_.attribute_damage_trace.size() - call.attribute_outcome_begin;
+  call.outcome_count = resolution_.outcomes.size() - call.outcome_begin;
 }
 
 presentation_subject combat::subject_for(const authored_effect_report& call) const {
-  if (call.body.kind == effect_store_kind::effect) {
-    return presentation_subject::effect;
+  switch (call.body.kind) {
+    case effect_store_kind::attack: {
+      const attack_effect& effect = resolution_.attack_effects.at(call.body.index);
+      return effect.source == player_entity ? presentation_subject::player_attack
+                                            : presentation_subject::enemy_attack;
+    }
+    case effect_store_kind::healing:
+      return presentation_subject::healing;
+    case effect_store_kind::attribute_damage:
+      return presentation_subject::attribute_damage;
+    case effect_store_kind::effect:
+      return presentation_subject::effect;
   }
-  const attack_effect& effect = resolution_.attack_effects.at(call.body.index);
-  return effect.source == player_entity ? presentation_subject::player_attack
-                                        : presentation_subject::enemy_attack;
+  return presentation_subject::effect;
 }
 
 std::vector<presentation_command::result_value> combat::presentation_results(
   const authored_effect_report& call) const {
   std::vector<presentation_command::result_value> result;
-  result.reserve(call.damage_outcome_count + call.effect_outcome_count);
-  for (size_t i = 0; i < call.damage_outcome_count; ++i) {
-    const damage_outcome& outcome =
-      resolution_.damage_trace[call.damage_outcome_begin + i];
-    result.push_back(presentation_command::result_value{
-      damage_subject(outcome.damage), outcome.damage.header.id,
-      static_cast<entity_id>(outcome.damage.header.target),
-      outcome.route.hp_before - outcome.route.committed_hp_after, 0});
-  }
-  for (size_t i = 0; i < call.effect_outcome_count; ++i) {
-    const effect_outcome& outcome =
-      resolution_.effect_trace[call.effect_outcome_begin + i];
-    result.push_back(presentation_command::result_value{
-      presentation_subject::effect, outcome.request.id, outcome.request.target,
-      outcome.resulting_stacks, static_cast<uint32_t>(outcome.result)});
+  result.reserve(call.outcome_count);
+  for (size_t i = 0; i < call.outcome_count; ++i) {
+    const outcome_ref ref = resolution_.outcomes[call.outcome_begin + i];
+    switch (ref.kind) {
+      case outcome_store_kind::damage: {
+        const damage_outcome& outcome = resolution_.damage_trace.at(ref.index);
+        result.push_back(presentation_command::result_value{
+          damage_subject(outcome.damage), outcome.damage.header.id,
+          static_cast<entity_id>(outcome.damage.header.target),
+          outcome.route.hp_before - outcome.route.committed_hp_after, 0});
+        break;
+      }
+      case outcome_store_kind::healing: {
+        const healing_outcome& outcome = resolution_.healing_trace.at(ref.index);
+        result.push_back(presentation_command::result_value{
+          presentation_subject::healing,
+          outcome.healing.id,
+          outcome.healing.target,
+          outcome.route.committed_after - outcome.route.before,
+          0});
+        break;
+      }
+      case outcome_store_kind::attribute_damage: {
+        const attribute_damage_outcome& outcome =
+          resolution_.attribute_damage_trace.at(ref.index);
+        result.push_back(presentation_command::result_value{
+          presentation_subject::attribute_damage,
+          outcome.damage.id,
+          outcome.damage.target,
+          outcome.route.before - outcome.route.committed_after,
+          static_cast<uint32_t>(outcome.damage.attribute)});
+        break;
+      }
+      case outcome_store_kind::effect: {
+        const effect_outcome& outcome = resolution_.effect_trace.at(ref.index);
+        result.push_back(presentation_command::result_value{
+          presentation_subject::effect,
+          outcome.request.id,
+          outcome.request.target,
+          outcome.resulting_stacks,
+          static_cast<uint32_t>(outcome.result)});
+        break;
+      }
+    }
   }
   return result;
 }
@@ -409,7 +543,7 @@ damage_outcome combat::resolve_damage(const damage_instance& damage) {
 
   result.target_valid = true;
   result.modifiers = collect_resistance_modifiers(*target, damage);
-  int64_t current = std::max<int32_t>(damage.payload.amount, 0);
+  int64_t current = damage.payload.amount;
   for (const auto& modifier : result.modifiers) {
     switch (modifier.kind) {
       case damage_modifier_kind::add:
@@ -425,19 +559,124 @@ damage_outcome combat::resolve_damage(const damage_instance& damage) {
         current = 0;
         break;
     }
-    current = std::clamp<int64_t>(current, 0, std::numeric_limits<int32_t>::max());
+    current = std::clamp<int64_t>(
+      current,
+      std::numeric_limits<int32_t>::min(),
+      std::numeric_limits<int32_t>::max());
   }
 
   result.route.modified = static_cast<int32_t>(current);
-  result.route.shield_absorbed = std::min(target->shield, result.route.modified);
+  result.route.shield_absorbed = result.route.modified > 0
+                                   ? std::min(target->shield, result.route.modified)
+                                   : 0;
   result.route.hp_before = target->hp;
-  result.route.proposed_hp_after =
-    target->hp - (result.route.modified - result.route.shield_absorbed);
+  const int64_t proposed = static_cast<int64_t>(target->hp) -
+                           (result.route.modified - result.route.shield_absorbed);
+  result.route.proposed_hp_after = static_cast<int32_t>(std::clamp<int64_t>(
+    proposed,
+    std::numeric_limits<int32_t>::min(),
+    std::numeric_limits<int32_t>::max()));
   // Zero-flooring is cardgame's current death policy. Commit guards may adjust
   // committed_hp_after between route construction and this authoritative write.
-  result.route.committed_hp_after = std::max(result.route.proposed_hp_after, 0);
+  const int32_t upper = std::max(target->max_hp, target->hp);
+  result.route.committed_hp_after =
+    target->hp <= 0 && result.route.proposed_hp_after > target->hp
+      ? target->hp
+      : std::clamp(result.route.proposed_hp_after, 0, upper);
   target->shield -= result.route.shield_absorbed;
   target->hp = result.route.committed_hp_after;
+  result.committed = true;
+  return result;
+}
+
+healing_outcome combat::resolve_healing(const healing_instance& healing) {
+  healing_outcome result;
+  result.healing = healing;
+  result.route.requested = healing.amount;
+  combatant_state* target = find_combatant(healing.target);
+  if (target == nullptr) return result;
+
+  result.target_valid = true;
+  result.route.before = target->hp;
+  result.effectiveness_basis_points = std::clamp(
+    target->healing_effectiveness_basis_points, 0, basis_points * 2);
+  const int64_t modified =
+    static_cast<int64_t>(healing.amount) * result.effectiveness_basis_points /
+    basis_points;
+  result.route.modified = static_cast<int32_t>(std::clamp<int64_t>(
+    modified,
+    std::numeric_limits<int32_t>::min(),
+    std::numeric_limits<int32_t>::max()));
+
+  // Healing never resurrects a target after the death predicate latched it. Already materialized
+  // negative healing still produces a zero-delta outcome for the current beat.
+  if (target->hp <= 0) {
+    result.route.proposed_after = target->hp;
+    result.route.committed_after = target->hp;
+    return result;
+  }
+
+  const int64_t proposed =
+    static_cast<int64_t>(target->hp) + result.route.modified;
+  result.route.proposed_after = static_cast<int32_t>(std::clamp<int64_t>(
+    proposed,
+    std::numeric_limits<int32_t>::min(),
+    std::numeric_limits<int32_t>::max()));
+  const int32_t upper = std::max(target->max_hp, target->hp);
+  result.route.committed_after = std::clamp(result.route.proposed_after, 0, upper);
+  result.route.clamped = result.route.proposed_after - result.route.committed_after;
+  target->hp = result.route.committed_after;
+  result.committed = true;
+  return result;
+}
+
+attribute_damage_outcome combat::resolve_attribute_damage(
+  const attribute_damage_instance& damage) {
+  attribute_damage_outcome result;
+  result.damage = damage;
+  result.route.requested = damage.amount;
+  combatant_state* target = find_combatant(damage.target);
+  if (target == nullptr) return result;
+
+  int32_t* attribute = nullptr;
+  switch (damage.attribute) {
+    case attribute_kind::agility:
+      attribute = &target->agility;
+      break;
+    case attribute_kind::count:
+      throw std::invalid_argument("cardgame attribute damage kind is invalid");
+  }
+
+  result.target_valid = true;
+  result.route.before = *attribute;
+  const size_t resistance_index = static_cast<size_t>(damage.attribute);
+  result.resistance_basis_points = std::clamp(
+    target->attribute_resistance_basis_points.at(resistance_index),
+    -basis_points,
+    basis_points);
+  const int64_t modified =
+    static_cast<int64_t>(damage.amount) *
+    (basis_points - result.resistance_basis_points) / basis_points;
+  result.route.modified = static_cast<int32_t>(std::clamp<int64_t>(
+    modified,
+    std::numeric_limits<int32_t>::min(),
+    std::numeric_limits<int32_t>::max()));
+
+  if (target->hp <= 0) {
+    result.route.proposed_after = *attribute;
+    result.route.committed_after = *attribute;
+    return result;
+  }
+
+  const int64_t proposed =
+    static_cast<int64_t>(*attribute) - result.route.modified;
+  result.route.proposed_after = static_cast<int32_t>(std::clamp<int64_t>(
+    proposed,
+    std::numeric_limits<int32_t>::min(),
+    std::numeric_limits<int32_t>::max()));
+  result.route.committed_after = std::max(result.route.proposed_after, 0);
+  result.route.clamped = result.route.proposed_after - result.route.committed_after;
+  *attribute = result.route.committed_after;
   result.committed = true;
   return result;
 }
@@ -445,6 +684,8 @@ damage_outcome combat::resolve_damage(const damage_instance& damage) {
 void combat::resolve_damage_work(const damage_instance& damage) {
   damage_outcome outcome = resolve_damage(damage);
   resolution_.damage_trace.push_back(outcome);
+  resolution_.outcomes.push_back(outcome_ref{
+    outcome_store_kind::damage, resolution_.damage_trace.size() - 1});
   add_category(resolution_.report.categories, execution_category::damage);
   add_category(resolution_.report.categories, execution_category::stat_change);
   if (damage.payload.channel == damage_channel::reaction) {
@@ -677,20 +918,36 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
         cursor.stage = resolution_stage::select_effect;
         return simul::step_control::advance;
       }
-      if (resolution_.plan[cursor.item_index].kind == effect_store_kind::attack) {
-        cursor.attack_index = resolution_.plan[cursor.item_index].index;
-        begin_attack_frontier(resolution_.attacks[cursor.attack_index]);
-        if (!resolution_.damage_frontier.active()) {
-          return simul::step_control::halt;
+      switch (resolution_.plan[cursor.item_index].kind) {
+        case effect_store_kind::attack:
+          cursor.attack_index = resolution_.plan[cursor.item_index].index;
+          begin_attack_frontier(resolution_.attacks[cursor.attack_index]);
+          if (!resolution_.damage_frontier.active()) {
+            return simul::step_control::halt;
+          }
+          cursor.stage = resolution_stage::attack_commit;
+          break;
+        case effect_store_kind::healing: {
+          cursor.healing_index = resolution_.plan[cursor.item_index].index;
+          auto& healing = resolution_.healings.at(cursor.healing_index);
+          if (healing.id == resolve::invalid_instance) healing.id = allocate_instance();
+          cursor.stage = resolution_stage::healing_commit;
+          break;
         }
-        cursor.stage = resolution_stage::attack_commit;
-      } else {
-        cursor.effect_index = resolution_.plan[cursor.item_index].index;
-        auto& request = resolution_.effects[cursor.effect_index];
-        if (request.id == resolve::invalid_instance) {
-          request.id = allocate_instance();
+        case effect_store_kind::attribute_damage: {
+          cursor.attribute_damage_index = resolution_.plan[cursor.item_index].index;
+          auto& damage = resolution_.attribute_damages.at(cursor.attribute_damage_index);
+          if (damage.id == resolve::invalid_instance) damage.id = allocate_instance();
+          cursor.stage = resolution_stage::attribute_damage_commit;
+          break;
         }
-        cursor.stage = resolution_stage::effect_commit;
+        case effect_store_kind::effect: {
+          cursor.effect_index = resolution_.plan[cursor.item_index].index;
+          auto& request = resolution_.effects.at(cursor.effect_index);
+          if (request.id == resolve::invalid_instance) request.id = allocate_instance();
+          cursor.stage = resolution_stage::effect_commit;
+          break;
+        }
       }
       return simul::step_control::advance;
 
@@ -796,11 +1053,48 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
       cursor.stage = resolution_stage::select_item;
       return simul::step_control::advance;
 
+    case resolution_stage::healing_commit: {
+      const auto healing = resolution_.healings.at(cursor.healing_index);
+      resolution_.healing_trace.push_back(resolve_healing(healing));
+      const size_t outcome_index = resolution_.healing_trace.size() - 1;
+      resolution_.outcomes.push_back(
+        outcome_ref{outcome_store_kind::healing, outcome_index});
+      add_category(resolution_.report.categories, execution_category::stat_change);
+      record_death_check(outcome_store_kind::healing, outcome_index, healing.target);
+      cursor.stage = resolution_stage::healing_after;
+      return simul::step_control::advance;
+    }
+
+    case resolution_stage::healing_after:
+      ++cursor.item_index;
+      cursor.stage = resolution_stage::select_item;
+      return simul::step_control::advance;
+
+    case resolution_stage::attribute_damage_commit: {
+      const auto damage = resolution_.attribute_damages.at(cursor.attribute_damage_index);
+      resolution_.attribute_damage_trace.push_back(resolve_attribute_damage(damage));
+      const size_t outcome_index = resolution_.attribute_damage_trace.size() - 1;
+      resolution_.outcomes.push_back(
+        outcome_ref{outcome_store_kind::attribute_damage, outcome_index});
+      add_category(resolution_.report.categories, execution_category::stat_change);
+      record_death_check(
+        outcome_store_kind::attribute_damage, outcome_index, damage.target);
+      cursor.stage = resolution_stage::attribute_damage_after;
+      return simul::step_control::advance;
+    }
+
+    case resolution_stage::attribute_damage_after:
+      ++cursor.item_index;
+      cursor.stage = resolution_stage::select_item;
+      return simul::step_control::advance;
+
     case resolution_stage::effect_commit: {
       const auto request = resolution_.effects[cursor.effect_index];
       resolution_.effect_trace.push_back(resolve_effect(request));
-      record_death_check(outcome_store_kind::effect, resolution_.effect_trace.size() - 1,
-                         request.target);
+      const size_t outcome_index = resolution_.effect_trace.size() - 1;
+      resolution_.outcomes.push_back(
+        outcome_ref{outcome_store_kind::effect, outcome_index});
+      record_death_check(outcome_store_kind::effect, outcome_index, request.target);
       cursor.stage = resolution_stage::effect_after;
       return simul::step_control::advance;
     }
