@@ -1412,13 +1412,13 @@ commit guards, elemental/status outcomes, listener scripts, retaliation и death
 2. **Ожидание действия игрока:** карта, конец хода, побег или другой project intent.
 3. **Начало действия игрока.**
 4. **Эффекты карты.**
-5. **Реакции союзников.**
-6. **Реакции противников.**
-7. **Реакции персонажа, использовавшего карту.**
+5. **Общий follow-up pass всех персонажей игрока, включая исполнителя.**
+6. **Общий follow-up pass всех противников.**
+7. **ActorStateTick персонажа, использовавшего карту.**
 8. **Атака/заклинание противника.**
-9. **Реакции персонажей игрока на действие противника.**
-10. **Реакции стороны противников на действие противника.**
-11. **Реакции конкретного противника, выполнившего действие.**
+9. **Общий follow-up pass всех противников, включая исполнителя enemy execution.**
+10. **Общий follow-up pass всех персонажей игрока.**
+11. **ActorStateTick конкретного противника-исполнителя.**
 12. **Конец действия** — после разрешения ответа противника.
 13. **Конец хода.**
 
@@ -1427,28 +1427,30 @@ commit guards, elemental/status outcomes, listener scripts, retaliation и death
 - **Начало хода (1):** эффекты начала хода союзников → эффекты начала хода противников → добавить карты
   в руку → вычислить/обновить ресурс действия.
 - **Начало действия (3):** validate/fix actor+card+targets/pay, затем replacement/intercept до исполнения.
-  Успешная кража означает, что карта фактически НЕ разыграна: группы 4, 5, 6 и follow-up часть 7
-  пропускаются. Но это всё ещё полное действие игрока: `ActorStateTick` выполняется, action countdown
+  Успешная кража означает, что карта фактически НЕ разыграна: группы 4, 5 и 6 пропускаются, но группа 7
+  выполняется. Это всё ещё полное действие игрока: `ActorStateTick` выполняется, action countdown
   продвигается и затем разрешается обычная очередь противников.
 - **Эффекты карты (4):** полностью и последовательно разрешать атомарные инструкции текста карты, например
   `damage instance → damage instance → взять карту в руку`; не схлопывать multi-hit. Только после завершения
   всей карты заморозить её `execution_report` для follow-up групп.
-- **Союзники / противники / использовавший карту (5–7):** это три последовательных follow-up pass над
-  ОДНИМ отчётом карты: player allies → enemies → actor. Каждый follow-up effect декларативно указывает,
-  какие категории отчёта его включают (`has attack`, `has elemental reaction`, `has stat change`, ...).
-  C++ вызывает подходящий script РОВНО ОДИН раз на rule, а script сам проходит стабильные списки всех атак,
-  реакций или stat changes и решает, сколько attack/heal/other instances создать. Work группы 5 полностью
-  разрешается до группы 6, затем группа 6 до группы 7; eligibility проверяется по живому состоянию.
-  Follow-up work не попадает обратно в исходный report и не может открыть follow-up-on-follow-up — это
-  такой же жёсткий запрет карточного проекта, как retaliation-on-retaliation в общем resolver-е. После
-  self-follow-up части группы 7 ровно один раз запускается отдельный
-  `ActorStateTick: DoT → negative → positive`; follow-up сам никогда не тикает состояния.
+- **Party follow-up / ActorStateTick (5–7):** это два последовательных party pass над ОДНИМ отчётом карты:
+  все персонажи игрока, ВКЛЮЧАЯ исполнителя → все противники → отдельный ActorStateTick исходного
+  исполнителя. У исполнителя больше нет специального self-follow-up pass. Каждый follow-up effect
+  декларативно указывает, какие категории отчёта его включают (`has attack`, `has elemental reaction`,
+  `has stat change`, ...). C++ вызывает подходящий script РОВНО ОДИН раз на rule, а script сам проходит
+  стабильные списки всех атак, реакций или stat changes и решает, сколько attack/heal/other instances
+  создать. Work source-party полностью разрешается до opposing-party; eligibility проверяется перед
+  bucket каждого участника. Follow-up work не попадает обратно в исходный report и не может открыть
+  follow-up-on-follow-up — это такой же жёсткий запрет, как retaliation-on-retaliation. После обоих pass
+  ровно один раз запускается `ActorStateTick: DoT → negative → positive` исходного actor; остальные
+  участники партии state tick не получают.
 - **Атака противника (8):** аналог группы эффектов карты, но источником является project-defined
   последовательность ударов/заклинаний, а не обязательно объект карты.
-- **Ответные группы (9–11):** те же роли, что 5–7, но точкой отсчёта является действие противника:
-  сначала персонажи игрока, затем сторона противников, затем конкретный исполнитель атаки; после его
-  self-follow-up отдельно выполняется один `ActorStateTick`. Группы 8–11 повторяются на каждое готовое
-  конечное enemy execution, а не превращают его отдельные hits в действия.
+- **Ответные группы (9–11):** симметричны 5–7 относительно источника: после enemy execution сначала
+  общий pass ВСЕХ противников, включая исполнителя → общий pass всех персонажей игрока → отдельный
+  `ActorStateTick` исходного противника. Общий инвариант:
+  `Execution → SourceSidePartyFollowUps → OpposingSidePartyFollowUps → SourceActorStateTick`.
+  Группы 8–11 повторяются на каждое готовое конечное enemy execution, а не превращают hits в действия.
 - **Конец действия (12):** эффекты, которые должны произойти только после завершения действия игрока и
   связанного с ним ответа противника.
 - **Конец хода (13):** до локальных end-turn эффектов разыграть все оставшиеся готовые атаки противников,
@@ -1456,8 +1458,22 @@ commit guards, elemental/status outcomes, listener scripts, retaliation и death
 
 Для локального пайплайна состояний персонажа принят более предсказуемый для игрока порядок:
 **DoT → отрицательные эффекты → положительные эффекты**. Это намеренно заменяет старые строки выше
-(`positive → DoT → negative`); scenario tests должны проверить последствия, после чего надо синхронно
-исправить старый `combat_pipeline`, все границы действия/хода, preview и тесты.
+(`positive → DoT → negative`). Design-документ `combat_pipeline` уже синхронизирован; scenario tests ещё
+должны проверить кодовые границы действия/хода, preview и тесты.
+
+**Порядок участников follow-up party pass (решено 2026-07-22):** он намеренно выглядит хаотично, но
+authoritative и воспроизводим. В начале pass фиксируется eligible participant snapshot; участники
+сортируются по `(mix(combat_seed, action_token, side_domain, stable_entity_id), stable_entity_id)`.
+Следовательно, action `42` может дать `[2,1,3]`, action `119` — `[3,2,1]`; player/enemy имеют разные
+domain salts. Relative order одних actor остаётся тем же во всех party passes одного action даже при
+изменении состава. Умерший до своего bucket участник пропускается, новый после materialization не входит.
+Внутри одного actor несколько подходящих независимых follow-up rules сохраняют обычный project order
+(`priority/definition/effect id/local ordinal`) и НЕ перемешиваются. Для forced end-turn execution без
+player action используется отдельный монотонный cycle token. Этот порядок не меняет stable policy очереди
+самих enemy executions (босс/основной противник, затем project order). ✅ Проектный
+`materialize_follow_up_order` уже реализует и тестирует container-independent/subset-stable materialization,
+разные side domains и громкую валидацию duplicate/invalid participant; подключение materialized snapshot к
+группам FSM остаётся следующим слоем.
 
 `execution_report` нужен как временный owning/snapshot-safe вход последующих групп, но не должен копировать
 все тяжёлые outcomes. Предпочтительная реализация: `resolution_work` владеет стабильными typed trace-массивами,
@@ -1465,7 +1481,9 @@ commit guards, elemental/status outcomes, listener scripts, retaliation и death
 записей, созданных ТОЛЬКО группой 4. Script scope даёт `each_attack`, `each_healing`,
 `each_elemental_reaction` или общий filter по kind. Для украденной карты допустим маленький отчёт
 `action committed + card stolen`, но follow-up window не открывается, потому что нет факта успешного
-`card executed`.
+`card executed`. ✅ Компактный category mask и `follow_up_enabler {any_of, all_of}` уже живут в коде;
+текущий combat resolver отмечает attack/damage/stat-change/status/reaction/elemental/retaliation. Typed ds
+итераторы и категории healing/attribute будут подключены вместе с соответствующими instance stores.
 
 Нужен общий pointer-free **effect instance/outcome envelope** с provenance и project kind, но payload и
 outcome остаются типизированными: `attack_instance`, `damage_instance`, `healing_instance`,
@@ -1543,9 +1561,8 @@ render не может случайно решить, какие поздние 
 
 Открытые вопросы этой ревизии:
 
-- каким стабильным ключом упорядочиваются несколько союзников/противников: текущая гипотеза — player side
-  раньше enemy side, внутри стороны явно выделенный участник/босс, затем stable entity id, actor всегда в
-  отдельном последнем pass;
+- показывать ли materialized follow-up party order заранее в preview/UI или только объяснять его в
+  execution log после действия;
 - какой минимальный erased `effect_ref`/typed-store API нужен ds, чтобы report не стал толстым variant и
   при этом snapshot/describe/filter не зависели от указателей;
 - в какой точке после latched death выполняется structural cleanup/free-slot и какие on-death scripts

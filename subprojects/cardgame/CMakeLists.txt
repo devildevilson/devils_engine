@@ -4,8 +4,10 @@ project(cardgame VERSION 0.0.1 LANGUAGES CXX)
 
 add_library(cardgame_core STATIC
   include/cardgame/effect_program.h
+  include/cardgame/follow_up.h
   include/cardgame/combat.h
   src/effect_program.cpp
+  src/follow_up.cpp
   src/combat.cpp
 )
 add_library(cardgame::core ALIAS cardgame_core)
@@ -25,6 +27,13 @@ if (DEVILS_ENGINE_BUILD_TESTS)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
   add_test(NAME cardgame_effect_program_test COMMAND cardgame_effect_program_test)
   set_tests_properties(cardgame_effect_program_test PROPERTIES LABELS devils_engine)
+
+  add_executable(cardgame_follow_up_test follow_up_test.cpp)
+  target_link_libraries(cardgame_follow_up_test PRIVATE cardgame::core devils_engine::options)
+  set_target_properties(cardgame_follow_up_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
+  add_test(NAME cardgame_follow_up_test COMMAND cardgame_follow_up_test)
+  set_tests_properties(cardgame_follow_up_test PROPERTIES LABELS devils_engine)
 
   add_executable(cardgame_headless_smoke headless_smoke.cpp)
   target_link_libraries(cardgame_headless_smoke PRIVATE cardgame::core devils_engine::options)
