@@ -90,18 +90,26 @@ struct attack_instance {
   constexpr bool operator==(const attack_instance&) const noexcept = default;
 };
 
-using damage_payload = resolve::damage_payload<int32_t, element>;
+enum class damage_destination : uint8_t {
+  unrouted,
+  shield,
+  health
+};
+
+// `unrouted` is the magnitude/modifier root produced by an attack. It never mutates a stat or
+// becomes an outcome. Routing emits bounded shield/health leaves carrying the already-modified
+// amount, so resistances cannot be applied twice.
+struct damage_payload {
+  element kind = element::none;
+  int32_t amount = 0;
+  damage_channel channel = damage_channel::primary;
+  uint64_t tags = 0;
+  damage_destination destination = damage_destination::unrouted;
+  constexpr bool operator==(const damage_payload&) const noexcept = default;
+};
+
 using damage_instance = resolve::work_item<damage_payload>;
 static_assert(resolve::work_record<damage_instance>);
-
-struct damage_outcome {
-  damage_instance damage{};
-  std::vector<damage_modifier> modifiers;
-  resolve::damage_route<int32_t> route{};
-  bool target_valid = false;
-  bool committed = false;
-  bool operator==(const damage_outcome&) const noexcept = default;
-};
 
 struct stat_change_route {
   int32_t requested = 0;
@@ -111,6 +119,22 @@ struct stat_change_route {
   int32_t committed_after = 0;
   int32_t clamped = 0;
   constexpr bool operator==(const stat_change_route&) const noexcept = default;
+};
+
+struct damage_preparation {
+  damage_instance damage{};
+  std::vector<damage_modifier> modifiers;
+  resolve::damage_route<int32_t> route{};
+  bool target_valid = false;
+  bool operator==(const damage_preparation&) const noexcept = default;
+};
+
+struct damage_outcome {
+  damage_instance damage{};
+  stat_change_route route{};
+  bool target_valid = false;
+  bool committed = false;
+  bool operator==(const damage_outcome&) const noexcept = default;
 };
 
 struct healing_effect {
@@ -374,6 +398,7 @@ struct resolution_work {
   std::vector<damage_instance> next_frontier;
   std::vector<retaliation_request> retaliation_requests;
   std::vector<damage_instance> responses;
+  std::vector<damage_preparation> damage_preparations;
   std::vector<damage_outcome> damage_trace;
   std::vector<healing_outcome> healing_trace;
   std::vector<attribute_damage_outcome> attribute_damage_trace;
@@ -502,6 +527,7 @@ enum class presentation_subject : uint8_t {
   enemy_attack,
   elemental_reaction,
   returned_damage,
+  shield_damage,
   healing,
   attribute_damage,
   effect
@@ -622,7 +648,8 @@ private:
   bool advance_to_retaliations();
   simul::step_control run_resolution_step(combat_cursor& cursor, pipeline_type& pipe);
 
-  damage_outcome resolve_damage(const damage_instance& damage);
+  damage_preparation prepare_damage(const damage_instance& damage) const;
+  damage_outcome commit_damage(const damage_instance& damage);
   void resolve_damage_work(const damage_instance& damage);
   healing_outcome resolve_healing(const healing_instance& healing);
   attribute_damage_outcome resolve_attribute_damage(

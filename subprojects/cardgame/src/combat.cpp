@@ -12,9 +12,12 @@ namespace {
 constexpr int32_t enemy_attack_damage = 2;
 constexpr int32_t enemy_start_countdown = 2;
 constexpr int32_t basis_points = 10000;
-constexpr uint16_t reaction_lane = 0;
-constexpr uint16_t retaliation_lane = 1;
+constexpr uint16_t shield_lane = 0;
+constexpr uint16_t health_lane = 1;
+constexpr uint16_t reaction_lane = 2;
+constexpr uint16_t retaliation_lane = 3;
 constexpr uint64_t applies_element_tag = uint64_t{1} << 0;
+constexpr uint64_t route_terminal_tag = uint64_t{1} << 1;
 constexpr resolve::resolution_limits combat_resolution_limits{
   16, 128, 32, 8, 16};
 
@@ -23,6 +26,9 @@ constexpr uint64_t effect_bit(const effect_kind kind) noexcept {
 }
 
 presentation_subject damage_subject(const damage_instance& damage) noexcept {
+  if (damage.payload.destination == damage_destination::shield) {
+    return presentation_subject::shield_damage;
+  }
   switch (damage.payload.channel) {
     case damage_channel::primary:
       return damage.header.source == player_entity ? presentation_subject::player_attack
@@ -472,7 +478,7 @@ std::vector<presentation_command::result_value> combat::presentation_results(
         result.push_back(presentation_command::result_value{
           damage_subject(outcome.damage), outcome.damage.header.id,
           static_cast<entity_id>(outcome.damage.header.target),
-          outcome.route.hp_before - outcome.route.committed_hp_after, 0});
+          outcome.route.before - outcome.route.committed_after, 0});
         break;
       }
       case outcome_store_kind::healing: {
@@ -534,11 +540,17 @@ std::vector<damage_modifier> combat::collect_resistance_modifiers(
   return modifiers;
 }
 
-damage_outcome combat::resolve_damage(const damage_instance& damage) {
-  damage_outcome result;
+damage_preparation combat::prepare_damage(const damage_instance& damage) const {
+  if (damage.payload.destination != damage_destination::unrouted) {
+    throw std::invalid_argument("cardgame damage preparation requires an unrouted instance");
+  }
+
+  damage_preparation result;
   result.damage = damage;
   result.route.requested = damage.payload.amount;
-  combatant_state* target = find_combatant(static_cast<entity_id>(damage.header.target));
+  result.route.modified = damage.payload.amount;
+  const combatant_state* target = find_combatant(
+    static_cast<entity_id>(damage.header.target));
   // Liveness gates the next beat, not work already materialized for the current beat. A later hit
   // in the same authored batch therefore still produces an authoritative zero-floor outcome.
   if (target == nullptr) {
@@ -571,7 +583,8 @@ damage_outcome combat::resolve_damage(const damage_instance& damage) {
 
   result.route.modified = static_cast<int32_t>(current);
   result.route.shield_absorbed = result.route.modified > 0
-                                   ? std::min(target->shield, result.route.modified)
+                                   ? std::min(std::max(target->shield, 0),
+                                              result.route.modified)
                                    : 0;
   result.route.hp_before = target->hp;
   const int64_t proposed = static_cast<int64_t>(target->hp) -
@@ -587,8 +600,46 @@ damage_outcome combat::resolve_damage(const damage_instance& damage) {
     target->hp <= 0 && result.route.proposed_hp_after > target->hp
       ? target->hp
       : std::clamp(result.route.proposed_hp_after, 0, upper);
-  target->shield -= result.route.shield_absorbed;
-  target->hp = result.route.committed_hp_after;
+  return result;
+}
+
+damage_outcome combat::commit_damage(const damage_instance& damage) {
+  if (damage.payload.destination == damage_destination::unrouted) {
+    throw std::invalid_argument("cardgame damage commit requires a routed leaf instance");
+  }
+
+  damage_outcome result;
+  result.damage = damage;
+  result.route.requested = damage.payload.amount;
+  result.route.modified = damage.payload.amount;
+  combatant_state* target = find_combatant(
+    static_cast<entity_id>(damage.header.target));
+  if (target == nullptr) return result;
+
+  result.target_valid = true;
+  int32_t* stat = damage.payload.destination == damage_destination::shield
+                    ? &target->shield
+                    : &target->hp;
+  result.route.before = *stat;
+  const int64_t proposed =
+    static_cast<int64_t>(*stat) - damage.payload.amount;
+  result.route.proposed_after = static_cast<int32_t>(std::clamp<int64_t>(
+    proposed,
+    std::numeric_limits<int32_t>::min(),
+    std::numeric_limits<int32_t>::max()));
+
+  if (damage.payload.destination == damage_destination::shield) {
+    result.route.committed_after = std::max(result.route.proposed_after, 0);
+  } else {
+    const int32_t upper = std::max(target->max_hp, target->hp);
+    result.route.committed_after =
+      target->hp <= 0 && result.route.proposed_after > target->hp
+        ? target->hp
+        : std::clamp(result.route.proposed_after, 0, upper);
+  }
+  result.route.clamped =
+    result.route.proposed_after - result.route.committed_after;
+  *stat = result.route.committed_after;
   result.committed = true;
   return result;
 }
@@ -686,68 +737,122 @@ attribute_damage_outcome combat::resolve_attribute_damage(
 }
 
 void combat::resolve_damage_work(const damage_instance& damage) {
-  damage_outcome outcome = resolve_damage(damage);
-  resolution_.damage_trace.push_back(outcome);
-  resolution_.outcomes.push_back(outcome_ref{
-    outcome_store_kind::damage, resolution_.damage_trace.size() - 1});
-  add_category(resolution_.report.categories, execution_category::damage);
-  add_category(resolution_.report.categories, execution_category::stat_change);
-  if (damage.payload.channel == damage_channel::reaction) {
-    add_category(resolution_.report.categories, execution_category::reaction);
-    add_category(resolution_.report.categories, execution_category::elemental_reaction);
-  } else if (damage.payload.channel == damage_channel::retaliation) {
-    add_category(resolution_.report.categories, execution_category::retaliation);
-  }
-  record_death_check(outcome_store_kind::damage, resolution_.damage_trace.size() - 1,
-                     static_cast<entity_id>(damage.header.target));
+  damage_preparation preparation = prepare_damage(damage);
 
-  combatant_state* target = find_combatant(static_cast<entity_id>(damage.header.target));
-  if (target == nullptr || !outcome.target_valid) {
-    return;
+  std::vector<damage_instance> leaves;
+  leaves.reserve(2);
+  const auto append_leaf = [&](const damage_destination destination,
+                               const int32_t amount,
+                               const uint16_t lane,
+                               const uint16_t ordinal) {
+    damage_instance leaf;
+    leaf.header = resolve::make_child_header(
+      damage.header,
+      damage.header.cause,
+      lane,
+      ordinal,
+      damage.header.source,
+      damage.header.target);
+    leaf.payload = damage.payload;
+    leaf.payload.amount = amount;
+    leaf.payload.destination = destination;
+    leaves.push_back(leaf);
+  };
+
+  if (preparation.target_valid && preparation.route.shield_absorbed > 0) {
+    append_leaf(
+      damage_destination::shield,
+      preparation.route.shield_absorbed,
+      shield_lane,
+      0);
+  }
+  const int32_t hp_amount =
+    preparation.route.modified - preparation.route.shield_absorbed;
+  if (!preparation.target_valid || hp_amount != 0 || leaves.empty()) {
+    append_leaf(damage_destination::health, hp_amount, health_lane, 1);
+  }
+  leaves.back().payload.tags |= route_terminal_tag;
+
+  constexpr size_t max_damage_leaves =
+    combat_resolution_limits.max_total_jobs * 2;
+  if (resolution_.damage_trace.size() > max_damage_leaves - leaves.size()) {
+    throw std::length_error("cardgame routed damage outcome capacity exceeded");
   }
 
-  // An elemental collision is detected once per attack instance. Its gameplay is a later resolver
-  // stage even if presentation eventually chooses to overlap both animations.
-  if ((damage.payload.tags & applies_element_tag) != 0 &&
-      damage.payload.kind != element::none) {
-    if (target->elemental_mark == element::none) {
-      target->elemental_mark = damage.payload.kind;
-    } else if (target->elemental_mark != damage.payload.kind) {
-      target->elemental_mark = element::none;
-      damage_instance reaction;
-      reaction.header = resolve::make_child_header(
-        damage.header,
-        resolve::cause_kind::reaction,
-        reaction_lane,
-        0,
-        damage.header.source,
-        damage.header.target);
-      reaction.payload = damage_payload{
-        damage.payload.kind, 2, damage_channel::reaction, 0};
-      resolution_.next_frontier.push_back(reaction);
+  resolution_.damage_preparations.push_back(std::move(preparation));
+  for (damage_instance& leaf : leaves) {
+    leaf.header.id = allocate_instance();
+    damage_outcome outcome = commit_damage(leaf);
+    resolution_.damage_trace.push_back(outcome);
+    const size_t outcome_index = resolution_.damage_trace.size() - 1;
+    resolution_.outcomes.push_back(outcome_ref{
+      outcome_store_kind::damage, outcome_index});
+    add_category(resolution_.report.categories, execution_category::damage);
+    add_category(resolution_.report.categories, execution_category::stat_change);
+    if (leaf.payload.channel == damage_channel::reaction) {
+      add_category(resolution_.report.categories, execution_category::reaction);
+      add_category(
+        resolution_.report.categories, execution_category::elemental_reaction);
+    } else if (leaf.payload.channel == damage_channel::retaliation) {
+      add_category(resolution_.report.categories, execution_category::retaliation);
     }
-  }
+    record_death_check(
+      outcome_store_kind::damage,
+      outcome_index,
+      static_cast<entity_id>(leaf.header.target));
 
-  // `thorns` listens to committed primary damage. Requests are materialized now, then passed
-  // through resolve::retaliation_journal after the reaction subtree so duplicate discovery and
-  // retaliation-lineage suppression are engine invariants rather than cardgame conventions.
-  const int32_t hp_loss = outcome.route.hp_before - outcome.route.committed_hp_after;
-  if (damage.payload.channel == damage_channel::primary && hp_loss > 0) {
-    for (size_t i = 0; i < target->effects.size(); ++i) {
-      const auto& effect = target->effects[i];
-      if (effect.kind != effect_kind::thorns || effect.stacks <= 0) continue;
-      if (i > std::numeric_limits<uint16_t>::max()) {
-        throw std::length_error("cardgame retaliation local ordinal exceeded");
+    combatant_state* target = find_combatant(
+      static_cast<entity_id>(leaf.header.target));
+    if (target == nullptr || !outcome.target_valid) continue;
+
+    // Elemental routing listens once to the terminal leaf, whether the hit ended on shield or HP.
+    if ((leaf.payload.tags & route_terminal_tag) != 0 &&
+        (leaf.payload.tags & applies_element_tag) != 0 &&
+        leaf.payload.kind != element::none) {
+      if (target->elemental_mark == element::none) {
+        target->elemental_mark = leaf.payload.kind;
+      } else if (target->elemental_mark != leaf.payload.kind) {
+        target->elemental_mark = element::none;
+        damage_instance reaction;
+        reaction.header = resolve::make_child_header(
+          leaf.header,
+          resolve::cause_kind::reaction,
+          reaction_lane,
+          0,
+          leaf.header.source,
+          leaf.header.target);
+        reaction.payload = damage_payload{
+          leaf.payload.kind, 2, damage_channel::reaction, 0};
+        resolution_.next_frontier.push_back(reaction);
       }
-      resolution_.retaliation_requests.push_back(retaliation_request{
-        damage.header,
-        effect.id,
-        static_cast<entity_id>(damage.header.target),
-        static_cast<entity_id>(damage.header.source),
-        effect.stacks,
-        static_cast<uint16_t>(i)});
+    }
+
+    // Thorns listens only to committed HP loss, never separately to shield absorption.
+    const int32_t hp_loss =
+      leaf.payload.destination == damage_destination::health
+        ? outcome.route.before - outcome.route.committed_after
+        : 0;
+    if (leaf.payload.channel == damage_channel::primary && hp_loss > 0) {
+      for (size_t i = 0; i < target->effects.size(); ++i) {
+        const auto& effect = target->effects[i];
+        if (effect.kind != effect_kind::thorns || effect.stacks <= 0) continue;
+        if (i > std::numeric_limits<uint16_t>::max()) {
+          throw std::length_error("cardgame retaliation local ordinal exceeded");
+        }
+        resolution_.retaliation_requests.push_back(retaliation_request{
+          leaf.header,
+          effect.id,
+          static_cast<entity_id>(leaf.header.target),
+          static_cast<entity_id>(leaf.header.source),
+          effect.stacks,
+          static_cast<uint16_t>(i)});
+      }
     }
   }
+
+  // Routed leaves share the global deterministic id domain with frontier work. Keep the frontier's
+  // allocator in sync before its next semantic child seal.
+  resolution_.damage_frontier.next_instance = next_instance_;
 }
 
 void combat::prepare_retaliations() {
@@ -1059,10 +1164,10 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
 
     case resolution_stage::response_commit: {
       const auto response = resolution_.responses[cursor.response_index];
+      const size_t outcome_begin = resolution_.damage_trace.size();
       resolve_damage_work(response);
       cursor.stage = resolution_stage::response_after;
       if (mode_ == run_mode::animated && active_response_task_ != 0) {
-        const damage_outcome& outcome = resolution_.damage_trace.back();
         pipe.expect_presentation(
           active_response_task_, simul::presentation_event_kind::finished);
         presentation_command command;
@@ -1072,12 +1177,18 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
         command.instance = response.header.id;
         command.target = static_cast<entity_id>(response.header.target);
         command.targets.push_back(command.target);
-        command.results.push_back(presentation_command::result_value{
-          presentation_subject::returned_damage,
-          response.header.id,
-          static_cast<entity_id>(response.header.target),
-          outcome.route.hp_before - outcome.route.committed_hp_after,
-          0});
+        for (size_t i = outcome_begin; i < resolution_.damage_trace.size(); ++i) {
+          const damage_outcome& outcome = resolution_.damage_trace[i];
+          command.results.push_back(presentation_command::result_value{
+            damage_subject(outcome.damage),
+            outcome.damage.header.id,
+            static_cast<entity_id>(outcome.damage.header.target),
+            outcome.route.before - outcome.route.committed_after,
+            0});
+        }
+        if (!command.results.empty()) {
+          command.value = command.results.front().value;
+        }
         presentation_outbox_.push_back(std::move(command));
         return simul::step_control::wait;
       }
