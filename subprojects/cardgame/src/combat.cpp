@@ -25,9 +25,22 @@ constexpr resolve::resolution_limits combat_resolution_limits{
   16, 128, 32, 8, 16};
 constexpr size_t max_script_emitted_instances = 128;
 constexpr std::string_view scripted_strike_resource = "scripts/scripted_strike";
+constexpr std::string_view thorns_retaliation_resource =
+  "scripts/thorns_retaliation";
 
 constexpr uint64_t effect_bit(const effect_kind kind) noexcept {
   return uint64_t{1} << static_cast<uint8_t>(kind);
+}
+
+devils_engine::utils::id retaliation_script(const effect_kind kind) noexcept {
+  switch (kind) {
+    case effect_kind::thorns:
+      return devils_engine::utils::string_hash(thorns_retaliation_resource);
+    case effect_kind::burning:
+    case effect_kind::count:
+      return devils_engine::utils::invalid_id;
+  }
+  return devils_engine::utils::invalid_id;
 }
 
 presentation_subject damage_subject(const damage_instance& damage) noexcept {
@@ -875,32 +888,52 @@ void combat::resolve_damage_work(const damage_instance& damage) {
       }
     }
 
-    // Thorns listens only to committed HP loss, never separately to shield absorption.
-    const int32_t hp_loss =
-      leaf.payload.destination == damage_destination::health
-        ? outcome.route.before - outcome.route.committed_after
-        : 0;
-    if (leaf.payload.channel == damage_channel::primary && hp_loss > 0) {
-      for (size_t i = 0; i < target->effects.size(); ++i) {
-        const auto& effect = target->effects[i];
-        if (effect.kind != effect_kind::thorns || effect.stacks <= 0) continue;
-        if (i > std::numeric_limits<uint16_t>::max()) {
-          throw std::length_error("cardgame retaliation local ordinal exceeded");
-        }
-        resolution_.retaliation_requests.push_back(retaliation_request{
-          leaf.header,
-          effect.id,
-          static_cast<entity_id>(leaf.header.target),
-          static_cast<entity_id>(leaf.header.source),
-          effect.stacks,
-          static_cast<uint16_t>(i)});
-      }
-    }
+    run_retaliation_rules(outcome);
   }
 
   // Routed leaves share the global deterministic id domain with frontier work. Keep the frontier's
   // allocator in sync before its next semantic child seal.
   resolution_.damage_frontier.next_instance = next_instance_;
+}
+
+void combat::run_retaliation_rules(const damage_outcome& trigger) {
+  if (!trigger.target_valid || !trigger.committed ||
+      !resolve::may_emit_retaliation(trigger.damage.header)) {
+    return;
+  }
+
+  combatant_state* target = find_combatant(
+    static_cast<entity_id>(trigger.damage.header.target));
+  if (target == nullptr) return;
+
+  for (size_t i = 0; i < target->effects.size(); ++i) {
+    const effect_state& rule = target->effects[i];
+    const devils_engine::utils::id script = retaliation_script(rule.kind);
+    if (script == devils_engine::utils::invalid_id) continue;
+    if (i > std::numeric_limits<uint16_t>::max()) {
+      throw std::length_error("cardgame retaliation rule ordinal exceeded");
+    }
+    if (scripts_ == nullptr) {
+      throw std::runtime_error(
+        "cardgame retaliation rule requires a combat script provider");
+    }
+    const devils_script::container* program = scripts_->find(script);
+    if (program == nullptr || program->cmds.empty()) {
+      throw std::runtime_error(
+        "cardgame retaliation rule script resource is missing or not loaded");
+    }
+
+    retaliation_rule_emit_context invocation{
+      &resolution_,
+      &rule,
+      &trigger,
+      target->hp <= 0,
+      static_cast<uint16_t>(i),
+      1,
+      0};
+    devils_script::context vm;
+    run_retaliation_rule_script(*program, vm, invocation);
+  }
 }
 
 void combat::prepare_retaliations() {

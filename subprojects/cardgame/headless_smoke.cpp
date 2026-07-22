@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "cardgame/combat.h"
+#include "script_test_fixture.h"
 
 namespace cg = cardgame::core;
 
@@ -59,8 +60,10 @@ size_t damage_count(const cg::combat& game, const cg::damage_channel channel) {
 } // namespace
 
 int main() {
-  cg::combat headless(cg::run_mode::headless);
-  cg::combat animated(cg::run_mode::animated);
+  cardgame::test::script_fixture script_fixture;
+  const auto* scripts = &script_fixture.scripts;
+  cg::combat headless(cg::run_mode::headless, scripts);
+  cg::combat animated(cg::run_mode::animated, scripts);
   uint64_t headless_tick = 0;
   uint64_t animated_tick = 0;
   drive_to_player(headless, headless_tick);
@@ -92,10 +95,10 @@ int main() {
   check(headless.state().countdown_pulse_index == 6,
         "countdown pulse coordinate did not distinguish quick actions and forced pulses");
 
-  // One attack and its reaction both pass through the target's resistance script operations.
-  // Thorns listens to the attack instance only, so the reaction cannot recursively return damage.
-  cg::combat elemental_headless(cg::run_mode::headless);
-  cg::combat elemental_animated(cg::run_mode::animated);
+  // Every committed damage leaf opens the DS retaliation rule. Primary and elemental reaction
+  // therefore each return damage; retaliation lineage prevents either response from recursing.
+  cg::combat elemental_headless(cg::run_mode::headless, scripts);
+  cg::combat elemental_animated(cg::run_mode::animated, scripts);
   uint64_t elemental_headless_tick = 0;
   uint64_t elemental_animated_tick = 0;
   drive_to_player(elemental_headless, elemental_headless_tick);
@@ -118,29 +121,31 @@ int main() {
         "complex animated/headless resolution diverged");
   check(elemental_headless.state().enemy.hp == 96,
         "fire resistance was not applied to attack and reaction damage");
-  check(elemental_headless.state().player.hp == 29,
-        "thorns did not create exactly one returned instance for the attack");
+  check(elemental_headless.state().player.hp == 28,
+        "primary and reaction leaves did not each open retaliation");
   check(elemental_headless.state().enemy.elemental_mark == cg::element::none,
         "elemental collision did not consume the previous mark");
   check(damage_count(elemental_headless, cg::damage_channel::primary) == 1,
         "fire strike did not create one attack damage instance");
   check(damage_count(elemental_headless, cg::damage_channel::reaction) == 1,
         "elemental collision did not create one reaction damage instance");
-  check(damage_count(elemental_headless, cg::damage_channel::retaliation) == 1,
+  check(damage_count(elemental_headless, cg::damage_channel::retaliation) == 2,
         "returned damage recursively reflected or was not emitted");
   const auto& elemental_trace = elemental_headless.last_resolution().damage_trace;
-  check(elemental_trace.size() == 3,
-        "elemental resolution did not materialize three damage outcomes");
+  check(elemental_trace.size() == 4,
+        "elemental resolution did not materialize four damage outcomes");
   const auto& damage_preparations =
     elemental_headless.last_resolution().damage_preparations;
-  check(damage_preparations.size() == 3,
-        "primary/reaction/retaliation roots did not preserve their preparation routes");
+  check(damage_preparations.size() == 4,
+        "primary/reaction/two retaliation roots lost their preparation routes");
   const auto& primary = elemental_trace[0];
   const auto& reaction = elemental_trace[1];
-  const auto& retaliation = elemental_trace[2];
+  const auto& primary_retaliation = elemental_trace[2];
+  const auto& reaction_retaliation = elemental_trace[3];
   const auto& primary_preparation = damage_preparations[0];
   const auto& reaction_preparation = damage_preparations[1];
-  const auto& retaliation_preparation = damage_preparations[2];
+  const auto& primary_retaliation_preparation = damage_preparations[2];
+  const auto& reaction_retaliation_preparation = damage_preparations[3];
   check(primary.damage.header.cause == devils_engine::resolve::cause_kind::primary &&
           primary.damage.header.parent == primary_preparation.damage.header.id &&
           primary.damage.header.generation == 1 &&
@@ -160,17 +165,29 @@ int main() {
           reaction_preparation.route.requested == 2 &&
           reaction_preparation.route.modified == 1,
         "elemental reaction is not a child of its triggering hit");
-  check(retaliation_preparation.damage.header.cause ==
+  check(primary_retaliation_preparation.damage.header.cause ==
             devils_engine::resolve::cause_kind::retaliation &&
-          retaliation_preparation.damage.header.parent == primary.damage.header.id &&
-          retaliation_preparation.damage.header.retaliation_lineage &&
-          retaliation.damage.header.parent == retaliation_preparation.damage.header.id &&
-          retaliation.damage.header.root == primary.damage.header.root &&
-          retaliation.damage.header.generation == 3 &&
-          retaliation.damage.header.retaliation_lineage,
-        "thorns did not use the hard resolve retaliation contract");
+          primary_retaliation_preparation.damage.header.parent ==
+            primary.damage.header.id &&
+          primary_retaliation_preparation.damage.header.retaliation_lineage &&
+          primary_retaliation.damage.header.parent ==
+            primary_retaliation_preparation.damage.header.id &&
+          primary_retaliation.damage.header.root == primary.damage.header.root &&
+          primary_retaliation.damage.header.generation == 3 &&
+          primary_retaliation.damage.header.retaliation_lineage &&
+          reaction_retaliation_preparation.damage.header.cause ==
+            devils_engine::resolve::cause_kind::retaliation &&
+          reaction_retaliation_preparation.damage.header.parent ==
+            reaction.damage.header.id &&
+          reaction_retaliation_preparation.damage.header.retaliation_lineage &&
+          reaction_retaliation.damage.header.parent ==
+            reaction_retaliation_preparation.damage.header.id &&
+          reaction_retaliation.damage.header.root == reaction.damage.header.root &&
+          reaction_retaliation.damage.header.generation == 5 &&
+          reaction_retaliation.damage.header.retaliation_lineage,
+        "damage-leaf DS rules did not preserve hard retaliation lineage");
   check(elemental_headless.last_resolution().damage_frontier.complete() &&
-          elemental_headless.last_resolution().damage_frontier.total_jobs == 3,
+          elemental_headless.last_resolution().damage_frontier.total_jobs == 4,
         "primary/reaction/retaliation frontier did not reach its persisted completion boundary");
   check(elemental_headless.last_resolution().effect_trace.size() == 1 &&
           elemental_headless.last_resolution().effect_trace.front().result ==
@@ -183,8 +200,8 @@ int main() {
   check(elemental_work.report.effects.size() == 2 &&
           elemental_work.report.effects[0].beat_index == 0 &&
           elemental_work.report.effects[1].beat_index == 0 &&
-          elemental_work.report.effects[0].damage_outcome_count == 3 &&
-          elemental_work.report.effects[0].outcome_count == 3 &&
+          elemental_work.report.effects[0].damage_outcome_count == 4 &&
+          elemental_work.report.effects[0].outcome_count == 4 &&
           elemental_work.report.effects[1].effect_outcome_count == 1 &&
           elemental_work.report.effects[1].outcome_count == 1,
         "execution report did not map authored effects to their typed outcome ranges");
@@ -192,6 +209,7 @@ int main() {
                                      {cg::outcome_store_kind::damage, 0},
                                      {cg::outcome_store_kind::damage, 1},
                                      {cg::outcome_store_kind::damage, 2},
+                                     {cg::outcome_store_kind::damage, 3},
                                      {cg::outcome_store_kind::effect, 0}},
         "common outcome envelope did not preserve damage/status semantic order");
   const auto categories = elemental_work.report.categories;
@@ -205,12 +223,12 @@ int main() {
           !cg::has_category(categories, cg::execution_category::healing) &&
           !cg::has_category(categories, cg::execution_category::attribute_change),
         "execution report category mask does not describe its emitted work");
-  check(elemental_work.death_trace.size() == 4,
+  check(elemental_work.death_trace.size() == 5,
         "death predicate was not evaluated after every damage/status outcome");
 
   // Both authored effects in the fire-card beat cue together. Only after every gameplay marker is
   // present does the sim execute attack then status and publish one aggregated result per effect.
-  cg::combat mid_resolution(cg::run_mode::animated);
+  cg::combat mid_resolution(cg::run_mode::animated, scripts);
   mid_resolution.load(elemental_snapshot);
   uint64_t mid_resolution_tick = 0;
   check(mid_resolution.submit(fire), "could not submit mid-resolution snapshot action");
@@ -229,27 +247,30 @@ int main() {
   }
   mid_resolution.update(++mid_resolution_tick);
   mid_commands = mid_resolution.take_presentation_commands();
-  check(mid_commands.size() == 1 &&
-          mid_commands.front().kind == cg::presentation_command_kind::start &&
-          mid_commands.front().subject == cg::presentation_subject::returned_damage,
-        "retaliation did not open its own immediate authored attack cue");
-  const auto mid_retaliation_snapshot = mid_resolution.save();
-  const auto retaliation_task = mid_commands.front().task;
-  check(mid_resolution.notify_presentation(
-          retaliation_task, devils_engine::simul::presentation_event_kind::gameplay),
-        "could not deliver retaliation gameplay marker");
-  mid_resolution.update(++mid_resolution_tick);
-  mid_commands = mid_resolution.take_presentation_commands();
-  check(mid_commands.size() == 1 &&
-          mid_commands.front().kind == cg::presentation_command_kind::result &&
-          mid_commands.front().subject == cg::presentation_subject::returned_damage &&
-          mid_commands.front().results.size() == 1,
-        "retaliation did not publish its own immediate authored attack result");
-  check(mid_resolution.notify_presentation(
-          retaliation_task, devils_engine::simul::presentation_event_kind::finished),
-        "could not finish retaliation authored attack");
-  mid_resolution.update(++mid_resolution_tick);
-  mid_commands = mid_resolution.take_presentation_commands();
+  cg::combat::snapshot mid_retaliation_snapshot;
+  for (size_t response = 0; response < 2; ++response) {
+    check(mid_commands.size() == 1 &&
+            mid_commands.front().kind == cg::presentation_command_kind::start &&
+            mid_commands.front().subject == cg::presentation_subject::returned_damage,
+          "damage leaf did not open its own immediate retaliation cue");
+    if (response == 0) mid_retaliation_snapshot = mid_resolution.save();
+    const auto retaliation_task = mid_commands.front().task;
+    check(mid_resolution.notify_presentation(
+            retaliation_task, devils_engine::simul::presentation_event_kind::gameplay),
+          "could not deliver retaliation gameplay marker");
+    mid_resolution.update(++mid_resolution_tick);
+    mid_commands = mid_resolution.take_presentation_commands();
+    check(mid_commands.size() == 1 &&
+            mid_commands.front().kind == cg::presentation_command_kind::result &&
+            mid_commands.front().subject == cg::presentation_subject::returned_damage &&
+            mid_commands.front().results.size() == 1,
+          "retaliation did not publish its own immediate authored attack result");
+    check(mid_resolution.notify_presentation(
+            retaliation_task, devils_engine::simul::presentation_event_kind::finished),
+          "could not finish retaliation authored attack");
+    mid_resolution.update(++mid_resolution_tick);
+    mid_commands = mid_resolution.take_presentation_commands();
+  }
   check(mid_commands.size() == 2 &&
           std::all_of(mid_commands.begin(), mid_commands.end(), [](const auto& command) {
             return command.kind == cg::presentation_command_kind::result;
@@ -267,12 +288,12 @@ int main() {
         "outer attack result did not exclude the separately animated retaliation outcome");
   check(status_result != mid_commands.end() && status_result->results.size() == 1,
         "status animation did not receive its own outcome range");
-  check(mid_resolution.state().enemy.hp == 96 && mid_resolution.state().player.hp == 29,
+  check(mid_resolution.state().enemy.hp == 96 && mid_resolution.state().player.hp == 28,
         "beat did not commit its authored effects sequentially after the shared gameplay barrier");
 
   // Snapshot after the complete beat commit but before its shared finished barrier. Presentation
   // tasks are dropped, while the already committed report and outcomes must not be repeated.
-  cg::combat resumed_resolution(cg::run_mode::headless);
+  cg::combat resumed_resolution(cg::run_mode::headless, scripts);
   resumed_resolution.load(mid_resolution.save());
   uint64_t resumed_resolution_tick = 0;
   drive_to_player(resumed_resolution, resumed_resolution_tick);
@@ -281,7 +302,7 @@ int main() {
   check(resumed_resolution.last_resolution() == elemental_headless.last_resolution(),
         "mid-resolution resume changed the materialized resolution trace");
 
-  cg::combat resumed_retaliation(cg::run_mode::headless);
+  cg::combat resumed_retaliation(cg::run_mode::headless, scripts);
   resumed_retaliation.load(mid_retaliation_snapshot);
   uint64_t resumed_retaliation_tick = 0;
   drive_to_player(resumed_retaliation, resumed_retaliation_tick);
@@ -291,7 +312,7 @@ int main() {
 
   // Two attack instances create two return instances. Returned damage is marked non-recursive,
   // even when both combatants own thorns.
-  cg::combat multi_hit(cg::run_mode::headless);
+  cg::combat multi_hit(cg::run_mode::headless, scripts);
   uint64_t multi_hit_tick = 0;
   drive_to_player(multi_hit, multi_hit_tick);
   auto multi_snapshot = multi_hit.save();
@@ -315,7 +336,7 @@ int main() {
 
   // Death latches after the first beat. Its already materialized work completes, but the next beat
   // gets an empty target snapshot and its authored-effect script is not invoked.
-  cg::combat beat_death(cg::run_mode::headless);
+  cg::combat beat_death(cg::run_mode::headless, scripts);
   uint64_t beat_death_tick = 0;
   drive_to_player(beat_death, beat_death_tick);
   auto beat_death_snapshot = beat_death.save();
@@ -341,7 +362,7 @@ int main() {
 
   // Duplicate discovery of the same rule for one sealed hit must not allocate or commit a second
   // retaliation. The rule id is the stable effect instance id.
-  cg::combat duplicate_thorns(cg::run_mode::headless);
+  cg::combat duplicate_thorns(cg::run_mode::headless, scripts);
   uint64_t duplicate_thorns_tick = 0;
   drive_to_player(duplicate_thorns, duplicate_thorns_tick);
   auto duplicate_snapshot = duplicate_thorns.save();
@@ -358,7 +379,7 @@ int main() {
         "retaliation journal did not deduplicate one rule for one hit");
 
   // Target policy rejects an effect explicitly; damage still resolves and the result is traceable.
-  cg::combat immune(cg::run_mode::headless);
+  cg::combat immune(cg::run_mode::headless, scripts);
   uint64_t immune_tick = 0;
   drive_to_player(immune, immune_tick);
   auto immune_snapshot = immune.save();
@@ -373,7 +394,7 @@ int main() {
         "forbidden effect did not produce an explicit immune outcome");
 
   // A second application updates the project-owned status entry instead of adding a duplicate.
-  cg::combat effect_update(cg::run_mode::headless);
+  cg::combat effect_update(cg::run_mode::headless, scripts);
   uint64_t effect_update_tick = 0;
   drive_to_player(effect_update, effect_update_tick);
   submit_and_drive(effect_update, fire, effect_update_tick);
@@ -392,7 +413,7 @@ int main() {
         "effect update outcome did not describe the merge");
 
   // Resume while the first player attack is flying and has not reached its gameplay point.
-  cg::combat in_flight(cg::run_mode::animated);
+  cg::combat in_flight(cg::run_mode::animated, scripts);
   uint64_t in_flight_tick = 0;
   drive_to_player(in_flight, in_flight_tick);
   check(in_flight.submit(
@@ -403,12 +424,12 @@ int main() {
   check(in_flight.waiting_presentation(), "animated attack is not waiting at gameplay marker");
 
   const auto snap = in_flight.save();
-  cg::combat resumed(cg::run_mode::headless);
+  cg::combat resumed(cg::run_mode::headless, scripts);
   resumed.load(snap);
   uint64_t resumed_tick = 0;
   drive_to_player(resumed, resumed_tick);
 
-  cg::combat control(cg::run_mode::headless);
+  cg::combat control(cg::run_mode::headless, scripts);
   uint64_t control_tick = 0;
   drive_to_player(control, control_tick);
   submit_and_drive(control,

@@ -1618,7 +1618,10 @@ engine_gaps «наиболее важные проверки» + technical_scope
    modifiers/resistance ровно один раз и сохраняет `damage_preparation`, затем создаёт максимум два
    bounded provenance leaf instances в порядке shield → residual HP. Только leaves мутируют характеристики,
    попадают в outcomes/presentation и вызывают death predicate; shield-only не создаёт фиктивный HP outcome,
-   terminal leaf один раз открывает elemental continuation, а thorns слушает только primary HP loss.
+   terminal leaf один раз открывает elemental continuation. Retaliation audit также закрыт: каждый
+   committed damage leaf (shield/HP, zero/negative, primary/reaction/periodic) передаётся подписанным DS
+   rules; C++ жёстко запрещает только retaliation-lineage. Поэтому shield→HP даёт два независимых trigger,
+   а решение emit/skip принадлежит скрипту.
    `emit_status` теперь также пишет typed request в общий plan. Первый resource path готов:
    `combat_effect_script_compiler` компилирует generic `act::script_resource`, authored recipe хранит только
    стабильный resource hash, а внешний demiurg catalogue отдаёт container на invocation. Shipped
@@ -1631,15 +1634,18 @@ engine_gaps «наиболее важные проверки» + technical_scope
    marker. Prepare materializes targets/authored effects; leaf записывает typed `emit_*` и не получает
    outcome синхронно. Retaliation всегда получает собственный authored attack cue/result/finished, чтобы
    presentation показывал цикл triggering instance → response attack; inline-слияния нет. ✅ Этот nested
-   checkpoint уже жив для native thorns и проверен вместе с resume на retaliation cue. Первый leaf slice
+   checkpoint уже жив и проверен вместе с resume на retaliation cue. Native thorns predicate удалён:
+   resource `scripts/thorns_retaliation` исполняется в `retaliation_rule_scope`, читает outcome route и сам
+   вызывает bounded `emit_retaliation_attack`. Первый leaf slice
    тоже жив: отдельный `register_stats_readonly` сохраняет mutable `register_stats`, а compiled
    `combat_effect_scope` пишет bounded pointer-free `emit_attack/healing/attribute_damage/status` в typed stores и
    semantic `plan`; unresolved attack root назначает resolver. ✅ devils_script v1.2.1 закрыл оба блокера:
    настоящий void `each_target` обходит frozen target set в project order, устанавливает отдельный
    `combat_target_scope`, а каждый `emit_*` создаёт один instance в target-major callback order; signed
    integer literal теперь пишется напрямую (`emit_healing = -2`). Минимальный resource-loaded authored
-   effect и его snapshot-safe stable-id lookup уже живы. Следом добавить rule/report scopes, внешнюю схему
-   beats/targeters и resource-loaded follow-up/status programs.
+   effect и его snapshot-safe stable-id lookup уже живы; immediate rule scope тоже готов. Следом добавить
+   execution-report scope для fixed-step follow-up, внешнюю схему beats/targeters и resource-loaded status
+   pulse programs.
 4. **CG-5** (ресурс + предпросмотр как параллельное S+1) — следующая вертикальная цель дизайна: сравнить ману vs
    две инициативы на одном наборе 30–40 карт.
 5. **CG-13 + CG-4** (переиспользуемый UI-list слева + инструментарий выделения/навигации + прокидка
