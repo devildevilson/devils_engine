@@ -9,10 +9,62 @@
 #include <devils_script/context.h>
 #include <devils_script/system.h>
 
+#include <devils_engine/act/script_compiler.h>
+#include <devils_engine/utils/string_id.h>
+
 #include "cardgame/combat.h"
+
+namespace devils_engine::demiurg {
+class resource_system;
+}
 
 namespace cardgame {
 namespace core {
+
+// Runtime lookup seam for pointer-free script ids stored in resolution_work. A combat snapshot can
+// be loaded into another combat instance backed by an equivalent resource catalogue.
+class combat_effect_script_provider {
+public:
+  virtual ~combat_effect_script_provider() noexcept = default;
+  virtual const devils_script::container* find(
+    devils_engine::utils::id script) const noexcept = 0;
+};
+
+// Read-only adapter over a loaded demiurg catalogue. It does not own or load resources; missing,
+// unloaded, or non-effect entries fail at the combat invocation boundary.
+class combat_effect_script_resources final : public combat_effect_script_provider {
+public:
+  explicit combat_effect_script_resources(
+    const devils_engine::demiurg::resource_system& resources) noexcept;
+
+  const devils_script::container* find(
+    devils_engine::utils::id script) const noexcept override;
+
+private:
+  const devils_engine::demiurg::resource_system* resources_ = nullptr;
+};
+
+// Project compiler adapter used by generic act::script_resource documents with
+// `ret = void`, `scope = combat_effect`.
+class combat_effect_script_compiler final
+  : public devils_engine::act::script_compiler {
+public:
+  combat_effect_script_compiler();
+
+  void configure_parser(tavl::parser& parser) const override;
+  devils_engine::act::compiled_script compile(
+    std::string_view name,
+    std::string_view return_type,
+    std::string_view scope,
+    std::string_view expression) const override;
+  devils_script::container compile_predicate(
+    std::string_view name, tavl::parser& parser) const override;
+  devils_script::container compile_effect(
+    std::string_view name, tavl::parser& parser) const override;
+
+private:
+  devils_script::system sys_;
+};
 
 // Transient writer supplied to one authored-effect emit script. Pointers/spans never enter
 // resolution_work or a snapshot: the script only appends pointer-free typed instances there.

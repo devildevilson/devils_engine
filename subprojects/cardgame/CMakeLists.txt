@@ -54,6 +54,8 @@ if (DEVILS_ENGINE_BUILD_TESTS)
 
   add_executable(cardgame_combat_script_test combat_script_test.cpp)
   target_link_libraries(cardgame_combat_script_test PRIVATE cardgame::core devils_engine::options)
+  target_compile_definitions(cardgame_combat_script_test PRIVATE
+    CARDGAME_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/")
   set_target_properties(cardgame_combat_script_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
   add_test(NAME cardgame_combat_script_test COMMAND cardgame_combat_script_test)
