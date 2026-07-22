@@ -90,6 +90,27 @@ TEST_CASE("stat_accessors: add_<field> мутирует компонент [stat
   CHECK(st.strength == 15); // 10 += 5
 }
 
+TEST_CASE("stat_accessors: readonly registration exposes fields but not add functions [stats][devils_script]") {
+  devils_script::system sys;
+  sys.init_basic_functions();
+  sys.init_math();
+  register_stats_readonly<test_stats, combined_scope, &get_primary>(sys, "stats");
+
+  test_stats st{10, 2.0f, 5};
+  const combined_scope scope{&st, nullptr};
+
+  const auto read =
+    sys.parse<int64_t, combined_scope>("readonly_read", "stats.strength + stats.luck");
+  devils_script::context vm;
+  vm.set_arg(read.find_arg("root"), scope);
+  read.process(&vm);
+  CHECK(vm.get_return<int64_t>() == 15);
+
+  CHECK_THROWS(sys.parse<void, combined_scope>(
+    "readonly_write", "stats = { add_strength(5) }"));
+  CHECK(st.strength == 10);
+}
+
 TEST_CASE("generic stats initialize every numeric aggregate field [stats]") {
   const auto stats = initialize_stats<test_stats>([](auto Index, std::string_view) {
     return double(decltype(Index)::value + 1) * 2.0;

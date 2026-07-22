@@ -1618,6 +1618,20 @@ engine_gaps «наиболее важные проверки» + technical_scope
    разделить shield/HP writes на отдельные damage instances/outcomes, не применив resistance дважды.
    Затем расширить envelope на draw/resource и загрузить минимальную вложенную схему карт и
    follow-up/status programs через demiurg+ds вместо native fixtures.
+   **DS contract зафиксирован (2026-07-22):** retaliation — immediate continuation конкретного instance
+   внутри внешнего execution/report; follow-up — fixed-step execution над frozen report с
+   `opens_follow_up=false`. DS делится на prepare rule/program scope до cue и leaf emit scope после gameplay
+   marker. Prepare materializes targets/authored effects; leaf записывает typed `emit_*` и не получает
+   outcome синхронно. Retaliation всегда получает собственный authored attack cue/result/finished, чтобы
+   presentation показывал цикл triggering instance → response attack; inline-слияния нет. ✅ Этот nested
+   checkpoint уже жив для native thorns и проверен вместе с resume на retaliation cue. Первый leaf slice
+   тоже жив: отдельный `register_stats_readonly` сохраняет mutable `register_stats`, а compiled
+   `combat_effect_scope` пишет bounded pointer-free `emit_attack/healing/attribute_damage` в typed stores и
+   semantic `plan`; unresolved attack root назначает resolver. ✅ devils_script v1.2.1 закрыл оба блокера:
+   настоящий void `each_target` обходит frozen target set в project order, устанавливает отдельный
+   `combat_target_scope`, а каждый `emit_*` создаёт один instance в target-major callback order; signed
+   integer literal теперь пишется напрямую (`emit_healing = -2`). Следом добавить rule/report scopes и
+   resource-loaded follow-up/status programs.
 4. **CG-5** (ресурс + предпросмотр как параллельное S+1) — следующая вертикальная цель дизайна: сравнить ману vs
    две инициативы на одном наборе 30–40 карт.
 5. **CG-13 + CG-4** (переиспользуемый UI-list слева + инструментарий выделения/навигации + прокидка

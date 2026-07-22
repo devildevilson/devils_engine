@@ -103,6 +103,7 @@ void combat::load(const snapshot& value) {
   next_effect_call_ = value.next_effect_call;
   presentation_outbox_.clear();
   active_beat_tasks_.clear();
+  active_response_task_ = 0;
   timeout_reported_ = false;
   pipeline_.load(value.pipeline);
 }
@@ -465,6 +466,9 @@ std::vector<presentation_command::result_value> combat::presentation_results(
     switch (ref.kind) {
       case outcome_store_kind::damage: {
         const damage_outcome& outcome = resolution_.damage_trace.at(ref.index);
+        // Retaliation owns a nested authored attack cue/result. Repeating it in the outer
+        // authored-effect result would visually merge the immediate response into its trigger.
+        if (outcome.damage.payload.channel == damage_channel::retaliation) break;
         result.push_back(presentation_command::result_value{
           damage_subject(outcome.damage), outcome.damage.header.id,
           static_cast<entity_id>(outcome.damage.header.target),
@@ -921,6 +925,10 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
       switch (resolution_.plan[cursor.item_index].kind) {
         case effect_store_kind::attack:
           cursor.attack_index = resolution_.plan[cursor.item_index].index;
+          if (auto& attack = resolution_.attacks[cursor.attack_index];
+              attack.root == resolve::invalid_instance) {
+            attack.root = allocate_root();
+          }
           begin_attack_frontier(resolution_.attacks[cursor.attack_index]);
           if (!resolution_.damage_frontier.active()) {
             return simul::step_control::halt;
@@ -1020,6 +1028,21 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
     case resolution_stage::select_response:
       if (cursor.response_index < resolution_.responses.size()) {
         cursor.stage = resolution_stage::response_commit;
+        if (mode_ == run_mode::animated) {
+          const damage_instance& response = resolution_.responses[cursor.response_index];
+          active_response_task_ = next_presentation_task_++;
+          pipe.expect_presentation(
+            active_response_task_, simul::presentation_event_kind::gameplay);
+          presentation_command command;
+          command.kind = presentation_command_kind::start;
+          command.task = active_response_task_;
+          command.subject = presentation_subject::returned_damage;
+          command.instance = response.header.id;
+          command.target = static_cast<entity_id>(response.header.target);
+          command.targets.push_back(command.target);
+          presentation_outbox_.push_back(std::move(command));
+          return simul::step_control::wait;
+        }
         return simul::step_control::advance;
       }
       if (resolution_.damage_frontier.active()) {
@@ -1038,10 +1061,31 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
       const auto response = resolution_.responses[cursor.response_index];
       resolve_damage_work(response);
       cursor.stage = resolution_stage::response_after;
+      if (mode_ == run_mode::animated && active_response_task_ != 0) {
+        const damage_outcome& outcome = resolution_.damage_trace.back();
+        pipe.expect_presentation(
+          active_response_task_, simul::presentation_event_kind::finished);
+        presentation_command command;
+        command.kind = presentation_command_kind::result;
+        command.task = active_response_task_;
+        command.subject = presentation_subject::returned_damage;
+        command.instance = response.header.id;
+        command.target = static_cast<entity_id>(response.header.target);
+        command.targets.push_back(command.target);
+        command.results.push_back(presentation_command::result_value{
+          presentation_subject::returned_damage,
+          response.header.id,
+          static_cast<entity_id>(response.header.target),
+          outcome.route.hp_before - outcome.route.committed_hp_after,
+          0});
+        presentation_outbox_.push_back(std::move(command));
+        return simul::step_control::wait;
+      }
       return simul::step_control::advance;
     }
 
     case resolution_stage::response_after:
+      active_response_task_ = 0;
       ++cursor.response_index;
       cursor.stage = resolution_stage::select_response;
       return simul::step_control::advance;
