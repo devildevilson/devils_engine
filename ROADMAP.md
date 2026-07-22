@@ -1614,10 +1614,13 @@ engine_gaps «наиболее важные проверки» + technical_scope
    effect/instance/outcome refs и scenario tests; следом добавлять реальный ECS stage adapter/stress на
    тысячи consequences, не перенося project ordering/elements/effects policy.
 3. 🟡 **Typed envelope + CG-9** — healing/attribute stores, semantic outcome refs, знаковые значения и
-   per-instance death checks готовы. Следующий обязательный аудит: перепроверить полный damage order и
-   разделить shield/HP writes на отдельные damage instances/outcomes, не применив resistance дважды.
-   Затем расширить envelope на draw/resource и загрузить минимальную вложенную схему карт и
-   follow-up/status programs через demiurg+ds вместо native fixtures.
+   per-instance death checks готовы. ✅ Damage audit закрыт 2026-07-23: один unrouted root применяет
+   modifiers/resistance ровно один раз и сохраняет `damage_preparation`, затем создаёт максимум два
+   bounded provenance leaf instances в порядке shield → residual HP. Только leaves мутируют характеристики,
+   попадают в outcomes/presentation и вызывают death predicate; shield-only не создаёт фиктивный HP outcome,
+   terminal leaf один раз открывает elemental continuation, а thorns слушает только primary HP loss.
+   Теперь расширить envelope на status/draw/resource emitters и загрузить минимальную вложенную схему карт
+   и follow-up/status programs через demiurg+ds вместо native fixtures.
    **DS contract зафиксирован (2026-07-22):** retaliation — immediate continuation конкретного instance
    внутри внешнего execution/report; follow-up — fixed-step execution над frozen report с
    `opens_follow_up=false`. DS делится на prepare rule/program scope до cue и leaf emit scope после gameplay

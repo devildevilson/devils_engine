@@ -131,22 +131,42 @@ int main() {
   const auto& elemental_trace = elemental_headless.last_resolution().damage_trace;
   check(elemental_trace.size() == 3,
         "elemental resolution did not materialize three damage outcomes");
+  const auto& damage_preparations =
+    elemental_headless.last_resolution().damage_preparations;
+  check(damage_preparations.size() == 3,
+        "primary/reaction/retaliation roots did not preserve their preparation routes");
   const auto& primary = elemental_trace[0];
   const auto& reaction = elemental_trace[1];
   const auto& retaliation = elemental_trace[2];
+  const auto& primary_preparation = damage_preparations[0];
+  const auto& reaction_preparation = damage_preparations[1];
+  const auto& retaliation_preparation = damage_preparations[2];
   check(primary.damage.header.cause == devils_engine::resolve::cause_kind::primary &&
-          primary.damage.header.generation == 0 &&
-          primary.route.requested == 4 && primary.route.modified == 3 &&
+          primary.damage.header.parent == primary_preparation.damage.header.id &&
+          primary.damage.header.generation == 1 &&
+          primary.damage.payload.destination == cg::damage_destination::health &&
+          primary_preparation.route.requested == 4 &&
+          primary_preparation.route.modified == 3 &&
+          primary.route.requested == 3 && primary.route.committed_after == 97 &&
           primary.committed,
         "primary damage did not preserve resolve provenance and route data");
-  check(reaction.damage.header.cause == devils_engine::resolve::cause_kind::reaction &&
-          reaction.damage.header.parent == primary.damage.header.id &&
+  check(reaction_preparation.damage.header.cause ==
+            devils_engine::resolve::cause_kind::reaction &&
+          reaction_preparation.damage.header.parent == primary.damage.header.id &&
+          reaction_preparation.damage.header.generation == 2 &&
+          reaction.damage.header.parent == reaction_preparation.damage.header.id &&
           reaction.damage.header.root == primary.damage.header.root &&
-          reaction.damage.header.generation == 1,
+          reaction.damage.header.generation == 3 &&
+          reaction_preparation.route.requested == 2 &&
+          reaction_preparation.route.modified == 1,
         "elemental reaction is not a child of its triggering hit");
-  check(retaliation.damage.header.cause == devils_engine::resolve::cause_kind::retaliation &&
-          retaliation.damage.header.parent == primary.damage.header.id &&
+  check(retaliation_preparation.damage.header.cause ==
+            devils_engine::resolve::cause_kind::retaliation &&
+          retaliation_preparation.damage.header.parent == primary.damage.header.id &&
+          retaliation_preparation.damage.header.retaliation_lineage &&
+          retaliation.damage.header.parent == retaliation_preparation.damage.header.id &&
           retaliation.damage.header.root == primary.damage.header.root &&
+          retaliation.damage.header.generation == 3 &&
           retaliation.damage.header.retaliation_lineage,
         "thorns did not use the hard resolve retaliation contract");
   check(elemental_headless.last_resolution().damage_frontier.complete() &&
