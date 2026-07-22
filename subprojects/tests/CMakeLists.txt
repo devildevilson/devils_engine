@@ -55,6 +55,9 @@ target_link_libraries(input_bindings_test PRIVATE devils_engine::input devils_en
 devils_add_doctest(simul_lifecycle_test simul_lifecycle_test.cpp)
 target_link_libraries(simul_lifecycle_test PRIVATE devils_engine::simul)
 
+devils_add_doctest(turn_pipeline_test turn_pipeline_test.cpp)
+target_link_libraries(turn_pipeline_test PRIVATE devils_engine::simul)
+
 devils_add_doctest(simul_settings_files_test simul_settings_files_test.cpp)
 target_link_libraries(simul_settings_files_test PRIVATE devils_engine::simul tavl)
 
