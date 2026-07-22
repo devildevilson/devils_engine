@@ -863,17 +863,121 @@ void combat::countdown_pulse() {
   }
 }
 
+void combat::enter_group(combat_cursor& cursor, const combat_group group) {
+  cursor.group = group;
+  cursor.step = combat_step::enter;
+  cursor.action.party = {};
+}
+
+void combat::trace(const combat_trace_kind kind,
+                   const combat_group group,
+                   const combat_cursor& cursor,
+                   const entity_id actor,
+                   const instance_id execution) {
+  entity_id source_actor = invalid_entity;
+  switch (group) {
+    case combat_group::action_begin:
+    case combat_group::card_effects:
+    case combat_group::card_player_party_follow_ups:
+    case combat_group::card_enemy_party_follow_ups:
+    case combat_group::player_actor_state_tick:
+    case combat_group::action_countdown:
+    case combat_group::action_end:
+      source_actor = cursor.action.player_actor;
+      break;
+    case combat_group::enemy_execution:
+    case combat_group::enemy_action_enemy_party_follow_ups:
+    case combat_group::enemy_action_player_party_follow_ups:
+    case combat_group::enemy_actor_state_tick:
+      source_actor = enemy_entity;
+      break;
+    case combat_group::turn_begin:
+    case combat_group::awaiting_action:
+    case combat_group::turn_end:
+      break;
+  }
+  state_.trace.push_back(combat_trace_event{
+    kind, group, cursor.action.token, execution, source_actor, actor});
+}
+
+std::vector<entity_id> combat::party_members(const combat_side side) const {
+  const combatant_state& member =
+    side == combat_side::player ? state_.player : state_.enemy;
+  if (member.hp <= 0) return {};
+  return {member.id};
+}
+
+bool combat::run_party_follow_ups(combat_cursor& cursor, const combat_side side) {
+  switch (cursor.step) {
+    case combat_step::enter:
+      trace(combat_trace_kind::group_enter, cursor.group, cursor);
+      if (!cursor.action.trigger_report.executed) return true;
+      cursor.action.party.order = materialize_follow_up_order(
+        party_members(side),
+        follow_up_order_context{state_.combat_seed, cursor.action.token, side});
+      cursor.action.party.actor_index = 0;
+      cursor.step = combat_step::visit_party;
+      return false;
+
+    case combat_step::visit_party: {
+      if (cursor.action.party.actor_index >= cursor.action.party.order.size()) {
+        return true;
+      }
+
+      const entity_id actor =
+        cursor.action.party.order[cursor.action.party.actor_index++];
+      const combatant_state* participant = find_combatant(actor);
+      if (participant == nullptr || participant->hp <= 0) return false;
+
+      // Temporary native fixture for the future rule registry: one attack subscription per
+      // participant, invoked once with the whole frozen report. Emitting zero new instances is a
+      // valid script result and, importantly, does not open a recursive follow-up window.
+      constexpr follow_up_enabler attack_listener{
+        category_bit(execution_category::attack), 0};
+      if (attack_listener.matches(cursor.action.trigger_report.categories)) {
+        trace(combat_trace_kind::follow_up_rule,
+              cursor.group,
+              cursor,
+              actor,
+              cursor.action.trigger_report.execution);
+      }
+      return false;
+    }
+
+    default:
+      throw std::logic_error("cardgame party follow-up cursor entered an invalid step");
+  }
+}
+
+void combat::actor_state_tick(combat_cursor& cursor, const entity_id actor) {
+  const combatant_state* participant = find_combatant(actor);
+  if (participant == nullptr || participant->hp <= 0) return;
+
+  // The group boundary is live now. The ordered DoT -> negative -> positive effect programs are
+  // the next typed-instance slice; this fixture records exactly one tick for the source actor.
+  trace(combat_trace_kind::actor_state_tick,
+        cursor.group,
+        cursor,
+        actor,
+        cursor.action.trigger_report.execution);
+}
+
 simul::step_control combat::run_step(combat_cursor& cursor, pipeline_type& pipe) {
   switch (cursor.phase) {
     case combat_phase::turn_begin:
+      trace(combat_trace_kind::group_enter, combat_group::turn_begin, cursor);
       ++state_.turn_index;
       state_.enemy_countdown = enemy_start_countdown;
       state_.enemy_intent_active = true;
       cursor.phase = combat_phase::awaiting_action;
-      cursor.step = combat_step::enter;
+      enter_group(cursor, combat_group::awaiting_action);
       return simul::step_control::advance;
 
     case combat_phase::awaiting_action: {
+      if (cursor.step == combat_step::enter) {
+        trace(combat_trace_kind::group_enter, combat_group::awaiting_action, cursor);
+        cursor.step = combat_step::wait_input;
+      }
       if (!pending_intent_.has_value()) {
         return simul::step_control::halt;
       }
@@ -881,88 +985,179 @@ simul::step_control combat::run_step(combat_cursor& cursor, pipeline_type& pipe)
       pending_intent_.reset();
       if (intent.kind == player_intent_kind::end_turn) {
         cursor.phase = combat_phase::end_turn;
-        cursor.step = combat_step::forced_pulse;
+        cursor.action = {};
+        enter_group(cursor, combat_group::turn_end);
       } else {
         ++state_.player_action_index;
+        ++state_.action_cycle_index;
         cursor.active_card = intent.card;
-        cursor.phase = combat_phase::resolving_action;
-        cursor.step = combat_step::build_player_resolution;
+        cursor.action = {};
+        cursor.action.token = state_.action_cycle_index;
+        cursor.action.player_actor = player_entity;
+        cursor.phase = combat_phase::action_cycle;
+        enter_group(cursor, combat_group::action_begin);
       }
       return simul::step_control::advance;
     }
 
-    case combat_phase::resolving_action:
-      switch (cursor.step) {
-        case combat_step::build_player_resolution:
-          begin_card_resolution(cursor);
-          cursor.step = combat_step::resolve_player;
+    case combat_phase::action_cycle:
+      switch (cursor.group) {
+        case combat_group::action_begin:
+          trace(combat_trace_kind::group_enter, cursor.group, cursor);
+          if (state_.intercept_next_card) {
+            state_.intercept_next_card = false;
+            ++state_.stolen_card_count;
+            cursor.action.card_stolen = true;
+            resolution_ = {};
+            cursor.resolution = {};
+            resolution_.report = execution_report{
+              allocate_execution(), player_entity, enemy_entity, false, {}};
+            cursor.action.trigger_report = resolution_.report;
+            trace(combat_trace_kind::card_stolen,
+                  cursor.group,
+                  cursor,
+                  player_entity,
+                  resolution_.report.execution);
+            enter_group(cursor, combat_group::player_actor_state_tick);
+          } else {
+            enter_group(cursor, combat_group::card_effects);
+          }
           return simul::step_control::advance;
-        case combat_step::resolve_player:
+
+        case combat_group::card_effects:
+          if (cursor.step == combat_step::enter) {
+            trace(combat_trace_kind::group_enter, cursor.group, cursor);
+            begin_card_resolution(cursor);
+            cursor.step = combat_step::resolve_execution;
+            return simul::step_control::advance;
+          }
+          if (cursor.step != combat_step::resolve_execution) {
+            throw std::logic_error("cardgame card execution entered an invalid step");
+          }
           if (cursor.resolution.stage != resolution_stage::done) {
             return run_resolution_step(cursor, pipe);
           }
+          cursor.action.trigger_report = resolution_.report;
           cursor.resolution = {};
-          cursor.step = combat_step::action_countdown;
+          enter_group(cursor, combat_group::card_player_party_follow_ups);
           return simul::step_control::advance;
-        case combat_step::action_countdown:
-          if (advances_countdown(cursor.active_card)) {
+
+        case combat_group::card_player_party_follow_ups:
+          if (run_party_follow_ups(cursor, combat_side::player)) {
+            enter_group(cursor, combat_group::card_enemy_party_follow_ups);
+          }
+          return simul::step_control::advance;
+
+        case combat_group::card_enemy_party_follow_ups:
+          if (run_party_follow_ups(cursor, combat_side::enemy)) {
+            enter_group(cursor, combat_group::player_actor_state_tick);
+          }
+          return simul::step_control::advance;
+
+        case combat_group::player_actor_state_tick:
+          trace(combat_trace_kind::group_enter, cursor.group, cursor);
+          actor_state_tick(cursor, cursor.action.player_actor);
+          enter_group(cursor, combat_group::action_countdown);
+          return simul::step_control::advance;
+
+        case combat_group::action_countdown:
+          trace(combat_trace_kind::group_enter, cursor.group, cursor);
+          if (cursor.action.card_stolen || advances_countdown(cursor.active_card)) {
             countdown_pulse();
+            trace(combat_trace_kind::countdown_pulse, cursor.group, cursor);
           }
-          cursor.step = state_.enemy_intent_active && state_.enemy_countdown == 0
-                          ? combat_step::build_enemy_resolution
-                          : combat_step::action_done;
+          enter_group(cursor,
+                      state_.enemy_intent_active && state_.enemy_countdown == 0
+                        ? combat_group::enemy_execution
+                        : combat_group::action_end);
           return simul::step_control::advance;
-        case combat_step::build_enemy_resolution:
-          begin_enemy_resolution(cursor);
-          cursor.step = combat_step::resolve_enemy;
-          return simul::step_control::advance;
-        case combat_step::resolve_enemy:
+
+        case combat_group::enemy_execution:
+          if (cursor.step == combat_step::enter) {
+            trace(combat_trace_kind::group_enter, cursor.group, cursor);
+            begin_enemy_resolution(cursor);
+            cursor.step = combat_step::resolve_execution;
+            return simul::step_control::advance;
+          }
+          if (cursor.step != combat_step::resolve_execution) {
+            throw std::logic_error("cardgame enemy execution entered an invalid step");
+          }
           if (cursor.resolution.stage != resolution_stage::done) {
             return run_resolution_step(cursor, pipe);
           }
+          cursor.action.trigger_report = resolution_.report;
           cursor.resolution = {};
+          enter_group(cursor, combat_group::enemy_action_enemy_party_follow_ups);
+          return simul::step_control::advance;
+
+        case combat_group::enemy_action_enemy_party_follow_ups:
+          if (run_party_follow_ups(cursor, combat_side::enemy)) {
+            enter_group(cursor, combat_group::enemy_action_player_party_follow_ups);
+          }
+          return simul::step_control::advance;
+
+        case combat_group::enemy_action_player_party_follow_ups:
+          if (run_party_follow_ups(cursor, combat_side::player)) {
+            enter_group(cursor, combat_group::enemy_actor_state_tick);
+          }
+          return simul::step_control::advance;
+
+        case combat_group::enemy_actor_state_tick:
+          trace(combat_trace_kind::group_enter, cursor.group, cursor);
+          actor_state_tick(cursor, enemy_entity);
           state_.enemy_intent_active = false;
-          cursor.step = combat_step::action_done;
+          if (cursor.action.forced_enemy_cycle) {
+            cursor.phase = combat_phase::end_turn;
+            cursor.step = combat_step::forced_pulse;
+          } else {
+            enter_group(cursor, combat_group::action_end);
+          }
           return simul::step_control::advance;
-        case combat_step::action_done:
+
+        case combat_group::action_end:
+          trace(combat_trace_kind::group_enter, cursor.group, cursor);
+          cursor.action = {};
           cursor.phase = combat_phase::awaiting_action;
-          cursor.step = combat_step::enter;
+          enter_group(cursor, combat_group::awaiting_action);
           return simul::step_control::advance;
-        default:
-          return simul::step_control::halt;
+
+        case combat_group::turn_begin:
+        case combat_group::awaiting_action:
+        case combat_group::turn_end:
+          throw std::logic_error("cardgame action cycle entered a non-action group");
       }
+      throw std::logic_error("cardgame action cycle group is invalid");
 
     case combat_phase::end_turn:
       switch (cursor.step) {
+        case combat_step::enter:
+          trace(combat_trace_kind::group_enter, combat_group::turn_end, cursor);
+          cursor.step = combat_step::forced_pulse;
+          return simul::step_control::advance;
         case combat_step::forced_pulse:
           if (!state_.enemy_intent_active) {
             cursor.step = combat_step::turn_done;
             return simul::step_control::advance;
           }
           if (state_.enemy_countdown == 0) {
-            cursor.step = combat_step::build_enemy_resolution;
+            ++state_.action_cycle_index;
+            cursor.action = {};
+            cursor.action.token = state_.action_cycle_index;
+            cursor.action.forced_enemy_cycle = true;
+            cursor.phase = combat_phase::action_cycle;
+            enter_group(cursor, combat_group::enemy_execution);
             return simul::step_control::advance;
           }
           countdown_pulse();
-          return simul::step_control::advance;
-        case combat_step::build_enemy_resolution:
-          begin_enemy_resolution(cursor);
-          cursor.step = combat_step::resolve_enemy;
-          return simul::step_control::advance;
-        case combat_step::resolve_enemy:
-          if (cursor.resolution.stage != resolution_stage::done) {
-            return run_resolution_step(cursor, pipe);
-          }
-          cursor.resolution = {};
-          state_.enemy_intent_active = false;
-          cursor.step = combat_step::forced_pulse;
+          trace(combat_trace_kind::countdown_pulse, combat_group::turn_end, cursor);
           return simul::step_control::advance;
         case combat_step::turn_done:
+          cursor.action = {};
           cursor.phase = combat_phase::turn_begin;
-          cursor.step = combat_step::enter;
+          enter_group(cursor, combat_group::turn_begin);
           return simul::step_control::advance;
         default:
-          return simul::step_control::halt;
+          throw std::logic_error("cardgame end-turn cursor entered an invalid step");
       }
 
     case combat_phase::battle_over:

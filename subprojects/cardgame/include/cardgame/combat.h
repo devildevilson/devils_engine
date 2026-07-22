@@ -319,21 +319,73 @@ struct resolution_cursor {
 enum class combat_phase : uint8_t {
   turn_begin,
   awaiting_action,
-  resolving_action,
+  action_cycle,
   end_turn,
   battle_over
 };
 
+// Project-owned groups of the settled combat pipeline. `action_countdown` is the explicit boundary
+// between numbered groups 7 and 8 rather than a fourteenth gameplay group.
+enum class combat_group : uint8_t {
+  turn_begin,
+  awaiting_action,
+  action_begin,
+  card_effects,
+  card_player_party_follow_ups,
+  card_enemy_party_follow_ups,
+  player_actor_state_tick,
+  action_countdown,
+  enemy_execution,
+  enemy_action_enemy_party_follow_ups,
+  enemy_action_player_party_follow_ups,
+  enemy_actor_state_tick,
+  action_end,
+  turn_end
+};
+
 enum class combat_step : uint8_t {
   enter,
-  build_player_resolution,
-  resolve_player,
-  action_countdown,
-  build_enemy_resolution,
-  resolve_enemy,
-  action_done,
+  wait_input,
+  resolve_execution,
+  visit_party,
   forced_pulse,
   turn_done
+};
+
+enum class combat_trace_kind : uint8_t {
+  group_enter,
+  card_stolen,
+  follow_up_rule,
+  actor_state_tick,
+  countdown_pulse
+};
+
+// Authoritative diagnostic/event log for the headless kernel. It also makes group order observable
+// without deriving gameplay from presentation timing. A bounded production log policy comes later.
+struct combat_trace_event {
+  combat_trace_kind kind = combat_trace_kind::group_enter;
+  combat_group group = combat_group::turn_begin;
+  uint64_t action_token = 0;
+  instance_id execution = 0;
+  entity_id source_actor = invalid_entity;
+  entity_id actor = invalid_entity;
+  constexpr bool operator==(const combat_trace_event&) const noexcept = default;
+};
+
+struct party_follow_up_cursor {
+  std::vector<entity_id> order;
+  size_t actor_index = 0;
+  bool operator==(const party_follow_up_cursor&) const noexcept = default;
+};
+
+struct action_cycle_cursor {
+  uint64_t token = 0;
+  entity_id player_actor = player_entity;
+  execution_report trigger_report{};
+  party_follow_up_cursor party{};
+  bool card_stolen = false;
+  bool forced_enemy_cycle = false;
+  bool operator==(const action_cycle_cursor&) const noexcept = default;
 };
 
 enum class presentation_subject : uint8_t {
@@ -375,20 +427,27 @@ struct combat_state {
   combatant_state player{player_entity, 30, 0, {}, element::none, 0, {}};
   combatant_state enemy{enemy_entity, 100, 0, {}, element::none, 0, {}};
   int32_t enemy_countdown = 0;
+  uint64_t combat_seed = 0x4341524447414d45ull;
   uint64_t turn_index = 0;
   uint64_t player_action_index = 0;
+  uint64_t action_cycle_index = 0;
   uint64_t countdown_pulse_index = 0;
+  uint64_t stolen_card_count = 0;
   bool enemy_intent_active = false;
+  bool intercept_next_card = false;
+  std::vector<combat_trace_event> trace;
   bool operator==(const combat_state&) const noexcept = default;
 };
 
 // Serializable project cursor. Presentation task ids are deliberately absent.
 struct combat_cursor {
   combat_phase phase = combat_phase::turn_begin;
+  combat_group group = combat_group::turn_begin;
   combat_step step = combat_step::enter;
   card_kind active_card = card_kind::strike;
+  action_cycle_cursor action{};
   resolution_cursor resolution{};
-  constexpr bool operator==(const combat_cursor&) const noexcept = default;
+  bool operator==(const combat_cursor&) const noexcept = default;
 };
 
 class combat {
@@ -453,6 +512,12 @@ private:
   void resolve_damage_work(const damage_instance& damage);
   effect_outcome resolve_effect(const effect_request& request);
   void record_death_check(outcome_store_kind kind, size_t outcome_index, entity_id target);
+  bool run_party_follow_ups(combat_cursor& cursor, combat_side side);
+  std::vector<entity_id> party_members(combat_side side) const;
+  void enter_group(combat_cursor& cursor, combat_group group);
+  void trace(combat_trace_kind kind, combat_group group, const combat_cursor& cursor,
+             entity_id actor = invalid_entity, instance_id execution = 0);
+  void actor_state_tick(combat_cursor& cursor, entity_id actor);
   std::vector<damage_modifier> collect_resistance_modifiers(
     const combatant_state& target, const damage_instance& damage) const;
   effect_apply_result can_apply_effect(const combatant_state* target,
