@@ -667,6 +667,7 @@ private:
   std::vector<presentation_command::result_value> presentation_results(
     const authored_effect_report& call) const;
   void prepare_retaliations();
+  void run_retaliation_rules(const damage_outcome& trigger);
   bool advance_to_retaliations();
   simul::step_control run_resolution_step(combat_cursor& cursor, pipeline_type& pipe);
 

@@ -131,7 +131,53 @@ int main() {
   check(scripted_strike->category() == devils_engine::act::category::effect &&
           !scripted_strike->program()->cmds.empty(),
         "scripted strike resource did not compile as a combat effect");
+  auto* thorns_rule = resources.get<devils_engine::act::script_resource>(
+    "scripts/thorns_retaliation");
+  check(thorns_rule != nullptr, "thorns retaliation resource was not discovered");
+  thorns_rule->load(devils_engine::utils::safe_handle_t{});
+  check(thorns_rule->category() == devils_engine::act::category::effect &&
+          !thorns_rule->program()->cmds.empty(),
+        "thorns retaliation resource did not compile as an immediate rule");
   cg::combat_effect_script_resources script_resources(resources);
+
+  cg::resolution_work retaliation_work;
+  cg::effect_state retaliation_rule{
+    700, cg::effect_kind::thorns, cg::enemy_entity, 2, 0};
+  cg::damage_outcome retaliation_trigger;
+  retaliation_trigger.damage.header = devils_engine::resolve::work_header{
+    11,
+    10,
+    9,
+    1,
+    0,
+    0,
+    cg::player_entity,
+    cg::enemy_entity,
+    devils_engine::resolve::cause_kind::primary,
+    false};
+  retaliation_trigger.damage.payload.destination = cg::damage_destination::shield;
+  retaliation_trigger.route = cg::stat_change_route{-3, -3, 4, 7, 7, 0};
+  retaliation_trigger.target_valid = true;
+  retaliation_trigger.committed = true;
+  cg::retaliation_rule_emit_context retaliation_invocation{
+    &retaliation_work,
+    &retaliation_rule,
+    &retaliation_trigger,
+    false,
+    3,
+    1,
+    0};
+  cg::run_retaliation_rule_script(
+    *thorns_rule->program(), vm, retaliation_invocation);
+  check(retaliation_invocation.emitted_responses == 1 &&
+          retaliation_work.retaliation_requests ==
+            std::vector<cg::retaliation_request>{{retaliation_trigger.damage.header,
+                                                  700,
+                                                  cg::enemy_entity,
+                                                  cg::player_entity,
+                                                  2,
+                                                  3}},
+        "retaliation DS rule did not own the decision to emit its response");
 
   cg::combat in_flight(cg::run_mode::animated, &script_resources);
   uint64_t in_flight_tick = 0;
@@ -177,8 +223,7 @@ int main() {
   try {
     drive_to_player(missing_provider, missing_tick);
   } catch (const std::runtime_error& error) {
-    missing_failed = std::string_view(error.what()).find(
-                       "requires a combat effect script provider") !=
+    missing_failed = std::string_view(error.what()).find("requires a combat effect script provider") !=
                      std::string_view::npos;
   }
   check(missing_failed,

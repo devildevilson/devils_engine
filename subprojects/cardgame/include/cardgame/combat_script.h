@@ -44,8 +44,8 @@ private:
   const devils_engine::demiurg::resource_system* resources_ = nullptr;
 };
 
-// Project compiler adapter used by generic act::script_resource documents with
-// `ret = void`, `scope = combat_effect`.
+// Project compiler adapter used by generic act::script_resource documents with `ret = void` and
+// either `scope = combat_effect` or `scope = retaliation_rule`.
 class combat_effect_script_compiler final
   : public devils_engine::act::script_compiler {
 public:
@@ -100,6 +100,32 @@ struct combat_target_scope {
   }
 };
 
+// One invocation per subscribed rule and committed damage leaf. The damage outcome is already
+// authoritative (including shield/health destination, zero or negative delta and death), while the
+// script is still only allowed to append a bounded immediate response.
+struct retaliation_rule_emit_context {
+  resolution_work* work = nullptr;
+  const effect_state* rule = nullptr;
+  const damage_outcome* trigger = nullptr;
+  bool target_dead = false;
+  uint16_t rule_ordinal = 0;
+  size_t max_emitted_responses = 1;
+  size_t emitted_responses = 0;
+
+  bool valid() const noexcept {
+    return work != nullptr && rule != nullptr && trigger != nullptr &&
+           trigger->damage.header.id != resolve::invalid_instance;
+  }
+};
+
+struct retaliation_rule_scope {
+  retaliation_rule_emit_context* invocation = nullptr;
+
+  bool valid() const noexcept {
+    return invocation != nullptr && invocation->valid();
+  }
+};
+
 // Registers the leaf authored-effect vocabulary. each_target traverses the frozen snapshot in its
 // project order; emit_* append one typed instance for the current target. Nothing resolves or
 // commits synchronously, and scripts cannot select actors outside the snapshot.
@@ -109,6 +135,12 @@ void register_combat_effect_script(devils_script::system& sys);
 void run_combat_effect_script(const devils_script::container& program,
                               devils_script::context& vm,
                               combat_effect_emit_context& invocation);
+
+// Runs one immediate-reaction rule for one already committed damage leaf. C++ only supplies the
+// candidate and enforces lineage/capacity; emitting no response is a normal script decision.
+void run_retaliation_rule_script(const devils_script::container& program,
+                                 devils_script::context& vm,
+                                 retaliation_rule_emit_context& invocation);
 
 } // namespace core
 } // namespace cardgame

@@ -47,6 +47,8 @@ if (DEVILS_ENGINE_BUILD_TESTS)
 
   add_executable(cardgame_typed_effect_test typed_effect_test.cpp)
   target_link_libraries(cardgame_typed_effect_test PRIVATE cardgame::core devils_engine::options)
+  target_compile_definitions(cardgame_typed_effect_test PRIVATE
+    CARDGAME_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/")
   set_target_properties(cardgame_typed_effect_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
   add_test(NAME cardgame_typed_effect_test COMMAND cardgame_typed_effect_test)
@@ -63,6 +65,8 @@ if (DEVILS_ENGINE_BUILD_TESTS)
 
   add_executable(cardgame_headless_smoke headless_smoke.cpp)
   target_link_libraries(cardgame_headless_smoke PRIVATE cardgame::core devils_engine::options)
+  target_compile_definitions(cardgame_headless_smoke PRIVATE
+    CARDGAME_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/")
   set_target_properties(cardgame_headless_smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
   add_test(NAME cardgame_headless_smoke COMMAND cardgame_headless_smoke)
