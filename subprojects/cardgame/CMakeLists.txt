@@ -3,16 +3,29 @@ cmake_minimum_required(VERSION 3.30)
 project(cardgame VERSION 0.0.1 LANGUAGES CXX)
 
 add_library(cardgame_core STATIC
+  include/cardgame/effect_program.h
   include/cardgame/combat.h
+  src/effect_program.cpp
   src/combat.cpp
 )
 add_library(cardgame::core ALIAS cardgame_core)
-target_link_libraries(cardgame_core PUBLIC devils_engine::simul devils_engine::options)
+target_link_libraries(cardgame_core PUBLIC
+  devils_engine::resolve
+  devils_engine::simul
+  devils_engine::options
+)
 target_include_directories(cardgame_core PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
 )
 
 if (DEVILS_ENGINE_BUILD_TESTS)
+  add_executable(cardgame_effect_program_test effect_program_test.cpp)
+  target_link_libraries(cardgame_effect_program_test PRIVATE cardgame::core devils_engine::options)
+  set_target_properties(cardgame_effect_program_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
+  add_test(NAME cardgame_effect_program_test COMMAND cardgame_effect_program_test)
+  set_tests_properties(cardgame_effect_program_test PROPERTIES LABELS devils_engine)
+
   add_executable(cardgame_headless_smoke headless_smoke.cpp)
   target_link_libraries(cardgame_headless_smoke PRIVATE cardgame::core devils_engine::options)
   set_target_properties(cardgame_headless_smoke PROPERTIES

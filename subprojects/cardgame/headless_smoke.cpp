@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 
 #include "cardgame/combat.h"
 
@@ -51,7 +52,7 @@ size_t damage_count(const cg::combat& game, const cg::damage_channel channel) {
     game.last_resolution().damage_trace.begin(),
     game.last_resolution().damage_trace.end(),
     [channel](const auto& value) {
-      return value.damage.channel == channel;
+      return value.damage.payload.channel == channel;
     }));
 }
 
@@ -121,40 +122,96 @@ int main() {
         "thorns did not create exactly one returned instance for the attack");
   check(elemental_headless.state().enemy.elemental_mark == cg::element::none,
         "elemental collision did not consume the previous mark");
-  check(damage_count(elemental_headless, cg::damage_channel::attack) == 1,
+  check(damage_count(elemental_headless, cg::damage_channel::primary) == 1,
         "fire strike did not create one attack damage instance");
   check(damage_count(elemental_headless, cg::damage_channel::reaction) == 1,
         "elemental collision did not create one reaction damage instance");
-  check(damage_count(elemental_headless, cg::damage_channel::returned) == 1,
+  check(damage_count(elemental_headless, cg::damage_channel::retaliation) == 1,
         "returned damage recursively reflected or was not emitted");
+  const auto& elemental_trace = elemental_headless.last_resolution().damage_trace;
+  check(elemental_trace.size() == 3,
+        "elemental resolution did not materialize three damage outcomes");
+  const auto& primary = elemental_trace[0];
+  const auto& reaction = elemental_trace[1];
+  const auto& retaliation = elemental_trace[2];
+  check(primary.damage.header.cause == devils_engine::resolve::cause_kind::primary &&
+          primary.damage.header.generation == 0 &&
+          primary.route.requested == 4 && primary.route.modified == 3 &&
+          primary.committed,
+        "primary damage did not preserve resolve provenance and route data");
+  check(reaction.damage.header.cause == devils_engine::resolve::cause_kind::reaction &&
+          reaction.damage.header.parent == primary.damage.header.id &&
+          reaction.damage.header.root == primary.damage.header.root &&
+          reaction.damage.header.generation == 1,
+        "elemental reaction is not a child of its triggering hit");
+  check(retaliation.damage.header.cause == devils_engine::resolve::cause_kind::retaliation &&
+          retaliation.damage.header.parent == primary.damage.header.id &&
+          retaliation.damage.header.root == primary.damage.header.root &&
+          retaliation.damage.header.retaliation_lineage,
+        "thorns did not use the hard resolve retaliation contract");
+  check(elemental_headless.last_resolution().damage_frontier.complete() &&
+          elemental_headless.last_resolution().damage_frontier.total_jobs == 3,
+        "primary/reaction/retaliation frontier did not reach its persisted completion boundary");
   check(elemental_headless.last_resolution().effect_trace.size() == 1 &&
           elemental_headless.last_resolution().effect_trace.front().result ==
             cg::effect_apply_result::added,
         "allowed burning effect was not added through the effect resolver");
+  const auto& elemental_work = elemental_headless.last_resolution();
+  check(elemental_work.program.beats.size() == 1 &&
+          elemental_work.program.beats.front().effects.size() == 2,
+        "fire card did not preserve its two authored effects in one beat");
+  check(elemental_work.report.effects.size() == 2 &&
+          elemental_work.report.effects[0].beat_index == 0 &&
+          elemental_work.report.effects[1].beat_index == 0 &&
+          elemental_work.report.effects[0].damage_outcome_count == 3 &&
+          elemental_work.report.effects[1].effect_outcome_count == 1,
+        "execution report did not map authored effects to their typed outcome ranges");
+  check(elemental_work.death_trace.size() == 4,
+        "death predicate was not evaluated after every damage/status outcome");
 
-  // Snapshot after primary damage committed but before its result animation finished. The
-  // materialized reaction/response queues must survive, while the in-flight render task is dropped.
+  // Both authored effects in the fire-card beat cue together. Only after every gameplay marker is
+  // present does the sim execute attack then status and publish one aggregated result per effect.
   cg::combat mid_resolution(cg::run_mode::animated);
   mid_resolution.load(elemental_snapshot);
   uint64_t mid_resolution_tick = 0;
   check(mid_resolution.submit(fire), "could not submit mid-resolution snapshot action");
   mid_resolution.update(++mid_resolution_tick);
   auto mid_commands = mid_resolution.take_presentation_commands();
-  check(mid_commands.size() == 1 &&
-          mid_commands.front().kind == cg::presentation_command_kind::start,
-        "attack cue did not publish exactly one start command");
-  check(mid_resolution.notify_presentation(
-          mid_commands.front().task,
-          devils_engine::simul::presentation_event_kind::gameplay),
-        "could not deliver attack gameplay marker");
+  check(mid_commands.size() == 2 &&
+          std::all_of(mid_commands.begin(), mid_commands.end(), [](const auto& command) {
+            return command.kind == cg::presentation_command_kind::start &&
+                   command.targets == std::vector<cg::entity_id>{cg::enemy_entity};
+          }),
+        "one beat did not publish both authored-effect cues with frozen targets");
+  for (const auto& command : mid_commands) {
+    check(mid_resolution.notify_presentation(
+            command.task, devils_engine::simul::presentation_event_kind::gameplay),
+          "could not deliver one batched gameplay marker");
+  }
   mid_resolution.update(++mid_resolution_tick);
   mid_commands = mid_resolution.take_presentation_commands();
-  check(mid_commands.size() == 1 &&
-          mid_commands.front().kind == cg::presentation_command_kind::result,
-        "attack commit did not publish exactly one result command");
-  check(mid_resolution.state().enemy.hp == 97 && mid_resolution.state().player.hp == 30,
-        "reaction or return damage ran before the primary result animation finished");
+  check(mid_commands.size() == 2 &&
+          std::all_of(mid_commands.begin(), mid_commands.end(), [](const auto& command) {
+            return command.kind == cg::presentation_command_kind::result;
+          }),
+        "beat commit did not publish one aggregated result per authored effect");
+  const auto attack_result = std::find_if(
+    mid_commands.begin(), mid_commands.end(), [](const auto& command) {
+      return command.subject == cg::presentation_subject::player_attack;
+    });
+  const auto status_result = std::find_if(
+    mid_commands.begin(), mid_commands.end(), [](const auto& command) {
+      return command.subject == cg::presentation_subject::effect;
+    });
+  check(attack_result != mid_commands.end() && attack_result->results.size() == 3,
+        "one attack animation did not aggregate primary/reaction/retaliation outcomes");
+  check(status_result != mid_commands.end() && status_result->results.size() == 1,
+        "status animation did not receive its own outcome range");
+  check(mid_resolution.state().enemy.hp == 96 && mid_resolution.state().player.hp == 29,
+        "beat did not commit its authored effects sequentially after the shared gameplay barrier");
 
+  // Snapshot after the complete beat commit but before its shared finished barrier. Presentation
+  // tasks are dropped, while the already committed report and outcomes must not be repeated.
   cg::combat resumed_resolution(cg::run_mode::headless);
   resumed_resolution.load(mid_resolution.save());
   uint64_t resumed_resolution_tick = 0;
@@ -180,10 +237,57 @@ int main() {
                    multi_hit_tick);
   check(multi_hit.state().enemy.hp == 96, "multi-hit did not apply both attack instances");
   check(multi_hit.state().player.hp == 28, "multi-hit did not return damage per attack instance");
-  check(damage_count(multi_hit, cg::damage_channel::attack) == 2,
+  check(damage_count(multi_hit, cg::damage_channel::primary) == 2,
         "multi-hit attack instance count is wrong");
-  check(damage_count(multi_hit, cg::damage_channel::returned) == 2,
+  check(damage_count(multi_hit, cg::damage_channel::retaliation) == 2,
         "returned damage count is wrong or recursively looped");
+  check(multi_hit.last_resolution().report.effects.size() == 1 &&
+          multi_hit.last_resolution().report.effects.front().plan_count == 2,
+        "one double-strike authored effect did not emit two ordered attack instances");
+
+  // Death latches after the first beat. Its already materialized work completes, but the next beat
+  // gets an empty target snapshot and its authored-effect script is not invoked.
+  cg::combat beat_death(cg::run_mode::headless);
+  uint64_t beat_death_tick = 0;
+  drive_to_player(beat_death, beat_death_tick);
+  auto beat_death_snapshot = beat_death.save();
+  beat_death_snapshot.state.enemy.hp = 2;
+  beat_death.load(beat_death_snapshot);
+  submit_and_drive(beat_death,
+                   {cg::player_intent_kind::play_card, cg::card_kind::combo_strike, 1},
+                   beat_death_tick);
+  const auto& beat_death_report = beat_death.last_resolution().report;
+  check(beat_death.state().enemy.hp == 0 &&
+          damage_count(beat_death, cg::damage_channel::primary) == 1,
+        "death between beats did not stop later damage work");
+  check(beat_death.last_resolution().death_trace.size() == 1 &&
+          beat_death.last_resolution().death_trace.front().dead,
+        "lethal instance did not latch its death predicate result");
+  check(beat_death_report.effects.size() == 2 &&
+          beat_death_report.effects[0].beat_index == 0 &&
+          beat_death_report.effects[0].invoked &&
+          beat_death_report.effects[1].beat_index == 1 &&
+          beat_death_report.effects[1].target_set.targets.empty() &&
+          !beat_death_report.effects[1].invoked,
+        "next beat was not deterministically cancelled by its dead target boundary");
+
+  // Duplicate discovery of the same rule for one sealed hit must not allocate or commit a second
+  // retaliation. The rule id is the stable effect instance id.
+  cg::combat duplicate_thorns(cg::run_mode::headless);
+  uint64_t duplicate_thorns_tick = 0;
+  drive_to_player(duplicate_thorns, duplicate_thorns_tick);
+  auto duplicate_snapshot = duplicate_thorns.save();
+  duplicate_snapshot.state.enemy.effects.push_back(
+    {3000, cg::effect_kind::thorns, cg::enemy_entity, 1, 0});
+  duplicate_snapshot.state.enemy.effects.push_back(
+    {3000, cg::effect_kind::thorns, cg::enemy_entity, 1, 0});
+  duplicate_thorns.load(duplicate_snapshot);
+  submit_and_drive(duplicate_thorns,
+                   {cg::player_intent_kind::play_card, cg::card_kind::strike, 1},
+                   duplicate_thorns_tick);
+  check(duplicate_thorns.state().player.hp == 29 &&
+          damage_count(duplicate_thorns, cg::damage_channel::retaliation) == 1,
+        "retaliation journal did not deduplicate one rule for one hit");
 
   // Target policy rejects an effect explicitly; damage still resolves and the result is traceable.
   cg::combat immune(cg::run_mode::headless);

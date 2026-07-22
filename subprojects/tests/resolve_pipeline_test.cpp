@@ -228,6 +228,30 @@ TEST_CASE("retaliation has a deterministic per-trigger budget") {
   CHECK(next_instance == 200);
 }
 
+TEST_CASE("ordered retaliation records can join a later project frontier") {
+  const auto root = make_root(1, 20, 10);
+  resolve::frontier_state<test_item> state;
+  REQUIRE(resolve::begin(state, std::span<const test_item>{&root, 1}, {}, 100));
+
+  resolve::retaliation_journal<integer_delta> retaliation;
+  retaliation.begin_record(1);
+  REQUIRE(retaliation.emit(state.current.front().header, 7, 1, 0, 20, 10, {3}) ==
+          resolve::retaliation_emit_result::recorded);
+  retaliation.seal_ordered();
+  REQUIRE(retaliation.records().size() == 1);
+  CHECK(retaliation.records().front().header.id == resolve::invalid_instance);
+
+  const test_item child{
+    retaliation.records().front().header,
+    retaliation.records().front().payload};
+  REQUIRE(resolve::advance(state, std::span<const test_item>{&child, 1}));
+  REQUIRE(state.current.size() == 1);
+  CHECK(state.current.front().header.id == 101);
+  CHECK(state.current.front().header.cause == resolve::cause_kind::retaliation);
+  CHECK(state.current.front().header.retaliation_lineage);
+  CHECK(state.total_jobs == 2);
+}
+
 TEST_CASE("minimum HP guard prevents lethal damage without resurrecting") {
   resolve::damage_route<int32_t> living;
   living.hp_before = 5;

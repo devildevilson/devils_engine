@@ -7,17 +7,19 @@
 #include <optional>
 #include <vector>
 
+#include <devils_engine/resolve/resolve.h>
 #include <devils_engine/simul/turn_pipeline.h>
+
+#include "cardgame/effect_program.h"
 
 namespace cardgame {
 namespace core {
 
+namespace resolve = devils_engine::resolve;
 namespace simul = devils_engine::simul;
 
-using entity_id = uint32_t;
-using instance_id = uint64_t;
+using instance_id = resolve::instance_id;
 
-inline constexpr entity_id invalid_entity = 0;
 inline constexpr entity_id player_entity = 1;
 inline constexpr entity_id enemy_entity = 2;
 
@@ -27,10 +29,11 @@ enum class run_mode : uint8_t {
 };
 
 enum class card_kind : uint8_t {
-  strike,       // physical damage 3, advances countdown
-  quick_strike, // physical damage 1, does not advance countdown
-  fire_strike,  // fire damage 4 + one burning effect request
-  double_strike // two physical attack instances with damage 2 each
+  strike,        // physical damage 3, advances countdown
+  quick_strike,  // physical damage 1, does not advance countdown
+  fire_strike,   // fire damage 4 + one burning effect request
+  double_strike, // one authored effect emits two physical attack instances
+  combo_strike   // two sequential beats with physical damage 2 each
 };
 
 enum class player_intent_kind : uint8_t {
@@ -56,13 +59,7 @@ enum class element : uint8_t {
 
 inline constexpr size_t element_count = static_cast<size_t>(element::count);
 
-enum class damage_channel : uint8_t {
-  attack,
-  reaction,
-  returned,
-  dot,
-  hp_cost
-};
+using damage_channel = resolve::damage_channel;
 
 enum class damage_modifier_kind : uint8_t {
   add,
@@ -79,7 +76,7 @@ struct damage_modifier {
 };
 
 struct attack_instance {
-  instance_id id = 0;
+  instance_id root = 0;
   instance_id parent_execution = 0;
   entity_id source = invalid_entity;
   entity_id target = invalid_entity;
@@ -89,26 +86,16 @@ struct attack_instance {
   constexpr bool operator==(const attack_instance&) const noexcept = default;
 };
 
-struct damage_instance {
-  instance_id id = 0;
-  instance_id parent = 0;
-  entity_id source = invalid_entity;
-  entity_id target = invalid_entity;
-  element type = element::none;
-  damage_channel channel = damage_channel::attack;
-  int32_t base_damage = 0;
-  // Returned/reaction damage is deliberately non-recursive by default.
-  bool can_return = false;
-  constexpr bool operator==(const damage_instance&) const noexcept = default;
-};
+using damage_payload = resolve::damage_payload<int32_t, element>;
+using damage_instance = resolve::work_item<damage_payload>;
+static_assert(resolve::work_record<damage_instance>);
 
 struct damage_outcome {
   damage_instance damage{};
   std::vector<damage_modifier> modifiers;
-  int32_t modified_damage = 0;
-  int32_t shield_absorbed = 0;
-  int32_t hp_loss = 0;
+  resolve::damage_route<int32_t> route{};
   bool target_valid = false;
+  bool committed = false;
   bool operator==(const damage_outcome&) const noexcept = default;
 };
 
@@ -157,6 +144,19 @@ struct effect_outcome {
   constexpr bool operator==(const effect_outcome&) const noexcept = default;
 };
 
+enum class outcome_store_kind : uint8_t {
+  damage,
+  effect
+};
+
+struct death_check {
+  outcome_store_kind kind = outcome_store_kind::damage;
+  size_t outcome_index = 0;
+  entity_id target = invalid_entity;
+  bool dead = false;
+  constexpr bool operator==(const death_check&) const noexcept = default;
+};
+
 struct combatant_state {
   entity_id id = invalid_entity;
   int32_t hp = 0;
@@ -169,69 +169,149 @@ struct combatant_state {
   bool operator==(const combatant_state&) const noexcept = default;
 };
 
-struct reaction_request {
-  instance_id id = 0;
-  instance_id parent_attack = 0;
+struct retaliation_request {
+  resolve::work_header trigger{};
+  resolve::rule_id rule = 0;
   entity_id source = invalid_entity;
   entity_id target = invalid_entity;
-  element type = element::none;
-  int32_t base_damage = 0;
-  constexpr bool operator==(const reaction_request&) const noexcept = default;
+  int32_t amount = 0;
+  uint16_t local_ordinal = 0;
+  constexpr bool operator==(const retaliation_request&) const noexcept = default;
 };
 
-enum class resolution_item_kind : uint8_t {
+struct attack_effect {
+  entity_id source = invalid_entity;
+  element type = element::none;
+  int32_t base_damage = 0;
+  uint16_t hit_count = 1;
+  bool applies_element = false;
+  constexpr bool operator==(const attack_effect&) const noexcept = default;
+};
+
+struct status_effect {
+  entity_id source = invalid_entity;
+  effect_kind kind = effect_kind::burning;
+  int32_t stacks = 1;
+  int32_t remaining_pulses = 0;
+  constexpr bool operator==(const status_effect&) const noexcept = default;
+};
+
+enum class effect_store_kind : uint8_t {
   attack,
   effect
 };
 
-struct resolution_item {
-  resolution_item_kind kind = resolution_item_kind::attack;
+// Erased pointer-free ref into an authored typed recipe store.
+struct effect_ref {
+  effect_store_kind kind = effect_store_kind::attack;
   size_t index = 0;
-  constexpr bool operator==(const resolution_item&) const noexcept = default;
+  constexpr bool operator==(const effect_ref&) const noexcept = default;
+};
+
+// The same envelope shape, but for concrete instances emitted by a script. Keeping the type
+// distinct prevents authored recipes and runtime work from being mixed accidentally.
+struct effect_instance_ref {
+  effect_store_kind kind = effect_store_kind::attack;
+  size_t index = 0;
+  constexpr bool operator==(const effect_instance_ref&) const noexcept = default;
+};
+
+// Pointer-free authored program. The ref selects a typed recipe; the targeter is orthogonal and is
+// materialized for every effect in a beat before any cue or gameplay call starts.
+struct authored_effect {
+  effect_ref body{};
+  targeter targets{};
+  constexpr bool operator==(const authored_effect&) const noexcept = default;
+};
+
+struct effect_beat {
+  std::vector<authored_effect> effects;
+  bool operator==(const effect_beat&) const noexcept = default;
+};
+
+struct effect_program {
+  std::vector<effect_beat> beats;
+  bool operator==(const effect_program&) const noexcept = default;
+};
+
+struct authored_effect_report {
+  instance_id id = 0;
+  size_t beat_index = 0;
+  size_t effect_index = 0;
+  effect_ref body{};
+  target_snapshot target_set{};
+  size_t plan_begin = 0;
+  size_t plan_count = 0;
+  size_t damage_outcome_begin = 0;
+  size_t damage_outcome_count = 0;
+  size_t effect_outcome_begin = 0;
+  size_t effect_outcome_count = 0;
+  bool invoked = false;
+  constexpr bool operator==(const authored_effect_report&) const noexcept = default;
+};
+
+struct execution_report {
+  instance_id execution = 0;
+  entity_id actor = invalid_entity;
+  entity_id selected_target = invalid_entity;
+  bool executed = false;
+  std::vector<authored_effect_report> effects;
+  bool operator==(const execution_report&) const noexcept = default;
 };
 
 struct resolution_work {
+  effect_program program;
+  std::vector<attack_effect> attack_effects;
+  std::vector<status_effect> status_effects;
+  execution_report report;
+
+  // Typed instances emitted by authored-effect scripts. `plan` preserves their semantic order.
   std::vector<attack_instance> attacks;
   std::vector<effect_request> effects;
-  // Materialized card-text order. Instance storage stays separated by type, while this plan keeps
-  // `buff -> attack` observably different from `attack -> debuff`.
-  std::vector<resolution_item> plan;
-  std::vector<reaction_request> reactions;
+  std::vector<effect_instance_ref> plan;
+  resolve::frontier_state<damage_instance> damage_frontier;
+  std::vector<damage_instance> next_frontier;
+  std::vector<retaliation_request> retaliation_requests;
   std::vector<damage_instance> responses;
   std::vector<damage_outcome> damage_trace;
   std::vector<effect_outcome> effect_trace;
+  std::vector<death_check> death_trace;
   bool operator==(const resolution_work&) const noexcept = default;
 };
 
 enum class resolution_stage : uint8_t {
   idle,
+  select_beat,
+  beat_cue,
+  select_effect,
   select_item,
-  attack_cue,
   attack_commit,
   attack_after,
   select_reaction,
-  reaction_cue,
   reaction_commit,
   reaction_after,
   select_response,
-  response_cue,
   response_commit,
   response_after,
   post_attack,
-  effect_cue,
   effect_commit,
   effect_after,
+  beat_results,
+  beat_after,
   done
 };
 
 struct resolution_cursor {
   resolution_stage stage = resolution_stage::idle;
+  size_t beat_index = 0;
+  size_t beat_report_begin = 0;
+  size_t authored_effect_index = 0;
   size_t item_index = 0;
+  size_t item_end = 0;
   size_t attack_index = 0;
   size_t reaction_index = 0;
   size_t response_index = 0;
   size_t effect_index = 0;
-  simul::presentation_task_id active_task = 0;
   constexpr bool operator==(const resolution_cursor&) const noexcept = default;
 };
 
@@ -276,6 +356,17 @@ struct presentation_command {
   entity_id target = invalid_entity;
   int32_t value = 0;
   uint32_t outcome = 0;
+  std::vector<entity_id> targets;
+  struct result_value {
+    presentation_subject subject = presentation_subject::player_attack;
+    instance_id instance = 0;
+    entity_id target = invalid_entity;
+    int32_t value = 0;
+    uint32_t outcome = 0;
+    constexpr bool operator==(const result_value&) const noexcept = default;
+  };
+  std::vector<result_value> results;
+  bool operator==(const presentation_command&) const noexcept = default;
 };
 
 // Entire authoritative state of the first combat slice. Presentation state is absent.
@@ -290,7 +381,7 @@ struct combat_state {
   bool operator==(const combat_state&) const noexcept = default;
 };
 
-// Serializable project cursor. Presentation task ids are sanitized by save().
+// Serializable project cursor. Presentation task ids are deliberately absent.
 struct combat_cursor {
   combat_phase phase = combat_phase::turn_begin;
   combat_step step = combat_step::enter;
@@ -310,6 +401,9 @@ public:
     std::optional<player_intent> pending_intent;
     uint64_t next_presentation_task = 1;
     instance_id next_instance = 1;
+    instance_id next_root = 1;
+    instance_id next_execution = 1;
+    instance_id next_effect_call = 1;
   };
 
   explicit combat(run_mode mode = run_mode::headless) noexcept;
@@ -342,21 +436,22 @@ public:
 private:
   void begin_card_resolution(combat_cursor& cursor);
   void begin_enemy_resolution(combat_cursor& cursor);
+  void begin_attack_frontier(const attack_instance& attack);
+  void materialize_beat(resolution_cursor& cursor);
+  void invoke_authored_effect(authored_effect_report& call);
+  void finalize_authored_effect(authored_effect_report& call);
+  std::vector<entity_id> eligible_targets(entity_id source) const;
+  presentation_subject subject_for(const authored_effect_report& call) const;
+  std::vector<presentation_command::result_value> presentation_results(
+    const authored_effect_report& call) const;
+  void prepare_retaliations();
+  bool advance_to_retaliations();
   simul::step_control run_resolution_step(combat_cursor& cursor, pipeline_type& pipe);
 
-  simul::step_control begin_presentation(resolution_cursor& cursor, pipeline_type& pipe,
-                                         presentation_subject subject, instance_id instance,
-                                         entity_id target, resolution_stage commit_stage);
-  simul::step_control publish_result(resolution_cursor& cursor, pipeline_type& pipe,
-                                     presentation_subject subject, instance_id instance,
-                                     entity_id target, int32_t value, uint32_t outcome,
-                                     resolution_stage after_stage);
-
   damage_outcome resolve_damage(const damage_instance& damage);
-  void resolve_attack(const attack_instance& attack);
-  void resolve_reaction(const reaction_request& reaction);
-  void resolve_response(const damage_instance& response);
+  void resolve_damage_work(const damage_instance& damage);
   effect_outcome resolve_effect(const effect_request& request);
+  void record_death_check(outcome_store_kind kind, size_t outcome_index, entity_id target);
   std::vector<damage_modifier> collect_resistance_modifiers(
     const combatant_state& target, const damage_instance& damage) const;
   effect_apply_result can_apply_effect(const combatant_state* target,
@@ -364,7 +459,10 @@ private:
 
   combatant_state* find_combatant(entity_id id) noexcept;
   const combatant_state* find_combatant(entity_id id) const noexcept;
-  instance_id allocate_instance() noexcept;
+  instance_id allocate_instance();
+  instance_id allocate_root();
+  instance_id allocate_execution();
+  instance_id allocate_effect_call();
   void countdown_pulse();
 
   pipeline_type pipeline_;
@@ -372,8 +470,13 @@ private:
   resolution_work resolution_;
   std::optional<player_intent> pending_intent_;
   std::vector<presentation_command> presentation_outbox_;
+  // Presentation task ids are derived and intentionally absent from snapshots.
+  std::vector<simul::presentation_task_id> active_beat_tasks_;
   uint64_t next_presentation_task_ = 1;
   instance_id next_instance_ = 1;
+  instance_id next_root_ = 1;
+  instance_id next_execution_ = 1;
+  instance_id next_effect_call_ = 1;
   run_mode mode_ = run_mode::headless;
   bool timeout_reported_ = false;
 };

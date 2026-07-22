@@ -77,8 +77,10 @@ public:
                                        : retaliation_emit_result::overflow;
   }
 
-  void seal(instance_id& next_instance,
-            const resolution_limits& limits = {}) {
+  // Deduplicate and validate while leaving ids unassigned. This is the integration path for a
+  // project that deliberately delays retaliation until a later continuation boundary and then
+  // feeds the resulting children to frontier_state::advance().
+  void seal_ordered(const resolution_limits& limits = {}) {
     journal_.seal_ordered();
     const auto records = journal_.records();
     std::vector<size_t> keyed_order(records.size());
@@ -120,13 +122,19 @@ public:
     for (size_t i = 0; i < records.size(); ++i) {
       if (keep[i] != 0) prepared.push_back(records[i]);
     }
+    sealed_.swap(prepared);
+  }
+
+  // Convenience path for a project-owned stage that does not join a frontier_state afterwards.
+  void seal(instance_id& next_instance,
+            const resolution_limits& limits = {}) {
+    seal_ordered(limits);
     const instance_id available = std::numeric_limits<instance_id>::max() - next_instance;
-    if (next_instance == invalid_instance || prepared.size() > available) {
+    if (next_instance == invalid_instance || sealed_.size() > available) {
       throw std::overflow_error("resolve::retaliation instance id space exhausted");
     }
-    for (auto& value : prepared)
+    for (auto& value : sealed_)
       value.header.id = next_instance++;
-    sealed_.swap(prepared);
   }
 
   std::span<const record_type> records() const noexcept {
