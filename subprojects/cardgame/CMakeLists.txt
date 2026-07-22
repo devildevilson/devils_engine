@@ -35,6 +35,13 @@ if (DEVILS_ENGINE_BUILD_TESTS)
   add_test(NAME cardgame_follow_up_test COMMAND cardgame_follow_up_test)
   set_tests_properties(cardgame_follow_up_test PROPERTIES LABELS devils_engine)
 
+  add_executable(cardgame_action_pipeline_test action_pipeline_test.cpp)
+  target_link_libraries(cardgame_action_pipeline_test PRIVATE cardgame::core devils_engine::options)
+  set_target_properties(cardgame_action_pipeline_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/cardgame/bin")
+  add_test(NAME cardgame_action_pipeline_test COMMAND cardgame_action_pipeline_test)
+  set_tests_properties(cardgame_action_pipeline_test PROPERTIES LABELS devils_engine)
+
   add_executable(cardgame_headless_smoke headless_smoke.cpp)
   target_link_libraries(cardgame_headless_smoke PRIVATE cardgame::core devils_engine::options)
   set_target_properties(cardgame_headless_smoke PROPERTIES
