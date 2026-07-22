@@ -533,6 +533,10 @@ add_library(devils_engine INTERFACE)
 target_link_libraries(devils_engine INTERFACE devils_engine::catalogue devils_engine::acumen devils_engine::act devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::utils devils_engine::mood devils_engine::simul devils_engine::flow devils_engine::aesthetics devils_engine::visage devils_engine::options)
 add_library(devils_engine::devils_plane ALIAS devils_engine)
 
+# First external gameplay consumer. It intentionally starts as a headless combat kernel; the full
+# app/render/UI shell will be added only after the discrete pipeline contract is proven here.
+add_subdirectory(subprojects/cardgame "${CMAKE_BINARY_DIR}/cmake/subprojects/cardgame")
+
 if (DEVILS_ENGINE_BUILD_TESTS)
   add_subdirectory(subprojects/tests "${CMAKE_BINARY_DIR}/cmake/subprojects/tests")
 endif()
@@ -541,7 +545,7 @@ add_subdirectory(subprojects/tile_frontier "${CMAKE_BINARY_DIR}/cmake/subproject
 if (DEVILS_ENGINE_BUILD_TESTS)
   add_custom_target(devils_engine_test
     COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} --output-on-failure -L devils_engine
-    DEPENDS utils_general_test utils_contract_test thread_general_test simul_lifecycle_test aesthetics_world_test sound_system_test acumen_test flow_test catalogue_introspection_test tile_frontier_snapshot_smoke tile_frontier_resume_smoke
+    DEPENDS utils_general_test utils_contract_test thread_general_test simul_lifecycle_test turn_pipeline_test aesthetics_world_test sound_system_test acumen_test flow_test catalogue_introspection_test cardgame_headless_smoke tile_frontier_snapshot_smoke tile_frontier_resume_smoke
     USES_TERMINAL
     COMMENT "Running devils_engine tests"
   )
