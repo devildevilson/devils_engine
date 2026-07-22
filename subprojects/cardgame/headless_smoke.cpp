@@ -164,8 +164,16 @@ int main() {
           elemental_work.report.effects[0].beat_index == 0 &&
           elemental_work.report.effects[1].beat_index == 0 &&
           elemental_work.report.effects[0].damage_outcome_count == 3 &&
-          elemental_work.report.effects[1].effect_outcome_count == 1,
+          elemental_work.report.effects[0].outcome_count == 3 &&
+          elemental_work.report.effects[1].effect_outcome_count == 1 &&
+          elemental_work.report.effects[1].outcome_count == 1,
         "execution report did not map authored effects to their typed outcome ranges");
+  check(elemental_work.outcomes == std::vector<cg::outcome_ref>{
+                                     {cg::outcome_store_kind::damage, 0},
+                                     {cg::outcome_store_kind::damage, 1},
+                                     {cg::outcome_store_kind::damage, 2},
+                                     {cg::outcome_store_kind::effect, 0}},
+        "common outcome envelope did not preserve damage/status semantic order");
   const auto categories = elemental_work.report.categories;
   check(cg::has_category(categories, cg::execution_category::attack) &&
           cg::has_category(categories, cg::execution_category::damage) &&

@@ -29,11 +29,15 @@ enum class run_mode : uint8_t {
 };
 
 enum class card_kind : uint8_t {
-  strike,        // physical damage 3, advances countdown
-  quick_strike,  // physical damage 1, does not advance countdown
-  fire_strike,   // fire damage 4 + one burning effect request
-  double_strike, // one authored effect emits two physical attack instances
-  combo_strike   // two sequential beats with physical damage 2 each
+  strike,         // physical damage 3, advances countdown
+  quick_strike,   // physical damage 1, does not advance countdown
+  fire_strike,    // fire damage 4 + one burning effect request
+  double_strike,  // one authored effect emits two physical attack instances
+  combo_strike,   // two sequential beats with physical damage 2 each
+  inverse_strike, // physical attack -5; semantic kind remains attack/damage
+  mend,           // self healing +6
+  cursed_mend,    // self healing -7; semantic kind remains healing
+  cripple         // agility damage 4
 };
 
 enum class player_intent_kind : uint8_t {
@@ -99,6 +103,73 @@ struct damage_outcome {
   bool operator==(const damage_outcome&) const noexcept = default;
 };
 
+struct stat_change_route {
+  int32_t requested = 0;
+  int32_t modified = 0;
+  int32_t before = 0;
+  int32_t proposed_after = 0;
+  int32_t committed_after = 0;
+  int32_t clamped = 0;
+  constexpr bool operator==(const stat_change_route&) const noexcept = default;
+};
+
+struct healing_effect {
+  entity_id source = invalid_entity;
+  int32_t amount = 0;
+  constexpr bool operator==(const healing_effect&) const noexcept = default;
+};
+
+struct healing_instance {
+  instance_id id = 0;
+  instance_id parent_execution = 0;
+  entity_id source = invalid_entity;
+  entity_id target = invalid_entity;
+  int32_t amount = 0;
+  constexpr bool operator==(const healing_instance&) const noexcept = default;
+};
+
+struct healing_outcome {
+  healing_instance healing{};
+  stat_change_route route{};
+  int32_t effectiveness_basis_points = 10000;
+  bool target_valid = false;
+  bool committed = false;
+  constexpr bool operator==(const healing_outcome&) const noexcept = default;
+};
+
+enum class attribute_kind : uint8_t {
+  agility,
+  count
+};
+
+inline constexpr size_t attribute_count = static_cast<size_t>(attribute_kind::count);
+
+struct attribute_damage_effect {
+  entity_id source = invalid_entity;
+  attribute_kind attribute = attribute_kind::agility;
+  int32_t amount = 0;
+  constexpr bool operator==(const attribute_damage_effect&) const noexcept = default;
+};
+
+struct attribute_damage_instance {
+  instance_id id = 0;
+  instance_id parent_execution = 0;
+  entity_id source = invalid_entity;
+  entity_id target = invalid_entity;
+  attribute_kind attribute = attribute_kind::agility;
+  int32_t amount = 0;
+  constexpr bool operator==(const attribute_damage_instance&) const noexcept = default;
+};
+
+struct attribute_damage_outcome {
+  attribute_damage_instance damage{};
+  stat_change_route route{};
+  int32_t resistance_basis_points = 0;
+  bool target_valid = false;
+  bool committed = false;
+  constexpr bool operator==(const attribute_damage_outcome&) const noexcept = default;
+};
+
 enum class effect_kind : uint8_t {
   burning,
   thorns,
@@ -146,7 +217,15 @@ struct effect_outcome {
 
 enum class outcome_store_kind : uint8_t {
   damage,
+  healing,
+  attribute_damage,
   effect
+};
+
+struct outcome_ref {
+  outcome_store_kind kind = outcome_store_kind::damage;
+  size_t index = 0;
+  constexpr bool operator==(const outcome_ref&) const noexcept = default;
 };
 
 struct death_check {
@@ -160,9 +239,14 @@ struct death_check {
 struct combatant_state {
   entity_id id = invalid_entity;
   int32_t hp = 0;
+  int32_t max_hp = 0;
   int32_t shield = 0;
+  int32_t agility = 0;
+  // 10000 means ordinary healing, 5000 halves both positive and negative healing instances.
+  int32_t healing_effectiveness_basis_points = 10000;
   // Positive values reduce damage; -2500 means 25% vulnerability, 10000 means immunity.
   std::array<int32_t, element_count> resistance_basis_points{};
+  std::array<int32_t, attribute_count> attribute_resistance_basis_points{};
   element elemental_mark = element::none;
   uint64_t effect_immunity_mask = 0;
   std::vector<effect_state> effects;
@@ -198,6 +282,8 @@ struct status_effect {
 
 enum class effect_store_kind : uint8_t {
   attack,
+  healing,
+  attribute_damage,
   effect
 };
 
@@ -221,6 +307,10 @@ struct effect_instance_ref {
 struct authored_effect {
   effect_ref body{};
   targeter targets{};
+  enum class target_domain : uint8_t {
+    opponent,
+    self
+  } domain = target_domain::opponent;
   constexpr bool operator==(const authored_effect&) const noexcept = default;
 };
 
@@ -246,6 +336,12 @@ struct authored_effect_report {
   size_t damage_outcome_count = 0;
   size_t effect_outcome_begin = 0;
   size_t effect_outcome_count = 0;
+  size_t healing_outcome_begin = 0;
+  size_t healing_outcome_count = 0;
+  size_t attribute_outcome_begin = 0;
+  size_t attribute_outcome_count = 0;
+  size_t outcome_begin = 0;
+  size_t outcome_count = 0;
   bool invoked = false;
   constexpr bool operator==(const authored_effect_report&) const noexcept = default;
 };
@@ -263,11 +359,15 @@ struct execution_report {
 struct resolution_work {
   effect_program program;
   std::vector<attack_effect> attack_effects;
+  std::vector<healing_effect> healing_effects;
+  std::vector<attribute_damage_effect> attribute_damage_effects;
   std::vector<status_effect> status_effects;
   execution_report report;
 
   // Typed instances emitted by authored-effect scripts. `plan` preserves their semantic order.
   std::vector<attack_instance> attacks;
+  std::vector<healing_instance> healings;
+  std::vector<attribute_damage_instance> attribute_damages;
   std::vector<effect_request> effects;
   std::vector<effect_instance_ref> plan;
   resolve::frontier_state<damage_instance> damage_frontier;
@@ -275,7 +375,10 @@ struct resolution_work {
   std::vector<retaliation_request> retaliation_requests;
   std::vector<damage_instance> responses;
   std::vector<damage_outcome> damage_trace;
+  std::vector<healing_outcome> healing_trace;
+  std::vector<attribute_damage_outcome> attribute_damage_trace;
   std::vector<effect_outcome> effect_trace;
+  std::vector<outcome_ref> outcomes;
   std::vector<death_check> death_trace;
   bool operator==(const resolution_work&) const noexcept = default;
 };
@@ -295,6 +398,10 @@ enum class resolution_stage : uint8_t {
   response_commit,
   response_after,
   post_attack,
+  healing_commit,
+  healing_after,
+  attribute_damage_commit,
+  attribute_damage_after,
   effect_commit,
   effect_after,
   beat_results,
@@ -312,6 +419,8 @@ struct resolution_cursor {
   size_t attack_index = 0;
   size_t reaction_index = 0;
   size_t response_index = 0;
+  size_t healing_index = 0;
+  size_t attribute_damage_index = 0;
   size_t effect_index = 0;
   constexpr bool operator==(const resolution_cursor&) const noexcept = default;
 };
@@ -393,6 +502,8 @@ enum class presentation_subject : uint8_t {
   enemy_attack,
   elemental_reaction,
   returned_damage,
+  healing,
+  attribute_damage,
   effect
 };
 
@@ -424,8 +535,10 @@ struct presentation_command {
 
 // Entire authoritative state of the first combat slice. Presentation state is absent.
 struct combat_state {
-  combatant_state player{player_entity, 30, 0, {}, element::none, 0, {}};
-  combatant_state enemy{enemy_entity, 100, 0, {}, element::none, 0, {}};
+  combatant_state player{
+    .id = player_entity, .hp = 30, .max_hp = 30, .agility = 10, .effects = {}};
+  combatant_state enemy{
+    .id = enemy_entity, .hp = 100, .max_hp = 100, .agility = 10, .effects = {}};
   int32_t enemy_countdown = 0;
   uint64_t combat_seed = 0x4341524447414d45ull;
   uint64_t turn_index = 0;
@@ -500,7 +613,8 @@ private:
   void materialize_beat(resolution_cursor& cursor);
   void invoke_authored_effect(authored_effect_report& call);
   void finalize_authored_effect(authored_effect_report& call);
-  std::vector<entity_id> eligible_targets(entity_id source) const;
+  std::vector<entity_id> eligible_targets(
+    entity_id source, authored_effect::target_domain domain) const;
   presentation_subject subject_for(const authored_effect_report& call) const;
   std::vector<presentation_command::result_value> presentation_results(
     const authored_effect_report& call) const;
@@ -510,6 +624,9 @@ private:
 
   damage_outcome resolve_damage(const damage_instance& damage);
   void resolve_damage_work(const damage_instance& damage);
+  healing_outcome resolve_healing(const healing_instance& healing);
+  attribute_damage_outcome resolve_attribute_damage(
+    const attribute_damage_instance& damage);
   effect_outcome resolve_effect(const effect_request& request);
   void record_death_check(outcome_store_kind kind, size_t outcome_index, entity_id target);
   bool run_party_follow_ups(combat_cursor& cursor, combat_side side);

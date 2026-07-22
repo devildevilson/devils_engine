@@ -1483,8 +1483,9 @@ player action используется отдельный монотонный c
 `each_elemental_reaction` или общий filter по kind. Для украденной карты допустим маленький отчёт
 `action committed + card stolen`, но follow-up window не открывается, потому что нет факта успешного
 `card executed`. ✅ Компактный category mask и `follow_up_enabler {any_of, all_of}` уже живут в коде;
-текущий combat resolver отмечает attack/damage/stat-change/status/reaction/elemental/retaliation. Typed ds
-итераторы и категории healing/attribute будут подключены вместе с соответствующими instance stores.
+текущий combat resolver отмечает attack/damage/healing/attribute-change/stat-change/status/reaction/
+elemental/retaliation. Typed stores и общий semantic-order `outcome_ref {kind,index}` уже подключены;
+отдельно остаются ds-итераторы над этим report API.
 
 Нужен общий pointer-free **effect instance/outcome envelope** с provenance и project kind, но payload и
 outcome остаются типизированными: `attack_instance`, `damage_instance`, `healing_instance`,
@@ -1541,9 +1542,18 @@ fail-loud validation.
 `effect_instance_ref`. Все target sets beat материализуются до cue, authored cues публикуются одним
 presentation batch, после общего gameplay barrier scripts исполняются последовательно, а затем один result
 на authored effect несёт его typed outcome range. `execution_report` сохраняет beat/effect identity,
-target snapshot и диапазоны emitted plan/damage/effect outcomes. `double_strike` доказывает один authored
+target snapshot и диапазоны emitted plan/typed outcomes. `double_strike` доказывает один authored
 call с двумя attack instances, `fire_strike` — два authored effects одного beat, `combo_strike` — отмену
 следующего beat после latched death; animated/headless и resume остаются идентичны.
+
+✅ **Первый typed envelope slice жив (2026-07-22):** `healing_instance` и
+`attribute_damage_instance` имеют собственные recipe/instance/outcome stores и project routes, а общий
+`outcome_ref {kind,index}` сохраняет semantic order без толстого variant. Healing использует свой
+effectiveness/cap route, agility damage — свой resistance/stat route; death predicate вызывается после
+каждого typed outcome. Знак не меняет semantic kind: отрицательная атака остаётся damage и не тратит щит,
+отрицательное лечение остаётся healing и может защёлкнуть смерть. `cardgame_typed_effect_test` проверяет
+обе знаковые формы, self-target healing, сопротивление урону ловкости, death boundary, report ranges и
+animated/headless identity.
 
 Один `attack_instance` может породить N дочерних `damage_instance` под общей provenance. Damage по щиту и
 остаток по здоровью лучше фиксировать отдельными instances/outcomes: shield-child уничтожает/уменьшает щит,
@@ -1601,10 +1611,12 @@ engine_gaps «наиболее важные проверки» + technical_scope
 2. ✅ **Первый generic resolution kernel** — `libs/resolve`: bounded MT journal, semantic id/order,
    target groups, host-paced frontier, retaliation-lineage и minimum-HP commit guard. Cardgame resolver уже
    перенесён на work/frontier/damage-route/retaliation. Grouped card pipeline уже имеет pointer-free
-   effect/instance refs и scenario tests; следом расширить typed envelope healing/attribute work и добавлять реальный ECS stage adapter/stress на
+   effect/instance/outcome refs и scenario tests; следом добавлять реальный ECS stage adapter/stress на
    тысячи consequences, не перенося project ordering/elements/effects policy.
-3. **Typed envelope + CG-9** — расширить semantic refs/stores на healing/attribute/draw/resource outcomes,
-   перепроверить shield/HP и полный damage order, затем загрузить минимальную вложенную схему карт и
+3. 🟡 **Typed envelope + CG-9** — healing/attribute stores, semantic outcome refs, знаковые значения и
+   per-instance death checks готовы. Следующий обязательный аудит: перепроверить полный damage order и
+   разделить shield/HP writes на отдельные damage instances/outcomes, не применив resistance дважды.
+   Затем расширить envelope на draw/resource и загрузить минимальную вложенную схему карт и
    follow-up/status programs через demiurg+ds вместо native fixtures.
 4. **CG-5** (ресурс + предпросмотр как параллельное S+1) — следующая вертикальная цель дизайна: сравнить ману vs
    две инициативы на одном наборе 30–40 карт.
