@@ -10,7 +10,7 @@
 #include <devils_engine/resolve/resolve.h>
 #include <devils_engine/simul/turn_pipeline.h>
 
-#include "cardgame/effect_program.h"
+#include "cardgame/follow_up.h"
 
 namespace cardgame {
 namespace core {
@@ -256,6 +256,7 @@ struct execution_report {
   entity_id selected_target = invalid_entity;
   bool executed = false;
   std::vector<authored_effect_report> effects;
+  execution_category_mask categories = 0;
   bool operator==(const execution_report&) const noexcept = default;
 };
 

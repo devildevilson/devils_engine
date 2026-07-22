@@ -166,6 +166,17 @@ int main() {
           elemental_work.report.effects[0].damage_outcome_count == 3 &&
           elemental_work.report.effects[1].effect_outcome_count == 1,
         "execution report did not map authored effects to their typed outcome ranges");
+  const auto categories = elemental_work.report.categories;
+  check(cg::has_category(categories, cg::execution_category::attack) &&
+          cg::has_category(categories, cg::execution_category::damage) &&
+          cg::has_category(categories, cg::execution_category::stat_change) &&
+          cg::has_category(categories, cg::execution_category::status) &&
+          cg::has_category(categories, cg::execution_category::reaction) &&
+          cg::has_category(categories, cg::execution_category::elemental_reaction) &&
+          cg::has_category(categories, cg::execution_category::retaliation) &&
+          !cg::has_category(categories, cg::execution_category::healing) &&
+          !cg::has_category(categories, cg::execution_category::attribute_change),
+        "execution report category mask does not describe its emitted work");
   check(elemental_work.death_trace.size() == 4,
         "death predicate was not evaluated after every damage/status outcome");
 

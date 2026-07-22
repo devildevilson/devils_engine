@@ -313,6 +313,9 @@ void combat::invoke_authored_effect(authored_effect_report& call) {
             effect_instance_ref{effect_store_kind::attack, index});
         }
       }
+      if (resolution_.plan.size() != call.plan_begin) {
+        add_category(resolution_.report.categories, execution_category::attack);
+      }
       break;
     }
     case effect_store_kind::effect: {
@@ -324,6 +327,9 @@ void combat::invoke_authored_effect(authored_effect_report& call) {
           effect.kind, effect.stacks, effect.remaining_pulses});
         resolution_.plan.push_back(
           effect_instance_ref{effect_store_kind::effect, index});
+      }
+      if (resolution_.plan.size() != call.plan_begin) {
+        add_category(resolution_.report.categories, execution_category::status);
       }
       break;
     }
@@ -439,6 +445,14 @@ damage_outcome combat::resolve_damage(const damage_instance& damage) {
 void combat::resolve_damage_work(const damage_instance& damage) {
   damage_outcome outcome = resolve_damage(damage);
   resolution_.damage_trace.push_back(outcome);
+  add_category(resolution_.report.categories, execution_category::damage);
+  add_category(resolution_.report.categories, execution_category::stat_change);
+  if (damage.payload.channel == damage_channel::reaction) {
+    add_category(resolution_.report.categories, execution_category::reaction);
+    add_category(resolution_.report.categories, execution_category::elemental_reaction);
+  } else if (damage.payload.channel == damage_channel::retaliation) {
+    add_category(resolution_.report.categories, execution_category::retaliation);
+  }
   record_death_check(outcome_store_kind::damage, resolution_.damage_trace.size() - 1,
                      static_cast<entity_id>(damage.header.target));
 
