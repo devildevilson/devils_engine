@@ -6,6 +6,11 @@
 #include <string_view>
 #include <tuple>
 
+#include <tavl/parser.h>
+
+#include <devils_engine/act/script_resource.h>
+#include <devils_engine/demiurg/resource_system.h>
+
 namespace cardgame {
 namespace core {
 namespace {
@@ -116,7 +121,89 @@ void emit_attribute_damage(const combat_target_scope scope,
     invocation.work->report.categories, execution_category::attribute_change);
 }
 
+void emit_status(const combat_target_scope scope,
+                 const effect_kind kind,
+                 const int64_t stacks,
+                 const int64_t remaining_pulses) {
+  if (kind == effect_kind::count) {
+    throw std::invalid_argument("cardgame DS emitted an invalid status kind");
+  }
+  auto& invocation = checked_invocation(scope);
+  reserve_instances(invocation, 1);
+  const size_t index = invocation.work->effects.size();
+  invocation.work->effects.push_back(effect_request{
+    0,
+    invocation.work->report.execution,
+    invocation.source,
+    scope.target,
+    kind,
+    checked_amount(stacks),
+    checked_amount(remaining_pulses)});
+  invocation.work->plan.push_back(
+    effect_instance_ref{effect_store_kind::effect, index});
+  add_category(invocation.work->report.categories, execution_category::status);
+}
+
 } // namespace
+
+combat_effect_script_compiler::combat_effect_script_compiler() {
+  sys_.init_basic_functions();
+  sys_.init_math();
+  register_combat_effect_script(sys_);
+}
+
+combat_effect_script_resources::combat_effect_script_resources(
+  const devils_engine::demiurg::resource_system& resources) noexcept
+  : resources_(&resources) {}
+
+const devils_script::container* combat_effect_script_resources::find(
+  const devils_engine::utils::id script) const noexcept {
+  auto* base = resources_->get(script);
+  if (base == nullptr ||
+      !base->is_type(
+        devils_engine::utils::type_id<devils_engine::act::script_resource>())) {
+    return nullptr;
+  }
+  auto* resource = static_cast<devils_engine::act::script_resource*>(base);
+  if (resource->category() != devils_engine::act::category::effect) {
+    return nullptr;
+  }
+  return resource->program();
+}
+
+void combat_effect_script_compiler::configure_parser(tavl::parser& parser) const {
+  sys_.configure_parser(parser);
+}
+
+devils_engine::act::compiled_script combat_effect_script_compiler::compile(
+  const std::string_view name,
+  const std::string_view return_type,
+  const std::string_view scope,
+  const std::string_view expression) const {
+  if (return_type != "void" || scope != "combat_effect") {
+    throw std::invalid_argument(
+      "cardgame script resource requires ret=void and scope=combat_effect");
+  }
+  return {
+    sys_.parse<void, combat_effect_scope>(name, expression),
+    devils_engine::act::category::effect};
+}
+
+devils_script::container combat_effect_script_compiler::compile_predicate(
+  const std::string_view,
+  tavl::parser&) const {
+  throw std::invalid_argument(
+    "cardgame combat-effect compiler does not support predicate roots");
+}
+
+devils_script::container combat_effect_script_compiler::compile_effect(
+  const std::string_view name,
+  tavl::parser& parser) const {
+  devils_script::container program;
+  devils_script::system::parse_context ctx;
+  sys_.parse<void, combat_effect_scope>(name, parser, ctx, program);
+  return program;
+}
 
 void register_combat_effect_script(devils_script::system& sys) {
   static std::array element_values{
@@ -126,13 +213,18 @@ void register_combat_effect_script(devils_script::system& sys) {
     std::tuple<std::string_view, element>{"ice", element::ice}};
   static std::array attribute_values{
     std::tuple<std::string_view, attribute_kind>{"agility", attribute_kind::agility}};
+  static std::array effect_values{
+    std::tuple<std::string_view, effect_kind>{"burning", effect_kind::burning},
+    std::tuple<std::string_view, effect_kind>{"thorns", effect_kind::thorns}};
 
   sys.register_enum<element>(element_values);
   sys.register_enum<attribute_kind>(attribute_values);
+  sys.register_enum<effect_kind>(effect_values);
   sys.register_function_iter<&each_target>("each_target", {"value"});
   sys.register_function<&emit_attack>("emit_attack");
   sys.register_function<&emit_healing>("emit_healing");
   sys.register_function<&emit_attribute_damage>("emit_attribute_damage");
+  sys.register_function<&emit_status>("emit_status");
 }
 
 void run_combat_effect_script(const devils_script::container& program,

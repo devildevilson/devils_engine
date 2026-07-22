@@ -9,6 +9,7 @@
 
 #include <devils_engine/resolve/resolve.h>
 #include <devils_engine/simul/turn_pipeline.h>
+#include <devils_engine/utils/string_id.h>
 
 #include "cardgame/follow_up.h"
 
@@ -19,6 +20,8 @@ namespace resolve = devils_engine::resolve;
 namespace simul = devils_engine::simul;
 
 using instance_id = resolve::instance_id;
+
+class combat_effect_script_provider;
 
 inline constexpr entity_id player_entity = 1;
 inline constexpr entity_id enemy_entity = 2;
@@ -37,7 +40,8 @@ enum class card_kind : uint8_t {
   inverse_strike, // physical attack -5; semantic kind remains attack/damage
   mend,           // self healing +6
   cursed_mend,    // self healing -7; semantic kind remains healing
-  cripple         // agility damage 4
+  cripple,        // agility damage 4
+  scripted_strike // resource-backed DS effect: physical damage 3
 };
 
 enum class player_intent_kind : uint8_t {
@@ -304,6 +308,22 @@ struct status_effect {
   constexpr bool operator==(const status_effect&) const noexcept = default;
 };
 
+// Pointer-free authored reference to an externally owned compiled DS resource. The provider is
+// runtime infrastructure and is deliberately absent from resolution_work snapshots.
+struct script_effect {
+  entity_id source = invalid_entity;
+  devils_engine::utils::id script = devils_engine::utils::invalid_id;
+  constexpr bool operator==(const script_effect&) const noexcept = default;
+};
+
+enum class authored_effect_store_kind : uint8_t {
+  attack,
+  healing,
+  attribute_damage,
+  effect,
+  script
+};
+
 enum class effect_store_kind : uint8_t {
   attack,
   healing,
@@ -313,7 +333,7 @@ enum class effect_store_kind : uint8_t {
 
 // Erased pointer-free ref into an authored typed recipe store.
 struct effect_ref {
-  effect_store_kind kind = effect_store_kind::attack;
+  authored_effect_store_kind kind = authored_effect_store_kind::attack;
   size_t index = 0;
   constexpr bool operator==(const effect_ref&) const noexcept = default;
 };
@@ -386,6 +406,7 @@ struct resolution_work {
   std::vector<healing_effect> healing_effects;
   std::vector<attribute_damage_effect> attribute_damage_effects;
   std::vector<status_effect> status_effects;
+  std::vector<script_effect> script_effects;
   execution_report report;
 
   // Typed instances emitted by authored-effect scripts. `plan` preserves their semantic order.
@@ -605,7 +626,8 @@ public:
     instance_id next_effect_call = 1;
   };
 
-  explicit combat(run_mode mode = run_mode::headless) noexcept;
+  explicit combat(run_mode mode = run_mode::headless,
+                  const combat_effect_script_provider* scripts = nullptr) noexcept;
 
   bool submit(player_intent intent);
   void update(uint64_t engine_tick);
@@ -689,6 +711,7 @@ private:
   instance_id next_execution_ = 1;
   instance_id next_effect_call_ = 1;
   run_mode mode_ = run_mode::headless;
+  const combat_effect_script_provider* scripts_ = nullptr;
   bool timeout_reported_ = false;
 };
 

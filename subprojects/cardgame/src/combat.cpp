@@ -1,8 +1,11 @@
 #include "cardgame/combat.h"
 
+#include "cardgame/combat_script.h"
+
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 namespace cardgame {
@@ -20,6 +23,8 @@ constexpr uint64_t applies_element_tag = uint64_t{1} << 0;
 constexpr uint64_t route_terminal_tag = uint64_t{1} << 1;
 constexpr resolve::resolution_limits combat_resolution_limits{
   16, 128, 32, 8, 16};
+constexpr size_t max_script_emitted_instances = 128;
+constexpr std::string_view scripted_strike_resource = "scripts/scripted_strike";
 
 constexpr uint64_t effect_bit(const effect_kind kind) noexcept {
   return uint64_t{1} << static_cast<uint8_t>(kind);
@@ -44,7 +49,9 @@ presentation_subject damage_subject(const damage_instance& damage) noexcept {
 
 } // namespace
 
-combat::combat(const run_mode mode) noexcept : mode_(mode) {}
+combat::combat(const run_mode mode,
+               const combat_effect_script_provider* scripts) noexcept
+  : mode_(mode), scripts_(scripts) {}
 
 bool combat::submit(player_intent intent) {
   if (!awaiting_player() || pending_intent_.has_value()) {
@@ -176,7 +183,7 @@ void combat::begin_card_resolution(combat_cursor& cursor) {
     resolution_.attack_effects.push_back(
       attack_effect{player_entity, type, damage, hit_count, applies_element});
     return authored_effect{
-      effect_ref{effect_store_kind::attack, index},
+      effect_ref{authored_effect_store_kind::attack, index},
       targeter{targeter_kind::target, independent_target_binding}};
   };
   const auto burning = [this]() {
@@ -184,14 +191,14 @@ void combat::begin_card_resolution(combat_cursor& cursor) {
     resolution_.status_effects.push_back(
       status_effect{player_entity, effect_kind::burning, 1, 2});
     return authored_effect{
-      effect_ref{effect_store_kind::effect, index},
+      effect_ref{authored_effect_store_kind::effect, index},
       targeter{targeter_kind::target, independent_target_binding}};
   };
   const auto healing = [this](const int32_t amount) {
     const size_t index = resolution_.healing_effects.size();
     resolution_.healing_effects.push_back(healing_effect{player_entity, amount});
     return authored_effect{
-      effect_ref{effect_store_kind::healing, index},
+      effect_ref{authored_effect_store_kind::healing, index},
       targeter{targeter_kind::target, independent_target_binding},
       authored_effect::target_domain::self};
   };
@@ -201,7 +208,15 @@ void combat::begin_card_resolution(combat_cursor& cursor) {
     resolution_.attribute_damage_effects.push_back(
       attribute_damage_effect{player_entity, attribute, amount});
     return authored_effect{
-      effect_ref{effect_store_kind::attribute_damage, index},
+      effect_ref{authored_effect_store_kind::attribute_damage, index},
+      targeter{targeter_kind::target, independent_target_binding}};
+  };
+  const auto script = [this](const std::string_view id) {
+    const size_t index = resolution_.script_effects.size();
+    resolution_.script_effects.push_back(
+      script_effect{player_entity, devils_engine::utils::string_hash(id)});
+    return authored_effect{
+      effect_ref{authored_effect_store_kind::script, index},
       targeter{targeter_kind::target, independent_target_binding}};
   };
 
@@ -244,6 +259,10 @@ void combat::begin_card_resolution(combat_cursor& cursor) {
       resolution_.program.beats.push_back(
         effect_beat{{attribute_damage(attribute_kind::agility, 4)}});
       break;
+    case card_kind::scripted_strike:
+      resolution_.program.beats.push_back(
+        effect_beat{{script(scripted_strike_resource)}});
+      break;
   }
 }
 
@@ -256,7 +275,7 @@ void combat::begin_enemy_resolution(combat_cursor& cursor) {
   resolution_.attack_effects.push_back(
     attack_effect{enemy_entity, element::none, enemy_attack_damage, 1, false});
   resolution_.program.beats.push_back(effect_beat{{authored_effect{
-    effect_ref{effect_store_kind::attack, 0},
+    effect_ref{authored_effect_store_kind::attack, 0},
     targeter{targeter_kind::target, independent_target_binding}}}});
 }
 
@@ -308,30 +327,36 @@ void combat::materialize_beat(resolution_cursor& cursor) {
   for (const authored_effect& effect : beat.effects) {
     entity_id source = invalid_entity;
     switch (effect.body.kind) {
-      case effect_store_kind::attack:
+      case authored_effect_store_kind::attack:
         if (effect.body.index >= resolution_.attack_effects.size()) {
           throw std::out_of_range("cardgame authored attack recipe index is invalid");
         }
         source = resolution_.attack_effects[effect.body.index].source;
         break;
-      case effect_store_kind::healing:
+      case authored_effect_store_kind::healing:
         if (effect.body.index >= resolution_.healing_effects.size()) {
           throw std::out_of_range("cardgame authored healing recipe index is invalid");
         }
         source = resolution_.healing_effects[effect.body.index].source;
         break;
-      case effect_store_kind::attribute_damage:
+      case authored_effect_store_kind::attribute_damage:
         if (effect.body.index >= resolution_.attribute_damage_effects.size()) {
           throw std::out_of_range(
             "cardgame authored attribute damage recipe index is invalid");
         }
         source = resolution_.attribute_damage_effects[effect.body.index].source;
         break;
-      case effect_store_kind::effect:
+      case authored_effect_store_kind::effect:
         if (effect.body.index >= resolution_.status_effects.size()) {
           throw std::out_of_range("cardgame authored status recipe index is invalid");
         }
         source = resolution_.status_effects[effect.body.index].source;
+        break;
+      case authored_effect_store_kind::script:
+        if (effect.body.index >= resolution_.script_effects.size()) {
+          throw std::out_of_range("cardgame authored script recipe index is invalid");
+        }
+        source = resolution_.script_effects[effect.body.index].source;
         break;
     }
     const entity_id fixed_target =
@@ -364,7 +389,7 @@ void combat::invoke_authored_effect(authored_effect_report& call) {
   call.outcome_begin = resolution_.outcomes.size();
 
   switch (call.body.kind) {
-    case effect_store_kind::attack: {
+    case authored_effect_store_kind::attack: {
       const attack_effect& effect = resolution_.attack_effects.at(call.body.index);
       if (effect.hit_count == 0) {
         throw std::invalid_argument("cardgame attack effect must emit at least one hit");
@@ -384,7 +409,7 @@ void combat::invoke_authored_effect(authored_effect_report& call) {
       }
       break;
     }
-    case effect_store_kind::healing: {
+    case authored_effect_store_kind::healing: {
       const healing_effect& effect = resolution_.healing_effects.at(call.body.index);
       for (const entity_id target : call.target_set.targets) {
         const size_t index = resolution_.healings.size();
@@ -398,7 +423,7 @@ void combat::invoke_authored_effect(authored_effect_report& call) {
       }
       break;
     }
-    case effect_store_kind::attribute_damage: {
+    case authored_effect_store_kind::attribute_damage: {
       const attribute_damage_effect& effect =
         resolution_.attribute_damage_effects.at(call.body.index);
       for (const entity_id target : call.target_set.targets) {
@@ -418,7 +443,7 @@ void combat::invoke_authored_effect(authored_effect_report& call) {
       }
       break;
     }
-    case effect_store_kind::effect: {
+    case authored_effect_store_kind::effect: {
       const status_effect& effect = resolution_.status_effects.at(call.body.index);
       for (const entity_id target : call.target_set.targets) {
         const size_t index = resolution_.effects.size();
@@ -431,6 +456,27 @@ void combat::invoke_authored_effect(authored_effect_report& call) {
       if (resolution_.plan.size() != call.plan_begin) {
         add_category(resolution_.report.categories, execution_category::status);
       }
+      break;
+    }
+    case authored_effect_store_kind::script: {
+      const script_effect& effect = resolution_.script_effects.at(call.body.index);
+      if (scripts_ == nullptr) {
+        throw std::runtime_error(
+          "cardgame authored script requires a combat effect script provider");
+      }
+      const devils_script::container* program = scripts_->find(effect.script);
+      if (program == nullptr || program->cmds.empty()) {
+        throw std::runtime_error(
+          "cardgame authored script resource is missing or not loaded");
+      }
+      combat_effect_emit_context invocation{
+        &resolution_,
+        effect.source,
+        call.target_set.targets,
+        max_script_emitted_instances,
+        0};
+      devils_script::context vm;
+      run_combat_effect_script(*program, vm, invocation);
       break;
     }
   }
@@ -448,16 +494,18 @@ void combat::finalize_authored_effect(authored_effect_report& call) {
 
 presentation_subject combat::subject_for(const authored_effect_report& call) const {
   switch (call.body.kind) {
-    case effect_store_kind::attack: {
+    case authored_effect_store_kind::attack: {
       const attack_effect& effect = resolution_.attack_effects.at(call.body.index);
       return effect.source == player_entity ? presentation_subject::player_attack
                                             : presentation_subject::enemy_attack;
     }
-    case effect_store_kind::healing:
+    case authored_effect_store_kind::healing:
       return presentation_subject::healing;
-    case effect_store_kind::attribute_damage:
+    case authored_effect_store_kind::attribute_damage:
       return presentation_subject::attribute_damage;
-    case effect_store_kind::effect:
+    case authored_effect_store_kind::effect:
+      return presentation_subject::effect;
+    case authored_effect_store_kind::script:
       return presentation_subject::effect;
   }
   return presentation_subject::effect;
