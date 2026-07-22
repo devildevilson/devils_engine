@@ -1,4 +1,5 @@
 #include <array>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 
@@ -45,6 +46,15 @@ void submit_and_drive(cg::combat& game, const cg::player_intent intent, uint64_t
   drive_to_player(game, tick);
 }
 
+size_t damage_count(const cg::combat& game, const cg::damage_channel channel) {
+  return static_cast<size_t>(std::count_if(
+    game.last_resolution().damage_trace.begin(),
+    game.last_resolution().damage_trace.end(),
+    [channel](const auto& value) {
+      return value.damage.channel == channel;
+    }));
+}
+
 } // namespace
 
 int main() {
@@ -81,6 +91,134 @@ int main() {
   check(headless.state().countdown_pulse_index == 6,
         "countdown pulse coordinate did not distinguish quick actions and forced pulses");
 
+  // One attack and its reaction both pass through the target's resistance script operations.
+  // Thorns listens to the attack instance only, so the reaction cannot recursively return damage.
+  cg::combat elemental_headless(cg::run_mode::headless);
+  cg::combat elemental_animated(cg::run_mode::animated);
+  uint64_t elemental_headless_tick = 0;
+  uint64_t elemental_animated_tick = 0;
+  drive_to_player(elemental_headless, elemental_headless_tick);
+  drive_to_player(elemental_animated, elemental_animated_tick);
+  auto elemental_snapshot = elemental_headless.save();
+  elemental_snapshot.state.enemy.elemental_mark = cg::element::water;
+  elemental_snapshot.state.enemy.resistance_basis_points[static_cast<size_t>(cg::element::fire)] = 2500;
+  elemental_snapshot.state.enemy.effects.push_back(
+    {1000, cg::effect_kind::thorns, cg::enemy_entity, 1, 0});
+  elemental_snapshot.state.player.effects.push_back(
+    {1001, cg::effect_kind::thorns, cg::player_entity, 1, 0});
+  elemental_headless.load(elemental_snapshot);
+  elemental_animated.load(elemental_snapshot);
+
+  const cg::player_intent fire{
+    cg::player_intent_kind::play_card, cg::card_kind::fire_strike, 1};
+  submit_and_drive(elemental_headless, fire, elemental_headless_tick);
+  submit_and_drive(elemental_animated, fire, elemental_animated_tick);
+  check(elemental_headless.state() == elemental_animated.state(),
+        "complex animated/headless resolution diverged");
+  check(elemental_headless.state().enemy.hp == 96,
+        "fire resistance was not applied to attack and reaction damage");
+  check(elemental_headless.state().player.hp == 29,
+        "thorns did not create exactly one returned instance for the attack");
+  check(elemental_headless.state().enemy.elemental_mark == cg::element::none,
+        "elemental collision did not consume the previous mark");
+  check(damage_count(elemental_headless, cg::damage_channel::attack) == 1,
+        "fire strike did not create one attack damage instance");
+  check(damage_count(elemental_headless, cg::damage_channel::reaction) == 1,
+        "elemental collision did not create one reaction damage instance");
+  check(damage_count(elemental_headless, cg::damage_channel::returned) == 1,
+        "returned damage recursively reflected or was not emitted");
+  check(elemental_headless.last_resolution().effect_trace.size() == 1 &&
+          elemental_headless.last_resolution().effect_trace.front().result ==
+            cg::effect_apply_result::added,
+        "allowed burning effect was not added through the effect resolver");
+
+  // Snapshot after primary damage committed but before its result animation finished. The
+  // materialized reaction/response queues must survive, while the in-flight render task is dropped.
+  cg::combat mid_resolution(cg::run_mode::animated);
+  mid_resolution.load(elemental_snapshot);
+  uint64_t mid_resolution_tick = 0;
+  check(mid_resolution.submit(fire), "could not submit mid-resolution snapshot action");
+  mid_resolution.update(++mid_resolution_tick);
+  auto mid_commands = mid_resolution.take_presentation_commands();
+  check(mid_commands.size() == 1 &&
+          mid_commands.front().kind == cg::presentation_command_kind::start,
+        "attack cue did not publish exactly one start command");
+  check(mid_resolution.notify_presentation(
+          mid_commands.front().task,
+          devils_engine::simul::presentation_event_kind::gameplay),
+        "could not deliver attack gameplay marker");
+  mid_resolution.update(++mid_resolution_tick);
+  mid_commands = mid_resolution.take_presentation_commands();
+  check(mid_commands.size() == 1 &&
+          mid_commands.front().kind == cg::presentation_command_kind::result,
+        "attack commit did not publish exactly one result command");
+  check(mid_resolution.state().enemy.hp == 97 && mid_resolution.state().player.hp == 30,
+        "reaction or return damage ran before the primary result animation finished");
+
+  cg::combat resumed_resolution(cg::run_mode::headless);
+  resumed_resolution.load(mid_resolution.save());
+  uint64_t resumed_resolution_tick = 0;
+  drive_to_player(resumed_resolution, resumed_resolution_tick);
+  check(resumed_resolution.state() == elemental_headless.state(),
+        "mid-resolution resume lost or duplicated reaction/return/effect work");
+  check(resumed_resolution.last_resolution() == elemental_headless.last_resolution(),
+        "mid-resolution resume changed the materialized resolution trace");
+
+  // Two attack instances create two return instances. Returned damage is marked non-recursive,
+  // even when both combatants own thorns.
+  cg::combat multi_hit(cg::run_mode::headless);
+  uint64_t multi_hit_tick = 0;
+  drive_to_player(multi_hit, multi_hit_tick);
+  auto multi_snapshot = multi_hit.save();
+  multi_snapshot.state.enemy.effects.push_back(
+    {2000, cg::effect_kind::thorns, cg::enemy_entity, 1, 0});
+  multi_snapshot.state.player.effects.push_back(
+    {2001, cg::effect_kind::thorns, cg::player_entity, 1, 0});
+  multi_hit.load(multi_snapshot);
+  submit_and_drive(multi_hit,
+                   {cg::player_intent_kind::play_card, cg::card_kind::double_strike, 1},
+                   multi_hit_tick);
+  check(multi_hit.state().enemy.hp == 96, "multi-hit did not apply both attack instances");
+  check(multi_hit.state().player.hp == 28, "multi-hit did not return damage per attack instance");
+  check(damage_count(multi_hit, cg::damage_channel::attack) == 2,
+        "multi-hit attack instance count is wrong");
+  check(damage_count(multi_hit, cg::damage_channel::returned) == 2,
+        "returned damage count is wrong or recursively looped");
+
+  // Target policy rejects an effect explicitly; damage still resolves and the result is traceable.
+  cg::combat immune(cg::run_mode::headless);
+  uint64_t immune_tick = 0;
+  drive_to_player(immune, immune_tick);
+  auto immune_snapshot = immune.save();
+  immune_snapshot.state.enemy.effect_immunity_mask =
+    uint64_t{1} << static_cast<uint8_t>(cg::effect_kind::burning);
+  immune.load(immune_snapshot);
+  submit_and_drive(immune, fire, immune_tick);
+  check(immune.state().enemy.effects.empty(), "immune target received a forbidden effect");
+  check(immune.last_resolution().effect_trace.size() == 1 &&
+          immune.last_resolution().effect_trace.front().result ==
+            cg::effect_apply_result::immune,
+        "forbidden effect did not produce an explicit immune outcome");
+
+  // A second application updates the project-owned status entry instead of adding a duplicate.
+  cg::combat effect_update(cg::run_mode::headless);
+  uint64_t effect_update_tick = 0;
+  drive_to_player(effect_update, effect_update_tick);
+  submit_and_drive(effect_update, fire, effect_update_tick);
+  auto update_snapshot = effect_update.save();
+  update_snapshot.state.enemy_countdown = 2; // keep this focused action before the enemy intent
+  effect_update.load(update_snapshot);
+  submit_and_drive(effect_update, fire, effect_update_tick);
+  check(effect_update.state().enemy.effects.size() == 1 &&
+          effect_update.state().enemy.effects.front().stacks == 2,
+        "second effect application duplicated the status instead of updating it");
+  check(effect_update.last_resolution().effect_trace.size() == 1 &&
+          effect_update.last_resolution().effect_trace.front().result ==
+            cg::effect_apply_result::updated &&
+          effect_update.last_resolution().effect_trace.front().previous_stacks == 1 &&
+          effect_update.last_resolution().effect_trace.front().resulting_stacks == 2,
+        "effect update outcome did not describe the merge");
+
   // Resume while the first player attack is flying and has not reached its gameplay point.
   cg::combat in_flight(cg::run_mode::animated);
   uint64_t in_flight_tick = 0;
@@ -89,7 +227,7 @@ int main() {
           {cg::player_intent_kind::play_card, cg::card_kind::strike, 1}),
         "could not submit in-flight snapshot action");
   in_flight.update(++in_flight_tick); // publishes start and waits; no gameplay marker delivered
-  check(in_flight.state().enemy_hp == 100, "damage committed before gameplay marker");
+  check(in_flight.state().enemy.hp == 100, "damage committed before gameplay marker");
   check(in_flight.waiting_presentation(), "animated attack is not waiting at gameplay marker");
 
   const auto snap = in_flight.save();
@@ -112,7 +250,7 @@ int main() {
     static_cast<unsigned long long>(headless.state().turn_index),
     static_cast<unsigned long long>(headless.state().player_action_index),
     static_cast<unsigned long long>(headless.state().countdown_pulse_index),
-    headless.state().player_hp,
-    headless.state().enemy_hp);
+    headless.state().player.hp,
+    headless.state().enemy.hp);
   return EXIT_SUCCESS;
 }
