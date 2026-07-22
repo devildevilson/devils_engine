@@ -49,6 +49,9 @@ target_include_directories(tile_frontier_config_test PRIVATE
 devils_add_doctest(thread_general_test thread_general_test.cpp)
 target_link_libraries(thread_general_test PRIVATE devils_engine::thread)
 
+devils_add_doctest(resolve_pipeline_test resolve_pipeline_test.cpp)
+target_link_libraries(resolve_pipeline_test PRIVATE devils_engine::resolve devils_engine::thread)
+
 devils_add_doctest(input_bindings_test input_bindings_test.cpp)
 target_link_libraries(input_bindings_test PRIVATE devils_engine::input devils_engine::utils tavl)
 
