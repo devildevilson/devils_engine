@@ -273,8 +273,16 @@ void combat::begin_card_resolution(combat_cursor& cursor) {
   cursor.resolution = {};
   cursor.resolution.stage = resolution_stage::select_beat;
 
+  const bool card_has_selected_target =
+    cursor.active_card != card_kind::mend &&
+    cursor.active_card != card_kind::cursed_mend &&
+    cursor.active_card != card_kind::scripted_guard;
   resolution_.report = execution_report{
-    allocate_execution(), player_entity, enemy_entity, true, {}};
+    allocate_execution(),
+    player_entity,
+    card_has_selected_target ? enemy_entity : invalid_entity,
+    true,
+    {}};
 
   const auto attack = [this](const element type, const int32_t damage,
                              const uint16_t hit_count, const bool applies_element) {
@@ -413,13 +421,20 @@ void combat::begin_attack_frontier(const attack_instance& attack) {
 
 std::vector<entity_id> combat::eligible_targets(
   const entity_id source,
-  const authored_effect::target_domain domain) const {
+  const authored_effect::target_domain domain,
+  const entity_id fixed_target) const {
   std::vector<entity_id> result;
   const combatant_state* candidate = nullptr;
-  if (domain == authored_effect::target_domain::self) {
-    candidate = find_combatant(source);
-  } else {
-    candidate = source == player_entity ? &state_.enemy : &state_.player;
+  switch (domain) {
+    case authored_effect::target_domain::self:
+      candidate = find_combatant(source);
+      break;
+    case authored_effect::target_domain::opponent:
+      candidate = source == player_entity ? &state_.enemy : &state_.player;
+      break;
+    case authored_effect::target_domain::explicit_target:
+      candidate = find_combatant(fixed_target);
+      break;
   }
   if (candidate == nullptr) return result;
   if (candidate->hp > 0) result.push_back(candidate->id);
@@ -446,6 +461,12 @@ void combat::materialize_beat(resolution_cursor& cursor) {
         }
         source = resolution_.healing_effects[effect.body.index].source;
         break;
+      case authored_effect_store_kind::shield:
+        if (effect.body.index >= resolution_.shield_effects.size()) {
+          throw std::out_of_range("cardgame authored shield recipe index is invalid");
+        }
+        source = resolution_.shield_effects[effect.body.index].source;
+        break;
       case authored_effect_store_kind::attribute_damage:
         if (effect.body.index >= resolution_.attribute_damage_effects.size()) {
           throw std::out_of_range(
@@ -466,12 +487,16 @@ void combat::materialize_beat(resolution_cursor& cursor) {
         source = resolution_.script_effects[effect.body.index].source;
         break;
     }
-    const entity_id fixed_target =
-      effect.domain == authored_effect::target_domain::self
-        ? source
-        : resolution_.report.selected_target;
+    entity_id fixed_target = resolution_.report.selected_target;
+    if (effect.domain == authored_effect::target_domain::self) {
+      fixed_target = source;
+    } else if (effect.domain == authored_effect::target_domain::explicit_target) {
+      fixed_target = effect.fixed_target;
+    }
     queries.push_back(target_query{
-      effect.targets, fixed_target, eligible_targets(source, effect.domain)});
+      effect.targets,
+      fixed_target,
+      eligible_targets(source, effect.domain, effect.fixed_target)});
   }
 
   const uint64_t entropy =
@@ -528,6 +553,20 @@ void combat::invoke_authored_effect(authored_effect_report& call) {
       }
       if (resolution_.plan.size() != call.plan_begin) {
         add_category(resolution_.report.categories, execution_category::healing);
+      }
+      break;
+    }
+    case authored_effect_store_kind::shield: {
+      const shield_effect& effect = resolution_.shield_effects.at(call.body.index);
+      for (const entity_id target : call.target_set.targets) {
+        const size_t index = resolution_.shields.size();
+        resolution_.shields.push_back(shield_instance{
+          0, resolution_.report.execution, effect.source, target, effect.amount});
+        resolution_.plan.push_back(
+          effect_instance_ref{effect_store_kind::shield, index});
+      }
+      if (resolution_.plan.size() != call.plan_begin) {
+        add_category(resolution_.report.categories, execution_category::shield);
       }
       break;
     }
@@ -610,6 +649,8 @@ presentation_subject combat::subject_for(const authored_effect_report& call) con
     }
     case authored_effect_store_kind::healing:
       return presentation_subject::healing;
+    case authored_effect_store_kind::shield:
+      return presentation_subject::shield;
     case authored_effect_store_kind::attribute_damage:
       return presentation_subject::attribute_damage;
     case authored_effect_store_kind::effect:
@@ -1667,14 +1708,20 @@ simul::step_control combat::run_party_follow_ups(
         prepared.report = execution_report{
           allocate_execution(),
           actor,
-          side == combat_side::player ? enemy_entity : player_entity,
+          invalid_entity,
           true,
           {}};
+        const combat_side opposing_side =
+          side == combat_side::player ? combat_side::enemy : combat_side::player;
+        const std::vector<entity_id> priority_opponents =
+          party_members(opposing_side);
         follow_up_rule_emit_context invocation{
           action_report_input(cursor.action.report),
           &prepared,
           prepared.report.actor,
-          prepared.report.selected_target,
+          cursor.action.trigger_report.actor,
+          cursor.action.trigger_report.selected_target,
+          priority_opponents,
           max_follow_up_authored_effects,
           0,
           0};

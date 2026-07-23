@@ -1659,9 +1659,16 @@ engine_gaps «наиболее важные проверки» + technical_scope
    party pass, даёт каждому этапу неизменный input prefix и сбрасывается после ActorStateTick; player/enemy
    sequences разделены. ✅ `follow_up_rule_scope` обходит этот prefix через `each_execution`, переиспользует
    read-only execution-report scopes и bounded-образом материализует authored beats; первый
-   `emit_follow_up_attack` затем проходит обычный resolver/presentation FSM. Output добавляется только после
-   полного resolution, невидим текущей party group и доступен следующей. Shipped test rule использует размер
-   input как damage и тем самым проверяет 4→5→6, отдельный enemy report и resume на follow-up cue. Затем
+   `emit_follow_up_attack` затем проходит обычный resolver/presentation FSM. ✅ Target contract явный:
+   emitter доступен только из `follow_up_target_scope`, который script получает через original opponent,
+   priority opponent, original-or-priority fallback или action actor selector. Отсутствующий/умерший
+   original target не подменяется скрыто: выбранный script policy использует первый frozen priority
+   candidate либо не вызывает callback; defensive `select_action_actor` сохраняет исполнителя исходной
+   карты/ability даже при другом rule owner. Каждый authored effect может нести свой pointer-free explicit
+   target; materialization повторно проверяет его живость. Первый `emit_follow_up_shield` проверяет этот путь
+   через полный resolver. Output добавляется только после полного resolution, невидим текущей party group и
+   доступен следующей. Shipped test rule использует размер input как damage и тем самым проверяет 4→5→6,
+   отдельный enemy report и resume на follow-up cue. Затем
    остаются реальный rule registry/component storage, остальные follow-up emitters, внешняя схема
    beats/targeters и resource-loaded status pulse programs.
 4. **Обязательная пауза перед крупной вертикалью:** провести отдельные code review и architecture review

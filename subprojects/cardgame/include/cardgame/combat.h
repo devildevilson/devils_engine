@@ -167,6 +167,12 @@ struct healing_outcome {
   constexpr bool operator==(const healing_outcome&) const noexcept = default;
 };
 
+struct shield_effect {
+  entity_id source = invalid_entity;
+  int32_t amount = 0;
+  constexpr bool operator==(const shield_effect&) const noexcept = default;
+};
+
 struct shield_instance {
   instance_id id = 0;
   instance_id parent_execution = 0;
@@ -339,6 +345,7 @@ struct script_effect {
 enum class authored_effect_store_kind : uint8_t {
   attack,
   healing,
+  shield,
   attribute_damage,
   effect,
   script
@@ -374,8 +381,10 @@ struct authored_effect {
   targeter targets{};
   enum class target_domain : uint8_t {
     opponent,
-    self
+    self,
+    explicit_target
   } domain = target_domain::opponent;
+  entity_id fixed_target = invalid_entity;
   constexpr bool operator==(const authored_effect&) const noexcept = default;
 };
 
@@ -427,6 +436,7 @@ struct resolution_work {
   effect_program program;
   std::vector<attack_effect> attack_effects;
   std::vector<healing_effect> healing_effects;
+  std::vector<shield_effect> shield_effects;
   std::vector<attribute_damage_effect> attribute_damage_effects;
   std::vector<status_effect> status_effects;
   std::vector<script_effect> script_effects;
@@ -730,7 +740,9 @@ private:
   void invoke_authored_effect(authored_effect_report& call);
   void finalize_authored_effect(authored_effect_report& call);
   std::vector<entity_id> eligible_targets(
-    entity_id source, authored_effect::target_domain domain) const;
+    entity_id source,
+    authored_effect::target_domain domain,
+    entity_id fixed_target = invalid_entity) const;
   presentation_subject subject_for(const authored_effect_report& call) const;
   std::vector<presentation_command::result_value> presentation_results(
     const authored_effect_report& call) const;

@@ -26,6 +26,24 @@ void check(const bool value, const std::string_view message) {
   if (!value) fail(message);
 }
 
+class fixed_follow_up_provider final : public cg::combat_effect_script_provider {
+public:
+  explicit fixed_follow_up_provider(
+    const devils_script::container& follow_up) noexcept
+    : follow_up_(&follow_up) {}
+
+  const devils_script::container* find(
+    const devils_engine::utils::id script) const noexcept override {
+    return script == devils_engine::utils::string_hash(
+                       "scripts/follow_up_attack")
+             ? follow_up_
+             : nullptr;
+  }
+
+private:
+  const devils_script::container* follow_up_ = nullptr;
+};
+
 std::vector<cg::presentation_command> drive_to_player(
   cg::combat& game, uint64_t& tick) {
   std::vector<cg::presentation_command> observed;
@@ -132,20 +150,24 @@ int main() {
     "follow_up_attack",
     "{ each_execution = { value = { assert = { executed, "
     "follow_up_input_execution } } }, "
-    "emit_follow_up_attack = { input_execution_count, none, false } }");
+    "select_original_or_priority_opponent = { value = { "
+    "emit_follow_up_attack = { input_execution_count, none, false } } } }");
   std::array<cg::resolution_work, 2> follow_up_input;
   follow_up_input[0].report =
     cg::execution_report{100, cg::player_entity, cg::enemy_entity, true, {}};
   follow_up_input[1].report =
     cg::execution_report{101, cg::player_entity, cg::enemy_entity, true, {}};
+  const std::array priority_opponents{cg::enemy_entity, cg::entity_id{3}};
   cg::resolution_work follow_up_output;
   follow_up_output.report =
-    cg::execution_report{102, cg::player_entity, cg::enemy_entity, true, {}};
+    cg::execution_report{102, cg::player_entity, cg::invalid_entity, true, {}};
   cg::follow_up_rule_emit_context follow_up_invocation{
     follow_up_input,
     &follow_up_output,
     cg::player_entity,
-    cg::enemy_entity,
+    cg::player_entity,
+    cg::entity_id{3},
+    priority_opponents,
     1,
     0,
     0};
@@ -159,16 +181,108 @@ int main() {
           follow_up_output.program.beats.size() == 1 &&
           follow_up_output.program.beats.front().effects.size() == 1 &&
           follow_up_output.program.beats.front().effects.front().body ==
-            cg::effect_ref{cg::authored_effect_store_kind::attack, 0},
-        "follow-up DS scope did not consume the frozen prefix and prepare one attack");
+            cg::effect_ref{cg::authored_effect_store_kind::attack, 0} &&
+          follow_up_output.program.beats.front().effects.front().fixed_target == 3 &&
+          follow_up_output.report.selected_target == 3,
+        "follow-up DS scope did not preserve the available original target");
+
+  cg::resolution_work fallback_output;
+  fallback_output.report =
+    cg::execution_report{103, cg::player_entity, cg::invalid_entity, true, {}};
+  cg::follow_up_rule_emit_context fallback_invocation{
+    follow_up_input,
+    &fallback_output,
+    cg::player_entity,
+    cg::player_entity,
+    cg::invalid_entity,
+    priority_opponents,
+    1,
+    0,
+    0};
+  cg::run_follow_up_rule_script(
+    follow_up_program, vm, fallback_invocation);
+  check(fallback_output.program.beats.size() == 1 &&
+          fallback_output.program.beats.front().effects.front().fixed_target ==
+            cg::enemy_entity &&
+          fallback_output.report.selected_target == cg::enemy_entity,
+        "targetless follow-up did not select the first priority opponent");
+  cg::resolution_work no_target_output;
+  no_target_output.report =
+    cg::execution_report{104, cg::player_entity, cg::invalid_entity, true, {}};
+  cg::follow_up_rule_emit_context no_target_invocation{
+    follow_up_input,
+    &no_target_output,
+    cg::player_entity,
+    cg::player_entity,
+    cg::invalid_entity,
+    {},
+    1,
+    0,
+    0};
+  cg::run_follow_up_rule_script(
+    follow_up_program, vm, no_target_invocation);
+  check(no_target_invocation.emitted_effects == 0 &&
+          no_target_output.program.beats.empty(),
+        "targetless follow-up emitted an attack without an eligible opponent");
+
+  const auto defensive_follow_up_program =
+    sys.parse<void, cg::follow_up_rule_scope>(
+      "follow_up_guard",
+      "select_action_actor = { value = { emit_follow_up_shield = 5 } }");
+  cg::resolution_work defensive_output;
+  defensive_output.report =
+    cg::execution_report{105, cg::entity_id{3}, cg::invalid_entity, true, {}};
+  cg::follow_up_rule_emit_context defensive_invocation{
+    follow_up_input,
+    &defensive_output,
+    cg::entity_id{3},
+    cg::player_entity,
+    cg::invalid_entity,
+    priority_opponents,
+    1,
+    0,
+    0};
+  cg::run_follow_up_rule_script(
+    defensive_follow_up_program, vm, defensive_invocation);
+  check(defensive_output.shield_effects ==
+            std::vector<cg::shield_effect>{{cg::entity_id{3}, 5}} &&
+          defensive_output.program.beats.size() == 1 &&
+          defensive_output.program.beats.front().effects.front().body ==
+            cg::effect_ref{cg::authored_effect_store_kind::shield, 0} &&
+          defensive_output.program.beats.front().effects.front().fixed_target ==
+            cg::player_entity &&
+          defensive_output.report.selected_target == cg::player_entity,
+        "defensive follow-up did not explicitly target the action actor");
+
+  fixed_follow_up_provider defensive_provider(defensive_follow_up_program);
+  cg::combat defensive_combat(cg::run_mode::headless, &defensive_provider);
+  uint64_t defensive_tick = 0;
+  (void)drive_to_player(defensive_combat, defensive_tick);
+  check(defensive_combat.submit({cg::player_intent_kind::play_card,
+                                 cg::card_kind::strike,
+                                 1}),
+        "defensive follow-up integration card was rejected");
+  (void)drive_to_player(defensive_combat, defensive_tick);
+  check(defensive_combat.state().enemy.hp == 97 &&
+          defensive_combat.state().player.shield == 10 &&
+          defensive_combat.last_resolution().report.actor == cg::enemy_entity &&
+          defensive_combat.last_resolution().shield_effects ==
+            std::vector<cg::shield_effect>{{cg::enemy_entity, 5}} &&
+          defensive_combat.last_resolution().shield_trace.size() == 1 &&
+          defensive_combat.last_resolution().shield_trace.front().shield.target ==
+            cg::player_entity,
+        "authored defensive follow-up did not resolve on the action actor");
+
   cg::resolution_work bounded_follow_up_output;
   bounded_follow_up_output.report =
-    cg::execution_report{103, cg::player_entity, cg::enemy_entity, true, {}};
+    cg::execution_report{106, cg::player_entity, cg::invalid_entity, true, {}};
   cg::follow_up_rule_emit_context bounded_follow_up{
     follow_up_input,
     &bounded_follow_up_output,
     cg::player_entity,
-    cg::enemy_entity,
+    cg::player_entity,
+    cg::invalid_entity,
+    priority_opponents,
     0,
     0,
     0};
@@ -310,6 +424,7 @@ int main() {
           guard_work.shield_trace.size() == 1 &&
           guard_work.shield_trace.front().route.before == 0 &&
           guard_work.shield_trace.front().route.committed_after == 5 &&
+          guard_work.report.selected_target == cg::invalid_entity &&
           guard_work.report.effects.size() == 1 &&
           guard_work.report.effects.front().shield_outcome_begin == 0 &&
           guard_work.report.effects.front().shield_outcome_count == 1 &&
