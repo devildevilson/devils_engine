@@ -1,0 +1,3 @@
+ret = "void"
+scope = "follow_up_rule"
+expr = "{ each_execution = { value = { assert = { executed, follow_up_input_execution } } }, emit_follow_up_attack = { input_execution_count, none, false } }"

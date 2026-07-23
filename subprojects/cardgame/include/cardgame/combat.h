@@ -748,7 +748,11 @@ private:
     const attribute_damage_instance& damage);
   effect_outcome resolve_effect(const effect_request& request);
   void record_death_check(outcome_store_kind kind, size_t outcome_index, entity_id target);
-  bool run_party_follow_ups(combat_cursor& cursor, combat_side side);
+  simul::step_control run_party_follow_ups(
+    combat_cursor& cursor,
+    pipeline_type& pipe,
+    combat_side side,
+    combat_group next_group);
   std::vector<entity_id> party_members(combat_side side) const;
   void enter_group(combat_cursor& cursor, combat_group group);
   void trace(combat_trace_kind kind, combat_group group, const combat_cursor& cursor,

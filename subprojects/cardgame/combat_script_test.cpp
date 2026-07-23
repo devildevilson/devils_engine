@@ -2,6 +2,7 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -127,6 +128,61 @@ int main() {
   check(bounded.emitted_instances == 1 && bounded_work.plan.size() == 1,
         "DS authored-effect emission appended work past its capacity");
 
+  const auto follow_up_program = sys.parse<void, cg::follow_up_rule_scope>(
+    "follow_up_attack",
+    "{ each_execution = { value = { assert = { executed, "
+    "follow_up_input_execution } } }, "
+    "emit_follow_up_attack = { input_execution_count, none, false } }");
+  std::array<cg::resolution_work, 2> follow_up_input;
+  follow_up_input[0].report =
+    cg::execution_report{100, cg::player_entity, cg::enemy_entity, true, {}};
+  follow_up_input[1].report =
+    cg::execution_report{101, cg::player_entity, cg::enemy_entity, true, {}};
+  cg::resolution_work follow_up_output;
+  follow_up_output.report =
+    cg::execution_report{102, cg::player_entity, cg::enemy_entity, true, {}};
+  cg::follow_up_rule_emit_context follow_up_invocation{
+    follow_up_input,
+    &follow_up_output,
+    cg::player_entity,
+    cg::enemy_entity,
+    1,
+    0,
+    0};
+  cg::run_follow_up_rule_script(
+    follow_up_program, vm, follow_up_invocation);
+  check(follow_up_invocation.visited_executions == 2 &&
+          follow_up_invocation.emitted_effects == 1 &&
+          follow_up_output.attack_effects ==
+            std::vector<cg::attack_effect>{
+              {cg::player_entity, cg::element::none, 2, 1, false}} &&
+          follow_up_output.program.beats.size() == 1 &&
+          follow_up_output.program.beats.front().effects.size() == 1 &&
+          follow_up_output.program.beats.front().effects.front().body ==
+            cg::effect_ref{cg::authored_effect_store_kind::attack, 0},
+        "follow-up DS scope did not consume the frozen prefix and prepare one attack");
+  cg::resolution_work bounded_follow_up_output;
+  bounded_follow_up_output.report =
+    cg::execution_report{103, cg::player_entity, cg::enemy_entity, true, {}};
+  cg::follow_up_rule_emit_context bounded_follow_up{
+    follow_up_input,
+    &bounded_follow_up_output,
+    cg::player_entity,
+    cg::enemy_entity,
+    0,
+    0,
+    0};
+  capacity_failed = false;
+  try {
+    cg::run_follow_up_rule_script(
+      follow_up_program, vm, bounded_follow_up);
+  } catch (const std::length_error&) {
+    capacity_failed = true;
+  }
+  check(capacity_failed && bounded_follow_up_output.program.beats.empty() &&
+          bounded_follow_up_output.attack_effects.empty(),
+        "follow-up authored-effect overflow appended partial work");
+
   // The combat stores only the stable resource id. The compiled container remains in demiurg and
   // can be supplied again when an in-flight snapshot is resumed by another combat host.
   cg::combat_effect_script_compiler compiler;
@@ -157,6 +213,9 @@ int main() {
   check(thorns_rule->category() == devils_engine::act::category::effect &&
           !thorns_rule->program()->cmds.empty(),
         "thorns retaliation resource did not compile as an immediate rule");
+  auto* follow_up_rule = resources.get<devils_engine::act::script_resource>(
+    "scripts/follow_up_attack");
+  check(follow_up_rule != nullptr, "follow-up attack resource was not discovered");
   cg::combat_effect_script_resources script_resources(resources);
 
   cg::resolution_work retaliation_work;
@@ -296,7 +355,112 @@ int main() {
   check(missing_failed,
         "resource-backed card silently fell back when no provider was installed");
 
+  // Loading the optional fixture activates one attack follow-up rule for every live participant.
+  // Snapshot at the first follow-up cue: the card execution is sealed input, while the source-party
+  // segment and its resolution cursor are still open.
+  follow_up_rule->load(devils_engine::utils::safe_handle_t{});
+  check(follow_up_rule->category() == devils_engine::act::category::effect &&
+          !follow_up_rule->program()->cmds.empty(),
+        "follow-up attack resource did not compile as a prepare rule");
+
+  cg::combat follow_up_in_flight(cg::run_mode::animated, &script_resources);
+  uint64_t follow_up_tick = 0;
+  (void)drive_to_player(follow_up_in_flight, follow_up_tick);
+  check(follow_up_in_flight.submit({cg::player_intent_kind::play_card,
+                                    cg::card_kind::strike,
+                                    1}),
+        "follow-up integration card was rejected");
+  follow_up_in_flight.update(++follow_up_tick);
+  auto commands = follow_up_in_flight.take_presentation_commands();
+  check(commands.size() == 1 &&
+          commands.front().kind == cg::presentation_command_kind::start &&
+          follow_up_in_flight.notify_presentation(
+            commands.front().task,
+            devils_engine::simul::presentation_event_kind::gameplay),
+        "follow-up integration did not reach the card gameplay checkpoint");
+  follow_up_in_flight.update(++follow_up_tick);
+  commands = follow_up_in_flight.take_presentation_commands();
+  check(commands.size() == 1 &&
+          commands.front().kind == cg::presentation_command_kind::result &&
+          follow_up_in_flight.notify_presentation(
+            commands.front().task,
+            devils_engine::simul::presentation_event_kind::finished),
+        "follow-up integration did not finish the card presentation");
+  follow_up_in_flight.update(++follow_up_tick);
+  commands = follow_up_in_flight.take_presentation_commands();
+  check(commands.size() == 1 &&
+          commands.front().kind == cg::presentation_command_kind::start &&
+          follow_up_in_flight.cursor().group ==
+            cg::combat_group::card_player_party_follow_ups &&
+          follow_up_in_flight.cursor().step == cg::combat_step::resolve_execution &&
+          follow_up_in_flight.cursor().action.report.segment_open &&
+          follow_up_in_flight.cursor().action.report.executions.size() == 1,
+        "follow-up execution did not pause over one sealed card input");
+  const auto follow_up_snapshot = follow_up_in_flight.save();
+
+  cg::combat resumed_follow_up(cg::run_mode::headless, &script_resources);
+  resumed_follow_up.load(follow_up_snapshot);
+  uint64_t resumed_follow_up_tick = 0;
+  (void)drive_to_player(resumed_follow_up, resumed_follow_up_tick);
+
+  cg::combat control_follow_up(cg::run_mode::headless, &script_resources);
+  uint64_t control_follow_up_tick = 0;
+  (void)drive_to_player(control_follow_up, control_follow_up_tick);
+  check(control_follow_up.submit({cg::player_intent_kind::play_card,
+                                  cg::card_kind::strike,
+                                  1}),
+        "follow-up control card was rejected");
+  (void)drive_to_player(control_follow_up, control_follow_up_tick);
+  check(resumed_follow_up.state() == control_follow_up.state() &&
+          resumed_follow_up.last_resolution() ==
+            control_follow_up.last_resolution(),
+        "follow-up execution changed across its presentation snapshot");
+  const auto actor_tick = std::find_if(
+    control_follow_up.state().trace.rbegin(),
+    control_follow_up.state().trace.rend(),
+    [](const cg::combat_trace_event& event) {
+      return event.kind == cg::combat_trace_kind::actor_state_tick;
+    });
+  check(control_follow_up.state().enemy.hp == 96 &&
+          control_follow_up.state().player.hp == 28 &&
+          actor_tick != control_follow_up.state().trace.rend() &&
+          actor_tick->report_execution_count == 3 &&
+          control_follow_up.last_resolution().report.actor == cg::enemy_entity &&
+          control_follow_up.last_resolution().damage_trace.size() == 1,
+        "party follow-ups did not produce card+source+opposing report work");
+
+  check(resumed_follow_up.submit({cg::player_intent_kind::play_card,
+                                  cg::card_kind::strike,
+                                  2}) &&
+          control_follow_up.submit({cg::player_intent_kind::play_card,
+                                    cg::card_kind::strike,
+                                    2}),
+        "mirrored follow-up integration cards were rejected");
+  (void)drive_to_player(resumed_follow_up, resumed_follow_up_tick);
+  (void)drive_to_player(control_follow_up, control_follow_up_tick);
+  check(resumed_follow_up.state() == control_follow_up.state() &&
+          resumed_follow_up.last_resolution() ==
+            control_follow_up.last_resolution(),
+        "mirrored follow-up sequence changed after resumed execution");
+  std::vector<cg::combat_trace_event> final_actor_ticks;
+  std::copy_if(control_follow_up.state().trace.begin(),
+               control_follow_up.state().trace.end(),
+               std::back_inserter(final_actor_ticks),
+               [](const cg::combat_trace_event& event) {
+                 return event.kind == cg::combat_trace_kind::actor_state_tick;
+               });
+  check(final_actor_ticks.size() == 3 &&
+          final_actor_ticks[1].actor == cg::player_entity &&
+          final_actor_ticks[2].actor == cg::enemy_entity &&
+          final_actor_ticks[1].report_execution_count == 3 &&
+          final_actor_ticks[2].report_execution_count == 3 &&
+          final_actor_ticks[1].execution != final_actor_ticks[2].execution &&
+          control_follow_up.state().enemy.hp == 90 &&
+          control_follow_up.state().player.hp == 23 &&
+          control_follow_up.last_resolution().report.actor == cg::player_entity,
+        "enemy execution did not build a fresh staged follow-up report");
+
   std::puts(
-    "cardgame DS effect scope: typed emitters, resource card and resume OK");
+    "cardgame DS scopes: typed emitters, follow-up prepare and resume OK");
   return EXIT_SUCCESS;
 }

@@ -1633,7 +1633,8 @@ engine_gaps «наиболее важные проверки» + technical_scope
    стабильный resource hash, а внешний demiurg catalogue отдаёт container на invocation. Shipped
    `scripts/scripted_strike` проходит gameplay barrier, DS emission и resume с идентичным trace. Следом
    расширить envelope на draw/resource emitters и загрузить вложенную схему card → beats → effect resources,
-   затем follow-up/status programs вместо native fixtures.
+   затем заменить временный follow-up registry fixture настоящими component/resource rule lists и добавить
+   status programs.
    **DS contract уточнён (2026-07-23):** retaliation — immediate continuation конкретного instance
    внутри внешнего execution/report с жёстким lineage-запретом рекурсии; follow-up — fixed-step group над
    frozen prefix action report. Её output невидим в той же группе, но после seal доступен следующей party
@@ -1656,8 +1657,12 @@ engine_gaps «наиболее важные проверки» + technical_scope
    `each_attack/damage/healing/shield/attribute_damage/status` с route/result accessors. Emitters намеренно
    отсутствуют. ✅ Сериализуемый `action_report` уже удерживает execution work и sealed ranges через оба
    party pass, даёт каждому этапу неизменный input prefix и сбрасывается после ActorStateTick; player/enemy
-   sequences разделены. Следующим срезом отдельный follow-up prepare scope должен bounded-образом
-   материализовать authored effects из этого prefix. Затем остаются внешняя схема
+   sequences разделены. ✅ `follow_up_rule_scope` обходит этот prefix через `each_execution`, переиспользует
+   read-only execution-report scopes и bounded-образом материализует authored beats; первый
+   `emit_follow_up_attack` затем проходит обычный resolver/presentation FSM. Output добавляется только после
+   полного resolution, невидим текущей party group и доступен следующей. Shipped test rule использует размер
+   input как damage и тем самым проверяет 4→5→6, отдельный enemy report и resume на follow-up cue. Затем
+   остаются реальный rule registry/component storage, остальные follow-up emitters, внешняя схема
    beats/targeters и resource-loaded status pulse programs.
 4. **Обязательная пауза перед крупной вертикалью:** провести отдельные code review и architecture review
    текущего combat kernel, затем спроектировать первый реальный набор карт. Новые механики, обнаруженные

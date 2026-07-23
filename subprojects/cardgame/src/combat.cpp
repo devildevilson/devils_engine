@@ -28,6 +28,9 @@ constexpr std::string_view scripted_strike_resource = "scripts/scripted_strike";
 constexpr std::string_view scripted_guard_resource = "scripts/scripted_guard";
 constexpr std::string_view thorns_retaliation_resource =
   "scripts/thorns_retaliation";
+constexpr std::string_view follow_up_attack_resource =
+  "scripts/follow_up_attack";
+constexpr size_t max_follow_up_authored_effects = 16;
 
 constexpr uint64_t effect_bit(const effect_kind kind) noexcept {
   return uint64_t{1} << static_cast<uint8_t>(kind);
@@ -1606,7 +1609,11 @@ std::vector<entity_id> combat::party_members(const combat_side side) const {
   return {member.id};
 }
 
-bool combat::run_party_follow_ups(combat_cursor& cursor, const combat_side side) {
+simul::step_control combat::run_party_follow_ups(
+  combat_cursor& cursor,
+  pipeline_type& pipe,
+  const combat_side side,
+  const combat_group next_group) {
   switch (cursor.step) {
     case combat_step::enter:
       trace(combat_trace_kind::group_enter, cursor.group, cursor);
@@ -1614,29 +1621,33 @@ bool combat::run_party_follow_ups(combat_cursor& cursor, const combat_side side)
         cursor.action.report, report_stage_for(cursor.group));
       if (!cursor.action.trigger_report.executed) {
         seal_action_report_segment(cursor.action.report);
-        return true;
+        enter_group(cursor, next_group);
+        return simul::step_control::advance;
       }
       cursor.action.party.order = materialize_follow_up_order(
         party_members(side),
         follow_up_order_context{state_.combat_seed, cursor.action.token, side});
       cursor.action.party.actor_index = 0;
       cursor.step = combat_step::visit_party;
-      return false;
+      return simul::step_control::advance;
 
     case combat_step::visit_party: {
       if (cursor.action.party.actor_index >= cursor.action.party.order.size()) {
         seal_action_report_segment(cursor.action.report);
-        return true;
+        enter_group(cursor, next_group);
+        return simul::step_control::advance;
       }
 
       const entity_id actor =
         cursor.action.party.order[cursor.action.party.actor_index++];
       const combatant_state* participant = find_combatant(actor);
-      if (participant == nullptr || participant->hp <= 0) return false;
+      if (participant == nullptr || participant->hp <= 0) {
+        return simul::step_control::advance;
+      }
 
-      // Temporary native fixture for the future rule registry: one attack subscription per
-      // participant, invoked once with the whole frozen report. Emitting zero new instances is a
-      // valid script result and, importantly, does not open a recursive follow-up window.
+      // Temporary native registry fixture: one optional resource-backed attack subscription per
+      // participant. The rule consumes the whole frozen prefix once. Its execution is appended to
+      // this open segment only after full resolution, so no actor in this party pass can observe it.
       constexpr follow_up_enabler attack_listener{
         category_bit(execution_category::attack), 0};
       if (attack_listener.matches(cursor.action.report.categories)) {
@@ -1645,9 +1656,50 @@ bool combat::run_party_follow_ups(combat_cursor& cursor, const combat_side side)
               cursor,
               actor,
               cursor.action.trigger_report.execution);
+        if (scripts_ == nullptr) return simul::step_control::advance;
+        const devils_script::container* program = scripts_->find(
+          devils_engine::utils::string_hash(follow_up_attack_resource));
+        if (program == nullptr || program->cmds.empty()) {
+          return simul::step_control::advance;
+        }
+
+        resolution_work prepared;
+        prepared.report = execution_report{
+          allocate_execution(),
+          actor,
+          side == combat_side::player ? enemy_entity : player_entity,
+          true,
+          {}};
+        follow_up_rule_emit_context invocation{
+          action_report_input(cursor.action.report),
+          &prepared,
+          prepared.report.actor,
+          prepared.report.selected_target,
+          max_follow_up_authored_effects,
+          0,
+          0};
+        devils_script::context vm;
+        run_follow_up_rule_script(*program, vm, invocation);
+        if (invocation.emitted_effects == 0) {
+          return simul::step_control::advance;
+        }
+
+        resolution_ = std::move(prepared);
+        cursor.resolution = {};
+        cursor.resolution.stage = resolution_stage::select_beat;
+        cursor.step = combat_step::resolve_execution;
       }
-      return false;
+      return simul::step_control::advance;
     }
+
+    case combat_step::resolve_execution:
+      if (cursor.resolution.stage != resolution_stage::done) {
+        return run_resolution_step(cursor, pipe);
+      }
+      append_action_report_execution(cursor.action.report, resolution_);
+      cursor.resolution = {};
+      cursor.step = combat_step::visit_party;
+      return simul::step_control::advance;
 
     default:
       throw std::logic_error("cardgame party follow-up cursor entered an invalid step");
@@ -1760,16 +1812,16 @@ simul::step_control combat::run_step(combat_cursor& cursor, pipeline_type& pipe)
           return simul::step_control::advance;
 
         case combat_group::card_player_party_follow_ups:
-          if (run_party_follow_ups(cursor, combat_side::player)) {
-            enter_group(cursor, combat_group::card_enemy_party_follow_ups);
-          }
-          return simul::step_control::advance;
+          return run_party_follow_ups(cursor,
+                                      pipe,
+                                      combat_side::player,
+                                      combat_group::card_enemy_party_follow_ups);
 
         case combat_group::card_enemy_party_follow_ups:
-          if (run_party_follow_ups(cursor, combat_side::enemy)) {
-            enter_group(cursor, combat_group::player_actor_state_tick);
-          }
-          return simul::step_control::advance;
+          return run_party_follow_ups(cursor,
+                                      pipe,
+                                      combat_side::enemy,
+                                      combat_group::player_actor_state_tick);
 
         case combat_group::player_actor_state_tick:
           trace(combat_trace_kind::group_enter, cursor.group, cursor);
@@ -1816,16 +1868,17 @@ simul::step_control combat::run_step(combat_cursor& cursor, pipeline_type& pipe)
           return simul::step_control::advance;
 
         case combat_group::enemy_action_enemy_party_follow_ups:
-          if (run_party_follow_ups(cursor, combat_side::enemy)) {
-            enter_group(cursor, combat_group::enemy_action_player_party_follow_ups);
-          }
-          return simul::step_control::advance;
+          return run_party_follow_ups(
+            cursor,
+            pipe,
+            combat_side::enemy,
+            combat_group::enemy_action_player_party_follow_ups);
 
         case combat_group::enemy_action_player_party_follow_ups:
-          if (run_party_follow_ups(cursor, combat_side::player)) {
-            enter_group(cursor, combat_group::enemy_actor_state_tick);
-          }
-          return simul::step_control::advance;
+          return run_party_follow_ups(cursor,
+                                      pipe,
+                                      combat_side::player,
+                                      combat_group::enemy_actor_state_tick);
 
         case combat_group::enemy_actor_state_tick:
           trace(combat_trace_kind::group_enter, cursor.group, cursor);
