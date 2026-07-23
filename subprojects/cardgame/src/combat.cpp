@@ -25,6 +25,7 @@ constexpr resolve::resolution_limits combat_resolution_limits{
   16, 128, 32, 8, 16};
 constexpr size_t max_script_emitted_instances = 128;
 constexpr std::string_view scripted_strike_resource = "scripts/scripted_strike";
+constexpr std::string_view scripted_guard_resource = "scripts/scripted_guard";
 constexpr std::string_view thorns_retaliation_resource =
   "scripts/thorns_retaliation";
 
@@ -224,13 +225,17 @@ void combat::begin_card_resolution(combat_cursor& cursor) {
       effect_ref{authored_effect_store_kind::attribute_damage, index},
       targeter{targeter_kind::target, independent_target_binding}};
   };
-  const auto script = [this](const std::string_view id) {
+  const auto script = [this](
+                        const std::string_view id,
+                        const authored_effect::target_domain domain =
+                          authored_effect::target_domain::opponent) {
     const size_t index = resolution_.script_effects.size();
     resolution_.script_effects.push_back(
       script_effect{player_entity, devils_engine::utils::string_hash(id)});
     return authored_effect{
       effect_ref{authored_effect_store_kind::script, index},
-      targeter{targeter_kind::target, independent_target_binding}};
+      targeter{targeter_kind::target, independent_target_binding},
+      domain};
   };
 
   switch (cursor.active_card) {
@@ -275,6 +280,10 @@ void combat::begin_card_resolution(combat_cursor& cursor) {
     case card_kind::scripted_strike:
       resolution_.program.beats.push_back(
         effect_beat{{script(scripted_strike_resource)}});
+      break;
+    case card_kind::scripted_guard:
+      resolution_.program.beats.push_back(effect_beat{{script(
+        scripted_guard_resource, authored_effect::target_domain::self)}});
       break;
   }
 }
@@ -398,6 +407,7 @@ void combat::invoke_authored_effect(authored_effect_report& call) {
   call.damage_outcome_begin = resolution_.damage_trace.size();
   call.effect_outcome_begin = resolution_.effect_trace.size();
   call.healing_outcome_begin = resolution_.healing_trace.size();
+  call.shield_outcome_begin = resolution_.shield_trace.size();
   call.attribute_outcome_begin = resolution_.attribute_damage_trace.size();
   call.outcome_begin = resolution_.outcomes.size();
 
@@ -500,6 +510,7 @@ void combat::finalize_authored_effect(authored_effect_report& call) {
   call.damage_outcome_count = resolution_.damage_trace.size() - call.damage_outcome_begin;
   call.effect_outcome_count = resolution_.effect_trace.size() - call.effect_outcome_begin;
   call.healing_outcome_count = resolution_.healing_trace.size() - call.healing_outcome_begin;
+  call.shield_outcome_count = resolution_.shield_trace.size() - call.shield_outcome_begin;
   call.attribute_outcome_count =
     resolution_.attribute_damage_trace.size() - call.attribute_outcome_begin;
   call.outcome_count = resolution_.outcomes.size() - call.outcome_begin;
@@ -548,6 +559,16 @@ std::vector<presentation_command::result_value> combat::presentation_results(
           presentation_subject::healing,
           outcome.healing.id,
           outcome.healing.target,
+          outcome.route.committed_after - outcome.route.before,
+          0});
+        break;
+      }
+      case outcome_store_kind::shield: {
+        const shield_outcome& outcome = resolution_.shield_trace.at(ref.index);
+        result.push_back(presentation_command::result_value{
+          presentation_subject::shield,
+          outcome.shield.id,
+          outcome.shield.target,
           outcome.route.committed_after - outcome.route.before,
           0});
         break;
@@ -742,6 +763,39 @@ healing_outcome combat::resolve_healing(const healing_instance& healing) {
   result.route.committed_after = std::clamp(result.route.proposed_after, 0, upper);
   result.route.clamped = result.route.proposed_after - result.route.committed_after;
   target->hp = result.route.committed_after;
+  result.committed = true;
+  return result;
+}
+
+shield_outcome combat::resolve_shield(const shield_instance& shield) {
+  shield_outcome result;
+  result.shield = shield;
+  result.route.requested = shield.amount;
+  result.route.modified = shield.amount;
+  combatant_state* target = find_combatant(shield.target);
+  if (target == nullptr) return result;
+
+  result.target_valid = true;
+  result.route.before = target->shield;
+
+  // Shield never resurrects or otherwise mutates an already dead target. A signed instance still
+  // remains observable in the typed trace when its beat was materialized before death latched.
+  if (target->hp <= 0) {
+    result.route.proposed_after = target->shield;
+    result.route.committed_after = target->shield;
+    return result;
+  }
+
+  const int64_t proposed =
+    static_cast<int64_t>(target->shield) + result.route.modified;
+  result.route.proposed_after = static_cast<int32_t>(std::clamp<int64_t>(
+    proposed,
+    std::numeric_limits<int32_t>::min(),
+    std::numeric_limits<int32_t>::max()));
+  result.route.committed_after = std::max(result.route.proposed_after, 0);
+  result.route.clamped =
+    result.route.proposed_after - result.route.committed_after;
+  target->shield = result.route.committed_after;
   result.committed = true;
   return result;
 }
@@ -1128,6 +1182,13 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
           cursor.stage = resolution_stage::healing_commit;
           break;
         }
+        case effect_store_kind::shield: {
+          cursor.shield_index = resolution_.plan[cursor.item_index].index;
+          auto& shield = resolution_.shields.at(cursor.shield_index);
+          if (shield.id == resolve::invalid_instance) shield.id = allocate_instance();
+          cursor.stage = resolution_stage::shield_commit;
+          break;
+        }
         case effect_store_kind::attribute_damage: {
           cursor.attribute_damage_index = resolution_.plan[cursor.item_index].index;
           auto& damage = resolution_.attribute_damages.at(cursor.attribute_damage_index);
@@ -1302,6 +1363,23 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
     }
 
     case resolution_stage::healing_after:
+      ++cursor.item_index;
+      cursor.stage = resolution_stage::select_item;
+      return simul::step_control::advance;
+
+    case resolution_stage::shield_commit: {
+      const auto shield = resolution_.shields.at(cursor.shield_index);
+      resolution_.shield_trace.push_back(resolve_shield(shield));
+      const size_t outcome_index = resolution_.shield_trace.size() - 1;
+      resolution_.outcomes.push_back(
+        outcome_ref{outcome_store_kind::shield, outcome_index});
+      add_category(resolution_.report.categories, execution_category::stat_change);
+      record_death_check(outcome_store_kind::shield, outcome_index, shield.target);
+      cursor.stage = resolution_stage::shield_after;
+      return simul::step_control::advance;
+    }
+
+    case resolution_stage::shield_after:
       ++cursor.item_index;
       cursor.stage = resolution_stage::select_item;
       return simul::step_control::advance;

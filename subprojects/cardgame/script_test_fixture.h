@@ -29,6 +29,7 @@ struct script_fixture {
       "scripts", "tavl", &compiler);
     resources.parse_resources(&modules);
     load("scripts/scripted_strike");
+    load("scripts/scripted_guard");
     load("scripts/thorns_retaliation");
   }
 

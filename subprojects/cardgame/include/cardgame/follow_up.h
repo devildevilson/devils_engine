@@ -22,6 +22,7 @@ enum class execution_category : uint8_t {
   attack,
   damage,
   healing,
+  shield,
   attribute_change,
   status,
   stat_change,

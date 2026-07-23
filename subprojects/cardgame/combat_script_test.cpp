@@ -1,8 +1,10 @@
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
 #include <string_view>
+#include <vector>
 
 #include <devils_engine/act/script_resource.h>
 #include <devils_engine/demiurg/module_system.h>
@@ -23,18 +25,21 @@ void check(const bool value, const std::string_view message) {
   if (!value) fail(message);
 }
 
-void drive_to_player(cg::combat& game, uint64_t& tick) {
+std::vector<cg::presentation_command> drive_to_player(
+  cg::combat& game, uint64_t& tick) {
+  std::vector<cg::presentation_command> observed;
   for (uint32_t guard = 0; guard < 256; ++guard) {
     game.update(++tick);
     const auto commands = game.take_presentation_commands();
     for (const auto& command : commands) {
+      observed.push_back(command);
       const auto event = command.kind == cg::presentation_command_kind::start
                            ? devils_engine::simul::presentation_event_kind::gameplay
                            : devils_engine::simul::presentation_event_kind::finished;
       check(game.notify_presentation(command.task, event),
             "scripted card produced an unexpected presentation event");
     }
-    if (game.awaiting_player()) return;
+    if (game.awaiting_player()) return observed;
     check(!game.faulted(), "scripted card pipeline faulted");
   }
   fail("scripted card pipeline did not return to player input");
@@ -51,26 +56,29 @@ int main() {
   const auto program = sys.parse<void, cg::combat_effect_scope>(
     "typed_emitters",
     "each_target = { value = { emit_attack = { 4, fire, true }, "
-    "emit_healing = -2, emit_attribute_damage = { agility, 3 }, "
+    "emit_healing = -2, emit_shield = -4, "
+    "emit_attribute_damage = { agility, 3 }, "
     "emit_status = { burning, 2, 3 } } }");
 
   cg::resolution_work work;
   work.report.execution = 42;
   const std::array targets{cg::entity_id{2}, cg::entity_id{3}};
   cg::combat_effect_emit_context invocation{
-    &work, cg::entity_id{1}, targets, 8, 0};
+    &work, cg::entity_id{1}, targets, 10, 0};
   devils_script::context vm;
   cg::run_combat_effect_script(program, vm, invocation);
 
-  check(invocation.emitted_instances == 8 && work.plan.size() == 8,
+  check(invocation.emitted_instances == 10 && work.plan.size() == 10,
         "DS emitters did not preserve the per-target semantic work count");
   check(work.plan == std::vector<cg::effect_instance_ref>{
                        {cg::effect_store_kind::attack, 0},
                        {cg::effect_store_kind::healing, 0},
+                       {cg::effect_store_kind::shield, 0},
                        {cg::effect_store_kind::attribute_damage, 0},
                        {cg::effect_store_kind::effect, 0},
                        {cg::effect_store_kind::attack, 1},
                        {cg::effect_store_kind::healing, 1},
+                       {cg::effect_store_kind::shield, 1},
                        {cg::effect_store_kind::attribute_damage, 1},
                        {cg::effect_store_kind::effect, 1}},
         "each_target lost target-major script order while appending typed store refs");
@@ -83,6 +91,9 @@ int main() {
   check(work.healings.size() == 2 && work.healings[0].target == 2 &&
           work.healings[0].amount == -2 && work.healings[1].target == 3,
         "emit_healing changed the signed value or frozen target order");
+  check(work.shields.size() == 2 && work.shields[0].target == 2 &&
+          work.shields[0].amount == -4 && work.shields[1].target == 3,
+        "emit_shield changed the signed value or frozen target order");
   check(work.attribute_damages.size() == 2 &&
           work.attribute_damages[0].attribute == cg::attribute_kind::agility &&
           work.attribute_damages[0].amount == 3 &&
@@ -95,6 +106,7 @@ int main() {
         "emit_status lost its typed status payload or frozen target order");
   check(cg::has_category(work.report.categories, cg::execution_category::attack) &&
           cg::has_category(work.report.categories, cg::execution_category::healing) &&
+          cg::has_category(work.report.categories, cg::execution_category::shield) &&
           cg::has_category(
             work.report.categories, cg::execution_category::attribute_change) &&
           cg::has_category(work.report.categories, cg::execution_category::status),
@@ -131,6 +143,13 @@ int main() {
   check(scripted_strike->category() == devils_engine::act::category::effect &&
           !scripted_strike->program()->cmds.empty(),
         "scripted strike resource did not compile as a combat effect");
+  auto* scripted_guard = resources.get<devils_engine::act::script_resource>(
+    "scripts/scripted_guard");
+  check(scripted_guard != nullptr, "scripted guard resource was not discovered");
+  scripted_guard->load(devils_engine::utils::safe_handle_t{});
+  check(scripted_guard->category() == devils_engine::act::category::effect &&
+          !scripted_guard->program()->cmds.empty(),
+        "scripted guard resource did not compile as a combat effect");
   auto* thorns_rule = resources.get<devils_engine::act::script_resource>(
     "scripts/thorns_retaliation");
   check(thorns_rule != nullptr, "thorns retaliation resource was not discovered");
@@ -211,6 +230,54 @@ int main() {
           resumed.last_resolution().attacks.size() == 1 &&
           resumed.last_resolution().attacks.front().base_damage == 3,
         "resource-backed DS invocation lost its typed attack or stable trace");
+
+  cg::combat guard(cg::run_mode::animated, &script_resources);
+  uint64_t guard_tick = 0;
+  (void)drive_to_player(guard, guard_tick);
+  check(guard.submit({cg::player_intent_kind::play_card,
+                      cg::card_kind::scripted_guard,
+                      1}),
+        "resource-backed shield card intent was rejected");
+  guard.update(++guard_tick);
+  check(guard.waiting_presentation() &&
+          guard.last_resolution().shields.empty(),
+        "resource-backed shield card did not pause before its DS invocation");
+  const auto guard_snapshot = guard.save();
+  const auto guard_commands = drive_to_player(guard, guard_tick);
+  const auto& guard_work = guard.last_resolution();
+  check(guard.state().player.shield == 5 &&
+          guard_work.shields.size() == 1 &&
+          guard_work.shields.front().amount == 5 &&
+          guard_work.shield_trace.size() == 1 &&
+          guard_work.shield_trace.front().route.before == 0 &&
+          guard_work.shield_trace.front().route.committed_after == 5 &&
+          guard_work.report.effects.size() == 1 &&
+          guard_work.report.effects.front().shield_outcome_begin == 0 &&
+          guard_work.report.effects.front().shield_outcome_count == 1 &&
+          guard_work.outcomes == std::vector<cg::outcome_ref>{
+                                   {cg::outcome_store_kind::shield, 0}} &&
+          guard_work.death_trace.size() == 1 && guard_work.death_trace.front().kind == cg::outcome_store_kind::shield && cg::has_category(guard_work.report.categories, cg::execution_category::shield) && cg::has_category(guard_work.report.categories, cg::execution_category::stat_change),
+        "resource-backed emit_shield did not resolve through its typed outcome");
+  const auto guard_result = std::find_if(
+    guard_commands.begin(), guard_commands.end(), [](const auto& command) {
+      return command.kind == cg::presentation_command_kind::result &&
+             !command.results.empty();
+    });
+  check(guard_result != guard_commands.end() &&
+          guard_result->results.size() == 1 &&
+          guard_result->results.front().subject ==
+            cg::presentation_subject::shield &&
+          guard_result->results.front().target == cg::player_entity &&
+          guard_result->results.front().value == 5,
+        "emit_shield did not publish its typed presentation result");
+
+  cg::combat resumed_guard(cg::run_mode::headless, &script_resources);
+  resumed_guard.load(guard_snapshot);
+  uint64_t resumed_guard_tick = 0;
+  (void)drive_to_player(resumed_guard, resumed_guard_tick);
+  check(resumed_guard.state() == guard.state() &&
+          resumed_guard.last_resolution() == guard.last_resolution(),
+        "emit_shield changed across pre-invocation snapshot resume");
 
   cg::combat missing_provider(cg::run_mode::headless);
   uint64_t missing_tick = 0;

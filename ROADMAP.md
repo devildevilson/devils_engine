@@ -1622,7 +1622,9 @@ engine_gaps «наиболее важные проверки» + technical_scope
    committed damage leaf (shield/HP, zero/negative, primary/reaction/periodic) передаётся подписанным DS
    rules; C++ жёстко запрещает только retaliation-lineage. Поэтому shield→HP даёт два независимых trigger,
    а решение emit/skip принадлежит скрипту.
-   `emit_status` теперь также пишет typed request в общий plan. Первый resource path готов:
+   `emit_status` теперь также пишет typed request в общий plan. `emit_shield` — отдельный signed semantic
+   kind: добавляет/снимает щит с clamp в ноль, пишет собственные instance/outcome/report range/category и
+   presentation result, не превращаясь в healing или damage. Первый resource path готов:
    `combat_effect_script_compiler` компилирует generic `act::script_resource`, authored recipe хранит только
    стабильный resource hash, а внешний demiurg catalogue отдаёт container на invocation. Shipped
    `scripts/scripted_strike` проходит gameplay barrier, DS emission и resume с идентичным trace. Следом
@@ -1638,7 +1640,7 @@ engine_gaps «наиболее важные проверки» + technical_scope
    resource `scripts/thorns_retaliation` исполняется в `retaliation_rule_scope`, читает outcome route и сам
    вызывает bounded `emit_retaliation_attack`. Первый leaf slice
    тоже жив: отдельный `register_stats_readonly` сохраняет mutable `register_stats`, а compiled
-   `combat_effect_scope` пишет bounded pointer-free `emit_attack/healing/attribute_damage/status` в typed stores и
+   `combat_effect_scope` пишет bounded pointer-free `emit_attack/healing/shield/attribute_damage/status` в typed stores и
    semantic `plan`; unresolved attack root назначает resolver. ✅ devils_script v1.2.1 закрыл оба блокера:
    настоящий void `each_target` обходит frozen target set в project order, устанавливает отдельный
    `combat_target_scope`, а каждый `emit_*` создаёт один instance в target-major callback order; signed
@@ -1646,13 +1648,17 @@ engine_gaps «наиболее важные проверки» + technical_scope
    effect и его snapshot-safe stable-id lookup уже живы; immediate rule scope тоже готов. Следом добавить
    execution-report scope для fixed-step follow-up, внешнюю схему beats/targeters и resource-loaded status
    pulse programs.
-4. **CG-5** (ресурс + предпросмотр как параллельное S+1) — следующая вертикальная цель дизайна: сравнить ману vs
+4. **Обязательная пауза перед крупной вертикалью:** провести отдельные code review и architecture review
+   текущего combat kernel, затем спроектировать первый реальный набор карт. Новые механики, обнаруженные
+   дизайном карт, сначала оформить как требования к building blocks/typed envelope и только после этого
+   фиксировать крупные API.
+5. **CG-5** (ресурс + предпросмотр как параллельное S+1) — следующая вертикальная цель дизайна: сравнить ману vs
    две инициативы на одном наборе 30–40 карт.
-5. **CG-13 + CG-4** (переиспользуемый UI-list слева + инструментарий выделения/навигации + прокидка
+6. **CG-13 + CG-4** (переиспользуемый UI-list слева + инструментарий выделения/навигации + прокидка
    состояния FSM в UI) — чтобы 3–4 стихии, 6–8 реакций и
    2 противника с таймерами были играбельны и читаемы.
-6. **CG-6/CG-7/CG-8** — по мере появления карт, требующих реакций/поля боя/предпросмотра S+1.
-7. **CG-10/CG-11/CG-12/CG-14** — на «Этапе 2» (вертикальный срез забега): гекс-сцена, resume, профиль,
+7. **CG-6/CG-7/CG-8** — по мере появления карт, требующих реакций/поля боя/предпросмотра S+1.
+8. **CG-10/CG-11/CG-12/CG-14** — на «Этапе 2» (вертикальный срез забега): гекс-сцена, resume, профиль,
    headless-баланс с AI игрока.
 
 Ключевые проверки перед фиксацией API: пригоден ли `visage` для длинного вертикального списка с
