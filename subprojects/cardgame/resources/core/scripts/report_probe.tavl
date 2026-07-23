@@ -1,0 +1,3 @@
+ret = "void"
+scope = "execution_report"
+expr = "{ each_attack = { value = { assert = { true, attack_item } } }, each_damage = { value = { assert = { committed, damage_item } } }, each_healing = { value = { assert = { true, healing_item } } }, each_shield = { value = { assert = { true, shield_item } } }, each_attribute_damage = { value = { assert = { true, attribute_item } } }, each_status = { value = { assert = { true, status_item } } } }"

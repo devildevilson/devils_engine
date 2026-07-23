@@ -1645,9 +1645,13 @@ engine_gaps «наиболее важные проверки» + technical_scope
    настоящий void `each_target` обходит frozen target set в project order, устанавливает отдельный
    `combat_target_scope`, а каждый `emit_*` создаёт один instance в target-major callback order; signed
    integer literal теперь пишется напрямую (`emit_healing = -2`). Минимальный resource-loaded authored
-   effect и его snapshot-safe stable-id lookup уже живы; immediate rule scope тоже готов. Следом добавить
-   execution-report scope для fixed-step follow-up, внешнюю схему beats/targeters и resource-loaded status
-   pulse programs.
+   effect и его snapshot-safe stable-id lookup уже живы; immediate rule scope тоже готов.
+   ✅ Read-only `execution_report` DS scope теперь rebind-ит frozen pointer-free report к owning
+   `resolution_work`, проверяет все ranges/typed refs и даёт metadata/categories/counts плюс
+   `each_attack/damage/healing/shield/attribute_damage/status` с route/result accessors. Emitters намеренно
+   отсутствуют: следующим срезом отдельный follow-up prepare scope должен bounded-образом материализовать
+   authored effects и удерживать trigger work через оба party pass. Затем остаются внешняя схема
+   beats/targeters и resource-loaded status pulse programs.
 4. **Обязательная пауза перед крупной вертикалью:** провести отдельные code review и architecture review
    текущего combat kernel, затем спроектировать первый реальный набор карт. Новые механики, обнаруженные
    дизайном карт, сначала оформить как требования к building blocks/typed envelope и только после этого
