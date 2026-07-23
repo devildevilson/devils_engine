@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include <devils_engine/resolve/resolve.h>
@@ -453,6 +454,42 @@ struct resolution_work {
   bool operator==(const resolution_work&) const noexcept = default;
 };
 
+// One large action sequence owns an append-only ledger. Every stage reads the prefix sealed by
+// earlier stages and appends zero or more complete execution works to its own segment. Outputs do
+// not become visible inside the stage that produced them; the next explicit stage sees them.
+enum class action_report_stage : uint8_t {
+  execution,
+  source_party_follow_ups,
+  opposing_party_follow_ups,
+  actor_state_tick
+};
+
+struct action_report_segment {
+  action_report_stage stage = action_report_stage::execution;
+  size_t input_execution_count = 0;
+  size_t execution_begin = 0;
+  size_t execution_count = 0;
+  execution_category_mask categories = 0;
+  constexpr bool operator==(const action_report_segment&) const noexcept = default;
+};
+
+struct action_report {
+  std::vector<resolution_work> executions;
+  std::vector<action_report_segment> segments;
+  action_report_segment active_segment{};
+  execution_category_mask categories = 0;
+  bool segment_open = false;
+  bool operator==(const action_report&) const noexcept = default;
+};
+
+void begin_action_report_segment(action_report& report, action_report_stage stage);
+void append_action_report_execution(action_report& report,
+                                    const resolution_work& execution);
+void seal_action_report_segment(action_report& report);
+std::span<const resolution_work> action_report_input(const action_report& report);
+std::span<const resolution_work> action_report_output(const action_report& report);
+void reset_action_report(action_report& report);
+
 enum class resolution_stage : uint8_t {
   idle,
   select_beat,
@@ -551,6 +588,8 @@ struct combat_trace_event {
   instance_id execution = 0;
   entity_id source_actor = invalid_entity;
   entity_id actor = invalid_entity;
+  size_t report_execution_count = 0;
+  execution_category_mask report_categories = 0;
   constexpr bool operator==(const combat_trace_event&) const noexcept = default;
 };
 
@@ -564,6 +603,7 @@ struct action_cycle_cursor {
   uint64_t token = 0;
   entity_id player_actor = player_entity;
   execution_report trigger_report{};
+  action_report report{};
   party_follow_up_cursor party{};
   bool card_stolen = false;
   bool forced_enemy_cycle = false;
@@ -712,7 +752,9 @@ private:
   std::vector<entity_id> party_members(combat_side side) const;
   void enter_group(combat_cursor& cursor, combat_group group);
   void trace(combat_trace_kind kind, combat_group group, const combat_cursor& cursor,
-             entity_id actor = invalid_entity, instance_id execution = 0);
+             entity_id actor = invalid_entity, instance_id execution = 0,
+             size_t report_execution_count = 0,
+             execution_category_mask report_categories = 0);
   void actor_state_tick(combat_cursor& cursor, entity_id actor);
   std::vector<damage_modifier> collect_resistance_modifiers(
     const combatant_state& target, const damage_instance& damage) const;

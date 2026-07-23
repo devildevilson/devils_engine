@@ -61,7 +61,89 @@ presentation_subject damage_subject(const damage_instance& damage) noexcept {
   }
 }
 
+action_report_stage report_stage_for(const combat_group group) {
+  switch (group) {
+    case combat_group::card_player_party_follow_ups:
+    case combat_group::enemy_action_enemy_party_follow_ups:
+      return action_report_stage::source_party_follow_ups;
+    case combat_group::card_enemy_party_follow_ups:
+    case combat_group::enemy_action_player_party_follow_ups:
+      return action_report_stage::opposing_party_follow_ups;
+    default:
+      throw std::logic_error(
+        "cardgame non-follow-up group has no party report stage");
+  }
+}
+
 } // namespace
+
+void begin_action_report_segment(
+  action_report& report, const action_report_stage stage) {
+  if (report.segment_open) {
+    throw std::logic_error(
+      "cardgame action report cannot open two segments at once");
+  }
+  report.active_segment = action_report_segment{
+    stage,
+    report.executions.size(),
+    report.executions.size(),
+    0,
+    0};
+  report.segment_open = true;
+}
+
+void append_action_report_execution(
+  action_report& report, const resolution_work& execution) {
+  if (!report.segment_open) {
+    throw std::logic_error(
+      "cardgame action report execution requires an open segment");
+  }
+  report.executions.push_back(execution);
+  report.active_segment.categories |= execution.report.categories;
+}
+
+void seal_action_report_segment(action_report& report) {
+  if (!report.segment_open) {
+    throw std::logic_error(
+      "cardgame action report cannot seal a closed segment");
+  }
+  report.active_segment.execution_count =
+    report.executions.size() - report.active_segment.execution_begin;
+  report.categories |= report.active_segment.categories;
+  report.segments.push_back(report.active_segment);
+  report.active_segment = {};
+  report.segment_open = false;
+}
+
+std::span<const resolution_work> action_report_input(
+  const action_report& report) {
+  if (!report.segment_open ||
+      report.active_segment.input_execution_count > report.executions.size()) {
+    throw std::logic_error(
+      "cardgame action report input requires a valid open segment");
+  }
+  return std::span<const resolution_work>{report.executions}.first(
+    report.active_segment.input_execution_count);
+}
+
+std::span<const resolution_work> action_report_output(
+  const action_report& report) {
+  if (!report.segment_open ||
+      report.active_segment.execution_begin > report.executions.size()) {
+    throw std::logic_error(
+      "cardgame action report output requires a valid open segment");
+  }
+  return std::span<const resolution_work>{report.executions}.subspan(
+    report.active_segment.execution_begin);
+}
+
+void reset_action_report(action_report& report) {
+  if (report.segment_open) {
+    throw std::logic_error(
+      "cardgame action report cannot reset an open segment");
+  }
+  report = {};
+}
 
 combat::combat(const run_mode mode,
                const combat_effect_script_provider* scripts) noexcept
@@ -1481,7 +1563,9 @@ void combat::trace(const combat_trace_kind kind,
                    const combat_group group,
                    const combat_cursor& cursor,
                    const entity_id actor,
-                   const instance_id execution) {
+                   const instance_id execution,
+                   const size_t report_execution_count,
+                   const execution_category_mask report_categories) {
   entity_id source_actor = invalid_entity;
   switch (group) {
     case combat_group::action_begin:
@@ -1505,7 +1589,14 @@ void combat::trace(const combat_trace_kind kind,
       break;
   }
   state_.trace.push_back(combat_trace_event{
-    kind, group, cursor.action.token, execution, source_actor, actor});
+    kind,
+    group,
+    cursor.action.token,
+    execution,
+    source_actor,
+    actor,
+    report_execution_count,
+    report_categories});
 }
 
 std::vector<entity_id> combat::party_members(const combat_side side) const {
@@ -1519,7 +1610,12 @@ bool combat::run_party_follow_ups(combat_cursor& cursor, const combat_side side)
   switch (cursor.step) {
     case combat_step::enter:
       trace(combat_trace_kind::group_enter, cursor.group, cursor);
-      if (!cursor.action.trigger_report.executed) return true;
+      begin_action_report_segment(
+        cursor.action.report, report_stage_for(cursor.group));
+      if (!cursor.action.trigger_report.executed) {
+        seal_action_report_segment(cursor.action.report);
+        return true;
+      }
       cursor.action.party.order = materialize_follow_up_order(
         party_members(side),
         follow_up_order_context{state_.combat_seed, cursor.action.token, side});
@@ -1529,6 +1625,7 @@ bool combat::run_party_follow_ups(combat_cursor& cursor, const combat_side side)
 
     case combat_step::visit_party: {
       if (cursor.action.party.actor_index >= cursor.action.party.order.size()) {
+        seal_action_report_segment(cursor.action.report);
         return true;
       }
 
@@ -1542,7 +1639,7 @@ bool combat::run_party_follow_ups(combat_cursor& cursor, const combat_side side)
       // valid script result and, importantly, does not open a recursive follow-up window.
       constexpr follow_up_enabler attack_listener{
         category_bit(execution_category::attack), 0};
-      if (attack_listener.matches(cursor.action.trigger_report.categories)) {
+      if (attack_listener.matches(cursor.action.report.categories)) {
         trace(combat_trace_kind::follow_up_rule,
               cursor.group,
               cursor,
@@ -1558,6 +1655,8 @@ bool combat::run_party_follow_ups(combat_cursor& cursor, const combat_side side)
 }
 
 void combat::actor_state_tick(combat_cursor& cursor, const entity_id actor) {
+  const std::span<const resolution_work> report_input =
+    action_report_input(cursor.action.report);
   const combatant_state* participant = find_combatant(actor);
   if (participant == nullptr || participant->hp <= 0) return;
 
@@ -1567,7 +1666,9 @@ void combat::actor_state_tick(combat_cursor& cursor, const entity_id actor) {
         cursor.group,
         cursor,
         actor,
-        cursor.action.trigger_report.execution);
+        cursor.action.trigger_report.execution,
+        report_input.size(),
+        cursor.action.report.categories);
 }
 
 simul::step_control combat::run_step(combat_cursor& cursor, pipeline_type& pipe) {
@@ -1621,6 +1722,10 @@ simul::step_control combat::run_step(combat_cursor& cursor, pipeline_type& pipe)
             resolution_.report = execution_report{
               allocate_execution(), player_entity, enemy_entity, false, {}};
             cursor.action.trigger_report = resolution_.report;
+            begin_action_report_segment(
+              cursor.action.report, action_report_stage::execution);
+            append_action_report_execution(cursor.action.report, resolution_);
+            seal_action_report_segment(cursor.action.report);
             trace(combat_trace_kind::card_stolen,
                   cursor.group,
                   cursor,
@@ -1635,6 +1740,8 @@ simul::step_control combat::run_step(combat_cursor& cursor, pipeline_type& pipe)
         case combat_group::card_effects:
           if (cursor.step == combat_step::enter) {
             trace(combat_trace_kind::group_enter, cursor.group, cursor);
+            begin_action_report_segment(
+              cursor.action.report, action_report_stage::execution);
             begin_card_resolution(cursor);
             cursor.step = combat_step::resolve_execution;
             return simul::step_control::advance;
@@ -1646,6 +1753,8 @@ simul::step_control combat::run_step(combat_cursor& cursor, pipeline_type& pipe)
             return run_resolution_step(cursor, pipe);
           }
           cursor.action.trigger_report = resolution_.report;
+          append_action_report_execution(cursor.action.report, resolution_);
+          seal_action_report_segment(cursor.action.report);
           cursor.resolution = {};
           enter_group(cursor, combat_group::card_player_party_follow_ups);
           return simul::step_control::advance;
@@ -1664,7 +1773,11 @@ simul::step_control combat::run_step(combat_cursor& cursor, pipeline_type& pipe)
 
         case combat_group::player_actor_state_tick:
           trace(combat_trace_kind::group_enter, cursor.group, cursor);
+          begin_action_report_segment(
+            cursor.action.report, action_report_stage::actor_state_tick);
           actor_state_tick(cursor, cursor.action.player_actor);
+          seal_action_report_segment(cursor.action.report);
+          reset_action_report(cursor.action.report);
           enter_group(cursor, combat_group::action_countdown);
           return simul::step_control::advance;
 
@@ -1683,6 +1796,8 @@ simul::step_control combat::run_step(combat_cursor& cursor, pipeline_type& pipe)
         case combat_group::enemy_execution:
           if (cursor.step == combat_step::enter) {
             trace(combat_trace_kind::group_enter, cursor.group, cursor);
+            begin_action_report_segment(
+              cursor.action.report, action_report_stage::execution);
             begin_enemy_resolution(cursor);
             cursor.step = combat_step::resolve_execution;
             return simul::step_control::advance;
@@ -1694,6 +1809,8 @@ simul::step_control combat::run_step(combat_cursor& cursor, pipeline_type& pipe)
             return run_resolution_step(cursor, pipe);
           }
           cursor.action.trigger_report = resolution_.report;
+          append_action_report_execution(cursor.action.report, resolution_);
+          seal_action_report_segment(cursor.action.report);
           cursor.resolution = {};
           enter_group(cursor, combat_group::enemy_action_enemy_party_follow_ups);
           return simul::step_control::advance;
@@ -1712,7 +1829,11 @@ simul::step_control combat::run_step(combat_cursor& cursor, pipeline_type& pipe)
 
         case combat_group::enemy_actor_state_tick:
           trace(combat_trace_kind::group_enter, cursor.group, cursor);
+          begin_action_report_segment(
+            cursor.action.report, action_report_stage::actor_state_tick);
           actor_state_tick(cursor, enemy_entity);
+          seal_action_report_segment(cursor.action.report);
+          reset_action_report(cursor.action.report);
           state_.enemy_intent_active = false;
           if (cursor.action.forced_enemy_cycle) {
             cursor.phase = combat_phase::end_turn;
