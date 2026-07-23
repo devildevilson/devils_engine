@@ -106,6 +106,22 @@ void emit_healing(const combat_target_scope scope, const int64_t amount) {
   add_category(invocation.work->report.categories, execution_category::healing);
 }
 
+void emit_shield(const combat_target_scope scope, const int64_t amount) {
+  auto& invocation = checked_invocation(scope);
+  reserve_instances(invocation, 1);
+  const int32_t checked = checked_amount(amount);
+  const size_t index = invocation.work->shields.size();
+  invocation.work->shields.push_back(shield_instance{
+    0,
+    invocation.work->report.execution,
+    invocation.source,
+    scope.target,
+    checked});
+  invocation.work->plan.push_back(
+    effect_instance_ref{effect_store_kind::shield, index});
+  add_category(invocation.work->report.categories, execution_category::shield);
+}
+
 void emit_attribute_damage(const combat_target_scope scope,
                            const attribute_kind attribute,
                            const int64_t amount) {
@@ -343,6 +359,7 @@ void register_combat_effect_script(devils_script::system& sys) {
   sys.register_function_iter<&each_target>("each_target", {"value"});
   sys.register_function<&emit_attack>("emit_attack");
   sys.register_function<&emit_healing>("emit_healing");
+  sys.register_function<&emit_shield>("emit_shield");
   sys.register_function<&emit_attribute_damage>("emit_attribute_damage");
   sys.register_function<&emit_status>("emit_status");
   sys.register_function<&rule_stacks>("rule_stacks");

@@ -32,16 +32,17 @@ enum class run_mode : uint8_t {
 };
 
 enum class card_kind : uint8_t {
-  strike,         // physical damage 3, advances countdown
-  quick_strike,   // physical damage 1, does not advance countdown
-  fire_strike,    // fire damage 4 + one burning effect request
-  double_strike,  // one authored effect emits two physical attack instances
-  combo_strike,   // two sequential beats with physical damage 2 each
-  inverse_strike, // physical attack -5; semantic kind remains attack/damage
-  mend,           // self healing +6
-  cursed_mend,    // self healing -7; semantic kind remains healing
-  cripple,        // agility damage 4
-  scripted_strike // resource-backed DS effect: physical damage 3
+  strike,          // physical damage 3, advances countdown
+  quick_strike,    // physical damage 1, does not advance countdown
+  fire_strike,     // fire damage 4 + one burning effect request
+  double_strike,   // one authored effect emits two physical attack instances
+  combo_strike,    // two sequential beats with physical damage 2 each
+  inverse_strike,  // physical attack -5; semantic kind remains attack/damage
+  mend,            // self healing +6
+  cursed_mend,     // self healing -7; semantic kind remains healing
+  cripple,         // agility damage 4
+  scripted_strike, // resource-backed DS effect: physical damage 3
+  scripted_guard   // resource-backed DS effect: self shield +5
 };
 
 enum class player_intent_kind : uint8_t {
@@ -165,6 +166,23 @@ struct healing_outcome {
   constexpr bool operator==(const healing_outcome&) const noexcept = default;
 };
 
+struct shield_instance {
+  instance_id id = 0;
+  instance_id parent_execution = 0;
+  entity_id source = invalid_entity;
+  entity_id target = invalid_entity;
+  int32_t amount = 0;
+  constexpr bool operator==(const shield_instance&) const noexcept = default;
+};
+
+struct shield_outcome {
+  shield_instance shield{};
+  stat_change_route route{};
+  bool target_valid = false;
+  bool committed = false;
+  constexpr bool operator==(const shield_outcome&) const noexcept = default;
+};
+
 enum class attribute_kind : uint8_t {
   agility,
   count
@@ -246,6 +264,7 @@ struct effect_outcome {
 enum class outcome_store_kind : uint8_t {
   damage,
   healing,
+  shield,
   attribute_damage,
   effect
 };
@@ -327,6 +346,7 @@ enum class authored_effect_store_kind : uint8_t {
 enum class effect_store_kind : uint8_t {
   attack,
   healing,
+  shield,
   attribute_damage,
   effect
 };
@@ -382,6 +402,8 @@ struct authored_effect_report {
   size_t effect_outcome_count = 0;
   size_t healing_outcome_begin = 0;
   size_t healing_outcome_count = 0;
+  size_t shield_outcome_begin = 0;
+  size_t shield_outcome_count = 0;
   size_t attribute_outcome_begin = 0;
   size_t attribute_outcome_count = 0;
   size_t outcome_begin = 0;
@@ -412,6 +434,7 @@ struct resolution_work {
   // Typed instances emitted by authored-effect scripts. `plan` preserves their semantic order.
   std::vector<attack_instance> attacks;
   std::vector<healing_instance> healings;
+  std::vector<shield_instance> shields;
   std::vector<attribute_damage_instance> attribute_damages;
   std::vector<effect_request> effects;
   std::vector<effect_instance_ref> plan;
@@ -422,6 +445,7 @@ struct resolution_work {
   std::vector<damage_preparation> damage_preparations;
   std::vector<damage_outcome> damage_trace;
   std::vector<healing_outcome> healing_trace;
+  std::vector<shield_outcome> shield_trace;
   std::vector<attribute_damage_outcome> attribute_damage_trace;
   std::vector<effect_outcome> effect_trace;
   std::vector<outcome_ref> outcomes;
@@ -446,6 +470,8 @@ enum class resolution_stage : uint8_t {
   post_attack,
   healing_commit,
   healing_after,
+  shield_commit,
+  shield_after,
   attribute_damage_commit,
   attribute_damage_after,
   effect_commit,
@@ -466,6 +492,7 @@ struct resolution_cursor {
   size_t reaction_index = 0;
   size_t response_index = 0;
   size_t healing_index = 0;
+  size_t shield_index = 0;
   size_t attribute_damage_index = 0;
   size_t effect_index = 0;
   constexpr bool operator==(const resolution_cursor&) const noexcept = default;
@@ -550,6 +577,7 @@ enum class presentation_subject : uint8_t {
   returned_damage,
   shield_damage,
   healing,
+  shield,
   attribute_damage,
   effect
 };
@@ -675,6 +703,7 @@ private:
   damage_outcome commit_damage(const damage_instance& damage);
   void resolve_damage_work(const damage_instance& damage);
   healing_outcome resolve_healing(const healing_instance& healing);
+  shield_outcome resolve_shield(const shield_instance& shield);
   attribute_damage_outcome resolve_attribute_damage(
     const attribute_damage_instance& damage);
   effect_outcome resolve_effect(const effect_request& request);
