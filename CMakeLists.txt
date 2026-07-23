@@ -546,7 +546,7 @@ add_subdirectory(subprojects/tile_frontier "${CMAKE_BINARY_DIR}/cmake/subproject
 if (DEVILS_ENGINE_BUILD_TESTS)
   add_custom_target(devils_engine_test
     COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} --output-on-failure -L devils_engine
-    DEPENDS utils_general_test utils_contract_test thread_general_test resolve_pipeline_test simul_lifecycle_test turn_pipeline_test aesthetics_world_test sound_system_test acumen_test flow_test catalogue_introspection_test cardgame_effect_program_test cardgame_follow_up_test cardgame_action_pipeline_test cardgame_typed_effect_test cardgame_combat_script_test cardgame_headless_smoke tile_frontier_snapshot_smoke tile_frontier_resume_smoke
+    DEPENDS utils_general_test utils_contract_test thread_general_test resolve_pipeline_test simul_lifecycle_test turn_pipeline_test aesthetics_world_test sound_system_test acumen_test flow_test catalogue_introspection_test cardgame_effect_program_test cardgame_follow_up_test cardgame_action_pipeline_test cardgame_typed_effect_test cardgame_combat_script_test cardgame_execution_report_script_test cardgame_headless_smoke tile_frontier_snapshot_smoke tile_frontier_resume_smoke
     USES_TERMINAL
     COMMENT "Running devils_engine tests"
   )

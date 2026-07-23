@@ -45,7 +45,8 @@ private:
 };
 
 // Project compiler adapter used by generic act::script_resource documents with `ret = void` and
-// either `scope = combat_effect` or `scope = retaliation_rule`.
+// `scope = combat_effect`, `scope = retaliation_rule` or the read-only
+// `scope = execution_report`.
 class combat_effect_script_compiler final
   : public devils_engine::act::script_compiler {
 public:
@@ -100,6 +101,75 @@ struct combat_target_scope {
   }
 };
 
+// Reconstituted read-only view over one frozen report and the resolution work that owns every
+// referenced typed store. Neither pointer is serialized; a resumed host supplies the owning work
+// again and every iterator validates the report ranges before dereferencing them.
+struct execution_report_view_context {
+  const resolution_work* work = nullptr;
+  const execution_report* report = nullptr;
+
+  bool valid() const noexcept {
+    return work != nullptr && report != nullptr &&
+           report->execution != resolve::invalid_instance;
+  }
+};
+
+struct execution_report_scope {
+  execution_report_view_context* invocation = nullptr;
+
+  bool valid() const noexcept {
+    return invocation != nullptr && invocation->valid();
+  }
+};
+
+struct report_attack_scope {
+  execution_report_view_context* invocation = nullptr;
+  const attack_instance* value = nullptr;
+  bool valid() const noexcept {
+    return invocation != nullptr && invocation->valid() && value != nullptr;
+  }
+};
+
+struct report_damage_scope {
+  execution_report_view_context* invocation = nullptr;
+  const damage_outcome* value = nullptr;
+  bool valid() const noexcept {
+    return invocation != nullptr && invocation->valid() && value != nullptr;
+  }
+};
+
+struct report_healing_scope {
+  execution_report_view_context* invocation = nullptr;
+  const healing_outcome* value = nullptr;
+  bool valid() const noexcept {
+    return invocation != nullptr && invocation->valid() && value != nullptr;
+  }
+};
+
+struct report_shield_scope {
+  execution_report_view_context* invocation = nullptr;
+  const shield_outcome* value = nullptr;
+  bool valid() const noexcept {
+    return invocation != nullptr && invocation->valid() && value != nullptr;
+  }
+};
+
+struct report_attribute_damage_scope {
+  execution_report_view_context* invocation = nullptr;
+  const attribute_damage_outcome* value = nullptr;
+  bool valid() const noexcept {
+    return invocation != nullptr && invocation->valid() && value != nullptr;
+  }
+};
+
+struct report_status_scope {
+  execution_report_view_context* invocation = nullptr;
+  const effect_outcome* value = nullptr;
+  bool valid() const noexcept {
+    return invocation != nullptr && invocation->valid() && value != nullptr;
+  }
+};
+
 // One invocation per subscribed rule and committed damage leaf. The damage outcome is already
 // authoritative (including shield/health destination, zero or negative delta and death), while the
 // script is still only allowed to append a bounded immediate response.
@@ -135,6 +205,13 @@ void register_combat_effect_script(devils_script::system& sys);
 void run_combat_effect_script(const devils_script::container& program,
                               devils_script::context& vm,
                               combat_effect_emit_context& invocation);
+
+// Runs a read-only report consumer. The program may inspect metadata/categories and iterate typed
+// instances/outcomes, but this scope deliberately has no emitters; follow-up output belongs to the
+// next prepare-scope layer.
+void run_execution_report_script(const devils_script::container& program,
+                                 devils_script::context& vm,
+                                 execution_report_view_context& invocation);
 
 // Runs one immediate-reaction rule for one already committed damage leaf. C++ only supplies the
 // candidate and enforces lineage/capacity; emitting no response is a normal script decision.

@@ -30,6 +30,7 @@ struct script_fixture {
     resources.parse_resources(&modules);
     load("scripts/scripted_strike");
     load("scripts/scripted_guard");
+    load("scripts/report_probe");
     load("scripts/thorns_retaliation");
   }
 
