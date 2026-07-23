@@ -45,6 +45,14 @@ retaliation_rule_emit_context& checked_invocation(
   return *scope.invocation;
 }
 
+follow_up_rule_emit_context& checked_invocation(
+  const follow_up_rule_scope scope) {
+  if (!scope.valid()) {
+    throw std::invalid_argument("cardgame DS received an invalid follow-up rule scope");
+  }
+  return *scope.invocation;
+}
+
 void reserve_instances(combat_effect_emit_context& invocation, const size_t count) {
   const size_t remaining = invocation.emitted_instances < invocation.max_emitted_instances
                              ? invocation.max_emitted_instances - invocation.emitted_instances
@@ -166,6 +174,75 @@ void emit_status(const combat_target_scope scope,
   invocation.work->plan.push_back(
     effect_instance_ref{effect_store_kind::effect, index});
   add_category(invocation.work->report.categories, execution_category::status);
+}
+
+void reserve_follow_up_effects(follow_up_rule_emit_context& invocation,
+                               const size_t count) {
+  const size_t remaining =
+    invocation.emitted_effects < invocation.max_authored_effects
+      ? invocation.max_authored_effects - invocation.emitted_effects
+      : 0;
+  if (count > remaining) {
+    throw std::length_error(
+      "cardgame DS follow-up authored-effect capacity exceeded");
+  }
+  invocation.emitted_effects += count;
+}
+
+int64_t follow_up_input_execution_count(const follow_up_rule_scope scope) {
+  return static_cast<int64_t>(checked_invocation(scope).input.size());
+}
+
+entity_id follow_up_actor(const follow_up_rule_scope scope) {
+  return checked_invocation(scope).actor;
+}
+
+entity_id follow_up_selected_target(const follow_up_rule_scope scope) {
+  return checked_invocation(scope).selected_target;
+}
+
+bool follow_up_has_category(const follow_up_rule_scope scope,
+                            const execution_category category) {
+  const auto& invocation = checked_invocation(scope);
+  for (const resolution_work& work : invocation.input) {
+    if (has_category(work.report.categories, category)) return true;
+  }
+  return false;
+}
+
+void each_follow_up_execution(
+  const follow_up_rule_scope scope,
+  const devils_script::script_function<void(execution_report_scope)> value) {
+  auto& invocation = checked_invocation(scope);
+  if (!value) {
+    throw std::invalid_argument(
+      "cardgame DS each_execution requires a value effect");
+  }
+  for (const resolution_work& work : invocation.input) {
+    execution_report_view_context view{&work, &work.report};
+    if (!view.valid()) {
+      throw std::invalid_argument(
+        "cardgame DS follow-up input contains an invalid execution report");
+    }
+    ++invocation.visited_executions;
+    value(execution_report_scope{&view});
+  }
+}
+
+void emit_follow_up_attack(const follow_up_rule_scope scope,
+                           const int64_t amount,
+                           const element kind,
+                           const bool applies_element) {
+  auto& invocation = checked_invocation(scope);
+  reserve_follow_up_effects(invocation, 1);
+  const size_t index = invocation.output->attack_effects.size();
+  invocation.output->attack_effects.push_back(attack_effect{
+    invocation.actor, kind, checked_amount(amount), 1, applies_element});
+  const authored_effect effect{
+    effect_ref{authored_effect_store_kind::attack, index},
+    targeter{targeter_kind::target, independent_target_binding},
+    authored_effect::target_domain::opponent};
+  invocation.output->program.beats.push_back(effect_beat{{effect}});
 }
 
 execution_report_view_context& checked_invocation(
@@ -781,6 +858,11 @@ devils_engine::act::compiled_script combat_effect_script_compiler::compile(
       sys_.parse<void, retaliation_rule_scope>(name, expression),
       devils_engine::act::category::effect};
   }
+  if (scope == "follow_up_rule") {
+    return {
+      sys_.parse<void, follow_up_rule_scope>(name, expression),
+      devils_engine::act::category::effect};
+  }
   if (scope == "execution_report") {
     return {
       sys_.parse<void, execution_report_scope>(name, expression),
@@ -878,6 +960,15 @@ void register_combat_effect_script(devils_script::system& sys) {
   sys.register_function<&emit_shield>("emit_shield");
   sys.register_function<&emit_attribute_damage>("emit_attribute_damage");
   sys.register_function<&emit_status>("emit_status");
+  sys.register_function<&follow_up_input_execution_count>(
+    "input_execution_count");
+  sys.register_function<&follow_up_actor>("follow_up_actor");
+  sys.register_function<&follow_up_selected_target>(
+    "follow_up_selected_target");
+  sys.register_function<&follow_up_has_category>("input_has_category");
+  sys.register_function_iter<&each_follow_up_execution>(
+    "each_execution", {"value"});
+  sys.register_function<&emit_follow_up_attack>("emit_follow_up_attack");
   sys.register_function<&report_execution>("execution");
   sys.register_function<&report_actor>("actor");
   sys.register_function<&report_selected_target>("selected_target");
@@ -1005,6 +1096,22 @@ void run_execution_report_script(
   vm.userptr = &invocation;
   if (program.max_lists != 0) vm.create_lists(&program);
   vm.set_arg(program.find_arg("root"), execution_report_scope{&invocation});
+  program.process(&vm);
+}
+
+void run_follow_up_rule_script(
+  const devils_script::container& program,
+  devils_script::context& vm,
+  follow_up_rule_emit_context& invocation) {
+  if (!invocation.valid()) {
+    throw std::invalid_argument("cardgame DS follow-up invocation is invalid");
+  }
+  invocation.emitted_effects = 0;
+  invocation.visited_executions = 0;
+  vm.clear();
+  vm.userptr = &invocation;
+  if (program.max_lists != 0) vm.create_lists(&program);
+  vm.set_arg(program.find_arg("root"), follow_up_rule_scope{&invocation});
   program.process(&vm);
 }
 

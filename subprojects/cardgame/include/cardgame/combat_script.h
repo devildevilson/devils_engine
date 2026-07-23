@@ -45,7 +45,7 @@ private:
 };
 
 // Project compiler adapter used by generic act::script_resource documents with `ret = void` and
-// `scope = combat_effect`, `scope = retaliation_rule` or the read-only
+// `scope = combat_effect`, `scope = retaliation_rule`, `scope = follow_up_rule` or the read-only
 // `scope = execution_report`.
 class combat_effect_script_compiler final
   : public devils_engine::act::script_compiler {
@@ -116,6 +116,32 @@ struct execution_report_view_context {
 
 struct execution_report_scope {
   execution_report_view_context* invocation = nullptr;
+
+  bool valid() const noexcept {
+    return invocation != nullptr && invocation->valid();
+  }
+};
+
+// One follow-up rule reads the complete prefix sealed before its party group and prepares one new
+// execution. The input span and writer are transient; only the pointer-free authored program and
+// its later resolved work enter the action report.
+struct follow_up_rule_emit_context {
+  std::span<const resolution_work> input{};
+  resolution_work* output = nullptr;
+  entity_id actor = invalid_entity;
+  entity_id selected_target = invalid_entity;
+  size_t max_authored_effects = 16;
+  size_t emitted_effects = 0;
+  size_t visited_executions = 0;
+
+  bool valid() const noexcept {
+    return output != nullptr && actor != invalid_entity &&
+           selected_target != invalid_entity;
+  }
+};
+
+struct follow_up_rule_scope {
+  follow_up_rule_emit_context* invocation = nullptr;
 
   bool valid() const noexcept {
     return invocation != nullptr && invocation->valid();
@@ -212,6 +238,12 @@ void run_combat_effect_script(const devils_script::container& program,
 void run_execution_report_script(const devils_script::container& program,
                                  devils_script::context& vm,
                                  execution_report_view_context& invocation);
+
+// Runs one party follow-up rule over a frozen action-report prefix. The script may inspect each
+// prior execution and append bounded authored effects to `output`; it never resolves them inline.
+void run_follow_up_rule_script(const devils_script::container& program,
+                               devils_script::context& vm,
+                               follow_up_rule_emit_context& invocation);
 
 // Runs one immediate-reaction rule for one already committed damage leaf. C++ only supplies the
 // candidate and enforces lineage/capacity; emitting no response is a normal script decision.
