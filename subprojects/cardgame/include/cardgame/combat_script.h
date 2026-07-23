@@ -128,15 +128,21 @@ struct execution_report_scope {
 struct follow_up_rule_emit_context {
   std::span<const resolution_work> input{};
   resolution_work* output = nullptr;
+  // Owner/source of the follow-up rule.
   entity_id actor = invalid_entity;
-  entity_id selected_target = invalid_entity;
+  // Actor whose card/enemy ability opened this action report.
+  entity_id action_actor = invalid_entity;
+  // Optional target selected by the opening execution.
+  entity_id original_target = invalid_entity;
+  // Live opponents in frozen project priority order.
+  std::span<const entity_id> priority_opponents{};
   size_t max_authored_effects = 16;
   size_t emitted_effects = 0;
   size_t visited_executions = 0;
 
   bool valid() const noexcept {
     return output != nullptr && actor != invalid_entity &&
-           selected_target != invalid_entity;
+           action_actor != invalid_entity;
   }
 };
 
@@ -145,6 +151,18 @@ struct follow_up_rule_scope {
 
   bool valid() const noexcept {
     return invocation != nullptr && invocation->valid();
+  }
+};
+
+// A script must enter one of the explicit follow-up selectors before it may emit targeted work.
+// This prevents emitters from silently guessing what an absent original target means.
+struct follow_up_target_scope {
+  follow_up_rule_emit_context* invocation = nullptr;
+  entity_id target = invalid_entity;
+
+  bool valid() const noexcept {
+    return invocation != nullptr && invocation->valid() &&
+           target != invalid_entity;
   }
 };
 

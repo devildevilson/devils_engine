@@ -1,5 +1,6 @@
 #include "cardgame/combat_script.h"
 
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <stdexcept>
@@ -49,6 +50,15 @@ follow_up_rule_emit_context& checked_invocation(
   const follow_up_rule_scope scope) {
   if (!scope.valid()) {
     throw std::invalid_argument("cardgame DS received an invalid follow-up rule scope");
+  }
+  return *scope.invocation;
+}
+
+follow_up_rule_emit_context& checked_invocation(
+  const follow_up_target_scope scope) {
+  if (!scope.valid()) {
+    throw std::invalid_argument(
+      "cardgame DS received an invalid follow-up target scope");
   }
   return *scope.invocation;
 }
@@ -193,12 +203,20 @@ int64_t follow_up_input_execution_count(const follow_up_rule_scope scope) {
   return static_cast<int64_t>(checked_invocation(scope).input.size());
 }
 
+int64_t follow_up_target_input_execution_count(const follow_up_target_scope scope) {
+  return static_cast<int64_t>(checked_invocation(scope).input.size());
+}
+
 entity_id follow_up_actor(const follow_up_rule_scope scope) {
   return checked_invocation(scope).actor;
 }
 
-entity_id follow_up_selected_target(const follow_up_rule_scope scope) {
-  return checked_invocation(scope).selected_target;
+entity_id follow_up_action_actor(const follow_up_rule_scope scope) {
+  return checked_invocation(scope).action_actor;
+}
+
+entity_id follow_up_original_target(const follow_up_rule_scope scope) {
+  return checked_invocation(scope).original_target;
 }
 
 bool follow_up_has_category(const follow_up_rule_scope scope,
@@ -208,6 +226,67 @@ bool follow_up_has_category(const follow_up_rule_scope scope,
     if (has_category(work.report.categories, category)) return true;
   }
   return false;
+}
+
+void invoke_follow_up_target(
+  follow_up_rule_emit_context& invocation,
+  const entity_id target,
+  const devils_script::script_function<void(follow_up_target_scope)> value) {
+  if (!value) {
+    throw std::invalid_argument(
+      "cardgame DS follow-up selector requires a value effect");
+  }
+  if (target != invalid_entity) {
+    value(follow_up_target_scope{&invocation, target});
+  }
+}
+
+void select_original_opponent(
+  const follow_up_rule_scope scope,
+  const devils_script::script_function<void(follow_up_target_scope)> value) {
+  auto& invocation = checked_invocation(scope);
+  const bool available =
+    std::find(invocation.priority_opponents.begin(),
+              invocation.priority_opponents.end(),
+              invocation.original_target) != invocation.priority_opponents.end();
+  invoke_follow_up_target(
+    invocation, available ? invocation.original_target : invalid_entity, value);
+}
+
+void select_priority_opponent(
+  const follow_up_rule_scope scope,
+  const devils_script::script_function<void(follow_up_target_scope)> value) {
+  auto& invocation = checked_invocation(scope);
+  invoke_follow_up_target(
+    invocation,
+    invocation.priority_opponents.empty()
+      ? invalid_entity
+      : invocation.priority_opponents.front(),
+    value);
+}
+
+void select_original_or_priority_opponent(
+  const follow_up_rule_scope scope,
+  const devils_script::script_function<void(follow_up_target_scope)> value) {
+  auto& invocation = checked_invocation(scope);
+  const bool original_available =
+    std::find(invocation.priority_opponents.begin(),
+              invocation.priority_opponents.end(),
+              invocation.original_target) != invocation.priority_opponents.end();
+  const entity_id target =
+    original_available
+      ? invocation.original_target
+      : (invocation.priority_opponents.empty()
+           ? invalid_entity
+           : invocation.priority_opponents.front());
+  invoke_follow_up_target(invocation, target, value);
+}
+
+void select_action_actor(
+  const follow_up_rule_scope scope,
+  const devils_script::script_function<void(follow_up_target_scope)> value) {
+  auto& invocation = checked_invocation(scope);
+  invoke_follow_up_target(invocation, invocation.action_actor, value);
 }
 
 void each_follow_up_execution(
@@ -229,19 +308,44 @@ void each_follow_up_execution(
   }
 }
 
-void emit_follow_up_attack(const follow_up_rule_scope scope,
+void set_follow_up_report_target(follow_up_rule_emit_context& invocation,
+                                 const entity_id target) {
+  if (invocation.output->report.selected_target == invalid_entity) {
+    invocation.output->report.selected_target = target;
+  }
+}
+
+void emit_follow_up_attack(const follow_up_target_scope scope,
                            const int64_t amount,
                            const element kind,
                            const bool applies_element) {
   auto& invocation = checked_invocation(scope);
   reserve_follow_up_effects(invocation, 1);
+  set_follow_up_report_target(invocation, scope.target);
   const size_t index = invocation.output->attack_effects.size();
   invocation.output->attack_effects.push_back(attack_effect{
     invocation.actor, kind, checked_amount(amount), 1, applies_element});
   const authored_effect effect{
     effect_ref{authored_effect_store_kind::attack, index},
     targeter{targeter_kind::target, independent_target_binding},
-    authored_effect::target_domain::opponent};
+    authored_effect::target_domain::explicit_target,
+    scope.target};
+  invocation.output->program.beats.push_back(effect_beat{{effect}});
+}
+
+void emit_follow_up_shield(const follow_up_target_scope scope,
+                           const int64_t amount) {
+  auto& invocation = checked_invocation(scope);
+  reserve_follow_up_effects(invocation, 1);
+  set_follow_up_report_target(invocation, scope.target);
+  const size_t index = invocation.output->shield_effects.size();
+  invocation.output->shield_effects.push_back(
+    shield_effect{invocation.actor, checked_amount(amount)});
+  const authored_effect effect{
+    effect_ref{authored_effect_store_kind::shield, index},
+    targeter{targeter_kind::target, independent_target_binding},
+    authored_effect::target_domain::explicit_target,
+    scope.target};
   invocation.output->program.beats.push_back(effect_beat{{effect}});
 }
 
@@ -962,13 +1066,24 @@ void register_combat_effect_script(devils_script::system& sys) {
   sys.register_function<&emit_status>("emit_status");
   sys.register_function<&follow_up_input_execution_count>(
     "input_execution_count");
+  sys.register_function<&follow_up_target_input_execution_count>(
+    "input_execution_count");
   sys.register_function<&follow_up_actor>("follow_up_actor");
-  sys.register_function<&follow_up_selected_target>(
-    "follow_up_selected_target");
+  sys.register_function<&follow_up_action_actor>("action_actor");
+  sys.register_function<&follow_up_original_target>("original_target");
   sys.register_function<&follow_up_has_category>("input_has_category");
+  sys.register_function_iter<&select_original_opponent>(
+    "select_original_opponent", {"value"});
+  sys.register_function_iter<&select_priority_opponent>(
+    "select_priority_opponent", {"value"});
+  sys.register_function_iter<&select_original_or_priority_opponent>(
+    "select_original_or_priority_opponent", {"value"});
+  sys.register_function_iter<&select_action_actor>(
+    "select_action_actor", {"value"});
   sys.register_function_iter<&each_follow_up_execution>(
     "each_execution", {"value"});
   sys.register_function<&emit_follow_up_attack>("emit_follow_up_attack");
+  sys.register_function<&emit_follow_up_shield>("emit_follow_up_shield");
   sys.register_function<&report_execution>("execution");
   sys.register_function<&report_actor>("actor");
   sys.register_function<&report_selected_target>("selected_target");
@@ -1105,6 +1220,20 @@ void run_follow_up_rule_script(
   follow_up_rule_emit_context& invocation) {
   if (!invocation.valid()) {
     throw std::invalid_argument("cardgame DS follow-up invocation is invalid");
+  }
+  if (std::find(invocation.priority_opponents.begin(),
+                invocation.priority_opponents.end(),
+                invalid_entity) != invocation.priority_opponents.end()) {
+    throw std::invalid_argument(
+      "cardgame DS follow-up priority targets contain an invalid entity");
+  }
+  std::vector<entity_id> sorted_targets(
+    invocation.priority_opponents.begin(), invocation.priority_opponents.end());
+  std::sort(sorted_targets.begin(), sorted_targets.end());
+  if (std::adjacent_find(sorted_targets.begin(), sorted_targets.end()) !=
+      sorted_targets.end()) {
+    throw std::invalid_argument(
+      "cardgame DS follow-up priority targets contain duplicates");
   }
   invocation.emitted_effects = 0;
   invocation.visited_executions = 0;
