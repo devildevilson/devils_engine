@@ -64,9 +64,102 @@ std::vector<cg::combat_trace_event> events_of(
   return result;
 }
 
+cg::resolution_work report_execution(
+  const cg::instance_id id, const cg::execution_category category) {
+  cg::resolution_work work;
+  work.report.execution = id;
+  work.report.actor = cg::player_entity;
+  work.report.selected_target = cg::enemy_entity;
+  work.report.executed = true;
+  work.report.categories = cg::category_bit(category);
+  return work;
+}
+
+void check_action_report_stages() {
+  cg::action_report report;
+  const cg::resolution_work card =
+    report_execution(1, cg::execution_category::attack);
+  const cg::resolution_work player_follow_up =
+    report_execution(2, cg::execution_category::healing);
+  const cg::resolution_work second_player_follow_up =
+    report_execution(3, cg::execution_category::shield);
+  const cg::resolution_work enemy_follow_up =
+    report_execution(4, cg::execution_category::status);
+
+  cg::begin_action_report_segment(report, cg::action_report_stage::execution);
+  check(cg::action_report_input(report).empty(),
+        "card execution stage received stale report input");
+  cg::append_action_report_execution(report, card);
+  check(cg::action_report_input(report).empty() &&
+          cg::action_report_output(report).size() == 1,
+        "card execution became visible inside its own stage");
+  cg::seal_action_report_segment(report);
+
+  cg::begin_action_report_segment(
+    report, cg::action_report_stage::source_party_follow_ups);
+  check(cg::action_report_input(report).size() == 1,
+        "source party did not receive the card report");
+  cg::append_action_report_execution(report, player_follow_up);
+  cg::append_action_report_execution(report, second_player_follow_up);
+  check(cg::action_report_input(report).size() == 1 &&
+          cg::action_report_output(report).size() == 2,
+        "source-party output leaked into its frozen input");
+  cg::seal_action_report_segment(report);
+
+  cg::begin_action_report_segment(
+    report, cg::action_report_stage::opposing_party_follow_ups);
+  check(cg::action_report_input(report).size() == 3,
+        "opposing party did not receive card plus source-party output");
+  cg::append_action_report_execution(report, enemy_follow_up);
+  check(cg::action_report_input(report).size() == 3,
+        "opposing-party output leaked into its frozen input");
+  cg::seal_action_report_segment(report);
+
+  cg::begin_action_report_segment(
+    report, cg::action_report_stage::actor_state_tick);
+  check(cg::action_report_input(report).size() == 4,
+        "ActorStateTick did not receive the complete action report");
+  check(report.categories ==
+          (cg::category_bit(cg::execution_category::attack) |
+           cg::category_bit(cg::execution_category::healing) |
+           cg::category_bit(cg::execution_category::shield) |
+           cg::category_bit(cg::execution_category::status)),
+        "action report did not accumulate execution categories");
+  cg::seal_action_report_segment(report);
+
+  check(report.segments.size() == 4,
+        "action report did not seal exactly four stage segments");
+  check(report.segments[0] ==
+          cg::action_report_segment{
+            cg::action_report_stage::execution,
+            0,
+            0,
+            1,
+            cg::category_bit(cg::execution_category::attack)},
+        "card execution segment has incorrect ranges");
+  check(report.segments[1].input_execution_count == 1 &&
+          report.segments[1].execution_begin == 1 &&
+          report.segments[1].execution_count == 2,
+        "source-party segment has incorrect ranges");
+  check(report.segments[2].input_execution_count == 3 &&
+          report.segments[2].execution_begin == 3 &&
+          report.segments[2].execution_count == 1,
+        "opposing-party segment has incorrect ranges");
+  check(report.segments[3].input_execution_count == 4 &&
+          report.segments[3].execution_count == 0,
+        "ActorStateTick segment has incorrect ranges");
+
+  cg::reset_action_report(report);
+  check(report.executions.empty() && report.segments.empty() &&
+          report.categories == 0 && !report.segment_open,
+        "action report did not reset after ActorStateTick");
+}
+
 } // namespace
 
 int main() {
+  check_action_report_stages();
+
   cg::combat normal(cg::run_mode::headless);
   uint64_t normal_tick = 0;
   drive_to_player(normal, normal_tick);
@@ -93,8 +186,12 @@ int main() {
           first_follow_ups[0].execution == first_follow_ups[1].execution,
         "card follow-up parties did not consume one frozen player execution in source-side order");
   const auto first_ticks = events_of(action_trace, cg::combat_trace_kind::actor_state_tick);
-  check(first_ticks.size() == 1 && first_ticks.front().actor == cg::player_entity,
-        "ordinary card did not tick exactly its source actor");
+  check(first_ticks.size() == 1 &&
+          first_ticks.front().actor == cg::player_entity &&
+          first_ticks.front().report_execution_count == 1 &&
+          (first_ticks.front().report_categories &
+           cg::category_bit(cg::execution_category::attack)) != 0,
+        "ordinary card ActorStateTick did not consume its complete action report");
 
   trace_begin = normal.state().trace.size();
   submit_and_drive(normal,
@@ -128,8 +225,11 @@ int main() {
   const auto mirrored_ticks = events_of(action_trace, cg::combat_trace_kind::actor_state_tick);
   check(mirrored_ticks.size() == 2 &&
           mirrored_ticks[0].actor == cg::player_entity &&
-          mirrored_ticks[1].actor == cg::enemy_entity,
-        "player and enemy executions did not tick their source actors exactly once");
+          mirrored_ticks[1].actor == cg::enemy_entity &&
+          mirrored_ticks[0].report_execution_count == 1 &&
+          mirrored_ticks[1].report_execution_count == 1 &&
+          mirrored_ticks[0].execution != mirrored_ticks[1].execution,
+        "player and enemy ActorStateTick groups did not consume separate reports");
   check(normal.state().enemy.hp == 94 && normal.state().player.hp == 28,
         "group orchestration changed authoritative attack results");
 
@@ -155,7 +255,10 @@ int main() {
         "stolen card did not skip card and both party follow-up groups");
   check(events_of(stolen_trace, cg::combat_trace_kind::card_stolen).size() == 1 &&
           events_of(stolen_trace, cg::combat_trace_kind::follow_up_rule).empty() &&
-          events_of(stolen_trace, cg::combat_trace_kind::actor_state_tick).size() == 1,
+          events_of(stolen_trace, cg::combat_trace_kind::actor_state_tick).size() == 1 &&
+          events_of(stolen_trace, cg::combat_trace_kind::actor_state_tick)
+              .front()
+              .report_execution_count == 1,
         "stolen card opened follow-ups or skipped its ActorStateTick");
   check(stolen.state().stolen_card_count == 1 &&
           stolen.state().countdown_pulse_index == 1 &&
@@ -210,9 +313,15 @@ int main() {
           in_flight.cursor().group == cg::combat_group::card_effects &&
           in_flight.cursor().action.token == 1,
         "in-flight snapshot did not retain the card group and action token");
+  const auto in_flight_snapshot = in_flight.save();
+  check(in_flight_snapshot.pipeline.cursor.action.report.segment_open &&
+          in_flight_snapshot.pipeline.cursor.action.report.active_segment.stage ==
+            cg::action_report_stage::execution &&
+          in_flight_snapshot.pipeline.cursor.action.report.executions.empty(),
+        "in-flight snapshot did not retain the open action-report segment");
 
   cg::combat resumed(cg::run_mode::headless);
-  resumed.load(in_flight.save());
+  resumed.load(in_flight_snapshot);
   uint64_t resumed_tick = 0;
   drive_to_player(resumed, resumed_tick);
 

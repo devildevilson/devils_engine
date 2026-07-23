@@ -1432,19 +1432,22 @@ commit guards, elemental/status outcomes, listener scripts, retaliation и death
   выполняется. Это всё ещё полное действие игрока: `ActorStateTick` выполняется, action countdown
   продвигается и затем разрешается обычная очередь противников.
 - **Эффекты карты (4):** полностью и последовательно разрешать атомарные инструкции текста карты, например
-  `damage instance → damage instance → взять карту в руку`; не схлопывать multi-hit. Только после завершения
-  всей карты заморозить её `execution_report` для follow-up групп.
-- **Party follow-up / ActorStateTick (5–7):** это два последовательных party pass над ОДНИМ отчётом карты:
+  `damage instance → damage instance → взять карту в руку`; не схлопывать multi-hit. После завершения
+  всей карты её `resolution_work/execution_report` становится первым sealed segment общего action report.
+- **Party follow-up / ActorStateTick (5–7):** это два последовательных party pass над нарастающим отчётом:
   все персонажи игрока, ВКЛЮЧАЯ исполнителя → все противники → отдельный ActorStateTick исходного
   исполнителя. У исполнителя больше нет специального self-follow-up pass. Каждый follow-up effect
   декларативно указывает, какие категории отчёта его включают (`has attack`, `has elemental reaction`,
   `has stat change`, ...). C++ вызывает подходящий script РОВНО ОДИН раз на rule, а script сам проходит
   стабильные списки всех атак, реакций или stat changes и решает, сколько attack/heal/other instances
-  создать. Work source-party полностью разрешается до opposing-party; eligibility проверяется перед
-  bucket каждого участника. Follow-up work не попадает обратно в исходный report и не может открыть
-  follow-up-on-follow-up — это такой же жёсткий запрет, как retaliation-on-retaliation. После обоих pass
-  ровно один раз запускается `ActorStateTick: DoT → negative → positive` исходного actor; остальные
-  участники партии state tick не получают.
+  создать. Каждая группа читает frozen prefix, существовавший на её входе: source-party видит группу 4,
+  opposing-party видит 4+5, ActorStateTick видит 4+5+6. Work source-party полностью разрешается и
+  запечатывается до opposing-party; eligibility проверяется перед bucket каждого участника. Выход НЕ виден
+  другим rules/actors той же группы, поэтому внутригрупповой рекурсии и зависимости от party order нет;
+  при этом он намеренно может включить follow-up rule следующей явной группы. Это отличается от жёсткого
+  lineage-запрета retaliation-on-retaliation. После обоих pass ровно один раз запускается
+  `ActorStateTick: DoT → negative → positive` исходного actor; он потребляет полный prefix, после чего
+  action report сбрасывается. Остальные участники партии state tick не получают.
 - **Атака противника (8):** аналог группы эффектов карты, но источником является project-defined
   последовательность ударов/заклинаний, а не обязательно объект карты.
 - **Ответные группы (9–11):** симметричны 5–7 относительно источника: после enemy execution сначала
@@ -1476,16 +1479,17 @@ player action используется отдельный монотонный c
 разные side domains и громкую валидацию duplicate/invalid participant; подключение materialized snapshot к
 группам FSM остаётся следующим слоем.
 
-`execution_report` нужен как временный owning/snapshot-safe вход последующих групп, но не должен копировать
-все тяжёлые outcomes. Предпочтительная реализация: `resolution_work` владеет стабильными typed trace-массивами,
-а report содержит execution/card/actor, category mask и упорядоченные `effect_ref {kind,index}`/диапазоны
-записей, созданных ТОЛЬКО группой 4. Script scope даёт `each_attack`, `each_healing`,
+`execution_report` — компактный индекс конкретного execution, а сериализуемый `action_report` временно
+владеет последовательностью полных `resolution_work` и sealed ranges групп. Каждый `resolution_work`
+владеет стабильными typed trace-массивами, а его report содержит execution/card/actor, category mask и
+упорядоченные `effect_ref {kind,index}`/диапазоны записей. Script scope даёт `each_attack`, `each_healing`,
 `each_elemental_reaction` или общий filter по kind. Для украденной карты допустим маленький отчёт
 `action committed + card stolen`, но follow-up window не открывается, потому что нет факта успешного
 `card executed`. ✅ Компактный category mask и `follow_up_enabler {any_of, all_of}` уже живут в коде;
 текущий combat resolver отмечает attack/damage/healing/attribute-change/stat-change/status/reaction/
 elemental/retaliation. Typed stores и общий semantic-order `outcome_ref {kind,index}` уже подключены;
-отдельно остаются ds-итераторы над этим report API.
+read-only DS-итераторы над одним execution подключены. ✅ Action ledger уже фиксирует frozen input/output
+границы `4→5→6→7`, очищается после ActorStateTick и строится заново для групп 8–11.
 
 Нужен общий pointer-free **effect instance/outcome envelope** с provenance и project kind, но payload и
 outcome остаются типизированными: `attack_instance`, `damage_instance`, `healing_instance`,
@@ -1630,9 +1634,10 @@ engine_gaps «наиболее важные проверки» + technical_scope
    `scripts/scripted_strike` проходит gameplay barrier, DS emission и resume с идентичным trace. Следом
    расширить envelope на draw/resource emitters и загрузить вложенную схему card → beats → effect resources,
    затем follow-up/status programs вместо native fixtures.
-   **DS contract зафиксирован (2026-07-22):** retaliation — immediate continuation конкретного instance
-   внутри внешнего execution/report; follow-up — fixed-step execution над frozen report с
-   `opens_follow_up=false`. DS делится на prepare rule/program scope до cue и leaf emit scope после gameplay
+   **DS contract уточнён (2026-07-23):** retaliation — immediate continuation конкретного instance
+   внутри внешнего execution/report с жёстким lineage-запретом рекурсии; follow-up — fixed-step group над
+   frozen prefix action report. Её output невидим в той же группе, но после seal доступен следующей party
+   group. DS делится на prepare rule/program scope до cue и leaf emit scope после gameplay
    marker. Prepare materializes targets/authored effects; leaf записывает typed `emit_*` и не получает
    outcome синхронно. Retaliation всегда получает собственный authored attack cue/result/finished, чтобы
    presentation показывал цикл triggering instance → response attack; inline-слияния нет. ✅ Этот nested
@@ -1649,8 +1654,10 @@ engine_gaps «наиболее важные проверки» + technical_scope
    ✅ Read-only `execution_report` DS scope теперь rebind-ит frozen pointer-free report к owning
    `resolution_work`, проверяет все ranges/typed refs и даёт metadata/categories/counts плюс
    `each_attack/damage/healing/shield/attribute_damage/status` с route/result accessors. Emitters намеренно
-   отсутствуют: следующим срезом отдельный follow-up prepare scope должен bounded-образом материализовать
-   authored effects и удерживать trigger work через оба party pass. Затем остаются внешняя схема
+   отсутствуют. ✅ Сериализуемый `action_report` уже удерживает execution work и sealed ranges через оба
+   party pass, даёт каждому этапу неизменный input prefix и сбрасывается после ActorStateTick; player/enemy
+   sequences разделены. Следующим срезом отдельный follow-up prepare scope должен bounded-образом
+   материализовать authored effects из этого prefix. Затем остаются внешняя схема
    beats/targeters и resource-loaded status pulse programs.
 4. **Обязательная пауза перед крупной вертикалью:** провести отдельные code review и architecture review
    текущего combat kernel, затем спроектировать первый реальный набор карт. Новые механики, обнаруженные
