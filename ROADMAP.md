@@ -161,6 +161,7 @@ Persistent multi-day event или repair action хранится в `SIM-03`, а
 | `UTL-06` | Generation primitives: noise, Voronoi/Delaunay, flood/distance, graph transforms | `L–XL` | deterministic reusable algorithms, не world grammar |
 | `UTL-07` | Canonical parallel group/filter/reduce для generation units | `L` | semantic ordering независимо от worker count |
 | `UTL-08` | Canonical byte/hash comparison test utilities | `S` | serial-vs-MT and save/reload identity helpers |
+| `UTL-12` | Перенести общий шаблонный сериализатор из `aesthetics` в `utils` | `M` | `utils` владеет neutral serialization templates/codecs; `aesthetics` оставляет ECS schema/component adapters и compatibility facade на время миграции |
 
 ### `libs/painter` — high-level rendering gaps
 
@@ -177,6 +178,17 @@ Persistent multi-day event или repair action хранится в `SIM-03`, а
 | `RND-09` | KTX/KTX2 compressed upload path | `L` | supported GPU blocks не декомпрессируются на CPU |
 | `RND-10` | Canonical mesh/material/skeleton upload interfaces | `L` | importer-independent runtime boundary |
 | `RND-11` | GPU timings/residency/debug capture | `M–L` | project/tool-readable metrics and captures |
+| `RND-16` | Post-processing graph/compositor foundation | `L` | ordered fullscreen passes, transient/persistent images, resize/format policy, enable/disable and debug views |
+| `RND-17` | Temporal rendering inputs and history lifecycle | `L` | camera jitter, motion vectors, depth/normal history, disocclusion, reset on cut/resize/teleport |
+| `RND-18` | Temporal anti-aliasing (TAA) | `L–XL` | reprojection, neighborhood clamp, responsive masks, ghosting diagnostics and no-history fallback |
+| `RND-19` | Screen-space ambient occlusion (SSAO) | `L` | depth/normal sampling, denoise/temporal accumulation, quality presets and lighting integration |
+| `RND-20` | Общий screen-space effects toolkit | `L–XL` | depth pyramid, reconstruction, bilateral blur/denoise and reusable kernels for SSR, contact shadows, fog and outlines |
+| `RND-21` | Базовая color post-processing chain | `L` | HDR exposure, tone mapping, bloom, color grading and output-color-space policy |
+
+Порядок post-processing: `RND-16` создаёт общий host, `RND-17` — temporal data/history contract;
+после них независимо проверяются `RND-18`, `RND-19` и `RND-21`. Переиспользуемые depth/reconstruction/
+denoise primitives из первых живых эффектов постепенно собираются в `RND-20`, а не проектируются
+полностью заранее.
 
 ### `libs/flow` — skeletal animation integration
 
@@ -249,6 +261,7 @@ Generator scripts используют отдельный headless Lua environme
 | `LEG-02` | Spawn-point filters/pick/cooldown/capacity | `L` | project-first; generic spawner manager только после второго consumer |
 | `LEG-03` | Формальная schema живых и restart-only settings | `M` | apply/reject/restart-required result и UI indication |
 | `LEG-04` | Ownership общего deferred phase pipeline | `L` | только после второго gameplay pipeline; не строить runtime DAG заранее |
+| `CFG-02` | Вынести настройки логгирования из общих настроек в отдельный файл/resource | `S–M` | отдельная schema для уровней, domains, sinks, filters и rotation; загрузка доступна до обычного app-config и имеет безопасный fallback |
 
 ### Дополнительный долг существующих библиотек
 
