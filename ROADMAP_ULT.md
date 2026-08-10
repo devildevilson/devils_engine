@@ -1,14 +1,17 @@
 # devils_engine — ультимативный project-driven roadmap
 
-Срез требований семи проектов на 2026-07-31:
+Срез требований десяти проектов, обновлённый 2026-08-10:
 
+- `apates_quest`;
 - `bandit_in_the_shell`;
 - `cardgame`;
+- `commander_simulator`;
 - `medieval_hero_manager`;
 - `mmo_planet_shooter`;
 - `party_adventure`;
 - `submarine_coop`;
-- `tower_crawler`.
+- `tower_crawler`;
+- `zerg_brain`.
 
 Документ сводит движковые требования проектов, уточняет границы уже существующих библиотек и предлагает порядок развития. Это не перечень контента и не обещание превратить движок в набор готовых жанровых решений.
 
@@ -27,7 +30,7 @@
 - Vulkan render graph, 2D/UV animation, Lua/Nuklear UI;
 - headless/animated и worker-count identity tests у живых consumers.
 
-Повторяющиеся пробелы концентрируются в девяти больших направлениях:
+Повторяющиеся пробелы концентрируются в двенадцати больших направлениях:
 
 1. долговечное состояние: save envelope, migrations, transactions, replay diagnostics;
 2. дискретная симуляция: calendar queue, persistent workflows, multi-cadence host;
@@ -37,7 +40,10 @@
 6. сеть: transport, replication, prediction, authority handoff и distributed persistence.
 7. локализация и текст: locale tables, language forms, tags, shaping/layout and compiled UI text;
 8. стандартные asset formats: KTX/KTX2, 3D meshes/scenes/animations and canonical import/runtime interfaces.
-9. генераторы: typed pass contracts, reusable C++ primitives, deterministic Lua orchestration, provenance and validation/repair.
+9. генераторы: typed pass contracts, reusable C++ primitives, deterministic Lua orchestration, provenance and validation/repair;
+10. знания и причинность: observations, immutable filtered views, evidence-backed explanations and retention;
+11. пространственные поля: versioned layered fields, brushes, dirty updates, mass flow and heatmap tooling;
+12. планетарная поверхность: projection-independent topology, coordinates, picking and globe/map presentation.
 
 Первые три направления в значительной степени собираются из уже существующих библиотек. 3D требует нескольких новых крупных kernels. Сетевой стек нельзя честно собрать из broker и ECS snapshot: это отдельная программа развития.
 
@@ -54,6 +60,8 @@
 - resource/artifact loading;
 - standard resource-format adapters and canonical runtime intermediates;
 - generator pass host, reusable native primitives, deterministic Lua glue and provenance/validation shell;
+- neutral knowledge/provenance records, filtered-view boundaries and inspection shell;
+- versioned layered-field storage/common algorithms and closed-surface topology primitives;
 - generic queries;
 - localization tables/forms/tag compiler and compiled-text UI path;
 - headless execution;
@@ -121,13 +129,16 @@
 
 | Код | Проект |
 | --- | --- |
+| `APQ` | `apates_quest` |
 | `BITS` | `bandit_in_the_shell` |
 | `CG` | `cardgame` |
+| `CMD` | `commander_simulator` |
 | `MHM` | `medieval_hero_manager` |
 | `MMO` | `mmo_planet_shooter` |
 | `PA` | `party_adventure` |
 | `SC` | `submarine_coop` |
 | `TC` | `tower_crawler` |
+| `ZB` | `zerg_brain` |
 
 ## Профили глобальных фич проектов
 
@@ -135,13 +146,16 @@
 
 | Проект | Графика/сцены | Skeletal animation | Физика | Навигация | Gameplay networking | Generator | AI/simulation |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `APQ` | strategic globe + отдельная tactical 3D scene | средняя/сложная для героев и чудовищ | зависит от формата тактики; не нужна глобальному ядру | сложная strategic graph + будущая tactical | не требуется | очень сложный spherical planet/culture/history generator | очень сложная campaign politics, knowledge and materialization |
 | `BITS` | полная сложная 3D city scene | сложная, включая ragdoll integration | сложная | сложная actor navigation | отсутствует | отсутствует либо минимален | сложный иерархический AI, factions/politics |
 | `CG` | простая 2D с глубиной, несколько сцен | почти отсутствует | отсутствует | отсутствует | отсутствует | отсутствует | runtime AI отсутствует; GOAP только для headless run statistics |
+| `CMD` | semantic tactical map, позднее optional 3D squad view | небольшой набор при 3D presentation | упрощённая либо отсутствует в первом proof | сложная semantic route/cover/threat navigation | не требуется | отсутствует | сложный inspectable hierarchical squad planner и knowledge boundaries |
 | `MHM` | 2.5D либо очень простое 3D, плоский стилизованный landscape | небольшой стандартный набор | отсутствует | сложная, прежде всего graph/strategic | отсутствует | отсутствует | наиболее сложный hierarchical AI, factions/politics |
 | `MMO` | возможно 2.5D, простой landscape | небольшой набор | простая | средняя | очень сложный MMO stack | сложный planet generator | strategic/local AI остаётся project system |
 | `PA` | полная 3D, сложный landscape/scenes | сложная | сложная | сложная | простой по продуктовой модели co-op | сложный generator небольших миров | простой event-driven AI |
 | `SC` | простая 3D, средний cave/vessel landscape | сложный skeletal runtime, но небольшой и простой набор clips | сложная | достаточно простая | co-op | средний, возможно streaming generator | средний |
 | `TC` | простая 2.5D + отдельная map presentation | небольшой набор | отсутствует | простая grid navigation | отсутствует | небольшие floors, возможен относительно крупный quest graph | простой tactical AI |
+| `ZB` | простая 2.5D/3D mass-RTS scene | animation LOD важнее сложности отдельных clips | минимальная | сложные flow fields/crowd movement | не требуется | authored maps либо лёгкий scenario generation | массовые layered fields, group allocation, economy and pressure fronts |
 
 ### `bandit_in_the_shell`
 
@@ -205,15 +219,46 @@
 - AI простой tactical command scorer.
 - Generator создаёт небольшие floors, но semantic quest/event graph одного этажа может быть относительно крупным; geometry generation проще semantic validation.
 
+### `zerg_brain`
+
+- Верхняя планка проекта находится не в сложности одного actor, а в количестве actors и пространственных слоёв: priority, food, threat, pressure, visibility, territory and flow.
+- Массовое movement требует flow fields, congestion/local avoidance, movement classes и точных fallback-paths для специальных существ.
+- Strategic operation задаёт terminal area + optional approach corridor; project самостоятельно переводит её в demand и group assignments.
+- `acumen` не должен запускаться на каждом существе: нужен project-owned hierarchical allocator с hysteresis, reservations and explanations.
+- Rendering требует instancing, culling и animation/effect/shadow LOD; simulation, visible и fully animated counts измеряются отдельно.
+- Physics, networking и сложный world generator не являются prerequisites первого proof.
+- Headless economy/field/batch tools важнее production presentation.
+
+### `commander_simulator`
+
+- Первый полноценный consumer knowledge-bounded planning: planner физически не должен видеть canonical truth, только versioned observations.
+- Mission, route, tactical and local plans имеют разные budgets/interrupts; локальная смена укрытия не перестраивает миссию целиком.
+- Semantic tactical map содержит authored affordances и dynamic knowledge overlays, а не сводится к navmesh.
+- Explanation обязано хранить реальные candidates, evidence и rejection reasons во время решения; отдельный текст после факта недостаточен.
+- Главный ранний runtime — headless graph mission + 2D tactical inspector. 3D squad scene является поздним presentation consumer.
+- Networking и world generator не требуются.
+
+### `apates_quest`
+
+- Главный long-lived consumer calendar, multi-cadence campaign, logical identity, materialization and durable saves.
+- Generated immutable world package включает closed spherical topology, provinces/routes, climate, cultures/history and Apate-role bindings; сохранять только seed нельзя.
+- Canonical truth отделена от holder-specific rumors, routes, maps, evidence and myth versions.
+- Globe требует seam-free adjacency, projection-independent picking, province/map-mode buffers and terra-incognita filtering without geometry leaks.
+- Tactical encounter временно materialize-ит persistent characters/items и возвращает один atomic typed outcome journal; autoresolve использует ту же schema.
+- Localization особенно чувствительна к procedural names, titles, gender/case forms and structured rule explanations.
+- Полный 3D tactical stack не должен блокировать первый headless political/knowledge proof.
+
 ### Архитектурные следствия
 
-- Нельзя делать полную 3D action-базу prerequisite для `CG`, `MHM` или `TC`.
-- `BITS` и `PA` определяют верхнюю планку общего renderer/animation/navigation; `SC` — physics/skeletal integration; `MMO` — networking; `MHM` — hierarchical simulation.
+- Нельзя делать полную 3D action-базу prerequisite для `CG`, `MHM`, `TC`, `CMD`, `ZB` или глобального ядра `APQ`.
+- `BITS` и `PA` определяют верхнюю планку общего renderer/animation/navigation; `SC` — physics/skeletal integration; `MMO` — networking; `MHM/APQ` — long-lived hierarchical simulation; `CMD` — inspectable knowledge-bounded planning; `ZB` — mass fields/flow/LOD.
 - 2D/2.5D path должен оставаться first-class, а не режимом полного 3D renderer с обязательной physics scene.
 - Общая skeletal integration должна масштабироваться от нескольких простых clips до full animation graph/ragdoll, не заставляя простые проекты платить полный runtime cost.
-- Generator contract нужен `PA/MMO/SC/TC`, но не должен становиться зависимостью authored `BITS`, `CG` или `MHM`.
+- Generator contract нужен `PA/MMO/SC/TC/APQ` и как tooling может помочь лёгким `ZB` scenarios, но не должен становиться зависимостью authored `BITS`, `CG`, `MHM` или `CMD`.
 - «Простой co-op» описывает продуктовый scope, а не автоматически низкую инженерную сложность networked physics.
 - External telemetry/screenshot sharing — отдельный web/platform concern и не аргумент добавлять gameplay networking в offline projects.
+- Knowledge/provenance shell не определяет, чему верит сторона: engine даёт ids, filtered views, causal links and inspection; semantic truth/rumor/evidence policy принадлежит проекту.
+- Layered-field toolkit не является swarm AI: engine владеет storage/versioning/algorithms/debugging, project — значением каждого слоя и решениями на его основе.
 
 ## Сводная capability matrix
 
@@ -223,35 +268,38 @@
 | Exact snapshot/resume | все | `READY/PARTIAL` | owner sections, save boundaries и compact policies | engine + project adapters | `M–L` |
 | Save envelope/slots | все | `MISSING` | atomic writes, metadata, limits, fingerprints | engine | `M` |
 | Schema migrations | все | `MISSING` | versioned sections и migration registry | engine + project migrations | `L` |
-| Replay/first divergence | BITS прежде всего; также deterministic projects/tools | `PARTIAL` | short input/time log, checkpoints, presentation policy, hash bisect | engine mechanism | `L` |
+| Replay/first divergence | BITS, CMD, ZB, APQ; также deterministic tools | `PARTIAL` | input/observation/time log, checkpoints, presentation policy, hash bisect | engine mechanism | `L` |
 | Typed commands/intents | все | `PARTIAL` | versioned command/result/rejection envelope | engine core + project payloads | `M` |
-| Preview/read model | CG, TC, BITS, PA | `PARTIAL` | shared validation query, state-version token | project-first, generic shell later | `M` |
-| Persistent workflow | CG, MHM, BITS, PA, TC, SC | `PARTIAL` | serializable stage/cursor owner outside combat | engine primitive + project state | `M–L` |
-| Calendar/due queue | MHM, BITS, PA, MMO | `MISSING` | canonical ordering, cancellation, catch-up, budgets | engine | `L` |
-| Multi-cadence simulation | MHM, BITS, PA, MMO | `PARTIAL` | explicit phase graph/cadence/dirty scheduler | project-first over engine executors | `L` |
-| Simulation LOD | MHM, BITS, PA, MMO | `MISSING` | logical↔aggregate↔resident lifecycle | engine mechanism + project codecs | `XL` |
-| World residency/streaming | BITS, PA, MMO, SC | `PARTIAL` | hierarchical cells, epochs, prefetch, reconcile | engine | `XL` |
-| Procedural artifact pipeline | PA, MMO, SC, TC | `MISSING` | seed/version/hash, CPU/external stages, cache | engine + project generators | `L–XL` |
-| Generator contract | PA, MMO, SC, TC | `MISSING/PARTIAL` | typed passes, C++ tool registry, deterministic Lua glue, provenance, validation/repair | engine host/toolkit + project pipelines | `XL` |
+| Preview/read model | CG, TC, BITS, PA, CMD, APQ, ZB | `PARTIAL` | shared validation query, state-version token and filtered semantic snapshot | project-first, generic shell later | `M` |
+| Persistent workflow | CG, MHM, BITS, PA, TC, SC, CMD, APQ, ZB | `PARTIAL` | serializable stage/cursor owner outside combat | engine primitive + project state | `M–L` |
+| Calendar/due queue | MHM, BITS, PA, MMO, APQ, CMD | `MISSING` | canonical ordering, cancellation, catch-up, budgets | engine | `L` |
+| Multi-cadence simulation | MHM, BITS, PA, MMO, APQ, CMD, ZB | `PARTIAL` | explicit phase graph/cadence/dirty scheduler | project-first over engine executors | `L` |
+| Simulation LOD | MHM, BITS, PA, MMO, APQ, ZB | `MISSING` | logical↔aggregate↔resident lifecycle | engine mechanism + project codecs | `XL` |
+| World residency/streaming | BITS, PA, MMO, SC, APQ | `PARTIAL` | hierarchical cells, epochs, prefetch, reconcile | engine | `XL` |
+| Procedural artifact pipeline | PA, MMO, SC, TC, APQ | `MISSING` | seed/version/hash, CPU/external stages, cache | engine + project generators | `L–XL` |
+| Generator contract | PA, MMO, SC, TC, APQ; optional ZB scenarios | `MISSING/PARTIAL` | typed passes, C++ tool registry, deterministic Lua glue, provenance, validation/repair | engine host/toolkit + project pipelines | `XL` |
 | Standard resource formats | все 3D-проекты + UI | `PARTIAL` | importer/runtime interfaces, KTX/KTX2, 3D meshes, validation and fallback | engine adapters over third-party codecs | `L–XL` |
-| Spatial query toolkit | BITS, MHM, PA, MMO, SC | `READY` as utilities | owner services, versions, multiple graph meanings | engine utilities + project graphs | `M` |
-| Scene transform hierarchy | BITS, PA, MMO, SC | `MISSING` | world/local transforms, instances, publication | engine | `L` |
-| Physics/query backend | BITS/PA/SC complex, MMO simple | `MISSING` | tiered engine adapter/lifetime over likely Jolt backend | engine adapter + third-party backend | `L–XL` |
-| Character controller/camera | BITS, PA, MMO, SC | `MISSING` | kinematic controller, first/third-person rigs | engine + project policies | `L–XL` |
-| Navigation | BITS/PA complex, MHM graph-heavy, MMO medium, SC/TC simple | `MISSING/PARTIAL` | tiered graph/grid/navmesh adapters, streaming and debug | engine adapters + project policies | `L–XL` |
-| Skeletal animation | BITS/PA complex, SC complex runtime/simple clips, MHM/MMO/TC small | `MISSING` | scalable adapter over third-party runtime, resources, notifies, ragdoll handoff and skinning | engine adapter + third-party runtime | `L–XL` |
-| High-level 3D rendering | BITS/PA full, SC simple 3D, MHM/MMO/TC 2.5D, CG 2D | `PARTIAL` | tiered scene batches, lights, shadows, culling and LOD without mandatory full-3D cost | engine renderer layer | `XL` |
+| Spatial query toolkit | BITS, MHM, PA, MMO, SC, APQ, CMD, ZB | `READY` as utilities | owner services, versions, multiple graph/field meanings | engine utilities + project graphs | `M` |
+| Layered spatial fields and mass flow | ZB прежде всего; также CMD/MMO/strategy tools | `MISSING/PARTIAL` | versioned layers, brush/dirty updates, flow solver, congestion and heatmap inspection | engine toolkit + project semantics | `L–XL` |
+| Knowledge/observation/provenance views | CMD, APQ, MHM, BITS; частично ZB | `MISSING/PARTIAL` | stable fact ids, immutable filtered views, transfer, causal trace and retention | engine shell + project fact semantics | `L–XL` |
+| Planetary surface topology/globe | APQ, MMO | `MISSING` | projection-independent cells/adjacency/coordinates, picking, LOD and map-mode buffers | engine toolkit + project planet grammar | `XL` |
+| Scene transform hierarchy | BITS, PA, MMO, SC, APQ, CMD, ZB | `MISSING` | world/local transforms, instances, publication | engine | `L` |
+| Physics/query backend | BITS/PA/SC complex, MMO simple; APQ/CMD/ZB only when detailed local scene requires it | `MISSING` | tiered engine adapter/lifetime over likely Jolt backend | engine adapter + third-party backend | `L–XL` |
+| Character controller/camera | BITS, PA, MMO, SC; optional APQ/CMD | `MISSING` | kinematic controller, first/third-person rigs | engine + project policies | `L–XL` |
+| Navigation | BITS/PA complex, MHM/APQ/CMD graph-heavy, ZB mass-flow, MMO medium, SC/TC simple | `MISSING/PARTIAL` | tiered graph/grid/flow/navmesh adapters, streaming and debug | engine adapters + project policies | `L–XL` |
+| Skeletal animation | BITS/PA complex, SC complex runtime/simple clips, APQ medium, MHM/MMO/TC/CMD/ZB small or LOD-heavy | `MISSING` | scalable adapter over third-party runtime, resources, notifies, ragdoll handoff and skinning | engine adapter + third-party runtime | `L–XL` |
+| High-level 3D rendering | BITS/PA full, SC simple 3D, APQ globe+tactical, CMD optional 3D, ZB mass scene, MHM/MMO/TC 2.5D, CG 2D | `PARTIAL` | tiered scene batches, lights, shadows, culling and LOD without mandatory full-3D cost | engine renderer layer | `XL` |
 | Grid tactics | TC | `PROJECT-FIRST` | cells, path/LOS/shapes/reservations | project-first | `L` |
 | Turn/resolution kernel | CG, TC | `READY/PARTIAL` | TC consumer, generic command shell | engine primitives + project rules | `M–L` |
-| Gamepad/contexts | CG, TC, BITS, PA, MMO, SC | `MISSING/PARTIAL` | joystick backend, focus, schemes/rebinding | engine | `M–L` |
+| Gamepad/contexts | CG, TC, BITS, PA, MMO, SC, APQ; optional CMD | `MISSING/PARTIAL` | joystick backend, focus, schemes/rebinding | engine | `M–L` |
 | Localization pipeline | все | `MISSING/PARTIAL` | locale tables, language forms, safe text tags, compiled UI representation | engine + project string tables | `L–XL` |
 | Compiled localized text in UI | все | `MISSING` | shaping/layout/cache/render API over compiled localized strings | engine/visage + text libraries | `L–XL` |
-| World-space/debug UI | BITS, PA, MMO, SC, TC | `MISSING` | overlays, picking, stable markers | engine tools | `L` |
+| World-space/debug UI | BITS, PA, MMO, SC, TC, APQ, CMD, ZB | `MISSING` | overlays, graph/field/globe picking, stable markers | engine tools | `L` |
 | Data/schema inspection | все | `PARTIAL` | cross-resource validators and browsers | engine framework + project validators | `M–L` |
-| Generated-content inspection tools | PA, MMO, SC, TC | `PARTIAL` | simplified maps/graphs/heatmaps and batch reports | engine tool shell + project views | `M–L` |
+| Generated-content inspection tools | PA, MMO, SC, TC, APQ; ZB scenario fields | `PARTIAL` | simplified maps/graphs/heatmaps and batch reports | engine tool shell + project views | `M–L` |
 | Full level authoring tools | BITS, PA, MMO, SC | `MISSING` | scene editing, transactions, undo/redo, nav/physics metadata | engine editor framework | `XL` |
-| Hierarchical goal/operation AI | MHM, BITS, MMO | `PARTIAL` | goal selection, persistent operations, multi-level plans and explanation | project-first over engine scheduler/GOAP/tooling | `XL` |
-| Headless GOAP/content simulation | CG, затем остальные data-driven проекты | `PARTIAL` | autonomous policy runner, scenario inputs and statistical export | engine harness + project policies | `M–L` |
+| Hierarchical goal/operation AI | MHM, BITS, MMO, CMD, APQ; group allocation in ZB | `PARTIAL` | goal selection, persistent operations, knowledge boundaries, multi-level plans and explanation | project-first over engine scheduler/GOAP/tooling | `XL` |
+| Headless GOAP/content simulation | CG, CMD, APQ, ZB, затем остальные data-driven проекты | `PARTIAL` | autonomous policy runner, scenario inputs and statistical export | engine harness + project policies | `M–L` |
 | Headless host/scenario harness | networking, затем все проекты | `PARTIAL` | dedicated-server executable shell, scenario orchestration/export/bisect | engine runtime/test tool | `M–L` |
 | Advanced spatial audio | BITS, MMO, PA, SC | `PARTIAL` | EFX-like environment DSP, occlusion/portals, semantic material/action sound maps | engine | `L–XL` |
 | VoIP/capture | SC, MMO | `MISSING` | capture, codec, jitter, network routing | engine/network | `XL` |
@@ -1688,6 +1736,105 @@ Telemetry and screenshot sharing are opt-in and separate:
 
 Сложность: `M` для telemetry HTTP client; `M–L` для screenshot readback/encode/share shell; каждый provider adapter оценивается отдельно.
 
+### 19. Knowledge, observations and explanation provenance
+
+Назначение: не дать planner/UI случайно читать canonical truth и предоставить нескольким проектам общий
+нейтральный shell для фактов, наблюдений, заявлений, причин решений и filtered read-only views.
+
+Статус: `MISSING/PARTIAL`, составим из существующего примерно на 40%.
+
+Можно переиспользовать:
+
+- versioned ids и project components из aesthetics;
+- immutable execution contexts and typed values из act;
+- catalogue/resolve provenance patterns and append-only ranges;
+- resource ids, localization keys and UI read-only seams;
+- deterministic snapshots and serialization.
+
+Не хватает:
+
+- stable fact/observation/explanation record envelope;
+- source, observed/received time, confidence, audience/access and supersession links;
+- immutable versioned filtered view, не exposing canonical world API;
+- explicit share/copy/withhold transaction;
+- causal links candidate → evidence → score/constraint → decision;
+- bounded retention/compaction and causal anchors;
+- truth-vs-view diff/inspection widgets;
+- replay of observation/claim propagation;
+- loc-key + typed parameters without storing formatted text.
+
+Engine не определяет, что считается истинным, как падает confidence, кто кому доверяет и какое
+свидетельство законно. Эти semantics принадлежат `CMD/APQ/MHM/BITS/ZB`. Общая часть — records, access
+boundary, provenance, storage/retention hooks and tooling.
+
+Сложность: `L` для record/view/provenance shell; `L–XL` вместе с transfer, retention, replay and UI.
+
+### 20. Layered spatial fields and mass flow toolkit
+
+Назначение: дать coarse spatial simulations versioned CPU layers, brush/dirty operations, common field
+algorithms, deterministic publication and visualization — без превращения toolkit в RTS/swarm policy.
+
+Статус: `MISSING/PARTIAL`, составим из существующего примерно на 35%.
+
+Можно переиспользовать:
+
+- `utils::grid`, geometry, kd/aabb trees and deterministic PRNG;
+- thread pool, aesthetics phase runner and catalogue semantic commit;
+- painter textures/overlays для presentation;
+- generator raster/field primitives после `GEN-03`.
+
+Не хватает:
+
+- typed field descriptor: extent/resolution/coordinate transform/version;
+- immutable read snapshot and double-buffered publish;
+- radius/polygon/corridor brush journal;
+- dirty tiles/incremental recompute;
+- sampling/gradient/distance/flood/diffusion/blur primitives;
+- integration/flow fields, movement classes and obstacle epochs;
+- congestion/capacity/local-avoidance adapter;
+- serial-vs-MT canonical tests;
+- provenance and heatmap inspector;
+- CPU truth ↔ optional GPU texture publication contract.
+
+`ZB` — первый mass-flow consumer. `CMD` может использовать threat/affordance overlays, `MMO` — macro
+fields, generators — raster stages. Pressure, food, priority and retreat semantics остаются проектными.
+
+Сложность: `L` для field host/basic algorithms; `XL` для flow/crowd/incremental tooling.
+
+### 21. Planetary surface topology and globe presentation
+
+Назначение: дать проектам с замкнутой планетой projection-independent surface ids, adjacency,
+coordinates, picking and reusable globe/map-mode rendering seams, не стандартизируя форму мира и province
+generation grammar.
+
+Статус: `MISSING/PARTIAL`, составим из существующего примерно на 20%.
+
+Можно переиспользовать:
+
+- geometry/spatial containers and hashing;
+- generator graph/artifact contract;
+- painter runtime mesh/buffer path после его расширения;
+- UI picking/debug overlays;
+- logical ids/world-package resources.
+
+Не хватает:
+
+- выбранного canonical surface topology adapter;
+- seam/pole-safe adjacency, distance and routing;
+- stable surface cell + local coordinate model;
+- polygon boundaries, label anchors and spatial index;
+- screen ray → globe → surface/province picking;
+- map projection adapters over the same topology;
+- LOD/incremental geometry and map-mode buffers;
+- terra-incognita filtered picking/rendering contract;
+- circumnavigation/seam/property tests.
+
+`APQ` — первый single-process globe/map consumer; `MMO` позже добавляет distributed coordinates,
+streaming and authority. Эти требования нельзя сразу сливать в один MMO-scale subsystem.
+
+Сложность: `XL` для reusable topology+picking+presentation proof; planet generator/runtime streaming
+оцениваются отдельно.
+
 ## Общий backlog с приоритетами
 
 ### Tier 0 — закрепить существующие контракты
@@ -1714,12 +1861,16 @@ Telemetry and screenshot sharing are opt-in and separate:
 | `SIM-03` | Persistent workflow conventions/host | project-first → engine | `M–L` | `PST-01` |
 | `SIM-04` | Generic command/version/rejection shell | engine + project payloads | `M` | `FND-03` |
 | `HLS-01` | Headless host/scenario interface for dedicated server and autonomous runs | engine/simul | `M` | `FND-01/02` |
+| `KNW-01` | Stable fact/observation/explanation envelope + immutable filtered-view host | engine shell + project schemas | `L` | `PST-01`, `FND-03` |
+| `KNW-02` | Provenance links, explicit share/copy transaction and bounded retention hooks | engine mechanism + project policy | `L` | `KNW-01` |
+| `KNW-03` | Truth-vs-view/decision inspector and observation-log replay | engine tools | `M–L` | `KNW-01/02`, `HLS-01` |
 
 Первые consumers persistence/workflow:
 
 - `CG` проверяет save/run/profile/workflow;
 - `TC` проверяет второй turn/resolve consumer;
-- `MHM` проверяет calendar and multi-cadence headless simulation.
+- `MHM/APQ` проверяют calendar and multi-cadence headless simulation;
+- `CMD` первым проверяет knowledge-filtered planner view and explanation provenance.
 
 Для `HLS-01` главный целевой consumer — будущий networking dedicated-server executable. Второй — автономные content/balance/generation runs со статистическим export. Существующие cardgame/tile_frontier headless tests являются исходными proof cases, но не определяют конечную topology.
 
@@ -1734,6 +1885,14 @@ Telemetry and screenshot sharing are opt-in and separate:
 | `GEN-05` | Bounded repair/rewind and canonical serial-vs-MT tests | engine host + project policies | `L` | `GEN-03/04` |
 | `GEN-06` | 2D region/planet reference pipeline | project-first (`MMO`/future strategy consumer) | `XL` | `GEN-02..05` |
 | `GEN-07` | 3D adventure graph→volume/module→artifact reference pipeline | project-first (`PA`) | `XL–XXL` | `GEN-02..05`, `AST-*`, 3D/nav/physics |
+| `GEN-08` | Closed-surface planet/culture/history package reference pipeline | project-first (`APQ`) | `XL–XXL` | `GEN-02..05`, `PLN-01/02`, `PST-01` |
+| `FLD-01` | Versioned layered-field host, immutable snapshots and deterministic publish | engine/utils/simulation | `L` | `FND-02`, utils grid |
+| `FLD-02` | Brush journal, dirty tiles and basic distance/flood/diffusion/gradient toolkit | engine/utils | `L` | `FLD-01`, `GEN-03` |
+| `FLD-03` | Flow-field, movement-class, obstacle-epoch and congestion/local-avoidance proof | project-first (`ZB`) → engine toolkit | `XL` | `FLD-01/02` |
+| `FLD-04` | Field provenance, heatmap and cost/stuck diagnostics | engine tools | `M–L` | `FLD-01/02`, `UI-00` |
+| `PLN-01` | Canonical closed-surface topology, stable ids, adjacency/distance and property tests | engine geometry + `APQ` proof | `L–XL` | `GEN-01`, `FND-02` |
+| `PLN-02` | Projection adapters, ray/surface/province picking and seam/circumnavigation tests | engine painter/spatial | `L` | `PLN-01`, `3D-02` |
+| `PLN-03` | Globe LOD/map-mode buffers and terra-incognita-filtered presentation | engine painter + project views | `XL` | `PLN-01/02`, `RND-03`, `KNW-01` |
 | `WLD-01` | Persistent logical id registry | engine | `M` | `PST-01` |
 | `WLD-02` | Logical↔resident mapping and epochs | engine | `L` | `WLD-01`, aesthetics |
 | `WLD-03` | Materialization reserve/commit/reconcile lifecycle | engine + project codecs | `XL` | `WLD-02`, prefab |
@@ -1750,6 +1909,8 @@ Telemetry and screenshot sharing are opt-in and separate:
 
 - `MMO`/ограниченный strategy fixture — 2D fields, regions and linked macro graphs;
 - `PA` — semantic task/region/content graphs, 3D generated package/artifacts/overrides;
+- `APQ` — closed-surface topology, immutable planet/culture/history package and globe picking;
+- `ZB` — layered spatial fields, brush operations and mass-flow proof без обязательного world generator;
 - `TC` — small floor + relatively large semantic quest graph without 3D artifact complexity;
 - `SC` — medium streaming cave/route segments;
 - `MHM` — aggregate↔named actor;
@@ -1801,6 +1962,10 @@ Telemetry and screenshot sharing are opt-in and separate:
 | `SC-01` | Vessel frames/topology/flood solver | `SC` | graph solver host/conservation tools | `XL` |
 | `SC-02` | Streaming cave/route-segment generator | `SC` | medium generated-world/residency consumer | `L–XL` |
 | `MMO-01` | Rail/logistics/strategic operations | `MMO` | transaction/graph primitives | `XL–XXL` |
+| `ZB-01` | Priority-operation fields, swarm demand/allocation and pressure-front simulation | `ZB` | layered fields, flow solver, assignment/reservation trace | `XL` |
+| `CMD-01` | Knowledge-bounded mission/route/tactical planner with partial replan | `CMD` | filtered views, persistent workflow, scorer/explanation and reservation primitives | `XL` |
+| `APQ-01` | Campaign politics/knowledge/myth and institutional rule model | `APQ` | calendar, provenance, rule explanation and rich UI shells | `XL–XXL` |
+| `APQ-02` | Campaign encounter materialization/autoresolve/tactical reconcile | `APQ` | logical identity, typed outcome journal and idempotent reconcile | `XL` |
 
 Ни один пункт этого tier не переносится целиком в engine.
 
@@ -1821,6 +1986,7 @@ Telemetry and screenshot sharing are opt-in and separate:
 | `UI-02` | World overlay/picking/debug draw integration | engine | `L` | `3D-02` |
 | `UI-03` | Full level-editor host, scene transactions and undo/redo | engine | `XL` | `UI-01/02`, stable 3D APIs |
 | `UI-04` | Render compiled localized text in panels/widgets | engine/visage | `L` | `LOC-03/04` |
+| `UI-05` | Semantic graph/route/timeline viewer with confidence/provenance overlays | engine tool shell + project adapters | `L` | `UI-01`, `KNW-01` |
 | `WEB-01` | Third-party HTTP/TLS client adapter, async jobs, limits and errors | engine/platform | `M` | no gameplay net dependency |
 | `WEB-02` | Opt-in telemetry schema, batching, consent and retention | engine/platform + project events | `M` | `WEB-01` |
 | `WEB-03` | Screenshot readback/encode/preview/share provider shell | engine/painter/visage/platform | `M–L` | `WEB-01`, render readback |
@@ -1912,6 +2078,61 @@ Telemetry and screenshot sharing are opt-in and separate:
 - materialization audit;
 - goal-scoring explanation shell.
 
+### `zerg_brain`
+
+Уникально:
+
+- priority-operation semantics and approach corridors;
+- food/upkeep/growth/control-capacity formulas;
+- pressure/front/retreat policy;
+- multi-capability swarm assignment;
+- physiology and moving-hive rules.
+
+Переиспользуемо после proof:
+
+- versioned layered-field host and brush journal;
+- flow-field/congestion diagnostics;
+- capacity-aware assignment/reservation trace;
+- mass simulation/render/animation LOD metrics;
+- field heatmap and provenance inspector.
+
+### `commander_simulator`
+
+Уникально:
+
+- mission/route/tactical template hierarchy;
+- squad fact/confidence semantics;
+- roles, support budgets and orbital actions;
+- prepared-position and evacuation policy;
+- user-facing military reports.
+
+Переиспользуемо:
+
+- immutable knowledge-filtered planner views;
+- persistent plan/interrupt/reservation records;
+- evidence-backed scoring explanation;
+- semantic graph/route/timeline widgets;
+- headless mission batch and no-progress/cycle diagnostics.
+
+### `apates_quest`
+
+Уникально:
+
+- characters/houses/titles/politics and institutional law;
+- heroic readiness/recognition, deeds, witnesses and myth;
+- terra-incognita/map-trade semantics;
+- Apate archetypes and world-history grammar;
+- encounter stakes and political outcome interpretation.
+
+Переиспользуемо:
+
+- closed-surface topology, projection and globe picking;
+- immutable generated world package;
+- knowledge/provenance/filtered-view tooling;
+- calendar/multi-cadence campaign host;
+- logical identity and tactical reconcile audit;
+- morphology-heavy localization fixtures.
+
 ### `bandit_in_the_shell`
 
 Уникально:
@@ -1993,6 +2214,18 @@ fingerprints + state hashes
     -> calendar/workflows
     -> logical ids/materialization
 
+stable records + owner sections
+  -> knowledge/observation envelopes
+    -> immutable filtered views
+      -> evidence-backed planning/explanations
+      -> truth-vs-view inspector and observation replay
+
+grid/geometry + deterministic publish
+  -> versioned layered fields
+    -> brush/dirty/basic field algorithms
+      -> flow/congestion/local avoidance
+      -> heatmap/provenance tooling
+
 transform/scene
   -> physics queries
     -> character/camera
@@ -2006,6 +2239,8 @@ resources + external jobs
     -> typed pass graph
       -> provenance/validation/bounded repair
         -> sealed world package
+          -> closed-surface topology/province graph
+            -> globe picking/map-mode/terra-incognita presentation
   -> artifact cache
     -> world residency
       -> simulation LOD/materialization
@@ -2052,12 +2287,15 @@ stable scene/resource/nav/physics contracts
 
 1. `cardgame`: завершить run/save/profile/UI и headless GOAP run-statistics fixture. Это самый короткий путь проверить долговечность и автономные прогоны поверх уже готового combat kernel.
 2. `tower_crawler`: второй discrete consumer для `turn_pipeline`/`resolve`; не обобщать grid до рабочего боя.
-3. `medieval_hero_manager`: calendar, workflow, multi-cadence and materialization в headless форме.
-4. Engine 3D laboratory: transform/physics/controller/animation/nav без полной игры.
-5. `party_adventure`: generation/artifacts/residency на более ограниченном мире.
-6. `bandit_in_the_shell`: плотная authored 3D city/action integration, multi-LOD simulation, short replay and optional web/share shell.
-7. `submarine_coop`: networked co-op, nested frames, graph solvers, advanced audio.
-8. `mmo_planet_shooter`: distributed world only after all lower contracts have measured proof.
+3. `commander_simulator`: маленькая headless graph mission как первый строгий consumer filtered knowledge views, persistent plans and truthful explanations.
+4. `zerg_brain`: layered-field/mass-flow playground с 1k proxy actors, затем scale ladder; не начинать с production battle rendering.
+5. `medieval_hero_manager`: calendar, workflow, multi-cadence and materialization в headless форме.
+6. `apates_quest`: сначала fixed-graph campaign bridge и knowledge/materialization round-trip; spherical generator/globe — отдельный следующий proof.
+7. Engine 3D laboratory: transform/physics/controller/animation/nav без полной игры.
+8. `party_adventure`: generation/artifacts/residency на более ограниченном мире.
+9. `bandit_in_the_shell`: плотная authored 3D city/action integration, multi-LOD simulation, short replay and optional web/share shell.
+10. `submarine_coop`: networked co-op, nested frames, graph solvers, advanced audio.
+11. `mmo_planet_shooter`: distributed world only after all lower contracts have measured proof.
 
 Этот порядок не задаёт, какую игру «нужно делать». Он минимизирует число новых неизвестных в одном срезе.
 
@@ -2065,7 +2303,10 @@ stable scene/resource/nav/physics contracts
 
 - `LOC-01..03` можно начинать до 3D: locale resources/compiler нужны любому UI consumer;
 - `AST-01/02` нужны до стабилизации texture pipeline, `AST-03/04` — перед 3D scene/animation;
-- `GEN-01..05` формируют общий generator contract; `GEN-06/07` остаются reference pipelines проектов;
+- `GEN-01..05` формируют общий generator contract; `GEN-06..08` остаются reference pipelines проектов;
+- `KNW-01..03` лучше доказывать на `CMD`, затем применять к `APQ/MHM/BITS`, не наоборот;
+- `FLD-01/02` можно начать как headless `ZB` fixture независимо от 3D; `FLD-03` требует scale proof;
+- `PLN-01/02` строятся только после сохранённого `APQ` world package; `MMO` не должен диктовать первому globe proof distributed requirements;
 - `UI-00` строится прямо на provenance/issues первого generator consumer и предшествует full editor;
 - `HLS-01` проектируется прежде всего под `NET-00` dedicated server, затем переиспользуется batch/content runners.
 
@@ -2081,7 +2322,9 @@ stable scene/resource/nav/physics contracts
 6. `PST-03`: migrations на реальном изменении run schema.
 7. `HLS-01`: headless host/scenario interface с будущим dedicated-server contract.
 8. `LOC-01`: locale tables/fallback/coverage как ранний независимый vertical slice.
-9. `SIM-01`: calendar только перед первым MHM slice.
+9. `KNW-01`: filtered knowledge view + provenance record как первый `CMD`-ориентированный slice.
+10. `SIM-01`: calendar только перед первым `MHM/APQ` slice.
+11. `FLD-01`: layered-field host как независимый `ZB`-ориентированный headless slice.
 
 Почему именно так:
 
@@ -2090,6 +2333,8 @@ stable scene/resource/nav/physics contracts
 - создаёт save/test contracts, которые понадобятся всем;
 - даёт первый реальный migration case;
 - начинает localization с проверяемых ресурсов, не затрагивая пока сложный shaping;
+- добавляет knowledge boundary до того, как несколько project planners начнут читать canonical world напрямую;
+- даёт `ZB` дешёвый mass-simulation proof без renderer/animation prerequisites;
 - не заставляет заранее проектировать materialization или distributed state.
 
 ## Критерии переноса project-кода в engine

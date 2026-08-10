@@ -59,6 +59,9 @@ Playground должен быстро отвечать на конкретный 
 | 4 | `hierarchy_sim_lab` | объясним и ограничен ли многоуровневый AI | `medieval_hero_manager` |
 | 5 | `tower_floor_lab` | достаточно ли grid/resolve/generator primitives для маленького этажа | `tower_crawler` |
 | 6 | `generator_contract_lab` | можно ли собирать typed deterministic passes через Lua glue | несколько проектов |
+| 7 | `commander_mission_lab` | способен ли planner решать миссию только по доступным observations и честно объяснять replan | `commander_simulator` |
+| 8 | `swarm_field_lab` | масштабируются ли layered fields, assignment и flow без per-unit микроконтроля | `zerg_brain` |
+| 9 | `apates_campaign_bridge_lab` | сохраняется ли один canonical character между campaign и encounter | `apates_quest` |
 
 Эти стенды не следует начинать одновременно. `painter_feature_lab` создаёт общую visual infrastructure;
 остальные становятся её потребителями по мере готовности нужных базовых систем.
@@ -433,6 +436,39 @@ artifacts и comparison между builds. Первым consumer может ст
 priorities и virtual voices. Может использовать ту же proxy geometry, что `submarine_light_room`, но
 остаётся отдельным аудио-сценарием.
 
+### 14. `swarm_field_lab`
+
+Плоская карта 128×128 с 1 000 proxy creatures, двумя food areas, одной составной operation
+`approach corridor → terminal area` и одной pressure front. Проверяет versioned layered fields, brush
+journal, dirty recompute, group demand/allocation, flow field, congestion, hysteresis и explanation
+выбранного actor. Headless и visual runs обязаны давать один canonical hash; затем количество actors
+увеличивается ступенями 1k → 10k → целевой budget. В первый slice не входят production animation,
+физиология улья и полноценный бой.
+
+### 15. `commander_mission_lab`
+
+Граф 8–12 tactical areas, четыре абстрактных бойца, укреплённый прямой путь, обход, подготовленная
+оборонительная позиция, одна неизвестная угроза, дополнительная цель и deadline эвакуации. Planner
+получает только immutable squad-knowledge snapshot. Scenario проверяет mission/route plan records,
+evidence-backed explanation, один interrupt, partial replan, reservation cleanup, недостижимый intent и
+batch no-progress/cycle detector. Сначала это headless simulation + 2D graph/timeline inspector; 3D не нужен.
+
+### 16. `apates_campaign_bridge_lab`
+
+Фиксированный замкнутый граф 12–20 провинций, один persistent ruler/hero, несколько knowledge holders,
+одна институциональная rule chain и одно encounter. Проверяет calendar workflow, rumor/contact/mapped-route
+views, truthful rule preview и lifecycle `reserve → materialize → outcome journal → atomic reconcile`.
+Первая encounter execution может быть headless/discrete: важно вернуть смерть/рану/время/предмет/
+witness ровно один раз. Save/resume и different-worker runs не должны менять политический outcome.
+
+### 17. `globe_topology_lab`
+
+Отдельный от campaign bridge стенд замкнутой поверхности. Создаёт маленький immutable world package с
+surface cells/provinces, adjacency и несколькими routes. Проверяет seam/pole-safe distance, полный обход,
+projection switching, ray→surface→province picking, map-mode buffers, label anchors и terra-incognita,
+которая не раскрывает hidden boundaries через hover/picking. После topology proof сюда добавляются
+generator provenance и culture/history layers; distributed MMO coordinates не входят в первый scope.
+
 ## Как playground растёт в срез игры
 
 Расширение должно идти не «добавим ещё контента», а последовательными доказанными рисками:
@@ -464,7 +500,7 @@ early game slice
 
 ## Предлагаемая физическая организация
 
-На ранней стадии лучше не создавать тринадцать полностью независимых приложений. Достаточно одного
+На ранней стадии лучше не создавать семнадцать полностью независимых приложений. Достаточно одного
 общего laboratory host и нескольких project-owned executables там, где topology действительно различна:
 
 ```text
@@ -482,10 +518,14 @@ subprojects/
         tower_floor/
         generator_contract/
         headless_run/
+        commander_mission/
+        swarm_field/
+        apates_campaign_bridge/
     infrastructure_lab/
       scenarios/
         resource_churn/
         planet_streaming/
+        globe_topology/
         network_session/
         localized_text/
 ```
