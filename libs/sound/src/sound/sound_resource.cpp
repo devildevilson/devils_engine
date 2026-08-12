@@ -28,8 +28,8 @@ static data_type type_from_ext(const std::string_view ext) noexcept {
   if (ext == "opus") {
     return data_type::opus;
   }
-  // pcm НЕ поддержан в resource2/system2 пути: make_decoder(pcm) отдаёт null → play был бы фатальным.
-  // Не заявляем '.pcm' как загружаемый формат, пока PCM-ветка не готова (см. system.cpp make_decoder).
+  // Headerless .pcm files cannot provide format/channel/rate metadata, so they are not loadable.
+  // Internal data_type::pcm remains supported for short sounds decoded by load_cold().
   return data_type::undefined;
 }
 

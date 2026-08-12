@@ -1542,7 +1542,7 @@ Ragdoll принадлежит physics integration, но animation adapter оп�
 
 OpenAL EFX может служить моделью возможностей, но текущий miniaudio path требует backend-neutral DSP/effect contract либо интеграции подходящего стороннего DSP layer. Gameplay публикует semantic event/material/action; конкретные samples and environment processing — presentation.
 
-`audio_spatial_lab` (2026-08-12) уже даёт изолированный manual A/B: production miniaudio `system2`
+`audio_spatial_lab` (2026-08-12) уже даёт изолированный manual A/B: production miniaudio `system`
 против direct OpenAL Soft на одинаковом deterministic mono S16 signal, horizontal/vertical orbit,
 matched front/up distance pulses и linear attenuation. Он сообщает actual device/sample rate/OpenAL HRTF, поддерживает
 HRTF off/on и dry-run CTest. Реальное headphone A/B подтвердило: OpenAL HRTF on заметно лучше передаёт
@@ -1552,8 +1552,11 @@ HRTF off/on и dry-run CTest. Реальное headphone A/B подтверди�
 нулевой `Y`-компонентой; равнодистанционные `+Y/-Y` поэтому дают одинаковый stereo output. Vertical
 orbit держит radius 4, так что perceived OpenAL near/far на нём может быть directional coloration.
 Сценарий расширен до 28 секунд: одинаковые front `-Z` и up `+Y` pulses `4→10→1→4` с явным radius
-log проверяют axis attenuation parity отдельно. Внешний HRTF DSP/Steam Audio отложен как overkill,
-пока этот более узкий listening pass не покажет реальную необходимость.
+log проверили axis attenuation parity отдельно: front и up работают корректно, а OpenAL отличается
+лишь очень небольшой direction-dependent coloration. Miniaudio выбран production backend; весь live
+OpenAL path архивирован в `exclude`. Ближайший optional audio-quality slice — мягкая bounded
+behind/above/below coloration штатным miniaudio/DSP path. Steam Audio/HRTF отложен до pre-release
+spatial evaluation проекта `submarine_coop`, где его цена будет проверяться на реальной сцене.
 
 VoIP добавляет совершенно отдельные capture/codec/jitter/network concerns.
 
@@ -2000,6 +2003,8 @@ streaming and authority. Эти требования нельзя сразу с�
 | `AUD-02` | Semantic events, priorities and virtual voices | engine/sound | `L` | `AUD-01` |
 | `AUD-03` | Material + action/impact -> semantic sound-event mapping | engine/sound + project material tags | `M–L` | `AUD-02`, physics material seam |
 | `AUD-04` | EFX-like environment DSP, zones, sends, occlusion and portals | engine/sound | `L–XL` | `PHY-01`, `WLD-04` |
+| `AUD-17` | Bounded behind/above/below coloration over miniaudio | engine/sound | `S–M` | miniaudio production path |
+| `AUD-18` | Steam Audio/HRTF pre-release evaluation | `submarine_coop` + engine adapter | `M–L` | real submarine scene, target platforms and voice budget |
 | `LOC-01` | Locale tables, fallback, coverage and pseudo-localization | engine/localization + demiurg | `M–L` | `FND-01` |
 | `LOC-02` | Language forms, typed parameters and safe tag compiler | engine/localization | `L` | `LOC-01` |
 | `LOC-03` | Compiled text program and resource fingerprints | engine/localization | `M–L` | `LOC-02` |

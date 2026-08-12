@@ -3,8 +3,6 @@
 
 #include <opusfile.h>
 
-#include "AL/al.h"
-#include "al_helper.h"
 #include "devils_engine/utils/core.h"
 #include "opus_decoder.h"
 
@@ -63,28 +61,6 @@ size_t opus_decoder::get_frames(void* memory, const size_t frames_count, const u
   }
 
   return static_cast<size_t>(read_frames);
-}
-
-size_t opus_decoder::get_frames(
-  const uint32_t al_buffer,
-  const size_t frames_count,
-  const uint16_t channels_override,
-  const uint32_t sample_rate_override) {
-  const uint16_t final_channels = channels_override == 2 ? uint16_t(2) : channels();
-  const uint32_t final_sample_rate = sample_rate_override != 0 ? sample_rate_override : sample_rate();
-  const size_t samples_count = frames_count * size_t(final_channels);
-  if (buffer.size() < samples_count) {
-    buffer.resize(samples_count, 0.0f);
-  }
-
-  const size_t read_frames = get_frames(buffer.data(), frames_count, final_channels);
-  const size_t read_bytes = read_frames * size_t(final_channels) * sizeof(float);
-  al_call(alBufferData, al_buffer,
-          to_al_format(final_channels, 32),
-          buffer.data(), read_bytes,
-          final_sample_rate);
-
-  return read_frames;
 }
 } // namespace sound
 } // namespace devils_engine

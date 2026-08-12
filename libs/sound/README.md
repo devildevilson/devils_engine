@@ -1,14 +1,17 @@
 # libs/sound
 
-`libs/sound` - звуковой слой движка. Актуальный путь сейчас строится вокруг `sound::system2` на miniaudio, `sound_resource` как demiurg-ресурса и набора декодеров, которые читают сжатые аудиоданные из памяти.
+`libs/sound` - звуковой слой движка. Production path строится вокруг `sound::system` на miniaudio, `sound_resource` как demiurg-ресурса и набора декодеров, которые читают сжатые аудиоданные из памяти.
 
-В библиотеке еще остались следы предыдущего OpenAL-пути (`sound::system`, `al_helper`, OpenAL overload'ы у декодеров и CMake-зависимость). Заброшенные `virtual_source`/`basic_sources` уже перенесены в корневой `exclude/`; смешанный с `system2` остаток требует отдельного рефакторинга.
+OpenAL больше не входит в live library: legacy OpenAL-реализация, ранее также называвшаяся
+`sound::system`, `al_helper`, decoder buffer overloads,
+линковка/DLL wiring и завершённая A/B-лаборатория архивированы в `exclude/openal_sound_legacy/` и
+`exclude/audio_spatial_lab_openal/`. Backend-neutral PCM helpers перенесены в `common.h`.
+После выбора backend miniaudio-класс переименован из `sound::system2` в канонический
+`sound::system`; compatibility alias для `system2` намеренно не оставлен.
 
-Для решения о spatial backend существует отдельный manual target
-`subprojects/audio_spatial_lab`: он сравнивает production `system2` и direct OpenAL Soft на
-одинаковом PCM/trajectory/attenuation, не добавляя backend abstraction в эту библиотеку. Headphone
-A/B 2026-08-12 показал, что miniaudio близок к OpenAL HRTF off и почти не различает above/below,
-тогда как OpenAL HRTF on заметно улучшает локализацию.
+Headphone A/B 2026-08-12 закрыл выбор backend: miniaudio в целом звучит почти как исторический
+OpenAL path, где HRTF, вероятнее всего, не включался. Front/up distance attenuation совпадает;
+наблюдаемое различие — лишь небольшая direction-dependent coloration OpenAL.
 
 ## Основная Идея
 
@@ -23,7 +26,7 @@ A/B 2026-08-12 показал, что miniaudio близок к OpenAL HRTF off 
 
 `sound_resource::load_cold()` строит новый immutable `resource_blob` и публикует его атомарно.
 Producer берёт `sound_resource::pin()` до отправки `command_sound_play`; команда переносит pin через
-broker, а `system2::task` удерживает его до terminal cleanup. `unload_warm()` атомарно снимает только
+broker, а `system::task` удерживает его до terminal cleanup. `unload_warm()` атомарно снимает только
 ссылку ресурса: queued/active задачи безопасно доигрывают старое поколение, а новые запросы его уже
 не получают. Это закрывает и unload race, и окно между публикацией команды и её потреблением.
 
@@ -58,11 +61,11 @@ producer-side pin. Handle остаётся identity/diagnostic fallback; playbac
 - `ogg_decoder`;
 - `pcm_decoder`.
 
-В актуальном `system2`-пути `make_decoder(data_type, id, data)` создает декодер из памяти для `mp3`, `wav`, `flac` и `ogg`. `pcm` теперь подключён (2026-07-05): короткие звуки (`< 5с`) `sound_resource` декодирует целиком в PCM в `load_cold` (данные `resource2` = сырые кадры, `type=pcm`, + метаданные `sample_format/channels/sample_rate/frames_count`), а `system2` играет их отдельной веткой через `pcm_decoder` (passthrough), минуя `make_decoder`. Метаданные аудио в `resource2` заполняются всегда. Сырые `.pcm`-ФАЙЛЫ по-прежнему не загружаются (нет заголовка/формата).
+В актуальном `system`-пути `make_decoder(data_type, id, data)` создает декодер из памяти для `mp3`, `wav`, `flac` и `ogg`. `pcm` теперь подключён (2026-07-05): короткие звуки (`< 5с`) `sound_resource` декодирует целиком в PCM в `load_cold` (данные `resource2` = сырые кадры, `type=pcm`, + метаданные `sample_format/channels/sample_rate/frames_count`), а `system` играет их отдельной веткой через `pcm_decoder` (passthrough), минуя `make_decoder`. Метаданные аудио в `resource2` заполняются всегда. Сырые `.pcm`-ФАЙЛЫ по-прежнему не загружаются (нет заголовка/формата).
 
-## system2
+## system
 
-`sound::system2` - текущая miniaudio-реализация. Она владеет:
+`sound::system` - текущая miniaudio-реализация. Она владеет:
 
 - `ma_context`;
 - `ma_device`;
@@ -73,13 +76,13 @@ producer-side pin. Handle остаётся identity/diagnostic fallback; playbac
 - scratch buffers для декодирования и конвертации;
 - настройками playback device, sample rate, channel count и decode budget.
 
-Устройство можно выбрать по имени. Если запрошенное устройство не найдено, система логирует предупреждение и создает default playback device. Список устройств доступен через `system2::playback_devices()`.
+Устройство можно выбрать по имени. Если запрошенное устройство не найдено, система логирует предупреждение и создает default playback device. Список устройств доступен через `system::playback_devices()`.
 
 Playback callback у miniaudio вызывает `ma_engine_read_pcm_frames()`. Сами звуки подключены к engine как `ma_sound` поверх кастомного data source.
 
 ## Voice Instances И Data Source
 
-`system2` заранее создает два пула:
+`system` заранее создает два пула:
 
 - mono voices - для позиционных `sfx` и `talk_pos`;
 - stereo voices - для UI/music/non-spatial сценариев.
@@ -96,8 +99,9 @@ Built-in miniaudio 0.11.25 spatializer не является HRTF renderer. Он
 проходит listener transform и участвует в distance attenuation. Ограничение возникает при panning:
 default stereo endpoint использует `SIDE_LEFT`/`SIDE_RIGHT` directions `(-1,0,0)`/`(+1,0,0)`, поэтому
 равнодистанционные позиции `+Y` и `-Y` получают одинаковые gains. Front/back обычный stereo panner
-тоже не кодирует. Не исправлять это перестановкой осей: следующий bounded эксперимент — Steam Audio
-binaural node в `audio_spatial_lab`, затем отдельный optional production spatializer seam.
+тоже не кодирует. Не исправлять это перестановкой осей. Открытый небольшой experiment — добавить
+очень мягкую miniaudio-native coloration для источников сзади/сверху/снизу; полноценный HRTF
+отложен до pre-release spatial pass проекта `submarine_coop`.
 
 Каждый `sound_instance` содержит `ma_sound` и кастомный ring-stream data source. Data source хранит PCM ring buffer, read/write cursors, счетчики прочитанных/записанных frames и underrun count. Он не знает о task id, sequencing или ресурсах.
 
@@ -132,7 +136,7 @@ binaural node в `audio_spatial_lab`, затем отдельный optional pro
 
 ## Статус И Управление
 
-`system2` поддерживает:
+`system` поддерживает:
 
 - `remove_sound(task_id)`;
 - `play_sound(task_id)` / `stop_sound(task_id)` для ручного управления уже подготовленной задачей;
@@ -151,7 +155,7 @@ binaural node в `audio_spatial_lab`, затем отдельный optional pro
 
 ## Интеграция В tile_frontier
 
-`sound_simulation` владеет `sound::system2` и работает через общий broker:
+`sound_simulation` владеет `sound::system` и работает через общий broker:
 
 - main -> sound: play, stop, update, device list, recreate device, master gain;
 - sound -> main: latest-wins snapshot состояния звуков.
@@ -178,17 +182,17 @@ Main сразу возвращает UI opaque handle на основе task id,
 - поддерживать простую sequence continuation через `after`;
 - публиковать snapshot состояния задач;
 - менять master volume;
-- пересоздавать `system2` при выборе другого устройства в `tile_frontier`.
+- пересоздавать `system` при выборе другого устройства в `tile_frontier`.
 
 ## Техдолг И Направления
 
-- Почистить остатки OpenAL: старый `sound::system`, `al_helper`, OpenAL overload'ы у декодеров, CMake-зависимость и связанные include'ы. До решения по miniaudio 3D этот код лучше не смешивать с новым контрактом.
-- `AUD-LAB-02`: встроить Steam Audio HRTF custom node только в лабораторию, сравнить nearest/bilinear interpolation и измерить 1/8/32 active voices; production path менять после quality/CPU verdict.
+- `AUD-17`: bounded directional coloration prototype поверх miniaudio — небольшой configurable EQ/gain response для behind/above/below, smooth interpolation, no distance-curve change, off switch и headphone A/B.
+- Steam Audio/HRTF оценивать ближе к релизу `submarine_coop`, когда появятся реальные требования к elevation/front-back, voice budget и целевым платформам.
 - Добавить более сложные модели трехмерного звука: категории источников, приоритеты, virtual voices, occlusion/obstruction, doppler policy, distance curves и настройки listener/world scale.
 - Добавить систему звуковых эффектов окружения: реверберация, фильтры, затухание, low-pass/high-pass и обработка в зависимости от помещения/среды.
-- Профилировать `system2::update()`. Подозрительные места: создание decoder/converter на первом update задачи, seek, декодирование, `ma_data_converter_process_pcm_frames`, запись в ring buffer и уборка задач/voice instances.
-- Оформить контракт выгрузки `sound_resource`: нельзя освобождать `data`, пока active task держит `resource2::data`.
-- ~~Подключить PCM в новом `resource2`/`system2` пути~~ (СДЕЛАНО 2026-07-05: короткие звуки → PCM в `load_cold`, отдельная ветка `pcm_decoder` в `system2`; сырые `.pcm`-файлы намеренно не загружаются).
+- Профилировать `system::update()`. Подозрительные места: создание decoder/converter на первом update задачи, seek, декодирование, `ma_data_converter_process_pcm_frames`, запись в ring buffer и уборка задач/voice instances.
+- ~~Оформить контракт выгрузки `sound_resource`~~ (СДЕЛАНО 2026-08-12: immutable shared generations и producer-side pin).
+- ~~Подключить PCM в новом `resource2`/`system` пути~~ (СДЕЛАНО 2026-07-05: короткие звуки → PCM в `load_cold`, отдельная ветка `pcm_decoder` в `system`; сырые `.pcm`-файлы намеренно не загружаются).
 - ~~Координация unload с queued/active playback~~ (СДЕЛАНО 2026-08-12: immutable shared generations, producer-side broker pin и focused lifetime test).
 - Добавить формат Opus и загрузку с диска через `opusfile`.
 - Добавить специальный источник постоянного/потокового звука, например live-поток из микрофона для VoIP.

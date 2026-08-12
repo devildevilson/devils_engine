@@ -18,11 +18,6 @@ public:
 
   bool seek(const size_t seek_size) override;
   size_t get_frames(void* memory, const size_t frames_count, const uint16_t channels_override = 0) override;
-  size_t get_frames(
-    const uint32_t al_buffer,
-    const size_t frames_count,
-    const uint16_t channels_override = 0,
-    const uint32_t sample_rate_override = 0) override;
 
 private:
   drwav data;

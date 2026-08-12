@@ -4,9 +4,8 @@
 #define DR_WAV_NO_STDIO
 #define DR_WAV_IMPLEMENTATION
 
-#include "AL/al.h"
-#include "al_helper.h"
 #include "dr_wav.h"
+#include "devils_engine/utils/core.h"
 #include "wav_decoder.h"
 
 static void* my_malloc(size_t sz, void* pUserData) {
@@ -97,65 +96,6 @@ size_t get_frames_templ(
 
   return readed_frames;
 }
-
-template <typename T>
-size_t get_frames_templ(
-  drwav* data, std::vector<uint8_t>& buffer,
-  const uint32_t al_buffer, const size_t frames_count,
-  const uint16_t channels, const uint32_t sample_rate) {
-  static_assert(
-    std::is_same_v<T, float> ||
-      std::is_same_v<T, int16_t> ||
-      std::is_same_v<T, uint8_t>,
-    "Supported formats is float32, signed16 and unsigned8");
-
-  const auto cur_fmt = bits_per_sample_to_format(adjust_bits_per_channel(data->bitsPerSample));
-  const size_t block_bytes_size = pcm_samples_to_bytes(frames_count, data->channels, cur_fmt);
-  if (buffer.size() < block_bytes_size) {
-    buffer.resize(block_bytes_size, 0);
-  }
-
-  size_t readed_frames = 0;
-  if (channels == 1 && data->channels != 1) {
-    auto block_data = reinterpret_cast<T*>(buffer.data());
-
-    if constexpr (std::is_same_v<T, float>) {
-      readed_frames = drwav_read_pcm_frames_f32(data, frames_count, block_data);
-    } else if constexpr (std::is_same_v<T, int16_t>) {
-      readed_frames = drwav_read_pcm_frames_s16(data, frames_count, block_data); //.data()
-    }
-    if constexpr (std::is_same_v<T, uint8_t>) {
-      readed_frames = drwav_read_pcm_frames(data, frames_count, block_data); //.data()
-    }
-
-    make_mono(block_data, block_data, readed_frames, data->channels);
-
-    const size_t buffer_size = pcm_samples_to_bytes(readed_frames, channels, cur_fmt);
-    al_call(alBufferData, al_buffer,
-            to_al_format(channels, format_to_bits(cur_fmt)),
-            block_data, buffer_size, sample_rate);
-  } else if (channels == data->channels) {
-    auto block_data = reinterpret_cast<T*>(buffer.data());
-
-    if constexpr (std::is_same_v<T, float>) {
-      readed_frames = drwav_read_pcm_frames_f32(data, frames_count, block_data); //.data()
-    } else if constexpr (std::is_same_v<T, int16_t>) {
-      readed_frames = drwav_read_pcm_frames_s16(data, frames_count, block_data); //.data()
-    } else if constexpr (std::is_same_v<T, uint8_t>) {
-      readed_frames = drwav_read_pcm_frames(data, frames_count, block_data);
-    }
-
-    const size_t buffer_size = pcm_samples_to_bytes(readed_frames, channels, cur_fmt);
-    al_call(alBufferData, al_buffer,
-            to_al_format(channels, format_to_bits(cur_fmt)),
-            block_data, buffer_size, sample_rate); //.data()
-  } else {
-    // ошибка, наверное просто вернем 0
-  }
-
-  return readed_frames;
-}
-
 // что то тут все не так, переписать
 // переписал, теперь вроде бы ошибок не должно быть, нужно научиться считать размер буфера по секундам
 size_t wav_decoder::get_frames(void* memory, const size_t frames_count, const uint16_t channels_override) {
@@ -168,28 +108,6 @@ size_t wav_decoder::get_frames(void* memory, const size_t frames_count, const ui
     readed_frames = get_frames_templ<int16_t>(&data, buffer, memory, frames_count, final_channels);
   } else if (format() == format::f32) {
     readed_frames = get_frames_templ<float>(&data, buffer, memory, frames_count, final_channels);
-  } else {
-    utils::error{}("wav format with {} bits per channel is not supported", data.bitsPerSample);
-  }
-
-  return readed_frames;
-}
-
-size_t wav_decoder::get_frames(
-  const uint32_t al_buffer,
-  const size_t frames_count,
-  const uint16_t channels_override,
-  const uint32_t sample_rate_override) {
-  const uint16_t final_channels = channels_override != 0 ? channels_override : channels();
-  const uint32_t final_sample_rate = sample_rate_override != 0 ? sample_rate_override : sample_rate();
-
-  size_t readed_frames = 0;
-  if (format() == format::u8) {
-    readed_frames = get_frames_templ<uint8_t>(&data, buffer, al_buffer, frames_count, final_channels, final_sample_rate);
-  } else if (format() == format::s16) {
-    readed_frames = get_frames_templ<int16_t>(&data, buffer, al_buffer, frames_count, final_channels, final_sample_rate);
-  } else if (format() == format::f32) {
-    readed_frames = get_frames_templ<float>(&data, buffer, al_buffer, frames_count, final_channels, final_sample_rate);
   } else {
     utils::error{}("wav format with {} bits per channel is not supported", data.bitsPerSample);
   }

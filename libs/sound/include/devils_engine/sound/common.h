@@ -28,6 +28,13 @@ constexpr format bits_per_sample_to_format(const size_t bits, const bool isfloat
   return format::unknown;
 }
 
+constexpr uint32_t adjust_bits_per_channel(const uint32_t bits) noexcept {
+  if (bits >= 32) return bits;
+  uint32_t adjusted = 1;
+  while (adjusted < bits) adjusted <<= 1;
+  return adjusted;
+}
+
 constexpr size_t format_to_bytes(const enum format format) noexcept {
   size_t sample_size = 0;
   switch (format) {
@@ -66,8 +73,28 @@ constexpr size_t second_to_pcm_samples(const size_t sample_rate, const uint32_t 
   return sample_rate * channels;
 }
 
+constexpr size_t second_to_pcm_frames(const double seconds, const size_t sample_rate) noexcept {
+  return static_cast<size_t>(seconds * static_cast<double>(sample_rate));
+}
+
+constexpr double pcm_frames_to_seconds(const size_t frames, const size_t sample_rate) noexcept {
+  return static_cast<double>(frames) / static_cast<double>(sample_rate);
+}
+
 constexpr size_t bytes_to_pcm_frames(const size_t bytes, const uint32_t channels, const enum format format) noexcept {
   return bytes / pcm_frame_to_bytes(channels, format);
+}
+
+template <typename T>
+void make_mono(T* dest, const T* source, const size_t frames, const uint16_t channels) {
+  for (size_t frame = 0; frame < frames; ++frame) {
+    const size_t first = frame * channels;
+    dest[frame] = source[first];
+    for (size_t channel = 1; channel < channels; ++channel) {
+      dest[frame] += source[first + channel];
+    }
+    dest[frame] /= static_cast<float>(channels);
+  }
 }
 
 struct vec3 {

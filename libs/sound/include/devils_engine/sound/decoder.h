@@ -20,11 +20,6 @@ public:
   virtual bool seek(const size_t seek_size) = 0;
   virtual size_t get_frames(void* memory, const size_t frames_count, const uint16_t channels_override = 0) = 0;
   // нужна ли мне эта функция? скорее нет чем да, но пока оставим
-  virtual size_t get_frames(
-    const uint32_t al_buffer,
-    const size_t frames_count,
-    const uint16_t channels_override = 0,
-    const uint32_t sample_rate_override = 0) = 0;
 
   enum format format() const noexcept;
   uint16_t channels() const noexcept;

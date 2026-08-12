@@ -127,7 +127,7 @@ TEST_CASE("sound vec3 helpers compute distance and normalization [sound::common]
   CHECK(n.z == doctest::Approx(0.0f));
 }
 
-TEST_CASE("sound task defaults are valid for a new positional sound request [sound::system2]") {
+TEST_CASE("sound task defaults are valid for a new positional sound request [sound::system]") {
   sound::task task;
 
   CHECK(task.id == SIZE_MAX);
@@ -142,7 +142,7 @@ TEST_CASE("sound task defaults are valid for a new positional sound request [sou
   CHECK(task.after == SIZE_MAX);
 }
 
-TEST_CASE("sound task stores resource view without taking ownership [sound::system2]") {
+TEST_CASE("sound task stores resource view without taking ownership [sound::system]") {
   std::string id = "test/sound";
   std::vector<char> bytes = {'R', 'I', 'F', 'F'};
 
@@ -192,9 +192,9 @@ TEST_CASE("sound resource pins queued and active task data across unload [sound:
   CHECK(lifetime.expired()); // last command/task pin released the generation
 }
 
-TEST_CASE("sound system can enumerate playback devices without requiring one to exist [sound::system2]") {
+TEST_CASE("sound system can enumerate playback devices without requiring one to exist [sound::system]") {
   std::vector<std::string> devices;
-  const bool enumerated = sound::system2::playback_devices(devices);
+  const bool enumerated = sound::system::playback_devices(devices);
 
   if (!enumerated) {
     MESSAGE("miniaudio could not enumerate playback devices in this environment");
@@ -207,12 +207,12 @@ TEST_CASE("sound system can enumerate playback devices without requiring one to 
   }
 }
 
-TEST_CASE("sound system smoke constructs on an enumerated or default playback device when available [sound::system2]") {
+TEST_CASE("sound system smoke constructs on an enumerated or default playback device when available [sound::system]") {
   std::vector<std::string> devices;
-  if (!sound::system2::playback_devices(devices) || devices.empty()) {
-    MESSAGE("no playback device available for system2 construction smoke test");
+  if (!sound::system::playback_devices(devices) || devices.empty()) {
+    MESSAGE("no playback device available for system construction smoke test");
     return;
   }
 
-  CHECK_NOTHROW(sound::system2(devices.front(), 0.1, 512));
+  CHECK_NOTHROW(sound::system(devices.front(), 0.1, 512));
 }

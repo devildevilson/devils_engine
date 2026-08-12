@@ -23,7 +23,7 @@ struct resource_blob;
 namespace simul {
 
 // Уникальный монотонный id задачи НА КАЖДЫЙ вызов (не actor/type id). Broker-консьюмеры
-// (напр. sound::system2) дедуплицируют задачи по нему, поэтому всем сообщениям нужен монотонный
+// (напр. sound::system) дедуплицируют задачи по нему, поэтому всем сообщениям нужен монотонный
 // источник; счётчик atomic, т.к. id раздают sim/main потоки.
 inline size_t generate_task_id() noexcept {
   static std::atomic<size_t> counter{0};

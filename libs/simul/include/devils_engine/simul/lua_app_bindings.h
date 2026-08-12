@@ -151,7 +151,7 @@ void install_sound_lua_bindings(
     return sol::nil;
   });
 
-  // Смена звукового устройства: пере-создаём system2 через канал recreate.
+  // Смена звукового устройства: пере-создаём system через канал recreate.
   app.set_function("set_sound_device", [cptr, settings_ptr, sound_enabled](const std::string& name) {
     auto& c = *cptr;
     if (!sound_enabled || c.br == nullptr) {

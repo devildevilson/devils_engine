@@ -4,7 +4,6 @@
 // In-memory Ogg Vorbis decoder implementing the common streaming decoder contract.
 
 #include <string_view>
-#include <vector>
 
 #include "decoder.h"
 
@@ -19,15 +18,9 @@ public:
 
   bool seek(const size_t seek_size) override;
   size_t get_frames(void* memory, const size_t frames_count, const uint16_t channels_override = 0) override;
-  size_t get_frames(
-    const uint32_t al_buffer,
-    const size_t frames_count,
-    const uint16_t channels_override = 0,
-    const uint32_t sample_rate_override = 0) override;
 
 private:
   stb_vorbis* data;
-  std::vector<uint8_t> buffer;
 };
 } // namespace sound
 } // namespace devils_engine

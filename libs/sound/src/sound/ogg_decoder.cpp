@@ -1,5 +1,3 @@
-#include "AL/al.h"
-#include "al_helper.h"
 #include "devils_engine/utils/core.h"
 #include "ogg_decoder.h"
 
@@ -39,35 +37,6 @@ size_t ogg_decoder::get_frames(void* memory, const size_t frames_count, const ui
   const size_t readed_samples =
     stb_vorbis_get_samples_float_interleaved(data, final_channels, reinterpret_cast<float*>(memory), num_floats);
   return readed_samples / final_channels;
-}
-
-size_t ogg_decoder::get_frames(
-  const uint32_t al_buffer,
-  const size_t frames_count,
-  const uint16_t channels_override,
-  const uint32_t sample_rate_override) {
-  const uint16_t final_channels = channels_override != 0 ? channels_override : channels();
-  const uint32_t final_sample_rate = sample_rate_override != 0 ? sample_rate_override : sample_rate();
-
-  const size_t block_bytes_size = pcm_samples_to_bytes(frames_count, data->channels, format());
-  if (buffer.size() < block_bytes_size) {
-    buffer.resize(block_bytes_size, 0);
-  }
-
-  // float32 портит звук? или это stb_vorbis говно?
-  const size_t num_floats = frames_count * final_channels;
-  const size_t readed_samples = stb_vorbis_get_samples_float_interleaved(data,
-                                                                         final_channels,
-                                                                         reinterpret_cast<float*>(buffer.data()),
-                                                                         num_floats);
-  const size_t readed_frames = readed_samples / final_channels; // фреймы - это сэмпл * каналы
-  const size_t cur_block_size = pcm_samples_to_bytes(readed_frames, final_channels, format());
-  al_call(alBufferData, al_buffer,
-          to_al_format(final_channels, 32),
-          buffer.data(), cur_block_size,
-          final_sample_rate);
-
-  return readed_frames;
 }
 } // namespace sound
 } // namespace devils_engine

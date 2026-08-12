@@ -342,18 +342,18 @@ demiurg/модов.
 
 ## libs/sound
 
-`sound` - звуковой слой. Сейчас актуальное направление - miniaudio `system2` и
+`sound` - звуковой слой. Сейчас актуальное направление - miniaudio `system` и
 звуки как `demiurg` ресурсы.
 
-В библиотеке еще остался старый OpenAL-путь. Его не стоит считать целевым API,
-но удалять его без отдельного решения тоже не нужно.
+OpenAL-путь после сравнительного прослушивания архивирован под `exclude/`; live
+`libs/sound` зависит только от miniaudio.
 
 Текущая модель:
 
 - звук загружается как `sound_resource`;
 - `sound_resource` хранит compressed bytes и возвращает `resource2` view;
 - sound thread получает play-команду с ресурсом;
-- `system2` создает decoder из memory-backed данных;
+- `system` создает decoder из memory-backed данных;
 - PCM стримится в miniaudio voice через ring data source.
 
 Поддерживаемые форматы в текущем направлении:
@@ -363,7 +363,7 @@ demiurg/модов.
 - flac;
 - ogg.
 
-`system2` умеет:
+`system` умеет:
 
 - создать audio device;
 - выбрать playback device по имени;

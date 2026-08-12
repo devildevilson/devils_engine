@@ -30,7 +30,7 @@ public:
 
   void init() override {
     container.reset(new state);
-    container->s.reset(new sound::system2);
+    container->s.reset(new sound::system);
   }
 
   bool stop_predicate() const override {
@@ -47,7 +47,7 @@ public:
       command_sound_devices cmd{};
       while (br.sound_devices.try_pop(cmd)) {
         if (cmd.out != nullptr) {
-          sound::system2::playback_devices(*cmd.out);
+          sound::system::playback_devices(*cmd.out);
         }
         if (cmd.ready != nullptr) {
           cmd.ready->store(true, std::memory_order_release);
@@ -58,7 +58,7 @@ public:
     {
       command_recreate_sound_system cmd{};
       while (br.recreate_sound.try_pop(cmd)) {
-        container->s.reset(new sound::system2(cmd.device_name));
+        container->s.reset(new sound::system(cmd.device_name));
         if (container->s) {
           container->s->set_master_volume(container->master_gain);
           for (uint32_t i = 0; i < container->source_gain.size(); ++i) {
@@ -175,7 +175,7 @@ public:
 
 private:
   struct state {
-    std::unique_ptr<sound::system2> s;
+    std::unique_ptr<sound::system> s;
     float master_gain = 1.0f;
     std::array<float, static_cast<size_t>(sound::type::count)> source_gain = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
     std::vector<sound::task_status> snapshot_status_cache;

@@ -31,7 +31,7 @@ gameplay consumer. Целевой внешний проект заполняет
 
 | Порядок | ID | Результат закрытия | Сложность | Почему сейчас |
 | --- | --- | --- | --- | --- |
-| 1 | `AUD-LAB-02` axis-distance pass | на одном headphone/device setup сопоставлены front `-Z` и up `+Y` pulses `4→10→1→4` для miniaudio и OpenAL HRTF off/on; отделена attenuation parity от directional coloration | `S` | vertical orbit имеет постоянный радиус, поэтому perceived near/far там не доказывает ошибку distance; 28-second tool и radius diagnostics готовы |
+| 1 | `AUD-17` directional coloration spike | miniaudio-native bounded EQ/gain coloration слегка различает behind/above/below без изменения distance curve; есть smooth interpolation, off switch и headphone A/B | `S–M` | backend уже выбран и OpenAL архивирован; это единственное полезное качество из comparison, которое стоит попробовать сохранить без HRTF stack |
 | 2 | `FSM-01` | inspector/serialization view показывает state, candidate transition, guards и settle result | `S` | маленький самостоятельный tooling slice над стабильным `mood` |
 | 3 | `CAT-03` | phase metadata/write policy регистрируются декларативно и доступны diagnostics | `S–M` | упрощает последующий общий trace UI без изменения executor semantics |
 | 4 | `CAT-01` | единый bounded statistics service принимает phase timing/rejection/overflow и показывает first divergence | `M` | объединяет уже существующие catalogue domains и бюджеты |
@@ -303,10 +303,9 @@ Generator scripts используют отдельный headless Lua environme
 | `AUD-11` | PCM policy: подключить decoder либо удалить формат | `S` | no advertised empty decoder path |
 | `AUD-12` | Semantic source type in play command | `S` | корректный volume bus вместо implicit `sfx` |
 | `AUD-13` | Velocity/doppler feed | `M` | только после проверки positional audio в live 3D scene |
-| `AUD-14` | Remove/archive OpenAL implementation | `S` | после окончательного закрепления miniaudio path |
 | `AUD-15` | Start/after/underrun/device-fallback/snapshot tests | `M` | audio regression suite |
-| `AUD-16` | Optional production HRTF spatializer seam | `M–L` | только если listening requirements оправдают внешний DSP: mono positional voice → attenuation → binaural stereo bus, fixed-block buffering, voice budget, non-HRTF fallback; Steam Audio пока считается overkill |
-| `AUD-LAB-02` | Front/up distance-axis parity listening pass — tool `READY` | `S` | два одинаковых `4→10→1→4` pulse вдоль `-Z`/`+Y`, явный radius log и три backend/HRTF passes; проверяет distance отдельно от constant-radius orbit coloration |
+| `AUD-17` | Subtle directional coloration | `S–M` | miniaudio-native bounded EQ/gain response для behind/above/below; не HRTF, не меняет distance attenuation, smooth/off/config и archived-lab A/B fixture при необходимости |
+| `AUD-18` | Steam Audio/HRTF evaluation for `submarine_coop` | `M–L` | дальний pre-release gate: real scene/listening target, platform/deployment cost, fixed-block latency, 1/8/32 voice CPU budget и fallback; не текущий engine dependency |
 | `UTL-09` | Allocator/spatial/string-pool/compression/serializer tests | `M` | risk-oriented batches, не coverage ради coverage |
 | `UTL-10` | Split heavyweight `core.h` and clarify serializer ownership | `M–L` | diagnostics/math/paths/unicode/crc boundaries |
 | `UTL-11` | Reorganize thread/allocator/spatial public layout | `S–M` | после public/experimental audit; no API churn alone |
@@ -473,7 +472,7 @@ camera как отдельный intent provider и точная запись `g
   и живут через queued/active task; `unload_warm()` снимает resource owner без invalidation playback,
   unload lifetime покрыт focused test.
 - [x] `AUD-LAB-01` tooling: отдельный `audio_spatial_lab` исполняет один deterministic mono S16
-  reference signal/trajectory через production miniaudio `system2` или direct OpenAL Soft, печатает
+  reference signal/trajectory через production miniaudio `system` или direct OpenAL Soft, печатает
   actual device/rate/HRTF, имеет HRTF off/on, headless dry-run и ручной comparison table. Реальное
   headphone A/B 2026-08-12: OpenAL HRTF on заметно улучшает понимание направления; built-in miniaudio
   звучит близко к OpenAL HRTF off; у miniaudio точки выше/ниже почти неразличимы. Проверка исходников
@@ -482,7 +481,12 @@ camera как отдельный intent provider и точная запись `g
 - [x] `AUD-LAB-02` tooling: сценарий расширен до 28 секунд одинаковыми front `-Z` и up `+Y`
   distance pulses `4→10→1→4`; runtime/dry-run печатают фактический radius. Vertical orbit явно
   помечен constant-radius directional test, поэтому HRTF coloration больше не смешивается с
-  distance attenuation. Ручной axis-parity listening verdict остаётся открытым.
+  distance attenuation. Ручной verdict: front и up attenuation работают одинаково; OpenAL даёт
+  только очень небольшую полезную direction coloration. Miniaudio выбран production backend.
+- [x] `AUD-14`: OpenAL runtime/reference path удалён из live tree. Legacy OpenAL implementation,
+  helpers, decoder buffer overloads, CMake/DLL dependency и A/B executable архивированы под
+  `exclude/`; `libs/sound` теперь miniaudio-only, PCM helpers живут в backend-neutral `common.h`,
+  а production class переименован из `sound::system2` в канонический `sound::system` без alias.
 - [x] `rng_state + int` и отключаемый sound worker с динамическим reserved-worker count закрыты.
 
 ### MT execution и diagnostics foundation
