@@ -148,6 +148,8 @@ public:
   // хотя может быть вообще замаппить [0, 0.2]
   void set_master_volume(const float val);
   void set_source_volume(const uint32_t type, const float val);
+  void set_directional_coloration(const directional_coloration_config& config) noexcept;
+  const directional_coloration_config& directional_coloration() const noexcept;
 
   void update(const size_t time);
 
@@ -183,6 +185,7 @@ private:
   uint32_t playback_sample_rate;
   double stream_buffer_seconds;
   size_t decode_frames_per_update;
+  directional_coloration_config directional_coloration_config_;
   std::array<float, static_cast<size_t>(type::count)> source_volume;
   std::unique_ptr<ma_context> m_context;
   std::unique_ptr<ma_engine> m_engine;
@@ -205,6 +208,7 @@ private:
   bool acquire_voice(sound_task& task); // выдать/разделить голос; false если пул пуст (idempotent при уже выданном)
   void init_decode(sound_task& task);   // создать decoder+converter, посчитать frames (idempotent) — на входе в active
   void release_task(sound_task& task);  // терминал: вернуть/выгрузить голос (если не разделён), освободить ресурсы
+  void update_directional_coloration(sound_task& task) noexcept;
 };
 } // namespace sound
 } // namespace devils_engine

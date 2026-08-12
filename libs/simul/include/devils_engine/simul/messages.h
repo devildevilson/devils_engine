@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <devils_engine/demiurg/resource_system.h>
+#include <devils_engine/sound/common.h>
 #include <devils_engine/utils/core.h>
 
 struct GLFWwindow;
@@ -170,6 +171,10 @@ struct command_sound_set_master_gain {
 struct command_sound_set_source_gain {
   uint32_t type = 0;
   float gain = 1.0f;
+};
+
+struct command_sound_set_directional_coloration {
+  sound::directional_coloration_config config;
 };
 
 struct command_recreate_sound_system {

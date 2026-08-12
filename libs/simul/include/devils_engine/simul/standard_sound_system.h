@@ -61,10 +61,18 @@ public:
         container->s.reset(new sound::system(cmd.device_name));
         if (container->s) {
           container->s->set_master_volume(container->master_gain);
+          container->s->set_directional_coloration(container->directional_coloration);
           for (uint32_t i = 0; i < container->source_gain.size(); ++i) {
             container->s->set_source_volume(i, container->source_gain[i]);
           }
         }
+      }
+    }
+
+    if (const auto* cmd = br.sound_directional_coloration.consume()) {
+      container->directional_coloration = cmd->config;
+      if (container->s) {
+        container->s->set_directional_coloration(container->directional_coloration);
       }
     }
 
@@ -178,6 +186,7 @@ private:
     std::unique_ptr<sound::system> s;
     float master_gain = 1.0f;
     std::array<float, static_cast<size_t>(sound::type::count)> source_gain = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+    sound::directional_coloration_config directional_coloration;
     std::vector<sound::task_status> snapshot_status_cache;
   };
 

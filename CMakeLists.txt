@@ -540,6 +540,7 @@ if (DEVILS_ENGINE_BUILD_TESTS)
   add_subdirectory(subprojects/tests "${CMAKE_BINARY_DIR}/cmake/subprojects/tests")
 endif()
 add_subdirectory(subprojects/tile_frontier "${CMAKE_BINARY_DIR}/cmake/subprojects/tile_frontier")
+add_subdirectory(subprojects/audio_coloration_lab "${CMAKE_BINARY_DIR}/cmake/subprojects/audio_coloration_lab")
 
 if (DEVILS_ENGINE_BUILD_TESTS)
   add_custom_target(devils_engine_test

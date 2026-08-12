@@ -111,6 +111,35 @@ float dot2(const vec3& a, const vec3& b) noexcept;
 float distance2(const vec3& a, const vec3& b) noexcept;
 vec3 normalize(const vec3& a) noexcept;
 
+// Optional lightweight directional cue for the miniaudio path. This is deliberately not HRTF:
+// it only drives one subtle high-shelf after spatialization and never changes the distance model.
+// Bounds are enforced by sanitize_directional_coloration_config() before the audio thread sees it.
+struct directional_coloration_config {
+  bool enabled = false;
+  float strength = 1.0f;
+  float behind_high_shelf_db = -2.25f;
+  float above_high_shelf_db = 0.65f;
+  float below_high_shelf_db = -0.85f;
+  float high_shelf_frequency_hz = 2500.0f;
+  float smoothing_ms = 80.0f;
+};
+
+struct directional_coloration_response {
+  float behind = 0.0f;
+  float above = 0.0f;
+  float below = 0.0f;
+  float high_shelf_db = 0.0f;
+};
+
+directional_coloration_config sanitize_directional_coloration_config(
+  directional_coloration_config config) noexcept;
+directional_coloration_response compute_directional_coloration(
+  const directional_coloration_config& config,
+  const vec3& listener_pos,
+  const vec3& listener_forward,
+  const vec3& listener_up,
+  const vec3& source_pos) noexcept;
+
 enum class type {
   music,
   talk,

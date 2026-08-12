@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <cmath>
 #include <cstring>
 
 #define NOMINMAX
@@ -50,8 +52,61 @@ float dot2(const vec3& a, const vec3& b) noexcept {
 }
 
 vec3 normalize(const vec3& a) noexcept {
-  const float k = std::sqrt(dot2(a, a));
+  const float length2 = dot2(a, a);
+  if (length2 <= 1.0e-12f) {
+    return vec3();
+  }
+  const float k = std::sqrt(length2);
   return vec3(a.x / k, a.y / k, a.z / k);
+}
+
+directional_coloration_config sanitize_directional_coloration_config(
+  directional_coloration_config config) noexcept {
+  config.strength = std::clamp(config.strength, 0.0f, 2.0f);
+  config.behind_high_shelf_db = std::clamp(config.behind_high_shelf_db, -3.0f, 0.0f);
+  config.above_high_shelf_db = std::clamp(config.above_high_shelf_db, -1.0f, 1.0f);
+  config.below_high_shelf_db = std::clamp(config.below_high_shelf_db, -1.0f, 1.0f);
+  config.high_shelf_frequency_hz = std::clamp(config.high_shelf_frequency_hz, 500.0f, 12000.0f);
+  config.smoothing_ms = std::clamp(config.smoothing_ms, 10.0f, 500.0f);
+  return config;
+}
+
+static float directional_weight(const float value) noexcept {
+  const float x = std::clamp(value, 0.0f, 1.0f);
+  return x * x * (3.0f - 2.0f * x);
+}
+
+directional_coloration_response compute_directional_coloration(
+  const directional_coloration_config& unsanitized_config,
+  const vec3& listener_pos,
+  const vec3& listener_forward,
+  const vec3& listener_up,
+  const vec3& source_pos) noexcept {
+  directional_coloration_response response;
+  const auto config = sanitize_directional_coloration_config(unsanitized_config);
+  if (!config.enabled) {
+    return response;
+  }
+
+  const vec3 relative = normalize(source_pos - listener_pos);
+  const vec3 forward = normalize(listener_forward);
+  const vec3 up = normalize(listener_up);
+  if (dot2(relative, relative) == 0.0f || dot2(forward, forward) == 0.0f || dot2(up, up) == 0.0f) {
+    return response;
+  }
+
+  const float front_dot = std::clamp(dot2(relative, forward), -1.0f, 1.0f);
+  const float up_dot = std::clamp(dot2(relative, up), -1.0f, 1.0f);
+  response.behind = directional_weight(-front_dot);
+  response.above = directional_weight(up_dot);
+  response.below = directional_weight(-up_dot);
+  response.high_shelf_db = std::clamp(
+    config.strength * (
+      response.behind * config.behind_high_shelf_db +
+      response.above * config.above_high_shelf_db +
+      response.below * config.below_high_shelf_db),
+    -3.0f, 1.0f);
+  return response;
 }
 
 double compute_base_priority(const enum type type) noexcept {
@@ -401,9 +456,90 @@ static void data_source_uninit(devils_engine_sound_data_source* pMyDataSource) {
   ma_data_source_uninit(&pMyDataSource->base);
 }
 
+// A tiny post-spatialization shelf. The sound thread only publishes atomic targets; coefficient
+// smoothing and filter state belong exclusively to miniaudio's audio callback. This avoids
+// reinitializing a stock filter concurrently with graph processing.
+struct directional_coloration_node {
+  ma_node_base base{}; // must remain first: miniaudio treats the object as ma_node
+  ma_uint32 channels = 0;
+  ma_uint32 sample_rate = 0;
+  std::atomic<float> target_high_gain{1.0f};
+  std::atomic<float> smoothing_alpha{1.0f};
+  std::atomic<float> lowpass_alpha{1.0f};
+  float current_high_gain = 1.0f;
+  std::array<float, MA_MAX_CHANNELS> lowpass_state{};
+};
+
+static void directional_coloration_process(
+  ma_node* node,
+  const float** frames_in,
+  ma_uint32* frame_count_in,
+  float** frames_out,
+  ma_uint32* frame_count_out) {
+  auto* coloration = reinterpret_cast<directional_coloration_node*>(node);
+  const ma_uint32 frames = std::min(*frame_count_in, *frame_count_out);
+  const float target_gain = coloration->target_high_gain.load(std::memory_order_relaxed);
+  const float smoothing = coloration->smoothing_alpha.load(std::memory_order_relaxed);
+  const float lowpass = coloration->lowpass_alpha.load(std::memory_order_relaxed);
+
+  for (ma_uint32 frame = 0; frame < frames; ++frame) {
+    coloration->current_high_gain += (target_gain - coloration->current_high_gain) * smoothing;
+    const size_t offset = size_t(frame) * coloration->channels;
+    for (ma_uint32 channel = 0; channel < coloration->channels; ++channel) {
+      const float input = frames_in[0][offset + channel];
+      float& low = coloration->lowpass_state[channel];
+      low += (input - low) * lowpass;
+      frames_out[0][offset + channel] = low + (input - low) * coloration->current_high_gain;
+    }
+  }
+
+  *frame_count_in = frames;
+  *frame_count_out = frames;
+}
+
+static const ma_node_vtable directional_coloration_vtable{
+  &directional_coloration_process,
+  nullptr,
+  1,
+  1,
+  0};
+
+static ma_result directional_coloration_node_init(
+  ma_engine* engine,
+  directional_coloration_node* node) {
+  node->channels = ma_engine_get_channels(engine);
+  node->sample_rate = ma_engine_get_sample_rate(engine);
+  if (node->channels == 0 || node->channels > MA_MAX_CHANNELS || node->sample_rate == 0) {
+    return MA_INVALID_ARGS;
+  }
+
+  auto config = ma_node_config_init();
+  config.vtable = &directional_coloration_vtable;
+  config.pInputChannels = &node->channels;
+  config.pOutputChannels = &node->channels;
+  return ma_node_init(ma_engine_get_node_graph(engine), &config, nullptr, &node->base);
+}
+
+static void directional_coloration_node_set(
+  directional_coloration_node* node,
+  const directional_coloration_config& config,
+  const float target_db) noexcept {
+  constexpr float pi = 3.14159265358979323846f;
+  const float sample_rate = static_cast<float>(node->sample_rate);
+  const float smoothing_frames = std::max(config.smoothing_ms * 0.001f * sample_rate, 1.0f);
+  const float smoothing_alpha = 1.0f - std::exp(-1.0f / smoothing_frames);
+  const float lowpass_alpha = 1.0f - std::exp(
+    -2.0f * pi * config.high_shelf_frequency_hz / sample_rate);
+  node->target_high_gain.store(std::pow(10.0f, target_db / 20.0f), std::memory_order_relaxed);
+  node->smoothing_alpha.store(std::clamp(smoothing_alpha, 0.0f, 1.0f), std::memory_order_relaxed);
+  node->lowpass_alpha.store(std::clamp(lowpass_alpha, 0.0f, 1.0f), std::memory_order_relaxed);
+}
+
 struct system::sound_instance {
   ma_sound sound;
   devils_engine_sound_data_source data_source;
+  directional_coloration_node coloration;
+  bool coloration_initialized = false;
 
   sound_instance() noexcept = default;
   sound_instance(const sound_instance& copy) noexcept = delete;
@@ -411,6 +547,35 @@ struct system::sound_instance {
   sound_instance& operator=(const sound_instance& copy) noexcept = delete;
   sound_instance& operator=(sound_instance&& move) noexcept = delete;
 };
+
+static ma_result attach_directional_coloration(
+  ma_engine* engine,
+  system::sound_instance* instance) {
+  ma_result result = directional_coloration_node_init(engine, &instance->coloration);
+  if (result != MA_SUCCESS) {
+    return result;
+  }
+  instance->coloration_initialized = true;
+
+  result = ma_node_attach_output_bus(
+    &instance->coloration.base, 0, ma_engine_get_endpoint(engine), 0);
+  if (result != MA_SUCCESS) {
+    return result;
+  }
+  return ma_node_attach_output_bus(
+    reinterpret_cast<ma_node*>(&instance->sound), 0,
+    reinterpret_cast<ma_node*>(&instance->coloration.base), 0);
+}
+
+static void uninit_sound_instance(system::sound_instance* instance) noexcept {
+  ma_sound_stop(&instance->sound);
+  ma_sound_uninit(&instance->sound);
+  if (instance->coloration_initialized) {
+    ma_node_uninit(&instance->coloration.base, nullptr);
+    instance->coloration_initialized = false;
+  }
+  data_source_uninit(&instance->data_source);
+}
 
 static void playback_data_callback(ma_device* pDevice, void* pOutput, const void*, ma_uint32 frameCount) {
   const auto ret = ma_engine_read_pcm_frames(reinterpret_cast<ma_engine*>(pDevice->pUserData), pOutput, frameCount, nullptr);
@@ -562,6 +727,10 @@ system::system(const std::string_view device_name, const double stream_buffer_se
       if (result != MA_SUCCESS) {
         utils::error{}("Could not initialize sound");
       }
+      result = attach_directional_coloration(m_engine.get(), m_instances_mono.back().get());
+      if (result != MA_SUCCESS) {
+        utils::error{}("Could not attach directional coloration node");
+      }
 
       ma_sound_set_attenuation_model(s, ma_attenuation_model_linear);
       ma_sound_set_rolloff(s, 1.0f);
@@ -620,21 +789,15 @@ system::~system() noexcept {
   ma_device_stop(m_device.get());
 
   for (auto& ptr : m_instances) {
-    ma_sound_stop(&ptr->sound);
-    ma_sound_uninit(&ptr->sound);
-    data_source_uninit(&ptr->data_source);
+    uninit_sound_instance(ptr.get());
   }
 
   for (auto& ptr : m_instances_mono) {
-    ma_sound_stop(&ptr->sound);
-    ma_sound_uninit(&ptr->sound);
-    data_source_uninit(&ptr->data_source);
+    uninit_sound_instance(ptr.get());
   }
 
   for (auto& ptr : m_instances_stereo) {
-    ma_sound_stop(&ptr->sound);
-    ma_sound_uninit(&ptr->sound);
-    data_source_uninit(&ptr->data_source);
+    uninit_sound_instance(ptr.get());
   }
 
   ma_device_uninit(m_device.get());
@@ -681,8 +844,7 @@ bool system::remove_sound(const size_t task_id) {
     } else if (inst->data_source.is_standart_stereo()) {
       m_instances_stereo_stack.push_back(inst);
     } else {
-      ma_sound_uninit(&inst->sound);
-      data_source_uninit(&inst->data_source);
+      uninit_sound_instance(inst);
       auto itr = std::find_if(m_instances.begin(), m_instances.end(), [inst](const auto& a) {
         return a.get() == inst;
       });
@@ -862,6 +1024,7 @@ bool system::update_sound(const struct task_update& task) {
   ma_sound_set_position(&cur_task.inst->sound, task.pos.x, task.pos.y, task.pos.z);
   ma_sound_set_direction(&cur_task.inst->sound, task.dir.x, task.dir.y, task.dir.z);
   ma_sound_set_velocity(&cur_task.inst->sound, task.vel.x, task.vel.y, task.vel.z);
+  update_directional_coloration(cur_task);
   return true;
 }
 
@@ -871,6 +1034,9 @@ void system::set_decode_budget_frames(const size_t frames) noexcept {
 
 bool system::set_listener_pos(const vec3& pos) {
   ma_engine_listener_set_position(m_engine.get(), 0, pos.x, pos.y, pos.z);
+  for (auto& task : m_tasks) {
+    update_directional_coloration(task);
+  }
   return true;
 }
 
@@ -879,6 +1045,9 @@ bool system::set_listener_ori(const vec3& look_at, const vec3& up) {
   const auto norm = normalize(look_at - vec3(pos.x, pos.y, pos.z));
   ma_engine_listener_set_direction(m_engine.get(), 0, norm.x, norm.y, norm.z);
   ma_engine_listener_set_world_up(m_engine.get(), 0, up.x, up.y, up.z);
+  for (auto& task : m_tasks) {
+    update_directional_coloration(task);
+  }
   return true;
 }
 
@@ -907,6 +1076,42 @@ void system::set_source_volume(const uint32_t type_index, const float val) {
       &task.inst->sound,
       task.task.volume * source_volume[type_index]);
   }
+}
+
+void system::set_directional_coloration(const directional_coloration_config& config) noexcept {
+  directional_coloration_config_ = sanitize_directional_coloration_config(config);
+  for (auto& task : m_tasks) {
+    update_directional_coloration(task);
+  }
+}
+
+const directional_coloration_config& system::directional_coloration() const noexcept {
+  return directional_coloration_config_;
+}
+
+void system::update_directional_coloration(sound_task& task) noexcept {
+  if (task.inst == nullptr || !task.inst->coloration_initialized) {
+    return;
+  }
+
+  float target_db = 0.0f;
+  if (task.task.max_distance > 0.0f && directional_coloration_config_.enabled) {
+    const auto listener_pos = ma_engine_listener_get_position(m_engine.get(), 0);
+    const auto listener_forward = ma_engine_listener_get_direction(m_engine.get(), 0);
+    const auto listener_up = ma_engine_listener_get_world_up(m_engine.get(), 0);
+    const auto response = compute_directional_coloration(
+      directional_coloration_config_,
+      vec3(listener_pos.x, listener_pos.y, listener_pos.z),
+      vec3(listener_forward.x, listener_forward.y, listener_forward.z),
+      vec3(listener_up.x, listener_up.y, listener_up.z),
+      task.task.pos);
+    target_db = response.high_shelf_db;
+  }
+
+  directional_coloration_node_set(
+    &task.inst->coloration,
+    directional_coloration_config_,
+    target_db);
 }
 
 // Выдать голос под задачу. idempotent: если голос уже есть (в т.ч. разделённый с prev
@@ -1016,8 +1221,7 @@ void system::release_task(sound_task& t) {
       } else if (inst->data_source.is_standart_stereo()) {
         m_instances_stereo_stack.push_back(inst);
       } else {
-        ma_sound_uninit(&inst->sound);
-        data_source_uninit(&inst->data_source);
+        uninit_sound_instance(inst);
         auto it = std::find_if(m_instances.begin(), m_instances.end(),
                                [inst](const auto& p) {
                                  return p.get() == inst;
@@ -1084,6 +1288,7 @@ void system::update(const size_t time) {
         ma_sound_set_position(&t.inst->sound, t.task.pos.x, t.task.pos.y, t.task.pos.z);
         ma_sound_set_direction(&t.inst->sound, t.task.dir.x, t.task.dir.y, t.task.dir.z);
         ma_sound_set_velocity(&t.inst->sound, t.task.vel.x, t.task.vel.y, t.task.vel.z);
+        update_directional_coloration(t);
 
         t.stream_begin_frame = t.inst->data_source.frames_written_total.load(std::memory_order_acquire);
         const size_t rate = t.decoder->sample_rate() != 0 ? t.decoder->sample_rate() : playback_sample_rate;
@@ -1196,6 +1401,12 @@ uint32_t system::instance_init(sound_instance* inst, const uint32_t sample_rate,
   result = ma_sound_init_from_data_source(m_engine.get(), ds, flags, nullptr, s);
   if (result != MA_SUCCESS) {
     utils::error{}("Could not initialize sound");
+  }
+  if (channels == 1) {
+    result = attach_directional_coloration(m_engine.get(), inst);
+    if (result != MA_SUCCESS) {
+      utils::error{}("Could not attach directional coloration node");
+    }
   }
 
   ma_sound_set_attenuation_model(s, ma_attenuation_model_linear);

@@ -83,6 +83,17 @@ sound = {
   talk_pos = 1.0
   ui_effect = 1.0
   sfx = 1.0
+  // Optional non-HRTF cue. Disabled for tile_frontier's top-down listener: enable it only for a
+  // true 3D listener after headphone tuning. Bounds are also enforced in libs/sound.
+  directional_coloration = {
+    enabled = false
+    strength = 1.0
+    behind_high_shelf_db = -2.25
+    above_high_shelf_db = 0.65
+    below_high_shelf_db = -0.85
+    high_shelf_frequency_hz = 2500.0
+    smoothing_ms = 80.0
+  }
 }
 
 ui = {

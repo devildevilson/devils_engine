@@ -103,6 +103,26 @@ default stereo endpoint использует `SIDE_LEFT`/`SIDE_RIGHT` directions
 очень мягкую miniaudio-native coloration для источников сзади/сверху/снизу; полноценный HRTF
 отложен до pre-release spatial pass проекта `submarine_coop`.
 
+`AUD-17` реализует этот experiment как optional post-spatialization high shelf только на mono
+voices. Listener-relative response не использует distance/radius: front нейтрален, зафиксированный
+профиль — behind `-2.25 dB`, above `+0.65 dB`, below `-0.85 dB` на `2.5 kHz`. Общий `strength`
+в `[0,2]` масштабирует весь cue; итог всё равно ограничен `[-3,+1] dB`. Коэффициент плавно движется к
+target внутри audio callback (`80 ms` по умолчанию); sound thread передаёт только atomic targets.
+Публичная конфигурация sanitizes strength до `[0,2]`, behind до `[-3,0] dB`, elevation до
+`[-1,+1] dB`, shelf frequency
+до `[500,12000] Hz`, smoothing до `[10,500] ms`. Эффект default-off и не применяется к
+non-spatial tasks. `tile_frontier` хранит профиль в `sound.directional_coloration`, но оставляет его
+выключенным: top-down camera listener не является честной 3D head orientation.
+
+Для ручного решения есть miniaudio-only `subprojects/audio_coloration_lab`: production system,
+одинаковый deterministic mono signal и constant-radius horizontal/vertical orbit. Сравнивать два
+запуска `--coloration off` и `--coloration on`; OpenAL dependency не возвращается. Унаследованные
+периодические click transients удалены после первого прослушивания, оба сигнала имеют 20 ms краевые
+fades. После двух орбит lab даёт изолированные one-second above/below holds с одинаковыми
+panning/radius/distance. Default signal — continuous harmonic hum (`110 Hz`, 64 обертона до
+`7.04 kHz`): стабильный спектр по обе стороны shelf лучше показывает изменение тембра; deterministic
+white noise остаётся через `--signal noise`.
+
 Каждый `sound_instance` содержит `ma_sound` и кастомный ring-stream data source. Data source хранит PCM ring buffer, read/write cursors, счетчики прочитанных/записанных frames и underrun count. Он не знает о task id, sequencing или ресурсах.
 
 ## Задачи Воспроизведения
@@ -186,7 +206,9 @@ Main сразу возвращает UI opaque handle на основе task id,
 
 ## Техдолг И Направления
 
-- `AUD-17`: bounded directional coloration prototype поверх miniaudio — небольшой configurable EQ/gain response для behind/above/below, smooth interpolation, no distance-curve change, off switch и headphone A/B.
+- `AUD-17` закрыт: optional bounded shelf оставлен как дешёвый прежде всего front/back cue; ручная
+  проверка показала, что elevation он надёжно не кодирует. Для height/front-back качества нужен HRTF,
+  а не дальнейшее усиление shelf.
 - Steam Audio/HRTF оценивать ближе к релизу `submarine_coop`, когда появятся реальные требования к elevation/front-back, voice budget и целевым платформам.
 - Добавить более сложные модели трехмерного звука: категории источников, приоритеты, virtual voices, occlusion/obstruction, doppler policy, distance curves и настройки listener/world scale.
 - Добавить систему звуковых эффектов окружения: реверберация, фильтры, затухание, low-pass/high-pass и обработка в зависимости от помещения/среды.

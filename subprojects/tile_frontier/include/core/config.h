@@ -110,6 +110,16 @@ struct logging_config {
 
 // Пользовательские уровни громкости. Имена категорий совпадают с sound::type; итоговый gain
 // голоса = master * category * volume конкретной задачи.
+struct directional_coloration_config {
+  bool enabled = false;
+  float strength = 1.0f;
+  float behind_high_shelf_db = -2.25f;
+  float above_high_shelf_db = 0.65f;
+  float below_high_shelf_db = -0.85f;
+  float high_shelf_frequency_hz = 2500.0f;
+  float smoothing_ms = 80.0f;
+};
+
 struct sound_config {
   std::string device;
   float master = 1.0f;
@@ -118,6 +128,7 @@ struct sound_config {
   float talk_pos = 1.0f;
   float ui_effect = 1.0f;
   float sfx = 1.0f;
+  directional_coloration_config directional_coloration;
 };
 
 // Per-frame UI safety limits. Zero disables a particular limit/GC step; repeated failed frames

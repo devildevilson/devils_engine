@@ -353,6 +353,27 @@ private:
       source(sound::type::talk_pos, sound_cfg.talk_pos);
       source(sound::type::ui_effect, sound_cfg.ui_effect);
       source(sound::type::sfx, sound_cfg.sfx);
+      if constexpr (requires {
+                      sound_cfg.directional_coloration.enabled;
+                      sound_cfg.directional_coloration.strength;
+                      sound_cfg.directional_coloration.behind_high_shelf_db;
+                      sound_cfg.directional_coloration.above_high_shelf_db;
+                      sound_cfg.directional_coloration.below_high_shelf_db;
+                      sound_cfg.directional_coloration.high_shelf_frequency_hz;
+                      sound_cfg.directional_coloration.smoothing_ms;
+                    }) {
+        const auto& source_config = sound_cfg.directional_coloration;
+        auto& coloration = c.br->sound_directional_coloration.write_slot();
+        coloration.config = sound::directional_coloration_config{
+          source_config.enabled,
+          source_config.strength,
+          source_config.behind_high_shelf_db,
+          source_config.above_high_shelf_db,
+          source_config.below_high_shelf_db,
+          source_config.high_shelf_frequency_hz,
+          source_config.smoothing_ms};
+        c.br->sound_directional_coloration.publish();
+      }
     }
   }
 

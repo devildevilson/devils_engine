@@ -125,6 +125,59 @@ TEST_CASE("sound vec3 helpers compute distance and normalization [sound::common]
   CHECK(n.x == doctest::Approx(0.6f));
   CHECK(n.y == doctest::Approx(0.8f));
   CHECK(n.z == doctest::Approx(0.0f));
+  const sound::vec3 zero = sound::normalize(sound::vec3{});
+  CHECK(zero.x == doctest::Approx(0.0f));
+  CHECK(zero.y == doctest::Approx(0.0f));
+  CHECK(zero.z == doctest::Approx(0.0f));
+}
+
+TEST_CASE("directional coloration is bounded, listener-relative, and disabled by default [sound::coloration]") {
+  sound::directional_coloration_config config;
+  const sound::vec3 listener{};
+  const sound::vec3 forward(0.0f, 0.0f, -1.0f);
+  const sound::vec3 up(0.0f, 1.0f, 0.0f);
+
+  CHECK(sound::compute_directional_coloration(config, listener, forward, up, sound::vec3(0.0f, 0.0f, -4.0f)).high_shelf_db == doctest::Approx(0.0f));
+
+  config.enabled = true;
+  const auto front = sound::compute_directional_coloration(config, listener, forward, up, sound::vec3(0.0f, 0.0f, -4.0f));
+  const auto behind = sound::compute_directional_coloration(config, listener, forward, up, sound::vec3(0.0f, 0.0f, 4.0f));
+  const auto above = sound::compute_directional_coloration(config, listener, forward, up, sound::vec3(0.0f, 4.0f, 0.0f));
+  const auto below = sound::compute_directional_coloration(config, listener, forward, up, sound::vec3(0.0f, -4.0f, 0.0f));
+
+  CHECK(front.high_shelf_db == doctest::Approx(0.0f));
+  CHECK(behind.behind == doctest::Approx(1.0f));
+  CHECK(behind.high_shelf_db == doctest::Approx(config.behind_high_shelf_db));
+  CHECK(above.above == doctest::Approx(1.0f));
+  CHECK(above.high_shelf_db == doctest::Approx(config.above_high_shelf_db));
+  CHECK(below.below == doctest::Approx(1.0f));
+  CHECK(below.high_shelf_db == doctest::Approx(config.below_high_shelf_db));
+
+  config.strength = 0.5f;
+  const auto half_behind = sound::compute_directional_coloration(config, listener, forward, up, sound::vec3(0.0f, 0.0f, 4.0f));
+  CHECK(half_behind.high_shelf_db == doctest::Approx(config.behind_high_shelf_db * 0.5f));
+  config.strength = 0.0f;
+  const auto neutral_behind = sound::compute_directional_coloration(config, listener, forward, up, sound::vec3(0.0f, 0.0f, 4.0f));
+  CHECK(neutral_behind.high_shelf_db == doctest::Approx(0.0f));
+  config.strength = 1.0f;
+
+  // Constant radius cannot affect the response; only listener-relative direction can.
+  const auto far_behind = sound::compute_directional_coloration(config, listener, forward, up, sound::vec3(0.0f, 0.0f, 400.0f));
+  CHECK(far_behind.high_shelf_db == doctest::Approx(behind.high_shelf_db));
+
+  config.behind_high_shelf_db = -100.0f;
+  config.above_high_shelf_db = 100.0f;
+  config.below_high_shelf_db = -100.0f;
+  config.strength = 100.0f;
+  config.high_shelf_frequency_hz = 100000.0f;
+  config.smoothing_ms = 0.0f;
+  const auto sanitized = sound::sanitize_directional_coloration_config(config);
+  CHECK(sanitized.behind_high_shelf_db == doctest::Approx(-3.0f));
+  CHECK(sanitized.above_high_shelf_db == doctest::Approx(1.0f));
+  CHECK(sanitized.below_high_shelf_db == doctest::Approx(-1.0f));
+  CHECK(sanitized.strength == doctest::Approx(2.0f));
+  CHECK(sanitized.high_shelf_frequency_hz == doctest::Approx(12000.0f));
+  CHECK(sanitized.smoothing_ms == doctest::Approx(10.0f));
 }
 
 TEST_CASE("sound task defaults are valid for a new positional sound request [sound::system]") {

@@ -31,16 +31,15 @@ gameplay consumer. Целевой внешний проект заполняет
 
 | Порядок | ID | Результат закрытия | Сложность | Почему сейчас |
 | --- | --- | --- | --- | --- |
-| 1 | `AUD-17` directional coloration spike | miniaudio-native bounded EQ/gain coloration слегка различает behind/above/below без изменения distance curve; есть smooth interpolation, off switch и headphone A/B | `S–M` | backend уже выбран и OpenAL архивирован; это единственное полезное качество из comparison, которое стоит попробовать сохранить без HRTF stack |
-| 2 | `FSM-01` | inspector/serialization view показывает state, candidate transition, guards и settle result | `S` | маленький самостоятельный tooling slice над стабильным `mood` |
-| 3 | `CAT-03` | phase metadata/write policy регистрируются декларативно и доступны diagnostics | `S–M` | упрощает последующий общий trace UI без изменения executor semantics |
-| 4 | `CAT-01` | единый bounded statistics service принимает phase timing/rejection/overflow и показывает first divergence | `M` | объединяет уже существующие catalogue domains и бюджеты |
-| 5 | `SIM-04` | у broker-каналов видны capacity, high-water mark, rejected/dropped и stalled-consumer diagnostics | `M` | полезно текущему multithreaded `tile_frontier` и будущему dedicated host |
-| 6 | `ACT-03` + `ACT-04` | command/preview/rejection имеют versioned envelope, typed code, loc-key, parameters и state token | `M` | нужен UI-командам без dry-run мутации мира |
-| 7 | `LOC-01` + `LOC-02` | загружаются locale manifest/table, работает fallback и module override, coverage проверяется headlessly | `M–L` | первый вертикальный срез новой локализации без shaping и сложных forms |
-| 8 | `GEN-01` + `GEN-02` | typed pass/artifact descriptors и registry исполняют два dummy passes с проверкой входов/выходов | `L` | минимальный proof нового generator contract до Lua и реальных карт |
-| 9 | `UTL-08` | общие byte/hash comparison helpers показывают первый divergent offset/record в deterministic tests | `S` | следующий foundation primitive для save/replay/headless diagnostics |
-| 10 | `MOD-01` + `MOD-02` | installed module catalog и несколько ordered TAVL profiles имеют headless round-trip и atomic active-profile selection | `M` | первый практический срез уточнённого game-facing module workflow поверх закрытых fingerprints |
+| 1 | `FSM-01` | inspector/serialization view показывает state, candidate transition, guards и settle result | `S` | маленький самостоятельный tooling slice над стабильным `mood` |
+| 2 | `CAT-03` | phase metadata/write policy регистрируются декларативно и доступны diagnostics | `S–M` | упрощает последующий общий trace UI без изменения executor semantics |
+| 3 | `CAT-01` | единый bounded statistics service принимает phase timing/rejection/overflow и показывает first divergence | `M` | объединяет уже существующие catalogue domains и бюджеты |
+| 4 | `SIM-04` | у broker-каналов видны capacity, high-water mark, rejected/dropped и stalled-consumer diagnostics | `M` | полезно текущему multithreaded `tile_frontier` и будущему dedicated host |
+| 5 | `ACT-03` + `ACT-04` | command/preview/rejection имеют versioned envelope, typed code, loc-key, parameters и state token | `M` | нужен UI-командам без dry-run мутации мира |
+| 6 | `LOC-01` + `LOC-02` | загружаются locale manifest/table, работает fallback и module override, coverage проверяется headlessly | `M–L` | первый вертикальный срез новой локализации без shaping и сложных forms |
+| 7 | `GEN-01` + `GEN-02` | typed pass/artifact descriptors и registry исполняют два dummy passes с проверкой входов/выходов | `L` | минимальный proof нового generator contract до Lua и реальных карт |
+| 8 | `UTL-08` | общие byte/hash comparison helpers показывают первый divergent offset/record в deterministic tests | `S` | следующий foundation primitive для save/replay/headless diagnostics |
+| 9 | `MOD-01` + `MOD-02` | installed module catalog и несколько ordered TAVL profiles имеют headless round-trip и atomic active-profile selection | `M` | первый практический срез уточнённого game-facing module workflow поверх закрытых fingerprints |
 
 После каждого пункта обновлять этот список: закрытая строка переносится в нижний архив, а её место
 занимает следующий ограниченный slice из полного backlog.
@@ -293,6 +292,7 @@ Generator scripts используют отдельный headless Lua environme
 | `FSM-05` | Blocked/on-entry/on-exit/internal-transition tests | `S` | закрыть edge cases стабильного FSM core |
 | `BLD-01` | Determinism flags as separate interface targets | `M` | fp/fast-math/denormals/FMA/precise policy |
 | `BLD-02` | CPU/build/sanitizer/release presets and linkage audit | `M` | documented supported configurations |
+| `BLD-03` | Aligned GLM gentypes ABI/layout audit | `S–M` | перед `GLM_FORCE_DEFAULT_ALIGNED_GENTYPES` проверить serialization, broker payloads, vertex/instance layouts и foreign API boundaries; SIMD benefit подтвердить profiling/assembly |
 | `RND-12` | GPU command coverage audit | `M` | убрать stubs только у реально используемых draw/dispatch/transfer paths |
 | `RND-13` | Strict render `.tavl` schemas and graph validation | `M–L` | errors/examples/tests for buffers/textures/shader preparation |
 | `RND-14` | Device-local draw groups and GPU indirect path | `L` | profiling-backed consumer |
@@ -304,7 +304,6 @@ Generator scripts используют отдельный headless Lua environme
 | `AUD-12` | Semantic source type in play command | `S` | корректный volume bus вместо implicit `sfx` |
 | `AUD-13` | Velocity/doppler feed | `M` | только после проверки positional audio в live 3D scene |
 | `AUD-15` | Start/after/underrun/device-fallback/snapshot tests | `M` | audio regression suite |
-| `AUD-17` | Subtle directional coloration | `S–M` | miniaudio-native bounded EQ/gain response для behind/above/below; не HRTF, не меняет distance attenuation, smooth/off/config и archived-lab A/B fixture при необходимости |
 | `AUD-18` | Steam Audio/HRTF evaluation for `submarine_coop` | `M–L` | дальний pre-release gate: real scene/listening target, platform/deployment cost, fixed-block latency, 1/8/32 voice CPU budget и fallback; не текущий engine dependency |
 | `UTL-09` | Allocator/spatial/string-pool/compression/serializer tests | `M` | risk-oriented batches, не coverage ради coverage |
 | `UTL-10` | Split heavyweight `core.h` and clarify serializer ownership | `M–L` | diagnostics/math/paths/unicode/crc boundaries |
@@ -487,6 +486,9 @@ camera как отдельный intent provider и точная запись `g
   helpers, decoder buffer overloads, CMake/DLL dependency и A/B executable архивированы под
   `exclude/`; `libs/sound` теперь miniaudio-only, PCM helpers живут в backend-neutral `common.h`,
   а production class переименован из `sound::system2` в канонический `sound::system` без alias.
+- [x] `AUD-17`: optional listener-relative high-shelf принят как дешёвый bounded front/back cue.
+  Финальный профиль `-2.25/+0.65/-0.85 dB`, общий strength `[0,2]`, default-off; headphone verdict
+  подтвердил, что elevation почти не читается и остаётся задачей будущего HRTF, а не усиления shelf.
 - [x] `rng_state + int` и отключаемый sound worker с динамическим reserved-worker count закрыты.
 
 ### MT execution и diagnostics foundation

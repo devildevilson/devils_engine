@@ -1554,8 +1554,11 @@ orbit держит radius 4, так что perceived OpenAL near/far на нём
 Сценарий расширен до 28 секунд: одинаковые front `-Z` и up `+Y` pulses `4→10→1→4` с явным radius
 log проверили axis attenuation parity отдельно: front и up работают корректно, а OpenAL отличается
 лишь очень небольшой direction-dependent coloration. Miniaudio выбран production backend; весь live
-OpenAL path архивирован в `exclude`. Ближайший optional audio-quality slice — мягкая bounded
-behind/above/below coloration штатным miniaudio/DSP path. Steam Audio/HRTF отложен до pre-release
+OpenAL path архивирован в `exclude`. `AUD-17` зафиксировал optional default-off bounded coloration:
+listener-relative high shelf с профилем behind `-2.25 dB`, above `+0.65 dB`, below `-0.85 dB`,
+общим strength `[0,2]` и итоговым пределом `[-3,+1] dB`. Он помогает заметить заход за спину, но
+ручная проверка признала elevation практически нечитаемым; это предел shared shelf, не дефект `Y`.
+Steam Audio/HRTF отложен до pre-release
 spatial evaluation проекта `submarine_coop`, где его цена будет проверяться на реальной сцене.
 
 VoIP добавляет совершенно отдельные capture/codec/jitter/network concerns.
@@ -1866,6 +1869,7 @@ streaming and authority. Эти требования нельзя сразу с�
 | `FND-03` | Structured fault/rejection/overflow record | engine shell | `M` | catalogue/resolve |
 | `FND-04` | Explicit authoritative/derived/ephemeral component/data classification docs/helpers | engine + projects | `S` | aesthetics |
 | `FND-05` | Channel delivery/backpressure metrics | engine/simul | `M` | broker |
+| `BLD-03` | Audit and opt in to aligned default GLM gentypes | engine/build + ABI consumers | `S–M` | serialization/broker/GPU/foreign-layout audit and measured SIMD benefit |
 | `MOD-01` | Installed module discovery + metadata/version/dependency catalog | engine/demiurg | `M` | `FND-01` |
 | `MOD-02` | Ordered TAVL profiles + active-profile pointer + atomic persistence | engine/demiurg + app shell | `M` | `MOD-01`, atomic file transaction |
 | `MOD-03` | Boot-time profile application and restart switch boundary | engine/simul | `M` | `MOD-02` |
@@ -2003,7 +2007,7 @@ streaming and authority. Эти требования нельзя сразу с�
 | `AUD-02` | Semantic events, priorities and virtual voices | engine/sound | `L` | `AUD-01` |
 | `AUD-03` | Material + action/impact -> semantic sound-event mapping | engine/sound + project material tags | `M–L` | `AUD-02`, physics material seam |
 | `AUD-04` | EFX-like environment DSP, zones, sends, occlusion and portals | engine/sound | `L–XL` | `PHY-01`, `WLD-04` |
-| `AUD-17` | Bounded behind/above/below coloration over miniaudio | engine/sound | `S–M` | miniaudio production path |
+| `AUD-17` | Bounded behind/above/below coloration over miniaudio — `READY`, optional/default-off; elevation limitation documented | engine/sound | `S` | miniaudio production path |
 | `AUD-18` | Steam Audio/HRTF pre-release evaluation | `submarine_coop` + engine adapter | `M–L` | real submarine scene, target platforms and voice budget |
 | `LOC-01` | Locale tables, fallback, coverage and pseudo-localization | engine/localization + demiurg | `M–L` | `FND-01` |
 | `LOC-02` | Language forms, typed parameters and safe tag compiler | engine/localization | `L` | `LOC-01` |
