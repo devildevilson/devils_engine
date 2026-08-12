@@ -371,7 +371,11 @@
 
 Не хватает:
 
-- export canonical ordered module list and fingerprints for save/replay/network handshake;
+- resource/build fingerprint slices поверх готового canonical ordered module-set fingerprint;
+- discovery catalog установленных folder/`.zip`/`.mod` модулей с metadata/version/dependencies;
+- несколько ordered TAVL module profiles, active-profile selection и boot-time применение до resource registry;
+- save manifest фактически загруженных module ids/versions/fingerprints и structured compatibility report;
+- явная degraded-load policy: missing/changed modules могут быть warning вместо fatal только по решению проекта/игрока, с opaque preservation либо destructive-save warning;
 - per-section resource schema migration metadata;
 - priority/cancellation/budgets для procedural CPU artifact jobs;
 - content-addressed artifact cache;
@@ -1538,6 +1542,19 @@ Ragdoll принадлежит physics integration, но animation adapter оп�
 
 OpenAL EFX может служить моделью возможностей, но текущий miniaudio path требует backend-neutral DSP/effect contract либо интеграции подходящего стороннего DSP layer. Gameplay публикует semantic event/material/action; конкретные samples and environment processing — presentation.
 
+`audio_spatial_lab` (2026-08-12) уже даёт изолированный manual A/B: production miniaudio `system2`
+против direct OpenAL Soft на одинаковом deterministic mono S16 signal, horizontal/vertical orbit,
+matched front/up distance pulses и linear attenuation. Он сообщает actual device/sample rate/OpenAL HRTF, поддерживает
+HRTF off/on и dry-run CTest. Реальное headphone A/B подтвердило: OpenAL HRTF on заметно лучше передаёт
+направление, built-in miniaudio близок к OpenAL HRTF off, а above/below у miniaudio почти неразличимы.
+Это согласуется с реализацией miniaudio 0.11.25: координата `Y` сохраняется в listener-space и участвует
+в distance, но обычный stereo panner вычисляет gains относительно SIDE_LEFT/RIGHT speaker vectors с
+нулевой `Y`-компонентой; равнодистанционные `+Y/-Y` поэтому дают одинаковый stereo output. Vertical
+orbit держит radius 4, так что perceived OpenAL near/far на нём может быть directional coloration.
+Сценарий расширен до 28 секунд: одинаковые front `-Z` и up `+Y` pulses `4→10→1→4` с явным radius
+log проверяют axis attenuation parity отдельно. Внешний HRTF DSP/Steam Audio отложен как overkill,
+пока этот более узкий listening pass не покажет реальную необходимость.
+
 VoIP добавляет совершенно отдельные capture/codec/jitter/network concerns.
 
 Сложность: `L–XL`; с VoIP — `XL`.
@@ -1841,11 +1858,15 @@ streaming and authority. Эти требования нельзя сразу с�
 
 | ID | Задача | Ownership | Сложность | Зависимости |
 | --- | --- | --- | --- | --- |
-| `FND-01` | Canonical module/resource/build fingerprint API | engine/demiurg | `M` | нет |
+| `FND-01` | Canonical module/resource/build fingerprint API; ordered module-set slice `READY`, resource/build slices open | engine/demiurg | `M` | нет |
 | `FND-02` | Common state hash/byte comparison and first-divergence test helpers | engine test utils | `S–M` | нет |
 | `FND-03` | Structured fault/rejection/overflow record | engine shell | `M` | catalogue/resolve |
 | `FND-04` | Explicit authoritative/derived/ephemeral component/data classification docs/helpers | engine + projects | `S` | aesthetics |
 | `FND-05` | Channel delivery/backpressure metrics | engine/simul | `M` | broker |
+| `MOD-01` | Installed module discovery + metadata/version/dependency catalog | engine/demiurg | `M` | `FND-01` |
+| `MOD-02` | Ordered TAVL profiles + active-profile pointer + atomic persistence | engine/demiurg + app shell | `M` | `MOD-01`, atomic file transaction |
+| `MOD-03` | Boot-time profile application and restart switch boundary | engine/simul | `M` | `MOD-02` |
+| `MOD-04` | Module profile manager UI and save compatibility warning flow | engine UI shell + project skin | `M–L` | `MOD-03`, `PST-06/07` |
 
 ### Tier 1 — долговечность и дискретная симуляция
 
@@ -1856,6 +1877,8 @@ streaming and authority. Эти требования нельзя сразу с�
 | `PST-03` | Section registry and migration graph | engine + project adapters | `L` | `PST-01` |
 | `PST-04` | Profile/run/campaign transaction helpers | project-first, generic idempotency core | `M–L` | `PST-02` |
 | `PST-05` | Replay artifact: intents/time/checkpoints/fingerprints | engine mechanism | `L` | `PST-01`, `FND-02` |
+| `PST-06` | Save module manifest + compatibility classifier | engine/demiurg + persistence | `M` | `FND-01`, `MOD-02` |
+| `PST-07` | Degraded load/opaque unknown-section policy | engine shell + project decision | `M–L` | `PST-03`, `PST-06` |
 | `SIM-01` | Serializable due queue/calendar | engine | `L` | `PST-01` |
 | `SIM-02` | Budgeted advance/stop/breakpoint diagnostics | engine | `M` | `SIM-01` |
 | `SIM-03` | Persistent workflow conventions/host | project-first → engine | `M–L` | `PST-01` |
@@ -1973,7 +1996,7 @@ streaming and authority. Эти требования нельзя сразу с�
 
 | ID | Задача | Ownership | Сложность | Зависимости |
 | --- | --- | --- | --- | --- |
-| `AUD-01` | Pin sound data for active tasks/unload safety | engine/sound | `M` | demiurg |
+| `AUD-01` | Pin sound data for queued/active tasks and unload safety — `READY` | engine/sound | `M` | demiurg |
 | `AUD-02` | Semantic events, priorities and virtual voices | engine/sound | `L` | `AUD-01` |
 | `AUD-03` | Material + action/impact -> semantic sound-event mapping | engine/sound + project material tags | `M–L` | `AUD-02`, physics material seam |
 | `AUD-04` | EFX-like environment DSP, zones, sends, occlusion and portals | engine/sound | `L–XL` | `PHY-01`, `WLD-04` |
@@ -2354,7 +2377,7 @@ headless/playground-проверок, минимизирующая число о
 
 Самый выгодный общий пакет на несколько следующих больших сессий:
 
-1. `FND-01`: canonical fingerprints.
+1. `FND-01`: module-set fingerprint slice closed; resource/build fingerprints remain consumer-gated.
 2. `FND-02`: common deterministic state comparison.
 3. `PST-01/02`: save envelope + atomic slots.
 4. `SIM-04`: versioned command/rejection shell.

@@ -12,7 +12,7 @@ namespace devils_engine {
 namespace demiurg {
 class zip_module : public module_interface {
 public:
-  zip_module(std::string root) noexcept;
+  zip_module(std::string root, std::string name) noexcept;
   ~zip_module() noexcept;
 
   std::string_view name() const;
@@ -28,7 +28,7 @@ public:
 
 private:
   void* native_handle;
-  std::string_view module_name;
+  std::string module_name;
 };
 } // namespace demiurg
 } // namespace devils_engine

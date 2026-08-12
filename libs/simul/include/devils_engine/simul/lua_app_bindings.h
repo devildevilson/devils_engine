@@ -12,6 +12,7 @@
 #include <devils_engine/demiurg/resource_system.h>
 #include <devils_engine/painter/gpu_texture_resource.h>
 #include <devils_engine/sound/common.h>
+#include <devils_engine/sound/sound_resource.h>
 #include <devils_engine/utils/core.h>
 #include <devils_engine/visage/image.h>
 #include <devils_engine/visage/system.h>
@@ -89,7 +90,8 @@ void install_sound_lua_bindings(
                        sound_res = a.as<demiurg::resource_handle>();
                        opts = b;
                      }
-                     if (sound_res.get() == nullptr) {
+                     auto* sound_resource = sound_res.get<sound::sound_resource>();
+                     if (sound_resource == nullptr) {
                        return sound_handle{};
                      }
 
@@ -106,6 +108,10 @@ void install_sound_lua_bindings(
                        }
                      }
                      play.res = resource_ref::from_handle(sound_res);
+                     play.resource_pin = sound_resource->pin();
+                     if (!play.resource_pin) {
+                       return sound_handle{};
+                     }
                      c.br->sound_play.try_push(play);
                      // оптимистичная запись: пока play не доедет в публикацию (latency 1-2 кадра),
                      // app.sound_state по ней вернёт 0, а не nil (deadline = окно старта).

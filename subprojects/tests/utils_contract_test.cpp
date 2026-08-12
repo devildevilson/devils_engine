@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -8,7 +10,9 @@
 
 #include <doctest/doctest.h>
 
+#include "devils_engine/utils/atomic_file.h"
 #include "devils_engine/utils/event_dispatcher.h"
+#include "devils_engine/utils/fileio.h"
 #include "devils_engine/utils/memory_pool.h"
 #include "devils_engine/utils/stack_allocator.h"
 #include "devils_engine/utils/string_id.h"
@@ -240,4 +244,147 @@ TEST_CASE("fixed_pool_mt create rejects objects that do not fit the block contra
   utils::fixed_pool_mt alignment_pool(64, 64, 16);
   CHECK_THROWS_AS(alignment_pool.create<fixed_pool_over_aligned_object>(), std::runtime_error);
   CHECK(alignment_pool.allocate() != nullptr);
+}
+
+TEST_CASE("atomic file transaction replaces only at commit [utils::atomic_file]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_atomic_file_commit_test";
+  const auto target = root / "settings.tavl";
+  fs::remove_all(root);
+  fs::create_directories(root);
+  REQUIRE(file_io::write(std::string("old"), target.generic_string()));
+
+  auto transaction = file_io::atomic_file_transaction::begin(target.generic_string());
+  REQUIRE(transaction.has_value());
+  CHECK(transaction->active());
+  CHECK_FALSE(transaction->committed());
+  REQUIRE(transaction->write("new ").has_value());
+  REQUIRE(transaction->write("content").has_value());
+  CHECK(file_io::read(target.generic_string()) == "old");
+  CHECK(fs::exists(target.generic_string() + ".tmp"));
+
+  REQUIRE(transaction->commit().has_value());
+  CHECK_FALSE(transaction->active());
+  CHECK(transaction->committed());
+  CHECK(file_io::read(target.generic_string()) == "new content");
+  CHECK_FALSE(fs::exists(target.generic_string() + ".tmp"));
+
+  const auto second_commit = transaction->commit();
+  REQUIRE_FALSE(second_commit.has_value());
+  CHECK(second_commit.error().stage == file_io::atomic_file_stage::invalid_state);
+  CHECK(second_commit.error().replacement_committed);
+
+  fs::remove_all(root);
+}
+
+TEST_CASE("aborted atomic file transaction preserves destination [utils::atomic_file]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_atomic_file_abort_test";
+  const auto target = root / "save.bin";
+  fs::remove_all(root);
+  fs::create_directories(root);
+  REQUIRE(file_io::write(std::string("committed"), target.generic_string()));
+
+  {
+    auto transaction = file_io::atomic_file_transaction::begin(target.generic_string());
+    REQUIRE(transaction.has_value());
+    REQUIRE(transaction->write("partial replacement").has_value());
+    CHECK(file_io::read(target.generic_string()) == "committed");
+  }
+
+  CHECK(file_io::read(target.generic_string()) == "committed");
+  CHECK_FALSE(fs::exists(target.generic_string() + ".tmp"));
+  fs::remove_all(root);
+}
+
+TEST_CASE("atomic file recovery removes stale temporary before retry [utils::atomic_file]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_atomic_file_recovery_test";
+  const auto target = root / "slot.bin";
+  const auto temporary = fs::path(target.generic_string() + ".tmp");
+  fs::remove_all(root);
+  fs::create_directories(root);
+  REQUIRE(file_io::write(std::string("stable"), target.generic_string()));
+  REQUIRE(file_io::write(std::string("crash debris"), temporary.generic_string()));
+
+  const auto blocked = file_io::atomic_file_transaction::begin(target.generic_string());
+  REQUIRE_FALSE(blocked.has_value());
+  CHECK(blocked.error().stage == file_io::atomic_file_stage::create_temporary);
+  CHECK(blocked.error().code == std::errc::file_exists);
+  CHECK(file_io::read(target.generic_string()) == "stable");
+
+  const auto recovered = file_io::recover_atomic_file(target.generic_string());
+  REQUIRE(recovered.has_value());
+  CHECK(*recovered);
+  CHECK_FALSE(fs::exists(temporary));
+  CHECK(file_io::read(target.generic_string()) == "stable");
+
+  const auto nothing_to_recover = file_io::recover_atomic_file(target.generic_string());
+  REQUIRE(nothing_to_recover.has_value());
+  CHECK_FALSE(*nothing_to_recover);
+  REQUIRE(file_io::atomic_replace(target.generic_string(), "next").has_value());
+  CHECK(file_io::read(target.generic_string()) == "next");
+
+  fs::remove_all(root);
+}
+
+TEST_CASE("atomic file reports validation failures without artifacts [utils::atomic_file]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_atomic_file_failure_test";
+  fs::remove_all(root);
+  fs::create_directories(root);
+
+  const auto missing_target = root / "missing" / "slot.bin";
+  const auto missing = file_io::atomic_replace(missing_target.generic_string(), "data");
+  REQUIRE_FALSE(missing.has_value());
+  CHECK(missing.error().stage == file_io::atomic_file_stage::validate_target);
+  CHECK_FALSE(missing.error().replacement_committed);
+  CHECK_FALSE(fs::exists(missing_target));
+  CHECK_FALSE(fs::exists(missing_target.generic_string() + ".tmp"));
+
+  const auto directory_target = root / "directory";
+  fs::create_directories(directory_target);
+  const auto directory = file_io::atomic_replace(directory_target.generic_string(), "data");
+  REQUIRE_FALSE(directory.has_value());
+  CHECK(directory.error().stage == file_io::atomic_file_stage::validate_target);
+  CHECK(directory.error().code == std::errc::is_a_directory);
+  CHECK(fs::is_directory(directory_target));
+
+  fs::remove_all(root);
+}
+
+TEST_CASE("atomic file reports replace failure before commit [utils::atomic_file]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_atomic_file_replace_failure_test";
+  const auto target = root / "slot.bin";
+  const auto backup = root / "slot.backup";
+  fs::remove_all(root);
+  fs::create_directories(root);
+  REQUIRE(file_io::write(std::string("old"), target.generic_string()));
+
+  auto transaction = file_io::atomic_file_transaction::begin(target.generic_string());
+  REQUIRE(transaction.has_value());
+  REQUIRE(transaction->write("new").has_value());
+
+  fs::rename(target, backup);
+  fs::create_directories(target);
+  const auto failed = transaction->commit();
+  REQUIRE_FALSE(failed.has_value());
+  CHECK(failed.error().stage == file_io::atomic_file_stage::replace);
+  CHECK_FALSE(failed.error().replacement_committed);
+  CHECK(fs::is_directory(target));
+  CHECK(fs::exists(target.generic_string() + ".tmp"));
+
+  transaction->abort();
+  CHECK_FALSE(fs::exists(target.generic_string() + ".tmp"));
+  fs::remove_all(target);
+  fs::rename(backup, target);
+  CHECK(file_io::read(target.generic_string()) == "old");
+
+  fs::remove_all(root);
 }

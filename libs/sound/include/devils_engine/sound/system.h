@@ -240,6 +240,9 @@ public:
   bool update_sound(const struct task_update& task);
   void set_decode_budget_frames(const size_t frames) noexcept;
   static bool playback_devices(std::vector<std::string>& out);
+  std::string_view playback_device_name() const noexcept;
+  uint32_t playback_rate() const noexcept;
+  uint32_t playback_channel_count() const noexcept;
 
   bool set_listener_pos(const vec3& pos);
   bool set_listener_ori(const vec3& look_at, const vec3& up);

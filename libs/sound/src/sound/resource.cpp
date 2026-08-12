@@ -12,6 +12,24 @@
 
 namespace devils_engine {
 namespace sound {
+
+resource2::resource2(std::shared_ptr<const resource_blob> blob) noexcept : owner(std::move(blob)) {
+  if (!owner) {
+    return;
+  }
+
+  id = owner->id;
+  type = owner->type;
+  data = std::span<const char>(owner->data);
+  sample_format = owner->sample_format;
+  channels = owner->channels;
+  sample_rate = owner->sample_rate;
+  frames_count = owner->frames_count;
+}
+
+bool resource2::pinned() const noexcept {
+  return owner != nullptr;
+}
 const std::string_view type_names[] = {
 #define X(name) #name,
   SOUND_SYSTEM_EXTENSION_LIST

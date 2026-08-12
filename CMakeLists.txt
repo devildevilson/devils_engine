@@ -38,6 +38,7 @@ set(PROJECT_EXTERNAL_DEPENDENCY_DIR ${CMAKE_CURRENT_LIST_DIR}/external)
 
 option(DEVILS_ENGINE_BUILD_TESTS "Build devils_engine tests" ON)
 option(DEVILS_ENGINE_BUILD_VENDOR_TESTS "Build tests provided by third-party dependencies" OFF)
+option(DEVILS_ENGINE_BUILD_AUDIO_LAB "Build the manual miniaudio/OpenAL spatial A/B laboratory" ON)
 
 # --- target architecture ------------------------------------------------------
 # Single project-level ISA selector. AVX is the current baseline; override with:
@@ -537,6 +538,10 @@ add_library(devils_engine::devils_plane ALIAS devils_engine)
 # First external gameplay consumer. It intentionally starts as a headless combat kernel; the full
 # app/render/UI shell will be added only after the discrete pipeline contract is proven here.
 add_subdirectory(subprojects/cardgame "${CMAKE_BINARY_DIR}/cmake/subprojects/cardgame")
+
+if (DEVILS_ENGINE_BUILD_AUDIO_LAB)
+  add_subdirectory(subprojects/audio_spatial_lab "${CMAKE_BINARY_DIR}/cmake/subprojects/audio_spatial_lab")
+endif()
 
 if (DEVILS_ENGINE_BUILD_TESTS)
   add_subdirectory(subprojects/tests "${CMAKE_BINARY_DIR}/cmake/subprojects/tests")

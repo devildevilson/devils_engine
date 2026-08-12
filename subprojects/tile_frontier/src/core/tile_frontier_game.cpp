@@ -344,15 +344,20 @@ void tile_frontier_game::publish_actor_sounds(broker& messages, const bool sound
     if (distance.x * distance.x + distance.y * distance.y > audible_squared) {
       continue;
     }
-    const auto sound = sound_by_name_.find(event.name);
-    if (sound == sound_by_name_.end()) {
+    const auto sound_it = sound_by_name_.find(event.name);
+    if (sound_it == sound_by_name_.end()) {
       continue;
     }
 
     command_sound_play play{};
     play.taskid = generate_task_id();
     play.after = SIZE_MAX;
-    play.res = resource_ref::from_handle(sound->second);
+    play.res = resource_ref::from_handle(sound_it->second);
+    auto* sound_resource = sound_it->second.get<sound::sound_resource>();
+    play.resource_pin = sound_resource == nullptr ? nullptr : sound_resource->pin();
+    if (!play.resource_pin) {
+      continue;
+    }
     play.start = 0.0;
     play.pos[0] = event.pos.x;
     play.pos[1] = event.pos.y;

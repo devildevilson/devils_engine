@@ -12,7 +12,7 @@ namespace devils_engine {
 namespace demiurg {
 class folder_module : public module_interface {
 public:
-  folder_module(std::string root) noexcept;
+  folder_module(std::string root, std::string name) noexcept;
   ~folder_module() noexcept = default;
 
   std::string_view name() const;
@@ -29,7 +29,7 @@ public:
   std::string load_text(const std::string& path) const override;
 
 private:
-  std::string_view module_name;
+  std::string module_name;
 };
 } // namespace demiurg
 } // namespace devils_engine

@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,9 @@ struct GLFWwindow;
 struct GLFWmonitor;
 
 namespace devils_engine {
+namespace sound {
+struct resource_blob;
+}
 namespace simul {
 
 // Уникальный монотонный id задачи НА КАЖДЫЙ вызов (не actor/type id). Broker-консьюмеры
@@ -124,6 +128,9 @@ struct command_sound_play {
   size_t taskid = 0;
   size_t after = SIZE_MAX;
   resource_ref res;
+  // Producer-side immutable pin. Берётся ДО публикации в broker, поэтому bytes переживают и
+  // ожидание в очереди, и active task, даже если assets thread тем временем выгрузил ресурс.
+  std::shared_ptr<const sound::resource_blob> resource_pin;
   double start = 0.0;
   uint32_t type = UINT32_MAX;
   float volume = 1.0f;

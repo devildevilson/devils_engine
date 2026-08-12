@@ -13,10 +13,8 @@
 
 namespace devils_engine {
 namespace demiurg {
-zip_module::zip_module(std::string root) noexcept : module_interface(std::move(root)), native_handle(nullptr) {
-  const auto view = std::string_view(_path);
-  module_name = view.substr(view.rfind('/') + 1).substr(0, view.rfind('.'));
-}
+zip_module::zip_module(std::string root, std::string name) noexcept
+  : module_interface(std::move(root)), native_handle(nullptr), module_name(std::move(name)) {}
 
 zip_module::~zip_module() noexcept {
   close();

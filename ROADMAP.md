@@ -31,16 +31,16 @@ gameplay consumer. Целевой внешний проект заполняет
 
 | Порядок | ID | Результат закрытия | Сложность | Почему сейчас |
 | --- | --- | --- | --- | --- |
-| 1 | `RES-01` | demiurg экспортирует canonical ordered module list и fingerprint; порядок покрыт тестом override-модулей | `S–M` | prerequisite save/replay/network handshake и уже нужен replay-плану |
-| 2 | `UTL-02` | atomic replace helper: temp file, flush, rename, recovery/error result; есть failure-path tests | `S–M` | маленькая общая основа для settings/save/artifact index |
-| 3 | `AUD-01` | active sound task удерживает resource data до остановки/завершения; unload race покрыта тестом | `M` | закрывает конкретный lifetime-риск в существующем runtime |
-| 4 | `FSM-01` | inspector/serialization view показывает state, candidate transition, guards и settle result | `S` | маленький самостоятельный tooling slice над стабильным `mood` |
-| 5 | `CAT-03` | phase metadata/write policy регистрируются декларативно и доступны diagnostics | `S–M` | упрощает последующий общий trace UI без изменения executor semantics |
-| 6 | `CAT-01` | единый bounded statistics service принимает phase timing/rejection/overflow и показывает first divergence | `M` | объединяет уже существующие catalogue domains и бюджеты |
-| 7 | `SIM-04` | у broker-каналов видны capacity, high-water mark, rejected/dropped и stalled-consumer diagnostics | `M` | полезно текущему multithreaded `tile_frontier` и будущему dedicated host |
-| 8 | `ACT-03` + `ACT-04` | command/preview/rejection имеют versioned envelope, typed code, loc-key, parameters и state token | `M` | нужен UI-командам без dry-run мутации мира |
-| 9 | `LOC-01` + `LOC-02` | загружаются locale manifest/table, работает fallback и module override, coverage проверяется headlessly | `M–L` | первый вертикальный срез новой локализации без shaping и сложных forms |
-| 10 | `GEN-01` + `GEN-02` | typed pass/artifact descriptors и registry исполняют два dummy passes с проверкой входов/выходов | `L` | минимальный proof нового generator contract до Lua и реальных карт |
+| 1 | `AUD-LAB-02` axis-distance pass | на одном headphone/device setup сопоставлены front `-Z` и up `+Y` pulses `4→10→1→4` для miniaudio и OpenAL HRTF off/on; отделена attenuation parity от directional coloration | `S` | vertical orbit имеет постоянный радиус, поэтому perceived near/far там не доказывает ошибку distance; 28-second tool и radius diagnostics готовы |
+| 2 | `FSM-01` | inspector/serialization view показывает state, candidate transition, guards и settle result | `S` | маленький самостоятельный tooling slice над стабильным `mood` |
+| 3 | `CAT-03` | phase metadata/write policy регистрируются декларативно и доступны diagnostics | `S–M` | упрощает последующий общий trace UI без изменения executor semantics |
+| 4 | `CAT-01` | единый bounded statistics service принимает phase timing/rejection/overflow и показывает first divergence | `M` | объединяет уже существующие catalogue domains и бюджеты |
+| 5 | `SIM-04` | у broker-каналов видны capacity, high-water mark, rejected/dropped и stalled-consumer diagnostics | `M` | полезно текущему multithreaded `tile_frontier` и будущему dedicated host |
+| 6 | `ACT-03` + `ACT-04` | command/preview/rejection имеют versioned envelope, typed code, loc-key, parameters и state token | `M` | нужен UI-командам без dry-run мутации мира |
+| 7 | `LOC-01` + `LOC-02` | загружаются locale manifest/table, работает fallback и module override, coverage проверяется headlessly | `M–L` | первый вертикальный срез новой локализации без shaping и сложных forms |
+| 8 | `GEN-01` + `GEN-02` | typed pass/artifact descriptors и registry исполняют два dummy passes с проверкой входов/выходов | `L` | минимальный proof нового generator contract до Lua и реальных карт |
+| 9 | `UTL-08` | общие byte/hash comparison helpers показывают первый divergent offset/record в deterministic tests | `S` | следующий foundation primitive для save/replay/headless diagnostics |
+| 10 | `MOD-01` + `MOD-02` | installed module catalog и несколько ordered TAVL profiles имеют headless round-trip и atomic active-profile selection | `M` | первый практический срез уточнённого game-facing module workflow поверх закрытых fingerprints |
 
 После каждого пункта обновлять этот список: закрытая строка переносится в нижний архив, а её место
 занимает следующий ограниченный slice из полного backlog.
@@ -76,7 +76,6 @@ gameplay consumer. Целевой внешний проект заполняет
 
 | ID | Задача | Сложность | Граница/результат |
 | --- | --- | --- | --- |
-| `RES-01` | Export canonical ordered module list and fingerprints | `S–M` | stable save/replay/network handshake input |
 | `RES-02` | Per-section resource schema migration metadata | `M` | version/fingerprint/migration owner для resource sections |
 | `RES-03` | Priority, cancellation и budgets для procedural CPU artifact jobs | `L` | bounded job lifecycle через существующие staged transitions |
 | `RES-04` | Content-addressed artifact cache | `L` | key/index/storage/eviction и corrupt-entry recovery |
@@ -85,7 +84,10 @@ gameplay consumer. Целевой внешний проект заполняет
 | `RES-07` | KTX/KTX2 texture resource | `L` | mip/layer/cubemap metadata, BC7 upload, fallback/transcode policy |
 | `RES-08` | Canonical 3D mesh/scene/animation formats | `L–XL` | единый CPU intermediate независимо от конкретного importer |
 | `RES-09` | Dependency/resource graph inspection UI | `M–L` | origins, overrides, edges, states, fingerprints and failures |
-| `RES-10` | Safe unload contract для active sound data | `M` | координируется с `AUD-01`; ресурс не исчезает у active task |
+| `RES-14` | Installed-module discovery catalog | `M` | сканирует project `mods/`/module root, folder/`.zip`/`.mod`, читает metadata/version/dependencies и возвращает стабильный UI read model без загрузки ресурсов |
+| `RES-15` | Ordered TAVL module profiles | `M` | несколько именованных профилей рядом с user settings; ordered selected module ids, active-profile pointer, atomic save/recovery через `UTL-02` |
+| `RES-16` | Boot-time active module profile | `M` | active profile выбирается до построения game resource registry; core обязателен, missing/duplicate/dependency/version diagnostics loud, actual loaded set даёт `RES-01` fingerprint |
+| `RES-17` | Module-profile switch boundary | `S–M` | меню может выбрать другой профиль; базовый контракт — применить при следующем полном runtime start/restart, без неявного hot-unload мира |
 
 ### `libs/catalogue` — trace, budgets и deferred execution
 
@@ -154,7 +156,6 @@ Persistent multi-day event или repair action хранится в `SIM-03`, а
 | ID | Задача | Сложность | Граница/результат |
 | --- | --- | --- | --- |
 | `UTL-01` | Service ownership/versioning вокруг spatial containers | `M` | immutable snapshot/version/query facade без единой world semantics |
-| `UTL-02` | Atomic file transaction helpers | `S–M` | temp/write/flush/replace/recover и explicit errors |
 | `UTL-03` | Более ясные error/`std::expected` APIs | `M–L` | сначала file/background/resource paths, затем по consumers |
 | `UTL-04` | Canonical priority queue serialization helpers | `M` | stable key/order/cancel token restore |
 | `UTL-05` | Artifact cache/index primitives | `M` | content hash, metadata, atomic index and verification |
@@ -219,7 +220,6 @@ denoise primitives из первых живых эффектов постепе�
 
 | ID | Задача | Сложность | Граница/результат |
 | --- | --- | --- | --- |
-| `AUD-01` | Resource/task lifetime pinning | `M` | active voice удерживает data; unload race test |
 | `AUD-02` | Parameterized semantic sound events | `M–L` | event id + typed parameters отдельно от file id |
 | `AUD-03` | Map `(material, action/impact, context) -> sound event` | `M–L` | шаги/удары/трение; project supplies semantic materials |
 | `AUD-04` | Priorities/virtual voices | `L` | bounded voice budget and deterministic grant policy where needed |
@@ -305,6 +305,8 @@ Generator scripts используют отдельный headless Lua environme
 | `AUD-13` | Velocity/doppler feed | `M` | только после проверки positional audio в live 3D scene |
 | `AUD-14` | Remove/archive OpenAL implementation | `S` | после окончательного закрепления miniaudio path |
 | `AUD-15` | Start/after/underrun/device-fallback/snapshot tests | `M` | audio regression suite |
+| `AUD-16` | Optional production HRTF spatializer seam | `M–L` | только если listening requirements оправдают внешний DSP: mono positional voice → attenuation → binaural stereo bus, fixed-block buffering, voice budget, non-HRTF fallback; Steam Audio пока считается overkill |
+| `AUD-LAB-02` | Front/up distance-axis parity listening pass — tool `READY` | `S` | два одинаковых `4→10→1→4` pulse вдоль `-Z`/`+Y`, явный radius log и три backend/HRTF passes; проверяет distance отдельно от constant-radius orbit coloration |
 | `UTL-09` | Allocator/spatial/string-pool/compression/serializer tests | `M` | risk-oriented batches, не coverage ради coverage |
 | `UTL-10` | Split heavyweight `core.h` and clarify serializer ownership | `M–L` | diagnostics/math/paths/unicode/crc boundaries |
 | `UTL-11` | Reorganize thread/allocator/spatial public layout | `S–M` | после public/experimental audit; no API churn alone |
@@ -371,6 +373,8 @@ cave/route segments. `BITS`, `CG` и `MHM` не получают generator depen
 | --- | --- | --- | --- |
 | `PST-01` | Durable save envelope, slots, metadata and atomic commit | `L` | `UTL-02`, `RES-01`, owner sections |
 | `PST-02` | Schema migration registry and save inspection tool | `L` | `ECS-01/02`, `RES-02` |
+| `PST-06` | Save module manifest and compatibility report | `M` | каждый save хранит ordered module ids/versions/fingerprints; load сравнивает exact/reordered/missing/changed/extra с active profile до десериализации |
+| `PST-07` | Explicit degraded-save policy | `M–L` | missing/changed module не всегда fatal: engine показывает structured warning, project решает allow/deny; неизвестные owner sections сохраняются opaque либо следующий save явно помечается как destructive |
 | `RPL-01` | Versioned intent/input log + exact `game_delta_ticks` | `M–L` | camera becomes separate intent provider |
 | `RPL-02` | Checkpoint and resource/config/build fingerprints | `M–L` | `SIM-05`, `RES-01`, `PST-01` |
 | `RPL-03` | First-divergence hash/bisect diagnostics | `M` | `CAT-01`, `UTL-08` |
@@ -379,6 +383,7 @@ cave/route segments. `BITS`, `CG` и `MHM` не получают generator depen
 | `AI-01` | Runtime GOAP/FSM profile switch | `L` | deterministic tick boundary, capability validation and cache invalidation |
 | `CFG-01` | Save simple UI Lua state | `M` | bounded data-only table, nested tables, no functions/userdata |
 | `API-01` | Header documentation and public/experimental API audit | `M–L` | проход по owner libraries; старые dispatcher/loader remnants архивировать отдельно |
+| `UI-20` | Module profile manager screen | `M` | список установленных модулей, enable/order, create/rename/delete/select profile, dependency/conflict feedback и save-compatibility warning перед запуском/загрузкой |
 
 Replay остаётся неактивной большой вертикалью до трёх prerequisites: ordered runtime module list,
 camera как отдельный intent provider и точная запись `game_delta_ticks` каждого sim tick.
@@ -445,6 +450,15 @@ camera как отдельный intent provider и точная запись `g
   staged CPU/external loading и Lua read-only access.
 - [x] GPU texture/mesh hot unload имеет fence-safe lifetime, bindless slot cleanup и reuse tests.
 - [x] Snapshot load уведомляет queries; созданные до load query/lazy-query сразу видят восстановленный мир.
+- [x] `RES-01`: demiurg экспортирует versioned canonical ordered module list/fingerprint; folder
+  fingerprints независимы от абсолютного root, archive hashes совместимы с module-list JSON,
+  override-order/content changes покрыты focused test.
+
+### Atomic persistence primitives
+
+- [x] `UTL-02`: `file_io::atomic_file_transaction` даёт exclusive same-directory temp,
+  streamed write, file flush, atomic replace, parent-directory flush, RAII abort, stale-temp recovery
+  и stage/error/committed diagnostics; success/abort/recovery/validation/replace-failure paths покрыты.
 
 ### Время, ввод, UI и звук
 
@@ -455,6 +469,20 @@ camera как отдельный intent provider и точная запись `g
 - [x] Read-only UI seam к pure act predicates/numbers/strings/describe работает без mutating Lua backend.
 - [x] UI instruction/wall-time/GC/Nuklear convert budgets и failure streak policy вынесены в settings.
 - [x] Positional/non-positional sound, listener, attenuation и live volume groups работают.
+- [x] `AUD-01`/`RES-10`: immutable shared sound generations pin-ятся producer-ом до broker publish
+  и живут через queued/active task; `unload_warm()` снимает resource owner без invalidation playback,
+  unload lifetime покрыт focused test.
+- [x] `AUD-LAB-01` tooling: отдельный `audio_spatial_lab` исполняет один deterministic mono S16
+  reference signal/trajectory через production miniaudio `system2` или direct OpenAL Soft, печатает
+  actual device/rate/HRTF, имеет HRTF off/on, headless dry-run и ручной comparison table. Реальное
+  headphone A/B 2026-08-12: OpenAL HRTF on заметно улучшает понимание направления; built-in miniaudio
+  звучит близко к OpenAL HRTF off; у miniaudio точки выше/ниже почти неразличимы. Проверка исходников
+  miniaudio 0.11.25 показала не потерю `Y`, а ограничение stereo panner: default SIDE_LEFT/RIGHT
+  directions имеют `y=0`, поэтому равнодистанционные `+Y/-Y` получают одинаковые channel gains.
+- [x] `AUD-LAB-02` tooling: сценарий расширен до 28 секунд одинаковыми front `-Z` и up `+Y`
+  distance pulses `4→10→1→4`; runtime/dry-run печатают фактический radius. Vertical orbit явно
+  помечен constant-radius directional test, поэтому HRTF coloration больше не смешивается с
+  distance attenuation. Ручной axis-parity listening verdict остаётся открытым.
 - [x] `rng_state + int` и отключаемый sound worker с динамическим reserved-worker count закрыты.
 
 ### MT execution и diagnostics foundation

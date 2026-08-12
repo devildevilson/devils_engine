@@ -106,15 +106,21 @@ public:
 
       command_sound_play cmd{};
       while (br.sound_play.try_pop(cmd)) {
-        auto* sres = cmd.res.template get<sound::sound_resource>();
-        if (sres == nullptr) {
-          utils::warn("sound: play task {} with null resource", cmd.taskid);
-          continue;
+        sound::resource2 view(cmd.resource_pin);
+        if (!view.pinned()) {
+          // Compatibility path for direct/internal producers not yet publishing a pin. The normal
+          // app/tile path always pins before enqueueing and therefore never dereferences a resource
+          // after an intervening unload.
+          auto* sres = cmd.res.template get<sound::sound_resource>();
+          if (sres == nullptr) {
+            utils::warn("sound: play task {} with null resource", cmd.taskid);
+            continue;
+          }
+          view = sres->view();
         }
 
-        const auto view = sres->view();
         if (view.data.empty() || view.type == sound::data_type::undefined) {
-          utils::warn("sound: resource '{}' not ready (task {})", sres->id, cmd.taskid);
+          utils::warn("sound: resource '{}' not ready (task {})", view.id, cmd.taskid);
           continue;
         }
 

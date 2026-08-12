@@ -33,6 +33,12 @@
 
 - `fileio.h` дает простые операции чтения/записи/append для строк, байтов и typed-векторов,
   а также проверки `exists`, `size`, `is_directory`, `is_regular_file`.
+- `atomic_file.h` дает same-directory RAII-транзакцию для durable replacement. Writer
+  эксклюзивно создаёт `target.tmp`, пишет данные, flush-ит файл, атомарно заменяет target и
+  синхронизирует parent directory. До commit старая версия остаётся authoritative;
+  abort/destructor удаляет temp. `recover_atomic_file` удаляет stale temp после crash и
+  вызывается только когда writer для target гарантированно не работает. Ошибка содержит
+  точную stage, `std::error_code` и признак, успел ли rename стать committed.
 - `string-utils.hpp` содержит split/trim/slice, case-insensitive поиск, парсинг чисел и
   dice-строк.
 - `time-utils.hpp` содержит timestamp helpers, форматирование UTC/local времени, счетчики

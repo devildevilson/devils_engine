@@ -961,6 +961,18 @@ bool system2::playback_devices(std::vector<std::string>& out) {
   return result == MA_SUCCESS;
 }
 
+std::string_view system2::playback_device_name() const noexcept {
+  return m_device == nullptr ? std::string_view{} : std::string_view(m_device->playback.name);
+}
+
+uint32_t system2::playback_rate() const noexcept {
+  return playback_sample_rate;
+}
+
+uint32_t system2::playback_channel_count() const noexcept {
+  return playback_channels;
+}
+
 system2::system2(const std::string_view device_name, const double stream_buffer_seconds, const size_t decode_frames_per_update) : cur_time(0),
                                                                                                                                   playback_channels(0),
                                                                                                                                   playback_sample_rate(0),

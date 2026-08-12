@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -18,13 +19,28 @@ class module_interface;
 
 class module_system {
 public:
+  static constexpr uint32_t fingerprint_format_version = 1;
+
+  enum class module_kind : uint8_t {
+    directory,
+    archive
+  };
+
   struct list_entry {
     std::string path;
     std::string hash;
     std::string file_date;
   };
 
-  module_system(std::string path) noexcept;
+  struct loaded_module {
+    std::string id;
+    std::string source;
+    std::string fingerprint;
+    module_kind kind = module_kind::directory;
+    uint32_t priority = 0;
+  };
+
+  explicit module_system(std::string path);
   ~module_system() noexcept;
 
   std::string path() const;
@@ -38,12 +54,18 @@ public:
   void close_modules();
   void discover_resources(std::vector<resource_candidate>& out);
 
+  std::span<const loaded_module> loaded_modules() const noexcept;
+  std::string_view fingerprint() const noexcept;
+
 private:
   void discover_resources_impl(std::vector<resource_candidate>& out);
+  void rebuild_fingerprint();
 
   std::string _path;
   std::string modules_list_name;
   std::vector<std::unique_ptr<module_interface>> modules;
+  std::vector<loaded_module> loaded_module_list;
+  std::string modules_fingerprint;
 };
 } // namespace demiurg
 } // namespace devils_engine

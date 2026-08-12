@@ -33,6 +33,7 @@ set(SRC_LIST
   src/thread/stack_pool.cpp
   src/thread/atomic_pool.cpp
   src/utils/prng.cpp
+  src/utils/atomic_file.cpp
   src/utils/fileio.cpp
   src/utils/time.cpp
   src/utils/timeline.cpp
@@ -66,6 +67,7 @@ set(HDR_LIST
   include/devils_engine/utils/dice.h
 
   include/devils_engine/utils/named_serializer.h
+  include/devils_engine/utils/atomic_file.h
   include/devils_engine/utils/fileio.h
   include/devils_engine/utils/time-utils.hpp
   include/devils_engine/utils/timeline.h

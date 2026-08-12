@@ -164,6 +164,7 @@ TEST_CASE("resource_system does not instantiate shadowed module resources [demiu
   CHECK(grass->path == "textures/grass.png");
   REQUIRE(grass->module != nullptr);
   CHECK(grass->module->path().find("/high/") != std::string_view::npos);
+  CHECK(grass->module_name == "high");
 
   auto* supplementary = grass->supplementary_next(grass);
   REQUIRE(supplementary != nullptr);
@@ -172,6 +173,68 @@ TEST_CASE("resource_system does not instantiate shadowed module resources [demiu
   CHECK(supplementary->supplementary_next(grass) == nullptr);
 
   fs::remove_all(root);
+}
+
+TEST_CASE("module_system exports canonical ordered module fingerprints [demiurg]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_demiurg_module_fingerprint_test";
+  const auto relocated = fs::temp_directory_path() / "devils_engine_demiurg_module_fingerprint_relocated_test";
+  fs::remove_all(root);
+  fs::remove_all(relocated);
+  fs::create_directories(root / "high" / "textures");
+  fs::create_directories(root / "low" / "configs");
+  fs::create_directories(relocated / "high" / "textures");
+  fs::create_directories(relocated / "low" / "configs");
+
+  std::ofstream(root / "high" / "textures" / "grass.png", std::ios::binary) << "high";
+  std::ofstream(root / "low" / "configs" / "world.tavl", std::ios::binary) << "size = 42\n";
+  std::ofstream(relocated / "high" / "textures" / "grass.png", std::ios::binary) << "high";
+  std::ofstream(relocated / "low" / "configs" / "world.tavl", std::ios::binary) << "size = 42\n";
+
+  const std::vector entries{
+    demiurg::module_system::list_entry{"high/", "", ""},
+    demiurg::module_system::list_entry{"low/", "", ""},
+    demiurg::module_system::list_entry{"missing/", "", ""}};
+
+  demiurg::module_system modules(root.generic_string() + "/");
+  modules.load_modules(entries);
+  const std::string ordered_fingerprint(modules.fingerprint());
+  const auto loaded = modules.loaded_modules();
+  REQUIRE(loaded.size() == 2);
+  CHECK(loaded[0].id == "high");
+  CHECK(loaded[0].source == "high/");
+  CHECK(loaded[0].kind == demiurg::module_system::module_kind::directory);
+  CHECK(loaded[0].priority == 0);
+  CHECK(loaded[0].fingerprint.size() == 64);
+  CHECK(loaded[1].id == "low");
+  CHECK(loaded[1].priority == 1);
+  CHECK(ordered_fingerprint.size() == 64);
+
+  demiurg::module_system relocated_modules(relocated.generic_string() + "/");
+  relocated_modules.load_modules(entries);
+  REQUIRE(relocated_modules.loaded_modules().size() == 2);
+  CHECK(relocated_modules.loaded_modules()[0].fingerprint == loaded[0].fingerprint);
+  CHECK(relocated_modules.loaded_modules()[1].fingerprint == loaded[1].fingerprint);
+  CHECK(relocated_modules.fingerprint() == ordered_fingerprint);
+
+  demiurg::module_system reversed(root.generic_string() + "/");
+  reversed.load_modules({entries[1], entries[0]});
+  REQUIRE(reversed.loaded_modules().size() == 2);
+  CHECK(reversed.loaded_modules()[0].id == "low");
+  CHECK(reversed.loaded_modules()[1].id == "high");
+  CHECK(reversed.fingerprint() != ordered_fingerprint);
+
+  std::ofstream(root / "high" / "textures" / "grass.png", std::ios::binary | std::ios::trunc) << "changed";
+  demiurg::module_system changed(root.generic_string() + "/");
+  changed.load_modules({entries[0], entries[1]});
+  REQUIRE(changed.loaded_modules().size() == 2);
+  CHECK(changed.loaded_modules()[0].fingerprint != loaded[0].fingerprint);
+  CHECK(changed.loaded_modules()[1].fingerprint == loaded[1].fingerprint);
+  CHECK(changed.fingerprint() != ordered_fingerprint);
+
+  fs::remove_all(root);
+  fs::remove_all(relocated);
 }
 
 TEST_CASE("resource_system expands tavl list resources and aliases indices [demiurg]") {

@@ -50,8 +50,24 @@ struct resource {
   double duration() const; // s
 };
 
-// id и data должны существовать на протяжении использования ресурса
+// Immutable backing store одного опубликованного поколения sound_resource. Ресурс атомарно
+// заменяет/снимает свою ссылку при load/unload, а broker-команда и playback task держат shared pin.
+// Поэтому старое поколение живёт до завершения последней уже принятой задачи и никогда не меняется
+// под декодером.
+struct resource_blob {
+  std::string id;
+  enum data_type type = data_type::undefined;
+  std::vector<char> data;
+  enum format sample_format = format::unknown;
+  uint16_t channels = 0;
+  uint32_t sample_rate = 0;
+  size_t frames_count = 0;
+};
+
+// Легковесный playback view. Если owner непустой, он владеет памятью data и строкой id.
+// Ручные non-owning views допустимы только для локальных fixtures с внешне гарантированным lifetime.
 struct resource2 {
+  std::shared_ptr<const resource_blob> owner;
   std::string_view id;
   enum data_type type = data_type::undefined;
   std::span<const char> data = {};
@@ -62,6 +78,10 @@ struct resource2 {
   uint16_t channels = 0;
   uint32_t sample_rate = 0;
   size_t frames_count = 0;
+
+  resource2() noexcept = default;
+  explicit resource2(std::shared_ptr<const resource_blob> blob) noexcept;
+  bool pinned() const noexcept;
 };
 } // namespace sound
 } // namespace devils_engine

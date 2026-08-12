@@ -80,6 +80,20 @@ resources.parse_resources(&modules);
 `load_modules()` принимает список entries, проверяет наличие путей, для файлов
 может сверить SHA-256 hash, затем создает `folder_module` или `zip_module`.
 
+После загрузки `loaded_modules()` возвращает фактически принятый список в
+override-порядке (`priority=0` выигрывает). Запись содержит root-relative
+logical id, diagnostic source, kind и SHA-256 fingerprint. `fingerprint()`
+возвращает versioned aggregate fingerprint всего ordered set: перестановка
+модулей меняет его, даже если сами модули не изменились. Абсолютный root и
+timestamps в canonical данные не входят.
+
+Для папки fingerprint строится по отсортированному списку relative file paths,
+размеров и содержимого. Symlinks запрещены, чтобы результат не зависел от
+внешнего дерева. Для `.zip/.mod` fingerprint пока является SHA-256 точного
+archive artifact и совместим с полем `hash` существующего module-list JSON.
+Generated cache modules следует держать в отдельном `module_system` и не
+включать в save/replay/network compatibility fingerprint.
+
 `module_system::parse_resources(resource_system*)` открывает все модули,
 просит каждый перечислить ресурсы и закрывает модули.
 

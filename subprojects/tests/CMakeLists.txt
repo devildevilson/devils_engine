@@ -95,7 +95,7 @@ devils_add_doctest(aesthetics_serialization_test aesthetics_serialization_test.c
 target_link_libraries(aesthetics_serialization_test PRIVATE devils_engine::aesthetics)
 
 devils_add_doctest(sound_system_test sound_system_test.cpp)
-target_link_libraries(sound_system_test PRIVATE devils_engine::sound devils_engine::utils)
+target_link_libraries(sound_system_test PRIVATE devils_engine::sound devils_engine::utils devils_engine::demiurg)
 
 devils_add_doctest(acumen_test acumen_test.cpp)
 target_link_libraries(acumen_test PRIVATE devils_engine::acumen devils_engine::act)

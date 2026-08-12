@@ -4,17 +4,28 @@
 
 В библиотеке еще остались следы предыдущего OpenAL-пути (`sound::system`, `al_helper`, OpenAL overload'ы у декодеров и CMake-зависимость). Заброшенные `virtual_source`/`basic_sources` уже перенесены в корневой `exclude/`; смешанный с `system2` остаток требует отдельного рефакторинга.
 
+Для решения о spatial backend существует отдельный manual target
+`subprojects/audio_spatial_lab`: он сравнивает production `system2` и direct OpenAL Soft на
+одинаковом PCM/trajectory/attenuation, не добавляя backend abstraction в эту библиотеку. Headphone
+A/B 2026-08-12 показал, что miniaudio близок к OpenAL HRTF off и почти не различает above/below,
+тогда как OpenAL HRTF on заметно улучшает локализацию.
+
 ## Основная Идея
 
 Звуковая система не должна быть владельцем ассетов. Звуки загружаются через `demiurg`, main/gameplay держит handle на `sound::sound_resource`, а sound thread получает команду проиграть ресурс и читает из него `resource2`.
 
-`resource2` - это легковесный view:
+`resource2` - это легковесный playback view:
 
+- `owner` - shared pin на immutable поколение данных;
 - `id` - идентификатор ресурса;
 - `type` - тип данных (`mp3`, `flac`, `wav`, `ogg`, `pcm`);
 - `data` - `span<const char>` на байты ресурса.
 
-Данные должны жить дольше задачи воспроизведения. Сейчас это обеспечивается тем, что ресурс остается warm, пока им пользуется приложение. Координация выгрузки звуков с активными задачами еще требует отдельного правила.
+`sound_resource::load_cold()` строит новый immutable `resource_blob` и публикует его атомарно.
+Producer берёт `sound_resource::pin()` до отправки `command_sound_play`; команда переносит pin через
+broker, а `system2::task` удерживает его до terminal cleanup. `unload_warm()` атомарно снимает только
+ссылку ресурса: queued/active задачи безопасно доигрывают старое поколение, а новые запросы его уже
+не получают. Это закрывает и unload race, и окно между публикацией команды и её потреблением.
 
 ## sound_resource
 
@@ -24,9 +35,12 @@
 - `binary = true`;
 - `load_cold()` читает файл через demiurg module;
 - тип выводится из расширения;
-- `view()` возвращает `resource2`.
+- `pin()` возвращает shared immutable generation;
+- `view()` строит owning `resource2` из текущего поколения.
 
-В `tile_frontier` звуки регистрируются как тип `sounds` с расширениями `mp3,flac,wav,ogg`. Main запрашивает нужные звуки до `warm`, хранит map `name_hash -> sound_resource*` и отправляет этот указатель в sound thread через broker.
+В `tile_frontier` звуки регистрируются как тип `sounds` с расширениями `mp3,flac,wav,ogg,opus`.
+Main запрашивает нужные звуки до `warm`, хранит handles и отправляет через broker handle плюс
+producer-side pin. Handle остаётся identity/diagnostic fallback; playback bytes принадлежат pin.
 
 ## Декодеры
 
@@ -77,6 +91,13 @@ Mono sounds создаются со spatialization, stereo sounds - с `MA_SOUND
 - min gain `0.0`;
 - max gain `1.0`;
 - max distance `default_sound_max_distance`.
+
+Built-in miniaudio 0.11.25 spatializer не является HRTF renderer. Он не теряет `Y`: координата
+проходит listener transform и участвует в distance attenuation. Ограничение возникает при panning:
+default stereo endpoint использует `SIDE_LEFT`/`SIDE_RIGHT` directions `(-1,0,0)`/`(+1,0,0)`, поэтому
+равнодистанционные позиции `+Y` и `-Y` получают одинаковые gains. Front/back обычный stereo panner
+тоже не кодирует. Не исправлять это перестановкой осей: следующий bounded эксперимент — Steam Audio
+binaural node в `audio_spatial_lab`, затем отдельный optional production spatializer seam.
 
 Каждый `sound_instance` содержит `ma_sound` и кастомный ring-stream data source. Data source хранит PCM ring buffer, read/write cursors, счетчики прочитанных/записанных frames и underrun count. Он не знает о task id, sequencing или ресурсах.
 
@@ -162,12 +183,13 @@ Main сразу возвращает UI opaque handle на основе task id,
 ## Техдолг И Направления
 
 - Почистить остатки OpenAL: старый `sound::system`, `al_helper`, OpenAL overload'ы у декодеров, CMake-зависимость и связанные include'ы. До решения по miniaudio 3D этот код лучше не смешивать с новым контрактом.
-- Проверить качество и ограничения 3D-звука miniaudio на реальных сценах. Сейчас модель простая: mono positional, linear attenuation, distance culling.
+- `AUD-LAB-02`: встроить Steam Audio HRTF custom node только в лабораторию, сравнить nearest/bilinear interpolation и измерить 1/8/32 active voices; production path менять после quality/CPU verdict.
 - Добавить более сложные модели трехмерного звука: категории источников, приоритеты, virtual voices, occlusion/obstruction, doppler policy, distance curves и настройки listener/world scale.
 - Добавить систему звуковых эффектов окружения: реверберация, фильтры, затухание, low-pass/high-pass и обработка в зависимости от помещения/среды.
 - Профилировать `system2::update()`. Подозрительные места: создание decoder/converter на первом update задачи, seek, декодирование, `ma_data_converter_process_pcm_frames`, запись в ring buffer и уборка задач/voice instances.
 - Оформить контракт выгрузки `sound_resource`: нельзя освобождать `data`, пока active task держит `resource2::data`.
-- ~~Подключить PCM в новом `resource2`/`system2` пути~~ (СДЕЛАНО 2026-07-05: короткие звуки → PCM в `load_cold`, отдельная ветка `pcm_decoder` в `system2`; сырые `.pcm`-файлы намеренно не загружаются). Осталось: координация выгрузки PCM-данных с активными задачами.
+- ~~Подключить PCM в новом `resource2`/`system2` пути~~ (СДЕЛАНО 2026-07-05: короткие звуки → PCM в `load_cold`, отдельная ветка `pcm_decoder` в `system2`; сырые `.pcm`-файлы намеренно не загружаются).
+- ~~Координация unload с queued/active playback~~ (СДЕЛАНО 2026-08-12: immutable shared generations, producer-side broker pin и focused lifetime test).
 - Добавить формат Opus и загрузку с диска через `opusfile`.
 - Добавить специальный источник постоянного/потокового звука, например live-поток из микрофона для VoIP.
 - Вместе с VoIP-источником добавить capture device: создать устройство записи, читать голос с микрофона, собирать Opus-пакеты, публиковать статус/метрики, дать настройки громкости, добавить базовую фильтрацию и проверить готовые решения/библиотеки для этой части.

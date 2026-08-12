@@ -23,14 +23,10 @@ static std::tuple<std::string_view, std::string_view, std::string_view> parse_pa
   return std::make_tuple(id, name, ext);
 }
 
-folder_module::folder_module(std::string root) noexcept : module_interface(std::move(root)) {
+folder_module::folder_module(std::string root, std::string name) noexcept
+  : module_interface(std::move(root)), module_name(std::move(name)) {
   if (_path[_path.size() - 1] != '/') {
     _path += '/';
-  }
-  const size_t index = _path.rfind('/', _path.size() - 1);
-  module_name = std::string_view(_path).substr(index);
-  if (module_name.back() == '/') {
-    module_name = module_name.substr(0, module_name.size() - 1);
   }
 }
 
