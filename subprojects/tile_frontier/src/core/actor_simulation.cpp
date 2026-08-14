@@ -19,6 +19,7 @@
 #include <devils_engine/catalogue/deferred.h>         // fn_deferred_ptr + collect/elect executors
 #include <devils_engine/catalogue/introspection.h>
 #include <devils_engine/catalogue/logging.h>  // DE_LOG — perf-дамп в домен gameplay
+#include <devils_engine/catalogue/phase.h>    // passive reads/writes/strategy/budget metadata
 #include <devils_engine/mood/runtime.h>       // mood::step / apply_transition — шаг FSM
 #include <devils_engine/thread/atomic_pool.h> // MT-пул (distribute/thread_index/wait)
 #include <devils_engine/utils/core.h>         // utils::error
@@ -485,7 +486,65 @@ using think_script_deferred = actor_local_effect_domain::fn_traits<
   &effect_think_script, "think", "self">;
 
 constexpr uint32_t max_deferred_effects_per_actor = 16;
+
+inline constexpr std::array actor_local_reads{
+  catalogue::phase_resource<"actor_position">(),
+  catalogue::phase_resource<"actor_perception">(),
+  catalogue::phase_resource<"actor_brain">(),
+};
+inline constexpr std::array actor_local_writes{
+  catalogue::phase_resource<"actor_velocity">(),
+};
+inline constexpr std::array actor_local_budgets{
+  catalogue::fixed_phase_budget<"effects_per_source", "calls">(max_deferred_effects_per_actor),
+  catalogue::dynamic_phase_budget<"calls_per_tick", "calls">(),
+};
+
+inline constexpr std::array actor_eat_reads{
+  catalogue::phase_resource<"entity_liveness">(),
+  catalogue::phase_resource<"actor_brain">(),
+};
+inline constexpr std::array actor_eat_writes{
+  catalogue::phase_resource<"world.structure">(),
+  catalogue::phase_resource<"actor_eating">(),
+  catalogue::phase_resource<"actor_grabbed">(),
+  catalogue::phase_resource<"actor_velocity">(),
+  catalogue::phase_resource<"actor_state">(),
+};
+inline constexpr std::array actor_eat_budgets{
+  catalogue::fixed_phase_budget<"effects_per_source", "calls">(max_deferred_effects_per_actor),
+  catalogue::dynamic_phase_budget<"calls_per_tick", "calls">(),
+};
+
+inline constexpr std::array actor_flag_reads{
+  catalogue::phase_resource<"entity_liveness">(),
+  catalogue::phase_resource<"flag_set">(),
+};
+inline constexpr std::array actor_flag_writes{
+  catalogue::phase_resource<"world.structure">(),
+  catalogue::phase_resource<"flag_set">(),
+};
+inline constexpr std::array actor_flag_budgets{
+  catalogue::fixed_phase_budget<"effects_per_source", "calls">(max_deferred_effects_per_actor),
+  catalogue::dynamic_phase_budget<"calls_per_tick", "calls">(),
+};
+
+inline constexpr std::array actor_effect_phases{
+  catalogue::make_phase_descriptor<actor_local_effect_domain>(
+    "actor.local_effects", "tile_frontier", catalogue::phase_write_policy::disjoint_by_key,
+    actor_local_reads, actor_local_writes, actor_local_budgets),
+  catalogue::make_phase_descriptor<actor_eat_effect_domain>(
+    "actor.eat_effects", "tile_frontier", catalogue::phase_write_policy::structural,
+    actor_eat_reads, actor_eat_writes, actor_eat_budgets),
+  catalogue::make_phase_descriptor<actor_flag_effect_domain>(
+    "actor.flag_effects", "tile_frontier", catalogue::phase_write_policy::structural,
+    actor_flag_reads, actor_flag_writes, actor_flag_budgets),
+};
 } // namespace
+
+std::span<const catalogue::phase_descriptor> actor_effect_phase_metadata() noexcept {
+  return actor_effect_phases;
+}
 
 const act::building_blocks& actor_building_blocks() {
   static const act::building_blocks blocks = [] {

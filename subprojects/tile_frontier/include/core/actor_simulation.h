@@ -13,6 +13,7 @@
 #include <devils_engine/act/interaction.h> // act::interaction — дескриптор арбитража эффекта-взаимодействия
 #include <devils_engine/act/registry.h>    // act::registry + function<RetT>
 #include <devils_engine/catalogue/call_log.h> // catalogue::call_log — контейнер отложенных вызовов (record/dispatch)
+#include <devils_engine/catalogue/phase.h>    // passive phase_descriptor read model for tooling
 #include <devils_engine/acumen/execution_scratch.h>
 #include <devils_engine/acumen/goap_resource.h>
 #include <devils_engine/acumen/registry.h>
@@ -57,6 +58,9 @@ namespace core {
 // потоке (оба зовутся из simulation::update), поэтому UI читает её напрямую — без broker.
 const devils_engine::catalogue::statistics_store& actor_perf_statistics() noexcept;
 void reset_actor_perf_statistics() noexcept;
+
+// Passive CAT-03 descriptors. Reading this span does not enable statistics or instrument executors.
+std::span<const devils_engine::catalogue::phase_descriptor> actor_effect_phase_metadata() noexcept;
 
 // Декларативный список gameplay building blocks проекта (act::building_blocks, ROADMAP п.14):
 // ds-словарь (deferred-эффекты + чистые аксессоры восприятия/spawn) и act-only исключения

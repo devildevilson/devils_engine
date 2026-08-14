@@ -451,6 +451,21 @@ catalogue::domain<domain::gameplay>::set_introspection(&stats);
 const double avg = stats.average_mcs(add_gold_wrap::function_id);
 ```
 
+## Passive phase metadata
+
+`catalogue/phase.h` описывает identity/owner, reads/writes, write policy, compile-time MT strategy
+и budgets фазы для tests/developer tools. `make_phase_descriptor<Domain>()` выводит arbitration,
+commit и conflict из уже выбранной `mt::domain` strategy, поэтому эта часть metadata не дублируется
+вручную.
+
+Metadata пассивна: executor не выполняет lookup, не публикует diagnostic events и вообще не знает о
+descriptor. Проект держит descriptor и его access/budget arrays в static constexpr storage. Только
+tooling при необходимости добавляет их в caller-owned `phase_registry`, который проверяет ids,
+дубли, budget fields и очевидные противоречия write/commit policy.
+
+Registry не является scheduler или dependency graph. Он не переставляет фазы, не доказывает
+отсутствие data races и не выводит reads/writes автоматически.
+
 ## Текущие Ограничения
 
 - `domain<Domain>::intro_i` - raw pointer без ownership. Владелец обязан

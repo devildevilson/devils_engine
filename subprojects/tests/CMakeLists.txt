@@ -91,6 +91,9 @@ target_link_libraries(catalogue_call_log_test PRIVATE devils_engine::catalogue d
 devils_add_doctest(catalogue_deferred_test catalogue_deferred_test.cpp)
 target_link_libraries(catalogue_deferred_test PRIVATE devils_engine::catalogue devils_engine::thread devils_script)
 
+devils_add_doctest(catalogue_phase_metadata_test catalogue_phase_metadata_test.cpp)
+target_link_libraries(catalogue_phase_metadata_test PRIVATE devils_engine::catalogue)
+
 devils_add_doctest(aesthetics_serialization_test aesthetics_serialization_test.cpp)
 target_link_libraries(aesthetics_serialization_test PRIVATE devils_engine::aesthetics)
 
@@ -108,6 +111,9 @@ target_link_libraries(goap_config_test PRIVATE devils_engine::acumen devils_engi
 
 devils_add_doctest(fsm_config_test fsm_config_test.cpp)
 target_link_libraries(fsm_config_test PRIVATE devils_engine::mood devils_engine::act devils_engine::demiurg tavl)
+
+devils_add_doctest(mood_diagnostics_test mood_diagnostics_test.cpp)
+target_link_libraries(mood_diagnostics_test PRIVATE devils_engine::mood devils_engine::act)
 
 devils_add_doctest(act_call_context_test act_call_context_test.cpp)
 target_link_libraries(act_call_context_test PRIVATE devils_engine::act devils_script)

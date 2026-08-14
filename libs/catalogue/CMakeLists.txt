@@ -9,6 +9,7 @@ project(
 set(SRC_LIST
   src/catalogue/introspection.cpp
   src/catalogue/logging.cpp
+  src/catalogue/phase.cpp
 )
 
 set(HDR_LIST
@@ -16,6 +17,7 @@ set(HDR_LIST
   include/devils_engine/catalogue/deferred.h
   include/devils_engine/catalogue/introspection.h
   include/devils_engine/catalogue/logging.h
+  include/devils_engine/catalogue/phase.h
 )
 
 add_library(devils_catalogue ${SRC_LIST} ${HDR_LIST})

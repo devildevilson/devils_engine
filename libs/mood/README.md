@@ -218,6 +218,20 @@ Cap нужен, потому что idle-переходы могут образ�
 может быть легитимной: начальное состояние, terminal state, debug-only state.
 Это предупреждения, а не ошибки.
 
+## Opt-in diagnostics
+
+`mood/diagnostics.h` не участвует в обычных `step()`/`settle()` и ничего не
+регистрирует глобально. Tooling явно вызывает:
+
+- `inspect_graph()` для owned pointer-free snapshot имён, ids, guards/actions и source rows;
+- `inspect_step()` для однократной проверки guards с результатом каждого candidate;
+- `inspect_settle()` для реального traced apply с цепочкой completion-переходов и причиной
+  остановки (`no_transition`, `blocked`, internal, self-loop или iteration limit).
+
+`inspect_step()` не исполняет actions. `inspect_settle()` исполняет их ровно один раз и поэтому
+не является preview/dry-run API. Transition ordinal стабилен только внутри одного построенного
+`mood::system` и предназначен для inspector-а, а не для save/network format.
+
 ## Связь С act
 
 `mood` не хранит свои `std::function`. Все guards и actions берутся из

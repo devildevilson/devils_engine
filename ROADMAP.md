@@ -31,15 +31,12 @@ gameplay consumer. Целевой внешний проект заполняет
 
 | Порядок | ID | Результат закрытия | Сложность | Почему сейчас |
 | --- | --- | --- | --- | --- |
-| 1 | `FSM-01` | inspector/serialization view показывает state, candidate transition, guards и settle result | `S` | маленький самостоятельный tooling slice над стабильным `mood` |
-| 2 | `CAT-03` | phase metadata/write policy регистрируются декларативно и доступны diagnostics | `S–M` | упрощает последующий общий trace UI без изменения executor semantics |
-| 3 | `CAT-01` | единый bounded statistics service принимает phase timing/rejection/overflow и показывает first divergence | `M` | объединяет уже существующие catalogue domains и бюджеты |
-| 4 | `SIM-04` | у broker-каналов видны capacity, high-water mark, rejected/dropped и stalled-consumer diagnostics | `M` | полезно текущему multithreaded `tile_frontier` и будущему dedicated host |
-| 5 | `ACT-03` + `ACT-04` | command/preview/rejection имеют versioned envelope, typed code, loc-key, parameters и state token | `M` | нужен UI-командам без dry-run мутации мира |
-| 6 | `LOC-01` + `LOC-02` | загружаются locale manifest/table, работает fallback и module override, coverage проверяется headlessly | `M–L` | первый вертикальный срез новой локализации без shaping и сложных forms |
-| 7 | `GEN-01` + `GEN-02` | typed pass/artifact descriptors и registry исполняют два dummy passes с проверкой входов/выходов | `L` | минимальный proof нового generator contract до Lua и реальных карт |
-| 8 | `UTL-08` | общие byte/hash comparison helpers показывают первый divergent offset/record в deterministic tests | `S` | следующий foundation primitive для save/replay/headless diagnostics |
-| 9 | `MOD-01` + `MOD-02` | installed module catalog и несколько ordered TAVL profiles имеют headless round-trip и atomic active-profile selection | `M` | первый практический срез уточнённого game-facing module workflow поверх закрытых fingerprints |
+| 1 | `UTL-08` | общие byte/hash comparison helpers показывают первый divergent offset/record в deterministic tests | `S` | следующий конкретный foundation primitive для save/replay/headless tests без общего diagnostics service |
+| 2 | `MOD-01` + `MOD-02` | installed module catalog и несколько ordered TAVL profiles имеют headless round-trip и atomic active-profile selection | `M` | первый практический срез уточнённого game-facing module workflow поверх закрытых fingerprints |
+| 3 | `SIM-04` | у broker-каналов видны capacity, high-water mark, rejected/dropped и stalled-consumer diagnostics | `M` | предметная диагностика текущего multithreaded `tile_frontier` и будущего dedicated host |
+| 4 | `ACT-03` + `ACT-04` | command/preview/rejection имеют versioned envelope, typed code, loc-key, parameters и state token | `M` | нужен UI-командам без dry-run мутации мира |
+| 5 | `LOC-01` + `LOC-02` | загружаются locale manifest/table, работает fallback и module override, coverage проверяется headlessly | `M–L` | первый вертикальный срез новой локализации без shaping и сложных forms |
+| 6 | `GEN-01` + `GEN-02` | typed pass/artifact descriptors и registry исполняют два dummy passes с проверкой входов/выходов | `L` | минимальный proof нового generator contract до Lua и реальных карт |
 
 После каждого пункта обновлять этот список: закрытая строка переносится в нижний архив, а её место
 занимает следующий ограниченный slice из полного backlog.
@@ -56,7 +53,7 @@ gameplay consumer. Целевой внешний проект заполняет
 | `ECS-04` | Compact delta/change tracking | `L–XL` | dirty/change epochs без превращения ECS в netcode |
 | `ECS-05` | Transaction journal | `L` | bounded committed operations для persistence/recovery consumers |
 | `ECS-06` | Replication codecs и baselines | `XL` | отдельный owning networking layer использует ECS primitives |
-| `ECS-07` | Materialization registry | `L–XL` | project codecs materialize/dematerialize logical records |
+| `ECS-07` | Materialization/reconcile registry | `L–XL` | reserve logical participants/items → project request → typed outcome journal → version check → once-only atomic reconcile/rollback; codecs and outcome semantics stay project-owned |
 | `ECS-08` | Явная classification `authoritative / derived / ephemeral` | `M` | metadata, validation и save/load policy |
 
 ### `libs/simul` — runtime, workflow и процессы
@@ -92,9 +89,8 @@ gameplay consumer. Целевой внешний проект заполняет
 
 | ID | Задача | Сложность | Граница/результат |
 | --- | --- | --- | --- |
-| `CAT-01` | Общий service/UI для phase timings, rejection/overflow и first divergence | `M` | bounded сбор и единый inspection API |
+| `CAT-01` | Возможная aggregation shell для нескольких diagnostic sources | `M` | deferred до двух consumers с одинаковым snapshot/reset lifecycle; не объединять timings, semantic rejection, overflow и divergence в общий variant заранее |
 | `CAT-02` | Bounded codecs для новых доказанных signatures | `M` | добавлять только вместе с реальным consumer; не делать generic serializer |
-| `CAT-03` | Удобная регистрация phase metadata/write policy | `S–M` | identity, reads/writes, strategy и budget видны tools/tests |
 
 Не добавлять в `catalogue`: replay format, RPC/network transport, world persistence и gameplay event ontology.
 
@@ -111,6 +107,14 @@ gameplay consumer. Целевой внешний проект заполняет
 
 `ACT-06` строится в owning persistence/network layer, а не внутри registry.
 
+### Knowledge/provenance — truth и ограниченные представления
+
+| ID | Задача | Сложность | Граница/результат |
+| --- | --- | --- | --- |
+| `KNW-01` | Stable fact/observation/explanation envelope и immutable filtered-view host | `L` | holder-facing planner/UI физически не получает canonical truth; project задаёт fact kinds/confidence semantics |
+| `KNW-02` | Provenance links, explicit transfer/copy и bounded retention | `L` | передача одной версии знания не раскрывает всё состояние источника; causal anchors переживают compaction |
+| `KNW-03` | Truth-vs-view/diff inspector и observation replay | `M–L` | показывает source/evidence/supersession и первый момент расхождения без превращения engine в rumor/law ontology |
+
 ### `libs/acumen` — GOAP и многоуровневое планирование
 
 | ID | Задача | Сложность | Ownership |
@@ -126,7 +130,6 @@ gameplay consumer. Целевой внешний проект заполняет
 
 | ID | Задача | Сложность | Граница/результат |
 | --- | --- | --- | --- |
-| `FSM-01` | Diagnostics/serialization views | `S` | state, transitions, guards/actions, settle и failures |
 | `FSM-02` | Capability/tooling around state graphs | `M` | graph browser, unreachable/ambiguous transition validation |
 
 Persistent multi-day event или repair action хранится в `SIM-03`, а не внутри `mood`.
@@ -361,9 +364,18 @@ constraints и repair policy.
 | `GEN-10` | Generated-content inspection tooling | `M–L` | simplified maps/graphs/heatmaps, pass timings and batch reports |
 | `GEN-11` | 2D region/planet reference pipeline | `XL` | project-first `MMO`; continents→climate→biomes→regions→history/politics |
 | `GEN-12` | 3D adventure reference pipeline | `XL–XXL` | project-first `PA`; tasks→graphs→terrain/modules→mesh/collision/nav artifacts |
+| `GEN-13` | Closed-surface planet/culture/history package | `XL–XXL` | project-first `APQ`; immutable topology/province/route/climate/history/special-place/Apate bindings + validation report and fingerprints, не seed-only save |
 
 Первые дополнительные consumers: `TC` — small floor + large semantic quest graph; `SC` — streaming
 cave/route segments. `BITS`, `CG` и `MHM` не получают generator dependency без реального требования.
+
+### Closed-surface topology и globe presentation
+
+| ID | Задача | Сложность | Граница/результат |
+| --- | --- | --- | --- |
+| `PLN-01` | Canonical closed-surface topology | `L–XL` | projection-independent stable cell/province ids, seam-free adjacency/distance and poles/seams/circumnavigation properties |
+| `PLN-02` | Projection/ray/surface picking adapters | `L` | saved `APQ` package → screen ray/surface/province without making a full 3D action scene prerequisite |
+| `PLN-03` | Globe LOD/map-mode buffers | `XL` | incremental boundaries/routes/labels and holder-filtered terra-incognita presentation with no geometry leak |
 
 ## Остальные открытые cross-system программы
 
@@ -409,6 +421,30 @@ camera как отдельный intent provider и точная запись `g
 
 Кросс-платформенный fixed-point для `cardgame` снят с roadmap: требуется воспроизводимость только в
 пределах одной ОС и одного build fingerprint.
+
+## Открытые project-first задачи `apates_quest`
+
+Нормативная последовательность начинается с `apates_campaign_bridge_lab` на фиксированном замкнутом
+графе из 12–20 провинций. Полный глобус и 3D-тактика не являются prerequisites этого proof. Engine
+получает только нейтральные lifetime/order/persistence/view mechanisms; персонажи, титулы, право,
+знание, миф, армейские правила и interpretation outcomes остаются проектными.
+
+| ID | Задача | Сложность | Definition of Done / возможная движковая дельта |
+| --- | --- | --- | --- |
+| `APQ-01` | Суточное campaign-ядро на fixed graph | `L` | persistent orders проходят stable `snapshot intents → movement/routes → contacts → mandatory actions → due events → reports/stop` pulse; auto-advance/one-day/until-date/until-event и save/resume дают одинаковый state hash |
+| `APQ-02` | Title/institution/policy/claim vertical | `L–XL` | character/house/title отделены от institution/seat; одна succession/hero-recognition chain имеет authority, evidence requirements, preview, structured rejection, два политических outcome и explanation provenance; отменённые universal binary culture flags не возвращаются |
+| `APQ-03` | Holder-specific knowledge и evidence | `L` | rumor/contact/mapped-route/surveyed/current-intelligence records, delayed expedition report, explicit map sale и false-map contradiction работают через filtered view без утечки canonical geometry |
+| `APQ-04` | Journey, army и multi-phase encounter | `L–XL` | route queue/current transition/progress/ETA/interruption переживают save; marching actor канонически остаётся в origin, но не действует как local defender; встречный переход создаёт boundary encounter; army contact/manoeuvre/decisive/pursuit поддерживает autoresolve и offer/accept/refuse duel with typed stakes |
+| `APQ-05` | Campaign encounter bridge без 3D | `L` | один persistent character/items проходит reserve → immutable materialization request → headless/manual-stub или autoresolve → единый project typed outcome journal → version validation → atomic exactly-once reconcile/release; death/wound/capture/time/witness/evidence покрыты faults/resume |
+| `APQ-06` | Durable generation-scale campaign batch | `L` | owner-section save/migration, bounded calendar/history/knowledge retention, domain RNG и 150–200-летний headless batch имеют budgets/stop reasons/first divergence и одинаковый результат serial/1/2/4/8 workers |
+| `APQ-07` | Малый личный TBT vertical | `XL` | после выбора локальных правил: герой + 3–5 спутников, 6–10 meaningful rounds, retreat/surrender/lethal contracts/objectives beyond killing; manual и autoresolve возвращают schema `APQ-05`, глобальный календарь на время сцены остановлен |
+| `APQ-08` | Myth/Apate/special-place layer | `XL` | deed truth, witnesses, competing recognized versions, granted rights и один Apate archetype связывают politics/religion/adventure; вулкан и незавершённая great work проверяют physical state, title/control/access, multi-stage hazard и historical reinterpretation |
+| `APQ-09` | Late authoritative-host network lab | `L–XL` | только после устойчивого single-player slice: два участника, simultaneous daily commands, authoritative pulse/result hash, reconnect snapshot и одна общая короткая TBT; transport/product multiplayer не входит в первый prototype |
+
+`APQ-01..05` вместе закрывают первый `apates_campaign_bridge_lab`. После `APQ-06` отдельно идут
+`PLN-01 → GEN-13 → PLN-02/03`: сохранённый immutable package предшествует globe renderer. Полная цель
+мира — 3–4k неравномерных сухопутных провинций плюс более крупные морские зоны, но первый generator
+proof обязан быть маленьким и проверять seam/circumnavigation, связность и отсутствие knowledge leak.
 
 ## Правила выбора следующей задачи
 
@@ -499,7 +535,18 @@ camera как отдельный intent provider и точная запись `g
 - [x] `aesthetics::system_runner` объединяет независимые systems под один pool barrier без скрытого DAG.
 - [x] `tile_frontier` cognition/effects и integration+drives используют доказанные MT paths.
 - [x] kD-tree deterministic parallel build снял первый измеренный bottleneck без изменения world hash/bytes.
-- [x] Catalogue domains уже собирают локальные timings; открытый общий service/UI вынесен в `CAT-01`.
+- [x] Catalogue domains собирают локальные timings в caller-owned `statistics_store`; project UI
+  читает предметный store напрямую без обязательного общего aggregation service.
+- [x] `FSM-01`: отдельный opt-in `mood/diagnostics.h` строит owned graph snapshot, guard-by-guard
+  step trace и фактический settle trace с точной причиной остановки. Обычные `step/settle` и
+  `runtime.cpp` не инструментированы; diagnostic settle исполняет actions ровно один раз.
+- [x] `CAT-03`: passive constexpr phase descriptors выводят arbitration/commit/conflict из
+  существующей strategy и явно показывают owner, reads/writes, write policy и fixed/dynamic budgets.
+  Executor ничего о metadata не знает; caller-owned registry создаётся только tooling/test consumer-ом.
+  Первый живой набор — local/eat/flag effect phases `tile_frontier`.
+- [x] Общий `CAT-01` service сознательно отложен: локальные timings остаются в `statistics_store`,
+  а semantic rejection/overflow/divergence принадлежат предметным owners до доказанного совпадения
+  lifecycle хотя бы у двух consumers.
 
 ### `cardgame` и общий resolver
 

@@ -9,10 +9,12 @@ project(
 add_library(devils_mood
   src/mood/system.cpp
   src/mood/runtime.cpp
+  src/mood/diagnostics.cpp
   src/mood/registry.cpp
   src/mood/fsm_resource.cpp
   include/devils_engine/mood/system.h
   include/devils_engine/mood/runtime.h
+  include/devils_engine/mood/diagnostics.h
   include/devils_engine/mood/registry.h
   include/devils_engine/mood/fsm_resource.h
 )

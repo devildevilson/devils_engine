@@ -34,6 +34,14 @@ static std::vector<std::byte> dump(const tf::actor_world_slice& s) {
 int main() {
   spdlog::set_level(spdlog::level::warn); // приглушить per-tick info из update()
 
+  // CAT-03 metadata is opt-in: this headless inspector/test is the first caller. Normal update()
+  // never registers or looks up these descriptors.
+  const auto effect_phases = tf::actor_effect_phase_metadata();
+  CHECK(effect_phases.size() == 3);
+  for (const auto& phase : effect_phases) {
+    catalogue::validate_phase_descriptor(phase);
+  }
+
   test_brain_fixture fixture(TILE_FRONTIER_SOURCE_RESOURCE_ROOT);
   const auto& brains = fixture.config();
 
