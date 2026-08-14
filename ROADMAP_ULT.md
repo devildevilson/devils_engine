@@ -47,6 +47,25 @@
 
 Первые три направления в значительной степени собираются из уже существующих библиотек. 3D требует нескольких новых крупных kernels. Сетевой стек нельзя честно собрать из broker и ECS snapshot: это отдельная программа развития.
 
+## Текущий режим развития
+
+Большой список ниже задаёт horizon и зависимости, но не является очередью снизу вверх. Работа движется
+по одной playground/project campaign с конечным наблюдаемым результатом либо по одной крупной
+симуляционной системе. Focused tests закрепляют найденные контракты, но не выбирают следующую тему.
+
+Текущая campaign — Painter visual stack под `subprojects/playgrounds/`:
+
+1. `PF01_forward_plus` — активная laboratory shell и Forward+ proof;
+2. `PF02_shadows` — directional/spot shadow maps;
+3. `PF03_post_processing` — независимая расширяемая post gallery;
+4. `PF04_stencil_effects` — stencil/masked effect gallery;
+5. `PF05_submarine_light_room` — тёмный project look для `SC`;
+6. `PF06_party_environment` — динамическое окружение для `PA`.
+
+Каждая лаборатория независима на уровне executable/resources/source. Поздняя lab выборочно фиксирует
+нужные результаты ранней, а общий стабильный код переезжает в `playgrounds/common` или owner-library
+только после реального повторения. Точные границы находятся в `PLAYGROUNDS.md` и локальных README.
+
 ## Принципы
 
 ### Механизм в engine, семантика в project
@@ -1566,8 +1585,9 @@ Ragdoll принадлежит physics integration, но animation adapter оп�
 
 OpenAL EFX может служить моделью возможностей, но текущий miniaudio path требует backend-neutral DSP/effect contract либо интеграции подходящего стороннего DSP layer. Gameplay публикует semantic event/material/action; конкретные samples and environment processing — presentation.
 
-`audio_spatial_lab` (2026-08-12) уже даёт изолированный manual A/B: production miniaudio `system`
-против direct OpenAL Soft на одинаковом deterministic mono S16 signal, horizontal/vertical orbit,
+`subprojects/playgrounds/AU01_spatial_audio` фиксирует результат изолированного manual A/B 2026-08-12:
+production miniaudio `system` против direct OpenAL Soft на одинаковом deterministic mono S16 signal,
+horizontal/vertical orbit,
 matched front/up distance pulses и linear attenuation. Он сообщает actual device/sample rate/OpenAL HRTF, поддерживает
 HRTF off/on и dry-run CTest. Реальное headphone A/B подтвердило: OpenAL HRTF on заметно лучше передаёт
 направление, built-in miniaudio близок к OpenAL HRTF off, а above/below у miniaudio почти неразличимы.
@@ -1578,7 +1598,8 @@ orbit держит radius 4, так что perceived OpenAL near/far на нём
 Сценарий расширен до 28 секунд: одинаковые front `-Z` и up `+Y` pulses `4→10→1→4` с явным radius
 log проверили axis attenuation parity отдельно: front и up работают корректно, а OpenAL отличается
 лишь очень небольшой direction-dependent coloration. Miniaudio выбран production backend; весь live
-OpenAL path архивирован в `exclude`. `AUD-17` зафиксировал optional default-off bounded coloration:
+OpenAL path архивирован в `exclude`. Живая `AU02_directional_coloration` и `AUD-17` зафиксировали
+optional default-off bounded coloration:
 listener-relative high shelf с профилем behind `-2.25 dB`, above `+0.65 dB`, below `-0.85 dB`,
 общим strength `[0,2]` и итоговым пределом `[-3,+1] dB`. Он помогает заметить заход за спину, но
 ручная проверка признала elevation практически нечитаемым; это предел shared shelf, не дефект `Y`.
@@ -1987,16 +2008,24 @@ streaming and authority. Эти требования нельзя сразу с�
 | `NAV-03` | Strategic region/road/access graph queries and hierarchical route planning | engine graph primitives + `MHM/APQ` policies | `L` | `WLD-01`, spatial query toolkit |
 | `ANM-01` | Third-party skeletal runtime spike + skeleton/clip adapter and pose sampling | engine/flow + chosen backend | `L` | `AST-04` |
 | `ANM-02` | Blending/root motion/notifies/IK | engine/flow | `XL` | `ANM-01`, `PHY-02` |
-| `RND-01` | Skinned render path | engine/painter | `L–XL` | `ANM-01`, `3D-01` |
-| `RND-02` | Lights/shadows/material scene layer | engine/painter | `XL` | `3D-01` |
-| `RND-03` | Visibility/LOD/HLOD/residency metrics | engine/painter | `XL` | `WLD-04`, `RND-02` |
+| `RND-01` | High-level 3D scene instance layer | engine/painter | `L` | `3D-01`; first bounded consumer `PF01` |
+| `RND-02` | Transform/skinning frame buffers | engine/painter | `L` | `3D-01`; skinning waits for `ANM-01` |
+| `RND-04` | Forward+ lighting path | engine/painter | `L–XL` | `RND-01/02`; `PF01` |
+| `RND-22` | Directional/spot shadow maps and atlas | engine/painter | `L–XL` | `RND-04`; `PF02` |
+| `RND-16/19/21` | Post compositor, first spatial effect and color chain | engine/painter | `L–XL` | `PF03`; temporal work remains separate |
+| `RND-23` | Stencil effect path | engine/painter | `M–L` | depth/stencil baseline; `PF04` |
+| `RND-03` | Skinned render path | engine/painter | `L–XL` | `ANM-01`, `RND-01/02` |
+| `RND-06/07` | Visibility/LOD/HLOD/residency metrics | engine/painter | `XL` | `WLD-04`, live scale consumer |
 | `INP-01` | Gamepad/axes/hotplug/control contexts | engine/input | `M–L` | нет |
 
-Проверять не внутри полной игры, а на engine laboratory scene:
+Проверять не внутри полной игры, а в независимых engine laboratory scenes:
 
-- controller/camera obstacle course;
-- one skinned actor;
-- one streamed room/door/off-mesh link;
+- `PF01` — Forward+ moving-light stress scene;
+- `PF02` — moving light/caster and shadow-atlas inspection;
+- `PF03` — post-effect gallery;
+- `PF04` — stencil/masked effect gallery;
+- отдельные будущие controller/camera obstacle course и one-skinned-actor labs;
+- one streamed room/door/off-mesh link после выбора physics/navigation campaign;
 - headless physics/nav tests;
 - render snapshot detached from gameplay pointers.
 
@@ -2429,30 +2458,19 @@ headless/playground-проверок, минимизирующая число о
 
 ## Ближайший практический пакет
 
-Самый выгодный общий пакет на несколько следующих больших сессий:
+Ближайший пакет — не набор независимых foundation-задач, а одна painter campaign:
 
-1. `FND-01`: module-set fingerprint slice closed; resource/build fingerprints remain consumer-gated.
-2. `FND-02`: common deterministic state comparison.
-3. `PST-01/02`: save envelope + atomic slots.
-4. `SIM-04`: versioned command/rejection shell.
-5. `CG-01`: `run_session` как первый consumer.
-6. `PST-03`: migrations на реальном изменении run schema.
-7. `HLS-01`: headless host/scenario interface с будущим dedicated-server contract.
-8. `LOC-01`: locale tables/fallback/coverage как ранний независимый vertical slice.
-9. `KNW-01`: filtered knowledge view + provenance record как первый `CMD`-ориентированный slice.
-10. `SIM-01`: calendar только перед первым `MHM/APQ` slice.
-11. `FLD-01`: layered-field host как независимый `ZB`-ориентированный headless slice.
+1. дорастить запускаемый baseline `PF01`: room/free camera/HDR+depth готовы; остаются camera rail и target viewer;
+2. bounded tile-light data и compute assignment готовы в первом варианте; добавить overflow diagnostics;
+3. получить visible simple-forward/Forward+ comparison, heatmap, overflow и timings;
+4. после DoD `PF01` перейти к отдельной `PF02_shadows`;
+5. затем независимо развивать `PF03_post_processing` и `PF04_stencil_effects`;
+6. собрать выбранные стабильные части в `PF05_submarine_light_room` и `PF06_party_environment`.
 
-Почему именно так:
-
-- не требует пока 3D и сети;
-- использует готовый `cardgame` kernel;
-- создаёт save/test contracts, которые понадобятся всем;
-- даёт первый реальный migration case;
-- начинает localization с проверяемых ресурсов, не затрагивая пока сложный shaping;
-- добавляет knowledge boundary до того, как несколько project planners начнут читать canonical world напрямую;
-- даёт `ZB` дешёвый mass-simulation proof без renderer/animation prerequisites;
-- не заставляет заранее проектировать materialization или distributed state.
+`FND-02`, persistence, module profiles, command shell, headless host, localization, knowledge, calendar и
+layered fields остаются важным dependency pool. Они возвращаются в active work только вместе с
+playground/project slice, которому дают конечный результат. Это не меняет их horizon priority, но
+убирает случайное переключение между несвязанными маленькими контрактами.
 
 ## Критерии переноса project-кода в engine
 

@@ -126,7 +126,7 @@ descriptor::descriptor() noexcept : texture_count(0), texture_stage(VK_SHADER_ST
 sampler::sampler() noexcept : mag_filter(VK_FILTER_LINEAR), min_filter(VK_FILTER_LINEAR),
                               address_u(VK_SAMPLER_ADDRESS_MODE_REPEAT), address_v(VK_SAMPLER_ADDRESS_MODE_REPEAT), address_w(VK_SAMPLER_ADDRESS_MODE_REPEAT),
                               mipmap_mode(VK_SAMPLER_MIPMAP_MODE_LINEAR), handle(VK_NULL_HANDLE) {}
-material::material() noexcept {}
+material::material() noexcept : shaders{}, raster{}, depth{} {}
 geometry::geometry() noexcept : index_type(index_type::u32), topology_type(0), restart(false), stride(0) {}
 draw_group::draw_group() noexcept : budget_constant(UINT32_MAX), types_constant(UINT32_MAX), type(type::device_local), instances_buffer(UINT32_MAX), indirect_buffer(UINT32_MAX), descriptor(UINT32_MAX), stride(0) {}
 execution_pass_base::resource_info::resource_info() noexcept : slot(invalid_resource_slot), usage(usage::undefined), action(store_op::none) {}
@@ -835,6 +835,7 @@ struct material_mirror {
   };
 
   std::string name;
+  std::vector<std::tuple<std::string, std::string>> definitions;
   struct material::shaders shaders;
   struct raster raster;
   struct depth depth;
@@ -847,6 +848,13 @@ struct material_mirror {
 
     material m;
     m.name = name;
+    m.definitions.reserve(definitions.size());
+    for (const auto& [definition, value] : definitions) {
+      if (definition.empty()) {
+        utils::error{}("Material '{}' contains an empty shader definition", name);
+      }
+      m.definitions.emplace_back(definition, value);
+    }
     m.shaders = shaders;
     m.raster.depth_clamp = raster.depth_clamp;
     m.raster.raster_discard = raster.raster_discard;

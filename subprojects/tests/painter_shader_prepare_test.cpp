@@ -38,6 +38,35 @@ TEST_CASE("glsl_source_file caches prepared SPIR-V by shader stage [painter]") {
   CHECK_FALSE(shader.prepared(shaderc_vertex_shader));
 }
 
+TEST_CASE("glsl_source_file keeps material-defined shader variants separate [painter]") {
+  painter::glsl_source_file shader;
+  shader.memory =
+    "#version 450\n"
+    "layout(location = 0) out vec4 out_color;\n"
+    "void main() {\n"
+    "#ifdef PF01_RED\n"
+    "  out_color = vec4(1.0, 0.0, 0.0, 1.0);\n"
+    "#else\n"
+    "  out_color = vec4(0.0, 0.0, 1.0, 1.0);\n"
+    "#endif\n"
+    "}\n";
+
+  const std::vector<painter::glsl_source_file::shader_definition> red{{"PF01_RED", "1"}};
+  const std::vector<painter::glsl_source_file::shader_definition> blue{{"PF01_BLUE", "1"}};
+  std::string error;
+  CHECK(shader.prepare_spirv(nullptr, shaderc_fragment_shader, red, &error));
+  CHECK(shader.prepare_spirv(nullptr, shaderc_fragment_shader, blue, &error));
+  const auto* red_spirv = shader.prepared_spirv(shaderc_fragment_shader, red);
+  const auto* blue_spirv = shader.prepared_spirv(shaderc_fragment_shader, blue);
+  REQUIRE(red_spirv != nullptr);
+  REQUIRE(blue_spirv != nullptr);
+  CHECK(*red_spirv != *blue_spirv);
+  CHECK(shader.variants.size() == 2);
+
+  shader.unload_warm(utils::safe_handle_t{});
+  CHECK(shader.variants.empty());
+}
+
 TEST_CASE("shader_crafter serves utils shared header from generated memory include [painter]") {
   painter::glsl_source_file shader;
   shader.memory =
@@ -82,6 +111,7 @@ TEST_CASE("painter render config reads demiurg tavl list subresources [painter]"
   fs::create_directories(root / "core" / "render_config" / "resources");
   fs::create_directories(root / "core" / "render_config" / "render_targets");
   fs::create_directories(root / "core" / "render_config" / "render_graphs");
+  fs::create_directories(root / "core" / "render_config" / "materials");
 
   {
     std::ofstream out(root / "core" / "render_config" / "declare_values.tavl");
@@ -128,6 +158,29 @@ TEST_CASE("painter render config reads demiurg tavl list subresources [painter]"
   }
 
   {
+    std::ofstream out(root / "core" / "render_config" / "materials" / "defined.tavl");
+    out << "{\n";
+    out << "  name = defined_material\n";
+    out << "  definitions = [ PF01_CHECKER_WALL = \"1\" ]\n";
+    out << "  shaders = {\n";
+    out << "    vertex = \"defined.vert.glsl\"\n";
+    out << "    fragment = \"defined.frag.glsl\"\n";
+    out << "  }\n";
+    out << "  depth = {\n";
+    out << "    test = false\n";
+    out << "    write = false\n";
+    out << "    compare = less_or_equal\n";
+    out << "  }\n";
+    out << "  raster = {\n";
+    out << "    cull = none\n";
+    out << "    front_face = cw\n";
+    out << "    polygon = fill\n";
+    out << "    line_width = 1.0\n";
+    out << "  }\n";
+    out << "}\n";
+  }
+
+  {
     std::ofstream out(root / "core" / "render_config" / "render_graphs" / "main.tavl");
     out << "{\n";
     out << "  name = graphics1\n";
@@ -161,6 +214,11 @@ TEST_CASE("painter render config reads demiurg tavl list subresources [painter]"
   CHECK(storage.find_resource("swapchain_image") != painter::invalid_resource_slot);
   CHECK(storage.find_resource("albedo_res") != painter::invalid_resource_slot);
   CHECK(storage.find_render_target("rt1") != painter::invalid_resource_slot);
+  const auto material_slot = storage.find_material("defined_material");
+  REQUIRE(material_slot != painter::invalid_resource_slot);
+  REQUIRE(storage.materials[material_slot].definitions.size() == 1);
+  CHECK(storage.materials[material_slot].definitions[0].first == "PF01_CHECKER_WALL");
+  CHECK(storage.materials[material_slot].definitions[0].second == "1");
   CHECK(storage.find_render_graph("graphics1") != painter::invalid_resource_slot);
   REQUIRE(storage.graphs.size() == 1);
   CHECK(storage.graphs.front().startup);

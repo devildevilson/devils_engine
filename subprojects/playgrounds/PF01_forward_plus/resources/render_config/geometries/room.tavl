@@ -1,0 +1,7 @@
+{
+  name = room_geometry
+  vertex_layout = p3n3uv2
+  index_type = none
+  topology = triangle_list
+  restart = false
+}

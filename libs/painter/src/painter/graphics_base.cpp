@@ -19,6 +19,13 @@ void graphics_base::set_shader_source(const demiurg::resource_system* reg, std::
   shader_prefix_ = std::move(prefix);
 }
 
+void graphics_base::set_shader_source_filesystem(std::string prefix) {
+  shader_filesystem_prefix_ = std::move(prefix);
+  if (!shader_filesystem_prefix_.empty() && shader_filesystem_prefix_.back() != '/' && shader_filesystem_prefix_.back() != '\\') {
+    shader_filesystem_prefix_.push_back('/');
+  }
+}
+
 void graphics_base::set_startup_graph(std::string name) {
   startup_graph_ = std::move(name);
   resident_graphs_.clear();
@@ -2017,7 +2024,7 @@ void graphics_base::create_resources() {
 
         res.handles[j].view = dev.createImageView(ivci);
 
-        set_name(device, vk::ImageView(res.handles[i].view), res.name + ".view" + std::to_string(j));
+        set_name(device, vk::ImageView(res.handles[j].view), res.name + ".view" + std::to_string(j));
 
         res.handles[j].subimage = std::bit_cast<subresource_image>(ivci.subresourceRange);
       } else {

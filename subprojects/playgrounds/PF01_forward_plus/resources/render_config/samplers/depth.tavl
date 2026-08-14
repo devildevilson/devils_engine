@@ -1,0 +1,5 @@
+{
+  name = depth_nearest
+  filter = nearest
+  address = clamp
+}

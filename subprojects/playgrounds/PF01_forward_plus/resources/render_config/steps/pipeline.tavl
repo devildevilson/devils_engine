@@ -1,0 +1,29 @@
+{
+  name = depth_prepass
+  material = depth_prepass_material
+  geometry = room_geometry
+  draw_group = room_draw_group
+  sets = [ scene_data ]
+  barriers = [ camera_buffer = uniform ]
+  command = "draw"
+}
+{
+  name = build_light_tiles
+  material = light_culling_material
+  sets = [ scene_data, depth_input, light_tiles ]
+  barriers = [ camera_buffer = uniform, light_buffer = storage_read, scene_depth = depth_read, tile_light_lists = storage_write ]
+  command = "dispatch constant light_dispatch"
+}
+{
+  name = draw_forward_plus
+  material = forward_plus_material
+  geometry = room_geometry
+  draw_group = room_draw_group
+  sets = [ scene_data, light_tiles ]
+  barriers = [ camera_buffer = uniform, light_buffer = storage_read, tile_light_lists = storage_read ]
+  command = "draw"
+}
+{
+  name = present_hdr
+  command = "blit hdr_color swapchain_image"
+}

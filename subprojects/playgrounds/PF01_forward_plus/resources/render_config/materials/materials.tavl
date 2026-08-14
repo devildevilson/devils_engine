@@ -1,0 +1,55 @@
+{
+  name = depth_prepass_material
+  shaders = {
+    vertex = "room.vert.glsl"
+    fragment = "depth.frag.glsl"
+  }
+  depth = {
+    test = true
+    write = true
+    compare = greater
+  }
+  raster = {
+    cull = none
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  name = light_culling_material
+  definitions = [ PF01_TILE_SIZE = "16", PF01_MAX_LIGHTS_PER_TILE = "64", PF01_TILES_X = "120", PF01_TILES_Y = "68" ]
+  shaders = {
+    compute = "light_cull.comp.glsl"
+  }
+  depth = {
+    test = false
+    write = false
+    compare = always
+  }
+  raster = {
+    cull = none
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  name = forward_plus_material
+  definitions = [ PF01_TILE_SIZE = "16", PF01_MAX_LIGHTS_PER_TILE = "64", PF01_TILES_X = "120", PF01_TILES_Y = "68", PF01_CHECKER_WALL = "1", PF01_SPECULAR_POWER = "48.0" ]
+  shaders = {
+    vertex = "room.vert.glsl"
+    fragment = "forward_plus.frag.glsl"
+  }
+  depth = {
+    test = true
+    write = false
+    compare = equal
+  }
+  raster = {
+    cull = none
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}

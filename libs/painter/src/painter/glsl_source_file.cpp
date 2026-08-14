@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include "devils_engine/demiurg/module_interface.h"
 #include "glsl_source_file.h"
 #include "shader_crafter.h"
@@ -39,6 +41,56 @@ bool glsl_source_file::prepare_spirv(const demiurg::resource_system* reg, const 
   return true;
 }
 
+const std::vector<uint32_t>* glsl_source_file::prepared_spirv(
+  const uint32_t shader_kind,
+  const std::span<const shader_definition> definitions) const noexcept {
+  if (definitions.empty()) {
+    return prepared(shader_kind) ? &spirv : nullptr;
+  }
+
+  for (const auto& variant : variants) {
+    if (variant.shader_kind == shader_kind &&
+        std::equal(variant.definitions.begin(), variant.definitions.end(), definitions.begin(), definitions.end())) {
+      return &variant.spirv;
+    }
+  }
+  return nullptr;
+}
+
+bool glsl_source_file::prepare_spirv(
+  const demiurg::resource_system* reg,
+  const uint32_t shader_kind,
+  const std::span<const shader_definition> definitions,
+  std::string* error) {
+  if (definitions.empty()) {
+    return prepare_spirv(reg, shader_kind, error);
+  }
+  if (prepared_spirv(shader_kind, definitions) != nullptr) {
+    return true;
+  }
+  if (memory.empty()) {
+    load(utils::safe_handle_t{});
+  }
+
+  shader_crafter sc(reg);
+  sc.set_optimization(true);
+  sc.set_shader_entry_point("main");
+  sc.set_shader_type(shader_kind);
+  for (const auto& [name, value] : definitions) {
+    sc.add_definition(name, value);
+  }
+  auto out = sc.compile(std::string(id), memory);
+  if (out.empty()) {
+    if (error != nullptr) {
+      *error = sc.err_msg();
+    }
+    return false;
+  }
+
+  variants.push_back(prepared_variant{shader_kind, {definitions.begin(), definitions.end()}, std::move(out)});
+  return true;
+}
+
 // супер простой класс в котором мы просто ждем когда нас положат в какой нибудь шейдер
 void glsl_source_file::load_cold(const utils::safe_handle_t&) {
   memory = module->load_text(path);
@@ -52,6 +104,8 @@ void glsl_source_file::unload_warm(const utils::safe_handle_t&) {
   spirv.clear();
   spirv.shrink_to_fit();
   spirv_shader_kind = UINT32_MAX;
+  variants.clear();
+  variants.shrink_to_fit();
 }
 } // namespace painter
 } // namespace devils_engine

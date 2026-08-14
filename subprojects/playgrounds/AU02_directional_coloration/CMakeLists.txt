@@ -9,7 +9,7 @@ target_link_libraries(audio_coloration_lab PRIVATE
   devils_engine::options)
 
 set_target_properties(audio_coloration_lab PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/audio_coloration_lab/bin")
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/subprojects/playgrounds/AU02_directional_coloration/bin")
 
 if (DEVILS_ENGINE_BUILD_TESTS)
   add_test(NAME audio_coloration_lab_hum_dry_run

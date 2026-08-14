@@ -1,0 +1,8 @@
+{
+  name = depth_target
+  resources = [ scene_depth = depth_attachment ]
+}
+{
+  name = forward_target
+  resources = [ hdr_color = color_attachment, scene_depth = depth_attachment ]
+}

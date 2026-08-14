@@ -1,0 +1,29 @@
+{
+  name = viewport
+  type = screensize
+}
+{
+  name = one
+  type = fixed
+  value = [1, 0, 0]
+}
+{
+  name = room_instances
+  type = fixed
+  value = [1, 0, 0]
+}
+{
+  name = room_draws
+  type = fixed
+  value = [1, 0, 0]
+}
+{
+  name = light_vec4_count
+  type = fixed
+  value = [257, 0, 0]
+}
+{
+  name = tile_word_count
+  type = fixed
+  value = [530400, 0, 0]
+}

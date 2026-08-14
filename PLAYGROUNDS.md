@@ -1,12 +1,14 @@
 # devils_engine — каталог маленьких playground-проектов
 
-Этот документ описывает намеренно маленькие проверочные проекты. Playground — не вертикальный срез
-игры и не обещание контента: это живой consumer одного-двух движковых контрактов и одной характерной
-проектной особенности.
+Этот документ описывает ограниченные проверочные проекты. Playground — основная единица текущего
+планирования: законченный срез, который можно запустить и оценить глазами/на слух либо который доказывает
+крупную симуляционную систему. Нумерованные задачи движка остаются каталогом зависимостей и не задают
+порядок работы сами по себе.
 
-Playground должен быстро отвечать на конкретный технический вопрос. Если он оказался полезен, его можно
-расширять следующими независимыми slices; со временем некоторые стенды естественно превратятся в ранние
-срезы игр. До этого момента они не обязаны иметь сюжет, баланс, production UI или законченный art style.
+Playground отвечает на конкретный технический вопрос и заканчивается наблюдаемым результатом. Если он
+оказался полезен, его можно расширять следующими именованными slices; некоторые стенды естественно
+превратятся в ранние срезы игр. До этого момента они не обязаны иметь сюжет, баланс, production UI или
+законченный art style.
 
 ## Общие правила
 
@@ -20,6 +22,7 @@ Playground должен быстро отвечать на конкретный 
 - Поддерживает headless validation там, где результат не обязан оцениваться глазами.
 - Имеет измеримые критерии завершения: frame time, determinism, memory, latency, artifact hash или
   корректный state transition.
+- Имеет свой `README.md`: назначение, запуск, точки входа, debug views, граница и Definition of Done.
 - Может быть удалён без потери проектного контента: ценность остаётся в закреплённом engine contract,
   tests и reusable resources/tools.
 
@@ -49,184 +52,72 @@ Playground должен быстро отвечать на конкретный 
 
 Это не полноценный editor. Оболочка только делает маленькие experiments наблюдаемыми и повторяемыми.
 
-## Рекомендуемый первый набор
+### Режим работы
 
-| Приоритет | Playground | Главный вопрос | Первый project consumer |
+- В каждый момент активна одна campaign и один её лабораторный срез.
+- Мелкая задача из `ROADMAP.md` берётся только как обнаруженный blocker текущего результата.
+- Числовой/focused test закрепляет контракт, но не выбирает направление работы.
+- Независимая идея, не мешающая текущему срезу, остаётся в backlog/parking lot.
+- Лаборатория закрывается запускаемым сценарием, debug-представлением, минимальным regression contract
+  и обновлённой документацией.
+- Все площадки физически живут под `subprojects/playgrounds/<CODE>_<human_name>/`; уже доказанная общая
+  оболочка постепенно собирается в `subprojects/playgrounds/common/`.
+
+## Текущий фокус — Painter visual stack
+
+Активная campaign: шесть независимых painter-лабораторий `PF01`–`PF06`. Сейчас в работе только
+[`PF01_forward_plus`](subprojects/playgrounds/PF01_forward_plus/README.md). Сначала она создаёт
+минимальную 3D laboratory shell и наблюдаемый Forward+ proof; следующая лаборатория выбирается после
+закрытия её Definition of Done.
+
+Лаборатории не образуют CMake/source dependency chain. Более поздняя площадка может выборочно взять
+зафиксированный baseline ранней либо общий код из `common`/`libs/painter`, после чего развивается
+независимо. Поэтому расширение `PF03` новыми post-effects не меняет автоматически `PF05`.
+
+## Painter campaign: шесть лабораторий
+
+| Порядок | Директория | Наблюдаемый результат | Первый consumer |
 | --- | --- | --- | --- |
-| 1 | `painter_feature_lab` | можно ли подключать visual feature почти без C++ | общий renderer |
-| 2 | `submarine_light_room` | работает ли свет как пространственное и игровое препятствие | `submarine_coop` |
-| 3 | `party_movement_garden` | пригодна ли 3D action foundation для исследования generated world | `party_adventure` |
-| 4 | `hierarchy_sim_lab` | объясним и ограничен ли многоуровневый AI | `medieval_hero_manager` |
-| 5 | `tower_floor_lab` | достаточно ли grid/resolve/generator primitives для маленького этажа | `tower_crawler` |
-| 6 | `generator_contract_lab` | можно ли собирать typed deterministic passes через Lua glue | несколько проектов |
-| 7 | `commander_mission_lab` | способен ли planner решать миссию только по доступным observations и честно объяснять replan | `commander_simulator` |
-| 8 | `swarm_field_lab` | масштабируются ли layered fields, assignment и flow без per-unit микроконтроля | `zerg_brain` |
-| 9 | `apates_campaign_bridge_lab` | сохраняется ли один canonical character между campaign и encounter | `apates_quest` |
+| 1 | `PF01_forward_plus` | много движущихся lights, cluster heatmap и Forward+/simple comparison | общий renderer |
+| 2 | `PF02_shadows` | directional/spot shadow maps, atlas и bias diagnostics | общий renderer |
+| 3 | `PF03_post_processing` | независимая расширяемая post-effect gallery | общий renderer |
+| 4 | `PF04_stencil_effects` | outline, local mask и portal/mirror/window proof | общий renderer |
+| 5 | `PF05_submarine_light_room` | густая тёмная сцена со светом как препятствием | `submarine_coop` |
+| 6 | `PF06_party_environment` | динамический свет, погода и окружение | `party_adventure` |
 
-Эти стенды не следует начинать одновременно. `painter_feature_lab` создаёт общую visual infrastructure;
-остальные становятся её потребителями по мере готовности нужных базовых систем.
+`PF01`–`PF04` доказывают отдельные painter capabilities. `PF05` и `PF06` фиксируют только нужное им
+подмножество этих возможностей в собственных resources/presets. Исходники и CMake targets лабораторий
+не зависят друг от друга.
 
-## 1. `painter_feature_lab` — лаборатория визуальных features
+## 1. Painter visual stack
 
-### Вопрос
+Главный вопрос campaign: можно ли последовательно доказать lighting, shadows, post-processing и stencil
+на маленьких наблюдаемых сценах, а затем собрать из выбранного подмножества два разных project looks?
 
-Можно ли добавить новую visual feature как render-graph fragment + materials + shaders + parameter
-schema, не добавляя специализированный C++ pass?
+Общая dataflow-граница:
 
-### Минимальная сцена
+```text
+scene instances + lights
+  -> depth prepass
+  -> Forward+ cluster/light assignment
+  -> forward HDR rendering <- shadow maps
+  -> selected post chain
+  -> swapchain/debug target viewer
+```
 
-- закрытая комната, наружная площадка и проход между ними;
-- несколько простых meshes: плоскость, куб, сфера, лестница, тонкая геометрия;
-- матовые, металлические, emissive, прозрачные и alpha-tested материалы;
-- один статический и один движущийся объект;
-- directional, point и spot light;
-- свободная camera и повторяемая camera rail.
+Подробная граница, точки входа и Definition of Done принадлежат README каждой директории:
 
-### Последовательные slices
+- [`PF01_forward_plus`](subprojects/playgrounds/PF01_forward_plus/README.md);
+- [`PF02_shadows`](subprojects/playgrounds/PF02_shadows/README.md);
+- [`PF03_post_processing`](subprojects/playgrounds/PF03_post_processing/README.md);
+- [`PF04_stencil_effects`](subprojects/playgrounds/PF04_stencil_effects/README.md);
+- [`PF05_submarine_light_room`](subprojects/playgrounds/PF05_submarine_light_room/README.md);
+- [`PF06_party_environment`](subprojects/playgrounds/PF06_party_environment/README.md).
 
-1. HDR offscreen scene, depth и normal targets.
-2. Generic fullscreen-triangle и compute-dispatch feature passes.
-3. Parameter blocks и live inspector.
-4. Просмотр любого промежуточного render target.
-5. Post-processing compositor и typed feature inputs/outputs.
-6. SSAO как первый spatial effect.
-7. Motion vectors, jitter и temporal history lifecycle.
-8. TAA как первый temporal effect.
-9. Bloom, exposure, tone mapping и color grading.
-10. Depth pyramid и общие reconstruction/denoise primitives.
-11. Простой screen-space contact shadow или outline.
-12. Минимальный volumetric fog consumer.
-
-### Инструменты, которые должен доказать стенд
-
-- shader/config hot reload;
-- shader-interface reflection и descriptor validation;
-- transient/history resource lifecycle;
-- reset history при camera cut, resize и teleport;
-- enable/disable с корректным passthrough;
-- quality presets;
-- GPU timing и memory cost каждого pass;
-- capture промежуточных targets;
-- loud errors для cycles, missing inputs, incompatible formats и двойного producer.
-
-### Не входит
-
-- production PBR material library;
-- большая outdoor scene;
-- полный editor;
-- окончательный набор эффектов конкретной игры.
-
-### Definition of Done первого среза
-
-Новый grayscale/outline/blur effect добавляется только ресурсным feature manifest, material и shader.
-C++ не меняется; граф валидируется, эффект можно выключить, его output можно просмотреть, а GPU time
-виден в inspector.
-
-## 2. `submarine_light_room` — тесная FPS-комната и давящее освещение
-
-### Вопрос
-
-Можно ли сделать освещение одновременно выразительным визуальным слоем и понятным препятствием, не
-делая gameplay зависимым от чтения framebuffer?
-
-### Минимальная сцена
-
-- две тесные комнаты подлодки, коридор, дверь и маленький технический отсек;
-- FPS controller;
-- ручной фонарь;
-- обычная, аварийная и повреждённая лампы;
-- один подбираемый предмет;
-- один интерактивный выключатель или breaker;
-- пар/дым в одной зоне;
-- движущийся либо качающийся локальный объект для проверки теней и physics interaction.
-
-### Первый gameplay slice
-
-- подобрать и бросить предмет;
-- включить/выключить фонарь;
-- отключить питание одной комнаты;
-- открыть дверь и изменить распространение света/тумана;
-- показать отдельный authoritative показатель освещённости комнаты или объекта.
-
-### Visual slices
-
-1. Per-pixel local lighting в HDR.
-2. Spot/point shadows и contact shadows.
-3. Ограниченная exposure policy: темнота не должна автоматически превращаться в серый день.
-4. Emissive fixtures, flicker и аварийный красный свет.
-5. SSAO и подчёркнутые тесные контакты поверхностей.
-6. Локальный volumetric smoke/steam.
-7. Wet material highlights и простые water/caustic accents.
-8. Project color grading.
-
-### Две модели освещения
-
-Renderer строит богатую картинку. Gameplay отдельно хранит дешёвую приближённую модель:
-
-- питание и состояние источников;
-- light/visibility value комнаты или spatial cell;
-- наличие грубой прямой видимости;
-- дверь/стена/дым как modifiers;
-- пороги обнаружения для actors.
-
-Эти модели должны коррелировать, но gameplay никогда не определяет видимость чтением pixels.
-
-### Не входит
-
-- полноценная подлодка;
-- flooding/pressure simulation;
-- co-op networking;
-- сложный enemy AI;
-- production ragdoll.
-
-### Definition of Done первого среза
-
-Игрок может обесточить комнату, осветить её фонарём и подобрать предмет. Визуальное и gameplay-состояние
-освещённости изменяются согласованно; debug view показывает оба, а renderer остаётся presentation-only.
-
-## 3. `party_movement_garden` — третье лицо, terrain и объёмный туман
-
-### Вопрос
-
-Можно ли комфортно управлять персонажем на небольшой сложной 3D-локации и собирать атмосферу из
-generated terrain, authored modules, animation, physics, navigation и volumetric rendering?
-
-### Минимальная сцена
-
-- небольшой valley/garden размером в несколько минут ходьбы не требуется: достаточно 30–60 секунд;
-- склон, уступ, узкий проход, мост, небольшая пещера и одна открытая площадка;
-- third-person controller и orbit camera;
-- один skinned character с idle/walk/run/jump;
-- один подбираемый объект и один physics object;
-- простой companion/navigation agent;
-- две fog volumes: низина и пещера.
-
-### Последовательные slices
-
-1. Character controller, slopes/steps и camera collision.
-2. Animation blending, root-motion policy и foot placement probe.
-3. Interaction ray/query и pickup.
-4. Navmesh/path query через мост и пещеру.
-5. Height fog.
-6. Froxel volume injection и light scattering.
-7. Temporal reprojection, depth-aware upsample и history diagnostics.
-8. Один generated terrain patch из graph/height/volume artifact.
-9. Вставка одного authored module в generated patch.
-10. Запекание либо построение collision/nav artifacts из того же package.
-
-### Не входит
-
-- party combat;
-- quest system;
-- полноценная генерация мира;
-- несколько классов персонажей;
-- co-op.
-
-### Definition of Done первого среза
-
-Персонаж проходит склон, мост и пещеру без camera/physics discontinuities. Fog volumes корректно
-пересекают геометрию и освещение, temporal history переживает обычное движение и сбрасывается при
-teleport. Companion строит маршрут по той же локации.
+Минимальная общая shell должна появляться из потребностей `PF01`, а не проектироваться целиком заранее.
+Повторённый стабильный код camera/debug/capture переезжает в
+[`common`](subprojects/playgrounds/common/README.md); renderer contracts — в `libs/painter` после
+доказательства, а feature resources остаются у лабораторий.
 
 ## 4. `hierarchy_sim_lab` — симуляция иерархического AI
 
@@ -433,7 +324,7 @@ artifacts и comparison между builds. Первым consumer может ст
 
 Три соединённые комнаты с разными материалами, дверями и acoustic zones. Проверяет
 `(material, action/impact, context) -> sound event`, шаги, удары, reverb/filters, obstruction, portals,
-priorities и virtual voices. Может использовать ту же proxy geometry, что `submarine_light_room`, но
+priorities и virtual voices. Может использовать ту же proxy geometry, что `PF05_submarine_light_room`, но
 остаётся отдельным аудио-сценарием.
 
 ### 14. `swarm_field_lab`
@@ -498,38 +389,26 @@ early game slice
 Если следующий шаг отвечает только «нужно больше контента», playground уже выполнил движковую задачу.
 Дальнейшее развитие должно происходить в проекте либо ждать возвращения интереса к его gameplay.
 
-## Предлагаемая физическая организация
+## Физическая организация
 
-На ранней стадии лучше не создавать семнадцать полностью независимых приложений. Достаточно одного
-общего laboratory host и нескольких project-owned executables там, где topology действительно различна:
+Площадки каталогизируются по коду и человеческому имени. У каждой есть собственная директория и README;
+наличие отдельного executable определяется её topology и независимостью эксперимента:
 
 ```text
 subprojects/
   playgrounds/
-    visual_lab/
-      scenarios/
-        painter_features/
-        submarine_light_room/
-        party_movement_garden/
-        audio_environment/
-    simulation_lab/
-      scenarios/
-        hierarchy_sim/
-        tower_floor/
-        generator_contract/
-        headless_run/
-        commander_mission/
-        swarm_field/
-        apates_campaign_bridge/
-    infrastructure_lab/
-      scenarios/
-        resource_churn/
-        planet_streaming/
-        globe_topology/
-        network_session/
-        localized_text/
+    common/
+    AU01_spatial_audio/
+    AU02_directional_coloration/
+    PF01_forward_plus/
+    PF02_shadows/
+    PF03_post_processing/
+    PF04_stencil_effects/
+    PF05_submarine_light_room/
+    PF06_party_environment/
+    ...
 ```
 
-Это ориентир, не обязательная архитектура. Отдельный executable оправдан, если различаются thread/process
-topology, renderer presence, dedicated-server режим или набор platform dependencies. Общий mega-demo,
-который обязан загрузить все системы сразу, также не нужен.
+`common` — не mega-demo и не источник feature inheritance. Он содержит только маленькую shared shell.
+Отдельный executable оправдан независимым экспериментом, отличающейся thread/process topology,
+renderer presence, dedicated-server режимом или набором platform dependencies.

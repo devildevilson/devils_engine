@@ -1,0 +1,7 @@
+{
+  name = room_draw_group
+  layout = v4
+  budget = room_instances
+  draw_capacity = room_draws
+  type = host_visible
+}

@@ -1,15 +1,17 @@
 # devils_engine — рабочий план развития
 
-Этот документ — оперативная очередь движка. Все незавершённые задачи находятся в верхней части,
-завершённые задачи и закреплённые контракты — в архиве в самом низу.
+Этот документ — каталог движковых контрактов и зависимостей для активных playground/project slices.
+Он больше не является очередью, по которой следует брать мелкие задачи сверху вниз. Завершённые
+задачи и закреплённые контракты остаются в архиве в самом низу.
 
-`ROADMAP_ULT.md` отвечает на вопрос «что в итоге потребуется всем проектам»; этот файл отвечает на
-вопрос «что можно брать в работу и закрывать». Проектная семантика остаётся в проектах: в engine
-переносятся ownership, lifetime, ordering, budgets, diagnostics и переиспользуемые primitives.
+`ROADMAP_ULT.md` отвечает на вопрос «что в итоге потребуется всем проектам»; `PLAYGROUNDS.md` выбирает
+текущую campaign и наблюдаемый результат; этот файл отвечает на вопрос «какие engine contracts могут
+понадобиться для его закрытия». Проектная семантика остаётся в проектах: в engine переносятся ownership,
+lifetime, ordering, budgets, diagnostics и переиспользуемые primitives.
 
-Текущий integration playground — `subprojects/tile_frontier`; `subprojects/cardgame` — второй живой
-gameplay consumer. Целевой внешний проект заполняет движковые registries/resources/scripts и добавляет
-тонкую C++-обвязку, не копируя app lifecycle, threading, loading, persistence или tooling infrastructure.
+`subprojects/tile_frontier` остаётся главным сложившимся integration playground, а `subprojects/cardgame`
+— вторым живым gameplay consumer. Текущий новый фокус — painter campaign под
+`subprojects/playgrounds/`, начиная с `PF01_forward_plus`.
 
 ## Легенда
 
@@ -24,22 +26,26 @@ gameplay consumer. Целевой внешний проект заполняет
 `project-first` означает: первый implementation живёт в проекте, а в engine переносится только после
 второго consumer либо когда уже доказана чистая общая граница.
 
-## Ближайшие задачи, которые можно закрыть
+## Активный срез
 
-Это не перечень самых больших возможностей движка, а ограниченные slices с понятным Definition of Done.
-Порядок внутри таблицы рекомендуемый; одновременно лучше держать не более двух задач.
+Campaign: [Painter visual stack](PLAYGROUNDS.md#текущий-фокус--painter-visual-stack).
 
-| Порядок | ID | Результат закрытия | Сложность | Почему сейчас |
-| --- | --- | --- | --- | --- |
-| 1 | `UTL-08` | общие byte/hash comparison helpers показывают первый divergent offset/record в deterministic tests | `S` | следующий конкретный foundation primitive для save/replay/headless tests без общего diagnostics service |
-| 2 | `MOD-01` + `MOD-02` | installed module catalog и несколько ordered TAVL profiles имеют headless round-trip и atomic active-profile selection | `M` | первый практический срез уточнённого game-facing module workflow поверх закрытых fingerprints |
-| 3 | `SIM-04` | у broker-каналов видны capacity, high-water mark, rejected/dropped и stalled-consumer diagnostics | `M` | предметная диагностика текущего multithreaded `tile_frontier` и будущего dedicated host |
-| 4 | `ACT-03` + `ACT-04` | command/preview/rejection имеют versioned envelope, typed code, loc-key, parameters и state token | `M` | нужен UI-командам без dry-run мутации мира |
-| 5 | `LOC-01` + `LOC-02` | загружаются locale manifest/table, работает fallback и module override, coverage проверяется headlessly | `M–L` | первый вертикальный срез новой локализации без shaping и сложных forms |
-| 6 | `GEN-01` + `GEN-02` | typed pass/artifact descriptors и registry исполняют два dummy passes с проверкой входов/выходов | `L` | минимальный proof нового generator contract до Lua и реальных карт |
+Текущая лаборатория: [`PF01_forward_plus`](subprojects/playgrounds/PF01_forward_plus/README.md).
 
-После каждого пункта обновлять этот список: закрытая строка переносится в нижний архив, а её место
-занимает следующий ограниченный slice из полного backlog.
+| Этап лаборатории | Наблюдаемый результат | Возможные engine blockers |
+| --- | --- | --- |
+| shell/baseline | отдельная 3D-сцена, camera rail, HDR + depth/stencil, target viewer | минимальные части `RND-01/02/11/12/13/15` |
+| Forward+ data | instance/light buffers и bounded cluster lists | `RND-01/02/04` |
+| visible comparison | moving lights, simple/Forward+ toggle, heatmap, overflow и timings | `RND-04/11` |
+
+Срез 2026-08-14: room/free-camera/HDR/reversed-Z depth, 96 moving point lights и config-defined
+depth → compute tile assignment → Forward+ → present уже запускаются с чистым Vulkan validation.
+Следующая наблюдаемая граница — naive-forward A/B, heatmap/overflow и repeatable camera rail/timings.
+
+`RND-*` из этой таблицы не требуется закрывать целиком до запуска сцены. Исправляется только конкретный
+blocker текущего этапа; найденная более широкая работа остаётся в backlog. `UTL-08`, module profiles,
+broker diagnostics, localization и generators поставлены на паузу до campaign, которой нужен их
+наблюдаемый результат.
 
 ## Открытый системный backlog
 
@@ -173,7 +179,7 @@ Persistent multi-day event или repair action хранится в `SIM-03`, а
 | `RND-01` | High-level 3D scene instance layer | `L` | typed instances, lifetime, snapshots and batches |
 | `RND-02` | Transform/skinning buffers | `L` | frame-owned uploads and stable instance mapping |
 | `RND-03` | Skeletal rendering | `L–XL` | bone palettes, bounds and skinned draw path |
-| `RND-04` | Lighting/shadows | `XL` | tiered scene path; 2D/2.5D не платят полный cost |
+| `RND-04` | Forward+ lighting path | `L–XL` | bounded cluster/light lists, compute assignment, point/spot data, heatmap/overflow; tiered path so 2D/2.5D не платят полный cost |
 | `RND-05` | Decals/transparency | `L–XL` | ordering, lifetime and material integration |
 | `RND-06` | Visibility/occlusion | `XL` | CPU/GPU culling с diagnostics |
 | `RND-07` | Material/mesh LOD and HLOD | `XL` | selection, residency, transitions and metrics |
@@ -187,11 +193,18 @@ Persistent multi-day event или repair action хранится в `SIM-03`, а
 | `RND-19` | Screen-space ambient occlusion (SSAO) | `L` | depth/normal sampling, denoise/temporal accumulation, quality presets and lighting integration |
 | `RND-20` | Общий screen-space effects toolkit | `L–XL` | depth pyramid, reconstruction, bilateral blur/denoise and reusable kernels for SSR, contact shadows, fog and outlines |
 | `RND-21` | Базовая color post-processing chain | `L` | HDR exposure, tone mapping, bloom, color grading and output-color-space policy |
+| `RND-22` | Directional/spot shadow maps and atlas | `L–XL` | caster selection, bias policy, atlas lifetime, debug view and timings; point cubemaps are a later extension |
+| `RND-23` | Stencil effect path | `M–L` | depth/stencil attachment lifetime, material front/back ops, masks/reference, visualization and ordinary graph consumers |
 
 Порядок post-processing: `RND-16` создаёт общий host, `RND-17` — temporal data/history contract;
 после них независимо проверяются `RND-18`, `RND-19` и `RND-21`. Переиспользуемые depth/reconstruction/
 denoise primitives из первых живых эффектов постепенно собираются в `RND-20`, а не проектируются
 полностью заранее.
+
+Текущий порядок proof задают лаборатории, а не номера: `PF01` тянет минимальные `RND-01/02/04/11`
+и только реально встреченные command/schema/format blockers; `PF02` доказывает `RND-22`, `PF03` —
+`RND-16/19/21` и последующие самостоятельные temporal slices, `PF04` — `RND-23`. `PF05/06` выбирают
+зафиксированное подмножество готовых возможностей вместо зависимости от полного состояния этих labs.
 
 ### `libs/flow` — skeletal animation integration
 
@@ -506,8 +519,9 @@ proof обязан быть маленьким и проверять seam/circum
 - [x] `AUD-01`/`RES-10`: immutable shared sound generations pin-ятся producer-ом до broker publish
   и живут через queued/active task; `unload_warm()` снимает resource owner без invalidation playback,
   unload lifetime покрыт focused test.
-- [x] `AUD-LAB-01` tooling: отдельный `audio_spatial_lab` исполняет один deterministic mono S16
-  reference signal/trajectory через production miniaudio `system` или direct OpenAL Soft, печатает
+- [x] `AUD-LAB-01` tooling: `subprojects/playgrounds/AU01_spatial_audio` документирует завершённый
+  A/B; архивный executable исполнял один deterministic mono S16 reference signal/trajectory через
+  production miniaudio `system` или direct OpenAL Soft и печатал
   actual device/rate/HRTF, имеет HRTF off/on, headless dry-run и ручной comparison table. Реальное
   headphone A/B 2026-08-12: OpenAL HRTF on заметно улучшает понимание направления; built-in miniaudio
   звучит близко к OpenAL HRTF off; у miniaudio точки выше/ниже почти неразличимы. Проверка исходников
@@ -524,7 +538,8 @@ proof обязан быть маленьким и проверять seam/circum
   а production class переименован из `sound::system2` в канонический `sound::system` без alias.
 - [x] `AUD-17`: optional listener-relative high-shelf принят как дешёвый bounded front/back cue.
   Финальный профиль `-2.25/+0.65/-0.85 dB`, общий strength `[0,2]`, default-off; headphone verdict
-  подтвердил, что elevation почти не читается и остаётся задачей будущего HRTF, а не усиления shelf.
+  подтвердил, что elevation почти не читается и остаётся задачей будущего HRTF, а не усиления shelf;
+  live executable находится в `subprojects/playgrounds/AU02_directional_coloration`.
 - [x] `rng_state + int` и отключаемый sound worker с динамическим reserved-worker count закрыты.
 
 ### MT execution и diagnostics foundation

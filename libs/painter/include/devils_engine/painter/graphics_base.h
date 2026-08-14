@@ -88,6 +88,7 @@ struct graphics_base {
   // fs-fallback через file_io (fast_test / корневой main.cpp). shader_prefix_ — напр. "shaders/".
   const demiurg::resource_system* config_reg_ = nullptr;
   std::string shader_prefix_;
+  std::string shader_filesystem_prefix_;
 
   // Фаза 3: селективное создание ресурсов. Если resident_graphs_ задан и найден, commit
   // вычисляет транзитивный used-set этих графов и создаёт ТОЛЬКО нужные им GPU-ресурсы
@@ -139,6 +140,9 @@ struct graphics_base {
   void dump_cache_on_disk(const std::string& path) const;
   // Задаёт demiurg-источник шейдеров (Фаза 1). Вызывать до change_render_graph.
   void set_shader_source(const demiurg::resource_system* reg, std::string prefix);
+  // Filesystem source for standalone tools/playgrounds that do not build a demiurg registry.
+  // Empty keeps the legacy <project>/tests/shaders directory.
+  void set_shader_source_filesystem(std::string prefix);
   // Фаза 3: задать графы, которые должны жить одновременно. Вызывать ДО commit_parsed_resources.
   // Пустой resident-набор ⇒ создаём все ресурсы (обратная совместимость).
   void set_startup_graph(std::string name);

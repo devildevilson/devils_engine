@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "common.h"
@@ -235,6 +236,8 @@ struct descriptor {
 };
 
 struct material {
+  using shader_definition = std::pair<std::string, std::string>;
+
   struct shaders {
     std::string vertex;
     std::string tesselation_control;
@@ -280,6 +283,9 @@ struct material {
   };
 
   std::string name;
+  // Applied to every GLSL stage owned by this material. Values may be empty for flag-like defines.
+  // The ordered list is part of the shader variant identity.
+  std::vector<shader_definition> definitions;
   struct shaders shaders;
   struct raster raster;
   struct depth depth;

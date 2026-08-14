@@ -302,7 +302,11 @@ void graphics_step_instance::create_pipeline_layout(const graphics_base* ctx) {
 // По расширению: .spv → готовые байты (shader_source_file, без компиляции); иначе GLSL
 // (glsl_source_file) → shader_crafter с реальным реестром (резолв #include через demiurg).
 // Если ctx->config_reg_ == nullptr — fs-fallback через file_io (fast_test / корневой main.cpp).
-static vk::UniqueShaderModule load_shader_module(const graphics_base* ctx, const std::string& shader_path, const uint32_t shader_kind) {
+static vk::UniqueShaderModule load_shader_module(
+  const graphics_base* ctx,
+  const std::string& shader_path,
+  const uint32_t shader_kind,
+  const std::span<const material::shader_definition> definitions = {}) {
   const auto make_module = [ctx](const void* data, const size_t bytes) {
     vk::ShaderModuleCreateInfo smci{};
     smci.codeSize = bytes;
@@ -331,19 +335,22 @@ static vk::UniqueShaderModule load_shader_module(const graphics_base* ctx, const
       utils::error{}("Shader resource '{}' (glsl) not found in engine registry", id);
     }
 
-    if (!res->prepared(shader_kind)) {
+    if (res->prepared_spirv(shader_kind, definitions) == nullptr) {
       std::string err;
-      if (!res->prepare_spirv(ctx->config_reg_, shader_kind, &err)) {
+      if (!res->prepare_spirv(ctx->config_reg_, shader_kind, definitions, &err)) {
         utils::error{}("Shader '{}' compilation failed\nError: {}", id, err);
       }
       utils::warn("Shader '{}' was compiled on render thread; expected assets-side prepared SPIR-V", id);
     }
 
-    return make_module(res->spirv.data(), res->spirv.size() * sizeof(res->spirv[0]));
+    const auto* spirv = res->prepared_spirv(shader_kind, definitions);
+    return make_module(spirv->data(), spirv->size() * sizeof((*spirv)[0]));
   }
 
   // fs-fallback
-  const auto full_path = utils::project_folder() + "tests/shaders/" + shader_path;
+  const auto full_path = (ctx->shader_filesystem_prefix_.empty()
+                            ? utils::project_folder() + "tests/shaders/"
+                            : ctx->shader_filesystem_prefix_) + shader_path;
   if (!file_io::exists(full_path)) {
     utils::error{}("Shader file '{}' not found", full_path);
   }
@@ -352,6 +359,9 @@ static vk::UniqueShaderModule load_shader_module(const graphics_base* ctx, const
   sc.set_optimization(true);
   sc.set_shader_entry_point("main");
   sc.set_shader_type(shader_kind);
+  for (const auto& [name, value] : definitions) {
+    sc.add_definition(name, value);
+  }
   const auto spv = sc.compile(full_path, content);
   if (spv.empty()) {
     utils::error{}("Shader '{}' compilation failed\nError: {}", full_path, sc.err_msg());
@@ -371,10 +381,10 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
 
   {
     if (!material.shaders.vertex.empty()) {
-      usm_vertex = load_shader_module(ctx, material.shaders.vertex, shaderc_vertex_shader);
+      usm_vertex = load_shader_module(ctx, material.shaders.vertex, shaderc_vertex_shader, material.definitions);
     }
     if (!material.shaders.fragment.empty()) {
-      usm_fragment = load_shader_module(ctx, material.shaders.fragment, shaderc_fragment_shader);
+      usm_fragment = load_shader_module(ctx, material.shaders.fragment, shaderc_fragment_shader, material.definitions);
     }
 
     pm.addShader(vk::ShaderStageFlagBits::eVertex, usm_vertex.get());
@@ -458,8 +468,12 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
     blending[id] = blend;
   }
 
-  for (const auto& b : blending) {
-    pm.colorBlending(blend_state(b));
+  for (uint32_t i = 0; i < blending.size(); ++i) {
+    const uint32_t resource_index = std::get<0>(rt.resources[i]);
+    const auto& resource = DS_ASSERT_ARRAY_GET(ctx->resources, resource_index);
+    if (!format::is_depth_vk_format(resource.format_hint)) {
+      pm.colorBlending(blend_state(blending[i]));
+    }
   }
 
   auto pipe = pm.create(
@@ -511,8 +525,21 @@ void compute_step_instance::create_pipeline_layout(const graphics_base* ctx) {
   pipeline_layout = plm.create(step.name + ".pipeline_layout");
 }
 
-void compute_step_instance::create_pipeline(const graphics_base*) {
-  // компут пайплайн гораздо проще
+void compute_step_instance::create_pipeline(const graphics_base* ctx) {
+  const auto& step = DS_ASSERT_ARRAY_GET(ctx->steps, super);
+  const auto& material = DS_ASSERT_ARRAY_GET(ctx->materials, step.material);
+  if (material.shaders.compute.empty()) {
+    utils::error{}("Compute step '{}' uses material '{}' without a compute shader", step.name, material.name);
+  }
+
+  auto shader = load_shader_module(ctx, material.shaders.compute, shaderc_compute_shader, material.definitions);
+  compute_pipeline_maker maker(device);
+  maker.shader(shader.get());
+  const auto next = maker.create(step.name + ".pipeline", pipeline_layout, pipeline);
+  if (pipeline != VK_NULL_HANDLE) {
+    vk::Device(device).destroy(pipeline);
+  }
+  pipeline = next;
 }
 
 execution_pass_instance::~execution_pass_instance() noexcept {
@@ -525,6 +552,17 @@ void execution_pass_instance::process(graphics_ctx* ctx, VkCommandBuffer buf) co
   make_barriers2(ctx, buf, pass.barriers[0]);
 
   if (pass.render_target != invalid_resource_slot) {
+    // Vulkan forbids ordinary pipeline barriers inside a render pass unless the render pass owns
+    // a matching self-dependency. Graphics step barriers describe external buffers/images too, so
+    // realize all of them before vkCmdBeginRenderPass; the step itself only binds and draws.
+    for (const uint32_t step_index : pass.steps) {
+      if (step_index == invalid_resource_slot) {
+        continue;
+      }
+      const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, step_index);
+      make_barriers1(ctx, buf, step.barriers);
+    }
+
     const auto& rt = DS_ASSERT_ARRAY_GET(ctx->base->render_targets, pass.render_target);
 
     // здесь мы должны:
@@ -665,8 +703,8 @@ void execution_pass_instance::create_render_pass(const graphics_base* ctx) {
       for (uint32_t i = 0; i < sub.size(); ++i) {
         const auto& info = sub[i];
 
-        dst_stage = src_stage | convertps(info.usage);
-        dst_mask = src_mask | convertam(info.usage);
+        dst_stage = dst_stage | convertps(info.usage);
+        dst_mask = dst_mask | convertam(info.usage);
       }
     }
 
@@ -700,8 +738,8 @@ void execution_pass_instance::create_render_pass(const graphics_base* ctx) {
     for (uint32_t i = 0; i < sub.size(); ++i) {
       const auto& info = sub[i];
 
-      dst_stage = src_stage | convertps(info.usage);
-      dst_mask = src_mask | convertam(info.usage);
+      dst_stage = dst_stage | convertps(info.usage);
+      dst_mask = dst_mask | convertam(info.usage);
     }
   }
 
@@ -981,7 +1019,12 @@ uint32_t render_graph_instance::find_semaphore(const std::string_view& name) con
   return invalid_resource_slot;
 }
 
-static void bind_descriptor_sets(graphics_ctx* ctx, VkCommandBuffer buf, VkPipelineLayout pipeline_layout, const std::vector<uint32_t>& sets) {
+static void bind_descriptor_sets(
+  graphics_ctx* ctx,
+  VkCommandBuffer buf,
+  VkPipelineLayout pipeline_layout,
+  const std::vector<uint32_t>& sets,
+  const vk::PipelineBindPoint bind_point = vk::PipelineBindPoint::eGraphics) {
   if (sets.empty()) {
     return;
   }
@@ -993,7 +1036,7 @@ static void bind_descriptor_sets(graphics_ctx* ctx, VkCommandBuffer buf, VkPipel
   }
 
   auto ptr = reinterpret_cast<const vk::DescriptorSet*>(ctx->descriptors_cache.data());
-  task.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, 0u, ctx->descriptors_cache.size(), ptr, 0u, nullptr);
+  task.bindDescriptorSets(bind_point, pipeline_layout, 0u, ctx->descriptors_cache.size(), ptr, 0u, nullptr);
   ctx->descriptors_cache.clear();
 }
 
@@ -1016,8 +1059,6 @@ void graphics_draw::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
 
   const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, super);
   const auto& draw_group = DS_ASSERT_ARRAY_GET(ctx->base->draw_groups, step.draw_group);
-
-  make_barriers1(ctx, buf, step.barriers);
 
   // подключаем все что есть, прибиндим сразу все
   bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
@@ -1064,8 +1105,6 @@ void graphics_draw_indexed::process(graphics_ctx* ctx, VkCommandBuffer buf) cons
   }
 
   vk::CommandBuffer task(buf);
-
-  make_barriers1(ctx, buf, step.barriers);
 
   // подключаем все что есть, прибиндим сразу все
   bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
@@ -1124,7 +1163,6 @@ void graphics_draw_constant::process(graphics_ctx* ctx, VkCommandBuffer buf) con
 
   vk::CommandBuffer task(buf);
 
-  make_barriers1(ctx, buf, step.barriers);
   bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
   push_constants(ctx, buf, pipeline_layout, step.push_constants);
   task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
@@ -1169,7 +1207,6 @@ void graphics_draw_indexed_constant::process(graphics_ctx* ctx, VkCommandBuffer 
 
   vk::CommandBuffer task(buf);
 
-  make_barriers1(ctx, buf, step.barriers);
   bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
   push_constants(ctx, buf, pipeline_layout, step.push_constants);
   task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
@@ -1214,7 +1251,6 @@ void graphics_draw_indirect::process(graphics_ctx* ctx, VkCommandBuffer buf) con
 
   vk::CommandBuffer task(buf);
 
-  make_barriers1(ctx, buf, step.barriers);
   bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
   push_constants(ctx, buf, pipeline_layout, step.push_constants);
   task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
@@ -1258,7 +1294,6 @@ void graphics_draw_indexed_indirect::process(graphics_ctx* ctx, VkCommandBuffer 
 
   vk::CommandBuffer task(buf);
 
-  make_barriers1(ctx, buf, step.barriers);
   bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
   push_constants(ctx, buf, pipeline_layout, step.push_constants);
   task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
@@ -1379,7 +1414,7 @@ void compute_dispatch_constant::process(graphics_ctx* ctx, VkCommandBuffer buf) 
   vk::CommandBuffer task(buf);
 
   make_barriers1(ctx, buf, step.barriers);
-  bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
+  bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets, vk::PipelineBindPoint::eCompute);
   push_constants(ctx, buf, pipeline_layout, step.push_constants);
   task.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
 
@@ -1406,7 +1441,7 @@ void compute_dispatch_indirect::process(graphics_ctx* ctx, VkCommandBuffer buf) 
   vk::CommandBuffer task(buf);
 
   make_barriers1(ctx, buf, step.barriers);
-  bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
+  bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets, vk::PipelineBindPoint::eCompute);
   push_constants(ctx, buf, pipeline_layout, step.push_constants);
   task.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
 

@@ -1,13 +1,21 @@
-# audio_coloration_lab
+# AU02 — directional coloration
 
 Минимальная miniaudio-only проверка `AUD-17`. Она использует production `sound::system`, один
 детерминированный mono signal и две constant-radius орбиты. OpenAL и HRTF здесь намеренно нет:
 сравниваются только одинаковые проходы с bounded coloration `on`/`off`.
 
+## Куда смотреть
+
+- `main.cpp` — signal fixture, trajectory, CLI и dry-run validation;
+- `libs/sound/include/devils_engine/sound/system.h` — public coloration/profile contract;
+- `libs/sound/src/sound/system.cpp` — production miniaudio node и spatial voice path.
+
+## Запуск
+
 ```sh
 cmake --build build-debug --target audio_coloration_lab -j2
-./build-debug/subprojects/audio_coloration_lab/bin/audio_coloration_lab --coloration off
-./build-debug/subprojects/audio_coloration_lab/bin/audio_coloration_lab --coloration on
+./build-debug/subprojects/playgrounds/AU02_directional_coloration/bin/audio_coloration_lab --coloration off
+./build-debug/subprojects/playgrounds/AU02_directional_coloration/bin/audio_coloration_lab --coloration on
 ```
 
 Default reference signal (`--signal hum`) — непрерывный 110 Hz harmonic buzz с 64 обертонами до

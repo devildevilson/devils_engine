@@ -72,7 +72,7 @@ Descriptor pool сейчас считается по фактическому с
 - `draw` / `draw_indexed` через draw groups и таблицу mesh slots;
 - `draw_ui` для UI-буферов visage;
 - `draw_indirect` / `draw_indexed_indirect` как частичный путь через render-graph ресурс;
-- `dispatch_constant` / `dispatch_indirect` как ранняя compute-заготовка;
+- `dispatch_constant` / `dispatch_indirect` с полноценным compute pipeline;
 - copy/blit transfer steps для render-graph ресурсов.
 
 `clear_color` и `clear_depth` пока остаются не реализованными step'ами. Часть draw-команд существует как API-скелет и требует проверки на реальных пайплайнах.
@@ -81,7 +81,7 @@ Descriptor pool сейчас считается по фактическому с
 
 `execution_pass_instance` создает Vulkan render pass и framebuffers по описанию `execution_pass_base`. Subpass-разметка, attachment usage, load/store actions и barriers приходят из конфига. Перед началом render pass применяется первый набор pass barriers; внутри subpass используется `nextSubpass`, а после pass - финальные barriers.
 
-Барьеры строятся из текущего `graphics_ctx::resources`: каждый runtime resource держит последний usage, а `make_barriers*()` переводит его в нужный Vulkan layout/access/stage. Для UI draw step явные barriers внутри render pass намеренно не вызываются: этот путь опирается на host-visible буферы, записанные до submit, и избегает illegal pipeline barrier внутри subpass.
+Барьеры строятся из текущего `graphics_ctx::resources`: каждый runtime resource держит последний usage, а `make_barriers*()` переводит его в нужный Vulkan layout/access/stage. Барьеры graphics steps выполняются перед `vkCmdBeginRenderPass`, поскольку обычный pipeline barrier внутри subpass без self-dependency запрещён; compute/transfer steps применяют свои barriers непосредственно перед командой.
 
 `render_graph_instance` разбивает passes на execution groups. Для каждой группы создаются command buffers на число кадров в полете, а локальные и глобальные семафоры связывают зависимости между группами.
 
@@ -140,6 +140,10 @@ Descriptor pool сейчас считается по фактическому с
 - из `demiurg::resource_system`, если `graphics_base::set_shader_source()` получил registry и prefix;
 - напрямую с файловой системы как fallback для старых тестов.
 
+Standalone consumers задают корень GLSL через `set_shader_source_filesystem()`. Материал может объявить
+ordered `definitions = [ NAME = "VALUE" ]`: они применяются ко всем его GLSL stages и входят в identity
+prepared SPIR-V variant, поэтому один source безопасно используется несколькими material variants.
+
 Нормальный путь для `tile_frontier`: assets-поток компилирует `glsl_source_file` в SPIR-V заранее через `prepare_spirv()`, а render thread только создает `VkShaderModule` и pipeline. Если SPIR-V не подготовлен, render thread умеет скомпилировать GLSL сам, но логирует предупреждение: это fallback, а не целевой runtime-путь.
 
 ## Что Сейчас Может
@@ -154,6 +158,7 @@ Descriptor pool сейчас считается по фактическому с
 - создавать samplers, descriptor set layouts, descriptor pool и descriptor sets;
 - поддерживать immutable samplers и asset texture array;
 - создавать render passes, framebuffers, graphics pipelines и command buffers;
+- создавать compute pipelines и выполнять config-defined constant/indirect dispatch;
 - выполнять render graph по execution groups;
 - переключать активный render graph без пересоздания resident ресурсов;
 - писать host-visible per-update/per-frame данные из внешнего кода;
@@ -162,6 +167,7 @@ Descriptor pool сейчас считается по фактическому с
 - загружать mesh/texture ресурсы в GPU таблицу через demiurg external steps;
 - использовать pipeline cache и сохранять его обратно на диск;
 - подготавливать GLSL через shaderc с поддержкой demiurg include resolution.
+- кэшировать stage+definitions варианты GLSL и задавать material shader defines из TAVL.
 
 В `subprojects/tile_frontier` это уже используется для отрисовки тайлов, акторов, UI, загрузки текстур, подготовки шейдеров на assets-потоке и runtime-переключения между resident render graphs.
 

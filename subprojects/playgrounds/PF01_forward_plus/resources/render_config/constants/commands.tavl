@@ -1,0 +1,5 @@
+{
+  name = light_dispatch
+  layout = dispatch3
+  value = [120.0, 68.0, 1.0]
+}

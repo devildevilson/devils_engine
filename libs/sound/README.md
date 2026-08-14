@@ -114,7 +114,8 @@ target внутри audio callback (`80 ms` по умолчанию); sound thre
 non-spatial tasks. `tile_frontier` хранит профиль в `sound.directional_coloration`, но оставляет его
 выключенным: top-down camera listener не является честной 3D head orientation.
 
-Для ручного решения есть miniaudio-only `subprojects/audio_coloration_lab`: production system,
+Для ручного решения есть miniaudio-only
+`subprojects/playgrounds/AU02_directional_coloration`: production system,
 одинаковый deterministic mono signal и constant-radius horizontal/vertical orbit. Сравнивать два
 запуска `--coloration off` и `--coloration on`; OpenAL dependency не возвращается. Унаследованные
 периодические click transients удалены после первого прослушивания, оба сигнала имеют 20 ms краевые

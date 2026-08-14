@@ -1,0 +1,43 @@
+{
+  name = pf01_forward_plus
+  startup = true
+  passes = [
+    {
+      name = pf01_depth
+      render_target = depth_target
+      subpasses = [
+        { scene_depth = (undefined, clear) },
+        { scene_depth = (depth_attachment, store) },
+        { scene_depth = (depth_read, store) }
+      ]
+      steps = [ depth_prepass ]
+    },
+    {
+      name = pf01_light_compute
+      subpasses = [
+        { camera_buffer = (uniform, store), light_buffer = (storage_read, store), scene_depth = (depth_read, store), tile_light_lists = (storage_write, store) }
+      ]
+      steps = [ build_light_tiles ]
+    },
+    {
+      name = pf01_forward
+      render_target = forward_target
+      subpasses = [
+        { hdr_color = (undefined, clear), scene_depth = (depth_read, store) },
+        { hdr_color = (color_attachment, store), scene_depth = (depth_attachment, store) },
+        { hdr_color = (transfer_src, store), scene_depth = (depth_attachment, store) }
+      ]
+      steps = [ draw_forward_plus ]
+    },
+    {
+      name = pf01_present
+      wait_for = [ swapchain_image ]
+      subpasses = [
+        { hdr_color = (transfer_src, store), swapchain_image = (transfer_dst, store) },
+        { hdr_color = (color_attachment, store), swapchain_image = (present, store) }
+      ]
+      steps = [ present_hdr ]
+    }
+  ]
+  present_source = swapchain_image
+}

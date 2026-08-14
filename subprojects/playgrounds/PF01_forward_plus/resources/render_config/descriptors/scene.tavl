@@ -1,0 +1,19 @@
+{
+  name = scene_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = all },
+    { resource = light_buffer, usage = storage_read, stage = all }
+  ]
+}
+{
+  name = depth_input
+  layout = [
+    { resource = scene_depth, usage = depth_read, sampler = depth_nearest, stage = compute }
+  ]
+}
+{
+  name = light_tiles
+  layout = [
+    { resource = tile_light_lists, usage = storage_write, stage = all }
+  ]
+}
