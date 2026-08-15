@@ -3,6 +3,11 @@
   type = screensize
 }
 {
+  name = viewport_half
+  type = screensize
+  scale = [0.5, 0.5, 1.0]
+}
+{
   name = one
   type = fixed
   value = [1, 0, 0]

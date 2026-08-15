@@ -44,6 +44,7 @@
   X(present)                                     \
   X(shadow_map)                                  \
   X(shadow_map_array)                            \
+  X(shadow_mask)                                 \
   X(depth)                                       \
   X(depth_stencil)                               \
   X(hi_z)                                        \

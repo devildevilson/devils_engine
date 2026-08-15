@@ -49,8 +49,9 @@ constexpr float cascade_split_lambda = 0.68f;
 constexpr float cascade_blend_fraction = 0.12f;
 constexpr float default_raster_bias_constant = -1.25f;
 constexpr float default_raster_bias_slope = -1.75f;
-constexpr float default_receiver_bias_constant = 0.0012f;
-constexpr float default_receiver_bias_slope = 0.0025f;
+constexpr float default_normal_bias_base = 0.20f;
+constexpr float default_normal_bias_slope = 1.10f;
+constexpr float default_receiver_plane_scale = 1.0f;
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -186,16 +187,21 @@ struct alignas(16) scene_block {
   glm::vec4 camera_position;
   glm::vec4 viewport_near;
   glm::vec4 light_direction;
+  // x: atlas resolution, y/z: world-texel normal bias, w: vertex-layout guard (must stay zero).
   glm::vec4 shadow_params;
+  glm::vec4 filter_params;
 };
-static_assert(sizeof(scene_block) == 256);
+static_assert(sizeof(scene_block) == 272);
 
 struct alignas(16) directional_cascade_record {
   glm::mat4 light_view_projection;
   // x/y: camera-space interval, z: blend-band start, w: debug tint enable.
   glm::vec4 split_depths;
+  // x: world-space width of one texel, y: map visibility enable,
+  // z: receiver-plane scale; w is reserved.
+  glm::vec4 shadow_params;
 };
-static_assert(sizeof(directional_cascade_record) == 5 * sizeof(glm::vec4));
+static_assert(sizeof(directional_cascade_record) == 6 * sizeof(glm::vec4));
 
 using directional_cascade_block = std::array<directional_cascade_record, cascade_count>;
 
@@ -282,6 +288,7 @@ directional_cascade_block make_directional_cascades(
       split_far,
       blend_start,
       debug_tint ? 1.0f : 0.0f);
+    out[index].shadow_params = glm::vec4(texel_world, 0.0f, 0.0f, 0.0f);
     split_near = split_far;
   }
   return out;
@@ -335,8 +342,11 @@ struct alignas(16) spot_light_record {
   glm::vec4 position_range;
   glm::vec4 direction_outer;
   glm::vec4 color_intensity;
+  // x: tangent of the spotlight half-FOV, y: map visibility enable,
+  // z: receiver-plane scale; w is reserved.
+  glm::vec4 shadow_params;
 };
-static_assert(sizeof(spot_light_record) == 7 * sizeof(glm::vec4));
+static_assert(sizeof(spot_light_record) == 8 * sizeof(glm::vec4));
 
 using spot_light_block = std::array<spot_light_record, spot_count>;
 
@@ -370,6 +380,7 @@ spot_light_block make_spot_lights(const float seconds) {
     out[i].position_range = glm::vec4(positions[i], range);
     out[i].direction_outer = glm::vec4(direction, outer_cosine);
     out[i].color_intensity = glm::vec4(colors[i], 5.5f);
+    out[i].shadow_params = glm::vec4(std::tan(glm::radians(52.0f) * 0.5f), 0.0f, 0.0f, 0.0f);
   }
   return out;
 }
@@ -457,6 +468,18 @@ void write_current_buffer(painter::graphics_base& base, const std::string_view n
   if (bytes != 0) {
     std::memcpy(static_cast<uint8_t*>(frame.mapped) + frame.sub.offset, data, bytes);
   }
+}
+
+void update_contact_dispatch(painter::graphics_base& base, const uint32_t width, const uint32_t height) {
+  const uint32_t half_width = (width + 1u) / 2u;
+  const uint32_t half_height = (height + 1u) / 2u;
+  const uint32_t slot = base.find_constant("contact_dispatch");
+  if (slot == painter::invalid_resource_slot) {
+    utils::error{}("PF02 contact_dispatch constant is absent from the configured graph");
+  }
+  const VkDispatchIndirectCommand command{(half_width + 7u) / 8u, (half_height + 7u) / 8u, 1u};
+  base.write_constant_data(slot, command);
+  base.update_event();
 }
 
 void write_overlay_buffers(painter::graphics_base& base, const playground::visage_overlay& overlay) {
@@ -566,21 +589,31 @@ int main(int argc, char** argv) {
   bool uncapped = false;
   bool start_zero_bias = false;
   bool initial_cascade_debug = false;
+  bool initial_contact = false;
+  bool initial_map_shadows = true;
+  bool initial_receiver_plane = true;
   uint32_t initial_lighting_mode = 0;
-  uint32_t initial_shadow_filter = 1;
+  uint32_t initial_aa_mode = 1;
+  bool initial_pcss = false;
   for (int i = 1; i < argc; ++i) {
     const std::string_view option(argv[i]);
     validation = validation || option == "--validation";
     uncapped = uncapped || option == "--uncapped";
     start_zero_bias = start_zero_bias || option == "--zero-bias";
     initial_cascade_debug = initial_cascade_debug || option == "--cascade-debug";
+    if (option == "--no-contact") initial_contact = false;
+    if (option == "--contact") initial_contact = true;
+    if (option == "--no-map-shadows") initial_map_shadows = false;
+    if (option == "--map-shadows") initial_map_shadows = true;
+    if (option == "--no-receiver-plane") initial_receiver_plane = false;
+    if (option == "--receiver-plane") initial_receiver_plane = true;
     if (option == "--all-lights") initial_lighting_mode = 0;
     if (option == "--directional-only") initial_lighting_mode = 1;
     if (option == "--spot-only") initial_lighting_mode = 2;
-    if (option == "--hard") initial_shadow_filter = 0;
-    if (option == "--pcf") initial_shadow_filter = 1;
-    if (option == "--poisson") initial_shadow_filter = 2;
-    if (option == "--pcss") initial_shadow_filter = 3;
+    if (option == "--hard") initial_aa_mode = 0;
+    if (option == "--pcf") initial_aa_mode = 1;
+    if (option == "--poisson") initial_aa_mode = 2;
+    initial_pcss = initial_pcss || option == "--pcss";
   }
 
   input::init input_runtime(&error_callback);
@@ -653,6 +686,7 @@ int main(int argc, char** argv) {
     base.set_surface(surface, initial_width, initial_height);
     base.resize_viewport(initial_width, initial_height);
     base.populate_constant_default_values();
+    update_contact_dispatch(base, initial_width, initial_height);
     const uint32_t graph = base.find_render_graph("pf02_shadows");
     if (graph == painter::invalid_resource_slot) utils::error{}("PF02 render graph was not found");
     base.change_render_graph(graph);
@@ -752,8 +786,14 @@ int main(int argc, char** argv) {
     bind_key("shadow_pcf", "key_6");
     bind_key("shadow_poisson", "key_7");
     bind_key("shadow_pcss", "key_8");
-    bind_key("softness_down", "left_bracket");
-    bind_key("softness_up", "right_bracket");
+    bind_key("aa_radius_down", "left_bracket");
+    bind_key("aa_radius_up", "right_bracket");
+    bind_key("emitter_radius_down", "semicolon");
+    bind_key("emitter_radius_up", "apostrophe");
+    bind_key("receiver_plane_down", "key_g");
+    bind_key("receiver_plane_up", "key_h");
+    bind_key("contact_toggle", "key_f");
+    bind_key("map_shadow_toggle", "key_r");
     bind_key("cascade_debug", "key_9");
     escape_key = input::glfw_key_from_canonical("escape");
     input::set_window_callback(window, &key_callback);
@@ -769,11 +809,19 @@ int main(int argc, char** argv) {
     playground::frame_pacer frame_pacer(uncapped ? 0u : 60u);
     float raster_bias_constant = start_zero_bias ? 0.0f : default_raster_bias_constant;
     float raster_bias_slope = start_zero_bias ? 0.0f : default_raster_bias_slope;
-    float receiver_bias_constant = start_zero_bias ? 0.0f : default_receiver_bias_constant;
-    float receiver_bias_slope = start_zero_bias ? 0.0f : default_receiver_bias_slope;
+    float normal_bias_base = start_zero_bias ? 0.0f : default_normal_bias_base;
+    float normal_bias_slope = start_zero_bias ? 0.0f : default_normal_bias_slope;
+    float receiver_plane_scale = start_zero_bias || !initial_receiver_plane ?
+      0.0f : default_receiver_plane_scale;
     uint32_t lighting_mode = initial_lighting_mode;
-    uint32_t shadow_filter = initial_shadow_filter;
-    float shadow_softness = 1.0f;
+    uint32_t aa_mode = initial_aa_mode;
+    float aa_radius = 1.0f;
+    bool pcss_enabled = initial_pcss;
+    float emitter_radius = 0.08f;
+    bool contact_enabled = initial_contact;
+    bool map_shadows_enabled = initial_map_shadows;
+    float contact_distance = 0.24f;
+    float contact_thickness = 0.055f;
     bool cascade_debug = initial_cascade_debug;
 
     const glm::vec3 light_direction = glm::normalize(glm::vec3{-0.55f, -1.0f, -0.38f});
@@ -784,8 +832,8 @@ int main(int argc, char** argv) {
     context.assets = &assets;
     context.set_gpu_profiler(&gpu_profiler);
 
-    utils::info("PF02 bias controls: Z/X receiver constant, C/V receiver slope, B/N raster constant, M/, raster slope, 0 zero, 1 defaults");
-    utils::info("PF02 graph: 2x2 directional CSM atlas + 2x2 spot atlas -> shadowed forward + depth debug -> present");
+    utils::info("PF02 bias controls: Z/X world-texel base, C/V slope, G/H receiver-plane scale, B/N raster constant, M/, raster slope");
+    utils::info("PF02 graph: directional + spot atlases -> camera depth -> half-res contact masks -> shadowed forward -> debug/present");
 
     while (!input::should_close(window)) {
       input::poll_events();
@@ -797,6 +845,7 @@ int main(int argc, char** argv) {
       if (resize_pending) {
         vk::Device(device).waitIdle();
         base.resize_viewport(pending_width, pending_height);
+        update_contact_dispatch(base, pending_width, pending_height);
         resize_pending = false;
       }
 
@@ -810,18 +859,24 @@ int main(int argc, char** argv) {
       mouse_x = next_mouse_x;
       mouse_y = next_mouse_y;
       camera.update(motion, dt);
-      receiver_bias_constant = std::clamp(
-        receiver_bias_constant +
+      normal_bias_base = std::clamp(
+        normal_bias_base +
           (float(input::events::is_pressed("receiver_constant_up")) -
-           float(input::events::is_pressed("receiver_constant_down"))) * dt * 0.002f,
+           float(input::events::is_pressed("receiver_constant_down"))) * dt * 0.75f,
         0.0f,
-        0.008f);
-      receiver_bias_slope = std::clamp(
-        receiver_bias_slope +
+        3.0f);
+      normal_bias_slope = std::clamp(
+        normal_bias_slope +
           (float(input::events::is_pressed("receiver_slope_up")) -
-           float(input::events::is_pressed("receiver_slope_down"))) * dt * 0.006f,
+           float(input::events::is_pressed("receiver_slope_down"))) * dt * 1.5f,
         0.0f,
-        0.02f);
+        6.0f);
+      receiver_plane_scale = std::clamp(
+        receiver_plane_scale +
+          (float(input::events::is_pressed("receiver_plane_up")) -
+           float(input::events::is_pressed("receiver_plane_down"))) * dt,
+        0.0f,
+        2.0f);
       raster_bias_constant = std::clamp(
         raster_bias_constant +
           (float(input::events::is_pressed("raster_constant_up")) -
@@ -837,28 +892,44 @@ int main(int argc, char** argv) {
       if (input::events::is_pressed("bias_zero")) {
         raster_bias_constant = 0.0f;
         raster_bias_slope = 0.0f;
-        receiver_bias_constant = 0.0f;
-        receiver_bias_slope = 0.0f;
+        normal_bias_base = 0.0f;
+        normal_bias_slope = 0.0f;
+        receiver_plane_scale = 0.0f;
       }
       if (input::events::is_pressed("bias_defaults")) {
         raster_bias_constant = default_raster_bias_constant;
         raster_bias_slope = default_raster_bias_slope;
-        receiver_bias_constant = default_receiver_bias_constant;
-        receiver_bias_slope = default_receiver_bias_slope;
+        normal_bias_base = default_normal_bias_base;
+        normal_bias_slope = default_normal_bias_slope;
+        receiver_plane_scale = default_receiver_plane_scale;
       }
       if (input::events::is_pressed("lighting_all")) lighting_mode = 0;
       if (input::events::is_pressed("lighting_directional")) lighting_mode = 1;
       if (input::events::is_pressed("lighting_spot")) lighting_mode = 2;
-      if (input::events::is_pressed("shadow_hard")) shadow_filter = 0;
-      if (input::events::is_pressed("shadow_pcf")) shadow_filter = 1;
-      if (input::events::is_pressed("shadow_poisson")) shadow_filter = 2;
-      if (input::events::is_pressed("shadow_pcss")) shadow_filter = 3;
-      shadow_softness = std::clamp(
-        shadow_softness +
-          (float(input::events::is_pressed("softness_up")) -
-           float(input::events::is_pressed("softness_down"))) * dt,
+      if (input::events::is_pressed("shadow_hard")) aa_mode = 0;
+      if (input::events::is_pressed("shadow_pcf")) aa_mode = 1;
+      if (input::events::is_pressed("shadow_poisson")) aa_mode = 2;
+      if (input::events::check_event("shadow_pcss", input::event_state::press)) {
+        pcss_enabled = !pcss_enabled;
+      }
+      if (input::events::check_event("contact_toggle", input::event_state::press)) {
+        contact_enabled = !contact_enabled;
+      }
+      if (input::events::check_event("map_shadow_toggle", input::event_state::press)) {
+        map_shadows_enabled = !map_shadows_enabled;
+      }
+      aa_radius = std::clamp(
+        aa_radius +
+          (float(input::events::is_pressed("aa_radius_up")) -
+           float(input::events::is_pressed("aa_radius_down"))) * dt,
         0.25f,
         4.0f);
+      emitter_radius = std::clamp(
+        emitter_radius +
+          (float(input::events::is_pressed("emitter_radius_up")) -
+           float(input::events::is_pressed("emitter_radius_down"))) * dt * 0.08f,
+        0.01f,
+        0.50f);
       if (input::events::check_event("cascade_debug", input::event_state::press)) {
         cascade_debug = !cascade_debug;
       }
@@ -873,12 +944,16 @@ int main(int argc, char** argv) {
       const auto view = camera.view();
       const float camera_fov = glm::radians(68.0f);
       const auto projection = playground::infinite_reverse_z_projection(camera_fov, aspect, camera_near);
-      const auto directional_cascades = make_directional_cascades(
+      auto directional_cascades = make_directional_cascades(
         camera,
         aspect,
         camera_fov,
         light_direction,
         cascade_debug);
+      for (auto& cascade : directional_cascades) {
+        cascade.shadow_params.y = map_shadows_enabled ? 1.0f : 0.0f;
+        cascade.shadow_params.z = receiver_plane_scale;
+      }
       const auto directional_regions = build_directional_regions(
         stage_pair,
         caster_pair,
@@ -888,18 +963,23 @@ int main(int argc, char** argv) {
       scene.view_projection = projection * view;
       scene.view = view;
       scene.light_view_projection = directional_cascades[0].light_view_projection;
-      scene.camera_position = glm::vec4(camera.position, shadow_softness);
+      scene.camera_position = glm::vec4(camera.position, -projection[1][1]);
       scene.viewport_near = glm::vec4(
         float(pending_width),
         float(pending_height),
         camera_near,
         float(lighting_mode));
-      scene.light_direction = glm::vec4(light_direction, float(shadow_filter));
+      scene.light_direction = glm::vec4(light_direction, float(aa_mode));
       scene.shadow_params = glm::vec4(
         float(shadow_resolution),
-        receiver_bias_constant,
-        receiver_bias_slope,
+        normal_bias_base,
+        normal_bias_slope,
         0.0f);
+      scene.filter_params = glm::vec4(
+        aa_radius,
+        pcss_enabled ? emitter_radius : 0.0f,
+        contact_enabled ? contact_distance : 0.0f,
+        contact_thickness);
       write_current_buffer(base, "scene_buffer", &scene, sizeof(scene));
       write_current_buffer(
         base,
@@ -913,7 +993,11 @@ int main(int argc, char** argv) {
         sizeof(directional_regions));
 
       const float seconds = std::chrono::duration<float>(now - start_time).count();
-      const auto spot_lights = make_spot_lights(seconds);
+      auto spot_lights = make_spot_lights(seconds);
+      for (auto& light : spot_lights) {
+        light.shadow_params.y = map_shadows_enabled ? 1.0f : 0.0f;
+        light.shadow_params.z = receiver_plane_scale;
+      }
       write_current_buffer(base, "spot_light_buffer", &spot_lights, sizeof(spot_lights));
       caster_instances[0].x = -2.2f + std::sin(seconds * 0.72f) * 2.1f;
       caster_instances[0].z = 0.3f + std::cos(seconds * 0.46f) * 0.8f;
@@ -944,8 +1028,8 @@ int main(int argc, char** argv) {
         region_casters[0] + region_casters[1] + region_casters[2] + region_casters[3];
       const std::string_view lighting_name =
         lighting_mode == 1 ? "directional only" : lighting_mode == 2 ? "spot only" : "all lights";
-      const std::array<std::string_view, 4> filter_names{"hard", "3x3 PCF", "rotated Poisson", "spot PCSS"};
-      std::array<std::string, 9> overlay_details{
+      const std::array<std::string_view, 3> aa_names{"hard", "3x3 PCF", "rotated Poisson"};
+      std::array<std::string, 10> overlay_details{
         std::format(
           "CSM: 4 x {}^2   splits: {:.1f} / {:.1f} / {:.1f} / {:.1f}   tint [9]: {}",
           shadow_resolution / 2,
@@ -963,29 +1047,44 @@ int main(int argc, char** argv) {
           region_casters[3],
           packed_count),
         std::format("Raster bias [B/N constant, M/, slope]: {:.2f}   {:.2f}", raster_bias_constant, raster_bias_slope),
-        std::format("Receiver bias [Z/X constant, C/V slope]: {:.5f}   {:.4f}", receiver_bias_constant, receiver_bias_slope),
-        "Bias presets: [0] zero (show acne)   [1] defaults (compare contact loss)",
-        std::format("Lighting mode: {}   [2] all   [3] directional   [4] spot", lighting_name),
         std::format(
-          "Shadow filter: {}   softness {:.2f}   [ / ] adjust   [5-8] mode",
-          filter_names[shadow_filter],
-          shadow_softness),
+          "World-texel normal bias [Z/X, C/V]: {:.2f} + {:.2f} slope   plane [G/H] {:.2f}",
+          normal_bias_base,
+          normal_bias_slope,
+          receiver_plane_scale),
+        "Bias presets: [0] zero   [1] defaults",
+        std::format(
+          "Lighting: {} [2-4]   map shadows [R]: {}",
+          lighting_name,
+          map_shadows_enabled ? "on" : "off"),
+        std::format(
+          "Edge AA: {}   radius {:.2f} texels [ / ]   [5-7] mode",
+          aa_names[aa_mode],
+          aa_radius),
+        std::format(
+          "Spot PCSS [8]: {}   emitter {:.3f}m [; / ']   contact [F]: {} {:.2f}m",
+          pcss_enabled ? "on" : "off",
+          emitter_radius,
+          contact_enabled ? "on" : "off",
+          contact_distance),
         "GPU passes: waiting for timestamp results...",
         "GPU graph: waiting for timestamp results..."};
-      if (gpu_profiler.has_results() && gpu_profiler.passes().size() == 4) {
+      if (gpu_profiler.has_results() && gpu_profiler.passes().size() == 6) {
         const auto timings = gpu_profiler.passes();
-        overlay_details[7] = std::format(
-          "GPU: directional {:.3f} ms   spot atlas {:.3f} ms   forward {:.3f} ms",
+        overlay_details[8] = std::format(
+          "GPU: dir {:.3f}   spot {:.3f}   depth {:.3f}   contact {:.3f} ms",
           timings[0].milliseconds,
           timings[1].milliseconds,
-          timings[2].milliseconds);
-        overlay_details[8] = std::format(
-          "GPU: present blit {:.3f} ms   complete graph {:.3f} ms",
-          timings[3].milliseconds,
+          timings[2].milliseconds,
+          timings[3].milliseconds);
+        overlay_details[9] = std::format(
+          "GPU: forward {:.3f} ms   blit {:.3f} ms   graph {:.3f} ms",
+          timings[4].milliseconds,
+          timings[5].milliseconds,
           gpu_profiler.frame_milliseconds());
       } else if (!gpu_profiler.available()) {
-        overlay_details[7] = "GPU timestamps unavailable on the selected graphics queue";
-        overlay_details[8].clear();
+        overlay_details[8] = "GPU timestamps unavailable on the selected graphics queue";
+        overlay_details[9].clear();
       }
       overlay.set_detail_lines(overlay_details);
 

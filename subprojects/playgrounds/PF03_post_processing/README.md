@@ -10,13 +10,15 @@
 - exposure и tone mapping;
 - bloom;
 - color grading;
-- один spatial effect: SSAO либо contact shadows;
+- один spatial effect: SSAO (первый non-temporal contact-shadow proof уже принадлежит `PF02`);
 - resource-driven chain с typed inputs/outputs;
 - включение эффектов по одному и просмотр каждого промежуточного target;
 - GPU time и memory cost каждого pass.
 
 Motion vectors/history/TAA, depth pyramid, denoise и volumetrics добавляются последующими именованными
-slices, а не входят скрыто в первый DoD.
+slices, а не входят скрыто в первый DoD. Stochastic soft-shadow visibility + temporal accumulation также
+начинается только здесь. PF02 оставляет contact masks как opt-in spatial proof: single-depth silhouettes
+не позволяют надёжно восстановить скрытую сторону blocker, поэтому HZB/history reconstruction исследуется здесь.
 
 ## Куда смотреть
 

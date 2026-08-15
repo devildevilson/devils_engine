@@ -27,6 +27,26 @@
   ]
 }
 {
+  name = scene_depth_input
+  layout = [
+    { resource = scene_depth, usage = depth_read, sampler = shadow_nearest, stage = compute }
+  ]
+}
+{
+  name = contact_shadow_write
+  layout = [
+    { resource = contact_directional, usage = texel_write, stage = compute },
+    { resource = contact_spots, usage = texel_write, stage = compute }
+  ]
+}
+{
+  name = contact_shadow_read
+  layout = [
+    { resource = contact_directional, usage = sampled, sampler = contact_linear, stage = fragment },
+    { resource = contact_spots, usage = sampled, sampler = contact_linear, stage = fragment }
+  ]
+}
+{
   name = ui_textures
   texture_count = 16
   sampler_pool = [ ui_linear ]

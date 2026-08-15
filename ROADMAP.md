@@ -73,12 +73,16 @@ push constant и spans `{pair, first_instance, instance_count}`; main-поток
 fail-fast проверяет stream до записи первого draw. Material `dynamic = [ depth_bias ]` включает
 `vkCmdSetDepthBias`; при отсутствии dynamic state поддержан прежний static raster bias. PF02 использует один
 spot material/step вместо четырёх материалов и восьми steps; validation-layer и визуальный прогоны чистые.
-Bias A/B теперь использует отдельные raster/receiver constant/slope controls, zero/default presets,
-наклонный receiver, тонкий contact caster и изоляцию directional/spot lighting. Runtime hard/PCF/rotated
-Poisson/spot-PCSS фильтры имеют общий softness control; PCSS пока исследовательский и для directional map
-переходит на расширенный Poisson. Directional target уже переведён на четыре practical-split каскада в
+Bias A/B теперь использует raw raster controls, world-texel receiver normal offset, tap-level receiver-plane
+derivatives, zero/default presets, наклонный receiver, тонкий contact caster и изоляцию light classes.
+Hard/PCF/Poisson edge AA отделён от world-unit spot-PCSS emitter. Camera depth prepass и half-resolution
+compute дают directional + четыре spot contact masks без temporal history; все masks имеют debug views и
+отдельный GPU timing. Contact masks являются opt-in spatial proof: single-depth silhouette artifacts
+консервативно reject'ятся, а полноценная hidden-surface/HZB/history reconstruction остаётся PF03.
+Directional target уже переведён на четыре practical-split каскада в
 `2×2` atlas через `draw_regions`; rotation-independent extent, texel snapping, debug tint и blend bands live.
-Следующий quality-срез — repeatable camera-rail проверка стабилизации, cascade-aware bias и caster culling.
+Следующий quality-срез — repeatable camera-rail проверка стабилизации/world-texel bias и caster culling;
+stochastic temporal shadow accumulation оставлен PF03.
 
 `RND-*` из этой таблицы не требуется закрывать целиком до запуска сцены. Исправляется только конкретный
 blocker текущего этапа; найденная более широкая работа остаётся в backlog. `UTL-08`, module profiles,
@@ -231,7 +235,7 @@ Persistent multi-day event или repair action хранится в `SIM-03`, а
 | `RND-19` | Screen-space ambient occlusion (SSAO) | `L` | depth/normal sampling, denoise/temporal accumulation, quality presets and lighting integration |
 | `RND-20` | Общий screen-space effects toolkit | `L–XL` | depth pyramid, reconstruction, bilateral blur/denoise and reusable kernels for SSR, contact shadows, fog and outlines |
 | `RND-21` | Базовая color post-processing chain | `L` | HDR exposure, tone mapping, bloom, color grading and output-color-space policy |
-| `RND-22` | Directional/spot shadow maps and atlas | `L–XL` | **active in PF02:** spot atlas, 4-cascade directional atlas, `draw_regions`, practical splits/snapping/blend/tint, CPU caster packing, bias fixtures/controls, hard/PCF/Poisson/spot-PCSS A/B and timings live; next camera-rail stability + cascade-aware bias/culling; atlas lifetime and point cubemaps later |
+| `RND-22` | Directional/spot shadow maps and atlas | `L–XL` | **active in PF02:** spot + 4-cascade directional atlases, `draw_regions`, splits/snapping/blend/tint, world-texel + receiver-plane bias, independent hard/PCF/Poisson AA, world-unit spot-PCSS, half-res directional/spot contact masks and timings live; next camera-rail stability + culling; temporal reconstruction belongs to PF03, atlas lifetime/cubemaps later |
 | `RND-23` | Stencil effect path | `M–L` | depth/stencil attachment lifetime, material front/back ops, masks/reference, visualization and ordinary graph consumers |
 | `RND-24` | Present policy отдельно от frame pacing | `M` | базовое разделение уже есть; осталось overrun-resync, выбранный-mode metrics и явный MAILBOX/FIFO/IMMEDIATE fallback policy |
 | `RND-25` | Вывод step usages/barriers из descriptor sets | `M` | **done 2026-08-15:** named `sets` → usages/read-write masks, dedup/conflict validation; pass/subpass attachment load/store остаются явными |

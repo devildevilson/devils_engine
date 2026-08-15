@@ -3,3 +3,8 @@
   filter = nearest
   address = clamp
 }
+{
+  name = contact_linear
+  filter = linear
+  address = clamp
+}

@@ -204,6 +204,7 @@ bool is_image(const enum values u) noexcept {
     case values::present: return true;
     case values::shadow_map: return true;
     case values::shadow_map_array: return true;
+    case values::shadow_mask: return true;
     case values::depth: return true;
     case values::depth_stencil: return true;
     case values::hi_z: return true;

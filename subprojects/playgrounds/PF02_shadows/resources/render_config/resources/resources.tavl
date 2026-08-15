@@ -23,6 +23,22 @@
   swap = per_frame
 }
 {
+  name = contact_directional
+  format = r8
+  role = shadow_mask
+  size = viewport_half
+  type = frames_in_flight
+  swap = per_frame
+}
+{
+  name = contact_spots
+  format = rgba8
+  role = shadow_mask
+  size = viewport_half
+  type = frames_in_flight
+  swap = per_frame
+}
+{
   name = directional_shadow
   format = d32
   role = shadow_map
@@ -40,7 +56,7 @@
 }
 {
   name = scene_buffer
-  format = mat4mat4mat4v4v4v4v4
+  format = mat4mat4mat4v4v4v4v4v4
   role = upload
   size = one
   type = frames_in_flight
@@ -48,7 +64,7 @@
 }
 {
   name = spot_light_buffer
-  format = mat4v4v4v4
+  format = mat4v4v4v4v4
   role = upload
   size = spot_light_count
   type = frames_in_flight
@@ -56,7 +72,7 @@
 }
 {
   name = directional_cascade_buffer
-  format = mat4v4
+  format = mat4v4v4
   role = upload
   size = directional_cascade_count
   type = frames_in_flight

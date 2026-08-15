@@ -17,6 +17,7 @@ layout(set = 0, binding = 0, std140) uniform SceneBlock {
   vec4 viewport_near;
   vec4 light_direction;
   vec4 shadow_params;
+  vec4 filter_params;
 } scene_data[3];
 
 struct SpotLight {
@@ -24,6 +25,7 @@ struct SpotLight {
   vec4 position_range;
   vec4 direction_outer;
   vec4 color_intensity;
+  vec4 shadow_params;
 };
 
 layout(set = 0, binding = 1, std430) readonly buffer SpotLightBuffer {
@@ -33,6 +35,7 @@ layout(set = 0, binding = 1, std430) readonly buffer SpotLightBuffer {
 struct DirectionalCascade {
   mat4 light_view_projection;
   vec4 split_depths;
+  vec4 shadow_params;
 };
 
 layout(set = 0, binding = 2, std430) readonly buffer DirectionalCascadeBuffer {
@@ -41,6 +44,8 @@ layout(set = 0, binding = 2, std430) readonly buffer DirectionalCascadeBuffer {
 
 layout(set = 1, binding = 0) uniform sampler2D directional_shadow_image[3];
 layout(set = 1, binding = 1) uniform sampler2D spot_shadow_atlas[3];
+layout(set = 2, binding = 0) uniform sampler2D directional_contact_image[3];
+layout(set = 2, binding = 1) uniform sampler2D spot_contact_image[3];
 
 const vec2 poisson_disk[16] = vec2[](
   vec2(-0.94201624, -0.39906216), vec2(0.94558609, -0.76890725),
@@ -66,8 +71,38 @@ float reverse_depth_distance(const float depth, const float near_plane, const fl
   return b / max(depth + a, 0.00001);
 }
 
-float directional_cascade_visibility(const int cascade_index, const float n_dot_l) {
-  const vec4 clip = directional_data[0].cascades[cascade_index].light_view_projection * vec4(world_position, 1.0);
+vec2 receiver_plane_gradient(const vec2 shadow_uv, const float receiver_depth) {
+  const vec2 uv_dx = dFdx(shadow_uv);
+  const vec2 uv_dy = dFdy(shadow_uv);
+  const float depth_dx = dFdx(receiver_depth);
+  const float depth_dy = dFdy(receiver_depth);
+  const float determinant = uv_dx.x * uv_dy.y - uv_dy.x * uv_dx.y;
+  if (abs(determinant) < 1.0e-8) return vec2(0.0);
+  return vec2(
+    (depth_dx * uv_dy.y - depth_dy * uv_dx.y) / determinant,
+    (-depth_dx * uv_dy.x + depth_dy * uv_dx.x) / determinant);
+}
+
+float receiver_depth_at(
+  const float center_depth,
+  const vec2 depth_gradient,
+  const vec2 sample_offset,
+  const float receiver_plane_scale) {
+  return center_depth +
+    dot(depth_gradient, sample_offset) * clamp(receiver_plane_scale, 0.0, 2.0);
+}
+
+float directional_cascade_visibility(
+  const int cascade_index,
+  const vec3 normal,
+  const float n_dot_l) {
+  if (directional_data[0].cascades[0].shadow_params.y < 0.5) return 1.0;
+  const float world_texel = directional_data[0].cascades[cascade_index].shadow_params.x;
+  const float normal_offset = world_texel *
+    (scene_data[0].shadow_params.y + scene_data[0].shadow_params.z * (1.0 - n_dot_l));
+  const vec3 receiver_position = world_position + normal * normal_offset;
+  const vec4 clip = directional_data[0].cascades[cascade_index].light_view_projection *
+    vec4(receiver_position, 1.0);
   const vec3 projected = clip.xyz / clip.w;
   const vec2 local_uv = projected.xy * 0.5 + 0.5;
   if (projected.z < 0.0 || projected.z > 1.0 || any(lessThan(local_uv, vec2(0.0))) || any(greaterThan(local_uv, vec2(1.0)))) {
@@ -77,25 +112,26 @@ float directional_cascade_visibility(const int cascade_index, const float n_dot_
   const vec2 tile = vec2(float(cascade_index & 1), float(cascade_index >> 1));
   const vec2 atlas_uv = (local_uv + tile) * 0.5;
   const float resolution = scene_data[0].shadow_params.x;
-  const float bias = scene_data[0].shadow_params.y + scene_data[0].shadow_params.z * (1.0 - n_dot_l);
   const vec2 texel = vec2(1.0 / resolution);
   const vec2 safe_min = tile * 0.5 + texel * 0.5;
   const vec2 safe_max = (tile + vec2(1.0)) * 0.5 - texel * 0.5;
-  const int filter_mode = int(scene_data[0].light_direction.w + 0.5);
-  if (filter_mode == 0) {
+  const vec2 depth_gradient = receiver_plane_gradient(atlas_uv, projected.z);
+  const float receiver_plane_scale = directional_data[0].cascades[cascade_index].shadow_params.z;
+  const int aa_mode = int(scene_data[0].light_direction.w + 0.5);
+  const float aa_radius = clamp(scene_data[0].filter_params.x, 0.25, 4.0);
+  if (aa_mode == 0) {
     const float stored_depth = texture(directional_shadow_image[0], clamp(atlas_uv, safe_min, safe_max)).r;
-    return projected.z + bias >= stored_depth ? 1.0 : 0.0;
+    return projected.z >= stored_depth ? 1.0 : 0.0;
   }
 
-  if (filter_mode >= 2) {
+  if (aa_mode == 2) {
     const mat2 rotation = shadow_rotation(world_position);
-    const float softness = clamp(scene_data[0].camera_position.w, 0.25, 4.0);
-    const float radius = (filter_mode == 3 ? 4.0 : 2.5) * softness;
     float visible = 0.0;
     for (int i = 0; i < 16; ++i) {
-      const vec2 sample_uv = clamp(atlas_uv + rotation * poisson_disk[i] * radius * texel, safe_min, safe_max);
+      const vec2 sample_offset = rotation * poisson_disk[i] * aa_radius * texel;
+      const vec2 sample_uv = clamp(atlas_uv + sample_offset, safe_min, safe_max);
       const float stored_depth = texture(directional_shadow_image[0], sample_uv).r;
-      visible += projected.z + bias >= stored_depth ? 1.0 : 0.0;
+      visible += receiver_depth_at(projected.z, depth_gradient, sample_uv - atlas_uv, receiver_plane_scale) >= stored_depth ? 1.0 : 0.0;
     }
     return visible / 16.0;
   }
@@ -104,16 +140,17 @@ float directional_cascade_visibility(const int cascade_index, const float n_dot_
   float samples = 0.0;
   for (int y = -PF02_PCF_RADIUS; y <= PF02_PCF_RADIUS; ++y) {
     for (int x = -PF02_PCF_RADIUS; x <= PF02_PCF_RADIUS; ++x) {
-      const vec2 sample_uv = clamp(atlas_uv + vec2(x, y) * texel, safe_min, safe_max);
+      const vec2 sample_offset = vec2(x, y) * aa_radius * texel;
+      const vec2 sample_uv = clamp(atlas_uv + sample_offset, safe_min, safe_max);
       const float stored_depth = texture(directional_shadow_image[0], sample_uv).r;
-      visible += projected.z + bias >= stored_depth ? 1.0 : 0.0;
+      visible += receiver_depth_at(projected.z, depth_gradient, sample_uv - atlas_uv, receiver_plane_scale) >= stored_depth ? 1.0 : 0.0;
       samples += 1.0;
     }
   }
   return visible / samples;
 }
 
-float directional_visibility(const float n_dot_l, out vec3 cascade_tint) {
+float directional_visibility(const vec3 normal, const float n_dot_l, out vec3 cascade_tint) {
   const float view_depth = -(scene_data[0].view * vec4(world_position, 1.0)).z;
   int cascade_index = -1;
   for (int index = 0; index < 4; ++index) {
@@ -133,7 +170,7 @@ float directional_visibility(const float n_dot_l, out vec3 cascade_tint) {
     vec3(0.42, 0.62, 1.0),
     vec3(1.0, 0.82, 0.32));
   const float debug_tint = directional_data[0].cascades[0].split_depths.w;
-  float visibility = directional_cascade_visibility(cascade_index, n_dot_l);
+  float visibility = directional_cascade_visibility(cascade_index, normal, n_dot_l);
   cascade_tint = mix(vec3(1.0), tint_colors[cascade_index], debug_tint);
 
   if (cascade_index < 3) {
@@ -141,7 +178,7 @@ float directional_visibility(const float n_dot_l, out vec3 cascade_tint) {
     const float split_far = directional_data[0].cascades[cascade_index].split_depths.y;
     const float blend = smoothstep(blend_start, split_far, view_depth);
     if (blend > 0.0) {
-      const float next_visibility = directional_cascade_visibility(cascade_index + 1, n_dot_l);
+      const float next_visibility = directional_cascade_visibility(cascade_index + 1, normal, n_dot_l);
       visibility = mix(visibility, next_visibility, blend);
       const vec3 next_tint = mix(vec3(1.0), tint_colors[cascade_index + 1], debug_tint);
       cascade_tint = mix(cascade_tint, next_tint, blend);
@@ -150,8 +187,21 @@ float directional_visibility(const float n_dot_l, out vec3 cascade_tint) {
   return visibility;
 }
 
-float spot_visibility(const int index, const vec3 position, const float n_dot_l) {
-  const vec4 clip = spot_data[0].lights[index].light_view_projection * vec4(position, 1.0);
+float spot_visibility(
+  const int index,
+  const vec3 position,
+  const vec3 normal,
+  const float n_dot_l) {
+  if (spot_data[0].lights[0].shadow_params.y < 0.5) return 1.0;
+  const vec4 unoffset_clip = spot_data[0].lights[index].light_view_projection * vec4(position, 1.0);
+  const float resolution = scene_data[0].shadow_params.x;
+  const float tile_resolution = resolution * 0.5;
+  const float world_texel =
+    2.0 * abs(unoffset_clip.w) * spot_data[0].lights[index].shadow_params.x / tile_resolution;
+  const float normal_offset = world_texel *
+    (scene_data[0].shadow_params.y + scene_data[0].shadow_params.z * (1.0 - n_dot_l));
+  const vec3 receiver_position = position + normal * normal_offset;
+  const vec4 clip = spot_data[0].lights[index].light_view_projection * vec4(receiver_position, 1.0);
   const vec3 projected = clip.xyz / clip.w;
   const vec2 local_uv = projected.xy * 0.5 + 0.5;
   if (projected.z < 0.0 || projected.z > 1.0 || any(lessThan(local_uv, vec2(0.0))) || any(greaterThan(local_uv, vec2(1.0)))) {
@@ -160,55 +210,65 @@ float spot_visibility(const int index, const vec3 position, const float n_dot_l)
 
   const vec2 tile = vec2(float(index & 1), float(index >> 1));
   const vec2 atlas_uv = (local_uv + tile) * 0.5;
-  const float resolution = scene_data[0].shadow_params.x;
-  const float bias = scene_data[0].shadow_params.y + scene_data[0].shadow_params.z * (1.0 - n_dot_l);
   const vec2 texel = vec2(1.0 / resolution);
   const vec2 safe_min = tile * 0.5 + texel * 0.5;
   const vec2 safe_max = (tile + vec2(1.0)) * 0.5 - texel * 0.5;
-  const int filter_mode = int(scene_data[0].light_direction.w + 0.5);
-  if (filter_mode == 0) {
+  const vec2 depth_gradient = receiver_plane_gradient(atlas_uv, projected.z);
+  const float receiver_plane_scale = spot_data[0].lights[index].shadow_params.z;
+  const int aa_mode = int(scene_data[0].light_direction.w + 0.5);
+  const float aa_radius = clamp(scene_data[0].filter_params.x, 0.25, 4.0);
+  const float emitter_radius = max(scene_data[0].filter_params.y, 0.0);
+  if (aa_mode == 0 && emitter_radius <= 0.0) {
     const float stored_depth = texture(spot_shadow_atlas[0], clamp(atlas_uv, safe_min, safe_max)).r;
-    return projected.z + bias >= stored_depth ? 1.0 : 0.0;
+    return projected.z >= stored_depth ? 1.0 : 0.0;
   }
 
   const mat2 rotation = shadow_rotation(position);
-  if (filter_mode >= 2) {
-    const float softness = clamp(scene_data[0].camera_position.w, 0.25, 4.0);
-    float filter_radius = 2.5 * softness;
-    if (filter_mode == 3) {
-      float blocker_depth = 0.0;
-      float blocker_count = 0.0;
-      const float search_radius = 6.0 * softness;
-      for (int i = 0; i < 16; ++i) {
-        const vec2 sample_uv = clamp(
-          atlas_uv + rotation * poisson_disk[i] * search_radius * texel,
-          safe_min,
-          safe_max);
-        const float stored_depth = texture(spot_shadow_atlas[0], sample_uv).r;
-        if (stored_depth > projected.z + bias && stored_depth > 0.0) {
-          blocker_depth += stored_depth;
-          blocker_count += 1.0;
-        }
+  if (emitter_radius > 0.0) {
+    float blocker_depth = 0.0;
+    float blocker_count = 0.0;
+    const float search_radius = clamp(emitter_radius / max(world_texel, 0.0001), 1.0, 12.0);
+    for (int i = 0; i < 16; ++i) {
+      const vec2 sample_offset = rotation * poisson_disk[i] * search_radius * texel;
+      const vec2 sample_uv = clamp(atlas_uv + sample_offset, safe_min, safe_max);
+      const float stored_depth = texture(spot_shadow_atlas[0], sample_uv).r;
+      const float receiver_depth = receiver_depth_at(
+        projected.z,
+        depth_gradient,
+        sample_uv - atlas_uv,
+        receiver_plane_scale);
+      if (stored_depth > receiver_depth && stored_depth > 0.0) {
+        blocker_depth += stored_depth;
+        blocker_count += 1.0;
       }
-      if (blocker_count == 0.0) return 1.0;
-
-      blocker_depth /= blocker_count;
-      const float near_plane = 0.15;
-      const float far_plane = spot_data[0].lights[index].position_range.w;
-      const float receiver_distance = reverse_depth_distance(projected.z, near_plane, far_plane);
-      const float blocker_distance = reverse_depth_distance(blocker_depth, near_plane, far_plane);
-      const float penumbra = max(receiver_distance - blocker_distance, 0.0) / max(blocker_distance, 0.0001);
-      filter_radius = clamp(1.0 + penumbra * 18.0 * softness, 1.0, 12.0);
     }
+    if (blocker_count == 0.0) return 1.0;
 
+    blocker_depth /= blocker_count;
+    const float near_plane = 0.15;
+    const float far_plane = spot_data[0].lights[index].position_range.w;
+    const float receiver_distance = reverse_depth_distance(projected.z, near_plane, far_plane);
+    const float blocker_distance = reverse_depth_distance(blocker_depth, near_plane, far_plane);
+    const float penumbra_world = emitter_radius *
+      max(receiver_distance - blocker_distance, 0.0) / max(blocker_distance, 0.0001);
+    const float filter_radius = clamp(max(aa_radius, penumbra_world / max(world_texel, 0.0001)), 0.5, 16.0);
     float visible = 0.0;
     for (int i = 0; i < 16; ++i) {
-      const vec2 sample_uv = clamp(
-        atlas_uv + rotation * poisson_disk[i] * filter_radius * texel,
-        safe_min,
-        safe_max);
+      const vec2 sample_offset = rotation * poisson_disk[i] * filter_radius * texel;
+      const vec2 sample_uv = clamp(atlas_uv + sample_offset, safe_min, safe_max);
       const float stored_depth = texture(spot_shadow_atlas[0], sample_uv).r;
-      visible += projected.z + bias >= stored_depth ? 1.0 : 0.0;
+      visible += receiver_depth_at(projected.z, depth_gradient, sample_uv - atlas_uv, receiver_plane_scale) >= stored_depth ? 1.0 : 0.0;
+    }
+    return visible / 16.0;
+  }
+
+  if (aa_mode == 2) {
+    float visible = 0.0;
+    for (int i = 0; i < 16; ++i) {
+      const vec2 sample_offset = rotation * poisson_disk[i] * aa_radius * texel;
+      const vec2 sample_uv = clamp(atlas_uv + sample_offset, safe_min, safe_max);
+      const float stored_depth = texture(spot_shadow_atlas[0], sample_uv).r;
+      visible += receiver_depth_at(projected.z, depth_gradient, sample_uv - atlas_uv, receiver_plane_scale) >= stored_depth ? 1.0 : 0.0;
     }
     return visible / 16.0;
   }
@@ -217,9 +277,10 @@ float spot_visibility(const int index, const vec3 position, const float n_dot_l)
   float samples = 0.0;
   for (int y = -PF02_PCF_RADIUS; y <= PF02_PCF_RADIUS; ++y) {
     for (int x = -PF02_PCF_RADIUS; x <= PF02_PCF_RADIUS; ++x) {
-      const vec2 sample_uv = clamp(atlas_uv + vec2(x, y) * texel, safe_min, safe_max);
+      const vec2 sample_offset = vec2(x, y) * aa_radius * texel;
+      const vec2 sample_uv = clamp(atlas_uv + sample_offset, safe_min, safe_max);
       const float stored_depth = texture(spot_shadow_atlas[0], sample_uv).r;
-      visible += projected.z + bias >= stored_depth ? 1.0 : 0.0;
+      visible += receiver_depth_at(projected.z, depth_gradient, sample_uv - atlas_uv, receiver_plane_scale) >= stored_depth ? 1.0 : 0.0;
       samples += 1.0;
     }
   }
@@ -241,17 +302,20 @@ void main() {
   const vec3 albedo = surface_albedo(normal);
   const vec3 view_direction = normalize(scene_data[0].camera_position.xyz - world_position);
   const int lighting_mode = int(scene_data[0].viewport_near.w + 0.5);
+  const vec2 contact_uv = gl_FragCoord.xy / scene_data[0].viewport_near.xy;
+  const float directional_contact = texture(directional_contact_image[0], contact_uv).r;
+  const vec4 spot_contacts = texture(spot_contact_image[0], contact_uv);
   const vec3 ambient = albedo * 0.055;
   vec3 direct = vec3(0.0);
   if (lighting_mode != 2) {
     const vec3 to_light = normalize(-scene_data[0].light_direction.xyz);
     const float diffuse = max(dot(normal, to_light), 0.0);
     vec3 cascade_tint;
-    const float visibility = directional_visibility(diffuse, cascade_tint);
+    const float visibility = directional_visibility(normal, diffuse, cascade_tint);
     const vec3 half_direction = normalize(to_light + view_direction);
-    const float specular = pow(max(dot(normal, half_direction), 0.0), 48.0) * step(0.0, diffuse);
+    const float specular = pow(max(dot(normal, half_direction), 0.0), 48.0) * step(0.0001, diffuse);
     direct = (albedo * diffuse + vec3(0.16) * specular) *
-      vec3(1.0, 0.93, 0.78) * cascade_tint * 1.35 * visibility;
+      vec3(1.0, 0.93, 0.78) * cascade_tint * 1.35 * visibility * directional_contact;
   }
 
   vec3 spot_lighting = vec3(0.0);
@@ -269,12 +333,12 @@ void main() {
     const float spot_diffuse = max(dot(normal, surface_to_light), 0.0);
     const float edge = max(1.0 - distance_to_light / range, 0.0);
     const float attenuation = edge * edge * cone;
-    const float spot_shadow = spot_visibility(index, world_position, spot_diffuse);
+    const float spot_shadow = spot_visibility(index, world_position, normal, spot_diffuse);
     const vec3 spot_half = normalize(surface_to_light + view_direction);
-    const float spot_specular = pow(max(dot(normal, spot_half), 0.0), 48.0) * step(0.0, spot_diffuse);
+    const float spot_specular = pow(max(dot(normal, spot_half), 0.0), 48.0) * step(0.0001, spot_diffuse);
     spot_lighting += (albedo * spot_diffuse + vec3(0.12) * spot_specular) *
       spot_data[0].lights[index].color_intensity.rgb *
-      spot_data[0].lights[index].color_intensity.a * attenuation * spot_shadow;
+      spot_data[0].lights[index].color_intensity.a * attenuation * spot_shadow * spot_contacts[index];
   }
 
   const vec3 hdr = ambient + direct + spot_lighting;

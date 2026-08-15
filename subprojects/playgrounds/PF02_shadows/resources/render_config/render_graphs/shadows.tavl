@@ -23,10 +23,31 @@
       steps = [ draw_spot_shadow_regions ]
     },
     {
+      name = pf02_depth
+      render_target = depth_target
+      subpasses = [
+        { scene_depth = (undefined, clear) },
+        { scene_depth = (depth_attachment, store) },
+        { scene_depth = (depth_read, store) }
+      ]
+      steps = [ depth_prepass ]
+    },
+    {
+      name = pf02_contact_shadows
+      subpasses = [
+        {
+          scene_depth = (depth_read, store),
+          contact_directional = (texel_write, store),
+          contact_spots = (texel_write, store)
+        }
+      ]
+      steps = [ build_contact_shadows ]
+    },
+    {
       name = pf02_forward
       render_target = forward_target
       subpasses = [
-        { hdr_color = (undefined, clear), scene_depth = (undefined, clear) },
+        { hdr_color = (undefined, clear), scene_depth = (depth_read, store) },
         { hdr_color = (color_attachment, store), scene_depth = (depth_attachment, store) },
         { hdr_color = (transfer_src, store), scene_depth = (depth_attachment, store) }
       ]

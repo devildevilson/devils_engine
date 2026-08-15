@@ -1,4 +1,16 @@
 {
+  name = depth_prepass_material
+  shaders = { vertex = "scene.vert.glsl", fragment = "depth.frag.glsl" }
+  depth = { test = true, write = true, compare = greater }
+  raster = { cull = back, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = contact_shadow_material
+  shaders = { compute = "contact_shadows.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
   name = directional_shadow_material
   dynamic = [ depth_bias ]
   shaders = {
@@ -33,8 +45,8 @@
   }
   depth = {
     test = true
-    write = true
-    compare = greater
+    write = false
+    compare = equal
   }
   raster = {
     cull = back

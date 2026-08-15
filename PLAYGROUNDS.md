@@ -98,26 +98,33 @@ font и показывает описание сцены, controls, сглаже
 подмножество этих возможностей в собственных resources/presets. Исходники и CMake targets лабораторий
 не зависят друг от друга.
 
-Текущий фокус — `PF02_shadows`. Directional map и фиксированный `2×2` spot atlas уже запускаются:
-движущиеся lights/casters, 3×3 PCF, receiver bias control и два прямых depth inset. Четыре spot regions
+Текущий фокус — `PF02_shadows`. `2×2` directional CSM и фиксированный `2×2` spot atlas уже запускаются:
+движущиеся lights/casters, независимые edge AA/spot-PCSS/contact режимы и четыре debug inset. Spot regions
 видны одновременно и не протекают друг в друга. Четыре material/восемь draw steps заменены одним generic
 `draw_regions`: main-поток пакует отобранные по cone/range caster instances и host command stream, а render
 graph управляет только ресурсами/layout. Каждая команда задаёт viewport/scissor/dynamic bias, индекс записи
 в целом bound GPU buffer и draw-group spans.
 
 Срез диагностики 2026-08-15 закрыт: общий Visage shell принимает динамические detail rows; PF02 выводит
-occupancy четырёх spot regions, packed caster count и раздельные raster/receiver bias. Opt-in Painter GPU
+occupancy четырёх spot regions, packed caster count и раздельные raster/world-texel/receiver-plane bias. Opt-in Painter GPU
 timestamp profiler ставит запросы только на границах render-graph passes, читает их после fence текущего
-frame-in-flight slot и показывает сглаженные directional/spot/forward/present-blit/full-graph времена;
+frame-in-flight slot и показывает сглаженные directional/spot/depth/contact/forward/blit/full-graph времена;
 без подключённого profiler query pool и timestamp commands отсутствуют. Bias quality-срез также закрыт:
-наклонный receiver и тонкий contact caster показывают acne/peter-panning, все четыре raster/receiver
-constant/slope значения управляются независимо, а режимы освещения изолируют directional и spot вклад.
-Runtime hard/3×3 PCF/rotated-Poisson/spot-PCSS и общий softness дают наблюдаемый A/B; PCSS пока остаётся
-исследовательской spot-light эвристикой. Первый CSM baseline также live: directional target стал `2×2`
+наклонный receiver и тонкий contact caster показывают acne/peter-panning, bias-компоненты управляются
+независимо, а режимы освещения изолируют directional и spot вклад.
+Runtime edge AA теперь независимо выбирает hard/3×3 PCF/rotated-Poisson и radius, а spot-PCSS отдельно
+задаёт emitter radius в мировых единицах. Receiver normal offset масштабируется world-size shadow texel
+конкретного cascade/spot depth; receiver-plane derivatives корректируют каждый tap. Half-resolution
+screen-space pass после camera depth prepass выдаёт directional + четыре spot contact masks, которые можно
+включить отдельно и увидеть в debug insets. Режим opt-in: signed receiver-plane/N·L/cone/range и
+silhouette rejection убирают ложные вклады, но single-depth hidden-surface limitation без temporal/HZB
+остаётся предметом PF03. Первый CSM baseline также live:
+directional target стал `2×2`
 atlas четырёх practical-split каскадов, записываемых вторым `draw_regions`; rotation-independent extent,
 light-space texel snapping и 12% blend bands уменьшают swimming и скрывают split seam, а runtime tint и
 полный depth atlas показывают выбор региона. Следующий quality-срез — repeatable camera-rail проверка
-стабилизации и cascade-aware bias/caster culling; directional PCSS по-прежнему заменён расширенным Poisson.
+стабилизации/world-texel bias и directional caster culling. Stochastic/temporal shadow reconstruction
+явно перенесён в PF03 вместе с motion/history contract.
 
 ## 1. Painter visual stack
 

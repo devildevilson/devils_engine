@@ -1,4 +1,18 @@
 {
+  name = depth_prepass
+  material = depth_prepass_material
+  geometry = scene_geometry
+  draw_group = scene_draw_group
+  sets = [ scene_data ]
+  command = "draw"
+}
+{
+  name = build_contact_shadows
+  material = contact_shadow_material
+  sets = [ spot_scene_data, scene_depth_input, contact_shadow_write ]
+  command = "dispatch constant contact_dispatch"
+}
+{
   name = draw_directional_shadow
   material = directional_shadow_material
   geometry = scene_geometry
@@ -21,7 +35,7 @@
   material = shadowed_scene_material
   geometry = scene_geometry
   draw_group = scene_draw_group
-  sets = [ spot_scene_data, shadow_inputs ]
+  sets = [ spot_scene_data, shadow_inputs, contact_shadow_read ]
   command = "draw"
 }
 {
@@ -29,7 +43,7 @@
   material = shadow_debug_material
   geometry = shadow_debug_geometry
   draw_group = shadow_debug_draw_group
-  sets = [ scene_data, shadow_inputs ]
+  sets = [ scene_data, shadow_inputs, contact_shadow_read ]
   command = "draw"
 }
 {

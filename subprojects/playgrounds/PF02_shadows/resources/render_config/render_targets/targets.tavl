@@ -1,4 +1,8 @@
 {
+  name = depth_target
+  resources = [ scene_depth = depth_attachment ]
+}
+{
   name = shadow_target
   resources = [ directional_shadow = depth_attachment ]
 }
