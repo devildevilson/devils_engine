@@ -1,5 +1,6 @@
 {
   name = directional_shadow_material
+  dynamic = [ depth_bias ]
   shaders = {
     vertex = "shadow.vert.glsl"
     fragment = "depth.frag.glsl"

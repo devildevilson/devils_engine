@@ -15,7 +15,7 @@ return function()
                 nk.panel_flags.no_scrollbar | nk.panel_flags.no_input
   local detail_count = math.min(playground_detail_count or 0, 10)
   local detail_padding = detail_count > 0 and 20 or 0
-  local panel_height = 112 + detail_count * 19 + detail_padding
+  local panel_height = 112 + detail_count * 23 + detail_padding
   if nk.begin_titled("playground_overlay", playground_title or "playground", {16, 16, 520, panel_height}, flags) then
     nk.push_font(14)
     nk.layout.row_dynamic(19, 1)

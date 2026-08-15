@@ -3,8 +3,9 @@
   material = directional_shadow_material
   geometry = scene_geometry
   draw_group = scene_draw_group
-  sets = [ scene_data ]
-  command = "draw"
+  sets = [ directional_scene_data ]
+  push_constants = [ region_index_push ]
+  command = "draw_regions directional_cascade_buffer directional_region_commands"
 }
 {
   name = draw_spot_shadow_regions

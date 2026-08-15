@@ -41,11 +41,16 @@ constexpr uint32_t initial_height = 720;
 constexpr uint32_t shadow_resolution = 2048;
 constexpr uint32_t caster_count = 5;
 constexpr uint32_t spot_count = 4;
+constexpr uint32_t cascade_count = 4;
 constexpr uint32_t packed_caster_capacity = caster_count * (spot_count + 1);
 constexpr float camera_near = 0.1f;
-constexpr float spot_bias_constant = -1.25f;
-constexpr float spot_bias_slope = -1.75f;
-constexpr float receiver_bias_slope = 0.0025f;
+constexpr float cascade_far = 40.0f;
+constexpr float cascade_split_lambda = 0.68f;
+constexpr float cascade_blend_fraction = 0.12f;
+constexpr float default_raster_bias_constant = -1.25f;
+constexpr float default_raster_bias_slope = -1.75f;
+constexpr float default_receiver_bias_constant = 0.0012f;
+constexpr float default_receiver_bias_slope = 0.0025f;
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -101,12 +106,31 @@ void add_quad(
   push(d, 0.0f, 1.0f);
 }
 
+void add_box(std::vector<vertex>& out, const glm::vec3& low, const glm::vec3& high) {
+  add_quad(out, {low.x, low.y, high.z}, {high.x, low.y, high.z}, {high.x, high.y, high.z}, {low.x, high.y, high.z}, {0, 0, 1});
+  add_quad(out, {high.x, low.y, low.z}, {low.x, low.y, low.z}, {low.x, high.y, low.z}, {high.x, high.y, low.z}, {0, 0, -1});
+  add_quad(out, {low.x, low.y, low.z}, {low.x, low.y, high.z}, {low.x, high.y, high.z}, {low.x, high.y, low.z}, {-1, 0, 0});
+  add_quad(out, {high.x, low.y, high.z}, {high.x, low.y, low.z}, {high.x, high.y, low.z}, {high.x, high.y, high.z}, {1, 0, 0});
+  add_quad(out, {low.x, low.y, low.z}, {high.x, low.y, low.z}, {high.x, low.y, high.z}, {low.x, low.y, high.z}, {0, -1, 0});
+  add_quad(out, {low.x, high.y, high.z}, {high.x, high.y, high.z}, {high.x, high.y, low.z}, {low.x, high.y, low.z}, {0, 1, 0});
+}
+
 std::vector<vertex> make_stage() {
   std::vector<vertex> out;
-  out.reserve(18);
+  out.reserve(60);
   add_quad(out, {-7, -2, 6}, {7, -2, 6}, {7, -2, -7}, {-7, -2, -7}, {0, 1, 0});
   add_quad(out, {-7, -2, -7}, {7, -2, -7}, {7, 5, -7}, {-7, 5, -7}, {0, 0, 1});
   add_quad(out, {-7, -2, -7}, {-7, -2, 6}, {-7, 5, 6}, {-7, 5, -7}, {1, 0, 0});
+
+  // Bias fixtures: an oblique receiver makes slope acne visible, while the very thin upright box
+  // exposes contact loss/peter-panning as raster or receiver bias grows.
+  const glm::vec3 ramp_a{-5.8f, -1.96f, -1.4f};
+  const glm::vec3 ramp_b{-2.7f, -1.96f, -1.4f};
+  const glm::vec3 ramp_c{-2.7f, -0.05f, -4.7f};
+  const glm::vec3 ramp_d{-5.8f, -0.05f, -4.7f};
+  const glm::vec3 ramp_normal = glm::normalize(glm::cross(ramp_b - ramp_a, ramp_c - ramp_a));
+  add_quad(out, ramp_a, ramp_b, ramp_c, ramp_d, ramp_normal);
+  add_box(out, {-4.55f, -2.0f, 0.25f}, {-4.39f, 0.25f, 1.15f});
   return out;
 }
 
@@ -165,6 +189,146 @@ struct alignas(16) scene_block {
   glm::vec4 shadow_params;
 };
 static_assert(sizeof(scene_block) == 256);
+
+struct alignas(16) directional_cascade_record {
+  glm::mat4 light_view_projection;
+  // x/y: camera-space interval, z: blend-band start, w: debug tint enable.
+  glm::vec4 split_depths;
+};
+static_assert(sizeof(directional_cascade_record) == 5 * sizeof(glm::vec4));
+
+using directional_cascade_block = std::array<directional_cascade_record, cascade_count>;
+
+directional_cascade_block make_directional_cascades(
+  const playground::free_camera& camera,
+  const float aspect,
+  const float vertical_fov,
+  const glm::vec3 light_direction,
+  const bool debug_tint) {
+  directional_cascade_block out{};
+  std::array<float, cascade_count> split_fars{};
+  for (uint32_t index = 0; index < cascade_count; ++index) {
+    const float fraction = float(index + 1) / float(cascade_count);
+    const float logarithmic = camera_near * std::pow(cascade_far / camera_near, fraction);
+    const float uniform = camera_near + (cascade_far - camera_near) * fraction;
+    split_fars[index] =
+      logarithmic * cascade_split_lambda + uniform * (1.0f - cascade_split_lambda);
+  }
+
+  const glm::vec3 camera_forward = camera.forward();
+  const glm::vec3 camera_right = camera.right();
+  const glm::vec3 camera_up = glm::normalize(glm::cross(camera_right, camera_forward));
+  const glm::mat4 light_view = glm::mat4(glm::mat3(glm::lookAtRH(
+    -light_direction,
+    glm::vec3{0.0f},
+    glm::vec3{0.0f, 1.0f, 0.0f})));
+  const float tangent = std::tan(vertical_fov * 0.5f);
+  float split_near = camera_near;
+
+  for (uint32_t index = 0; index < cascade_count; ++index) {
+    const float split_far = split_fars[index];
+    std::array<glm::vec3, 8> corners{};
+    uint32_t corner_index = 0;
+    for (const float distance : {split_near, split_far}) {
+      const glm::vec3 center = camera.position + camera_forward * distance;
+      const float half_height = tangent * distance;
+      const float half_width = half_height * aspect;
+      for (const float vertical : {-1.0f, 1.0f}) {
+        for (const float horizontal : {-1.0f, 1.0f}) {
+          corners[corner_index++] = center +
+            camera_right * (horizontal * half_width) + camera_up * (vertical * half_height);
+        }
+      }
+    }
+
+    glm::vec3 center{0.0f};
+    for (const auto corner : corners) center += corner;
+    center /= float(corners.size());
+    float radius = 0.0f;
+    for (const auto corner : corners) radius = std::max(radius, glm::length(corner - center));
+    // A rotation-independent sphere plus a quantized extent prevents the projection from breathing
+    // while the camera rotates inside one split interval.
+    radius = std::ceil(radius * 16.0f) / 16.0f;
+
+    const glm::vec3 center_light = glm::vec3(light_view * glm::vec4(center, 1.0f));
+    const float texel_world = (radius * 2.0f) / float(shadow_resolution / 2);
+    const float snapped_x = std::round(center_light.x / texel_world) * texel_world;
+    const float snapped_y = std::round(center_light.y / texel_world) * texel_world;
+
+    float minimum_z = 1.0e30f;
+    float maximum_z = -1.0e30f;
+    for (const auto corner : corners) {
+      const float light_z = (light_view * glm::vec4(corner, 1.0f)).z;
+      minimum_z = std::min(minimum_z, light_z);
+      maximum_z = std::max(maximum_z, light_z);
+    }
+    // The camera slice is a receiver volume. Extend it along the light direction so nearby objects
+    // outside the frustum can still cast into the visible slice.
+    constexpr float caster_depth_margin = 12.0f;
+    const float near_distance = -maximum_z - caster_depth_margin;
+    const float far_distance = -minimum_z + caster_depth_margin;
+    const glm::mat4 light_projection = reverse_z_ortho(
+      snapped_x - radius,
+      snapped_x + radius,
+      snapped_y - radius,
+      snapped_y + radius,
+      near_distance,
+      far_distance);
+
+    const float blend_start = split_far - (split_far - split_near) * cascade_blend_fraction;
+    out[index].light_view_projection = light_projection * light_view;
+    out[index].split_depths = glm::vec4(
+      split_near,
+      split_far,
+      blend_start,
+      debug_tint ? 1.0f : 0.0f);
+    split_near = split_far;
+  }
+  return out;
+}
+
+constexpr uint32_t directional_span_count = cascade_count * 2;
+
+struct alignas(16) directional_region_stream {
+  painter::region_draw_header header;
+  std::array<painter::region_draw_command, cascade_count> regions;
+  std::array<painter::region_draw_span, directional_span_count> spans;
+};
+static_assert(
+  sizeof(directional_region_stream) == painter::region_draw_buffer_size(cascade_count, directional_span_count));
+
+directional_region_stream build_directional_regions(
+  const uint32_t stage_pair,
+  const uint32_t caster_pair,
+  const float raster_bias_constant,
+  const float raster_bias_slope) {
+  directional_region_stream stream{};
+  stream.header.region_count = cascade_count;
+  stream.header.span_count = directional_span_count;
+  stream.header.region_stride = sizeof(painter::region_draw_command);
+  stream.header.span_stride = sizeof(painter::region_draw_span);
+
+  constexpr uint32_t tile_resolution = shadow_resolution / 2;
+  for (uint32_t cascade_index = 0; cascade_index < cascade_count; ++cascade_index) {
+    auto& region = stream.regions[cascade_index];
+    region.viewport_x = float((cascade_index & 1u) * tile_resolution);
+    region.viewport_y = float((cascade_index >> 1u) * tile_resolution);
+    region.viewport_width = float(tile_resolution);
+    region.viewport_height = float(tile_resolution);
+    region.scissor_x = int32_t((cascade_index & 1u) * tile_resolution);
+    region.scissor_y = int32_t((cascade_index >> 1u) * tile_resolution);
+    region.scissor_width = tile_resolution;
+    region.scissor_height = tile_resolution;
+    region.depth_bias_constant = raster_bias_constant;
+    region.depth_bias_slope = raster_bias_slope;
+    region.data_index = cascade_index;
+    region.first_span = cascade_index * 2;
+    region.span_count = 2;
+    stream.spans[region.first_span] = painter::region_draw_span{stage_pair, 0, 1, 0};
+    stream.spans[region.first_span + 1] = painter::region_draw_span{caster_pair, 0, caster_count, 0};
+  }
+  return stream;
+}
 
 struct alignas(16) spot_light_record {
   glm::mat4 light_view_projection;
@@ -238,7 +402,9 @@ spot_region_stream build_spot_regions(
   const std::array<glm::vec4, caster_count>& visible_casters,
   std::array<glm::vec4, packed_caster_capacity>& packed_casters,
   const uint32_t stage_pair,
-  const uint32_t caster_pair) {
+  const uint32_t caster_pair,
+  const float raster_bias_constant,
+  const float raster_bias_slope) {
   spot_region_stream stream{};
   stream.header.region_count = spot_count;
   stream.header.span_count = spot_span_count;
@@ -258,8 +424,8 @@ spot_region_stream build_spot_regions(
     region.scissor_y = int32_t((light_index >> 1u) * tile_resolution);
     region.scissor_width = tile_resolution;
     region.scissor_height = tile_resolution;
-    region.depth_bias_constant = spot_bias_constant;
-    region.depth_bias_slope = spot_bias_slope;
+    region.depth_bias_constant = raster_bias_constant;
+    region.depth_bias_slope = raster_bias_slope;
     region.data_index = light_index;
     region.first_span = light_index * 2;
     region.span_count = 2;
@@ -398,10 +564,23 @@ std::vector<const char*> instance_extensions(const bool validation) {
 int main(int argc, char** argv) {
   bool validation = false;
   bool uncapped = false;
+  bool start_zero_bias = false;
+  bool initial_cascade_debug = false;
+  uint32_t initial_lighting_mode = 0;
+  uint32_t initial_shadow_filter = 1;
   for (int i = 1; i < argc; ++i) {
     const std::string_view option(argv[i]);
     validation = validation || option == "--validation";
     uncapped = uncapped || option == "--uncapped";
+    start_zero_bias = start_zero_bias || option == "--zero-bias";
+    initial_cascade_debug = initial_cascade_debug || option == "--cascade-debug";
+    if (option == "--all-lights") initial_lighting_mode = 0;
+    if (option == "--directional-only") initial_lighting_mode = 1;
+    if (option == "--spot-only") initial_lighting_mode = 2;
+    if (option == "--hard") initial_shadow_filter = 0;
+    if (option == "--pcf") initial_shadow_filter = 1;
+    if (option == "--poisson") initial_shadow_filter = 2;
+    if (option == "--pcss") initial_shadow_filter = 3;
   }
 
   input::init input_runtime(&error_callback);
@@ -491,8 +670,8 @@ int main(int argc, char** argv) {
       common_resources + "ui/lab_overlay.lua",
       playground::overlay_description{
         "PF02 — shadow maps + atlas",
-        "directional map + 2×2 spot atlas → 3×3 PCF; depth views at top-right",
-        "WASD/QE + mouse · Shift boost · Z/X bias · Esc exit"});
+        "4-cascade directional atlas + 2×2 spot atlas → runtime shadow filters",
+        "WASD/QE + mouse · Shift boost · bias keys below · Esc exit"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(font_texture, painter::texture_create_info{{atlas.width, atlas.height, 1}, VK_FORMAT_R8G8B8A8_UNORM});
@@ -556,8 +735,26 @@ int main(int argc, char** argv) {
     bind_key("camera_down", "key_q");
     bind_key("camera_up", "key_e");
     bind_key("camera_fast", "left_shift");
-    bind_key("bias_down", "key_z");
-    bind_key("bias_up", "key_x");
+    bind_key("receiver_constant_down", "key_z");
+    bind_key("receiver_constant_up", "key_x");
+    bind_key("receiver_slope_down", "key_c");
+    bind_key("receiver_slope_up", "key_v");
+    bind_key("raster_constant_down", "key_b");
+    bind_key("raster_constant_up", "key_n");
+    bind_key("raster_slope_down", "key_m");
+    bind_key("raster_slope_up", "comma");
+    bind_key("bias_zero", "key_0");
+    bind_key("bias_defaults", "key_1");
+    bind_key("lighting_all", "key_2");
+    bind_key("lighting_directional", "key_3");
+    bind_key("lighting_spot", "key_4");
+    bind_key("shadow_hard", "key_5");
+    bind_key("shadow_pcf", "key_6");
+    bind_key("shadow_poisson", "key_7");
+    bind_key("shadow_pcss", "key_8");
+    bind_key("softness_down", "left_bracket");
+    bind_key("softness_up", "right_bracket");
+    bind_key("cascade_debug", "key_9");
     escape_key = input::glfw_key_from_canonical("escape");
     input::set_window_callback(window, &key_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
@@ -570,14 +767,16 @@ int main(int argc, char** argv) {
     auto previous_time = std::chrono::steady_clock::now();
     const auto start_time = previous_time;
     playground::frame_pacer frame_pacer(uncapped ? 0u : 60u);
-    float base_bias = 0.0012f;
+    float raster_bias_constant = start_zero_bias ? 0.0f : default_raster_bias_constant;
+    float raster_bias_slope = start_zero_bias ? 0.0f : default_raster_bias_slope;
+    float receiver_bias_constant = start_zero_bias ? 0.0f : default_receiver_bias_constant;
+    float receiver_bias_slope = start_zero_bias ? 0.0f : default_receiver_bias_slope;
+    uint32_t lighting_mode = initial_lighting_mode;
+    uint32_t shadow_filter = initial_shadow_filter;
+    float shadow_softness = 1.0f;
+    bool cascade_debug = initial_cascade_debug;
 
     const glm::vec3 light_direction = glm::normalize(glm::vec3{-0.55f, -1.0f, -0.38f});
-    const glm::vec3 light_center{0.0f, 0.0f, -1.0f};
-    const glm::vec3 light_eye = light_center - light_direction * 14.0f;
-    const glm::mat4 light_view = glm::lookAtRH(light_eye, light_center, glm::vec3{0.0f, 1.0f, 0.0f});
-    const glm::mat4 light_projection = reverse_z_ortho(-9.0f, 9.0f, -7.0f, 7.0f, 0.1f, 30.0f);
-    const glm::mat4 light_view_projection = light_projection * light_view;
 
     painter::gpu_timestamp_profiler gpu_profiler(base);
     painter::graphics_ctx context;
@@ -585,8 +784,8 @@ int main(int argc, char** argv) {
     context.assets = &assets;
     context.set_gpu_profiler(&gpu_profiler);
 
-    utils::info("PF02 controls: WASD/QE + mouse camera, Z/X receiver bias, Esc exit");
-    utils::info("PF02 graph: directional map + 2x2 spot atlas -> shadowed forward + depth debug -> present");
+    utils::info("PF02 bias controls: Z/X receiver constant, C/V receiver slope, B/N raster constant, M/, raster slope, 0 zero, 1 defaults");
+    utils::info("PF02 graph: 2x2 directional CSM atlas + 2x2 spot atlas -> shadowed forward + depth debug -> present");
 
     while (!input::should_close(window)) {
       input::poll_events();
@@ -611,10 +810,58 @@ int main(int argc, char** argv) {
       mouse_x = next_mouse_x;
       mouse_y = next_mouse_y;
       camera.update(motion, dt);
-      base_bias = std::clamp(
-        base_bias + (float(input::events::is_pressed("bias_up")) - float(input::events::is_pressed("bias_down"))) * dt * 0.002f,
+      receiver_bias_constant = std::clamp(
+        receiver_bias_constant +
+          (float(input::events::is_pressed("receiver_constant_up")) -
+           float(input::events::is_pressed("receiver_constant_down"))) * dt * 0.002f,
         0.0f,
         0.008f);
+      receiver_bias_slope = std::clamp(
+        receiver_bias_slope +
+          (float(input::events::is_pressed("receiver_slope_up")) -
+           float(input::events::is_pressed("receiver_slope_down"))) * dt * 0.006f,
+        0.0f,
+        0.02f);
+      raster_bias_constant = std::clamp(
+        raster_bias_constant +
+          (float(input::events::is_pressed("raster_constant_up")) -
+           float(input::events::is_pressed("raster_constant_down"))) * dt * 2.0f,
+        -8.0f,
+        0.0f);
+      raster_bias_slope = std::clamp(
+        raster_bias_slope +
+          (float(input::events::is_pressed("raster_slope_up")) -
+           float(input::events::is_pressed("raster_slope_down"))) * dt * 2.5f,
+        -8.0f,
+        0.0f);
+      if (input::events::is_pressed("bias_zero")) {
+        raster_bias_constant = 0.0f;
+        raster_bias_slope = 0.0f;
+        receiver_bias_constant = 0.0f;
+        receiver_bias_slope = 0.0f;
+      }
+      if (input::events::is_pressed("bias_defaults")) {
+        raster_bias_constant = default_raster_bias_constant;
+        raster_bias_slope = default_raster_bias_slope;
+        receiver_bias_constant = default_receiver_bias_constant;
+        receiver_bias_slope = default_receiver_bias_slope;
+      }
+      if (input::events::is_pressed("lighting_all")) lighting_mode = 0;
+      if (input::events::is_pressed("lighting_directional")) lighting_mode = 1;
+      if (input::events::is_pressed("lighting_spot")) lighting_mode = 2;
+      if (input::events::is_pressed("shadow_hard")) shadow_filter = 0;
+      if (input::events::is_pressed("shadow_pcf")) shadow_filter = 1;
+      if (input::events::is_pressed("shadow_poisson")) shadow_filter = 2;
+      if (input::events::is_pressed("shadow_pcss")) shadow_filter = 3;
+      shadow_softness = std::clamp(
+        shadow_softness +
+          (float(input::events::is_pressed("softness_up")) -
+           float(input::events::is_pressed("softness_down"))) * dt,
+        0.25f,
+        4.0f);
+      if (input::events::check_event("cascade_debug", input::event_state::press)) {
+        cascade_debug = !cascade_debug;
+      }
 
       if (!base.can_draw()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(8));
@@ -624,16 +871,46 @@ int main(int argc, char** argv) {
       base.prepare_frame();
       const float aspect = float(std::max(pending_width, 1u)) / float(std::max(pending_height, 1u));
       const auto view = camera.view();
-      const auto projection = playground::infinite_reverse_z_projection(glm::radians(68.0f), aspect, camera_near);
+      const float camera_fov = glm::radians(68.0f);
+      const auto projection = playground::infinite_reverse_z_projection(camera_fov, aspect, camera_near);
+      const auto directional_cascades = make_directional_cascades(
+        camera,
+        aspect,
+        camera_fov,
+        light_direction,
+        cascade_debug);
+      const auto directional_regions = build_directional_regions(
+        stage_pair,
+        caster_pair,
+        raster_bias_constant,
+        raster_bias_slope);
       scene_block scene{};
       scene.view_projection = projection * view;
       scene.view = view;
-      scene.light_view_projection = light_view_projection;
-      scene.camera_position = glm::vec4(camera.position, 1.0f);
-      scene.viewport_near = glm::vec4(float(pending_width), float(pending_height), camera_near, 0.0f);
-      scene.light_direction = glm::vec4(light_direction, 0.0f);
-      scene.shadow_params = glm::vec4(float(shadow_resolution), base_bias, receiver_bias_slope, 0.0f);
+      scene.light_view_projection = directional_cascades[0].light_view_projection;
+      scene.camera_position = glm::vec4(camera.position, shadow_softness);
+      scene.viewport_near = glm::vec4(
+        float(pending_width),
+        float(pending_height),
+        camera_near,
+        float(lighting_mode));
+      scene.light_direction = glm::vec4(light_direction, float(shadow_filter));
+      scene.shadow_params = glm::vec4(
+        float(shadow_resolution),
+        receiver_bias_constant,
+        receiver_bias_slope,
+        0.0f);
       write_current_buffer(base, "scene_buffer", &scene, sizeof(scene));
+      write_current_buffer(
+        base,
+        "directional_cascade_buffer",
+        directional_cascades.data(),
+        sizeof(directional_cascades));
+      write_current_buffer(
+        base,
+        "directional_region_commands",
+        &directional_regions,
+        sizeof(directional_regions));
 
       const float seconds = std::chrono::duration<float>(now - start_time).count();
       const auto spot_lights = make_spot_lights(seconds);
@@ -646,7 +923,9 @@ int main(int argc, char** argv) {
         caster_instances,
         packed_caster_instances,
         stage_pair,
-        caster_pair);
+        caster_pair,
+        raster_bias_constant,
+        raster_bias_slope);
       const auto instance_frame = base.get_current_instance_resource_frame(caster_pair);
       std::memcpy(
         static_cast<uint8_t*>(instance_frame.mapped) + instance_frame.sub.offset,
@@ -663,33 +942,50 @@ int main(int argc, char** argv) {
         spot_regions.spans[7].instance_count};
       const uint32_t packed_count =
         region_casters[0] + region_casters[1] + region_casters[2] + region_casters[3];
-      std::array<std::string, 5> overlay_details{
+      const std::string_view lighting_name =
+        lighting_mode == 1 ? "directional only" : lighting_mode == 2 ? "spot only" : "all lights";
+      const std::array<std::string_view, 4> filter_names{"hard", "3x3 PCF", "rotated Poisson", "spot PCSS"};
+      std::array<std::string, 9> overlay_details{
         std::format(
-          "Atlas: 4 x {}^2   casters: [{}, {}, {}, {}]   packed: {}",
+          "CSM: 4 x {}^2   splits: {:.1f} / {:.1f} / {:.1f} / {:.1f}   tint [9]: {}",
+          shadow_resolution / 2,
+          directional_cascades[0].split_depths.y,
+          directional_cascades[1].split_depths.y,
+          directional_cascades[2].split_depths.y,
+          directional_cascades[3].split_depths.y,
+          cascade_debug ? "on" : "off"),
+        std::format(
+          "Spot atlas: 4 x {}^2   casters: [{}, {}, {}, {}]   packed: {}",
           shadow_resolution / 2,
           region_casters[0],
           region_casters[1],
           region_casters[2],
           region_casters[3],
           packed_count),
-        std::format("Caster raster bias: constant {:.2f}   slope {:.2f}", spot_bias_constant, spot_bias_slope),
-        std::format("Receiver sample bias: constant {:.5f}   slope {:.4f}", base_bias, receiver_bias_slope),
+        std::format("Raster bias [B/N constant, M/, slope]: {:.2f}   {:.2f}", raster_bias_constant, raster_bias_slope),
+        std::format("Receiver bias [Z/X constant, C/V slope]: {:.5f}   {:.4f}", receiver_bias_constant, receiver_bias_slope),
+        "Bias presets: [0] zero (show acne)   [1] defaults (compare contact loss)",
+        std::format("Lighting mode: {}   [2] all   [3] directional   [4] spot", lighting_name),
+        std::format(
+          "Shadow filter: {}   softness {:.2f}   [ / ] adjust   [5-8] mode",
+          filter_names[shadow_filter],
+          shadow_softness),
         "GPU passes: waiting for timestamp results...",
         "GPU graph: waiting for timestamp results..."};
       if (gpu_profiler.has_results() && gpu_profiler.passes().size() == 4) {
         const auto timings = gpu_profiler.passes();
-        overlay_details[3] = std::format(
+        overlay_details[7] = std::format(
           "GPU: directional {:.3f} ms   spot atlas {:.3f} ms   forward {:.3f} ms",
           timings[0].milliseconds,
           timings[1].milliseconds,
           timings[2].milliseconds);
-        overlay_details[4] = std::format(
+        overlay_details[8] = std::format(
           "GPU: present blit {:.3f} ms   complete graph {:.3f} ms",
           timings[3].milliseconds,
           gpu_profiler.frame_milliseconds());
       } else if (!gpu_profiler.available()) {
-        overlay_details[3] = "GPU timestamps unavailable on the selected graphics queue";
-        overlay_details[4].clear();
+        overlay_details[7] = "GPU timestamps unavailable on the selected graphics queue";
+        overlay_details[8].clear();
       }
       overlay.set_detail_lines(overlay_details);
 

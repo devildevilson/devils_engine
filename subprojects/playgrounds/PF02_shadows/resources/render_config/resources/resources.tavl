@@ -55,6 +55,22 @@
   swap = per_frame
 }
 {
+  name = directional_cascade_buffer
+  format = mat4v4
+  role = upload
+  size = directional_cascade_count
+  type = frames_in_flight
+  swap = per_frame
+}
+{
+  name = directional_region_commands
+  format = c1
+  role = upload
+  size = directional_region_commands_bytes
+  type = frames_in_flight
+  swap = per_frame
+}
+{
   name = spot_region_commands
   format = c1
   role = upload

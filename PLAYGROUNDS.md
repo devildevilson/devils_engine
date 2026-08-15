@@ -76,9 +76,8 @@ font и показывает описание сцены, controls, сглаже
 ## Текущий фокус — Painter visual stack
 
 Активная campaign: шесть независимых painter-лабораторий `PF01`–`PF06`. Сейчас в работе только
-[`PF01_forward_plus`](subprojects/playgrounds/PF01_forward_plus/README.md). Сначала она создаёт
-минимальную 3D laboratory shell и наблюдаемый Forward+ proof; следующая лаборатория выбирается после
-закрытия её Definition of Done.
+[`PF02_shadows`](subprojects/playgrounds/PF02_shadows/README.md); `PF01_forward_plus` уже дал минимальную
+3D laboratory shell и наблюдаемый Forward+ baseline.
 
 Лаборатории не образуют CMake/source dependency chain. Более поздняя площадка может выборочно взять
 зафиксированный baseline ранней либо общий код из `common`/`libs/painter`, после чего развивается
@@ -110,9 +109,15 @@ graph управляет только ресурсами/layout. Каждая к
 occupancy четырёх spot regions, packed caster count и раздельные raster/receiver bias. Opt-in Painter GPU
 timestamp profiler ставит запросы только на границах render-graph passes, читает их после fence текущего
 frame-in-flight slot и показывает сглаженные directional/spot/forward/present-blit/full-graph времена;
-без подключённого profiler query pool и timestamp commands отсутствуют. Следующий quality-срез идёт в
-порядке: отдельное управление bias на contact/sloped fixtures → hard/PCF/Poisson/PCSS soft-shadow A/B →
-стабилизированные directional cascades с debug colors/blend bands. Так фильтрация не маскирует bias defects.
+без подключённого profiler query pool и timestamp commands отсутствуют. Bias quality-срез также закрыт:
+наклонный receiver и тонкий contact caster показывают acne/peter-panning, все четыре raster/receiver
+constant/slope значения управляются независимо, а режимы освещения изолируют directional и spot вклад.
+Runtime hard/3×3 PCF/rotated-Poisson/spot-PCSS и общий softness дают наблюдаемый A/B; PCSS пока остаётся
+исследовательской spot-light эвристикой. Первый CSM baseline также live: directional target стал `2×2`
+atlas четырёх practical-split каскадов, записываемых вторым `draw_regions`; rotation-independent extent,
+light-space texel snapping и 12% blend bands уменьшают swimming и скрывают split seam, а runtime tint и
+полный depth atlas показывают выбор региона. Следующий quality-срез — repeatable camera-rail проверка
+стабилизации и cascade-aware bias/caster culling; directional PCSS по-прежнему заменён расширенным Poisson.
 
 ## 1. Painter visual stack
 

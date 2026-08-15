@@ -5,10 +5,18 @@
   ]
 }
 {
+  name = directional_scene_data
+  layout = [
+    { resource = scene_buffer, usage = uniform, stage = all },
+    { resource = directional_cascade_buffer, usage = storage_read, stage = all }
+  ]
+}
+{
   name = spot_scene_data
   layout = [
     { resource = scene_buffer, usage = uniform, stage = all },
-    { resource = spot_light_buffer, usage = storage_read, stage = all }
+    { resource = spot_light_buffer, usage = storage_read, stage = all },
+    { resource = directional_cascade_buffer, usage = storage_read, stage = all }
   ]
 }
 {

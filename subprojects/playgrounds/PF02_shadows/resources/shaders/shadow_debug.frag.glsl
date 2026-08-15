@@ -29,7 +29,7 @@ void main() {
 
   const vec2 sample_uv = in_directional ? directional_uv : atlas_uv;
   const bool outer_border = any(lessThan(sample_uv, vec2(0.012))) || any(greaterThan(sample_uv, vec2(0.988)));
-  const bool tile_border = in_atlas && (abs(sample_uv.x - 0.5) < 0.006 || abs(sample_uv.y - 0.5) < 0.006);
+  const bool tile_border = abs(sample_uv.x - 0.5) < 0.006 || abs(sample_uv.y - 0.5) < 0.006;
   const float depth = in_directional
     ? texture(directional_shadow_image[0], sample_uv).r
     : texture(spot_shadow_atlas[0], sample_uv).r;
