@@ -1,0 +1,18 @@
+{
+  name = region_material
+  dynamic = [ depth_bias ]
+  shaders = {
+    vertex = "vertex1.vert.glsl"
+    fragment = "fragment1.frag.glsl"
+  }
+  depth = {
+    test = true
+    write = true
+    compare = greater
+  }
+  raster = {
+    cull = back
+    front_face = ccw
+    polygon = fill
+  }
+}

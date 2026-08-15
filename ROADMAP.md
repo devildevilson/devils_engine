@@ -30,17 +30,49 @@ lifetime, ordering, budgets, diagnostics и переиспользуемые pri
 
 Campaign: [Painter visual stack](PLAYGROUNDS.md#текущий-фокус--painter-visual-stack).
 
-Текущая лаборатория: [`PF01_forward_plus`](subprojects/playgrounds/PF01_forward_plus/README.md).
+Текущая лаборатория: [`PF02_shadows`](subprojects/playgrounds/PF02_shadows/README.md).
 
 | Этап лаборатории | Наблюдаемый результат | Возможные engine blockers |
 | --- | --- | --- |
-| shell/baseline | отдельная 3D-сцена, camera rail, HDR + depth/stencil, target viewer | минимальные части `RND-01/02/11/12/13/15` |
-| Forward+ data | instance/light buffers и bounded cluster lists | `RND-01/02/04` |
-| visible comparison | moving lights, simple/Forward+ toggle, heatmap, overflow и timings | `RND-04/11` |
+| shadow baseline | directional map + движущиеся casters + depth viewer | минимальные части `RND-01/02/11/13/15/22` |
+| spot atlas | несколько light views в одном target, региональные viewport/scissor/bias и caster spans | `RND-06/12/13/22` |
+| visible diagnostics | bias/occupancy/culling overlay, GPU timings и atlas lifetime | `RND-11/22` |
 
-Срез 2026-08-14: room/free-camera/HDR/reversed-Z depth, 96 moving point lights и config-defined
-depth → compute tile assignment → Forward+ → present уже запускаются с чистым Vulkan validation.
-Следующая наблюдаемая граница — naive-forward A/B, heatmap/overflow и repeatable camera rail/timings.
+Срез 2026-08-14: room/free-camera/HDR/reversed-Z depth, 96 движущихся point lights в решётке `8 × 4 × 3`
+и config-defined depth → compute tile assignment → Forward+ → present уже запускаются. Сцена имеет нулевой
+ambient и жёсткий radius cutoff. Попутно исправлен общий контракт
+`painter` config constants — parsed defaults теперь активны до первого кадра, поэтому constant dispatch больше
+не превращается в `(0,0,0)`; staging runtime writes по-прежнему публикуются только через `update_event()`.
+Срез 2026-08-15: light culling переведён с одного последовательного invocation на tile на workgroup `8 × 8`;
+near-plane/camera-crossing spheres больше не исчезают при наклоне камеры. Screen-space projected bounds были
+отброшены после false negatives на боковых видах: финальный тест идёт напрямую против четырёх view-space
+плоскостей tile-frustum. Их scale берётся из чистой projection matrix: прежнее чтение диагонали
+`projection * view` делало tile bounds зависимыми от yaw/pitch и создавало 16-pixel cutoff полосы. Tile
+capacity поднята с 64 до всех 96 лабораторных lights, чтобы до появления явного overflow counter результат
+не зависел от молчаливого усечения. Dispatch следует реальному viewport вместо постоянных 120×68 groups.
+PF01 снова использует mailbox-first present policy и отдельный common deadline/`sleep_until` limiter на
+60 FPS; `--uncapped` отключает только limiter и оставляет mailbox stress mode. Первый Visage-overlay через
+обычные `draw_ui` buffers показывает описание/controls и сглаженные FPS/frame time.
+`RND-25` закрыт: named descriptor sets автоматически добавляют свои usages в step barriers/read-write masks,
+одинаковые usages дедуплицируются, конфликтующие fail-fast; PF01 разделяет read/write SSBO descriptor views и
+больше не повторяет set resources вручную. `painter_shader_prepare_test` закрепляет inference.
+
+Аудит `RND-24`: основной runtime уже независимо пейсит main/render/sound/assets workers через
+`simul::advancer` absolute deadline + `sleep_until`, а Painter выбирает MAILBOX с гарантированным FIFO fallback.
+Остаток задачи: явная platform/user fallback policy (включая IMMEDIATE), публикация фактически выбранного
+present mode/метрик и resync общего `advancer` при сильном overrun вместо catch-up burst.
+Отложенный хвост PF01 — naive-forward A/B, heatmap/overflow и repeatable camera rail/timings; он не
+перебивает текущий PF02-срез.
+
+Срез PF02 2026-08-15: fixed `2×2` spot atlas больше не размножает material/step на каждый light. Общая
+команда `draw_regions gpu_data host_commands` принимает обычный целиком bound uniform/storage buffer и
+host-visible versioned stream. На регион stream задаёт viewport/scissor, dynamic depth bias, `data_index`
+push constant и spans `{pair, first_instance, instance_count}`; main-поток единолично понимает сцену,
+консервативно отбирает casters и пакует instance lanes. Render graph остаётся layout/resource manager и
+fail-fast проверяет stream до записи первого draw. Material `dynamic = [ depth_bias ]` включает
+`vkCmdSetDepthBias`; при отсутствии dynamic state поддержан прежний static raster bias. PF02 использует один
+spot material/step вместо четырёх материалов и восьми steps; validation-layer и визуальный прогоны чистые.
+Следующая наблюдаемая граница — bias/occupancy/culling counts в overlay, затем GPU timings.
 
 `RND-*` из этой таблицы не требуется закрывать целиком до запуска сцены. Исправляется только конкретный
 blocker текущего этапа; найденная более широкая работа остаётся в backlog. `UTL-08`, module profiles,
@@ -193,8 +225,10 @@ Persistent multi-day event или repair action хранится в `SIM-03`, а
 | `RND-19` | Screen-space ambient occlusion (SSAO) | `L` | depth/normal sampling, denoise/temporal accumulation, quality presets and lighting integration |
 | `RND-20` | Общий screen-space effects toolkit | `L–XL` | depth pyramid, reconstruction, bilateral blur/denoise and reusable kernels for SSR, contact shadows, fog and outlines |
 | `RND-21` | Базовая color post-processing chain | `L` | HDR exposure, tone mapping, bloom, color grading and output-color-space policy |
-| `RND-22` | Directional/spot shadow maps and atlas | `L–XL` | caster selection, bias policy, atlas lifetime, debug view and timings; point cubemaps are a later extension |
+| `RND-22` | Directional/spot shadow maps and atlas | `L–XL` | **active in PF02:** directional + fixed 2×2 spot atlas/PCF/debug live; generic `draw_regions` и CPU caster packing live; next bias/occupancy diagnostics, GPU timings and atlas lifetime; point cubemaps later |
 | `RND-23` | Stencil effect path | `M–L` | depth/stencil attachment lifetime, material front/back ops, masks/reference, visualization and ordinary graph consumers |
+| `RND-24` | Present policy отдельно от frame pacing | `M` | базовое разделение уже есть; осталось overrun-resync, выбранный-mode metrics и явный MAILBOX/FIFO/IMMEDIATE fallback policy |
+| `RND-25` | Вывод step usages/barriers из descriptor sets | `M` | **done 2026-08-15:** named `sets` → usages/read-write masks, dedup/conflict validation; pass/subpass attachment load/store остаются явными |
 
 Порядок post-processing: `RND-16` создаёт общий host, `RND-17` — temporal data/history contract;
 после них независимо проверяются `RND-18`, `RND-19` и `RND-21`. Переиспользуемые depth/reconstruction/
@@ -333,6 +367,7 @@ Generator scripts используют отдельный headless Lua environme
 | `UI-17` | Runtime UI reload | `M` | state/error/cache lifecycle |
 | `UI-18` | Lua 5.4 closable-variable integration | `S–M` | deterministic cleanup of scoped UI resources |
 | `UI-19` | Generic runtime debug overlay | `M` | consumer of catalogue/resource/broker diagnostics |
+| `UI-20` | Малый Visage overlay для playground common | `S–M` | **first slice 2026-08-15:** Lua/Nuklear + MSDF font, описание/controls/FPS/frame time; расширяется только доказанными общими widgets |
 
 ## Новые общие системы
 

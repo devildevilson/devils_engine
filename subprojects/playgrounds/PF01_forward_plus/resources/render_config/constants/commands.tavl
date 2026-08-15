@@ -1,5 +1,10 @@
 {
   name = light_dispatch
   layout = dispatch3
-  value = [120.0, 68.0, 1.0]
+  value = [80.0, 45.0, 1.0]
+}
+{
+  name = ui_push
+  layout = ui1ui1ui1ui1ui1ui1ui1
+  value = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 }

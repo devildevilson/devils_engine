@@ -58,13 +58,13 @@ void main() {
   const vec3 view_direction = normalize(camera_data[0].camera_position.xyz - world_position);
   const uvec2 tile = uvec2(gl_FragCoord.xy) / PF01_TILE_SIZE;
   if (tile.x >= PF01_TILES_X || tile.y >= PF01_TILES_Y) {
-    out_color = vec4(albedo * 0.025, 1.0);
+    out_color = vec4(0.0, 0.0, 0.0, 1.0);
     return;
   }
   const uint list_base = (tile.y * PF01_TILES_X + tile.x) * (PF01_MAX_LIGHTS_PER_TILE + 1);
   const uint count = min(tile_data[0].words[list_base], uint(PF01_MAX_LIGHTS_PER_TILE));
 
-  vec3 lighting = albedo * 0.025;
+  vec3 lighting = vec3(0.0);
   for (uint item = 0u; item < count; ++item) {
     const uint light_index = tile_data[0].words[list_base + 1u + item];
     const vec4 position_radius = light_data[0].words[1u + light_index * 2u];
@@ -82,5 +82,6 @@ void main() {
   }
 
   const vec3 mapped = lighting / (lighting + vec3(1.0));
-  out_color = vec4(pow(mapped, vec3(1.0 / 2.2)), 1.0);
+  // Keep the HDR target linear. The swapchain format conversion owns display encoding.
+  out_color = vec4(mapped, 1.0);
 }

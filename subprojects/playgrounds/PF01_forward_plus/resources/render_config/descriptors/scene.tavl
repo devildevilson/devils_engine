@@ -1,4 +1,10 @@
 {
+  name = camera_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = vertex }
+  ]
+}
+{
   name = scene_data
   layout = [
     { resource = camera_buffer, usage = uniform, stage = all },
@@ -12,8 +18,20 @@
   ]
 }
 {
-  name = light_tiles
+  name = light_tiles_write
   layout = [
-    { resource = tile_light_lists, usage = storage_write, stage = all }
+    { resource = tile_light_lists, usage = storage_write, stage = compute }
   ]
+}
+{
+  name = light_tiles_read
+  layout = [
+    { resource = tile_light_lists, usage = storage_read, stage = fragment }
+  ]
+}
+{
+  name = ui_textures
+  texture_count = 16
+  sampler_pool = [ ui_linear ]
+  texture_stage = fragment
 }

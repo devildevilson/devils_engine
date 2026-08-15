@@ -43,12 +43,22 @@ Playground отвечает на конкретный технический в�
 - pause, single-step и time scale;
 - выбор scenario без перекомпиляции;
 - runtime parameter inspector;
+- небольшой Visage overlay с названием/описанием сцены, controls и FPS/frame time;
 - render-target/debug overlay;
 - CPU/GPU timings и resource residency;
 - capture screenshot + config/resource/build fingerprints;
 - reset scenario в исходное состояние;
 - deterministic seed;
 - опциональный headless запуск с фиксированным числом ticks/frames.
+
+Frame pacing этой оболочки не выводится из present mode: MAILBOX/FIFO/IMMEDIATE выбирают tearing и
+поведение presentation queue, а отдельный deadline + sleep limiter задаёт частоту producer loop. На обычном
+desktop предпочтителен MAILBOX-first; fallback между FIFO и IMMEDIATE выбирается явно по политике платформы.
+
+Первый рабочий common slice уже используется PF01: `frame_pacer` держит абсолютный deadline и отбрасывает
+пропущенное расписание без catch-up burst, а non-interactive Visage-overlay загружает общий Lua entry/MSDF
+font и показывает описание сцены, controls, сглаженные FPS/frame time. GPU upload/font descriptor и
+`draw_ui` остаются обычными ресурсами render graph конкретной лаборатории.
 
 Это не полноценный editor. Оболочка только делает маленькие experiments наблюдаемыми и повторяемыми.
 
@@ -88,6 +98,14 @@ Playground отвечает на конкретный технический в�
 `PF01`–`PF04` доказывают отдельные painter capabilities. `PF05` и `PF06` фиксируют только нужное им
 подмножество этих возможностей в собственных resources/presets. Исходники и CMake targets лабораторий
 не зависят друг от друга.
+
+Текущий фокус — `PF02_shadows`. Directional map и фиксированный `2×2` spot atlas уже запускаются:
+движущиеся lights/casters, 3×3 PCF, receiver bias control и два прямых depth inset. Четыре spot regions
+видны одновременно и не протекают друг в друга. Четыре material/восемь draw steps заменены одним generic
+`draw_regions`: main-поток пакует отобранные по cone/range caster instances и host command stream, а render
+graph управляет только ресурсами/layout. Каждая команда задаёт viewport/scissor/dynamic bias, индекс записи
+в целом bound GPU buffer и draw-group spans. Следующая наблюдаемая граница — вывести bias/atlas occupancy и
+culling counts как явные данные, затем добавить GPU timings и минимальный atlas lifetime contract.
 
 ## 1. Painter visual stack
 

@@ -27,7 +27,7 @@
         { hdr_color = (color_attachment, store), scene_depth = (depth_attachment, store) },
         { hdr_color = (transfer_src, store), scene_depth = (depth_attachment, store) }
       ]
-      steps = [ draw_forward_plus ]
+      steps = [ draw_forward_plus, draw_light_markers, draw_playground_overlay ]
     },
     {
       name = pf01_present

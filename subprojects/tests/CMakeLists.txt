@@ -145,6 +145,9 @@ target_link_libraries(catalogue_introspection_test PRIVATE devils_engine::catalo
 
 devils_add_doctest(painter_shader_prepare_test painter_shader_prepare_test.cpp)
 target_link_libraries(painter_shader_prepare_test PRIVATE devils_engine::painter devils_engine::demiurg devils_engine::utils)
+target_compile_definitions(painter_shader_prepare_test PRIVATE
+  PAINTER_TEST_CONFIG_ROOT="${CMAKE_CURRENT_LIST_DIR}/test_render_config/"
+)
 
 devils_add_doctest(painter_queue_plan_test painter_queue_plan_test.cpp)
 target_link_libraries(painter_queue_plan_test PRIVATE devils_engine::painter)

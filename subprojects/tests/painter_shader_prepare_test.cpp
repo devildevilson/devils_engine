@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -8,10 +9,112 @@
 #include "devils_engine/demiurg/module_system.h"
 #include "devils_engine/demiurg/resource_system.h"
 #include "devils_engine/painter/glsl_source_file.h"
+#include "devils_engine/painter/graphics_base.h"
 #include "devils_engine/painter/render_config_source.h"
+#include "devils_engine/painter/region_draw.h"
 #include "devils_engine/painter/structures.h"
 
 using namespace devils_engine;
+
+TEST_CASE("painter step derives resource usages from named descriptor sets [painter]") {
+  const auto storage = painter::build_render_config(PAINTER_TEST_CONFIG_ROOT);
+  const auto step_slot = storage.find_execution_step("draw_tiles");
+  const auto camera_slot = storage.find_resource("camera_buffer");
+  REQUIRE(step_slot != painter::invalid_resource_slot);
+  REQUIRE(camera_slot != painter::invalid_resource_slot);
+
+  const auto& step = storage.steps[step_slot];
+  const auto usage_count = std::count_if(step.barriers.begin(), step.barriers.end(), [&](const auto& entry) {
+    return std::get<0>(entry) == camera_slot && std::get<1>(entry) == painter::usage::uniform;
+  });
+  CHECK(usage_count == 1);
+  CHECK(step.read.test(camera_slot));
+  CHECK_FALSE(step.write.test(camera_slot));
+
+  const auto ui_slot = storage.find_execution_step("draw_ui");
+  REQUIRE(ui_slot != painter::invalid_resource_slot);
+  const auto& ui_step = storage.steps[ui_slot];
+  const auto ui_camera_count = std::count_if(ui_step.barriers.begin(), ui_step.barriers.end(), [&](const auto& entry) {
+    return std::get<0>(entry) == camera_slot;
+  });
+  CHECK(ui_camera_count == 1);
+}
+
+TEST_CASE("painter draw_regions keeps region commands separate from shader data [painter]") {
+  const auto storage = painter::build_render_config(PAINTER_TEST_CONFIG_ROOT);
+  const auto step_slot = storage.find_execution_step("draw_regions");
+  const auto data_slot = storage.find_resource("region_gpu_data");
+  const auto commands_slot = storage.find_resource("region_commands");
+  const auto material_slot = storage.find_material("region_material");
+  REQUIRE(step_slot != painter::invalid_resource_slot);
+  REQUIRE(data_slot != painter::invalid_resource_slot);
+  REQUIRE(commands_slot != painter::invalid_resource_slot);
+  REQUIRE(material_slot != painter::invalid_resource_slot);
+
+  const auto& step = storage.steps[step_slot];
+  CHECK(step.cmd_params.type == painter::command::draw_regions);
+  CHECK(std::get<0>(step.cmd_params.resources[0]) == data_slot);
+  CHECK(std::get<1>(step.cmd_params.resources[0]) == painter::usage::storage_read);
+  CHECK(std::get<0>(step.cmd_params.resources[1]) == commands_slot);
+  CHECK(std::get<1>(step.cmd_params.resources[1]) == painter::usage::transfer_dst);
+  CHECK(step.read.test(data_slot));
+  CHECK(storage.materials[material_slot].raster.depth_bias);
+  CHECK(storage.materials[material_slot].raster.dynamic_depth_bias);
+
+  painter::region_draw_header header{};
+  header.region_count = 4;
+  header.span_count = 8;
+  header.region_stride = sizeof(painter::region_draw_command);
+  header.span_stride = sizeof(painter::region_draw_span);
+  CHECK(header.magic == painter::region_draw_magic);
+  CHECK(painter::region_draw_buffer_size(header.region_count, header.span_count) ==
+        sizeof(header) + 4 * sizeof(painter::region_draw_command) + 8 * sizeof(painter::region_draw_span));
+}
+
+TEST_CASE("painter constant defaults are active before the first frame [painter]") {
+  struct dispatch_command {
+    uint32_t x;
+    uint32_t y;
+    uint32_t z;
+  };
+
+  painter::graphics_base base(
+    VK_NULL_HANDLE,
+    VK_NULL_HANDLE,
+    VK_NULL_HANDLE,
+    painter::presentation_engine_type::no_present);
+
+  painter::constant dispatch;
+  dispatch.name = "light_dispatch";
+  dispatch.layout_str = "dispatch3";
+  dispatch.layout = {painter::format::dispatch3};
+  dispatch.value = {120.0, 68.0, 1.0};
+  dispatch.size = sizeof(dispatch_command);
+  dispatch.offset = 0;
+  base.constants.emplace_back(std::move(dispatch));
+  for (auto& memory : base.constants_memory) {
+    memory.resize(sizeof(dispatch_command) / sizeof(uint32_t), 0u);
+  }
+
+  base.populate_constant_default_values();
+  auto active = base.get_constant_data<dispatch_command>(0);
+  CHECK(active.x == 120u);
+  CHECK(active.y == 68u);
+  CHECK(active.z == 1u);
+
+  const dispatch_command replacement{4u, 5u, 6u};
+  base.write_constant_data(0, replacement);
+  active = base.get_constant_data<dispatch_command>(0);
+  CHECK(active.x == 120u);
+  CHECK(active.y == 68u);
+  CHECK(active.z == 1u);
+
+  base.update_constant_memory();
+  active = base.get_constant_data<dispatch_command>(0);
+  CHECK(active.x == 4u);
+  CHECK(active.y == 5u);
+  CHECK(active.z == 6u);
+}
 
 TEST_CASE("glsl_source_file caches prepared SPIR-V by shader stage [painter]") {
   painter::glsl_source_file shader;

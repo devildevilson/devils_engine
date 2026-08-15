@@ -48,3 +48,13 @@
   value = [2048, 0, 0]
   presets = [ low = [1024, 0, 0], mid = [2048, 0, 0], high = [4096, 0, 0] ]
 }
+{
+  name = region_records
+  type = fixed
+  value = [4, 0, 0]
+}
+{
+  name = region_commands_bytes
+  type = fixed
+  value = [4096, 0, 0]
+}

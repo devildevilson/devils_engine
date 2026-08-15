@@ -1,0 +1,46 @@
+{
+  name = pf02_shadows
+  startup = true
+  passes = [
+    {
+      name = pf02_directional_shadow
+      render_target = shadow_target
+      subpasses = [
+        { directional_shadow = (undefined, clear) },
+        { directional_shadow = (depth_attachment, store) },
+        { directional_shadow = (depth_read, store) }
+      ]
+      steps = [ draw_directional_shadow ]
+    },
+    {
+      name = pf02_spot_shadow_atlas
+      render_target = spot_shadow_atlas_target
+      subpasses = [
+        { spot_shadow_atlas = (undefined, clear) },
+        { spot_shadow_atlas = (depth_attachment, store) },
+        { spot_shadow_atlas = (depth_read, store) }
+      ]
+      steps = [ draw_spot_shadow_regions ]
+    },
+    {
+      name = pf02_forward
+      render_target = forward_target
+      subpasses = [
+        { hdr_color = (undefined, clear), scene_depth = (undefined, clear) },
+        { hdr_color = (color_attachment, store), scene_depth = (depth_attachment, store) },
+        { hdr_color = (transfer_src, store), scene_depth = (depth_attachment, store) }
+      ]
+      steps = [ draw_scene, draw_shadow_debug, draw_playground_overlay ]
+    },
+    {
+      name = pf02_present
+      wait_for = [ swapchain_image ]
+      subpasses = [
+        { hdr_color = (transfer_src, store), swapchain_image = (transfer_dst, store) },
+        { hdr_color = (color_attachment, store), swapchain_image = (present, store) }
+      ]
+      steps = [ present_hdr ]
+    }
+  ]
+  present_source = swapchain_image
+}

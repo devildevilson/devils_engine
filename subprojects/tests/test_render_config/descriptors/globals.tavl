@@ -1,10 +1,16 @@
 // Общий UBO-дескриптор: camera_buffer (view_proj + ui_proj + misc) как uniform-буфер.
 // camera_buffer — doublebuffer/per_update, поэтому descriptorCount = buffering (=2): в шейдере
 // это массив global_ubo[2], где элемент [0] = текущая копия (update_descriptors ротирует).
-// usage буферу (eUniformBuffer) даёт draw_ui-шаг через barriers (camera_buffer = uniform).
+// Подключивший sets=[globals] шаг автоматически получает camera_buffer=uniform usage/barrier.
 {
   name = globals
   layout = [
     { resource = camera_buffer, usage = uniform, stage = all }
+  ]
+}
+{
+  name = region_data
+  layout = [
+    { resource = region_gpu_data, usage = storage_read, stage = vertex }
   ]
 }

@@ -1,0 +1,12 @@
+{
+  name = shadow_target
+  resources = [ directional_shadow = depth_attachment ]
+}
+{
+  name = spot_shadow_atlas_target
+  resources = [ spot_shadow_atlas = depth_attachment ]
+}
+{
+  name = forward_target
+  resources = [ hdr_color = color_attachment, scene_depth = depth_attachment ]
+}

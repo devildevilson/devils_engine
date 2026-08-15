@@ -1,0 +1,14 @@
+{
+  name = scene_draw_group
+  layout = v4
+  budget = scene_instances
+  draw_capacity = scene_draws
+  type = host_visible
+}
+{
+  name = shadow_debug_draw_group
+  layout = v4
+  budget = debug_instances
+  draw_capacity = debug_draws
+  type = host_visible
+}

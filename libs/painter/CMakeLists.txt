@@ -71,6 +71,7 @@ set(HDR_LIST
   include/devils_engine/painter/shader_source_file.h
   include/devils_engine/painter/common.h
   include/devils_engine/painter/common_steps.h
+  include/devils_engine/painter/region_draw.h
   include/devils_engine/painter/structures.h
   include/devils_engine/painter/graphics_base.h
   include/devils_engine/painter/assets_base.h

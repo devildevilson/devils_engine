@@ -3,15 +3,13 @@
   material = depth_prepass_material
   geometry = room_geometry
   draw_group = room_draw_group
-  sets = [ scene_data ]
-  barriers = [ camera_buffer = uniform ]
+  sets = [ camera_data ]
   command = "draw"
 }
 {
   name = build_light_tiles
   material = light_culling_material
-  sets = [ scene_data, depth_input, light_tiles ]
-  barriers = [ camera_buffer = uniform, light_buffer = storage_read, scene_depth = depth_read, tile_light_lists = storage_write ]
+  sets = [ scene_data, depth_input, light_tiles_write ]
   command = "dispatch constant light_dispatch"
 }
 {
@@ -19,11 +17,29 @@
   material = forward_plus_material
   geometry = room_geometry
   draw_group = room_draw_group
-  sets = [ scene_data, light_tiles ]
-  barriers = [ camera_buffer = uniform, light_buffer = storage_read, tile_light_lists = storage_read ]
+  sets = [ scene_data, light_tiles_read ]
   command = "draw"
 }
 {
   name = present_hdr
   command = "blit hdr_color swapchain_image"
+}
+{
+  name = draw_light_markers
+  material = light_marker_material
+  geometry = light_marker_geometry
+  draw_group = light_marker_draw_group
+  sets = [ camera_data ]
+  command = "draw"
+}
+{
+  name = draw_playground_overlay
+  material = ui_overlay_material
+  geometry = ui_geometry
+  command = "draw_ui ui_vertices ui_indices ui_commands"
+  sets = [ camera_data, ui_textures ]
+  push_constants = [ ui_push ]
+  blending = {
+    hdr_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
+  }
 }

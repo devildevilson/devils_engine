@@ -1,0 +1,26 @@
+{
+  name = scene_data
+  layout = [
+    { resource = scene_buffer, usage = uniform, stage = all }
+  ]
+}
+{
+  name = spot_scene_data
+  layout = [
+    { resource = scene_buffer, usage = uniform, stage = all },
+    { resource = spot_light_buffer, usage = storage_read, stage = all }
+  ]
+}
+{
+  name = shadow_inputs
+  layout = [
+    { resource = directional_shadow, usage = depth_read, sampler = shadow_nearest, stage = fragment },
+    { resource = spot_shadow_atlas, usage = depth_read, sampler = shadow_nearest, stage = fragment }
+  ]
+}
+{
+  name = ui_textures
+  texture_count = 16
+  sampler_pool = [ ui_linear ]
+  texture_stage = fragment
+}

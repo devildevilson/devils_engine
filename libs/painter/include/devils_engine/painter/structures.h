@@ -251,6 +251,7 @@ struct material {
     bool depth_clamp;
     bool raster_discard;
     bool depth_bias;
+    bool dynamic_depth_bias;
     uint32_t polygon;
     uint32_t cull;
     uint32_t front_face;

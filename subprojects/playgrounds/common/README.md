@@ -6,7 +6,9 @@
 Уже есть:
 
 - input-neutral `free_camera` и `camera_motion`;
-- Vulkan reversed-Z infinite projection helper.
+- Vulkan reversed-Z infinite projection helper;
+- `frame_pacer`: deadline + `sleep_until`, отключаемый для stress-run; пропущенные deadlines не догоняются burst-кадрами;
+- небольшой non-interactive `visage_overlay`: общий Lua/Nuklear entry, MSDF font atlas, описание лаборатории и сглаженные FPS/frame time.
 
 Планируемые обязанности:
 

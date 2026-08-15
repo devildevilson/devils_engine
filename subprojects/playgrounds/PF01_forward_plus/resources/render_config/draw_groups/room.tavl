@@ -5,3 +5,10 @@
   draw_capacity = room_draws
   type = host_visible
 }
+{
+  name = light_marker_draw_group
+  layout = v4v4
+  budget = light_marker_instances
+  draw_capacity = light_marker_draws
+  type = host_visible
+}

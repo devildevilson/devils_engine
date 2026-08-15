@@ -590,7 +590,7 @@ pipeline_maker& pipeline_maker::tessellation(bool enabled, const uint32_t patchC
 }
 
 pipeline_maker& pipeline_maker::depthClamp(const vk::Bool32 enable) {
-  rasterisationInfo.depthBiasClamp = enable;
+  rasterisationInfo.depthClampEnable = enable;
 
   return *this;
 }
@@ -620,7 +620,7 @@ pipeline_maker& pipeline_maker::frontFace(const vk::FrontFace face) {
 }
 
 pipeline_maker& pipeline_maker::depthBias(const vk::Bool32 enable, const float constFactor, const float clamp, const float slopeFactor) {
-  rasterisationInfo.depthClampEnable = enable;
+  rasterisationInfo.depthBiasEnable = enable;
   rasterisationInfo.depthBiasConstantFactor = constFactor;
   rasterisationInfo.depthBiasClamp = clamp;
   rasterisationInfo.depthBiasSlopeFactor = slopeFactor;

@@ -1,0 +1,80 @@
+{
+  name = directional_shadow_material
+  shaders = {
+    vertex = "shadow.vert.glsl"
+    fragment = "depth.frag.glsl"
+  }
+  depth = {
+    test = true
+    write = true
+    compare = greater
+  }
+  raster = {
+    cull = back
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  name = spot_shadow_material
+  dynamic = [ depth_bias ]
+  shaders = { vertex = "spot_shadow.vert.glsl", fragment = "depth.frag.glsl" }
+  depth = { test = true, write = true, compare = greater }
+  raster = { cull = back, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = shadowed_scene_material
+  definitions = [ PF02_PCF_RADIUS = "1" ]
+  shaders = {
+    vertex = "scene.vert.glsl"
+    fragment = "shadowed.frag.glsl"
+  }
+  depth = {
+    test = true
+    write = true
+    compare = greater
+  }
+  raster = {
+    cull = back
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  name = shadow_debug_material
+  shaders = {
+    vertex = "shadow_debug.vert.glsl"
+    fragment = "shadow_debug.frag.glsl"
+  }
+  depth = {
+    test = false
+    write = false
+    compare = always
+  }
+  raster = {
+    cull = none
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  name = ui_overlay_material
+  shaders = {
+    vertex = "ui.vert.glsl"
+    fragment = "ui.frag.glsl"
+  }
+  depth = {
+    test = false
+    write = false
+    compare = always
+  }
+  raster = {
+    cull = none
+    front_face = cw
+    polygon = fill
+    line_width = 1.0
+  }
+}

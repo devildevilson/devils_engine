@@ -18,12 +18,37 @@
   value = [1, 0, 0]
 }
 {
+  name = light_marker_instances
+  type = fixed
+  value = [96, 0, 0]
+}
+{
+  name = light_marker_draws
+  type = fixed
+  value = [1, 0, 0]
+}
+{
   name = light_vec4_count
   type = fixed
-  value = [257, 0, 0]
+  value = [193, 0, 0]
 }
 {
   name = tile_word_count
   type = fixed
-  value = [530400, 0, 0]
+  value = [791520, 0, 0]
+}
+{
+  name = ui_vertices_bytes
+  type = fixed
+  value = [524288, 0, 0]
+}
+{
+  name = ui_indices_bytes
+  type = fixed
+  value = [131072, 0, 0]
+}
+{
+  name = ui_commands_bytes
+  type = fixed
+  value = [16384, 0, 0]
 }

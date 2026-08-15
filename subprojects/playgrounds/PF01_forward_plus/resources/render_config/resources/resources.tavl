@@ -46,3 +46,27 @@
   type = frames_in_flight
   swap = per_frame
 }
+{
+  name = ui_vertices
+  format = c1
+  role = upload
+  size = ui_vertices_bytes
+  type = frames_in_flight
+  swap = per_frame
+}
+{
+  name = ui_indices
+  format = c1
+  role = upload
+  size = ui_indices_bytes
+  type = frames_in_flight
+  swap = per_frame
+}
+{
+  name = ui_commands
+  format = c1
+  role = upload
+  size = ui_commands_bytes
+  type = frames_in_flight
+  swap = per_frame
+}

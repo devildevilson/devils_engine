@@ -246,6 +246,15 @@ public:
   void process(graphics_ctx*, VkCommandBuffer) const override;
 };
 
+// Generic multi-region draw. The normal geometry/draw_group owns mesh and instance storage;
+// cmd_params.resources[0] is a descriptor-bound per-region GPU record array and resources[1] is a
+// host-visible region_draw_header/commands/spans stream. One uint data_index is pushed per region.
+class graphics_draw_regions : public graphics_step_instance {
+public:
+  graphics_draw_regions(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept;
+  void process(graphics_ctx*, VkCommandBuffer) const override;
+};
+
 class compute_dispatch_constant : public compute_step_instance {
 public:
   compute_dispatch_constant(const uint32_t super, VkDevice device) noexcept;

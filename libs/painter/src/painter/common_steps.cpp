@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 
 #include <devils_engine/catalogue/logging.h>
 
@@ -10,6 +11,7 @@
 #include "devils_engine/utils/string-utils.hpp"
 #include "glsl_source_file.h"
 #include "graphics_base.h"
+#include "region_draw.h"
 #include "makers.h"
 #include "shader_crafter.h"
 #include "shader_source_file.h"
@@ -429,6 +431,9 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
   // нужно явно прописать это дело в шагах
   pm.dynamicState(vk::DynamicState::eViewport);
   pm.dynamicState(vk::DynamicState::eScissor);
+  if (material.raster.dynamic_depth_bias) {
+    pm.dynamicState(vk::DynamicState::eDepthBias);
+  }
 
   pm.viewport(); // empty viewport for DynamicState
   pm.scissor();  // empty scissor  for DynamicState
@@ -1401,6 +1406,200 @@ void graphics_draw_ui::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
 
     task.drawIndexed(c.elem_count, 1, first_index, 0, 0);
     first_index += c.elem_count;
+  }
+}
+
+graphics_draw_regions::graphics_draw_regions(
+  const uint32_t super,
+  VkDevice device,
+  VkRenderPass renderpass,
+  const uint32_t subpass_index,
+  const uint32_t render_target_index) noexcept
+  : graphics_step_instance(super, device, renderpass, subpass_index, render_target_index) {}
+
+void graphics_draw_regions::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
+  const auto& step = DS_ASSERT_ARRAY_GET(ctx->base->steps, super);
+  const auto& material = DS_ASSERT_ARRAY_GET(ctx->base->materials, step.material);
+  const auto& geo = DS_ASSERT_ARRAY_GET(ctx->base->geometries, step.geometry);
+  const auto& draw_group = DS_ASSERT_ARRAY_GET(ctx->base->draw_groups, step.draw_group);
+  const auto& [data_index, data_usage] = step.cmd_params.resources[0];
+  const auto& [commands_index, commands_usage] = step.cmd_params.resources[1];
+  static_cast<void>(data_usage);
+  static_cast<void>(commands_usage);
+
+  const auto data_frame = ctx->base->get_current_buffer_resource_frame(data_index);
+  const auto commands_frame = ctx->base->get_current_buffer_resource_frame(commands_index);
+  if (commands_frame.mapped == nullptr) {
+    utils::error{}("draw_regions step '{}' requires a host-visible command buffer", step.name);
+  }
+  if (commands_frame.sub.size < sizeof(region_draw_header)) {
+    utils::error{}("draw_regions step '{}' command buffer is smaller than its header", step.name);
+  }
+
+  const auto* bytes = static_cast<const uint8_t*>(commands_frame.mapped) + commands_frame.sub.offset;
+  region_draw_header header{};
+  std::memcpy(&header, bytes, sizeof(header));
+  if (header.magic != region_draw_magic || header.version != region_draw_version) {
+    utils::error{}(
+      "draw_regions step '{}' has invalid command header magic/version ({:#x}/{}, expected {:#x}/{})",
+      step.name,
+      header.magic,
+      header.version,
+      region_draw_magic,
+      region_draw_version);
+  }
+  if (header.region_stride != sizeof(region_draw_command) || header.span_stride != sizeof(region_draw_span)) {
+    utils::error{}(
+      "draw_regions step '{}' has incompatible strides ({}/{}, expected {}/{})",
+      step.name,
+      header.region_stride,
+      header.span_stride,
+      sizeof(region_draw_command),
+      sizeof(region_draw_span));
+  }
+  const size_t required_bytes = region_draw_buffer_size(header.region_count, header.span_count);
+  if (required_bytes > commands_frame.sub.size) {
+    utils::error{}(
+      "draw_regions step '{}' command stream requires {} bytes, buffer has {}",
+      step.name,
+      required_bytes,
+      commands_frame.sub.size);
+  }
+
+  const auto& data_resource = DS_ASSERT_ARRAY_GET(ctx->base->resources, data_index);
+  if (data_resource.size_hint == 0) {
+    utils::error{}("draw_regions step '{}' gpu_data '{}' has zero element stride", step.name, data_resource.name);
+  }
+  const uint32_t data_capacity = uint32_t(data_frame.sub.size / data_resource.size_hint);
+  const uint8_t* region_bytes = bytes + sizeof(region_draw_header);
+  const uint8_t* span_bytes = region_bytes + size_t(header.region_count) * sizeof(region_draw_command);
+  const auto read_region = [region_bytes](const uint32_t index) {
+    region_draw_command value{};
+    std::memcpy(&value, region_bytes + size_t(index) * sizeof(value), sizeof(value));
+    return value;
+  };
+  const auto read_span = [span_bytes](const uint32_t index) {
+    region_draw_span value{};
+    std::memcpy(&value, span_bytes + size_t(index) * sizeof(value), sizeof(value));
+    return value;
+  };
+
+  const auto& target = DS_ASSERT_ARRAY_GET(ctx->base->render_targets, render_target_index);
+  if (target.resources.empty()) {
+    utils::error{}("draw_regions step '{}' render target has no attachments", step.name);
+  }
+  const auto& [target_resource_index, target_usage] = target.resources.front();
+  static_cast<void>(target_usage);
+  const auto [target_bytes, target_extent] = DS_ASSERT_ARRAY_GET(ctx->base->resources, target_resource_index).compute_frame_size(ctx->base);
+  static_cast<void>(target_bytes);
+  const auto [target_width, target_height] = target_extent;
+
+  // Validate the complete stream before recording any draw from it.
+  for (uint32_t region_index = 0; region_index < header.region_count; ++region_index) {
+    const auto region = read_region(region_index);
+    const bool finite_viewport = std::isfinite(region.viewport_x) && std::isfinite(region.viewport_y) &&
+                                 std::isfinite(region.viewport_width) && std::isfinite(region.viewport_height) &&
+                                 std::isfinite(region.min_depth) && std::isfinite(region.max_depth);
+    const bool finite_bias = std::isfinite(region.depth_bias_constant) &&
+                             std::isfinite(region.depth_bias_clamp) &&
+                             std::isfinite(region.depth_bias_slope);
+    if (!finite_viewport || region.viewport_width <= 0.0f || region.viewport_height <= 0.0f ||
+        region.viewport_x < 0.0f || region.viewport_y < 0.0f ||
+        region.viewport_x + region.viewport_width > float(target_width) ||
+        region.viewport_y + region.viewport_height > float(target_height) ||
+        region.min_depth < 0.0f || region.max_depth > 1.0f || region.min_depth > region.max_depth) {
+      utils::error{}("draw_regions step '{}' region {} has an invalid viewport", step.name, region_index);
+    }
+    if (material.raster.dynamic_depth_bias && !finite_bias) {
+      utils::error{}("draw_regions step '{}' region {} has invalid dynamic depth bias", step.name, region_index);
+    }
+    if (region.scissor_x < 0 || region.scissor_y < 0 ||
+        uint64_t(region.scissor_x) + region.scissor_width > target_width ||
+        uint64_t(region.scissor_y) + region.scissor_height > target_height) {
+      utils::error{}("draw_regions step '{}' region {} has an invalid scissor", step.name, region_index);
+    }
+    if (region.data_index >= data_capacity) {
+      utils::error{}(
+        "draw_regions step '{}' region {} selects gpu_data {}, capacity is {}",
+        step.name,
+        region_index,
+        region.data_index,
+        data_capacity);
+    }
+    if (region.first_span > header.span_count || region.span_count > header.span_count - region.first_span) {
+      utils::error{}("draw_regions step '{}' region {} has an invalid span range", step.name, region_index);
+    }
+    for (uint32_t j = 0; j < region.span_count; ++j) {
+      const auto span = read_span(region.first_span + j);
+      if (span.pair_index >= ctx->base->pairs.size()) {
+        utils::error{}("draw_regions step '{}' region {} references absent pair {}", step.name, region_index, span.pair_index);
+      }
+      const auto& pair = ctx->base->pairs[span.pair_index];
+      if (pair.draw_group != step.draw_group) {
+        utils::error{}("draw_regions step '{}' region {} pair {} belongs to another draw group", step.name, region_index, span.pair_index);
+      }
+      if (span.first_instance > pair.max_size || span.instance_count > pair.max_size - span.first_instance) {
+        utils::error{}("draw_regions step '{}' region {} span {} exceeds pair capacity", step.name, region_index, region.first_span + j);
+      }
+      const auto& mesh = DS_ASSERT_ARRAY_GET(ctx->assets->buffer_slots, pair.mesh);
+      if (mesh.geometry != step.geometry) {
+        utils::error{}("draw_regions step '{}' pair {} uses a different geometry layout", step.name, span.pair_index);
+      }
+    }
+  }
+
+  vk::CommandBuffer task(buf);
+  bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
+  task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+  const auto& instance_buffer = DS_ASSERT_ARRAY_GET(ctx->resources, draw_group.instances_buffer);
+
+  for (uint32_t region_index = 0; region_index < header.region_count; ++region_index) {
+    const auto region = read_region(region_index);
+    const vk::Viewport viewport(
+      region.viewport_x,
+      region.viewport_y,
+      region.viewport_width,
+      region.viewport_height,
+      region.min_depth,
+      region.max_depth);
+    const vk::Rect2D scissor(
+      vk::Offset2D(region.scissor_x, region.scissor_y),
+      vk::Extent2D(region.scissor_width, region.scissor_height));
+    task.setViewport(0, viewport);
+    task.setScissor(0, scissor);
+    if (material.raster.dynamic_depth_bias) {
+      task.setDepthBias(region.depth_bias_constant, region.depth_bias_clamp, region.depth_bias_slope);
+    }
+    task.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eAll, 0, sizeof(region.data_index), &region.data_index);
+
+    for (uint32_t j = 0; j < region.span_count; ++j) {
+      const auto span = read_span(region.first_span + j);
+      if (span.instance_count == 0) continue;
+      const auto& pair = ctx->base->pairs[span.pair_index];
+      const auto& mesh = DS_ASSERT_ARRAY_GET(ctx->assets->buffer_slots, pair.mesh);
+      task.bindVertexBuffers(0, vk::Buffer(mesh.vertex_storage), vk::DeviceSize(0));
+      task.bindVertexBuffers(
+        1,
+        vk::Buffer(instance_buffer.buf),
+        vk::DeviceSize(instance_buffer.subbuf.offset + pair.instance_offset));
+      if (geo.index_type == geometry::index_type::none) {
+        task.draw(mesh.vertex_count, span.instance_count, mesh.first_vertex, span.first_instance);
+      } else {
+        auto index_type = vk::IndexType::eUint32;
+        if (geo.index_type == geometry::index_type::u16) index_type = vk::IndexType::eUint16;
+        if (geo.index_type == geometry::index_type::u8) index_type = vk::IndexType::eUint8;
+        task.bindIndexBuffer(mesh.index_storage, 0, index_type);
+        task.drawIndexed(mesh.index_count, span.instance_count, mesh.first_index, mesh.vertex_offset, span.first_instance);
+      }
+    }
+  }
+
+  // Existing ordinary graphics steps inherit the pass-wide defaults established at pass begin.
+  // Restore that contract after the regional command mutates viewport/scissor/depth bias.
+  task.setViewport(0, vk::Viewport(0.0f, 0.0f, float(target_width), float(target_height), 0.0f, 1.0f));
+  task.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), vk::Extent2D(target_width, target_height)));
+  if (material.raster.dynamic_depth_bias) {
+    task.setDepthBias(material.raster.bias_constant, material.raster.bias_clamp, material.raster.bias_slope);
   }
 }
 

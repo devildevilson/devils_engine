@@ -24,7 +24,9 @@
 #include "devils_engine/painter/makers.h"
 #include "devils_engine/painter/system_info.h"
 #include "devils_engine/painter/vulkan_header.h"
+#include "devils_engine/playground/frame_pacer.h"
 #include "devils_engine/playground/free_camera.h"
+#include "devils_engine/playground/visage_overlay.h"
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/fileio.h"
 
@@ -35,6 +37,9 @@ namespace {
 constexpr uint32_t initial_width = 1280;
 constexpr uint32_t initial_height = 720;
 constexpr uint32_t light_count = 96;
+constexpr uint32_t tile_size = 16;
+constexpr uint32_t max_tiles_x = 120;
+constexpr uint32_t max_tiles_y = 68;
 constexpr float near_plane = 0.1f;
 
 uint32_t pending_width = initial_width;
@@ -124,14 +129,14 @@ std::array<glm::vec4, 1 + light_count * 2> make_lights(const float time) {
   std::array<glm::vec4, 1 + light_count * 2> words{};
   words[0].x = std::bit_cast<float>(light_count);
   for (uint32_t i = 0; i < light_count; ++i) {
-    const uint32_t ix = i % 8;
-    const uint32_t iy = (i / 8) % 4;
-    const uint32_t iz = i / 32;
-    const float phase = float(i) * 0.713f;
+    const uint32_t ix = i % 8u;
+    const uint32_t iy = (i / 8u) % 4u;
+    const uint32_t iz = i / 32u;
     const glm::vec3 base{
       -4.8f + float(ix) * (9.6f / 7.0f),
       -2.0f + float(iy) * (4.0f / 3.0f),
       -4.5f + float(iz) * 4.5f};
+    const float phase = float(i) * 0.713f;
     const glm::vec3 motion{
       std::sin(time * 0.71f + phase) * 0.28f,
       std::sin(time * 0.93f + phase * 1.7f) * 0.24f,
@@ -140,6 +145,20 @@ std::array<glm::vec4, 1 + light_count * 2> make_lights(const float time) {
     words[2 + i * 2] = glm::vec4(hue_color(float(i) / float(light_count)), 2.8f);
   }
   return words;
+}
+
+struct light_marker_instance {
+  glm::vec4 position_radius;
+  glm::vec4 color_intensity;
+};
+
+std::array<light_marker_instance, light_count> make_light_markers(
+  const std::array<glm::vec4, 1 + light_count * 2>& lights) {
+  std::array<light_marker_instance, light_count> markers{};
+  for (uint32_t i = 0; i < light_count; ++i) {
+    markers[i] = light_marker_instance{lights[1 + i * 2], lights[2 + i * 2]};
+  }
+  return markers;
 }
 
 void write_current_buffer(painter::graphics_base& base, const std::string_view name, const void* data, const size_t bytes) {
@@ -151,7 +170,103 @@ void write_current_buffer(painter::graphics_base& base, const std::string_view n
   if (frame.mapped == nullptr || bytes > frame.sub.size) {
     utils::error{}("PF01 cannot write buffer '{}' (mapped {}, capacity {}, requested {})", name, frame.mapped != nullptr, frame.sub.size, bytes);
   }
-  std::memcpy(static_cast<uint8_t*>(frame.mapped) + frame.sub.offset, data, bytes);
+  if (bytes != 0) {
+    std::memcpy(static_cast<uint8_t*>(frame.mapped) + frame.sub.offset, data, bytes);
+  }
+}
+
+void write_overlay_buffers(painter::graphics_base& base, const playground::visage_overlay& overlay) {
+  const auto vertices = overlay.vertices();
+  const auto indices = overlay.indices();
+  write_current_buffer(base, "ui_vertices", vertices.data(), vertices.size());
+  write_current_buffer(base, "ui_indices", indices.data(), indices.size());
+
+  const auto commands = overlay.commands();
+  const uint32_t slot = base.find_resource("ui_commands");
+  if (slot == painter::invalid_resource_slot) {
+    utils::error{}("PF01 buffer 'ui_commands' is absent from the configured graph");
+  }
+  const auto frame = base.get_current_buffer_resource_frame(slot);
+  const uint32_t count = uint32_t(commands.size());
+  const size_t bytes = sizeof(count) + commands.size_bytes();
+  if (frame.mapped == nullptr || bytes > frame.sub.size) {
+    utils::error{}(
+      "PF01 cannot write UI commands (mapped {}, capacity {}, requested {})",
+      frame.mapped != nullptr,
+      frame.sub.size,
+      bytes);
+  }
+  auto* destination = static_cast<uint8_t*>(frame.mapped) + frame.sub.offset;
+  std::memcpy(destination, &count, sizeof(count));
+  if (!commands.empty()) {
+    std::memcpy(destination + sizeof(count), commands.data(), commands.size_bytes());
+  }
+}
+
+void bind_texture_descriptor(
+  painter::graphics_base& base,
+  const painter::assets_base& assets,
+  const std::string_view descriptor_name) {
+  const uint32_t slot = base.find_descriptor(descriptor_name);
+  if (slot == painter::invalid_resource_slot) {
+    utils::error{}("PF01 texture descriptor '{}' is absent", descriptor_name);
+  }
+  auto& descriptor = base.descriptors[slot];
+  const vk::ImageView fallback(assets.default_texture_view());
+  if (!fallback || descriptor.texture_count == 0) {
+    utils::error{}("PF01 texture descriptor '{}' has no fallback or slots", descriptor_name);
+  }
+
+  std::vector<vk::DescriptorImageInfo> images(descriptor.texture_count);
+  for (uint32_t i = 0; i < descriptor.texture_count; ++i) {
+    vk::ImageView view;
+    if (i < assets.texture_slots.size()) {
+      view = assets.texture_slots[i].view;
+    }
+    images[i] = vk::DescriptorImageInfo(
+      vk::Sampler{},
+      view ? view : fallback,
+      vk::ImageLayout::eShaderReadOnlyOptimal);
+  }
+
+  std::vector<vk::WriteDescriptorSet> writes;
+  for (const auto raw_set : descriptor.sets) {
+    if (raw_set == VK_NULL_HANDLE) {
+      continue;
+    }
+    vk::WriteDescriptorSet write;
+    write.dstSet = raw_set;
+    write.dstBinding = uint32_t(descriptor.layout.size());
+    write.descriptorCount = descriptor.texture_count;
+    write.descriptorType = vk::DescriptorType::eSampledImage;
+    write.pImageInfo = images.data();
+    writes.push_back(write);
+  }
+  vk::Device(base.device).updateDescriptorSets(writes, nullptr);
+}
+
+void update_light_dispatch(painter::graphics_base& base, const uint32_t width, const uint32_t height) {
+  const uint32_t required_x = (width + tile_size - 1u) / tile_size;
+  const uint32_t required_y = (height + tile_size - 1u) / tile_size;
+  if (required_x > max_tiles_x || required_y > max_tiles_y) {
+    utils::warn(
+      "PF01 viewport {}x{} exceeds the configured Forward+ tile budget {}x{}",
+      width,
+      height,
+      max_tiles_x * tile_size,
+      max_tiles_y * tile_size);
+  }
+
+  const uint32_t slot = base.find_constant("light_dispatch");
+  if (slot == painter::invalid_resource_slot) {
+    utils::error{}("PF01 light_dispatch constant is absent from the configured graph");
+  }
+  const VkDispatchIndirectCommand command{
+    std::min(required_x, max_tiles_x),
+    std::min(required_y, max_tiles_y),
+    1u};
+  base.write_constant_data(slot, command);
+  base.update_event();
 }
 
 std::vector<const char*> instance_extensions(const bool validation) {
@@ -167,7 +282,13 @@ std::vector<const char*> instance_extensions(const bool validation) {
 } // namespace
 
 int main(int argc, char** argv) {
-  const bool validation = argc > 1 && std::string_view(argv[1]) == "--validation";
+  bool validation = false;
+  bool uncapped = false;
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view option(argv[i]);
+    validation = validation || option == "--validation";
+    uncapped = uncapped || option == "--uncapped";
+  }
   input::init input_runtime(&error_callback);
   input::events::init();
   painter::load_dispatcher1();
@@ -238,6 +359,7 @@ int main(int argc, char** argv) {
     base.set_surface(surface, initial_width, initial_height);
     base.resize_viewport(initial_width, initial_height);
     base.populate_constant_default_values();
+    update_light_dispatch(base, initial_width, initial_height);
     const uint32_t graph = base.find_render_graph("pf01_forward_plus");
     if (graph == painter::invalid_resource_slot) {
       utils::error{}("PF01 render graph was not found");
@@ -249,6 +371,25 @@ int main(int argc, char** argv) {
     assets.create_allocator(instance);
     assets.create_command_buffer(queues.transfer, queues.graphics);
     assets.set_graphics_base(&base);
+    assets.create_default_texture();
+
+    const std::string common_resources = std::string(PLAYGROUND_COMMON_RESOURCE_ROOT) + "/";
+    playground::visage_overlay overlay(
+      common_resources + "fonts/crimson.roman.ttf",
+      common_resources + "ui/lab_overlay.lua",
+      playground::overlay_description{
+        "PF01 — Forward+",
+        "depth prepass → tile compute culling → Blinn–Phong Forward+",
+        "WASD move · Q/E vertical · mouse look · Shift boost · Esc exit"});
+    const auto atlas = overlay.font_atlas();
+    const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
+    assets.create_texture_storage(
+      font_texture,
+      painter::texture_create_info{{atlas.width, atlas.height, 1}, VK_FORMAT_R8G8B8A8_UNORM});
+    assets.populate_texture_storage(font_texture, atlas.bytes);
+    assets.mark_ready_texture_slot(font_texture);
+    overlay.set_font_texture(font_texture);
+    bind_texture_descriptor(base, assets, "ui_textures");
 
     const auto room = make_room();
     const auto mesh = assets.register_buffer_storage("pf01.room");
@@ -271,6 +412,28 @@ int main(int argc, char** argv) {
       std::memcpy(static_cast<uint8_t*>(indirect.mapped) + indirect.sub.offset, &command, sizeof(command));
     }
 
+    const std::array<float, 3> marker_origin{0.0f, 0.0f, 0.0f};
+    const auto marker_mesh = assets.register_buffer_storage("pf01.light_marker");
+    assets.create_buffer_storage(marker_mesh, painter::buffer_create_info{"light_marker_geometry", 1, 0});
+    assets.populate_buffer_storage(
+      marker_mesh,
+      std::span(reinterpret_cast<const uint8_t*>(marker_origin.data()), sizeof(marker_origin)),
+      std::span<const uint8_t>{});
+    assets.mark_ready_buffer_slot(marker_mesh);
+    const uint32_t marker_group = base.find_draw_group("light_marker_draw_group");
+    const uint32_t marker_pair = base.register_pair(marker_group, marker_mesh, light_count);
+    const auto initial_lights = make_lights(0.0f);
+    const auto initial_markers = make_light_markers(initial_lights);
+    for (uint32_t offset = 0; offset < base.frames_in_flight(); ++offset) {
+      const auto instances = base.get_current_instance_resource_frame(marker_pair, offset);
+      const auto indirect = base.get_current_indirect_resource_frame(marker_pair, offset);
+      std::memcpy(static_cast<uint8_t*>(instances.mapped) + instances.sub.offset, initial_markers.data(), sizeof(initial_markers));
+      VkDrawIndirectCommand command{};
+      command.vertexCount = 1;
+      command.instanceCount = light_count;
+      std::memcpy(static_cast<uint8_t*>(indirect.mapped) + indirect.sub.offset, &command, sizeof(command));
+    }
+
     input::events::clear_bindings();
     bind_key("camera_forward", "key_w");
     bind_key("camera_back", "key_s");
@@ -290,12 +453,16 @@ int main(int argc, char** argv) {
     auto [mouse_x, mouse_y] = input::cursor_pos(window);
     auto previous_time = std::chrono::steady_clock::now();
     const auto start_time = previous_time;
+    playground::frame_pacer frame_pacer(uncapped ? 0u : 60u);
 
     painter::graphics_ctx context;
     context.base = &base;
     context.assets = &assets;
 
     utils::info("PF01 controls: WASD move, Q/E down/up, Shift accelerate, mouse look, Esc exit");
+    utils::info(
+      "PF01 pacing: mailbox-first present, {}",
+      uncapped ? "uncapped producer" : "independent 60 FPS sleep limiter");
     utils::info("PF01 graph: depth prepass -> compute light lists -> Forward+ -> present");
 
     while (!input::should_close(window)) {
@@ -308,6 +475,7 @@ int main(int argc, char** argv) {
       if (resize_pending) {
         vk::Device(device).waitIdle();
         base.resize_viewport(pending_width, pending_height);
+        update_light_dispatch(base, pending_width, pending_height);
         resize_pending = false;
       }
 
@@ -335,16 +503,34 @@ int main(int argc, char** argv) {
       camera_data.view_projection = projection * view;
       camera_data.view = view;
       camera_data.camera_position = glm::vec4(camera.position, 1.0f);
-      camera_data.viewport_near = glm::vec4(float(pending_width), float(pending_height), near_plane, 0.0f);
+      camera_data.viewport_near = glm::vec4(
+        float(pending_width),
+        float(pending_height),
+        near_plane,
+        -projection[1][1]); // w is the positive vertical scale of projection, independent of view rotation.
       write_current_buffer(base, "camera_buffer", &camera_data, sizeof(camera_data));
 
       const float seconds = std::chrono::duration<float>(now - start_time).count();
       const auto lights = make_lights(seconds);
       write_current_buffer(base, "light_buffer", lights.data(), sizeof(lights));
+      const auto markers = make_light_markers(lights);
+      const auto marker_instances = base.get_current_instance_resource_frame(marker_pair);
+      std::memcpy(
+        static_cast<uint8_t*>(marker_instances.mapped) + marker_instances.sub.offset,
+        markers.data(),
+        sizeof(markers));
+
+      const uint64_t frame_delta_us = uint64_t(std::max(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::duration<float>(dt)).count(),
+        int64_t{1}));
+      const uint64_t timestamp_us = uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
+      overlay.update(frame_delta_us, timestamp_us);
+      write_overlay_buffers(base, overlay);
 
       context.prepare();
       context.draw();
       base.submit_frame();
+      frame_pacer.wait();
     }
 
     vk::Device(device).waitIdle();

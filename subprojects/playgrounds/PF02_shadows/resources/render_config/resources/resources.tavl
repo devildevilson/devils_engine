@@ -1,0 +1,88 @@
+{
+  name = swapchain_image
+  format = swapchain4
+  role = present
+  size = viewport
+  type = swapchain
+  swap = swapchain
+}
+{
+  name = hdr_color
+  format = sf4
+  role = hdr_color
+  size = viewport
+  type = frames_in_flight
+  swap = per_frame
+}
+{
+  name = scene_depth
+  format = d32
+  role = depth
+  size = viewport
+  type = frames_in_flight
+  swap = per_frame
+}
+{
+  name = directional_shadow
+  format = d32
+  role = shadow_map
+  size = shadow_resolution
+  type = frames_in_flight
+  swap = per_frame
+}
+{
+  name = spot_shadow_atlas
+  format = d32
+  role = shadow_map
+  size = shadow_resolution
+  type = frames_in_flight
+  swap = per_frame
+}
+{
+  name = scene_buffer
+  format = mat4mat4mat4v4v4v4v4
+  role = upload
+  size = one
+  type = frames_in_flight
+  swap = per_frame
+}
+{
+  name = spot_light_buffer
+  format = mat4v4v4v4
+  role = upload
+  size = spot_light_count
+  type = frames_in_flight
+  swap = per_frame
+}
+{
+  name = spot_region_commands
+  format = c1
+  role = upload
+  size = spot_region_commands_bytes
+  type = frames_in_flight
+  swap = per_frame
+}
+{
+  name = ui_vertices
+  format = c1
+  role = upload
+  size = ui_vertices_bytes
+  type = frames_in_flight
+  swap = per_frame
+}
+{
+  name = ui_indices
+  format = c1
+  role = upload
+  size = ui_indices_bytes
+  type = frames_in_flight
+  swap = per_frame
+}
+{
+  name = ui_commands
+  format = c1
+  role = upload
+  size = ui_commands_bytes
+  type = frames_in_flight
+  swap = per_frame
+}

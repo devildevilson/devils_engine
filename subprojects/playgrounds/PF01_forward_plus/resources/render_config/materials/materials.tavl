@@ -17,8 +17,27 @@
   }
 }
 {
+  name = light_marker_material
+  definitions = [ PF01_MARKER_SIZE = "14.0" ]
+  shaders = {
+    vertex = "light_marker.vert.glsl"
+    fragment = "light_marker.frag.glsl"
+  }
+  depth = {
+    test = true
+    write = true
+    compare = greater
+  }
+  raster = {
+    cull = none
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
   name = light_culling_material
-  definitions = [ PF01_TILE_SIZE = "16", PF01_MAX_LIGHTS_PER_TILE = "64", PF01_TILES_X = "120", PF01_TILES_Y = "68" ]
+  definitions = [ PF01_TILE_SIZE = "16", PF01_MAX_LIGHTS_PER_TILE = "96", PF01_TILES_X = "120", PF01_TILES_Y = "68" ]
   shaders = {
     compute = "light_cull.comp.glsl"
   }
@@ -36,7 +55,7 @@
 }
 {
   name = forward_plus_material
-  definitions = [ PF01_TILE_SIZE = "16", PF01_MAX_LIGHTS_PER_TILE = "64", PF01_TILES_X = "120", PF01_TILES_Y = "68", PF01_CHECKER_WALL = "1", PF01_SPECULAR_POWER = "48.0" ]
+  definitions = [ PF01_TILE_SIZE = "16", PF01_MAX_LIGHTS_PER_TILE = "96", PF01_TILES_X = "120", PF01_TILES_Y = "68", PF01_CHECKER_WALL = "1", PF01_SPECULAR_POWER = "48.0" ]
   shaders = {
     vertex = "room.vert.glsl"
     fragment = "forward_plus.frag.glsl"
@@ -49,6 +68,24 @@
   raster = {
     cull = none
     front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  name = ui_overlay_material
+  shaders = {
+    vertex = "ui.vert.glsl"
+    fragment = "ui.frag.glsl"
+  }
+  depth = {
+    test = false
+    write = false
+    compare = always
+  }
+  raster = {
+    cull = none
+    front_face = cw
     polygon = fill
     line_width = 1.0
   }

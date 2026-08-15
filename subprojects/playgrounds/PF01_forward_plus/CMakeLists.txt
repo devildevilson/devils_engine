@@ -14,6 +14,7 @@ target_link_libraries(PF01_forward_plus PRIVATE
 )
 target_compile_definitions(PF01_forward_plus PRIVATE
   PF01_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources"
+  PLAYGROUND_COMMON_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../common/resources"
 )
 
 set_target_properties(PF01_forward_plus PROPERTIES

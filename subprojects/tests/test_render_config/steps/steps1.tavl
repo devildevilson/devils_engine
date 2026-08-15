@@ -25,8 +25,8 @@
   command = "draw"
 }
 // Интерфейс. Без draw_group: vertex/index/command буферы — обычные ресурсы, имена в команде.
-// barriers дают usage: camera_buffer=uniform (для дескриптора globals), ui_vertices=vertex,
-// ui_indices=index. sets: globals (UBO, set0) + textures (set1: sampled-image массив binding0 +
+// sets выводят camera_buffer=uniform из descriptor globals; command выводит ui_vertices=vertex,
+// ui_indices=index и ui_commands=transfer_dst. textures = sampled-image массив binding0 +
 // sampler-пул binding1). push_constants: ui_push. Альфа-блендинг на albedo_res.
 {
   name = draw_ui
@@ -35,10 +35,18 @@
   command = "draw_ui ui_vertices ui_indices ui_commands"
   sets = [ globals, textures ]
   push_constants = [ ui_push ]
-  barriers = [ camera_buffer = uniform, ui_vertices = vertex, ui_indices = index, ui_commands = transfer_dst ]
   blending = {
     albedo_res = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
   }
+}
+{
+  name = draw_regions
+  material = region_material
+  geometry = g1
+  draw_group = dg1
+  sets = [ region_data ]
+  push_constants = [ region_index_push ]
+  command = "draw_regions region_gpu_data region_commands"
 }
 {
   name = blit_to_swapchain

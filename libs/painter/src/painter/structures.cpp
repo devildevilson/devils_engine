@@ -836,6 +836,7 @@ struct material_mirror {
 
   std::string name;
   std::vector<std::tuple<std::string, std::string>> definitions;
+  std::vector<std::string> dynamic;
   struct material::shaders shaders;
   struct raster raster;
   struct depth depth;
@@ -858,7 +859,21 @@ struct material_mirror {
     m.shaders = shaders;
     m.raster.depth_clamp = raster.depth_clamp;
     m.raster.raster_discard = raster.raster_discard;
-    m.raster.depth_bias = raster.depth_bias;
+    m.raster.dynamic_depth_bias = false;
+    for (const auto& state : dynamic) {
+      if (state == "depth_bias") {
+        if (m.raster.dynamic_depth_bias) {
+          utils::error{}("Material '{}' repeats dynamic state 'depth_bias'", m.name);
+        }
+        if (raster.depth_bias) {
+          utils::error{}("Material '{}' specifies both static raster.depth_bias and dynamic depth_bias", m.name);
+        }
+        m.raster.dynamic_depth_bias = true;
+        continue;
+      }
+      utils::error{}("Material '{}' contains unsupported dynamic state '{}'", m.name, state);
+    }
+    m.raster.depth_bias = raster.depth_bias || m.raster.dynamic_depth_bias;
     m.raster.polygon = check(polygon_mode::from_string(raster.polygon), "polygon_mode", raster.polygon, m.name);
     m.raster.cull = check(cull_mode::from_string(raster.cull), "cull_mode", raster.cull, m.name);
     m.raster.front_face = check(front_face::from_string(raster.front_face), "front_face", raster.front_face, m.name);
@@ -993,6 +1008,33 @@ static void parse_step2(
   }
 
   step.name = data.name;
+  const auto add_resource_usage = [&](const uint32_t index, const usage::values value) {
+    const auto existing = std::find_if(step.barriers.begin(), step.barriers.end(), [&](const auto& entry) {
+      return std::get<0>(entry) == index;
+    });
+    if (existing != step.barriers.end()) {
+      const auto previous = std::get<1>(*existing);
+      if (previous != value) {
+        const auto& res = ctx.resources[index];
+        utils::error{}(
+          "Execution step '{}' has conflicting usages for resource '{}': '{}' != '{}'",
+          step.name,
+          res.name,
+          usage::to_string(previous),
+          usage::to_string(value));
+      }
+      return;
+    }
+
+    step.barriers.emplace_back(index, value);
+    if (usage::is_read(value)) {
+      step.read.set(index, true);
+    }
+    if (usage::is_write(value)) {
+      step.write.set(index, true);
+    }
+  };
+
   for (const auto& [res_name, data] : data.blending) {
     const uint32_t index = check(ctx.find_resource(res_name), "resource", res_name, step.name);
     step.blending.emplace_back(std::make_tuple(index, data.convert()));
@@ -1001,14 +1043,7 @@ static void parse_step2(
   for (const auto& [res_name, usage_str] : data.barriers) {
     const uint32_t index = check(ctx.find_resource(res_name), "resource", res_name, step.name);
     const auto usage = check(usage::from_string(usage_str), usage_str, step.name);
-    step.barriers.push_back(std::make_tuple(index, usage));
-
-    if (usage::is_read(usage)) {
-      step.read.set(index, true);
-    }
-    if (usage::is_write(usage)) {
-      step.write.set(index, true);
-    }
+    add_resource_usage(index, usage);
   }
 
   step.descriptor = UINT32_MAX;
@@ -1025,15 +1060,8 @@ static void parse_step2(
   for (const auto& [res_name, usage_str] : data.resources) {
     const uint32_t index = check(ctx.find_resource(res_name), "resource", res_name, step.name);
     const auto usage = check(usage::from_string(usage_str), usage_str, step.name);
-    step.barriers.push_back(std::make_tuple(index, usage));
+    add_resource_usage(index, usage);
     ctx.descriptors[step.descriptor].layout.push_back(std::make_tuple(index, usage, UINT32_MAX, uint32_t(VK_SHADER_STAGE_ALL)));
-
-    if (usage::is_read(usage)) {
-      step.read.set(index, true);
-    }
-    if (usage::is_write(usage)) {
-      step.write.set(index, true);
-    }
   }
 
   for (const auto& descriptor_name : data.sets) {
@@ -1044,6 +1072,11 @@ static void parse_step2(
 
     const uint32_t index = check(ctx.find_descriptor(descriptor_name), "descriptor", descriptor_name, step.name);
     step.sets.push_back(index);
+    for (const auto& [resource_index, resource_usage, sampler_index, stages] : ctx.descriptors[index].layout) {
+      static_cast<void>(sampler_index);
+      static_cast<void>(stages);
+      add_resource_usage(resource_index, resource_usage);
+    }
   }
 
   for (const auto& constant_name : data.push_constants) {
@@ -1082,28 +1115,7 @@ static void parse_step2(
 
   for (uint32_t i = 0; i < step.cmd_params.resources.size() && std::get<0>(step.cmd_params.resources[i]) != invalid_resource_slot; ++i) {
     const auto& [cmd_res, cmd_usage] = step.cmd_params.resources[i];
-
-    const auto itr = std::find_if(step.barriers.begin(), step.barriers.end(), [&](const auto& data) {
-      return cmd_res == std::get<0>(data);
-    });
-    if (itr != step.barriers.end()) {
-      const auto& [index, usage] = *itr;
-      if (cmd_usage != usage) {
-        const auto& res = ctx.resources[index];
-        utils::error{}("Execution step '{}' has resource '{}' barriers conflict, '{}' != '{}'", step.name, res.name, usage::to_string(cmd_usage), usage::to_string(usage));
-      } else {
-        step.barriers.push_back(step.cmd_params.resources[i]);
-      }
-    } else {
-      step.barriers.push_back(step.cmd_params.resources[i]);
-    }
-
-    if (usage::is_read(cmd_usage)) {
-      step.read.set(cmd_res, true);
-    }
-    if (usage::is_write(cmd_usage)) {
-      step.write.set(cmd_res, true);
-    }
+    add_resource_usage(cmd_res, cmd_usage);
   }
 
   // так нужно еще юсаджи собрать в ресурсы
@@ -1634,6 +1646,64 @@ command_params parse_command(render_config_storage* ctx, const step_base& step, 
       p.resources[i] = std::make_tuple(index, usages[i]);
       rest = utils::string::trim(rem);
     }
+    return p;
+  }
+
+  // Generic regional drawing: "draw_regions <gpu_data> <commands>". gpu_data must already be
+  // present in one of the step's descriptor sets and is bound once for the whole step; commands is
+  // a host-visible region_draw wire stream. Per-region data_index is delivered via one uint push.
+  if (part == "draw_regions") {
+    if (step.draw_group == invalid_resource_slot) {
+      utils::error{}("Command 'draw_regions' requires a draw_group in step '{}'", step.name);
+    }
+    if (step.push_constants.size() != 1) {
+      utils::error{}("Command 'draw_regions' in step '{}' requires exactly one push constant containing data_index", step.name);
+    }
+    const auto& push = DS_ASSERT_ARRAY_GET(ctx->constants, step.push_constants.front());
+    if (push.size < sizeof(uint32_t)) {
+      utils::error{}("Command 'draw_regions' push constant '{}' in step '{}' is smaller than uint", push.name, step.name);
+    }
+
+    auto rest = utils::string::trim(remaining);
+    const auto& [data_token, after_data] = utils::string::split_prefix(rest, " ");
+    const auto& [commands_token, trailing] = utils::string::split_prefix(utils::string::trim(after_data), " ");
+    const auto data_name = utils::string::trim(data_token);
+    const auto commands_name = utils::string::trim(commands_token);
+    if (data_name.empty() || commands_name.empty() || !utils::string::trim(trailing).empty()) {
+      utils::error{}("Command 'draw_regions' in step '{}' expects exactly 2 resources: <gpu_data> <commands>", step.name);
+    }
+
+    command_params p;
+    p.type = command::values::draw_regions;
+    const uint32_t data_index = check(ctx->find_resource(data_name), "resource", data_name, step.name);
+    const uint32_t commands_index = check(ctx->find_resource(commands_name), "resource", commands_name, step.name);
+    if (!role::is_buffer(ctx->resources[data_index].role) || !role::is_buffer(ctx->resources[commands_index].role)) {
+      utils::error{}("Command 'draw_regions' in step '{}' accepts buffer resources only", step.name);
+    }
+
+    auto data_usage = usage::values::count;
+    for (const uint32_t descriptor_index : step.sets) {
+      const auto& descriptor = DS_ASSERT_ARRAY_GET(ctx->descriptors, descriptor_index);
+      for (const auto& [resource_index, resource_usage, sampler_index, stages] : descriptor.layout) {
+        static_cast<void>(sampler_index);
+        static_cast<void>(stages);
+        if (resource_index != data_index) continue;
+        if (resource_usage != usage::uniform && resource_usage != usage::storage_read) {
+          utils::error{}("draw_regions gpu_data '{}' in step '{}' must be uniform or storage_read", data_name, step.name);
+        }
+        if (data_usage != usage::values::count && data_usage != resource_usage) {
+          utils::error{}("draw_regions gpu_data '{}' in step '{}' has conflicting descriptor usages", data_name, step.name);
+        }
+        data_usage = resource_usage;
+      }
+    }
+    if (data_usage == usage::values::count) {
+      utils::error{}("draw_regions gpu_data '{}' in step '{}' is not present in its descriptor sets", data_name, step.name);
+    }
+
+    p.resources[0] = std::make_tuple(data_index, data_usage);
+    // CPU-read command streams still need a non-zero VkBufferUsageFlags placeholder at creation.
+    p.resources[1] = std::make_tuple(commands_index, usage::transfer_dst);
     return p;
   }
 

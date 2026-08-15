@@ -574,6 +574,10 @@ void graphics_base::populate_constant_default_values() {
     auto spn = std::span(constants_memory[1].begin() + (c.offset / sizeof(uint32_t)), constants_memory[1].end());
     put_values(spn, c.layout, c.value);
   }
+
+  // Parsed defaults must be usable by the first recorded frame. Runtime writes still go through
+  // constants_memory[1] and become visible only at the explicit update_event() boundary.
+  update_constant_memory();
 }
 
 buffer_frame graphics_base::get_current_buffer_resource_frame(const uint32_t res_index, const uint32_t counter_offset) const {
@@ -942,7 +946,6 @@ void graphics_base::prepare_frame() {
   computed_current_frame_index = current_frame_in_flight();
   wait_fence();
   image_acquire();
-  //update_constant_memory(); // слишком часто
   update_descriptors(); // тут перевыделения памяти, лучше убрать отсюда
 
   //if (!can_draw()) return;
@@ -2344,6 +2347,7 @@ render_graph_instance graphics_base::create_render_graph_instance(const uint32_t
         case command::values::draw_constant: cur_step = create_render_step<graphics_draw_constant>(out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
         case command::values::draw_indexed_constant: cur_step = create_render_step<graphics_draw_indexed_constant>(out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
         case command::values::draw_ui: cur_step = create_render_step<graphics_draw_ui>(out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
+        case command::values::draw_regions: cur_step = create_render_step<graphics_draw_regions>(out, step_index, device, ptr_raw->renderpass, subpass_index, pass.render_target); break;
         case command::values::dispatch_indirect: cur_step = create_render_step<compute_dispatch_indirect>(out, step_index, device); break;
         case command::values::dispatch_constant: cur_step = create_render_step<compute_dispatch_constant>(out, step_index, device); break;
         case command::values::copy_buffer: cur_step = create_render_step<transfer_copy_buffer>(out, step_index); break;

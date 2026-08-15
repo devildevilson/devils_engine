@@ -58,3 +58,19 @@
   type = doublebuffer
   swap = per_update
 }
+{
+  name = region_gpu_data
+  format = mat4v4v4v4
+  role = upload
+  size = region_records
+  type = doublebuffer
+  swap = per_update
+}
+{
+  name = region_commands
+  format = c1
+  role = upload
+  size = region_commands_bytes
+  type = doublebuffer
+  swap = per_update
+}

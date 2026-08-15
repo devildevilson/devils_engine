@@ -18,3 +18,8 @@
   layout = ui1ui1ui1ui1ui1ui1ui1
   value = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 }
+{
+  name = region_index_push
+  layout = ui1
+  value = [0.0]
+}

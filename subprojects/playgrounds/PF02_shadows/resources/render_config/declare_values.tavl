@@ -1,0 +1,60 @@
+{
+  name = viewport
+  type = screensize
+}
+{
+  name = one
+  type = fixed
+  value = [1, 0, 0]
+}
+{
+  name = scene_instances
+  type = fixed
+  value = [26, 0, 0]
+}
+{
+  name = scene_draws
+  type = fixed
+  value = [26, 0, 0]
+}
+{
+  name = debug_instances
+  type = fixed
+  value = [1, 0, 0]
+}
+{
+  name = debug_draws
+  type = fixed
+  value = [1, 0, 0]
+}
+{
+  name = shadow_resolution
+  type = fixed
+  value = [2048, 0, 0]
+  presets = [ low = [1024, 0, 0], mid = [2048, 0, 0], high = [4096, 0, 0] ]
+}
+{
+  name = spot_light_count
+  type = fixed
+  value = [4, 0, 0]
+}
+{
+  name = spot_region_commands_bytes
+  type = fixed
+  value = [4096, 0, 0]
+}
+{
+  name = ui_vertices_bytes
+  type = fixed
+  value = [524288, 0, 0]
+}
+{
+  name = ui_indices_bytes
+  type = fixed
+  value = [131072, 0, 0]
+}
+{
+  name = ui_commands_bytes
+  type = fixed
+  value = [16384, 0, 0]
+}

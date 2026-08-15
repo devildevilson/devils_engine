@@ -423,6 +423,7 @@ void assets_base::create_buffer_storage(const buffer_asset_handle& h, const buff
 
   //buffer_slots[h].name = info.name;
   buffer_slots[h].geometry_name = info.geometry_name;
+  buffer_slots[h].geometry = index;
   buffer_slots[h].index_alc = i_alc;
   buffer_slots[h].index_storage = i_buf;
   buffer_slots[h].vertex_alc = v_alc;

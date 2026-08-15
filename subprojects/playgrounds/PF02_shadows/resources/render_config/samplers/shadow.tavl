@@ -1,0 +1,5 @@
+{
+  name = shadow_nearest
+  filter = nearest
+  address = clamp
+}
