@@ -7,6 +7,7 @@
 #include "devils_engine/demiurg/resource_system.h"
 #include "devils_engine/utils/fileio.h"
 #include "graphics_base.h"
+#include "gpu_timing.h"
 #include "makers.h"
 #include "pipeline_cache_resource.h"
 #include "vulkan_header.h"
@@ -56,7 +57,11 @@ bool graphics_base::is_descriptor_active(const uint32_t i) const {
   return !graph_filtered_ || descriptor_active_mask_.test(i);
 }
 
-graphics_ctx::graphics_ctx() noexcept : base(nullptr), assets(nullptr) {}
+graphics_ctx::graphics_ctx() noexcept : base(nullptr), assets(nullptr), gpu_profiler(nullptr) {}
+
+void graphics_ctx::set_gpu_profiler(gpu_timestamp_profiler* profiler) noexcept {
+  gpu_profiler = profiler;
+}
 
 // resource::usage_mask хранит Vulkan usage как uint32_t (сюда кастятся vk::Buffer/ImageUsageFlags
 // в create_resources). Ловим момент, когда базовые usage-флаги перестанут влезать в 32 бита
@@ -2487,6 +2492,10 @@ bool graphics_base::presentable_state_waiting_host_event() const {
 
 void graphics_ctx::prepare() {
   // тут нужно собрать текущие ресурсы и дескрипторы
+
+  if (gpu_profiler != nullptr) {
+    gpu_profiler->prepare_frame(base->current_frame_in_flight(), uint32_t(base->execution_graph.groups.size()));
+  }
 
   resources.clear();
   resources.resize(base->resources.size());

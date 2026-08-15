@@ -25,6 +25,7 @@ endif()
 set(SRC_LIST
   src/painter/auxiliary.cpp
   src/painter/glsl_source_file.cpp
+  src/painter/gpu_timing.cpp
   src/painter/render_config_source.cpp
   src/painter/pipeline_cache_resource.cpp
   src/painter/queue.cpp
@@ -61,6 +62,7 @@ add_custom_command(
 set(HDR_LIST
   include/devils_engine/painter/auxiliary.h
   include/devils_engine/painter/glsl_source_file.h
+  include/devils_engine/painter/gpu_timing.h
   include/devils_engine/painter/render_config_source.h
   include/devils_engine/painter/makers.h
   include/devils_engine/painter/queue.h

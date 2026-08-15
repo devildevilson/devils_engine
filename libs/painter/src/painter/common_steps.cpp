@@ -11,6 +11,7 @@
 #include "devils_engine/utils/string-utils.hpp"
 #include "glsl_source_file.h"
 #include "graphics_base.h"
+#include "gpu_timing.h"
 #include "region_draw.h"
 #include "makers.h"
 #include "shader_crafter.h"
@@ -888,15 +889,21 @@ execution_group::~execution_group() noexcept {
   // вернем командный буфер?
 }
 
-void execution_group::process(graphics_ctx* ctx) const {
+void execution_group::process(graphics_ctx* ctx, const uint32_t pass_index) const {
   const uint32_t cur_index = ctx->base->current_frame_index() % frames.size();
   auto cb = frames[cur_index].buffer;
   vk::CommandBuffer task(cb);
   vk::CommandBufferBeginInfo cbbi{};
   cbbi.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
   task.begin(cbbi);
+  if (ctx->gpu_profiler != nullptr) {
+    ctx->gpu_profiler->record_pass_begin(cb, cur_index, pass_index);
+  }
   for (auto p : steps) {
     p->process(ctx, cb);
+  }
+  if (ctx->gpu_profiler != nullptr) {
+    ctx->gpu_profiler->record_pass_end(cb, cur_index, pass_index);
   }
   task.end();
 }
@@ -914,8 +921,8 @@ void execution_group::populate_command_buffers() {
 }
 
 void render_graph_instance::process(graphics_ctx* ctx, VkCommandBuffer) const {
-  for (const auto& g : groups) {
-    g.process(ctx);
+  for (uint32_t i = 0; i < groups.size(); ++i) {
+    groups[i].process(ctx, i);
   }
 }
 

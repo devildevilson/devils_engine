@@ -36,6 +36,9 @@ public:
 
   rgba_image_view font_atlas() const noexcept;
   void set_font_texture(uint32_t texture_slot);
+  // Optional lab-owned diagnostic rows rendered below the common scene/controls/frame meter.
+  // Strings are copied into the overlay's Lua environment and may be replaced every frame.
+  void set_detail_lines(std::span<const std::string> lines);
   bool update(uint64_t frame_delta_us, uint64_t timestamp_us);
 
   std::span<const uint8_t> vertices() const noexcept;

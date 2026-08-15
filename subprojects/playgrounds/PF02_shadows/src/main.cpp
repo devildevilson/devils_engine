@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <span>
 #include <string>
 #include <thread>
@@ -20,6 +21,7 @@
 #include "devils_engine/painter/assets_base.h"
 #include "devils_engine/painter/auxiliary.h"
 #include "devils_engine/painter/graphics_base.h"
+#include "devils_engine/painter/gpu_timing.h"
 #include "devils_engine/painter/makers.h"
 #include "devils_engine/painter/region_draw.h"
 #include "devils_engine/painter/system_info.h"
@@ -41,6 +43,9 @@ constexpr uint32_t caster_count = 5;
 constexpr uint32_t spot_count = 4;
 constexpr uint32_t packed_caster_capacity = caster_count * (spot_count + 1);
 constexpr float camera_near = 0.1f;
+constexpr float spot_bias_constant = -1.25f;
+constexpr float spot_bias_slope = -1.75f;
+constexpr float receiver_bias_slope = 0.0025f;
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -253,8 +258,8 @@ spot_region_stream build_spot_regions(
     region.scissor_y = int32_t((light_index >> 1u) * tile_resolution);
     region.scissor_width = tile_resolution;
     region.scissor_height = tile_resolution;
-    region.depth_bias_constant = -1.25f;
-    region.depth_bias_slope = -1.75f;
+    region.depth_bias_constant = spot_bias_constant;
+    region.depth_bias_slope = spot_bias_slope;
     region.data_index = light_index;
     region.first_span = light_index * 2;
     region.span_count = 2;
@@ -574,9 +579,11 @@ int main(int argc, char** argv) {
     const glm::mat4 light_projection = reverse_z_ortho(-9.0f, 9.0f, -7.0f, 7.0f, 0.1f, 30.0f);
     const glm::mat4 light_view_projection = light_projection * light_view;
 
+    painter::gpu_timestamp_profiler gpu_profiler(base);
     painter::graphics_ctx context;
     context.base = &base;
     context.assets = &assets;
+    context.set_gpu_profiler(&gpu_profiler);
 
     utils::info("PF02 controls: WASD/QE + mouse camera, Z/X receiver bias, Esc exit");
     utils::info("PF02 graph: directional map + 2x2 spot atlas -> shadowed forward + depth debug -> present");
@@ -625,7 +632,7 @@ int main(int argc, char** argv) {
       scene.camera_position = glm::vec4(camera.position, 1.0f);
       scene.viewport_near = glm::vec4(float(pending_width), float(pending_height), camera_near, 0.0f);
       scene.light_direction = glm::vec4(light_direction, 0.0f);
-      scene.shadow_params = glm::vec4(float(shadow_resolution), base_bias, 0.0025f, 0.0f);
+      scene.shadow_params = glm::vec4(float(shadow_resolution), base_bias, receiver_bias_slope, 0.0f);
       write_current_buffer(base, "scene_buffer", &scene, sizeof(scene));
 
       const float seconds = std::chrono::duration<float>(now - start_time).count();
@@ -647,6 +654,45 @@ int main(int argc, char** argv) {
         sizeof(packed_caster_instances));
       write_current_buffer(base, "spot_region_commands", &spot_regions, sizeof(spot_regions));
 
+      context.prepare();
+
+      const std::array<uint32_t, spot_count> region_casters{
+        spot_regions.spans[1].instance_count,
+        spot_regions.spans[3].instance_count,
+        spot_regions.spans[5].instance_count,
+        spot_regions.spans[7].instance_count};
+      const uint32_t packed_count =
+        region_casters[0] + region_casters[1] + region_casters[2] + region_casters[3];
+      std::array<std::string, 5> overlay_details{
+        std::format(
+          "Atlas: 4 x {}^2   casters: [{}, {}, {}, {}]   packed: {}",
+          shadow_resolution / 2,
+          region_casters[0],
+          region_casters[1],
+          region_casters[2],
+          region_casters[3],
+          packed_count),
+        std::format("Caster raster bias: constant {:.2f}   slope {:.2f}", spot_bias_constant, spot_bias_slope),
+        std::format("Receiver sample bias: constant {:.5f}   slope {:.4f}", base_bias, receiver_bias_slope),
+        "GPU passes: waiting for timestamp results...",
+        "GPU graph: waiting for timestamp results..."};
+      if (gpu_profiler.has_results() && gpu_profiler.passes().size() == 4) {
+        const auto timings = gpu_profiler.passes();
+        overlay_details[3] = std::format(
+          "GPU: directional {:.3f} ms   spot atlas {:.3f} ms   forward {:.3f} ms",
+          timings[0].milliseconds,
+          timings[1].milliseconds,
+          timings[2].milliseconds);
+        overlay_details[4] = std::format(
+          "GPU: present blit {:.3f} ms   complete graph {:.3f} ms",
+          timings[3].milliseconds,
+          gpu_profiler.frame_milliseconds());
+      } else if (!gpu_profiler.available()) {
+        overlay_details[3] = "GPU timestamps unavailable on the selected graphics queue";
+        overlay_details[4].clear();
+      }
+      overlay.set_detail_lines(overlay_details);
+
       const uint64_t frame_delta_us = uint64_t(std::max(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::duration<float>(dt)).count(),
         int64_t{1}));
@@ -654,7 +700,6 @@ int main(int argc, char** argv) {
       overlay.update(frame_delta_us, timestamp_us);
       write_overlay_buffers(base, overlay);
 
-      context.prepare();
       context.draw();
       base.submit_frame();
       frame_pacer.wait();

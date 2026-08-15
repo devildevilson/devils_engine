@@ -72,7 +72,7 @@ push constant и spans `{pair, first_instance, instance_count}`; main-поток
 fail-fast проверяет stream до записи первого draw. Material `dynamic = [ depth_bias ]` включает
 `vkCmdSetDepthBias`; при отсутствии dynamic state поддержан прежний static raster bias. PF02 использует один
 spot material/step вместо четырёх материалов и восьми steps; validation-layer и визуальный прогоны чистые.
-Следующая наблюдаемая граница — bias/occupancy/culling counts в overlay, затем GPU timings.
+Следующий quality-срез — независимый bias A/B на contact/sloped fixtures, затем soft filters и CSM.
 
 `RND-*` из этой таблицы не требуется закрывать целиком до запуска сцены. Исправляется только конкретный
 blocker текущего этапа; найденная более широкая работа остаётся в backlog. `UTL-08`, module profiles,
@@ -218,14 +218,14 @@ Persistent multi-day event или repair action хранится в `SIM-03`, а
 | `RND-08` | Runtime-generated mesh lifecycle | `L` | CPU artifact → GPU publish/reuse/unload with epochs |
 | `RND-09` | KTX/KTX2 compressed upload path | `L` | supported GPU blocks не декомпрессируются на CPU |
 | `RND-10` | Canonical mesh/material/skeleton upload interfaces | `L` | importer-independent runtime boundary |
-| `RND-11` | GPU timings/residency/debug capture | `M–L` | project/tool-readable metrics and captures |
+| `RND-11` | GPU timings/residency/debug capture | `M–L` | **partial PF02:** opt-in per-pass/full-graph timestamp profiler live; next reusable publication, residency and captures |
 | `RND-16` | Post-processing graph/compositor foundation | `L` | ordered fullscreen passes, transient/persistent images, resize/format policy, enable/disable and debug views |
 | `RND-17` | Temporal rendering inputs and history lifecycle | `L` | camera jitter, motion vectors, depth/normal history, disocclusion, reset on cut/resize/teleport |
 | `RND-18` | Temporal anti-aliasing (TAA) | `L–XL` | reprojection, neighborhood clamp, responsive masks, ghosting diagnostics and no-history fallback |
 | `RND-19` | Screen-space ambient occlusion (SSAO) | `L` | depth/normal sampling, denoise/temporal accumulation, quality presets and lighting integration |
 | `RND-20` | Общий screen-space effects toolkit | `L–XL` | depth pyramid, reconstruction, bilateral blur/denoise and reusable kernels for SSR, contact shadows, fog and outlines |
 | `RND-21` | Базовая color post-processing chain | `L` | HDR exposure, tone mapping, bloom, color grading and output-color-space policy |
-| `RND-22` | Directional/spot shadow maps and atlas | `L–XL` | **active in PF02:** directional + fixed 2×2 spot atlas/PCF/debug live; generic `draw_regions` и CPU caster packing live; next bias/occupancy diagnostics, GPU timings and atlas lifetime; point cubemaps later |
+| `RND-22` | Directional/spot shadow maps and atlas | `L–XL` | **active in PF02:** atlas/PCF/debug, `draw_regions`, CPU caster packing, occupancy/bias/timings live; next bias fixtures/policy → PCF/Poisson/PCSS → stabilized CSM; atlas lifetime and point cubemaps later |
 | `RND-23` | Stencil effect path | `M–L` | depth/stencil attachment lifetime, material front/back ops, masks/reference, visualization and ordinary graph consumers |
 | `RND-24` | Present policy отдельно от frame pacing | `M` | базовое разделение уже есть; осталось overrun-resync, выбранный-mode metrics и явный MAILBOX/FIFO/IMMEDIATE fallback policy |
 | `RND-25` | Вывод step usages/barriers из descriptor sets | `M` | **done 2026-08-15:** named `sets` → usages/read-write masks, dedup/conflict validation; pass/subpass attachment load/store остаются явными |

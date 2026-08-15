@@ -30,6 +30,7 @@ class resource_system;
 namespace painter {
 
 struct assets_base;
+class gpu_timestamp_profiler;
 constexpr uint32_t default_frames_in_flight = 3;
 
 // читаются painter_base, но данных больше
@@ -332,6 +333,7 @@ struct image_memory_barrier {
 struct graphics_ctx {
   const graphics_base* base;
   const assets_base* assets;
+  gpu_timestamp_profiler* gpu_profiler;
 
   // текущие ресурсы
   std::vector<resource_inst> resources;
@@ -343,6 +345,7 @@ struct graphics_ctx {
   std::vector<VkDescriptorSet> descriptors_cache;
 
   graphics_ctx() noexcept;
+  void set_gpu_profiler(gpu_timestamp_profiler* profiler) noexcept;
   void prepare();
   void draw();
 };

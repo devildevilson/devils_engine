@@ -9,12 +9,19 @@
 #include "devils_engine/demiurg/module_system.h"
 #include "devils_engine/demiurg/resource_system.h"
 #include "devils_engine/painter/glsl_source_file.h"
+#include "devils_engine/painter/gpu_timing.h"
 #include "devils_engine/painter/graphics_base.h"
 #include "devils_engine/painter/render_config_source.h"
 #include "devils_engine/painter/region_draw.h"
 #include "devils_engine/painter/structures.h"
 
 using namespace devils_engine;
+
+TEST_CASE("painter GPU timestamp delta respects valid-bit wraparound [painter]") {
+  CHECK(painter::gpu_timestamp_delta(100, 145, 64) == 45);
+  CHECK(painter::gpu_timestamp_delta(250, 5, 8) == 11);
+  CHECK(painter::gpu_timestamp_delta(10, 20, 0) == 0);
+}
 
 TEST_CASE("painter step derives resource usages from named descriptor sets [painter]") {
   const auto storage = painter::build_render_config(PAINTER_TEST_CONFIG_ROOT);

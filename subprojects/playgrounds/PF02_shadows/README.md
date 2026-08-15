@@ -21,6 +21,8 @@
 - прямые depth debug-views directional map и всего spot atlas в правом верхнем углу;
 - `dynamic = [ depth_bias ]` принадлежит material; статический raster bias остаётся альтернативой для
   материалов без dynamic state;
+- overlay показывает caster occupancy каждого atlas region, packed count, caster/receiver bias и
+  сглаженные GPU timestamps для directional/spot/forward/blit passes и полного render graph;
 - общие free camera, Visage overlay и независимый frame pacer из `../common`.
 
 Сборка и запуск из корня:
@@ -52,10 +54,16 @@ Point-light cubemap shadows — отдельное расширение посл
 
 ## Следующий срез
 
-1. Показать selected region, dynamic caster bias и atlas occupancy/culling counts в overlay.
-2. Добавить GPU timings.
-3. Сравнить receiver bias с raster depth bias и зафиксировать policy против acne/peter-panning.
-4. Заменить фиксированную раскладку минимальным atlas allocation/lifetime contract.
+1. Сделать raster constant/slope и receiver constant/slope независимо управляемыми; добавить наклонный
+   receiver и тонкий contact caster для явного сравнения acne против peter-panning.
+2. Добавить переключаемые hard/PCF/rotated-Poisson фильтры, затем PCSS для зависящей от blocker distance
+   полутени spot lights. Фильтр не должен маскировать неправильный bias contract.
+3. Перевести directional shadow на 3–4 стабилизированных camera-frustum cascades: practical split,
+   texel snapping, region visualization и blend band; atlas recording переиспользует `draw_regions`.
+4. После измерений заменить фиксированную раскладку минимальным atlas allocation/lifetime contract.
+
+GPU `complete graph` измеряет интервал от начала первого command buffer до конца present-blit pass на
+graphics queue; он намеренно не является временем `vkQueuePresentKHR`, scanout или CPU frame.
 
 ## Definition of Done
 

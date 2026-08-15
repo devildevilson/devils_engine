@@ -20,6 +20,7 @@ struct visage_overlay::impl {
   uint32_t atlas_height = 0;
   std::unique_ptr<visage::system> ui;
   double smoothed_frame_ms = 0.0;
+  size_t detail_count = 0;
 };
 
 visage_overlay::visage_overlay(
@@ -53,6 +54,8 @@ visage_overlay::visage_overlay(
   env["playground_title"] = std::move(description.title);
   env["playground_scene"] = std::move(description.scene);
   env["playground_controls"] = std::move(description.controls);
+  env["playground_details"] = state_->ui->script_state().create_table();
+  env["playground_detail_count"] = 0;
 
   const auto source = file_io::read(script_path);
   auto result = state_->ui->script_state().safe_script(
@@ -80,6 +83,24 @@ rgba_image_view visage_overlay::font_atlas() const noexcept {
 
 void visage_overlay::set_font_texture(const uint32_t texture_slot) {
   state_->font->set_texture_id(texture_slot);
+}
+
+void visage_overlay::set_detail_lines(const std::span<const std::string> lines) {
+  constexpr size_t max_detail_lines = 10;
+  if (lines.size() > max_detail_lines) {
+    utils::error{}("playground Visage overlay accepts at most {} detail lines, got {}", max_detail_lines, lines.size());
+  }
+
+  auto& env = state_->ui->script_env();
+  sol::table details = env["playground_details"];
+  for (size_t i = 0; i < lines.size(); ++i) {
+    details[i + 1] = lines[i];
+  }
+  for (size_t i = lines.size(); i < state_->detail_count; ++i) {
+    details[i + 1] = sol::nil;
+  }
+  state_->detail_count = lines.size();
+  env["playground_detail_count"] = state_->detail_count;
 }
 
 bool visage_overlay::update(const uint64_t frame_delta_us, const uint64_t timestamp_us) {

@@ -104,8 +104,15 @@ font и показывает описание сцены, controls, сглаже
 видны одновременно и не протекают друг в друга. Четыре material/восемь draw steps заменены одним generic
 `draw_regions`: main-поток пакует отобранные по cone/range caster instances и host command stream, а render
 graph управляет только ресурсами/layout. Каждая команда задаёт viewport/scissor/dynamic bias, индекс записи
-в целом bound GPU buffer и draw-group spans. Следующая наблюдаемая граница — вывести bias/atlas occupancy и
-culling counts как явные данные, затем добавить GPU timings и минимальный atlas lifetime contract.
+в целом bound GPU buffer и draw-group spans.
+
+Срез диагностики 2026-08-15 закрыт: общий Visage shell принимает динамические detail rows; PF02 выводит
+occupancy четырёх spot regions, packed caster count и раздельные raster/receiver bias. Opt-in Painter GPU
+timestamp profiler ставит запросы только на границах render-graph passes, читает их после fence текущего
+frame-in-flight slot и показывает сглаженные directional/spot/forward/present-blit/full-graph времена;
+без подключённого profiler query pool и timestamp commands отсутствуют. Следующий quality-срез идёт в
+порядке: отдельное управление bias на contact/sloped fixtures → hard/PCF/Poisson/PCSS soft-shadow A/B →
+стабилизированные directional cascades с debug colors/blend bands. Так фильтрация не маскирует bias defects.
 
 ## 1. Painter visual stack
 

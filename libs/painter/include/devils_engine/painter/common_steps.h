@@ -159,7 +159,7 @@ struct execution_group {
 
   execution_group() noexcept;
   ~execution_group() noexcept;
-  void process(graphics_ctx*) const;
+  void process(graphics_ctx*, uint32_t pass_index) const;
   void populate_command_buffers();
 };
 
