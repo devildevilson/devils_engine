@@ -190,8 +190,10 @@ struct alignas(16) scene_block {
   // x: atlas resolution, y/z: world-texel normal bias, w: vertex-layout guard (must stay zero).
   glm::vec4 shadow_params;
   glm::vec4 filter_params;
+  // x/y: начало и конец затухания contact по глубине камеры, z: ширина viewport-edge fade в uv.
+  glm::vec4 contact_params;
 };
-static_assert(sizeof(scene_block) == 272);
+static_assert(sizeof(scene_block) == 288);
 
 struct alignas(16) directional_cascade_record {
   glm::mat4 light_view_projection;
@@ -822,6 +824,11 @@ int main(int argc, char** argv) {
     bool map_shadows_enabled = initial_map_shadows;
     float contact_distance = 0.24f;
     float contact_thickness = 0.055f;
+    // Контакт — фича крупного плана: за fade_end лучи не трассируются вообще, а у края кадра вклад
+    // гасится, потому что блокер там виден лишь частично.
+    const float contact_fade_start = 8.0f;
+    const float contact_fade_end = 18.0f;
+    const float contact_edge_fade = 0.06f;
     bool cascade_debug = initial_cascade_debug;
 
     const glm::vec3 light_direction = glm::normalize(glm::vec3{-0.55f, -1.0f, -0.38f});
@@ -980,6 +987,11 @@ int main(int argc, char** argv) {
         pcss_enabled ? emitter_radius : 0.0f,
         contact_enabled ? contact_distance : 0.0f,
         contact_thickness);
+      scene.contact_params = glm::vec4(
+        contact_fade_start,
+        contact_fade_end,
+        contact_edge_fade,
+        0.0f);
       write_current_buffer(base, "scene_buffer", &scene, sizeof(scene));
       write_current_buffer(
         base,
@@ -1028,8 +1040,11 @@ int main(int argc, char** argv) {
         region_casters[0] + region_casters[1] + region_casters[2] + region_casters[3];
       const std::string_view lighting_name =
         lighting_mode == 1 ? "directional only" : lighting_mode == 2 ? "spot only" : "all lights";
-      const std::array<std::string_view, 3> aa_names{"hard", "3x3 PCF", "rotated Poisson"};
-      std::array<std::string, 10> overlay_details{
+      // Названия отражают ФАКТИЧЕСКИЙ путь выборки: hard читает атлас обычным сэмплером и сравнивает
+      // вручную, два других режима идут через сравнивающий сэмплер (аппаратная билинейная доля на tap).
+      const std::array<std::string_view, 3> aa_names{
+        "hard (raw tap)", "weighted PCF (hw compare)", "rotated Poisson (hw compare)"};
+      std::array<std::string, 11> overlay_details{
         std::format(
           "CSM: 4 x {}^2   splits: {:.1f} / {:.1f} / {:.1f} / {:.1f}   tint [9]: {}",
           shadow_resolution / 2,
@@ -1067,24 +1082,29 @@ int main(int argc, char** argv) {
           emitter_radius,
           contact_enabled ? "on" : "off",
           contact_distance),
+        std::format(
+          "Contact: min-combined, nearest-depth upsample, fade {:.0f}..{:.0f}m, edge {:.2f}",
+          contact_fade_start,
+          contact_fade_end,
+          contact_edge_fade),
         "GPU passes: waiting for timestamp results...",
         "GPU graph: waiting for timestamp results..."};
       if (gpu_profiler.has_results() && gpu_profiler.passes().size() == 6) {
         const auto timings = gpu_profiler.passes();
-        overlay_details[8] = std::format(
+        overlay_details[9] = std::format(
           "GPU: dir {:.3f}   spot {:.3f}   depth {:.3f}   contact {:.3f} ms",
           timings[0].milliseconds,
           timings[1].milliseconds,
           timings[2].milliseconds,
           timings[3].milliseconds);
-        overlay_details[9] = std::format(
+        overlay_details[10] = std::format(
           "GPU: forward {:.3f} ms   blit {:.3f} ms   graph {:.3f} ms",
           timings[4].milliseconds,
           timings[5].milliseconds,
           gpu_profiler.frame_milliseconds());
       } else if (!gpu_profiler.available()) {
-        overlay_details[8] = "GPU timestamps unavailable on the selected graphics queue";
-        overlay_details[9].clear();
+        overlay_details[9] = "GPU timestamps unavailable on the selected graphics queue";
+        overlay_details[10].clear();
       }
       overlay.set_detail_lines(overlay_details);
 

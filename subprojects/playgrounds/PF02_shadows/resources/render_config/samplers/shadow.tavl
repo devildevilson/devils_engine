@@ -4,6 +4,14 @@
   address = clamp
 }
 {
+  // Сравнивающий сэмплер: шейдер объявляет sampler2DShadow и получает на tap билинейную ДОЛЮ
+  // прошедших сравнение текселей. reverse-Z ⇒ видимость = (receiver >= stored) ⇒ greater_or_equal.
+  name = shadow_compare
+  filter = linear
+  address = clamp
+  compare = greater_or_equal
+}
+{
   name = contact_linear
   filter = linear
   address = clamp

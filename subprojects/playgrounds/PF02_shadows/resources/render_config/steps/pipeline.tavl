@@ -36,7 +36,7 @@
   material = shadowed_scene_material
   geometry = scene_geometry
   draw_group = scene_draw_group
-  sets = [ spot_scene_data, shadow_inputs, contact_shadow_read ]
+  sets = [ spot_scene_data, shadow_scene_inputs, contact_shadow_read ]
   shader_constants = [ pcf_radius = "1" ]
   command = "draw"
 }

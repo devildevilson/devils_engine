@@ -68,8 +68,14 @@
 - открытая сцена с floor/walls, пятью cube casters, наклонным receiver и тонким contact caster;
 - practical split (`lambda = 0.68`), rotation-independent cascade sphere, light-space texel snapping и
   12% blend band; `9` включает окраску выбранных каскадов;
-- edge anti-aliasing и физическая мягкость разделены: runtime hard/3×3 PCF/rotated-Poisson выбирают
-  фиксированный AA kernel, а независимый spot-PCSS использует emitter radius в мировых единицах;
+- edge anti-aliasing и физическая мягкость разделены: runtime hard/взвешенный PCF/rotated-Poisson
+  выбирают фиксированный AA kernel, а независимый spot-PCSS использует emitter radius в мировых единицах;
+- shadow atlas читается сравнивающим сэмплером (`shadow_compare`, `greater_or_equal` под reverse-Z):
+  один tap `sampler2DShadow` возвращает билинейную долю прошедших сравнение текселей, поэтому взвешенный
+  `3×3` даёт эффективный футпринт `6×6`. Тот же атлас параллельно доступен обычным nearest-сэмплером —
+  hard-режим A/B и blocker search PCSS требуют сырого значения глубины;
+- PCF-kernel взвешен разделимым tent'ом от `pcf_radius`, а не равномерной суммой: переход читается
+  сглаженным, а не ступенчатым;
 - main-поток консервативно пересекает caster bounds с каждым spot cone, пакует подходящие instance lanes и
   формирует два generic region spans (stage/casters) на источник;
 - оба atlas pass используют `draw_regions`: региональная команда отдельно несёт viewport/scissor,
@@ -84,6 +90,12 @@
   а `N·L`, cone и range rejection пропускают заведомо лишние rays; короткий `0.24 m` preset закрывает
   bias-gap, но single-depth silhouette остаётся фундаментальным ограничением screen-space метода, поэтому
   этот исследовательский режим выключен по умолчанию и включается через `F`/`--contact`;
+- вклад contact-масок ограничивает карту теней через `min`, а не умножается на неё (иначе полутень
+  затемняется дважды), и апсемплится по ближайшей глубине: `contact_directional` — формат `sf2`, где
+  `.r` = маска, `.g` = линейная view-глубина источника (`.g == 0` = пиксель без геометрии), поэтому
+  обычный bilinear больше не протекает через силуэты;
+- contact-вклад гаснет по трём осям: длина ray, глубина камеры (`8…18 м`, за пределом лучи вообще не
+  трассируются) и близость точки попадания к краю кадра (блокер там виден лишь частично);
 - прямые debug-views показывают оба полных atlas и обе contact masks в правом верхнем углу;
 - `dynamic = [ depth_bias ]` принадлежит material; статический raster bias остаётся альтернативой для
   материалов без dynamic state;
@@ -150,11 +162,10 @@ atlas/masks — `shadow_debug.frag.glsl`.
      `contact_ray_steps`/`contact_refine_steps` шага `build_contact_shadows`. Размер воркгруппы
      contact-компьюта (`local_size_*_id`) станет следующим потребителем вместе с host-стороной dispatch,
      чтобы не разъехались два источника истины.
-   - Осталось от этого пункта: перевести shadow sampling на `sampler2DShadow` и взвешенный
-     детерминированный `3×3` kernel вместо ручных сравнений и случайного вращения.
-2. **Комбинирование и upsample вклада contact masks.** `min` вместо умножения на карту теней;
-   depth-aware (nearest-depth) upsample half-res masks вместо bilinear; fade по длине ray, по расстоянию
-   до камеры и к краю экрана. Самый дешёвый видимый сдвиг картинки, до любой работы над самим ray.
+   - Шейдерный consumer сделан: sampling идёт через `sampler2DShadow`, PCF взвешен tent'ом, rotated
+     Poisson тоже перешёл на сравнивающие taps.
+2. ✅ **Комбинирование и upsample вклада contact masks** (2026-08-17): `min` вместо умножения,
+   nearest-depth upsample по `.g`-каналу маски, fade по длине ray/глубине камеры/краю кадра.
 3. **`guarded contact` preset и A/B против `contact off`** на фиксированных camera bookmarks
    (противоположный угол blocker, grazing receiver, край экрана, вытянутая стенка):
    - шаг ray в screen space фиксированной пиксельной длиной вместо мировых шагов с неравномерной

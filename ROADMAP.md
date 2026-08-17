@@ -87,10 +87,14 @@ Directional target уже переведён на четыре practical-split �
 Правдоподобие набирается корректным bias, ненулевым ambient внутри тени и контактным затемнением; рост
 мягкости с расстоянием допускается только дешёвой оценкой по одному центральному blocker-tap'у.
 Закрыт `RND-26`: сравнивающие сэмплеры и specialization constants шага. Тиры качества PF02 переехали из
-define'ов материала в `shader_constants` (`pcf_radius`, `contact_ray_steps`, `contact_refine_steps`),
-живой прогон с `--pcf` чист по валидации. Дальше по README PF02: `min` вместо умножения contact-вклада +
-depth-aware upsample + fades, затем `guarded contact`, дешёвая оценка полутени и `dual-depth contact`;
-repeatable camera-rail и caster culling следуют за ними.
+define'ов материала в `shader_constants` (`pcf_radius`, `contact_ray_steps`, `contact_refine_steps`).
+Первые две техники тоже закрыты: sampling идёт через `sampler2DShadow` со взвешенным разделимым tent'ом
+(один tap = билинейная доля, `3×3` даёт футпринт `6×6`), при этом сырой nearest-доступ к атласам сохранён
+для hard-режима и blocker search PCSS; contact-вклад ограничивает карту через `min` вместо умножения,
+апсемплится по ближайшей глубине (`contact_directional` стал `sf2`: маска + линейная глубина источника) и
+гаснет по длине ray, глубине камеры и краю кадра. Все presets проходят валидацию чисто. Дальше по README
+PF02: `guarded contact`, дешёвая оценка полутени, `dual-depth contact`, затем repeatable camera-rail и
+directional caster culling.
 
 `RND-*` из этой таблицы не требуется закрывать целиком до запуска сцены. Исправляется только конкретный
 blocker текущего этапа; найденная более широкая работа остаётся в backlog. `UTL-08`, module profiles,

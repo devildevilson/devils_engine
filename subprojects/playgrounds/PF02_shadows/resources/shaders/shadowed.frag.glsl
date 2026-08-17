@@ -18,6 +18,8 @@ layout(set = 0, binding = 0, std140) uniform SceneBlock {
   vec4 light_direction;
   vec4 shadow_params;
   vec4 filter_params;
+  // x/y: начало и конец затухания contact по глубине камеры, z: ширина viewport-edge fade.
+  vec4 contact_params;
 } scene_data[3];
 
 struct SpotLight {
@@ -42,8 +44,13 @@ layout(set = 0, binding = 2, std430) readonly buffer DirectionalCascadeBuffer {
   DirectionalCascade cascades[];
 } directional_data[3];
 
-layout(set = 1, binding = 0) uniform sampler2D directional_shadow_image[3];
-layout(set = 1, binding = 1) uniform sampler2D spot_shadow_atlas[3];
+// Атласы читаются двумя способами: сравнивающий сэмплер отдаёт билинейную ДОЛЮ прошедших сравнение
+// текселей (аппаратный PCF), а обычный нужен там, где требуется сырое значение глубины: hard-режим
+// A/B и blocker search PCSS.
+layout(set = 1, binding = 0) uniform sampler2DShadow directional_shadow_compare[3];
+layout(set = 1, binding = 1) uniform sampler2DShadow spot_shadow_compare[3];
+layout(set = 1, binding = 2) uniform sampler2D directional_shadow_image[3];
+layout(set = 1, binding = 3) uniform sampler2D spot_shadow_atlas[3];
 layout(set = 2, binding = 0) uniform sampler2D directional_contact_image[3];
 layout(set = 2, binding = 1) uniform sampler2D spot_contact_image[3];
 
@@ -92,6 +99,64 @@ float receiver_depth_at(
     dot(depth_gradient, sample_offset) * clamp(receiver_plane_scale, 0.0, 2.0);
 }
 
+// Разделимый tent-вес: центральный tap весит больше краевых, поэтому переход читается сглаженным,
+// а не как «ступенька усреднения». Радиус приходит specialization-константой, поэтому вес считается
+// от него, а не из фиксированной таблицы.
+float tap_weight(const int x, const int y) {
+  const float extent = float(pcf_radius) + 1.0;
+  return (1.0 - abs(float(x)) / extent) * (1.0 - abs(float(y)) / extent);
+}
+
+float weighted_pcf_directional(
+  const vec2 atlas_uv,
+  const float receiver_depth,
+  const vec2 depth_gradient,
+  const vec2 texel,
+  const float aa_radius,
+  const float receiver_plane_scale,
+  const vec2 safe_min,
+  const vec2 safe_max) {
+  float visible = 0.0;
+  float total = 0.0;
+  for (int y = -pcf_radius; y <= pcf_radius; ++y) {
+    for (int x = -pcf_radius; x <= pcf_radius; ++x) {
+      const vec2 sample_offset = vec2(x, y) * aa_radius * texel;
+      const vec2 sample_uv = clamp(atlas_uv + sample_offset, safe_min, safe_max);
+      const float reference = receiver_depth_at(
+        receiver_depth, depth_gradient, sample_uv - atlas_uv, receiver_plane_scale);
+      const float weight = tap_weight(x, y);
+      visible += weight * texture(directional_shadow_compare[0], vec3(sample_uv, reference));
+      total += weight;
+    }
+  }
+  return visible / total;
+}
+
+float weighted_pcf_spot(
+  const vec2 atlas_uv,
+  const float receiver_depth,
+  const vec2 depth_gradient,
+  const vec2 texel,
+  const float aa_radius,
+  const float receiver_plane_scale,
+  const vec2 safe_min,
+  const vec2 safe_max) {
+  float visible = 0.0;
+  float total = 0.0;
+  for (int y = -pcf_radius; y <= pcf_radius; ++y) {
+    for (int x = -pcf_radius; x <= pcf_radius; ++x) {
+      const vec2 sample_offset = vec2(x, y) * aa_radius * texel;
+      const vec2 sample_uv = clamp(atlas_uv + sample_offset, safe_min, safe_max);
+      const float reference = receiver_depth_at(
+        receiver_depth, depth_gradient, sample_uv - atlas_uv, receiver_plane_scale);
+      const float weight = tap_weight(x, y);
+      visible += weight * texture(spot_shadow_compare[0], vec3(sample_uv, reference));
+      total += weight;
+    }
+  }
+  return visible / total;
+}
+
 float directional_cascade_visibility(
   const int cascade_index,
   const vec3 normal,
@@ -130,28 +195,22 @@ float directional_cascade_visibility(
     for (int i = 0; i < 16; ++i) {
       const vec2 sample_offset = rotation * poisson_disk[i] * aa_radius * texel;
       const vec2 sample_uv = clamp(atlas_uv + sample_offset, safe_min, safe_max);
-      const float stored_depth = texture(directional_shadow_image[0], sample_uv).r;
-      visible += receiver_depth_at(projected.z, depth_gradient, sample_uv - atlas_uv, receiver_plane_scale) >= stored_depth ? 1.0 : 0.0;
+      const float reference = receiver_depth_at(
+        projected.z, depth_gradient, sample_uv - atlas_uv, receiver_plane_scale);
+      visible += texture(directional_shadow_compare[0], vec3(sample_uv, reference));
     }
     return visible / 16.0;
   }
 
-  float visible = 0.0;
-  float samples = 0.0;
-  for (int y = -pcf_radius; y <= pcf_radius; ++y) {
-    for (int x = -pcf_radius; x <= pcf_radius; ++x) {
-      const vec2 sample_offset = vec2(x, y) * aa_radius * texel;
-      const vec2 sample_uv = clamp(atlas_uv + sample_offset, safe_min, safe_max);
-      const float stored_depth = texture(directional_shadow_image[0], sample_uv).r;
-      visible += receiver_depth_at(projected.z, depth_gradient, sample_uv - atlas_uv, receiver_plane_scale) >= stored_depth ? 1.0 : 0.0;
-      samples += 1.0;
-    }
-  }
-  return visible / samples;
+  return weighted_pcf_directional(
+    atlas_uv, projected.z, depth_gradient, texel, aa_radius, receiver_plane_scale, safe_min, safe_max);
 }
 
-float directional_visibility(const vec3 normal, const float n_dot_l, out vec3 cascade_tint) {
-  const float view_depth = -(scene_data[0].view * vec4(world_position, 1.0)).z;
+float directional_visibility(
+  const vec3 normal,
+  const float n_dot_l,
+  const float view_depth,
+  out vec3 cascade_tint) {
   int cascade_index = -1;
   for (int index = 0; index < 4; ++index) {
     if (view_depth <= directional_data[0].cascades[index].split_depths.y) {
@@ -256,8 +315,9 @@ float spot_visibility(
     for (int i = 0; i < 16; ++i) {
       const vec2 sample_offset = rotation * poisson_disk[i] * filter_radius * texel;
       const vec2 sample_uv = clamp(atlas_uv + sample_offset, safe_min, safe_max);
-      const float stored_depth = texture(spot_shadow_atlas[0], sample_uv).r;
-      visible += receiver_depth_at(projected.z, depth_gradient, sample_uv - atlas_uv, receiver_plane_scale) >= stored_depth ? 1.0 : 0.0;
+      const float reference = receiver_depth_at(
+        projected.z, depth_gradient, sample_uv - atlas_uv, receiver_plane_scale);
+      visible += texture(spot_shadow_compare[0], vec3(sample_uv, reference));
     }
     return visible / 16.0;
   }
@@ -267,24 +327,15 @@ float spot_visibility(
     for (int i = 0; i < 16; ++i) {
       const vec2 sample_offset = rotation * poisson_disk[i] * aa_radius * texel;
       const vec2 sample_uv = clamp(atlas_uv + sample_offset, safe_min, safe_max);
-      const float stored_depth = texture(spot_shadow_atlas[0], sample_uv).r;
-      visible += receiver_depth_at(projected.z, depth_gradient, sample_uv - atlas_uv, receiver_plane_scale) >= stored_depth ? 1.0 : 0.0;
+      const float reference = receiver_depth_at(
+        projected.z, depth_gradient, sample_uv - atlas_uv, receiver_plane_scale);
+      visible += texture(spot_shadow_compare[0], vec3(sample_uv, reference));
     }
     return visible / 16.0;
   }
 
-  float visible = 0.0;
-  float samples = 0.0;
-  for (int y = -pcf_radius; y <= pcf_radius; ++y) {
-    for (int x = -pcf_radius; x <= pcf_radius; ++x) {
-      const vec2 sample_offset = vec2(x, y) * aa_radius * texel;
-      const vec2 sample_uv = clamp(atlas_uv + sample_offset, safe_min, safe_max);
-      const float stored_depth = texture(spot_shadow_atlas[0], sample_uv).r;
-      visible += receiver_depth_at(projected.z, depth_gradient, sample_uv - atlas_uv, receiver_plane_scale) >= stored_depth ? 1.0 : 0.0;
-      samples += 1.0;
-    }
-  }
-  return visible / samples;
+  return weighted_pcf_spot(
+    atlas_uv, projected.z, depth_gradient, texel, aa_radius, receiver_plane_scale, safe_min, safe_max);
 }
 
 vec3 surface_albedo(const vec3 normal) {
@@ -297,25 +348,56 @@ vec3 surface_albedo(const vec3 normal) {
   return vec3(0.72, 0.48, 0.30);
 }
 
+// Маски контакта живут в половинном разрешении. Обычный bilinear смешивает соседние пиксели через
+// силуэт и даёт гало вокруг объектов, поэтому tap выбирается по БЛИЖАЙШЕЙ глубине: compute пишет в .g
+// линейную view-глубину своего источника, а .g == 0 помечает пиксель без геометрии.
+ivec2 nearest_contact_texel(const vec2 contact_uv, const float view_depth) {
+  const ivec2 mask_size = textureSize(directional_contact_image[0], 0);
+  const vec2 coordinate = contact_uv * vec2(mask_size) - 0.5;
+  const ivec2 base_texel = ivec2(floor(coordinate));
+
+  ivec2 best_texel = clamp(base_texel, ivec2(0), mask_size - 1);
+  float best_difference = 1.0e30;
+  for (int index = 0; index < 4; ++index) {
+    const ivec2 texel = clamp(
+      base_texel + ivec2(index & 1, index >> 1), ivec2(0), mask_size - 1);
+    const float source_depth = texelFetch(directional_contact_image[0], texel, 0).g;
+    if (source_depth <= 0.0) {
+      continue;
+    }
+    const float difference = abs(source_depth - view_depth);
+    if (difference < best_difference) {
+      best_difference = difference;
+      best_texel = texel;
+    }
+  }
+  return best_texel;
+}
+
 void main() {
   const vec3 normal = normalize(world_normal);
   const vec3 albedo = surface_albedo(normal);
   const vec3 view_direction = normalize(scene_data[0].camera_position.xyz - world_position);
   const int lighting_mode = int(scene_data[0].viewport_near.w + 0.5);
+  const float view_depth = -(scene_data[0].view * vec4(world_position, 1.0)).z;
   const vec2 contact_uv = gl_FragCoord.xy / scene_data[0].viewport_near.xy;
-  const float directional_contact = texture(directional_contact_image[0], contact_uv).r;
-  const vec4 spot_contacts = texture(spot_contact_image[0], contact_uv);
+  const ivec2 contact_texel = nearest_contact_texel(contact_uv, view_depth);
+  const float directional_contact = texelFetch(directional_contact_image[0], contact_texel, 0).r;
+  const vec4 spot_contacts = texelFetch(spot_contact_image[0], contact_texel, 0);
   const vec3 ambient = albedo * 0.055;
   vec3 direct = vec3(0.0);
   if (lighting_mode != 2) {
     const vec3 to_light = normalize(-scene_data[0].light_direction.xyz);
     const float diffuse = max(dot(normal, to_light), 0.0);
     vec3 cascade_tint;
-    const float visibility = directional_visibility(normal, diffuse, cascade_tint);
+    const float visibility = directional_visibility(normal, diffuse, view_depth, cascade_tint);
     const vec3 half_direction = normalize(to_light + view_direction);
     const float specular = pow(max(dot(normal, half_direction), 0.0), 48.0) * step(0.0001, diffuse);
+    // Умножение затемняло бы полутень дважды: карта уже отдаёт долю видимости. Контакт лишь
+    // ограничивает её сверху, поэтому он не в состоянии осветлить то, что карта считает тенью.
+    const float shadowed = min(visibility, directional_contact);
     direct = (albedo * diffuse + vec3(0.16) * specular) *
-      vec3(1.0, 0.93, 0.78) * cascade_tint * 1.35 * visibility * directional_contact;
+      vec3(1.0, 0.93, 0.78) * cascade_tint * 1.35 * shadowed;
   }
 
   vec3 spot_lighting = vec3(0.0);
@@ -336,9 +418,10 @@ void main() {
     const float spot_shadow = spot_visibility(index, world_position, normal, spot_diffuse);
     const vec3 spot_half = normalize(surface_to_light + view_direction);
     const float spot_specular = pow(max(dot(normal, spot_half), 0.0), 48.0) * step(0.0001, spot_diffuse);
+    const float spot_shadowed = min(spot_shadow, spot_contacts[index]);
     spot_lighting += (albedo * spot_diffuse + vec3(0.12) * spot_specular) *
       spot_data[0].lights[index].color_intensity.rgb *
-      spot_data[0].lights[index].color_intensity.a * attenuation * spot_shadow * spot_contacts[index];
+      spot_data[0].lights[index].color_intensity.a * attenuation * spot_shadowed;
   }
 
   const vec3 hdr = ambient + direct + spot_lighting;

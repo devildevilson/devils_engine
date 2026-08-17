@@ -27,6 +27,17 @@
   ]
 }
 {
+  // Сцена читает атласы дважды: сравнивающим сэмплером (аппаратный PCF) и обычным nearest
+  // (hard-режим A/B и blocker search PCSS, которым нужно СЫРОЕ значение глубины).
+  name = shadow_scene_inputs
+  layout = [
+    { resource = directional_shadow, usage = depth_read, sampler = shadow_compare, stage = fragment },
+    { resource = spot_shadow_atlas, usage = depth_read, sampler = shadow_compare, stage = fragment },
+    { resource = directional_shadow, usage = depth_read, sampler = shadow_nearest, stage = fragment },
+    { resource = spot_shadow_atlas, usage = depth_read, sampler = shadow_nearest, stage = fragment }
+  ]
+}
+{
   name = scene_depth_input
   layout = [
     { resource = scene_depth, usage = depth_read, sampler = shadow_nearest, stage = compute }

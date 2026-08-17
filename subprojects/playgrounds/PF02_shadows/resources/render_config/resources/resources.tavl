@@ -24,7 +24,9 @@
 }
 {
   name = contact_directional
-  format = r8
+  // .r = маска, .g = линейная view-глубина источника: нужна для depth-aware upsample половинного
+  // разрешения (обычный bilinear протекает через силуэты).
+  format = sf2
   role = shadow_mask
   size = viewport_half
   type = frames_in_flight
@@ -56,7 +58,7 @@
 }
 {
   name = scene_buffer
-  format = mat4mat4mat4v4v4v4v4v4
+  format = mat4mat4mat4v4v4v4v4v4v4
   role = upload
   size = one
   type = frames_in_flight
