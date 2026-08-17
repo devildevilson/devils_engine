@@ -65,20 +65,24 @@ vec3 reconstruct_receiver_normal(
   const float right_depth = texelFetch(depth_image[0], right_pixel, 0).r;
   const float up_depth = texelFetch(depth_image[0], up_pixel, 0).r;
   const float down_depth = texelFetch(depth_image[0], down_pixel, 0).r;
-  const float center_distance = scene_data[0].viewport_near.z / center_depth;
-  const float invalid_delta = 1.0e20;
-  const float left_delta = left_depth > 0.0
-    ? abs(scene_data[0].viewport_near.z / left_depth - center_distance) : invalid_delta;
-  const float right_delta = right_depth > 0.0
-    ? abs(scene_data[0].viewport_near.z / right_depth - center_distance) : invalid_delta;
-  const float up_delta = up_depth > 0.0
-    ? abs(scene_data[0].viewport_near.z / up_depth - center_distance) : invalid_delta;
-  const float down_delta = down_depth > 0.0
-    ? abs(scene_data[0].viewport_near.z / down_depth - center_distance) : invalid_delta;
-  const float discontinuity_threshold = max(0.025, center_distance * 0.006);
-  stable_receiver = max(max(left_delta, right_delta), max(up_delta, down_delta)) <=
-    discontinuity_threshold;
+  // Гейт «здесь нет силуэта» обязан быть свободен от масштаба. Прежний порог сравнивал ПЕРВУЮ разность
+  // линейной глубины с долей дистанции, а на скользящем полу или просто вдалеке один пиксель покрывает
+  // очень много мировых единиц: первая разность там огромна сама по себе, и весь наклонный/дальний пол
+  // отбраковывался как «нестабильный» — contact-тени на нём не считались вовсе.
+  // Плоскость в reverse-Z линейна в экранных координатах, поэтому её ВТОРАЯ разность равна нулю при
+  // любом наклоне и любой дистанции: сравниваем кривизну с локальным наклоном, а не с дистанцией.
+  const bool have_neighbours = left_depth > 0.0 && right_depth > 0.0 && up_depth > 0.0 && down_depth > 0.0;
+  const float curvature_x = abs(left_depth + right_depth - 2.0 * center_depth);
+  const float curvature_y = abs(up_depth + down_depth - 2.0 * center_depth);
+  const float slope_x = abs(right_depth - left_depth);
+  const float slope_y = abs(down_depth - up_depth);
+  const float curvature_limit = max(center_depth * 1.0e-3, 0.35 * max(slope_x, slope_y));
+  stable_receiver = have_neighbours && max(curvature_x, curvature_y) <= curvature_limit;
 
+  const float left_delta = abs(left_depth - center_depth);
+  const float right_delta = abs(right_depth - center_depth);
+  const float up_delta = abs(up_depth - center_depth);
+  const float down_delta = abs(down_depth - center_depth);
   const vec3 dx = right_delta <= left_delta
     ? reconstruct_world_position(right_pixel, right_depth > 0.0 ? right_depth : center_depth) - center_position
     : center_position - reconstruct_world_position(left_pixel, left_depth > 0.0 ? left_depth : center_depth);

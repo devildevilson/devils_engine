@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <optional>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -44,13 +45,22 @@ constexpr uint32_t spot_count = 4;
 constexpr uint32_t cascade_count = 4;
 constexpr uint32_t packed_caster_capacity = caster_count * (spot_count + 1);
 constexpr float camera_near = 0.1f;
-constexpr float cascade_far = 40.0f;
-constexpr float cascade_split_lambda = 0.68f;
+float cascade_far = 40.0f;
+// Ближний каскад — это вся близкая картинка: его world-размер текселя одновременно задаёт ширину
+// ступенек на краю, минимально возможное размытие фильтра и отрыв тени от объекта (normal offset
+// считается в текселях). Поэтому распределение сдвинуто к логарифмическому: при 0.68 первый каскад
+// уходил на 3.5 м и давал ~10 мм на тексель, при 0.88 — ~1.6 м и ~4.6 мм.
+float cascade_split_lambda = 0.88f;
 constexpr float cascade_blend_fraction = 0.12f;
-constexpr float default_raster_bias_constant = -1.25f;
-constexpr float default_raster_bias_slope = -1.75f;
-constexpr float default_normal_bias_base = 0.20f;
-constexpr float default_normal_bias_slope = 1.10f;
+// Аппаратное сравнение фильтрует переход само, а receiver-plane производные правят глубину каждого
+// tap'а, поэтому оба bias'а можно держать заметно меньше: их избыток читается как отрыв тени от
+// основания объекта (peter-panning), а не как чистая тень.
+constexpr float default_raster_bias_constant = -0.60f;
+constexpr float default_raster_bias_slope = -1.00f;
+// Подобрано измерением, а не на глаз: high-pass std участка пола на ракурсе `grazing` падает
+// 3.75 (нулевой bias) -> 0.39 (0.15/0.85) -> 0.27 (дно метрики) при 0.25/1.20. Больше не помогает.
+constexpr float default_normal_bias_base = 0.25f;
+constexpr float default_normal_bias_slope = 1.20f;
 constexpr float default_receiver_plane_scale = 1.0f;
 
 uint32_t pending_width = initial_width;
@@ -306,11 +316,18 @@ struct alignas(16) directional_region_stream {
 static_assert(
   sizeof(directional_region_stream) == painter::region_draw_buffer_size(cascade_count, directional_span_count));
 
+// Raster depth bias задаётся В ЕДИНИЦАХ ГЛУБИНЫ и потому одинаков для всех каскадов, тогда как
+// ошибка квантования глубины растёт вместе с world-размером текселя (4.6 -> 111 мм, то есть в 24 раза).
+// Из-за этого дальним каскадам запаса не хватало и на границе каскадов появлялась тонкая тёмная полоса
+// через весь кадр: фильтрованные режимы получали ложное перекрытие там, где hard-режим его не видел.
+// Normal offset такую полосу НЕ лечит (он и так масштабируется текселем каскада) — лечит именно
+// пер-каскадный depth bias. Команда региона несёт dynamic bias отдельно, так что масштаб бесплатен.
 directional_region_stream build_directional_regions(
   const uint32_t stage_pair,
   const uint32_t caster_pair,
   const float raster_bias_constant,
-  const float raster_bias_slope) {
+  const float raster_bias_slope,
+  const std::array<directional_cascade_record, cascade_count>& cascades) {
   directional_region_stream stream{};
   stream.header.region_count = cascade_count;
   stream.header.span_count = directional_span_count;
@@ -328,8 +345,11 @@ directional_region_stream build_directional_regions(
     region.scissor_y = int32_t((cascade_index >> 1u) * tile_resolution);
     region.scissor_width = tile_resolution;
     region.scissor_height = tile_resolution;
-    region.depth_bias_constant = raster_bias_constant;
-    region.depth_bias_slope = raster_bias_slope;
+    const float texel_scale = cascades[0].shadow_params.x > 0.0f
+      ? cascades[cascade_index].shadow_params.x / cascades[0].shadow_params.x
+      : 1.0f;
+    region.depth_bias_constant = raster_bias_constant * texel_scale;
+    region.depth_bias_slope = raster_bias_slope * texel_scale;
     region.data_index = cascade_index;
     region.first_span = cascade_index * 2;
     region.span_count = 2;
@@ -472,6 +492,50 @@ void write_current_buffer(painter::graphics_base& base, const std::string_view n
   }
 }
 
+// Радиус PCF задан specialization-константой шага, то есть живёт в конфиге. Overlay читает её оттуда же,
+// иначе диагностика ширины фильтра разъедется с фактическим шейдером.
+int32_t read_pcf_radius(const painter::graphics_base& base) {
+  const auto slot = base.find_execution_step("draw_scene");
+  if (slot == painter::invalid_resource_slot) {
+    return 1;
+  }
+  for (const auto& [name, value] : base.steps[slot].shader_constants) {
+    if (name == "pcf_radius") {
+      return std::max(std::atoi(value.c_str()), 0);
+    }
+  }
+  return 1;
+}
+
+// Повторяемые точки наблюдения. Без них любое сравнение bias/фильтра/контакта — это «подвинь камеру
+// примерно туда же»: фикстуры сцены (пандус, тонкая коробка, угол куба) видны только с конкретных
+// ракурсов, а именно на них проявляются acne, peter-panning и лесенка края.
+struct camera_bookmark {
+  std::string_view name;
+  glm::vec3 position;
+  float yaw;
+  float pitch;
+  std::string_view purpose;
+};
+
+const std::array<camera_bookmark, 7> camera_bookmarks{
+  camera_bookmark{"overview", {0.00f, 1.00f, 7.50f}, -1.5708f, -0.0588f, "весь стенд"},
+  camera_bookmark{"corner", {0.30f, -1.62f, -1.05f}, 0.6107f, -0.1730f, "стык куба и его тени: прилегание/peter-panning"},
+  camera_bookmark{"grazing", {5.60f, -1.86f, 5.20f}, -2.2485f, -0.0123f, "пол под очень малым углом: acne/рябь"},
+  camera_bookmark{"ramp", {-0.20f, -0.35f, 0.60f}, -2.4088f, -0.1385f, "наклонный receiver: slope acne"},
+  camera_bookmark{"thin", {-2.00f, -1.15f, 2.70f}, -2.4669f, -0.1701f, "тонкая коробка: contact/peter-panning"},
+  camera_bookmark{"cascades", {5.60f, -0.55f, 5.60f}, -1.8854f, -0.1090f, "пустой пол на 2..20 м: границы каскадов"},
+  camera_bookmark{"topdown", {0.00f, 3.50f, 2.00f}, -1.5708f, -0.8851f, "пол сверху: рёбра/каскады/рябь"}};
+
+const camera_bookmark* find_camera_bookmark(const std::string_view& name) {
+  for (const auto& bookmark : camera_bookmarks) {
+    if (bookmark.name == name) {
+      return &bookmark;
+    }
+  }
+  return nullptr;
+}
+
 void update_contact_dispatch(painter::graphics_base& base, const uint32_t width, const uint32_t height) {
   const uint32_t half_width = (width + 1u) / 2u;
   const uint32_t half_height = (height + 1u) / 2u;
@@ -484,13 +548,19 @@ void update_contact_dispatch(painter::graphics_base& base, const uint32_t width,
   base.update_event();
 }
 
-void write_overlay_buffers(painter::graphics_base& base, const playground::visage_overlay& overlay) {
+// overlay_visible == false публикует пустой список команд: шаг draw_ui остаётся в графе, но ничего не
+// рисует. Нужно для снимков-сравнений, где панель перекрывает как раз ту фикстуру, которую сравниваем.
+void write_overlay_buffers(
+  painter::graphics_base& base,
+  const playground::visage_overlay& overlay,
+  const bool overlay_visible) {
   const auto vertices = overlay.vertices();
   const auto indices = overlay.indices();
   write_current_buffer(base, "ui_vertices", vertices.data(), vertices.size());
   write_current_buffer(base, "ui_indices", indices.data(), indices.size());
 
-  const auto commands = overlay.commands();
+  const auto all_commands = overlay.commands();
+  const auto commands = overlay_visible ? all_commands : all_commands.subspan(0, 0);
   const uint32_t slot = base.find_resource("ui_commands");
   if (slot == painter::invalid_resource_slot) {
     utils::error{}("PF02 buffer 'ui_commands' is absent from the configured graph");
@@ -597,8 +667,107 @@ int main(int argc, char** argv) {
   uint32_t initial_lighting_mode = 0;
   uint32_t initial_aa_mode = 1;
   bool initial_pcss = false;
+  const camera_bookmark* initial_bookmark = &camera_bookmarks[0];
+  float frozen_time = -1.0f;
+  bool overlay_visible = true;
+  bool camera_locked = false;
+  int32_t pcf_radius_override = -1;
+  float pcf_min_pixels_override = -1.0f;
+  std::optional<std::array<float, 5>> cli_camera;
+  std::optional<glm::vec2> cli_contact_fade;
+  std::optional<glm::vec2> cli_normal_bias;
+  std::optional<glm::vec2> cli_raster_bias;
   for (int i = 1; i < argc; ++i) {
     const std::string_view option(argv[i]);
+    if (option == "--no-overlay") overlay_visible = false;
+    if (option == "--lock-camera") camera_locked = true;
+    constexpr std::string_view pcf_prefix = "--pcf-radius=";
+    if (option.starts_with(pcf_prefix)) {
+      pcf_radius_override = std::max(std::atoi(std::string(option.substr(pcf_prefix.size())).c_str()), 0);
+    }
+    // Раскладка каскадов из CLI: позволяет поставить ОДИН и ТОТ ЖЕ объект в разные каскады при
+    // неподвижной камере — иначе «деградацию с номером каскада» невозможно отделить от ракурса и
+    // проекционного размера.
+    constexpr std::string_view contact_fade_prefix = "--contact-fade=";
+    if (option.starts_with(contact_fade_prefix)) {
+      const auto text = std::string(option.substr(contact_fade_prefix.size()));
+      const auto comma = text.find(',');
+      if (comma == std::string::npos) {
+        utils::error{}("Option '{}' expects '<start>,<end>' in metres", option);
+      }
+      cli_contact_fade = glm::vec2(
+        std::strtof(text.substr(0, comma).c_str(), nullptr),
+        std::strtof(text.substr(comma + 1).c_str(), nullptr));
+    }
+    constexpr std::string_view cascade_far_prefix = "--cascade-far=";
+    if (option.starts_with(cascade_far_prefix)) {
+      cascade_far = std::max(std::strtof(std::string(option.substr(cascade_far_prefix.size())).c_str(), nullptr), 1.0f);
+    }
+    constexpr std::string_view cascade_lambda_prefix = "--cascade-lambda=";
+    if (option.starts_with(cascade_lambda_prefix)) {
+      cascade_split_lambda = std::clamp(
+        std::strtof(std::string(option.substr(cascade_lambda_prefix.size())).c_str(), nullptr), 0.0f, 1.0f);
+    }
+    constexpr std::string_view pcf_pixels_prefix = "--pcf-min-pixels=";
+    if (option.starts_with(pcf_pixels_prefix)) {
+      pcf_min_pixels_override = std::max(
+        std::strtof(std::string(option.substr(pcf_pixels_prefix.size())).c_str(), nullptr), 0.0f);
+    }
+    // Пресеты bias'а из CLI: без них подбор дефолтов сводится к «понажимай кнопки и посмотри»,
+    // а сравнить два состояния на одном ракурсе нельзя вообще.
+    constexpr std::string_view normal_bias_prefix = "--normal-bias=";
+    constexpr std::string_view raster_bias_prefix = "--raster-bias=";
+    if (option.starts_with(normal_bias_prefix) || option.starts_with(raster_bias_prefix)) {
+      const bool is_normal = option.starts_with(normal_bias_prefix);
+      const auto text = std::string(option.substr(
+        (is_normal ? normal_bias_prefix : raster_bias_prefix).size()));
+      const auto comma = text.find(',');
+      if (comma == std::string::npos) {
+        utils::error{}("Bias option '{}' expects '<base>,<slope>'", option);
+      }
+      const float first = std::strtof(text.substr(0, comma).c_str(), nullptr);
+      const float second = std::strtof(text.substr(comma + 1).c_str(), nullptr);
+      if (is_normal) {
+        cli_normal_bias = glm::vec2(first, second);
+      } else {
+        cli_raster_bias = glm::vec2(first, second);
+      }
+    }
+    constexpr std::string_view time_prefix = "--time=";
+    if (option.starts_with(time_prefix)) {
+      frozen_time = std::max(std::strtof(std::string(option.substr(time_prefix.size())).c_str(), nullptr), 0.0f);
+    }
+    constexpr std::string_view camera_at_prefix = "--camera-at=";
+    if (option.starts_with(camera_at_prefix)) {
+      const auto text = std::string(option.substr(camera_at_prefix.size()));
+      std::array<float, 5> values{};
+      size_t begin = 0;
+      uint32_t count = 0;
+      while (count < values.size() && begin <= text.size()) {
+        const auto comma = text.find(',', begin);
+        const auto piece = text.substr(begin, comma == std::string::npos ? std::string::npos : comma - begin);
+        values[count++] = std::strtof(piece.c_str(), nullptr);
+        if (comma == std::string::npos) break;
+        begin = comma + 1;
+      }
+      if (count != values.size()) {
+        utils::error{}("Option '{}' expects '<x>,<y>,<z>,<yaw>,<pitch>'", option);
+      }
+      cli_camera = values;
+    }
+    constexpr std::string_view camera_prefix = "--camera=";
+    if (option.starts_with(camera_prefix)) {
+      const auto requested = option.substr(camera_prefix.size());
+      initial_bookmark = find_camera_bookmark(requested);
+      if (initial_bookmark == nullptr) {
+        std::string available;
+        for (const auto& bookmark : camera_bookmarks) {
+          if (!available.empty()) available += ", ";
+          available += bookmark.name;
+        }
+        utils::error{}("Unknown camera bookmark '{}'. Available: {}", requested, available);
+      }
+    }
     validation = validation || option == "--validation";
     uncapped = uncapped || option == "--uncapped";
     start_zero_bias = start_zero_bias || option == "--zero-bias";
@@ -682,6 +851,42 @@ int main(int argc, char** argv) {
     base.set_startup_graph("pf02_shadows");
 
     auto render_config = painter::build_render_config(resource_root + "render_config/");
+    const auto override_step_constant = [&](const std::string_view& name, const std::string& value) {
+      const auto slot = render_config.find_execution_step("draw_scene");
+      if (slot == painter::invalid_resource_slot) {
+        utils::error{}("PF02 step 'draw_scene' is absent from the configured graph");
+      }
+      auto& constants = render_config.steps[slot].shader_constants;
+      const auto found = std::find_if(constants.begin(), constants.end(), [&](const auto& entry) {
+        return entry.first == name;
+      });
+      if (found == constants.end()) {
+        utils::error{}("PF02 step 'draw_scene' has no '{}' shader constant to override", name);
+      }
+      found->second = value;
+      utils::info("PF02 shader constant override: {} = {}", name, value);
+    };
+    if (pcf_min_pixels_override >= 0.0f) {
+      override_step_constant("pcf_min_screen_pixels", std::format("{:.3f}", pcf_min_pixels_override));
+    }
+    if (pcf_radius_override >= 0) {
+      // Тир качества PCF — specialization-константа шага, то есть значение времени создания pipeline.
+      // Поэтому CLI правит распарсенный конфиг ДО коммита графа: рантайм-переключение потребовало бы
+      // пересборки pipeline и не входит в задачи лаборатории.
+      const auto slot = render_config.find_execution_step("draw_scene");
+      if (slot == painter::invalid_resource_slot) {
+        utils::error{}("PF02 step 'draw_scene' is absent from the configured graph");
+      }
+      auto& constants = render_config.steps[slot].shader_constants;
+      const auto found = std::find_if(constants.begin(), constants.end(), [](const auto& entry) {
+        return entry.first == "pcf_radius";
+      });
+      if (found == constants.end()) {
+        utils::error{}("PF02 step 'draw_scene' has no 'pcf_radius' shader constant to override");
+      }
+      found->second = std::to_string(pcf_radius_override);
+      utils::info("PF02 pcf_radius override: {}", pcf_radius_override);
+    }
     if (base.commit_parsed_resources(render_config) != 0) {
       utils::error{}("PF02 could not commit render graph from '{}'", resource_root);
     }
@@ -797,6 +1002,7 @@ int main(int argc, char** argv) {
     bind_key("contact_toggle", "key_f");
     bind_key("map_shadow_toggle", "key_r");
     bind_key("cascade_debug", "key_9");
+    bind_key("camera_dump", "key_p");
     escape_key = input::glfw_key_from_canonical("escape");
     input::set_window_callback(window, &key_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
@@ -804,20 +1010,42 @@ int main(int argc, char** argv) {
     input::set_raw_mouse_motion(window);
 
     playground::free_camera camera;
-    camera.position = {0.0f, 1.0f, 7.5f};
+    camera.position = initial_bookmark->position;
+    camera.yaw = initial_bookmark->yaw;
+    camera.pitch = initial_bookmark->pitch;
+    utils::info("PF02 camera bookmark '{}': {}", initial_bookmark->name, initial_bookmark->purpose);
+    if (cli_camera.has_value()) {
+      camera.position = glm::vec3((*cli_camera)[0], (*cli_camera)[1], (*cli_camera)[2]);
+      camera.yaw = (*cli_camera)[3];
+      camera.pitch = (*cli_camera)[4];
+      utils::info(
+        "PF02 camera override: {:.2f},{:.2f},{:.2f} yaw {:.4f} pitch {:.4f}",
+        camera.position.x, camera.position.y, camera.position.z, camera.yaw, camera.pitch);
+    }
     auto [mouse_x, mouse_y] = input::cursor_pos(window);
     auto previous_time = std::chrono::steady_clock::now();
     const auto start_time = previous_time;
     playground::frame_pacer frame_pacer(uncapped ? 0u : 60u);
-    float raster_bias_constant = start_zero_bias ? 0.0f : default_raster_bias_constant;
-    float raster_bias_slope = start_zero_bias ? 0.0f : default_raster_bias_slope;
-    float normal_bias_base = start_zero_bias ? 0.0f : default_normal_bias_base;
-    float normal_bias_slope = start_zero_bias ? 0.0f : default_normal_bias_slope;
+    float raster_bias_constant = cli_raster_bias.has_value()
+      ? cli_raster_bias->x
+      : (start_zero_bias ? 0.0f : default_raster_bias_constant);
+    float raster_bias_slope = cli_raster_bias.has_value()
+      ? cli_raster_bias->y
+      : (start_zero_bias ? 0.0f : default_raster_bias_slope);
+    float normal_bias_base = cli_normal_bias.has_value()
+      ? cli_normal_bias->x
+      : (start_zero_bias ? 0.0f : default_normal_bias_base);
+    float normal_bias_slope = cli_normal_bias.has_value()
+      ? cli_normal_bias->y
+      : (start_zero_bias ? 0.0f : default_normal_bias_slope);
     float receiver_plane_scale = start_zero_bias || !initial_receiver_plane ?
       0.0f : default_receiver_plane_scale;
     uint32_t lighting_mode = initial_lighting_mode;
     uint32_t aa_mode = initial_aa_mode;
-    float aa_radius = 1.0f;
+    // Шаг между tap'ами в текселях. У сравнивающего сэмплера каждый tap уже накрывает 2x2, поэтому
+    // футпринт = (2 * pcf_radius + 1) * aa_radius + 1 тексель.
+    float aa_radius = 0.85f;
+    const int32_t pcf_radius = read_pcf_radius(base);
     bool pcss_enabled = initial_pcss;
     float emitter_radius = 0.08f;
     bool contact_enabled = initial_contact;
@@ -826,8 +1054,8 @@ int main(int argc, char** argv) {
     float contact_thickness = 0.055f;
     // Контакт — фича крупного плана: за fade_end лучи не трассируются вообще, а у края кадра вклад
     // гасится, потому что блокер там виден лишь частично.
-    const float contact_fade_start = 8.0f;
-    const float contact_fade_end = 18.0f;
+    const float contact_fade_start = cli_contact_fade.has_value() ? cli_contact_fade->x : 8.0f;
+    const float contact_fade_end = cli_contact_fade.has_value() ? cli_contact_fade->y : 18.0f;
     const float contact_edge_fade = 0.06f;
     bool cascade_debug = initial_cascade_debug;
 
@@ -865,7 +1093,11 @@ int main(int argc, char** argv) {
       motion.look_delta = {float(next_mouse_x - mouse_x), float(next_mouse_y - mouse_y)};
       mouse_x = next_mouse_x;
       mouse_y = next_mouse_y;
-      camera.update(motion, dt);
+      // Заблокированная камера обязательна для попиксельных сравнений: без неё любое движение мыши
+      // (в т.ч. от внешнего скриншотера) слегка поворачивает вид, и два прогона перестают совпадать.
+      if (!camera_locked) {
+        camera.update(motion, dt);
+      }
       normal_bias_base = std::clamp(
         normal_bias_base +
           (float(input::events::is_pressed("receiver_constant_up")) -
@@ -919,6 +1151,17 @@ int main(int argc, char** argv) {
       if (input::events::check_event("shadow_pcss", input::event_state::press)) {
         pcss_enabled = !pcss_enabled;
       }
+      // Печатает текущий вид готовой строкой CLI: артефакт, который видно только с конкретного ракурса,
+      // иначе невозможно передать другому человеку или воспроизвести в сравнении.
+      if (input::events::check_event("camera_dump", input::event_state::press)) {
+        utils::info(
+          "PF02 camera: --camera-at={:.2f},{:.2f},{:.2f},{:.4f},{:.4f}",
+          camera.position.x,
+          camera.position.y,
+          camera.position.z,
+          camera.yaw,
+          camera.pitch);
+      }
       if (input::events::check_event("contact_toggle", input::event_state::press)) {
         contact_enabled = !contact_enabled;
       }
@@ -965,7 +1208,8 @@ int main(int argc, char** argv) {
         stage_pair,
         caster_pair,
         raster_bias_constant,
-        raster_bias_slope);
+        raster_bias_slope,
+        directional_cascades);
       scene_block scene{};
       scene.view_projection = projection * view;
       scene.view = view;
@@ -1004,7 +1248,11 @@ int main(int argc, char** argv) {
         &directional_regions,
         sizeof(directional_regions));
 
-      const float seconds = std::chrono::duration<float>(now - start_time).count();
+      // Сцена анимирована (движется light и caster), поэтому без фиксации времени два прогона
+      // несравнимы попиксельно и любое A/B превращается в «на глаз похоже».
+      const float seconds = frozen_time >= 0.0f
+        ? frozen_time
+        : std::chrono::duration<float>(now - start_time).count();
       auto spot_lights = make_spot_lights(seconds);
       for (auto& light : spot_lights) {
         light.shadow_params.y = map_shadows_enabled ? 1.0f : 0.0f;
@@ -1042,9 +1290,12 @@ int main(int argc, char** argv) {
         lighting_mode == 1 ? "directional only" : lighting_mode == 2 ? "spot only" : "all lights";
       // Названия отражают ФАКТИЧЕСКИЙ путь выборки: hard читает атлас обычным сэмплером и сравнивает
       // вручную, два других режима идут через сравнивающий сэмплер (аппаратная билинейная доля на tap).
+      const float filter_texels = aa_mode == 0
+        ? 1.0f
+        : float(2 * pcf_radius + 1) * aa_radius + 1.0f;
       const std::array<std::string_view, 3> aa_names{
         "hard (raw tap)", "weighted PCF (hw compare)", "rotated Poisson (hw compare)"};
-      std::array<std::string, 11> overlay_details{
+      std::array<std::string, 12> overlay_details{
         std::format(
           "CSM: 4 x {}^2   splits: {:.1f} / {:.1f} / {:.1f} / {:.1f}   tint [9]: {}",
           shadow_resolution / 2,
@@ -1061,6 +1312,16 @@ int main(int argc, char** argv) {
           region_casters[2],
           region_casters[3],
           packed_count),
+        // Одно число объясняет ширину ступенек, минимальное размытие и отрыв тени сразу: normal offset
+        // и шаг фильтра задаются в текселях, поэтому мир-размер текселя каскада — общий множитель.
+        std::format(
+          "Cascade texel: {:.1f} / {:.1f} / {:.1f} / {:.1f} mm   filter {:.1f} texels ~ {:.0f} mm",
+          directional_cascades[0].shadow_params.x * 1000.0f,
+          directional_cascades[1].shadow_params.x * 1000.0f,
+          directional_cascades[2].shadow_params.x * 1000.0f,
+          directional_cascades[3].shadow_params.x * 1000.0f,
+          filter_texels,
+          filter_texels * directional_cascades[0].shadow_params.x * 1000.0f),
         std::format("Raster bias [B/N constant, M/, slope]: {:.2f}   {:.2f}", raster_bias_constant, raster_bias_slope),
         std::format(
           "World-texel normal bias [Z/X, C/V]: {:.2f} + {:.2f} slope   plane [G/H] {:.2f}",
@@ -1091,20 +1352,20 @@ int main(int argc, char** argv) {
         "GPU graph: waiting for timestamp results..."};
       if (gpu_profiler.has_results() && gpu_profiler.passes().size() == 6) {
         const auto timings = gpu_profiler.passes();
-        overlay_details[9] = std::format(
+        overlay_details[10] = std::format(
           "GPU: dir {:.3f}   spot {:.3f}   depth {:.3f}   contact {:.3f} ms",
           timings[0].milliseconds,
           timings[1].milliseconds,
           timings[2].milliseconds,
           timings[3].milliseconds);
-        overlay_details[10] = std::format(
+        overlay_details[11] = std::format(
           "GPU: forward {:.3f} ms   blit {:.3f} ms   graph {:.3f} ms",
           timings[4].milliseconds,
           timings[5].milliseconds,
           gpu_profiler.frame_milliseconds());
       } else if (!gpu_profiler.available()) {
-        overlay_details[9] = "GPU timestamps unavailable on the selected graphics queue";
-        overlay_details[10].clear();
+        overlay_details[10] = "GPU timestamps unavailable on the selected graphics queue";
+        overlay_details[11].clear();
       }
       overlay.set_detail_lines(overlay_details);
 
@@ -1113,7 +1374,7 @@ int main(int argc, char** argv) {
         int64_t{1}));
       const uint64_t timestamp_us = uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
       overlay.update(frame_delta_us, timestamp_us);
-      write_overlay_buffers(base, overlay);
+      write_overlay_buffers(base, overlay, overlay_visible);
 
       context.draw();
       base.submit_frame();

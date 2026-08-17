@@ -3,6 +3,9 @@
 // Тир качества PCF: задаётся specialization-константой шага (shader_constants), поэтому смена
 // радиуса стоит только пересборки pipeline, а не нового SPIR-V варианта.
 layout(constant_id = 0) const int pcf_radius = 1;
+// Минимальная ширина перехода в ЭКРАННЫХ пикселях и предел, до которого разрешено расширять шаг tap'ов.
+layout(constant_id = 1) const float pcf_min_screen_pixels = 3.0;
+layout(constant_id = 2) const float pcf_max_radius_scale = 8.0;
 
 layout(location = 0) in vec3 world_position;
 layout(location = 1) in vec3 world_normal;
@@ -78,16 +81,48 @@ float reverse_depth_distance(const float depth, const float near_plane, const fl
   return b / max(depth + a, 0.00001);
 }
 
-vec2 receiver_plane_gradient(const vec2 shadow_uv, const float receiver_depth) {
-  const vec2 uv_dx = dFdx(shadow_uv);
-  const vec2 uv_dy = dFdy(shadow_uv);
-  const float depth_dx = dFdx(receiver_depth);
-  const float depth_dy = dFdy(receiver_depth);
-  const float determinant = uv_dx.x * uv_dy.y - uv_dy.x * uv_dx.y;
-  if (abs(determinant) < 1.0e-8) return vec2(0.0);
-  return vec2(
-    (depth_dx * uv_dy.y - depth_dy * uv_dx.y) / determinant,
-    (-depth_dx * uv_dy.x + depth_dy * uv_dx.x) / determinant);
+// Градиент глубины по atlas-uv вдоль плоскости receiver'а, посчитанный АНАЛИТИЧЕСКИ из Якобиана
+// light-матрицы: для ortho он точен, для перспективы — первый порядок в точке выборки, чего достаточно,
+// потому что коррекция линейна по смещению tap'а.
+// Это замена экранных производных ПО РОБАСТНОСТИ, а не по картинке: кадр совпадает с dFdx/dFdy-версией
+// побитово (проверено, AE = 0), но у производных есть два принципиальных изъяна. Первый: на строке смены
+// индекса каскада соседние пиксели одного 2x2-квада проецируются в РАЗНЫЕ тайлы атласа, и производная
+// там мусорная. Второй: spot-цикл вызывает эту функцию в расходящемся управлении (continue по
+// cone/range), где производные по спецификации не определены вовсе.
+vec2 receiver_plane_gradient(
+  const mat4 light_matrix,
+  const vec3 surface_normal,
+  const vec3 projected,
+  const float clip_w,
+  const float atlas_to_local) {
+  if (abs(clip_w) < 1.0e-6) return vec2(0.0);
+  const vec3 row0 = vec3(light_matrix[0][0], light_matrix[1][0], light_matrix[2][0]);
+  const vec3 row1 = vec3(light_matrix[0][1], light_matrix[1][1], light_matrix[2][1]);
+  const vec3 row2 = vec3(light_matrix[0][2], light_matrix[1][2], light_matrix[2][2]);
+  const vec3 row3 = vec3(light_matrix[0][3], light_matrix[1][3], light_matrix[2][3]);
+  // Производные проективного деления в точке выборки; для ortho row3 == 0 и это просто строки матрицы.
+  const vec3 q0 = (row0 - projected.x * row3) / clip_w;
+  const vec3 q1 = (row1 - projected.y * row3) / clip_w;
+  const vec3 q2 = (row2 - projected.z * row3) / clip_w;
+
+  // Любой ортонормированный базис плоскости receiver'а: результат от его выбора не зависит.
+  const vec3 helper = abs(surface_normal.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+  const vec3 tangent = normalize(cross(surface_normal, helper));
+  const vec3 bitangent = cross(surface_normal, tangent);
+
+  // Смещение в плоскости -> (du, dv) в local-uv (отсюда множитель 0.5 от ndc) и -> ddepth.
+  const float a11 = 0.5 * dot(q0, tangent);
+  const float a12 = 0.5 * dot(q0, bitangent);
+  const float a21 = 0.5 * dot(q1, tangent);
+  const float a22 = 0.5 * dot(q1, bitangent);
+  const float c1 = dot(q2, tangent);
+  const float c2 = dot(q2, bitangent);
+  const float determinant = a11 * a22 - a12 * a21;
+  if (abs(determinant) < 1.0e-12) return vec2(0.0);
+
+  // g = A^{-T} c переводит (du, dv) в ddepth, затем local-uv -> atlas-uv.
+  const vec2 gradient_local = vec2(a22 * c1 - a21 * c2, a11 * c2 - a12 * c1) / determinant;
+  return gradient_local * atlas_to_local;
 }
 
 float receiver_depth_at(
@@ -102,6 +137,31 @@ float receiver_depth_at(
 // Разделимый tent-вес: центральный tap весит больше краевых, поэтому переход читается сглаженным,
 // а не как «ступенька усреднения». Радиус приходит specialization-константой, поэтому вес считается
 // от него, а не из фиксированной таблицы.
+// Фильтр задаётся В ТЕКСЕЛЯХ карты, а экранный размер текселя падает с дистанцией: у дальних каскадов
+// он уходит ниже пикселя, футпринт становится субпиксельным и сглаживание перестаёт работать — край
+// снова читается лесенкой при любом режиме AA. Поэтому шаг tap'ов масштабируется так, чтобы переход
+// занимал не меньше pcf_min_screen_pixels пикселей. Учитывается и наклон поверхности: у пола под малым
+// углом один пиксель покрывает много мировых единиц, и именно там лесенка заметна сильнее всего.
+float screen_aware_radius(
+  const float base_radius,
+  const float world_texel,
+  const float view_depth,
+  const vec3 surface_normal) {
+  if (pcf_min_screen_pixels <= 0.0 || world_texel <= 0.0 || view_depth <= 0.0) {
+    return base_radius;
+  }
+  const float viewport_height = max(scene_data[0].viewport_near.y, 1.0);
+  const float projection_y = max(scene_data[0].camera_position.w, 1.0e-4); // 1 / tan(fov/2)
+  const vec3 view_direction = normalize(scene_data[0].camera_position.xyz - world_position);
+  const float grazing = max(abs(dot(view_direction, surface_normal)), 0.08);
+  const float world_per_pixel = 2.0 * view_depth / (projection_y * viewport_height) / grazing;
+  const float texel_pixels = world_texel / max(world_per_pixel, 1.0e-6);
+  const float footprint_texels = float(2 * pcf_radius + 1) * base_radius;
+  const float footprint_pixels = max(footprint_texels * texel_pixels, 1.0e-6);
+  const float scale = max(pcf_min_screen_pixels / footprint_pixels, 1.0);
+  return base_radius * min(scale, pcf_max_radius_scale);
+}
+
 float tap_weight(const int x, const int y) {
   const float extent = float(pcf_radius) + 1.0;
   return (1.0 - abs(float(x)) / extent) * (1.0 - abs(float(y)) / extent);
@@ -160,7 +220,8 @@ float weighted_pcf_spot(
 float directional_cascade_visibility(
   const int cascade_index,
   const vec3 normal,
-  const float n_dot_l) {
+  const float n_dot_l,
+  const float view_depth) {
   if (directional_data[0].cascades[0].shadow_params.y < 0.5) return 1.0;
   const float world_texel = directional_data[0].cascades[cascade_index].shadow_params.x;
   const float normal_offset = world_texel *
@@ -180,10 +241,12 @@ float directional_cascade_visibility(
   const vec2 texel = vec2(1.0 / resolution);
   const vec2 safe_min = tile * 0.5 + texel * 0.5;
   const vec2 safe_max = (tile + vec2(1.0)) * 0.5 - texel * 0.5;
-  const vec2 depth_gradient = receiver_plane_gradient(atlas_uv, projected.z);
+  const vec2 depth_gradient = receiver_plane_gradient(
+    directional_data[0].cascades[cascade_index].light_view_projection, normal, projected, clip.w, 2.0);
   const float receiver_plane_scale = directional_data[0].cascades[cascade_index].shadow_params.z;
   const int aa_mode = int(scene_data[0].light_direction.w + 0.5);
-  const float aa_radius = clamp(scene_data[0].filter_params.x, 0.25, 4.0);
+  const float aa_radius = screen_aware_radius(
+    clamp(scene_data[0].filter_params.x, 0.25, 4.0), world_texel, view_depth, normal);
   if (aa_mode == 0) {
     const float stored_depth = texture(directional_shadow_image[0], clamp(atlas_uv, safe_min, safe_max)).r;
     return projected.z >= stored_depth ? 1.0 : 0.0;
@@ -229,7 +292,7 @@ float directional_visibility(
     vec3(0.42, 0.62, 1.0),
     vec3(1.0, 0.82, 0.32));
   const float debug_tint = directional_data[0].cascades[0].split_depths.w;
-  float visibility = directional_cascade_visibility(cascade_index, normal, n_dot_l);
+  float visibility = directional_cascade_visibility(cascade_index, normal, n_dot_l, view_depth);
   cascade_tint = mix(vec3(1.0), tint_colors[cascade_index], debug_tint);
 
   if (cascade_index < 3) {
@@ -237,7 +300,7 @@ float directional_visibility(
     const float split_far = directional_data[0].cascades[cascade_index].split_depths.y;
     const float blend = smoothstep(blend_start, split_far, view_depth);
     if (blend > 0.0) {
-      const float next_visibility = directional_cascade_visibility(cascade_index + 1, normal, n_dot_l);
+      const float next_visibility = directional_cascade_visibility(cascade_index + 1, normal, n_dot_l, view_depth);
       visibility = mix(visibility, next_visibility, blend);
       const vec3 next_tint = mix(vec3(1.0), tint_colors[cascade_index + 1], debug_tint);
       cascade_tint = mix(cascade_tint, next_tint, blend);
@@ -272,10 +335,13 @@ float spot_visibility(
   const vec2 texel = vec2(1.0 / resolution);
   const vec2 safe_min = tile * 0.5 + texel * 0.5;
   const vec2 safe_max = (tile + vec2(1.0)) * 0.5 - texel * 0.5;
-  const vec2 depth_gradient = receiver_plane_gradient(atlas_uv, projected.z);
+  const vec2 depth_gradient = receiver_plane_gradient(
+    spot_data[0].lights[index].light_view_projection, normal, projected, clip.w, 2.0);
   const float receiver_plane_scale = spot_data[0].lights[index].shadow_params.z;
   const int aa_mode = int(scene_data[0].light_direction.w + 0.5);
-  const float aa_radius = clamp(scene_data[0].filter_params.x, 0.25, 4.0);
+  const float spot_view_depth = -(scene_data[0].view * vec4(position, 1.0)).z;
+  const float aa_radius = screen_aware_radius(
+    clamp(scene_data[0].filter_params.x, 0.25, 4.0), world_texel, spot_view_depth, normal);
   const float emitter_radius = max(scene_data[0].filter_params.y, 0.0);
   if (aa_mode == 0 && emitter_radius <= 0.0) {
     const float stored_depth = texture(spot_shadow_atlas[0], clamp(atlas_uv, safe_min, safe_max)).r;
