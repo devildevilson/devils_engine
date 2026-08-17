@@ -81,8 +81,16 @@ compute дают directional + четыре spot contact masks без temporal h
 консервативно reject'ятся, а полноценная hidden-surface/HZB/history reconstruction остаётся PF03.
 Directional target уже переведён на четыре practical-split каскада в
 `2×2` atlas через `draw_regions`; rotation-independent extent, texel snapping, debug tint и blend bands live.
-Следующий quality-срез — repeatable camera-rail проверка стабилизации/world-texel bias и caster culling;
-stochastic temporal shadow accumulation оставлен PF03.
+
+Срез PF02 2026-08-17 (граница техник зафиксирована): цель лаборатории — сглаженные (edge AA), а не
+физически мягкие тени, поэтому temporal, stochastic, HZB, полноценный PCSS и area lights уходят в `PF03`.
+Правдоподобие набирается корректным bias, ненулевым ambient внутри тени и контактным затемнением; рост
+мягкости с расстоянием допускается только дешёвой оценкой по одному центральному blocker-tap'у.
+Закрыт `RND-26`: сравнивающие сэмплеры и specialization constants шага. Тиры качества PF02 переехали из
+define'ов материала в `shader_constants` (`pcf_radius`, `contact_ray_steps`, `contact_refine_steps`),
+живой прогон с `--pcf` чист по валидации. Дальше по README PF02: `min` вместо умножения contact-вклада +
+depth-aware upsample + fades, затем `guarded contact`, дешёвая оценка полутени и `dual-depth contact`;
+repeatable camera-rail и caster culling следуют за ними.
 
 `RND-*` из этой таблицы не требуется закрывать целиком до запуска сцены. Исправляется только конкретный
 blocker текущего этапа; найденная более широкая работа остаётся в backlog. `UTL-08`, module profiles,
@@ -239,6 +247,7 @@ Persistent multi-day event или repair action хранится в `SIM-03`, а
 | `RND-23` | Stencil effect path | `M–L` | depth/stencil attachment lifetime, material front/back ops, masks/reference, visualization and ordinary graph consumers |
 | `RND-24` | Present policy отдельно от frame pacing | `M` | базовое разделение уже есть; осталось overrun-resync, выбранный-mode metrics и явный MAILBOX/FIFO/IMMEDIATE fallback policy |
 | `RND-25` | Вывод step usages/barriers из descriptor sets | `M` | **done 2026-08-15:** named `sets` → usages/read-write masks, dedup/conflict validation; pass/subpass attachment load/store остаются явными |
+| `RND-26` | Сравнивающие сэмплеры и specialization constants шага | `S–M` | **done 2026-08-17:** `sampler.compare = <compare_op>` (аппаратный `samplerXDShadow` PCF) и `step.shader_constants = [ name = "value" ]`; `constant_id`/тип/размер из reflection SPIR-V, форма `id_<N>` для констант без `OpName`, имя→id снимается отдельной debug-сборкой (spirv-opt снимает `OpName`), неизвестное имя = loud error со списком доступных; покрыто `painter_shader_prepare_test` |
 
 Порядок post-processing: `RND-16` создаёт общий host, `RND-17` — temporal data/history contract;
 после них независимо проверяются `RND-18`, `RND-19` и `RND-21`. Переиспользуемые depth/reconstruction/

@@ -15,6 +15,7 @@
 #include "region_draw.h"
 #include "makers.h"
 #include "shader_crafter.h"
+#include "shader_specialization.h"
 #include "shader_source_file.h"
 #include "shaderc/shaderc.h"
 #include "vulkan_header.h"
@@ -305,11 +306,51 @@ void graphics_step_instance::create_pipeline_layout(const graphics_base* ctx) {
 // По расширению: .spv → готовые байты (shader_source_file, без компиляции); иначе GLSL
 // (glsl_source_file) → shader_crafter с реальным реестром (резолв #include через demiurg).
 // Если ctx->config_reg_ == nullptr — fs-fallback через file_io (fast_test / корневой main.cpp).
+// Имена specialization-констант живут в OpName, а spirv-opt их снимает, поэтому в готовом
+// оптимизированном модуле остаются только constant_id и типы. Эта отдельная сборка того же
+// исходника с debug info нужна ИСКЛЮЧИТЕЛЬНО для карты имя→id; pipeline по-прежнему собирается из
+// оптимизированного модуля. Вызывается только когда шаг адресует константу по имени.
+static void resolve_specialization_names(
+  const graphics_base* ctx,
+  const std::string& source_name,
+  const std::string& source_text,
+  const uint32_t shader_kind,
+  const std::span<const material::shader_definition> definitions,
+  std::vector<specialization_constant>& constants) {
+  if (source_text.empty() || constants.empty()) {
+    return;
+  }
+
+  shader_crafter sc(ctx->config_reg_);
+  sc.set_optimization(false);
+  sc.set_debug_info(true);
+  sc.set_shader_entry_point("main");
+  sc.set_shader_type(shader_kind);
+  for (const auto& [name, value] : definitions) {
+    sc.add_definition(name, value);
+  }
+  const auto named_spirv = sc.compile(source_name, source_text);
+  if (named_spirv.empty()) {
+    utils::warn(
+      "Could not resolve specialization constant names of shader '{}': {}",
+      source_name,
+      sc.err_msg());
+    return;
+  }
+
+  const auto named = reflect_specialization_constants(named_spirv, source_name);
+  merge_specialization_names(constants, named);
+}
+
+// out_spec != nullptr => дополнительно снимается reflection specialization-констант этой стадии.
+// Reflection делается только по запросу: без него SPIR-V нужен лишь для создания модуля.
 static vk::UniqueShaderModule load_shader_module(
   const graphics_base* ctx,
   const std::string& shader_path,
   const uint32_t shader_kind,
-  const std::span<const material::shader_definition> definitions = {}) {
+  const std::span<const material::shader_definition> definitions = {},
+  std::vector<specialization_constant>* out_spec = nullptr,
+  const bool resolve_names = false) {
   const auto make_module = [ctx](const void* data, const size_t bytes) {
     vk::ShaderModuleCreateInfo smci{};
     smci.codeSize = bytes;
@@ -330,6 +371,11 @@ static vk::UniqueShaderModule load_shader_module(
       if (res == nullptr) {
         utils::error{}("Shader resource '{}' (spv) not found in engine registry", id);
       }
+      if (out_spec != nullptr) {
+        const auto words = std::span<const uint32_t>(
+          reinterpret_cast<const uint32_t*>(res->memory.data()), res->memory.size() / sizeof(uint32_t));
+        *out_spec = reflect_specialization_constants(words, id);
+      }
       return make_module(res->memory.data(), res->memory.size());
     }
 
@@ -347,6 +393,12 @@ static vk::UniqueShaderModule load_shader_module(
     }
 
     const auto* spirv = res->prepared_spirv(shader_kind, definitions);
+    if (out_spec != nullptr) {
+      *out_spec = reflect_specialization_constants(*spirv, id);
+      if (resolve_names) {
+        resolve_specialization_names(ctx, id, res->memory, shader_kind, definitions, *out_spec);
+      }
+    }
     return make_module(spirv->data(), spirv->size() * sizeof((*spirv)[0]));
   }
 
@@ -369,7 +421,67 @@ static vk::UniqueShaderModule load_shader_module(
   if (spv.empty()) {
     utils::error{}("Shader '{}' compilation failed\nError: {}", full_path, sc.err_msg());
   }
+  if (out_spec != nullptr) {
+    *out_spec = reflect_specialization_constants(spv, full_path);
+    if (resolve_names) {
+      resolve_specialization_names(ctx, full_path, content, shader_kind, definitions, *out_spec);
+    }
+  }
   return make_module(spv.data(), spv.size() * sizeof(spv[0]));
+}
+
+// true, если хотя бы одна константа адресована по имени, а не формой 'id_<N>'.
+static bool step_names_specialization_constants(const step_base& step) {
+  return std::any_of(step.shader_constants.begin(), step.shader_constants.end(), [](const auto& entry) {
+    return !is_explicit_specialization_id(entry.first);
+  });
+}
+
+// Значения specialization-констант шага для ОДНОЙ стадии. Blob обязан жить до create() pipeline,
+// потому что maker хранит только указатель на данные.
+static specialization_blob resolve_stage_specialization(
+  const step_base& step,
+  const std::span<const specialization_constant> reflected,
+  std::vector<bool>& matched,
+  std::string& available) {
+  if (step.shader_constants.empty()) {
+    return {};
+  }
+  if (!reflected.empty()) {
+    if (!available.empty()) {
+      available += "; ";
+    }
+    available += describe_specialization_constants(reflected);
+  }
+  return build_specialization_blob(reflected, step.shader_constants, step.name, &matched);
+}
+
+static void apply_stage_specialization(pipeline_maker& pm, const specialization_blob& blob) {
+  if (blob.empty()) {
+    return;
+  }
+  for (const auto& entry : blob.entries) {
+    pm.addSpecializationEntry(entry.constant_id, entry.offset, entry.size);
+  }
+  pm.addData(blob.data.size(), blob.data.data());
+}
+
+// Константа, не найденная ни в одной стадии, — это опечатка в конфиге либо мёртвая настройка:
+// молча проигнорировать её нельзя, иначе пресет качества «работает», ничего не меняя.
+static void check_specialization_matched(
+  const step_base& step,
+  const std::vector<bool>& matched,
+  const std::string& available) {
+  for (size_t index = 0; index < step.shader_constants.size(); ++index) {
+    if (matched[index]) {
+      continue;
+    }
+    utils::error{}(
+      "Step '{}': shader constant '{}' is not a specialization constant of its shaders. Available: {}",
+      step.name,
+      step.shader_constants[index].first,
+      available.empty() ? std::string("<none>") : available);
+  }
 }
 
 void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
@@ -382,16 +494,37 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
 
   const auto& material = DS_ASSERT_ARRAY_GET(ctx->materials, step.material);
 
+  // Живут до pm.create(): maker держит указатель на данные специализации.
+  specialization_blob vertex_specialization;
+  specialization_blob fragment_specialization;
+
   {
+    const bool wants_specialization = !step.shader_constants.empty();
+    const bool resolve_names = wants_specialization && step_names_specialization_constants(step);
+    std::vector<specialization_constant> vertex_constants;
+    std::vector<specialization_constant> fragment_constants;
+    std::vector<bool> matched(step.shader_constants.size(), false);
+    std::string available;
+
     if (!material.shaders.vertex.empty()) {
-      usm_vertex = load_shader_module(ctx, material.shaders.vertex, shaderc_vertex_shader, material.definitions);
+      usm_vertex = load_shader_module(
+        ctx, material.shaders.vertex, shaderc_vertex_shader, material.definitions,
+        wants_specialization ? &vertex_constants : nullptr, resolve_names);
     }
     if (!material.shaders.fragment.empty()) {
-      usm_fragment = load_shader_module(ctx, material.shaders.fragment, shaderc_fragment_shader, material.definitions);
+      usm_fragment = load_shader_module(
+        ctx, material.shaders.fragment, shaderc_fragment_shader, material.definitions,
+        wants_specialization ? &fragment_constants : nullptr, resolve_names);
     }
 
+    vertex_specialization = resolve_stage_specialization(step, vertex_constants, matched, available);
+    fragment_specialization = resolve_stage_specialization(step, fragment_constants, matched, available);
+    check_specialization_matched(step, matched, available);
+
     pm.addShader(vk::ShaderStageFlagBits::eVertex, usm_vertex.get());
+    apply_stage_specialization(pm, vertex_specialization);
     pm.addShader(vk::ShaderStageFlagBits::eFragment, usm_fragment.get());
+    apply_stage_specialization(pm, fragment_specialization);
   }
 
   uint32_t location_offset = 0;
@@ -538,9 +671,25 @@ void compute_step_instance::create_pipeline(const graphics_base* ctx) {
     utils::error{}("Compute step '{}' uses material '{}' without a compute shader", step.name, material.name);
   }
 
-  auto shader = load_shader_module(ctx, material.shaders.compute, shaderc_compute_shader, material.definitions);
+  std::vector<specialization_constant> compute_constants;
+  auto shader = load_shader_module(
+    ctx, material.shaders.compute, shaderc_compute_shader, material.definitions,
+    step.shader_constants.empty() ? nullptr : &compute_constants,
+    !step.shader_constants.empty() && step_names_specialization_constants(step));
+
+  std::vector<bool> matched(step.shader_constants.size(), false);
+  std::string available;
+  auto specialization = resolve_stage_specialization(step, compute_constants, matched, available);
+  check_specialization_matched(step, matched, available);
+
   compute_pipeline_maker maker(device);
   maker.shader(shader.get());
+  if (!specialization.empty()) {
+    for (const auto& entry : specialization.entries) {
+      maker.addSpecializationEntry(entry.constant_id, entry.offset, entry.size);
+    }
+    maker.addData(specialization.data.size(), specialization.data.data());
+  }
   const auto next = maker.create(step.name + ".pipeline", pipeline_layout, pipeline);
   if (pipeline != VK_NULL_HANDLE) {
     vk::Device(device).destroy(pipeline);

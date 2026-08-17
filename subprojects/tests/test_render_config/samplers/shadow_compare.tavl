@@ -1,0 +1,8 @@
+// Сравнивающий сэмплер: шейдер объявляет samplerXDShadow и получает на tap билинейную ДОЛЮ
+// прошедших сравнение текселей. reverse-Z ⇒ greater_or_equal.
+{
+  name = shadow_compare
+  filter = linear
+  address = clamp
+  compare = greater_or_equal
+}

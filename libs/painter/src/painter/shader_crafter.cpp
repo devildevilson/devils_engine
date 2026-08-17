@@ -86,7 +86,7 @@ private:
   const demiurg::resource_system* _sys;
 };
 
-shader_crafter::shader_crafter(const demiurg::resource_system* sys) : _sys(sys), _opt(true), _type(0), _err_type(shaderc_compilation_status_success) {}
+shader_crafter::shader_crafter(const demiurg::resource_system* sys) : _sys(sys), _opt(true), _debug_info(false), _type(0), _err_type(shaderc_compilation_status_success) {}
 
 // здесь бы мы хотели принять на вход текст шейдера
 // и получить на выход бинарник готовый к употреблению
@@ -99,6 +99,10 @@ void shader_crafter::add_definition(std::string name, std::string value) {
 
 void shader_crafter::set_optimization(const bool opt) {
   _opt = opt;
+}
+
+void shader_crafter::set_debug_info(const bool enable) {
+  _debug_info = enable;
 }
 
 void shader_crafter::set_shader_type(const uint32_t type) {
@@ -122,6 +126,9 @@ std::vector<uint32_t> shader_crafter::compile(const std::string& source_name, co
   options.SetTargetSpirv(shaderc_spirv_version_1_0);
   if (_opt) {
     options.SetOptimizationLevel(shaderc_optimization_level_performance);
+  }
+  if (_debug_info) {
+    options.SetGenerateDebugInfo();
   }
 
   options.SetIncluder(std::make_unique<simple_shader_includer>(_sys));

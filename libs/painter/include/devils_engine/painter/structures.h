@@ -209,6 +209,11 @@ struct sampler {
   uint32_t address_v;
   uint32_t address_w;
   uint32_t mipmap_mode; // VkSamplerMipmapMode
+  // Сравнивающий сэмплер: шейдер объявляет samplerXDShadow и получает на tap готовую
+  // билинейную ДОЛЮ прошедших сравнение текселей вместо одного значения глубины.
+  // compare_enable == 0 => обычный сэмплер, compare_op игнорируется.
+  uint32_t compare_enable;
+  uint32_t compare_op; // VkCompareOp; reverse-Z => greater_or_equal
   VkSampler handle;
 
   sampler() noexcept;
@@ -375,11 +380,18 @@ struct command_params {
 // Editor-only rendering - наверное идет поверх проекта
 // debug - рисовать линии, оси, боксы и проч, наверное очень похожи на обычные шаги...
 struct step_base {
+  // Specialization constant шага: (имя либо 'id_<N>', текст значения). Имя, constant_id, тип и размер
+  // берутся из reflection готового SPIR-V, поэтому тип значения не угадывается по тексту, а
+  // конфиг остаётся именованным. Форма 'id_<N>' — escape hatch для констант без OpName
+  // (например компонент local_size_*_id). Значения входят в идентичность pipeline шага.
+  using shader_constant = std::pair<std::string, std::string>;
+
   std::string name;
   std::vector<std::tuple<uint32_t, blend_data>> blending;
   std::vector<std::tuple<uint32_t, usage::values>> barriers;
   std::vector<uint32_t> sets;
   std::vector<uint32_t> push_constants;
+  std::vector<shader_constant> shader_constants;
   // эта команда подскажет какой instance мы создаем
   // например draw ui - нам нужен инстанс
   // который подхватит данные из nuklear и правильно их интерпретирует

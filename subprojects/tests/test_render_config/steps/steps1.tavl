@@ -46,6 +46,8 @@
   draw_group = dg1
   sets = [ region_data ]
   push_constants = [ region_index_push ]
+  // specialization constants: имя из SPIR-V шейдера либо 'id_<N>' для констант без OpName
+  shader_constants = [ region_quality = "2", id_7 = "0.5" ]
   command = "draw_regions region_gpu_data region_commands"
 }
 {

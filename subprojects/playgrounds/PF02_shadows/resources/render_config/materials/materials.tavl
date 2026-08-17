@@ -38,7 +38,6 @@
 }
 {
   name = shadowed_scene_material
-  definitions = [ PF02_PCF_RADIUS = "1" ]
   shaders = {
     vertex = "scene.vert.glsl"
     fragment = "shadowed.frag.glsl"

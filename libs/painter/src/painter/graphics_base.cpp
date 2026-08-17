@@ -1549,6 +1549,9 @@ void graphics_base::create_samplers() {
     sm.filter(vk::Filter(s.min_filter), vk::Filter(s.mag_filter));
     sm.mipmapMode(vk::SamplerMipmapMode(s.mipmap_mode));
     sm.addressMode(vk::SamplerAddressMode(s.address_u), vk::SamplerAddressMode(s.address_v), vk::SamplerAddressMode(s.address_w));
+    if (s.compare_enable != 0) {
+      sm.compareOp(VK_TRUE, vk::CompareOp(s.compare_op));
+    }
     s.handle = sm.create(s.name);
     DE_LOG(catalogue::log_domain::render, flow, "graphics_base: created sampler '{}'", s.name);
   }

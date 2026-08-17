@@ -125,7 +125,8 @@ descriptor::descriptor() noexcept : texture_count(0), texture_stage(VK_SHADER_ST
 }
 sampler::sampler() noexcept : mag_filter(VK_FILTER_LINEAR), min_filter(VK_FILTER_LINEAR),
                               address_u(VK_SAMPLER_ADDRESS_MODE_REPEAT), address_v(VK_SAMPLER_ADDRESS_MODE_REPEAT), address_w(VK_SAMPLER_ADDRESS_MODE_REPEAT),
-                              mipmap_mode(VK_SAMPLER_MIPMAP_MODE_LINEAR), handle(VK_NULL_HANDLE) {}
+                              mipmap_mode(VK_SAMPLER_MIPMAP_MODE_LINEAR),
+                              compare_enable(0), compare_op(VK_COMPARE_OP_NEVER), handle(VK_NULL_HANDLE) {}
 material::material() noexcept : shaders{}, raster{}, depth{} {}
 geometry::geometry() noexcept : index_type(index_type::u32), topology_type(0), restart(false), stride(0) {}
 draw_group::draw_group() noexcept : budget_constant(UINT32_MAX), types_constant(UINT32_MAX), type(type::device_local), instances_buffer(UINT32_MAX), indirect_buffer(UINT32_MAX), descriptor(UINT32_MAX), stride(0) {}
@@ -715,7 +716,10 @@ struct sampler_mirror {
   std::string name;
   std::string filter = "linear";
   std::string address = "repeat";
-  // под доращивание: mipmap, anisotropy, lod, border_color, compare
+  // Пусто => обычный сэмплер. Иначе имя compare_op: сэмплер становится сравнивающим,
+  // а шейдер обязан объявить его как samplerXDShadow (иначе валидация ругнётся на mismatch).
+  std::string compare;
+  // под доращивание: mipmap, anisotropy, lod, border_color
 
   sampler convert(const render_config_storage& /*ctx*/) const {
     sampler s;
@@ -727,6 +731,10 @@ struct sampler_mirror {
     s.address_u = a;
     s.address_v = a;
     s.address_w = a;
+    if (!compare.empty()) {
+      s.compare_enable = 1;
+      s.compare_op = check(compare_op::from_string(compare), "compare_op", compare, name);
+    }
     return s;
   }
 };
@@ -986,6 +994,7 @@ struct pass_step2_mirror {
   std::vector<std::tuple<std::string, std::string>> resources;
   std::vector<std::string> sets;
   std::vector<std::string> push_constants;
+  std::vector<std::tuple<std::string, std::string>> shader_constants;
   std::string material;
   std::string geometry;
   std::string draw_group;
@@ -1082,6 +1091,24 @@ static void parse_step2(
   for (const auto& constant_name : data.push_constants) {
     const uint32_t index = check(ctx.find_constant(constant_name), "constant", constant_name, step.name);
     step.push_constants.push_back(index);
+  }
+
+  // Имя/тип/constant_id specialization-константы известны только из SPIR-V материала, поэтому здесь
+  // проверяется лишь форма записи; резолв и loud error на неизвестное имя живут в create_pipeline.
+  for (const auto& [constant_name, value] : data.shader_constants) {
+    if (constant_name.empty()) {
+      utils::error{}("Execution step '{}' has a shader constant with an empty name", step.name);
+    }
+    if (value.empty()) {
+      utils::error{}("Shader constant '{}' of step '{}' has an empty value", constant_name, step.name);
+    }
+    const auto existing = std::find_if(step.shader_constants.begin(), step.shader_constants.end(), [&](const auto& entry) {
+      return entry.first == constant_name;
+    });
+    if (existing != step.shader_constants.end()) {
+      utils::error{}("Shader constant '{}' is specified twice in step '{}'", constant_name, step.name);
+    }
+    step.shader_constants.emplace_back(constant_name, value);
   }
 
   if (!data.material.empty()) {

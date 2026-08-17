@@ -2,6 +2,11 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
+// Тиры качества screen-space ray: задаются specialization-константами шага, поэтому пресет меняет
+// только pipeline, а marching-код остаётся один.
+layout(constant_id = 0) const int contact_ray_steps = 8;
+layout(constant_id = 1) const int contact_refine_steps = 3;
+
 layout(set = 0, binding = 0, std140) uniform SceneBlock {
   mat4 view_projection;
   mat4 view;
@@ -136,14 +141,13 @@ float contact_visibility(
   const float maximum_distance,
   const float thickness) {
   if (dot(receiver_normal, surface_to_light) <= 0.001) return 1.0;
-  const int step_count = 8;
   const float start_distance = min(0.018, maximum_distance * 0.25);
   const float plane_epsilon = clamp(receiver_footprint * 1.25, 0.008, 0.035);
   const float normal_offset = clamp(plane_epsilon * 0.75, 0.006, 0.018);
   const vec3 ray_origin = receiver_position + receiver_normal * normal_offset;
   float previous_distance = start_distance;
-  for (int step_index = 0; step_index < step_count; ++step_index) {
-    const float fraction = (float(step_index) + 0.75) / float(step_count);
+  for (int step_index = 0; step_index < contact_ray_steps; ++step_index) {
+    const float fraction = (float(step_index) + 0.75) / float(contact_ray_steps);
     const float distance_along_ray = mix(start_distance, maximum_distance, fraction);
     if (contact_ray_hit(
       receiver_position,
@@ -158,7 +162,7 @@ float contact_visibility(
       float hit_distance = distance_along_ray;
       // Refine only occupied rays: this removes the eight visible distance bands without paying for
       // a uniformly denser march over the whole half-resolution buffer.
-      for (int refinement = 0; refinement < 3; ++refinement) {
+      for (int refinement = 0; refinement < contact_refine_steps; ++refinement) {
         const float candidate = (clear_distance + hit_distance) * 0.5;
         if (contact_ray_hit(
           receiver_position,

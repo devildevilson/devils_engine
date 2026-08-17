@@ -31,6 +31,7 @@ set(SRC_LIST
   src/painter/queue.cpp
   src/painter/makers.cpp
   src/painter/shader_crafter.cpp
+  src/painter/shader_specialization.cpp
   src/painter/system_info.cpp
   src/painter/vulkan_header.cpp
   src/painter/shader_source_file.cpp
@@ -67,6 +68,7 @@ set(HDR_LIST
   include/devils_engine/painter/makers.h
   include/devils_engine/painter/queue.h
   include/devils_engine/painter/shader_crafter.h
+  include/devils_engine/painter/shader_specialization.h
   include/devils_engine/painter/system_info.h
   include/devils_engine/painter/vulkan_header.h
   include/devils_engine/painter/vulkan_minimal.h

@@ -1,8 +1,8 @@
 #version 450
 
-#ifndef PF02_PCF_RADIUS
-#define PF02_PCF_RADIUS 1
-#endif
+// Тир качества PCF: задаётся specialization-константой шага (shader_constants), поэтому смена
+// радиуса стоит только пересборки pipeline, а не нового SPIR-V варианта.
+layout(constant_id = 0) const int pcf_radius = 1;
 
 layout(location = 0) in vec3 world_position;
 layout(location = 1) in vec3 world_normal;
@@ -138,8 +138,8 @@ float directional_cascade_visibility(
 
   float visible = 0.0;
   float samples = 0.0;
-  for (int y = -PF02_PCF_RADIUS; y <= PF02_PCF_RADIUS; ++y) {
-    for (int x = -PF02_PCF_RADIUS; x <= PF02_PCF_RADIUS; ++x) {
+  for (int y = -pcf_radius; y <= pcf_radius; ++y) {
+    for (int x = -pcf_radius; x <= pcf_radius; ++x) {
       const vec2 sample_offset = vec2(x, y) * aa_radius * texel;
       const vec2 sample_uv = clamp(atlas_uv + sample_offset, safe_min, safe_max);
       const float stored_depth = texture(directional_shadow_image[0], sample_uv).r;
@@ -275,8 +275,8 @@ float spot_visibility(
 
   float visible = 0.0;
   float samples = 0.0;
-  for (int y = -PF02_PCF_RADIUS; y <= PF02_PCF_RADIUS; ++y) {
-    for (int x = -PF02_PCF_RADIUS; x <= PF02_PCF_RADIUS; ++x) {
+  for (int y = -pcf_radius; y <= pcf_radius; ++y) {
+    for (int x = -pcf_radius; x <= pcf_radius; ++x) {
       const vec2 sample_offset = vec2(x, y) * aa_radius * texel;
       const vec2 sample_uv = clamp(atlas_uv + sample_offset, safe_min, safe_max);
       const float stored_depth = texture(spot_shadow_atlas[0], sample_uv).r;

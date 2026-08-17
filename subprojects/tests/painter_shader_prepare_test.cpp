@@ -1,6 +1,8 @@
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <utility>
 #include <vector>
 
 #include <doctest/doctest.h>
@@ -13,6 +15,8 @@
 #include "devils_engine/painter/graphics_base.h"
 #include "devils_engine/painter/render_config_source.h"
 #include "devils_engine/painter/region_draw.h"
+#include "devils_engine/painter/shader_crafter.h"
+#include "devils_engine/painter/shader_specialization.h"
 #include "devils_engine/painter/structures.h"
 
 using namespace devils_engine;
@@ -348,4 +352,148 @@ TEST_CASE("painter render config reads demiurg tavl list subresources [painter]"
   CHECK(albedo->text.empty());
 
   fs::remove_all(root);
+}
+
+TEST_CASE("specialization reflection reports id, type and size of shader constants [painter]") {
+  painter::glsl_source_file shader;
+  shader.memory =
+    "#version 450\n"
+    "layout(constant_id = 0) const uint pcf_radius = 1;\n"
+    "layout(constant_id = 3) const float bias_scale = 0.5;\n"
+    "layout(constant_id = 5) const bool use_contact = false;\n"
+    "layout(constant_id = 9) const int signed_knob = -2;\n"
+    "layout(location = 0) out vec4 out_color;\n"
+    "void main() {\n"
+    "  const float v = float(pcf_radius) * bias_scale * float(signed_knob);\n"
+    "  out_color = vec4(use_contact ? v : 0.0, 0.0, 0.0, 1.0);\n"
+    "}\n";
+
+  std::string error;
+  REQUIRE(shader.prepare_spirv(nullptr, shaderc_fragment_shader, &error));
+  const auto reflected = painter::reflect_specialization_constants(shader.spirv, "test");
+
+  const auto find_by_id = [&](const uint32_t id) -> const painter::specialization_constant* {
+    const auto itr = std::find_if(reflected.begin(), reflected.end(), [&](const auto& entry) {
+      return entry.constant_id == id;
+    });
+    return itr == reflected.end() ? nullptr : &(*itr);
+  };
+
+  REQUIRE(reflected.size() == 4);
+  const auto* radius = find_by_id(0);
+  const auto* bias = find_by_id(3);
+  const auto* contact = find_by_id(5);
+  const auto* knob = find_by_id(9);
+  REQUIRE(radius != nullptr);
+  REQUIRE(bias != nullptr);
+  REQUIRE(contact != nullptr);
+  REQUIRE(knob != nullptr);
+
+  CHECK(radius->kind == painter::specialization_constant::value_kind::unsigned_integer);
+  CHECK(radius->size == 4);
+  CHECK(bias->kind == painter::specialization_constant::value_kind::floating);
+  CHECK(contact->kind == painter::specialization_constant::value_kind::boolean);
+  CHECK(contact->size == 4);
+  CHECK(knob->kind == painter::specialization_constant::value_kind::signed_integer);
+
+  // Оптимизированный модуль имён не содержит: spirv-opt снимает OpName. Поэтому constant_id/тип
+  // всегда доступны, а имена приезжают отдельной сборкой с debug info.
+  CHECK(radius->name.empty());
+
+  painter::shader_crafter named(nullptr);
+  named.set_optimization(false);
+  named.set_debug_info(true);
+  named.set_shader_entry_point("main");
+  named.set_shader_type(shaderc_fragment_shader);
+  const auto named_spirv = named.compile("test", shader.memory);
+  REQUIRE_FALSE(named_spirv.empty());
+
+  auto merged = reflected;
+  painter::merge_specialization_names(merged, painter::reflect_specialization_constants(named_spirv, "test"));
+  const auto merged_name_of = [&](const uint32_t id) {
+    const auto itr = std::find_if(merged.begin(), merged.end(), [&](const auto& entry) {
+      return entry.constant_id == id;
+    });
+    REQUIRE(itr != merged.end());
+    return itr->name;
+  };
+  CHECK(merged_name_of(0) == "pcf_radius");
+  CHECK(merged_name_of(3) == "bias_scale");
+  CHECK(merged_name_of(5) == "use_contact");
+  CHECK(merged_name_of(9) == "signed_knob");
+}
+
+TEST_CASE("specialization blob parses values by reflected type and reports strangers [painter]") {
+  std::vector<painter::specialization_constant> reflected{
+    {"pcf_radius", 0, 4, painter::specialization_constant::value_kind::unsigned_integer},
+    {"bias_scale", 3, 4, painter::specialization_constant::value_kind::floating},
+    {"use_contact", 5, 4, painter::specialization_constant::value_kind::boolean},
+    {"", 7, 4, painter::specialization_constant::value_kind::signed_integer},
+  };
+
+  const std::vector<std::pair<std::string, std::string>> requested{
+    {"pcf_radius", "3"},
+    {"bias_scale", "0.25"},
+    {"use_contact", "true"},
+    {"id_7", "-5"},
+    {"absent_knob", "1"},
+  };
+
+  std::vector<bool> matched(requested.size(), false);
+  const auto blob = painter::build_specialization_blob(reflected, requested, "step", &matched);
+
+  REQUIRE(blob.entries.size() == 4);
+  CHECK(blob.data.size() == 16);
+  // Порядок записей канонизирован по constant_id независимо от порядка в конфиге.
+  CHECK(blob.entries[0].constant_id == 0);
+  CHECK(blob.entries[1].constant_id == 3);
+  CHECK(blob.entries[2].constant_id == 5);
+  CHECK(blob.entries[3].constant_id == 7);
+
+  const auto read_at = [&](const uint32_t constant_id, auto sample) {
+    const auto itr = std::find_if(blob.entries.begin(), blob.entries.end(), [&](const auto& entry) {
+      return entry.constant_id == constant_id;
+    });
+    REQUIRE(itr != blob.entries.end());
+    REQUIRE(itr->size == sizeof(sample));
+    std::memcpy(&sample, blob.data.data() + itr->offset, sizeof(sample));
+    return sample;
+  };
+
+  CHECK(read_at(0, uint32_t{}) == 3u);
+  CHECK(read_at(3, float{}) == doctest::Approx(0.25f));
+  CHECK(read_at(5, uint32_t{}) == 1u);
+  CHECK(read_at(7, int32_t{}) == -5);
+
+  // 'absent_knob' в этой стадии не найден: сама сборка молчит, а loud error остаётся за вызывающим,
+  // который видит все стадии сразу.
+  CHECK(matched[0]);
+  CHECK(matched[3]);
+  CHECK_FALSE(matched[4]);
+}
+
+TEST_CASE("render config parses step shader constants and comparison samplers [painter]") {
+  const auto storage = painter::build_render_config(PAINTER_TEST_CONFIG_ROOT);
+
+  const auto step_slot = storage.find_execution_step("draw_regions");
+  REQUIRE(step_slot != painter::invalid_resource_slot);
+  const auto& step = storage.steps[step_slot];
+  REQUIRE(step.shader_constants.size() == 2);
+  CHECK(step.shader_constants[0].first == "region_quality");
+  CHECK(step.shader_constants[0].second == "2");
+  CHECK(step.shader_constants[1].first == "id_7");
+  CHECK(step.shader_constants[1].second == "0.5");
+
+  const auto sampler_slot = storage.find_sampler("shadow_compare");
+  REQUIRE(sampler_slot != painter::invalid_resource_slot);
+  const auto& compare_sampler = storage.samplers[sampler_slot];
+  CHECK(compare_sampler.compare_enable == 1);
+  CHECK(compare_sampler.compare_op == painter::compare_op::from_string("greater_or_equal"));
+  const auto linear_slot = storage.find_sampler("linear");
+  REQUIRE(linear_slot != painter::invalid_resource_slot);
+  CHECK(compare_sampler.mag_filter == storage.samplers[linear_slot].mag_filter);
+
+  const auto plain_slot = storage.find_sampler("nearest");
+  REQUIRE(plain_slot != painter::invalid_resource_slot);
+  CHECK(storage.samplers[plain_slot].compare_enable == 0);
 }
