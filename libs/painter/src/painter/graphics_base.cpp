@@ -597,7 +597,7 @@ buffer_frame graphics_base::get_current_buffer_resource_frame(const uint32_t res
   const auto& counter = DS_ASSERT_ARRAY_GET(counters, res.swap);
   const uint32_t cur_index = counter.get_value();
   const uint32_t buffering = res.compute_buffering(this);
-  const auto& frame = res.handles[(cur_index + counter_offset) % buffering];
+  const auto& frame = res.handles[history_copy_index(cur_index, counter_offset, buffering)];
 
   const auto& res_cont = DS_ASSERT_ARRAY_GET(resource_containers, frame.index);
 
@@ -625,7 +625,7 @@ image_frame graphics_base::get_current_image_resource_frame(const uint32_t res_i
   const auto& counter = DS_ASSERT_ARRAY_GET(counters, res.swap);
   const uint32_t cur_index = counter.get_value();
   const uint32_t buffering = res.compute_buffering(this);
-  const auto& frame = res.handles[(cur_index + counter_offset) % buffering];
+  const auto& frame = res.handles[history_copy_index(cur_index, counter_offset, buffering)];
 
   VkImage img = VK_NULL_HANDLE;
   void* mem_ptr = nullptr;
@@ -702,6 +702,9 @@ void graphics_base::resize_viewport(const uint32_t width, const uint32_t height)
   swapchain_image_size = std::make_tuple(width, height);
   recreate_swapchain(width, height);
   recreate_screensize_resources(width, height);
+  // ресурсы пересозданы => история потеряна вместе с ними: чистим и переводим копии в read-only layout,
+  // иначе первый кадр после resize читает UNDEFINED-картинки
+  initialize_temporal_resources();
   execution_graph.resize_viewport(this, width, height);
   // все?
 }
@@ -1400,6 +1403,7 @@ int32_t graphics_base::commit_parsed_resources(render_config_storage& storage) {
   create_samplers(); // до layout'ов: immutable-сэмплеры зашиваются в descriptor set layout
   create_descriptor_set_layouts();
   create_resources();
+  initialize_temporal_resources(); // история на старте должна быть пустой и в правильном layout, а не мусором
   recreate_descriptor_pool(); // размеры пула — по фактическим дескрипторам (texture_count уже клампнут)
   create_descriptor_sets();
   revalidate_pairs(draw_group_names);
@@ -1568,16 +1572,20 @@ void graphics_base::create_descriptor_set_layouts() {
     std::vector<std::vector<vk::Sampler>> imm_keep;
     imm_keep.reserve(desc.layout.size() + 1);
     for (uint32_t i = 0; i < desc.layout.size(); ++i) {
-      const auto& [slot, usage, sampler_index, stages] = desc.layout[i];
-      const auto& res = resources[slot];
-      const uint32_t buffers_count = res.compute_buffering(this);
-      const auto stage = vk::ShaderStageFlags(stages);
-      if (sampler_index != invalid_resource_slot) {
+      const auto& bind = desc.layout[i];
+      // Размер массива binding'а — это не число копий ресурса: шейдеру показывается либо текущая копия
+      // (одиночный дескриптор), либо окно истории из history копий. Копии, существующие только против гонок
+      // кадров в полёте, шейдеру не видны, поэтому размер массива задан конфигом и не зависит от
+      // frames_in_flight (см. descriptor::binding).
+      const uint32_t array_size = bind.array_size();
+      // history == 0 => одиночный дескриптор текущей копии; history == N => окно из N копий истории
+      const auto stage = vk::ShaderStageFlags(bind.stages);
+      if (bind.sampler != invalid_resource_slot) {
         // sampled + sampler => combinedImageSampler с immutable-сэмплером (по одному на элемент массива)
-        imm_keep.emplace_back(buffers_count, vk::Sampler(samplers[sampler_index].handle));
+        imm_keep.emplace_back(array_size, vk::Sampler(samplers[bind.sampler].handle));
         dslm.combined(i, vk::DescriptorType::eCombinedImageSampler, stage, imm_keep.back());
       } else {
-        dslm.binding(i, convertdt(usage), stage, buffers_count);
+        dslm.binding(i, convertdt(bind.usage), stage, array_size);
       }
     }
     // asset-текстуры РАЗДЕЛЕНЫ (bindless v2): binding L = SAMPLED_IMAGE массив (пишется рендером),
@@ -1709,8 +1717,8 @@ void graphics_base::compute_active_masks(const std::vector<uint32_t>& graph_indi
     if (!descriptor_active_mask_[d]) {
       continue;
     }
-    for (const auto& [slot, usage, sampler_index, stages] : descriptors[d].layout) {
-      mark_res(slot);
+    for (const auto& bind : descriptors[d].layout) {
+      mark_res(bind.resource);
     }
   }
 
@@ -1786,8 +1794,8 @@ void graphics_base::create_resources() {
     if (!is_descriptor_active(di)) {
       continue;
     }
-    for (const auto& [res_index, usage, sampler_index, stages] : descriptors[di].layout) {
-      add_usage(res_index, usage);
+    for (const auto& bind : descriptors[di].layout) {
+      add_usage(bind.resource, bind.usage);
     }
   }
 
@@ -1828,6 +1836,16 @@ void graphics_base::create_resources() {
 
     const bool is_image = role::is_image(res.role);
 
+    // Копии temporal-ресурса чистятся при создании (initialize_temporal_resources), иначе первый кадр читал
+    // бы историю из мусора. Значит движок сам требует у ресурса transfer_dst — граф про эту запись не знает.
+    if (res.history_depth > 0) {
+      if (is_image) {
+        image_flags[i] = image_flags[i] | vk::ImageUsageFlagBits::eTransferDst;
+      } else {
+        buffer_flags[i] = buffer_flags[i] | vk::BufferUsageFlagBits::eTransferDst;
+      }
+    }
+
     if (is_image) {
       res.usage_mask = res.usage_mask | static_cast<uint32_t>(image_flags[i]);
     } else {
@@ -1865,6 +1883,13 @@ void graphics_base::create_resources() {
 
     if (buffering == 0) {
       utils::error{}("Invalid buffering for resource '{}'", res.name);
+    }
+
+    if (buffering > max_frames_in_flight) {
+      utils::error{}(
+        "Resource '{}' needs {} copies (период '{}' + {} кадров истории), а хранилище рассчитано на {}: "
+        "уменьшите глубину истории либо число кадров в полёте",
+        res.name, buffering, type::to_string(res.type), res.history_depth, max_frames_in_flight);
     }
 
     // если у нас роль present то мы пропускаем этот ресурс и создадим его отдельно при создании свопчеина
@@ -2049,6 +2074,104 @@ void graphics_base::create_resources() {
   }
 }
 
+void graphics_base::initialize_temporal_resources() {
+  std::vector<uint32_t> temporal_slots;
+  for (uint32_t i = 0; i < resources.size(); ++i) {
+    const auto& res = resources[i];
+    if (res.history_depth == 0 || !is_resource_active(i) || res.role == role::present) {
+      continue;
+    }
+    if (res.history_usage == usage::values::count) {
+      utils::error{}("Resource '{}' has history depth {} but no history usage resolved", res.name, res.history_depth);
+    }
+    temporal_slots.push_back(i);
+  }
+
+  if (temporal_slots.empty()) {
+    return;
+  }
+
+  vk::Device dev(device);
+  vk::CommandBufferAllocateInfo cbai{};
+  cbai.commandPool = command_pool;
+  cbai.level = vk::CommandBufferLevel::ePrimary;
+  cbai.commandBufferCount = 1;
+  const auto buffers = dev.allocateCommandBuffers(cbai);
+  vk::CommandBuffer task(buffers[0]);
+  task.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+
+  for (const uint32_t slot : temporal_slots) {
+    const auto& res = resources[slot];
+    const uint32_t buffering = res.compute_buffering(this);
+    const auto history_usage = static_cast<usage::values>(res.history_usage);
+
+    for (uint32_t j = 0; j < buffering; ++j) {
+      const auto& handle = res.handles[j];
+      const auto& cont = DS_ASSERT_ARRAY_GET(resource_containers, handle.index);
+
+      if (!role::is_image(res.role)) {
+        task.fillBuffer(std::bit_cast<VkBuffer>(cont.handle), handle.subbuffer.offset, handle.subbuffer.size, 0u);
+        continue;
+      }
+
+      const auto image = std::bit_cast<VkImage>(cont.handle);
+      const auto range = std::bit_cast<vk::ImageSubresourceRange>(handle.subimage);
+
+      vk::ImageMemoryBarrier to_clear{};
+      to_clear.srcAccessMask = vk::AccessFlags{};
+      to_clear.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+      to_clear.oldLayout = vk::ImageLayout::eUndefined;
+      to_clear.newLayout = vk::ImageLayout::eTransferDstOptimal;
+      to_clear.image = image;
+      to_clear.subresourceRange = range;
+      task.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer,
+        vk::DependencyFlags{}, nullptr, nullptr, to_clear);
+
+      const bool is_depth = (range.aspectMask & vk::ImageAspectFlagBits::eDepth) == vk::ImageAspectFlagBits::eDepth;
+      if (is_depth) {
+        task.clearDepthStencilImage(image, vk::ImageLayout::eTransferDstOptimal, vk::ClearDepthStencilValue(0.0f, 0), range);
+      } else {
+        task.clearColorImage(image, vk::ImageLayout::eTransferDstOptimal, vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f}), range);
+      }
+
+      vk::ImageMemoryBarrier to_history{};
+      to_history.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+      to_history.dstAccessMask = convertam(history_usage);
+      to_history.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+      to_history.newLayout = convertil(history_usage);
+      to_history.image = image;
+      to_history.subresourceRange = range;
+      task.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer, convertps(history_usage),
+        vk::DependencyFlags{}, nullptr, nullptr, to_history);
+    }
+  }
+
+  task.end();
+
+  const auto fence = dev.createFence(vk::FenceCreateInfo{});
+  {
+    vk::SubmitInfo si{};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &task;
+    const auto queue_lock = graphics.lock();
+    const auto res = vk::Queue(graphics.handle()).submit(1, &si, fence);
+    if (res != vk::Result::eSuccess) {
+      utils::error{}("Could not submit temporal resource initialization: {}", vk::to_string(res));
+    }
+  }
+
+  const size_t sec1 = size_t(1000) * size_t(1000) * size_t(1000);
+  if (dev.waitForFences(fence, true, sec1) != vk::Result::eSuccess) {
+    utils::error{}("Temporal resource initialization did not finish in time");
+  }
+  dev.destroy(fence);
+  dev.freeCommandBuffers(command_pool, task);
+
+  DE_LOG(catalogue::log_domain::render, flow, "temporal resources initialized: {} resources cleared to empty history", temporal_slots.size());
+}
+
 void graphics_base::recreate_descriptor_pool() {
   // Считаем нужды по типам: на каждый АКТИВНЫЙ дескриптор — per-set число дескрипторов каждого типа
   // (resource-bindings по буферизации ресурса + asset-текстурный массив texture_count),
@@ -2072,12 +2195,11 @@ void graphics_base::recreate_descriptor_pool() {
       continue;
     }
     const auto& d = descriptors[di];
-    for (const auto& [slot, usage, sampler_index, stages] : d.layout) {
-      const uint32_t buffering = resources[slot].compute_buffering(this);
-      if (sampler_index != invalid_resource_slot) {
-        add(vk::DescriptorType::eCombinedImageSampler, buffering);
+    for (const auto& bind : d.layout) {
+      if (bind.sampler != invalid_resource_slot) {
+        add(vk::DescriptorType::eCombinedImageSampler, bind.array_size());
       } else {
-        add(convertdt(usage), buffering);
+        add(convertdt(bind.usage), bind.array_size());
       }
     }
     if (d.texture_count > 0) {
@@ -2157,37 +2279,45 @@ void graphics_base::update_descriptors() {
     const auto set = d.sets[current_set_index];
 
     for (uint32_t bind = 0; bind < d.layout.size(); ++bind) {
-      const auto& [res_index, usage, sampler_index, stages] = d.layout[bind];
-      const auto& res = resources[res_index];
+      const auto& layout_bind = d.layout[bind];
+      const auto& res = resources[layout_bind.resource];
       const uint32_t buffering = res.compute_buffering(this);
+      // Без history — один дескриптор на текущую копию; с history = N — окно из N зафиксированных копий
+      // ([0] прошлый кадр … [N-1] N кадров назад). Копии, существующие только против гонок кадров в
+      // полёте, шейдеру не показываются.
+      const uint32_t array_size = layout_bind.array_size();
+      // frames_back(j): без history — текущая копия, с history — j+1 кадров назад
       const bool is_image = role::is_image(res.role);
-      const bool combined = sampler_index != invalid_resource_slot;
+      const bool combined = layout_bind.sampler != invalid_resource_slot;
 
       writes.emplace_back();
       writes.back().dstSet = set;
       writes.back().dstBinding = bind;
       writes.back().dstArrayElement = 0;
-      writes.back().descriptorCount = buffering;
-      writes.back().descriptorType = combined ? vk::DescriptorType::eCombinedImageSampler : convertdt(usage);
+      writes.back().descriptorCount = array_size;
+      writes.back().descriptorType = combined ? vk::DescriptorType::eCombinedImageSampler : convertdt(layout_bind.usage);
 
       if (is_image) {
         offsets.push_back(std::make_tuple(images.size(), is_image));
-        for (uint32_t j = 0; j < buffering; ++j) {
+        for (uint32_t j = 0; j < array_size; ++j) {
           const auto& counter = DS_ASSERT_ARRAY_GET(counters, res.swap);
           const uint32_t current_clock = counter.get_value();
-          const uint32_t final_index = (current_clock + j) % buffering;
+          // Порядок ФИКСИРОВАННЫЙ и осмысленный: [0] — текущая копия, [1] — предыдущий кадр, [2] —
+          // позапрошлый. Поэтому шейдер берёт историю по константному индексу и ему не нужно передавать
+          // номер кадра.
+          const uint32_t final_index = history_copy_index(current_clock, layout_bind.frames_back(j), buffering);
 
           images.emplace_back();
           // immutable-сэмплер уже в layout; для combined достаточно view (sampler в write игнорируется)
-          images.back().sampler = combined ? vk::Sampler(samplers[sampler_index].handle) : vk::Sampler(nullptr);
+          images.back().sampler = combined ? vk::Sampler(samplers[layout_bind.sampler].handle) : vk::Sampler(nullptr);
           images.back().imageView = res.handles[final_index].view;
-          images.back().imageLayout = convertil(usage);
+          images.back().imageLayout = convertil(layout_bind.usage);
         }
       } else {
         offsets.push_back(std::make_tuple(buffers.size(), is_image));
-        for (uint32_t j = 0; j < buffering; ++j) {
+        for (uint32_t j = 0; j < array_size; ++j) {
           const uint32_t current_clock = counters[res.swap].value;
-          const uint32_t final_index = (current_clock + j) % buffering;
+          const uint32_t final_index = history_copy_index(current_clock, layout_bind.frames_back(j), buffering);
 
           const auto& cont = resource_containers[res.handles[final_index].index];
           auto handle = std::bit_cast<VkBuffer>(cont.handle);
@@ -2214,64 +2344,6 @@ void graphics_base::update_descriptors() {
 
   vk::Device dev(device);
   dev.updateDescriptorSets(writes, nullptr);
-
-  /*for (uint32_t i = 0; i < descriptors.size(); ++i) {
-    const auto& d = descriptors[i];
-    for (uint32_t bind = 0; bind < d.layout.size(); ++bind) {
-      const auto& [res_index, usage] = d.layout[bind];
-      const auto& res = resources[res_index];
-      const uint32_t buffering = static_cast<uint32_t>(res.type);
-      const bool is_image = role::is_image(res.role);
-
-      for (uint32_t f = 0; f < frames_in_flight(); ++f) {
-        writes.emplace_back();
-        writes.back().dstSet = d.sets[f];
-        writes.back().dstBinding = bind;
-        writes.back().dstArrayElement = 0;
-        writes.back().descriptorCount = buffering;
-        writes.back().descriptorType = convertdt(usage);
-
-        if (is_image) {
-          offsets.push_back(std::make_tuple(images.size(), is_image));
-          for (uint32_t j = 0; j < buffering; ++j) {
-            const uint32_t current_clock = counters[res.swap].value;
-            const uint32_t final_index = (current_clock + j) % buffering;
-
-            images.emplace_back();
-            images.back().sampler = nullptr;
-            images.back().imageView = res.handles[final_index].view;
-            images.back().imageLayout = convertil(usage);
-          }
-        } else {
-          offsets.push_back(std::make_tuple(buffers.size(), is_image));
-          for (uint32_t j = 0; j < buffering; ++j) {
-            const uint32_t current_clock = counters[res.swap].value;
-            const uint32_t final_index = (current_clock + j) % buffering;
-
-            const auto& cont = resource_containers[res.handles[final_index].index];
-            auto handle = std::bit_cast<VkBuffer>(cont.handle);
-
-            buffers.emplace_back();
-            buffers.back().buffer = handle;
-            buffers.back().offset = res.handles[final_index].subbuffer.offset;
-            buffers.back().range = res.handles[final_index].subbuffer.size;
-          }
-        }
-      }
-    }
-  }
-
-  for (size_t i = 0; i < writes.size(); ++i) {
-    const auto& [offset, is_image] = offsets[i];
-    if (is_image) {
-      writes[i].pImageInfo = &images[offset];
-    } else {
-      writes[i].pBufferInfo = &buffers[offset];
-    }
-  }
-
-  vk::Device dev(device);
-  dev.updateDescriptorSets(writes, nullptr);*/
 }
 
 void graphics_base::wait_fence() {
@@ -2286,6 +2358,148 @@ void graphics_base::wait_fence() {
     utils::error{}("waitForFences failed for current frame {}", current_frame_index());
   }
   vk::Device(device).resetFences(vk::Fence(f));
+}
+
+// Позиция пасса в графе, который сигналит эту семафору (invalid_resource_slot — никто).
+static uint32_t find_signal_position(const graphics_base* base, const render_graph_base& graph, const std::string_view& name) {
+  for (uint32_t i = 0; i < graph.passes.size(); ++i) {
+    const auto& pass = DS_ASSERT_ARRAY_GET(base->passes, graph.passes[i]);
+    for (const auto& signal_name : pass.signal) {
+      if (signal_name == name) {
+        return i;
+      }
+    }
+  }
+  return invalid_resource_slot;
+}
+
+// Ожидание семафора ПРЕДЫДУЩЕГО кадра. Такие ожидания складываются в конец списка и считаются отдельно:
+// на первом submit'е инстанса их никто ещё не сигналил, и submit отрезает хвост.
+static void add_previous_frame_wait(
+  const render_graph_instance& out, execution_group& group, const uint32_t local_sem_index, const vk::PipelineStageFlags stages) {
+  const auto& sem = DS_ASSERT_ARRAY_GET(out.local_semaphores, local_sem_index);
+  for (uint32_t j = 0; j < group.frames.size(); ++j) {
+    const uint32_t prev = j == 0 ? uint32_t(group.frames.size()) - 1 : j - 1;
+    group.frames[j].wait_for.push_back(sem.handles[prev]);
+    group.frames[j].wait_for_stages.push_back(static_cast<uint32_t>(stages));
+    group.frames[j].cross_frame_waits += 1;
+  }
+}
+
+static vk::PipelineStageFlags pass_wait_stages(const execution_pass_base& pass) {
+  vk::PipelineStageFlags stages{};
+  if (pass.has_step_type(step_type::graphics)) {
+    stages = stages | vk::PipelineStageFlagBits::eAllGraphics;
+  }
+  if (pass.has_step_type(step_type::compute)) {
+    stages = stages | vk::PipelineStageFlagBits::eComputeShader;
+  }
+  if (pass.has_step_type(step_type::transfer)) {
+    stages = stages | vk::PipelineStageFlagBits::eTransfer;
+  }
+  static_assert(step_type::count == 3);
+  return stages;
+}
+
+// Читает ли пасс этот ресурс КАК ИСТОРИЮ, то есть есть ли у него биндинг с history > 0. Именно это
+// объявление (а не факт чтения ресурса вообще) и есть источник кросс-кадровой зависимости: обычное чтение
+// текущей копии никакого порядка между кадрами не требует.
+static bool pass_reads_history(const graphics_base* base, const execution_pass_base& pass, const uint32_t res_index) {
+  for (const uint32_t step_index : pass.steps) {
+    if (step_index == invalid_resource_slot) {
+      continue;
+    }
+    const auto& step = DS_ASSERT_ARRAY_GET(base->steps, step_index);
+    for (const uint32_t set_index : step.sets) {
+      const auto& d = DS_ASSERT_ARRAY_GET(base->descriptors, set_index);
+      for (const auto& bind : d.layout) {
+        if (bind.resource == res_index && bind.history > 0) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// Вывод кросс-кадрового порядка из объявленного чтения истории. Ни семафоры, ни ожидания в конфиге для
+// этого писать не надо: 'history = N' у биндинга говорит, что пасс читает копию, записанную N кадров назад,
+// а значит должен дождаться пасса-писателя предыдущего кадра. Ручной wait_previous остаётся escape hatch
+// для случаев, которые из дескрипторов не видны.
+static void derive_history_ordering(const graphics_base* base, render_graph_instance& out, const render_graph_base& graph) {
+  // (позиция пасса-писателя -> индекс его авто-семафоры)
+  std::vector<std::tuple<uint32_t, uint32_t>> writer_semaphores;
+  // (позиция читателя, индекс семафоры) — чтобы один и тот же порядок не выводился дважды на несколько
+  // history-ресурсов сразу
+  std::vector<std::tuple<uint32_t, uint32_t>> derived_waits;
+
+  for (uint32_t res_index = 0; res_index < base->resources.size(); ++res_index) {
+    const auto& res = DS_ASSERT_ARRAY_GET(base->resources, res_index);
+    if (res.history_depth == 0) {
+      continue;
+    }
+
+    std::vector<uint32_t> readers;
+    std::vector<uint32_t> writers;
+    for (uint32_t i = 0; i < graph.passes.size(); ++i) {
+      const auto& pass = DS_ASSERT_ARRAY_GET(base->passes, graph.passes[i]);
+      if (pass.write.test(res_index)) {
+        writers.push_back(i);
+      }
+      if (pass_reads_history(base, pass, res_index)) {
+        readers.push_back(i);
+      }
+    }
+
+    if (readers.empty()) {
+      continue; // историю просил другой граф
+    }
+
+    if (writers.empty()) {
+      utils::error{}(
+        "Graph '{}' reads resource '{}' as history, but no pass of this graph writes it: истории просто "
+        "не появится — читать будет нечего",
+        graph.name, res.name);
+    }
+
+    for (const uint32_t w : writers) {
+      const auto& writer_pass = DS_ASSERT_ARRAY_GET(base->passes, graph.passes[w]);
+
+      uint32_t sem_index = invalid_resource_slot;
+      for (const auto& [pos, index] : writer_semaphores) {
+        if (pos == w) {
+          sem_index = index;
+          break;
+        }
+      }
+
+      if (sem_index == invalid_resource_slot) {
+        sem_index = out.create_semaphore("history:" + writer_pass.name, base->frames_in_flight());
+        const auto& sem = DS_ASSERT_ARRAY_GET(out.local_semaphores, sem_index);
+        auto& writer_group = DS_ASSERT_ARRAY_GET(out.groups, w);
+        for (uint32_t j = 0; j < writer_group.frames.size(); ++j) {
+          writer_group.frames[j].signal.push_back(sem.handles[j]);
+        }
+        writer_semaphores.emplace_back(w, sem_index);
+      }
+
+      for (const uint32_t r : readers) {
+        const auto existing = std::find(derived_waits.begin(), derived_waits.end(), std::make_tuple(r, sem_index));
+        if (existing != derived_waits.end()) {
+          continue;
+        }
+
+        const auto& reader_pass = DS_ASSERT_ARRAY_GET(base->passes, graph.passes[r]);
+        auto& reader_group = DS_ASSERT_ARRAY_GET(out.groups, r);
+        add_previous_frame_wait(out, reader_group, sem_index, pass_wait_stages(reader_pass));
+        derived_waits.emplace_back(r, sem_index);
+
+        DE_LOG(catalogue::log_domain::render, flow,
+               "graph '{}': pass '{}' waits previous frame of pass '{}' (history of '{}')",
+               graph.name, reader_pass.name, writer_pass.name, res.name);
+      }
+    }
+  }
 }
 
 render_graph_instance graphics_base::create_render_graph_instance(const uint32_t index) {
@@ -2386,6 +2600,7 @@ render_graph_instance graphics_base::create_render_graph_instance(const uint32_t
       out.steps.emplace_back(std::move(ptr));
     }
 
+
     // для каждой группы создадим командные буферы
     // нужно еще прочитать настройки синхронизаций
     // по идее семафора это тоже ресурс = имя + пачка примитивов
@@ -2435,10 +2650,23 @@ render_graph_instance graphics_base::create_render_graph_instance(const uint32_t
 
       const uint32_t local_index = out.find_semaphore(name);
       if (local_index != invalid_resource_slot) {
+        // Локальная семафора пасса — зависимость ВНУТРИ кадра, поэтому ждём слот ТОГО ЖЕ кадра. Значит
+        // сигналящий пасс обязан идти раньше в графе, иначе очередь встанет: проверяем это громко.
+        const uint32_t signal_position = find_signal_position(this, graph, name);
+        if (signal_position == invalid_resource_slot) {
+          utils::error{}("Semaphore '{}' waited by pass '{}' is not signalled by any pass of graph '{}'", name, pass.name, graph.name);
+        }
+        if (signal_position >= i) {
+          utils::error{}(
+            "Pass '{}' waits semaphore '{}' signalled by a LATER pass of graph '{}': внутрикадровое "
+            "ожидание требует, чтобы сигналящий пасс шёл раньше; для зависимости от предыдущего кадра "
+            "используйте wait_previous",
+            pass.name, name, graph.name);
+        }
+
         const auto& sem = DS_ASSERT_ARRAY_GET(out.local_semaphores, local_index);
         for (uint32_t j = 0; j < group.frames.size(); ++j) {
-          const uint32_t sem_index = j == 0 ? group.frames.size() - 1 : j - 1; // предыдущий кадр
-          group.frames[j].wait_for.push_back(sem.handles[sem_index]);
+          group.frames[j].wait_for.push_back(sem.handles[j]); // тот же кадр
           group.frames[j].wait_for_stages.push_back(static_cast<uint32_t>(wait_for_stages));
         }
 
@@ -2447,7 +2675,53 @@ render_graph_instance graphics_base::create_render_graph_instance(const uint32_t
 
       utils::error{}("Could not find semaphore resource '{}' for pass '{}'", name, pass.name);
     }
+
+    // Кросс-кадровые ожидания идут ПОСЛЕ внутрикадровых: submit отрезает их хвост на первом кадре графа.
+    for (const auto& name : pass.wait_previous) {
+      const uint32_t local_index = out.find_semaphore(name);
+      if (local_index == invalid_resource_slot) {
+        utils::error{}("Could not find local semaphore '{}' for wait_previous of pass '{}'", name, pass.name);
+      }
+      add_previous_frame_wait(out, group, local_index, wait_for_stages);
+    }
   }
+
+  // Фиксация temporal-копий — в САМОМ КОНЦЕ кадра, а не сразу за пассом-писателем: копию может тронуть
+  // любой более поздний пасс (тот же blit в свопчейн переводит её в transfer_src), и тогда следующие кадры
+  // читали бы историю в layout, который дескриптор не обещал. В конце кадра состояние копии окончательное.
+  if (!out.groups.empty()) {
+    auto fixate = std::make_unique<temporal_fixate_instance>();
+    for (uint32_t res_index = 0; res_index < resources.size(); ++res_index) {
+      const auto& res = resources[res_index];
+      if (res.history_depth == 0 || !is_resource_active(res_index)) {
+        continue;
+      }
+
+      bool written_here = false;
+      for (const uint32_t pass_index : graph.passes) {
+        written_here = written_here || DS_ASSERT_ARRAY_GET(passes, pass_index).write.test(res_index);
+      }
+      if (!written_here) {
+        continue; // этот граф ресурс не пишет — фиксировать нечего
+      }
+
+      if (res.history_usage == usage::values::count) {
+        utils::error{}("Resource '{}' has history depth {} but no history usage resolved", res.name, res.history_depth);
+      }
+      fixate->targets.emplace_back(res_index, static_cast<uint32_t>(res.history_usage));
+    }
+
+    if (!fixate->targets.empty()) {
+      auto ptr_raw = fixate.get();
+      out.groups.back().steps.push_back(ptr_raw);
+      out.steps.emplace_back(std::move(fixate));
+    }
+  }
+
+  // Кросс-кадровый порядок ВЫВОДИТСЯ из объявленного чтения истории, а не пишется руками. Кадр N читает
+  // копию, записанную кадром N-1, поэтому пасс-читатель обязан дождаться пасса-писателя предыдущего кадра.
+  // Ожидание фенса тут не помогает: fence ждёт кадр N-frames_in_flight, а N-1 ещё в полёте.
+  derive_history_ordering(this, out, graph);
 
   // так и дальше че? ну и все походу
   // наконецто... будем надеяться что это хотя бы сработает как надо

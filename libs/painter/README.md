@@ -34,7 +34,11 @@ Resident-графы задаются через `set_startup_graph()`, `add_resi
 
 ## Ресурсы И Буферизация
 
-Render-graph ресурс описывает роль, формат, размер, счетчик и тип буферизации. Типы вроде `singlebuffer`, `doublebuffer`, `triplebuffer`, `swapchain`, `frames_in_flight` и `per_update` приводятся к числу runtime-кадров через `resource::compute_buffering()`.
+Render-graph ресурс описывает роль, формат, размер и счетчик вращения. Число копий он НЕ задает: оно выводится как период счетчика плюс глубина истории, которую попросили читатели (`resource::compute_buffering()`).
+
+Период — свойство счетчика: `per_frame` крутится по `frames_in_flight`, `swapchain` — по числу образов презентации. Про остальные счетчики движок ничего знать не может (их вращает хост), поэтому там требуется явный `type` — он же остается override'ом для ресурса, которому осознанно хватает меньшего числа копий (`doublebuffer` у host-visible upload-буферов). Значения: `singlebuffer`, `doublebuffer`, `triplebuffer`, `quadbuffer`, `rampagebuffer`, `swapchain`, `swapchain_plus_one`, `frames_in_flight`, `frames_in_flight_plus_one`.
+
+Глубина истории — свойство техники-читателя, поэтому объявляется в binding'е дескриптора (`history = N`), а не у ресурса; двум техникам с разной глубиной согласовываться не надо, ресурс берет max. Копий получается `период + max(history)`: копия должна дожить до чтения и не может перезаписываться, пока ее читают кадры в полете. Из того же объявления выводится read-only фиксация копий истории (`temporal_fixate_instance` в конце кадра) и кросс-кадровый порядок пассов (`derive_history_ordering`), а начальное состояние копий задает `initialize_temporal_resources()` — чистые нули в нужном layout вместо мусора на первых кадрах.
 
 `graphics_base::create_resources()` группирует совместимые ресурсы в `resource_container`:
 

@@ -72,7 +72,7 @@ execution_pass_instance::execution_pass_instance() noexcept
 
 subpass_next::subpass_next() noexcept : renderpass(VK_NULL_HANDLE) {}
 
-execution_group::frame::frame() noexcept : buffer(VK_NULL_HANDLE) {}
+execution_group::frame::frame() noexcept : buffer(VK_NULL_HANDLE), cross_frame_waits(0) {}
 
 execution_group::execution_group() noexcept : device(VK_NULL_HANDLE), pool(VK_NULL_HANDLE) {}
 
@@ -1039,6 +1039,19 @@ void execution_pass_end_instance::process(graphics_ctx* ctx, VkCommandBuffer buf
   make_barriers2(ctx, buf, pass.barriers.back());
 }
 
+temporal_fixate_instance::temporal_fixate_instance() noexcept : step_interface(step_interface::type::step, invalid_resource_slot) {}
+
+void temporal_fixate_instance::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
+  // targets собраны при сборке графа: ресурс с историей + юсадж, объявленный читателями. make_barriers1
+  // сама пропускает копии, которые уже лежат в нужном layout, поэтому лишних барьеров не будет.
+  std::vector<std::tuple<uint32_t, usage::values>> converted;
+  converted.reserve(targets.size());
+  for (const auto& [slot, target_usage] : targets) {
+    converted.emplace_back(slot, static_cast<usage::values>(target_usage));
+  }
+  make_barriers1(ctx, buf, converted);
+}
+
 execution_group::~execution_group() noexcept {
   // вернем командный буфер?
 }
@@ -1124,30 +1137,42 @@ void render_graph_instance::clear() {
 }
 
 void render_graph_instance::submit(const graphics_base* ctx, const graphics_queue& q, VkSemaphore finish, VkFence f) const {
-  std::array<vk::Semaphore, 16> finish_semaphores;
-  std::array<vk::SubmitInfo, 16> infos;
-  assert(groups.size() < 16);
+  constexpr uint32_t max_groups = 16;
+  constexpr uint32_t max_signals = 8;
+  // Хранилище сигналов у КАЖДОЙ группы своё: pSignalSemaphores живёт до конца vkQueueSubmit, поэтому один
+  // общий буфер на все submit-инфо означал бы, что все группы сигналят содержимое последней.
+  std::array<std::array<vk::Semaphore, max_signals>, max_groups> signal_storage{};
+  std::array<vk::SubmitInfo, max_groups> infos;
+  if (groups.size() > max_groups) {
+    utils::error{}("Render graph has {} execution groups, submit supports {}", groups.size(), max_groups);
+  }
+
   const uint32_t frame_index = ctx->current_frame_index();
   for (uint32_t i = 0; i < groups.size(); ++i) {
     const auto& group = groups[i];
     const auto& cur_frame = group.frames[frame_index % group.frames.size()];
     assert(cur_frame.wait_for.size() == cur_frame.wait_for_stages.size());
-    assert(cur_frame.signal.size() < 15);
-
-    std::copy_n(
-      reinterpret_cast<const vk::Semaphore*>(cur_frame.signal.data()),
-      cur_frame.signal.size(),
-      finish_semaphores.data());
-    if (i == groups.size() - 1) {
-      finish_semaphores[cur_frame.signal.size()] = finish;
+    const bool add_finish = (i == groups.size() - 1) && finish != VK_NULL_HANDLE;
+    if (cur_frame.signal.size() + size_t(add_finish) > max_signals) {
+      utils::error{}("Execution group {} signals {} semaphores, submit supports {}", i, cur_frame.signal.size() + size_t(add_finish), max_signals);
     }
 
-    infos[i].waitSemaphoreCount = cur_frame.wait_for.size();
+    auto& signals = signal_storage[i];
+    std::copy_n(reinterpret_cast<const vk::Semaphore*>(cur_frame.signal.data()), cur_frame.signal.size(), signals.data());
+    if (add_finish) {
+      signals[cur_frame.signal.size()] = vk::Semaphore(finish);
+    }
+
+    // Первый кадр инстанса: кросс-кадровые ожидания сложены в конец списка и ждать их некого — отрезаем.
+    // Дальше баланс держится сам: слот j сигналит свой семафор, а слот j+1 его ждёт.
+    const uint32_t cross = submitted_frames == 0 ? cur_frame.cross_frame_waits : 0;
+    const uint32_t waits = uint32_t(cur_frame.wait_for.size()) - cross;
+
+    infos[i].waitSemaphoreCount = waits;
     infos[i].pWaitSemaphores = reinterpret_cast<const vk::Semaphore*>(cur_frame.wait_for.data());
-    //for (const auto sem : cur_frame.wait_for) { utils::info("Current wait for semaphore {:p}", (const void*)sem); }
     infos[i].pWaitDstStageMask = reinterpret_cast<const vk::PipelineStageFlags*>(cur_frame.wait_for_stages.data());
-    infos[i].signalSemaphoreCount = cur_frame.signal.size() + size_t(i == groups.size() - 1 && finish != VK_NULL_HANDLE);
-    infos[i].pSignalSemaphores = finish_semaphores.data();
+    infos[i].signalSemaphoreCount = cur_frame.signal.size() + size_t(add_finish);
+    infos[i].pSignalSemaphores = signals.data();
     infos[i].commandBufferCount = 1;
     infos[i].pCommandBuffers = reinterpret_cast<const vk::CommandBuffer*>(&cur_frame.buffer);
   }
@@ -1156,6 +1181,10 @@ void render_graph_instance::submit(const graphics_base* ctx, const graphics_queu
   const auto res = vk::Queue(q.handle()).submit(groups.size(), infos.data(), f);
   if (res != vk::Result::eSuccess) {
     utils::error{}("Failed to submit commads to queue, result: {}", vk::to_string(res));
+  }
+
+  if (submitted_frames < UINT32_MAX) {
+    submitted_frames += 1;
   }
 }
 

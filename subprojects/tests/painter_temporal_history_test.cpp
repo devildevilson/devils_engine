@@ -1,0 +1,115 @@
+#include <doctest/doctest.h>
+
+#include <cstdint>
+
+#include "devils_engine/painter/common.h"
+#include "devils_engine/painter/structures.h"
+
+using namespace devils_engine;
+
+namespace {
+
+// Модель ротации копий, ровно как её видит update_descriptors: индекс копии, отстоящей на frames_back
+// кадров назад, при часах clock и общем числе копий.
+uint32_t copy_at(const uint32_t clock, const uint32_t frames_back, const uint32_t copies) {
+  return painter::history_copy_index(clock, frames_back, copies);
+}
+
+// Есть ли гонка при данном числе копий: кадр N пишет копию, которую кто-то ещё читает или пишет.
+// Кадры N-1 … N-frames_in_flight+1 считаются «в полёте» — их команды могут выполняться параллельно.
+bool has_collision(const uint32_t frames_in_flight, const uint32_t history, const uint32_t copies) {
+  constexpr uint32_t simulated_frames = 64;
+  for (uint32_t frame = frames_in_flight + history; frame < simulated_frames; ++frame) {
+    const uint32_t target = copy_at(frame, 0, copies);
+
+    for (uint32_t back = 1; back < frames_in_flight; ++back) {
+      const uint32_t in_flight = frame - back;
+      // писать в копию, которую ещё пишет кадр в полёте, нельзя
+      if (copy_at(in_flight, 0, copies) == target) {
+        return true;
+      }
+      // и в ту, которую он читает как историю, тоже
+      for (uint32_t j = 1; j <= history; ++j) {
+        if (copy_at(in_flight, j, copies) == target) {
+          return true;
+        }
+      }
+    }
+
+    // история обязана дожить до чтения: копию, прочитанную как «j кадров назад», не должен был
+    // перезаписать никто из кадров после её записи
+    for (uint32_t j = 1; j <= history; ++j) {
+      const uint32_t source = copy_at(frame, j, copies);
+      for (uint32_t writer = frame - j + 1; writer <= frame; ++writer) {
+        if (copy_at(writer, 0, copies) == source) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+} // namespace
+
+TEST_CASE("history binding shows a window of history, never the copy being written [painter]") {
+  // Без истории binding — одиночный дескриптор текущей копии: никакого массива в шейдере
+  const painter::descriptor::binding current(0, painter::usage::sampled, painter::invalid_resource_slot, 0, 0);
+  CHECK(current.array_size() == 1);
+  CHECK(current.frames_back(0) == 0);
+
+  // С историей — окно из ровно N копий, и текущая в него НЕ входит: она лежит в writable layout, а копии
+  // истории зафиксированы в read-only, и один binding не может обещать оба layout сразу.
+  const painter::descriptor::binding window(0, painter::usage::sampled, painter::invalid_resource_slot, 0, 2);
+  CHECK(window.array_size() == 2);
+  CHECK(window.frames_back(0) == 1);
+  CHECK(window.frames_back(1) == 2);
+}
+
+TEST_CASE("history window indices address exactly the previous frames [painter]") {
+  constexpr uint32_t copies = 4; // frames_in_flight 3 + history 1
+  const painter::descriptor::binding window(0, painter::usage::sampled, painter::invalid_resource_slot, 0, 1);
+
+  for (uint32_t clock = 0; clock < 12; ++clock) {
+    const uint32_t current = copy_at(clock, 0, copies);
+    const uint32_t previous = copy_at(clock, window.frames_back(0), copies);
+    CHECK(previous != current);
+    // копия, которую читает кадр clock, — это та, в которую писал кадр clock-1
+    CHECK(previous == copy_at(clock - 1, 0, copies));
+  }
+}
+
+TEST_CASE("copies = counter period + history is the minimum that has no races [painter]") {
+  for (uint32_t frames = 1; frames <= 4; ++frames) {
+    for (uint32_t history = 1; history <= 3; ++history) {
+      const uint32_t derived = frames + history;
+      CHECK_FALSE(has_collision(frames, history, derived));
+      // и это именно МИНИМУМ: одной копией меньше — уже гонка, поэтому число копий выводится, а не
+      // назначается «с запасом»
+      CHECK(has_collision(frames, history, derived - 1));
+    }
+  }
+}
+
+TEST_CASE("resource copy count comes from the period plus reader-declared history [painter]") {
+  painter::resource res;
+  res.type = painter::type::values::frames_in_flight;
+
+  constexpr uint32_t frames_in_flight = 3;
+  constexpr uint32_t swapchain_images = 3;
+
+  res.history_depth = 0;
+  CHECK(res.compute_buffering(frames_in_flight, swapchain_images) == frames_in_flight);
+
+  res.history_depth = 1;
+  CHECK(res.compute_buffering(frames_in_flight, swapchain_images) == frames_in_flight + 1);
+
+  res.history_depth = 2;
+  CHECK(res.compute_buffering(frames_in_flight, swapchain_images) == frames_in_flight + 2);
+
+  // период — свойство счётчика, а не глубины конвейера: ресурс на swapchain-счётчике крутится по числу
+  // образов и историю прибавляет к нему же
+  res.type = painter::type::values::swapchain;
+  res.history_depth = 1;
+  CHECK(res.compute_buffering(frames_in_flight, swapchain_images) == swapchain_images + 1);
+}

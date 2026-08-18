@@ -1,0 +1,9 @@
+{
+  name = viewport
+  type = screensize
+}
+{
+  name = one
+  type = fixed
+  value = [1, 0, 0]
+}

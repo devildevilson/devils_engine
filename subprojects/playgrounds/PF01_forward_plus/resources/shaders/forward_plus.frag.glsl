@@ -26,15 +26,15 @@ layout(set = 0, binding = 0, std140) uniform CameraBlock {
   mat4 view;
   vec4 camera_position;
   vec4 viewport_near;
-} camera_data[3];
+} camera_data;
 
 layout(set = 0, binding = 1, std430) readonly buffer LightBuffer {
   vec4 words[];
-} light_data[3];
+} light_data;
 
 layout(set = 1, binding = 0, std430) readonly buffer TileBuffer {
   uint words[];
-} tile_data[3];
+} tile_data;
 
 vec3 wall_albedo(vec3 normal, vec2 texcoord) {
   vec3 albedo = vec3(0.72);
@@ -55,20 +55,20 @@ vec3 wall_albedo(vec3 normal, vec2 texcoord) {
 void main() {
   const vec3 normal = normalize(world_normal);
   const vec3 albedo = wall_albedo(normal, uv);
-  const vec3 view_direction = normalize(camera_data[0].camera_position.xyz - world_position);
+  const vec3 view_direction = normalize(camera_data.camera_position.xyz - world_position);
   const uvec2 tile = uvec2(gl_FragCoord.xy) / PF01_TILE_SIZE;
   if (tile.x >= PF01_TILES_X || tile.y >= PF01_TILES_Y) {
     out_color = vec4(0.0, 0.0, 0.0, 1.0);
     return;
   }
   const uint list_base = (tile.y * PF01_TILES_X + tile.x) * (PF01_MAX_LIGHTS_PER_TILE + 1);
-  const uint count = min(tile_data[0].words[list_base], uint(PF01_MAX_LIGHTS_PER_TILE));
+  const uint count = min(tile_data.words[list_base], uint(PF01_MAX_LIGHTS_PER_TILE));
 
   vec3 lighting = vec3(0.0);
   for (uint item = 0u; item < count; ++item) {
-    const uint light_index = tile_data[0].words[list_base + 1u + item];
-    const vec4 position_radius = light_data[0].words[1u + light_index * 2u];
-    const vec4 color_intensity = light_data[0].words[2u + light_index * 2u];
+    const uint light_index = tile_data.words[list_base + 1u + item];
+    const vec4 position_radius = light_data.words[1u + light_index * 2u];
+    const vec4 color_intensity = light_data.words[2u + light_index * 2u];
     const vec3 to_light = position_radius.xyz - world_position;
     const float distance_to_light = length(to_light);
     if (distance_to_light >= position_radius.w) continue;

@@ -9,12 +9,12 @@ layout(location = 3) in vec4 in_instance;
 
 layout(set = 0, binding = 0, std140) uniform SceneBlock {
   PF02_SCENE_BLOCK_BODY
-} scene_data[3];
+} scene_data;
 
 
 layout(set = 0, binding = 1, std430) readonly buffer DirectionalCascadeBuffer {
   DirectionalCascade cascades[];
-} directional_data[3];
+} directional_data;
 
 layout(push_constant) uniform RegionPush {
   uint data_index;
@@ -23,7 +23,7 @@ layout(push_constant) uniform RegionPush {
 void main() {
   // Keep the shared p3n3uv2 caster geometry validation-clean in this depth-only pipeline. The
   // runtime value is zero; unlike a literal, it cannot be folded before vertex-input reflection.
-  const vec3 unused_attributes = (in_normal + vec3(in_uv, 0.0)) * scene_data[0].shadow_params.w;
+  const vec3 unused_attributes = (in_normal + vec3(in_uv, 0.0)) * scene_data.shadow_params.w;
   const vec3 world_position = in_position + in_instance.xyz + unused_attributes;
-  gl_Position = directional_data[0].cascades[region.data_index].light_view_projection * vec4(world_position, 1.0);
+  gl_Position = directional_data.cascades[region.data_index].light_view_projection * vec4(world_position, 1.0);
 }

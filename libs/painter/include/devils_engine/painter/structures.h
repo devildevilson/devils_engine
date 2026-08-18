@@ -127,9 +127,19 @@ struct resource {
   uint32_t size_hint;   // 1 data element size
   uint32_t size;        // constant_value index
   enum role::values role;
+  // Период вращения. type::values::count => не задан в конфиге: период выводится из счётчика (см.
+  // resolve_resource_periods). Явный type остаётся override'ом для ресурсов на host-счётчиках, про
+  // период которых движок ничего знать не может.
   enum type::values type;
   uint32_t swap; // counter index
   uint32_t usage_mask;
+  // Глубина истории: сколько кадров назад читают этот ресурс. НЕ объявляется у ресурса — это свойство
+  // техники-читателя, поэтому выводится как max(binding.history) по всем биндингам активных дескрипторов
+  // (resolve_resource_periods). Полное число копий = период + history_depth.
+  uint32_t history_depth;
+  // Юсадж, в котором копии фиксируются на время жизни истории; тоже выводится из history-биндингов.
+  // usage::values::count => ресурс как история не читается.
+  enum usage::values history_usage;
 
   std::array<frame, max_frames_in_flight> handles;
 
@@ -137,6 +147,7 @@ struct resource {
   std::tuple<size_t, std::tuple<uint32_t, uint32_t>> compute_frame_size(const graphics_base* base) const;
   size_t compute_size(const graphics_base* base) const;
   uint32_t compute_buffering(const graphics_base* base) const;
+  uint32_t compute_buffering(const uint32_t frames_count, const uint32_t swapchain_count) const;
 };
 
 // нужно получить буфер или картинку с правильными контейнерами, view и subresource
@@ -220,10 +231,36 @@ struct sampler {
 };
 
 struct descriptor {
+  // Один binding набора. sampler == invalid_resource_slot => без сэмплера (тогда тип binding'а =
+  // convertdt(usage)); иначе sampled+sampler => eCombinedImageSampler.
+  //
+  // Binding даёт шейдеру ЛИБО текущую копию ресурса, ЛИБО окно истории — и это ровно то, что означает
+  // history:
+  //   history == 0 — одиночный дескриптор на ТЕКУЩУЮ копию (никакого массива в шейдере вообще);
+  //   history == N — массив из N элементов, [0] — прошлый кадр, [1] — позапрошлый, …, [N-1] — N кадров назад.
+  // Текущая копия в окно истории НЕ входит намеренно: пасс, который пишет ресурс (TAA пишет новую историю
+  // и читает прошлую в одном пассе), держит её в writable layout, а копии истории зафиксированы в read-only.
+  // Один binding не может обещать оба layout сразу, поэтому запись берётся своим binding'ом, а чтение —
+  // окном. Заодно шейдер не видит копий, которые существуют лишь против гонок кадров в полёте и содержат
+  // мусор: каждый индекс, который шейдер может назвать, осмыслен, а размер массива задан конфигом и не
+  // зависит от frames_in_flight.
+  struct binding {
+    uint32_t resource;
+    enum usage::values usage;
+    uint32_t sampler;
+    uint32_t stages; // VkShaderStageFlags
+    uint32_t history;
+
+    binding() noexcept;
+    binding(const uint32_t resource, const enum usage::values usage, const uint32_t sampler,
+            const uint32_t stages, const uint32_t history = 0) noexcept;
+    uint32_t array_size() const noexcept { return history == 0 ? 1 : history; }
+    // На сколько кадров назад смотрит элемент массива j
+    uint32_t frames_back(const uint32_t j) const noexcept { return history == 0 ? 0 : j + 1; }
+  };
+
   std::string name;
-  // (slot, usage, sampler_index, shader_stages). sampler_index == UINT32_MAX => без сэмплера
-  // (тогда тип binding'а = convertdt(usage)); иначе sampled+sampler => eCombinedImageSampler.
-  std::vector<std::tuple<uint32_t, enum usage::values, uint32_t, uint32_t>> layout;
+  std::vector<binding> layout;
 
   // Опциональный asset-текстурный binding, заполняемый РЕНДЕРОМ из assets_base.texture_slots (а не из
   // ctx.resources — текстуры не render-graph ресурсы). РАЗДЕЛЁН на два binding'а (bindless v2):
@@ -431,8 +468,11 @@ struct execution_pass_base {
   // но у меня пока render_graph_base и эта структуры связаны
 
   std::string name;
-  std::vector<std::string> wait_for; // семафоры
-  std::vector<std::string> signal;   // семафоры
+  std::vector<std::string> wait_for; // семафоры ЭТОГО кадра (пасс-сигналящий обязан идти раньше в графе)
+  // Escape hatch для кросс-кадровой зависимости: ждём семафор ПРЕДЫДУЩЕГО кадра. Обычно писать это руками
+  // не надо — зависимость выводится из объявленного чтения истории ('history = N' в биндинге дескриптора).
+  std::vector<std::string> wait_previous;
+  std::vector<std::string> signal; // семафоры
   std::vector<std::vector<resource_info>> subpasses;
   std::vector<std::vector<resource_info>> barriers;
   std::vector<uint32_t> steps;

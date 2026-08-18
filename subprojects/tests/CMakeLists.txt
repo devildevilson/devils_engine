@@ -152,6 +152,9 @@ target_compile_definitions(painter_shader_prepare_test PRIVATE
 devils_add_doctest(painter_atlas_layout_test painter_atlas_layout_test.cpp)
 target_link_libraries(painter_atlas_layout_test PRIVATE devils_engine::painter)
 
+devils_add_doctest(painter_temporal_history_test painter_temporal_history_test.cpp)
+target_link_libraries(painter_temporal_history_test PRIVATE devils_engine::painter)
+
 devils_add_doctest(painter_queue_plan_test painter_queue_plan_test.cpp)
 target_link_libraries(painter_queue_plan_test PRIVATE devils_engine::painter)
 

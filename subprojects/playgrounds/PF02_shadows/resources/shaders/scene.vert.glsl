@@ -9,7 +9,7 @@ layout(location = 3) in vec4 in_instance;
 
 layout(set = 0, binding = 0, std140) uniform SceneBlock {
   PF02_SCENE_BLOCK_BODY
-} scene_data[3];
+} scene_data;
 
 layout(location = 0) out vec3 world_position;
 layout(location = 1) out vec3 world_normal;
@@ -19,5 +19,5 @@ void main() {
   world_position = in_position + in_instance.xyz;
   world_normal = in_normal;
   uv = in_uv;
-  gl_Position = scene_data[0].view_projection * vec4(world_position, 1.0);
+  gl_Position = scene_data.view_projection * vec4(world_position, 1.0);
 }

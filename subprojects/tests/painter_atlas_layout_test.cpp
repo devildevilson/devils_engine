@@ -4,6 +4,7 @@
 #include <doctest/doctest.h>
 
 #include "devils_engine/painter/atlas_layout.h"
+#include "devils_engine/painter/common.h"
 
 using namespace devils_engine;
 
@@ -82,4 +83,26 @@ TEST_CASE("atlas layout is deterministic and yields matching uv transforms [pain
   const float center_u = 0.5f * uv.scale_x + uv.offset_x;
   CHECK(center_u > uv.offset_x);
   CHECK(center_u < uv.offset_x + uv.scale_x);
+}
+
+TEST_CASE("history copy index keeps shader-side indices constant [painter]") {
+  // Контракт: [0] всегда текущая копия, [1] — предыдущий кадр, [2] — позапрошлый, при ЛЮБОМ значении
+  // счётчика кадров. Именно это позволяет шейдеру брать историю по константному индексу.
+  for (uint32_t clock = 0; clock < 12; ++clock) {
+    CHECK(painter::history_copy_index(clock, 0, 3) == clock % 3);
+    CHECK(painter::history_copy_index(clock, 1, 3) == (clock + 2) % 3);
+    CHECK(painter::history_copy_index(clock, 2, 3) == (clock + 1) % 3);
+
+    // Разные копии для разной давности, и полный оборот возвращает текущую.
+    CHECK(painter::history_copy_index(clock, 1, 3) != painter::history_copy_index(clock, 0, 3));
+    CHECK(painter::history_copy_index(clock, 2, 3) != painter::history_copy_index(clock, 1, 3));
+    CHECK(painter::history_copy_index(clock, 3, 3) == painter::history_copy_index(clock, 0, 3));
+  }
+
+  // Двойная буферизация: одна история, чередование без вырождения.
+  CHECK(painter::history_copy_index(7, 0, 2) == 1);
+  CHECK(painter::history_copy_index(7, 1, 2) == 0);
+  // Одна копия: истории нет, всё указывает на неё же — это не ошибка, а отсутствие истории.
+  CHECK(painter::history_copy_index(5, 1, 1) == 0);
+  CHECK(painter::history_copy_index(5, 1, 0) == 0);
 }

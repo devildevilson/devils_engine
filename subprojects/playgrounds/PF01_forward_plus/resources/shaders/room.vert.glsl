@@ -10,7 +10,7 @@ layout(set = 0, binding = 0, std140) uniform CameraBlock {
   mat4 view;
   vec4 camera_position;
   vec4 viewport_near;
-} camera_data[3];
+} camera_data;
 
 layout(location = 0) out vec3 world_position;
 layout(location = 1) out vec3 world_normal;
@@ -20,5 +20,5 @@ void main() {
   world_position = in_position + in_instance.xyz;
   world_normal = in_normal;
   uv = in_uv;
-  gl_Position = camera_data[0].view_projection * vec4(world_position, 1.0);
+  gl_Position = camera_data.view_projection * vec4(world_position, 1.0);
 }

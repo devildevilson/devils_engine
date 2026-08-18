@@ -498,6 +498,20 @@ std::string_view to_string(const uint32_t u) noexcept;
 uint32_t from_string(const std::string_view& name) noexcept;
 } // namespace blend_op
 
+// Индекс копии буферизованного ресурса, отстоящей на frames_back кадров назад: 0 — текущая копия,
+// 1 — предыдущий кадр, 2 — позапрошлый. Именно в этом порядке пишутся дескрипторы, поэтому индекс истории
+// в шейдере остаётся КОНСТАНТОЙ (`[0]` текущий, `[1]` прошлый) и не приходит данными.
+constexpr uint32_t history_copy_index(
+  const uint32_t clock,
+  const uint32_t frames_back,
+  const uint32_t buffering) noexcept {
+  if (buffering == 0) {
+    return 0;
+  }
+  const uint32_t back = frames_back % buffering;
+  return (clock + buffering - back) % buffering;
+}
+
 namespace compare_op {
 std::string_view to_string(const uint32_t u) noexcept;
 uint32_t from_string(const std::string_view& name) noexcept;

@@ -7,15 +7,15 @@ layout(location = 0) out vec4 out_color;
 
 layout(set = 0, binding = 0, std140) uniform SceneBlock {
   PF02_SCENE_BLOCK_BODY
-} scene_data[3];
+} scene_data;
 
-layout(set = 1, binding = 0) uniform sampler2D directional_shadow_image[3];
-layout(set = 1, binding = 1) uniform sampler2D spot_shadow_atlas[3];
-layout(set = 2, binding = 0) uniform sampler2D directional_contact_image[3];
-layout(set = 2, binding = 1) uniform sampler2D spot_contact_image[3];
+layout(set = 1, binding = 0) uniform sampler2D directional_shadow_image;
+layout(set = 1, binding = 1) uniform sampler2D spot_shadow_atlas;
+layout(set = 2, binding = 0) uniform sampler2D directional_contact_image;
+layout(set = 2, binding = 1) uniform sampler2D spot_contact_image;
 
 void main() {
-  const vec2 viewport = scene_data[0].viewport_near.xy;
+  const vec2 viewport = scene_data.viewport_near.xy;
   const float side = min(224.0, min(viewport.x * 0.22, viewport.y * 0.32));
   const vec2 directional_origin = vec2(viewport.x - side * 2.0 - 24.0, 12.0);
   const vec2 atlas_origin = vec2(viewport.x - side - 12.0, 12.0);
@@ -35,8 +35,8 @@ void main() {
     const vec2 contact_uv = in_directional_contact ? directional_contact_uv : spot_contact_uv;
     const bool contact_border = any(lessThan(contact_uv, vec2(0.012))) || any(greaterThan(contact_uv, vec2(0.988)));
     const vec4 contact_value = in_directional_contact
-      ? vec4(vec3(texture(directional_contact_image[0], contact_uv).r), 1.0)
-      : vec4(texture(spot_contact_image[0], contact_uv).rgb, 1.0);
+      ? vec4(vec3(texture(directional_contact_image, contact_uv).r), 1.0)
+      : vec4(texture(spot_contact_image, contact_uv).rgb, 1.0);
     out_color = contact_border ? vec4(0.18, 0.86, 1.0, 1.0) : contact_value;
     return;
   }
@@ -45,8 +45,8 @@ void main() {
   const bool outer_border = any(lessThan(sample_uv, vec2(0.012))) || any(greaterThan(sample_uv, vec2(0.988)));
   const bool tile_border = abs(sample_uv.x - 0.5) < 0.006 || abs(sample_uv.y - 0.5) < 0.006;
   const float depth = in_directional
-    ? texture(directional_shadow_image[0], sample_uv).r
-    : texture(spot_shadow_atlas[0], sample_uv).r;
+    ? texture(directional_shadow_image, sample_uv).r
+    : texture(spot_shadow_atlas, sample_uv).r;
   const float visible_depth = pow(clamp(depth, 0.0, 1.0), 0.35);
   out_color = (outer_border || tile_border) ? vec4(1.0, 0.78, 0.18, 1.0) : vec4(vec3(visible_depth), 1.0);
 }

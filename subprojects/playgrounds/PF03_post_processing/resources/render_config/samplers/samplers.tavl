@@ -1,0 +1,5 @@
+{
+  name = frame_linear
+  filter = linear
+  address = clamp
+}

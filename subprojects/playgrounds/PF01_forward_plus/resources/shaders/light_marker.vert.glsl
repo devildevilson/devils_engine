@@ -13,13 +13,13 @@ layout(set = 0, binding = 0, std140) uniform CameraBlock {
   mat4 view;
   vec4 camera_position;
   vec4 viewport_near;
-} camera_data[3];
+} camera_data;
 
 layout(location = 0) out vec3 marker_color;
 
 void main() {
   const vec3 world_position = in_position_radius.xyz + in_origin;
   marker_color = in_color_intensity.rgb;
-  gl_Position = camera_data[0].view_projection * vec4(world_position, 1.0);
+  gl_Position = camera_data.view_projection * vec4(world_position, 1.0);
   gl_PointSize = PF01_MARKER_SIZE;
 }

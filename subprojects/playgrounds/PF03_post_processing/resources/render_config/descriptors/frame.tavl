@@ -1,0 +1,29 @@
+{
+  name = frame_data
+  layout = [
+    { resource = frame_buffer, usage = uniform, stage = compute }
+  ]
+}
+{
+  name = scene_write
+  layout = [
+    { resource = scene_color, usage = texel_write, stage = compute }
+  ]
+}
+{
+  // Вот всё объявление темпоральной техники: 'history = 1' говорит, что биндинг читает копию, записанную
+  // кадром назад. Из него выводится и число копий ресурса, и read-only layout этих копий, и то, что пасс
+  // обязан дождаться пасса-писателя предыдущего кадра. Текущая копия в это окно не входит: её отдаёт
+  // отдельный write-биндинг (temporal_write), потому что она лежит в writable layout.
+  name = temporal_inputs
+  layout = [
+    { resource = scene_color, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = feedback_color, usage = sampled, sampler = frame_linear, stage = compute, history = 1 }
+  ]
+}
+{
+  name = temporal_write
+  layout = [
+    { resource = feedback_color, usage = texel_write, stage = compute }
+  ]
+}

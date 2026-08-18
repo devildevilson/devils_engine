@@ -12,10 +12,10 @@ layout(set = 0, binding = 0, std140) uniform CameraBlock {
   mat4 view;
   vec4 camera_position;
   vec4 viewport_near;
-} camera_data[3];
+} camera_data;
 
 void main() {
-  const vec2 viewport = camera_data[0].viewport_near.xy;
+  const vec2 viewport = camera_data.viewport_near.xy;
   const vec2 clip = in_position / viewport * 2.0 - 1.0;
   gl_Position = vec4(clip, 0.0, 1.0);
   out_uv = in_uv;

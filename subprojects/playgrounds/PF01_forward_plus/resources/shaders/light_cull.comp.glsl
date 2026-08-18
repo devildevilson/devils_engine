@@ -20,17 +20,17 @@ layout(set = 0, binding = 0, std140) uniform CameraBlock {
   mat4 view;
   vec4 camera_position;
   vec4 viewport_near;
-} camera_data[3];
+} camera_data;
 
 layout(set = 0, binding = 1, std430) readonly buffer LightBuffer {
   vec4 words[];
-} light_data[3];
+} light_data;
 
-layout(set = 1, binding = 0) uniform sampler2D depth_image[3];
+layout(set = 1, binding = 0) uniform sampler2D depth_image;
 
 layout(set = 2, binding = 0, std430) buffer TileBuffer {
   uint words[];
-} tile_data[3];
+} tile_data;
 
 shared uint nearest_depth_bits;
 shared uint farthest_depth_bits;
@@ -38,7 +38,7 @@ shared uint geometry_count;
 shared uint accepted_flags[128];
 
 float view_depth(float reverse_depth) {
-  return camera_data[0].viewport_near.z / max(reverse_depth, 0.000001);
+  return camera_data.viewport_near.z / max(reverse_depth, 0.000001);
 }
 
 bool sphere_intersects_plane(vec3 center, float radius, vec3 inward_normal) {
@@ -54,13 +54,13 @@ bool overlaps_tile(
   vec2 rect_max) {
   // A sphere crossing the camera/near plane has no finite screen-space bound. Keeping it for every
   // tile is conservative; the depth interval still rejects surfaces outside its radius.
-  if (center_depth <= radius + camera_data[0].viewport_near.z) {
+  if (center_depth <= radius + camera_data.viewport_near.z) {
     return true;
   }
 
   const vec2 ndc_min = rect_min / viewport * 2.0 - 1.0;
   const vec2 ndc_max = rect_max / viewport * 2.0 - 1.0;
-  const float projection_y_magnitude = camera_data[0].viewport_near.w;
+  const float projection_y_magnitude = camera_data.viewport_near.w;
   const float projection_x = projection_y_magnitude * viewport.y / viewport.x;
   const float projection_y = -projection_y_magnitude;
   const vec3 left_plane = vec3(projection_x, 0.0, ndc_min.x);
@@ -76,7 +76,7 @@ bool overlaps_tile(
 void main() {
   const uvec2 tile = gl_WorkGroupID.xy;
   if (tile.x >= PF01_TILES_X || tile.y >= PF01_TILES_Y) return;
-  const uvec2 viewport = uvec2(camera_data[0].viewport_near.xy);
+  const uvec2 viewport = uvec2(camera_data.viewport_near.xy);
   const uvec2 tile_min = tile * PF01_TILE_SIZE;
   if (tile_min.x >= viewport.x || tile_min.y >= viewport.y) {
     return;
@@ -90,7 +90,7 @@ void main() {
     nearest_depth_bits = floatBitsToUint(1e30);
     farthest_depth_bits = floatBitsToUint(0.0);
     geometry_count = 0u;
-    tile_data[0].words[list_base] = 0u;
+    tile_data.words[list_base] = 0u;
   }
   for (uint i = local_index; i < 128u; i += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
     accepted_flags[i] = 0u;
@@ -99,7 +99,7 @@ void main() {
 
   for (uint y = tile_min.y + gl_LocalInvocationID.y; y < tile_max.y; y += gl_WorkGroupSize.y) {
     for (uint x = tile_min.x + gl_LocalInvocationID.x; x < tile_max.x; x += gl_WorkGroupSize.x) {
-      const float reverse_depth = texelFetch(depth_image[0], ivec2(x, y), 0).r;
+      const float reverse_depth = texelFetch(depth_image, ivec2(x, y), 0).r;
       if (reverse_depth > 0.0) {
         const uint bits = floatBitsToUint(view_depth(reverse_depth));
         atomicMin(nearest_depth_bits, bits);
@@ -116,14 +116,14 @@ void main() {
 
   const float nearest_depth = uintBitsToFloat(nearest_depth_bits);
   const float farthest_depth = uintBitsToFloat(farthest_depth_bits);
-  const uint light_count = min(floatBitsToUint(light_data[0].words[0].x), 128u);
+  const uint light_count = min(floatBitsToUint(light_data.words[0].x), 128u);
   const vec2 viewport_f = vec2(viewport);
   const vec2 rect_min = vec2(tile_min);
   const vec2 rect_max = vec2(tile_max);
 
   for (uint i = local_index; i < light_count; i += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
-    const vec4 position_radius = light_data[0].words[1u + i * 2u];
-    const vec3 view_position = (camera_data[0].view * vec4(position_radius.xyz, 1.0)).xyz;
+    const vec4 position_radius = light_data.words[1u + i * 2u];
+    const vec3 view_position = (camera_data.view * vec4(position_radius.xyz, 1.0)).xyz;
     const float radius = position_radius.w;
     const float center_depth = -view_position.z;
     if (center_depth + radius < nearest_depth || center_depth - radius > farthest_depth) {
@@ -140,10 +140,10 @@ void main() {
     uint accepted = 0u;
     for (uint i = 0u; i < light_count && accepted < PF01_MAX_LIGHTS_PER_TILE; ++i) {
       if (accepted_flags[i] != 0u) {
-        tile_data[0].words[list_base + 1u + accepted] = i;
+        tile_data.words[list_base + 1u + accepted] = i;
         ++accepted;
       }
     }
-    tile_data[0].words[list_base] = accepted;
+    tile_data.words[list_base] = accepted;
   }
 }

@@ -15,7 +15,7 @@ layout(set = 0, binding = 0) uniform global_ubo {
   mat4 ui_proj;
   vec4 misc;
   vec4 reserved[3];
-} g[2];
+} g;
 
 out gl_PerVertex {
   vec4 gl_Position;
@@ -23,7 +23,7 @@ out gl_PerVertex {
 
 void main() {
   const vec2 world_pos = in_actor_center + in_vertex_pos.xy * in_actor_size;
-  gl_Position = g[0].view_proj * vec4(world_pos, 0.0, 1.0);
+  gl_Position = g.view_proj * vec4(world_pos, 0.0, 1.0);
   out_color = in_vertex_color * in_actor_color
     + vec4(float(in_tex & 1u) * 0.001)
     + vec4(in_actor_size * 0.001);

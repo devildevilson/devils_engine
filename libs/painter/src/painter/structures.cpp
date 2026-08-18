@@ -112,7 +112,12 @@ void counter::set_value(const uint32_t val) noexcept {
   next_value.store(val, std::memory_order_release);
 }
 resource::frame::frame() noexcept : index(0), view(VK_NULL_HANDLE), subimage{0, 0, 0, 0, 0}, subbuffer{0, 0} {}
-resource::resource() noexcept : format_hint(VK_FORMAT_UNDEFINED), size_hint(0), size(UINT32_MAX), role(role::values::count), type(type::values::count), swap(0), usage_mask(0) {}
+resource::resource() noexcept : format_hint(VK_FORMAT_UNDEFINED), size_hint(0), size(UINT32_MAX), role(role::values::count), type(type::values::count), swap(0), usage_mask(0),
+                               history_depth(0), history_usage(usage::values::count) {}
+descriptor::binding::binding() noexcept : resource(invalid_resource_slot), usage(usage::values::count), sampler(invalid_resource_slot), stages(VK_SHADER_STAGE_ALL), history(0) {}
+descriptor::binding::binding(const uint32_t resource, const enum usage::values usage, const uint32_t sampler,
+                             const uint32_t stages, const uint32_t history) noexcept
+  : resource(resource), usage(usage), sampler(sampler), stages(stages), history(history) {}
 constant::constant() noexcept : size(0), offset(0) {}
 uint32_t render_target::resource_index(const uint32_t res_id) const {
   uint32_t i = 0;
@@ -269,8 +274,15 @@ size_t resource::compute_size(const graphics_base* base) const {
   return buffer_size * compute_buffering(base);
 }
 
+// Число копий не задаётся руками: период вращения (тип, выведенный из счётчика либо override из конфига)
+// плюс глубина истории, которую попросили читатели. Копия должна дожить до чтения (нужно history+1) и не
+// может перезаписываться, пока её читают кадры в полёте (нужно период+history) — второе строже.
 uint32_t resource::compute_buffering(const graphics_base* base) const {
-  return type::compute_buffering(base, type);
+  return type::compute_buffering(base, type) + history_depth;
+}
+
+uint32_t resource::compute_buffering(const uint32_t frames_count, const uint32_t swapchain_count) const {
+  return type::compute_buffering(frames_count, swapchain_count, type) + history_depth;
 }
 
 size_t geometry::index_size() const {
@@ -511,7 +523,11 @@ struct resource_mirror {
     res.role = check(role::from_string(role), role, name);
     //res.size = check(size::from_string(size), size, name);
     res.size = check(ctx.find_constant_value(size), "constant_value", size, name);
-    res.type = check(type::from_string(type), type, name);
+    // Пустой type — норма: период вращения выводится из счётчика (resolve_resource_periods). Явный type
+    // нужен только там, где период счётчика движку неизвестен (host-счётчики), либо как осознанный override.
+    if (!type.empty()) {
+      res.type = check(type::from_string(type), type, name);
+    }
     // создавать на месте? хардкодить? честно говоря было бы неплохо задекларировать где то
     res.swap = check(ctx.find_counter(swap), "counter", swap, name);
     res.usage_mask = 0;
@@ -747,6 +763,10 @@ struct descriptor_mirror {
     std::string usage;
     std::string sampler;       // пусто => без сэмплера
     std::string stage = "all"; // 'fragment | vertex | ...' либо 'all'
+    // Сколько кадров назад читает этот binding: 0 — только текущая копия, 1 — плюс предыдущий кадр.
+    // Массив binding'а получает размер history + 1; из этого же объявления выводится и число копий
+    // ресурса, и кросс-кадровый порядок пассов.
+    uint32_t history = 0;
   };
 
   std::string name;
@@ -791,7 +811,13 @@ struct descriptor_mirror {
         }
       }
       const uint32_t stages = parse_shader_stages(e.stage);
-      d.layout.push_back(std::make_tuple(res_index, usage_value, sampler_index, stages));
+      if (e.history > 0 && usage::is_write(usage_value)) {
+        utils::error{}(
+          "Descriptor '{}' reads resource '{}' with history = {} in a WRITE usage '{}': история "
+          "фиксируется read-only, писать в неё нельзя",
+          name, e.resource, e.history, e.usage);
+      }
+      d.layout.push_back(descriptor::binding(res_index, usage_value, sampler_index, stages, e.history));
     }
     return d;
   }
@@ -983,6 +1009,7 @@ struct pass2_mirror {
   std::vector<std::string> steps; // ключевое слово next_subpass
 
   std::vector<std::string> wait_for;
+  std::vector<std::string> wait_previous;
   std::vector<std::string> signal;
 };
 
@@ -1070,7 +1097,7 @@ static void parse_step2(
     const uint32_t index = check(ctx.find_resource(res_name), "resource", res_name, step.name);
     const auto usage = check(usage::from_string(usage_str), usage_str, step.name);
     add_resource_usage(index, usage);
-    ctx.descriptors[step.descriptor].layout.push_back(std::make_tuple(index, usage, UINT32_MAX, uint32_t(VK_SHADER_STAGE_ALL)));
+    ctx.descriptors[step.descriptor].layout.push_back(descriptor::binding(index, usage, invalid_resource_slot, uint32_t(VK_SHADER_STAGE_ALL)));
   }
 
   for (const auto& descriptor_name : data.sets) {
@@ -1081,10 +1108,16 @@ static void parse_step2(
 
     const uint32_t index = check(ctx.find_descriptor(descriptor_name), "descriptor", descriptor_name, step.name);
     step.sets.push_back(index);
-    for (const auto& [resource_index, resource_usage, sampler_index, stages] : ctx.descriptors[index].layout) {
-      static_cast<void>(sampler_index);
-      static_cast<void>(stages);
-      add_resource_usage(resource_index, resource_usage);
+    for (const auto& bind : ctx.descriptors[index].layout) {
+      if (bind.history > 0) {
+        // History-биндинг смотрит на ДРУГИЕ копии ресурса — те, что уже зафиксированы в read-only layout
+        // кадром-писателем. Барьеры шага описывают только текущую копию, поэтому история их не порождает:
+        // иначе один шаг (пишет новую историю, читает прошлую) выглядел бы как конфликт юсаджей.
+        // Vulkan usage flags ресурса это не теряет — они собираются напрямую по дескрипторам в
+        // create_resources.
+        continue;
+      }
+      add_resource_usage(bind.resource, bind.usage);
     }
   }
 
@@ -1164,6 +1197,7 @@ static void parse_execution_pass2(
   const bool is_render_pass = pass.render_target != invalid_resource_slot;
 
   pass.wait_for = data.wait_for;
+  pass.wait_previous = data.wait_previous;
   pass.signal = data.signal;
 
   for (const auto& step_name : data.steps) {
@@ -1453,6 +1487,75 @@ semaphore::semaphore() noexcept {
   handles.fill(VK_NULL_HANDLE);
 }
 
+// Число копий ресурса не пишется руками нигде. Оно сводится из двух ортогональных фактов, у каждого из
+// которых своё место объявления:
+//   1) ПЕРИОД ВРАЩЕНИЯ — свойство счётчика: 'per_frame' крутится по frames_in_flight, 'swapchain' — по
+//      числу образов презентации. Про остальные счётчики движок ничего знать не может (их вращает хост,
+//      и это законно может быть и 2 копии, и число образов свопчейна), поэтому там требуется явный type.
+//   2) ГЛУБИНА ИСТОРИИ — свойство ТЕХНИКИ-читателя, а не ресурса, поэтому объявляется в биндинге
+//      дескриптора ('history = 1'). Двум техникам с разной глубиной согласовываться не надо: ресурс
+//      берёт max, и это единственное правило.
+// Итого copies = период + max(history). Заодно тут выводится юсадж, в котором копии фиксируются на время
+// жизни истории (read-only layout), — из тех же history-биндингов.
+static void resolve_resource_periods(render_config_storage& lctx) {
+  for (const auto& d : lctx.descriptors) {
+    for (const auto& bind : d.layout) {
+      if (bind.history == 0) {
+        continue;
+      }
+
+      auto& res = DS_ASSERT_ARRAY_GET(lctx.resources, bind.resource);
+      if (res.role == role::present) {
+        utils::error{}(
+          "Descriptor '{}' asks {} frames of history from present resource '{}': образы свопчейна "
+          "принадлежат презентации, историю надо держать в собственном ресурсе",
+          d.name, bind.history, res.name);
+      }
+
+      if (res.history_usage != usage::values::count && res.history_usage != bind.usage) {
+        utils::error{}(
+          "Resource '{}' is read as history in two different usages ('{}' and '{}'): копия фиксируется "
+          "в ОДНОМ layout на всё время жизни истории, поэтому юсадж должен совпадать (дескриптор '{}')",
+          res.name, usage::to_string(res.history_usage), usage::to_string(bind.usage), d.name);
+      }
+
+      if (res.swap != lctx.per_frame_counter_index && res.swap != lctx.swapchain_counter_index) {
+        const auto& counter = DS_ASSERT_ARRAY_GET(lctx.counters, res.swap);
+        utils::warn(
+          "Descriptor '{}' reads resource '{}' {} frames back, but the resource rotates on counter '{}', "
+          "which the host advances on its own: 'history' считает КАДРЫ, поэтому индекс [1] может оказаться "
+          "не предыдущим кадром",
+          d.name, res.name, bind.history, counter.name);
+      }
+
+      res.history_depth = std::max(res.history_depth, bind.history);
+      res.history_usage = bind.usage;
+    }
+  }
+
+  for (auto& res : lctx.resources) {
+    if (res.type != type::values::count) {
+      continue; // явный override периода
+    }
+
+    if (res.swap == lctx.per_frame_counter_index) {
+      res.type = type::values::frames_in_flight;
+      continue;
+    }
+
+    if (res.swap == lctx.swapchain_counter_index) {
+      res.type = type::values::swapchain;
+      continue;
+    }
+
+    const auto& counter = DS_ASSERT_ARRAY_GET(lctx.counters, res.swap);
+    utils::error{}(
+      "Resource '{}' has no 'type' and rotates on counter '{}': период этого счётчика задаёт хост, движок "
+      "его не знает — укажите type явно (например 'doublebuffer')",
+      res.name, counter.name);
+  }
+}
+
 static void parse_data_impl(render_config_storage& lctx, const config_source& src) {
   const auto constant_values = parse_config_content<constant_value_mirror>(src.read_file("declare_values.tavl"), "declare_values.tavl");
   const auto counter_names = parse_config_content<std::string>(src.read_file("declare_counters.tavl"), "declare_counters.tavl");
@@ -1599,12 +1702,17 @@ static void parse_data_impl(render_config_storage& lctx, const config_source& sr
     {
       descriptor d;
       d.name = group.name + ".descriptor";
-      d.layout = {std::make_tuple(group.instances_buffer, usage::storage_write, UINT32_MAX, uint32_t(VK_SHADER_STAGE_ALL)), std::make_tuple(group.indirect_buffer, usage::storage_write, UINT32_MAX, uint32_t(VK_SHADER_STAGE_ALL))};
+      d.layout = {
+        descriptor::binding(group.instances_buffer, usage::storage_write, invalid_resource_slot, uint32_t(VK_SHADER_STAGE_ALL)),
+        descriptor::binding(group.indirect_buffer, usage::storage_write, invalid_resource_slot, uint32_t(VK_SHADER_STAGE_ALL))};
 
       group.descriptor = lctx.descriptors.size();
       lctx.descriptors.emplace_back(std::move(d));
     }
   }
+
+  // последним шагом: периоды вращения и глубина истории (нужны все дескрипторы, включая созданные выше)
+  resolve_resource_periods(lctx);
 }
 
 render_config_storage build_render_config(std::string path) {
@@ -1711,17 +1819,15 @@ command_params parse_command(render_config_storage* ctx, const step_base& step, 
     auto data_usage = usage::values::count;
     for (const uint32_t descriptor_index : step.sets) {
       const auto& descriptor = DS_ASSERT_ARRAY_GET(ctx->descriptors, descriptor_index);
-      for (const auto& [resource_index, resource_usage, sampler_index, stages] : descriptor.layout) {
-        static_cast<void>(sampler_index);
-        static_cast<void>(stages);
-        if (resource_index != data_index) continue;
-        if (resource_usage != usage::uniform && resource_usage != usage::storage_read) {
+      for (const auto& bind : descriptor.layout) {
+        if (bind.resource != data_index) continue;
+        if (bind.usage != usage::uniform && bind.usage != usage::storage_read) {
           utils::error{}("draw_regions gpu_data '{}' in step '{}' must be uniform or storage_read", data_name, step.name);
         }
-        if (data_usage != usage::values::count && data_usage != resource_usage) {
+        if (data_usage != usage::values::count && data_usage != bind.usage) {
           utils::error{}("draw_regions gpu_data '{}' in step '{}' has conflicting descriptor usages", data_name, step.name);
         }
-        data_usage = resource_usage;
+        data_usage = bind.usage;
       }
     }
     if (data_usage == usage::values::count) {

@@ -1,0 +1,35 @@
+{
+  name = pf03_post
+  startup = true
+  passes = [
+    {
+      name = pf03_scene
+      subpasses = [
+        { scene_color = (texel_write, store) }
+      ]
+      steps = [ draw_scene ]
+    },
+    {
+      // Пасс и пишет новую копию feedback_color, и читает прошлую (history-биндинг). Кросс-кадровый
+      // порядок для этого в конфиге не объявляется — он выводится из самого history-чтения.
+      name = pf03_temporal
+      subpasses = [
+        {
+          scene_color = (sampled, store),
+          feedback_color = (texel_write, store)
+        }
+      ]
+      steps = [ accumulate_history ]
+    },
+    {
+      name = pf03_present
+      wait_for = [ swapchain_image ]
+      subpasses = [
+        { feedback_color = (transfer_src, store), swapchain_image = (transfer_dst, store) },
+        { feedback_color = (transfer_src, store), swapchain_image = (present, store) }
+      ]
+      steps = [ present_feedback ]
+    }
+  ]
+  present_source = swapchain_image
+}

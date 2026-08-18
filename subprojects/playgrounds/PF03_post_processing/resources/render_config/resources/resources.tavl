@@ -1,0 +1,31 @@
+{
+  name = swapchain_image
+  format = swapchain4
+  role = present
+  size = viewport
+  swap = swapchain
+}
+{
+  // Кадр «как есть», без темпорального накопления
+  name = scene_color
+  format = sf4
+  role = hdr_color
+  size = viewport
+  swap = per_frame
+}
+{
+  // Темпоральная цель: пасс пишет новую копию и читает прошлую. Числа копий тут НЕТ — оно выводится
+  // из периода счётчика (frames_in_flight) плюс глубина истории, которую попросил дескриптор.
+  name = feedback_color
+  format = sf4
+  role = hdr_color
+  size = viewport
+  swap = per_frame
+}
+{
+  name = frame_buffer
+  format = v4v4
+  role = upload
+  size = one
+  swap = per_frame
+}

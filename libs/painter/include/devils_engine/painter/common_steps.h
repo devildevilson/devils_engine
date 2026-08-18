@@ -141,12 +141,30 @@ public:
   void process(graphics_ctx*, VkCommandBuffer) const override;
 };
 
+// Фиксация temporal-копии. Как только пасс-писатель закончил с копией, она переводится в read-only layout
+// и живёт в нём столько кадров, сколько попросили читатели ('history = N' в биндинге). Читающим кадрам
+// барьеры уже не нужны: копия лежит ровно в том layout, который объявлен в дескрипторе, а видимость записи
+// обеспечивает ожидание семафора кадра-писателя. Обратный переход в writable не нужен явно: когда копия
+// снова становится целью записи, кадр начинает с ней работать из undefined — содержимое всё равно
+// перезаписывается, а гонок нет, потому что копий period + history.
+class temporal_fixate_instance : public step_interface {
+public:
+  // (слот ресурса, юсадж истории) — юсадж выведен из history-биндингов дескрипторов
+  std::vector<std::tuple<uint32_t, uint32_t>> targets;
+
+  temporal_fixate_instance() noexcept;
+  void process(graphics_ctx*, VkCommandBuffer) const override;
+};
+
 struct execution_group {
   struct frame {
     VkCommandBuffer buffer;
     std::vector<VkSemaphore> wait_for; // previos execution_groups
     std::vector<uint32_t> wait_for_stages;
     std::vector<VkSemaphore> signal; // next execution_groups
+    // Сколько ПОСЛЕДНИХ элементов wait_for ждут семафор предыдущего кадра. На первом submit'е графа их
+    // никто ещё не сигналил, поэтому хвост отрезается (иначе очередь встанет навсегда).
+    uint32_t cross_frame_waits;
 
     frame() noexcept;
   };
@@ -186,6 +204,10 @@ public:
 
   // тут должна быть семафора конца кадра
   std::vector<semaphore> local_semaphores;
+
+  // Сколько кадров этот инстанс уже отправил. Нужно ровно для одного: на самом первом submit'е семафоры
+  // «предыдущего кадра» ещё не сигналены никем, и ждать их нельзя.
+  mutable uint32_t submitted_frames = 0;
 
   void process(graphics_ctx*, VkCommandBuffer) const override;
   void recreate_pipeline(const graphics_base*) override;

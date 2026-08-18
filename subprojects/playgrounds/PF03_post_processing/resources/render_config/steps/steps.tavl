@@ -1,0 +1,16 @@
+{
+  name = draw_scene
+  material = scene_material
+  sets = [ frame_data, scene_write ]
+  command = "dispatch constant screen_dispatch"
+}
+{
+  name = accumulate_history
+  material = temporal_material
+  sets = [ frame_data, temporal_inputs, temporal_write ]
+  command = "dispatch constant screen_dispatch"
+}
+{
+  name = present_feedback
+  command = "blit feedback_color swapchain_image"
+}

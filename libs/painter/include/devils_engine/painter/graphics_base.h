@@ -155,6 +155,7 @@ struct graphics_base {
   void set_surface(VkSurfaceKHR surface, const uint32_t width, const uint32_t height);
   void populate_constant_default_values();
 
+  // counter_offset здесь и ниже — СКОЛЬКО КАДРОВ НАЗАД: 0 текущая копия, 1 предыдущий кадр.
   buffer_frame get_current_buffer_resource_frame(const uint32_t res_index, const uint32_t counter_offset = 0) const;
   image_frame get_current_image_resource_frame(const uint32_t res_index, const uint32_t counter_offset = 0) const;
 
@@ -269,6 +270,10 @@ struct graphics_base {
   // массивов (texture_count до 4096) — считаем по распарсенным дескрипторам.
   void recreate_descriptor_pool();
   void create_resources();
+  // Начальное состояние копий temporal-ресурса: без него первый кадр читает историю, которой ещё нет —
+  // картинки в layout UNDEFINED и с мусором в памяти. Копии чистятся в нули и переводятся в тот read-only
+  // layout, который объявлен history-биндингами, поэтому история на старте детерминированно пустая.
+  void initialize_temporal_resources();
   void create_descriptor_sets();
   void revalidate_pairs(const std::vector<std::string>& prev_drav_group_names);
 

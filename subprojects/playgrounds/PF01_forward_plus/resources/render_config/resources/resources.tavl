@@ -3,7 +3,6 @@
   format = swapchain4
   role = present
   size = viewport
-  type = swapchain
   swap = swapchain
 }
 {
@@ -11,7 +10,6 @@
   format = sf4
   role = hdr_color
   size = viewport
-  type = frames_in_flight
   swap = per_frame
 }
 {
@@ -19,7 +17,6 @@
   format = d32
   role = depth
   size = viewport
-  type = frames_in_flight
   swap = per_frame
 }
 {
@@ -27,7 +24,6 @@
   format = mat4mat4v4v4
   role = upload
   size = one
-  type = frames_in_flight
   swap = per_frame
 }
 {
@@ -35,7 +31,6 @@
   format = v4
   role = upload
   size = light_vec4_count
-  type = frames_in_flight
   swap = per_frame
 }
 {
@@ -43,7 +38,6 @@
   format = ui1
   role = culling
   size = tile_word_count
-  type = frames_in_flight
   swap = per_frame
 }
 {
@@ -51,7 +45,6 @@
   format = c1
   role = upload
   size = ui_vertices_bytes
-  type = frames_in_flight
   swap = per_frame
 }
 {
@@ -59,7 +52,6 @@
   format = c1
   role = upload
   size = ui_indices_bytes
-  type = frames_in_flight
   swap = per_frame
 }
 {
@@ -67,6 +59,5 @@
   format = c1
   role = upload
   size = ui_commands_bytes
-  type = frames_in_flight
   swap = per_frame
 }

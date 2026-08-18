@@ -11,29 +11,29 @@ layout(constant_id = 1) const int contact_refine_steps = 3;
 
 layout(set = 0, binding = 0, std140) uniform SceneBlock {
   PF02_SCENE_BLOCK_BODY
-} scene_data[3];
+} scene_data;
 
 
 layout(set = 0, binding = 1, std430) readonly buffer SpotLightBuffer {
   SpotLight lights[];
-} spot_data[3];
+} spot_data;
 
-layout(set = 1, binding = 0) uniform sampler2D depth_image[3];
-layout(set = 2, binding = 0, rg16f) uniform writeonly image2D directional_contact_image[3];
-layout(set = 2, binding = 1, rgba8) uniform writeonly image2D spot_contact_image[3];
+layout(set = 1, binding = 0) uniform sampler2D depth_image;
+layout(set = 2, binding = 0, rg16f) uniform writeonly image2D directional_contact_image;
+layout(set = 2, binding = 1, rgba8) uniform writeonly image2D spot_contact_image;
 
 vec3 reconstruct_world_position(const ivec2 pixel, const float reverse_depth) {
-  const vec2 viewport = scene_data[0].viewport_near.xy;
+  const vec2 viewport = scene_data.viewport_near.xy;
   const vec2 uv = (vec2(pixel) + 0.5) / viewport;
   const vec2 ndc = uv * 2.0 - 1.0;
-  const float view_depth = scene_data[0].viewport_near.z / max(reverse_depth, 0.000001);
-  const float projection_y = scene_data[0].camera_position.w;
+  const float view_depth = scene_data.viewport_near.z / max(reverse_depth, 0.000001);
+  const float projection_y = scene_data.camera_position.w;
   const float projection_x = projection_y * viewport.y / viewport.x;
   const vec3 view_position = vec3(
     ndc.x * view_depth / projection_x,
     -ndc.y * view_depth / projection_y,
     -view_depth);
-  return transpose(mat3(scene_data[0].view)) * view_position + scene_data[0].camera_position.xyz;
+  return transpose(mat3(scene_data.view)) * view_position + scene_data.camera_position.xyz;
 }
 
 vec3 reconstruct_receiver_normal(
@@ -42,15 +42,15 @@ vec3 reconstruct_receiver_normal(
   const vec3 center_position,
   out float receiver_footprint,
   out bool stable_receiver) {
-  const ivec2 viewport = ivec2(scene_data[0].viewport_near.xy);
+  const ivec2 viewport = ivec2(scene_data.viewport_near.xy);
   const ivec2 left_pixel = max(pixel - ivec2(1, 0), ivec2(0));
   const ivec2 right_pixel = min(pixel + ivec2(1, 0), viewport - 1);
   const ivec2 up_pixel = max(pixel - ivec2(0, 1), ivec2(0));
   const ivec2 down_pixel = min(pixel + ivec2(0, 1), viewport - 1);
-  const float left_depth = texelFetch(depth_image[0], left_pixel, 0).r;
-  const float right_depth = texelFetch(depth_image[0], right_pixel, 0).r;
-  const float up_depth = texelFetch(depth_image[0], up_pixel, 0).r;
-  const float down_depth = texelFetch(depth_image[0], down_pixel, 0).r;
+  const float left_depth = texelFetch(depth_image, left_pixel, 0).r;
+  const float right_depth = texelFetch(depth_image, right_pixel, 0).r;
+  const float up_depth = texelFetch(depth_image, up_pixel, 0).r;
+  const float down_depth = texelFetch(depth_image, down_pixel, 0).r;
   // Гейт «здесь нет силуэта» обязан быть свободен от масштаба. Прежний порог сравнивал ПЕРВУЮ разность
   // линейной глубины с долей дистанции, а на скользящем полу или просто вдалеке один пиксель покрывает
   // очень много мировых единиц: первая разность там огромна сама по себе, и весь наклонный/дальний пол
@@ -78,10 +78,10 @@ vec3 reconstruct_receiver_normal(
   receiver_footprint = max(length(dx), length(dy));
   vec3 receiver_normal = cross(dx, dy);
   if (dot(receiver_normal, receiver_normal) < 1.0e-10) {
-    receiver_normal = scene_data[0].camera_position.xyz - center_position;
+    receiver_normal = scene_data.camera_position.xyz - center_position;
   }
   receiver_normal = normalize(receiver_normal);
-  if (dot(receiver_normal, scene_data[0].camera_position.xyz - center_position) < 0.0) {
+  if (dot(receiver_normal, scene_data.camera_position.xyz - center_position) < 0.0) {
     receiver_normal = -receiver_normal;
   }
   return receiver_normal;
@@ -98,9 +98,9 @@ bool contact_ray_hit(
   const float plane_epsilon,
   out vec2 hit_uv) {
   hit_uv = vec2(0.5);
-  const vec2 viewport = scene_data[0].viewport_near.xy;
+  const vec2 viewport = scene_data.viewport_near.xy;
   const vec3 sample_position = ray_origin + surface_to_light * distance_along_ray;
-  const vec4 clip = scene_data[0].view_projection * vec4(sample_position, 1.0);
+  const vec4 clip = scene_data.view_projection * vec4(sample_position, 1.0);
   if (clip.w <= 0.0) return false;
   const vec3 projected = clip.xyz / clip.w;
   const vec2 uv = projected.xy * 0.5 + 0.5;
@@ -110,7 +110,7 @@ bool contact_ray_hit(
   hit_uv = uv;
 
   const ivec2 sample_pixel = clamp(ivec2(uv * viewport), ivec2(0), ivec2(viewport) - 1);
-  const float stored_depth = texelFetch(depth_image[0], sample_pixel, 0).r;
+  const float stored_depth = texelFetch(depth_image, sample_pixel, 0).r;
   if (stored_depth <= 0.0) return false;
   const vec3 blocker_position = reconstruct_world_position(sample_pixel, stored_depth);
   const float blocker_plane_distance = dot(blocker_position - receiver_position, receiver_normal);
@@ -120,8 +120,8 @@ bool contact_ray_hit(
     return false;
   }
 
-  const float surface_depth = scene_data[0].viewport_near.z / stored_depth;
-  const float ray_depth = -(scene_data[0].view * vec4(sample_position, 1.0)).z;
+  const float surface_depth = scene_data.viewport_near.z / stored_depth;
+  const float ray_depth = -(scene_data.view * vec4(sample_position, 1.0)).z;
   const float separation = ray_depth - surface_depth;
   const float fraction = clamp(distance_along_ray / maximum_distance, 0.0, 1.0);
   const float allowed_thickness = thickness * (1.0 + fraction);
@@ -183,7 +183,7 @@ float contact_visibility(
 
       // Блокер у самого края экрана виден лишь частично, поэтому его вклад гасится: иначе на границе
       // кадра тень возникает и исчезает при повороте камеры.
-      const float border = max(scene_data[0].contact_params.z, 0.0001);
+      const float border = max(scene_data.contact_params.z, 0.0001);
       const vec2 border_distance = min(hit_uv, vec2(1.0) - hit_uv);
       const float edge_fade = clamp(min(border_distance.x, border_distance.y) / border, 0.0, 1.0);
       const float occlusion = (1.0 - smoothstep(0.0, maximum_distance, hit_distance)) *
@@ -197,31 +197,31 @@ float contact_visibility(
 
 void main() {
   const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-  const ivec2 viewport = ivec2(scene_data[0].viewport_near.xy);
-  const ivec2 output_size = imageSize(directional_contact_image[0]);
+  const ivec2 viewport = ivec2(scene_data.viewport_near.xy);
+  const ivec2 output_size = imageSize(directional_contact_image);
   if (any(greaterThanEqual(pixel, output_size))) return;
   const ivec2 source_pixel = min(pixel * 2 + ivec2(1), viewport - 1);
 
-  const float reverse_depth = texelFetch(depth_image[0], source_pixel, 0).r;
-  const float maximum_distance = max(scene_data[0].filter_params.z, 0.0);
-  const float thickness = max(scene_data[0].filter_params.w, 0.001);
+  const float reverse_depth = texelFetch(depth_image, source_pixel, 0).r;
+  const float maximum_distance = max(scene_data.filter_params.z, 0.0);
+  const float thickness = max(scene_data.filter_params.w, 0.001);
   // .g == 0 означает «в этом пикселе нет геометрии»: depth-aware upsample такой tap игнорирует.
   if (reverse_depth <= 0.0 || maximum_distance <= 0.0) {
-    imageStore(directional_contact_image[0], pixel, vec4(1.0, 0.0, 0.0, 0.0));
-    imageStore(spot_contact_image[0], pixel, vec4(1.0));
+    imageStore(directional_contact_image, pixel, vec4(1.0, 0.0, 0.0, 0.0));
+    imageStore(spot_contact_image, pixel, vec4(1.0));
     return;
   }
 
-  const float source_view_depth = scene_data[0].viewport_near.z / reverse_depth;
-  const float fade_start = scene_data[0].contact_params.x;
-  const float fade_end = scene_data[0].contact_params.y;
+  const float source_view_depth = scene_data.viewport_near.z / reverse_depth;
+  const float fade_start = scene_data.contact_params.x;
+  const float fade_end = scene_data.contact_params.y;
   const float distance_fade = fade_end > fade_start
     ? 1.0 - smoothstep(fade_start, fade_end, source_view_depth)
     : 1.0;
   if (distance_fade <= 0.0) {
     // Контакт — фича крупного плана: за пределами fade_end лучи не трассируются вообще.
-    imageStore(directional_contact_image[0], pixel, vec4(1.0, source_view_depth, 0.0, 0.0));
-    imageStore(spot_contact_image[0], pixel, vec4(1.0));
+    imageStore(directional_contact_image, pixel, vec4(1.0, source_view_depth, 0.0, 0.0));
+    imageStore(spot_contact_image, pixel, vec4(1.0));
     return;
   }
 
@@ -235,18 +235,18 @@ void main() {
     receiver_footprint,
     stable_receiver);
   if (!stable_receiver) {
-    imageStore(directional_contact_image[0], pixel, vec4(1.0, source_view_depth, 0.0, 0.0));
-    imageStore(spot_contact_image[0], pixel, vec4(1.0));
+    imageStore(directional_contact_image, pixel, vec4(1.0, source_view_depth, 0.0, 0.0));
+    imageStore(spot_contact_image, pixel, vec4(1.0));
     return;
   }
-  const int lighting_mode = int(scene_data[0].viewport_near.w + 0.5);
+  const int lighting_mode = int(scene_data.viewport_near.w + 0.5);
   float directional = 1.0;
   if (lighting_mode != 2) {
     directional = contact_visibility(
       world_position,
       receiver_normal,
       receiver_footprint,
-      normalize(-scene_data[0].light_direction.xyz),
+      normalize(-scene_data.light_direction.xyz),
       maximum_distance,
       thickness,
       distance_fade);
@@ -255,12 +255,12 @@ void main() {
   vec4 spots = vec4(1.0);
   if (lighting_mode != 1) {
     for (int index = 0; index < 4; ++index) {
-      const vec3 to_light = spot_data[0].lights[index].position_range.xyz - world_position;
+      const vec3 to_light = spot_data.lights[index].position_range.xyz - world_position;
       const float distance_to_light = length(to_light);
-      if (distance_to_light >= spot_data[0].lights[index].position_range.w) continue;
+      if (distance_to_light >= spot_data.lights[index].position_range.w) continue;
       const vec3 spot_to_surface = -to_light / max(distance_to_light, 0.0001);
-      if (dot(spot_to_surface, spot_data[0].lights[index].direction_outer.xyz) <=
-          spot_data[0].lights[index].direction_outer.w) continue;
+      if (dot(spot_to_surface, spot_data.lights[index].direction_outer.xyz) <=
+          spot_data.lights[index].direction_outer.w) continue;
       const float ray_distance = min(maximum_distance, distance_to_light);
       spots[index] = contact_visibility(
         world_position,
@@ -273,6 +273,6 @@ void main() {
     }
   }
 
-  imageStore(directional_contact_image[0], pixel, vec4(directional, source_view_depth, 0.0, 0.0));
-  imageStore(spot_contact_image[0], pixel, spots);
+  imageStore(directional_contact_image, pixel, vec4(directional, source_view_depth, 0.0, 0.0));
+  imageStore(spot_contact_image, pixel, spots);
 }
