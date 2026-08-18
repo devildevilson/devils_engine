@@ -1,5 +1,7 @@
 #version 450
 
+#include "pf02_records.glsl"
+
 // Тир качества PCF: задаётся specialization-константой шага (shader_constants), поэтому смена
 // радиуса стоит только пересборки pipeline, а не нового SPIR-V варианта.
 layout(constant_id = 0) const int pcf_radius = 1;
@@ -13,40 +15,14 @@ layout(location = 2) in vec2 uv;
 layout(location = 0) out vec4 out_color;
 
 layout(set = 0, binding = 0, std140) uniform SceneBlock {
-  mat4 view_projection;
-  mat4 view;
-  mat4 light_view_projection;
-  vec4 camera_position;
-  vec4 viewport_near;
-  vec4 light_direction;
-  vec4 shadow_params;
-  vec4 filter_params;
-  // x/y: начало и конец затухания contact по глубине камеры, z: ширина viewport-edge fade.
-  vec4 contact_params;
-  vec4 shadow_layout;
+  PF02_SCENE_BLOCK_BODY
 } scene_data[3];
 
-struct SpotLight {
-  mat4 light_view_projection;
-  vec4 position_range;
-  vec4 direction_outer;
-  vec4 color_intensity;
-  vec4 shadow_params;
-  vec4 uv_scale_offset;
-};
 
 layout(set = 0, binding = 1, std430) readonly buffer SpotLightBuffer {
   SpotLight lights[];
 } spot_data[3];
 
-struct DirectionalCascade {
-  mat4 light_view_projection;
-  vec4 split_depths;
-  vec4 shadow_params;
-  // xy — масштаб, zw — смещение local_uv -> atlas_uv. Раскладка атласа приходит данными, поэтому
-  // шейдер не знает ни числа регионов, ни их сетки.
-  vec4 uv_scale_offset;
-};
 
 layout(set = 0, binding = 2, std430) readonly buffer DirectionalCascadeBuffer {
   DirectionalCascade cascades[];

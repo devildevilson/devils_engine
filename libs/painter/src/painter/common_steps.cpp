@@ -322,6 +322,7 @@ static void resolve_specialization_names(
   }
 
   shader_crafter sc(ctx->config_reg_);
+  sc.set_include_root(ctx->shader_filesystem_prefix_);
   sc.set_optimization(false);
   sc.set_debug_info(true);
   sc.set_shader_entry_point("main");
@@ -411,6 +412,10 @@ static vk::UniqueShaderModule load_shader_module(
   }
   const auto content = file_io::read(full_path);
   shader_crafter sc(nullptr);
+  sc.set_include_root(
+    ctx->shader_filesystem_prefix_.empty()
+      ? utils::project_folder() + "tests/shaders/"
+      : ctx->shader_filesystem_prefix_);
   sc.set_optimization(true);
   sc.set_shader_entry_point("main");
   sc.set_shader_type(shader_kind);

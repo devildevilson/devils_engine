@@ -1,19 +1,12 @@
 #version 450
 
+#include "pf02_records.glsl"
+
 layout(location = 0) in vec2 screen_uv;
 layout(location = 0) out vec4 out_color;
 
 layout(set = 0, binding = 0, std140) uniform SceneBlock {
-  mat4 view_projection;
-  mat4 view;
-  mat4 light_view_projection;
-  vec4 camera_position;
-  vec4 viewport_near;
-  vec4 light_direction;
-  vec4 shadow_params;
-  vec4 filter_params;
-  vec4 contact_params;
-  vec4 shadow_layout;
+  PF02_SCENE_BLOCK_BODY
 } scene_data[3];
 
 layout(set = 1, binding = 0) uniform sampler2D directional_shadow_image[3];

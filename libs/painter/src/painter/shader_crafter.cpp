@@ -1,4 +1,5 @@
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <string_view>
 
@@ -7,6 +8,7 @@
 #include "devils_engine/demiurg/resource_system.h"
 #include "devils_engine/painter/bindings_shared_include_text.h"
 #include "devils_engine/utils/core.h"
+#include "devils_engine/utils/fileio.h"
 #include "glsl_source_file.h"
 #include "shader_crafter.h"
 
@@ -28,7 +30,12 @@ shaderc_include_result* make_empty_include_result() {
 
 class simple_shader_includer : public shaderc::CompileOptions::IncluderInterface {
 public:
-  simple_shader_includer(const demiurg::resource_system* sys) : _sys(sys) {}
+  // include_root != пусто => файлы ищутся ещё и на диске относительно этого корня. Нужно лабораториям,
+  // которые читают шейдеры прямо из дерева исходников (без demiurg-реестра): без этого общий файл с
+  // объявлениями записей невозможен, а дублировать layout по пяти шейдерам — гарантированный баг,
+  // потому что рассинхрон виден только по кривой картинке.
+  simple_shader_includer(const demiurg::resource_system* sys, std::string include_root)
+    : _sys(sys), _include_root(std::move(include_root)) {}
 
   shaderc_include_result* GetInclude(
     const char* requested_source, // запрашиваемый файл
@@ -51,6 +58,19 @@ public:
 
     // я всегда должен возвращать валидную память
     auto result = make_empty_include_result();
+
+    if (!_include_root.empty()) {
+      const auto full_path = _include_root + std::string(file_name);
+      if (file_io::exists(full_path)) {
+        _contents.push_back(file_io::read(full_path));
+        const auto& content = _contents.back();
+        result->source_name = requested_source;
+        result->source_name_length = std::strlen(requested_source);
+        result->content = content.data();
+        result->content_length = content.size();
+        return result;
+      }
+    }
 
     if (_sys == nullptr) {
       return result;
@@ -84,6 +104,9 @@ public:
 
 private:
   const demiurg::resource_system* _sys;
+  std::string _include_root;
+  // Содержимое обязано жить до конца компиляции: shaderc держит только указатель.
+  std::deque<std::string> _contents;
 };
 
 shader_crafter::shader_crafter(const demiurg::resource_system* sys) : _sys(sys), _opt(true), _debug_info(false), _type(0), _err_type(shaderc_compilation_status_success) {}
@@ -99,6 +122,10 @@ void shader_crafter::add_definition(std::string name, std::string value) {
 
 void shader_crafter::set_optimization(const bool opt) {
   _opt = opt;
+}
+
+void shader_crafter::set_include_root(std::string root) {
+  _include_root = std::move(root);
 }
 
 void shader_crafter::set_debug_info(const bool enable) {
@@ -131,7 +158,7 @@ std::vector<uint32_t> shader_crafter::compile(const std::string& source_name, co
     options.SetGenerateDebugInfo();
   }
 
-  options.SetIncluder(std::make_unique<simple_shader_includer>(_sys));
+  options.SetIncluder(std::make_unique<simple_shader_includer>(_sys, _include_root));
   const auto kind = static_cast<shaderc_shader_kind>(_type);
   const auto preprocess_result = compiler.PreprocessGlsl(source, kind, source_name.c_str(), options);
   if (preprocess_result.GetCompilationStatus() != shaderc_compilation_status_success) {

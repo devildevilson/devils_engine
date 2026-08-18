@@ -1,5 +1,7 @@
 #version 450
 
+#include "pf02_records.glsl"
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 // Тиры качества screen-space ray: задаются specialization-константами шага, поэтому пресет меняет
@@ -8,27 +10,9 @@ layout(constant_id = 0) const int contact_ray_steps = 8;
 layout(constant_id = 1) const int contact_refine_steps = 3;
 
 layout(set = 0, binding = 0, std140) uniform SceneBlock {
-  mat4 view_projection;
-  mat4 view;
-  mat4 light_view_projection;
-  vec4 camera_position;
-  vec4 viewport_near;
-  vec4 light_direction;
-  vec4 shadow_params;
-  vec4 filter_params;
-  // x/y: начало и конец затухания по глубине камеры, z: ширина viewport-edge fade в uv.
-  vec4 contact_params;
-  vec4 shadow_layout;
+  PF02_SCENE_BLOCK_BODY
 } scene_data[3];
 
-struct SpotLight {
-  mat4 light_view_projection;
-  vec4 position_range;
-  vec4 direction_outer;
-  vec4 color_intensity;
-  vec4 shadow_params;
-  vec4 uv_scale_offset;
-};
 
 layout(set = 0, binding = 1, std430) readonly buffer SpotLightBuffer {
   SpotLight lights[];

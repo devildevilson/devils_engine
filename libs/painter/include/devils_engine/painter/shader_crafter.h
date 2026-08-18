@@ -26,6 +26,8 @@ public:
   // Сохраняет debug info (в т.ч. OpName). Нужно только для reflection имён: оптимизатор
   // иначе снимает имена, и specialization-константы адресуются лишь по constant_id.
   void set_debug_info(const bool enable);
+  // Корень для локальных #include при работе без demiurg-реестра (лаборатории на fs-пути).
+  void set_include_root(std::string root);
   void set_shader_type(const uint32_t type);
   void set_shader_entry_point(std::string entry_point);
   std::vector<uint32_t> compile(const std::string& source_name, const std::string& source);
@@ -37,6 +39,7 @@ private:
   const demiurg::resource_system* _sys;
   bool _opt;
   bool _debug_info;
+  std::string _include_root;
   uint32_t _type;
   uint32_t _err_type;
   std::string _entry_point;
