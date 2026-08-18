@@ -719,6 +719,7 @@ int main(int argc, char** argv) {
   uint32_t atlas_resolution_override = 0;
   std::optional<std::array<float, 5>> cli_camera;
   std::optional<glm::vec2> cli_contact_fade;
+  std::optional<float> cli_shadow_fade;
   std::optional<glm::vec2> cli_normal_bias;
   std::optional<glm::vec2> cli_raster_bias;
   for (int i = 1; i < argc; ++i) {
@@ -732,6 +733,11 @@ int main(int argc, char** argv) {
     // Раскладка каскадов из CLI: позволяет поставить ОДИН и ТОТ ЖЕ объект в разные каскады при
     // неподвижной камере — иначе «деградацию с номером каскада» невозможно отделить от ракурса и
     // проекционного размера.
+    constexpr std::string_view shadow_fade_prefix = "--shadow-fade=";
+    if (option.starts_with(shadow_fade_prefix)) {
+      cli_shadow_fade = std::clamp(
+        std::strtof(std::string(option.substr(shadow_fade_prefix.size())).c_str(), nullptr), 0.0f, 0.9f);
+    }
     constexpr std::string_view contact_fade_prefix = "--contact-fade=";
     if (option.starts_with(contact_fade_prefix)) {
       const auto text = std::string(option.substr(contact_fade_prefix.size()));
@@ -1210,6 +1216,8 @@ int main(int argc, char** argv) {
     float contact_thickness = 0.055f;
     // Контакт — фича крупного плана: за fade_end лучи не трассируются вообще, а у края кадра вклад
     // гасится, потому что блокер там виден лишь частично.
+    // Доля последнего каскада, на которой тень плавно уходит в ambient. 0 = резкий обрыв.
+    const float shadow_fade_fraction = cli_shadow_fade.has_value() ? *cli_shadow_fade : 0.18f;
     const float contact_fade_start = cli_contact_fade.has_value() ? cli_contact_fade->x : 8.0f;
     const float contact_fade_end = cli_contact_fade.has_value() ? cli_contact_fade->y : 18.0f;
     const float contact_edge_fade = 0.06f;
@@ -1400,7 +1408,7 @@ int main(int argc, char** argv) {
         float(cascade_count),
         float(atlas_width),
         float(atlas_height),
-        0.0f);
+        shadow_fade_fraction);
       write_current_buffer(base, "scene_buffer", &scene, sizeof(scene));
       write_current_buffer(
         base,
@@ -1481,7 +1489,7 @@ int main(int argc, char** argv) {
       }();
       const float worst_in_slice = pixels_per_texel_far *
         (directional_cascades[0].split_depths.y / std::max(camera_near, 1.0e-4f));
-      std::array<std::string, 13> overlay_details{
+      std::array<std::string, 14> overlay_details{
         std::format(
           "CSM: {} x [{}]   splits: {}   tint [9]: {}",
           cascade_count,
@@ -1533,6 +1541,10 @@ int main(int argc, char** argv) {
           contact_enabled ? "on" : "off",
           contact_distance),
         std::format(
+          "Shadow fade: last {:.0f}% of {:.0f} m fades into ambient",
+          100.0f * shadow_fade_fraction,
+          directional_cascades[cascade_count - 1].split_depths.y),
+        std::format(
           "Contact: min-combined, nearest-depth upsample, fade {:.0f}..{:.0f}m, edge {:.2f}",
           contact_fade_start,
           contact_fade_end,
@@ -1541,20 +1553,20 @@ int main(int argc, char** argv) {
         "GPU graph: waiting for timestamp results..."};
       if (gpu_profiler.has_results() && gpu_profiler.passes().size() == 6) {
         const auto timings = gpu_profiler.passes();
-        overlay_details[11] = std::format(
+        overlay_details[12] = std::format(
           "GPU: dir {:.3f}   spot {:.3f}   depth {:.3f}   contact {:.3f} ms",
           timings[0].milliseconds,
           timings[1].milliseconds,
           timings[2].milliseconds,
           timings[3].milliseconds);
-        overlay_details[12] = std::format(
+        overlay_details[13] = std::format(
           "GPU: forward {:.3f} ms   blit {:.3f} ms   graph {:.3f} ms",
           timings[4].milliseconds,
           timings[5].milliseconds,
           gpu_profiler.frame_milliseconds());
       } else if (!gpu_profiler.available()) {
-        overlay_details[11] = "GPU timestamps unavailable on the selected graphics queue";
-        overlay_details[12].clear();
+        overlay_details[12] = "GPU timestamps unavailable on the selected graphics queue";
+        overlay_details[13].clear();
       }
       overlay.set_detail_lines(overlay_details);
 

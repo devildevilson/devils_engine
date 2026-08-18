@@ -279,6 +279,16 @@ float directional_visibility(
   float visibility = directional_cascade_visibility(cascade_index, normal, n_dot_l, view_depth);
   cascade_tint = mix(vec3(1.0), tint_colors[cascade_index], debug_tint);
 
+  // Затухание у края последнего каскада: за ним теней нет вообще, и без плавного перехода край
+  // читается как обрыв (именно это раздражало на коротких shadow_distance). Дальний каскад грубый,
+  // поэтому терять его постепенно дешевле, чем пытаться дотянуть качество.
+  const float fade_fraction = clamp(scene_data[0].shadow_layout.w, 0.0, 0.9);
+  if (fade_fraction > 0.0) {
+    const float shadow_far = directional_data[0].cascades[active_cascades - 1].split_depths.y;
+    const float fade_start = shadow_far * (1.0 - fade_fraction);
+    cascade_tint = mix(cascade_tint, vec3(1.0), smoothstep(fade_start, shadow_far, view_depth));
+  }
+
   if (cascade_index + 1 < active_cascades) {
     const float blend_start = directional_data[0].cascades[cascade_index].split_depths.z;
     const float split_far = directional_data[0].cascades[cascade_index].split_depths.y;
@@ -289,6 +299,12 @@ float directional_visibility(
       const vec3 next_tint = mix(vec3(1.0), tint_colors[cascade_index + 1], debug_tint);
       cascade_tint = mix(cascade_tint, next_tint, blend);
     }
+  }
+
+  if (fade_fraction > 0.0) {
+    const float shadow_far = directional_data[0].cascades[active_cascades - 1].split_depths.y;
+    const float fade_start = shadow_far * (1.0 - fade_fraction);
+    visibility = mix(visibility, 1.0, smoothstep(fade_start, shadow_far, view_depth));
   }
   return visibility;
 }
