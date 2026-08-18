@@ -17,6 +17,7 @@ layout(set = 0, binding = 0, std140) uniform SceneBlock {
   vec4 shadow_params;
   vec4 filter_params;
   vec4 contact_params;
+  vec4 shadow_layout;
 } scene_data[3];
 
 void main() {

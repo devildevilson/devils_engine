@@ -39,6 +39,16 @@
   presets = [ low = [1024, 0, 0], mid = [2048, 0, 0], high = [4096, 0, 0] ]
 }
 {
+  // Атлас каскадов отделён от spot-атласа: бюджету каскадов нужно расти независимо (шесть каскадов в
+  // 2048 не влезают), а платить за это удвоением spot-атласа незачем.
+  // Можно объявить как `type = screensize` со scale — тогда качество перестанет зависеть от разрешения
+  // окна, потому что размер тайла будет расти вместе с ним.
+  name = directional_atlas_resolution
+  type = fixed
+  value = [2048, 0, 0]
+  presets = [ low = [1024, 0, 0], mid = [2048, 0, 0], high = [4096, 0, 0] ]
+}
+{
   name = spot_light_count
   type = fixed
   value = [4, 0, 0]
@@ -46,7 +56,8 @@
 {
   name = directional_cascade_count
   type = fixed
-  value = [4, 0, 0]
+  // БЮДЖЕТ записей каскадов, а не фактическое число: раскладку задаёт рантайм (--cascade-tiles).
+  value = [6, 0, 0]
 }
 {
   name = directional_region_commands_bytes

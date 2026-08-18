@@ -23,6 +23,7 @@ layout(set = 0, binding = 0, std140) uniform SceneBlock {
   vec4 filter_params;
   // x/y: начало и конец затухания contact по глубине камеры, z: ширина viewport-edge fade.
   vec4 contact_params;
+  vec4 shadow_layout;
 } scene_data[3];
 
 struct SpotLight {
@@ -31,6 +32,7 @@ struct SpotLight {
   vec4 direction_outer;
   vec4 color_intensity;
   vec4 shadow_params;
+  vec4 uv_scale_offset;
 };
 
 layout(set = 0, binding = 1, std430) readonly buffer SpotLightBuffer {
@@ -41,6 +43,9 @@ struct DirectionalCascade {
   mat4 light_view_projection;
   vec4 split_depths;
   vec4 shadow_params;
+  // xy — масштаб, zw — смещение local_uv -> atlas_uv. Раскладка атласа приходит данными, поэтому
+  // шейдер не знает ни числа регионов, ни их сетки.
+  vec4 uv_scale_offset;
 };
 
 layout(set = 0, binding = 2, std430) readonly buffer DirectionalCascadeBuffer {
@@ -94,7 +99,7 @@ vec2 receiver_plane_gradient(
   const vec3 surface_normal,
   const vec3 projected,
   const float clip_w,
-  const float atlas_to_local) {
+  const vec2 atlas_to_local) {
   if (abs(clip_w) < 1.0e-6) return vec2(0.0);
   const vec3 row0 = vec3(light_matrix[0][0], light_matrix[1][0], light_matrix[2][0]);
   const vec3 row1 = vec3(light_matrix[0][1], light_matrix[1][1], light_matrix[2][1]);
@@ -122,7 +127,7 @@ vec2 receiver_plane_gradient(
 
   // g = A^{-T} c переводит (du, dv) в ddepth, затем local-uv -> atlas-uv.
   const vec2 gradient_local = vec2(a22 * c1 - a21 * c2, a11 * c2 - a12 * c1) / determinant;
-  return gradient_local * atlas_to_local;
+  return gradient_local / max(atlas_to_local, vec2(1.0e-6));
 }
 
 float receiver_depth_at(
@@ -235,14 +240,14 @@ float directional_cascade_visibility(
     return 1.0;
   }
 
-  const vec2 tile = vec2(float(cascade_index & 1), float(cascade_index >> 1));
-  const vec2 atlas_uv = (local_uv + tile) * 0.5;
-  const float resolution = scene_data[0].shadow_params.x;
-  const vec2 texel = vec2(1.0 / resolution);
-  const vec2 safe_min = tile * 0.5 + texel * 0.5;
-  const vec2 safe_max = (tile + vec2(1.0)) * 0.5 - texel * 0.5;
+  const vec2 region_scale = directional_data[0].cascades[cascade_index].uv_scale_offset.xy;
+  const vec2 region_offset = directional_data[0].cascades[cascade_index].uv_scale_offset.zw;
+  const vec2 atlas_uv = local_uv * region_scale + region_offset;
+  const vec2 texel = 1.0 / max(scene_data[0].shadow_layout.yz, vec2(1.0));
+  const vec2 safe_min = region_offset + texel * 0.5;
+  const vec2 safe_max = region_offset + region_scale - texel * 0.5;
   const vec2 depth_gradient = receiver_plane_gradient(
-    directional_data[0].cascades[cascade_index].light_view_projection, normal, projected, clip.w, 2.0);
+    directional_data[0].cascades[cascade_index].light_view_projection, normal, projected, clip.w, region_scale);
   const float receiver_plane_scale = directional_data[0].cascades[cascade_index].shadow_params.z;
   const int aa_mode = int(scene_data[0].light_direction.w + 0.5);
   const float aa_radius = screen_aware_radius(
@@ -274,8 +279,9 @@ float directional_visibility(
   const float n_dot_l,
   const float view_depth,
   out vec3 cascade_tint) {
+  const int active_cascades = int(scene_data[0].shadow_layout.x + 0.5);
   int cascade_index = -1;
-  for (int index = 0; index < 4; ++index) {
+  for (int index = 0; index < active_cascades; ++index) {
     if (view_depth <= directional_data[0].cascades[index].split_depths.y) {
       cascade_index = index;
       break;
@@ -286,16 +292,18 @@ float directional_visibility(
     return 1.0;
   }
 
-  const vec3 tint_colors[4] = vec3[](
+  const vec3 tint_colors[6] = vec3[](
     vec3(1.0, 0.42, 0.42),
     vec3(0.42, 1.0, 0.52),
     vec3(0.42, 0.62, 1.0),
-    vec3(1.0, 0.82, 0.32));
+    vec3(1.0, 0.82, 0.32),
+    vec3(0.85, 0.45, 1.0),
+    vec3(0.40, 0.95, 0.95));
   const float debug_tint = directional_data[0].cascades[0].split_depths.w;
   float visibility = directional_cascade_visibility(cascade_index, normal, n_dot_l, view_depth);
   cascade_tint = mix(vec3(1.0), tint_colors[cascade_index], debug_tint);
 
-  if (cascade_index < 3) {
+  if (cascade_index + 1 < active_cascades) {
     const float blend_start = directional_data[0].cascades[cascade_index].split_depths.z;
     const float split_far = directional_data[0].cascades[cascade_index].split_depths.y;
     const float blend = smoothstep(blend_start, split_far, view_depth);
@@ -316,10 +324,10 @@ float spot_visibility(
   const float n_dot_l) {
   if (spot_data[0].lights[0].shadow_params.y < 0.5) return 1.0;
   const vec4 unoffset_clip = spot_data[0].lights[index].light_view_projection * vec4(position, 1.0);
-  const float resolution = scene_data[0].shadow_params.x;
-  const float tile_resolution = resolution * 0.5;
+  const float region_resolution = max(
+    spot_data[0].lights[index].uv_scale_offset.x * scene_data[0].shadow_layout.y, 1.0);
   const float world_texel =
-    2.0 * abs(unoffset_clip.w) * spot_data[0].lights[index].shadow_params.x / tile_resolution;
+    2.0 * abs(unoffset_clip.w) * spot_data[0].lights[index].shadow_params.x / region_resolution;
   const float normal_offset = world_texel *
     (scene_data[0].shadow_params.y + scene_data[0].shadow_params.z * (1.0 - n_dot_l));
   const vec3 receiver_position = position + normal * normal_offset;
@@ -330,13 +338,14 @@ float spot_visibility(
     return 1.0;
   }
 
-  const vec2 tile = vec2(float(index & 1), float(index >> 1));
-  const vec2 atlas_uv = (local_uv + tile) * 0.5;
-  const vec2 texel = vec2(1.0 / resolution);
-  const vec2 safe_min = tile * 0.5 + texel * 0.5;
-  const vec2 safe_max = (tile + vec2(1.0)) * 0.5 - texel * 0.5;
+  const vec2 region_scale = spot_data[0].lights[index].uv_scale_offset.xy;
+  const vec2 region_offset = spot_data[0].lights[index].uv_scale_offset.zw;
+  const vec2 atlas_uv = local_uv * region_scale + region_offset;
+  const vec2 texel = 1.0 / max(scene_data[0].shadow_layout.yz, vec2(1.0));
+  const vec2 safe_min = region_offset + texel * 0.5;
+  const vec2 safe_max = region_offset + region_scale - texel * 0.5;
   const vec2 depth_gradient = receiver_plane_gradient(
-    spot_data[0].lights[index].light_view_projection, normal, projected, clip.w, 2.0);
+    spot_data[0].lights[index].light_view_projection, normal, projected, clip.w, region_scale);
   const float receiver_plane_scale = spot_data[0].lights[index].shadow_params.z;
   const int aa_mode = int(scene_data[0].light_direction.w + 0.5);
   const float spot_view_depth = -(scene_data[0].view * vec4(position, 1.0)).z;

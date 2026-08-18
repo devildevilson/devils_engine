@@ -61,6 +61,7 @@ add_custom_command(
 )
 
 set(HDR_LIST
+  include/devils_engine/painter/atlas_layout.h
   include/devils_engine/painter/auxiliary.h
   include/devils_engine/painter/glsl_source_file.h
   include/devils_engine/painter/gpu_timing.h

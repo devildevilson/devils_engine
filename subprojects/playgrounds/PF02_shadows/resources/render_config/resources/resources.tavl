@@ -44,7 +44,7 @@
   name = directional_shadow
   format = d32
   role = shadow_map
-  size = shadow_resolution
+  size = directional_atlas_resolution
   type = frames_in_flight
   swap = per_frame
 }
@@ -58,7 +58,7 @@
 }
 {
   name = scene_buffer
-  format = mat4mat4mat4v4v4v4v4v4v4
+  format = mat4mat4mat4v4v4v4v4v4v4v4
   role = upload
   size = one
   type = frames_in_flight
@@ -66,7 +66,7 @@
 }
 {
   name = spot_light_buffer
-  format = mat4v4v4v4v4
+  format = mat4v4v4v4v4v4
   role = upload
   size = spot_light_count
   type = frames_in_flight
@@ -74,7 +74,7 @@
 }
 {
   name = directional_cascade_buffer
-  format = mat4v4v4
+  format = mat4v4v4v4
   role = upload
   size = directional_cascade_count
   type = frames_in_flight

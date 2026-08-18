@@ -13,6 +13,7 @@ layout(set = 0, binding = 0, std140) uniform SceneBlock {
   vec4 shadow_params;
   vec4 filter_params;
   vec4 contact_params;
+  vec4 shadow_layout;
 } scene_data[3];
 
 layout(set = 1, binding = 0) uniform sampler2D directional_shadow_image[3];

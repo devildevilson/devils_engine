@@ -86,7 +86,7 @@ void visage_overlay::set_font_texture(const uint32_t texture_slot) {
 }
 
 void visage_overlay::set_detail_lines(const std::span<const std::string> lines) {
-  constexpr size_t max_detail_lines = 12;
+  constexpr size_t max_detail_lines = 14;
   if (lines.size() > max_detail_lines) {
     utils::error{}("playground Visage overlay accepts at most {} detail lines, got {}", max_detail_lines, lines.size());
   }

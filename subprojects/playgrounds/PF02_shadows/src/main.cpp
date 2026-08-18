@@ -20,6 +20,7 @@
 #include "devils_engine/input/core.h"
 #include "devils_engine/input/events.h"
 #include "devils_engine/painter/assets_base.h"
+#include "devils_engine/painter/atlas_layout.h"
 #include "devils_engine/painter/auxiliary.h"
 #include "devils_engine/painter/graphics_base.h"
 #include "devils_engine/painter/gpu_timing.h"
@@ -42,7 +43,11 @@ constexpr uint32_t initial_height = 720;
 constexpr uint32_t shadow_resolution = 2048;
 constexpr uint32_t caster_count = 5;
 constexpr uint32_t spot_count = 4;
-constexpr uint32_t cascade_count = 4;
+// Число каскадов и размеры их регионов задаются рантаймом, поэтому здесь только БЮДЖЕТ: сколько записей
+// и команд регионов вообще может существовать. Реальная раскладка приходит из painter::allocate_atlas_regions.
+constexpr uint32_t max_cascade_count = 6;
+uint32_t cascade_count = 4;
+std::array<uint32_t, max_cascade_count> cascade_tile_sizes{1024, 1024, 1024, 1024, 1024, 1024};
 constexpr uint32_t packed_caster_capacity = caster_count * (spot_count + 1);
 constexpr float camera_near = 0.1f;
 float cascade_far = 40.0f;
@@ -202,8 +207,11 @@ struct alignas(16) scene_block {
   glm::vec4 filter_params;
   // x/y: начало и конец затухания contact по глубине камеры, z: ширина viewport-edge fade в uv.
   glm::vec4 contact_params;
+  // x: фактическое число каскадов, y/z: размер атласа в текселях, w: резерв. Шейдер берёт отсюда и
+  // границу циклов, и размер текселя — раскладка перестала быть константой шейдера.
+  glm::vec4 shadow_layout;
 };
-static_assert(sizeof(scene_block) == 288);
+static_assert(sizeof(scene_block) == 304);
 
 struct alignas(16) directional_cascade_record {
   glm::mat4 light_view_projection;
@@ -212,19 +220,25 @@ struct alignas(16) directional_cascade_record {
   // x: world-space width of one texel, y: map visibility enable,
   // z: receiver-plane scale; w is reserved.
   glm::vec4 shadow_params;
+  // Регион в атласе как ДАННЫЕ: xy — масштаб, zw — смещение local_uv -> atlas_uv. Шейдер больше не
+  // знает раскладку и не считает tile из индекса каскада.
+  glm::vec4 uv_scale_offset;
 };
-static_assert(sizeof(directional_cascade_record) == 6 * sizeof(glm::vec4));
+static_assert(sizeof(directional_cascade_record) == 7 * sizeof(glm::vec4));
 
-using directional_cascade_block = std::array<directional_cascade_record, cascade_count>;
+using directional_cascade_block = std::array<directional_cascade_record, max_cascade_count>;
 
 directional_cascade_block make_directional_cascades(
   const playground::free_camera& camera,
   const float aspect,
   const float vertical_fov,
   const glm::vec3 light_direction,
-  const bool debug_tint) {
+  const bool debug_tint,
+  const std::span<const painter::atlas_region> regions,
+  const uint32_t atlas_width,
+  const uint32_t atlas_height) {
   directional_cascade_block out{};
-  std::array<float, cascade_count> split_fars{};
+  std::array<float, max_cascade_count> split_fars{};
   for (uint32_t index = 0; index < cascade_count; ++index) {
     const float fraction = float(index + 1) / float(cascade_count);
     const float logarithmic = camera_near * std::pow(cascade_far / camera_near, fraction);
@@ -269,7 +283,8 @@ directional_cascade_block make_directional_cascades(
     radius = std::ceil(radius * 16.0f) / 16.0f;
 
     const glm::vec3 center_light = glm::vec3(light_view * glm::vec4(center, 1.0f));
-    const float texel_world = (radius * 2.0f) / float(shadow_resolution / 2);
+    // Размер текселя теперь берётся из ФАКТИЧЕСКОГО региона каскада, а не из половины атласа.
+    const float texel_world = (radius * 2.0f) / float(regions[index].size);
     const float snapped_x = std::round(center_light.x / texel_world) * texel_world;
     const float snapped_y = std::round(center_light.y / texel_world) * texel_world;
 
@@ -301,20 +316,38 @@ directional_cascade_block make_directional_cascades(
       blend_start,
       debug_tint ? 1.0f : 0.0f);
     out[index].shadow_params = glm::vec4(texel_world, 0.0f, 0.0f, 0.0f);
+    const auto uv = painter::atlas_region_uv(regions[index], atlas_width, atlas_height);
+    out[index].uv_scale_offset = glm::vec4(uv.scale_x, uv.scale_y, uv.offset_x, uv.offset_y);
     split_near = split_far;
   }
   return out;
 }
 
-constexpr uint32_t directional_span_count = cascade_count * 2;
+constexpr uint32_t directional_span_count = max_cascade_count * 2;
 
 struct alignas(16) directional_region_stream {
   painter::region_draw_header header;
-  std::array<painter::region_draw_command, cascade_count> regions;
+  std::array<painter::region_draw_command, max_cascade_count> regions;
   std::array<painter::region_draw_span, directional_span_count> spans;
+
+  // Провод ПАКОВАННЫЙ: spans начинаются сразу после region_count команд, а не после всего массива
+  // максимального размера. Пока каскадов было ровно четыре, sizeof() совпадал с раскладкой; с рантайм-
+  // числом каскадов запись обязана идти блоками, иначе граф читает spans по неверному смещению.
+  size_t pack(const std::span<uint8_t> destination) const {
+    const size_t regions_bytes = size_t(header.region_count) * sizeof(painter::region_draw_command);
+    const size_t spans_bytes = size_t(header.span_count) * sizeof(painter::region_draw_span);
+    const size_t total = sizeof(header) + regions_bytes + spans_bytes;
+    if (destination.size() < total) {
+      utils::error{}("PF02 region stream needs {} bytes, got {}", total, destination.size());
+    }
+    std::memcpy(destination.data(), &header, sizeof(header));
+    std::memcpy(destination.data() + sizeof(header), regions.data(), regions_bytes);
+    std::memcpy(destination.data() + sizeof(header) + regions_bytes, spans.data(), spans_bytes);
+    return total;
+  }
 };
 static_assert(
-  sizeof(directional_region_stream) == painter::region_draw_buffer_size(cascade_count, directional_span_count));
+  sizeof(directional_region_stream) >= painter::region_draw_buffer_size(max_cascade_count, directional_span_count));
 
 // Raster depth bias задаётся В ЕДИНИЦАХ ГЛУБИНЫ и потому одинаков для всех каскадов, тогда как
 // ошибка квантования глубины растёт вместе с world-размером текселя (4.6 -> 111 мм, то есть в 24 раза).
@@ -327,24 +360,25 @@ directional_region_stream build_directional_regions(
   const uint32_t caster_pair,
   const float raster_bias_constant,
   const float raster_bias_slope,
-  const std::array<directional_cascade_record, cascade_count>& cascades) {
+  const directional_cascade_block& cascades,
+  const std::span<const painter::atlas_region> regions) {
   directional_region_stream stream{};
   stream.header.region_count = cascade_count;
-  stream.header.span_count = directional_span_count;
+  stream.header.span_count = cascade_count * 2;
   stream.header.region_stride = sizeof(painter::region_draw_command);
   stream.header.span_stride = sizeof(painter::region_draw_span);
 
-  constexpr uint32_t tile_resolution = shadow_resolution / 2;
   for (uint32_t cascade_index = 0; cascade_index < cascade_count; ++cascade_index) {
     auto& region = stream.regions[cascade_index];
-    region.viewport_x = float((cascade_index & 1u) * tile_resolution);
-    region.viewport_y = float((cascade_index >> 1u) * tile_resolution);
-    region.viewport_width = float(tile_resolution);
-    region.viewport_height = float(tile_resolution);
-    region.scissor_x = int32_t((cascade_index & 1u) * tile_resolution);
-    region.scissor_y = int32_t((cascade_index >> 1u) * tile_resolution);
-    region.scissor_width = tile_resolution;
-    region.scissor_height = tile_resolution;
+    const auto& placement = regions[cascade_index];
+    region.viewport_x = float(placement.x);
+    region.viewport_y = float(placement.y);
+    region.viewport_width = float(placement.size);
+    region.viewport_height = float(placement.size);
+    region.scissor_x = int32_t(placement.x);
+    region.scissor_y = int32_t(placement.y);
+    region.scissor_width = placement.size;
+    region.scissor_height = placement.size;
     const float texel_scale = cascades[0].shadow_params.x > 0.0f
       ? cascades[cascade_index].shadow_params.x / cascades[0].shadow_params.x
       : 1.0f;
@@ -367,12 +401,18 @@ struct alignas(16) spot_light_record {
   // x: tangent of the spotlight half-FOV, y: map visibility enable,
   // z: receiver-plane scale; w is reserved.
   glm::vec4 shadow_params;
+  // Тот же контракт, что у каскадов: регион в атласе — данные, не индекс.
+  glm::vec4 uv_scale_offset;
 };
-static_assert(sizeof(spot_light_record) == 8 * sizeof(glm::vec4));
+static_assert(sizeof(spot_light_record) == 9 * sizeof(glm::vec4));
 
 using spot_light_block = std::array<spot_light_record, spot_count>;
 
-spot_light_block make_spot_lights(const float seconds) {
+spot_light_block make_spot_lights(
+  const float seconds,
+  const std::span<const painter::atlas_region> spot_regions,
+  const uint32_t atlas_width,
+  const uint32_t atlas_height) {
   spot_light_block out{};
   const std::array<glm::vec3, spot_count> targets{
     glm::vec3{-2.2f, -1.8f, -0.8f},
@@ -403,6 +443,8 @@ spot_light_block make_spot_lights(const float seconds) {
     out[i].direction_outer = glm::vec4(direction, outer_cosine);
     out[i].color_intensity = glm::vec4(colors[i], 5.5f);
     out[i].shadow_params = glm::vec4(std::tan(glm::radians(52.0f) * 0.5f), 0.0f, 0.0f, 0.0f);
+    const auto uv = painter::atlas_region_uv(spot_regions[i], atlas_width, atlas_height);
+    out[i].uv_scale_offset = glm::vec4(uv.scale_x, uv.scale_y, uv.offset_x, uv.offset_y);
   }
   return out;
 }
@@ -437,7 +479,8 @@ spot_region_stream build_spot_regions(
   const uint32_t stage_pair,
   const uint32_t caster_pair,
   const float raster_bias_constant,
-  const float raster_bias_slope) {
+  const float raster_bias_slope,
+  const std::span<const painter::atlas_region> spot_regions) {
   spot_region_stream stream{};
   stream.header.region_count = spot_count;
   stream.header.span_count = spot_span_count;
@@ -446,17 +489,17 @@ spot_region_stream build_spot_regions(
 
   std::copy(visible_casters.begin(), visible_casters.end(), packed_casters.begin());
   uint32_t packed_offset = caster_count;
-  constexpr uint32_t tile_resolution = shadow_resolution / 2;
   for (uint32_t light_index = 0; light_index < spot_count; ++light_index) {
     auto& region = stream.regions[light_index];
-    region.viewport_x = float((light_index & 1u) * tile_resolution);
-    region.viewport_y = float((light_index >> 1u) * tile_resolution);
-    region.viewport_width = float(tile_resolution);
-    region.viewport_height = float(tile_resolution);
-    region.scissor_x = int32_t((light_index & 1u) * tile_resolution);
-    region.scissor_y = int32_t((light_index >> 1u) * tile_resolution);
-    region.scissor_width = tile_resolution;
-    region.scissor_height = tile_resolution;
+    const auto& placement = spot_regions[light_index];
+    region.viewport_x = float(placement.x);
+    region.viewport_y = float(placement.y);
+    region.viewport_width = float(placement.size);
+    region.viewport_height = float(placement.size);
+    region.scissor_x = int32_t(placement.x);
+    region.scissor_y = int32_t(placement.y);
+    region.scissor_width = placement.size;
+    region.scissor_height = placement.size;
     region.depth_bias_constant = raster_bias_constant;
     region.depth_bias_slope = raster_bias_slope;
     region.data_index = light_index;
@@ -673,6 +716,7 @@ int main(int argc, char** argv) {
   bool camera_locked = false;
   int32_t pcf_radius_override = -1;
   float pcf_min_pixels_override = -1.0f;
+  uint32_t atlas_resolution_override = 0;
   std::optional<std::array<float, 5>> cli_camera;
   std::optional<glm::vec2> cli_contact_fade;
   std::optional<glm::vec2> cli_normal_bias;
@@ -699,9 +743,43 @@ int main(int argc, char** argv) {
         std::strtof(text.substr(0, comma).c_str(), nullptr),
         std::strtof(text.substr(comma + 1).c_str(), nullptr));
     }
+    // `--shadow-distance` — до какой дистанции тени обязаны существовать вообще. Это политика сцены;
+    // `--cascade-far` оставлен синонимом, потому что все прошлые замеры записаны через него.
     constexpr std::string_view cascade_far_prefix = "--cascade-far=";
-    if (option.starts_with(cascade_far_prefix)) {
-      cascade_far = std::max(std::strtof(std::string(option.substr(cascade_far_prefix.size())).c_str(), nullptr), 1.0f);
+    constexpr std::string_view shadow_distance_prefix = "--shadow-distance=";
+    if (option.starts_with(cascade_far_prefix) || option.starts_with(shadow_distance_prefix)) {
+      const auto prefix = option.starts_with(cascade_far_prefix) ? cascade_far_prefix : shadow_distance_prefix;
+      cascade_far = std::max(std::strtof(std::string(option.substr(prefix.size())).c_str(), nullptr), 1.0f);
+    }
+    // Бюджет атласа: список размеров регионов, число каскадов = длина списка. Так «сколько платим и за
+    // что» видно одной строкой, а не выводится из абстрактной цели качества.
+    constexpr std::string_view atlas_prefix = "--shadow-atlas=";
+    if (option.starts_with(atlas_prefix)) {
+      atlas_resolution_override = uint32_t(std::max(std::atoi(std::string(option.substr(atlas_prefix.size())).c_str()), 0));
+    }
+    constexpr std::string_view cascade_tiles_prefix = "--cascade-tiles=";
+    if (option.starts_with(cascade_tiles_prefix)) {
+      const auto text = std::string(option.substr(cascade_tiles_prefix.size()));
+      uint32_t count = 0;
+      size_t begin = 0;
+      while (begin <= text.size() && count < max_cascade_count) {
+        const auto comma = text.find(',', begin);
+        const auto piece = text.substr(begin, comma == std::string::npos ? std::string::npos : comma - begin);
+        const auto value = uint32_t(std::max(std::atoi(piece.c_str()), 0));
+        if (value == 0) {
+          utils::error{}("Option '{}' expects positive tile sizes", option);
+        }
+        cascade_tile_sizes[count++] = value;
+        if (comma == std::string::npos) break;
+        begin = comma + 1;
+      }
+      if (count == 0) {
+        utils::error{}("Option '{}' expects at least one tile size", option);
+      }
+      cascade_count = count;
+      for (uint32_t i = count; i < max_cascade_count; ++i) {
+        cascade_tile_sizes[i] = cascade_tile_sizes[count - 1];
+      }
     }
     constexpr std::string_view cascade_lambda_prefix = "--cascade-lambda=";
     if (option.starts_with(cascade_lambda_prefix)) {
@@ -866,6 +944,16 @@ int main(int argc, char** argv) {
       found->second = value;
       utils::info("PF02 shader constant override: {} = {}", name, value);
     };
+    if (atlas_resolution_override != 0) {
+      const auto slot = render_config.find_constant_value("directional_atlas_resolution");
+      if (slot == UINT32_MAX) {
+        utils::error{}("PF02 declare_value 'directional_atlas_resolution' is absent from the configured graph");
+      }
+      auto& value = render_config.constant_values[slot];
+      value.value = {atlas_resolution_override, 0, 0};
+      value.current_value = value.value;
+      utils::info("PF02 directional atlas override: {}", atlas_resolution_override);
+    }
     if (pcf_min_pixels_override >= 0.0f) {
       override_step_constant("pcf_min_screen_pixels", std::format("{:.3f}", pcf_min_pixels_override));
     }
@@ -1008,6 +1096,74 @@ int main(int argc, char** argv) {
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
     input::set_cursor_input_mode(window, DEVILS_ENGINE_INPUT_CURSOR_DISABLED);
     input::set_raw_mouse_motion(window);
+
+    // Раскладка атласа: бюджет приходит из конфига (размер атласа) и из CLI (число и размеры регионов
+    // каскадов), а размещение считает painter. Не влезло — падаем громко: молча уменьшить регион значит
+    // тихо испортить качество, которое автор только что задал.
+    // Размер атласа читается из declare_value конфига, а не из C++ константы: так он остаётся одним
+    // источником истины и продолжает работать, если значение объявят как `type = screensize` со scale.
+    const uint32_t atlas_value_slot = base.find_constant_value("directional_atlas_resolution");
+    if (atlas_value_slot == UINT32_MAX) {
+      utils::error{}("PF02 declare_value 'directional_atlas_resolution' is absent from the configured graph");
+    }
+    const auto [atlas_value_x, atlas_value_y, atlas_value_z] =
+      base.constant_values[atlas_value_slot].compute_value();
+    static_cast<void>(atlas_value_z);
+    const uint32_t atlas_width = atlas_value_x;
+    const uint32_t atlas_height = atlas_value_y != 0 ? atlas_value_y : atlas_value_x;
+    if (atlas_width == 0 || atlas_height == 0) {
+      utils::error{}("PF02 shadow atlas has zero extent");
+    }
+
+    std::array<painter::atlas_region, max_cascade_count> directional_atlas_regions{};
+    if (!painter::allocate_atlas_regions(
+          atlas_width,
+          atlas_height,
+          std::span(cascade_tile_sizes).first(cascade_count),
+          directional_atlas_regions)) {
+      std::string requested;
+      for (uint32_t i = 0; i < cascade_count; ++i) {
+        requested += (i == 0 ? "" : ", ") + std::to_string(cascade_tile_sizes[i]);
+      }
+      utils::error{}(
+        "PF02 cascade tiles [{}] do not fit the {}x{} shadow atlas: raise the atlas size or lower the tiles",
+        requested,
+        atlas_width,
+        atlas_height);
+    }
+
+    // Spot-атлас использует тот же контракт: четыре равных региона, размещённых аллокатором.
+    std::array<painter::atlas_region, spot_count> spot_atlas_regions{};
+    const uint32_t spot_value_slot = base.find_constant_value("shadow_resolution");
+    if (spot_value_slot == UINT32_MAX) {
+      utils::error{}("PF02 declare_value 'shadow_resolution' is absent from the configured graph");
+    }
+    const auto spot_atlas_side = std::get<0>(base.constant_values[spot_value_slot].compute_value());
+    std::array<uint32_t, spot_count> spot_tile_sizes{};
+    spot_tile_sizes.fill(spot_atlas_side / 2);
+    if (!painter::allocate_atlas_regions(
+          spot_atlas_side, spot_atlas_side, spot_tile_sizes, spot_atlas_regions)) {
+      utils::error{}("PF02 spot regions do not fit the {}x{} spot atlas", spot_atlas_side, spot_atlas_side);
+    }
+
+    {
+      std::string layout;
+      for (uint32_t i = 0; i < cascade_count; ++i) {
+        layout += std::format(
+          "{}{}^2@({},{})",
+          i == 0 ? "" : " ",
+          directional_atlas_regions[i].size,
+          directional_atlas_regions[i].x,
+          directional_atlas_regions[i].y);
+      }
+      utils::info(
+        "PF02 cascade atlas {}x{}: {} | occupancy {:.0f}%",
+        atlas_width,
+        atlas_height,
+        layout,
+        100.0f * painter::atlas_occupancy(
+                   std::span(directional_atlas_regions).first(cascade_count), atlas_width, atlas_height));
+    }
 
     playground::free_camera camera;
     camera.position = initial_bookmark->position;
@@ -1199,7 +1355,10 @@ int main(int argc, char** argv) {
         aspect,
         camera_fov,
         light_direction,
-        cascade_debug);
+        cascade_debug,
+        std::span(directional_atlas_regions).first(cascade_count),
+        atlas_width,
+        atlas_height);
       for (auto& cascade : directional_cascades) {
         cascade.shadow_params.y = map_shadows_enabled ? 1.0f : 0.0f;
         cascade.shadow_params.z = receiver_plane_scale;
@@ -1209,7 +1368,8 @@ int main(int argc, char** argv) {
         caster_pair,
         raster_bias_constant,
         raster_bias_slope,
-        directional_cascades);
+        directional_cascades,
+        std::span(directional_atlas_regions).first(cascade_count));
       scene_block scene{};
       scene.view_projection = projection * view;
       scene.view = view;
@@ -1222,7 +1382,7 @@ int main(int argc, char** argv) {
         float(lighting_mode));
       scene.light_direction = glm::vec4(light_direction, float(aa_mode));
       scene.shadow_params = glm::vec4(
-        float(shadow_resolution),
+        float(atlas_width),
         normal_bias_base,
         normal_bias_slope,
         0.0f);
@@ -1236,24 +1396,31 @@ int main(int argc, char** argv) {
         contact_fade_end,
         contact_edge_fade,
         0.0f);
+      scene.shadow_layout = glm::vec4(
+        float(cascade_count),
+        float(atlas_width),
+        float(atlas_height),
+        0.0f);
       write_current_buffer(base, "scene_buffer", &scene, sizeof(scene));
       write_current_buffer(
         base,
         "directional_cascade_buffer",
         directional_cascades.data(),
         sizeof(directional_cascades));
+      std::array<uint8_t, sizeof(directional_region_stream)> packed_directional_regions{};
+      const size_t directional_region_bytes = directional_regions.pack(packed_directional_regions);
       write_current_buffer(
         base,
         "directional_region_commands",
-        &directional_regions,
-        sizeof(directional_regions));
+        packed_directional_regions.data(),
+        directional_region_bytes);
 
       // Сцена анимирована (движется light и caster), поэтому без фиксации времени два прогона
       // несравнимы попиксельно и любое A/B превращается в «на глаз похоже».
       const float seconds = frozen_time >= 0.0f
         ? frozen_time
         : std::chrono::duration<float>(now - start_time).count();
-      auto spot_lights = make_spot_lights(seconds);
+      auto spot_lights = make_spot_lights(seconds, spot_atlas_regions, atlas_width, atlas_height);
       for (auto& light : spot_lights) {
         light.shadow_params.y = map_shadows_enabled ? 1.0f : 0.0f;
         light.shadow_params.z = receiver_plane_scale;
@@ -1269,7 +1436,8 @@ int main(int argc, char** argv) {
         stage_pair,
         caster_pair,
         raster_bias_constant,
-        raster_bias_slope);
+        raster_bias_slope,
+        spot_atlas_regions);
       const auto instance_frame = base.get_current_instance_resource_frame(caster_pair);
       std::memcpy(
         static_cast<uint8_t*>(instance_frame.mapped) + instance_frame.sub.offset,
@@ -1295,18 +1463,34 @@ int main(int argc, char** argv) {
         : float(2 * pcf_radius + 1) * aa_radius + 1.0f;
       const std::array<std::string_view, 3> aa_names{
         "hard (raw tap)", "weighted PCF (hw compare)", "rotated Poisson (hw compare)"};
-      std::array<std::string, 12> overlay_details{
+      // Списки строятся по ФАКТИЧЕСКОМУ числу каскадов: раскладка больше не константа.
+      const auto join_cascades = [&](auto&& value) {
+        std::string out;
+        for (uint32_t i = 0; i < cascade_count; ++i) {
+          out += (i == 0 ? "" : " / ") + value(i);
+        }
+        return out;
+      };
+      // Качество ПОКАЗЫВАЕТСЯ, а не задаётся: P — сколько экранных пикселей занимает тексель у дальней
+      // границы слайса (зависит только от FOV/разрешения/размера региона), worst — то же у начала слайса,
+      // где качество внутри каскада худшее. Человеку задавать это как вход неудобно, читать — полезно.
+      const float pixels_per_texel_far = [&]() {
+        const float world_per_pixel = 2.0f * directional_cascades[0].split_depths.y * std::tan(camera_fov * 0.5f) /
+                                      float(std::max(pending_height, 1u));
+        return directional_cascades[0].shadow_params.x / std::max(world_per_pixel, 1.0e-6f);
+      }();
+      const float worst_in_slice = pixels_per_texel_far *
+        (directional_cascades[0].split_depths.y / std::max(camera_near, 1.0e-4f));
+      std::array<std::string, 13> overlay_details{
         std::format(
-          "CSM: 4 x {}^2   splits: {:.1f} / {:.1f} / {:.1f} / {:.1f}   tint [9]: {}",
-          shadow_resolution / 2,
-          directional_cascades[0].split_depths.y,
-          directional_cascades[1].split_depths.y,
-          directional_cascades[2].split_depths.y,
-          directional_cascades[3].split_depths.y,
+          "CSM: {} x [{}]   splits: {}   tint [9]: {}",
+          cascade_count,
+          join_cascades([&](uint32_t i) { return std::to_string(directional_atlas_regions[i].size); }),
+          join_cascades([&](uint32_t i) { return std::format("{:.1f}", directional_cascades[i].split_depths.y); }),
           cascade_debug ? "on" : "off"),
         std::format(
           "Spot atlas: 4 x {}^2   casters: [{}, {}, {}, {}]   packed: {}",
-          shadow_resolution / 2,
+          spot_atlas_regions[0].size,
           region_casters[0],
           region_casters[1],
           region_casters[2],
@@ -1315,13 +1499,18 @@ int main(int argc, char** argv) {
         // Одно число объясняет ширину ступенек, минимальное размытие и отрыв тени сразу: normal offset
         // и шаг фильтра задаются в текселях, поэтому мир-размер текселя каскада — общий множитель.
         std::format(
-          "Cascade texel: {:.1f} / {:.1f} / {:.1f} / {:.1f} mm   filter {:.1f} texels ~ {:.0f} mm",
-          directional_cascades[0].shadow_params.x * 1000.0f,
-          directional_cascades[1].shadow_params.x * 1000.0f,
-          directional_cascades[2].shadow_params.x * 1000.0f,
-          directional_cascades[3].shadow_params.x * 1000.0f,
+          "Cascade texel: {} mm   filter {:.1f} texels ~ {:.0f} mm",
+          join_cascades([&](uint32_t i) { return std::format("{:.1f}", directional_cascades[i].shadow_params.x * 1000.0f); }),
           filter_texels,
           filter_texels * directional_cascades[0].shadow_params.x * 1000.0f),
+        std::format(
+          "Derived quality: {:.2f} px/texel at slice end, {:.1f} px worst in slice 0   atlas {}x{}, {:.0f}% used",
+          pixels_per_texel_far,
+          worst_in_slice,
+          atlas_width,
+          atlas_height,
+          100.0f * painter::atlas_occupancy(
+                     std::span(directional_atlas_regions).first(cascade_count), atlas_width, atlas_height)),
         std::format("Raster bias [B/N constant, M/, slope]: {:.2f}   {:.2f}", raster_bias_constant, raster_bias_slope),
         std::format(
           "World-texel normal bias [Z/X, C/V]: {:.2f} + {:.2f} slope   plane [G/H] {:.2f}",
@@ -1352,20 +1541,20 @@ int main(int argc, char** argv) {
         "GPU graph: waiting for timestamp results..."};
       if (gpu_profiler.has_results() && gpu_profiler.passes().size() == 6) {
         const auto timings = gpu_profiler.passes();
-        overlay_details[10] = std::format(
+        overlay_details[11] = std::format(
           "GPU: dir {:.3f}   spot {:.3f}   depth {:.3f}   contact {:.3f} ms",
           timings[0].milliseconds,
           timings[1].milliseconds,
           timings[2].milliseconds,
           timings[3].milliseconds);
-        overlay_details[11] = std::format(
+        overlay_details[12] = std::format(
           "GPU: forward {:.3f} ms   blit {:.3f} ms   graph {:.3f} ms",
           timings[4].milliseconds,
           timings[5].milliseconds,
           gpu_profiler.frame_milliseconds());
       } else if (!gpu_profiler.available()) {
-        overlay_details[10] = "GPU timestamps unavailable on the selected graphics queue";
-        overlay_details[11].clear();
+        overlay_details[11] = "GPU timestamps unavailable on the selected graphics queue";
+        overlay_details[12].clear();
       }
       overlay.set_detail_lines(overlay_details);
 

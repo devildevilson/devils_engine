@@ -13,7 +13,7 @@ return function()
 
   local flags = nk.panel_flags.border | nk.panel_flags.title |
                 nk.panel_flags.no_scrollbar | nk.panel_flags.no_input
-  local detail_count = math.min(playground_detail_count or 0, 12)
+  local detail_count = math.min(playground_detail_count or 0, 14)
   local detail_padding = detail_count > 0 and 20 or 0
   local panel_height = 112 + detail_count * 23 + detail_padding
   if nk.begin_titled("playground_overlay", playground_title or "playground", {16, 16, 520, panel_height}, flags) then
