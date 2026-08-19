@@ -3,3 +3,9 @@
   filter = linear
   address = clamp
 }
+{
+  // Глубина, нормали и motion читаются точечно: интерполировать их между пикселями нельзя
+  name = frame_nearest
+  filter = nearest
+  address = clamp
+}

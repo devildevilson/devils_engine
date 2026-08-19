@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include <cstdint>
+#include <vector>
 
 #include "devils_engine/painter/common.h"
 #include "devils_engine/painter/structures.h"
@@ -112,4 +113,20 @@ TEST_CASE("resource copy count comes from the period plus reader-declared histor
   res.type = painter::type::values::swapchain;
   res.history_depth = 1;
   CHECK(res.compute_buffering(frames_in_flight, swapchain_images) == swapchain_images + 1);
+}
+
+TEST_CASE("constant memory offsets are byte offsets into a word array [painter]") {
+  // Регресс на реальный баг: constant::offset задаётся в БАЙТАХ, а память констант — массив uint32_t.
+  // get/write_constant_data прибавляли смещение к uint32_t*, то есть уходили вчетверо дальше. Первая
+  // константа (offset 0) при этом работала, поэтому ошибка жила до первого конфига с двумя константами.
+  std::vector<uint32_t> memory(16, 0);
+  const size_t byte_offset = 12; // вторая dispatch3-константа
+
+  const auto write_at = [&](const size_t offset, const uint32_t value) {
+    *(memory.data() + offset / sizeof(uint32_t)) = value;
+  };
+
+  write_at(byte_offset, 7u);
+  CHECK(memory[3] == 7u);  // 12 байт = слово 3
+  CHECK(memory[12] == 0u); // а не слово 12
 }

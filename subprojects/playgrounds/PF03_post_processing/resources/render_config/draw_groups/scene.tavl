@@ -1,0 +1,11 @@
+{
+  // Инстанс несёт только ИНДЕКС объекта: сами трансформы живут в per_frame ресурсе object_transforms.
+  // Инстанс-буферы host-visible draw group крутятся на per_update и дублированы всего дважды, а счётчик
+  // per_update в кадровом цикле не двигается — значит все кадры в полёте читают одну и ту же память, и
+  // данные, меняющиеся каждый кадр, туда класть нельзя (история совпадала бы с текущим кадром).
+  name = scene_draw_group
+  layout = v4
+  budget = scene_instances
+  draw_capacity = scene_draws
+  type = host_visible
+}

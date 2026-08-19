@@ -1,29 +1,74 @@
 {
   name = frame_data
   layout = [
-    { resource = frame_buffer, usage = uniform, stage = compute }
+    { resource = frame_buffer, usage = uniform, stage = all }
   ]
 }
 {
-  name = scene_write
+  // Вот и весь per-object motion: вершинный шейдер получает трансформ этого кадра и трансформ прошлого из
+  // истории того же ресурса. Опознавать объекты на экране не нужно — фрагмент уже знает свой инстанс.
+  name = object_data
+  layout = [
+    { resource = object_transforms, usage = storage_read, stage = vertex },
+    { resource = object_transforms, usage = storage_read, stage = vertex, history = 1 }
+  ]
+}
+{
+  name = gbuffer_inputs
+  layout = [
+    { resource = scene_depth, usage = depth_read, sampler = frame_nearest, stage = compute },
+    { resource = gbuffer_normal, usage = sampled, sampler = frame_nearest, stage = compute },
+    { resource = gbuffer_motion, usage = sampled, sampler = frame_nearest, stage = compute }
+  ]
+}
+{
+  name = shade_write
   layout = [
     { resource = scene_color, usage = texel_write, stage = compute }
   ]
 }
 {
-  // Вот всё объявление темпоральной техники: 'history = 1' говорит, что биндинг читает копию, записанную
-  // кадром назад. Из него выводится и число копий ресурса, и read-only layout этих копий, и то, что пасс
-  // обязан дождаться пасса-писателя предыдущего кадра. Текущая копия в это окно не входит: её отдаёт
-  // отдельный write-биндинг (temporal_write), потому что она лежит в writable layout.
-  name = temporal_inputs
+  // Репроекция: текущий кадр читается обычным биндингом, прошлый — через 'history = 1'. Из этого же
+  // объявления движок выводит и порядок между кадрами: пасс-читатель ждёт пасс-затенения ПРОШЛОГО кадра.
+  name = compose_inputs
   layout = [
-    { resource = scene_color, usage = sampled, sampler = frame_linear, stage = compute },
-    { resource = feedback_color, usage = sampled, sampler = frame_linear, stage = compute, history = 1 }
+    { resource = fogged_color, usage = sampled, sampler = frame_nearest, stage = compute },
+    { resource = fogged_color, usage = sampled, sampler = frame_linear, stage = compute, history = 1 },
+    { resource = exposure_state, usage = texel_read, stage = compute }
   ]
 }
 {
-  name = temporal_write
+  name = scene_read
   layout = [
-    { resource = feedback_color, usage = texel_write, stage = compute }
+    { resource = scene_color, usage = sampled, sampler = frame_linear, stage = compute }
+  ]
+}
+{
+  name = fog_write
+  layout = [
+    { resource = fogged_color, usage = texel_write, stage = compute }
+  ]
+}
+{
+  // Экспозиция замеряет кадр УЖЕ с туманом: туман меняет среднюю яркость, и мерить до него значило бы
+  // экспонировать не ту картинку, которую увидит зритель.
+  name = fogged_read
+  layout = [
+    { resource = fogged_color, usage = sampled, sampler = frame_linear, stage = compute }
+  ]
+}
+{
+  // Замер экспозиции пишет новое состояние и читает прошлое (адаптация) — тот же случай «писатель он же
+  // читатель», что и у накопления, и порядок между кадрами движок выводит сам.
+  name = exposure_io
+  layout = [
+    { resource = exposure_state, usage = texel_write, stage = compute },
+    { resource = exposure_state, usage = texel_read, stage = compute, history = 1 }
+  ]
+}
+{
+  name = compose_write
+  layout = [
+    { resource = composed_color, usage = texel_write, stage = compute }
   ]
 }

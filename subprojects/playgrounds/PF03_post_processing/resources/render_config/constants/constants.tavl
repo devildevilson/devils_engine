@@ -3,3 +3,8 @@
   layout = dispatch3
   value = [160.0, 90.0, 1.0]
 }
+{
+  name = exposure_dispatch
+  layout = dispatch3
+  value = [1.0, 1.0, 1.0]
+}

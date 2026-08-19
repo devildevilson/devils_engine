@@ -6,7 +6,32 @@
   swap = swapchain
 }
 {
-  // Кадр «как есть», без темпорального накопления
+  // Тонкий G-buffer: глубина + нормаль + motion. Альбедо в него НЕ кладём — площадка остаётся forward,
+  // G-buffer здесь нужен как набор атрибутов для экранных эффектов, а не как переход на deferred.
+  name = scene_depth
+  format = d32
+  role = depth
+  size = viewport
+  swap = per_frame
+}
+{
+  // Мировая нормаль в октаэдральной упаковке: две компоненты вместо трёх при том же качестве.
+  name = gbuffer_normal
+  format = sf2
+  role = gbuffer_normal
+  size = viewport
+  swap = per_frame
+}
+{
+  // Motion vector в UV кадра: prev_uv - cur_uv, то есть куда СМЕСТИТЬСЯ, чтобы попасть в прошлый кадр.
+  name = gbuffer_motion
+  format = sf2
+  role = gbuffer_velocity
+  size = viewport
+  swap = per_frame
+}
+{
+  // Затенённый кадр. Его же читает пасс репроекции как историю — первый честный потребитель контракта.
   name = scene_color
   format = sf4
   role = hdr_color
@@ -14,17 +39,43 @@
   swap = per_frame
 }
 {
-  // Темпоральная цель: пасс пишет новую копию и читает прошлую. Числа копий тут НЕТ — оно выводится
-  // из периода счётчика (frames_in_flight) плюс глубина истории, которую попросил дескриптор.
-  name = feedback_color
+  // Кадр после тумана. Отдельный ресурс, а не запись на месте: пасс не может держать одну копию сразу как
+  // цель записи и как источник выборки — это два разных layout, и один биндинг не обещает оба.
+  name = fogged_color
   format = sf4
   role = hdr_color
   size = viewport
   swap = per_frame
 }
 {
-  name = frame_buffer
+  // Что показываем на экране: выбранный debug-режим либо итоговая картинка
+  name = composed_color
+  format = sf4
+  role = hdr_color
+  size = viewport
+  swap = per_frame
+}
+{
+  // Трансформы объектов: только ТЕКУЩИЙ кадр. Прошлый не дублируется руками — его отдаёт история этого же
+  // ресурса (`history = 1` в дескрипторе). Ресурс живёт на per_frame, поэтому «кадр назад» здесь честно кадр.
+  name = object_transforms
   format = v4v4
+  role = upload
+  size = scene_instances
+  swap = per_frame
+}
+{
+  // Состояние экспозиции: картинка 1x1. История нужна для АДАПТАЦИИ — новая экспозиция считается от
+  // прошлой, иначе яркость дёргалась бы каждый кадр вместо плавного привыкания глаза.
+  name = exposure_state
+  format = sf4
+  role = exposure
+  size = one
+  swap = per_frame
+}
+{
+  name = frame_buffer
+  format = mat4mat4mat4v4v4v4v4v4v4v4v4
   role = upload
   size = one
   swap = per_frame

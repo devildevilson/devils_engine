@@ -1,0 +1,5 @@
+{
+  // Порядок ресурсов = порядок location в gbuffer.frag.glsl
+  name = gbuffer_target
+  resources = [ gbuffer_normal = color_attachment, gbuffer_motion = color_attachment, scene_depth = depth_attachment ]
+}

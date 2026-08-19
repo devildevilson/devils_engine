@@ -1,6 +1,9 @@
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <span>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -8,6 +11,10 @@
 #include <thread>
 #include <vector>
 
+#include <glm/gtc/matrix_inverse.hpp>
+#include <glm/mat4x4.hpp>
+#include <glm/trigonometric.hpp>
+#include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
 #include "devils_engine/catalogue/logging.h"
@@ -20,7 +27,9 @@
 #include "devils_engine/painter/system_info.h"
 #include "devils_engine/painter/vulkan_header.h"
 #include "devils_engine/playground/frame_pacer.h"
+#include "devils_engine/playground/free_camera.h"
 #include "devils_engine/utils/core.h"
+#include "devils_engine/utils/fileio.h"
 
 using namespace devils_engine;
 
@@ -29,6 +38,15 @@ namespace {
 constexpr uint32_t initial_width = 1280;
 constexpr uint32_t initial_height = 720;
 constexpr uint32_t dispatch_tile = 8;
+constexpr float near_plane = 0.1f;
+// Детерминированный шаг для орбиты: положение камеры становится чистой функцией номера кадра, поэтому два
+// прогона с одинаковым --frames дают одинаковую картинку и ошибку репроекции можно сравнивать численно.
+constexpr float orbit_step_seconds = 1.0f / 60.0f;
+
+// Отладочные виды; порядок обязан совпадать с PF03_DEBUG_* в resources/shaders/pf03_frame.glsl
+constexpr std::array<std::string_view, 11> debug_names = {
+  "shaded", "depth", "normal", "motion", "reprojected",
+  "error(motion)", "error(no motion)", "clipping", "calibration", "exposure", "transmittance"};
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -36,6 +54,8 @@ bool resize_pending = false;
 bool reset_requested = false;
 int32_t escape_key = -1;
 int32_t reset_key = -1;
+std::array<int32_t, debug_names.size()> debug_keys{};
+uint32_t debug_mode = 0;
 
 void error_callback(const int error, const char* message) noexcept {
   utils::warn("PF03 input error {}: {}", error, message);
@@ -43,11 +63,20 @@ void error_callback(const int error, const char* message) noexcept {
 
 void key_callback(GLFWwindow* window, const int key, const int scancode, const int action, const int) noexcept {
   input::events::update_key(scancode, action);
-  if (key == escape_key && action == 1) {
+  if (action != 1) {
+    return;
+  }
+  if (key == escape_key) {
     input::set_should_close(window, true);
   }
-  if (key == reset_key && action == 1) {
+  if (key == reset_key) {
     reset_requested = true;
+  }
+  for (uint32_t i = 0; i < debug_keys.size(); ++i) {
+    if (key == debug_keys[i]) {
+      debug_mode = i;
+      utils::info("PF03 debug view {}: {}", i, debug_names[i]);
+    }
   }
 }
 
@@ -59,10 +88,93 @@ void framebuffer_callback(GLFWwindow*, const int width, const int height) noexce
 
 // Раскладка обязана совпадать с PF03_FRAME_BLOCK_BODY (resources/shaders/pf03_frame.glsl)
 struct alignas(16) frame_block {
-  glm::vec4 viewport_time;
+  glm::mat4 view_projection;
+  glm::mat4 previous_view_projection;
+  glm::mat4 inverse_view_projection;
+  glm::vec4 camera_position;
+  glm::vec4 viewport_near;
   glm::vec4 controls;
+  glm::vec4 light_direction;
+  glm::vec4 tonemap;
+  glm::vec4 exposure_limits;
+  glm::vec4 fog_params;
+  glm::vec4 fog_color;
 };
-static_assert(sizeof(frame_block) == 32);
+static_assert(sizeof(frame_block) == 320);
+
+struct vertex {
+  float px, py, pz;
+  float nx, ny, nz;
+};
+
+void add_quad(
+  std::vector<vertex>& out,
+  const glm::vec3& a, const glm::vec3& b, const glm::vec3& c, const glm::vec3& d,
+  const glm::vec3& normal) {
+  const auto push = [&out, normal](const glm::vec3& p) {
+    out.push_back(vertex{p.x, p.y, p.z, normal.x, normal.y, normal.z});
+  };
+  push(a); push(b); push(c);
+  push(a); push(c); push(d);
+}
+
+void add_box(std::vector<vertex>& out, const glm::vec3& center, const glm::vec3& half) {
+  const glm::vec3 mn = center - half;
+  const glm::vec3 mx = center + half;
+  add_quad(out, {mn.x, mn.y, mx.z}, {mx.x, mn.y, mx.z}, {mx.x, mx.y, mx.z}, {mn.x, mx.y, mx.z}, {0, 0, 1});
+  add_quad(out, {mx.x, mn.y, mn.z}, {mn.x, mn.y, mn.z}, {mn.x, mx.y, mn.z}, {mx.x, mx.y, mn.z}, {0, 0, -1});
+  add_quad(out, {mx.x, mn.y, mx.z}, {mx.x, mn.y, mn.z}, {mx.x, mx.y, mn.z}, {mx.x, mx.y, mx.z}, {1, 0, 0});
+  add_quad(out, {mn.x, mn.y, mn.z}, {mn.x, mn.y, mx.z}, {mn.x, mx.y, mx.z}, {mn.x, mx.y, mn.z}, {-1, 0, 0});
+  add_quad(out, {mn.x, mx.y, mx.z}, {mx.x, mx.y, mx.z}, {mx.x, mx.y, mn.z}, {mn.x, mx.y, mn.z}, {0, 1, 0});
+  add_quad(out, {mn.x, mn.y, mn.z}, {mx.x, mn.y, mn.z}, {mx.x, mn.y, mx.z}, {mn.x, mn.y, mx.z}, {0, -1, 0});
+}
+
+// Комната статична: она даёт motion только от камеры и держит шахматный пол как стресс-паттерн.
+std::vector<vertex> make_room() {
+  std::vector<vertex> out;
+  constexpr float room_x = 9.0f;
+  constexpr float room_y = 3.0f;
+  constexpr float room_z = 9.0f;
+  add_quad(out, {-room_x, -room_y, room_z}, {room_x, -room_y, room_z}, {room_x, -room_y, -room_z}, {-room_x, -room_y, -room_z}, {0, 1, 0});
+  add_quad(out, {-room_x, -room_y, -room_z}, {room_x, -room_y, -room_z}, {room_x, room_y, -room_z}, {-room_x, room_y, -room_z}, {0, 0, 1});
+  add_quad(out, {room_x, -room_y, room_z}, {-room_x, -room_y, room_z}, {-room_x, room_y, room_z}, {room_x, room_y, room_z}, {0, 0, -1});
+  add_quad(out, {-room_x, -room_y, room_z}, {-room_x, -room_y, -room_z}, {-room_x, room_y, -room_z}, {-room_x, room_y, room_z}, {1, 0, 0});
+  return out;
+}
+
+std::vector<vertex> make_cube() {
+  std::vector<vertex> out;
+  add_box(out, {0.0f, 0.0f, 0.0f}, {0.7f, 0.7f, 0.7f});
+  return out;
+}
+
+// Запись трансформа объекта в per_frame ресурсе object_transforms. Прошлый кадр здесь НЕ дублируется:
+// вершинный шейдер берёт его из истории того же ресурса, потому что период у него честно кадровый.
+struct object_transform {
+  glm::vec4 offset; // xyz — смещение, w — угол поворота вокруг Y
+  glm::vec4 reserved;
+};
+
+constexpr uint32_t mover_count = 6;
+
+// Движение объектов — чистая функция НОМЕРА кадра, как и орбита камеры: только так дамп двух режимов
+// сравним попиксельно.
+//
+// Перенос и вращение разведены по отдельным ручкам сознательно. Вращение меняет нормаль, а от неё зависит
+// затенение, поэтому у вращающейся поверхности точка меняет цвет между кадрами — репроекция такое не
+// исправляет ПО ОПРЕДЕЛЕНИЮ (этим займётся neighbourhood clamp в TAA). Чтобы мерить сами векторы, нужен
+// инвариантный сигнал, то есть чистый перенос: --object-spin=0.
+glm::vec4 mover_offset(const uint32_t index, const int64_t frame_index, const float speed, const float spin) {
+  const float phase = float(frame_index) * orbit_step_seconds * speed;
+  const float lane = float(index);
+  const float radius = 1.6f + 0.45f * lane;
+  const float angle = phase * (0.6f + 0.18f * lane) + lane * 1.05f;
+  return glm::vec4(
+    std::cos(angle) * radius,
+    -2.3f + 0.55f * std::sin(phase * 1.7f + lane),
+    std::sin(angle) * radius - 1.0f,
+    float(frame_index) * orbit_step_seconds * spin * (0.9f + 0.25f * lane));
+}
 
 void write_current_buffer(painter::graphics_base& base, const std::string_view name, const void* data, const size_t bytes) {
   const uint32_t slot = base.find_resource(name);
@@ -108,6 +220,126 @@ void report_resource_copies(const painter::graphics_base& base, const std::strin
     res.history_depth);
 }
 
+// sf4 хранится половинной точностью, поэтому дамп сам разворачивает half в float: тащить ради этого
+// зависимость не за чем, а формат фиксированный (IEEE binary16).
+float half_to_float(const uint16_t h) {
+  const uint32_t sign = uint32_t(h & 0x8000u) << 16;
+  const uint32_t exponent = (h >> 10) & 0x1fu;
+  const uint32_t mantissa = h & 0x3ffu;
+
+  if (exponent == 0) {
+    if (mantissa == 0) {
+      return std::bit_cast<float>(sign);
+    }
+    // денормал: нормализуем сдвигом
+    uint32_t e = 0;
+    uint32_t m = mantissa;
+    while ((m & 0x400u) == 0) {
+      m <<= 1;
+      e += 1;
+    }
+    m &= 0x3ffu;
+    const uint32_t bits = sign | ((127 - 15 - e + 1) << 23) | (m << 13);
+    return std::bit_cast<float>(bits);
+  }
+
+  if (exponent == 0x1fu) {
+    return std::bit_cast<float>(sign | 0x7f800000u | (mantissa << 13));
+  }
+
+  const uint32_t bits = sign | ((exponent + 127 - 15) << 23) | (mantissa << 13);
+  return std::bit_cast<float>(bits);
+}
+
+// Кадр-точный дамп итоговой картинки в PPM. Скриншот внешним инструментом для измерений не годится:
+// он приходит в произвольный момент, а сравнивать режимы надо на ОДНОМ И ТОМ ЖЕ кадре — иначе камера
+// успевает уехать, и разница между «ошибка с motion» и «ошибка без motion» тонет в разнице фаз.
+void dump_composed_image(painter::graphics_base& base, const std::string& path) {
+  const uint32_t slot = base.find_resource("composed_color");
+  if (slot == painter::invalid_resource_slot) {
+    utils::error{}("PF03 resource 'composed_color' is absent from the configured graph");
+  }
+
+  const auto frame = base.get_current_image_resource_frame(slot);
+  const auto [width, height] = base.swapchain_extent();
+  const size_t texel_size = sizeof(uint16_t) * 4; // sf4 = R16G16B16A16_SFLOAT
+  const size_t bytes = size_t(width) * size_t(height) * texel_size;
+
+  vma::Allocator allocator(base.allocator);
+  vk::BufferCreateInfo bci{};
+  bci.usage = vk::BufferUsageFlagBits::eTransferDst;
+  bci.size = bytes;
+  vma::AllocationCreateInfo aci{};
+  aci.usage = vma::MemoryUsage::eGpuToCpu;
+  aci.flags = vma::AllocationCreateFlagBits::eMapped;
+  auto [staging, allocation] = allocator.createBuffer(bci, aci);
+
+  vk::Device dev(base.device);
+  vk::CommandBufferAllocateInfo cbai{};
+  cbai.commandPool = base.command_pool;
+  cbai.level = vk::CommandBufferLevel::ePrimary;
+  cbai.commandBufferCount = 1;
+  const auto buffers = dev.allocateCommandBuffers(cbai);
+  vk::CommandBuffer task(buffers[0]);
+  task.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+
+  // Пасс презентации оставляет composed_color в transfer_src, поэтому переход layout не нужен — нужна
+  // только видимость записи для копирования.
+  vk::ImageMemoryBarrier before{};
+  before.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+  before.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+  before.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
+  before.newLayout = vk::ImageLayout::eTransferSrcOptimal;
+  before.image = frame.handle;
+  before.subresourceRange = std::bit_cast<vk::ImageSubresourceRange>(frame.sub);
+  task.pipelineBarrier(
+    vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer,
+    vk::DependencyFlags{}, nullptr, nullptr, before);
+
+  vk::BufferImageCopy region{};
+  region.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+  region.imageSubresource.mipLevel = 0;
+  region.imageSubresource.baseArrayLayer = frame.sub.base_array_layer;
+  region.imageSubresource.layerCount = 1;
+  region.imageExtent = vk::Extent3D{width, height, 1};
+  task.copyImageToBuffer(frame.handle, vk::ImageLayout::eTransferSrcOptimal, staging, region);
+  task.end();
+
+  const auto fence = dev.createFence(vk::FenceCreateInfo{});
+  {
+    vk::SubmitInfo si{};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &task;
+    const auto queue_lock = base.graphics.lock();
+    if (vk::Queue(base.graphics.handle()).submit(1, &si, fence) != vk::Result::eSuccess) {
+      utils::error{}("PF03 could not submit the image dump copy");
+    }
+  }
+  if (dev.waitForFences(fence, true, size_t(1000) * 1000 * 1000) != vk::Result::eSuccess) {
+    utils::error{}("PF03 image dump did not finish in time");
+  }
+
+  const auto info = allocator.getAllocationInfo(allocation);
+  const auto* halfs = static_cast<const uint16_t*>(info.pMappedData);
+  std::string ppm = "P6\n" + std::to_string(width) + " " + std::to_string(height) + "\n255\n";
+  ppm.reserve(ppm.size() + size_t(width) * height * 3);
+  for (size_t i = 0; i < size_t(width) * height; ++i) {
+    for (uint32_t c = 0; c < 3; ++c) {
+      const float value = half_to_float(halfs[i * 4 + c]);
+      ppm.push_back(char(uint8_t(std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f)));
+    }
+  }
+  // аргументы file_io::write — (bytes, path): порядок обратный привычному, поэтому пишем явно
+  if (!file_io::write(std::span<const char>(ppm.data(), ppm.size()), path, file_io::type::binary)) {
+    utils::error{}("PF03 could not write the dump to '{}'", path);
+  }
+
+  dev.destroy(fence);
+  dev.freeCommandBuffers(base.command_pool, task);
+  allocator.destroyBuffer(staging, allocation);
+  utils::info("PF03 dumped {}x{} composed frame to '{}'", width, height, path);
+}
+
 std::vector<const char*> instance_extensions(const bool validation) {
   uint32_t count = 0;
   const char** required = input::get_required_instance_extensions(&count);
@@ -118,32 +350,147 @@ std::vector<const char*> instance_extensions(const bool validation) {
   return extensions;
 }
 
+void bind_key(const std::string_view event, const std::string_view canonical) {
+  const auto [key, scancode] = input::key_from_canonical(canonical);
+  if (key < 0 || scancode < 0) {
+    utils::error{}("PF03 could not resolve input key '{}'", canonical);
+  }
+  input::events::set_key(event, scancode, key);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
   bool validation = false;
   bool uncapped = false;
   bool verbose = false;
+  bool camera_locked = false;
   uint32_t frame_limit = 0; // 0 — до Esc; иначе выходим сами (детерминированные прогоны)
-  float history_weight = 0.94f;
-  float motion_speed = 1.0f;
+  float orbit_speed = 0.0f;  // > 0 — камера идёт по орбите как функция НОМЕРА кадра
+  float object_speed = 1.0f; // скорость переноса движущихся кубов; 0 — сцена полностью статична
+  float object_spin = 0.6f;  // скорость вращения кубов; 0 нужен для измерения самих motion-векторов
+  uint32_t tonemap_operator = 3; // 0 none, 1 reinhard, 2 hable, 3 aces
+  float manual_exposure = 0.0f;  // > 0 — фиксированная экспозиция вместо автоматической
+  float adapt_rate = 2.2f;       // скорость привыкания, 1/секунда
+  float sun_intensity = 6.0f;    // яркость солнца: задаёт динамический диапазон кадра
+  bool encode_srgb = false;      // тракт презентации сам кодирует sRGB — измерено видом 8
+  float fog_density = 0.035f;    // плотность тумана у опорной высоты, 1/метр
+  float fog_falloff = 6.0f;      // масштаб спада плотности по высоте, метры
+  float fog_height = -3.0f;      // опорная высота: пол комнаты
+  float fog_anisotropy = 0.62f;  // > 0 — рассеяние вперёд, туман светится в сторону солнца
+  glm::vec3 sun_direction{0.45f, 0.82f, 0.35f}; // направление НА солнце; у горизонта туман выглядит иначе
+  std::string dump_path;    // непусто — на последнем кадре пишем итоговую картинку в PPM
+  float motion_gain = 6.0f;
+  float error_gain = 8.0f;
+  glm::vec3 start_position{0.0f, -0.4f, 6.5f};
+  float start_yaw = -1.5707963f;
+  float start_pitch = -0.05f;
+
   for (int i = 1; i < argc; ++i) {
     const std::string_view option(argv[i]);
     validation = validation || option == "--validation";
     uncapped = uncapped || option == "--uncapped";
     verbose = verbose || option == "--verbose";
+    camera_locked = camera_locked || option == "--lock-camera";
 
     constexpr std::string_view frames_prefix = "--frames=";
     if (option.starts_with(frames_prefix)) {
       frame_limit = uint32_t(std::stoul(std::string(option.substr(frames_prefix.size()))));
     }
-    constexpr std::string_view weight_prefix = "--history-weight=";
-    if (option.starts_with(weight_prefix)) {
-      history_weight = std::clamp(std::stof(std::string(option.substr(weight_prefix.size()))), 0.0f, 0.999f);
+    constexpr std::string_view debug_prefix = "--debug=";
+    if (option.starts_with(debug_prefix)) {
+      debug_mode = std::min<uint32_t>(uint32_t(std::stoul(std::string(option.substr(debug_prefix.size())))), debug_names.size() - 1);
     }
-    constexpr std::string_view speed_prefix = "--motion-speed=";
-    if (option.starts_with(speed_prefix)) {
-      motion_speed = std::stof(std::string(option.substr(speed_prefix.size())));
+    constexpr std::string_view sun_dir_prefix = "--sun-dir=";
+    if (option.starts_with(sun_dir_prefix)) {
+      const auto text = std::string(option.substr(sun_dir_prefix.size()));
+      std::array<float, 3> values{sun_direction.x, sun_direction.y, sun_direction.z};
+      size_t begin = 0;
+      for (uint32_t v = 0; v < values.size() && begin <= text.size(); ++v) {
+        const auto end = text.find(',', begin);
+        values[v] = std::stof(text.substr(begin, end == std::string::npos ? std::string::npos : end - begin));
+        if (end == std::string::npos) break;
+        begin = end + 1;
+      }
+      sun_direction = {values[0], values[1], values[2]};
+    }
+    constexpr std::string_view fog_prefix = "--fog=";
+    if (option.starts_with(fog_prefix)) {
+      fog_density = std::stof(std::string(option.substr(fog_prefix.size())));
+    }
+    constexpr std::string_view fog_height_prefix = "--fog-height=";
+    if (option.starts_with(fog_height_prefix)) {
+      fog_falloff = std::stof(std::string(option.substr(fog_height_prefix.size())));
+    }
+    constexpr std::string_view fog_aniso_prefix = "--fog-anisotropy=";
+    if (option.starts_with(fog_aniso_prefix)) {
+      fog_anisotropy = std::stof(std::string(option.substr(fog_aniso_prefix.size())));
+    }
+    constexpr std::string_view tonemap_prefix = "--tonemap=";
+    if (option.starts_with(tonemap_prefix)) {
+      const auto name = option.substr(tonemap_prefix.size());
+      if (name == "none") tonemap_operator = 0;
+      else if (name == "reinhard") tonemap_operator = 1;
+      else if (name == "hable") tonemap_operator = 2;
+      else if (name == "aces") tonemap_operator = 3;
+      else utils::error{}("PF03 unknown tonemap operator '{}' (none|reinhard|hable|aces)", name);
+    }
+    constexpr std::string_view exposure_prefix = "--exposure=";
+    if (option.starts_with(exposure_prefix)) {
+      manual_exposure = std::stof(std::string(option.substr(exposure_prefix.size())));
+    }
+    constexpr std::string_view adapt_prefix = "--adapt-rate=";
+    if (option.starts_with(adapt_prefix)) {
+      adapt_rate = std::stof(std::string(option.substr(adapt_prefix.size())));
+    }
+    constexpr std::string_view sun_prefix = "--sun=";
+    if (option.starts_with(sun_prefix)) {
+      sun_intensity = std::stof(std::string(option.substr(sun_prefix.size())));
+    }
+    constexpr std::string_view srgb_prefix = "--encode-srgb=";
+    if (option.starts_with(srgb_prefix)) {
+      encode_srgb = std::stoi(std::string(option.substr(srgb_prefix.size()))) != 0;
+    }
+    constexpr std::string_view object_prefix = "--object-speed=";
+    if (option.starts_with(object_prefix)) {
+      object_speed = std::stof(std::string(option.substr(object_prefix.size())));
+    }
+    constexpr std::string_view spin_prefix = "--object-spin=";
+    if (option.starts_with(spin_prefix)) {
+      object_spin = std::stof(std::string(option.substr(spin_prefix.size())));
+    }
+    constexpr std::string_view orbit_prefix = "--orbit=";
+    if (option.starts_with(orbit_prefix)) {
+      orbit_speed = std::stof(std::string(option.substr(orbit_prefix.size())));
+    }
+    constexpr std::string_view motion_gain_prefix = "--motion-gain=";
+    if (option.starts_with(motion_gain_prefix)) {
+      motion_gain = std::stof(std::string(option.substr(motion_gain_prefix.size())));
+    }
+    constexpr std::string_view error_gain_prefix = "--error-gain=";
+    if (option.starts_with(error_gain_prefix)) {
+      error_gain = std::stof(std::string(option.substr(error_gain_prefix.size())));
+    }
+    constexpr std::string_view dump_prefix = "--dump=";
+    if (option.starts_with(dump_prefix)) {
+      dump_path = std::string(option.substr(dump_prefix.size()));
+    }
+    constexpr std::string_view camera_prefix = "--camera-at=";
+    if (option.starts_with(camera_prefix)) {
+      const auto text = std::string(option.substr(camera_prefix.size()));
+      std::array<float, 5> values{start_position.x, start_position.y, start_position.z, start_yaw, start_pitch};
+      size_t begin = 0;
+      for (uint32_t v = 0; v < values.size() && begin <= text.size(); ++v) {
+        const auto end = text.find(',', begin);
+        values[v] = std::stof(text.substr(begin, end == std::string::npos ? std::string::npos : end - begin));
+        if (end == std::string::npos) {
+          break;
+        }
+        begin = end + 1;
+      }
+      start_position = {values[0], values[1], values[2]};
+      start_yaw = values[3];
+      start_pitch = values[4];
     }
   }
 
@@ -182,7 +529,7 @@ int main(int argc, char** argv) {
   painter::load_dispatcher2(instance);
   const VkDebugUtilsMessengerEXT messenger = validation ? painter::create_debug_messenger(instance) : VK_NULL_HANDLE;
 
-  GLFWwindow* window = input::create_window(initial_width, initial_height, "PF03 — temporal history");
+  GLFWwindow* window = input::create_window(initial_width, initial_height, "PF03 — thin G-buffer + reprojection");
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   const auto surface_result = input::create_window_surface(instance, window, nullptr, &surface);
   if (surface_result != uint32_t(vk::Result::eSuccess)) {
@@ -239,27 +586,104 @@ int main(int argc, char** argv) {
     assets.set_graphics_base(&base);
     assets.create_default_texture();
 
+    const auto upload_mesh = [&assets](const std::string& id, const std::vector<vertex>& data) {
+      const auto slot = assets.register_buffer_storage(id);
+      assets.create_buffer_storage(slot, painter::buffer_create_info{"scene_geometry", uint32_t(data.size()), 0});
+      assets.populate_buffer_storage(
+        slot,
+        std::span(reinterpret_cast<const uint8_t*>(data.data()), data.size() * sizeof(data[0])),
+        std::span<const uint8_t>{});
+      assets.mark_ready_buffer_slot(slot);
+      return slot;
+    };
+
+    const auto room = make_room();
+    const auto cube = make_cube();
+    const auto room_mesh = upload_mesh("pf03.room", room);
+    const auto cube_mesh = upload_mesh("pf03.cube", cube);
+
+    const uint32_t draw_group = base.find_draw_group("scene_draw_group");
+    const uint32_t room_pair = base.register_pair(draw_group, room_mesh, 1);
+    const uint32_t mover_pair = base.register_pair(draw_group, cube_mesh, mover_count);
+
+    // В инстанс-лейн пишем ТОЛЬКО индекс объекта, и один раз: это константа, поэтому общий на все кадры в
+    // полёте per_update буфер тут безопасен. Всё, что меняется каждый кадр, живёт в object_transforms.
+    for (uint32_t offset = 0; offset < base.frames_in_flight(); ++offset) {
+      const auto room_instances = base.get_current_instance_resource_frame(room_pair, offset);
+      const glm::vec4 room_index{0.0f, 0.0f, 0.0f, 0.0f};
+      std::memcpy(static_cast<uint8_t*>(room_instances.mapped) + room_instances.sub.offset, &room_index, sizeof(room_index));
+
+      const auto mover_instances = base.get_current_instance_resource_frame(mover_pair, offset);
+      std::array<glm::vec4, mover_count> mover_indices{};
+      for (uint32_t i = 0; i < mover_count; ++i) {
+        mover_indices[i] = glm::vec4(float(i + 1), 0.0f, 0.0f, 0.0f);
+      }
+      std::memcpy(static_cast<uint8_t*>(mover_instances.mapped) + mover_instances.sub.offset, mover_indices.data(), sizeof(mover_indices));
+
+      const auto room_indirect = base.get_current_indirect_resource_frame(room_pair, offset);
+      VkDrawIndirectCommand room_command{};
+      room_command.vertexCount = uint32_t(room.size());
+      room_command.instanceCount = 1;
+      std::memcpy(static_cast<uint8_t*>(room_indirect.mapped) + room_indirect.sub.offset, &room_command, sizeof(room_command));
+
+      const auto mover_indirect = base.get_current_indirect_resource_frame(mover_pair, offset);
+      VkDrawIndirectCommand mover_command{};
+      mover_command.vertexCount = uint32_t(cube.size());
+      mover_command.instanceCount = mover_count;
+      std::memcpy(static_cast<uint8_t*>(mover_indirect.mapped) + mover_indirect.sub.offset, &mover_command, sizeof(mover_command));
+    }
+
     input::events::clear_bindings();
+    bind_key("camera_forward", "key_w");
+    bind_key("camera_back", "key_s");
+    bind_key("camera_left", "key_a");
+    bind_key("camera_right", "key_d");
+    bind_key("camera_down", "key_q");
+    bind_key("camera_up", "key_e");
+    bind_key("camera_fast", "left_shift");
     escape_key = input::glfw_key_from_canonical("escape");
     reset_key = input::glfw_key_from_canonical("key_r");
+    for (uint32_t i = 0; i < debug_keys.size(); ++i) {
+      debug_keys[i] = input::glfw_key_from_canonical("key_" + std::to_string(i));
+    }
     input::set_window_callback(window, &key_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
+    if (!camera_locked) {
+      input::set_cursor_input_mode(window, DEVILS_ENGINE_INPUT_CURSOR_DISABLED);
+      input::set_raw_mouse_motion(window);
+    }
+
+    playground::free_camera camera;
+    camera.position = start_position;
+    camera.yaw = start_yaw;
+    camera.pitch = start_pitch;
 
     painter::graphics_ctx context;
     context.base = &base;
     context.assets = &assets;
 
     report_resource_copies(base, "scene_color");
-    report_resource_copies(base, "feedback_color");
-    utils::info("PF03 frames in flight: {}", base.frames_in_flight());
-    utils::info("PF03 graph: scene compute -> temporal accumulate (reads previous frame) -> blit present");
-    utils::info("PF03 controls: R reset history, Esc exit");
+    report_resource_copies(base, "gbuffer_motion");
+    utils::info("PF03 graph: thin G-buffer (depth+normal+motion) -> shade -> compose/reproject -> present");
+    utils::info(
+      "PF03 views: 0 shaded, 1 depth, 2 normal, 3 motion, 4 reprojected, 5 error(motion), 6 error(no motion), "
+      "7 clipping, 8 calibration, 9 exposure, 10 transmittance");
+    utils::info(
+      "PF03 fog: density {}, height falloff {} m, reference {} m, anisotropy {}",
+      fog_density, fog_falloff, fog_height, fog_anisotropy);
+    utils::info(
+      "PF03 tone mapping: operator {}, exposure {}, adapt rate {}/s, sun {}",
+      tonemap_operator, manual_exposure > 0.0f ? std::to_string(manual_exposure) : std::string("auto"),
+      adapt_rate, sun_intensity);
+    utils::info("PF03 controls: WASD/QE move, mouse look, R reset history, Esc exit");
+    utils::info("PF03 scene: static room (camera motion only) + {} moving cubes (per-object motion)", mover_count);
 
     auto previous_time = std::chrono::steady_clock::now();
-    const auto start_time = previous_time;
+    auto [mouse_x, mouse_y] = input::cursor_pos(window);
     playground::frame_pacer frame_pacer(uncapped ? 0u : 60u);
     uint32_t frames_since_reset = 0;
     uint32_t frames_total = 0;
+    glm::mat4 previous_view_projection(1.0f);
 
     while (!input::should_close(window)) {
       input::poll_events();
@@ -281,6 +705,25 @@ int main(int argc, char** argv) {
         reset_requested = false;
       }
 
+      if (orbit_speed > 0.0f) {
+        // Орбита — функция номера кадра, а не стенных часов: только так две записи сравнимы попиксельно
+        const float phase = float(frames_total) * orbit_step_seconds * orbit_speed;
+        camera.position = glm::vec3(std::sin(phase) * 5.5f, -0.4f + std::sin(phase * 0.7f) * 0.35f, std::cos(phase) * 5.5f);
+        camera.yaw = -phase - 1.5707963f;
+        camera.pitch = -0.06f;
+      } else if (!camera_locked) {
+        const auto [next_mouse_x, next_mouse_y] = input::cursor_pos(window);
+        playground::camera_motion motion;
+        motion.forward = float(input::events::is_pressed("camera_forward")) - float(input::events::is_pressed("camera_back"));
+        motion.right = float(input::events::is_pressed("camera_right")) - float(input::events::is_pressed("camera_left"));
+        motion.up = float(input::events::is_pressed("camera_up")) - float(input::events::is_pressed("camera_down"));
+        motion.fast = input::events::is_pressed("camera_fast");
+        motion.look_delta = {float(next_mouse_x - mouse_x), float(next_mouse_y - mouse_y)};
+        mouse_x = next_mouse_x;
+        mouse_y = next_mouse_y;
+        camera.update(motion, dt);
+      }
+
       if (!base.can_draw()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(8));
         continue;
@@ -288,23 +731,58 @@ int main(int argc, char** argv) {
 
       base.prepare_frame();
 
+      const float aspect = float(std::max(pending_width, 1u)) / float(std::max(pending_height, 1u));
+      const auto view = camera.view();
+      const auto projection = playground::infinite_reverse_z_projection(glm::radians(68.0f), aspect, near_plane);
+      const auto view_projection = projection * view;
+
+      // На первом кадре и после сброса прошлой матрицы нет: берём текущую, тогда motion = 0, и «истории
+      // нет» читается как нулевое движение, а не как случайный вектор.
+      if (frames_since_reset == 0) {
+        previous_view_projection = view_projection;
+      }
+
       frame_block frame_data{};
-      frame_data.viewport_time = glm::vec4(
-        float(pending_width),
-        float(pending_height),
-        std::chrono::duration<float>(now - start_time).count(),
-        float(frames_since_reset));
-      frame_data.controls = glm::vec4(history_weight, motion_speed, 0.0f, 0.0f);
+      frame_data.view_projection = view_projection;
+      frame_data.previous_view_projection = previous_view_projection;
+      frame_data.inverse_view_projection = glm::inverse(view_projection);
+      frame_data.camera_position = glm::vec4(camera.position, 1.0f);
+      frame_data.viewport_near = glm::vec4(float(pending_width), float(pending_height), near_plane, float(frames_since_reset));
+      frame_data.controls = glm::vec4(float(debug_mode), motion_gain, error_gain, encode_srgb ? 1.0f : 0.0f);
+      frame_data.light_direction = glm::vec4(glm::normalize(sun_direction), 0.12f);
+      frame_data.tonemap = glm::vec4(float(tonemap_operator), manual_exposure, adapt_rate, dt);
+      // границы log2 средней яркости, ключ (средний серый) и яркость солнца
+      frame_data.exposure_limits = glm::vec4(-6.0f, 8.0f, 0.18f, sun_intensity);
+      frame_data.fog_params = glm::vec4(fog_density, fog_falloff, fog_height, fog_anisotropy);
+      // Цвет рассеяния масштабируется солнцем: туман светится тем же светом, что и всё остальное, поэтому
+      // при смене яркости освещения он не должен внезапно становиться чёрным или выжженным.
+      frame_data.fog_color = glm::vec4(glm::vec3(0.42f, 0.52f, 0.72f) * sun_intensity * 0.45f, 0.75f);
       write_current_buffer(base, "frame_buffer", &frame_data, sizeof(frame_data));
+
+      {
+        // Только текущие трансформы: индекс 0 — неподвижная комната, дальше движущиеся кубы. Прошлый кадр
+        // движок отдаст сам из истории этого ресурса, поэтому дублировать его здесь нечего.
+        std::array<object_transform, 1 + mover_count> transforms{};
+        transforms[0].offset = glm::vec4(0.0f);
+        for (uint32_t i = 0; i < mover_count; ++i) {
+          transforms[1 + i].offset = mover_offset(i, int64_t(frames_total), object_speed, object_spin);
+        }
+        write_current_buffer(base, "object_transforms", transforms.data(), sizeof(transforms));
+      }
 
       context.prepare();
       context.draw();
       base.submit_frame();
       frame_pacer.wait();
 
+      previous_view_projection = view_projection;
       frames_since_reset += 1;
       frames_total += 1;
       if (frame_limit != 0 && frames_total >= frame_limit) {
+        if (!dump_path.empty()) {
+          vk::Device(device).waitIdle();
+          dump_composed_image(base, dump_path);
+        }
         utils::info("PF03 reached the requested {} frames, exiting", frame_limit);
         break;
       }

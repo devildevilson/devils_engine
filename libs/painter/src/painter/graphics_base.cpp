@@ -1272,14 +1272,18 @@ uint32_t graphics_base::register_pair(const uint32_t draw_group, const uint32_t 
   return index;
 }
 
+// constant::offset задан в БАЙТАХ (см. commit_parsed_resources), а память констант — массив uint32_t,
+// поэтому смещение обязано делиться на размер элемента. Без деления вторая и последующие константы читались
+// и писались вчетверо дальше своего места: первая константа с offset 0 работала, поэтому ошибка жила
+// незамеченной до первого конфига с двумя константами.
 void* graphics_base::get_constant_data(const uint32_t index) {
   const auto& constant = DS_ASSERT_ARRAY_GET(constants, index);
-  return reinterpret_cast<void*>(constants_memory[0].data() + constant.offset);
+  return reinterpret_cast<void*>(constants_memory[0].data() + constant.offset / sizeof(uint32_t));
 }
 
 const void* graphics_base::get_constant_data(const uint32_t index) const {
   const auto& constant = DS_ASSERT_ARRAY_GET(constants, index);
-  return reinterpret_cast<const void*>(constants_memory[0].data() + constant.offset);
+  return reinterpret_cast<const void*>(constants_memory[0].data() + constant.offset / sizeof(uint32_t));
 }
 
 void graphics_base::write_constant_data(const uint32_t slot, const void* data, const size_t size) {
@@ -1287,7 +1291,7 @@ void graphics_base::write_constant_data(const uint32_t slot, const void* data, c
   if (constant.size < size) {
     utils::error{}("Trying to copy object more size than constant '{}'", constant.name);
   }
-  auto ptr = reinterpret_cast<void*>(constants_memory[1].data() + constant.offset);
+  auto ptr = reinterpret_cast<void*>(constants_memory[1].data() + constant.offset / sizeof(uint32_t));
   memcpy(ptr, data, size);
 }
 
@@ -2456,9 +2460,18 @@ static void derive_history_ordering(const graphics_base* base, render_graph_inst
     }
 
     if (writers.empty()) {
+      // Историю может производить не только пасс, но и ХОСТ: он пишет копию текущего кадра, пока GPU читает
+      // предыдущую, и это разные копии по самой арифметике период+история. Кросс-кадровый порядок тут не
+      // нужен — на GPU в такой ресурс никто не пишет, а запись хоста упорядочена отправкой прошлого кадра.
+      if (role::is_host_visible(res.role)) {
+        DE_LOG(catalogue::log_domain::render, flow,
+               "graph '{}': history of host-written resource '{}' needs no pass ordering", graph.name, res.name);
+        continue;
+      }
+
       utils::error{}(
-        "Graph '{}' reads resource '{}' as history, but no pass of this graph writes it: истории просто "
-        "не появится — читать будет нечего",
+        "Graph '{}' reads resource '{}' as history, but neither a pass of this graph nor the host writes it: "
+        "истории просто не появится — читать будет нечего",
         graph.name, res.name);
     }
 

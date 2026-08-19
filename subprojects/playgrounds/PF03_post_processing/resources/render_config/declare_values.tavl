@@ -7,3 +7,13 @@
   type = fixed
   value = [1, 0, 0]
 }
+{
+  name = scene_instances
+  type = fixed
+  value = [16, 0, 0]
+}
+{
+  name = scene_draws
+  type = fixed
+  value = [2, 0, 0]
+}

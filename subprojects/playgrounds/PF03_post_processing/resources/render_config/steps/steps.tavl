@@ -1,16 +1,36 @@
 {
-  name = draw_scene
-  material = scene_material
-  sets = [ frame_data, scene_write ]
+  name = draw_gbuffer
+  material = gbuffer_material
+  geometry = scene_geometry
+  draw_group = scene_draw_group
+  sets = [ frame_data, object_data ]
+  command = "draw"
+}
+{
+  name = shade_scene
+  material = shade_material
+  sets = [ frame_data, gbuffer_inputs, shade_write ]
   command = "dispatch constant screen_dispatch"
 }
 {
-  name = accumulate_history
-  material = temporal_material
-  sets = [ frame_data, temporal_inputs, temporal_write ]
+  name = apply_fog
+  material = fog_material
+  sets = [ frame_data, gbuffer_inputs, scene_read, fog_write ]
   command = "dispatch constant screen_dispatch"
 }
 {
-  name = present_feedback
-  command = "blit feedback_color swapchain_image"
+  name = measure_exposure
+  material = exposure_material
+  sets = [ frame_data, fogged_read, exposure_io ]
+  command = "dispatch constant exposure_dispatch"
+}
+{
+  name = compose_frame
+  material = compose_material
+  sets = [ frame_data, gbuffer_inputs, compose_inputs, compose_write ]
+  command = "dispatch constant screen_dispatch"
+}
+{
+  name = present_composed
+  command = "blit composed_color swapchain_image"
 }

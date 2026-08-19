@@ -1,12 +1,30 @@
 {
-  name = scene_material
-  shaders = { compute = "scene.comp.glsl" }
+  name = gbuffer_material
+  shaders = { vertex = "gbuffer.vert.glsl", fragment = "gbuffer.frag.glsl" }
+  depth = { test = true, write = true, compare = greater }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = shade_material
+  shaders = { compute = "shade.comp.glsl" }
   depth = { test = false, write = false, compare = always }
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {
-  name = temporal_material
-  shaders = { compute = "temporal.comp.glsl" }
+  name = fog_material
+  shaders = { compute = "fog.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = exposure_material
+  shaders = { compute = "exposure.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = compose_material
+  shaders = { compute = "compose.comp.glsl" }
   depth = { test = false, write = false, compare = always }
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }

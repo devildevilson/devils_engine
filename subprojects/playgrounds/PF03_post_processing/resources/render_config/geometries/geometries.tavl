@@ -1,0 +1,7 @@
+{
+  name = scene_geometry
+  vertex_layout = p3n3
+  index_type = none
+  topology = triangle_list
+  restart = false
+}

@@ -1519,13 +1519,18 @@ static void resolve_resource_periods(render_config_storage& lctx) {
           res.name, usage::to_string(res.history_usage), usage::to_string(bind.usage), d.name);
       }
 
-      if (res.swap != lctx.per_frame_counter_index && res.swap != lctx.swapchain_counter_index) {
+      if (res.swap != lctx.per_frame_counter_index) {
+        // 'history' считает КАДРЫ — это единственный смысл, который движок может обеспечить сам. У ресурса на
+        // host-счётчике «предыдущая копия» это предыдущий АПДЕЙТ, а не кадр: счётчик двигает хост, и между
+        // двумя кадрами он может не сдвинуться вовсе (тогда история совпадёт с текущим кадром) либо сдвинуться
+        // несколько раз. Это ортогональная ось, и делается она на стороне пользователя явно — прошлое
+        // значение кладётся вторым полем записи, как любые прикладные данные.
         const auto& counter = DS_ASSERT_ARRAY_GET(lctx.counters, res.swap);
-        utils::warn(
-          "Descriptor '{}' reads resource '{}' {} frames back, but the resource rotates on counter '{}', "
-          "which the host advances on its own: 'history' считает КАДРЫ, поэтому индекс [1] может оказаться "
-          "не предыдущим кадром",
-          d.name, res.name, bind.history, counter.name);
+        utils::error{}(
+          "Descriptor '{}' asks {} frames of history from resource '{}', which rotates on counter '{}': "
+          "'history' означает КАДРЫ и требует swap = per_frame. Историю по апдейтам держите явно — вторым "
+          "полем записи ресурса",
+          d.name, bind.history, res.name, counter.name);
       }
 
       res.history_depth = std::max(res.history_depth, bind.history);

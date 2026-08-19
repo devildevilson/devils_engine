@@ -3,32 +3,86 @@
   startup = true
   passes = [
     {
-      name = pf03_scene
-      subpasses = [
-        { scene_color = (texel_write, store) }
-      ]
-      steps = [ draw_scene ]
-    },
-    {
-      // Пасс и пишет новую копию feedback_color, и читает прошлую (history-биндинг). Кросс-кадровый
-      // порядок для этого в конфиге не объявляется — он выводится из самого history-чтения.
-      name = pf03_temporal
+      // Тонкий G-buffer одним проходом: нормаль, motion и глубина
+      name = pf03_gbuffer
+      render_target = gbuffer_target
       subpasses = [
         {
-          scene_color = (sampled, store),
-          feedback_color = (texel_write, store)
+          gbuffer_normal = (undefined, clear),
+          gbuffer_motion = (undefined, clear),
+          scene_depth = (undefined, clear)
+        },
+        {
+          gbuffer_normal = (color_attachment, store),
+          gbuffer_motion = (color_attachment, store),
+          scene_depth = (depth_attachment, store)
+        },
+        {
+          gbuffer_normal = (sampled, store),
+          gbuffer_motion = (sampled, store),
+          scene_depth = (depth_read, store)
         }
       ]
-      steps = [ accumulate_history ]
+      steps = [ draw_gbuffer ]
+    },
+    {
+      name = pf03_shade
+      subpasses = [
+        {
+          scene_depth = (depth_read, store),
+          gbuffer_normal = (sampled, store),
+          scene_color = (texel_write, store)
+        }
+      ]
+      steps = [ shade_scene ]
+    },
+    {
+      // Туман и аэроперспектива: применяются в ЛИНЕЙНОМ HDR до экспозиции, потому что это яркость сцены,
+      // а не постобработка изображения.
+      name = pf03_fog
+      subpasses = [
+        {
+          scene_depth = (depth_read, store),
+          scene_color = (sampled, store),
+          fogged_color = (texel_write, store)
+        }
+      ]
+      steps = [ apply_fog ]
+    },
+    {
+      // Замер яркости кадра и адаптация экспозиции. Отдельным пассом, потому что сводит весь кадр в один
+      // тексель: следующему пассу нужен уже готовый результат.
+      name = pf03_exposure
+      subpasses = [
+        {
+          fogged_color = (sampled, store),
+          exposure_state = (texel_write, store)
+        }
+      ]
+      steps = [ measure_exposure ]
+    },
+    {
+      // Читает историю scene_color: кросс-кадровый порядок с pf03_shade выводится, а не объявляется
+      name = pf03_compose
+      subpasses = [
+        {
+          scene_depth = (depth_read, store),
+          gbuffer_motion = (sampled, store),
+          fogged_color = (sampled, store),
+          exposure_state = (texel_read, store),
+          composed_color = (texel_write, store)
+        }
+      ]
+      steps = [ compose_frame ]
     },
     {
       name = pf03_present
       wait_for = [ swapchain_image ]
       subpasses = [
-        { feedback_color = (transfer_src, store), swapchain_image = (transfer_dst, store) },
-        { feedback_color = (transfer_src, store), swapchain_image = (present, store) }
+        { composed_color = (transfer_src, store), swapchain_image = (transfer_dst, store) },
+        { composed_color = (transfer_src, store), swapchain_image = (present, store) }
       ]
-      steps = [ present_feedback ]
+      steps = [ present_composed ]
     }
   ]
   present_source = swapchain_image
