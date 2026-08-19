@@ -733,6 +733,11 @@ void graphics_base::clear_resources() {
     const uint32_t buffering = res.compute_buffering(this);
     for (uint32_t i = 0; i < buffering; ++i) {
       dev.destroy(res.handles[i].view);
+      // виды на уровни живут отдельно от вида на цепочку, поэтому уничтожаются отдельно
+      for (auto& level_view : res.handles[i].level_views) {
+        dev.destroy(level_view);
+        level_view = VK_NULL_HANDLE;
+      }
     }
   }
 
@@ -819,6 +824,10 @@ void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t
     for (uint32_t i = 0; i < buffering; ++i) {
       if (is_image) {
         dev.destroy(res.handles[i].view);
+        for (auto& level_view : res.handles[i].level_views) {
+          dev.destroy(level_view);
+          level_view = VK_NULL_HANDLE;
+        }
       }
 
       const auto itr = std::find(indices.begin(), indices.end(), res.handles[i].index);
@@ -829,6 +838,9 @@ void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t
         auto& cont = DS_ASSERT_ARRAY_GET(resource_containers, res.handles[i].index);
         cont.size = size * buffering;
         cont.extent = {std::get<0>(exts), std::get<1>(exts)};
+        if (is_image) {
+          cont.mips = res.compute_mip_levels(std::get<0>(exts), std::get<1>(exts));
+        }
       }
     }
   }
@@ -865,15 +877,33 @@ void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t
         const auto img_handle = std::bit_cast<VkImage>(cont.handle);
         const auto fmt = static_cast<vk::Format>(res.format_hint);
 
+        // 'auto'-цепочка при новом размере окна может иметь ДРУГОЕ число уровней, поэтому оно пересчитывается,
+        // а не берётся из старого subimage.
+        const uint32_t levels = res.compute_mip_levels(cont.extent.x, cont.extent.y);
+        auto range = std::bit_cast<vk::ImageSubresourceRange>(res.handles[i].subimage);
+        range.baseMipLevel = 0;
+        range.levelCount = levels;
+
         vk::ImageViewCreateInfo ivci{};
         ivci.image = img_handle;
         ivci.format = fmt;
         ivci.viewType = vk::ImageViewType::e2D;
         ivci.components = vk::ComponentMapping{};
-        ivci.subresourceRange = std::bit_cast<vk::ImageSubresourceRange>(res.handles[i].subimage);
+        ivci.subresourceRange = range;
 
         res.handles[i].view = dev.createImageView(ivci);
         set_name(device, vk::ImageView(res.handles[i].view), res.name + ".view" + std::to_string(i));
+        res.handles[i].subimage = std::bit_cast<subresource_image>(range);
+
+        for (uint32_t level = 0; level < levels; ++level) {
+          auto level_info = ivci;
+          level_info.subresourceRange.baseMipLevel = level;
+          level_info.subresourceRange.levelCount = 1;
+          res.handles[i].level_views[level] = dev.createImageView(level_info);
+          set_name(
+            device, vk::ImageView(res.handles[i].level_views[level]),
+            res.name + ".view" + std::to_string(i) + ".mip" + std::to_string(level));
+        }
       }
     }
   }
@@ -1556,6 +1586,10 @@ void graphics_base::create_samplers() {
     sampler_maker sm{vk::Device(device)};
     sm.filter(vk::Filter(s.min_filter), vk::Filter(s.mag_filter));
     sm.mipmapMode(vk::SamplerMipmapMode(s.mipmap_mode));
+    // Без явного диапазона LOD maxLod остаётся нулём, и любая выборка уровня выше нулевого МОЛЧА возвращает
+    // нулевой — мип-цепочка выглядела бы созданной и нерабочей одновременно. Верхняя граница снята: сколько
+    // уровней есть у вида, столько и доступно.
+    sm.lod(0.0f, VK_LOD_CLAMP_NONE, 0.0f);
     sm.addressMode(vk::SamplerAddressMode(s.address_u), vk::SamplerAddressMode(s.address_v), vk::SamplerAddressMode(s.address_w));
     if (s.compare_enable != 0) {
       sm.compareOp(VK_TRUE, vk::CompareOp(s.compare_op));
@@ -1695,8 +1729,8 @@ void graphics_base::compute_active_masks(const std::vector<uint32_t>& graph_indi
 
         // step.barriers уже вбирает barriers + step.resources (local-descr) + cmd_params.resources
         // (см. parse_execution_step2), но берём ещё и cmd_params явно — над-аппроксимация безопасна.
-        for (const auto& [res_idx, usage] : step.barriers) {
-          mark_res(res_idx);
+        for (const auto& target : step.barriers) {
+          mark_res(target.resource);
         }
         for (const auto& [res_idx, usage] : step.cmd_params.resources) {
           mark_res(res_idx);
@@ -1750,8 +1784,8 @@ void graphics_base::create_resources() {
   };
 
   const auto consume_step = [&](const step_base& step) {
-    for (const auto& [res_index, usage] : step.barriers) {
-      add_usage(res_index, usage);
+    for (const auto& target : step.barriers) {
+      add_usage(target.resource, target.usage);
     }
   };
 
@@ -1867,7 +1901,7 @@ void graphics_base::create_resources() {
     const bool is_buffer = role::is_buffer(res.role);
     //const auto& size_value = DS_ASSERT_ARRAY_GET(constant_values, res.size);
 
-    const uint32_t res_mips = 1;
+    uint32_t res_mips = 1;
     const bool is_host_resource = role::is_host_visible(res.role);
 
     // тут бы мы хотели еще как то сгруппировать ресурсы
@@ -1879,6 +1913,10 @@ void graphics_base::create_resources() {
     auto [buffer_size, img_ext] = res.compute_frame_size(this);
     const uint32_t buffering = res.compute_buffering(this);
     auto image_extent = vk::Extent2D{std::get<0>(img_ext), std::get<1>(img_ext)};
+    if (role::is_image(res.role)) {
+      // Число уровней считается от размера уровня 0, поэтому 'auto' при resize честно пересчитывается
+      res_mips = res.compute_mip_levels(image_extent.width, image_extent.height);
+    }
     const size_t frame_size = buffer_size;
     const size_t frame_stride = is_buffer
                                   ? utils::align_to(frame_size, buffer_suballocation_alignment(physical_device, res.usage_mask))
@@ -2050,6 +2088,8 @@ void graphics_base::create_resources() {
           aspect = vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
         }
 
+        const uint32_t levels = match.mips;
+
         vk::ImageViewCreateInfo ivci{};
         ivci.image = img_handle;
         ivci.format = fmt;
@@ -2059,15 +2099,27 @@ void graphics_base::create_resources() {
         // определяется форматом? ролью?
         ivci.subresourceRange.aspectMask = aspect;
         ivci.subresourceRange.baseMipLevel = 0;
-        ivci.subresourceRange.levelCount = 1;
+        ivci.subresourceRange.levelCount = levels;
         ivci.subresourceRange.baseArrayLayer = match.layer_offset + j;
         ivci.subresourceRange.layerCount = 1;
 
+        // Вид на всю цепочку: только он годится для выборки с LOD
         res.handles[j].view = dev.createImageView(ivci);
-
         set_name(device, vk::ImageView(res.handles[j].view), res.name + ".view" + std::to_string(j));
 
         res.handles[j].subimage = std::bit_cast<subresource_image>(ivci.subresourceRange);
+
+        // Виды на отдельные уровни: storage-картинка и attachment адресуют РОВНО один уровень (у
+        // imageLoad/imageStore нет LOD), поэтому цепочке нужен ещё и вид на каждый уровень отдельно.
+        for (uint32_t level = 0; level < levels; ++level) {
+          auto level_info = ivci;
+          level_info.subresourceRange.baseMipLevel = level;
+          level_info.subresourceRange.levelCount = 1;
+          res.handles[j].level_views[level] = dev.createImageView(level_info);
+          set_name(
+            device, vk::ImageView(res.handles[j].level_views[level]),
+            res.name + ".view" + std::to_string(j) + ".mip" + std::to_string(level));
+        }
       } else {
         res.handles[j].subbuffer.offset = match.offset + frame_stride * j;
         res.handles[j].subbuffer.size = frame_size;
@@ -2315,7 +2367,16 @@ void graphics_base::update_descriptors() {
           images.emplace_back();
           // immutable-сэмплер уже в layout; для combined достаточно view (sampler в write игнорируется)
           images.back().sampler = combined ? vk::Sampler(samplers[layout_bind.sampler].handle) : vk::Sampler(nullptr);
-          images.back().imageView = res.handles[final_index].view;
+          // Биндинг с уровнем получает вид НА УРОВЕНЬ, без уровня — вид на всю цепочку. Для картинки без мипов
+          // это одно и то же по содержимому, поэтому обычный случай ничего не замечает.
+          images.back().imageView = layout_bind.mip == invalid_resource_slot
+                                      ? res.handles[final_index].view
+                                      : res.handles[final_index].level_views[layout_bind.mip];
+          if (images.back().imageView == VK_NULL_HANDLE) {
+            utils::error{}(
+              "Descriptor '{}' binding {} asks mip {} of resource '{}', which has no such level",
+              d.name, bind, layout_bind.mip, res.name);
+          }
           images.back().imageLayout = convertil(layout_bind.usage);
         }
       } else {
@@ -2802,7 +2863,8 @@ void graphics_ctx::prepare() {
       const auto [x, y] = base->swapchain_extent();
       resources[i].extent = {x, y};
       resources[i].role = base_res.role;
-      resources[i].usage = usage::undefined;
+      resources[i].mips = 1;
+      resources[i].usage_levels.fill(usage::undefined);
       continue;
     }
 
@@ -2814,14 +2876,16 @@ void graphics_ctx::prepare() {
       resources[i].view = cur_handle.view;
       resources[i].extent = {base_res_container.extent.x, base_res_container.extent.y};
       resources[i].role = base_res.role;
-      resources[i].usage = usage::undefined;
+      resources[i].mips = std::max(cur_handle.subimage.level_count, 1u);
+      resources[i].usage_levels.fill(usage::undefined);
     } else {
       resources[i].buf = std::bit_cast<VkBuffer>(base_res_container.handle);
       resources[i].subbuf = cur_handle.subbuffer;
       resources[i].view = VK_NULL_HANDLE;
       resources[i].extent = {base_res_container.extent.x, base_res_container.extent.y};
       resources[i].role = base_res.role;
-      resources[i].usage = usage::undefined;
+      resources[i].mips = 1;
+      resources[i].usage_levels.fill(usage::undefined);
     }
   }
 

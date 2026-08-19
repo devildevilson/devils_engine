@@ -44,10 +44,10 @@ constexpr float near_plane = 0.1f;
 constexpr float orbit_step_seconds = 1.0f / 60.0f;
 
 // Отладочные виды; порядок обязан совпадать с PF03_DEBUG_* в resources/shaders/pf03_frame.glsl
-constexpr std::array<std::string_view, 16> debug_names = {
+constexpr std::array<std::string_view, 17> debug_names = {
   "shaded", "depth", "normal", "motion", "reprojected", "error(motion)", "error(no motion)",
   "clipping", "calibration", "exposure", "transmittance", "ao", "ao raw", "taa rejection",
-  "bloom", "shafts"};
+  "bloom", "shafts", "sharpen"};
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -119,8 +119,10 @@ struct alignas(16) frame_block {
   glm::vec4 taa_jitter;
   glm::vec4 bloom_params;
   glm::vec4 shaft_params;
+  glm::vec4 lens_params;
+  glm::vec4 output_params;
 };
-static_assert(sizeof(frame_block) == 400);
+static_assert(sizeof(frame_block) == 432);
 
 struct vertex {
   float px, py, pz;
@@ -438,6 +440,11 @@ int main(int argc, char** argv) {
   float bloom_up_weight = 0.75f;   // вес каждого шага подъёма: меньше — компактнее свечение
   float shaft_intensity = 0.08f;   // сила лучей: это доля рассеянного света, а не яркость сама по себе
   float shaft_falloff = 2.5f;      // затухание вдоль луча
+  float sharpen = 0.35f;           // резкость после накопления: TAA неизбежно размывает историю
+  float vignette = 0.25f;          // затемнение краёв
+  float aberration = 0.0f;         // хроматическая аберрация; по умолчанию выключена как приём на вкус
+  float grain = 0.0f;              // зерно; тоже на вкус
+  bool dither = true;              // дизер перед 8-битным выводом: почти бесплатно, убирает бандинг
   float taa_weight = 0.92f;       // вес истории: больше — стабильнее и мылее
   uint32_t taa_phases = 8;        // длина последовательности джиттера
   float jitter_scale = 1.0f;      // 0 — джиттер выключен (тогда накапливать нечего)
@@ -466,6 +473,26 @@ int main(int argc, char** argv) {
     constexpr std::string_view debug_prefix = "--debug=";
     if (option.starts_with(debug_prefix)) {
       debug_mode = std::min<uint32_t>(uint32_t(std::stoul(std::string(option.substr(debug_prefix.size())))), debug_names.size() - 1);
+    }
+    constexpr std::string_view sharpen_prefix = "--sharpen=";
+    if (option.starts_with(sharpen_prefix)) {
+      sharpen = std::stof(std::string(option.substr(sharpen_prefix.size())));
+    }
+    constexpr std::string_view vignette_prefix = "--vignette=";
+    if (option.starts_with(vignette_prefix)) {
+      vignette = std::stof(std::string(option.substr(vignette_prefix.size())));
+    }
+    constexpr std::string_view aberration_prefix = "--aberration=";
+    if (option.starts_with(aberration_prefix)) {
+      aberration = std::stof(std::string(option.substr(aberration_prefix.size())));
+    }
+    constexpr std::string_view grain_prefix = "--grain=";
+    if (option.starts_with(grain_prefix)) {
+      grain = std::stof(std::string(option.substr(grain_prefix.size())));
+    }
+    constexpr std::string_view dither_prefix = "--dither=";
+    if (option.starts_with(dither_prefix)) {
+      dither = std::stoi(std::string(option.substr(dither_prefix.size()))) != 0;
     }
     constexpr std::string_view bloom_prefix = "--bloom=";
     if (option.starts_with(bloom_prefix)) {
@@ -829,7 +856,7 @@ int main(int argc, char** argv) {
     utils::info(
       "PF03 views: 0 shaded, 1 depth, 2 normal, 3 motion, 4 reprojected, 5 error(motion), 6 error(no motion), "
       "7 clipping, 8 calibration, 9 exposure, 10 transmittance, 11 ao, 12 ao raw, 13 taa rejection, "
-      "14 bloom, 15 shafts");
+      "14 bloom, 15 shafts, 16 sharpen");
     utils::info(
       "PF03 SSAO: {}, radius {} m, intensity {}, bias {} (half resolution + depth-aware blur)",
       ao_enabled ? "on" : "off", ao_radius, ao_intensity, ao_bias);
@@ -844,6 +871,9 @@ int main(int argc, char** argv) {
       "PF03 bloom: intensity {}, threshold {}, knee {}, spread {} (4-level pyramid)",
       bloom_intensity, bloom_threshold, bloom_knee, bloom_up_weight);
     utils::info("PF03 light shafts: intensity {}, falloff {} (screen-space, sun must be on screen)", shaft_intensity, shaft_falloff);
+    utils::info(
+      "PF03 output: sharpen {}, vignette {}, aberration {}, grain {}, dither {}",
+      sharpen, vignette, aberration, grain, dither ? "on" : "off");
     utils::info("PF03 lighting: sun {}, ambient fraction {} (SSAO модулирует только ambient)", sun_intensity, ambient_fraction);
     utils::info(
       "PF03 fog: density {}, height falloff {} m, reference {} m, anisotropy {}",
@@ -984,6 +1014,10 @@ int main(int argc, char** argv) {
         shafts_strength = visible ? shaft_intensity : 0.0f;
       }
       frame_data.shaft_params = glm::vec4(sun_uv, shafts_strength, shaft_falloff);
+      frame_data.lens_params = glm::vec4(sharpen, vignette, aberration, grain);
+      // Семя зерна и дизера меняется по кадрам: статичный шум читается как грязь на экране, а не как зерно.
+      // Оно же остаётся детерминированным (функция номера кадра), поэтому дампы сравнимы.
+      frame_data.output_params = glm::vec4(dither ? 1.0f : 0.0f, float(frames_total % 64u), 0.0f, 0.0f);
       write_current_buffer(base, "frame_buffer", &frame_data, sizeof(frame_data));
 
       {

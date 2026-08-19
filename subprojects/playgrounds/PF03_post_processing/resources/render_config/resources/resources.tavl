@@ -73,31 +73,14 @@
   swap = per_frame
 }
 {
-  name = bloom_half
+  // Пирамида bloom ОДНИМ ресурсом с мип-цепочкой: уровень 0 — половина кадра, дальше вдвое. Раньше это были
+  // четыре отдельных ресурса с размерами через declare_values — работало, но стоило четырёх объявлений,
+  // четырёх контейнеров и четырёх наборов дескрипторов.
+  name = bloom
   format = sf4
   role = bloom_mip
   size = viewport_half
-  swap = per_frame
-}
-{
-  name = bloom_quarter
-  format = sf4
-  role = bloom_mip
-  size = viewport_quarter
-  swap = per_frame
-}
-{
-  name = bloom_eighth
-  format = sf4
-  role = bloom_mip
-  size = viewport_eighth
-  swap = per_frame
-}
-{
-  name = bloom_sixteenth
-  format = sf4
-  role = bloom_mip
-  size = viewport_sixteenth
+  mips = 4
   swap = per_frame
 }
 {
@@ -137,7 +120,7 @@
 }
 {
   name = frame_buffer
-  format = mat4mat4mat4v4v4v4v4v4v4v4v4v4v4v4v4v4
+  format = mat4mat4mat4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4
   role = upload
   size = one
   swap = per_frame

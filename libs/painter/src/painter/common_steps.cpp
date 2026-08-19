@@ -143,56 +143,86 @@ static_assert(offsetof(subresource_image, level_count) == offsetof(VkImageSubres
 static_assert(offsetof(subresource_image, base_array_layer) == offsetof(VkImageSubresourceRange, baseArrayLayer));
 static_assert(offsetof(subresource_image, layer_count) == offsetof(VkImageSubresourceRange, layerCount));
 
-static void make_barriers1(graphics_ctx* ctx, VkCommandBuffer buf, const std::vector<std::tuple<uint32_t, usage::values>>& barriers) {
-  vk::CommandBuffer task(buf);
+// Один барьер на подресурс. Уровни, оказавшиеся в одинаковом состоянии, склеиваются в ОДИН барьер с
+// levelCount > 1: так обычная картинка без мипов и чтение пирамиды целиком стоят ровно столько же, сколько
+// стоили до появления уровней, и в командный буфер не летит по барьеру на уровень.
+static void collect_barrier(
+  graphics_ctx* ctx,
+  const uint32_t slot,
+  const uint32_t mip,
+  const usage::values target,
+  vk::PipelineStageFlags& src_stages,
+  vk::PipelineStageFlags& dst_stages) {
+  auto& res = DS_ASSERT_ARRAY_GET(ctx->resources, slot);
 
-  vk::PipelineStageFlags src_stages{};
-  vk::PipelineStageFlags dst_stages{};
-  for (const auto& [index, usage] : barriers) {
-    auto& res = DS_ASSERT_ARRAY_GET(ctx->resources, index);
-    if (res.usage == usage) {
+  if (!role::is_image(res.role)) {
+    const auto current = res.usage_levels[0];
+    if (current == target) {
+      return;
+    }
+    src_stages = src_stages | convertps(current);
+    dst_stages = dst_stages | convertps(target);
+
+    vk::BufferMemoryBarrier buf_bar{};
+    buf_bar.srcAccessMask = convertam(current);
+    buf_bar.dstAccessMask = convertam(target);
+    buf_bar.buffer = res.buf;
+    buf_bar.offset = res.subbuf.offset;
+    buf_bar.size = res.subbuf.size;
+    ctx->buffer_barriers.emplace_back(std::bit_cast<buffer_memory_barrier>(buf_bar));
+    res.usage_levels[0] = target;
+    return;
+  }
+
+  const uint32_t levels = std::max(res.mips, 1u);
+  const uint32_t first = mip == invalid_resource_slot ? 0 : mip;
+  const uint32_t last = mip == invalid_resource_slot ? levels : std::min(mip + 1, levels);
+
+  for (uint32_t level = first; level < last;) {
+    const auto current = res.usage_levels[level];
+    if (current == target) {
+      level += 1;
       continue;
     }
 
-    src_stages = src_stages | convertps(res.usage);
-    dst_stages = dst_stages | convertps(usage);
-
-    // + собираем структуры для img barrier и buf barrier
-
-    if (role::is_image(res.role)) {
-      vk::ImageMemoryBarrier img_bar{};
-      img_bar.srcAccessMask = convertam(res.usage);
-      img_bar.dstAccessMask = convertam(usage);
-      img_bar.oldLayout = convertil(res.usage);
-      img_bar.newLayout = convertil(usage);
-      img_bar.image = res.img;
-      img_bar.subresourceRange = std::bit_cast<vk::ImageSubresourceRange>(res.subimg);
-      ctx->image_barriers.emplace_back(std::bit_cast<image_memory_barrier>(img_bar));
-    } else {
-      vk::BufferMemoryBarrier buf_bar{};
-      buf_bar.srcAccessMask = convertam(res.usage);
-      buf_bar.dstAccessMask = convertam(usage);
-      buf_bar.buffer = res.buf;
-      buf_bar.offset = res.subbuf.offset;
-      buf_bar.size = res.subbuf.size;
-      ctx->buffer_barriers.emplace_back(std::bit_cast<buffer_memory_barrier>(buf_bar));
+    // склеиваем подряд идущие уровни с тем же исходным состоянием
+    uint32_t run = level + 1;
+    while (run < last && res.usage_levels[run] == current) {
+      run += 1;
     }
 
-    //{
-    //  const auto& bres = DS_ASSERT_ARRAY_GET(ctx->base->resources, index);
-    //  utils::info("Make barrier for resource '{}' from '{}' to '{}'", bres.name, usage::to_string(res.usage), usage::to_string(usage));
-    //}
+    src_stages = src_stages | convertps(current);
+    dst_stages = dst_stages | convertps(target);
 
-    res.usage = usage;
+    auto range = std::bit_cast<vk::ImageSubresourceRange>(res.subimg);
+    range.baseMipLevel = level;
+    range.levelCount = run - level;
+
+    vk::ImageMemoryBarrier img_bar{};
+    img_bar.srcAccessMask = convertam(current);
+    img_bar.dstAccessMask = convertam(target);
+    img_bar.oldLayout = convertil(current);
+    img_bar.newLayout = convertil(target);
+    img_bar.image = res.img;
+    img_bar.subresourceRange = range;
+    ctx->image_barriers.emplace_back(std::bit_cast<image_memory_barrier>(img_bar));
+
+    for (uint32_t i = level; i < run; ++i) {
+      res.usage_levels[i] = target;
+    }
+    level = run;
   }
+}
 
+static void submit_barriers(
+  graphics_ctx* ctx, VkCommandBuffer buf, const vk::PipelineStageFlags src_stages, const vk::PipelineStageFlags dst_stages) {
   if (ctx->image_barriers.empty() && ctx->buffer_barriers.empty()) {
     return;
   }
 
   const auto img_ptr = reinterpret_cast<const vk::ImageMemoryBarrier*>(ctx->image_barriers.data());
   const auto buf_ptr = reinterpret_cast<const vk::BufferMemoryBarrier*>(ctx->buffer_barriers.data());
-  task.pipelineBarrier(
+  vk::CommandBuffer(buf).pipelineBarrier(
     src_stages, dst_stages, vk::DependencyFlagBits::eByRegion,
     0u, nullptr,
     uint32_t(ctx->buffer_barriers.size()), buf_ptr,
@@ -200,71 +230,36 @@ static void make_barriers1(graphics_ctx* ctx, VkCommandBuffer buf, const std::ve
 
   ctx->image_barriers.clear();
   ctx->buffer_barriers.clear();
+}
+
+static void make_barriers1(graphics_ctx* ctx, VkCommandBuffer buf, const std::vector<barrier_target>& barriers) {
+  vk::PipelineStageFlags src_stages{};
+  vk::PipelineStageFlags dst_stages{};
+  for (const auto& target : barriers) {
+    collect_barrier(ctx, target.resource, target.mip, target.usage, src_stages, dst_stages);
+  }
+  submit_barriers(ctx, buf, src_stages, dst_stages);
 }
 
 static void make_barriers2(graphics_ctx* ctx, VkCommandBuffer buf, const std::vector<execution_pass_base::resource_info>& barriers) {
-  vk::CommandBuffer task(buf);
-
   vk::PipelineStageFlags src_stages{};
   vk::PipelineStageFlags dst_stages{};
   for (const auto& ri : barriers) {
-    auto& res = DS_ASSERT_ARRAY_GET(ctx->resources, ri.slot);
-    if (res.usage == ri.usage) {
-      continue;
-    }
-
-    src_stages = src_stages | convertps(res.usage);
-    dst_stages = dst_stages | convertps(ri.usage);
-
-    // + собираем структуры для img barrier и buf barrier
-
-    if (role::is_image(res.role)) {
-      vk::ImageMemoryBarrier img_bar{};
-      img_bar.srcAccessMask = convertam(res.usage);
-      img_bar.dstAccessMask = convertam(ri.usage);
-      img_bar.oldLayout = convertil(res.usage);
-      img_bar.newLayout = convertil(ri.usage);
-      img_bar.image = res.img;
-      img_bar.subresourceRange = std::bit_cast<vk::ImageSubresourceRange>(res.subimg);
-      ctx->image_barriers.emplace_back(std::bit_cast<image_memory_barrier>(img_bar));
-    } else {
-      vk::BufferMemoryBarrier buf_bar{};
-      buf_bar.srcAccessMask = convertam(res.usage);
-      buf_bar.dstAccessMask = convertam(ri.usage);
-      buf_bar.buffer = res.buf;
-      buf_bar.offset = res.subbuf.offset;
-      buf_bar.size = res.subbuf.size;
-      ctx->buffer_barriers.emplace_back(std::bit_cast<buffer_memory_barrier>(buf_bar));
-    }
-
-    //{
-    //  const auto& bres = DS_ASSERT_ARRAY_GET(ctx->base->resources, ri.slot);
-    //  utils::info("Make barrier for resource '{}' from '{}' to '{}'", bres.name, usage::to_string(res.usage), usage::to_string(ri.usage));
-    //}
-
-    res.usage = ri.usage;
+    collect_barrier(ctx, ri.slot, ri.mip, ri.usage, src_stages, dst_stages);
   }
-
-  if (ctx->image_barriers.empty() && ctx->buffer_barriers.empty()) {
-    return;
-  }
-
-  const auto img_ptr = reinterpret_cast<const vk::ImageMemoryBarrier*>(ctx->image_barriers.data());
-  const auto buf_ptr = reinterpret_cast<const vk::BufferMemoryBarrier*>(ctx->buffer_barriers.data());
-  task.pipelineBarrier(
-    src_stages, dst_stages, vk::DependencyFlagBits::eByRegion,
-    0u, nullptr,
-    uint32_t(ctx->buffer_barriers.size()), buf_ptr,
-    uint32_t(ctx->image_barriers.size()), img_ptr);
-
-  ctx->image_barriers.clear();
-  ctx->buffer_barriers.clear();
+  submit_barriers(ctx, buf, src_stages, dst_stages);
 }
 
+// Рендер-пасс сам меняет layout вложений по своему описанию, поэтому состояние обновляется без барьеров
 static void change_usages(graphics_ctx* ctx, const std::vector<execution_pass_base::resource_info>& barriers) {
   for (const auto& ri : barriers) {
     auto& res = DS_ASSERT_ARRAY_GET(ctx->resources, ri.slot);
-    res.usage = ri.usage;
+    const uint32_t levels = std::max(res.mips, 1u);
+    const uint32_t first = ri.mip == invalid_resource_slot ? 0 : ri.mip;
+    const uint32_t last = ri.mip == invalid_resource_slot ? levels : std::min(ri.mip + 1, levels);
+    for (uint32_t level = first; level < last; ++level) {
+      res.usage_levels[level] = ri.usage;
+    }
   }
 }
 
@@ -948,7 +943,19 @@ void execution_pass_instance::create_framebuffers(const graphics_base* ctx) {
 
       const uint32_t buffering = res.compute_buffering(ctx);
       const uint32_t current_index = i % buffering;
-      views[j] = res.handles[current_index].view;
+      // Вложение адресует ровно один уровень, поэтому у цепочки берётся вид на уровень 0. Рисование в
+      // произвольный уровень потребует, чтобы render target умел называть уровень — этого пока нет, и молча
+      // писать в нулевой при объявленной цепочке было бы неверно, поэтому падаем громко.
+      const uint32_t levels = std::max(res.handles[current_index].subimage.level_count, 1u);
+      if (levels > 1) {
+        utils::error{}(
+          "Render target '{}' uses resource '{}' with {} mip levels: attachments address exactly one level, and "
+          "naming a level in a render target is not supported yet",
+          rt.name, res.name, levels);
+      }
+      views[j] = res.handles[current_index].level_views[0] != VK_NULL_HANDLE
+                   ? res.handles[current_index].level_views[0]
+                   : res.handles[current_index].view;
 
       const auto [size, img_ext] = res.compute_frame_size(ctx);
       const auto [img_width, img_height] = img_ext;
@@ -1044,10 +1051,11 @@ temporal_fixate_instance::temporal_fixate_instance() noexcept : step_interface(s
 void temporal_fixate_instance::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   // targets собраны при сборке графа: ресурс с историей + юсадж, объявленный читателями. make_barriers1
   // сама пропускает копии, которые уже лежат в нужном layout, поэтому лишних барьеров не будет.
-  std::vector<std::tuple<uint32_t, usage::values>> converted;
+  std::vector<barrier_target> converted;
   converted.reserve(targets.size());
   for (const auto& [slot, target_usage] : targets) {
-    converted.emplace_back(slot, static_cast<usage::values>(target_usage));
+    // Фиксация касается ВСЕЙ цепочки: история читается целиком, а не отдельным уровнем
+    converted.emplace_back(slot, static_cast<usage::values>(target_usage), invalid_resource_slot);
   }
   make_barriers1(ctx, buf, converted);
 }

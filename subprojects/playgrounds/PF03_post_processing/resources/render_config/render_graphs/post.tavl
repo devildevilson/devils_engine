@@ -107,10 +107,7 @@
         {
           taa_color = (sampled, store),
           exposure_state = (texel_read, store),
-          bloom_half = (texel_write, store),
-          bloom_quarter = (texel_write, store),
-          bloom_eighth = (texel_write, store),
-          bloom_sixteenth = (texel_write, store)
+          bloom = (texel_write, store)
         }
       ]
       steps = [ bloom_down_half, bloom_down_quarter, bloom_down_eighth, bloom_down_sixteenth ]
@@ -120,10 +117,7 @@
       name = pf03_bloom_up
       subpasses = [
         {
-          bloom_sixteenth = (sampled, store),
-          bloom_eighth = (general, store),
-          bloom_quarter = (general, store),
-          bloom_half = (general, store)
+          bloom = (general, store)
         }
       ]
       steps = [ bloom_up_eighth, bloom_up_quarter, bloom_up_half ]
@@ -132,7 +126,7 @@
       name = pf03_shafts
       subpasses = [
         {
-          bloom_quarter = (sampled, store),
+          bloom = (sampled, store),
           scene_depth = (depth_read, store),
           shafts_quarter = (texel_write, store)
         }
@@ -149,7 +143,7 @@
           taa_color = (sampled, store),
           ao_blurred = (sampled, store),
           ao_raw = (sampled, store),
-          bloom_half = (sampled, store),
+          bloom = (sampled, store),
           shafts_quarter = (sampled, store),
           exposure_state = (texel_read, store),
           composed_color = (texel_write, store)

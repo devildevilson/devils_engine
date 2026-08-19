@@ -43,7 +43,43 @@ void main() {
   const vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
   const float depth = texture(depth_image, uv).r;
   const vec2 motion = texture(motion_image, uv).rg;
-  const vec3 current = texture(scene_image, uv).rgb;
+
+  // Хроматическая аберрация: каналы берутся с чуть разным масштабом от центра кадра. Это оптический эффект,
+  // поэтому применяется к линейному свету ДО кривой, а не к готовой картинке.
+  const vec2 from_center = uv - 0.5;
+  const float aberration = frame.lens_params.z;
+  vec3 current;
+  if (aberration > 0.0) {
+    const float scale = aberration * 0.004;
+    current = vec3(
+      texture(scene_image, 0.5 + from_center * (1.0 + scale)).r,
+      texture(scene_image, uv).g,
+      texture(scene_image, 0.5 + from_center * (1.0 - scale)).b);
+  } else {
+    current = texture(scene_image, uv).rgb;
+  }
+
+  // Резкость крестом из пяти отсчётов. Нужна именно ПОСЛЕ накопления: TAA переинтерполирует историю каждый
+  // кадр и неизбежно её размывает (измерено в срезе 5), а резкость возвращает высокие частоты. Вычитание
+  // соседей ограничено снизу нулём, иначе на кромках появляется звон — тёмная кайма вокруг светлого.
+  const float sharpen = frame.lens_params.x;
+  if (sharpen > 0.0) {
+    const vec2 texel = 1.0 / vec2(size);
+    const vec3 left = texture(scene_image, uv - vec2(texel.x, 0.0)).rgb;
+    const vec3 right = texture(scene_image, uv + vec2(texel.x, 0.0)).rgb;
+    const vec3 up = texture(scene_image, uv - vec2(0.0, texel.y)).rgb;
+    const vec3 down = texture(scene_image, uv + vec2(0.0, texel.y)).rgb;
+
+    const vec3 sharpened = current + (current * 4.0 - (left + right + up + down)) * sharpen * 0.25;
+
+    // Результат ЗАЩЕМЛЯЕТСЯ диапазоном соседей (приём RCAS). Без этого нерезкое маскирование выбрасывает
+    // значение за пределы того, что вокруг, и на кромках появляется звон — светлая или тёмная кайма. Измерено:
+    // незащемлённая резкость увеличивает отклонение от суперсэмплированного эталона тем сильнее, чем она
+    // больше, то есть меняет одну ошибку на другую вместо возврата детали.
+    const vec3 neighbourhood_min = min(min(min(left, right), min(up, down)), current);
+    const vec3 neighbourhood_max = max(max(max(left, right), max(up, down)), current);
+    current = clamp(sharpened, neighbourhood_min, neighbourhood_max);
+  }
 
   // История на первом кадре после сброса пустая (движок чистит копии в нули), поэтому сравнивать с ней
   // нечего: показываем текущий кадр, а не «ошибку» размером во весь экран.
@@ -89,6 +125,9 @@ void main() {
     if (peak < 0.02) result = vec3(0.0, 0.15, 0.8);
   } else if (mode == PF03_DEBUG_AO) {
     result = vec3(texture(ao_image, uv).r);
+  } else if (mode == PF03_DEBUG_SHARPEN) {
+    // Что именно добавила резкость: разница с несглаженной выборкой, усиленная для наглядности
+    result = abs(current - texture(scene_image, uv).rgb) * exposure * 8.0;
   } else if (mode == PF03_DEBUG_BLOOM) {
     result = pf03_apply_tonemap(bloom * exposure * 4.0, tonemap_op);
   } else if (mode == PF03_DEBUG_SHAFTS) {
@@ -118,6 +157,31 @@ void main() {
     // Та же ошибка, но БЕЗ motion-векторов: контрольная величина, относительно которой видно, что
     // векторы действительно что-то исправляют, а не просто «выглядят правдоподобно».
     result = abs(naive - current) * frame.controls.z;
+  }
+
+  // Виньетка — тоже оптика, поэтому в линейных единицах и до кривой её применять правильнее; но она
+  // умножает уже сжатый результат, чтобы не спорить с автоэкспозицией: затемнение краёв не должно
+  // подниматься замером обратно.
+  const float vignette_strength = frame.lens_params.y;
+  if (vignette_strength > 0.0 && mode == PF03_DEBUG_SHADED) {
+    const float radius = length(from_center * vec2(1.0, 0.75)) * 1.4142;
+    result *= mix(1.0, max(1.0 - radius * radius, 0.0), vignette_strength);
+  }
+
+  // Зерно — свойство плёнки/сенсора, а не сцены, поэтому применяется в display-referred единицах после
+  // кривой и модулируется яркостью: в светах его почти не видно, как и в реальной плёнке.
+  const float grain_strength = frame.lens_params.w;
+  if (grain_strength > 0.0 && mode == PF03_DEBUG_SHADED) {
+    const float noise = pf03_gradient_noise(vec2(pixel) + vec2(frame.output_params.y)) - 0.5;
+    const float luma = pf03_luminance(result);
+    result += noise * grain_strength * (1.0 - luma) * 0.5;
+  }
+
+  // Дизеринг перед 8-битным выводом. Квантование в свопчейне идёт уже за пределами шейдера, поэтому шум
+  // добавляется ровно в шаг квантования: без него плавные тёмные градиенты (небо, туман) разваливаются на
+  // видимые полосы, а стоит это одно сложение.
+  if (frame.output_params.x > 0.5) {
+    result += pf03_triangular_dither(vec2(pixel), frame.output_params.y) / 255.0;
   }
 
   // Кодирование в sRGB делается ТОЛЬКО если конечная запись идёт в линейный формат. Тумблер оставлен

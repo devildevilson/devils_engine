@@ -19,7 +19,9 @@
   vec4 taa_params;                  \
   vec4 taa_jitter;                  \
   vec4 bloom_params;                \
-  vec4 shaft_params;
+  vec4 shaft_params;                \
+  vec4 lens_params;                 \
+  vec4 output_params;
 
 // viewport_near:    xy = размер кадра в пикселях, z = near, w = номер кадра с последнего сброса истории
 // controls:         x = debug-режим, y = усиление motion при показе, z = усиление ошибки, w = кодировать sRGB
@@ -37,6 +39,8 @@
 // bloom_params:     x = сила, y = порог яркого прохода, z = мягкость колена порога, w = вес шага подъёма
 // shaft_params:     xy = положение солнца на экране в UV, z = сила лучей, w = затухание вдоль луча
 //                   (z <= 0 => солнце вне кадра либо лучи выключены)
+// lens_params:      x = сила резкости, y = виньетка, z = хроматическая аберрация, w = зерно
+// output_params:    x = дизеринг вкл, y = семя зерна (меняется по кадрам), z/w = резерв
 
 #define PF03_DEBUG_SHADED         0
 #define PF03_DEBUG_DEPTH          1
@@ -54,6 +58,7 @@
 #define PF03_DEBUG_TAA_WEIGHT     13
 #define PF03_DEBUG_BLOOM          14
 #define PF03_DEBUG_SHAFTS         15
+#define PF03_DEBUG_SHARPEN        16
 
 #define PF03_TONEMAP_NONE     0
 #define PF03_TONEMAP_REINHARD 1
@@ -210,6 +215,16 @@ vec3 pf03_sample_catmull_rom(const sampler2D tex, const vec2 uv, const vec2 size
   result += texture(tex, vec2(tc12.x, tc3.y)).rgb * (w12.x * w3.y);
 
   return max(result, vec3(0.0));
+}
+
+// Треугольный дизер (TPDF): сумма двух независимых равномерных величин. Ровный шум амплитудой в один шаг
+// квантования оставляет заметную зернистость и не убирает бандинг полностью, а треугольный распределяет
+// ошибку так, что полосы исчезают при меньшей видимой шумности — стандартный приём из обработки звука,
+// работающий здесь по той же причине.
+float pf03_triangular_dither(const vec2 pixel, const float seed) {
+  const float a = pf03_gradient_noise(pixel + vec2(seed, 0.0));
+  const float b = pf03_gradient_noise(pixel + vec2(0.0, seed + 11.0));
+  return (a + b - 1.0);
 }
 
 // Кодирование в sRGB. Нужно только если конечная запись НЕ в sRGB-формат: иначе преобразование сделает

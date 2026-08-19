@@ -566,6 +566,9 @@ bool is_depth_vk_format(const uint32_t fmt) noexcept;
 
 constexpr size_t maximum_rendering_resources_count = 256;
 constexpr size_t max_frames_in_flight = 8;
+// Предел уровней мип-цепочки. 12 уровней это 4096 пикселей по стороне — с запасом для экранных пирамид, а
+// фиксированный предел позволяет держать layout по уровням массивом, без аллокаций в кадровом цикле.
+constexpr size_t max_mip_levels = 12;
 constexpr size_t max_framebuffer_attachments = 8;
 using resource_usage_t = std::bitset<maximum_rendering_resources_count>;
 constexpr uint32_t invalid_resource_slot = UINT32_MAX;

@@ -114,7 +114,11 @@ struct subresource_buffer {
 struct resource {
   struct frame {
     size_t index;
+    // Вид на ВСЮ цепочку (levelCount = mips): для выборки с LOD
     VkImageView view;
+    // Виды на отдельные уровни: цель записи и attachment всегда один уровень, а не цепочка. Индекс = номер
+    // уровня; при mips == 1 заполнен только [0] и совпадает с view по содержимому.
+    std::array<VkImageView, max_mip_levels> level_views;
     subresource_image subimage;
     subresource_buffer subbuffer;
 
@@ -133,6 +137,10 @@ struct resource {
   enum type::values type;
   uint32_t swap; // counter index
   uint32_t usage_mask;
+  // Число уровней мип-цепочки. 1 — обычная картинка; 0 в конфиге ('auto') превращается в полную цепочку до
+  // 1x1 при создании ресурса. Объявляется у РЕСУРСА, а не у читателя: глубина пирамиды определяет аллокацию
+  // и является решением про память и качество, тогда как «какой уровень мне нужен» — свойство биндинга.
+  uint32_t mips;
   // Глубина истории: сколько кадров назад читают этот ресурс. НЕ объявляется у ресурса — это свойство
   // техники-читателя, поэтому выводится как max(binding.history) по всем биндингам активных дескрипторов
   // (resolve_resource_periods). Полное число копий = период + history_depth.
@@ -148,6 +156,8 @@ struct resource {
   size_t compute_size(const graphics_base* base) const;
   uint32_t compute_buffering(const graphics_base* base) const;
   uint32_t compute_buffering(const uint32_t frames_count, const uint32_t swapchain_count) const;
+  // Сколько уровней реально будет создано: явное значение либо полная цепочка от размера уровня 0
+  uint32_t compute_mip_levels(const uint32_t width, const uint32_t height) const;
 };
 
 // нужно получить буфер или картинку с правильными контейнерами, view и subresource
@@ -174,6 +184,18 @@ struct image_frame {
   void* mapped;
 
   image_frame() noexcept;
+};
+
+// Цель барьера: ресурс, требуемый юсадж и уровень мип-цепочки. mip == invalid_resource_slot означает ВСЮ
+// цепочку — так выражается и обычная картинка без мипов, и чтение пирамиды целиком через textureLod.
+// Объявлять это руками не нужно: цель выводится из биндингов дескрипторов шага.
+struct barrier_target {
+  uint32_t resource;
+  enum usage::values usage;
+  uint32_t mip;
+
+  barrier_target() noexcept;
+  barrier_target(const uint32_t resource, const enum usage::values usage, const uint32_t mip = invalid_resource_slot) noexcept;
 };
 
 struct constant {
@@ -250,10 +272,13 @@ struct descriptor {
     uint32_t sampler;
     uint32_t stages; // VkShaderStageFlags
     uint32_t history;
+    // Какой уровень мип-цепочки нужен этому binding'у. invalid_resource_slot — вся цепочка (выборка с LOD);
+    // иначе один уровень, и тогда именно его layout отслеживается и переводится барьерами.
+    uint32_t mip;
 
     binding() noexcept;
     binding(const uint32_t resource, const enum usage::values usage, const uint32_t sampler,
-            const uint32_t stages, const uint32_t history = 0) noexcept;
+            const uint32_t stages, const uint32_t history = 0, const uint32_t mip = invalid_resource_slot) noexcept;
     uint32_t array_size() const noexcept { return history == 0 ? 1 : history; }
     // На сколько кадров назад смотрит элемент массива j
     uint32_t frames_back(const uint32_t j) const noexcept { return history == 0 ? 0 : j + 1; }
@@ -425,7 +450,7 @@ struct step_base {
 
   std::string name;
   std::vector<std::tuple<uint32_t, blend_data>> blending;
-  std::vector<std::tuple<uint32_t, usage::values>> barriers;
+  std::vector<barrier_target> barriers;
   std::vector<uint32_t> sets;
   std::vector<uint32_t> push_constants;
   std::vector<shader_constant> shader_constants;
@@ -458,9 +483,11 @@ struct execution_pass_base {
     uint32_t slot;
     usage::values usage;
     store_op::values action;
+    uint32_t mip; // invalid_resource_slot => вся цепочка
 
     resource_info() noexcept;
-    resource_info(const uint32_t slot, const usage::values usage, const store_op::values action) noexcept;
+    resource_info(const uint32_t slot, const usage::values usage, const store_op::values action,
+                  const uint32_t mip = invalid_resource_slot) noexcept;
   };
 
   // wait_for, signal - но по идее это не тут должно быть указано

@@ -111,13 +111,17 @@ void counter::inc_next_value() noexcept {
 void counter::set_value(const uint32_t val) noexcept {
   next_value.store(val, std::memory_order_release);
 }
-resource::frame::frame() noexcept : index(0), view(VK_NULL_HANDLE), subimage{0, 0, 0, 0, 0}, subbuffer{0, 0} {}
+resource::frame::frame() noexcept : index(0), view(VK_NULL_HANDLE), subimage{0, 0, 0, 0, 0}, subbuffer{0, 0} {
+  // Виды уровней обязаны быть занулены: их уничтожает общий цикл очистки, а у неактивных ресурсов и у уровней
+  // выше созданных они иначе остались бы мусором (destroy(VK_NULL_HANDLE) законен, destroy(мусор) — нет).
+  level_views.fill(VK_NULL_HANDLE);
+}
 resource::resource() noexcept : format_hint(VK_FORMAT_UNDEFINED), size_hint(0), size(UINT32_MAX), role(role::values::count), type(type::values::count), swap(0), usage_mask(0),
-                               history_depth(0), history_usage(usage::values::count) {}
-descriptor::binding::binding() noexcept : resource(invalid_resource_slot), usage(usage::values::count), sampler(invalid_resource_slot), stages(VK_SHADER_STAGE_ALL), history(0) {}
+                               mips(1), history_depth(0), history_usage(usage::values::count) {}
+descriptor::binding::binding() noexcept : resource(invalid_resource_slot), usage(usage::values::count), sampler(invalid_resource_slot), stages(VK_SHADER_STAGE_ALL), history(0), mip(invalid_resource_slot) {}
 descriptor::binding::binding(const uint32_t resource, const enum usage::values usage, const uint32_t sampler,
-                             const uint32_t stages, const uint32_t history) noexcept
-  : resource(resource), usage(usage), sampler(sampler), stages(stages), history(history) {}
+                             const uint32_t stages, const uint32_t history, const uint32_t mip) noexcept
+  : resource(resource), usage(usage), sampler(sampler), stages(stages), history(history), mip(mip) {}
 constant::constant() noexcept : size(0), offset(0) {}
 uint32_t render_target::resource_index(const uint32_t res_id) const {
   uint32_t i = 0;
@@ -135,8 +139,12 @@ sampler::sampler() noexcept : mag_filter(VK_FILTER_LINEAR), min_filter(VK_FILTER
 material::material() noexcept : shaders{}, raster{}, depth{} {}
 geometry::geometry() noexcept : index_type(index_type::u32), topology_type(0), restart(false), stride(0) {}
 draw_group::draw_group() noexcept : budget_constant(UINT32_MAX), types_constant(UINT32_MAX), type(type::device_local), instances_buffer(UINT32_MAX), indirect_buffer(UINT32_MAX), descriptor(UINT32_MAX), stride(0) {}
-execution_pass_base::resource_info::resource_info() noexcept : slot(invalid_resource_slot), usage(usage::undefined), action(store_op::none) {}
-execution_pass_base::resource_info::resource_info(const uint32_t slot, const usage::values usage, const store_op::values action) noexcept : slot(slot), usage(usage), action(action) {}
+execution_pass_base::resource_info::resource_info() noexcept : slot(invalid_resource_slot), usage(usage::undefined), action(store_op::none), mip(invalid_resource_slot) {}
+execution_pass_base::resource_info::resource_info(const uint32_t slot, const usage::values usage, const store_op::values action, const uint32_t mip) noexcept
+  : slot(slot), usage(usage), action(action), mip(mip) {}
+barrier_target::barrier_target() noexcept : resource(invalid_resource_slot), usage(usage::values::count), mip(invalid_resource_slot) {}
+barrier_target::barrier_target(const uint32_t resource, const enum usage::values usage, const uint32_t mip) noexcept
+  : resource(resource), usage(usage), mip(mip) {}
 constexpr uint32_t default_color_blending = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 blend_data::blend_data() noexcept : enable(false),
                                     srcColorBlendFactor(0),
@@ -172,7 +180,7 @@ void resource_container::create_container(VmaAllocator alc, const uint32_t host_
     ici.initialLayout = vk::ImageLayout::eUndefined; // general?
     ici.samples = vk::SampleCountFlagBits::e1;
     ici.arrayLayers = layers;
-    ici.mipLevels = 1;
+    ici.mipLevels = std::max(mips, 1u);
     ici.extent = vk::Extent3D{extent.x, extent.y, 1u};
     ici.tiling = bool(host_visible) ? vk::ImageTiling::eLinear : vk::ImageTiling::eOptimal;
 
@@ -279,6 +287,21 @@ size_t resource::compute_size(const graphics_base* base) const {
 // может перезаписываться, пока её читают кадры в полёте (нужно период+history) — второе строже.
 uint32_t resource::compute_buffering(const graphics_base* base) const {
   return type::compute_buffering(base, type) + history_depth;
+}
+
+uint32_t resource::compute_mip_levels(const uint32_t width, const uint32_t height) const {
+  if (mips != 0) {
+    return mips;
+  }
+  // 'auto': полная цепочка до 1x1. Считается от размера уровня 0, поэтому при resize число уровней меняется
+  // вместе с окном — это и есть смысл автоматической цепочки.
+  uint32_t levels = 1;
+  uint32_t extent = std::max(width, height);
+  while (extent > 1 && levels < max_mip_levels) {
+    extent /= 2;
+    levels += 1;
+  }
+  return levels;
 }
 
 uint32_t resource::compute_buffering(const uint32_t frames_count, const uint32_t swapchain_count) const {
@@ -509,6 +532,9 @@ struct resource_mirror {
   std::string size;
   std::string type;
   std::string swap;
+  // Число уровней мип-цепочки: '1' обычная картинка, 'auto' полная цепочка до 1x1, либо явное число.
+  // Объявляется у РЕСУРСА, потому что определяет аллокацию; «какой уровень мне нужен» — свойство биндинга.
+  std::string mips = "1";
 
   // mirror context
   resource convert(const render_config_storage& ctx) const {
@@ -531,6 +557,18 @@ struct resource_mirror {
     // создавать на месте? хардкодить? честно говоря было бы неплохо задекларировать где то
     res.swap = check(ctx.find_counter(swap), "counter", swap, name);
     res.usage_mask = 0;
+
+    if (mips == "auto") {
+      res.mips = 0; // полная цепочка; фактическое число уровней считается от размера при создании
+    } else {
+      res.mips = uint32_t(std::stoul(mips));
+      if (res.mips == 0 || res.mips > max_mip_levels) {
+        utils::error{}("Resource '{}' declares mips = {}, supported range is 1..{} or 'auto'", name, mips, max_mip_levels);
+      }
+      if (res.mips > 1 && !role::is_image(res.role)) {
+        utils::error{}("Resource '{}' declares mips = {} but its role '{}' is not an image", name, res.mips, role);
+      }
+    }
 
     if (role::is_image(res.role) || role::is_attachment(res.role)) {
       const auto fmt_id = format::from_string(res.format);
@@ -732,6 +770,9 @@ struct sampler_mirror {
   std::string name;
   std::string filter = "linear";
   std::string address = "repeat";
+  // Как выбирается уровень мип-цепочки между двумя ближайшими: nearest берёт один, linear интерполирует
+  // (трилинейная выборка). Для пирамид, которые читаются через textureLod, обычно нужен linear.
+  std::string mipmap = "nearest";
   // Пусто => обычный сэмплер. Иначе имя compare_op: сэмплер становится сравнивающим,
   // а шейдер обязан объявить его как samplerXDShadow (иначе валидация ругнётся на mismatch).
   std::string compare;
@@ -743,6 +784,12 @@ struct sampler_mirror {
     const uint32_t f = parse_filter(filter, name);
     s.mag_filter = f;
     s.min_filter = f;
+    s.mipmap_mode = mipmap == "linear" ? VK_SAMPLER_MIPMAP_MODE_LINEAR
+                  : mipmap == "nearest" ? VK_SAMPLER_MIPMAP_MODE_NEAREST
+                                        : UINT32_MAX;
+    if (s.mipmap_mode == UINT32_MAX) {
+      utils::error{}("Sampler '{}' has unknown mipmap mode '{}' (nearest|linear)", name, mipmap);
+    }
     const uint32_t a = parse_address(address, name);
     s.address_u = a;
     s.address_v = a;
@@ -767,6 +814,10 @@ struct descriptor_mirror {
     // Массив binding'а получает размер history + 1; из этого же объявления выводится и число копий
     // ресурса, и кросс-кадровый порядок пассов.
     uint32_t history = 0;
+    // Какой уровень мип-цепочки трогает binding. Пусто — вся цепочка: так её можно сэмплировать через
+    // textureLod. Storage-вид на цепочку невозможен по правилам Vulkan (у imageLoad/imageStore нет LOD),
+    // поэтому пишущему binding'у уровень обязателен.
+    std::string mip;
   };
 
   std::string name;
@@ -817,7 +868,31 @@ struct descriptor_mirror {
           "фиксируется read-only, писать в неё нельзя",
           name, e.resource, e.history, e.usage);
       }
-      d.layout.push_back(descriptor::binding(res_index, usage_value, sampler_index, stages, e.history));
+      uint32_t mip_index = invalid_resource_slot;
+      if (!e.mip.empty()) {
+        mip_index = uint32_t(std::stoul(e.mip));
+        if (mip_index >= max_mip_levels) {
+          utils::error{}("Descriptor '{}' asks mip {} of resource '{}', supported range is 0..{}",
+                         name, mip_index, e.resource, max_mip_levels - 1);
+        }
+      }
+
+      // Storage-вид обязан покрывать РОВНО один уровень — у imageLoad/imageStore нет параметра LOD, это
+      // требование Vulkan, а не соглашение. Поэтому пишущий binding без указания уровня на ресурсе с
+      // мип-цепочкой — ошибка конфига, а не молчаливое чтение нулевого уровня.
+      const auto& target = ctx.resources[res_index];
+      const bool single_level_required =
+        usage_value == usage::texel_write || usage_value == usage::texel_read || usage_value == usage::general ||
+        usage::is_attachment(usage_value);
+      const bool has_chain = target.mips == 0 || target.mips > 1;
+      if (single_level_required && has_chain && mip_index == invalid_resource_slot) {
+        utils::error{}(
+          "Descriptor '{}' binds resource '{}' as '{}' without a mip: storage images and attachments address "
+          "exactly one level, so the level must be named explicitly",
+          name, e.resource, e.usage);
+      }
+
+      d.layout.push_back(descriptor::binding(res_index, usage_value, sampler_index, stages, e.history, mip_index));
     }
     return d;
   }
@@ -1044,25 +1119,28 @@ static void parse_step2(
   }
 
   step.name = data.name;
-  const auto add_resource_usage = [&](const uint32_t index, const usage::values value) {
+  // Конфликт юсаджей проверяется по паре (ресурс, УРОВЕНЬ): у пирамиды один шаг законно читает уровень k и
+  // пишет уровень k+1 — это разные подресурсы с разными layout, и запрещать такое нельзя.
+  const auto add_resource_usage = [&](const uint32_t index, const usage::values value, const uint32_t mip = invalid_resource_slot) {
     const auto existing = std::find_if(step.barriers.begin(), step.barriers.end(), [&](const auto& entry) {
-      return std::get<0>(entry) == index;
+      return entry.resource == index && entry.mip == mip;
     });
     if (existing != step.barriers.end()) {
-      const auto previous = std::get<1>(*existing);
+      const auto previous = existing->usage;
       if (previous != value) {
         const auto& res = ctx.resources[index];
         utils::error{}(
-          "Execution step '{}' has conflicting usages for resource '{}': '{}' != '{}'",
+          "Execution step '{}' has conflicting usages for resource '{}' mip {}: '{}' != '{}'",
           step.name,
           res.name,
+          mip == invalid_resource_slot ? std::string("all") : std::to_string(mip),
           usage::to_string(previous),
           usage::to_string(value));
       }
       return;
     }
 
-    step.barriers.emplace_back(index, value);
+    step.barriers.emplace_back(index, value, mip);
     if (usage::is_read(value)) {
       step.read.set(index, true);
     }
@@ -1117,7 +1195,9 @@ static void parse_step2(
         // create_resources.
         continue;
       }
-      add_resource_usage(bind.resource, bind.usage);
+      // Уровень берётся из биндинга: именно так барьер целится в конкретный подресурс, а чтение цепочки
+      // целиком (mip не указан) переводит все уровни сразу.
+      add_resource_usage(bind.resource, bind.usage, bind.mip);
     }
   }
 

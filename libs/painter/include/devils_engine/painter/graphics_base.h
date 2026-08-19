@@ -306,7 +306,10 @@ struct resource_inst {
 
   role::values role;
 
-  usage::values usage; // перезаписываем
+  // Layout отслеживается ПО УРОВНЯМ: цепочке понижений нужно, чтобы уровень k лежал в sampled, пока k+1
+  // пишется. Одним состоянием на ресурс это невыразимо. При mips == 1 значим только элемент [0].
+  uint32_t mips;
+  std::array<usage::values, max_mip_levels> usage_levels;
 };
 
 struct buffer_memory_barrier {

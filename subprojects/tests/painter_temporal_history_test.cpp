@@ -130,3 +130,31 @@ TEST_CASE("constant memory offsets are byte offsets into a word array [painter]"
   CHECK(memory[3] == 7u);  // 12 байт = слово 3
   CHECK(memory[12] == 0u); // а не слово 12
 }
+
+TEST_CASE("mip chain length is derived from the level 0 extent [painter]") {
+  painter::resource res;
+  res.role = painter::role::hdr_color;
+
+  // Явное число уровней уважается как есть: это решение автора про память и качество
+  res.mips = 4;
+  CHECK(res.compute_mip_levels(1280, 720) == 4);
+  CHECK(res.compute_mip_levels(64, 64) == 4);
+
+  // 'auto' (mips == 0) — полная цепочка до 1x1 по БОЛЬШЕЙ стороне, с потолком max_mip_levels
+  res.mips = 0;
+  CHECK(res.compute_mip_levels(1, 1) == 1);
+  CHECK(res.compute_mip_levels(2, 1) == 2);
+  CHECK(res.compute_mip_levels(8, 8) == 4);   // 8 -> 4 -> 2 -> 1
+  CHECK(res.compute_mip_levels(640, 360) == 10); // 640 -> 320 -> ... -> 2 -> 1, девять делений
+  CHECK(res.compute_mip_levels(65536, 1) == painter::max_mip_levels);
+}
+
+TEST_CASE("a storage binding must name its mip level [painter]") {
+  // Требование Vulkan, а не соглашение: у imageLoad/imageStore нет параметра LOD, поэтому storage-вид
+  // покрывает ровно один уровень. Биндинг это и отражает: 'mip' обязателен для пишущих юсаджей на цепочке.
+  const painter::descriptor::binding chain_read(0, painter::usage::sampled, painter::invalid_resource_slot, 0);
+  CHECK(chain_read.mip == painter::invalid_resource_slot);
+
+  const painter::descriptor::binding level_write(0, painter::usage::texel_write, painter::invalid_resource_slot, 0, 0, 2);
+  CHECK(level_write.mip == 2);
+}
