@@ -36,7 +36,7 @@ TEST_CASE("painter step derives resource usages from named descriptor sets [pain
 
   const auto& step = storage.steps[step_slot];
   const auto usage_count = std::count_if(step.barriers.begin(), step.barriers.end(), [&](const auto& entry) {
-    return std::get<0>(entry) == camera_slot && std::get<1>(entry) == painter::usage::uniform;
+    return entry.resource == camera_slot && entry.usage == painter::usage::uniform;
   });
   CHECK(usage_count == 1);
   CHECK(step.read.test(camera_slot));
@@ -46,7 +46,7 @@ TEST_CASE("painter step derives resource usages from named descriptor sets [pain
   REQUIRE(ui_slot != painter::invalid_resource_slot);
   const auto& ui_step = storage.steps[ui_slot];
   const auto ui_camera_count = std::count_if(ui_step.barriers.begin(), ui_step.barriers.end(), [&](const auto& entry) {
-    return std::get<0>(entry) == camera_slot;
+    return entry.resource == camera_slot;
   });
   CHECK(ui_camera_count == 1);
 }
