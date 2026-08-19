@@ -34,9 +34,15 @@
   command = "dispatch constant screen_dispatch"
 }
 {
+  name = resolve_taa
+  material = taa_material
+  sets = [ frame_data, gbuffer_inputs, fogged_read, taa_io ]
+  command = "dispatch constant screen_dispatch"
+}
+{
   name = measure_exposure
   material = exposure_material
-  sets = [ frame_data, fogged_read, exposure_io ]
+  sets = [ frame_data, taa_read, exposure_io ]
   command = "dispatch constant exposure_dispatch"
 }
 {

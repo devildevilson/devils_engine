@@ -2431,11 +2431,10 @@ static bool pass_reads_history(const graphics_base* base, const execution_pass_b
 // а значит должен дождаться пасса-писателя предыдущего кадра. Ручной wait_previous остаётся escape hatch
 // для случаев, которые из дескрипторов не видны.
 static void derive_history_ordering(const graphics_base* base, render_graph_instance& out, const render_graph_base& graph) {
-  // (позиция пасса-писателя -> индекс его авто-семафоры)
-  std::vector<std::tuple<uint32_t, uint32_t>> writer_semaphores;
-  // (позиция читателя, индекс семафоры) — чтобы один и тот же порядок не выводился дважды на несколько
-  // history-ресурсов сразу
-  std::vector<std::tuple<uint32_t, uint32_t>> derived_waits;
+  // Семафора создаётся на ПАРУ (писатель, читатель), а не на писателя. Бинарный семафор — это один сигнал на
+  // одно ожидание: если два разных пасса читают историю одного ресурса и ждут одну семафору, второе ожидание
+  // повиснет на неотсигналенном примитиве. Поэтому писатель сигналит по одной семафоре на каждого читателя.
+  std::vector<std::tuple<uint32_t, uint32_t, uint32_t>> pair_semaphores;
 
   for (uint32_t res_index = 0; res_index < base->resources.size(); ++res_index) {
     const auto& res = DS_ASSERT_ARRAY_GET(base->resources, res_index);
@@ -2478,34 +2477,27 @@ static void derive_history_ordering(const graphics_base* base, render_graph_inst
     for (const uint32_t w : writers) {
       const auto& writer_pass = DS_ASSERT_ARRAY_GET(base->passes, graph.passes[w]);
 
-      uint32_t sem_index = invalid_resource_slot;
-      for (const auto& [pos, index] : writer_semaphores) {
-        if (pos == w) {
-          sem_index = index;
-          break;
+      for (const uint32_t r : readers) {
+        const auto existing = std::find_if(pair_semaphores.begin(), pair_semaphores.end(), [&](const auto& entry) {
+          return std::get<0>(entry) == w && std::get<1>(entry) == r;
+        });
+        if (existing != pair_semaphores.end()) {
+          continue; // этот порядок уже выведен по другому history-ресурсу
         }
-      }
 
-      if (sem_index == invalid_resource_slot) {
-        sem_index = out.create_semaphore("history:" + writer_pass.name, base->frames_in_flight());
+        const auto& reader_pass = DS_ASSERT_ARRAY_GET(base->passes, graph.passes[r]);
+        const uint32_t sem_index = out.create_semaphore(
+          "history:" + writer_pass.name + "->" + reader_pass.name, base->frames_in_flight());
         const auto& sem = DS_ASSERT_ARRAY_GET(out.local_semaphores, sem_index);
+
         auto& writer_group = DS_ASSERT_ARRAY_GET(out.groups, w);
         for (uint32_t j = 0; j < writer_group.frames.size(); ++j) {
           writer_group.frames[j].signal.push_back(sem.handles[j]);
         }
-        writer_semaphores.emplace_back(w, sem_index);
-      }
 
-      for (const uint32_t r : readers) {
-        const auto existing = std::find(derived_waits.begin(), derived_waits.end(), std::make_tuple(r, sem_index));
-        if (existing != derived_waits.end()) {
-          continue;
-        }
-
-        const auto& reader_pass = DS_ASSERT_ARRAY_GET(base->passes, graph.passes[r]);
         auto& reader_group = DS_ASSERT_ARRAY_GET(out.groups, r);
         add_previous_frame_wait(out, reader_group, sem_index, pass_wait_stages(reader_pass));
-        derived_waits.emplace_back(r, sem_index);
+        pair_semaphores.emplace_back(w, r, sem_index);
 
         DE_LOG(catalogue::log_domain::render, flow,
                "graph '{}': pass '{}' waits previous frame of pass '{}' (history of '{}')",

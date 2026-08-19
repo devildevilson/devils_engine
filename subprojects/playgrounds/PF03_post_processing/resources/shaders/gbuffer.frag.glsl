@@ -21,6 +21,12 @@ void main() {
   const vec2 current_uv = gl_FragCoord.xy / frame.viewport_near.xy;
   const vec2 previous_uv = (previous_clip.xy / previous_clip.w) * 0.5 + 0.5;
 
+  // Джиттер ОБОИХ кадров вычитается: обе позиции получены из джиттеренных проекций, а motion обязан быть
+  // чисто геометрическим. Иначе субпиксельное дрожание протекает в вектор, TAA репроецирует по нему и
+  // начинает бороться с собственным джиттером — картинка мылится, а сглаживания не появляется.
+  const vec2 current_unjittered = current_uv - frame.taa_jitter.xy;
+  const vec2 previous_unjittered = previous_uv - frame.taa_jitter.zw;
+
   // Договор: motion — это СМЕЩЕНИЕ К прошлому кадру, поэтому читатель делает uv + motion
-  out_motion = previous_uv - current_uv;
+  out_motion = previous_unjittered - current_unjittered;
 }

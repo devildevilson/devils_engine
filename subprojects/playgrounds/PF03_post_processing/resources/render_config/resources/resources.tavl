@@ -64,6 +64,15 @@
   swap = per_frame
 }
 {
+  // Накопленный кадр TAA. Историей служит он сам: копить надо РЕЗУЛЬТАТ накопления, а не сырой кадр —
+  // иначе усреднения по многим кадрам не получится, будет смешивание всего двух.
+  name = taa_color
+  format = sf4
+  role = history_color
+  size = viewport
+  swap = per_frame
+}
+{
   // Что показываем на экране: выбранный debug-режим либо итоговая картинка
   name = composed_color
   format = sf4
@@ -91,7 +100,7 @@
 }
 {
   name = frame_buffer
-  format = mat4mat4mat4v4v4v4v4v4v4v4v4v4
+  format = mat4mat4mat4v4v4v4v4v4v4v4v4v4v4v4
   role = upload
   size = one
   swap = per_frame

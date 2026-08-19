@@ -80,6 +80,9 @@ void main() {
     if (peak < 0.02) result = vec3(0.0, 0.15, 0.8);
   } else if (mode == PF03_DEBUG_AO) {
     result = vec3(texture(ao_image, uv).r);
+  } else if (mode == PF03_DEBUG_TAA_WEIGHT) {
+    // Насколько сильно clamp подтянул историю: на движущихся силуэтах вспыхивает, на статике ноль
+    result = vec3(texture(scene_image, uv).a * 4.0, 0.0, 0.0);
   } else if (mode == PF03_DEBUG_AO_RAW) {
     result = vec3(texture(ao_raw_image, uv).r);
   } else if (mode == PF03_DEBUG_TRANSMITTANCE) {

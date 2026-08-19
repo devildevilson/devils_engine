@@ -74,12 +74,25 @@
       steps = [ apply_fog ]
     },
     {
+      // Накопление TAA: репроекция прошлого накопленного кадра по motion-векторам плюс neighbourhood clamp
+      name = pf03_taa
+      subpasses = [
+        {
+          gbuffer_motion = (sampled, store),
+          scene_depth = (depth_read, store),
+          fogged_color = (sampled, store),
+          taa_color = (texel_write, store)
+        }
+      ]
+      steps = [ resolve_taa ]
+    },
+    {
       // Замер яркости кадра и адаптация экспозиции. Отдельным пассом, потому что сводит весь кадр в один
       // тексель: следующему пассу нужен уже готовый результат.
       name = pf03_exposure
       subpasses = [
         {
-          fogged_color = (sampled, store),
+          taa_color = (sampled, store),
           exposure_state = (texel_write, store)
         }
       ]
@@ -92,7 +105,7 @@
         {
           scene_depth = (depth_read, store),
           gbuffer_motion = (sampled, store),
-          fogged_color = (sampled, store),
+          taa_color = (sampled, store),
           ao_blurred = (sampled, store),
           ao_raw = (sampled, store),
           exposure_state = (texel_read, store),

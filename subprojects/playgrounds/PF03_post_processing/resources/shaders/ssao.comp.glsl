@@ -62,7 +62,9 @@ void main() {
 
   // Своё вращение выборки на каждый пиксель: один набор направлений на весь кадр даёт не шум, а structured
   // banding, который блюр только размажет, но не уберёт.
-  const float rotation = pf03_gradient_noise(vec2(pixel));
+  // Временной сдвиг вращения: без него шум AO статичен, и накопление его не уберёт — усреднять нечего.
+  // Именно эта пара «стохастическая выборка + темпоральное накопление» и была обещана в выводах PF02.
+  const float rotation = pf03_gradient_noise(vec2(pixel)) + frame.taa_params.w;
 
   float occlusion = 0.0;
   for (int i = 0; i < ao_samples; ++i) {

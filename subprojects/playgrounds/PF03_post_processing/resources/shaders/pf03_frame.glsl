@@ -15,7 +15,9 @@
   vec4 exposure_limits;             \
   vec4 fog_params;                  \
   vec4 fog_color;                   \
-  vec4 ao_params;
+  vec4 ao_params;                   \
+  vec4 taa_params;                  \
+  vec4 taa_jitter;
 
 // viewport_near:    xy = размер кадра в пикселях, z = near, w = номер кадра с последнего сброса истории
 // controls:         x = debug-режим, y = усиление motion при показе, z = усиление ошибки, w = кодировать sRGB
@@ -26,6 +28,10 @@
 // fog_color:        xyz = цвет рассеяния (уже с яркостью), w = вклад солнечного диска в рассеяние
 // ao_params:        x = радиус в метрах, y = сила, z = порог по касательной плоскости,
 //                   w = показатель контраста (0 => AO выключен целиком)
+// taa_params:       x = вес истории, y = режим отбраковки (0 нет, 1 min/max, 2 дисперсия, 3 по скорости),
+//                   z = 0 выключен / 1 bilinear-история / 2 Catmull-Rom история,
+//                   w = временной сдвиг выборки AO
+// taa_jitter:       xy = джиттер текущего кадра в UV, zw = джиттер предыдущего кадра в UV
 
 #define PF03_DEBUG_SHADED         0
 #define PF03_DEBUG_DEPTH          1
@@ -40,6 +46,7 @@
 #define PF03_DEBUG_TRANSMITTANCE  10
 #define PF03_DEBUG_AO             11
 #define PF03_DEBUG_AO_RAW         12
+#define PF03_DEBUG_TAA_WEIGHT     13
 
 #define PF03_TONEMAP_NONE     0
 #define PF03_TONEMAP_REINHARD 1
@@ -141,6 +148,61 @@ vec2 pf03_disc_sample(const vec2 xi, const float rotation) {
   const float angle = 6.28318531 * fract(xi.x + rotation);
   const float radius = sqrt(clamp(xi.y, 0.0, 1.0));
   return vec2(cos(angle), sin(angle)) * radius;
+}
+
+// Обратимое сжатие диапазона для СМЕШИВАНИЯ истории. Копить надо не в линейном HDR: один яркий пиксель
+// (светящаяся панель, блик) в линейном пространстве перетягивает среднее на себя, и вокруг него остаётся
+// светящийся шлейф. Приём из доклада Karis: смешиваем в сжатом пространстве и разжимаем обратно.
+vec3 pf03_range_compress(const vec3 color) {
+  return color / (1.0 + pf03_luminance(color));
+}
+
+vec3 pf03_range_expand(const vec3 color) {
+  return color / max(1.0 - pf03_luminance(color), 1.0e-4);
+}
+
+// YCoCg: яркость отделена от двух цветовых осей. Для отбраковки истории это принципиально — коробка,
+// построенная в RGB, растягивается по всем трём каналам сразу и отбраковывает историю там, где менялась
+// только цветность; в YCoCg ограничение по яркости работает отдельно от цвета и получается заметно плотнее.
+// Преобразование дешёвое и точно обратимое.
+vec3 pf03_rgb_to_ycocg(const vec3 c) {
+  return vec3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, -0.25 * c.r + 0.5 * c.g - 0.25 * c.b);
+}
+
+vec3 pf03_ycocg_to_rgb(const vec3 c) {
+  return vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z);
+}
+
+// Выборка истории фильтром Catmull-Rom через 5 билинейных обращений (оптимизация Karis). Зачем: под движением
+// история переинтерполируется КАЖДЫЙ кадр, и обычный bilinear на каждом шаге чуть размывает картинку — за
+// десяток кадров накапливается заметное мыло, и именно оно, а не отбраковка, даёт основную ошибку при
+// движении камеры (измерено). Catmull-Rom имеет отрицательные лепестки, то есть слегка подчёркивает детали и
+// компенсирует это размытие.
+vec3 pf03_sample_catmull_rom(const sampler2D tex, const vec2 uv, const vec2 size) {
+  const vec2 sample_position = uv * size;
+  const vec2 texel_center = floor(sample_position - 0.5) + 0.5;
+  const vec2 f = sample_position - texel_center;
+
+  const vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+  const vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  const vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  const vec2 w3 = f * f * (-0.5 + 0.5 * f);
+
+  const vec2 w12 = w1 + w2;
+  const vec2 offset12 = w2 / max(w12, vec2(1.0e-5));
+
+  const vec2 tc0 = (texel_center - 1.0) / size;
+  const vec2 tc3 = (texel_center + 2.0) / size;
+  const vec2 tc12 = (texel_center + offset12) / size;
+
+  vec3 result = vec3(0.0);
+  result += texture(tex, vec2(tc12.x, tc0.y)).rgb * (w12.x * w0.y);
+  result += texture(tex, vec2(tc0.x, tc12.y)).rgb * (w0.x * w12.y);
+  result += texture(tex, vec2(tc12.x, tc12.y)).rgb * (w12.x * w12.y);
+  result += texture(tex, vec2(tc3.x, tc12.y)).rgb * (w3.x * w12.y);
+  result += texture(tex, vec2(tc12.x, tc3.y)).rgb * (w12.x * w3.y);
+
+  return max(result, vec3(0.0));
 }
 
 // Кодирование в sRGB. Нужно только если конечная запись НЕ в sRGB-формат: иначе преобразование сделает

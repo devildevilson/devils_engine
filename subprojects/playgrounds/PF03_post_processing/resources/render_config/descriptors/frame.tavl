@@ -32,8 +32,8 @@
   // объявления движок выводит и порядок между кадрами: пасс-читатель ждёт пасс-затенения ПРОШЛОГО кадра.
   name = compose_inputs
   layout = [
-    { resource = fogged_color, usage = sampled, sampler = frame_nearest, stage = compute },
-    { resource = fogged_color, usage = sampled, sampler = frame_linear, stage = compute, history = 1 },
+    { resource = taa_color, usage = sampled, sampler = frame_nearest, stage = compute },
+    { resource = taa_color, usage = sampled, sampler = frame_linear, stage = compute, history = 1 },
     { resource = exposure_state, usage = texel_read, stage = compute },
     // AO здесь только для отладочного вида: сам шейдинг читает его своим сетом. Держим в этом же наборе,
     // потому что гарантированный минимум Vulkan — 4 привязанных сета, а пятый уже вне переносимости.
@@ -99,6 +99,22 @@
   layout = [
     { resource = exposure_state, usage = texel_write, stage = compute },
     { resource = exposure_state, usage = texel_read, stage = compute, history = 1 }
+  ]
+}
+{
+  // Экспозиция мерит то, что увидит зритель — то есть уже накопленный кадр
+  name = taa_read
+  layout = [
+    { resource = taa_color, usage = sampled, sampler = frame_linear, stage = compute }
+  ]
+}
+{
+  // Накопление TAA: пишем новый кадр и читаем прошлый накопленный. Снова «писатель он же читатель», и
+  // кросс-кадровый порядок движок выводит сам.
+  name = taa_io
+  layout = [
+    { resource = taa_color, usage = texel_write, stage = compute },
+    { resource = taa_color, usage = sampled, sampler = frame_linear, stage = compute, history = 1 }
   ]
 }
 {

@@ -44,9 +44,9 @@ constexpr float near_plane = 0.1f;
 constexpr float orbit_step_seconds = 1.0f / 60.0f;
 
 // Отладочные виды; порядок обязан совпадать с PF03_DEBUG_* в resources/shaders/pf03_frame.glsl
-constexpr std::array<std::string_view, 13> debug_names = {
+constexpr std::array<std::string_view, 14> debug_names = {
   "shaded", "depth", "normal", "motion", "reprojected", "error(motion)", "error(no motion)",
-  "clipping", "calibration", "exposure", "transmittance", "ao", "ao raw"};
+  "clipping", "calibration", "exposure", "transmittance", "ao", "ao raw", "taa rejection"};
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -86,6 +86,20 @@ void framebuffer_callback(GLFWwindow*, const int width, const int height) noexce
   resize_pending = pending_width != 0 && pending_height != 0;
 }
 
+// Последовательность Халтона: низкодискрепансный набор субпиксельных смещений. Случайный джиттер сходился бы
+// хуже — точки сбиваются в кучки и часть площади пикселя не сэмплируется вовсе, а регулярная сетка даёт
+// видимую периодичность. Основания 2 и 3 взаимно просты, поэтому пара координат не коррелирует.
+float halton(uint index, const uint base) {
+  float result = 0.0f;
+  float inverse = 1.0f / float(base);
+  while (index > 0u) {
+    result += float(index % base) * inverse;
+    index /= base;
+    inverse /= float(base);
+  }
+  return result;
+}
+
 // Раскладка обязана совпадать с PF03_FRAME_BLOCK_BODY (resources/shaders/pf03_frame.glsl)
 struct alignas(16) frame_block {
   glm::mat4 view_projection;
@@ -100,8 +114,10 @@ struct alignas(16) frame_block {
   glm::vec4 fog_params;
   glm::vec4 fog_color;
   glm::vec4 ao_params;
+  glm::vec4 taa_params;
+  glm::vec4 taa_jitter;
 };
-static_assert(sizeof(frame_block) == 336);
+static_assert(sizeof(frame_block) == 368);
 
 struct vertex {
   float px, py, pz;
@@ -392,6 +408,18 @@ int main(int argc, char** argv) {
   float ao_radius = 0.55f;       // радиус выборки SSAO в метрах
   float ao_intensity = 1.8f;     // сила затенения
   float ao_power = 1.8f;         // показатель контраста: компенсирует систематическую недооценку оценщика
+  bool taa_enabled = true;
+  // Режим отбраковки истории: 0 — нет, 1 — жёсткая коробка min/max, 2 — клип по дисперсии в YCoCg.
+  // Жёсткая коробка отбраковывает историю при любом движении камеры и возвращает ступеньку на далёких
+  // кромках; клип по дисперсии допускает правдоподобное отклонение.
+  // По умолчанию жёсткая коробка: с фильтром Catmull-Rom она ИЗМЕРЕННО точнее (536 против 554 по отклонению
+  // от эталона). Режим 3 (по скорости) держит больше истории — меньше ступенек на движении, но больше отставания.
+  uint32_t taa_reject = 1;
+  // Фильтр выборки истории: bilinear копит размытие под движением, Catmull-Rom его компенсирует
+  bool taa_catmull_rom = true;
+  float taa_weight = 0.92f;       // вес истории: больше — стабильнее и мылее
+  uint32_t taa_phases = 8;        // длина последовательности джиттера
+  float jitter_scale = 1.0f;      // 0 — джиттер выключен (тогда накапливать нечего)
   float ao_bias = 0.08f;         // порог по касательной плоскости: ниже него затенитель считается компланарным
   bool ao_enabled = true;
   uint32_t ao_samples = 0; // != 0 — переопределяем specialization-константу шага до сборки графа
@@ -417,6 +445,34 @@ int main(int argc, char** argv) {
     constexpr std::string_view debug_prefix = "--debug=";
     if (option.starts_with(debug_prefix)) {
       debug_mode = std::min<uint32_t>(uint32_t(std::stoul(std::string(option.substr(debug_prefix.size())))), debug_names.size() - 1);
+    }
+    constexpr std::string_view taa_prefix = "--taa=";
+    if (option.starts_with(taa_prefix)) {
+      taa_enabled = std::stoi(std::string(option.substr(taa_prefix.size()))) != 0;
+    }
+    constexpr std::string_view taa_clamp_prefix = "--taa-clamp=";
+    if (option.starts_with(taa_clamp_prefix)) {
+      const auto name = option.substr(taa_clamp_prefix.size());
+      if (name == "0" || name == "none") taa_reject = 0;
+      else if (name == "1" || name == "minmax") taa_reject = 1;
+      else if (name == "2" || name == "variance") taa_reject = 2;
+      else if (name == "3" || name == "velocity") taa_reject = 3;
+      else utils::error{}("PF03 unknown TAA rejection mode '{}' (none|minmax|variance|velocity)", name);
+    }
+    constexpr std::string_view taa_filter_prefix = "--taa-filter=";
+    if (option.starts_with(taa_filter_prefix)) {
+      const auto name = option.substr(taa_filter_prefix.size());
+      if (name == "bilinear") taa_catmull_rom = false;
+      else if (name == "catmullrom") taa_catmull_rom = true;
+      else utils::error{}("PF03 unknown TAA history filter '{}' (bilinear|catmullrom)", name);
+    }
+    constexpr std::string_view taa_weight_prefix = "--taa-weight=";
+    if (option.starts_with(taa_weight_prefix)) {
+      taa_weight = std::stof(std::string(option.substr(taa_weight_prefix.size())));
+    }
+    constexpr std::string_view jitter_prefix = "--jitter=";
+    if (option.starts_with(jitter_prefix)) {
+      jitter_scale = std::stof(std::string(option.substr(jitter_prefix.size())));
     }
     constexpr std::string_view ao_prefix = "--ao=";
     if (option.starts_with(ao_prefix)) {
@@ -731,11 +787,17 @@ int main(int argc, char** argv) {
     utils::info("PF03 graph: thin G-buffer (depth+normal+motion) -> shade -> compose/reproject -> present");
     utils::info(
       "PF03 views: 0 shaded, 1 depth, 2 normal, 3 motion, 4 reprojected, 5 error(motion), 6 error(no motion), "
-      "7 clipping, 8 calibration, 9 exposure, 10 transmittance, 11 ao, 12 ao raw");
+      "7 clipping, 8 calibration, 9 exposure, 10 transmittance, 11 ao, 12 ao raw, 13 taa rejection");
     utils::info(
       "PF03 SSAO: {}, radius {} m, intensity {}, bias {} (half resolution + depth-aware blur)",
       ao_enabled ? "on" : "off", ao_radius, ao_intensity, ao_bias);
     utils::info("PF03 SSAO contrast power {}", ao_power);
+    utils::info(
+      "PF03 TAA: {}, history weight {}, rejection {}, jitter phases {}",
+      taa_enabled ? "on" : "off", taa_weight,
+      taa_reject == 0 ? "none" : (taa_reject == 1 ? "minmax box" : (taa_reject == 2 ? "variance clip (YCoCg)" : "velocity-scaled clip (YCoCg)")),
+      taa_phases);
+    utils::info("PF03 TAA history filter: {}", taa_catmull_rom ? "Catmull-Rom" : "bilinear");
     utils::info("PF03 lighting: sun {}, ambient fraction {} (SSAO модулирует только ambient)", sun_intensity, ambient_fraction);
     utils::info(
       "PF03 fog: density {}, height falloff {} m, reference {} m, anisotropy {}",
@@ -754,6 +816,7 @@ int main(int argc, char** argv) {
     uint32_t frames_since_reset = 0;
     uint32_t frames_total = 0;
     glm::mat4 previous_view_projection(1.0f);
+    glm::vec2 previous_jitter_uv(0.0f);
 
     while (!input::should_close(window)) {
       input::poll_events();
@@ -803,13 +866,35 @@ int main(int argc, char** argv) {
 
       const float aspect = float(std::max(pending_width, 1u)) / float(std::max(pending_height, 1u));
       const auto view = camera.view();
-      const auto projection = playground::infinite_reverse_z_projection(glm::radians(68.0f), aspect, near_plane);
+      auto projection = playground::infinite_reverse_z_projection(glm::radians(68.0f), aspect, near_plane);
+
+      // Субпиксельный джиттер — это НЕ постобработка, а смещение самой проекции: каждый кадр сцена
+      // сэмплируется в других точках внутри пикселя, и накопление превращает это в настоящий суперсэмплинг.
+      // Сдвиг добавляется в третий столбец, поэтому масштабируется вместе с w и работает на любой глубине.
+      const uint32_t phase = frames_total % std::max(taa_phases, 1u);
+      // Джиттер НЕ привязан к включённости накопления сознательно: «джиттер без TAA» — это отдельное
+      // состояние, которое надо уметь показать, потому что именно оно демонстрирует, что джиттер сам по себе
+      // не сглаживает, а даёт дрожание.
+      const glm::vec2 jitter_pixels = jitter_scale > 0.0f
+        ? glm::vec2(halton(phase + 1u, 2u) - 0.5f, halton(phase + 1u, 3u) - 0.5f) * jitter_scale
+        : glm::vec2(0.0f);
+      const glm::vec2 jitter_uv{
+        jitter_pixels.x / float(std::max(pending_width, 1u)),
+        jitter_pixels.y / float(std::max(pending_height, 1u))};
+      // Знак определён ИЗМЕРЕНИЕМ, а не выводом из формы матрицы: инвариант такой — на полностью статичной
+      // сцене со статичной камерой motion обязан быть нулём при включённом джиттере. При обратном знаке он
+      // оказывался 1.6 px, джиттер протекал в векторы, TAA репроецировал по ним и в итоге давал картинку
+      // ДАЛЬШЕ от суперсэмплированной, чем один кадр.
+      projection[2][0] -= jitter_uv.x * 2.0f;
+      projection[2][1] -= jitter_uv.y * 2.0f;
+
       const auto view_projection = projection * view;
 
       // На первом кадре и после сброса прошлой матрицы нет: берём текущую, тогда motion = 0, и «истории
       // нет» читается как нулевое движение, а не как случайный вектор.
       if (frames_since_reset == 0) {
         previous_view_projection = view_projection;
+        previous_jitter_uv = jitter_uv;
       }
 
       frame_block frame_data{};
@@ -828,6 +913,15 @@ int main(int argc, char** argv) {
       // при смене яркости освещения он не должен внезапно становиться чёрным или выжженным.
       frame_data.fog_color = glm::vec4(glm::vec3(0.42f, 0.52f, 0.72f) * sun_intensity * 0.45f, 0.75f);
       frame_data.ao_params = glm::vec4(ao_radius, ao_intensity, ao_bias, ao_enabled ? ao_power : 0.0f);
+      // Временной сдвиг вращения выборки AO имеет смысл только вместе с накоплением: иначе это просто шум,
+      // который меняется каждый кадр и мерцает.
+      const float ao_temporal = taa_enabled ? float(phase) / float(std::max(taa_phases, 1u)) : 0.0f;
+      frame_data.taa_params = glm::vec4(
+        taa_enabled ? taa_weight : 0.0f,
+        float(taa_reject),
+        taa_enabled ? (taa_catmull_rom ? 2.0f : 1.0f) : 0.0f,
+        ao_temporal);
+      frame_data.taa_jitter = glm::vec4(jitter_uv, previous_jitter_uv);
       write_current_buffer(base, "frame_buffer", &frame_data, sizeof(frame_data));
 
       {
@@ -847,6 +941,7 @@ int main(int argc, char** argv) {
       frame_pacer.wait();
 
       previous_view_projection = view_projection;
+      previous_jitter_uv = jitter_uv;
       frames_since_reset += 1;
       frames_total += 1;
       if (frame_limit != 0 && frames_total >= frame_limit) {
