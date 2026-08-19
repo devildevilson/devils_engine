@@ -20,6 +20,9 @@ layout(set = 2, binding = 1) uniform sampler2D history_image;
 // Экспозиция посчитана отдельным пассом этого же кадра: .y — множитель
 layout(set = 2, binding = 2, rgba16f) uniform readonly image2D exposure_state;
 
+layout(set = 2, binding = 3) uniform sampler2D ao_image;
+layout(set = 2, binding = 4) uniform sampler2D ao_raw_image;
+
 layout(set = 3, binding = 0, rgba16f) uniform writeonly image2D composed_image;
 
 vec3 motion_to_color(const vec2 motion, const vec2 size) {
@@ -75,6 +78,10 @@ void main() {
     result = pf03_apply_tonemap(exposed, tonemap_op) * 0.25;
     if (peak > 1.0) result = vec3(1.0, 0.1, 0.0);
     if (peak < 0.02) result = vec3(0.0, 0.15, 0.8);
+  } else if (mode == PF03_DEBUG_AO) {
+    result = vec3(texture(ao_image, uv).r);
+  } else if (mode == PF03_DEBUG_AO_RAW) {
+    result = vec3(texture(ao_raw_image, uv).r);
   } else if (mode == PF03_DEBUG_TRANSMITTANCE) {
     // Пропускание тумана: белое — поверхность видна как есть, чёрное — от неё не дошло ничего
     result = vec3(texture(scene_image, uv).a);

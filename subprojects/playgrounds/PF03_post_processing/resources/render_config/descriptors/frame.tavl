@@ -34,7 +34,42 @@
   layout = [
     { resource = fogged_color, usage = sampled, sampler = frame_nearest, stage = compute },
     { resource = fogged_color, usage = sampled, sampler = frame_linear, stage = compute, history = 1 },
-    { resource = exposure_state, usage = texel_read, stage = compute }
+    { resource = exposure_state, usage = texel_read, stage = compute },
+    // AO здесь только для отладочного вида: сам шейдинг читает его своим сетом. Держим в этом же наборе,
+    // потому что гарантированный минимум Vulkan — 4 привязанных сета, а пятый уже вне переносимости.
+    { resource = ao_blurred, usage = sampled, sampler = frame_nearest, stage = compute },
+    // Сырой AO нужен для отладочного вида: только сравнив его с отфильтрованным, можно судить, что делает
+    // блюр — а он часть техники, а не улучшение.
+    { resource = ao_raw, usage = sampled, sampler = frame_nearest, stage = compute }
+  ]
+}
+{
+  name = ao_write
+  layout = [
+    { resource = ao_raw, usage = texel_write, stage = compute }
+  ]
+}
+{
+  name = ao_read
+  layout = [
+    { resource = ao_raw, usage = sampled, sampler = frame_nearest, stage = compute }
+  ]
+}
+{
+  name = ao_blur_write
+  layout = [
+    { resource = ao_blurred, usage = texel_write, stage = compute }
+  ]
+}
+{
+  // Затенение читает ШЕЙДИНГ, а не пост-обработка: AO ослабляет ambient, и умножать им готовую картинку
+  // значит гасить ещё и прямой солнечный свет, чего в природе не происходит.
+  name = ao_final_read
+  layout = [
+    { resource = ao_blurred, usage = sampled, sampler = frame_nearest, stage = compute },
+    // Сырой AO нужен для отладочного вида: только сравнив его с отфильтрованным, можно судить, что делает
+    // блюр — а он часть техники, а не улучшение.
+    { resource = ao_raw, usage = sampled, sampler = frame_nearest, stage = compute }
   ]
 }
 {

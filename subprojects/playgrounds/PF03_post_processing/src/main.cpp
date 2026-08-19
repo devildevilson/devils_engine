@@ -44,9 +44,9 @@ constexpr float near_plane = 0.1f;
 constexpr float orbit_step_seconds = 1.0f / 60.0f;
 
 // Отладочные виды; порядок обязан совпадать с PF03_DEBUG_* в resources/shaders/pf03_frame.glsl
-constexpr std::array<std::string_view, 11> debug_names = {
-  "shaded", "depth", "normal", "motion", "reprojected",
-  "error(motion)", "error(no motion)", "clipping", "calibration", "exposure", "transmittance"};
+constexpr std::array<std::string_view, 13> debug_names = {
+  "shaded", "depth", "normal", "motion", "reprojected", "error(motion)", "error(no motion)",
+  "clipping", "calibration", "exposure", "transmittance", "ao", "ao raw"};
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -99,8 +99,9 @@ struct alignas(16) frame_block {
   glm::vec4 exposure_limits;
   glm::vec4 fog_params;
   glm::vec4 fog_color;
+  glm::vec4 ao_params;
 };
-static_assert(sizeof(frame_block) == 320);
+static_assert(sizeof(frame_block) == 336);
 
 struct vertex {
   float px, py, pz;
@@ -190,16 +191,23 @@ void write_current_buffer(painter::graphics_base& base, const std::string_view n
   std::memcpy(static_cast<uint8_t*>(frame.mapped) + frame.sub.offset, data, bytes);
 }
 
-void update_screen_dispatch(painter::graphics_base& base, const uint32_t width, const uint32_t height) {
-  const uint32_t slot = base.find_constant("screen_dispatch");
+void update_dispatch_constant(
+  painter::graphics_base& base, const std::string_view name, const uint32_t width, const uint32_t height) {
+  const uint32_t slot = base.find_constant(name);
   if (slot == painter::invalid_resource_slot) {
-    utils::error{}("PF03 screen_dispatch constant is absent from the configured graph");
+    utils::error{}("PF03 constant '{}' is absent from the configured graph", name);
   }
   const VkDispatchIndirectCommand command{
     (width + dispatch_tile - 1u) / dispatch_tile,
     (height + dispatch_tile - 1u) / dispatch_tile,
     1u};
   base.write_constant_data(slot, command);
+}
+
+void update_screen_dispatch(painter::graphics_base& base, const uint32_t width, const uint32_t height) {
+  update_dispatch_constant(base, "screen_dispatch", width, height);
+  // SSAO считается в половинном разрешении, поэтому у него своя сетка групп
+  update_dispatch_constant(base, "half_dispatch", (width + 1u) / 2u, (height + 1u) / 2u);
   base.update_event();
 }
 
@@ -373,11 +381,20 @@ int main(int argc, char** argv) {
   float manual_exposure = 0.0f;  // > 0 — фиксированная экспозиция вместо автоматической
   float adapt_rate = 2.2f;       // скорость привыкания, 1/секунда
   float sun_intensity = 6.0f;    // яркость солнца: задаёт динамический диапазон кадра
+  // Доля неба в освещении. SSAO модулирует ИМЕННО ambient, поэтому в солнечно-доминированной сцене он
+  // слаб по построению, а в пасмурной или в помещении становится главным источником объёма.
+  float ambient_fraction = 0.12f;
   bool encode_srgb = false;      // тракт презентации сам кодирует sRGB — измерено видом 8
   float fog_density = 0.035f;    // плотность тумана у опорной высоты, 1/метр
   float fog_falloff = 6.0f;      // масштаб спада плотности по высоте, метры
   float fog_height = -3.0f;      // опорная высота: пол комнаты
   float fog_anisotropy = 0.62f;  // > 0 — рассеяние вперёд, туман светится в сторону солнца
+  float ao_radius = 0.55f;       // радиус выборки SSAO в метрах
+  float ao_intensity = 1.8f;     // сила затенения
+  float ao_power = 1.8f;         // показатель контраста: компенсирует систематическую недооценку оценщика
+  float ao_bias = 0.08f;         // порог по касательной плоскости: ниже него затенитель считается компланарным
+  bool ao_enabled = true;
+  uint32_t ao_samples = 0; // != 0 — переопределяем specialization-константу шага до сборки графа
   glm::vec3 sun_direction{0.45f, 0.82f, 0.35f}; // направление НА солнце; у горизонта туман выглядит иначе
   std::string dump_path;    // непусто — на последнем кадре пишем итоговую картинку в PPM
   float motion_gain = 6.0f;
@@ -400,6 +417,30 @@ int main(int argc, char** argv) {
     constexpr std::string_view debug_prefix = "--debug=";
     if (option.starts_with(debug_prefix)) {
       debug_mode = std::min<uint32_t>(uint32_t(std::stoul(std::string(option.substr(debug_prefix.size())))), debug_names.size() - 1);
+    }
+    constexpr std::string_view ao_prefix = "--ao=";
+    if (option.starts_with(ao_prefix)) {
+      ao_enabled = std::stoi(std::string(option.substr(ao_prefix.size()))) != 0;
+    }
+    constexpr std::string_view ao_samples_prefix = "--ao-samples=";
+    if (option.starts_with(ao_samples_prefix)) {
+      ao_samples = uint32_t(std::stoul(std::string(option.substr(ao_samples_prefix.size()))));
+    }
+    constexpr std::string_view ao_radius_prefix = "--ao-radius=";
+    if (option.starts_with(ao_radius_prefix)) {
+      ao_radius = std::stof(std::string(option.substr(ao_radius_prefix.size())));
+    }
+    constexpr std::string_view ao_intensity_prefix = "--ao-intensity=";
+    if (option.starts_with(ao_intensity_prefix)) {
+      ao_intensity = std::stof(std::string(option.substr(ao_intensity_prefix.size())));
+    }
+    constexpr std::string_view ao_power_prefix = "--ao-power=";
+    if (option.starts_with(ao_power_prefix)) {
+      ao_power = std::stof(std::string(option.substr(ao_power_prefix.size())));
+    }
+    constexpr std::string_view ao_bias_prefix = "--ao-bias=";
+    if (option.starts_with(ao_bias_prefix)) {
+      ao_bias = std::stof(std::string(option.substr(ao_bias_prefix.size())));
     }
     constexpr std::string_view sun_dir_prefix = "--sun-dir=";
     if (option.starts_with(sun_dir_prefix)) {
@@ -442,6 +483,10 @@ int main(int argc, char** argv) {
     constexpr std::string_view adapt_prefix = "--adapt-rate=";
     if (option.starts_with(adapt_prefix)) {
       adapt_rate = std::stof(std::string(option.substr(adapt_prefix.size())));
+    }
+    constexpr std::string_view ambient_prefix = "--ambient=";
+    if (option.starts_with(ambient_prefix)) {
+      ambient_fraction = std::stof(std::string(option.substr(ambient_prefix.size())));
     }
     constexpr std::string_view sun_prefix = "--sun=";
     if (option.starts_with(sun_prefix)) {
@@ -565,6 +610,25 @@ int main(int argc, char** argv) {
     base.set_startup_graph("pf03_post");
 
     auto render_config = painter::build_render_config(resource_root + "render_config/");
+
+    // Число проб SSAO — specialization-константа шага, поэтому переопределяется в РАСПАРСЕННОМ конфиге до
+    // сборки графа: так тир качества меняется пересборкой pipeline, а не правкой файла на диске (приём из PF02).
+    if (ao_samples != 0) {
+      const auto slot = render_config.find_execution_step("compute_ao");
+      if (slot == painter::invalid_resource_slot) {
+        utils::error{}("PF03 step 'compute_ao' is absent from the configured graph");
+      }
+      auto& constants = render_config.steps[slot].shader_constants;
+      const auto found = std::find_if(constants.begin(), constants.end(), [](const auto& entry) {
+        return entry.first == "ao_samples";
+      });
+      if (found == constants.end()) {
+        utils::error{}("PF03 step 'compute_ao' has no 'ao_samples' shader constant to override");
+      }
+      found->second = std::to_string(ao_samples);
+      utils::info("PF03 shader constant override: ao_samples = {}", ao_samples);
+    }
+
     if (base.commit_parsed_resources(render_config) != 0) {
       utils::error{}("PF03 could not commit render graph from '{}'", resource_root);
     }
@@ -667,7 +731,12 @@ int main(int argc, char** argv) {
     utils::info("PF03 graph: thin G-buffer (depth+normal+motion) -> shade -> compose/reproject -> present");
     utils::info(
       "PF03 views: 0 shaded, 1 depth, 2 normal, 3 motion, 4 reprojected, 5 error(motion), 6 error(no motion), "
-      "7 clipping, 8 calibration, 9 exposure, 10 transmittance");
+      "7 clipping, 8 calibration, 9 exposure, 10 transmittance, 11 ao, 12 ao raw");
+    utils::info(
+      "PF03 SSAO: {}, radius {} m, intensity {}, bias {} (half resolution + depth-aware blur)",
+      ao_enabled ? "on" : "off", ao_radius, ao_intensity, ao_bias);
+    utils::info("PF03 SSAO contrast power {}", ao_power);
+    utils::info("PF03 lighting: sun {}, ambient fraction {} (SSAO модулирует только ambient)", sun_intensity, ambient_fraction);
     utils::info(
       "PF03 fog: density {}, height falloff {} m, reference {} m, anisotropy {}",
       fog_density, fog_falloff, fog_height, fog_anisotropy);
@@ -679,6 +748,7 @@ int main(int argc, char** argv) {
     utils::info("PF03 scene: static room (camera motion only) + {} moving cubes (per-object motion)", mover_count);
 
     auto previous_time = std::chrono::steady_clock::now();
+    const auto loop_start = previous_time;
     auto [mouse_x, mouse_y] = input::cursor_pos(window);
     playground::frame_pacer frame_pacer(uncapped ? 0u : 60u);
     uint32_t frames_since_reset = 0;
@@ -749,7 +819,7 @@ int main(int argc, char** argv) {
       frame_data.camera_position = glm::vec4(camera.position, 1.0f);
       frame_data.viewport_near = glm::vec4(float(pending_width), float(pending_height), near_plane, float(frames_since_reset));
       frame_data.controls = glm::vec4(float(debug_mode), motion_gain, error_gain, encode_srgb ? 1.0f : 0.0f);
-      frame_data.light_direction = glm::vec4(glm::normalize(sun_direction), 0.12f);
+      frame_data.light_direction = glm::vec4(glm::normalize(sun_direction), ambient_fraction);
       frame_data.tonemap = glm::vec4(float(tonemap_operator), manual_exposure, adapt_rate, dt);
       // границы log2 средней яркости, ключ (средний серый) и яркость солнца
       frame_data.exposure_limits = glm::vec4(-6.0f, 8.0f, 0.18f, sun_intensity);
@@ -757,6 +827,7 @@ int main(int argc, char** argv) {
       // Цвет рассеяния масштабируется солнцем: туман светится тем же светом, что и всё остальное, поэтому
       // при смене яркости освещения он не должен внезапно становиться чёрным или выжженным.
       frame_data.fog_color = glm::vec4(glm::vec3(0.42f, 0.52f, 0.72f) * sun_intensity * 0.45f, 0.75f);
+      frame_data.ao_params = glm::vec4(ao_radius, ao_intensity, ao_bias, ao_enabled ? ao_power : 0.0f);
       write_current_buffer(base, "frame_buffer", &frame_data, sizeof(frame_data));
 
       {
@@ -783,7 +854,12 @@ int main(int argc, char** argv) {
           vk::Device(device).waitIdle();
           dump_composed_image(base, dump_path);
         }
-        utils::info("PF03 reached the requested {} frames, exiting", frame_limit);
+        // Среднее время кадра печатается всегда: это единственная цена, которую площадка может измерить без
+        // GPU-таймеров, и её достаточно, чтобы сравнить тиры качества между собой на одной машине.
+        const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_start).count();
+        utils::info(
+          "PF03 reached the requested {} frames in {:.3f} s, average frame {:.3f} ms{}",
+          frame_limit, elapsed, 1000.0 * elapsed / double(frame_limit), uncapped ? " (uncapped)" : " (paced)");
         break;
       }
     }

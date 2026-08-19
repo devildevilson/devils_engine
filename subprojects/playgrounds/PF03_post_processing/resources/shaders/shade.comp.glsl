@@ -12,7 +12,9 @@ layout(set = 1, binding = 0) uniform sampler2D depth_image;
 layout(set = 1, binding = 1) uniform sampler2D normal_image;
 layout(set = 1, binding = 2) uniform sampler2D motion_image;
 
-layout(set = 2, binding = 0, rgba16f) uniform writeonly image2D scene_image;
+layout(set = 2, binding = 0) uniform sampler2D ao_image;
+
+layout(set = 3, binding = 0, rgba16f) uniform writeonly image2D scene_image;
 
 vec3 world_position_from_depth(const vec2 uv, const float reverse_depth) {
   const vec4 ndc = vec4(uv * 2.0 - 1.0, reverse_depth, 1.0);
@@ -50,7 +52,36 @@ void main() {
   const float ndl = max(dot(normal, normalize(frame.light_direction.xyz)), 0.0);
   // Ambient задан ДОЛЕЙ солнца, а не абсолютом: отражённый от неба свет масштабируется тем же светилом,
   // поэтому при смене яркости солнца сцена не рассыпается на «выжженный свет и чёрные тени».
-  const float ambient = frame.light_direction.w * frame.exposure_limits.w;
+  const float ambient_light = frame.light_direction.w * frame.exposure_limits.w;
+
+  // AO живёт в половинном разрешении, поэтому апсемпл depth-aware: из четырёх соседей берём того, чья
+  // глубина ближе к нашей. Обычный bilinear протекает через силуэты и рисует затенение на фоне (урок PF02).
+  float ao = 1.0;
+  if (frame.ao_params.w > 0.0) {
+    const ivec2 ao_size = textureSize(ao_image, 0);
+    const vec2 ao_coord = uv * vec2(ao_size) - 0.5;
+    const ivec2 base = ivec2(floor(ao_coord));
+
+    float best_difference = 1.0e9;
+    for (int y = 0; y <= 1; ++y) {
+      for (int x = 0; x <= 1; ++x) {
+        const ivec2 tap = clamp(base + ivec2(x, y), ivec2(0), ao_size - 1);
+        const vec2 value = texelFetch(ao_image, tap, 0).rg;
+        if (value.g <= 0.0) {
+          continue; // тексель неба
+        }
+        const float difference = abs(value.g - pf03_linear_depth(depth, frame.viewport_near.z));
+        if (difference < best_difference) {
+          best_difference = difference;
+          ao = value.r;
+        }
+      }
+    }
+  }
+
+  // AO умножает ТОЛЬКО ambient: прямой солнечный свет затеняется геометрией и тенями, а не статистикой
+  // соседей. Домножать им весь результат — распространённая ошибка, от которой картинка выглядит грязной.
+  const float ambient = ambient_light * ao;
 
   // Альбедо берётся ИЗ НОРМАЛИ, а не из мировых координат. Это принципиально для per-object motion: если
   // рисунок привязан к миру, он «плывёт» по движущейся поверхности, и точка меняет цвет между кадрами — тогда

@@ -39,6 +39,22 @@
   swap = per_frame
 }
 {
+  // Сырое ambient occlusion: .r = множитель затенения, .g = линейная глубина этого текселя. Глубина нужна
+  // для depth-aware блюра и апсемпла — обычный bilinear протекает через силуэты (урок PF02).
+  name = ao_raw
+  format = sf2
+  role = shadow_mask
+  size = viewport_half
+  swap = per_frame
+}
+{
+  name = ao_blurred
+  format = sf2
+  role = shadow_mask
+  size = viewport_half
+  swap = per_frame
+}
+{
   // Кадр после тумана. Отдельный ресурс, а не запись на месте: пасс не может держать одну копию сразу как
   // цель записи и как источник выборки — это два разных layout, и один биндинг не обещает оба.
   name = fogged_color
@@ -75,7 +91,7 @@
 }
 {
   name = frame_buffer
-  format = mat4mat4mat4v4v4v4v4v4v4v4v4
+  format = mat4mat4mat4v4v4v4v4v4v4v4v4v4
   role = upload
   size = one
   swap = per_frame

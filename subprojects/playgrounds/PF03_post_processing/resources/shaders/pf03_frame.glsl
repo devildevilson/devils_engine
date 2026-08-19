@@ -14,7 +14,8 @@
   vec4 tonemap;                     \
   vec4 exposure_limits;             \
   vec4 fog_params;                  \
-  vec4 fog_color;
+  vec4 fog_color;                   \
+  vec4 ao_params;
 
 // viewport_near:    xy = размер кадра в пикселях, z = near, w = номер кадра с последнего сброса истории
 // controls:         x = debug-режим, y = усиление motion при показе, z = усиление ошибки, w = кодировать sRGB
@@ -23,6 +24,8 @@
 // exposure_limits:  x/y = границы log2 средней яркости, z = ключ (средний серый), w = яркость солнца
 // fog_params:       x = плотность у опорной высоты, y = масштаб спада по высоте, z = опорная высота, w = анизотропия
 // fog_color:        xyz = цвет рассеяния (уже с яркостью), w = вклад солнечного диска в рассеяние
+// ao_params:        x = радиус в метрах, y = сила, z = порог по касательной плоскости,
+//                   w = показатель контраста (0 => AO выключен целиком)
 
 #define PF03_DEBUG_SHADED         0
 #define PF03_DEBUG_DEPTH          1
@@ -35,6 +38,8 @@
 #define PF03_DEBUG_CALIBRATION    8
 #define PF03_DEBUG_EXPOSURE       9
 #define PF03_DEBUG_TRANSMITTANCE  10
+#define PF03_DEBUG_AO             11
+#define PF03_DEBUG_AO_RAW         12
 
 #define PF03_TONEMAP_NONE     0
 #define PF03_TONEMAP_REINHARD 1
@@ -109,6 +114,33 @@ float pf03_phase_hg(const float cos_theta, const float g) {
   const float gg = g * g;
   const float denom = 1.0 + gg - 2.0 * g * cos_theta;
   return (1.0 - gg) / (4.0 * 3.14159265 * pow(max(denom, 1.0e-4), 1.5));
+}
+
+// Interleaved gradient noise (Jorge Jimenez): дешёвый детерминированный шум БЕЗ текстуры-ассета. Нужен,
+// чтобы у каждого пикселя было своё вращение выборки — иначе весь кадр использует один и тот же набор
+// направлений, и вместо шума получаются жирные полосы, которые никакой блюр уже не уберёт.
+float pf03_gradient_noise(const vec2 pixel) {
+  return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+}
+
+// Точка последовательности Хаммерсли: низкодискрепансный набор вместо случайного. При 16 пробах разница
+// видна прямо глазом — случайные точки сбиваются в кучки и дают пятна.
+vec2 pf03_hammersley(const uint index, const uint count) {
+  uint bits = index;
+  bits = (bits << 16u) | (bits >> 16u);
+  bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+  bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+  bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+  bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+  return vec2(float(index) / float(count), float(bits) * 2.3283064365386963e-10);
+}
+
+// Точка в единичном диске из низкодискрепансной пары: SSAO смотрит вокруг пикселя на ЭКРАНЕ, поэтому нужен
+// диск, а не полушарие. Радиус берётся как sqrt, иначе точки сгущаются к центру.
+vec2 pf03_disc_sample(const vec2 xi, const float rotation) {
+  const float angle = 6.28318531 * fract(xi.x + rotation);
+  const float radius = sqrt(clamp(xi.y, 0.0, 1.0));
+  return vec2(cos(angle), sin(angle)) * radius;
 }
 
 // Кодирование в sRGB. Нужно только если конечная запись НЕ в sRGB-формат: иначе преобразование сделает

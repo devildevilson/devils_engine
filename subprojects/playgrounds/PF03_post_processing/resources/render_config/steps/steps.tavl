@@ -7,9 +7,24 @@
   command = "draw"
 }
 {
+  // Число проб — specialization-константа шага: это тир качества, а его смена стоит только пересборки
+  // pipeline, а не нового варианта шейдера (правило заведено в PF02).
+  name = compute_ao
+  material = ao_material
+  sets = [ frame_data, gbuffer_inputs, ao_write ]
+  shader_constants = [ ao_samples = "16" ]
+  command = "dispatch constant half_dispatch"
+}
+{
+  name = blur_ao
+  material = ao_blur_material
+  sets = [ frame_data, ao_read, ao_blur_write ]
+  command = "dispatch constant half_dispatch"
+}
+{
   name = shade_scene
   material = shade_material
-  sets = [ frame_data, gbuffer_inputs, shade_write ]
+  sets = [ frame_data, gbuffer_inputs, ao_final_read, shade_write ]
   command = "dispatch constant screen_dispatch"
 }
 {

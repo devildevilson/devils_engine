@@ -26,11 +26,35 @@
       steps = [ draw_gbuffer ]
     },
     {
+      // SSAO в половинном разрешении плюс depth-aware блюр: сырой AO всегда шумный, и блюр — часть техники,
+      // а не улучшение. Оба пасса до шейдинга, потому что AO нужен именно ему.
+      name = pf03_ao
+      subpasses = [
+        {
+          scene_depth = (depth_read, store),
+          gbuffer_normal = (sampled, store),
+          ao_raw = (texel_write, store)
+        }
+      ]
+      steps = [ compute_ao ]
+    },
+    {
+      name = pf03_ao_blur
+      subpasses = [
+        {
+          ao_raw = (sampled, store),
+          ao_blurred = (texel_write, store)
+        }
+      ]
+      steps = [ blur_ao ]
+    },
+    {
       name = pf03_shade
       subpasses = [
         {
           scene_depth = (depth_read, store),
           gbuffer_normal = (sampled, store),
+          ao_blurred = (sampled, store),
           scene_color = (texel_write, store)
         }
       ]
@@ -69,6 +93,8 @@
           scene_depth = (depth_read, store),
           gbuffer_motion = (sampled, store),
           fogged_color = (sampled, store),
+          ao_blurred = (sampled, store),
+          ao_raw = (sampled, store),
           exposure_state = (texel_read, store),
           composed_color = (texel_write, store)
         }
