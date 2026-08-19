@@ -95,9 +95,21 @@
   command = "dispatch constant quarter_dispatch"
 }
 {
+  name = build_histogram
+  material = histogram_material
+  sets = [ frame_data, histogram_build ]
+  command = "dispatch constant histogram_dispatch"
+}
+{
   name = measure_exposure
   material = exposure_material
-  sets = [ frame_data, taa_read, exposure_io ]
+  sets = [ frame_data, exposure_resolve ]
+  command = "dispatch constant exposure_dispatch"
+}
+{
+  name = clear_histogram
+  material = histogram_clear_material
+  sets = [ frame_data, histogram_clear ]
   command = "dispatch constant exposure_dispatch"
 }
 {

@@ -24,6 +24,9 @@ layout(set = 2, binding = 3) uniform sampler2D ao_image;
 layout(set = 2, binding = 4) uniform sampler2D ao_raw_image;
 layout(set = 2, binding = 5) uniform sampler2D bloom_image;
 layout(set = 2, binding = 6) uniform sampler2D shafts_image;
+layout(set = 2, binding = 7, std430) readonly buffer HistogramBuffer {
+  uint bins[];
+} histogram;
 
 layout(set = 3, binding = 0, rgba16f) uniform writeonly image2D composed_image;
 
@@ -125,6 +128,43 @@ void main() {
     if (peak < 0.02) result = vec3(0.0, 0.15, 0.8);
   } else if (mode == PF03_DEBUG_AO) {
     result = vec3(texture(ao_image, uv).r);
+  } else if (mode == PF03_DEBUG_HISTOGRAM) {
+    // Состояние замера числами: r = log2(экспозиция), g = adapted, b = measured — всё со общим сдвигом,
+    // чтобы дамп читался кодом без оверлея.
+    const vec4 state = imageLoad(exposure_state, ivec2(0));
+    // Масштаб /8, а не /32: при восьми битах на канал шаг отсчёта был 0.125 стопа, то есть ГРУБЕЕ эффектов,
+    // которые этим видом и меряются (влияние маленького выброса на среднее — сотые доли стопа). Диапазон
+    // сузился до +-4 стопов, чего для всех измеряемых величин достаточно.
+    result = vec3(log2(max(state.y, 1e-6)) / 8.0 + 0.5, state.x / 8.0 + 0.5, state.z / 8.0 + 0.5);
+  } else if (mode == PF03_DEBUG_LUMINANCE) {
+    // То же, что видит замер: log2 яркости, отображённый из диапазона замера в 0..1. Нужен, чтобы отличить
+    // «сцена действительно однородна» от «сбор гистограммы читает не то».
+    const float lum = pf03_luminance(texture(scene_image, uv).rgb);
+    const float mapped = (log2(max(lum, 1e-6)) - frame.exposure_limits.x) /
+                         max(frame.exposure_limits.y - frame.exposure_limits.x, 1e-4);
+    result = vec3(clamp(mapped, 0.0, 1.0));
+  } else if (mode == PF03_DEBUG_HISTOGRAM_PLOT) {
+    // График распределения: x — номер корзины, y — доля пикселей в ней в логарифмическом масштабе. Смотреть
+    // на распределение глазами оказалось необходимо: числа замера не объясняли, почему отбрасывание
+    // перцентилей почти не двигает результат.
+    // Первая строка кадра — сырые числа корзин для чтения кодом: график глазами показал вырождение, но не
+    // объяснил его, а точные значения объясняют.
+    if (pixel.y == 0 && pixel.x < PF03_HISTOGRAM_BINS) {
+      const float raw = float(histogram.bins[pixel.x]);
+      const float encoded = raw > 0.0 ? clamp(log2(raw + 1.0) / 24.0, 0.0, 1.0) : 0.0;
+      imageStore(composed_image, pixel, vec4(encoded, 0.0, 0.0, 1.0));
+      return;
+    }
+
+    const int bin = clamp(int(uv.x * float(PF03_HISTOGRAM_BINS)), 0, PF03_HISTOGRAM_BINS - 1);
+    const float count = float(histogram.bins[bin]);
+    const float height = count > 0.0 ? clamp(log2(count) / 24.0, 0.0, 1.0) : 0.0;
+    const float y = 1.0 - uv.y;
+    result = y < height ? vec3(0.9, 0.75, 0.35) : vec3(0.04);
+    // граница окна перцентилей и положение замера
+    const vec4 state = imageLoad(exposure_state, ivec2(0));
+    const float measured_x = (state.z - frame.exposure_limits.x) / max(frame.exposure_limits.y - frame.exposure_limits.x, 1e-4);
+    if (abs(uv.x - measured_x) < 0.002) result = vec3(0.2, 1.0, 0.3);
   } else if (mode == PF03_DEBUG_SHARPEN) {
     // Что именно добавила резкость: разница с несглаженной выборкой, усиленная для наглядности
     result = abs(current - texture(scene_image, uv).rgb) * exposure * 8.0;

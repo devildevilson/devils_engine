@@ -42,7 +42,10 @@
     // блюр — а он часть техники, а не улучшение.
     { resource = ao_raw, usage = sampled, sampler = frame_nearest, stage = compute },
     { resource = bloom, usage = sampled, sampler = frame_linear, stage = compute, mip = 0 },
-    { resource = shafts_quarter, usage = sampled, sampler = frame_linear, stage = compute }
+    { resource = shafts_quarter, usage = sampled, sampler = frame_linear, stage = compute },
+    // Гистограмма для отладочного вида. Обнуление стоит в НАЧАЛЕ своего пасса именно поэтому: иначе к моменту
+    // компоновки буфер уже пуст, и посмотреть на распределение нечем.
+    { resource = luminance_histogram, usage = storage_read, stage = compute }
   ]
 }
 {
@@ -56,7 +59,10 @@
   layout = [
     { resource = ao_raw, usage = sampled, sampler = frame_nearest, stage = compute },
     { resource = bloom, usage = sampled, sampler = frame_linear, stage = compute, mip = 0 },
-    { resource = shafts_quarter, usage = sampled, sampler = frame_linear, stage = compute }
+    { resource = shafts_quarter, usage = sampled, sampler = frame_linear, stage = compute },
+    // Гистограмма для отладочного вида. Обнуление стоит в НАЧАЛЕ своего пасса именно поэтому: иначе к моменту
+    // компоновки буфер уже пуст, и посмотреть на распределение нечем.
+    { resource = luminance_histogram, usage = storage_read, stage = compute }
   ]
 }
 {
@@ -75,7 +81,10 @@
     // блюр — а он часть техники, а не улучшение.
     { resource = ao_raw, usage = sampled, sampler = frame_nearest, stage = compute },
     { resource = bloom, usage = sampled, sampler = frame_linear, stage = compute, mip = 0 },
-    { resource = shafts_quarter, usage = sampled, sampler = frame_linear, stage = compute }
+    { resource = shafts_quarter, usage = sampled, sampler = frame_linear, stage = compute },
+    // Гистограмма для отладочного вида. Обнуление стоит в НАЧАЛЕ своего пасса именно поэтому: иначе к моменту
+    // компоновки буфер уже пуст, и посмотреть на распределение нечем.
+    { resource = luminance_histogram, usage = storage_read, stage = compute }
   ]
 }
 {
@@ -105,6 +114,33 @@
   layout = [
     { resource = exposure_state, usage = texel_write, stage = compute },
     { resource = exposure_state, usage = texel_read, stage = compute, history = 1 }
+  ]
+}
+{
+  // Сбор гистограммы: атомарные сложения, поэтому 'general' (read-modify-write)
+  name = histogram_build
+  layout = [
+    { resource = taa_color, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = luminance_histogram, usage = general, stage = compute }
+  ]
+}
+{
+  // Разбор гистограммы ТОЛЬКО читает её. Разные юсаджи у сбора и разбора — не формальность: барьеры движок
+  // выводит из смены юсаджа, и при одинаковом юсадже между двумя шагами барьера не будет вовсе, то есть
+  // разбор прочитал бы недописанную гистограмму.
+  name = exposure_resolve
+  layout = [
+    { resource = luminance_histogram, usage = storage_read, stage = compute },
+    { resource = exposure_state, usage = texel_write, stage = compute },
+    { resource = exposure_state, usage = texel_read, stage = compute, history = 1 }
+  ]
+}
+{
+  // Обнуление после разбора отдельным шагом с юсаджем ЗАПИСИ — по той же причине: иначе не будет барьера
+  // между чтением и обнулением.
+  name = histogram_clear
+  layout = [
+    { resource = luminance_histogram, usage = storage_write, stage = compute }
   ]
 }
 {

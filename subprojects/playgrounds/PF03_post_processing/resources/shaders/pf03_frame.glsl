@@ -21,7 +21,8 @@
   vec4 bloom_params;                \
   vec4 shaft_params;                \
   vec4 lens_params;                 \
-  vec4 output_params;
+  vec4 output_params;               \
+  vec4 metering;
 
 // viewport_near:    xy = размер кадра в пикселях, z = near, w = номер кадра с последнего сброса истории
 // controls:         x = debug-режим, y = усиление motion при показе, z = усиление ошибки, w = кодировать sRGB
@@ -40,7 +41,9 @@
 // shaft_params:     xy = положение солнца на экране в UV, z = сила лучей, w = затухание вдоль луча
 //                   (z <= 0 => солнце вне кадра либо лучи выключены)
 // lens_params:      x = сила резкости, y = виньетка, z = хроматическая аберрация, w = зерно
-// output_params:    x = дизеринг вкл, y = семя зерна (меняется по кадрам), z/w = резерв
+// output_params:    x = дизеринг вкл, y = семя зерна (меняется по кадрам), z = яркость панели, w = резерв
+// metering:         x = нижний перцентиль, y = верхний перцентиль, z = сила центровзвешенности,
+//                   w = скорость адаптации К ТЁМНОМУ (к яркому лежит в tonemap.z)
 
 #define PF03_DEBUG_SHADED         0
 #define PF03_DEBUG_DEPTH          1
@@ -59,6 +62,31 @@
 #define PF03_DEBUG_BLOOM          14
 #define PF03_DEBUG_SHAFTS         15
 #define PF03_DEBUG_SHARPEN        16
+#define PF03_DEBUG_HISTOGRAM      17
+#define PF03_DEBUG_HISTOGRAM_PLOT 18
+#define PF03_DEBUG_LUMINANCE      19
+
+// Число корзин обязано совпадать с declare_value 'histogram_bins'. Корзина 0 зарезервирована под «темнее
+// нижней границы»: такие пиксели исключаются из статистики, иначе чёрный фон утягивает экспозицию вверх.
+#define PF03_HISTOGRAM_BINS 256
+
+// Отображение яркости в номер корзины и обратно. Логарифмическое: экспозиция живёт в стопах, и линейная
+// сетка тратила бы почти все корзины на света, которых мало.
+int pf03_luminance_to_bin(const float luminance, const float min_log2, const float max_log2) {
+  if (luminance < 1.0e-5) {
+    return 0;
+  }
+  const float value = (log2(luminance) - min_log2) / max(max_log2 - min_log2, 1.0e-4);
+  if (value <= 0.0) {
+    return 0;
+  }
+  return clamp(int(value * float(PF03_HISTOGRAM_BINS - 1)) + 1, 1, PF03_HISTOGRAM_BINS - 1);
+}
+
+float pf03_bin_to_log2(const int bin, const float min_log2, const float max_log2) {
+  const float value = (float(bin) - 0.5) / float(PF03_HISTOGRAM_BINS - 1);
+  return min_log2 + value * (max_log2 - min_log2);
+}
 
 #define PF03_TONEMAP_NONE     0
 #define PF03_TONEMAP_REINHARD 1

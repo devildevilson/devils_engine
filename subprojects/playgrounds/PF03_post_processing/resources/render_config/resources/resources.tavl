@@ -110,6 +110,15 @@
   swap = per_frame
 }
 {
+  // Гистограмма яркости кадра. Буфер, а не картинка: сюда пишут атомарными сложениями, и это единственная
+  // структура в цепочке, которой нужен read-modify-write из множества инвокаций.
+  name = luminance_histogram
+  format = ui1
+  role = material_data
+  size = histogram_bins
+  swap = per_frame
+}
+{
   // Состояние экспозиции: картинка 1x1. История нужна для АДАПТАЦИИ — новая экспозиция считается от
   // прошлой, иначе яркость дёргалась бы каждый кадр вместо плавного привыкания глаза.
   name = exposure_state
@@ -120,7 +129,7 @@
 }
 {
   name = frame_buffer
-  format = mat4mat4mat4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4
+  format = mat4mat4mat4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4
   role = upload
   size = one
   swap = per_frame

@@ -3,6 +3,7 @@
 #include <bit>
 #include <span>
 #include <chrono>
+#include <limits>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -22,6 +23,7 @@
 #include "devils_engine/input/events.h"
 #include "devils_engine/painter/assets_base.h"
 #include "devils_engine/painter/auxiliary.h"
+#include "devils_engine/painter/gpu_timing.h"
 #include "devils_engine/painter/graphics_base.h"
 #include "devils_engine/painter/makers.h"
 #include "devils_engine/painter/system_info.h"
@@ -38,16 +40,18 @@ namespace {
 constexpr uint32_t initial_width = 1280;
 constexpr uint32_t initial_height = 720;
 constexpr uint32_t dispatch_tile = 8;
+// Гистограмма считается группами 16x16: по потоку на корзину, то есть одно глобальное атомарное сложение на поток
+constexpr uint32_t histogram_tile = 16;
 constexpr float near_plane = 0.1f;
 // Детерминированный шаг для орбиты: положение камеры становится чистой функцией номера кадра, поэтому два
 // прогона с одинаковым --frames дают одинаковую картинку и ошибку репроекции можно сравнивать численно.
 constexpr float orbit_step_seconds = 1.0f / 60.0f;
 
 // Отладочные виды; порядок обязан совпадать с PF03_DEBUG_* в resources/shaders/pf03_frame.glsl
-constexpr std::array<std::string_view, 17> debug_names = {
+constexpr std::array<std::string_view, 20> debug_names = {
   "shaded", "depth", "normal", "motion", "reprojected", "error(motion)", "error(no motion)",
   "clipping", "calibration", "exposure", "transmittance", "ao", "ao raw", "taa rejection",
-  "bloom", "shafts", "sharpen"};
+  "bloom", "shafts", "sharpen", "histogram", "histogram plot", "luminance"};
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -121,8 +125,9 @@ struct alignas(16) frame_block {
   glm::vec4 shaft_params;
   glm::vec4 lens_params;
   glm::vec4 output_params;
+  glm::vec4 metering;
 };
-static_assert(sizeof(frame_block) == 432);
+static_assert(sizeof(frame_block) == 448);
 
 struct vertex {
   float px, py, pz;
@@ -220,27 +225,44 @@ void write_current_buffer(painter::graphics_base& base, const std::string_view n
   std::memcpy(static_cast<uint8_t*>(frame.mapped) + frame.sub.offset, data, bytes);
 }
 
+// Размер группы — ПАРАМЕТР, а не константа функции. До этого функция всегда делила на 8, и вызов для
+// гистограммы, которой нужна сетка 16x16, получил двойное деление: сетка вышла 10x6 вместо 80x45, то есть в
+// гистограмму попадали первые шестнадцать строк кадра вместо всего кадра. Симптом был крайне обманчивым —
+// распределение выглядело вырожденным (четыре корзины подряд), потому что верхняя полоса кадра это ровное небо.
 void update_dispatch_constant(
-  painter::graphics_base& base, const std::string_view name, const uint32_t width, const uint32_t height) {
+  painter::graphics_base& base, const std::string_view name,
+  const uint32_t width, const uint32_t height, const uint32_t tile) {
   const uint32_t slot = base.find_constant(name);
   if (slot == painter::invalid_resource_slot) {
     utils::error{}("PF03 constant '{}' is absent from the configured graph", name);
   }
   const VkDispatchIndirectCommand command{
-    (width + dispatch_tile - 1u) / dispatch_tile,
-    (height + dispatch_tile - 1u) / dispatch_tile,
+    (width + tile - 1u) / tile,
+    (height + tile - 1u) / tile,
     1u};
   base.write_constant_data(slot, command);
 }
 
+// Масштаб сетки замера: 1 — по каждому пикселю, 2 — по каждому второму и так далее. Ручкой, а не константой,
+// потому что вопрос «сколько стоит замер» теперь можно измерить, а не оценивать.
+uint32_t metering_scale = 2;
+
 void update_screen_dispatch(painter::graphics_base& base, const uint32_t width, const uint32_t height) {
-  update_dispatch_constant(base, "screen_dispatch", width, height);
-  // SSAO считается в половинном разрешении, поэтому у него своя сетка групп
-  update_dispatch_constant(base, "half_dispatch", (width + 1u) / 2u, (height + 1u) / 2u);
-  // Уровни пирамиды: сетка групп на каждый свой размер, иначе шаг либо не покроет уровень, либо выйдет за него
-  update_dispatch_constant(base, "quarter_dispatch", (width + 3u) / 4u, (height + 3u) / 4u);
-  update_dispatch_constant(base, "eighth_dispatch", (width + 7u) / 8u, (height + 7u) / 8u);
-  update_dispatch_constant(base, "sixteenth_dispatch", (width + 15u) / 16u, (height + 15u) / 16u);
+  // Каждой цели передаётся её РАЗМЕР В ПИКСЕЛЯХ и размер группы её шейдера — так двойное деление становится
+  // невыразимым, а не подстерегающим.
+  update_dispatch_constant(base, "screen_dispatch", width, height, dispatch_tile);
+  // SSAO и пирамида считаются в пониженных разрешениях, группа у них та же 8x8
+  update_dispatch_constant(base, "half_dispatch", (width + 1u) / 2u, (height + 1u) / 2u, dispatch_tile);
+  update_dispatch_constant(base, "quarter_dispatch", (width + 3u) / 4u, (height + 3u) / 4u, dispatch_tile);
+  update_dispatch_constant(base, "eighth_dispatch", (width + 7u) / 8u, (height + 7u) / 8u, dispatch_tile);
+  update_dispatch_constant(base, "sixteenth_dispatch", (width + 15u) / 16u, (height + 15u) / 16u, dispatch_tile);
+  // Гистограмма считается по сетке вдвое реже кадра, группами 16x16 (по потоку на корзину)
+  const uint32_t metering_divisor = std::max(metering_scale, 1u);
+  update_dispatch_constant(
+    base, "histogram_dispatch",
+    (width + metering_divisor - 1u) / metering_divisor,
+    (height + metering_divisor - 1u) / metering_divisor,
+    histogram_tile);
   base.update_event();
 }
 
@@ -381,6 +403,61 @@ void dump_composed_image(painter::graphics_base& base, const std::string& path) 
   utils::info("PF03 dumped {}x{} composed frame to '{}'", width, height, path);
 }
 
+// Накопитель времён пассов. Среднее по прогону, а не мгновенное значение: одиночный кадр на этом железе
+// шумит сильнее, чем стоят измеряемые эффекты, и именно поэтому суждения о цене до сих пор были угадыванием.
+// Минимум держится отдельно — он менее подвержен помехам от чужой нагрузки, потому что шум только добавляет.
+struct pass_timing_accumulator {
+  struct entry {
+    std::string name;
+    double total = 0.0;
+    double minimum = std::numeric_limits<double>::max();
+    double maximum = 0.0;
+  };
+
+  std::vector<entry> passes;
+  double frame_total = 0.0;
+  double frame_minimum = std::numeric_limits<double>::max();
+  uint64_t samples = 0;
+
+  void add(const std::span<const painter::gpu_pass_timing>& timings, const double frame_ms) {
+    if (passes.empty()) {
+      passes.resize(timings.size());
+      for (size_t i = 0; i < timings.size(); ++i) {
+        passes[i].name = timings[i].name;
+      }
+    }
+    if (passes.size() != timings.size()) {
+      utils::error{}("PF03 pass timing count changed mid-run: {} -> {}", passes.size(), timings.size());
+    }
+
+    for (size_t i = 0; i < timings.size(); ++i) {
+      const double value = timings[i].milliseconds;
+      passes[i].total += value;
+      passes[i].minimum = std::min(passes[i].minimum, value);
+      passes[i].maximum = std::max(passes[i].maximum, value);
+    }
+    frame_total += frame_ms;
+    frame_minimum = std::min(frame_minimum, frame_ms);
+    samples += 1;
+  }
+
+  void report() const {
+    if (samples == 0) {
+      utils::info("PF03 GPU timings: no samples collected");
+      return;
+    }
+
+    const double count = double(samples);
+    utils::info("PF03 GPU timings over {} frames (мс: среднее / минимум / максимум):", samples);
+    for (const auto& pass : passes) {
+      utils::info(
+        "  {:<20} {:6.3f} / {:6.3f} / {:6.3f}",
+        pass.name, pass.total / count, pass.minimum, pass.maximum);
+    }
+    utils::info("  {:<20} {:6.3f} / {:6.3f}", "ВСЕГО НА GPU", frame_total / count, frame_minimum);
+  }
+};
+
 std::vector<const char*> instance_extensions(const bool validation) {
   uint32_t count = 0;
   const char** required = input::get_required_instance_extensions(&count);
@@ -412,7 +489,17 @@ int main(int argc, char** argv) {
   float object_spin = 0.6f;  // скорость вращения кубов; 0 нужен для измерения самих motion-векторов
   uint32_t tonemap_operator = 3; // 0 none, 1 reinhard, 2 hable, 3 aces
   float manual_exposure = 0.0f;  // > 0 — фиксированная экспозиция вместо автоматической
-  float adapt_rate = 2.2f;       // скорость привыкания, 1/секунда
+  float adapt_up = 2.2f;         // привыкание К ЯРКОМУ, 1/с: у глаза это секунды
+  float adapt_down = 0.35f;      // привыкание К ТЁМНОМУ: десятки секунд, отсюда ощущение ослепления
+  float metering_low = 0.45f;    // нижний перцентиль: отбрасываем тени, они не определяют экспозицию
+  float metering_high = 0.95f;   // верхний перцентиль: отбрасываем выбросы — блики и источники
+  float center_weight = 0.4f;    // центровзвешенность замера
+  float lamp_intensity = 40.0f;  // яркость светящейся панели: ручка для изоляции влияния выброса на замер
+  // Границы замера в стопах. Это и есть вход для «эффекта тёмной комнаты»: авторски ограниченная экспозиция
+  // не даёт вытянуть тёмное помещение, и узкий проход работает визуальным барьером. Волюмы в движке жить не
+  // должны — он берёт границы данными, а расставляет их прикладной слой.
+  float exposure_min = -6.0f;
+  float exposure_max = 8.0f;
   float sun_intensity = 6.0f;    // яркость солнца: задаёт динамический диапазон кадра
   // Доля неба в освещении. SSAO модулирует ИМЕННО ambient, поэтому в солнечно-доминированной сцене он
   // слаб по построению, а в пасмурной или в помещении становится главным источником объёма.
@@ -606,7 +693,45 @@ int main(int argc, char** argv) {
     }
     constexpr std::string_view adapt_prefix = "--adapt-rate=";
     if (option.starts_with(adapt_prefix)) {
-      adapt_rate = std::stof(std::string(option.substr(adapt_prefix.size())));
+      adapt_up = std::stof(std::string(option.substr(adapt_prefix.size())));
+      adapt_down = adapt_up; // общий темп: нужен для A/B против асимметричного
+    }
+    constexpr std::string_view adapt_up_prefix = "--adapt-up=";
+    if (option.starts_with(adapt_up_prefix)) {
+      adapt_up = std::stof(std::string(option.substr(adapt_up_prefix.size())));
+    }
+    constexpr std::string_view adapt_down_prefix = "--adapt-down=";
+    if (option.starts_with(adapt_down_prefix)) {
+      adapt_down = std::stof(std::string(option.substr(adapt_down_prefix.size())));
+    }
+    constexpr std::string_view mscale_prefix = "--metering-scale=";
+    if (option.starts_with(mscale_prefix)) {
+      metering_scale = uint32_t(std::stoul(std::string(option.substr(mscale_prefix.size()))));
+    }
+    constexpr std::string_view range_prefix = "--exposure-range=";
+    if (option.starts_with(range_prefix)) {
+      const auto text = std::string(option.substr(range_prefix.size()));
+      const auto comma = text.find(',');
+      exposure_min = std::stof(text.substr(0, comma));
+      if (comma != std::string::npos) {
+        exposure_max = std::stof(text.substr(comma + 1));
+      }
+    }
+    constexpr std::string_view lamp_prefix = "--lamp=";
+    if (option.starts_with(lamp_prefix)) {
+      lamp_intensity = std::stof(std::string(option.substr(lamp_prefix.size())));
+    }
+    constexpr std::string_view low_prefix = "--metering-low=";
+    if (option.starts_with(low_prefix)) {
+      metering_low = std::stof(std::string(option.substr(low_prefix.size())));
+    }
+    constexpr std::string_view high_prefix = "--metering-high=";
+    if (option.starts_with(high_prefix)) {
+      metering_high = std::stof(std::string(option.substr(high_prefix.size())));
+    }
+    constexpr std::string_view center_prefix = "--metering-center=";
+    if (option.starts_with(center_prefix)) {
+      center_weight = std::stof(std::string(option.substr(center_prefix.size())));
     }
     constexpr std::string_view ambient_prefix = "--ambient=";
     if (option.starts_with(ambient_prefix)) {
@@ -846,9 +971,17 @@ int main(int argc, char** argv) {
     camera.yaw = start_yaw;
     camera.pitch = start_pitch;
 
+    // Профилировщик создаётся ПОСЛЕ смены графа: ему нужно знать число пассов и их имена
+    painter::gpu_timestamp_profiler gpu_profiler(base);
+    pass_timing_accumulator timings;
+
     painter::graphics_ctx context;
     context.base = &base;
     context.assets = &assets;
+    context.set_gpu_profiler(&gpu_profiler);
+    if (!gpu_profiler.available()) {
+      utils::warn("PF03 GPU timestamps are unavailable on this device; per-pass cost will stay unmeasured");
+    }
 
     report_resource_copies(base, "scene_color");
     report_resource_copies(base, "gbuffer_motion");
@@ -856,7 +989,7 @@ int main(int argc, char** argv) {
     utils::info(
       "PF03 views: 0 shaded, 1 depth, 2 normal, 3 motion, 4 reprojected, 5 error(motion), 6 error(no motion), "
       "7 clipping, 8 calibration, 9 exposure, 10 transmittance, 11 ao, 12 ao raw, 13 taa rejection, "
-      "14 bloom, 15 shafts, 16 sharpen");
+      "14 bloom, 15 shafts, 16 sharpen, 17 histogram state, 18 histogram plot");
     utils::info(
       "PF03 SSAO: {}, radius {} m, intensity {}, bias {} (half resolution + depth-aware blur)",
       ao_enabled ? "on" : "off", ao_radius, ao_intensity, ao_bias);
@@ -881,7 +1014,11 @@ int main(int argc, char** argv) {
     utils::info(
       "PF03 tone mapping: operator {}, exposure {}, adapt rate {}/s, sun {}",
       tonemap_operator, manual_exposure > 0.0f ? std::to_string(manual_exposure) : std::string("auto"),
-      adapt_rate, sun_intensity);
+      adapt_up, sun_intensity);
+    utils::info(
+      "PF03 metering: histogram percentiles {}..{}, center weight {}, adaptation up {}/s down {}/s",
+      metering_low, metering_high, center_weight, adapt_up, adapt_down);
+    utils::info("PF03 metering range: {}..{} stops (границы для «тёмной комнаты»)", exposure_min, exposure_max);
     utils::info("PF03 controls: WASD/QE move, mouse look, R reset history, Esc exit");
     utils::info("PF03 scene: static room (camera motion only) + {} moving cubes (per-object motion)", mover_count);
 
@@ -940,6 +1077,12 @@ int main(int argc, char** argv) {
 
       base.prepare_frame();
 
+      // Результаты запросов забираются в prepare_frame после ожидания фенса слота, поэтому читать их надо
+      // сразу здесь: это времена кадра, отправленного frames_in_flight кадров назад.
+      if (gpu_profiler.has_results()) {
+        timings.add(gpu_profiler.passes(), gpu_profiler.frame_milliseconds());
+      }
+
       const float aspect = float(std::max(pending_width, 1u)) / float(std::max(pending_height, 1u));
       const auto view = camera.view();
       auto projection = playground::infinite_reverse_z_projection(glm::radians(68.0f), aspect, near_plane);
@@ -981,9 +1124,9 @@ int main(int argc, char** argv) {
       frame_data.viewport_near = glm::vec4(float(pending_width), float(pending_height), near_plane, float(frames_since_reset));
       frame_data.controls = glm::vec4(float(debug_mode), motion_gain, error_gain, encode_srgb ? 1.0f : 0.0f);
       frame_data.light_direction = glm::vec4(glm::normalize(sun_direction), ambient_fraction);
-      frame_data.tonemap = glm::vec4(float(tonemap_operator), manual_exposure, adapt_rate, dt);
+      frame_data.tonemap = glm::vec4(float(tonemap_operator), manual_exposure, adapt_up, dt);
       // границы log2 средней яркости, ключ (средний серый) и яркость солнца
-      frame_data.exposure_limits = glm::vec4(-6.0f, 8.0f, 0.18f, sun_intensity);
+      frame_data.exposure_limits = glm::vec4(exposure_min, exposure_max, 0.18f, sun_intensity);
       frame_data.fog_params = glm::vec4(fog_density, fog_falloff, fog_height, fog_anisotropy);
       // Цвет рассеяния масштабируется солнцем: туман светится тем же светом, что и всё остальное, поэтому
       // при смене яркости освещения он не должен внезапно становиться чёрным или выжженным.
@@ -1017,7 +1160,8 @@ int main(int argc, char** argv) {
       frame_data.lens_params = glm::vec4(sharpen, vignette, aberration, grain);
       // Семя зерна и дизера меняется по кадрам: статичный шум читается как грязь на экране, а не как зерно.
       // Оно же остаётся детерминированным (функция номера кадра), поэтому дампы сравнимы.
-      frame_data.output_params = glm::vec4(dither ? 1.0f : 0.0f, float(frames_total % 64u), 0.0f, 0.0f);
+      frame_data.output_params = glm::vec4(dither ? 1.0f : 0.0f, float(frames_total % 64u), lamp_intensity, 0.0f);
+      frame_data.metering = glm::vec4(metering_low, metering_high, center_weight, adapt_down);
       write_current_buffer(base, "frame_buffer", &frame_data, sizeof(frame_data));
 
       {
@@ -1051,8 +1195,13 @@ int main(int argc, char** argv) {
         utils::info(
           "PF03 reached the requested {} frames in {:.3f} s, average frame {:.3f} ms{}",
           frame_limit, elapsed, 1000.0 * elapsed / double(frame_limit), uncapped ? " (uncapped)" : " (paced)");
+        timings.report();
         break;
       }
+    }
+
+    if (frame_limit == 0) {
+      timings.report(); // выход по Esc: отчёт всё равно нужен
     }
 
     vk::Device(device).waitIdle();

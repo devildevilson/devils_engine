@@ -53,6 +53,18 @@
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {
+  name = histogram_material
+  shaders = { compute = "histogram.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = histogram_clear_material
+  shaders = { compute = "histogram_clear.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
   name = exposure_material
   shaders = { compute = "exposure.comp.glsl" }
   depth = { test = false, write = false, compare = always }

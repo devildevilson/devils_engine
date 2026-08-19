@@ -93,10 +93,11 @@
       subpasses = [
         {
           taa_color = (sampled, store),
+          luminance_histogram = (general, store),
           exposure_state = (texel_write, store)
         }
       ]
-      steps = [ measure_exposure ]
+      steps = [ clear_histogram, build_histogram, measure_exposure ]
     },
     {
       // Пирамида bloom: четыре понижения одним пассом. Каждый шаг читает предыдущий уровень и пишет следующий,
@@ -145,6 +146,7 @@
           ao_raw = (sampled, store),
           bloom = (sampled, store),
           shafts_quarter = (sampled, store),
+          luminance_histogram = (storage_read, store),
           exposure_state = (texel_read, store),
           composed_color = (texel_write, store)
         }

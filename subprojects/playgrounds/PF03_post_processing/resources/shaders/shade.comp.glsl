@@ -112,7 +112,9 @@ void main() {
   // яркость: небо она уложит под единицу, и сжимать станет нечего. А маленький источник на два порядка ярче
   // среднего среднее почти не двигает — и вот его-то экспозиция вытянуть уже не может, только кривая.
   const bool lamp = world.z < -8.85 && abs(world.x - 2.5) < 2.2 && world.y > -1.2 && world.y < 0.9;
-  const vec3 emissive = lamp ? vec3(1.0, 0.92, 0.78) * sun * 40.0 : vec3(0.0);
+  // Яркость панели — отдельная ручка, потому что только ею можно ИЗОЛИРОВАТЬ влияние маленького яркого
+  // источника на замер: тот же кадр, та же камера, разница только в наличии выброса.
+  const vec3 emissive = lamp ? vec3(1.0, 0.92, 0.78) * sun * frame.output_params.z : vec3(0.0);
 
   const vec3 color = albedo * checker * (ndl * sun + ambient) + vec3(specular) + emissive;
   imageStore(scene_image, pixel, vec4(color, 1.0));
