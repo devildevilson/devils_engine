@@ -40,7 +40,9 @@
     { resource = ao_blurred, usage = sampled, sampler = frame_nearest, stage = compute },
     // Сырой AO нужен для отладочного вида: только сравнив его с отфильтрованным, можно судить, что делает
     // блюр — а он часть техники, а не улучшение.
-    { resource = ao_raw, usage = sampled, sampler = frame_nearest, stage = compute }
+    { resource = ao_raw, usage = sampled, sampler = frame_nearest, stage = compute },
+    { resource = bloom_half, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = shafts_quarter, usage = sampled, sampler = frame_linear, stage = compute }
   ]
 }
 {
@@ -52,7 +54,9 @@
 {
   name = ao_read
   layout = [
-    { resource = ao_raw, usage = sampled, sampler = frame_nearest, stage = compute }
+    { resource = ao_raw, usage = sampled, sampler = frame_nearest, stage = compute },
+    { resource = bloom_half, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = shafts_quarter, usage = sampled, sampler = frame_linear, stage = compute }
   ]
 }
 {
@@ -69,7 +73,9 @@
     { resource = ao_blurred, usage = sampled, sampler = frame_nearest, stage = compute },
     // Сырой AO нужен для отладочного вида: только сравнив его с отфильтрованным, можно судить, что делает
     // блюр — а он часть техники, а не улучшение.
-    { resource = ao_raw, usage = sampled, sampler = frame_nearest, stage = compute }
+    { resource = ao_raw, usage = sampled, sampler = frame_nearest, stage = compute },
+    { resource = bloom_half, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = shafts_quarter, usage = sampled, sampler = frame_linear, stage = compute }
   ]
 }
 {
@@ -115,6 +121,80 @@
   layout = [
     { resource = taa_color, usage = texel_write, stage = compute },
     { resource = taa_color, usage = sampled, sampler = frame_linear, stage = compute, history = 1 }
+  ]
+}
+{
+  // Понижение: читаем предыдущий уровень, пишем следующий. Первый шаг читает накопленный кадр и заодно
+  // выполняет яркий проход (prefilter).
+  name = bloom_down_0
+  layout = [
+    { resource = taa_color, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = bloom_half, usage = texel_write, stage = compute },
+    // Порог яркого прохода имеет смысл только ПОСЛЕ экспозиции: «ярко» — это относительно принятого
+    // среднего серого, а в линейном HDR выше любой абсолютной планки оказывается почти вся сцена.
+    { resource = exposure_state, usage = texel_read, stage = compute }
+  ]
+}
+{
+  name = bloom_down_1
+  layout = [
+    { resource = bloom_half, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = bloom_quarter, usage = texel_write, stage = compute },
+    // Биндинг экспозиции есть у всех уровней, хотя нужен только первому: шейдер один на все четыре шага, и
+    // layout обязан совпадать с объявленным в нём набором, даже если ветка отключена spec-константой.
+    { resource = exposure_state, usage = texel_read, stage = compute }
+  ]
+}
+{
+  name = bloom_down_2
+  layout = [
+    { resource = bloom_quarter, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = bloom_eighth, usage = texel_write, stage = compute },
+    // Биндинг экспозиции есть у всех уровней, хотя нужен только первому: шейдер один на все четыре шага, и
+    // layout обязан совпадать с объявленным в нём набором, даже если ветка отключена spec-константой.
+    { resource = exposure_state, usage = texel_read, stage = compute }
+  ]
+}
+{
+  name = bloom_down_3
+  layout = [
+    { resource = bloom_eighth, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = bloom_sixteenth, usage = texel_write, stage = compute },
+    // Биндинг экспозиции есть у всех уровней, хотя нужен только первому: шейдер один на все четыре шага, и
+    // layout обязан совпадать с объявленным в нём набором, даже если ветка отключена spec-константой.
+    { resource = exposure_state, usage = texel_read, stage = compute }
+  ]
+}
+{
+  // Повышение аддитивное: цель одновременно читается и пишется, поэтому объявлена как 'general' —
+  // read-write storage image. Отдельного ресурса на каждый шаг подъёма так не требуется.
+  name = bloom_up_2
+  layout = [
+    { resource = bloom_sixteenth, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = bloom_eighth, usage = general, stage = compute }
+  ]
+}
+{
+  name = bloom_up_1
+  layout = [
+    { resource = bloom_eighth, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = bloom_quarter, usage = general, stage = compute }
+  ]
+}
+{
+  name = bloom_up_0
+  layout = [
+    { resource = bloom_quarter, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = bloom_half, usage = general, stage = compute }
+  ]
+}
+{
+  // Лучи: маска берётся с четверти пирамиды, глубина нужна чтобы лучи шли только оттуда, где нет геометрии
+  name = shafts_io
+  layout = [
+    { resource = bloom_quarter, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = scene_depth, usage = depth_read, sampler = frame_nearest, stage = compute },
+    { resource = shafts_quarter, usage = texel_write, stage = compute }
   ]
 }
 {

@@ -822,6 +822,13 @@ vk::PipelineStageFlags convertps(const usage::values e) {
   return vk::PipelineStageFlags(0);
 }
 
+vk::DescriptorType convertdt(const usage::values e, const bool is_image) {
+  if (is_image && e == usage::general) {
+    return vk::DescriptorType::eStorageImage;
+  }
+  return convertdt(e);
+}
+
 vk::DescriptorType convertdt(const usage::values e) {
   switch (e) {
     case usage::input_attachment: return vk::DescriptorType::eInputAttachment;

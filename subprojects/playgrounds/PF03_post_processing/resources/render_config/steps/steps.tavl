@@ -40,6 +40,61 @@
   command = "dispatch constant screen_dispatch"
 }
 {
+  // Первый шаг понижения делает и яркий проход: specialization-константа отличает его от остальных, поэтому
+  // шейдер один, а вариантов два — ровно тот случай, для которого spec-константы и нужны.
+  name = bloom_down_half
+  material = bloom_down_material
+  sets = [ frame_data, bloom_down_0 ]
+  shader_constants = [ bloom_prefilter = "1" ]
+  command = "dispatch constant half_dispatch"
+}
+{
+  name = bloom_down_quarter
+  material = bloom_down_material
+  sets = [ frame_data, bloom_down_1 ]
+  shader_constants = [ bloom_prefilter = "0" ]
+  command = "dispatch constant quarter_dispatch"
+}
+{
+  name = bloom_down_eighth
+  material = bloom_down_material
+  sets = [ frame_data, bloom_down_2 ]
+  shader_constants = [ bloom_prefilter = "0" ]
+  command = "dispatch constant eighth_dispatch"
+}
+{
+  name = bloom_down_sixteenth
+  material = bloom_down_material
+  sets = [ frame_data, bloom_down_3 ]
+  shader_constants = [ bloom_prefilter = "0" ]
+  command = "dispatch constant sixteenth_dispatch"
+}
+{
+  name = bloom_up_eighth
+  material = bloom_up_material
+  sets = [ frame_data, bloom_up_2 ]
+  command = "dispatch constant eighth_dispatch"
+}
+{
+  name = bloom_up_quarter
+  material = bloom_up_material
+  sets = [ frame_data, bloom_up_1 ]
+  command = "dispatch constant quarter_dispatch"
+}
+{
+  name = bloom_up_half
+  material = bloom_up_material
+  sets = [ frame_data, bloom_up_0 ]
+  command = "dispatch constant half_dispatch"
+}
+{
+  name = draw_shafts
+  material = shafts_material
+  sets = [ frame_data, shafts_io ]
+  shader_constants = [ shaft_samples = "24" ]
+  command = "dispatch constant quarter_dispatch"
+}
+{
   name = measure_exposure
   material = exposure_material
   sets = [ frame_data, taa_read, exposure_io ]

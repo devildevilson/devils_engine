@@ -44,9 +44,10 @@ constexpr float near_plane = 0.1f;
 constexpr float orbit_step_seconds = 1.0f / 60.0f;
 
 // Отладочные виды; порядок обязан совпадать с PF03_DEBUG_* в resources/shaders/pf03_frame.glsl
-constexpr std::array<std::string_view, 14> debug_names = {
+constexpr std::array<std::string_view, 16> debug_names = {
   "shaded", "depth", "normal", "motion", "reprojected", "error(motion)", "error(no motion)",
-  "clipping", "calibration", "exposure", "transmittance", "ao", "ao raw", "taa rejection"};
+  "clipping", "calibration", "exposure", "transmittance", "ao", "ao raw", "taa rejection",
+  "bloom", "shafts"};
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -116,8 +117,10 @@ struct alignas(16) frame_block {
   glm::vec4 ao_params;
   glm::vec4 taa_params;
   glm::vec4 taa_jitter;
+  glm::vec4 bloom_params;
+  glm::vec4 shaft_params;
 };
-static_assert(sizeof(frame_block) == 368);
+static_assert(sizeof(frame_block) == 400);
 
 struct vertex {
   float px, py, pz;
@@ -156,6 +159,14 @@ std::vector<vertex> make_room() {
   add_quad(out, {-room_x, -room_y, -room_z}, {room_x, -room_y, -room_z}, {room_x, room_y, -room_z}, {-room_x, room_y, -room_z}, {0, 0, 1});
   add_quad(out, {room_x, -room_y, room_z}, {-room_x, -room_y, room_z}, {-room_x, room_y, room_z}, {room_x, room_y, room_z}, {0, 0, -1});
   add_quad(out, {-room_x, -room_y, room_z}, {-room_x, -room_y, -room_z}, {-room_x, room_y, -room_z}, {-room_x, room_y, room_z}, {1, 0, 0});
+
+  // Колонны у дальней стены. Нужны не для красоты: экранные световые лучи возникают там, где свет проходит
+  // МЕЖДУ затенителями. Радиальное размытие большого сплошного неба даёт просто засветку кадра, а не шахты —
+  // без разрывов в маске эффект нечем показать и нечем измерить.
+  for (uint32_t i = 0; i < 5; ++i) {
+    const float x = -6.0f + float(i) * 3.0f;
+    add_box(out, {x, 0.4f, -7.5f}, {0.45f, 3.4f, 0.45f});
+  }
   return out;
 }
 
@@ -224,6 +235,10 @@ void update_screen_dispatch(painter::graphics_base& base, const uint32_t width, 
   update_dispatch_constant(base, "screen_dispatch", width, height);
   // SSAO считается в половинном разрешении, поэтому у него своя сетка групп
   update_dispatch_constant(base, "half_dispatch", (width + 1u) / 2u, (height + 1u) / 2u);
+  // Уровни пирамиды: сетка групп на каждый свой размер, иначе шаг либо не покроет уровень, либо выйдет за него
+  update_dispatch_constant(base, "quarter_dispatch", (width + 3u) / 4u, (height + 3u) / 4u);
+  update_dispatch_constant(base, "eighth_dispatch", (width + 7u) / 8u, (height + 7u) / 8u);
+  update_dispatch_constant(base, "sixteenth_dispatch", (width + 15u) / 16u, (height + 15u) / 16u);
   base.update_event();
 }
 
@@ -417,6 +432,12 @@ int main(int argc, char** argv) {
   uint32_t taa_reject = 1;
   // Фильтр выборки истории: bilinear копит размытие под движением, Catmull-Rom его компенсирует
   bool taa_catmull_rom = true;
+  float bloom_intensity = 0.06f;   // вклад пирамиды в кадр
+  float bloom_threshold = 1.0f;    // порог в единицах ПОСЛЕ экспозиции: «ярче, чем зритель считает белым»
+  float bloom_knee = 0.5f;         // мягкость колена порога
+  float bloom_up_weight = 0.75f;   // вес каждого шага подъёма: меньше — компактнее свечение
+  float shaft_intensity = 0.08f;   // сила лучей: это доля рассеянного света, а не яркость сама по себе
+  float shaft_falloff = 2.5f;      // затухание вдоль луча
   float taa_weight = 0.92f;       // вес истории: больше — стабильнее и мылее
   uint32_t taa_phases = 8;        // длина последовательности джиттера
   float jitter_scale = 1.0f;      // 0 — джиттер выключен (тогда накапливать нечего)
@@ -445,6 +466,26 @@ int main(int argc, char** argv) {
     constexpr std::string_view debug_prefix = "--debug=";
     if (option.starts_with(debug_prefix)) {
       debug_mode = std::min<uint32_t>(uint32_t(std::stoul(std::string(option.substr(debug_prefix.size())))), debug_names.size() - 1);
+    }
+    constexpr std::string_view bloom_prefix = "--bloom=";
+    if (option.starts_with(bloom_prefix)) {
+      bloom_intensity = std::stof(std::string(option.substr(bloom_prefix.size())));
+    }
+    constexpr std::string_view bloom_threshold_prefix = "--bloom-threshold=";
+    if (option.starts_with(bloom_threshold_prefix)) {
+      bloom_threshold = std::stof(std::string(option.substr(bloom_threshold_prefix.size())));
+    }
+    constexpr std::string_view bloom_up_prefix = "--bloom-spread=";
+    if (option.starts_with(bloom_up_prefix)) {
+      bloom_up_weight = std::stof(std::string(option.substr(bloom_up_prefix.size())));
+    }
+    constexpr std::string_view shafts_prefix = "--shafts=";
+    if (option.starts_with(shafts_prefix)) {
+      shaft_intensity = std::stof(std::string(option.substr(shafts_prefix.size())));
+    }
+    constexpr std::string_view shaft_falloff_prefix = "--shafts-falloff=";
+    if (option.starts_with(shaft_falloff_prefix)) {
+      shaft_falloff = std::stof(std::string(option.substr(shaft_falloff_prefix.size())));
     }
     constexpr std::string_view taa_prefix = "--taa=";
     if (option.starts_with(taa_prefix)) {
@@ -787,7 +828,8 @@ int main(int argc, char** argv) {
     utils::info("PF03 graph: thin G-buffer (depth+normal+motion) -> shade -> compose/reproject -> present");
     utils::info(
       "PF03 views: 0 shaded, 1 depth, 2 normal, 3 motion, 4 reprojected, 5 error(motion), 6 error(no motion), "
-      "7 clipping, 8 calibration, 9 exposure, 10 transmittance, 11 ao, 12 ao raw, 13 taa rejection");
+      "7 clipping, 8 calibration, 9 exposure, 10 transmittance, 11 ao, 12 ao raw, 13 taa rejection, "
+      "14 bloom, 15 shafts");
     utils::info(
       "PF03 SSAO: {}, radius {} m, intensity {}, bias {} (half resolution + depth-aware blur)",
       ao_enabled ? "on" : "off", ao_radius, ao_intensity, ao_bias);
@@ -798,6 +840,10 @@ int main(int argc, char** argv) {
       taa_reject == 0 ? "none" : (taa_reject == 1 ? "minmax box" : (taa_reject == 2 ? "variance clip (YCoCg)" : "velocity-scaled clip (YCoCg)")),
       taa_phases);
     utils::info("PF03 TAA history filter: {}", taa_catmull_rom ? "Catmull-Rom" : "bilinear");
+    utils::info(
+      "PF03 bloom: intensity {}, threshold {}, knee {}, spread {} (4-level pyramid)",
+      bloom_intensity, bloom_threshold, bloom_knee, bloom_up_weight);
+    utils::info("PF03 light shafts: intensity {}, falloff {} (screen-space, sun must be on screen)", shaft_intensity, shaft_falloff);
     utils::info("PF03 lighting: sun {}, ambient fraction {} (SSAO модулирует только ambient)", sun_intensity, ambient_fraction);
     utils::info(
       "PF03 fog: density {}, height falloff {} m, reference {} m, anisotropy {}",
@@ -922,6 +968,22 @@ int main(int argc, char** argv) {
         taa_enabled ? (taa_catmull_rom ? 2.0f : 1.0f) : 0.0f,
         ao_temporal);
       frame_data.taa_jitter = glm::vec4(jitter_uv, previous_jitter_uv);
+      frame_data.bloom_params = glm::vec4(bloom_intensity, bloom_threshold, bloom_knee, bloom_up_weight);
+
+      // Положение солнца на экране: проецируем точку далеко по направлению НА светило. Если она за камерой
+      // (w <= 0) либо ушла далеко за пределы кадра, лучи гасим — экранный метод их всё равно не построит.
+      const auto sun_world = camera.position + glm::normalize(sun_direction) * 1000.0f;
+      const auto sun_clip = view_projection * glm::vec4(sun_world, 1.0f);
+      glm::vec2 sun_uv(0.0f);
+      float shafts_strength = 0.0f;
+      if (sun_clip.w > 0.0f) {
+        sun_uv = glm::vec2(sun_clip.x / sun_clip.w, sun_clip.y / sun_clip.w) * 0.5f + 0.5f;
+        const float margin = 0.35f;
+        const bool visible = sun_uv.x > -margin && sun_uv.x < 1.0f + margin &&
+                             sun_uv.y > -margin && sun_uv.y < 1.0f + margin;
+        shafts_strength = visible ? shaft_intensity : 0.0f;
+      }
+      frame_data.shaft_params = glm::vec4(sun_uv, shafts_strength, shaft_falloff);
       write_current_buffer(base, "frame_buffer", &frame_data, sizeof(frame_data));
 
       {

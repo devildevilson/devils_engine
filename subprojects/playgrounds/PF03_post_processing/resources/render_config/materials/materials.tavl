@@ -35,6 +35,24 @@
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {
+  name = bloom_down_material
+  shaders = { compute = "bloom_down.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = bloom_up_material
+  shaders = { compute = "bloom_up.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = shafts_material
+  shaders = { compute = "shafts.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
   name = exposure_material
   shaders = { compute = "exposure.comp.glsl" }
   depth = { test = false, write = false, compare = always }

@@ -99,6 +99,47 @@
       steps = [ measure_exposure ]
     },
     {
+      // Пирамида bloom: четыре понижения одним пассом. Каждый шаг читает предыдущий уровень и пишет следующий,
+      // барьеры между ними выводятся из дескрипторов шагов. Отдельные пассы тут не нужны и вредны: submit
+      // ограничен шестнадцатью группами.
+      name = pf03_bloom_down
+      subpasses = [
+        {
+          taa_color = (sampled, store),
+          exposure_state = (texel_read, store),
+          bloom_half = (texel_write, store),
+          bloom_quarter = (texel_write, store),
+          bloom_eighth = (texel_write, store),
+          bloom_sixteenth = (texel_write, store)
+        }
+      ]
+      steps = [ bloom_down_half, bloom_down_quarter, bloom_down_eighth, bloom_down_sixteenth ]
+    },
+    {
+      // Подъём аддитивный, цель читается и пишется как general
+      name = pf03_bloom_up
+      subpasses = [
+        {
+          bloom_sixteenth = (sampled, store),
+          bloom_eighth = (general, store),
+          bloom_quarter = (general, store),
+          bloom_half = (general, store)
+        }
+      ]
+      steps = [ bloom_up_eighth, bloom_up_quarter, bloom_up_half ]
+    },
+    {
+      name = pf03_shafts
+      subpasses = [
+        {
+          bloom_quarter = (sampled, store),
+          scene_depth = (depth_read, store),
+          shafts_quarter = (texel_write, store)
+        }
+      ]
+      steps = [ draw_shafts ]
+    },
+    {
       // Читает историю scene_color: кросс-кадровый порядок с pf03_shade выводится, а не объявляется
       name = pf03_compose
       subpasses = [
@@ -108,6 +149,8 @@
           taa_color = (sampled, store),
           ao_blurred = (sampled, store),
           ao_raw = (sampled, store),
+          bloom_half = (sampled, store),
+          shafts_quarter = (sampled, store),
           exposure_state = (texel_read, store),
           composed_color = (texel_write, store)
         }

@@ -22,6 +22,8 @@ layout(set = 2, binding = 2, rgba16f) uniform readonly image2D exposure_state;
 
 layout(set = 2, binding = 3) uniform sampler2D ao_image;
 layout(set = 2, binding = 4) uniform sampler2D ao_raw_image;
+layout(set = 2, binding = 5) uniform sampler2D bloom_image;
+layout(set = 2, binding = 6) uniform sampler2D shafts_image;
 
 layout(set = 3, binding = 0, rgba16f) uniform writeonly image2D composed_image;
 
@@ -56,10 +58,17 @@ void main() {
   const float exposure = imageLoad(exposure_state, ivec2(0)).y;
   const int tonemap_op = int(frame.tonemap.x + 0.5);
 
+  // Bloom и лучи добавляются в ЛИНЕЙНОМ HDR до экспозиции: это свет, попавший не туда, куда должен был
+  // (рассеяние в оптике и в атмосфере), а не эффект над готовым изображением. Поэтому экспозиция и кривая
+  // обрабатывают их наравне со сценой.
+  const vec3 bloom = texture(bloom_image, uv).rgb * frame.bloom_params.x;
+  const vec3 shafts = texture(shafts_image, uv).rgb;
+  const vec3 lit = current + bloom + shafts;
+
   // Порядок операций не произволен: экспозиция — это МНОЖИТЕЛЬ в линейном HDR, tone mapping — КРИВАЯ,
   // сжимающая уже отэкспонированный диапазон в [0,1]. Поменять их местами значит растянуть обратно то, что
   // кривая только что сжала.
-  vec3 result = pf03_apply_tonemap(current * exposure, tonemap_op);
+  vec3 result = pf03_apply_tonemap(lit * exposure, tonemap_op);
 
   if (mode == PF03_DEBUG_DEPTH) {
     const float linear_depth = depth > 0.0 ? pf03_linear_depth(depth, frame.viewport_near.z) : 0.0;
@@ -73,13 +82,17 @@ void main() {
   } else if (mode == PF03_DEBUG_CLIPPING) {
     // Где кадр выходит за диапазон ПОСЛЕ экспозиции: красное — светы за единицей, синее — почти чёрное.
     // Это то, что кривая обязана вытянуть, и то, чего простая обрезка не умеет.
-    const vec3 exposed = current * exposure;
+    const vec3 exposed = lit * exposure;
     const float peak = max(max(exposed.r, exposed.g), exposed.b);
     result = pf03_apply_tonemap(exposed, tonemap_op) * 0.25;
     if (peak > 1.0) result = vec3(1.0, 0.1, 0.0);
     if (peak < 0.02) result = vec3(0.0, 0.15, 0.8);
   } else if (mode == PF03_DEBUG_AO) {
     result = vec3(texture(ao_image, uv).r);
+  } else if (mode == PF03_DEBUG_BLOOM) {
+    result = pf03_apply_tonemap(bloom * exposure * 4.0, tonemap_op);
+  } else if (mode == PF03_DEBUG_SHAFTS) {
+    result = pf03_apply_tonemap(shafts * exposure * 4.0, tonemap_op);
   } else if (mode == PF03_DEBUG_TAA_WEIGHT) {
     // Насколько сильно clamp подтянул историю: на движущихся силуэтах вспыхивает, на статике ноль
     result = vec3(texture(scene_image, uv).a * 4.0, 0.0, 0.0);

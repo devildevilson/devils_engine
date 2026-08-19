@@ -17,7 +17,9 @@
   vec4 fog_color;                   \
   vec4 ao_params;                   \
   vec4 taa_params;                  \
-  vec4 taa_jitter;
+  vec4 taa_jitter;                  \
+  vec4 bloom_params;                \
+  vec4 shaft_params;
 
 // viewport_near:    xy = размер кадра в пикселях, z = near, w = номер кадра с последнего сброса истории
 // controls:         x = debug-режим, y = усиление motion при показе, z = усиление ошибки, w = кодировать sRGB
@@ -32,6 +34,9 @@
 //                   z = 0 выключен / 1 bilinear-история / 2 Catmull-Rom история,
 //                   w = временной сдвиг выборки AO
 // taa_jitter:       xy = джиттер текущего кадра в UV, zw = джиттер предыдущего кадра в UV
+// bloom_params:     x = сила, y = порог яркого прохода, z = мягкость колена порога, w = вес шага подъёма
+// shaft_params:     xy = положение солнца на экране в UV, z = сила лучей, w = затухание вдоль луча
+//                   (z <= 0 => солнце вне кадра либо лучи выключены)
 
 #define PF03_DEBUG_SHADED         0
 #define PF03_DEBUG_DEPTH          1
@@ -47,6 +52,8 @@
 #define PF03_DEBUG_AO             11
 #define PF03_DEBUG_AO_RAW         12
 #define PF03_DEBUG_TAA_WEIGHT     13
+#define PF03_DEBUG_BLOOM          14
+#define PF03_DEBUG_SHAFTS         15
 
 #define PF03_TONEMAP_NONE     0
 #define PF03_TONEMAP_REINHARD 1

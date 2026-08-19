@@ -114,6 +114,10 @@ vk::ImageLayout convertil(const usage::values e);
 vk::AccessFlags convertam(const usage::values e);
 vk::PipelineStageFlags convertps(const usage::values e);
 vk::DescriptorType convertdt(const usage::values e);
+// 'general' у КАРТИНКИ означает read-write storage image: layout (eGeneral), usage-флаг (eStorage) и access-маска
+// (read|write) у него уже такие, а тип дескриптора без этой перегрузки выдавался буферный. Нужно всюду, где
+// шаг и читает, и пишет одну и ту же картинку — например аддитивный upsample bloom-пирамиды.
+vk::DescriptorType convertdt(const usage::values e, const bool is_image);
 vk::ImageUsageFlags convertiuf(const usage::values e);
 vk::BufferUsageFlags convertbuf(const usage::values e);
 

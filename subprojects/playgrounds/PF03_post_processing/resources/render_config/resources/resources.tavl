@@ -73,6 +73,43 @@
   swap = per_frame
 }
 {
+  name = bloom_half
+  format = sf4
+  role = bloom_mip
+  size = viewport_half
+  swap = per_frame
+}
+{
+  name = bloom_quarter
+  format = sf4
+  role = bloom_mip
+  size = viewport_quarter
+  swap = per_frame
+}
+{
+  name = bloom_eighth
+  format = sf4
+  role = bloom_mip
+  size = viewport_eighth
+  swap = per_frame
+}
+{
+  name = bloom_sixteenth
+  format = sf4
+  role = bloom_mip
+  size = viewport_sixteenth
+  swap = per_frame
+}
+{
+  // Световые лучи считаются на четверти той же пирамиды: маска ярких пикселей у них общая с bloom, различается
+  // только фильтр — радиальный вместо изотропного.
+  name = shafts_quarter
+  format = sf4
+  role = bloom
+  size = viewport_quarter
+  swap = per_frame
+}
+{
   // Что показываем на экране: выбранный debug-режим либо итоговая картинка
   name = composed_color
   format = sf4
@@ -100,7 +137,7 @@
 }
 {
   name = frame_buffer
-  format = mat4mat4mat4v4v4v4v4v4v4v4v4v4v4v4
+  format = mat4mat4mat4v4v4v4v4v4v4v4v4v4v4v4v4v4
   role = upload
   size = one
   swap = per_frame

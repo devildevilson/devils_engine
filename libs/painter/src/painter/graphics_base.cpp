@@ -1577,6 +1577,7 @@ void graphics_base::create_descriptor_set_layouts() {
     imm_keep.reserve(desc.layout.size() + 1);
     for (uint32_t i = 0; i < desc.layout.size(); ++i) {
       const auto& bind = desc.layout[i];
+      const auto& res = DS_ASSERT_ARRAY_GET(resources, bind.resource);
       // Размер массива binding'а — это не число копий ресурса: шейдеру показывается либо текущая копия
       // (одиночный дескриптор), либо окно истории из history копий. Копии, существующие только против гонок
       // кадров в полёте, шейдеру не видны, поэтому размер массива задан конфигом и не зависит от
@@ -1589,7 +1590,7 @@ void graphics_base::create_descriptor_set_layouts() {
         imm_keep.emplace_back(array_size, vk::Sampler(samplers[bind.sampler].handle));
         dslm.combined(i, vk::DescriptorType::eCombinedImageSampler, stage, imm_keep.back());
       } else {
-        dslm.binding(i, convertdt(bind.usage), stage, array_size);
+        dslm.binding(i, convertdt(bind.usage, role::is_image(res.role)), stage, array_size);
       }
     }
     // asset-текстуры РАЗДЕЛЕНЫ (bindless v2): binding L = SAMPLED_IMAGE массив (пишется рендером),
@@ -2203,7 +2204,7 @@ void graphics_base::recreate_descriptor_pool() {
       if (bind.sampler != invalid_resource_slot) {
         add(vk::DescriptorType::eCombinedImageSampler, bind.array_size());
       } else {
-        add(convertdt(bind.usage), bind.array_size());
+        add(convertdt(bind.usage, role::is_image(resources[bind.resource].role)), bind.array_size());
       }
     }
     if (d.texture_count > 0) {
@@ -2299,7 +2300,7 @@ void graphics_base::update_descriptors() {
       writes.back().dstBinding = bind;
       writes.back().dstArrayElement = 0;
       writes.back().descriptorCount = array_size;
-      writes.back().descriptorType = combined ? vk::DescriptorType::eCombinedImageSampler : convertdt(layout_bind.usage);
+      writes.back().descriptorType = combined ? vk::DescriptorType::eCombinedImageSampler : convertdt(layout_bind.usage, is_image);
 
       if (is_image) {
         offsets.push_back(std::make_tuple(images.size(), is_image));
