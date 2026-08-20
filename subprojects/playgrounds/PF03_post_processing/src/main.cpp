@@ -54,6 +54,10 @@ constexpr uint32_t motion_tile_size = 16;
 // тракт обязан вести себя ровно как до появления TAAU. Живёт здесь, потому что от него зависят и размеры
 // ресурсов (переопределение распарсенного конфига), и сетки диспатчей.
 float render_scale = 1.0f;
+// Какой граф стартует и сколько сэмплов у forward-ветви. MSAA — это ФОРМА конвейера, а не тумблер эффекта,
+// поэтому выбор ГРАФА, а не флаг в UBO: у forward-ветви нет ни G-buffer'а, ни накопления, ни экранных эффектов.
+std::string startup_graph = "pf03_post";
+uint32_t msaa_samples = 0; // != 0 — переопределяем 'samples' у вложений forward-ветви до сборки графа
 // Высота сенсора в мм: полный кадр. Нужна, чтобы CoC считался в ПИКСЕЛЯХ, а не в абстрактных единицах.
 constexpr float sensor_height_mm = 24.0f;
 constexpr float near_plane = 0.1f;
@@ -783,6 +787,18 @@ int main(int argc, char** argv) {
       else if (name == "linear") lut_linear_shaper = true;
       else utils::error{}("PF03 unknown lut shaper '{}' (log|linear)", name);
     }
+    constexpr std::string_view graph_prefix = "--graph=";
+    if (option.starts_with(graph_prefix)) {
+      const auto name = option.substr(graph_prefix.size());
+      if (name == "post") startup_graph = "pf03_post";
+      else if (name == "forward") startup_graph = "pf03_forward";
+      else if (name == "forward-plain") startup_graph = "pf03_forward_plain";
+      else utils::error{}("PF03 unknown graph '{}' (post|forward|forward-plain)", name);
+    }
+    constexpr std::string_view msaa_prefix = "--msaa=";
+    if (option.starts_with(msaa_prefix)) {
+      msaa_samples = uint32_t(std::stoul(std::string(option.substr(msaa_prefix.size()))));
+    }
     constexpr std::string_view render_scale_prefix = "--render-scale=";
     if (option.starts_with(render_scale_prefix)) {
       render_scale = std::stof(std::string(option.substr(render_scale_prefix.size())));
@@ -1191,7 +1207,12 @@ int main(int argc, char** argv) {
     const std::string cache_path = utils::cache_folder() + "pf03_post_processing.pipeline_cache";
     base.get_or_create_pipeline_cache(cache_path);
     base.set_shader_source_filesystem(resource_root + "shaders/");
-    base.set_startup_graph("pf03_post");
+    // ОБА графа резидентны: иначе ресурсы второго не создаются, и переключение упирается в предупреждение
+    // движка «graph is not resident». Резидентность — это заявка на память, и объявлять её должен автор.
+    base.set_startup_graph(startup_graph);
+    base.add_resident_graph("pf03_post");
+    base.add_resident_graph("pf03_forward");
+    base.add_resident_graph("pf03_forward_plain");
 
     auto render_config = painter::build_render_config(resource_root + "render_config/");
 
@@ -1211,6 +1232,19 @@ int main(int argc, char** argv) {
       }
       found->second = std::to_string(ao_samples);
       utils::info("PF03 shader constant override: ao_samples = {}", ao_samples);
+    }
+
+    // Число сэмплов — тоже размер ресурса: память вложения растёт линейно по сэмплам. Переопределяется в
+    // объявленных ресурсах до сборки графа, потому что смена стоит пересоздания вложений.
+    if (msaa_samples != 0) {
+      for (const auto* name : {"forward_color", "forward_depth"}) {
+        const auto slot = render_config.find_resource(name);
+        if (slot == painter::invalid_resource_slot) {
+          utils::error{}("PF03 resource '{}' is absent from the configured graph", name);
+        }
+        render_config.resources[slot].samples = msaa_samples;
+      }
+      utils::info("PF03 MSAA override: {} samples in the forward branch", msaa_samples);
     }
 
     // Разрешение рендера — это РАЗМЕР РЕСУРСОВ, а не число в UBO: переопределяется в объявленных значениях
@@ -1328,9 +1362,9 @@ int main(int argc, char** argv) {
       utils::error{}("PF03 counter 'grade_cache' is absent from the configured graph");
     }
 
-    const uint32_t graph = base.find_render_graph("pf03_post");
+    const uint32_t graph = base.find_render_graph(startup_graph);
     if (graph == painter::invalid_resource_slot) {
-      utils::error{}("PF03 render graph was not found");
+      utils::error{}("PF03 render graph '{}' was not found", startup_graph);
     }
     base.change_render_graph(graph);
 
@@ -1475,6 +1509,7 @@ int main(int argc, char** argv) {
     utils::info(
       "PF03 LUT: {0}^3 (объёмный ресурс), shaper {1} over {2}..{3} stops",
       lut_grid, lut_linear_shaper ? "linear" : "log2", lut_min_stop, lut_max_stop);
+    utils::info("PF03 graph: {}", startup_graph);
     utils::info(
       "PF03 render scale: {} ({}x{} рендер при {}x{} дисплея) — накопление идёт в разрешении дисплея",
       render_scale, std::get<0>(render_extent(initial_width, initial_height)),

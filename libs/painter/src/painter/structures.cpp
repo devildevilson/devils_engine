@@ -117,7 +117,7 @@ resource::frame::frame() noexcept : index(0), view(VK_NULL_HANDLE), subimage{0, 
   level_views.fill(VK_NULL_HANDLE);
 }
 resource::resource() noexcept : format_hint(VK_FORMAT_UNDEFINED), size_hint(0), size(UINT32_MAX), role(role::values::count), type(type::values::count), swap(0), usage_mask(0),
-                               mips(1), history_depth(0), history_usage(usage::values::count) {}
+                               samples(1), mips(1), history_depth(0), history_usage(usage::values::count) {}
 descriptor::binding::binding() noexcept : resource(invalid_resource_slot), usage(usage::values::count), sampler(invalid_resource_slot), stages(VK_SHADER_STAGE_ALL), history(0), mip(invalid_resource_slot) {}
 descriptor::binding::binding(const uint32_t resource, const enum usage::values usage, const uint32_t sampler,
                              const uint32_t stages, const uint32_t history, const uint32_t mip) noexcept
@@ -180,10 +180,18 @@ void resource_container::create_container(VmaAllocator alc, const uint32_t host_
     // это одно и то же утверждение, и держать его в двух местах значит разрешить им разойтись.
     ici.imageType = extent.is_volume() ? vk::ImageType::e3D : vk::ImageType::e2D;
     ici.initialLayout = vk::ImageLayout::eUndefined; // general?
-    ici.samples = vk::SampleCountFlagBits::e1;
+    ici.samples = static_cast<vk::SampleCountFlagBits>(std::max(samples, 1u));
     ici.arrayLayers = layers;
     ici.mipLevels = std::max(mips, 1u);
     ici.extent = vk::Extent3D{extent.x, extent.y, std::max(extent.z, 1u)};
+
+    // Требование спецификации, а не вкуса: у многосэмплового образа ровно один уровень мип-цепочки. Ловим
+    // здесь, потому что дальше это превратится в невнятную ошибку драйвера.
+    if (ici.samples != vk::SampleCountFlagBits::e1 && ici.mipLevels != 1) {
+      utils::error{}(
+        "Container '{}' asks {} samples with {} mip levels: multisampled images must have exactly one level",
+        name, uint32_t(samples), uint32_t(mips));
+    }
 
     // Vulkan запрещает слои у трёхмерного образа, а буферизация картинок здесь сделана слоями. Значит копии
     // 3D-ресурса обязаны лежать в РАЗНЫХ образах, и если сюда пришло иначе — это ошибка вызывающей стороны,
@@ -548,6 +556,9 @@ struct resource_mirror {
   // Число уровней мип-цепочки: '1' обычная картинка, 'auto' полная цепочка до 1x1, либо явное число.
   // Объявляется у РЕСУРСА, потому что определяет аллокацию; «какой уровень мне нужен» — свойство биндинга.
   std::string mips = "1";
+  // Число сэмплов на пиксель (MSAA). Тоже свойство ресурса и тоже по причине аллокации. Движок не решает за
+  // автора, что с многосэмпловой картинкой законно: он проверяет только то, что запрещает спецификация.
+  uint32_t samples = 1;
 
   // mirror context
   resource convert(const render_config_storage& ctx) const {
@@ -569,6 +580,14 @@ struct resource_mirror {
     }
     // создавать на месте? хардкодить? честно говоря было бы неплохо задекларировать где то
     res.swap = check(ctx.find_counter(swap), "counter", swap, name);
+
+    // Требование спецификации: число сэмплов — степень двойки от 1 до 64. Всё остальное про MSAA (можно ли
+    // такую картинку выбирать, класть в неё storage, держать историю) решает автор: это инструмент, а не
+    // набор нянек.
+    if (samples == 0 || (samples & (samples - 1)) != 0 || samples > 64) {
+      utils::error{}("Resource '{}' asks {} samples: must be a power of two between 1 and 64", name, samples);
+    }
+    res.samples = samples;
     res.usage_mask = 0;
 
     if (mips == "auto") {

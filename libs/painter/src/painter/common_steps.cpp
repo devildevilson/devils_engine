@@ -583,7 +583,28 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
   pm.depthBias(material.raster.depth_bias, material.raster.bias_constant, material.raster.bias_clamp, material.raster.bias_slope);
   pm.lineWidth(material.raster.line_width);
 
-  pm.rasterizationSamples(vk::SampleCountFlagBits::e1);
+  // rasterizationSamples у pipeline ОБЯЗАН совпадать с числом сэмплов вложений подпасса, поэтому он
+  // выводится из render target, а не объявляется в материале. Цели resolve в счёт не идут: они односэмпловые
+  // по определению. Если вложения не согласованы между собой — это ошибка автора, и лучше сказать о ней
+  // здесь, чем получить невнятную жалобу драйвера.
+  {
+    const auto& target = DS_ASSERT_ARRAY_GET(ctx->render_targets, render_target_index);
+    uint32_t attachment_samples = 1;
+    for (const auto& [res_index, attachment_usage] : target.resources) {
+      if (attachment_usage == usage::resolve_attachment) {
+        continue;
+      }
+      const auto& attachment = DS_ASSERT_ARRAY_GET(ctx->resources, res_index);
+      const uint32_t value = std::max(attachment.samples, 1u);
+      if (attachment_samples != 1 && value != attachment_samples) {
+        utils::error{}(
+          "Render target '{}' mixes {} and {} samples: every attachment of a pass must have the same count",
+          target.name, attachment_samples, value);
+      }
+      attachment_samples = std::max(attachment_samples, value);
+    }
+    pm.rasterizationSamples(static_cast<vk::SampleCountFlagBits>(attachment_samples));
+  }
   pm.sampleShading(false);
   pm.multisampleCoverage(false, false);
 
@@ -608,8 +629,14 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
   }
 
   for (uint32_t i = 0; i < blending.size(); ++i) {
-    const uint32_t resource_index = std::get<0>(rt.resources[i]);
+    const auto& [resource_index, attachment_usage] = rt.resources[i];
     const auto& resource = DS_ASSERT_ARRAY_GET(ctx->resources, resource_index);
+    // Состояние блендинга нужно ровно цветовым вложениям подпасса. Цель resolve в их число НЕ входит: в
+    // VkSubpassDescription она лежит отдельным массивом, параллельным цветовому, и pColorBlendState с лишней
+    // записью Vulkan отвергает (attachmentCount обязан совпасть с colorAttachmentCount).
+    if (attachment_usage == usage::resolve_attachment) {
+      continue;
+    }
     if (!format::is_depth_vk_format(resource.format_hint)) {
       pm.colorBlending(blend_state(blending[i]));
     }
@@ -783,7 +810,9 @@ void execution_pass_instance::create_render_pass(const graphics_base* ctx) {
     const auto& [res_index, type] = rt.resources[i];
     const auto& res = DS_ASSERT_ARRAY_GET(ctx->resources, res_index);
     rpm.attachmentBegin(static_cast<vk::Format>(res.format_hint));
-    rpm.attachmentSamples(vk::SampleCountFlagBits::e1);
+    // Число сэмплов вложения — свойство РЕСУРСА, а не render pass: объявлять его здесь значило бы разрешить
+    // им разойтись. Цель resolve при этом односэмпловая, и это не исключение, а определение resolve.
+    rpm.attachmentSamples(static_cast<vk::SampleCountFlagBits>(std::max(res.samples, 1u)));
 
     const auto& sinfo = start[i];
     const auto& finfo = finish[i];
@@ -824,6 +853,26 @@ void execution_pass_instance::create_render_pass(const graphics_base* ctx) {
       }
 
       if (info.usage == usage::resolve_attachment) {
+        // Требование спецификации: у цветового вложения, которое резолвится, обязано быть больше одного
+        // сэмпла. Иначе resolve нечего делать, и это ошибка объявления, а не «MSAA выключен»: выключенный
+        // MSAA — это граф БЕЗ цели resolve, то есть другая форма конвейера.
+        uint32_t multisampled = 0;
+        for (uint32_t j = 0; j < rt.resources.size(); ++j) {
+          const auto& [other_index, other_usage] = rt.resources[j];
+          if (other_usage == usage::resolve_attachment) {
+            continue;
+          }
+          const auto& other = DS_ASSERT_ARRAY_GET(ctx->resources, other_index);
+          if (!format::is_depth_vk_format(other.format_hint)) {
+            multisampled = std::max(multisampled, other.samples);
+          }
+        }
+        if (multisampled <= 1) {
+          utils::error{}(
+            "Render target '{}' declares a resolve attachment, but its color attachment has one sample: "
+            "resolve requires a multisampled source, and disabling MSAA means a graph WITHOUT a resolve target",
+            rt.name);
+        }
         rpm.subpassResolveAttachment(i, convertil(info.usage));
       }
 

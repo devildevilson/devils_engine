@@ -819,6 +819,13 @@ void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t
     if (cv.type != value_type::screensize) {
       continue;
     }
+    // Ресурс неактивного графа контейнера не получил (create_resources его пропустил), поэтому его handles
+    // указывают в нулевой контейнер — то есть в чужой образ. Создавать по ним виды значит делать вид чужого
+    // формата на чужой картинке; валидация это ловит, а без неё был бы тихий мусор. Пробел был латентным
+    // ровно до первого конфига с ДВУМЯ графами.
+    if (!is_resource_active(&res - resources.data())) {
+      continue;
+    }
 
     const bool is_image = role::is_image(res.role);
 
@@ -868,6 +875,9 @@ void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t
     const auto& cv = DS_ASSERT_ARRAY_GET(constant_values, res.size);
     if (cv.type != value_type::screensize) {
       continue;
+    }
+    if (!is_resource_active(&res - resources.data())) {
+      continue; // см. выше: у неактивного ресурса нет своего контейнера
     }
 
     const bool is_image = role::is_image(res.role);
@@ -1919,6 +1929,7 @@ void graphics_base::create_resources() {
     uint32_t format;
     uint32_t usage_mask;
     uint32_t mips;
+    uint32_t samples;
     bool is_buffer;
     bool is_host_resource;
 
@@ -2056,6 +2067,7 @@ void graphics_base::create_resources() {
         entry.format = res.format_hint;
         entry.usage_mask = res.usage_mask;
         entry.mips = res_mips;
+        entry.samples = res.samples;
         entry.is_buffer = false;
         entry.is_host_resource = is_host_resource;
         entry.layers = 1;
@@ -2088,7 +2100,8 @@ void graphics_base::create_resources() {
       const bool format_match = res.format_hint == data.format;
       const bool usage_mask_match = res.usage_mask == data.usage_mask;
       const bool mips_match = res_mips == data.mips;
-      return size_match && format_match && usage_mask_match && mips_match;
+      const bool samples_match = res.samples == data.samples;
+      return size_match && format_match && usage_mask_match && mips_match && samples_match;
     });
 
     if (itr == matching.end()) {
@@ -2097,6 +2110,7 @@ void graphics_base::create_resources() {
       matching.back().format = res.format_hint;
       matching.back().usage_mask = res.usage_mask;
       matching.back().mips = res_mips;
+      matching.back().samples = res.samples;
       matching.back().is_buffer = is_buffer;
       matching.back().is_host_resource = is_host_resource;
       matching.back().layers = 0;
@@ -2130,6 +2144,7 @@ void graphics_base::create_resources() {
     cont.format = data.format;
     cont.layers = data.layers;
     cont.mips = data.mips;
+    cont.samples = data.samples;
     cont.usage_mask = data.usage_mask;
     cont.extent = data.extent;
     cont.size = data.size;
@@ -3070,6 +3085,7 @@ void graphics_ctx::prepare() {
       resources[i].extent = {x, y, 1};
       resources[i].role = base_res.role;
       resources[i].mips = 1;
+      resources[i].samples = 1;
       resources[i].usage_levels.fill(usage::undefined);
       continue;
     }
@@ -3083,6 +3099,7 @@ void graphics_ctx::prepare() {
       resources[i].extent = base_res_container.extent;
       resources[i].role = base_res.role;
       resources[i].mips = std::max(cur_handle.subimage.level_count, 1u);
+      resources[i].samples = std::max(base_res.samples, 1u);
       resources[i].usage_levels.fill(usage::undefined);
     } else {
       resources[i].buf = std::bit_cast<VkBuffer>(base_res_container.handle);
@@ -3091,6 +3108,7 @@ void graphics_ctx::prepare() {
       resources[i].extent = base_res_container.extent;
       resources[i].role = base_res.role;
       resources[i].mips = 1;
+      resources[i].samples = 1;
       resources[i].usage_levels.fill(usage::undefined);
     }
   }

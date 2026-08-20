@@ -239,3 +239,34 @@
   size = viewport
   swap = per_frame
 }
+{
+  // МНОГОСЭМПЛОВЫЙ цвет forward-ветви. 'samples' — свойство ресурса, потому что определяет аллокацию: память
+  // вложения растёт линейно по сэмплам, и это главная цена MSAA, а не арифметика.
+  name = forward_color
+  format = sf4
+  role = lighting_result
+  size = viewport
+  samples = 4
+  swap = per_frame
+}
+{
+  // Многосэмпловая ГЛУБИНА. В Vulkan 1.0 это совершенно законно — нельзя только её РЕЗОЛВИТЬ (для этого нужен
+  // depth_stencil_resolve, ядро с 1.2). Forward-рендеру резолв глубины и не нужен: глубина живёт ровно внутри
+  // пасса, для теста. А экранные эффекты, которым нужна глубина ПОСЛЕ пасса, с MSAA не согласуются в принципе —
+  // они читают один сэмпл.
+  name = forward_depth
+  format = d32
+  role = depth
+  size = viewport
+  samples = 4
+  swap = per_frame
+}
+{
+  // Цель resolve: односэмпловая по определению. Альфа несёт долю покрытых сэмплов, поэтому по ней же
+  // подмешивается небо — в forward-ветви нет G-buffer'а, и «пустой пиксель» опознаётся именно так.
+  name = resolved_color
+  format = sf4
+  role = lighting_result
+  size = viewport
+  swap = per_frame
+}

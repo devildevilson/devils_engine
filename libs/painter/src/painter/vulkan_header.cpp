@@ -755,6 +755,8 @@ vk::AccessFlags convertam(const usage::values e) {
   switch (e) {
     case usage::undefined: return vk::AccessFlags(0);
     case usage::color_attachment: return vk::AccessFlagBits::eColorAttachmentWrite;
+    // Resolve пишется фиксированной функцией в конце подпасса, то есть той же записью вложения цвета
+    case usage::resolve_attachment: return vk::AccessFlagBits::eColorAttachmentWrite;
     case usage::depth_attachment: return vk::AccessFlagBits::eDepthStencilAttachmentWrite;
     case usage::input_attachment: return vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentRead;
     case usage::ignore_attachment: return vk::AccessFlags(0);
@@ -792,6 +794,7 @@ vk::PipelineStageFlags convertps(const usage::values e) {
   switch (e) {
     case usage::undefined: return vk::PipelineStageFlagBits::eTopOfPipe;
     case usage::color_attachment: return vk::PipelineStageFlagBits::eColorAttachmentOutput;
+    case usage::resolve_attachment: return vk::PipelineStageFlagBits::eColorAttachmentOutput;
     case usage::depth_attachment: return vk::PipelineStageFlagBits::eEarlyFragmentTests | vk::PipelineStageFlagBits::eLateFragmentTests;
     case usage::input_attachment: return vk::PipelineStageFlagBits::eFragmentShader;
     case usage::ignore_attachment: return vk::PipelineStageFlagBits(0);
@@ -860,6 +863,8 @@ vk::ImageUsageFlags convertiuf(const usage::values e) {
     case usage::color_attachment: return vk::ImageUsageFlagBits::eColorAttachment;
     case usage::depth_attachment: return vk::ImageUsageFlagBits::eDepthStencilAttachment;
     case usage::input_attachment: return vk::ImageUsageFlagBits::eInputAttachment;
+    // Цель resolve — обычное вложение цвета: без этого флага фреймбуфер её не примет
+    case usage::resolve_attachment: return vk::ImageUsageFlagBits::eColorAttachment;
     case usage::ignore_attachment: return vk::ImageUsageFlagBits{0};
     case usage::sampled: return vk::ImageUsageFlagBits::eSampled;
     case usage::texel_read: return vk::ImageUsageFlagBits::eStorage;

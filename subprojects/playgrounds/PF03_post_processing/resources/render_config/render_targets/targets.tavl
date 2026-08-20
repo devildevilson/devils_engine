@@ -3,3 +3,17 @@
   name = gbuffer_target
   resources = [ gbuffer_normal = color_attachment, gbuffer_motion = color_attachment, scene_depth = depth_attachment ]
 }
+{
+  // Порядок ресурсов = порядок location в forward.frag.glsl, дальше глубина, дальше цель resolve.
+  // Ограничение Vulkan, о котором стоит знать: массив resolve-вложений идёт ПАРАЛЛЕЛЬНО массиву цветовых,
+  // поэтому один цвет — одна цель resolve, и порядок в этом списке значим.
+  name = forward_target
+  resources = [ forward_color = color_attachment, forward_depth = depth_attachment, resolved_color = resolve_attachment ]
+}
+{
+  // Та же геометрия и тот же шейдинг, но БЕЗ MSAA: цвет односэмпловый и рисуется напрямую, цели resolve нет.
+  // Это и есть форма «MSAA выключен» — не флаг, а другой render target и другой граф. Ресурсы переиспользованы:
+  // resolved_color здесь обычное вложение цвета, а глубина берётся односэмпловая из post-ветви.
+  name = forward_plain_target
+  resources = [ resolved_color = color_attachment, scene_depth = depth_attachment ]
+}

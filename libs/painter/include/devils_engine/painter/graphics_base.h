@@ -335,6 +335,9 @@ struct resource_inst {
   // Layout отслеживается ПО УРОВНЯМ: цепочке понижений нужно, чтобы уровень k лежал в sampled, пока k+1
   // пишется. Одним состоянием на ресурс это невыразимо. При mips == 1 значим только элемент [0].
   uint32_t mips;
+  // Число сэмплов: из него выводится и attachmentSamples у render pass, и rasterizationSamples у pipeline —
+  // объявлять их отдельно значило бы разрешить им разойтись с ресурсом.
+  uint32_t samples;
   std::array<usage::values, max_mip_levels> usage_levels;
 };
 

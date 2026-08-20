@@ -403,3 +403,17 @@
     { resource = blur_color, usage = texel_write, stage = compute }
   ]
 }
+{
+  // Forward-ветвь: истории объекта не нужно, потому что motion-векторы нужны репроекции и motion blur, а их
+  // в MSAA-ветви нет. Один биндинг вместо двух — развилка видна уже в объявлении.
+  name = forward_objects
+  layout = [
+    { resource = object_transforms, usage = storage_read, stage = vertex }
+  ]
+}
+{
+  name = resolved_read
+  layout = [
+    { resource = resolved_color, usage = sampled, sampler = frame_linear, stage = compute }
+  ]
+}

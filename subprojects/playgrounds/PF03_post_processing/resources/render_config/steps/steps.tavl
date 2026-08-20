@@ -237,3 +237,25 @@
   name = present_composed
   command = "blit composed_color swapchain_image"
 }
+{
+  name = draw_forward
+  material = forward_material
+  geometry = scene_geometry
+  draw_group = scene_draw_group
+  sets = [ frame_data, forward_objects ]
+  command = "draw"
+}
+{
+  name = forward_output
+  material = forward_output_material
+  sets = [ frame_data, resolved_read, compose_write ]
+  command = "dispatch constant screen_dispatch"
+}
+{
+  name = draw_forward_plain
+  material = forward_material
+  geometry = scene_geometry
+  draw_group = scene_draw_group
+  sets = [ frame_data, forward_objects ]
+  command = "draw"
+}

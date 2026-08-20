@@ -248,3 +248,105 @@
   ]
   present_source = swapchain_image
 }
+{
+  // РЕФЕРЕНСНЫЙ FORWARD С MSAA — отдельный граф, а не тумблер, и это главное про MSAA. Здесь нет G-buffer'а,
+  // нет накопления, нет экранных эффектов: почти всё, что делает цепочка pf03_post, простому проекту не нужно,
+  // а часть из этого с MSAA и не согласуется. Три пасса: рисуем со сглаживанием и резолвим, приводим к
+  // отображаемому диапазону, показываем.
+  name = pf03_forward
+  passes = [
+    {
+      // Освещение считается прямо при растеризации. Многосэмпловые цвет и глубина плюс цель resolve одним
+      // пассом: resolve делает фиксированная функция в конце подпасса, то есть даром по сравнению с ручным
+      // проходом.
+      name = pf03_forward_draw
+      render_target = forward_target
+      subpasses = [
+        {
+          forward_color = (undefined, clear),
+          forward_depth = (undefined, clear),
+          resolved_color = (undefined, clear)
+        },
+        {
+          forward_color = (color_attachment, store),
+          forward_depth = (depth_attachment, store),
+          resolved_color = (resolve_attachment, store)
+        },
+        {
+          forward_color = (color_attachment, store),
+          forward_depth = (depth_attachment, store),
+          resolved_color = (sampled, store)
+        }
+      ]
+      steps = [ draw_forward ]
+    },
+    {
+      // Экспозиция, кривая, дизер и небо по покрытию — ровно то, что нужно простому проекту, и ничего больше
+      name = pf03_forward_output
+      subpasses = [
+        {
+          resolved_color = (sampled, store),
+          composed_color = (texel_write, store)
+        }
+      ]
+      steps = [ forward_output ]
+    },
+    {
+      name = pf03_forward_present
+      wait_for = [ swapchain_image ]
+      subpasses = [
+        { composed_color = (transfer_src, store), swapchain_image = (transfer_dst, store) },
+        { composed_color = (transfer_src, store), swapchain_image = (present, store) }
+      ]
+      steps = [ present_composed ]
+    }
+  ]
+  present_source = swapchain_image
+}
+{
+  // Тот же forward БЕЗ MSAA — честная база для сравнения. Отличается от pf03_forward ровно многосэмпловостью:
+  // ни резолва, ни многосэмпловых вложений, дальше та же пара пассов. Именно на этой паре графов и мерится,
+  // что MSAA даёт и чего стоит.
+  name = pf03_forward_plain
+  passes = [
+    {
+      name = pf03_plain_draw
+      render_target = forward_plain_target
+      subpasses = [
+        {
+          resolved_color = (undefined, clear),
+          scene_depth = (undefined, clear)
+        },
+        {
+          resolved_color = (color_attachment, store),
+          scene_depth = (depth_attachment, store)
+        },
+        {
+          resolved_color = (sampled, store),
+          scene_depth = (depth_read, store)
+        }
+      ]
+      steps = [ draw_forward_plain ]
+    },
+    {
+      name = pf03_plain_output
+      subpasses = [
+        {
+          resolved_color = (sampled, store),
+          composed_color = (texel_write, store)
+        }
+      ]
+      steps = [ forward_output ]
+    },
+    {
+      name = pf03_plain_present
+      wait_for = [ swapchain_image ]
+      subpasses = [
+        { composed_color = (transfer_src, store), swapchain_image = (transfer_dst, store) },
+        { composed_color = (transfer_src, store), swapchain_image = (present, store) }
+      ]
+      steps = [ present_composed ]
+    }
+  ]
+  present_source = swapchain_image
+}
