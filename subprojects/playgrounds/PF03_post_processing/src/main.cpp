@@ -46,17 +46,21 @@ constexpr uint32_t histogram_tile = 16;
 constexpr uint32_t lut_tile = 4;
 // Уровней в пирамиде глубины; обязано совпадать с 'mips' у ресурса hiz
 constexpr uint32_t hiz_levels = 6;
+// Уровней в пирамиде боке; обязано совпадать с 'mips' у ресурса dof_pyramid
+constexpr uint32_t dof_levels = 4;
+// Высота сенсора в мм: полный кадр. Нужна, чтобы CoC считался в ПИКСЕЛЯХ, а не в абстрактных единицах.
+constexpr float sensor_height_mm = 24.0f;
 constexpr float near_plane = 0.1f;
 // Детерминированный шаг для орбиты: положение камеры становится чистой функцией номера кадра, поэтому два
 // прогона с одинаковым --frames дают одинаковую картинку и ошибку репроекции можно сравнивать численно.
 constexpr float orbit_step_seconds = 1.0f / 60.0f;
 
 // Отладочные виды; порядок обязан совпадать с PF03_DEBUG_* в resources/shaders/pf03_frame.glsl
-constexpr std::array<std::string_view, 28> debug_names = {
+constexpr std::array<std::string_view, 29> debug_names = {
   "shaded", "depth", "normal", "motion", "reprojected", "error(motion)", "error(no motion)",
   "clipping", "calibration", "exposure", "transmittance", "ao", "ao raw", "taa rejection",
   "bloom", "shafts", "sharpen", "histogram", "histogram plot", "luminance",
-  "grade delta", "lut error", "gamut", "lut strip", "hiz", "hiz check", "ssr steps", "ssr fate"};
+  "grade delta", "lut error", "gamut", "lut strip", "hiz", "hiz check", "ssr steps", "ssr fate", "dof coc"};
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -157,8 +161,10 @@ struct alignas(16) frame_block {
   glm::vec4 lut_params;
   glm::vec4 hiz_params;
   glm::vec4 ssr_params;
+  glm::vec4 dof_params;
+  glm::vec4 dof_lens;
 };
-static_assert(sizeof(frame_block) == 592);
+static_assert(sizeof(frame_block) == 624);
 
 struct vertex {
   float px, py, pz;
@@ -627,6 +633,16 @@ int main(int argc, char** argv) {
   // точности, потому что скользящий вдоль пола луч не выходит из окрестности той самой геометрии, от которой
   // отражается, и пропустить клетку целиком почти никогда нельзя.
   bool ssr_hierarchical = false;
+  // Глубина резкости. Параметры объектива физические: только у них есть единицы, а значит и проверяемые
+  // следствия — обратная пропорциональность диафрагме и предел размытия на бесконечности.
+  float dof_strength = 0.0f;     // по умолчанию ВЫКЛЮЧЕНА: это приём на вкус, а не часть корректного тракта
+  float dof_focus = 5.0f;        // дистанция фокусировки, метры
+  float dof_aperture = 1.8f;     // диафрагменное число
+  float dof_focal = 50.0f;       // фокусное расстояние, мм
+  float dof_max_coc = 32.0f;     // предел CoC в пикселях: это бюджет сбора, а не физика
+  bool dof_occlusion = true;     // уважать силуэты у заднего плана (выключается для измерения протечки)
+  uint32_t dof_taps = 0;         // != 0 — переопределяем specialization-константу шага
+  bool dof_pyramid = true;       // собирать с пирамиды либо с нулевого уровня при том же числе проб
   float taa_weight = 0.92f;       // вес истории: больше — стабильнее и мылее
   uint32_t taa_phases = 8;        // длина последовательности джиттера
   float jitter_scale = 1.0f;      // 0 — джиттер выключен (тогда накапливать нечего)
@@ -730,6 +746,38 @@ int main(int argc, char** argv) {
       if (name == "log" || name == "log2") lut_linear_shaper = false;
       else if (name == "linear") lut_linear_shaper = true;
       else utils::error{}("PF03 unknown lut shaper '{}' (log|linear)", name);
+    }
+    constexpr std::string_view dof_prefix = "--dof=";
+    if (option.starts_with(dof_prefix)) {
+      dof_strength = std::stof(std::string(option.substr(dof_prefix.size())));
+    }
+    constexpr std::string_view focus_prefix = "--focus=";
+    if (option.starts_with(focus_prefix)) {
+      dof_focus = std::stof(std::string(option.substr(focus_prefix.size())));
+    }
+    constexpr std::string_view aperture_prefix = "--aperture=";
+    if (option.starts_with(aperture_prefix)) {
+      dof_aperture = std::stof(std::string(option.substr(aperture_prefix.size())));
+    }
+    constexpr std::string_view focal_prefix = "--focal=";
+    if (option.starts_with(focal_prefix)) {
+      dof_focal = std::stof(std::string(option.substr(focal_prefix.size())));
+    }
+    constexpr std::string_view max_coc_prefix = "--dof-max-coc=";
+    if (option.starts_with(max_coc_prefix)) {
+      dof_max_coc = std::stof(std::string(option.substr(max_coc_prefix.size())));
+    }
+    constexpr std::string_view dof_occl_prefix = "--dof-occlusion=";
+    if (option.starts_with(dof_occl_prefix)) {
+      dof_occlusion = std::stoi(std::string(option.substr(dof_occl_prefix.size()))) != 0;
+    }
+    constexpr std::string_view dof_taps_prefix = "--dof-taps=";
+    if (option.starts_with(dof_taps_prefix)) {
+      dof_taps = uint32_t(std::stoul(std::string(option.substr(dof_taps_prefix.size()))));
+    }
+    constexpr std::string_view dof_pyr_prefix = "--dof-pyramid=";
+    if (option.starts_with(dof_pyr_prefix)) {
+      dof_pyramid = std::stoi(std::string(option.substr(dof_pyr_prefix.size()))) != 0;
     }
     constexpr std::string_view ssr_prefix = "--ssr=";
     if (option.starts_with(ssr_prefix)) {
@@ -1110,6 +1158,32 @@ int main(int argc, char** argv) {
       utils::info("PF03 shader constant override: ao_samples = {}", ao_samples);
     }
 
+    // Число проб боке и использование пирамиды — тоже тиры качества
+    if (dof_taps != 0 || !dof_pyramid) {
+      const auto slot = render_config.find_execution_step("gather_dof");
+      if (slot == painter::invalid_resource_slot) {
+        utils::error{}("PF03 step 'gather_dof' is absent from the configured graph");
+      }
+      auto& constants = render_config.steps[slot].shader_constants;
+      const auto set_constant = [&constants](const std::string_view name, const std::string& value) {
+        const auto found = std::find_if(constants.begin(), constants.end(), [name](const auto& entry) {
+          return entry.first == name;
+        });
+        if (found == constants.end()) {
+          utils::error{}("PF03 step 'gather_dof' has no '{}' shader constant to override", name);
+        }
+        found->second = value;
+      };
+      if (dof_taps != 0) {
+        set_constant("dof_taps", std::to_string(dof_taps));
+        utils::info("PF03 shader constant override: dof_taps = {}", dof_taps);
+      }
+      if (!dof_pyramid) {
+        set_constant("dof_use_pyramid", "0");
+        utils::info("PF03 shader constant override: dof_use_pyramid = 0 (сбор с нулевого уровня)");
+      }
+    }
+
     // Способ марша SSR — тир качества, поэтому это specialization-константа шага, и переопределяется она в
     // распарсенном конфиге до сборки графа (тот же приём, что у числа проб SSAO).
     if (ssr_hierarchical) {
@@ -1305,6 +1379,9 @@ int main(int argc, char** argv) {
       "PF03 LUT: {0}^3 (объёмный ресурс), shaper {1} over {2}..{3} stops",
       lut_grid, lut_linear_shaper ? "linear" : "log2", lut_min_stop, lut_max_stop);
     utils::info(
+      "PF03 DoF: сила {}, фокус {} м, диафрагма f/{}, фокусное {} мм, предел CoC {} px, силуэты {}",
+      dof_strength, dof_focus, dof_aperture, dof_focal, dof_max_coc, dof_occlusion ? "уважаются" : "игнорируются");
+    utils::info(
       "PF03 SSR: сила {}, шероховатость {}, толщина {} м, предел шагов {}, марш {}",
       ssr_intensity, ssr_roughness, ssr_thickness, ssr_steps, ssr_hierarchical ? "иерархический" : "линейный");
     utils::info(
@@ -1491,6 +1568,9 @@ int main(int argc, char** argv) {
       frame_data.grade_filter = glm::vec4(color_filter, filter_strength);
       frame_data.hiz_params = glm::vec4(float(hiz_debug_level), float(hiz_levels), 0.0f, 0.0f);
       frame_data.ssr_params = glm::vec4(ssr_intensity, ssr_roughness, ssr_thickness, ssr_steps);
+      frame_data.dof_params = glm::vec4(
+        dof_strength, dof_occlusion ? 1.0f : 0.0f, dof_max_coc, float(dof_levels));
+      frame_data.dof_lens = glm::vec4(dof_focus, dof_aperture, dof_focal, sensor_height_mm);
       frame_data.lut_params = glm::vec4(
         grade_by_lut ? 1.0f : 0.0f, lut_linear_shaper ? 1.0f : 0.0f, lut_min_stop, lut_max_stop);
       write_current_buffer(base, "frame_buffer", &frame_data, sizeof(frame_data));

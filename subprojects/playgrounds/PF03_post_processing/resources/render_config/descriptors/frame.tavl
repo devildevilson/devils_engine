@@ -32,7 +32,7 @@
   // объявления движок выводит и порядок между кадрами: пасс-читатель ждёт пасс-затенения ПРОШЛОГО кадра.
   name = compose_inputs
   layout = [
-    { resource = taa_color, usage = sampled, sampler = frame_nearest, stage = compute },
+    { resource = dof_color, usage = sampled, sampler = frame_nearest, stage = compute },
     { resource = taa_color, usage = sampled, sampler = frame_linear, stage = compute, history = 1 },
     { resource = exposure_state, usage = texel_read, stage = compute },
     // AO здесь только для отладочного вида: сам шейдинг читает его своим сетом. Держим в этом же наборе,
@@ -59,7 +59,9 @@
     // консервативности обращается к каждому уровню через texelFetch с явным LOD.
     { resource = hiz, usage = sampled, sampler = frame_nearest, stage = compute },
     // Диагностика марша SSR: шаги и судьба луча. Только для отладочных видов — сама картинка её не читает.
-    { resource = ssr_stats, usage = sampled, sampler = frame_nearest, stage = compute }
+    { resource = ssr_stats, usage = sampled, sampler = frame_nearest, stage = compute },
+    // Маска CoC для отладочного вида
+    { resource = dof_coc, usage = sampled, sampler = frame_nearest, stage = compute }
   ]
 }
 {
@@ -134,7 +136,7 @@
   // Сбор гистограммы: атомарные сложения, поэтому 'general' (read-modify-write)
   name = histogram_build
   layout = [
-    { resource = taa_color, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = dof_color, usage = sampled, sampler = frame_linear, stage = compute },
     { resource = luminance_histogram, usage = general, stage = compute }
   ]
 }
@@ -178,7 +180,7 @@
   // проверка ведётся по паре (ресурс, уровень): это разные подресурсы с разными layout.
   name = bloom_down_0
   layout = [
-    { resource = taa_color, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = dof_color, usage = sampled, sampler = frame_linear, stage = compute },
     { resource = bloom, usage = texel_write, stage = compute, mip = 0 },
     { resource = exposure_state, usage = texel_read, stage = compute }
   ]
@@ -316,5 +318,59 @@
   name = reflected_read
   layout = [
     { resource = reflected_color, usage = sampled, sampler = frame_linear, stage = compute }
+  ]
+}
+{
+  name = dof_coc_write
+  layout = [
+    { resource = dof_coc, usage = texel_write, stage = compute }
+  ]
+}
+{
+  // Нулевой уровень пирамиды боке: из накопленного кадра и маски CoC
+  name = dof_down_0
+  layout = [
+    { resource = taa_color, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = dof_coc, usage = sampled, sampler = frame_nearest, stage = compute },
+    { resource = dof_pyramid, usage = texel_write, stage = compute, mip = 0 }
+  ]
+}
+{
+  name = dof_down_1
+  layout = [
+    { resource = dof_pyramid, usage = sampled, sampler = frame_linear, stage = compute, mip = 0 },
+    { resource = dof_coc, usage = sampled, sampler = frame_nearest, stage = compute },
+    { resource = dof_pyramid, usage = texel_write, stage = compute, mip = 1 }
+  ]
+}
+{
+  name = dof_down_2
+  layout = [
+    { resource = dof_pyramid, usage = sampled, sampler = frame_linear, stage = compute, mip = 1 },
+    { resource = dof_coc, usage = sampled, sampler = frame_nearest, stage = compute },
+    { resource = dof_pyramid, usage = texel_write, stage = compute, mip = 2 }
+  ]
+}
+{
+  name = dof_down_3
+  layout = [
+    { resource = dof_pyramid, usage = sampled, sampler = frame_linear, stage = compute, mip = 2 },
+    { resource = dof_coc, usage = sampled, sampler = frame_nearest, stage = compute },
+    { resource = dof_pyramid, usage = texel_write, stage = compute, mip = 3 }
+  ]
+}
+{
+  // Сбор боке: кадр, маска и вся цепочка пирамиды (уровень выбирается по радиусу, поэтому биндинг без 'mip')
+  name = dof_gather_read
+  layout = [
+    { resource = taa_color, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = dof_coc, usage = sampled, sampler = frame_nearest, stage = compute },
+    { resource = dof_pyramid, usage = sampled, sampler = frame_linear, stage = compute }
+  ]
+}
+{
+  name = dof_write
+  layout = [
+    { resource = dof_color, usage = texel_write, stage = compute }
   ]
 }

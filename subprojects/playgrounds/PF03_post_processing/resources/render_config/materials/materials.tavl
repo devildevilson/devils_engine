@@ -100,3 +100,21 @@
   depth = { test = false, write = false, compare = always }
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
+{
+  name = dof_coc_material
+  shaders = { compute = "dof_coc.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = dof_down_material
+  shaders = { compute = "dof_down.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = dof_gather_material
+  shaders = { compute = "dof_gather.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}

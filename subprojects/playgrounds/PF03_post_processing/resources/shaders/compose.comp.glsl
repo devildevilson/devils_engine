@@ -36,6 +36,8 @@ layout(set = 2, binding = 9) uniform sampler3D lut_prev_image;
 layout(set = 2, binding = 10) uniform sampler2D hiz_image;
 // Диагностика марша SSR: .r = шагов / предел, .g = попадание, .b = ушёл за кадр, .a = вес
 layout(set = 2, binding = 11) uniform sampler2D ssr_stats_image;
+// Круг нерезкости для отладочного вида: .r = CoC со знаком, .g = линейная глубина
+layout(set = 2, binding = 12) uniform sampler2D dof_coc_image;
 
 layout(set = 3, binding = 0, rgba16f) uniform writeonly image2D composed_image;
 
@@ -334,6 +336,13 @@ void main() {
       traced && stats.g < 0.5 && stats.b < 0.5 ? 1.0 : 0.0,
       stats.g > 0.5 ? 1.0 : 0.0,
       stats.b > 0.5 ? 1.0 : 0.0);
+  } else if (mode == PF03_DEBUG_DOF_COC) {
+    // Круг нерезкости в пикселях, нормированный бюджетом: красный — задний план, зелёный — передний. Каналы
+    // разведены не для красоты: у заднего плана размытие ОГРАНИЧЕНО пределом, у переднего предела нет, и
+    // проверять эти два утверждения надо порознь.
+    const float coc = texture(dof_coc_image, uv).r;
+    const float limit = max(frame.dof_params.z, 1.0e-3);
+    result = vec3(max(coc, 0.0) / limit, max(-coc, 0.0) / limit, 0.0);
   } else if (mode == PF03_DEBUG_ERROR_NAIVE) {
     // Та же ошибка, но БЕЗ motion-векторов: контрольная величина, относительно которой видно, что
     // векторы действительно что-то исправляют, а не просто «выглядят правдоподобно».

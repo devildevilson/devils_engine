@@ -116,12 +116,28 @@
       steps = [ resolve_taa ]
     },
     {
+      // Глубина резкости. Стоит ПОСЛЕ накопления и ДО замера экспозиции, потому что размывает ОБЪЕКТИВ: сенсор
+      // видит уже размытый свет, значит и замер, и bloom обязаны работать по размытому кадру. Пять шагов одним
+      // пассом: маска CoC, четыре уровня пирамиды боке и сбор.
+      name = pf03_dof
+      subpasses = [
+        {
+          scene_depth = (depth_read, store),
+          taa_color = (sampled, store),
+          dof_coc = (texel_write, store),
+          dof_pyramid = (texel_write, store),
+          dof_color = (texel_write, store)
+        }
+      ]
+      steps = [ compute_dof_coc, dof_down_half, dof_down_1, dof_down_2, dof_down_3, gather_dof ]
+    },
+    {
       // Замер яркости кадра и адаптация экспозиции. Отдельным пассом, потому что сводит весь кадр в один
       // тексель: следующему пассу нужен уже готовый результат.
       name = pf03_exposure
       subpasses = [
         {
-          taa_color = (sampled, store),
+          dof_color = (sampled, store),
           luminance_histogram = (general, store),
           exposure_state = (texel_write, store)
         }
@@ -135,7 +151,7 @@
       name = pf03_bloom_down
       subpasses = [
         {
-          taa_color = (sampled, store),
+          dof_color = (sampled, store),
           exposure_state = (texel_read, store),
           bloom = (texel_write, store)
         }
@@ -186,6 +202,8 @@
           color_lut = (sampled, store),
           hiz = (sampled, store),
           ssr_stats = (sampled, store),
+          dof_coc = (sampled, store),
+          dof_color = (sampled, store),
           scene_depth = (depth_read, store),
           gbuffer_motion = (sampled, store),
           taa_color = (sampled, store),

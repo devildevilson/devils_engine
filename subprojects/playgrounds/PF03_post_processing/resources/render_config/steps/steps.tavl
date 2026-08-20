@@ -142,6 +142,48 @@
   command = "dispatch constant quarter_dispatch"
 }
 {
+  name = compute_dof_coc
+  material = dof_coc_material
+  sets = [ frame_data, gbuffer_inputs, dof_coc_write ]
+  command = "dispatch constant screen_dispatch"
+}
+{
+  name = dof_down_half
+  material = dof_down_material
+  sets = [ frame_data, dof_down_0 ]
+  shader_constants = [ dof_from_frame = "1" ]
+  command = "dispatch constant half_dispatch"
+}
+{
+  name = dof_down_1
+  material = dof_down_material
+  sets = [ frame_data, dof_down_1 ]
+  shader_constants = [ dof_from_frame = "0" ]
+  command = "dispatch constant quarter_dispatch"
+}
+{
+  name = dof_down_2
+  material = dof_down_material
+  sets = [ frame_data, dof_down_2 ]
+  shader_constants = [ dof_from_frame = "0" ]
+  command = "dispatch constant eighth_dispatch"
+}
+{
+  name = dof_down_3
+  material = dof_down_material
+  sets = [ frame_data, dof_down_3 ]
+  shader_constants = [ dof_from_frame = "0" ]
+  command = "dispatch constant sixteenth_dispatch"
+}
+{
+  // Число проб и использование пирамиды — тиры качества, поэтому specialization-константы
+  name = gather_dof
+  material = dof_gather_material
+  sets = [ frame_data, dof_gather_read, dof_write ]
+  shader_constants = [ dof_taps = "24", dof_use_pyramid = "1" ]
+  command = "dispatch constant screen_dispatch"
+}
+{
   name = build_histogram
   material = histogram_material
   sets = [ frame_data, histogram_build ]
