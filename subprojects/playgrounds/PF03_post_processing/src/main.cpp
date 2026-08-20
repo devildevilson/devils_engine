@@ -48,6 +48,8 @@ constexpr uint32_t lut_tile = 4;
 constexpr uint32_t hiz_levels = 6;
 // Уровней в пирамиде боке; обязано совпадать с 'mips' у ресурса dof_pyramid
 constexpr uint32_t dof_levels = 4;
+// Размер плитки максимума motion в пикселях; обязан совпадать со scale у declare_value viewport_tile
+constexpr uint32_t motion_tile_size = 16;
 // Высота сенсора в мм: полный кадр. Нужна, чтобы CoC считался в ПИКСЕЛЯХ, а не в абстрактных единицах.
 constexpr float sensor_height_mm = 24.0f;
 constexpr float near_plane = 0.1f;
@@ -56,11 +58,11 @@ constexpr float near_plane = 0.1f;
 constexpr float orbit_step_seconds = 1.0f / 60.0f;
 
 // Отладочные виды; порядок обязан совпадать с PF03_DEBUG_* в resources/shaders/pf03_frame.glsl
-constexpr std::array<std::string_view, 29> debug_names = {
+constexpr std::array<std::string_view, 30> debug_names = {
   "shaded", "depth", "normal", "motion", "reprojected", "error(motion)", "error(no motion)",
   "clipping", "calibration", "exposure", "transmittance", "ao", "ao raw", "taa rejection",
   "bloom", "shafts", "sharpen", "histogram", "histogram plot", "luminance",
-  "grade delta", "lut error", "gamut", "lut strip", "hiz", "hiz check", "ssr steps", "ssr fate", "dof coc"};
+  "grade delta", "lut error", "gamut", "lut strip", "hiz", "hiz check", "ssr steps", "ssr fate", "dof coc", "blur tiles"};
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -163,8 +165,9 @@ struct alignas(16) frame_block {
   glm::vec4 ssr_params;
   glm::vec4 dof_params;
   glm::vec4 dof_lens;
+  glm::vec4 blur_params;
 };
-static_assert(sizeof(frame_block) == 624);
+static_assert(sizeof(frame_block) == 640);
 
 struct vertex {
   float px, py, pz;
@@ -314,6 +317,12 @@ void update_screen_dispatch(painter::graphics_base& base, const uint32_t width, 
   update_dispatch_constant(base, "eighth_dispatch", (width + 7u) / 8u, (height + 7u) / 8u, dispatch_tile);
   update_dispatch_constant(base, "sixteenth_dispatch", (width + 15u) / 16u, (height + 15u) / 16u, dispatch_tile);
   update_dispatch_constant(base, "thirtysecond_dispatch", (width + 31u) / 32u, (height + 31u) / 32u, dispatch_tile);
+  // Плитки максимума motion: сетка 1/16 кадра, и по потоку на плитку (группа 8x8)
+  update_dispatch_constant(
+    base, "tile_dispatch",
+    (width + motion_tile_size - 1u) / motion_tile_size,
+    (height + motion_tile_size - 1u) / motion_tile_size,
+    dispatch_tile);
   // Гистограмма считается по сетке вдвое реже кадра, группами 16x16 (по потоку на корзину)
   const uint32_t metering_divisor = std::max(metering_scale, 1u);
   update_dispatch_constant(
@@ -643,6 +652,11 @@ int main(int argc, char** argv) {
   bool dof_occlusion = true;     // уважать силуэты у заднего плана (выключается для измерения протечки)
   uint32_t dof_taps = 0;         // != 0 — переопределяем specialization-константу шага
   bool dof_pyramid = true;       // собирать с пирамиды либо с нулевого уровня при том же числе проб
+  // Motion blur. Шторка задаётся ДОЛЕЙ кадра: 0.5 это 180 градусов при любой частоте, то есть привычная
+  // киношная величина. По умолчанию выключен — автору эффект не нравится, и это приём на вкус.
+  float blur_shutter = 0.0f;
+  uint32_t blur_taps = 0;        // != 0 — переопределяем specialization-константу шага
+  bool blur_tiles = true;        // расширение максимума motion по плиткам (выключается для измерения)
   float taa_weight = 0.92f;       // вес истории: больше — стабильнее и мылее
   uint32_t taa_phases = 8;        // длина последовательности джиттера
   float jitter_scale = 1.0f;      // 0 — джиттер выключен (тогда накапливать нечего)
@@ -746,6 +760,18 @@ int main(int argc, char** argv) {
       if (name == "log" || name == "log2") lut_linear_shaper = false;
       else if (name == "linear") lut_linear_shaper = true;
       else utils::error{}("PF03 unknown lut shaper '{}' (log|linear)", name);
+    }
+    constexpr std::string_view shutter_prefix = "--shutter=";
+    if (option.starts_with(shutter_prefix)) {
+      blur_shutter = std::stof(std::string(option.substr(shutter_prefix.size())));
+    }
+    constexpr std::string_view blur_taps_prefix = "--blur-taps=";
+    if (option.starts_with(blur_taps_prefix)) {
+      blur_taps = uint32_t(std::stoul(std::string(option.substr(blur_taps_prefix.size()))));
+    }
+    constexpr std::string_view blur_tiles_prefix = "--blur-tiles=";
+    if (option.starts_with(blur_tiles_prefix)) {
+      blur_tiles = std::stoi(std::string(option.substr(blur_tiles_prefix.size()))) != 0;
     }
     constexpr std::string_view dof_prefix = "--dof=";
     if (option.starts_with(dof_prefix)) {
@@ -1158,6 +1184,32 @@ int main(int argc, char** argv) {
       utils::info("PF03 shader constant override: ao_samples = {}", ao_samples);
     }
 
+    // Число проб motion blur и расширение по плиткам — тоже тиры качества
+    if (blur_taps != 0 || !blur_tiles) {
+      const auto slot = render_config.find_execution_step("apply_motion_blur");
+      if (slot == painter::invalid_resource_slot) {
+        utils::error{}("PF03 step 'apply_motion_blur' is absent from the configured graph");
+      }
+      auto& constants = render_config.steps[slot].shader_constants;
+      const auto set_constant = [&constants](const std::string_view name, const std::string& value) {
+        const auto found = std::find_if(constants.begin(), constants.end(), [name](const auto& entry) {
+          return entry.first == name;
+        });
+        if (found == constants.end()) {
+          utils::error{}("PF03 step 'apply_motion_blur' has no '{}' shader constant to override", name);
+        }
+        found->second = value;
+      };
+      if (blur_taps != 0) {
+        set_constant("blur_taps", std::to_string(blur_taps));
+        utils::info("PF03 shader constant override: blur_taps = {}", blur_taps);
+      }
+      if (!blur_tiles) {
+        set_constant("blur_use_tiles", "0");
+        utils::info("PF03 shader constant override: blur_use_tiles = 0 (без расширения по плиткам)");
+      }
+    }
+
     // Число проб боке и использование пирамиды — тоже тиры качества
     if (dof_taps != 0 || !dof_pyramid) {
       const auto slot = render_config.find_execution_step("gather_dof");
@@ -1379,6 +1431,9 @@ int main(int argc, char** argv) {
       "PF03 LUT: {0}^3 (объёмный ресурс), shaper {1} over {2}..{3} stops",
       lut_grid, lut_linear_shaper ? "linear" : "log2", lut_min_stop, lut_max_stop);
     utils::info(
+      "PF03 motion blur: шторка {} кадра, плитки {} px, расширение {}",
+      blur_shutter, motion_tile_size, blur_tiles ? "включено" : "выключено");
+    utils::info(
       "PF03 DoF: сила {}, фокус {} м, диафрагма f/{}, фокусное {} мм, предел CoC {} px, силуэты {}",
       dof_strength, dof_focus, dof_aperture, dof_focal, dof_max_coc, dof_occlusion ? "уважаются" : "игнорируются");
     utils::info(
@@ -1571,6 +1626,7 @@ int main(int argc, char** argv) {
       frame_data.dof_params = glm::vec4(
         dof_strength, dof_occlusion ? 1.0f : 0.0f, dof_max_coc, float(dof_levels));
       frame_data.dof_lens = glm::vec4(dof_focus, dof_aperture, dof_focal, sensor_height_mm);
+      frame_data.blur_params = glm::vec4(blur_shutter, 0.0f, 0.0f, float(motion_tile_size));
       frame_data.lut_params = glm::vec4(
         grade_by_lut ? 1.0f : 0.0f, lut_linear_shaper ? 1.0f : 0.0f, lut_min_stop, lut_max_stop);
       write_current_buffer(base, "frame_buffer", &frame_data, sizeof(frame_data));

@@ -45,3 +45,9 @@
   layout = dispatch3
   value = [5.0, 3.0, 1.0]
 }
+{
+  // 1/16 кадра: сетка плиток максимума motion
+  name = tile_dispatch
+  layout = dispatch3
+  value = [10.0, 6.0, 1.0]
+}

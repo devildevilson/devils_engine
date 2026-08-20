@@ -33,7 +33,8 @@
   vec4 hiz_params;                  \
   vec4 ssr_params;                  \
   vec4 dof_params;                  \
-  vec4 dof_lens;
+  vec4 dof_lens;                    \
+  vec4 blur_params;
 
 // viewport_near:    xy = размер кадра в пикселях, z = near, w = номер кадра с последнего сброса истории
 // controls:         x = debug-режим, y = усиление motion при показе, z = усиление ошибки, w = кодировать sRGB
@@ -73,6 +74,8 @@
 //                   z = предел CoC в пикселях (бюджет сбора), w = число уровней пирамиды боке
 // dof_lens:         x = дистанция фокусировки в метрах, y = диафрагменное число, z = фокусное расстояние в мм,
 //                   w = высота сенсора в мм
+// blur_params:      x = доля открытой шторки (0 — motion blur выключен), y/z = резерв,
+//                   w = размер плитки максимума motion в пикселях
 
 #define PF03_DEBUG_SHADED         0
 #define PF03_DEBUG_DEPTH          1
@@ -103,6 +106,7 @@
 #define PF03_DEBUG_SSR_STEPS      26
 #define PF03_DEBUG_SSR_FATE       27
 #define PF03_DEBUG_DOF_COC        28
+#define PF03_DEBUG_BLUR_TILES     29
 
 // Число корзин обязано совпадать с declare_value 'histogram_bins'. Корзина 0 зарезервирована под «темнее
 // нижней границы»: такие пиксели исключаются из статистики, иначе чёрный фон утягивает экспозицию вверх.

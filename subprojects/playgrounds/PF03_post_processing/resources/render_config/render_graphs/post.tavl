@@ -132,12 +132,29 @@
       steps = [ compute_dof_coc, dof_down_half, dof_down_1, dof_down_2, dof_down_3, gather_dof ]
     },
     {
+      // Motion blur: интеграл яркости за время открытой шторки. Стоит ПОСЛЕ глубины резкости (сначала объектив,
+      // потом шторка) и ДО замера экспозиции. Три шага одним пассом: максимум motion по плиткам, расширение
+      // максимума на соседние плитки и сам сбор вдоль вектора.
+      name = pf03_motion_blur
+      subpasses = [
+        {
+          gbuffer_motion = (sampled, store),
+          scene_depth = (depth_read, store),
+          dof_color = (sampled, store),
+          motion_tile_max = (texel_write, store),
+          motion_tile_dilated = (texel_write, store),
+          blur_color = (texel_write, store)
+        }
+      ]
+      steps = [ build_motion_tiles, dilate_motion_tiles, apply_motion_blur ]
+    },
+    {
       // Замер яркости кадра и адаптация экспозиции. Отдельным пассом, потому что сводит весь кадр в один
       // тексель: следующему пассу нужен уже готовый результат.
       name = pf03_exposure
       subpasses = [
         {
-          dof_color = (sampled, store),
+          blur_color = (sampled, store),
           luminance_histogram = (general, store),
           exposure_state = (texel_write, store)
         }
@@ -151,7 +168,7 @@
       name = pf03_bloom_down
       subpasses = [
         {
-          dof_color = (sampled, store),
+          blur_color = (sampled, store),
           exposure_state = (texel_read, store),
           bloom = (texel_write, store)
         }
@@ -203,7 +220,8 @@
           hiz = (sampled, store),
           ssr_stats = (sampled, store),
           dof_coc = (sampled, store),
-          dof_color = (sampled, store),
+          blur_color = (sampled, store),
+          motion_tile_dilated = (sampled, store),
           scene_depth = (depth_read, store),
           gbuffer_motion = (sampled, store),
           taa_color = (sampled, store),

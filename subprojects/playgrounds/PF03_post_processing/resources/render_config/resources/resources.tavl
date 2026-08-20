@@ -129,7 +129,7 @@
 }
 {
   name = frame_buffer
-  format = mat4mat4mat4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4
+  format = mat4mat4mat4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4
   role = upload
   size = one
   swap = per_frame
@@ -209,6 +209,31 @@
   // Кадр после глубины резкости. Дальше по цепочке его читают замер экспозиции, пирамида bloom и компоновка:
   // размытие делает ОБЪЕКТИВ, то есть сенсор видит уже размытый свет.
   name = dof_color
+  format = sf4
+  role = hdr_color
+  size = viewport
+  swap = per_frame
+}
+{
+  // Максимальный по модулю motion-вектор плитки и он же после расширения на соседей. Два ресурса, а не запись
+  // на месте: расширение читает всю окрестность, поэтому источник и цель обязаны быть разными.
+  name = motion_tile_max
+  format = sf2
+  role = gbuffer_velocity
+  size = viewport_tile
+  swap = per_frame
+}
+{
+  name = motion_tile_dilated
+  format = sf2
+  role = gbuffer_velocity
+  size = viewport_tile
+  swap = per_frame
+}
+{
+  // Кадр после motion blur. Дальше по цепочке его читают замер экспозиции, пирамида bloom и компоновка:
+  // шторка — часть съёмки, значит сенсор видит уже смазанный свет.
+  name = blur_color
   format = sf4
   role = hdr_color
   size = viewport

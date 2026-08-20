@@ -1159,7 +1159,10 @@ void render_graph_instance::clear() {
 }
 
 void render_graph_instance::submit(const graphics_base* ctx, const graphics_queue& q, VkSemaphore finish, VkFence f) const {
-  constexpr uint32_t max_groups = 16;
+  // Предел был шестнадцать, и это упиралось в реальность: цепочка PF03 доросла до семнадцати пассов (добавление
+  // motion blur), и обход «слить два эффекта в один пасс» стоил бы раздельного измерения их цены. Число здесь
+  // задаёт только размер стековых массивов ниже, поэтому поднять его дешевле, чем ужимать граф.
+  constexpr uint32_t max_groups = 24;
   constexpr uint32_t max_signals = 8;
   // Хранилище сигналов у КАЖДОЙ группы своё: pSignalSemaphores живёт до конца vkQueueSubmit, поэтому один
   // общий буфер на все submit-инфо означал бы, что все группы сигналят содержимое последней.

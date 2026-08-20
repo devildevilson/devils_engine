@@ -184,6 +184,26 @@
   command = "dispatch constant screen_dispatch"
 }
 {
+  name = build_motion_tiles
+  material = motion_tile_material
+  sets = [ frame_data, motion_tile_write ]
+  command = "dispatch constant tile_dispatch"
+}
+{
+  name = dilate_motion_tiles
+  material = motion_dilate_material
+  sets = [ frame_data, motion_dilate_write ]
+  command = "dispatch constant tile_dispatch"
+}
+{
+  // Число проб и расширение по плиткам — тиры качества, поэтому specialization-константы
+  name = apply_motion_blur
+  material = motion_blur_material
+  sets = [ frame_data, gbuffer_inputs, motion_blur_read, motion_blur_write ]
+  shader_constants = [ blur_taps = "12", blur_use_tiles = "1" ]
+  command = "dispatch constant screen_dispatch"
+}
+{
   name = build_histogram
   material = histogram_material
   sets = [ frame_data, histogram_build ]

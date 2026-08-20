@@ -38,6 +38,8 @@ layout(set = 2, binding = 10) uniform sampler2D hiz_image;
 layout(set = 2, binding = 11) uniform sampler2D ssr_stats_image;
 // Круг нерезкости для отладочного вида: .r = CoC со знаком, .g = линейная глубина
 layout(set = 2, binding = 12) uniform sampler2D dof_coc_image;
+// Расширенный максимум motion по плиткам: отладочный вид показывает, откуда берётся длина шлейфа
+layout(set = 2, binding = 13) uniform sampler2D blur_tile_image;
 
 layout(set = 3, binding = 0, rgba16f) uniform writeonly image2D composed_image;
 
@@ -343,6 +345,11 @@ void main() {
     const float coc = texture(dof_coc_image, uv).r;
     const float limit = max(frame.dof_params.z, 1.0e-3);
     result = vec3(max(coc, 0.0) / limit, max(-coc, 0.0) / limit, 0.0);
+  } else if (mode == PF03_DEBUG_BLUR_TILES) {
+    // Длина шлейфа, которую видит сбор: расширенный максимум motion по плиткам, в пикселях и с учётом шторки.
+    // Вид нужен затем, что «шлейф не там, где ожидался» неотличимо от «максимум взят не по той окрестности».
+    const vec2 tile_motion = texture(blur_tile_image, uv).rg * vec2(size) * frame.blur_params.x;
+    result = vec3(clamp(length(tile_motion) / 32.0, 0.0, 1.0));
   } else if (mode == PF03_DEBUG_ERROR_NAIVE) {
     // Та же ошибка, но БЕЗ motion-векторов: контрольная величина, относительно которой видно, что
     // векторы действительно что-то исправляют, а не просто «выглядят правдоподобно».
