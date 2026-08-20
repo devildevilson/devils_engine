@@ -1,5 +1,6 @@
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -180,9 +181,15 @@ TEST_CASE("a conditional counter may advance no faster than the cache has copies
   // Условный пасс пишет копию, выбранную значением счётчика. Живых поколений не может быть больше, чем копий:
   // иначе кадр в полёте читает копию, которую уже перезаписали. Отсюда минимальный разрыв между сдвигами —
   // он ВЫВОДИТСЯ из числа копий, а не объявляется автором отдельным полем.
-  const auto min_gap = [](const uint32_t frames_in_flight, const uint32_t copies) {
+  // Разрыв считается от ПЕРИОДА, а не от полного числа копий: копии истории заняты прошлыми поколениями и
+  // свободными для записи не являются, поэтому история не имеет права ослаблять ограничение. А если кэш ещё и
+  // читается как история, разрыв поднимается до frames_in_flight — тогда прошлое поколение записано за
+  // горизонтом фенса кадра, его запись гарантированно завершена, и кросс-кадровый семафор не нужен (вывести
+  // его и невозможно: писало поколение не обязательно предыдущим кадром).
+  const auto min_gap = [](const uint32_t frames_in_flight, const uint32_t period, const uint32_t history = 0) {
     const uint32_t window = frames_in_flight > 1 ? frames_in_flight - 1 : 1;
-    return (window + copies - 2) / (copies - 1);
+    const uint32_t gap = (window + period - 2) / (period - 1);
+    return history > 0 ? std::max(gap, frames_in_flight) : gap;
   };
 
   // Копий столько же, сколько кадров в полёте — двигать можно каждый кадр, то есть ограничения нет
@@ -195,6 +202,13 @@ TEST_CASE("a conditional counter may advance no faster than the cache has copies
   CHECK(min_gap(3, 2) == 2);
   CHECK(min_gap(4, 2) == 3);
   CHECK(min_gap(4, 3) == 2);
+
+  // История поколений стоит разрыва во весь конвейер: иначе прошлое поколение может быть ещё в полёте
+  CHECK(min_gap(3, 3, 1) == 3);
+  CHECK(min_gap(3, 2, 1) == 3);
+  CHECK(min_gap(4, 2, 1) == 4);
+  // и она не имеет права ослаблять ограничение: считать разрыв от периода+истории было бы ошибкой
+  CHECK(min_gap(3, 2, 1) > min_gap(3, 3));
 
   // Модель прямой проверкой: при разрыве gap среди кадров в полёте живо не больше copies поколений
   for (uint32_t frames = 2; frames <= 4; ++frames) {

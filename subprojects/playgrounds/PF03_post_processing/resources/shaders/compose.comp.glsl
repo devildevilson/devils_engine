@@ -29,6 +29,9 @@ layout(set = 2, binding = 7, std430) readonly buffer HistogramBuffer {
 } histogram;
 // Таблица грейда, запечённая отдельным пассом этого же кадра: куб N x N x N.
 layout(set = 2, binding = 8) uniform sampler3D lut_image;
+// Прошлое ПОКОЛЕНИЕ таблицы ('history = 1' на условном счётчике). Нужно только на время перехода после смены
+// настроек: при веса 1 второй выборки не происходит вовсе.
+layout(set = 2, binding = 9) uniform sampler3D lut_prev_image;
 
 layout(set = 3, binding = 0, rgba16f) uniform writeonly image2D composed_image;
 
@@ -37,7 +40,16 @@ layout(set = 3, binding = 0, rgba16f) uniform writeonly image2D composed_image;
 vec3 pf03_graded_by_lut(const vec3 color, const int shaper, const float min_stop, const float max_stop) {
   const float grid = float(textureSize(lut_image, 0).x);
   const vec3 encoded = pf03_shaper_encode(color, min_stop, max_stop, shaper);
-  return pf03_shaper_decode(pf03_sample_lut(lut_image, encoded, grid), min_stop, max_stop, shaper);
+
+  // Переход между поколениями таблицы: смешиваются КОДИРОВАННЫЕ значения, а не декодированные. В кодированном
+  // пространстве смешивание линейно по стопам, то есть переход идёт с постоянной скоростью в тех же единицах,
+  // в которых работает грейд; в линейном свете та же интерполяция шла бы рывком в тенях.
+  const float blend = frame.output_params.w;
+  vec3 table = pf03_sample_lut(lut_image, encoded, grid);
+  if (blend < 1.0) {
+    table = mix(pf03_sample_lut(lut_prev_image, encoded, grid), table, blend);
+  }
+  return pf03_shaper_decode(table, min_stop, max_stop, shaper);
 }
 
 vec3 motion_to_color(const vec2 motion, const vec2 size) {

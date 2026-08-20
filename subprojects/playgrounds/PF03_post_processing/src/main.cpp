@@ -609,6 +609,10 @@ int main(int argc, char** argv) {
   // настройки в площадке заданы командной строкой, поэтому таблица честно запекается ОДИН раз. Ручка нужна,
   // чтобы измерить цену перезапекания и чтобы можно было наступить на ограничение частоты сдвигов.
   uint32_t relut_period = 0;
+  // За сколько кадров новое поколение таблицы вытесняет прошлое. 0 — мгновенно (тогда история таблицы не
+  // читается вовсе). Смысл ручки не косметический: смена настроек грейда меняет цвет кадра скачком, а история
+  // ПОКОЛЕНИЙ на условном счётчике — единственный способ этот скачок размазать.
+  uint32_t lut_fade_frames = 0;
   float taa_weight = 0.92f;       // вес истории: больше — стабильнее и мылее
   uint32_t taa_phases = 8;        // длина последовательности джиттера
   float jitter_scale = 1.0f;      // 0 — джиттер выключен (тогда накапливать нечего)
@@ -712,6 +716,10 @@ int main(int argc, char** argv) {
       if (name == "log" || name == "log2") lut_linear_shaper = false;
       else if (name == "linear") lut_linear_shaper = true;
       else utils::error{}("PF03 unknown lut shaper '{}' (log|linear)", name);
+    }
+    constexpr std::string_view lut_fade_prefix = "--lut-fade=";
+    if (option.starts_with(lut_fade_prefix)) {
+      lut_fade_frames = uint32_t(std::stoul(std::string(option.substr(lut_fade_prefix.size()))));
     }
     constexpr std::string_view relut_prefix = "--relut=";
     if (option.starts_with(relut_prefix)) {
@@ -1235,6 +1243,9 @@ int main(int argc, char** argv) {
       "PF03 LUT: {0}^3 (объёмный ресурс), shaper {1} over {2}..{3} stops",
       lut_grid, lut_linear_shaper ? "linear" : "log2", lut_min_stop, lut_max_stop);
     utils::info(
+      "PF03 LUT fade: {} (переход между поколениями таблицы)",
+      lut_fade_frames == 0 ? std::string("мгновенно") : (std::to_string(lut_fade_frames) + " кадров"));
+    utils::info(
       "PF03 LUT bake: {} (пасс на условном счётчике grade_cache)",
       relut_period == 0 ? std::string("однократно") : ("каждые " + std::to_string(relut_period) + " кадров"));
     utils::info("PF03 controls: WASD/QE move, mouse look, R reset history, Esc exit");
@@ -1246,6 +1257,10 @@ int main(int argc, char** argv) {
     playground::frame_pacer frame_pacer(uncapped ? 0u : 60u);
     uint32_t frames_since_reset = 0;
     uint32_t frames_total = 0;
+    // Кадров с последнего сдвига счётчика кэша и номер поколения: поколение нужно как ТЕСТОВЫЙ СИГНАЛ — без
+    // разницы между таблицами переход нечем измерить, поэтому на каждом сдвиге температура прыгает.
+    uint32_t frames_since_relut = 0;
+    uint32_t lut_generation = 0;
     glm::mat4 previous_view_projection(1.0f);
     glm::vec2 previous_jitter_uv(0.0f);
 
@@ -1269,12 +1284,16 @@ int main(int argc, char** argv) {
         reset_requested = false;
         // R сбрасывает историю И объявляет таблицу устаревшей: так видно, что пасс запекания возвращается
         base.inc_counter(grade_cache_counter);
+        frames_since_relut = 0;
+        lut_generation += 1;
       }
 
       // Периодический сдвиг счётчика: имитация «автор подвигал ручки грейда». Нужен для измерения цены
       // перезапекания и для проверки, что движок ловит слишком частые сдвиги громко.
       if (relut_period != 0 && frames_total % relut_period == 0) {
         base.inc_counter(grade_cache_counter);
+        frames_since_relut = 0;
+        lut_generation += 1;
       }
 
       if (orbit_speed > 0.0f) {
@@ -1386,9 +1405,19 @@ int main(int argc, char** argv) {
       frame_data.lens_params = glm::vec4(sharpen, vignette, aberration, grain);
       // Семя зерна и дизера меняется по кадрам: статичный шум читается как грязь на экране, а не как зерно.
       // Оно же остаётся детерминированным (функция номера кадра), поэтому дампы сравнимы.
-      frame_data.output_params = glm::vec4(dither ? 1.0f : 0.0f, float(frames_total % 64u), lamp_intensity, 0.0f);
+      // Вес перехода между поколениями таблицы: 1 — только текущее (второй выборки в шейдере не будет).
+      const float lut_blend = lut_fade_frames == 0
+        ? 1.0f
+        : std::min(1.0f, float(frames_since_relut) / float(lut_fade_frames));
+      frame_data.output_params = glm::vec4(
+        dither ? 1.0f : 0.0f, float(frames_total % 64u), lamp_intensity, lut_blend);
       frame_data.metering = glm::vec4(metering_low, metering_high, center_weight, adapt_down);
-      frame_data.grade_balance = glm::vec4(temperature, tint, wb_naive ? 1.0f : 0.0f, contrast);
+      // Тестовый сигнал: при периодическом перезапекании поколения обязаны ОТЛИЧАТЬСЯ, иначе переход между
+      // ними нечем измерить. Поэтому температура прыгает на каждом сдвиге счётчика.
+      const float generation_temperature = relut_period != 0 && (lut_generation % 2u) == 1u
+        ? temperature * 1.5f
+        : temperature;
+      frame_data.grade_balance = glm::vec4(generation_temperature, tint, wb_naive ? 1.0f : 0.0f, contrast);
       frame_data.grade_tone = glm::vec4(
         saturation, contrast_pivot, grade_enabled ? 1.0f : 0.0f, grade_display_space ? 1.0f : 0.0f);
       frame_data.grade_slope = glm::vec4(grade_slope, 0.0f);
@@ -1417,6 +1446,7 @@ int main(int argc, char** argv) {
 
       previous_view_projection = view_projection;
       previous_jitter_uv = jitter_uv;
+      frames_since_relut += 1;
       frames_since_reset += 1;
       frames_total += 1;
       if (frame_limit != 0 && frames_total >= frame_limit) {

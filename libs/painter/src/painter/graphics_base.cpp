@@ -2626,6 +2626,24 @@ static void derive_history_ordering(const graphics_base* base, render_graph_inst
       continue; // историю просил другой граф
     }
 
+    // Ресурс на условном счётчике упорядочен не семафором, а ГОРИЗОНТОМ ФЕНСА: у такого счётчика разрыв между
+    // сдвигами не меньше frames_in_flight (см. validate_conditional_passes), поэтому прошлое поколение записано
+    // кадром, чей фенс текущий кадр уже дождался. Семафор здесь не только лишний, но и неверный: он указывал бы
+    // на пасс ПРЕДЫДУЩЕГО кадра, а писало поколение совсем другое, более раннее.
+    bool conditional = false;
+    for (const auto pass_index : graph.passes) {
+      if (DS_ASSERT_ARRAY_GET(base->passes, pass_index).counter == res.swap) {
+        conditional = true;
+        break;
+      }
+    }
+    if (conditional) {
+      DE_LOG(catalogue::log_domain::render, flow,
+             "graph '{}': history of cached resource '{}' is ordered by the fence horizon, not by a semaphore",
+             graph.name, res.name);
+      continue;
+    }
+
     if (writers.empty()) {
       // Историю может производить не только пасс, но и ХОСТ: он пишет копию текущего кадра, пока GPU читает
       // предыдущую, и это разные копии по самой арифметике период+история. Кросс-кадровый порядок тут не
@@ -2716,18 +2734,28 @@ void graphics_base::validate_conditional_passes(const uint32_t graph_index) {
           DS_ASSERT_ARRAY_GET(counters, res.swap).name);
       }
 
-      const uint32_t copies = res.compute_buffering(this);
-      if (copies < 2) {
+      // Разрыв считается от ПЕРИОДА, а не от полного числа копий: копии истории заняты прошлыми поколениями и
+      // свободными для записи не являются, поэтому история не имеет права ослаблять ограничение.
+      const uint32_t period = type::compute_buffering(this, res.type);
+      if (period < 2) {
         utils::error{}(
-          "Cache resource '{}' has {} copy: в момент перезаписи кадры в полёте ещё читают старое содержимое, "
+          "Cache resource '{}' has period {}: в момент перезаписи кадры в полёте ещё читают старое содержимое, "
           "поэтому минимум — две копии",
-          res.name, copies);
+          res.name, period);
       }
 
-      // Живых поколений не больше, чем копий: в окне из frames_in_flight-1 предыдущих кадров может быть не
-      // больше copies-1 сдвигов. Отсюда минимальный разрыв между сдвигами, и он ВЫВОДИТСЯ, а не объявляется.
+      // Живых поколений не больше, чем копий периода: в окне из frames_in_flight-1 предыдущих кадров может
+      // быть не больше period-1 сдвигов. Отсюда минимальный разрыв между сдвигами, и он ВЫВОДИТСЯ.
       const uint32_t window = frames > 1 ? frames - 1 : 1;
-      const uint32_t gap = (window + copies - 2) / (copies - 1);
+      uint32_t gap = (window + period - 2) / (period - 1);
+
+      // А если кэш ещё и читается как история, разрыв поднимается до frames_in_flight. Это и есть цена за
+      // историю ПОКОЛЕНИЙ: прошлое поколение тогда записано за горизонтом фенса кадра, его запись
+      // гарантированно завершена, и выводить кросс-кадровый семафор не нужно (его и невозможно вывести —
+      // писало поколение не обязательно предыдущим кадром).
+      if (res.history_depth > 0) {
+        gap = std::max(gap, frames);
+      }
       auto& stored = DS_ASSERT_ARRAY_GET(counter_min_advance_gap, pass.counter);
       stored = std::max(stored, gap);
       written += 1;
@@ -2741,13 +2769,6 @@ void graphics_base::validate_conditional_passes(const uint32_t graph_index) {
     }
   }
 
-  // История у ресурса на условном счётчике сюда НЕ доезжает, и это стоит знать: правило из среза 2
-  // (resolve_resource_periods) запрещает 'history' на любом счётчике кроме per_frame громко, потому что
-  // history там означает КАДРЫ. Для кэша осмысленной была бы история ПОКОЛЕНИЙ (кросс-фейд между старой и
-  // новой таблицей при смене настроек), и арифметика копий её выдержала бы — но выведенный кросс-кадровый
-  // порядок нет: писателя, которого надо ждать, в этом кадре могло не быть. Поэтому если правило среза 2
-  // когда-нибудь ослабят, здесь должен появиться варнинг с предложением упорядочить вручную через
-  // wait_previous, а не молчаливое разрешение.
 }
 
 render_graph_instance graphics_base::create_render_graph_instance(const uint32_t index) {
