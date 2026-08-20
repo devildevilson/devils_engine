@@ -27,15 +27,15 @@ layout(set = 2, binding = 6) uniform sampler2D shafts_image;
 layout(set = 2, binding = 7, std430) readonly buffer HistogramBuffer {
   uint bins[];
 } histogram;
-// Таблица грейда, запечённая отдельным пассом этого же кадра. Полоса N*N x N — см. pf03_sample_lut.
-layout(set = 2, binding = 8) uniform sampler2D lut_image;
+// Таблица грейда, запечённая отдельным пассом этого же кадра: куб N x N x N.
+layout(set = 2, binding = 8) uniform sampler3D lut_image;
 
 layout(set = 3, binding = 0, rgba16f) uniform writeonly image2D composed_image;
 
 // Табличный путь грейда: кодируем вход shaper'ом, читаем таблицу, декодируем обратно. Те же три операции,
 // что в запекании, только в обратном порядке — поэтому при нейтральном грейде это тождество.
 vec3 pf03_graded_by_lut(const vec3 color, const int shaper, const float min_stop, const float max_stop) {
-  const float grid = float(textureSize(lut_image, 0).y);
+  const float grid = float(textureSize(lut_image, 0).x);
   const vec3 encoded = pf03_shaper_encode(color, min_stop, max_stop, shaper);
   return pf03_shaper_decode(pf03_sample_lut(lut_image, encoded, grid), min_stop, max_stop, shaper);
 }
@@ -125,7 +125,7 @@ void main() {
   const int shaper = int(frame.lut_params.y + 0.5);
   const float min_stop = frame.lut_params.z;
   const float max_stop = frame.lut_params.w;
-  const float lut_grid = float(textureSize(lut_image, 0).y);
+  const float lut_grid = float(textureSize(lut_image, 0).x);
   const pf03_grade_params grade = pf03_make_grade_params(
     frame.grade_balance, frame.grade_tone, frame.grade_slope, frame.grade_offset, frame.grade_power,
     frame.grade_filter);
@@ -269,9 +269,12 @@ void main() {
                          max(max(reference.r, reference.g), reference.b) <= 1.0;
     result = vec3(negative ? 1.0 : 0.0, 0.0, created ? 1.0 : 0.0);
   } else if (mode == PF03_DEBUG_LUT_STRIP) {
-    // Содержимое таблицы как есть: полоса растянута на кадр. Вид нужен ровно затем, зачем в срезе 8 понадобился
-    // график гистограммы — увидеть, что запеклось, а не судить по итоговой картинке.
-    const vec3 stored = texture(lut_image, uv).rgb;
+    // Содержимое таблицы как есть. У куба показываем СРЕЗЫ, разложенные по кадру: по горизонтали красная ось
+    // внутри среза, по вертикали зелёная, а номер среза (синяя ось) идёт по горизонтали плитками — то есть та
+    // самая полоса, только строится она видом, а не раскладкой ресурса.
+    const float grid = float(textureSize(lut_image, 0).x);
+    const float slice = floor(uv.x * grid);
+    const vec3 stored = texture(lut_image, vec3(fract(uv.x * grid), uv.y, (slice + 0.5) / grid)).rgb;
     result = display_grade
       ? stored
       : pf03_apply_tonemap(pf03_shaper_decode(stored, min_stop, max_stop, shaper), tonemap_op);

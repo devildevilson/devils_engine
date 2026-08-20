@@ -178,29 +178,18 @@ vec3 pf03_shaper_decode(const vec3 encoded, const float min_stop, const float ma
   return exp2(encoded * (max_stop - min_stop) + min_stop);
 }
 
-// Выборка 3D-таблицы, разложенной ПОЛОСОЙ: ширина = N*N (плитка на каждый синий срез), высота = N. Полоса, а
-// не 3D-картинка, потому что ресурсы render graph пока только двумерные (записано как пробел движка).
+// Выборка трёхмерной таблицы. Ресурс — настоящая 3D-картинка, поэтому железо делает трилинейную интерполяцию
+// само: одна выборка вместо двух и никакой ручной интерполяции по третьей оси.
 //
-// Ключевая деталь — координата внутри плитки обязана лежать в ЦЕНТРАХ текселей: r отображается в
-// [0.5, N-0.5] текселя своей плитки, поэтому билинейная фильтрация никогда не заходит в соседний СИНИЙ срез.
-// Без этого таблица тихо смешивала бы несмежные цвета по краям красной оси, а выглядело бы это «почти
-// правильно». По синей оси интерполяция делается руками — двумя выборками и mix, что и даёт ровно трилинейную.
-vec3 pf03_sample_lut(const sampler2D lut, const vec3 encoded, const float size) {
+// Полтексельная поправка остаётся и она обязательна: таблица задана В УЗЛАХ сетки, а тексель адресуется своим
+// ЦЕНТРОМ, поэтому вход отображается в [0.5, N-0.5] текселя. Без неё сетка растягивается на полтекселя и даже
+// тождество уезжает (измерено: в 33 раза на прежней раскладке полосой). Что ушло вместе с полосой — это
+// затекание фильтра в соседний срез третьей оси: у куба соседних срезов по краю просто нет, там работает
+// clamp сэмплера.
+vec3 pf03_sample_lut(const sampler3D lut, const vec3 encoded, const float size) {
   const vec3 c = clamp(encoded, vec3(0.0), vec3(1.0));
-  const float last = size - 1.0;
-
-  const float blue = c.b * last;
-  const float slice_low = floor(blue);
-  const float slice_high = min(slice_low + 1.0, last);
-  const float blend = blue - slice_low;
-
-  // смещение внутри плитки; полная ширина полосы = size * size
-  const float u = (c.r * last + 0.5) / (size * size);
-  const float v = (c.g * last + 0.5) / size;
-
-  const vec3 low = texture(lut, vec2(u + slice_low / size, v)).rgb;
-  const vec3 high = texture(lut, vec2(u + slice_high / size, v)).rgb;
-  return mix(low, high, blend);
+  const vec3 coord = (c * (size - 1.0) + 0.5) / size;
+  return texture(lut, coord).rgb;
 }
 
 #endif

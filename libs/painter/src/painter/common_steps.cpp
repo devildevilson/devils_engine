@@ -958,7 +958,15 @@ void execution_pass_instance::create_framebuffers(const graphics_base* ctx) {
                    : res.handles[current_index].view;
 
       const auto [size, img_ext] = res.compute_frame_size(ctx);
-      const auto [img_width, img_height] = img_ext;
+      const auto [img_width, img_height, img_depth] = img_ext;
+
+      // Объёмная картинка не может быть вложением: у framebuffer'а нет третьей оси, а срез 3D-образа
+      // адресуется слоями через отдельный вид, то есть это другая техника, а не «то же самое с глубиной».
+      if (img_depth > 1) {
+        utils::error{}(
+          "Resource '{}' is a volume image ({}x{}x{}) and cannot be a render target attachment",
+          res.name, img_width, img_height, img_depth);
+      }
 
       if (this->width == 0) {
         this->width = img_width;
@@ -1690,7 +1698,8 @@ void graphics_draw_regions::process(graphics_ctx* ctx, VkCommandBuffer buf) cons
   static_cast<void>(target_usage);
   const auto [target_bytes, target_extent] = DS_ASSERT_ARRAY_GET(ctx->base->resources, target_resource_index).compute_frame_size(ctx->base);
   static_cast<void>(target_bytes);
-  const auto [target_width, target_height] = target_extent;
+  const auto [target_width, target_height, target_depth] = target_extent;
+  static_cast<void>(target_depth); // объёмное вложение отсекается при создании framebuffer'а
 
   // Validate the complete stream before recording any draw from it.
   for (uint32_t region_index = 0; region_index < header.region_count; ++region_index) {
@@ -1902,6 +1911,7 @@ void transfer_copy_image::process(graphics_ctx* ctx, VkCommandBuffer buf) const 
   assert(role::is_image(res2.role));
   assert(res1.extent.x == res2.extent.x);
   assert(res1.extent.y == res2.extent.y);
+  assert(res1.extent.z == res2.extent.z);
 
   vk::CommandBuffer task(buf);
 
@@ -1995,10 +2005,10 @@ void transfer_blit_linear::process(graphics_ctx* ctx, VkCommandBuffer buf) const
   vk::ImageBlit b{};
   b.srcSubresource = convert_to_isl(std::bit_cast<vk::ImageSubresourceRange>(res1.subimg));
   b.srcOffsets[0] = vk::Offset3D{0, 0, 0};
-  b.srcOffsets[1] = vk::Offset3D(res1.extent.x, res1.extent.y, 1);
+  b.srcOffsets[1] = vk::Offset3D(res1.extent.x, res1.extent.y, std::max(res1.extent.z, 1u));
   b.dstSubresource = convert_to_isl(std::bit_cast<vk::ImageSubresourceRange>(res2.subimg));
   b.dstOffsets[0] = vk::Offset3D{0, 0, 0};
-  b.dstOffsets[1] = vk::Offset3D(res2.extent.x, res2.extent.y, 1);
+  b.dstOffsets[1] = vk::Offset3D(res2.extent.x, res2.extent.y, std::max(res2.extent.z, 1u));
   task.blitImage(res1.img, vk::ImageLayout::eTransferSrcOptimal, res2.img, vk::ImageLayout::eTransferDstOptimal, b, vk::Filter::eLinear);
 }
 
@@ -2022,10 +2032,10 @@ void transfer_blit_nearest::process(graphics_ctx* ctx, VkCommandBuffer buf) cons
   vk::ImageBlit b{};
   b.srcSubresource = convert_to_isl(std::bit_cast<vk::ImageSubresourceRange>(res1.subimg));
   b.srcOffsets[0] = vk::Offset3D{0, 0, 0};
-  b.srcOffsets[1] = vk::Offset3D(res1.extent.x, res1.extent.y, 1);
+  b.srcOffsets[1] = vk::Offset3D(res1.extent.x, res1.extent.y, std::max(res1.extent.z, 1u));
   b.dstSubresource = convert_to_isl(std::bit_cast<vk::ImageSubresourceRange>(res2.subimg));
   b.dstOffsets[0] = vk::Offset3D{0, 0, 0};
-  b.dstOffsets[1] = vk::Offset3D(res2.extent.x, res2.extent.y, 1);
+  b.dstOffsets[1] = vk::Offset3D(res2.extent.x, res2.extent.y, std::max(res2.extent.z, 1u));
   task.blitImage(res1.img, vk::ImageLayout::eTransferSrcOptimal, res2.img, vk::ImageLayout::eTransferDstOptimal, b, vk::Filter::eNearest);
 }
 

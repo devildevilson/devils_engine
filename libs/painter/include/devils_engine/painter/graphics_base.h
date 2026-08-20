@@ -300,9 +300,7 @@ struct resource_inst {
   };
 
   VkImageView view;
-  struct {
-    uint32_t x, y;
-  } extent;
+  struct extent extent;
 
   role::values role;
 

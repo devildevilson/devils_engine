@@ -71,8 +71,13 @@ struct counter {
   void set_value(const uint32_t val) noexcept;
 };
 
+// Размер ресурса по трём осям. Третья ось не декоративная: у неё есть отдельное следствие — картинка с
+// глубиной больше единицы это VK_IMAGE_TYPE_3D, а у трёхмерного образа Vulkan запрещает слои, тогда как
+// буферизация картинок здесь сделана ИМЕННО слоями одного образа. Поэтому у 3D-ресурса копия — отдельный образ.
 struct extent {
   uint32_t x, y, z;
+
+  bool is_volume() const noexcept { return z > 1; }
 };
 
 // нужно добавить тип памяти при аллокации
@@ -80,9 +85,7 @@ struct resource_container {
   std::string name;
   VmaAllocation alloc;
   size_t handle;
-  struct {
-    uint32_t x, y;
-  } extent;
+  struct extent extent;
   size_t size;
 
   uint32_t format;
@@ -152,12 +155,12 @@ struct resource {
   std::array<frame, max_frames_in_flight> handles;
 
   resource() noexcept;
-  std::tuple<size_t, std::tuple<uint32_t, uint32_t>> compute_frame_size(const graphics_base* base) const;
+  std::tuple<size_t, struct extent> compute_frame_size(const graphics_base* base) const;
   size_t compute_size(const graphics_base* base) const;
   uint32_t compute_buffering(const graphics_base* base) const;
   uint32_t compute_buffering(const uint32_t frames_count, const uint32_t swapchain_count) const;
   // Сколько уровней реально будет создано: явное значение либо полная цепочка от размера уровня 0
-  uint32_t compute_mip_levels(const uint32_t width, const uint32_t height) const;
+  uint32_t compute_mip_levels(const struct extent& size) const;
 };
 
 // нужно получить буфер или картинку с правильными контейнерами, view и subresource

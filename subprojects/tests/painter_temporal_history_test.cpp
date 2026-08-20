@@ -137,16 +137,43 @@ TEST_CASE("mip chain length is derived from the level 0 extent [painter]") {
 
   // Явное число уровней уважается как есть: это решение автора про память и качество
   res.mips = 4;
-  CHECK(res.compute_mip_levels(1280, 720) == 4);
-  CHECK(res.compute_mip_levels(64, 64) == 4);
+  CHECK(res.compute_mip_levels({1280, 720, 1}) == 4);
+  CHECK(res.compute_mip_levels({64, 64, 1}) == 4);
 
   // 'auto' (mips == 0) — полная цепочка до 1x1 по БОЛЬШЕЙ стороне, с потолком max_mip_levels
   res.mips = 0;
-  CHECK(res.compute_mip_levels(1, 1) == 1);
-  CHECK(res.compute_mip_levels(2, 1) == 2);
-  CHECK(res.compute_mip_levels(8, 8) == 4);   // 8 -> 4 -> 2 -> 1
-  CHECK(res.compute_mip_levels(640, 360) == 10); // 640 -> 320 -> ... -> 2 -> 1, девять делений
-  CHECK(res.compute_mip_levels(65536, 1) == painter::max_mip_levels);
+  CHECK(res.compute_mip_levels({1, 1, 1}) == 1);
+  CHECK(res.compute_mip_levels({2, 1, 1}) == 2);
+  CHECK(res.compute_mip_levels({8, 8, 1}) == 4);   // 8 -> 4 -> 2 -> 1
+  CHECK(res.compute_mip_levels({640, 360, 1}) == 10); // 640 -> 320 -> ... -> 2 -> 1, девять делений
+  CHECK(res.compute_mip_levels({65536, 1, 1}) == painter::max_mip_levels);
+
+  // У объёмной картинки уровень делит и глубину, поэтому она входит в максимум наравне с шириной и высотой:
+  // цепочка, посчитанная только по двум осям, оставила бы уровни, у которых z уже равен единице.
+  CHECK(res.compute_mip_levels({8, 8, 32}) == 6); // 32 -> 16 -> 8 -> 4 -> 2 -> 1
+  CHECK(res.compute_mip_levels({32, 32, 32}) == 6);
+}
+
+TEST_CASE("depth above one means a volume image, and a volume image cannot use layers [painter]") {
+  // «Глубина больше единицы» и «трёхмерная картинка» — одно утверждение, поэтому тип образа выводится из
+  // размера, а не объявляется отдельно: два места для одного факта разошлись бы.
+  CHECK_FALSE(painter::extent{32, 32, 1}.is_volume());
+  CHECK_FALSE(painter::extent{1024, 32, 1}.is_volume());
+  CHECK(painter::extent{32, 32, 32}.is_volume());
+  CHECK(painter::extent{1, 1, 2}.is_volume());
+
+  // Следствие, из которого и вырос RND-49: буферизация картинок здесь сделана СЛОЯМИ одного образа, а Vulkan
+  // запрещает слои у трёхмерного образа (VUID-VkImageCreateInfo-imageType-00961). Значит копии объёмного
+  // ресурса обязаны лежать в разных образах — это не оптимизация, а единственный законный вариант.
+  painter::resource_container flat;
+  flat.extent = {1024, 32, 1};
+  flat.layers = 3;
+  CHECK_FALSE(flat.extent.is_volume()); // три копии слоями — законно
+
+  painter::resource_container volume;
+  volume.extent = {32, 32, 32};
+  volume.layers = 1;
+  CHECK(volume.extent.is_volume()); // копия = отдельный контейнер, поэтому слой ровно один
 }
 
 TEST_CASE("a storage binding must name its mip level [painter]") {

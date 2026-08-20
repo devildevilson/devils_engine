@@ -42,6 +42,8 @@ constexpr uint32_t initial_height = 720;
 constexpr uint32_t dispatch_tile = 8;
 // Гистограмма считается группами 16x16: по потоку на корзину, то есть одно глобальное атомарное сложение на поток
 constexpr uint32_t histogram_tile = 16;
+// Таблица грейда запекается группами 4x4x4: цель объёмная, и куб группы даёт ту же занятость при трёх осях
+constexpr uint32_t lut_tile = 4;
 constexpr float near_plane = 0.1f;
 // Детерминированный шаг для орбиты: положение камеры становится чистой функцией номера кадра, поэтому два
 // прогона с одинаковым --frames дают одинаковую картинку и ошибку репроекции можно сравнивать численно.
@@ -268,6 +270,22 @@ void update_dispatch_constant(
   base.write_constant_data(slot, command);
 }
 
+// Тот же расчёт для объёмной цели. Отдельная функция, а не параметр по умолчанию, ровно по той же причине,
+// по которой размер группы стал параметром: чтобы «забыл поделить третью ось» было невыразимо.
+void update_dispatch_constant_3d(
+  painter::graphics_base& base, const std::string_view name,
+  const uint32_t width, const uint32_t height, const uint32_t depth, const uint32_t tile) {
+  const uint32_t slot = base.find_constant(name);
+  if (slot == painter::invalid_resource_slot) {
+    utils::error{}("PF03 constant '{}' is absent from the configured graph", name);
+  }
+  const VkDispatchIndirectCommand command{
+    (width + tile - 1u) / tile,
+    (height + tile - 1u) / tile,
+    (depth + tile - 1u) / tile};
+  base.write_constant_data(slot, command);
+}
+
 // Масштаб сетки замера: 1 — по каждому пикселю, 2 — по каждому второму и так далее. Ручкой, а не константой,
 // потому что вопрос «сколько стоит замер» теперь можно измерить, а не оценивать.
 uint32_t metering_scale = 2;
@@ -294,7 +312,7 @@ void update_screen_dispatch(painter::graphics_base& base, const uint32_t width, 
     histogram_tile);
   // Таблица грейда от разрешения кадра не зависит вовсе — её сетка задаётся размером самой таблицы. Константа
   // ставится здесь просто чтобы все dispatch'и считались в одном месте, а не в двух.
-  update_dispatch_constant(base, "lut_dispatch", lut_grid * lut_grid, lut_grid, dispatch_tile);
+  update_dispatch_constant_3d(base, "lut_dispatch", lut_grid, lut_grid, lut_grid, lut_tile);
   base.update_event();
 }
 
@@ -1041,9 +1059,9 @@ int main(int argc, char** argv) {
         utils::error{}("PF03 declared value 'color_lut_size' is absent from the configured graph");
       }
       auto& value = render_config.constant_values[slot];
-      value.value = std::make_tuple(lut_grid * lut_grid, lut_grid, 0u);
+      value.value = std::make_tuple(lut_grid, lut_grid, lut_grid);
       value.current_value = value.value;
-      utils::info("PF03 resource size override: color_lut = {}x{} (LUT {}^3)", lut_grid * lut_grid, lut_grid, lut_grid);
+      utils::info("PF03 resource size override: color_lut = {0}x{0}x{0}", lut_grid);
     }
 
     if (base.commit_parsed_resources(render_config) != 0) {
@@ -1199,9 +1217,8 @@ int main(int argc, char** argv) {
       grade_offset.x, grade_offset.y, grade_offset.z,
       grade_power.x, grade_power.y, grade_power.z);
     utils::info(
-      "PF03 LUT: {}^3 (strip {}x{}), shaper {} over {}..{} stops",
-      lut_grid, lut_grid * lut_grid, lut_grid, lut_linear_shaper ? "linear" : "log2",
-      lut_min_stop, lut_max_stop);
+      "PF03 LUT: {0}^3 (объёмный ресурс), shaper {1} over {2}..{3} stops",
+      lut_grid, lut_linear_shaper ? "linear" : "log2", lut_min_stop, lut_max_stop);
     utils::info("PF03 controls: WASD/QE move, mouse look, R reset history, Esc exit");
     utils::info("PF03 scene: static room (camera motion only) + {} moving cubes (per-object motion)", mover_count);
 

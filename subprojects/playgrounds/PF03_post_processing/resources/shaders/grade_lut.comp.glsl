@@ -2,32 +2,28 @@
 
 #include "pf03_grade.glsl"
 
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 
 layout(set = 0, binding = 0, std140) uniform FrameBlock {
   PF03_FRAME_BLOCK_BODY
 } frame;
 
-layout(set = 1, binding = 0, rgba16f) uniform writeonly image2D lut_image;
+layout(set = 1, binding = 0, rgba16f) uniform writeonly image3D lut_image;
 
-// Запекание грейда в таблицу. Раскладка — полоса: ширина = N*N, высота = N, плитка на каждый синий срез.
-// Размер N берётся из самой картинки (высота), поэтому смена размера таблицы — это пересоздание РЕСУРСА и
-// ничего больше: ни константы шага, ни правки шейдера.
+// Запекание грейда в таблицу. Ресурс — трёхмерная картинка, поэтому узел сетки адресуется напрямую тремя
+// координатами: ни раскладки плитками, ни арифметики «номер плитки = синий срез» больше нет. Размер N берётся
+// из самой картинки, поэтому смена размера таблицы — это пересоздание РЕСУРСА и ничего больше: ни константы
+// шага, ни правки шейдера.
 void main() {
-  const ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
-  const ivec2 size = imageSize(lut_image);
-  if (texel.x >= size.x || texel.y >= size.y) {
+  const ivec3 texel = ivec3(gl_GlobalInvocationID);
+  const ivec3 size = imageSize(lut_image);
+  if (any(greaterThanEqual(texel, size))) {
     return;
   }
 
-  const float grid = float(size.y);
-  const float last = grid - 1.0;
-  const int slice = texel.x / size.y;      // индекс синего среза = номер плитки
-  const int red = texel.x - slice * size.y;
-
   // Координата узла сетки в кодированном пространстве. Именно узлы, а не центры текселей: выборка в
   // pf03_sample_lut отображает вход в [0.5, N-0.5] текселя, то есть узел k соответствует значению k/(N-1).
-  const vec3 encoded = vec3(float(red), float(texel.y), float(slice)) / last;
+  const vec3 encoded = vec3(texel) / vec3(size - 1);
 
   const int shaper = int(frame.lut_params.y + 0.5);
   const float min_stop = frame.lut_params.z;

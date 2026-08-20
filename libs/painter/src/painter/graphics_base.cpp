@@ -837,9 +837,9 @@ void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t
         // определять что картинка или нет по другим метрикам (например по мип уровням)
         auto& cont = DS_ASSERT_ARRAY_GET(resource_containers, res.handles[i].index);
         cont.size = size * buffering;
-        cont.extent = {std::get<0>(exts), std::get<1>(exts)};
+        cont.extent = exts;
         if (is_image) {
-          cont.mips = res.compute_mip_levels(std::get<0>(exts), std::get<1>(exts));
+          cont.mips = res.compute_mip_levels(exts);
         }
       }
     }
@@ -879,7 +879,7 @@ void graphics_base::recreate_screensize_resources(const uint32_t, const uint32_t
 
         // 'auto'-цепочка при новом размере окна может иметь ДРУГОЕ число уровней, поэтому оно пересчитывается,
         // а не берётся из старого subimage.
-        const uint32_t levels = res.compute_mip_levels(cont.extent.x, cont.extent.y);
+        const uint32_t levels = res.compute_mip_levels(cont.extent);
         auto range = std::bit_cast<vk::ImageSubresourceRange>(res.handles[i].subimage);
         range.baseMipLevel = 0;
         range.levelCount = levels;
@@ -1844,9 +1844,7 @@ void graphics_base::create_resources() {
 
   // имя?
   struct matching_resources {
-    struct {
-      uint32_t x, y;
-    } extent;
+    struct extent extent;
     uint32_t format;
     uint32_t usage_mask;
     uint32_t mips;
@@ -1910,12 +1908,11 @@ void graphics_base::create_resources() {
     // размеры буферов так то должны быть aligned к 16
     // и размеры картинок тоже поди нужно алигнуть к чему то
 
-    auto [buffer_size, img_ext] = res.compute_frame_size(this);
+    auto [buffer_size, image_extent] = res.compute_frame_size(this);
     const uint32_t buffering = res.compute_buffering(this);
-    auto image_extent = vk::Extent2D{std::get<0>(img_ext), std::get<1>(img_ext)};
     if (role::is_image(res.role)) {
       // Число уровней считается от размера уровня 0, поэтому 'auto' при resize честно пересчитывается
-      res_mips = res.compute_mip_levels(image_extent.width, image_extent.height);
+      res_mips = res.compute_mip_levels(image_extent);
     }
     const size_t frame_size = buffer_size;
     const size_t frame_stride = is_buffer
@@ -1975,7 +1972,35 @@ void graphics_base::create_resources() {
     //  buffer_size = sizeof(vk::DrawIndirectCommand) * 2;
     //}
 
+    // Копии картинки лежат СЛОЯМИ одного образа, а у трёхмерного образа Vulkan слои запрещает. Поэтому у
+    // объёмного ресурса каждая копия получает свой образ: контейнеры создаются подряд, по одному на копию, и
+    // ни с кем не делятся. Из-за этого объёмный ресурс стоит дороже дескрипторами и аллокациями — это цена
+    // третьей оси, а не недоделка.
+    const bool is_volume_image = !is_buffer && image_extent.is_volume();
+    if (is_volume_image) {
+      container_table[i] = uint32_t(matching.size());
+      for (uint32_t copy = 0; copy < buffering; ++copy) {
+        auto& entry = matching.emplace_back();
+        entry.extent = image_extent;
+        entry.format = res.format_hint;
+        entry.usage_mask = res.usage_mask;
+        entry.mips = res_mips;
+        entry.is_buffer = false;
+        entry.is_host_resource = is_host_resource;
+        entry.layers = 1;
+        entry.layer_offset = 0;
+        entry.offset = 0;
+        entry.size = frame_stride;
+        entry.layer_size = frame_stride;
+        entry.name = res.name + ".copy" + std::to_string(copy);
+      }
+      continue;
+    }
+
     auto itr = std::find_if(matching.begin(), matching.end(), [&](const auto& data) -> bool {
+      if (data.extent.is_volume()) {
+        return false; // объёмный контейнер принадлежит одной копии одного ресурса
+      }
       if (is_buffer != data.is_buffer) {
         return false;
       }
@@ -1987,7 +2012,8 @@ void graphics_base::create_resources() {
         return res.usage_mask == data.usage_mask;
       }
 
-      const bool size_match = image_extent.width == data.extent.x && image_extent.height == data.extent.y;
+      const bool size_match = image_extent.x == data.extent.x && image_extent.y == data.extent.y &&
+                              image_extent.z == data.extent.z;
       const bool format_match = res.format_hint == data.format;
       const bool usage_mask_match = res.usage_mask == data.usage_mask;
       const bool mips_match = res_mips == data.mips;
@@ -1996,7 +2022,7 @@ void graphics_base::create_resources() {
 
     if (itr == matching.end()) {
       matching.emplace_back();
-      matching.back().extent = {image_extent.width, image_extent.height};
+      matching.back().extent = image_extent;
       matching.back().format = res.format_hint;
       matching.back().usage_mask = res.usage_mask;
       matching.back().mips = res_mips;
@@ -2034,7 +2060,7 @@ void graphics_base::create_resources() {
     cont.layers = data.layers;
     cont.mips = data.mips;
     cont.usage_mask = data.usage_mask;
-    cont.extent = {data.extent.x, data.extent.y};
+    cont.extent = data.extent;
     cont.size = data.size;
     cont.mem_ptr = nullptr;
 
@@ -2054,18 +2080,21 @@ void graphics_base::create_resources() {
       continue; // Фаза 3: пропускаем неактивные
     }
 
-    const uint32_t cont_index = container_table[i];
-
-    auto& match = matching[cont_index];
-    auto& cont = resource_containers[cont_index];
+    const uint32_t first_cont_index = container_table[i];
 
     const bool is_image = role::is_image(res.role);
+    const bool is_volume_image = is_image && resource_containers[first_cont_index].extent.is_volume();
 
     const uint32_t buffering = res.compute_buffering(this);
     const auto frame_size = frame_sizes[i];
     const auto frame_stride = frame_strides[i];
 
     for (uint32_t j = 0; j < buffering; ++j) {
+      // У объёмного ресурса контейнеры лежат подряд, по одному на копию; у остальных копии это слои одного
+      const uint32_t cont_index = is_volume_image ? first_cont_index + j : first_cont_index;
+      auto& match = matching[cont_index];
+      auto& cont = resource_containers[cont_index];
+
       res.handles[j].index = cont_index;
       if (is_image) {
         const auto img_handle = std::bit_cast<VkImage>(cont.handle);
@@ -2090,17 +2119,20 @@ void graphics_base::create_resources() {
 
         const uint32_t levels = match.mips;
 
+        const bool volume = cont.extent.is_volume();
+
         vk::ImageViewCreateInfo ivci{};
         ivci.image = img_handle;
         ivci.format = fmt;
-        ivci.viewType = vk::ImageViewType::e2D;
+        // Тип вида следует типу образа: объёмный образ даёт sampler3D/image3D, и слой у него ровно один.
+        ivci.viewType = volume ? vk::ImageViewType::e3D : vk::ImageViewType::e2D;
         ivci.components = vk::ComponentMapping{};
         ivci.subresourceRange = vk::ImageSubresourceRange{};
         // определяется форматом? ролью?
         ivci.subresourceRange.aspectMask = aspect;
         ivci.subresourceRange.baseMipLevel = 0;
         ivci.subresourceRange.levelCount = levels;
-        ivci.subresourceRange.baseArrayLayer = match.layer_offset + j;
+        ivci.subresourceRange.baseArrayLayer = volume ? 0 : match.layer_offset + j;
         ivci.subresourceRange.layerCount = 1;
 
         // Вид на всю цепочку: только он годится для выборки с LOD
@@ -2126,8 +2158,11 @@ void graphics_base::create_resources() {
       }
     }
 
-    match.offset += frame_stride * buffering;
-    match.layer_offset += buffering;
+    if (!is_volume_image) {
+      auto& match = matching[first_cont_index];
+      match.offset += frame_stride * buffering;
+      match.layer_offset += buffering;
+    }
   }
 }
 
@@ -2861,7 +2896,7 @@ void graphics_ctx::prepare() {
       resources[i].subimg = cur_handle.subimage;
       resources[i].view = cur_handle.view;
       const auto [x, y] = base->swapchain_extent();
-      resources[i].extent = {x, y};
+      resources[i].extent = {x, y, 1};
       resources[i].role = base_res.role;
       resources[i].mips = 1;
       resources[i].usage_levels.fill(usage::undefined);
@@ -2874,7 +2909,7 @@ void graphics_ctx::prepare() {
       resources[i].img = std::bit_cast<VkImage>(base_res_container.handle);
       resources[i].subimg = cur_handle.subimage;
       resources[i].view = cur_handle.view;
-      resources[i].extent = {base_res_container.extent.x, base_res_container.extent.y};
+      resources[i].extent = base_res_container.extent;
       resources[i].role = base_res.role;
       resources[i].mips = std::max(cur_handle.subimage.level_count, 1u);
       resources[i].usage_levels.fill(usage::undefined);
@@ -2882,7 +2917,7 @@ void graphics_ctx::prepare() {
       resources[i].buf = std::bit_cast<VkBuffer>(base_res_container.handle);
       resources[i].subbuf = cur_handle.subbuffer;
       resources[i].view = VK_NULL_HANDLE;
-      resources[i].extent = {base_res_container.extent.x, base_res_container.extent.y};
+      resources[i].extent = base_res_container.extent;
       resources[i].role = base_res.role;
       resources[i].mips = 1;
       resources[i].usage_levels.fill(usage::undefined);

@@ -176,12 +176,23 @@ void resource_container::create_container(VmaAllocator alc, const uint32_t host_
     vk::ImageCreateInfo ici{};
     ici.usage = static_cast<vk::ImageUsageFlags>(usage_mask);
     ici.format = static_cast<vk::Format>(format);
-    ici.imageType = vk::ImageType::e2D;
+    // Тип образа выводится из глубины, а не объявляется: «глубина больше единицы» и «трёхмерная картинка» —
+    // это одно и то же утверждение, и держать его в двух местах значит разрешить им разойтись.
+    ici.imageType = extent.is_volume() ? vk::ImageType::e3D : vk::ImageType::e2D;
     ici.initialLayout = vk::ImageLayout::eUndefined; // general?
     ici.samples = vk::SampleCountFlagBits::e1;
     ici.arrayLayers = layers;
     ici.mipLevels = std::max(mips, 1u);
-    ici.extent = vk::Extent3D{extent.x, extent.y, 1u};
+    ici.extent = vk::Extent3D{extent.x, extent.y, std::max(extent.z, 1u)};
+
+    // Vulkan запрещает слои у трёхмерного образа, а буферизация картинок здесь сделана слоями. Значит копии
+    // 3D-ресурса обязаны лежать в РАЗНЫХ образах, и если сюда пришло иначе — это ошибка вызывающей стороны,
+    // а не то, что можно молча поправить.
+    if (ici.imageType == vk::ImageType::e3D && layers != 1) {
+      utils::error{}(
+        "Volume resource container '{}' asks for {} array layers, but a 3D image must have exactly one: "
+        "копии объёмного ресурса должны лежать в отдельных образах", name, layers);
+    }
     ici.tiling = bool(host_visible) ? vk::ImageTiling::eLinear : vk::ImageTiling::eOptimal;
 
     // patterns from roles
@@ -231,35 +242,36 @@ void resource_container::create_container(VmaAllocator alc, const uint32_t host_
   }
 }
 
-std::tuple<size_t, std::tuple<uint32_t, uint32_t>> resource::compute_frame_size(const graphics_base* base) const {
+std::tuple<size_t, extent> resource::compute_frame_size(const graphics_base* base) const {
   const auto& size_value = DS_ASSERT_ARRAY_GET(base->constant_values, size);
 
   const auto [width, height] = base->swapchain_extent();
 
-  auto image_extent = vk::Extent2D{width, height};
+  auto image_extent = extent{width, height, 1};
   size_t buffer_size = 0;
   if (role == role::present && size_value.type != value_type::screensize) {
     buffer_size = size_t(width) * size_t(height) * size_t(size_hint);
-    image_extent = vk::Extent2D(width, height);
+    image_extent = extent{width, height, 1};
   } else if (size_value.type == value_type::screensize) {
     const auto& [xs, ys, zs] = size_value.current_scale;
     buffer_size = size_t(width * xs) * size_t(height * ys) * size_t(size_hint);
-    image_extent = vk::Extent2D(width * xs, height * ys);
+    image_extent = extent{uint32_t(width * xs), uint32_t(height * ys), 1};
   } else if (size_value.type == value_type::fixed) {
     const auto& [x, y, z] = size_value.current_value;
     const auto& [xs, ys, zs] = size_value.current_scale;
     buffer_size = size_t(x * xs) * size_t(size_hint);
-    image_extent = vk::Extent2D(x * xs, x * xs);
+    image_extent = extent{uint32_t(x * xs), uint32_t(x * xs), 1};
   } else if (size_value.type == value_type::fixed_2d) {
     const auto& [x, y, z] = size_value.current_value;
     const auto& [xs, ys, zs] = size_value.current_scale;
     buffer_size = size_t(x * xs) * size_t(y * ys) * size_t(size_hint);
-    image_extent = vk::Extent2D(x * xs, y * ys);
+    image_extent = extent{uint32_t(x * xs), uint32_t(y * ys), 1};
   } else if (size_value.type == value_type::fixed_3d) {
     const auto& [x, y, z] = size_value.current_value;
     const auto& [xs, ys, zs] = size_value.current_scale;
     buffer_size = size_t(x * xs) * size_t(y * ys) * size_t(z * zs) * size_t(size_hint);
-    image_extent = vk::Extent2D(x * xs, y * ys);
+    // Третья ось доезжает до картинки, а не только до размера буфера: именно она делает образ трёхмерным
+    image_extent = extent{uint32_t(x * xs), uint32_t(y * ys), std::max(uint32_t(z * zs), 1u)};
   }
 
   // наверное указать что за глобальная юниформа? а сколько их бывает то
@@ -274,7 +286,7 @@ std::tuple<size_t, std::tuple<uint32_t, uint32_t>> resource::compute_frame_size(
     buffer_size = indirect_buffer_size * size_hint;
   }
 
-  return std::make_tuple(buffer_size, std::make_tuple(image_extent.width, image_extent.height));
+  return std::make_tuple(buffer_size, image_extent);
 }
 
 size_t resource::compute_size(const graphics_base* base) const {
@@ -289,14 +301,15 @@ uint32_t resource::compute_buffering(const graphics_base* base) const {
   return type::compute_buffering(base, type) + history_depth;
 }
 
-uint32_t resource::compute_mip_levels(const uint32_t width, const uint32_t height) const {
+uint32_t resource::compute_mip_levels(const struct extent& size) const {
   if (mips != 0) {
     return mips;
   }
   // 'auto': полная цепочка до 1x1. Считается от размера уровня 0, поэтому при resize число уровней меняется
-  // вместе с окном — это и есть смысл автоматической цепочки.
+  // вместе с окном — это и есть смысл автоматической цепочки. У объёмной картинки уровень делит и глубину,
+  // поэтому в максимум входят все три оси.
   uint32_t levels = 1;
-  uint32_t extent = std::max(width, height);
+  uint32_t extent = std::max(std::max(size.x, size.y), size.z);
   while (extent > 1 && levels < max_mip_levels) {
     extent /= 2;
     levels += 1;
