@@ -48,10 +48,11 @@ constexpr float near_plane = 0.1f;
 constexpr float orbit_step_seconds = 1.0f / 60.0f;
 
 // Отладочные виды; порядок обязан совпадать с PF03_DEBUG_* в resources/shaders/pf03_frame.glsl
-constexpr std::array<std::string_view, 20> debug_names = {
+constexpr std::array<std::string_view, 24> debug_names = {
   "shaded", "depth", "normal", "motion", "reprojected", "error(motion)", "error(no motion)",
   "clipping", "calibration", "exposure", "transmittance", "ao", "ao raw", "taa rejection",
-  "bloom", "shafts", "sharpen", "histogram", "histogram plot", "luminance"};
+  "bloom", "shafts", "sharpen", "histogram", "histogram plot", "luminance",
+  "grade delta", "lut error", "gamut", "lut strip"};
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -105,6 +106,23 @@ float halton(uint index, const uint base) {
   return result;
 }
 
+// Разбор списка «x,y,z» из аргумента. Незаданные компоненты остаются от значения по умолчанию, поэтому
+// '--grade-slope=1.05' задаёт только красный канал.
+glm::vec3 parse_vec3(const std::string_view text, const glm::vec3 fallback) {
+  std::array<float, 3> values{fallback.x, fallback.y, fallback.z};
+  const std::string str(text);
+  size_t begin = 0;
+  for (uint32_t v = 0; v < values.size() && begin <= str.size(); ++v) {
+    const auto end = str.find(',', begin);
+    values[v] = std::stof(str.substr(begin, end == std::string::npos ? std::string::npos : end - begin));
+    if (end == std::string::npos) {
+      break;
+    }
+    begin = end + 1;
+  }
+  return {values[0], values[1], values[2]};
+}
+
 // Раскладка обязана совпадать с PF03_FRAME_BLOCK_BODY (resources/shaders/pf03_frame.glsl)
 struct alignas(16) frame_block {
   glm::mat4 view_projection;
@@ -126,8 +144,15 @@ struct alignas(16) frame_block {
   glm::vec4 lens_params;
   glm::vec4 output_params;
   glm::vec4 metering;
+  glm::vec4 grade_balance;
+  glm::vec4 grade_tone;
+  glm::vec4 grade_slope;
+  glm::vec4 grade_offset;
+  glm::vec4 grade_power;
+  glm::vec4 grade_filter;
+  glm::vec4 lut_params;
 };
-static_assert(sizeof(frame_block) == 448);
+static_assert(sizeof(frame_block) == 560);
 
 struct vertex {
   float px, py, pz;
@@ -247,6 +272,10 @@ void update_dispatch_constant(
 // потому что вопрос «сколько стоит замер» теперь можно измерить, а не оценивать.
 uint32_t metering_scale = 2;
 
+// Сторона куба таблицы грейда. Живёт здесь, а не в main, потому что от неё зависит и размер ресурса
+// (переопределение распарсенного конфига), и сетка запекающего dispatch.
+uint32_t lut_grid = 32;
+
 void update_screen_dispatch(painter::graphics_base& base, const uint32_t width, const uint32_t height) {
   // Каждой цели передаётся её РАЗМЕР В ПИКСЕЛЯХ и размер группы её шейдера — так двойное деление становится
   // невыразимым, а не подстерегающим.
@@ -263,6 +292,9 @@ void update_screen_dispatch(painter::graphics_base& base, const uint32_t width, 
     (width + metering_divisor - 1u) / metering_divisor,
     (height + metering_divisor - 1u) / metering_divisor,
     histogram_tile);
+  // Таблица грейда от разрешения кадра не зависит вовсе — её сетка задаётся размером самой таблицы. Константа
+  // ставится здесь просто чтобы все dispatch'и считались в одном месте, а не в двух.
+  update_dispatch_constant(base, "lut_dispatch", lut_grid * lut_grid, lut_grid, dispatch_tile);
   base.update_event();
 }
 
@@ -532,6 +564,29 @@ int main(int argc, char** argv) {
   float aberration = 0.0f;         // хроматическая аберрация; по умолчанию выключена как приём на вкус
   float grain = 0.0f;              // зерно; тоже на вкус
   bool dither = true;              // дизер перед 8-битным выводом: почти бесплатно, убирает бандинг
+  // Грейд включён по умолчанию и НЕЙТРАЛЕН. Это не «эффект на вкус», а тождество: при нейтральных ручках
+  // табличный путь обязан совпасть с кадром без грейда, и держать эту проверку в штатном прогоне полезнее,
+  // чем включать её отдельным тестом раз в срез.
+  bool grade_enabled = true;
+  bool grade_display_space = false; // false — scene-referred (до кривой), true — display-referred (после)
+  bool grade_by_lut = true;         // true — таблица, false — та же функция аналитически; чистое A/B
+  bool wb_naive = false;            // наивный баланс белого усилением каналов: нужен для измерения его цены
+  // Объявленная температура ОСВЕЩЕНИЯ сцены (как у баланса белого в камере), не «температура картинки»:
+  // выше 6500 — сцена считается освещённой холоднее, и картинка теплеет. Направление контринтуитивное, но
+  // это единственная трактовка, в которой число совпадает с числом на реальном источнике.
+  float temperature = 6500.0f;
+  float tint = 0.0f;               // ось зелёный–пурпурный, перпендикулярно локусу
+  float contrast = 1.0f;
+  float contrast_pivot = 0.18f;    // средний серый: то же число, что ключ замера экспозиции
+  float saturation = 1.0f;
+  glm::vec3 grade_slope{1.0f};    // ASC CDL
+  glm::vec3 grade_offset{0.0f};
+  glm::vec3 grade_power{1.0f};
+  glm::vec3 color_filter{1.0f};
+  float filter_strength = 1.0f;
+  bool lut_linear_shaper = false; // линейный shaper вместо log2: показывает, куда уходит сетка таблицы
+  float lut_min_stop = -12.0f;    // границы shaper'а в стопах: область определения таблицы
+  float lut_max_stop = 10.0f;
   float taa_weight = 0.92f;       // вес истории: больше — стабильнее и мылее
   uint32_t taa_phases = 8;        // длина последовательности джиттера
   float jitter_scale = 1.0f;      // 0 — джиттер выключен (тогда накапливать нечего)
@@ -580,6 +635,114 @@ int main(int argc, char** argv) {
     constexpr std::string_view dither_prefix = "--dither=";
     if (option.starts_with(dither_prefix)) {
       dither = std::stoi(std::string(option.substr(dither_prefix.size()))) != 0;
+    }
+    // Пресет «взгляда»: ставит сразу несколько ручек, поэтому в командной строке должен идти ПЕРЕД точечными —
+    // разбор идёт по порядку аргументов, и последнее упоминание выигрывает.
+    constexpr std::string_view look_prefix = "--look=";
+    if (option.starts_with(look_prefix)) {
+      const auto name = option.substr(look_prefix.size());
+      if (name == "neutral") {
+        temperature = 6500.0f; tint = 0.0f; contrast = 1.0f; saturation = 1.0f;
+        grade_slope = glm::vec3(1.0f); grade_offset = glm::vec3(0.0f); grade_power = glm::vec3(1.0f);
+        color_filter = glm::vec3(1.0f);
+      } else if (name == "warm") {
+        temperature = 8200.0f; tint = -0.04f; contrast = 1.06f; saturation = 1.06f;
+        grade_slope = glm::vec3(1.03f, 1.0f, 0.96f);
+      } else if (name == "cool") {
+        temperature = 5200.0f; tint = 0.03f; contrast = 1.06f; saturation = 0.95f;
+        grade_offset = glm::vec3(0.0f, 0.004f, 0.018f);
+      } else if (name == "bleach") {
+        // Сильный грейд специально: он и нагружает табулирование, и выгоняет каналы за гамму
+        contrast = 1.35f; saturation = 0.55f; grade_power = glm::vec3(0.95f, 0.95f, 1.0f);
+      } else if (name == "teal_orange") {
+        contrast = 1.15f; saturation = 1.18f;
+        grade_slope = glm::vec3(1.06f, 1.0f, 0.92f);
+        grade_offset = glm::vec3(-0.006f, 0.0f, 0.02f);
+      } else {
+        utils::error{}("PF03 unknown look '{}' (neutral|warm|cool|bleach|teal_orange)", name);
+      }
+    }
+    constexpr std::string_view grade_prefix = "--grade=";
+    if (option.starts_with(grade_prefix)) {
+      grade_enabled = std::stoi(std::string(option.substr(grade_prefix.size()))) != 0;
+    }
+    constexpr std::string_view grade_space_prefix = "--grade-space=";
+    if (option.starts_with(grade_space_prefix)) {
+      const auto name = option.substr(grade_space_prefix.size());
+      if (name == "scene") grade_display_space = false;
+      else if (name == "display") grade_display_space = true;
+      else utils::error{}("PF03 unknown grade space '{}' (scene|display)", name);
+    }
+    constexpr std::string_view lut_prefix = "--lut=";
+    if (option.starts_with(lut_prefix)) {
+      grade_by_lut = std::stoi(std::string(option.substr(lut_prefix.size()))) != 0;
+    }
+    constexpr std::string_view lut_size_prefix = "--lut-size=";
+    if (option.starts_with(lut_size_prefix)) {
+      lut_grid = uint32_t(std::stoul(std::string(option.substr(lut_size_prefix.size()))));
+      if (lut_grid < 2 || lut_grid > 128) {
+        utils::error{}("PF03 lut size {} is out of the supported 2..128 range", lut_grid);
+      }
+    }
+    constexpr std::string_view lut_shaper_prefix = "--lut-shaper=";
+    if (option.starts_with(lut_shaper_prefix)) {
+      const auto name = option.substr(lut_shaper_prefix.size());
+      if (name == "log" || name == "log2") lut_linear_shaper = false;
+      else if (name == "linear") lut_linear_shaper = true;
+      else utils::error{}("PF03 unknown lut shaper '{}' (log|linear)", name);
+    }
+    constexpr std::string_view lut_range_prefix = "--lut-range=";
+    if (option.starts_with(lut_range_prefix)) {
+      const auto range = parse_vec3(option.substr(lut_range_prefix.size()), glm::vec3(lut_min_stop, lut_max_stop, 0.0f));
+      lut_min_stop = range.x;
+      lut_max_stop = range.y;
+    }
+    constexpr std::string_view temperature_prefix = "--temperature=";
+    if (option.starts_with(temperature_prefix)) {
+      temperature = std::stof(std::string(option.substr(temperature_prefix.size())));
+    }
+    constexpr std::string_view tint_prefix = "--tint=";
+    if (option.starts_with(tint_prefix)) {
+      tint = std::stof(std::string(option.substr(tint_prefix.size())));
+    }
+    constexpr std::string_view wb_prefix = "--wb=";
+    if (option.starts_with(wb_prefix)) {
+      const auto name = option.substr(wb_prefix.size());
+      if (name == "adapt") wb_naive = false;
+      else if (name == "naive") wb_naive = true;
+      else utils::error{}("PF03 unknown white balance mode '{}' (adapt|naive)", name);
+    }
+    constexpr std::string_view contrast_prefix = "--contrast=";
+    if (option.starts_with(contrast_prefix)) {
+      contrast = std::stof(std::string(option.substr(contrast_prefix.size())));
+    }
+    constexpr std::string_view pivot_prefix = "--contrast-pivot=";
+    if (option.starts_with(pivot_prefix)) {
+      contrast_pivot = std::stof(std::string(option.substr(pivot_prefix.size())));
+    }
+    constexpr std::string_view saturation_prefix = "--saturation=";
+    if (option.starts_with(saturation_prefix)) {
+      saturation = std::stof(std::string(option.substr(saturation_prefix.size())));
+    }
+    constexpr std::string_view slope_prefix = "--grade-slope=";
+    if (option.starts_with(slope_prefix)) {
+      grade_slope = parse_vec3(option.substr(slope_prefix.size()), grade_slope);
+    }
+    constexpr std::string_view offset_prefix = "--grade-offset=";
+    if (option.starts_with(offset_prefix)) {
+      grade_offset = parse_vec3(option.substr(offset_prefix.size()), grade_offset);
+    }
+    constexpr std::string_view power_prefix = "--grade-power=";
+    if (option.starts_with(power_prefix)) {
+      grade_power = parse_vec3(option.substr(power_prefix.size()), grade_power);
+    }
+    constexpr std::string_view filter_prefix = "--color-filter=";
+    if (option.starts_with(filter_prefix)) {
+      color_filter = parse_vec3(option.substr(filter_prefix.size()), color_filter);
+    }
+    constexpr std::string_view filter_strength_prefix = "--color-filter-strength=";
+    if (option.starts_with(filter_strength_prefix)) {
+      filter_strength = std::stof(std::string(option.substr(filter_strength_prefix.size())));
     }
     constexpr std::string_view bloom_prefix = "--bloom=";
     if (option.starts_with(bloom_prefix)) {
@@ -655,16 +818,7 @@ int main(int argc, char** argv) {
     }
     constexpr std::string_view sun_dir_prefix = "--sun-dir=";
     if (option.starts_with(sun_dir_prefix)) {
-      const auto text = std::string(option.substr(sun_dir_prefix.size()));
-      std::array<float, 3> values{sun_direction.x, sun_direction.y, sun_direction.z};
-      size_t begin = 0;
-      for (uint32_t v = 0; v < values.size() && begin <= text.size(); ++v) {
-        const auto end = text.find(',', begin);
-        values[v] = std::stof(text.substr(begin, end == std::string::npos ? std::string::npos : end - begin));
-        if (end == std::string::npos) break;
-        begin = end + 1;
-      }
-      sun_direction = {values[0], values[1], values[2]};
+      sun_direction = parse_vec3(option.substr(sun_dir_prefix.size()), sun_direction);
     }
     constexpr std::string_view fog_prefix = "--fog=";
     if (option.starts_with(fog_prefix)) {
@@ -878,6 +1032,20 @@ int main(int argc, char** argv) {
       utils::info("PF03 shader constant override: ao_samples = {}", ao_samples);
     }
 
+    // Размер таблицы грейда — это РАЗМЕР РЕСУРСА, а не число в UBO и не константа шага. Поэтому он
+    // переопределяется в объявленном значении до сборки графа: сменить его живьём нельзя, нужно пересоздать
+    // картинку. Ровно тот рычаг «размеры целей», про который говорит аудит.
+    if (lut_grid != 32) {
+      const auto slot = render_config.find_constant_value("color_lut_size");
+      if (slot == painter::invalid_resource_slot) {
+        utils::error{}("PF03 declared value 'color_lut_size' is absent from the configured graph");
+      }
+      auto& value = render_config.constant_values[slot];
+      value.value = std::make_tuple(lut_grid * lut_grid, lut_grid, 0u);
+      value.current_value = value.value;
+      utils::info("PF03 resource size override: color_lut = {}x{} (LUT {}^3)", lut_grid * lut_grid, lut_grid, lut_grid);
+    }
+
     if (base.commit_parsed_resources(render_config) != 0) {
       utils::error{}("PF03 could not commit render graph from '{}'", resource_root);
     }
@@ -989,7 +1157,8 @@ int main(int argc, char** argv) {
     utils::info(
       "PF03 views: 0 shaded, 1 depth, 2 normal, 3 motion, 4 reprojected, 5 error(motion), 6 error(no motion), "
       "7 clipping, 8 calibration, 9 exposure, 10 transmittance, 11 ao, 12 ao raw, 13 taa rejection, "
-      "14 bloom, 15 shafts, 16 sharpen, 17 histogram state, 18 histogram plot");
+      "14 bloom, 15 shafts, 16 sharpen, 17 histogram state, 18 histogram plot, 19 metered luminance, "
+      "20 grade delta, 21 lut error, 22 gamut, 23 lut strip");
     utils::info(
       "PF03 SSAO: {}, radius {} m, intensity {}, bias {} (half resolution + depth-aware blur)",
       ao_enabled ? "on" : "off", ao_radius, ao_intensity, ao_bias);
@@ -1019,6 +1188,20 @@ int main(int argc, char** argv) {
       "PF03 metering: histogram percentiles {}..{}, center weight {}, adaptation up {}/s down {}/s",
       metering_low, metering_high, center_weight, adapt_up, adapt_down);
     utils::info("PF03 metering range: {}..{} stops (границы для «тёмной комнаты»)", exposure_min, exposure_max);
+    utils::info(
+      "PF03 grade: {}, {}-referred, path {}, wb {} ({} K, tint {}), contrast {} @ {}, saturation {}",
+      grade_enabled ? "on" : "off", grade_display_space ? "display" : "scene",
+      grade_by_lut ? "LUT" : "analytic", wb_naive ? "naive gains" : "von Kries",
+      temperature, tint, contrast, contrast_pivot, saturation);
+    utils::info(
+      "PF03 grade CDL: slope [{} {} {}], offset [{} {} {}], power [{} {} {}]",
+      grade_slope.x, grade_slope.y, grade_slope.z,
+      grade_offset.x, grade_offset.y, grade_offset.z,
+      grade_power.x, grade_power.y, grade_power.z);
+    utils::info(
+      "PF03 LUT: {}^3 (strip {}x{}), shaper {} over {}..{} stops",
+      lut_grid, lut_grid * lut_grid, lut_grid, lut_linear_shaper ? "linear" : "log2",
+      lut_min_stop, lut_max_stop);
     utils::info("PF03 controls: WASD/QE move, mouse look, R reset history, Esc exit");
     utils::info("PF03 scene: static room (camera motion only) + {} moving cubes (per-object motion)", mover_count);
 
@@ -1162,6 +1345,15 @@ int main(int argc, char** argv) {
       // Оно же остаётся детерминированным (функция номера кадра), поэтому дампы сравнимы.
       frame_data.output_params = glm::vec4(dither ? 1.0f : 0.0f, float(frames_total % 64u), lamp_intensity, 0.0f);
       frame_data.metering = glm::vec4(metering_low, metering_high, center_weight, adapt_down);
+      frame_data.grade_balance = glm::vec4(temperature, tint, wb_naive ? 1.0f : 0.0f, contrast);
+      frame_data.grade_tone = glm::vec4(
+        saturation, contrast_pivot, grade_enabled ? 1.0f : 0.0f, grade_display_space ? 1.0f : 0.0f);
+      frame_data.grade_slope = glm::vec4(grade_slope, 0.0f);
+      frame_data.grade_offset = glm::vec4(grade_offset, 0.0f);
+      frame_data.grade_power = glm::vec4(grade_power, 0.0f);
+      frame_data.grade_filter = glm::vec4(color_filter, filter_strength);
+      frame_data.lut_params = glm::vec4(
+        grade_by_lut ? 1.0f : 0.0f, lut_linear_shaper ? 1.0f : 0.0f, lut_min_stop, lut_max_stop);
       write_current_buffer(base, "frame_buffer", &frame_data, sizeof(frame_data));
 
       {

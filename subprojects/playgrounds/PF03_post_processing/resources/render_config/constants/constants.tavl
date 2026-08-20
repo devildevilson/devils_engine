@@ -33,3 +33,9 @@
   layout = dispatch3
   value = [80.0, 45.0, 1.0]
 }
+{
+  // 1024x32 группами 8x8
+  name = lut_dispatch
+  layout = dispatch3
+  value = [128.0, 4.0, 1.0]
+}

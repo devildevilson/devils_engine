@@ -76,3 +76,9 @@
   depth = { test = false, write = false, compare = always }
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
+{
+  name = grade_lut_material
+  shaders = { compute = "grade_lut.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}

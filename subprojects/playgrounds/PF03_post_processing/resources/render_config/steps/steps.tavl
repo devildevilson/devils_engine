@@ -113,6 +113,12 @@
   command = "dispatch constant exposure_dispatch"
 }
 {
+  name = bake_grade_lut
+  material = grade_lut_material
+  sets = [ frame_data, lut_write ]
+  command = "dispatch constant lut_dispatch"
+}
+{
   name = compose_frame
   material = compose_material
   sets = [ frame_data, gbuffer_inputs, compose_inputs, compose_write ]

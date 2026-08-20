@@ -129,8 +129,19 @@
 }
 {
   name = frame_buffer
-  format = mat4mat4mat4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4
+  format = mat4mat4mat4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4
   role = upload
   size = one
+  swap = per_frame
+}
+{
+  // Запечённая таблица грейда. per_frame, потому что перезапекается каждым кадром: кадры в полёте не должны
+  // читать таблицу, которую сосед уже переписывает. Хранится в кодированных shaper'ом координатах — тогда
+  // нейтральный грейд становится ТОЖДЕСТВОМ в этих координатах, а трилинейная интерполяция воспроизводит
+  // линейную функцию точно, то есть у тождества нет ошибки табулирования по построению.
+  name = color_lut
+  format = sf4
+  role = color_lut
+  size = color_lut_size
   swap = per_frame
 }

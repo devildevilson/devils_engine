@@ -22,7 +22,14 @@
   vec4 shaft_params;                \
   vec4 lens_params;                 \
   vec4 output_params;               \
-  vec4 metering;
+  vec4 metering;                    \
+  vec4 grade_balance;               \
+  vec4 grade_tone;                  \
+  vec4 grade_slope;                 \
+  vec4 grade_offset;                \
+  vec4 grade_power;                 \
+  vec4 grade_filter;                \
+  vec4 lut_params;
 
 // viewport_near:    xy = размер кадра в пикселях, z = near, w = номер кадра с последнего сброса истории
 // controls:         x = debug-режим, y = усиление motion при показе, z = усиление ошибки, w = кодировать sRGB
@@ -44,6 +51,16 @@
 // output_params:    x = дизеринг вкл, y = семя зерна (меняется по кадрам), z = яркость панели, w = резерв
 // metering:         x = нижний перцентиль, y = верхний перцентиль, z = сила центровзвешенности,
 //                   w = скорость адаптации К ТЁМНОМУ (к яркому лежит в tonemap.z)
+// grade_balance:    x = температура освещения в K, y = оттенок (зелёный–пурпурный), z = наивный баланс белого,
+//                   w = контраст
+// grade_tone:       x = насыщенность, y = опорная точка контраста, z = грейд включён,
+//                   w = пространство грейда (0 scene-referred до кривой, 1 display-referred после кривой)
+// grade_slope:      xyz = ASC CDL slope
+// grade_offset:     xyz = ASC CDL offset
+// grade_power:      xyz = ASC CDL power
+// grade_filter:     xyz = цвет фильтра, w = его сила
+// lut_params:       x = путь (0 аналитический, 1 таблица), y = shaper (0 log2, 1 линейный),
+//                   z/w = границы shaper'а в стопах
 
 #define PF03_DEBUG_SHADED         0
 #define PF03_DEBUG_DEPTH          1
@@ -65,6 +82,10 @@
 #define PF03_DEBUG_HISTOGRAM      17
 #define PF03_DEBUG_HISTOGRAM_PLOT 18
 #define PF03_DEBUG_LUMINANCE      19
+#define PF03_DEBUG_GRADE          20
+#define PF03_DEBUG_LUT_ERROR      21
+#define PF03_DEBUG_GAMUT          22
+#define PF03_DEBUG_LUT_STRIP      23
 
 // Число корзин обязано совпадать с declare_value 'histogram_bins'. Корзина 0 зарезервирована под «темнее
 // нижней границы»: такие пиксели исключаются из статистики, иначе чёрный фон утягивает экспозицию вверх.

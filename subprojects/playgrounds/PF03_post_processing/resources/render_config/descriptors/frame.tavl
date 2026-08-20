@@ -45,7 +45,11 @@
     { resource = shafts_quarter, usage = sampled, sampler = frame_linear, stage = compute },
     // Гистограмма для отладочного вида. Обнуление стоит в НАЧАЛЕ своего пасса именно поэтому: иначе к моменту
     // компоновки буфер уже пуст, и посмотреть на распределение нечем.
-    { resource = luminance_histogram, usage = storage_read, stage = compute }
+    { resource = luminance_histogram, usage = storage_read, stage = compute },
+    // Таблица грейда. Читается ЛИНЕЙНЫМ сэмплером: интерполяция — часть техники, а не сглаживание. Измерено:
+    // при nearest даже ТОЖДЕСТВО через таблицу уезжает на 8.6 RMSE (максимум 23 уровня) против 0.41 с
+    // линейным, то есть в 21 раз.
+    { resource = color_lut, usage = sampled, sampler = frame_linear, stage = compute }
   ]
 }
 {
@@ -229,5 +233,13 @@
   name = compose_write
   layout = [
     { resource = composed_color, usage = texel_write, stage = compute }
+  ]
+}
+{
+  // Запекание таблицы грейда. Ни одного входа кроме кадровой юниформы: таблица — чистая функция настроек,
+  // а не кадра, поэтому пасс от него не зависит вообще.
+  name = lut_write
+  layout = [
+    { resource = color_lut, usage = texel_write, stage = compute }
   ]
 }

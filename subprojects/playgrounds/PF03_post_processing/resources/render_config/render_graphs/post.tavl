@@ -135,10 +135,24 @@
       steps = [ draw_shafts ]
     },
     {
+      // Запекание таблицы грейда. Отдельный пасс, потому что он не зависит НИ ОТ ЧЕГО в кадре: таблица —
+      // функция настроек. Из этого же следует, что запекать её каждый кадр не нужно, а способа сказать
+      // «выполни пасс по требованию» в графе пока нет (записано как пробел движка) — поэтому цена запекания
+      // измеряется как постоянная, и её видно в отчёте таймстемпов.
+      name = pf03_grade_lut
+      subpasses = [
+        {
+          color_lut = (texel_write, store)
+        }
+      ]
+      steps = [ bake_grade_lut ]
+    },
+    {
       // Читает историю scene_color: кросс-кадровый порядок с pf03_shade выводится, а не объявляется
       name = pf03_compose
       subpasses = [
         {
+          color_lut = (sampled, store),
           scene_depth = (depth_read, store),
           gbuffer_motion = (sampled, store),
           taa_color = (sampled, store),
