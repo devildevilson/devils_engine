@@ -50,6 +50,10 @@ constexpr uint32_t hiz_levels = 6;
 constexpr uint32_t dof_levels = 4;
 // Размер плитки максимума motion в пикселях; обязан совпадать со scale у declare_value viewport_tile
 constexpr uint32_t motion_tile_size = 16;
+// Масштаб разрешения РЕНДЕРА относительно дисплея (TAAU). 1.0 — рендер в разрешении дисплея, и тогда весь
+// тракт обязан вести себя ровно как до появления TAAU. Живёт здесь, потому что от него зависят и размеры
+// ресурсов (переопределение распарсенного конфига), и сетки диспатчей.
+float render_scale = 1.0f;
 // Высота сенсора в мм: полный кадр. Нужна, чтобы CoC считался в ПИКСЕЛЯХ, а не в абстрактных единицах.
 constexpr float sensor_height_mm = 24.0f;
 constexpr float near_plane = 0.1f;
@@ -307,6 +311,14 @@ uint32_t metering_scale = 2;
 // (переопределение распарсенного конфига), и сетка запекающего dispatch.
 uint32_t lut_grid = 32;
 
+// Размер цели рендера. Считается ТОЧНО так же, как его считает движок для screensize-ресурса (усечение
+// произведения), иначе сетка диспатча и размер картинки разъедутся на пиксель.
+std::tuple<uint32_t, uint32_t> render_extent(const uint32_t width, const uint32_t height) {
+  return {
+    std::max(uint32_t(float(width) * render_scale), 1u),
+    std::max(uint32_t(float(height) * render_scale), 1u)};
+}
+
 void update_screen_dispatch(painter::graphics_base& base, const uint32_t width, const uint32_t height) {
   // Каждой цели передаётся её РАЗМЕР В ПИКСЕЛЯХ и размер группы её шейдера — так двойное деление становится
   // невыразимым, а не подстерегающим.
@@ -317,6 +329,16 @@ void update_screen_dispatch(painter::graphics_base& base, const uint32_t width, 
   update_dispatch_constant(base, "eighth_dispatch", (width + 7u) / 8u, (height + 7u) / 8u, dispatch_tile);
   update_dispatch_constant(base, "sixteenth_dispatch", (width + 15u) / 16u, (height + 15u) / 16u, dispatch_tile);
   update_dispatch_constant(base, "thirtysecond_dispatch", (width + 31u) / 32u, (height + 31u) / 32u, dispatch_tile);
+  // Сетки разрешения РЕНДЕРА: всё до накопления считается по ним. Уровни пирамиды глубины идут по тем же
+  // делителям, потому что пирамида живёт в разрешении рендера.
+  const auto [render_width, render_height] = render_extent(width, height);
+  update_dispatch_constant(base, "render_dispatch", render_width, render_height, dispatch_tile);
+  update_dispatch_constant(base, "render_2_dispatch", (render_width + 1u) / 2u, (render_height + 1u) / 2u, dispatch_tile);
+  update_dispatch_constant(base, "render_4_dispatch", (render_width + 3u) / 4u, (render_height + 3u) / 4u, dispatch_tile);
+  update_dispatch_constant(base, "render_8_dispatch", (render_width + 7u) / 8u, (render_height + 7u) / 8u, dispatch_tile);
+  update_dispatch_constant(base, "render_16_dispatch", (render_width + 15u) / 16u, (render_height + 15u) / 16u, dispatch_tile);
+  update_dispatch_constant(base, "render_32_dispatch", (render_width + 31u) / 32u, (render_height + 31u) / 32u, dispatch_tile);
+
   // Плитки максимума motion: сетка 1/16 кадра, и по потоку на плитку (группа 8x8)
   update_dispatch_constant(
     base, "tile_dispatch",
@@ -761,6 +783,13 @@ int main(int argc, char** argv) {
       else if (name == "linear") lut_linear_shaper = true;
       else utils::error{}("PF03 unknown lut shaper '{}' (log|linear)", name);
     }
+    constexpr std::string_view render_scale_prefix = "--render-scale=";
+    if (option.starts_with(render_scale_prefix)) {
+      render_scale = std::stof(std::string(option.substr(render_scale_prefix.size())));
+      if (render_scale < 0.25f || render_scale > 1.0f) {
+        utils::error{}("PF03 render scale {} is out of the supported 0.25..1.0 range", render_scale);
+      }
+    }
     constexpr std::string_view shutter_prefix = "--shutter=";
     if (option.starts_with(shutter_prefix)) {
       blur_shutter = std::stof(std::string(option.substr(shutter_prefix.size())));
@@ -1184,6 +1213,22 @@ int main(int argc, char** argv) {
       utils::info("PF03 shader constant override: ao_samples = {}", ao_samples);
     }
 
+    // Разрешение рендера — это РАЗМЕР РЕСУРСОВ, а не число в UBO: переопределяется в объявленных значениях
+    // до сборки графа. Ровно тот же рычаг, что размер таблицы грейда, и та же цена — пересоздание ресурсов.
+    if (render_scale != 1.0f) {
+      for (const auto* name : {"viewport_render", "viewport_render_half"}) {
+        const auto slot = render_config.find_constant_value(name);
+        if (slot == painter::invalid_resource_slot) {
+          utils::error{}("PF03 declared value '{}' is absent from the configured graph", name);
+        }
+        auto& value = render_config.constant_values[slot];
+        const auto& [x, y, z] = value.scale;
+        value.scale = std::make_tuple(x * render_scale, y * render_scale, z);
+        value.current_scale = value.scale;
+      }
+      utils::info("PF03 render scale override: {} of display resolution", render_scale);
+    }
+
     // Число проб motion blur и расширение по плиткам — тоже тиры качества
     if (blur_taps != 0 || !blur_tiles) {
       const auto slot = render_config.find_execution_step("apply_motion_blur");
@@ -1431,6 +1476,10 @@ int main(int argc, char** argv) {
       "PF03 LUT: {0}^3 (объёмный ресурс), shaper {1} over {2}..{3} stops",
       lut_grid, lut_linear_shaper ? "linear" : "log2", lut_min_stop, lut_max_stop);
     utils::info(
+      "PF03 render scale: {} ({}x{} рендер при {}x{} дисплея) — накопление идёт в разрешении дисплея",
+      render_scale, std::get<0>(render_extent(initial_width, initial_height)),
+      std::get<1>(render_extent(initial_width, initial_height)), initial_width, initial_height);
+    utils::info(
       "PF03 motion blur: шторка {} кадра, плитки {} px, расширение {}",
       blur_shutter, motion_tile_size, blur_tiles ? "включено" : "выключено");
     utils::info(
@@ -1539,9 +1588,14 @@ int main(int argc, char** argv) {
       const glm::vec2 jitter_pixels = jitter_scale > 0.0f
         ? glm::vec2(halton(phase + 1u, 2u) - 0.5f, halton(phase + 1u, 3u) - 0.5f) * jitter_scale
         : glm::vec2(0.0f);
+      // Джиттер выражается в пикселях РЕНДЕРА, а не дисплея. При TAAU это принципиально: смысл джиттера — чтобы
+      // выборка гуляла внутри пикселя ТОЙ сетки, в которой рисуется кадр. Делить на размер дисплея значило бы
+      // при пониженном рендере трясти выборку в разы меньше нужного, и накопление не набирало бы информации,
+      // которой в одном низком кадре нет — то есть TAAU не давал бы ничего (это и было измерено до правки).
+      const auto [jitter_width, jitter_height] = render_extent(pending_width, pending_height);
       const glm::vec2 jitter_uv{
-        jitter_pixels.x / float(std::max(pending_width, 1u)),
-        jitter_pixels.y / float(std::max(pending_height, 1u))};
+        jitter_pixels.x / float(std::max(jitter_width, 1u)),
+        jitter_pixels.y / float(std::max(jitter_height, 1u))};
       // Знак определён ИЗМЕРЕНИЕМ, а не выводом из формы матрицы: инвариант такой — на полностью статичной
       // сцене со статичной камерой motion обязан быть нулём при включённом джиттере. При обратном знаке он
       // оказывался 1.6 px, джиттер протекал в векторы, TAA репроецировал по ним и в итоге давал картинку

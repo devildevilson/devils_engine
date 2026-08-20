@@ -11,7 +11,7 @@
   name = scene_depth
   format = d32
   role = depth
-  size = viewport
+  size = viewport_render
   swap = per_frame
 }
 {
@@ -19,7 +19,7 @@
   name = gbuffer_normal
   format = sf2
   role = gbuffer_normal
-  size = viewport
+  size = viewport_render
   swap = per_frame
 }
 {
@@ -27,7 +27,7 @@
   name = gbuffer_motion
   format = sf2
   role = gbuffer_velocity
-  size = viewport
+  size = viewport_render
   swap = per_frame
 }
 {
@@ -35,7 +35,7 @@
   name = scene_color
   format = sf4
   role = hdr_color
-  size = viewport
+  size = viewport_render
   swap = per_frame
 }
 {
@@ -44,14 +44,14 @@
   name = ao_raw
   format = sf2
   role = shadow_mask
-  size = viewport_half
+  size = viewport_render_half
   swap = per_frame
 }
 {
   name = ao_blurred
   format = sf2
   role = shadow_mask
-  size = viewport_half
+  size = viewport_render_half
   swap = per_frame
 }
 {
@@ -60,7 +60,7 @@
   name = fogged_color
   format = sf4
   role = hdr_color
-  size = viewport
+  size = viewport_render
   swap = per_frame
 }
 {
@@ -163,7 +163,7 @@
   name = hiz
   format = v2
   role = hi_z
-  size = viewport
+  size = viewport_render
   mips = 6
   swap = per_frame
 }
@@ -174,7 +174,7 @@
   name = reflected_color
   format = sf4
   role = hdr_color
-  size = viewport
+  size = viewport_render
   swap = per_frame
 }
 {
@@ -183,7 +183,7 @@
   name = ssr_stats
   format = sf4
   role = postprocess_output
-  size = viewport
+  size = viewport_render
   swap = per_frame
 }
 {

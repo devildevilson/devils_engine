@@ -25,13 +25,15 @@ void main() {
   }
 
   const ivec2 source_size = textureSize(motion_image, 0);
-  const int tile_size = int(frame.blur_params.w + 0.5);
-  const ivec2 base = tile * tile_size;
+  // Размер блока выводится из ОТНОШЕНИЯ размеров, а не берётся из UBO: при TAAU motion живёт в разрешении
+  // рендера, а сетка плиток — в разрешении дисплея, и константа из UBO покрывала бы не то поле.
+  const ivec2 block = max(source_size / tiles, ivec2(1));
+  const ivec2 base = tile * block;
 
   vec2 best = vec2(0.0);
   float best_length = 0.0;
-  for (int y = 0; y < tile_size; ++y) {
-    for (int x = 0; x < tile_size; ++x) {
+  for (int y = 0; y < block.y; ++y) {
+    for (int x = 0; x < block.x; ++x) {
       const ivec2 tap = clamp(base + ivec2(x, y), ivec2(0), source_size - 1);
       const vec2 motion = texelFetch(motion_image, tap, 0).rg;
       const float len = length(motion);

@@ -317,7 +317,9 @@ void main() {
     bool violated = false;
     for (int level = 1; level < levels; ++level) {
       const ivec2 level_size = textureSize(hiz_image, level);
-      const ivec2 tap = clamp(pixel >> level, ivec2(0), level_size - 1);
+      // Индексация по uv, а не сдвигом пикселя: при TAAU пирамида живёт в разрешении рендера, и пиксель
+      // дисплея её текселей не адресует.
+      const ivec2 tap = clamp(ivec2(uv * vec2(level_size)), ivec2(0), level_size - 1);
       const vec2 bounds = texelFetch(hiz_image, tap, level).rg;
       if (depth < bounds.x || depth > bounds.y) {
         violated = true;

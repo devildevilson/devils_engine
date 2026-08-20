@@ -11,37 +11,37 @@
   name = build_hiz_0
   material = hiz_first_material
   sets = [ frame_data, hiz_first ]
-  command = "dispatch constant screen_dispatch"
+  command = "dispatch constant render_dispatch"
 }
 {
   name = build_hiz_1
   material = hiz_down_material
   sets = [ frame_data, hiz_down_1 ]
-  command = "dispatch constant half_dispatch"
+  command = "dispatch constant render_2_dispatch"
 }
 {
   name = build_hiz_2
   material = hiz_down_material
   sets = [ frame_data, hiz_down_2 ]
-  command = "dispatch constant quarter_dispatch"
+  command = "dispatch constant render_4_dispatch"
 }
 {
   name = build_hiz_3
   material = hiz_down_material
   sets = [ frame_data, hiz_down_3 ]
-  command = "dispatch constant eighth_dispatch"
+  command = "dispatch constant render_8_dispatch"
 }
 {
   name = build_hiz_4
   material = hiz_down_material
   sets = [ frame_data, hiz_down_4 ]
-  command = "dispatch constant sixteenth_dispatch"
+  command = "dispatch constant render_16_dispatch"
 }
 {
   name = build_hiz_5
   material = hiz_down_material
   sets = [ frame_data, hiz_down_5 ]
-  command = "dispatch constant thirtysecond_dispatch"
+  command = "dispatch constant render_32_dispatch"
 }
 {
   // Число проб — specialization-константа шага: это тир качества, а его смена стоит только пересборки
@@ -50,25 +50,25 @@
   material = ao_material
   sets = [ frame_data, gbuffer_inputs, ao_write ]
   shader_constants = [ ao_samples = "16" ]
-  command = "dispatch constant half_dispatch"
+  command = "dispatch constant render_2_dispatch"
 }
 {
   name = blur_ao
   material = ao_blur_material
   sets = [ frame_data, ao_read, ao_blur_write ]
-  command = "dispatch constant half_dispatch"
+  command = "dispatch constant render_2_dispatch"
 }
 {
   name = shade_scene
   material = shade_material
   sets = [ frame_data, gbuffer_inputs, ao_final_read, shade_write ]
-  command = "dispatch constant screen_dispatch"
+  command = "dispatch constant render_dispatch"
 }
 {
   name = apply_fog
   material = fog_material
   sets = [ frame_data, gbuffer_inputs, scene_read, fog_write ]
-  command = "dispatch constant screen_dispatch"
+  command = "dispatch constant render_dispatch"
 }
 {
   // Способ марша — тир качества: смена стоит пересборки pipeline, поэтому specialization-константа, а не UBO.
@@ -78,7 +78,7 @@
   material = ssr_material
   sets = [ frame_data, gbuffer_inputs, ssr_read, ssr_write ]
   shader_constants = [ ssr_hierarchical = "0" ]
-  command = "dispatch constant screen_dispatch"
+  command = "dispatch constant render_dispatch"
 }
 {
   name = resolve_taa

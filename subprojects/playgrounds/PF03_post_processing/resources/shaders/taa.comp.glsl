@@ -26,7 +26,18 @@ void main() {
   }
 
   const vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
-  const vec3 current = texture(current_image, uv).rgb;
+
+  // ВОТ И ВЕСЬ TAAU: вход может быть мельче цели. Накопление идёт в разрешении ДИСПЛЕЯ, а сцена рисуется в
+  // разрешении рендера, и субпиксельный джиттер за несколько кадров покрывает сетку дисплея — то есть история
+  // хранит информацию, которой в одном низком кадре нет. При равных разрешениях ветка обязана быть той же
+  // самой, что была до TAAU, иначе штатный прогон перестал бы быть эталоном сам себе.
+  const ivec2 render_size = textureSize(current_image, 0);
+  const bool upsampling = render_size.x != size.x || render_size.y != size.y;
+  // Фильтр реконструкции — Catmull-Rom: билинейный при подъёме разрешения теряет ровно то, за чем TAAU и
+  // затевается (измерено в срезе 5 на выборке истории, здесь та же причина).
+  const vec3 current = upsampling
+    ? pf03_sample_catmull_rom(current_image, uv, vec2(render_size))
+    : texture(current_image, uv).rgb;
 
   // TAA выключен либо истории ещё нет — отдаём текущий кадр как есть. Это и есть passthrough: без него
   // первые кадры после сброса подмешивали бы пустую историю и кадр выходил бы темнее.
@@ -71,7 +82,9 @@ void main() {
       if (x == 0 && y == 0) {
         continue;
       }
-      const ivec2 tap = clamp(pixel + ivec2(x, y), ivec2(0), size - 1);
+      // Окрестность берётся в текселях ИСТОЧНИКА: при подъёме разрешения координата пикселя дисплея не
+      // адресует низкое разрешение, и коробка отбраковки собиралась бы не по тем соседям.
+      const ivec2 tap = clamp(ivec2(uv * vec2(render_size)) + ivec2(x, y), ivec2(0), render_size - 1);
       const vec3 neighbour = pf03_rgb_to_ycocg(pf03_range_compress(texelFetch(current_image, tap, 0).rgb));
       neighbourhood_min = min(neighbourhood_min, neighbour);
       neighbourhood_max = max(neighbourhood_max, neighbour);
@@ -131,6 +144,11 @@ void main() {
   history_ycocg = reject_mode > 0 ? clipped : history_ycocg;
   const vec3 history_compressed = pf03_ycocg_to_rgb(history_ycocg);
 
+  // Вес истории здесь ФИКСИРОВАННЫЙ, и это признанное ограничение реконструкции. Попытка сделать его зависящим
+  // от того, насколько близко фактическая позиция отсчёта рендера легла к центру пикселя дисплея, ИЗМЕРЕННО
+  // сделала хуже (6.19 против 5.95 при масштабе 0.75) и вдобавок замедлила сходимость: при среднем весе около
+  // 0.99 накопление не успевает сойтись за сотню кадров. Настоящему TAAU нужен не вес, а СЧЁТЧИК набранных
+  // отсчётов на пиксель — см. README, срез 13.
   const float weight = clamp(frame.taa_params.x, 0.0, 0.98);
   const vec3 blended = mix(current_compressed, history_compressed, weight);
 
