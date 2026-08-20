@@ -30,7 +30,8 @@
   vec4 grade_power;                 \
   vec4 grade_filter;                \
   vec4 lut_params;                  \
-  vec4 hiz_params;
+  vec4 hiz_params;                  \
+  vec4 ssr_params;
 
 // viewport_near:    xy = размер кадра в пикселях, z = near, w = номер кадра с последнего сброса истории
 // controls:         x = debug-режим, y = усиление motion при показе, z = усиление ошибки, w = кодировать sRGB
@@ -64,6 +65,8 @@
 // lut_params:       x = путь (0 аналитический, 1 таблица), y = shaper (0 log2, 1 линейный),
 //                   z/w = границы shaper'а в стопах
 // hiz_params:       x = уровень пирамиды для отладочного вида, y = число уровней, zw = резерв
+// ssr_params:       x = сила отражений (0 — выключены), y = шероховатость, z = толщина поверхности в метрах,
+//                   w = предел шагов марша
 
 #define PF03_DEBUG_SHADED         0
 #define PF03_DEBUG_DEPTH          1
@@ -91,6 +94,8 @@
 #define PF03_DEBUG_LUT_STRIP      23
 #define PF03_DEBUG_HIZ            24
 #define PF03_DEBUG_HIZ_CHECK      25
+#define PF03_DEBUG_SSR_STEPS      26
+#define PF03_DEBUG_SSR_FATE       27
 
 // Число корзин обязано совпадать с declare_value 'histogram_bins'. Корзина 0 зарезервирована под «темнее
 // нижней границы»: такие пиксели исключаются из статистики, иначе чёрный фон утягивает экспозицию вверх.

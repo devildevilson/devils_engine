@@ -57,7 +57,9 @@
     { resource = color_lut, usage = sampled, sampler = frame_linear, stage = compute, history = 1 },
     // Пирамида глубины для отладочных видов. Биндинг БЕЗ уровня — вид на всю цепочку, потому что проверка
     // консервативности обращается к каждому уровню через texelFetch с явным LOD.
-    { resource = hiz, usage = sampled, sampler = frame_nearest, stage = compute }
+    { resource = hiz, usage = sampled, sampler = frame_nearest, stage = compute },
+    // Диагностика марша SSR: шаги и судьба луча. Только для отладочных видов — сама картинка её не читает.
+    { resource = ssr_stats, usage = sampled, sampler = frame_nearest, stage = compute }
   ]
 }
 {
@@ -292,5 +294,27 @@
   layout = [
     { resource = hiz, usage = sampled, sampler = frame_nearest, stage = compute, mip = 4 },
     { resource = hiz, usage = texel_write, stage = compute, mip = 5 }
+  ]
+}
+{
+  // Входы SSR: затуманенный кадр и пирамида глубины (вид на всю цепочку — марш обращается к любому уровню)
+  name = ssr_read
+  layout = [
+    { resource = fogged_color, usage = sampled, sampler = frame_linear, stage = compute },
+    { resource = hiz, usage = sampled, sampler = frame_nearest, stage = compute }
+  ]
+}
+{
+  name = ssr_write
+  layout = [
+    { resource = reflected_color, usage = texel_write, stage = compute },
+    { resource = ssr_stats, usage = texel_write, stage = compute }
+  ]
+}
+{
+  // Накопление TAA читает кадр УЖЕ с отражениями
+  name = reflected_read
+  layout = [
+    { resource = reflected_color, usage = sampled, sampler = frame_linear, stage = compute }
   ]
 }

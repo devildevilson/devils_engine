@@ -71,9 +71,19 @@
   command = "dispatch constant screen_dispatch"
 }
 {
+  // Способ марша — тир качества: смена стоит пересборки pipeline, поэтому specialization-константа, а не UBO.
+  // По умолчанию ЛИНЕЙНЫЙ, и это результат измерения, а не упрощение: в этой сцене иерархический марш по
+  // пирамиде оказался дороже линейного при той же точности (см. README, срез 10).
+  name = trace_ssr
+  material = ssr_material
+  sets = [ frame_data, gbuffer_inputs, ssr_read, ssr_write ]
+  shader_constants = [ ssr_hierarchical = "0" ]
+  command = "dispatch constant screen_dispatch"
+}
+{
   name = resolve_taa
   material = taa_material
-  sets = [ frame_data, gbuffer_inputs, fogged_read, taa_io ]
+  sets = [ frame_data, gbuffer_inputs, reflected_read, taa_io ]
   command = "dispatch constant screen_dispatch"
 }
 {

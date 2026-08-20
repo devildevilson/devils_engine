@@ -34,6 +34,8 @@ layout(set = 2, binding = 8) uniform sampler3D lut_image;
 layout(set = 2, binding = 9) uniform sampler3D lut_prev_image;
 // Пирамида глубины: вид на всю цепочку, читается texelFetch'ем с явным уровнем
 layout(set = 2, binding = 10) uniform sampler2D hiz_image;
+// Диагностика марша SSR: .r = шагов / предел, .g = попадание, .b = ушёл за кадр, .a = вес
+layout(set = 2, binding = 11) uniform sampler2D ssr_stats_image;
 
 layout(set = 3, binding = 0, rgba16f) uniform writeonly image2D composed_image;
 
@@ -318,6 +320,20 @@ void main() {
       }
     }
     result = violated ? vec3(1.0, 0.0, 0.0) : vec3(0.03);
+  } else if (mode == PF03_DEBUG_SSR_STEPS) {
+    // Сколько шагов стоил марш. Это и есть та величина, ради которой строилась пирамида, и сравнивать
+    // иерархический марш с линейным надо по ней, а не по картинке.
+    const float steps = texture(ssr_stats_image, uv).r;
+    result = vec3(clamp(steps, 0.0, 1.0));
+  } else if (mode == PF03_DEBUG_SSR_FATE) {
+    // Судьба луча: зелёное — нашёл поверхность, синее — ушёл за кадр (экранный метод просто не знает, что там),
+    // красное — прошёл весь отрезок и не встретил ничего. Ограничения метода тут видно числом, а не на словах.
+    const vec4 stats = texture(ssr_stats_image, uv);
+    const bool traced = stats.a > 0.0;
+    result = vec3(
+      traced && stats.g < 0.5 && stats.b < 0.5 ? 1.0 : 0.0,
+      stats.g > 0.5 ? 1.0 : 0.0,
+      stats.b > 0.5 ? 1.0 : 0.0);
   } else if (mode == PF03_DEBUG_ERROR_NAIVE) {
     // Та же ошибка, но БЕЗ motion-векторов: контрольная величина, относительно которой видно, что
     // векторы действительно что-то исправляют, а не просто «выглядят правдоподобно».

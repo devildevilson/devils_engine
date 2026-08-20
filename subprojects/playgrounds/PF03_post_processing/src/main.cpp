@@ -52,11 +52,11 @@ constexpr float near_plane = 0.1f;
 constexpr float orbit_step_seconds = 1.0f / 60.0f;
 
 // Отладочные виды; порядок обязан совпадать с PF03_DEBUG_* в resources/shaders/pf03_frame.glsl
-constexpr std::array<std::string_view, 26> debug_names = {
+constexpr std::array<std::string_view, 28> debug_names = {
   "shaded", "depth", "normal", "motion", "reprojected", "error(motion)", "error(no motion)",
   "clipping", "calibration", "exposure", "transmittance", "ao", "ao raw", "taa rejection",
   "bloom", "shafts", "sharpen", "histogram", "histogram plot", "luminance",
-  "grade delta", "lut error", "gamut", "lut strip", "hiz", "hiz check"};
+  "grade delta", "lut error", "gamut", "lut strip", "hiz", "hiz check", "ssr steps", "ssr fate"};
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -156,8 +156,9 @@ struct alignas(16) frame_block {
   glm::vec4 grade_filter;
   glm::vec4 lut_params;
   glm::vec4 hiz_params;
+  glm::vec4 ssr_params;
 };
-static_assert(sizeof(frame_block) == 576);
+static_assert(sizeof(frame_block) == 592);
 
 struct vertex {
   float px, py, pz;
@@ -618,6 +619,14 @@ int main(int argc, char** argv) {
   // ПОКОЛЕНИЙ на условном счётчике — единственный способ этот скачок размазать.
   uint32_t lut_fade_frames = 0;
   uint32_t hiz_debug_level = 0; // какой уровень пирамиды показывает вид 24
+  float ssr_intensity = 0.55f;   // сила отражений; 0 — кадр проходит насквозь побитово
+  float ssr_roughness = 0.0f;    // шероховатость: пока только ослабляет отражение (нет канала материала)
+  float ssr_thickness = 0.6f;    // толщина поверхности в метрах: без неё марш «находит» отражения за объектами
+  float ssr_steps = 128.0f;      // предел шагов марша
+  // Марш по умолчанию ЛИНЕЙНЫЙ — по измерению: в этой сцене иерархический по пирамиде дороже при той же
+  // точности, потому что скользящий вдоль пола луч не выходит из окрестности той самой геометрии, от которой
+  // отражается, и пропустить клетку целиком почти никогда нельзя.
+  bool ssr_hierarchical = false;
   float taa_weight = 0.92f;       // вес истории: больше — стабильнее и мылее
   uint32_t taa_phases = 8;        // длина последовательности джиттера
   float jitter_scale = 1.0f;      // 0 — джиттер выключен (тогда накапливать нечего)
@@ -721,6 +730,29 @@ int main(int argc, char** argv) {
       if (name == "log" || name == "log2") lut_linear_shaper = false;
       else if (name == "linear") lut_linear_shaper = true;
       else utils::error{}("PF03 unknown lut shaper '{}' (log|linear)", name);
+    }
+    constexpr std::string_view ssr_prefix = "--ssr=";
+    if (option.starts_with(ssr_prefix)) {
+      ssr_intensity = std::stof(std::string(option.substr(ssr_prefix.size())));
+    }
+    constexpr std::string_view ssr_rough_prefix = "--ssr-roughness=";
+    if (option.starts_with(ssr_rough_prefix)) {
+      ssr_roughness = std::stof(std::string(option.substr(ssr_rough_prefix.size())));
+    }
+    constexpr std::string_view ssr_thick_prefix = "--ssr-thickness=";
+    if (option.starts_with(ssr_thick_prefix)) {
+      ssr_thickness = std::stof(std::string(option.substr(ssr_thick_prefix.size())));
+    }
+    constexpr std::string_view ssr_steps_prefix = "--ssr-steps=";
+    if (option.starts_with(ssr_steps_prefix)) {
+      ssr_steps = std::stof(std::string(option.substr(ssr_steps_prefix.size())));
+    }
+    constexpr std::string_view ssr_march_prefix = "--ssr-march=";
+    if (option.starts_with(ssr_march_prefix)) {
+      const auto name = option.substr(ssr_march_prefix.size());
+      if (name == "hiz") ssr_hierarchical = true;
+      else if (name == "linear") ssr_hierarchical = false;
+      else utils::error{}("PF03 unknown ssr march '{}' (hiz|linear)", name);
     }
     constexpr std::string_view hiz_level_prefix = "--hiz-level=";
     if (option.starts_with(hiz_level_prefix)) {
@@ -1078,6 +1110,24 @@ int main(int argc, char** argv) {
       utils::info("PF03 shader constant override: ao_samples = {}", ao_samples);
     }
 
+    // Способ марша SSR — тир качества, поэтому это specialization-константа шага, и переопределяется она в
+    // распарсенном конфиге до сборки графа (тот же приём, что у числа проб SSAO).
+    if (ssr_hierarchical) {
+      const auto slot = render_config.find_execution_step("trace_ssr");
+      if (slot == painter::invalid_resource_slot) {
+        utils::error{}("PF03 step 'trace_ssr' is absent from the configured graph");
+      }
+      auto& constants = render_config.steps[slot].shader_constants;
+      const auto found = std::find_if(constants.begin(), constants.end(), [](const auto& entry) {
+        return entry.first == "ssr_hierarchical";
+      });
+      if (found == constants.end()) {
+        utils::error{}("PF03 step 'trace_ssr' has no 'ssr_hierarchical' shader constant to override");
+      }
+      found->second = "1";
+      utils::info("PF03 shader constant override: ssr_hierarchical = 1 (марш по пирамиде глубины)");
+    }
+
     // Размер таблицы грейда — это РАЗМЕР РЕСУРСА, а не число в UBO и не константа шага. Поэтому он
     // переопределяется в объявленном значении до сборки графа: сменить его живьём нельзя, нужно пересоздать
     // картинку. Ровно тот рычаг «размеры целей», про который говорит аудит.
@@ -1254,6 +1304,9 @@ int main(int argc, char** argv) {
     utils::info(
       "PF03 LUT: {0}^3 (объёмный ресурс), shaper {1} over {2}..{3} stops",
       lut_grid, lut_linear_shaper ? "linear" : "log2", lut_min_stop, lut_max_stop);
+    utils::info(
+      "PF03 SSR: сила {}, шероховатость {}, толщина {} м, предел шагов {}, марш {}",
+      ssr_intensity, ssr_roughness, ssr_thickness, ssr_steps, ssr_hierarchical ? "иерархический" : "линейный");
     utils::info(
       "PF03 LUT fade: {} (переход между поколениями таблицы)",
       lut_fade_frames == 0 ? std::string("мгновенно") : (std::to_string(lut_fade_frames) + " кадров"));
@@ -1437,6 +1490,7 @@ int main(int argc, char** argv) {
       frame_data.grade_power = glm::vec4(grade_power, 0.0f);
       frame_data.grade_filter = glm::vec4(color_filter, filter_strength);
       frame_data.hiz_params = glm::vec4(float(hiz_debug_level), float(hiz_levels), 0.0f, 0.0f);
+      frame_data.ssr_params = glm::vec4(ssr_intensity, ssr_roughness, ssr_thickness, ssr_steps);
       frame_data.lut_params = glm::vec4(
         grade_by_lut ? 1.0f : 0.0f, lut_linear_shaper ? 1.0f : 0.0f, lut_min_stop, lut_max_stop);
       write_current_buffer(base, "frame_buffer", &frame_data, sizeof(frame_data));

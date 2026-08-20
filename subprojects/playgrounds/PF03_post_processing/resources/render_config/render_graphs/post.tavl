@@ -87,13 +87,29 @@
       steps = [ apply_fog ]
     },
     {
+      // Отражения в экранном пространстве по пирамиде глубины. Стоят ПОСЛЕ тумана и ДО накопления: отражения
+      // это свет, поэтому они должны попасть и в замер экспозиции, и в bloom, а шум марша усредняет TAA.
+      name = pf03_ssr
+      subpasses = [
+        {
+          scene_depth = (depth_read, store),
+          gbuffer_normal = (sampled, store),
+          hiz = (sampled, store),
+          fogged_color = (sampled, store),
+          reflected_color = (texel_write, store),
+          ssr_stats = (texel_write, store)
+        }
+      ]
+      steps = [ trace_ssr ]
+    },
+    {
       // Накопление TAA: репроекция прошлого накопленного кадра по motion-векторам плюс neighbourhood clamp
       name = pf03_taa
       subpasses = [
         {
           gbuffer_motion = (sampled, store),
           scene_depth = (depth_read, store),
-          fogged_color = (sampled, store),
+          reflected_color = (sampled, store),
           taa_color = (texel_write, store)
         }
       ]
@@ -169,6 +185,7 @@
         {
           color_lut = (sampled, store),
           hiz = (sampled, store),
+          ssr_stats = (sampled, store),
           scene_depth = (depth_read, store),
           gbuffer_motion = (sampled, store),
           taa_color = (sampled, store),
