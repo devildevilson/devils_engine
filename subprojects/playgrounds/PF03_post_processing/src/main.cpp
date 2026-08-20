@@ -605,6 +605,10 @@ int main(int argc, char** argv) {
   bool lut_linear_shaper = false; // линейный shaper вместо log2: показывает, куда уходит сетка таблицы
   float lut_min_stop = -12.0f;    // границы shaper'а в стопах: область определения таблицы
   float lut_max_stop = 10.0f;
+  // Каждые сколько кадров хост объявляет настройки грейда изменившимися (сдвигает счётчик кэша). 0 — никогда:
+  // настройки в площадке заданы командной строкой, поэтому таблица честно запекается ОДИН раз. Ручка нужна,
+  // чтобы измерить цену перезапекания и чтобы можно было наступить на ограничение частоты сдвигов.
+  uint32_t relut_period = 0;
   float taa_weight = 0.92f;       // вес истории: больше — стабильнее и мылее
   uint32_t taa_phases = 8;        // длина последовательности джиттера
   float jitter_scale = 1.0f;      // 0 — джиттер выключен (тогда накапливать нечего)
@@ -708,6 +712,10 @@ int main(int argc, char** argv) {
       if (name == "log" || name == "log2") lut_linear_shaper = false;
       else if (name == "linear") lut_linear_shaper = true;
       else utils::error{}("PF03 unknown lut shaper '{}' (log|linear)", name);
+    }
+    constexpr std::string_view relut_prefix = "--relut=";
+    if (option.starts_with(relut_prefix)) {
+      relut_period = uint32_t(std::stoul(std::string(option.substr(relut_prefix.size()))));
     }
     constexpr std::string_view lut_range_prefix = "--lut-range=";
     if (option.starts_with(lut_range_prefix)) {
@@ -1072,6 +1080,13 @@ int main(int argc, char** argv) {
     base.populate_constant_default_values();
     update_screen_dispatch(base, initial_width, initial_height);
 
+    // Счётчик кэша грейда: его двигает ХОСТ, потому что только он знает, изменились ли настройки. Пасс
+    // запекания привязан к этому счётчику в конфиге, поэтому в кадрах без сдвига он не пишет команд.
+    const uint32_t grade_cache_counter = base.find_counter("grade_cache");
+    if (grade_cache_counter == painter::invalid_resource_slot) {
+      utils::error{}("PF03 counter 'grade_cache' is absent from the configured graph");
+    }
+
     const uint32_t graph = base.find_render_graph("pf03_post");
     if (graph == painter::invalid_resource_slot) {
       utils::error{}("PF03 render graph was not found");
@@ -1219,6 +1234,9 @@ int main(int argc, char** argv) {
     utils::info(
       "PF03 LUT: {0}^3 (объёмный ресурс), shaper {1} over {2}..{3} stops",
       lut_grid, lut_linear_shaper ? "linear" : "log2", lut_min_stop, lut_max_stop);
+    utils::info(
+      "PF03 LUT bake: {} (пасс на условном счётчике grade_cache)",
+      relut_period == 0 ? std::string("однократно") : ("каждые " + std::to_string(relut_period) + " кадров"));
     utils::info("PF03 controls: WASD/QE move, mouse look, R reset history, Esc exit");
     utils::info("PF03 scene: static room (camera motion only) + {} moving cubes (per-object motion)", mover_count);
 
@@ -1249,6 +1267,14 @@ int main(int argc, char** argv) {
       if (reset_requested) {
         frames_since_reset = 0;
         reset_requested = false;
+        // R сбрасывает историю И объявляет таблицу устаревшей: так видно, что пасс запекания возвращается
+        base.inc_counter(grade_cache_counter);
+      }
+
+      // Периодический сдвиг счётчика: имитация «автор подвигал ручки грейда». Нужен для измерения цены
+      // перезапекания и для проверки, что движок ловит слишком частые сдвиги громко.
+      if (relut_period != 0 && frames_total % relut_period == 0) {
+        base.inc_counter(grade_cache_counter);
       }
 
       if (orbit_speed > 0.0f) {

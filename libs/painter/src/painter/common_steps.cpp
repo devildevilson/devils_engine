@@ -74,7 +74,7 @@ subpass_next::subpass_next() noexcept : renderpass(VK_NULL_HANDLE) {}
 
 execution_group::frame::frame() noexcept : buffer(VK_NULL_HANDLE), cross_frame_waits(0) {}
 
-execution_group::execution_group() noexcept : device(VK_NULL_HANDLE), pool(VK_NULL_HANDLE) {}
+execution_group::execution_group() noexcept : device(VK_NULL_HANDLE), pool(VK_NULL_HANDLE), pass_slot(invalid_resource_slot) {}
 
 render_graph_instance::semaphore::semaphore() noexcept {
   memset(handles.data(), 0, sizeof(handles));
@@ -1082,8 +1082,14 @@ void execution_group::process(graphics_ctx* ctx, const uint32_t pass_index) cons
   if (ctx->gpu_profiler != nullptr) {
     ctx->gpu_profiler->record_pass_begin(cb, cur_index, pass_index);
   }
-  for (auto p : steps) {
-    p->process(ctx, cb);
+  // Условный пасс в кадре без сдвига счётчика не пишет НИ ОДНОЙ команды, но группа по-прежнему отправляется:
+  // семафоры сигналятся самим submit'ом, поэтому цепочка ожиданий остаётся целой, а число измеряемых
+  // таймстемпами пассов не меняется по кадрам — пустой пасс честно показывает свои ~0 мс.
+  const bool execute = pass_slot == invalid_resource_slot || ctx->base->pass_executes_this_frame(pass_slot);
+  if (execute) {
+    for (auto p : steps) {
+      p->process(ctx, cb);
+    }
   }
   if (ctx->gpu_profiler != nullptr) {
     ctx->gpu_profiler->record_pass_end(cb, cur_index, pass_index);

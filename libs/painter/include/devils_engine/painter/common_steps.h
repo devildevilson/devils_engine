@@ -174,6 +174,9 @@ struct execution_group {
 
   VkDevice device;
   VkCommandPool pool;
+  // Слот пасса графа: нужен, чтобы спросить у graphics_base, обязан ли условный пасс писать команды в этом
+  // кадре. invalid_resource_slot => группа не привязана к пассу и исполняется всегда.
+  uint32_t pass_slot;
 
   execution_group() noexcept;
   ~execution_group() noexcept;

@@ -38,7 +38,7 @@ step_base::step_base() noexcept
     geometry(invalid_resource_slot),
     draw_group(invalid_resource_slot) {}
 
-execution_pass_base::execution_pass_base() noexcept : render_target(invalid_resource_slot) {}
+execution_pass_base::execution_pass_base() noexcept : render_target(invalid_resource_slot), counter(invalid_resource_slot) {}
 
 bool execution_pass_base::is_graphics_pass() const noexcept {
   return render_target != invalid_resource_slot;
@@ -1093,6 +1093,7 @@ struct draw_group_mirror {
 struct pass2_mirror {
   std::string name;
   std::string render_target;
+  std::string counter; // условный счётчик: пасс исполняется только когда он сдвинулся
   std::vector<std::unordered_map<std::string, std::tuple<std::string, std::string>>> subpasses;
   std::vector<std::string> steps; // ключевое слово next_subpass
 
@@ -1288,6 +1289,10 @@ static void parse_execution_pass2(
     pass.render_target = check(ctx.find_render_target(data.render_target), "render_target", data.render_target, pass.name);
   }
   const bool is_render_pass = pass.render_target != invalid_resource_slot;
+
+  if (!data.counter.empty()) {
+    pass.counter = check(ctx.find_counter(data.counter), "counter", data.counter, pass.name);
+  }
 
   pass.wait_for = data.wait_for;
   pass.wait_previous = data.wait_previous;
@@ -1618,6 +1623,10 @@ static void resolve_resource_periods(render_config_storage& lctx) {
         // двумя кадрами он может не сдвинуться вовсе (тогда история совпадёт с текущим кадром) либо сдвинуться
         // несколько раз. Это ортогональная ось, и делается она на стороне пользователя явно — прошлое
         // значение кладётся вторым полем записи, как любые прикладные данные.
+        // Взаимодействие с условными счётчиками (RND-50): у кэша осмысленной была бы история ПОКОЛЕНИЙ, а не
+        // кадров (кросс-фейд между старой и новой запечённой таблицей), и арифметика копий её выдержала бы —
+        // это правило запрещает её заодно. Ослаблять без вывода кросс-кадрового порядка нельзя: писателя,
+        // которого ждёт читатель истории, в кадре могло не быть — см. validate_conditional_passes.
         const auto& counter = DS_ASSERT_ARRAY_GET(lctx.counters, res.swap);
         utils::error{}(
           "Descriptor '{}' asks {} frames of history from resource '{}', which rotates on counter '{}': "

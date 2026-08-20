@@ -706,6 +706,9 @@ void graphics_base::resize_viewport(const uint32_t width, const uint32_t height)
   // иначе первый кадр после resize читает UNDEFINED-картинки
   initialize_temporal_resources();
   execution_graph.resize_viewport(this, width, height);
+  // Кэши условных пассов уехали вместе с пересозданными ресурсами: забываем, что пассы их писали, иначе пасс
+  // решит, что это поколение он уже сделал, и обнулённый ресурс останется пустым.
+  reset_pass_execution_state();
   // все?
 }
 
@@ -981,6 +984,7 @@ void graphics_base::draw() {
 void graphics_base::prepare_frame() {
   update_frame();
   update_counters();
+  update_conditional_passes();
   computed_current_frame_index = current_frame_in_flight();
   wait_fence();
   image_acquire();
@@ -1047,6 +1051,10 @@ void graphics_base::submit_frame() {
     case vk::Result::eErrorSurfaceLostKHR: break;
     default: utils::error{}("Could not acquire next swapchain image, got: {}", vk::to_string(res));
   }
+
+  // Кэш считается записанным только после того, как кадр действительно отправлен: кадр, не дошедший до
+  // submit, не должен закрывать поколение — иначе таблица осталась бы незапечённой навсегда.
+  commit_conditional_passes();
 }
 
 void graphics_base::update_frame() {
@@ -1064,7 +1072,70 @@ bool graphics_base::can_draw() const {
 
 void graphics_base::inc_counter(const uint32_t slot) {
   auto& counter = DS_ASSERT_ARRAY_GET(counters, slot);
+
+  // У условного счётчика частота сдвигов ограничена числом копий кэша: живых поколений не может быть больше,
+  // чем копий, иначе кадр в полёте читает копию, которую уже перезаписали. Проверяем громко, а не молча:
+  // ровно на таком молчании RND-33 дал историю, побитово равную текущему кадру, при правдоподобной картинке.
+  if (slot < counter_min_advance_gap.size() && counter_min_advance_gap[slot] > 1) {
+    const uint32_t now = per_frame_counter_index < counters.size()
+                           ? DS_ASSERT_ARRAY_GET(counters, per_frame_counter_index).get_value()
+                           : 0u;
+    const uint32_t last = DS_ASSERT_ARRAY_GET(counter_last_advance, slot);
+    const uint32_t gap = DS_ASSERT_ARRAY_GET(counter_min_advance_gap, slot);
+    if (last != UINT32_MAX && now - last < gap) {
+      utils::error{}(
+        "Counter '{}' advanced {} frames after the previous advance, but its cache needs at least {}: "
+        "увеличьте число копий ресурса кэша либо двигайте счётчик реже",
+        counter.name, now - last, gap);
+    }
+    DS_ASSERT_ARRAY_GET(counter_last_advance, slot) = now;
+  }
+
   counter.inc_next_value();
+}
+
+bool graphics_base::pass_executes_this_frame(const uint32_t pass_slot) const {
+  if (pass_slot >= pass_executes.size()) {
+    return true;
+  }
+  return DS_ASSERT_ARRAY_GET(pass_executes, pass_slot) != 0;
+}
+
+void graphics_base::update_conditional_passes() {
+  if (pass_executes.size() != passes.size()) {
+    pass_executes.assign(passes.size(), 1);
+  }
+  if (pass_observed_counter.size() != passes.size()) {
+    pass_observed_counter.assign(passes.size(), UINT32_MAX);
+  }
+
+  for (uint32_t i = 0; i < passes.size(); ++i) {
+    const auto& pass = DS_ASSERT_ARRAY_GET(passes, i);
+    if (pass.counter == invalid_resource_slot) {
+      pass_executes[i] = 1;
+      continue;
+    }
+    // Сравнение по НЕравенству, а не '<': значение счётчика не обязано быть монотонным (swapchain-счётчик
+    // выставляется номером образа из vkAcquireNextImageKHR), да и переполнение так перестаёт быть вопросом.
+    const uint32_t value = DS_ASSERT_ARRAY_GET(counters, pass.counter).get_value();
+    pass_executes[i] = uint8_t(DS_ASSERT_ARRAY_GET(pass_observed_counter, i) != value);
+  }
+}
+
+void graphics_base::commit_conditional_passes() {
+  for (uint32_t i = 0; i < passes.size() && i < pass_executes.size(); ++i) {
+    const auto& pass = DS_ASSERT_ARRAY_GET(passes, i);
+    if (pass.counter == invalid_resource_slot || pass_executes[i] == 0) {
+      continue;
+    }
+    DS_ASSERT_ARRAY_GET(pass_observed_counter, i) = DS_ASSERT_ARRAY_GET(counters, pass.counter).get_value();
+  }
+}
+
+void graphics_base::reset_pass_execution_state() {
+  pass_observed_counter.assign(passes.size(), UINT32_MAX);
+  pass_executes.assign(passes.size(), 1);
+  counter_last_advance.assign(counters.size(), UINT32_MAX);
 }
 
 void graphics_base::update_counters() {
@@ -2604,6 +2675,81 @@ static void derive_history_ordering(const graphics_base* base, render_graph_inst
   }
 }
 
+// Проверки условных пассов. Всё, что тут ловится, иначе проявилось бы молчаливой неверной картинкой, а не
+// сбоем: кэш, записанный не в ту копию, выглядит как «просто другой кадр».
+void graphics_base::validate_conditional_passes(const uint32_t graph_index) {
+  const auto& graph = DS_ASSERT_ARRAY_GET(graphs, graph_index);
+  counter_min_advance_gap.assign(counters.size(), 1);
+  counter_last_advance.assign(counters.size(), UINT32_MAX);
+
+  const uint32_t frames = frames_in_flight();
+
+  for (const auto pass_index : graph.passes) {
+    const auto& pass = DS_ASSERT_ARRAY_GET(passes, pass_index);
+    if (pass.counter == invalid_resource_slot) {
+      continue;
+    }
+
+    uint32_t written = 0;
+    for (uint32_t res_index = 0; res_index < resources.size(); ++res_index) {
+      if (!pass.write.test(res_index)) {
+        continue;
+      }
+      const auto& res = DS_ASSERT_ARRAY_GET(resources, res_index);
+
+      // Свопчейн условным быть не может: образ надо заполнять каждый кадр, иначе на экран уедет чужой кадр.
+      if (res.role == role::present) {
+        utils::error{}(
+          "Pass '{}' is bound to counter '{}' but writes presentable resource '{}': "
+          "пасс, трогающий свопчейн, обязан исполняться каждый кадр",
+          pass.name, DS_ASSERT_ARRAY_GET(counters, pass.counter).name, res.name);
+      }
+
+      // Ресурс кэша обязан жить на ТОМ ЖЕ счётчике: индекс копии выводится из значения счётчика, поэтому
+      // сдвиг сам даёт новый слот, а кадры без сдвига читают тот же. На чужом счётчике один сдвиг обновил бы
+      // одну копию из нескольких, а остальные кадры читали бы пустоту.
+      if (res.swap != pass.counter) {
+        utils::error{}(
+          "Pass '{}' is bound to counter '{}' but writes resource '{}' living on counter '{}': "
+          "ресурс кэша обязан вращаться тем же счётчиком, что и гейт пасса",
+          pass.name, DS_ASSERT_ARRAY_GET(counters, pass.counter).name, res.name,
+          DS_ASSERT_ARRAY_GET(counters, res.swap).name);
+      }
+
+      const uint32_t copies = res.compute_buffering(this);
+      if (copies < 2) {
+        utils::error{}(
+          "Cache resource '{}' has {} copy: в момент перезаписи кадры в полёте ещё читают старое содержимое, "
+          "поэтому минимум — две копии",
+          res.name, copies);
+      }
+
+      // Живых поколений не больше, чем копий: в окне из frames_in_flight-1 предыдущих кадров может быть не
+      // больше copies-1 сдвигов. Отсюда минимальный разрыв между сдвигами, и он ВЫВОДИТСЯ, а не объявляется.
+      const uint32_t window = frames > 1 ? frames - 1 : 1;
+      const uint32_t gap = (window + copies - 2) / (copies - 1);
+      auto& stored = DS_ASSERT_ARRAY_GET(counter_min_advance_gap, pass.counter);
+      stored = std::max(stored, gap);
+      written += 1;
+    }
+
+    if (written == 0) {
+      utils::error{}(
+        "Pass '{}' is bound to counter '{}' but writes nothing: гейт по счётчику имеет смысл только у пасса, "
+        "который что-то кэширует",
+        pass.name, DS_ASSERT_ARRAY_GET(counters, pass.counter).name);
+    }
+  }
+
+  // История у ресурса на условном счётчике сюда НЕ доезжает, и это стоит знать: правило из среза 2
+  // (resolve_resource_periods) запрещает 'history' на любом счётчике кроме per_frame громко, потому что
+  // history там означает КАДРЫ. Для кэша осмысленной была бы история ПОКОЛЕНИЙ (кросс-фейд между старой и
+  // новой таблицей при смене настроек), и арифметика копий её выдержала бы — но выведенный кросс-кадровый
+  // порядок нет: писателя, которого надо ждать, в этом кадре могло не быть. Поэтому если правило среза 2
+  // когда-нибудь ослабят, здесь должен появиться варнинг с предложением упорядочить вручную через
+  // wait_previous, а не молчаливое разрешение.
+}
+
 render_graph_instance graphics_base::create_render_graph_instance(const uint32_t index) {
   if (index >= graphs.size()) {
     utils::error{}("Try to get graph with index {}, but array has {} graphs", index, graphs.size());
@@ -2633,6 +2779,7 @@ render_graph_instance graphics_base::create_render_graph_instance(const uint32_t
     auto& group = out.groups.back();
     group.device = device;
     group.pool = command_pool;
+    group.pass_slot = pass_index;
     group.steps.push_back(ptr_raw);
     group.frames.resize(frames_in_flight());
     group.populate_command_buffers();
@@ -2840,6 +2987,9 @@ void graphics_base::change_render_graph(const uint32_t index) {
     utils::warn("change_render_graph: graph '{}' is not resident; its resources may not have been created",
                 DS_ASSERT_ARRAY_GET(graphs, index).name);
   }
+
+  validate_conditional_passes(index);
+  reset_pass_execution_state();
 
   auto next_graph = create_render_graph_instance(index);
 

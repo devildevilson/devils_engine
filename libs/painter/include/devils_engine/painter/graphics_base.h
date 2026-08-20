@@ -84,6 +84,20 @@ struct graphics_base {
 
   render_graph_instance execution_graph;
 
+  // Наблюдённое значение условного счётчика у каждого пасса: «какое поколение я уже записал». Живёт здесь, а
+  // не в счётчике: счётчик остаётся тупыми данными, а «делал ли я это уже» — состояние пасса. Сентинел
+  // UINT32_MAX, а не нуль и не единица: значение swapchain-счётчика приходит из vkAcquireNextImageKHR, где
+  // нуль совершенно законен, поэтому стартовым значением сентинел не задать.
+  std::vector<uint32_t> pass_observed_counter;
+  // Решение «пишет ли этот пасс команды в текущем кадре». Принимается в prepare_frame, а не во время записи:
+  // запись команд получает graphics_base по КОНСТАНТНОЙ ссылке, и это правильно — решать там нечего.
+  std::vector<uint8_t> pass_executes;
+  // Условный ли счётчик (кто-то из пассов на него привязан) и минимальный разрыв между сдвигами в кадрах.
+  // Разрыв не объявляется автором, а ВЫВОДИТСЯ из числа копий ресурса кэша: живых поколений может быть не
+  // больше, чем копий, иначе кадр в полёте читает копию, которую уже перезаписали.
+  std::vector<uint32_t> counter_min_advance_gap;
+  std::vector<uint32_t> counter_last_advance;
+
   // Источник шейдеров через demiurg (Фаза 1). Если config_reg_ != nullptr, create_pipeline
   // тянет шейдеры из реестра (glsl_source_file/shader_source_file по расширению), иначе
   // fs-fallback через file_io (fast_test / корневой main.cpp). shader_prefix_ — напр. "shaders/".
@@ -182,6 +196,20 @@ struct graphics_base {
   void change_render_graph(const uint32_t index);
 
   void inc_counter(const uint32_t slot);
+  // Обязан ли пасс записать команды в этом кадре. Для пасса без условного счётчика — всегда да; для пасса с
+  // счётчиком — только когда счётчик сдвинулся с прошлого исполнения (сравнение НЕ '<': значение
+  // swapchain-счётчика выставляется номером образа и не монотонно).
+  bool pass_executes_this_frame(const uint32_t pass_slot) const;
+  // Забыть, что пассы уже что-то записали: после смены графа и после resize кэши невалидны, и обнуляется
+  // именно память ПАССА, а не счётчик.
+  void reset_pass_execution_state();
+  // Решает, какие условные пассы обязаны исполниться в этом кадре (вызывается из prepare_frame после
+  // update_counters). Наблюдённое значение фиксируется не здесь, а после успешного submit: кадр, который не
+  // дошёл до отправки, не должен считаться записавшим кэш.
+  void update_conditional_passes();
+  void commit_conditional_passes();
+  // Проверки условных пассов; вызывается при смене графа, когда известен состав активных пассов.
+  void validate_conditional_passes(const uint32_t graph_index);
 
   uint32_t compute_frame_index(const int32_t offset) const;
   uint32_t current_swapchain_image_index() const;

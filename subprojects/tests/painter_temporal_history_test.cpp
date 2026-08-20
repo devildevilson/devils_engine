@@ -176,6 +176,41 @@ TEST_CASE("depth above one means a volume image, and a volume image cannot use l
   CHECK(volume.extent.is_volume()); // копия = отдельный контейнер, поэтому слой ровно один
 }
 
+TEST_CASE("a conditional counter may advance no faster than the cache has copies [painter]") {
+  // Условный пасс пишет копию, выбранную значением счётчика. Живых поколений не может быть больше, чем копий:
+  // иначе кадр в полёте читает копию, которую уже перезаписали. Отсюда минимальный разрыв между сдвигами —
+  // он ВЫВОДИТСЯ из числа копий, а не объявляется автором отдельным полем.
+  const auto min_gap = [](const uint32_t frames_in_flight, const uint32_t copies) {
+    const uint32_t window = frames_in_flight > 1 ? frames_in_flight - 1 : 1;
+    return (window + copies - 2) / (copies - 1);
+  };
+
+  // Копий столько же, сколько кадров в полёте — двигать можно каждый кадр, то есть ограничения нет
+  CHECK(min_gap(3, 3) == 1);
+  CHECK(min_gap(2, 2) == 1);
+  CHECK(min_gap(4, 4) == 1);
+
+  // Две копии при трёх кадрах в полёте: не чаще раза в два кадра. Это тот самый doublebuffer, и он не
+  // «оптимизация», а нижняя граница — одной копии не хватает никогда.
+  CHECK(min_gap(3, 2) == 2);
+  CHECK(min_gap(4, 2) == 3);
+  CHECK(min_gap(4, 3) == 2);
+
+  // Модель прямой проверкой: при разрыве gap среди кадров в полёте живо не больше copies поколений
+  for (uint32_t frames = 2; frames <= 4; ++frames) {
+    for (uint32_t copies = 2; copies <= frames; ++copies) {
+      const uint32_t gap = min_gap(frames, copies);
+      uint32_t alive = 1; // поколение, которое пишет текущий кадр
+      for (uint32_t back = 1; back < frames; ++back) {
+        if (back % gap == 0) {
+          alive += 1; // на этом кадре был сдвиг, значит кадры до него читают другое поколение
+        }
+      }
+      CHECK(alive <= copies);
+    }
+  }
+}
+
 TEST_CASE("a storage binding must name its mip level [painter]") {
   // Требование Vulkan, а не соглашение: у imageLoad/imageStore нет параметра LOD, поэтому storage-вид
   // покрывает ровно один уровень. Биндинг это и отражает: 'mip' обязателен для пишущих юсаджей на цепочке.
