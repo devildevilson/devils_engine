@@ -7,6 +7,43 @@
   command = "draw"
 }
 {
+  // Нулевой уровень: копия глубины в (min, max). Дальше пять понижений min/max по блокам 2x2.
+  name = build_hiz_0
+  material = hiz_first_material
+  sets = [ frame_data, hiz_first ]
+  command = "dispatch constant screen_dispatch"
+}
+{
+  name = build_hiz_1
+  material = hiz_down_material
+  sets = [ frame_data, hiz_down_1 ]
+  command = "dispatch constant half_dispatch"
+}
+{
+  name = build_hiz_2
+  material = hiz_down_material
+  sets = [ frame_data, hiz_down_2 ]
+  command = "dispatch constant quarter_dispatch"
+}
+{
+  name = build_hiz_3
+  material = hiz_down_material
+  sets = [ frame_data, hiz_down_3 ]
+  command = "dispatch constant eighth_dispatch"
+}
+{
+  name = build_hiz_4
+  material = hiz_down_material
+  sets = [ frame_data, hiz_down_4 ]
+  command = "dispatch constant sixteenth_dispatch"
+}
+{
+  name = build_hiz_5
+  material = hiz_down_material
+  sets = [ frame_data, hiz_down_5 ]
+  command = "dispatch constant thirtysecond_dispatch"
+}
+{
   // Число проб — specialization-константа шага: это тир качества, а его смена стоит только пересборки
   // pipeline, а не нового варианта шейдера (правило заведено в PF02).
   name = compute_ao

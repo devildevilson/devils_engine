@@ -26,6 +26,19 @@
       steps = [ draw_gbuffer ]
     },
     {
+      // Пирамида глубины. Стоит сразу за G-buffer, потому что это ИНФРАСТРУКТУРА: её ждут SSR, отсечение и
+      // depth of field, а не какой-то один эффект. Шесть шагов одним пассом — барьеры между уровнями движок
+      // выводит из дескрипторов (у пары (ресурс, уровень) свой layout), а группы submit'а не тратятся.
+      name = pf03_hiz
+      subpasses = [
+        {
+          scene_depth = (depth_read, store),
+          hiz = (texel_write, store)
+        }
+      ]
+      steps = [ build_hiz_0, build_hiz_1, build_hiz_2, build_hiz_3, build_hiz_4, build_hiz_5 ]
+    },
+    {
       // SSAO в половинном разрешении плюс depth-aware блюр: сырой AO всегда шумный, и блюр — часть техники,
       // а не улучшение. Оба пасса до шейдинга, потому что AO нужен именно ему.
       name = pf03_ao
@@ -155,6 +168,7 @@
       subpasses = [
         {
           color_lut = (sampled, store),
+          hiz = (sampled, store),
           scene_depth = (depth_read, store),
           gbuffer_motion = (sampled, store),
           taa_color = (sampled, store),

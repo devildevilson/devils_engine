@@ -32,6 +32,8 @@ layout(set = 2, binding = 8) uniform sampler3D lut_image;
 // Прошлое ПОКОЛЕНИЕ таблицы ('history = 1' на условном счётчике). Нужно только на время перехода после смены
 // настроек: при веса 1 второй выборки не происходит вовсе.
 layout(set = 2, binding = 9) uniform sampler3D lut_prev_image;
+// Пирамида глубины: вид на всю цепочку, читается texelFetch'ем с явным уровнем
+layout(set = 2, binding = 10) uniform sampler2D hiz_image;
 
 layout(set = 3, binding = 0, rgba16f) uniform writeonly image2D composed_image;
 
@@ -290,6 +292,32 @@ void main() {
     result = display_grade
       ? stored
       : pf03_apply_tonemap(pf03_shaper_decode(stored, min_stop, max_stop, shaper), tonemap_op);
+  } else if (mode == PF03_DEBUG_HIZ) {
+    // Уровень пирамиды как есть: красный — дальняя граница блока, зелёный — ближняя, в линейной глубине.
+    // Вид нужен затем же, зачем график гистограммы в срезе 8: увидеть, что построилось.
+    const int level = clamp(int(frame.hiz_params.x + 0.5), 0, int(frame.hiz_params.y + 0.5) - 1);
+    const ivec2 level_size = textureSize(hiz_image, level);
+    const ivec2 tap = clamp(ivec2(uv * vec2(level_size)), ivec2(0), level_size - 1);
+    const vec2 bounds = texelFetch(hiz_image, tap, level).rg;
+    const float far_plane = bounds.x > 0.0 ? pf03_linear_depth(bounds.x, frame.viewport_near.z) : 0.0;
+    const float near_plane = bounds.y > 0.0 ? pf03_linear_depth(bounds.y, frame.viewport_near.z) : 0.0;
+    result = vec3(clamp(far_plane / 60.0, 0.0, 1.0), clamp(near_plane / 60.0, 0.0, 1.0), 0.0);
+  } else if (mode == PF03_DEBUG_HIZ_CHECK) {
+    // ПРОВЕРКА КОНСЕРВАТИВНОСТИ, а не картинка: каждый уровень обязан ограничивать глубину КАЖДОГО пикселя,
+    // который он покрывает. Красное — нашёлся уровень, чей интервал не содержит глубину этого пикселя; такое
+    // невозможно при верной пирамиде, поэтому число красных пикселей обязано быть нулём. Проверять надо
+    // texelFetch'ем с явным уровнем: интерполяция сгладила бы границы внутрь интервала и спрятала ошибку.
+    const int levels = int(frame.hiz_params.y + 0.5);
+    bool violated = false;
+    for (int level = 1; level < levels; ++level) {
+      const ivec2 level_size = textureSize(hiz_image, level);
+      const ivec2 tap = clamp(pixel >> level, ivec2(0), level_size - 1);
+      const vec2 bounds = texelFetch(hiz_image, tap, level).rg;
+      if (depth < bounds.x || depth > bounds.y) {
+        violated = true;
+      }
+    }
+    result = violated ? vec3(1.0, 0.0, 0.0) : vec3(0.03);
   } else if (mode == PF03_DEBUG_ERROR_NAIVE) {
     // Та же ошибка, но БЕЗ motion-векторов: контрольная величина, относительно которой видно, что
     // векторы действительно что-то исправляют, а не просто «выглядят правдоподобно».

@@ -44,17 +44,19 @@ constexpr uint32_t dispatch_tile = 8;
 constexpr uint32_t histogram_tile = 16;
 // Таблица грейда запекается группами 4x4x4: цель объёмная, и куб группы даёт ту же занятость при трёх осях
 constexpr uint32_t lut_tile = 4;
+// Уровней в пирамиде глубины; обязано совпадать с 'mips' у ресурса hiz
+constexpr uint32_t hiz_levels = 6;
 constexpr float near_plane = 0.1f;
 // Детерминированный шаг для орбиты: положение камеры становится чистой функцией номера кадра, поэтому два
 // прогона с одинаковым --frames дают одинаковую картинку и ошибку репроекции можно сравнивать численно.
 constexpr float orbit_step_seconds = 1.0f / 60.0f;
 
 // Отладочные виды; порядок обязан совпадать с PF03_DEBUG_* в resources/shaders/pf03_frame.glsl
-constexpr std::array<std::string_view, 24> debug_names = {
+constexpr std::array<std::string_view, 26> debug_names = {
   "shaded", "depth", "normal", "motion", "reprojected", "error(motion)", "error(no motion)",
   "clipping", "calibration", "exposure", "transmittance", "ao", "ao raw", "taa rejection",
   "bloom", "shafts", "sharpen", "histogram", "histogram plot", "luminance",
-  "grade delta", "lut error", "gamut", "lut strip"};
+  "grade delta", "lut error", "gamut", "lut strip", "hiz", "hiz check"};
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -153,8 +155,9 @@ struct alignas(16) frame_block {
   glm::vec4 grade_power;
   glm::vec4 grade_filter;
   glm::vec4 lut_params;
+  glm::vec4 hiz_params;
 };
-static_assert(sizeof(frame_block) == 560);
+static_assert(sizeof(frame_block) == 576);
 
 struct vertex {
   float px, py, pz;
@@ -303,6 +306,7 @@ void update_screen_dispatch(painter::graphics_base& base, const uint32_t width, 
   update_dispatch_constant(base, "quarter_dispatch", (width + 3u) / 4u, (height + 3u) / 4u, dispatch_tile);
   update_dispatch_constant(base, "eighth_dispatch", (width + 7u) / 8u, (height + 7u) / 8u, dispatch_tile);
   update_dispatch_constant(base, "sixteenth_dispatch", (width + 15u) / 16u, (height + 15u) / 16u, dispatch_tile);
+  update_dispatch_constant(base, "thirtysecond_dispatch", (width + 31u) / 32u, (height + 31u) / 32u, dispatch_tile);
   // Гистограмма считается по сетке вдвое реже кадра, группами 16x16 (по потоку на корзину)
   const uint32_t metering_divisor = std::max(metering_scale, 1u);
   update_dispatch_constant(
@@ -613,6 +617,7 @@ int main(int argc, char** argv) {
   // читается вовсе). Смысл ручки не косметический: смена настроек грейда меняет цвет кадра скачком, а история
   // ПОКОЛЕНИЙ на условном счётчике — единственный способ этот скачок размазать.
   uint32_t lut_fade_frames = 0;
+  uint32_t hiz_debug_level = 0; // какой уровень пирамиды показывает вид 24
   float taa_weight = 0.92f;       // вес истории: больше — стабильнее и мылее
   uint32_t taa_phases = 8;        // длина последовательности джиттера
   float jitter_scale = 1.0f;      // 0 — джиттер выключен (тогда накапливать нечего)
@@ -716,6 +721,13 @@ int main(int argc, char** argv) {
       if (name == "log" || name == "log2") lut_linear_shaper = false;
       else if (name == "linear") lut_linear_shaper = true;
       else utils::error{}("PF03 unknown lut shaper '{}' (log|linear)", name);
+    }
+    constexpr std::string_view hiz_level_prefix = "--hiz-level=";
+    if (option.starts_with(hiz_level_prefix)) {
+      hiz_debug_level = uint32_t(std::stoul(std::string(option.substr(hiz_level_prefix.size()))));
+      if (hiz_debug_level >= hiz_levels) {
+        utils::error{}("PF03 hiz level {} is out of the built {} levels", hiz_debug_level, hiz_levels);
+      }
     }
     constexpr std::string_view lut_fade_prefix = "--lut-fade=";
     if (option.starts_with(lut_fade_prefix)) {
@@ -1424,6 +1436,7 @@ int main(int argc, char** argv) {
       frame_data.grade_offset = glm::vec4(grade_offset, 0.0f);
       frame_data.grade_power = glm::vec4(grade_power, 0.0f);
       frame_data.grade_filter = glm::vec4(color_filter, filter_strength);
+      frame_data.hiz_params = glm::vec4(float(hiz_debug_level), float(hiz_levels), 0.0f, 0.0f);
       frame_data.lut_params = glm::vec4(
         grade_by_lut ? 1.0f : 0.0f, lut_linear_shaper ? 1.0f : 0.0f, lut_min_stop, lut_max_stop);
       write_current_buffer(base, "frame_buffer", &frame_data, sizeof(frame_data));

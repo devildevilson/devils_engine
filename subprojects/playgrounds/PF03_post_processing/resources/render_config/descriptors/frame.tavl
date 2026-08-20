@@ -54,7 +54,10 @@
     // есть даёт предыдущую запечённую таблицу. Нужна для плавного перехода при смене настроек грейда — иначе
     // картинка скачком меняет цвет в кадре запекания. Платой служит частота сдвигов: движок требует у такого
     // счётчика разрыв не меньше frames_in_flight, и тогда прошлое поколение записано за горизонтом фенса.
-    { resource = color_lut, usage = sampled, sampler = frame_linear, stage = compute, history = 1 }
+    { resource = color_lut, usage = sampled, sampler = frame_linear, stage = compute, history = 1 },
+    // Пирамида глубины для отладочных видов. Биндинг БЕЗ уровня — вид на всю цепочку, потому что проверка
+    // консервативности обращается к каждому уровню через texelFetch с явным LOD.
+    { resource = hiz, usage = sampled, sampler = frame_nearest, stage = compute }
   ]
 }
 {
@@ -246,5 +249,48 @@
   name = lut_write
   layout = [
     { resource = color_lut, usage = texel_write, stage = compute }
+  ]
+}
+{
+  // Нулевой уровень пирамиды: из буфера глубины. Уровень называется явно — у storage-вида нет LOD.
+  name = hiz_first
+  layout = [
+    { resource = scene_depth, usage = depth_read, sampler = frame_nearest, stage = compute },
+    { resource = hiz, usage = texel_write, stage = compute, mip = 0 }
+  ]
+}
+{
+  name = hiz_down_1
+  layout = [
+    { resource = hiz, usage = sampled, sampler = frame_nearest, stage = compute, mip = 0 },
+    { resource = hiz, usage = texel_write, stage = compute, mip = 1 }
+  ]
+}
+{
+  name = hiz_down_2
+  layout = [
+    { resource = hiz, usage = sampled, sampler = frame_nearest, stage = compute, mip = 1 },
+    { resource = hiz, usage = texel_write, stage = compute, mip = 2 }
+  ]
+}
+{
+  name = hiz_down_3
+  layout = [
+    { resource = hiz, usage = sampled, sampler = frame_nearest, stage = compute, mip = 2 },
+    { resource = hiz, usage = texel_write, stage = compute, mip = 3 }
+  ]
+}
+{
+  name = hiz_down_4
+  layout = [
+    { resource = hiz, usage = sampled, sampler = frame_nearest, stage = compute, mip = 3 },
+    { resource = hiz, usage = texel_write, stage = compute, mip = 4 }
+  ]
+}
+{
+  name = hiz_down_5
+  layout = [
+    { resource = hiz, usage = sampled, sampler = frame_nearest, stage = compute, mip = 4 },
+    { resource = hiz, usage = texel_write, stage = compute, mip = 5 }
   ]
 }
