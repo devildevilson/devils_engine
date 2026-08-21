@@ -108,9 +108,11 @@
       subpasses = [
         {
           gbuffer_motion = (sampled, store),
+          gbuffer_normal = (sampled, store),
           scene_depth = (depth_read, store),
           reflected_color = (sampled, store),
-          taa_color = (texel_write, store)
+          taa_color = (texel_write, store),
+          taa_meta = (texel_write, store)
         }
       ]
       steps = [ resolve_taa ]
@@ -212,7 +214,7 @@
       steps = [ bake_grade_lut ]
     },
     {
-      // Читает историю scene_color: кросс-кадровый порядок с pf03_shade выводится, а не объявляется
+      // Читает историю taa_color для диагностической репроекции; кросс-кадровый порядок выводится автоматически.
       name = pf03_compose
       subpasses = [
         {
@@ -225,6 +227,7 @@
           scene_depth = (depth_read, store),
           gbuffer_motion = (sampled, store),
           taa_color = (sampled, store),
+          taa_meta = (sampled, store),
           ao_blurred = (sampled, store),
           ao_raw = (sampled, store),
           bloom = (sampled, store),

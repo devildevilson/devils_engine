@@ -1,5 +1,12 @@
 #version 450
 
+// Алгоритм: общий temporal resolve для TAA и TAAU. История репроецируется motion vector'ом, выбирается
+// Catmull-Rom, сжимается по яркости и ограничивается 3x3 окрестностью в YCoCg, чтобы яркие disocclusion не
+// оставляли шлейф. При полном разрешении действует обычный фиксированный history weight. При upscale каждый
+// jittered source sample вносится в соседние display-пиксели непрерывным tent-footprint: центр получает
+// полный вес, к краю одного render-текселя вес плавно падает. Взвешенный per-pixel coverage count задаёт вес
+// среднего, поэтому движение не переключает пиксель скачком между «чистой историей» и spatial fallback.
+
 #include "pf03_frame.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -17,6 +24,10 @@ layout(set = 2, binding = 0) uniform sampler2D current_image;
 layout(set = 3, binding = 0, rgba16f) uniform writeonly image2D taa_output;
 // Прошлый НАКОПЛЕННЫЙ кадр ('history = 1' у того же ресурса): копится результат накопления, а не сырой кадр
 layout(set = 3, binding = 1) uniform sampler2D taa_history;
+// Метаданные живут отдельно от цвета: alpha кадра сохраняет пропускание тумана.
+// .r = накопленный эффективный вес TAAU-отсчётов, .g = доля отвергнутой истории.
+layout(set = 3, binding = 2, rg16f) uniform writeonly image2D taa_meta_output;
+layout(set = 3, binding = 3) uniform sampler2D taa_meta_history;
 
 void main() {
   const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -27,24 +38,62 @@ void main() {
 
   const vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
 
-  // ВОТ И ВЕСЬ TAAU: вход может быть мельче цели. Накопление идёт в разрешении ДИСПЛЕЯ, а сцена рисуется в
-  // разрешении рендера, и субпиксельный джиттер за несколько кадров покрывает сетку дисплея — то есть история
-  // хранит информацию, которой в одном низком кадре нет. При равных разрешениях ветка обязана быть той же
-  // самой, что была до TAAU, иначе штатный прогон перестал бы быть эталоном сам себе.
+  // Вход может быть мельче цели. Catmull-Rom даёт spatial estimate между source samples, но temporal resolve
+  // не считает её полным новым наблюдением: доверие задаёт расстояние до ближайшей фактической jittered
+  // позиции, а история со временем собирает complementary phases.
   const ivec2 render_size = textureSize(current_image, 0);
   const bool upsampling = render_size.x != size.x || render_size.y != size.y;
-  // Фильтр реконструкции — Catmull-Rom: билинейный при подъёме разрешения теряет ровно то, за чем TAAU и
-  // затевается (измерено в срезе 5 на выборке истории, здесь та же причина).
-  const vec3 current = upsampling
-    ? pf03_sample_catmull_rom(current_image, uv, vec2(render_size))
+  const float current_transmittance = texture(current_image, uv).a;
+
+  // Выключенный TAA либо нулевой вес — честный passthrough и контрольный простой upscale. Coverage-ветка
+  // не должна менять его даже в пикселях, куда в эту фазу попал настоящий source-отсчёт: иначе `--taa=0`
+  // и `--taa-weight=0` перестают быть одной и той же базой A/B.
+  if (frame.taa_params.z <= 0.5 || frame.taa_params.x <= 0.0) {
+    const vec3 passthrough = upsampling
+      ? pf03_sample_catmull_rom(current_image, uv, vec2(render_size))
+      : texture(current_image, uv).rgb;
+    imageStore(taa_output, pixel, vec4(passthrough, current_transmittance));
+    imageStore(taa_meta_output, pixel, vec4(0.0));
+    return;
+  }
+
+  // Позиция ближайшего настоящего отсчёта рендера в сетке дисплея. Проекция сдвигает геометрию на -jitter,
+  // а измеренный знак покрытия здесь обратный: значение source-текселя принадлежит позиции center - jitter.
+  // При другом знаке RMSE к full-resolution эталону вырос с 3.76 до 6.87 уровня из 255.
+  //
+  // Первая версия считала coverage БУЛЕВЫМ: один display-пиксель получал sample целиком, соседний не получал
+  // ничего и держал историю с весом 1. При малейшем движении граница этой маски перескакивала через силуэт,
+  // и кромка заметно «достраивалась». Здесь sample имеет tent-footprint размером в один render-тексель:
+  // вклад меняется непрерывно вместе с его положением, а не прыгает между 0 и 1.
+  const vec2 source_position = (uv + frame.taa_jitter.xy) * vec2(render_size) - 0.5;
+  const ivec2 source_pixel = clamp(
+    ivec2(floor(source_position + 0.5)), ivec2(0), render_size - 1);
+  const vec2 sample_uv = (vec2(source_pixel) + 0.5) / vec2(render_size) - frame.taa_jitter.xy;
+  const vec2 footprint_pixels = vec2(size) / vec2(render_size);
+  const vec2 sample_offset_pixels = sample_uv * vec2(size) - (vec2(pixel) + 0.5);
+  const vec2 coverage_axis = clamp(
+    vec2(1.0) - abs(sample_offset_pixels) / max(footprint_pixels, vec2(1.0)), vec2(0.0), vec2(1.0));
+  const float current_coverage = upsampling ? coverage_axis.x * coverage_axis.y : 1.0;
+
+  // Spatial estimate адресуется с jitter-поправкой: нужен цвет в текущем display-пикселе, а source grid
+  // физически сдвинут относительно него. В центре footprint берём настоящий texel без фильтра; к краям
+  // плавно переходим к Catmull-Rom, чтобы footprint не превращался в увеличенный квадрат source-пикселя.
+  const vec2 aligned_uv = clamp(uv + frame.taa_jitter.xy, vec2(0.0), vec2(1.0));
+  const vec3 aligned_reconstructed = upsampling
+    ? pf03_sample_catmull_rom(current_image, aligned_uv, vec2(render_size))
     : texture(current_image, uv).rgb;
+  const vec3 source_sample = texelFetch(current_image, source_pixel, 0).rgb;
+  const vec3 current = mix(aligned_reconstructed, source_sample, current_coverage);
+  // Transmittance — свойство текущей сцены, не temporal confidence: её реконструируем пространственно и
+  // никогда не смешиваем с историей, иначе движущийся силуэт оставляет шлейф уже в самом тумане.
 
   // TAA выключен либо истории ещё нет — отдаём текущий кадр как есть. Это и есть passthrough: без него
   // первые кадры после сброса подмешивали бы пустую историю и кадр выходил бы темнее.
   // taa_params.z: 0 выключен, 1 включён с bilinear-выборкой истории, 2 включён с Catmull-Rom
   const bool history_valid = frame.viewport_near.w > 1.5 && frame.taa_params.z > 0.5;
   if (!history_valid) {
-    imageStore(taa_output, pixel, vec4(current, 0.0));
+    imageStore(taa_output, pixel, vec4(current, current_transmittance));
+    imageStore(taa_meta_output, pixel, vec4(current_coverage, 0.0, 0.0, 0.0));
     return;
   }
 
@@ -56,7 +105,18 @@ void main() {
   // Выход за кадр — это disocclusion: истории для этого пикселя физически не существует
   const bool inside = all(greaterThanEqual(history_uv, vec2(0.0))) && all(lessThanEqual(history_uv, vec2(1.0)));
   if (!inside) {
-    imageStore(taa_output, pixel, vec4(current, 0.0));
+    imageStore(taa_output, pixel, vec4(current, current_transmittance));
+    imageStore(taa_meta_output, pixel, vec4(current_coverage, 0.0, 0.0, 0.0));
+    return;
+  }
+
+  const float history_count = texture(taa_meta_history, history_uv).r;
+  // При полном разрешении сохраняется старый контракт TAA (глобально валидная история). При TAAU нулевой
+  // счётчик означает, что этот display-пиксель ещё ни разу не получил настоящий source-отсчёт: использовать
+  // его пространственный fallback как историю означало бы снова накапливать один и тот же upscale.
+  if (upsampling && history_count <= 0.0) {
+    imageStore(taa_output, pixel, vec4(current, current_transmittance));
+    imageStore(taa_meta_output, pixel, vec4(current_coverage, 0.0, 0.0, 0.0));
     return;
   }
 
@@ -144,13 +204,35 @@ void main() {
   history_ycocg = reject_mode > 0 ? clipped : history_ycocg;
   const vec3 history_compressed = pf03_ycocg_to_rgb(history_ycocg);
 
-  // Вес истории здесь ФИКСИРОВАННЫЙ, и это признанное ограничение реконструкции. Попытка сделать его зависящим
-  // от того, насколько близко фактическая позиция отсчёта рендера легла к центру пикселя дисплея, ИЗМЕРЕННО
-  // сделала хуже (6.19 против 5.95 при масштабе 0.75) и вдобавок замедлила сходимость: при среднем весе около
-  // 0.99 накопление не успевает сойтись за сотню кадров. Настоящему TAAU нужен не вес, а СЧЁТЧИК набранных
-  // отсчётов на пиксель — см. README, срез 13.
-  const float weight = clamp(frame.taa_params.x, 0.0, 0.98);
+  const float requested_weight = clamp(frame.taa_params.x, 0.0, 0.98);
+  float weight = requested_weight;
+  float next_count = 1.0;
+  if (upsampling) {
+    // Счётчик — орган управления реконструкцией: накопленный эффективный вес n получает долю n/(n+w),
+    // новый footprint весом w — долю w/(n+w). Сумма ограничена значением, эквивалентным обычному history
+    // weight, поэтому после сходимости TAAU не превращается в бесконечное среднее с весом 0.99+.
+    const float confidence = 1.0 - clamp(rejection, 0.0, 1.0);
+    const float trusted_count = history_count * confidence;
+    const float count_limit = requested_weight / max(1.0 - requested_weight, 1.0e-4);
+    if (current_coverage > 1.0e-3 && requested_weight > 0.0) {
+      // Дробный coverage — дробный новый sample. По мере движения footprint вклад текущего кадра и вес
+      // истории меняются непрерывно; count хранит сумму эффективных весов, а не число бинарных попаданий.
+      weight = min(
+        requested_weight, trusted_count / max(trusted_count + current_coverage, 1.0e-4));
+      next_count = min(trusted_count + current_coverage, count_limit);
+    } else if (trusted_count > 0.0 && requested_weight > 0.0) {
+      // За пределом footprint переносим репроецированную историю. На штатных масштабах tent'ы соседних
+      // source samples перекрывают экран, но ветка сохраняет корректность для экстремального downscale.
+      weight = requested_weight;
+      next_count = min(trusted_count, count_limit);
+    } else {
+      // История потеряна либо полностью отвергнута — временно возвращаемся к пространственному upscale.
+      weight = 0.0;
+      next_count = requested_weight > 0.0 ? current_coverage : 0.0;
+    }
+  }
   const vec3 blended = mix(current_compressed, history_compressed, weight);
 
-  imageStore(taa_output, pixel, vec4(pf03_range_expand(blended), rejection));
+  imageStore(taa_output, pixel, vec4(pf03_range_expand(blended), current_transmittance));
+  imageStore(taa_meta_output, pixel, vec4(next_count, rejection, 0.0, 0.0));
 }

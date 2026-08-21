@@ -1,6 +1,11 @@
 #ifndef PF03_SHADING_GLSL
 #define PF03_SHADING_GLSL
 
+// Общая модель света для compute/G-buffer и forward/MSAA ветвей. Она намеренно проста: процедурные sky и
+// checker material, Lambert sun, ambient от неба, Blinn-Phong highlight и emissive panel дают широкий HDR
+// диапазон и резкие частоты для проверки постобработки. Единственная развилка — внешний AO множит ambient;
+// одинаковая функция по обе стороны A/B не позволяет ошибке освещения притвориться эффектом pipeline.
+
 #include "pf03_frame.glsl"
 
 // Освещение сцены площадки, вынесенное из compute-пасса ради ВТОРОГО потребителя: forward-пасс с MSAA считает

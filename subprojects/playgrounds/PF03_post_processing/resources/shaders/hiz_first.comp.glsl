@@ -1,5 +1,10 @@
 #version 450
 
+// Алгоритм: инициализация Hi-Z цепочки из hardware depth. Каждый reverse-Z отсчёт копируется одновременно
+// в min и max, то есть уровень 0 задаёт точный одноточечный интервал; последующие down-пассы расширят его на
+// блоки. Отдельный shader нужен потому, что источник здесь depth attachment, а не предыдущий mip, и Vulkan
+// layout обязан отражать реально объявленные bindings даже у отключённых specialization ветвей.
+
 #include "pf03_frame.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;

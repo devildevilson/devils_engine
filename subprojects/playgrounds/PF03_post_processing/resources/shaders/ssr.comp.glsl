@@ -1,5 +1,11 @@
 #version 450
 
+// Алгоритм: screen-space reflections по depth и нормали. Отражённый мировой луч проецируется в экранный
+// отрезок и идёт либо равномерным эталонным march, либо по консервативной min/max Hi-Z пирамиде, спускаясь
+// только в потенциально пересекающихся клетках. Попадание ограничено мировой толщиной, экранными краями и
+// Fresnel-весом; промах получает приближённое небо. Отдельный stats image хранит цену и судьбу каждого луча,
+// потому что визуального сходства недостаточно для проверки корректности иерархического прохода.
+
 #include "pf03_frame.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -135,13 +141,23 @@ march_result march_hierarchical(const vec2 uv0, const float d0, const vec2 uv1, 
     const vec2 p = p0 + delta * t;
     const float cell = exp2(float(level));
 
-    // t до выхода из клетки по каждой оси; у почти нулевой компоненты деление даёт бесконечность, и min сам
-    // выбирает другую ось
-    const vec2 boundary = vec2(
-      delta.x > 0.0 ? (floor(p.x / cell) + 1.0) * cell : floor(p.x / cell) * cell,
-      delta.y > 0.0 ? (floor(p.y / cell) + 1.0) * cell : floor(p.y / cell) * cell);
-    const vec2 to_boundary = (boundary - p) / delta;
-    const float next_t = min(t + max(min(to_boundary.x, to_boundary.y), 0.0) + epsilon, 1.0);
+    // t до выхода из клетки по каждой оси. Нулевая компонента требует явной бесконечности: 0/0 даёт NaN,
+    // после которого min и clamp уже не обязаны выбрать вторую ось и луч может зависнуть в одной клетке.
+    float to_boundary_x = 1.0e30;
+    if (abs(delta.x) > 1.0e-6) {
+      const float boundary_x = delta.x > 0.0
+        ? (floor(p.x / cell) + 1.0) * cell
+        : floor(p.x / cell) * cell;
+      to_boundary_x = (boundary_x - p.x) / delta.x;
+    }
+    float to_boundary_y = 1.0e30;
+    if (abs(delta.y) > 1.0e-6) {
+      const float boundary_y = delta.y > 0.0
+        ? (floor(p.y / cell) + 1.0) * cell
+        : floor(p.y / cell) * cell;
+      to_boundary_y = (boundary_y - p.y) / delta.y;
+    }
+    const float next_t = min(t + max(min(to_boundary_x, to_boundary_y), 0.0) + epsilon, 1.0);
 
     const vec2 uv_enter = mix(uv0, uv1, t);
     const vec2 uv_exit = mix(uv0, uv1, next_t);
@@ -279,7 +295,7 @@ void main() {
 
   const vec3 result = scene.rgb + reflection * weight;
 
-  // Диагностика в альфу не помещается (там пропускание тумана), поэтому отладочные виды считают марш сами.
+  // Диагностика в альфу не помещается (там пропускание тумана), поэтому пишется в отдельный stats image.
   imageStore(result_image, pixel, vec4(result, scene.a));
   imageStore(stats_image, pixel, vec4(
     steps / max(max_steps, 1.0), hit ? 1.0 : 0.0, offscreen ? 1.0 : 0.0, weight));

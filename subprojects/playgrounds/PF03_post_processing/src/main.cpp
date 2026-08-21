@@ -68,7 +68,7 @@ constexpr float orbit_step_seconds = 1.0f / 60.0f;
 // Отладочные виды; порядок обязан совпадать с PF03_DEBUG_* в resources/shaders/pf03_frame.glsl
 constexpr std::array<std::string_view, 30> debug_names = {
   "shaded", "depth", "normal", "motion", "reprojected", "error(motion)", "error(no motion)",
-  "clipping", "calibration", "exposure", "transmittance", "ao", "ao raw", "taa rejection",
+  "clipping", "calibration", "exposure", "transmittance", "ao", "ao raw", "taa state",
   "bloom", "shafts", "sharpen", "histogram", "histogram plot", "luminance",
   "grade delta", "lut error", "gamut", "lut strip", "hiz", "hiz check", "ssr steps", "ssr fate", "dof coc", "blur tiles"};
 
@@ -612,9 +612,10 @@ int main(int argc, char** argv) {
   // Режим отбраковки истории: 0 — нет, 1 — жёсткая коробка min/max, 2 — клип по дисперсии в YCoCg.
   // Жёсткая коробка отбраковывает историю при любом движении камеры и возвращает ступеньку на далёких
   // кромках; клип по дисперсии допускает правдоподобное отклонение.
-  // По умолчанию жёсткая коробка: с фильтром Catmull-Rom она ИЗМЕРЕННО точнее (536 против 554 по отклонению
-  // от эталона). Режим 3 (по скорости) держит больше истории — меньше ступенек на движении, но больше отставания.
-  uint32_t taa_reject = 1;
+  // На старом тесте жёсткая коробка выигрывала у velocity clamp, но проверка именно движущейся дальней
+  // кромки против замороженного supersampled-эталона дала другой ответ: variance clip сохраняет больше
+  // полезной субпиксельной истории без шлейфа. Режим 3 держит ещё больше истории, но платит отставанием.
+  uint32_t taa_reject = 2;
   // Фильтр выборки истории: bilinear копит размытие под движением, Catmull-Rom его компенсирует
   bool taa_catmull_rom = true;
   float bloom_intensity = 0.06f;   // вклад пирамиды в кадр
@@ -623,7 +624,9 @@ int main(int argc, char** argv) {
   float bloom_up_weight = 0.75f;   // вес каждого шага подъёма: меньше — компактнее свечение
   float shaft_intensity = 0.08f;   // сила лучей: это доля рассеянного света, а не яркость сама по себе
   float shaft_falloff = 2.5f;      // затухание вдоль луча
-  float sharpen = 0.35f;           // резкость после накопления: TAA неизбежно размывает историю
+  // Sharpen подчёркивает остаточную ступеньку ровно тогда, когда clamp отбросил историю. Это настройка вкуса,
+  // а не обязательная половина TAA, поэтому корректный спокойный дефолт не вмешивается в resolve.
+  float sharpen = 0.0f;
   float vignette = 0.25f;          // затемнение краёв
   float aberration = 0.0f;         // хроматическая аберрация; по умолчанию выключена как приём на вкус
   float grain = 0.0f;              // зерно; тоже на вкус
@@ -683,7 +686,9 @@ int main(int argc, char** argv) {
   float blur_shutter = 0.0f;
   uint32_t blur_taps = 0;        // != 0 — переопределяем specialization-константу шага
   bool blur_tiles = true;        // расширение максимума motion по плиткам (выключается для измерения)
-  float taa_weight = 0.92f;       // вес истории: больше — стабильнее и мылее
+  // 0.88 точнее 0.92 при непрерывном движении камеры: accumulator быстрее принимает честную новую геометрию,
+  // а межкадровая разница в измеренном rail практически та же. Больше — стабильнее, но сильнее отставание.
+  float taa_weight = 0.88f;
   uint32_t taa_phases = 8;        // длина последовательности джиттера
   float jitter_scale = 1.0f;      // 0 — джиттер выключен (тогда накапливать нечего)
   float ao_bias = 0.08f;         // порог по касательной плоскости: ниже него затенитель считается компланарным
@@ -1464,7 +1469,7 @@ int main(int argc, char** argv) {
     utils::info("PF03 graph: thin G-buffer (depth+normal+motion) -> shade -> compose/reproject -> present");
     utils::info(
       "PF03 views: 0 shaded, 1 depth, 2 normal, 3 motion, 4 reprojected, 5 error(motion), 6 error(no motion), "
-      "7 clipping, 8 calibration, 9 exposure, 10 transmittance, 11 ao, 12 ao raw, 13 taa rejection, "
+      "7 clipping, 8 calibration, 9 exposure, 10 transmittance, 11 ao, 12 ao raw, 13 taa state, "
       "14 bloom, 15 shafts, 16 sharpen, 17 histogram state, 18 histogram plot, 19 metered luminance, "
       "20 grade delta, 21 lut error, 22 gamut, 23 lut strip");
     utils::info(
@@ -1623,18 +1628,14 @@ int main(int argc, char** argv) {
       const glm::vec2 jitter_pixels = jitter_scale > 0.0f
         ? glm::vec2(halton(phase + 1u, 2u) - 0.5f, halton(phase + 1u, 3u) - 0.5f) * jitter_scale
         : glm::vec2(0.0f);
-      // АМПЛИТУДА ДЖИТТЕРА — ЭТО КОНТРАКТ С РЕКОНСТРУКЦИЕЙ, а не свойство сетки рендера. Теория говорит, что при
-      // TAAU выборка должна гулять внутри пикселя РЕНДЕРА (тогда отсчёты ложатся в разные пиксели дисплея), и
-      // так и было сделано сначала. Но реконструкция здесь усредняет по сетке ДИСПЛЕЯ, а не разрешает позиции
-      // отсчётов (см. README, срез 13), поэтому джиттер шире пикселя дисплея не покупает ничего и стоит
-      // устойчивости. Измерено на статичной сцене — дрожание кадр к кадру и отклонение от эталона:
-      //   масштаб 0.67: в пикселях рендера 4.89 / 6.36, в пикселях дисплея 4.26 / 6.23;
-      //   масштаб 0.50: в пикселях рендера 5.50 / 6.11, в пикселях дисплея 4.18 / 5.97.
-      // Лучше по ОБЕИМ метрикам, поэтому делим на размер дисплея. Когда у реконструкции появится счётчик
-      // набранных отсчётов, амплитуду надо будет вернуть в пиксели рендера — вместе с ним она заработает.
+      // АМПЛИТУДА ДЖИТТЕРА — ЭТО КОНТРАКТ С РЕКОНСТРУКЦИЕЙ. При TAAU выборка гуляет внутри пикселя РЕНДЕРА:
+      // тогда один low-resolution тексель в разные фазы действительно попадает в разные пиксели дисплея.
+      // Resolve хранит per-pixel coverage count и добавляет отсчёт только в тот пиксель, куда он попал; без
+      // этого контракта широкий джиттер давал лишь дрожание (отрицательный результат среза 13).
+      const auto [jitter_width, jitter_height] = render_extent(pending_width, pending_height);
       const glm::vec2 jitter_uv{
-        jitter_pixels.x / float(std::max(pending_width, 1u)),
-        jitter_pixels.y / float(std::max(pending_height, 1u))};
+        jitter_pixels.x / float(std::max(jitter_width, 1u)),
+        jitter_pixels.y / float(std::max(jitter_height, 1u))};
       // Знак определён ИЗМЕРЕНИЕМ, а не выводом из формы матрицы: инвариант такой — на полностью статичной
       // сцене со статичной камерой motion обязан быть нулём при включённом джиттере. При обратном знаке он
       // оказывался 1.6 px, джиттер протекал в векторы, TAA репроецировал по ним и в итоге давал картинку
@@ -1669,7 +1670,12 @@ int main(int argc, char** argv) {
       frame_data.ao_params = glm::vec4(ao_radius, ao_intensity, ao_bias, ao_enabled ? ao_power : 0.0f);
       // Временной сдвиг вращения выборки AO имеет смысл только вместе с накоплением: иначе это просто шум,
       // который меняется каждый кадр и мерцает.
-      const float ao_temporal = taa_enabled ? float(phase) / float(std::max(taa_phases, 1u)) : 0.0f;
+      // Вращать stochastic AO имеет смысл только когда temporal resolve действительно накапливает результат.
+      // При нулевом весе иначе `--taa-weight=0` отличался от `--taa=0` уже ДО самого TAA-пасса и переставал
+      // быть честной проверкой его passthrough-контракта.
+      const float ao_temporal = taa_enabled && taa_weight > 0.0f
+        ? float(phase) / float(std::max(taa_phases, 1u))
+        : 0.0f;
       frame_data.taa_params = glm::vec4(
         taa_enabled ? taa_weight : 0.0f,
         float(taa_reject),
@@ -1719,7 +1725,9 @@ int main(int argc, char** argv) {
       frame_data.dof_params = glm::vec4(
         dof_strength, dof_occlusion ? 1.0f : 0.0f, dof_max_coc, float(dof_levels));
       frame_data.dof_lens = glm::vec4(dof_focus, dof_aperture, dof_focal, sensor_height_mm);
-      frame_data.blur_params = glm::vec4(blur_shutter, 0.0f, 0.0f, float(motion_tile_size));
+      const auto [render_width, render_height] = render_extent(pending_width, pending_height);
+      frame_data.blur_params = glm::vec4(
+        blur_shutter, float(render_width), float(render_height), float(motion_tile_size));
       frame_data.lut_params = glm::vec4(
         grade_by_lut ? 1.0f : 0.0f, lut_linear_shaper ? 1.0f : 0.0f, lut_min_stop, lut_max_stop);
       write_current_buffer(base, "frame_buffer", &frame_data, sizeof(frame_data));

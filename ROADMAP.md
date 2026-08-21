@@ -231,6 +231,14 @@ Persistent multi-day event или repair action хранится в `SIM-03`, а
 
 ### `libs/painter` — high-level rendering gaps
 
+**PF03 closing update (2026-08-21):** `RND-46` закрыт после исправления render-space motion и добавления
+взвешенного per-display-pixel coverage/count: при `render-scale=0.5` RMSE против native TAA теперь `2.98/255`
+против `7.40/255` у простого upscale. Tent-footprint также уменьшил межкадровую ошибку на малом повороте
+`6.65 → 5.22`; отрицательный промежуточный результат в строке ниже сохранён как история
+диагноза; актуальный контракт описан в `subprojects/playgrounds/PF03_post_processing/README.md`.
+Для `RND-31` готов отдельный design proposal с независимыми осями и частичными overrides:
+`subprojects/playgrounds/PF03_post_processing/RENDER_PROFILES.md`; реализация resolver/apply остаётся backlog.
+
 | ID | Задача | Сложность | Граница/результат |
 | --- | --- | --- | --- |
 | `RND-01` | High-level 3D scene instance layer | `L` | typed instances, lifetime, snapshots and batches |

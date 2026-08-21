@@ -1,5 +1,10 @@
 #version 450
 
+// Алгоритм: референсное forward-освещение для ветви MSAA/plain. Фрагмент получает готовые мировые позицию
+// и нормаль и вызывает ту же общую функцию света, что compute-shading основного графа, но без SSAO и других
+// screen-space эффектов. Поэтому сравнение ветвей изолирует именно выбор pipeline/MSAA, а не расхождение
+// формул; alpha=1 помечает покрытые геометрией samples для последующего resolve с небом.
+
 #include "pf03_shading.glsl"
 
 layout(set = 0, binding = 0, std140) uniform FrameBlock {

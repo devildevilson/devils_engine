@@ -1,5 +1,10 @@
 #version 450
 
+// Алгоритм: подготовка текущей геометрии и per-object motion для тонкого G-buffer. Один постоянный instance
+// id адресует текущий и исторический SSBO transforms; одна и та же вершина преобразуется обеими версиями,
+// поэтому fragment stage получает прошлую clip-позицию именно этой поверхности. Текущий world normal идёт
+// отдельно для G-buffer, а gl_Position строится текущей матрицей кадра.
+
 #include "pf03_frame.glsl"
 
 layout(location = 0) in vec3 in_position;

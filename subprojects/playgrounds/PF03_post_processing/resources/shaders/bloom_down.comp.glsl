@@ -1,5 +1,10 @@
 #version 450
 
+// Алгоритм: один шаг построения bloom-пирамиды. Из предыдущего уровня собирается 13-tap фильтр Jimenez,
+// который одновременно уменьшает изображение вдвое и гасит частоты, способные мерцать после downsample.
+// На первом уровне дополнительно действует exposure-relative soft-knee threshold: выбирается свет, который
+// зритель считает ярче белого, но сам цвет остаётся линейным HDR. Остальные уровни только продолжают фильтр.
+
 #include "pf03_frame.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -43,19 +48,20 @@ void main() {
   // Тринадцативыборочное понижение (Jimenez): обычный box на каждом уровне пропускает высокие частоты, и на
   // движении пирамида начинает пульсировать. Здесь центральный крест и четыре угловых квадрата с весами,
   // подобранными так, чтобы фильтр гасил частоты выше нового Найквиста.
+  // Веса суммируются ровно в единицу: константное изображение обязано оставаться константным на каждом mip.
   vec3 result = texture(source_image, uv).rgb * 0.125;
-  result += texture(source_image, uv + texel * vec2(-1.0, -1.0)).rgb * 0.0625;
-  result += texture(source_image, uv + texel * vec2( 1.0, -1.0)).rgb * 0.0625;
-  result += texture(source_image, uv + texel * vec2(-1.0,  1.0)).rgb * 0.0625;
-  result += texture(source_image, uv + texel * vec2( 1.0,  1.0)).rgb * 0.0625;
+  result += texture(source_image, uv + texel * vec2(-2.0, -2.0)).rgb * 0.03125;
+  result += texture(source_image, uv + texel * vec2( 2.0, -2.0)).rgb * 0.03125;
+  result += texture(source_image, uv + texel * vec2(-2.0,  2.0)).rgb * 0.03125;
+  result += texture(source_image, uv + texel * vec2( 2.0,  2.0)).rgb * 0.03125;
   result += texture(source_image, uv + texel * vec2(-2.0,  0.0)).rgb * 0.0625;
   result += texture(source_image, uv + texel * vec2( 2.0,  0.0)).rgb * 0.0625;
   result += texture(source_image, uv + texel * vec2( 0.0, -2.0)).rgb * 0.0625;
   result += texture(source_image, uv + texel * vec2( 0.0,  2.0)).rgb * 0.0625;
-  result += texture(source_image, uv + texel * vec2(-1.0,  0.0)).rgb * 0.125;
-  result += texture(source_image, uv + texel * vec2( 1.0,  0.0)).rgb * 0.125;
-  result += texture(source_image, uv + texel * vec2( 0.0, -1.0)).rgb * 0.125;
-  result += texture(source_image, uv + texel * vec2( 0.0,  1.0)).rgb * 0.125;
+  result += texture(source_image, uv + texel * vec2(-1.0, -1.0)).rgb * 0.125;
+  result += texture(source_image, uv + texel * vec2( 1.0, -1.0)).rgb * 0.125;
+  result += texture(source_image, uv + texel * vec2(-1.0,  1.0)).rgb * 0.125;
+  result += texture(source_image, uv + texel * vec2( 1.0,  1.0)).rgb * 0.125;
 
   if (bloom_prefilter != 0) {
     result = prefilter(result, imageLoad(exposure_state, ivec2(0)).y);

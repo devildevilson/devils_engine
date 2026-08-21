@@ -1,5 +1,10 @@
 #version 450
 
+// Алгоритм: compute shading тонкого G-buffer. По reverse-Z depth восстанавливается мировая позиция, normal
+// декодируется из octahedral пары, а half-resolution AO поднимается выбором ближайшей по глубине из четырёх
+// проб. AO ослабляет только ambient; прямой солнечный свет, checker material, specular и emissive считаются
+// общей функцией с forward-ветвью. Пустая depth означает небо и обрабатывается отдельно.
+
 #include "pf03_shading.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;

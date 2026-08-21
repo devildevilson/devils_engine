@@ -63,7 +63,9 @@
     // Маска CoC для отладочного вида
     { resource = dof_coc, usage = sampled, sampler = frame_nearest, stage = compute },
     // Расширенный максимум motion по плиткам: отладочный вид показывает, откуда берётся длина шлейфа
-    { resource = motion_tile_dilated, usage = sampled, sampler = frame_nearest, stage = compute }
+    { resource = motion_tile_dilated, usage = sampled, sampler = frame_nearest, stage = compute },
+    // Temporal metadata отдельно от цвета: rejection нужен отладочному виду, а alpha цвета сохраняет туман.
+    { resource = taa_meta, usage = sampled, sampler = frame_nearest, stage = compute }
   ]
 }
 {
@@ -75,12 +77,7 @@
 {
   name = ao_read
   layout = [
-    { resource = ao_raw, usage = sampled, sampler = frame_nearest, stage = compute },
-    { resource = bloom, usage = sampled, sampler = frame_linear, stage = compute, mip = 0 },
-    { resource = shafts_quarter, usage = sampled, sampler = frame_linear, stage = compute },
-    // Гистограмма для отладочного вида. Обнуление стоит в НАЧАЛЕ своего пасса именно поэтому: иначе к моменту
-    // компоновки буфер уже пуст, и посмотреть на распределение нечем.
-    { resource = luminance_histogram, usage = storage_read, stage = compute }
+    { resource = ao_raw, usage = sampled, sampler = frame_nearest, stage = compute }
   ]
 }
 {
@@ -94,15 +91,7 @@
   // значит гасить ещё и прямой солнечный свет, чего в природе не происходит.
   name = ao_final_read
   layout = [
-    { resource = ao_blurred, usage = sampled, sampler = frame_nearest, stage = compute },
-    // Сырой AO нужен для отладочного вида: только сравнив его с отфильтрованным, можно судить, что делает
-    // блюр — а он часть техники, а не улучшение.
-    { resource = ao_raw, usage = sampled, sampler = frame_nearest, stage = compute },
-    { resource = bloom, usage = sampled, sampler = frame_linear, stage = compute, mip = 0 },
-    { resource = shafts_quarter, usage = sampled, sampler = frame_linear, stage = compute },
-    // Гистограмма для отладочного вида. Обнуление стоит в НАЧАЛЕ своего пасса именно поэтому: иначе к моменту
-    // компоновки буфер уже пуст, и посмотреть на распределение нечем.
-    { resource = luminance_histogram, usage = storage_read, stage = compute }
+    { resource = ao_blurred, usage = sampled, sampler = frame_nearest, stage = compute }
   ]
 }
 {
@@ -115,23 +104,6 @@
   name = fog_write
   layout = [
     { resource = fogged_color, usage = texel_write, stage = compute }
-  ]
-}
-{
-  // Экспозиция замеряет кадр УЖЕ с туманом: туман меняет среднюю яркость, и мерить до него значило бы
-  // экспонировать не ту картинку, которую увидит зритель.
-  name = fogged_read
-  layout = [
-    { resource = fogged_color, usage = sampled, sampler = frame_linear, stage = compute }
-  ]
-}
-{
-  // Замер экспозиции пишет новое состояние и читает прошлое (адаптация) — тот же случай «писатель он же
-  // читатель», что и у накопления, и порядок между кадрами движок выводит сам.
-  name = exposure_io
-  layout = [
-    { resource = exposure_state, usage = texel_write, stage = compute },
-    { resource = exposure_state, usage = texel_read, stage = compute, history = 1 }
   ]
 }
 {
@@ -162,19 +134,14 @@
   ]
 }
 {
-  // Экспозиция мерит то, что увидит зритель — то есть уже накопленный кадр
-  name = taa_read
-  layout = [
-    { resource = taa_color, usage = sampled, sampler = frame_linear, stage = compute }
-  ]
-}
-{
   // Накопление TAA: пишем новый кадр и читаем прошлый накопленный. Снова «писатель он же читатель», и
   // кросс-кадровый порядок движок выводит сам.
   name = taa_io
   layout = [
     { resource = taa_color, usage = texel_write, stage = compute },
-    { resource = taa_color, usage = sampled, sampler = frame_linear, stage = compute, history = 1 }
+    { resource = taa_color, usage = sampled, sampler = frame_linear, stage = compute, history = 1 },
+    { resource = taa_meta, usage = texel_write, stage = compute },
+    { resource = taa_meta, usage = sampled, sampler = frame_nearest, stage = compute, history = 1 }
   ]
 }
 {

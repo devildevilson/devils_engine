@@ -75,28 +75,20 @@ font и показывает описание сцены, controls, сглаже
 
 ## Текущий фокус — Painter visual stack
 
-Активная campaign: шесть независимых painter-лабораторий `PF01`–`PF06`. Сейчас в работе
-[`PF03_post_processing`](subprojects/playgrounds/PF03_post_processing/README.md): пост-стек и temporal.
-`PF01_forward_plus` дал 3D laboratory shell и Forward+ baseline, `PF02_shadows` закрыт (сглаженные тени без
-temporal; в движок уехали `draw_regions`, сравнивающие сэмплеры, specialization constants шага, atlas
-allocation contract и локальные `#include` в шейдерах).
+Активная campaign: шесть независимых painter-лабораторий `PF01`–`PF06`. `PF01_forward_plus`, `PF02_shadows`
+и [`PF03_post_processing`](subprojects/playgrounds/PF03_post_processing/README.md) закрыты; текущий bounded
+результат — [`PF04_stencil_effects`](subprojects/playgrounds/PF04_stencil_effects/README.md): outline,
+локальная маска post-effect и пространственный portal/mirror/window proof через обычный stencil path.
 
-Вывод `PF02`, определивший порядок работ в `PF03`: разрыв до референсного визуального стиля лежит не в
-тенях, а в ambient occlusion, тумане/аэроперспективе, экспозиции и детальности материалов. Поэтому `PF03`
-начинается с тонкого G-buffer и контракта чтения предыдущего кадра, затем экспозиция/туман/SSAO, и только
-потом TAA — после которого становится возможной и резкая тень без шума, которую `PF02` намеренно не делал.
-
-`PF03` уже запускаем, и **срез 1 закрыт** (2026-08-19): тонкий G-buffer (глубина + октаэдральная нормаль +
-motion от камеры) плюс репроекция прошлого кадра по этим векторам, проверенная численно — нулевая ошибка при
-статичной камере, линейный рост поля motion со скоростью, растущий отрыв от наивной репроекции. Появился и
-инструмент измерения на всю оставшуюся цепочку: `--orbit` делает камеру функцией номера кадра, `--dump`
-пишет кадр в PPM, поэтому два прогона побитово совпадают и режимы сравнимы численно.
-
-Контракт истории закрыт (2026-08-18) и живёт в движке. Число копий ресурса больше не
-объявляется руками — период вращения берётся у счётчика, глубина истории объявляется читателем
-(`history = N` в биндинге дескриптора), а read-only фиксация копий, кросс-кадровый порядок пассов и очистка
-истории на старте выводятся из этого же объявления (`RND-29`). Площадка проверяет это накоплением кадра с
-валидацией и `--frames=N`; следующий срез — сам тонкий G-buffer.
+`PF03` закрыт 2026-08-21 полной запускаемой post-цепочкой, numeric/debug контрактами и shader-аудитом.
+Финальная незакрытая техника, TAAU, теперь действительно реконструирует: при масштабе 0.5 ошибка против
+native TAA составляет `2.98/255`, у простого upscale — `7.40/255`; непрерывный coverage дополнительно убрал
+заметное переключение кромок при движении камеры. Аудит, исправленные контракты и
+сознательно оставленные production-границы записаны в
+[`SHADER_AUDIT.md`](subprojects/playgrounds/PF03_post_processing/SHADER_AUDIT.md). Проект независимых render
+profiles и частичных overrides вынесен в
+[`RENDER_PROFILES.md`](subprojects/playgrounds/PF03_post_processing/RENDER_PROFILES.md) и остаётся отдельным
+backlog, а не блокером следующей площадки.
 
 Лаборатории не образуют CMake/source dependency chain. Более поздняя площадка может выборочно взять
 зафиксированный baseline ранней либо общий код из `common`/`libs/painter`, после чего развивается
@@ -117,33 +109,10 @@ motion от камеры) плюс репроекция прошлого кад�
 подмножество этих возможностей в собственных resources/presets. Исходники и CMake targets лабораторий
 не зависят друг от друга.
 
-Текущий фокус — `PF02_shadows`. `2×2` directional CSM и фиксированный `2×2` spot atlas уже запускаются:
-движущиеся lights/casters, независимые edge AA/spot-PCSS/contact режимы и четыре debug inset. Spot regions
-видны одновременно и не протекают друг в друга. Четыре material/восемь draw steps заменены одним generic
-`draw_regions`: main-поток пакует отобранные по cone/range caster instances и host command stream, а render
-graph управляет только ресурсами/layout. Каждая команда задаёт viewport/scissor/dynamic bias, индекс записи
-в целом bound GPU buffer и draw-group spans.
-
-Срез диагностики 2026-08-15 закрыт: общий Visage shell принимает динамические detail rows; PF02 выводит
-occupancy четырёх spot regions, packed caster count и раздельные raster/world-texel/receiver-plane bias. Opt-in Painter GPU
-timestamp profiler ставит запросы только на границах render-graph passes, читает их после fence текущего
-frame-in-flight slot и показывает сглаженные directional/spot/depth/contact/forward/blit/full-graph времена;
-без подключённого profiler query pool и timestamp commands отсутствуют. Bias quality-срез также закрыт:
-наклонный receiver и тонкий contact caster показывают acne/peter-panning, bias-компоненты управляются
-независимо, а режимы освещения изолируют directional и spot вклад.
-Runtime edge AA теперь независимо выбирает hard/3×3 PCF/rotated-Poisson и radius, а spot-PCSS отдельно
-задаёт emitter radius в мировых единицах. Receiver normal offset масштабируется world-size shadow texel
-конкретного cascade/spot depth; receiver-plane derivatives корректируют каждый tap. Half-resolution
-screen-space pass после camera depth prepass выдаёт directional + четыре spot contact masks, которые можно
-включить отдельно и увидеть в debug insets. Режим opt-in: signed receiver-plane/N·L/cone/range и
-silhouette rejection убирают ложные вклады, но single-depth hidden-surface limitation без temporal/HZB
-остаётся предметом PF03. Первый CSM baseline также live:
-directional target стал `2×2`
-atlas четырёх practical-split каскадов, записываемых вторым `draw_regions`; rotation-independent extent,
-light-space texel snapping и 12% blend bands уменьшают swimming и скрывают split seam, а runtime tint и
-полный depth atlas показывают выбор региона. Следующий quality-срез — repeatable camera-rail проверка
-стабилизации/world-texel bias и directional caster culling. Stochastic/temporal shadow reconstruction
-явно перенесён в PF03 вместе с motion/history contract.
+Следующий ограниченный результат — первый executable `PF04`: один выбранный объект с outline, локальный
+post-effect через stencil mask, один portal/mirror/window пример и визуализация stencil buffer. Все сценарии
+должны идти через обычные painter materials/render graph; production parsing/execution fixes принадлежат
+`libs/painter`, а демонстрационные consumers остаются внутри лаборатории.
 
 ## 1. Painter visual stack
 

@@ -1,5 +1,10 @@
 #version 450
 
+// Алгоритм: vertex transform референсной forward-ветви. Индекс инстанса выбирает из SSBO смещение и поворот
+// вокруг Y, которыми преобразуются позиция и нормаль; затем текущая view-projection выдаёт clip position.
+// Прошлый transform здесь не нужен: эта ветвь сознательно не имеет motion vectors и temporal эффектов,
+// поэтому остаётся минимальной базой для MSAA/plain сравнения.
+
 #include "pf03_frame.glsl"
 
 layout(location = 0) in vec3 in_position;

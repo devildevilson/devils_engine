@@ -1,5 +1,11 @@
 #version 450
 
+// Алгоритм: финальная компоновка кадра в разрешении дисплея. Шейдер берёт уже temporal-resolved HDR кадр,
+// добавляет bloom и screen-space shafts в линейном свете, применяет экспозицию, scene- или display-referred
+// цветокоррекцию (аналитически либо через 3D LUT), tone mapping и только затем экранные украшения/дизер.
+// Здесь же живут диагностические представления: они читают реальные промежуточные ресурсы и позволяют
+// проверять каждый этап отдельно, не пытаясь угадать причину ошибки по итоговой картинке.
+
 #include "pf03_grade.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -12,7 +18,7 @@ layout(set = 1, binding = 0) uniform sampler2D depth_image;
 layout(set = 1, binding = 1) uniform sampler2D normal_image;
 layout(set = 1, binding = 2) uniform sampler2D motion_image;
 
-// Здесь это уже ЗАТУМАНЕННЫЙ кадр (см. граф): в альфе лежит пропускание тумана
+// Здесь уже результат TAA -> DoF -> motion blur; RGB в линейном HDR, в alpha сохранено пропускание тумана.
 layout(set = 2, binding = 0) uniform sampler2D scene_image;
 // Прошлый кадр приходит ОТДЕЛЬНЫМ биндингом ('history = 1' в конфиге), а не элементом массива копий:
 // номер кадра шейдеру не нужен ни данными, ни индексом.
@@ -40,6 +46,8 @@ layout(set = 2, binding = 11) uniform sampler2D ssr_stats_image;
 layout(set = 2, binding = 12) uniform sampler2D dof_coc_image;
 // Расширенный максимум motion по плиткам: отладочный вид показывает, откуда берётся длина шлейфа
 layout(set = 2, binding = 13) uniform sampler2D blur_tile_image;
+// Temporal metadata: .r = накопленный эффективный вес TAAU-отсчётов, .g = доля отвергнутой истории
+layout(set = 2, binding = 14) uniform sampler2D taa_meta_image;
 
 layout(set = 3, binding = 0, rgba16f) uniform writeonly image2D composed_image;
 
@@ -235,8 +243,12 @@ void main() {
   } else if (mode == PF03_DEBUG_SHAFTS) {
     result = pf03_apply_tonemap(shafts * exposure * 4.0, tonemap_op);
   } else if (mode == PF03_DEBUG_TAA_WEIGHT) {
-    // Насколько сильно clamp подтянул историю: на движущихся силуэтах вспыхивает, на статике ноль
-    result = vec3(texture(scene_image, uv).a * 4.0, 0.0, 0.0);
+    // Temporal state: красный — насколько clamp подтянул историю, зелёный — какой эффективный вес TAAU-отсчётов
+    // уже набрал display-пиксель относительно предела обычного history weight. В статике после сходимости
+    // поле зелёное; disocclusion одновременно гасит счётчик и вспыхивает красным.
+    const vec2 meta = texture(taa_meta_image, uv).rg;
+    const float count_limit = frame.taa_params.x / max(1.0 - frame.taa_params.x, 1.0e-4);
+    result = vec3(meta.g * 4.0, meta.r / max(count_limit, 1.0), 0.0);
   } else if (mode == PF03_DEBUG_AO_RAW) {
     result = vec3(texture(ao_raw_image, uv).r);
   } else if (mode == PF03_DEBUG_TRANSMITTANCE) {
