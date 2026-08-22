@@ -85,10 +85,11 @@ font и показывает описание сцены, controls, сглаже
 native TAA составляет `2.98/255`, у простого upscale — `7.40/255`; непрерывный coverage дополнительно убрал
 заметное переключение кромок при движении камеры. Аудит, исправленные контракты и
 сознательно оставленные production-границы записаны в
-[`SHADER_AUDIT.md`](subprojects/playgrounds/PF03_post_processing/SHADER_AUDIT.md). Проект независимых render
-profiles и частичных overrides вынесен в
-[`RENDER_PROFILES.md`](subprojects/playgrounds/PF03_post_processing/RENDER_PROFILES.md) и остаётся отдельным
-backlog, а не блокером следующей площадки.
+[`SHADER_AUDIT.md`](subprojects/playgrounds/PF03_post_processing/SHADER_AUDIT.md). Проект build-вариантов уже
+выбранного render graph, declared-value references и частичных material/step patches вынесен в
+[`RENDER_PROFILES.md`](subprojects/playgrounds/PF03_post_processing/RENDER_PROFILES.md): основной state —
+независимые graph-specific settings, общий preset лишь массово их записывает, а concrete variant выводится
+resolver'ом. Реализация остаётся отдельным backlog, а не блокером следующей площадки.
 
 Лаборатории не образуют CMake/source dependency chain. Более поздняя площадка может выборочно взять
 зафиксированный baseline ранней либо общий код из `common`/`libs/painter`, после чего развивается

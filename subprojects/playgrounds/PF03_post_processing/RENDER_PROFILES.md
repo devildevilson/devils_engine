@@ -1,151 +1,304 @@
-# Render profiles: предложение после PF03
+# Render settings: независимые настройки выбранного renderer
 
-PF03 показал, что одного `low / mid / high` рядом с отдельными числами недостаточно. У рендера есть несколько
-независимых осей качества, и они меняются с разной ценой. Нужен не глобальный enum в Painter, а именованный
-документ композиции: базовая форма графа плюс выбранный вариант каждой оси и, при необходимости, точечные
-переопределения.
+## Что является основной сущностью
 
-## Что уже есть и почему этого мало
-
-- `pf03_post`, `pf03_forward`, `pf03_forward_plain` правильно представляют разные **формы pipeline**.
-- `--render-scale`, `--ao-samples`, `--dof-taps` и похожие ключи патчат распарсенный config до commit. Механизм
-  работает, но знание о нём размазано по `main.cpp`.
-- значения UBO меняются живьём, однако `--ao=0`, `--shutter=0` и `--dof=0` не экономят GPU: pass остаётся в
-  графе. Для качества это ложное выключение, пригодное только для A/B.
-- старые `presets` / `scale_presets` у `declare_value` парсятся, но нигде не применяются. Они умеют менять
-  только одно значение и заранее зашиты в `low / mid / high`, поэтому всё равно не описывают профиль кадра.
-- `--look` — полезный прикладной preset изображения, но это другая ось. Цветовой look не должен случайно
-  менять число SSAO-проб или форму графа.
-
-## Предлагаемая модель
-
-Профиль — таблица выбранных **фрагментов по именованным осям**:
-
-| ось | примеры вариантов | что меняет |
-|---|---|---|
-| `pipeline` | `post`, `forward_msaa`, `forward_plain` | форму графа целиком |
-| `resolution` | `native`, `taa_u_75`, `taa_u_67`, `taa_u_50` | размеры render targets |
-| `ao` | `off`, `low`, `high` | наличие pass + specialization constants |
-| `ssr` | `off`, `linear_64`, `linear_128`, `hiz_128` | наличие pass + pipeline variant |
-| `dof` | `off`, `gameplay`, `cinematic` | наличие цепочки + число проб |
-| `motion_blur` | `off`, `gameplay`, `cinematic` | наличие цепочки + число проб |
-| `bloom` | `off`, `three_mips`, `four_mips` | форму цепочки и число mip levels |
-| `output` | `sdr`, позднее `hdr10` | формат/transfer function |
-| `look` | `neutral`, `warm`, `bleach` | только прикладные runtime-параметры |
-
-Один профиль выбирает по одному варианту нужных осей. Пользовательская точечная настройка заменяет только
-одну ось, не копируя весь preset:
+Большой `performance/balanced/quality` profile не должен быть основным контрактом. В пользовательском меню
+обычно есть несколько независимых выборов:
 
 ```text
---render-profile=balanced
---render.ao=high
---render.ssr=off
---look=warm
+resolution = native
+shadows = high
+ao = low
+reflections = off
+dof = gameplay
+bloom = high
 ```
 
-Здесь `balanced` остаётся базой, `ao` и `ssr` — две явные дельты, а `look` ортогонален качеству.
+Кнопка `High` — лишь макрос, который выставляет сразу несколько таких значений. После ручного изменения одной
+оси UI может показать `Custom`, но отдельного профиля `Custom` в данных нет: он выводится из несовпадения
+текущей таблицы ни с одним известным preset.
 
-## Возможная форма TAVL
+При этом список настроек не должен быть универсальным для всего движка. Production сначала выбирает renderer
+или recipe графа для сцены и платформы; уже он объявляет поддерживаемые оси, их варианты, default и
+ограничения совместимости. Forward/MSAA, deferred indoor и cinematic renderer могут иметь разные схемы
+настроек. Это согласуется с тем, что проект определяет меню только после выбора технологий.
 
-Это эскиз контракта, не предложение немедленно учить общий TAVL произвольным object paths:
+Удобно различать четыре слоя:
+
+1. **Renderer/graph recipe** — крупный набор технологий и контрактов ресурсов, выбранный проектом или сценой.
+2. **Independent settings** — пользовательские `shadows/ao/reflections/...`, разрешаемые в конкретную сборку.
+3. **Preset** — необязательная именованная таблица, которая массово записывает independent settings.
+4. **Runtime scene state** — focus distance, текущая экспозиционная компенсация, цветовой look и другие
+   прикладные UBO/SSBO-данные, которые сцена или camera volume может менять поверх выбранного качества.
+
+Concrete render variant тогда является **результатом resolver**, например хешем
+`indoor_post + {ao=low,dof=off,...}`, а не документом, который автор обязан написать целиком.
+
+## Две цены применения
+
+Пользователю и проекту достаточно видеть две цены:
+
+| класс | примеры | применение |
+|---|---|---|
+| runtime data | focus distance, aperture, bloom intensity, fog density, цветовой look | запись UBO/SSBO на следующий кадр |
+| graph build data | specialization constants, shader defines, resource sizes/formats/mips/samples, material pipeline state, topology | полная сборка нового поколения графа |
+
+Внутри Painter сборка состоит из нескольких Vulkan-операций, но наружу не нужно выставлять отдельные цены
+pipeline/resource/topology recreation: это одна транзакция. Если готовое поколение уже резидентно, проект
+может переключить его на границе кадра; это оптимизация хранения, а не третий семантический вид настройки.
+
+Одна пользовательская ось может содержать варианты с разной ценой. Например:
+
+- `dof: gameplay ↔ cinematic` меняет только project-owned lens data и применяется в runtime;
+- `dof: off ↔ gameplay` добавляет или убирает цепочку и собирает новое поколение graph;
+- `dof: 12 ↔ 24 samples` через specialization constant тоже требует полной сборки, хотя topology та же.
+
+UI может пометить настройку значком «применится после загрузки/пересборки», но цена выводится из targets её
+варианта, а не дублируется вручную отдельным `cost = ...`.
+
+## Как может выглядеть пользовательское состояние
+
+Текущая конфигурация хранит независимые выборы:
 
 ```tavl
 {
-  name = balanced
-  axes = [
-    pipeline = post,
-    resolution = taa_u_75,
+  graph = indoor_post
+  settings = [
+    resolution = native,
+    shadows = high,
     ao = low,
-    ssr = linear_64,
-    dof = off,
-    motion_blur = off,
-    bloom = four_mips,
-    output = sdr
-  ]
-}
-
-{
-  name = ao.low
-  group = ao
-  graph_fragment = post_ao
-  overrides = [
-    { step = compute_ao, shader_constant = ao_samples, value = "8" }
-  ]
-}
-
-{
-  name = resolution.taa_u_75
-  group = resolution
-  overrides = [
-    { declared_value = viewport_render, scale = [0.75, 0.75, 1.0] },
-    { declared_value = viewport_render_half, scale = [0.375, 0.375, 1.0] }
+    reflections = off,
+    dof = gameplay,
+    bloom = high
   ]
 }
 ```
 
-У fragment должен быть один `group`. Два выбранных fragment одной группы — громкая ошибка, если второй не
-объявлен явным CLI/user override. Это ловит случай `ao.low + ao.high`, вместо того чтобы молча зависеть от
-порядка файлов.
+Preset — это обычная частичная или полная запись в эту таблицу:
 
-## Где проходит граница Painter
+```tavl
+{
+  name = high
+  settings = [
+    resolution = native,
+    shadows = high,
+    ao = high,
+    reflections = high,
+    dof = gameplay,
+    bloom = high
+  ]
+}
+```
 
-Painter применяет только то, чем владеет:
+Применение preset не создаёт особой связи с ним: после записи значений каждая ось снова независима. Для
+повторяемого benchmark полезно сохранять итоговую развёрнутую таблицу, а не только имя preset.
 
-- выбор/композицию графа;
-- размеры, mip levels, sample count и форматы ресурсов;
-- specialization constants шагов;
-- material definitions и pipeline state.
+Разумный precedence верхнего уровня:
 
-Числа вроде `ao_radius`, `fog_density`, `bloom_intensity` и цветового look принадлежат проекту. Верхний слой
-может хранить их рядом в одном пользовательском документе, но передаёт Painter только секцию `render`, а
-секцию `settings` применяет сам. Иначе Painter пришлось бы знать смысл каждого эффекта.
+```text
+renderer defaults
+  < platform/device defaults
+  < selected preset
+  < saved per-setting user choices
+  < temporary project/camera runtime overrides
+```
 
-## Цена изменения должна выводиться, а не писаться от руки
+Последний слой не должен тайно менять build targets. Если cinematic camera требует другую topology, проект
+явно запрашивает другую settings table или готовое graph generation.
 
-Тип target уже определяет необходимую операцию:
+## Определение одной оси
 
-| target | цена применения |
-|---|---|
-| runtime setting / UBO | следующий кадр |
-| уже резидентный graph | переключение на границе кадра |
-| specialization constant / material definition | пересборка pipeline |
-| extent / mips / samples / format | пересоздание ресурсов и зависимых views/descriptors |
-| topology fragment | пересборка render graph; сначала можно оставить startup-only |
+Каждая ось принадлежит выбранному graph recipe и содержит именованные choices. Choice — это delta, а не
+полная копия config:
 
-Resolver сначала полностью строит итоговый профиль, валидирует ссылки и конфликты, затем выдаёт diff и план
-операций. Применять профиль по одному полю опасно: при ошибке посередине получится наполовину старый граф и
-наполовину новый. Нужна транзакция «всё валидно — commit целиком».
+```tavl
+{
+  name = ao
+  for_graph = indoor_post
+  default = low
 
-## Как представлять выключенные эффекты
+  choices = [
+    {
+      name = off
+      fragments = [ ambient_occlusion = none ]
+    },
+    {
+      name = low
+      fragments = [ ambient_occlusion = ssao ]
+      values = [ { name = ao_samples, value = [8, 0, 0] } ]
+    },
+    {
+      name = high
+      fragments = [ ambient_occlusion = ssao ]
+      values = [ { name = ao_samples, value = [16, 0, 0] } ]
+    }
+  ]
+}
+```
 
-`enabled = false` внутри существующего pass не решает задачу, если pass всё равно dispatch'ится. Низкий tier
-должен выбирать форму графа без SSAO/SSR/DoF/motion blur. На первом этапе разумнее держать несколько явных
-графов или сгенерированных вариантов, чем сразу строить универсальный condition language.
+`fragment` здесь — будущий structural механизм, не существующий синтаксис Painter. Важен контракт: recipe
+объявляет именованный slot `ambient_occlusion` с известными inputs/outputs, а choice выбирает `none` или
+совместимую реализацию. Это безопаснее, чем разрешить профилю произвольно удалить pass и надеяться, что
+consumers сами починятся.
 
-Практичная первая ступень для PF03:
+Runtime-варианты могут жить в том же проектном описании оси, но не обязаны проходить через Painter:
 
-| профиль | resolution | AO | SSR | DoF | motion blur | назначение |
-|---|---:|---:|---:|---:|---:|---|
-| `performance` | 0.67 TAAU | 8 | off | off | off | слабая iGPU / 60 FPS |
-| `balanced` | 0.75 TAAU | 8 | linear 64 | off | off | обычная игра |
-| `quality` | 1.0 | 16 | linear 128 | off | off | native-resolution база |
-| `cinematic` | 1.0 | 16 | linear 128 | 24 | 12 | всё включено для A/B/кадра |
+```tavl
+{
+  name = dof
+  choices = [
+    { name = off,       fragments = [ depth_of_field = none ] },
+    { name = gameplay, fragments = [ depth_of_field = gather_dof ], runtime = { aperture = 4.0 } },
+    { name = cinematic, fragments = [ depth_of_field = gather_dof ], runtime = { aperture = 1.4 } }
+  ]
+}
+```
 
-Это именно стартовая таблица, а не утверждение об универсальных настройках: PF03 уже измерил, что стоимость
-`compose`, SSR и post-TAA проходов зависит от конкретного железа, а TAAU ускоряет только часть до resolve.
+Переход `gameplay → cinematic` не требует graph build, если resolver видит, что structural/build-части
+choices одинаковы и различается только runtime delta. `off → gameplay` меняет fragment и требует build.
+
+Painter не должен знать семантику `aperture`: верхний project layer раскладывает `runtime` по своим
+UBO/SSBO. Painter получает только structural/build delta.
+
+## Почему это не требует вручную писать 2^N графов
+
+Если восемь независимых эффектов имеют `off/on`, существует 256 итоговых комбинаций. Хранить 256 полных
+TAVL-графов нельзя: они разойдутся при первом общем изменении.
+
+Нужна композиция на уровне **ограниченных именованных extension points**:
+
+1. base recipe объявляет slots и contracts ресурсов;
+2. choice каждой оси выбирает fragment для своего slot и добавляет typed patches;
+3. resolver объединяет choices, проверяет зависимости и конфликты;
+4. результат проходит обычную полную graph validation;
+5. только затем транзакционно строится новое поколение;
+6. каноническая таблица choices может служить cache key уже собранного поколения.
+
+То есть комбинаций исполнения по-прежнему много, но автор описывает каждый вариант эффекта один раз. Сборка
+конкретного сочетания происходит по требованию. Огромная тестовая матрица от этого не исчезает, поэтому наружу
+следует выставлять только полезные проекту группы, ограничивать несовместимые сочетания и объединять сильно
+связанные параметры в одну ось.
+
+Не всё обязано быть fragment. Переход `ssao → gtao` хорошо ложится в AO slot; переход `forward MSAA → deferred
+TAA` меняет слишком много базовых контрактов и должен выбирать другой renderer/graph recipe. Если две
+«независимые» оси постоянно конфликтуют, они либо принадлежат разным recipes, либо на самом деле являются
+одной составной осью.
+
+## Минимальный недостающий build-механизм
+
+PF03 уже вручную делает то, что должен делать общий resolver: после разбора TAVL и до commit ищет
+`viewport_render`, `compute_ao`, `gather_dof` и заменяет значения. Независимо от будущих fragments полезны три
+базовых примитива:
+
+1. `declare_values.tavl` можно использовать ссылкой в `step.shader_constants`;
+2. те же значения можно использовать в material `definitions` (это текущее имя поля; по смыслу shader
+   defines);
+3. choice настройки может содержать typed partial patches именованных values/materials/steps до полной
+   валидации и commit.
+
+Это build-time механизм. Он не обязан менять живой `VkPipeline` или отдельный ресурс на месте.
+
+### Ссылки на declare values
+
+Базовый config хранит связь один раз:
+
+```tavl
+// declare_values.tavl
+{
+  name = ao_samples
+  type = fixed
+  value = [16, 0, 0]
+}
+{
+  name = ssr_hierarchical
+  type = fixed
+  value = [0, 0, 0]
+}
+
+// steps/steps.tavl
+{
+  name = compute_ao
+  material = ao_material
+  shader_constants = [ ao_samples = "$ao_samples" ]
+  sets = [ frame_data, gbuffer_inputs, ao_write ]
+  command = "dispatch constant half_render_dispatch"
+}
+
+// materials/materials.tavl
+{
+  name = ssr_material
+  definitions = [ PF03_SSR_HIERARCHICAL = "$ssr_hierarchical" ]
+  shaders = { compute = "ssr.comp.glsl" }
+}
+```
+
+`$name` означает первую компоненту declared value; `$name.x/.y/.z` — явный выбор компоненты. В MVP ссылка
+разрешена только на `type = fixed`: нынешний `screensize` хранит scale, а реальный extent выводится позже из
+swapchain, поэтому его `current_value.x` не является шириной. Для specialization constant конечный тип
+по-прежнему приходит из SPIR-V reflection; для definition значение форматируется как GLSL token. Неизвестное
+имя или неподходящий тип — громкая ошибка до Vulkan.
+
+Для будущих дробных compile-time значений лучше добавить declared scalar с явным типом
+`u32/i32/f32/bool`, а не угадывать тип по строке.
+
+### Typed partial patches
+
+Не нужен универсальный путь вроде `materials.scene.raster.cull`: это создаст второй язык поверх TAVL. Choice
+содержит те же именованные типы объектов, но в patch-форме, где отсутствующее поле означает «оставить базовое»:
+
+```tavl
+{
+  name = high
+  values = [
+    { name = viewport_render, scale = [1.0, 1.0, 1.0] },
+    { name = ssr_hierarchical, value = [1, 0, 0] }
+  ]
+  materials = [
+    { name = ssr_material, definitions = [ PF03_SSR_QUALITY = "2" ] }
+  ]
+  steps = [
+    { name = trace_ssr, shader_constants = [ ssr_steps = "128" ] }
+  ]
+}
+```
+
+Material уже является описанием Vulkan pipeline, поэтому partial material patch покрывает defines и pipeline
+state без отдельной абстракции. Step patch в MVP стоит ограничить material и shader constants; изменение
+sets/command слишком близко к topology и должно идти через graph fragment.
+
+## Merge, ownership и совместимость
+
+При одном большом variant достаточно было бы порядка patch'ей. При независимых настройках такой порядок
+опасен: `ao=high` и `reflections=low` не должны молча соревноваться за один leaf. Правила resolver:
+
+- object target ищется по `(kind, name)` и обязан быть достижим из выбранного graph recipe;
+- неизвестный или неиспользуемый target — ошибка, а не настройка «на будущее»;
+- отсутствующий leaf наследует base, указанный leaf заменяет его, включая `false`, `0` и пустое значение;
+- именованные maps `definitions`, `shader_constants` и `blending` сливаются по ключу;
+- structural ordered arrays не патчатся; topology меняется только выбором объявленного fragment slot;
+- два settings choices не могут менять один build leaf, если recipe не объявил явное правило композиции;
+- fragment обязан удовлетворить slot contract, а requirements/incompatibilities проверяются до сборки;
+- после merge разрешаются `$value`, затем запускается обычная parse/semantic/reflection/graph validation;
+- commit происходит только целиком; при ошибке старое поколение остаётся активным.
+
+Для partial objects нужны отдельные typed patch-структуры с `optional`-полями. Нынешние mirror defaults
+(`false`, `0`, пустая строка) не различают «поле отсутствовало» и «явно записано false/0», поэтому повторно
+прогнать существующий `convert()` недостаточно.
 
 ## Порядок реализации
 
-1. **Resolver без runtime hot reload (S–M):** документы profile/fragment, группы, наследование одного base,
-   конфликтные override и итоговый diff. Чистые unit tests без Vulkan.
-2. **Применение до graph commit (M):** declared values, resource fields, step specialization constants,
-   material definitions и выбор существующего графа. Это заменяет ручные патчи в playground `main.cpp`.
-3. **Форма графа (L):** либо явные варианты, либо ограниченные named fragments с проверкой зависимостей.
-   Не начинать с произвольного удаления любого pass: автоматически чинить ресурсы и consumers слишком легко
-   превратить в неявный второй render graph compiler.
-4. **Hot switch (отдельная L-задача):** транзакционное пересоздание ресурсов/pipelines на границе кадра,
-   отчёт о цене, сброс temporal history и безопасное освобождение старого поколения после fences.
+1. **Value references (S):** `$name[.component]` в `shader_constants` и material `definitions`, с тестами
+   resolution/type/error paths.
+2. **Typed build patches (S–M):** `values/materials/steps`, merge в копию parsed config, ownership/conflict
+   diagnostics и полный validation до commit.
+3. **Independent settings resolver (M):** graph-specific schema осей и choices, defaults, preset как массовая
+   запись, канонический resolved state и diff `runtime/build`. Сначала работает только с неизменной topology.
+4. **Named graph slots/fragments (L):** `none` и несколько совместимых реализаций с явными resource contracts;
+   этим закрываются честные `AO/SSR/DoF = off` без ручных 2^N графов.
+5. **Transactional generation build/cache (M–L):** сборка целого поколения, сброс его temporal history,
+   optional cache/residency и безопасное освобождение старого поколения после fences.
 
-Минимально полезный результат — пункты 1–2: `--render-profile` и частичная замена оси до старта. Этого уже
-достаточно, чтобы перестать копировать по `main.cpp` ручной поиск `compute_ao`, `viewport_render` и похожих
-полей. Runtime-переключение не должно блокировать этот первый контракт.
+Минимально полезный результат — пункты 1–3: проект получает настоящие независимые quality controls и
+перестаёт вручную патчить PF03 `main.cpp`. До пункта 4 structural `off/on` либо недоступен в данном recipe,
+либо выбирается через несколько явно поддержанных graph recipes; подменять выключение нулевой intensity нельзя,
+потому что GPU-проход всё равно будет стоить времени.
