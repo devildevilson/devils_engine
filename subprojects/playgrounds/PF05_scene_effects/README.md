@@ -13,9 +13,11 @@ cmake --build build-debug --target PF05_scene_effects -j2
 
 Опции: `--validation`, `--uncapped`, `--fixed-camera`, `--fixed-step`, `--no-decals`, `--no-particles`,
 `--no-weather`, `--weather=clear|rain|snow`, `--no-particle-collision`, `--no-weather-shelter`,
-`--emitter-stop-frame=N`, `--frames=N`,
+`--no-cel`, `--cel-bands=2..8`, `--cel-softness=0..0.49`,
+`--cel-outline=off|silhouette|feature`, `--no-cel-outline`, `--emitter-stop-frame=N`, `--frames=N`,
 `--dump=file.ppm`. Камера — WASD/QE, мышь и Shift; `F` переключает decal pass, `P` останавливает/запускает
 emitter, `R` очищает spark pool, `T` циклически меняет rain/snow/clear, `C` включает collision, `H` — shelter.
+`G` независимо переключает cel lighting, `B` циклически меняет 2–5 bands, `O` — outline policy.
 При `--fixed-camera`
 cursor возвращается в `CURSOR_NORMAL`, а `--dump` записывает точный кадр из `scene_color`, как в PF03/PF04.
 `--fixed-step` фиксирует только particle timestep на `1/60 s`, чтобы lifecycle rail не зависела от скорости машины.
@@ -238,6 +240,35 @@ pixel-equivalent вне overlay, а rain/snow — `5648.02`, то есть mode 
 slots или появления существенно больших pools. `--no-particles` — debug runtime switch и не удаляет passes;
 production `particles = off` должен выбирать graph generation без simulation/render steps.
 
+## Cel shading и outline policy
+
+Пятый срез отделяет две runtime-настройки, которые часто ошибочно склеивают в один `toon material`.
+`cel_settings_buffer` обновляется на следующий кадр и содержит lighting mode, число bands/softness, outline policy,
+thresholds и цвет. Никакой pipeline или graph rebuild для этих значений не нужен.
+
+Opaque shader сначала считает обычный directional Lambert `N·L`. В cel mode диапазон `0..1` превращается в
+`N` равномерных уровней; граница между соседними уровнями получает короткий `smoothstep`, заданный в долях одной
+ячейки. При softness `0` переход математически жёсткий, но сильнее shimmering; `0.08` оставляет полосу визуально
+дискретной и даёт небольшой AA-переход. Ambient добавляется после квантования, поэтому тёмный lighting band не
+превращается в абсолютный чёрный. Отдельная гладкая UV-сфера справа существует именно как fixture: кубы не могут
+показать несколько bands внутри одной грани.
+
+Outline является screen-space consumer уже готовых opaque `scene_depth + scene_normal`:
+
+- `off` полностью отбрасывает fullscreen pass;
+- `silhouette` ищет границу geometry/background и относительный разрыв linear depth;
+- `feature` добавляет normal discontinuity и подчёркивает видимые жёсткие грани.
+
+Относительный depth threshold работает одинаковее вблизи и вдали, круглая окрестность `2 px` сохраняет экранную
+толщину. Pass стоит после opaque lighting, но перед decals, particles и text: контур принадлежит видимой поверхности
+мира, а последующие слои могут его закрыть. Он сознательно не является PF04 through-wall selection outline, не знает
+скрытой геометрии и не обводит прозрачные particles/MSDF. При policy `off` runtime pass пока остаётся в graph и
+делает discard; production `cel_outline = off` должен собирать generation без этого pass.
+
+Fixed-camera rail без decals/particles различает настройки вне overlay: smooth Lambert против 2 bands даёт
+`AE=17417`, 2 против 5 bands — `20338`, silhouette против feature — `493.542`. Повтор feature-кадра совпадает
+побитно в проверяемом crop (`AE=0`); Vulkan validation чистая.
+
 ## Планируемые срезы
 
 - ~~Crimson MSDF вдоль отрезка и quadratic Bézier, фиксированный размер/ограниченная длина и wrapped billboard~~;
@@ -245,7 +276,7 @@ production `particles = off` должен выбирать graph generation бе
 - ~~screen-space decals с reconstruction из depth/normal и ограниченным decal volume~~;
 - ~~particles, emitter lifecycle и простая particle physics~~;
 - ~~rain и snow как два наблюдаемо разных consumer particle-системы~~;
-- cel shading с управляемыми lighting bands и outline policy;
+- ~~cel shading с управляемыми lighting bands и outline policy~~;
 - маленькое world-space UI окно над объектом: имя, health bar и несколько полей состояния.
 
 Дополнительные эффекты добавляются только отдельными закрываемыми срезами. Площадка не является одной

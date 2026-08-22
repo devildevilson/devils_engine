@@ -1,7 +1,7 @@
 { name = viewport, type = screensize }
 { name = one, type = fixed, value = [1, 0, 0] }
 { name = scene_instances, type = fixed, value = [8, 0, 0] }
-{ name = scene_draws, type = fixed, value = [3, 0, 0] }
+{ name = scene_draws, type = fixed, value = [4, 0, 0] }
 { name = world_glyph_instances, type = fixed, value = [256, 0, 0] }
 { name = world_glyph_draws, type = fixed, value = [1, 0, 0] }
 { name = billboard_glyph_instances, type = fixed, value = [256, 0, 0] }

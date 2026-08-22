@@ -3,8 +3,17 @@
   material = scene_material
   geometry = scene_geometry
   draw_group = scene_draw_group
-  sets = [ camera_data ]
+  sets = [ camera_data, cel_settings ]
   command = "draw"
+}
+{
+  name = draw_cel_outline
+  material = cel_outline_material
+  geometry = fullscreen_geometry
+  sets = [ camera_data, decal_scene, cel_settings ]
+  command = "draw constant fullscreen_draw"
+  // The outline belongs to opaque lighting. Decals, particles and text are later layers and may cover it.
+  blending = { scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
 }
 {
   name = draw_screen_decals

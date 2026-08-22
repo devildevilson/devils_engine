@@ -33,7 +33,7 @@
         { scene_color = (color_attachment, store), scene_normal = (sampled, store), scene_depth = (depth_read, store) },
         { scene_color = (color_attachment, store), scene_normal = (sampled, store), scene_depth = (depth_read, store) }
       ]
-      steps = [ draw_screen_decals ]
+      steps = [ draw_cel_outline, draw_screen_decals ]
     },
     {
       name = pf05_text

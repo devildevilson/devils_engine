@@ -1,7 +1,8 @@
 #version 450
 
-// Алгоритм: минимальная opaque fixture получает world offset и material id из instance. Она нужна не как
-// отдельный lighting proof, а как честная depth/occlusion среда для world-space и billboard MSDF текста.
+// Алгоритм: одна локальная mesh используется множеством instance: xyz задаёт world offset, w выбирает fixture
+// material. Position переводится в clip space, а world position/normal без искажения уходят в fragment shader.
+// Плоские room/cube normals проверяют feature edges, гладкие normals отдельной сферы — cel lighting bands.
 
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;

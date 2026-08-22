@@ -56,6 +56,9 @@ constexpr float particle_lifetime_max = 4.2f;
 constexpr uint32_t weather_clear = 0;
 constexpr uint32_t weather_rain = 1;
 constexpr uint32_t weather_snow = 2;
+constexpr uint32_t cel_outline_off = 0;
+constexpr uint32_t cel_outline_silhouette = 1;
+constexpr uint32_t cel_outline_feature = 2;
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -67,12 +70,19 @@ int32_t particle_reset_key = -1;
 int32_t weather_cycle_key = -1;
 int32_t particle_collision_key = -1;
 int32_t weather_shelter_key = -1;
+int32_t cel_toggle_key = -1;
+int32_t cel_bands_key = -1;
+int32_t cel_outline_key = -1;
 bool decals_enabled = true;
 bool particle_toggle_requested = false;
 bool particle_reset_requested = false;
 bool weather_cycle_requested = false;
 bool particle_collision_enabled = true;
 bool weather_shelter_enabled = true;
+bool cel_enabled = true;
+uint32_t cel_band_count = 4;
+float cel_band_softness = 0.08f;
+uint32_t cel_outline_policy = cel_outline_feature;
 
 void error_callback(const int error, const char* message) noexcept {
   utils::warn("PF05 input error {}: {}", error, message);
@@ -100,6 +110,15 @@ void key_callback(GLFWwindow* window, const int key, const int scancode, const i
   }
   if (key == weather_shelter_key && action == 1) {
     weather_shelter_enabled = !weather_shelter_enabled;
+  }
+  if (key == cel_toggle_key && action == 1) {
+    cel_enabled = !cel_enabled;
+  }
+  if (key == cel_bands_key && action == 1) {
+    cel_band_count = cel_band_count >= 5u ? 2u : cel_band_count + 1u;
+  }
+  if (key == cel_outline_key && action == 1) {
+    cel_outline_policy = (cel_outline_policy + 1u) % 3u;
   }
 }
 
@@ -191,10 +210,23 @@ struct alignas(16) particle_emitter_block {
 };
 static_assert(sizeof(particle_emitter_block) == 144);
 
+struct alignas(16) cel_settings_block {
+  glm::vec4 lighting;
+  glm::vec4 outline;
+  glm::vec4 outline_color;
+};
+static_assert(sizeof(cel_settings_block) == 48);
+
 std::string_view weather_name(const uint32_t mode) noexcept {
   if (mode == weather_rain) return "rain";
   if (mode == weather_snow) return "snow";
   return "clear";
+}
+
+std::string_view cel_outline_name(const uint32_t policy) noexcept {
+  if (policy == cel_outline_silhouette) return "silhouette";
+  if (policy == cel_outline_feature) return "feature";
+  return "off";
 }
 
 struct emitter_runtime {
@@ -287,6 +319,37 @@ std::vector<scene_vertex> make_room() {
 std::vector<scene_vertex> make_cube() {
   std::vector<scene_vertex> out;
   add_box(out, {}, {0.65f, 0.65f, 0.65f});
+  return out;
+}
+
+std::vector<scene_vertex> make_uv_sphere(const uint32_t slices = 32, const uint32_t stacks = 16) {
+  std::vector<scene_vertex> out;
+  out.reserve(size_t(slices) * stacks * 6);
+  constexpr float pi = 3.14159265358979323846f;
+  const auto unit = [=](const uint32_t x, const uint32_t y) {
+    const float longitude = 2.0f * pi * float(x) / float(slices);
+    const float latitude = -0.5f * pi + pi * float(y) / float(stacks);
+    const float ring = std::cos(latitude);
+    return glm::vec3{ring * std::cos(longitude), std::sin(latitude), ring * std::sin(longitude)};
+  };
+  const auto push = [&out](const glm::vec3 normal) {
+    constexpr float radius = 0.72f;
+    const glm::vec3 position = normal * radius;
+    out.push_back(scene_vertex{
+      position.x, position.y, position.z,
+      normal.x, normal.y, normal.z});
+  };
+  for (uint32_t y = 0; y < stacks; ++y) {
+    for (uint32_t x = 0; x < slices; ++x) {
+      const uint32_t next_x = (x + 1u) % slices;
+      const glm::vec3 a = unit(x, y);
+      const glm::vec3 b = unit(x, y + 1u);
+      const glm::vec3 c = unit(next_x, y + 1u);
+      const glm::vec3 d = unit(next_x, y);
+      push(a); push(b); push(c);
+      push(a); push(c); push(d);
+    }
+  }
   return out;
 }
 
@@ -772,10 +835,18 @@ int main(int argc, char** argv) {
       start_without_particle_collision || option == "--no-particle-collision";
     start_without_weather_shelter =
       start_without_weather_shelter || option == "--no-weather-shelter";
+    if (option == "--no-cel") {
+      cel_enabled = false;
+      cel_outline_policy = cel_outline_off;
+    }
+    if (option == "--no-cel-outline") cel_outline_policy = cel_outline_off;
     if (option == "--no-weather") weather_mode = weather_clear;
     constexpr std::string_view frames_prefix = "--frames=";
     constexpr std::string_view emitter_stop_prefix = "--emitter-stop-frame=";
     constexpr std::string_view weather_prefix = "--weather=";
+    constexpr std::string_view cel_bands_prefix = "--cel-bands=";
+    constexpr std::string_view cel_softness_prefix = "--cel-softness=";
+    constexpr std::string_view cel_outline_prefix = "--cel-outline=";
     constexpr std::string_view dump_prefix = "--dump=";
     if (option.starts_with(frames_prefix)) {
       frame_limit = uint32_t(std::stoul(std::string(option.substr(frames_prefix.size()))));
@@ -789,6 +860,22 @@ int main(int argc, char** argv) {
       else if (value == "rain") weather_mode = weather_rain;
       else if (value == "snow") weather_mode = weather_snow;
       else utils::error{}("PF05 unknown weather mode '{}'; expected clear, rain or snow", value);
+    }
+    if (option.starts_with(cel_bands_prefix)) {
+      cel_band_count = std::clamp(
+        uint32_t(std::stoul(std::string(option.substr(cel_bands_prefix.size())))), 2u, 8u);
+    }
+    if (option.starts_with(cel_softness_prefix)) {
+      cel_band_softness = std::clamp(
+        std::stof(std::string(option.substr(cel_softness_prefix.size()))), 0.0f, 0.49f);
+    }
+    if (option.starts_with(cel_outline_prefix)) {
+      const std::string_view value = option.substr(cel_outline_prefix.size());
+      if (value == "off") cel_outline_policy = cel_outline_off;
+      else if (value == "silhouette") cel_outline_policy = cel_outline_silhouette;
+      else if (value == "feature") cel_outline_policy = cel_outline_feature;
+      else utils::error{}(
+        "PF05 unknown cel outline policy '{}'; expected off, silhouette or feature", value);
     }
     if (option.starts_with(dump_prefix)) {
       dump_path = std::string(option.substr(dump_prefix.size()));
@@ -886,10 +973,12 @@ int main(int argc, char** argv) {
     };
     const auto room = make_room();
     const auto cube = make_cube();
+    const auto cel_sphere = make_uv_sphere();
     const auto emitter_marker = make_emitter_marker();
     const auto decal_cube = make_decal_cube();
     const auto room_mesh = upload_scene_mesh("pf05.room", room);
     const auto cube_mesh = upload_scene_mesh("pf05.cube", cube);
+    const auto cel_sphere_mesh = upload_scene_mesh("pf05.cel_sphere", cel_sphere);
     const auto emitter_marker_mesh = upload_scene_mesh("pf05.emitter_marker", emitter_marker);
     const auto decal_mesh = assets.register_buffer_storage("pf05.decal_cube");
     assets.create_buffer_storage(
@@ -917,8 +1006,8 @@ int main(int argc, char** argv) {
       common_resources + "ui/lab_overlay.lua",
       playground::overlay_description{
         "PF05 — Scene effects",
-        "Crimson atlas, screen decals and a persistent GPU particle pool",
-        "WASD/QE + mouse · F decals · P emitter · R reset · T weather · C collision · H shelter · Esc"});
+        "Crimson atlas, decals, GPU particles and runtime cel shading",
+        "WASD/QE + mouse · G cel · B bands · O outline · T weather · C collision · H shelter · Esc"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(
@@ -1022,6 +1111,7 @@ int main(int argc, char** argv) {
     const uint32_t room_pair = base.register_pair(scene_group, room_mesh, 1);
     const uint32_t props_pair = base.register_pair(scene_group, cube_mesh, 2);
     const uint32_t emitter_marker_pair = base.register_pair(scene_group, emitter_marker_mesh, 1);
+    const uint32_t cel_sphere_pair = base.register_pair(scene_group, cel_sphere_mesh, 1);
     const uint32_t decal_pair = base.register_pair(decal_group, decal_mesh, uint32_t(decal_glyphs.size()));
     const uint32_t world_pair = base.register_pair(world_group, glyph_mesh, uint32_t(world_glyphs.size()));
     const uint32_t billboard_pair = base.register_pair(
@@ -1031,6 +1121,8 @@ int main(int argc, char** argv) {
       glm::vec4{-1.6f, -0.85f, -2.7f, 1}, glm::vec4{2.25f, -0.85f, -2.9f, 2}};
     const std::array<glm::vec4, 1> emitter_marker_instances{
       glm::vec4{0.0f, -1.36f, -2.25f, 3}};
+    const std::array<glm::vec4, 1> cel_sphere_instances{
+      glm::vec4{3.45f, -0.77f, 0.75f, 4}};
     write_pair(base, room_pair, std::span<const glm::vec4>(room_instances), uint32_t(room.size()));
     write_pair(base, props_pair, std::span<const glm::vec4>(prop_instances), uint32_t(cube.size()));
     write_pair(
@@ -1038,6 +1130,11 @@ int main(int argc, char** argv) {
       emitter_marker_pair,
       std::span<const glm::vec4>(emitter_marker_instances),
       uint32_t(emitter_marker.size()));
+    write_pair(
+      base,
+      cel_sphere_pair,
+      std::span<const glm::vec4>(cel_sphere_instances),
+      uint32_t(cel_sphere.size()));
     write_pair(base, decal_pair, std::span<const decal_instance>(decal_glyphs), uint32_t(decal_cube.size()));
     write_pair(base, world_pair, std::span<const glyph_instance>(world_glyphs), uint32_t(glyph_quad.size()));
     write_pair(base, billboard_pair, std::span<const billboard_glyph_instance>(billboard_glyphs), uint32_t(glyph_quad.size()));
@@ -1057,6 +1154,9 @@ int main(int argc, char** argv) {
     weather_cycle_key = input::glfw_key_from_canonical("key_t");
     particle_collision_key = input::glfw_key_from_canonical("key_c");
     weather_shelter_key = input::glfw_key_from_canonical("key_h");
+    cel_toggle_key = input::glfw_key_from_canonical("key_g");
+    cel_bands_key = input::glfw_key_from_canonical("key_b");
+    cel_outline_key = input::glfw_key_from_canonical("key_o");
     input::set_window_callback(window, &key_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
     if (fixed_camera) {
@@ -1141,6 +1241,19 @@ int main(int argc, char** argv) {
           0,
           0)};
       write_current_buffer(base, "camera_buffer", &camera_data, sizeof(camera_data));
+      const cel_settings_block cel_settings{
+        glm::vec4(
+          cel_enabled ? 1.0f : 0.0f,
+          float(cel_band_count),
+          cel_band_softness,
+          0.22f),
+        glm::vec4(
+          float(cel_outline_policy),
+          2.0f,
+          0.035f,
+          0.82f),
+        glm::vec4(0.012f, 0.016f, 0.024f, 0.92f)};
+      write_current_buffer(base, "cel_settings_buffer", &cel_settings, sizeof(cel_settings));
       const float simulation_dt = fixed_step ? (1.0f / 60.0f) : dt;
       if (emitter_stop_frame != 0 && frames_total == emitter_stop_frame) emitter.stop();
       const glm::uvec4 particle_lifecycle = emitter.advance(simulation_dt);
@@ -1166,7 +1279,7 @@ int main(int argc, char** argv) {
         int64_t{1}));
       const uint64_t timestamp_us = uint64_t(
         std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
-      const std::array<std::string, 13> details{
+      const std::array<std::string, 14> details{
         std::format("Atlas: {}x{}, {} glyph metrics", atlas.width, atlas.height, font.glyphs.size()),
         std::format("Fixed: height {:.2f}, limit 4.80, consumed {}/{} characters",
           fixed_text.resolved_height, fixed_text.consumed_characters, fixed_text.source_characters),
@@ -1188,6 +1301,12 @@ int main(int argc, char** argv) {
           particle_emitter.lifetime_drag.z,
           particle_emitter.lifetime_drag.w,
           particle_capacity),
+        std::format("Cel: lighting [{}] · {} bands · softness {:.2f} · outline {} / {:.0f}px",
+          cel_enabled ? "ON" : "OFF",
+          cel_band_count,
+          cel_band_softness,
+          cel_outline_name(cel_outline_policy),
+          cel_settings.outline.y),
         std::format("Custom fill: packed detail slot {}, per-text mix", weathered_texture),
         "World/billboard glyph coverage writes depth; transparent quad pixels are discarded"};
       overlay.set_detail_lines(details);

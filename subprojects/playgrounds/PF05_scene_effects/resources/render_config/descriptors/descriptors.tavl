@@ -3,6 +3,10 @@
   layout = [ { resource = camera_buffer, usage = uniform, stage = all } ]
 }
 {
+  name = cel_settings
+  layout = [ { resource = cel_settings_buffer, usage = uniform, stage = fragment } ]
+}
+{
   name = decal_scene
   layout = [
     { resource = scene_depth, usage = depth_read, sampler = nearest_sampler, stage = fragment },

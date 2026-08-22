@@ -5,6 +5,12 @@
   raster = { cull = back, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {
+  name = cel_outline_material
+  shaders = { vertex = "fullscreen.vert.glsl", fragment = "cel_outline.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
   name = screen_decal_material
   shaders = { vertex = "screen_decal.vert.glsl", fragment = "screen_decal.frag.glsl" }
   depth = { test = false, write = false, compare = always }

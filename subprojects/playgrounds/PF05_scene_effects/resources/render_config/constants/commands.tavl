@@ -14,6 +14,11 @@
   value = [6.0, 1024.0, 0.0, 2048.0]
 }
 {
+  name = fullscreen_draw
+  layout = draw4
+  value = [3.0, 1.0, 0.0, 0.0]
+}
+{
   name = ui_push
   layout = ui1ui1ui1ui1ui1ui1ui1
   value = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

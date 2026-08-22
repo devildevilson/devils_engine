@@ -135,6 +135,10 @@ Rain использует velocity-aligned cylindrical ribbons: мировая �
 поворачивается только тонкая ширина. Явный shelter AABB закрывает semantic gap screen depth для offscreen roof;
 комната стала roofed dry fixture, `H` даёт shelter A/B, а `C` — depth-collision A/B. Weather использует alpha,
 sparks остаются additive, UI гарантирован отдельным последним pass.
+Cel-срез добавляет runtime UBO вместо pipeline variants: `G` включает Lambert quantization, `B` меняет число
+bands, а `O` выбирает screen-space outline `off/silhouette/feature`. Отдельная гладкая сфера делает уровни
+наблюдаемыми; outline читает visible opaque depth/normal до decals/particles/text и поэтому не превращается в
+through-wall selector. Fixed A/B различает smooth/2/5 bands и обе outline policies, повторный crop даёт `AE=0`.
 Лаборатории по-прежнему не зависят друг от друга; общие production fixes принадлежат `libs/painter`.
 
 ## 1. Painter visual stack
