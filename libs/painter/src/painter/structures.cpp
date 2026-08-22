@@ -669,27 +669,38 @@ struct blend_data_mirror {
     bd.enable = enable;
     const auto& [srcColorBlendFactor, colorBlendOp, dstColorBlendFactor] = parse_blend_exp(color);
     const auto& [srcAlphaBlendFactor, alphaBlendOp, dstAlphaBlendFactor] = parse_blend_exp(alpha);
-    bd.srcColorBlendFactor = srcColorBlendFactor;
-    bd.colorBlendOp = colorBlendOp;
-    bd.dstColorBlendFactor = dstColorBlendFactor;
-    bd.srcAlphaBlendFactor = srcAlphaBlendFactor;
-    bd.alphaBlendOp = alphaBlendOp;
-    bd.dstAlphaBlendFactor = dstAlphaBlendFactor;
-    if (mask.empty()) {
-      bd.colorWriteMask = default_color_blending;
+    // An omitted blend expression keeps blend_data's valid Vulkan defaults. This matters for an authored
+    // write mask with blending disabled: parse_blend_exp returns the "absent" sentinel, which must not be
+    // copied into VkPipelineColorBlendAttachmentState as an invalid enum.
+    if (!color.empty()) {
+      bd.srcColorBlendFactor = srcColorBlendFactor;
+      bd.colorBlendOp = colorBlendOp;
+      bd.dstColorBlendFactor = dstColorBlendFactor;
     }
-    for (const auto c : mask) {
-      if (c == 'r') {
-        bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_R_BIT;
-      }
-      if (c == 'g') {
-        bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_G_BIT;
-      }
-      if (c == 'b') {
-        bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_B_BIT;
-      }
-      if (c == 'a') {
-        bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_A_BIT;
+    if (!alpha.empty()) {
+      bd.srcAlphaBlendFactor = srcAlphaBlendFactor;
+      bd.alphaBlendOp = alphaBlendOp;
+      bd.dstAlphaBlendFactor = dstAlphaBlendFactor;
+    }
+    // Empty means the Vulkan/default RGBA mask. A non-empty expression is an explicit replacement,
+    // not bits OR-ed into that default; the old code started from RGBA and therefore made every authored
+    // mask silently equivalent to RGBA. `none` is useful for depth/stencil-only draws in a color render pass.
+    if (!mask.empty()) {
+      bd.colorWriteMask = 0;
+    }
+    if (mask != "none") {
+      for (const auto c : mask) {
+        if (c == 'r') {
+          bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_R_BIT;
+        } else if (c == 'g') {
+          bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_G_BIT;
+        } else if (c == 'b') {
+          bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_B_BIT;
+        } else if (c == 'a') {
+          bd.colorWriteMask = bd.colorWriteMask | VK_COLOR_COMPONENT_A_BIT;
+        } else {
+          utils::error{}("Unknown color write-mask component '{}' in mask '{}'; expected rgba or none", c, mask);
+        }
       }
     }
 

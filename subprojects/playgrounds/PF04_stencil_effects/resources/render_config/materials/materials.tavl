@@ -33,8 +33,8 @@
       pass_op = replace
       depth_fail_op = keep
       compare_op = always
-      compare_mask = 255
-      write_mask = 255
+      compare_mask = 1
+      write_mask = 1
       reference = 1
     }
     back = {
@@ -42,8 +42,8 @@
       pass_op = replace
       depth_fail_op = keep
       compare_op = always
-      compare_mask = 255
-      write_mask = 255
+      compare_mask = 1
+      write_mask = 1
       reference = 1
     }
   }
@@ -71,7 +71,7 @@
       pass_op = keep
       depth_fail_op = keep
       compare_op = not_equal
-      compare_mask = 255
+      compare_mask = 1
       write_mask = 0
       reference = 1
     }
@@ -80,13 +80,89 @@
       pass_op = keep
       depth_fail_op = keep
       compare_op = not_equal
-      compare_mask = 255
+      compare_mask = 1
       write_mask = 0
       reference = 1
     }
   }
   raster = {
     cull = front
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  // Невидимая world-space пластина записывает только bit 1 (0x02), сохраняя selection bit 0.
+  name = local_mask_material
+  shaders = {
+    vertex = "local_mask.vert.glsl"
+    fragment = "local_mask.frag.glsl"
+  }
+  depth = {
+    test = true
+    write = false
+    compare = greater
+    stencil_test = true
+    front = {
+      fail_op = keep
+      pass_op = replace
+      depth_fail_op = keep
+      compare_op = always
+      compare_mask = 2
+      write_mask = 2
+      reference = 2
+    }
+    back = {
+      fail_op = keep
+      pass_op = replace
+      depth_fail_op = keep
+      compare_op = always
+      compare_mask = 2
+      write_mask = 2
+      reference = 2
+    }
+  }
+  raster = {
+    cull = none
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  // Fullscreen tint запускается только где установлен local-effect bit 0x02.
+  name = local_tint_material
+  shaders = {
+    vertex = "fullscreen.vert.glsl"
+    fragment = "local_tint.frag.glsl"
+  }
+  depth = {
+    test = false
+    write = false
+    compare = always
+    stencil_test = true
+    front = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = keep
+      compare_op = equal
+      compare_mask = 2
+      write_mask = 0
+      reference = 2
+    }
+    back = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = keep
+      compare_op = equal
+      compare_mask = 2
+      write_mask = 0
+      reference = 2
+    }
+  }
+  raster = {
+    cull = none
     front_face = ccw
     polygon = fill
     line_width = 1.0
@@ -110,7 +186,7 @@
       pass_op = keep
       depth_fail_op = keep
       compare_op = equal
-      compare_mask = 255
+      compare_mask = 1
       write_mask = 0
       reference = 1
     }
@@ -119,7 +195,7 @@
       pass_op = keep
       depth_fail_op = keep
       compare_op = equal
-      compare_mask = 255
+      compare_mask = 1
       write_mask = 0
       reference = 1
     }

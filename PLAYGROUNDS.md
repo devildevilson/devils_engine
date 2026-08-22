@@ -79,7 +79,8 @@ font и показывает описание сцены, controls, сглаже
 и [`PF03_post_processing`](subprojects/playgrounds/PF03_post_processing/README.md) закрыты; текущий bounded
 результат — [`PF04_stencil_effects`](subprojects/playgrounds/PF04_stencil_effects/README.md). Первый executable
 уже доказывает `D24S8` attachment, reference writer, fullscreen equal-test visualization и stencil outline;
-следующий срез — локальный post-effect через отдельный bit, затем window mask и dynamic masks/reference.
+второй срез добавил независимый `0x02` bit и локальный fullscreen tint без color writes у proxy geometry.
+Следующий срез — window mask, затем dynamic masks/reference.
 
 `PF03` закрыт 2026-08-21 полной запускаемой post-цепочкой, numeric/debug контрактами и shader-аудитом.
 Финальная незакрытая техника, TAAU, теперь действительно реконструирует: при масштабе 0.5 ошибка против
@@ -112,8 +113,8 @@ resolver'ом. Реализация остаётся отдельным backlog,
 подмножество этих возможностей в собственных resources/presets. Исходники и CMake targets лабораторий
 не зависят друг от друга.
 
-Текущий ограниченный результат — локальный post-effect через отдельный stencil bit поверх уже работающего
-PF04 outline/debug baseline. Затем следует один window-mask пример и dynamic reference/read/write masks. Все
+Текущий ограниченный результат — один window-mask пример поверх уже работающих независимых selection и
+local-effect bits. Затем следуют dynamic reference/read/write masks и asymmetric front/back fixture. Все
 сценарии идут через обычные Painter materials/render graph; production parsing/execution fixes принадлежат
 `libs/painter`, а демонстрационные consumers остаются внутри лаборатории.
 

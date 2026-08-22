@@ -12,3 +12,10 @@
   draw_capacity = selected_draws
   type = host_visible
 }
+{
+  name = local_mask_draw_group
+  layout = v4
+  budget = mask_instances
+  draw_capacity = mask_draws
+  type = host_visible
+}

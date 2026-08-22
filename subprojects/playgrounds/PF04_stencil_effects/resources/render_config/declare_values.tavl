@@ -28,6 +28,16 @@
   value = [1, 0, 0]
 }
 {
+  name = mask_instances
+  type = fixed
+  value = [1, 0, 0]
+}
+{
+  name = mask_draws
+  type = fixed
+  value = [1, 0, 0]
+}
+{
   name = ui_vertices_bytes
   type = fixed
   value = [524288, 0, 0]

@@ -39,8 +39,10 @@ uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
 bool resize_pending = false;
 bool stencil_debug = false;
+bool local_effect = true;
 int32_t escape_key = -1;
 int32_t debug_key = -1;
+int32_t local_effect_key = -1;
 
 void error_callback(const int error, const char* message) noexcept {
   utils::warn("PF04 input error {}: {}", error, message);
@@ -53,6 +55,9 @@ void key_callback(GLFWwindow* window, const int key, const int scancode, const i
   }
   if (key == debug_key && action == 1) {
     stencil_debug = !stencil_debug;
+  }
+  if (key == local_effect_key && action == 1) {
+    local_effect = !local_effect;
   }
 }
 
@@ -73,6 +78,10 @@ void bind_key(const std::string_view event, const std::string_view canonical) {
 struct vertex {
   float px, py, pz;
   float nx, ny, nz;
+};
+
+struct mask_vertex {
+  float px, py, pz;
 };
 
 void add_quad(
@@ -266,6 +275,7 @@ int main(int argc, char** argv) {
     uncapped = uncapped || option == "--uncapped";
     fixed_camera = fixed_camera || option == "--fixed-camera";
     stencil_debug = stencil_debug || option == "--stencil-debug";
+    local_effect = local_effect && option != "--no-local-effect";
   }
 
   input::init input_runtime(&error_callback);
@@ -368,15 +378,34 @@ int main(int argc, char** argv) {
     const auto cube = make_cube();
     const auto room_mesh = upload_mesh("pf04.room", room);
     const auto cube_mesh = upload_mesh("pf04.cube", cube);
+    // Two triangles form a world-space proxy. It never changes scene color; it writes stencil bit 0x02.
+    const std::array<mask_vertex, 6> local_mask_vertices{
+      mask_vertex{-1.4f, -1.1f, 0.0f}, mask_vertex{1.4f, -1.1f, 0.0f}, mask_vertex{1.4f, 1.4f, 0.0f},
+      mask_vertex{-1.4f, -1.1f, 0.0f}, mask_vertex{1.4f, 1.4f, 0.0f}, mask_vertex{-1.4f, 1.4f, 0.0f}};
+    const auto mask_mesh = assets.register_buffer_storage("pf04.local_mask");
+    assets.create_buffer_storage(
+      mask_mesh,
+      painter::buffer_create_info{"local_mask_geometry", uint32_t(local_mask_vertices.size()), 0});
+    assets.populate_buffer_storage(
+      mask_mesh,
+      std::span(
+        reinterpret_cast<const uint8_t*>(local_mask_vertices.data()),
+        local_mask_vertices.size() * sizeof(local_mask_vertices[0])),
+      std::span<const uint8_t>{});
+    assets.mark_ready_buffer_slot(mask_mesh);
 
     const uint32_t scene_group = base.find_draw_group("scene_draw_group");
     const uint32_t selected_group = base.find_draw_group("selected_draw_group");
-    if (scene_group == painter::invalid_resource_slot || selected_group == painter::invalid_resource_slot) {
+    const uint32_t mask_group = base.find_draw_group("local_mask_draw_group");
+    if (scene_group == painter::invalid_resource_slot ||
+        selected_group == painter::invalid_resource_slot ||
+        mask_group == painter::invalid_resource_slot) {
       utils::error{}("PF04 scene draw groups are absent");
     }
     const uint32_t room_pair = base.register_pair(scene_group, room_mesh, 1);
     const uint32_t props_pair = base.register_pair(scene_group, cube_mesh, 3);
     const uint32_t selected_pair = base.register_pair(selected_group, cube_mesh, 1);
+    const uint32_t mask_pair = base.register_pair(mask_group, mask_mesh, 1);
 
     const std::array<glm::vec4, 1> room_instances{glm::vec4{0.0f, 0.0f, 0.0f, 0.0f}};
     const std::array<glm::vec4, 3> prop_instances{
@@ -384,9 +413,11 @@ int main(int argc, char** argv) {
       glm::vec4{2.1f, -0.78f, -2.1f, 1.0f},
       glm::vec4{0.1f, 0.75f, -3.6f, 1.0f}};
     const std::array<glm::vec4, 1> selected_instances{glm::vec4{0.0f, -0.72f, -1.55f, 2.0f}};
+    const std::array<glm::vec4, 1> mask_instances{glm::vec4{-0.65f, 0.1f, -0.45f, 0.0f}};
     write_pair(base, room_pair, room_instances, uint32_t(room.size()));
     write_pair(base, props_pair, prop_instances, uint32_t(cube.size()));
     write_pair(base, selected_pair, selected_instances, uint32_t(cube.size()));
+    write_pair(base, mask_pair, mask_instances, uint32_t(local_mask_vertices.size()));
 
     const std::string common_resources = std::string(PLAYGROUND_COMMON_RESOURCE_ROOT) + "/";
     playground::visage_overlay overlay(
@@ -394,8 +425,8 @@ int main(int argc, char** argv) {
       common_resources + "ui/lab_overlay.lua",
       playground::overlay_description{
         "PF04 — Stencil effects",
-        "selected object writes stencil=1 → expanded shell tests !=1",
-        "WASD/QE move · mouse look · V stencil tint · Esc exit"});
+        "bit 0: selection outline · bit 1: independent local effect mask",
+        "WASD/QE move · mouse look · L local tint · V stencil tint · Esc exit"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(
@@ -416,6 +447,7 @@ int main(int argc, char** argv) {
     bind_key("camera_fast", "left_shift");
     escape_key = input::glfw_key_from_canonical("escape");
     debug_key = input::glfw_key_from_canonical("key_v");
+    local_effect_key = input::glfw_key_from_canonical("key_l");
     input::set_window_callback(window, &key_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
     input::set_cursor_input_mode(window, DEVILS_ENGINE_INPUT_CURSOR_DISABLED);
@@ -432,8 +464,8 @@ int main(int argc, char** argv) {
     context.base = &base;
     context.assets = &assets;
 
-    utils::info("PF04 controls: WASD/QE move, Shift accelerate, mouse look, V stencil tint, Esc exit");
-    utils::info("PF04 graph: scene -> stencil writer -> outline -> stencil debug consumer -> UI -> present");
+    utils::info("PF04 controls: WASD/QE move, Shift accelerate, mouse look, L local tint, V stencil tint, Esc exit");
+    utils::info("PF04 graph: scene -> selection bit -> local mask bit -> outline -> local tint -> stencil debug -> UI -> present");
 
     while (!input::should_close(window)) {
       input::poll_events();
@@ -475,7 +507,11 @@ int main(int argc, char** argv) {
       camera_data.view = view;
       camera_data.camera_position = glm::vec4(camera.position, 1.0f);
       camera_data.viewport_near = glm::vec4(float(pending_width), float(pending_height), near_plane, 0.0f);
-      camera_data.debug_params = glm::vec4(stencil_debug ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+      camera_data.debug_params = glm::vec4(
+        stencil_debug ? 1.0f : 0.0f,
+        local_effect ? 1.0f : 0.0f,
+        0.0f,
+        0.0f);
       write_current_buffer(base, "camera_buffer", &camera_data, sizeof(camera_data));
 
       const uint64_t frame_delta_us = uint64_t(std::max(
@@ -483,8 +519,9 @@ int main(int argc, char** argv) {
         int64_t{1}));
       const uint64_t timestamp_us = uint64_t(
         std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
-      const std::array<std::string, 2> details{
-        "Stencil writer: reference 1, compare always, pass replace",
+      const std::array<std::string, 3> details{
+        "Selection: write/read mask 0x01; outline tests bit 0 only",
+        local_effect ? "Local tint: ON; invisible proxy writes mask 0x02" : "Local tint: OFF (press L); mask remains independent",
         stencil_debug ? "Debug tint: ON (fullscreen compare equal 1)" : "Debug tint: OFF (press V)"};
       overlay.set_detail_lines(details);
       overlay.update(frame_delta_us, timestamp_us);

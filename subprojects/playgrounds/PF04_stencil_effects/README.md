@@ -10,8 +10,9 @@ cmake --build build-debug --target PF04_stencil_effects -j2
 ./build-debug/subprojects/playgrounds/PF04_stencil_effects/bin/PF04_stencil_effects
 ```
 
-Опции: `--validation`, `--uncapped`, `--fixed-camera`, `--stencil-debug`. Управление: WASD/QE, мышь,
-Shift; `V` включает magenta-визуализацию stencil reference 1, Escape закрывает окно.
+Опции: `--validation`, `--uncapped`, `--fixed-camera`, `--stencil-debug`, `--no-local-effect`. Управление:
+WASD/QE, мышь, Shift; `L` включает локальный cyan tint, `V` — magenta-визуализацию selection bit,
+Escape закрывает окно.
 
 ## Первый работающий срез
 
@@ -35,6 +36,28 @@ depth test. Debug consumer не читает stencil как texture: fullscreen 
 Проверено 2026-08-22 на Iris Xe: debug-view визуально совпадает с выбранной геометрией, outline остаётся
 снаружи маски, восьмисекундный запуск с Vulkan validation не выдаёт ошибок.
 
+## Независимый локальный эффект
+
+Второй срез делит stencil на независимые области ответственности:
+
+```text
+selected cube → write mask 0x01, reference 0x01
+world-space rectangle → depth test → write mask 0x02, reference 0x02, color mask none
+outline/debug → compare mask 0x01
+fullscreen local tint → compare mask 0x02 → alpha blend cyan
+```
+
+В пересечении прямоугольника и выбранного объекта stencil содержит `0x03`. Это намеренная проверка:
+outline продолжает видеть selection bit, а local tint — свой bit, потому что оба consumer'а маскируют
+не относящиеся к ним разряды. Proxy rectangle не виден сам по себе: step задаёт `mask = none`, depth write
+выключен, а прошедшие depth test fragments меняют только stencil. Кнопка `L` отключает consumer через UBO,
+не меняя static pipeline state и не перестраивая граф.
+
+Tint здесь намеренно blend-only. Настоящая десатурация должна прочитать исходный цвет, но читать и писать
+один и тот же color attachment в обычном pass нельзя из-за feedback loop; для неё понадобится input
+attachment/subpass либо отдельная ping-pong цель. Этот срез доказывает stencil routing, а не скрывает
+неверный ресурсный контракт за шейдером.
+
 ## Что уже доказано в Painter
 
 - combined depth/stencil resource создаётся, очищается и сохраняет оба aspect внутри pass;
@@ -43,6 +66,12 @@ depth test. Debug consumer не читает stencil как texture: fullscreen 
 - несколько обычных graph steps последовательно используют одну stencil mask;
 - fullscreen graphics consumer может использовать stencil без sampled descriptor;
 - stencil writer совмещается с reversed-Z depth test, а consumer не обходит occlusion.
+- разные эффекты могут безопасно делить байт через read/write masks и сохранять чужие bits;
+- step-level `mask = none` действительно создаёт depth/stencil-only draw внутри color render pass.
+
+В Painter по пути исправлен разбор color write masks: непустая маска теперь заменяет RGBA, `none` даёт
+ноль, а отсутствующие blend expressions сохраняют валидные Vulkan defaults вместо sentinel `UINT32_MAX`.
+Регресс покрыт `painter_shader_prepare_test` (`13` cases, `147` assertions).
 
 Reference/read/write masks сейчас **static pipeline state**. В material `dynamic` поддержан только
 `depth_bias`; runtime controls потребуют добавить `StencilReference`, `StencilCompareMask` и
@@ -51,11 +80,10 @@ UBO: fixed-function stencil state от UBO не меняется.
 
 ## Следующие срезы
 
-1. Локальный post-effect: отдельный stencil bit ограничивает fullscreen tint/desaturation.
-2. Пространственный window proof: geometry aperture пишет mask, второй view рисуется только внутри неё;
+1. Пространственный window proof: geometry aperture пишет mask, второй view рисуется только внутри неё;
    полноценные recursive portal и mirror clipping в первый proof не входят.
-3. Dynamic reference/read/write masks и UI controls.
-4. Намеренно разные front/back operations с debug fixture, где результат обеих сторон виден отдельно.
+2. Dynamic reference/read/write masks и UI controls.
+3. Намеренно разные front/back operations с debug fixture, где результат обеих сторон виден отдельно.
 
 ## Definition of Done
 

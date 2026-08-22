@@ -51,6 +51,26 @@ TEST_CASE("painter step derives resource usages from named descriptor sets [pain
   CHECK(ui_camera_count == 1);
 }
 
+TEST_CASE("painter color write masks replace RGBA and can disable color writes [painter]") {
+  const auto storage = painter::build_render_config(PAINTER_TEST_CONFIG_ROOT);
+  const auto mask_only_slot = storage.find_execution_step("draw_triangles");
+  const auto ui_slot = storage.find_execution_step("draw_ui");
+  REQUIRE(mask_only_slot != painter::invalid_resource_slot);
+  REQUIRE(ui_slot != painter::invalid_resource_slot);
+
+  const auto& mask_only = storage.steps[mask_only_slot];
+  REQUIRE(mask_only.blending.size() == 1);
+  CHECK(std::get<1>(mask_only.blending.front()).colorWriteMask == 0u);
+  CHECK(std::get<1>(mask_only.blending.front()).srcColorBlendFactor != UINT32_MAX);
+  CHECK(std::get<1>(mask_only.blending.front()).colorBlendOp != UINT32_MAX);
+
+  const auto& ui = storage.steps[ui_slot];
+  REQUIRE(ui.blending.size() == 1);
+  // Vulkan ColorComponent R/G bits are 0x1/0x2; keep this parsing test independent of Vulkan-Hpp/VMA.
+  CHECK(std::get<1>(ui.blending.front()).colorWriteMask ==
+        0x3u);
+}
+
 TEST_CASE("painter draw_regions keeps region commands separate from shader data [painter]") {
   const auto storage = painter::build_render_config(PAINTER_TEST_CONFIG_ROOT);
   const auto step_slot = storage.find_execution_step("draw_regions");

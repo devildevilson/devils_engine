@@ -23,6 +23,26 @@
   command = "draw"
 }
 {
+  name = write_local_mask
+  material = local_mask_material
+  geometry = local_mask_geometry
+  draw_group = local_mask_draw_group
+  sets = [ camera_data ]
+  command = "draw"
+  // Это stencil-only pass внутри color target: fragment выполняется, но attachment color не меняется.
+  blending = { scene_color = { mask = none } }
+}
+{
+  name = apply_local_tint
+  material = local_tint_material
+  geometry = fullscreen_geometry
+  sets = [ camera_data ]
+  command = "draw constant fullscreen_draw"
+  blending = {
+    scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
+  }
+}
+{
   name = visualize_stencil
   material = stencil_debug_material
   geometry = fullscreen_geometry
