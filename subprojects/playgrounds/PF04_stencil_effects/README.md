@@ -11,9 +11,10 @@ cmake --build build-debug --target PF04_stencil_effects -j2
 ```
 
 Опции: `--validation`, `--uncapped`, `--fixed-camera`, `--stencil-debug`, `--no-local-effect`,
-`--no-window`, `--frames=N`, `--dump=file.ppm`. Управление: WASD/QE, мышь, Shift; `P` включает spatial
+`--no-window`, `--no-face-fixture`, `--frames=N`, `--dump=file.ppm`. Управление: WASD/QE, мышь, Shift; `P` включает spatial
 window, `L` — локальный cyan tint, `V` — magenta-визуализацию selection bit. `R` переносит selection
-между bits `0x01/0x08/0x80`, `C` включает read/compare mask, `X` — write mask. Escape закрывает окно.
+между bits `0x01/0x08/0x80`, `C` включает read/compare mask, `X` — write mask, `F` — front/back fixture.
+Escape закрывает окно.
 Для детерминированных прогонов есть `--selection-channel=0..2`, `--selection-compare=0|1` и
 `--selection-write=0|1`.
 
@@ -97,11 +98,12 @@ clipping, преобразование камеры через пару порт
 - разные эффекты могут безопасно делить байт через read/write masks и сохранять чужие bits;
 - step-level `mask = none` действительно создаёт depth/stencil-only draw внутри color render pass.
 - часть общего depth attachment можно очистить stencil-ограниченным draw и использовать для второго view.
+- front и back faces одного draw могут применять разные `VkStencilOpState` и давать независимо наблюдаемый результат.
 
 В Painter по пути исправлен разбор color write masks: непустая маска теперь заменяет RGBA, `none` даёт
 ноль, а отсутствующие blend expressions сохраняют валидные Vulkan defaults вместо sentinel `UINT32_MAX`.
 Регресс вместе с dynamic stencil parsing покрыт `painter_shader_prepare_test` (`14` cases,
-`155` assertions).
+`157` assertions).
 
 ## Dynamic reference и masks
 
@@ -118,18 +120,39 @@ dynamic = [ stencil_reference, stencil_compare_mask, stencil_write_mask ]
 смена selection channel согласованно обновляет всех потребителей на следующем update event без пересборки
 pipeline или render graph.
 
+Внутри `material` больше нет отдельных `dynamic_depth_bias`,
+`dynamic_stencil_reference` и других bool-полей. Все states хранятся в
+`std::array<uint32_t, 16> dynamic`, свободные слоты равны `UINT32_MAX`. Parser по-прежнему
+принимает человеческие имена и кладёт в массив numeric values соответствующих Vulkan enums.
+Единое соответствие имён и Vulkan values задаёт
+`DEVILS_ENGINE_PAINTER_DYNAMIC_STATE_LIST` в `common.h`. Из него X-macro строит плотный
+`dynamic_state::values`, string conversion и `to_vulkan()`; generated `static_assert` остаётся в
+`common.cpp`. Новый core state теперь добавляется одной строкой в этот список и не требует
+ещё одного поля в публичной структуре; лимит 16 и duplicate states проверяются громко.
+
 Проверено frame-exact dumps: перенос `0x01 → 0x08` даёт побитово тот же участок сцены (`AE = 0` после
 исключения меняющегося текста overlay); write mask `0` убирает selection debug; compare mask `0` делает
 masked operands равными нулю, поэтому `equal` tint проходит везде, а `not_equal` outline — нигде. Это
 наблюдаемые последствия fixed-function формул, а не UBO-имитация в shader.
 
-## Следующие срезы
+## Asymmetric front/back fixture
 
-1. Намеренно разные front/back operations с debug fixture, где результат обеих сторон виден отдельно.
+Один draw подаёт два screen-space quad с противоположным winding и `cull = none`:
+
+```text
+left front faces → replace, write/read mask 0x30, reference 0x10 → green consumer
+right back faces → invert,  write/read mask 0x30                 → yellow consumer sees 0x30
+```
+
+Оба consumer'а — fullscreen stencil tests, поэтому цвета показывают именно fixed-function
+результ, а не ветку в shader. Mask `0x30` не затрагивает bits `0x01/0x02/0x04`, а selection может
+отдельно переехать на `0x80`. `F` и `--no-face-fixture` отключают writer: A/B dump убирает оба
+прямоугольника без следа в остальной сцене. Финальный четырёхкадровый dump с Vulkan validation
+проходит чисто.
 
 ## Definition of Done
 
-Outline, локальный post-effect и window mask используют обычные Painter materials/render graph; static и
-dynamic front/back stencil state проверены явно, а debug view позволяет объяснить, почему конкретный pixel
-прошёл или не прошёл test. Production parsing/execution fixes принадлежат `libs/painter`; демонстрационные
-shaders и visualization остаются в лаборатории.
+Definition of Done достигнут: outline, локальный post-effect и window mask используют обычные Painter
+materials/render graph; static, dynamic и асимметричный front/back stencil state проверены явно, а debug
+views позволяют объяснить, почему конкретный pixel прошёл или не прошёл test. Production
+parsing/execution fixes принадлежат `libs/painter`; демонстрационные shaders и visualization остаются в лаборатории.

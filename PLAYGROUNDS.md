@@ -75,14 +75,14 @@ font и показывает описание сцены, controls, сглаже
 
 ## Текущий фокус — Painter visual stack
 
-Активная campaign: семь независимых painter-лабораторий `PF01`–`PF07`. `PF01_forward_plus`, `PF02_shadows`
-и [`PF03_post_processing`](subprojects/playgrounds/PF03_post_processing/README.md) закрыты; текущий bounded
-результат — [`PF04_stencil_effects`](subprojects/playgrounds/PF04_stencil_effects/README.md). Первый executable
-уже доказывает `D24S8` attachment, reference writer, fullscreen equal-test visualization и stencil outline;
-второй срез добавил независимый `0x02` bit и локальный fullscreen tint без color writes у proxy geometry.
-Третий срез добавил aperture bit `0x04`, локальный depth clear и второй camera view внутри spatial window.
-Четвёртый срез добавил runtime `StencilReference/CompareMask/WriteMask` через step constant без пересборки
-pipeline. Следующий срез — asymmetric front/back fixture.
+Активная campaign: семь независимых painter-лабораторий `PF01`–`PF07`. `PF01_forward_plus`, `PF02_shadows`,
+[`PF03_post_processing`](subprojects/playgrounds/PF03_post_processing/README.md) и
+[`PF04_stencil_effects`](subprojects/playgrounds/PF04_stencil_effects/README.md) закрыты; следующий bounded result —
+[`PF05_scene_effects`](subprojects/playgrounds/PF05_scene_effects/README.md). PF04 закрыт пятью срезами: `D24S8`
+selection/outline/debug; независимые bits `0x02/0x04` для local tint и spatial window; runtime
+`StencilReference/CompareMask/WriteMask`; и финальный asymmetric front/back fixture. Внутреннее
+представление dynamic states свёрнуто из растущего набора bool-полей в один массив Vulkan values;
+их человеческие имена и mapping задаёт один X-macro list в `painter/common.h`.
 
 `PF03` закрыт 2026-08-21 полной запускаемой post-цепочкой, numeric/debug контрактами и shader-аудитом.
 Финальная незакрытая техника, TAAU, теперь действительно реконструирует: при масштабе 0.5 ошибка против
@@ -115,10 +115,9 @@ resolver'ом. Реализация остаётся отдельным backlog,
 подмножество этих возможностей в собственных resources/presets. Исходники и CMake targets лабораторий
 не зависят друг от друга.
 
-Текущий ограниченный результат — asymmetric front/back fixture поверх уже работающих independent bits,
-spatial window и dynamic reference/read/write masks. Все
-сценарии идут через обычные Painter materials/render graph; production parsing/execution fixes принадлежат
-`libs/painter`, а демонстрационные consumers остаются внутри лаборатории.
+Текущий ограниченный результат переходит в PF05: первый наблюдаемый scene-effect slice нужно выбрать из
+3D SDF, screen-space decals, particles/weather, cel shading, billboards и world-space UI. Лаборатории по-прежнему
+не зависят друг от друга; общие production fixes принадлежат `libs/painter`.
 
 ## 1. Painter visual stack
 

@@ -935,6 +935,52 @@ uint32_t from_string(const std::string_view& name) noexcept {
 }
 } // namespace front_face
 
+namespace dynamic_state {
+constexpr std::string_view names[] = {
+#define X(name, vulkan_value) #name,
+  DEVILS_ENGINE_PAINTER_DYNAMIC_STATE_LIST
+#undef X
+};
+
+constexpr uint32_t vulkan_values[] = {
+#define X(name, vulkan_value) vulkan_value,
+  DEVILS_ENGINE_PAINTER_DYNAMIC_STATE_LIST
+#undef X
+};
+
+const gtl::flat_hash_map<std::string_view, values> map = {
+#define X(name, vulkan_value) std::make_pair(names[values::name], values::name),
+  DEVILS_ENGINE_PAINTER_DYNAMIC_STATE_LIST
+#undef X
+};
+
+#define X(name, vulkan_value) static_assert(vulkan_values[values::name] == vulkan_value);
+DEVILS_ENGINE_PAINTER_DYNAMIC_STATE_LIST
+#undef X
+
+std::string_view to_string(const values u) noexcept {
+  if (u >= count) {
+    return std::string_view();
+  }
+  return names[u];
+}
+
+values from_string(const std::string_view& name) noexcept {
+  const auto itr = map.find(name);
+  if (itr == map.end()) {
+    return values::count;
+  }
+  return itr->second;
+}
+
+uint32_t to_vulkan(const values u) noexcept {
+  if (u >= count) {
+    return UINT32_MAX;
+  }
+  return vulkan_values[u];
+}
+} // namespace dynamic_state
+
 namespace format {
 constexpr std::string_view names[] = {
 #define X(name, aspect, vulkan_value, element_type) #name,
@@ -1094,6 +1140,13 @@ usage::values check(const usage::values index, const std::string_view& hint, con
 store_op::values check(const store_op::values index, const std::string_view& hint, const std::string_view& name_hint) {
   if (index >= store_op::count) {
     utils::error{}("Could not find store_op '{}', context: {}", hint, name_hint);
+  }
+  return index;
+}
+
+dynamic_state::values check(const dynamic_state::values index, const std::string_view& hint, const std::string_view& name_hint) {
+  if (index >= dynamic_state::count) {
+    utils::error{}("Could not find dynamic_state '{}', context: {}", hint, name_hint);
   }
   return index;
 }

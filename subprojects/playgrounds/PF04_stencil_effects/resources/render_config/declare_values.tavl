@@ -48,6 +48,16 @@
   value = [1, 0, 0]
 }
 {
+  name = face_fixture_instances
+  type = fixed
+  value = [1, 0, 0]
+}
+{
+  name = face_fixture_draws
+  type = fixed
+  value = [1, 0, 0]
+}
+{
   name = ui_vertices_bytes
   type = fixed
   value = [524288, 0, 0]

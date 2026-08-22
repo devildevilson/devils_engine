@@ -109,6 +109,10 @@ static vk::PipelineColorBlendAttachmentState blend_state(const blend_data& b) no
   state.colorWriteMask = static_cast<vk::ColorComponentFlags>(b.colorWriteMask);
   return state;
 }
+
+static bool has_dynamic_state(const material& material, const vk::DynamicState state) noexcept {
+  return material.has_dynamic_state(static_cast<uint32_t>(state));
+}
 static_assert(alignof(subresource_image) == alignof(vk::ImageSubresourceRange));
 
 static_assert(sizeof(vk::ImageLayout) == sizeof(uint32_t));
@@ -565,16 +569,16 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
   // нужно явно прописать это дело в шагах
   pm.dynamicState(vk::DynamicState::eViewport);
   pm.dynamicState(vk::DynamicState::eScissor);
-  if (material.raster.dynamic_depth_bias) {
+  if (has_dynamic_state(material, vk::DynamicState::eDepthBias)) {
     pm.dynamicState(vk::DynamicState::eDepthBias);
   }
-  if (material.depth.dynamic_stencil_reference) {
+  if (has_dynamic_state(material, vk::DynamicState::eStencilReference)) {
     pm.dynamicState(vk::DynamicState::eStencilReference);
   }
-  if (material.depth.dynamic_stencil_compare_mask) {
+  if (has_dynamic_state(material, vk::DynamicState::eStencilCompareMask)) {
     pm.dynamicState(vk::DynamicState::eStencilCompareMask);
   }
-  if (material.depth.dynamic_stencil_write_mask) {
+  if (has_dynamic_state(material, vk::DynamicState::eStencilWriteMask)) {
     pm.dynamicState(vk::DynamicState::eStencilWriteMask);
   }
 
@@ -1334,23 +1338,24 @@ static void push_constants(graphics_ctx* ctx, VkCommandBuffer buf, VkPipelineLay
 // commands coherently on the next command-buffer recording without rebuilding any pipeline.
 static void set_dynamic_stencil_state(graphics_ctx* ctx, const VkCommandBuffer buf, const step_base& step) {
   const auto& material = DS_ASSERT_ARRAY_GET(ctx->base->materials, step.material);
-  const bool has_dynamic_state = material.depth.dynamic_stencil_reference ||
-                                 material.depth.dynamic_stencil_compare_mask ||
-                                 material.depth.dynamic_stencil_write_mask;
-  if (!has_dynamic_state) {
+  const bool has_stencil_state =
+    has_dynamic_state(material, vk::DynamicState::eStencilReference) ||
+    has_dynamic_state(material, vk::DynamicState::eStencilCompareMask) ||
+    has_dynamic_state(material, vk::DynamicState::eStencilWriteMask);
+  if (!has_stencil_state) {
     return;
   }
 
   const auto* values = static_cast<const uint32_t*>(ctx->base->get_constant_data(step.stencil_state));
   vk::CommandBuffer task(buf);
   constexpr auto faces = vk::StencilFaceFlagBits::eFrontAndBack;
-  if (material.depth.dynamic_stencil_reference) {
+  if (has_dynamic_state(material, vk::DynamicState::eStencilReference)) {
     task.setStencilReference(faces, values[0]);
   }
-  if (material.depth.dynamic_stencil_compare_mask) {
+  if (has_dynamic_state(material, vk::DynamicState::eStencilCompareMask)) {
     task.setStencilCompareMask(faces, values[1]);
   }
-  if (material.depth.dynamic_stencil_write_mask) {
+  if (has_dynamic_state(material, vk::DynamicState::eStencilWriteMask)) {
     task.setStencilWriteMask(faces, values[2]);
   }
 }
@@ -1817,7 +1822,7 @@ void graphics_draw_regions::process(graphics_ctx* ctx, VkCommandBuffer buf) cons
         region.min_depth < 0.0f || region.max_depth > 1.0f || region.min_depth > region.max_depth) {
       utils::error{}("draw_regions step '{}' region {} has an invalid viewport", step.name, region_index);
     }
-    if (material.raster.dynamic_depth_bias && !finite_bias) {
+    if (has_dynamic_state(material, vk::DynamicState::eDepthBias) && !finite_bias) {
       utils::error{}("draw_regions step '{}' region {} has invalid dynamic depth bias", step.name, region_index);
     }
     if (region.scissor_x < 0 || region.scissor_y < 0 ||
@@ -1875,7 +1880,7 @@ void graphics_draw_regions::process(graphics_ctx* ctx, VkCommandBuffer buf) cons
       vk::Extent2D(region.scissor_width, region.scissor_height));
     task.setViewport(0, viewport);
     task.setScissor(0, scissor);
-    if (material.raster.dynamic_depth_bias) {
+    if (has_dynamic_state(material, vk::DynamicState::eDepthBias)) {
       task.setDepthBias(region.depth_bias_constant, region.depth_bias_clamp, region.depth_bias_slope);
     }
     task.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eAll, 0, sizeof(region.data_index), &region.data_index);
@@ -1906,7 +1911,7 @@ void graphics_draw_regions::process(graphics_ctx* ctx, VkCommandBuffer buf) cons
   // Restore that contract after the regional command mutates viewport/scissor/depth bias.
   task.setViewport(0, vk::Viewport(0.0f, 0.0f, float(target_width), float(target_height), 0.0f, 1.0f));
   task.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), vk::Extent2D(target_width, target_height)));
-  if (material.raster.dynamic_depth_bias) {
+  if (has_dynamic_state(material, vk::DynamicState::eDepthBias)) {
     task.setDepthBias(material.raster.bias_constant, material.raster.bias_clamp, material.raster.bias_slope);
   }
 }

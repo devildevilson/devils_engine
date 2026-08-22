@@ -327,7 +327,6 @@ struct material {
     bool depth_clamp;
     bool raster_discard;
     bool depth_bias;
-    bool dynamic_depth_bias;
     uint32_t polygon;
     uint32_t cull;
     uint32_t front_face;
@@ -352,9 +351,6 @@ struct material {
     bool write;
     bool bounds_test;
     bool stencil_test;
-    bool dynamic_stencil_reference;
-    bool dynamic_stencil_compare_mask;
-    bool dynamic_stencil_write_mask;
     uint32_t compare;
     stencil_op_state front;
     stencil_op_state back;
@@ -369,10 +365,14 @@ struct material {
   struct shaders shaders;
   struct raster raster;
   struct depth depth;
+  // Compact list of VkDynamicState numeric values. UINT32_MAX marks unused capacity; a fixed array keeps
+  // material trivially movable and prevents one bool field from being added for every future Vulkan state.
+  std::array<uint32_t, 16> dynamic;
 
   // вьюпорт? было бы неплохо задать его для шедоу мап
 
   material() noexcept;
+  bool has_dynamic_state(uint32_t state) const noexcept;
 };
 
 struct geometry {

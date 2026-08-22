@@ -137,7 +137,13 @@ sampler::sampler() noexcept : mag_filter(VK_FILTER_LINEAR), min_filter(VK_FILTER
                               address_u(VK_SAMPLER_ADDRESS_MODE_REPEAT), address_v(VK_SAMPLER_ADDRESS_MODE_REPEAT), address_w(VK_SAMPLER_ADDRESS_MODE_REPEAT),
                               mipmap_mode(VK_SAMPLER_MIPMAP_MODE_LINEAR),
                               compare_enable(0), compare_op(VK_COMPARE_OP_NEVER), handle(VK_NULL_HANDLE) {}
-material::material() noexcept : shaders{}, raster{}, depth{} {}
+material::material() noexcept : shaders{}, raster{}, depth{}, dynamic{} {
+  dynamic.fill(UINT32_MAX);
+}
+
+bool material::has_dynamic_state(const uint32_t state) const noexcept {
+  return std::find(dynamic.begin(), dynamic.end(), state) != dynamic.end();
+}
 geometry::geometry() noexcept : index_type(index_type::u32), topology_type(0), restart(false), stride(0) {}
 draw_group::draw_group() noexcept : budget_constant(UINT32_MAX), types_constant(UINT32_MAX), type(type::device_local), instances_buffer(UINT32_MAX), indirect_buffer(UINT32_MAX), descriptor(UINT32_MAX), stride(0) {}
 execution_pass_base::resource_info::resource_info() noexcept : slot(invalid_resource_slot), usage(usage::undefined), action(store_op::none), mip(invalid_resource_slot) {}
@@ -1012,45 +1018,24 @@ struct material_mirror {
     m.shaders = shaders;
     m.raster.depth_clamp = raster.depth_clamp;
     m.raster.raster_discard = raster.raster_discard;
-    m.raster.dynamic_depth_bias = false;
-    m.depth.dynamic_stencil_reference = false;
-    m.depth.dynamic_stencil_compare_mask = false;
-    m.depth.dynamic_stencil_write_mask = false;
     for (const auto& state : dynamic) {
-      if (state == "depth_bias") {
-        if (m.raster.dynamic_depth_bias) {
-          utils::error{}("Material '{}' repeats dynamic state 'depth_bias'", m.name);
-        }
+      const auto state_id = check(dynamic_state::from_string(state), state, m.name);
+      if (state_id == dynamic_state::depth_bias) {
         if (raster.depth_bias) {
           utils::error{}("Material '{}' specifies both static raster.depth_bias and dynamic depth_bias", m.name);
         }
-        m.raster.dynamic_depth_bias = true;
-        continue;
       }
-      if (state == "stencil_reference") {
-        if (m.depth.dynamic_stencil_reference) {
-          utils::error{}("Material '{}' repeats dynamic state 'stencil_reference'", m.name);
-        }
-        m.depth.dynamic_stencil_reference = true;
-        continue;
+      const uint32_t value = dynamic_state::to_vulkan(state_id);
+      if (m.has_dynamic_state(value)) {
+        utils::error{}("Material '{}' repeats dynamic state '{}'", m.name, state);
       }
-      if (state == "stencil_compare_mask") {
-        if (m.depth.dynamic_stencil_compare_mask) {
-          utils::error{}("Material '{}' repeats dynamic state 'stencil_compare_mask'", m.name);
-        }
-        m.depth.dynamic_stencil_compare_mask = true;
-        continue;
+      const auto empty = std::find(m.dynamic.begin(), m.dynamic.end(), UINT32_MAX);
+      if (empty == m.dynamic.end()) {
+        utils::error{}("Material '{}' exceeds the {} dynamic-state slots", m.name, m.dynamic.size());
       }
-      if (state == "stencil_write_mask") {
-        if (m.depth.dynamic_stencil_write_mask) {
-          utils::error{}("Material '{}' repeats dynamic state 'stencil_write_mask'", m.name);
-        }
-        m.depth.dynamic_stencil_write_mask = true;
-        continue;
-      }
-      utils::error{}("Material '{}' contains unsupported dynamic state '{}'", m.name, state);
+      *empty = value;
     }
-    m.raster.depth_bias = raster.depth_bias || m.raster.dynamic_depth_bias;
+    m.raster.depth_bias = raster.depth_bias || m.has_dynamic_state(dynamic_state::to_vulkan(dynamic_state::depth_bias));
     m.raster.polygon = check(polygon_mode::from_string(raster.polygon), "polygon_mode", raster.polygon, m.name);
     m.raster.cull = check(cull_mode::from_string(raster.cull), "cull_mode", raster.cull, m.name);
     m.raster.front_face = check(front_face::from_string(raster.front_face), "front_face", raster.front_face, m.name);
@@ -1063,9 +1048,11 @@ struct material_mirror {
     m.depth.compare = check(compare_op::from_string(depth.compare), "compare_op", depth.compare, m.name);
     m.depth.bounds_test = depth.bounds_test;
     m.depth.stencil_test = depth.stencil_test;
-    if ((m.depth.dynamic_stencil_reference ||
-         m.depth.dynamic_stencil_compare_mask ||
-         m.depth.dynamic_stencil_write_mask) && !m.depth.stencil_test) {
+    const bool has_dynamic_stencil =
+      m.has_dynamic_state(dynamic_state::to_vulkan(dynamic_state::stencil_reference)) ||
+      m.has_dynamic_state(dynamic_state::to_vulkan(dynamic_state::stencil_compare_mask)) ||
+      m.has_dynamic_state(dynamic_state::to_vulkan(dynamic_state::stencil_write_mask));
+    if (has_dynamic_stencil && !m.depth.stencil_test) {
       utils::error{}("Material '{}' declares dynamic stencil state but depth.stencil_test is false", m.name);
     }
     if (m.depth.stencil_test) {
@@ -1335,9 +1322,10 @@ static void parse_step2(
   }
   if (is_graphics) {
     const auto& material = DS_ASSERT_ARRAY_GET(ctx.materials, step.material);
-    const bool needs_stencil_state = material.depth.dynamic_stencil_reference ||
-                                     material.depth.dynamic_stencil_compare_mask ||
-                                     material.depth.dynamic_stencil_write_mask;
+    const bool needs_stencil_state =
+      material.has_dynamic_state(dynamic_state::to_vulkan(dynamic_state::stencil_reference)) ||
+      material.has_dynamic_state(dynamic_state::to_vulkan(dynamic_state::stencil_compare_mask)) ||
+      material.has_dynamic_state(dynamic_state::to_vulkan(dynamic_state::stencil_write_mask));
     if (needs_stencil_state && step.stencil_state == invalid_resource_slot) {
       utils::error{}("Graphics step '{}' uses dynamic stencil state but does not name stencil_state", step.name);
     }

@@ -10,7 +10,7 @@
         { scene_color = (color_attachment, store), scene_depth_stencil = (depth_attachment, store) },
         { scene_color = (transfer_src, store), scene_depth_stencil = (depth_attachment, store) }
       ]
-      steps = [ draw_scene, draw_selected, write_local_mask, draw_outline, apply_local_tint, visualize_stencil, write_window_mask, clear_window, draw_window_scene, draw_window_selected, draw_playground_overlay ]
+      steps = [ draw_scene, draw_selected, write_local_mask, draw_outline, apply_local_tint, visualize_stencil, write_window_mask, clear_window, draw_window_scene, draw_window_selected, write_face_fixture, visualize_fixture_front, visualize_fixture_back, draw_playground_overlay ]
     },
     {
       name = pf04_present

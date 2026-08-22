@@ -87,6 +87,33 @@
   command = "draw"
 }
 {
+  name = write_face_fixture
+  material = face_fixture_writer_material
+  geometry = face_fixture_geometry
+  draw_group = face_fixture_draw_group
+  sets = [ camera_data ]
+  command = "draw"
+  blending = { scene_color = { mask = none } }
+}
+{
+  name = visualize_fixture_front
+  material = face_fixture_front_material
+  geometry = fullscreen_geometry
+  command = "draw constant fullscreen_draw"
+  blending = {
+    scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
+  }
+}
+{
+  name = visualize_fixture_back
+  material = face_fixture_back_material
+  geometry = fullscreen_geometry
+  command = "draw constant fullscreen_draw"
+  blending = {
+    scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
+  }
+}
+{
   name = draw_playground_overlay
   material = ui_overlay_material
   geometry = ui_geometry

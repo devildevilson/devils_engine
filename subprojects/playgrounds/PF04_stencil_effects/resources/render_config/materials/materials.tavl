@@ -325,6 +325,76 @@
   }
 }
 {
+  // Один draw содержит CCW и CW quads: front заменяет bits 0x30 на 0x10, back инвертирует их в 0x30.
+  name = face_fixture_writer_material
+  shaders = {
+    vertex = "face_fixture.vert.glsl"
+    fragment = "face_fixture_writer.frag.glsl"
+  }
+  depth = {
+    test = false
+    write = false
+    compare = always
+    stencil_test = true
+    front = {
+      fail_op = keep
+      pass_op = replace
+      depth_fail_op = keep
+      compare_op = always
+      compare_mask = 48
+      write_mask = 48
+      reference = 16
+    }
+    back = {
+      fail_op = keep
+      pass_op = invert
+      depth_fail_op = keep
+      compare_op = always
+      compare_mask = 48
+      write_mask = 48
+      reference = 16
+    }
+  }
+  raster = {
+    cull = none
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  name = face_fixture_front_material
+  shaders = {
+    vertex = "fullscreen.vert.glsl"
+    fragment = "face_fixture_front.frag.glsl"
+  }
+  depth = {
+    test = false
+    write = false
+    compare = always
+    stencil_test = true
+    front = { fail_op = keep, pass_op = keep, depth_fail_op = keep, compare_op = equal, compare_mask = 48, write_mask = 0, reference = 16 }
+    back = { fail_op = keep, pass_op = keep, depth_fail_op = keep, compare_op = equal, compare_mask = 48, write_mask = 0, reference = 16 }
+  }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = face_fixture_back_material
+  shaders = {
+    vertex = "fullscreen.vert.glsl"
+    fragment = "face_fixture_back.frag.glsl"
+  }
+  depth = {
+    test = false
+    write = false
+    compare = always
+    stencil_test = true
+    front = { fail_op = keep, pass_op = keep, depth_fail_op = keep, compare_op = equal, compare_mask = 48, write_mask = 0, reference = 48 }
+    back = { fail_op = keep, pass_op = keep, depth_fail_op = keep, compare_op = equal, compare_mask = 48, write_mask = 0, reference = 48 }
+  }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
   name = ui_overlay_material
   shaders = {
     vertex = "ui.vert.glsl"

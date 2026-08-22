@@ -222,6 +222,12 @@
   X(ccw, VK_FRONT_FACE_COUNTER_CLOCKWISE)               \
   X(cw, VK_FRONT_FACE_CLOCKWISE)
 
+#define DEVILS_ENGINE_PAINTER_DYNAMIC_STATE_LIST                         \
+  X(depth_bias, VK_DYNAMIC_STATE_DEPTH_BIAS)                             \
+  X(stencil_compare_mask, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK)         \
+  X(stencil_write_mask, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK)             \
+  X(stencil_reference, VK_DYNAMIC_STATE_STENCIL_REFERENCE)
+
 #define DEVILS_ENGINE_PAINTER_VALUE_TYPES_LIST \
   X(screensize)                                \
   X(fixed)                                     \
@@ -537,6 +543,19 @@ std::string_view to_string(const uint32_t u) noexcept;
 uint32_t from_string(const std::string_view& name) noexcept;
 } // namespace front_face
 
+namespace dynamic_state {
+enum values : uint8_t {
+#define X(name, vulkan_value) name,
+  DEVILS_ENGINE_PAINTER_DYNAMIC_STATE_LIST
+#undef X
+    count
+};
+
+std::string_view to_string(const values u) noexcept;
+values from_string(const std::string_view& name) noexcept;
+uint32_t to_vulkan(const values u) noexcept;
+} // namespace dynamic_state
+
 namespace format_element_type {
 enum values : uint32_t {
 #define X(element_type) element_type,
@@ -579,6 +598,7 @@ size::values check(const size::values index, const std::string_view& hint, const
 type::values check(const type::values index, const std::string_view& hint, const std::string_view& name_hint = {});
 usage::values check(const usage::values index, const std::string_view& hint, const std::string_view& name_hint = {});
 store_op::values check(const store_op::values index, const std::string_view& hint, const std::string_view& name_hint = {});
+dynamic_state::values check(const dynamic_state::values index, const std::string_view& hint, const std::string_view& name_hint = {});
 value_type::values check(const value_type::values index, const std::string_view& hint, const std::string_view& name_hint = {});
 preset::values check(const preset::values index, const std::string_view& hint, const std::string_view& name_hint = {});
 command::values check(const command::values index, const std::string_view& hint, const std::string_view& name_hint = {});

@@ -81,9 +81,13 @@ TEST_CASE("painter resolves dynamic stencil state from a step constant [painter]
   REQUIRE(constant_slot != painter::invalid_resource_slot);
 
   const auto& material = storage.materials[material_slot];
-  CHECK(material.depth.dynamic_stencil_reference);
-  CHECK(material.depth.dynamic_stencil_compare_mask);
-  CHECK(material.depth.dynamic_stencil_write_mask);
+  CHECK(material.has_dynamic_state(painter::dynamic_state::to_vulkan(painter::dynamic_state::stencil_reference)));
+  CHECK(material.has_dynamic_state(painter::dynamic_state::to_vulkan(painter::dynamic_state::stencil_compare_mask)));
+  CHECK(material.has_dynamic_state(painter::dynamic_state::to_vulkan(painter::dynamic_state::stencil_write_mask)));
+  CHECK(std::count_if(material.dynamic.begin(), material.dynamic.end(), [](const uint32_t state) {
+    return state != UINT32_MAX;
+  }) == 3);
+  CHECK(material.dynamic[3] == UINT32_MAX);
   CHECK(storage.steps[step_slot].stencil_state == constant_slot);
   CHECK(storage.constants[constant_slot].size == sizeof(uint32_t) * 3);
 }
@@ -107,7 +111,8 @@ TEST_CASE("painter draw_regions keeps region commands separate from shader data 
   CHECK(std::get<1>(step.cmd_params.resources[1]) == painter::usage::transfer_dst);
   CHECK(step.read.test(data_slot));
   CHECK(storage.materials[material_slot].raster.depth_bias);
-  CHECK(storage.materials[material_slot].raster.dynamic_depth_bias);
+  CHECK(storage.materials[material_slot].has_dynamic_state(
+    painter::dynamic_state::to_vulkan(painter::dynamic_state::depth_bias)));
 
   painter::region_draw_header header{};
   header.region_count = 4;

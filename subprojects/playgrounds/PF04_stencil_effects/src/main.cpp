@@ -43,6 +43,7 @@ bool resize_pending = false;
 bool stencil_debug = false;
 bool local_effect = true;
 bool spatial_window = true;
+bool face_fixture = true;
 constexpr std::array<uint32_t, 3> selection_bits{0x01u, 0x08u, 0x80u};
 uint32_t selection_channel = 0;
 bool selection_compare_enabled = true;
@@ -55,6 +56,7 @@ int32_t window_key = -1;
 int32_t selection_channel_key = -1;
 int32_t selection_compare_key = -1;
 int32_t selection_write_key = -1;
+int32_t face_fixture_key = -1;
 
 void error_callback(const int error, const char* message) noexcept {
   utils::warn("PF04 input error {}: {}", error, message);
@@ -86,6 +88,9 @@ void key_callback(GLFWwindow* window, const int key, const int scancode, const i
     selection_write_enabled = !selection_write_enabled;
     selection_state_dirty = true;
   }
+  if (key == face_fixture_key && action == 1) {
+    face_fixture = !face_fixture;
+  }
 }
 
 void framebuffer_callback(GLFWwindow*, const int width, const int height) noexcept {
@@ -109,6 +114,10 @@ struct vertex {
 
 struct mask_vertex {
   float px, py, pz;
+};
+
+struct face_vertex {
+  float x, y;
 };
 
 void add_quad(
@@ -420,6 +429,7 @@ int main(int argc, char** argv) {
     stencil_debug = stencil_debug || option == "--stencil-debug";
     local_effect = local_effect && option != "--no-local-effect";
     spatial_window = spatial_window && option != "--no-window";
+    face_fixture = face_fixture && option != "--no-face-fixture";
     constexpr std::string_view frames_prefix = "--frames=";
     if (option.starts_with(frames_prefix)) {
       frame_limit = uint32_t(std::stoul(std::string(option.substr(frames_prefix.size()))));
@@ -592,15 +602,35 @@ int main(int argc, char** argv) {
         window_mask_vertices.size() * sizeof(window_mask_vertices[0])),
       std::span<const uint8_t>{});
     assets.mark_ready_buffer_slot(window_mesh);
+    // Positive Vulkan viewport height reverses clip-XY winding in framebuffer coordinates.
+    // Therefore the left quad is CW in clip XY -> CCW/front in the pipeline; right is the opposite.
+    const std::array<face_vertex, 12> face_fixture_vertices{
+      face_vertex{-0.92f, 0.55f}, face_vertex{-0.62f, 0.88f}, face_vertex{-0.62f, 0.55f},
+      face_vertex{-0.92f, 0.55f}, face_vertex{-0.92f, 0.88f}, face_vertex{-0.62f, 0.88f},
+      face_vertex{0.62f, 0.55f}, face_vertex{0.92f, 0.55f}, face_vertex{0.92f, 0.88f},
+      face_vertex{0.62f, 0.55f}, face_vertex{0.92f, 0.88f}, face_vertex{0.62f, 0.88f}};
+    const auto face_fixture_mesh = assets.register_buffer_storage("pf04.face_fixture");
+    assets.create_buffer_storage(
+      face_fixture_mesh,
+      painter::buffer_create_info{"face_fixture_geometry", uint32_t(face_fixture_vertices.size()), 0});
+    assets.populate_buffer_storage(
+      face_fixture_mesh,
+      std::span(
+        reinterpret_cast<const uint8_t*>(face_fixture_vertices.data()),
+        face_fixture_vertices.size() * sizeof(face_fixture_vertices[0])),
+      std::span<const uint8_t>{});
+    assets.mark_ready_buffer_slot(face_fixture_mesh);
 
     const uint32_t scene_group = base.find_draw_group("scene_draw_group");
     const uint32_t selected_group = base.find_draw_group("selected_draw_group");
     const uint32_t mask_group = base.find_draw_group("local_mask_draw_group");
     const uint32_t window_group = base.find_draw_group("window_mask_draw_group");
+    const uint32_t face_fixture_group = base.find_draw_group("face_fixture_draw_group");
     if (scene_group == painter::invalid_resource_slot ||
         selected_group == painter::invalid_resource_slot ||
         mask_group == painter::invalid_resource_slot ||
-        window_group == painter::invalid_resource_slot) {
+        window_group == painter::invalid_resource_slot ||
+        face_fixture_group == painter::invalid_resource_slot) {
       utils::error{}("PF04 scene draw groups are absent");
     }
     const uint32_t room_pair = base.register_pair(scene_group, room_mesh, 1);
@@ -608,6 +638,7 @@ int main(int argc, char** argv) {
     const uint32_t selected_pair = base.register_pair(selected_group, cube_mesh, 1);
     const uint32_t mask_pair = base.register_pair(mask_group, mask_mesh, 1);
     const uint32_t window_pair = base.register_pair(window_group, window_mesh, 1);
+    const uint32_t face_fixture_pair = base.register_pair(face_fixture_group, face_fixture_mesh, 1);
 
     const std::array<glm::vec4, 1> room_instances{glm::vec4{0.0f, 0.0f, 0.0f, 0.0f}};
     const std::array<glm::vec4, 3> prop_instances{
@@ -617,11 +648,13 @@ int main(int argc, char** argv) {
     const std::array<glm::vec4, 1> selected_instances{glm::vec4{0.0f, -0.72f, -1.55f, 2.0f}};
     const std::array<glm::vec4, 1> mask_instances{glm::vec4{-0.65f, 0.1f, -0.45f, 0.0f}};
     const std::array<glm::vec4, 1> window_instances{glm::vec4{1.65f, 0.35f, -0.25f, 0.0f}};
+    const std::array<glm::vec4, 1> face_fixture_instances{glm::vec4{0.0f}};
     write_pair(base, room_pair, room_instances, uint32_t(room.size()));
     write_pair(base, props_pair, prop_instances, uint32_t(cube.size()));
     write_pair(base, selected_pair, selected_instances, uint32_t(cube.size()));
     write_pair(base, mask_pair, mask_instances, uint32_t(local_mask_vertices.size()));
     write_pair(base, window_pair, window_instances, uint32_t(window_mask_vertices.size()));
+    write_pair(base, face_fixture_pair, face_fixture_instances, uint32_t(face_fixture_vertices.size()));
 
     const std::string common_resources = std::string(PLAYGROUND_COMMON_RESOURCE_ROOT) + "/";
     playground::visage_overlay overlay(
@@ -629,8 +662,8 @@ int main(int argc, char** argv) {
       common_resources + "ui/lab_overlay.lua",
       playground::overlay_description{
         "PF04 — Stencil effects",
-        "bits 0/1: selection + local effect · bit 2: alternate-view window",
-        "P window · L tint · V debug · R channel · C read · X write · Esc exit"});
+        "bits 0/1/2: selection + tint + window · bits 4/5: front/back fixture",
+        "P window · L tint · V debug · R/C/X dynamic · F face fixture · Esc exit"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(
@@ -656,6 +689,7 @@ int main(int argc, char** argv) {
     selection_channel_key = input::glfw_key_from_canonical("key_r");
     selection_compare_key = input::glfw_key_from_canonical("key_c");
     selection_write_key = input::glfw_key_from_canonical("key_x");
+    face_fixture_key = input::glfw_key_from_canonical("key_f");
     input::set_window_callback(window, &key_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
     if (fixed_camera) {
@@ -680,8 +714,8 @@ int main(int argc, char** argv) {
     context.base = &base;
     context.assets = &assets;
 
-    utils::info("PF04 controls: move/look, P window, L tint, V stencil debug, R selection channel, C compare mask, X write mask, Esc exit");
-    utils::info("PF04 graph: main view -> selection/local bits -> aperture bit -> local depth clear -> alternate view -> UI -> present");
+    utils::info("PF04 controls: move/look, P window, L tint, V stencil debug, R selection channel, C compare mask, X write mask, F face fixture, Esc exit");
+    utils::info("PF04 graph: main view -> independent masks/window -> asymmetric front/back fixture -> UI -> present");
 
     uint32_t frames_total = 0;
     while (!input::should_close(window)) {
@@ -731,7 +765,7 @@ int main(int argc, char** argv) {
         stencil_debug ? 1.0f : 0.0f,
         local_effect ? 1.0f : 0.0f,
         spatial_window ? 1.0f : 0.0f,
-        0.0f);
+        face_fixture ? 1.0f : 0.0f);
       write_current_buffer(base, "camera_buffer", &camera_data, sizeof(camera_data));
       camera_block window_camera_data{};
       window_camera_data.view = window_camera.view();
@@ -755,7 +789,8 @@ int main(int argc, char** argv) {
           selection_write_enabled ? selection_bit : 0u),
         local_effect ? "Local tint: ON; invisible proxy writes mask 0x02" : "Local tint: OFF (press L); mask remains independent",
         spatial_window ? "Window: ON; aperture 0x04 owns alternate-view depth" : "Window: OFF (press P)",
-        stencil_debug ? "Debug tint: ON (fullscreen compare equal 1)" : "Debug tint: OFF (press V)"};
+        face_fixture ? "Faces: ON; green=front replace 0x10, yellow=back invert 0x30" : "Faces: OFF (press F)",
+        stencil_debug ? "Debug tint: ON (dynamic equal)" : "Debug tint: OFF (press V)"};
       overlay.set_detail_lines(details);
       overlay.update(frame_delta_us, timestamp_us);
       write_overlay_buffers(base, overlay);

@@ -26,3 +26,10 @@
   draw_capacity = window_draws
   type = host_visible
 }
+{
+  name = face_fixture_draw_group
+  layout = v4
+  budget = face_fixture_instances
+  draw_capacity = face_fixture_draws
+  type = host_visible
+}
