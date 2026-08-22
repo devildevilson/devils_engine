@@ -3,13 +3,6 @@
   startup = true
   passes = [
     {
-      name = pf05_particle_simulation
-      subpasses = [
-        { particle_emitter_buffer = (uniform, store), particle_state = (storage_write, store) }
-      ]
-      steps = [ simulate_particles ]
-    },
-    {
       name = pf05_scene
       render_target = scene_target
       subpasses = [
@@ -18,6 +11,19 @@
         { scene_color = (color_attachment, store), scene_normal = (sampled, store), scene_depth = (depth_read, store) }
       ]
       steps = [ draw_scene ]
+    },
+    {
+      // Current-frame depth/normal are already complete: collision need not lag one camera frame behind.
+      name = pf05_particle_simulation
+      subpasses = [
+        {
+          particle_emitter_buffer = (uniform, store),
+          particle_state = (storage_write, store),
+          scene_depth = (depth_read, store),
+          scene_normal = (sampled, store)
+        }
+      ]
+      steps = [ simulate_particles ]
     },
     {
       name = pf05_decals
@@ -35,9 +41,20 @@
       subpasses = [
         { scene_color = (color_attachment, store), scene_depth = (depth_read, store), particle_state = (storage_read, store) },
         { scene_color = (color_attachment, store), scene_depth = (depth_attachment, store), particle_state = (storage_read, store) },
-        { scene_color = (transfer_src, store), scene_depth = (depth_attachment, store), particle_state = (storage_read, store) }
+        { scene_color = (color_attachment, store), scene_depth = (depth_attachment, store), particle_state = (storage_read, store) }
       ]
-      steps = [ draw_particles, draw_world_text, draw_billboard_text, draw_playground_overlay ]
+      steps = [ draw_weather, draw_sparks, draw_world_text, draw_billboard_text ]
+    },
+    {
+      // UI is a separate final pass so dense weather can never be reordered over diagnostics.
+      name = pf05_ui
+      render_target = ui_target
+      subpasses = [
+        { scene_color = (color_attachment, store) },
+        { scene_color = (color_attachment, store) },
+        { scene_color = (transfer_src, store) }
+      ]
+      steps = [ draw_playground_overlay ]
     },
     {
       name = pf05_present

@@ -13,7 +13,7 @@
 }
 {
   name = particle_emitter_buffer
-  format = v4v4v4v4v4ui4
+  format = v4v4v4v4v4ui4ui4v4v4
   role = upload
   size = one
   swap = per_frame

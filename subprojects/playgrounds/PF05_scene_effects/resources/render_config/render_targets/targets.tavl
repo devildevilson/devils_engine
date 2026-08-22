@@ -4,3 +4,4 @@
 }
 { name = decal_target, resources = [ scene_color = color_attachment ] }
 { name = text_target, resources = [ scene_color = color_attachment, scene_depth = depth_attachment ] }
+{ name = ui_target, resources = [ scene_color = color_attachment ] }

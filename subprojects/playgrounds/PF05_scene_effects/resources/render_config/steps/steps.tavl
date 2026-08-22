@@ -18,17 +18,27 @@
 {
   name = simulate_particles
   material = particle_simulation_material
-  sets = [ particle_simulation ]
+  sets = [ camera_data, particle_simulation ]
   command = "dispatch constant particle_dispatch"
 }
 {
-  name = draw_particles
+  name = draw_sparks
   material = particle_material
   geometry = particle_geometry
   sets = [ camera_data, particle_render ]
-  command = "draw constant particle_draw"
+  command = "draw constant spark_draw"
   // Additive sparks are order-independent, so this first lifecycle proof does not smuggle in a sort problem.
   blending = { scene_color = { enable = true, color = "src_alpha add one", alpha = "zero add one" } }
+}
+{
+  name = draw_weather
+  material = particle_material
+  geometry = particle_geometry
+  sets = [ camera_data, particle_render ]
+  command = "draw constant weather_draw"
+  // Weather is deliberately non-additive. This exposes the remaining unsorted-alpha policy instead of
+  // making snow glow merely to avoid it; rain's narrow streaks and sparse snow keep the artifact bounded.
+  blending = { scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
 }
 {
   name = draw_world_text

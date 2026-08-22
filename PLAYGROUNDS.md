@@ -123,11 +123,18 @@ cylindrical/Y-locked и constant-pixel world-anchored screen-size. Fixed font he
 World/billboard glyph coverage теперь пишет depth. Настоящий decal pass растеризует ориентированные box-volume,
 восстанавливает world position из opaque depth, ограничивает её через `world_to_decal`, фильтрует receiver по
 scene normal и проецирует MSDF на дальнюю и боковую стены. `F`/`--no-decals` дают наблюдаемый A/B.
-Третий срез добавляет persistent GPU particle pool на 2048 stable slots: compute читает `history=1`, выполняет
+Третий срез добавляет persistent GPU spark partition на 2048 stable slots: compute читает `history=1`, выполняет
 spawn/lifetime, semi-implicit Euler, gravity/drag и bounce от аналитических границ комнаты; procedural spherical
 billboards проходят world depth и используют order-independent additive blending. `P` переводит emitter из
 emitting в draining/stopped и обратно, `R` очищает pool. Fixed-step rail после stop совпадает с пустым pool
 (`AE=0`) по завершении максимального lifetime.
+Weather-срез расширяет общий buffer ещё на 1024 camera-local slots и переносит compute после opaque scene:
+отрезок движения сравнивается с current `scene_depth`, world hit/normal восстанавливаются, sparks отражаются,
+а rain/snow respawn'ятся. `T` циклически меняет быстрые rain streaks, медленные drifting snow flakes и clear.
+Rain использует velocity-aligned cylindrical ribbons: мировая ось падения не зависит от camera-up, к камере
+поворачивается только тонкая ширина. Явный shelter AABB закрывает semantic gap screen depth для offscreen roof;
+комната стала roofed dry fixture, `H` даёт shelter A/B, а `C` — depth-collision A/B. Weather использует alpha,
+sparks остаются additive, UI гарантирован отдельным последним pass.
 Лаборатории по-прежнему не зависят друг от друга; общие production fixes принадлежат `libs/painter`.
 
 ## 1. Painter visual stack

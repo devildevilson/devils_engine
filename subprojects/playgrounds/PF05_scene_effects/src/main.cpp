@@ -48,9 +48,14 @@ constexpr float near_plane = 0.1f;
 constexpr float billboard_spherical = 0.0f;
 constexpr float billboard_cylindrical_y = 1.0f;
 constexpr float billboard_screen_size = 2.0f;
-constexpr uint32_t particle_capacity = 2048;
+constexpr uint32_t spark_particle_capacity = 2048;
+constexpr uint32_t weather_particle_capacity = 1024;
+constexpr uint32_t particle_capacity = spark_particle_capacity + weather_particle_capacity;
 constexpr float particle_rate = 180.0f;
 constexpr float particle_lifetime_max = 4.2f;
+constexpr uint32_t weather_clear = 0;
+constexpr uint32_t weather_rain = 1;
+constexpr uint32_t weather_snow = 2;
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
@@ -59,9 +64,15 @@ int32_t escape_key = -1;
 int32_t decal_key = -1;
 int32_t particle_toggle_key = -1;
 int32_t particle_reset_key = -1;
+int32_t weather_cycle_key = -1;
+int32_t particle_collision_key = -1;
+int32_t weather_shelter_key = -1;
 bool decals_enabled = true;
 bool particle_toggle_requested = false;
 bool particle_reset_requested = false;
+bool weather_cycle_requested = false;
+bool particle_collision_enabled = true;
+bool weather_shelter_enabled = true;
 
 void error_callback(const int error, const char* message) noexcept {
   utils::warn("PF05 input error {}: {}", error, message);
@@ -80,6 +91,15 @@ void key_callback(GLFWwindow* window, const int key, const int scancode, const i
   }
   if (key == particle_reset_key && action == 1) {
     particle_reset_requested = true;
+  }
+  if (key == weather_cycle_key && action == 1) {
+    weather_cycle_requested = true;
+  }
+  if (key == particle_collision_key && action == 1) {
+    particle_collision_enabled = !particle_collision_enabled;
+  }
+  if (key == weather_shelter_key && action == 1) {
+    weather_shelter_enabled = !weather_shelter_enabled;
   }
 }
 
@@ -165,8 +185,17 @@ struct alignas(16) particle_emitter_block {
   glm::vec4 bounds_restitution;
   glm::vec4 lifetime_drag;
   glm::uvec4 lifecycle;
+  glm::uvec4 weather;
+  glm::vec4 shelter_min_enabled;
+  glm::vec4 shelter_max;
 };
-static_assert(sizeof(particle_emitter_block) == 96);
+static_assert(sizeof(particle_emitter_block) == 144);
+
+std::string_view weather_name(const uint32_t mode) noexcept {
+  if (mode == weather_rain) return "rain";
+  if (mode == weather_snow) return "snow";
+  return "clear";
+}
 
 struct emitter_runtime {
   bool emitting = true;
@@ -215,7 +244,7 @@ struct emitter_runtime {
     }
     const uint32_t reset = reset_pending ? 1u : 0u;
     reset_pending = false;
-    return glm::uvec4(spawn_begin, spawn_count, particle_capacity, reset);
+    return glm::uvec4(spawn_begin, spawn_count, spark_particle_capacity, reset);
   }
 };
 
@@ -250,6 +279,8 @@ std::vector<scene_vertex> make_room() {
   add_quad(out, {-5, -1.5f, -5}, {5, -1.5f, -5}, {5, 3.5f, -5}, {-5, 3.5f, -5}, {0, 0, 1});
   add_quad(out, {-5, -1.5f, 3}, {-5, -1.5f, -5}, {-5, 3.5f, -5}, {-5, 3.5f, 3}, {1, 0, 0});
   add_quad(out, {5, -1.5f, -5}, {5, -1.5f, 3}, {5, 3.5f, 3}, {5, 3.5f, -5}, {-1, 0, 0});
+  // The open front remains a readable doorway while the ceiling makes the room an explicit rain shelter.
+  add_quad(out, {-5, 3.5f, -5}, {5, 3.5f, -5}, {5, 3.5f, 3}, {-5, 3.5f, 3}, {0, -1, 0});
   return out;
 }
 
@@ -723,6 +754,9 @@ int main(int argc, char** argv) {
   bool fixed_step = false;
   bool start_without_decals = false;
   bool start_without_particles = false;
+  bool start_without_particle_collision = false;
+  bool start_without_weather_shelter = false;
+  uint32_t weather_mode = weather_rain;
   uint32_t frame_limit = 0;
   uint32_t emitter_stop_frame = 0;
   std::string dump_path;
@@ -734,8 +768,14 @@ int main(int argc, char** argv) {
     fixed_step = fixed_step || option == "--fixed-step";
     start_without_decals = start_without_decals || option == "--no-decals";
     start_without_particles = start_without_particles || option == "--no-particles";
+    start_without_particle_collision =
+      start_without_particle_collision || option == "--no-particle-collision";
+    start_without_weather_shelter =
+      start_without_weather_shelter || option == "--no-weather-shelter";
+    if (option == "--no-weather") weather_mode = weather_clear;
     constexpr std::string_view frames_prefix = "--frames=";
     constexpr std::string_view emitter_stop_prefix = "--emitter-stop-frame=";
+    constexpr std::string_view weather_prefix = "--weather=";
     constexpr std::string_view dump_prefix = "--dump=";
     if (option.starts_with(frames_prefix)) {
       frame_limit = uint32_t(std::stoul(std::string(option.substr(frames_prefix.size()))));
@@ -743,12 +783,22 @@ int main(int argc, char** argv) {
     if (option.starts_with(emitter_stop_prefix)) {
       emitter_stop_frame = uint32_t(std::stoul(std::string(option.substr(emitter_stop_prefix.size()))));
     }
+    if (option.starts_with(weather_prefix)) {
+      const std::string_view value = option.substr(weather_prefix.size());
+      if (value == "clear") weather_mode = weather_clear;
+      else if (value == "rain") weather_mode = weather_rain;
+      else if (value == "snow") weather_mode = weather_snow;
+      else utils::error{}("PF05 unknown weather mode '{}'; expected clear, rain or snow", value);
+    }
     if (option.starts_with(dump_prefix)) {
       dump_path = std::string(option.substr(dump_prefix.size()));
     }
   }
   if (!dump_path.empty() && frame_limit == 0) frame_limit = 1;
   decals_enabled = !start_without_decals;
+  particle_collision_enabled = !start_without_particle_collision;
+  weather_shelter_enabled = !start_without_weather_shelter;
+  if (start_without_particles) weather_mode = weather_clear;
 
   input::init input_runtime(&error_callback);
   input::events::init();
@@ -868,7 +918,7 @@ int main(int argc, char** argv) {
       playground::overlay_description{
         "PF05 — Scene effects",
         "Crimson atlas, screen decals and a persistent GPU particle pool",
-        "WASD/QE + mouse · F decals · P emitter start/stop · R reset particles · Esc"});
+        "WASD/QE + mouse · F decals · P emitter · R reset · T weather · C collision · H shelter · Esc"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(
@@ -1004,6 +1054,9 @@ int main(int argc, char** argv) {
     decal_key = input::glfw_key_from_canonical("key_f");
     particle_toggle_key = input::glfw_key_from_canonical("key_p");
     particle_reset_key = input::glfw_key_from_canonical("key_r");
+    weather_cycle_key = input::glfw_key_from_canonical("key_t");
+    particle_collision_key = input::glfw_key_from_canonical("key_c");
+    weather_shelter_key = input::glfw_key_from_canonical("key_h");
     input::set_window_callback(window, &key_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
     if (fixed_camera) {
@@ -1016,6 +1069,7 @@ int main(int argc, char** argv) {
     playground::free_camera camera;
     camera.position = {0.0f, 0.25f, 5.3f};
     emitter_runtime emitter;
+    bool weather_reset_pending = true;
     if (start_without_particles) {
       emitter.stop();
       emitter.drain_elapsed = particle_lifetime_max;
@@ -1043,6 +1097,11 @@ int main(int argc, char** argv) {
       if (particle_reset_requested) {
         emitter.reset_and_start();
         particle_reset_requested = false;
+      }
+      if (weather_cycle_requested) {
+        weather_mode = (weather_mode + 1u) % 3u;
+        weather_reset_pending = true;
+        weather_cycle_requested = false;
       }
       if (resize_pending) {
         vk::Device(device).waitIdle();
@@ -1076,7 +1135,11 @@ int main(int argc, char** argv) {
         glm::vec4(camera.position, 1),
         glm::vec4(float(pending_width), float(pending_height), near_plane, 0),
         glm::inverse(projection * view),
-        glm::vec4(decals_enabled ? 1.0f : 0.0f, 0, 0, 0)};
+        glm::vec4(
+          decals_enabled ? 1.0f : 0.0f,
+          particle_collision_enabled ? 1.0f : 0.0f,
+          0,
+          0)};
       write_current_buffer(base, "camera_buffer", &camera_data, sizeof(camera_data));
       const float simulation_dt = fixed_step ? (1.0f / 60.0f) : dt;
       if (emitter_stop_frame != 0 && frames_total == emitter_stop_frame) emitter.stop();
@@ -1087,7 +1150,15 @@ int main(int argc, char** argv) {
         glm::vec4(0.0f, -4.8f, 0.0f, simulation_dt),
         glm::vec4(-1.42f, 4.82f, -4.82f, 2.82f),
         glm::vec4(2.4f, particle_lifetime_max, 0.08f, 0.48f),
-        particle_lifecycle};
+        particle_lifecycle,
+        glm::uvec4(
+          weather_mode,
+          weather_reset_pending ? 1u : 0u,
+          particle_capacity,
+          frames_total),
+        glm::vec4(-5.0f, -1.5f, -5.0f, weather_shelter_enabled ? 1.0f : 0.0f),
+        glm::vec4(5.0f, 3.5f, 3.0f, 0.0f)};
+      weather_reset_pending = false;
       write_current_buffer(
         base, "particle_emitter_buffer", &particle_emitter, sizeof(particle_emitter));
       const uint64_t frame_delta_us = uint64_t(std::max(
@@ -1095,7 +1166,7 @@ int main(int argc, char** argv) {
         int64_t{1}));
       const uint64_t timestamp_us = uint64_t(
         std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
-      const std::array<std::string, 12> details{
+      const std::array<std::string, 13> details{
         std::format("Atlas: {}x{}, {} glyph metrics", atlas.width, atlas.height, font.glyphs.size()),
         std::format("Fixed: height {:.2f}, limit 4.80, consumed {}/{} characters",
           fixed_text.resolved_height, fixed_text.consumed_characters, fixed_text.source_characters),
@@ -1108,6 +1179,10 @@ int main(int argc, char** argv) {
           decal_glyphs.size(), decals_enabled ? "ON" : "OFF"),
         std::format("Emitter: {} · {} particles/s · {} total spawned",
           emitter.phase(), uint32_t(particle_rate), emitter.total_emitted),
+        std::format("Weather: {} · {} slots · depth collision [{}] · room shelter [{}]",
+          weather_name(weather_mode), weather_particle_capacity,
+          particle_collision_enabled ? "ON" : "OFF",
+          weather_shelter_enabled ? "ON" : "OFF"),
         std::format("Physics: gravity {:.1f} m/s^2 · drag {:.2f} · bounce {:.2f} · pool {}",
           particle_emitter.acceleration_dt.y,
           particle_emitter.lifetime_drag.z,

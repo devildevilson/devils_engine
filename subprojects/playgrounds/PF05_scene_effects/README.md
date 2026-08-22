@@ -12,8 +12,11 @@ cmake --build build-debug --target PF05_scene_effects -j2
 ```
 
 Опции: `--validation`, `--uncapped`, `--fixed-camera`, `--fixed-step`, `--no-decals`, `--no-particles`,
-`--emitter-stop-frame=N`, `--frames=N`, `--dump=file.ppm`. Камера — WASD/QE, мышь и Shift; `F` переключает
-decal pass, `P` останавливает/запускает emitter, `R` очищает pool и перезапускает его. При `--fixed-camera`
+`--no-weather`, `--weather=clear|rain|snow`, `--no-particle-collision`, `--no-weather-shelter`,
+`--emitter-stop-frame=N`, `--frames=N`,
+`--dump=file.ppm`. Камера — WASD/QE, мышь и Shift; `F` переключает decal pass, `P` останавливает/запускает
+emitter, `R` очищает spark pool, `T` циклически меняет rain/snow/clear, `C` включает collision, `H` — shelter.
+При `--fixed-camera`
 cursor возвращается в `CURSOR_NORMAL`, а `--dump` записывает точный кадр из `scene_color`, как в PF03/PF04.
 `--fixed-step` фиксирует только particle timestep на `1/60 s`, чтобы lifecycle rail не зависела от скорости машины.
 
@@ -152,15 +155,18 @@ policies; случай камеры внутри volume текущим fixture �
 
 ## Particles, emitter lifecycle и простая физика
 
-Третий срез — один point emitter и persistent GPU pool на 2048 stable slots. CPU не пересылает массив
+Третий и четвёртый срезы используют один persistent GPU buffer на 3072 stable slots: 2048 для point-emitter
+sparks и 1024 для выбранного weather mode. CPU не пересылает массив
 частиц обратно и вперёд: каждый кадр он передаёт только параметры emitter, timestep и маленький spawn batch
 `{first_serial, count}`. Сам `particle_state` является `per_frame` buffer; compute пишет текущую копию и читает
 `history = 1`, поэтому Painter выводит и внутрикадровый compute→vertex barrier, и cross-frame зависимость.
+Compute теперь стоит после opaque scene pass, потому что collision читает current-frame depth/normal.
 
 ```text
 CPU emitter: rate accumulator -> contiguous spawn serial range
-GPU slot i: previous state -> integrate/collide/expire or spawn(serial % capacity) -> current state
-graphics: 2048 procedural six-vertex billboard instances -> depth test -> additive scene color
+GPU spark slot: previous -> integrate -> analytic + screen collision -> expire/spawn -> current
+GPU weather slot: previous -> rain/snow motion -> screen collision -> camera-local respawn -> current
+graphics: 2048 additive sparks + 1024 alpha weather billboards -> opaque depth test
 ```
 
 Один invocation полностью владеет одним slot, поэтому здесь нет freelist, compaction и atomics. Spawn serial
@@ -177,19 +183,57 @@ Lifecycle разделён сознательно:
 
 Физика — semi-implicit Euler: сначала gravity и exponential drag меняют velocity, затем обновляется position.
 Пол и четыре границы комнаты являются аналитическими planes; пересечение исправляет position и отражает нужную
-компоненту velocity с restitution, на полу дополнительно гасится горизонтальная скорость. Это намеренно не
-collision с произвольной сценой: rain/snow позже смогут сравнить analytic volumes с scene-depth/HZB collision.
+компоненту velocity с restitution, на полу дополнительно гасится горизонтальная скорость.
 
-Рендер использует spherical billboards, мягкий radial coverage и additive blending. Additive выбран как честная
-order-independent политика для sparks; обычный дым с alpha blending потребует сортировки, weighted OIT либо
-явного согласия на артефакты. Particles тестируют opaque reverse-Z depth, но сами depth не пишут.
+Screen-space collision дополняет их произвольной видимой геометрией. После интегрирования candidate position
+проецируется в текущий viewport, shader читает ближайшие `scene_depth + scene_normal` и восстанавливает world hit.
+Отрезок считается пересёкшим поверхность, если previous point был с camera-side, candidate дошёл до surface-side,
+остался внутри небольшой thickness и velocity направлена в receiver normal. Spark отражает velocity, rain/snow
+завершаются и переиспользуют slot. `C`/`--no-particle-collision` дают A/B.
 
-Детерминированная проверка (`--fixed-step --uncapped --emitter-stop-frame=60`) показывает lifecycle численно:
+Это не world collision structure: за первой видимой поверхностью, вне экрана и для occluded geometry данных нет;
+один candidate-depth sample также может пропустить очень быстрый или тонкий контакт. Current-frame порядок убирает
+лаг камеры, thickness покрывает обычный `1/60 s` шаг, но gameplay particles всё равно требуют colliders/SDF/BVH.
+
+Weather mode переиспользует одни 1024 slots, но является двумя разными consumer:
+
+- rain рождается в camera-local box, быстро падает с ветром и рисуется узкими голубыми streaks. Его длинная
+  billboard-ось совпадает с world velocity, а к камере вокруг неё поворачивается только поперечная ось: это
+  цилиндрический ribbon, который перспективно сокращается при взгляде вдоль падения и не становится camera-up полосой;
+- snow падает медленно, получает меняющийся боковой drift и рисуется мягкими холодными flakes;
+- clear немедленно освобождает weather range; смена mode сбрасывает только эту часть buffer.
+
+Одной screen-space depth недостаточно для дома: невидимая или offscreen крыша не существует для такого collision.
+Поэтому emitter дополнительно принимает явный axis-aligned `shelter min/max`. Вся precipitation внутри volume
+удаляется до render, а scattered spawn внутри него сразу отвергается. Fixture трактует комнату `[-5..5] ×
+[-1.5..3.5] × [-5..3]` как один dry volume и получил потолок при открытом входе: снаружи дождь виден, изнутри
+он остаётся только за проёмом. `H`/`--no-weather-shelter` дают прямой A/B. Один AABB — намеренно простой контракт;
+несколько зданий потребуют маленький buffer volumes либо spatial index, а сложный навес можно собрать из нескольких
+convex volumes.
+
+Отдельная rail отключает screen collision в обоих кадрах: shelter ON/OFF всё равно меняет `415.191`
+pixel-equivalent в crop входа/комнаты. Повтор shelter-кадра вне overlay даёт `AE=0`, поэтому volume не является
+случайной маскировкой depth test и сохраняет детерминированный particle path.
+
+Даже после тонкой геометрии rain look не исчерпан частицами. Полная сцена обычно сочетает как минимум near drops,
+дешёвую mid/far volumetric density или rain fog, wetness/ripples на surfaces и impact splashes. PF05 сейчас доказывает
+только первый уровень и управление осадками; атмосферное рассеяние и wet-surface response относятся к lighting/PBR.
+
+Spark renderer использует spherical billboards, мягкий radial coverage и order-independent additive blending.
+Weather намеренно использует обычный alpha blend: это не заставляет снег светиться, но честно оставляет проблему
+сортировки при большой плотности; production выбирает sorting, weighted OIT либо допустимые артефакты. Все
+particles тестируют opaque reverse-Z depth, но сами depth не пишут. UI вынесен в отдельный последний pass,
+чтобы плотный snow никогда не мог оказаться поверх diagnostics.
+
+Детерминированная проверка (`--fixed-step --uncapped --weather=clear --emitter-stop-frame=60`) показывает lifecycle численно:
 на кадре 180 draining-кадр ещё отличается от `--no-particles`, а на кадре 360 после максимального lifetime
 вне overlay совпадает с ним (`AE = 0`). Два независимых emitting dump кадра 180 также совпадают (`AE = 0`).
 Vulkan validation проходит чисто.
 
-Текущий fixed draw вызывает шесть vertices для всех 2048 slots, а мёртвые уходят за clip volume. Это хороший
+Weather rails также воспроизводимы: повтор rain frame 180 даёт `AE=0`; collision ON/OFF меняет `2510.13`
+pixel-equivalent вне overlay, а rain/snow — `5648.02`, то есть mode и collision не являются пустыми тумблерами.
+
+Текущие fixed draws вызывают шесть vertices для всех 3072 slots, а мёртвые уходят за clip volume. Это хороший
 неатомарный baseline; GPU compaction + indirect instance count следует добавлять после измерения цены пустых
 slots или появления существенно больших pools. `--no-particles` — debug runtime switch и не удаляет passes;
 production `particles = off` должен выбирать graph generation без simulation/render steps.
@@ -200,7 +244,7 @@ production `particles = off` должен выбирать graph generation бе
 - ~~spherical, cylindrical-Y и world-anchored screen-size billboards~~;
 - ~~screen-space decals с reconstruction из depth/normal и ограниченным decal volume~~;
 - ~~particles, emitter lifecycle и простая particle physics~~;
-- rain и snow как два наблюдаемо разных consumer particle-системы;
+- ~~rain и snow как два наблюдаемо разных consumer particle-системы~~;
 - cel shading с управляемыми lighting bands и outline policy;
 - маленькое world-space UI окно над объектом: имя, health bar и несколько полей состояния.
 

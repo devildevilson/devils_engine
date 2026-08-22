@@ -15,12 +15,17 @@
   layout = [
     { resource = particle_emitter_buffer, usage = uniform, stage = compute },
     { resource = particle_state, usage = storage_write, stage = compute },
-    { resource = particle_state, usage = storage_read, stage = compute, history = 1 }
+    { resource = particle_state, usage = storage_read, stage = compute, history = 1 },
+    { resource = scene_depth, usage = depth_read, sampler = nearest_sampler, stage = compute },
+    { resource = scene_normal, usage = sampled, sampler = nearest_sampler, stage = compute }
   ]
 }
 {
   name = particle_render
-  layout = [ { resource = particle_state, usage = storage_read, stage = vertex } ]
+  layout = [
+    { resource = particle_state, usage = storage_read, stage = vertex },
+    { resource = particle_emitter_buffer, usage = uniform, stage = vertex }
+  ]
 }
 {
   // The same asset array contains the Crimson atlas used by world text and the Visage overlay.
