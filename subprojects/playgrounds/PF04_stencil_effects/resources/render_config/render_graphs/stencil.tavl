@@ -3,14 +3,26 @@
   startup = true
   passes = [
     {
+      // Selection становится фильтруемой картинкой coverage + reverse-Z depth. MAX color blending выбирает
+      // ближайшую поверхность объекта order-independently, поэтому отдельная depth texture не нужна.
+      name = pf04_selection_mask
+      render_target = selection_mask_target
+      subpasses = [
+        { selection_mask = (undefined, clear) },
+        { selection_mask = (color_attachment, store) },
+        { selection_mask = (sampled, store) }
+      ]
+      steps = [ draw_selection_mask ]
+    },
+    {
       name = pf04_scene
       render_target = scene_target
       subpasses = [
-        { scene_color = (undefined, clear), scene_depth_stencil = (undefined, clear) },
-        { scene_color = (color_attachment, store), scene_depth_stencil = (depth_attachment, store) },
-        { scene_color = (transfer_src, store), scene_depth_stencil = (depth_attachment, store) }
+        { scene_color = (undefined, clear), scene_depth_stencil = (undefined, clear), selection_mask = (sampled, store) },
+        { scene_color = (color_attachment, store), scene_depth_stencil = (depth_attachment, store), selection_mask = (sampled, store) },
+        { scene_color = (transfer_src, store), scene_depth_stencil = (depth_attachment, store), selection_mask = (sampled, store) }
       ]
-      steps = [ draw_scene, draw_wallhack_target, draw_selected, write_wallhack_mask, write_local_mask, draw_outline, apply_local_tint, visualize_stencil, apply_wallhack_silhouette, write_window_mask, clear_window, draw_window_scene, draw_window_selected, write_face_fixture, visualize_fixture_front, visualize_fixture_back, draw_playground_overlay ]
+      steps = [ draw_scene, draw_wallhack_target, draw_selected, write_wallhack_mask, write_local_mask, apply_local_tint, visualize_stencil, apply_local_outline, write_window_mask, clear_window, draw_window_scene, draw_window_selected, write_face_fixture, visualize_fixture_front, visualize_fixture_back, redraw_wallhack_visible, apply_wallhack_silhouette, apply_overlay_outline, draw_playground_overlay ]
     },
     {
       name = pf04_present

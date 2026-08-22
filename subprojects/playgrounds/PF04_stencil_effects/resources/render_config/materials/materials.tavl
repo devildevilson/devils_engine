@@ -56,39 +56,62 @@
   }
 }
 {
-  // Увеличенная оболочка проходит только вне reference=1, поэтому остаётся узкое кольцо вокруг силуэта.
-  name = outline_material
-  dynamic = [ stencil_reference, stencil_compare_mask, stencil_write_mask ]
+  // Отдельный mask pass получает полную проекцию selected object. Depth attachment не нужен: step применяет
+  // order-independent MAX blending к reverse-Z depth в color channel и оставляет ближайшую поверхность.
+  name = selection_mask_material
   shaders = {
-    vertex = "outline.vert.glsl"
-    fragment = "outline.frag.glsl"
+    vertex = "selection_mask.vert.glsl"
+    fragment = "selection_mask.frag.glsl"
+  }
+  depth = {
+    test = false
+    write = false
+    compare = always
+  }
+  raster = {
+    cull = back
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  // Локальный вариант переносит depth selected object на расширенное кольцо. Оно участвует в reverse-Z
+  // как пиксели самого объекта и записывает depth, чтобы последующий spatial window уважал эту границу.
+  name = local_outline_material
+  definitions = [ PF04_OUTLINE_OVERLAY = "0" ]
+  shaders = {
+    vertex = "fullscreen.vert.glsl"
+    fragment = "screen_outline.frag.glsl"
   }
   depth = {
     test = true
-    write = false
+    write = true
     compare = greater_or_equal
-    stencil_test = true
-    front = {
-      fail_op = keep
-      pass_op = keep
-      depth_fail_op = keep
-      compare_op = not_equal
-      compare_mask = 1
-      write_mask = 0
-      reference = 1
-    }
-    back = {
-      fail_op = keep
-      pass_op = keep
-      depth_fail_op = keep
-      compare_op = not_equal
-      compare_mask = 1
-      write_mask = 0
-      reference = 1
-    }
   }
   raster = {
-    cull = front
+    cull = none
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  // Дополнительный through-wall selector использует ту же маску и дилатацию, но намеренно отключает
+  // depth test. Runtime-флаг только включает consumer; локальный outline остаётся базовым эффектом.
+  name = overlay_outline_material
+  definitions = [ PF04_OUTLINE_OVERLAY = "1" ]
+  shaders = {
+    vertex = "fullscreen.vert.glsl"
+    fragment = "screen_outline.frag.glsl"
+  }
+  depth = {
+    test = false
+    write = false
+    compare = always
+  }
+  raster = {
+    cull = none
     front_face = ccw
     polygon = fill
     line_width = 1.0
@@ -150,7 +173,7 @@
       pass_op = keep
       depth_fail_op = keep
       compare_op = equal
-      compare_mask = 64
+      compare_mask = 68
       write_mask = 0
       reference = 64
     }
@@ -159,13 +182,53 @@
       pass_op = keep
       depth_fail_op = keep
       compare_op = equal
-      compare_mask = 64
+      compare_mask = 68
       write_mask = 0
       reference = 64
     }
   }
   raster = {
     cull = none
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  // Повторяет только видимую часть target после overlay-outline. Portal bit запрещает draw внутри окна:
+  // alternate view остаётся самостоятельным содержимым, а вне окна обычный reverse-Z восстанавливает
+  // ровно те пиксели цели, которые она занимала до post-effect.
+  name = wallhack_visible_material
+  shaders = {
+    vertex = "scene.vert.glsl"
+    fragment = "scene.frag.glsl"
+  }
+  depth = {
+    test = true
+    write = false
+    compare = greater_or_equal
+    stencil_test = true
+    front = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = keep
+      compare_op = equal
+      compare_mask = 4
+      write_mask = 0
+      reference = 0
+    }
+    back = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = keep
+      compare_op = equal
+      compare_mask = 4
+      write_mask = 0
+      reference = 0
+    }
+  }
+  raster = {
+    cull = back
     front_face = ccw
     polygon = fill
     line_width = 1.0

@@ -45,6 +45,7 @@ bool local_effect = true;
 bool spatial_window = true;
 bool face_fixture = true;
 bool wallhack_effect = true;
+bool outline_overlay = false;
 constexpr std::array<uint32_t, 3> selection_bits{0x01u, 0x08u, 0x80u};
 uint32_t selection_channel = 0;
 bool selection_compare_enabled = true;
@@ -59,6 +60,7 @@ int32_t selection_compare_key = -1;
 int32_t selection_write_key = -1;
 int32_t face_fixture_key = -1;
 int32_t wallhack_key = -1;
+int32_t outline_overlay_key = -1;
 
 void error_callback(const int error, const char* message) noexcept {
   utils::warn("PF04 input error {}: {}", error, message);
@@ -95,6 +97,9 @@ void key_callback(GLFWwindow* window, const int key, const int scancode, const i
   }
   if (key == wallhack_key && action == 1) {
     wallhack_effect = !wallhack_effect;
+  }
+  if (key == outline_overlay_key && action == 1) {
+    outline_overlay = !outline_overlay;
   }
 }
 
@@ -437,6 +442,7 @@ int main(int argc, char** argv) {
     spatial_window = spatial_window && option != "--no-window";
     face_fixture = face_fixture && option != "--no-face-fixture";
     wallhack_effect = wallhack_effect && option != "--no-wallhack";
+    outline_overlay = outline_overlay || option == "--outline-overlay";
     constexpr std::string_view frames_prefix = "--frames=";
     if (option.starts_with(frames_prefix)) {
       frame_limit = uint32_t(std::stoul(std::string(option.substr(frames_prefix.size()))));
@@ -652,7 +658,8 @@ int main(int argc, char** argv) {
 
     const std::array<glm::vec4, 1> room_instances{glm::vec4{0.0f, 0.0f, 0.0f, 0.0f}};
     const std::array<glm::vec4, 3> prop_instances{
-      glm::vec4{-2.0f, -0.78f, -1.0f, 1.0f},
+      // Передний cube перекрывает левую часть selection: local/overlay outline отличаются уже на fixed view.
+      glm::vec4{-0.72f, -0.78f, -0.75f, 1.0f},
       glm::vec4{2.1f, -0.78f, -2.1f, 1.0f},
       glm::vec4{0.1f, 0.75f, -3.6f, 1.0f}};
     const std::array<glm::vec4, 1> selected_instances{glm::vec4{0.0f, -0.72f, -1.55f, 2.0f}};
@@ -676,7 +683,7 @@ int main(int argc, char** argv) {
       playground::overlay_description{
         "PF04 — Stencil effects",
         "bits 0/1/2: base effects · bit 6: hidden target · bits 4/5: face fixture",
-        "P window · L tint · H hidden target · V debug · R/C/X dynamic · F faces · Esc exit"});
+        "O outline mode · P window · L tint · H hidden target · V debug · R/C/X dynamic · F faces · Esc exit"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(
@@ -704,6 +711,7 @@ int main(int argc, char** argv) {
     selection_write_key = input::glfw_key_from_canonical("key_x");
     face_fixture_key = input::glfw_key_from_canonical("key_f");
     wallhack_key = input::glfw_key_from_canonical("key_h");
+    outline_overlay_key = input::glfw_key_from_canonical("key_o");
     input::set_window_callback(window, &key_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
     if (fixed_camera) {
@@ -728,8 +736,8 @@ int main(int argc, char** argv) {
     context.base = &base;
     context.assets = &assets;
 
-    utils::info("PF04 controls: move/look, P window, L tint, H hidden target, V stencil debug, R selection channel, C compare mask, X write mask, F face fixture, Esc exit");
-    utils::info("PF04 graph: main view -> closed-box outline + occluded target -> independent masks/window -> asymmetric front/back fixture -> UI -> present");
+    utils::info("PF04 controls: move/look, O through-wall outline, P window, L tint, H hidden target, V stencil debug, R selection channel, C compare mask, X write mask, F face fixture, Esc exit");
+    utils::info("PF04 graph: selection coverage+depth -> local outline -> spatial window -> optional overlay selector + occluded target -> UI -> present");
 
     uint32_t frames_total = 0;
     while (!input::should_close(window)) {
@@ -780,7 +788,11 @@ int main(int argc, char** argv) {
         local_effect ? 1.0f : 0.0f,
         spatial_window ? 1.0f : 0.0f,
         face_fixture ? 1.0f : 0.0f);
-      camera_data.effect_params = glm::vec4(wallhack_effect ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+      camera_data.effect_params = glm::vec4(
+        wallhack_effect ? 1.0f : 0.0f,
+        outline_overlay ? 1.0f : 0.0f,
+        0.0f,
+        0.0f);
       write_current_buffer(base, "camera_buffer", &camera_data, sizeof(camera_data));
       camera_block window_camera_data{};
       window_camera_data.view = window_camera.view();
@@ -797,7 +809,7 @@ int main(int argc, char** argv) {
       const uint64_t timestamp_us = uint64_t(
         std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
       const uint32_t selection_bit = selection_bits[selection_channel];
-      const std::array<std::string, 6> details{
+      const std::array<std::string, 7> details{
         std::format(
           "Dynamic selection: ref 0x{:02X}, read 0x{:02X}, write 0x{:02X}",
           selection_bit,
@@ -805,6 +817,7 @@ int main(int argc, char** argv) {
           selection_write_enabled ? selection_bit : 0u),
         local_effect ? "Local tint: ON; invisible proxy writes mask 0x02" : "Local tint: OFF (press L); mask remains independent",
         wallhack_effect ? "Hidden target: ON; depth-fail writes 0x40, red=occluded only" : "Hidden target: OFF (press H)",
+        outline_overlay ? "Outline: LOCAL + through-wall overlay (press O)" : "Outline: LOCAL depth-tested (press O for overlay)",
         spatial_window ? "Window: ON; aperture 0x04 owns alternate-view depth" : "Window: OFF (press P)",
         face_fixture ? "Faces: ON; green=front replace 0x10, yellow=back invert 0x30" : "Faces: OFF (press F)",
         stencil_debug ? "Debug tint: ON (dynamic equal)" : "Debug tint: OFF (press V)"};

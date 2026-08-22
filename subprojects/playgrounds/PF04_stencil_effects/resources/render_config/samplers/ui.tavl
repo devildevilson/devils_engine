@@ -3,3 +3,8 @@
   filter = linear
   address = clamp
 }
+{
+  name = outline_linear
+  filter = linear
+  address = clamp
+}

@@ -11,6 +11,12 @@
   ]
 }
 {
+  name = selection_mask_read
+  layout = [
+    { resource = selection_mask, usage = sampled, sampler = outline_linear, stage = fragment }
+  ]
+}
+{
   name = ui_textures
   texture_count = 16
   sampler_pool = [ ui_linear ]

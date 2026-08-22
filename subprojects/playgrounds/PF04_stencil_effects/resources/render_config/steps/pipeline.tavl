@@ -7,6 +7,18 @@
   command = "draw"
 }
 {
+  name = draw_selection_mask
+  material = selection_mask_material
+  geometry = scene_geometry
+  draw_group = selected_draw_group
+  sets = [ camera_data ]
+  command = "draw"
+  // MAX по .r сохраняет coverage=1, MAX по .g выбирает ближайшую reverse-Z depth независимо от draw order.
+  blending = {
+    selection_mask = { enable = true, color = "one max one", alpha = "one max one" }
+  }
+}
+{
   name = draw_selected
   material = selected_material
   geometry = scene_geometry
@@ -42,11 +54,32 @@
   }
 }
 {
-  name = draw_outline
-  material = outline_material
+  name = apply_local_outline
+  material = local_outline_material
+  geometry = fullscreen_geometry
+  sets = [ camera_data, selection_mask_read ]
+  command = "draw constant fullscreen_draw"
+  blending = {
+    scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
+  }
+}
+{
+  name = apply_overlay_outline
+  material = overlay_outline_material
+  geometry = fullscreen_geometry
+  sets = [ camera_data, selection_mask_read ]
+  command = "draw constant fullscreen_draw"
+  blending = {
+    scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
+  }
+}
+{
+  // Graph ставит этот redraw после локального outline, но до optional through-wall overlay. Поэтому target
+  // перекрывает локальную кромку как обычный объект, а selector режима O остаётся поверх всей 3D-сцены.
+  name = redraw_wallhack_visible
+  material = wallhack_visible_material
   geometry = scene_geometry
-  draw_group = selected_draw_group
-  stencil_state = selection_stencil_state
+  draw_group = wallhack_target_draw_group
   sets = [ camera_data ]
   command = "draw"
 }

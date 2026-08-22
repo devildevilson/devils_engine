@@ -2,3 +2,7 @@
   name = scene_target
   resources = [ scene_color = color_attachment, scene_depth_stencil = depth_attachment ]
 }
+{
+  name = selection_mask_target
+  resources = [ selection_mask = color_attachment ]
+}
