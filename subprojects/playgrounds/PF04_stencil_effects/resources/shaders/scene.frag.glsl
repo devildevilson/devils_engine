@@ -14,7 +14,8 @@ void main() {
   const vec3 light = normalize(vec3(-0.45, 0.8, 0.35));
   const float diffuse = max(dot(n, light), 0.0);
   vec3 base = vec3(0.31, 0.35, 0.40);
-  if (material_id > 1.5) base = vec3(0.18, 0.46, 0.72);
+  if (material_id > 2.5) base = vec3(0.18, 0.58, 0.34);
+  else if (material_id > 1.5) base = vec3(0.18, 0.46, 0.72);
   else if (material_id > 0.5) base = vec3(0.50, 0.29, 0.18);
   const float floor_grid = world_normal.y > 0.9
     ? mix(0.72, 1.0, float((int(floor(world_position.x)) + int(floor(world_position.z))) & 1))

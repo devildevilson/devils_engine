@@ -16,6 +16,32 @@
   command = "draw"
 }
 {
+  name = draw_wallhack_target
+  material = scene_material
+  geometry = scene_geometry
+  draw_group = wallhack_target_draw_group
+  sets = [ camera_data ]
+  command = "draw"
+}
+{
+  name = write_wallhack_mask
+  material = wallhack_mask_material
+  geometry = scene_geometry
+  draw_group = wallhack_target_draw_group
+  sets = [ camera_data ]
+  command = "draw"
+  blending = { scene_color = { mask = none } }
+}
+{
+  name = apply_wallhack_silhouette
+  material = wallhack_silhouette_material
+  geometry = fullscreen_geometry
+  command = "draw constant fullscreen_draw"
+  blending = {
+    scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
+  }
+}
+{
   name = draw_outline
   material = outline_material
   geometry = scene_geometry

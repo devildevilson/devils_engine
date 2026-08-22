@@ -78,9 +78,10 @@ font и показывает описание сцены, controls, сглаже
 Активная campaign: семь независимых painter-лабораторий `PF01`–`PF07`. `PF01_forward_plus`, `PF02_shadows`,
 [`PF03_post_processing`](subprojects/playgrounds/PF03_post_processing/README.md) и
 [`PF04_stencil_effects`](subprojects/playgrounds/PF04_stencil_effects/README.md) закрыты; следующий bounded result —
-[`PF05_scene_effects`](subprojects/playgrounds/PF05_scene_effects/README.md). PF04 закрыт пятью срезами: `D24S8`
+[`PF05_scene_effects`](subprojects/playgrounds/PF05_scene_effects/README.md). PF04 закрыт основными срезами: `D24S8`
 selection/outline/debug; независимые bits `0x02/0x04` для local tint и spatial window; runtime
-`StencilReference/CompareMask/WriteMask`; и финальный asymmetric front/back fixture. Внутреннее
+`StencilReference/CompareMask/WriteMask`; asymmetric front/back fixture; а после закрытия — замкнутая outline-box и
+`depth_fail_op`-силуэт скрытой цели на bit `0x40`. Внутреннее
 представление dynamic states свёрнуто из растущего набора bool-полей в один массив Vulkan values;
 их человеческие имена и mapping задаёт один X-macro list в `painter/common.h`.
 

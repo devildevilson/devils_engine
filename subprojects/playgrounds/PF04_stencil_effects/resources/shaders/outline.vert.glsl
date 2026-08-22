@@ -1,8 +1,9 @@
 #version 450
 
-// Алгоритм: вершины выбранной mesh немного выталкиваются вдоль нормали. Рисуются только back faces
-// увеличенной оболочки, а stencil compare `!= 1` отбрасывает её часть поверх исходного объекта. В результате
-// остаётся кольцо вокруг видимого силуэта; depth test по-прежнему скрывает outline за передними occluders.
+// Алгоритм: этот fixture точно знает, что local mesh — box с half-extent 0.72. Каждая координата угла
+// сдвигается по своему знаку, поэтому все шесть граней остаются соединённой увеличенной коробкой.
+// Выталкивание flat-shaded вершин вдоль face normal дало бы шесть разорванных quad. Дальше back-face shell и
+// stencil `!= selection` оставляют только кольцо вокруг видимого силуэта, а depth скрывает его за occluders.
 
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
@@ -17,6 +18,9 @@ layout(set = 0, binding = 0, std140) uniform CameraBlock {
 } camera_data;
 
 void main() {
-  const vec3 world_position = in_position + in_normal * 0.075 + in_instance.xyz;
+  // Every authored box face has one axis-aligned unit normal, hence this is exactly 1 for all 36 vertices.
+  const float valid_box_normal = dot(abs(in_normal), vec3(1.0));
+  const vec3 expanded_box_position = in_position + sign(in_position) * (0.075 * valid_box_normal);
+  const vec3 world_position = expanded_box_position + in_instance.xyz;
   gl_Position = camera_data.view_projection * vec4(world_position, 1.0);
 }

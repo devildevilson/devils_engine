@@ -13,6 +13,13 @@
   type = host_visible
 }
 {
+  name = wallhack_target_draw_group
+  layout = v4
+  budget = wallhack_instances
+  draw_capacity = wallhack_draws
+  type = host_visible
+}
+{
   name = local_mask_draw_group
   layout = v4
   budget = mask_instances

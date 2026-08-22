@@ -95,6 +95,83 @@
   }
 }
 {
+  // Видимая часть повторной target mesh проходит >= depth и не меняет stencil.
+  // Только скрытые за ближней геометрией fragments попадают в depth_fail_op и пишут bit 0x40.
+  name = wallhack_mask_material
+  shaders = {
+    vertex = "scene.vert.glsl"
+    fragment = "wallhack_mask.frag.glsl"
+  }
+  depth = {
+    test = true
+    write = false
+    compare = greater_or_equal
+    stencil_test = true
+    front = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = replace
+      compare_op = always
+      compare_mask = 64
+      write_mask = 64
+      reference = 64
+    }
+    back = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = replace
+      compare_op = always
+      compare_mask = 64
+      write_mask = 64
+      reference = 64
+    }
+  }
+  raster = {
+    cull = back
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  // Fullscreen consumer покрасит только записанные hidden-target pixels, не отключая depth у основной сцены.
+  name = wallhack_silhouette_material
+  shaders = {
+    vertex = "fullscreen.vert.glsl"
+    fragment = "wallhack_silhouette.frag.glsl"
+  }
+  depth = {
+    test = false
+    write = false
+    compare = always
+    stencil_test = true
+    front = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = keep
+      compare_op = equal
+      compare_mask = 64
+      write_mask = 0
+      reference = 64
+    }
+    back = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = keep
+      compare_op = equal
+      compare_mask = 64
+      write_mask = 0
+      reference = 64
+    }
+  }
+  raster = {
+    cull = none
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
   // Невидимая world-space пластина записывает только bit 1 (0x02), сохраняя selection bit 0.
   name = local_mask_material
   shaders = {

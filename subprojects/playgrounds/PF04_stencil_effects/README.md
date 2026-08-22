@@ -11,10 +11,11 @@ cmake --build build-debug --target PF04_stencil_effects -j2
 ```
 
 Опции: `--validation`, `--uncapped`, `--fixed-camera`, `--stencil-debug`, `--no-local-effect`,
-`--no-window`, `--no-face-fixture`, `--frames=N`, `--dump=file.ppm`. Управление: WASD/QE, мышь, Shift; `P` включает spatial
+`--no-window`, `--no-face-fixture`, `--no-wallhack`, `--frames=N`, `--dump=file.ppm`. Управление: WASD/QE, мышь,
+Shift; `P` включает spatial
 window, `L` — локальный cyan tint, `V` — magenta-визуализацию selection bit. `R` переносит selection
 между bits `0x01/0x08/0x80`, `C` включает read/compare mask, `X` — write mask, `F` — front/back fixture.
-Escape закрывает окно.
+`H` включает силуэт скрытой части цели. Escape закрывает окно.
 Для детерминированных прогонов есть `--selection-channel=0..2`, `--selection-compare=0|1` и
 `--selection-write=0|1`.
 
@@ -37,7 +38,9 @@ scene geometry
 ```
 
 Выбранный синий куб записывает `1` только там, где его fragment действительно прошёл reversed-Z depth
-test. Увеличенная вдоль normal оболочка рисует только back faces и проверяет `stencil != 1`, поэтому от неё
+test. Outline-оболочка расширяет все три координаты каждого local corner, поэтому получается замкнутая
+коробка из шести граней. Прежнее смещение flat-shaded вершин вдоль face normal раздвигало бы грани как отдельные quad.
+Увеличенная box рисует только back faces и проверяет `stencil != 1`, поэтому от неё
 остаётся оранжевое кольцо вокруг видимого силуэта; стоящий спереди объект продолжает скрывать outline через
 depth test. Debug consumer не читает stencil как texture: fullscreen triangle проходит fixed-function
 `stencil == 1` и накладывает magenta tint ровно на записанные пиксели.
@@ -87,6 +90,25 @@ clipping, преобразование камеры через пару порт
 `--dump`: с window виден холодный второй ракурс и его checker floor, с `--no-window` aperture не оставляет
 следов. Четырёхкадровый dump с Vulkan validation проходит чисто.
 
+## Силуэт цели за препятствием
+
+Зелёная target box сначала рисуется обычным scene material, поэтому её открытые части видны без специального
+shading. После всех main-view depth writers та же mesh рисуется повторно:
+
+```text
+target depth >= stored depth (reverse-Z) → visible/equal → stencil keep
+target depth <  stored depth             → occluded      → depth_fail_op replace 0x40
+fullscreen stencil == 0x40              → red alpha blend
+```
+
+`greater_or_equal` здесь принципиален. Строгий `greater` счёл бы равную глубину уже нарисованной видимой цели depth
+failure и покрасил бы её целиком. Stencil bit `0x40` не пересекается с `0x01/0x02/0x04`, fixture `0x30` и selection channel `0x80`.
+
+Для одного фиксированного цвета stencil не строго обязателен: можно вторым draw сразу рисовать color с обратным depth condition.
+Stencil здесь полезен как развязка: geometry/depth формируют маску один раз, а после неё можно менять цвет,
+добавлять pulse/outline или комбинировать с другими masks без повторной растеризации target. `H` и `--no-wallhack` отключают writer.
+Frame-exact A/B показывает: красная скрытая часть исчезает, зелёная видимая остаётся; четырёхкадровый Vulkan validation dump чист.
+
 ## Что уже доказано в Painter
 
 - combined depth/stencil resource создаётся, очищается и сохраняет оба aspect внутри pass;
@@ -99,6 +121,7 @@ clipping, преобразование камеры через пару порт
 - step-level `mask = none` действительно создаёт depth/stencil-only draw внутри color render pass.
 - часть общего depth attachment можно очистить stencil-ограниченным draw и использовать для второго view.
 - front и back faces одного draw могут применять разные `VkStencilOpState` и давать независимо наблюдаемый результат.
+- `depth_fail_op` может выделить именно скрытую за ближней геометрией часть повторного target draw.
 
 В Painter по пути исправлен разбор color write masks: непустая маска теперь заменяет RGBA, `none` даёт
 ноль, а отсутствующие blend expressions сохраняют валидные Vulkan defaults вместо sentinel `UINT32_MAX`.
@@ -152,7 +175,7 @@ right back faces → invert,  write/read mask 0x30                 → yellow co
 
 ## Definition of Done
 
-Definition of Done достигнут: outline, локальный post-effect и window mask используют обычные Painter
-materials/render graph; static, dynamic и асимметричный front/back stencil state проверены явно, а debug
+Definition of Done достигнут: closed-box outline, occluded-target silhouette, локальный post-effect и window mask
+используют обычные Painter materials/render graph; static, dynamic и асимметричный front/back stencil state проверены явно, а debug
 views позволяют объяснить, почему конкретный pixel прошёл или не прошёл test. Production
 parsing/execution fixes принадлежат `libs/painter`; демонстрационные shaders и visualization остаются в лаборатории.

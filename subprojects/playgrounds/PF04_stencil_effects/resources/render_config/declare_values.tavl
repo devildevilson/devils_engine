@@ -28,6 +28,16 @@
   value = [1, 0, 0]
 }
 {
+  name = wallhack_instances
+  type = fixed
+  value = [1, 0, 0]
+}
+{
+  name = wallhack_draws
+  type = fixed
+  value = [1, 0, 0]
+}
+{
   name = mask_instances
   type = fixed
   value = [1, 0, 0]
