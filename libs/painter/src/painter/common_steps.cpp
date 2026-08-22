@@ -568,6 +568,15 @@ void graphics_step_instance::create_pipeline(const graphics_base* ctx) {
   if (material.raster.dynamic_depth_bias) {
     pm.dynamicState(vk::DynamicState::eDepthBias);
   }
+  if (material.depth.dynamic_stencil_reference) {
+    pm.dynamicState(vk::DynamicState::eStencilReference);
+  }
+  if (material.depth.dynamic_stencil_compare_mask) {
+    pm.dynamicState(vk::DynamicState::eStencilCompareMask);
+  }
+  if (material.depth.dynamic_stencil_write_mask) {
+    pm.dynamicState(vk::DynamicState::eStencilWriteMask);
+  }
 
   pm.viewport(); // empty viewport for DynamicState
   pm.scissor();  // empty scissor  for DynamicState
@@ -1320,6 +1329,32 @@ static void push_constants(graphics_ctx* ctx, VkCommandBuffer buf, VkPipelineLay
   }
 }
 
+// Dynamic stencil values are step-owned runtime data, not mutable material state. One constant can be
+// shared by a writer and all of its consumers, so changing the channel updates their fixed-function
+// commands coherently on the next command-buffer recording without rebuilding any pipeline.
+static void set_dynamic_stencil_state(graphics_ctx* ctx, const VkCommandBuffer buf, const step_base& step) {
+  const auto& material = DS_ASSERT_ARRAY_GET(ctx->base->materials, step.material);
+  const bool has_dynamic_state = material.depth.dynamic_stencil_reference ||
+                                 material.depth.dynamic_stencil_compare_mask ||
+                                 material.depth.dynamic_stencil_write_mask;
+  if (!has_dynamic_state) {
+    return;
+  }
+
+  const auto* values = static_cast<const uint32_t*>(ctx->base->get_constant_data(step.stencil_state));
+  vk::CommandBuffer task(buf);
+  constexpr auto faces = vk::StencilFaceFlagBits::eFrontAndBack;
+  if (material.depth.dynamic_stencil_reference) {
+    task.setStencilReference(faces, values[0]);
+  }
+  if (material.depth.dynamic_stencil_compare_mask) {
+    task.setStencilCompareMask(faces, values[1]);
+  }
+  if (material.depth.dynamic_stencil_write_mask) {
+    task.setStencilWriteMask(faces, values[2]);
+  }
+}
+
 graphics_draw::graphics_draw(const uint32_t super, VkDevice device, VkRenderPass renderpass, const uint32_t subpass_index, const uint32_t render_target_index) noexcept : graphics_step_instance(super, device, renderpass, subpass_index, render_target_index) {}
 
 // просто капец
@@ -1335,6 +1370,7 @@ void graphics_draw::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   push_constants(ctx, buf, pipeline_layout, step.push_constants);
 
   task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+  set_dynamic_stencil_state(ctx, buf, step);
 
   if (step.geometry != invalid_resource_slot) {
     for (const auto pair_index : draw_group.pairs) {
@@ -1381,6 +1417,7 @@ void graphics_draw_indexed::process(graphics_ctx* ctx, VkCommandBuffer buf) cons
   push_constants(ctx, buf, pipeline_layout, step.push_constants);
 
   task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+  set_dynamic_stencil_state(ctx, buf, step);
 
   uint32_t vertex_bind = 0;
 
@@ -1435,6 +1472,7 @@ void graphics_draw_constant::process(graphics_ctx* ctx, VkCommandBuffer buf) con
   bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
   push_constants(ctx, buf, pipeline_layout, step.push_constants);
   task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+  set_dynamic_stencil_state(ctx, buf, step);
 
   uint32_t vertex_bind = 0;
 
@@ -1479,6 +1517,7 @@ void graphics_draw_indexed_constant::process(graphics_ctx* ctx, VkCommandBuffer 
   bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
   push_constants(ctx, buf, pipeline_layout, step.push_constants);
   task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+  set_dynamic_stencil_state(ctx, buf, step);
 
   uint32_t vertex_bind = 0;
 
@@ -1523,6 +1562,7 @@ void graphics_draw_indirect::process(graphics_ctx* ctx, VkCommandBuffer buf) con
   bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
   push_constants(ctx, buf, pipeline_layout, step.push_constants);
   task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+  set_dynamic_stencil_state(ctx, buf, step);
 
   uint32_t vertex_bind = 0;
 
@@ -1566,6 +1606,7 @@ void graphics_draw_indexed_indirect::process(graphics_ctx* ctx, VkCommandBuffer 
   bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
   push_constants(ctx, buf, pipeline_layout, step.push_constants);
   task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+  set_dynamic_stencil_state(ctx, buf, step);
 
   uint32_t vertex_bind = 0;
 
@@ -1633,6 +1674,7 @@ void graphics_draw_ui::process(graphics_ctx* ctx, VkCommandBuffer buf) const {
   // для сбора usage_mask буферов (create_resources), не для барьеров здесь.
   bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
   task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+  set_dynamic_stencil_state(ctx, buf, step);
 
   // буферы — обычные per_update ресурсы; .handle для bind, .mapped для CPU-чтения команд
   const auto vtx = ctx->base->get_current_buffer_resource_frame(vtx_i);
@@ -1816,6 +1858,7 @@ void graphics_draw_regions::process(graphics_ctx* ctx, VkCommandBuffer buf) cons
   vk::CommandBuffer task(buf);
   bind_descriptor_sets(ctx, buf, pipeline_layout, step.sets);
   task.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+  set_dynamic_stencil_state(ctx, buf, step);
   const auto& instance_buffer = DS_ASSERT_ARRAY_GET(ctx->resources, draw_group.instances_buffer);
 
   for (uint32_t region_index = 0; region_index < header.region_count; ++region_index) {

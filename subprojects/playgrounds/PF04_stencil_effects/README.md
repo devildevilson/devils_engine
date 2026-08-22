@@ -12,7 +12,10 @@ cmake --build build-debug --target PF04_stencil_effects -j2
 
 Опции: `--validation`, `--uncapped`, `--fixed-camera`, `--stencil-debug`, `--no-local-effect`,
 `--no-window`, `--frames=N`, `--dump=file.ppm`. Управление: WASD/QE, мышь, Shift; `P` включает spatial
-window, `L` — локальный cyan tint, `V` — magenta-визуализацию selection bit, Escape закрывает окно.
+window, `L` — локальный cyan tint, `V` — magenta-визуализацию selection bit. `R` переносит selection
+между bits `0x01/0x08/0x80`, `C` включает read/compare mask, `X` — write mask. Escape закрывает окно.
+Для детерминированных прогонов есть `--selection-channel=0..2`, `--selection-compare=0|1` и
+`--selection-write=0|1`.
 
 При `--fixed-camera` GLFW явно переключается в `CURSOR_NORMAL`: мышь освобождена, потому что camera look
 не используется. `--dump` переносит прямо из `scene_color` в PPM после точного кадра `--frames`; если номер
@@ -97,17 +100,32 @@ clipping, преобразование камеры через пару порт
 
 В Painter по пути исправлен разбор color write masks: непустая маска теперь заменяет RGBA, `none` даёт
 ноль, а отсутствующие blend expressions сохраняют валидные Vulkan defaults вместо sentinel `UINT32_MAX`.
-Регресс покрыт `painter_shader_prepare_test` (`13` cases, `147` assertions).
+Регресс вместе с dynamic stencil parsing покрыт `painter_shader_prepare_test` (`14` cases,
+`155` assertions).
 
-Reference/read/write masks сейчас **static pipeline state**. В material `dynamic` поддержан только
-`depth_bias`; runtime controls потребуют добавить `StencilReference`, `StencilCompareMask` и
-`StencilWriteMask`, а затем команды их установки. Площадка намеренно не изображает runtime изменением
-UBO: fixed-function stencil state от UBO не меняется.
+## Dynamic reference и masks
+
+Material теперь может объявить:
+
+```text
+dynamic = [ stencil_reference, stencil_compare_mask, stencil_write_mask ]
+```
+
+А graphics step ссылается на runtime-константу `stencil_state = selection_stencil_state` формата
+`{uint reference, uint compare_mask, uint write_mask}`. Pipeline включает стандартные Vulkan dynamic states,
+а при записи command buffer Painter вызывает `vkCmdSetStencilReference`, `vkCmdSetStencilCompareMask` и
+`vkCmdSetStencilWriteMask` для обеих граней. Writer, outline и debug используют одну константу, поэтому
+смена selection channel согласованно обновляет всех потребителей на следующем update event без пересборки
+pipeline или render graph.
+
+Проверено frame-exact dumps: перенос `0x01 → 0x08` даёт побитово тот же участок сцены (`AE = 0` после
+исключения меняющегося текста overlay); write mask `0` убирает selection debug; compare mask `0` делает
+masked operands равными нулю, поэтому `equal` tint проходит везде, а `not_equal` outline — нигде. Это
+наблюдаемые последствия fixed-function формул, а не UBO-имитация в shader.
 
 ## Следующие срезы
 
-1. Dynamic reference/read/write masks и UI controls.
-2. Намеренно разные front/back operations с debug fixture, где результат обеих сторон виден отдельно.
+1. Намеренно разные front/back operations с debug fixture, где результат обеих сторон виден отдельно.
 
 ## Definition of Done
 

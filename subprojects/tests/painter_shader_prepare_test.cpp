@@ -71,6 +71,23 @@ TEST_CASE("painter color write masks replace RGBA and can disable color writes [
         0x3u);
 }
 
+TEST_CASE("painter resolves dynamic stencil state from a step constant [painter]") {
+  const auto storage = painter::build_render_config(PAINTER_TEST_CONFIG_ROOT);
+  const auto step_slot = storage.find_execution_step("draw_triangles");
+  const auto material_slot = storage.find_material("mat1");
+  const auto constant_slot = storage.find_constant("dynamic_stencil");
+  REQUIRE(step_slot != painter::invalid_resource_slot);
+  REQUIRE(material_slot != painter::invalid_resource_slot);
+  REQUIRE(constant_slot != painter::invalid_resource_slot);
+
+  const auto& material = storage.materials[material_slot];
+  CHECK(material.depth.dynamic_stencil_reference);
+  CHECK(material.depth.dynamic_stencil_compare_mask);
+  CHECK(material.depth.dynamic_stencil_write_mask);
+  CHECK(storage.steps[step_slot].stencil_state == constant_slot);
+  CHECK(storage.constants[constant_slot].size == sizeof(uint32_t) * 3);
+}
+
 TEST_CASE("painter draw_regions keeps region commands separate from shader data [painter]") {
   const auto storage = painter::build_render_config(PAINTER_TEST_CONFIG_ROOT);
   const auto step_slot = storage.find_execution_step("draw_regions");

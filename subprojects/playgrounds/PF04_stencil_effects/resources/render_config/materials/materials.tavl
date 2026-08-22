@@ -19,6 +19,7 @@
 {
   // Выбранный объект одновременно рисует цвет/глубину и записывает reference=1 в stencil.
   name = selected_material
+  dynamic = [ stencil_reference, stencil_compare_mask, stencil_write_mask ]
   shaders = {
     vertex = "scene.vert.glsl"
     fragment = "scene.frag.glsl"
@@ -57,6 +58,7 @@
 {
   // Увеличенная оболочка проходит только вне reference=1, поэтому остаётся узкое кольцо вокруг силуэта.
   name = outline_material
+  dynamic = [ stencil_reference, stencil_compare_mask, stencil_write_mask ]
   shaders = {
     vertex = "outline.vert.glsl"
     fragment = "outline.frag.glsl"
@@ -286,6 +288,7 @@
   // Этот fullscreen consumer не читает stencil как texture: fixed-function compare сам оставляет
   // фрагменты только там, где reference равен единице. Шейдер управляет лишь прозрачностью debug tint.
   name = stencil_debug_material
+  dynamic = [ stencil_reference, stencil_compare_mask, stencil_write_mask ]
   shaders = {
     vertex = "fullscreen.vert.glsl"
     fragment = "stencil_debug.frag.glsl"

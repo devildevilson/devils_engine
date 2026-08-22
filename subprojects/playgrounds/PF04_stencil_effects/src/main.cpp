@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <span>
 #include <string>
 #include <thread>
@@ -42,10 +43,18 @@ bool resize_pending = false;
 bool stencil_debug = false;
 bool local_effect = true;
 bool spatial_window = true;
+constexpr std::array<uint32_t, 3> selection_bits{0x01u, 0x08u, 0x80u};
+uint32_t selection_channel = 0;
+bool selection_compare_enabled = true;
+bool selection_write_enabled = true;
+bool selection_state_dirty = true;
 int32_t escape_key = -1;
 int32_t debug_key = -1;
 int32_t local_effect_key = -1;
 int32_t window_key = -1;
+int32_t selection_channel_key = -1;
+int32_t selection_compare_key = -1;
+int32_t selection_write_key = -1;
 
 void error_callback(const int error, const char* message) noexcept {
   utils::warn("PF04 input error {}: {}", error, message);
@@ -64,6 +73,18 @@ void key_callback(GLFWwindow* window, const int key, const int scancode, const i
   }
   if (key == window_key && action == 1) {
     spatial_window = !spatial_window;
+  }
+  if (key == selection_channel_key && action == 1) {
+    selection_channel = (selection_channel + 1) % uint32_t(selection_bits.size());
+    selection_state_dirty = true;
+  }
+  if (key == selection_compare_key && action == 1) {
+    selection_compare_enabled = !selection_compare_enabled;
+    selection_state_dirty = true;
+  }
+  if (key == selection_write_key && action == 1) {
+    selection_write_enabled = !selection_write_enabled;
+    selection_state_dirty = true;
   }
 }
 
@@ -144,6 +165,13 @@ struct alignas(16) camera_block {
   glm::vec4 debug_params;
 };
 static_assert(sizeof(camera_block) == 176);
+
+struct dynamic_stencil_state {
+  uint32_t reference;
+  uint32_t compare_mask;
+  uint32_t write_mask;
+};
+static_assert(sizeof(dynamic_stencil_state) == sizeof(uint32_t) * 3);
 
 void write_current_buffer(
   painter::graphics_base& base,
@@ -400,6 +428,21 @@ int main(int argc, char** argv) {
     if (option.starts_with(dump_prefix)) {
       dump_path = std::string(option.substr(dump_prefix.size()));
     }
+    constexpr std::string_view channel_prefix = "--selection-channel=";
+    if (option.starts_with(channel_prefix)) {
+      selection_channel = uint32_t(std::stoul(std::string(option.substr(channel_prefix.size()))));
+    }
+    constexpr std::string_view compare_prefix = "--selection-compare=";
+    if (option.starts_with(compare_prefix)) {
+      selection_compare_enabled = std::stoul(std::string(option.substr(compare_prefix.size()))) != 0;
+    }
+    constexpr std::string_view write_prefix = "--selection-write=";
+    if (option.starts_with(write_prefix)) {
+      selection_write_enabled = std::stoul(std::string(option.substr(write_prefix.size()))) != 0;
+    }
+  }
+  if (selection_channel >= selection_bits.size()) {
+    utils::error{}("PF04 --selection-channel={} is outside 0..{}", selection_channel, selection_bits.size() - 1);
   }
   if (!dump_path.empty() && frame_limit == 0) {
     frame_limit = 1;
@@ -482,6 +525,21 @@ int main(int argc, char** argv) {
       utils::error{}("PF04 render graph was not found");
     }
     base.change_render_graph(graph);
+    const uint32_t selection_stencil_slot = base.find_constant("selection_stencil_state");
+    if (selection_stencil_slot == painter::invalid_resource_slot) {
+      utils::error{}("PF04 constant 'selection_stencil_state' is absent");
+    }
+    const auto publish_selection_stencil = [&base, selection_stencil_slot]() {
+      const uint32_t bit = selection_bits[selection_channel];
+      const dynamic_stencil_state state{
+        bit,
+        selection_compare_enabled ? bit : 0u,
+        selection_write_enabled ? bit : 0u};
+      base.write_constant_data(selection_stencil_slot, state);
+      base.update_event();
+      selection_state_dirty = false;
+    };
+    publish_selection_stencil();
 
     painter::assets_base assets(device, physical.handle);
     assets.create_fence();
@@ -572,7 +630,7 @@ int main(int argc, char** argv) {
       playground::overlay_description{
         "PF04 — Stencil effects",
         "bits 0/1: selection + local effect · bit 2: alternate-view window",
-        "WASD/QE move · mouse look · P window · L tint · V stencil · Esc exit"});
+        "P window · L tint · V debug · R channel · C read · X write · Esc exit"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(
@@ -595,6 +653,9 @@ int main(int argc, char** argv) {
     debug_key = input::glfw_key_from_canonical("key_v");
     local_effect_key = input::glfw_key_from_canonical("key_l");
     window_key = input::glfw_key_from_canonical("key_p");
+    selection_channel_key = input::glfw_key_from_canonical("key_r");
+    selection_compare_key = input::glfw_key_from_canonical("key_c");
+    selection_write_key = input::glfw_key_from_canonical("key_x");
     input::set_window_callback(window, &key_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
     if (fixed_camera) {
@@ -619,12 +680,15 @@ int main(int argc, char** argv) {
     context.base = &base;
     context.assets = &assets;
 
-    utils::info("PF04 controls: WASD/QE move, Shift accelerate, mouse look, P window, L local tint, V stencil tint, Esc exit");
+    utils::info("PF04 controls: move/look, P window, L tint, V stencil debug, R selection channel, C compare mask, X write mask, Esc exit");
     utils::info("PF04 graph: main view -> selection/local bits -> aperture bit -> local depth clear -> alternate view -> UI -> present");
 
     uint32_t frames_total = 0;
     while (!input::should_close(window)) {
       input::poll_events();
+      if (selection_state_dirty) {
+        publish_selection_stencil();
+      }
       const auto now = std::chrono::steady_clock::now();
       const float dt = std::clamp(std::chrono::duration<float>(now - previous_time).count(), 0.0f, 0.1f);
       previous_time = now;
@@ -682,8 +746,13 @@ int main(int argc, char** argv) {
         int64_t{1}));
       const uint64_t timestamp_us = uint64_t(
         std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
-      const std::array<std::string, 4> details{
-        "Selection: write/read mask 0x01; outline tests bit 0 only",
+      const uint32_t selection_bit = selection_bits[selection_channel];
+      const std::array<std::string, 5> details{
+        std::format(
+          "Dynamic selection: ref 0x{:02X}, read 0x{:02X}, write 0x{:02X}",
+          selection_bit,
+          selection_compare_enabled ? selection_bit : 0u,
+          selection_write_enabled ? selection_bit : 0u),
         local_effect ? "Local tint: ON; invisible proxy writes mask 0x02" : "Local tint: OFF (press L); mask remains independent",
         spatial_window ? "Window: ON; aperture 0x04 owns alternate-view depth" : "Window: OFF (press P)",
         stencil_debug ? "Debug tint: ON (fullscreen compare equal 1)" : "Debug tint: OFF (press V)"};

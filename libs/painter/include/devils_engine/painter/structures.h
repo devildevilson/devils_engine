@@ -352,6 +352,9 @@ struct material {
     bool write;
     bool bounds_test;
     bool stencil_test;
+    bool dynamic_stencil_reference;
+    bool dynamic_stencil_compare_mask;
+    bool dynamic_stencil_write_mask;
     uint32_t compare;
     stencil_op_state front;
     stencil_op_state back;
@@ -475,6 +478,9 @@ struct step_base {
   uint32_t material;
   uint32_t geometry;
   uint32_t draw_group;
+  // Optional constant `{uint reference, uint compare_mask, uint write_mask}` consumed by graphics
+  // steps whose material declares one or more corresponding dynamic stencil states.
+  uint32_t stencil_state;
 
   command_params cmd_params;
 

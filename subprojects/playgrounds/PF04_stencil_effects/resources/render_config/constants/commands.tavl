@@ -8,3 +8,9 @@
   layout = ui1ui1ui1ui1ui1ui1ui1
   value = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 }
+{
+  // Runtime fixed-function state: reference, compare/read mask, write mask.
+  name = selection_stencil_state
+  layout = ui1ui1ui1
+  value = [1.0, 1.0, 1.0]
+}

@@ -1,6 +1,7 @@
 // material_mirror: name, shaders, raster, depth (вложенные агрегаты, пропущенные поля = дефолт)
 {
   name = mat1
+  dynamic = [ stencil_reference, stencil_compare_mask, stencil_write_mask ]
   shaders = {
     vertex = "vertex1.vert.glsl"
     fragment = "fragment1.frag.glsl"
@@ -9,6 +10,25 @@
     test = false
     write = false
     compare = less_or_equal
+    stencil_test = true
+    front = {
+      fail_op = keep
+      pass_op = replace
+      depth_fail_op = keep
+      compare_op = always
+      compare_mask = 1
+      write_mask = 1
+      reference = 1
+    }
+    back = {
+      fail_op = keep
+      pass_op = replace
+      depth_fail_op = keep
+      compare_op = always
+      compare_mask = 1
+      write_mask = 1
+      reference = 1
+    }
   }
   raster = {
     cull = none

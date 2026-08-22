@@ -23,3 +23,8 @@
   layout = ui1
   value = [0.0]
 }
+{
+  name = dynamic_stencil
+  layout = ui1ui1ui1
+  value = [1.0, 1.0, 1.0]
+}

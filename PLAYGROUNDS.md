@@ -81,7 +81,8 @@ font и показывает описание сцены, controls, сглаже
 уже доказывает `D24S8` attachment, reference writer, fullscreen equal-test visualization и stencil outline;
 второй срез добавил независимый `0x02` bit и локальный fullscreen tint без color writes у proxy geometry.
 Третий срез добавил aperture bit `0x04`, локальный depth clear и второй camera view внутри spatial window.
-Следующий срез — dynamic masks/reference.
+Четвёртый срез добавил runtime `StencilReference/CompareMask/WriteMask` через step constant без пересборки
+pipeline. Следующий срез — asymmetric front/back fixture.
 
 `PF03` закрыт 2026-08-21 полной запускаемой post-цепочкой, numeric/debug контрактами и shader-аудитом.
 Финальная незакрытая техника, TAAU, теперь действительно реконструирует: при масштабе 0.5 ошибка против
@@ -114,8 +115,8 @@ resolver'ом. Реализация остаётся отдельным backlog,
 подмножество этих возможностей в собственных resources/presets. Исходники и CMake targets лабораторий
 не зависят друг от друга.
 
-Текущий ограниченный результат — dynamic reference/read/write masks поверх уже работающих независимых
-selection/local/window bits. Затем следует asymmetric front/back fixture. Все
+Текущий ограниченный результат — asymmetric front/back fixture поверх уже работающих independent bits,
+spatial window и dynamic reference/read/write masks. Все
 сценарии идут через обычные Painter materials/render graph; production parsing/execution fixes принадлежат
 `libs/painter`, а демонстрационные consumers остаются внутри лаборатории.
 

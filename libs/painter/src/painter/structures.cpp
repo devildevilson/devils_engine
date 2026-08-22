@@ -36,7 +36,8 @@ step_base::step_base() noexcept
   : descriptor(invalid_resource_slot),
     material(invalid_resource_slot),
     geometry(invalid_resource_slot),
-    draw_group(invalid_resource_slot) {}
+    draw_group(invalid_resource_slot),
+    stencil_state(invalid_resource_slot) {}
 
 execution_pass_base::execution_pass_base() noexcept : render_target(invalid_resource_slot), counter(invalid_resource_slot) {}
 
@@ -1012,6 +1013,9 @@ struct material_mirror {
     m.raster.depth_clamp = raster.depth_clamp;
     m.raster.raster_discard = raster.raster_discard;
     m.raster.dynamic_depth_bias = false;
+    m.depth.dynamic_stencil_reference = false;
+    m.depth.dynamic_stencil_compare_mask = false;
+    m.depth.dynamic_stencil_write_mask = false;
     for (const auto& state : dynamic) {
       if (state == "depth_bias") {
         if (m.raster.dynamic_depth_bias) {
@@ -1021,6 +1025,27 @@ struct material_mirror {
           utils::error{}("Material '{}' specifies both static raster.depth_bias and dynamic depth_bias", m.name);
         }
         m.raster.dynamic_depth_bias = true;
+        continue;
+      }
+      if (state == "stencil_reference") {
+        if (m.depth.dynamic_stencil_reference) {
+          utils::error{}("Material '{}' repeats dynamic state 'stencil_reference'", m.name);
+        }
+        m.depth.dynamic_stencil_reference = true;
+        continue;
+      }
+      if (state == "stencil_compare_mask") {
+        if (m.depth.dynamic_stencil_compare_mask) {
+          utils::error{}("Material '{}' repeats dynamic state 'stencil_compare_mask'", m.name);
+        }
+        m.depth.dynamic_stencil_compare_mask = true;
+        continue;
+      }
+      if (state == "stencil_write_mask") {
+        if (m.depth.dynamic_stencil_write_mask) {
+          utils::error{}("Material '{}' repeats dynamic state 'stencil_write_mask'", m.name);
+        }
+        m.depth.dynamic_stencil_write_mask = true;
         continue;
       }
       utils::error{}("Material '{}' contains unsupported dynamic state '{}'", m.name, state);
@@ -1038,6 +1063,11 @@ struct material_mirror {
     m.depth.compare = check(compare_op::from_string(depth.compare), "compare_op", depth.compare, m.name);
     m.depth.bounds_test = depth.bounds_test;
     m.depth.stencil_test = depth.stencil_test;
+    if ((m.depth.dynamic_stencil_reference ||
+         m.depth.dynamic_stencil_compare_mask ||
+         m.depth.dynamic_stencil_write_mask) && !m.depth.stencil_test) {
+      utils::error{}("Material '{}' declares dynamic stencil state but depth.stencil_test is false", m.name);
+    }
     if (m.depth.stencil_test) {
       m.depth.front.fail_op = check(stencil_op::from_string(depth.front.fail_op), "stencil_op", depth.front.fail_op, m.name);
       m.depth.front.pass_op = check(stencil_op::from_string(depth.front.pass_op), "stencil_op", depth.front.pass_op, m.name);
@@ -1144,6 +1174,7 @@ struct pass_step2_mirror {
   std::string material;
   std::string geometry;
   std::string draw_group;
+  std::string stencil_state;
   std::string command;
 };
 
@@ -1277,6 +1308,15 @@ static void parse_step2(
   if (!data.draw_group.empty()) {
     step.draw_group = check(ctx.find_draw_group(data.draw_group), "draw_group", data.draw_group, step.name);
   }
+  if (!data.stencil_state.empty()) {
+    step.stencil_state = check(ctx.find_constant(data.stencil_state), "constant", data.stencil_state, step.name);
+    const auto& state = DS_ASSERT_ARRAY_GET(ctx.constants, step.stencil_state);
+    if (state.size < sizeof(uint32_t) * 3) {
+      utils::error{}(
+        "Stencil state constant '{}' of step '{}' is {} bytes; expected at least three uint32 values",
+        state.name, step.name, state.size);
+    }
+  }
   step.command = data.command;
 
   if (step.command.empty() && data.draw_group.empty()) {
@@ -1292,6 +1332,18 @@ static void parse_step2(
 
   if ((is_graphics || is_compute) && step.material == UINT32_MAX) {
     utils::error{}("Graphics or compute step must specify material, step '{}'", step.name);
+  }
+  if (is_graphics) {
+    const auto& material = DS_ASSERT_ARRAY_GET(ctx.materials, step.material);
+    const bool needs_stencil_state = material.depth.dynamic_stencil_reference ||
+                                     material.depth.dynamic_stencil_compare_mask ||
+                                     material.depth.dynamic_stencil_write_mask;
+    if (needs_stencil_state && step.stencil_state == invalid_resource_slot) {
+      utils::error{}("Graphics step '{}' uses dynamic stencil state but does not name stencil_state", step.name);
+    }
+    if (!needs_stencil_state && step.stencil_state != invalid_resource_slot) {
+      utils::error{}("Graphics step '{}' names stencil_state but material '{}' declares no dynamic stencil state", step.name, material.name);
+    }
   }
 
   // парсим команду где? да можно и тут так то

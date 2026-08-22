@@ -5,6 +5,7 @@
   material = mat1
   geometry = g1
   draw_group = dg1
+  stencil_state = dynamic_stencil
   sets = [ textures ]
   command = "draw"
   // Depth/stencil-only draw inside a target that also owns color.
