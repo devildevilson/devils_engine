@@ -139,6 +139,13 @@ Cel-срез добавляет runtime UBO вместо pipeline variants: `G` 
 bands, а `O` выбирает screen-space outline `off/silhouette/feature`. Отдельная гладкая сфера делает уровни
 наблюдаемыми; outline читает visible opaque depth/normal до decals/particles/text и поэтому не превращается в
 through-wall selector. Fixed A/B различает smooth/2/5 bands и обе outline policies, повторный crop даёт `AE=0`.
+World-UI срез использует отдельный native Nuklear context без Lua: bounded C++ config задаёт anchor/name/health,
+до трёх status rows и image slots. Три окна проходят один `nk_convert`; command userdata становится `window_id`
+в расширенной вершине, а 48-byte/window SSBO переводит локальные пиксели в world-anchor clip space. Размер следует
+`reference_distance/depth` с min/max clamp и дальним fade, поэтому панель приближается вместе с объектом, не теряя
+читаемость. `I` освобождает cursor, CPU hit rectangles выбирают ближайший stable id, selection слегка подсвечивает
+панель и связанный scene instance. Material сохраняет reverse-Z anchor depth; hidden-behind-wall fixture совпадает
+с UI-off (`AE=0`).
 Лаборатории по-прежнему не зависят друг от друга; общие production fixes принадлежат `libs/painter`.
 
 ## 1. Painter visual stack

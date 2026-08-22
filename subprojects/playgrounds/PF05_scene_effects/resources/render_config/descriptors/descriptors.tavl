@@ -32,6 +32,10 @@
   ]
 }
 {
+  name = world_ui_data
+  layout = [ { resource = world_ui_transforms, usage = storage_read, stage = vertex } ]
+}
+{
   // The same asset array contains the Crimson atlas used by world text and the Visage overlay.
   name = text_textures
   texture_count = 16

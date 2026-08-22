@@ -43,7 +43,7 @@
         { scene_color = (color_attachment, store), scene_depth = (depth_attachment, store), particle_state = (storage_read, store) },
         { scene_color = (color_attachment, store), scene_depth = (depth_attachment, store), particle_state = (storage_read, store) }
       ]
-      steps = [ draw_weather, draw_sparks, draw_world_text, draw_billboard_text ]
+      steps = [ draw_weather, draw_sparks, draw_world_text, draw_billboard_text, draw_world_ui ]
     },
     {
       // UI is a separate final pass so dense weather can never be reordered over diagnostics.

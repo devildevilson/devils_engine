@@ -37,6 +37,7 @@
 #include "devils_engine/utils/fileio.h"
 #include "devils_engine/utils/shared.h"
 #include "devils_engine/visage/font.h"
+#include "world_ui.h"
 
 using namespace devils_engine;
 
@@ -73,6 +74,8 @@ int32_t weather_shelter_key = -1;
 int32_t cel_toggle_key = -1;
 int32_t cel_bands_key = -1;
 int32_t cel_outline_key = -1;
+int32_t world_ui_key = -1;
+int32_t world_ui_interaction_key = -1;
 bool decals_enabled = true;
 bool particle_toggle_requested = false;
 bool particle_reset_requested = false;
@@ -83,6 +86,8 @@ bool cel_enabled = true;
 uint32_t cel_band_count = 4;
 float cel_band_softness = 0.08f;
 uint32_t cel_outline_policy = cel_outline_feature;
+bool world_ui_enabled = true;
+bool world_ui_interaction_toggle_requested = false;
 
 void error_callback(const int error, const char* message) noexcept {
   utils::warn("PF05 input error {}: {}", error, message);
@@ -120,6 +125,16 @@ void key_callback(GLFWwindow* window, const int key, const int scancode, const i
   if (key == cel_outline_key && action == 1) {
     cel_outline_policy = (cel_outline_policy + 1u) % 3u;
   }
+  if (key == world_ui_key && action == 1) {
+    world_ui_enabled = !world_ui_enabled;
+  }
+  if (key == world_ui_interaction_key && action == 1) {
+    world_ui_interaction_toggle_requested = true;
+  }
+}
+
+void mouse_button_callback(GLFWwindow*, const int button, const int action, const int) noexcept {
+  input::events::update_mouse_button(button, action);
 }
 
 void framebuffer_callback(GLFWwindow*, const int width, const int height) noexcept {
@@ -671,6 +686,29 @@ void write_overlay_buffers(painter::graphics_base& base, const playground::visag
   }
 }
 
+void write_world_ui_buffers(painter::graphics_base& base, const pf05::world_ui_builder& world_ui) {
+  const auto vertices = world_ui.vertices();
+  const auto indices = world_ui.indices();
+  const auto transforms = world_ui.transforms();
+  write_current_buffer(base, "world_ui_vertices", vertices.data(), vertices.size_bytes());
+  write_current_buffer(base, "world_ui_indices", indices.data(), indices.size_bytes());
+  write_current_buffer(base, "world_ui_transforms", transforms.data(), transforms.size_bytes());
+
+  const auto commands = world_ui.commands();
+  const uint32_t slot = base.find_resource("world_ui_commands");
+  const auto frame = base.get_current_buffer_resource_frame(slot);
+  const uint32_t count = uint32_t(commands.size());
+  const size_t bytes = sizeof(count) + commands.size_bytes();
+  if (frame.mapped == nullptr || bytes > frame.sub.size) {
+    utils::error{}("PF05 cannot write world UI commands (capacity {}, requested {})", frame.sub.size, bytes);
+  }
+  auto* destination = static_cast<uint8_t*>(frame.mapped) + frame.sub.offset;
+  std::memcpy(destination, &count, sizeof(count));
+  if (!commands.empty()) {
+    std::memcpy(destination + sizeof(count), commands.data(), commands.size_bytes());
+  }
+}
+
 void bind_texture_descriptor(
   painter::graphics_base& base,
   const painter::assets_base& assets,
@@ -819,10 +857,13 @@ int main(int argc, char** argv) {
   bool start_without_particles = false;
   bool start_without_particle_collision = false;
   bool start_without_weather_shelter = false;
+  bool start_without_world_ui = false;
+  bool world_ui_occlusion_fixture = false;
   uint32_t weather_mode = weather_rain;
   uint32_t frame_limit = 0;
   uint32_t emitter_stop_frame = 0;
   std::string dump_path;
+  std::string initial_world_ui_selection;
   for (int i = 1; i < argc; ++i) {
     const std::string_view option(argv[i]);
     validation = validation || option == "--validation";
@@ -835,6 +876,9 @@ int main(int argc, char** argv) {
       start_without_particle_collision || option == "--no-particle-collision";
     start_without_weather_shelter =
       start_without_weather_shelter || option == "--no-weather-shelter";
+    start_without_world_ui = start_without_world_ui || option == "--no-world-ui";
+    world_ui_occlusion_fixture =
+      world_ui_occlusion_fixture || option == "--world-ui-occlusion-fixture";
     if (option == "--no-cel") {
       cel_enabled = false;
       cel_outline_policy = cel_outline_off;
@@ -848,6 +892,7 @@ int main(int argc, char** argv) {
     constexpr std::string_view cel_softness_prefix = "--cel-softness=";
     constexpr std::string_view cel_outline_prefix = "--cel-outline=";
     constexpr std::string_view dump_prefix = "--dump=";
+    constexpr std::string_view world_ui_selected_prefix = "--world-ui-selected=";
     if (option.starts_with(frames_prefix)) {
       frame_limit = uint32_t(std::stoul(std::string(option.substr(frames_prefix.size()))));
     }
@@ -880,11 +925,15 @@ int main(int argc, char** argv) {
     if (option.starts_with(dump_prefix)) {
       dump_path = std::string(option.substr(dump_prefix.size()));
     }
+    if (option.starts_with(world_ui_selected_prefix)) {
+      initial_world_ui_selection = std::string(option.substr(world_ui_selected_prefix.size()));
+    }
   }
   if (!dump_path.empty() && frame_limit == 0) frame_limit = 1;
   decals_enabled = !start_without_decals;
   particle_collision_enabled = !start_without_particle_collision;
   weather_shelter_enabled = !start_without_weather_shelter;
+  world_ui_enabled = !start_without_world_ui;
   if (start_without_particles) weather_mode = weather_clear;
 
   input::init input_runtime(&error_callback);
@@ -1007,7 +1056,7 @@ int main(int argc, char** argv) {
       playground::overlay_description{
         "PF05 — Scene effects",
         "Crimson atlas, decals, GPU particles and runtime cel shading",
-        "WASD/QE + mouse · G cel · B bands · O outline · T weather · C collision · H shelter · Esc"});
+        "WASD/QE + mouse · U world UI · I cursor/select · G cel · B bands · O outline · Esc"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(
@@ -1026,6 +1075,56 @@ int main(int argc, char** argv) {
     assets.populate_texture_storage(weathered_texture, weathered_pixels);
     assets.mark_ready_texture_slot(weathered_texture);
     bind_texture_descriptor(base, assets, "text_textures");
+    pf05::world_ui_builder world_ui(overlay.font_metrics(), pf05::world_ui_style{
+      .size_px = glm::vec2{196.0f, 92.0f},
+      .font_px = 18.0f,
+      .anchor_gap_px = 12.0f,
+      .reference_distance = 5.5f,
+      .min_scale = 0.45f,
+      .max_scale = 1.35f,
+      .fade_start_distance = 13.0f,
+      .fade_end_distance = 16.0f,
+      .max_fields = 3,
+      .max_images = 3});
+    std::vector<pf05::world_ui_window> world_ui_windows{
+      pf05::world_ui_window{
+        .id = "pf05.sentinel",
+        .name = "Azure Sentinel",
+        .anchor = glm::vec3{3.45f, 0.15f, 0.75f},
+        .health = 0.78f,
+        .image_slots = {weathered_texture},
+        .fields = {
+          {"State", "PATROL", glm::vec4{0.46f, 0.86f, 1.0f, 1.0f}},
+          {"Armor", "72", glm::vec4{0.78f, 0.86f, 1.0f, 1.0f}}}},
+      pf05::world_ui_window{
+        .id = "pf05.supply",
+        .name = "Supply Core",
+        .anchor = glm::vec3{-1.6f, 0.02f, -2.7f},
+        .health = 0.46f,
+        .image_slots = {weathered_texture},
+        .fields = {
+          {"Power", "46%", glm::vec4{1.0f, 0.72f, 0.32f, 1.0f}},
+          {"Link", "STABLE", glm::vec4{0.48f, 0.94f, 0.66f, 1.0f}}}},
+      pf05::world_ui_window{
+        .id = "pf05.relay",
+        .name = "Forest Relay",
+        .anchor = glm::vec3{2.25f, 0.02f, -2.9f},
+        .health = 0.92f,
+        .image_slots = {weathered_texture, weathered_texture},
+        .fields = {
+          {"Mode", "GUARD", glm::vec4{0.70f, 1.0f, 0.78f, 1.0f}},
+          {"Signal", "91%", glm::vec4{0.64f, 0.90f, 1.0f, 1.0f}}}}};
+    if (world_ui_occlusion_fixture) {
+      world_ui_windows[0].name = "Occluded Probe";
+      world_ui_windows[0].anchor = glm::vec3{0.0f, 0.0f, -6.0f};
+    }
+    std::string selected_world_ui_id = std::move(initial_world_ui_selection);
+    if (!selected_world_ui_id.empty() && std::ranges::none_of(
+          world_ui_windows,
+          [&](const pf05::world_ui_window& candidate) { return candidate.id == selected_world_ui_id; })) {
+      utils::warn("PF05 unknown world UI selection '{}'; selection cleared", selected_world_ui_id);
+      selected_world_ui_id.clear();
+    }
 
     const auto& font = overlay.font_metrics();
     quadratic_path fixed_line{
@@ -1117,24 +1216,32 @@ int main(int argc, char** argv) {
     const uint32_t billboard_pair = base.register_pair(
       billboard_group, glyph_mesh, uint32_t(billboard_glyphs.size()));
     const std::array<glm::vec4, 1> room_instances{glm::vec4{0, 0, 0, 0}};
-    const std::array<glm::vec4, 2> prop_instances{
+    std::array<glm::vec4, 2> prop_instances{
       glm::vec4{-1.6f, -0.85f, -2.7f, 1}, glm::vec4{2.25f, -0.85f, -2.9f, 2}};
     const std::array<glm::vec4, 1> emitter_marker_instances{
       glm::vec4{0.0f, -1.36f, -2.25f, 3}};
-    const std::array<glm::vec4, 1> cel_sphere_instances{
+    std::array<glm::vec4, 1> cel_sphere_instances{
       glm::vec4{3.45f, -0.77f, 0.75f, 4}};
     write_pair(base, room_pair, std::span<const glm::vec4>(room_instances), uint32_t(room.size()));
-    write_pair(base, props_pair, std::span<const glm::vec4>(prop_instances), uint32_t(cube.size()));
+    const auto write_selected_scene_instances = [&] {
+      constexpr float selected_material_bit = 8.0f;
+      prop_instances[0].w = 1.0f + (selected_world_ui_id == "pf05.supply" ? selected_material_bit : 0.0f);
+      prop_instances[1].w = 2.0f + (selected_world_ui_id == "pf05.relay" ? selected_material_bit : 0.0f);
+      cel_sphere_instances[0].w =
+        4.0f + (selected_world_ui_id == "pf05.sentinel" ? selected_material_bit : 0.0f);
+      write_pair(base, props_pair, std::span<const glm::vec4>(prop_instances), uint32_t(cube.size()));
+      write_pair(
+        base,
+        cel_sphere_pair,
+        std::span<const glm::vec4>(cel_sphere_instances),
+        uint32_t(cel_sphere.size()));
+    };
+    write_selected_scene_instances();
     write_pair(
       base,
       emitter_marker_pair,
       std::span<const glm::vec4>(emitter_marker_instances),
       uint32_t(emitter_marker.size()));
-    write_pair(
-      base,
-      cel_sphere_pair,
-      std::span<const glm::vec4>(cel_sphere_instances),
-      uint32_t(cel_sphere.size()));
     write_pair(base, decal_pair, std::span<const decal_instance>(decal_glyphs), uint32_t(decal_cube.size()));
     write_pair(base, world_pair, std::span<const glyph_instance>(world_glyphs), uint32_t(glyph_quad.size()));
     write_pair(base, billboard_pair, std::span<const billboard_glyph_instance>(billboard_glyphs), uint32_t(glyph_quad.size()));
@@ -1157,7 +1264,11 @@ int main(int argc, char** argv) {
     cel_toggle_key = input::glfw_key_from_canonical("key_g");
     cel_bands_key = input::glfw_key_from_canonical("key_b");
     cel_outline_key = input::glfw_key_from_canonical("key_o");
+    world_ui_key = input::glfw_key_from_canonical("key_u");
+    world_ui_interaction_key = input::glfw_key_from_canonical("key_i");
+    input::events::set_mouse_button("world_ui_select", 0);
     input::set_window_callback(window, &key_callback);
+    input::set_window_callback(window, &mouse_button_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
     if (fixed_camera) {
       input::set_cursor_input_mode(window, DEVILS_ENGINE_INPUT_CURSOR_NORMAL);
@@ -1169,6 +1280,7 @@ int main(int argc, char** argv) {
     playground::free_camera camera;
     camera.position = {0.0f, 0.25f, 5.3f};
     emitter_runtime emitter;
+    bool world_ui_interaction_enabled = fixed_camera;
     bool weather_reset_pending = true;
     if (start_without_particles) {
       emitter.stop();
@@ -1208,13 +1320,30 @@ int main(int argc, char** argv) {
         base.resize_viewport(pending_width, pending_height);
         resize_pending = false;
       }
-      const auto [next_mouse_x, next_mouse_y] = input::cursor_pos(window);
+      auto [next_mouse_x, next_mouse_y] = input::cursor_pos(window);
+      if (world_ui_interaction_toggle_requested) {
+        if (!fixed_camera) {
+          world_ui_interaction_enabled = !world_ui_interaction_enabled;
+          input::set_cursor_input_mode(
+            window,
+            world_ui_interaction_enabled
+              ? DEVILS_ENGINE_INPUT_CURSOR_NORMAL
+              : DEVILS_ENGINE_INPUT_CURSOR_DISABLED);
+          if (!world_ui_interaction_enabled) input::set_raw_mouse_motion(window);
+          // Changing GLFW cursor mode may warp its virtual position. Rebase immediately so returning to
+          // camera control cannot turn the camera by that synthetic delta.
+          const auto [rebased_mouse_x, rebased_mouse_y] = input::cursor_pos(window);
+          mouse_x = next_mouse_x = rebased_mouse_x;
+          mouse_y = next_mouse_y = rebased_mouse_y;
+        }
+        world_ui_interaction_toggle_requested = false;
+      }
       playground::camera_motion motion;
       motion.forward = float(input::events::is_pressed("camera_forward")) - float(input::events::is_pressed("camera_back"));
       motion.right = float(input::events::is_pressed("camera_right")) - float(input::events::is_pressed("camera_left"));
       motion.up = float(input::events::is_pressed("camera_up")) - float(input::events::is_pressed("camera_down"));
       motion.fast = input::events::is_pressed("camera_fast");
-      if (!fixed_camera) {
+      if (!fixed_camera && !world_ui_interaction_enabled) {
         motion.look_delta = {float(next_mouse_x - mouse_x), float(next_mouse_y - mouse_y)};
         camera.update(motion, dt);
       }
@@ -1279,6 +1408,44 @@ int main(int argc, char** argv) {
         int64_t{1}));
       const uint64_t timestamp_us = uint64_t(
         std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
+      world_ui_windows[0].health = 0.68f + 0.20f * std::sin(float(frames_total) * 0.018f);
+      for (size_t i = 0; i < world_ui_windows.size(); ++i) {
+        world_ui_windows[i].visible = world_ui_enabled && (!world_ui_occlusion_fixture || i == 0);
+        world_ui_windows[i].selected = world_ui_windows[i].id == selected_world_ui_id;
+      }
+      if (!world_ui.build(
+            world_ui_windows,
+            camera_data.view_projection,
+            camera_data.view,
+            pending_width,
+            pending_height)) {
+        utils::warn("PF05 native Nuklear world UI conversion failed");
+      }
+      const bool selection_clicked =
+        world_ui_interaction_enabled &&
+        input::events::check_event("world_ui_select", input::event_state::click_mask);
+      if (selection_clicked) {
+        const auto [window_width, window_height] = input::window_size(window);
+        const glm::vec2 cursor_px{
+          float(next_mouse_x) * float(pending_width) / float(std::max(window_width, 1u)),
+          float(next_mouse_y) * float(pending_height) / float(std::max(window_height, 1u))};
+        const auto hit = world_ui.hit_test(cursor_px);
+        selected_world_ui_id = hit.has_value() ? world_ui_windows[*hit].id : std::string{};
+        write_selected_scene_instances();
+        for (auto& candidate : world_ui_windows) {
+          candidate.selected = candidate.id == selected_world_ui_id;
+        }
+        // Selection changes panel styling, so reconvert only on the click frame; normal frames remain one convert.
+        if (!world_ui.build(
+              world_ui_windows,
+              camera_data.view_projection,
+              camera_data.view,
+              pending_width,
+              pending_height)) {
+          utils::warn("PF05 native Nuklear world UI selection conversion failed");
+        }
+      }
+      write_world_ui_buffers(base, world_ui);
       const std::array<std::string, 14> details{
         std::format("Atlas: {}x{}, {} glyph metrics", atlas.width, atlas.height, font.glyphs.size()),
         std::format("Fixed: height {:.2f}, limit 4.80, consumed {}/{} characters",
@@ -1307,7 +1474,10 @@ int main(int argc, char** argv) {
           cel_band_softness,
           cel_outline_name(cel_outline_policy),
           cel_settings.outline.y),
-        std::format("Custom fill: packed detail slot {}, per-text mix", weathered_texture),
+        std::format("World UI: {} windows · distance scale/fade · {} vertices / {} cmds · selected {} [{}]",
+          world_ui_windows.size(), world_ui.vertices().size(), world_ui.commands().size(),
+          selected_world_ui_id.empty() ? "none" : selected_world_ui_id,
+          world_ui_enabled ? (world_ui_interaction_enabled ? "SELECT" : "ON") : "OFF"),
         "World/billboard glyph coverage writes depth; transparent quad pixels are discarded"};
       overlay.set_detail_lines(details);
       overlay.update(frame_delta_us, timestamp_us);

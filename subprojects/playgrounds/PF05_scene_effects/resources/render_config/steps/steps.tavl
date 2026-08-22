@@ -68,6 +68,15 @@
   blending = { scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
 }
 {
+  name = draw_world_ui
+  material = world_ui_material
+  geometry = world_ui_geometry
+  command = "draw_ui world_ui_vertices world_ui_indices world_ui_commands"
+  sets = [ camera_data, world_ui_data, text_textures ]
+  push_constants = [ ui_push ]
+  blending = { scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
+}
+{
   name = draw_playground_overlay
   material = ui_overlay_material
   geometry = ui_geometry

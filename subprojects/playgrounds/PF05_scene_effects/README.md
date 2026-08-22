@@ -15,9 +15,13 @@ cmake --build build-debug --target PF05_scene_effects -j2
 `--no-weather`, `--weather=clear|rain|snow`, `--no-particle-collision`, `--no-weather-shelter`,
 `--no-cel`, `--cel-bands=2..8`, `--cel-softness=0..0.49`,
 `--cel-outline=off|silhouette|feature`, `--no-cel-outline`, `--emitter-stop-frame=N`, `--frames=N`,
-`--dump=file.ppm`. Камера — WASD/QE, мышь и Shift; `F` переключает decal pass, `P` останавливает/запускает
+`--no-world-ui`, `--world-ui-occlusion-fixture`, `--world-ui-selected=<id>`, `--dump=file.ppm`. Камера — WASD/QE,
+мышь и Shift;
+`F` переключает decal pass, `P` останавливает/запускает
 emitter, `R` очищает spark pool, `T` циклически меняет rain/snow/clear, `C` включает collision, `H` — shelter.
-`G` независимо переключает cel lighting, `B` циклически меняет 2–5 bands, `O` — outline policy.
+`G` независимо переключает cel lighting, `B` циклически меняет 2–5 bands, `O` — outline policy, `U` — world UI.
+`I` переключает camera capture на обычный GLFW `CURSOR_NORMAL`; в этом режиме клик по окну выбирает связанный
+`window_id`, клик мимо снимает выбор. Возврат из режима не создаёт ложный mouse delta.
 При `--fixed-camera`
 cursor возвращается в `CURSOR_NORMAL`, а `--dump` записывает точный кадр из `scene_color`, как в PF03/PF04.
 `--fixed-step` фиксирует только particle timestep на `1/60 s`, чтобы lifecycle rail не зависела от скорости машины.
@@ -269,6 +273,71 @@ Fixed-camera rail без decals/particles различает настройки 
 `AE=17417`, 2 против 5 bands — `20338`, silhouette против feature — `493.542`. Повтор feature-кадра совпадает
 побитно в проверяемом crop (`AE=0`); Vulkan validation чистая.
 
+## Native Nuklear world UI
+
+Шестой срез строит маленькие окна над объектами через отдельный native Nuklear context — Lua в этом пути не
+участвует. Вход намеренно уже общего immediate-mode API: `world_ui_window` содержит стабильный id, world anchor,
+имя, health, до трёх коротких `{label,value,color}` строк и до трёх texture slots; общий `world_ui_style` задаёт
+размер окна, font size `18 px`, отступ от anchor и лимиты. Текущий fixture передаёт массив трёх окон за кадр:
+две строки состояния, health bar с green/amber/red policy и одну-две картинки из обычного bindless UI descriptor.
+
+Все N окон вызывают Nuklear, а затем проходят ОДИН `nk_convert`. Стандартная 20-byte UI vertex расширяется одним
+`uint window_id`; id берётся из command userdata и запекается в индексируемые этой командой вершины. Raw pointer на
+матрицу намеренно не переживает convert/upload: GPU получает маленький id, а отдельный SSBO хранит по 48 bytes на
+окно — `{world anchor, fade end}`, `{pixel offset, size}` и distance policy. Поэтому texture/font по-прежнему создают обычные draw
+commands, но матрица не размножает render calls. Fixture сейчас даёт 722 vertices и 15 texture/solid commands для
+трёх окон.
+
+У Nuklear обнаружилась важная тонкость: автоматический background создаётся внутри `nk_begin`, до того как функция
+возвращает current window, и соседние solid primitives могут слиться под userdata предыдущего окна. Поэтому implicit
+background прозрачен, а видимая panel/background border рисуется сразу после `nk_begin` уже с правильным userdata.
+Иначе следующая панель появлялась второй раз со сдвигом ровно на шаг virtual layout.
+
+Vertex shader проецирует anchor обычной camera VP и прибавляет local pixel offset к `clip.xy`, умножая его на
+`clip.w`. Но размер теперь не строго постоянный: `scale = clamp(reference_distance / view_depth, min, max)` сочетает
+поведение spherical/world-size и screen-size billboard. При текущей policy reference = `5.5 m`, clamp =
+`0.45..1.35`; близкое окно растёт вместе с объектом, дальнее уменьшается, но оба остаются читаемыми. После `13 m`
+alpha плавно уходит в ноль к `16 m`. CPU использует ту же проекцию и scale для hit rectangle, а при overlap выбирает
+окно с минимальным view depth. Stable строковый `window.id` остаётся gameplay identity, тогда как плотный индекс
+нужен только GPU batch. В fixture ids обратно связаны с двумя box instances и sphere: selection слегка сдвигает
+материал объекта к cyan, а выбранное окно получает более светлые panel и border.
+
+Все окна сохраняют reverse-Z depth anchor.
+Материал тестирует и пишет depth с `greater_or_equal`: opaque geometry закрывает окно, а ближнее окно закрывает
+дальнее. Fragment shader делает `discard` при почти нулевой MSDF/image alpha, чтобы прозрачная площадь glyph quad
+не стала невидимым depth occluder. World UI исполняется до финального diagnostic overlay.
+
+`U`/`--no-world-ui` дают A/B `3954.75` pixel-equivalent вне overlay, повторный кадр совпадает (`AE=0`). Новый
+distance кадр явно различает размеры трёх окон; `--world-ui-selected=pf05.sentinel` меняет `2481.53`
+pixel-equivalent в общем crop панели и объекта. Отдельная
+`--world-ui-occlusion-fixture` оставляет окно за задней стеной; его кадр побитно совпадает с отключённым world UI
+в scene crop (`AE=0`), то есть window действительно проходит world depth, а не только визуально лежит рядом.
+Полный кадр с particles/weather проходит Vulkan validation чисто.
+
+CPU picking намеренно геометрический: он знает rectangle и порядок anchor depth, но не читает scene depth. Поэтому
+строго запретить клик по полностью закрытой стеной панели сможет только отдельный GPU object-id attachment/readback
+либо общий scene ray query; подменять это PF05-specific collision не стали.
+
+Оставленные production-задачи: screen-edge clamp/leader line, overlap avoidance между множеством окон,
+occlusion-aware picking, DPI/accessibility policy и внешний parser для этого bounded config. При сотнях labels CPU
+`nk_convert` и 16-bit index stream нужно измерить против специализированного glyph/quad generator; этот срез
+доказывает удобный путь для десятков маленьких информативных окон, а не универсальный UI scene graph.
+
+### Что переносить в основной движок
+
+Сейчас уже доказаны существующие общие контракты Painter: один `draw_ui` stream умеет обслуживать N transformed
+окон, bindless solid/MSDF/image path переиспользуется без нового вида draw command, а mouse buttons проходят через обычный `input::events`. Их расширять специально под PF05 не требуется.
+
+Следующие кандидаты на перенос требуют второго consumer, чтобы не зацементировать форму лаборатории:
+
+- чистая функция `project_world_ui(anchor, view, projection, viewport, distance_policy)`, возвращающая clip anchor, scale/fade и hit rectangle; CPU и shader должны иметь один проверяемый математический контракт;
+- общий native-Nuklear converter, который сохраняет command userdata в дополнительном vertex payload и делает один convert для нескольких поверхностей;
+- независимая font face/metrics/atlas library вне `visage`, чтобы world text и native UI не зависели от Lua/Nuklear оболочки diagnostic overlay;
+- renderer-wide picking attachment/readback или scene ray query для честного occlusion-aware выбора.
+
+В движок пока не следует переносить `world_ui_window` с полями `health/State/Armor`, цвета, лимит в три строки,
+distance числа и реакцию игры на selection: это project-owned presentation policy. Screen-edge/overlap policy тоже должна сначала появиться в реальной сцене с большим числом объектов.
+
 ## Планируемые срезы
 
 - ~~Crimson MSDF вдоль отрезка и quadratic Bézier, фиксированный размер/ограниченная длина и wrapped billboard~~;
@@ -277,7 +346,7 @@ Fixed-camera rail без decals/particles различает настройки 
 - ~~particles, emitter lifecycle и простая particle physics~~;
 - ~~rain и snow как два наблюдаемо разных consumer particle-системы~~;
 - ~~cel shading с управляемыми lighting bands и outline policy~~;
-- маленькое world-space UI окно над объектом: имя, health bar и несколько полей состояния.
+- ~~маленькое world-space UI окно над объектом: имя, health bar и несколько полей состояния~~.
 
 Дополнительные эффекты добавляются только отдельными закрываемыми срезами. Площадка не является одной
 обязательной mega-scene и не должна связывать все техники в один pipeline.

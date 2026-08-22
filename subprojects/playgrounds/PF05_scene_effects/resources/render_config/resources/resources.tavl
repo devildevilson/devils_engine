@@ -14,7 +14,7 @@
 {
   // GPU simulation ping-pongs implicitly through per-frame history: current copy is written, history=1 read.
   name = particle_state
-  format = v4v4
+  format = v4v4v4
   role = material_data
   size = particle_capacity
   swap = per_frame
@@ -29,3 +29,13 @@
 { name = ui_vertices, format = c1, role = upload, size = ui_vertices_bytes, swap = per_frame }
 { name = ui_indices, format = c1, role = upload, size = ui_indices_bytes, swap = per_frame }
 { name = ui_commands, format = c1, role = upload, size = ui_commands_bytes, swap = per_frame }
+{
+  name = world_ui_transforms
+  format = v4v4v4
+  role = upload
+  size = world_ui_windows
+  swap = per_frame
+}
+{ name = world_ui_vertices, format = c1, role = upload, size = world_ui_vertices_bytes, swap = per_frame }
+{ name = world_ui_indices, format = c1, role = upload, size = world_ui_indices_bytes, swap = per_frame }
+{ name = world_ui_commands, format = c1, role = upload, size = world_ui_commands_bytes, swap = per_frame }

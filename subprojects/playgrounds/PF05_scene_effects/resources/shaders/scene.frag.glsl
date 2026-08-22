@@ -3,7 +3,8 @@
 // Алгоритм: directional Lambert сначала даёт непрерывный N.L. В cel mode диапазон 0..1 делится на N уровней:
 // соседние уровни соединяет управляемая узкая smoothstep-зона, поэтому bands остаются читаемыми, но не мерцают
 // от бесконечно жёсткой границы. Ambient добавляется ПОСЛЕ квантования и не уничтожает тёмную полосу. Material id
-// выбирает fixture-цвет; второй MRT сохраняет непрерывную world normal для decals и feature-outline.
+// выбирает fixture-цвет; bit 8 слегка подсвечивает выбранный через world UI scene object, не меняя его geometry id.
+// Второй MRT сохраняет непрерывную world normal для decals и feature-outline.
 
 layout(location = 0) in vec3 world_position;
 layout(location = 1) in vec3 world_normal;
@@ -32,11 +33,14 @@ float quantized_lighting(const float value, const float band_count, const float 
 }
 
 void main() {
+  const bool selected = material_id >= 8.0;
+  const float fixture_id = selected ? material_id - 8.0 : material_id;
   vec3 base = vec3(0.17, 0.20, 0.24);
-  if (material_id > 0.5) base = vec3(0.28, 0.20, 0.14);
-  if (material_id > 1.5) base = vec3(0.12, 0.25, 0.22);
-  if (material_id > 2.5) base = vec3(1.00, 0.28, 0.035);
-  if (material_id > 3.5) base = vec3(0.20, 0.42, 0.82);
+  if (fixture_id > 0.5) base = vec3(0.28, 0.20, 0.14);
+  if (fixture_id > 1.5) base = vec3(0.12, 0.25, 0.22);
+  if (fixture_id > 2.5) base = vec3(1.00, 0.28, 0.035);
+  if (fixture_id > 3.5) base = vec3(0.20, 0.42, 0.82);
+  if (selected) base = mix(base, vec3(0.18, 0.72, 0.96), 0.32);
   const vec3 light_dir = normalize(vec3(-0.4, 0.8, 0.5));
   float lambert = max(dot(normalize(world_normal), light_dir), 0.0);
   if (cel.lighting.x > 0.5) {

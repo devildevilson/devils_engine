@@ -4,3 +4,4 @@
 { name = particle_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
 { name = fullscreen_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
 { name = ui_geometry, vertex_layout = v2v2c4, index_type = u16, topology = triangle_list, restart = false }
+{ name = world_ui_geometry, vertex_layout = v2v2c4ui1, index_type = u16, topology = triangle_list, restart = false }

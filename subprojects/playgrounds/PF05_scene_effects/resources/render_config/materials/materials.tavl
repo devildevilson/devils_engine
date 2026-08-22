@@ -47,3 +47,11 @@
   depth = { test = false, write = false, compare = always }
   raster = { cull = none, front_face = cw, polygon = fill, line_width = 1.0 }
 }
+{
+  name = world_ui_material
+  shaders = { vertex = "world_ui.vert.glsl", fragment = "world_ui.frag.glsl" }
+  // Every pixel in one window carries its anchor depth. Equal keeps Nuklear's ordered layers composable;
+  // a nearer window writes depth and naturally hides a farther overlapping window.
+  depth = { test = true, write = true, compare = greater_or_equal }
+  raster = { cull = none, front_face = cw, polygon = fill, line_width = 1.0 }
+}
