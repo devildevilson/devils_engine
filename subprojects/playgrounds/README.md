@@ -27,7 +27,7 @@
 | `PF01` | `PF01_forward_plus` | закрыта | 3D laboratory shell и Forward+ |
 | `PF02` | `PF02_shadows` | закрыта | shadow maps и их диагностика |
 | `PF03` | `PF03_post_processing` | закрыта | расширяемая независимая post-effect gallery |
-| `PF04` | `PF04_stencil_effects` | текущий фокус, outline + local mask работают | stencil и masked effects |
+| `PF04` | `PF04_stencil_effects` | текущий фокус, outline + local mask + spatial window работают | stencil и masked effects |
 | `PF05` | `PF05_scene_effects` | запланирована | SDF, decals, particles/weather, cel shading, billboards и world-space UI |
 | `PF06` | `PF06_submarine_light_room` | запланирована | тёмная сцена для `submarine_coop` |
 | `PF07` | `PF07_party_environment` | запланирована | динамическое окружение для `party_adventure` |

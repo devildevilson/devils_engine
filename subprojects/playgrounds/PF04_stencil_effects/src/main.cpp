@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -40,9 +41,11 @@ uint32_t pending_height = initial_height;
 bool resize_pending = false;
 bool stencil_debug = false;
 bool local_effect = true;
+bool spatial_window = true;
 int32_t escape_key = -1;
 int32_t debug_key = -1;
 int32_t local_effect_key = -1;
+int32_t window_key = -1;
 
 void error_callback(const int error, const char* message) noexcept {
   utils::warn("PF04 input error {}: {}", error, message);
@@ -58,6 +61,9 @@ void key_callback(GLFWwindow* window, const int key, const int scancode, const i
   }
   if (key == local_effect_key && action == 1) {
     local_effect = !local_effect;
+  }
+  if (key == window_key && action == 1) {
+    spatial_window = !spatial_window;
   }
 }
 
@@ -263,12 +269,121 @@ void write_pair(
   }
 }
 
+float half_to_float(const uint16_t h) {
+  const uint32_t sign = uint32_t(h & 0x8000u) << 16;
+  const uint32_t exponent = (h >> 10) & 0x1fu;
+  const uint32_t mantissa = h & 0x3ffu;
+  if (exponent == 0) {
+    if (mantissa == 0) {
+      return std::bit_cast<float>(sign);
+    }
+    uint32_t shift = 0;
+    uint32_t normalized = mantissa;
+    while ((normalized & 0x400u) == 0) {
+      normalized <<= 1;
+      shift += 1;
+    }
+    normalized &= 0x3ffu;
+    return std::bit_cast<float>(sign | ((127 - 15 - shift + 1) << 23) | (normalized << 13));
+  }
+  if (exponent == 0x1fu) {
+    return std::bit_cast<float>(sign | 0x7f800000u | (mantissa << 13));
+  }
+  return std::bit_cast<float>(sign | ((exponent + 127 - 15) << 23) | (mantissa << 13));
+}
+
+// Frame-exact PPM dump copied from PF03's proven path. scene_color is left in transfer_src by the present
+// pass, so the copy observes the rendered image itself rather than an asynchronously timed desktop capture.
+void dump_scene_image(painter::graphics_base& base, const std::string& path) {
+  const uint32_t slot = base.find_resource("scene_color");
+  if (slot == painter::invalid_resource_slot) {
+    utils::error{}("PF04 resource 'scene_color' is absent from the configured graph");
+  }
+  const auto frame = base.get_current_image_resource_frame(slot);
+  const auto [width, height] = base.swapchain_extent();
+  const size_t bytes = size_t(width) * size_t(height) * sizeof(uint16_t) * 4;
+
+  vma::Allocator allocator(base.allocator);
+  vk::BufferCreateInfo buffer_info{};
+  buffer_info.usage = vk::BufferUsageFlagBits::eTransferDst;
+  buffer_info.size = bytes;
+  vma::AllocationCreateInfo allocation_info{};
+  allocation_info.usage = vma::MemoryUsage::eGpuToCpu;
+  allocation_info.flags = vma::AllocationCreateFlagBits::eMapped;
+  auto [staging, allocation] = allocator.createBuffer(buffer_info, allocation_info);
+
+  vk::Device dev(base.device);
+  vk::CommandBufferAllocateInfo command_info{};
+  command_info.commandPool = base.command_pool;
+  command_info.level = vk::CommandBufferLevel::ePrimary;
+  command_info.commandBufferCount = 1;
+  const auto buffers = dev.allocateCommandBuffers(command_info);
+  vk::CommandBuffer task(buffers[0]);
+  task.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+
+  vk::ImageMemoryBarrier before{};
+  before.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+  before.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+  before.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
+  before.newLayout = vk::ImageLayout::eTransferSrcOptimal;
+  before.image = frame.handle;
+  before.subresourceRange = std::bit_cast<vk::ImageSubresourceRange>(frame.sub);
+  task.pipelineBarrier(
+    vk::PipelineStageFlagBits::eTransfer,
+    vk::PipelineStageFlagBits::eTransfer,
+    vk::DependencyFlags{}, nullptr, nullptr, before);
+
+  vk::BufferImageCopy region{};
+  region.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+  region.imageSubresource.mipLevel = 0;
+  region.imageSubresource.baseArrayLayer = frame.sub.base_array_layer;
+  region.imageSubresource.layerCount = 1;
+  region.imageExtent = vk::Extent3D{width, height, 1};
+  task.copyImageToBuffer(frame.handle, vk::ImageLayout::eTransferSrcOptimal, staging, region);
+  task.end();
+
+  const auto fence = dev.createFence(vk::FenceCreateInfo{});
+  {
+    vk::SubmitInfo submit{};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &task;
+    const auto queue_lock = base.graphics.lock();
+    if (vk::Queue(base.graphics.handle()).submit(1, &submit, fence) != vk::Result::eSuccess) {
+      utils::error{}("PF04 could not submit the image dump copy");
+    }
+  }
+  if (dev.waitForFences(fence, true, size_t(1000) * 1000 * 1000) != vk::Result::eSuccess) {
+    utils::error{}("PF04 image dump did not finish in time");
+  }
+
+  const auto info = allocator.getAllocationInfo(allocation);
+  const auto* halfs = static_cast<const uint16_t*>(info.pMappedData);
+  std::string ppm = "P6\n" + std::to_string(width) + " " + std::to_string(height) + "\n255\n";
+  ppm.reserve(ppm.size() + size_t(width) * height * 3);
+  for (size_t i = 0; i < size_t(width) * height; ++i) {
+    for (uint32_t c = 0; c < 3; ++c) {
+      const float value = half_to_float(halfs[i * 4 + c]);
+      ppm.push_back(char(uint8_t(std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f)));
+    }
+  }
+  if (!file_io::write(std::span<const char>(ppm.data(), ppm.size()), path, file_io::type::binary)) {
+    utils::error{}("PF04 could not write the dump to '{}'", path);
+  }
+
+  dev.destroy(fence);
+  dev.freeCommandBuffers(base.command_pool, task);
+  allocator.destroyBuffer(staging, allocation);
+  utils::info("PF04 dumped {}x{} scene frame to '{}'", width, height, path);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
   bool validation = false;
   bool uncapped = false;
   bool fixed_camera = false;
+  uint32_t frame_limit = 0;
+  std::string dump_path;
   for (int i = 1; i < argc; ++i) {
     const std::string_view option(argv[i]);
     validation = validation || option == "--validation";
@@ -276,6 +391,18 @@ int main(int argc, char** argv) {
     fixed_camera = fixed_camera || option == "--fixed-camera";
     stencil_debug = stencil_debug || option == "--stencil-debug";
     local_effect = local_effect && option != "--no-local-effect";
+    spatial_window = spatial_window && option != "--no-window";
+    constexpr std::string_view frames_prefix = "--frames=";
+    if (option.starts_with(frames_prefix)) {
+      frame_limit = uint32_t(std::stoul(std::string(option.substr(frames_prefix.size()))));
+    }
+    constexpr std::string_view dump_prefix = "--dump=";
+    if (option.starts_with(dump_prefix)) {
+      dump_path = std::string(option.substr(dump_prefix.size()));
+    }
+  }
+  if (!dump_path.empty() && frame_limit == 0) {
+    frame_limit = 1;
   }
 
   input::init input_runtime(&error_callback);
@@ -393,19 +520,36 @@ int main(int argc, char** argv) {
         local_mask_vertices.size() * sizeof(local_mask_vertices[0])),
       std::span<const uint8_t>{});
     assets.mark_ready_buffer_slot(mask_mesh);
+    const std::array<mask_vertex, 6> window_mask_vertices{
+      mask_vertex{-0.75f, -0.85f, 0.0f}, mask_vertex{0.75f, -0.85f, 0.0f}, mask_vertex{0.75f, 0.85f, 0.0f},
+      mask_vertex{-0.75f, -0.85f, 0.0f}, mask_vertex{0.75f, 0.85f, 0.0f}, mask_vertex{-0.75f, 0.85f, 0.0f}};
+    const auto window_mesh = assets.register_buffer_storage("pf04.window_mask");
+    assets.create_buffer_storage(
+      window_mesh,
+      painter::buffer_create_info{"window_mask_geometry", uint32_t(window_mask_vertices.size()), 0});
+    assets.populate_buffer_storage(
+      window_mesh,
+      std::span(
+        reinterpret_cast<const uint8_t*>(window_mask_vertices.data()),
+        window_mask_vertices.size() * sizeof(window_mask_vertices[0])),
+      std::span<const uint8_t>{});
+    assets.mark_ready_buffer_slot(window_mesh);
 
     const uint32_t scene_group = base.find_draw_group("scene_draw_group");
     const uint32_t selected_group = base.find_draw_group("selected_draw_group");
     const uint32_t mask_group = base.find_draw_group("local_mask_draw_group");
+    const uint32_t window_group = base.find_draw_group("window_mask_draw_group");
     if (scene_group == painter::invalid_resource_slot ||
         selected_group == painter::invalid_resource_slot ||
-        mask_group == painter::invalid_resource_slot) {
+        mask_group == painter::invalid_resource_slot ||
+        window_group == painter::invalid_resource_slot) {
       utils::error{}("PF04 scene draw groups are absent");
     }
     const uint32_t room_pair = base.register_pair(scene_group, room_mesh, 1);
     const uint32_t props_pair = base.register_pair(scene_group, cube_mesh, 3);
     const uint32_t selected_pair = base.register_pair(selected_group, cube_mesh, 1);
     const uint32_t mask_pair = base.register_pair(mask_group, mask_mesh, 1);
+    const uint32_t window_pair = base.register_pair(window_group, window_mesh, 1);
 
     const std::array<glm::vec4, 1> room_instances{glm::vec4{0.0f, 0.0f, 0.0f, 0.0f}};
     const std::array<glm::vec4, 3> prop_instances{
@@ -414,10 +558,12 @@ int main(int argc, char** argv) {
       glm::vec4{0.1f, 0.75f, -3.6f, 1.0f}};
     const std::array<glm::vec4, 1> selected_instances{glm::vec4{0.0f, -0.72f, -1.55f, 2.0f}};
     const std::array<glm::vec4, 1> mask_instances{glm::vec4{-0.65f, 0.1f, -0.45f, 0.0f}};
+    const std::array<glm::vec4, 1> window_instances{glm::vec4{1.65f, 0.35f, -0.25f, 0.0f}};
     write_pair(base, room_pair, room_instances, uint32_t(room.size()));
     write_pair(base, props_pair, prop_instances, uint32_t(cube.size()));
     write_pair(base, selected_pair, selected_instances, uint32_t(cube.size()));
     write_pair(base, mask_pair, mask_instances, uint32_t(local_mask_vertices.size()));
+    write_pair(base, window_pair, window_instances, uint32_t(window_mask_vertices.size()));
 
     const std::string common_resources = std::string(PLAYGROUND_COMMON_RESOURCE_ROOT) + "/";
     playground::visage_overlay overlay(
@@ -425,8 +571,8 @@ int main(int argc, char** argv) {
       common_resources + "ui/lab_overlay.lua",
       playground::overlay_description{
         "PF04 — Stencil effects",
-        "bit 0: selection outline · bit 1: independent local effect mask",
-        "WASD/QE move · mouse look · L local tint · V stencil tint · Esc exit"});
+        "bits 0/1: selection + local effect · bit 2: alternate-view window",
+        "WASD/QE move · mouse look · P window · L tint · V stencil · Esc exit"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(
@@ -448,13 +594,22 @@ int main(int argc, char** argv) {
     escape_key = input::glfw_key_from_canonical("escape");
     debug_key = input::glfw_key_from_canonical("key_v");
     local_effect_key = input::glfw_key_from_canonical("key_l");
+    window_key = input::glfw_key_from_canonical("key_p");
     input::set_window_callback(window, &key_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
-    input::set_cursor_input_mode(window, DEVILS_ENGINE_INPUT_CURSOR_DISABLED);
-    input::set_raw_mouse_motion(window);
+    if (fixed_camera) {
+      input::set_cursor_input_mode(window, DEVILS_ENGINE_INPUT_CURSOR_NORMAL);
+    } else {
+      input::set_cursor_input_mode(window, DEVILS_ENGINE_INPUT_CURSOR_DISABLED);
+      input::set_raw_mouse_motion(window);
+    }
 
     playground::free_camera camera;
     camera.position = {0.0f, 0.2f, 5.2f};
+    playground::free_camera window_camera;
+    window_camera.position = {-3.0f, 0.35f, 1.8f};
+    window_camera.yaw = -0.75f;
+    window_camera.pitch = -0.27f;
     auto [mouse_x, mouse_y] = input::cursor_pos(window);
     auto previous_time = std::chrono::steady_clock::now();
     const auto start_time = previous_time;
@@ -464,9 +619,10 @@ int main(int argc, char** argv) {
     context.base = &base;
     context.assets = &assets;
 
-    utils::info("PF04 controls: WASD/QE move, Shift accelerate, mouse look, L local tint, V stencil tint, Esc exit");
-    utils::info("PF04 graph: scene -> selection bit -> local mask bit -> outline -> local tint -> stencil debug -> UI -> present");
+    utils::info("PF04 controls: WASD/QE move, Shift accelerate, mouse look, P window, L local tint, V stencil tint, Esc exit");
+    utils::info("PF04 graph: main view -> selection/local bits -> aperture bit -> local depth clear -> alternate view -> UI -> present");
 
+    uint32_t frames_total = 0;
     while (!input::should_close(window)) {
       input::poll_events();
       const auto now = std::chrono::steady_clock::now();
@@ -510,18 +666,26 @@ int main(int argc, char** argv) {
       camera_data.debug_params = glm::vec4(
         stencil_debug ? 1.0f : 0.0f,
         local_effect ? 1.0f : 0.0f,
-        0.0f,
+        spatial_window ? 1.0f : 0.0f,
         0.0f);
       write_current_buffer(base, "camera_buffer", &camera_data, sizeof(camera_data));
+      camera_block window_camera_data{};
+      window_camera_data.view = window_camera.view();
+      window_camera_data.view_projection = projection * window_camera_data.view;
+      window_camera_data.camera_position = glm::vec4(window_camera.position, 1.0f);
+      window_camera_data.viewport_near = camera_data.viewport_near;
+      window_camera_data.debug_params = camera_data.debug_params;
+      write_current_buffer(base, "window_camera_buffer", &window_camera_data, sizeof(window_camera_data));
 
       const uint64_t frame_delta_us = uint64_t(std::max(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::duration<float>(dt)).count(),
         int64_t{1}));
       const uint64_t timestamp_us = uint64_t(
         std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
-      const std::array<std::string, 3> details{
+      const std::array<std::string, 4> details{
         "Selection: write/read mask 0x01; outline tests bit 0 only",
         local_effect ? "Local tint: ON; invisible proxy writes mask 0x02" : "Local tint: OFF (press L); mask remains independent",
+        spatial_window ? "Window: ON; aperture 0x04 owns alternate-view depth" : "Window: OFF (press P)",
         stencil_debug ? "Debug tint: ON (fullscreen compare equal 1)" : "Debug tint: OFF (press V)"};
       overlay.set_detail_lines(details);
       overlay.update(frame_delta_us, timestamp_us);
@@ -531,6 +695,15 @@ int main(int argc, char** argv) {
       context.draw();
       base.submit_frame();
       frame_pacer.wait();
+      frames_total += 1;
+      if (frame_limit != 0 && frames_total >= frame_limit) {
+        if (!dump_path.empty()) {
+          vk::Device(device).waitIdle();
+          dump_scene_image(base, dump_path);
+        }
+        utils::info("PF04 reached the requested {} frames", frame_limit);
+        break;
+      }
     }
 
     vk::Device(device).waitIdle();

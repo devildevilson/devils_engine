@@ -169,6 +169,120 @@
   }
 }
 {
+  // Aperture пишет только bit 2 (0x04). Color/depth остаются от основной сцены до window clear.
+  name = window_mask_material
+  shaders = {
+    vertex = "local_mask.vert.glsl"
+    fragment = "window_mask.frag.glsl"
+  }
+  depth = {
+    test = true
+    write = false
+    compare = greater
+    stencil_test = true
+    front = {
+      fail_op = keep
+      pass_op = replace
+      depth_fail_op = keep
+      compare_op = always
+      compare_mask = 4
+      write_mask = 4
+      reference = 4
+    }
+    back = {
+      fail_op = keep
+      pass_op = replace
+      depth_fail_op = keep
+      compare_op = always
+      compare_mask = 4
+      write_mask = 4
+      reference = 4
+    }
+  }
+  raster = {
+    cull = none
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  // Fullscreen fragment очищает color и reverse-Z depth только внутри aperture bit 0x04.
+  name = window_clear_material
+  shaders = {
+    vertex = "fullscreen.vert.glsl"
+    fragment = "window_clear.frag.glsl"
+  }
+  depth = {
+    test = true
+    write = true
+    compare = always
+    stencil_test = true
+    front = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = keep
+      compare_op = equal
+      compare_mask = 4
+      write_mask = 0
+      reference = 4
+    }
+    back = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = keep
+      compare_op = equal
+      compare_mask = 4
+      write_mask = 0
+      reference = 4
+    }
+  }
+  raster = {
+    cull = none
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  // Повторный scene draw использует другую camera UBO и проходит только внутри aperture bit 0x04.
+  name = window_scene_material
+  shaders = {
+    vertex = "scene.vert.glsl"
+    fragment = "window_scene.frag.glsl"
+  }
+  depth = {
+    test = true
+    write = true
+    compare = greater
+    stencil_test = true
+    front = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = keep
+      compare_op = equal
+      compare_mask = 4
+      write_mask = 0
+      reference = 4
+    }
+    back = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = keep
+      compare_op = equal
+      compare_mask = 4
+      write_mask = 0
+      reference = 4
+    }
+  }
+  raster = {
+    cull = back
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
   // Этот fullscreen consumer не читает stencil как texture: fixed-function compare сам оставляет
   // фрагменты только там, где reference равен единице. Шейдер управляет лишь прозрачностью debug tint.
   name = stencil_debug_material

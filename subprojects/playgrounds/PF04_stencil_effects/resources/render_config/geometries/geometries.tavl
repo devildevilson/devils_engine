@@ -20,6 +20,13 @@
   restart = false
 }
 {
+  name = window_mask_geometry
+  vertex_layout = p3
+  index_type = none
+  topology = triangle_list
+  restart = false
+}
+{
   name = ui_geometry
   vertex_layout = v2v2c4
   index_type = u16

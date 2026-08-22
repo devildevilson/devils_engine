@@ -5,6 +5,12 @@
   ]
 }
 {
+  name = window_camera_data
+  layout = [
+    { resource = window_camera_buffer, usage = uniform, stage = all }
+  ]
+}
+{
   name = ui_textures
   texture_count = 16
   sampler_pool = [ ui_linear ]

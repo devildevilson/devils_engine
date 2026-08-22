@@ -53,6 +53,37 @@
   }
 }
 {
+  name = write_window_mask
+  material = window_mask_material
+  geometry = window_mask_geometry
+  draw_group = window_mask_draw_group
+  sets = [ camera_data ]
+  command = "draw"
+  blending = { scene_color = { mask = none } }
+}
+{
+  name = clear_window
+  material = window_clear_material
+  geometry = fullscreen_geometry
+  command = "draw constant fullscreen_draw"
+}
+{
+  name = draw_window_scene
+  material = window_scene_material
+  geometry = scene_geometry
+  draw_group = scene_draw_group
+  sets = [ window_camera_data ]
+  command = "draw"
+}
+{
+  name = draw_window_selected
+  material = window_scene_material
+  geometry = scene_geometry
+  draw_group = selected_draw_group
+  sets = [ window_camera_data ]
+  command = "draw"
+}
+{
   name = draw_playground_overlay
   material = ui_overlay_material
   geometry = ui_geometry

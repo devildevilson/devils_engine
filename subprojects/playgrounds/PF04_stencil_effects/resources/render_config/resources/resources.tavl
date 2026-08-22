@@ -27,6 +27,13 @@
   swap = per_frame
 }
 {
+  name = window_camera_buffer
+  format = mat4mat4v4v4v4
+  role = upload
+  size = one
+  swap = per_frame
+}
+{
   name = ui_vertices
   format = c1
   role = upload

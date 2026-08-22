@@ -10,9 +10,14 @@ cmake --build build-debug --target PF04_stencil_effects -j2
 ./build-debug/subprojects/playgrounds/PF04_stencil_effects/bin/PF04_stencil_effects
 ```
 
-Опции: `--validation`, `--uncapped`, `--fixed-camera`, `--stencil-debug`, `--no-local-effect`. Управление:
-WASD/QE, мышь, Shift; `L` включает локальный cyan tint, `V` — magenta-визуализацию selection bit,
-Escape закрывает окно.
+Опции: `--validation`, `--uncapped`, `--fixed-camera`, `--stencil-debug`, `--no-local-effect`,
+`--no-window`, `--frames=N`, `--dump=file.ppm`. Управление: WASD/QE, мышь, Shift; `P` включает spatial
+window, `L` — локальный cyan tint, `V` — magenta-визуализацию selection bit, Escape закрывает окно.
+
+При `--fixed-camera` GLFW явно переключается в `CURSOR_NORMAL`: мышь освобождена, потому что camera look
+не используется. `--dump` переносит прямо из `scene_color` в PPM после точного кадра `--frames`; если номер
+не указан, пишется первый кадр. Это тот же frame-exact подход, что в PF03, без случайного тайминга desktop
+screenshot.
 
 ## Первый работающий срез
 
@@ -58,6 +63,26 @@ Tint здесь намеренно blend-only. Настоящая десатур
 attachment/subpass либо отдельная ping-pong цель. Этот срез доказывает stencil routing, а не скрывает
 неверный ресурсный контракт за шейдером.
 
+## Spatial window
+
+Третий срез использует ещё один независимый bit и повторно рисует сцену с другой камерой:
+
+```text
+world-space aperture → depth test main view → write stencil bit 0x04, no color/depth write
+fullscreen clear → stencil == 0x04 → dark-blue background + reverse-Z depth = 0
+scene geometry + alternate camera → stencil == 0x04 → ordinary reverse-Z depth/write
+```
+
+Локальный depth clear принципиален. Глубина основной и alternate camera лежит в разных пространствах, и
+сравнивать вторую сцену с первой нельзя. Fullscreen fragment очищает общий depth attachment только внутри
+aperture, после чего окно получает собственный корректный depth ordering, не требуя второго depth image.
+Пиксели с selection/local bits сохраняют их: aperture меняет только `0x04`.
+
+Это spatial window, а не полноценный recursive portal: alternate camera задана явно, oblique near-plane
+clipping, преобразование камеры через пару порталов и рекурсия пока не входят в proof. Проверено A/B через
+`--dump`: с window виден холодный второй ракурс и его checker floor, с `--no-window` aperture не оставляет
+следов. Четырёхкадровый dump с Vulkan validation проходит чисто.
+
 ## Что уже доказано в Painter
 
 - combined depth/stencil resource создаётся, очищается и сохраняет оба aspect внутри pass;
@@ -68,6 +93,7 @@ attachment/subpass либо отдельная ping-pong цель. Этот ср
 - stencil writer совмещается с reversed-Z depth test, а consumer не обходит occlusion.
 - разные эффекты могут безопасно делить байт через read/write masks и сохранять чужие bits;
 - step-level `mask = none` действительно создаёт depth/stencil-only draw внутри color render pass.
+- часть общего depth attachment можно очистить stencil-ограниченным draw и использовать для второго view.
 
 В Painter по пути исправлен разбор color write masks: непустая маска теперь заменяет RGBA, `none` даёт
 ноль, а отсутствующие blend expressions сохраняют валидные Vulkan defaults вместо sentinel `UINT32_MAX`.
@@ -75,15 +101,13 @@ attachment/subpass либо отдельная ping-pong цель. Этот ср
 
 Reference/read/write masks сейчас **static pipeline state**. В material `dynamic` поддержан только
 `depth_bias`; runtime controls потребуют добавить `StencilReference`, `StencilCompareMask` и
-`StencilWriteMask`, а затем команды их установки. Первый срез намеренно не изображает runtime изменением
+`StencilWriteMask`, а затем команды их установки. Площадка намеренно не изображает runtime изменением
 UBO: fixed-function stencil state от UBO не меняется.
 
 ## Следующие срезы
 
-1. Пространственный window proof: geometry aperture пишет mask, второй view рисуется только внутри неё;
-   полноценные recursive portal и mirror clipping в первый proof не входят.
-2. Dynamic reference/read/write masks и UI controls.
-3. Намеренно разные front/back operations с debug fixture, где результат обеих сторон виден отдельно.
+1. Dynamic reference/read/write masks и UI controls.
+2. Намеренно разные front/back operations с debug fixture, где результат обеих сторон виден отдельно.
 
 ## Definition of Done
 
