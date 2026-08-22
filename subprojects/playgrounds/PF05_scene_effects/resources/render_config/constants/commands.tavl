@@ -1,0 +1,5 @@
+{
+  name = ui_push
+  layout = ui1ui1ui1ui1ui1ui1ui1
+  value = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+}

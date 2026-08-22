@@ -1,0 +1,17 @@
+{ name = scene_draw_group, layout = v4, budget = scene_instances, draw_capacity = scene_draws, type = host_visible }
+{
+  // mat4 = glyph-local quad -> world, then atlas rect, fill, outline and SDF controls.
+  name = world_glyph_draw_group
+  layout = mat4v4v4v4v4
+  budget = world_glyph_instances
+  draw_capacity = world_glyph_draws
+  type = host_visible
+}
+{
+  // Billboard glyph matrix remains in billboard-local coordinates; the final v4 supplies world anchor.
+  name = billboard_glyph_draw_group
+  layout = mat4v4v4v4v4v4
+  budget = billboard_glyph_instances
+  draw_capacity = billboard_glyph_draws
+  type = host_visible
+}

@@ -1,0 +1,36 @@
+{
+  name = draw_scene
+  material = scene_material
+  geometry = scene_geometry
+  draw_group = scene_draw_group
+  sets = [ camera_data ]
+  command = "draw"
+}
+{
+  name = draw_world_text
+  material = world_msdf_material
+  geometry = glyph_geometry
+  draw_group = world_glyph_draw_group
+  sets = [ camera_data, text_textures ]
+  command = "draw"
+  blending = { scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
+}
+{
+  name = draw_billboard_text
+  material = billboard_msdf_material
+  geometry = glyph_geometry
+  draw_group = billboard_glyph_draw_group
+  sets = [ camera_data, text_textures ]
+  command = "draw"
+  blending = { scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
+}
+{
+  name = draw_playground_overlay
+  material = ui_overlay_material
+  geometry = ui_geometry
+  command = "draw_ui ui_vertices ui_indices ui_commands"
+  sets = [ camera_data, text_textures ]
+  push_constants = [ ui_push ]
+  blending = { scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
+}
+{ name = present_scene, command = "blit scene_color swapchain_image" }

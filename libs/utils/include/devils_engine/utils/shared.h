@@ -146,10 +146,23 @@ INLINE vec4 quadratic_bezier(const vec4 p1, const vec4 p2, const vec4 p3, const 
   return inv_t * inv_t * p1 + float(2.0) * inv_t * t * p2 + t * t * p3;
 }
 
+// Первая производная нужна не только чтобы рисовать саму кривую: это стабильная касательная для
+// ориентации текста, ribbon/particles и других объектов, распределённых вдоль quadratic Bézier.
+INLINE vec4 quadratic_bezier_derivative(const vec4 p1, const vec4 p2, const vec4 p3, const float t) {
+  return float(2.0) * (float(1.0) - t) * (p2 - p1) + float(2.0) * t * (p3 - p2);
+}
+
 // две контрольных точки, 0 <= t <= 1
 INLINE vec4 cubic_bezier(const vec4 p1, const vec4 p2, const vec4 p3, const vec4 p4, const float t) {
   const float inv_t = float(1.0) - t;
   return inv_t * inv_t * inv_t * p1 + float(3.0) * inv_t * inv_t * t * p2 + float(3.0) * inv_t * t * t * p3 + t * t * t * p4;
+}
+
+INLINE vec4 cubic_bezier_derivative(const vec4 p1, const vec4 p2, const vec4 p3, const vec4 p4, const float t) {
+  const float inv_t = float(1.0) - t;
+  return float(3.0) * inv_t * inv_t * (p2 - p1) +
+         float(6.0) * inv_t * t * (p3 - p2) +
+         float(3.0) * t * t * (p4 - p3);
 }
 
 #ifdef __cplusplus

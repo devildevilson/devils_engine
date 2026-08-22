@@ -81,6 +81,10 @@ rgba_image_view visage_overlay::font_atlas() const noexcept {
   return {state_->atlas, state_->atlas_width, state_->atlas_height};
 }
 
+const visage::font_t& visage_overlay::font_metrics() const noexcept {
+  return *state_->font;
+}
+
 void visage_overlay::set_font_texture(const uint32_t texture_slot) {
   state_->font->set_texture_id(texture_slot);
 }

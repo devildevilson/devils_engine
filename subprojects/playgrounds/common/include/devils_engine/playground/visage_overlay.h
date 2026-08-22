@@ -8,6 +8,10 @@
 
 #include <devils_engine/visage/render_output.h>
 
+namespace devils_engine::visage {
+struct font_t;
+}
+
 namespace devils_engine::playground {
 
 struct overlay_description {
@@ -35,6 +39,9 @@ public:
   visage_overlay& operator=(const visage_overlay&) = delete;
 
   rgba_image_view font_atlas() const noexcept;
+  // CPU metrics belong to the same atlas returned above. World-space MSDF fixtures can therefore
+  // reuse Crimson without building a second atlas or depending on Nuklear's private vertex stream.
+  const visage::font_t& font_metrics() const noexcept;
   void set_font_texture(uint32_t texture_slot);
   // Optional lab-owned diagnostic rows rendered below the common scene/controls/frame meter.
   // Strings are copied into the overlay's Lua environment and may be replaced every frame.
