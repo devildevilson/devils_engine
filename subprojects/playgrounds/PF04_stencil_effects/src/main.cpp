@@ -11,7 +11,10 @@
 #include <vector>
 
 #include <glm/mat4x4.hpp>
+#include <glm/geometric.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
 #include <glm/trigonometric.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
@@ -130,6 +133,32 @@ struct face_vertex {
   float x, y;
 };
 
+struct spatial_window_link {
+  glm::mat4 source_world;
+  glm::mat4 destination_world;
+  glm::vec2 half_extent;
+  float clip_offset;
+};
+
+glm::mat4 make_plane_frame(
+  const glm::vec3& center,
+  const glm::vec3& right,
+  const glm::vec3& up,
+  const glm::vec3& normal) noexcept {
+  return glm::mat4{
+    glm::vec4(glm::normalize(right), 0.0f),
+    glm::vec4(glm::normalize(up), 0.0f),
+    glm::vec4(glm::normalize(normal), 0.0f),
+    glm::vec4(center, 1.0f)};
+}
+
+glm::vec4 forward_clip_plane(const glm::mat4& plane_world, const float offset) noexcept {
+  const glm::vec3 normal = glm::normalize(glm::vec3(plane_world[2]));
+  const glm::vec3 center = glm::vec3(plane_world[3]);
+  // gl_ClipDistance keeps the non-negative half-space. Destination +Z points away from virtual camera.
+  return glm::vec4(normal, -glm::dot(normal, center) + std::max(offset, 0.0f));
+}
+
 void add_quad(
   std::vector<vertex>& out,
   const glm::vec3& a,
@@ -183,8 +212,9 @@ struct alignas(16) camera_block {
   glm::vec4 viewport_near;
   glm::vec4 debug_params;
   glm::vec4 effect_params;
+  glm::vec4 clip_plane;
 };
-static_assert(sizeof(camera_block) == 192);
+static_assert(sizeof(camera_block) == 208);
 
 struct dynamic_stencil_state {
   uint32_t reference;
@@ -291,15 +321,16 @@ std::vector<const char*> instance_extensions(const bool validation) {
   return extensions;
 }
 
+template <typename Instance, size_t Count>
 void write_pair(
   painter::graphics_base& base,
   const uint32_t pair,
-  const std::span<const glm::vec4> instances,
+  const std::array<Instance, Count>& instances,
   const uint32_t vertex_count) {
   for (uint32_t offset = 0; offset < base.frames_in_flight(); ++offset) {
     const auto instance_frame = base.get_current_instance_resource_frame(pair, offset);
     const auto indirect_frame = base.get_current_indirect_resource_frame(pair, offset);
-    const size_t instance_bytes = instances.size_bytes();
+    const size_t instance_bytes = sizeof(Instance) * instances.size();
     if (instance_bytes > instance_frame.sub.size) {
       utils::error{}("PF04 pair {} instance data exceeds its configured budget", pair);
     }
@@ -601,9 +632,28 @@ int main(int argc, char** argv) {
         local_mask_vertices.size() * sizeof(local_mask_vertices[0])),
       std::span<const uint8_t>{});
     assets.mark_ready_buffer_slot(mask_mesh);
+    // The two authored plane frames are the portal contract. The aperture mesh below reads its extent and
+    // source transform from this same object, so rendering cannot silently drift from camera mapping.
+    const spatial_window_link window_link{
+      make_plane_frame(
+        glm::vec3{1.65f, 0.35f, -0.25f},
+        glm::vec3{1.0f, 0.0f, 0.0f},
+        glm::vec3{0.0f, 1.0f, 0.0f},
+        glm::vec3{0.0f, 0.0f, 1.0f}),
+      make_plane_frame(
+        glm::vec3{1.997212f, -0.959121f, -0.600328f},
+        glm::vec3{-0.681639f, 0.0f, -0.731689f},
+        glm::vec3{0.195164f, 0.963771f, -0.181814f},
+        glm::vec3{0.705180f, -0.266731f, -0.656944f}),
+      glm::vec2{0.75f, 0.85f},
+      0.01f};
     const std::array<mask_vertex, 6> window_mask_vertices{
-      mask_vertex{-0.75f, -0.85f, 0.0f}, mask_vertex{0.75f, -0.85f, 0.0f}, mask_vertex{0.75f, 0.85f, 0.0f},
-      mask_vertex{-0.75f, -0.85f, 0.0f}, mask_vertex{0.75f, 0.85f, 0.0f}, mask_vertex{-0.75f, 0.85f, 0.0f}};
+      mask_vertex{-window_link.half_extent.x, -window_link.half_extent.y, 0.0f},
+      mask_vertex{ window_link.half_extent.x, -window_link.half_extent.y, 0.0f},
+      mask_vertex{ window_link.half_extent.x,  window_link.half_extent.y, 0.0f},
+      mask_vertex{-window_link.half_extent.x, -window_link.half_extent.y, 0.0f},
+      mask_vertex{ window_link.half_extent.x,  window_link.half_extent.y, 0.0f},
+      mask_vertex{-window_link.half_extent.x,  window_link.half_extent.y, 0.0f}};
     const auto window_mesh = assets.register_buffer_storage("pf04.window_mask");
     assets.create_buffer_storage(
       window_mesh,
@@ -656,6 +706,18 @@ int main(int argc, char** argv) {
     const uint32_t window_pair = base.register_pair(window_group, window_mesh, 1);
     const uint32_t face_fixture_pair = base.register_pair(face_fixture_group, face_fixture_mesh, 1);
 
+    // Destination basis retains the useful cold-room bookmark of the earlier proof, but it is now a plane
+    // rather than a camera pose.
+    glm::mat4 portal_facing_flip{1.0f};
+    portal_facing_flip[0][0] = -1.0f;
+    portal_facing_flip[2][2] = -1.0f;
+    const glm::mat4 main_to_window =
+      window_link.destination_world * portal_facing_flip * glm::inverse(window_link.source_world);
+    const glm::mat4 window_to_main =
+      window_link.source_world * portal_facing_flip * glm::inverse(window_link.destination_world);
+    const glm::vec4 window_clip_plane =
+      forward_clip_plane(window_link.destination_world, window_link.clip_offset);
+
     const std::array<glm::vec4, 1> room_instances{glm::vec4{0.0f, 0.0f, 0.0f, 0.0f}};
     const std::array<glm::vec4, 3> prop_instances{
       // Передний cube перекрывает левую часть selection: local/overlay outline отличаются уже на fixed view.
@@ -666,7 +728,7 @@ int main(int argc, char** argv) {
     // Green target is partly hidden by the selected blue cube from the fixed-camera bookmark.
     const std::array<glm::vec4, 1> wallhack_target_instances{glm::vec4{0.55f, 0.05f, -3.15f, 3.0f}};
     const std::array<glm::vec4, 1> mask_instances{glm::vec4{-0.65f, 0.1f, -0.45f, 0.0f}};
-    const std::array<glm::vec4, 1> window_instances{glm::vec4{1.65f, 0.35f, -0.25f, 0.0f}};
+    const std::array<glm::mat4, 1> window_instances{window_link.source_world};
     const std::array<glm::vec4, 1> face_fixture_instances{glm::vec4{0.0f}};
     write_pair(base, room_pair, room_instances, uint32_t(room.size()));
     write_pair(base, props_pair, prop_instances, uint32_t(cube.size()));
@@ -723,10 +785,6 @@ int main(int argc, char** argv) {
 
     playground::free_camera camera;
     camera.position = {0.0f, 0.2f, 5.2f};
-    playground::free_camera window_camera;
-    window_camera.position = {-3.0f, 0.35f, 1.8f};
-    window_camera.yaw = -0.75f;
-    window_camera.pitch = -0.27f;
     auto [mouse_x, mouse_y] = input::cursor_pos(window);
     auto previous_time = std::chrono::steady_clock::now();
     const auto start_time = previous_time;
@@ -793,14 +851,20 @@ int main(int argc, char** argv) {
         outline_overlay ? 1.0f : 0.0f,
         0.0f,
         0.0f);
+      camera_data.clip_plane = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
       write_current_buffer(base, "camera_buffer", &camera_data, sizeof(camera_data));
       camera_block window_camera_data{};
-      window_camera_data.view = window_camera.view();
+      // If X_remote = M * X_main and C_remote = M * C_main, then
+      // V_remote = V_main * inverse(M). Consequently P*V_remote*X_remote equals
+      // P*V_main*X_main for every point, so camera rotation cannot make the image slip under the aperture.
+      window_camera_data.view = view * window_to_main;
       window_camera_data.view_projection = projection * window_camera_data.view;
-      window_camera_data.camera_position = glm::vec4(window_camera.position, 1.0f);
+      const glm::mat4 window_camera_world = main_to_window * glm::inverse(view);
+      window_camera_data.camera_position = window_camera_world[3];
       window_camera_data.viewport_near = camera_data.viewport_near;
       window_camera_data.debug_params = camera_data.debug_params;
       window_camera_data.effect_params = camera_data.effect_params;
+      window_camera_data.clip_plane = window_clip_plane;
       write_current_buffer(base, "window_camera_buffer", &window_camera_data, sizeof(window_camera_data));
 
       const uint64_t frame_delta_us = uint64_t(std::max(
@@ -818,7 +882,7 @@ int main(int argc, char** argv) {
         local_effect ? "Local tint: ON; invisible proxy writes mask 0x02" : "Local tint: OFF (press L); mask remains independent",
         wallhack_effect ? "Hidden target: ON; depth-fail writes 0x40, red=occluded only" : "Hidden target: OFF (press H)",
         outline_overlay ? "Outline: LOCAL + through-wall overlay (press O)" : "Outline: LOCAL depth-tested (press O for overlay)",
-        spatial_window ? "Window: ON; aperture 0x04 owns alternate-view depth" : "Window: OFF (press P)",
+        spatial_window ? "Window: ON; explicit portal pair + destination clip" : "Window: OFF (press P)",
         face_fixture ? "Faces: ON; green=front replace 0x10, yellow=back invert 0x30" : "Faces: OFF (press F)",
         stencil_debug ? "Debug tint: ON (dynamic equal)" : "Debug tint: OFF (press V)"};
       overlay.set_detail_lines(details);

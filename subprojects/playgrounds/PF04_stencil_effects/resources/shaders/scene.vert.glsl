@@ -3,6 +3,8 @@
 // Алгоритм: обычная instanced geometry. XYZ instance-атрибута сдвигают локальную mesh в мир, W выбирает
 // демонстрационный материал. Та же mesh и тот же offset используются stencil-writer и outline-проходом,
 // чтобы fixed-function test сравнивал две проекции одного объекта, а не приблизительные screen bounds.
+// Дополнительно world-space plane пишет signed distance в gl_ClipDistance: main camera передаёт постоянную
+// положительную plane, а spatial-window camera отбрасывает всё по ближнюю сторону destination plane.
 
 layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
@@ -14,7 +16,14 @@ layout(set = 0, binding = 0, std140) uniform CameraBlock {
   vec4 camera_position;
   vec4 viewport_near;
   vec4 debug_params;
+  vec4 effect_params;
+  vec4 clip_plane;
 } camera_data;
+
+out gl_PerVertex {
+  vec4 gl_Position;
+  float gl_ClipDistance[1];
+};
 
 layout(location = 0) out vec3 world_position;
 layout(location = 1) out vec3 world_normal;
@@ -25,4 +34,5 @@ void main() {
   world_normal = in_normal;
   material_id = in_instance.w;
   gl_Position = camera_data.view_projection * vec4(world_position, 1.0);
+  gl_ClipDistance[0] = dot(camera_data.clip_plane, vec4(world_position, 1.0));
 }

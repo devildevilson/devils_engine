@@ -28,7 +28,7 @@
 }
 {
   name = window_mask_draw_group
-  layout = v4
+  layout = mat4
   budget = window_instances
   draw_capacity = window_draws
   type = host_visible

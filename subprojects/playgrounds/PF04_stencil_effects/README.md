@@ -99,10 +99,10 @@ attachment/subpass либо отдельная ping-pong цель. Этот ср
 ```text
 world-space aperture → depth test main view → write stencil bit 0x04, no color/depth write
 fullscreen clear → stencil == 0x04 → dark-blue background + reverse-Z depth = 0
-scene geometry + alternate camera → stencil == 0x04 → ordinary reverse-Z depth/write
+scene geometry + rigid-mapped remote camera → stencil == 0x04 → ordinary reverse-Z depth/write
 ```
 
-Локальный depth clear принципиален. Глубина основной и alternate camera лежит в разных пространствах, и
+Локальный depth clear принципиален. Глубина основной и remote camera лежит в разных пространствах, и
 сравнивать вторую сцену с первой нельзя. Fullscreen fragment очищает общий depth attachment только внутри
 aperture, после чего окно получает собственный корректный depth ordering, не требуя второго depth image.
 Пиксели с selection/local bits сохраняют их: aperture меняет только `0x04`.
@@ -110,8 +110,32 @@ Local outline выполняется перед aperture и пишет пере�
 window перекрывает его не «по номеру pass», а только если сама aperture ближе; overlay-вариант после portal
 сознательно отменяет это правило.
 
-Это spatial window, а не полноценный recursive portal: alternate camera задана явно, oblique near-plane
-clipping, преобразование камеры через пару порталов и рекурсия пока не входят в proof. Проверено A/B через
+Первая версия ошибочно использовала ФИКСИРОВАННЫЙ `window_camera.view()` с обычной симметричной projection.
+Aperture при повороте следовала main camera, а полноэкранный удалённый кадр оставался в несвязанной clip-системе,
+поэтому изображение скользило под рамкой. Теперь `spatial_window_link` явно хранит две authored plane transforms:
+`source_world` задаёт положение и ориентацию видимой апертуры, а `destination_world` — куда она ведёт. Та же полная
+source matrix приходит instance-данными в aperture draw, поэтому визуальная плоскость и математика перехода не могут
+разойтись при её повороте. Размер хранится отдельно как `half_extent` и не масштабирует rigid transform.
+
+Переход между сторонами строится как `M = T_destination · R_y(π) · T_source⁻¹`; разворот на 180° переводит
+взгляд через source plane во взгляд из destination plane. Каждый кадр используется
+`V_remote = V_main · M⁻¹`. Для соответствующих точек выполняется инвариант
+`P · V_remote · M · X = P · V_main · X`: поворот зрителя применяется ровно один раз, одна физическая точка окна
+остаётся совмещена с одной точкой удалённого вида, а движение камеры даёт ожидаемый parallax. Отдельной reference
+camera больше нет.
+
+Destination plane также задаёт допустимое полупространство удалённой сцены. Её world-space equation передаётся
+в `window_camera_buffer`, а `scene.vert.glsl` пишет `gl_ClipDistance[0]`; геометрия между виртуальной камерой и
+destination plane не попадает в окно. Небольшой `clip_offset` сдвигает границу за плоскость и не даёт численной
+погрешности прорезать саму рамку. Main-view camera получает тождественно положительную plane, поэтому тот же shader
+там ничего не отсекает.
+
+Off-axis projection здесь не нужна: remote geometry сразу растеризуется в общий framebuffer и обрезается stencil.
+Она понадобилась бы при render-to-texture с последующим натягиванием картинки на quad. Здесь выбрано shader clip
+distance вместо oblique near-plane projection: видимый результат тот же, но projection matrix остаётся обычной;
+oblique clipping мог бы отсечь лишнее раньше и остаётся возможной оптимизацией. Destination уже существует как
+отдельный authored transform, но её рамка не рисуется как объект сцены. Рекурсия порталов намеренно отложена.
+Проверено A/B через
 `--dump`: с window виден холодный второй ракурс и его checker floor, с `--no-window` aperture не оставляет
 следов. Четырёхкадровый dump с Vulkan validation проходит чисто.
 

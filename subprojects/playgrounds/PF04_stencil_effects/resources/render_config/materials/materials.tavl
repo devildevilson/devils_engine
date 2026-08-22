@@ -314,7 +314,7 @@
   // Aperture пишет только bit 2 (0x04). Color/depth остаются от основной сцены до window clear.
   name = window_mask_material
   shaders = {
-    vertex = "local_mask.vert.glsl"
+    vertex = "window_mask.vert.glsl"
     fragment = "window_mask.frag.glsl"
   }
   depth = {
