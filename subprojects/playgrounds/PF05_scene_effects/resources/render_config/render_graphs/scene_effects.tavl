@@ -3,6 +3,13 @@
   startup = true
   passes = [
     {
+      name = pf05_particle_simulation
+      subpasses = [
+        { particle_emitter_buffer = (uniform, store), particle_state = (storage_write, store) }
+      ]
+      steps = [ simulate_particles ]
+    },
+    {
       name = pf05_scene
       render_target = scene_target
       subpasses = [
@@ -26,11 +33,11 @@
       name = pf05_text
       render_target = text_target
       subpasses = [
-        { scene_color = (color_attachment, store), scene_depth = (depth_read, store) },
-        { scene_color = (color_attachment, store), scene_depth = (depth_attachment, store) },
-        { scene_color = (transfer_src, store), scene_depth = (depth_attachment, store) }
+        { scene_color = (color_attachment, store), scene_depth = (depth_read, store), particle_state = (storage_read, store) },
+        { scene_color = (color_attachment, store), scene_depth = (depth_attachment, store), particle_state = (storage_read, store) },
+        { scene_color = (transfer_src, store), scene_depth = (depth_attachment, store), particle_state = (storage_read, store) }
       ]
-      steps = [ draw_world_text, draw_billboard_text, draw_playground_overlay ]
+      steps = [ draw_particles, draw_world_text, draw_billboard_text, draw_playground_overlay ]
     },
     {
       name = pf05_present

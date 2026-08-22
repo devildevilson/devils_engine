@@ -16,6 +16,21 @@
   blending = { scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
 }
 {
+  name = simulate_particles
+  material = particle_simulation_material
+  sets = [ particle_simulation ]
+  command = "dispatch constant particle_dispatch"
+}
+{
+  name = draw_particles
+  material = particle_material
+  geometry = particle_geometry
+  sets = [ camera_data, particle_render ]
+  command = "draw constant particle_draw"
+  // Additive sparks are order-independent, so this first lifecycle proof does not smuggle in a sort problem.
+  blending = { scene_color = { enable = true, color = "src_alpha add one", alpha = "zero add one" } }
+}
+{
   name = draw_world_text
   material = world_msdf_material
   geometry = glyph_geometry

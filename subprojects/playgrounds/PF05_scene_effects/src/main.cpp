@@ -48,13 +48,20 @@ constexpr float near_plane = 0.1f;
 constexpr float billboard_spherical = 0.0f;
 constexpr float billboard_cylindrical_y = 1.0f;
 constexpr float billboard_screen_size = 2.0f;
+constexpr uint32_t particle_capacity = 2048;
+constexpr float particle_rate = 180.0f;
+constexpr float particle_lifetime_max = 4.2f;
 
 uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
 bool resize_pending = false;
 int32_t escape_key = -1;
 int32_t decal_key = -1;
+int32_t particle_toggle_key = -1;
+int32_t particle_reset_key = -1;
 bool decals_enabled = true;
+bool particle_toggle_requested = false;
+bool particle_reset_requested = false;
 
 void error_callback(const int error, const char* message) noexcept {
   utils::warn("PF05 input error {}: {}", error, message);
@@ -67,6 +74,12 @@ void key_callback(GLFWwindow* window, const int key, const int scancode, const i
   }
   if (key == decal_key && action == 1) {
     decals_enabled = !decals_enabled;
+  }
+  if (key == particle_toggle_key && action == 1) {
+    particle_toggle_requested = true;
+  }
+  if (key == particle_reset_key && action == 1) {
+    particle_reset_requested = true;
   }
 }
 
@@ -145,6 +158,67 @@ struct alignas(16) camera_block {
 };
 static_assert(sizeof(camera_block) == 240);
 
+struct alignas(16) particle_emitter_block {
+  glm::vec4 origin_rate;
+  glm::vec4 direction_speed;
+  glm::vec4 acceleration_dt;
+  glm::vec4 bounds_restitution;
+  glm::vec4 lifetime_drag;
+  glm::uvec4 lifecycle;
+};
+static_assert(sizeof(particle_emitter_block) == 96);
+
+struct emitter_runtime {
+  bool emitting = true;
+  bool reset_pending = true;
+  float spawn_accumulator = 0.0f;
+  float drain_elapsed = 0.0f;
+  uint32_t spawn_cursor = 0;
+  uint64_t total_emitted = 0;
+
+  void start() noexcept {
+    emitting = true;
+    drain_elapsed = 0.0f;
+  }
+
+  void stop() noexcept {
+    emitting = false;
+    drain_elapsed = 0.0f;
+    spawn_accumulator = 0.0f;
+  }
+
+  void reset_and_start() noexcept {
+    emitting = true;
+    reset_pending = true;
+    spawn_accumulator = 0.0f;
+    drain_elapsed = 0.0f;
+    spawn_cursor = 0;
+    total_emitted = 0;
+  }
+
+  std::string_view phase() const noexcept {
+    if (emitting) return "emitting";
+    return drain_elapsed < particle_lifetime_max ? "draining" : "stopped";
+  }
+
+  glm::uvec4 advance(const float dt) noexcept {
+    uint32_t spawn_count = 0;
+    const uint32_t spawn_begin = spawn_cursor;
+    if (emitting) {
+      spawn_accumulator += dt * particle_rate;
+      spawn_count = std::min(uint32_t(spawn_accumulator), particle_capacity);
+      spawn_accumulator -= float(spawn_count);
+      spawn_cursor += spawn_count;
+      total_emitted += spawn_count;
+    } else {
+      drain_elapsed += dt;
+    }
+    const uint32_t reset = reset_pending ? 1u : 0u;
+    reset_pending = false;
+    return glm::uvec4(spawn_begin, spawn_count, particle_capacity, reset);
+  }
+};
+
 void add_quad(
   std::vector<scene_vertex>& out,
   const glm::vec3& a,
@@ -182,6 +256,12 @@ std::vector<scene_vertex> make_room() {
 std::vector<scene_vertex> make_cube() {
   std::vector<scene_vertex> out;
   add_box(out, {}, {0.65f, 0.65f, 0.65f});
+  return out;
+}
+
+std::vector<scene_vertex> make_emitter_marker() {
+  std::vector<scene_vertex> out;
+  add_box(out, {}, {0.12f, 0.12f, 0.12f});
   return out;
 }
 
@@ -640,19 +720,28 @@ int main(int argc, char** argv) {
   bool validation = false;
   bool uncapped = false;
   bool fixed_camera = false;
+  bool fixed_step = false;
   bool start_without_decals = false;
+  bool start_without_particles = false;
   uint32_t frame_limit = 0;
+  uint32_t emitter_stop_frame = 0;
   std::string dump_path;
   for (int i = 1; i < argc; ++i) {
     const std::string_view option(argv[i]);
     validation = validation || option == "--validation";
     uncapped = uncapped || option == "--uncapped";
     fixed_camera = fixed_camera || option == "--fixed-camera";
+    fixed_step = fixed_step || option == "--fixed-step";
     start_without_decals = start_without_decals || option == "--no-decals";
+    start_without_particles = start_without_particles || option == "--no-particles";
     constexpr std::string_view frames_prefix = "--frames=";
+    constexpr std::string_view emitter_stop_prefix = "--emitter-stop-frame=";
     constexpr std::string_view dump_prefix = "--dump=";
     if (option.starts_with(frames_prefix)) {
       frame_limit = uint32_t(std::stoul(std::string(option.substr(frames_prefix.size()))));
+    }
+    if (option.starts_with(emitter_stop_prefix)) {
+      emitter_stop_frame = uint32_t(std::stoul(std::string(option.substr(emitter_stop_prefix.size()))));
     }
     if (option.starts_with(dump_prefix)) {
       dump_path = std::string(option.substr(dump_prefix.size()));
@@ -686,7 +775,7 @@ int main(int argc, char** argv) {
   painter::load_dispatcher2(instance);
   const VkDebugUtilsMessengerEXT messenger = validation
     ? painter::create_debug_messenger(instance) : VK_NULL_HANDLE;
-  GLFWwindow* window = input::create_window(initial_width, initial_height, "PF05 — world MSDF text");
+  GLFWwindow* window = input::create_window(initial_width, initial_height, "PF05 — scene effects");
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   const auto surface_result = input::create_window_surface(instance, window, nullptr, &surface);
   if (surface_result != uint32_t(vk::Result::eSuccess)) {
@@ -747,9 +836,11 @@ int main(int argc, char** argv) {
     };
     const auto room = make_room();
     const auto cube = make_cube();
+    const auto emitter_marker = make_emitter_marker();
     const auto decal_cube = make_decal_cube();
     const auto room_mesh = upload_scene_mesh("pf05.room", room);
     const auto cube_mesh = upload_scene_mesh("pf05.cube", cube);
+    const auto emitter_marker_mesh = upload_scene_mesh("pf05.emitter_marker", emitter_marker);
     const auto decal_mesh = assets.register_buffer_storage("pf05.decal_cube");
     assets.create_buffer_storage(
       decal_mesh, painter::buffer_create_info{"decal_volume_geometry", uint32_t(decal_cube.size()), 0});
@@ -775,9 +866,9 @@ int main(int argc, char** argv) {
       common_resources + "fonts/crimson.roman.ttf",
       common_resources + "ui/lab_overlay.lua",
       playground::overlay_description{
-        "PF05 — Scene effects / MSDF",
-        "Crimson atlas: world paths, three billboard modes and screen-space decals",
-        "WASD/QE + mouse · F toggles decals · fixed-size text clips · Esc"});
+        "PF05 — Scene effects",
+        "Crimson atlas, screen decals and a persistent GPU particle pool",
+        "WASD/QE + mouse · F decals · P emitter start/stop · R reset particles · Esc"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(
@@ -880,6 +971,7 @@ int main(int argc, char** argv) {
     const uint32_t billboard_group = base.find_draw_group("billboard_glyph_draw_group");
     const uint32_t room_pair = base.register_pair(scene_group, room_mesh, 1);
     const uint32_t props_pair = base.register_pair(scene_group, cube_mesh, 2);
+    const uint32_t emitter_marker_pair = base.register_pair(scene_group, emitter_marker_mesh, 1);
     const uint32_t decal_pair = base.register_pair(decal_group, decal_mesh, uint32_t(decal_glyphs.size()));
     const uint32_t world_pair = base.register_pair(world_group, glyph_mesh, uint32_t(world_glyphs.size()));
     const uint32_t billboard_pair = base.register_pair(
@@ -887,8 +979,15 @@ int main(int argc, char** argv) {
     const std::array<glm::vec4, 1> room_instances{glm::vec4{0, 0, 0, 0}};
     const std::array<glm::vec4, 2> prop_instances{
       glm::vec4{-1.6f, -0.85f, -2.7f, 1}, glm::vec4{2.25f, -0.85f, -2.9f, 2}};
+    const std::array<glm::vec4, 1> emitter_marker_instances{
+      glm::vec4{0.0f, -1.36f, -2.25f, 3}};
     write_pair(base, room_pair, std::span<const glm::vec4>(room_instances), uint32_t(room.size()));
     write_pair(base, props_pair, std::span<const glm::vec4>(prop_instances), uint32_t(cube.size()));
+    write_pair(
+      base,
+      emitter_marker_pair,
+      std::span<const glm::vec4>(emitter_marker_instances),
+      uint32_t(emitter_marker.size()));
     write_pair(base, decal_pair, std::span<const decal_instance>(decal_glyphs), uint32_t(decal_cube.size()));
     write_pair(base, world_pair, std::span<const glyph_instance>(world_glyphs), uint32_t(glyph_quad.size()));
     write_pair(base, billboard_pair, std::span<const billboard_glyph_instance>(billboard_glyphs), uint32_t(glyph_quad.size()));
@@ -903,6 +1002,8 @@ int main(int argc, char** argv) {
     bind_key("camera_fast", "left_shift");
     escape_key = input::glfw_key_from_canonical("escape");
     decal_key = input::glfw_key_from_canonical("key_f");
+    particle_toggle_key = input::glfw_key_from_canonical("key_p");
+    particle_reset_key = input::glfw_key_from_canonical("key_r");
     input::set_window_callback(window, &key_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
     if (fixed_camera) {
@@ -914,6 +1015,11 @@ int main(int argc, char** argv) {
 
     playground::free_camera camera;
     camera.position = {0.0f, 0.25f, 5.3f};
+    emitter_runtime emitter;
+    if (start_without_particles) {
+      emitter.stop();
+      emitter.drain_elapsed = particle_lifetime_max;
+    }
     auto [mouse_x, mouse_y] = input::cursor_pos(window);
     auto previous_time = std::chrono::steady_clock::now();
     const auto start_time = previous_time;
@@ -929,6 +1035,15 @@ int main(int argc, char** argv) {
       previous_time = now;
       input::events::update(size_t(std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::duration<float>(dt)).count()));
+      if (particle_toggle_requested) {
+        if (emitter.emitting) emitter.stop();
+        else emitter.start();
+        particle_toggle_requested = false;
+      }
+      if (particle_reset_requested) {
+        emitter.reset_and_start();
+        particle_reset_requested = false;
+      }
       if (resize_pending) {
         vk::Device(device).waitIdle();
         base.resize_viewport(pending_width, pending_height);
@@ -963,12 +1078,24 @@ int main(int argc, char** argv) {
         glm::inverse(projection * view),
         glm::vec4(decals_enabled ? 1.0f : 0.0f, 0, 0, 0)};
       write_current_buffer(base, "camera_buffer", &camera_data, sizeof(camera_data));
+      const float simulation_dt = fixed_step ? (1.0f / 60.0f) : dt;
+      if (emitter_stop_frame != 0 && frames_total == emitter_stop_frame) emitter.stop();
+      const glm::uvec4 particle_lifecycle = emitter.advance(simulation_dt);
+      const particle_emitter_block particle_emitter{
+        glm::vec4(0.0f, -1.22f, -2.25f, particle_rate),
+        glm::vec4(0.0f, 1.0f, 0.0f, 3.8f),
+        glm::vec4(0.0f, -4.8f, 0.0f, simulation_dt),
+        glm::vec4(-1.42f, 4.82f, -4.82f, 2.82f),
+        glm::vec4(2.4f, particle_lifetime_max, 0.08f, 0.48f),
+        particle_lifecycle};
+      write_current_buffer(
+        base, "particle_emitter_buffer", &particle_emitter, sizeof(particle_emitter));
       const uint64_t frame_delta_us = uint64_t(std::max(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::duration<float>(dt)).count(),
         int64_t{1}));
       const uint64_t timestamp_us = uint64_t(
         std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
-      const std::array<std::string, 10> details{
+      const std::array<std::string, 12> details{
         std::format("Atlas: {}x{}, {} glyph metrics", atlas.width, atlas.height, font.glyphs.size()),
         std::format("Fixed: height {:.2f}, limit 4.80, consumed {}/{} characters",
           fixed_text.resolved_height, fixed_text.consumed_characters, fixed_text.source_characters),
@@ -979,6 +1106,13 @@ int main(int argc, char** argv) {
         std::format("Screen-size: {} glyphs, constant 38 px at world anchor", screen_text.size()),
         std::format("Screen decals: {} glyph volumes, depth reconstruction [{}]",
           decal_glyphs.size(), decals_enabled ? "ON" : "OFF"),
+        std::format("Emitter: {} · {} particles/s · {} total spawned",
+          emitter.phase(), uint32_t(particle_rate), emitter.total_emitted),
+        std::format("Physics: gravity {:.1f} m/s^2 · drag {:.2f} · bounce {:.2f} · pool {}",
+          particle_emitter.acceleration_dt.y,
+          particle_emitter.lifetime_drag.z,
+          particle_emitter.lifetime_drag.w,
+          particle_capacity),
         std::format("Custom fill: packed detail slot {}, per-text mix", weathered_texture),
         "World/billboard glyph coverage writes depth; transparent quad pixels are discarded"};
       overlay.set_detail_lines(details);

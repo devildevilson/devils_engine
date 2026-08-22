@@ -1,4 +1,14 @@
 {
+  name = particle_dispatch
+  layout = dispatch3
+  value = [32.0, 1.0, 1.0]
+}
+{
+  name = particle_draw
+  layout = draw4
+  value = [6.0, 2048.0, 0.0, 0.0]
+}
+{
   name = ui_push
   layout = ui1ui1ui1ui1ui1ui1ui1
   value = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

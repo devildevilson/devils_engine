@@ -12,6 +12,18 @@
   raster = { cull = front, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {
+  name = particle_simulation_material
+  shaders = { compute = "particle_simulation.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = particle_material
+  shaders = { vertex = "particle.vert.glsl", fragment = "particle.frag.glsl" }
+  depth = { test = true, write = false, compare = greater }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
   name = world_msdf_material
   shaders = { vertex = "world_msdf.vert.glsl", fragment = "msdf.frag.glsl" }
   depth = { test = true, write = true, compare = greater_or_equal }

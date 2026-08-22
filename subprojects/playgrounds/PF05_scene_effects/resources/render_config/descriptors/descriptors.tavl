@@ -10,6 +10,19 @@
   ]
 }
 {
+  // Every invocation owns one stable slot: no freelist atomics are needed for this bounded pool.
+  name = particle_simulation
+  layout = [
+    { resource = particle_emitter_buffer, usage = uniform, stage = compute },
+    { resource = particle_state, usage = storage_write, stage = compute },
+    { resource = particle_state, usage = storage_read, stage = compute, history = 1 }
+  ]
+}
+{
+  name = particle_render
+  layout = [ { resource = particle_state, usage = storage_read, stage = vertex } ]
+}
+{
   // The same asset array contains the Crimson atlas used by world text and the Visage overlay.
   name = text_textures
   texture_count = 16

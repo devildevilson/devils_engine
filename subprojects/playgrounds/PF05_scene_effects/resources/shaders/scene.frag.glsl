@@ -14,6 +14,7 @@ void main() {
   vec3 base = vec3(0.17, 0.20, 0.24);
   if (material_id > 0.5) base = vec3(0.28, 0.20, 0.14);
   if (material_id > 1.5) base = vec3(0.12, 0.25, 0.22);
+  if (material_id > 2.5) base = vec3(1.00, 0.28, 0.035);
   const vec3 light_dir = normalize(vec3(-0.4, 0.8, 0.5));
   const float diffuse = 0.28 + 0.72 * max(dot(normalize(world_normal), light_dir), 0.0);
   frag_color = vec4(base * diffuse, 1.0);

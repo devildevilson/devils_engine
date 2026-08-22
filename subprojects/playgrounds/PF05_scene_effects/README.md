@@ -11,9 +11,11 @@ cmake --build build-debug --target PF05_scene_effects -j2
 ./build-debug/subprojects/playgrounds/PF05_scene_effects/bin/PF05_scene_effects
 ```
 
-Опции: `--validation`, `--uncapped`, `--fixed-camera`, `--no-decals`, `--frames=N`, `--dump=file.ppm`.
-Камера — WASD/QE, мышь и Shift; `F` переключает decal pass. При `--fixed-camera` cursor возвращается в
-`CURSOR_NORMAL`, а `--dump` записывает точный кадр из `scene_color`, как в PF03/PF04.
+Опции: `--validation`, `--uncapped`, `--fixed-camera`, `--fixed-step`, `--no-decals`, `--no-particles`,
+`--emitter-stop-frame=N`, `--frames=N`, `--dump=file.ppm`. Камера — WASD/QE, мышь и Shift; `F` переключает
+decal pass, `P` останавливает/запускает emitter, `R` очищает pool и перезапускает его. При `--fixed-camera`
+cursor возвращается в `CURSOR_NORMAL`, а `--dump` записывает точный кадр из `scene_color`, как в PF03/PF04.
+`--fixed-step` фиксирует только particle timestep на `1/60 s`, чтобы lifecycle rail не зависела от скорости машины.
 
 ## Первый срез — Crimson MSDF в мире
 
@@ -148,12 +150,56 @@ Transparent receivers, normal/roughness modification и angle-independent projec
 policies; случай камеры внутри volume текущим fixture отдельно не проверен.
 `--no-decals` является честным A/B: при одинаковом fixed-camera кадре исчезают обе projected надписи.
 
+## Particles, emitter lifecycle и простая физика
+
+Третий срез — один point emitter и persistent GPU pool на 2048 stable slots. CPU не пересылает массив
+частиц обратно и вперёд: каждый кадр он передаёт только параметры emitter, timestep и маленький spawn batch
+`{first_serial, count}`. Сам `particle_state` является `per_frame` buffer; compute пишет текущую копию и читает
+`history = 1`, поэтому Painter выводит и внутрикадровый compute→vertex barrier, и cross-frame зависимость.
+
+```text
+CPU emitter: rate accumulator -> contiguous spawn serial range
+GPU slot i: previous state -> integrate/collide/expire or spawn(serial % capacity) -> current state
+graphics: 2048 procedural six-vertex billboard instances -> depth test -> additive scene color
+```
+
+Один invocation полностью владеет одним slot, поэтому здесь нет freelist, compaction и atomics. Spawn serial
+по modulo выбирает slot и одновременно служит стабильным random seed. При текущих `180 particles/s` и
+`2.4..4.2 s` lifetime максимально ожидаемое число живых частиц заметно меньше capacity, поэтому новый spawn
+не должен догонять ещё занятой slot.
+
+Lifecycle разделён сознательно:
+
+- `emitting`: rate accumulator выдаёт новые serials;
+- `draining`: spawn прекращён, но уже живые particles продолжают update;
+- `stopped`: прошло не меньше максимального lifetime, следовательно pool гарантированно пуст;
+- `R`: одноразовый reset flag заставляет compute игнорировать историю всех slots и снова начать emission.
+
+Физика — semi-implicit Euler: сначала gravity и exponential drag меняют velocity, затем обновляется position.
+Пол и четыре границы комнаты являются аналитическими planes; пересечение исправляет position и отражает нужную
+компоненту velocity с restitution, на полу дополнительно гасится горизонтальная скорость. Это намеренно не
+collision с произвольной сценой: rain/snow позже смогут сравнить analytic volumes с scene-depth/HZB collision.
+
+Рендер использует spherical billboards, мягкий radial coverage и additive blending. Additive выбран как честная
+order-independent политика для sparks; обычный дым с alpha blending потребует сортировки, weighted OIT либо
+явного согласия на артефакты. Particles тестируют opaque reverse-Z depth, но сами depth не пишут.
+
+Детерминированная проверка (`--fixed-step --uncapped --emitter-stop-frame=60`) показывает lifecycle численно:
+на кадре 180 draining-кадр ещё отличается от `--no-particles`, а на кадре 360 после максимального lifetime
+вне overlay совпадает с ним (`AE = 0`). Два независимых emitting dump кадра 180 также совпадают (`AE = 0`).
+Vulkan validation проходит чисто.
+
+Текущий fixed draw вызывает шесть vertices для всех 2048 slots, а мёртвые уходят за clip volume. Это хороший
+неатомарный baseline; GPU compaction + indirect instance count следует добавлять после измерения цены пустых
+slots или появления существенно больших pools. `--no-particles` — debug runtime switch и не удаляет passes;
+production `particles = off` должен выбирать graph generation без simulation/render steps.
+
 ## Планируемые срезы
 
 - ~~Crimson MSDF вдоль отрезка и quadratic Bézier, фиксированный размер/ограниченная длина и wrapped billboard~~;
 - ~~spherical, cylindrical-Y и world-anchored screen-size billboards~~;
 - ~~screen-space decals с reconstruction из depth/normal и ограниченным decal volume~~;
-- particles, emitter lifecycle и простая particle physics;
+- ~~particles, emitter lifecycle и простая particle physics~~;
 - rain и snow как два наблюдаемо разных consumer particle-системы;
 - cel shading с управляемыми lighting bands и outline policy;
 - маленькое world-space UI окно над объектом: имя, health bar и несколько полей состояния.
