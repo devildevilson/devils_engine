@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <glm/geometric.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/trigonometric.hpp>
 #include <glm/vec2.hpp>
@@ -52,6 +53,8 @@ uint32_t pending_width = initial_width;
 uint32_t pending_height = initial_height;
 bool resize_pending = false;
 int32_t escape_key = -1;
+int32_t decal_key = -1;
+bool decals_enabled = true;
 
 void error_callback(const int error, const char* message) noexcept {
   utils::warn("PF05 input error {}: {}", error, message);
@@ -61,6 +64,9 @@ void key_callback(GLFWwindow* window, const int key, const int scancode, const i
   input::events::update_key(scancode, action);
   if (key == escape_key && action == 1) {
     input::set_should_close(window, true);
+  }
+  if (key == decal_key && action == 1) {
+    decals_enabled = !decals_enabled;
   }
 }
 
@@ -85,6 +91,10 @@ struct scene_vertex {
 
 struct glyph_vertex {
   float x, y;
+};
+
+struct decal_vertex {
+  float x, y, z;
 };
 
 struct glyph_style {
@@ -116,13 +126,24 @@ struct billboard_glyph_instance {
 };
 static_assert(sizeof(billboard_glyph_instance) == 144);
 
+struct decal_instance {
+  glm::mat4 decal_to_world;
+  glm::mat4 world_to_decal;
+  glm::vec4 uv_rect;
+  glm::vec4 fill;
+  glm::vec4 effect;
+};
+static_assert(sizeof(decal_instance) == 176);
+
 struct alignas(16) camera_block {
   glm::mat4 view_projection;
   glm::mat4 view;
   glm::vec4 camera_position;
   glm::vec4 viewport_near;
+  glm::mat4 inverse_view_projection;
+  glm::vec4 effect_params;
 };
-static_assert(sizeof(camera_block) == 160);
+static_assert(sizeof(camera_block) == 240);
 
 void add_quad(
   std::vector<scene_vertex>& out,
@@ -161,6 +182,17 @@ std::vector<scene_vertex> make_room() {
 std::vector<scene_vertex> make_cube() {
   std::vector<scene_vertex> out;
   add_box(out, {}, {0.65f, 0.65f, 0.65f});
+  return out;
+}
+
+std::vector<decal_vertex> make_decal_cube() {
+  const auto scene_cube = make_cube();
+  std::vector<decal_vertex> out;
+  out.reserve(scene_cube.size());
+  for (const auto& vertex : scene_cube) {
+    // make_cube has a 0.65 half extent; decal local space is exactly [-0.5, +0.5].
+    out.push_back(decal_vertex{vertex.px / 1.3f, vertex.py / 1.3f, vertex.pz / 1.3f});
+  }
   return out;
 }
 
@@ -351,6 +383,56 @@ std::vector<billboard_glyph_instance> layout_billboard(
       cursor += advance;
     }
     baseline -= line_height;
+  }
+  return out;
+}
+
+std::vector<decal_instance> layout_surface_decal(
+  const visage::font_t& font,
+  const std::string_view text,
+  const glm::vec3& baseline_origin,
+  const glm::vec3& right_axis,
+  const glm::vec3& up_axis,
+  const glm::vec3& projection_normal,
+  const float font_height,
+  const float max_length,
+  const float volume_depth,
+  const glyph_style& style,
+  const uint32_t atlas_slot) {
+  const glm::vec3 right = glm::normalize(right_axis);
+  const glm::vec3 up = glm::normalize(up_axis);
+  const glm::vec3 normal = glm::normalize(projection_normal);
+  std::vector<decal_instance> out;
+  float cursor = 0.0f;
+  for (const char32_t character : utf::as_u32(text)) {
+    const auto* glyph = font.find_glyph(uint32_t(character));
+    if (glyph == nullptr) continue;
+    const float advance = float(glyph->advance) * font_height;
+    if (cursor + advance > max_length) break;
+    if (glyph->w > 0 && glyph->h > 0) {
+      const float left = float(glyph->pl) * font_height;
+      const float bottom = float(glyph->pb) * font_height;
+      const float width = float(glyph->pr - glyph->pl) * font_height;
+      const float height = float(glyph->pt - glyph->pb) * font_height;
+      const glm::vec3 lower_left = baseline_origin + right * (cursor + left) + up * bottom;
+      const glm::vec3 center = lower_left + right * (width * 0.5f) + up * (height * 0.5f);
+      const glm::mat4 decal_to_world{
+        glm::vec4(right * width, 0.0f),
+        glm::vec4(up * height, 0.0f),
+        glm::vec4(normal * volume_depth, 0.0f),
+        glm::vec4(center, 1.0f)};
+      out.push_back(decal_instance{
+        decal_to_world,
+        glm::inverse(decal_to_world),
+        glm::vec4(
+          float(glyph->al / double(font.width)),
+          float(glyph->ab / double(font.height)),
+          float(glyph->ar / double(font.width)),
+          float(glyph->at / double(font.height))),
+        style.fill,
+        glm::vec4(float(atlas_slot), style.boldness, style.softness, 0.55f)});
+    }
+    cursor += advance;
   }
   return out;
 }
@@ -558,6 +640,7 @@ int main(int argc, char** argv) {
   bool validation = false;
   bool uncapped = false;
   bool fixed_camera = false;
+  bool start_without_decals = false;
   uint32_t frame_limit = 0;
   std::string dump_path;
   for (int i = 1; i < argc; ++i) {
@@ -565,6 +648,7 @@ int main(int argc, char** argv) {
     validation = validation || option == "--validation";
     uncapped = uncapped || option == "--uncapped";
     fixed_camera = fixed_camera || option == "--fixed-camera";
+    start_without_decals = start_without_decals || option == "--no-decals";
     constexpr std::string_view frames_prefix = "--frames=";
     constexpr std::string_view dump_prefix = "--dump=";
     if (option.starts_with(frames_prefix)) {
@@ -575,6 +659,7 @@ int main(int argc, char** argv) {
     }
   }
   if (!dump_path.empty() && frame_limit == 0) frame_limit = 1;
+  decals_enabled = !start_without_decals;
 
   input::init input_runtime(&error_callback);
   input::events::init();
@@ -662,8 +747,17 @@ int main(int argc, char** argv) {
     };
     const auto room = make_room();
     const auto cube = make_cube();
+    const auto decal_cube = make_decal_cube();
     const auto room_mesh = upload_scene_mesh("pf05.room", room);
     const auto cube_mesh = upload_scene_mesh("pf05.cube", cube);
+    const auto decal_mesh = assets.register_buffer_storage("pf05.decal_cube");
+    assets.create_buffer_storage(
+      decal_mesh, painter::buffer_create_info{"decal_volume_geometry", uint32_t(decal_cube.size()), 0});
+    assets.populate_buffer_storage(
+      decal_mesh,
+      std::span(reinterpret_cast<const uint8_t*>(decal_cube.data()), decal_cube.size() * sizeof(decal_cube[0])),
+      std::span<const uint8_t>{});
+    assets.mark_ready_buffer_slot(decal_mesh);
     const std::array<glyph_vertex, 6> glyph_quad{
       glyph_vertex{0, 0}, glyph_vertex{1, 0}, glyph_vertex{1, 1},
       glyph_vertex{0, 0}, glyph_vertex{1, 1}, glyph_vertex{0, 1}};
@@ -682,8 +776,8 @@ int main(int argc, char** argv) {
       common_resources + "ui/lab_overlay.lua",
       playground::overlay_description{
         "PF05 — Scene effects / MSDF",
-        "Crimson atlas: line, quadratic Bezier, wall plane and billboard",
-        "WASD/QE + mouse · fixed-size text clips · fit mode derives font size · Esc"});
+        "Crimson atlas: world paths, three billboard modes and screen-space decals",
+        "WASD/QE + mouse · F toggles decals · fixed-size text clips · Esc"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(
@@ -712,10 +806,6 @@ int main(int argc, char** argv) {
       glm::vec3{-3.1f, 1.25f, -2.0f}, glm::vec3{0.0f, 2.7f, -2.0f}, glm::vec3{3.1f, 1.25f, -2.0f},
       glm::vec3{0, 0, 1}};
     curve.build_lengths();
-    quadratic_path wall_line{
-      glm::vec3{-3.4f, -0.35f, -4.94f}, glm::vec3{0.0f, -0.35f, -4.94f}, glm::vec3{3.4f, -0.35f, -4.94f},
-      glm::vec3{0, 0, 1}};
-    wall_line.build_lengths();
     const auto fixed_text = layout_on_path(
       font, "FIXED SIZE CLIPS THIS LONG STRING", fixed_line, 4.8f, 0.52f,
       glyph_style{glm::vec4{0.95f, 0.94f, 0.86f, 1}, glm::vec4{0.04f, 0.05f, 0.08f, 1}, 0, 0.10f, 0},
@@ -726,11 +816,19 @@ int main(int argc, char** argv) {
         glm::vec4{1.0f, 0.58f, 0.12f, 1}, glm::vec4{0.25f, 0.03f, 0.01f, 1},
         0.015f, 0.12f, 0.08f, weathered_texture, 0.78f},
       font_texture);
-    const auto wall_text = layout_on_path(
-      font, "COPLANAR WORLD TEXT - SCREEN SPACE DECAL NEXT", wall_line, 6.8f, 0.34f,
-      glyph_style{
-        glm::vec4{0.25f, 0.92f, 0.85f, 1}, glm::vec4{0.01f, 0.09f, 0.10f, 1},
-        0.02f, 0.08f, 0, weathered_texture, 0.42f},
+    const auto back_wall_decal = layout_surface_decal(
+      font, "TRUE SCREEN SPACE DECAL",
+      glm::vec3{-3.45f, -0.30f, -4.96f},
+      glm::vec3{1, 0, 0}, glm::vec3{0, 1, 0}, glm::vec3{0, 0, 1},
+      0.43f, 6.9f, 0.30f,
+      glyph_style{glm::vec4{0.18f, 0.95f, 0.83f, 0.92f}, {}, 0.015f, 0, 0.03f},
+      font_texture);
+    const auto right_wall_decal = layout_surface_decal(
+      font, "ORIENTED VOLUME",
+      glm::vec3{4.96f, 0.30f, -3.80f},
+      glm::vec3{0, 0, 1}, glm::vec3{0, 1, 0}, glm::vec3{-1, 0, 0},
+      0.36f, 3.4f, 0.30f,
+      glyph_style{glm::vec4{1.0f, 0.42f, 0.64f, 0.90f}, {}, 0.01f, 0, 0.02f},
       font_texture);
     if (std::abs(curve_text.consumed_length - curve.length) > 0.01f) {
       utils::error{}(
@@ -768,17 +866,21 @@ int main(int argc, char** argv) {
     billboard_glyphs.insert(billboard_glyphs.end(), cylindrical_text.begin(), cylindrical_text.end());
     billboard_glyphs.insert(billboard_glyphs.end(), screen_text.begin(), screen_text.end());
     std::vector<glyph_instance> world_glyphs;
-    world_glyphs.reserve(
-      fixed_text.glyphs.size() + curve_text.glyphs.size() + wall_text.glyphs.size());
+    world_glyphs.reserve(fixed_text.glyphs.size() + curve_text.glyphs.size());
     world_glyphs.insert(world_glyphs.end(), fixed_text.glyphs.begin(), fixed_text.glyphs.end());
     world_glyphs.insert(world_glyphs.end(), curve_text.glyphs.begin(), curve_text.glyphs.end());
-    world_glyphs.insert(world_glyphs.end(), wall_text.glyphs.begin(), wall_text.glyphs.end());
+    std::vector<decal_instance> decal_glyphs;
+    decal_glyphs.reserve(back_wall_decal.size() + right_wall_decal.size());
+    decal_glyphs.insert(decal_glyphs.end(), back_wall_decal.begin(), back_wall_decal.end());
+    decal_glyphs.insert(decal_glyphs.end(), right_wall_decal.begin(), right_wall_decal.end());
 
     const uint32_t scene_group = base.find_draw_group("scene_draw_group");
+    const uint32_t decal_group = base.find_draw_group("decal_draw_group");
     const uint32_t world_group = base.find_draw_group("world_glyph_draw_group");
     const uint32_t billboard_group = base.find_draw_group("billboard_glyph_draw_group");
     const uint32_t room_pair = base.register_pair(scene_group, room_mesh, 1);
     const uint32_t props_pair = base.register_pair(scene_group, cube_mesh, 2);
+    const uint32_t decal_pair = base.register_pair(decal_group, decal_mesh, uint32_t(decal_glyphs.size()));
     const uint32_t world_pair = base.register_pair(world_group, glyph_mesh, uint32_t(world_glyphs.size()));
     const uint32_t billboard_pair = base.register_pair(
       billboard_group, glyph_mesh, uint32_t(billboard_glyphs.size()));
@@ -787,6 +889,7 @@ int main(int argc, char** argv) {
       glm::vec4{-1.6f, -0.85f, -2.7f, 1}, glm::vec4{2.25f, -0.85f, -2.9f, 2}};
     write_pair(base, room_pair, std::span<const glm::vec4>(room_instances), uint32_t(room.size()));
     write_pair(base, props_pair, std::span<const glm::vec4>(prop_instances), uint32_t(cube.size()));
+    write_pair(base, decal_pair, std::span<const decal_instance>(decal_glyphs), uint32_t(decal_cube.size()));
     write_pair(base, world_pair, std::span<const glyph_instance>(world_glyphs), uint32_t(glyph_quad.size()));
     write_pair(base, billboard_pair, std::span<const billboard_glyph_instance>(billboard_glyphs), uint32_t(glyph_quad.size()));
 
@@ -799,6 +902,7 @@ int main(int argc, char** argv) {
     bind_key("camera_up", "key_e");
     bind_key("camera_fast", "left_shift");
     escape_key = input::glfw_key_from_canonical("escape");
+    decal_key = input::glfw_key_from_canonical("key_f");
     input::set_window_callback(window, &key_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
     if (fixed_camera) {
@@ -855,14 +959,16 @@ int main(int argc, char** argv) {
         projection * view,
         view,
         glm::vec4(camera.position, 1),
-        glm::vec4(float(pending_width), float(pending_height), near_plane, 0)};
+        glm::vec4(float(pending_width), float(pending_height), near_plane, 0),
+        glm::inverse(projection * view),
+        glm::vec4(decals_enabled ? 1.0f : 0.0f, 0, 0, 0)};
       write_current_buffer(base, "camera_buffer", &camera_data, sizeof(camera_data));
       const uint64_t frame_delta_us = uint64_t(std::max(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::duration<float>(dt)).count(),
         int64_t{1}));
       const uint64_t timestamp_us = uint64_t(
         std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
-      const std::array<std::string, 9> details{
+      const std::array<std::string, 10> details{
         std::format("Atlas: {}x{}, {} glyph metrics", atlas.width, atlas.height, font.glyphs.size()),
         std::format("Fixed: height {:.2f}, limit 4.80, consumed {}/{} characters",
           fixed_text.resolved_height, fixed_text.consumed_characters, fixed_text.source_characters),
@@ -871,8 +977,10 @@ int main(int argc, char** argv) {
         std::format("Spherical: {} glyphs, camera right + up", spherical_text.size()),
         std::format("Cylindrical: {} glyphs, world Y locked", cylindrical_text.size()),
         std::format("Screen-size: {} glyphs, constant 38 px at world anchor", screen_text.size()),
+        std::format("Screen decals: {} glyph volumes, depth reconstruction [{}]",
+          decal_glyphs.size(), decals_enabled ? "ON" : "OFF"),
         std::format("Custom fill: packed detail slot {}, per-text mix", weathered_texture),
-        "Wall text is coplanar world geometry; true screen-space decal is the next PF05 slice"};
+        "World/billboard glyph coverage writes depth; transparent quad pixels are discarded"};
       overlay.set_detail_lines(details);
       overlay.update(frame_delta_us, timestamp_us);
       write_overlay_buffers(base, overlay);

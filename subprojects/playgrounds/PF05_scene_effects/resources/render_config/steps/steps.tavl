@@ -7,6 +7,15 @@
   command = "draw"
 }
 {
+  name = draw_screen_decals
+  material = screen_decal_material
+  geometry = decal_volume_geometry
+  draw_group = decal_draw_group
+  sets = [ camera_data, decal_scene, text_textures ]
+  command = "draw"
+  blending = { scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
+}
+{
   name = draw_world_text
   material = world_msdf_material
   geometry = glyph_geometry

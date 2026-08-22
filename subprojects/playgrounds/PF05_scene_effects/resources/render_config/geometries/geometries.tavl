@@ -1,3 +1,4 @@
 { name = scene_geometry, vertex_layout = p3n3, index_type = none, topology = triangle_list, restart = false }
 { name = glyph_geometry, vertex_layout = v2, index_type = none, topology = triangle_list, restart = false }
+{ name = decal_volume_geometry, vertex_layout = p3, index_type = none, topology = triangle_list, restart = false }
 { name = ui_geometry, vertex_layout = v2v2c4, index_type = u16, topology = triangle_list, restart = false }

@@ -6,6 +6,8 @@
 { name = world_glyph_draws, type = fixed, value = [1, 0, 0] }
 { name = billboard_glyph_instances, type = fixed, value = [256, 0, 0] }
 { name = billboard_glyph_draws, type = fixed, value = [2, 0, 0] }
+{ name = decal_instances, type = fixed, value = [128, 0, 0] }
+{ name = decal_draws, type = fixed, value = [1, 0, 0] }
 { name = ui_vertices_bytes, type = fixed, value = [524288, 0, 0] }
 { name = ui_indices_bytes, type = fixed, value = [131072, 0, 0] }
 { name = ui_commands_bytes, type = fixed, value = [16384, 0, 0] }

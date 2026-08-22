@@ -5,7 +5,8 @@
 // pixel range атласа в текущий экранный масштаб — поэтому один Crimson atlas работает для world glyphs
 // любого размера. Alpha-канал даёт true distance для внешнего outline. Boldness, outline и softness
 // повторяют смысл Visage ui.frag, так что style не зависит от способа размещения текста. Вторая bindless
-// texture может модулировать fill (fixture: weathered stone), не меняя signed-distance coverage.
+// texture может модулировать fill (fixture: weathered stone), не меняя signed-distance coverage. Почти нулевой
+// coverage отбрасывается, потому что world/billboard материалы пишут depth и пустой quad не должен его менять.
 
 layout(location = 0) in vec2 in_uv;
 layout(location = 1) in vec4 in_fill_color;
@@ -50,4 +51,7 @@ void main() {
   } else {
     frag_color = vec4(styled_fill, in_fill_color.a * fill);
   }
+  // Text materials write depth. Without discard the transparent remainder of every glyph quad would
+  // become an invisible occluder for later glyphs and labels.
+  if (frag_color.a <= 1.0 / 255.0) discard;
 }

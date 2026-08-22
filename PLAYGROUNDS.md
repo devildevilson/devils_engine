@@ -116,12 +116,13 @@ resolver'ом. Реализация остаётся отдельным backlog,
 подмножество этих возможностей в собственных resources/presets. Исходники и CMake targets лабораторий
 не зависят друг от друга.
 
-Текущий ограниченный результат PF05 — первый запускаемый Crimson MSDF slice: один atlas обслуживает UI,
+Текущие ограниченные результаты PF05 — запускаемые Crimson MSDF и screen-space decal slices: один atlas обслуживает UI,
 индивидуальные world glyph matrices на прямой/quadratic Bézier и три billboard space — spherical world-size,
 cylindrical/Y-locked и constant-pixel world-anchored screen-size. Fixed font height обрезает хвост по длине,
 при одной длине размер выводится из метрик, а optional detail texture стилизует fill без изменения MSDF coverage.
-Coplanar wall text пока только фиксирует layout; настоящий depth-reconstructed screen-space decal остаётся
-следующим отдельным срезом.
+World/billboard glyph coverage теперь пишет depth. Настоящий decal pass растеризует ориентированные box-volume,
+восстанавливает world position из opaque depth, ограничивает её через `world_to_decal`, фильтрует receiver по
+scene normal и проецирует MSDF на дальнюю и боковую стены. `F`/`--no-decals` дают наблюдаемый A/B.
 Лаборатории по-прежнему не зависят друг от друга; общие production fixes принадлежат `libs/painter`.
 
 ## 1. Painter visual stack

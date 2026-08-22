@@ -5,15 +5,22 @@
   raster = { cull = back, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {
+  name = screen_decal_material
+  shaders = { vertex = "screen_decal.vert.glsl", fragment = "screen_decal.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  // Rasterized back faces bound fragment work; reconstructed-position clipping remains authoritative.
+  raster = { cull = front, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
   name = world_msdf_material
   shaders = { vertex = "world_msdf.vert.glsl", fragment = "msdf.frag.glsl" }
-  depth = { test = true, write = false, compare = greater_or_equal }
+  depth = { test = true, write = true, compare = greater_or_equal }
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {
   name = billboard_msdf_material
   shaders = { vertex = "billboard_msdf.vert.glsl", fragment = "msdf.frag.glsl" }
-  depth = { test = true, write = false, compare = greater_or_equal }
+  depth = { test = true, write = true, compare = greater_or_equal }
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {

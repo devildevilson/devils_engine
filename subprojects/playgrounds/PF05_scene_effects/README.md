@@ -11,9 +11,9 @@ cmake --build build-debug --target PF05_scene_effects -j2
 ./build-debug/subprojects/playgrounds/PF05_scene_effects/bin/PF05_scene_effects
 ```
 
-Опции: `--validation`, `--uncapped`, `--fixed-camera`, `--frames=N`, `--dump=file.ppm`. Камера —
-WASD/QE, мышь и Shift. При `--fixed-camera` cursor возвращается в `CURSOR_NORMAL`, а `--dump` записывает
-точный кадр из `scene_color`, как в PF03/PF04.
+Опции: `--validation`, `--uncapped`, `--fixed-camera`, `--no-decals`, `--frames=N`, `--dump=file.ppm`.
+Камера — WASD/QE, мышь и Shift; `F` переключает decal pass. При `--fixed-camera` cursor возвращается в
+`CURSOR_NORMAL`, а `--dump` записывает точный кадр из `scene_color`, как в PF03/PF04.
 
 ## Первый срез — Crimson MSDF в мире
 
@@ -59,6 +59,12 @@ Fragment shader повторяет смысл MSDF-ветки `ui.frag.glsl`: me
 `clip.xy += pixel_offset · 2/viewport · anchor_clip.w`. Множитель `w` принципиален — без него размер снова
 зависел бы от расстояния. Сейчас pipeline сохраняет anchor Z/W и делает reverse-Z test. Если health/name marker
 должен быть виден сквозь мир, это будет второй material policy без depth test, а не четвёртая billboard math.
+
+World и billboard materials теперь также пишут reverse-Z depth. MSDF fragment делает `discard` при практически
+нулевом coverage: иначе невидимая часть каждого прямоугольного glyph quad стала бы depth-occluder. Поэтому
+ближний spatial label честно закрывает дальний, а world-anchored screen-size label исчезает за стеной. Для
+полупрозрачных пересекающихся labels всё равно понадобится явно выбрать sorted-alpha/OIT policy; один depth
+buffer сам по себе не определяет правильный порядок смешивания.
 
 ### Текстурированный fill
 
@@ -111,16 +117,42 @@ up-provider является radial/surface normal, после чего right с
 а descriptor/pipeline contracts должны оставаться в Painter shader includes/`libs/painter`, чтобы shared header
 не превратился в склад эффектов.
 
-На дальней стене пока намеренно показан coplanar world-text. Настоящий screen-space decal — другой способ
-проекции: он должен восстановить world position из scene depth, ограничить его decal volume и только затем
-вычислить glyph UV. Это следующий самостоятельный PF05-срез; называть обычный прозрачный quad SS decal было бы
-неверным контрактом.
+## Screen-space decals
+
+Второй срез использует именно deferred/screen-space projection, а не quad, лежащий рядом со стеной:
+
+```text
+opaque scene -> scene color + depth + world normal
+oriented decal box back faces
+  -> depth sample -> inverse(VP) -> world position -> world_to_decal
+  -> reject outside local [-0.5, 0.5]
+  -> reject/fade by receiver normal
+  -> local XY -> decal/MSDF UV -> alpha blend into scene color
+world/billboard text with writable depth -> UI -> present
+```
+
+Fixture проецирует Crimson-надписи на дальнюю и правую стены, используя два разных ортонормальных basis.
+Один glyph сейчас равен одному volume instance, потому что glyph'ы лежат в разных областях общего atlas;
+обычная картинная decal использовала бы тот же pass с одним volume и одним цельным UV rect. Instance хранит
+`decal_to_world` для rasterization и заранее вычисленный `world_to_decal` для fragment clipping — инвертировать
+матрицу на каждом пикселе незачем. Back-face rasterization ограничивает fragment work экранной проекцией box,
+а проверка локальных координат остаётся авторитетной.
+
+Normal threshold `0.55` не даёт проекции загнуться с дальней стены на боковую грань. Decal не тестирует и не
+пишет hardware depth: она получает уже выбранную opaque surface из `scene_depth`, так что закрытая стеной
+поверхность естественно не получает эффект. После decal pass граф переводит depth из read-only layout обратно
+в attachment layout для текста, который уже должен писать глубину.
+
+Граница техники на этом срезе явная: decals получают только opaque depth/normal и меняют только scene color.
+Transparent receivers, normal/roughness modification и angle-independent projection — отдельные material
+policies; случай камеры внутри volume текущим fixture отдельно не проверен.
+`--no-decals` является честным A/B: при одинаковом fixed-camera кадре исчезают обе projected надписи.
 
 ## Планируемые срезы
 
 - ~~Crimson MSDF вдоль отрезка и quadratic Bézier, фиксированный размер/ограниченная длина и wrapped billboard~~;
 - ~~spherical, cylindrical-Y и world-anchored screen-size billboards~~;
-- screen-space decals с reconstruction из depth/normal и ограниченным decal volume;
+- ~~screen-space decals с reconstruction из depth/normal и ограниченным decal volume~~;
 - particles, emitter lifecycle и простая particle physics;
 - rain и snow как два наблюдаемо разных consumer particle-системы;
 - cel shading с управляемыми lighting bands и outline policy;

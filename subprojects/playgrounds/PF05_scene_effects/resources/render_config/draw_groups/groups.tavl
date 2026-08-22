@@ -1,5 +1,14 @@
 { name = scene_draw_group, layout = v4, budget = scene_instances, draw_capacity = scene_draws, type = host_visible }
 {
+  // Two matrices avoid a per-fragment inverse: local cube -> world for rasterization and world -> local
+  // for testing the reconstructed scene point against the oriented decal volume.
+  name = decal_draw_group
+  layout = mat4mat4v4v4v4
+  budget = decal_instances
+  draw_capacity = decal_draws
+  type = host_visible
+}
+{
   // mat4 = glyph-local quad -> world, then atlas rect, fill, outline and SDF controls.
   name = world_glyph_draw_group
   layout = mat4v4v4v4v4
