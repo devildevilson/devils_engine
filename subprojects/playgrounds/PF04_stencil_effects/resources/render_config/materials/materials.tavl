@@ -1,0 +1,151 @@
+{
+  name = scene_material
+  shaders = {
+    vertex = "scene.vert.glsl"
+    fragment = "scene.frag.glsl"
+  }
+  depth = {
+    test = true
+    write = true
+    compare = greater
+  }
+  raster = {
+    cull = back
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  // Выбранный объект одновременно рисует цвет/глубину и записывает reference=1 в stencil.
+  name = selected_material
+  shaders = {
+    vertex = "scene.vert.glsl"
+    fragment = "scene.frag.glsl"
+  }
+  depth = {
+    test = true
+    write = true
+    compare = greater
+    stencil_test = true
+    front = {
+      fail_op = keep
+      pass_op = replace
+      depth_fail_op = keep
+      compare_op = always
+      compare_mask = 255
+      write_mask = 255
+      reference = 1
+    }
+    back = {
+      fail_op = keep
+      pass_op = replace
+      depth_fail_op = keep
+      compare_op = always
+      compare_mask = 255
+      write_mask = 255
+      reference = 1
+    }
+  }
+  raster = {
+    cull = back
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  // Увеличенная оболочка проходит только вне reference=1, поэтому остаётся узкое кольцо вокруг силуэта.
+  name = outline_material
+  shaders = {
+    vertex = "outline.vert.glsl"
+    fragment = "outline.frag.glsl"
+  }
+  depth = {
+    test = true
+    write = false
+    compare = greater_or_equal
+    stencil_test = true
+    front = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = keep
+      compare_op = not_equal
+      compare_mask = 255
+      write_mask = 0
+      reference = 1
+    }
+    back = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = keep
+      compare_op = not_equal
+      compare_mask = 255
+      write_mask = 0
+      reference = 1
+    }
+  }
+  raster = {
+    cull = front
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  // Этот fullscreen consumer не читает stencil как texture: fixed-function compare сам оставляет
+  // фрагменты только там, где reference равен единице. Шейдер управляет лишь прозрачностью debug tint.
+  name = stencil_debug_material
+  shaders = {
+    vertex = "fullscreen.vert.glsl"
+    fragment = "stencil_debug.frag.glsl"
+  }
+  depth = {
+    test = false
+    write = false
+    compare = always
+    stencil_test = true
+    front = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = keep
+      compare_op = equal
+      compare_mask = 255
+      write_mask = 0
+      reference = 1
+    }
+    back = {
+      fail_op = keep
+      pass_op = keep
+      depth_fail_op = keep
+      compare_op = equal
+      compare_mask = 255
+      write_mask = 0
+      reference = 1
+    }
+  }
+  raster = {
+    cull = none
+    front_face = ccw
+    polygon = fill
+    line_width = 1.0
+  }
+}
+{
+  name = ui_overlay_material
+  shaders = {
+    vertex = "ui.vert.glsl"
+    fragment = "ui.frag.glsl"
+  }
+  depth = {
+    test = false
+    write = false
+    compare = always
+  }
+  raster = {
+    cull = none
+    front_face = cw
+    polygon = fill
+    line_width = 1.0
+  }
+}

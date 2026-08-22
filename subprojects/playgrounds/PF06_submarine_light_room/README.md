@@ -1,10 +1,10 @@
-# PF05 — submarine light room
+# PF06 — submarine light room
 
 Первая художественно направленная сцена painter stack для `submarine_coop`: тесная тёмная комната,
 в которой свет является читаемым пространственным препятствием.
 
-Лаборатория выборочно наследует доказанные возможности `PF01`–`PF03`, но владеет собственными
-resources, shaders, parameter presets и executable. Расширение общей post gallery не меняет её без
+Лаборатория выборочно наследует доказанные возможности `PF01`–`PF05`, но владеет собственными
+resources, shaders, parameter presets и executable. Расширение общих effect galleries не меняет её без
 явного переноса.
 
 ## Первый наблюдаемый результат
@@ -21,8 +21,8 @@ resources, shaders, parameter presets и executable. Расширение общ
 ## Куда смотреть
 
 Пока executable отсутствует. Project look живёт в локальных `resources/`, shaders и presets; `src/`
-содержит только scene interaction/debug glue. Нужные lighting/shadow/post capabilities берутся как
-зафиксированное подмножество, а не через зависимость от targets `PF01`–`PF03`.
+содержит только scene interaction/debug glue. Нужные lighting/shadow/post/effect capabilities берутся как
+зафиксированное подмножество, а не через зависимость от targets `PF01`–`PF05`.
 
 ## Definition of Done
 

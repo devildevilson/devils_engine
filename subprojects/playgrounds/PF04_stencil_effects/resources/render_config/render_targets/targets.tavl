@@ -1,0 +1,4 @@
+{
+  name = scene_target
+  resources = [ scene_color = color_attachment, scene_depth_stencil = depth_attachment ]
+}

@@ -75,10 +75,11 @@ font и показывает описание сцены, controls, сглаже
 
 ## Текущий фокус — Painter visual stack
 
-Активная campaign: шесть независимых painter-лабораторий `PF01`–`PF06`. `PF01_forward_plus`, `PF02_shadows`
+Активная campaign: семь независимых painter-лабораторий `PF01`–`PF07`. `PF01_forward_plus`, `PF02_shadows`
 и [`PF03_post_processing`](subprojects/playgrounds/PF03_post_processing/README.md) закрыты; текущий bounded
-результат — [`PF04_stencil_effects`](subprojects/playgrounds/PF04_stencil_effects/README.md): outline,
-локальная маска post-effect и пространственный portal/mirror/window proof через обычный stencil path.
+результат — [`PF04_stencil_effects`](subprojects/playgrounds/PF04_stencil_effects/README.md). Первый executable
+уже доказывает `D24S8` attachment, reference writer, fullscreen equal-test visualization и stencil outline;
+следующий срез — локальный post-effect через отдельный bit, затем window mask и dynamic masks/reference.
 
 `PF03` закрыт 2026-08-21 полной запускаемой post-цепочкой, numeric/debug контрактами и shader-аудитом.
 Финальная незакрытая техника, TAAU, теперь действительно реконструирует: при масштабе 0.5 ошибка против
@@ -93,9 +94,9 @@ resolver'ом. Реализация остаётся отдельным backlog,
 
 Лаборатории не образуют CMake/source dependency chain. Более поздняя площадка может выборочно взять
 зафиксированный baseline ранней либо общий код из `common`/`libs/painter`, после чего развивается
-независимо. Поэтому расширение `PF03` новыми post-effects не меняет автоматически `PF05`.
+независимо. Поэтому расширение ранней gallery не меняет автоматически `PF06`.
 
-## Painter campaign: шесть лабораторий
+## Painter campaign: семь лабораторий
 
 | Порядок | Директория | Наблюдаемый результат | Первый consumer |
 | --- | --- | --- | --- |
@@ -103,16 +104,17 @@ resolver'ом. Реализация остаётся отдельным backlog,
 | 2 | `PF02_shadows` | directional/spot shadow maps, atlas и bias diagnostics | общий renderer |
 | 3 | `PF03_post_processing` | независимая расширяемая post-effect gallery | общий renderer |
 | 4 | `PF04_stencil_effects` | outline, local mask и portal/mirror/window proof | общий renderer |
-| 5 | `PF05_submarine_light_room` | густая тёмная сцена со светом как препятствием | `submarine_coop` |
-| 6 | `PF06_party_environment` | динамический свет, погода и окружение | `party_adventure` |
+| 5 | `PF05_scene_effects` | 3D SDF, decals, particles/weather, cel shading, billboards и world-space UI | общий renderer |
+| 6 | `PF06_submarine_light_room` | густая тёмная сцена со светом как препятствием | `submarine_coop` |
+| 7 | `PF07_party_environment` | динамический свет, погода и окружение | `party_adventure` |
 
-`PF01`–`PF04` доказывают отдельные painter capabilities. `PF05` и `PF06` фиксируют только нужное им
+`PF01`–`PF05` доказывают отдельные painter capabilities. `PF06` и `PF07` фиксируют только нужное им
 подмножество этих возможностей в собственных resources/presets. Исходники и CMake targets лабораторий
 не зависят друг от друга.
 
-Следующий ограниченный результат — первый executable `PF04`: один выбранный объект с outline, локальный
-post-effect через stencil mask, один portal/mirror/window пример и визуализация stencil buffer. Все сценарии
-должны идти через обычные painter materials/render graph; production parsing/execution fixes принадлежат
+Текущий ограниченный результат — локальный post-effect через отдельный stencil bit поверх уже работающего
+PF04 outline/debug baseline. Затем следует один window-mask пример и dynamic reference/read/write masks. Все
+сценарии идут через обычные Painter materials/render graph; production parsing/execution fixes принадлежат
 `libs/painter`, а демонстрационные consumers остаются внутри лаборатории.
 
 ## 1. Painter visual stack
@@ -137,8 +139,9 @@ scene instances + lights
 - [`PF02_shadows`](subprojects/playgrounds/PF02_shadows/README.md);
 - [`PF03_post_processing`](subprojects/playgrounds/PF03_post_processing/README.md);
 - [`PF04_stencil_effects`](subprojects/playgrounds/PF04_stencil_effects/README.md);
-- [`PF05_submarine_light_room`](subprojects/playgrounds/PF05_submarine_light_room/README.md);
-- [`PF06_party_environment`](subprojects/playgrounds/PF06_party_environment/README.md).
+- [`PF05_scene_effects`](subprojects/playgrounds/PF05_scene_effects/README.md);
+- [`PF06_submarine_light_room`](subprojects/playgrounds/PF06_submarine_light_room/README.md);
+- [`PF07_party_environment`](subprojects/playgrounds/PF07_party_environment/README.md).
 
 Минимальная общая shell должна появляться из потребностей `PF01`, а не проектироваться целиком заранее.
 Повторённый стабильный код camera/debug/capture переезжает в
@@ -350,7 +353,7 @@ artifacts и comparison между builds. Первым consumer может ст
 
 Три соединённые комнаты с разными материалами, дверями и acoustic zones. Проверяет
 `(material, action/impact, context) -> sound event`, шаги, удары, reverb/filters, obstruction, portals,
-priorities и virtual voices. Может использовать ту же proxy geometry, что `PF05_submarine_light_room`, но
+priorities и virtual voices. Может использовать ту же proxy geometry, что `PF06_submarine_light_room`, но
 остаётся отдельным аудио-сценарием.
 
 ### 14. `swarm_field_lab`
@@ -430,8 +433,9 @@ subprojects/
     PF02_shadows/
     PF03_post_processing/
     PF04_stencil_effects/
-    PF05_submarine_light_room/
-    PF06_party_environment/
+    PF05_scene_effects/
+    PF06_submarine_light_room/
+    PF07_party_environment/
     ...
 ```
 

@@ -1,0 +1,49 @@
+{
+  name = draw_scene
+  material = scene_material
+  geometry = scene_geometry
+  draw_group = scene_draw_group
+  sets = [ camera_data ]
+  command = "draw"
+}
+{
+  name = draw_selected
+  material = selected_material
+  geometry = scene_geometry
+  draw_group = selected_draw_group
+  sets = [ camera_data ]
+  command = "draw"
+}
+{
+  name = draw_outline
+  material = outline_material
+  geometry = scene_geometry
+  draw_group = selected_draw_group
+  sets = [ camera_data ]
+  command = "draw"
+}
+{
+  name = visualize_stencil
+  material = stencil_debug_material
+  geometry = fullscreen_geometry
+  sets = [ camera_data ]
+  command = "draw constant fullscreen_draw"
+  blending = {
+    scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
+  }
+}
+{
+  name = draw_playground_overlay
+  material = ui_overlay_material
+  geometry = ui_geometry
+  command = "draw_ui ui_vertices ui_indices ui_commands"
+  sets = [ camera_data, ui_textures ]
+  push_constants = [ ui_push ]
+  blending = {
+    scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
+  }
+}
+{
+  name = present_scene
+  command = "blit scene_color swapchain_image"
+}

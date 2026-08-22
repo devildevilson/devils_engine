@@ -1,0 +1,49 @@
+{
+  name = swapchain_image
+  format = swapchain4
+  role = present
+  size = viewport
+  swap = swapchain
+}
+{
+  name = scene_color
+  format = sf4
+  role = hdr_color
+  size = viewport
+  swap = per_frame
+}
+{
+  name = scene_depth_stencil
+  format = ds24
+  role = depth_stencil
+  size = viewport
+  swap = per_frame
+}
+{
+  name = camera_buffer
+  format = mat4mat4v4v4v4
+  role = upload
+  size = one
+  swap = per_frame
+}
+{
+  name = ui_vertices
+  format = c1
+  role = upload
+  size = ui_vertices_bytes
+  swap = per_frame
+}
+{
+  name = ui_indices
+  format = c1
+  role = upload
+  size = ui_indices_bytes
+  swap = per_frame
+}
+{
+  name = ui_commands
+  format = c1
+  role = upload
+  size = ui_commands_bytes
+  swap = per_frame
+}

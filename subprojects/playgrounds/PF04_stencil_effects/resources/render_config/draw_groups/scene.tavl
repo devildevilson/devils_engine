@@ -1,0 +1,14 @@
+{
+  name = scene_draw_group
+  layout = v4
+  budget = scene_instances
+  draw_capacity = scene_draws
+  type = host_visible
+}
+{
+  name = selected_draw_group
+  layout = v4
+  budget = selected_instances
+  draw_capacity = selected_draws
+  type = host_visible
+}

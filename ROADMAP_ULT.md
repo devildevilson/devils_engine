@@ -59,8 +59,9 @@
 2. `PF02_shadows` — directional/spot shadow maps;
 3. `PF03_post_processing` — независимая расширяемая post gallery;
 4. `PF04_stencil_effects` — stencil/masked effect gallery;
-5. `PF05_submarine_light_room` — тёмный project look для `SC`;
-6. `PF06_party_environment` — динамическое окружение для `PA`.
+5. `PF05_scene_effects` — SDF/decals/particles/weather/cel shading/billboards/world-space UI;
+6. `PF06_submarine_light_room` — тёмный project look для `SC`;
+7. `PF07_party_environment` — динамическое окружение для `PA`.
 
 Каждая лаборатория независима на уровне executable/resources/source. Поздняя lab выборочно фиксирует
 нужные результаты ранней, а общий стабильный код переезжает в `playgrounds/common` или owner-library
@@ -2465,7 +2466,8 @@ headless/playground-проверок, минимизирующая число о
 3. получить visible simple-forward/Forward+ comparison, heatmap, overflow и timings;
 4. после DoD `PF01` перейти к отдельной `PF02_shadows`;
 5. затем независимо развивать `PF03_post_processing` и `PF04_stencil_effects`;
-6. собрать выбранные стабильные части в `PF05_submarine_light_room` и `PF06_party_environment`.
+6. независимо закрывать scene-effect slices в `PF05_scene_effects`;
+7. собрать выбранные стабильные части в `PF06_submarine_light_room` и `PF07_party_environment`.
 
 `FND-02`, persistence, module profiles, command shell, headless host, localization, knowledge, calendar и
 layered fields остаются важным dependency pool. Они возвращаются в active work только вместе с

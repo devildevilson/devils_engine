@@ -1,0 +1,12 @@
+{
+  name = camera_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = all }
+  ]
+}
+{
+  name = ui_textures
+  texture_count = 16
+  sampler_pool = [ ui_linear ]
+  texture_stage = fragment
+}

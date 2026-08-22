@@ -1,4 +1,4 @@
-# PF06 — party environment
+# PF07 — party environment
 
 Визуальная лаборатория динамического окружения для `party_adventure`. Она отделена от будущего
 character-controller/animation/navigation playground, чтобы rendering не зависел сразу от всего 3D
