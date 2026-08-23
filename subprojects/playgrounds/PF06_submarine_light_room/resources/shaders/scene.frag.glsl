@@ -2,11 +2,8 @@
 
 // Алгоритм: два project lights и camera flashlight дают direct Lambert + простой Blinn specular на каждом пикселе.
 // Room irradiance — дешёвый diffuse bounce proxy, энергия которого выводится только из реально включённых lights:
-// при blackout direct и indirect равны нулю, поэтому exposure не может изобрести силуэты. В слабом свете world-space
-// два по-разному текущих warped-ridge слоя темнят irradiance вытянутыми разветвляющимися полосами. Mode gate
-// разрешает их только в exploration, direct-radiance gate убирает их из света, а screen-eccentricity gate оставляет
-// центр спокойнее периферии. Это художественная модуляция для едва замечаемого боковым зрением движения, а не
-// подмена настоящей shadow map.
+// при blackout direct и indirect равны нулю, поэтому exposure не может изобрести силуэты. Low-light shadow pattern
+// намеренно здесь не считается: он принадлежит participating medium и потому не исчезает вместе с surface GI.
 
 layout(location = 0) in vec3 in_world_position;
 layout(location = 1) in vec3 in_world_normal;
@@ -54,47 +51,6 @@ layout(set = 2, binding = 2, std140) uniform ShadowBlock {
   vec4 params;
   vec4 flashlight_position_range;
 } shadows;
-
-float hash31(const vec3 p) {
-  vec3 q = fract(p * 0.1031);
-  q += dot(q, q.yzx + 33.33);
-  return fract((q.x + q.y) * q.z);
-}
-
-float value_noise(const vec3 p) {
-  const vec3 cell = floor(p);
-  vec3 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  const float n000 = hash31(cell + vec3(0, 0, 0));
-  const float n100 = hash31(cell + vec3(1, 0, 0));
-  const float n010 = hash31(cell + vec3(0, 1, 0));
-  const float n110 = hash31(cell + vec3(1, 1, 0));
-  const float n001 = hash31(cell + vec3(0, 0, 1));
-  const float n101 = hash31(cell + vec3(1, 0, 1));
-  const float n011 = hash31(cell + vec3(0, 1, 1));
-  const float n111 = hash31(cell + vec3(1, 1, 1));
-  return mix(
-    mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
-    mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y),
-    f.z);
-}
-
-float shadow_pattern(const vec3 world_position) {
-  const float t = lighting.presentation.y * lighting.presentation.w;
-  vec3 p = world_position * vec3(0.28, 1.72, 0.25) + vec3(0.0, t * 0.56, t * 0.11);
-  const float broad_warp = value_noise(p * 0.34 + vec3(0.0, t * 0.07, t * 0.03)) - 0.5;
-  p.xz += vec2(broad_warp * 2.25, broad_warp * 1.55);
-  p.x += sin(p.y * 0.72 + t * 0.23) * 0.32;
-
-  // A narrow iso-ridge gives a long tongue; a slower offset ridge occasionally joins and splits it. Unlike the
-  // discarded quantization, this changes the silhouette of the pattern rather than only posterizing its value.
-  const float primary_ridge = pow(1.0 - abs(value_noise(p) * 2.0 - 1.0), 3.4);
-  vec3 branch_p = p * vec3(1.46, 0.69, 1.31) + vec3(5.7, -t * 0.41, 9.3 + t * 0.08);
-  branch_p.xz += vec2(sin(branch_p.y * 0.57 - t * 0.17), cos(branch_p.y * 0.49 + t * 0.13)) * 0.24;
-  const float branch_ridge = pow(1.0 - abs(value_noise(branch_p) * 2.0 - 1.0), 4.2);
-  const float filaments = max(primary_ridge, branch_ridge * 0.72);
-  return smoothstep(0.14, 0.72, filaments);
-}
 
 float shadow_visibility(
   sampler2DShadow shadow_map,
@@ -200,27 +156,6 @@ void main() {
 
   vec3 indirect = lighting.room_irradiance.rgb *
                   lighting.room_irradiance.w * lighting.state.z * lighting.source_reach.w;
-  const float direct_level = dot(direct, vec3(0.2126, 0.7152, 0.0722));
-  const float exploration_gate = lighting.source_reach.w *
-                                 (1.0 - smoothstep(0.05, 0.35, lighting.state.y));
-  // A wide smooth interval makes the pattern strongest in indirect-only shadow, then lets the real source erase
-  // it continuously through the penumbra instead of producing a second hard lighting boundary.
-  const float direct_shadow_gate = 1.0 - smoothstep(0.018, 0.22, direct_level);
-  const vec3 view_position = (camera_data.view * vec4(in_world_position, 1.0)).xyz;
-  const float view_depth = max(-view_position.z, 0.001);
-  const float tan_half_fov = tan(radians(65.0) * 0.5);
-  const float aspect = camera_data.viewport_near.x / max(camera_data.viewport_near.y, 1.0);
-  const vec2 screen_position = view_position.xy / (view_depth * tan_half_fov * vec2(aspect, 1.0));
-  const float peripheral = smoothstep(0.28, 0.88, length(screen_position));
-  const float peripheral_weight = mix(0.48, 1.08, peripheral);
-  float pattern = 0.0;
-  // This coherent runtime bypass makes the CLI A/B a useful cost measurement too; a production graph generation
-  // may still remove the feature entirely when the project does not use it.
-  if (lighting.presentation.z > 0.0001 && exploration_gate > 0.0001 && direct_shadow_gate > 0.0001) {
-    pattern = shadow_pattern(in_world_position) * lighting.presentation.z *
-              exploration_gate * direct_shadow_gate * peripheral_weight;
-  }
-  indirect *= max(1.0 - pattern * 0.94, 0.035);
 
   // Material 2 = weak bioluminescent fixture, 3 = safe ceiling lamp. Their emission obeys source state.
   vec3 emission = vec3(0.0);

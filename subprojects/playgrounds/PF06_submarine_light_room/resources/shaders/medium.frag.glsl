@@ -4,6 +4,9 @@
 // surface, после чего 20 midpoint samples интегрируют Beer-Lambert transmittance и single in-scattering. Результат
 // не содержит surface colour: MRT хранит scattering.rgb + linear distance и transmittance.rgb, чтобы full-resolution
 // compose мог применить коэффициенты к своему точному surface pixel без размытия материала через силуэты.
+// Exploration shadow pattern живёт здесь же: уже вычисленные крупный noise и вытянутый filament формируют медленно
+// движущиеся объёмные языки. Внутри них density немного растёт, а локальное in-scattering падает — поэтому узор
+// остаётся тёмным в толще воды и не зависит от коэффициента surface GI.
 
 layout(location = 0) in vec2 in_uv;
 layout(location = 0) out vec4 out_scattering_depth;
@@ -105,12 +108,16 @@ void main() {
 
   const float safe_gate = smoothstep(0.05, 0.60, lighting.state.y);
   const float base_density = lighting.medium_params.x * mix(1.0, 0.34, safe_gate);
+  const float exploration_pattern_gate = lighting.source_reach.w * (1.0 - safe_gate);
+  const float peripheral = smoothstep(0.28, 0.92, length(ndc));
+  const float peripheral_weight = mix(0.42, 1.12, peripheral);
   const vec3 absorption = max(lighting.medium_absorption.rgb, vec3(0.001));
   const vec3 flashlight_forward = normalize(lighting.flashlight_direction_cos.xyz);
   const vec3 ambient_source = lighting.room_irradiance.rgb * lighting.source_reach.w * 0.42;
 
   vec3 transmittance = vec3(1.0);
   vec3 in_scattering = vec3(0.0);
+  float pattern_peak = 0.0;
   float cached_window_visibility = 1.0;
   float cached_flashlight_visibility = 1.0;
   const float time = lighting.presentation.y;
@@ -124,7 +131,22 @@ void main() {
       const float mote_noise = hash31(floor((sample_position + drift * 4.0) * 12.0));
       const float mote = smoothstep(0.991, 0.999, mote_noise) * lighting.medium_params.w;
       const float heterogeneity = mix(1.0, 0.45 + broad_noise * 1.35, lighting.medium_scattering.w);
-      const float local_density = base_density * heterogeneity * (0.78 + filament * 0.38 + mote * 2.2);
+      // Reuse both density fields instead of adding several expensive value-noise evaluations to every one of
+      // the 20 samples. The low-frequency ridge gives coherent volumes; the anisotropic filament cuts long vertical
+      // branches into them. Pattern strength is independent from room bounce but naturally vanishes with density.
+      const float broad_ridge = pow(1.0 - abs(broad_noise * 2.0 - 1.0), 3.2);
+      const float filament_ridge = pow(1.0 - abs(filament * 2.0 - 1.0), 4.4);
+      const float pattern_shape = smoothstep(0.18, 0.78, max(broad_ridge * 0.68, filament_ridge));
+      const float pattern = clamp(
+        pattern_shape * lighting.presentation.z * exploration_pattern_gate * peripheral_weight,
+        0.0,
+        1.4);
+      // Preserve the nearest coherent ridge as optical depth. Averaging twenty alternating bright/dark samples
+      // would otherwise converge to a nearly uniform grey fog and erase exactly the slow peripheral silhouette.
+      const float near_volume_weight = 1.0 - smoothstep(8.0, 14.0, distance_along_ray);
+      pattern_peak = max(pattern_peak, pattern * near_volume_weight);
+      const float local_density = base_density * heterogeneity *
+                                  (0.78 + filament * 0.38 + mote * 2.2) * (1.0 + pattern * 0.42);
 
       const float weak_distance = length(sample_position - lighting.weak_position_radius.xyz);
       const float weak_radial = clamp(1.0 - weak_distance / max(lighting.source_reach.x, 0.001), 0.0, 1.0);
@@ -159,7 +181,10 @@ void main() {
       const vec3 flashlight_scatter = lighting.flashlight_color_energy.rgb *
         lighting.flashlight_color_energy.w * lighting.state.w * flashlight_cone * flashlight_front *
         flashlight_falloff * lighting.medium_params.z * phase * cached_flashlight_visibility * 0.006;
-      const vec3 source_radiance = ambient_source + weak_scatter + flashlight_scatter;
+      // A denser region alone can become brighter from extra scattering. Suppressing illumination inside the same
+      // ridge makes it read as a moving shadow suspended in water instead of a bright fog bank.
+      const float pattern_light = 1.0 - smoothstep(0.0, 1.4, pattern) * 0.88;
+      const vec3 source_radiance = (ambient_source + weak_scatter + flashlight_scatter) * pattern_light;
 
       const vec3 step_transmittance = exp(-absorption * local_density * step_length);
       in_scattering += transmittance * source_radiance * lighting.medium_scattering.rgb *
@@ -167,6 +192,14 @@ void main() {
       transmittance *= step_transmittance;
     }
   }
+
+  // This is still a medium effect: zero density removes it exactly, and its strength grows with the ray's actual
+  // participating-medium distance. It acts after single scattering so a dark filament cannot turn into a bright
+  // bank merely because its density increased.
+  const float pattern_occlusion = smoothstep(0.32, 1.18, pattern_peak);
+  const float pattern_optical_depth = base_density * ray_length * pattern_occlusion * 0.52;
+  in_scattering *= 1.0 - pattern_occlusion * 0.58;
+  transmittance *= exp(-absorption * pattern_optical_depth);
 
   out_scattering_depth = vec4(in_scattering, surface_distance);
   out_transmittance = vec4(transmittance, 1.0);

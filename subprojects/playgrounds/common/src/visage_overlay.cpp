@@ -107,7 +107,28 @@ void visage_overlay::set_detail_lines(const std::span<const std::string> lines) 
   env["playground_detail_count"] = state_->detail_count;
 }
 
-bool visage_overlay::update(const uint64_t frame_delta_us, const uint64_t timestamp_us) {
+void visage_overlay::set_number(const std::string_view name, const double value) {
+  state_->ui->script_env()[std::string(name)] = value;
+}
+
+double visage_overlay::number(const std::string_view name, const double fallback) const {
+  const sol::object value = state_->ui->script_env()[std::string(name)];
+  return value.valid() && value.is<double>() ? value.as<double>() : fallback;
+}
+
+void visage_overlay::set_boolean(const std::string_view name, const bool value) {
+  state_->ui->script_env()[std::string(name)] = value;
+}
+
+bool visage_overlay::boolean(const std::string_view name, const bool fallback) const {
+  const sol::object value = state_->ui->script_env()[std::string(name)];
+  return value.valid() && value.is<bool>() ? value.as<bool>() : fallback;
+}
+
+bool visage_overlay::update(
+  const visage::input_snapshot_t& input,
+  const uint64_t frame_delta_us,
+  const uint64_t timestamp_us) {
   const double frame_ms = std::max(double(frame_delta_us) / 1000.0, 0.001);
   state_->smoothed_frame_ms = state_->smoothed_frame_ms == 0.0
                                 ? frame_ms
@@ -115,12 +136,28 @@ bool visage_overlay::update(const uint64_t frame_delta_us, const uint64_t timest
   state_->ui->set_env_number("playground_frame_ms", state_->smoothed_frame_ms);
   state_->ui->set_env_number("playground_fps", 1000.0 / state_->smoothed_frame_ms);
 
-  visage::input_snapshot_t input{};
   state_->ui->input(input);
   if (!state_->ui->update(size_t(frame_delta_us), size_t(timestamp_us), timestamp_us ^ 0x9e3779b97f4a7c15ull)) {
     return false;
   }
   return state_->ui->convert();
+}
+
+bool visage_overlay::update(const uint64_t frame_delta_us, const uint64_t timestamp_us) {
+  return update(visage::input_snapshot_t{}, frame_delta_us, timestamp_us);
+}
+
+bool visage_overlay::update_pointer(
+  const float mouse_x,
+  const float mouse_y,
+  const bool mouse_left,
+  const uint64_t frame_delta_us,
+  const uint64_t timestamp_us) {
+  visage::input_snapshot_t input{};
+  input.mouse_x = mouse_x;
+  input.mouse_y = mouse_y;
+  input.mouse_left = mouse_left;
+  return update(input, frame_delta_us, timestamp_us);
 }
 
 std::span<const uint8_t> visage_overlay::vertices() const noexcept {

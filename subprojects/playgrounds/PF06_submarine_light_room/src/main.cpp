@@ -58,6 +58,11 @@ int32_t flashlight_key = -1;
 int32_t shadow_key = -1;
 int32_t helmet_key = -1;
 int32_t tonemap_key = -1;
+int32_t ui_visibility_key = -1;
+int32_t ui_interaction_key = -1;
+bool ui_visibility_toggle_requested = false;
+bool ui_interaction_toggle_requested = false;
+bool ui_mouse_left = false;
 
 void error_callback(const int error, const char* message) noexcept {
   utils::warn("PF06 input error {}: {}", error, message);
@@ -71,6 +76,13 @@ void key_callback(GLFWwindow* window, const int key, const int scancode, const i
   if (key == shadow_key && action == 1) shadows_enabled = !shadows_enabled;
   if (key == helmet_key && action == 1) helmet_enabled = !helmet_enabled;
   if (key == tonemap_key && action == 1) tonemap_operator = (tonemap_operator + 1u) % 3u;
+  if (key == ui_visibility_key && action == 1) ui_visibility_toggle_requested = true;
+  if (key == ui_interaction_key && action == 1) ui_interaction_toggle_requested = true;
+}
+
+void mouse_button_callback(GLFWwindow*, const int button, const int action, const int) noexcept {
+  input::events::update_mouse_button(button, action);
+  if (button == 0) ui_mouse_left = action != 0;
 }
 
 void framebuffer_callback(GLFWwindow*, const int width, const int height) noexcept {
@@ -279,6 +291,11 @@ void write_overlay_buffers(painter::graphics_base& base, const playground::visag
   if (!commands.empty()) std::memcpy(destination + sizeof(count), commands.data(), commands.size_bytes());
 }
 
+void clear_overlay_commands(painter::graphics_base& base) {
+  const uint32_t count = 0;
+  write_current_buffer(base, "ui_commands", &count, sizeof(count));
+}
+
 void bind_texture_descriptor(
   painter::graphics_base& base,
   const painter::assets_base& assets,
@@ -423,6 +440,7 @@ int main(int argc, char** argv) {
   float pattern_strength = 1.55f;
   float pattern_speed = 0.075f;
   float bounce_override = -1.0f;
+  float left_source_strength = 1.0f;
   float medium_density = 0.14f;
   float medium_anisotropy = 0.42f;
   float god_ray_strength = 0.90f;
@@ -432,6 +450,7 @@ int main(int argc, char** argv) {
   float tonemap_black_crush = 0.006f;
   float helmet_strength = 0.82f;
   bool medium_enabled = true;
+  bool overlay_visible = true;
   uint32_t flashlight_on_frame = UINT32_MAX;
   uint32_t flashlight_off_frame = UINT32_MAX;
   uint32_t exploration_on_frame = UINT32_MAX;
@@ -445,12 +464,14 @@ int main(int argc, char** argv) {
     if (option == "--no-medium") medium_enabled = false;
     if (option == "--no-shadows") shadows_enabled = false;
     if (option == "--no-helmet") helmet_enabled = false;
+    if (option == "--no-ui") overlay_visible = false;
     flashlight_enabled = flashlight_enabled || option == "--flashlight";
     constexpr std::string_view lighting_prefix = "--lighting=";
     constexpr std::string_view exposure_prefix = "--exposure=";
     constexpr std::string_view pattern_prefix = "--pattern=";
     constexpr std::string_view pattern_speed_prefix = "--pattern-speed=";
     constexpr std::string_view bounce_prefix = "--bounce=";
+    constexpr std::string_view left_source_prefix = "--left-source=";
     constexpr std::string_view medium_prefix = "--medium-density=";
     constexpr std::string_view anisotropy_prefix = "--medium-anisotropy=";
     constexpr std::string_view god_rays_prefix = "--god-rays=";
@@ -476,6 +497,7 @@ int main(int argc, char** argv) {
     if (option.starts_with(pattern_prefix)) pattern_strength = std::clamp(std::stof(std::string(option.substr(pattern_prefix.size()))), 0.0f, 2.0f);
     if (option.starts_with(pattern_speed_prefix)) pattern_speed = std::max(std::stof(std::string(option.substr(pattern_speed_prefix.size()))), 0.0f);
     if (option.starts_with(bounce_prefix)) bounce_override = std::clamp(std::stof(std::string(option.substr(bounce_prefix.size()))), 0.0f, 1.0f);
+    if (option.starts_with(left_source_prefix)) left_source_strength = std::clamp(std::stof(std::string(option.substr(left_source_prefix.size()))), 0.0f, 3.0f);
     if (option.starts_with(medium_prefix)) medium_density = std::clamp(std::stof(std::string(option.substr(medium_prefix.size()))), 0.0f, 0.8f);
     if (option.starts_with(anisotropy_prefix)) medium_anisotropy = std::clamp(std::stof(std::string(option.substr(anisotropy_prefix.size()))), -0.85f, 0.85f);
     if (option.starts_with(god_rays_prefix)) god_ray_strength = std::clamp(std::stof(std::string(option.substr(god_rays_prefix.size()))), 0.0f, 3.0f);
@@ -590,11 +612,11 @@ int main(int argc, char** argv) {
     const std::string common_resources = std::string(PLAYGROUND_COMMON_RESOURCE_ROOT) + "/";
     playground::visage_overlay overlay(
       common_resources + "fonts/crimson.roman.ttf",
-      common_resources + "ui/lab_overlay.lua",
+      resource_root + "ui/pf06_controls.lua",
       playground::overlay_description{
         "PF06 — Submarine light room",
         "Project-look slice: direct light, room irradiance and low-light pattern",
-        "WASD/QE + mouse · L lighting · F flashlight · K shadows · H helmet · T tonemap · Esc"});
+        "WASD/QE · I cursor · U UI · L mode · F light · K shadows · H helmet · T tone"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(
@@ -619,7 +641,10 @@ int main(int argc, char** argv) {
     shadow_key = input::glfw_key_from_canonical("key_k");
     helmet_key = input::glfw_key_from_canonical("key_h");
     tonemap_key = input::glfw_key_from_canonical("key_t");
+    ui_visibility_key = input::glfw_key_from_canonical("key_u");
+    ui_interaction_key = input::glfw_key_from_canonical("key_i");
     input::set_window_callback(window, &key_callback);
+    input::set_window_callback(window, &mouse_button_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
     if (fixed_camera) input::set_cursor_input_mode(window, DEVILS_ENGINE_INPUT_CURSOR_NORMAL);
     else {
@@ -629,6 +654,8 @@ int main(int argc, char** argv) {
 
     playground::free_camera camera;
     camera.position = {0.0f, 0.15f, 3.25f};
+    bool ui_interaction_enabled = fixed_camera && overlay_visible;
+    float exploration_gi = bounce_override >= 0.0f ? bounce_override : 0.23f;
     auto [mouse_x, mouse_y] = input::cursor_pos(window);
     auto previous_time = std::chrono::steady_clock::now();
     const auto start_time = previous_time;
@@ -660,13 +687,40 @@ int main(int argc, char** argv) {
         base.resize_viewport(pending_width, pending_height);
         resize_pending = false;
       }
-      const auto [next_mouse_x, next_mouse_y] = input::cursor_pos(window);
+      auto [next_mouse_x, next_mouse_y] = input::cursor_pos(window);
+      if (ui_visibility_toggle_requested) {
+        overlay_visible = !overlay_visible;
+        if (!overlay_visible && ui_interaction_enabled && !fixed_camera) {
+          ui_interaction_enabled = false;
+          input::set_cursor_input_mode(window, DEVILS_ENGINE_INPUT_CURSOR_DISABLED);
+          input::set_raw_mouse_motion(window);
+        }
+        const auto [rebased_mouse_x, rebased_mouse_y] = input::cursor_pos(window);
+        mouse_x = next_mouse_x = rebased_mouse_x;
+        mouse_y = next_mouse_y = rebased_mouse_y;
+        ui_visibility_toggle_requested = false;
+      }
+      if (ui_interaction_toggle_requested) {
+        if (overlay_visible && !fixed_camera) {
+          ui_interaction_enabled = !ui_interaction_enabled;
+          input::set_cursor_input_mode(
+            window,
+            ui_interaction_enabled
+              ? DEVILS_ENGINE_INPUT_CURSOR_NORMAL
+              : DEVILS_ENGINE_INPUT_CURSOR_DISABLED);
+          if (!ui_interaction_enabled) input::set_raw_mouse_motion(window);
+          const auto [rebased_mouse_x, rebased_mouse_y] = input::cursor_pos(window);
+          mouse_x = next_mouse_x = rebased_mouse_x;
+          mouse_y = next_mouse_y = rebased_mouse_y;
+        }
+        ui_interaction_toggle_requested = false;
+      }
       playground::camera_motion motion;
       motion.forward = float(input::events::is_pressed("camera_forward")) - float(input::events::is_pressed("camera_back"));
       motion.right = float(input::events::is_pressed("camera_right")) - float(input::events::is_pressed("camera_left"));
       motion.up = float(input::events::is_pressed("camera_up")) - float(input::events::is_pressed("camera_down"));
       motion.fast = input::events::is_pressed("camera_fast");
-      if (!fixed_camera) {
+      if (!fixed_camera && !ui_interaction_enabled) {
         motion.look_delta = {float(next_mouse_x - mouse_x), float(next_mouse_y - mouse_y)};
         camera.update(motion, dt);
       }
@@ -737,8 +791,7 @@ int main(int argc, char** argv) {
       const glm::vec3 room_gi = gi_weight > 0.0001f
         ? (weak_gi * weak_source + safe_gi * safe_source + flashlight_gi * flashlight_source) / gi_weight
         : weak_gi;
-      float bounce = lighting_mode == safe_mode ? 0.30f : 0.23f;
-      if (bounce_override >= 0.0f) bounce = bounce_override;
+      const float bounce = lighting_mode == safe_mode ? 0.30f : exploration_gi;
       const float time_seconds = fixed_step
         ? float(frames_total) / 60.0f
         : std::chrono::duration<float>(now - start_time).count();
@@ -746,7 +799,7 @@ int main(int argc, char** argv) {
         glm::vec4(weak_weight, safe_weight, bounce, flashlight_gain),
         glm::vec4(exposure, time_seconds, pattern_strength, pattern_speed),
         glm::vec4(window_position, 5.2f),
-        glm::vec4(0.28f, 0.46f, 0.50f, 7.5f),
+        glm::vec4(0.28f, 0.46f, 0.50f, 7.5f * left_source_strength),
         glm::vec4(0.0f, 2.55f, -1.4f, 7.0f),
         glm::vec4(1.00f, 0.64f, 0.34f, 13.0f),
         glm::vec4(flashlight_direction, 0.90f),
@@ -770,11 +823,11 @@ int main(int argc, char** argv) {
       const uint64_t timestamp_us = uint64_t(
         std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
       const std::array<std::string, 12> details{
-        std::format("Lighting: {} · weak {:.2f} · safe {:.2f}", mode_name(lighting_mode), weak_weight, safe_weight),
-        std::format("Room irradiance: fixed {:.2f} · source presence {:.2f}", bounce, room_source),
+        std::format("Lighting: {} · weak {:.2f} · safe {:.2f} · left ×{:.2f}", mode_name(lighting_mode), weak_weight, safe_weight, left_source_strength),
+        std::format("Room irradiance: exploration GI {:.3f} · source presence {:.2f}", exploration_gi, room_source),
         std::format("Point reach: weak {:.1f} m · safe {:.1f} m", weak_reach, safe_reach),
         std::format("Flashlight: {} · ease-out front {:.1f}/12.0 m", flashlight_enabled ? "ON" : "OFF", flashlight_reach),
-        std::format("Pattern: organic peripheral flow · strength {:.2f} · speed {:.3f}", pattern_strength, pattern_speed),
+        std::format("Pattern: volumetric peripheral flow · strength {:.2f} · speed {:.3f}", pattern_strength, pattern_speed),
         std::format("Medium: {} · density {:.3f} · g {:.2f}", medium_enabled ? "ON" : "OFF", medium_density, medium_anisotropy),
         std::format("Volume: god rays {:.2f} · motes {:.2f}", god_ray_strength, mote_strength),
         std::format("Shadows: {} · 2×1024² reverse-Z · surface PCF / volume compare", shadows_enabled ? "ON" : "OFF"),
@@ -782,9 +835,32 @@ int main(int argc, char** argv) {
         std::format("Helmet: {} · strength {:.2f}", helmet_enabled ? "ON" : "OFF", helmet_strength),
         std::format("Scene: {} axis-aligned instances · per-pixel lighting", scene_instances.size()),
         "Half-resolution medium: 20 samples; flashlight + window maps shadow the volume"};
-      overlay.set_detail_lines(details);
-      overlay.update(frame_delta_us, timestamp_us);
-      write_overlay_buffers(base, overlay);
+      if (overlay_visible) {
+        overlay.set_detail_lines(details);
+        overlay.set_number("pf06_gi", exploration_gi);
+        overlay.set_number("pf06_left_source", left_source_strength);
+        overlay.set_number("pf06_medium_density", medium_density);
+        overlay.set_number("pf06_pattern_contrast", pattern_strength);
+        overlay.set_boolean("pf06_hide_requested", false);
+        const float ui_mouse_x = ui_interaction_enabled ? float(next_mouse_x) : -1.0f;
+        const float ui_mouse_y = ui_interaction_enabled ? float(next_mouse_y) : -1.0f;
+        if (!overlay.update_pointer(
+              ui_mouse_x,
+              ui_mouse_y,
+              ui_interaction_enabled && ui_mouse_left,
+              frame_delta_us,
+              timestamp_us)) {
+          utils::warn("PF06 Visage controls update failed");
+        }
+        exploration_gi = std::clamp(float(overlay.number("pf06_gi", exploration_gi)), 0.0f, 1.0f);
+        left_source_strength = std::clamp(float(overlay.number("pf06_left_source", left_source_strength)), 0.0f, 3.0f);
+        medium_density = std::clamp(float(overlay.number("pf06_medium_density", medium_density)), 0.0f, 0.80f);
+        pattern_strength = std::clamp(float(overlay.number("pf06_pattern_contrast", pattern_strength)), 0.0f, 2.0f);
+        if (overlay.boolean("pf06_hide_requested", false)) ui_visibility_toggle_requested = true;
+        write_overlay_buffers(base, overlay);
+      } else {
+        clear_overlay_commands(base);
+      }
 
       context.prepare();
       context.draw();

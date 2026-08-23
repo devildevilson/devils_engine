@@ -5,11 +5,13 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 
 #include <devils_engine/visage/render_output.h>
 
 namespace devils_engine::visage {
 struct font_t;
+struct input_snapshot_t;
 }
 
 namespace devils_engine::playground {
@@ -26,9 +28,9 @@ struct rgba_image_view {
   uint32_t height = 0;
 };
 
-// Small non-interactive Visage shell shared by graphical playgrounds. It owns the CPU font atlas,
-// Lua/Nuklear runtime and a smoothed frame meter; the playground host remains responsible for
-// uploading the atlas and the produced POD buffers through its ordinary painter path.
+// Small Visage shell shared by graphical playgrounds. The default update overload remains non-interactive;
+// a lab may explicitly provide an input snapshot and exchange a bounded set of host-owned environment values.
+// The playground host remains responsible for uploading the produced POD buffers through Painter.
 class visage_overlay {
 public:
   visage_overlay(std::string font_path, std::string script_path, overlay_description description);
@@ -46,7 +48,21 @@ public:
   // Optional lab-owned diagnostic rows rendered below the common scene/controls/frame meter.
   // Strings are copied into the overlay's Lua environment and may be replaced every frame.
   void set_detail_lines(std::span<const std::string> lines);
+  void set_number(std::string_view name, double value);
+  double number(std::string_view name, double fallback) const;
+  void set_boolean(std::string_view name, bool value);
+  bool boolean(std::string_view name, bool fallback) const;
   bool update(uint64_t frame_delta_us, uint64_t timestamp_us);
+  bool update(
+    const visage::input_snapshot_t& input,
+    uint64_t frame_delta_us,
+    uint64_t timestamp_us);
+  bool update_pointer(
+    float mouse_x,
+    float mouse_y,
+    bool mouse_left,
+    uint64_t frame_delta_us,
+    uint64_t timestamp_us);
 
   std::span<const uint8_t> vertices() const noexcept;
   std::span<const uint8_t> indices() const noexcept;
