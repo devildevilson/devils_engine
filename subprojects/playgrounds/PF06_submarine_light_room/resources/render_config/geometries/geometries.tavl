@@ -1,0 +1,4 @@
+{ name = scene_geometry, vertex_layout = p3n3, index_type = none, topology = triangle_list, restart = false }
+{ name = fullscreen_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
+{ name = mote_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
+{ name = ui_geometry, vertex_layout = v2v2c4, index_type = u16, topology = triangle_list, restart = false }

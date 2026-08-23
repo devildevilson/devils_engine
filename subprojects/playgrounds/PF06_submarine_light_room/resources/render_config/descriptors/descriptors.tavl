@@ -1,0 +1,33 @@
+{
+  name = camera_data
+  layout = [ { resource = camera_buffer, usage = uniform, stage = all } ]
+}
+{
+  name = lighting_data
+  layout = [ { resource = lighting_buffer, usage = uniform, stage = all } ]
+}
+{
+  name = medium_data
+  layout = [
+    { resource = scene_depth, usage = depth_read, stage = fragment, sampler = nearest_sampler },
+    { resource = camera_buffer, usage = uniform, stage = fragment },
+    { resource = lighting_buffer, usage = uniform, stage = fragment }
+  ]
+}
+{
+  name = compose_data
+  layout = [
+    { resource = scene_color, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = scene_depth, usage = depth_read, stage = fragment, sampler = nearest_sampler },
+    { resource = medium_scattering, usage = sampled, stage = fragment, sampler = nearest_sampler },
+    { resource = medium_transmittance, usage = sampled, stage = fragment, sampler = nearest_sampler },
+    { resource = camera_buffer, usage = uniform, stage = fragment },
+    { resource = lighting_buffer, usage = uniform, stage = fragment }
+  ]
+}
+{
+  name = ui_textures
+  texture_count = 16
+  sampler_pool = [ linear_sampler ]
+  texture_stage = fragment
+}

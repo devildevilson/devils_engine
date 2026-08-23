@@ -1,0 +1,66 @@
+{
+  name = pf06_submarine_room
+  startup = true
+  passes = [
+    {
+      name = pf06_lighting
+      render_target = lit_target
+      subpasses = [
+        { scene_color = (undefined, clear), scene_normal = (undefined, clear), scene_depth = (undefined, clear) },
+        { scene_color = (color_attachment, store), scene_normal = (color_attachment, store), scene_depth = (depth_attachment, store) },
+        { scene_color = (sampled, store), scene_normal = (sampled, store), scene_depth = (depth_read, store) }
+      ]
+      steps = [ draw_scene ]
+    },
+    {
+      name = pf06_medium
+      render_target = medium_target
+      subpasses = [
+        { scene_depth = (depth_read, store), medium_scattering = (undefined, clear), medium_transmittance = (undefined, clear) },
+        { scene_depth = (depth_read, store), medium_scattering = (color_attachment, store), medium_transmittance = (color_attachment, store) },
+        { scene_depth = (depth_read, store), medium_scattering = (sampled, store), medium_transmittance = (sampled, store) }
+      ]
+      steps = [ integrate_medium ]
+    },
+    {
+      name = pf06_compose
+      render_target = compose_target
+      subpasses = [
+        { scene_color = (sampled, store), scene_depth = (depth_read, store), medium_scattering = (sampled, store), medium_transmittance = (sampled, store), final_color = (undefined, clear) },
+        { scene_color = (sampled, store), scene_depth = (depth_read, store), medium_scattering = (sampled, store), medium_transmittance = (sampled, store), final_color = (color_attachment, store) },
+        { scene_color = (sampled, store), scene_depth = (depth_read, store), medium_scattering = (sampled, store), medium_transmittance = (sampled, store), final_color = (color_attachment, store) }
+      ]
+      steps = [ compose_scene ]
+    },
+    {
+      name = pf06_motes
+      render_target = mote_target
+      subpasses = [
+        { final_color = (color_attachment, store), scene_depth = (depth_read, store) },
+        { final_color = (color_attachment, store), scene_depth = (depth_attachment, store) },
+        { final_color = (color_attachment, store), scene_depth = (depth_read, store) }
+      ]
+      steps = [ draw_motes ]
+    },
+    {
+      name = pf06_ui
+      render_target = ui_target
+      subpasses = [
+        { final_color = (color_attachment, store) },
+        { final_color = (color_attachment, store) },
+        { final_color = (transfer_src, store) }
+      ]
+      steps = [ draw_overlay ]
+    },
+    {
+      name = pf06_present
+      wait_for = [ swapchain_image ]
+      subpasses = [
+        { final_color = (transfer_src, store), swapchain_image = (transfer_dst, store) },
+        { final_color = (transfer_src, store), swapchain_image = (present, store) }
+      ]
+      steps = [ present_scene ]
+    }
+  ]
+  present_source = swapchain_image
+}

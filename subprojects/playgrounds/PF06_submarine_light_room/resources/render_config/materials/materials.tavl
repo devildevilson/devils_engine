@@ -1,0 +1,30 @@
+{
+  name = scene_material
+  shaders = { vertex = "scene.vert.glsl", fragment = "scene.frag.glsl" }
+  depth = { test = true, write = true, compare = greater }
+  raster = { cull = back, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = medium_material
+  shaders = { vertex = "fullscreen.vert.glsl", fragment = "medium.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = cw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = compose_material
+  shaders = { vertex = "fullscreen.vert.glsl", fragment = "compose.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = cw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = mote_material
+  shaders = { vertex = "motes.vert.glsl", fragment = "motes.frag.glsl" }
+  depth = { test = true, write = false, compare = greater }
+  raster = { cull = none, front_face = cw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = ui_material
+  shaders = { vertex = "ui.vert.glsl", fragment = "ui.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = cw, polygon = fill, line_width = 1.0 }
+}

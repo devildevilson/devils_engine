@@ -1,0 +1,5 @@
+{ name = lit_target, resources = [ scene_color = color_attachment, scene_normal = color_attachment, scene_depth = depth_attachment ] }
+{ name = medium_target, resources = [ medium_scattering = color_attachment, medium_transmittance = color_attachment ] }
+{ name = compose_target, resources = [ final_color = color_attachment ] }
+{ name = mote_target, resources = [ final_color = color_attachment, scene_depth = depth_attachment ] }
+{ name = ui_target, resources = [ final_color = color_attachment ] }

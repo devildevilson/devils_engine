@@ -1,0 +1,40 @@
+{
+  name = draw_scene
+  material = scene_material
+  geometry = scene_geometry
+  draw_group = scene_draw_group
+  sets = [ camera_data, lighting_data ]
+  command = "draw"
+}
+{
+  name = integrate_medium
+  material = medium_material
+  geometry = fullscreen_geometry
+  sets = [ medium_data ]
+  command = "draw constant fullscreen_draw"
+}
+{
+  name = compose_scene
+  material = compose_material
+  geometry = fullscreen_geometry
+  sets = [ compose_data ]
+  command = "draw constant fullscreen_draw"
+}
+{
+  name = draw_motes
+  material = mote_material
+  geometry = mote_geometry
+  sets = [ camera_data, lighting_data ]
+  command = "draw constant mote_draw"
+  blending = { final_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
+}
+{
+  name = draw_overlay
+  material = ui_material
+  geometry = ui_geometry
+  command = "draw_ui ui_vertices ui_indices ui_commands"
+  sets = [ camera_data, ui_textures ]
+  push_constants = [ ui_push ]
+  blending = { final_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
+}
+{ name = present_scene, command = "blit final_color swapchain_image" }

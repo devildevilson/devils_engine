@@ -1,0 +1,8 @@
+{
+  // position.xyz + material id, half extent.xyz + roughness, albedo.rgb + metallic.
+  name = scene_draw_group
+  layout = v4v4v4
+  budget = scene_instances
+  draw_capacity = scene_draws
+  type = host_visible
+}
