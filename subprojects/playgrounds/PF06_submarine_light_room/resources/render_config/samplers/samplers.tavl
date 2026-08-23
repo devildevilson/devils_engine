@@ -1,2 +1,4 @@
 { name = linear_sampler, filter = linear, address = clamp }
 { name = nearest_sampler, filter = nearest, address = clamp }
+// Reverse-Z: receiver visibility is reference_depth >= closest caster depth.
+{ name = shadow_compare, filter = linear, address = clamp, compare = greater_or_equal }

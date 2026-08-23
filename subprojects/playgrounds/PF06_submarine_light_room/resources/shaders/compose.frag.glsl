@@ -32,12 +32,26 @@ layout(set = 0, binding = 5, std140) uniform LightingBlock {
   vec4 medium_params;
   vec4 medium_absorption;
   vec4 medium_scattering_data;
+  vec4 tonemap_params;
+  vec4 helmet_params;
 } lighting;
 
 vec3 aces_fitted(const vec3 value) {
   const vec3 a = value * (2.51 * value + 0.03);
   const vec3 b = value * (2.43 * value + 0.59) + 0.14;
   return clamp(a / b, 0.0, 1.0);
+}
+
+vec3 hable_curve(const vec3 value) {
+  const float A = 0.15, B = 0.50, C = 0.10, D = 0.20, E = 0.02, F = 0.30;
+  return ((value * (A * value + C * B) + D * E) /
+          (value * (A * value + B) + D * F)) - E / F;
+}
+
+vec3 apply_tonemap(const vec3 value, const int op) {
+  if (op == 0) return value / (1.0 + value);
+  if (op == 1) return clamp(hable_curve(value * 2.0) / hable_curve(vec3(11.2)), 0.0, 1.0);
+  return aces_fitted(value);
 }
 
 float linear_distance(const vec2 uv, const float depth) {
@@ -82,5 +96,10 @@ void main() {
 
   vec3 color = (surface * transmittance + scattering) * lighting.presentation.x;
   color *= vec3(0.91, 1.00, 1.06);
-  frag_color = vec4(aces_fitted(color), 1.0);
+  color = max(color - lighting.tonemap_params.w, vec3(0.0));
+  color = pow(color, vec3(max(lighting.tonemap_params.y, 0.01)));
+  color = apply_tonemap(color, int(lighting.tonemap_params.x + 0.5));
+  const float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  color = mix(vec3(luma), color, lighting.tonemap_params.z);
+  frag_color = vec4(color, 1.0);
 }

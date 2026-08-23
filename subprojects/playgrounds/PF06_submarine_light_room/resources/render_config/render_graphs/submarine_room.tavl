@@ -3,12 +3,32 @@
   startup = true
   passes = [
     {
+      name = pf06_window_shadow
+      render_target = window_shadow_target
+      subpasses = [
+        { window_shadow = (undefined, clear) },
+        { window_shadow = (depth_attachment, store) },
+        { window_shadow = (depth_read, store) }
+      ]
+      steps = [ draw_window_shadow ]
+    },
+    {
+      name = pf06_flashlight_shadow
+      render_target = flashlight_shadow_target
+      subpasses = [
+        { flashlight_shadow = (undefined, clear) },
+        { flashlight_shadow = (depth_attachment, store) },
+        { flashlight_shadow = (depth_read, store) }
+      ]
+      steps = [ draw_flashlight_shadow ]
+    },
+    {
       name = pf06_lighting
       render_target = lit_target
       subpasses = [
-        { scene_color = (undefined, clear), scene_normal = (undefined, clear), scene_depth = (undefined, clear) },
-        { scene_color = (color_attachment, store), scene_normal = (color_attachment, store), scene_depth = (depth_attachment, store) },
-        { scene_color = (sampled, store), scene_normal = (sampled, store), scene_depth = (depth_read, store) }
+        { scene_color = (undefined, clear), scene_normal = (undefined, clear), scene_depth = (undefined, clear), flashlight_shadow = (depth_read, store), window_shadow = (depth_read, store) },
+        { scene_color = (color_attachment, store), scene_normal = (color_attachment, store), scene_depth = (depth_attachment, store), flashlight_shadow = (depth_read, store), window_shadow = (depth_read, store) },
+        { scene_color = (sampled, store), scene_normal = (sampled, store), scene_depth = (depth_read, store), flashlight_shadow = (depth_read, store), window_shadow = (depth_read, store) }
       ]
       steps = [ draw_scene ]
     },
@@ -16,9 +36,9 @@
       name = pf06_medium
       render_target = medium_target
       subpasses = [
-        { scene_depth = (depth_read, store), medium_scattering = (undefined, clear), medium_transmittance = (undefined, clear) },
-        { scene_depth = (depth_read, store), medium_scattering = (color_attachment, store), medium_transmittance = (color_attachment, store) },
-        { scene_depth = (depth_read, store), medium_scattering = (sampled, store), medium_transmittance = (sampled, store) }
+        { scene_depth = (depth_read, store), flashlight_shadow = (depth_read, store), window_shadow = (depth_read, store), medium_scattering = (undefined, clear), medium_transmittance = (undefined, clear) },
+        { scene_depth = (depth_read, store), flashlight_shadow = (depth_read, store), window_shadow = (depth_read, store), medium_scattering = (color_attachment, store), medium_transmittance = (color_attachment, store) },
+        { scene_depth = (depth_read, store), flashlight_shadow = (depth_read, store), window_shadow = (depth_read, store), medium_scattering = (sampled, store), medium_transmittance = (sampled, store) }
       ]
       steps = [ integrate_medium ]
     },
@@ -26,9 +46,9 @@
       name = pf06_compose
       render_target = compose_target
       subpasses = [
-        { scene_color = (sampled, store), scene_depth = (depth_read, store), medium_scattering = (sampled, store), medium_transmittance = (sampled, store), final_color = (undefined, clear) },
-        { scene_color = (sampled, store), scene_depth = (depth_read, store), medium_scattering = (sampled, store), medium_transmittance = (sampled, store), final_color = (color_attachment, store) },
-        { scene_color = (sampled, store), scene_depth = (depth_read, store), medium_scattering = (sampled, store), medium_transmittance = (sampled, store), final_color = (color_attachment, store) }
+        { scene_color = (sampled, store), scene_depth = (depth_read, store), medium_scattering = (sampled, store), medium_transmittance = (sampled, store), scene_ldr = (undefined, clear) },
+        { scene_color = (sampled, store), scene_depth = (depth_read, store), medium_scattering = (sampled, store), medium_transmittance = (sampled, store), scene_ldr = (color_attachment, store) },
+        { scene_color = (sampled, store), scene_depth = (depth_read, store), medium_scattering = (sampled, store), medium_transmittance = (sampled, store), scene_ldr = (color_attachment, store) }
       ]
       steps = [ compose_scene ]
     },
@@ -36,11 +56,21 @@
       name = pf06_motes
       render_target = mote_target
       subpasses = [
-        { final_color = (color_attachment, store), scene_depth = (depth_read, store) },
-        { final_color = (color_attachment, store), scene_depth = (depth_attachment, store) },
-        { final_color = (color_attachment, store), scene_depth = (depth_read, store) }
+        { scene_ldr = (color_attachment, store), scene_depth = (depth_read, store) },
+        { scene_ldr = (color_attachment, store), scene_depth = (depth_attachment, store) },
+        { scene_ldr = (sampled, store), scene_depth = (depth_read, store) }
       ]
       steps = [ draw_motes ]
+    },
+    {
+      name = pf06_helmet
+      render_target = helmet_target
+      subpasses = [
+        { scene_ldr = (sampled, store), final_color = (undefined, clear) },
+        { scene_ldr = (sampled, store), final_color = (color_attachment, store) },
+        { scene_ldr = (sampled, store), final_color = (color_attachment, store) }
+      ]
+      steps = [ draw_helmet ]
     },
     {
       name = pf06_ui

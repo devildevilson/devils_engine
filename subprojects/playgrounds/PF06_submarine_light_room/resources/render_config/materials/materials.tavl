@@ -5,6 +5,20 @@
   raster = { cull = back, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {
+  name = flashlight_shadow_material
+  definitions = [ PF06_WINDOW_SHADOW = "0" ]
+  shaders = { vertex = "shadow.vert.glsl", fragment = "depth.frag.glsl" }
+  depth = { test = true, write = true, compare = greater }
+  raster = { cull = back, front_face = ccw, polygon = fill, line_width = 1.0, depth_bias = true, bias_constant = -0.45, bias_slope = -0.80 }
+}
+{
+  name = window_shadow_material
+  definitions = [ PF06_WINDOW_SHADOW = "1" ]
+  shaders = { vertex = "shadow.vert.glsl", fragment = "depth.frag.glsl" }
+  depth = { test = true, write = true, compare = greater }
+  raster = { cull = back, front_face = ccw, polygon = fill, line_width = 1.0, depth_bias = true, bias_constant = -0.45, bias_slope = -0.80 }
+}
+{
   name = medium_material
   shaders = { vertex = "fullscreen.vert.glsl", fragment = "medium.frag.glsl" }
   depth = { test = false, write = false, compare = always }
@@ -20,6 +34,12 @@
   name = mote_material
   shaders = { vertex = "motes.vert.glsl", fragment = "motes.frag.glsl" }
   depth = { test = true, write = false, compare = greater }
+  raster = { cull = none, front_face = cw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = helmet_material
+  shaders = { vertex = "fullscreen.vert.glsl", fragment = "helmet.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
   raster = { cull = none, front_face = cw, polygon = fill, line_width = 1.0 }
 }
 {

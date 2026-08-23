@@ -1,9 +1,25 @@
 {
+  name = draw_flashlight_shadow
+  material = flashlight_shadow_material
+  geometry = scene_geometry
+  draw_group = scene_draw_group
+  sets = [ shadow_render_data ]
+  command = "draw"
+}
+{
+  name = draw_window_shadow
+  material = window_shadow_material
+  geometry = scene_geometry
+  draw_group = scene_draw_group
+  sets = [ shadow_render_data ]
+  command = "draw"
+}
+{
   name = draw_scene
   material = scene_material
   geometry = scene_geometry
   draw_group = scene_draw_group
-  sets = [ camera_data, lighting_data ]
+  sets = [ camera_data, lighting_data, shadow_sample_data ]
   command = "draw"
 }
 {
@@ -26,7 +42,14 @@
   geometry = mote_geometry
   sets = [ camera_data, lighting_data ]
   command = "draw constant mote_draw"
-  blending = { final_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
+  blending = { scene_ldr = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
+}
+{
+  name = draw_helmet
+  material = helmet_material
+  geometry = fullscreen_geometry
+  sets = [ helmet_data ]
+  command = "draw constant fullscreen_draw"
 }
 {
   name = draw_overlay

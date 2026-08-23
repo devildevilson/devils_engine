@@ -41,7 +41,19 @@ layout(set = 1, binding = 0, std140) uniform LightingBlock {
   vec4 medium_absorption;
   // rgb scattering colour, w large-scale density heterogeneity.
   vec4 medium_scattering;
+  // operator, contrast, saturation, black crush; helmet strength, rim, tint, edge dirt.
+  vec4 tonemap_params;
+  vec4 helmet_params;
 } lighting;
+
+layout(set = 2, binding = 0) uniform sampler2DShadow flashlight_shadow;
+layout(set = 2, binding = 1) uniform sampler2DShadow window_shadow;
+layout(set = 2, binding = 2, std140) uniform ShadowBlock {
+  mat4 flashlight_view_projection;
+  mat4 window_view_projection;
+  vec4 params;
+  vec4 flashlight_position_range;
+} shadows;
 
 float hash31(const vec3 p) {
   vec3 q = fract(p * 0.1031);
@@ -84,6 +96,33 @@ float shadow_pattern(const vec3 world_position) {
   return smoothstep(0.14, 0.72, filaments);
 }
 
+float shadow_visibility(
+  sampler2DShadow shadow_map,
+  const mat4 light_view_projection,
+  const vec3 world_position,
+  const vec3 normal,
+  const float n_dot_l) {
+  if (shadows.params.x < 0.5) return 1.0;
+  const vec4 unoffset_clip = light_view_projection * vec4(world_position, 1.0);
+  if (unoffset_clip.w <= 0.0) return 1.0;
+  const float world_texel = 2.0 * unoffset_clip.w * shadows.params.y;
+  const vec3 receiver = world_position + normal * world_texel * (0.55 + 1.35 * (1.0 - n_dot_l));
+  const vec4 clip = light_view_projection * vec4(receiver, 1.0);
+  const vec3 projected = clip.xyz / clip.w;
+  const vec2 uv = projected.xy * 0.5 + 0.5;
+  if (projected.z < 0.0 || projected.z > 1.0 || any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+    return 1.0;
+  }
+  const vec2 texel = vec2(1.0 / 1024.0);
+  float visibility = 0.0;
+  for (int y = -1; y <= 1; ++y) {
+    for (int x = -1; x <= 1; ++x) {
+      visibility += texture(shadow_map, vec3(clamp(uv + vec2(x, y) * texel, texel * 0.5, 1.0 - texel * 0.5), projected.z));
+    }
+  }
+  return visibility / 9.0;
+}
+
 vec3 point_light(
   const vec3 position,
   const float radius,
@@ -109,6 +148,12 @@ void main() {
   const vec3 view_direction = normalize(camera_data.camera_position.xyz - in_world_position);
   const float roughness = clamp(in_material.y, 0.04, 1.0);
 
+  const vec3 weak_to_light = normalize(lighting.weak_position_radius.xyz - in_world_position);
+  const vec3 window_direction = normalize(vec3(1.0, -0.08, 0.10));
+  const vec3 window_ray = normalize(in_world_position - lighting.weak_position_radius.xyz);
+  const float window_cone = smoothstep(0.64, 0.78, dot(window_ray, window_direction));
+  const float window_visibility = shadow_visibility(
+    window_shadow, shadows.window_view_projection, in_world_position, normal, max(dot(normal, weak_to_light), 0.0));
   vec3 direct = point_light(
     lighting.weak_position_radius.xyz,
     max(lighting.source_reach.x, 0.001),
@@ -116,7 +161,7 @@ void main() {
     lighting.weak_color_energy.w * lighting.state.x,
     normal,
     view_direction,
-    roughness);
+    roughness) * window_cone * window_visibility;
   direct += point_light(
     lighting.safe_position_radius.xyz,
     max(lighting.source_reach.y, 0.001),
@@ -126,7 +171,7 @@ void main() {
     view_direction,
     roughness);
 
-  const vec3 to_surface = in_world_position - camera_data.camera_position.xyz;
+  const vec3 to_surface = in_world_position - shadows.flashlight_position_range.xyz;
   const float flashlight_distance = length(to_surface);
   const vec3 flashlight_ray = to_surface / max(flashlight_distance, 0.0001);
   const float cone = smoothstep(
@@ -137,14 +182,21 @@ void main() {
     max(lighting.source_reach.z - 0.75, 0.0),
     max(lighting.source_reach.z, 0.001),
     flashlight_distance);
+  const vec3 flashlight_to_light = normalize(shadows.flashlight_position_range.xyz - in_world_position);
+  const float flashlight_visibility = shadow_visibility(
+    flashlight_shadow,
+    shadows.flashlight_view_projection,
+    in_world_position,
+    normal,
+    max(dot(normal, flashlight_to_light), 0.0));
   direct += point_light(
-    camera_data.camera_position.xyz,
-    12.0,
+    shadows.flashlight_position_range.xyz,
+    shadows.flashlight_position_range.w,
     lighting.flashlight_color_energy.rgb,
     lighting.flashlight_color_energy.w * lighting.state.w * cone * flashlight_front,
     normal,
     view_direction,
-    roughness);
+    roughness) * flashlight_visibility;
 
   vec3 indirect = lighting.room_irradiance.rgb *
                   lighting.room_irradiance.w * lighting.state.z * lighting.source_reach.w;

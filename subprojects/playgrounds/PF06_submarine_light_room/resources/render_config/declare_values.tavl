@@ -1,5 +1,6 @@
 { name = viewport, type = screensize }
 { name = viewport_half, type = screensize, scale = [0.5, 0.5, 1.0] }
+{ name = shadow_resolution, type = fixed, value = [1024, 1024, 1] }
 { name = one, type = fixed, value = [1, 0, 0] }
 { name = scene_instances, type = fixed, value = [32, 0, 0] }
 { name = scene_draws, type = fixed, value = [1, 0, 0] }

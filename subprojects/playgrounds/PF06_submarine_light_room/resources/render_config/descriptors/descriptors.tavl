@@ -7,10 +7,32 @@
   layout = [ { resource = lighting_buffer, usage = uniform, stage = all } ]
 }
 {
+  name = shadow_render_data
+  layout = [ { resource = shadow_buffer, usage = uniform, stage = vertex } ]
+}
+{
+  name = shadow_sample_data
+  layout = [
+    { resource = flashlight_shadow, usage = depth_read, stage = fragment, sampler = shadow_compare },
+    { resource = window_shadow, usage = depth_read, stage = fragment, sampler = shadow_compare },
+    { resource = shadow_buffer, usage = uniform, stage = fragment }
+  ]
+}
+{
   name = medium_data
   layout = [
     { resource = scene_depth, usage = depth_read, stage = fragment, sampler = nearest_sampler },
     { resource = camera_buffer, usage = uniform, stage = fragment },
+    { resource = lighting_buffer, usage = uniform, stage = fragment },
+    { resource = flashlight_shadow, usage = depth_read, stage = fragment, sampler = shadow_compare },
+    { resource = window_shadow, usage = depth_read, stage = fragment, sampler = shadow_compare },
+    { resource = shadow_buffer, usage = uniform, stage = fragment }
+  ]
+}
+{
+  name = helmet_data
+  layout = [
+    { resource = scene_ldr, usage = sampled, stage = fragment, sampler = linear_sampler },
     { resource = lighting_buffer, usage = uniform, stage = fragment }
   ]
 }

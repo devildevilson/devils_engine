@@ -30,7 +30,17 @@ layout(set = 0, binding = 2, std140) uniform LightingBlock {
   vec4 medium_params;
   vec4 medium_absorption;
   vec4 medium_scattering;
+  vec4 tonemap_params;
+  vec4 helmet_params;
 } lighting;
+layout(set = 0, binding = 3) uniform sampler2DShadow flashlight_shadow;
+layout(set = 0, binding = 4) uniform sampler2DShadow window_shadow;
+layout(set = 0, binding = 5, std140) uniform ShadowBlock {
+  mat4 flashlight_view_projection;
+  mat4 window_view_projection;
+  vec4 params;
+  vec4 flashlight_position_range;
+} shadows;
 
 const int medium_steps = 20;
 const float pi = 3.14159265359;
@@ -65,6 +75,21 @@ float phase_hg(const float cosine, const float anisotropy) {
   return (1.0 - g * g) / (4.0 * pi * denominator * sqrt(denominator));
 }
 
+float shadow_visibility(
+  sampler2DShadow shadow_map,
+  const mat4 light_view_projection,
+  const vec3 position) {
+  if (shadows.params.x < 0.5) return 1.0;
+  const vec4 clip = light_view_projection * vec4(position, 1.0);
+  if (clip.w <= 0.0) return 1.0;
+  const vec3 projected = clip.xyz / clip.w;
+  const vec2 uv = projected.xy * 0.5 + 0.5;
+  if (projected.z < 0.0 || projected.z > 1.0 || any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+    return 1.0;
+  }
+  return texture(shadow_map, vec3(clamp(uv, vec2(0.0005), vec2(0.9995)), projected.z));
+}
+
 void main() {
   const float depth = texture(scene_depth, in_uv).r;
   const vec2 ndc = in_uv * 2.0 - 1.0;
@@ -82,16 +107,12 @@ void main() {
   const float base_density = lighting.medium_params.x * mix(1.0, 0.34, safe_gate);
   const vec3 absorption = max(lighting.medium_absorption.rgb, vec3(0.001));
   const vec3 flashlight_forward = normalize(lighting.flashlight_direction_cos.xyz);
-  const float flashlight_angle = dot(ray_direction, flashlight_forward);
-  const float flashlight_cone = smoothstep(
-    lighting.flashlight_direction_cos.w,
-    min(lighting.flashlight_direction_cos.w + 0.075, 0.999),
-    flashlight_angle);
-  const float phase = phase_hg(flashlight_angle, lighting.medium_params.y) * 4.0 * pi;
   const vec3 ambient_source = lighting.room_irradiance.rgb * lighting.source_reach.w * 0.42;
 
   vec3 transmittance = vec3(1.0);
   vec3 in_scattering = vec3(0.0);
+  float cached_window_visibility = 1.0;
+  float cached_flashlight_visibility = 1.0;
   const float time = lighting.presentation.y;
   if (base_density > 0.000001) {
     for (int i = 0; i < medium_steps; ++i) {
@@ -107,16 +128,37 @@ void main() {
 
       const float weak_distance = length(sample_position - lighting.weak_position_radius.xyz);
       const float weak_radial = clamp(1.0 - weak_distance / max(lighting.source_reach.x, 0.001), 0.0, 1.0);
+      const vec3 window_direction = normalize(vec3(1.0, -0.08, 0.10));
+      const vec3 window_ray = normalize(sample_position - lighting.weak_position_radius.xyz);
+      const float window_cone = smoothstep(0.64, 0.78, dot(window_ray, window_direction));
+      // Shadow visibility varies much more slowly along a half-resolution ray than density. Reuse one compare for
+      // two neighbouring midpoint samples; source/cone gates also avoid map reads where contribution is zero.
+      if ((i & 1) == 0 && lighting.state.x * window_cone > 0.0001) {
+        cached_window_visibility = shadow_visibility(window_shadow, shadows.window_view_projection, sample_position);
+      }
       const vec3 weak_scatter = lighting.weak_color_energy.rgb * lighting.weak_color_energy.w *
-                                lighting.state.x * weak_radial * weak_radial * 0.055;
+                                lighting.state.x * weak_radial * weak_radial * window_cone * cached_window_visibility * 0.055;
+      const vec3 flashlight_delta = sample_position - shadows.flashlight_position_range.xyz;
+      const float flashlight_distance = length(flashlight_delta);
+      const vec3 flashlight_ray = flashlight_delta / max(flashlight_distance, 0.0001);
+      const float flashlight_angle = dot(flashlight_ray, flashlight_forward);
+      const float flashlight_cone = smoothstep(
+        lighting.flashlight_direction_cos.w,
+        min(lighting.flashlight_direction_cos.w + 0.075, 0.999),
+        flashlight_angle);
+      const float phase = phase_hg(dot(flashlight_ray, ray_direction), lighting.medium_params.y) * 4.0 * pi;
       const float flashlight_front = 1.0 - smoothstep(
         max(lighting.source_reach.z - 0.85, 0.0),
         max(lighting.source_reach.z, 0.001),
-        distance_along_ray);
-      const float flashlight_falloff = 1.0 / (1.0 + distance_along_ray * distance_along_ray * 0.075);
+        flashlight_distance);
+      const float flashlight_falloff = 1.0 / (1.0 + flashlight_distance * flashlight_distance * 0.075);
+      if ((i & 1) == 0 && lighting.state.w * flashlight_cone > 0.0001) {
+        cached_flashlight_visibility = shadow_visibility(
+          flashlight_shadow, shadows.flashlight_view_projection, sample_position);
+      }
       const vec3 flashlight_scatter = lighting.flashlight_color_energy.rgb *
         lighting.flashlight_color_energy.w * lighting.state.w * flashlight_cone * flashlight_front *
-        flashlight_falloff * lighting.medium_params.z * phase * 0.006;
+        flashlight_falloff * lighting.medium_params.z * phase * cached_flashlight_visibility * 0.006;
       const vec3 source_radiance = ambient_source + weak_scatter + flashlight_scatter;
 
       const vec3 step_transmittance = exp(-absorption * local_density * step_length);

@@ -1,6 +1,7 @@
 # PF06 — submarine light room
 
-Статус: **ACTIVE**, закрыты базовые `lighting states`, depth-bounded medium и suspended motes (2026-08-23).
+Статус: **ACTIVE**, закрыты `lighting states`, depth-bounded medium, suspended motes, shadow maps, constrained
+tonemapping и helmet baseline (2026-08-23).
 
 Активная первая художественно направленная сцена Painter stack для `submarine_coop`. Это не gallery эффектов:
 одна тесная подводная комната должна целиком менять характер при переключении состояния света, оставаясь одним
@@ -36,8 +37,11 @@ assignment из PF01 без изменения material response.
 предметов, но нулевая энергия оставляет комнату чёрной. Это дешёвая gameplay-stable аппроксимация multiple bounce,
 не screen-space GI и не обещание межкомнатного переноса света.
 
-Flashlight и направленный свет из иллюминатора получают shadow map. Не каждый декоративный источник обязан иметь
-тень: shadow-casting — отдельный ограниченный бюджет. Самостоятельный «ghosting теней» в baseline не входит — у
+Flashlight и направленный свет из иллюминатора имеют отдельные `1024²` reverse-Z shadow maps. Фонарик смещён от
+камеры на `22 cm` вправо и `16 cm` вниз: строго camera-coincident источник прячет свою тень за силуэтом caster и
+плохо проверяет технику. Surface использует небольшой `3×3` comparison-PCF с world-texel normal offset; half-res
+medium делает один compare на пару соседних march samples и пропускает чтение вне cone/при выключенном источнике.
+Не каждый декоративный источник обязан иметь тень: shadow-casting — отдельный ограниченный бюджет. Самостоятельный «ghosting теней» в baseline не входит — у
 движущегося фонаря он даст оторванные следы. Темпорально накапливать имеет смысл volumetric scattering/шум с
 reprojection и rejection, а не задерживать геометрическую границу тени.
 
@@ -58,9 +62,10 @@ Low-light shadow pattern — material-space warped ridged noise с вытяну�
 темнит только слабо освещённые поверхности и затухает и в абсолютной темноте, где нечего видеть, и при safe light,
 где узор не должен пачкать кадр. Это художественная модуляция irradiance, а не замена shadow map.
 
-Helmet pass выполняется после tonemapping: мягкая форма стекла/виньетка, слабая неоднородность и редкие блики по
-краю. Он не должен постоянно искажать центр кадра или имитировать грязную камеру. Wet material highlights остаются
-в lighting pass, а не рисуются поверх всего экрана.
+Helmet pass выполняется после tonemapping и depth-tested motes. Screen-space superellipse задаёт стекло и мягкий
+обод; radial refraction, холодный tint, внутренняя кромка и два arc-блика растут только к краям, поэтому центр почти
+не искажается. Небольшая неоднородность также ограничена ободом и не имитирует постоянно грязную камеру.
+`strength=0` — точный passthrough. Wet material highlights остаются в lighting pass, а не рисуются поверх экрана.
 
 ## Render flow
 
@@ -96,11 +101,14 @@ Preset меняет несколько sliders для быстрого A/B, но
 Это соответствует render-settings направлению PF03: выключение уже выбранной технологии в production может собрать
 другую graph generation, тогда как художественные числа обновляются следующим кадром.
 
-Пока интерактивное управление ограничено `L` (blackout → exploration → safe) и `F` (фонарь).
+Интерактивно доступны `L` (blackout → exploration → safe), `F` (фонарь), `K` (shadow visibility), `H` (helmet) и
+`T` (Reinhard → Hable → ACES).
 Воспроизводимый CLI rail: `--fixed-camera --fixed-step --lighting=blackout|exploration|safe --frames=N
 --dump=file.ppm`; также доступны `--exposure=`, `--pattern=`, `--pattern-speed=` и `--bounce=`. Полное окно sliders
 получит уже сформированные оси `--medium-density=`, `--medium-anisotropy=`, `--god-rays=` и `--motes=`;
-`--no-medium` даёт полный A/B. Для временного rail есть `--flashlight-on-frame=N`, `--flashlight-off-frame=N` и
+`--no-medium`, `--no-shadows` и `--no-helmet` дают runtime A/B. Output принимает `--tonemap=aces|hable|reinhard`,
+`--contrast=`, `--saturation=`, `--black-crush=` и `--helmet=`. Для временного rail есть
+`--flashlight-on-frame=N`, `--flashlight-off-frame=N` и
 `--exploration-on-frame=N`: они запускают источник из нулевого envelope, позволяя dump'ом увидеть положение фронта.
 
 ## Срез 1 — lighting states
@@ -163,7 +171,7 @@ presence. Поэтому вторая лампа может слегка изм�
 
 | Конфигурация | Frame time | FPS |
 | --- | ---: | ---: |
-| half-res pattern + medium | `7.840 ms` | `127.5` |
+| half-res pattern + medium, до shadow/helmet | `7.840 ms` | `127.5` |
 | half-res medium, без pattern | `6.486 ms` | `154.2` |
 | pattern, без medium | `4.867 ms` | `205.5` |
 | без обоих | `4.610 ms` | `216.9` |
@@ -180,6 +188,10 @@ textures с cross-fade и world offset: screen-space decal потеряет ес
 будет отдельно получать direct-light gate. Следующий возможный шаг medium — temporal/froxel reuse, но только после
 появления реальной необходимости: текущий half-resolution путь уже оставляет достаточный запас до shadow maps.
 
+После добавления двух карт, surface PCF, shadowed volume и helmet representative полный rail с включённым фонарём
+дал `7.795 ms / 128.3 FPS`. CPU wall-time вокруг present заметно колеблется, поэтому это проверка отсутствия возврата
+к прежним `14.5 ms`, а не точная разбивка GPU pass'ов; для такой разбивки нужны timestamp queries.
+
 ## Depth-bounded medium и взвесь
 
 Half-resolution pass читает reverse-Z depth и восстанавливает camera ray аналитически из фиксированного FOV.
@@ -189,9 +201,10 @@ filament scale меняют плотность; safe light снижает худ
 Полноразмерный compose не апскейлит уже затонированную картинку: он bilateral-like восстанавливает только два
 коэффициента среды и применяет их к точному full-resolution scene color.
 
-Для camera-coincident flashlight каждый sample до первого visible depth по определению видим и источнику, и камере,
-поэтому его объёмный конус уже согласован с opaque depth без отдельной shadow map. Смещённый фонарь и свет из окна
-такого свойства не имеют — им всё ещё нужна собственная shadow map, это следующий lighting шаг.
+Фонарик больше не camera-coincident: небольшое физическое смещение делает тени видимыми рядом с caster и требует
+отдельной карты для объёма. И flashlight, и window map проверяют visibility sample position; одна проверка
+переиспользуется двумя соседними midpoint steps. Это почти не меняет fixed image (`RMSE 0.025/255` относительно
+20 проверок на источник), но убирает лишнюю половину texture compares.
 
 Отдельный pass рисует 1536 стабильных procedural world-space motes. Instance id задаёт позицию, медленный vertical
 wrap и drift; spherical billboard ограничен примерно двумя экранными пикселями, проходит reverse-Z test и не пишет
@@ -213,11 +226,12 @@ pattern on/off `1894.87`, safe pattern on/off `AE=0`; повторный explora
 
 1. **DONE** — `lighting states`: геометрия комнаты, per-pixel lights, room irradiance,
    blackout/exploration/safe и fixed dumps.
-2. **BASELINE DONE** — `medium`: depth-bounded absorption/in-scattering, flashlight volume и крупная муть;
-   shadowed offset/window light остаётся дополнением.
+2. **DONE** — `medium`: depth-bounded absorption/in-scattering, flashlight volume и крупная муть.
 3. **DONE** — `particles + pattern`: depth-tested suspended motes и material-space low-light pattern с A/B.
-4. `helmet + controls`: constrained tonemapping, helmet glass и интерактивные sliders.
-5. `closing`: движущийся shadow caster, temporal stability, GPU timings и итоговая настройка образа.
+4. **DONE** — `shadow maps`: offset flashlight + window light, surface PCF и volume visibility.
+5. **BASELINE DONE** — `helmet + output`: fixed constrained exposure, три tone curves, contrast/saturation/black
+   crush и отдельное helmet glass с runtime/CLI A/B; полноценное sliders-окно ещё остаётся.
+6. `closing`: moving-camera/caster stability, GPU timestamp timings, sliders и итоговая настройка образа.
 
 ## Definition of Done
 

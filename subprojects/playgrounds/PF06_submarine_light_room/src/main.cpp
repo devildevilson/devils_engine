@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <glm/common.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/trigonometric.hpp>
 #include <glm/vec3.hpp>
@@ -48,9 +49,15 @@ uint32_t pending_height = initial_height;
 bool resize_pending = false;
 uint32_t lighting_mode = exploration_mode;
 bool flashlight_enabled = false;
+bool shadows_enabled = true;
+bool helmet_enabled = true;
+uint32_t tonemap_operator = 2;
 int32_t escape_key = -1;
 int32_t lighting_key = -1;
 int32_t flashlight_key = -1;
+int32_t shadow_key = -1;
+int32_t helmet_key = -1;
+int32_t tonemap_key = -1;
 
 void error_callback(const int error, const char* message) noexcept {
   utils::warn("PF06 input error {}: {}", error, message);
@@ -61,6 +68,9 @@ void key_callback(GLFWwindow* window, const int key, const int scancode, const i
   if (key == escape_key && action == 1) input::set_should_close(window, true);
   if (key == lighting_key && action == 1) lighting_mode = (lighting_mode + 1u) % 3u;
   if (key == flashlight_key && action == 1) flashlight_enabled = !flashlight_enabled;
+  if (key == shadow_key && action == 1) shadows_enabled = !shadows_enabled;
+  if (key == helmet_key && action == 1) helmet_enabled = !helmet_enabled;
+  if (key == tonemap_key && action == 1) tonemap_operator = (tonemap_operator + 1u) % 3u;
 }
 
 void framebuffer_callback(GLFWwindow*, const int width, const int height) noexcept {
@@ -79,6 +89,12 @@ std::string_view mode_name(const uint32_t mode) noexcept {
   if (mode == blackout_mode) return "blackout";
   if (mode == safe_mode) return "safe";
   return "exploration";
+}
+
+std::string_view tonemap_name(const uint32_t op) noexcept {
+  if (op == 0) return "reinhard";
+  if (op == 1) return "hable";
+  return "aces";
 }
 
 struct scene_vertex {
@@ -115,8 +131,34 @@ struct alignas(16) lighting_block {
   glm::vec4 medium_params;
   glm::vec4 medium_absorption;
   glm::vec4 medium_scattering;
+  glm::vec4 tonemap_params;
+  glm::vec4 helmet_params;
 };
-static_assert(sizeof(lighting_block) == 208);
+static_assert(sizeof(lighting_block) == 240);
+
+struct alignas(16) shadow_block {
+  glm::mat4 flashlight_view_projection;
+  glm::mat4 window_view_projection;
+  // x map enable, y tangent-of-half-FOV / resolution for receiver normal bias; zw layout guards/reserved.
+  glm::vec4 params;
+  glm::vec4 flashlight_position_range;
+};
+static_assert(sizeof(shadow_block) == 160);
+
+glm::mat4 reverse_z_perspective(
+  const float vertical_fov,
+  const float aspect,
+  const float near_distance,
+  const float far_distance) noexcept {
+  const float f = 1.0f / std::tan(vertical_fov * 0.5f);
+  glm::mat4 projection{0.0f};
+  projection[0][0] = f / aspect;
+  projection[1][1] = -f;
+  projection[2][2] = near_distance / (far_distance - near_distance);
+  projection[2][3] = -1.0f;
+  projection[3][2] = near_distance * far_distance / (far_distance - near_distance);
+  return projection;
+}
 
 float advance_source(
   float value,
@@ -385,6 +427,10 @@ int main(int argc, char** argv) {
   float medium_anisotropy = 0.42f;
   float god_ray_strength = 0.90f;
   float mote_strength = 0.75f;
+  float tonemap_contrast = 1.06f;
+  float tonemap_saturation = 0.86f;
+  float tonemap_black_crush = 0.006f;
+  float helmet_strength = 0.82f;
   bool medium_enabled = true;
   uint32_t flashlight_on_frame = UINT32_MAX;
   uint32_t flashlight_off_frame = UINT32_MAX;
@@ -397,6 +443,8 @@ int main(int argc, char** argv) {
     fixed_camera = fixed_camera || option == "--fixed-camera";
     fixed_step = fixed_step || option == "--fixed-step";
     if (option == "--no-medium") medium_enabled = false;
+    if (option == "--no-shadows") shadows_enabled = false;
+    if (option == "--no-helmet") helmet_enabled = false;
     flashlight_enabled = flashlight_enabled || option == "--flashlight";
     constexpr std::string_view lighting_prefix = "--lighting=";
     constexpr std::string_view exposure_prefix = "--exposure=";
@@ -407,6 +455,11 @@ int main(int argc, char** argv) {
     constexpr std::string_view anisotropy_prefix = "--medium-anisotropy=";
     constexpr std::string_view god_rays_prefix = "--god-rays=";
     constexpr std::string_view motes_prefix = "--motes=";
+    constexpr std::string_view tonemap_prefix = "--tonemap=";
+    constexpr std::string_view contrast_prefix = "--contrast=";
+    constexpr std::string_view saturation_prefix = "--saturation=";
+    constexpr std::string_view black_crush_prefix = "--black-crush=";
+    constexpr std::string_view helmet_prefix = "--helmet=";
     constexpr std::string_view flashlight_on_prefix = "--flashlight-on-frame=";
     constexpr std::string_view flashlight_off_prefix = "--flashlight-off-frame=";
     constexpr std::string_view exploration_on_prefix = "--exploration-on-frame=";
@@ -427,6 +480,17 @@ int main(int argc, char** argv) {
     if (option.starts_with(anisotropy_prefix)) medium_anisotropy = std::clamp(std::stof(std::string(option.substr(anisotropy_prefix.size()))), -0.85f, 0.85f);
     if (option.starts_with(god_rays_prefix)) god_ray_strength = std::clamp(std::stof(std::string(option.substr(god_rays_prefix.size()))), 0.0f, 3.0f);
     if (option.starts_with(motes_prefix)) mote_strength = std::clamp(std::stof(std::string(option.substr(motes_prefix.size()))), 0.0f, 2.0f);
+    if (option.starts_with(tonemap_prefix)) {
+      const auto value = option.substr(tonemap_prefix.size());
+      if (value == "reinhard") tonemap_operator = 0;
+      else if (value == "hable") tonemap_operator = 1;
+      else if (value == "aces") tonemap_operator = 2;
+      else utils::error{}("PF06 unknown tonemap '{}'; expected reinhard, hable or aces", value);
+    }
+    if (option.starts_with(contrast_prefix)) tonemap_contrast = std::clamp(std::stof(std::string(option.substr(contrast_prefix.size()))), 0.65f, 1.60f);
+    if (option.starts_with(saturation_prefix)) tonemap_saturation = std::clamp(std::stof(std::string(option.substr(saturation_prefix.size()))), 0.0f, 1.5f);
+    if (option.starts_with(black_crush_prefix)) tonemap_black_crush = std::clamp(std::stof(std::string(option.substr(black_crush_prefix.size()))), 0.0f, 0.08f);
+    if (option.starts_with(helmet_prefix)) helmet_strength = std::clamp(std::stof(std::string(option.substr(helmet_prefix.size()))), 0.0f, 1.0f);
     if (option.starts_with(flashlight_on_prefix)) flashlight_on_frame = uint32_t(std::stoul(std::string(option.substr(flashlight_on_prefix.size()))));
     if (option.starts_with(flashlight_off_prefix)) flashlight_off_frame = uint32_t(std::stoul(std::string(option.substr(flashlight_off_prefix.size()))));
     if (option.starts_with(exploration_on_prefix)) exploration_on_frame = uint32_t(std::stoul(std::string(option.substr(exploration_on_prefix.size()))));
@@ -435,8 +499,9 @@ int main(int argc, char** argv) {
   }
   if (!dump_path.empty() && frame_limit == 0) frame_limit = 1;
   utils::info(
-    "PF06 config: lighting={}, flashlight={}, medium={}, fixed_step={}",
-    mode_name(lighting_mode), flashlight_enabled, medium_enabled, fixed_step);
+    "PF06 config: lighting={}, flashlight={}, shadows={}, helmet={}, tonemap={}, medium={}, fixed_step={}",
+    mode_name(lighting_mode), flashlight_enabled, shadows_enabled, helmet_enabled,
+    tonemap_name(tonemap_operator), medium_enabled, fixed_step);
 
   input::init input_runtime(&error_callback);
   input::events::init();
@@ -529,7 +594,7 @@ int main(int argc, char** argv) {
       playground::overlay_description{
         "PF06 — Submarine light room",
         "Project-look slice: direct light, room irradiance and low-light pattern",
-        "WASD/QE + mouse · L lighting state · F flashlight · Esc"});
+        "WASD/QE + mouse · L lighting · F flashlight · K shadows · H helmet · T tonemap · Esc"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(
@@ -551,6 +616,9 @@ int main(int argc, char** argv) {
     escape_key = input::glfw_key_from_canonical("escape");
     lighting_key = input::glfw_key_from_canonical("key_l");
     flashlight_key = input::glfw_key_from_canonical("key_f");
+    shadow_key = input::glfw_key_from_canonical("key_k");
+    helmet_key = input::glfw_key_from_canonical("key_h");
+    tonemap_key = input::glfw_key_from_canonical("key_t");
     input::set_window_callback(window, &key_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
     if (fixed_camera) input::set_cursor_input_mode(window, DEVILS_ENGINE_INPUT_CURSOR_NORMAL);
@@ -623,6 +691,28 @@ int main(int argc, char** argv) {
         glm::vec4(float(pending_width), float(pending_height), near_plane, 0.0f)};
       write_current_buffer(base, "camera_buffer", &camera_data, sizeof(camera_data));
 
+      const glm::vec3 window_position{-4.72f, 0.45f, -2.0f};
+      const glm::vec3 window_direction = glm::normalize(glm::vec3{1.0f, -0.08f, 0.10f});
+      const glm::vec3 flashlight_direction = camera.forward();
+      const glm::mat3 camera_to_world = glm::transpose(glm::mat3(view));
+      const glm::vec3 flashlight_position = camera.position +
+        camera_to_world * glm::vec3{0.22f, -0.16f, -0.05f};
+      const glm::vec3 flashlight_up = std::abs(glm::dot(flashlight_direction, glm::vec3{0,1,0})) > 0.98f
+        ? glm::vec3{0,0,1}
+        : glm::vec3{0,1,0};
+      const glm::mat4 flashlight_shadow_projection = reverse_z_perspective(
+        glm::radians(56.0f), 1.0f, 0.12f, 12.0f);
+      const glm::mat4 window_shadow_projection = reverse_z_perspective(
+        glm::radians(74.0f), 1.0f, 0.12f, 10.0f);
+      const shadow_block shadow_data{
+        flashlight_shadow_projection * glm::lookAtRH(
+          flashlight_position, flashlight_position + flashlight_direction, flashlight_up),
+        window_shadow_projection * glm::lookAtRH(
+          window_position, window_position + window_direction, glm::vec3{0,1,0}),
+        glm::vec4(shadows_enabled ? 1.0f : 0.0f, std::tan(glm::radians(37.0f)) / 1024.0f, 0.0f, 0.0f),
+        glm::vec4(flashlight_position, 12.0f)};
+      write_current_buffer(base, "shadow_buffer", &shadow_data, sizeof(shadow_data));
+
       const float simulation_dt = fixed_step ? 1.0f / 60.0f : dt;
       weak_source = advance_source(
         weak_source, lighting_mode != blackout_mode, simulation_dt, 1.40f, 0.24f);
@@ -655,11 +745,11 @@ int main(int argc, char** argv) {
       const lighting_block lighting{
         glm::vec4(weak_weight, safe_weight, bounce, flashlight_gain),
         glm::vec4(exposure, time_seconds, pattern_strength, pattern_speed),
-        glm::vec4(-3.55f, 0.45f, -2.0f, 5.2f),
+        glm::vec4(window_position, 5.2f),
         glm::vec4(0.28f, 0.46f, 0.50f, 7.5f),
         glm::vec4(0.0f, 2.55f, -1.4f, 7.0f),
         glm::vec4(1.00f, 0.64f, 0.34f, 13.0f),
-        glm::vec4(camera.forward(), 0.90f),
+        glm::vec4(flashlight_direction, 0.90f),
         glm::vec4(0.72f, 0.82f, 0.84f, 12.0f),
         glm::vec4(room_gi, 1.0f),
         glm::vec4(weak_reach, safe_reach, flashlight_reach, room_source),
@@ -669,7 +759,9 @@ int main(int argc, char** argv) {
           god_ray_strength,
           mote_strength),
         glm::vec4(0.82f, 0.34f, 0.18f, 0.0f),
-        glm::vec4(0.14f, 0.27f, 0.30f, 0.82f)};
+        glm::vec4(0.14f, 0.27f, 0.30f, 0.82f),
+        glm::vec4(float(tonemap_operator), tonemap_contrast, tonemap_saturation, tonemap_black_crush),
+        glm::vec4(helmet_enabled ? helmet_strength : 0.0f, 0.46f, 0.70f, 0.18f)};
       write_current_buffer(base, "lighting_buffer", &lighting, sizeof(lighting));
 
       const uint64_t frame_delta_us = uint64_t(std::max(
@@ -677,7 +769,7 @@ int main(int argc, char** argv) {
         int64_t{1}));
       const uint64_t timestamp_us = uint64_t(
         std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
-      const std::array<std::string, 10> details{
+      const std::array<std::string, 12> details{
         std::format("Lighting: {} · weak {:.2f} · safe {:.2f}", mode_name(lighting_mode), weak_weight, safe_weight),
         std::format("Room irradiance: fixed {:.2f} · source presence {:.2f}", bounce, room_source),
         std::format("Point reach: weak {:.1f} m · safe {:.1f} m", weak_reach, safe_reach),
@@ -685,9 +777,11 @@ int main(int argc, char** argv) {
         std::format("Pattern: organic peripheral flow · strength {:.2f} · speed {:.3f}", pattern_strength, pattern_speed),
         std::format("Medium: {} · density {:.3f} · g {:.2f}", medium_enabled ? "ON" : "OFF", medium_density, medium_anisotropy),
         std::format("Volume: god rays {:.2f} · motes {:.2f}", god_ray_strength, mote_strength),
-        std::format("Exposure: fixed {:.2f}; blackout is never auto-lifted", exposure),
+        std::format("Shadows: {} · 2×1024² reverse-Z · surface PCF / volume compare", shadows_enabled ? "ON" : "OFF"),
+        std::format("Tonemap: {} · exposure {:.2f} · contrast {:.2f} · saturation {:.2f}", tonemap_name(tonemap_operator), exposure, tonemap_contrast, tonemap_saturation),
+        std::format("Helmet: {} · strength {:.2f}", helmet_enabled ? "ON" : "OFF", helmet_strength),
         std::format("Scene: {} axis-aligned instances · per-pixel lighting", scene_instances.size()),
-        "Half-resolution medium: 20 samples; window shadow map remains next"};
+        "Half-resolution medium: 20 samples; flashlight + window maps shadow the volume"};
       overlay.set_detail_lines(details);
       overlay.update(frame_delta_us, timestamp_us);
       write_overlay_buffers(base, overlay);
