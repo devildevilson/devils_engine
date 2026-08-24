@@ -2,8 +2,10 @@
 
 // Алгоритм: full-resolution surface colour не блюрится. Вместо этого четыре соседних half-resolution medium
 // samples смешиваются bilinear weights, дополнительно подавленными относительной разницей linear depth. Полученные
-// scattering/transmittance применяются к точному текущему surface pixel, после чего fixed exposure и ACES-like
-// curve делают финальный LDR кадр. Depth-aware weights не дают туману дальней стены протекать через ближний силуэт.
+// scattering/transmittance применяются к точному текущему surface pixel. Выбранная tone curve формирует LDR, после
+// чего exploration-only low-light response расширяет лишь тёмный toe и заранее ослабленный black crush: слабые
+// spatial differences остаются видимыми без повышения GI или density, но нулевая radiance blackout остаётся нулём.
+// Depth-aware weights не дают туману дальней стены протекать через ближний силуэт.
 
 layout(location = 0) in vec2 in_uv;
 layout(location = 0) out vec4 frag_color;
@@ -96,9 +98,20 @@ void main() {
 
   vec3 color = (surface * transmittance + scattering) * lighting.presentation.x;
   color *= vec3(0.91, 1.00, 1.06);
-  color = max(color - lighting.tonemap_params.w, vec3(0.0));
+  const float safe_gate = smoothstep(0.05, 0.60, lighting.state.y);
+  const float low_light_visibility = clamp(lighting.room_irradiance.w, 0.0, 1.0) *
+                                     lighting.source_reach.w * (1.0 - safe_gate);
+  const float effective_black_crush = lighting.tonemap_params.w * mix(1.0, 0.08, low_light_visibility);
+  color = max(color - effective_black_crush, vec3(0.0));
   color = pow(color, vec3(max(lighting.tonemap_params.y, 0.01)));
   color = apply_tonemap(color, int(lighting.tonemap_params.x + 0.5));
+  // Dark adaptation belongs to the observer-facing response, after the filmic curve. It expands
+  // weak but real display-space differences without adding irradiance: exact black remains black,
+  // safe lighting bypasses it, and bright direct light is protected by the toe gate.
+  const float display_luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+  const float dark_toe = 1.0 - smoothstep(0.020, 0.18, display_luma);
+  const vec3 dark_adapted = sqrt(max(color, vec3(0.0)));
+  color = mix(color, dark_adapted, low_light_visibility * dark_toe);
   const float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
   color = mix(vec3(luma), color, lighting.tonemap_params.z);
   frag_color = vec4(color, 1.0);

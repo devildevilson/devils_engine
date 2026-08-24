@@ -44,19 +44,23 @@ return function()
   nk.fin()
 
   local control_flags = nk.panel_flags.border | nk.panel_flags.title | nk.panel_flags.no_scrollbar
-  if nk.begin_titled("pf06_tuning", "PF06 atmosphere tuning", {552, 16, 390, 286}, control_flags) then
+  if nk.begin_titled("pf06_tuning", "PF06 atmosphere tuning", {552, 16, 390, 398}, control_flags) then
     nk.push_font(14)
-    pf06_gi = slider_row("Exploration GI", pf06_gi or 0.23, 0.0, 1.0, 0.005)
+    pf06_gi = slider_row("Exploration GI (floor .085)", pf06_gi or 0.23, 0.0, 1.0, 0.005)
+    pf06_low_light_visibility = slider_row("Low-light visibility", pf06_low_light_visibility or 0.80, 0.0, 1.0, 0.005)
     pf06_left_source = slider_row("Left situational light", pf06_left_source or 1.0, 0.0, 3.0, 0.02)
     pf06_medium_density = slider_row("Atmosphere density", pf06_medium_density or 0.14, 0.0, 0.80, 0.005)
-    pf06_pattern_contrast = slider_row("Volumetric pattern contrast", pf06_pattern_contrast or 1.55, 0.0, 2.0, 0.01)
+    pf06_pattern_contrast = slider_row("Surface pressure", pf06_pattern_contrast or 1.55, 0.0, 2.0, 0.01)
+    pf06_volume_shadow = slider_row("Volume shadow", pf06_volume_shadow or 0.55, 0.0, 2.0, 0.01)
 
     nk.layout.row_dynamic(27, 2)
     if nk.button("Reset defaults") then
       pf06_gi = 0.23
+      pf06_low_light_visibility = 0.80
       pf06_left_source = 1.0
       pf06_medium_density = 0.14
       pf06_pattern_contrast = 1.55
+      pf06_volume_shadow = 0.55
     end
     if nk.button("Hide UI (U restores)") then
       pf06_hide_requested = true

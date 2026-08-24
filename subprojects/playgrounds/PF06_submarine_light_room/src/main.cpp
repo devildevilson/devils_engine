@@ -437,8 +437,10 @@ int main(int argc, char** argv) {
   bool fixed_step = false;
   uint32_t frame_limit = 0;
   float exposure = 1.55f;
+  float low_light_visibility = 0.80f;
   float pattern_strength = 1.55f;
   float pattern_speed = 0.075f;
+  float volume_shadow_strength = 0.55f;
   float bounce_override = -1.0f;
   float left_source_strength = 1.0f;
   float medium_density = 0.14f;
@@ -468,8 +470,10 @@ int main(int argc, char** argv) {
     flashlight_enabled = flashlight_enabled || option == "--flashlight";
     constexpr std::string_view lighting_prefix = "--lighting=";
     constexpr std::string_view exposure_prefix = "--exposure=";
+    constexpr std::string_view low_light_visibility_prefix = "--low-light-visibility=";
     constexpr std::string_view pattern_prefix = "--pattern=";
     constexpr std::string_view pattern_speed_prefix = "--pattern-speed=";
+    constexpr std::string_view volume_shadow_prefix = "--volume-shadow=";
     constexpr std::string_view bounce_prefix = "--bounce=";
     constexpr std::string_view left_source_prefix = "--left-source=";
     constexpr std::string_view medium_prefix = "--medium-density=";
@@ -494,8 +498,10 @@ int main(int argc, char** argv) {
       else utils::error{}("PF06 unknown lighting mode '{}'; expected blackout, exploration or safe", value);
     }
     if (option.starts_with(exposure_prefix)) exposure = std::max(std::stof(std::string(option.substr(exposure_prefix.size()))), 0.0f);
+    if (option.starts_with(low_light_visibility_prefix)) low_light_visibility = std::clamp(std::stof(std::string(option.substr(low_light_visibility_prefix.size()))), 0.0f, 1.0f);
     if (option.starts_with(pattern_prefix)) pattern_strength = std::clamp(std::stof(std::string(option.substr(pattern_prefix.size()))), 0.0f, 2.0f);
     if (option.starts_with(pattern_speed_prefix)) pattern_speed = std::max(std::stof(std::string(option.substr(pattern_speed_prefix.size()))), 0.0f);
+    if (option.starts_with(volume_shadow_prefix)) volume_shadow_strength = std::clamp(std::stof(std::string(option.substr(volume_shadow_prefix.size()))), 0.0f, 2.0f);
     if (option.starts_with(bounce_prefix)) bounce_override = std::clamp(std::stof(std::string(option.substr(bounce_prefix.size()))), 0.0f, 1.0f);
     if (option.starts_with(left_source_prefix)) left_source_strength = std::clamp(std::stof(std::string(option.substr(left_source_prefix.size()))), 0.0f, 3.0f);
     if (option.starts_with(medium_prefix)) medium_density = std::clamp(std::stof(std::string(option.substr(medium_prefix.size()))), 0.0f, 0.8f);
@@ -804,14 +810,14 @@ int main(int argc, char** argv) {
         glm::vec4(1.00f, 0.64f, 0.34f, 13.0f),
         glm::vec4(flashlight_direction, 0.90f),
         glm::vec4(0.72f, 0.82f, 0.84f, 12.0f),
-        glm::vec4(room_gi, 1.0f),
+        glm::vec4(room_gi, low_light_visibility),
         glm::vec4(weak_reach, safe_reach, flashlight_reach, room_source),
         glm::vec4(
           medium_enabled ? medium_density : 0.0f,
           medium_anisotropy,
           god_ray_strength,
           mote_strength),
-        glm::vec4(0.82f, 0.34f, 0.18f, 0.0f),
+        glm::vec4(0.82f, 0.34f, 0.18f, volume_shadow_strength),
         glm::vec4(0.14f, 0.27f, 0.30f, 0.82f),
         glm::vec4(float(tonemap_operator), tonemap_contrast, tonemap_saturation, tonemap_black_crush),
         glm::vec4(helmet_enabled ? helmet_strength : 0.0f, 0.46f, 0.70f, 0.18f)};
@@ -824,11 +830,11 @@ int main(int argc, char** argv) {
         std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
       const std::array<std::string, 12> details{
         std::format("Lighting: {} · weak {:.2f} · safe {:.2f} · left ×{:.2f}", mode_name(lighting_mode), weak_weight, safe_weight, left_source_strength),
-        std::format("Room irradiance: exploration GI {:.3f} · source presence {:.2f}", exploration_gi, room_source),
+        std::format("Room irradiance: GI {:.3f} · low-light visibility {:.2f}", exploration_gi, low_light_visibility),
         std::format("Point reach: weak {:.1f} m · safe {:.1f} m", weak_reach, safe_reach),
         std::format("Flashlight: {} · ease-out front {:.1f}/12.0 m", flashlight_enabled ? "ON" : "OFF", flashlight_reach),
-        std::format("Pattern: volumetric peripheral flow · strength {:.2f} · speed {:.3f}", pattern_strength, pattern_speed),
-        std::format("Medium: {} · density {:.3f} · g {:.2f}", medium_enabled ? "ON" : "OFF", medium_density, medium_anisotropy),
+        std::format("Surface pressure: {:.2f} · speed {:.3f} · orientation floor .085", pattern_strength, pattern_speed),
+        std::format("Medium: {} · density {:.3f} · volume shadow {:.2f}", medium_enabled ? "ON" : "OFF", medium_density, volume_shadow_strength),
         std::format("Volume: god rays {:.2f} · motes {:.2f}", god_ray_strength, mote_strength),
         std::format("Shadows: {} · 2×1024² reverse-Z · surface PCF / volume compare", shadows_enabled ? "ON" : "OFF"),
         std::format("Tonemap: {} · exposure {:.2f} · contrast {:.2f} · saturation {:.2f}", tonemap_name(tonemap_operator), exposure, tonemap_contrast, tonemap_saturation),
@@ -838,9 +844,11 @@ int main(int argc, char** argv) {
       if (overlay_visible) {
         overlay.set_detail_lines(details);
         overlay.set_number("pf06_gi", exploration_gi);
+        overlay.set_number("pf06_low_light_visibility", low_light_visibility);
         overlay.set_number("pf06_left_source", left_source_strength);
         overlay.set_number("pf06_medium_density", medium_density);
         overlay.set_number("pf06_pattern_contrast", pattern_strength);
+        overlay.set_number("pf06_volume_shadow", volume_shadow_strength);
         overlay.set_boolean("pf06_hide_requested", false);
         const float ui_mouse_x = ui_interaction_enabled ? float(next_mouse_x) : -1.0f;
         const float ui_mouse_y = ui_interaction_enabled ? float(next_mouse_y) : -1.0f;
@@ -853,9 +861,11 @@ int main(int argc, char** argv) {
           utils::warn("PF06 Visage controls update failed");
         }
         exploration_gi = std::clamp(float(overlay.number("pf06_gi", exploration_gi)), 0.0f, 1.0f);
+        low_light_visibility = std::clamp(float(overlay.number("pf06_low_light_visibility", low_light_visibility)), 0.0f, 1.0f);
         left_source_strength = std::clamp(float(overlay.number("pf06_left_source", left_source_strength)), 0.0f, 3.0f);
         medium_density = std::clamp(float(overlay.number("pf06_medium_density", medium_density)), 0.0f, 0.80f);
         pattern_strength = std::clamp(float(overlay.number("pf06_pattern_contrast", pattern_strength)), 0.0f, 2.0f);
+        volume_shadow_strength = std::clamp(float(overlay.number("pf06_volume_shadow", volume_shadow_strength)), 0.0f, 2.0f);
         if (overlay.boolean("pf06_hide_requested", false)) ui_visibility_toggle_requested = true;
         write_overlay_buffers(base, overlay);
       } else {

@@ -58,10 +58,16 @@ reprojection и rejection, а не задерживать геометричес
   медленно проявляются и растворяются, не требуя fluid simulation. Это дополнительный дешёвый эффект к исходному
   списку и более естественный носитель давления, чем fullscreen grain.
 
-Low-light shadow pattern теперь принадлежит participating medium, а не материалам. Уже используемые полем density
-крупный noise и вытянутый filament формируют медленно движущиеся объёмные языки: внутри них немного возрастает
-optical depth и ослабевает локальное in-scattering. Поэтому полоса читается тёмной толщей воды, не исчезает при
-уменьшении surface GI и всё ещё затухает в safe light. Это художественная неоднородность среды, не shadow map.
+Indoor pressure теперь складывается из двух независимых слабых сигналов. Dominant-plane surface ridges медленно
+модулируют только indirect/orientation fill и плавно стираются direct light. Отдельное гладкое 3D-поле меняет density
+medium максимум на 15% и совсем немного подавляет scattering, поэтому добавляет объём, но не создаёт чёрных облачных
+объектов. Оба сигнала затухают в safe. Верхняя половина authored `Volume shadow` отдельно возвращает тяжёлую optical
+depth как специальный horror/illness эффект, а не baseline комнаты.
+
+Третий слой — не свет, а low-light response наблюдателя. После tone curve он расширяет только уже существующие
+тёмные различия, сохраняя точный ноль и защищая яркий direct light. Поэтому exploration может выглядеть слабо
+освещённым, но всё же показывать медленное движение surface/volume полей без завышенных GI и density. Response
+умножен на source presence и выключается safe gate: ни blackout, ни safe от него не меняются.
 
 Helmet pass выполняется после tonemapping и depth-tested motes. Screen-space superellipse задаёт стекло и мягкий
 обод; radial refraction, холодный tint, внутренняя кромка и два arc-блика растут только к краям, поэтому центр почти
@@ -73,10 +79,10 @@ Helmet pass выполняется после tonemapping и depth-tested motes.
 ```text
 shadow-casting light depth
   -> opaque depth + normal/material
-  -> per-pixel direct light + room irradiance
-  -> depth-bounded participating medium + shadowed god rays + low-light pattern
+  -> per-pixel direct light + orientation fill + surface pressure
+  -> depth-bounded participating medium + shadowed god rays + subtle volume shadow
   -> suspended particles
-  -> constrained exposure + tonemapping
+  -> constrained exposure + tonemapping + exploration dark adaptation
   -> helmet glass
   -> interactive Visage controls
   -> present
@@ -87,10 +93,11 @@ shadow-casting light depth
 
 ## Управление параметрами
 
-PF06 владеет небольшим интерактивным Visage/Nuklear tuning-окном. В нём оставлены четыре оси, которые сейчас нужны
-для подбора образа: exploration GI, множитель энергии левого ситуативного источника, density объёмной среды и
-contrast/amplitude volumetric shadow pattern. Это canonical runtime state: значения считываются после одного общего
-`nk_convert` и попадают в lighting UBO следующего кадра без пересборки графа или pipeline. `Reset defaults`
+PF06 владеет небольшим интерактивным Visage/Nuklear tuning-окном. В нём оставлены шесть осей, которые сейчас нужны
+для подбора образа: физический exploration GI, независимая perceptual `Low-light visibility`, множитель энергии левого
+ситуативного источника, density объёмной среды, `Surface pressure` и `Volume shadow`. Это canonical runtime state:
+значения считываются после одного общего `nk_convert` и попадают в lighting UBO следующего кадра без пересборки
+графа или pipeline. `Reset defaults`
 возвращает исходные числа.
 
 `I` переключает захват мыши между камерой и tuning UI. Переход обратно немедленно rebases cursor position, поэтому
@@ -101,7 +108,8 @@ GLFW warp не дёргает камеру. `U` полностью скрыва�
 Остальные интерактивные переключатели: `L` (blackout → exploration → safe), `F` (фонарь), `K` (shadow visibility),
 `H` (helmet) и `T` (Reinhard → Hable → ACES).
 Воспроизводимый CLI rail: `--fixed-camera --fixed-step --lighting=blackout|exploration|safe --frames=N
---dump=file.ppm`; также доступны `--exposure=`, `--pattern=`, `--pattern-speed=`, `--bounce=` и `--left-source=`.
+--dump=file.ppm`; также доступны `--exposure=`, `--low-light-visibility=`, `--pattern=`, `--pattern-speed=`,
+`--volume-shadow=`, `--bounce=` и `--left-source=`.
 Остальные сформированные оси: `--medium-density=`, `--medium-anisotropy=`, `--god-rays=` и `--motes=`;
 `--no-medium`, `--no-shadows` и `--no-helmet` дают runtime A/B. Output принимает `--tonemap=aces|hable|reinhard`,
 `--contrast=`, `--saturation=`, `--black-crush=` и `--helmet=`. Для временного rail есть
@@ -113,12 +121,16 @@ GLFW warp не дёргает камеру. `U` полностью скрыва�
 Первая работающая версия использует один instanced unit cube для 18 элементов тесной комнаты, дверного проёма,
 короткого коридора, props и двух смысловых светильников. Fragment shader считает point/spot-like direct Lambert и
 Blinn highlight попиксельно. Room-local irradiance — отдельный diffuse term, энергия которого зависит от реально
-включённых weak/safe sources; при blackout direct, indirect и emission строго нулевые. Ранний surface warped-ridge
-pattern из этого shader удалён после появления объёмного варианта: коэффициент GI теперь меняет только читаемость
-материалов и не является неявным master strength для атмосферного эффекта.
+включённых weak/safe sources; при blackout direct, indirect и emission строго нулевые. При exploration source presence
+shader гарантирует orientation floor `.085`, даже если authored bounce опущен ниже: это gameplay visibility contract,
+а не настоящий bounce. Отдельный surface pressure уменьшает только indirect максимум на 30%, усиливается к периферии
+и стирается direct radiance, поэтому не способен превратить читаемую поверхность в чёрную дыру.
 
 HDR сцена и final image разделены: отдельный compose pass применяет фиксированный exposure, холодный grade и
 ACES-like curve. Это место позднее принимает depth-bounded medium и helmet, не меняя surface-lighting material.
+После filmic curve exploration-only dark adaptation (`.8` по умолчанию) раскрывает weak display signal через
+square-root toe. Это не ambient и не auto exposure: RGB умножается только там, где уже есть ненулевая radiance;
+source-presence/safe gates оставляют blackout и safe bit-identical при любом значении slider.
 Важный graph contract: каждый graphics pass с одним subpass задаёт три состояния attachments — до, активное и после.
 Пропуск активного состояния делал normal/depth read-only во время записи и приводил к падению Intel Vulkan driver
 при создании pipeline; конфигурация исправлена, а validation rail чист.
@@ -132,9 +144,10 @@ ACES-like curve. Это место позднее принимает depth-bound
 Direct и room irradiance намеренно не используют одну формулу. Direct остаётся локальным и может складываться от
 нескольких lights. GI получает `max` плавного presence всех источников, а не сумму их energy: один работающий фонарь
 уже даёт всей комнате фиксированный минимальный diffuse level, но второй фонарь не поднимает ambient ещё раз. Так
-игрок сохраняет общую ориентацию, а тёмная область вне direct light остаётся местом максимальной видимости medium.
-При этом medium имеет собственный ambient scattering от присутствующих sources: это намеренный дополнительный
-volumetric fill, который не умножается на surface bounce и может нести shadow pattern при `GI=0`.
+игрок сохраняет общую ориентацию, а тёмная область вне direct light остаётся местом максимальной видимости pressure.
+Exploration дополнительно имеет минимальный orientation floor `.085`: ползунок GI меняет художественный bounce выше
+этой границы, но больше не может случайно превратить режим исследования в blackout. Medium сохраняет собственный
+ambient scattering от присутствующих sources как независимый volumetric fill.
 
 Источник имеет CPU envelope `0..1`, но shader получает пространственный reach. Включение использует quadratic
 ease-out `p(t) = 1-(1-t)²`: front быстро даёт ближний ориентир, затем заметно замедляется на дальних поверхностях.
@@ -197,8 +210,9 @@ Surface-pattern сам по себе стоил меньше миллисеку�
 Half-resolution pass читает reverse-Z depth и восстанавливает camera ray аналитически из фиксированного FOV.
 Двадцать midpoint samples идут только до первого opaque surface (либо до 18 m): Beer–Lambert отдельно поглощает RGB,
 single in-scattering получает room irradiance, слабый point source и flashlight cone. Крупный медленный noise и
-второй filament scale меняют плотность и без дополнительных noise fetches формируют volumetric pattern; safe light
-снижает художественное усиление среды и полностью убирает pattern, но не выключает саму среду.
+второй filament scale создают обычную муть. Shadow modulation использует отдельное дешёвое поле плавных синусов,
+поэтому не повторяет форму density noise; при default strength `.55` оно меняет density примерно на ±8% и scattering
+не более чем на 4.4%. Safe light убирает modulation, но не выключает саму среду.
 Полноразмерный compose не апскейлит уже затонированную картинку: он bilateral-like восстанавливает только два
 коэффициента среды и применяет их к точному full-resolution scene color.
 
@@ -214,26 +228,29 @@ depth. Примерно 58% остаются тёмной пылью, 42% пол
 light, поэтому это не самостоятельные emissive sparks. Это дешёвая локальная взвесь, не particle simulation из
 PF05 и не замена объёмной плотности.
 
-Эксперимент с квантизацией shadow pattern удалён: уровни меняли значение затемнения, но почти не меняли читаемую
-форму. Текущий непрерывный pattern строит ridges из двух уже вычисленных density fields, слегка повышает density,
-подавляет scattering внутри полосы и сохраняет ближайший выраженный ridge как дополнительную optical depth. Последнее
-важно: обычное среднее двадцати samples превращало чередующиеся полосы в однородный серый fog. Screen eccentricity
-оставляет центр спокойнее и усиливает эффект в периферии.
+Промежуточный volumetric-only pattern давал красивый тяжёлый объём, но одно и то же поле сразу повышало density,
+подавляло scattering и второй раз добавляло optical depth. Результат выглядел как беспорядочные почти чёрные облака.
+Текущий layered вариант оставляет baseline volume signed и zero-mean, а старый характер начинает плавно возвращаться
+только при `Volume shadow > 1`. Surface pressure использует своё dominant-plane value-noise поле и не зависит от
+volume density.
 
-Новая граница проверена с нулевым surface GI: pattern on/off всё равно отличается на `AE=837.933`. При обычном
-GI отличие равно `1265.27`; при `--no-medium` pattern on/off бит-идентичны (`AE=0`), как и в safe mode (`AE=0`).
-То есть effect действительно существует только в атмосфере и больше не модулирует surface shader.
+После exploration dark adaptation defaults относительно обоих выключенных эффектов дают surface-only
+`AE=390.644`, volume-only `193.621`, вместе `504.068` на fixed frame 180 (`motes=0`). Один surface pattern без medium
+меняет кадр на `AE=787.795`, а между frame 180 и 360 с неподвижной камерой — на `AE=141.413`: рисунок заметен и
+действительно медленно движется, а не является статической грязью. При `bounce=0` полный pressure всё ещё даёт
+`AE=327.072` относительно выключенного, поэтому GI больше не служит master visibility. `Low-light visibility=0→1`
+бит-идентичен и в blackout, и в safe (`AE=0`); эти состояния нельзя случайно подсветить perceptual curve.
 
 ## Срезы
 
 1. **DONE** — `lighting states`: геометрия комнаты, per-pixel lights, room irradiance,
    blackout/exploration/safe и fixed dumps.
 2. **DONE** — `medium`: depth-bounded absorption/in-scattering, flashlight volume и крупная муть.
-3. **DONE** — `particles + pattern`: depth-tested suspended motes и volumetric low-light pattern с A/B.
+3. **DONE** — `particles + pressure`: depth-tested suspended motes, surface pressure и subtle/heavy volume ranges.
 4. **DONE** — `shadow maps`: offset flashlight + window light, surface PCF и volume visibility.
 5. **DONE** — `helmet + output`: fixed constrained exposure, три tone curves, contrast/saturation/black crush и
    отдельное helmet glass с runtime/CLI A/B.
-6. **DONE** — `tuning UI`: четыре актуальных runtime slider, reset, mouse/camera mode и полное отключение UI.
+6. **DONE** — `tuning UI`: шесть актуальных runtime slider, reset, mouse/camera mode и полное отключение UI.
 7. `closing`: moving-camera/caster stability, GPU timestamp timings и итоговая настройка образа.
 
 ## Definition of Done

@@ -2,8 +2,9 @@
 
 // Алгоритм: два project lights и camera flashlight дают direct Lambert + простой Blinn specular на каждом пикселе.
 // Room irradiance — дешёвый diffuse bounce proxy, энергия которого выводится только из реально включённых lights:
-// при blackout direct и indirect равны нулю, поэтому exposure не может изобрести силуэты. Low-light shadow pattern
-// намеренно здесь не считается: он принадлежит participating medium и потому не исчезает вместе с surface GI.
+// при blackout direct и indirect равны нулю, поэтому exposure не может изобрести силуэты. При наличии хотя бы одного
+// source небольшой orientation floor не даёт exploration превратиться в blackout. Отдельный медленный surface ridge
+// модулирует только этот indirect в пределах нескольких десятков процентов; direct light плавно стирает его.
 
 layout(location = 0) in vec3 in_world_position;
 layout(location = 1) in vec3 in_world_normal;
@@ -51,6 +52,39 @@ layout(set = 2, binding = 2, std140) uniform ShadowBlock {
   vec4 params;
   vec4 flashlight_position_range;
 } shadows;
+
+float hash21(const vec2 p) {
+  vec3 q = fract(vec3(p.xyx) * 0.1031);
+  q += dot(q, q.yzx + 33.33);
+  return fract((q.x + q.y) * q.z);
+}
+
+float value_noise(const vec2 p) {
+  const vec2 cell = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(hash21(cell), hash21(cell + vec2(1, 0)), f.x),
+    mix(hash21(cell + vec2(0, 1)), hash21(cell + vec2(1, 1)), f.x),
+    f.y);
+}
+
+float surface_pressure_pattern(const vec3 world_position, const vec3 normal) {
+  // Axis-aligned fixtures use the dominant surface plane. This is a cheap project fixture equivalent of triplanar
+  // mapping: no UVs are required and neighbouring faces do not inherit one arbitrary projection's stretching.
+  const vec3 axis = abs(normal);
+  const vec2 plane = axis.x > axis.y && axis.x > axis.z
+    ? world_position.zy
+    : (axis.y > axis.z ? world_position.xz : world_position.xy);
+  const float t = lighting.presentation.y * lighting.presentation.w;
+  vec2 p = plane * vec2(0.34, 1.28) + vec2(t * 0.055, -t * 0.19);
+  const float warp = value_noise(p * 0.31 + vec2(-t * 0.018, t * 0.011)) - 0.5;
+  p.x += warp * 2.1 + sin(p.y * 0.61 + t * 0.09) * 0.28;
+  const float primary = pow(1.0 - abs(value_noise(p) * 2.0 - 1.0), 4.0);
+  const vec2 branch_p = p * vec2(1.41, 0.73) + vec2(7.3 - t * 0.08, 3.1 + t * 0.045);
+  const float branch = pow(1.0 - abs(value_noise(branch_p) * 2.0 - 1.0), 5.0);
+  return smoothstep(0.18, 0.76, max(primary, branch * 0.58));
+}
 
 float shadow_visibility(
   sampler2DShadow shadow_map,
@@ -154,8 +188,27 @@ void main() {
     view_direction,
     roughness) * flashlight_visibility;
 
-  vec3 indirect = lighting.room_irradiance.rgb *
-                  lighting.room_irradiance.w * lighting.state.z * lighting.source_reach.w;
+  const float safe_gate = smoothstep(0.05, 0.60, lighting.state.y);
+  const float exploration_gate = lighting.source_reach.w * (1.0 - safe_gate);
+  const float orientation_floor = 0.085 * exploration_gate;
+  const float indirect_strength = max(lighting.state.z * lighting.source_reach.w, orientation_floor);
+  vec3 indirect = lighting.room_irradiance.rgb * indirect_strength;
+
+  const float direct_level = dot(direct, vec3(0.2126, 0.7152, 0.0722));
+  const float direct_shadow_gate = 1.0 - smoothstep(0.018, 0.22, direct_level);
+  const float pressure_strength = clamp(lighting.presentation.z, 0.0, 2.0);
+  float surface_pressure = 0.0;
+  if (pressure_strength * exploration_gate * direct_shadow_gate > 0.0001) {
+    const vec3 view_position = (camera_data.view * vec4(in_world_position, 1.0)).xyz;
+    const float view_depth = max(-view_position.z, 0.001);
+    const float tan_half_fov = tan(radians(65.0) * 0.5);
+    const float aspect = camera_data.viewport_near.x / max(camera_data.viewport_near.y, 1.0);
+    const vec2 screen_position = view_position.xy / (view_depth * tan_half_fov * vec2(aspect, 1.0));
+    const float peripheral = smoothstep(0.30, 0.90, length(screen_position));
+    surface_pressure = surface_pressure_pattern(in_world_position, normal) * pressure_strength *
+                       exploration_gate * direct_shadow_gate * mix(0.38, 1.0, peripheral);
+  }
+  indirect *= 1.0 - min(surface_pressure * 0.17, 0.30);
 
   // Material 2 = weak bioluminescent fixture, 3 = safe ceiling lamp. Their emission obeys source state.
   vec3 emission = vec3(0.0);
