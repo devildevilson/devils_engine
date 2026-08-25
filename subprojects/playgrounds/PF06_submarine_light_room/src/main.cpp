@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -23,6 +24,7 @@
 #include "devils_engine/input/events.h"
 #include "devils_engine/painter/assets_base.h"
 #include "devils_engine/painter/auxiliary.h"
+#include "devils_engine/painter/gpu_timing.h"
 #include "devils_engine/painter/graphics_base.h"
 #include "devils_engine/painter/makers.h"
 #include "devils_engine/painter/system_info.h"
@@ -145,8 +147,10 @@ struct alignas(16) lighting_block {
   glm::vec4 medium_scattering;
   glm::vec4 tonemap_params;
   glm::vec4 helmet_params;
+  // x shadow-wall strength, y clear radius, z transition width, w boundary-noise amplitude.
+  glm::vec4 shadow_wall_params;
 };
-static_assert(sizeof(lighting_block) == 240);
+static_assert(sizeof(lighting_block) == 256);
 
 struct alignas(16) shadow_block {
   glm::mat4 flashlight_view_projection;
@@ -428,6 +432,58 @@ void dump_final_image(painter::graphics_base& base, const std::string& path) {
   utils::info("PF06 dumped {}x{} final frame to '{}'", width, height, path);
 }
 
+// Accumulate delayed timestamp results over the run. A single frame is too noisy for deciding whether a pass is
+// worth restructuring; the minimum is useful because unrelated GPU load can only add time, while max exposes stalls.
+struct pass_timing_accumulator {
+  struct entry {
+    std::string name;
+    double total = 0.0;
+    double minimum = std::numeric_limits<double>::max();
+    double maximum = 0.0;
+  };
+
+  std::vector<entry> passes;
+  double frame_total = 0.0;
+  double frame_minimum = std::numeric_limits<double>::max();
+  uint64_t samples = 0;
+
+  void add(const std::span<const painter::gpu_pass_timing>& timings, const double frame_ms) {
+    if (passes.empty()) {
+      passes.resize(timings.size());
+      for (size_t i = 0; i < timings.size(); ++i) passes[i].name = timings[i].name;
+    }
+    if (passes.size() != timings.size()) {
+      utils::error{}("PF06 pass timing count changed mid-run: {} -> {}", passes.size(), timings.size());
+    }
+
+    for (size_t i = 0; i < timings.size(); ++i) {
+      const double value = timings[i].milliseconds;
+      passes[i].total += value;
+      passes[i].minimum = std::min(passes[i].minimum, value);
+      passes[i].maximum = std::max(passes[i].maximum, value);
+    }
+    frame_total += frame_ms;
+    frame_minimum = std::min(frame_minimum, frame_ms);
+    samples += 1;
+  }
+
+  void report() const {
+    if (samples == 0) {
+      utils::info("PF06 GPU timings: no samples collected");
+      return;
+    }
+
+    const double count = double(samples);
+    utils::info("PF06 GPU timings over {} frames (ms: average / minimum / maximum):", samples);
+    for (const auto& pass : passes) {
+      utils::info(
+        "  {:<24} {:6.3f} / {:6.3f} / {:6.3f}",
+        pass.name, pass.total / count, pass.minimum, pass.maximum);
+    }
+    utils::info("  {:<24} {:6.3f} / {:6.3f}", "TOTAL ON GPU", frame_total / count, frame_minimum);
+  }
+};
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -440,7 +496,8 @@ int main(int argc, char** argv) {
   float low_light_visibility = 0.80f;
   float pattern_strength = 1.55f;
   float pattern_speed = 0.075f;
-  float volume_shadow_strength = 0.55f;
+  float shadow_wall_strength = 1.0f;
+  float shadow_wall_radius = 4.5f;
   float bounce_override = -1.0f;
   float left_source_strength = 1.0f;
   float medium_density = 0.14f;
@@ -474,6 +531,7 @@ int main(int argc, char** argv) {
     constexpr std::string_view pattern_prefix = "--pattern=";
     constexpr std::string_view pattern_speed_prefix = "--pattern-speed=";
     constexpr std::string_view volume_shadow_prefix = "--volume-shadow=";
+    constexpr std::string_view shadow_radius_prefix = "--shadow-radius=";
     constexpr std::string_view bounce_prefix = "--bounce=";
     constexpr std::string_view left_source_prefix = "--left-source=";
     constexpr std::string_view medium_prefix = "--medium-density=";
@@ -501,7 +559,8 @@ int main(int argc, char** argv) {
     if (option.starts_with(low_light_visibility_prefix)) low_light_visibility = std::clamp(std::stof(std::string(option.substr(low_light_visibility_prefix.size()))), 0.0f, 1.0f);
     if (option.starts_with(pattern_prefix)) pattern_strength = std::clamp(std::stof(std::string(option.substr(pattern_prefix.size()))), 0.0f, 2.0f);
     if (option.starts_with(pattern_speed_prefix)) pattern_speed = std::max(std::stof(std::string(option.substr(pattern_speed_prefix.size()))), 0.0f);
-    if (option.starts_with(volume_shadow_prefix)) volume_shadow_strength = std::clamp(std::stof(std::string(option.substr(volume_shadow_prefix.size()))), 0.0f, 2.0f);
+    if (option.starts_with(volume_shadow_prefix)) shadow_wall_strength = std::clamp(std::stof(std::string(option.substr(volume_shadow_prefix.size()))), 0.0f, 2.0f);
+    if (option.starts_with(shadow_radius_prefix)) shadow_wall_radius = std::clamp(std::stof(std::string(option.substr(shadow_radius_prefix.size()))), 1.0f, 8.0f);
     if (option.starts_with(bounce_prefix)) bounce_override = std::clamp(std::stof(std::string(option.substr(bounce_prefix.size()))), 0.0f, 1.0f);
     if (option.starts_with(left_source_prefix)) left_source_strength = std::clamp(std::stof(std::string(option.substr(left_source_prefix.size()))), 0.0f, 3.0f);
     if (option.starts_with(medium_prefix)) medium_density = std::clamp(std::stof(std::string(option.substr(medium_prefix.size()))), 0.0f, 0.8f);
@@ -666,9 +725,17 @@ int main(int argc, char** argv) {
     auto previous_time = std::chrono::steady_clock::now();
     const auto start_time = previous_time;
     playground::frame_pacer frame_pacer(uncapped ? 0u : 60u);
+    // The graph is already selected, so the profiler can allocate exactly two queries for each execution group and
+    // frame-in-flight slot. Results are read only after graphics_base has waited that slot's fence.
+    painter::gpu_timestamp_profiler gpu_profiler(base);
+    pass_timing_accumulator gpu_timings;
     painter::graphics_ctx context;
     context.base = &base;
     context.assets = &assets;
+    context.set_gpu_profiler(&gpu_profiler);
+    if (!gpu_profiler.available()) {
+      utils::warn("PF06 GPU timestamps are unavailable on this device; per-pass cost will stay unmeasured");
+    }
     uint32_t frames_total = 0;
     double measured_seconds = 0.0;
     uint32_t measured_frames = 0;
@@ -738,6 +805,11 @@ int main(int argc, char** argv) {
       }
 
       base.prepare_frame();
+      // context.prepare collected the previous completed slot on the preceding iteration. Consume it here before
+      // recording another frame; reported results therefore belong to a frame submitted frames_in_flight ago.
+      if (gpu_profiler.has_results()) {
+        gpu_timings.add(gpu_profiler.passes(), gpu_profiler.frame_milliseconds());
+      }
       if (frames_total == flashlight_on_frame) flashlight_enabled = true;
       if (frames_total == flashlight_off_frame) flashlight_enabled = false;
       if (frames_total == exploration_on_frame) lighting_mode = exploration_mode;
@@ -817,10 +889,11 @@ int main(int argc, char** argv) {
           medium_anisotropy,
           god_ray_strength,
           mote_strength),
-        glm::vec4(0.82f, 0.34f, 0.18f, volume_shadow_strength),
+        glm::vec4(0.82f, 0.34f, 0.18f, 0.0f),
         glm::vec4(0.14f, 0.27f, 0.30f, 0.82f),
         glm::vec4(float(tonemap_operator), tonemap_contrast, tonemap_saturation, tonemap_black_crush),
-        glm::vec4(helmet_enabled ? helmet_strength : 0.0f, 0.46f, 0.70f, 0.18f)};
+        glm::vec4(helmet_enabled ? helmet_strength : 0.0f, 0.46f, 0.70f, 0.18f),
+        glm::vec4(shadow_wall_strength, shadow_wall_radius, 2.4f, 1.0f)};
       write_current_buffer(base, "lighting_buffer", &lighting, sizeof(lighting));
 
       const uint64_t frame_delta_us = uint64_t(std::max(
@@ -834,7 +907,7 @@ int main(int argc, char** argv) {
         std::format("Point reach: weak {:.1f} m · safe {:.1f} m", weak_reach, safe_reach),
         std::format("Flashlight: {} · ease-out front {:.1f}/12.0 m", flashlight_enabled ? "ON" : "OFF", flashlight_reach),
         std::format("Surface pressure: {:.2f} · speed {:.3f} · orientation floor .085", pattern_strength, pattern_speed),
-        std::format("Medium: {} · density {:.3f} · volume shadow {:.2f}", medium_enabled ? "ON" : "OFF", medium_density, volume_shadow_strength),
+        std::format("Medium: {} · density {:.3f} · shadow wall {:.2f} @ {:.1f} m", medium_enabled ? "ON" : "OFF", medium_density, shadow_wall_strength, shadow_wall_radius),
         std::format("Volume: god rays {:.2f} · motes {:.2f}", god_ray_strength, mote_strength),
         std::format("Shadows: {} · 2×1024² reverse-Z · surface PCF / volume compare", shadows_enabled ? "ON" : "OFF"),
         std::format("Tonemap: {} · exposure {:.2f} · contrast {:.2f} · saturation {:.2f}", tonemap_name(tonemap_operator), exposure, tonemap_contrast, tonemap_saturation),
@@ -848,7 +921,8 @@ int main(int argc, char** argv) {
         overlay.set_number("pf06_left_source", left_source_strength);
         overlay.set_number("pf06_medium_density", medium_density);
         overlay.set_number("pf06_pattern_contrast", pattern_strength);
-        overlay.set_number("pf06_volume_shadow", volume_shadow_strength);
+        overlay.set_number("pf06_volume_shadow", shadow_wall_strength);
+        overlay.set_number("pf06_shadow_radius", shadow_wall_radius);
         overlay.set_boolean("pf06_hide_requested", false);
         const float ui_mouse_x = ui_interaction_enabled ? float(next_mouse_x) : -1.0f;
         const float ui_mouse_y = ui_interaction_enabled ? float(next_mouse_y) : -1.0f;
@@ -865,7 +939,8 @@ int main(int argc, char** argv) {
         left_source_strength = std::clamp(float(overlay.number("pf06_left_source", left_source_strength)), 0.0f, 3.0f);
         medium_density = std::clamp(float(overlay.number("pf06_medium_density", medium_density)), 0.0f, 0.80f);
         pattern_strength = std::clamp(float(overlay.number("pf06_pattern_contrast", pattern_strength)), 0.0f, 2.0f);
-        volume_shadow_strength = std::clamp(float(overlay.number("pf06_volume_shadow", volume_shadow_strength)), 0.0f, 2.0f);
+        shadow_wall_strength = std::clamp(float(overlay.number("pf06_volume_shadow", shadow_wall_strength)), 0.0f, 2.0f);
+        shadow_wall_radius = std::clamp(float(overlay.number("pf06_shadow_radius", shadow_wall_radius)), 1.0f, 8.0f);
         if (overlay.boolean("pf06_hide_requested", false)) ui_visibility_toggle_requested = true;
         write_overlay_buffers(base, overlay);
       } else {
@@ -889,9 +964,11 @@ int main(int argc, char** argv) {
             "PF06 uncapped steady frame: {:.3f} ms ({:.1f} FPS, {} samples)",
             average_ms, 1000.0 / average_ms, measured_frames);
         }
+        gpu_timings.report();
         break;
       }
     }
+    if (frame_limit == 0) gpu_timings.report();
     vk::Device(device).waitIdle();
     base.dump_cache_on_disk(cache_path);
   }

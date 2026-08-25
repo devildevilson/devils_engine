@@ -75,10 +75,9 @@ font и показывает описание сцены, controls, сглаже
 
 ## Текущий фокус — Painter visual stack
 
-Активная campaign: семь независимых painter-лабораторий `PF01`–`PF07`. `PF01_forward_plus`, `PF02_shadows`,
-[`PF03_post_processing`](subprojects/playgrounds/PF03_post_processing/README.md) и
-[`PF04_stencil_effects`](subprojects/playgrounds/PF04_stencil_effects/README.md) закрыты; следующий bounded result —
-[`PF05_scene_effects`](subprojects/playgrounds/PF05_scene_effects/README.md). PF04 закрыт основными срезами: `D24S8`
+Активная campaign: семь независимых painter-лабораторий `PF01`–`PF07`. `PF01_forward_plus`–
+[`PF06_submarine_light_room`](subprojects/playgrounds/PF06_submarine_light_room/README.md) закрыты; следующий bounded
+result — [`PF07_party_environment`](subprojects/playgrounds/PF07_party_environment/README.md). PF04 закрыт основными срезами: `D24S8`
 selection/outline/debug; независимые bits `0x02/0x04` для local tint и spatial window; runtime
 `StencilReference/CompareMask/WriteMask`; asymmetric front/back fixture; а после закрытия — отдельная coverage+depth selection mask,
 трёхпиксельный depth-aware screen-space outline, optional through-wall selector и `depth_fail_op`-силуэт скрытой цели на bit `0x40` с явным порядком относительно portal. Внутреннее
@@ -112,9 +111,8 @@ resolver'ом. Реализация остаётся отдельным backlog,
 | 6 | `PF06_submarine_light_room` | густая тёмная сцена со светом как препятствием | `submarine_coop` |
 | 7 | `PF07_party_environment` | динамический свет, погода и окружение | `party_adventure` |
 
-`PF01`–`PF05` закрыты и доказывают отдельные painter capabilities. Активная площадка — `PF06`; она и `PF07`
-фиксируют только нужное им
-подмножество этих возможностей в собственных resources/presets. Исходники и CMake targets лабораторий
+`PF01`–`PF06` закрыты. Следующая площадка — `PF07`; обе project-look сцены фиксируют только нужное им подмножество
+gallery-возможностей в собственных resources/presets. Исходники и CMake targets лабораторий
 не зависят друг от друга.
 
 Текущие ограниченные результаты PF05 — запускаемые Crimson MSDF и screen-space decal slices: один atlas обслуживает UI,

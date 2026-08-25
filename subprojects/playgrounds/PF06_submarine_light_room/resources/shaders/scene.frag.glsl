@@ -4,7 +4,8 @@
 // Room irradiance — дешёвый diffuse bounce proxy, энергия которого выводится только из реально включённых lights:
 // при blackout direct и indirect равны нулю, поэтому exposure не может изобрести силуэты. При наличии хотя бы одного
 // source небольшой orientation floor не даёт exploration превратиться в blackout. Отдельный медленный surface ridge
-// модулирует только этот indirect в пределах нескольких десятков процентов; direct light плавно стирает его.
+// модулирует только этот indirect в пределах нескольких десятков процентов; direct light плавно стирает его. Два
+// разных warp-состояния непрерывно перетекают друг в друга, поэтому ridge меняет форму, а не просто скользит по стене.
 
 layout(location = 0) in vec3 in_world_position;
 layout(location = 1) in vec3 in_world_normal;
@@ -42,6 +43,8 @@ layout(set = 1, binding = 0, std140) uniform LightingBlock {
   // operator, contrast, saturation, black crush; helmet strength, rim, tint, edge dirt.
   vec4 tonemap_params;
   vec4 helmet_params;
+  // shadow wall: strength, camera-centred clear radius, transition width, boundary-noise amplitude.
+  vec4 shadow_wall_params;
 } lighting;
 
 layout(set = 2, binding = 0) uniform sampler2DShadow flashlight_shadow;
@@ -70,20 +73,37 @@ float value_noise(const vec2 p) {
 }
 
 float surface_pressure_pattern(const vec3 world_position, const vec3 normal) {
-  // Axis-aligned fixtures use the dominant surface plane. This is a cheap project fixture equivalent of triplanar
-  // mapping: no UVs are required and neighbouring faces do not inherit one arbitrary projection's stretching.
-  const vec3 axis = abs(normal);
-  const vec2 plane = axis.x > axis.y && axis.x > axis.z
-    ? world_position.zy
-    : (axis.y > axis.z ? world_position.xz : world_position.xy);
+  // Project one coherent world-space flow direction into the receiver tangent plane. The pattern therefore follows
+  // the actual surface normal: on the floor it lies in XZ, on walls it turns into their plane, and neither inherits
+  // the screen axes. The fallback only handles a normal accidentally parallel to the preferred flow direction.
+  const vec3 n = normalize(normal);
+  const vec3 preferred_flow = normalize(vec3(0.58, 0.21, 0.79));
+  vec3 tangent = preferred_flow - n * dot(preferred_flow, n);
+  if (dot(tangent, tangent) < 0.0025) {
+    const vec3 fallback_flow = vec3(0.13, 0.97, -0.21);
+    tangent = fallback_flow - n * dot(fallback_flow, n);
+  }
+  tangent = normalize(tangent);
+  const vec3 bitangent = normalize(cross(n, tangent));
+  const vec2 plane = vec2(dot(world_position, tangent), dot(world_position, bitangent));
   const float t = lighting.presentation.y * lighting.presentation.w;
-  vec2 p = plane * vec2(0.34, 1.28) + vec2(t * 0.055, -t * 0.19);
-  const float warp = value_noise(p * 0.31 + vec2(-t * 0.018, t * 0.011)) - 0.5;
-  p.x += warp * 2.1 + sin(p.y * 0.61 + t * 0.09) * 0.28;
+  // At the default speed this cycle takes roughly two minutes. The two samples have unrelated axes, so their
+  // cross-fade changes ridge topology instead of looking like a texture translation.
+  const float morph = 0.5 + 0.5 * sin(t * 0.70 - 0.8);
+  const vec2 breathing_scale = vec2(
+    1.0 + sin(t * 0.43) * 0.075,
+    1.0 + cos(t * 0.31) * 0.055);
+  vec2 p = plane * vec2(0.34, 1.28) * breathing_scale + vec2(t * 0.055, -t * 0.19);
+  const float warp_a = value_noise(p * 0.31 + vec2(-t * 0.018, t * 0.011));
+  const float warp_b = value_noise(p.yx * vec2(-0.24, 0.37) + vec2(13.7 + t * 0.013, -5.4 - t * 0.016));
+  const float warp = mix(warp_a, warp_b, morph) - 0.5;
+  p.x += warp * 2.1 + sin(p.y * 0.61 + t * 0.42) * (0.24 + morph * 0.10);
+  p.y += sin(p.x * 0.23 - t * 0.29) * 0.13;
   const float primary = pow(1.0 - abs(value_noise(p) * 2.0 - 1.0), 4.0);
   const vec2 branch_p = p * vec2(1.41, 0.73) + vec2(7.3 - t * 0.08, 3.1 + t * 0.045);
   const float branch = pow(1.0 - abs(value_noise(branch_p) * 2.0 - 1.0), 5.0);
-  return smoothstep(0.18, 0.76, max(primary, branch * 0.58));
+  const float branch_weight = mix(0.48, 0.68, 0.5 + 0.5 * cos(t * 0.53 + 1.7));
+  return smoothstep(0.18, 0.76, max(primary, branch * branch_weight));
 }
 
 float shadow_visibility(

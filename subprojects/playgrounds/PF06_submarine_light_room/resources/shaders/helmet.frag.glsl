@@ -25,6 +25,7 @@ layout(set = 0, binding = 1, std140) uniform LightingBlock {
   vec4 medium_scattering;
   vec4 tonemap_params;
   vec4 helmet_params;
+  vec4 shadow_wall_params;
 } lighting;
 
 float hash21(const vec2 p) {

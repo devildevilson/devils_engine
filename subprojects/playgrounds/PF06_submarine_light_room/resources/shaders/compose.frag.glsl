@@ -2,9 +2,10 @@
 
 // Алгоритм: full-resolution surface colour не блюрится. Вместо этого четыре соседних half-resolution medium
 // samples смешиваются bilinear weights, дополнительно подавленными относительной разницей linear depth. Полученные
-// scattering/transmittance применяются к точному текущему surface pixel. Выбранная tone curve формирует LDR, после
-// чего exploration-only low-light response расширяет лишь тёмный toe и заранее ослабленный black crush: слабые
-// spatial differences остаются видимыми без повышения GI или density, но нулевая radiance blackout остаётся нулём.
+// scattering/transmittance применяются к точному текущему surface pixel. Alpha medium response несёт отдельную
+// плавную неоднородность shadow-volume visibility. Выбранная tone curve формирует LDR, после чего exploration-only
+// low-light response расширяет лишь тёмный toe и заранее ослабленный black crush: слабые spatial differences остаются
+// видимыми без повышения GI или density, но нулевая radiance blackout остаётся нулём.
 // Depth-aware weights не дают туману дальней стены протекать через ближний силуэт.
 
 layout(location = 0) in vec2 in_uv;
@@ -36,6 +37,7 @@ layout(set = 0, binding = 5, std140) uniform LightingBlock {
   vec4 medium_scattering_data;
   vec4 tonemap_params;
   vec4 helmet_params;
+  vec4 shadow_wall_params;
 } lighting;
 
 vec3 aces_fitted(const vec3 value) {
@@ -75,13 +77,14 @@ void main() {
 
   vec3 scattering = vec3(0.0);
   vec3 transmittance = vec3(0.0);
+  float volume_visibility_response = 0.0;
   float total_weight = 0.0;
   for (int y = 0; y < 2; ++y) {
     for (int x = 0; x < 2; ++x) {
       const ivec2 offset = ivec2(x, y);
       const ivec2 coord = clamp(base + offset, ivec2(0), medium_size - 1);
       const vec4 candidate_scattering = texelFetch(medium_scattering, coord, 0);
-      const vec3 candidate_transmittance = texelFetch(medium_transmittance, coord, 0).rgb;
+      const vec4 candidate_transmittance = texelFetch(medium_transmittance, coord, 0);
       const vec2 axis_weight = mix(1.0 - fraction, fraction, vec2(offset));
       const float spatial_weight = axis_weight.x * axis_weight.y;
       const float relative_depth_error = abs(candidate_scattering.a - target_distance) /
@@ -89,18 +92,24 @@ void main() {
       const float depth_weight = exp(-relative_depth_error * 28.0);
       const float weight = spatial_weight * depth_weight + 0.000001;
       scattering += candidate_scattering.rgb * weight;
-      transmittance += candidate_transmittance * weight;
+      transmittance += candidate_transmittance.rgb * weight;
+      volume_visibility_response += candidate_transmittance.a * weight;
       total_weight += weight;
     }
   }
   scattering /= total_weight;
   transmittance /= total_weight;
+  volume_visibility_response /= total_weight;
 
   vec3 color = (surface * transmittance + scattering) * lighting.presentation.x;
   color *= vec3(0.91, 1.00, 1.06);
   const float safe_gate = smoothstep(0.05, 0.60, lighting.state.y);
-  const float low_light_visibility = clamp(lighting.room_irradiance.w, 0.0, 1.0) *
-                                     lighting.source_reach.w * (1.0 - safe_gate);
+  const float base_low_light_visibility = clamp(lighting.room_irradiance.w, 0.0, 1.0) *
+                                          lighting.source_reach.w * (1.0 - safe_gate);
+  const float low_light_visibility = clamp(
+    base_low_light_visibility * volume_visibility_response,
+    0.0,
+    1.0);
   const float effective_black_crush = lighting.tonemap_params.w * mix(1.0, 0.08, low_light_visibility);
   color = max(color - effective_black_crush, vec3(0.0));
   color = pow(color, vec3(max(lighting.tonemap_params.y, 0.01)));

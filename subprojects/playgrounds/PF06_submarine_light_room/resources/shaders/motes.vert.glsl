@@ -30,6 +30,7 @@ layout(set = 1, binding = 0, std140) uniform LightingBlock {
   vec4 medium_scattering;
   vec4 tonemap_params;
   vec4 helmet_params;
+  vec4 shadow_wall_params;
 } lighting;
 
 float hash11(float p) {
