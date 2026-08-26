@@ -65,7 +65,11 @@ double interpolate_crossing(const double previous_time, const double previous_va
   return previous_time + (current_time - previous_time) * (-previous_value / span);
 }
 
-day_summary summarize_day(const celestial_system& system, const double day_start, const double step_minutes) {
+// `day_index` — номер СУТОК, а не абсолютное время: сутки начинаются в полночь, и её эпоху знает
+// небесная механика. Раньше сюда приходило просто целое время в сутках, и разбор «одного дня» брал
+// произвольный отрезок вращения, из-за чего восход мог оказаться позже заката.
+day_summary summarize_day(const celestial_system& system, const double day_index, const double step_minutes) {
+  const double day_start = system.from_calendar(1, uint32_t(day_index), 0.0);
   day_summary summary;
   const double step_days = step_minutes / minutes_per_day;
   const int32_t steps = static_cast<int32_t>(minutes_per_day / step_minutes);

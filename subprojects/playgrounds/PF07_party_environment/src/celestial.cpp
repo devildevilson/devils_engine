@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <format>
 #include <numbers>
 
@@ -17,7 +18,6 @@ constexpr double sun_radius_km = 695700.0;
 constexpr double solar_irradiance_1au_w_m2 = 1361.0;
 constexpr double gm_sun_km3_s2 = 1.32712440018e11;
 constexpr double gm_earth_km3_s2 = 3.986004418e5;
-constexpr double day_seconds = 86400.0;
 constexpr double luminous_efficacy_max_lm_per_w = 683.0;
 constexpr double stefan_boltzmann_w_m2_k4 = 5.670374419e-8;
 constexpr double planck_h_j_s = 6.62607015e-34;
@@ -71,10 +71,10 @@ double angle_between(const glm::dvec3& a, const glm::dvec3& b) {
   return std::atan2(cross_length, dot_product(a, b));
 }
 
-// Период обращения по третьему закону Кеплера для заданного гравитационного параметра.
-double orbital_period_days(const double semi_major_km, const double gravity_parameter_km3_s2) {
-  const double seconds = 2.0 * pi * std::sqrt(semi_major_km * semi_major_km * semi_major_km / gravity_parameter_km3_s2);
-  return seconds / day_seconds;
+// Период обращения по третьему закону Кеплера, в СЕКУНДАХ. Раньше эта функция сразу делила на сутки,
+// но сутки теперь производны от года, и до вычисления года их длина неизвестна.
+double orbital_period_seconds(const double semi_major_km, const double gravity_parameter_km3_s2) {
+  return 2.0 * pi * std::sqrt(semi_major_km * semi_major_km * semi_major_km / gravity_parameter_km3_s2);
 }
 
 glm::dvec3 orbit_position(const orbit_config& orbit, const double semi_major_km, const double period_days,
@@ -246,16 +246,117 @@ celestial_system::celestial_system(system_config config) : config_(std::move(con
   }
 
   const double total_mass_solar = config_.primary.mass_solar + config_.companion.mass_solar;
+
+  // Порядок здесь обязателен. Год задан орбитой и массами и ни от чего больше не зависит; длина
+  // солнечных суток получается делением года на заданное ЦЕЛОЕ их число; и только после этого все
+  // прочие периоды можно выразить в сутках.
+  const double year_seconds =
+    orbital_period_seconds(read_orbit_semi_major_km(config_.planet.orbit, true), gm_sun_km3_s2 * total_mass_solar);
+  const double days_per_year = double(std::max(config_.planet.solar_days_per_year, 1u));
+  day_seconds_ = year_seconds / days_per_year;
+  planet_year_days_ = days_per_year;
+
   binary_period_days_ =
-    orbital_period_days(read_orbit_semi_major_km(config_.binary, true), gm_sun_km3_s2 * total_mass_solar);
-  planet_year_days_ =
-    orbital_period_days(read_orbit_semi_major_km(config_.planet.orbit, true), gm_sun_km3_s2 * total_mass_solar);
+    orbital_period_seconds(read_orbit_semi_major_km(config_.binary, true), gm_sun_km3_s2 * total_mass_solar) /
+    day_seconds_;
 
   moon_periods_days_.reserve(config_.moons.size());
   for (const auto& moon : config_.moons) {
     moon_periods_days_.push_back(
-      orbital_period_days(read_orbit_semi_major_km(moon.orbit, false), gm_earth_km3_s2 * config_.planet.mass_earth));
+      orbital_period_seconds(read_orbit_semi_major_km(moon.orbit, false),
+                             gm_earth_km3_s2 * config_.planet.mass_earth) /
+      day_seconds_);
   }
+
+  // Длина цикла: через сколько ЦЕЛЫХ лет взаимное положение двойной и планеты повторяется. Ищется
+  // перебором, а не задаётся числом в конфиге: стоит подвинуть орбиту — и прежнее число станет
+  // молча неверным.
+  cycle_years_ = 1;
+  double best_error = 1.0;
+  for (uint32_t years = 1; years <= 24; ++years) {
+    const double orbits = double(years) * planet_year_days_ / binary_period_days_;
+    const double error = std::abs(orbits - std::round(orbits));
+    if (error < best_error - 1e-9) {
+      best_error = error;
+      cycle_years_ = years;
+    }
+  }
+
+  // Полночь — нижняя кульминация главного светила. Ищется численно по минимуму его высоты за сутки,
+  // а не выводится формулой: высота уже собирает в себе и вращение планеты, и её движение по орбите,
+  // и наклон оси, и повторять этот вывод отдельно значило бы завести второй источник правды.
+  // Ищется ПОСЛЕДНЯЯ полночь до нуля, а не первая после. Иначе нулевой момент оказывается ещё во
+  // вчерашних сутках, и отчёт на старте сцены показывает последний день предыдущего года.
+  midnight_epoch_days_ = -1.0;
+  double lowest = 1.0e30;
+  constexpr int coarse_steps = 240;
+  for (int step = 0; step < coarse_steps; ++step) {
+    const double time = -1.0 + double(step) / double(coarse_steps);
+    const double altitude = evaluate(time).stars[0].altitude_deg;
+    if (altitude < lowest) {
+      lowest = altitude;
+      midnight_epoch_days_ = time;
+    }
+  }
+  double window = 1.0 / double(coarse_steps);
+  for (int pass = 0; pass < 6; ++pass) {
+    const double centre = midnight_epoch_days_;
+    for (int step = -4; step <= 4; ++step) {
+      const double time = centre + double(step) * window * 0.25;
+      const double altitude = evaluate(time).stars[0].altitude_deg;
+      if (altitude < lowest) {
+        lowest = altitude;
+        midnight_epoch_days_ = time;
+      }
+    }
+    window *= 0.25;
+  }
+}
+
+double celestial_system::day_seconds() const {
+  return day_seconds_;
+}
+
+double celestial_system::sidereal_rotation_days() const {
+  // За солнечные сутки планета проходит по орбите долю 1/N года, поэтому меридиан обязан повернуться
+  // на полный оборот ПЛЮС эту долю. Отсюда звёздный оборот короче солнечных суток.
+  return planet_year_days_ / (planet_year_days_ + 1.0);
+}
+
+double celestial_system::midnight_epoch_days() const {
+  return midnight_epoch_days_;
+}
+
+uint32_t celestial_system::cycle_years() const {
+  return cycle_years_;
+}
+
+celestial_system::calendar_time celestial_system::to_calendar(const double time_days) const {
+  // Отсчёт ведётся от ПОЛУНОЧИ, а не от начала сцены. Иначе ноль часов приходится на произвольную
+  // фазу вращения планеты, и закат оказывается в 05:52, а восход в 19:23.
+  const double civil = time_days - midnight_epoch_days_;
+  const double whole = std::floor(civil);
+  const double fraction = civil - whole;
+  const double days_per_year = std::max(planet_year_days_, 1.0);
+
+  const int64_t absolute_day = int64_t(whole);
+  const int64_t year = int64_t(std::floor(double(absolute_day) / days_per_year));
+  const int64_t day_of_year = absolute_day - int64_t(std::llround(double(year) * days_per_year));
+
+  calendar_time out{};
+  out.year = uint32_t(std::max<int64_t>(year, 0));
+  out.cycle_year = uint32_t(out.year % std::max(cycle_years_, 1u)) + 1u;
+  out.day = uint32_t(std::max<int64_t>(day_of_year, 0));
+  const double hours = fraction * 24.0;
+  out.hour = uint32_t(std::floor(hours));
+  out.minute = uint32_t(std::floor((hours - std::floor(hours)) * 60.0));
+  return out;
+}
+
+double celestial_system::from_calendar(const uint32_t cycle_year, const uint32_t day,
+                                       const double hour) const {
+  const double years = double(cycle_year == 0 ? 0u : cycle_year - 1u);
+  return midnight_epoch_days_ + years * planet_year_days_ + double(day) + hour / 24.0;
 }
 
 const system_config& celestial_system::config() const {
@@ -345,7 +446,7 @@ celestial_system::instant celestial_system::sample(const double time_days) const
   const auto planet_x = normalized(cross_product(helper, axis));
   const auto planet_y = cross_product(axis, planet_x);
 
-  const double rotation_period_days = config_.planet.rotation_period_hours / 24.0;
+  const double rotation_period_days = sidereal_rotation_days();
   const double meridian = wrap_angle(to_radians(config_.planet.prime_meridian_epoch_deg) +
                                      to_radians(config_.observer.longitude_deg) +
                                      2.0 * pi * time_days / rotation_period_days);

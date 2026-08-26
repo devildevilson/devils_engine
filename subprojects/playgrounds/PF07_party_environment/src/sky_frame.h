@@ -177,7 +177,12 @@ bool parse_colour_script(const std::string& text, colour_script& out, std::strin
 // любой из которых два дампа перестают быть сравнимыми.
 struct view_preset {
   std::string name;
-  double time_days = 0.0;
+  // Время задаётся КАЛЕНДАРЁМ, а не числом суток от эпохи. Сырое число было непрозрачным вдвойне:
+  // оно не говорило ни в каком году цикла находится состояние, ни какой это час, — а именно эти две
+  // вещи и отличают одно именованное состояние от другого.
+  uint32_t cycle_year = 1;
+  uint32_t day = 0;
+  double hour = 12.0;
   double look_azimuth_deg = 0.0;
   double look_altitude_deg = 10.0;
   double ev100 = 13.0;

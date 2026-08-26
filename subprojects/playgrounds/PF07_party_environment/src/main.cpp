@@ -91,6 +91,9 @@ void print_usage() {
                "  --foliage-lod=M     граница между полным и упрощённым мешем куста\n"
                "  --foliage-shadow-cascades=N  в скольких ближних каскадах трава даёт тень\n"
                "  --cascade-split=F   доля логарифмического разбиения каскадов (1 лог, 0 равномерное)\n"
+               "  --year=N            год внутри повторяющегося цикла, от единицы\n"
+               "  --day=D             сутки внутри года, от нуля\n"
+               "  --hour=H            час внутри суток\n"
                "  --galaxy=F          сила сгущения звёзд в галактической полосе\n"
                "  --star-rotation=F   доля физической скорости вращения неба (1 — честная, 0 — статика)\n";
 }
@@ -164,6 +167,12 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.foliage_lod_m = std::stod(value);
     } else if (read_prefixed(argument, "--foliage-shadow-cascades=", value)) {
       out.view.foliage_shadow_cascades = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--year=", value)) {
+      out.view.start_cycle_year = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--day=", value)) {
+      out.view.start_day_of_year = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--hour=", value)) {
+      out.view.start_hour = std::stod(value);
     } else if (read_prefixed(argument, "--cascade-split=", value)) {
       out.view.cascade_split_lambda = std::stod(value);
     } else if (read_prefixed(argument, "--shadow-sources=", value)) {
@@ -215,13 +224,12 @@ bool parse_options(const int argc, char** argv, options& out) {
   return true;
 }
 
-std::string format_clock(const double time_days) {
-  const double day = std::floor(time_days);
-  const double fraction = time_days - day;
-  const double hours = fraction * 24.0;
-  const int32_t hour = static_cast<int32_t>(std::floor(hours));
-  const int32_t minute = static_cast<int32_t>(std::floor((hours - hour) * 60.0));
-  return std::format("d{:>5.0f} {:02}:{:02}", day, hour, minute);
+// Календарь берётся у небесной механики: эпоха полуночи и длина года принадлежат ей, и повторять их
+// здесь значило бы развести часы отчёта с часами окна.
+std::string format_clock(const pf07::celestial_system& system, const double time_days) {
+  const auto now = system.to_calendar(time_days);
+  return std::format("г{}/{} д{:>3} {:02}:{:02}", now.cycle_year, system.cycle_years(), now.day, now.hour,
+                     now.minute);
 }
 
 std::string body_name(const pf07::celestial_system& system, const int32_t index) {
@@ -266,7 +274,7 @@ void print_system(const pf07::celestial_system& system) {
 }
 
 void print_state(const pf07::celestial_system& system, const pf07::sky_state& state) {
-  std::cout << std::format("\n== небо на {} (t = {:.4f} сут) ==\n", format_clock(state.time_days), state.time_days);
+  std::cout << std::format("\n== небо на {} (t = {:.4f} сут) ==\n", format_clock(system, state.time_days), state.time_days);
   std::cout << "  тело      высота  азимут  угл.радиус  расстояние      освещ., лк  фаза   затмение\n";
 
   const auto print_body = [&](const pf07::body_view& view) {
@@ -311,7 +319,10 @@ struct event_track {
   int32_t peak_occluder = -1;
 };
 
-void scan_events(const pf07::celestial_system& system, const double span_days, const double step_minutes) {
+// Обход событий начинается с ЗАДАННОГО момента, а не с нуля. Иначе «покажи третий год цикла»
+// невозможно спросить вовсе: календарь на выводе показывал бы третий год, а сканировался первый.
+void scan_events(const pf07::celestial_system& system, const double start_days, const double span_days,
+                 const double step_minutes) {
   const double step_days = step_minutes / (24.0 * 60.0);
   const size_t moon_count = system.config().moons.size();
 
@@ -320,14 +331,16 @@ void scan_events(const pf07::celestial_system& system, const double span_days, c
   std::vector<double> previous_star_altitude(2, 0.0);
   bool has_previous = false;
 
-  std::cout << std::format("\n== события на {:.1f} сут, шаг {:.1f} мин ==\n", span_days, step_minutes);
+  const auto start_calendar = system.to_calendar(start_days);
+  std::cout << std::format("\n== события на {:.1f} сут от г{}/{} д{}, шаг {:.1f} мин ==\n", span_days,
+                           start_calendar.cycle_year, system.cycle_years(), start_calendar.day, step_minutes);
 
   const auto close_track = [&](event_track& track, const double now, const std::string_view kind,
                                const std::string_view subject) {
     if (!track.active) return;
     std::cout << std::format("  {}  {}: {:<8} максимум {:.3f} ({}) в {}, длительность {:.2f} ч\n",
-                             format_clock(track.begin_days), kind, subject, track.peak_value,
-                             body_name(system, track.peak_occluder), format_clock(track.peak_days),
+                             format_clock(system, track.begin_days), kind, subject, track.peak_value,
+                             body_name(system, track.peak_occluder), format_clock(system, track.peak_days),
                              (now - track.begin_days) * 24.0);
     track = event_track{};
   };
@@ -350,16 +363,16 @@ void scan_events(const pf07::celestial_system& system, const double span_days, c
     close_track(track, now, kind, subject);
   };
 
-  for (double now = 0.0; now <= span_days; now += step_days) {
+  for (double now = start_days; now <= start_days + span_days; now += step_days) {
     const auto state = system.evaluate(now);
 
     for (size_t i = 0; i < state.stars.size(); ++i) {
       const auto& view = state.stars[i];
       if (has_previous && previous_star_altitude[i] < 0.0 && view.altitude_deg >= 0.0) {
-        std::cout << std::format("  {}  восход  {}\n", format_clock(now), view.name);
+        std::cout << std::format("  {}  восход  {}\n", format_clock(system, now), view.name);
       }
       if (has_previous && previous_star_altitude[i] >= 0.0 && view.altitude_deg < 0.0) {
-        std::cout << std::format("  {}  закат   {}\n", format_clock(now), view.name);
+        std::cout << std::format("  {}  закат   {}\n", format_clock(system, now), view.name);
       }
       previous_star_altitude[i] = view.altitude_deg;
 
@@ -690,7 +703,7 @@ void verify_eclipse_energy(checker& check, const pf07::celestial_system& system)
   check.expect_near(view.illuminance_lx, expected, std::abs(expected) * 1e-12,
                     "освещённость точно следует доле перекрытия диска");
   std::cout << std::format("  самое глубокое затмение: {} на {}, перекрыто {:.3f} диска телом {}\n", view.name,
-                           format_clock(deepest_time), view.occluded_fraction, body_name(system, view.occluder));
+                           format_clock(system, deepest_time), view.occluded_fraction, body_name(system, view.occluder));
 }
 
 int run_verification(const pf07::celestial_system& system) {
@@ -733,12 +746,18 @@ int main(int argc, char** argv) {
   const pf07::celestial_system system(std::move(config));
   print_system(system);
 
+  // Календарный старт перекрывает абсолютный и действует ВО ВСЕХ режимах, а не только в окне:
+  // отчёт по третьему году цикла должен спрашиваться теми же словами, что и кадр.
+  if (selected.view.start_cycle_year != 0) {
+    selected.time_days = system.from_calendar(selected.view.start_cycle_year, selected.view.start_day_of_year,
+                                              selected.view.start_hour);
+  }
   selected.view.start_time_days = selected.time_days;
 
   switch (selected.requested) {
     case action::render: return pf07::run_sky_view(system, selected.view);
     case action::report: print_state(system, system.evaluate(selected.time_days)); return 0;
-    case action::events: scan_events(system, selected.span_days, selected.step_minutes); return 0;
+    case action::events: scan_events(system, selected.time_days, selected.span_days, selected.step_minutes); return 0;
     case action::verify: return run_verification(system);
     case action::survey: pf07::run_survey(system, selected.survey); return 0;
   }

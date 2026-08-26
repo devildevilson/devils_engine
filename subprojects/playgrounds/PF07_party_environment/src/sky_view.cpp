@@ -522,7 +522,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     bool found = false;
     for (const auto& preset : list.presets) {
       if (preset.name != options.preset) continue;
-      options.start_time_days = preset.time_days;
+      options.start_time_days = system.from_calendar(preset.cycle_year, preset.day, preset.hour);
       options.look_azimuth_deg = preset.look_azimuth_deg;
       options.look_altitude_deg = preset.look_altitude_deg;
       options.fixed_look = true;
@@ -530,8 +530,9 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       options.exposure.manual = true;
       options.exposure.manual_ev100 = preset.ev100;
       found = true;
-      utils::info("PF07 preset '{}': day {:.4f}, camera {:.1f}/{:.1f}, fixed EV100 {:+.2f}", preset.name,
-                  preset.time_days, preset.look_azimuth_deg, preset.look_altitude_deg, preset.ev100);
+      utils::info("PF07 preset '{}': year {}/{} day {} {:.2f}h, camera {:.1f}/{:.1f}, fixed EV100 {:+.2f}",
+                  preset.name, preset.cycle_year, system.cycle_years(), preset.day, preset.hour,
+                  preset.look_azimuth_deg, preset.look_altitude_deg, preset.ev100);
       break;
     }
     if (!found) utils::error{}("PF07 preset '{}' is not declared in presets.tavl", options.preset);
@@ -730,7 +731,8 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     playground::visage_overlay overlay(
       common_resources + "fonts/crimson.roman.ttf", resource_root + "ui/pf07_controls.lua",
       playground::overlay_description{
-        "PF07 — Party environment", "Slice 2: physical sky over a binary system, march + transmittance table",
+        "PF07 — Party environment",
+        "Slices 1-5: binary sky, physical exposure, two-sun shadows, valley and instanced foliage",
         "WASD/QE look · Space pause · [ ] time speed · - = exposure"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
@@ -812,7 +814,12 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       }
     }
 
-    double game_time_days = options.start_time_days;
+    // Календарный старт перекрывает абсолютный: «третий год, сотые сутки» задаётся человеком, а
+    // время в сутках от эпохи — машиной.
+    double game_time_days = options.start_cycle_year != 0
+                              ? system.from_calendar(options.start_cycle_year, options.start_day_of_year,
+                                                     options.start_hour)
+                              : options.start_time_days;
     double time_scale = options.time_scale;
     // Адаптация обязана стартовать уже привыкшей, иначе любой дамп ловит её переходный процесс. Но
     // замер приходит с видеокарты и на первом кадре его ещё нет, поэтому вместо угадывания начальное
@@ -1038,11 +1045,11 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
                                           slot_active[1] ? shadow_sources[1].body_code : -1.0f, 0.0f, 0.0f);
       write_current_buffer(base, "sky_buffer", &sky_block, sizeof(sky_block));
 
-      const double day_fraction = game_time_days - std::floor(game_time_days);
+      const auto calendar = system.to_calendar(game_time_days);
       const std::array<std::string, 8> details{
-        std::format("Time: day {:.0f} {:02}:{:02} · {:.4f} game days per real second{}", std::floor(game_time_days),
-                    int32_t(day_fraction * 24.0), int32_t(std::fmod(day_fraction * 24.0, 1.0) * 60.0), time_scale,
-                    paused ? " · PAUSED" : ""),
+        std::format("Year {}/{} · day {}/{} · {:02}:{:02} · {:.4f} days per real second{}", calendar.cycle_year,
+                    system.cycle_years(), calendar.day, uint32_t(system.planet_year_days()), calendar.hour,
+                    calendar.minute, time_scale, paused ? " · PAUSED" : ""),
         std::format("{}: altitude {:.2f}° · {:.0f} lx{}", state.stars[0].name, state.stars[0].altitude_deg,
                     state.stars[0].illuminance_lx,
                     state.stars[0].occluded_fraction > 1e-4
