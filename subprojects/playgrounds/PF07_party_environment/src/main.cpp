@@ -84,6 +84,11 @@ void print_usage() {
                "  --trace-exposure    покадровая печать экспозиции: цель, текущая, отставание\n"
                "  --shadow-far=M      дальность каскадов теней в метрах\n"
                "  --shadow-sources=N  сколько светил отбрасывают тени (0..2), для сравнения кадров\n"
+               "  --wind=M            сила ветра: отклонение верхушки куста в метрах\n"
+               "  --wind-direction=D  направление ветра в градусах от севера через восток\n"
+               "  --foliage=N         число кустов\n"
+               "  --foliage-range=M   дальность отрисовки зарослей в метрах\n"
+               "  --foliage-lod=M     граница между полным и упрощённым мешем куста\n"
                "  --galaxy=F          сила сгущения звёзд в галактической полосе\n"
                "  --star-rotation=F   доля физической скорости вращения неба (1 — честная, 0 — статика)\n";
 }
@@ -145,6 +150,16 @@ bool parse_options(const int argc, char** argv, options& out) {
     } else if (read_prefixed(argument, "--ev=", value)) {
       out.view.exposure.manual_ev100 = std::stod(value);
       out.view.exposure.manual = true;
+    } else if (read_prefixed(argument, "--wind=", value)) {
+      out.view.wind_strength_m = std::stod(value);
+    } else if (read_prefixed(argument, "--wind-direction=", value)) {
+      out.view.wind_direction_deg = std::stod(value);
+    } else if (read_prefixed(argument, "--foliage=", value)) {
+      out.view.foliage_count = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--foliage-range=", value)) {
+      out.view.foliage_range_m = std::stod(value);
+    } else if (read_prefixed(argument, "--foliage-lod=", value)) {
+      out.view.foliage_lod_m = std::stod(value);
     } else if (read_prefixed(argument, "--shadow-sources=", value)) {
       out.view.shadow_sources = uint32_t(std::stoul(value));
     } else if (read_prefixed(argument, "--shadow-far=", value)) {

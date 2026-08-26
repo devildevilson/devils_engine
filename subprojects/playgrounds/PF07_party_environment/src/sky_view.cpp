@@ -2,6 +2,8 @@
 
 #include "fixture.h"
 #include "shadows.h"
+#include "foliage.h"
+#include "terrain.h"
 
 #include <algorithm>
 #include <array>
@@ -243,23 +245,38 @@ void write_pair_current(painter::graphics_base& base, const uint32_t pair,
 // Команды регионов: по одной на каскад. Каждая несёт свой viewport в атласе и индекс записи каскада,
 // поэтому шесть карт рисуются ОДНИМ проходом, а не шестью, и порядок здесь — это просто порядок
 // записей в буфере, а не знание шейдера о раскладке атласа.
-void write_shadow_regions(painter::graphics_base& base, const uint32_t pair, const uint32_t instance_count,
+// Что именно рисуется в тень: пара и сколько её инстансов. Список СВОЙ у каждого каскада, и это не
+// мелочь: заросли имеет смысл класть только в ближние каскады. Шесть тысяч кустов в дальний каскад
+// стоят полного прохода по ним ради теней, которые на своей дальности занимают доли пикселя.
+struct shadow_caster {
+  uint32_t pair = 0;
+  uint32_t instance_count = 0;
+  uint32_t vertex_count = 0;
+};
+
+void write_shadow_regions(painter::graphics_base& base,
+                          const std::span<const std::vector<shadow_caster>> casters,
                           const std::span<const painter::atlas_region> regions,
                           const std::span<const bool> slot_active) {
   const uint32_t region_count = uint32_t(regions.size());
-  std::array<uint8_t, 1024> bytes{};
-  const size_t needed = painter::region_draw_buffer_size(region_count, region_count);
+  uint32_t span_total = 0;
+  for (uint32_t index = 0; index < region_count; ++index) {
+    if (slot_active[index / cascade_count]) span_total += uint32_t(casters[index].size());
+  }
+  std::array<uint8_t, 2048> bytes{};
+  const size_t needed = painter::region_draw_buffer_size(region_count, span_total);
   if (needed > bytes.size()) utils::error{}("PF07 shadow region buffer too small ({} bytes)", needed);
 
   painter::region_draw_header header{};
   header.region_count = region_count;
-  header.span_count = region_count;
+  header.span_count = span_total;
   header.region_stride = sizeof(painter::region_draw_command);
   header.span_stride = sizeof(painter::region_draw_span);
   std::memcpy(bytes.data(), &header, sizeof(header));
 
   size_t command_offset = sizeof(header);
   size_t span_offset = command_offset + size_t(region_count) * sizeof(painter::region_draw_command);
+  uint32_t span_cursor = 0;
   for (uint32_t index = 0; index < region_count; ++index) {
     painter::region_draw_command command{};
     command.viewport_x = float(regions[index].x);
@@ -272,21 +289,25 @@ void write_shadow_regions(painter::graphics_base& base, const uint32_t pair, con
     command.scissor_y = int32_t(regions[index].y);
     command.scissor_width = regions[index].size;
     command.scissor_height = regions[index].size;
+    // Пустой слот не рисует ничего вовсе: у него просто нет пролётов. Тайл при этом остаётся
+    // очищенным, а сила источника в записи каскада равна нулю, поэтому читать его никто не станет.
+    const bool active = slot_active[index / cascade_count];
     command.data_index = index;
-    command.first_span = index;
-    command.span_count = 1;
+    command.first_span = span_cursor;
+    command.span_count = active ? uint32_t(casters[index].size()) : 0u;
     std::memcpy(bytes.data() + command_offset, &command, sizeof(command));
     command_offset += sizeof(command);
 
-    // Пустой слот не рисует ничего: ноль инстансов вместо шести лишних проходов по тайлу. Сам тайл
-    // при этом остаётся очищенным, а сила источника в записи каскада равна нулю, поэтому читать его
-    // никто и не станет.
-    painter::region_draw_span span{};
-    span.pair_index = pair;
-    span.first_instance = 0;
-    span.instance_count = slot_active[index / cascade_count] ? instance_count : 0u;
-    std::memcpy(bytes.data() + span_offset, &span, sizeof(span));
-    span_offset += sizeof(span);
+    if (!active) continue;
+    for (const auto& caster : casters[index]) {
+      painter::region_draw_span span{};
+      span.pair_index = caster.pair;
+      span.first_instance = 0;
+      span.instance_count = caster.instance_count;
+      std::memcpy(bytes.data() + span_offset, &span, sizeof(span));
+      span_offset += sizeof(span);
+      span_cursor += 1;
+    }
   }
   write_current_buffer(base, "shadow_region_commands", bytes.data(), needed);
 }
@@ -630,6 +651,59 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     const uint32_t ground_pair = base.register_pair(scene_group, ground_mesh, 1);
     utils::info("PF07 ground disc: radius {:.0f} m, {} vertices", options.ground_radius_m, ground.size());
 
+    // Участок долины — СТАТИЧЕСКИЙ меш у начала координат, третья пара группы. Рисуется раньше диска,
+    // чтобы ранний тест глубины отсёк те его пиксели, что окажутся под участком.
+    const auto valley = make_valley_patch();
+    const auto valley_mesh = assets.register_buffer_storage("pf07.valley_patch");
+    assets.create_buffer_storage(valley_mesh,
+                                 painter::buffer_create_info{"scene_geometry", uint32_t(valley.size()), 0});
+    assets.populate_buffer_storage(
+      valley_mesh, std::span(reinterpret_cast<const uint8_t*>(valley.data()), valley.size() * sizeof(valley[0])),
+      std::span<const uint8_t>{});
+    assets.mark_ready_buffer_slot(valley_mesh);
+    const uint32_t valley_pair = base.register_pair(scene_group, valley_mesh, 1);
+    {
+      // Участок приподнят на два сантиметра над диском: к своему краю рельеф выходит в ноль, и там обе
+      // поверхности совпадают. Без подъёма они дерутся за глубину и покрываются рябью.
+      const std::array<scene_instance, 1> instance{
+        scene_instance{glm::vec4(0.0f, 0.02f, 0.0f, 0.0f), glm::vec4(0.5f, 0.5f, 0.5f, 0.0f),
+                       glm::vec4(glm::vec3(float(options.atmosphere.ground_albedo)), 0.0f)}};
+      for (uint32_t offset = 0; offset < base.frames_in_flight(); ++offset) {
+        const auto frame = base.get_current_instance_resource_frame(valley_pair, offset);
+        const auto indirect = base.get_current_indirect_resource_frame(valley_pair, offset);
+        std::memcpy(static_cast<uint8_t*>(frame.mapped) + frame.sub.offset, instance.data(),
+                    instance.size() * sizeof(instance[0]));
+        const VkDrawIndirectCommand command{uint32_t(valley.size()), 1, 0, 0};
+        std::memcpy(static_cast<uint8_t*>(indirect.mapped) + indirect.sub.offset, &command, sizeof(command));
+      }
+    }
+    utils::info("PF07 valley patch: {:.0f} m across, {} vertices", valley_half_size * 2.0, valley.size());
+
+    // Заросли: два меша и две пары. LOD здесь — это ВЫБОР ПАРЫ, а не упрощение на лету: дальние кусты
+    // рисуются мешем с двумя лезвиями вместо пяти, и разбор идёт на хосте по дальности от камеры.
+    const auto shrub_near_mesh_data = make_shrub(shrub_blades_near);
+    const auto shrub_far_mesh_data = make_shrub(shrub_blades_far);
+    const auto shrub_near_mesh = assets.register_buffer_storage("pf07.shrub_near");
+    const auto shrub_far_mesh = assets.register_buffer_storage("pf07.shrub_far");
+    for (const auto& [slot, data] : std::initializer_list<std::pair<uint32_t, const std::vector<scene_vertex>&>>{
+           {shrub_near_mesh, shrub_near_mesh_data}, {shrub_far_mesh, shrub_far_mesh_data}}) {
+      assets.create_buffer_storage(slot,
+                                   painter::buffer_create_info{"scene_geometry", uint32_t(data.size()), 0});
+      assets.populate_buffer_storage(
+        slot, std::span(reinterpret_cast<const uint8_t*>(data.data()), data.size() * sizeof(data[0])),
+        std::span<const uint8_t>{});
+      assets.mark_ready_buffer_slot(slot);
+    }
+    const uint32_t shrub_near_pair = base.register_pair(scene_group, shrub_near_mesh, options.foliage_count);
+    const uint32_t shrub_far_pair = base.register_pair(scene_group, shrub_far_mesh, options.foliage_count);
+    const auto shrubs = scatter_shrubs(options.foliage_count);
+    utils::info("PF07 foliage: {} shrubs, near mesh {} vertices, far mesh {}", shrubs.size(),
+                shrub_near_mesh_data.size(), shrub_far_mesh_data.size());
+    std::vector<scene_instance> shrub_near_instances;
+    std::vector<scene_instance> shrub_far_instances;
+    shrub_near_instances.reserve(shrubs.size());
+    shrub_far_instances.reserve(shrubs.size());
+
     // Раскладка атласа теней считается ОДИН раз: размеры тайлов постоянны, а укладка детерминирована,
     // поэтому пересчитывать её каждый кадр значило бы каждый кадр получать тот же ответ.
     std::array<painter::atlas_region, cascade_total> shadow_regions{};
@@ -746,6 +820,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     double current_ev100 = options.exposure.manual_ev100;
     bool exposure_settled = options.exposure.manual;
     double exposure_bias_stops = 0.0;
+    double wall_seconds = 0.0;
     uint32_t frames_total = 0;
 
     while (!input::should_close(window)) {
@@ -811,6 +886,9 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       // дамп: игровое время шло бы как на шестидесяти кадрах, а глаз привыкал бы со скоростью машины,
       // и восход в дампе проходил бы с совсем другой экспозицией, чем в окне.
       const double step_seconds = options.frames != 0 ? 1.0 / 60.0 : double(dt);
+      // Часы РЕАЛЬНОГО времени для ветра. При фиксированном числе кадров они идут постоянным шагом
+      // вместе с игровыми: дамп обязан быть воспроизводимым целиком, а не наполовину.
+      wall_seconds += step_seconds;
       if (!paused) game_time_days += time_scale * step_seconds;
       const auto state = system.evaluate(game_time_days);
 
@@ -827,6 +905,27 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
 
       // Диск земли следует за камерой по горизонтали. Для сферы это точно, а не приближённо:
       // наблюдатель всегда стоит на её вершине, и «вершина» — это ровно то место, где он стоит.
+      // Разбор зарослей по дальности. Делается каждый кадр и намеренно в лоб: шесть тысяч кустов —
+      // это порядок, на котором простой проход по массиву ещё дешевле любой структуры, и цена этого
+      // видна в отчёте наравне с проходами видеокарты.
+      shrub_near_instances.clear();
+      shrub_far_instances.clear();
+      const float range_squared = float(options.foliage_range_m * options.foliage_range_m);
+      const float lod_squared = float(options.foliage_lod_m * options.foliage_lod_m);
+      for (const auto& item : shrubs) {
+        const float dx = item.x - camera.position.x;
+        const float dz = item.z - camera.position.z;
+        const float distance_squared = dx * dx + dz * dz;
+        if (distance_squared > range_squared) continue;
+        const scene_instance instance{
+          glm::vec4(item.x, item.y, item.z, 1.0f),
+          glm::vec4(item.width * 0.5f, item.height * 0.5f, item.width * 0.5f, item.phase),
+          glm::vec4(item.albedo, item.yaw)};
+        (distance_squared <= lod_squared ? shrub_near_instances : shrub_far_instances).push_back(instance);
+      }
+      write_pair_current(base, shrub_near_pair, shrub_near_instances, uint32_t(shrub_near_mesh_data.size()));
+      write_pair_current(base, shrub_far_pair, shrub_far_instances, uint32_t(shrub_far_mesh_data.size()));
+
       const std::array<scene_instance, 1> ground_instance{make_ground_instance(
         camera.position.x, camera.position.z, glm::vec3(float(options.atmosphere.ground_albedo)))};
       write_pair_current(base, ground_pair, ground_instance, uint32_t(ground.size()));
@@ -849,7 +948,21 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
                        std::span(cascades).subspan(slot * cascade_count, cascade_count));
       }
       write_current_buffer(base, "cascade_buffer", cascades.data(), sizeof(cascades));
-      write_shadow_regions(base, scene_pair, uint32_t(fixture.size()), shadow_regions, slot_active);
+      // Кто бросает тень в каждый каскад. Коробки и рельеф — во все: гребень долины обязан затенять
+      // проход, а без рельефа в карте тень от него просто не появится. Заросли — только в ближние
+      // каскады: дальше их тень занимает доли пикселя, а стоит полного прохода по тысячам инстансов.
+      std::array<std::vector<shadow_caster>, cascade_total> casters{};
+      for (uint32_t index = 0; index < cascade_total; ++index) {
+        auto& list = casters[index];
+        list.clear();
+        list.push_back({scene_pair, uint32_t(fixture.size()), uint32_t(cube.size())});
+        list.push_back({valley_pair, 1u, uint32_t(valley.size())});
+        if (index % cascade_count == 0 && !shrub_near_instances.empty()) {
+          list.push_back({shrub_near_pair, uint32_t(shrub_near_instances.size()),
+                          uint32_t(shrub_near_mesh_data.size())});
+        }
+      }
+      write_shadow_regions(base, casters, shadow_regions, slot_active);
 
       // Экспозиция догоняет цель по-разному вверх и вниз. Постоянные заданы в реальных секундах, а не
       // в игровых: привыкает глаз игрока, а не планета.
@@ -904,12 +1017,18 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       march.camera_height_km = double(camera.position.y) * 0.001;
       auto sky_block = pack_sky_block(state, star_frame, options.atmosphere, march, output,
                                       system.config().planet.radius_km, system.config().moons);
+      // Ветер: направление из настроек, время — РЕАЛЬНОЕ, а не игровое. Перемотка суток не имеет
+      // права разгонять качание веток: ветер живёт в том же времени, что и глаз наблюдателя.
+      const double wind_angle = options.wind_direction_deg * 3.14159265358979323846 / 180.0;
+      sky_block.wind_params =
+        glm::vec4(float(std::sin(wind_angle)), float(-std::cos(wind_angle)),
+                  float(options.wind_strength_m), float(wall_seconds));
       sky_block.shadow_bodies = glm::vec4(slot_active[0] ? shadow_sources[0].body_code : -1.0f,
                                           slot_active[1] ? shadow_sources[1].body_code : -1.0f, 0.0f, 0.0f);
       write_current_buffer(base, "sky_buffer", &sky_block, sizeof(sky_block));
 
       const double day_fraction = game_time_days - std::floor(game_time_days);
-      const std::array<std::string, 7> details{
+      const std::array<std::string, 8> details{
         std::format("Time: day {:.0f} {:02}:{:02} · {:.4f} game days per real second{}", std::floor(game_time_days),
                     int32_t(day_fraction * 24.0), int32_t(std::fmod(day_fraction * 24.0, 1.0) * 60.0), time_scale,
                     paused ? " · PAUSED" : ""),
@@ -929,6 +1048,9 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
         std::format("Scene: direct {:.4g} lx · metered frame luminance {:.4g} nits{}",
                     state.horizontal_illuminance_lx, scene_luminance,
                     goal_ev100 <= options.exposure.min_ev100 + 1e-6 ? " · adaptation at its night floor" : ""),
+        std::format("Foliage: {} near + {} far of {} · LOD {:.0f} m · range {:.0f} m · wind {:.2f} m",
+                    shrub_near_instances.size(), shrub_far_instances.size(), shrubs.size(),
+                    options.foliage_lod_m, options.foliage_range_m, options.wind_strength_m),
         std::format("Colour script: tint ({:.2f} {:.2f} {:.2f}) · saturation {:.2f} · contrast {:.2f}",
                     output.grade_tint.x, output.grade_tint.y, output.grade_tint.z, output.grade_saturation,
                     output.grade_contrast)};

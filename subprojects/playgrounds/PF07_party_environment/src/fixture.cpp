@@ -1,9 +1,12 @@
 #include "fixture.h"
 
+#include "terrain.h"
+
 #include <algorithm>
 #include <cmath>
 
 #include <glm/geometric.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
 namespace devils_engine::pf07 {
@@ -27,10 +30,20 @@ scene_instance box(const glm::vec3 centre, const glm::vec3 half, const glm::vec3
 }
 
 // Столб стоит НА земле, поэтому центр поднимается на половину высоты: иначе половина каждого предмета
-// уходит под поверхность, и тень начинается не от его основания.
+// уходит под поверхность, и тень начинается не от его основания. С появлением рельефа «земля» здесь —
+// уже не ноль, а высота долины в этой точке; предметы, оставленные на нуле, повисли бы в воздухе на
+// склоне и утонули бы в дне.
 scene_instance pillar(const float x, const float z, const float height, const float thickness,
                       const glm::vec3 albedo) noexcept {
-  return box({x, height * 0.5f, z}, {thickness * 0.5f, height * 0.5f, thickness * 0.5f}, albedo);
+  const float ground = float(valley_height(x, z));
+  return box({x, ground + height * 0.5f, z}, {thickness * 0.5f, height * 0.5f, thickness * 0.5f}, albedo);
+}
+
+// Плита садится на рельеф так же, как столб: её половина высоты откладывается от поверхности.
+scene_instance slab(const float x, const float z, const float half_height, const glm::vec2 half_extent,
+                    const glm::vec3 albedo) noexcept {
+  const float ground = float(valley_height(x, z));
+  return box({x, ground + half_height, z}, {half_extent.x, half_height, half_extent.y}, albedo);
 }
 
 } // namespace
@@ -72,13 +85,13 @@ std::vector<scene_instance> make_fixture_instances() {
 
   // Плиты-приёмники. Тень, упавшая на другой предмет, ловит ошибки глубины и смещения, которых ровная
   // земля не показывает вовсе.
-  out.push_back(box({0.0f, 0.35f, 20.0f}, {6.0f, 0.35f, 2.5f}, pale));
-  out.push_back(box({-9.0f, 0.6f, 25.0f}, {3.0f, 0.6f, 3.0f}, mid));
-  out.push_back(box({11.0f, 1.1f, 22.0f}, {2.0f, 1.1f, 2.0f}, dark));
+  out.push_back(slab(0.0f, 20.0f, 0.35f, {6.0f, 2.5f}, pale));
+  out.push_back(slab(-9.0f, 25.0f, 0.6f, {3.0f, 3.0f}, mid));
+  out.push_back(slab(11.0f, 22.0f, 1.1f, {2.0f, 2.0f}, dark));
 
   // Стена поперёк: единственный предмет, у которого есть заметная боковая грань. На ней видно, как
   // свет двух светил разного цвета ложится на одну плоскость под разными углами.
-  out.push_back(box({2.0f, 1.6f, 45.0f}, {9.0f, 1.6f, 0.6f}, pale));
+  out.push_back(slab(2.0f, 45.0f, 1.6f, {9.0f, 0.6f}, pale));
   return out;
 }
 

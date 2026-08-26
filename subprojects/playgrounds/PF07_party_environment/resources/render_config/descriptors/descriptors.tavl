@@ -67,15 +67,20 @@
 {
   name = scene_lighting
   layout = [
-    { resource = sky_buffer, usage = uniform, stage = fragment },
+    { resource = sky_buffer, usage = uniform, stage = all },
     { resource = transmittance_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
     { resource = sky_view_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
     { resource = aerial_lut, usage = sampled, stage = fragment, sampler = linear_sampler }
   ]
 }
 {
+  // Блок неба нужен и построению теней: там же считается качание зарослей, и считаться оно обязано
+  // ровно тем же кодом и теми же данными, что в основном проходе.
   name = shadow_write
-  layout = [ { resource = cascade_buffer, usage = storage_read, stage = all } ]
+  layout = [
+    { resource = cascade_buffer, usage = storage_read, stage = all },
+    { resource = sky_buffer, usage = uniform, stage = all }
+  ]
 }
 {
   name = shadow_sample
