@@ -1,5 +1,10 @@
 #include "sky_frame.h"
 
+#include <format>
+
+#include <tavl/deserialize.h>
+#include <tavl/parser.h>
+
 #include <algorithm>
 #include <cmath>
 #include <numbers>
@@ -14,6 +19,46 @@ double to_radians(const double degrees) {
 }
 
 } // namespace
+
+bool parse_colour_script(const std::string& text, colour_script& out, std::string& diagnostics) {
+  tavl::parser parser;
+  parser.add_default_operator();
+  parser.flush(text);
+  parser.finish();
+
+  tavl::ct_context context;
+  out = colour_script{};
+  tavl::deserialize(parser, context, out);
+
+  if (context.diagnostics.empty()) return true;
+
+  diagnostics.clear();
+  for (const auto& entry : context.diagnostics) {
+    diagnostics += std::format("  {} at {}:{} field '{}'\n", tavl::to_string(entry.error.type), entry.error.span.line,
+                               entry.error.span.column, entry.field);
+  }
+  return false;
+}
+
+bool parse_view_presets(const std::string& text, view_preset_list& out, std::string& diagnostics) {
+  tavl::parser parser;
+  parser.add_default_operator();
+  parser.flush(text);
+  parser.finish();
+
+  tavl::ct_context context;
+  out = view_preset_list{};
+  tavl::deserialize(parser, context, out);
+
+  if (context.diagnostics.empty()) return true;
+
+  diagnostics.clear();
+  for (const auto& entry : context.diagnostics) {
+    diagnostics += std::format("  {} at {}:{} field '{}'\n", tavl::to_string(entry.error.type), entry.error.span.line,
+                               entry.error.span.column, entry.field);
+  }
+  return false;
+}
 
 glm::vec3 horizon_to_world(const glm::dvec3& horizon_direction) {
   return glm::vec3(static_cast<float>(horizon_direction.x), static_cast<float>(horizon_direction.z),
@@ -72,9 +117,13 @@ sky_gpu_block pack_sky_block(const sky_state& state, const sky_state& star_frame
   block.sky_basis_east = glm::vec4(glm::vec3(star_frame.east_inertial), 0.0f);
   block.sky_basis_north = glm::vec4(glm::vec3(star_frame.north_inertial), 0.0f);
   block.sky_basis_up = glm::vec4(glm::vec3(star_frame.up_inertial), 0.0f);
+  block.grade_tint_saturation =
+    glm::vec4(output.grade_tint, static_cast<float>(output.grade_saturation));
+  block.grade_curve = glm::vec4(static_cast<float>(output.grade_contrast),
+                                static_cast<float>(output.scotopic_strength), 0.0f, 0.0f);
   block.presentation_params =
     glm::vec4(static_cast<float>(output.disc_scale), static_cast<float>(output.star_density),
-              static_cast<float>(output.star_brightness), static_cast<float>(output.galaxy_brightness));
+              static_cast<float>(output.star_brightness), static_cast<float>(output.galaxy_concentration));
 
   return block;
 }

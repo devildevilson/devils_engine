@@ -147,6 +147,27 @@ vec3 pf07_march_scattering(const pf07_sky_block sky, const sampler2D transmittan
                 sky.star_color_illuminance[s].rgb * illuminance;
     }
 
+    // Луны освещают воздух наравне со светилами. Без этого ночное небо оставалось абсолютно чёрным
+    // при освещённой луной земле — сочетание, которого в природе не бывает: свет, дошедший до земли,
+    // обязан был пройти сквозь тот же воздух и часть его рассеять. Полнолуние даёт около 0.03 нит
+    // рассеянного света, и на ночной экспозиции это отчётливо видимое синеватое небо.
+    //
+    // Многократное рассеяние для лун не считается сознательно: их вклад и так на пять порядков ниже
+    // солнечного, а вторая выборка из таблицы удвоила бы цену марша ради невидимой добавки.
+    const int moon_count = int(sky.march_params.w);
+    for (int m = 0; m < moon_count && m < PF07_MOON_CAPACITY; ++m) {
+      const float illuminance = sky.moon_color_illuminance[m].w;
+      if (illuminance <= 0.0) continue;
+
+      const vec3 light_direction = sky.moon_direction[m].xyz;
+      const vec3 light_transmittance =
+        pf07_transmittance_to_light(sky, transmittance_table, point, light_direction);
+      const float cosine = dot(direction, light_direction);
+      const vec3 phase_weighted = medium.scattering_rayleigh * pf07_rayleigh_phase(cosine) +
+                                  vec3(medium.scattering_mie * pf07_mie_phase(cosine, mie_g));
+      source += light_transmittance * phase_weighted * sky.moon_color_illuminance[m].rgb * illuminance;
+    }
+
     // Аналитическое интегрирование вклада на шаге вместо умножения на длину: на длинных шагах у
     // горизонта это заметно точнее и не даёт полос.
     const vec3 safe_extinction = max(medium.extinction, vec3(1e-9));

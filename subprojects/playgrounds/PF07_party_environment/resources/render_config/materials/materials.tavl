@@ -40,3 +40,9 @@
   depth = { test = false, write = false, compare = always }
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
+{
+  name = meter_material
+  shaders = { compute = "meter.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}

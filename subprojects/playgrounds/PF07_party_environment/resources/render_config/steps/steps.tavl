@@ -46,3 +46,9 @@
   blending = { final_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
 }
 { name = present_scene, command = "blit final_color swapchain_image" }
+{
+  name = measure_scene
+  material = meter_material
+  sets = [ meter_write ]
+  command = "dispatch constant meter_dispatch"
+}

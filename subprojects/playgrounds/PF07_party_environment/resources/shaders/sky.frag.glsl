@@ -55,14 +55,46 @@ vec3 star_cell_direction(const int face, const vec2 cell_uv) {
   return normalize(vec3(cell_uv.x, cell_uv.y, -1.0));
 }
 
+// Галактическая плоскость. Система живёт внутри галактики, и с планеты та видна как сгущение звёзд
+// вдоль большого круга.
+//
+// Раньше здесь была РАЗМЫТАЯ ЛЕНТА СВЕТА, и у неё была видимая граница: гауссиана обрывалась порогом
+// `band < 0.002`, а ровный градиент на почти чёрном небе показывает такой обрыв как чёткий край. Это
+// та же болезнь, что у любой мягкой добавки поверх темноты — глаз находит край там, где математика
+// считает его исчезающе слабым.
+//
+// Поэтому светимости здесь больше нет вовсе. Полоса выражена только ПЛОТНОСТЬЮ звёзд: их в этой
+// области больше, и граница исчезает по построению — у россыпи точек края не бывает, сколько бы
+// плавно ни менялась их частота. Рисунок звёздных облаков и тёмных прожилок отложен: он требует
+// текстуры или шума, а не ещё одной формулы.
+// Переход в звёздный базис: небо, закреплённое за системой, а не за горизонтом планеты. Одна функция
+// на всех потребителей — россыпь звёзд и галактическую плоскость: разойдись они, полоса поехала бы
+// относительно созвездий, которые сама же и населяет.
+vec3 sky_inertial_direction(const vec3 direction) {
+  const mat3 to_inertial = mat3(sky_data.sky.sky_basis_east.xyz, sky_data.sky.sky_basis_up.xyz,
+                                -sky_data.sky.sky_basis_north.xyz);
+  return normalize(to_inertial * direction);
+}
+
+float galactic_band(const vec3 inertial) {
+  // Плоскость галактики наклонена к плоскости двойной: иначе лента совпала бы с путём светил и
+  // читалась бы как ошибка, а не как отдельная структура.
+  const vec3 galactic_pole = normalize(vec3(0.31, 0.82, -0.48));
+  const float height = dot(inertial, galactic_pole);
+  // Шире прежнего почти вшестеро: настоящая лента занимает десятки градусов, а прежние три с
+  // половиной делали из неё шов. Сгущение вдоль ленты оставлено — оно даёт неоднородность россыпи.
+  const float across = exp(-height * height / 0.045);
+  const vec3 along = normalize(inertial - galactic_pole * height);
+  const float clumping = 0.6 + 0.4 * sin(atan(along.z, along.x) * 3.0 + along.y * 4.0);
+  return across * clumping;
+}
+
 vec3 star_field(const vec3 direction) {
   const float density = max(sky_data.sky.presentation_params.y, 1e-3);
   const float brightness = sky_data.sky.presentation_params.z;
   if (brightness <= 0.0) return vec3(0.0);
 
-  const mat3 to_inertial = mat3(sky_data.sky.sky_basis_east.xyz, sky_data.sky.sky_basis_up.xyz,
-                                -sky_data.sky.sky_basis_north.xyz);
-  const vec3 inertial = normalize(to_inertial * direction);
+  const vec3 inertial = sky_inertial_direction(direction);
 
   const vec3 magnitude_axis = abs(inertial);
   int face;
@@ -85,13 +117,18 @@ vec3 star_field(const vec3 direction) {
   const vec2 scaled = face_uv * grid;
   const vec2 base = floor(scaled);
 
+  // Занятость ячейки — та самая плотность, которой и выражена галактическая полоса. Множитель
+  // считается один раз на пиксель по направлению взгляда: ячейки в окрестности отстоят от него на
+  // доли градуса, и разница между ними на масштабе полосы в десятки градусов неразличима.
+  const float occupancy = 0.11 * (1.0 + sky_data.sky.presentation_params.w * 2.5 * galactic_band(inertial));
+
   vec3 total = vec3(0.0);
   for (int x = -1; x <= 1; ++x) {
     for (int y = -1; y <= 1; ++y) {
       const vec2 cell = base + vec2(float(x), float(y));
       const vec3 key = vec3(cell, float(face) * 37.0);
       const float seed = hash_cell(key);
-      if (seed > 0.11) continue;
+      if (seed > occupancy) continue;
 
       const vec2 jitter = vec2(hash_cell(key + 17.0), hash_cell(key + 43.0));
       const vec3 star_direction = star_cell_direction(face, (cell + jitter) / grid);
@@ -117,32 +154,6 @@ vec3 star_field(const vec3 direction) {
     }
   }
   return total;
-}
-
-// Галактическая полоса. Система живёт внутри галактики, и с планеты та видна как размытая лента звёзд
-// вдоль большого круга. Здесь это ещё не рисунок звёздных облаков, а честный минимум: плотность светимости
-// падает от плоскости диска, а вдоль ленты идёт крупная неоднородность.
-vec3 galaxy_band(const vec3 inertial) {
-  const float brightness = sky_data.sky.presentation_params.w;
-  if (brightness <= 0.0) return vec3(0.0);
-
-  // Плоскость галактики наклонена к плоскости двойной: иначе лента совпала бы с путём светил и читалась
-  // бы как ошибка, а не как отдельная структура.
-  const vec3 galactic_pole = normalize(vec3(0.31, 0.82, -0.48));
-  const float height = dot(inertial, galactic_pole);
-  const float band = exp(-height * height / 0.0075);
-  if (band < 0.002) return vec3(0.0);
-
-  const vec3 along = normalize(inertial - galactic_pole * height);
-  const float clumping = 0.55 + 0.45 * sin(atan(along.z, along.x) * 3.0 + along.y * 4.0);
-  const float dust = 0.65 + 0.35 * sin(atan(along.z, along.x) * 11.0 + 1.7);
-
-  // Порядок величины важен. Настоящая галактическая лента имеет яркость поверхности около 1.7e-4 нит,
-  // то есть на четыре порядка тусклее полной луны, и при любой экспозиции, на которой видна луна,
-  // физически была бы невидима. Здесь она преувеличена, но ровно настолько, чтобы читаться дымкой
-  // между звёздами, а не полосой света: 0.35 нит против четырёх тысяч у звёздного зерна.
-  const vec3 tint = vec3(0.86, 0.90, 1.0);
-  return tint * band * clumping * dust * brightness * 0.35;
 }
 
 void main() {
@@ -242,10 +253,7 @@ void main() {
     // это соотношение, не выдумывая отдельного «переключателя ночи».
     const float sky_luminance = dot(in_scattering, vec3(0.2126, 0.7152, 0.0722));
     const float star_visibility = 1.0 / (1.0 + sky_luminance / 40.0);
-    const mat3 to_inertial = mat3(sky_data.sky.sky_basis_east.xyz, sky_data.sky.sky_basis_up.xyz,
-                                  -sky_data.sky.sky_basis_north.xyz);
-    color += transmittance * (star_field(view_direction) + galaxy_band(normalize(to_inertial * view_direction))) *
-             star_visibility;
+    color += transmittance * star_field(view_direction) * star_visibility;
 
     // Множитель размера дисков — осознанное преувеличение ради читаемости: 0.9° диска Selen при поле
     // зрения 65° занимают десяток пикселей. Яркость поверхности диска при этом НЕ меняется, потому
@@ -322,6 +330,13 @@ void main() {
   // Режим 4 выставляет цвет внутри цикла лун, поэтому он сюда не попадает: иначе разбор терминатора
   // затирался бы длиной марша, и отладка показывала бы одинаковые каналы вместо трёх разных величин.
   const float debug_mode = sky_data.sky.output_params.w;
+  if (debug_mode > 6.5) {
+    // Режим 7: галактическая плоскость как величина, а не как россыпь. Полоса выражена ПЛОТНОСТЬЮ
+    // звёзд, и на глаз по готовому небу не понять, попала она в кадр или нет — а без этого подбор
+    // ширины превращается в угадывание.
+    out_color = vec4(vec3(galactic_band(sky_inertial_direction(view_direction))), 1.0);
+    return;
+  }
   if (debug_mode > 5.5) {
     // Режим 6: сама таблица прохождения, растянутая на экран.
     out_color = vec4(texture(transmittance_lut, in_uv).rgb, 1.0);

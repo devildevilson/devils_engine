@@ -69,7 +69,10 @@ void print_usage() {
                "  --dump=PATH         сохранить последний кадр в ppm\n"
                "  --width=N --height=N  размер окна\n"
                "  --time-scale=F      игровых суток за реальную секунду\n"
-               "  --exposure=F        экспозиция вывода\n"
+               "  --ev=F              зафиксировать EV100 вместо адаптации\n"
+               "  --ev-bias=F         экспокоррекция в стопах\n"
+               "  --preset=NAME       именованное состояние: noon, double_sunset, night, eclipse\n"
+               "  --night-vision=F    сила ночного зрения, 0 отключает\n"
                "  --turbidity=F       множитель аэрозоля\n"
                "  --march-steps=N     шагов основного марша неба\n"
                "  --aerial-range=KM   дальность таблицы воздушной перспективы\n"
@@ -77,7 +80,9 @@ void print_usage() {
                "  --look-azimuth=F --look-altitude=F  фиксированное наведение камеры, градусы\n"
                "  --disc-scale=F      преувеличение размера дисков светил и лун\n"
                "  --star-density=F --star-brightness=F  звёздное поле\n"
-               "  --galaxy=F          яркость галактической полосы\n"
+               "  --adaptation=F      полнота адаптации экспозиции (1 = всё средне-серое, 0 = фикс)\n"
+               "  --trace-exposure    покадровая печать экспозиции: цель, текущая, отставание\n"
+               "  --galaxy=F          сила сгущения звёзд в галактической полосе\n"
                "  --star-rotation=F   доля физической скорости вращения неба (1 — честная, 0 — статика)\n";
 }
 
@@ -135,8 +140,19 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.height = uint32_t(std::stoul(value));
     } else if (read_prefixed(argument, "--time-scale=", value)) {
       out.view.time_scale = std::stod(value);
-    } else if (read_prefixed(argument, "--exposure=", value)) {
-      out.view.output.exposure = std::stod(value);
+    } else if (read_prefixed(argument, "--ev=", value)) {
+      out.view.exposure.manual_ev100 = std::stod(value);
+      out.view.exposure.manual = true;
+    } else if (argument == "--trace-exposure") {
+      out.view.trace_exposure = true;
+    } else if (read_prefixed(argument, "--adaptation=", value)) {
+      out.view.exposure.adaptation_strength = std::stod(value);
+    } else if (read_prefixed(argument, "--ev-bias=", value)) {
+      out.view.exposure.bias_stops = std::stod(value);
+    } else if (read_prefixed(argument, "--night-vision=", value)) {
+      out.view.output.scotopic_strength = std::stod(value);
+    } else if (read_prefixed(argument, "--preset=", value)) {
+      out.view.preset = value;
     } else if (read_prefixed(argument, "--turbidity=", value)) {
       out.view.atmosphere.turbidity = std::stod(value);
     } else if (read_prefixed(argument, "--march-steps=", value)) {
@@ -157,7 +173,7 @@ bool parse_options(const int argc, char** argv, options& out) {
     } else if (read_prefixed(argument, "--star-brightness=", value)) {
       out.view.output.star_brightness = std::stod(value);
     } else if (read_prefixed(argument, "--galaxy=", value)) {
-      out.view.output.galaxy_brightness = std::stod(value);
+      out.view.output.galaxy_concentration = std::stod(value);
     } else if (read_prefixed(argument, "--star-rotation=", value)) {
       out.view.output.star_rotation_scale = std::stod(value);
     } else if (read_prefixed(argument, "--look-altitude=", value)) {

@@ -55,6 +55,17 @@
       steps = [ draw_sky ]
     },
     {
+      // Замер экспозиции. Стоит ПОСЛЕ неба и ДО вывода, потому что читает физическую яркость сцены,
+      // а вывод её уже сжимает: после тонмаппинга измерять нечего. Хост подхватывает результат на
+      // следующем кадре, поэтому обратной связи «экспозиция влияет на замер» здесь нет — в sky_color
+      // лежит яркость до всякого умножения.
+      name = pf07_meter
+      subpasses = [
+        { sky_color = (sampled, store), exposure_meter = (storage_write, store) }
+      ]
+      steps = [ measure_scene ]
+    },
+    {
       name = pf07_compose
       render_target = compose_target
       subpasses = [

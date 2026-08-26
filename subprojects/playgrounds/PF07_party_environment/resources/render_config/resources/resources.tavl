@@ -23,7 +23,7 @@
 // Небесная обстановка кадра: два светила, четыре луны, параметры атмосферы и вывода.
 {
   name = sky_buffer
-  format = v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4
+  format = v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4
   role = upload
   size = one
   swap = per_frame
@@ -31,3 +31,8 @@
 { name = ui_vertices, format = c1, role = upload, size = ui_vertices_bytes, swap = per_frame }
 { name = ui_indices, format = c1, role = upload, size = ui_indices_bytes, swap = per_frame }
 { name = ui_commands, format = c1, role = upload, size = ui_commands_bytes, swap = per_frame }
+// Итог замера: одно число — средняя геометрическая яркость кадра. Роль readback означает память,
+// видимую хосту, поэтому читается оно без ожидания видеокарты: на кадре N хост берёт ту копию, которую
+// видеокарта заполняла на кадре N минус глубина буферизации, и та давно готова. Задержка в пару кадров
+// для экспозиции невидима — адаптация всё равно размазана на секунды.
+{ name = exposure_meter, format = v4, role = readback, size = one, swap = per_frame }

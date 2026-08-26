@@ -84,6 +84,95 @@ void framebuffer_callback(GLFWwindow*, const int width, const int height) noexce
   resize_pending = true;
 }
 
+// Экспозиция по замеру ЯРКОСТИ кадра.
+//
+// Прошлая версия мерила горизонтальную освещённость — падающий свет, как фотограф с полусферой на
+// объективе. Для сцены, которую свет освещает, это верно, но небо светом не освещается: оно само есть
+// источник и в сумерках занимает весь кадр. На рассвете при светиле на -6° падающий замер давал
+// 17 лк, экспозиция открывалась почти на три ступени сверх нужного, и небо выходило белым при
+// формально верных числах. Поправкой это не лечится: ошибочна сама измеряемая величина, а не её
+// множитель — уменьшение замера делает картинку ЕЩЁ светлее.
+//
+// Теперь яркость кадра считает видеокарта (см. meter.comp.glsl) и кладёт в буфер, видимый хосту.
+// Формула — обычный отражённый замер при ISO 100 с калибровочной постоянной 12.5: яркость сцены
+// отображается в средне-серое. Прямой свет светил в замер больше не входит вообще: диск в кадре
+// учтён самой картинкой, а за кадром он на экспозицию влиять и не должен.
+double target_ev100(const double scene_luminance_nits, const exposure_settings& settings) {
+  const double measured = std::log2(std::max(scene_luminance_nits, 1e-6) * 100.0 / 12.5);
+  // Полная адаптация вывела бы измеренную яркость в средне-серое и стёрла разницу между полднем и
+  // полночью. Доля меньше единицы оставляет тёмным состояниям их темноту: кадр отходит от точки
+  // отсчёта на ту же долю, на какую от неё отошла сцена.
+  const double ev100 = settings.reference_ev100 + settings.bias_stops +
+                       settings.adaptation_strength * (measured - settings.reference_ev100);
+  return std::clamp(ev100, settings.min_ev100, settings.max_ev100);
+}
+
+// Средняя геометрическая яркость кадра, посчитанная видеокардой. Копия берётся ТЕКУЩАЯ: её видеокарта
+// заполняла столько кадров назад, сколько держится копий ресурса, и та работа давно завершена — ждать
+// забора нечего. Пока замер не пришёл (первые кадры, ресурс ещё нулевой), возвращается ноль, и вызов
+// сам решает, что делать.
+double read_scene_luminance(painter::graphics_base& base) {
+  const uint32_t slot = base.find_resource("exposure_meter");
+  if (slot == painter::invalid_resource_slot) return 0.0;
+
+  const auto frame = base.get_current_buffer_resource_frame(slot);
+  if (frame.mapped == nullptr || frame.sub.size < sizeof(float)) return 0.0;
+
+  float value = 0.0f;
+  std::memcpy(&value, static_cast<const uint8_t*>(frame.mapped) + frame.sub.offset, sizeof(value));
+  if (!std::isfinite(value) || value <= 0.0f) return 0.0;
+  return double(value);
+}
+
+// Множитель вывода из EV100. Яркость 1.2 * 2^EV100 отображается в единицу — обычная фотографическая
+// нормировка, а не подобранное число.
+double exposure_from_ev100(const double ev100) {
+  return 1.0 / (1.2 * std::pow(2.0, ev100));
+}
+
+// Значения цветового сценария на заданной высоте главного светила. Между ключами линейная
+// интерполяция; за краями — крайние ключи без экстраполяции, чтобы сценарий не улетал на полюсах.
+void evaluate_colour_script(const colour_script& script, const double sun_altitude_deg,
+                            output_settings& output) {
+  if (script.keys.empty()) return;
+
+  const auto apply = [&output](const colour_script_key& key) {
+    output.grade_tint = key.tint.size() >= 3
+                          ? glm::vec3(float(key.tint[0]), float(key.tint[1]), float(key.tint[2]))
+                          : glm::vec3(1.0f);
+    output.grade_saturation = key.saturation;
+    output.grade_contrast = key.contrast;
+  };
+
+  if (sun_altitude_deg <= script.keys.front().sun_altitude_deg) {
+    apply(script.keys.front());
+    return;
+  }
+  if (sun_altitude_deg >= script.keys.back().sun_altitude_deg) {
+    apply(script.keys.back());
+    return;
+  }
+
+  for (size_t i = 1; i < script.keys.size(); ++i) {
+    const auto& previous = script.keys[i - 1];
+    const auto& current = script.keys[i];
+    if (sun_altitude_deg > current.sun_altitude_deg) continue;
+
+    const double span = current.sun_altitude_deg - previous.sun_altitude_deg;
+    const double weight = span > 0.0 ? (sun_altitude_deg - previous.sun_altitude_deg) / span : 0.0;
+    const auto blend = [weight](const double a, const double b) { return a + (b - a) * weight; };
+
+    const bool has_tint = previous.tint.size() >= 3 && current.tint.size() >= 3;
+    output.grade_tint = has_tint ? glm::vec3(float(blend(previous.tint[0], current.tint[0])),
+                                             float(blend(previous.tint[1], current.tint[1])),
+                                             float(blend(previous.tint[2], current.tint[2])))
+                                 : glm::vec3(1.0f);
+    output.grade_saturation = blend(previous.saturation, current.saturation);
+    output.grade_contrast = blend(previous.contrast, current.contrast);
+    return;
+  }
+}
+
 double star_separation_deg(const sky_state& state) {
   const auto& a = state.stars[0].direction;
   const auto& b = state.stars[1].direction;
@@ -303,7 +392,38 @@ struct pass_timing_accumulator {
 
 } // namespace
 
-int run_sky_view(const celestial_system& system, const view_options& options) {
+int run_sky_view(const celestial_system& system, const view_options& raw_options) {
+  view_options options = raw_options;
+
+  if (!options.preset.empty()) {
+    const std::string presets_path = std::string(PF07_RESOURCE_ROOT) + "/celestial/presets.tavl";
+    const std::string text = file_io::read(presets_path, file_io::type::text);
+    if (text.empty()) utils::error{}("PF07 could not read presets '{}'", presets_path);
+
+    view_preset_list list;
+    std::string diagnostics;
+    if (!parse_view_presets(text, list, diagnostics)) {
+      utils::error{}("PF07 presets '{}' have tavl diagnostics:\n{}", presets_path, diagnostics);
+    }
+
+    bool found = false;
+    for (const auto& preset : list.presets) {
+      if (preset.name != options.preset) continue;
+      options.start_time_days = preset.time_days;
+      options.look_azimuth_deg = preset.look_azimuth_deg;
+      options.look_altitude_deg = preset.look_altitude_deg;
+      options.fixed_look = true;
+      options.time_scale = 0.0;
+      options.exposure.manual = true;
+      options.exposure.manual_ev100 = preset.ev100;
+      found = true;
+      utils::info("PF07 preset '{}': day {:.4f}, camera {:.1f}/{:.1f}, fixed EV100 {:+.2f}", preset.name,
+                  preset.time_days, preset.look_azimuth_deg, preset.look_altitude_deg, preset.ev100);
+      break;
+    }
+    if (!found) utils::error{}("PF07 preset '{}' is not declared in presets.tavl", options.preset);
+  }
+
   pending_width = options.width;
   pending_height = options.height;
   paused = options.paused;
@@ -454,9 +574,26 @@ int run_sky_view(const celestial_system& system, const view_options& options) {
     }
     double baked_turbidity = -1.0;
 
+    colour_script script;
+    {
+      const std::string script_path = std::string(PF07_RESOURCE_ROOT) + "/celestial/colour_script.tavl";
+      const std::string text = file_io::read(script_path, file_io::type::text);
+      if (text.empty()) utils::error{}("PF07 could not read colour script '{}'", script_path);
+
+      std::string diagnostics;
+      if (!parse_colour_script(text, script, diagnostics)) {
+        utils::error{}("PF07 colour script '{}' has tavl diagnostics:\n{}", script_path, diagnostics);
+      }
+    }
+
     double game_time_days = options.start_time_days;
     double time_scale = options.time_scale;
-    double exposure = options.output.exposure;
+    // Адаптация обязана стартовать уже привыкшей, иначе любой дамп ловит её переходный процесс. Но
+    // замер приходит с видеокарты и на первом кадре его ещё нет, поэтому вместо угадывания начальное
+    // значение ПРИЩЁЛКИВАЕТСЯ к первому же настоящему замеру, а до него экспозиция не двигается.
+    double current_ev100 = options.exposure.manual_ev100;
+    bool exposure_settled = options.exposure.manual;
+    double exposure_bias_stops = 0.0;
     uint32_t frames_total = 0;
 
     while (!input::should_close(window)) {
@@ -483,9 +620,9 @@ int run_sky_view(const celestial_system& system, const view_options& options) {
         utils::info("PF07 time scale {:.4f} game days per real second", time_scale);
       }
       if (exposure_step != 0.0) {
-        exposure *= std::pow(2.0, exposure_step);
+        exposure_bias_stops += exposure_step;
         exposure_step = 0.0;
-        utils::info("PF07 exposure {:.3e}", exposure);
+        utils::info("PF07 exposure compensation {:+.1f} stops", exposure_bias_stops);
       }
 
       auto [next_mouse_x, next_mouse_y] = input::cursor_pos(window);
@@ -515,12 +652,14 @@ int run_sky_view(const celestial_system& system, const view_options& options) {
       }
       if (gpu_profiler.has_results()) gpu_timings.add(gpu_profiler.passes(), gpu_profiler.frame_milliseconds());
 
-      // При фиксированном числе кадров время идёт постоянным шагом: дамп обязан быть воспроизводимым,
-      // а привязка к реальному dt сделала бы его зависимым от нагрузки машины.
-      if (!paused) {
-        const double advance = options.frames != 0 ? time_scale / 60.0 : time_scale * double(dt);
-        game_time_days += advance;
-      }
+      // Шаг времени кадра. При фиксированном числе кадров он постоянный: дамп обязан быть
+      // воспроизводимым, а привязка к реальному dt сделала бы его зависимым от нагрузки машины.
+      //
+      // Значение ОДНО и на игровое время, и на адаптацию экспозиции. Разойдясь, они дают тихо неверный
+      // дамп: игровое время шло бы как на шестидесяти кадрах, а глаз привыкал бы со скоростью машины,
+      // и восход в дампе проходил бы с совсем другой экспозицией, чем в окне.
+      const double step_seconds = options.frames != 0 ? 1.0 / 60.0 : double(dt);
+      if (!paused) game_time_days += time_scale * step_seconds;
       const auto state = system.evaluate(game_time_days);
 
       const float aspect = float(std::max(pending_width, 1u)) / float(std::max(pending_height, 1u));
@@ -534,8 +673,47 @@ int run_sky_view(const celestial_system& system, const view_options& options) {
         glm::vec4(float(pending_width), float(pending_height), near_plane, std::tan(vertical_fov * 0.5f))};
       write_current_buffer(base, "camera_buffer", &camera_data, sizeof(camera_data));
 
+      // Экспозиция догоняет цель по-разному вверх и вниз. Постоянные заданы в реальных секундах, а не
+      // в игровых: привыкает глаз игрока, а не планета.
+      // Замер учитывает и прямой свет, и рассеянный. Второе слагаемое решающее в сумерках: прямого
+      // света там нет вовсе, а небо продолжает светить.
+      const double scene_luminance = read_scene_luminance(base);
+      const bool metered = !options.exposure.manual && scene_luminance > 0.0;
+      const double goal_ev100 = options.exposure.manual ? options.exposure.manual_ev100
+                                                        : target_ev100(scene_luminance, options.exposure);
+      if (metered) {
+        if (exposure_settled) {
+          // Ускоренное время сжимает адаптацию во столько же раз. На паузе мир не ускорен вовсе,
+          // поэтому берётся ДЕЙСТВУЮЩИЙ темп, а не выставленный: иначе остановленное на перемотке
+          // время оставило бы мгновенный глаз, и поворот камеры менял бы экспозицию скачком.
+          // Множитель ограничен единицей сверху — замедление не имеет права делать глаз медленнее
+          // штатного, ему и так некуда торопиться.
+          const double effective_scale = paused ? 0.0 : time_scale;
+          const double compression =
+            std::min(1.0, options.exposure.reference_time_scale / std::max(effective_scale, 1e-12));
+          const double seconds = (goal_ev100 > current_ev100 ? options.exposure.adapt_brighter_seconds
+                                                             : options.exposure.adapt_darker_seconds) *
+                                 compression;
+          const double rate = 1.0 - std::exp(-step_seconds / std::max(seconds, 1e-6));
+          current_ev100 += (goal_ev100 - current_ev100) * rate;
+        } else {
+          current_ev100 = goal_ev100;
+          exposure_settled = true;
+        }
+      } else if (options.exposure.manual) {
+        current_ev100 = goal_ev100;
+      }
+
       auto output = options.output;
-      output.exposure = exposure;
+      output.exposure = exposure_from_ev100(current_ev100 - exposure_bias_stops);
+      // Первые кадры замера ещё нет, и печатать для них цель бессмысленно: она посчитана от нулевой
+      // яркости и к экспозиции отношения не имеет.
+      if (options.trace_exposure && (metered || options.exposure.manual)) {
+        utils::info("PF07 t={:.5f} · {:5.2f}° · L {:.4g} nits · target {:+.2f} · EV {:+.2f} · lag {:+.2f} stops",
+                    game_time_days, state.stars[0].altitude_deg, scene_luminance, goal_ev100, current_ev100,
+                    goal_ev100 - current_ev100);
+      }
+      evaluate_colour_script(script, state.stars[0].altitude_deg, output);
       // Звёздное поле берёт базис горизонта с замедленного времени: сутки идут за двадцать четыре
       // реальные минуты, и честное вращение неба выглядит вертолётом. Светила и луны при этом
       // продолжают идти по-настоящему, поэтому замедление касается только рисунка созвездий.
@@ -547,7 +725,7 @@ int run_sky_view(const celestial_system& system, const view_options& options) {
       write_current_buffer(base, "sky_buffer", &sky_block, sizeof(sky_block));
 
       const double day_fraction = game_time_days - std::floor(game_time_days);
-      const std::array<std::string, 6> details{
+      const std::array<std::string, 7> details{
         std::format("Time: day {:.0f} {:02}:{:02} · {:.4f} game days per real second{}", std::floor(game_time_days),
                     int32_t(day_fraction * 24.0), int32_t(std::fmod(day_fraction * 24.0, 1.0) * 60.0), time_scale,
                     paused ? " · PAUSED" : ""),
@@ -561,9 +739,15 @@ int run_sky_view(const celestial_system& system, const view_options& options) {
                       ? std::format(" · eclipsed {:.3f}", state.stars[1].occluded_fraction) : ""),
         std::format("Horizontal illuminance: {:.4g} lx · separation {:.2f}°", state.horizontal_illuminance_lx,
                     star_separation_deg(state)),
-        std::format("Exposure: {:.3e} · atmosphere march {} steps + transmittance LUT", exposure,
-                    options.march.primary_steps),
-        "Transmittance table replaces the nested light march: 36.5 ms -> 12.4 ms at 720p"};
+        std::format("Exposure: EV100 {:+.2f}{} · target {:+.2f} · bias {:+.1f} · multiplier {:.3e}",
+                    current_ev100, options.exposure.manual ? " (fixed)" : "", goal_ev100,
+                    options.exposure.bias_stops + exposure_bias_stops, output.exposure),
+        std::format("Scene: direct {:.4g} lx · metered frame luminance {:.4g} nits{}",
+                    state.horizontal_illuminance_lx, scene_luminance,
+                    goal_ev100 <= options.exposure.min_ev100 + 1e-6 ? " · adaptation at its night floor" : ""),
+        std::format("Colour script: tint ({:.2f} {:.2f} {:.2f}) · saturation {:.2f} · contrast {:.2f}",
+                    output.grade_tint.x, output.grade_tint.y, output.grade_tint.z, output.grade_saturation,
+                    output.grade_contrast)};
       overlay.set_detail_lines(details);
       const uint64_t frame_delta_us = uint64_t(std::max(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::duration<float>(dt)).count(),
@@ -582,6 +766,11 @@ int run_sky_view(const celestial_system& system, const view_options& options) {
     }
 
     vk::Device(device).waitIdle();
+    // Состояние экспозиции печатается рядом с дампом: сравнивать кадры можно только зная, какой
+    // экспозицией они сняты, а по самой картинке это не восстанавливается.
+    utils::info("PF07 exposure at t={:.5f}: frame luminance {:.4g} nits · EV100 {:+.2f} · multiplier {:.4e}",
+                game_time_days, read_scene_luminance(base), current_ev100,
+                exposure_from_ev100(current_ev100 - exposure_bias_stops));
     if (!options.dump_path.empty()) dump_final_image(base, options.dump_path);
     gpu_timings.report();
     base.dump_cache_on_disk(cache_path);

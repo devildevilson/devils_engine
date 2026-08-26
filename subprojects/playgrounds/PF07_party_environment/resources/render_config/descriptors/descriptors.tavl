@@ -57,3 +57,10 @@
   sampler_pool = [ linear_sampler ]
   texture_stage = fragment
 }
+{
+  name = meter_write
+  layout = [
+    { resource = sky_color, usage = sampled, stage = compute, sampler = linear_sampler },
+    { resource = exposure_meter, usage = storage_write, stage = compute }
+  ]
+}
