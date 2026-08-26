@@ -5,8 +5,20 @@
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {
+  name = multiscatter_material
+  shaders = { compute = "multiscatter.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
   name = sky_view_material
   shaders = { compute = "sky_view.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = aerial_material
+  shaders = { compute = "aerial.comp.glsl" }
   depth = { test = false, write = false, compare = always }
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }

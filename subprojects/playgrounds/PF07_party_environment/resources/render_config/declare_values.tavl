@@ -11,6 +11,12 @@
 { name = transmittance_lut_size, type = fixed_2d, value = [256, 64, 1] }
 // Небо целиком в 192x108 отсчётов. Именно этот размер отвязывает цену неба от разрешения экрана.
 { name = sky_view_lut_size, type = fixed_2d, value = [192, 108, 1] }
+// Многократное рассеяние считается изотропным, поэтому от направления взгляда не зависит и двух осей
+// «высота × зенитный угол светила» достаточно. Функция очень гладкая — 32x32 хватает с запасом.
+{ name = multiscatter_lut_size, type = fixed_2d, value = [32, 32, 1] }
+// Воздушная перспектива: две экранные оси и ось расстояния. Настоящий куб, третья ось доезжает до
+// образа, а не только до размера буфера.
+{ name = aerial_lut_size, type = fixed_3d, value = [32, 32, 32] }
 { name = ui_vertices_bytes, type = fixed, value = [524288, 0, 0] }
 { name = ui_indices_bytes, type = fixed, value = [131072, 0, 0] }
 { name = ui_commands_bytes, type = fixed, value = [16384, 0, 0] }

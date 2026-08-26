@@ -5,10 +5,22 @@
   command = "dispatch constant transmittance_dispatch"
 }
 {
+  name = build_multiscatter
+  material = multiscatter_material
+  sets = [ multiscatter_write ]
+  command = "dispatch constant multiscatter_dispatch"
+}
+{
   name = build_sky_view
   material = sky_view_material
   sets = [ sky_view_write ]
   command = "dispatch constant sky_view_dispatch"
+}
+{
+  name = build_aerial
+  material = aerial_material
+  sets = [ aerial_write ]
+  command = "dispatch constant aerial_dispatch"
 }
 {
   name = draw_sky

@@ -53,7 +53,10 @@ struct atmosphere_settings {
 struct march_settings {
   double camera_height_km = 0.002;
   int32_t primary_steps = 32;
-  int32_t light_steps = 8;
+  // Дальность таблицы воздушной перспективы, км. С высоты в два метра горизонт лежит в пяти
+  // километрах, поэтому восьми хватает на всю видимую поверхность с запасом; рельефу срезов 4-5
+  // понадобится больше.
+  double aerial_range_km = 8.0;
 };
 
 struct output_settings {

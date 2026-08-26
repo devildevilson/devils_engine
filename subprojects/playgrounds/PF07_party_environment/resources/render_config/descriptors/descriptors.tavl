@@ -7,11 +7,30 @@
   ]
 }
 {
+  name = multiscatter_write
+  layout = [
+    { resource = sky_buffer, usage = uniform, stage = compute },
+    { resource = transmittance_lut, usage = sampled, stage = compute, sampler = linear_sampler },
+    { resource = multiscatter_lut, usage = texel_write, stage = compute }
+  ]
+}
+{
   name = sky_view_write
   layout = [
     { resource = sky_buffer, usage = uniform, stage = compute },
     { resource = transmittance_lut, usage = sampled, stage = compute, sampler = linear_sampler },
+    { resource = multiscatter_lut, usage = sampled, stage = compute, sampler = linear_sampler },
     { resource = sky_view_lut, usage = texel_write, stage = compute }
+  ]
+}
+{
+  name = aerial_write
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = compute },
+    { resource = sky_buffer, usage = uniform, stage = compute },
+    { resource = transmittance_lut, usage = sampled, stage = compute, sampler = linear_sampler },
+    { resource = multiscatter_lut, usage = sampled, stage = compute, sampler = linear_sampler },
+    { resource = aerial_lut, usage = texel_write, stage = compute }
   ]
 }
 {
@@ -20,7 +39,9 @@
     { resource = camera_buffer, usage = uniform, stage = fragment },
     { resource = sky_buffer, usage = uniform, stage = fragment },
     { resource = transmittance_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
-    { resource = sky_view_lut, usage = sampled, stage = fragment, sampler = linear_sampler }
+    { resource = multiscatter_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = sky_view_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = aerial_lut, usage = sampled, stage = fragment, sampler = linear_sampler }
   ]
 }
 {

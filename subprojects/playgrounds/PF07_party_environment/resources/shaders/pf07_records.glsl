@@ -34,8 +34,8 @@ struct pf07_sky_block {
   // x — параметр анизотропии Ми; y — центр озонового слоя, км; z — полуширина озона, км;
   // w — мутность, множитель рассеяния Ми.
   vec4 atmosphere_medium;
-  // x — высота камеры над поверхностью, км; y — число шагов основного марша; z — не используется с
-  // появлением таблицы прохождения, оставлено под будущий марш объёма; w — число активных лун.
+  // x — высота камеры над поверхностью, км; y — число шагов основного марша; z — дальность таблицы
+  // воздушной перспективы, км; w — число активных лун.
   vec4 march_params;
   // x — экспозиция, y — игровое время в сутках, z — альбедо поверхности, w — режим отладки.
   vec4 output_params;
@@ -130,6 +130,24 @@ vec3 pf07_sky_view_direction(const vec2 uv, const vec2 size) {
   const float elevation = sign(shaped) * shaped * shaped * (0.5 * 3.14159265358979323846);
   const float cosine = cos(elevation);
   return vec3(sin(azimuth) * cosine, sin(elevation), -cos(azimuth) * cosine);
+}
+
+// --- параметризация таблицы многократного рассеяния ---
+//
+// Двух осей достаточно: свет высоких порядков считается изотропным, поэтому направление ВЗГЛЯДА на него
+// не влияет, и остаются только высота точки и зенитный угол светила.
+
+vec2 pf07_multiscatter_uv(const float radius, const float mu_sun, const float ground_radius,
+                          const float top_radius, const vec2 size) {
+  const float u = pf07_unit_to_texture(clamp(mu_sun * 0.5 + 0.5, 0.0, 1.0), size.x);
+  const float height = clamp((radius - ground_radius) / max(top_radius - ground_radius, 1e-6), 0.0, 1.0);
+  return vec2(u, pf07_unit_to_texture(height, size.y));
+}
+
+void pf07_multiscatter_from_uv(const vec2 uv, const float ground_radius, const float top_radius,
+                               const vec2 size, out float radius, out float mu_sun) {
+  mu_sun = clamp(pf07_texture_to_unit(uv.x, size.x) * 2.0 - 1.0, -1.0, 1.0);
+  radius = ground_radius + pf07_texture_to_unit(uv.y, size.y) * (top_radius - ground_radius);
 }
 
 #endif

@@ -3,6 +3,10 @@
 { name = transmittance_dispatch, layout = dispatch3, value = [32.0, 8.0, 1.0] }
 // 192x108 при группе 8x8 — двадцать четыре группы на четырнадцать, последняя строка обрезается проверкой.
 { name = sky_view_dispatch, layout = dispatch3, value = [24.0, 14.0, 1.0] }
+// 32x32 при группе 8x8 — четыре на четыре.
+{ name = multiscatter_dispatch, layout = dispatch3, value = [4.0, 4.0, 1.0] }
+// 32x32 нитей по экранным осям; третью ось каждая нить проходит сама нарастающим итогом.
+{ name = aerial_dispatch, layout = dispatch3, value = [4.0, 4.0, 1.0] }
 {
   name = ui_push
   layout = ui1ui1ui1ui1ui1ui1ui1

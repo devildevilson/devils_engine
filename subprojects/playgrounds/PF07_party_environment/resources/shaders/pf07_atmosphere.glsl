@@ -92,11 +92,25 @@ vec3 pf07_transmittance_to_light(const pf07_sky_block sky, const sampler2D table
   return texture(table, pf07_transmittance_uv(radius, mu, ground_radius, top_radius, size)).rgb;
 }
 
-// Однократное рассеяние вдоль луча. Вынесено сюда, потому что этим же кодом считается и таблица
+// Вклад многократного рассеяния в точке: изотропная добавка, пропорциональная местному коэффициенту
+// рассеяния. Именно её отсутствие делало небо вдали от светила слишком тёмным и серым.
+vec3 pf07_multiscatter(const pf07_sky_block sky, const sampler2D table, const vec3 position,
+                       const vec3 light_direction) {
+  const float ground_radius = sky.atmosphere_geometry.x;
+  const float top_radius = sky.atmosphere_geometry.y;
+  const float length_to_centre = max(length(position), 1e-6);
+  const float radius = clamp(length_to_centre, ground_radius, top_radius);
+  const float mu_sun = dot(position / length_to_centre, light_direction);
+
+  const vec2 size = vec2(textureSize(table, 0));
+  return texture(table, pf07_multiscatter_uv(radius, mu_sun, ground_radius, top_radius, size)).rgb;
+}
+
+// Однократное рассеяние вдоль луча плюс изотропная добавка высоких порядков. Вынесено сюда, потому что этим же кодом считается и таблица
 // sky-view, и короткий марш до поверхности во фрагментном шейдере: разойтись им нельзя.
-vec3 pf07_march_scattering(const pf07_sky_block sky, const sampler2D transmittance_table, const vec3 origin,
-                           const vec3 direction, const float march_length, const int steps,
-                           out vec3 view_transmittance) {
+vec3 pf07_march_scattering(const pf07_sky_block sky, const sampler2D transmittance_table,
+                           const sampler2D multiscatter_table, const vec3 origin, const vec3 direction,
+                           const float march_length, const int steps, out vec3 view_transmittance) {
   const float ground_radius = sky.atmosphere_geometry.x;
   const float mie_g = sky.atmosphere_medium.x;
 
@@ -123,7 +137,14 @@ vec3 pf07_march_scattering(const pf07_sky_block sky, const sampler2D transmittan
       const float cosine = dot(direction, light_direction);
       const vec3 phase_weighted = medium.scattering_rayleigh * pf07_rayleigh_phase(cosine) +
                                   vec3(medium.scattering_mie * pf07_mie_phase(cosine, mie_g));
-      source += light_transmittance * phase_weighted * sky.star_color_illuminance[s].rgb * illuminance;
+
+      // Многократное рассеяние приходит со всех сторон, поэтому фаза для него изотропна и в множитель
+      // не входит: остаётся сам коэффициент рассеяния, помноженный на светимость из таблицы.
+      const vec3 higher_orders = pf07_multiscatter(sky, multiscatter_table, point, light_direction) *
+                                 (medium.scattering_rayleigh + vec3(medium.scattering_mie));
+
+      source += (light_transmittance * phase_weighted + higher_orders) *
+                sky.star_color_illuminance[s].rgb * illuminance;
     }
 
     // Аналитическое интегрирование вклада на шаге вместо умножения на длину: на длинных шагах у

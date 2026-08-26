@@ -21,7 +21,8 @@ layout(set = 0, binding = 0, std140) uniform SkyBlock {
 } sky_data;
 
 layout(set = 0, binding = 1) uniform sampler2D transmittance_lut;
-layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D sky_view_image;
+layout(set = 0, binding = 2) uniform sampler2D multiscatter_lut;
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D sky_view_image;
 
 void main() {
   const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -48,8 +49,8 @@ void main() {
 
   const float march_length = pf07_sphere_hit(origin, direction, top_radius);
   vec3 view_transmittance;
-  const vec3 in_scattering = pf07_march_scattering(sky_data.sky, transmittance_lut, origin, direction,
-                                                   march_length, steps, view_transmittance);
+  const vec3 in_scattering = pf07_march_scattering(sky_data.sky, transmittance_lut, multiscatter_lut, origin,
+                                                   direction, march_length, steps, view_transmittance);
 
   // В альфе — светимость прохождения вдоль луча. Она нужна фрагментному шейдеру, чтобы ослаблять диски
   // светил и звёзды тем же воздухом, сквозь который смотрит небо, не повторяя марш.

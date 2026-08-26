@@ -71,7 +71,9 @@ void print_usage() {
                "  --time-scale=F      игровых суток за реальную секунду\n"
                "  --exposure=F        экспозиция вывода\n"
                "  --turbidity=F       множитель аэрозоля\n"
-               "  --march-steps=N --light-steps=N  шаги марша по атмосфере\n"
+               "  --march-steps=N     шагов основного марша неба\n"
+               "  --aerial-range=KM   дальность таблицы воздушной перспективы\n"
+               "  --camera-height=KM  высота наблюдателя над поверхностью\n"
                "  --look-azimuth=F --look-altitude=F  фиксированное наведение камеры, градусы\n"
                "  --disc-scale=F      преувеличение размера дисков светил и лун\n"
                "  --star-density=F --star-brightness=F  звёздное поле\n"
@@ -139,8 +141,10 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.atmosphere.turbidity = std::stod(value);
     } else if (read_prefixed(argument, "--march-steps=", value)) {
       out.view.march.primary_steps = int32_t(std::stol(value));
-    } else if (read_prefixed(argument, "--light-steps=", value)) {
-      out.view.march.light_steps = int32_t(std::stol(value));
+    } else if (read_prefixed(argument, "--camera-height=", value)) {
+      out.view.march.camera_height_km = std::stod(value);
+    } else if (read_prefixed(argument, "--aerial-range=", value)) {
+      out.view.march.aerial_range_km = std::stod(value);
     } else if (read_prefixed(argument, "--debug=", value)) {
       out.view.output.debug_mode = std::stod(value);
     } else if (read_prefixed(argument, "--look-azimuth=", value)) {

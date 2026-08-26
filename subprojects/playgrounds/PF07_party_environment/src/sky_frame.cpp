@@ -64,7 +64,7 @@ sky_gpu_block pack_sky_block(const sky_state& state, const sky_state& star_frame
               static_cast<float>(atmosphere.ozone_width_km), static_cast<float>(atmosphere.turbidity));
   block.march_params =
     glm::vec4(static_cast<float>(march.camera_height_km), static_cast<float>(march.primary_steps),
-              static_cast<float>(march.light_steps), static_cast<float>(moon_count));
+              static_cast<float>(march.aerial_range_km), static_cast<float>(moon_count));
   block.output_params =
     glm::vec4(static_cast<float>(output.exposure), static_cast<float>(state.time_days),
               static_cast<float>(atmosphere.ground_albedo), static_cast<float>(output.debug_mode));

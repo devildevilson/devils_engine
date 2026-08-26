@@ -12,13 +12,34 @@
       steps = [ build_transmittance ]
     },
     {
+      // Свет высоких порядков. Считается после прохождения, потому что опирается на него, и до неба,
+      // потому что небо им пользуется.
+      name = pf07_multiscatter
+      // Пасс исполняется только в кадрах, где хост сдвинул счётчик. В остальных он не пишет ни одной
+      // команды, и в отчёте таймстемпов это видно как ноль миллисекунд.
+      counter = atmosphere_cache
+      subpasses = [
+        { transmittance_lut = (sampled, store), multiscatter_lut = (texel_write, store) }
+      ]
+      steps = [ build_multiscatter ]
+    },
+    {
       // Небо целиком, посчитанное один раз за кадр в маленькую таблицу. Отсюда и берётся отвязка цены
       // кадра от разрешения экрана: 192x108 отсчётов вместо двух миллионов пикселей.
       name = pf07_sky_view
       subpasses = [
-        { transmittance_lut = (sampled, store), sky_view_lut = (texel_write, store) }
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (texel_write, store) }
       ]
       steps = [ build_sky_view ]
+    },
+    {
+      // Воздух между камерой и сценой. Зависит от ориентации камеры, поэтому пересчитывается каждый
+      // кадр — но всего 32x32 луча, а не два миллиона.
+      name = pf07_aerial
+      subpasses = [
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), aerial_lut = (texel_write, store) }
+      ]
+      steps = [ build_aerial ]
     },
     {
       // Небо целиком аналитическое: ни геометрии, ни глубины. Марш по атмосфере идёт прямо во
@@ -27,9 +48,9 @@
       name = pf07_sky
       render_target = sky_target
       subpasses = [
-        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), sky_color = (undefined, clear) },
-        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), sky_color = (color_attachment, store) },
-        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), sky_color = (sampled, store) }
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), sky_color = (undefined, clear) },
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), sky_color = (color_attachment, store) },
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), sky_color = (sampled, store) }
       ]
       steps = [ draw_sky ]
     },

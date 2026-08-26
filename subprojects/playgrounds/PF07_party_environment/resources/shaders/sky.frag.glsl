@@ -26,7 +26,9 @@ layout(set = 0, binding = 1, std140) uniform SkyBlock {
 } sky_data;
 
 layout(set = 0, binding = 2) uniform sampler2D transmittance_lut;
-layout(set = 0, binding = 3) uniform sampler2D sky_view_lut;
+layout(set = 0, binding = 3) uniform sampler2D multiscatter_lut;
+layout(set = 0, binding = 4) uniform sampler2D sky_view_lut;
+layout(set = 0, binding = 5) uniform sampler3D aerial_lut;
 
 const float pi = pf07_pi;
 
@@ -76,9 +78,10 @@ vec3 star_field(const vec3 direction) {
     face_uv = inertial.xy / magnitude_axis.z;
   }
 
-  // 48 ячеек на ребро грани при заполнении 18% дают около 2500 звёзд на всё небо. Невооружённый глаз
-  // видит порядка трёх тысяч, так что это правдоподобный порядок, а не поле шума.
-  const float grid = 48.0 * density;
+  // 40 ячеек на ребро грани при заполнении 11% дают около 1050 звёзд на всё небо. Меньше, чем видит
+  // невооружённый глаз, и это осознанно: звезда обязана быть крупнее пикселя (см. ниже), а поле из
+  // трёх тысяч заметных зёрен читается шумом.
+  const float grid = 40.0 * density;
   const vec2 scaled = face_uv * grid;
   const vec2 base = floor(scaled);
 
@@ -88,20 +91,29 @@ vec3 star_field(const vec3 direction) {
       const vec2 cell = base + vec2(float(x), float(y));
       const vec3 key = vec3(cell, float(face) * 37.0);
       const float seed = hash_cell(key);
-      if (seed > 0.18) continue;
+      if (seed > 0.11) continue;
 
       const vec2 jitter = vec2(hash_cell(key + 17.0), hash_cell(key + 43.0));
       const vec3 star_direction = star_cell_direction(face, (cell + jitter) / grid);
       const float angle = acos(clamp(dot(inertial, star_direction), -1.0, 1.0));
 
       const float magnitude = hash_cell(key + 91.0);
-      const float radius = 0.00035 + 0.00045 * magnitude * magnitude;
+      // Звезда МЕНЬШЕ пикселя мерцает: при вращении неба она перескакивает между соседними пикселями,
+      // и её яркость скачет вместе с попаданием в центр. Лечится это не сглаживанием, а размером —
+      // радиус не даётся опуститься ниже полутора пикселей, а сколько это в радианах, зависит от поля
+      // зрения и разрешения. Та же логика, что у экранно-осведомлённой ширины фильтра теней в PF02.
+      const float pixel_angle = 2.0 * camera_data.viewport_near.w / max(camera_data.viewport_near.y, 1.0);
+      const float radius = max(0.0007 + 0.0011 * magnitude * magnitude, 1.5 * pixel_angle);
       if (angle > radius) continue;
 
       const float falloff = 1.0 - smoothstep(0.0, radius, angle);
       // Холодные и тёплые звёзды: тот же спектр Планка, только грубее.
       const vec3 tint = mix(vec3(1.0, 0.86, 0.70), vec3(0.78, 0.86, 1.0), hash_cell(key + 13.0));
-      total += tint * falloff * falloff * brightness * 4000.0 * (0.15 + magnitude * magnitude);
+      // Яркость держится на постоянном ПОТОКЕ, а не на постоянной яркости поверхности: раздутая до
+      // полутора пикселей звезда иначе стала бы во столько же раз ярче, во сколько выросла её площадь.
+      const float area_correction = (0.0007 * 0.0007) / (radius * radius);
+      total += tint * falloff * falloff * brightness * 4000.0 * (0.15 + magnitude * magnitude) *
+               clamp(area_correction, 0.05, 1.0);
     }
   }
   return total;
@@ -155,12 +167,13 @@ void main() {
   vec3 transmittance = vec3(1.0);
 
   if (ground_distance > 0.0) {
-    // Луч в землю с высоты в два метра короче пяти километров даже у самого горизонта, поэтому его
-    // считать таблицей незачем и нельзя: у поверхности нужно ещё и собственное затенение. Восьми
-    // шагов на такую длину достаточно с запасом.
-    const int ground_steps = 8;
-    in_scattering = pf07_march_scattering(sky_data.sky, transmittance_lut, origin, view_direction,
-                                          ground_distance, ground_steps, transmittance);
+    // Воздух между камерой и поверхностью берётся из объёмной таблицы: одна выборка вместо марша на
+    // каждый пиксель земли. Ось расстояния квадратичная, поэтому координата среза — корень из доли.
+    const float max_range = sky_data.sky.march_params.z;
+    const float slice = sqrt(clamp(ground_distance / max(max_range, 1e-6), 0.0, 1.0));
+    const vec4 aerial = texture(aerial_lut, vec3(in_uv, slice));
+    in_scattering = aerial.rgb;
+    transmittance = vec3(aerial.a);
   } else {
     // Небо целиком приходит из таблицы: одна выборка вместо тридцати двух шагов марша на пиксель.
     const vec2 sky_view_size = vec2(textureSize(sky_view_lut, 0));
@@ -203,6 +216,21 @@ void main() {
 
       ground_light += sky_data.sky.moon_color_illuminance[m].rgb * illuminance * cosine;
     }
+    // Свет НЕБА на землю. Его не было вовсе: поверхность освещалась только прямым лучом, и потому
+    // выглядела вырезанной из другой картинки — в тени от неё не оставалось ничего, а лунная подсветка
+    // не читалась. Полный интеграл яркости неба по полусфере здесь не нужен: небо уже посчитано в
+    // таблице, и пяти выборок хватает, чтобы оценить его среднюю яркость, а освещённость горизонтальной
+    // площадки от полусферы такой яркости равна pi * L.
+    const vec2 sky_view_size = vec2(textureSize(sky_view_lut, 0));
+    const vec3 sky_up = vec3(0.0, 1.0, 0.0);
+    vec3 sky_average = texture(sky_view_lut, pf07_sky_view_uv(sky_up, sky_view_size)).rgb;
+    sky_average += texture(sky_view_lut, pf07_sky_view_uv(normalize(vec3(1.0, 1.0, 0.0)), sky_view_size)).rgb;
+    sky_average += texture(sky_view_lut, pf07_sky_view_uv(normalize(vec3(-1.0, 1.0, 0.0)), sky_view_size)).rgb;
+    sky_average += texture(sky_view_lut, pf07_sky_view_uv(normalize(vec3(0.0, 1.0, 1.0)), sky_view_size)).rgb;
+    sky_average += texture(sky_view_lut, pf07_sky_view_uv(normalize(vec3(0.0, 1.0, -1.0)), sky_view_size)).rgb;
+    sky_average /= 5.0;
+    ground_light += sky_average * pi;
+
     color += transmittance * ground_light * albedo / pi;
   } else {
     // Диски светил и лун рисуются только там, где луч уходит в космос. Яркость диска — освещённость,

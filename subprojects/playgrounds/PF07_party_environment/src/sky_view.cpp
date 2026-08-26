@@ -445,6 +445,15 @@ int run_sky_view(const celestial_system& system, const view_options& options) {
       utils::warn("PF07 GPU timestamps are unavailable on this device; per-pass cost will stay unmeasured");
     }
 
+    // Таблица многократного рассеяния живёт на условном счётчике: она функция параметров среды и
+    // ничего больше. Хост двигает счётчик при старте и при смене мутности, то есть в будущем — при
+    // смене погоды.
+    const uint32_t atmosphere_counter = base.find_counter("atmosphere_cache");
+    if (atmosphere_counter == painter::invalid_resource_slot) {
+      utils::error{}("PF07 counter 'atmosphere_cache' is absent from the configured graph");
+    }
+    double baked_turbidity = -1.0;
+
     double game_time_days = options.start_time_days;
     double time_scale = options.time_scale;
     double exposure = options.output.exposure;
@@ -500,6 +509,10 @@ int run_sky_view(const celestial_system& system, const view_options& options) {
       }
 
       base.prepare_frame();
+      if (baked_turbidity != options.atmosphere.turbidity) {
+        base.inc_counter(atmosphere_counter);
+        baked_turbidity = options.atmosphere.turbidity;
+      }
       if (gpu_profiler.has_results()) gpu_timings.add(gpu_profiler.passes(), gpu_profiler.frame_milliseconds());
 
       // При фиксированном числе кадров время идёт постоянным шагом: дамп обязан быть воспроизводимым,
