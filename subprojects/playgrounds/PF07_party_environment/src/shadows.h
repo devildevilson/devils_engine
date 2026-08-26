@@ -65,8 +65,12 @@ using shadow_source_set = std::array<shadow_source, shadow_source_count>;
 shadow_source_set select_shadow_sources(const sky_state& state);
 
 // Каскады для одного источника. Записывает `cascade_count` подряд идущих записей.
+//
+// `caster_height` — самый высокий предмет сцены. Он задаёт запас каскада вдоль луча света, и без него
+// низкое светило теряет дальнюю часть каждой тени: чтобы кастер попал в карту, нужно
+// `caster_height / sin(высоты светила)`, а это сотни метров уже при пяти градусах.
 void build_cascades(const shadow_source& source, const playground::free_camera& camera, float aspect,
-                    float vertical_fov, float camera_near, float shadow_far,
+                    float vertical_fov, float camera_near, float shadow_far, float caster_height,
                     std::span<const painter::atlas_region> regions, uint32_t atlas_width,
                     uint32_t atlas_height, std::span<cascade_record> out);
 

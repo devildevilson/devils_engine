@@ -612,6 +612,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     // хватает тридцати двух при двенадцати используемых.
     const uint32_t scene_pair = base.register_pair(scene_group, cube_mesh, 32);
     const auto fixture = make_fixture_instances();
+    const double caster_height = fixture_caster_height(fixture);
     write_fixture(base, scene_pair, fixture, uint32_t(cube.size()));
 
     // Земля — вторая пара в той же группе отрисовки. Проход рисует ВСЕ пары группы, поэтому диск
@@ -842,7 +843,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
                             shadow_sources[slot].strength > 0.0;
         if (!slot_active[slot]) continue;
         build_cascades(shadow_sources[slot], camera, aspect, vertical_fov, near_plane,
-                       float(options.shadow_far_m),
+                       float(options.shadow_far_m), float(caster_height),
                        std::span(shadow_regions).subspan(slot * cascade_count, cascade_count),
                        shadow_atlas_width, shadow_atlas_height,
                        std::span(cascades).subspan(slot * cascade_count, cascade_count));

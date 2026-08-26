@@ -1,5 +1,6 @@
 #include "fixture.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include <glm/geometric.hpp>
@@ -150,6 +151,14 @@ scene_instance make_ground_instance(const double centre_x, const double centre_z
   // и половина возвращает диску его собственный масштаб в метрах.
   return scene_instance{glm::vec4(float(centre_x), 0.0f, float(centre_z), 0.0f),
                         glm::vec4(0.5f, 0.5f, 0.5f, 0.0f), glm::vec4(albedo, 0.0f)};
+}
+
+double fixture_caster_height(const std::vector<scene_instance>& instances) {
+  double highest = 0.0;
+  for (const auto& instance : instances) {
+    highest = std::max(highest, double(instance.position_material.y + instance.half_extent_roughness.y));
+  }
+  return highest;
 }
 
 } // namespace devils_engine::pf07

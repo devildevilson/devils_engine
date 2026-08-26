@@ -41,6 +41,9 @@ constexpr uint32_t ground_segment_count = 128;
 std::vector<scene_vertex> make_unit_cube();
 std::vector<scene_instance> make_fixture_instances();
 
+// Самый высокий предмет фикстуры. Нужен каскадам: запас вдоль луча света считается от него.
+double fixture_caster_height(const std::vector<scene_instance>& instances);
+
 // Земля как ГЕОМЕТРИЯ, а не как ветка в шейдере неба.
 //
 // Раньше поверхность планеты считалась аналитически прямо во фрагментном шейдере неба. Физически это

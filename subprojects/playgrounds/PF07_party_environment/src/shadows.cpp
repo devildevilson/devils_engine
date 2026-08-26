@@ -75,15 +75,25 @@ shadow_source_set select_shadow_sources(const sky_state& state) {
 
 void build_cascades(const shadow_source& source, const playground::free_camera& camera, const float aspect,
                     const float vertical_fov, const float camera_near, const float shadow_far,
-                    const std::span<const painter::atlas_region> regions, const uint32_t atlas_width,
-                    const uint32_t atlas_height, const std::span<cascade_record> out) {
+                    const float caster_height, const std::span<const painter::atlas_region> regions,
+                    const uint32_t atlas_width, const uint32_t atlas_height,
+                    const std::span<cascade_record> out) {
   // Разбиение по практической схеме: логарифмическое даёт верную плотность текселей у камеры,
   // равномерное не вырождает дальний каскад, доля между ними — единственный рычаг.
   constexpr float split_lambda = 0.85f;
   constexpr float blend_fraction = 0.12f;
   // Запас по направлению света: приёмник виден в срезе камеры, а кастер может стоять снаружи и всё
-  // равно бросать в него тень. Без запаса тени появляются из ниоткуда на границе среза.
-  constexpr float caster_depth_margin = 20.0f;
+  // равно бросать в него тень. Без запаса тени обрываются на границе среза.
+  //
+  // Запас обязан РАСТИ у горизонта, и постоянная величина здесь — скрытая ошибка. Чтобы кастер высотой
+  // h попал в карту, вдоль луча света нужно h / sin(высоты светила): при 30° это шестнадцать метров,
+  // при 5° — девяносто два, при 1° — четыреста пятьдесят. Зашитые двадцать метров верны ровно до
+  // двадцати трёх градусов, а ниже молча теряют дальнюю часть каждой тени.
+  //
+  // Пол по синусу ограничивает запас снизу: у самого горизонта формула уходит в бесконечность, а свет
+  // там всё равно скользит по поверхности и прямого вклада почти не даёт.
+  const float elevation_sine = std::max(source.direction.y, 0.02f);
+  const float caster_depth_margin = std::clamp(caster_height / elevation_sine, 20.0f, 1500.0f);
 
   std::array<float, cascade_count> split_fars{};
   for (uint32_t index = 0; index < cascade_count; ++index) {
