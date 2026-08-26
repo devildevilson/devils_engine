@@ -75,12 +75,12 @@ shadow_source_set select_shadow_sources(const sky_state& state) {
 
 void build_cascades(const shadow_source& source, const playground::free_camera& camera, const float aspect,
                     const float vertical_fov, const float camera_near, const float shadow_far,
-                    const float caster_height, const std::span<const painter::atlas_region> regions,
+                    const float caster_height, const float split_lambda,
+                    const std::span<const painter::atlas_region> regions,
                     const uint32_t atlas_width, const uint32_t atlas_height,
                     const std::span<cascade_record> out) {
   // Разбиение по практической схеме: логарифмическое даёт верную плотность текселей у камеры,
-  // равномерное не вырождает дальний каскад, доля между ними — единственный рычаг.
-  constexpr float split_lambda = 0.85f;
+  // равномерное не вырождает дальний каскад, доля между ними приходит снаружи.
   constexpr float blend_fraction = 0.12f;
   // Запас по направлению света: приёмник виден в срезе камеры, а кастер может стоять снаружи и всё
   // равно бросать в него тень. Без запаса тени обрываются на границе среза.

@@ -69,8 +69,13 @@ shadow_source_set select_shadow_sources(const sky_state& state);
 // `caster_height` — самый высокий предмет сцены. Он задаёт запас каскада вдоль луча света, и без него
 // низкое светило теряет дальнюю часть каждой тени: чтобы кастер попал в карту, нужно
 // `caster_height / sin(высоты светила)`, а это сотни метров уже при пяти градусах.
+// `split_lambda` — доля логарифмического разбиения против равномерного. Единица даёт классическое
+// логарифмическое: точность у самой камеры и растянутый дальний каскад. Ноль — равномерное. Величина
+// не косметическая: именно она решает, каким будет мировой размер текселя на каждой дальности, то есть
+// с какого расстояния перестают читаться мелкие тени вроде травяных.
 void build_cascades(const shadow_source& source, const playground::free_camera& camera, float aspect,
                     float vertical_fov, float camera_near, float shadow_far, float caster_height,
+                    float split_lambda,
                     std::span<const painter::atlas_region> regions, uint32_t atlas_width,
                     uint32_t atlas_height, std::span<cascade_record> out);
 

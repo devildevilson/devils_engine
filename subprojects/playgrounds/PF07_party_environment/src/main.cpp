@@ -89,6 +89,8 @@ void print_usage() {
                "  --foliage=N         число кустов\n"
                "  --foliage-range=M   дальность отрисовки зарослей в метрах\n"
                "  --foliage-lod=M     граница между полным и упрощённым мешем куста\n"
+               "  --foliage-shadow-cascades=N  в скольких ближних каскадах трава даёт тень\n"
+               "  --cascade-split=F   доля логарифмического разбиения каскадов (1 лог, 0 равномерное)\n"
                "  --galaxy=F          сила сгущения звёзд в галактической полосе\n"
                "  --star-rotation=F   доля физической скорости вращения неба (1 — честная, 0 — статика)\n";
 }
@@ -160,6 +162,10 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.foliage_range_m = std::stod(value);
     } else if (read_prefixed(argument, "--foliage-lod=", value)) {
       out.view.foliage_lod_m = std::stod(value);
+    } else if (read_prefixed(argument, "--foliage-shadow-cascades=", value)) {
+      out.view.foliage_shadow_cascades = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--cascade-split=", value)) {
+      out.view.cascade_split_lambda = std::stod(value);
     } else if (read_prefixed(argument, "--shadow-sources=", value)) {
       out.view.shadow_sources = uint32_t(std::stoul(value));
     } else if (read_prefixed(argument, "--shadow-far=", value)) {

@@ -943,7 +943,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
         if (!slot_active[slot]) continue;
         build_cascades(shadow_sources[slot], camera, aspect, vertical_fov, near_plane,
                        float(options.shadow_far_m), float(caster_height),
-                       std::span(shadow_regions).subspan(slot * cascade_count, cascade_count),
+                       float(options.cascade_split_lambda), std::span(shadow_regions).subspan(slot * cascade_count, cascade_count),
                        shadow_atlas_width, shadow_atlas_height,
                        std::span(cascades).subspan(slot * cascade_count, cascade_count));
       }
@@ -957,9 +957,20 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
         list.clear();
         list.push_back({scene_pair, uint32_t(fixture.size()), uint32_t(cube.size())});
         list.push_back({valley_pair, 1u, uint32_t(valley.size())});
-        if (index % cascade_count == 0 && !shrub_near_instances.empty()) {
-          list.push_back({shrub_near_pair, uint32_t(shrub_near_instances.size()),
-                          uint32_t(shrub_near_mesh_data.size())});
+        // Заросли бросают тень в столько ближних каскадов, сколько попросили, и ОБЕИМИ парами LOD.
+        // Прежде здесь стоял только ближний каскад и только ближняя пара — то есть тень получали
+        // 584 куста из 4696 нарисованных, и только те, что ближе 3.7 м. Ограничение выглядело
+        // экономией, а на деле просто прятало эффект: чтобы увидеть тень травы, надо было в неё
+        // почти упереться.
+        if (index % cascade_count < options.foliage_shadow_cascades) {
+          if (!shrub_near_instances.empty()) {
+            list.push_back({shrub_near_pair, uint32_t(shrub_near_instances.size()),
+                            uint32_t(shrub_near_mesh_data.size())});
+          }
+          if (!shrub_far_instances.empty()) {
+            list.push_back({shrub_far_pair, uint32_t(shrub_far_instances.size()),
+                            uint32_t(shrub_far_mesh_data.size())});
+          }
         }
       }
       write_shadow_regions(base, casters, shadow_regions, slot_active);
