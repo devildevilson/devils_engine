@@ -1,0 +1,30 @@
+{
+  name = transmittance_material
+  shaders = { compute = "transmittance.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = sky_view_material
+  shaders = { compute = "sky_view.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = sky_material
+  shaders = { vertex = "fullscreen.vert.glsl", fragment = "sky.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = compose_material
+  shaders = { vertex = "fullscreen.vert.glsl", fragment = "compose.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = ui_material
+  shaders = { vertex = "ui.vert.glsl", fragment = "ui.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}

@@ -1,0 +1,3 @@
+{ name = sky_target, resources = [ sky_color = color_attachment ] }
+{ name = compose_target, resources = [ final_color = color_attachment ] }
+{ name = ui_target, resources = [ final_color = color_attachment ] }

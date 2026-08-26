@@ -421,6 +421,9 @@ sky_state celestial_system::evaluate(const double time_days) const {
 
   sky_state state;
   state.time_days = time_days;
+  state.east_inertial = now.east;
+  state.north_inertial = now.north;
+  state.up_inertial = now.up;
   state.moons.resize(config_.moons.size());
 
   const auto to_local = [&](const glm::dvec3& world_direction) {
@@ -474,6 +477,7 @@ sky_state celestial_system::evaluate(const double time_days) const {
     const double unoccluded = stars_[i].illuminance_at_1au_lx / (distance_au * distance_au);
     view.unocculted_lx = unoccluded * view.horizon_fraction;
     view.illuminance_lx = view.unocculted_lx * (1.0 - view.occluded_fraction);
+    view.space_illuminance_lx = unoccluded * (1.0 - view.occluded_fraction);
   }
 
   for (size_t m = 0; m < state.moons.size(); ++m) {
@@ -534,6 +538,7 @@ sky_state celestial_system::evaluate(const double time_days) const {
     view.phase = 0.5 * (1.0 + std::cos(dominant_phase_angle));
     view.illuminance_lx = total_illuminance * view.horizon_fraction;
     view.unocculted_lx = unocculted_total * view.horizon_fraction;
+    view.space_illuminance_lx = total_illuminance;
 
     const double color_maximum = std::max({weighted_color.x, weighted_color.y, weighted_color.z});
     view.color_linear = color_maximum > 0.0 ? weighted_color / color_maximum : glm::dvec3(1.0, 1.0, 1.0);

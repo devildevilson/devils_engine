@@ -19,6 +19,7 @@
 
 #include "celestial.h"
 #include "survey.h"
+#include "sky_view.h"
 
 using namespace devils_engine;
 
@@ -28,10 +29,11 @@ constexpr double default_event_days = 90.0;
 constexpr double default_event_step_minutes = 2.0;
 constexpr double eclipse_threshold = 1e-4;
 
-enum class action : uint32_t { report, events, verify, survey };
+enum class action : uint32_t { render, report, events, verify, survey };
 
 struct options {
-  action requested = action::report;
+  action requested = action::render;
+  pf07::view_options view;
   pf07::survey_options survey;
   std::string config_path = std::string(PF07_RESOURCE_ROOT) + "/celestial/system.tavl";
   double time_days = 0.0;
@@ -47,7 +49,8 @@ bool read_prefixed(const std::string_view argument, const std::string_view prefi
 
 void print_usage() {
   std::cout << "PF07 celestial mechanics (срез 1)\n"
-               "  --report            эфемериды на момент --time (по умолчанию)\n"
+               "  --render            окно с физическим небом (по умолчанию)\n"
+               "  --report            эфемериды на момент --time\n"
                "  --events            таблица событий на --days вперёд\n"
                "  --verify            численные инварианты, ненулевой код возврата при провале\n"
                "  --survey            сезоны, суточная структура, парады, двойные затмения, луны днём\n"
@@ -60,7 +63,20 @@ void print_usage() {
                "  --star-threshold=F  доля перекрытия диска светила, начиная с которой это событие\n"
                "  --game-minutes=F    игровых минут за реальную секунду\n"
                "  --small-dimming=F   доля потери света, с которой явление считается малым\n"
-               "  --large-dimming=F   доля потери света, с которой явление считается крупным\n";
+               "  --large-dimming=F   доля потери света, с которой явление считается крупным\n"
+               "  --validation        включить слои валидации Vulkan\n"
+               "  --frames=N          закрыть окно после N кадров\n"
+               "  --dump=PATH         сохранить последний кадр в ppm\n"
+               "  --width=N --height=N  размер окна\n"
+               "  --time-scale=F      игровых суток за реальную секунду\n"
+               "  --exposure=F        экспозиция вывода\n"
+               "  --turbidity=F       множитель аэрозоля\n"
+               "  --march-steps=N --light-steps=N  шаги марша по атмосфере\n"
+               "  --look-azimuth=F --look-altitude=F  фиксированное наведение камеры, градусы\n"
+               "  --disc-scale=F      преувеличение размера дисков светил и лун\n"
+               "  --star-density=F --star-brightness=F  звёздное поле\n"
+               "  --galaxy=F          яркость галактической полосы\n"
+               "  --star-rotation=F   доля физической скорости вращения неба (1 — честная, 0 — статика)\n";
 }
 
 bool parse_options(const int argc, char** argv, options& out) {
@@ -68,7 +84,9 @@ bool parse_options(const int argc, char** argv, options& out) {
     const std::string_view argument = argv[i];
     std::string value;
 
-    if (argument == "--report") {
+    if (argument == "--render") {
+      out.requested = action::render;
+    } else if (argument == "--report") {
       out.requested = action::report;
     } else if (argument == "--events") {
       out.requested = action::events;
@@ -99,6 +117,48 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.survey.small_effect_dimming = std::stod(value);
     } else if (read_prefixed(argument, "--large-dimming=", value)) {
       out.survey.large_effect_dimming = std::stod(value);
+    } else if (argument == "--validation") {
+      out.view.validation = true;
+    } else if (argument == "--uncapped") {
+      out.view.uncapped = true;
+    } else if (argument == "--pause") {
+      out.view.paused = true;
+    } else if (read_prefixed(argument, "--frames=", value)) {
+      out.view.frames = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--dump=", value)) {
+      out.view.dump_path = value;
+    } else if (read_prefixed(argument, "--width=", value)) {
+      out.view.width = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--height=", value)) {
+      out.view.height = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--time-scale=", value)) {
+      out.view.time_scale = std::stod(value);
+    } else if (read_prefixed(argument, "--exposure=", value)) {
+      out.view.output.exposure = std::stod(value);
+    } else if (read_prefixed(argument, "--turbidity=", value)) {
+      out.view.atmosphere.turbidity = std::stod(value);
+    } else if (read_prefixed(argument, "--march-steps=", value)) {
+      out.view.march.primary_steps = int32_t(std::stol(value));
+    } else if (read_prefixed(argument, "--light-steps=", value)) {
+      out.view.march.light_steps = int32_t(std::stol(value));
+    } else if (read_prefixed(argument, "--debug=", value)) {
+      out.view.output.debug_mode = std::stod(value);
+    } else if (read_prefixed(argument, "--look-azimuth=", value)) {
+      out.view.look_azimuth_deg = std::stod(value);
+      out.view.fixed_look = true;
+    } else if (read_prefixed(argument, "--disc-scale=", value)) {
+      out.view.output.disc_scale = std::stod(value);
+    } else if (read_prefixed(argument, "--star-density=", value)) {
+      out.view.output.star_density = std::stod(value);
+    } else if (read_prefixed(argument, "--star-brightness=", value)) {
+      out.view.output.star_brightness = std::stod(value);
+    } else if (read_prefixed(argument, "--galaxy=", value)) {
+      out.view.output.galaxy_brightness = std::stod(value);
+    } else if (read_prefixed(argument, "--star-rotation=", value)) {
+      out.view.output.star_rotation_scale = std::stod(value);
+    } else if (read_prefixed(argument, "--look-altitude=", value)) {
+      out.view.look_altitude_deg = std::stod(value);
+      out.view.fixed_look = true;
     } else {
       utils::warn("PF07 unknown argument '{}'", argument);
       print_usage();
@@ -626,7 +686,10 @@ int main(int argc, char** argv) {
   const pf07::celestial_system system(std::move(config));
   print_system(system);
 
+  selected.view.start_time_days = selected.time_days;
+
   switch (selected.requested) {
+    case action::render: return pf07::run_sky_view(system, selected.view);
     case action::report: print_state(system, system.evaluate(selected.time_days)); return 0;
     case action::events: scan_events(system, selected.span_days, selected.step_minutes); return 0;
     case action::verify: return run_verification(system);

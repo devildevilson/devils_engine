@@ -1,0 +1,36 @@
+{
+  name = build_transmittance
+  material = transmittance_material
+  sets = [ transmittance_write ]
+  command = "dispatch constant transmittance_dispatch"
+}
+{
+  name = build_sky_view
+  material = sky_view_material
+  sets = [ sky_view_write ]
+  command = "dispatch constant sky_view_dispatch"
+}
+{
+  name = draw_sky
+  material = sky_material
+  geometry = fullscreen_geometry
+  sets = [ sky_data ]
+  command = "draw constant fullscreen_draw"
+}
+{
+  name = compose_sky
+  material = compose_material
+  geometry = fullscreen_geometry
+  sets = [ compose_data ]
+  command = "draw constant fullscreen_draw"
+}
+{
+  name = draw_overlay
+  material = ui_material
+  geometry = ui_geometry
+  command = "draw_ui ui_vertices ui_indices ui_commands"
+  sets = [ camera_data, ui_textures ]
+  push_constants = [ ui_push ]
+  blending = { final_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
+}
+{ name = present_scene, command = "blit final_color swapchain_image" }

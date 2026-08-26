@@ -1,0 +1,43 @@
+#ifndef DEVILS_ENGINE_PF07_SKY_VIEW_H
+#define DEVILS_ENGINE_PF07_SKY_VIEW_H
+
+// Оконный слой среза 2: показывает небо, посчитанное из той же небесной механики, что и headless-отчёты.
+// Отделён от `main.cpp`, чтобы командные режимы среза 1 не тянули за собой Vulkan.
+
+#include <cstdint>
+#include <string>
+
+#include "celestial.h"
+#include "sky_frame.h"
+
+namespace devils_engine::pf07 {
+
+struct view_options {
+  uint32_t width = 1280;
+  uint32_t height = 720;
+  bool validation = false;
+  bool uncapped = false;
+  uint32_t frames = 0;              // ноль — до закрытия окна
+  std::string dump_path;            // непустой путь дампит кадр перед выходом
+  double start_time_days = 0.0;
+  // Игровых суток за реальную секунду. Значение по умолчанию совпадает с темпом, от которого посчитан
+  // бюджет событий: одна игровая минута за реальную секунду, то есть сутки за двадцать четыре минуты.
+  // Прежние 0.02 давали сутки за пятьдесят СЕКУНД — отсюда и вертолётное вращение неба.
+  double time_scale = 1.0 / 1440.0;
+  bool paused = false;
+  // Фиксированное наведение камеры для повторяемых дампов: сравнивать состояния можно только из
+  // одной и той же точки зрения, а мышь для этого не годится.
+  bool fixed_look = false;
+  double look_azimuth_deg = 0.0;    // от севера через восток
+  double look_altitude_deg = 10.0;
+
+  atmosphere_settings atmosphere;
+  march_settings march;
+  output_settings output;
+};
+
+int run_sky_view(const celestial_system& system, const view_options& options);
+
+} // namespace devils_engine::pf07
+
+#endif
