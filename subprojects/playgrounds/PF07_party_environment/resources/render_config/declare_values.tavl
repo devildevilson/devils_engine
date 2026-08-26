@@ -20,3 +20,13 @@
 { name = ui_vertices_bytes, type = fixed, value = [524288, 0, 0] }
 { name = ui_indices_bytes, type = fixed, value = [131072, 0, 0] }
 { name = ui_commands_bytes, type = fixed, value = [16384, 0, 0] }
+// Бюджет опорной геометрии среза 4. Настоящий ландшафт придёт срезом 5 и попросит совсем других
+// чисел, поэтому запас здесь скромный и намеренно тесный.
+// Две пары в группе: кастеры-коробки и диск земли. Бюджет инстансов общий на обе, поэтому в нём
+// лежит запас коробок ПЛЮС единственный инстанс земли.
+{ name = scene_instances, type = fixed, value = [80, 0, 0] }
+{ name = scene_draws, type = fixed, value = [80, 0, 0] }
+// Атлас каскадов: три тайла по 1024 в ряд и два ряда — по одному ряду на теневой источник.
+{ name = shadow_atlas_size, type = fixed_2d, value = [3072, 2048, 1] }
+{ name = cascade_records, type = fixed, value = [6, 0, 0] }
+{ name = shadow_region_bytes, type = fixed, value = [1024, 0, 0] }

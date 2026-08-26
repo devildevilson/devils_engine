@@ -1,2 +1,5 @@
 { name = linear_sampler, filter = linear, address = clamp }
 { name = nearest_sampler, filter = nearest, address = clamp }
+// Сравнивающий сэмплер: шейдер объявляет sampler2DShadow и получает на выборку билинейную ДОЛЮ
+// текселей, прошедших сравнение. Глубина обратная, поэтому видимость = (приёмник >= записанного).
+{ name = shadow_compare, filter = linear, address = clamp, compare = greater_or_equal }

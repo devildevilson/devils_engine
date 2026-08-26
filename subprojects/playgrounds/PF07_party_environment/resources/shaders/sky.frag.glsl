@@ -171,21 +171,23 @@ void main() {
   const float camera_height = sky_data.sky.march_params.x;
   const int moon_count = int(sky_data.sky.march_params.w);
 
-  const vec3 origin = vec3(0.0, planet_radius + camera_height, 0.0);
-  const float ground_distance = pf07_sphere_hit(origin, view_direction, planet_radius);
+  // Начало луча берёт и ГОРИЗОНТАЛЬНОЕ положение камеры. Для самого неба оно безразлично — сдвиг на
+  // десяток метров по шеститысячекилометровой сфере не меняет ничего, — но точка попадания в землю
+  // обязана совпадать с тем местом, где стоит геометрия, иначе тени на земле уедут от предметов.
+  const vec3 origin = vec3(camera_data.camera_position.x * 0.001, planet_radius + camera_height,
+                           camera_data.camera_position.z * 0.001);
+  const float ground_distance = pf07_ground_hit(origin, view_direction, planet_radius, camera_height);
 
+  // Луч, уходящий в землю, небом больше не занимается вовсе: поверхность стала ГЕОМЕТРИЕЙ и рисуется
+  // отдельным проходом, который перекроет эти пиксели по глубине. Здесь остаётся один тест — чтобы не
+  // рисовать под горизонтом диски и звёзды.
+  //
+  // Убрано отсюда было не украшение, а весь расчёт освещения поверхности вместе с чтением карты теней.
+  // Ветка эта исполнялась не всегда, но платили за неё всегда: код теней поднимал расход регистров
+  // целого шейдера, и кадр без земли в поле зрения стоил 6.9 мс вместо 4.9.
   vec3 in_scattering = vec3(0.0);
-  vec3 transmittance = vec3(1.0);
-
-  if (ground_distance > 0.0) {
-    // Воздух между камерой и поверхностью берётся из объёмной таблицы: одна выборка вместо марша на
-    // каждый пиксель земли. Ось расстояния квадратичная, поэтому координата среза — корень из доли.
-    const float max_range = sky_data.sky.march_params.z;
-    const float slice = sqrt(clamp(ground_distance / max(max_range, 1e-6), 0.0, 1.0));
-    const vec4 aerial = texture(aerial_lut, vec3(in_uv, slice));
-    in_scattering = aerial.rgb;
-    transmittance = vec3(aerial.a);
-  } else {
+  vec3 transmittance = vec3(0.0);
+  if (ground_distance <= 0.0) {
     // Небо целиком приходит из таблицы: одна выборка вместо тридцати двух шагов марша на пиксель.
     const vec2 sky_view_size = vec2(textureSize(sky_view_lut, 0));
     const vec4 sampled = texture(sky_view_lut, pf07_sky_view_uv(view_direction, sky_view_size));
@@ -195,55 +197,7 @@ void main() {
 
   vec3 color = in_scattering;
 
-  if (ground_distance > 0.0) {
-    // Поверхность нужна не ради самой поверхности, а ради честного горизонта: без неё небо снизу
-    // выглядит как продолжение зенита, и закат нечем ограничить.
-    const vec3 ground_point = origin + view_direction * ground_distance;
-    const vec3 normal = normalize(ground_point);
-    const float albedo = sky_data.sky.output_params.z;
-
-    vec3 ground_light = vec3(0.0);
-    for (int s = 0; s < PF07_STAR_COUNT; ++s) {
-      const vec3 light_direction = sky_data.sky.star_direction[s].xyz;
-      const float illuminance = sky_data.sky.star_color_illuminance[s].w;
-      if (illuminance <= 0.0) continue;
-
-      const float cosine = max(dot(normal, light_direction), 0.0);
-      if (cosine <= 0.0) continue;
-
-      const vec3 light_transmittance = pf07_transmittance_to_light(sky_data.sky, transmittance_lut, ground_point, light_direction);
-      ground_light += light_transmittance * sky_data.sky.star_color_illuminance[s].rgb * illuminance * cosine;
-    }
-
-    // Луны освещают землю наравне со светилами. Без этого ночь без светил становится абсолютно
-    // чёрной, и граница неба и земли пропадает даже при полной луне над головой.
-    for (int m = 0; m < moon_count && m < PF07_MOON_CAPACITY; ++m) {
-      const vec3 light_direction = sky_data.sky.moon_direction[m].xyz;
-      const float illuminance = sky_data.sky.moon_color_illuminance[m].w;
-      if (illuminance <= 0.0) continue;
-
-      const float cosine = max(dot(normal, light_direction), 0.0);
-      if (cosine <= 0.0) continue;
-
-      ground_light += sky_data.sky.moon_color_illuminance[m].rgb * illuminance * cosine;
-    }
-    // Свет НЕБА на землю. Его не было вовсе: поверхность освещалась только прямым лучом, и потому
-    // выглядела вырезанной из другой картинки — в тени от неё не оставалось ничего, а лунная подсветка
-    // не читалась. Полный интеграл яркости неба по полусфере здесь не нужен: небо уже посчитано в
-    // таблице, и пяти выборок хватает, чтобы оценить его среднюю яркость, а освещённость горизонтальной
-    // площадки от полусферы такой яркости равна pi * L.
-    const vec2 sky_view_size = vec2(textureSize(sky_view_lut, 0));
-    const vec3 sky_up = vec3(0.0, 1.0, 0.0);
-    vec3 sky_average = texture(sky_view_lut, pf07_sky_view_uv(sky_up, sky_view_size)).rgb;
-    sky_average += texture(sky_view_lut, pf07_sky_view_uv(normalize(vec3(1.0, 1.0, 0.0)), sky_view_size)).rgb;
-    sky_average += texture(sky_view_lut, pf07_sky_view_uv(normalize(vec3(-1.0, 1.0, 0.0)), sky_view_size)).rgb;
-    sky_average += texture(sky_view_lut, pf07_sky_view_uv(normalize(vec3(0.0, 1.0, 1.0)), sky_view_size)).rgb;
-    sky_average += texture(sky_view_lut, pf07_sky_view_uv(normalize(vec3(0.0, 1.0, -1.0)), sky_view_size)).rgb;
-    sky_average /= 5.0;
-    ground_light += sky_average * pi;
-
-    color += transmittance * ground_light * albedo / pi;
-  } else {
+  if (ground_distance <= 0.0) {
     // Диски светил и лун рисуются только там, где луч уходит в космос. Яркость диска — освещённость,
     // распределённая по его телесному углу, поэтому диск остаётся физически согласован с тем светом,
     // которым он же освещает сцену.

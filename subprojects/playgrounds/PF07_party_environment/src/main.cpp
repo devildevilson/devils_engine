@@ -82,6 +82,8 @@ void print_usage() {
                "  --star-density=F --star-brightness=F  звёздное поле\n"
                "  --adaptation=F      полнота адаптации экспозиции (1 = всё средне-серое, 0 = фикс)\n"
                "  --trace-exposure    покадровая печать экспозиции: цель, текущая, отставание\n"
+               "  --shadow-far=M      дальность каскадов теней в метрах\n"
+               "  --shadow-sources=N  сколько светил отбрасывают тени (0..2), для сравнения кадров\n"
                "  --galaxy=F          сила сгущения звёзд в галактической полосе\n"
                "  --star-rotation=F   доля физической скорости вращения неба (1 — честная, 0 — статика)\n";
 }
@@ -143,6 +145,10 @@ bool parse_options(const int argc, char** argv, options& out) {
     } else if (read_prefixed(argument, "--ev=", value)) {
       out.view.exposure.manual_ev100 = std::stod(value);
       out.view.exposure.manual = true;
+    } else if (read_prefixed(argument, "--shadow-sources=", value)) {
+      out.view.shadow_sources = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--shadow-far=", value)) {
+      out.view.shadow_far_m = std::stod(value);
     } else if (argument == "--trace-exposure") {
       out.view.trace_exposure = true;
     } else if (read_prefixed(argument, "--adaptation=", value)) {

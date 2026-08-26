@@ -3,6 +3,18 @@
   startup = true
   passes = [
     {
+      // Карта теней. Все каскады обоих источников рисуются ОДНИМ проходом: команда региона несёт свой
+      // viewport и индекс каскада, поэтому шесть карт стоят одного прохода, а не шести.
+      name = pf07_shadow
+      render_target = shadow_target
+      subpasses = [
+        { shadow_atlas = (undefined, clear) },
+        { shadow_atlas = (depth_attachment, store) },
+        { shadow_atlas = (depth_read, store) }
+      ]
+      steps = [ draw_shadow_cascades ]
+    },
+    {
       // Таблица прохождения зависит только от параметров среды, поэтому пересчитывается один раз за
       // кадр и стоит копейки: 256x64 отсчёта против двух миллионов пикселей кадра.
       name = pf07_transmittance
@@ -48,11 +60,24 @@
       name = pf07_sky
       render_target = sky_target
       subpasses = [
-        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), sky_color = (undefined, clear) },
-        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), sky_color = (color_attachment, store) },
-        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), sky_color = (sampled, store) }
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (undefined, clear) },
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store) },
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store) }
       ]
       steps = [ draw_sky ]
+    },
+    {
+      // Опорная геометрия. Идёт ПОСЛЕ неба и в тот же образ: небо уже залило кадр целиком, включая
+      // аналитическую поверхность планеты, и предметы просто дорисовываются поверх. Глубина нужна не
+      // против неба — оно заведомо дальше всего, — а против самих предметов.
+      name = pf07_scene
+      render_target = scene_target
+      subpasses = [
+        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store), scene_depth = (undefined, clear) },
+        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store), scene_depth = (depth_attachment, store) },
+        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (sampled, store), scene_depth = (depth_read, store) }
+      ]
+      steps = [ draw_scene ]
     },
     {
       // Замер экспозиции. Стоит ПОСЛЕ неба и ДО вывода, потому что читает физическую яркость сцены,

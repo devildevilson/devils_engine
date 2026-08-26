@@ -1,0 +1,55 @@
+#version 450
+
+#include "pf07_surface.glsl"
+
+// Затенение предметов сцены. Физически это ровно то же, что и земля: ламбертова поверхность в том же
+// свете, поэтому весь расчёт освещённости живёт в общем `pf07_surface.glsl`, а здесь остаётся только
+// альбедо и воздух между предметом и глазом.
+//
+// Воздушная перспектива обязательна и не является украшением. Небо у нас физическое и на километре
+// заметно синеет; предмет, нарисованный без этого слагаемого, окажется контрастнее и теплее фона на
+// том же расстоянии и будет читаться наклеенным поверх кадра — та самая болезнь, из-за которой земля
+// когда-то выглядела вырезанной из другой картинки.
+
+layout(location = 0) in vec3 in_world_position;
+layout(location = 1) in vec3 in_world_normal;
+layout(location = 2) in vec3 in_albedo;
+layout(location = 0) out vec4 out_color;
+
+layout(set = 0, binding = 0, std140) uniform CameraBlock {
+  mat4 view_projection;
+  mat4 view;
+  vec4 camera_position;
+  vec4 viewport_near;
+} camera_data;
+
+layout(set = 2, binding = 0, std140) uniform SkyBlock {
+  pf07_sky_block sky;
+} sky_data;
+
+layout(set = 2, binding = 1) uniform sampler2D transmittance_lut;
+layout(set = 2, binding = 2) uniform sampler2D sky_view_lut;
+layout(set = 2, binding = 3) uniform sampler3D aerial_lut;
+
+void main() {
+  const vec3 normal = normalize(in_world_normal);
+  const vec3 planet_point = pf07_scene_to_planet(sky_data.sky, in_world_position);
+
+  const float view_distance = length(in_world_position - camera_data.camera_position.xyz);
+  const vec3 illuminance =
+    pf07_surface_illuminance(sky_data.sky, transmittance_lut, sky_view_lut, planet_point,
+                             in_world_position, normal, view_distance);
+  vec3 color = illuminance * in_albedo / pf07_pi;
+
+  // Воздух между предметом и глазом. Ось расстояния таблицы квадратичная, поэтому и выборка идёт по
+  // корню: у камеры срезы густые, вдали редкие.
+  const float max_range = sky_data.sky.march_params.z;
+  const float distance_km = view_distance * 0.001;
+  const float slice = sqrt(clamp(distance_km / max(max_range, 1e-6), 0.0, 1.0));
+  const vec2 screen_uv = gl_FragCoord.xy / max(camera_data.viewport_near.xy, vec2(1.0));
+  const vec4 aerial = texture(aerial_lut, vec3(screen_uv, slice));
+  color = color * aerial.a + aerial.rgb;
+
+  const float half_float_ceiling = 60000.0;
+  out_color = vec4(min(color, vec3(half_float_ceiling)), 1.0);
+}

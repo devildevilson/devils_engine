@@ -26,7 +26,7 @@
   name = draw_sky
   material = sky_material
   geometry = fullscreen_geometry
-  sets = [ sky_data ]
+  sets = [ sky_data, shadow_sample ]
   command = "draw constant fullscreen_draw"
 }
 {
@@ -51,4 +51,21 @@
   material = meter_material
   sets = [ meter_write ]
   command = "dispatch constant meter_dispatch"
+}
+{
+  name = draw_scene
+  material = scene_material
+  geometry = scene_geometry
+  draw_group = scene_draw_group
+  sets = [ camera_data, shadow_sample, scene_lighting ]
+  command = "draw"
+}
+{
+  name = draw_shadow_cascades
+  material = shadow_material
+  geometry = scene_geometry
+  draw_group = scene_draw_group
+  sets = [ shadow_write ]
+  push_constants = [ region_index_push ]
+  command = "draw_regions cascade_buffer shadow_region_commands"
 }

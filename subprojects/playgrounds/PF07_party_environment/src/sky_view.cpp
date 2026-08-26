@@ -1,5 +1,8 @@
 #include "sky_view.h"
 
+#include "fixture.h"
+#include "shadows.h"
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -20,6 +23,8 @@
 #include "devils_engine/input/core.h"
 #include "devils_engine/input/events.h"
 #include "devils_engine/painter/assets_base.h"
+#include "devils_engine/painter/atlas_layout.h"
+#include "devils_engine/painter/region_draw.h"
 #include "devils_engine/painter/auxiliary.h"
 #include "devils_engine/painter/gpu_timing.h"
 #include "devils_engine/painter/graphics_base.h"
@@ -197,6 +202,93 @@ void write_current_buffer(painter::graphics_base& base, const std::string_view n
     utils::error{}("PF07 cannot write '{}' (capacity {}, requested {})", name, frame.sub.size, bytes);
   }
   if (bytes != 0) std::memcpy(static_cast<uint8_t*>(frame.mapped) + frame.sub.offset, data, bytes);
+}
+
+// Инстансы опорной геометрии пишутся во ВСЕ копии кадра сразу и один раз: фикстура статична, а
+// копий у ресурса столько же, сколько кадров в полёте, и незаполненная копия дала бы мигание раз в
+// два-три кадра.
+void write_fixture(painter::graphics_base& base, const uint32_t pair,
+                   const std::span<const scene_instance> instances, const uint32_t vertex_count) {
+  for (uint32_t offset = 0; offset < base.frames_in_flight(); ++offset) {
+    const auto instance_frame = base.get_current_instance_resource_frame(pair, offset);
+    const auto indirect_frame = base.get_current_indirect_resource_frame(pair, offset);
+    if (instances.size_bytes() > instance_frame.sub.size) {
+      utils::error{}("PF07 fixture instance budget exceeded ({} bytes, capacity {})",
+                     instances.size_bytes(), instance_frame.sub.size);
+    }
+    std::memcpy(static_cast<uint8_t*>(instance_frame.mapped) + instance_frame.sub.offset, instances.data(),
+                instances.size_bytes());
+    const VkDrawIndirectCommand command{vertex_count, uint32_t(instances.size()), 0, 0};
+    std::memcpy(static_cast<uint8_t*>(indirect_frame.mapped) + indirect_frame.sub.offset, &command,
+                sizeof(command));
+  }
+}
+
+// Инстанс, меняющийся каждый кадр, пишется только в ТЕКУЩУЮ копию: остальные принадлежат кадрам,
+// которые ещё в полёте, и трогать их значит менять уже отданную видеокарте работу.
+void write_pair_current(painter::graphics_base& base, const uint32_t pair,
+                        const std::span<const scene_instance> instances, const uint32_t vertex_count) {
+  const auto instance_frame = base.get_current_instance_resource_frame(pair, 0);
+  const auto indirect_frame = base.get_current_indirect_resource_frame(pair, 0);
+  if (instances.size_bytes() > instance_frame.sub.size) {
+    utils::error{}("PF07 pair {} instance budget exceeded", pair);
+  }
+  std::memcpy(static_cast<uint8_t*>(instance_frame.mapped) + instance_frame.sub.offset, instances.data(),
+              instances.size_bytes());
+  const VkDrawIndirectCommand command{vertex_count, uint32_t(instances.size()), 0, 0};
+  std::memcpy(static_cast<uint8_t*>(indirect_frame.mapped) + indirect_frame.sub.offset, &command,
+              sizeof(command));
+}
+
+// Команды регионов: по одной на каскад. Каждая несёт свой viewport в атласе и индекс записи каскада,
+// поэтому шесть карт рисуются ОДНИМ проходом, а не шестью, и порядок здесь — это просто порядок
+// записей в буфере, а не знание шейдера о раскладке атласа.
+void write_shadow_regions(painter::graphics_base& base, const uint32_t pair, const uint32_t instance_count,
+                          const std::span<const painter::atlas_region> regions,
+                          const std::span<const bool> slot_active) {
+  const uint32_t region_count = uint32_t(regions.size());
+  std::array<uint8_t, 1024> bytes{};
+  const size_t needed = painter::region_draw_buffer_size(region_count, region_count);
+  if (needed > bytes.size()) utils::error{}("PF07 shadow region buffer too small ({} bytes)", needed);
+
+  painter::region_draw_header header{};
+  header.region_count = region_count;
+  header.span_count = region_count;
+  header.region_stride = sizeof(painter::region_draw_command);
+  header.span_stride = sizeof(painter::region_draw_span);
+  std::memcpy(bytes.data(), &header, sizeof(header));
+
+  size_t command_offset = sizeof(header);
+  size_t span_offset = command_offset + size_t(region_count) * sizeof(painter::region_draw_command);
+  for (uint32_t index = 0; index < region_count; ++index) {
+    painter::region_draw_command command{};
+    command.viewport_x = float(regions[index].x);
+    command.viewport_y = float(regions[index].y);
+    command.viewport_width = float(regions[index].size);
+    command.viewport_height = float(regions[index].size);
+    command.min_depth = 0.0f;
+    command.max_depth = 1.0f;
+    command.scissor_x = int32_t(regions[index].x);
+    command.scissor_y = int32_t(regions[index].y);
+    command.scissor_width = regions[index].size;
+    command.scissor_height = regions[index].size;
+    command.data_index = index;
+    command.first_span = index;
+    command.span_count = 1;
+    std::memcpy(bytes.data() + command_offset, &command, sizeof(command));
+    command_offset += sizeof(command);
+
+    // Пустой слот не рисует ничего: ноль инстансов вместо шести лишних проходов по тайлу. Сам тайл
+    // при этом остаётся очищенным, а сила источника в записи каскада равна нулю, поэтому читать его
+    // никто и не станет.
+    painter::region_draw_span span{};
+    span.pair_index = pair;
+    span.first_instance = 0;
+    span.instance_count = slot_active[index / cascade_count] ? instance_count : 0u;
+    std::memcpy(bytes.data() + span_offset, &span, sizeof(span));
+    span_offset += sizeof(span);
+  }
+  write_current_buffer(base, "shadow_region_commands", bytes.data(), needed);
 }
 
 void write_overlay_buffers(painter::graphics_base& base, const playground::visage_overlay& overlay) {
@@ -504,6 +596,61 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     assets.set_graphics_base(&base);
     assets.create_default_texture();
 
+    // Опорная геометрия среза 4. Меш ровно один — единичный куб; всё остальное делает инстанс.
+    const auto cube = make_unit_cube();
+    const auto cube_mesh = assets.register_buffer_storage("pf07.unit_cube");
+    assets.create_buffer_storage(cube_mesh,
+                                 painter::buffer_create_info{"scene_geometry", uint32_t(cube.size()), 0});
+    assets.populate_buffer_storage(
+      cube_mesh, std::span(reinterpret_cast<const uint8_t*>(cube.data()), cube.size() * sizeof(cube[0])),
+      std::span<const uint8_t>{});
+    assets.mark_ready_buffer_slot(cube_mesh);
+
+    const auto scene_group = base.find_draw_group("scene_draw_group");
+    // Резерв пары считается в ИНСТАНСАХ и занимает место в буфере отрисовок под каждый из них, поэтому
+    // просить с запасом здесь не бесплатно: соседняя пара сдвигается ровно на этот резерв. Фикстуре
+    // хватает тридцати двух при двенадцати используемых.
+    const uint32_t scene_pair = base.register_pair(scene_group, cube_mesh, 32);
+    const auto fixture = make_fixture_instances();
+    write_fixture(base, scene_pair, fixture, uint32_t(cube.size()));
+
+    // Земля — вторая пара в той же группе отрисовки. Проход рисует ВСЕ пары группы, поэтому диск
+    // попадает в кадр сам; а в проход теней он не попадает, потому что там пролёты заданы явно и
+    // ссылаются только на пару кастеров. Земля обязана тени принимать, но отбрасывать ей нечего.
+    const auto ground = make_ground_disc(options.ground_radius_m, system.config().planet.radius_km * 1000.0,
+                                         ground_ring_count, ground_segment_count);
+    const auto ground_mesh = assets.register_buffer_storage("pf07.ground_disc");
+    assets.create_buffer_storage(ground_mesh,
+                                 painter::buffer_create_info{"scene_geometry", uint32_t(ground.size()), 0});
+    assets.populate_buffer_storage(
+      ground_mesh, std::span(reinterpret_cast<const uint8_t*>(ground.data()), ground.size() * sizeof(ground[0])),
+      std::span<const uint8_t>{});
+    assets.mark_ready_buffer_slot(ground_mesh);
+    const uint32_t ground_pair = base.register_pair(scene_group, ground_mesh, 1);
+    utils::info("PF07 ground disc: radius {:.0f} m, {} vertices", options.ground_radius_m, ground.size());
+
+    // Раскладка атласа теней считается ОДИН раз: размеры тайлов постоянны, а укладка детерминирована,
+    // поэтому пересчитывать её каждый кадр значило бы каждый кадр получать тот же ответ.
+    std::array<painter::atlas_region, cascade_total> shadow_regions{};
+    uint32_t shadow_atlas_width = 0;
+    uint32_t shadow_atlas_height = 0;
+    {
+      std::array<uint32_t, cascade_total> sizes{};
+      sizes.fill(cascade_tile_size);
+      // Размер атласа читается из ОБЪЯВЛЕНИЯ, а не повторяется здесь константой: разойдись эти два
+      // числа, укладка молча съехала бы, и каскады читались бы из чужих тайлов.
+      const uint32_t size_index = base.find_constant_value("shadow_atlas_size");
+      if (size_index == UINT32_MAX) utils::error{}("PF07 value 'shadow_atlas_size' is absent");
+      const auto [atlas_width, atlas_height, unused_depth] =
+        base.constant_values[size_index].current_value;
+      if (!painter::allocate_atlas_regions(atlas_width, atlas_height, sizes, shadow_regions)) {
+        utils::error{}("PF07 shadow atlas {}x{} cannot hold {} tiles of {}", atlas_width, atlas_height,
+                       cascade_total, cascade_tile_size);
+      }
+      shadow_atlas_width = atlas_width;
+      shadow_atlas_height = atlas_height;
+    }
+
     const std::string common_resources = std::string(PLAYGROUND_COMMON_RESOURCE_ROOT) + "/";
     playground::visage_overlay overlay(
       common_resources + "fonts/crimson.roman.ttf", resource_root + "ui/pf07_controls.lua",
@@ -542,7 +689,11 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
 
     playground::free_camera camera;
     // Камера смотрит чуть выше горизонта: срез 2 показывает небо, а не землю.
-    camera.position = {0.0f, 0.0f, 0.0f};
+    // Глаз стоит НАД сценой, а не в её плоскости. Пока камера была в нуле, атмосфера считала
+    // наблюдателя на двух метрах, а геометрия рисовалась с уровня земли: основания предметов ложились
+    // ровно на линию горизонта, и всё выглядело стоящим бесконечно далеко. Сцена в метрах, высота
+    // атмосферы в километрах — отсюда и множитель.
+    camera.position = {0.0f, float(options.march.camera_height_km * 1000.0), 0.0f};
     if (options.fixed_look) {
       // Азимут отсчитывается от севера через восток, мир имеет X на восток и Z на юг, поэтому
       // направление взгляда равно (sin A, tan h, -cos A) до нормировки, а yaw камеры — его угол в
@@ -673,6 +824,32 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
         glm::vec4(float(pending_width), float(pending_height), near_plane, std::tan(vertical_fov * 0.5f))};
       write_current_buffer(base, "camera_buffer", &camera_data, sizeof(camera_data));
 
+      // Диск земли следует за камерой по горизонтали. Для сферы это точно, а не приближённо:
+      // наблюдатель всегда стоит на её вершине, и «вершина» — это ровно то место, где он стоит.
+      const std::array<scene_instance, 1> ground_instance{make_ground_instance(
+        camera.position.x, camera.position.z, glm::vec3(float(options.atmosphere.ground_albedo)))};
+      write_pair_current(base, ground_pair, ground_instance, uint32_t(ground.size()));
+
+      // Теневые источники выбираются КАЖДЫЙ кадр по яркости, а не назначаются раз и навсегда. Днём
+      // это обе звезды, в сумерках может оказаться компаньон и луна, ночью — две луны. Одно правило
+      // вместо трёх режимов; передача главенства получается сама, потому что вклад каждого источника
+      // умножается на его долю света, и перестановка тел между слотами ничего не меняет.
+      const auto shadow_sources = select_shadow_sources(state);
+      std::array<cascade_record, cascade_total> cascades{};
+      std::array<bool, shadow_source_count> slot_active{};
+      for (uint32_t slot = 0; slot < shadow_source_count; ++slot) {
+        slot_active[slot] = slot < options.shadow_sources && shadow_sources[slot].active &&
+                            shadow_sources[slot].strength > 0.0;
+        if (!slot_active[slot]) continue;
+        build_cascades(shadow_sources[slot], camera, aspect, vertical_fov, near_plane,
+                       float(options.shadow_far_m),
+                       std::span(shadow_regions).subspan(slot * cascade_count, cascade_count),
+                       shadow_atlas_width, shadow_atlas_height,
+                       std::span(cascades).subspan(slot * cascade_count, cascade_count));
+      }
+      write_current_buffer(base, "cascade_buffer", cascades.data(), sizeof(cascades));
+      write_shadow_regions(base, scene_pair, uint32_t(fixture.size()), shadow_regions, slot_active);
+
       // Экспозиция догоняет цель по-разному вверх и вниз. Постоянные заданы в реальных секундах, а не
       // в игровых: привыкает глаз игрока, а не планета.
       // Замер учитывает и прямой свет, и рассеянный. Второе слагаемое решающее в сумерках: прямого
@@ -720,8 +897,14 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       const double star_time =
         options.start_time_days + (game_time_days - options.start_time_days) * output.star_rotation_scale;
       const auto star_frame = system.evaluate(star_time);
-      const auto sky_block = pack_sky_block(state, star_frame, options.atmosphere, options.march, output,
-                                            system.config().planet.radius_km, system.config().moons);
+      // Высота наблюдателя для атмосферы берётся из КАМЕРЫ, а не из настройки: поднявшись, игрок
+      // обязан увидеть, как отодвигается горизонт. Настройка задаёт только начальное положение.
+      auto march = options.march;
+      march.camera_height_km = double(camera.position.y) * 0.001;
+      auto sky_block = pack_sky_block(state, star_frame, options.atmosphere, march, output,
+                                      system.config().planet.radius_km, system.config().moons);
+      sky_block.shadow_bodies = glm::vec4(slot_active[0] ? shadow_sources[0].body_code : -1.0f,
+                                          slot_active[1] ? shadow_sources[1].body_code : -1.0f, 0.0f, 0.0f);
       write_current_buffer(base, "sky_buffer", &sky_block, sizeof(sky_block));
 
       const double day_fraction = game_time_days - std::floor(game_time_days);

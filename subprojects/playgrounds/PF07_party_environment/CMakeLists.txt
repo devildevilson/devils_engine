@@ -7,6 +7,8 @@ add_executable(PF07_party_environment
   src/celestial.cpp src/celestial.h
   src/survey.cpp src/survey.h
   src/sky_frame.cpp src/sky_frame.h
+  src/fixture.cpp src/fixture.h
+  src/shadows.cpp src/shadows.h
   src/sky_view.cpp src/sky_view.h
 )
 target_link_libraries(PF07_party_environment PRIVATE

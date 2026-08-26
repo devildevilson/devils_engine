@@ -63,18 +63,39 @@ float pf07_disc_solid_angle(const float angular_radius) {
   return 4.0 * pf07_pi * half_sine * half_sine;
 }
 
-// Ближайшее положительное пересечение луча со сферой радиуса radius с центром в начале координат.
-float pf07_sphere_hit(const vec3 origin, const vec3 direction, const float radius) {
+// Ближайшее положительное пересечение луча со сферой, по УСТОЙЧИВОЙ формуле корней.
+//
+// Наивное `-b - sqrt(b*b - c)` для почти касательного луча вычитает два почти равных числа: у земли с
+// высоты двух метров b около 637, корень отличается от него в пятом знаке, и разность в двадцать
+// метров получается с точностью в сорок. Тень на земле от этого рвётся в клочья по краю.
+//
+// Устойчивая форма считает один корень напрямую, а второй — через произведение корней, равное c.
+// Никакого вычитания близких величин в ней нет вовсе.
+float pf07_sphere_hit_offset(const vec3 origin, const vec3 direction, const float c) {
   const float b = dot(origin, direction);
-  const float c = dot(origin, origin) - radius * radius;
   const float discriminant = b * b - c;
   if (discriminant < 0.0) return -1.0;
 
   const float root = sqrt(discriminant);
-  const float near_hit = -b - root;
-  const float far_hit = -b + root;
+  const float q = b > 0.0 ? -(b + root) : -(b - root);
+  const float first = q;
+  const float second = abs(q) > 1e-20 ? c / q : q;
+  const float near_hit = min(first, second);
+  const float far_hit = max(first, second);
   if (near_hit >= 0.0) return near_hit;
   return far_hit >= 0.0 ? far_hit : -1.0;
+}
+
+float pf07_sphere_hit(const vec3 origin, const vec3 direction, const float radius) {
+  return pf07_sphere_hit_offset(origin, direction, dot(origin, origin) - radius * radius);
+}
+
+// Пересечение с ПОВЕРХНОСТЬЮ планеты. Свободный член считается через высоту наблюдателя, а не как
+// разность квадратов: `|o|² - r²` при высоте в два метра даёт 25.5 км² из величины порядка 4·10⁷,
+// где младший разряд float равен 4.8 — то есть ошибку в девятнадцать процентов на пустом месте.
+// Тождество `(|o| - r)(|o| + r) = h(2r + h)` даёт то же число точно.
+float pf07_ground_hit(const vec3 origin, const vec3 direction, const float radius, const float height) {
+  return pf07_sphere_hit_offset(origin, direction, height * (2.0 * radius + height));
 }
 
 // Доля света, доходящая от точки до светила: одна выборка вместо вложенного марша.

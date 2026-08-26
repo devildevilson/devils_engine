@@ -64,3 +64,23 @@
     { resource = exposure_meter, usage = storage_write, stage = compute }
   ]
 }
+{
+  name = scene_lighting
+  layout = [
+    { resource = sky_buffer, usage = uniform, stage = fragment },
+    { resource = transmittance_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = sky_view_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = aerial_lut, usage = sampled, stage = fragment, sampler = linear_sampler }
+  ]
+}
+{
+  name = shadow_write
+  layout = [ { resource = cascade_buffer, usage = storage_read, stage = all } ]
+}
+{
+  name = shadow_sample
+  layout = [
+    { resource = cascade_buffer, usage = storage_read, stage = fragment },
+    { resource = shadow_atlas, usage = depth_read, sampler = shadow_compare, stage = fragment }
+  ]
+}

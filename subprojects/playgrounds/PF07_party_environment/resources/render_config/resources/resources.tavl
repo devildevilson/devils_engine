@@ -23,7 +23,7 @@
 // Небесная обстановка кадра: два светила, четыре луны, параметры атмосферы и вывода.
 {
   name = sky_buffer
-  format = v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4
+  format = v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4
   role = upload
   size = one
   swap = per_frame
@@ -36,3 +36,11 @@
 // видеокарта заполняла на кадре N минус глубина буферизации, и та давно готова. Задержка в пару кадров
 // для экспозиции невидима — адаптация всё равно размазана на секунды.
 { name = exposure_meter, format = v4, role = readback, size = one, swap = per_frame }
+// Глубина сцены. До среза 4 её не было вовсе: кадр состоял из полноэкранных проходов, где порядок
+// задан графом, а не расстоянием. Предметы обязаны разбираться между собой сами.
+{ name = scene_depth, format = d32, role = depth, size = viewport, swap = per_frame }
+// Карта теней двух источников. Один образ на всё: раскладка передаётся данными, поэтому число
+// каскадов и число источников меняются без правки шейдера.
+{ name = shadow_atlas, format = d32, role = shadow_map, size = shadow_atlas_size, swap = per_frame }
+{ name = cascade_buffer, format = mat4v4v4v4, role = upload, size = cascade_records, swap = per_frame }
+{ name = shadow_region_commands, format = c1, role = upload, size = shadow_region_bytes, swap = per_frame }

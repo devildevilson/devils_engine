@@ -42,8 +42,13 @@ struct alignas(16) sky_gpu_block {
   glm::vec4 grade_tint_saturation;
   // x — контраст, y — сила ночного зрения, zw — резерв.
   glm::vec4 grade_curve;
+  // Какие ТЕЛА получили каскады теней, кодом: 0..1 — звезда с этим индексом, 2+m — луна m,
+  // отрицательное — слот пуст. Без этого поля освещение и тени не нашли бы друг друга: система теней
+  // берёт два самых ярких источника на небе, кем бы они ни были, и в цикле по звёздам и лунам иначе
+  // нечем понять, чья это тень. x — первый слот, y — второй.
+  glm::vec4 shadow_bodies;
 };
-static_assert(sizeof(sky_gpu_block) == 416);
+static_assert(sizeof(sky_gpu_block) == 432);
 
 struct atmosphere_settings {
   double height_km = 100.0;         // верх атмосферы над поверхностью

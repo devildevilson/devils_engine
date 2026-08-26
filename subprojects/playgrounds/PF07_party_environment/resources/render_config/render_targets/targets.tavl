@@ -1,3 +1,5 @@
 { name = sky_target, resources = [ sky_color = color_attachment ] }
 { name = compose_target, resources = [ final_color = color_attachment ] }
 { name = ui_target, resources = [ final_color = color_attachment ] }
+{ name = scene_target, resources = [ sky_color = color_attachment, scene_depth = depth_attachment ] }
+{ name = shadow_target, resources = [ shadow_atlas = depth_attachment ] }
