@@ -32,6 +32,7 @@ layout(set = 2, binding = 0, std140) uniform SkyBlock {
 layout(location = 0) out vec3 out_world_position;
 layout(location = 1) out vec3 out_world_normal;
 layout(location = 2) out vec3 out_albedo;
+layout(location = 3) out vec2 out_foliage_height;
 
 void main() {
   vec3 local = in_position * in_half_roughness.xyz * 2.0;
@@ -56,5 +57,6 @@ void main() {
   out_world_position = world;
   out_world_normal = normal;
   out_albedo = in_albedo_yaw.rgb;
+  out_foliage_height = vec2(in_position_material.w, clamp(in_position.y, 0.0, 1.0));
   gl_Position = camera_data.view_projection * vec4(world, 1.0);
 }

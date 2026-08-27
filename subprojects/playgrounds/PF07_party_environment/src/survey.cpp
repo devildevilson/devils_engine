@@ -179,7 +179,7 @@ void print_seasons(const celestial_system& system, const survey_options& options
 }
 
 void print_binary_cycle(const celestial_system& system, const survey_options& options) {
-  std::cout << "\n== цикл двойной: как меняется день внутри одного оборота ==\n";
+  std::cout << "\n== оборот двойной: как меняется день внутри одного оборота ==\n";
   std::cout << "  день   разделение   вклад B   восход A  восход B  разрыв   закат A  закат B  разрыв   одно светило, ч\n";
 
   const double period = system.binary_period_days();
@@ -411,6 +411,7 @@ void print_event_budget(const celestial_system& system, const survey_options& op
   const double step_days = options.budget_step_minutes / minutes_per_day;
   const int32_t steps = static_cast<int32_t>(options.budget_span_days / step_days);
   const size_t moon_count = system.config().moons.size();
+  const double start_days = system.from_calendar(1, 0, 0.0);
 
   std::vector<event_counter> events;
   events.push_back({"взаимное затмение солнц"});
@@ -419,9 +420,10 @@ void print_event_budget(const celestial_system& system, const survey_options& op
   events.push_back({"покрытие луны луной"});
   events.push_back({"парад всех тел"});
   events.push_back({"луна закрывает оба солнца"});
+  event_counter unique_events{"уникальные наблюдаемые эпизоды"};
 
   for (int32_t i = 0; i <= steps; ++i) {
-    const auto state = system.evaluate(i * step_days);
+    const auto state = system.evaluate(start_days + i * step_days);
 
     bool mutual = false;
     bool by_moon = false;
@@ -433,7 +435,7 @@ void print_event_budget(const celestial_system& system, const survey_options& op
 
     for (size_t s = 0; s < state.stars.size(); ++s) {
       const auto& star = state.stars[s];
-      const bool visible = star.altitude_deg > 0.0 && star.occluded_fraction > options.min_star_occultation;
+      const bool visible = star.horizon_fraction > 0.0 && star.occluded_fraction > options.min_star_occultation;
       const bool by_star = star.occluder >= 0 && star.occluder < 2;
       if (visible && by_star) {
         mutual = true;
@@ -454,8 +456,9 @@ void print_event_budget(const celestial_system& system, const survey_options& op
 
     bool lunar = false;
     double lunar_depth = 0.0;
+    const bool night_visible = state.stars[0].horizon_fraction <= 0.0 && state.stars[1].horizon_fraction <= 0.0;
     for (const auto& moon : state.moons) {
-      if (moon.altitude_deg <= 0.0) continue;
+      if (!night_visible || moon.horizon_fraction <= 0.0) continue;
       if (moon.occluded_fraction <= options.min_lunar_eclipse) continue;
       lunar = true;
       lunar_depth = std::max(lunar_depth, moon.occluded_fraction);
@@ -470,7 +473,7 @@ void print_event_budget(const celestial_system& system, const survey_options& op
         const auto& near = state.moons[a];
         const auto& far = state.moons[b];
         if (near.distance_km >= far.distance_km) continue;
-        if (near.altitude_deg <= 0.0 || far.altitude_deg <= 0.0) continue;
+        if (near.horizon_fraction <= 0.0 || far.horizon_fraction <= 0.0) continue;
 
         const double separation = angle_between(near.direction, far.direction);
         const double fraction = disk_occluded_fraction(to_radians(separation), to_radians(far.angular_radius_deg),
@@ -507,32 +510,33 @@ void print_event_budget(const celestial_system& system, const survey_options& op
     events[3].update(moon_over_moon, moon_over_depth);
     events[4].update(all_visible && spread <= options.parade_threshold_deg, spread);
     events[5].update(both_at_once, both_depth);
+    const bool anything = mutual || by_moon || lunar || moon_over_moon || both_at_once ||
+                          (all_visible && spread <= options.parade_threshold_deg);
+    unique_events.update(anything, std::max({mutual_depth, by_moon_depth, lunar_depth, moon_over_depth}));
   }
 
   const double real_hours_per_game_day =
     minutes_per_day / options.game_minutes_per_real_second / 3600.0;
-  std::cout << std::format("  окно {:.0f} игровых суток ({:.1f} года), считаются только видимые над горизонтом события\n",
+  std::cout << std::format("  окно {:.0f} игровых суток ({:.1f} года) от г1 д0 00:00; только видимые события\n",
                            options.budget_span_days, options.budget_span_days / system.planet_year_days());
   std::cout << std::format("  темп времени: {:.0f} игровая минута за реальную секунду, то есть сутки за {:.1f} мин реального\n",
                            options.game_minutes_per_real_second, real_hours_per_game_day * 60.0);
-  std::cout << "  событие                        раз в, сут   реальных часов   сильнейшее\n";
+  std::cout << "  событие                       число  раз в, сут   реальных часов   сильнейшее\n";
 
-  double total_rate = 0.0;
   for (const auto& event : events) {
     if (event.count == 0) {
-      std::cout << std::format("  {:<30} {:>10}   {:>14}   {:>10}\n", event.name, "-", "-", "-");
+      std::cout << std::format("  {:<30} {:>5}  {:>10}   {:>14}   {:>10}\n", event.name, 0, "-", "-", "-");
       continue;
     }
     const double interval = options.budget_span_days / event.count;
-    total_rate += 1.0 / interval;
-    std::cout << std::format("  {:<30} {:10.0f}   {:14.1f}   {:10.3f}\n", event.name, interval,
+    std::cout << std::format("  {:<30} {:5}  {:10.0f}   {:14.1f}   {:10.3f}\n", event.name, event.count, interval,
                              interval * real_hours_per_game_day, event.strongest);
   }
 
-  if (total_rate > 0.0) {
-    const double aggregate = 1.0 / total_rate;
-    std::cout << std::format("  {:<30} {:10.0f}   {:14.1f}\n", "ИТОГО любое событие", aggregate,
-                             aggregate * real_hours_per_game_day);
+  if (unique_events.count > 0) {
+    const double interval = options.budget_span_days / unique_events.count;
+    std::cout << std::format("  {:<30} {:5}  {:10.0f}   {:14.1f}\n", unique_events.name, unique_events.count,
+                             interval, interval * real_hours_per_game_day);
   }
 }
 
@@ -548,6 +552,7 @@ void print_effect_scale(const celestial_system& system, const survey_options& op
 
   const double step_days = options.budget_step_minutes / minutes_per_day;
   const int32_t steps = static_cast<int32_t>(options.budget_span_days / step_days);
+  const double start_days = system.from_calendar(1, 0, 0.0);
 
   event_counter small_day{"малый дневной"};
   event_counter large_day{"крупный дневной"};
@@ -558,8 +563,8 @@ void print_effect_scale(const celestial_system& system, const survey_options& op
   double deepest_night = 0.0;
 
   for (int32_t i = 0; i <= steps; ++i) {
-    const double now = i * step_days;
-    const auto state = system.evaluate(now);
+    const double elapsed = i * step_days;
+    const auto state = system.evaluate(start_days + elapsed);
 
     const double day_dimming =
       state.unocculted_star_illuminance_lx > 0.0
@@ -587,7 +592,7 @@ void print_effect_scale(const celestial_system& system, const survey_options& op
 
     if (day_dimming > deepest_day) {
       deepest_day = day_dimming;
-      deepest_day_time = now;
+      deepest_day_time = elapsed;
     }
     deepest_night = std::max(deepest_night, night_visible ? night_dimming : 0.0);
 
@@ -601,15 +606,15 @@ void print_effect_scale(const celestial_system& system, const survey_options& op
   std::cout << std::format("  порог малого {:.0f}% потери света, крупного {:.0f}% либо угасание светила на {:.0f}%\n",
                            100.0 * options.small_effect_dimming, 100.0 * options.large_effect_dimming,
                            100.0 * options.large_effect_star_occultation);
-  std::cout << "  класс                          раз в, сут   реальных часов   сильнейшее\n";
+  std::cout << "  класс                         число  раз в, сут   реальных часов   сильнейшее\n";
 
   const auto line = [&](const event_counter& event) {
     if (event.count == 0) {
-      std::cout << std::format("  {:<30} {:>10}   {:>14}   {:>10}\n", event.name, "-", "-", "-");
+      std::cout << std::format("  {:<30} {:>5}  {:>10}   {:>14}   {:>10}\n", event.name, 0, "-", "-", "-");
       return 0.0;
     }
     const double interval = options.budget_span_days / event.count;
-    std::cout << std::format("  {:<30} {:10.0f}   {:14.1f}   {:10.3f}\n", event.name, interval,
+    std::cout << std::format("  {:<30} {:5}  {:10.0f}   {:14.1f}   {:10.3f}\n", event.name, event.count, interval,
                              interval * real_hours_per_game_day, event.strongest);
     return 1.0 / interval;
   };
@@ -618,11 +623,13 @@ void print_effect_scale(const celestial_system& system, const survey_options& op
   const double large_rate = line(large_day) + line(large_night);
 
   if (small_rate > 0.0) {
-    std::cout << std::format("  {:<30} {:10.0f}   {:14.1f}\n", "ВСЕ малые", 1.0 / small_rate,
+    const int32_t count = small_day.count + small_night.count;
+    std::cout << std::format("  {:<30} {:5}  {:10.0f}   {:14.1f}\n", "ВСЕ малые", count, 1.0 / small_rate,
                              real_hours_per_game_day / small_rate);
   }
   if (large_rate > 0.0) {
-    std::cout << std::format("  {:<30} {:10.0f}   {:14.1f}\n", "ВСЕ крупные", 1.0 / large_rate,
+    const int32_t count = large_day.count + large_night.count;
+    std::cout << std::format("  {:<30} {:5}  {:10.0f}   {:14.1f}\n", "ВСЕ крупные", count, 1.0 / large_rate,
                              real_hours_per_game_day / large_rate);
   }
   std::cout << std::format("  глубочайшее дневное затемнение за окно: {:.1f}% на сутки {:.2f}\n", 100.0 * deepest_day,

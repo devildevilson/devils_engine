@@ -68,7 +68,7 @@ int pf07_shadow_slot(const pf07_sky_block sky, const float body_code) {
 }
 
 #ifdef PF07_SURFACE_NO_SHADOWS
-float pf07_shadow_visibility(const int slot, const vec3 p, const vec3 n, const float d) { return 1.0; }
+float pf07_shadow_visibility(const int slot, const vec3 p, const vec3 n, const float d, const float b) { return 1.0; }
 #endif
 
 // Полная освещённость поверхности: прямой свет светил, прямой свет лун и рассеянный свет неба.
@@ -78,7 +78,9 @@ float pf07_shadow_visibility(const int slot, const vec3 p, const vec3 n, const f
 // остальные. Умножь мы на видимость всё вместе — тень стала бы чёрной дырой, а не тенью.
 vec3 pf07_surface_illuminance(const pf07_sky_block sky, const sampler2D transmittance_lut,
                               const sampler2D sky_view_lut, const vec3 planet_point,
-                              const vec3 scene_position, const vec3 normal, const float view_distance) {
+                              const vec3 scene_position, const vec3 normal, const float view_distance,
+                              const float receiver_bias_scale, const float direct_visibility,
+                              const float sky_visibility) {
   vec3 total = vec3(0.0);
 
   for (int s = 0; s < PF07_STAR_COUNT; ++s) {
@@ -91,7 +93,7 @@ vec3 pf07_surface_illuminance(const pf07_sky_block sky, const sampler2D transmit
 
     const int slot = pf07_shadow_slot(sky, float(s));
     const float visibility =
-      slot < 0 ? 1.0 : pf07_shadow_visibility(slot, scene_position, normal, view_distance);
+      slot < 0 ? 1.0 : pf07_shadow_visibility(slot, scene_position, normal, view_distance, receiver_bias_scale);
     if (visibility <= 0.0) continue;
 
     const vec3 light_transmittance =
@@ -110,11 +112,11 @@ vec3 pf07_surface_illuminance(const pf07_sky_block sky, const sampler2D transmit
 
     const int slot = pf07_shadow_slot(sky, float(PF07_STAR_COUNT + m));
     const float visibility =
-      slot < 0 ? 1.0 : pf07_shadow_visibility(slot, scene_position, normal, view_distance);
+      slot < 0 ? 1.0 : pf07_shadow_visibility(slot, scene_position, normal, view_distance, receiver_bias_scale);
     total += sky.moon_color_illuminance[m].rgb * illuminance * cosine * visibility;
   }
 
-  return total + pf07_sky_illuminance(sky_view_lut, normal);
+  return total * direct_visibility + pf07_sky_illuminance(sky_view_lut, normal) * sky_visibility;
 }
 
 #endif

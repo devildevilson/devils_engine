@@ -14,6 +14,7 @@
 layout(location = 0) in vec3 in_world_position;
 layout(location = 1) in vec3 in_world_normal;
 layout(location = 2) in vec3 in_albedo;
+layout(location = 3) in vec2 in_foliage_height;
 layout(location = 0) out vec4 out_color;
 
 layout(set = 0, binding = 0, std140) uniform CameraBlock {
@@ -36,9 +37,18 @@ void main() {
   const vec3 planet_point = pf07_scene_to_planet(sky_data.sky, in_world_position);
 
   const float view_distance = length(in_world_position - camera_data.camera_position.xyz);
+  const float foliage = step(0.5, in_foliage_height.x);
+  const float open_height = smoothstep(0.0, 0.75, in_foliage_height.y);
+  // Единый bias в 1.5 текселя был шире десятисантиметрового лезвия и выталкивал его из собственной
+  // тени. У растения приёмник смещается лишь на четверть текселя. Оставшаяся окклюзия описывает сам
+  // куст: у основания свет закрывают соседние лезвия и земля, у верхушки растение открыто.
+  const float receiver_bias_scale = mix(1.5, 0.25, foliage);
+  const float direct_visibility = mix(1.0, mix(0.45, 1.0, open_height), foliage);
+  const float sky_visibility = mix(1.0, mix(0.25, 0.80, open_height), foliage);
   const vec3 illuminance =
     pf07_surface_illuminance(sky_data.sky, transmittance_lut, sky_view_lut, planet_point,
-                             in_world_position, normal, view_distance);
+                             in_world_position, normal, view_distance, receiver_bias_scale,
+                             direct_visibility, sky_visibility);
   vec3 color = illuminance * in_albedo / pf07_pi;
 
   // Воздух между предметом и глазом. Ось расстояния таблицы квадратичная, поэтому и выборка идёт по

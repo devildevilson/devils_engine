@@ -86,12 +86,11 @@ sky_gpu_block pack_sky_block(const sky_state& state, const sky_state& star_frame
                 static_cast<float>(star.color_linear.z), static_cast<float>(std::max(0.0, illuminance)));
   }
 
-  // Освещённость дисков светил: без затмения и без горизонта. Затмение теперь рисуется геометрически,
-  // луной поверх диска, и гасить сам диск значило бы посчитать его дважды.
+  // Освещённость дисков светил: без затмения и без горизонта. Она хранится в состоянии явно: при
+  // полном перекрытии восстановить её делением фактического нуля на видимую долю уже невозможно.
   for (size_t i = 0; i < sky_star_count && i < state.stars.size(); ++i) {
     const auto& star = state.stars[i];
-    const double visible = std::max(1.0 - star.occluded_fraction, 1e-3);
-    block.star_disc_illuminance[i] = static_cast<float>(std::max(0.0, star.space_illuminance_lx / visible));
+    block.star_disc_illuminance[i] = static_cast<float>(std::max(0.0, star.space_unocculted_lx));
   }
 
   const size_t moon_count = std::min(state.moons.size(), sky_moon_capacity);
@@ -112,6 +111,8 @@ sky_gpu_block pack_sky_block(const sky_state& state, const sky_state& star_frame
     const double albedo = m < moons.size() ? moons[m].albedo : 0.12;
     block.moon_phase[m] = glm::vec4(static_cast<float>(albedo), static_cast<float>(moon.occluded_fraction),
                                     static_cast<float>(boost), static_cast<float>(visual_scale));
+    block.moon_star_visibility[m] =
+      glm::vec4(static_cast<float>(moon.star_visibility[0]), static_cast<float>(moon.star_visibility[1]), 0.0f, 0.0f);
     block.moon_distance_km[m] = static_cast<float>(moon.distance_km);
   }
 

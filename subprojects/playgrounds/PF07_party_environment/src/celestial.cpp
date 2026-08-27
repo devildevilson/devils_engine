@@ -268,19 +268,19 @@ celestial_system::celestial_system(system_config config) : config_(std::move(con
       day_seconds_);
   }
 
-  // Длина цикла: через сколько ЦЕЛЫХ лет взаимное положение двойной и планеты повторяется. Ищется
-  // перебором, а не задаётся числом в конфиге: стоит подвинуть орбиту — и прежнее число станет
-  // молча неверным.
-  cycle_years_ = 1;
+  // Приближённый beat двойной: целое число лет, которое ближе всего подходит к целому числу её
+  // оборотов. Это НЕ цикл всей системы — остаток ненулевой, а периоды лун сюда вообще не входят.
+  binary_beat_years_ = 1;
   double best_error = 1.0;
   for (uint32_t years = 1; years <= 24; ++years) {
     const double orbits = double(years) * planet_year_days_ / binary_period_days_;
     const double error = std::abs(orbits - std::round(orbits));
     if (error < best_error - 1e-9) {
       best_error = error;
-      cycle_years_ = years;
+      binary_beat_years_ = years;
     }
   }
+  binary_beat_error_days_ = best_error * binary_period_days_;
 
   // Полночь — нижняя кульминация главного светила. Ищется численно по минимуму его высоты за сутки,
   // а не выводится формулой: высота уже собирает в себе и вращение планеты, и её движение по орбите,
@@ -327,8 +327,12 @@ double celestial_system::midnight_epoch_days() const {
   return midnight_epoch_days_;
 }
 
-uint32_t celestial_system::cycle_years() const {
-  return cycle_years_;
+uint32_t celestial_system::binary_beat_years() const {
+  return binary_beat_years_;
+}
+
+double celestial_system::binary_beat_error_days() const {
+  return binary_beat_error_days_;
 }
 
 celestial_system::calendar_time celestial_system::to_calendar(const double time_days) const {
@@ -344,8 +348,9 @@ celestial_system::calendar_time celestial_system::to_calendar(const double time_
   const int64_t day_of_year = absolute_day - int64_t(std::llround(double(year) * days_per_year));
 
   calendar_time out{};
-  out.year = uint32_t(std::max<int64_t>(year, 0));
-  out.cycle_year = uint32_t(out.year % std::max(cycle_years_, 1u)) + 1u;
+  const uint32_t zero_based_year = uint32_t(std::max<int64_t>(year, 0));
+  out.year = zero_based_year + 1u;
+  out.beat_year = zero_based_year % std::max(binary_beat_years_, 1u) + 1u;
   out.day = uint32_t(std::max<int64_t>(day_of_year, 0));
   const double hours = fraction * 24.0;
   out.hour = uint32_t(std::floor(hours));
@@ -353,9 +358,9 @@ celestial_system::calendar_time celestial_system::to_calendar(const double time_
   return out;
 }
 
-double celestial_system::from_calendar(const uint32_t cycle_year, const uint32_t day,
+double celestial_system::from_calendar(const uint32_t year, const uint32_t day,
                                        const double hour) const {
-  const double years = double(cycle_year == 0 ? 0u : cycle_year - 1u);
+  const double years = double(year == 0 ? 0u : year - 1u);
   return midnight_epoch_days_ + years * planet_year_days_ + double(day) + hour / 24.0;
 }
 
@@ -576,6 +581,7 @@ sky_state celestial_system::evaluate(const double time_days) const {
 
     const double distance_au = view.distance_km / au_km;
     const double unoccluded = stars_[i].illuminance_at_1au_lx / (distance_au * distance_au);
+    view.space_unocculted_lx = unoccluded;
     view.unocculted_lx = unoccluded * view.horizon_fraction;
     view.illuminance_lx = view.unocculted_lx * (1.0 - view.occluded_fraction);
     view.space_illuminance_lx = unoccluded * (1.0 - view.occluded_fraction);
@@ -604,6 +610,7 @@ sky_state celestial_system::evaluate(const double time_days) const {
 
     for (size_t s = 0; s < state.stars.size(); ++s) {
       const auto illumination = star_illuminance_at(s, now.moons[m].position, now, static_cast<int32_t>(m));
+      view.star_visibility[s] = 1.0 - illumination.occluded_fraction;
       unoccluded_illumination += illumination.unoccluded_lx;
       received_illumination += illumination.illuminance_lx;
       if (illumination.occluded_fraction > deepest_occlusion) {
@@ -639,6 +646,7 @@ sky_state celestial_system::evaluate(const double time_days) const {
     view.phase = 0.5 * (1.0 + std::cos(dominant_phase_angle));
     view.illuminance_lx = total_illuminance * view.horizon_fraction;
     view.unocculted_lx = unocculted_total * view.horizon_fraction;
+    view.space_unocculted_lx = unocculted_total;
     view.space_illuminance_lx = total_illuminance;
 
     const double color_maximum = std::max({weighted_color.x, weighted_color.y, weighted_color.z});

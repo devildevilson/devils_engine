@@ -26,6 +26,8 @@ struct alignas(16) sky_gpu_block {
   glm::vec4 moon_direction[sky_moon_capacity];
   glm::vec4 moon_color_illuminance[sky_moon_capacity];
   glm::vec4 moon_phase[sky_moon_capacity];
+  // x/y — доля Aurin/Ember, видимая с этой луны. Общая глубина затмения не сохраняет цвет остатка.
+  glm::vec4 moon_star_visibility[sky_moon_capacity];
   glm::vec4 atmosphere_geometry;
   glm::vec4 atmosphere_medium;
   glm::vec4 march_params;
@@ -48,7 +50,7 @@ struct alignas(16) sky_gpu_block {
   // нечем понять, чья это тень. x — первый слот, y — второй.
   glm::vec4 shadow_bodies;
   // Ветер: xy — направление в горизонтальной плоскости, z — сила в метрах отклонения верхушки,
-  // w — время в секундах. Поле одно на весь мир, потому что ветер — свойство погоды, а не растения.
+  // w — время в секундах. Поле одно на весь мир, а не отдельное на каждый куст.
   glm::vec4 wind_params;
   // Освещённость светила БЕЗ затмения и без горизонта, по одной на звезду в x и y. Нужна ровно диску:
   // затмение теперь показывается геометрически — луна закрывает часть диска собой, — и дополнительно
@@ -59,7 +61,7 @@ struct alignas(16) sky_gpu_block {
   // здесь развела бы освещение с затенением без единого предупреждения.
   glm::vec4 moon_distance_km;
 };
-static_assert(sizeof(sky_gpu_block) == 480);
+static_assert(sizeof(sky_gpu_block) == 544);
 
 struct atmosphere_settings {
   double height_km = 100.0;         // верх атмосферы над поверхностью
@@ -68,7 +70,7 @@ struct atmosphere_settings {
   double ozone_center_km = 25.0;
   double ozone_width_km = 15.0;
   double mie_anisotropy = 0.76;
-  double turbidity = 1.0;           // множитель аэрозоля; позже сюда придёт погодный вектор
+  double turbidity = 1.0;           // ручной множитель аэрозоля; погода остаётся за границей PF07
   double ground_albedo = 0.10;
 };
 
@@ -196,10 +198,9 @@ bool parse_colour_script(const std::string& text, colour_script& out, std::strin
 // любой из которых два дампа перестают быть сравнимыми.
 struct view_preset {
   std::string name;
-  // Время задаётся КАЛЕНДАРЁМ, а не числом суток от эпохи. Сырое число было непрозрачным вдвойне:
-  // оно не говорило ни в каком году цикла находится состояние, ни какой это час, — а именно эти две
-  // вещи и отличают одно именованное состояние от другого.
-  uint32_t cycle_year = 1;
+  // Время задаётся абсолютным годом календаря, а не якобы повторяющимся годом цикла: семилетний beat
+  // двойной имеет остаточную ошибку и вообще не включает фазы лун.
+  uint32_t year = 1;
   uint32_t day = 0;
   double hour = 12.0;
   double look_azimuth_deg = 0.0;

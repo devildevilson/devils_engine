@@ -345,18 +345,17 @@ void main() {
         const float star_illuminance = sky_data.sky.star_disc_illuminance[s];
         if (star_illuminance <= 0.0) continue;
         const float lit = max(0.0, dot(surface_normal, sky_data.sky.star_direction[s].xyz));
-        radiance += sky_data.sky.star_color_illuminance[s].rgb * star_illuminance * lit;
+        const float visibility = clamp(sky_data.sky.moon_star_visibility[m][s], 0.0, 1.0);
+        radiance += sky_data.sky.star_color_illuminance[s].rgb * star_illuminance * lit * visibility;
       }
       const float albedo = max(sky_data.sky.moon_phase[m].x, 0.0);
-      // Лунное затмение: планета закрывает луне свет, и та темнеет целиком.
-      const float lunar_eclipse = clamp(1.0 - sky_data.sky.moon_phase[m].y, 0.0, 1.0);
       // Множитель заметности — осознанная неправда ради читаемости: физически Kolo и Iskra дают доли
       // процента общего света, и найти их на небе почти невозможно. Освещения сцены и затмений он не
       // касается, только нарисованного диска.
       const float boost = max(sky_data.sky.moon_phase[m].z, 1.0);
 
       nearest_moon_distance = distance_km;
-      nearest_moon_radiance = radiance * (albedo / pi) * lunar_eclipse * boost;
+      nearest_moon_radiance = radiance * (albedo / pi) * boost;
       moon_hit = true;
     }
 

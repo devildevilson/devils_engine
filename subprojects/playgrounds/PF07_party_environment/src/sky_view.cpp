@@ -522,7 +522,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     bool found = false;
     for (const auto& preset : list.presets) {
       if (preset.name != options.preset) continue;
-      options.start_time_days = system.from_calendar(preset.cycle_year, preset.day, preset.hour);
+      options.start_time_days = system.from_calendar(preset.year, preset.day, preset.hour);
       options.look_azimuth_deg = preset.look_azimuth_deg;
       options.look_altitude_deg = preset.look_altitude_deg;
       options.fixed_look = true;
@@ -530,8 +530,8 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       options.exposure.manual = true;
       options.exposure.manual_ev100 = preset.ev100;
       found = true;
-      utils::info("PF07 preset '{}': year {}/{} day {} {:.2f}h, camera {:.1f}/{:.1f}, fixed EV100 {:+.2f}",
-                  preset.name, preset.cycle_year, system.cycle_years(), preset.day, preset.hour,
+      utils::info("PF07 preset '{}': year {} day {} {:.2f}h, camera {:.1f}/{:.1f}, fixed EV100 {:+.2f}",
+                  preset.name, preset.year, preset.day, preset.hour,
                   preset.look_azimuth_deg, preset.look_altitude_deg, preset.ev100);
       break;
     }
@@ -634,7 +634,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     // хватает тридцати двух при двенадцати используемых.
     const uint32_t scene_pair = base.register_pair(scene_group, cube_mesh, 32);
     const auto fixture = make_fixture_instances();
-    const double caster_height = fixture_caster_height(fixture);
+    double caster_height = fixture_caster_height(fixture);
     write_fixture(base, scene_pair, fixture, uint32_t(cube.size()));
 
     // Земля — вторая пара в той же группе отрисовки. Проход рисует ВСЕ пары группы, поэтому диск
@@ -655,6 +655,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     // Участок долины — СТАТИЧЕСКИЙ меш у начала координат, третья пара группы. Рисуется раньше диска,
     // чтобы ранний тест глубины отсёк те его пиксели, что окажутся под участком.
     const auto valley = make_valley_patch();
+    for (const auto& vertex : valley) caster_height = std::max(caster_height, double(vertex.py));
     const auto valley_mesh = assets.register_buffer_storage("pf07.valley_patch");
     assets.create_buffer_storage(valley_mesh,
                                  painter::buffer_create_info{"scene_geometry", uint32_t(valley.size()), 0});
@@ -698,6 +699,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     const uint32_t shrub_near_pair = base.register_pair(scene_group, shrub_near_mesh, options.foliage_count);
     const uint32_t shrub_far_pair = base.register_pair(scene_group, shrub_far_mesh, options.foliage_count);
     const auto shrubs = scatter_shrubs(options.foliage_count);
+    for (const auto& item : shrubs) caster_height = std::max(caster_height, double(item.y + item.height));
     utils::info("PF07 foliage: {} shrubs, near mesh {} vertices, far mesh {}", shrubs.size(),
                 shrub_near_mesh_data.size(), shrub_far_mesh_data.size());
     std::vector<scene_instance> shrub_near_instances;
@@ -816,8 +818,8 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
 
     // Календарный старт перекрывает абсолютный: «третий год, сотые сутки» задаётся человеком, а
     // время в сутках от эпохи — машиной.
-    double game_time_days = options.start_cycle_year != 0
-                              ? system.from_calendar(options.start_cycle_year, options.start_day_of_year,
+    double game_time_days = options.start_year != 0
+                              ? system.from_calendar(options.start_year, options.start_day_of_year,
                                                      options.start_hour)
                               : options.start_time_days;
     double time_scale = options.time_scale;
@@ -1047,8 +1049,9 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
 
       const auto calendar = system.to_calendar(game_time_days);
       const std::array<std::string, 8> details{
-        std::format("Year {}/{} · day {}/{} · {:02}:{:02} · {:.4f} days per real second{}", calendar.cycle_year,
-                    system.cycle_years(), calendar.day, uint32_t(system.planet_year_days()), calendar.hour,
+        std::format("Year {} · beat {}/{} · day {}/{} · {:02}:{:02} · {:.4f} days per real second{}", calendar.year,
+                    calendar.beat_year, system.binary_beat_years(), calendar.day,
+                    uint32_t(system.planet_year_days()), calendar.hour,
                     calendar.minute, time_scale, paused ? " · PAUSED" : ""),
         std::format("{}: altitude {:.2f}° · {:.0f} lx{}", state.stars[0].name, state.stars[0].altitude_deg,
                     state.stars[0].illuminance_lx,

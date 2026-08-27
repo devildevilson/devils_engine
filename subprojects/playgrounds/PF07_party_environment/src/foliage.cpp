@@ -108,7 +108,9 @@ std::vector<shrub> scatter_shrubs(const uint32_t target_count) {
     // Фаза ветра у каждого куста своя, иначе все качаются как один предмет.
     item.phase = float(hash01(index * 49979687u + 31u) * 2.0 * pi);
     const float tone = float(0.75 + 0.5 * hash01(index * 86028121u + 37u));
-    item.albedo = glm::vec3(0.20f, 0.30f, 0.13f) * tone;
+    // Средняя яркость прежнего (0.20, 0.30, 0.13) была в 2.66 раза выше земли. При лунном свете и
+    // ночном зрении куст превращался в светлую серую массу даже там, где силуэт должен теряться.
+    item.albedo = glm::vec3(0.13f, 0.20f, 0.08f) * tone;
     out.push_back(item);
   }
   return out;
