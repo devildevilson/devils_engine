@@ -94,6 +94,7 @@ void print_usage() {
                "  --year=N            год внутри повторяющегося цикла, от единицы\n"
                "  --day=D             сутки внутри года, от нуля\n"
                "  --hour=H            час внутри суток\n"
+               "  --corona=F          яркость короны светил в долях физической\n"
                "  --galaxy=F          сила сгущения звёзд в галактической полосе\n"
                "  --star-rotation=F   доля физической скорости вращения неба (1 — честная, 0 — статика)\n";
 }
@@ -208,6 +209,8 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.output.star_density = std::stod(value);
     } else if (read_prefixed(argument, "--star-brightness=", value)) {
       out.view.output.star_brightness = std::stod(value);
+    } else if (read_prefixed(argument, "--corona=", value)) {
+      out.view.output.corona_strength = std::stod(value);
     } else if (read_prefixed(argument, "--galaxy=", value)) {
       out.view.output.galaxy_concentration = std::stod(value);
     } else if (read_prefixed(argument, "--star-rotation=", value)) {

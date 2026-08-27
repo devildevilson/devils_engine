@@ -198,16 +198,22 @@ void main() {
   vec3 color = in_scattering;
 
   if (ground_distance <= 0.0) {
-    // Диски светил и лун рисуются только там, где луч уходит в космос. Яркость диска — освещённость,
-    // распределённая по его телесному углу, поэтому диск остаётся физически согласован с тем светом,
-    // которым он же освещает сцену.
+    // Всё, что лежит ЗА атмосферой, собирается отдельно и лишь потом умножается на её прохождение.
+    // Разделение принципиальное: луна обязана ЗАКРЫВАТЬ собой то, что за ней, а рассеянный свет
+    // воздуха висит перед ней и никуда не девается.
+    //
+    // Прежде диски просто ПРИБАВЛЯЛИСЬ к цвету. Из-за этого тёмная луна прибавляла ноль и была
+    // невидима вовсе, а солнечное затмение выражалось лишь в том, что диск светила равномерно тускнел
+    // — и это падение яркости экспозиция послушно возвращала обратно. Затмение нельзя было разглядеть
+    // в принципе, и по той же причине не темнели луны, стоящие против света.
+    vec3 space = vec3(0.0);
+
     // Звёзды гаснут в светлом небе. Настоящая звезда занимает ничтожную долю пикселя, и рядом с
     // рассеянным светом её вклад теряется; здесь же звезда рисуется целым пикселем, поэтому днём
-    // она пробивалась сквозь небо. Ослабление по яркости самого неба — самый прямой способ вернуть
-    // это соотношение, не выдумывая отдельного «переключателя ночи».
+    // она пробивалась сквозь небо.
     const float sky_luminance = dot(in_scattering, vec3(0.2126, 0.7152, 0.0722));
     const float star_visibility = 1.0 / (1.0 + sky_luminance / 40.0);
-    color += transmittance * star_field(view_direction) * star_visibility;
+    space += star_field(view_direction) * star_visibility;
 
     // Множитель размера дисков — осознанное преувеличение ради читаемости: 0.9° диска Selen при поле
     // зрения 65° занимают десяток пикселей. Яркость поверхности диска при этом НЕ меняется, потому
@@ -217,67 +223,148 @@ void main() {
     for (int s = 0; s < PF07_STAR_COUNT; ++s) {
       const vec3 light_direction = sky_data.sky.star_direction[s].xyz;
       const float angular_radius = sky_data.sky.star_direction[s].w;
-      const float illuminance = sky_data.sky.star_color_illuminance[s].w;
+      // Яркость диска берётся БЕЗ затмения: закрывать его будет сама луна, геометрически.
+      const float illuminance = sky_data.sky.star_disc_illuminance[s];
       if (illuminance <= 0.0 || angular_radius <= 0.0) continue;
 
       const float drawn_radius = angular_radius * disc_scale;
+      // Корона тянется на несколько радиусов от диска. Именно она делает затмение зрелищем: диск
+      // закрыт, а вокруг него остаётся светящееся кольцо внешней атмосферы светила.
+      const float corona_reach = drawn_radius * 5.0;
       const float angle = acos(clamp(dot(view_direction, light_direction), -1.0, 1.0));
-      if (angle > drawn_radius) continue;
+      if (angle > corona_reach) continue;
 
       const float solid_angle = pf07_disc_solid_angle(angular_radius);
-      // Потемнение к краю: диск не однороден, и без него светило читается как наклейка.
-      const float edge = sqrt(max(0.0, 1.0 - pow(angle / drawn_radius, 2.0)));
-      const float limb = 0.4 + 0.6 * pow(edge, 0.4);
-      color += transmittance * sky_data.sky.star_color_illuminance[s].rgb * illuminance / solid_angle * limb;
+      const vec3 photosphere = sky_data.sky.star_color_illuminance[s].rgb * illuminance / solid_angle;
+
+      if (angle <= drawn_radius) {
+        // Потемнение к краю: диск не однороден, и без него светило читается как наклейка.
+        const float edge = sqrt(max(0.0, 1.0 - pow(angle / drawn_radius, 2.0)));
+        const float limb = 0.4 + 0.6 * pow(edge, 0.4);
+        space += photosphere * limb;
+        continue;
+      }
+
+      // Корона слабее фотосферы в МИЛЛИОН раз — оттого её и не видно, пока диск открыт. Спад примерно
+      // как r^-2.5 от края диска. Множитель снаружи: в одиночной системе при полном затмении небо
+      // темнеет в тысячу раз и физической яркости хватает с избытком, а здесь второе светило держит
+      // небо дневным, и корона едва его превышает.
+      const float corona_strength = max(sky_data.sky.grade_curve.z, 0.0);
+      if (corona_strength <= 0.0) continue;
+
+      // Корона проявляется по мере ЗАКРЫТИЯ диска, и это модель восприятия, а не физика: сама корона
+      // никуда не девается, но рядом с открытым диском её топит блик — рассеяние в глазу и в оптике.
+      // Блик здесь не моделируется вовсе, поэтому без этого множителя незатменное светило обрастало бы
+      // ореолом, которого в жизни у него не видно.
+      //
+      // Доля закрытия выводится из двух уже имеющихся величин: освещённость с затмением и без него.
+      const float open = sky_data.sky.star_color_illuminance[s].w;
+      const float covered = clamp(1.0 - open / max(illuminance, 1e-6), 0.0, 1.0);
+      const float reveal = smoothstep(0.15, 0.85, covered);
+      if (reveal <= 0.0) continue;
+
+      const float radii = angle / max(drawn_radius, 1e-6);
+      // Ближе к диску корона теплее — там лежит хромосфера, и именно она даёт затмению золотой ободок.
+      // Тёплая зона тянется до трёх радиусов не для красоты: луна крупнее светила и закрывает собой
+      // всё до 1.76 радиуса, поэтому ободок, уложенный вплотную к диску, целиком уходит ей за спину.
+      // Тон взят с сильным перекосом в тёплое не для красоты. Небо во время затмения здесь остаётся
+      // ДНЕВНЫМ — компаньон никуда не делся, — поэтому кольцо неизбежно подходит к потолку яркости, а
+      // в насыщенном пикселе цвета не остаётся вовсе. Чтобы золото пережило насыщение, синий канал
+      // приходится уводить вниз втрое: тогда красный упирается в потолок раньше синего, и разница
+      // между ними сохраняется.
+      const vec3 tint = mix(vec3(1.55, 0.98, 0.42), vec3(1.0), smoothstep(1.0, 3.2, radii));
+      space += photosphere * sky_data.sky.star_color_illuminance[s].rgb * tint * 1.0e-6 *
+               corona_strength * reveal * pow(radii, -2.5);
     }
+
+    // Луны. Ближайшая из перекрывшихся закрывает остальные, поэтому сначала выбирается победитель по
+    // расстоянию, и лишь затем он заменяет собой всё, что было за ним.
+    const int moon_count = int(sky_data.sky.march_params.w);
+    float nearest_moon_distance = 1.0e30;
+    vec3 nearest_moon_radiance = vec3(0.0);
+    bool moon_hit = false;
 
     for (int m = 0; m < moon_count && m < PF07_MOON_CAPACITY; ++m) {
       const vec3 moon_direction = sky_data.sky.moon_direction[m].xyz;
       const float angular_radius = sky_data.sky.moon_direction[m].w;
-      const float illuminance = sky_data.sky.moon_color_illuminance[m].w;
-      if (angular_radius <= 0.0 || illuminance <= 0.0) continue;
+      if (angular_radius <= 0.0) continue;
+
+      // Увеличение дисков ломало бы геометрию затмений, и это была настоящая причина их невидимости:
+      // радиусы раздуваются втрое, а угловое РАССТОЯНИЕ между телами оставалось прежним, и при
+      // настоящем перекрытии в 46% нарисованная луна закрывала светило целиком. Вместо надкушенного
+      // солнца зритель видел просто исчезнувшее солнце.
+      //
+      // Поэтому увеличивается и расстояние: при одинаковом множителе у радиусов и у разноса ДОЛЯ
+      // перекрытия сохраняется в точности. Внутри касания разнос растёт вместе с дисками, снаружи
+      // луна прижимается к точке касания — иначе нарисованные диски перекрывались бы там, где
+      // настоящие уже разошлись.
+      vec3 drawn_direction = moon_direction;
+      for (int s = 0; s < PF07_STAR_COUNT; ++s) {
+        const float star_radius = sky_data.sky.star_direction[s].w;
+        if (star_radius <= 0.0 || sky_data.sky.star_disc_illuminance[s] <= 0.0) continue;
+
+        const vec3 star_direction = sky_data.sky.star_direction[s].xyz;
+        const float contact = star_radius + angular_radius;
+        const float drawn_contact = contact * disc_scale;
+        const float separation = acos(clamp(dot(star_direction, moon_direction), -1.0, 1.0));
+        if (separation >= drawn_contact) continue;
+
+        const float target = separation <= contact ? separation * disc_scale : drawn_contact;
+        const vec3 axis = normalize(cross(star_direction, moon_direction) + vec3(1e-7, 0.0, 0.0));
+        drawn_direction = star_direction * cos(target) + cross(axis, star_direction) * sin(target);
+      }
 
       const float drawn_radius = angular_radius * disc_scale * max(sky_data.sky.moon_phase[m].w, 1.0);
-      const float angle = acos(clamp(dot(view_direction, moon_direction), -1.0, 1.0));
+      const float angle = acos(clamp(dot(view_direction, drawn_direction), -1.0, 1.0));
       if (angle > drawn_radius) continue;
 
-      const float solid_angle = pf07_disc_solid_angle(angular_radius);
+      const float distance_km = sky_data.sky.moon_distance_km[m];
+      if (distance_km >= nearest_moon_distance) continue;
+
       // Терминатор строится геометрически: нормаль точки диска восстанавливается из её положения на
       // видимой полусфере. Нормаль смотрит НА наблюдателя — с обратным знаком освещалась бы дальняя
       // сторона, и любой серп выглядел бы полным диском.
       //
       // Светил два, и терминатор у луны тоже двойной: солнца разнесены на небе до пятнадцати градусов,
-      // поэтому вдоль края серпа идёт узкая полоса, освещённая только компаньоном. Её ширина и есть
-      // угловое расстояние между светилами, а яркость — их отношение освещённостей.
-      const vec3 local_x = normalize(cross(moon_direction, vec3(0.0, 1.0, 0.0)) + vec3(1e-5, 0.0, 0.0));
-      const vec3 local_y = cross(moon_direction, local_x);
-      const vec3 tangent = view_direction - moon_direction * dot(view_direction, moon_direction);
+      // поэтому вдоль края серпа идёт узкая полоса, освещённая только компаньоном.
+      const vec3 local_x = normalize(cross(drawn_direction, vec3(0.0, 1.0, 0.0)) + vec3(1e-5, 0.0, 0.0));
+      const vec3 local_y = cross(drawn_direction, local_x);
+      const vec3 tangent = view_direction - drawn_direction * dot(view_direction, drawn_direction);
       const float sine_radius = max(sin(drawn_radius), 1e-6);
       const float offset_x = dot(tangent, local_x) / sine_radius;
       const float offset_y = dot(tangent, local_y) / sine_radius;
       const float radial = clamp(sqrt(offset_x * offset_x + offset_y * offset_y), 0.0, 1.0);
-      const vec3 surface_normal = normalize(-moon_direction * sqrt(max(0.0, 1.0 - radial * radial)) +
+      const vec3 surface_normal = normalize(-drawn_direction * sqrt(max(0.0, 1.0 - radial * radial)) +
                                             local_x * offset_x + local_y * offset_y);
 
-      vec3 reflected = vec3(0.0);
-      float total_star_illuminance = 0.0;
+      // Яркость диска считается ФИЗИЧЕСКИ: ламбертова поверхность с известным альбедо под светом
+      // звёзд. Прежде она бралась из освещённости, которую луна шлёт НАМ, а та обращается в ноль в
+      // новолуние — вместе со всем диском, включая ту его часть, которую всё же видно.
+      vec3 radiance = vec3(0.0);
       for (int s = 0; s < PF07_STAR_COUNT; ++s) {
-        total_star_illuminance += max(0.0, sky_data.sky.star_color_illuminance[s].w);
-      }
-      for (int s = 0; s < PF07_STAR_COUNT; ++s) {
-        const float star_illuminance = sky_data.sky.star_color_illuminance[s].w;
-        if (star_illuminance <= 0.0 || total_star_illuminance <= 0.0) continue;
-
+        const float star_illuminance = sky_data.sky.star_disc_illuminance[s];
+        if (star_illuminance <= 0.0) continue;
         const float lit = max(0.0, dot(surface_normal, sky_data.sky.star_direction[s].xyz));
-        reflected += sky_data.sky.star_color_illuminance[s].rgb * lit * (star_illuminance / total_star_illuminance);
+        radiance += sky_data.sky.star_color_illuminance[s].rgb * star_illuminance * lit;
       }
-
+      const float albedo = max(sky_data.sky.moon_phase[m].x, 0.0);
+      // Лунное затмение: планета закрывает луне свет, и та темнеет целиком.
+      const float lunar_eclipse = clamp(1.0 - sky_data.sky.moon_phase[m].y, 0.0, 1.0);
       // Множитель заметности — осознанная неправда ради читаемости: физически Kolo и Iskra дают доли
       // процента общего света, и найти их на небе почти невозможно. Освещения сцены и затмений он не
       // касается, только нарисованного диска.
       const float boost = max(sky_data.sky.moon_phase[m].z, 1.0);
-      color += transmittance * reflected * illuminance / solid_angle * boost;
+
+      nearest_moon_distance = distance_km;
+      nearest_moon_radiance = radiance * (albedo / pi) * lunar_eclipse * boost;
+      moon_hit = true;
     }
+
+    // Луна ЗАМЕЩАЕТ собой всё, что за ней: звёзды, диски светил, галактическую россыпь. Именно это и
+    // делает затмение видимым — тёмный диск на месте светила, а не равномерно потускневшее светило.
+    if (moon_hit) space = nearest_moon_radiance;
+
+    color += transmittance * space;
   }
 
   // Отладочные режимы: 1 — направление луча, 2 — попадание в поверхность, 3 — длина марша.

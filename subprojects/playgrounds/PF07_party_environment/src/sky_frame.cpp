@@ -1,13 +1,14 @@
 #include "sky_frame.h"
 
+#include <algorithm>
+#include <cmath>
 #include <format>
+#include <numbers>
+
+#include <glm/geometric.hpp>
 
 #include <tavl/deserialize.h>
 #include <tavl/parser.h>
-
-#include <algorithm>
-#include <cmath>
-#include <numbers>
 
 namespace devils_engine::pf07 {
 namespace {
@@ -85,6 +86,14 @@ sky_gpu_block pack_sky_block(const sky_state& state, const sky_state& star_frame
                 static_cast<float>(star.color_linear.z), static_cast<float>(std::max(0.0, illuminance)));
   }
 
+  // Освещённость дисков светил: без затмения и без горизонта. Затмение теперь рисуется геометрически,
+  // луной поверх диска, и гасить сам диск значило бы посчитать его дважды.
+  for (size_t i = 0; i < sky_star_count && i < state.stars.size(); ++i) {
+    const auto& star = state.stars[i];
+    const double visible = std::max(1.0 - star.occluded_fraction, 1e-3);
+    block.star_disc_illuminance[i] = static_cast<float>(std::max(0.0, star.space_illuminance_lx / visible));
+  }
+
   const size_t moon_count = std::min(state.moons.size(), sky_moon_capacity);
   for (size_t m = 0; m < moon_count; ++m) {
     const auto& moon = state.moons[m];
@@ -97,8 +106,13 @@ sky_gpu_block pack_sky_block(const sky_state& state, const sky_state& star_frame
                 static_cast<float>(moon.color_linear.z), static_cast<float>(std::max(0.0, illuminance)));
     const double boost = m < moons.size() ? moons[m].disc_boost : 1.0;
     const double visual_scale = m < moons.size() ? moons[m].disc_visual_scale : 1.0;
-    block.moon_phase[m] = glm::vec4(static_cast<float>(moon.phase), static_cast<float>(moon.occluded_fraction),
+    // В x лежит АЛЬБЕДО, а не фаза. Фазу шейдер восстанавливает сам из геометрии терминатора, а вот
+    // альбедо ему нужно: яркость диска теперь считается физически, от света звёзд, и не берётся из
+    // освещённости, которую луна шлёт нам, — та обращается в ноль в новолуние вместе со всем диском.
+    const double albedo = m < moons.size() ? moons[m].albedo : 0.12;
+    block.moon_phase[m] = glm::vec4(static_cast<float>(albedo), static_cast<float>(moon.occluded_fraction),
                                     static_cast<float>(boost), static_cast<float>(visual_scale));
+    block.moon_distance_km[m] = static_cast<float>(moon.distance_km);
   }
 
   block.atmosphere_geometry =
@@ -120,7 +134,8 @@ sky_gpu_block pack_sky_block(const sky_state& state, const sky_state& star_frame
   block.grade_tint_saturation =
     glm::vec4(output.grade_tint, static_cast<float>(output.grade_saturation));
   block.grade_curve = glm::vec4(static_cast<float>(output.grade_contrast),
-                                static_cast<float>(output.scotopic_strength), 0.0f, 0.0f);
+                                static_cast<float>(output.scotopic_strength),
+                                static_cast<float>(output.corona_strength), 0.0f);
   block.presentation_params =
     glm::vec4(static_cast<float>(output.disc_scale), static_cast<float>(output.star_density),
               static_cast<float>(output.star_brightness), static_cast<float>(output.galaxy_concentration));

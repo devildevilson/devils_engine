@@ -44,7 +44,7 @@ presets = [
     day = 11
     hour = 0.0
     look_azimuth_deg = 175.0
-    look_altitude_deg = 14.0
+    look_altitude_deg = 36.0
     ev100 = 0.99
   }
   {
