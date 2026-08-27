@@ -27,12 +27,6 @@ constexpr double default_event_days = 90.0;
 constexpr double default_event_step_minutes = 2.0;
 constexpr double eclipse_threshold = 1e-4;
 
-double angle_between_deg(const glm::dvec3& a, const glm::dvec3& b) {
-  const glm::dvec3 cross(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
-  const double cross_length = std::sqrt(cross.x * cross.x + cross.y * cross.y + cross.z * cross.z);
-  return std::atan2(cross_length, a.x * b.x + a.y * b.y + a.z * b.z) * 180.0 / std::numbers::pi;
-}
-
 enum class action : uint32_t { render, report, events, verify, survey };
 
 struct options {
@@ -71,6 +65,7 @@ void print_usage() {
                "  --validation        включить слои валидации Vulkan\n"
                "  --frames=N          закрыть окно после N кадров\n"
                "  --dump=PATH         сохранить последний кадр в ppm\n"
+               "  --no-overlay        не рисовать диагностический текст (для эталонных кадров)\n"
                "  --width=N --height=N  размер окна\n"
                "  --time-scale=F      игровых суток за реальную секунду\n"
                "  --ev=F              зафиксировать EV100 вместо адаптации\n"
@@ -186,6 +181,8 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.shadow_far_m = std::stod(value);
     } else if (argument == "--trace-exposure") {
       out.view.trace_exposure = true;
+    } else if (argument == "--no-overlay") {
+      out.view.show_overlay = false;
     } else if (read_prefixed(argument, "--adaptation=", value)) {
       out.view.exposure.adaptation_strength = std::stod(value);
     } else if (read_prefixed(argument, "--ev-bias=", value)) {
@@ -342,6 +339,7 @@ void scan_events(const pf07::celestial_system& system, const double start_days, 
   bool has_previous = false;
   bool unique_active = false;
   uint32_t unique_count = 0;
+  pf07::observable_event_state observed;
 
   const auto start_calendar = system.to_calendar(start_days);
   std::cout << std::format("\n== события на {:.1f} сут от г{} д{}, шаг {:.1f} мин ==\n", span_days,
@@ -385,7 +383,7 @@ void scan_events(const pf07::celestial_system& system, const double start_days, 
 
   for (double now = start_days; now <= start_days + span_days; now += step_days) {
     const auto state = system.evaluate(now);
-    bool anything_visible = false;
+    pf07::observe_events(state, options, observed);
 
     for (size_t i = 0; i < state.stars.size(); ++i) {
       const auto& view = state.stars[i];
@@ -397,82 +395,36 @@ void scan_events(const pf07::celestial_system& system, const double start_days, 
       }
       previous_star_altitude[i] = view.altitude_deg;
 
-      const double visible_eclipse =
-        view.horizon_fraction > 0.0 && view.occluded_fraction >= options.min_star_occultation
-          ? view.occluded_fraction : 0.0;
-      anything_visible = anything_visible || visible_eclipse > 0.0;
+      const double visible_eclipse = observed.star_occultation[i];
       update_track(star_eclipse[i], now, visible_eclipse, view.occluder, "затмение", view.name);
     }
 
-    const bool night_visible = state.stars[0].horizon_fraction <= 0.0 && state.stars[1].horizon_fraction <= 0.0;
     for (size_t m = 0; m < moon_count; ++m) {
       const auto& view = state.moons[m];
-      const double visible_eclipse =
-        night_visible && view.horizon_fraction > 0.0 && view.occluded_fraction >= options.min_lunar_eclipse
-          ? view.occluded_fraction : 0.0;
-      anything_visible = anything_visible || visible_eclipse > 0.0;
-      update_track(moon_eclipse[m], now, visible_eclipse, view.occluder, "лунное  ", view.name);
+      update_track(moon_eclipse[m], now, observed.lunar_eclipse[m], view.occluder, "лунное  ", view.name);
     }
 
     for (size_t far_index = 0; far_index < moon_count; ++far_index) {
       const auto& far = state.moons[far_index];
-      double deepest = 0.0;
-      int32_t nearest_occluder = -1;
-      for (size_t near_index = 0; near_index < moon_count; ++near_index) {
-        if (near_index == far_index) continue;
-        const auto& near = state.moons[near_index];
-        if (near.distance_km >= far.distance_km) continue;
-        if (near.horizon_fraction <= 0.0 || far.horizon_fraction <= 0.0) continue;
-        const double separation = angle_between_deg(near.direction, far.direction) * std::numbers::pi / 180.0;
-        const double fraction = pf07::disk_occluded_fraction(
-          separation, far.angular_radius_deg * std::numbers::pi / 180.0,
-          near.angular_radius_deg * std::numbers::pi / 180.0);
-        if (fraction <= deepest) continue;
-        deepest = fraction;
-        nearest_occluder = 3 + static_cast<int32_t>(near_index);
-      }
-      const double visible_occultation = deepest >= options.min_moon_occultation ? deepest : 0.0;
-      anything_visible = anything_visible || visible_occultation > 0.0;
-      update_track(moon_occultation[far_index], now, visible_occultation, nearest_occluder, "покрытие ", far.name);
+      update_track(moon_occultation[far_index], now, observed.moon_occultation[far_index],
+                   observed.moon_occulting_body[far_index], "покрытие ", far.name);
     }
-
-    bool all_visible = true;
-    std::vector<glm::dvec3> directions;
-    directions.reserve(state.stars.size() + state.moons.size());
-    for (const auto& star : state.stars) {
-      all_visible = all_visible && star.horizon_fraction > 0.0;
-      directions.push_back(star.direction);
-    }
-    for (const auto& moon : state.moons) {
-      all_visible = all_visible && moon.horizon_fraction > 0.0;
-      directions.push_back(moon.direction);
-    }
-    double spread = 0.0;
-    if (all_visible) {
-      for (size_t a = 0; a < directions.size(); ++a) {
-        for (size_t b = a + 1; b < directions.size(); ++b) {
-          spread = std::max(spread, angle_between_deg(directions[a], directions[b]));
-        }
-      }
-    }
-    const bool parade_visible = all_visible && spread <= options.parade_threshold_deg;
-    if (parade_visible) {
+    if (observed.parade) {
       if (!parade.active) {
         parade.active = true;
         parade.begin_days = now;
-        parade.peak_value = spread;
+        parade.peak_value = observed.parade_spread_deg;
         parade.peak_days = now;
-      } else if (spread < parade.peak_value) {
-        parade.peak_value = spread;
+      } else if (observed.parade_spread_deg < parade.peak_value) {
+        parade.peak_value = observed.parade_spread_deg;
         parade.peak_days = now;
       }
     } else {
       close_parade(now);
     }
-    anything_visible = anything_visible || parade_visible;
 
-    if (anything_visible && !unique_active) ++unique_count;
-    unique_active = anything_visible;
+    if (observed.any() && !unique_active) ++unique_count;
+    unique_active = observed.any();
 
     has_previous = true;
   }
@@ -841,6 +793,26 @@ void verify_calendar(checker& check, const pf07::celestial_system& system) {
                std::format("остаточная ошибка {:.3f} сут", system.binary_beat_error_days()));
 }
 
+void verify_event_calendar(checker& check, const pf07::celestial_system& system) {
+  pf07::survey_options options;
+  options.budget_span_days = 7.0 * system.planet_year_days();
+  // Это тот же шаг, которым печатается authored-бюджет. Пять минут уже недостаточно: короткий провал
+  // ниже порога может разрезать одно взаимное затмение на два и дать ложные 16 вместо 15.
+  options.budget_step_minutes = 2.0;
+  const auto budget = pf07::calculate_event_budget(system, options);
+
+  constexpr std::array<int32_t, size_t(pf07::observable_event_kind::count)> expected{15, 12, 32, 5, 2, 0};
+  constexpr std::array<std::string_view, size_t(pf07::observable_event_kind::count)> names{
+    "взаимные затмения светил", "затмения светил лунами", "лунные затмения",
+    "покрытия лун", "тесные парады", "одна луна над обоими светилами"};
+  for (size_t i = 0; i < expected.size(); ++i) {
+    check.expect(budget.categories[i].count == expected[i], names[i],
+                 std::format("{} вместо {} за 2555 сут", budget.categories[i].count, expected[i]));
+  }
+  check.expect(budget.unique.count == 66, "семилетний календарь содержит 66 уникальных эпизодов",
+               std::format("получено {}", budget.unique.count));
+}
+
 int run_verification(const pf07::celestial_system& system) {
   std::cout << "\n== проверки ==\n";
 
@@ -855,6 +827,7 @@ int run_verification(const pf07::celestial_system& system) {
   verify_illuminance_identity(check, system);
   verify_eclipse_energy(check, system);
   verify_calendar(check, system);
+  verify_event_calendar(check, system);
 
   std::cout << std::format("\n  проверок {}, провалов {}\n", check.total(), check.failed());
   return check.passed() ? 0 : 1;

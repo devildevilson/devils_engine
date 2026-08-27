@@ -11,6 +11,8 @@
 
 #include "celestial.h"
 
+#include <array>
+
 namespace devils_engine::pf07 {
 
 struct survey_options {
@@ -40,6 +42,46 @@ struct survey_options {
   // источников теней меняет картинку сильнее, чем следует из потери его доли света.
   double large_effect_star_occultation = 0.90;
 };
+
+// Один источник истины для `--events`, длинного бюджета и проверок. Здесь решается, существует ли
+// геометрическое совпадение ДЛЯ ИГРОКА: тело должно быть над горизонтом, а лунное затмение — ещё и
+// происходить после захода обоих светил. Форматирование календаря сюда намеренно не входит.
+struct observable_event_state {
+  std::array<double, 2> star_occultation{};
+  std::vector<double> lunar_eclipse;
+  std::vector<double> moon_occultation;
+  std::vector<int32_t> moon_occulting_body;
+  bool parade = false;
+  double parade_spread_deg = 0.0;
+
+  bool any() const;
+};
+
+void observe_events(const sky_state& state, const survey_options& options, observable_event_state& out);
+
+enum class observable_event_kind : size_t {
+  mutual_stars,
+  star_by_moon,
+  lunar_eclipse,
+  moon_by_moon,
+  parade,
+  moon_over_both_stars,
+  count
+};
+
+struct event_budget_counter {
+  int32_t count = 0;
+  double strongest = 0.0;
+};
+
+struct observable_event_budget {
+  std::array<event_budget_counter, size_t(observable_event_kind::count)> categories{};
+  event_budget_counter unique;
+};
+
+// Окно начинается в гражданскую полночь г1 д0. Это важно: машинная эпоха t=0 находится на 1.1 часа
+// позже, и событие на правой границе меняло итог 66 -> 65 при внешне одинаковом «семилетнем» запросе.
+observable_event_budget calculate_event_budget(const celestial_system& system, const survey_options& options);
 
 void run_survey(const celestial_system& system, const survey_options& options);
 

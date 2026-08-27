@@ -407,113 +407,10 @@ struct event_counter {
 
 void print_event_budget(const celestial_system& system, const survey_options& options) {
   std::cout << "\n== бюджет событий ==\n";
-
-  const double step_days = options.budget_step_minutes / minutes_per_day;
-  const int32_t steps = static_cast<int32_t>(options.budget_span_days / step_days);
-  const size_t moon_count = system.config().moons.size();
-  const double start_days = system.from_calendar(1, 0, 0.0);
-
-  std::vector<event_counter> events;
-  events.push_back({"взаимное затмение солнц"});
-  events.push_back({"затмение солнца луной"});
-  events.push_back({"лунное затмение"});
-  events.push_back({"покрытие луны луной"});
-  events.push_back({"парад всех тел"});
-  events.push_back({"луна закрывает оба солнца"});
-  event_counter unique_events{"уникальные наблюдаемые эпизоды"};
-
-  for (int32_t i = 0; i <= steps; ++i) {
-    const auto state = system.evaluate(start_days + i * step_days);
-
-    bool mutual = false;
-    bool by_moon = false;
-    bool both_at_once = false;
-    double mutual_depth = 0.0;
-    double by_moon_depth = 0.0;
-    double both_depth = 1.0;
-    bool both_covered = true;
-
-    for (size_t s = 0; s < state.stars.size(); ++s) {
-      const auto& star = state.stars[s];
-      const bool visible = star.horizon_fraction > 0.0 && star.occluded_fraction > options.min_star_occultation;
-      const bool by_star = star.occluder >= 0 && star.occluder < 2;
-      if (visible && by_star) {
-        mutual = true;
-        mutual_depth = std::max(mutual_depth, star.occluded_fraction);
-      }
-      if (visible && !by_star) {
-        by_moon = true;
-        by_moon_depth = std::max(by_moon_depth, star.occluded_fraction);
-      }
-      if (visible && !by_star) {
-        both_depth = std::min(both_depth, star.occluded_fraction);
-      } else {
-        both_covered = false;
-      }
-    }
-    // Обе звезды закрыты одной и той же луной — отдельное, самое редкое событие.
-    both_at_once = both_covered && state.stars[0].occluder == state.stars[1].occluder && state.stars[0].occluder >= 2;
-
-    bool lunar = false;
-    double lunar_depth = 0.0;
-    const bool night_visible = state.stars[0].horizon_fraction <= 0.0 && state.stars[1].horizon_fraction <= 0.0;
-    for (const auto& moon : state.moons) {
-      if (!night_visible || moon.horizon_fraction <= 0.0) continue;
-      if (moon.occluded_fraction <= options.min_lunar_eclipse) continue;
-      lunar = true;
-      lunar_depth = std::max(lunar_depth, moon.occluded_fraction);
-    }
-
-    // Покрытие луны луной — чисто наблюдательное событие: ближняя проходит перед дальней.
-    bool moon_over_moon = false;
-    double moon_over_depth = 0.0;
-    for (size_t a = 0; a < moon_count; ++a) {
-      for (size_t b = 0; b < moon_count; ++b) {
-        if (a == b) continue;
-        const auto& near = state.moons[a];
-        const auto& far = state.moons[b];
-        if (near.distance_km >= far.distance_km) continue;
-        if (near.horizon_fraction <= 0.0 || far.horizon_fraction <= 0.0) continue;
-
-        const double separation = angle_between(near.direction, far.direction);
-        const double fraction = disk_occluded_fraction(to_radians(separation), to_radians(far.angular_radius_deg),
-                                                       to_radians(near.angular_radius_deg));
-        if (fraction <= options.min_moon_occultation) continue;
-        moon_over_moon = true;
-        moon_over_depth = std::max(moon_over_depth, fraction);
-      }
-    }
-
-    double spread = 0.0;
-    bool all_visible = true;
-    std::vector<glm::dvec3> directions;
-    directions.reserve(2 + moon_count);
-    for (const auto& view : state.stars) {
-      if (view.altitude_deg <= 0.0) all_visible = false;
-      directions.push_back(view.direction);
-    }
-    for (const auto& view : state.moons) {
-      if (view.altitude_deg <= 0.0) all_visible = false;
-      directions.push_back(view.direction);
-    }
-    if (all_visible) {
-      for (size_t a = 0; a < directions.size(); ++a) {
-        for (size_t b = a + 1; b < directions.size(); ++b) {
-          spread = std::max(spread, angle_between(directions[a], directions[b]));
-        }
-      }
-    }
-
-    events[0].update(mutual, mutual_depth);
-    events[1].update(by_moon, by_moon_depth);
-    events[2].update(lunar, lunar_depth);
-    events[3].update(moon_over_moon, moon_over_depth);
-    events[4].update(all_visible && spread <= options.parade_threshold_deg, spread);
-    events[5].update(both_at_once, both_depth);
-    const bool anything = mutual || by_moon || lunar || moon_over_moon || both_at_once ||
-                          (all_visible && spread <= options.parade_threshold_deg);
-    unique_events.update(anything, std::max({mutual_depth, by_moon_depth, lunar_depth, moon_over_depth}));
-  }
+  const auto budget = calculate_event_budget(system, options);
+  constexpr std::array<std::string_view, size_t(observable_event_kind::count)> names{
+    "взаимное затмение солнц", "затмение солнца луной", "лунное затмение",
+    "покрытие луны луной", "парад всех тел", "луна закрывает оба солнца"};
 
   const double real_hours_per_game_day =
     minutes_per_day / options.game_minutes_per_real_second / 3600.0;
@@ -523,19 +420,21 @@ void print_event_budget(const celestial_system& system, const survey_options& op
                            options.game_minutes_per_real_second, real_hours_per_game_day * 60.0);
   std::cout << "  событие                       число  раз в, сут   реальных часов   сильнейшее\n";
 
-  for (const auto& event : events) {
+  for (size_t i = 0; i < budget.categories.size(); ++i) {
+    const auto& event = budget.categories[i];
     if (event.count == 0) {
-      std::cout << std::format("  {:<30} {:>5}  {:>10}   {:>14}   {:>10}\n", event.name, 0, "-", "-", "-");
+      std::cout << std::format("  {:<30} {:>5}  {:>10}   {:>14}   {:>10}\n", names[i], 0, "-", "-", "-");
       continue;
     }
     const double interval = options.budget_span_days / event.count;
-    std::cout << std::format("  {:<30} {:5}  {:10.0f}   {:14.1f}   {:10.3f}\n", event.name, event.count, interval,
+    std::cout << std::format("  {:<30} {:5}  {:10.0f}   {:14.1f}   {:10.3f}\n", names[i], event.count, interval,
                              interval * real_hours_per_game_day, event.strongest);
   }
 
-  if (unique_events.count > 0) {
-    const double interval = options.budget_span_days / unique_events.count;
-    std::cout << std::format("  {:<30} {:5}  {:10.0f}   {:14.1f}\n", unique_events.name, unique_events.count,
+  if (budget.unique.count > 0) {
+    const double interval = options.budget_span_days / budget.unique.count;
+    std::cout << std::format("  {:<30} {:5}  {:10.0f}   {:14.1f}\n", "уникальные наблюдаемые эпизоды",
+                             budget.unique.count,
                              interval, interval * real_hours_per_game_day);
   }
 }
@@ -638,6 +537,148 @@ void print_effect_scale(const celestial_system& system, const survey_options& op
 }
 
 } // namespace
+
+bool observable_event_state::any() const {
+  const auto positive = [](const double value) { return value > 0.0; };
+  return parade || std::ranges::any_of(star_occultation, positive) ||
+         std::ranges::any_of(lunar_eclipse, positive) || std::ranges::any_of(moon_occultation, positive);
+}
+
+void observe_events(const sky_state& state, const survey_options& options, observable_event_state& out) {
+  const size_t moon_count = state.moons.size();
+  out.star_occultation.fill(0.0);
+  out.lunar_eclipse.assign(moon_count, 0.0);
+  out.moon_occultation.assign(moon_count, 0.0);
+  out.moon_occulting_body.assign(moon_count, -1);
+  out.parade = false;
+  out.parade_spread_deg = 0.0;
+
+  for (size_t s = 0; s < state.stars.size(); ++s) {
+    const auto& star = state.stars[s];
+    if (star.horizon_fraction > 0.0 && star.occluded_fraction > options.min_star_occultation) {
+      out.star_occultation[s] = star.occluded_fraction;
+    }
+  }
+
+  const bool night = state.stars[0].horizon_fraction <= 0.0 && state.stars[1].horizon_fraction <= 0.0;
+  for (size_t m = 0; m < moon_count; ++m) {
+    const auto& moon = state.moons[m];
+    if (night && moon.horizon_fraction > 0.0 && moon.occluded_fraction > options.min_lunar_eclipse) {
+      out.lunar_eclipse[m] = moon.occluded_fraction;
+    }
+  }
+
+  // Для каждой дальней луны сохраняется только самое глубокое покрытие: два ближних диска одновременно
+  // практически невозможны, а календарю всё равно нужен один предмет и один закрывающий его объект.
+  for (size_t far_index = 0; far_index < moon_count; ++far_index) {
+    const auto& far = state.moons[far_index];
+    for (size_t near_index = 0; near_index < moon_count; ++near_index) {
+      if (near_index == far_index) continue;
+      const auto& near = state.moons[near_index];
+      if (near.distance_km >= far.distance_km) continue;
+      if (near.horizon_fraction <= 0.0 || far.horizon_fraction <= 0.0) continue;
+      const double separation = angle_between(near.direction, far.direction);
+      const double fraction = disk_occluded_fraction(to_radians(separation), to_radians(far.angular_radius_deg),
+                                                     to_radians(near.angular_radius_deg));
+      if (fraction <= options.min_moon_occultation || fraction <= out.moon_occultation[far_index]) continue;
+      out.moon_occultation[far_index] = fraction;
+      out.moon_occulting_body[far_index] = 3 + static_cast<int32_t>(near_index);
+    }
+  }
+
+  bool all_visible = true;
+  for (const auto& star : state.stars) {
+    all_visible = all_visible && star.horizon_fraction > 0.0;
+  }
+  for (const auto& moon : state.moons) {
+    all_visible = all_visible && moon.horizon_fraction > 0.0;
+  }
+  if (all_visible) {
+    const size_t body_count = state.stars.size() + moon_count;
+    const auto direction = [&](const size_t index) -> const glm::dvec3& {
+      return index < state.stars.size() ? state.stars[index].direction
+                                        : state.moons[index - state.stars.size()].direction;
+    };
+    for (size_t a = 0; a < body_count; ++a) {
+      for (size_t b = a + 1; b < body_count; ++b) {
+        out.parade_spread_deg = std::max(out.parade_spread_deg, angle_between(direction(a), direction(b)));
+      }
+    }
+    out.parade = out.parade_spread_deg <= options.parade_threshold_deg;
+  }
+}
+
+observable_event_budget calculate_event_budget(const celestial_system& system, const survey_options& options) {
+  observable_event_budget out;
+  constexpr size_t kind_count = size_t(observable_event_kind::count);
+  std::array<bool, kind_count> active{};
+  std::array<bool, kind_count> seen{};
+  bool unique_active = false;
+
+  const auto update = [&](const observable_event_kind kind, const bool condition, const double magnitude) {
+    const size_t index = size_t(kind);
+    if (!condition) {
+      active[index] = false;
+      return;
+    }
+    if (!seen[index]) {
+      out.categories[index].strongest = magnitude;
+      seen[index] = true;
+    } else if (kind == observable_event_kind::parade) {
+      out.categories[index].strongest = std::min(out.categories[index].strongest, magnitude);
+    } else {
+      out.categories[index].strongest = std::max(out.categories[index].strongest, magnitude);
+    }
+    if (active[index]) return;
+    active[index] = true;
+    ++out.categories[index].count;
+  };
+
+  const double step_days = options.budget_step_minutes / minutes_per_day;
+  const int32_t steps = static_cast<int32_t>(options.budget_span_days / step_days);
+  const double start_days = system.from_calendar(1, 0, 0.0);
+  observable_event_state observed;
+  for (int32_t i = 0; i <= steps; ++i) {
+    const auto state = system.evaluate(start_days + i * step_days);
+    observe_events(state, options, observed);
+
+    bool mutual = false;
+    bool by_moon = false;
+    double mutual_depth = 0.0;
+    double by_moon_depth = 0.0;
+    bool both_covered = true;
+    double both_depth = 1.0;
+    for (size_t s = 0; s < state.stars.size(); ++s) {
+      const double depth = observed.star_occultation[s];
+      const bool by_star = state.stars[s].occluder >= 0 && state.stars[s].occluder < 2;
+      const bool by_moon_body = state.stars[s].occluder >= 3;
+      mutual = mutual || (depth > 0.0 && by_star);
+      by_moon = by_moon || (depth > 0.0 && by_moon_body);
+      if (by_star) mutual_depth = std::max(mutual_depth, depth);
+      if (by_moon_body) by_moon_depth = std::max(by_moon_depth, depth);
+      if (depth > 0.0 && by_moon_body) both_depth = std::min(both_depth, depth);
+      else both_covered = false;
+    }
+    const bool both_at_once = both_covered && state.stars[0].occluder == state.stars[1].occluder &&
+                              state.stars[0].occluder >= 3;
+    const double lunar_depth = observed.lunar_eclipse.empty()
+                                 ? 0.0 : *std::ranges::max_element(observed.lunar_eclipse);
+    const double moon_over_depth = observed.moon_occultation.empty()
+                                     ? 0.0 : *std::ranges::max_element(observed.moon_occultation);
+
+    update(observable_event_kind::mutual_stars, mutual, mutual_depth);
+    update(observable_event_kind::star_by_moon, by_moon, by_moon_depth);
+    update(observable_event_kind::lunar_eclipse, lunar_depth > 0.0, lunar_depth);
+    update(observable_event_kind::moon_by_moon, moon_over_depth > 0.0, moon_over_depth);
+    update(observable_event_kind::parade, observed.parade, observed.parade_spread_deg);
+    update(observable_event_kind::moon_over_both_stars, both_at_once, both_depth);
+
+    if (observed.any() && !unique_active) ++out.unique.count;
+    unique_active = observed.any();
+  }
+
+  return out;
+}
 
 void run_survey(const celestial_system& system, const survey_options& options) {
   print_structure(system);

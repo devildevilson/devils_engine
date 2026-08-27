@@ -20,6 +20,7 @@ struct view_options {
   bool uncapped = false;
   uint32_t frames = 0;              // ноль — до закрытия окна
   std::string dump_path;            // непустой путь дампит кадр перед выходом
+  bool show_overlay = true;         // эталонные кадры отключают меняющиеся FPS/timestamps
   double start_time_days = 0.0;
   // Старт по абсолютному календарному году. Ноль означает «не задано»: тогда действует
   // `start_time_days`. Положение внутри семилетнего beat выводится отдельно и не подменяет дату.

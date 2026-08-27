@@ -42,10 +42,10 @@ void main() {
   if (in_position_material.w > 0.5) {
     world += pf07_wind_sway(world, in_position.y, in_half_roughness.w, sky_data.sky.wind_params);
   }
-  // Нормаль в этом конвейере не нужна, но объявлена: раскладка вершин общая с основным проходом, и
-  // убрать её отсюда значило бы завести вторую геометрию ради одного шейдера. Множитель — ноль из
-  // данных, а не литерал: литерал свернулся бы до отражения вершинного входа.
-  world += in_normal * (in_position_material.w * 0.0);
+  // Нормаль в этом конвейере не нужна, но p3n3-геометрия общая с основным проходом. Резервное поле
+  // UBO равно нулю в рантайме, однако компилятор не может свернуть его до отражения интерфейса — так
+  // validation видит честное потребление location 1 без второй раскладки вершин только ради depth.
+  world += in_normal * sky_data.sky.grade_curve.w;
 
   gl_Position = shadow_data.cascades[region.data_index].light_view_projection * vec4(world, 1.0);
 }

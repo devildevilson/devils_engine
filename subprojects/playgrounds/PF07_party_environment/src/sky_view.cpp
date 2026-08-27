@@ -332,6 +332,11 @@ void write_overlay_buffers(painter::graphics_base& base, const playground::visag
   if (!commands.empty()) std::memcpy(destination + sizeof(count), commands.data(), commands.size_bytes());
 }
 
+void clear_overlay_commands(painter::graphics_base& base) {
+  const uint32_t count = 0;
+  write_current_buffer(base, "ui_commands", &count, sizeof(count));
+}
+
 void bind_texture_descriptor(painter::graphics_base& base, const painter::assets_base& assets,
                              const std::string_view descriptor_name) {
   const uint32_t slot = base.find_descriptor(descriptor_name);
@@ -1075,14 +1080,18 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
         std::format("Colour script: tint ({:.2f} {:.2f} {:.2f}) · saturation {:.2f} · contrast {:.2f}",
                     output.grade_tint.x, output.grade_tint.y, output.grade_tint.z, output.grade_saturation,
                     output.grade_contrast)};
-      overlay.set_detail_lines(details);
-      const uint64_t frame_delta_us = uint64_t(std::max(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::duration<float>(dt)).count(),
-        int64_t{1}));
-      const uint64_t timestamp_us =
-        uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
-      if (!overlay.update(frame_delta_us, timestamp_us)) utils::warn("PF07 Visage overlay update failed");
-      write_overlay_buffers(base, overlay);
+      if (options.show_overlay) {
+        overlay.set_detail_lines(details);
+        const uint64_t frame_delta_us = uint64_t(std::max(
+          std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::duration<float>(dt)).count(),
+          int64_t{1}));
+        const uint64_t timestamp_us =
+          uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
+        if (!overlay.update(frame_delta_us, timestamp_us)) utils::warn("PF07 Visage overlay update failed");
+        write_overlay_buffers(base, overlay);
+      } else {
+        clear_overlay_commands(base);
+      }
 
       context.prepare();
       context.draw();
