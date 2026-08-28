@@ -1,0 +1,63 @@
+{
+  name = transmittance_material
+  shaders = { compute = "transmittance.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = multiscatter_material
+  shaders = { compute = "multiscatter.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = sky_view_material
+  shaders = { compute = "sky_view.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = aerial_material
+  shaders = { compute = "aerial.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = sky_material
+  shaders = { vertex = "fullscreen.vert.glsl", fragment = "sky.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = compose_material
+  shaders = { vertex = "fullscreen.vert.glsl", fragment = "compose.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = ui_material
+  shaders = { vertex = "ui.vert.glsl", fragment = "ui.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = meter_material
+  shaders = { compute = "meter.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = scene_material
+  shaders = { vertex = "scene.vert.glsl", fragment = "scene.frag.glsl" }
+  depth = { test = true, write = true, compare = greater }
+  raster = { cull = back, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  // Смещение глубины борется с самозатенением: приёмник и кастер — одна и та же поверхность, и без
+  // смещения она затеняет сама себя полосами. Наклонная составляющая обязательна, потому что ошибка
+  // растёт с углом между нормалью и лучом света.
+  name = shadow_material
+  shaders = { vertex = "shadow.vert.glsl", fragment = "depth.frag.glsl" }
+  depth = { test = true, write = true, compare = greater }
+  raster = { cull = back, front_face = ccw, polygon = fill, line_width = 1.0, depth_bias = true, bias_constant = -0.6, bias_slope = -1.6 }
+}

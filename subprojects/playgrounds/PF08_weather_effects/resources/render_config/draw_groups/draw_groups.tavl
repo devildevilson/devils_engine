@@ -1,0 +1,9 @@
+// Инстансы опорной геометрии: центр и id материала, половинные размеры и шероховатость, альбедо.
+// Раскладка совпадает с PF06 сознательно — это уже проверенный контракт, а не новый.
+{
+  name = scene_draw_group
+  layout = v4v4v4
+  budget = scene_instances
+  draw_capacity = scene_draws
+  type = host_visible
+}

@@ -1,0 +1,46 @@
+{ name = swapchain_image, format = swapchain4, role = present, size = viewport, swap = swapchain }
+// Небо считается в физических единицах и не помещается в LDR: канал HDR обязателен, иначе закат
+// и ночь нельзя сравнивать одним и тем же выводом.
+{ name = sky_color, format = sf4, role = hdr_color, size = viewport, swap = per_frame }
+{ name = final_color, format = sf4, role = postprocess_output, size = viewport, swap = per_frame }
+// Доля света, доходящая от точки атмосферы до её верхней границы. Считается один раз на кадр и
+// заменяет вложенный марш к светилу одной выборкой.
+{ name = transmittance_lut, format = sf4, role = color_lut, size = transmittance_lut_size, swap = per_frame }
+// Свет, рассеянный дважды и более, свёрнутый в геометрическую сумму порядков.
+{
+  name = multiscatter_lut
+  format = sf4
+  role = color_lut
+  size = multiscatter_lut_size
+  swap = atmosphere_cache
+  type = doublebuffer
+}
+// Воздух между камерой и точкой сцены: rgb — набранное рассеяние, a — светимость прохождения.
+{ name = aerial_lut, format = sf4, role = color_lut, size = aerial_lut_size, swap = per_frame }
+// Однократное рассеяние по всем направлениям неба. rgb — яркость, a — светимость прохождения вдоль луча.
+{ name = sky_view_lut, format = sf4, role = color_lut, size = sky_view_lut_size, swap = per_frame }
+{ name = camera_buffer, format = mat4mat4v4v4, role = upload, size = one, swap = per_frame }
+// Небесная обстановка кадра: два светила, четыре луны, параметры атмосферы и вывода.
+{
+  name = sky_buffer
+  format = v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4
+  role = upload
+  size = one
+  swap = per_frame
+}
+{ name = ui_vertices, format = c1, role = upload, size = ui_vertices_bytes, swap = per_frame }
+{ name = ui_indices, format = c1, role = upload, size = ui_indices_bytes, swap = per_frame }
+{ name = ui_commands, format = c1, role = upload, size = ui_commands_bytes, swap = per_frame }
+// Итог замера: одно число — средняя геометрическая яркость кадра. Роль readback означает память,
+// видимую хосту, поэтому читается оно без ожидания видеокарты: на кадре N хост берёт ту копию, которую
+// видеокарта заполняла на кадре N минус глубина буферизации, и та давно готова. Задержка в пару кадров
+// для экспозиции невидима — адаптация всё равно размазана на секунды.
+{ name = exposure_meter, format = v4, role = readback, size = one, swap = per_frame }
+// Глубина сцены. До среза 4 её не было вовсе: кадр состоял из полноэкранных проходов, где порядок
+// задан графом, а не расстоянием. Предметы обязаны разбираться между собой сами.
+{ name = scene_depth, format = d32, role = depth, size = viewport, swap = per_frame }
+// Карта теней двух источников. Один образ на всё: раскладка передаётся данными, поэтому число
+// каскадов и число источников меняются без правки шейдера.
+{ name = shadow_atlas, format = d32, role = shadow_map, size = shadow_atlas_size, swap = per_frame }
+{ name = cascade_buffer, format = mat4v4v4v4, role = upload, size = cascade_records, swap = per_frame }
+{ name = shadow_region_commands, format = c1, role = upload, size = shadow_region_bytes, swap = per_frame }

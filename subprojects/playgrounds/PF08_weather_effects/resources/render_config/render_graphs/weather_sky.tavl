@@ -1,0 +1,122 @@
+{
+  name = pf08_weather_sky
+  startup = true
+  passes = [
+    {
+      // Карта теней. Все каскады обоих источников рисуются ОДНИМ проходом: команда региона несёт свой
+      // viewport и индекс каскада, поэтому шесть карт стоят одного прохода, а не шести.
+      name = pf08_shadow
+      render_target = shadow_target
+      subpasses = [
+        { shadow_atlas = (undefined, clear) },
+        { shadow_atlas = (depth_attachment, store) },
+        { shadow_atlas = (depth_read, store) }
+      ]
+      steps = [ draw_shadow_cascades ]
+    },
+    {
+      // Таблица прохождения зависит только от параметров среды, поэтому пересчитывается один раз за
+      // кадр и стоит копейки: 256x64 отсчёта против двух миллионов пикселей кадра.
+      name = pf08_transmittance
+      subpasses = [
+        { transmittance_lut = (texel_write, store) }
+      ]
+      steps = [ build_transmittance ]
+    },
+    {
+      // Свет высоких порядков. Считается после прохождения, потому что опирается на него, и до неба,
+      // потому что небо им пользуется.
+      name = pf08_multiscatter
+      // Пасс исполняется только в кадрах, где хост сдвинул счётчик. В остальных он не пишет ни одной
+      // команды, и в отчёте таймстемпов это видно как ноль миллисекунд.
+      counter = atmosphere_cache
+      subpasses = [
+        { transmittance_lut = (sampled, store), multiscatter_lut = (texel_write, store) }
+      ]
+      steps = [ build_multiscatter ]
+    },
+    {
+      // Небо целиком, посчитанное один раз за кадр в маленькую таблицу. Отсюда и берётся отвязка цены
+      // кадра от разрешения экрана: 192x108 отсчётов вместо двух миллионов пикселей.
+      name = pf08_sky_view
+      subpasses = [
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (texel_write, store) }
+      ]
+      steps = [ build_sky_view ]
+    },
+    {
+      // Воздух между камерой и сценой. Зависит от ориентации камеры, поэтому пересчитывается каждый
+      // кадр — но всего 32x32 луча, а не два миллиона.
+      name = pf08_aerial
+      subpasses = [
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), aerial_lut = (texel_write, store) }
+      ]
+      steps = [ build_aerial ]
+    },
+    {
+      // Небо не пишет глубину: атмосферный цвет приходит из LUT, а диски и звёздное поле
+      // композятся поверх него в том же fullscreen-проходе. Земля отсюда вынесена в геометрию.
+      name = pf08_sky
+      render_target = sky_target
+      subpasses = [
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (undefined, clear) },
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store) },
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store) }
+      ]
+      steps = [ draw_sky ]
+    },
+    {
+      // Вся поверхность сцены: камера-следующий изогнутый диск земли, статическая долина, опорные
+      // предметы и заросли. Идёт после неба в тот же образ и впервые заполняет глубину.
+      name = pf08_scene
+      render_target = scene_target
+      subpasses = [
+        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store), scene_depth = (undefined, clear) },
+        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store), scene_depth = (depth_attachment, store) },
+        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (sampled, store), scene_depth = (depth_read, store) }
+      ]
+      steps = [ draw_scene ]
+    },
+    {
+      // Замер экспозиции. Стоит ПОСЛЕ неба и ДО вывода, потому что читает физическую яркость сцены,
+      // а вывод её уже сжимает: после тонмаппинга измерять нечего. Хост подхватывает результат на
+      // следующем кадре, поэтому обратной связи «экспозиция влияет на замер» здесь нет — в sky_color
+      // лежит яркость до всякого умножения.
+      name = pf08_meter
+      subpasses = [
+        { sky_color = (sampled, store), exposure_meter = (storage_write, store) }
+      ]
+      steps = [ measure_scene ]
+    },
+    {
+      name = pf08_compose
+      render_target = compose_target
+      subpasses = [
+        { sky_color = (sampled, store), final_color = (undefined, clear) },
+        { sky_color = (sampled, store), final_color = (color_attachment, store) },
+        { sky_color = (sampled, store), final_color = (color_attachment, store) }
+      ]
+      steps = [ compose_sky ]
+    },
+    {
+      name = pf08_ui
+      render_target = ui_target
+      subpasses = [
+        { final_color = (color_attachment, store) },
+        { final_color = (color_attachment, store) },
+        { final_color = (transfer_src, store) }
+      ]
+      steps = [ draw_overlay ]
+    },
+    {
+      name = pf08_present
+      wait_for = [ swapchain_image ]
+      subpasses = [
+        { final_color = (transfer_src, store), swapchain_image = (transfer_dst, store) },
+        { final_color = (transfer_src, store), swapchain_image = (present, store) }
+      ]
+      steps = [ present_scene ]
+    }
+  ]
+  present_source = swapchain_image
+}

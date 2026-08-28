@@ -1,0 +1,91 @@
+{ name = camera_data, layout = [ { resource = camera_buffer, usage = uniform, stage = all } ] }
+{
+  name = transmittance_write
+  layout = [
+    { resource = sky_buffer, usage = uniform, stage = compute },
+    { resource = transmittance_lut, usage = texel_write, stage = compute }
+  ]
+}
+{
+  name = multiscatter_write
+  layout = [
+    { resource = sky_buffer, usage = uniform, stage = compute },
+    { resource = transmittance_lut, usage = sampled, stage = compute, sampler = linear_sampler },
+    { resource = multiscatter_lut, usage = texel_write, stage = compute }
+  ]
+}
+{
+  name = sky_view_write
+  layout = [
+    { resource = sky_buffer, usage = uniform, stage = compute },
+    { resource = transmittance_lut, usage = sampled, stage = compute, sampler = linear_sampler },
+    { resource = multiscatter_lut, usage = sampled, stage = compute, sampler = linear_sampler },
+    { resource = sky_view_lut, usage = texel_write, stage = compute }
+  ]
+}
+{
+  name = aerial_write
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = compute },
+    { resource = sky_buffer, usage = uniform, stage = compute },
+    { resource = transmittance_lut, usage = sampled, stage = compute, sampler = linear_sampler },
+    { resource = multiscatter_lut, usage = sampled, stage = compute, sampler = linear_sampler },
+    { resource = aerial_lut, usage = texel_write, stage = compute }
+  ]
+}
+{
+  name = sky_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = fragment },
+    { resource = sky_buffer, usage = uniform, stage = fragment },
+    { resource = transmittance_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = multiscatter_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = sky_view_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = aerial_lut, usage = sampled, stage = fragment, sampler = linear_sampler }
+  ]
+}
+{
+  name = compose_data
+  layout = [
+    { resource = sky_color, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = sky_buffer, usage = uniform, stage = fragment }
+  ]
+}
+{
+  name = ui_textures
+  texture_count = 16
+  sampler_pool = [ linear_sampler ]
+  texture_stage = fragment
+}
+{
+  name = meter_write
+  layout = [
+    { resource = sky_color, usage = sampled, stage = compute, sampler = linear_sampler },
+    { resource = exposure_meter, usage = storage_write, stage = compute }
+  ]
+}
+{
+  name = scene_lighting
+  layout = [
+    { resource = sky_buffer, usage = uniform, stage = all },
+    { resource = transmittance_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = sky_view_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = aerial_lut, usage = sampled, stage = fragment, sampler = linear_sampler }
+  ]
+}
+{
+  // Блок неба нужен и построению теней: там же считается качание зарослей, и считаться оно обязано
+  // ровно тем же кодом и теми же данными, что в основном проходе.
+  name = shadow_write
+  layout = [
+    { resource = cascade_buffer, usage = storage_read, stage = all },
+    { resource = sky_buffer, usage = uniform, stage = all }
+  ]
+}
+{
+  name = shadow_sample
+  layout = [
+    { resource = cascade_buffer, usage = storage_read, stage = fragment },
+    { resource = shadow_atlas, usage = depth_read, sampler = shadow_compare, stage = fragment }
+  ]
+}
