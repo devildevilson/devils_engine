@@ -78,13 +78,33 @@
       steps = [ draw_scene ]
     },
     {
-      // Замер экспозиции. Стоит ПОСЛЕ неба и ДО вывода, потому что читает физическую яркость сцены,
+      // Однородная среда интегрируется в настоящей 3D-сетке. Свет двух звёзд и лун приходит из того
+      // же sky block, а их тени — из тех же каскадов; отдельной «погодной лампы» здесь нет.
+      name = pf08_fog_volume
+      subpasses = [
+        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), shadow_atlas = (depth_read, store), fog_volume = (texel_write, store) }
+      ]
+      steps = [ build_fog_volume ]
+    },
+    {
+      // HDR-композиция обязана стоять до замера: экспонометр должен видеть именно туманное изображение.
+      name = pf08_fog_apply
+      render_target = weather_target
+      subpasses = [
+        { sky_color = (sampled, store), scene_depth = (depth_read, store), fog_volume = (sampled, store), weather_color = (undefined, clear) },
+        { sky_color = (sampled, store), scene_depth = (depth_read, store), fog_volume = (sampled, store), weather_color = (color_attachment, store) },
+        { sky_color = (sampled, store), scene_depth = (depth_read, store), fog_volume = (sampled, store), weather_color = (sampled, store) }
+      ]
+      steps = [ apply_fog ]
+    },
+    {
+      // Замер экспозиции. Стоит ПОСЛЕ среды и ДО вывода, потому что читает физическую яркость сцены,
       // а вывод её уже сжимает: после тонмаппинга измерять нечего. Хост подхватывает результат на
-      // следующем кадре, поэтому обратной связи «экспозиция влияет на замер» здесь нет — в sky_color
-      // лежит яркость до всякого умножения.
+      // следующем кадре, поэтому обратной связи «экспозиция влияет на замер» здесь нет — в
+      // weather_color лежит яркость до всякого умножения.
       name = pf08_meter
       subpasses = [
-        { sky_color = (sampled, store), exposure_meter = (storage_write, store) }
+        { weather_color = (sampled, store), exposure_meter = (storage_write, store) }
       ]
       steps = [ measure_scene ]
     },
@@ -92,9 +112,9 @@
       name = pf08_compose
       render_target = compose_target
       subpasses = [
-        { sky_color = (sampled, store), final_color = (undefined, clear) },
-        { sky_color = (sampled, store), final_color = (color_attachment, store) },
-        { sky_color = (sampled, store), final_color = (color_attachment, store) }
+        { weather_color = (sampled, store), final_color = (undefined, clear) },
+        { weather_color = (sampled, store), final_color = (color_attachment, store) },
+        { weather_color = (sampled, store), final_color = (color_attachment, store) }
       ]
       steps = [ compose_sky ]
     },

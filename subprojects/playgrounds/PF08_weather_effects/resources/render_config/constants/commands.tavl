@@ -7,6 +7,8 @@
 { name = multiscatter_dispatch, layout = dispatch3, value = [4.0, 4.0, 1.0] }
 // 32x32 нитей по экранным осям; третью ось каждая нить проходит сама нарастающим итогом.
 { name = aerial_dispatch, layout = dispatch3, value = [4.0, 4.0, 1.0] }
+// 160x90 при группе 8x8: последняя строка групп обрезается проверкой границ.
+{ name = fog_dispatch, layout = dispatch3, value = [20.0, 12.0, 1.0] }
 {
   name = ui_push
   layout = ui1ui1ui1ui1ui1ui1ui1

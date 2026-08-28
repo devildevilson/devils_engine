@@ -9,6 +9,7 @@
 #define PF08_SURFACE_GLSL
 
 #include "pf08_atmosphere.glsl"
+#include "pf08_local_medium.glsl"
 #ifndef PF08_SURFACE_NO_SHADOWS
 #include "pf08_shadow_sample.glsl"
 #endif
@@ -96,8 +97,13 @@ vec3 pf08_surface_illuminance(const pf08_sky_block sky, const sampler2D transmit
       slot < 0 ? 1.0 : pf08_shadow_visibility(slot, scene_position, normal, view_distance, receiver_bias_scale);
     if (visibility <= 0.0) continue;
 
-    const vec3 light_transmittance =
+    vec3 light_transmittance =
       pf08_transmittance_to_light(sky, transmittance_lut, planet_point, light_direction);
+    // Shadow map отвечает только за геометрическую видимость. В тумане даже видимое светило доходит
+    // до поверхности ослабленным; без этого множителя густой объём оставлял сухие резкие тени.
+    if (sky.fog_params.x > 0.0) {
+      light_transmittance *= pf08_fog_light_transmittance(sky, scene_position, light_direction);
+    }
     total += light_transmittance * sky.star_color_illuminance[s].rgb * illuminance * cosine * visibility;
   }
 
@@ -113,7 +119,11 @@ vec3 pf08_surface_illuminance(const pf08_sky_block sky, const sampler2D transmit
     const int slot = pf08_shadow_slot(sky, float(PF08_STAR_COUNT + m));
     const float visibility =
       slot < 0 ? 1.0 : pf08_shadow_visibility(slot, scene_position, normal, view_distance, receiver_bias_scale);
-    total += sky.moon_color_illuminance[m].rgb * illuminance * cosine * visibility;
+    float local_medium = 1.0;
+    if (sky.fog_params.x > 0.0) {
+      local_medium = pf08_fog_light_transmittance(sky, scene_position, light_direction);
+    }
+    total += sky.moon_color_illuminance[m].rgb * illuminance * cosine * visibility * local_medium;
   }
 
   return total * direct_visibility + pf08_sky_illuminance(sky_view_lut, normal) * sky_visibility;

@@ -72,10 +72,17 @@ void print_usage() {
                "  --ev=F              зафиксировать EV100 вместо адаптации\n"
                "  --ev-bias=F         экспокоррекция в стопах\n"
                "  --preset=NAME       именованное состояние: noon, double_sunset, night, eclipse\n"
-               "  --weather=NAME      погодное состояние: clear, haze, windy\n"
+               "  --weather=NAME      погодное состояние: clear, haze, windy, fog\n"
                "  --weather-transition=S  длительность runtime-перехода по T, реальные секунды\n"
                "  --night-vision=F    сила ночного зрения, 0 отключает\n"
                "  --turbidity=F       множитель аэрозоля\n"
+               "  --fog-extinction=F  extinction локального тумана, 1/м (0 = точный clear)\n"
+               "  --fog-albedo=F      альбедо рассеяния локального тумана, 0..1\n"
+               "  --fog-anisotropy=F  HG-анизотропия локального тумана, -0.85..0.85\n"
+               "  --fog-base=M        высота начала экспоненциального спада плотности\n"
+               "  --fog-height=M      scale height туманного слоя\n"
+               "  --fog-range=M       дальность froxel-объёма в метрах\n"
+               "  --debug=8           показать transmittance froxel-объёма напрямую\n"
                "  --march-steps=N     шагов основного марша неба\n"
                "  --aerial-range=KM   дальность таблицы воздушной перспективы\n"
                "  --camera-height=KM  высота наблюдателя над поверхностью\n"
@@ -204,6 +211,23 @@ bool parse_options(const int argc, char** argv, options& out) {
     } else if (read_prefixed(argument, "--turbidity=", value)) {
       out.view.atmosphere.turbidity = std::stod(value);
       out.view.turbidity_overridden = true;
+    } else if (read_prefixed(argument, "--fog-extinction=", value)) {
+      out.view.fog_extinction_per_m = std::stod(value);
+      out.view.fog_extinction_overridden = true;
+    } else if (read_prefixed(argument, "--fog-albedo=", value)) {
+      out.view.fog_scattering_albedo = std::stod(value);
+      out.view.fog_albedo_overridden = true;
+    } else if (read_prefixed(argument, "--fog-anisotropy=", value)) {
+      out.view.fog_anisotropy = std::stod(value);
+      out.view.fog_anisotropy_overridden = true;
+    } else if (read_prefixed(argument, "--fog-base=", value)) {
+      out.view.fog_base_height_m = std::stod(value);
+      out.view.fog_base_overridden = true;
+    } else if (read_prefixed(argument, "--fog-height=", value)) {
+      out.view.fog_scale_height_m = std::stod(value);
+      out.view.fog_height_overridden = true;
+    } else if (read_prefixed(argument, "--fog-range=", value)) {
+      out.view.fog_range_m = std::stod(value);
     } else if (read_prefixed(argument, "--march-steps=", value)) {
       out.view.march.primary_steps = int32_t(std::stol(value));
     } else if (read_prefixed(argument, "--camera-height=", value)) {
@@ -813,7 +837,7 @@ void verify_weather(checker& check) {
   check.expect(parsed, "погодные пресеты разобраны", diagnostics);
   if (!parsed) return;
 
-  check.expect(presets.presets.size() == 3, "первый погодный срез содержит три честных состояния",
+  check.expect(presets.presets.size() == 4, "погодные пресеты содержат три surface/atmosphere состояния и туман",
                std::format("получено {}", presets.presets.size()));
   const auto* clear = pf08::find_weather_preset(presets, "clear");
   check.expect(clear != nullptr, "clear weather объявлена");
@@ -822,15 +846,41 @@ void verify_weather(checker& check) {
     check.expect_near(state.aerosol_turbidity, 1.0, 0.0, "clear сохраняет baseline-аэрозоль");
     check.expect_near(state.wind_direction_deg, 250.0, 0.0, "clear сохраняет baseline-направление ветра");
     check.expect_near(state.wind_strength_m, 0.22, 0.0, "clear сохраняет baseline-силу ветра");
+    check.expect_near(state.fog_extinction_per_m, 0.0, 0.0, "clear точно отключает локальную среду");
+  }
+
+  const auto* fog = pf08::find_weather_preset(presets, "fog");
+  check.expect(fog != nullptr, "fog weather объявлена");
+  if (fog != nullptr) {
+    const auto state = pf08::state_from_preset(*fog);
+    const auto integral = pf08::integrate_homogeneous_fog(
+      state.fog_extinction_per_m, state.fog_scattering_albedo, 100.0);
+    check.expect_near(integral.transmittance, std::exp(-1.8), 1e-14,
+                      "однородный туман совпадает с аналитическим Beer-Lambert");
+    check.expect_near(integral.in_scattering_fraction,
+                      state.fog_scattering_albedo * (1.0 - std::exp(-1.8)), 1e-14,
+                      "однородное рассеяние интегрируется аналитически");
+    check.expect_near(pf08::fog_density_at_height(state.fog_base_height_m + state.fog_scale_height_m,
+                                                  state.fog_base_height_m,
+                                                  state.fog_scale_height_m), std::exp(-1.0), 1e-14,
+                      "высотный профиль теряет e раз на scale height");
+    check.expect_near(pf08::fog_light_transmittance(state.fog_extinction_per_m, 0.0, 1.0,
+                                                    state.fog_base_height_m, state.fog_scale_height_m),
+                      std::exp(-state.fog_extinction_per_m * state.fog_scale_height_m), 1e-14,
+                      "вертикальный свет получает аналитическую толщину туманного слоя");
   }
 
   check.expect_near(pf08::normalize_weather_direction(-10.0), 350.0, 0.0,
                     "направление ветра нормализуется по кругу");
-  const pf08::weather_state west{1.0, 350.0, 0.2};
-  const pf08::weather_state east{2.0, 10.0, 0.6};
+  const pf08::weather_state west{1.0, 350.0, 0.2, 0.0, 0.92, 0.35, 0.0, 80.0};
+  const pf08::weather_state east{2.0, 10.0, 0.6, 0.02, 0.80, -0.15, 10.0, 40.0};
   const auto middle = pf08::interpolate_weather(west, east, 0.5);
   check.expect_near(middle.wind_direction_deg, 0.0, 1e-12,
                     "переход ветра идёт по короткой дуге через север");
+  check.expect_near(middle.fog_extinction_per_m, 0.01, 1e-12,
+                    "локальная среда входит в тот же непрерывный погодный переход");
+  check.expect_near(middle.fog_scale_height_m, 60.0, 1e-12,
+                    "форма локальной среды интерполируется вместе с её плотностью");
 
   pf08::weather_transition transition;
   transition.snap("west", west);

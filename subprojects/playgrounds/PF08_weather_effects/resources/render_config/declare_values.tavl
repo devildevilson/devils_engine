@@ -17,6 +17,9 @@
 // Воздушная перспектива: две экранные оси и ось расстояния. Настоящий куб, третья ось доезжает до
 // образа, а не только до размера буфера.
 { name = aerial_lut_size, type = fixed_3d, value = [32, 32, 32] }
+// Локальная среда: 160x90 покрывает 1080p одним froxel на 12 экранных пикселей по каждой оси,
+// 32 слоя распределены квадратично. RGBA16F занимает 3.5 MiB на кадр.
+{ name = fog_volume_size, type = fixed_3d, value = [160, 90, 32] }
 { name = ui_vertices_bytes, type = fixed, value = [524288, 0, 0] }
 { name = ui_indices_bytes, type = fixed, value = [131072, 0, 0] }
 { name = ui_commands_bytes, type = fixed, value = [16384, 0, 0] }

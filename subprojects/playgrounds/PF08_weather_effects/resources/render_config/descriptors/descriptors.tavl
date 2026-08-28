@@ -47,7 +47,7 @@
 {
   name = compose_data
   layout = [
-    { resource = sky_color, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = weather_color, usage = sampled, stage = fragment, sampler = linear_sampler },
     { resource = sky_buffer, usage = uniform, stage = fragment }
   ]
 }
@@ -60,7 +60,7 @@
 {
   name = meter_write
   layout = [
-    { resource = sky_color, usage = sampled, stage = compute, sampler = linear_sampler },
+    { resource = weather_color, usage = sampled, stage = compute, sampler = linear_sampler },
     { resource = exposure_meter, usage = storage_write, stage = compute }
   ]
 }
@@ -85,7 +85,27 @@
 {
   name = shadow_sample
   layout = [
-    { resource = cascade_buffer, usage = storage_read, stage = fragment },
-    { resource = shadow_atlas, usage = depth_read, sampler = shadow_compare, stage = fragment }
+    { resource = cascade_buffer, usage = storage_read, stage = all },
+    { resource = shadow_atlas, usage = depth_read, sampler = shadow_compare, stage = all }
+  ]
+}
+{
+  name = fog_write
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = compute },
+    { resource = sky_buffer, usage = uniform, stage = compute },
+    { resource = transmittance_lut, usage = sampled, stage = compute, sampler = linear_sampler },
+    { resource = sky_view_lut, usage = sampled, stage = compute, sampler = linear_sampler },
+    { resource = fog_volume, usage = texel_write, stage = compute }
+  ]
+}
+{
+  name = fog_apply_data
+  layout = [
+    { resource = sky_color, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = scene_depth, usage = depth_read, stage = fragment, sampler = nearest_sampler },
+    { resource = fog_volume, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = camera_buffer, usage = uniform, stage = fragment },
+    { resource = sky_buffer, usage = uniform, stage = fragment }
   ]
 }

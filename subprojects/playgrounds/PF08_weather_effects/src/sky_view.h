@@ -62,6 +62,12 @@ struct view_options {
   // Ветер: направление в градусах от севера через восток и сила в метрах отклонения верхушки.
   double wind_direction_deg = 250.0;
   double wind_strength_m = 0.22;
+  double fog_extinction_per_m = 0.0;
+  double fog_scattering_albedo = 0.92;
+  double fog_anisotropy = 0.35;
+  double fog_base_height_m = 0.0;
+  double fog_scale_height_m = 80.0;
+  double fog_range_m = 220.0;
   // Preset заполняет единое погодное состояние; прямые CLI-рычаги ниже могут независимо перекрыть
   // его поля для A/B. Отрицательная длительность означает значение из weather/presets.tavl.
   std::string weather_preset = "clear";
@@ -70,6 +76,11 @@ struct view_options {
   bool turbidity_overridden = false;
   bool wind_direction_overridden = false;
   bool wind_strength_overridden = false;
+  bool fog_extinction_overridden = false;
+  bool fog_albedo_overridden = false;
+  bool fog_anisotropy_overridden = false;
+  bool fog_base_overridden = false;
+  bool fog_height_overridden = false;
   // Фиксированное наведение камеры для повторяемых дампов: сравнивать состояния можно только из
   // одной и той же точки зрения, а мышь для этого не годится.
   bool fixed_look = false;

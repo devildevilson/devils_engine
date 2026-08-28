@@ -61,3 +61,15 @@
   depth = { test = true, write = true, compare = greater }
   raster = { cull = back, front_face = ccw, polygon = fill, line_width = 1.0, depth_bias = true, bias_constant = -0.6, bias_slope = -1.6 }
 }
+{
+  name = fog_material
+  shaders = { compute = "fog.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = fog_apply_material
+  shaders = { vertex = "fullscreen.vert.glsl", fragment = "fog_apply.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}

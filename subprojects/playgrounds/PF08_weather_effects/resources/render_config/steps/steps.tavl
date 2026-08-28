@@ -69,3 +69,16 @@
   push_constants = [ region_index_push ]
   command = "draw_regions cascade_buffer shadow_region_commands"
 }
+{
+  name = build_fog_volume
+  material = fog_material
+  sets = [ fog_write, shadow_sample ]
+  command = "dispatch constant fog_dispatch"
+}
+{
+  name = apply_fog
+  material = fog_apply_material
+  geometry = fullscreen_geometry
+  sets = [ fog_apply_data ]
+  command = "draw constant fullscreen_draw"
+}

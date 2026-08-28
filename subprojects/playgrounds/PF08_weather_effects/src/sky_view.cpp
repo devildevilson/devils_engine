@@ -568,12 +568,23 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     if (options.turbidity_overridden) state.aerosol_turbidity = options.atmosphere.turbidity;
     if (options.wind_direction_overridden) state.wind_direction_deg = options.wind_direction_deg;
     if (options.wind_strength_overridden) state.wind_strength_m = options.wind_strength_m;
+    if (options.fog_extinction_overridden) state.fog_extinction_per_m = options.fog_extinction_per_m;
+    if (options.fog_albedo_overridden) state.fog_scattering_albedo = options.fog_scattering_albedo;
+    if (options.fog_anisotropy_overridden) state.fog_anisotropy = options.fog_anisotropy;
+    if (options.fog_base_overridden) state.fog_base_height_m = options.fog_base_height_m;
+    if (options.fog_height_overridden) state.fog_scale_height_m = options.fog_scale_height_m;
     state.wind_direction_deg = normalize_weather_direction(state.wind_direction_deg);
     if (!std::isfinite(state.aerosol_turbidity) || state.aerosol_turbidity <= 0.0 ||
         !std::isfinite(state.wind_direction_deg) || !std::isfinite(state.wind_strength_m) ||
-        state.wind_strength_m < 0.0) {
-      utils::error{}("PF08 effective weather state is invalid: turbidity {}, wind {} deg / {} m",
-                     state.aerosol_turbidity, state.wind_direction_deg, state.wind_strength_m);
+        state.wind_strength_m < 0.0 || !std::isfinite(state.fog_extinction_per_m) ||
+        state.fog_extinction_per_m < 0.0 || !std::isfinite(state.fog_scattering_albedo) ||
+        state.fog_scattering_albedo < 0.0 || state.fog_scattering_albedo > 1.0 ||
+        !std::isfinite(state.fog_anisotropy) || std::abs(state.fog_anisotropy) > 0.85 ||
+        !std::isfinite(state.fog_base_height_m) || !std::isfinite(state.fog_scale_height_m) ||
+        state.fog_scale_height_m <= 0.0) {
+      utils::error{}("PF08 effective weather is invalid: turbidity {}, wind {} deg / {} m, fog {} 1/m / {} / g {}",
+                     state.aerosol_turbidity, state.wind_direction_deg, state.wind_strength_m,
+                     state.fog_extinction_per_m, state.fog_scattering_albedo, state.fog_anisotropy);
     }
     return state;
   };
@@ -584,9 +595,14 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
   const double weather_transition_seconds = options.weather_transition_overridden
                                               ? options.weather_transition_seconds
                                               : weather_presets.transition_seconds;
-  utils::info("PF08 weather '{}': aerosol {:.2f}, wind {:.0f} deg / {:.2f} m, transition {:.1f} s",
+  if (!std::isfinite(options.fog_range_m) || options.fog_range_m <= 0.0) {
+    utils::error{}("PF08 fog range must be finite and positive");
+  }
+  utils::info("PF08 weather '{}': aerosol {:.2f}, wind {:.0f} deg / {:.2f} m, fog {:.4f} 1/m @ H {:.0f} m, transition {:.1f} s",
               initial_weather->name, weather.state().aerosol_turbidity, weather.state().wind_direction_deg,
-              weather.state().wind_strength_m, weather_transition_seconds);
+              weather.state().wind_strength_m, weather.state().fog_extinction_per_m,
+              weather.state().fog_scale_height_m,
+              weather_transition_seconds);
 
   pending_width = options.width;
   pending_height = options.height;
@@ -785,7 +801,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       common_resources + "fonts/crimson.roman.ttf", resource_root + "ui/pf08_controls.lua",
       playground::overlay_description{
         "PF08 — Weather effects",
-        "Slice 1: one weather state feeds atmosphere and the shared foliage/shadow wind field",
+        "Slice 2: homogeneous local medium integrated in a shadowed froxel volume",
         "WASD/QE look · Space pause · T weather · [ ] time speed · - = exposure"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
@@ -1109,6 +1125,12 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       sky_block.wind_params =
         glm::vec4(float(std::sin(wind_angle)), float(-std::cos(wind_angle)),
                   float(weather.state().wind_strength_m), float(wall_seconds));
+      sky_block.fog_params =
+        glm::vec4(float(weather.state().fog_extinction_per_m),
+                  float(weather.state().fog_scattering_albedo),
+                  float(weather.state().fog_anisotropy), float(options.fog_range_m));
+      sky_block.fog_shape = glm::vec4(float(weather.state().fog_base_height_m),
+                                      float(weather.state().fog_scale_height_m), 0.0f, 0.0f);
       sky_block.shadow_bodies = glm::vec4(slot_active[0] ? shadow_sources[0].body_code : -1.0f,
                                           slot_active[1] ? shadow_sources[1].body_code : -1.0f, 0.0f, 0.0f);
       write_current_buffer(base, "sky_buffer", &sky_block, sizeof(sky_block));
@@ -1136,13 +1158,15 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
                     state.horizontal_illuminance_lx, scene_luminance,
                     goal_ev100 <= options.exposure.min_ev100 + 1e-6 ? " · adaptation at its night floor" : ""),
         weather.active()
-          ? std::format("Weather: {} -> {} · {:.0f}% · aerosol {:.2f} · wind {:.0f}° / {:.2f} m",
+          ? std::format("Weather: {} -> {} · {:.0f}% · aerosol {:.2f} · wind {:.0f}°/{:.2f} m · fog {:.4f} 1/m H{:.0f}m",
                         weather.source_name(), weather.target_name(), weather.progress() * 100.0,
                         weather.state().aerosol_turbidity, weather.state().wind_direction_deg,
-                        weather.state().wind_strength_m)
-          : std::format("Weather: {} · aerosol {:.2f} · wind {:.0f}° / {:.2f} m",
+                        weather.state().wind_strength_m, weather.state().fog_extinction_per_m,
+                        weather.state().fog_scale_height_m)
+          : std::format("Weather: {} · aerosol {:.2f} · wind {:.0f}°/{:.2f} m · fog {:.4f} 1/m H{:.0f}m",
                         weather.target_name(), weather.state().aerosol_turbidity,
-                        weather.state().wind_direction_deg, weather.state().wind_strength_m),
+                        weather.state().wind_direction_deg, weather.state().wind_strength_m,
+                        weather.state().fog_extinction_per_m, weather.state().fog_scale_height_m),
         std::format("Foliage: {} near + {} far of {} · LOD {:.0f} m · range {:.0f} m",
                     shrub_near_instances.size(), shrub_far_instances.size(), shrubs.size(),
                     options.foliage_lod_m, options.foliage_range_m),

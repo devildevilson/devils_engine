@@ -29,6 +29,27 @@ bool valid_state(const weather_state& state, const std::string_view name, std::s
     append_diagnostic(diagnostics, std::format("weather '{}' has negative wind_strength_m", name));
     valid = false;
   }
+  if (!std::isfinite(state.fog_extinction_per_m) || state.fog_extinction_per_m < 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has negative fog_extinction_per_m", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.fog_scattering_albedo) || state.fog_scattering_albedo < 0.0 ||
+      state.fog_scattering_albedo > 1.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has fog_scattering_albedo outside [0, 1]", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.fog_anisotropy) || std::abs(state.fog_anisotropy) > 0.85) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has fog_anisotropy outside [-0.85, 0.85]", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.fog_base_height_m)) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has non-finite fog_base_height_m", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.fog_scale_height_m) || state.fog_scale_height_m <= 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has non-positive fog_scale_height_m", name));
+    valid = false;
+  }
   return valid;
 }
 
@@ -77,7 +98,9 @@ bool parse_weather_presets(const std::string& text, weather_preset_list& out, st
 
 weather_state state_from_preset(const weather_preset& preset) {
   return weather_state{preset.aerosol_turbidity, normalize_weather_direction(preset.wind_direction_deg),
-                       preset.wind_strength_m};
+                       preset.wind_strength_m, preset.fog_extinction_per_m,
+                       preset.fog_scattering_albedo, preset.fog_anisotropy,
+                       preset.fog_base_height_m, preset.fog_scale_height_m};
 }
 
 const weather_preset* find_weather_preset(const weather_preset_list& list, const std::string_view name) {
@@ -100,7 +123,43 @@ weather_state interpolate_weather(const weather_state& from, const weather_state
   return weather_state{
     std::lerp(from.aerosol_turbidity, to.aerosol_turbidity, t),
     normalize_weather_direction(from.wind_direction_deg + direction_delta * t),
-    std::lerp(from.wind_strength_m, to.wind_strength_m, t)};
+    std::lerp(from.wind_strength_m, to.wind_strength_m, t),
+    std::lerp(from.fog_extinction_per_m, to.fog_extinction_per_m, t),
+    std::lerp(from.fog_scattering_albedo, to.fog_scattering_albedo, t),
+    std::lerp(from.fog_anisotropy, to.fog_anisotropy, t),
+    std::lerp(from.fog_base_height_m, to.fog_base_height_m, t),
+    std::lerp(from.fog_scale_height_m, to.fog_scale_height_m, t)};
+}
+
+homogeneous_fog_integral integrate_homogeneous_fog(const double extinction_per_m,
+                                                   const double scattering_albedo,
+                                                   const double distance_m) {
+  const double extinction = std::max(0.0, extinction_per_m);
+  const double albedo = std::clamp(scattering_albedo, 0.0, 1.0);
+  const double distance = std::max(0.0, distance_m);
+  const double transmittance = std::exp(-extinction * distance);
+  return {transmittance, albedo * (1.0 - transmittance)};
+}
+
+double fog_density_at_height(const double height_m, const double base_height_m,
+                             const double scale_height_m) {
+  const double scale = std::max(scale_height_m, 1e-9);
+  return std::exp(-std::max(height_m - base_height_m, 0.0) / scale);
+}
+
+double fog_light_transmittance(const double extinction_per_m, const double receiver_height_m,
+                               const double light_vertical_component, const double base_height_m,
+                               const double scale_height_m) {
+  const double extinction = std::max(extinction_per_m, 0.0);
+  if (extinction == 0.0) return 1.0;
+  if (light_vertical_component <= 0.0) return 0.0;
+
+  const double scale = std::max(scale_height_m, 1e-9);
+  const double inverse_vertical = 1.0 / light_vertical_component;
+  const double column_m = receiver_height_m < base_height_m
+    ? (base_height_m - receiver_height_m + scale) * inverse_vertical
+    : scale * fog_density_at_height(receiver_height_m, base_height_m, scale) * inverse_vertical;
+  return std::exp(-extinction * column_m);
 }
 
 void weather_transition::snap(std::string name, const weather_state& state) {

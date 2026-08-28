@@ -48,6 +48,20 @@ float pf08_cascade_visibility(const int index, const vec3 world_position, const 
   return visible / 9.0;
 }
 
+// Объём уже фильтруется трилинейной выборкой самой froxel-сетки, поэтому девятиточечный PCF здесь
+// лишь умножал бы цену на девять и размывал тень второй раз. Точка воздуха не имеет поверхности и
+// нормали; depth bias внесён при построении карты, а за пределами каскада источник считается видимым.
+float pf08_cascade_visibility_single(const int index, const vec3 world_position) {
+  const pf08_cascade cascade = pf08_shadow_data.cascades[index];
+  const vec4 light_clip = cascade.light_view_projection * vec4(world_position, 1.0);
+  const vec3 projected = light_clip.xyz / max(light_clip.w, 1e-6);
+  if (any(lessThan(projected.xy, vec2(-1.0))) || any(greaterThan(projected.xy, vec2(1.0)))) return 1.0;
+  if (projected.z <= 0.0 || projected.z >= 1.0) return 1.0;
+  const vec2 local_uv = projected.xy * 0.5 + 0.5;
+  const vec2 atlas_uv = local_uv * cascade.uv_scale_offset.xy + cascade.uv_scale_offset.zw;
+  return texture(pf08_shadow_atlas, vec3(atlas_uv, projected.z));
+}
+
 // Видимость источника из точки. Каскад выбирается по расстоянию до камеры, а на стыке двух каскадов
 // идёт смешивание: без него граница между ними видна как ступенька резкости, потому что мировой
 // размер текселя у соседних каскадов отличается в разы.
@@ -77,6 +91,28 @@ float pf08_shadow_visibility(const int slot, const vec3 world_position, const ve
 
   // Сила источника гасит тень у порога вхождения в двойку. Без этого тело, входящее в число двух
   // самых ярких, включало бы свою тень скачком.
+  return mix(1.0, visibility, strength);
+}
+
+float pf08_volume_shadow_visibility(const int slot, const vec3 world_position, const float view_distance) {
+  const int first = slot * PF08_CASCADE_COUNT;
+  const float strength = pf08_shadow_data.cascades[first].shadow_params.y;
+  if (strength <= 0.0) return 1.0;
+
+  int index = first + PF08_CASCADE_COUNT - 1;
+  for (int i = 0; i < PF08_CASCADE_COUNT; ++i) {
+    if (view_distance < pf08_shadow_data.cascades[first + i].split_depths.y) {
+      index = first + i;
+      break;
+    }
+  }
+  float visibility = pf08_cascade_visibility_single(index, world_position);
+  const vec4 splits = pf08_shadow_data.cascades[index].split_depths;
+  const bool has_next = index < first + PF08_CASCADE_COUNT - 1;
+  if (has_next && view_distance > splits.z) {
+    const float blend = clamp((view_distance - splits.z) / max(splits.y - splits.z, 1e-4), 0.0, 1.0);
+    visibility = mix(visibility, pf08_cascade_visibility_single(index + 1, world_position), blend);
+  }
   return mix(1.0, visibility, strength);
 }
 

@@ -1,6 +1,6 @@
 # PF08 — weather effects
 
-Статус: **срезы 0–1 CLOSED — baseline и единое погодное состояние зафиксированы** (2026-08-28).
+Статус: **срезы 0–2 CLOSED — froxel-среда и её контракт с тенями зафиксированы** (2026-08-28).
 
 PF08 проверяет погоду как состояние открытого мира, а не как отдельный дождевой emitter. Площадка начинает
 с независимой копии закрытого `PF07_party_environment`: та же P-type двойная система, календарь и затмения,
@@ -14,14 +14,18 @@ PF08 и не создаёт CMake/source dependency между лаборато�
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --verify
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --preset=noon --weather=haze
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=fog
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=fog --debug=8
 ./subprojects/playgrounds/PF08_weather_effects/compare_pf07_baseline.sh
 ```
 
-`--weather=clear|haze|windy` выбирает состояние сразу, `T` циклически запускает переход длительностью
+`--weather=clear|haze|windy|fog` выбирает состояние сразу, `T` циклически запускает переход длительностью
 `--weather-transition=S` (по умолчанию `4 s`). `--turbidity`, `--wind`, `--wind-direction` сохранены как
-независимые overrides поверх пресета: ими изолируется один consumer для A/B. Четыре астрономических пресета
-PF07 сохранены буквально, а `compare_pf07_baseline.sh` доказывает, что default `clear` даёт те же пиксели в
-`noon`, `double_sunset`, `night`, `eclipse`.
+независимые overrides поверх пресета; локальная среда отдельно управляется через `--fog-extinction=`,
+`--fog-albedo=`, `--fog-anisotropy=` и `--fog-range=`. Ими изолируется один consumer для A/B.
+Профиль отдельно задаётся `--fog-base=` и `--fog-height=` (экспоненциальный scale height). Четыре
+астрономических пресета PF07 сохранены буквально, а `compare_pf07_baseline.sh` доказывает, что default
+`clear` даёт те же пиксели в `noon`, `double_sunset`, `night`, `eclipse`.
 
 ## Граница площадки
 
@@ -66,8 +70,9 @@ weather state
    общее ветровое поле, CLI/runtime-контроли и диагностическая визуализация значений. Пока consumer не
    существует, поле в state не добавляется «на будущее»: `overcast`, `rain`, `snow` появятся только вместе
    с froxel-облаками и осадками.
-2. **Froxel medium.** Сначала однородный туман как проверяемый интеграл, затем высотная/адвектируемая
-   плотность и облачный слой; оба светила и shadow visibility используют один интеграл.
+2. **DONE — froxel medium.** Проверяемый однородный интеграл как первый proof, затем общий экспоненциальный
+   высотный профиль для объёма и поверхностей; оба светила, луны, атмосферное прохождение и shadow visibility.
+   Адвектируемая неоднородность и облачный слой остаются следующим расширением объёма.
 3. **Precipitation across distance.** Near drops/flakes, mid/far extinction, укрытие и impact-события.
    PF05 даёт проверенный particle lifecycle, но его camera-local billboard rain не считается готовой погодой.
 4. **Wet world and screen manifestations.** Накопление/высыхание мокроты, roughness/specular response,
@@ -96,11 +101,13 @@ post-build, поэтому первый запуск нового target не о
 `180°`. Переход идёт в реальных секундах и хранит исходный snapshot; новый выбор посреди перехода стартует
 из текущего показанного состояния без щелчка.
 
-Сейчас в state ровно три числа с двумя настоящими consumer'ами:
+После среза 2 в state шесть величин с тремя настоящими consumer'ами:
 
 - `aerosol_turbidity` подставляется в единую модель атмосферы и инвалидирует зависящий от среды LUT cache;
 - `wind_direction_deg` и `wind_strength_m` один раз упаковываются в shared GPU block, который читают и
   `scene.vert`, и `shadow.vert`. Поэтому куст и его тень не могут получить разные погодные кадры.
+- `fog_extinction_per_m`, `fog_scattering_albedo`, `fog_anisotropy` описывают локальную среду и читаются
+  froxel-pass; нулевой extinction остаётся точным clear-state.
 
 Наблюдаемость измерена на одном `noon`-кадре при фиксированном EV. Только аэрозоль (`1.0 -> 2.4`) при
 clear-ветре меняет `16507.3` pixel-equivalent; только ветер (`250°/0.22 -> 320°/0.55`) при clear-аэрозоле —
@@ -108,3 +115,38 @@ clear-ветре меняет `16507.3` pixel-equivalent; только вете�
 `41/41` до `52/52`: добавлены разбор authored-конфига, точные baseline-значения, круговая интерполяция,
 реальные секунды перехода, прерывание без щелчка и точное прибытие в authored-state. Non-clear `windy`
 проходит Vulkan validation без `VUID`, warning или error от API-слоя.
+
+## Что закрыл срез 2
+
+Локальный туман — настоящий `160x90x32` 3D-образ RGBA16F, а не полноэкранный шум. Экранные оси редкие,
+ось расстояния квадратична; каждая compute-нить проходит луч один раз и пишет нарастающие
+`in_scattering.rgb` и `transmittance.a`. Нулевой слой хранит точное `(0, 1)`, поэтому ближайшая геометрия
+не получает целый первый слой тумана. На каждом сегменте Beer–Lambert и рассеяние интегрируются
+аналитически: `T=exp(-sigma_t*d)`, `S=L_source*albedo*(1-T)`, а не приближением `sigma*d`.
+
+Источник света не придуман погодой отдельно: объём читает обе звезды и луны из общего `sky_buffer`,
+атмосферное прохождение — из общего LUT, тени — из тех же двух наборов каскадов. Для воздуха используется
+одна shadow-выборка вместо surface PCF 3x3: сама froxel-сетка затем фильтруется трилинейно, и второй
+девятиточечный фильтр только девятикратно увеличил бы цену. Изотропная часть берётся из пяти выборок уже
+посчитанного `sky_view_lut`; направленная использует нормированную фазу Henyey–Greenstein.
+
+Композиция `L_out=L_scene*T+S` идёт в отдельный HDR `weather_color` после сцены, но ДО экспонометра.
+Иначе замер видел бы ясную сцену, а вывод — туманную. Глубина reverse-Z ограничивает интеграл на предметах,
+небо проходит полную локальную дальность. При нулевом extinction fragment-pass берёт прямую ветку копирования
+без выборки froxel-образа: после добавления обоих проходов все четыре clear-кадра снова `MATCH` PF07 побайтно.
+
+Численный GPU debug `--debug=8` показывает `T` напрямую. После высотного follow-up горизонтальный луч с
+камеры `2 m` в authored `fog` (`sigma_t=0.018 1/m`, `H=160 m`, дальность `220 m`) дал
+`5/255 = 0.01961`; аналитика требует `exp(-0.018 * exp(-2/160) * 220)=0.02002`, то есть тот же результат
+после 8-bit округления дампа. CPU-проверки выросли до `60/60`. На Iris Xe, минимум из 76 steady-state
+кадров 1280x720: clear volume/apply `0.127/0.224 ms`, активный fog `0.647/0.286 ms`; цена самого
+интегрирования среды относительно clear-bypass — около `0.52 ms`. Активный `fog` с debug-view прошёл
+Vulkan validation без `VUID`, warning или error от API-слоя.
+
+FOLLOW-UP ПО ТЕНЯМ. Shadow map — только бинарная/фильтрованная видимость светила; сама по себе она не
+знает, сколько среды лежит между источником и точкой. Поэтому общий `pf08_local_medium.glsl` теперь даёт
+и froxel-pass, и surface-lighting один экспоненциальный профиль. Поверхность получает
+`direct * fog_light_transmittance * shadow_visibility`, а объём тем же visibility вырезает прямое
+in-scattering. В результате тень на земле исчезает вместе с прямым светом, но слабая объёмная тень может
+остаться как физический световой столб. Измерение нижней половины одного noon-кадра, A/B `2` против `0`
+shadow sources: clear `MAE 0.00203056`, authored fog `0.00032528` — контраст подавлен на `84%`.
