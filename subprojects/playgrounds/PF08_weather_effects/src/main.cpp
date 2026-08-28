@@ -16,6 +16,7 @@
 #include "devils_engine/utils/fileio.h"
 
 #include "celestial.h"
+#include "fixture.h"
 #include "survey.h"
 #include "sky_view.h"
 #include "weather.h"
@@ -72,7 +73,7 @@ void print_usage() {
                "  --ev=F              зафиксировать EV100 вместо адаптации\n"
                "  --ev-bias=F         экспокоррекция в стопах\n"
                "  --preset=NAME       именованное состояние: noon, double_sunset, night, eclipse\n"
-               "  --weather=NAME      состояние: clear, haze, windy, fog, cloudy, overcast, rain\n"
+               "  --weather=NAME      состояние: clear, haze, windy, fog, cloudy, overcast, rain, snow\n"
                "  --weather-transition=S  длительность runtime-перехода по T, реальные секунды\n"
                "  --night-vision=F    сила ночного зрения, 0 отключает\n"
                "  --turbidity=F       множитель аэрозоля\n"
@@ -102,6 +103,15 @@ void print_usage() {
                "  --rain-range=M      дальность froxel-представления дождя\n"
                "  --no-rain-particles отключить ближние streaks/impacts для A/B\n"
                "  --no-rain-collision отключить depth contacts для A/B\n"
+               "  --snow-rate=MMH     водный эквивалент снегопада в мм/ч\n"
+               "  --snow-speed=MPS    вертикальная скорость падения хлопьев\n"
+               "  --snow-wind=MPS     горизонтальный перенос хлопьев общим ветром\n"
+               "  --snow-size=M       размер ближнего хлопья в мировых метрах\n"
+               "  --snow-radius=M     радиус ближнего particle-объёма\n"
+               "  --snow-extinction=F дальнее extinction снега, 1/м\n"
+               "  --snow-range=M      дальность froxel-представления снега\n"
+               "  --no-precipitation-particles отключить общий rain/snow pool для A/B\n"
+               "  --no-shelter-occlusion оставить крышу видимой, но выключить её precipitation test\n"
                "  --debug=8|9|10      transmittance объёма | cloud density | cloud shadow\n"
                "  --march-steps=N     шагов основного марша неба\n"
                "  --aerial-range=KM   дальность таблицы воздушной перспективы\n"
@@ -307,6 +317,30 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.rain_particles = false;
     } else if (argument == "--no-rain-collision") {
       out.view.rain_collision = false;
+    } else if (read_prefixed(argument, "--snow-rate=", value)) {
+      out.view.snow_rate_mm_h = std::stod(value);
+      out.view.snow_rate_overridden = true;
+    } else if (read_prefixed(argument, "--snow-speed=", value)) {
+      out.view.snow_fall_speed_m_s = std::stod(value);
+      out.view.snow_fall_speed_overridden = true;
+    } else if (read_prefixed(argument, "--snow-wind=", value)) {
+      out.view.snow_wind_speed_m_s = std::stod(value);
+      out.view.snow_wind_speed_overridden = true;
+    } else if (read_prefixed(argument, "--snow-size=", value)) {
+      out.view.snow_flake_size_m = std::stod(value);
+      out.view.snow_flake_size_overridden = true;
+    } else if (read_prefixed(argument, "--snow-radius=", value)) {
+      out.view.snow_near_radius_m = std::stod(value);
+      out.view.snow_near_radius_overridden = true;
+    } else if (read_prefixed(argument, "--snow-extinction=", value)) {
+      out.view.snow_far_extinction_per_m = std::stod(value);
+      out.view.snow_far_extinction_overridden = true;
+    } else if (read_prefixed(argument, "--snow-range=", value)) {
+      out.view.snow_range_m = std::stod(value);
+    } else if (argument == "--no-precipitation-particles") {
+      out.view.rain_particles = false;
+    } else if (argument == "--no-shelter-occlusion") {
+      out.view.shelter_occlusion = false;
     } else if (read_prefixed(argument, "--march-steps=", value)) {
       out.view.march.primary_steps = int32_t(std::stol(value));
     } else if (read_prefixed(argument, "--camera-height=", value)) {
@@ -916,7 +950,7 @@ void verify_weather(checker& check) {
   check.expect(parsed, "погодные пресеты разобраны", diagnostics);
   if (!parsed) return;
 
-  check.expect(presets.presets.size() == 7, "погодные пресеты содержат clear, haze, windy, fog, cloudy, overcast и rain",
+  check.expect(presets.presets.size() == 8, "погодные пресеты содержат clear, haze, windy, fog, cloudy, overcast, rain и snow",
                std::format("получено {}", presets.presets.size()));
   const auto* clear = pf08::find_weather_preset(presets, "clear");
   check.expect(clear != nullptr, "clear weather объявлена");
@@ -951,6 +985,30 @@ void verify_weather(checker& check) {
     check.expect_near(pf08::rain_far_weight(start + width, start, width), 1.0, 0.0,
                       "far-дождь достигает полного веса за границей near-pool");
   }
+
+  const auto* snow = pf08::find_weather_preset(presets, "snow");
+  check.expect(snow != nullptr, "snow weather объявлена");
+  if (snow != nullptr) {
+    const auto state = pf08::state_from_preset(*snow);
+    check.expect(state.rain_rate_mm_h == 0.0 && state.snow_rate_mm_h > 0.0 &&
+                 state.snow_far_extinction_per_m > 0.0,
+                 "snow использует собственные near slots и far extinction без дождевой подмены");
+    check.expect(state.snow_fall_speed_m_s < state.rain_fall_speed_m_s &&
+                 state.snow_flake_size_m > 0.01,
+                 "authored снег медленнее дождя и имеет видимый мировой размер");
+  }
+
+  const auto fixture = pf08::make_fixture_scene();
+  check.expect(fixture.instances.size() == 17, "видимый навес добавляет крышу и четыре стойки в fixture");
+  const auto& roof = fixture.instances[12];
+  const glm::vec3 expected_minimum = glm::vec3(roof.position_material) - glm::vec3(roof.half_extent_roughness);
+  const glm::vec3 expected_maximum = glm::vec3(roof.position_material) + glm::vec3(roof.half_extent_roughness);
+  const auto same_vec3 = [](const glm::vec3 a, const glm::vec3 b) {
+    return a.x == b.x && a.y == b.y && a.z == b.z;
+  };
+  check.expect(same_vec3(fixture.shelter.minimum, expected_minimum) &&
+               same_vec3(fixture.shelter.maximum, expected_maximum),
+               "геометрия крыши и precipitation shelter используют один AABB");
 
   const auto* overcast = pf08::find_weather_preset(presets, "overcast");
   check.expect(overcast != nullptr, "overcast weather объявлена");
@@ -1030,6 +1088,14 @@ void verify_weather(checker& check) {
     check.expect_near(rain_middle.rain_far_extinction_per_m,
                       rain->rain_far_extinction_per_m * 0.5, 1e-12,
                       "far rain extinction интерполируется вместе с near-плотностью");
+  }
+  if (rain != nullptr && snow != nullptr) {
+    const auto mixed = pf08::interpolate_weather(
+      pf08::state_from_preset(*rain), pf08::state_from_preset(*snow), 0.5);
+    check.expect_near(mixed.rain_rate_mm_h, rain->rain_rate_mm_h * 0.5, 1e-12,
+                      "rain rate плавно убывает при переходе к снегу");
+    check.expect_near(mixed.snow_rate_mm_h, snow->snow_rate_mm_h * 0.5, 1e-12,
+                      "snow rate плавно нарастает в том же precipitation pool");
   }
 
   pf08::weather_transition transition;

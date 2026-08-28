@@ -32,6 +32,16 @@ struct scene_instance {
   glm::vec4 albedo_unused;
 };
 
+struct shelter_volume {
+  glm::vec3 minimum{0.0f};
+  glm::vec3 maximum{0.0f};
+};
+
+struct fixture_scene {
+  std::vector<scene_instance> instances;
+  shelter_volume shelter;
+};
+
 // Плотность диска. Кольца геометрической прогрессией, поэтому у камеры они густые, а к горизонту
 // разрежаются; на пяти километрах соседние кольца расходятся на километр, и погрешность силуэта от
 // этого равна сантиметру — доли пикселя.
@@ -39,7 +49,7 @@ constexpr uint32_t ground_ring_count = 64;
 constexpr uint32_t ground_segment_count = 128;
 
 std::vector<scene_vertex> make_unit_cube();
-std::vector<scene_instance> make_fixture_instances();
+fixture_scene make_fixture_scene();
 
 // Самый высокий предмет фикстуры. Нужен каскадам: запас вдоль луча света считается от него.
 double fixture_caster_height(const std::vector<scene_instance>& instances);

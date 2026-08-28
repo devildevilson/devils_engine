@@ -117,6 +117,30 @@ bool valid_state(const weather_state& state, const std::string_view name, std::s
     append_diagnostic(diagnostics, std::format("weather '{}' has negative rain_far_extinction_per_m", name));
     valid = false;
   }
+  if (!std::isfinite(state.snow_rate_mm_h) || state.snow_rate_mm_h < 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has negative snow_rate_mm_h", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.snow_fall_speed_m_s) || state.snow_fall_speed_m_s <= 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has non-positive snow_fall_speed_m_s", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.snow_wind_speed_m_s) || state.snow_wind_speed_m_s < 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has negative snow_wind_speed_m_s", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.snow_flake_size_m) || state.snow_flake_size_m <= 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has non-positive snow_flake_size_m", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.snow_near_radius_m) || state.snow_near_radius_m <= 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has non-positive snow_near_radius_m", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.snow_far_extinction_per_m) || state.snow_far_extinction_per_m < 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has negative snow_far_extinction_per_m", name));
+    valid = false;
+  }
   return valid;
 }
 
@@ -176,7 +200,10 @@ weather_state state_from_preset(const weather_preset& preset) {
                        preset.cloud_advection_speed_m_s, preset.rain_rate_mm_h,
                        preset.rain_fall_speed_m_s, preset.rain_wind_speed_m_s,
                        preset.rain_drop_length_m, preset.rain_near_radius_m,
-                       preset.rain_far_extinction_per_m};
+                       preset.rain_far_extinction_per_m, preset.snow_rate_mm_h,
+                       preset.snow_fall_speed_m_s, preset.snow_wind_speed_m_s,
+                       preset.snow_flake_size_m, preset.snow_near_radius_m,
+                       preset.snow_far_extinction_per_m};
 }
 
 const weather_preset* find_weather_preset(const weather_preset_list& list, const std::string_view name) {
@@ -221,7 +248,13 @@ weather_state interpolate_weather(const weather_state& from, const weather_state
     std::lerp(from.rain_wind_speed_m_s, to.rain_wind_speed_m_s, t),
     std::lerp(from.rain_drop_length_m, to.rain_drop_length_m, t),
     std::lerp(from.rain_near_radius_m, to.rain_near_radius_m, t),
-    std::lerp(from.rain_far_extinction_per_m, to.rain_far_extinction_per_m, t)};
+    std::lerp(from.rain_far_extinction_per_m, to.rain_far_extinction_per_m, t),
+    std::lerp(from.snow_rate_mm_h, to.snow_rate_mm_h, t),
+    std::lerp(from.snow_fall_speed_m_s, to.snow_fall_speed_m_s, t),
+    std::lerp(from.snow_wind_speed_m_s, to.snow_wind_speed_m_s, t),
+    std::lerp(from.snow_flake_size_m, to.snow_flake_size_m, t),
+    std::lerp(from.snow_near_radius_m, to.snow_near_radius_m, t),
+    std::lerp(from.snow_far_extinction_per_m, to.snow_far_extinction_per_m, t)};
 }
 
 homogeneous_fog_integral integrate_homogeneous_fog(const double extinction_per_m,

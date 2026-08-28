@@ -61,14 +61,15 @@ std::vector<scene_vertex> make_unit_cube() {
   return out;
 }
 
-std::vector<scene_instance> make_fixture_instances() {
+fixture_scene make_fixture_scene() {
   // Альбедо намеренно нейтральные и близкие друг к другу: цвет теней в этом срезе обязан приходить от
   // СВЕТИЛ, а не от краски предметов. Разными их делает только светлота, чтобы предметы отличались.
   const glm::vec3 pale{0.62f, 0.60f, 0.57f};
   const glm::vec3 mid{0.44f, 0.43f, 0.41f};
   const glm::vec3 dark{0.28f, 0.28f, 0.27f};
 
-  std::vector<scene_instance> out;
+  fixture_scene scene;
+  auto& out = scene.instances;
   // Ряд столбов разной высоты поперёк вида: разная длина тени в одном кадре сразу показывает, держит
   // ли каскад масштаб, и делит ли кросс-фейд обе тени одинаково на всех расстояниях.
   out.push_back(pillar(-6.0f, 12.0f, 4.0f, 0.7f, pale));
@@ -92,7 +93,26 @@ std::vector<scene_instance> make_fixture_instances() {
   // Стена поперёк: единственный предмет, у которого есть заметная боковая грань. На ней видно, как
   // свет двух светил разного цвета ложится на одну плоскость под разными углами.
   out.push_back(slab(2.0f, 45.0f, 1.6f, {9.0f, 0.6f}, pale));
-  return out;
+
+  // Крыша и её collision-объём рождаются из одной коробки. Это не даёт particle/froxel shelter
+  // незаметно разойтись с видимой геометрией при следующем изменении размеров навеса.
+  const glm::vec3 roof_centre_xz{1.8f, 0.0f, 8.0f};
+  const glm::vec3 roof_half{3.5f, 0.18f, 2.6f};
+  const float roof_ground = float(valley_height(roof_centre_xz.x, roof_centre_xz.z));
+  const glm::vec3 roof_centre{roof_centre_xz.x, roof_ground + 3.35f, roof_centre_xz.z};
+  out.push_back(box(roof_centre, roof_half, dark));
+  scene.shelter = {roof_centre - roof_half, roof_centre + roof_half};
+
+  constexpr float post_height = 3.17f;
+  constexpr float post_thickness = 0.22f;
+  for (const float x : {roof_centre_xz.x - roof_half.x + 0.18f,
+                        roof_centre_xz.x + roof_half.x - 0.18f}) {
+    for (const float z : {roof_centre_xz.z - roof_half.z + 0.18f,
+                          roof_centre_xz.z + roof_half.z - 0.18f}) {
+      out.push_back(pillar(x, z, post_height, post_thickness, dark));
+    }
+  }
+  return scene;
 }
 
 namespace {

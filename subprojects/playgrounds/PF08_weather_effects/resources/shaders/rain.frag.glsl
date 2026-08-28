@@ -20,10 +20,17 @@ void main() {
     const float width = 1.0 - smoothstep(0.18, 1.0, across);
     const float ends = smoothstep(0.0, 0.14, in_uv.y) * (1.0 - smoothstep(0.82, 1.0, in_uv.y));
     alpha = width * ends * in_alpha;
-  } else {
+  } else if (in_kind == 1u) {
     const float radius = length(in_uv - 0.5) * 2.0;
     const float ring = smoothstep(0.35, 0.58, radius) * (1.0 - smoothstep(0.64, 0.92, radius));
     alpha = ring * in_alpha;
+  } else {
+    const vec2 centred = (in_uv - 0.5) * 2.0;
+    const float radius = length(centred);
+    const float soft_disc = 1.0 - smoothstep(0.28, 1.0, radius);
+    const float arms = 1.0 - smoothstep(0.06, 0.22,
+      min(abs(centred.x), min(abs(centred.y), abs(abs(centred.x) - abs(centred.y)) * 0.7071)));
+    alpha = max(soft_disc * 0.72, arms * (1.0 - smoothstep(0.55, 1.0, radius))) * in_alpha;
   }
   if (alpha <= 1.0 / 255.0) discard;
   out_color = vec4(in_radiance, alpha);

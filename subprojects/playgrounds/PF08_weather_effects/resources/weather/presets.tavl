@@ -1,5 +1,5 @@
-// Здесь остаются только параметры с настоящими consumers: rain появляется вместе с near particle
-// pool и дальним froxel extinction. Snow ждёт собственного движения и покрытия, а не перекраски rain.
+// Здесь остаются только параметры с настоящими consumers: rain и snow появились вместе со своими
+// near-движением и дальним froxel extinction, а не заранее и не как две перекраски одного billboard.
 
 transition_seconds = 4.0
 
@@ -32,6 +32,12 @@ presets = [
     rain_drop_length_m = 0.45
     rain_near_radius_m = 18.0
     rain_far_extinction_per_m = 0.0
+    snow_rate_mm_h = 0.0
+    snow_fall_speed_m_s = 1.6
+    snow_wind_speed_m_s = 3.0
+    snow_flake_size_m = 0.045
+    snow_near_radius_m = 22.0
+    snow_far_extinction_per_m = 0.0
   }
   {
     // Сухая аэрозольная дымка: атмосферный consumer виден, ветер почти не меняется.
@@ -61,6 +67,12 @@ presets = [
     rain_drop_length_m = 0.45
     rain_near_radius_m = 18.0
     rain_far_extinction_per_m = 0.0
+    snow_rate_mm_h = 0.0
+    snow_fall_speed_m_s = 1.6
+    snow_wind_speed_m_s = 3.0
+    snow_flake_size_m = 0.045
+    snow_near_radius_m = 22.0
+    snow_far_extinction_per_m = 0.0
   }
   {
     // Проверка второго consumer: заросли и их тени читают одно усилившееся поле.
@@ -90,6 +102,12 @@ presets = [
     rain_drop_length_m = 0.45
     rain_near_radius_m = 18.0
     rain_far_extinction_per_m = 0.0
+    snow_rate_mm_h = 0.0
+    snow_fall_speed_m_s = 1.6
+    snow_wind_speed_m_s = 3.0
+    snow_flake_size_m = 0.045
+    snow_near_radius_m = 22.0
+    snow_far_extinction_per_m = 0.0
   }
   {
     // Влажный локальный туман. По формуле Кошмидера 3.912 / sigma видимость равна примерно 217 м.
@@ -119,6 +137,12 @@ presets = [
     rain_drop_length_m = 0.45
     rain_near_radius_m = 18.0
     rain_far_extinction_per_m = 0.0
+    snow_rate_mm_h = 0.0
+    snow_fall_speed_m_s = 1.6
+    snow_wind_speed_m_s = 3.0
+    snow_flake_size_m = 0.045
+    snow_near_radius_m = 22.0
+    snow_far_extinction_per_m = 0.0
   }
   {
     // Разорванная облачность: первый визуальный A/B, где хорошо читаются отдельные тела и их тени.
@@ -148,6 +172,12 @@ presets = [
     rain_drop_length_m = 0.45
     rain_near_radius_m = 18.0
     rain_far_extinction_per_m = 0.0
+    snow_rate_mm_h = 0.0
+    snow_fall_speed_m_s = 1.6
+    snow_wind_speed_m_s = 3.0
+    snow_flake_size_m = 0.045
+    snow_near_radius_m = 22.0
+    snow_far_extinction_per_m = 0.0
   }
   {
     // Низкий слоисто-кучевой покров: отдельная геометрическая погода, а не затемнение экспозиции.
@@ -177,6 +207,12 @@ presets = [
     rain_drop_length_m = 0.45
     rain_near_radius_m = 18.0
     rain_far_extinction_per_m = 0.0
+    snow_rate_mm_h = 0.0
+    snow_fall_speed_m_s = 1.6
+    snow_wind_speed_m_s = 3.0
+    snow_flake_size_m = 0.045
+    snow_near_radius_m = 22.0
+    snow_far_extinction_per_m = 0.0
   }
   {
     // Сильный дождь под низким покровом: near streaks + impacts + mid/far extinction.
@@ -206,5 +242,47 @@ presets = [
     rain_drop_length_m = 0.48
     rain_near_radius_m = 18.0
     rain_far_extinction_per_m = 0.00045
+    snow_rate_mm_h = 0.0
+    snow_fall_speed_m_s = 1.6
+    snow_wind_speed_m_s = 3.0
+    snow_flake_size_m = 0.045
+    snow_near_radius_m = 22.0
+    snow_far_extinction_per_m = 0.0
+  }
+  {
+    // Мокрый плотный снег: те же облака и общий ветер, но собственные медленное падение, хлопья и
+    // froxel extinction. Накопление на земле намеренно не подменяется белой перекраской — это 4C.
+    name = "snow"
+    aerosol_turbidity = 1.45
+    wind_direction_deg = 225.0
+    wind_strength_m = 0.30
+    fog_extinction_per_m = 0.0010
+    fog_scattering_albedo = 0.96
+    fog_anisotropy = 0.32
+    fog_base_height_m = 0.0
+    fog_scale_height_m = 300.0
+    fog_density_variation = 0.12
+    fog_cell_size_m = 105.0
+    fog_advection_speed_m_s = 2.0
+    cloud_coverage = 0.86
+    cloud_extinction_per_m = 0.013
+    cloud_scattering_albedo = 0.985
+    cloud_anisotropy = 0.62
+    cloud_base_height_m = 340.0
+    cloud_top_height_m = 760.0
+    cloud_cell_size_m = 620.0
+    cloud_advection_speed_m_s = 8.0
+    rain_rate_mm_h = 0.0
+    rain_fall_speed_m_s = 17.0
+    rain_wind_speed_m_s = 4.0
+    rain_drop_length_m = 0.45
+    rain_near_radius_m = 18.0
+    rain_far_extinction_per_m = 0.0
+    snow_rate_mm_h = 7.0
+    snow_fall_speed_m_s = 1.6
+    snow_wind_speed_m_s = 3.2
+    snow_flake_size_m = 0.045
+    snow_near_radius_m = 22.0
+    snow_far_extinction_per_m = 0.00085
   }
 ]

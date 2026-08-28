@@ -77,20 +77,21 @@ weather state
    `41/41`, побитное сравнение четырёх clear-кадров с PF07 и Vulkan validation без API-сообщений.
 1. **DONE — weather state.** Данные и пресеты `clear|haze|windy`, переходы без перестройки render graph,
    общее ветровое поле, CLI/runtime-контроли и диагностическая визуализация значений. Пока consumer не
-   существует, поле в state не добавляется «на будущее»: `overcast`, `rain`, `snow` появятся только вместе
-   с froxel-облаками и осадками.
+   существует, поле в state не добавляется «на будущее»: `overcast`, `rain`, `snow` были добавлены только
+   одновременно с настоящими froxel/particle consumers.
 2. **DONE — froxel medium.** Проверяемый однородный интеграл как первый proof, затем общий экспоненциальный
    высотный профиль и advected world-space density field для объёма и поверхностей; оба светила, луны,
    атмосферное прохождение и shadow visibility.
 3. **DONE — finite cloud layer.** `cloudy|overcast`, 3D world-space density, общий ветер, два светила,
    self-shadowing и совпадающая с объёмом движущаяся тень на поверхности.
-4. **IN PROGRESS — precipitation across distance.** 4A закрывает дождь: near drops, mid/far extinction и
-   depth-driven impact-события. Snow, видимое укрытие и осадки за ним остаются в 4B. PF05 дал проверенный
-   particle lifecycle, но его camera-local billboard rain сам по себе не считался готовой погодой.
+4. **DONE — precipitation across distance.** 4A закрывает дождь: near drops, mid/far extinction и
+   depth-driven impact-события. 4B добавляет снег в тот же persistent pool и настоящий видимый навес,
+   чья геометрия одновременно задаёт near collision и сухой объём в far medium.
 5. **Wet world and screen manifestations.** Накопление/высыхание мокроты, roughness/specular response,
    лужи и рябь; lens droplets только как следствие попадания воды, с отдельным A/B.
 6. **Закрывающий аудит.** Фиксированные clear/overcast/rain/snow кадры в нескольких временах суток,
-   временные переходы, GPU budget, Vulkan validation и проверка того, что clear всё ещё совпадает с baseline.
+   временные переходы, GPU budget и Vulkan validation. Побитный PF07 baseline остаётся историческим gate
+   срезов 0–4A: с 4B PF08 намеренно содержит новую постоянную геометрию навеса.
 
 ## Definition of Done нулевого среза
 
@@ -234,3 +235,35 @@ FOLLOW-UP ПО RUNTIME-ПЕРЕХОДУ. `T` впервые обнаружил �
 weather state, transmittance и остальные consumers остаются покадровыми; multiscatter отстаёт максимум на
 один кадр, а финальное dirty-значение обязательно запекается после окончания перехода. Четыре headless
 проверки фиксируют ритм `build/skip/build/skip` и подняли контракт до `86/86`.
+
+## Что закрыл срез 4B
+
+`snow` — восьмой authored weather preset и второй тип в том же pool из `4096` стабильных slots. Это не
+перекрашенный дождь: rate хранится как водный эквивалент мм/ч, скорость падения `1.6 м/с`, общий ветровой
+перенос `3.2 м/с`, размер хлопья `4.5 см`, near-radius `22 м`, far extinction `0.00085 1/м`. Четвёртый
+`vec4` particle record хранит тип и постоянную фазу; снег рисуется вращающимся мягким хлопком, медленно
+падает и получает поперечный flutter. Дождь и снег могут одновременно занимать детерминированные доли
+pool во время непрерывного перехода, без нового enum pipeline и без CPU readback. Контакт снега завершает
+хлопок без дождевого splash; накопление покрытия намеренно оставлено wet-world slice.
+
+Укрытие теперь имеет видимую причину: к fixture добавлены одна крыша и четыре стойки. `make_fixture_scene`
+возвращает инстансы и AABB крыши вместе, поэтому render, near segment collision и froxel shelter не имеют
+трёх независимо authored границ. Near particle сначала пересекает этот world-space AABB и лишь затем
+пытается использовать current screen depth. Для far snow/rain точка сухая, если луч вверх ПРОТИВ реальной
+скорости падения пересекает нижнюю плоскость крыши; следовательно, косой снег образует подветренную границу
+и может задуваться через открытый бок. `--no-shelter-occlusion` оставляет крышу видимой и отключает только
+этот физический consumer для чистого A/B.
+
+Хлопья становятся sub-pixel раньше дождевых streaks, поэтому snow froxel handover начинается на `0.25R`
+и набирает полный вес за `0.45R`; дождевой контракт `0.72R/0.45R` не менялся. Far снег имеет собственное
+extinction, альбедо `0.98` и HG `g=0.45`, но использует те же звёзды, луны, sky ambient и precipitation
+light-column, что дождь. Fixed-noon A/B: near pool против `--no-precipitation-particles` даёт
+`MAE 0.000349426`, far extinction против `--snow-extinction=0` — `0.0167005`, shelter on/off —
+`0.000073345`; shelter difference-image локализован под крышей и вдоль её подветренного края.
+
+Release build и runtime GLSL compile проходят; headless contract — `93/93`. Финальный восьмикадровый snow
+запуск с Vulkan validation не выдаёт VUID/API warning/error. На Iris Xe 1280x720 его minima:
+simulation `0.023 ms`, volume `3.703`, apply `0.331`, particle draw `0.045`, total `10.330 ms`. PF07 не
+запускался и frozen PNG не переснимались. Новая постоянная крыша осознанно завершает эпоху побитного clear
+совпадения с PF07 после 4A: скрывать физическое укрытие только в clear означало бы заставить мир менять
+геометрию при смене погоды.

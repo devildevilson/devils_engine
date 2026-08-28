@@ -118,8 +118,10 @@ float pf08_weather_volume_range(const pf08_sky_block sky) {
   const bool fog_active = sky.fog_params.x > 0.0;
   const bool cloud_active = sky.cloud_params.x > 0.0 && sky.cloud_params.y > 0.0;
   const bool rain_active = sky.precipitation_params.x > 0.0 && sky.precipitation_shape.y > 0.0;
+  const bool snow_active = sky.snow_params.x > 0.0 && sky.snow_shape.y > 0.0;
   return max(max(fog_active ? sky.fog_params.w : 0.0, cloud_active ? sky.cloud_shape.w : 0.0),
-             rain_active ? sky.precipitation_shape.w : 0.0);
+             max(rain_active ? sky.precipitation_shape.w : 0.0,
+                 snow_active ? sky.snow_shape.w : 0.0));
 }
 
 #endif

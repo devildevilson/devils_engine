@@ -590,6 +590,12 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     if (options.rain_drop_length_overridden) state.rain_drop_length_m = options.rain_drop_length_m;
     if (options.rain_near_radius_overridden) state.rain_near_radius_m = options.rain_near_radius_m;
     if (options.rain_far_extinction_overridden) state.rain_far_extinction_per_m = options.rain_far_extinction_per_m;
+    if (options.snow_rate_overridden) state.snow_rate_mm_h = options.snow_rate_mm_h;
+    if (options.snow_fall_speed_overridden) state.snow_fall_speed_m_s = options.snow_fall_speed_m_s;
+    if (options.snow_wind_speed_overridden) state.snow_wind_speed_m_s = options.snow_wind_speed_m_s;
+    if (options.snow_flake_size_overridden) state.snow_flake_size_m = options.snow_flake_size_m;
+    if (options.snow_near_radius_overridden) state.snow_near_radius_m = options.snow_near_radius_m;
+    if (options.snow_far_extinction_overridden) state.snow_far_extinction_per_m = options.snow_far_extinction_per_m;
     state.wind_direction_deg = normalize_weather_direction(state.wind_direction_deg);
     if (!std::isfinite(state.aerosol_turbidity) || state.aerosol_turbidity <= 0.0 ||
         !std::isfinite(state.wind_direction_deg) || !std::isfinite(state.wind_strength_m) ||
@@ -615,7 +621,13 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
         !std::isfinite(state.rain_wind_speed_m_s) || state.rain_wind_speed_m_s < 0.0 ||
         !std::isfinite(state.rain_drop_length_m) || state.rain_drop_length_m <= 0.0 ||
         !std::isfinite(state.rain_near_radius_m) || state.rain_near_radius_m <= 0.0 ||
-        !std::isfinite(state.rain_far_extinction_per_m) || state.rain_far_extinction_per_m < 0.0) {
+        !std::isfinite(state.rain_far_extinction_per_m) || state.rain_far_extinction_per_m < 0.0 ||
+        !std::isfinite(state.snow_rate_mm_h) || state.snow_rate_mm_h < 0.0 ||
+        !std::isfinite(state.snow_fall_speed_m_s) || state.snow_fall_speed_m_s <= 0.0 ||
+        !std::isfinite(state.snow_wind_speed_m_s) || state.snow_wind_speed_m_s < 0.0 ||
+        !std::isfinite(state.snow_flake_size_m) || state.snow_flake_size_m <= 0.0 ||
+        !std::isfinite(state.snow_near_radius_m) || state.snow_near_radius_m <= 0.0 ||
+        !std::isfinite(state.snow_far_extinction_per_m) || state.snow_far_extinction_per_m < 0.0) {
       utils::error{}("PF08 effective weather is invalid: turbidity {}, wind {} deg / {} m, fog {} 1/m / {} / g {}, cloud {:.2f} / {} 1/m, rain {:.1f} mm/h / {} 1/m",
                      state.aerosol_turbidity, state.wind_direction_deg, state.wind_strength_m,
                      state.fog_extinction_per_m, state.fog_scattering_albedo, state.fog_anisotropy,
@@ -640,12 +652,16 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
   if (!std::isfinite(options.rain_range_m) || options.rain_range_m <= 0.0) {
     utils::error{}("PF08 rain range must be finite and positive");
   }
-  utils::info("PF08 weather '{}': aerosol {:.2f}, wind {:.0f} deg / {:.2f} m, fog {:.4f} 1/m @ H {:.0f} m, cloud {:.2f} @ {:.0f}-{:.0f} m, rain {:.1f} mm/h, transition {:.1f} s",
+  if (!std::isfinite(options.snow_range_m) || options.snow_range_m <= 0.0) {
+    utils::error{}("PF08 snow range must be finite and positive");
+  }
+  utils::info("PF08 weather '{}': aerosol {:.2f}, wind {:.0f} deg / {:.2f} m, fog {:.4f} 1/m @ H {:.0f} m, cloud {:.2f} @ {:.0f}-{:.0f} m, rain/snow {:.1f}/{:.1f} mm/h, transition {:.1f} s",
               initial_weather->name, weather.state().aerosol_turbidity, weather.state().wind_direction_deg,
               weather.state().wind_strength_m, weather.state().fog_extinction_per_m,
               weather.state().fog_scale_height_m, weather.state().cloud_coverage,
               weather.state().cloud_base_height_m, weather.state().cloud_top_height_m,
-              weather.state().rain_rate_mm_h, weather_transition_seconds);
+              weather.state().rain_rate_mm_h, weather.state().snow_rate_mm_h,
+              weather_transition_seconds);
 
   pending_width = options.width;
   pending_height = options.height;
@@ -743,7 +759,9 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     // просить с запасом здесь не бесплатно: соседняя пара сдвигается ровно на этот резерв. Фикстуре
     // хватает тридцати двух при двенадцати используемых.
     const uint32_t scene_pair = base.register_pair(scene_group, cube_mesh, 32);
-    const auto fixture = make_fixture_instances();
+    const auto fixture_scene = make_fixture_scene();
+    const auto& fixture = fixture_scene.instances;
+    const auto shelter = fixture_scene.shelter;
     double caster_height = fixture_caster_height(fixture);
     write_fixture(base, scene_pair, fixture, uint32_t(cube.size()));
 
@@ -1206,6 +1224,20 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       const float rain_particle_mode = !options.rain_particles ? 0.0f : (options.rain_collision ? 1.0f : 2.0f);
       sky_block.precipitation_time = glm::vec4(float(step_seconds), float(frames_total), 0.22f,
                                                rain_particle_mode);
+      sky_block.snow_params = glm::vec4(float(weather.state().snow_rate_mm_h),
+                                        float(weather.state().snow_fall_speed_m_s),
+                                        float(weather.state().snow_wind_speed_m_s),
+                                        float(weather.state().snow_near_radius_m));
+      // Хлопья становятся sub-pixel гораздо раньше длинных дождевых streaks. Froxel handover поэтому
+      // начинается уже на четверти near-radius; иначе видимый навес в 8 м защищал бы только от пары
+      // случайных billboard'ов, а непрерывный снег начинался бы уже далеко за ним.
+      const double snow_far_start_m = weather.state().snow_near_radius_m * 0.25;
+      sky_block.snow_shape = glm::vec4(float(weather.state().snow_flake_size_m),
+                                       float(weather.state().snow_far_extinction_per_m),
+                                       float(snow_far_start_m), float(options.snow_range_m));
+      const float shelter_enabled = options.shelter_occlusion ? 1.0f : 0.0f;
+      sky_block.shelter_minimum = glm::vec4(shelter.minimum, shelter_enabled);
+      sky_block.shelter_maximum = glm::vec4(shelter.maximum, shelter_enabled);
       sky_block.shadow_bodies = glm::vec4(slot_active[0] ? shadow_sources[0].body_code : -1.0f,
                                           slot_active[1] ? shadow_sources[1].body_code : -1.0f, 0.0f, 0.0f);
       write_current_buffer(base, "sky_buffer", &sky_block, sizeof(sky_block));
@@ -1233,18 +1265,19 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
                     state.horizontal_illuminance_lx, scene_luminance,
                     goal_ev100 <= options.exposure.min_ev100 + 1e-6 ? " · adaptation at its night floor" : ""),
         weather.active()
-          ? std::format("Weather: {} -> {} · {:.0f}% · aerosol {:.2f} · wind {:.0f}°/{:.2f} m · fog {:.4f} · cloud {:.2f} [{:.0f}-{:.0f}] · rain {:.1f} mm/h",
+          ? std::format("Weather: {} -> {} · {:.0f}% · aerosol {:.2f} · wind {:.0f}°/{:.2f} m · fog {:.4f} · cloud {:.2f} [{:.0f}-{:.0f}] · rain/snow {:.1f}/{:.1f} mm/h",
                         weather.source_name(), weather.target_name(), weather.progress() * 100.0,
                         weather.state().aerosol_turbidity, weather.state().wind_direction_deg,
                         weather.state().wind_strength_m, weather.state().fog_extinction_per_m,
                         weather.state().cloud_coverage, weather.state().cloud_base_height_m,
-                        weather.state().cloud_top_height_m, weather.state().rain_rate_mm_h)
-          : std::format("Weather: {} · aerosol {:.2f} · wind {:.0f}°/{:.2f} m · fog {:.4f} · cloud {:.2f} [{:.0f}-{:.0f}] · rain {:.1f} mm/h",
+                        weather.state().cloud_top_height_m, weather.state().rain_rate_mm_h,
+                        weather.state().snow_rate_mm_h)
+          : std::format("Weather: {} · aerosol {:.2f} · wind {:.0f}°/{:.2f} m · fog {:.4f} · cloud {:.2f} [{:.0f}-{:.0f}] · rain/snow {:.1f}/{:.1f} mm/h",
                         weather.target_name(), weather.state().aerosol_turbidity,
                         weather.state().wind_direction_deg, weather.state().wind_strength_m,
                         weather.state().fog_extinction_per_m, weather.state().cloud_coverage,
                         weather.state().cloud_base_height_m, weather.state().cloud_top_height_m,
-                        weather.state().rain_rate_mm_h),
+                        weather.state().rain_rate_mm_h, weather.state().snow_rate_mm_h),
         std::format("Foliage: {} near + {} far of {} · LOD {:.0f} m · range {:.0f} m",
                     shrub_near_instances.size(), shrub_far_instances.size(), shrubs.size(),
                     options.foliage_lod_m, options.foliage_range_m),

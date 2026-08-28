@@ -29,7 +29,8 @@ void main() {
   const bool fog_active = sky_data.sky.fog_params.x > 0.0;
   const bool cloud_active = sky_data.sky.cloud_params.x > 0.0 && sky_data.sky.cloud_params.y > 0.0;
   const bool rain_active = pf08_rain_active(sky_data.sky) && sky_data.sky.precipitation_shape.y > 0.0;
-  if (!fog_active && !cloud_active && !rain_active) {
+  const bool snow_active = pf08_snow_active(sky_data.sky) && sky_data.sky.snow_shape.y > 0.0;
+  if (!fog_active && !cloud_active && !rain_active && !snow_active) {
     out_color = vec4(radiance, 1.0);
     return;
   }

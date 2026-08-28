@@ -24,7 +24,7 @@
 {
   // Persistent GPU pool: текущая копия пишется compute, history=1 хранит состояние прошлого кадра.
   name = rain_particle_state
-  format = v4v4v4
+  format = v4v4v4v4
   role = material_data
   size = rain_particle_capacity
   swap = per_frame
@@ -35,7 +35,7 @@
 // Небесная обстановка кадра: два светила, четыре луны, параметры атмосферы и вывода.
 {
   name = sky_buffer
-  format = v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4
+  format = v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4v4
   role = upload
   size = one
   swap = per_frame

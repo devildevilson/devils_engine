@@ -3,7 +3,7 @@
 
 // Погодное состояние PF08. Здесь живут только величины с реальными consumer'ами текущего среза:
 // аэрозоль читает атмосферная модель, направление и сила ветра — главный и теневой проходы листвы,
-// локальную взвесь и облака — froxel-объём, дождь — particle и дальний volume consumers.
+// локальную взвесь и облака — froxel-объём, дождь/снег — общий particle pool и дальний volume.
 
 #include <string>
 #include <string_view>
@@ -41,6 +41,14 @@ struct weather_state {
   double rain_drop_length_m = 0.45;
   double rain_near_radius_m = 18.0;
   double rain_far_extinction_per_m = 0.0;
+  // Снег делит с дождём stable-slot pool, но не его динамику: медленные хлопья дрейфуют и дают
+  // отдельное дальнее extinction. Rate — водный эквивалент мм/ч, чтобы переходы оставались размерными.
+  double snow_rate_mm_h = 0.0;
+  double snow_fall_speed_m_s = 1.6;
+  double snow_wind_speed_m_s = 3.0;
+  double snow_flake_size_m = 0.045;
+  double snow_near_radius_m = 22.0;
+  double snow_far_extinction_per_m = 0.0;
 };
 
 struct weather_preset {
@@ -70,6 +78,12 @@ struct weather_preset {
   double rain_drop_length_m = 0.45;
   double rain_near_radius_m = 18.0;
   double rain_far_extinction_per_m = 0.0;
+  double snow_rate_mm_h = 0.0;
+  double snow_fall_speed_m_s = 1.6;
+  double snow_wind_speed_m_s = 3.0;
+  double snow_flake_size_m = 0.045;
+  double snow_near_radius_m = 22.0;
+  double snow_far_extinction_per_m = 0.0;
 };
 
 struct weather_preset_list {

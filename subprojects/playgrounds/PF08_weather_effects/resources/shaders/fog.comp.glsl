@@ -47,7 +47,8 @@ vec3 pf08_fog_ambient_radiance() {
 
 void pf08_weather_sources(const vec3 direction, const vec3 world_position, const float view_distance,
                           const vec3 ambient, const float column_modulation,
-                          out vec3 fog_source, out vec3 cloud_source, out vec3 rain_source) {
+                          out vec3 fog_source, out vec3 cloud_source, out vec3 rain_source,
+                          out vec3 snow_source) {
   const pf08_sky_block sky = sky_data.sky;
   const vec3 planet_point = vec3(world_position.x * 0.001,
                                  sky.atmosphere_geometry.x + world_position.y * 0.001,
@@ -55,6 +56,7 @@ void pf08_weather_sources(const vec3 direction, const vec3 world_position, const
   fog_source = ambient;
   cloud_source = ambient;
   rain_source = ambient;
+  snow_source = ambient;
 
   for (int s = 0; s < PF08_STAR_COUNT; ++s) {
     const float illuminance = sky.star_color_illuminance[s].w;
@@ -73,8 +75,9 @@ void pf08_weather_sources(const vec3 direction, const vec3 world_position, const
     if (sky.cloud_params.x > 0.0) {
       local_medium *= pf08_cloud_light_transmittance(sky, world_position, light_direction);
     }
-    if (pf08_rain_active(sky) && sky.precipitation_shape.y > 0.0) {
-      local_medium *= pf08_rain_light_transmittance(sky, world_position, light_direction);
+    if ((pf08_rain_active(sky) && sky.precipitation_shape.y > 0.0) ||
+        (pf08_snow_active(sky) && sky.snow_shape.y > 0.0)) {
+      local_medium *= pf08_precipitation_light_transmittance(sky, world_position, light_direction);
     }
     const vec3 source_radiance = atmosphere * sky.star_color_illuminance[s].rgb * illuminance *
                                  visibility * local_medium;
@@ -82,6 +85,7 @@ void pf08_weather_sources(const vec3 direction, const vec3 world_position, const
     fog_source += source_radiance * pf08_mie_phase(cosine, sky.fog_params.z);
     cloud_source += source_radiance * pf08_mie_phase(cosine, sky.cloud_params.w);
     rain_source += source_radiance * pf08_mie_phase(cosine, 0.60);
+    snow_source += source_radiance * pf08_mie_phase(cosine, 0.45);
   }
 
   const int moon_count = int(sky.march_params.w);
@@ -101,8 +105,9 @@ void pf08_weather_sources(const vec3 direction, const vec3 world_position, const
     if (sky.cloud_params.x > 0.0) {
       local_medium *= pf08_cloud_light_transmittance(sky, world_position, light_direction);
     }
-    if (pf08_rain_active(sky) && sky.precipitation_shape.y > 0.0) {
-      local_medium *= pf08_rain_light_transmittance(sky, world_position, light_direction);
+    if ((pf08_rain_active(sky) && sky.precipitation_shape.y > 0.0) ||
+        (pf08_snow_active(sky) && sky.snow_shape.y > 0.0)) {
+      local_medium *= pf08_precipitation_light_transmittance(sky, world_position, light_direction);
     }
     const vec3 source_radiance =
       sky.moon_color_illuminance[m].rgb * illuminance * visibility * local_medium;
@@ -110,6 +115,7 @@ void pf08_weather_sources(const vec3 direction, const vec3 world_position, const
     fog_source += source_radiance * pf08_mie_phase(cosine, sky.fog_params.z);
     cloud_source += source_radiance * pf08_mie_phase(cosine, sky.cloud_params.w);
     rain_source += source_radiance * pf08_mie_phase(cosine, 0.60);
+    snow_source += source_radiance * pf08_mie_phase(cosine, 0.45);
   }
 }
 
@@ -123,7 +129,8 @@ void main() {
   const bool fog_active = fog_extinction > 0.0;
   const bool cloud_active = sky_data.sky.cloud_params.x > 0.0 && cloud_extinction > 0.0;
   const bool rain_active = pf08_rain_active(sky_data.sky) && sky_data.sky.precipitation_shape.y > 0.0;
-  if (!fog_active && !cloud_active && !rain_active) {
+  const bool snow_active = pf08_snow_active(sky_data.sky) && sky_data.sky.snow_shape.y > 0.0;
+  if (!fog_active && !cloud_active && !rain_active && !snow_active) {
     // Apply-pass имеет такой же exact-copy bypass и образ не читает. Не записывать 96 бесполезных
     // слоёв — часть clear-контракта: выключенная погода не должна платить за объём.
     return;
@@ -162,8 +169,18 @@ void main() {
       ? cloud_extinction * pf08_cloud_density(sky_data.sky, world_position) : 0.0;
     const float local_rain_extinction = rain_active
       ? sky_data.sky.precipitation_shape.y * pf08_rain_far_weight(sky_data.sky, midpoint) *
-        pf08_rain_vertical_density(sky_data.sky, world_position.y) : 0.0;
-    const float local_extinction = local_fog_extinction + local_cloud_extinction + local_rain_extinction;
+        pf08_precipitation_vertical_density(sky_data.sky, world_position.y) *
+        (pf08_shelter_blocks_precipitation(sky_data.sky, world_position,
+                                           pf08_precipitation_velocity(sky_data.sky, false)) ? 0.0 : 1.0)
+        : 0.0;
+    const float local_snow_extinction = snow_active
+      ? sky_data.sky.snow_shape.y * pf08_snow_far_weight(sky_data.sky, midpoint) *
+        pf08_precipitation_vertical_density(sky_data.sky, world_position.y) *
+        (pf08_shelter_blocks_precipitation(sky_data.sky, world_position,
+                                           pf08_precipitation_velocity(sky_data.sky, true)) ? 0.0 : 1.0)
+        : 0.0;
+    const float local_extinction = local_fog_extinction + local_cloud_extinction +
+                                   local_rain_extinction + local_snow_extinction;
     if (local_extinction <= 1e-8) {
       imageStore(fog_image, ivec3(cell, slice), vec4(min(in_scattering, vec3(60000.0)), transmittance));
       continue;
@@ -172,12 +189,14 @@ void main() {
     vec3 fog_source;
     vec3 cloud_source;
     vec3 rain_source;
+    vec3 snow_source;
     pf08_weather_sources(direction, world_position, midpoint, ambient, column_modulation,
-                         fog_source, cloud_source, rain_source);
+                         fog_source, cloud_source, rain_source, snow_source);
     const vec3 scattering_source =
       (fog_source * local_fog_extinction * fog_albedo +
        cloud_source * local_cloud_extinction * cloud_albedo +
-       rain_source * local_rain_extinction * 0.90) / local_extinction;
+       rain_source * local_rain_extinction * 0.90 +
+       snow_source * local_snow_extinction * 0.98) / local_extinction;
     const float segment_transmittance = exp(-local_extinction * segment);
     // Для постоянного source это точный аналитический интеграл на сегменте, а не sigma*ds.
     in_scattering += transmittance * scattering_source * (1.0 - segment_transmittance);

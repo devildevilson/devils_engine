@@ -6,6 +6,7 @@ struct RainParticle {
   vec4 position_age;
   vec4 velocity_lifetime;
   vec4 impact_position_age;
+  vec4 metadata;
 };
 
 layout(set = 0, binding = 0, std140) uniform CameraBlock {
@@ -39,7 +40,9 @@ void main() {
   const RainParticle particle = rain_state.particles[id];
   const bool impact = particle.impact_position_age.w >= 0.0;
   const bool falling = particle.position_age.w >= 0.0 && particle.velocity_lifetime.w > 0.0;
-  if (sky_data.sky.precipitation_time.w < 0.5 || sky_data.sky.precipitation_params.x <= 0.0 ||
+  const bool snow = particle.metadata.x > 0.5;
+  if (sky_data.sky.precipitation_time.w < 0.5 ||
+      (sky_data.sky.precipitation_params.x <= 0.0 && sky_data.sky.snow_params.x <= 0.0) ||
       (!impact && !falling)) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     out_uv = vec2(0.0);
@@ -64,7 +67,7 @@ void main() {
     up = camera_world[1];
     half_extent = vec2(mix(0.025, 0.16, life));
     out_alpha = (1.0 - life) * 0.42;
-  } else {
+  } else if (!snow) {
     out_kind = 0u;
     centre = particle.position_age.xyz;
     up = normalize(particle.velocity_lifetime.xyz);
@@ -75,6 +78,16 @@ void main() {
     half_extent = vec2(mix(0.004, 0.009, random_size),
                        sky_data.sky.precipitation_shape.x * mix(0.36, 0.62, random_size));
     out_alpha = mix(0.12, 0.28, random_size);
+  } else {
+    out_kind = 2u;
+    centre = particle.position_age.xyz;
+    const float angle = particle.metadata.y + sky_data.sky.wind_params.w * 0.85;
+    right = normalize(camera_world[0] * cos(angle) + camera_world[1] * sin(angle));
+    up = normalize(-camera_world[0] * sin(angle) + camera_world[1] * cos(angle));
+    const float random_size = float(pf08_rain_hash(id) & 255u) / 255.0;
+    const float size = sky_data.sky.snow_shape.x * mix(0.62, 1.35, random_size);
+    half_extent = vec2(size);
+    out_alpha = mix(0.42, 0.78, random_size);
   }
 
   const vec3 world = centre + right * (corner.x * half_extent.x) + up * (corner.y * half_extent.y);
@@ -92,5 +105,7 @@ void main() {
     illuminance += sky_data.sky.moon_color_illuminance[m].w;
   }
   const vec3 tint = illuminance > 0.0 ? weighted_light / illuminance : vec3(0.65, 0.75, 0.90);
-  out_radiance = tint * max(illuminance * (impact ? 0.055 : 0.035), 0.015);
+  const float response = snow ? 0.075 : (impact ? 0.055 : 0.035);
+  const vec3 particle_tint = snow ? mix(tint, vec3(0.92, 0.96, 1.0), 0.55) : tint;
+  out_radiance = particle_tint * max(illuminance * response, snow ? 0.035 : 0.015);
 }

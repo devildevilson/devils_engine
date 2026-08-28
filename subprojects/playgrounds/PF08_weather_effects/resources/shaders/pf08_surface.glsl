@@ -112,8 +112,9 @@ vec3 pf08_surface_illuminance(const pf08_sky_block sky, const sampler2D transmit
     if (sky.cloud_params.x > 0.0) {
       light_transmittance *= pf08_cloud_light_transmittance(sky, scene_position, light_direction);
     }
-    if (pf08_rain_active(sky) && sky.precipitation_shape.y > 0.0) {
-      light_transmittance *= pf08_rain_light_transmittance(sky, scene_position, light_direction);
+    if ((pf08_rain_active(sky) && sky.precipitation_shape.y > 0.0) ||
+        (pf08_snow_active(sky) && sky.snow_shape.y > 0.0)) {
+      light_transmittance *= pf08_precipitation_light_transmittance(sky, scene_position, light_direction);
     }
     total += light_transmittance * sky.star_color_illuminance[s].rgb * illuminance * cosine * visibility;
   }
@@ -138,8 +139,9 @@ vec3 pf08_surface_illuminance(const pf08_sky_block sky, const sampler2D transmit
     if (sky.cloud_params.x > 0.0) {
       local_medium *= pf08_cloud_light_transmittance(sky, scene_position, light_direction);
     }
-    if (pf08_rain_active(sky) && sky.precipitation_shape.y > 0.0) {
-      local_medium *= pf08_rain_light_transmittance(sky, scene_position, light_direction);
+    if ((pf08_rain_active(sky) && sky.precipitation_shape.y > 0.0) ||
+        (pf08_snow_active(sky) && sky.snow_shape.y > 0.0)) {
+      local_medium *= pf08_precipitation_light_transmittance(sky, scene_position, light_direction);
     }
     total += sky.moon_color_illuminance[m].rgb * illuminance * cosine * visibility * local_medium;
   }

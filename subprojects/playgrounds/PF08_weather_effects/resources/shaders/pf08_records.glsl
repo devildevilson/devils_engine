@@ -82,6 +82,13 @@ struct pf08_sky_block {
   vec4 precipitation_shape;
   // x — dt реального кадра, y — номер кадра, z — lifetime impact, секунды.
   vec4 precipitation_time;
+  // Снег: rate водного эквивалента, скорость падения, горизонтальный перенос и near-radius.
+  vec4 snow_params;
+  // Размер хлопья, дальний extinction, начало far LOD и дальность volume.
+  vec4 snow_shape;
+  // AABB ВИДИМОЙ крыши. w > 0 включает один и тот же shelter-test в particle и froxel consumers.
+  vec4 shelter_minimum;
+  vec4 shelter_maximum;
   // Освещённость светила БЕЗ затмения и без горизонта, по одной на звезду в x и y. Нужна ровно диску:
   // затмение теперь показывается геометрически — луна закрывает часть диска собой, — и дополнительно
   // гасить сам диск значило бы посчитать затмение дважды.
