@@ -1,6 +1,6 @@
 # PF08 — weather effects
 
-Статус: **срезы 0–3 CLOSED — fog/froxel-среда и конечный облачный слой зафиксированы** (2026-08-28).
+Статус: **срезы 0–3 CLOSED; срез 4A CLOSED — дождь near/mid/far и surface contacts** (2026-08-28).
 
 PF08 проверяет погоду как состояние открытого мира, а не как отдельный дождевой emitter. Площадка начинает
 с независимой копии закрытого `PF07_party_environment`: та же P-type двойная система, календарь и затмения,
@@ -17,17 +17,22 @@ build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effe
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=fog
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=cloudy
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=overcast --debug=10
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=rain
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=rain --no-rain-particles
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=fog --debug=8
 ./subprojects/playgrounds/PF08_weather_effects/compare_pf07_baseline.sh
 ```
 
-`--weather=clear|haze|windy|fog|cloudy|overcast` выбирает состояние сразу, `T` циклически запускает переход длительностью
+`--weather=clear|haze|windy|fog|cloudy|overcast|rain` выбирает состояние сразу, `T` циклически запускает переход длительностью
 `--weather-transition=S` (по умолчанию `4 s`). `--turbidity`, `--wind`, `--wind-direction` сохранены как
 независимые overrides поверх пресета; локальная среда отдельно управляется через `--fog-extinction=`,
 `--fog-albedo=`, `--fog-anisotropy=` и `--fog-range=`. Ими изолируется один consumer для A/B.
 Профиль отдельно задаётся `--fog-base=` и `--fog-height=` (экспоненциальный scale height), пространственное
-поле — `--fog-variation=`, `--fog-cell=` и `--fog-speed=`. Четыре
-астрономических пресета PF07 сохранены буквально. `compare_pf07_baseline.sh` запускает ТОЛЬКО PF08 и
+поле — `--fog-variation=`, `--fog-cell=` и `--fog-speed=`.
+Параметры дождя изолируются через `--rain-rate=`, `--rain-speed=`, `--rain-wind=`, `--rain-length=`,
+`--rain-radius=`, `--rain-extinction=` и `--rain-range=`. `--no-rain-particles` оставляет только far volume,
+`--no-rain-collision` — streaks без surface contacts. Четыре астрономических пресета PF07 сохранены
+буквально. `compare_pf07_baseline.sh` запускает ТОЛЬКО PF08 и
 сравнивает его с четырьмя уже зафиксированными PNG PF07; сам PF07 повторно запускается только при явном
 обновлении его `reference_frames/`.
 
@@ -79,8 +84,9 @@ weather state
    атмосферное прохождение и shadow visibility.
 3. **DONE — finite cloud layer.** `cloudy|overcast`, 3D world-space density, общий ветер, два светила,
    self-shadowing и совпадающая с объёмом движущаяся тень на поверхности.
-4. **Precipitation across distance.** Near drops/flakes, mid/far extinction, укрытие и impact-события.
-   PF05 даёт проверенный particle lifecycle, но его camera-local billboard rain не считается готовой погодой.
+4. **IN PROGRESS — precipitation across distance.** 4A закрывает дождь: near drops, mid/far extinction и
+   depth-driven impact-события. Snow, видимое укрытие и осадки за ним остаются в 4B. PF05 дал проверенный
+   particle lifecycle, но его camera-local billboard rain сам по себе не считался готовой погодой.
 5. **Wet world and screen manifestations.** Накопление/высыхание мокроты, roughness/specular response,
    лужи и рябь; lens droplets только как следствие попадания воды, с отдельным A/B.
 6. **Закрывающий аудит.** Фиксированные clear/overcast/rain/snow кадры в нескольких временах суток,
@@ -189,3 +195,42 @@ frame 8 против 80 при `fog-speed=0` побитно совпадает (
 volume/apply/total: clear после оптимизации пустого прохода `0.009/0.209/5.783 ms`, cloudy
 `1.235/0.363/7.404 ms`, overcast `1.248/0.369/7.569 ms`. `cloudy` проходит Vulkan validation без VUID,
 API warning или error. Headless contract — `72/72`.
+
+## Что закрыл срез 4A
+
+`rain` — одно непрерывное состояние, а не screen overlay. `rain_rate_mm_h` управляет долей активных slots
+в фиксированном pool из `4096` записей; скорость падения, горизонтальный перенос общим направлением ветра,
+длина streak и near-radius размерены в метрах и м/с. Один compute invocation владеет одним стабильным slot,
+current copy пишется на GPU, `history=1` читается как прошлый кадр — CPU не раздаёт капли и не читает их назад.
+Первые четыре кадра детерминированно рассеивают pool по camera-local объёму, затем движение идёт с фиксированным
+`1/60 s` в кадровых тестах. Важная найденная ошибка: `wind_params.xy` означает world `XZ`; сборка его как
+`vec3(vec2, fall_speed)` отправляла падение в `Z` и делала почти горизонтальный дождь. Теперь компоненты
+переводятся явно в `(wind.x, -fall, wind.z)`.
+
+Контакт — не случайный splash: compute стоит после opaque scene, берёт depth этого же кадра, пересекает
+отрезок движения капли с реконструированной поверхностью и на `0.22 s` превращает тот же slot в расширяющееся
+кольцо. Streak/ring вручную сравнивается с reverse-Z depth при композиции, поэтому осадки не просвечивают через
+опорную геометрию. Это намеренно только контакт с ВИДИМОЙ поверхностью. У PF07 fixture нет физической крыши;
+вводить невидимый AABB как «укрытие» означало бы создать gameplay collider без визуальной причины. Укрытие
+придёт в 4B вместе с видимым навесом/объёмом, который сможет отсекать rain spawn и far medium согласованно.
+
+За near-radius дождь переходит в тот же `160x90x96` froxel volume: cubic smoothstep начинается на `0.72R`
+и за `0.45R` набирает authored `rain_far_extinction_per_m`. Вертикально дождь существует от поверхности до
+основания облака; источники рассеяния — те же две звезды, луны и sky ambient, что у fog/cloud. Near streaks
+композятся в HDR после fog apply, но до metering, поэтому экспозиция видит конечный погодный кадр.
+
+Проверка разделёнными A/B при fixed noon EV: particles против `--no-rain-particles` дают `MAE 0.000300492`;
+collision против `--no-rain-collision` — `0.0000308103`, причём difference-image локализует кольца на земле;
+far extinction против `--rain-extinction=0` при выключенных particles — `0.0115107`. Дождевой light-column
+также ослабляет прямой свет на поверхности и к froxel scattering, как fog/cloud. На Iris Xe минимум
+steady 1280x720 для финального authored rain: simulation `0.036 ms`, volume `3.772`, apply `0.334`,
+rain draw `0.038`, total `9.750 ms`. `--verify` теперь `86/86`, rain Vulkan-validation clean. Единственный
+финальный набор clear кадров снова дал `AE=0` для всех четырёх сохранённых PF07 PNG; PF07 не запускался.
+
+FOLLOW-UP ПО RUNTIME-ПЕРЕХОДУ. `T` впервые обнаружил контракт, которого fixed preset не касался:
+`multiscatter_lut` хранит две cache-копии, а плавная turbidity меняется каждый кадр. Старый код поэтому
+двигал `atmosphere_cache` на соседних кадрах и `painter` правильно останавливал процесс, пока GPU ещё мог
+читать перезаписываемую копию. Новый host gate разрешает rebuild только через два submitted frame. Сам
+weather state, transmittance и остальные consumers остаются покадровыми; multiscatter отстаёт максимум на
+один кадр, а финальное dirty-значение обязательно запекается после окончания перехода. Четыре headless
+проверки фиксируют ритм `build/skip/build/skip` и подняли контракт до `86/86`.

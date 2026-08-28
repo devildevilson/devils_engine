@@ -21,6 +21,9 @@
 // 96 квадратичных слоёв нужны облакам на километровой дальности: при 48 границы облака распадались
 // на видимые горизонтальные ступени. RGBA16F занимает 10.5 MiB на кадр.
 { name = fog_volume_size, type = fixed_3d, value = [160, 90, 96] }
+// Один compute invocation владеет одним стабильным rain slot. 4096 капель — фиксированный бюджет:
+// интенсивность меняет долю активных slots, а не пересоздаёт ресурс и pipeline.
+{ name = rain_particle_capacity, type = fixed, value = [4096, 0, 0] }
 { name = ui_vertices_bytes, type = fixed, value = [524288, 0, 0] }
 { name = ui_indices_bytes, type = fixed, value = [131072, 0, 0] }
 { name = ui_commands_bytes, type = fixed, value = [16384, 0, 0] }

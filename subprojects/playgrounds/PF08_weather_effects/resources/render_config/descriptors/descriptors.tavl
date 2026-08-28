@@ -109,3 +109,22 @@
     { resource = sky_buffer, usage = uniform, stage = fragment }
   ]
 }
+{
+  name = rain_simulation_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = compute },
+    { resource = sky_buffer, usage = uniform, stage = compute },
+    { resource = rain_particle_state, usage = storage_write, stage = compute },
+    { resource = rain_particle_state, usage = storage_read, stage = compute, history = 1 },
+    { resource = scene_depth, usage = depth_read, stage = compute, sampler = nearest_sampler }
+  ]
+}
+{
+  name = rain_render_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = vertex },
+    { resource = sky_buffer, usage = uniform, stage = vertex },
+    { resource = rain_particle_state, usage = storage_read, stage = vertex },
+    { resource = scene_depth, usage = depth_read, stage = fragment, sampler = nearest_sampler }
+  ]
+}

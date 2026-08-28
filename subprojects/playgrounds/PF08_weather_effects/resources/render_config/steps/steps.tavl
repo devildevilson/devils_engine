@@ -82,3 +82,17 @@
   sets = [ fog_apply_data ]
   command = "draw constant fullscreen_draw"
 }
+{
+  name = simulate_rain
+  material = rain_simulation_material
+  sets = [ rain_simulation_data ]
+  command = "dispatch constant rain_dispatch"
+}
+{
+  name = draw_rain
+  material = rain_material
+  geometry = rain_geometry
+  sets = [ rain_render_data ]
+  command = "draw constant rain_draw"
+  blending = { weather_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
+}

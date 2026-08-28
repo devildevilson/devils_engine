@@ -3,6 +3,7 @@
 #include "pf08_atmosphere.glsl"
 #include "pf08_clouds.glsl"
 #include "pf08_local_medium.glsl"
+#include "pf08_precipitation.glsl"
 #include "pf08_shadow_sample.glsl"
 
 // Настоящая froxel-сетка: XY — редкая экранная сетка, Z — квадратично распределённое расстояние.
@@ -46,13 +47,14 @@ vec3 pf08_fog_ambient_radiance() {
 
 void pf08_weather_sources(const vec3 direction, const vec3 world_position, const float view_distance,
                           const vec3 ambient, const float column_modulation,
-                          out vec3 fog_source, out vec3 cloud_source) {
+                          out vec3 fog_source, out vec3 cloud_source, out vec3 rain_source) {
   const pf08_sky_block sky = sky_data.sky;
   const vec3 planet_point = vec3(world_position.x * 0.001,
                                  sky.atmosphere_geometry.x + world_position.y * 0.001,
                                  world_position.z * 0.001);
   fog_source = ambient;
   cloud_source = ambient;
+  rain_source = ambient;
 
   for (int s = 0; s < PF08_STAR_COUNT; ++s) {
     const float illuminance = sky.star_color_illuminance[s].w;
@@ -71,11 +73,15 @@ void pf08_weather_sources(const vec3 direction, const vec3 world_position, const
     if (sky.cloud_params.x > 0.0) {
       local_medium *= pf08_cloud_light_transmittance(sky, world_position, light_direction);
     }
+    if (pf08_rain_active(sky) && sky.precipitation_shape.y > 0.0) {
+      local_medium *= pf08_rain_light_transmittance(sky, world_position, light_direction);
+    }
     const vec3 source_radiance = atmosphere * sky.star_color_illuminance[s].rgb * illuminance *
                                  visibility * local_medium;
     const float cosine = dot(direction, light_direction);
     fog_source += source_radiance * pf08_mie_phase(cosine, sky.fog_params.z);
     cloud_source += source_radiance * pf08_mie_phase(cosine, sky.cloud_params.w);
+    rain_source += source_radiance * pf08_mie_phase(cosine, 0.60);
   }
 
   const int moon_count = int(sky.march_params.w);
@@ -95,11 +101,15 @@ void pf08_weather_sources(const vec3 direction, const vec3 world_position, const
     if (sky.cloud_params.x > 0.0) {
       local_medium *= pf08_cloud_light_transmittance(sky, world_position, light_direction);
     }
+    if (pf08_rain_active(sky) && sky.precipitation_shape.y > 0.0) {
+      local_medium *= pf08_rain_light_transmittance(sky, world_position, light_direction);
+    }
     const vec3 source_radiance =
       sky.moon_color_illuminance[m].rgb * illuminance * visibility * local_medium;
     const float cosine = dot(direction, light_direction);
     fog_source += source_radiance * pf08_mie_phase(cosine, sky.fog_params.z);
     cloud_source += source_radiance * pf08_mie_phase(cosine, sky.cloud_params.w);
+    rain_source += source_radiance * pf08_mie_phase(cosine, 0.60);
   }
 }
 
@@ -112,7 +122,8 @@ void main() {
   const float cloud_extinction = max(sky_data.sky.cloud_params.y, 0.0);
   const bool fog_active = fog_extinction > 0.0;
   const bool cloud_active = sky_data.sky.cloud_params.x > 0.0 && cloud_extinction > 0.0;
-  if (!fog_active && !cloud_active) {
+  const bool rain_active = pf08_rain_active(sky_data.sky) && sky_data.sky.precipitation_shape.y > 0.0;
+  if (!fog_active && !cloud_active && !rain_active) {
     // Apply-pass имеет такой же exact-copy bypass и образ не читает. Не записывать 96 бесполезных
     // слоёв — часть clear-контракта: выключенная погода не должна платить за объём.
     return;
@@ -149,7 +160,10 @@ void main() {
       ? fog_extinction * pf08_fog_density(sky_data.sky, world_position.y) * column_modulation : 0.0;
     const float local_cloud_extinction = cloud_active
       ? cloud_extinction * pf08_cloud_density(sky_data.sky, world_position) : 0.0;
-    const float local_extinction = local_fog_extinction + local_cloud_extinction;
+    const float local_rain_extinction = rain_active
+      ? sky_data.sky.precipitation_shape.y * pf08_rain_far_weight(sky_data.sky, midpoint) *
+        pf08_rain_vertical_density(sky_data.sky, world_position.y) : 0.0;
+    const float local_extinction = local_fog_extinction + local_cloud_extinction + local_rain_extinction;
     if (local_extinction <= 1e-8) {
       imageStore(fog_image, ivec3(cell, slice), vec4(min(in_scattering, vec3(60000.0)), transmittance));
       continue;
@@ -157,11 +171,13 @@ void main() {
 
     vec3 fog_source;
     vec3 cloud_source;
+    vec3 rain_source;
     pf08_weather_sources(direction, world_position, midpoint, ambient, column_modulation,
-                         fog_source, cloud_source);
+                         fog_source, cloud_source, rain_source);
     const vec3 scattering_source =
       (fog_source * local_fog_extinction * fog_albedo +
-       cloud_source * local_cloud_extinction * cloud_albedo) / local_extinction;
+       cloud_source * local_cloud_extinction * cloud_albedo +
+       rain_source * local_rain_extinction * 0.90) / local_extinction;
     const float segment_transmittance = exp(-local_extinction * segment);
     // Для постоянного source это точный аналитический интеграл на сегменте, а не sigma*ds.
     in_scattering += transmittance * scattering_source * (1.0 - segment_transmittance);

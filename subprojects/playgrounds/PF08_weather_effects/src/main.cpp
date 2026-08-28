@@ -72,7 +72,7 @@ void print_usage() {
                "  --ev=F              зафиксировать EV100 вместо адаптации\n"
                "  --ev-bias=F         экспокоррекция в стопах\n"
                "  --preset=NAME       именованное состояние: noon, double_sunset, night, eclipse\n"
-               "  --weather=NAME      состояние: clear, haze, windy, fog, cloudy, overcast\n"
+               "  --weather=NAME      состояние: clear, haze, windy, fog, cloudy, overcast, rain\n"
                "  --weather-transition=S  длительность runtime-перехода по T, реальные секунды\n"
                "  --night-vision=F    сила ночного зрения, 0 отключает\n"
                "  --turbidity=F       множитель аэрозоля\n"
@@ -93,6 +93,15 @@ void print_usage() {
                "  --cloud-cell=M      размер world-space облачной ячейки\n"
                "  --cloud-speed=MPS   скорость переноса облаков ветром\n"
                "  --cloud-range=M     дальность облачного froxel-интеграла\n"
+               "  --rain-rate=MMH     интенсивность дождя в мм/ч (0 = точный bypass)\n"
+               "  --rain-speed=MPS    вертикальная скорость падения капель\n"
+               "  --rain-wind=MPS     горизонтальный перенос капель общим ветром\n"
+               "  --rain-length=M     длина ближнего streak в мировых метрах\n"
+               "  --rain-radius=M     радиус ближнего particle-объёма\n"
+               "  --rain-extinction=F дальнее extinction дождя, 1/м\n"
+               "  --rain-range=M      дальность froxel-представления дождя\n"
+               "  --no-rain-particles отключить ближние streaks/impacts для A/B\n"
+               "  --no-rain-collision отключить depth contacts для A/B\n"
                "  --debug=8|9|10      transmittance объёма | cloud density | cloud shadow\n"
                "  --march-steps=N     шагов основного марша неба\n"
                "  --aerial-range=KM   дальность таблицы воздушной перспективы\n"
@@ -274,6 +283,30 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.cloud_speed_overridden = true;
     } else if (read_prefixed(argument, "--cloud-range=", value)) {
       out.view.cloud_range_m = std::stod(value);
+    } else if (read_prefixed(argument, "--rain-rate=", value)) {
+      out.view.rain_rate_mm_h = std::stod(value);
+      out.view.rain_rate_overridden = true;
+    } else if (read_prefixed(argument, "--rain-speed=", value)) {
+      out.view.rain_fall_speed_m_s = std::stod(value);
+      out.view.rain_fall_speed_overridden = true;
+    } else if (read_prefixed(argument, "--rain-wind=", value)) {
+      out.view.rain_wind_speed_m_s = std::stod(value);
+      out.view.rain_wind_speed_overridden = true;
+    } else if (read_prefixed(argument, "--rain-length=", value)) {
+      out.view.rain_drop_length_m = std::stod(value);
+      out.view.rain_drop_length_overridden = true;
+    } else if (read_prefixed(argument, "--rain-radius=", value)) {
+      out.view.rain_near_radius_m = std::stod(value);
+      out.view.rain_near_radius_overridden = true;
+    } else if (read_prefixed(argument, "--rain-extinction=", value)) {
+      out.view.rain_far_extinction_per_m = std::stod(value);
+      out.view.rain_far_extinction_overridden = true;
+    } else if (read_prefixed(argument, "--rain-range=", value)) {
+      out.view.rain_range_m = std::stod(value);
+    } else if (argument == "--no-rain-particles") {
+      out.view.rain_particles = false;
+    } else if (argument == "--no-rain-collision") {
+      out.view.rain_collision = false;
     } else if (read_prefixed(argument, "--march-steps=", value)) {
       out.view.march.primary_steps = int32_t(std::stol(value));
     } else if (read_prefixed(argument, "--camera-height=", value)) {
@@ -883,7 +916,7 @@ void verify_weather(checker& check) {
   check.expect(parsed, "погодные пресеты разобраны", diagnostics);
   if (!parsed) return;
 
-  check.expect(presets.presets.size() == 6, "погодные пресеты содержат clear, haze, windy, fog, cloudy и overcast",
+  check.expect(presets.presets.size() == 7, "погодные пресеты содержат clear, haze, windy, fog, cloudy, overcast и rain",
                std::format("получено {}", presets.presets.size()));
   const auto* clear = pf08::find_weather_preset(presets, "clear");
   check.expect(clear != nullptr, "clear weather объявлена");
@@ -896,6 +929,27 @@ void verify_weather(checker& check) {
     check.expect_near(state.fog_density_variation, 0.0, 0.0,
                       "clear точно отключает пространственную модуляцию");
     check.expect_near(state.cloud_coverage, 0.0, 0.0, "clear точно отключает облачный слой");
+    check.expect_near(state.rain_rate_mm_h, 0.0, 0.0, "clear точно отключает ближние осадки");
+    check.expect_near(state.rain_far_extinction_per_m, 0.0, 0.0,
+                      "clear точно отключает дальний дождевой объём");
+  }
+
+  const auto* rain = pf08::find_weather_preset(presets, "rain");
+  check.expect(rain != nullptr, "rain weather объявлена");
+  if (rain != nullptr) {
+    const auto state = pf08::state_from_preset(*rain);
+    check.expect(state.rain_rate_mm_h > 0.0 && state.rain_far_extinction_per_m > 0.0,
+                 "rain связывает near-pool и far extinction одним состоянием");
+    check.expect(state.rain_fall_speed_m_s > state.rain_wind_speed_m_s,
+                 "authored дождь преимущественно падает, а не летит горизонтально");
+    const double start = state.rain_near_radius_m * 0.72;
+    const double width = state.rain_near_radius_m * 0.45;
+    check.expect_near(pf08::rain_far_weight(start, start, width), 0.0, 0.0,
+                      "far-дождь нулевой в начале LOD handover");
+    check.expect_near(pf08::rain_far_weight(start + width * 0.5, start, width), 0.5, 1e-14,
+                      "середина LOD handover имеет половинный вес");
+    check.expect_near(pf08::rain_far_weight(start + width, start, width), 1.0, 0.0,
+                      "far-дождь достигает полного веса за границей near-pool");
   }
 
   const auto* overcast = pf08::find_weather_preset(presets, "overcast");
@@ -968,6 +1022,15 @@ void verify_weather(checker& check) {
                       0.5 * (clear->cloud_advection_speed_m_s + overcast->cloud_advection_speed_m_s),
                       1e-12, "скорость облаков интерполируется вместе с погодой");
   }
+  if (clear != nullptr && rain != nullptr) {
+    const auto rain_middle = pf08::interpolate_weather(
+      pf08::state_from_preset(*clear), pf08::state_from_preset(*rain), 0.5);
+    check.expect_near(rain_middle.rain_rate_mm_h, rain->rain_rate_mm_h * 0.5, 1e-12,
+                      "rain rate входит в непрерывный weather transition");
+    check.expect_near(rain_middle.rain_far_extinction_per_m,
+                      rain->rain_far_extinction_per_m * 0.5, 1e-12,
+                      "far rain extinction интерполируется вместе с near-плотностью");
+  }
 
   pf08::weather_transition transition;
   transition.snap("west", west);
@@ -981,6 +1044,13 @@ void verify_weather(checker& check) {
   transition.advance(2.0);
   check.expect(!transition.active() && transition.target_name() == "west",
                "погодный переход точно приходит в authored-состояние");
+
+  pf08::atmosphere_cache_gate cache_gate{2};
+  check.expect(cache_gate.try_rebuild(0), "atmosphere cache строится на стартовом кадре");
+  check.expect(!cache_gate.try_rebuild(1), "doublebuffer cache запрещает соседний rebuild");
+  check.expect(cache_gate.try_rebuild(2), "doublebuffer cache разрешает rebuild через два кадра");
+  check.expect(!cache_gate.try_rebuild(3) && cache_gate.try_rebuild(4),
+               "плавный weather transition сохраняет безопасный ритм cache rebuild");
 }
 
 void verify_event_calendar(checker& check, const pf08::celestial_system& system) {

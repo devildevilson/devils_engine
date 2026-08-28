@@ -3,8 +3,7 @@
 
 // Погодное состояние PF08. Здесь живут только величины с реальными consumer'ами текущего среза:
 // аэрозоль читает атмосферная модель, направление и сила ветра — главный и теневой проходы листвы,
-// локальную взвесь — froxel-объём. Облачность, осадки и мокрота появятся вместе со своими
-// объёмными/частичными/surface consumer'ами.
+// локальную взвесь и облака — froxel-объём, дождь — particle и дальний volume consumers.
 
 #include <string>
 #include <string_view>
@@ -35,6 +34,13 @@ struct weather_state {
   double cloud_top_height_m = 900.0;
   double cloud_cell_size_m = 750.0;
   double cloud_advection_speed_m_s = 8.0;
+  // Дождь: физический rate управляет заполнением near-pool, дальнее extinction задаётся отдельно.
+  double rain_rate_mm_h = 0.0;
+  double rain_fall_speed_m_s = 17.0;
+  double rain_wind_speed_m_s = 4.0;
+  double rain_drop_length_m = 0.45;
+  double rain_near_radius_m = 18.0;
+  double rain_far_extinction_per_m = 0.0;
 };
 
 struct weather_preset {
@@ -58,6 +64,12 @@ struct weather_preset {
   double cloud_top_height_m = 900.0;
   double cloud_cell_size_m = 750.0;
   double cloud_advection_speed_m_s = 8.0;
+  double rain_rate_mm_h = 0.0;
+  double rain_fall_speed_m_s = 17.0;
+  double rain_wind_speed_m_s = 4.0;
+  double rain_drop_length_m = 0.45;
+  double rain_near_radius_m = 18.0;
+  double rain_far_extinction_per_m = 0.0;
 };
 
 struct weather_preset_list {
@@ -89,6 +101,8 @@ double cloud_vertical_column(double receiver_height_m, double base_height_m, dou
 double cloud_light_transmittance(double extinction_per_m, double horizontal_density,
                                  double receiver_height_m, double light_vertical_component,
                                  double base_height_m, double top_height_m);
+// Тот же cubic smoothstep, которым particle-представление передаёт дальность froxel-дождю.
+double rain_far_weight(double distance_m, double start_m, double width_m);
 
 // Переход хранит исходный snapshot, а не имя пресета: если T нажата посреди предыдущего перехода,
 // новый начинается ровно из показанного кадра и не щёлкает обратно к прежней authored-точке.

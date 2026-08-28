@@ -93,6 +93,30 @@ bool valid_state(const weather_state& state, const std::string_view name, std::s
     append_diagnostic(diagnostics, std::format("weather '{}' has negative cloud_advection_speed_m_s", name));
     valid = false;
   }
+  if (!std::isfinite(state.rain_rate_mm_h) || state.rain_rate_mm_h < 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has negative rain_rate_mm_h", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.rain_fall_speed_m_s) || state.rain_fall_speed_m_s <= 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has non-positive rain_fall_speed_m_s", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.rain_wind_speed_m_s) || state.rain_wind_speed_m_s < 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has negative rain_wind_speed_m_s", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.rain_drop_length_m) || state.rain_drop_length_m <= 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has non-positive rain_drop_length_m", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.rain_near_radius_m) || state.rain_near_radius_m <= 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has non-positive rain_near_radius_m", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.rain_far_extinction_per_m) || state.rain_far_extinction_per_m < 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has negative rain_far_extinction_per_m", name));
+    valid = false;
+  }
   return valid;
 }
 
@@ -149,7 +173,10 @@ weather_state state_from_preset(const weather_preset& preset) {
                        preset.cloud_extinction_per_m, preset.cloud_scattering_albedo,
                        preset.cloud_anisotropy, preset.cloud_base_height_m,
                        preset.cloud_top_height_m, preset.cloud_cell_size_m,
-                       preset.cloud_advection_speed_m_s};
+                       preset.cloud_advection_speed_m_s, preset.rain_rate_mm_h,
+                       preset.rain_fall_speed_m_s, preset.rain_wind_speed_m_s,
+                       preset.rain_drop_length_m, preset.rain_near_radius_m,
+                       preset.rain_far_extinction_per_m};
 }
 
 const weather_preset* find_weather_preset(const weather_preset_list& list, const std::string_view name) {
@@ -188,7 +215,13 @@ weather_state interpolate_weather(const weather_state& from, const weather_state
     std::lerp(from.cloud_base_height_m, to.cloud_base_height_m, t),
     std::lerp(from.cloud_top_height_m, to.cloud_top_height_m, t),
     std::lerp(from.cloud_cell_size_m, to.cloud_cell_size_m, t),
-    std::lerp(from.cloud_advection_speed_m_s, to.cloud_advection_speed_m_s, t)};
+    std::lerp(from.cloud_advection_speed_m_s, to.cloud_advection_speed_m_s, t),
+    std::lerp(from.rain_rate_mm_h, to.rain_rate_mm_h, t),
+    std::lerp(from.rain_fall_speed_m_s, to.rain_fall_speed_m_s, t),
+    std::lerp(from.rain_wind_speed_m_s, to.rain_wind_speed_m_s, t),
+    std::lerp(from.rain_drop_length_m, to.rain_drop_length_m, t),
+    std::lerp(from.rain_near_radius_m, to.rain_near_radius_m, t),
+    std::lerp(from.rain_far_extinction_per_m, to.rain_far_extinction_per_m, t)};
 }
 
 homogeneous_fog_integral integrate_homogeneous_fog(const double extinction_per_m,
@@ -240,6 +273,11 @@ double cloud_light_transmittance(const double extinction_per_m, const double hor
   const double column = cloud_vertical_column(receiver_height_m, base_height_m, top_height_m) /
                         light_vertical_component;
   return std::exp(-extinction_per_m * horizontal_density * column);
+}
+
+double rain_far_weight(const double distance_m, const double start_m, const double width_m) {
+  const double x = std::clamp((distance_m - start_m) / std::max(width_m, 1e-9), 0.0, 1.0);
+  return x * x * (3.0 - 2.0 * x);
 }
 
 void weather_transition::snap(std::string name, const weather_state& state) {

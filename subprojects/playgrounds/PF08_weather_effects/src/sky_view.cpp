@@ -584,6 +584,12 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     if (options.cloud_top_overridden) state.cloud_top_height_m = options.cloud_top_height_m;
     if (options.cloud_cell_overridden) state.cloud_cell_size_m = options.cloud_cell_size_m;
     if (options.cloud_speed_overridden) state.cloud_advection_speed_m_s = options.cloud_advection_speed_m_s;
+    if (options.rain_rate_overridden) state.rain_rate_mm_h = options.rain_rate_mm_h;
+    if (options.rain_fall_speed_overridden) state.rain_fall_speed_m_s = options.rain_fall_speed_m_s;
+    if (options.rain_wind_speed_overridden) state.rain_wind_speed_m_s = options.rain_wind_speed_m_s;
+    if (options.rain_drop_length_overridden) state.rain_drop_length_m = options.rain_drop_length_m;
+    if (options.rain_near_radius_overridden) state.rain_near_radius_m = options.rain_near_radius_m;
+    if (options.rain_far_extinction_overridden) state.rain_far_extinction_per_m = options.rain_far_extinction_per_m;
     state.wind_direction_deg = normalize_weather_direction(state.wind_direction_deg);
     if (!std::isfinite(state.aerosol_turbidity) || state.aerosol_turbidity <= 0.0 ||
         !std::isfinite(state.wind_direction_deg) || !std::isfinite(state.wind_strength_m) ||
@@ -603,11 +609,18 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
         std::abs(state.cloud_anisotropy) > 0.85 || !std::isfinite(state.cloud_base_height_m) ||
         !std::isfinite(state.cloud_top_height_m) || state.cloud_top_height_m <= state.cloud_base_height_m ||
         !std::isfinite(state.cloud_cell_size_m) || state.cloud_cell_size_m <= 0.0 ||
-        !std::isfinite(state.cloud_advection_speed_m_s) || state.cloud_advection_speed_m_s < 0.0) {
-      utils::error{}("PF08 effective weather is invalid: turbidity {}, wind {} deg / {} m, fog {} 1/m / {} / g {}, cloud {:.2f} / {} 1/m",
+        !std::isfinite(state.cloud_advection_speed_m_s) || state.cloud_advection_speed_m_s < 0.0 ||
+        !std::isfinite(state.rain_rate_mm_h) || state.rain_rate_mm_h < 0.0 ||
+        !std::isfinite(state.rain_fall_speed_m_s) || state.rain_fall_speed_m_s <= 0.0 ||
+        !std::isfinite(state.rain_wind_speed_m_s) || state.rain_wind_speed_m_s < 0.0 ||
+        !std::isfinite(state.rain_drop_length_m) || state.rain_drop_length_m <= 0.0 ||
+        !std::isfinite(state.rain_near_radius_m) || state.rain_near_radius_m <= 0.0 ||
+        !std::isfinite(state.rain_far_extinction_per_m) || state.rain_far_extinction_per_m < 0.0) {
+      utils::error{}("PF08 effective weather is invalid: turbidity {}, wind {} deg / {} m, fog {} 1/m / {} / g {}, cloud {:.2f} / {} 1/m, rain {:.1f} mm/h / {} 1/m",
                      state.aerosol_turbidity, state.wind_direction_deg, state.wind_strength_m,
                      state.fog_extinction_per_m, state.fog_scattering_albedo, state.fog_anisotropy,
-                     state.cloud_coverage, state.cloud_extinction_per_m);
+                     state.cloud_coverage, state.cloud_extinction_per_m, state.rain_rate_mm_h,
+                     state.rain_far_extinction_per_m);
     }
     return state;
   };
@@ -624,12 +637,15 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
   if (!std::isfinite(options.cloud_range_m) || options.cloud_range_m <= 0.0) {
     utils::error{}("PF08 cloud range must be finite and positive");
   }
-  utils::info("PF08 weather '{}': aerosol {:.2f}, wind {:.0f} deg / {:.2f} m, fog {:.4f} 1/m @ H {:.0f} m, cloud {:.2f} @ {:.0f}-{:.0f} m, transition {:.1f} s",
+  if (!std::isfinite(options.rain_range_m) || options.rain_range_m <= 0.0) {
+    utils::error{}("PF08 rain range must be finite and positive");
+  }
+  utils::info("PF08 weather '{}': aerosol {:.2f}, wind {:.0f} deg / {:.2f} m, fog {:.4f} 1/m @ H {:.0f} m, cloud {:.2f} @ {:.0f}-{:.0f} m, rain {:.1f} mm/h, transition {:.1f} s",
               initial_weather->name, weather.state().aerosol_turbidity, weather.state().wind_direction_deg,
               weather.state().wind_strength_m, weather.state().fog_extinction_per_m,
               weather.state().fog_scale_height_m, weather.state().cloud_coverage,
               weather.state().cloud_base_height_m, weather.state().cloud_top_height_m,
-              weather_transition_seconds);
+              weather.state().rain_rate_mm_h, weather_transition_seconds);
 
   pending_width = options.width;
   pending_height = options.height;
@@ -898,6 +914,12 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       utils::error{}("PF08 counter 'atmosphere_cache' is absent from the configured graph");
     }
     double baked_turbidity = -1.0;
+    // multiscatter_lut — doublebuffer на условном counter. Между перезаписями обязаны пройти два
+    // submitted frame, иначе одна копия всё ещё может читаться GPU. Плавный weather transition меняет
+    // turbidity каждый кадр, поэтому cache обновляется через кадр; сам state, transmittance и все
+    // остальные consumers продолжают идти каждый кадр. После окончания перехода несовпавшее последнее
+    // значение остаётся dirty и обязательно запечётся на ближайшем разрешённом кадре.
+    atmosphere_cache_gate atmosphere_rebuild_gate{2};
 
     colour_script script;
     {
@@ -992,7 +1014,8 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       frame_atmosphere.turbidity = weather.state().aerosol_turbidity;
 
       base.prepare_frame();
-      if (baked_turbidity != frame_atmosphere.turbidity) {
+      if (baked_turbidity != frame_atmosphere.turbidity &&
+          atmosphere_rebuild_gate.try_rebuild(frames_total)) {
         base.inc_counter(atmosphere_counter);
         baked_turbidity = frame_atmosphere.turbidity;
       }
@@ -1170,6 +1193,19 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
                                         float(options.cloud_range_m));
       sky_block.cloud_motion = glm::vec4(float(weather.state().cloud_cell_size_m),
                                          float(weather.state().cloud_advection_speed_m_s), 0.0f, 0.0f);
+      sky_block.precipitation_params = glm::vec4(float(weather.state().rain_rate_mm_h),
+                                                 float(weather.state().rain_fall_speed_m_s),
+                                                 float(weather.state().rain_wind_speed_m_s),
+                                                 float(weather.state().rain_near_radius_m));
+      // Far medium включается внутри ближнего радиуса и мягко набирает полный вес к его краю.
+      const double rain_far_start_m = weather.state().rain_near_radius_m * 0.72;
+      sky_block.precipitation_shape = glm::vec4(float(weather.state().rain_drop_length_m),
+                                                float(weather.state().rain_far_extinction_per_m),
+                                                float(rain_far_start_m), float(options.rain_range_m));
+      // w: 0 — particles off; 1 — particles + collision; 2 — particles без collision.
+      const float rain_particle_mode = !options.rain_particles ? 0.0f : (options.rain_collision ? 1.0f : 2.0f);
+      sky_block.precipitation_time = glm::vec4(float(step_seconds), float(frames_total), 0.22f,
+                                               rain_particle_mode);
       sky_block.shadow_bodies = glm::vec4(slot_active[0] ? shadow_sources[0].body_code : -1.0f,
                                           slot_active[1] ? shadow_sources[1].body_code : -1.0f, 0.0f, 0.0f);
       write_current_buffer(base, "sky_buffer", &sky_block, sizeof(sky_block));
@@ -1197,17 +1233,18 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
                     state.horizontal_illuminance_lx, scene_luminance,
                     goal_ev100 <= options.exposure.min_ev100 + 1e-6 ? " · adaptation at its night floor" : ""),
         weather.active()
-          ? std::format("Weather: {} -> {} · {:.0f}% · aerosol {:.2f} · wind {:.0f}°/{:.2f} m · fog {:.4f} · cloud {:.2f} [{:.0f}-{:.0f}]",
+          ? std::format("Weather: {} -> {} · {:.0f}% · aerosol {:.2f} · wind {:.0f}°/{:.2f} m · fog {:.4f} · cloud {:.2f} [{:.0f}-{:.0f}] · rain {:.1f} mm/h",
                         weather.source_name(), weather.target_name(), weather.progress() * 100.0,
                         weather.state().aerosol_turbidity, weather.state().wind_direction_deg,
                         weather.state().wind_strength_m, weather.state().fog_extinction_per_m,
                         weather.state().cloud_coverage, weather.state().cloud_base_height_m,
-                        weather.state().cloud_top_height_m)
-          : std::format("Weather: {} · aerosol {:.2f} · wind {:.0f}°/{:.2f} m · fog {:.4f} · cloud {:.2f} [{:.0f}-{:.0f}]",
+                        weather.state().cloud_top_height_m, weather.state().rain_rate_mm_h)
+          : std::format("Weather: {} · aerosol {:.2f} · wind {:.0f}°/{:.2f} m · fog {:.4f} · cloud {:.2f} [{:.0f}-{:.0f}] · rain {:.1f} mm/h",
                         weather.target_name(), weather.state().aerosol_turbidity,
                         weather.state().wind_direction_deg, weather.state().wind_strength_m,
                         weather.state().fog_extinction_per_m, weather.state().cloud_coverage,
-                        weather.state().cloud_base_height_m, weather.state().cloud_top_height_m),
+                        weather.state().cloud_base_height_m, weather.state().cloud_top_height_m,
+                        weather.state().rain_rate_mm_h),
         std::format("Foliage: {} near + {} far of {} · LOD {:.0f} m · range {:.0f} m",
                     shrub_near_instances.size(), shrub_far_instances.size(), shrubs.size(),
                     options.foliage_lod_m, options.foliage_range_m),

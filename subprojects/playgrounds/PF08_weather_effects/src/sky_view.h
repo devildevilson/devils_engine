@@ -80,6 +80,16 @@ struct view_options {
   double cloud_cell_size_m = 750.0;
   double cloud_advection_speed_m_s = 8.0;
   double cloud_range_m = 6000.0;
+  double rain_rate_mm_h = 0.0;
+  double rain_fall_speed_m_s = 17.0;
+  double rain_wind_speed_m_s = 4.0;
+  double rain_drop_length_m = 0.45;
+  double rain_near_radius_m = 18.0;
+  double rain_far_extinction_per_m = 0.0;
+  double rain_range_m = 3000.0;
+  // Диагностические выключатели разделяют near-particles, depth contacts и far volume для A/B.
+  bool rain_particles = true;
+  bool rain_collision = true;
   // Preset заполняет единое погодное состояние; прямые CLI-рычаги ниже могут независимо перекрыть
   // его поля для A/B. Отрицательная длительность означает значение из weather/presets.tavl.
   std::string weather_preset = "clear";
@@ -104,6 +114,12 @@ struct view_options {
   bool cloud_top_overridden = false;
   bool cloud_cell_overridden = false;
   bool cloud_speed_overridden = false;
+  bool rain_rate_overridden = false;
+  bool rain_fall_speed_overridden = false;
+  bool rain_wind_speed_overridden = false;
+  bool rain_drop_length_overridden = false;
+  bool rain_near_radius_overridden = false;
+  bool rain_far_extinction_overridden = false;
   // Фиксированное наведение камеры для повторяемых дампов: сравнивать состояния можно только из
   // одной и той же точки зрения, а мышь для этого не годится.
   bool fixed_look = false;

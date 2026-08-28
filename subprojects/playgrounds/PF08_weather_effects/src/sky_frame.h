@@ -19,6 +19,19 @@ namespace devils_engine::pf08 {
 constexpr size_t sky_star_count = 2;
 constexpr size_t sky_moon_capacity = 4;
 
+// Host-side gate условного multiscatter cache. Он не знает Vulkan, только число уже submitted frames:
+// это делает требование doublebuffer проверяемым в headless --verify, а не спрятанным в оконном цикле.
+class atmosphere_cache_gate {
+public:
+  explicit atmosphere_cache_gate(uint32_t minimum_frame_gap = 2) noexcept;
+  bool try_rebuild(uint32_t submitted_frame) noexcept;
+
+private:
+  uint32_t minimum_frame_gap_ = 2;
+  uint32_t last_rebuild_frame_ = 0;
+  bool has_rebuilt_ = false;
+};
+
 // Раскладка обязана совпадать с `pf08_sky_block` в resources/shaders/pf08_records.glsl.
 struct alignas(16) sky_gpu_block {
   glm::vec4 star_direction[sky_star_count];
@@ -64,6 +77,9 @@ struct alignas(16) sky_gpu_block {
   glm::vec4 cloud_params;
   glm::vec4 cloud_shape;
   glm::vec4 cloud_motion;
+  glm::vec4 precipitation_params;
+  glm::vec4 precipitation_shape;
+  glm::vec4 precipitation_time;
   // Освещённость светила БЕЗ затмения и без горизонта, по одной на звезду в x и y. Нужна ровно диску:
   // затмение теперь показывается геометрически — луна закрывает часть диска собой, — и дополнительно
   // гасить сам диск значило бы посчитать затмение дважды.
@@ -73,7 +89,7 @@ struct alignas(16) sky_gpu_block {
   // здесь развела бы освещение с затенением без единого предупреждения.
   glm::vec4 moon_distance_km;
 };
-static_assert(sizeof(sky_gpu_block) == 640);
+static_assert(sizeof(sky_gpu_block) == 688);
 
 struct atmosphere_settings {
   double height_km = 100.0;         // верх атмосферы над поверхностью

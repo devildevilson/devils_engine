@@ -78,6 +78,15 @@
       steps = [ draw_scene ]
     },
     {
+      // Капля проверяет столкновение по глубине ЭТОГО кадра, поэтому симуляция стоит строго после
+      // opaque scene. Предыдущее состояние приходит через history=1, без host readback.
+      name = pf08_rain_simulation
+      subpasses = [
+        { scene_depth = (depth_read, store), rain_particle_state = (storage_write, store) }
+      ]
+      steps = [ simulate_rain ]
+    },
+    {
       // Однородная среда интегрируется в настоящей 3D-сетке. Свет двух звёзд и лун приходит из того
       // же sky block, а их тени — из тех же каскадов; отдельной «погодной лампы» здесь нет.
       name = pf08_fog_volume
@@ -96,6 +105,18 @@
         { sky_color = (sampled, store), scene_depth = (depth_read, store), fog_volume = (sampled, store), weather_color = (sampled, store) }
       ]
       steps = [ apply_fog ]
+    },
+    {
+      // Ближние streaks и краткие impacts композятся в HDR до экспонометра. Дальний дождь уже сидит
+      // в froxel volume; smooth handover по дальности не даёт двум представлениям сложиться вдвое.
+      name = pf08_rain
+      render_target = weather_target
+      subpasses = [
+        { weather_color = (sampled, store), scene_depth = (depth_read, store), rain_particle_state = (storage_read, store) },
+        { weather_color = (color_attachment, store), scene_depth = (depth_read, store), rain_particle_state = (storage_read, store) },
+        { weather_color = (sampled, store), scene_depth = (depth_read, store), rain_particle_state = (storage_read, store) }
+      ]
+      steps = [ draw_rain ]
     },
     {
       // Замер экспозиции. Стоит ПОСЛЕ среды и ДО вывода, потому что читает физическую яркость сцены,

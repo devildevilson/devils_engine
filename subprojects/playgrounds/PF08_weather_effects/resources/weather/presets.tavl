@@ -1,6 +1,5 @@
-// Первый погодный срез содержит только параметры, у которых уже есть настоящий consumer.
-// `overcast`, `rain` и `snow` здесь намеренно отсутствуют: до froxel-облаков и осадков эти имена
-// были бы всего лишь ветром и мутностью, выдающими себя за законченную погоду.
+// Здесь остаются только параметры с настоящими consumers: rain появляется вместе с near particle
+// pool и дальним froxel extinction. Snow ждёт собственного движения и покрытия, а не перекраски rain.
 
 transition_seconds = 4.0
 
@@ -27,6 +26,12 @@ presets = [
     cloud_top_height_m = 900.0
     cloud_cell_size_m = 750.0
     cloud_advection_speed_m_s = 8.0
+    rain_rate_mm_h = 0.0
+    rain_fall_speed_m_s = 17.0
+    rain_wind_speed_m_s = 4.0
+    rain_drop_length_m = 0.45
+    rain_near_radius_m = 18.0
+    rain_far_extinction_per_m = 0.0
   }
   {
     // Сухая аэрозольная дымка: атмосферный consumer виден, ветер почти не меняется.
@@ -50,6 +55,12 @@ presets = [
     cloud_top_height_m = 900.0
     cloud_cell_size_m = 750.0
     cloud_advection_speed_m_s = 8.0
+    rain_rate_mm_h = 0.0
+    rain_fall_speed_m_s = 17.0
+    rain_wind_speed_m_s = 4.0
+    rain_drop_length_m = 0.45
+    rain_near_radius_m = 18.0
+    rain_far_extinction_per_m = 0.0
   }
   {
     // Проверка второго consumer: заросли и их тени читают одно усилившееся поле.
@@ -73,6 +84,12 @@ presets = [
     cloud_top_height_m = 900.0
     cloud_cell_size_m = 750.0
     cloud_advection_speed_m_s = 8.0
+    rain_rate_mm_h = 0.0
+    rain_fall_speed_m_s = 17.0
+    rain_wind_speed_m_s = 4.0
+    rain_drop_length_m = 0.45
+    rain_near_radius_m = 18.0
+    rain_far_extinction_per_m = 0.0
   }
   {
     // Влажный локальный туман. По формуле Кошмидера 3.912 / sigma видимость равна примерно 217 м.
@@ -96,6 +113,12 @@ presets = [
     cloud_top_height_m = 900.0
     cloud_cell_size_m = 750.0
     cloud_advection_speed_m_s = 8.0
+    rain_rate_mm_h = 0.0
+    rain_fall_speed_m_s = 17.0
+    rain_wind_speed_m_s = 4.0
+    rain_drop_length_m = 0.45
+    rain_near_radius_m = 18.0
+    rain_far_extinction_per_m = 0.0
   }
   {
     // Разорванная облачность: первый визуальный A/B, где хорошо читаются отдельные тела и их тени.
@@ -119,6 +142,12 @@ presets = [
     cloud_top_height_m = 1100.0
     cloud_cell_size_m = 850.0
     cloud_advection_speed_m_s = 10.0
+    rain_rate_mm_h = 0.0
+    rain_fall_speed_m_s = 17.0
+    rain_wind_speed_m_s = 4.0
+    rain_drop_length_m = 0.45
+    rain_near_radius_m = 18.0
+    rain_far_extinction_per_m = 0.0
   }
   {
     // Низкий слоисто-кучевой покров: отдельная геометрическая погода, а не затемнение экспозиции.
@@ -142,5 +171,40 @@ presets = [
     cloud_top_height_m = 900.0
     cloud_cell_size_m = 750.0
     cloud_advection_speed_m_s = 8.0
+    rain_rate_mm_h = 0.0
+    rain_fall_speed_m_s = 17.0
+    rain_wind_speed_m_s = 4.0
+    rain_drop_length_m = 0.45
+    rain_near_radius_m = 18.0
+    rain_far_extinction_per_m = 0.0
+  }
+  {
+    // Сильный дождь под низким покровом: near streaks + impacts + mid/far extinction.
+    name = "rain"
+    aerosol_turbidity = 1.8
+    wind_direction_deg = 245.0
+    wind_strength_m = 0.38
+    fog_extinction_per_m = 0.0015
+    fog_scattering_albedo = 0.94
+    fog_anisotropy = 0.42
+    fog_base_height_m = 0.0
+    fog_scale_height_m = 320.0
+    fog_density_variation = 0.18
+    fog_cell_size_m = 90.0
+    fog_advection_speed_m_s = 3.0
+    cloud_coverage = 0.82
+    cloud_extinction_per_m = 0.013
+    cloud_scattering_albedo = 0.98
+    cloud_anisotropy = 0.65
+    cloud_base_height_m = 380.0
+    cloud_top_height_m = 820.0
+    cloud_cell_size_m = 650.0
+    cloud_advection_speed_m_s = 11.0
+    rain_rate_mm_h = 28.0
+    rain_fall_speed_m_s = 17.0
+    rain_wind_speed_m_s = 4.2
+    rain_drop_length_m = 0.48
+    rain_near_radius_m = 18.0
+    rain_far_extinction_per_m = 0.00045
   }
 ]

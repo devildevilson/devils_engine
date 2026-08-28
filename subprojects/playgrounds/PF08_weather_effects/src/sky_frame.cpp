@@ -11,6 +11,18 @@
 #include <tavl/parser.h>
 
 namespace devils_engine::pf08 {
+
+atmosphere_cache_gate::atmosphere_cache_gate(const uint32_t minimum_frame_gap) noexcept
+  : minimum_frame_gap_(std::max(minimum_frame_gap, 1u)) {}
+
+bool atmosphere_cache_gate::try_rebuild(const uint32_t submitted_frame) noexcept {
+  // Unsigned difference сохраняет смысл и после wrap frame counter.
+  if (has_rebuilt_ && submitted_frame - last_rebuild_frame_ < minimum_frame_gap_) return false;
+  last_rebuild_frame_ = submitted_frame;
+  has_rebuilt_ = true;
+  return true;
+}
+
 namespace {
 
 constexpr double pi = std::numbers::pi;
