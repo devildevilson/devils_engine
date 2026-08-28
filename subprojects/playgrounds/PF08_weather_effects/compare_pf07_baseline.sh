@@ -4,31 +4,38 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repository_root="$(cd "${script_dir}/../../.." && pwd)"
 build_dir="${1:-${repository_root}/build-release}"
-pf07="${build_dir}/subprojects/playgrounds/PF07_party_environment/bin/PF07_party_environment"
 pf08="${build_dir}/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects"
+reference_dir="${repository_root}/subprojects/playgrounds/PF07_party_environment/reference_frames"
 
-for executable in "${pf07}" "${pf08}"; do
-  if [[ ! -x "${executable}" ]]; then
-    echo "Executable not found: ${executable}" >&2
-    echo "Build PF07_party_environment and PF08_weather_effects first, or pass the build directory." >&2
-    exit 1
-  fi
-done
+if [[ ! -x "${pf08}" ]]; then
+  echo "PF08 executable not found: ${pf08}" >&2
+  echo "Build PF08_weather_effects first, or pass the build directory." >&2
+  exit 1
+fi
+if ! command -v magick >/dev/null 2>&1; then
+  echo "ImageMagick 'magick' is required for pixel comparison with the frozen PNG references." >&2
+  exit 1
+fi
 
 temporary_dir="$(mktemp -d)"
 trap 'rm -rf "${temporary_dir}"' EXIT
 
 for preset in noon double_sunset night eclipse; do
-  pf07_frame="${temporary_dir}/pf07_${preset}.ppm"
   pf08_frame="${temporary_dir}/pf08_${preset}.ppm"
+  reference_frame="${reference_dir}/${preset}.png"
+  if [[ ! -f "${reference_frame}" ]]; then
+    echo "Frozen PF07 reference not found: ${reference_frame}" >&2
+    exit 1
+  fi
   arguments=(--preset="${preset}" --frames=8 --width=1280 --height=720 --no-overlay)
-  "${pf07}" "${arguments[@]}" --dump="${pf07_frame}"
   "${pf08}" "${arguments[@]}" --dump="${pf08_frame}"
-  if ! cmp --silent "${pf07_frame}" "${pf08_frame}"; then
-    echo "Baseline mismatch: ${preset}" >&2
+  metric="${temporary_dir}/${preset}.metric"
+  if ! magick compare -metric AE "${reference_frame}" "${pf08_frame}" null: 2>"${metric}"; then
+    pixels="$(<"${metric}")"
+    echo "Baseline mismatch: ${preset} (${pixels} pixels differ)" >&2
     exit 1
   fi
   echo "MATCH ${preset}"
 done
 
-echo "PF08 clear baseline is pixel-identical to PF07."
+echo "PF08 clear baseline is pixel-identical to the frozen PF07 reference frames."

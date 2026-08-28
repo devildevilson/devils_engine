@@ -60,6 +60,10 @@ struct alignas(16) sky_gpu_block {
   glm::vec4 fog_shape;
   // x — амплитуда неоднородности; y — размер ячейки, м; z — скорость advection, м/с; w — резерв.
   glm::vec4 fog_noise;
+  // Конечный облачный слой: coverage/extinction/albedo/anisotropy, его высоты и движение.
+  glm::vec4 cloud_params;
+  glm::vec4 cloud_shape;
+  glm::vec4 cloud_motion;
   // Освещённость светила БЕЗ затмения и без горизонта, по одной на звезду в x и y. Нужна ровно диску:
   // затмение теперь показывается геометрически — луна закрывает часть диска собой, — и дополнительно
   // гасить сам диск значило бы посчитать затмение дважды.
@@ -69,7 +73,7 @@ struct alignas(16) sky_gpu_block {
   // здесь развела бы освещение с затенением без единого предупреждения.
   glm::vec4 moon_distance_km;
 };
-static_assert(sizeof(sky_gpu_block) == 592);
+static_assert(sizeof(sky_gpu_block) == 640);
 
 struct atmosphere_settings {
   double height_km = 100.0;         // верх атмосферы над поверхностью

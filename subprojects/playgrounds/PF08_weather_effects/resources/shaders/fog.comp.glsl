@@ -1,6 +1,7 @@
 #version 450
 
 #include "pf08_atmosphere.glsl"
+#include "pf08_clouds.glsl"
 #include "pf08_local_medium.glsl"
 #include "pf08_shadow_sample.glsl"
 
@@ -43,14 +44,15 @@ vec3 pf08_fog_ambient_radiance() {
   return total * 0.2;
 }
 
-vec3 pf08_fog_source(const vec3 direction, const vec3 world_position, const float view_distance,
-                     const vec3 ambient, const float column_modulation) {
+void pf08_weather_sources(const vec3 direction, const vec3 world_position, const float view_distance,
+                          const vec3 ambient, const float column_modulation,
+                          out vec3 fog_source, out vec3 cloud_source) {
   const pf08_sky_block sky = sky_data.sky;
   const vec3 planet_point = vec3(world_position.x * 0.001,
                                  sky.atmosphere_geometry.x + world_position.y * 0.001,
                                  world_position.z * 0.001);
-  vec3 source = ambient;
-  const float g = sky.fog_params.z;
+  fog_source = ambient;
+  cloud_source = ambient;
 
   for (int s = 0; s < PF08_STAR_COUNT; ++s) {
     const float illuminance = sky.star_color_illuminance[s].w;
@@ -61,10 +63,19 @@ vec3 pf08_fog_source(const vec3 direction, const vec3 world_position, const floa
       pf08_volume_shadow_visibility(slot, world_position, view_distance);
     const vec3 atmosphere = pf08_transmittance_to_light(
       sky, transmittance_lut, planet_point, light_direction);
-    const float local_medium = pf08_fog_light_transmittance(
-      sky, world_position, light_direction, column_modulation);
-    source += atmosphere * sky.star_color_illuminance[s].rgb * illuminance *
-              pf08_mie_phase(dot(direction, light_direction), g) * visibility * local_medium;
+    float local_medium = 1.0;
+    if (sky.fog_params.x > 0.0) {
+      local_medium *= pf08_fog_light_transmittance(
+        sky, world_position, light_direction, column_modulation);
+    }
+    if (sky.cloud_params.x > 0.0) {
+      local_medium *= pf08_cloud_light_transmittance(sky, world_position, light_direction);
+    }
+    const vec3 source_radiance = atmosphere * sky.star_color_illuminance[s].rgb * illuminance *
+                                 visibility * local_medium;
+    const float cosine = dot(direction, light_direction);
+    fog_source += source_radiance * pf08_mie_phase(cosine, sky.fog_params.z);
+    cloud_source += source_radiance * pf08_mie_phase(cosine, sky.cloud_params.w);
   }
 
   const int moon_count = int(sky.march_params.w);
@@ -76,12 +87,20 @@ vec3 pf08_fog_source(const vec3 direction, const vec3 world_position, const floa
     const int slot = pf08_fog_shadow_slot(float(PF08_STAR_COUNT + m));
     const float visibility = slot < 0 ? 1.0 :
       pf08_volume_shadow_visibility(slot, world_position, view_distance);
-    const float local_medium = pf08_fog_light_transmittance(
-      sky, world_position, light_direction, column_modulation);
-    source += sky.moon_color_illuminance[m].rgb * illuminance *
-              pf08_mie_phase(dot(direction, light_direction), g) * visibility * local_medium;
+    float local_medium = 1.0;
+    if (sky.fog_params.x > 0.0) {
+      local_medium *= pf08_fog_light_transmittance(
+        sky, world_position, light_direction, column_modulation);
+    }
+    if (sky.cloud_params.x > 0.0) {
+      local_medium *= pf08_cloud_light_transmittance(sky, world_position, light_direction);
+    }
+    const vec3 source_radiance =
+      sky.moon_color_illuminance[m].rgb * illuminance * visibility * local_medium;
+    const float cosine = dot(direction, light_direction);
+    fog_source += source_radiance * pf08_mie_phase(cosine, sky.fog_params.z);
+    cloud_source += source_radiance * pf08_mie_phase(cosine, sky.cloud_params.w);
   }
-  return source;
 }
 
 void main() {
@@ -89,11 +108,13 @@ void main() {
   const ivec3 size = imageSize(fog_image);
   if (cell.x >= size.x || cell.y >= size.y) return;
 
-  const float extinction = max(sky_data.sky.fog_params.x, 0.0);
-  if (extinction <= 0.0) {
-    for (int slice = 0; slice < size.z; ++slice) {
-      imageStore(fog_image, ivec3(cell, slice), vec4(0.0, 0.0, 0.0, 1.0));
-    }
+  const float fog_extinction = max(sky_data.sky.fog_params.x, 0.0);
+  const float cloud_extinction = max(sky_data.sky.cloud_params.y, 0.0);
+  const bool fog_active = fog_extinction > 0.0;
+  const bool cloud_active = sky_data.sky.cloud_params.x > 0.0 && cloud_extinction > 0.0;
+  if (!fog_active && !cloud_active) {
+    // Apply-pass имеет такой же exact-copy bypass и образ не читает. Не записывать 96 бесполезных
+    // слоёв — часть clear-контракта: выключенная погода не должна платить за объём.
     return;
   }
 
@@ -105,8 +126,9 @@ void main() {
   const vec3 direction = normalize(camera_to_world *
     vec3(ndc.x * aspect * tan_half_fov, -ndc.y * tan_half_fov, -1.0));
 
-  const float albedo = clamp(sky_data.sky.fog_params.y, 0.0, 1.0);
-  const float max_range = max(sky_data.sky.fog_params.w, 1e-3);
+  const float fog_albedo = clamp(sky_data.sky.fog_params.y, 0.0, 1.0);
+  const float cloud_albedo = clamp(sky_data.sky.cloud_params.z, 0.0, 1.0);
+  const float max_range = max(pf08_weather_volume_range(sky_data.sky), 1e-3);
   const vec3 ambient = pf08_fog_ambient_radiance();
   vec3 in_scattering = vec3(0.0);
   float transmittance = 1.0;
@@ -121,14 +143,28 @@ void main() {
     previous_distance = slice_distance;
 
     const vec3 world_position = camera_data.camera_position.xyz + direction * midpoint;
-    const float column_modulation = pf08_fog_column_modulation(sky_data.sky, world_position);
-    const vec3 source = pf08_fog_source(
-      direction, world_position, midpoint, ambient, column_modulation);
-    const float local_extinction = extinction *
-      pf08_fog_density(sky_data.sky, world_position.y) * column_modulation;
+    const float column_modulation = fog_active
+      ? pf08_fog_column_modulation(sky_data.sky, world_position) : 1.0;
+    const float local_fog_extinction = fog_active
+      ? fog_extinction * pf08_fog_density(sky_data.sky, world_position.y) * column_modulation : 0.0;
+    const float local_cloud_extinction = cloud_active
+      ? cloud_extinction * pf08_cloud_density(sky_data.sky, world_position) : 0.0;
+    const float local_extinction = local_fog_extinction + local_cloud_extinction;
+    if (local_extinction <= 1e-8) {
+      imageStore(fog_image, ivec3(cell, slice), vec4(min(in_scattering, vec3(60000.0)), transmittance));
+      continue;
+    }
+
+    vec3 fog_source;
+    vec3 cloud_source;
+    pf08_weather_sources(direction, world_position, midpoint, ambient, column_modulation,
+                         fog_source, cloud_source);
+    const vec3 scattering_source =
+      (fog_source * local_fog_extinction * fog_albedo +
+       cloud_source * local_cloud_extinction * cloud_albedo) / local_extinction;
     const float segment_transmittance = exp(-local_extinction * segment);
     // Для постоянного source это точный аналитический интеграл на сегменте, а не sigma*ds.
-    in_scattering += transmittance * source * albedo * (1.0 - segment_transmittance);
+    in_scattering += transmittance * scattering_source * (1.0 - segment_transmittance);
     transmittance *= segment_transmittance;
     imageStore(fog_image, ivec3(cell, slice), vec4(min(in_scattering, vec3(60000.0)), transmittance));
   }

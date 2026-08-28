@@ -71,6 +71,15 @@ struct view_options {
   double fog_cell_size_m = 70.0;
   double fog_advection_speed_m_s = 0.0;
   double fog_range_m = 220.0;
+  double cloud_coverage = 0.0;
+  double cloud_extinction_per_m = 0.012;
+  double cloud_scattering_albedo = 0.98;
+  double cloud_anisotropy = 0.65;
+  double cloud_base_height_m = 450.0;
+  double cloud_top_height_m = 900.0;
+  double cloud_cell_size_m = 750.0;
+  double cloud_advection_speed_m_s = 8.0;
+  double cloud_range_m = 6000.0;
   // Preset заполняет единое погодное состояние; прямые CLI-рычаги ниже могут независимо перекрыть
   // его поля для A/B. Отрицательная длительность означает значение из weather/presets.tavl.
   std::string weather_preset = "clear";
@@ -87,6 +96,14 @@ struct view_options {
   bool fog_variation_overridden = false;
   bool fog_cell_overridden = false;
   bool fog_speed_overridden = false;
+  bool cloud_coverage_overridden = false;
+  bool cloud_extinction_overridden = false;
+  bool cloud_albedo_overridden = false;
+  bool cloud_anisotropy_overridden = false;
+  bool cloud_base_overridden = false;
+  bool cloud_top_overridden = false;
+  bool cloud_cell_overridden = false;
+  bool cloud_speed_overridden = false;
   // Фиксированное наведение камеры для повторяемых дампов: сравнивать состояния можно только из
   // одной и той же точки зрения, а мышь для этого не годится.
   bool fixed_look = false;

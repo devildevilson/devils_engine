@@ -19,6 +19,14 @@ presets = [
     fog_density_variation = 0.0
     fog_cell_size_m = 70.0
     fog_advection_speed_m_s = 0.0
+    cloud_coverage = 0.0
+    cloud_extinction_per_m = 0.012
+    cloud_scattering_albedo = 0.98
+    cloud_anisotropy = 0.65
+    cloud_base_height_m = 450.0
+    cloud_top_height_m = 900.0
+    cloud_cell_size_m = 750.0
+    cloud_advection_speed_m_s = 8.0
   }
   {
     // Сухая аэрозольная дымка: атмосферный consumer виден, ветер почти не меняется.
@@ -34,6 +42,14 @@ presets = [
     fog_density_variation = 0.0
     fog_cell_size_m = 70.0
     fog_advection_speed_m_s = 0.0
+    cloud_coverage = 0.0
+    cloud_extinction_per_m = 0.012
+    cloud_scattering_albedo = 0.98
+    cloud_anisotropy = 0.65
+    cloud_base_height_m = 450.0
+    cloud_top_height_m = 900.0
+    cloud_cell_size_m = 750.0
+    cloud_advection_speed_m_s = 8.0
   }
   {
     // Проверка второго consumer: заросли и их тени читают одно усилившееся поле.
@@ -49,6 +65,14 @@ presets = [
     fog_density_variation = 0.0
     fog_cell_size_m = 70.0
     fog_advection_speed_m_s = 4.0
+    cloud_coverage = 0.0
+    cloud_extinction_per_m = 0.012
+    cloud_scattering_albedo = 0.98
+    cloud_anisotropy = 0.65
+    cloud_base_height_m = 450.0
+    cloud_top_height_m = 900.0
+    cloud_cell_size_m = 750.0
+    cloud_advection_speed_m_s = 8.0
   }
   {
     // Влажный локальный туман. По формуле Кошмидера 3.912 / sigma видимость равна примерно 217 м.
@@ -64,5 +88,59 @@ presets = [
     fog_density_variation = 0.35
     fog_cell_size_m = 70.0
     fog_advection_speed_m_s = 1.4
+    cloud_coverage = 0.0
+    cloud_extinction_per_m = 0.012
+    cloud_scattering_albedo = 0.98
+    cloud_anisotropy = 0.65
+    cloud_base_height_m = 450.0
+    cloud_top_height_m = 900.0
+    cloud_cell_size_m = 750.0
+    cloud_advection_speed_m_s = 8.0
+  }
+  {
+    // Разорванная облачность: первый визуальный A/B, где хорошо читаются отдельные тела и их тени.
+    name = "cloudy"
+    aerosol_turbidity = 1.2
+    wind_direction_deg = 275.0
+    wind_strength_m = 0.30
+    fog_extinction_per_m = 0.0
+    fog_scattering_albedo = 0.92
+    fog_anisotropy = 0.35
+    fog_base_height_m = 0.0
+    fog_scale_height_m = 80.0
+    fog_density_variation = 0.0
+    fog_cell_size_m = 70.0
+    fog_advection_speed_m_s = 0.0
+    cloud_coverage = 0.42
+    cloud_extinction_per_m = 0.008
+    cloud_scattering_albedo = 0.98
+    cloud_anisotropy = 0.65
+    cloud_base_height_m = 550.0
+    cloud_top_height_m = 1100.0
+    cloud_cell_size_m = 850.0
+    cloud_advection_speed_m_s = 10.0
+  }
+  {
+    // Низкий слоисто-кучевой покров: отдельная геометрическая погода, а не затемнение экспозиции.
+    name = "overcast"
+    aerosol_turbidity = 1.6
+    wind_direction_deg = 265.0
+    wind_strength_m = 0.34
+    fog_extinction_per_m = 0.0
+    fog_scattering_albedo = 0.92
+    fog_anisotropy = 0.35
+    fog_base_height_m = 0.0
+    fog_scale_height_m = 80.0
+    fog_density_variation = 0.0
+    fog_cell_size_m = 70.0
+    fog_advection_speed_m_s = 0.0
+    cloud_coverage = 0.72
+    cloud_extinction_per_m = 0.012
+    cloud_scattering_albedo = 0.98
+    cloud_anisotropy = 0.65
+    cloud_base_height_m = 450.0
+    cloud_top_height_m = 900.0
+    cloud_cell_size_m = 750.0
+    cloud_advection_speed_m_s = 8.0
   }
 ]

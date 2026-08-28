@@ -1,6 +1,6 @@
 # PF08 — weather effects
 
-Статус: **срезы 0–2 CLOSED — froxel-среда, тени и advected density field зафиксированы** (2026-08-28).
+Статус: **срезы 0–3 CLOSED — fog/froxel-среда и конечный облачный слой зафиксированы** (2026-08-28).
 
 PF08 проверяет погоду как состояние открытого мира, а не как отдельный дождевой emitter. Площадка начинает
 с независимой копии закрытого `PF07_party_environment`: та же P-type двойная система, календарь и затмения,
@@ -15,18 +15,21 @@ build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effe
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --verify
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --preset=noon --weather=haze
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=fog
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=cloudy
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=overcast --debug=10
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=fog --debug=8
 ./subprojects/playgrounds/PF08_weather_effects/compare_pf07_baseline.sh
 ```
 
-`--weather=clear|haze|windy|fog` выбирает состояние сразу, `T` циклически запускает переход длительностью
+`--weather=clear|haze|windy|fog|cloudy|overcast` выбирает состояние сразу, `T` циклически запускает переход длительностью
 `--weather-transition=S` (по умолчанию `4 s`). `--turbidity`, `--wind`, `--wind-direction` сохранены как
 независимые overrides поверх пресета; локальная среда отдельно управляется через `--fog-extinction=`,
 `--fog-albedo=`, `--fog-anisotropy=` и `--fog-range=`. Ими изолируется один consumer для A/B.
 Профиль отдельно задаётся `--fog-base=` и `--fog-height=` (экспоненциальный scale height), пространственное
 поле — `--fog-variation=`, `--fog-cell=` и `--fog-speed=`. Четыре
-астрономических пресета PF07 сохранены буквально, а `compare_pf07_baseline.sh` доказывает, что default
-`clear` даёт те же пиксели в `noon`, `double_sunset`, `night`, `eclipse`.
+астрономических пресета PF07 сохранены буквально. `compare_pf07_baseline.sh` запускает ТОЛЬКО PF08 и
+сравнивает его с четырьмя уже зафиксированными PNG PF07; сам PF07 повторно запускается только при явном
+обновлении его `reference_frames/`.
 
 ## Граница площадки
 
@@ -73,12 +76,14 @@ weather state
    с froxel-облаками и осадками.
 2. **DONE — froxel medium.** Проверяемый однородный интеграл как первый proof, затем общий экспоненциальный
    высотный профиль и advected world-space density field для объёма и поверхностей; оба светила, луны,
-   атмосферное прохождение и shadow visibility. Отдельный облачный слой остаётся следующим расширением.
-3. **Precipitation across distance.** Near drops/flakes, mid/far extinction, укрытие и impact-события.
+   атмосферное прохождение и shadow visibility.
+3. **DONE — finite cloud layer.** `cloudy|overcast`, 3D world-space density, общий ветер, два светила,
+   self-shadowing и совпадающая с объёмом движущаяся тень на поверхности.
+4. **Precipitation across distance.** Near drops/flakes, mid/far extinction, укрытие и impact-события.
    PF05 даёт проверенный particle lifecycle, но его camera-local billboard rain не считается готовой погодой.
-4. **Wet world and screen manifestations.** Накопление/высыхание мокроты, roughness/specular response,
+5. **Wet world and screen manifestations.** Накопление/высыхание мокроты, roughness/specular response,
    лужи и рябь; lens droplets только как следствие попадания воды, с отдельным A/B.
-5. **Закрывающий аудит.** Фиксированные clear/overcast/rain/snow кадры в нескольких временах суток,
+6. **Закрывающий аудит.** Фиксированные clear/overcast/rain/snow кадры в нескольких временах суток,
    временные переходы, GPU budget, Vulkan validation и проверка того, что clear всё ещё совпадает с baseline.
 
 ## Definition of Done нулевого среза
@@ -119,8 +124,9 @@ clear-ветре меняет `16507.3` pixel-equivalent; только вете�
 
 ## Что закрыл срез 2
 
-Локальный туман — настоящий `160x90x32` 3D-образ RGBA16F, а не полноэкранный шум. Экранные оси редкие,
-ось расстояния квадратична; каждая compute-нить проходит луч один раз и пишет нарастающие
+Локальный туман начинал с настоящего `160x90x32` 3D-образа RGBA16F, а не полноэкранного шума; после
+облачного среза общий объём имеет 96 дальностных слоёв. Экранные оси редкие, ось расстояния квадратична;
+каждая compute-нить проходит луч один раз и пишет нарастающие
 `in_scattering.rgb` и `transmittance.a`. Нулевой слой хранит точное `(0, 1)`, поэтому ближайшая геометрия
 не получает целый первый слой тумана. На каждом сегменте Beer–Lambert и рассеяние интегрируются
 аналитически: `T=exp(-sigma_t*d)`, `S=L_source*albedo*(1-T)`, а не приближением `sigma*d`.
@@ -162,3 +168,24 @@ FOLLOW-UP ПО НЕОДНОРОДНОСТИ. Две дешёвые value-noise �
 frame 8 против 80 при `fog-speed=0` побитно совпадает (`MAE 0`), authored speed даёт `MAE 0.000631`.
 Стандартное отклонение `T` вдоль одного небесного ряда: гладкий профиль `0.00193`, ячеистый `0.01891`,
 то есть пространственный сигнал почти в десять раз сильнее фонового изменения направления луча.
+
+## Что закрыл срез 3
+
+Облако не переиспользует бесконечный экспоненциальный fog-профиль. Это отдельный конечный слой с authored
+`base/top`, coverage, extinction, scattering albedo и HG anisotropy. `cloudy` оставляет разорванные тела,
+`overcast` собирает низкий сплошной покров. Три октавы 3D value noise живут в мировых координатах; XZ
+переносится тем же направлением ветра, что туман и листва, но собственной скоростью в м/с. Вертикальный
+`sin²`-профиль гладко сводит плотность к нулю на обеих границах слоя.
+
+Тот же `pf08_clouds.glsl` читают froxel-pass и surface lighting. Для тени на земле вертикальный интеграл
+`sin²` аналитический: полный столб равен половине толщины слоя, а 3D-модуляция берётся в середине луча
+через облако. Поэтому облако и его тень не являются двумя независимо движущимися noise-текстурами.
+`--debug=9` показывает density field, `--debug=10` — только Beer–Lambert transmittance главного светила
+к поверхности. На paused кадрах 8→80 authored advection меняет `cloudy` density field на `MAE 0.00239`,
+а `overcast` cloud shadow — на `0.000842`; при `--cloud-speed=0` обе пары побитно совпадают.
+
+Общий объём вырос до `160x90x96`: 48 дальностных слоёв давали видимые горизонтальные ступени на границе
+километрового облака, 96 их убрали. На Iris Xe в соседних 80-кадровых 1280x720 запусках minimum
+volume/apply/total: clear после оптимизации пустого прохода `0.009/0.209/5.783 ms`, cloudy
+`1.235/0.363/7.404 ms`, overcast `1.248/0.369/7.569 ms`. `cloudy` проходит Vulkan validation без VUID,
+API warning или error. Headless contract — `72/72`.

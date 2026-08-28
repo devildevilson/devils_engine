@@ -26,6 +26,15 @@ struct weather_state {
   double fog_density_variation = 0.0;
   double fog_cell_size_m = 70.0;
   double fog_advection_speed_m_s = 0.0;
+  // Конечный облачный слой. Coverage 0 — точный clear-bypass; высоты и размер ячейки в метрах.
+  double cloud_coverage = 0.0;
+  double cloud_extinction_per_m = 0.012;
+  double cloud_scattering_albedo = 0.98;
+  double cloud_anisotropy = 0.65;
+  double cloud_base_height_m = 450.0;
+  double cloud_top_height_m = 900.0;
+  double cloud_cell_size_m = 750.0;
+  double cloud_advection_speed_m_s = 8.0;
 };
 
 struct weather_preset {
@@ -41,6 +50,14 @@ struct weather_preset {
   double fog_density_variation = 0.0;
   double fog_cell_size_m = 70.0;
   double fog_advection_speed_m_s = 0.0;
+  double cloud_coverage = 0.0;
+  double cloud_extinction_per_m = 0.012;
+  double cloud_scattering_albedo = 0.98;
+  double cloud_anisotropy = 0.65;
+  double cloud_base_height_m = 450.0;
+  double cloud_top_height_m = 900.0;
+  double cloud_cell_size_m = 750.0;
+  double cloud_advection_speed_m_s = 8.0;
 };
 
 struct weather_preset_list {
@@ -68,6 +85,10 @@ double fog_density_at_height(double height_m, double base_height_m, double scale
 double fog_light_transmittance(double extinction_per_m, double receiver_height_m,
                                double light_vertical_component, double base_height_m,
                                double scale_height_m);
+double cloud_vertical_column(double receiver_height_m, double base_height_m, double top_height_m);
+double cloud_light_transmittance(double extinction_per_m, double horizontal_density,
+                                 double receiver_height_m, double light_vertical_component,
+                                 double base_height_m, double top_height_m);
 
 // Переход хранит исходный snapshot, а не имя пресета: если T нажата посреди предыдущего перехода,
 // новый начинается ровно из показанного кадра и не щёлкает обратно к прежней authored-точке.

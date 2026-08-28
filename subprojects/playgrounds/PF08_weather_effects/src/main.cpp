@@ -72,7 +72,7 @@ void print_usage() {
                "  --ev=F              зафиксировать EV100 вместо адаптации\n"
                "  --ev-bias=F         экспокоррекция в стопах\n"
                "  --preset=NAME       именованное состояние: noon, double_sunset, night, eclipse\n"
-               "  --weather=NAME      погодное состояние: clear, haze, windy, fog\n"
+               "  --weather=NAME      состояние: clear, haze, windy, fog, cloudy, overcast\n"
                "  --weather-transition=S  длительность runtime-перехода по T, реальные секунды\n"
                "  --night-vision=F    сила ночного зрения, 0 отключает\n"
                "  --turbidity=F       множитель аэрозоля\n"
@@ -85,7 +85,15 @@ void print_usage() {
                "  --fog-cell=M        размер низкочастотной ячейки плотности\n"
                "  --fog-speed=MPS     скорость advection ячеек по направлению ветра\n"
                "  --fog-range=M       дальность froxel-объёма в метрах\n"
-               "  --debug=8           показать transmittance froxel-объёма напрямую\n"
+               "  --cloud-coverage=F  доля покрытия облачного слоя, 0..1\n"
+               "  --cloud-extinction=F extinction облака, 1/м\n"
+               "  --cloud-albedo=F    альбедо рассеяния облака, 0..1\n"
+               "  --cloud-anisotropy=F HG-анизотропия облака, -0.85..0.85\n"
+               "  --cloud-base=M --cloud-top=M  границы облачного слоя\n"
+               "  --cloud-cell=M      размер world-space облачной ячейки\n"
+               "  --cloud-speed=MPS   скорость переноса облаков ветром\n"
+               "  --cloud-range=M     дальность облачного froxel-интеграла\n"
+               "  --debug=8|9|10      transmittance объёма | cloud density | cloud shadow\n"
                "  --march-steps=N     шагов основного марша неба\n"
                "  --aerial-range=KM   дальность таблицы воздушной перспективы\n"
                "  --camera-height=KM  высота наблюдателя над поверхностью\n"
@@ -240,6 +248,32 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.fog_speed_overridden = true;
     } else if (read_prefixed(argument, "--fog-range=", value)) {
       out.view.fog_range_m = std::stod(value);
+    } else if (read_prefixed(argument, "--cloud-coverage=", value)) {
+      out.view.cloud_coverage = std::stod(value);
+      out.view.cloud_coverage_overridden = true;
+    } else if (read_prefixed(argument, "--cloud-extinction=", value)) {
+      out.view.cloud_extinction_per_m = std::stod(value);
+      out.view.cloud_extinction_overridden = true;
+    } else if (read_prefixed(argument, "--cloud-albedo=", value)) {
+      out.view.cloud_scattering_albedo = std::stod(value);
+      out.view.cloud_albedo_overridden = true;
+    } else if (read_prefixed(argument, "--cloud-anisotropy=", value)) {
+      out.view.cloud_anisotropy = std::stod(value);
+      out.view.cloud_anisotropy_overridden = true;
+    } else if (read_prefixed(argument, "--cloud-base=", value)) {
+      out.view.cloud_base_height_m = std::stod(value);
+      out.view.cloud_base_overridden = true;
+    } else if (read_prefixed(argument, "--cloud-top=", value)) {
+      out.view.cloud_top_height_m = std::stod(value);
+      out.view.cloud_top_overridden = true;
+    } else if (read_prefixed(argument, "--cloud-cell=", value)) {
+      out.view.cloud_cell_size_m = std::stod(value);
+      out.view.cloud_cell_overridden = true;
+    } else if (read_prefixed(argument, "--cloud-speed=", value)) {
+      out.view.cloud_advection_speed_m_s = std::stod(value);
+      out.view.cloud_speed_overridden = true;
+    } else if (read_prefixed(argument, "--cloud-range=", value)) {
+      out.view.cloud_range_m = std::stod(value);
     } else if (read_prefixed(argument, "--march-steps=", value)) {
       out.view.march.primary_steps = int32_t(std::stol(value));
     } else if (read_prefixed(argument, "--camera-height=", value)) {
@@ -849,7 +883,7 @@ void verify_weather(checker& check) {
   check.expect(parsed, "погодные пресеты разобраны", diagnostics);
   if (!parsed) return;
 
-  check.expect(presets.presets.size() == 4, "погодные пресеты содержат три surface/atmosphere состояния и туман",
+  check.expect(presets.presets.size() == 6, "погодные пресеты содержат clear, haze, windy, fog, cloudy и overcast",
                std::format("получено {}", presets.presets.size()));
   const auto* clear = pf08::find_weather_preset(presets, "clear");
   check.expect(clear != nullptr, "clear weather объявлена");
@@ -861,6 +895,30 @@ void verify_weather(checker& check) {
     check.expect_near(state.fog_extinction_per_m, 0.0, 0.0, "clear точно отключает локальную среду");
     check.expect_near(state.fog_density_variation, 0.0, 0.0,
                       "clear точно отключает пространственную модуляцию");
+    check.expect_near(state.cloud_coverage, 0.0, 0.0, "clear точно отключает облачный слой");
+  }
+
+  const auto* overcast = pf08::find_weather_preset(presets, "overcast");
+  check.expect(overcast != nullptr, "overcast weather объявлена");
+  if (overcast != nullptr) {
+    const auto state = pf08::state_from_preset(*overcast);
+    const double thickness = state.cloud_top_height_m - state.cloud_base_height_m;
+    check.expect(state.cloud_coverage > 0.0 && state.cloud_coverage <= 1.0,
+                 "overcast включает конечное облачное покрытие");
+    check.expect_near(pf08::cloud_vertical_column(0.0, state.cloud_base_height_m,
+                                                  state.cloud_top_height_m),
+                      thickness * 0.5, 1e-12,
+                      "полный sin²-профиль имеет половину толщины слоя");
+    check.expect_near(pf08::cloud_vertical_column(
+                        0.5 * (state.cloud_base_height_m + state.cloud_top_height_m),
+                        state.cloud_base_height_m, state.cloud_top_height_m),
+                      thickness * 0.25, 1e-12,
+                      "над серединой остаётся четверть толщины облачного слоя");
+    check.expect_near(pf08::cloud_light_transmittance(
+                        state.cloud_extinction_per_m, 1.0, 0.0, 1.0,
+                        state.cloud_base_height_m, state.cloud_top_height_m),
+                      std::exp(-state.cloud_extinction_per_m * thickness * 0.5), 1e-14,
+                      "вертикальная облачная тень совпадает с Beer-Lambert");
   }
 
   const auto* fog = pf08::find_weather_preset(presets, "fog");
@@ -901,6 +959,15 @@ void verify_weather(checker& check) {
                     "неоднородность входит в тот же непрерывный weather transition");
   check.expect_near(middle.fog_advection_speed_m_s, 1.0, 1e-12,
                     "скорость advection входит в тот же непрерывный weather transition");
+  if (clear != nullptr && overcast != nullptr) {
+    const auto cloud_middle = pf08::interpolate_weather(
+      pf08::state_from_preset(*clear), pf08::state_from_preset(*overcast), 0.5);
+    check.expect_near(cloud_middle.cloud_coverage, overcast->cloud_coverage * 0.5, 1e-12,
+                      "coverage входит в непрерывный weather transition");
+    check.expect_near(cloud_middle.cloud_advection_speed_m_s,
+                      0.5 * (clear->cloud_advection_speed_m_s + overcast->cloud_advection_speed_m_s),
+                      1e-12, "скорость облаков интерполируется вместе с погодой");
+  }
 
   pf08::weather_transition transition;
   transition.snap("west", west);
