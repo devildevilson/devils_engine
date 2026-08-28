@@ -573,6 +573,9 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     if (options.fog_anisotropy_overridden) state.fog_anisotropy = options.fog_anisotropy;
     if (options.fog_base_overridden) state.fog_base_height_m = options.fog_base_height_m;
     if (options.fog_height_overridden) state.fog_scale_height_m = options.fog_scale_height_m;
+    if (options.fog_variation_overridden) state.fog_density_variation = options.fog_density_variation;
+    if (options.fog_cell_overridden) state.fog_cell_size_m = options.fog_cell_size_m;
+    if (options.fog_speed_overridden) state.fog_advection_speed_m_s = options.fog_advection_speed_m_s;
     state.wind_direction_deg = normalize_weather_direction(state.wind_direction_deg);
     if (!std::isfinite(state.aerosol_turbidity) || state.aerosol_turbidity <= 0.0 ||
         !std::isfinite(state.wind_direction_deg) || !std::isfinite(state.wind_strength_m) ||
@@ -581,7 +584,10 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
         state.fog_scattering_albedo < 0.0 || state.fog_scattering_albedo > 1.0 ||
         !std::isfinite(state.fog_anisotropy) || std::abs(state.fog_anisotropy) > 0.85 ||
         !std::isfinite(state.fog_base_height_m) || !std::isfinite(state.fog_scale_height_m) ||
-        state.fog_scale_height_m <= 0.0) {
+        state.fog_scale_height_m <= 0.0 || !std::isfinite(state.fog_density_variation) ||
+        state.fog_density_variation < 0.0 || state.fog_density_variation > 0.95 ||
+        !std::isfinite(state.fog_cell_size_m) || state.fog_cell_size_m <= 0.0 ||
+        !std::isfinite(state.fog_advection_speed_m_s) || state.fog_advection_speed_m_s < 0.0) {
       utils::error{}("PF08 effective weather is invalid: turbidity {}, wind {} deg / {} m, fog {} 1/m / {} / g {}",
                      state.aerosol_turbidity, state.wind_direction_deg, state.wind_strength_m,
                      state.fog_extinction_per_m, state.fog_scattering_albedo, state.fog_anisotropy);
@@ -598,10 +604,11 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
   if (!std::isfinite(options.fog_range_m) || options.fog_range_m <= 0.0) {
     utils::error{}("PF08 fog range must be finite and positive");
   }
-  utils::info("PF08 weather '{}': aerosol {:.2f}, wind {:.0f} deg / {:.2f} m, fog {:.4f} 1/m @ H {:.0f} m, transition {:.1f} s",
+  utils::info("PF08 weather '{}': aerosol {:.2f}, wind {:.0f} deg / {:.2f} m, fog {:.4f} 1/m @ H {:.0f} m, variation {:.2f} / {:.1f} m/s, transition {:.1f} s",
               initial_weather->name, weather.state().aerosol_turbidity, weather.state().wind_direction_deg,
               weather.state().wind_strength_m, weather.state().fog_extinction_per_m,
-              weather.state().fog_scale_height_m,
+              weather.state().fog_scale_height_m, weather.state().fog_density_variation,
+              weather.state().fog_advection_speed_m_s,
               weather_transition_seconds);
 
   pending_width = options.width;
@@ -1131,6 +1138,9 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
                   float(weather.state().fog_anisotropy), float(options.fog_range_m));
       sky_block.fog_shape = glm::vec4(float(weather.state().fog_base_height_m),
                                       float(weather.state().fog_scale_height_m), 0.0f, 0.0f);
+      sky_block.fog_noise = glm::vec4(float(weather.state().fog_density_variation),
+                                      float(weather.state().fog_cell_size_m),
+                                      float(weather.state().fog_advection_speed_m_s), 0.0f);
       sky_block.shadow_bodies = glm::vec4(slot_active[0] ? shadow_sources[0].body_code : -1.0f,
                                           slot_active[1] ? shadow_sources[1].body_code : -1.0f, 0.0f, 0.0f);
       write_current_buffer(base, "sky_buffer", &sky_block, sizeof(sky_block));
@@ -1158,15 +1168,17 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
                     state.horizontal_illuminance_lx, scene_luminance,
                     goal_ev100 <= options.exposure.min_ev100 + 1e-6 ? " · adaptation at its night floor" : ""),
         weather.active()
-          ? std::format("Weather: {} -> {} · {:.0f}% · aerosol {:.2f} · wind {:.0f}°/{:.2f} m · fog {:.4f} 1/m H{:.0f}m",
+          ? std::format("Weather: {} -> {} · {:.0f}% · aerosol {:.2f} · wind {:.0f}°/{:.2f} m · fog {:.4f} H{:.0f} var{:.2f} @{:.1f}m/s",
                         weather.source_name(), weather.target_name(), weather.progress() * 100.0,
                         weather.state().aerosol_turbidity, weather.state().wind_direction_deg,
                         weather.state().wind_strength_m, weather.state().fog_extinction_per_m,
-                        weather.state().fog_scale_height_m)
-          : std::format("Weather: {} · aerosol {:.2f} · wind {:.0f}°/{:.2f} m · fog {:.4f} 1/m H{:.0f}m",
+                        weather.state().fog_scale_height_m, weather.state().fog_density_variation,
+                        weather.state().fog_advection_speed_m_s)
+          : std::format("Weather: {} · aerosol {:.2f} · wind {:.0f}°/{:.2f} m · fog {:.4f} H{:.0f} var{:.2f} @{:.1f}m/s",
                         weather.target_name(), weather.state().aerosol_turbidity,
                         weather.state().wind_direction_deg, weather.state().wind_strength_m,
-                        weather.state().fog_extinction_per_m, weather.state().fog_scale_height_m),
+                        weather.state().fog_extinction_per_m, weather.state().fog_scale_height_m,
+                        weather.state().fog_density_variation, weather.state().fog_advection_speed_m_s),
         std::format("Foliage: {} near + {} far of {} · LOD {:.0f} m · range {:.0f} m",
                     shrub_near_instances.size(), shrub_far_instances.size(), shrubs.size(),
                     options.foliage_lod_m, options.foliage_range_m),

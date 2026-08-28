@@ -22,6 +22,10 @@ struct weather_state {
   double fog_anisotropy = 0.35;
   double fog_base_height_m = 0.0;
   double fog_scale_height_m = 80.0;
+  // Низкочастотные world-space столбы плотности. Variation 0 возвращает точный высотный профиль.
+  double fog_density_variation = 0.0;
+  double fog_cell_size_m = 70.0;
+  double fog_advection_speed_m_s = 0.0;
 };
 
 struct weather_preset {
@@ -34,6 +38,9 @@ struct weather_preset {
   double fog_anisotropy = 0.35;
   double fog_base_height_m = 0.0;
   double fog_scale_height_m = 80.0;
+  double fog_density_variation = 0.0;
+  double fog_cell_size_m = 70.0;
+  double fog_advection_speed_m_s = 0.0;
 };
 
 struct weather_preset_list {

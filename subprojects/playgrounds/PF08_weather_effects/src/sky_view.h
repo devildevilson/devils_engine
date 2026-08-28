@@ -67,6 +67,9 @@ struct view_options {
   double fog_anisotropy = 0.35;
   double fog_base_height_m = 0.0;
   double fog_scale_height_m = 80.0;
+  double fog_density_variation = 0.0;
+  double fog_cell_size_m = 70.0;
+  double fog_advection_speed_m_s = 0.0;
   double fog_range_m = 220.0;
   // Preset заполняет единое погодное состояние; прямые CLI-рычаги ниже могут независимо перекрыть
   // его поля для A/B. Отрицательная длительность означает значение из weather/presets.tavl.
@@ -81,6 +84,9 @@ struct view_options {
   bool fog_anisotropy_overridden = false;
   bool fog_base_overridden = false;
   bool fog_height_overridden = false;
+  bool fog_variation_overridden = false;
+  bool fog_cell_overridden = false;
+  bool fog_speed_overridden = false;
   // Фиксированное наведение камеры для повторяемых дампов: сравнивать состояния можно только из
   // одной и той же точки зрения, а мышь для этого не годится.
   bool fixed_look = false;

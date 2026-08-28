@@ -81,6 +81,9 @@ void print_usage() {
                "  --fog-anisotropy=F  HG-анизотропия локального тумана, -0.85..0.85\n"
                "  --fog-base=M        высота начала экспоненциального спада плотности\n"
                "  --fog-height=M      scale height туманного слоя\n"
+               "  --fog-variation=F   амплитуда world-space неоднородности, 0..0.95\n"
+               "  --fog-cell=M        размер низкочастотной ячейки плотности\n"
+               "  --fog-speed=MPS     скорость advection ячеек по направлению ветра\n"
                "  --fog-range=M       дальность froxel-объёма в метрах\n"
                "  --debug=8           показать transmittance froxel-объёма напрямую\n"
                "  --march-steps=N     шагов основного марша неба\n"
@@ -226,6 +229,15 @@ bool parse_options(const int argc, char** argv, options& out) {
     } else if (read_prefixed(argument, "--fog-height=", value)) {
       out.view.fog_scale_height_m = std::stod(value);
       out.view.fog_height_overridden = true;
+    } else if (read_prefixed(argument, "--fog-variation=", value)) {
+      out.view.fog_density_variation = std::stod(value);
+      out.view.fog_variation_overridden = true;
+    } else if (read_prefixed(argument, "--fog-cell=", value)) {
+      out.view.fog_cell_size_m = std::stod(value);
+      out.view.fog_cell_overridden = true;
+    } else if (read_prefixed(argument, "--fog-speed=", value)) {
+      out.view.fog_advection_speed_m_s = std::stod(value);
+      out.view.fog_speed_overridden = true;
     } else if (read_prefixed(argument, "--fog-range=", value)) {
       out.view.fog_range_m = std::stod(value);
     } else if (read_prefixed(argument, "--march-steps=", value)) {
@@ -847,6 +859,8 @@ void verify_weather(checker& check) {
     check.expect_near(state.wind_direction_deg, 250.0, 0.0, "clear сохраняет baseline-направление ветра");
     check.expect_near(state.wind_strength_m, 0.22, 0.0, "clear сохраняет baseline-силу ветра");
     check.expect_near(state.fog_extinction_per_m, 0.0, 0.0, "clear точно отключает локальную среду");
+    check.expect_near(state.fog_density_variation, 0.0, 0.0,
+                      "clear точно отключает пространственную модуляцию");
   }
 
   const auto* fog = pf08::find_weather_preset(presets, "fog");
@@ -868,12 +882,14 @@ void verify_weather(checker& check) {
                                                     state.fog_base_height_m, state.fog_scale_height_m),
                       std::exp(-state.fog_extinction_per_m * state.fog_scale_height_m), 1e-14,
                       "вертикальный свет получает аналитическую толщину туманного слоя");
+    check.expect(state.fog_density_variation > 0.0 && state.fog_advection_speed_m_s > 0.0,
+                 "authored fog имеет пространственные ячейки и advection");
   }
 
   check.expect_near(pf08::normalize_weather_direction(-10.0), 350.0, 0.0,
                     "направление ветра нормализуется по кругу");
-  const pf08::weather_state west{1.0, 350.0, 0.2, 0.0, 0.92, 0.35, 0.0, 80.0};
-  const pf08::weather_state east{2.0, 10.0, 0.6, 0.02, 0.80, -0.15, 10.0, 40.0};
+  const pf08::weather_state west{1.0, 350.0, 0.2, 0.0, 0.92, 0.35, 0.0, 80.0, 0.0, 70.0, 0.0};
+  const pf08::weather_state east{2.0, 10.0, 0.6, 0.02, 0.80, -0.15, 10.0, 40.0, 0.8, 50.0, 2.0};
   const auto middle = pf08::interpolate_weather(west, east, 0.5);
   check.expect_near(middle.wind_direction_deg, 0.0, 1e-12,
                     "переход ветра идёт по короткой дуге через север");
@@ -881,6 +897,10 @@ void verify_weather(checker& check) {
                     "локальная среда входит в тот же непрерывный погодный переход");
   check.expect_near(middle.fog_scale_height_m, 60.0, 1e-12,
                     "форма локальной среды интерполируется вместе с её плотностью");
+  check.expect_near(middle.fog_density_variation, 0.4, 1e-12,
+                    "неоднородность входит в тот же непрерывный weather transition");
+  check.expect_near(middle.fog_advection_speed_m_s, 1.0, 1e-12,
+                    "скорость advection входит в тот же непрерывный weather transition");
 
   pf08::weather_transition transition;
   transition.snap("west", west);

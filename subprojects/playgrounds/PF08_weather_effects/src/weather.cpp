@@ -50,6 +50,19 @@ bool valid_state(const weather_state& state, const std::string_view name, std::s
     append_diagnostic(diagnostics, std::format("weather '{}' has non-positive fog_scale_height_m", name));
     valid = false;
   }
+  if (!std::isfinite(state.fog_density_variation) || state.fog_density_variation < 0.0 ||
+      state.fog_density_variation > 0.95) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has fog_density_variation outside [0, 0.95]", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.fog_cell_size_m) || state.fog_cell_size_m <= 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has non-positive fog_cell_size_m", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.fog_advection_speed_m_s) || state.fog_advection_speed_m_s < 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has negative fog_advection_speed_m_s", name));
+    valid = false;
+  }
   return valid;
 }
 
@@ -100,7 +113,9 @@ weather_state state_from_preset(const weather_preset& preset) {
   return weather_state{preset.aerosol_turbidity, normalize_weather_direction(preset.wind_direction_deg),
                        preset.wind_strength_m, preset.fog_extinction_per_m,
                        preset.fog_scattering_albedo, preset.fog_anisotropy,
-                       preset.fog_base_height_m, preset.fog_scale_height_m};
+                       preset.fog_base_height_m, preset.fog_scale_height_m,
+                       preset.fog_density_variation, preset.fog_cell_size_m,
+                       preset.fog_advection_speed_m_s};
 }
 
 const weather_preset* find_weather_preset(const weather_preset_list& list, const std::string_view name) {
@@ -128,7 +143,10 @@ weather_state interpolate_weather(const weather_state& from, const weather_state
     std::lerp(from.fog_scattering_albedo, to.fog_scattering_albedo, t),
     std::lerp(from.fog_anisotropy, to.fog_anisotropy, t),
     std::lerp(from.fog_base_height_m, to.fog_base_height_m, t),
-    std::lerp(from.fog_scale_height_m, to.fog_scale_height_m, t)};
+    std::lerp(from.fog_scale_height_m, to.fog_scale_height_m, t),
+    std::lerp(from.fog_density_variation, to.fog_density_variation, t),
+    std::lerp(from.fog_cell_size_m, to.fog_cell_size_m, t),
+    std::lerp(from.fog_advection_speed_m_s, to.fog_advection_speed_m_s, t)};
 }
 
 homogeneous_fog_integral integrate_homogeneous_fog(const double extinction_per_m,

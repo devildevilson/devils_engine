@@ -83,6 +83,8 @@ vec3 pf08_surface_illuminance(const pf08_sky_block sky, const sampler2D transmit
                               const float receiver_bias_scale, const float direct_visibility,
                               const float sky_visibility) {
   vec3 total = vec3(0.0);
+  const float fog_column_modulation = sky.fog_params.x > 0.0
+    ? pf08_fog_column_modulation(sky, scene_position) : 1.0;
 
   for (int s = 0; s < PF08_STAR_COUNT; ++s) {
     const vec3 light_direction = sky.star_direction[s].xyz;
@@ -102,7 +104,8 @@ vec3 pf08_surface_illuminance(const pf08_sky_block sky, const sampler2D transmit
     // Shadow map отвечает только за геометрическую видимость. В тумане даже видимое светило доходит
     // до поверхности ослабленным; без этого множителя густой объём оставлял сухие резкие тени.
     if (sky.fog_params.x > 0.0) {
-      light_transmittance *= pf08_fog_light_transmittance(sky, scene_position, light_direction);
+      light_transmittance *= pf08_fog_light_transmittance(
+        sky, scene_position, light_direction, fog_column_modulation);
     }
     total += light_transmittance * sky.star_color_illuminance[s].rgb * illuminance * cosine * visibility;
   }
@@ -121,7 +124,8 @@ vec3 pf08_surface_illuminance(const pf08_sky_block sky, const sampler2D transmit
       slot < 0 ? 1.0 : pf08_shadow_visibility(slot, scene_position, normal, view_distance, receiver_bias_scale);
     float local_medium = 1.0;
     if (sky.fog_params.x > 0.0) {
-      local_medium = pf08_fog_light_transmittance(sky, scene_position, light_direction);
+      local_medium = pf08_fog_light_transmittance(
+        sky, scene_position, light_direction, fog_column_modulation);
     }
     total += sky.moon_color_illuminance[m].rgb * illuminance * cosine * visibility * local_medium;
   }

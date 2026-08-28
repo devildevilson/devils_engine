@@ -16,6 +16,9 @@ presets = [
     fog_anisotropy = 0.35
     fog_base_height_m = 0.0
     fog_scale_height_m = 80.0
+    fog_density_variation = 0.0
+    fog_cell_size_m = 70.0
+    fog_advection_speed_m_s = 0.0
   }
   {
     // Сухая аэрозольная дымка: атмосферный consumer виден, ветер почти не меняется.
@@ -28,6 +31,9 @@ presets = [
     fog_anisotropy = 0.35
     fog_base_height_m = 0.0
     fog_scale_height_m = 80.0
+    fog_density_variation = 0.0
+    fog_cell_size_m = 70.0
+    fog_advection_speed_m_s = 0.0
   }
   {
     // Проверка второго consumer: заросли и их тени читают одно усилившееся поле.
@@ -40,6 +46,9 @@ presets = [
     fog_anisotropy = 0.35
     fog_base_height_m = 0.0
     fog_scale_height_m = 80.0
+    fog_density_variation = 0.0
+    fog_cell_size_m = 70.0
+    fog_advection_speed_m_s = 4.0
   }
   {
     // Влажный локальный туман. По формуле Кошмидера 3.912 / sigma видимость равна примерно 217 м.
@@ -51,6 +60,9 @@ presets = [
     fog_scattering_albedo = 0.92
     fog_anisotropy = 0.35
     fog_base_height_m = 0.0
-    fog_scale_height_m = 160.0
+    fog_scale_height_m = 240.0
+    fog_density_variation = 0.35
+    fog_cell_size_m = 70.0
+    fog_advection_speed_m_s = 1.4
   }
 ]
