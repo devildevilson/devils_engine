@@ -31,4 +31,4 @@
 | `PF05` | `PF05_scene_effects` | закрыта | SDF, decals, particles/weather, cel shading, billboards и world-space UI |
 | `PF06` | `PF06_submarine_light_room` | закрыта | тёмная сцена для `submarine_coop` |
 | `PF07` | `PF07_party_environment` | закрыта | небесная механика, атмосфера, экспозиция, две тени и proxy-долина |
-| `PF08` | `PF08_weather_effects` | активна, baseline закрыт | погода в открытом динамически освещённом мире |
+| `PF08` | `PF08_weather_effects` | активна, срезы 0–1 закрыты | погода в открытом динамически освещённом мире |

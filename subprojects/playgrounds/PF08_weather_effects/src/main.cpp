@@ -18,6 +18,7 @@
 #include "celestial.h"
 #include "survey.h"
 #include "sky_view.h"
+#include "weather.h"
 
 using namespace devils_engine;
 
@@ -71,6 +72,8 @@ void print_usage() {
                "  --ev=F              зафиксировать EV100 вместо адаптации\n"
                "  --ev-bias=F         экспокоррекция в стопах\n"
                "  --preset=NAME       именованное состояние: noon, double_sunset, night, eclipse\n"
+               "  --weather=NAME      погодное состояние: clear, haze, windy\n"
+               "  --weather-transition=S  длительность runtime-перехода по T, реальные секунды\n"
                "  --night-vision=F    сила ночного зрения, 0 отключает\n"
                "  --turbidity=F       множитель аэрозоля\n"
                "  --march-steps=N     шагов основного марша неба\n"
@@ -157,8 +160,10 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.exposure.manual = true;
     } else if (read_prefixed(argument, "--wind=", value)) {
       out.view.wind_strength_m = std::stod(value);
+      out.view.wind_strength_overridden = true;
     } else if (read_prefixed(argument, "--wind-direction=", value)) {
       out.view.wind_direction_deg = std::stod(value);
+      out.view.wind_direction_overridden = true;
     } else if (read_prefixed(argument, "--foliage=", value)) {
       out.view.foliage_count = uint32_t(std::stoul(value));
     } else if (read_prefixed(argument, "--foliage-range=", value)) {
@@ -191,8 +196,14 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.output.scotopic_strength = std::stod(value);
     } else if (read_prefixed(argument, "--preset=", value)) {
       out.view.preset = value;
+    } else if (read_prefixed(argument, "--weather=", value)) {
+      out.view.weather_preset = value;
+    } else if (read_prefixed(argument, "--weather-transition=", value)) {
+      out.view.weather_transition_seconds = std::stod(value);
+      out.view.weather_transition_overridden = true;
     } else if (read_prefixed(argument, "--turbidity=", value)) {
       out.view.atmosphere.turbidity = std::stod(value);
+      out.view.turbidity_overridden = true;
     } else if (read_prefixed(argument, "--march-steps=", value)) {
       out.view.march.primary_steps = int32_t(std::stol(value));
     } else if (read_prefixed(argument, "--camera-height=", value)) {
@@ -793,6 +804,48 @@ void verify_calendar(checker& check, const pf08::celestial_system& system) {
                std::format("остаточная ошибка {:.3f} сут", system.binary_beat_error_days()));
 }
 
+void verify_weather(checker& check) {
+  const std::string path = std::string(PF08_RESOURCE_ROOT) + "/weather/presets.tavl";
+  const std::string text = file_io::read(path, file_io::type::text);
+  pf08::weather_preset_list presets;
+  std::string diagnostics;
+  const bool parsed = !text.empty() && pf08::parse_weather_presets(text, presets, diagnostics);
+  check.expect(parsed, "погодные пресеты разобраны", diagnostics);
+  if (!parsed) return;
+
+  check.expect(presets.presets.size() == 3, "первый погодный срез содержит три честных состояния",
+               std::format("получено {}", presets.presets.size()));
+  const auto* clear = pf08::find_weather_preset(presets, "clear");
+  check.expect(clear != nullptr, "clear weather объявлена");
+  if (clear != nullptr) {
+    const auto state = pf08::state_from_preset(*clear);
+    check.expect_near(state.aerosol_turbidity, 1.0, 0.0, "clear сохраняет baseline-аэрозоль");
+    check.expect_near(state.wind_direction_deg, 250.0, 0.0, "clear сохраняет baseline-направление ветра");
+    check.expect_near(state.wind_strength_m, 0.22, 0.0, "clear сохраняет baseline-силу ветра");
+  }
+
+  check.expect_near(pf08::normalize_weather_direction(-10.0), 350.0, 0.0,
+                    "направление ветра нормализуется по кругу");
+  const pf08::weather_state west{1.0, 350.0, 0.2};
+  const pf08::weather_state east{2.0, 10.0, 0.6};
+  const auto middle = pf08::interpolate_weather(west, east, 0.5);
+  check.expect_near(middle.wind_direction_deg, 0.0, 1e-12,
+                    "переход ветра идёт по короткой дуге через север");
+
+  pf08::weather_transition transition;
+  transition.snap("west", west);
+  transition.set_target("east", east, 4.0);
+  transition.advance(1.0);
+  check.expect_near(transition.progress(), 0.25, 0.0, "погодный переход использует реальные секунды");
+  const auto interrupted = transition.state();
+  transition.set_target("west", west, 2.0);
+  check.expect_near(transition.state().aerosol_turbidity, interrupted.aerosol_turbidity, 0.0,
+                    "новый переход не щёлкает посреди предыдущего");
+  transition.advance(2.0);
+  check.expect(!transition.active() && transition.target_name() == "west",
+               "погодный переход точно приходит в authored-состояние");
+}
+
 void verify_event_calendar(checker& check, const pf08::celestial_system& system) {
   pf08::survey_options options;
   options.budget_span_days = 7.0 * system.planet_year_days();
@@ -827,6 +880,7 @@ int run_verification(const pf08::celestial_system& system) {
   verify_illuminance_identity(check, system);
   verify_eclipse_energy(check, system);
   verify_calendar(check, system);
+  verify_weather(check);
   verify_event_calendar(check, system);
 
   std::cout << std::format("\n  проверок {}, провалов {}\n", check.total(), check.failed());

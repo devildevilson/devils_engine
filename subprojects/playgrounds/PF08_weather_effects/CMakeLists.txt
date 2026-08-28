@@ -11,6 +11,7 @@ add_executable(PF08_weather_effects
   src/shadows.cpp src/shadows.h
   src/terrain.cpp src/terrain.h
   src/foliage.cpp src/foliage.h
+  src/weather.cpp src/weather.h
   src/sky_view.cpp src/sky_view.h
 )
 target_link_libraries(PF08_weather_effects PRIVATE

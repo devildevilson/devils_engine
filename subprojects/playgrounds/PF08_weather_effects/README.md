@@ -1,6 +1,6 @@
 # PF08 — weather effects
 
-Статус: **нулевой срез CLOSED — PF07 baseline перенесён и зафиксирован** (2026-08-28).
+Статус: **срезы 0–1 CLOSED — baseline и единое погодное состояние зафиксированы** (2026-08-28).
 
 PF08 проверяет погоду как состояние открытого мира, а не как отдельный дождевой emitter. Площадка начинает
 с независимой копии закрытого `PF07_party_environment`: та же P-type двойная система, календарь и затмения,
@@ -13,13 +13,15 @@ PF08 и не создаёт CMake/source dependency между лаборато�
 ```sh
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --verify
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --preset=noon --weather=haze
 ./subprojects/playgrounds/PF08_weather_effects/compare_pf07_baseline.sh
 ```
 
-Все CLI-рычаги и четыре астрономических пресета PF07 пока сохранены буквально. Это намеренно: до появления
-первого погодного consumer clear-state обязан пройти `41/41` численную проверку и дать те же пиксели в
-`noon`, `double_sunset`, `night`, `eclipse`. Скрипт сравнивает сырые PPM, поэтому метаданные PNG и timestamps
-не могут спрятать расхождение.
+`--weather=clear|haze|windy` выбирает состояние сразу, `T` циклически запускает переход длительностью
+`--weather-transition=S` (по умолчанию `4 s`). `--turbidity`, `--wind`, `--wind-direction` сохранены как
+независимые overrides поверх пресета: ими изолируется один consumer для A/B. Четыре астрономических пресета
+PF07 сохранены буквально, а `compare_pf07_baseline.sh` доказывает, что default `clear` даёт те же пиксели в
+`noon`, `double_sunset`, `night`, `eclipse`.
 
 ## Граница площадки
 
@@ -60,9 +62,10 @@ weather state
 
 0. **DONE — frozen clear baseline.** Независимый `PF08_weather_effects`, собственные namespace/resources,
    `41/41`, побитное сравнение четырёх clear-кадров с PF07 и Vulkan validation без API-сообщений.
-1. **Weather state.** Данные и пресеты `clear|overcast|rain|snow`, переходы без перестройки render graph,
-   общее ветровое поле и диагностическая визуализация значений. Пока consumer не существует, поле в state
-   не добавляется «на будущее».
+1. **DONE — weather state.** Данные и пресеты `clear|haze|windy`, переходы без перестройки render graph,
+   общее ветровое поле, CLI/runtime-контроли и диагностическая визуализация значений. Пока consumer не
+   существует, поле в state не добавляется «на будущее»: `overcast`, `rain`, `snow` появятся только вместе
+   с froxel-облаками и осадками.
 2. **Froxel medium.** Сначала однородный туман как проверяемый интеграл, затем высотная/адвектируемая
    плотность и облачный слой; оба светила и shadow visibility используют один интеграл.
 3. **Precipitation across distance.** Near drops/flakes, mid/far extinction, укрытие и impact-события.
@@ -84,3 +87,24 @@ weather state
 `compare_pf07_baseline.sh` возвращает `MATCH` для `noon`, `double_sunset`, `night`, `eclipse`; восьмикадровый
 `--validation`-запуск не выдаёт `VUID`, warning или error от API-слоя. Каталог pipeline cache создаётся
 post-build, поэтому первый запуск нового target не оставляет отдельный filesystem warning.
+
+## Что закрыл срез 1
+
+`src/weather.*` — чистая от Vulkan модель. Она загружает authored-точки из
+`resources/weather/presets.tavl`, проверяет пустые/повторные имена и физически бессмысленные значения,
+нормализует направление и интерполирует его по кратчайшей дуге: середина `350° -> 10°` равна `0°`, а не
+`180°`. Переход идёт в реальных секундах и хранит исходный snapshot; новый выбор посреди перехода стартует
+из текущего показанного состояния без щелчка.
+
+Сейчас в state ровно три числа с двумя настоящими consumer'ами:
+
+- `aerosol_turbidity` подставляется в единую модель атмосферы и инвалидирует зависящий от среды LUT cache;
+- `wind_direction_deg` и `wind_strength_m` один раз упаковываются в shared GPU block, который читают и
+  `scene.vert`, и `shadow.vert`. Поэтому куст и его тень не могут получить разные погодные кадры.
+
+Наблюдаемость измерена на одном `noon`-кадре при фиксированном EV. Только аэрозоль (`1.0 -> 2.4`) при
+clear-ветре меняет `16507.3` pixel-equivalent; только ветер (`250°/0.22 -> 320°/0.55`) при clear-аэрозоле —
+`8629.18`. Default `clear` после подключения state снова дал четыре `MATCH` против PF07. `--verify` вырос с
+`41/41` до `52/52`: добавлены разбор authored-конфига, точные baseline-значения, круговая интерполяция,
+реальные секунды перехода, прерывание без щелчка и точное прибытие в authored-state. Non-clear `windy`
+проходит Vulkan validation без `VUID`, warning или error от API-слоя.

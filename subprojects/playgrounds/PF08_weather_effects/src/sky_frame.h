@@ -70,8 +70,8 @@ struct atmosphere_settings {
   double ozone_center_km = 25.0;
   double ozone_width_km = 15.0;
   double mie_anisotropy = 0.76;
-  // Пока это прямой диагностический рычаг PF07 baseline. В первом погодном срезе он станет одним
-  // из consumer'ов погодного состояния, а не самим состоянием целиком.
+  // Атмосферный consumer погодного состояния. Поле остаётся здесь, потому что pack_sky_block принимает
+  // готовый snapshot среды и не должен знать, пришёл он из пресета, перехода или CLI override.
   double turbidity = 1.0;
   double ground_albedo = 0.10;
 };

@@ -10,6 +10,7 @@
 #include "celestial.h"
 #include "shadows.h"
 #include "sky_frame.h"
+#include "weather.h"
 
 namespace devils_engine::pf08 {
 
@@ -61,6 +62,14 @@ struct view_options {
   // Ветер: направление в градусах от севера через восток и сила в метрах отклонения верхушки.
   double wind_direction_deg = 250.0;
   double wind_strength_m = 0.22;
+  // Preset заполняет единое погодное состояние; прямые CLI-рычаги ниже могут независимо перекрыть
+  // его поля для A/B. Отрицательная длительность означает значение из weather/presets.tavl.
+  std::string weather_preset = "clear";
+  double weather_transition_seconds = -1.0;
+  bool weather_transition_overridden = false;
+  bool turbidity_overridden = false;
+  bool wind_direction_overridden = false;
+  bool wind_strength_overridden = false;
   // Фиксированное наведение камеры для повторяемых дампов: сравнивать состояния можно только из
   // одной и той же точки зрения, а мышь для этого не годится.
   bool fixed_look = false;

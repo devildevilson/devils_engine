@@ -56,7 +56,9 @@ int32_t faster_key = -1;
 int32_t slower_key = -1;
 int32_t exposure_up_key = -1;
 int32_t exposure_down_key = -1;
+int32_t weather_cycle_key = -1;
 double exposure_step = 0.0;
+bool weather_cycle_requested = false;
 
 struct alignas(16) camera_block {
   glm::mat4 view_projection;
@@ -78,6 +80,7 @@ void key_callback(GLFWwindow* window, const int key, const int scancode, const i
   if (key == slower_key && action == 1) time_scale_step -= 1.0;
   if (key == exposure_up_key && action == 1) exposure_step += 1.0;
   if (key == exposure_down_key && action == 1) exposure_step -= 1.0;
+  if (key == weather_cycle_key && action == 1) weather_cycle_requested = true;
 }
 
 void mouse_button_callback(GLFWwindow*, const int button, const int action, const int) noexcept {
@@ -543,9 +546,52 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     if (!found) utils::error{}("PF08 preset '{}' is not declared in presets.tavl", options.preset);
   }
 
+  const std::string weather_path = std::string(PF08_RESOURCE_ROOT) + "/weather/presets.tavl";
+  const std::string weather_text = file_io::read(weather_path, file_io::type::text);
+  if (weather_text.empty()) utils::error{}("PF08 could not read weather presets '{}'", weather_path);
+
+  weather_preset_list weather_presets;
+  std::string weather_diagnostics;
+  if (!parse_weather_presets(weather_text, weather_presets, weather_diagnostics)) {
+    utils::error{}("PF08 weather presets '{}' have diagnostics:\n{}", weather_path, weather_diagnostics);
+  }
+  const weather_preset* initial_weather = find_weather_preset(weather_presets, options.weather_preset);
+  if (initial_weather == nullptr) {
+    utils::error{}("PF08 weather '{}' is not declared in weather/presets.tavl", options.weather_preset);
+  }
+  if (options.weather_transition_overridden &&
+      (!std::isfinite(options.weather_transition_seconds) || options.weather_transition_seconds < 0.0)) {
+    utils::error{}("PF08 weather transition must be finite and non-negative");
+  }
+
+  const auto apply_weather_overrides = [&options](weather_state state) {
+    if (options.turbidity_overridden) state.aerosol_turbidity = options.atmosphere.turbidity;
+    if (options.wind_direction_overridden) state.wind_direction_deg = options.wind_direction_deg;
+    if (options.wind_strength_overridden) state.wind_strength_m = options.wind_strength_m;
+    state.wind_direction_deg = normalize_weather_direction(state.wind_direction_deg);
+    if (!std::isfinite(state.aerosol_turbidity) || state.aerosol_turbidity <= 0.0 ||
+        !std::isfinite(state.wind_direction_deg) || !std::isfinite(state.wind_strength_m) ||
+        state.wind_strength_m < 0.0) {
+      utils::error{}("PF08 effective weather state is invalid: turbidity {}, wind {} deg / {} m",
+                     state.aerosol_turbidity, state.wind_direction_deg, state.wind_strength_m);
+    }
+    return state;
+  };
+
+  weather_transition weather;
+  weather.snap(initial_weather->name, apply_weather_overrides(state_from_preset(*initial_weather)));
+  size_t weather_index = size_t(initial_weather - weather_presets.presets.data());
+  const double weather_transition_seconds = options.weather_transition_overridden
+                                              ? options.weather_transition_seconds
+                                              : weather_presets.transition_seconds;
+  utils::info("PF08 weather '{}': aerosol {:.2f}, wind {:.0f} deg / {:.2f} m, transition {:.1f} s",
+              initial_weather->name, weather.state().aerosol_turbidity, weather.state().wind_direction_deg,
+              weather.state().wind_strength_m, weather_transition_seconds);
+
   pending_width = options.width;
   pending_height = options.height;
   paused = options.paused;
+  weather_cycle_requested = false;
 
   input::init input_runtime(&error_callback);
   input::events::init();
@@ -739,8 +785,8 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       common_resources + "fonts/crimson.roman.ttf", resource_root + "ui/pf08_controls.lua",
       playground::overlay_description{
         "PF08 — Weather effects",
-        "Baseline: PF07 binary sky, physical exposure, two-sun shadows, valley and foliage",
-        "WASD/QE look · Space pause · [ ] time speed · - = exposure"});
+        "Slice 1: one weather state feeds atmosphere and the shared foliage/shadow wind field",
+        "WASD/QE look · Space pause · T weather · [ ] time speed · - = exposure"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(font_texture,
@@ -765,6 +811,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     faster_key = input::glfw_key_from_canonical("right_bracket");
     exposure_down_key = input::glfw_key_from_canonical("minus");
     exposure_up_key = input::glfw_key_from_canonical("equal");
+    weather_cycle_key = input::glfw_key_from_canonical("key_t");
     input::set_window_callback(window, &key_callback);
     input::set_window_callback(window, &mouse_button_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
@@ -772,7 +819,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     input::set_raw_mouse_motion(window);
 
     playground::free_camera camera;
-    // Камера смотрит чуть выше горизонта: срез 2 показывает небо, а не землю.
+    // Камера смотрит чуть выше горизонта: здесь одновременно читаются небо, долина и движение зарослей.
     // Глаз стоит НАД сценой, а не в её плоскости. Пока камера была в нуле, атмосфера считала
     // наблюдателя на двух метрах, а геометрия рисовалась с уровня земли: основания предметов ложились
     // ровно на линию горизонта, и всё выглядело стоящим бесконечно далеко. Сцена в метрах, высота
@@ -801,8 +848,8 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     }
 
     // Таблица многократного рассеяния живёт на условном счётчике: она функция параметров среды и
-    // ничего больше. Хост двигает счётчик при старте и при смене мутности. Погодный срез расширит
-    // invalidation ровно теми параметрами среды, от которых эта таблица действительно зависит.
+    // ничего больше. Хост двигает счётчик при старте и при изменении аэрозоля weather state;
+    // следующие срезы расширят invalidation только параметрами, от которых LUT действительно зависит.
     const uint32_t atmosphere_counter = base.find_counter("atmosphere_cache");
     if (atmosphere_counter == painter::invalid_resource_slot) {
       utils::error{}("PF08 counter 'atmosphere_cache' is absent from the configured graph");
@@ -865,6 +912,14 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
         exposure_step = 0.0;
         utils::info("PF08 exposure compensation {:+.1f} stops", exposure_bias_stops);
       }
+      if (weather_cycle_requested) {
+        weather_index = (weather_index + 1) % weather_presets.presets.size();
+        const auto& next = weather_presets.presets[weather_index];
+        weather.set_target(next.name, apply_weather_overrides(state_from_preset(next)), weather_transition_seconds);
+        weather_cycle_requested = false;
+        utils::info("PF08 weather transition '{}' -> '{}' over {:.1f} s", weather.source_name(),
+                    weather.target_name(), weather_transition_seconds);
+      }
 
       auto [next_mouse_x, next_mouse_y] = input::cursor_pos(window);
       playground::camera_motion motion;
@@ -886,10 +941,17 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
         continue;
       }
 
+      // Fixed-frame mode advances weather by the same deterministic clock as wind, astronomy and
+      // exposure. A transition dump must not depend on how quickly this machine compiled a shader.
+      const double step_seconds = options.frames != 0 ? 1.0 / 60.0 : double(dt);
+      weather.advance(step_seconds);
+      auto frame_atmosphere = options.atmosphere;
+      frame_atmosphere.turbidity = weather.state().aerosol_turbidity;
+
       base.prepare_frame();
-      if (baked_turbidity != options.atmosphere.turbidity) {
+      if (baked_turbidity != frame_atmosphere.turbidity) {
         base.inc_counter(atmosphere_counter);
-        baked_turbidity = options.atmosphere.turbidity;
+        baked_turbidity = frame_atmosphere.turbidity;
       }
       if (gpu_profiler.has_results()) gpu_timings.add(gpu_profiler.passes(), gpu_profiler.frame_milliseconds());
 
@@ -899,7 +961,6 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       // Значение ОДНО и на игровое время, и на адаптацию экспозиции. Разойдясь, они дают тихо неверный
       // дамп: игровое время шло бы как на шестидесяти кадрах, а глаз привыкал бы со скоростью машины,
       // и восход в дампе проходил бы с совсем другой экспозицией, чем в окне.
-      const double step_seconds = options.frames != 0 ? 1.0 / 60.0 : double(dt);
       // Часы РЕАЛЬНОГО времени для ветра. При фиксированном числе кадров они идут постоянным шагом
       // вместе с игровыми: дамп обязан быть воспроизводимым целиком, а не наполовину.
       wall_seconds += step_seconds;
@@ -1040,20 +1101,20 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       // обязан увидеть, как отодвигается горизонт. Настройка задаёт только начальное положение.
       auto march = options.march;
       march.camera_height_km = double(camera.position.y) * 0.001;
-      auto sky_block = pack_sky_block(state, star_frame, options.atmosphere, march, output,
+      auto sky_block = pack_sky_block(state, star_frame, frame_atmosphere, march, output,
                                       system.config().planet.radius_km, system.config().moons);
       // Ветер: направление из настроек, время — РЕАЛЬНОЕ, а не игровое. Перемотка суток не имеет
       // права разгонять качание веток: ветер живёт в том же времени, что и глаз наблюдателя.
-      const double wind_angle = options.wind_direction_deg * 3.14159265358979323846 / 180.0;
+      const double wind_angle = weather.state().wind_direction_deg * 3.14159265358979323846 / 180.0;
       sky_block.wind_params =
         glm::vec4(float(std::sin(wind_angle)), float(-std::cos(wind_angle)),
-                  float(options.wind_strength_m), float(wall_seconds));
+                  float(weather.state().wind_strength_m), float(wall_seconds));
       sky_block.shadow_bodies = glm::vec4(slot_active[0] ? shadow_sources[0].body_code : -1.0f,
                                           slot_active[1] ? shadow_sources[1].body_code : -1.0f, 0.0f, 0.0f);
       write_current_buffer(base, "sky_buffer", &sky_block, sizeof(sky_block));
 
       const auto calendar = system.to_calendar(game_time_days);
-      const std::array<std::string, 8> details{
+      const std::array<std::string, 9> details{
         std::format("Year {} · beat {}/{} · day {}/{} · {:02}:{:02} · {:.4f} days per real second{}", calendar.year,
                     calendar.beat_year, system.binary_beat_years(), calendar.day,
                     uint32_t(system.planet_year_days()), calendar.hour,
@@ -1074,9 +1135,17 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
         std::format("Scene: direct {:.4g} lx · metered frame luminance {:.4g} nits{}",
                     state.horizontal_illuminance_lx, scene_luminance,
                     goal_ev100 <= options.exposure.min_ev100 + 1e-6 ? " · adaptation at its night floor" : ""),
-        std::format("Foliage: {} near + {} far of {} · LOD {:.0f} m · range {:.0f} m · wind {:.2f} m",
+        weather.active()
+          ? std::format("Weather: {} -> {} · {:.0f}% · aerosol {:.2f} · wind {:.0f}° / {:.2f} m",
+                        weather.source_name(), weather.target_name(), weather.progress() * 100.0,
+                        weather.state().aerosol_turbidity, weather.state().wind_direction_deg,
+                        weather.state().wind_strength_m)
+          : std::format("Weather: {} · aerosol {:.2f} · wind {:.0f}° / {:.2f} m",
+                        weather.target_name(), weather.state().aerosol_turbidity,
+                        weather.state().wind_direction_deg, weather.state().wind_strength_m),
+        std::format("Foliage: {} near + {} far of {} · LOD {:.0f} m · range {:.0f} m",
                     shrub_near_instances.size(), shrub_far_instances.size(), shrubs.size(),
-                    options.foliage_lod_m, options.foliage_range_m, options.wind_strength_m),
+                    options.foliage_lod_m, options.foliage_range_m),
         std::format("Colour script: tint ({:.2f} {:.2f} {:.2f}) · saturation {:.2f} · contrast {:.2f}",
                     output.grade_tint.x, output.grade_tint.y, output.grade_tint.z, output.grade_saturation,
                     output.grade_contrast)};

@@ -1,0 +1,29 @@
+// Первый погодный срез содержит только параметры, у которых уже есть настоящий consumer.
+// `overcast`, `rain` и `snow` здесь намеренно отсутствуют: до froxel-облаков и осадков эти имена
+// были бы всего лишь ветром и мутностью, выдающими себя за законченную погоду.
+
+transition_seconds = 4.0
+
+presets = [
+  {
+    // Побитно тот же clear-state, с которого закрыт нулевой срез.
+    name = "clear"
+    aerosol_turbidity = 1.0
+    wind_direction_deg = 250.0
+    wind_strength_m = 0.22
+  }
+  {
+    // Сухая аэрозольная дымка: атмосферный consumer виден, ветер почти не меняется.
+    name = "haze"
+    aerosol_turbidity = 2.4
+    wind_direction_deg = 255.0
+    wind_strength_m = 0.18
+  }
+  {
+    // Проверка второго consumer: заросли и их тени читают одно усилившееся поле.
+    name = "windy"
+    aerosol_turbidity = 1.15
+    wind_direction_deg = 320.0
+    wind_strength_m = 0.55
+  }
+]
