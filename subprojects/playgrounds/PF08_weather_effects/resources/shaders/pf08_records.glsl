@@ -89,6 +89,10 @@ struct pf08_sky_block {
   // AABB ВИДИМОЙ крыши. w > 0 включает один и тот же shelter-test в particle и froxel consumers.
   vec4 shelter_minimum;
   vec4 shelter_maximum;
+  // Накопленная история поверхности: толщина снега, глобальное покрытие, wetness и enable.
+  vec4 surface_weather;
+  // Геометрическая толщина включена, maximum depth, cover depth и размер world-space пятна.
+  vec4 surface_weather_shape;
   // Освещённость светила БЕЗ затмения и без горизонта, по одной на звезду в x и y. Нужна ровно диску:
   // затмение теперь показывается геометрически — луна закрывает часть диска собой, — и дополнительно
   // гасить сам диск значило бы посчитать затмение дважды.

@@ -1,6 +1,6 @@
 # PF08 — weather effects
 
-Статус: **срезы 0–3 CLOSED; срез 4A CLOSED — дождь near/mid/far и surface contacts** (2026-08-28).
+Статус: **срезы 0–4B CLOSED; срез 5A CLOSED — snowpack и material response** (2026-08-29).
 
 PF08 проверяет погоду как состояние открытого мира, а не как отдельный дождевой emitter. Площадка начинает
 с независимой копии закрытого `PF07_party_environment`: та же P-type двойная система, календарь и затмения,
@@ -19,11 +19,13 @@ build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effe
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=overcast --debug=10
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=rain
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=rain --no-rain-particles
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=snow --surface-age=30
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=rain --surface-age=1 --no-precipitation-particles
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=fog --debug=8
 ./subprojects/playgrounds/PF08_weather_effects/compare_pf07_baseline.sh
 ```
 
-`--weather=clear|haze|windy|fog|cloudy|overcast|rain` выбирает состояние сразу, `T` циклически запускает переход длительностью
+`--weather=clear|haze|windy|fog|cloudy|overcast|rain|snow` выбирает состояние сразу, `T` циклически запускает переход длительностью
 `--weather-transition=S` (по умолчанию `4 s`). `--turbidity`, `--wind`, `--wind-direction` сохранены как
 независимые overrides поверх пресета; локальная среда отдельно управляется через `--fog-extinction=`,
 `--fog-albedo=`, `--fog-anisotropy=` и `--fog-range=`. Ими изолируется один consumer для A/B.
@@ -35,6 +37,12 @@ build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effe
 буквально. `compare_pf07_baseline.sh` запускает ТОЛЬКО PF08 и
 сравнивает его с четырьмя уже зафиксированными PNG PF07; сам PF07 повторно запускается только при явном
 обновлении его `reference_frames/`.
+
+История поверхности идёт отдельно от календаря: `--surface-time-scale=F` задаёт мировые секунды на
+реальную секунду (по умолчанию `60`), поэтому `pause` останавливает небесную механику, но не снегопад вокруг
+наблюдателя. `--surface-age=MIN` детерминированно прогревает историю на заданное число МИРОВЫХ минут и
+нужен для воспроизводимых A/B; `--snow-melt=MMH`, `--surface-dry-half-life=H`,
+`--no-surface-weather` и `--no-snow-displacement` разделяют интегратор, материал и геометрию.
 
 ## Граница площадки
 
@@ -87,8 +95,9 @@ weather state
 4. **DONE — precipitation across distance.** 4A закрывает дождь: near drops, mid/far extinction и
    depth-driven impact-события. 4B добавляет снег в тот же persistent pool и настоящий видимый навес,
    чья геометрия одновременно задаёт near collision и сухой объём в far medium.
-5. **Wet world and screen manifestations.** Накопление/высыхание мокроты, roughness/specular response,
-   лужи и рябь; lens droplets только как следствие попадания воды, с отдельным A/B.
+5. **IN PROGRESS — wet world and screen manifestations.** 5A закрывает snowpack, таяние/высыхание,
+   world-space coverage, геометрическую толщину и albedo/roughness/specular response. Лужи, рябь и lens
+   droplets только как следствие попадания воды остаются следующей частью, с отдельным A/B.
 6. **Закрывающий аудит.** Фиксированные clear/overcast/rain/snow кадры в нескольких временах суток,
    временные переходы, GPU budget и Vulkan validation. Побитный PF07 baseline остаётся историческим gate
    срезов 0–4A: с 4B PF08 намеренно содержит новую постоянную геометрию навеса.
@@ -244,7 +253,7 @@ weather state, transmittance и остальные consumers остаются п
 `vec4` particle record хранит тип и постоянную фазу; снег рисуется вращающимся мягким хлопком, медленно
 падает и получает поперечный flutter. Дождь и снег могут одновременно занимать детерминированные доли
 pool во время непрерывного перехода, без нового enum pipeline и без CPU readback. Контакт снега завершает
-хлопок без дождевого splash; накопление покрытия намеренно оставлено wet-world slice.
+хлопок без дождевого splash; накопление покрытия реализовано следующим wet-world срезом 5A ниже.
 
 Укрытие теперь имеет видимую причину: к fixture добавлены одна крыша и четыре стойки. `make_fixture_scene`
 возвращает инстансы и AABB крыши вместе, поэтому render, near segment collision и froxel shelter не имеют
@@ -267,3 +276,47 @@ simulation `0.023 ms`, volume `3.703`, apply `0.331`, particle draw `0.045`, tot
 запускался и frozen PNG не переснимались. Новая постоянная крыша осознанно завершает эпоху побитного clear
 совпадения с PF07 после 4A: скрывать физическое укрытие только в clear означало бы заставить мир менять
 геометрию при смене погоды.
+
+## Что закрыл срез 5A
+
+`src/surface_weather.*` хранит историю, а не текущее имя пресета: водный эквивалент снега в миллиметрах
+и безразмерную мокроту. При штатной шкале `60` одна реальная минута равна одному мировому часу; authored
+снег `7 мм/ч` за это время даёт `7 мм` воды или `70 мм` рыхлого снега при явном отношении `10:1`.
+Толщина ограничена `12 см`. Когда снегопад прекращается, pack тает со скоростью `0.8 мм воды/ч`, дождь
+ускоряет таяние, а получившаяся вода входит в тот же wetness. Намокание и высыхание экспоненциальны,
+поэтому один шаг `60 s` и шестьдесят шагов `1 s` дают один результат; dry half-life по умолчанию `0.35 h`.
+Температуры здесь намеренно нет: выводить её из слова `snow` было бы скрытой климатической моделью.
+
+CPU передаёт только глобальные depth/coverage/wetness. Пространство строится в общем
+`pf08_surface_weather.glsl`: две low-frequency value-noise октавы в world `XZ`, authored 12-метровая
+ячейка, вес наклона по нормали и тот же луч против реальной скорости осадков, которым 4B проверяет крышу.
+Поэтому ранний покров появляется пятнами, склоны держат меньше снега, а под видимым навесом остаётся сухое
+место с подветренной границей. Размер пятен сначала был `2–5 м`, но попал на трёхметровую сетку долины и
+дал полосы; масштаб `4–12 м` выбран как минимальный, который текущая геометрия действительно разрешает.
+
+Снег — не только перекраска. `scene.vert` поднимает открытую поверхность вертикально по гравитации на
+накопленную толщину, а `shadow.vert` вызывает ТОТ ЖЕ helper после того же wind deformation. Поэтому
+покрытая плита, её силуэт и отбрасываемая тень не расходятся. Листва не раздувается белой оболочкой:
+трава остаётся геометрией, торчащей из pack. Fragment material переводит снег в неоднородное холодное
+альбедо `0.72..0.97`; жидкая плёнка затемняет исходное альбедо до `58%`, снижает roughness `0.72 -> 0.22`
+и включает GGX с `F0=0.045`. Небо отражается из существующего sky-view LUT. У него нет prefiltered mip
+chain, поэтому один резкий sample явно ослаблен коэффициентом `0.25`; без этого мокрый склон на скользящем
+угле становился бело-голубым зеркалом и читался как снег. Дорогой второй обход светил выполняется только
+для жидкой плёнки: матовый снег выражается diffuse, пятнами и толщиной.
+
+Fixed-noon кадры сняты только PF08, с выключенными near particles и far precipitation extinction.
+Возраст `0 -> 5` мировых минут (`0 -> 5.8 мм`, coverage `0 -> 52%`) даёт `MAE 0.019257`; `5 -> 30`
+(`5.8 -> 35 мм`, coverage `52 -> 99%`) — `0.0207413`. Shelter on/off локализован под крышей и даёт
+`0.00011922`; displacement on/off при `35 мм` даёт `0.000881147`, с разностью на рельефе, верхах плит
+и их тенях. Rain age `1 min` против `--no-surface-weather` даёт `0.0208997`: открытый грунт темнеет и
+ловит отражение неба, защищённый остаётся сухим.
+
+Release build и runtime GLSL проходят; `--verify` — `99/99`, включая накопление, frame partition,
+water-to-depth, таяние, передачу талой воды и dry half-life. Снег и дождь Vulkan-validation clean. Iris Xe
+1280x720 steady minima для scene/total: clear `1.194/5.534 ms`, снег `1.553/9.496`, мокрый дождевой кадр
+`3.040/11.052`; totals включают разные authored fog/cloud states, поэтому изолированная цена material видна
+именно в scene pass. PF07 и `compare_pf07_baseline.sh` не запускались, frozen PNG не переснимались.
+
+Оставшаяся честная граница: история пока глобальная, а shelter/slope/noise mask вычисляется заново из
+текущей геометрии — это не persistent footprint texture и не гидрология. Лужи, течение, рябь от impacts и
+lens droplets остаются продолжением среза 5, а не притворяются уже решёнными одним scalar wetness.

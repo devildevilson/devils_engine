@@ -149,4 +149,101 @@ vec3 pf08_surface_illuminance(const pf08_sky_block sky, const sampler2D transmit
   return total * direct_visibility + pf08_sky_illuminance(sky_view_lut, normal) * sky_visibility;
 }
 
+vec3 pf08_ggx_brdf(const vec3 normal, const vec3 view_direction, const vec3 light_direction,
+                   const float roughness, const vec3 f0) {
+  const vec3 half_direction = normalize(view_direction + light_direction);
+  const float n_dot_v = max(dot(normal, view_direction), 1e-4);
+  const float n_dot_l = max(dot(normal, light_direction), 0.0);
+  const float n_dot_h = max(dot(normal, half_direction), 0.0);
+  const float v_dot_h = max(dot(view_direction, half_direction), 0.0);
+  if (n_dot_l <= 0.0) return vec3(0.0);
+
+  const float alpha = max(roughness * roughness, 0.0025);
+  const float alpha2 = alpha * alpha;
+  const float denominator = n_dot_h * n_dot_h * (alpha2 - 1.0) + 1.0;
+  const float distribution = alpha2 / max(pf08_pi * denominator * denominator, 1e-6);
+  const float k = (roughness + 1.0) * (roughness + 1.0) * 0.125;
+  const float geometry_v = n_dot_v / (n_dot_v * (1.0 - k) + k);
+  const float geometry_l = n_dot_l / (n_dot_l * (1.0 - k) + k);
+  const vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - v_dot_h, 5.0);
+  return distribution * geometry_v * geometry_l * fresnel /
+         max(4.0 * n_dot_v * n_dot_l, 1e-5);
+}
+
+// Specular вызывается только для накопленного WET response. Базовая PF07-сцена была намеренно
+// ламбертова, поэтому сухая поверхность не получает новый блеск просто из-за наличия кода.
+vec3 pf08_surface_weather_specular(const pf08_sky_block sky, const sampler2D transmittance_lut,
+                                   const sampler2D sky_view_lut, const vec3 planet_point,
+                                   const vec3 scene_position, const vec3 normal,
+                                   const vec3 view_direction, const float view_distance,
+                                   const float receiver_bias_scale, const float direct_visibility,
+                                   const float sky_visibility, const float roughness, const vec3 f0) {
+  vec3 total = vec3(0.0);
+  const float fog_column_modulation = sky.fog_params.x > 0.0
+    ? pf08_fog_column_modulation(sky, scene_position) : 1.0;
+
+  for (int s = 0; s < PF08_STAR_COUNT; ++s) {
+    const vec3 light_direction = sky.star_direction[s].xyz;
+    const float illuminance = sky.star_color_illuminance[s].w;
+    if (illuminance <= 0.0 || dot(normal, light_direction) <= 0.0) continue;
+    const int slot = pf08_shadow_slot(sky, float(s));
+    const float visibility = slot < 0 ? 1.0 :
+      pf08_shadow_visibility(slot, scene_position, normal, view_distance, receiver_bias_scale);
+    if (visibility <= 0.0) continue;
+    vec3 medium = pf08_transmittance_to_light(sky, transmittance_lut, planet_point, light_direction);
+    if (sky.fog_params.x > 0.0) {
+      medium *= pf08_fog_light_transmittance(
+        sky, scene_position, light_direction, fog_column_modulation);
+    }
+    if (sky.cloud_params.x > 0.0) {
+      medium *= pf08_cloud_light_transmittance(sky, scene_position, light_direction);
+    }
+    if ((pf08_rain_active(sky) && sky.precipitation_shape.y > 0.0) ||
+        (pf08_snow_active(sky) && sky.snow_shape.y > 0.0)) {
+      medium *= pf08_precipitation_light_transmittance(sky, scene_position, light_direction);
+    }
+    total += medium * sky.star_color_illuminance[s].rgb * illuminance * visibility *
+             max(dot(normal, light_direction), 0.0) *
+             pf08_ggx_brdf(normal, view_direction, light_direction, roughness, f0);
+  }
+
+  const int moon_count = int(sky.march_params.w);
+  for (int m = 0; m < moon_count && m < PF08_MOON_CAPACITY; ++m) {
+    const vec3 light_direction = sky.moon_direction[m].xyz;
+    const float illuminance = sky.moon_color_illuminance[m].w;
+    if (illuminance <= 0.0 || dot(normal, light_direction) <= 0.0) continue;
+    const int slot = pf08_shadow_slot(sky, float(PF08_STAR_COUNT + m));
+    const float visibility = slot < 0 ? 1.0 :
+      pf08_shadow_visibility(slot, scene_position, normal, view_distance, receiver_bias_scale);
+    float medium = 1.0;
+    if (sky.fog_params.x > 0.0) {
+      medium *= pf08_fog_light_transmittance(
+        sky, scene_position, light_direction, fog_column_modulation);
+    }
+    if (sky.cloud_params.x > 0.0) {
+      medium *= pf08_cloud_light_transmittance(sky, scene_position, light_direction);
+    }
+    if ((pf08_rain_active(sky) && sky.precipitation_shape.y > 0.0) ||
+        (pf08_snow_active(sky) && sky.snow_shape.y > 0.0)) {
+      medium *= pf08_precipitation_light_transmittance(sky, scene_position, light_direction);
+    }
+    total += sky.moon_color_illuminance[m].rgb * illuminance * medium * visibility *
+             max(dot(normal, light_direction), 0.0) *
+             pf08_ggx_brdf(normal, view_direction, light_direction, roughness, f0);
+  }
+
+  const vec3 reflected = reflect(-view_direction, normal);
+  const vec2 sky_size = vec2(textureSize(sky_view_lut, 0));
+  const vec3 environment = texture(sky_view_lut, pf08_sky_view_uv(reflected, sky_size)).rgb;
+  const float n_dot_v = max(dot(normal, view_direction), 0.0);
+  const vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - n_dot_v, 5.0);
+  const float environment_weight = (1.0 - roughness) * (1.0 - roughness);
+  // Sky-view LUT не имеет prefiltered mip chain: одна выборка остаётся идеально резким отражением
+  // даже у шероховатой поверхности. 0.25 — явная компенсация недостающего углового свёртывания;
+  // прямой GGX выше остаётся неизменным. Без неё склон на скользящем угле выглядел как снег.
+  const float unfiltered_environment_compensation = 0.25;
+  return total * direct_visibility + environment * fresnel * environment_weight *
+         unfiltered_environment_compensation * sky_visibility;
+}
+
 #endif

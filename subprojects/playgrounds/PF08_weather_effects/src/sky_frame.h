@@ -84,6 +84,10 @@ struct alignas(16) sky_gpu_block {
   glm::vec4 snow_shape;
   glm::vec4 shelter_minimum;
   glm::vec4 shelter_maximum;
+  // x snow depth (m), y coverage, z wetness, w visual response enabled.
+  glm::vec4 surface_weather;
+  // x displacement enabled, y maximum depth, z cover depth, w patch cell size (m).
+  glm::vec4 surface_weather_shape;
   // Освещённость светила БЕЗ затмения и без горизонта, по одной на звезду в x и y. Нужна ровно диску:
   // затмение теперь показывается геометрически — луна закрывает часть диска собой, — и дополнительно
   // гасить сам диск значило бы посчитать затмение дважды.
@@ -93,7 +97,7 @@ struct alignas(16) sky_gpu_block {
   // здесь развела бы освещение с затенением без единого предупреждения.
   glm::vec4 moon_distance_km;
 };
-static_assert(sizeof(sky_gpu_block) == 752);
+static_assert(sizeof(sky_gpu_block) == 784);
 
 struct atmosphere_settings {
   double height_km = 100.0;         // верх атмосферы над поверхностью

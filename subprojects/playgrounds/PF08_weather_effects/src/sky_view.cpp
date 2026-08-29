@@ -655,6 +655,10 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
   if (!std::isfinite(options.snow_range_m) || options.snow_range_m <= 0.0) {
     utils::error{}("PF08 snow range must be finite and positive");
   }
+  if (!valid_surface_weather_settings(options.surface_weather) ||
+      !std::isfinite(options.surface_age_minutes) || options.surface_age_minutes < 0.0) {
+    utils::error{}("PF08 surface-weather settings or prewarm age are invalid");
+  }
   utils::info("PF08 weather '{}': aerosol {:.2f}, wind {:.0f} deg / {:.2f} m, fog {:.4f} 1/m @ H {:.0f} m, cloud {:.2f} @ {:.0f}-{:.0f} m, rain/snow {:.1f}/{:.1f} mm/h, transition {:.1f} s",
               initial_weather->name, weather.state().aerosol_turbidity, weather.state().wind_direction_deg,
               weather.state().wind_strength_m, weather.state().fog_extinction_per_m,
@@ -828,6 +832,9 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     const uint32_t shrub_far_pair = base.register_pair(scene_group, shrub_far_mesh, options.foliage_count);
     const auto shrubs = scatter_shrubs(options.foliage_count);
     for (const auto& item : shrubs) caster_height = std::max(caster_height, double(item.y + item.height));
+    // Сначала найдена вершина ВСЕХ кастеров, затем добавлен максимум snow displacement. Добавление
+    // только к fixture потерялось бы, если долина или куст оказался выше крыши.
+    caster_height += options.surface_weather.max_snow_depth_m;
     utils::info("PF08 foliage: {} shrubs, near mesh {} vertices, far mesh {}", shrubs.size(),
                 shrub_near_mesh_data.size(), shrub_far_mesh_data.size());
     std::vector<scene_instance> shrub_near_instances;
@@ -966,6 +973,15 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     double exposure_bias_stops = 0.0;
     double wall_seconds = 0.0;
     uint32_t frames_total = 0;
+    surface_weather_state surface_history;
+    if (options.surface_response && options.surface_age_minutes > 0.0) {
+      // Age задан в МИРОВЫХ минутах и не зависит от runtime time-scale. Временная шкала 60 означает,
+      // что одна переданная секунда ровно равна одной мировой минуте.
+      auto prewarm_settings = options.surface_weather;
+      prewarm_settings.world_seconds_per_real_second = 60.0;
+      advance_surface_weather(surface_history, weather.state(), prewarm_settings,
+                              options.surface_age_minutes);
+    }
 
     while (!input::should_close(window)) {
       input::poll_events();
@@ -1028,6 +1044,9 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       // exposure. A transition dump must not depend on how quickly this machine compiled a shader.
       const double step_seconds = options.frames != 0 ? 1.0 / 60.0 : double(dt);
       weather.advance(step_seconds);
+      if (options.surface_response) {
+        advance_surface_weather(surface_history, weather.state(), options.surface_weather, step_seconds);
+      }
       auto frame_atmosphere = options.atmosphere;
       frame_atmosphere.turbidity = weather.state().aerosol_turbidity;
 
@@ -1238,12 +1257,20 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       const float shelter_enabled = options.shelter_occlusion ? 1.0f : 0.0f;
       sky_block.shelter_minimum = glm::vec4(shelter.minimum, shelter_enabled);
       sky_block.shelter_maximum = glm::vec4(shelter.maximum, shelter_enabled);
+      const auto surface = sample_surface_weather(surface_history, options.surface_weather);
+      sky_block.surface_weather = glm::vec4(float(surface.snow_depth_m),
+                                            float(surface.snow_coverage), float(surface.wetness),
+                                            options.surface_response ? 1.0f : 0.0f);
+      sky_block.surface_weather_shape = glm::vec4(options.snow_displacement ? 1.0f : 0.0f,
+                                                  float(options.surface_weather.max_snow_depth_m),
+                                                  float(options.surface_weather.snow_cover_depth_m),
+                                                  12.0f);
       sky_block.shadow_bodies = glm::vec4(slot_active[0] ? shadow_sources[0].body_code : -1.0f,
                                           slot_active[1] ? shadow_sources[1].body_code : -1.0f, 0.0f, 0.0f);
       write_current_buffer(base, "sky_buffer", &sky_block, sizeof(sky_block));
 
       const auto calendar = system.to_calendar(game_time_days);
-      const std::array<std::string, 9> details{
+      const std::array<std::string, 10> details{
         std::format("Year {} · beat {}/{} · day {}/{} · {:02}:{:02} · {:.4f} days per real second{}", calendar.year,
                     calendar.beat_year, system.binary_beat_years(), calendar.day,
                     uint32_t(system.planet_year_days()), calendar.hour,
@@ -1281,6 +1308,9 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
         std::format("Foliage: {} near + {} far of {} · LOD {:.0f} m · range {:.0f} m",
                     shrub_near_instances.size(), shrub_far_instances.size(), shrubs.size(),
                     options.foliage_lod_m, options.foliage_range_m),
+        std::format("Surface: snow {:.1f} mm / {:.0f}% · wetness {:.0f}%{}",
+                    surface.snow_depth_m * 1000.0, surface.snow_coverage * 100.0,
+                    surface.wetness * 100.0, options.surface_response ? "" : " · OFF"),
         std::format("Colour script: tint ({:.2f} {:.2f} {:.2f}) · saturation {:.2f} · contrast {:.2f}",
                     output.grade_tint.x, output.grade_tint.y, output.grade_tint.z, output.grade_saturation,
                     output.grade_contrast)};

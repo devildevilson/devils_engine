@@ -2,6 +2,7 @@
 
 #include "pf08_records.glsl"
 #include "pf08_shadow.glsl"
+#include "pf08_surface_weather.glsl"
 #include "pf08_wind.glsl"
 
 // Проход построения карты теней: только глубина. Индекс каскада приходит push-константой, потому что
@@ -31,17 +32,20 @@ layout(push_constant) uniform RegionPush {
 
 void main() {
   vec3 local = in_position * in_half_roughness.xyz * 2.0;
+  vec3 normal = in_normal;
   if (in_position_material.w > 0.5) {
     const float yaw = in_albedo_yaw.w;
     const float cosine = cos(yaw);
     const float sine = sin(yaw);
     local = vec3(local.x * cosine - local.z * sine, local.y, local.x * sine + local.z * cosine);
+    normal = vec3(normal.x * cosine - normal.z * sine, normal.y, normal.x * sine + normal.z * cosine);
   }
 
   vec3 world = local + in_position_material.xyz;
   if (in_position_material.w > 0.5) {
     world += pf08_wind_sway(world, in_position.y, in_half_roughness.w, sky_data.sky.wind_params);
   }
+  world = pf08_apply_snow_displacement(sky_data.sky, world, normal, in_position_material.w);
   // Нормаль в этом конвейере не нужна, но p3n3-геометрия общая с основным проходом. Резервное поле
   // UBO равно нулю в рантайме, однако компилятор не может свернуть его до отражения интерфейса — так
   // validation видит честное потребление location 1 без второй раскладки вершин только ради depth.

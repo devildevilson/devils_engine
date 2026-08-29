@@ -65,7 +65,8 @@ bool pf08_shelter_blocks_precipitation(const pf08_sky_block sky, const vec3 posi
   // Крыша — горизонтальная коробка. Для миллионов froxel samples достаточно пересечь её нижнюю
   // плоскость: луч идёт ВВЕРХ против падения, поэтому после неё он либо вошёл в крышу, либо уже
   // никогда не войдёт. Это тот же AABB-ответ без шести делений на каждый sample.
-  if (position.y > sky.shelter_maximum.y) return false;
+  // Точка на верхней стороне крыши открыта осадкам; epsilon не даёт поверхности заслонить саму себя.
+  if (position.y >= sky.shelter_maximum.y - 1e-3) return false;
   const vec3 upward = -falling_velocity;
   const float hit_t = max((sky.shelter_minimum.y - position.y) / max(upward.y, 1e-5), 0.0);
   const vec2 hit_xz = position.xz + upward.xz * hit_t;

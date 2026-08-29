@@ -1,6 +1,7 @@
 #version 450
 
 #include "pf08_records.glsl"
+#include "pf08_surface_weather.glsl"
 #include "pf08_wind.glsl"
 
 // Геометрия сцены: коробки, участок долины, диск земли и заросли — один меш на пару, всё остальное
@@ -53,6 +54,7 @@ void main() {
     // ноль у корня, единица у верхушки. Иначе пришлось бы делить на масштаб прямо здесь.
     world += pf08_wind_sway(world, in_position.y, in_half_roughness.w, sky_data.sky.wind_params);
   }
+  world = pf08_apply_snow_displacement(sky_data.sky, world, normal, in_position_material.w);
 
   out_world_position = world;
   out_world_normal = normal;

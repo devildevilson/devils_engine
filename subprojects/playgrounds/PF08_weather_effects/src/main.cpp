@@ -19,6 +19,7 @@
 #include "fixture.h"
 #include "survey.h"
 #include "sky_view.h"
+#include "surface_weather.h"
 #include "weather.h"
 
 using namespace devils_engine;
@@ -112,6 +113,12 @@ void print_usage() {
                "  --snow-range=M      дальность froxel-представления снега\n"
                "  --no-precipitation-particles отключить общий rain/snow pool для A/B\n"
                "  --no-shelter-occlusion оставить крышу видимой, но выключить её precipitation test\n"
+               "  --surface-age=MIN   предварительно выдержать поверхность под стартовой погодой\n"
+               "  --surface-time-scale=F мировых секунд накопления за реальную секунду\n"
+               "  --snow-melt=MMH     скорость таяния водного эквивалента без снегопада\n"
+               "  --surface-dry-half-life=H  полупериод высыхания wetness в мировых часах\n"
+               "  --no-surface-weather отключить накопление и весь визуальный отклик\n"
+               "  --no-snow-displacement оставить покрытие, но убрать геометрическую толщину\n"
                "  --debug=8|9|10      transmittance объёма | cloud density | cloud shadow\n"
                "  --march-steps=N     шагов основного марша неба\n"
                "  --aerial-range=KM   дальность таблицы воздушной перспективы\n"
@@ -341,6 +348,19 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.rain_particles = false;
     } else if (argument == "--no-shelter-occlusion") {
       out.view.shelter_occlusion = false;
+    } else if (read_prefixed(argument, "--surface-age=", value)) {
+      out.view.surface_age_minutes = std::stod(value);
+    } else if (read_prefixed(argument, "--surface-time-scale=", value)) {
+      out.view.surface_weather.world_seconds_per_real_second = std::stod(value);
+    } else if (read_prefixed(argument, "--snow-melt=", value)) {
+      out.view.surface_weather.snow_melt_mm_h = std::stod(value);
+    } else if (read_prefixed(argument, "--surface-dry-half-life=", value)) {
+      out.view.surface_weather.dry_half_life_hours = std::stod(value);
+    } else if (argument == "--no-surface-weather") {
+      out.view.surface_response = false;
+      out.view.snow_displacement = false;
+    } else if (argument == "--no-snow-displacement") {
+      out.view.snow_displacement = false;
     } else if (read_prefixed(argument, "--march-steps=", value)) {
       out.view.march.primary_steps = int32_t(std::stol(value));
     } else if (read_prefixed(argument, "--camera-height=", value)) {
@@ -996,6 +1016,39 @@ void verify_weather(checker& check) {
     check.expect(state.snow_fall_speed_m_s < state.rain_fall_speed_m_s &&
                  state.snow_flake_size_m > 0.01,
                  "authored снег медленнее дождя и имеет видимый мировой размер");
+
+    pf08::surface_weather_settings settings;
+    pf08::surface_weather_state one_step;
+    pf08::surface_weather_state many_steps;
+    pf08::advance_surface_weather(one_step, state, settings, 60.0);
+    for (uint32_t i = 0; i < 60; ++i) {
+      pf08::advance_surface_weather(many_steps, state, settings, 1.0);
+    }
+    check.expect_near(one_step.snow_water_mm, 7.0, 1e-12,
+                      "одна реальная минута на штатной шкале накапливает час authored снега");
+    check.expect_near(many_steps.snow_water_mm, one_step.snow_water_mm, 1e-12,
+                      "snowpack не зависит от разбиения времени на кадры");
+    const auto accumulated = pf08::sample_surface_weather(one_step, settings);
+    check.expect_near(accumulated.snow_depth_m, 0.070, 1e-12,
+                      "водный эквивалент переводится в геометрическую толщину снега");
+
+    auto clear_weather = state;
+    clear_weather.snow_rate_mm_h = 0.0;
+    clear_weather.rain_rate_mm_h = 0.0;
+    auto melting = one_step;
+    settings.world_seconds_per_real_second = 3600.0;
+    pf08::advance_surface_weather(melting, clear_weather, settings, 1.0);
+    check.expect_near(melting.snow_water_mm, 6.2, 1e-12,
+                      "после снегопада authored melt снимает водный эквивалент в мм/ч");
+    check.expect(melting.wetness > 0.0,
+                 "талый снег передаёт воду в отклик мокрой поверхности");
+
+    one_step.snow_water_mm = 0.0;
+    one_step.wetness = 1.0;
+    pf08::advance_surface_weather(one_step, clear_weather, settings,
+                                  settings.dry_half_life_hours);
+    check.expect_near(one_step.wetness, 0.5, 1e-14,
+                      "wetness теряет половину за authored dry half-life");
   }
 
   const auto fixture = pf08::make_fixture_scene();

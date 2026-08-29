@@ -10,6 +10,7 @@
 #include "celestial.h"
 #include "shadows.h"
 #include "sky_frame.h"
+#include "surface_weather.h"
 #include "weather.h"
 
 namespace devils_engine::pf08 {
@@ -98,6 +99,12 @@ struct view_options {
   bool rain_particles = true;
   bool rain_collision = true;
   bool shelter_occlusion = true;
+  surface_weather_settings surface_weather;
+  // Предварительный возраст нужен для воспроизводимых A/B без десятисекундного ожидания каждого
+  // dump. В обычном окне ноль: поверхность начинает с сухого состояния и накапливает осадки на глазах.
+  double surface_age_minutes = 0.0;
+  bool surface_response = true;
+  bool snow_displacement = true;
   // Preset заполняет единое погодное состояние; прямые CLI-рычаги ниже могут независимо перекрыть
   // его поля для A/B. Отрицательная длительность означает значение из weather/presets.tavl.
   std::string weather_preset = "clear";

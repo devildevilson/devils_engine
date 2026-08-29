@@ -4,6 +4,28 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- PF08 SLICE 5A CLOSED — snowpack and surface response (2026-08-29). New pure `surface_weather.*`
+  integrates snow water-equivalent and wetness independently of the celestial pause: default scale is 60
+  world seconds per real second, snow depth is explicit 10:1 with a 12 cm cap, melt is 0.8 mm water/h after
+  snowfall stops, rain accelerates it, and meltwater enters the same exponentially compositional wetness;
+  drying has a 0.35 world-hour half-life. `--surface-age=MIN` prewarms WORLD minutes deterministically for
+  A/B, while time scale, melt, drying, response and displacement have separate CLI controls. CPU sends only
+  depth/coverage/wetness. Shared `pf08_surface_weather.glsl` authors world-XZ two-octave patches at a
+  resolvable 4–12 m scale, slope acceptance and the SAME trajectory-aware roof test as precipitation, so
+  early snow is patchy and the visible shelter remains dry/downwind-shaped. `scene.vert` and `shadow.vert`
+  invoke the SAME gravity-vertical displacement after wind; 35 mm snow therefore changes terrain/fixture
+  silhouettes and their shadows together (displacement A/B MAE `0.000881147`). Foliage is not inflated.
+  Snow gets varied cold albedo `0.72..0.97`; wet material darkens diffuse to 58%, moves roughness
+  `0.72->0.22`, uses GGX `F0=0.045`, and reflects the existing sky LUT with an explicit 0.25 compensation
+  because that LUT has no prefiltered roughness mips. The initial unattenuated sharp sample turned grazing
+  wet terrain into a white-blue mirror that read as snow. Only liquid pays the second light/shadow loop;
+  snow scene minimum fell to `1.553 ms` while retaining diffuse, patches and real thickness. Fixed-noon PF08
+  MAE: age 0->5 min `0.019257`, 5->30 `0.0207413`, surface shelter on/off `0.00011922`, wet response
+  `0.0208997`. Iris Xe steady scene/total minima: clear `1.194/5.534 ms`, snow `1.553/9.496`, wet rain
+  `3.040/11.052`. Release/runtime GLSL, snow+rain Vulkan validation and `99/99` pass. PF07 and its compare
+  script were not launched; frozen PNGs were not recaptured. Honest remaining boundary: history is global,
+  while spatial masks are re-evaluated; persistent footprints, puddles, runoff, ripples and lens droplets
+  remain the rest of slice 5.
 - PF08 SLICE 4B CLOSED — snow plus real visible shelter (2026-08-29). `snow` is the eighth continuous
   weather preset and a second type in the existing 4096-slot persistent precipitation pool, not recoloured
   rain or a new pipeline enum. Its water-equivalent rate, `1.6 m/s` fall, shared-wind `3.2 m/s` drift,
