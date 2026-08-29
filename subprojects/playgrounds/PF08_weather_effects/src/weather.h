@@ -34,6 +34,16 @@ struct weather_state {
   double cloud_top_height_m = 900.0;
   double cloud_cell_size_m = 750.0;
   double cloud_advection_speed_m_s = 8.0;
+  // Общий world-space footprint осадков. Coverage=1 сохраняет прежний однородный дождь; меньшие
+  // значения образуют advected ячейки/фронты, которые вместе читают near, mid, far и поверхность.
+  double precipitation_coverage = 1.0;
+  double precipitation_cell_size_m = 850.0;
+  double precipitation_advection_speed_m_s = 8.0;
+  double precipitation_edge_softness = 0.14;
+  // Низкая взвесь от ударов о поверхность. Extinction — authored максимум в 1/м, фактическая
+  // плотность дополнительно масштабируется rain rate и footprint.
+  double splash_mist_extinction_per_m = 0.0;
+  double splash_mist_height_m = 1.0;
   // Дождь: физический rate управляет заполнением near-pool, дальнее extinction задаётся отдельно.
   double rain_rate_mm_h = 0.0;
   double rain_fall_speed_m_s = 17.0;
@@ -72,6 +82,12 @@ struct weather_preset {
   double cloud_top_height_m = 900.0;
   double cloud_cell_size_m = 750.0;
   double cloud_advection_speed_m_s = 8.0;
+  double precipitation_coverage = 1.0;
+  double precipitation_cell_size_m = 850.0;
+  double precipitation_advection_speed_m_s = 8.0;
+  double precipitation_edge_softness = 0.14;
+  double splash_mist_extinction_per_m = 0.0;
+  double splash_mist_height_m = 1.0;
   double rain_rate_mm_h = 0.0;
   double rain_fall_speed_m_s = 17.0;
   double rain_wind_speed_m_s = 4.0;

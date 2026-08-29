@@ -584,6 +584,15 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     if (options.cloud_top_overridden) state.cloud_top_height_m = options.cloud_top_height_m;
     if (options.cloud_cell_overridden) state.cloud_cell_size_m = options.cloud_cell_size_m;
     if (options.cloud_speed_overridden) state.cloud_advection_speed_m_s = options.cloud_advection_speed_m_s;
+    if (options.precipitation_coverage_overridden) state.precipitation_coverage = options.precipitation_coverage;
+    if (options.precipitation_cell_overridden) state.precipitation_cell_size_m = options.precipitation_cell_size_m;
+    if (options.precipitation_speed_overridden) {
+      state.precipitation_advection_speed_m_s = options.precipitation_advection_speed_m_s;
+    }
+    if (options.splash_mist_overridden) {
+      state.splash_mist_extinction_per_m = options.splash_mist_extinction_per_m;
+    }
+    if (options.splash_height_overridden) state.splash_mist_height_m = options.splash_mist_height_m;
     if (options.rain_rate_overridden) state.rain_rate_mm_h = options.rain_rate_mm_h;
     if (options.rain_fall_speed_overridden) state.rain_fall_speed_m_s = options.rain_fall_speed_m_s;
     if (options.rain_wind_speed_overridden) state.rain_wind_speed_m_s = options.rain_wind_speed_m_s;
@@ -616,6 +625,13 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
         !std::isfinite(state.cloud_top_height_m) || state.cloud_top_height_m <= state.cloud_base_height_m ||
         !std::isfinite(state.cloud_cell_size_m) || state.cloud_cell_size_m <= 0.0 ||
         !std::isfinite(state.cloud_advection_speed_m_s) || state.cloud_advection_speed_m_s < 0.0 ||
+        !std::isfinite(state.precipitation_coverage) || state.precipitation_coverage < 0.0 ||
+        state.precipitation_coverage > 1.0 || !std::isfinite(state.precipitation_cell_size_m) ||
+        state.precipitation_cell_size_m <= 0.0 ||
+        !std::isfinite(state.precipitation_advection_speed_m_s) ||
+        state.precipitation_advection_speed_m_s < 0.0 ||
+        !std::isfinite(state.splash_mist_extinction_per_m) || state.splash_mist_extinction_per_m < 0.0 ||
+        !std::isfinite(state.splash_mist_height_m) || state.splash_mist_height_m <= 0.0 ||
         !std::isfinite(state.rain_rate_mm_h) || state.rain_rate_mm_h < 0.0 ||
         !std::isfinite(state.rain_fall_speed_m_s) || state.rain_fall_speed_m_s <= 0.0 ||
         !std::isfinite(state.rain_wind_speed_m_s) || state.rain_wind_speed_m_s < 0.0 ||
@@ -654,6 +670,14 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
   }
   if (!std::isfinite(options.snow_range_m) || options.snow_range_m <= 0.0) {
     utils::error{}("PF08 snow range must be finite and positive");
+  }
+  if (options.precipitation_light_stride < 1 || options.precipitation_light_stride > 4) {
+    utils::error{}("PF08 precipitation lighting stride must be in [1, 4]");
+  }
+  if (!std::isfinite(options.rain_mid_radius_m) || !std::isfinite(options.snow_mid_radius_m) ||
+      options.rain_mid_radius_m <= weather.state().rain_near_radius_m ||
+      options.snow_mid_radius_m <= weather.state().snow_near_radius_m) {
+    utils::error{}("PF08 mid precipitation radii must be finite and exceed their near radii");
   }
   if (!valid_surface_weather_settings(options.surface_weather) ||
       !std::isfinite(options.surface_age_minutes) || options.surface_age_minutes < 0.0) {
@@ -1220,7 +1244,8 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
                                       float(weather.state().fog_scale_height_m), 0.0f, 0.0f);
       sky_block.fog_noise = glm::vec4(float(weather.state().fog_density_variation),
                                       float(weather.state().fog_cell_size_m),
-                                      float(weather.state().fog_advection_speed_m_s), 0.0f);
+                                      float(weather.state().fog_advection_speed_m_s),
+                                      float(options.precipitation_light_stride));
       sky_block.cloud_params = glm::vec4(float(weather.state().cloud_coverage),
                                          float(weather.state().cloud_extinction_per_m),
                                          float(weather.state().cloud_scattering_albedo),
@@ -1265,6 +1290,15 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
                                                   float(options.surface_weather.max_snow_depth_m),
                                                   float(options.surface_weather.snow_cover_depth_m),
                                                   12.0f);
+      sky_block.precipitation_field = glm::vec4(float(weather.state().precipitation_coverage),
+                                                float(weather.state().precipitation_cell_size_m),
+                                                float(weather.state().precipitation_advection_speed_m_s),
+                                                float(weather.state().precipitation_edge_softness));
+      const float rain_mist_rate = float(std::clamp(weather.state().rain_rate_mm_h / 40.0, 0.0, 1.5));
+      sky_block.precipitation_mist_lod =
+        glm::vec4(float(weather.state().splash_mist_extinction_per_m) * rain_mist_rate,
+                  float(weather.state().splash_mist_height_m), float(options.rain_mid_radius_m),
+                  float(options.snow_mid_radius_m));
       sky_block.shadow_bodies = glm::vec4(slot_active[0] ? shadow_sources[0].body_code : -1.0f,
                                           slot_active[1] ? shadow_sources[1].body_code : -1.0f, 0.0f, 0.0f);
       write_current_buffer(base, "sky_buffer", &sky_block, sizeof(sky_block));

@@ -13,6 +13,38 @@ bool pf08_snow_active(const pf08_sky_block sky) {
   return sky.snow_params.x > 0.0;
 }
 
+float pf08_precipitation_hash(const vec2 cell) {
+  return fract(sin(dot(cell, vec2(91.7, 263.3))) * 43758.5453123);
+}
+
+float pf08_precipitation_noise(const vec2 position) {
+  const vec2 cell = floor(position);
+  const vec2 local = fract(position);
+  const vec2 blend = local * local * (3.0 - 2.0 * local);
+  const float a = pf08_precipitation_hash(cell);
+  const float b = pf08_precipitation_hash(cell + vec2(1.0, 0.0));
+  const float c = pf08_precipitation_hash(cell + vec2(0.0, 1.0));
+  const float d = pf08_precipitation_hash(cell + vec2(1.0, 1.0));
+  return mix(mix(a, b, blend.x), mix(c, d, blend.x), blend.y);
+}
+
+// ОДНО world-space поле для near spawn, mid LOD и дальней оптической плотности. Coverage=1 —
+// точная единица без noise-cost и сохраняет прежние authored rain/snow кадры.
+float pf08_precipitation_field_density(const pf08_sky_block sky, const vec2 world_xz) {
+  const float coverage = clamp(sky.precipitation_field.x, 0.0, 1.0);
+  if (coverage <= 0.0) return 0.0;
+  if (coverage >= 0.9999) return 1.0;
+  const float cell = max(sky.precipitation_field.y, 1.0);
+  const vec2 advected = world_xz - sky.wind_params.xy * sky.precipitation_field.z * sky.wind_params.w;
+  const vec2 coordinate = advected / cell + vec2(7.4, 3.8);
+  const float broad = pf08_precipitation_noise(coordinate);
+  const float detail = pf08_precipitation_noise(coordinate * 2.17 + vec2(13.1, 5.7));
+  const float field = broad * 0.76 + detail * 0.24;
+  const float edge = clamp(sky.precipitation_field.w, 0.01, 0.5);
+  const float threshold = 1.0 - coverage;
+  return smoothstep(threshold - edge, threshold + edge, field);
+}
+
 float pf08_precipitation_far_weight(const float distance_m, const float start, const float radius) {
   return smoothstep(max(start, 0.0), max(start, 0.0) + max(radius * 0.45, 1.0), distance_m);
 }
@@ -95,7 +127,10 @@ float pf08_precipitation_light_transmittance(const pf08_sky_block sky, const vec
   if (light_direction.y <= 0.0) return 0.0;
   const float cloud_base = max(sky.cloud_shape.x, 1.0);
   const float vertical_column = max(cloud_base - world_position.y, 0.0);
-  return exp(-extinction * vertical_column / max(light_direction.y, 1e-4));
+  const float half_path = vertical_column * 0.5 / max(light_direction.y, 1e-4);
+  const vec2 midpoint_xz = world_position.xz + light_direction.xz * half_path;
+  const float footprint = pf08_precipitation_field_density(sky, midpoint_xz);
+  return exp(-extinction * footprint * vertical_column / max(light_direction.y, 1e-4));
 }
 
 #endif

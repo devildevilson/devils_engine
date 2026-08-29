@@ -86,3 +86,9 @@
   depth = { test = false, write = false, compare = always }
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
+{
+  name = mid_precipitation_material
+  shaders = { vertex = "mid_precipitation.vert.glsl", fragment = "mid_precipitation.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}

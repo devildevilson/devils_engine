@@ -77,18 +77,23 @@ RainParticle pf08_spawn_precipitation(const uint id, const bool snow, const bool
   const float age = scatter ? pf08_rain_random(seed + 4u) * lifetime * 0.92 : 0.0;
 
   RainParticle particle;
-  particle.position_age = vec4(camera_data.camera_position.xyz + vec3(x, radius * 0.82, z) + velocity * age,
-                               age);
-  // Scatter может сразу положить медленный хлопок под крышу. Возвращаем такой slot к началу ЕГО ЖЕ
-  // траектории над камерой: дальше он пересечёт реальную крышу segment test'ом. Простое поднятие по Y
-  // изменило бы наклонную линию падения и могло перенести хлопок на неверную сторону края.
+  // Startup scatter должен заполнить ТЕКУЩИЙ camera-volume, а не отложить все медленные хлопья
+  // downwind на velocity*age. Вертикальная фаза остаётся физической; XZ при старте распределяется
+  // непосредственно вокруг камеры, дальше поле движет обычная скорость.
+  particle.position_age = vec4(camera_data.camera_position.xyz +
+                               vec3(x, radius * 0.82 + velocity.y * age, z), age);
+  // Scatter может сразу положить медленный хлопок под крышу. Startup XZ намеренно уже равномерный
+  // в текущем camera-volume, поэтому здесь возвращается только верхняя вертикальная фаза; дальнейший
+  // segment честно пойдёт по authored wind velocity и пересечёт крышу с нужной стороны.
   if (pf08_shelter_blocks_precipitation(sky, particle.position_age.xyz, velocity)) {
-    particle.position_age.xyz -= velocity * age;
+    particle.position_age.y -= velocity.y * age;
     particle.position_age.w = 0.0;
   }
   particle.velocity_lifetime = vec4(velocity, lifetime);
   particle.impact_position_age = vec4(0.0, 0.0, 0.0, -1.0);
   particle.metadata = vec4(snow ? 1.0 : 0.0, pf08_rain_random(seed + 5u) * 6.2831853, 0.0, 0.0);
+  const float footprint = pf08_precipitation_field_density(sky, particle.position_age.xz);
+  if (pf08_rain_random(seed + 6u) > footprint) return pf08_dead_rain();
   return particle;
 }
 
@@ -159,6 +164,7 @@ void main() {
   bool alive = particle.position_age.w >= 0.0 &&
                particle.position_age.w < particle.velocity_lifetime.w;
   if (alive) {
+    const float radius = max(snow ? sky.snow_params.w : sky.precipitation_params.w, 1.0);
     const vec3 previous_position = particle.position_age.xyz;
     vec3 step_velocity = particle.velocity_lifetime.xyz;
     if (snow) {
@@ -166,7 +172,7 @@ void main() {
       const float flutter = sin(sky.wind_params.w * 2.1 + particle.metadata.y) * 0.42;
       step_velocity.xz += perpendicular * flutter;
     }
-    const vec3 candidate_position = previous_position + step_velocity * dt;
+    vec3 candidate_position = previous_position + step_velocity * dt;
     vec3 hit_position;
     const float thickness = max(snow ? 0.08 : 0.20, -step_velocity.y * dt * 1.25);
     const bool shelter_contact = pf08_shelter_segment_contact(
@@ -182,13 +188,22 @@ void main() {
       current_state.particles[id] = particle;
       return;
     }
+    // Camera-local torus: медленный снег при authored 3.2/1.6 m/s успевает сдвинуться на ~60 м за
+    // падение, тогда как near-radius равен 22 м. Прежний kill оставлял весь pool с одной стороны
+    // камеры. Wrap происходит только у уже затухающей внешней границы и сохраняет плотность объёма.
+    const float horizontal_limit = radius * 1.15;
+    vec3 relative = candidate_position - camera_data.camera_position.xyz;
+    if (relative.x > horizontal_limit) candidate_position.x -= horizontal_limit * 2.0;
+    if (relative.x < -horizontal_limit) candidate_position.x += horizontal_limit * 2.0;
+    if (relative.z > horizontal_limit) candidate_position.z -= horizontal_limit * 2.0;
+    if (relative.z < -horizontal_limit) candidate_position.z += horizontal_limit * 2.0;
     particle.position_age.xyz = candidate_position;
     particle.position_age.w += dt;
-    const vec3 relative = candidate_position - camera_data.camera_position.xyz;
-    const float radius = max(snow ? sky.snow_params.w : sky.precipitation_params.w, 1.0);
+    relative = candidate_position - camera_data.camera_position.xyz;
+    const float footprint = pf08_precipitation_field_density(sky, candidate_position.xz);
+    const float slot_threshold = pf08_rain_random(id * 43u + 23u);
     alive = particle.position_age.w < particle.velocity_lifetime.w &&
-            abs(relative.x) <= radius * 1.15 && abs(relative.z) <= radius * 1.15 &&
-            relative.y >= -radius * 0.55;
+            relative.y >= -radius * 0.55 && slot_threshold <= footprint;
   }
   if (!alive) particle = pf08_spawn_precipitation(id, snow, false);
   current_state.particles[id] = particle;

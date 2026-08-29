@@ -4,6 +4,31 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- PF08 SLICE 5B CLOSED — precipitation scale, weather context and performance follow-up (2026-08-29,
+  author asked why accumulation was expensive and required sunshowers, tropical rain, a tangible distant
+  rain wall, larger coverage and precipitation LOD). THE FIRST DIAGNOSIS: CPU `surface_weather` history is
+  negligible and snow displacement/material adds only about `0.13 ms`; the actual wet regression was TWO
+  complete star/moon/shadow loops in the fragment shader. New combined `pf08_surface_wet_radiance` shares
+  atmosphere/cloud/fog/precipitation transmittance and shadow visibility between diffuse and GGX. Fixed rain
+  scene minimum is now dry/wet `1.445/1.684 ms`, surcharge `0.239` instead of `1.617 ms` (~85% removed),
+  and the pre/post merge wet frame is byte-identical. PRECIPITATION NOW HAS THREE REPRESENTATIONS: the
+  existing 4096-slot persistent near pool with contacts; a new stateless two-layer, world-anchored 64x64
+  procedural mid grid (8192 candidates, default rain/snow reach `120/160 m`); and the 160x90x96 froxel far
+  medium. Snow startup no longer applies full `velocity*age` to XZ — which shifted slow flakes 40–60 m out
+  of a 22 m near volume — and a camera-local XZ torus wraps only at the faded outer edge, so the whole pool
+  cannot drift to one side. ONE advected world-XZ precipitation field (coverage/cell/speed/edge) drives near
+  spawn, mid occupancy and far extinction; coverage=1 has an exact no-noise path. Its moving boundary is the
+  distant rain wall: objects inside lose contrast by Beer–Lambert without drawing individual far drops.
+  It deliberately does NOT multiply historical snow/wetness, because that would make old accumulation move
+  with the current cloud; a real persistent surface clipmap remains separate future work. New `sunshower`
+  authors `3.5 mm/h`, broken cells, open sun, negligible far extinction and no common wet fog; `downpour`
+  authors `60 mm/h`, low cloud, strong optical column and a one-metre splash-mist layer multiplied by rate
+  and the same field. Froxel density retains all 96 slices, while precipitation lighting defaults to stride
+  2 and reuses source visibility/transmittance across an adjacent pair. Exact `--precip-light-stride=1`
+  versus 2 on downpour: volume `4.332 -> 2.890 ms`, total `10.712 -> 9.272`, image MAE `0.00252273`, PSNR
+  `45.31 dB`; mid+near draw is about `0.10 ms`. Release/runtime GLSL, `git diff --check`, downpour Vulkan
+  validation and `103/103` pass. PF07 and `compare_pf07_baseline.sh` were NOT launched; frozen PNGs were not
+  recaptured.
 - PF08 SLICE 5A CLOSED — snowpack and surface response (2026-08-29). New pure `surface_weather.*`
   integrates snow water-equivalent and wetness independently of the celestial pause: default scale is 60
   world seconds per real second, snow depth is explicit 10:1 with a 12 cm cap, melt is 0.8 mm water/h after

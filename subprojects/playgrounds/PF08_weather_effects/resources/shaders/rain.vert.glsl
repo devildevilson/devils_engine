@@ -90,6 +90,14 @@ void main() {
     out_alpha = mix(0.42, 0.78, random_size);
   }
 
+  if (!impact) {
+    const float near_radius = max(snow ? sky_data.sky.snow_params.w :
+                                       sky_data.sky.precipitation_params.w, 1.0);
+    const float horizontal_distance = length(centre.xz - camera_data.camera_position.xz);
+    out_alpha *= 1.0 - smoothstep(near_radius * 0.80, near_radius * 1.12,
+                                 horizontal_distance);
+  }
+
   const vec3 world = centre + right * (corner.x * half_extent.x) + up * (corner.y * half_extent.y);
   gl_Position = camera_data.view_projection * vec4(world, 1.0);
   out_uv = corner * 0.5 + 0.5;

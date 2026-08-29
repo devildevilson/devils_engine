@@ -12,6 +12,8 @@
 // 4096 стабильных slots по 64 invocation в группе.
 { name = rain_dispatch, layout = dispatch3, value = [64.0, 1.0, 1.0] }
 { name = rain_draw, layout = draw4, value = [6.0, 4096.0, 0.0, 0.0] }
+// Два world-locked слоя по сетке 64x64. Нет persistent state и collision: это средний LOD.
+{ name = mid_precipitation_draw, layout = draw4, value = [6.0, 8192.0, 0.0, 0.0] }
 {
   name = ui_push
   layout = ui1ui1ui1ui1ui1ui1ui1

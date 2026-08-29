@@ -53,20 +53,22 @@ void main() {
   float wet_mask;
   pf08_surface_weather_material(sky_data.sky, in_world_position, normal, foliage, in_albedo,
                                 surface_albedo, roughness, f0, snow_mask, wet_mask);
-  const vec3 illuminance =
-    pf08_surface_illuminance(sky_data.sky, transmittance_lut, sky_view_lut, planet_point,
-                             in_world_position, normal, view_distance, receiver_bias_scale,
-                             direct_visibility, sky_visibility);
-  vec3 color = illuminance * surface_albedo / pf08_pi;
+  vec3 color;
   // При roughness 0.86 снежный GGX незаметен рядом с его светлым diffuse, но всё равно удваивал
   // обход светил и shadow-map samples на каждом покрытом пикселе. Зеркальная ветка нужна именно
   // жидкой плёнке; снег выражается альбедо, пятнами и настоящей толщиной.
   if (wet_mask > 1e-4) {
     const vec3 view_direction = normalize(camera_data.camera_position.xyz - in_world_position);
-    color += pf08_surface_weather_specular(
+    color = pf08_surface_wet_radiance(
       sky_data.sky, transmittance_lut, sky_view_lut, planet_point, in_world_position, normal,
       view_direction, view_distance, receiver_bias_scale, direct_visibility, sky_visibility,
-      roughness, f0);
+      surface_albedo, roughness, f0);
+  } else {
+    const vec3 illuminance =
+      pf08_surface_illuminance(sky_data.sky, transmittance_lut, sky_view_lut, planet_point,
+                               in_world_position, normal, view_distance, receiver_bias_scale,
+                               direct_visibility, sky_visibility);
+    color = illuminance * surface_albedo / pf08_pi;
   }
 
   // Воздух между предметом и глазом. Ось расстояния таблицы квадратичная, поэтому и выборка идёт по

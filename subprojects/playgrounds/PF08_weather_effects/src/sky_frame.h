@@ -71,7 +71,8 @@ struct alignas(16) sky_gpu_block {
   // x — высота начала экспоненциального спада, м; y — scale height, м. zw зарезервированы для
   // пространственной модуляции следующего шага.
   glm::vec4 fog_shape;
-  // x — амплитуда неоднородности; y — размер ячейки, м; z — скорость advection, м/с; w — резерв.
+  // x — амплитуда неоднородности; y — размер ячейки, м; z — скорость advection, м/с;
+  // w — lighting stride froxel Z при активных осадках.
   glm::vec4 fog_noise;
   // Конечный облачный слой: coverage/extinction/albedo/anisotropy, его высоты и движение.
   glm::vec4 cloud_params;
@@ -88,6 +89,10 @@ struct alignas(16) sky_gpu_block {
   glm::vec4 surface_weather;
   // x displacement enabled, y maximum depth, z cover depth, w patch cell size (m).
   glm::vec4 surface_weather_shape;
+  // x coverage, y world cell (m), z advection (m/s), w edge softness.
+  glm::vec4 precipitation_field;
+  // x splash extinction, y splash height, z rain mid radius, w snow mid radius.
+  glm::vec4 precipitation_mist_lod;
   // Освещённость светила БЕЗ затмения и без горизонта, по одной на звезду в x и y. Нужна ровно диску:
   // затмение теперь показывается геометрически — луна закрывает часть диска собой, — и дополнительно
   // гасить сам диск значило бы посчитать затмение дважды.
@@ -97,7 +102,7 @@ struct alignas(16) sky_gpu_block {
   // здесь развела бы освещение с затенением без единого предупреждения.
   glm::vec4 moon_distance_km;
 };
-static_assert(sizeof(sky_gpu_block) == 784);
+static_assert(sizeof(sky_gpu_block) == 816);
 
 struct atmosphere_settings {
   double height_km = 100.0;         // верх атмосферы над поверхностью

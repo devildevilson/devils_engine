@@ -81,6 +81,14 @@ struct view_options {
   double cloud_cell_size_m = 750.0;
   double cloud_advection_speed_m_s = 8.0;
   double cloud_range_m = 6000.0;
+  double precipitation_coverage = 1.0;
+  double precipitation_cell_size_m = 850.0;
+  double precipitation_advection_speed_m_s = 8.0;
+  // Lighting is much smoother than density and may be reused by adjacent froxel slices while it
+  // rains/snows. One is the exact diagnostic path; two is the authored performance setting.
+  uint32_t precipitation_light_stride = 2;
+  double splash_mist_extinction_per_m = 0.0;
+  double splash_mist_height_m = 1.0;
   double rain_rate_mm_h = 0.0;
   double rain_fall_speed_m_s = 17.0;
   double rain_wind_speed_m_s = 4.0;
@@ -105,6 +113,8 @@ struct view_options {
   double surface_age_minutes = 0.0;
   bool surface_response = true;
   bool snow_displacement = true;
+  double rain_mid_radius_m = 120.0;
+  double snow_mid_radius_m = 160.0;
   // Preset заполняет единое погодное состояние; прямые CLI-рычаги ниже могут независимо перекрыть
   // его поля для A/B. Отрицательная длительность означает значение из weather/presets.tavl.
   std::string weather_preset = "clear";
@@ -129,6 +139,11 @@ struct view_options {
   bool cloud_top_overridden = false;
   bool cloud_cell_overridden = false;
   bool cloud_speed_overridden = false;
+  bool precipitation_coverage_overridden = false;
+  bool precipitation_cell_overridden = false;
+  bool precipitation_speed_overridden = false;
+  bool splash_mist_overridden = false;
+  bool splash_height_overridden = false;
   bool rain_rate_overridden = false;
   bool rain_fall_speed_overridden = false;
   bool rain_wind_speed_overridden = false;

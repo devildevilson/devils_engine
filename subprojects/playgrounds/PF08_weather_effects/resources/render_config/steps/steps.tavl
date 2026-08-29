@@ -96,3 +96,11 @@
   command = "draw constant rain_draw"
   blending = { weather_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
 }
+{
+  name = draw_mid_precipitation
+  material = mid_precipitation_material
+  geometry = rain_geometry
+  sets = [ mid_precipitation_data ]
+  command = "draw constant mid_precipitation_draw"
+  blending = { weather_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" } }
+}

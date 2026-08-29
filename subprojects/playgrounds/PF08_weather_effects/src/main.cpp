@@ -113,6 +113,14 @@ void print_usage() {
                "  --snow-range=M      дальность froxel-представления снега\n"
                "  --no-precipitation-particles отключить общий rain/snow pool для A/B\n"
                "  --no-shelter-occlusion оставить крышу видимой, но выключить её precipitation test\n"
+               "  --precip-coverage=F world-space доля площади под осадками\n"
+               "  --precip-cell=M     размер дождевой/снежной погодной ячейки\n"
+               "  --precip-speed=MPS advection общего precipitation field\n"
+               "  --precip-light-stride=N  шаг lighting осадков по froxel Z (1..4; default 2)\n"
+               "  --splash-mist=1/M  extinction приземной взвеси от ударов\n"
+               "  --splash-height=M  scale height приземной водяной взвеси\n"
+               "  --rain-mid-radius=M дальность процедурного среднего дождя\n"
+               "  --snow-mid-radius=M дальность процедурного среднего снега\n"
                "  --surface-age=MIN   предварительно выдержать поверхность под стартовой погодой\n"
                "  --surface-time-scale=F мировых секунд накопления за реальную секунду\n"
                "  --snow-melt=MMH     скорость таяния водного эквивалента без снегопада\n"
@@ -300,6 +308,23 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.cloud_speed_overridden = true;
     } else if (read_prefixed(argument, "--cloud-range=", value)) {
       out.view.cloud_range_m = std::stod(value);
+    } else if (read_prefixed(argument, "--precip-coverage=", value)) {
+      out.view.precipitation_coverage = std::stod(value);
+      out.view.precipitation_coverage_overridden = true;
+    } else if (read_prefixed(argument, "--precip-cell=", value)) {
+      out.view.precipitation_cell_size_m = std::stod(value);
+      out.view.precipitation_cell_overridden = true;
+    } else if (read_prefixed(argument, "--precip-speed=", value)) {
+      out.view.precipitation_advection_speed_m_s = std::stod(value);
+      out.view.precipitation_speed_overridden = true;
+    } else if (read_prefixed(argument, "--precip-light-stride=", value)) {
+      out.view.precipitation_light_stride = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--splash-mist=", value)) {
+      out.view.splash_mist_extinction_per_m = std::stod(value);
+      out.view.splash_mist_overridden = true;
+    } else if (read_prefixed(argument, "--splash-height=", value)) {
+      out.view.splash_mist_height_m = std::stod(value);
+      out.view.splash_height_overridden = true;
     } else if (read_prefixed(argument, "--rain-rate=", value)) {
       out.view.rain_rate_mm_h = std::stod(value);
       out.view.rain_rate_overridden = true;
@@ -320,6 +345,8 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.rain_far_extinction_overridden = true;
     } else if (read_prefixed(argument, "--rain-range=", value)) {
       out.view.rain_range_m = std::stod(value);
+    } else if (read_prefixed(argument, "--rain-mid-radius=", value)) {
+      out.view.rain_mid_radius_m = std::stod(value);
     } else if (argument == "--no-rain-particles") {
       out.view.rain_particles = false;
     } else if (argument == "--no-rain-collision") {
@@ -344,6 +371,8 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.snow_far_extinction_overridden = true;
     } else if (read_prefixed(argument, "--snow-range=", value)) {
       out.view.snow_range_m = std::stod(value);
+    } else if (read_prefixed(argument, "--snow-mid-radius=", value)) {
+      out.view.snow_mid_radius_m = std::stod(value);
     } else if (argument == "--no-precipitation-particles") {
       out.view.rain_particles = false;
     } else if (argument == "--no-shelter-occlusion") {
@@ -970,7 +999,8 @@ void verify_weather(checker& check) {
   check.expect(parsed, "погодные пресеты разобраны", diagnostics);
   if (!parsed) return;
 
-  check.expect(presets.presets.size() == 8, "погодные пресеты содержат clear, haze, windy, fog, cloudy, overcast, rain и snow",
+  check.expect(presets.presets.size() == 10,
+               "погодные пресеты содержат clear..snow плюс sunshower и downpour",
                std::format("получено {}", presets.presets.size()));
   const auto* clear = pf08::find_weather_preset(presets, "clear");
   check.expect(clear != nullptr, "clear weather объявлена");
@@ -1004,6 +1034,24 @@ void verify_weather(checker& check) {
                       "середина LOD handover имеет половинный вес");
     check.expect_near(pf08::rain_far_weight(start + width, start, width), 1.0, 0.0,
                       "far-дождь достигает полного веса за границей near-pool");
+  }
+
+  const auto* sunshower = pf08::find_weather_preset(presets, "sunshower");
+  const auto* downpour = pf08::find_weather_preset(presets, "downpour");
+  check.expect(sunshower != nullptr && downpour != nullptr,
+               "слепой дождь и тропический ливень authored независимо");
+  if (sunshower != nullptr && downpour != nullptr) {
+    const auto light = pf08::state_from_preset(*sunshower);
+    const auto heavy = pf08::state_from_preset(*downpour);
+    check.expect(light.rain_rate_mm_h > 0.0 && light.fog_extinction_per_m == 0.0 &&
+                 light.cloud_coverage < 0.5 && light.rain_far_extinction_per_m < 0.0001,
+                 "sunshower оставляет открытое солнце и почти не режет дальность");
+    check.expect(heavy.rain_rate_mm_h > light.rain_rate_mm_h &&
+                 heavy.rain_far_extinction_per_m > light.rain_far_extinction_per_m * 20.0 &&
+                 heavy.cloud_coverage > 0.9 && heavy.splash_mist_extinction_per_m > 0.0,
+                 "downpour связывает ливень, стену дождя, низкие тучи и splash mist");
+    check.expect(light.precipitation_coverage < 1.0 && heavy.precipitation_coverage < 1.0,
+                 "оба неоднородных дождя используют world-space precipitation field");
   }
 
   const auto* snow = pf08::find_weather_preset(presets, "snow");

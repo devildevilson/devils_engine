@@ -69,6 +69,7 @@ struct pf08_sky_block {
   // x — высота начала экспоненциального спада, м; y — scale height, м.
   vec4 fog_shape;
   // x — амплитуда неоднородности; y — размер ячейки, м; z — скорость advection, м/с.
+  // w — stride lighting вдоль Z только при активных осадках; density остаётся полночастотной.
   vec4 fog_noise;
   // Облака: coverage, extinction 1/м, scattering albedo и HG anisotropy.
   vec4 cloud_params;
@@ -93,6 +94,10 @@ struct pf08_sky_block {
   vec4 surface_weather;
   // Геометрическая толщина включена, maximum depth, cover depth и размер world-space пятна.
   vec4 surface_weather_shape;
+  // Общий footprint near/mid/far/surface: coverage, cell metres, advection m/s, edge softness.
+  vec4 precipitation_field;
+  // Приповерхностная splash-взвесь и границы среднего particle LOD.
+  vec4 precipitation_mist_lod;
   // Освещённость светила БЕЗ затмения и без горизонта, по одной на звезду в x и y. Нужна ровно диску:
   // затмение теперь показывается геометрически — луна закрывает часть диска собой, — и дополнительно
   // гасить сам диск значило бы посчитать затмение дважды.

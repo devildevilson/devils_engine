@@ -1,6 +1,6 @@
 # PF08 — weather effects
 
-Статус: **срезы 0–4B CLOSED; срез 5A CLOSED — snowpack и material response** (2026-08-29).
+Статус: **срезы 0–5B CLOSED; 5B — масштаб осадков, погодный контекст и performance** (2026-08-29).
 
 PF08 проверяет погоду как состояние открытого мира, а не как отдельный дождевой emitter. Площадка начинает
 с независимой копии закрытого `PF07_party_environment`: та же P-type двойная система, календарь и затмения,
@@ -18,6 +18,8 @@ build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effe
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=cloudy
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=overcast --debug=10
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=rain
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=sunshower
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=downpour --surface-age=1
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=rain --no-rain-particles
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=snow --surface-age=30
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=rain --surface-age=1 --no-precipitation-particles
@@ -25,7 +27,8 @@ build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effe
 ./subprojects/playgrounds/PF08_weather_effects/compare_pf07_baseline.sh
 ```
 
-`--weather=clear|haze|windy|fog|cloudy|overcast|rain|snow` выбирает состояние сразу, `T` циклически запускает переход длительностью
+`--weather=clear|haze|windy|fog|cloudy|overcast|sunshower|rain|downpour|snow` выбирает состояние сразу,
+`T` циклически запускает переход длительностью
 `--weather-transition=S` (по умолчанию `4 s`). `--turbidity`, `--wind`, `--wind-direction` сохранены как
 независимые overrides поверх пресета; локальная среда отдельно управляется через `--fog-extinction=`,
 `--fog-albedo=`, `--fog-anisotropy=` и `--fog-range=`. Ими изолируется один consumer для A/B.
@@ -37,6 +40,13 @@ build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effe
 буквально. `compare_pf07_baseline.sh` запускает ТОЛЬКО PF08 и
 сравнивает его с четырьмя уже зафиксированными PNG PF07; сам PF07 повторно запускается только при явном
 обновлении его `reference_frames/`.
+
+Общее пространственное поле осадков настраивается через `--precip-coverage=`, `--precip-cell=` и
+`--precip-speed=`; его одновременно читают near spawn, процедурный mid LOD и far extinction. Границы
+particle LOD задаются `--rain-mid-radius=`/`--snow-mid-radius=`, приземная водяная взвесь —
+`--splash-mist=`/`--splash-height=`. `--precip-light-stride=1` включает точный A/B lighting каждого
+froxel-среза; штатное значение `2` переиспользует гладкий lighting на соседней паре, сохраняя все 96
+density samples.
 
 История поверхности идёт отдельно от календаря: `--surface-time-scale=F` задаёт мировые секунды на
 реальную секунду (по умолчанию `60`), поэтому `pause` останавливает небесную механику, но не снегопад вокруг
@@ -96,8 +106,10 @@ weather state
    depth-driven impact-события. 4B добавляет снег в тот же persistent pool и настоящий видимый навес,
    чья геометрия одновременно задаёт near collision и сухой объём в far medium.
 5. **IN PROGRESS — wet world and screen manifestations.** 5A закрывает snowpack, таяние/высыхание,
-   world-space coverage, геометрическую толщину и albedo/roughness/specular response. Лужи, рябь и lens
-   droplets только как следствие попадания воды остаются следующей частью, с отдельным A/B.
+   world-space coverage, геометрическую толщину и albedo/roughness/specular response. 5B расширяет один
+   precipitation field на near/mid/far, добавляет слепой дождь, тропический ливень, splash mist и снимает
+   главный performance-регресс wet lighting. Persistent локальная карта истории, лужи, рябь и lens
+   droplets только как следствие попадания воды остаются следующими частями, с отдельными A/B.
 6. **Закрывающий аудит.** Фиксированные clear/overcast/rain/snow кадры в нескольких временах суток,
    временные переходы, GPU budget и Vulkan validation. Побитный PF07 baseline остаётся историческим gate
    срезов 0–4A: с 4B PF08 намеренно содержит новую постоянную геометрию навеса.
@@ -320,3 +332,52 @@ water-to-depth, таяние, передачу талой воды и dry half-l
 Оставшаяся честная граница: история пока глобальная, а shelter/slope/noise mask вычисляется заново из
 текущей геометрии — это не persistent footprint texture и не гидрология. Лужи, течение, рябь от impacts и
 lens droplets остаются продолжением среза 5, а не притворяются уже решёнными одним scalar wetness.
+
+## Что закрыл срез 5B
+
+ОСАДКИ ТЕПЕРЬ ИМЕЮТ ТРИ ПРЕДСТАВЛЕНИЯ, а не одну маленькую коробку возле камеры. Near остаётся
+persistent pool из `4096` stable slots с depth contacts. Новый mid draw процедурно строит `8192` кандидатов
+в двух world-anchored слоях сетки `64x64`: у них нет SSBO history, collision и CPU update, а при движении
+камеры меняется только внешний ряд world cells. Rain по умолчанию доходит до `120 м`, snow — до `160 м`,
+после чего непрерывность берёт `160x90x96` froxel volume. Billboard'ы становятся немного крупнее с
+дальностью и одновременно затухают на обоих стыках; это LOD видимого статистического поля, а не попытка
+нарисовать каждую далёкую каплю.
+
+Исправлен конкретный snow failure. Startup раньше создавал XZ возле камеры, а затем сразу прибавлял ко всей
+позиции `velocity * random_age`. Медленный хлопок живёт долго и успевал сместиться на `40–60 м` при near
+radius `22 м`, поэтому камера видела снегопад со стороны. Теперь startup age меняет только вертикальную
+фазу, а XZ сразу заполняет текущий объём. Во время жизни camera-local XZ torus переукладывает хлопья у уже
+затухающей внешней границы; весь pool больше не выдувается в одну сторону.
+
+Near, mid и far читают ОДНО `pf08_precipitation_field_density`: coverage, размер ячейки, мягкость края и
+advection в world XZ вдоль общего направления ветра, но с собственной скоростью м/с. Поэтому distant rain
+не равномерен по экрану: внутри moving cell объекты теряют контраст по Beer–Lambert и её кромка становится
+той самой дождевой стеной; за пределом той же ячейки не рождаются ни near drops, ни mid streaks. Coverage
+`1` возвращает точную единицу без noise cost и сохраняет прежние равномерные `rain|snow`. Это ТЕКУЩЕЕ поле
+погоды, не карта прошлого накопления: умножать им старый снег означало бы заставить уже выпавший pack уехать
+вместе с тучей, поэтому persistent surface clipmap оставлен отдельной будущей задачей.
+
+Погода вокруг дождя теперь authored явно. `sunshower` даёт `3.5 мм/ч` в разорванных ячейках при открытом
+солнце, почти нулевой far extinction и без общего влажного fog. `downpour` даёт `60 мм/ч`, низкий облачный
+слой, локальные ячейки, сильный optical column и метровый приземный слой splash mist. Взвесь не состоит из
+новых impact particles: это низкий экспоненциальный volume, умноженный на rain rate и то же precipitation
+field, поэтому её цена не растёт с числом видимых камней или травинок.
+
+PERFORMANCE FOLLOW-UP разделил ошибочно объединённые причины. CPU history оказался пренебрежимо дешёвым;
+снег с настоящим displacement добавляет около `0.13 ms` scene pass. Главный regression мокрого кадра был
+в шейдере: diffuse lighting уже обходил все звёзды/луны и shadow maps, затем wet GGX повторял тот же обход.
+`pf08_surface_wet_radiance` теперь за один цикл считает diffuse и specular, совместно используя atmosphere,
+cloud/fog/precipitation transmittance и shadow visibility. Fixed rain A/B: dry scene minimum `1.445 ms`, wet
+`1.684 ms`, то есть surcharge `0.239 ms` вместо прежних `1.617 ms` — снято около `85%`; контрольный wet
+кадр до/после merge побитно одинаков.
+
+Вторая оптимизация не возвращает прежние cloud stairs: density по-прежнему вычисляется во всех 96 Z-slices,
+но при активных осадках гладкие source visibility/light transmittance переиспользуются на соседней паре.
+На authored `downpour` точный `--precip-light-stride=1` дал volume minimum `4.332 ms`, штатный stride 2 —
+`2.890 ms`; total `10.712 -> 9.272 ms`. Fixed A/B имеет `MAE 0.00252273`, `PSNR 45.31 dB`, а рядом кадры
+визуально неразличимы. Mid draw стоит около `0.10 ms`, simulation обычно `0.03 ms`.
+
+Release build, runtime GLSL, `git diff --check` и Vulkan validation для `downpour` проходят без VUID/API
+warning/error. Headless contract теперь `103/103`, включая два новых пресета и их различия по облачности,
+видимости, splash mist и spatial coverage. PF07, `compare_pf07_baseline.sh` и frozen reference frames в этом
+follow-up не запускались.

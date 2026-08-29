@@ -170,14 +170,16 @@ vec3 pf08_ggx_brdf(const vec3 normal, const vec3 view_direction, const vec3 ligh
          max(4.0 * n_dot_v * n_dot_l, 1e-5);
 }
 
-// Specular вызывается только для накопленного WET response. Базовая PF07-сцена была намеренно
-// ламбертова, поэтому сухая поверхность не получает новый блеск просто из-за наличия кода.
-vec3 pf08_surface_weather_specular(const pf08_sky_block sky, const sampler2D transmittance_lut,
-                                   const sampler2D sky_view_lut, const vec3 planet_point,
-                                   const vec3 scene_position, const vec3 normal,
-                                   const vec3 view_direction, const float view_distance,
-                                   const float receiver_bias_scale, const float direct_visibility,
-                                   const float sky_visibility, const float roughness, const vec3 f0) {
+// Полный wet radiance считается ОДНИМ обходом источников. Прежний код сначала вычислял diffuse
+// illuminance, затем вторично проходил те же звёзды/луны, atmosphere, cloud/fog columns и shadow PCF
+// ради GGX. На мокром кадре это удваивало самый дорогой surface-код.
+vec3 pf08_surface_wet_radiance(const pf08_sky_block sky, const sampler2D transmittance_lut,
+                               const sampler2D sky_view_lut, const vec3 planet_point,
+                               const vec3 scene_position, const vec3 normal,
+                               const vec3 view_direction, const float view_distance,
+                               const float receiver_bias_scale, const float direct_visibility,
+                               const float sky_visibility, const vec3 albedo,
+                               const float roughness, const vec3 f0) {
   vec3 total = vec3(0.0);
   const float fog_column_modulation = sky.fog_params.x > 0.0
     ? pf08_fog_column_modulation(sky, scene_position) : 1.0;
@@ -202,9 +204,10 @@ vec3 pf08_surface_weather_specular(const pf08_sky_block sky, const sampler2D tra
         (pf08_snow_active(sky) && sky.snow_shape.y > 0.0)) {
       medium *= pf08_precipitation_light_transmittance(sky, scene_position, light_direction);
     }
+    const vec3 brdf = albedo / pf08_pi +
+      pf08_ggx_brdf(normal, view_direction, light_direction, roughness, f0);
     total += medium * sky.star_color_illuminance[s].rgb * illuminance * visibility *
-             max(dot(normal, light_direction), 0.0) *
-             pf08_ggx_brdf(normal, view_direction, light_direction, roughness, f0);
+             max(dot(normal, light_direction), 0.0) * brdf;
   }
 
   const int moon_count = int(sky.march_params.w);
@@ -227,9 +230,10 @@ vec3 pf08_surface_weather_specular(const pf08_sky_block sky, const sampler2D tra
         (pf08_snow_active(sky) && sky.snow_shape.y > 0.0)) {
       medium *= pf08_precipitation_light_transmittance(sky, scene_position, light_direction);
     }
+    const vec3 brdf = albedo / pf08_pi +
+      pf08_ggx_brdf(normal, view_direction, light_direction, roughness, f0);
     total += sky.moon_color_illuminance[m].rgb * illuminance * medium * visibility *
-             max(dot(normal, light_direction), 0.0) *
-             pf08_ggx_brdf(normal, view_direction, light_direction, roughness, f0);
+             max(dot(normal, light_direction), 0.0) * brdf;
   }
 
   const vec3 reflected = reflect(-view_direction, normal);
@@ -242,8 +246,10 @@ vec3 pf08_surface_weather_specular(const pf08_sky_block sky, const sampler2D tra
   // даже у шероховатой поверхности. 0.25 — явная компенсация недостающего углового свёртывания;
   // прямой GGX выше остаётся неизменным. Без неё склон на скользящем угле выглядел как снег.
   const float unfiltered_environment_compensation = 0.25;
-  return total * direct_visibility + environment * fresnel * environment_weight *
-         unfiltered_environment_compensation * sky_visibility;
+  const vec3 diffuse_sky = pf08_sky_illuminance(sky_view_lut, normal) * albedo / pf08_pi;
+  const vec3 specular_sky = environment * fresnel * environment_weight *
+                            unfiltered_environment_compensation;
+  return total * direct_visibility + (diffuse_sky + specular_sky) * sky_visibility;
 }
 
 #endif

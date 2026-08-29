@@ -93,6 +93,33 @@ bool valid_state(const weather_state& state, const std::string_view name, std::s
     append_diagnostic(diagnostics, std::format("weather '{}' has negative cloud_advection_speed_m_s", name));
     valid = false;
   }
+  if (!std::isfinite(state.precipitation_coverage) || state.precipitation_coverage < 0.0 ||
+      state.precipitation_coverage > 1.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has precipitation_coverage outside [0, 1]", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.precipitation_cell_size_m) || state.precipitation_cell_size_m <= 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has non-positive precipitation_cell_size_m", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.precipitation_advection_speed_m_s) ||
+      state.precipitation_advection_speed_m_s < 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has negative precipitation_advection_speed_m_s", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.precipitation_edge_softness) || state.precipitation_edge_softness <= 0.0 ||
+      state.precipitation_edge_softness > 0.5) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has precipitation_edge_softness outside (0, 0.5]", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.splash_mist_extinction_per_m) || state.splash_mist_extinction_per_m < 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has negative splash_mist_extinction_per_m", name));
+    valid = false;
+  }
+  if (!std::isfinite(state.splash_mist_height_m) || state.splash_mist_height_m <= 0.0) {
+    append_diagnostic(diagnostics, std::format("weather '{}' has non-positive splash_mist_height_m", name));
+    valid = false;
+  }
   if (!std::isfinite(state.rain_rate_mm_h) || state.rain_rate_mm_h < 0.0) {
     append_diagnostic(diagnostics, std::format("weather '{}' has negative rain_rate_mm_h", name));
     valid = false;
@@ -197,7 +224,10 @@ weather_state state_from_preset(const weather_preset& preset) {
                        preset.cloud_extinction_per_m, preset.cloud_scattering_albedo,
                        preset.cloud_anisotropy, preset.cloud_base_height_m,
                        preset.cloud_top_height_m, preset.cloud_cell_size_m,
-                       preset.cloud_advection_speed_m_s, preset.rain_rate_mm_h,
+                       preset.cloud_advection_speed_m_s, preset.precipitation_coverage,
+                       preset.precipitation_cell_size_m, preset.precipitation_advection_speed_m_s,
+                       preset.precipitation_edge_softness, preset.splash_mist_extinction_per_m,
+                       preset.splash_mist_height_m, preset.rain_rate_mm_h,
                        preset.rain_fall_speed_m_s, preset.rain_wind_speed_m_s,
                        preset.rain_drop_length_m, preset.rain_near_radius_m,
                        preset.rain_far_extinction_per_m, preset.snow_rate_mm_h,
@@ -243,6 +273,12 @@ weather_state interpolate_weather(const weather_state& from, const weather_state
     std::lerp(from.cloud_top_height_m, to.cloud_top_height_m, t),
     std::lerp(from.cloud_cell_size_m, to.cloud_cell_size_m, t),
     std::lerp(from.cloud_advection_speed_m_s, to.cloud_advection_speed_m_s, t),
+    std::lerp(from.precipitation_coverage, to.precipitation_coverage, t),
+    std::lerp(from.precipitation_cell_size_m, to.precipitation_cell_size_m, t),
+    std::lerp(from.precipitation_advection_speed_m_s, to.precipitation_advection_speed_m_s, t),
+    std::lerp(from.precipitation_edge_softness, to.precipitation_edge_softness, t),
+    std::lerp(from.splash_mist_extinction_per_m, to.splash_mist_extinction_per_m, t),
+    std::lerp(from.splash_mist_height_m, to.splash_mist_height_m, t),
     std::lerp(from.rain_rate_mm_h, to.rain_rate_mm_h, t),
     std::lerp(from.rain_fall_speed_m_s, to.rain_fall_speed_m_s, t),
     std::lerp(from.rain_wind_speed_m_s, to.rain_wind_speed_m_s, t),

@@ -116,7 +116,7 @@
         { weather_color = (color_attachment, store), scene_depth = (depth_read, store), rain_particle_state = (storage_read, store) },
         { weather_color = (sampled, store), scene_depth = (depth_read, store), rain_particle_state = (storage_read, store) }
       ]
-      steps = [ draw_rain ]
+      steps = [ draw_rain, draw_mid_precipitation ]
     },
     {
       // Замер экспозиции. Стоит ПОСЛЕ среды и ДО вывода, потому что читает физическую яркость сцены,

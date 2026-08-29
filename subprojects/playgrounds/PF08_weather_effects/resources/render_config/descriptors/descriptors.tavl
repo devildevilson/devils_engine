@@ -128,3 +128,11 @@
     { resource = scene_depth, usage = depth_read, stage = fragment, sampler = nearest_sampler }
   ]
 }
+{
+  name = mid_precipitation_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = vertex },
+    { resource = sky_buffer, usage = uniform, stage = vertex },
+    { resource = scene_depth, usage = depth_read, stage = fragment, sampler = nearest_sampler }
+  ]
+}
