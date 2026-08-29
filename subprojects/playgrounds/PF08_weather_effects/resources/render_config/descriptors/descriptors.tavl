@@ -41,7 +41,8 @@
     { resource = transmittance_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
     { resource = multiscatter_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
     { resource = sky_view_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
-    { resource = aerial_lut, usage = sampled, stage = fragment, sampler = linear_sampler }
+    { resource = aerial_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = surface_precipitation_memory, usage = storage_read, stage = fragment }
   ]
 }
 {
@@ -70,7 +71,16 @@
     { resource = sky_buffer, usage = uniform, stage = all },
     { resource = transmittance_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
     { resource = sky_view_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
-    { resource = aerial_lut, usage = sampled, stage = fragment, sampler = linear_sampler }
+    { resource = aerial_lut, usage = sampled, stage = fragment, sampler = linear_sampler },
+    { resource = surface_precipitation_memory, usage = storage_read, stage = fragment }
+  ]
+}
+{
+  name = surface_memory_update
+  layout = [
+    { resource = sky_buffer, usage = uniform, stage = compute },
+    { resource = surface_precipitation_memory, usage = storage_write, stage = compute },
+    { resource = surface_precipitation_memory, usage = storage_read, stage = compute, history = 1 }
   ]
 }
 {

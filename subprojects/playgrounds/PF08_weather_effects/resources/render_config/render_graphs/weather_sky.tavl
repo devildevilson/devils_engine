@@ -54,14 +54,23 @@
       steps = [ build_aerial ]
     },
     {
+      // 64x64 world-map помнит осадки после ухода текущей погодной ячейки. Compute намеренно стоит
+      // до sky/scene: радуга читает память у камеры, поверхность — в собственной мировой точке.
+      name = pf08_surface_memory
+      subpasses = [
+        { surface_precipitation_memory = (storage_write, store) }
+      ]
+      steps = [ update_surface_memory ]
+    },
+    {
       // Небо не пишет глубину: атмосферный цвет приходит из LUT, а диски и звёздное поле
       // композятся поверх него в том же fullscreen-проходе. Земля отсюда вынесена в геометрию.
       name = pf08_sky
       render_target = sky_target
       subpasses = [
-        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (undefined, clear) },
-        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store) },
-        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store) }
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), surface_precipitation_memory = (storage_read, store), shadow_atlas = (depth_read, store), sky_color = (undefined, clear) },
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), surface_precipitation_memory = (storage_read, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store) },
+        { transmittance_lut = (sampled, store), multiscatter_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), surface_precipitation_memory = (storage_read, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store) }
       ]
       steps = [ draw_sky ]
     },
@@ -71,9 +80,9 @@
       name = pf08_scene
       render_target = scene_target
       subpasses = [
-        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store), scene_depth = (undefined, clear) },
-        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store), scene_depth = (depth_attachment, store) },
-        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), shadow_atlas = (depth_read, store), sky_color = (sampled, store), scene_depth = (depth_read, store) }
+        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), surface_precipitation_memory = (storage_read, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store), scene_depth = (undefined, clear) },
+        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), surface_precipitation_memory = (storage_read, store), shadow_atlas = (depth_read, store), sky_color = (color_attachment, store), scene_depth = (depth_attachment, store) },
+        { transmittance_lut = (sampled, store), sky_view_lut = (sampled, store), aerial_lut = (sampled, store), surface_precipitation_memory = (storage_read, store), shadow_atlas = (depth_read, store), sky_color = (sampled, store), scene_depth = (depth_read, store) }
       ]
       steps = [ draw_scene ]
     },

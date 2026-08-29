@@ -1,6 +1,9 @@
 #version 450
 
 #include "pf08_atmosphere.glsl"
+#define PF08_SURFACE_MEMORY_SET 0
+#define PF08_SURFACE_MEMORY_BINDING 6
+#include "pf08_surface_memory.glsl"
 
 // Небо считается честным маршем по атмосфере прямо здесь, без предрасчитанных таблиц. Это заведомо
 // дорого и выбрано намеренно: следующий шаг среза заменит марш LUT-моделью, и тогда у выигрыша будет
@@ -31,6 +34,123 @@ layout(set = 0, binding = 4) uniform sampler2D sky_view_lut;
 layout(set = 0, binding = 5) uniform sampler3D aerial_lut;
 
 const float pi = pf08_pi;
+
+float pf08_rainbow_profile(const float angle, const float centre, const float width,
+                           const float sharpness) {
+  const float distance = abs((angle - centre) / max(width, radians(0.02)));
+  return exp(-pow(distance, max(sharpness, 0.1) * 2.0));
+}
+
+vec3 pf08_rainbow_saturate(const vec3 colour, const float saturation) {
+  const float luminance = dot(colour, vec3(0.2126, 0.7152, 0.0722));
+  return max(mix(vec3(luminance), colour, saturation), vec3(0.0));
+}
+
+vec3 pf08_rainbow_source_direction(const pf08_sky_block sky, const int source_index,
+                                    const float separation_scale) {
+  const vec3 source = normalize(sky.star_direction[source_index].xyz);
+  if (source_index == 0 || abs(separation_scale - 1.0) < 1e-4) return source;
+
+  // Художественно растягиваем только разделение дуг, не двигая сами светила и их освещение.
+  const vec3 anchor = normalize(sky.star_direction[0].xyz);
+  const float cosine = clamp(dot(anchor, source), -1.0, 1.0);
+  const float separation = acos(cosine);
+  const vec3 tangent_vector = source - anchor * cosine;
+  const float tangent_length = length(tangent_vector);
+  if (tangent_length < 1e-6) return source;
+  const vec3 tangent = tangent_vector / tangent_length;
+  const float artistic_separation = min(separation * separation_scale, radians(30.0));
+  return normalize(anchor * cos(artistic_separation) + tangent * sin(artistic_separation));
+}
+
+vec3 pf08_apply_rainbows(const vec3 background, const vec3 view_direction) {
+  const pf08_sky_block sky = sky_data.sky;
+  const float intensity = max(sky.rainbow_appearance.x, 0.0);
+  if (sky.surface_weather.w < 0.5 || intensity <= 1e-5) return background;
+  const vec4 memory = pf08_sample_surface_memory(sky, camera_data.camera_position.xz);
+  const float persistence = max(sky.rainbow_context.z, 0.05);
+  const float recent_rain = smoothstep(0.10 / persistence, 1.4 / persistence, memory.x);
+  // Сильный текущий дождь закрывает радугу собственной стеной. После прохода ячейки water-memory
+  // остаётся, current rate падает, и на несколько минут открывается короткое окно after-effect.
+  const float rain_cutoff = max(sky.rainbow_context.w, 0.0);
+  const float clearing = rain_cutoff <= 1e-4
+    ? (sky.precipitation_params.x <= 1e-4 ? 1.0 : 0.0)
+    : 1.0 - smoothstep(rain_cutoff * 0.10, rain_cutoff, sky.precipitation_params.x);
+  const float weather_strength = recent_rain * clearing;
+  if (weather_strength <= 1e-4) return background;
+
+  int brightest_source = 0;
+  float brightest_lux = 0.0;
+  for (int i = 0; i < PF08_STAR_COUNT; ++i) {
+    const float visible_lux = sky.star_direction[i].y > 0.0
+      ? max(sky.star_color_illuminance[i].w, 0.0) : 0.0;
+    if (visible_lux > brightest_lux) {
+      brightest_lux = visible_lux;
+      brightest_source = i;
+    }
+  }
+  if (brightest_lux <= 0.0) return background;
+
+  const int source_mode = int(round(clamp(sky.rainbow_sources.x, 0.0, 2.0)));
+  const float saturation = max(sky.rainbow_appearance.y, 0.0);
+  const float width_scale = max(sky.rainbow_appearance.z, 0.05);
+  const float sharpness = max(sky.rainbow_appearance.w, 0.1);
+  const float veil_strength = max(sky.rainbow_context.x, 0.0);
+  const float background_contrast = clamp(sky.rainbow_context.y, 0.0, 1.0);
+  const float secondary_strength = max(sky.rainbow_sources.y, 0.0);
+  const float source_balance = clamp(sky.rainbow_sources.z, 0.0, 1.0);
+  const float separation_scale = max(sky.rainbow_sources.w, 0.0);
+
+  vec3 radiance = vec3(0.0);
+  float darkening = 0.0;
+  const float horizon = smoothstep(-0.03, 0.08, view_direction.y);
+  for (int i = 0; i < PF08_STAR_COUNT; ++i) {
+    const bool selected = source_mode == 2 || (source_mode == 1 && i == brightest_source) ||
+                          (source_mode == 0 && i == 0);
+    const float physical_lux = max(sky.star_color_illuminance[i].w, 0.0);
+    if (!selected || sky.star_direction[i].y <= 0.0 || physical_lux <= 0.0) continue;
+
+    const float sun_height = smoothstep(0.015, 0.18, sky.star_direction[i].y);
+    const float source_strength = weather_strength * sun_height * horizon;
+    if (source_strength <= 1e-5) continue;
+    const vec3 rainbow_source = pf08_rainbow_source_direction(sky, i, separation_scale);
+    const float angle = acos(clamp(dot(view_direction, -rainbow_source), -1.0, 1.0));
+    const float artistic_lux = mix(physical_lux, brightest_lux, source_balance);
+
+    // Primary: red outside, blue inside. Width and edge exponent are independent art controls.
+    const float red = pf08_rainbow_profile(angle, radians(42.5), radians(0.68) * width_scale, sharpness);
+    const float green = pf08_rainbow_profile(angle, radians(41.7), radians(0.70) * width_scale, sharpness);
+    const float blue = pf08_rainbow_profile(angle, radians(40.9), radians(0.74) * width_scale, sharpness);
+    const vec3 primary = pf08_rainbow_saturate(vec3(red, green * 0.82, blue * 0.92), saturation);
+    const float primary_veil = pf08_rainbow_profile(
+      angle, radians(41.7), radians(1.55) * width_scale, max(sharpness * 0.55, 0.35));
+    vec3 source_radiance = primary +
+      primary_veil * veil_strength * vec3(0.10, 0.12, 0.15);
+
+    // Secondary order lies around 51° and reverses the colour order. Default zero keeps the image
+    // focused on the two STELLAR primary bows; fantasy projects can deliberately enable all four arcs.
+    if (secondary_strength > 1e-5) {
+      const float second_red = pf08_rainbow_profile(
+        angle, radians(50.5), radians(0.82) * width_scale, sharpness);
+      const float second_green = pf08_rainbow_profile(
+        angle, radians(51.4), radians(0.84) * width_scale, sharpness);
+      const float second_blue = pf08_rainbow_profile(
+        angle, radians(52.3), radians(0.88) * width_scale, sharpness);
+      const vec3 secondary = pf08_rainbow_saturate(
+        vec3(second_red, second_green * 0.82, second_blue * 0.92), saturation);
+      source_radiance += secondary * secondary_strength;
+    }
+
+    // Alexander's band supplies contrast rather than more emitted light. It is the useful artistic
+    // lever once a brighter additive bow would only tonemap to white.
+    const float alexander = smoothstep(radians(43.2), radians(44.2), angle) *
+      (1.0 - smoothstep(radians(49.5), radians(51.0), angle));
+    darkening = max(darkening, alexander * background_contrast * source_strength * min(intensity, 1.0));
+    radiance += source_radiance * artistic_lux * 0.0065 * intensity * source_strength;
+  }
+
+  return background * (1.0 - clamp(darkening, 0.0, 0.85)) + radiance;
+}
 
 // Звёздное поле. Направление переводится в инерциальную систему, поэтому звёзды закреплены за небом
 // и вращаются вместе с планетой, а не едут за камерой. Сетка ячеек по направлению: в каждой ячейке
@@ -366,11 +486,15 @@ void main() {
     color += transmittance * space;
   }
 
+  // Радуга — угловая геометрия атмосферы, а не decal на изображении. Scene и последующий local
+  // volume естественно закроют её геометрией и остаточной дождевой дымкой.
+  color = pf08_apply_rainbows(color, view_direction);
+
   // Отладочные режимы: 1 — направление луча, 2 — попадание в поверхность, 3 — длина марша.
   // Режим 4 выставляет цвет внутри цикла лун, поэтому он сюда не попадает: иначе разбор терминатора
   // затирался бы длиной марша, и отладка показывала бы одинаковые каналы вместо трёх разных величин.
   const float debug_mode = sky_data.sky.output_params.w;
-  if (debug_mode > 6.5) {
+  if (debug_mode > 6.5 && debug_mode < 7.5) {
     // Режим 7: галактическая плоскость как величина, а не как россыпь. Полоса выражена ПЛОТНОСТЬЮ
     // звёзд, и на глаз по готовому небу не понять, попала она в кадр или нет — а без этого подбор
     // ширины превращается в угадывание.

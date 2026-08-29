@@ -89,6 +89,12 @@
   command = "dispatch constant rain_dispatch"
 }
 {
+  name = update_surface_memory
+  material = surface_memory_material
+  sets = [ surface_memory_update ]
+  command = "dispatch constant surface_memory_dispatch"
+}
+{
   name = draw_rain
   material = rain_material
   geometry = rain_geometry

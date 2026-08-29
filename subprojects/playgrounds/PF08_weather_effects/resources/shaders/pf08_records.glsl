@@ -90,9 +90,9 @@ struct pf08_sky_block {
   // AABB ВИДИМОЙ крыши. w > 0 включает один и тот же shelter-test в particle и froxel consumers.
   vec4 shelter_minimum;
   vec4 shelter_maximum;
-  // Накопленная история поверхности: толщина снега, глобальное покрытие, wetness и enable.
+  // Инициализация world-map: rain mm, snow-water mm, dry half-life h и visual-response enable.
   vec4 surface_weather;
-  // Геометрическая толщина включена, maximum depth, cover depth и размер world-space пятна.
+  // World-map: half extent m, cell size m, world seconds/real second и snow melt mm/h.
   vec4 surface_weather_shape;
   // Общий footprint near/mid/far/surface: coverage, cell metres, advection m/s, edge softness.
   vec4 precipitation_field;
@@ -106,6 +106,13 @@ struct pf08_sky_block {
   // лун в массиве при этом НЕ переставляется: по индексу луны его читает система теней, и сортировка
   // здесь развела бы освещение с затенением без единого предупреждения.
   vec4 moon_distance_km;
+  // Художественные параметры радуги. Физическая геометрия отделена от её заметности.
+  // appearance: intensity, saturation, band width, edge sharpness.
+  vec4 rainbow_appearance;
+  // context: veil, local background contrast, memory persistence, current-rain cutoff mm/h.
+  vec4 rainbow_context;
+  // sources: primary/brightest/all mode, secondary bow, source balance, separation scale.
+  vec4 rainbow_sources;
 };
 
 // --- параметризация таблицы прохождения ---

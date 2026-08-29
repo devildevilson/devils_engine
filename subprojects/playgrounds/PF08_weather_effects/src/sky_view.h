@@ -10,7 +10,7 @@
 #include "celestial.h"
 #include "shadows.h"
 #include "sky_frame.h"
-#include "surface_weather.h"
+#include "surface_memory.h"
 #include "weather.h"
 
 namespace devils_engine::pf08 {
@@ -86,7 +86,7 @@ struct view_options {
   double precipitation_advection_speed_m_s = 8.0;
   // Lighting is much smoother than density and may be reused by adjacent froxel slices while it
   // rains/snows. One is the exact diagnostic path; two is the authored performance setting.
-  uint32_t precipitation_light_stride = 2;
+  uint32_t precipitation_light_stride = 3;
   double splash_mist_extinction_per_m = 0.0;
   double splash_mist_height_m = 1.0;
   double rain_rate_mm_h = 0.0;
@@ -107,12 +107,15 @@ struct view_options {
   bool rain_particles = true;
   bool rain_collision = true;
   bool shelter_occlusion = true;
-  surface_weather_settings surface_weather;
+  surface_memory_settings surface_memory;
   // Предварительный возраст нужен для воспроизводимых A/B без десятисекундного ожидания каждого
   // dump. В обычном окне ноль: поверхность начинает с сухого состояния и накапливает осадки на глазах.
   double surface_age_minutes = 0.0;
+  // Явная воспроизводимая память для кадров ПОСЛЕ осадков. Это миллиметры водного эквивалента,
+  // которыми инициализируется low-resolution world map до первого compute update.
+  double initial_rain_memory_mm = 0.0;
+  double initial_snow_memory_mm = 0.0;
   bool surface_response = true;
-  bool snow_displacement = true;
   double rain_mid_radius_m = 120.0;
   double snow_mid_radius_m = 160.0;
   // Preset заполняет единое погодное состояние; прямые CLI-рычаги ниже могут независимо перекрыть

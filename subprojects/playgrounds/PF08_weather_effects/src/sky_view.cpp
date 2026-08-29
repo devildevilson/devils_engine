@@ -679,9 +679,28 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       options.snow_mid_radius_m <= weather.state().snow_near_radius_m) {
     utils::error{}("PF08 mid precipitation radii must be finite and exceed their near radii");
   }
-  if (!valid_surface_weather_settings(options.surface_weather) ||
-      !std::isfinite(options.surface_age_minutes) || options.surface_age_minutes < 0.0) {
+  if (!valid_surface_memory_settings(options.surface_memory) ||
+      !std::isfinite(options.surface_age_minutes) || options.surface_age_minutes < 0.0 ||
+      !std::isfinite(options.initial_rain_memory_mm) || options.initial_rain_memory_mm < 0.0 ||
+      !std::isfinite(options.initial_snow_memory_mm) || options.initial_snow_memory_mm < 0.0) {
     utils::error{}("PF08 surface-weather settings or prewarm age are invalid");
+  }
+  const auto& rainbow = options.output.rainbow;
+  if (!std::isfinite(rainbow.intensity) || rainbow.intensity < 0.0 || rainbow.intensity > 16.0 ||
+      !std::isfinite(rainbow.saturation) || rainbow.saturation < 0.0 || rainbow.saturation > 4.0 ||
+      !std::isfinite(rainbow.width) || rainbow.width < 0.1 || rainbow.width > 4.0 ||
+      !std::isfinite(rainbow.sharpness) || rainbow.sharpness < 0.1 || rainbow.sharpness > 4.0 ||
+      !std::isfinite(rainbow.veil_strength) || rainbow.veil_strength < 0.0 || rainbow.veil_strength > 4.0 ||
+      !std::isfinite(rainbow.background_contrast) || rainbow.background_contrast < 0.0 ||
+      rainbow.background_contrast > 0.8 || !std::isfinite(rainbow.persistence) ||
+      rainbow.persistence < 0.1 || rainbow.persistence > 16.0 ||
+      !std::isfinite(rainbow.rain_cutoff_mm_h) || rainbow.rain_cutoff_mm_h < 0.0 ||
+      rainbow.rain_cutoff_mm_h > 100.0 || !std::isfinite(rainbow.secondary_bow_strength) ||
+      rainbow.secondary_bow_strength < 0.0 || rainbow.secondary_bow_strength > 2.0 ||
+      !std::isfinite(rainbow.source_balance) || rainbow.source_balance < 0.0 ||
+      rainbow.source_balance > 1.0 || !std::isfinite(rainbow.source_separation_scale) ||
+      rainbow.source_separation_scale < 0.0 || rainbow.source_separation_scale > 16.0) {
+    utils::error{}("PF08 artistic rainbow settings are outside their documented ranges");
   }
   utils::info("PF08 weather '{}': aerosol {:.2f}, wind {:.0f} deg / {:.2f} m, fog {:.4f} 1/m @ H {:.0f} m, cloud {:.2f} @ {:.0f}-{:.0f} m, rain/snow {:.1f}/{:.1f} mm/h, transition {:.1f} s",
               initial_weather->name, weather.state().aerosol_turbidity, weather.state().wind_direction_deg,
@@ -824,7 +843,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       // Участок приподнят на два сантиметра над диском: к своему краю рельеф выходит в ноль, и там обе
       // поверхности совпадают. Без подъёма они дерутся за глубину и покрываются рябью.
       const std::array<scene_instance, 1> instance{
-        scene_instance{glm::vec4(0.0f, 0.02f, 0.0f, 0.0f), glm::vec4(0.5f, 0.5f, 0.5f, 0.0f),
+        scene_instance{glm::vec4(0.0f, 0.02f, 0.0f, -1.0f), glm::vec4(0.5f, 0.5f, 0.5f, 0.0f),
                        glm::vec4(glm::vec3(float(options.atmosphere.ground_albedo)), 0.0f)}};
       for (uint32_t offset = 0; offset < base.frames_in_flight(); ++offset) {
         const auto frame = base.get_current_instance_resource_frame(valley_pair, offset);
@@ -856,9 +875,6 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     const uint32_t shrub_far_pair = base.register_pair(scene_group, shrub_far_mesh, options.foliage_count);
     const auto shrubs = scatter_shrubs(options.foliage_count);
     for (const auto& item : shrubs) caster_height = std::max(caster_height, double(item.y + item.height));
-    // Сначала найдена вершина ВСЕХ кастеров, затем добавлен максимум snow displacement. Добавление
-    // только к fixture потерялось бы, если долина или куст оказался выше крыши.
-    caster_height += options.surface_weather.max_snow_depth_m;
     utils::info("PF08 foliage: {} shrubs, near mesh {} vertices, far mesh {}", shrubs.size(),
                 shrub_near_mesh_data.size(), shrub_far_mesh_data.size());
     std::vector<scene_instance> shrub_near_instances;
@@ -997,15 +1013,12 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     double exposure_bias_stops = 0.0;
     double wall_seconds = 0.0;
     uint32_t frames_total = 0;
-    surface_weather_state surface_history;
-    if (options.surface_response && options.surface_age_minutes > 0.0) {
-      // Age задан в МИРОВЫХ минутах и не зависит от runtime time-scale. Временная шкала 60 означает,
-      // что одна переданная секунда ровно равна одной мировой минуте.
-      auto prewarm_settings = options.surface_weather;
-      prewarm_settings.world_seconds_per_real_second = 60.0;
-      advance_surface_weather(surface_history, weather.state(), prewarm_settings,
-                              options.surface_age_minutes);
-    }
+    // Prewarm и явные recent-* инициализируют только первые copies GPU world-map. После этого карта
+    // живёт на GPU и продолжает помнить локальные фронты независимо от текущего имени пресета.
+    const double initial_rain_memory_mm = options.initial_rain_memory_mm +
+      weather.state().rain_rate_mm_h * options.surface_age_minutes / 60.0;
+    const double initial_snow_memory_mm = options.initial_snow_memory_mm +
+      weather.state().snow_rate_mm_h * options.surface_age_minutes / 60.0;
 
     while (!input::should_close(window)) {
       input::poll_events();
@@ -1068,9 +1081,6 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       // exposure. A transition dump must not depend on how quickly this machine compiled a shader.
       const double step_seconds = options.frames != 0 ? 1.0 / 60.0 : double(dt);
       weather.advance(step_seconds);
-      if (options.surface_response) {
-        advance_surface_weather(surface_history, weather.state(), options.surface_weather, step_seconds);
-      }
       auto frame_atmosphere = options.atmosphere;
       frame_atmosphere.turbidity = weather.state().aerosol_turbidity;
 
@@ -1282,14 +1292,13 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       const float shelter_enabled = options.shelter_occlusion ? 1.0f : 0.0f;
       sky_block.shelter_minimum = glm::vec4(shelter.minimum, shelter_enabled);
       sky_block.shelter_maximum = glm::vec4(shelter.maximum, shelter_enabled);
-      const auto surface = sample_surface_weather(surface_history, options.surface_weather);
-      sky_block.surface_weather = glm::vec4(float(surface.snow_depth_m),
-                                            float(surface.snow_coverage), float(surface.wetness),
+      sky_block.surface_weather = glm::vec4(float(initial_rain_memory_mm),
+                                            float(initial_snow_memory_mm),
+                                            float(options.surface_memory.dry_half_life_hours),
                                             options.surface_response ? 1.0f : 0.0f);
-      sky_block.surface_weather_shape = glm::vec4(options.snow_displacement ? 1.0f : 0.0f,
-                                                  float(options.surface_weather.max_snow_depth_m),
-                                                  float(options.surface_weather.snow_cover_depth_m),
-                                                  12.0f);
+      sky_block.surface_weather_shape = glm::vec4(256.0f, 8.0f,
+                                                  float(options.surface_memory.world_seconds_per_real_second),
+                                                  float(options.surface_memory.snow_melt_mm_h));
       sky_block.precipitation_field = glm::vec4(float(weather.state().precipitation_coverage),
                                                 float(weather.state().precipitation_cell_size_m),
                                                 float(weather.state().precipitation_advection_speed_m_s),
@@ -1304,7 +1313,9 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       write_current_buffer(base, "sky_buffer", &sky_block, sizeof(sky_block));
 
       const auto calendar = system.to_calendar(game_time_days);
-      const std::array<std::string, 10> details{
+      const char* rainbow_sources = options.output.rainbow.sources == rainbow_source_mode::primary
+        ? "primary" : (options.output.rainbow.sources == rainbow_source_mode::brightest ? "brightest" : "all");
+      const std::array<std::string, 11> details{
         std::format("Year {} · beat {}/{} · day {}/{} · {:02}:{:02} · {:.4f} days per real second{}", calendar.year,
                     calendar.beat_year, system.binary_beat_years(), calendar.day,
                     uint32_t(system.planet_year_days()), calendar.hour,
@@ -1342,9 +1353,14 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
         std::format("Foliage: {} near + {} far of {} · LOD {:.0f} m · range {:.0f} m",
                     shrub_near_instances.size(), shrub_far_instances.size(), shrubs.size(),
                     options.foliage_lod_m, options.foliage_range_m),
-        std::format("Surface: snow {:.1f} mm / {:.0f}% · wetness {:.0f}%{}",
-                    surface.snow_depth_m * 1000.0, surface.snow_coverage * 100.0,
-                    surface.wetness * 100.0, options.surface_response ? "" : " · OFF"),
+        std::format("Surface memory: 64x64 / 512 m · initial rain/snow {:.1f}/{:.1f} mm · dry H {:.2f} h{}",
+                    initial_rain_memory_mm, initial_snow_memory_mm,
+                    options.surface_memory.dry_half_life_hours,
+                    options.surface_response ? "" : " · RESPONSE OFF"),
+        std::format("Rainbow: {} · I {:.2f} · sat {:.2f} · width/sharp {:.2f}/{:.2f} · balance/sep {:.2f}/{:.2f}",
+                    rainbow_sources, options.output.rainbow.intensity, options.output.rainbow.saturation,
+                    options.output.rainbow.width, options.output.rainbow.sharpness,
+                    options.output.rainbow.source_balance, options.output.rainbow.source_separation_scale),
         std::format("Colour script: tint ({:.2f} {:.2f} {:.2f}) · saturation {:.2f} · contrast {:.2f}",
                     output.grade_tint.x, output.grade_tint.y, output.grade_tint.z, output.grade_saturation,
                     output.grade_contrast)};

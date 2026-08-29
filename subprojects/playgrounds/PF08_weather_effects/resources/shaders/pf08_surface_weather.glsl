@@ -1,94 +1,63 @@
-// Пространственный отклик поверхности на ИСТОРИЮ осадков. Host интегрирует water equivalent и
-// wetness, а здесь одна world-space формула превращает их в пятна, толщину и материал.
+// Минимальный MATERIAL-AWARE отклик на precipitation memory. Карта хранит только историю воды;
+// этот файл решает, как конкретная proxy-поверхность её показывает. Никаких выдуманных puddle masks,
+// PBR-плёнки и геометрического раздувания: в PF08 для них нет ни material data, ни подходящей сцены.
 
 #ifndef PF08_SURFACE_WEATHER_GLSL
 #define PF08_SURFACE_WEATHER_GLSL
 
 #include "pf08_precipitation.glsl"
 
-float pf08_surface_hash(const vec2 cell) {
+void pf08_surface_memory_material(const pf08_sky_block sky, const vec4 memory,
+                                  const vec3 world_position, const vec3 world_normal,
+                                  const float material_kind, const vec3 base_albedo,
+                                  out vec3 albedo, out float rain_memory, out float snow_memory) {
+  albedo = base_albedo;
+  rain_memory = 0.0;
+  snow_memory = 0.0;
+  if (sky.surface_weather.w < 0.5) return;
+
+  const bool foliage = material_kind > 0.5;
+  const bool terrain = material_kind < -0.5;
+  const bool sheltered_rain = pf08_shelter_blocks_precipitation(
+    sky, world_position, pf08_precipitation_velocity(sky, false));
+  const bool sheltered_snow = pf08_shelter_blocks_precipitation(
+    sky, world_position, pf08_precipitation_velocity(sky, true));
+
+  // Материал важнее самого rain rate. Земля лишь немного темнеет; нейтральная каменная fixture ещё
+  // слабее; листва практически не меняется, потому что капли на листьях требуют отдельной геометрии.
+  const float rain_response = foliage ? 0.025 : (terrain ? 0.72 : 0.28);
+  const float snow_response = foliage ? 0.035 : (terrain ? 1.0 : 0.55);
+  rain_memory = sheltered_rain ? 0.0 : smoothstep(0.08, 1.8, memory.x) * rain_response;
+  const float slope = smoothstep(0.30, 0.78, normalize(world_normal).y);
+  snow_memory = sheltered_snow ? 0.0 : smoothstep(0.10, 1.4, memory.y) * snow_response * slope;
+
+  // Это намеренно аркадный минимум: широкое, очень слабое потемнение и лёгкий остаток снега.
+  // Детальные лужи, грязь, мокрые листья и SSR принадлежат материалам будущей реальной сцены.
+  albedo *= 1.0 - rain_memory * 0.14;
+  albedo = mix(albedo, vec3(0.80, 0.86, 0.91), snow_memory * 0.12);
+}
+
+float pf08_surface_glint_hash(const vec2 cell) {
   return fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453123);
 }
 
-float pf08_surface_value_noise(const vec2 position) {
-  const vec2 cell = floor(position);
-  const vec2 local = fract(position);
-  const vec2 blend = local * local * (3.0 - 2.0 * local);
-  const float a = pf08_surface_hash(cell);
-  const float b = pf08_surface_hash(cell + vec2(1.0, 0.0));
-  const float c = pf08_surface_hash(cell + vec2(0.0, 1.0));
-  const float d = pf08_surface_hash(cell + vec2(1.0, 1.0));
-  return mix(mix(a, b, blend.x), mix(c, d, blend.x), blend.y);
-}
-
-float pf08_surface_snow_mask(const pf08_sky_block sky, const vec3 world_position,
-                             const vec3 world_normal, const float foliage) {
-  const float coverage = clamp(sky.surface_weather.y, 0.0, 1.0);
-  if (sky.surface_weather.w < 0.5 || sky.surface_weather.x <= 0.0 || coverage <= 0.0 ||
-      foliage > 0.5) return 0.0;
-
-  const float slope = smoothstep(0.30, 0.78, normalize(world_normal).y);
-  if (slope <= 0.0) return 0.0;
-  const bool sheltered = pf08_shelter_blocks_precipitation(
-    sky, world_position, pf08_precipitation_velocity(sky, true));
-  if (sheltered) return 0.0;
-
-  const float cell = max(sky.surface_weather_shape.w, 0.5);
-  const float broad = pf08_surface_value_noise(world_position.xz / cell);
-  const float detail = pf08_surface_value_noise(world_position.xz / (cell * 0.37) + vec2(19.7, 7.3));
-  const float field = broad * 0.72 + detail * 0.28;
-  const float threshold = 1.0 - coverage;
-  float patch_weight = smoothstep(threshold - 0.16, threshold + 0.16, field);
-  patch_weight *= smoothstep(0.0, 0.025, coverage);
-  patch_weight = mix(patch_weight, 1.0, smoothstep(0.86, 1.0, coverage));
-  return slope * patch_weight;
-}
-
-float pf08_surface_wet_mask(const pf08_sky_block sky, const vec3 world_position) {
-  if (sky.surface_weather.w < 0.5 || sky.surface_weather.z <= 0.0) return 0.0;
-  const bool sheltered = pf08_shelter_blocks_precipitation(
-    sky, world_position, pf08_precipitation_velocity(sky, false));
-  return sheltered ? 0.0 : clamp(sky.surface_weather.z, 0.0, 1.0);
-}
-
-vec3 pf08_apply_snow_displacement(const pf08_sky_block sky, const vec3 world_position,
-                                  const vec3 world_normal, const float foliage) {
-  if (sky.surface_weather_shape.x < 0.5) return world_position;
-  const float mask = pf08_surface_snow_mask(sky, world_position, world_normal, foliage);
-  vec3 displaced = world_position;
-  // Снег оседает по гравитации, а не раздувает меш вдоль нормали. На склоне это даёт меньшую
-  // вертикальную толщину через slope-mask и не раздвигает края коробок в стороны.
-  displaced.y += min(sky.surface_weather.x, sky.surface_weather_shape.y) * mask;
-  return displaced;
-}
-
-void pf08_surface_weather_material(const pf08_sky_block sky, const vec3 world_position,
-                                   const vec3 world_normal, const float foliage,
-                                   const vec3 base_albedo, out vec3 albedo,
-                                   out float roughness, out vec3 f0,
-                                   out float snow_mask, out float wet_mask) {
-  if (sky.surface_weather.w < 0.5 ||
-      (sky.surface_weather.x <= 0.0 && sky.surface_weather.z <= 0.0)) {
-    albedo = base_albedo;
-    roughness = 0.72;
-    f0 = vec3(0.025);
-    snow_mask = 0.0;
-    wet_mask = 0.0;
-    return;
-  }
-  snow_mask = pf08_surface_snow_mask(sky, world_position, world_normal, foliage);
-  wet_mask = pf08_surface_wet_mask(sky, world_position) * (1.0 - snow_mask);
-
-  const float fine = pf08_surface_value_noise(world_position.xz * 0.43 + vec2(3.1, 11.9));
-  const vec3 snow_albedo = mix(vec3(0.72, 0.78, 0.82), vec3(0.90, 0.94, 0.97), fine);
-  const vec3 wet_albedo = base_albedo * mix(1.0, 0.58, wet_mask);
-  albedo = mix(wet_albedo, snow_albedo, snow_mask);
-  // Это мокрая шероховатая почва и бетон, не идеальная лужа. При 0.10 вся наклонная долина
-  // отражала один резкий texel sky-view LUT и становилась бело-голубым зеркалом.
-  roughness = mix(0.72, 0.22, wet_mask);
-  roughness = mix(roughness, 0.86, snow_mask);
-  f0 = mix(vec3(0.025), vec3(0.045), wet_mask);
-  f0 = mix(f0, vec3(0.030), snow_mask);
+float pf08_snow_sparkle(const vec3 world_position, const vec3 normal,
+                        const vec3 view_direction, const vec3 light_direction,
+                        const float snow_memory) {
+  if (snow_memory <= 1e-4) return 0.0;
+  // Одна world-locked микрогрань на 12.5 см. Это не normal map: направление строится из hash и
+  // остаётся закреплённым за землёй. Узкий highlight даёт множество редких точек только при солнце.
+  const vec2 cell = floor(world_position.xz * 8.0);
+  const float azimuth = pf08_surface_glint_hash(cell) * 6.2831853;
+  const float tilt = mix(0.10, 0.72, pf08_surface_glint_hash(cell + vec2(17.0, 43.0)));
+  const vec3 helper = abs(normal.y) < 0.95 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+  const vec3 tangent = normalize(cross(helper, normal));
+  const vec3 bitangent = cross(normal, tangent);
+  const vec3 micro_normal = normalize(normal * sqrt(1.0 - tilt * tilt) +
+    (tangent * cos(azimuth) + bitangent * sin(azimuth)) * tilt);
+  const vec3 half_direction = normalize(view_direction + light_direction);
+  const float alignment = max(dot(micro_normal, half_direction), 0.0);
+  return snow_memory * pow(alignment, 320.0) * 18.0;
 }
 
 #endif

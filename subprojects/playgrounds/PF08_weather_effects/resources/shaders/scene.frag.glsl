@@ -1,6 +1,9 @@
 #version 450
 
 #include "pf08_surface.glsl"
+#define PF08_SURFACE_MEMORY_SET 2
+#define PF08_SURFACE_MEMORY_BINDING 4
+#include "pf08_surface_memory.glsl"
 #include "pf08_surface_weather.glsl"
 
 // Затенение предметов сцены. Физически это ровно то же, что и земля: ламбертова поверхность в том же
@@ -46,29 +49,33 @@ void main() {
   const float receiver_bias_scale = mix(1.5, 0.25, foliage);
   const float direct_visibility = mix(1.0, mix(0.45, 1.0, open_height), foliage);
   const float sky_visibility = mix(1.0, mix(0.25, 0.80, open_height), foliage);
+  const vec4 precipitation_memory = pf08_sample_surface_memory(sky_data.sky, in_world_position.xz);
+  if (sky_data.sky.output_params.w > 10.5 && sky_data.sky.output_params.w < 11.5) {
+    // Debug 11: rain-memory красная, snow-water голубая. Масштаб 1000 nits нужен только затем, чтобы
+    // диагностическое значение пережило штатную fixed-noon экспозицию.
+    const vec3 memory_colour = vec3(clamp(precipitation_memory.x / 2.0, 0.0, 1.0),
+                                    clamp(precipitation_memory.y / 2.0, 0.0, 1.0),
+                                    clamp(precipitation_memory.y / 2.0, 0.0, 1.0));
+    out_color = vec4(memory_colour * 1000.0, 1.0);
+    return;
+  }
   vec3 surface_albedo;
-  float roughness;
-  vec3 f0;
-  float snow_mask;
-  float wet_mask;
-  pf08_surface_weather_material(sky_data.sky, in_world_position, normal, foliage, in_albedo,
-                                surface_albedo, roughness, f0, snow_mask, wet_mask);
-  vec3 color;
-  // При roughness 0.86 снежный GGX незаметен рядом с его светлым diffuse, но всё равно удваивал
-  // обход светил и shadow-map samples на каждом покрытом пикселе. Зеркальная ветка нужна именно
-  // жидкой плёнке; снег выражается альбедо, пятнами и настоящей толщиной.
-  if (wet_mask > 1e-4) {
+  float rain_memory;
+  float snow_memory;
+  pf08_surface_memory_material(sky_data.sky, precipitation_memory, in_world_position, normal,
+                               in_foliage_height.x, in_albedo, surface_albedo,
+                               rain_memory, snow_memory);
+  vec3 primary_direct;
+  const vec3 illuminance =
+    pf08_surface_illuminance(sky_data.sky, transmittance_lut, sky_view_lut, planet_point,
+                             in_world_position, normal, view_distance, receiver_bias_scale,
+                             direct_visibility, sky_visibility, primary_direct);
+  vec3 color = illuminance * surface_albedo / pf08_pi;
+  if (snow_memory > 1e-4 && sky_data.sky.star_direction[0].y > 0.0) {
     const vec3 view_direction = normalize(camera_data.camera_position.xyz - in_world_position);
-    color = pf08_surface_wet_radiance(
-      sky_data.sky, transmittance_lut, sky_view_lut, planet_point, in_world_position, normal,
-      view_direction, view_distance, receiver_bias_scale, direct_visibility, sky_visibility,
-      surface_albedo, roughness, f0);
-  } else {
-    const vec3 illuminance =
-      pf08_surface_illuminance(sky_data.sky, transmittance_lut, sky_view_lut, planet_point,
-                               in_world_position, normal, view_distance, receiver_bias_scale,
-                               direct_visibility, sky_visibility);
-    color = illuminance * surface_albedo / pf08_pi;
+    const float sparkle = pf08_snow_sparkle(in_world_position, normal, view_direction,
+                                             sky_data.sky.star_direction[0].xyz, snow_memory);
+    color += primary_direct * sparkle * 0.025;
   }
 
   // Воздух между предметом и глазом. Ось расстояния таблицы квадратичная, поэтому и выборка идёт по

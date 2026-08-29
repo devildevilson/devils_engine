@@ -80,6 +80,12 @@
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {
+  name = surface_memory_material
+  shaders = { compute = "surface_memory.comp.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
   name = rain_material
   shaders = { vertex = "rain.vert.glsl", fragment = "rain.frag.glsl" }
   // Depth сравнивается вручную с уже готовым scene_depth: weather_target глубины не содержит.

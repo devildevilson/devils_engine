@@ -152,6 +152,21 @@ sky_gpu_block pack_sky_block(const sky_state& state, const sky_state& star_frame
   block.presentation_params =
     glm::vec4(static_cast<float>(output.disc_scale), static_cast<float>(output.star_density),
               static_cast<float>(output.star_brightness), static_cast<float>(output.galaxy_concentration));
+  block.rainbow_appearance =
+    glm::vec4(static_cast<float>(output.rainbow.intensity),
+              static_cast<float>(output.rainbow.saturation),
+              static_cast<float>(output.rainbow.width),
+              static_cast<float>(output.rainbow.sharpness));
+  block.rainbow_context =
+    glm::vec4(static_cast<float>(output.rainbow.veil_strength),
+              static_cast<float>(output.rainbow.background_contrast),
+              static_cast<float>(output.rainbow.persistence),
+              static_cast<float>(output.rainbow.rain_cutoff_mm_h));
+  block.rainbow_sources =
+    glm::vec4(static_cast<float>(output.rainbow.sources),
+              static_cast<float>(output.rainbow.secondary_bow_strength),
+              static_cast<float>(output.rainbow.source_balance),
+              static_cast<float>(output.rainbow.source_separation_scale));
 
   return block;
 }

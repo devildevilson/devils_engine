@@ -19,7 +19,7 @@
 #include "fixture.h"
 #include "survey.h"
 #include "sky_view.h"
-#include "surface_weather.h"
+#include "surface_memory.h"
 #include "weather.h"
 
 using namespace devils_engine;
@@ -73,7 +73,7 @@ void print_usage() {
                "  --time-scale=F      игровых суток за реальную секунду\n"
                "  --ev=F              зафиксировать EV100 вместо адаптации\n"
                "  --ev-bias=F         экспокоррекция в стопах\n"
-               "  --preset=NAME       именованное состояние: noon, double_sunset, night, eclipse\n"
+               "  --preset=NAME       noon, double_sunset, double_rainbow, night, eclipse\n"
                "  --weather=NAME      состояние: clear, haze, windy, fog, cloudy, overcast, rain, snow\n"
                "  --weather-transition=S  длительность runtime-перехода по T, реальные секунды\n"
                "  --night-vision=F    сила ночного зрения, 0 отключает\n"
@@ -116,18 +116,26 @@ void print_usage() {
                "  --precip-coverage=F world-space доля площади под осадками\n"
                "  --precip-cell=M     размер дождевой/снежной погодной ячейки\n"
                "  --precip-speed=MPS advection общего precipitation field\n"
-               "  --precip-light-stride=N  шаг lighting осадков по froxel Z (1..4; default 2)\n"
+               "  --precip-light-stride=N  шаг lighting осадков по froxel Z (1..4; default 3)\n"
                "  --splash-mist=1/M  extinction приземной взвеси от ударов\n"
                "  --splash-height=M  scale height приземной водяной взвеси\n"
                "  --rain-mid-radius=M дальность процедурного среднего дождя\n"
                "  --snow-mid-radius=M дальность процедурного среднего снега\n"
                "  --surface-age=MIN   предварительно выдержать поверхность под стартовой погодой\n"
+               "  --recent-rain=MM --recent-snow=MM  начальная world-map память для after-effects\n"
                "  --surface-time-scale=F мировых секунд накопления за реальную секунду\n"
                "  --snow-melt=MMH     скорость таяния водного эквивалента без снегопада\n"
-               "  --surface-dry-half-life=H  полупериод высыхания wetness в мировых часах\n"
-               "  --no-surface-weather отключить накопление и весь визуальный отклик\n"
-               "  --no-snow-displacement оставить покрытие, но убрать геометрическую толщину\n"
-               "  --debug=8|9|10      transmittance объёма | cloud density | cloud shadow\n"
+               "  --surface-dry-half-life=H  полупериод rain-memory в мировых часах\n"
+               "  --no-surface-weather скрыть простой material response, сохранив world-map history\n"
+               "  --rainbow-intensity=F --rainbow-saturation=F  яркость и чистота цветов радуги\n"
+               "  --rainbow-width=F --rainbow-sharpness=F  ширина и чёткость спектральных полос\n"
+               "  --rainbow-veil=F --rainbow-contrast=F  мягкая дуга и затемнение Alexander band\n"
+               "  --rainbow-persistence=F --rainbow-rain-cutoff=MMH  окно after-rain\n"
+               "  --rainbow-sources=primary|brightest|all  какие светила создают дуги\n"
+               "  --rainbow-source-balance=F  0 физическая яркость, 1 равные дуги\n"
+               "  --rainbow-separation=F  художественный множитель разделения дуг\n"
+               "  --rainbow-secondary=F  вторичный метеорологический порядок около 51°\n"
+               "  --debug=8|9|10|11   volume T | cloud density | cloud shadow | surface memory\n"
                "  --march-steps=N     шагов основного марша неба\n"
                "  --aerial-range=KM   дальность таблицы воздушной перспективы\n"
                "  --camera-height=KM  высота наблюдателя над поверхностью\n"
@@ -379,17 +387,51 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.shelter_occlusion = false;
     } else if (read_prefixed(argument, "--surface-age=", value)) {
       out.view.surface_age_minutes = std::stod(value);
+    } else if (read_prefixed(argument, "--recent-rain=", value)) {
+      out.view.initial_rain_memory_mm = std::stod(value);
+    } else if (read_prefixed(argument, "--recent-snow=", value)) {
+      out.view.initial_snow_memory_mm = std::stod(value);
     } else if (read_prefixed(argument, "--surface-time-scale=", value)) {
-      out.view.surface_weather.world_seconds_per_real_second = std::stod(value);
+      out.view.surface_memory.world_seconds_per_real_second = std::stod(value);
     } else if (read_prefixed(argument, "--snow-melt=", value)) {
-      out.view.surface_weather.snow_melt_mm_h = std::stod(value);
+      out.view.surface_memory.snow_melt_mm_h = std::stod(value);
     } else if (read_prefixed(argument, "--surface-dry-half-life=", value)) {
-      out.view.surface_weather.dry_half_life_hours = std::stod(value);
+      out.view.surface_memory.dry_half_life_hours = std::stod(value);
     } else if (argument == "--no-surface-weather") {
       out.view.surface_response = false;
-      out.view.snow_displacement = false;
-    } else if (argument == "--no-snow-displacement") {
-      out.view.snow_displacement = false;
+    } else if (read_prefixed(argument, "--rainbow-intensity=", value)) {
+      out.view.output.rainbow.intensity = std::stod(value);
+    } else if (read_prefixed(argument, "--rainbow-saturation=", value)) {
+      out.view.output.rainbow.saturation = std::stod(value);
+    } else if (read_prefixed(argument, "--rainbow-width=", value)) {
+      out.view.output.rainbow.width = std::stod(value);
+    } else if (read_prefixed(argument, "--rainbow-sharpness=", value)) {
+      out.view.output.rainbow.sharpness = std::stod(value);
+    } else if (read_prefixed(argument, "--rainbow-veil=", value)) {
+      out.view.output.rainbow.veil_strength = std::stod(value);
+    } else if (read_prefixed(argument, "--rainbow-contrast=", value)) {
+      out.view.output.rainbow.background_contrast = std::stod(value);
+    } else if (read_prefixed(argument, "--rainbow-persistence=", value)) {
+      out.view.output.rainbow.persistence = std::stod(value);
+    } else if (read_prefixed(argument, "--rainbow-rain-cutoff=", value)) {
+      out.view.output.rainbow.rain_cutoff_mm_h = std::stod(value);
+    } else if (read_prefixed(argument, "--rainbow-sources=", value)) {
+      if (value == "primary") {
+        out.view.output.rainbow.sources = pf08::rainbow_source_mode::primary;
+      } else if (value == "brightest") {
+        out.view.output.rainbow.sources = pf08::rainbow_source_mode::brightest;
+      } else if (value == "all") {
+        out.view.output.rainbow.sources = pf08::rainbow_source_mode::all;
+      } else {
+        utils::warn("PF08 unknown rainbow source mode '{}'; expected primary|brightest|all", value);
+        return false;
+      }
+    } else if (read_prefixed(argument, "--rainbow-source-balance=", value)) {
+      out.view.output.rainbow.source_balance = std::stod(value);
+    } else if (read_prefixed(argument, "--rainbow-separation=", value)) {
+      out.view.output.rainbow.source_separation_scale = std::stod(value);
+    } else if (read_prefixed(argument, "--rainbow-secondary=", value)) {
+      out.view.output.rainbow.secondary_bow_strength = std::stod(value);
     } else if (read_prefixed(argument, "--march-steps=", value)) {
       out.view.march.primary_steps = int32_t(std::stol(value));
     } else if (read_prefixed(argument, "--camera-height=", value)) {
@@ -1002,6 +1044,18 @@ void verify_weather(checker& check) {
   check.expect(presets.presets.size() == 10,
                "погодные пресеты содержат clear..snow плюс sunshower и downpour",
                std::format("получено {}", presets.presets.size()));
+  bool authored_phase_is_exclusive = true;
+  std::string mixed_preset;
+  for (const auto& preset : presets.presets) {
+    if (preset.rain_rate_mm_h > 0.0 && preset.snow_rate_mm_h > 0.0) {
+      authored_phase_is_exclusive = false;
+      mixed_preset = preset.name;
+      break;
+    }
+  }
+  check.expect(authored_phase_is_exclusive,
+               "authored weather выбирает дождь ИЛИ снег, но не оба сразу",
+               mixed_preset.empty() ? std::string{} : std::format("смешанный preset '{}'", mixed_preset));
   const auto* clear = pf08::find_weather_preset(presets, "clear");
   check.expect(clear != nullptr, "clear weather объявлена");
   if (clear != nullptr) {
@@ -1065,38 +1119,6 @@ void verify_weather(checker& check) {
                  state.snow_flake_size_m > 0.01,
                  "authored снег медленнее дождя и имеет видимый мировой размер");
 
-    pf08::surface_weather_settings settings;
-    pf08::surface_weather_state one_step;
-    pf08::surface_weather_state many_steps;
-    pf08::advance_surface_weather(one_step, state, settings, 60.0);
-    for (uint32_t i = 0; i < 60; ++i) {
-      pf08::advance_surface_weather(many_steps, state, settings, 1.0);
-    }
-    check.expect_near(one_step.snow_water_mm, 7.0, 1e-12,
-                      "одна реальная минута на штатной шкале накапливает час authored снега");
-    check.expect_near(many_steps.snow_water_mm, one_step.snow_water_mm, 1e-12,
-                      "snowpack не зависит от разбиения времени на кадры");
-    const auto accumulated = pf08::sample_surface_weather(one_step, settings);
-    check.expect_near(accumulated.snow_depth_m, 0.070, 1e-12,
-                      "водный эквивалент переводится в геометрическую толщину снега");
-
-    auto clear_weather = state;
-    clear_weather.snow_rate_mm_h = 0.0;
-    clear_weather.rain_rate_mm_h = 0.0;
-    auto melting = one_step;
-    settings.world_seconds_per_real_second = 3600.0;
-    pf08::advance_surface_weather(melting, clear_weather, settings, 1.0);
-    check.expect_near(melting.snow_water_mm, 6.2, 1e-12,
-                      "после снегопада authored melt снимает водный эквивалент в мм/ч");
-    check.expect(melting.wetness > 0.0,
-                 "талый снег передаёт воду в отклик мокрой поверхности");
-
-    one_step.snow_water_mm = 0.0;
-    one_step.wetness = 1.0;
-    pf08::advance_surface_weather(one_step, clear_weather, settings,
-                                  settings.dry_half_life_hours);
-    check.expect_near(one_step.wetness, 0.5, 1e-14,
-                      "wetness теряет половину за authored dry half-life");
   }
 
   const auto fixture = pf08::make_fixture_scene();

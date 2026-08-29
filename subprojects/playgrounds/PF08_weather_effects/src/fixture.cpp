@@ -182,7 +182,9 @@ scene_instance make_ground_instance(const double centre_x, const double centre_z
                                     const glm::vec3& albedo) {
   // Половинные размеры равны половине: вершинный шейдер умножает положение на удвоенный полуразмер,
   // и половина возвращает диску его собственный масштаб в метрах.
-  return scene_instance{glm::vec4(float(centre_x), 0.0f, float(centre_z), 0.0f),
+  // material=-1 отличает terrain от нейтральной fixture (0) и листвы (1). Это не PBR material id:
+  // единственный consumer — намеренно слабый отклик precipitation-memory.
+  return scene_instance{glm::vec4(float(centre_x), 0.0f, float(centre_z), -1.0f),
                         glm::vec4(0.5f, 0.5f, 0.5f, 0.0f), glm::vec4(albedo, 0.0f)};
 }
 

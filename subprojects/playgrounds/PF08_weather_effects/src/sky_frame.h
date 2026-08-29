@@ -85,9 +85,9 @@ struct alignas(16) sky_gpu_block {
   glm::vec4 snow_shape;
   glm::vec4 shelter_minimum;
   glm::vec4 shelter_maximum;
-  // x snow depth (m), y coverage, z wetness, w visual response enabled.
+  // x initial rain mm, y initial snow-water mm, z dry half-life hours, w visual response enabled.
   glm::vec4 surface_weather;
-  // x displacement enabled, y maximum depth, z cover depth, w patch cell size (m).
+  // x map half extent, y cell size, z world seconds/real second, w snow melt mm/h.
   glm::vec4 surface_weather_shape;
   // x coverage, y world cell (m), z advection (m/s), w edge softness.
   glm::vec4 precipitation_field;
@@ -101,8 +101,14 @@ struct alignas(16) sky_gpu_block {
   // лун в массиве при этом НЕ переставляется: по индексу луны его читает система теней, и сортировка
   // здесь развела бы освещение с затенением без единого предупреждения.
   glm::vec4 moon_distance_km;
+  // x intensity, y saturation, z band width, w edge sharpness.
+  glm::vec4 rainbow_appearance;
+  // x veil, y local background contrast, z memory persistence, w current-rain cutoff mm/h.
+  glm::vec4 rainbow_context;
+  // x source mode, y secondary-order bow, z source balance, w source separation scale.
+  glm::vec4 rainbow_sources;
 };
-static_assert(sizeof(sky_gpu_block) == 816);
+static_assert(sizeof(sky_gpu_block) == 864);
 
 struct atmosphere_settings {
   double height_km = 100.0;         // верх атмосферы над поверхностью
@@ -186,6 +192,31 @@ struct exposure_settings {
   double reference_time_scale = 1.0 / 1440.0;
 };
 
+enum class rainbow_source_mode : uint32_t {
+  primary = 0,
+  brightest = 1,
+  all = 2
+};
+
+// Художественная заметность отделена от геометрии. Радиус дуги и anti-solar direction остаются
+// физическими при separation_scale=1, но проект волен сделать эффект ярче, чище и долговечнее.
+struct rainbow_settings {
+  double intensity = 1.0;
+  double saturation = 1.15;
+  double width = 1.0;
+  double sharpness = 1.0;
+  double veil_strength = 1.0;
+  double background_contrast = 0.08;
+  double persistence = 1.0;
+  double rain_cutoff_mm_h = 8.0;
+  rainbow_source_mode sources = rainbow_source_mode::all;
+  double secondary_bow_strength = 0.0;
+  // Ноль сохраняет физическое отношение illuminance двух светил; единица делает обе дуги равными.
+  double source_balance = 0.65;
+  // Художественное увеличение углового расстояния между источниками только для радуг.
+  double source_separation_scale = 1.0;
+};
+
 struct output_settings {
   double exposure = 1.0e-4;
   // Ночное зрение: при низкой яркости колбочки перестают работать, цвет уходит и картинка холодает.
@@ -221,6 +252,7 @@ struct output_settings {
   // закрытия диска, см. `sky.frag.glsl`.
   double corona_strength = 6.0;
   double star_rotation_scale = 0.15;
+  rainbow_settings rainbow;
 };
 
 // Ключ цветового сценария. Хранится по высоте главного светила: именно она задаёт время суток.
