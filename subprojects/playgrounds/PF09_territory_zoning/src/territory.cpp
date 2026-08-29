@@ -97,6 +97,10 @@ territory::territory(const layout_config& config) : config_(config) {
     if (config_.split[t] == 0) {
       utils::error{}("PF09 layout: tier '{}' subdivides by zero", tier_name(tier(t)));
     }
+    if (config_.split[t] > max_split) {
+      utils::error{}("PF09 layout: tier '{}' subdivides by {}, above the {} the stack buffer holds",
+                     tier_name(tier(t)), config_.split[t], max_split);
+    }
     dim *= config_.split[t];
 
     // Индекс ячейки живёт в 29 битах id вместе с ярусом. Ловим здесь, потому что дальше переполнение
@@ -117,6 +121,10 @@ territory::territory(const layout_config& config) : config_(config) {
 }
 
 glm::dvec2 territory::warp(const glm::dvec2& point_m) const {
+  // Нулевая амплитуда — это не «октавы с нулевым вкладом», а отсутствие варпа. Ранний выход нужен не ради
+  // микрооптимизации, а чтобы `--warp=0` измерял ЦЕНУ варпа, а не считал шум и умножал его на ноль.
+  if (config_.warp_strength == 0.0) return point_m;
+
   auto result = point_m;
 
   // Октавы берут смещение от ИСХОДНОЙ точки, а не от накопленной: последовательный доменный варп
@@ -151,14 +159,19 @@ uint32_t territory::subdivide(const glm::i64vec2 parent_cell, const tier value, 
   const uint32_t count = config_.split[size_t(value)];
   if (count == 1) return 0;
 
+  // Доли считаются ОДИН раз в стековый буфер. Раньше их считали дважды — на сумму и на обход — и это
+  // удваивало число хешей на каждый разрешённый тексель. Клипмап печёт миллионы текселей за перестройку
+  // уровня, поэтому цена одного `resolve` перестала быть мелочью.
+  std::array<double, max_split> weights{};
   double total = 0.0;
   for (uint32_t i = 0; i < count; ++i) {
-    total += split_weight(parent_cell, value, axis, i);
+    weights[i] = split_weight(parent_cell, value, axis, i);
+    total += weights[i];
   }
 
   double cursor = 0.0;
   for (uint32_t i = 0; i < count; ++i) {
-    const double width = split_weight(parent_cell, value, axis, i) / total;
+    const double width = weights[i] / total;
     if (local < cursor + width || i + 1 == count) {
       local = std::clamp((local - cursor) / width, 0.0, std::nextafter(1.0, 0.0));
       return i;

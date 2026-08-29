@@ -6,6 +6,7 @@ cmake_minimum_required(VERSION 3.25)
 add_executable(PF09_territory_zoning
   src/main.cpp
   src/territory.cpp src/territory.h
+  src/clipmap.cpp src/clipmap.h
 )
 target_link_libraries(PF09_territory_zoning PRIVATE
   devils_engine::utils

@@ -51,6 +51,9 @@ enum class tier : uint32_t {
 constexpr size_t tier_count = size_t(tier::count);
 constexpr tier leaf_tier = tier::parcel;
 
+// Предел линейного дробления одного яруса: доли родителя считаются в стековый буфер этого размера.
+constexpr uint32_t max_split = 64;
+
 std::string_view tier_name(const tier value) noexcept;
 
 // Идентификатор территории: ярус в старших битах, индекс ячейки в младших. Ярус внутри id, а не рядом с
