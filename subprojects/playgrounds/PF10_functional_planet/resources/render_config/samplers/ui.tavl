@@ -1,1 +1,2 @@
 { name = ui_linear, filter = linear, address = clamp }
+{ name = decal_nearest, filter = nearest, address = clamp }

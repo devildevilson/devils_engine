@@ -31,6 +31,34 @@ struct surface_hit {
   region_sample region{};
 };
 
+// Compact static political field used by the fragment shader.  The procedural generator remains the
+// canonical authoring/picking source; this is its one-time runtime bake.
+struct political_texel {
+  uint32_t region_id = no_region;
+  float edge_distance = 0.0f;
+};
+static_assert(sizeof(political_texel) == 8);
+
+struct province_graph {
+  std::vector<uint32_t> province_ids;      // sorted; CSR node index -> stable planet-local id
+  std::vector<uint32_t> neighbour_offsets; // size = province_ids.size() + 1
+  std::vector<uint32_t> neighbours;        // CSR values are node indices, not hashed ids
+  std::vector<glm::vec3> centre_directions;
+  std::vector<glm::vec3> label_directions; // deepest sampled interior point, not merely the centroid
+  std::vector<float> label_clearance;      // approximate angular radius available around label_directions
+  std::vector<uint8_t> coastal;
+  uint32_t undirected_edges = 0;
+  uint32_t connected_components = 0;
+};
+
+struct political_atlas {
+  uint32_t face_side = 0;
+  uint32_t water_regions = 0;
+  uint32_t polar_regions = 0;
+  std::vector<political_texel> texels; // six cube faces, (face_side + 1)^2 nodes each
+  province_graph graph;
+};
+
 enum class landmark_kind : uint32_t { city, wonder, construction };
 
 // GPU-facing record. direction_height.xyz is planet-local and survives every globe transform.
@@ -48,6 +76,8 @@ uint32_t hash_cell(glm::ivec3 cell) noexcept;
 float surface_height(glm::vec3 direction) noexcept;
 region_sample sample_region(glm::vec3 direction) noexcept;
 glm::vec3 surface_position(glm::vec3 direction) noexcept;
+std::vector<glm::vec4> bake_surface_vertices(uint32_t face_side);
+political_atlas bake_political_atlas(uint32_t face_side);
 surface_hit intersect_surface(glm::vec3 ray_origin, glm::vec3 ray_direction) noexcept;
 std::vector<landmark> make_landmarks(uint32_t count);
 

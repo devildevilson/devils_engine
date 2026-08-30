@@ -10,6 +10,7 @@ struct viewer_options {
   uint32_t height = 720;
   uint32_t frames = 0;
   uint32_t mesh_side = 256;
+  float camera_distance = 2.62f;
   bool validation = false;
   bool fixed_rotation = false;
   std::string dump_path;

@@ -1,1 +1,2 @@
 { name = scene_target, resources = [ scene_color = color_attachment, scene_depth = depth_attachment ] }
+{ name = label_target, resources = [ scene_color = color_attachment ] }

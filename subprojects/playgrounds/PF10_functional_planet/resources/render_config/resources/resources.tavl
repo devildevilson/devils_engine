@@ -2,8 +2,11 @@
 { name = scene_color, format = sf4, role = hdr_color, size = viewport, swap = per_frame }
 { name = scene_depth, format = d32, role = depth, size = viewport, swap = per_frame }
 { name = camera_buffer, format = c1, role = upload, size = camera_bytes, swap = per_frame }
+// A dedicated never-advanced counter keeps this one-time bake resident while ordinary update constants move.
+{ name = surface_vertices, format = c1, role = upload, size = surface_vertex_bytes, swap = static_surface, type = singlebuffer }
+{ name = political_atlas, format = c1, role = upload, size = political_atlas_bytes, swap = static_surface, type = singlebuffer }
 { name = landmarks, format = c1, role = upload, size = landmark_bytes, swap = per_frame }
-{ name = label_glyphs, format = c1, role = upload, size = label_bytes, swap = per_frame }
+{ name = label_glyphs, format = c1, role = upload, size = label_bytes, swap = static_surface, type = singlebuffer }
 { name = ui_vertices, format = c1, role = upload, size = ui_vertices_bytes, swap = per_frame }
 { name = ui_indices, format = c1, role = upload, size = ui_indices_bytes, swap = per_frame }
 { name = ui_commands, format = c1, role = upload, size = ui_commands_bytes, swap = per_frame }

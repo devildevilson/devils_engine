@@ -6,10 +6,12 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <unordered_map>
 #include <unordered_set>
 
 #include <glm/common.hpp>
 #include <glm/geometric.hpp>
+#include <glm/vec2.hpp>
 
 namespace devils_engine::pf10 {
 namespace {
@@ -116,6 +118,17 @@ glm::vec3 fibonacci_direction(const uint32_t index, const uint32_t count) noexce
   return {std::cos(angle) * radius, y, std::sin(angle) * radius};
 }
 
+glm::vec3 cube_direction(const uint32_t face, const glm::vec2 uv) noexcept {
+  if (face == 0u) return glm::normalize(glm::vec3(1.0f, uv.y, -uv.x));
+  if (face == 1u) return glm::normalize(glm::vec3(-1.0f, uv.y, uv.x));
+  if (face == 2u) return glm::normalize(glm::vec3(uv.x, 1.0f, -uv.y));
+  if (face == 3u) return glm::normalize(glm::vec3(uv.x, -1.0f, uv.y));
+  if (face == 4u) return glm::normalize(glm::vec3(uv.x, uv.y, 1.0f));
+  return glm::normalize(glm::vec3(-uv.x, uv.y, -1.0f));
+}
+
+bool is_land_id(const uint32_t id) noexcept { return (id & 0xc0000000u) == 0u; }
+
 } // namespace
 
 uint32_t hash_cell(const glm::ivec3 cell) noexcept {
@@ -179,6 +192,164 @@ region_sample sample_region(glm::vec3 direction) noexcept {
 glm::vec3 surface_position(glm::vec3 direction) noexcept {
   direction = glm::normalize(direction);
   return direction * (planet_radius + surface_height(direction));
+}
+
+std::vector<glm::vec4> bake_surface_vertices(const uint32_t face_side) {
+  const uint32_t side = std::max(face_side, 1u);
+  const uint64_t nodes_per_face = uint64_t(side + 1u) * uint64_t(side + 1u);
+  std::vector<glm::vec4> result(size_t(nodes_per_face * 6u));
+  for (uint32_t face = 0; face < 6u; ++face) {
+    for (uint32_t y = 0; y <= side; ++y) {
+      for (uint32_t x = 0; x <= side; ++x) {
+        const glm::vec2 uv = glm::vec2(float(x), float(y)) / float(side) * 2.0f - 1.0f;
+        const glm::vec3 direction = cube_direction(face, uv);
+        result[size_t(uint64_t(face) * nodes_per_face + uint64_t(y) * (side + 1u) + x)] =
+          glm::vec4(surface_position(direction), 0.0f);
+      }
+    }
+  }
+  return result;
+}
+
+political_atlas bake_political_atlas(const uint32_t face_side) {
+  political_atlas result{};
+  result.face_side = std::max(face_side, 1u);
+  const uint32_t side = result.face_side;
+  const uint64_t nodes_per_face = uint64_t(side + 1u) * uint64_t(side + 1u);
+  result.texels.resize(size_t(nodes_per_face * 6u));
+
+  struct centre_accumulator {
+    glm::vec3 sum{0.0f};
+    glm::vec3 label_direction{0.0f, 1.0f, 0.0f};
+    float best_edge = -1.0f;
+    uint32_t count = 0;
+    bool coastal = false;
+  };
+  std::unordered_map<uint32_t, centre_accumulator> centres;
+  centres.reserve(5000);
+  std::unordered_set<uint32_t> water_ids;
+  std::unordered_set<uint32_t> polar_ids;
+  std::unordered_set<uint64_t> edge_set;
+  edge_set.reserve(16000);
+
+  const auto texel_index = [=](const uint32_t face, const uint32_t x, const uint32_t y) {
+    return size_t(uint64_t(face) * nodes_per_face + uint64_t(y) * (side + 1u) + x);
+  };
+  for (uint32_t face = 0; face < 6u; ++face) {
+    for (uint32_t y = 0; y <= side; ++y) {
+      for (uint32_t x = 0; x <= side; ++x) {
+        const glm::vec2 uv = glm::vec2(float(x), float(y)) / float(side) * 2.0f - 1.0f;
+        const glm::vec3 direction = cube_direction(face, uv);
+        const auto region = sample_region(direction);
+        result.texels[texel_index(face, x, y)] = {region.id, region.edge_distance};
+        if (region.kind == region_kind::land) {
+          auto& centre = centres[region.id];
+          centre.sum += direction;
+          ++centre.count;
+          if (region.edge_distance > centre.best_edge) {
+            centre.best_edge = region.edge_distance;
+            centre.label_direction = direction;
+          }
+        } else if (region.kind == region_kind::water) water_ids.insert(region.id);
+        else polar_ids.insert(region.id);
+      }
+    }
+  }
+
+  const auto join = [&](const political_texel a, const political_texel b) {
+    if (a.region_id == b.region_id) return;
+    const bool a_land = is_land_id(a.region_id);
+    const bool b_land = is_land_id(b.region_id);
+    if (a_land && b_land) {
+      const uint32_t low = std::min(a.region_id, b.region_id);
+      const uint32_t high = std::max(a.region_id, b.region_id);
+      edge_set.insert((uint64_t(low) << 32u) | uint64_t(high));
+    } else {
+      if (a_land) centres[a.region_id].coastal = true;
+      if (b_land) centres[b.region_id].coastal = true;
+    }
+  };
+  // Shared cube edges are sampled by both faces.  Their identical seam node plus each face's first inward
+  // node makes cross-face province contacts appear in these ordinary horizontal/vertical comparisons too.
+  for (uint32_t face = 0; face < 6u; ++face) {
+    for (uint32_t y = 0; y <= side; ++y) {
+      for (uint32_t x = 0; x <= side; ++x) {
+        const auto current = result.texels[texel_index(face, x, y)];
+        if (x < side) join(current, result.texels[texel_index(face, x + 1u, y)]);
+        if (y < side) join(current, result.texels[texel_index(face, x, y + 1u)]);
+      }
+    }
+  }
+
+  auto& graph = result.graph;
+  result.water_regions = uint32_t(water_ids.size());
+  result.polar_regions = uint32_t(polar_ids.size());
+  graph.province_ids.reserve(centres.size());
+  for (const auto& [id, _] : centres) graph.province_ids.push_back(id);
+  std::ranges::sort(graph.province_ids);
+  std::unordered_map<uint32_t, uint32_t> node_index;
+  node_index.reserve(graph.province_ids.size());
+  graph.centre_directions.resize(graph.province_ids.size());
+  graph.label_directions.resize(graph.province_ids.size());
+  graph.label_clearance.resize(graph.province_ids.size());
+  graph.coastal.resize(graph.province_ids.size());
+  for (uint32_t i = 0; i < graph.province_ids.size(); ++i) {
+    const uint32_t id = graph.province_ids[i];
+    node_index.emplace(id, i);
+    const auto& centre = centres.at(id);
+    graph.centre_directions[i] = glm::normalize(centre.sum);
+    graph.label_directions[i] = centre.label_direction;
+    graph.label_clearance[i] = centre.best_edge / province_frequency;
+    graph.coastal[i] = uint8_t(centre.coastal);
+  }
+
+  std::vector<std::pair<uint32_t, uint32_t>> edges;
+  edges.reserve(edge_set.size());
+  for (const uint64_t packed : edge_set) {
+    edges.emplace_back(node_index.at(uint32_t(packed >> 32u)), node_index.at(uint32_t(packed)));
+  }
+  std::ranges::sort(edges);
+  graph.undirected_edges = uint32_t(edges.size());
+  graph.neighbour_offsets.assign(graph.province_ids.size() + 1u, 0u);
+  for (const auto [a, b] : edges) {
+    ++graph.neighbour_offsets[a + 1u];
+    ++graph.neighbour_offsets[b + 1u];
+  }
+  for (uint32_t i = 1; i < graph.neighbour_offsets.size(); ++i) {
+    graph.neighbour_offsets[i] += graph.neighbour_offsets[i - 1u];
+  }
+  graph.neighbours.resize(edges.size() * 2u);
+  std::vector<uint32_t> cursors = graph.neighbour_offsets;
+  for (const auto [a, b] : edges) {
+    graph.neighbours[cursors[a]++] = b;
+    graph.neighbours[cursors[b]++] = a;
+  }
+  for (uint32_t node = 0; node < graph.province_ids.size(); ++node) {
+    std::sort(graph.neighbours.begin() + graph.neighbour_offsets[node],
+              graph.neighbours.begin() + graph.neighbour_offsets[node + 1u]);
+  }
+
+  std::vector<uint8_t> visited(graph.province_ids.size(), 0u);
+  std::vector<uint32_t> pending;
+  pending.reserve(graph.province_ids.size());
+  for (uint32_t root = 0; root < graph.province_ids.size(); ++root) {
+    if (visited[root]) continue;
+    ++graph.connected_components;
+    visited[root] = 1u;
+    pending.push_back(root);
+    while (!pending.empty()) {
+      const uint32_t node = pending.back();
+      pending.pop_back();
+      for (uint32_t i = graph.neighbour_offsets[node]; i < graph.neighbour_offsets[node + 1u]; ++i) {
+        const uint32_t neighbour = graph.neighbours[i];
+        if (!visited[neighbour]) {
+          visited[neighbour] = 1u;
+          pending.push_back(neighbour);
+        }
+      }
+    }
+  }
+  return result;
 }
 
 surface_hit intersect_surface(const glm::vec3 ray_origin, glm::vec3 ray_direction) noexcept {

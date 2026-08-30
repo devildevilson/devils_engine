@@ -11,34 +11,23 @@ layout(set = 0, binding = 0, std140) uniform CameraBlock {
   uvec4 params;
   vec4 viewport_near;
 } camera_data;
+layout(set = 0, binding = 1, std430) readonly buffer SurfaceVertices { vec4 positions[]; } surface;
 
 layout(location = 0) out vec3 out_local_direction;
 layout(location = 1) out vec3 out_world_position;
 layout(location = 2) out float out_height;
 
-vec3 cube_direction(const uint face, const vec2 uv) {
-  if (face == 0u) return normalize(vec3(1.0, uv.y, -uv.x));
-  if (face == 1u) return normalize(vec3(-1.0, uv.y, uv.x));
-  if (face == 2u) return normalize(vec3(uv.x, 1.0, -uv.y));
-  if (face == 3u) return normalize(vec3(uv.x, -1.0, uv.y));
-  if (face == 4u) return normalize(vec3(uv.x, uv.y, 1.0));
-  return normalize(vec3(-uv.x, uv.y, -1.0));
-}
-
 void main() {
   const uint side = max(camera_data.params.z, 1u);
-  const uint vertices_per_face = side * side * 6u;
-  const uint face = uint(gl_VertexIndex) / vertices_per_face;
-  const uint local_vertex = uint(gl_VertexIndex) % vertices_per_face;
-  const uint cell = local_vertex / 6u;
-  const uint corner_index = local_vertex % 6u;
-  const uvec2 corners[6] = uvec2[6](uvec2(0, 0), uvec2(1, 0), uvec2(1, 1),
-                                    uvec2(0, 0), uvec2(1, 1), uvec2(0, 1));
-  const uvec2 cell_xy = uvec2(cell % side, cell / side) + corners[corner_index];
-  const vec2 uv = vec2(cell_xy) / float(side) * 2.0 - 1.0;
-  const vec3 direction = cube_direction(face, uv);
-  const float height = pf10_surface_height(direction);
-  const vec3 local_position = direction * (PF10_RADIUS + height);
+  const uint face = uint(gl_InstanceIndex) / side;
+  const uint row = uint(gl_InstanceIndex) % side;
+  const uint strip_vertex = uint(gl_VertexIndex);
+  const uvec2 cell_xy = uvec2(strip_vertex / 2u, row + (strip_vertex & 1u));
+  const uint nodes_per_face = (side + 1u) * (side + 1u);
+  const uint node = face * nodes_per_face + cell_xy.y * (side + 1u) + cell_xy.x;
+  const vec3 local_position = surface.positions[node].xyz;
+  const vec3 direction = normalize(local_position);
+  const float height = length(local_position) - PF10_RADIUS;
   const vec3 world_position = (camera_data.planet_to_world * vec4(local_position, 1.0)).xyz;
   gl_Position = camera_data.view_projection * vec4(world_position, 1.0);
   out_local_direction = direction;

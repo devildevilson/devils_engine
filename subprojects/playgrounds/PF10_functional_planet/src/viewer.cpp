@@ -21,6 +21,7 @@
 #include "devils_engine/painter/assets_base.h"
 #include "devils_engine/painter/auxiliary.h"
 #include "devils_engine/painter/graphics_base.h"
+#include "devils_engine/painter/gpu_timing.h"
 #include "devils_engine/painter/makers.h"
 #include "devils_engine/painter/system_info.h"
 #include "devils_engine/painter/vulkan_header.h"
@@ -89,48 +90,85 @@ struct alignas(16) camera_block {
   glm::vec4 border_colour;
   glm::uvec4 params; // selected id, hovered id, cube-face side, flags
   glm::vec4 viewport_near;
+  glm::mat4 inverse_view_projection;
 };
-static_assert(sizeof(camera_block) == 272);
+static_assert(sizeof(camera_block) == 336);
 
-struct alignas(16) label_glyph {
-  glm::vec4 direction_height;
-  glm::vec4 pixel_rect;
+struct alignas(16) decal_glyph {
+  glm::mat4 decal_to_planet;
+  glm::mat4 planet_to_decal;
   glm::vec4 uv_rect;
-  glm::uvec4 params;
+  glm::vec4 fill;
+  glm::vec4 effect; // atlas slot, boldness, softness, label class
 };
-static_assert(sizeof(label_glyph) == 64);
+static_assert(sizeof(decal_glyph) == 176);
 
-std::vector<label_glyph> make_labels(const visage::font_t& font, const uint32_t texture_slot) {
-  struct label_source {
-    const char* text;
-    glm::vec3 direction;
-    float height_px;
-  };
-  const label_source sources[] = {
-    {"NORTHREACH", glm::normalize(glm::vec3(-0.85f, 0.35f, -0.38f)), 20.0f},
-    {"MERIDIAN SEA", glm::normalize(glm::vec3(0.05f, -0.249f, -0.967f)), 18.0f},
-    {"EMBER COAST", glm::normalize(glm::vec3(-0.73f, -0.50f, -0.46f)), 18.0f}};
-  std::vector<label_glyph> result;
-  for (const auto& source : sources) {
-    float cursor = -float(font.text_width(source.height_px, source.text)) * 0.5f;
-    for (const unsigned char character : std::string_view(source.text)) {
+struct label_set {
+  std::vector<decal_glyph> glyphs;
+  uint32_t empire_glyphs = 0;
+  uint32_t province_glyphs = 0;
+};
+
+void append_surface_label(std::vector<decal_glyph>& result, const visage::font_t& font,
+                          const std::string_view text, glm::vec3 anchor, const float font_height,
+                          const glm::vec4 fill, const uint32_t texture_slot, const uint32_t owner_region) {
+  anchor = glm::normalize(anchor);
+  const glm::vec3 reference = std::abs(anchor.y) > 0.92f ? glm::vec3(1.0f, 0.0f, 0.0f) :
+                                                           glm::vec3(0.0f, 1.0f, 0.0f);
+  const glm::vec3 right = glm::normalize(glm::cross(reference, anchor));
+  const glm::vec3 up = glm::normalize(glm::cross(anchor, right));
+  float cursor = -float(font.text_width(font_height, text)) * 0.5f;
+  for (const unsigned char character : text) {
       const auto* glyph = font.find_glyph(uint32_t(character));
       if (glyph == nullptr) continue;
-      const float advance = float(glyph->advance) * source.height_px;
+      const float advance = float(glyph->advance) * font_height;
       if (glyph->w > 0 && glyph->h > 0) {
-        const float left = cursor + float(glyph->pl) * source.height_px;
-        const float bottom = float(glyph->pb) * source.height_px;
-        result.push_back(label_glyph{
-          glm::vec4(source.direction, surface_height(source.direction) + 0.055f),
-          glm::vec4(left, bottom, float(glyph->pr - glyph->pl) * source.height_px,
-                    float(glyph->pt - glyph->pb) * source.height_px),
+        const float left = cursor + float(glyph->pl) * font_height;
+        const float bottom = float(glyph->pb) * font_height - font_height * 0.32f;
+        const float width = float(glyph->pr - glyph->pl) * font_height;
+        const float height = float(glyph->pt - glyph->pb) * font_height;
+        const glm::vec3 glyph_direction = glm::normalize(anchor + right * (left + width * 0.5f) +
+                                                          up * (bottom + height * 0.5f));
+        const glm::vec3 glyph_right = glm::normalize(right - glyph_direction * glm::dot(right, glyph_direction));
+        const glm::vec3 glyph_up = glm::normalize(glm::cross(glyph_direction, glyph_right));
+        const glm::vec3 centre = surface_position(glyph_direction);
+        constexpr float projection_depth = 0.120f;
+        const glm::mat4 decal_to_planet{
+          glm::vec4(glyph_right * width, 0.0f), glm::vec4(glyph_up * height, 0.0f),
+          glm::vec4(glyph_direction * projection_depth, 0.0f), glm::vec4(centre, 1.0f)};
+        result.push_back(decal_glyph{
+          decal_to_planet, glm::inverse(decal_to_planet),
           glm::vec4(float(glyph->al / double(font.width)), float(glyph->ab / double(font.height)),
                     float(glyph->ar / double(font.width)), float(glyph->at / double(font.height))),
-          glm::uvec4(texture_slot, 0, 0, 0)});
+          fill, glm::vec4(float(texture_slot), 0.0f, 0.05f, std::bit_cast<float>(owner_region))});
       }
       cursor += advance;
-    }
   }
+}
+
+label_set make_labels(const visage::font_t& font, const uint32_t texture_slot, const province_graph& graph) {
+  label_set result;
+  result.glyphs.reserve(graph.province_ids.size() * 6u + 64u);
+  struct empire_source { const char* text; glm::vec3 direction; };
+  constexpr empire_source empires[] = {
+    {"NORTHREACH", {-0.85f, 0.35f, -0.38f}},
+    {"MERIDIAN SEA", {0.05f, -0.249f, -0.967f}},
+    {"EMBER COAST", {-0.73f, -0.50f, -0.46f}}};
+  for (const auto& source : empires) {
+    append_surface_label(result.glyphs, font, source.text, source.direction, 0.034f,
+                         glm::vec4(0.94f, 0.91f, 0.80f, 1.0f), texture_slot, no_region);
+  }
+  result.empire_glyphs = uint32_t(result.glyphs.size());
+  for (uint32_t province = 0; province < graph.province_ids.size(); ++province) {
+    const std::string text = std::format("P{:04}", province + 1u);
+    const float unit_width = std::max(float(font.text_width(1.0, text)), 0.001f);
+    const float fitted_height = std::min(0.0080f, graph.label_clearance[province] * 1.45f / unit_width);
+    append_surface_label(result.glyphs, font, text,
+                         graph.label_directions[province], fitted_height,
+                         glm::vec4(0.95f, 0.94f, 0.88f, 0.96f), texture_slot,
+                         graph.province_ids[province]);
+  }
+  result.province_glyphs = uint32_t(result.glyphs.size()) - result.empire_glyphs;
   return result;
 }
 
@@ -350,8 +388,15 @@ int run_viewer(const viewer_options& options) {
     bind_texture_descriptor(base, assets);
 
     const auto landmarks = make_landmarks(24);
-    const auto labels = make_labels(overlay.font_metrics(), font_texture);
-    const auto survey = survey_planet(600000);
+    constexpr uint32_t political_atlas_side = 512u;
+    const auto surface_vertices = bake_surface_vertices(options.mesh_side);
+    auto politics = bake_political_atlas(political_atlas_side);
+    write_buffer(base, "surface_vertices", surface_vertices.data(), surface_vertices.size() * sizeof(glm::vec4));
+    write_buffer(base, "political_atlas", politics.texels.data(), politics.texels.size() * sizeof(political_texel));
+    politics.texels.clear();
+    politics.texels.shrink_to_fit();
+    const auto labels = make_labels(overlay.font_metrics(), font_texture, politics.graph);
+    write_buffer(base, "label_glyphs", labels.glyphs.data(), labels.glyphs.size() * sizeof(decal_glyph));
 
     input::events::clear_bindings();
     bind_key("rotate_up", "key_w");
@@ -370,7 +415,7 @@ int run_viewer(const viewer_options& options) {
 
     float yaw = options.fixed_rotation ? 2.20f : 0.0f;
     float pitch = options.fixed_rotation ? -0.24f : -0.16f;
-    float camera_distance = 2.62f;
+    float camera_distance = options.camera_distance;
     bool auto_rotate = !options.fixed_rotation;
     bool political = true;
     bool show_objects = true;
@@ -384,20 +429,24 @@ int run_viewer(const viewer_options& options) {
 
     auto previous_time = std::chrono::steady_clock::now();
     const auto start_time = previous_time;
-    playground::frame_pacer pacer(60u);
+    // PF10 is a throughput laboratory. Presentation already prefers MAILBOX and falls back to IMMEDIATE;
+    // an additional producer deadline would hide the exact performance this slice is meant to measure.
+    playground::frame_pacer pacer(0u);
     painter::graphics_ctx context;
     context.base = &base;
     context.assets = &assets;
+    painter::gpu_timestamp_profiler gpu_profiler(base);
+    context.set_gpu_profiler(&gpu_profiler);
     uint32_t drawn_frames = 0;
     std::vector<std::string> detail;
 
     while (!input::should_close(window)) {
       input::poll_events();
       const auto now = std::chrono::steady_clock::now();
-      const float dt = options.fixed_rotation ? 1.0f / 60.0f
-                                               : std::clamp(std::chrono::duration<float>(now - previous_time).count(), 0.0f, 0.1f);
+      const float real_dt = std::clamp(std::chrono::duration<float>(now - previous_time).count(), 0.0f, 0.1f);
+      const float dt = options.fixed_rotation ? 1.0f / 60.0f : real_dt;
       previous_time = now;
-      input::events::update(size_t(dt * 1.0e6f));
+      input::events::update(size_t(real_dt * 1.0e6f));
 
       if (resize_pending) {
         vk::Device(device).waitIdle();
@@ -405,7 +454,7 @@ int run_viewer(const viewer_options& options) {
         resize_pending = false;
       }
       if (scroll_accumulator != 0.0) {
-        camera_distance = std::clamp(camera_distance * float(std::pow(0.88, scroll_accumulator)), 2.05f, 4.5f);
+        camera_distance = std::clamp(camera_distance * float(std::pow(0.88, scroll_accumulator)), 1.16f, 4.5f);
         scroll_accumulator = 0.0;
       }
 
@@ -455,8 +504,13 @@ int run_viewer(const viewer_options& options) {
       }
 
       detail.clear();
-      detail.push_back(std::format("sampled playable provinces: {}  water regions: {}  polar regions: {}",
-                                   survey.land_regions, survey.water_regions, survey.polar_regions));
+      detail.push_back(std::format("materialized playable provinces: {}  water regions: {}  polar regions: {}",
+                                   politics.graph.province_ids.size(), politics.water_regions, politics.polar_regions));
+      detail.push_back(std::format("adjacency: {} nodes  {} edges  {} land components  mean degree {:.2f}",
+                                   politics.graph.province_ids.size(), politics.graph.undirected_edges,
+                                   politics.graph.connected_components,
+                                   politics.graph.province_ids.empty() ? 0.0 :
+                                     double(politics.graph.neighbours.size()) / double(politics.graph.province_ids.size())));
       detail.push_back(std::format("mesh: 6 x {} x {} cells = {} procedural triangles", options.mesh_side,
                                    options.mesh_side, uint64_t(options.mesh_side) * options.mesh_side * 12ull));
       if (hit.hit) {
@@ -467,6 +521,13 @@ int run_viewer(const viewer_options& options) {
       detail.push_back(std::format("border palette {}  political {}  object anchors {}  distance {:.2f} R",
                                    palette % 4u, political ? "on" : "off", show_objects ? landmarks.size() : 0,
                                    camera_distance));
+      detail.push_back(camera_distance < 1.72f ?
+                         std::format("surface decals: province LOD ({} glyph volumes)", labels.province_glyphs) :
+                         std::format("surface decals: empire LOD ({} glyph volumes)", labels.empire_glyphs));
+      if (gpu_profiler.has_results()) {
+        detail.push_back(std::format("GPU {:.3f} ms ({:.0f} fps equivalent)", gpu_profiler.frame_milliseconds(),
+                                     1000.0 / std::max(gpu_profiler.frame_milliseconds(), 0.001)));
+      }
       overlay.set_detail_lines(detail);
 
       if (!base.can_draw()) {
@@ -485,21 +546,28 @@ int run_viewer(const viewer_options& options) {
       camera.border_colour = border_palette(palette);
       camera.params = glm::uvec4(selected, hovered, options.mesh_side,
                                  (political ? 1u : 0u) | (show_objects ? 2u : 0u));
-      camera.viewport_near = glm::vec4(float(pending_width), float(pending_height), 0.05f, 1.0f);
+      camera.viewport_near = glm::vec4(float(pending_width), float(pending_height), 0.05f,
+                                       float(political_atlas_side));
+      camera.inverse_view_projection = glm::inverse(camera.view_projection);
       write_buffer(base, "camera_buffer", &camera, sizeof(camera));
       write_buffer(base, "landmarks", landmarks.data(), landmarks.size() * sizeof(landmark));
-      write_buffer(base, "label_glyphs", labels.data(), labels.size() * sizeof(label_glyph));
 
-      const uint32_t planet_vertices = options.mesh_side * options.mesh_side * 6u * 6u;
-      const VkDrawIndirectCommand planet_command{planet_vertices, 1, 0, 0};
+      // One triangle strip per cube-face row. Instance boundaries restart the strip for free, retaining the
+      // exact 2*side*side triangles while invoking ~3x fewer vertices than the old repeated triangle list.
+      const VkDrawIndirectCommand planet_command{2u * (options.mesh_side + 1u), 6u * options.mesh_side, 0, 0};
       const VkDrawIndirectCommand marker_command{12, show_objects ? uint32_t(landmarks.size()) : 0u, 0, 0};
-      const VkDrawIndirectCommand label_command{6, political ? uint32_t(labels.size()) : 0u, 0, 0};
+      const bool province_label_lod = camera_distance < 1.72f;
+      const VkDrawIndirectCommand label_command{
+        6u,
+        political ? (province_label_lod ? labels.province_glyphs : labels.empire_glyphs) : 0u,
+        0u,
+        province_label_lod ? labels.empire_glyphs : 0u};
       base.write_constant_data(base.find_constant("planet_draw"), planet_command);
       base.write_constant_data(base.find_constant("marker_draw"), marker_command);
       base.write_constant_data(base.find_constant("label_draw"), label_command);
       base.update_event();
 
-      const uint64_t delta_us = uint64_t(std::max(dt, 1.0e-6f) * 1.0e6f);
+      const uint64_t delta_us = uint64_t(std::max(real_dt, 1.0e-6f) * 1.0e6f);
       const uint64_t stamp_us = uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count());
       overlay.update(delta_us, stamp_us);
       write_overlay(base, overlay);
@@ -516,6 +584,11 @@ int run_viewer(const viewer_options& options) {
     if (!options.dump_path.empty()) {
       dump_scene(base, options.dump_path);
       utils::info("PF10 viewer: frame saved to '{}'", options.dump_path);
+    }
+    if (gpu_profiler.has_results()) {
+      utils::info("PF10 GPU frame {:.3f} ms ({:.1f} fps equivalent)", gpu_profiler.frame_milliseconds(),
+                  1000.0 / std::max(gpu_profiler.frame_milliseconds(), 0.001));
+      for (const auto& pass : gpu_profiler.passes()) utils::info("  {}: {:.3f} ms", pass.name, pass.milliseconds);
     }
     base.dump_cache_on_disk(cache_path);
   }

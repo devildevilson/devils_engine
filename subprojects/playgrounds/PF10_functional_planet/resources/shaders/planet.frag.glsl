@@ -11,6 +11,8 @@ layout(set = 0, binding = 0, std140) uniform CameraBlock {
   uvec4 params;
   vec4 viewport_near;
 } camera_data;
+struct PoliticalTexel { uint region_id; float edge_distance; };
+layout(set = 0, binding = 2, std430) readonly buffer PoliticalAtlas { PoliticalTexel texels[]; } political_atlas;
 
 layout(location = 0) in vec3 in_local_direction;
 layout(location = 1) in vec3 in_world_position;
@@ -24,9 +26,48 @@ vec3 province_colour(const uint id) {
   return mix(vec3(0.24, 0.31, 0.18), vec3(0.64, 0.52, 0.31), random * 0.72);
 }
 
+struct CubeCoordinate { uint face; vec2 uv; };
+
+CubeCoordinate cube_coordinate(const vec3 direction) {
+  const vec3 magnitude = abs(direction);
+  if (magnitude.x >= magnitude.y && magnitude.x >= magnitude.z) {
+    if (direction.x >= 0.0) return CubeCoordinate(0u, vec2(-direction.z, direction.y) / magnitude.x);
+    return CubeCoordinate(1u, vec2(direction.z, direction.y) / magnitude.x);
+  }
+  if (magnitude.y >= magnitude.z) {
+    if (direction.y >= 0.0) return CubeCoordinate(2u, vec2(direction.x, -direction.z) / magnitude.y);
+    return CubeCoordinate(3u, vec2(direction.x, direction.z) / magnitude.y);
+  }
+  if (direction.z >= 0.0) return CubeCoordinate(4u, vec2(direction.x, direction.y) / magnitude.z);
+  return CubeCoordinate(5u, vec2(-direction.x, direction.y) / magnitude.z);
+}
+
+PoliticalTexel atlas_texel(const uint face, const uvec2 xy, const uint side) {
+  const uint stride = side + 1u;
+  return political_atlas.texels[face * stride * stride + xy.y * stride + xy.x];
+}
+
+pf10_region_sample sample_baked_region(const vec3 direction) {
+  const uint side = uint(camera_data.viewport_near.w + 0.5);
+  const CubeCoordinate cube = cube_coordinate(direction);
+  const vec2 location = clamp((cube.uv * 0.5 + 0.5) * float(side), vec2(0.0), vec2(float(side)));
+  const uvec2 nearest_xy = uvec2(location + 0.5);
+  const PoliticalTexel nearest = atlas_texel(cube.face, nearest_xy, side);
+  const uvec2 low = uvec2(floor(location));
+  const uvec2 high = min(low + 1u, uvec2(side));
+  const vec2 blend = fract(location);
+  const float edge0 = mix(atlas_texel(cube.face, uvec2(low.x, low.y), side).edge_distance,
+                          atlas_texel(cube.face, uvec2(high.x, low.y), side).edge_distance, blend.x);
+  const float edge1 = mix(atlas_texel(cube.face, uvec2(low.x, high.y), side).edge_distance,
+                          atlas_texel(cube.face, uvec2(high.x, high.y), side).edge_distance, blend.x);
+  const uint high_bits = nearest.region_id & 0xc0000000u;
+  const uint kind = high_bits == 0xc0000000u ? 2u : (high_bits == 0x80000000u ? 1u : 0u);
+  return pf10_region_sample(nearest.region_id, kind, mix(edge0, edge1, blend.y));
+}
+
 void main() {
   const vec3 direction = normalize(in_local_direction);
-  const pf10_region_sample region = pf10_sample_region(direction);
+  const pf10_region_sample region = sample_baked_region(direction);
   const bool political = (camera_data.params.w & 1u) != 0u;
   vec3 albedo;
   if (region.kind == 2u) {

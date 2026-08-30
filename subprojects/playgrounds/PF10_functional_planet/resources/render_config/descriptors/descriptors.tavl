@@ -1,16 +1,25 @@
-{ name = planet_data, layout = [ { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" } ] }
+{
+  name = planet_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" },
+    { resource = surface_vertices, usage = storage_read, stage = vertex },
+    { resource = political_atlas, usage = storage_read, stage = fragment }
+  ]
+}
 {
   name = marker_data
   layout = [
-    { resource = camera_buffer, usage = uniform, stage = vertex },
+    { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" },
     { resource = landmarks, usage = storage_read, stage = vertex }
   ]
 }
 {
   name = label_data
   layout = [
-    { resource = camera_buffer, usage = uniform, stage = vertex },
-    { resource = label_glyphs, usage = storage_read, stage = vertex }
+    { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" },
+    { resource = label_glyphs, usage = storage_read, stage = vertex },
+    { resource = scene_depth, usage = depth_read, sampler = decal_nearest, stage = fragment },
+    { resource = political_atlas, usage = storage_read, stage = fragment }
   ]
 }
 { name = camera_data, layout = [ { resource = camera_buffer, usage = uniform, stage = vertex } ] }

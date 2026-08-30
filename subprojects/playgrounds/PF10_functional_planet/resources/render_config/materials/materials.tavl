@@ -13,7 +13,7 @@
 {
   name = label_material
   shaders = { vertex = "label.vert.glsl", fragment = "label.frag.glsl" }
-  depth = { test = true, write = false, compare = greater }
+  depth = { test = false, write = false, compare = always }
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {

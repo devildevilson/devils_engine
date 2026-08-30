@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <format>
 #include <iostream>
+#include <ranges>
 #include <string>
 #include <string_view>
 
@@ -22,7 +23,8 @@ void usage() {
                "  --verify               проверить surface/province contracts без Vulkan\n"
                "  --frames=N             закрыть viewer после N кадров\n"
                "  --shot=PATH            сохранить последний кадр в PPM\n"
-               "  --mesh=N               клеток на грань cube-sphere (32..512, default 256)\n"
+               "  --mesh=N               клеток на грань cube-sphere (32..256, default 256)\n"
+               "  --distance=R           расстояние камеры 1.16..4.5 R (default 2.62)\n"
                "  --fixed-rotation       детерминированный угол глобуса для кадров\n"
                "  --validation           включить Vulkan validation layers\n";
 }
@@ -55,6 +57,40 @@ int verify() {
   check(first.sampled_max_height - first.sampled_min_height > 0.075f,
         "geometry has a visible radial height range");
   check(first.fingerprint == second.fingerprint, std::format("deterministic fingerprint 0x{:016x}", first.fingerprint));
+
+  const auto politics = pf10::bake_political_atlas(512u);
+  const auto& graph = politics.graph;
+  check(graph.province_ids.size() >= first.land_regions && graph.province_ids.size() <= 5000u,
+        std::format("dense adjacency bake covers the survey and stays in budget ({}/{})",
+                    graph.province_ids.size(), first.land_regions));
+  check(graph.neighbour_offsets.size() == graph.province_ids.size() + 1u &&
+          graph.neighbour_offsets.back() == graph.neighbours.size(),
+        "adjacency graph has a complete CSR layout");
+  bool symmetric = true;
+  bool isolated = false;
+  for (uint32_t node = 0; node < graph.province_ids.size(); ++node) {
+    isolated |= graph.neighbour_offsets[node] == graph.neighbour_offsets[node + 1u];
+    for (uint32_t i = graph.neighbour_offsets[node]; i < graph.neighbour_offsets[node + 1u]; ++i) {
+      const uint32_t neighbour = graph.neighbours[i];
+      if (neighbour >= graph.province_ids.size() || neighbour == node) {
+        symmetric = false;
+        continue;
+      }
+      const auto begin = graph.neighbours.begin() + graph.neighbour_offsets[neighbour];
+      const auto end = graph.neighbours.begin() + graph.neighbour_offsets[neighbour + 1u];
+      symmetric &= std::binary_search(begin, end, node);
+    }
+  }
+  check(symmetric, "every land adjacency is an undirected symmetric edge");
+  check(!isolated, "no playable province is isolated from the navigation graph");
+  const double mean_degree = graph.province_ids.empty() ? 0.0 :
+    double(graph.neighbours.size()) / double(graph.province_ids.size());
+  check(mean_degree >= 4.0 && mean_degree <= 8.0,
+        std::format("mean province degree is plausible ({:.2f})", mean_degree));
+  check(std::ranges::all_of(std::views::iota(size_t(0), graph.province_ids.size()), [&](const size_t node) {
+          return pf10::sample_region(graph.label_directions[node]).id == graph.province_ids[node] &&
+                 graph.label_clearance[node] > 0.0f;
+        }), "every label anchor is a positive-clearance point inside its province");
 
   const glm::vec3 probe = glm::normalize(glm::vec3(0.37f, 0.51f, -0.78f));
   const float original_height = pf10::surface_height(probe);
@@ -100,7 +136,8 @@ int main(const int argc, const char** argv) {
     else if (argument == "--fixed-rotation") options.fixed_rotation = true;
     else if (prefixed(argument, "--frames=", value)) options.frames = uint32_t(std::stoul(value));
     else if (prefixed(argument, "--shot=", value)) options.dump_path = value;
-    else if (prefixed(argument, "--mesh=", value)) options.mesh_side = std::clamp(uint32_t(std::stoul(value)), 32u, 512u);
+    else if (prefixed(argument, "--mesh=", value)) options.mesh_side = std::clamp(uint32_t(std::stoul(value)), 32u, 256u);
+    else if (prefixed(argument, "--distance=", value)) options.camera_distance = std::clamp(std::stof(value), 1.16f, 4.5f);
     else {
       std::cerr << "unknown option: " << argument << '\n';
       usage();

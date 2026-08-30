@@ -1,8 +1,13 @@
 { name = viewport, type = screensize }
 { name = one, type = fixed, value = [1, 0, 0] }
-{ name = camera_bytes, type = fixed, value = [272, 0, 0] }
+{ name = camera_bytes, type = fixed, value = [336, 0, 0] }
 { name = landmark_bytes, type = fixed, value = [3072, 0, 0] }
-{ name = label_bytes, type = fixed, value = [16384, 0, 0] }
+// Six faces at the maximum --mesh=256: 6 * 257 * 257 * sizeof(vec4).
+{ name = surface_vertex_bytes, type = fixed, value = [6340704, 0, 0] }
+// Six 513x513 cube nodes at 8 bytes (stable region id + exact procedural edge distance).
+{ name = political_atlas_bytes, type = fixed, value = [12632112, 0, 0] }
+// ~4.1k temporary province names plus three empire names, 176 bytes per MSDF projection-volume glyph.
+{ name = label_bytes, type = fixed, value = [5242880, 0, 0] }
 { name = ui_vertices_bytes, type = fixed, value = [524288, 0, 0] }
 { name = ui_indices_bytes, type = fixed, value = [131072, 0, 0] }
 { name = ui_commands_bytes, type = fixed, value = [16384, 0, 0] }
