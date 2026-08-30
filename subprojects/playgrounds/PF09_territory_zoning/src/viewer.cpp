@@ -764,10 +764,6 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
         scroll_accumulator = 0.0;
       }
 
-      const double pan = span_m * 0.6 * double(dt);
-      centre.x += pan * (double(input::events::is_pressed("pan_right")) - double(input::events::is_pressed("pan_left")));
-      centre.y += pan * (double(input::events::is_pressed("pan_down")) - double(input::events::is_pressed("pan_up")));
-
       const bool agents_key = input::events::is_pressed("toggle_agents");
       if (agents_key && !agents_latch) show_agents = !show_agents;
       agents_latch = agents_key;
@@ -800,6 +796,27 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
                              12.0, 89.0);
       yaw_rad += float(1.2 * double(dt) * (double(input::events::is_pressed("yaw_right")) -
                                            double(input::events::is_pressed("yaw_left"))));
+
+      // Панорамирование ОТНОСИТЕЛЬНО ВЗГЛЯДА, а не мировых осей. С мировыми осями после поворота на
+      // `Q`/`E` клавиши переставали значить то, что видит игрок: `W` уводил вбок, а на развороте в
+      // полкруга — назад. Базис берётся ТОТ ЖЕ, что и у луча под курсором (`right = forward x up`),
+      // поэтому «вперёд» на клавиатуре и «вглубь экрана» под мышью — одно направление, а не два похожих.
+      //
+      // Считается ПОСЛЕ поворота: иначе кадр, в котором игрок одновременно повернул и пошёл, уезжал бы по
+      // прошлому направлению — это видно как рывок вбок на каждом повороте с зажатым `W`.
+      const glm::dvec2 view_forward{std::sin(double(yaw_rad)), std::cos(double(yaw_rad))};
+      const glm::dvec2 view_right{-view_forward.y, view_forward.x};
+
+      glm::dvec2 step{};
+      step += view_forward * (double(input::events::is_pressed("pan_up")) -
+                              double(input::events::is_pressed("pan_down")));
+      step += view_right * (double(input::events::is_pressed("pan_right")) -
+                            double(input::events::is_pressed("pan_left")));
+
+      // По диагонали идут с той же скоростью, что и по прямой: без этого две зажатые клавиши дают
+      // множитель в корень из двух, и путь наискось незаметно оказывается быстрее.
+      const double step_length = std::sqrt(step.x * step.x + step.y * step.y);
+      if (step_length > 1.0e-6) centre += step * (span_m * 0.6 * double(dt) / step_length);
 
       store.focus(centre);
 
