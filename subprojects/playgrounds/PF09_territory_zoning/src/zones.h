@@ -31,6 +31,7 @@
 // идентификатора зоны, поэтому ссылка через границу сектора разрешается без глобального индекса: по id
 // видно, какой файл открывать.
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <span>
@@ -62,6 +63,7 @@ enum class zone_kind : uint32_t {
   door,        // проём в стене: место, проходимость которого переключается в рантайме
   stair,       // лестница: место, связанное с другим этажом СВЯЗЬЮ, а не общим ребром
   street,      // отрезок улицы между перекрёстками
+  verge,       // обочина: полоса улицы, прилегающая к дому. Именно на неё выходят двери
   crossroad,
   square,
   yard,
@@ -232,6 +234,16 @@ struct zone_record {
   uint32_t prop_begin = 0;
   uint32_t prop_count = 0;
 
+  // Юридическая принадлежность: титул, которому земля принадлежит ПО ПРАВУ. Это НЕ `parent`: `parent` —
+  // пространственная вложенность («где это»), а титул — право («чьё это»), и совпадать они не обязаны.
+  // Дом стоит на улице, но принадлежит не улице. Значение `0xffffffff` — земля ничья.
+  uint32_t title = 0xffffffffu;
+
+  // Скорость перемещения по месту, множитель. Это НЕ флаг «дорога»: мостовая, обочина, комната, грязный
+  // двор и лестница различаются не тем, дорога это или нет, а тем, насколько быстро тут идут. Флаг
+  // отвечал только «да/нет» и заставлял выбирать между «улица» и «не улица» там, где нужен спектр.
+  float speed = 1.0f;
+
   // Индекс в таблице контроля сектора; `no_control` — зона ответа не несёт. Отдельная таблица, а не поле
   // в каждой записи: носителей единицы на тысячи зон, и явное «эта зона отвечает за район» лучше, чем
   // восемь нулевых байт в каждой комнате.
@@ -245,6 +257,7 @@ struct zone_record {
   bool abstract() const noexcept { return part_count == 0; }
   bool impassable() const noexcept { return (tags & uint32_t(zone_flags::impassable)) != 0; }
   bool road() const noexcept { return (tags & uint32_t(zone_flags::road)) != 0; }
+  float step_cost() const noexcept { return 1.0f / std::max(speed, 0.05f); }
   bool closed() const noexcept { return (tags & uint32_t(zone_flags::closed)) != 0; }
 };
 
@@ -372,6 +385,14 @@ public:
   // Смена владельца и уровня преступности — рантайм-событие: район отжали, облаву провели. Переживает
   // выгрузку сектора по той же причине, что и закрытая дверь.
   void set_control(const zone_key carrier, const zone_control& value);
+
+  // Кто держит ЭТО КОНКРЕТНОЕ МЕСТО. Отдельно от `control_at`, и это не дублирование: `control_at`
+  // поднимается до уровня-носителя и отвечает «кто держит квартал», а занять можно ОДНУ ПЛОЩАДЬ, не взяв
+  // квартала. Первая редакция обходилась одним механизмом, и «революционеры заняли площадь» выражалось
+  // как «революционеры взяли район» — то есть ровно то различие, ради которого всё это заводилось,
+  // и терялось.
+  void set_place_holder(const zone_key place, const uint32_t holder);
+  uint32_t place_holder(const zone_key place) const;
   uint32_t control_overrides() const noexcept { return uint32_t(control_.size()); }
 
   // Состояние переключаемых мест. Двери НЕ хранятся как особый вид связи: дверь — зона, и «заперта» это
@@ -423,6 +444,14 @@ private:
     bool operator<(const control_state& other) const noexcept { return key < other.key; }
   };
   std::vector<control_state> control_;
+
+  struct place_state {
+    zone_key key = invalid_key;
+    uint32_t holder = 0;
+
+    bool operator<(const place_state& other) const noexcept { return key < other.key; }
+  };
+  std::vector<place_state> place_holders_;
   stream_stats last_{};
 };
 

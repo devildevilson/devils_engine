@@ -26,6 +26,7 @@
 #include "navigate.h"
 #include "viewer.h"
 #include "tactics.h"
+#include "titles.h"
 #include "world_build.h"
 #include "zones.h"
 #include "territory.h"
@@ -104,7 +105,7 @@ void print_usage() {
                "  --dump=PATH           ppm-срез карты для глаз\n"
                "  --floor=N --cutaway   с какого этажа начинать и срезать ли передний план\n"
                "  --tactics             показать укрытия, наблюдение и веер приказа наведённого места\n"
-               "  --control-map=0|1|2   раскраска: вид места / кто держит район / преступность\n"
+               "  --control-map=0..4    раскраска: вид / кто держит / преступность / собственник / закон\n"
                "  --dump-tier=N         ярус окраски дампа, 0 = world, 6 = parcel\n"
                "  --dump-mode=NAME      zone | owner\n"
                "  --dump-source=NAME    direct | clipmap | residency | zones\n"
@@ -165,7 +166,7 @@ bool parse_options(const int argc, const char** argv, options& out) {
     } else if (argument == "--tactics") {
       out.view.start_tactics = true;
     } else if (read_prefixed(argument, "--control-map=", value)) {
-      out.view.start_control_mode = uint32_t(std::stoul(value)) % 3;
+      out.view.start_control_mode = uint32_t(std::stoul(value)) % 5;
     } else if (read_prefixed(argument, "--view-span=", value)) {
       out.view.start_span_m = std::stod(value);
     } else if (read_prefixed(argument, "--agents=", value)) {
@@ -625,6 +626,8 @@ int run_build_world(const pf09::territory& map, const options& opts) {
   std::cout << std::format("PF09 сборка мира в '{}'\n", world_root(opts).string());
   std::cout << std::format("  {} секторов по {:.0f} м, {} зон, {} связей, {} предметов, {} поселений\n", stats.sectors,
                            pf09::sector_span_m, stats.zones, stats.links, stats.props, stats.settlements);
+  std::cout << std::format("  {} титулов: право отдельным файлом, потому что «кто правит» обязано "
+                           "отвечаться и без подгруженной земли\n", stats.titles);
   std::cout << std::format("  {:.1f} КБ содержимого, собрано за {:.0f} мс, в среднем {:.1f} КБ и {} зон на сектор\n",
                            double(stats.bytes) / 1024.0, stats.millis,
                            double(stats.bytes) / 1024.0 / double(std::max(stats.sectors, 1u)),
@@ -2045,6 +2048,336 @@ const pf09::zone_record* sample_settlement_of(const pf09::zone_store& store, con
 }
 
 
+
+
+// Право на землю: де-юре и де-факто. Проверяется не то, что титулы записались, а то, ради чего они
+// заведены: что карта права и карта силы РАЗДЕЛЕНЫ, что цепочка признаний обрывается на узурпаторе, и
+// что из обрыва вырастает вопрос «чей закон здесь в силе» с ответом, который бывает «ничей».
+void verify_titles(checker& check, pf09::zone_store& store, const options& opts) {
+  pf09::title_book titles;
+  titles.load(pf09::titles_path(world_root(opts)));
+  check.expect(titles.size() > 0, "дерево титулов прочиталось");
+  if (titles.size() == 0) return;
+
+  const pf09::realm_view view{&store, &titles};
+
+  size_t zoned = 0;
+  size_t untitled = 0;
+  size_t rootless = 0;
+  size_t parallel = 0;
+  size_t usurped_wards = 0;
+  size_t wards = 0;
+  size_t under_crown = 0;
+  size_t under_ward = 0;
+  size_t lawless = 0;
+
+  pf09::zone_key sample_house = pf09::invalid_key;
+  pf09::zone_key sample_street = pf09::invalid_key;
+  pf09::zone_key sample_in_usurped = pf09::invalid_key;
+
+  for (int32_t y = 0; y < int32_t(opts.build.sector_side); ++y) {
+    for (int32_t x = 0; x < int32_t(opts.build.sector_side); ++x) {
+      const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
+      if (sector == nullptr) continue;
+
+      for (const auto& record : sector->zones) {
+        if (record.kind == pf09::zone_kind::district) {
+          ++wards;
+          if (record.title != 0xffffffffu && titles.usurped(record.title)) ++usurped_wards;
+        }
+        if (record.level != pf09::zone_level::interior || record.abstract()) continue;
+        ++zoned;
+
+        if (record.title == 0xffffffffu) {
+          ++untitled;
+          continue;
+        }
+
+        const auto chain = titles.chain(record.title);
+        const auto* top = chain.empty() ? nullptr : titles.find(chain.back());
+        if (top == nullptr || top->rank != pf09::title_rank::realm) ++rootless;
+
+        // Две иерархии ПАРАЛЛЕЛЬНЫ, а не дублируют друг друга. Пространственный родитель зала — здание;
+        // его титул — дом. Разные вещи, и совпадать они не должны: «переехал» и «сменил хозяина» —
+        // разные события, и одной иерархией их не выразить.
+        const auto* spatial = store.find(record.parent);
+        if (spatial != nullptr && spatial->title != record.title) ++parallel;
+
+        const auto law = pf09::law_over(view, record.key);
+        if (law == pf09::invalid_title) ++lawless;
+        else {
+          const auto* source = titles.find(law);
+          if (source != nullptr && source->rank == pf09::title_rank::realm) ++under_crown;
+          if (source != nullptr && source->rank == pf09::title_rank::district) {
+            ++under_ward;
+            if (sample_in_usurped == pf09::invalid_key) sample_in_usurped = record.key;
+          }
+        }
+
+        if (record.kind == pf09::zone_kind::hall && sample_house == pf09::invalid_key) sample_house = record.key;
+        if (record.kind == pf09::zone_kind::street && sample_street == pf09::invalid_key) {
+          sample_street = record.key;
+        }
+      }
+    }
+  }
+
+  check.expect(zoned > 0, "места прочитались");
+  check.expect(untitled == 0, "у каждого места есть титул", std::format("{} мест без права", untitled));
+  check.expect(rootless == 0, "цепочка права доходит до державы", std::format("{} оборванных", rootless));
+  check.expect(parallel > 0, "право и пространство — разные иерархии",
+               "титул места всегда совпал с титулом его пространственного родителя");
+  check.expect(usurped_wards > 0, "часть кварталов держит не законный владелец");
+
+  // Обрыв признания — то, ради чего всё это. В законопослушном квартале действует закон державы; в
+  // занятом — закон самого квартала, и корона до него не достаёт.
+  check.expect(under_crown > 0, "в законопослушных местах в силе закон державы");
+  check.expect(under_ward > 0, "в занятом квартале в силе его собственный закон",
+               "нигде не нашлось места, до которого корона не достаёт");
+
+  // Занять МЕСТО — не то же, что взять квартал. Революционеры на площади не становятся хозяевами района.
+  if (sample_street != pf09::invalid_key) {
+    const auto* street = store.find(sample_street);
+    const auto ward = street == nullptr ? 0xffffffffu : street->title;
+    const auto before_ward = titles.holder(ward);
+
+    store.set_place_holder(sample_street, 4242);
+    check.expect(pf09::de_facto_holder(view, sample_street) == 4242,
+                 "занятое место держит тот, кто его занял");
+    check.expect(titles.holder(ward) == before_ward,
+                 "занятие места не делает захватчика хозяином квартала");
+    store.set_place_holder(sample_street, 0);
+  }
+
+  // Частная территория. Улица открыта всем; дом — только своему де-факто держателю, и держателю, а не
+  // законному владельцу: занятый дом закрыт и для хозяина тоже.
+  if (sample_house != pf09::invalid_key && sample_street != pf09::invalid_key) {
+    const auto* house = store.find(sample_house);
+    const auto deed = house == nullptr ? 0xffffffffu : house->title;
+    const auto owner = titles.de_jure_holder(deed);
+
+    check.expect(pf09::may_enter(view, sample_street, 777).allowed, "улица открыта всем");
+    const auto stranger = pf09::may_enter(view, sample_house, 777);
+    check.expect(!stranger.allowed, "в чужой дом просто так не войти");
+    check.expect(stranger.owner == deed, "отказ называет, чью границу нарушают");
+    check.expect(pf09::may_enter(view, sample_house, owner).allowed, "хозяин входит в свой дом");
+
+    // Дом занят чужаком. Право хозяина никуда не делось — а дверь ему больше не открывается, и городской
+    // закон до этого дома не достаёт: цепочка признаний оборвалась на самом доме, а собственность
+    // законов не издаёт.
+    titles.set_holder(deed, 4243);
+    check.expect(!pf09::may_enter(view, sample_house, owner).allowed,
+                 "в занятый дом не входит и законный владелец");
+    check.expect(pf09::may_enter(view, sample_house, 4243).allowed, "входит тот, кто занял");
+    check.expect(titles.de_jure_holder(deed) == owner, "занятие не отменяет права: де-юре владелец прежний");
+    check.expect(pf09::law_over(view, sample_house) == pf09::invalid_title,
+                 "до занятого дома не достаёт ничей закон");
+    titles.set_holder(deed, owner);
+    check.expect(pf09::law_over(view, sample_house) != pf09::invalid_title,
+                 "закон возвращается вместе с законным хозяином");
+  }
+
+  // И следствие для навигации: законопослушный обходит чужую территорию, вор идёт напрямик.
+  //
+  // Пары берутся МЕЖДУ ДОМАМИ, а не между обочинами. Улицы связаны хорошо, чужие дворы на пути между
+  // ними не попадаются вовсе, и первая редакция сравнивала «ноль нарушений против нуля» — то есть была
+  // зелёной и пустой. Чтобы вопрос вообще возник, маршрут должен идти оттуда, где ты хозяин, туда, где
+  // ты гость, мимо третьих владений.
+  std::vector<pf09::part_ref> spots;
+  pf09::zone_key town = pf09::invalid_key;
+  for (int32_t y = 0; y < int32_t(opts.build.sector_side) && spots.size() < 300; ++y) {
+    for (int32_t x = 0; x < int32_t(opts.build.sector_side) && spots.size() < 300; ++x) {
+      const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
+      if (sector == nullptr) continue;
+      for (const auto& record : sector->zones) {
+        if (record.kind != pf09::zone_kind::hall && record.kind != pf09::zone_kind::yard) continue;
+        const auto* home = store.containing(record.key, pf09::zone_kind::settlement);
+        if (home == nullptr) continue;
+        if (town == pf09::invalid_key) town = home->key;
+        if (home->key != town) continue;
+        spots.push_back({record.key, 0});
+        if (spots.size() >= 300) break;
+      }
+    }
+  }
+
+  size_t rude_private = 0;
+  size_t polite_private = 0;
+  size_t compared = 0;
+  size_t rude_longer = 0;
+
+  for (uint32_t i = 0; i < 96 && spots.size() > 2; ++i) {
+    const auto from = spots[utils::splitmix(i * 2ull + 1ull, 0x1a3full) % spots.size()];
+    const auto to = spots[utils::splitmix(i * 2ull + 2ull, 0x1a3full) % spots.size()];
+    if (from == to || from.zone == to.zone) continue;
+
+    const auto* start_zone = store.find(from.zone);
+    const auto* goal_zone = store.find(to.zone);
+    if (start_zone == nullptr || goal_zone == nullptr) continue;
+    (void)goal_zone;
+
+    // Актор — хозяин ТОГО дома, откуда вышел. Тогда «своё» и «чужое» на маршруте различимы, а иначе
+    // хозяином он не был бы нигде и первый же шаг считался бы нарушением.
+    const uint32_t actor = titles.de_jure_holder(start_zone->title);
+    pf09::travel_policy lawful{};
+    lawful.realm = &view;
+    lawful.actor = actor;
+
+    const auto rude = pf09::find_path(store, from, to);
+    const auto polite = pf09::find_path(store, from, to, 65536, lawful);
+    if (rude.empty() || polite.empty()) continue;
+
+    // Считается РОВНО ТО, что минимизирует маршрут, — все шаги по чужому, включая дом назначения. Первая
+    // редакция исключала владения цели и старта «по смыслу»: идти в гости не преступление. Но политика
+    // штрафует их наравне со всеми, и проверка мерила одну величину, а маршрут оптимизировал другую —
+    // на одном сиде из девяти вежливый путь вышел «хуже» на один шаг. Мерить надо то, чем управляешь.
+    const auto count_private = [&](const std::vector<pf09::part_ref>& path) {
+      size_t total = 0;
+      for (const auto& step : path) {
+        if (!pf09::may_enter(view, step.zone, actor).allowed) ++total;
+      }
+      return total;
+    };
+    const auto rude_count = count_private(rude);
+    const auto polite_count = count_private(polite);
+    if (rude_count == 0 && polite_count == 0) continue; // нечего сравнивать: чужого на пути и не было
+
+    ++compared;
+    rude_private += rude_count;
+    polite_private += polite_count;
+    if (polite.size() > rude.size()) ++rude_longer;
+  }
+
+  check.expect(compared > 0, "нашлись маршруты, где чужая территория вообще попадается",
+               "ни на одном пути не оказалось третьих владений — сравнивать нечего, и молчать об этом нельзя");
+  check.expect(polite_private < rude_private, "законопослушный обходит чужую территорию",
+               std::format("{} чужих шагов против {} у безразличного на {} маршрутах", polite_private,
+                           rude_private, compared));
+
+  std::cout << std::format("  замер: титулов {}, кварталов {} (занято {}); мест под законом державы {}, "
+                           "под законом квартала {}, без закона {}; на {} маршрутах законопослушный "
+                           "прошёл {} чужих шагов против {}, крюк сделал на {}\n",
+                           titles.size(), wards, usurped_wards, under_crown, under_ward, lawless, compared,
+                           polite_private, rude_private, rude_longer);
+}
+
+// Улица, нарезанная на мостовую и обочины. Это не отдельный слой и не флаг: то же зонирование, просто
+// мельче, а разница между полосами выражена СКОРОСТЬЮ. Проверяются три следствия, ради которых нарезка и
+// делалась, — иначе она осталась бы лишними записями в файле.
+void verify_roads(checker& check, const pf09::zone_store& store, const options& opts) {
+  size_t roadways = 0;
+  size_t verges = 0;
+  size_t slow_roadway = 0;
+  size_t door_on_roadway = 0;
+  size_t doors = 0;
+  float roadway_speed = 0.0f;
+  float verge_speed = 0.0f;
+
+  for (int32_t y = 0; y < int32_t(opts.build.sector_side); ++y) {
+    for (int32_t x = 0; x < int32_t(opts.build.sector_side); ++x) {
+      const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
+      if (sector == nullptr) continue;
+
+      for (const auto& record : sector->zones) {
+        if (record.kind == pf09::zone_kind::street) {
+          ++roadways;
+          roadway_speed = record.speed;
+        }
+        if (record.kind == pf09::zone_kind::verge) {
+          ++verges;
+          verge_speed = record.speed;
+          if (record.speed >= roadway_speed && roadway_speed > 0.0f) ++slow_roadway;
+        }
+        if (record.kind != pf09::zone_kind::door) continue;
+        ++doors;
+
+        // Дверь дома обязана выходить НА ОБОЧИНУ, а не на мостовую. Ради этого полосы и кладутся
+        // параллельно улице: положи их поперёк — и дверь окажется на проезжей части, а «зона, прилегающая
+        // к дому» перестанет существовать как отдельная вещь.
+        for (const auto& portal : store.portals_of({record.key, 0})) {
+          const auto* other = store.find(portal.other);
+          if (other == nullptr) continue;
+          if (other->kind == pf09::zone_kind::street) ++door_on_roadway;
+        }
+      }
+    }
+  }
+
+  check.expect(roadways > 0 && verges > 0, "улица нарезана на мостовую и обочины",
+               std::format("мостовых {}, обочин {}", roadways, verges));
+  check.expect(roadway_speed > verge_speed, "по мостовой идут быстрее, чем по обочине",
+               std::format("{:.2f} против {:.2f}", roadway_speed, verge_speed));
+  check.expect(slow_roadway == 0, "ни одна обочина не быстрее мостовой");
+  check.expect(door_on_roadway == 0, "дверь дома выходит на обочину, а не на проезжую часть",
+               std::format("{} дверей из {} открываются прямо на мостовую", door_on_roadway, doors));
+
+  // И главное следствие: маршрут ТЯНЕТСЯ на мостовую. Скорость, которая ни на что не влияет, — это
+  // просто число в файле.
+  // Обочины берутся ИЗ ОДНОГО ГОРОДА. Между городами внутреннего пути и не должно быть — туда ходят
+  // дорогой уровнем выше, — и пары где попало давали шесть коротких маршрутов вместо шестидесяти
+  // четырёх длинных. На коротком маршруте мостовая и не успевает себя проявить.
+  std::vector<pf09::part_ref> spots;
+  pf09::zone_key town = pf09::invalid_key;
+  for (int32_t y = 0; y < int32_t(opts.build.sector_side) && spots.size() < 400; ++y) {
+    for (int32_t x = 0; x < int32_t(opts.build.sector_side) && spots.size() < 400; ++x) {
+      const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
+      if (sector == nullptr) continue;
+      for (const auto& record : sector->zones) {
+        if (record.kind != pf09::zone_kind::verge) continue;
+        const auto* home = store.containing(record.key, pf09::zone_kind::settlement);
+        if (home == nullptr) continue;
+        if (town == pf09::invalid_key) town = home->key;
+        if (home->key != town) continue;
+
+        // Берётся КАЖДАЯ часть обочины: одно место тянется вдоль всей улицы десятком кусков, и пары из
+        // «нулевых» частей оказывались рядом друг с другом.
+        for (uint32_t index = 0; index < record.part_count; ++index) {
+          spots.push_back({record.key, index});
+        }
+        if (spots.size() >= 400) break;
+      }
+    }
+  }
+
+  size_t roadway_steps = 0;
+  size_t verge_steps = 0;
+  size_t routed = 0;
+  for (uint32_t i = 0; i < 64 && spots.size() > 2; ++i) {
+    const auto from = spots[utils::splitmix(i * 2ull + 1ull, 0x0adcull) % spots.size()];
+    const auto to = spots[utils::splitmix(i * 2ull + 2ull, 0x0adcull) % spots.size()];
+    if (from == to) continue;
+    const auto path = pf09::find_path(store, from, to);
+    if (path.empty()) continue;
+    ++routed;
+
+    // Считаются ЧАСТИ, а не зоны. Обочина вдоль всей улицы — ОДНА зона из десятка кусков, и подсчёт по
+    // зонам давал «1 мостовая против 2 обочин» на любом маршруте: метрика мерила число мест, а не
+    // пройденный путь, и разница в скорости в неё не попадала вовсе.
+    for (const auto& step : path) {
+      const auto* zone = store.find(step.zone);
+      if (zone == nullptr) continue;
+      if (zone->kind == pf09::zone_kind::street) ++roadway_steps;
+      if (zone->kind == pf09::zone_kind::verge) ++verge_steps;
+    }
+  }
+
+  check.expect(routed > 0, "маршруты по улицам нашлись");
+  // Контракт формулируется через ДОЛЮ, а не через выдуманный порог. Мостовая занимает треть площади
+  // улицы (полосы режутся один к одному к одному), значит при безразличии к скорости на неё пришлась бы
+  // примерно треть шагов. Больше трети — и скорость действительно тянет маршрут; ровно треть — и число в
+  // файле ни на что не влияет. Требовать «вдвое больше обочины» было бы требованием к геометрии города:
+  // на изломах улицы полосы мостовой не стыкуются, и маршрут законно сходит на обочину.
+  const double street_steps = double(roadway_steps + verge_steps);
+  const double roadway_share = street_steps > 0.0 ? double(roadway_steps) / street_steps : 0.0;
+  check.expect(roadway_steps * 2 > verge_steps, "мостовая берёт больше своей доли улицы",
+               std::format("{:.0f}% шагов при трети площади ({} против {})", roadway_share * 100.0,
+                           roadway_steps, verge_steps));
+  std::cout << std::format("  замер: мостовых {} (скорость {:.2f}), обочин {} (скорость {:.2f}); "
+                           "на {} маршрутах мостовая берёт {:.0f}% шагов при трети площади ({} против {})\n",
+                           roadways, roadway_speed, verges, verge_speed, routed, roadway_share * 100.0,
+                           roadway_steps, verge_steps);
+}
+
 // Кто держит территорию и как это меняет маршруты. Это и есть проверка того, что иерархия вложенности
 // НЕСУЩАЯ, а не справочная: если ответ «кто держит район» не влияет ни на что, то и района как игровой
 // сущности нет — есть только слово в файле.
@@ -2758,6 +3091,8 @@ void verify_zones(checker& check, const pf09::territory& map, const options& opt
   verify_props(check, store, opts);
   verify_tactics(check, store, opts);
   verify_control(check, store, opts);
+  verify_roads(check, store, opts);
+  verify_titles(check, store, opts);
   verify_doors_and_floors(check, store, opts);
 
   std::cout << std::format("  замер: {} секторов, {} зон, {} связей, {:.1f} КБ на диске; резидентно {} секторов "

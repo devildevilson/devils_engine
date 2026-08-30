@@ -12,6 +12,7 @@ add_executable(PF09_territory_zoning
   src/world_build.cpp src/world_build.h
   src/navigate.cpp src/navigate.h
   src/tactics.cpp src/tactics.h
+  src/titles.cpp src/titles.h
   src/viewer.cpp src/viewer.h
 )
 target_link_libraries(PF09_territory_zoning PRIVATE

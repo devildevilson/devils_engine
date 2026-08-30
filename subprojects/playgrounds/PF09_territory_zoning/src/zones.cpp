@@ -13,7 +13,7 @@ namespace devils_engine::pf09 {
 
 namespace {
 
-constexpr char sector_magic[8] = {'P', 'F', '0', '9', 'Z', 'S', '0', '6'};
+constexpr char sector_magic[8] = {'P', 'F', '0', '9', 'Z', 'S', '0', '8'};
 
 struct sector_header {
   char magic[8];
@@ -63,6 +63,7 @@ std::string_view zone_kind_name(const zone_kind value) noexcept {
     case zone_kind::door: return "door";
     case zone_kind::stair: return "stair";
     case zone_kind::street: return "street";
+    case zone_kind::verge: return "verge";
     case zone_kind::crossroad: return "crossroad";
     case zone_kind::square: return "square";
     case zone_kind::yard: return "yard";
@@ -155,6 +156,8 @@ uint64_t compute_fingerprint(const zone_sector& sector) {
     hash = utils::hash_combine(hash, record.prop_begin);
     hash = utils::hash_combine(hash, record.prop_count);
     hash = utils::hash_combine(hash, record.control);
+    hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(record.speed));
+    hash = utils::hash_combine(hash, record.title);
     for (uint32_t axis = 0; axis < 3; ++axis) {
       hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(record.bounds.lower[axis]));
       hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(record.bounds.upper[axis]));
@@ -521,6 +524,21 @@ void zone_store::set_control(const zone_key carrier, const zone_control& value) 
     return;
   }
   control_.insert(place, control_state{carrier, value});
+}
+
+void zone_store::set_place_holder(const zone_key place, const uint32_t owner) {
+  if (place == invalid_key) return;
+  const auto found = std::lower_bound(place_holders_.begin(), place_holders_.end(), place_state{place, 0});
+  if (found != place_holders_.end() && found->key == place) {
+    found->holder = owner;
+    return;
+  }
+  place_holders_.insert(found, place_state{place, owner});
+}
+
+uint32_t zone_store::place_holder(const zone_key place) const {
+  const auto found = std::lower_bound(place_holders_.begin(), place_holders_.end(), place_state{place, 0});
+  return found != place_holders_.end() && found->key == place ? found->holder : 0u;
 }
 
 void zone_store::set_closed(const zone_key key, const bool value) {

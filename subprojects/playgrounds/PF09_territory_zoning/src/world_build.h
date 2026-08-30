@@ -33,6 +33,7 @@ struct build_stats {
   uint32_t links = 0;
   uint32_t settlements = 0;
   uint32_t props = 0;
+  uint32_t titles = 0;
   uint64_t bytes = 0;
   double millis = 0.0;
 };

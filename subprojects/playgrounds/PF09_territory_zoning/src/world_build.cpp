@@ -1,5 +1,7 @@
 #include "world_build.h"
 
+#include "titles.h"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -54,6 +56,8 @@ struct draft {
   };
   std::vector<graph_link> graph_links;
   std::vector<zone_prop> props;   // расставляются последним проходом, когда известны проёмы
+  float speed = 1.0f;
+  title_id title = invalid_title;
   zone_control control{};
   bool carries_control = false;
   // Части хранятся В ЛОКАЛЬНЫХ координатах относительно `reference`, а мировые получаются сложением при
@@ -205,6 +209,16 @@ build_stats build_world(const territory& map, const locality_config& local, cons
 
   std::vector<draft> drafts;
 
+  // Дерево титулов. Строится рядом с землёй, но живёт отдельным файлом и целиком в памяти: «кто правит
+  // этим городом» обязано отвечаться всегда, а не только когда город подгружен.
+  title_book titles;
+  title_record crown{};
+  crown.de_jure_parent = invalid_title;
+  crown.de_jure_holder = 1;
+  crown.law = 1;
+  crown.rank = title_rank::realm;
+  const auto realm_title = titles.add(crown, "the crown");
+
   // --- крупные уровни: узлы графа без формы ---
   //
   // На политическом уровне достаточно графа между владениями. Форма там всё равно не квадратная, а на
@@ -290,6 +304,10 @@ build_stats build_world(const territory& map, const locality_config& local, cons
     }
   }
 
+  std::map<uint64_t, title_id> city_titles;
+  std::map<uint64_t, title_id> district_titles;   // по личности квартала
+  std::map<uint64_t, title_id> property_titles;   // по личности здания или двора
+
   const auto emit_shape = [&](draft entry) {
     if (!entry.anchored) {
       zone_bounds box{{1e30f, entry.low, 1e30f}, {-1e30f, entry.high, -1e30f}};
@@ -317,6 +335,14 @@ build_stats build_world(const territory& map, const locality_config& local, cons
     entry.carries_control = true;
     entry.control.faction = lawful_faction(entry.identity);
     entry.control.prosperity = uint16_t(150 + utils::splitmix(entry.identity, 0x91ull) % 850);
+
+    title_record city{};
+    city.de_jure_parent = realm_title;
+    city.de_jure_holder = entry.control.faction;
+    city.law = 2;
+    city.rank = title_rank::city;
+    entry.title = titles.add(city, entry.name);
+    city_titles[item.node] = entry.title;
 
     for (const auto& other : settlements) {
       if (other.node == item.node) continue;
@@ -401,6 +427,20 @@ build_stats build_world(const territory& map, const locality_config& local, cons
         // Преступность — не украшение: по ней считается стоимость маршрута, и именно из-за неё
         // осторожный путь отличается от короткого.
         entry.control.crime = uint16_t(criminal ? 400 + (roll >> 32) % 600 : (roll >> 32) % 350);
+
+        // Титул квартала. Де-юре он под городом и держит его тот же, кто город; де-факто у трети
+        // кварталов держатель другой — и вот с этого момента цепочка признаний обрывается, и городской
+        // закон до квартала не достаёт. Заметьте: карта права в файле НЕ МЕНЯЕТСЯ от того, что квартал
+        // заняли, — меняется только карта силы.
+        title_record ward{};
+        ward.de_jure_parent = city_titles.count(item.node) != 0 ? city_titles[item.node] : realm_title;
+        ward.de_jure_holder = lawful_faction(identity_of(3, item.node));
+        ward.de_facto_holder = criminal ? entry.control.faction : 0;
+        ward.law = 3;
+        ward.rank = title_rank::district;
+        entry.title = titles.add(ward, entry.name);
+        district_titles[entry.identity] = entry.title;
+
         drafts.push_back(std::move(entry));
       }
     }
@@ -408,6 +448,31 @@ build_stats build_world(const territory& map, const locality_config& local, cons
       const uint32_t dx = std::min(px * district_side / side, district_side - 1);
       const uint32_t dy = std::min(py * district_side / side, district_side - 1);
       return identity_of(5, item.node, dy * district_side + dx);
+    };
+    const auto district_title_of = [&](const uint32_t px, const uint32_t py) {
+      const auto found = district_titles.find(district_of(px, py));
+      return found == district_titles.end() ? invalid_title : found->second;
+    };
+
+    // Частная собственность. Дом и двор принадлежат КОНКРЕТНОМУ владельцу, и это отдельный титул, а не
+    // поле в записи зоны: у него есть де-юре хозяин, де-факто держатель и место в дереве права. Отсюда и
+    // берётся «заход на частную территорию не приветствуется», и отсюда же то, что дом, занятый чужаком,
+    // закрыт для собственного хозяина.
+    const auto make_property = [&](const uint64_t identity, const uint32_t px, const uint32_t py,
+                                   const std::string& name) {
+      const auto found = property_titles.find(identity);
+      if (found != property_titles.end()) return found->second;
+
+      title_record deed{};
+      deed.de_jure_parent = district_title_of(px, py);
+      // Владельцы — не фракции, а лица: нумерация начинается заведомо выше фракционной, чтобы «дом
+      // господина Г» нельзя было спутать с «домом, принадлежащим короне».
+      deed.de_jure_holder = 1000u + uint32_t(utils::splitmix(identity, 0xdeedull) % 4000ull);
+      deed.law = 0;   // собственность законов не издаёт: она им подчиняется
+      deed.rank = title_rank::property;
+      const auto id = titles.add(deed, name);
+      property_titles[identity] = id;
+      return id;
     };
 
     // Клетки собираются в места волной по одинаковой роли. Улицы дополнительно режутся перекрёстками:
@@ -505,30 +570,94 @@ build_stats build_world(const territory& map, const locality_config& local, cons
 
     const auto kind_label = [](const zone_kind kind) { return std::string(zone_kind_name(kind)); };
 
+    // Вдоль какой оси идёт улица в этой клетке. Нужно, чтобы полосы легли ПАРАЛЛЕЛЬНО улице: тогда дверь
+    // дома выходит на обочину, а не на мостовую, — ровно то, ради чего улица и режется.
+    const auto street_runs_along_u = [&](const uint32_t px, const uint32_t py) {
+      const auto is_street = [&](const int64_t nx, const int64_t ny) {
+        if (nx < 0 || ny < 0 || nx >= int64_t(side) || ny >= int64_t(side)) return false;
+        const auto role = role_at(uint32_t(nx), uint32_t(ny));
+        return role == zone_role::street;
+      };
+      const uint32_t along_u = uint32_t(is_street(int64_t(px) - 1, py)) + uint32_t(is_street(int64_t(px) + 1, py));
+      const uint32_t along_v = uint32_t(is_street(px, int64_t(py) - 1)) + uint32_t(is_street(px, int64_t(py) + 1));
+      return along_u >= along_v;
+    };
+
     for (uint32_t id = 0; id < groups.size(); ++id) {
       if (groups[id].empty()) continue;
 
-      draft entry{};
-      entry.kind = group_kind[id];
-      entry.high = 0.2f;
-      entry.identity = identity_of(4, item.node, 40000u + id);
-      entry.parent_identity = district_of(groups[id].front() % side, groups[id].front() / side);
-      entry.name = std::format("{} {}", kind_label(group_kind[id]), id);
-      entry.reference = reference;
-      // Дорогой считаются УЛИЦА И ПЕРЕКРЁСТОК, а не всё, что не двор. Площадь — открытое место, а не
-      // проезжая часть: с флагом дороги маршрут начинал резать через неё вместо того, чтобы идти улицей,
-      // и заодно площадь попадала под правило «дороги остаются чистыми» и лишалась всякой утвари.
-      if (group_kind[id] == zone_kind::street || group_kind[id] == zone_kind::crossroad) {
-        entry.tags = uint32_t(zone_flags::road);
+      const bool is_street = group_kind[id] == zone_kind::street;
+
+      // Улица режется на ТРИ места: мостовая посередине и две обочины по краям. Это не украшение и не
+      // отдельный слой — это то же зонирование, просто мельче, и разница между полосами выражена
+      // СКОРОСТЬЮ, а не признаком «дорога». Дверь дома выходит на обочину, обочина граничит с мостовой,
+      // и «пройти вдоль улицы» перестало быть тем же самым, что «пройти между домом и улицей».
+      draft roadway{};
+      draft verges{};
+
+      const auto setup = [&](draft& target, const zone_kind kind, const uint32_t salt, const float speed,
+                             const uint32_t tags) {
+        target.kind = kind;
+        target.high = 0.2f;
+        target.speed = speed;
+        target.tags = tags;
+        target.identity = identity_of(4, item.node, salt + id);
+        target.parent_identity = district_of(groups[id].front() % side, groups[id].front() / side);
+        target.name = std::format("{} {}", kind_label(kind), id);
+        target.reference = reference;
+      };
+
+      // Право на землю. Улица, обочина, перекрёсток и площадь — общие: их титул это титул квартала, и
+      // частного владельца у них нет, поэтому вход свободен. Двор — ЧАСТНЫЙ: у него свой титул
+      // собственности, и зайти в чужой двор уже нельзя.
+      const uint32_t anchor_px = groups[id].front() % side;
+      const uint32_t anchor_py = groups[id].front() / side;
+      const auto public_title = district_title_of(anchor_px, anchor_py);
+      const auto yard_title = group_kind[id] == zone_kind::yard
+                                ? make_property(identity_of(6, item.node, 40000u + id), anchor_px, anchor_py,
+                                                std::format("yard of {},{}", anchor_px, anchor_py))
+                                : invalid_title;
+
+      if (is_street) {
+        setup(roadway, zone_kind::street, 40000u, 1.7f, uint32_t(zone_flags::road));
+        setup(verges, zone_kind::verge, 90000u, 1.0f, 0);
+        roadway.title = public_title;
+        verges.title = public_title;
+      } else {
+        // Перекрёсток остаётся цельным: резать его вдоль оси нечем — осей там две. Площадь и двор не
+        // режутся по смыслу: это открытые места, а не проезды.
+        setup(roadway, group_kind[id], 40000u,
+              group_kind[id] == zone_kind::crossroad ? 1.4f : 1.0f,
+              group_kind[id] == zone_kind::crossroad ? uint32_t(zone_flags::road) : 0u);
+        roadway.title = yard_title != invalid_title ? yard_title : public_title;
       }
 
       for (const auto plot : groups[id]) {
+        const uint32_t px = plot % side;
+        const uint32_t py = plot / side;
         // Массив берётся ОДИН раз: два вызова давали два разных временных объекта, и диапазон собирался
         // из начала одного и конца другого — часть выходила с восемью вершинами вместо четырёх.
-        const auto quad = cell_quad(plot % side, plot / side);
-        entry.parts.push_back({quad.begin(), quad.end()});
+        const auto quad = cell_quad(px, py);
+
+        if (!is_street) {
+          roadway.parts.push_back({quad.begin(), quad.end()});
+          continue;
+        }
+
+        constexpr double verge_width = 1.0 / 3.0;
+        if (street_runs_along_u(px, py)) {
+          verges.parts.push_back(sub_quad(quad, 0.0, 0.0, 1.0, verge_width));
+          roadway.parts.push_back(sub_quad(quad, 0.0, verge_width, 1.0, 1.0 - verge_width));
+          verges.parts.push_back(sub_quad(quad, 0.0, 1.0 - verge_width, 1.0, 1.0));
+        } else {
+          verges.parts.push_back(sub_quad(quad, 0.0, 0.0, verge_width, 1.0));
+          roadway.parts.push_back(sub_quad(quad, verge_width, 0.0, 1.0 - verge_width, 1.0));
+          verges.parts.push_back(sub_quad(quad, 1.0 - verge_width, 0.0, 1.0, 1.0));
+        }
       }
-      emit_shape(std::move(entry));
+
+      if (!roadway.parts.empty()) emit_shape(std::move(roadway));
+      if (!verges.parts.empty()) emit_shape(std::move(verges));
     }
 
     // Здания: зал из помещений, стены как непроходимое место, двери как отдельные маленькие места и —
@@ -557,13 +686,20 @@ build_stats build_world(const territory& map, const locality_config& local, cons
       const int32_t plot_sector_y = sector_of(double(reference.y) + double(quad[0].y));
       shell.sector_x = plot_sector_x;
       shell.sector_y = plot_sector_y;
+
+      // Дом целиком — одна собственность: зал, стены, двери, лестница и второй этаж принадлежат одному
+      // владельцу. Право не режется по комнатам, и это разница между «где я» и «чьё это».
+      const auto deed = make_property(building_identity, px, py, std::format("house {},{}", px, py));
+      shell.title = deed;
       drafts.push_back(std::move(shell));
 
       // Всё, из чего состоит это здание, приписано ОДНОМУ сектору — тому же, что и само здание.
+
       const auto anchor_here = [&](draft& target) {
         target.anchored = true;
         target.sector_x = plot_sector_x;
         target.sector_y = plot_sector_y;
+        target.title = deed;
       };
 
       const double step = (1.0 - 2.0 * inset_u) / double(local.room_side);
@@ -1153,6 +1289,8 @@ build_stats build_world(const territory& map, const locality_config& local, cons
         record.kind = item.kind;
         record.tags = item.tags;
         record.floor = item.floor;
+        record.speed = item.speed;
+        record.title = item.title;
 
         const auto parent_key = by_identity.find(item.parent_identity);
         record.parent = parent_key == by_identity.end() ? invalid_key : parent_key->second;
@@ -1215,6 +1353,9 @@ build_stats build_world(const territory& map, const locality_config& local, cons
       stats.bytes += out.byte_size();
     }
   }
+
+  titles.save(titles_path(options.root));
+  stats.titles = titles.size();
 
   stats.millis = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin_time).count();
   return stats;

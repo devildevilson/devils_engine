@@ -34,6 +34,7 @@ using namespace devils_engine;
 
 #include "navigate.h"
 #include "tactics.h"
+#include "titles.h"
 #include "zones.h"
 
 namespace devils_engine::pf09 {
@@ -161,6 +162,25 @@ uint32_t faction_tint(const uint32_t faction) {
 uint32_t crime_tint(const uint32_t crime) {
   const float t = std::clamp(float(crime) / 1000.0f, 0.0f, 1.0f);
   return pack(uint32_t(70.0f + 170.0f * t), uint32_t(150.0f - 100.0f * t), uint32_t(110.0f - 70.0f * t), 255);
+}
+
+// Раскраска по праву: чья это земля и чей закон здесь в силе. Разные вопросы и разные картинки — первая
+// про собственность, вторая про то, докуда достаёт власть.
+uint32_t owner_tint(const uint32_t owner) {
+  if (owner == 0) return pack(120, 120, 128, 255);
+  const auto h = utils::splitmix(uint64_t(owner) + 1ull);
+  return pack(96 + uint32_t(h & 0x7f), 96 + uint32_t((h >> 21) & 0x7f), 96 + uint32_t((h >> 42) & 0x7f), 255);
+}
+
+uint32_t law_tint(const title_book& titles, const title_id source) {
+  if (source == invalid_title) return pack(40, 40, 46, 255);   // сюда не достаёт ничей закон
+  const auto* record = titles.find(source);
+  switch (record == nullptr ? title_rank::count : record->rank) {
+    case title_rank::realm: return pack(96, 150, 200, 255);
+    case title_rank::city: return pack(120, 180, 130, 255);
+    case title_rank::district: return pack(206, 140, 70, 255);
+    default: return pack(120, 120, 128, 255);
+  }
 }
 
 uint32_t wall_tint(const zone_kind kind) {
@@ -680,6 +700,12 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
     bool show_tactics = options.start_tactics;
     // 0 — по виду места, 1 — кто держит район, 2 — насколько тут опасно.
     uint32_t control_mode = options.start_control_mode;
+
+    // Право живёт отдельным файлом и целиком в памяти: «кто правит этим городом» обязано отвечаться и
+    // тогда, когда сам город ещё не подгружен.
+    title_book titles;
+    titles.load(titles_path(options.world_root));
+    const realm_view realm{&store, &titles};
     bool control_latch = false;
     bool walls_latch = false;
     bool props_latch = false;
@@ -700,6 +726,9 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
     bool names_latch = false;
     bool door_latch = false;
     uint32_t toggled_doors = 0;
+
+    // От чьего лица задаются вопросы про вход. Партия — посторонний: так видно, где её не ждут.
+    constexpr uint32_t party_actor = 777;
 
     std::vector<agent> walkers;
     std::vector<zone_key> walkable;
@@ -762,7 +791,7 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
       if (latched("toggle_names", names_latch)) show_names = !show_names;
       if (latched("toggle_props", props_latch)) show_props = !show_props;
       if (latched("toggle_tactics", tactics_latch)) show_tactics = !show_tactics;
-      if (latched("cycle_control", control_latch)) control_mode = (control_mode + 1) % 3;
+      if (latched("cycle_control", control_latch)) control_mode = (control_mode + 1) % 5;
       const bool door_key = latched("toggle_door", door_latch);
 
       pitch_deg = std::clamp(pitch_deg + 40.0 * double(dt) *
@@ -914,6 +943,10 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
                 floor_tint = faction_tint(store.control_at(record.key, control_field::faction).faction);
               } else if (control_mode == 2) {
                 floor_tint = crime_tint(store.control_at(record.key, control_field::crime).crime);
+              } else if (control_mode == 3) {
+                floor_tint = owner_tint(de_facto_holder(realm, record.key));
+              } else if (control_mode == 4) {
+                floor_tint = law_tint(titles, law_over(realm, record.key));
               }
               if (below) {
                 // Нижний этаж уходит в полупрозрачность, а не в другой цвет: он должен читаться как
@@ -1135,6 +1168,26 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
                                      locked_gates));
         detail.push_back(std::format("props: {} here", store.props_of(shown->key).size()));
         {
+          // Право показывается ЧЕТЫРЬМЯ разными фактами, потому что это четыре разных вопроса: чьё по
+          // праву, кто держит на деле, чей закон достаёт и пустят ли сюда. Свести их в один — значит
+          // потерять ровно те различия, ради которых титулы и заведены.
+          const auto* deed = titles.find(shown->title);
+          const auto law = law_over(realm, shown->key);
+          const auto* law_record = law == invalid_title ? nullptr : titles.find(law);
+          const auto verdict = may_enter(realm, shown->key, party_actor);
+          detail.push_back(std::format("de jure: {} '{}' of {}  de facto: {}",
+                                       deed == nullptr ? "none" : title_rank_name(deed->rank),
+                                       deed == nullptr ? "" : titles.name_of(shown->title),
+                                       deed == nullptr ? 0u : deed->de_jure_holder,
+                                       de_facto_holder(realm, shown->key)));
+          detail.push_back(std::format("law here: {}  entry for {}: {}",
+                                       law_record == nullptr
+                                         ? std::string("nobody's — no law reaches here")
+                                         : std::format("{} '{}'", title_rank_name(law_record->rank),
+                                                       titles.name_of(law)),
+                                       party_actor, verdict.allowed ? "allowed" : "trespass"));
+        }
+        {
           const auto* holder = store.carrier_of(shown->key, control_field::faction);
           const auto faction = store.control_at(shown->key, control_field::faction);
           const auto crime = store.control_at(shown->key, control_field::crime);
@@ -1159,8 +1212,9 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
       }
       detail.push_back(std::format("view {:.0f} m  pitch {:.0f} deg  map level {}  zones in frame {}", span_m,
                                    pitch_deg, zone_level_name(level), geometry.slots.size()));
-      static constexpr const char* control_names[] = {"kind", "faction", "crime"};
-      detail.push_back(std::format("map colours by {}", control_names[control_mode % 3]));
+      static constexpr const char* control_names[] = {"kind", "faction", "crime", "owner", "law"};
+      detail.push_back(std::format("map colours by {}  ({} titles loaded)", control_names[control_mode % 5],
+                                   titles.size()));
       detail.push_back(std::format("floor {}  cutaway {}  routes {}  names {}  props {}  tactics {}  "
                                    "doors toggled {}",
                                    current_floor, cutaway ? "on" : "off", show_routes ? "on" : "off",

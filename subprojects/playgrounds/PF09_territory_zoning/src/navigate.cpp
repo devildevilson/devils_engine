@@ -1,5 +1,7 @@
 #include "navigate.h"
 
+#include "titles.h"
+
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -264,7 +266,10 @@ std::vector<part_ref> find_path(const zone_store& store, const part_ref from, co
       if (zone == nullptr || !store.passable(*zone)) continue;
       if (store.part_of(next) == nullptr) continue; // сосед в невыгруженном секторе
 
-      float step = zone->road() ? 0.5f : 1.0f;
+      // Стоимость шага берётся из СКОРОСТИ места, а не из флага «дорога». Мостовая, обочина и комната
+      // различаются не признаком, а величиной, и маршрут обязан это различать: иначе выбор между улицей
+      // и двором получается двоичным там, где он на самом деле плавный.
+      float step = zone->step_cost();
 
       // Территория дорожает шаг. Подъём по вложенности до района стоит дорого, чтобы делать его на каждом
       // ребре, поэтому ответ запоминается на зону в пределах ОДНОГО поиска: район у соседних мест общий,
@@ -283,6 +288,13 @@ std::vector<part_ref> find_path(const zone_store& store, const part_ref from, co
         if (policy.avoid_faction != 0 && known_control->second.faction == policy.avoid_faction) {
           step *= policy.avoid_cost;
         }
+      }
+
+      // Чужая частная территория дорожает шаг. Спрашивается тот же `may_enter`, которым игра решает,
+      // звать ли стражу: маршрут и правоприменение обязаны опираться на одно правило, иначе персонаж
+      // пойдёт там, где его за это арестуют.
+      if (policy.realm != nullptr && !may_enter(*policy.realm, next.zone, policy.actor).allowed) {
+        step *= policy.trespass_cost;
       }
 
       const float cost = here.cost + step;
