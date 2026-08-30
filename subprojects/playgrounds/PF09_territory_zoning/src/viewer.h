@@ -25,6 +25,7 @@ struct viewer_options {
   uint32_t frames = 0;           // ноль — до закрытия окна
   int32_t start_floor = 0;       // с какого этажа начинать
   bool start_cutaway = false;    // срезать передний план сразу
+  bool start_tactics = false;    // сразу показывать тактическую картину наведённого места
   std::string dump_path;         // сохранить последний кадр
   bool validation = false;
 };

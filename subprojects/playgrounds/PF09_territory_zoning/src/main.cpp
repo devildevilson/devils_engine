@@ -25,6 +25,7 @@
 #include "locality.h"
 #include "navigate.h"
 #include "viewer.h"
+#include "tactics.h"
 #include "world_build.h"
 #include "zones.h"
 #include "territory.h"
@@ -102,6 +103,7 @@ void print_usage() {
                "  --verify              численные инварианты, ненулевой код возврата при провале\n"
                "  --dump=PATH           ppm-срез карты для глаз\n"
                "  --floor=N --cutaway   с какого этажа начинать и срезать ли передний план\n"
+               "  --tactics             показать укрытия, наблюдение и веер приказа наведённого места\n"
                "  --dump-tier=N         ярус окраски дампа, 0 = world, 6 = parcel\n"
                "  --dump-mode=NAME      zone | owner\n"
                "  --dump-source=NAME    direct | clipmap | residency | zones\n"
@@ -159,6 +161,8 @@ bool parse_options(const int argc, const char** argv, options& out) {
       out.view.start_floor = int32_t(std::stol(value));
     } else if (argument == "--cutaway") {
       out.view.start_cutaway = true;
+    } else if (argument == "--tactics") {
+      out.view.start_tactics = true;
     } else if (read_prefixed(argument, "--view-span=", value)) {
       out.view.start_span_m = std::stod(value);
     } else if (read_prefixed(argument, "--agents=", value)) {
@@ -616,8 +620,8 @@ int run_build_world(const pf09::territory& map, const options& opts) {
   const auto stats = build_fixture(map, opts);
 
   std::cout << std::format("PF09 сборка мира в '{}'\n", world_root(opts).string());
-  std::cout << std::format("  {} секторов по {:.0f} м, {} зон, {} связей, {} поселений\n", stats.sectors,
-                           pf09::sector_span_m, stats.zones, stats.links, stats.settlements);
+  std::cout << std::format("  {} секторов по {:.0f} м, {} зон, {} связей, {} предметов, {} поселений\n", stats.sectors,
+                           pf09::sector_span_m, stats.zones, stats.links, stats.props, stats.settlements);
   std::cout << std::format("  {:.1f} КБ содержимого, собрано за {:.0f} мс, в среднем {:.1f} КБ и {} зон на сектор\n",
                            double(stats.bytes) / 1024.0, stats.millis,
                            double(stats.bytes) / 1024.0 / double(std::max(stats.sectors, 1u)),
@@ -1564,6 +1568,7 @@ void verify_agents(checker& check, const pf09::zone_store& store, const options&
   size_t escaped = 0;
   size_t stalled = 0;
   size_t no_path = 0;
+  size_t inside_prop = 0;
   uint64_t total_steps = 0;
 
   constexpr uint32_t trials = 64;
@@ -1591,6 +1596,7 @@ void verify_agents(checker& check, const pf09::zone_store& store, const options&
       const auto outline = store.outline_of(walker.location);
       if (outline.empty()) break;
       if (!pf09::point_in_outline(outline, walker.position)) ++escaped;
+      if (pf09::blocked_by_prop(store, walker.location, walker.position)) ++inside_prop;
     }
     total_steps += steps;
     if (!walker.arrived) ++stalled;
@@ -1599,6 +1605,11 @@ void verify_agents(checker& check, const pf09::zone_store& store, const options&
   check.expect(no_path == 0, "маршрут между комнатами находится", std::format("{} пар без пути", no_path));
   check.expect(escaped == 0, "персонаж не выходит из своей зоны", std::format("{} выходов наружу", escaped));
   check.expect(stalled == 0, "персонаж доходит до цели", std::format("{} застряли", stalled));
+  // Предмет ломает то, на чём держалось движение: «внутри выпуклой части можно идти по прямой». Что
+  // маршрут ВСЁ ЕЩЁ проходится — это и есть проверка, что обход предмета остался местной задачей шага и
+  // не потребовал резать часть на куски.
+  check.expect(inside_prop == 0, "персонаж не проходит сквозь предмет",
+               std::format("{} шагов внутри непроходимого предмета", inside_prop));
 
   std::cout << std::format("  замер: {} маршрутов пройдено, {} шагов всего, в среднем {:.0f} шагов на маршрут\n",
                            routed, total_steps, double(total_steps) / double(std::max<size_t>(routed, 1)));
@@ -1744,6 +1755,281 @@ void verify_doors_and_floors(checker& check, pf09::zone_store& store, const opti
   std::cout << std::format("  замер: дверей {} (заперто в файле {}), лестниц {}, зон выше первого этажа {}, "
                            "переключение изменило {} маршрутов из {}\n",
                            doors.size(), closed_in_file, stairs.size(), upper_zones, changed, trials);
+}
+
+
+// Предметы. Расстановка свободна, но не произвольна: предмет обязан целиком лежать внутри своей выпуклой
+// части, держаться от проёмов дальше габарита актора и не липнуть к соседу. Нарушение любого из трёх — это
+// запертая мебелью комната, о которой маршрут не узнает: связность живёт на частях, а часть предмет не
+// разрезает.
+void verify_props(checker& check, const pf09::zone_store& store, const options& opts) {
+  const auto segment_distance = [](const glm::vec2 point, const glm::vec2 a, const glm::vec2 b) {
+    const auto span = b - a;
+    const float length = span.x * span.x + span.y * span.y;
+    const float t = length < 1.0e-8f ? 0.0f : std::clamp(((point.x - a.x) * span.x + (point.y - a.y) * span.y) / length,
+                                                         0.0f, 1.0f);
+    const glm::vec2 closest{a.x + span.x * t, a.y + span.y * t};
+    return std::sqrt((point.x - closest.x) * (point.x - closest.x) + (point.y - closest.y) * (point.y - closest.y));
+  };
+
+  size_t total = 0;
+  size_t outside = 0;
+  size_t on_edge = 0;
+  size_t at_gate = 0;
+  size_t touching = 0;
+  size_t sight_blockers = 0;
+  size_t on_road = 0;
+
+  for (int32_t y = 0; y < int32_t(opts.build.sector_side); ++y) {
+    for (int32_t x = 0; x < int32_t(opts.build.sector_side); ++x) {
+      const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
+      if (sector == nullptr) continue;
+
+      for (const auto& record : sector->zones) {
+        const auto props = sector->props_of(record);
+        if (props.empty()) continue;
+        if (record.road()) on_road += props.size();
+
+        for (size_t i = 0; i < props.size(); ++i) {
+          const auto& prop = props[i];
+          ++total;
+          if (prop.blocks_sight()) ++sight_blockers;
+
+          const pf09::part_ref where{record.key, prop.part};
+          const auto outline = store.outline_of(where);
+          if (outline.size() < 3 || !pf09::point_in_outline(outline, prop.position)) {
+            ++outside;
+            continue;
+          }
+          for (size_t e = 0; e < outline.size(); ++e) {
+            if (segment_distance(prop.position, outline[e], outline[(e + 1) % outline.size()]) <= prop.radius) {
+              ++on_edge;
+              break;
+            }
+          }
+          for (const auto& gate : store.portals_of(where)) {
+            if (!gate.geometric()) continue;
+            if (segment_distance(prop.position, gate.from, gate.to) <= prop.radius + pf09::agent_radius_m) {
+              ++at_gate;
+              break;
+            }
+          }
+          for (size_t j = i + 1; j < props.size(); ++j) {
+            if (props[j].part != prop.part) continue;
+            const auto delta = props[j].position - prop.position;
+            if (std::sqrt(delta.x * delta.x + delta.y * delta.y) <=
+                prop.radius + props[j].radius + 2.0f * pf09::agent_radius_m) {
+              ++touching;
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  check.expect(total > 0, "предметы расставлены");
+  check.expect(outside == 0, "предмет лежит внутри своей части", std::format("{} снаружи", outside));
+  check.expect(on_edge == 0, "предмет не торчит сквозь стену", std::format("{} задевают ребро", on_edge));
+  check.expect(at_gate == 0, "предмет не перекрывает проём", std::format("{} стоят в дверях", at_gate));
+  check.expect(touching == 0, "между предметами проходит актор", std::format("{} пар вплотную", touching));
+  check.expect(on_road == 0, "дороги остаются чистыми",
+               std::format("{} предметов на проезжей части", on_road));
+  check.expect(sight_blockers > 0, "есть за чем прятаться", "ни один предмет не перекрывает взгляд");
+  std::cout << std::format("  замер: предметов {}, из них перекрывают взгляд {}\n", total, sight_blockers);
+}
+
+
+// Тактические запросы. Ради них зонирование и затевалось: место должно отвечать не только «где я», но и
+// «где спрятаться», «откуда видно вход», «куда развести группу». Проверяются не сами ответы (их считает
+// жадный перебор, и «лучший» ответ здесь никто не обещал), а СВОЙСТВА, без которых они бессмысленны.
+void verify_tactics(checker& check, const pf09::zone_store& store, const options& opts) {
+  std::vector<const pf09::zone_record*> places;
+  for (int32_t y = 0; y < int32_t(opts.build.sector_side) && places.size() < 400; ++y) {
+    for (int32_t x = 0; x < int32_t(opts.build.sector_side) && places.size() < 400; ++x) {
+      const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
+      if (sector == nullptr) continue;
+      for (const auto& record : sector->zones) {
+        if (record.level != pf09::zone_level::interior || record.abstract()) continue;
+        if (sector->props_of(record).empty()) continue;
+        places.push_back(&record);
+        if (places.size() >= 400) break;
+      }
+    }
+  }
+  check.expect(!places.empty(), "нашлись места с предметами");
+  if (places.empty()) return;
+
+  size_t asymmetric = 0;
+  size_t self_blind = 0;
+  size_t exposed_cover = 0;
+  size_t cover_in_prop = 0;
+  size_t with_cover = 0;
+  size_t threat_dependent = 0;
+  size_t wrong_side = 0;
+  size_t gates_missed = 0;
+  size_t watched = 0;
+  size_t duplicate_orders = 0;
+  size_t orders_outside = 0;
+  size_t total_cover = 0;
+  size_t shadowed_anyway = 0;
+  size_t by_object = 0;
+
+  for (const auto* place : places) {
+    glm::vec2 anchor{};
+    if (!pf09::interior_point(store, {place->key, 0}, anchor)) continue;
+
+    // Видимость — ОТНОШЕНИЕ, а не направление. Несимметричная видимость означала бы, что стрелять можно
+    // только в одну сторону, и такую ошибку в игре ищут месяцами.
+    if (!pf09::visible(store, place->key, anchor, anchor)) ++self_blind;
+    for (uint32_t index = 1; index < place->part_count; ++index) {
+      glm::vec2 other{};
+      if (!pf09::interior_point(store, {place->key, index}, other)) continue;
+      if (pf09::visible(store, place->key, anchor, other) != pf09::visible(store, place->key, other, anchor)) {
+        ++asymmetric;
+      }
+    }
+
+    // Угроза берётся ВНУТРИ места, а не снаружи. Снаружи она не видит ничего по определению видимости, и
+    // фильтр «не просматривается» пропускал бы всё подряд: проверка была бы зелёной и пустой. Для врага,
+    // который ещё не вошёл, роль угрозы играет проём, через который он войдёт.
+    glm::vec2 threat = anchor;
+    glm::vec2 opposite = anchor;
+    {
+      const auto edges = store.perimeter(place->key);
+      for (const auto& portal : edges) {
+        if (!portal.geometric()) continue;
+        uint32_t part = 0;
+        (void)part;
+        threat = portal.middle();
+        break;
+      }
+      float best = -1.0f;
+      for (uint32_t index = 0; index < place->part_count; ++index) {
+        glm::vec2 point{};
+        if (!pf09::interior_point(store, {place->key, index}, point)) continue;
+        const auto delta = point - threat;
+        const float distance = delta.x * delta.x + delta.y * delta.y;
+        if (distance > best) {
+          best = distance;
+          opposite = point;
+        }
+      }
+    }
+    // Угроза в проёме стоит на самом ребре, и `visible` честно скажет «снаружи». Втягиваем её внутрь.
+    pf09::settle_into_place(store, place->key, threat);
+
+    const auto cover = pf09::cover_spots(store, place->key, threat);
+    total_cover += cover.size();
+    if (!cover.empty()) ++with_cover;
+    for (const auto& spot : cover) {
+      // Укрытие обязано быть НЕ ВИДНО оттуда, откуда прячутся, и не занято мебелью.
+      if (pf09::visible(store, place->key, threat, spot.position)) ++exposed_cover;
+      if (pf09::blocked_by_prop(store, {place->key, spot.part}, spot.position)) ++cover_in_prop;
+
+      // И главное — что укрытие даёт ИМЕННО ПРЕДМЕТ, а не то, что здесь и так ничего не видно. Зеркальная
+      // точка — перед тем же предметом, со стороны угрозы — обязана просматриваться. Без этой половины
+      // проверка остаётся тавтологией: `cover_spots` сама отбрасывает видимое и подтверждает лишь себя.
+      const auto props = store.props_of(place->key);
+      if (spot.sheltered()) ++by_object;
+      if (spot.blocker < props.size()) {
+        const auto& prop = props[spot.blocker];
+        auto towards = threat - prop.position;
+        const float length = std::sqrt(towards.x * towards.x + towards.y * towards.y);
+        if (length > 1.0e-3f) {
+          const auto front = prop.position + towards / length * (prop.radius + 0.55f);
+          if (!pf09::visible(store, place->key, threat, front)) ++shadowed_anyway;
+        }
+      }
+    }
+
+    // Укрытие ОТНОСИТЕЛЬНО угрозы, и это надо утверждать аккуратно. «Набор обязан отличаться в КАЖДОМ
+    // месте» — утверждение про фикстуру, а не про модель: в комнате с одним предметом две разные угрозы
+    // законно дают одно и то же. Утверждать здесь можно две вещи: что зависимость есть ХОТЯ БЫ ГДЕ-ТО, и
+    // что каждая точка лежит с ПРОТИВОПОЛОЖНОЙ от угрозы стороны своего предмета — а вот это уже
+    // выполняется всегда и проверяется точно.
+    const auto other_cover = pf09::cover_spots(store, place->key, opposite);
+    bool same = cover.size() == other_cover.size();
+    for (size_t i = 0; i < cover.size() && same; ++i) {
+      const auto delta = cover[i].position - other_cover[i].position;
+      same = delta.x * delta.x + delta.y * delta.y < 0.01f;
+    }
+    if (!cover.empty() && !same) ++threat_dependent;
+
+    const auto place_props = store.props_of(place->key);
+    for (const auto& spot : cover) {
+      if (!spot.sheltered() || spot.blocker >= place_props.size()) continue;
+      const auto& prop = place_props[spot.blocker];
+      const auto to_spot = spot.position - prop.position;
+      const auto to_threat = threat - prop.position;
+      if (to_spot.x * to_threat.x + to_spot.y * to_threat.y >= 0.0f) ++wrong_side;
+    }
+
+    // Наблюдение: жадный набор обязан закрыть все входы, которые вообще откуда-нибудь видны.
+    const auto spots = pf09::watch_spots(store, place->key, 4);
+    if (!spots.empty()) ++watched;
+    for (const auto& portal : store.perimeter(place->key)) {
+      if (!portal.geometric()) continue;
+      const auto gate = portal.middle();
+
+      bool reachable_by_someone = false;
+      for (uint32_t index = 0; index < place->part_count && !reachable_by_someone; ++index) {
+        glm::vec2 point{};
+        if (!pf09::interior_point(store, {place->key, index}, point)) continue;
+        reachable_by_someone = pf09::visible(store, place->key, point, gate);
+      }
+      if (!reachable_by_someone) continue; // вход, не видный ниоткуда, — законный ответ
+
+      const bool seen = std::any_of(spots.begin(), spots.end(), [&](const pf09::tactical_spot& item) {
+        return pf09::visible(store, place->key, item.position, gate);
+      });
+      if (!seen) ++gates_missed;
+    }
+
+    // Веер приказа: одно распоряжение — разные задачи. Двое в одной точке это не группа, а один человек.
+    std::vector<glm::vec2> group;
+    for (uint32_t i = 0; i < 4; ++i) {
+      group.push_back(anchor + glm::vec2{float(i) * 0.5f, 0.0f});
+    }
+    const auto plan = pf09::fan_out(store, place->key, pf09::order_kind::hold, threat, group);
+    for (size_t i = 0; i < plan.size(); ++i) {
+      uint32_t part = 0;
+      const auto outline = store.outline_of({place->key, plan[i].target.part});
+      if (!pf09::point_in_outline(outline, plan[i].position)) ++orders_outside;
+      (void)part;
+      for (size_t j = i + 1; j < plan.size(); ++j) {
+        const auto delta = plan[i].position - plan[j].position;
+        if (delta.x * delta.x + delta.y * delta.y < 0.01f) ++duplicate_orders;
+      }
+    }
+  }
+
+  check.expect(self_blind == 0, "точка видна сама себе", std::format("{} мест без этого", self_blind));
+  check.expect(asymmetric == 0, "видимость симметрична", std::format("{} несимметричных пар", asymmetric));
+  check.expect(with_cover > 0, "укрытия находятся", "ни в одном месте не нашлось укрытия");
+  check.expect(exposed_cover == 0, "укрытие не просматривается угрозой",
+               std::format("{} простреливаемых укрытий", exposed_cover));
+  check.expect(cover_in_prop == 0, "укрытие не внутри предмета", std::format("{} точек в мебели", cover_in_prop));
+  // Точное утверждение, а не допуск: если укрытие приписано предмету, то подход к этому предмету со
+  // стороны угрозы обязан просматриваться. Иначе прячет форма места, и предмет тут ни при чём.
+  check.expect(shadowed_anyway == 0, "названный предмет и есть тот, кто укрывает",
+               std::format("{} точек приписаны предмету, который ничего не закрывает", shadowed_anyway));
+  check.expect(by_object > 0, "укрытие за предметом существует", "все укрытия оказались укрытиями формы");
+  check.expect(threat_dependent > 0, "укрытие зависит от того, откуда угроза",
+               "ни в одном месте набор не изменился при угрозе с другой стороны");
+  check.expect(wrong_side == 0, "укрытие лежит с обратной от угрозы стороны предмета",
+               std::format("{} точек с той же стороны, что и угроза", wrong_side));
+  check.expect(watched > 0, "точки наблюдения находятся");
+  check.expect(gates_missed == 0, "видимые входы закрыты наблюдением",
+               std::format("{} входов остались без присмотра", gates_missed));
+  check.expect(duplicate_orders == 0, "приказ разводит людей по разным точкам",
+               std::format("{} совпадений", duplicate_orders));
+  check.expect(orders_outside == 0, "назначенная точка лежит в своей части",
+               std::format("{} назначений снаружи", orders_outside));
+
+  std::cout << std::format("  замер: мест с предметами {}, из них с укрытиями {} (всего {} точек, из них "
+                           "{} за предметом и {} за формой места), с наблюдением {}\n",
+                           places.size(), with_cover, total_cover, by_object, total_cover - by_object, watched);
 }
 
 // Связи без геометрии. Их два вида, и оба обязаны лежать В ФАЙЛЕ, потому что вывести их из совпадения
@@ -2235,6 +2521,8 @@ void verify_zones(checker& check, const pf09::territory& map, const options& opt
   verify_places(check, opts);
   verify_agents(check, store, opts);
   verify_graph_nodes(check, store, opts);
+  verify_props(check, store, opts);
+  verify_tactics(check, store, opts);
   verify_doors_and_floors(check, store, opts);
 
   std::cout << std::format("  замер: {} секторов, {} зон, {} связей, {:.1f} КБ на диске; резидентно {} секторов "

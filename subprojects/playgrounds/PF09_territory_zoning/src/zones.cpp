@@ -13,7 +13,7 @@ namespace devils_engine::pf09 {
 
 namespace {
 
-constexpr char sector_magic[8] = {'P', 'F', '0', '9', 'Z', 'S', '0', '4'};
+constexpr char sector_magic[8] = {'P', 'F', '0', '9', 'Z', 'S', '0', '5'};
 
 struct sector_header {
   char magic[8];
@@ -23,6 +23,7 @@ struct sector_header {
   uint32_t part_count;
   uint32_t vertex_count;
   uint32_t portal_count;
+  uint32_t prop_count;
   uint32_t name_bytes;
   uint64_t fingerprint;
 };
@@ -96,6 +97,11 @@ std::span<const zone_portal> zone_sector::portals_of(const zone_part& part) cons
   return {portals.data() + part.portal_begin, part.portal_count};
 }
 
+std::span<const zone_prop> zone_sector::props_of(const zone_record& record) const {
+  if (record.prop_begin + record.prop_count > props.size()) return {};
+  return {props.data() + record.prop_begin, record.prop_count};
+}
+
 std::span<const zone_portal> zone_sector::links_of(const zone_record& record) const {
   if (record.link_begin + record.link_count > portals.size()) return {};
   return {portals.data() + record.link_begin, record.link_count};
@@ -103,7 +109,8 @@ std::span<const zone_portal> zone_sector::links_of(const zone_record& record) co
 
 uint64_t zone_sector::byte_size() const noexcept {
   return zones.size() * sizeof(zone_record) + parts.size() * sizeof(zone_part) +
-         vertices.size() * sizeof(glm::vec2) + portals.size() * sizeof(zone_portal) + names.size();
+         vertices.size() * sizeof(glm::vec2) + portals.size() * sizeof(zone_portal) +
+         props.size() * sizeof(zone_prop) + names.size();
 }
 
 // Луч вправо и счёт пересечений. Границу считаем принадлежащей зоне через `>=`/`<` на одном конце: точка
@@ -144,6 +151,8 @@ uint64_t compute_fingerprint(const zone_sector& sector) {
     hash = utils::hash_combine(hash, uint32_t(record.floor));
     hash = utils::hash_combine(hash, record.link_begin);
     hash = utils::hash_combine(hash, record.link_count);
+    hash = utils::hash_combine(hash, record.prop_begin);
+    hash = utils::hash_combine(hash, record.prop_count);
     for (uint32_t axis = 0; axis < 3; ++axis) {
       hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(record.bounds.lower[axis]));
       hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(record.bounds.upper[axis]));
@@ -174,6 +183,14 @@ uint64_t compute_fingerprint(const zone_sector& sector) {
     hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(portal.to.x));
     hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(portal.to.y));
   }
+  for (const auto& prop : sector.props) {
+    hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(prop.position.x));
+    hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(prop.position.y));
+    hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(prop.radius));
+    hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(prop.height));
+    hash = utils::hash_combine(hash, prop.part);
+    hash = utils::hash_combine(hash, prop.flags);
+  }
   for (const char symbol : sector.names) {
     hash = utils::hash_combine(hash, uint64_t(uint8_t(symbol)));
   }
@@ -189,6 +206,7 @@ void write_sector(const std::filesystem::path& path, const zone_sector& sector) 
   header.part_count = uint32_t(sector.parts.size());
   header.vertex_count = uint32_t(sector.vertices.size());
   header.portal_count = uint32_t(sector.portals.size());
+  header.prop_count = uint32_t(sector.props.size());
   header.name_bytes = uint32_t(sector.names.size());
   header.fingerprint = compute_fingerprint(sector);
 
@@ -206,6 +224,9 @@ void write_sector(const std::filesystem::path& path, const zone_sector& sector) 
   }
   for (const auto& portal : sector.portals) {
     append(bytes, portal);
+  }
+  for (const auto& prop : sector.props) {
+    append(bytes, prop);
   }
   bytes.insert(bytes.end(), sector.names.begin(), sector.names.end());
 
@@ -237,6 +258,7 @@ bool read_sector(const std::filesystem::path& path, zone_sector& out) {
   out.parts.resize(header.part_count);
   out.vertices.resize(header.vertex_count);
   out.portals.resize(header.portal_count);
+  out.props.resize(header.prop_count);
   out.names.resize(header.name_bytes);
 
   for (auto& record : out.zones) {
@@ -250,6 +272,9 @@ bool read_sector(const std::filesystem::path& path, zone_sector& out) {
   }
   for (auto& portal : out.portals) {
     if (!take(bytes, cursor, portal)) return false;
+  }
+  for (auto& prop : out.props) {
+    if (!take(bytes, cursor, prop)) return false;
   }
   if (cursor + out.names.size() > bytes.size()) return false;
   std::memcpy(out.names.data(), bytes.data() + cursor, out.names.size());
@@ -463,6 +488,13 @@ std::span<const zone_portal> zone_store::portals_of(const part_ref& reference) c
   const auto* part = part_of(reference);
   if (part == nullptr) return {};
   return sector(key_sector_x(reference.zone), key_sector_y(reference.zone))->portals_of(*part);
+}
+
+std::span<const zone_prop> zone_store::props_of(const zone_key key) const {
+  const auto* record = find(key);
+  if (record == nullptr) return {};
+  const auto* owner = sector(key_sector_x(key), key_sector_y(key));
+  return owner == nullptr ? std::span<const zone_prop>{} : owner->props_of(*record);
 }
 
 std::span<const zone_portal> zone_store::links_of(const zone_key key) const {

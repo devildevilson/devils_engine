@@ -33,6 +33,7 @@ using namespace devils_engine;
 #include "devils_engine/utils/hash.h"
 
 #include "navigate.h"
+#include "tactics.h"
 #include "zones.h"
 
 namespace devils_engine::pf09 {
@@ -300,9 +301,31 @@ void emit_wall(frame_geometry& out, const glm::vec2 a, const glm::vec2 b, const 
   push(out, a, high, tint, slot);
 }
 
+// Предмет: коробка со стороной в два радиуса. Круг рисовать незачем — предмет и в модели круг лишь для
+// расчёта обхода, а на экране важно, что он стоит именно здесь и именно такой высоты.
+void emit_box(frame_geometry& out, const glm::vec2 centre, const float radius, const float low,
+              const float high, const uint32_t top_tint, const uint32_t side_tint, const uint32_t slot);
+
 void emit_line(frame_geometry& out, const glm::vec2 a, const glm::vec2 b, const float height, const uint32_t tint) {
   out.lines.push_back({a.x, height, a.y, tint, no_slot, 0, 0, 0});
   out.lines.push_back({b.x, height, b.y, tint, no_slot, 0, 0, 0});
+}
+
+void emit_box(frame_geometry& out, const glm::vec2 centre, const float radius, const float low,
+              const float high, const uint32_t top_tint, const uint32_t side_tint, const uint32_t slot) {
+  const glm::vec2 corners[4] = {{centre.x - radius, centre.y - radius},
+                                {centre.x + radius, centre.y - radius},
+                                {centre.x + radius, centre.y + radius},
+                                {centre.x - radius, centre.y + radius}};
+  push(out, corners[0], high, top_tint, slot);
+  push(out, corners[1], high, top_tint, slot);
+  push(out, corners[2], high, top_tint, slot);
+  push(out, corners[0], high, top_tint, slot);
+  push(out, corners[2], high, top_tint, slot);
+  push(out, corners[3], high, top_tint, slot);
+  for (uint32_t i = 0; i < 4; ++i) {
+    emit_wall(out, corners[i], corners[(i + 1) % 4], low, high, side_tint, slot);
+  }
 }
 
 void emit_marker(frame_geometry& out, const glm::vec2 centre, const float radius, const float height,
@@ -524,7 +547,7 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
         "PF09 territory zoning",
         "sectors from disk -> polygon zones -> portals from shared edges",
         "WASD pan | wheel zoom | LMB select | QE yaw | RF pitch | ZX floor | C cutaway | V route | N names | "
-        "K toggle door | G agents | P portals | H walls | Esc quit"});
+        "O props | B tactics | K toggle door | G agents | P portals | H walls | Esc quit"});
 
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
@@ -616,6 +639,8 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
     bind_key("toggle_routes", "key_v");
     bind_key("toggle_names", "key_n");
     bind_key("toggle_door", "key_k");
+    bind_key("toggle_props", "key_o");
+    bind_key("toggle_tactics", "key_b");
     bind_key("pitch_up", "key_r");
     bind_key("pitch_down", "key_f");
     bind_key("yaw_left", "key_q");
@@ -631,7 +656,11 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
     bool show_agents = true;
     bool show_portals = true;
     bool show_walls = true;
+    bool show_props = true;
+    bool show_tactics = options.start_tactics;
     bool walls_latch = false;
+    bool props_latch = false;
+    bool tactics_latch = false;
     double pitch_deg = 42.0;
     float yaw_rad = 0.0f;
     bool agents_latch = false;
@@ -708,6 +737,8 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
       if (latched("toggle_cutaway", cutaway_latch)) cutaway = !cutaway;
       if (latched("toggle_routes", routes_latch)) show_routes = !show_routes;
       if (latched("toggle_names", names_latch)) show_names = !show_names;
+      if (latched("toggle_props", props_latch)) show_props = !show_props;
+      if (latched("toggle_tactics", tactics_latch)) show_tactics = !show_tactics;
       const bool door_key = latched("toggle_door", door_latch);
 
       pitch_deg = std::clamp(pitch_deg + 40.0 * double(dt) *
@@ -880,6 +911,17 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
                 }
               }
 
+              // Предметы места. Рисуются только на своём этаже и только когда не срезаны: срез убирает
+              // не только стену, но и шкаф, иначе он остаётся висеть посреди среза.
+              if (show_props && !below && !sliced) {
+                for (const auto& prop : sector->props_of(record)) {
+                  if (prop.part != index) continue;
+                  const uint32_t top = prop.blocks_sight() ? pack(126, 96, 70, 255) : pack(158, 132, 96, 255);
+                  const uint32_t side = prop.climbable() ? pack(104, 84, 62, 255) : pack(82, 64, 48, 255);
+                  emit_box(geometry, prop.position, prop.radius, low, low + prop.height, top, side, slot);
+                }
+              }
+
               if (!show_portals || below) continue;
               for (const auto& portal : portals) {
                 if (!portal.geometric()) continue;
@@ -993,6 +1035,56 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
         walkers.clear();
       }
 
+      // --- тактическая картина ---
+      //
+      // Ровно те же вызовы, которыми пользуется игра, и ровно на тех данных, по которым ходят. Отдельный
+      // «отладочный» расчёт показал бы красивую картинку, ничего не говорящую о том, что решит ИИ.
+      if (show_tactics && hovered_zone != nullptr && !hovered_zone->abstract()) {
+        const auto place = hovered_zone->key;
+        glm::vec2 threat = walkers.empty() ? glm::vec2{float(centre.x), float(centre.y)} : walkers.front().position;
+
+        // Угроза должна быть ВНУТРИ места, иначе видимость не определена и ответ выродится в список
+        // предметов. Если группа снаружи — берём проём, через который она войдёт.
+        uint32_t dummy = 0;
+        (void)dummy;
+        if (!settle_into_place(store, place, threat)) {
+          const auto edges = store.perimeter(place);
+          for (const auto& portal : edges) {
+            if (!portal.geometric()) continue;
+            threat = portal.middle();
+            if (settle_into_place(store, place, threat)) break;
+          }
+        }
+
+        const float mark_height = float(current_floor) * storey_pitch_m + 0.2f;
+        emit_marker(geometry, threat, 0.45f, mark_height, pack(255, 80, 60, 235));
+
+        for (const auto& spot : cover_spots(store, place, threat, 8)) {
+          // За предметом и за формой места — разные вещи, и цветом они разные: первое можно потерять
+          // вместе с предметом, второе нет.
+          emit_marker(geometry, spot.position, 0.40f, mark_height,
+                      spot.sheltered() ? pack(90, 220, 120, 230) : pack(150, 200, 180, 200));
+          emit_line(geometry, threat, spot.position, mark_height, pack(90, 220, 120, 110));
+        }
+        for (const auto& spot : watch_spots(store, place, 4)) {
+          emit_marker(geometry, spot.position, 0.40f, mark_height, pack(110, 170, 255, 230));
+          for (const auto& portal : store.perimeter(place)) {
+            if (!portal.geometric()) continue;
+            if (!visible(store, place, spot.position, portal.middle())) continue;
+            emit_line(geometry, spot.position, portal.middle(), mark_height, pack(110, 170, 255, 130));
+          }
+        }
+
+        std::vector<glm::vec2> group;
+        for (uint32_t i = 0; i < walkers.size() && group.size() < 4; ++i) {
+          group.push_back(walkers[i].position);
+        }
+        for (const auto& order : fan_out(store, place, order_kind::hold, threat, group)) {
+          emit_line(geometry, group[order.agent], order.position, mark_height + 0.05f,
+                    pack(255, 214, 96, 200));
+        }
+      }
+
       // --- метаинформация о выбранной зоне ---
 
       detail.clear();
@@ -1012,6 +1104,7 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
         }
         detail.push_back(std::format("parts: {}  portals: {} open, {} locked", shown->part_count, open_gates,
                                      locked_gates));
+        detail.push_back(std::format("props: {} here", store.props_of(shown->key).size()));
         detail.push_back(std::format("floor: {}  passable: {}{}", shown->floor,
                                      store.passable(*shown) ? "yes" : "no",
                                      shown->kind == zone_kind::door
@@ -1026,9 +1119,11 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
       }
       detail.push_back(std::format("view {:.0f} m  pitch {:.0f} deg  map level {}  zones in frame {}", span_m,
                                    pitch_deg, zone_level_name(level), geometry.slots.size()));
-      detail.push_back(std::format("floor {}  cutaway {}  routes {}  names {}  doors toggled {}", current_floor,
-                                   cutaway ? "on" : "off", show_routes ? "on" : "off", show_names ? "on" : "off",
-                                   toggled_doors));
+      detail.push_back(std::format("floor {}  cutaway {}  routes {}  names {}  props {}  tactics {}  "
+                                   "doors toggled {}",
+                                   current_floor, cutaway ? "on" : "off", show_routes ? "on" : "off",
+                                   show_names ? "on" : "off", show_props ? "on" : "off",
+                                   show_tactics ? "on" : "off", toggled_doors));
       detail.push_back(std::format("sectors resident {}  {:.0f} KB  agents {}", store.resident_sectors(),
                                    double(store.resident_bytes()) / 1024.0, walkers.size()));
       overlay.set_detail_lines(detail);

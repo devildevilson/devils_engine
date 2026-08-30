@@ -200,6 +200,11 @@ struct zone_record {
   uint32_t link_begin = 0;
   uint32_t link_count = 0;
 
+  // Предметы места. Лежат у ЗОНЫ, а не у части: «что стоит в этой комнате» — вопрос про место, а часть
+  // лишь уточняет, где именно, и хранится в самом предмете.
+  uint32_t prop_begin = 0;
+  uint32_t prop_count = 0;
+
   // Этаж — ОТДЕЛЬНОЕ поле, а не вывод из высоты. Высоту читает рисование, а «какой уровень здания» —
   // вопрос игры: подвал, первый, второй. Выводить его из `bounds.lower.y` значило бы требовать, чтобы у
   // всех зданий этажи были одинаковой высоты, а это неправда уже про подвал.
@@ -209,6 +214,37 @@ struct zone_record {
   bool impassable() const noexcept { return (tags & uint32_t(zone_flags::impassable)) != 0; }
   bool road() const noexcept { return (tags & uint32_t(zone_flags::road)) != 0; }
   bool closed() const noexcept { return (tags & uint32_t(zone_flags::closed)) != 0; }
+};
+
+// Предмет внутри места: стул, стол, бочка, камень. Размещается СВОБОДНО — не по клеткам и не по сетке, —
+// но с полным знанием того, в каком месте и в какой его части он лежит.
+//
+// Он ломает то, на чём держалась вся модель движения: «часть выпукла, значит внутри неё можно идти по
+// прямой к проёму». Как только посреди комнаты стоит стол, это неправда. Поэтому предмет — НЕ зона:
+// зонами он превратил бы каждую комнату в лоскутное одеяло из десятка фигур, а связность — в граф,
+// который надо пересобирать всякий раз, когда стул подвинули. Предмет остаётся препятствием ВНУТРИ
+// части, а часть остаётся единицей связности; обход предмета — забота шага, а не маршрута.
+enum class prop_flags : uint32_t {
+  none = 0,
+  blocks_move = 1u << 0,   // актор не проходит сквозь
+  blocks_sight = 1u << 1,  // за ним не видно — из этого и получается укрытие
+  climbable = 1u << 2,     // через стол можно перелезть: движению мешает, взгляду нет
+};
+
+[[nodiscard]] constexpr uint32_t operator|(const prop_flags a, const prop_flags b) noexcept {
+  return uint32_t(a) | uint32_t(b);
+}
+
+struct zone_prop {
+  glm::vec2 position{};
+  float radius = 0.0f;
+  float height = 0.0f;
+  uint32_t part = 0;      // часть, внутри которой он лежит: сужает и запрос, и проверку
+  uint32_t flags = 0;
+
+  bool blocks_move() const noexcept { return (flags & uint32_t(prop_flags::blocks_move)) != 0; }
+  bool blocks_sight() const noexcept { return (flags & uint32_t(prop_flags::blocks_sight)) != 0; }
+  bool climbable() const noexcept { return (flags & uint32_t(prop_flags::climbable)) != 0; }
 };
 
 // Ссылка на часть. Навигация и выборка работают с частями, поэтому адрес у них парный: зона говорит, ЧТО
@@ -233,6 +269,7 @@ struct zone_sector {
   std::vector<zone_part> parts;
   std::vector<glm::vec2> vertices;
   std::vector<zone_portal> portals;
+  std::vector<zone_prop> props;
   std::vector<char> names;
   uint64_t fingerprint = 0;
 
@@ -241,6 +278,7 @@ struct zone_sector {
   std::span<const glm::vec2> outline_of(const zone_part& part) const;
   std::span<const zone_portal> portals_of(const zone_part& part) const;
   std::span<const zone_portal> links_of(const zone_record& record) const;
+  std::span<const zone_prop> props_of(const zone_record& record) const;
   uint64_t byte_size() const noexcept;
 };
 
@@ -302,6 +340,7 @@ public:
   std::span<const glm::vec2> outline_of(const part_ref& reference) const;
   std::span<const zone_portal> portals_of(const part_ref& reference) const;
   std::span<const zone_portal> links_of(const zone_key key) const;
+  std::span<const zone_prop> props_of(const zone_key key) const;
   std::string_view name_of(const zone_record& record) const;
 
   uint32_t resident_sectors() const noexcept { return uint32_t(resident_.size()); }

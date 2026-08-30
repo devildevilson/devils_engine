@@ -53,6 +53,7 @@ struct draft {
     uint32_t flags = 0;
   };
   std::vector<graph_link> graph_links;
+  std::vector<zone_prop> props;   // расставляются последним проходом, когда известны проёмы
   // Части хранятся В ЛОКАЛЬНЫХ координатах относительно `reference`, а мировые получаются сложением при
   // записи. Это не экономия и не удобство: точка, посчитанная сразу в мировых метрах, приходит уже
   // округлённой до трёх сантиметров, и короткое ребро двери длиной в два метра даёт из таких точек
@@ -479,7 +480,12 @@ build_stats build_world(const territory& map, const locality_config& local, cons
       entry.parent_identity = district_of(groups[id].front() % side, groups[id].front() / side);
       entry.name = std::format("{} {}", kind_label(group_kind[id]), id);
       entry.reference = reference;
-      if (group_kind[id] != zone_kind::yard) entry.tags = uint32_t(zone_flags::road);
+      // Дорогой считаются УЛИЦА И ПЕРЕКРЁСТОК, а не всё, что не двор. Площадь — открытое место, а не
+      // проезжая часть: с флагом дороги маршрут начинал резать через неё вместо того, чтобы идти улицей,
+      // и заодно площадь попадала под правило «дороги остаются чистыми» и лишалась всякой утвари.
+      if (group_kind[id] == zone_kind::street || group_kind[id] == zone_kind::crossroad) {
+        entry.tags = uint32_t(zone_flags::road);
+      }
 
       for (const auto plot : groups[id]) {
         // Массив берётся ОДИН раз: два вызова давали два разных временных объекта, и диапазон собирался
@@ -980,6 +986,118 @@ build_stats build_world(const territory& map, const locality_config& local, cons
     }
   }
 
+  // --- предметы внутри мест ---
+  //
+  // Ставятся ПОСЛЕДНИМИ, когда уже известны проёмы: главное правило расстановки — не перекрыть проход.
+  // Свободное размещение здесь не «где угодно», а «где угодно при соблюдении зазоров»: предмет обязан
+  // целиком лежать внутри выпуклой части, держаться от её рёбер и от каждого проёма дальше, чем габарит
+  // актора, и не липнуть к соседнему предмету. Без последнего два стула встают вплотную и запирают
+  // комнату, а маршрут об этом не знает: связность-то живёт на частях.
+  {
+    constexpr float agent_radius = 0.35f;
+    constexpr float door_clearance = 0.95f;  // чтобы в проёме 2.4 м всегда оставался проход
+    constexpr float edge_clearance = 0.75f;
+    constexpr float placement_margin = 0.02f;  // запас на разницу локальных и мировых координат
+
+    struct prop_kind {
+      float radius;
+      float height;
+      uint32_t flags;
+    };
+    // Мебель и уличная утварь различаются не только видом: за шкаф можно спрятаться, через стол —
+    // перелезть, а камень мешает ногам и не мешает взгляду. Из этих трёх различий и получаются потом
+    // укрытие, обход и простреливаемость.
+    static constexpr prop_kind indoor_kinds[] = {
+      {0.70f, 0.80f, prop_flags::blocks_move | prop_flags::climbable},              // стол
+      {0.30f, 0.50f, uint32_t(prop_flags::blocks_move)},                            // стул
+      {0.50f, 1.80f, prop_flags::blocks_move | prop_flags::blocks_sight},           // шкаф
+    };
+    static constexpr prop_kind outdoor_kinds[] = {
+      {0.50f, 1.00f, prop_flags::blocks_move | prop_flags::blocks_sight},           // ящик
+      {0.40f, 0.90f, prop_flags::blocks_move | prop_flags::blocks_sight},           // бочка
+      {0.60f, 0.70f, uint32_t(prop_flags::blocks_move)},                            // камень
+    };
+
+    const auto segment_distance = [](const glm::vec2 point, const glm::vec2 a, const glm::vec2 b) {
+      const auto span = b - a;
+      const float length = glm::dot(span, span);
+      const float t = length < 1.0e-8f ? 0.0f : std::clamp(glm::dot(point - a, span) / length, 0.0f, 1.0f);
+      return glm::length(point - (a + span * t));
+    };
+
+    for (uint32_t index = 0; index < drafts.size(); ++index) {
+      auto& entry = drafts[index];
+      if (keys[index] == invalid_key || entry.level != zone_level::interior) continue;
+      if ((entry.tags & uint32_t(zone_flags::impassable)) != 0) continue;
+
+      const bool indoor = entry.kind == zone_kind::hall;
+      const bool outdoor = entry.kind == zone_kind::yard || entry.kind == zone_kind::square;
+      // Дороги и перекрёстки остаются чистыми: загромождённая улица — это баррикада, а баррикада должна
+      // быть решением игры, а не побочным продуктом расстановки мебели.
+      if (!indoor && !outdoor) continue;
+
+      const auto kinds = indoor ? std::span<const prop_kind>(indoor_kinds)
+                                : std::span<const prop_kind>(outdoor_kinds);
+
+      for (uint32_t part = 0; part < entry.parts.size(); ++part) {
+        const auto& outline = entry.parts[part];
+        if (outline.size() < 3) continue;
+
+        glm::vec2 lower{1.0e30f, 1.0e30f};
+        glm::vec2 upper{-1.0e30f, -1.0e30f};
+        double area = 0.0;
+        for (size_t i = 0; i < outline.size(); ++i) {
+          lower = glm::min(lower, outline[i]);
+          upper = glm::max(upper, outline[i]);
+          const auto& a = outline[i];
+          const auto& b = outline[(i + 1) % outline.size()];
+          area += double(a.x) * double(b.y) - double(b.x) * double(a.y);
+        }
+        area = std::abs(area) * 0.5;
+
+        // Плотность, а не число: в маленькой каморке три шкафа — это уже стена.
+        const uint32_t wanted = uint32_t(std::min(area / 26.0, 5.0));
+        if (wanted == 0) continue;
+
+        const auto& gates = outgoing[draft_items[index][part]];
+        uint32_t placed = 0;
+        for (uint32_t attempt = 0; attempt < wanted * 12 && placed < wanted; ++attempt) {
+          const auto noise = utils::splitmix(entry.identity + part * 131ull, attempt + 1ull);
+          const auto& kind = kinds[(noise >> 44) % kinds.size()];
+          const glm::vec2 point{lower.x + float(double(noise & 0xffffull) / 65535.0) * (upper.x - lower.x),
+                                lower.y + float(double((noise >> 18) & 0xffffull) / 65535.0) * (upper.y - lower.y)};
+
+          if (!point_in_outline(outline, point)) continue;
+
+          bool room = true;
+          for (size_t i = 0; i < outline.size() && room; ++i) {
+            room = segment_distance(point, outline[i], outline[(i + 1) % outline.size()]) >
+                   kind.radius + edge_clearance;
+          }
+          for (const auto& gate : gates) {
+            if (!room) break;
+            if (!gate.geometric()) continue;
+            room = segment_distance(point, gate.from - entry.reference, gate.to - entry.reference) >
+                   kind.radius + door_clearance;
+          }
+          for (const auto& other : entry.props) {
+            if (!room) break;
+            if (other.part != part) continue;
+            // Запас поверх зазора — не перестраховка. Расстановка считает в ЛОКАЛЬНЫХ координатах, а
+            // проверяют её потом в мировых, и одно и то же расстояние в двух системах отличается на
+            // несколько миллиметров. Пара, принятая ровно на пороге, в мировых оказывалась под ним.
+            room = glm::distance(point, other.position) >
+                   kind.radius + other.radius + 2.0f * agent_radius + placement_margin;
+          }
+          if (!room) continue;
+
+          entry.props.push_back({point, kind.radius, kind.height, part, kind.flags});
+          ++placed;
+        }
+      }
+    }
+  }
+
   build_stats stats{};
   stats.settlements = uint32_t(settlements.size());
 
@@ -1032,6 +1150,14 @@ build_stats build_world(const territory& map, const locality_config& local, cons
         }
         if (item.parts.empty()) record.bounds = zone_bounds{};
 
+        record.prop_begin = uint32_t(out.props.size());
+        record.prop_count = uint32_t(item.props.size());
+        for (const auto& prop : item.props) {
+          auto copy = prop;
+          copy.position += item.reference;   // предметы, как и вершины, считаются в локальных координатах
+          out.props.push_back(copy);
+        }
+
         record.link_begin = uint32_t(out.portals.size());
         out.portals.insert(out.portals.end(), node_links[index].begin(), node_links[index].end());
         record.link_count = uint32_t(out.portals.size()) - record.link_begin;
@@ -1045,6 +1171,7 @@ build_stats build_world(const territory& map, const locality_config& local, cons
       ++stats.sectors;
       stats.zones += uint32_t(out.zones.size());
       stats.links += uint32_t(out.portals.size());
+      stats.props += uint32_t(out.props.size());
       stats.bytes += out.byte_size();
     }
   }
