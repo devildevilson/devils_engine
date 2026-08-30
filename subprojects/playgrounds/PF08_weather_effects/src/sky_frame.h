@@ -117,8 +117,13 @@ struct alignas(16) sky_gpu_block {
   // xyz — channel radius/luminance/glow radius, w — deterministic path seed. Автор остаётся CPU
   // metadata: weather и magic намеренно не выбирают разные shader branches.
   glm::vec4 lightning_shape;
+  // Верхнеатмосферное сияние: художественная заметность отделена от сферической геометрии слоя и
+  // магнитной привязки. Нулевая intensity — точный ранний выход прежнего неба.
+  glm::vec4 aurora_appearance;
+  glm::vec4 aurora_geometry;
+  glm::vec4 aurora_magnetic;
 };
-static_assert(sizeof(sky_gpu_block) == 944);
+static_assert(sizeof(sky_gpu_block) == 992);
 
 struct atmosphere_settings {
   double height_km = 100.0;         // верх атмосферы над поверхностью
@@ -239,6 +244,24 @@ struct snow_sparkle_settings {
 
 bool valid_snow_sparkle_settings(const snow_sparkle_settings& settings);
 
+struct aurora_settings {
+  double intensity = 0.0;
+  double saturation = 1.25;
+  double curtain_density = 0.38;
+  // Ноль оставляет только естественную ночную наблюдаемость; единица разрешает fantasy daylight aurora.
+  double daylight_visibility = 0.0;
+  double lower_altitude_km = 90.0;
+  double upper_altitude_km = 240.0;
+  double oval_angle_deg = 18.0;
+  double oval_width_deg = 4.0;
+  double magnetic_tilt_deg = 16.0;
+  double magnetic_azimuth_deg = 330.0;
+  double curtain_bands = 72.0;
+  double drift_deg_per_second = 0.12;
+};
+
+bool valid_aurora_settings(const aurora_settings& settings);
+
 struct output_settings {
   double exposure = 1.0e-4;
   // Ночное зрение: при низкой яркости колбочки перестают работать, цвет уходит и картинка холодает.
@@ -276,6 +299,7 @@ struct output_settings {
   double star_rotation_scale = 0.15;
   rainbow_settings rainbow;
   snow_sparkle_settings snow_sparkle;
+  aurora_settings aurora;
 };
 
 // Ключ цветового сценария. Хранится по высоте главного светила: именно она задаёт время суток.
@@ -304,6 +328,10 @@ struct view_preset {
   double look_azimuth_deg = 0.0;
   double look_altitude_deg = 10.0;
   double ev100 = 13.0;
+  // Отрицательные значения не меняют renderer presentation. Только специализированные showcase
+  // пресеты вроде aurora вправе задать их сами; CLI override всё равно имеет приоритет.
+  double aurora_intensity = -1.0;
+  double scotopic_strength = -1.0;
 };
 
 struct view_preset_list {

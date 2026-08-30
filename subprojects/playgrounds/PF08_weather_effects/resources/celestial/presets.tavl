@@ -26,6 +26,8 @@ presets = [
     look_azimuth_deg = 168.0
     look_altitude_deg = 25.0
     ev100 = 12.47
+    aurora_intensity = -1.0
+    scotopic_strength = -1.0
   }
   {
     name = "double_sunset"
@@ -36,6 +38,8 @@ presets = [
     look_azimuth_deg = 253.0
     look_altitude_deg = 6.0
     ev100 = 9.28
+    aurora_intensity = -1.0
+    scotopic_strength = -1.0
   }
   {
     name = "double_rainbow"
@@ -47,6 +51,8 @@ presets = [
     look_azimuth_deg = 60.0
     look_altitude_deg = 28.0
     ev100 = 11.0
+    aurora_intensity = -1.0
+    scotopic_strength = -1.0
   }
   {
     name = "snow_glint"
@@ -58,6 +64,21 @@ presets = [
     look_azimuth_deg = 253.0
     look_altitude_deg = -8.0
     ev100 = 9.28
+    aurora_intensity = -1.0
+    scotopic_strength = -1.0
+  }
+  {
+    name = "aurora"
+    // Полная Selen всё ещё даёт читаемый ландшафт, но камера смотрит вдоль authored магнитного овала.
+    // Showcase намеренно включает сильную emission и цветное зрение; явные CLI overrides всё равно главнее.
+    year = 1
+    day = 11
+    hour = 0.0
+    look_azimuth_deg = 150.0
+    look_altitude_deg = 15.0
+    ev100 = 0.99
+    aurora_intensity = 4.0
+    scotopic_strength = 0.0
   }
   {
     name = "night"
@@ -68,6 +89,8 @@ presets = [
     look_azimuth_deg = 175.0
     look_altitude_deg = 36.0
     ev100 = 0.99
+    aurora_intensity = -1.0
+    scotopic_strength = -1.0
   }
   {
     name = "eclipse"
@@ -82,5 +105,7 @@ presets = [
     look_azimuth_deg = 128.0
     look_altitude_deg = 16.0
     ev100 = 10.49
+    aurora_intensity = -1.0
+    scotopic_strength = -1.0
   }
 ]

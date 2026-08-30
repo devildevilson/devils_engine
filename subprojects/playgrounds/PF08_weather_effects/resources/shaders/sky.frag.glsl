@@ -1,6 +1,7 @@
 #version 450
 
 #include "pf08_atmosphere.glsl"
+#include "pf08_aurora.glsl"
 #define PF08_SURFACE_MEMORY_SET 0
 #define PF08_SURFACE_MEMORY_BINDING 6
 #include "pf08_surface_memory.glsl"
@@ -484,6 +485,12 @@ void main() {
     if (moon_hit) space = nearest_moon_radiance;
 
     color += transmittance * space;
+
+    // Сияние находится перед космосом, но за нижней атмосферой. Полная view-transmittance почти точно
+    // соответствует пути от 90+ км: основное extinction всё равно набирается в нижних километрах.
+    color += transmittance * pf08_aurora_radiance(
+      sky_data.sky, origin, view_direction,
+      dot(in_scattering, vec3(0.2126, 0.7152, 0.0722)));
   }
 
   // Радуга — угловая геометрия атмосферы, а не decal на изображении. Scene и последующий local

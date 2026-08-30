@@ -121,6 +121,10 @@ struct pf08_sky_block {
   vec4 lightning_end_flash;
   vec4 lightning_colour_intensity;
   vec4 lightning_shape;
+  // Aurora: intensity/saturation/density/daylight; altitude shell/oval; magnetic pole/bands/drift.
+  vec4 aurora_appearance;
+  vec4 aurora_geometry;
+  vec4 aurora_magnetic;
 };
 
 // --- параметризация таблицы прохождения ---

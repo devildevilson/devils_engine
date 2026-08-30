@@ -540,6 +540,12 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       options.time_scale = 0.0;
       options.exposure.manual = true;
       options.exposure.manual_ev100 = preset.ev100;
+      if (preset.aurora_intensity >= 0.0 && !options.aurora_intensity_overridden) {
+        options.output.aurora.intensity = preset.aurora_intensity;
+      }
+      if (preset.scotopic_strength >= 0.0 && !options.scotopic_strength_overridden) {
+        options.output.scotopic_strength = preset.scotopic_strength;
+      }
       found = true;
       utils::info("PF08 preset '{}': year {} day {} {:.2f}h, camera {:.1f}/{:.1f}, fixed EV100 {:+.2f}",
                   preset.name, preset.year, preset.day, preset.hour,
@@ -707,6 +713,9 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
   }
   if (!valid_snow_sparkle_settings(options.output.snow_sparkle)) {
     utils::error{}("PF08 artistic snow sparkle settings are outside their documented ranges");
+  }
+  if (!valid_aurora_settings(options.output.aurora)) {
+    utils::error{}("PF08 aurora appearance, shell or magnetic settings are outside documented ranges");
   }
   if (!std::isfinite(options.lightning_phase) || options.lightning_phase < -1.0 ||
       options.lightning_phase > 1.0 || !std::isfinite(options.lightning_strength) ||
@@ -1372,7 +1381,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       const auto calendar = system.to_calendar(game_time_days);
       const char* rainbow_sources = options.output.rainbow.sources == rainbow_source_mode::primary
         ? "primary" : (options.output.rainbow.sources == rainbow_source_mode::brightest ? "brightest" : "all");
-      const std::array<std::string, 13> details{
+      const std::array<std::string, 14> details{
         std::format("Year {} · beat {}/{} · day {}/{} · {:02}:{:02} · {:.4f} days per real second{}", calendar.year,
                     calendar.beat_year, system.binary_beat_years(), calendar.day,
                     uint32_t(system.planet_year_days()), calendar.hour,
@@ -1424,6 +1433,10 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
                     options.output.snow_sparkle.source_balance),
         std::format("Lightning: {} · channel/flash {:.2f}/{:.2f} · strength {:.2f} · L retriggers",
                     options.lightning_mode, flash.channel, flash.flash, options.lightning_strength),
+        std::format("Aurora: I {:.2f} · shell {:.0f}-{:.0f} km · oval {:.1f}±{:.1f}° · bands {:.0f}",
+                    output.aurora.intensity, output.aurora.lower_altitude_km,
+                    output.aurora.upper_altitude_km, output.aurora.oval_angle_deg,
+                    output.aurora.oval_width_deg, output.aurora.curtain_bands),
         std::format("Colour script: tint ({:.2f} {:.2f} {:.2f}) · saturation {:.2f} · contrast {:.2f}",
                     output.grade_tint.x, output.grade_tint.y, output.grade_tint.z, output.grade_saturation,
                     output.grade_contrast)};

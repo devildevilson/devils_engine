@@ -31,6 +31,22 @@ bool valid_snow_sparkle_settings(const snow_sparkle_settings& settings) {
          settings.source_balance <= 1.0;
 }
 
+bool valid_aurora_settings(const aurora_settings& a) {
+  return std::isfinite(a.intensity) && a.intensity >= 0.0 && a.intensity <= 16.0 &&
+         std::isfinite(a.saturation) && a.saturation >= 0.0 && a.saturation <= 4.0 &&
+         std::isfinite(a.curtain_density) && a.curtain_density >= 0.0 && a.curtain_density <= 1.0 &&
+         std::isfinite(a.daylight_visibility) && a.daylight_visibility >= 0.0 &&
+         a.daylight_visibility <= 1.0 && std::isfinite(a.lower_altitude_km) &&
+         a.lower_altitude_km >= 60.0 && std::isfinite(a.upper_altitude_km) &&
+         a.upper_altitude_km > a.lower_altitude_km && a.upper_altitude_km <= 600.0 &&
+         std::isfinite(a.oval_angle_deg) && a.oval_angle_deg >= 0.0 && a.oval_angle_deg <= 60.0 &&
+         std::isfinite(a.oval_width_deg) && a.oval_width_deg > 0.1 && a.oval_width_deg <= 30.0 &&
+         std::isfinite(a.magnetic_tilt_deg) && a.magnetic_tilt_deg >= 0.0 &&
+         a.magnetic_tilt_deg <= 90.0 && std::isfinite(a.magnetic_azimuth_deg) &&
+         std::isfinite(a.curtain_bands) && a.curtain_bands >= 1.0 && a.curtain_bands <= 96.0 &&
+         std::isfinite(a.drift_deg_per_second) && std::abs(a.drift_deg_per_second) <= 10.0;
+}
+
 namespace {
 
 constexpr double pi = std::numbers::pi;
@@ -180,6 +196,21 @@ sky_gpu_block pack_sky_block(const sky_state& state, const sky_state& star_frame
               static_cast<float>(output.snow_sparkle.density),
               static_cast<float>(output.snow_sparkle.sharpness),
               static_cast<float>(output.snow_sparkle.source_balance));
+  block.aurora_appearance =
+    glm::vec4(static_cast<float>(output.aurora.intensity),
+              static_cast<float>(output.aurora.saturation),
+              static_cast<float>(output.aurora.curtain_density),
+              static_cast<float>(output.aurora.daylight_visibility));
+  block.aurora_geometry =
+    glm::vec4(static_cast<float>(output.aurora.lower_altitude_km),
+              static_cast<float>(output.aurora.upper_altitude_km),
+              static_cast<float>(to_radians(output.aurora.oval_angle_deg)),
+              static_cast<float>(to_radians(output.aurora.oval_width_deg)));
+  block.aurora_magnetic =
+    glm::vec4(static_cast<float>(to_radians(output.aurora.magnetic_tilt_deg)),
+              static_cast<float>(to_radians(output.aurora.magnetic_azimuth_deg)),
+              static_cast<float>(output.aurora.curtain_bands),
+              static_cast<float>(to_radians(output.aurora.drift_deg_per_second)));
 
   return block;
 }

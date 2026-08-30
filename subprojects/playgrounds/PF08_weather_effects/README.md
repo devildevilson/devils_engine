@@ -1,6 +1,6 @@
 # PF08 — weather effects
 
-Статус: **срезы 0–6 CLOSED; далее северное сияние и закрывающий аудит** (2026-08-29).
+Статус: **срезы 0–7 CLOSED; далее закрывающий аудит** (2026-08-30).
 
 PF08 проверяет погоду как состояние открытого мира, а не как отдельный дождевой emitter. Площадка начинает
 с независимой копии закрытого `PF07_party_environment`: та же P-type двойная система, календарь и затмения,
@@ -29,6 +29,7 @@ build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effe
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=downpour --lightning=storm
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=downpour --lightning=distant --lightning-phase=0.03
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --lightning=magic
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --preset=aurora --weather=clear
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=rain --surface-age=1 --no-precipitation-particles
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=clear --recent-rain=2 --debug=11
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=fog --debug=8
@@ -127,10 +128,11 @@ weather state
    пути, цветом и lifetime. Гроза — композиция overcast/downpour, lightning events и при необходимости грома,
    а не ещё один монолитный preset shader. Event, объёмная/поверхностная вспышка, разрешимый procedural
    channel с ветвями, magic-профиль и scheduler используют один механизм.
-7. **PLANNED — aurora and weather horizon.** Северное сияние — протяжённая эмиссионная структура верхней
+7. **DONE — aurora and weather horizon.** Северное сияние — протяжённая эмиссионная структура верхней
    атмосферы, а не облако и не post-process: world/planet-anchored curtains, высотный слой, магнитное
    направление, спектральные линии, медленное движение и корректная окклюзия горизонтом. После него отдельно
-   решается, добавляет ли ещё какой-либо эффект новый механизм или лишь перекрашивает уже доказанный.
+   решается, добавляет ли ещё какой-либо эффект новый механизм или лишь перекрашивает уже доказанный. Все
+   перечисленные consumers реализованы; нижняя облачность закрывает сияние штатной volume-композицией.
 8. **Закрывающий аудит.** Фиксированные clear/overcast/rain/snow/lightning/aurora кадры в нескольких временах суток,
    временные переходы, GPU budget и Vulkan validation. Побитный PF07 baseline остаётся историческим gate
    срезов 0–4A: с 4B PF08 намеренно содержит новую постоянную геометрию навеса.
@@ -425,6 +427,22 @@ minimum `2.751 ms` против `2.678 ms`, то есть включение с�
 `7.099/7.109 ms` лежат в шуме запуска. Preset проходит Vulkan validation без VUID/API warning/error,
 headless contract — `101/101`.
 
+Карта rain-memory имеет фиксированный world-space размер и должна переживать resize/fullscreen. Найденный
+engine bug был именно здесь: `resize_viewport` пересоздавал только screensize-ресурсы, но обнулял
+всю temporal-историю, включая эту карту. В итоге радуга исчезала не от смены aspect/FOV, а от
+потери своего погодного условия. Теперь resize очищает только реально пересозданную screensize history;
+динамический тест `1280x720 -> 1600x900` на 20-м кадре сохранил обе дуги на итоговом 80-м.
+
+Density всё ещё вычисляется во всех 96 Z-slices, но precipitation lighting по умолчанию переиспользуется на
+трёх соседних срезах. На `downpour` stride `2 -> 3` снизил volume minimum `2.883 -> 2.405 ms`, total
+`9.257 -> 8.622 ms`; фиксированный A/B дал `MAE 0.00203176`, `PSNR 47.15 dB`, визуальной ступенчатости не
+видно. `--precip-light-stride=1` остаётся точным reference path.
+
+Release build, runtime clear/recent-rain/recent-snow/downpour и Vulkan validation проходят без VUID/API
+warning/error; `--verify` — `98/98`. Шесть тестов удалённого CPU scalar-интегратора также удалены, а новый
+контракт authored rain XOR snow добавлен. PF07, `compare_pf07_baseline.sh` и frozen reference frames при этом
+пересмотре не запускались.
+
 ## Срез 6: универсальная молния
 
 Первый слой — lifetime/photometry contract. `lightning_event` не принадлежит
@@ -481,18 +499,44 @@ transmittance до своей дистанции. Решающее правил�
 не отбрасывает новую lightning-shadow. Это production lighting extension, а не причина заводить второй тип
 молнии; event и его фотометрия уже дают для него все исходные данные.
 
-Карта rain-memory имеет фиксированный world-space размер и должна переживать resize/fullscreen. Найденный
-engine bug был именно здесь: `resize_viewport` пересоздавал только screensize-ресурсы, но обнулял
-всю temporal-историю, включая эту карту. В итоге радуга исчезала не от смены aspect/FOV, а от
-потери своего погодного условия. Теперь resize очищает только реально пересозданную screensize history;
-динамический тест `1280x720 -> 1600x900` на 20-м кадре сохранил обе дуги на итоговом 80-м.
+## Срез 7: северное сияние
 
-Density всё ещё вычисляется во всех 96 Z-slices, но precipitation lighting по умолчанию переиспользуется на
-трёх соседних срезах. На `downpour` stride `2 -> 3` снизил volume minimum `2.883 -> 2.405 ms`, total
-`9.257 -> 8.622 ms`; фиксированный A/B дал `MAE 0.00203176`, `PSNR 47.15 dB`, визуальной ступенчатости не
-видно. `--precip-light-stride=1` остаётся точным reference path.
+Сияние не расширяет прежнюю рассеивающую атмосферу высотой `100 км`. Настоящий authored слой лежит на
+`90–240 км`; растянуть ради него atmosphere LUT означало бы пересчитать все закрытые состояния и тратить
+samples почти в вакууме. Вместо этого `pf08_aurora.glsl` пересекает отдельную сферическую оболочку над той же
+планетой восемью отсчётами. Полученная emission умножается на готовую view-transmittance нижней атмосферы и
+добавляется перед local weather volume. Поэтому поверхность планеты и scene geometry закрывают сияние по
+depth, а `cloudy|overcast|fog` ослабляют его тем же Beer–Lambert, что звёзды и луны. Специальной ветки
+«спрятать aurora облаком» нет; fixed `overcast` действительно оставляет вместо ярких curtains тёмный покров.
 
-Release build, runtime clear/recent-rain/recent-snow/downpour и Vulkan validation проходят без VUID/API
-warning/error; `--verify` — `98/98`. Шесть тестов удалённого CPU scalar-интегратора также удалены, а новый
-контракт authored rain XOR snow добавлен. PF07, `compare_pf07_baseline.sh` и frozen reference frames при этом
-пересмотре не запускались.
+Положение не camera-space. Магнитный полюс наклонён на `16°` в азимуте `330°`, а emission собирается около
+овала магнитной колатитуды `18±4°`. Долготное поле постоянно вдоль радиальной колонки: именно это превращает
+складки в вертикальные curtains, а не в волнистую наклейку на небе. `72` неравномерных folds медленно дрейфуют
+на `0.12°/s` по реальному времени; игровая перемотка суток их не ускоряет. При speed `0` paused frames 8 и 80
+побитно одинаковы (`AE=0`), при authored speed normalized `MAE 0.000157413` — движение есть, но не выглядит
+кипящим temporal noise.
+
+Emission сочетает нижнюю зелёную линию и более высокую фиолетовую компоненту с разными высотными профилями.
+Ночное зрение принципиально не спрятано: слабое сияние при `--aurora-intensity=1 --night-vision=1` глаз видит
+почти серым, что правдоподобно при средней яркости кадра около `0.02 нит`. Showcase `aurora` осознанно ставит
+`intensity=4` и `night-vision=0`, смотрит с противоположной магнитному полюсу стороны на `15°` над горизонтом
+и показывает насыщенную зелёно-фиолетовую корону. CLI имеет приоритет над этими двумя presentation-полями,
+поэтому оба режима доступны через один preset.
+
+| CLI | Default | Смысл |
+|---|---:|---|
+| `--aurora-intensity` | `0` (`4` в preset) | HDR emission; ноль сохраняет точный early-out |
+| `--aurora-saturation` | `1.25` | художественная чистота спектральных цветов |
+| `--aurora-density` | `0.38` | заполнение магнитного овала активными curtains |
+| `--aurora-daylight` | `0` | `0` — естественно тонет в дневном небе, `1` — fantasy daylight aurora |
+| `--aurora-bottom/top` | `90/240 км` | отдельная сферическая оболочка emission |
+| `--aurora-oval/width` | `18/4°` | магнитная колатитуда центра и полуширина овала |
+| `--aurora-tilt/azimuth` | `16/330°` | planet-anchored магнитный полюс |
+| `--aurora-bands/speed` | `72/0.12°/s` | число folds и медленный angular drift |
+
+Fixed authored preset против intensity `0` даёт normalized `MAE 0.0910081`; навес и рельеф читаются чёрными
+силуэтами поверх emission. Первоначальные 12 samples с `acos` в каждом стоили около `2.3–3.2 ms` sky-pass.
+Локальная cosine-координата узкого овала устранила `acos`, восемь samples сохранили форму; финальные
+1280x720 minima authored/off: sky `1.710/0.807 ms`, total `6.395/5.362 ms`. Срез добавляет примерно
+`0.903 ms` к sky и `1.033 ms` к кадру только при ненулевой intensity. Vulkan validation активного preset
+чиста, release build проходит, headless contract — `117/117`.

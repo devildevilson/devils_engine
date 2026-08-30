@@ -165,6 +165,8 @@ struct view_options {
   bool snow_flake_size_overridden = false;
   bool snow_near_radius_overridden = false;
   bool snow_far_extinction_overridden = false;
+  bool aurora_intensity_overridden = false;
+  bool scotopic_strength_overridden = false;
   // Фиксированное наведение камеры для повторяемых дампов: сравнивать состояния можно только из
   // одной и той же точки зрения, а мышь для этого не годится.
   bool fixed_look = false;

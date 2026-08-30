@@ -74,7 +74,7 @@ void print_usage() {
                "  --time-scale=F      игровых суток за реальную секунду\n"
                "  --ev=F              зафиксировать EV100 вместо адаптации\n"
                "  --ev-bias=F         экспокоррекция в стопах\n"
-               "  --preset=NAME       noon, double_sunset, double_rainbow, snow_glint, night, eclipse\n"
+               "  --preset=NAME       noon, double_sunset, double_rainbow, snow_glint, aurora, night, eclipse\n"
                "  --weather=NAME      clear, haze, windy, fog, cloudy, overcast, sunshower, rain, downpour, snow\n"
                "  --weather-transition=S  длительность runtime-перехода по T, реальные секунды\n"
                "  --night-vision=F    сила ночного зрения, 0 отключает\n"
@@ -142,6 +142,12 @@ void print_usage() {
                "  --lightning=off|distant|close|magic|storm  источник универсального lightning event\n"
                "  --lightning-phase=F  заморозить вспышку в фазе 0..1 для воспроизводимого A/B\n"
                "  --lightning-strength=F  художественный множитель световой энергии молнии\n"
+               "  --aurora-intensity=F --aurora-saturation=F  заметность и чистота цвета сияния\n"
+               "  --aurora-density=F --aurora-daylight=F  заполнение curtains и fantasy daylight gate\n"
+               "  --aurora-bottom=KM --aurora-top=KM  отдельная верхнеатмосферная оболочка\n"
+               "  --aurora-oval=DEG --aurora-width=DEG  магнитная широта и ширина овала\n"
+               "  --aurora-tilt=DEG --aurora-azimuth=DEG  положение магнитного полюса\n"
+               "  --aurora-bands=F --aurora-speed=DPS  число folds и угловой drift\n"
                "  --debug=8|9|10|11   volume T | cloud density | cloud shadow | surface memory\n"
                "  --march-steps=N     шагов основного марша неба\n"
                "  --aerial-range=KM   дальность таблицы воздушной перспективы\n"
@@ -261,6 +267,7 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.exposure.bias_stops = std::stod(value);
     } else if (read_prefixed(argument, "--night-vision=", value)) {
       out.view.output.scotopic_strength = std::stod(value);
+      out.view.scotopic_strength_overridden = true;
     } else if (read_prefixed(argument, "--preset=", value)) {
       out.view.preset = value;
     } else if (read_prefixed(argument, "--weather=", value)) {
@@ -458,6 +465,31 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.lightning_phase = std::stod(value);
     } else if (read_prefixed(argument, "--lightning-strength=", value)) {
       out.view.lightning_strength = std::stod(value);
+    } else if (read_prefixed(argument, "--aurora-intensity=", value)) {
+      out.view.output.aurora.intensity = std::stod(value);
+      out.view.aurora_intensity_overridden = true;
+    } else if (read_prefixed(argument, "--aurora-saturation=", value)) {
+      out.view.output.aurora.saturation = std::stod(value);
+    } else if (read_prefixed(argument, "--aurora-density=", value)) {
+      out.view.output.aurora.curtain_density = std::stod(value);
+    } else if (read_prefixed(argument, "--aurora-daylight=", value)) {
+      out.view.output.aurora.daylight_visibility = std::stod(value);
+    } else if (read_prefixed(argument, "--aurora-bottom=", value)) {
+      out.view.output.aurora.lower_altitude_km = std::stod(value);
+    } else if (read_prefixed(argument, "--aurora-top=", value)) {
+      out.view.output.aurora.upper_altitude_km = std::stod(value);
+    } else if (read_prefixed(argument, "--aurora-oval=", value)) {
+      out.view.output.aurora.oval_angle_deg = std::stod(value);
+    } else if (read_prefixed(argument, "--aurora-width=", value)) {
+      out.view.output.aurora.oval_width_deg = std::stod(value);
+    } else if (read_prefixed(argument, "--aurora-tilt=", value)) {
+      out.view.output.aurora.magnetic_tilt_deg = std::stod(value);
+    } else if (read_prefixed(argument, "--aurora-azimuth=", value)) {
+      out.view.output.aurora.magnetic_azimuth_deg = std::stod(value);
+    } else if (read_prefixed(argument, "--aurora-bands=", value)) {
+      out.view.output.aurora.curtain_bands = std::stod(value);
+    } else if (read_prefixed(argument, "--aurora-speed=", value)) {
+      out.view.output.aurora.drift_deg_per_second = std::stod(value);
     } else if (read_prefixed(argument, "--march-steps=", value)) {
       out.view.march.primary_steps = int32_t(std::stol(value));
     } else if (read_prefixed(argument, "--camera-height=", value)) {
@@ -1278,6 +1310,22 @@ void verify_weather(checker& check) {
   invalid_sparkle.density = 1.01;
   check.expect(!pf08::valid_snow_sparkle_settings(invalid_sparkle),
                "плотность снежных микрограней ограничена единицей");
+
+  const pf08::aurora_settings aurora{};
+  check.expect(pf08::valid_aurora_settings(aurora),
+               "authored aurora shell, magnetic oval и художественные параметры допустимы");
+  auto aurora_visible = aurora;
+  aurora_visible.intensity = 1.0;
+  check.expect(pf08::valid_aurora_settings(aurora_visible),
+               "включённое сияние использует ту же валидную сферическую оболочку");
+  auto aurora_inverted = aurora;
+  aurora_inverted.lower_altitude_km = aurora.upper_altitude_km;
+  check.expect(!pf08::valid_aurora_settings(aurora_inverted),
+               "верх aurora shell обязан лежать выше его нижней границы");
+  auto aurora_daylight = aurora;
+  aurora_daylight.daylight_visibility = 1.01;
+  check.expect(!pf08::valid_aurora_settings(aurora_daylight),
+               "fantasy daylight visibility остаётся явной нормированной величиной");
 }
 
 void verify_event_calendar(checker& check, const pf08::celestial_system& system) {
