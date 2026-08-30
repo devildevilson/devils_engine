@@ -32,8 +32,23 @@ namespace devils_engine::pf09 {
 struct clipmap_config {
   uint32_t side = 512;             // тексели на сторону уровня
   uint32_t resident_levels = 6;    // сколько слотов в пуле
+  // Два РАЗНЫХ вопроса, которые нельзя держать одним числом. Первый: насколько мелок самый мелкий
+  // тексель — это про резкость картинки вблизи. Второй: сколько текселей должна занимать ячейка, чтобы
+  // считаться разрешимой на уровне — это про то, какой ярус уровень хранит. Пока это был один параметр,
+  // настройка под резкость делала карту вырожденной, а настройка под ярус — блочной.
+  double base_texel_m = 0.0;       // ноль означает «вывести из размера листовой территории»
   uint32_t min_tier_texels = 8;    // сколько текселей занимает ячейка яруса, чтобы считаться разрешимой
   double hysteresis_octaves = 0.3; // запас при переключении окна резидентности, в долях уровня
+
+  // Сколько уровней держать сверх нужных с каждой стороны. Юбка существует ровно затем, чтобы уровень
+  // пёкся ДО того, как его понадобится показать: зум проходит октаву за сотни миллисекунд, и этого
+  // времени достаточно, если начать заранее.
+  uint32_t prefetch_levels = 1;
+
+  // Потолок полной печки за одно наведение камеры, в текселях. Ноль снимает ограничение. Полосы
+  // панорамирования в бюджет НЕ входят: валидный уровень обязан остаться валидным, иначе окно поедет, а
+  // содержимое отстанет, и это будет уже не «менее детально», а просто неверно.
+  uint64_t bake_budget_texels = 0;
 };
 
 // Прямоугольник заливки в текселях текстуры уровня. Границы уже развёрнуты по модулю, поэтому регион
@@ -53,8 +68,20 @@ struct upload_region {
 struct update_cost {
   uint64_t texels = 0;
   uint32_t regions = 0;
-  uint32_t rebuilt_levels = 0;  // уровни, залитые целиком: вошли в окно резидентности или прыгнули далеко
+  uint32_t rebuilt_levels = 0;  // уровни, ЗАВЕРШИВШИЕ полную печку на этом наведении
   uint32_t shifted_levels = 0;  // уровни, обновлённые полосами
+  uint32_t pending_levels = 0;  // уровни, печка которых не уместилась в бюджет и продолжится
+  uint32_t starved_levels = 0;  // нужные МЕЛКИЕ уровни, которым не хватило слотов пула
+};
+
+// Какие два уровня смешивать в точке и с каким весом. Вес принадлежит вызывающему, а не сэмплеру: у
+// уровней разный масштаб и разное тороидальное смещение, поэтому у каждого своя `uv`, и аппаратная
+// интерполяция поперёк уровней смешала бы правильные значения по неправильным координатам.
+struct level_pick {
+  uint32_t fine = 0;
+  uint32_t coarse = 0;
+  double weight = 0.0;  // 0 — целиком мелкий уровень, 1 — целиком крупный
+  bool covered = false; // нашёлся ли вообще хоть один готовый уровень, накрывающий точку
 };
 
 class clipmap {
@@ -67,6 +94,10 @@ public:
   double texel_size_m(const uint32_t level) const noexcept;
   double coverage_m(const uint32_t level) const noexcept;
   tier level_tier(const uint32_t level) const noexcept { return level_tier_[level]; }
+
+  // Уровень готов, только если его содержимое целиком соответствует текущему окну. Печущийся уровень
+  // намеренно не отдаёт тексели: показать половину испечённого окна хуже, чем показать грубый уровень.
+  bool ready(const uint32_t level) const noexcept { return resident(level) && levels_[level].valid; }
 
   uint32_t first_resident() const noexcept { return first_resident_; }
   uint32_t resident_count() const noexcept { return resident_count_; }
@@ -91,6 +122,14 @@ public:
   // `invalid_zone`, если уровень не резидентен или точка вне его окна.
   zone_id sample(const glm::dvec2& point_m, const uint32_t level) const;
 
+  // Пара уровней для плавного перехода. Мелкий и крупный выбираются из ГОТОВЫХ и накрывающих точку,
+  // поэтому во время печки пара просто съезжает вверх, а картинка теряет резкость, но не пропадает.
+  level_pick pick(const glm::dvec2& point_m, const double meters_per_pixel) const;
+
+  // Самый мелкий готовый уровень, накрывающий точку. `level_count()`, если такого нет — это дыра, и
+  // именно её ищет проверка непрерывного зума.
+  uint32_t serving_level(const glm::dvec2& point_m) const;
+
   // Мировой центр текселя. Публичен, потому что проверка «тексель равен прямому resolve» обязана щупать
   // ровно ту точку, по которой тексель и пекли.
   glm::dvec2 texel_center_m(const glm::i64vec2 texel, const uint32_t level) const;
@@ -103,11 +142,15 @@ public:
 private:
   struct level_state {
     glm::i64vec2 origin{};      // мировой индекс текселя левого нижнего угла окна
-    bool valid = false;
+    bool valid = false;         // содержимое целиком соответствует `origin`
+    bool baking = false;        // полная печка начата и не закончена
+    int64_t baked_rows = 0;     // сколько строк окна уже испечено
     std::vector<zone_id> texels;
   };
 
   glm::i64vec2 origin_for(const glm::dvec2& center_m, const uint32_t level) const;
+  bool contains(const glm::dvec2& point_m, const uint32_t level) const;
+  void advance_bake(const uint32_t level, uint64_t& budget, update_cost& cost);
   void fill_rect(const uint32_t level, const glm::i64vec2 begin, const glm::i64vec2 end, update_cost& cost);
   void emit_region(const uint32_t level, const glm::i64vec2 begin, const glm::i64vec2 end, update_cost& cost);
 
@@ -122,6 +165,7 @@ private:
   std::vector<upload_region> regions_;
 
   uint32_t first_resident_ = 0;
+  uint32_t needed_first_ = 0;
   uint32_t resident_count_ = 0;
   bool focused_ = false;
 };

@@ -27,10 +27,11 @@ clipmap::clipmap(const territory& map, const clipmap_config& config) : map_(&map
     utils::error{}("PF09 clipmap: the pool must hold at least one level");
   }
 
-  // Тексель самого мелкого уровня выводится ИЗ ИЕРАРХИИ, а не задаётся отдельно: он ровно такой, чтобы
-  // листовая территория занимала объявленное число текселей. Иначе клипмап и дерево разъедутся по
-  // масштабу, и «ярус разрешим на этом уровне» перестанет быть утверждением про пиксели.
-  base_texel_m_ = map.tier_span_m(leaf_tier) / double(config_.min_tier_texels);
+  // По умолчанию тексель самого мелкого уровня выводится из иерархии: он такой, чтобы листовая
+  // территория занимала объявленное число текселей. Явное значение перекрывает это, потому что резкость
+  // вблизи задаёт экран, а не дерево.
+  base_texel_m_ = config_.base_texel_m > 0.0 ? config_.base_texel_m
+                                             : map.tier_span_m(leaf_tier) / double(config_.min_tier_texels);
 
   const double world = map.config().world_span_m;
   level_count_ = 1;
@@ -135,6 +136,33 @@ void clipmap::fill_rect(const uint32_t level, const glm::i64vec2 begin, const gl
   emit_region(level, begin, end, cost);
 }
 
+// Печка идёт СТРОКАМИ окна и продолжается с того места, где кончился бюджет. Строка выбрана единицей
+// потому, что регион заливки из целых строк — это один прямоугольник во всю ширину, а не лоскут: дробить
+// печку колонками значило бы плодить команды копирования там, где нужна одна.
+void clipmap::advance_bake(const uint32_t level, uint64_t& budget, update_cost& cost) {
+  auto& state = levels_[level];
+  const int64_t side = int64_t(config_.side);
+
+  const int64_t affordable = budget == 0 ? side : int64_t(std::min<uint64_t>(budget / uint64_t(side), uint64_t(side)));
+  const int64_t rows = std::min(side - state.baked_rows, std::max<int64_t>(affordable, 1));
+
+  const int64_t begin_y = state.origin.y + state.baked_rows;
+  fill_rect(level, {state.origin.x, begin_y}, {state.origin.x + side, begin_y + rows}, cost);
+  state.baked_rows += rows;
+
+  const uint64_t spent = uint64_t(rows) * uint64_t(side);
+  budget = budget <= spent ? 0 : budget - spent;
+
+  if (state.baked_rows < side) {
+    ++cost.pending_levels;
+    return;
+  }
+
+  state.baking = false;
+  state.valid = true;
+  ++cost.rebuilt_levels;
+}
+
 update_cost clipmap::focus(const glm::dvec2& center_m, const double meters_per_pixel, const double view_distance_m) {
   regions_.clear();
   update_cost cost{};
@@ -143,40 +171,72 @@ update_cost clipmap::focus(const glm::dvec2& center_m, const double meters_per_p
 
   // Гистерезис живёт на непрерывной октаве, а не на уже округлённом уровне: округление само по себе
   // переключается ровно на границе, и камера, стоящая на ней, переключала бы окно каждый кадр.
-  uint32_t first = wanted;
+  uint32_t needed_first = wanted;
   if (focused_) {
     const double octave = meters_per_pixel <= base_texel_m_ ? 0.0 : std::log2(meters_per_pixel / base_texel_m_);
-    const double current = double(first_resident_);
+    const double current = double(needed_first_);
     const bool coarser = octave > current + 1.0 + config_.hysteresis_octaves;
     const bool finer = octave < current - config_.hysteresis_octaves;
-    first = coarser || finer ? wanted : first_resident_;
+    needed_first = coarser || finer ? wanted : needed_first_;
   }
 
-  const uint32_t last_wanted = required_last(view_distance_m);
-  first = std::min(first, last_wanted);
-  const uint32_t count = std::min(config_.resident_levels, level_count_ - first);
+  const uint32_t needed_last = std::max(needed_first, required_last(view_distance_m));
+
+  // Юбка расширяет окно в обе стороны: уровень должен успеть испечься ДО того, как зум до него доедет.
+  const uint32_t skirt = config_.prefetch_levels;
+  uint32_t first = needed_first > skirt ? needed_first - skirt : 0;
+  uint32_t last = std::min(level_count_ - 1, needed_last + skirt);
+
+  // Порядок, в котором пул отдаёт слоты при нехватке, задан явно, потому что цена у концов РАЗНАЯ и
+  // выяснилась она измерением, а не рассуждением:
+  //   1. мелкая юбка — её потеря даёт лишь всплеск детализации при приближении;
+  //   2. мелкие нужные уровни — картинка вблизи становится менее резкой, и это переживаемо;
+  //   3. грубая юбка — отдаётся ПОСЛЕДНЕЙ.
+  // Третий пункт неочевиден и стоил отдельного прогона. Дыры появляются только при ОТДАЛЕНИИ, когда
+  // растёт дальность видимости, и закрывает их заранее испечённый грубый уровень. Отдав грубую юбку ради
+  // детализации, мы меняем «чуть мутнее вблизи» на «на периферии пусто, пока печётся» — то есть меняем
+  // косметику на дыру.
+  while (last - first + 1 > config_.resident_levels && first < needed_first) ++first;
+  while (last - first + 1 > config_.resident_levels && first < needed_last) {
+    ++first;
+    ++cost.starved_levels;
+  }
+  while (last - first + 1 > config_.resident_levels && last > needed_last) --last;
+
+  const uint32_t count = last - first + 1;
+
+  uint64_t budget = config_.bake_budget_texels;
 
   for (uint32_t k = 0; k < level_count_; ++k) {
     const bool now_resident = k >= first && k < first + count;
     if (!now_resident) {
       levels_[k].valid = false;
+      levels_[k].baking = false;
+      levels_[k].baked_rows = 0;
       continue;
     }
 
     const auto origin = origin_for(center_m, k);
     const int64_t side = int64_t(config_.side);
+
+    // Пока уровень печётся, его окно ЗАМОРОЖЕНО. Иначе съехавшая на тексель камера сбрасывала бы печку в
+    // начало, и уровень с мелким текселем не заканчивался бы никогда: он движется каждый кадр. Дрейф за
+    // время печки догоняется обычными полосами сразу после её завершения, и это дёшево — дрейф ограничен
+    // скоростью камеры, а не размером окна.
+    if (levels_[k].baking) continue;
+
     const auto previous = levels_[k].origin;
     const glm::i64vec2 delta{origin.x - previous.x, origin.y - previous.y};
 
     // Прыжок дальше стороны окна не оставляет ни одного пригодного текселя, поэтому полосами обновлять
-    // нечего: это та же полная перепечка, только записанная сложнее.
+    // нечего: это та же полная печка, только записанная сложнее.
     const bool rebuild = !levels_[k].valid || std::abs(delta.x) >= side || std::abs(delta.y) >= side;
     levels_[k].origin = origin;
 
     if (rebuild) {
-      levels_[k].valid = true;
-      ++cost.rebuilt_levels;
-      fill_rect(k, origin, {origin.x + side, origin.y + side}, cost);
+      levels_[k].valid = false;
+      levels_[k].baking = true;
+      levels_[k].baked_rows = 0;
       continue;
     }
     if (delta.x == 0 && delta.y == 0) continue;
@@ -197,23 +257,79 @@ update_cost clipmap::focus(const glm::dvec2& center_m, const double meters_per_p
     fill_rect(k, {kept_begin, row_begin}, {kept_end, row_end}, cost);
   }
 
+  // Печка идёт ОТ САМОГО ГРУБОГО из ожидающих. Порядок не косметический: при отдалении растёт дальность
+  // видимости, и незакрытым остаётся именно край — его закрывает грубый уровень. При приближении дыры не
+  // бывает вовсе, есть лишь временно меньшая детализация. Обратный порядок (от мелкого) отдаёт бюджет
+  // тому уровню, отсутствие которого никого не ранит, и морит голодом тот, без которого показывать нечего.
+  for (uint32_t k = first + count; k-- > first;) {
+    if (!levels_[k].baking) continue;
+    advance_bake(k, budget, cost);
+  }
+
   first_resident_ = first;
   resident_count_ = count;
+  needed_first_ = needed_first;
   focused_ = true;
   return cost;
 }
 
+bool clipmap::contains(const glm::dvec2& point_m, const uint32_t level) const {
+  const double size = texel_size_[level];
+  const int64_t side = int64_t(config_.side);
+  const glm::i64vec2 texel{int64_t(std::floor(point_m.x / size)), int64_t(std::floor(point_m.y / size))};
+  const auto origin = levels_[level].origin;
+  return texel.x >= origin.x && texel.y >= origin.y && texel.x < origin.x + side && texel.y < origin.y + side;
+}
+
+uint32_t clipmap::serving_level(const glm::dvec2& point_m) const {
+  for (uint32_t k = first_resident_; k < first_resident_ + resident_count_; ++k) {
+    if (ready(k) && contains(point_m, k)) return k;
+  }
+  return level_count_;
+}
+
+level_pick clipmap::pick(const glm::dvec2& point_m, const double meters_per_pixel) const {
+  level_pick out{};
+
+  const double octave = meters_per_pixel <= base_texel_m_ ? 0.0 : std::log2(meters_per_pixel / base_texel_m_);
+  const double clamped = std::clamp(octave, 0.0, double(level_count_ - 1));
+
+  // Непрерывная октава даёт и пару уровней, и вес между ними. Округление здесь было бы ровно тем
+  // переключением на границе, ради устранения которого и заводился гистерезис.
+  const auto ideal = uint32_t(std::floor(clamped));
+  out.weight = clamped - std::floor(clamped);
+
+  out.fine = serving_level(point_m);
+  if (out.fine >= level_count_) return out;
+  out.covered = true;
+
+  // Мелкий уровень не может быть мельче идеального: показывать тексель вчетверо мельче пикселя значит
+  // платить памятью и трафиком за то, чего не видно.
+  for (uint32_t k = out.fine; k < ideal && k + 1 < level_count_; ++k) {
+    if (!ready(k + 1) || !contains(point_m, k + 1)) break;
+    out.fine = k + 1;
+    out.weight = clamped - double(out.fine);
+  }
+  out.weight = std::clamp(out.weight, 0.0, 1.0);
+
+  out.coarse = out.fine;
+  if (out.fine + 1 < level_count_ && ready(out.fine + 1) && contains(point_m, out.fine + 1)) {
+    out.coarse = out.fine + 1;
+  } else {
+    out.weight = 0.0; // смешивать не с чем, и притворяться обратного нельзя
+  }
+  return out;
+}
+
 zone_id clipmap::sample(const glm::dvec2& point_m, const uint32_t level) const {
-  if (!resident(level) || !levels_[level].valid) return invalid_zone;
+  if (!ready(level)) return invalid_zone;
 
   const double size = texel_size_[level];
   const int64_t side = int64_t(config_.side);
   const glm::i64vec2 texel{int64_t(std::floor(point_m.x / size)), int64_t(std::floor(point_m.y / size))};
   const auto origin = levels_[level].origin;
 
-  if (texel.x < origin.x || texel.y < origin.y || texel.x >= origin.x + side || texel.y >= origin.y + side) {
-    return invalid_zone;
-  }
+  if (!contains(point_m, level)) return invalid_zone;
   return levels_[level].texels[size_t(wrap_texel(texel.y, side) * side + wrap_texel(texel.x, side))];
 }
 

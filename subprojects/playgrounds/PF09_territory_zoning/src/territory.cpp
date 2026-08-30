@@ -41,28 +41,30 @@ constexpr uint64_t roll_range = roll_mask + 1ull;
   return double(h >> 11) * (2.0 / 9007199254740992.0) - 1.0; // [-1, 1)
 }
 
-[[nodiscard]] double quintic(const double t) noexcept {
-  return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+template <typename scalar>
+[[nodiscard]] scalar quintic(const scalar t) noexcept {
+  return t * t * t * (t * (t * scalar(6) - scalar(15)) + scalar(10));
 }
 
 // Обычный value noise на квинтической интерполяции. Квинтика здесь не для гладкости картинки, а ради
 // непрерывной первой производной: по якобиану варпа проверяется отсутствие складок, и на кубическом
 // сглаживании эта проверка ловила бы изломы сетки, а не настоящие складки.
-[[nodiscard]] double value_noise(const double x, const double y, const int64_t period, const uint64_t seed) noexcept {
-  const double fx = std::floor(x);
-  const double fy = std::floor(y);
+template <typename scalar>
+[[nodiscard]] scalar value_noise(const scalar x, const scalar y, const int64_t period, const uint64_t seed) noexcept {
+  const scalar fx = std::floor(x);
+  const scalar fy = std::floor(y);
   const int64_t ix = int64_t(fx);
   const int64_t iy = int64_t(fy);
-  const double tx = quintic(x - fx);
-  const double ty = quintic(y - fy);
+  const scalar tx = quintic<scalar>(x - fx);
+  const scalar ty = quintic<scalar>(y - fy);
 
-  const double v00 = lattice_value(ix, iy, period, seed);
-  const double v10 = lattice_value(ix + 1, iy, period, seed);
-  const double v01 = lattice_value(ix, iy + 1, period, seed);
-  const double v11 = lattice_value(ix + 1, iy + 1, period, seed);
+  const scalar v00 = scalar(lattice_value(ix, iy, period, seed));
+  const scalar v10 = scalar(lattice_value(ix + 1, iy, period, seed));
+  const scalar v01 = scalar(lattice_value(ix, iy + 1, period, seed));
+  const scalar v11 = scalar(lattice_value(ix + 1, iy + 1, period, seed));
 
-  const double bottom = v00 + (v10 - v00) * tx;
-  const double top = v01 + (v11 - v01) * tx;
+  const scalar bottom = v00 + (v10 - v00) * tx;
+  const scalar top = v01 + (v11 - v01) * tx;
   return bottom + (top - bottom) * ty;
 }
 
@@ -144,36 +146,38 @@ glm::dvec2 territory::warp(const glm::dvec2& point_m) const {
 
 // Доля полосы `index` в разбиении родителя на `count` частей вдоль оси. Доли зависят только от родителя,
 // яруса и оси, поэтому одна и та же территория режется одинаково, кем бы её ни спросили.
-double territory::split_weight(const glm::i64vec2 parent_cell, const tier value, const uint32_t axis,
+template <typename scalar>
+scalar territory::split_weight(const glm::i64vec2 parent_cell, const tier value, const uint32_t axis,
                                const uint32_t index) const {
   const uint64_t h = cell_hash(parent_cell, value, config_.seed, 0x5911700ull + axis * 977ull + index * 31ull);
-  const double unit = double(h & 0xffffull) / double(roll_range);
-  return 1.0 + config_.split_jitter * (unit * 2.0 - 1.0);
+  const scalar unit = scalar(h & 0xffffull) / scalar(roll_range);
+  return scalar(1) + scalar(config_.split_jitter) * (unit * scalar(2) - scalar(1));
 }
 
 // Выбор полосы, в которую попала локальная координата, и пересчёт координаты внутрь этой полосы.
 // Ребёнок ищется ВНУТРИ родителя, поэтому уйти из него он не может ни при каком округлении: строгое
 // вложение здесь структурное, а не следствие удачной арифметики.
+template <typename scalar>
 uint32_t territory::subdivide(const glm::i64vec2 parent_cell, const tier value, const uint32_t axis,
-                              double& local) const {
+                              scalar& local) const {
   const uint32_t count = config_.split[size_t(value)];
   if (count == 1) return 0;
 
   // Доли считаются ОДИН раз в стековый буфер. Раньше их считали дважды — на сумму и на обход — и это
   // удваивало число хешей на каждый разрешённый тексель. Клипмап печёт миллионы текселей за перестройку
   // уровня, поэтому цена одного `resolve` перестала быть мелочью.
-  std::array<double, max_split> weights{};
-  double total = 0.0;
+  std::array<scalar, max_split> weights{};
+  scalar total = scalar(0);
   for (uint32_t i = 0; i < count; ++i) {
-    weights[i] = split_weight(parent_cell, value, axis, i);
+    weights[i] = split_weight<scalar>(parent_cell, value, axis, i);
     total += weights[i];
   }
 
-  double cursor = 0.0;
+  scalar cursor = scalar(0);
   for (uint32_t i = 0; i < count; ++i) {
-    const double width = weights[i] / total;
+    const scalar width = weights[i] / total;
     if (local < cursor + width || i + 1 == count) {
-      local = std::clamp((local - cursor) / width, 0.0, std::nextafter(1.0, 0.0));
+      local = std::clamp((local - cursor) / width, scalar(0), std::nextafter(scalar(1), scalar(0)));
       return i;
     }
     cursor += width;
@@ -185,25 +189,6 @@ uint32_t territory::subdivide(const glm::i64vec2 parent_cell, const tier value, 
 // потомок выбирается среди детей именно этого родителя. Это единственная форма, при которой вложение не
 // зависит от точности: пересчёт каждого яруса из своей мировой координаты расходится ровно на границе
 // ячейки, где `x / span_locale == 480.0` и одновременно `x / span_parcel == 2399.9999999999995`.
-void territory::cells_of(const glm::dvec2& point_m, std::span<glm::i64vec2> out) const {
-  const auto warped = warp(point_m);
-
-  // Мир замкнут: варп периодичен с периодом в сторону мира, и координата заворачивается вместе с ним.
-  const double inverse_span = 1.0 / config_.world_span_m;
-  glm::dvec2 local{warped.x * inverse_span, warped.y * inverse_span};
-  local.x -= std::floor(local.x);
-  local.y -= std::floor(local.y);
-
-  out[0] = {0, 0};
-  for (size_t t = 1; t < tier_count; ++t) {
-    const auto value = tier(t);
-    const int64_t step = int64_t(config_.split[t]);
-    const uint32_t ix = subdivide(out[t - 1], value, 0, local.x);
-    const uint32_t iy = subdivide(out[t - 1], value, 1, local.y);
-    out[t] = {out[t - 1].x * step + int64_t(ix), out[t - 1].y * step + int64_t(iy)};
-  }
-}
-
 bool territory::absorbed(const glm::i64vec2 cell, const tier value) const {
   if (value == tier::world) return false;
   return (cell_hash(cell, value, config_.seed, 0xa11ce5ull) & roll_mask) < merge_threshold_;
@@ -243,6 +228,116 @@ uint32_t territory::flat_index(const glm::i64vec2 cell, const tier value) const 
 glm::i64vec2 territory::unflatten(const uint32_t index, const tier value) const {
   const int64_t dim = int64_t(grid_dim_[size_t(value)]);
   return {int64_t(index) % dim, int64_t(index) / dim};
+}
+
+template <typename scalar>
+void territory::cells_impl(const glm::dvec2& point_m, std::span<glm::i64vec2> out) const {
+  // Варп считается в той же точности, что и спуск: смысл замера в том, чтобы получить ровно ту цепочку
+  // округлений, которая будет в GLSL, а не смесь из двух точностей.
+  scalar wx = scalar(point_m.x);
+  scalar wy = scalar(point_m.y);
+
+  if (config_.warp_strength != 0.0) {
+    for (size_t t = size_t(tier::realm); t < tier_count; ++t) {
+      const scalar lambda = scalar(tier_span_[t]);
+      const scalar amplitude = scalar(config_.warp_strength) * lambda;
+      const scalar u = scalar(point_m.x) / lambda;
+      const scalar v = scalar(point_m.y) / lambda;
+      const int64_t period = int64_t(grid_dim_[t]);
+      wx += amplitude * value_noise<scalar>(u, v, period, utils::splitmix(config_.seed, t * 2ull + 1ull));
+      wy += amplitude * value_noise<scalar>(u, v, period, utils::splitmix(config_.seed, t * 2ull + 2ull));
+    }
+  }
+
+  const scalar inverse_span = scalar(1) / scalar(config_.world_span_m);
+  scalar lx = wx * inverse_span;
+  scalar ly = wy * inverse_span;
+  lx -= std::floor(lx);
+  ly -= std::floor(ly);
+
+  out[0] = {0, 0};
+  for (size_t t = 1; t < tier_count; ++t) {
+    const auto value = tier(t);
+    const int64_t step = int64_t(config_.split[t]);
+    const uint32_t ix = subdivide<scalar>(out[t - 1], value, 0, lx);
+    const uint32_t iy = subdivide<scalar>(out[t - 1], value, 1, ly);
+    out[t] = {out[t - 1].x * step + int64_t(ix), out[t - 1].y * step + int64_t(iy)};
+  }
+}
+
+void territory::cells_of(const glm::dvec2& point_m, std::span<glm::i64vec2> out) const {
+  cells_impl<double>(point_m, out);
+}
+
+zone_id territory::resolve_single(const glm::dvec2& point_m, const tier value) const {
+  std::array<glm::i64vec2, tier_count> cells{};
+  cells_impl<float>(point_m, cells);
+
+  const size_t index = size_t(value);
+  return make_zone(value, flat_index(representative(cells[index], value), value));
+}
+
+glm::dvec2 territory::node_centre_m(const zone_id id) const {
+  const auto value = tier_of(id);
+
+  std::array<glm::i64vec2, tier_count> cells{};
+  cells[size_t(value)] = unflatten(index_of(id), value);
+  for (size_t t = size_t(value); t > 0; --t) {
+    const int64_t step = int64_t(config_.split[t]);
+    cells[t - 1] = {cells[t].x / step, cells[t].y / step};
+  }
+
+  double lo_x = 0.0;
+  double hi_x = 1.0;
+  double lo_y = 0.0;
+  double hi_y = 1.0;
+
+  for (size_t t = 1; t <= size_t(value); ++t) {
+    const auto child = tier(t);
+    const uint32_t count = config_.split[t];
+    const int64_t step = int64_t(count);
+
+    const uint32_t index_x = uint32_t(cells[t].x - cells[t - 1].x * step);
+    const uint32_t index_y = uint32_t(cells[t].y - cells[t - 1].y * step);
+
+    for (uint32_t axis = 0; axis < 2; ++axis) {
+      double total = 0.0;
+      std::array<double, max_split> weights{};
+      for (uint32_t i = 0; i < count; ++i) {
+        weights[i] = split_weight<double>(cells[t - 1], child, axis, i);
+        total += weights[i];
+      }
+
+      const uint32_t wanted = axis == 0 ? index_x : index_y;
+      double cursor = 0.0;
+      for (uint32_t i = 0; i < wanted; ++i) {
+        cursor += weights[i] / total;
+      }
+      const double width = weights[wanted] / total;
+
+      if (axis == 0) {
+        const double span = hi_x - lo_x;
+        hi_x = lo_x + span * (cursor + width);
+        lo_x = lo_x + span * cursor;
+      } else {
+        const double span = hi_y - lo_y;
+        hi_y = lo_y + span * (cursor + width);
+        lo_y = lo_y + span * cursor;
+      }
+    }
+  }
+
+  const glm::dvec2 target{(lo_x + hi_x) * 0.5 * config_.world_span_m, (lo_y + hi_y) * 0.5 * config_.world_span_m};
+
+  // Обращение варпа неподвижной точкой: `p <- target - (warp(p) - p)`. Сходится, потому что смещение
+  // варпа мало по сравнению с собственным масштабом — то же условие, что запрещает складки.
+  auto guess = target;
+  for (uint32_t step = 0; step < 24; ++step) {
+    const auto residual = warp(guess) - target;
+    if (std::abs(residual.x) + std::abs(residual.y) < 1.0e-6) break;
+    guess -= residual;
+  }
+  return guess;
 }
 
 address territory::resolve_chain(const glm::dvec2& point_m) const {

@@ -7,8 +7,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <format>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <numbers>
 #include <numeric>
 #include <string>
 #include <string_view>
@@ -18,15 +21,19 @@
 #include "devils_engine/utils/hash.h"
 
 #include "clipmap.h"
+#include "locality.h"
+#include "navigate.h"
+#include "world_build.h"
+#include "zones.h"
 #include "territory.h"
 
 using namespace devils_engine;
 
 namespace {
 
-enum class action : uint32_t { report, clipmap, verify, dump };
+enum class action : uint32_t { report, clipmap, zoom, locality, world, stream, verify, dump };
 enum class dump_mode : uint32_t { zone, owner };
-enum class dump_source : uint32_t { direct, clipmap };
+enum class dump_source : uint32_t { direct, clipmap, residency, zones };
 
 struct options {
   action requested = action::report;
@@ -41,9 +48,16 @@ struct options {
   uint32_t dump_size = 768;
 
   pf09::clipmap_config clip;
+  pf09::locality_config local;
+  pf09::build_options build{};
+  double stream_radius_m = 12000.0;
+  uint32_t stream_budget = 32;
   double zoom_m_per_pixel = 4.0;
   double view_distance_m = 12000.0;
   uint32_t verify_clip_side = 128;
+  uint32_t screen_pixels = 1920;
+  double pitch_deg = 55.0;
+  double fov_deg = 40.0;
   dump_source dump_from = dump_source::direct;
 
   uint32_t samples = 200000;
@@ -62,16 +76,32 @@ void print_usage() {
   std::cout << "PF09 territory zoning\n"
                "  --report              таблица ярусов, узлов и масштабов (по умолчанию)\n"
                "  --clipmap             таблица уровней клипмапа, окно резидентности и цена обновления\n"
+               "  --zoom-study          лестница полос зума от высоты партии до империи\n"
+               "  --locality            локальности: размещение, состав, связность и бюджет\n"
+               "  --build-world         собрать секторные файлы игровых территорий\n"
+               "  --stream              пройти маршрут и показать подгрузку секторов\n"
+               "  --world=PATH          каталог секторных файлов\n"
+               "  --sectors=N           сторона квадрата собираемых секторов\n"
+               "  --stream-radius=M     радиус подгрузки\n"
+               "  --stream-budget=N     сколько секторов держим одновременно\n"
+               "  --extent=M            сторона пятна локальности\n"
+               "  --plot-side=N         сетка участков застройки внутри пятна\n"
+               "  --room-side=N         сетка помещений внутри здания\n"
+               "  --screen=N            ширина экрана в пикселях для пересчёта в метры на пиксель\n"
+               "  --pitch=DEG           наклон камеры к земле\n"
+               "  --fov=DEG             вертикальный угол обзора\n"
                "  --verify              численные инварианты, ненулевой код возврата при провале\n"
                "  --dump=PATH           ppm-срез карты для глаз\n"
                "  --dump-tier=N         ярус окраски дампа, 0 = world, 6 = parcel\n"
                "  --dump-mode=NAME      zone | owner\n"
-               "  --dump-source=NAME    direct | clipmap: прямое разрешение или то, что лежит в клипмапе\n"
+               "  --dump-source=NAME    direct | clipmap | residency | zones\n"
+               "  --bake-budget=N       потолок печки за кадр в текселях, 0 снимает ограничение\n"
                "  --zoom=F              метров на пиксель экрана\n"
                "  --view=M              дальность видимости в метрах\n"
                "  --clip-side=N         сторона уровня клипмапа в текселях\n"
                "  --clip-levels=N       сколько уровней держит пул\n"
                "  --tier-texels=N       сколько текселей занимает разрешимая ячейка яруса\n"
+               "  --base-texel=M        размер текселя самого мелкого уровня в метрах\n"
                "  --dump-center=X,Y     центр дампа в метрах\n"
                "  --dump-span=M         сторона дампа в метрах\n"
                "  --dump-size=N         сторона дампа в пикселях\n"
@@ -99,6 +129,34 @@ bool parse_options(const int argc, const char** argv, options& out) {
       out.requested = action::report;
     } else if (argument == "--clipmap") {
       out.requested = action::clipmap;
+    } else if (argument == "--zoom-study") {
+      out.requested = action::zoom;
+    } else if (argument == "--locality") {
+      out.requested = action::locality;
+    } else if (argument == "--build-world") {
+      out.requested = action::world;
+    } else if (argument == "--stream") {
+      out.requested = action::stream;
+    } else if (read_prefixed(argument, "--world=", value)) {
+      out.build.root = value;
+    } else if (read_prefixed(argument, "--sectors=", value)) {
+      out.build.sector_side = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--stream-radius=", value)) {
+      out.stream_radius_m = std::stod(value);
+    } else if (read_prefixed(argument, "--stream-budget=", value)) {
+      out.stream_budget = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--extent=", value)) {
+      out.local.extent_m = std::stod(value);
+    } else if (read_prefixed(argument, "--plot-side=", value)) {
+      out.local.plot_side = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--room-side=", value)) {
+      out.local.room_side = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--screen=", value)) {
+      out.screen_pixels = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--pitch=", value)) {
+      out.pitch_deg = std::stod(value);
+    } else if (read_prefixed(argument, "--fov=", value)) {
+      out.fov_deg = std::stod(value);
     } else if (argument == "--verify") {
       out.requested = action::verify;
     } else if (read_prefixed(argument, "--dump=", value)) {
@@ -114,7 +172,10 @@ bool parse_options(const int argc, const char** argv, options& out) {
     } else if (read_prefixed(argument, "--dump-mode=", value)) {
       out.dump_colouring = value == "owner" ? dump_mode::owner : dump_mode::zone;
     } else if (read_prefixed(argument, "--dump-source=", value)) {
-      out.dump_from = value == "clipmap" ? dump_source::clipmap : dump_source::direct;
+      out.dump_from = value == "clipmap"     ? dump_source::clipmap
+                      : value == "residency" ? dump_source::residency
+                      : value == "zones"     ? dump_source::zones
+                                             : dump_source::direct;
     } else if (read_prefixed(argument, "--zoom=", value)) {
       out.zoom_m_per_pixel = std::stod(value);
     } else if (read_prefixed(argument, "--view=", value)) {
@@ -125,6 +186,10 @@ bool parse_options(const int argc, const char** argv, options& out) {
       out.clip.resident_levels = uint32_t(std::stoul(value));
     } else if (read_prefixed(argument, "--tier-texels=", value)) {
       out.clip.min_tier_texels = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--base-texel=", value)) {
+      out.clip.base_texel_m = std::stod(value);
+    } else if (read_prefixed(argument, "--bake-budget=", value)) {
+      out.clip.bake_budget_texels = std::stoull(value);
     } else if (read_prefixed(argument, "--dump-center=", value)) {
       const auto comma = value.find(',');
       if (comma == std::string::npos) {
@@ -285,6 +350,324 @@ int run_clipmap_report(const pf09::territory& map, const options& opts) {
                                    opts.zoom_m_per_pixel, opts.view_distance_m);
   std::cout << std::format("  прыжок за пределы окна: {} текселей в {} регионах, перепечек {}\n", far_cost.texels,
                            far_cost.regions, far_cost.rebuilt_levels);
+  return EXIT_SUCCESS;
+}
+
+
+// --- исследование зума ---
+
+struct zoom_stop {
+  const char* name;
+  double view_width_m;
+  const char* gameplay;
+};
+
+// Остановки взяты из игрового замысла, а не из степеней двойки: именно на них у игрока меняется, ЧТО он
+// делает, и именно эти масштабы обязаны быть удобными. Клипмап под них подстраивается, а не наоборот.
+constexpr zoom_stop zoom_stops[] = {
+  {"party",     60.0,      "прямое управление подопечными"},
+  {"encounter", 250.0,     "окрестности стычки, отдельные постройки"},
+  {"errand",    2000.0,    "абстрактные приказы: съезди в город А"},
+  {"company",   20000.0,   "торговая/наёмничья компания, несколько соседних городов"},
+  {"holding",   120000.0,  "владение землёй, соседние баронства"},
+  {"political", 500000.0,  "политический расклад, уровень CK3"},
+  {"empire",    1500000.0, "империя и прилегающие страны"},
+};
+
+// Считает РАЗЛИЧИМЫЕ территории в кадре, спрашивая ту иерархию, которая на этом масштабе существует.
+// В прошлой редакции здесь опрашивались только глобальные ярусы, и на партийной высоте выходило две
+// территории на экран — но это было свойством иерархии, обрывавшейся на участке в 213 м, а не свойством
+// масштаба. Локальность отвечает ниже участка, и число меняется на порядки.
+uint32_t distinct_zones(const pf09::territory& map, const pf09::locality_field& field, const glm::dvec2& centre,
+                        const double width_m, const pf09::tier value, const uint32_t samples) {
+  std::vector<uint64_t> seen;
+  seen.reserve(samples);
+  for (uint32_t i = 0; i < samples; ++i) {
+    const auto unit = sample_point(i, 1.0, 0x2110ull);
+    const glm::dvec2 point{centre.x + (unit.x - 0.5) * width_m, centre.y + (unit.y - 0.5) * width_m};
+
+    const auto local = field.resolve_local(point);
+    seen.push_back(local.valid() ? (uint64_t(local.anchor) << 32) | local.local
+                                 : uint64_t(map.resolve(point, value)));
+  }
+  std::sort(seen.begin(), seen.end());
+  return uint32_t(std::unique(seen.begin(), seen.end()) - seen.begin());
+}
+
+int run_zoom_study(const pf09::territory& map, const options& opts) {
+  pf09::clipmap clip(map, opts.clip);
+  glm::dvec2 centre{map.config().world_span_m * 0.5, map.config().world_span_m * 0.5};
+
+  // Наблюдатель ставится В ЛОКАЛЬНОСТЬ, а не в чистое поле: партийные остановки иначе меряли бы пустошь,
+  // где никакой мелкой структуры нет ни при какой иерархии, и снова получили бы две территории на кадр.
+  pf09::locality_field field(map, opts.local);
+  field.focus(centre);
+  if (!field.resident().empty()) centre = field.resident().front()->centre_m();
+
+  std::cout << std::format("PF09 лестница зума: экран {} пикселей, наклон {:.0f}°, обзор {:.0f}°, "
+                           "сторона уровня {}²\n\n",
+                           opts.screen_pixels, opts.pitch_deg, opts.fov_deg, opts.clip.side);
+
+  // Сколько уровней нужно одновременно, задаёт не отношение ДАЛЬНОСТЕЙ, а отношение ФУТПРИНТОВ текселя
+  // по экрану. Для луча под углом `a` к земле футпринт вдоль взгляда пропорционален `1 / sin^2(a)`:
+  // дальность растёт, и вдобавок луч ложится на землю всё более полого. Считать по дальностям — значит
+  // получить у вида строго сверху отношение в двадцать раз, хотя там достаточно одного уровня.
+  const double half_fov = opts.fov_deg * 0.5 * std::numbers::pi / 180.0;
+  const double pitch = opts.pitch_deg * std::numbers::pi / 180.0;
+  const double angle_low = std::max(pitch - half_fov, 0.5 * std::numbers::pi / 180.0);
+  const double angle_high = pitch + half_fov;
+
+  // Крупнейший футпринт — там, где синус наименьший, то есть у дальнего от вертикали края экрана;
+  // наименьший — там, где луч ближе всего к отвесу.
+  const double sin_low = std::sin(angle_low);
+  const double sin_high = std::sin(angle_high);
+  const double sin_worst = std::min(sin_low, sin_high);
+  const double sin_best = angle_low <= std::numbers::pi * 0.5 && angle_high >= std::numbers::pi * 0.5
+                            ? 1.0
+                            : std::max(sin_low, sin_high);
+  const double depth_ratio = (sin_best * sin_best) / (sin_worst * sin_worst);
+  const double depth_octaves = std::log2(depth_ratio);
+
+  std::cout << "  остановка     обзор     м/пиксель   уровень   тексель, пикс   территорий на экране   растр\n";
+  for (const auto& stop : zoom_stops) {
+    const double mpp = stop.view_width_m / double(opts.screen_pixels);
+    const uint32_t level = clip.required_first(mpp);
+    const double texel_pixels = clip.texel_size_m(level) / mpp;
+    const auto value = clip.level_tier(level);
+    const uint32_t zones = distinct_zones(map, field, centre, stop.view_width_m, value, 4096);
+
+    // Растр вырождается, когда на экране видно считанные территории: тогда «карта» — это одно-два
+    // значения, и хранить их текстурой нет смысла, их надо спрашивать у CPU по точке.
+    const bool local_scale = stop.view_width_m <= opts.local.extent_m;
+    const char* verdict = local_scale ? "локальность" : (zones < 8 ? "ВЫРОЖДЕН" : "по делу");
+
+    std::cout << std::format("  {:<11} {:>8} {:>11.3f}   {:>7}   {:>13.2f}   {:>20}   {}\n", stop.name,
+                             stop.view_width_m >= 1000.0 ? std::format("{:.0f} км", stop.view_width_m / 1000.0)
+                                                         : std::format("{:.0f} м", stop.view_width_m),
+                             mpp, level, texel_pixels, zones, verdict);
+  }
+
+  // Уровней нужно СУММА двух независимых слагаемых, и второе я сперва забыл. Первое — октавы футпринта:
+  // сколько разных LOD требует наклон камеры. Второе — `log2(экран / сторона уровня)`: окно уровня
+  // покрывает ровно `side` текселей, поэтому экран шириной `P` пикселей нельзя обслужить одним уровнем
+  // при текселе в пиксель — периферию берут более грубые уровни просто потому, что у них окно шире.
+  const double screen_octaves = std::max(0.0, std::log2(double(opts.screen_pixels) / double(opts.clip.side)));
+  const uint32_t pool = uint32_t(std::ceil(depth_octaves + screen_octaves)) + 1;
+
+  std::cout << std::format("\n  наклон {:.0f}° при обзоре {:.0f}°: футпринт по экрану меняется в {:.1f} раз — "
+                           "{:.1f} октавы\n",
+                           opts.pitch_deg, opts.fov_deg, depth_ratio, depth_octaves);
+  std::cout << std::format("  экран {} пикселей против стороны уровня {} — ещё {:.1f} октавы\n", opts.screen_pixels,
+                           opts.clip.side, screen_octaves);
+  std::cout << std::format("  итого уровней в пуле: {}, это {:.1f} МБ при 4 байтах на тексель\n", pool,
+                           double(uint64_t(pool) * opts.clip.side * opts.clip.side * 4) / (1024.0 * 1024.0));
+
+  // Сторона уровня — не свободный параметр вкуса: она входит в бюджет дважды и в разные стороны. Вдвое
+  // большая сторона убирает одну октаву из пула, но учетверяет цену уровня, поэтому оптимум существует и
+  // лежит не там, где подсказывает интуиция «больше текстура — лучше».
+  std::cout << "\n  сторона   уровней   память\n";
+  for (uint32_t side = 128; side <= 2048; side *= 2) {
+    const double octaves = std::max(0.0, std::log2(double(opts.screen_pixels) / double(side)));
+    const uint32_t levels = uint32_t(std::ceil(depth_octaves + octaves)) + 1;
+    std::cout << std::format("  {:>7}   {:>7}   {:>6.1f} МБ\n", side, levels,
+                             double(uint64_t(levels) * side * side * 4) / (1024.0 * 1024.0));
+  }
+
+  std::cout << "\n  полосы с перекрытием (текущая полоса держится, пока обзор внутри её диапазона):\n";
+  std::cout << "  уровень   вход при отдалении   выход при приближении   идеальный обзор\n";
+  constexpr double overlap = 0.35;
+  for (uint32_t k = 0; k < clip.level_count(); ++k) {
+    const double ideal_low = clip.texel_size_m(k) * double(opts.screen_pixels);
+    const double ideal_high = ideal_low * 2.0;
+    std::cout << std::format("  {:>7}   {:>18}   {:>21}   {:>10} .. {}\n", k,
+                             std::format("{:.0f} м", ideal_low * (1.0 - overlap)),
+                             std::format("{:.0f} м", ideal_high * (1.0 + overlap)),
+                             std::format("{:.0f} м", ideal_low), std::format("{:.0f} м", ideal_high));
+  }
+
+  std::cout << std::format("\n  перекрытие {:.0f}% ширины полосы: между входом соседа и выходом текущей есть зазор, "
+                           "в котором и надо печь следующий уровень\n", overlap * 100.0);
+  return EXIT_SUCCESS;
+}
+
+
+// --- локальности ---
+
+// Обход графа смежности от улиц. Это ровно то, что делает локальный ИИ, когда ему сказали «найди работу
+// в городе»: он идёт по публичным зонам и заходит внутрь через выходы построек.
+std::vector<uint8_t> reach_from_streets(const pf09::locality& place) {
+  std::vector<uint8_t> seen(place.zone_count(), 0);
+  std::vector<uint32_t> queue;
+
+  for (uint32_t i = 0; i < place.zone_count(); ++i) {
+    if (place.role(i) != pf09::zone_role::street) continue;
+    seen[i] = 1;
+    queue.push_back(i);
+    break;
+  }
+
+  for (size_t head = 0; head < queue.size(); ++head) {
+    for (const auto next : place.neighbours(queue[head])) {
+      if (seen[next] != 0) continue;
+      seen[next] = 1;
+      queue.push_back(next);
+    }
+  }
+  return seen;
+}
+
+uint32_t count_role(const pf09::locality& place, const pf09::zone_role role) {
+  uint32_t total = 0;
+  for (uint32_t i = 0; i < place.zone_count(); ++i) {
+    if (place.role(i) == role) ++total;
+  }
+  return total;
+}
+
+int run_locality_report(const pf09::territory& map, const options& opts) {
+  pf09::locality_field field(map, opts.local);
+  const glm::dvec2 observer{map.config().world_span_m * 0.5, map.config().world_span_m * 0.5};
+
+  const auto begin = std::chrono::steady_clock::now();
+  const uint32_t built = field.focus(observer);
+  const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+
+  std::cout << std::format("PF09 локальности: пятно {:.0f} м, сетка участков {}², помещений {}², радиус "
+                           "резидентности {:.0f} м\n",
+                           opts.local.extent_m, opts.local.plot_side, opts.local.room_side,
+                           opts.local.residency_radius_m);
+  std::cout << std::format("  построено {} локальностей за {:.1f} мс, резидентно {}, {:.1f} КБ\n\n", built, elapsed,
+                           field.resident().size(), double(field.resident_bytes()) / 1024.0);
+
+  std::cout << "  вид      якорь        улиц   дворов   зданий   помещений   достижимо   размер\n";
+  for (const auto* place : field.resident()) {
+    const auto seen = reach_from_streets(*place);
+    uint32_t live = 0;
+    uint32_t reached = 0;
+    for (uint32_t i = 0; i < place->zone_count(); ++i) {
+      if (place->role(i) == pf09::zone_role::count) continue;
+      ++live;
+      reached += seen[i];
+    }
+
+    std::cout << std::format("  {:<8} {:>10}   {:>5}   {:>6}   {:>6}   {:>9}   {:>4}/{:<4}   {:>5.1f} КБ\n",
+                             pf09::locality_kind_name(place->kind()), place->anchor(),
+                             count_role(*place, pf09::zone_role::street), count_role(*place, pf09::zone_role::yard),
+                             count_role(*place, pf09::zone_role::building),
+                             count_role(*place, pf09::zone_role::room), reached, live,
+                             double(place->byte_size()) / 1024.0);
+  }
+
+  // Сколько локальностей вообще размещено на весь мир — это цена, которую платит игра за то, чтобы
+  // «зайти в любой город», и она должна быть посчитана, а не оценена.
+  const uint64_t locales = map.node_count(pf09::tier::locale);
+  const double density = opts.local.town_chance + opts.local.crypt_chance + opts.local.castle_chance;
+  std::cout << std::format("\n  на {} локальных территорий мира приходится примерно {:.0f} локальностей "
+                           "({:.1f}% плотность); материализуются только те, что в радиусе\n",
+                           locales, double(locales) * density, density * 100.0);
+  return EXIT_SUCCESS;
+}
+
+
+// --- игровые территории: сборка и стриминг ---
+
+std::filesystem::path world_root(const options& opts) {
+  return opts.build.root.empty() ? std::filesystem::temp_directory_path() / "pf09_world" : opts.build.root;
+}
+
+glm::dvec2 world_centre(const options& opts) {
+  return {(double(opts.build.sector_x) + double(opts.build.sector_side) * 0.5) * pf09::sector_span_m,
+          (double(opts.build.sector_y) + double(opts.build.sector_side) * 0.5) * pf09::sector_span_m};
+}
+
+pf09::build_stats build_fixture(const pf09::territory& map, const options& opts) {
+  auto build = opts.build;
+  build.root = world_root(opts);
+  return pf09::build_world(map, opts.local, build);
+}
+
+int run_build_world(const pf09::territory& map, const options& opts) {
+  const auto stats = build_fixture(map, opts);
+
+  std::cout << std::format("PF09 сборка мира в '{}'\n", world_root(opts).string());
+  std::cout << std::format("  {} секторов по {:.0f} м, {} зон, {} связей, {} поселений\n", stats.sectors,
+                           pf09::sector_span_m, stats.zones, stats.links, stats.settlements);
+  std::cout << std::format("  {:.1f} КБ содержимого, собрано за {:.0f} мс, в среднем {:.1f} КБ и {} зон на сектор\n",
+                           double(stats.bytes) / 1024.0, stats.millis,
+                           double(stats.bytes) / 1024.0 / double(std::max(stats.sectors, 1u)),
+                           stats.zones / std::max(stats.sectors, 1u));
+
+  // Экстраполяция на весь мир — то число, ради которого стриминг и существует. Держать комнаты всей
+  // империи в памяти нельзя, и это надо назвать вслух, а не подразумевать.
+  const double covered = double(opts.build.sector_side) * pf09::sector_span_m;
+  const double ratio = (map.config().world_span_m / covered) * (map.config().world_span_m / covered);
+  std::cout << std::format("  собрано {:.0f}x{:.0f} км из {:.0f}x{:.0f} км мира; при той же плотности весь мир — "
+                           "{:.1f} ГБ и {:.0f} млн зон\n",
+                           covered / 1000.0, covered / 1000.0, map.config().world_span_m / 1000.0,
+                           map.config().world_span_m / 1000.0, double(stats.bytes) * ratio / (1024.0 * 1024.0 * 1024.0),
+                           double(stats.zones) * ratio / 1.0e6);
+  return EXIT_SUCCESS;
+}
+
+int run_stream_report(const pf09::territory& map, const options& opts) {
+  const auto root = world_root(opts);
+  if (!std::filesystem::exists(root)) build_fixture(map, opts);
+
+  pf09::zone_store store(root, opts.stream_radius_m, opts.stream_budget);
+  const auto centre = world_centre(opts);
+
+  std::cout << std::format("PF09 стриминг из '{}': радиус {:.0f} м, бюджет {} секторов\n\n", root.string(),
+                           opts.stream_radius_m, opts.stream_budget);
+  std::cout << "  шаг   позиция, км    загружено   выгружено   резидентно   память   прочитано\n";
+
+  const double travel = double(opts.build.sector_side) * pf09::sector_span_m * 0.8;
+  constexpr uint32_t steps = 10;
+
+  uint64_t total_read = 0;
+  for (uint32_t step = 0; step <= steps; ++step) {
+    const glm::dvec2 observer{centre.x - travel * 0.5 + travel * double(step) / double(steps), centre.y};
+    const auto stats = store.focus(observer);
+    total_read += stats.bytes_read;
+
+    std::cout << std::format("  {:>3}   {:>7.1f}, {:<4.1f} {:>10}  {:>10}   {:>10}   {:>5.1f} КБ   {:>5.1f} КБ\n", step,
+                             observer.x / 1000.0, observer.y / 1000.0, stats.loaded, stats.evicted, stats.resident,
+                             double(stats.resident_bytes) / 1024.0, double(stats.bytes_read) / 1024.0);
+  }
+
+  // Пикинг: это и есть «информация о конкретной зоне», ради которой всё и затевалось. Точка берётся
+  // ВНУТРИ поселения, а не в центре области: в центре законно пусто, и пустой ответ на всех уровнях
+  // показал бы правило про пропуски, но не показал бы, что все четыре уровня отвечают.
+  store.focus(centre);
+  glm::vec3 probe{float(centre.x), 1.0f, float(centre.y)};
+  for (int32_t y = 0; y < int32_t(opts.build.sector_side) && probe.y > 0.0f; ++y) {
+    for (int32_t x = 0; x < int32_t(opts.build.sector_side); ++x) {
+      const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
+      if (sector == nullptr) continue;
+
+      const auto found = std::find_if(sector->zones.begin(), sector->zones.end(), [](const pf09::zone_record& item) {
+        return item.level == pf09::zone_level::interior && item.kind == pf09::zone_kind::room;
+      });
+      if (found == sector->zones.end()) continue;
+
+      probe = {(found->bounds.lower.x + found->bounds.upper.x) * 0.5f,
+               (found->bounds.lower.y + found->bounds.upper.y) * 0.5f,
+               (found->bounds.lower.z + found->bounds.upper.z) * 0.5f};
+      store.focus({double(probe.x), double(probe.z)});
+      y = int32_t(opts.build.sector_side);
+      break;
+    }
+  }
+
+  std::cout << std::format("\n  что под точкой ({:.0f}, {:.0f}, {:.0f}):\n", probe.x, probe.y, probe.z);
+  for (uint32_t level = 0; level < uint32_t(pf09::zone_level::count); ++level) {
+    const auto* found = store.pick(probe, pf09::zone_level(level));
+    std::cout << std::format("    {:<10} {}\n", pf09::zone_level_name(pf09::zone_level(level)),
+                             found == nullptr ? std::string("— пусто, и это законный ответ")
+                                              : std::format("{} '{}', проходов {}", pf09::zone_kind_name(found->kind),
+                                                            store.name_of(*found), found->portal_count));
+  }
+
+  std::cout << std::format("\n  всего прочитано за проход {:.1f} КБ\n", double(total_read) / 1024.0);
   return EXIT_SUCCESS;
 }
 
@@ -764,6 +1147,539 @@ void verify_clipmap_quantisation(checker& check, const pf09::territory& map, con
                            pf09::tier_name(value));
 }
 
+
+// Непрерывный зум с ограниченным бюджетом печки. Это ответ на вопрос, во что превращается перепечка
+// уровня при плавной смене масштаба: если юбка предзагрузки и бюджет работают, кадр не встаёт и ни один
+// пиксель не остаётся без уровня. Дыра здесь — не «менее детально», а нечего показать вообще.
+void verify_clipmap_zoom(checker& check, const pf09::territory& map, const options& opts) {
+  auto cfg = opts.clip;
+  cfg.side = opts.verify_clip_side;
+  cfg.bake_budget_texels = uint64_t(cfg.side) * 8;
+
+  pf09::clipmap clip(map, cfg);
+  const double span = map.config().world_span_m;
+  glm::dvec2 centre{span * 0.5, span * 0.5};
+
+  constexpr uint32_t screen_pixels = 1000;
+  constexpr uint32_t frames = 320;
+  constexpr double octaves = 5.0;
+
+  // Прогрев идёт ДО исчезновения очереди, а не фиксированное число кадров: фиксированное число молча
+  // превратилось бы в часть проверки и скрыло бы, что печка не успевает.
+  const double start_mpp = clip.texel_size_m(0);
+  for (uint32_t i = 0; i < 4096; ++i) {
+    if (clip.focus(centre, start_mpp, start_mpp * screen_pixels).pending_levels == 0) break;
+  }
+
+  size_t holes = 0;
+  size_t uncovered_pick = 0;
+  size_t disagreements = 0;
+  size_t ring_band = 0;
+  size_t compared = 0;
+  uint32_t starved_frames = 0;
+  uint64_t worst_frame = 0;
+  uint32_t longest_pending = 0;
+  uint32_t pending_streak = 0;
+
+  for (uint32_t frame = 0; frame < frames; ++frame) {
+    const double mpp = start_mpp * std::pow(2.0, octaves * double(frame) / double(frames));
+    const double view = mpp * screen_pixels;
+
+    // Камера одновременно едет: зум и панорамирование в реальной игре не разнесены по времени, и полосы
+    // обязаны уживаться с печкой, а не заменять её.
+    centre.x += clip.texel_size_m(clip.first_resident()) * 0.7;
+    const auto cost = clip.focus(centre, mpp, view);
+
+    worst_frame = std::max(worst_frame, cost.texels);
+    starved_frames += cost.starved_levels != 0 ? 1 : 0;
+    pending_streak = cost.pending_levels != 0 ? pending_streak + 1 : 0;
+    longest_pending = std::max(longest_pending, pending_streak);
+
+    for (uint32_t i = 0; i < 64; ++i) {
+      const auto unit = sample_point(frame * 64 + i, 1.0, 0x2003ull);
+      const glm::dvec2 point{centre.x + (unit.x * 2.0 - 1.0) * view, centre.y + (unit.y * 2.0 - 1.0) * view};
+
+      if (clip.serving_level(point) >= clip.level_count()) {
+        ++holes;
+        continue;
+      }
+
+      const auto choice = clip.pick(point, mpp);
+      if (!choice.covered) {
+        ++uncovered_pick;
+        continue;
+      }
+
+      // Смешивать идентификаторы нельзя. Но и согласия «в точности» требовать нельзя: у соседних уровней
+      // разный размер текселя, значит центры текселей — РАЗНЫЕ точки, и у границы крупного яруса они
+      // законно попадают по разные её стороны. Дефект — расхождение вдали от границы; расхождение у
+      // границы означает лишь, что линия границы дёрнется на кольце смены уровня на один крупный тексель.
+      // Именно поэтому границы придётся рисовать из SDF, а не из разницы идентификаторов.
+      const auto coarse_tier = clip.level_tier(choice.coarse);
+      const auto fine = clip.sample(point, choice.fine);
+      const auto coarse = clip.sample(point, choice.coarse);
+      if (fine == pf09::invalid_zone || coarse == pf09::invalid_zone) continue;
+      ++compared;
+
+      const auto fine_ancestor = map.ancestor_at(fine, coarse_tier);
+      const auto coarse_ancestor = map.ancestor_at(coarse, coarse_tier);
+      if (fine_ancestor == coarse_ancestor) continue;
+
+      const double coarse_texel = clip.texel_size_m(choice.coarse);
+      const glm::dvec2 cell{std::floor(point.x / coarse_texel) * coarse_texel + coarse_texel * 0.5,
+                            std::floor(point.y / coarse_texel) * coarse_texel + coarse_texel * 0.5};
+
+      bool uniform = true;
+      for (int32_t dy = -1; dy <= 1 && uniform; ++dy) {
+        for (int32_t dx = -1; dx <= 1 && uniform; ++dx) {
+          const glm::dvec2 probe{cell.x + dx * coarse_texel, cell.y + dy * coarse_texel};
+          uniform = map.resolve(probe, coarse_tier) == coarse_ancestor;
+        }
+      }
+
+      if (uniform) {
+        ++disagreements;
+      } else {
+        ++ring_band;
+      }
+    }
+  }
+
+  check.expect(holes == 0, "непрерывный зум не оставляет дыр", std::format("{} точек без готового уровня", holes));
+  check.expect(uncovered_pick == 0, "пара уровней всегда находится", std::format("{} точек без пары", uncovered_pick));
+  check.expect(worst_frame <= cfg.bake_budget_texels + uint64_t(cfg.side) * 4 * opts.clip.resident_levels,
+               "кадр не встаёт под бюджетом", std::format("худший кадр {} текселей", worst_frame));
+
+  // Расхождение здесь — это не «шов виден», это «уровни врут друг про друга»: показать один и тот же ярус
+  // из соседних колец стало бы невозможно, и переход пришлось бы прятать, а не просто не замечать.
+  check.expect(disagreements == 0, "соседние уровни согласны про общий ярус вдали от границы",
+               std::format("{} расхождений", disagreements));
+
+  std::cout << std::format("  замер: непрерывный зум на {:.0f} октав за {} кадров — худший кадр {} текселей, "
+                           "печка длилась максимум {} кадров подряд\n",
+                           octaves, frames, worst_frame, longest_pending);
+  std::cout << std::format("  замер: пулу не хватило слотов в {} кадрах из {} — цена уплачена детализацией, "
+                           "не покрытием\n", starved_frames, frames);
+  std::cout << std::format("  замер: на кольце смены уровня граница дёргается у {:.2f}% точек\n",
+                           100.0 * double(ring_band) / double(std::max<size_t>(compared, 1)));
+}
+
+
+// Пригодность одинарной точности для compute-запекания. Вопрос не академический: fp64 на GPU либо
+// отсутствует, либо идёт в 1/8–1/32 темпа, поэтому шейдер обязан считать во float. Спуск от корня
+// перенормирует локальную координату на каждом ярусе, так что ошибка не копится вниз по дереву — но
+// проверить это надо замером, потому что цена ошибки высока: CPU-picking и растр разъедутся.
+void verify_single_precision(checker& check, const pf09::territory& map, const options& opts,
+                             const uint32_t samples) {
+  const double span = map.config().world_span_m;
+  const pf09::clipmap probe_map(map, opts.clip);
+  const double finest_texel = probe_map.texel_size_m(0);
+
+  size_t differing = 0;
+  double worst_radius = 0.0;
+
+  for (uint32_t i = 0; i < samples; ++i) {
+    const auto point = sample_point(i, span, 0x32f10a7ull);
+    const auto wide = map.resolve(point);
+    if (wide == map.resolve_single(point)) continue;
+    ++differing;
+
+    // Мерим НЕ «есть ли рядом граница», а НА КАКОМ РАССТОЯНИИ она находится. Фиксированный радиус пробы
+    // отвечал бы только «да/нет» и молчал о масштабе, а решает здесь именно масштаб: расхождение
+    // безопасно ровно настолько, насколько оно меньше текселя.
+    double radius = 1.0e-5;
+    for (uint32_t step = 0; step < 24; ++step) {
+      bool uniform = true;
+      for (int32_t dy = -1; dy <= 1 && uniform; ++dy) {
+        for (int32_t dx = -1; dx <= 1 && uniform; ++dx) {
+          uniform = map.resolve({point.x + dx * radius, point.y + dy * radius}) == wide;
+        }
+      }
+      if (!uniform) break;
+      radius *= 2.0;
+    }
+    worst_radius = std::max(worst_radius, radius);
+  }
+
+  // Порог — половина самого мелкого текселя: расхождение меньше него не способно изменить ни один
+  // запечённый тексель, потому что тексель пекут по центру, а центр отстоит от границы дальше.
+  check.expect(worst_radius < finest_texel * 0.5, "одинарной точности хватает для запекания",
+               std::format("расхождения доходят до {:.4f} м при текселе {:.3f} м", worst_radius, finest_texel));
+
+  std::cout << std::format("  замер: float расходится с double у {:.4f}% точек, дальше всего в {:.4f} м от границы "
+                           "при текселе {:.2f} м\n",
+                           100.0 * double(differing) / double(samples), worst_radius, finest_texel);
+}
+
+
+void verify_locality(checker& check, const pf09::territory& map, const options& opts) {
+  pf09::locality_field field(map, opts.local);
+  const glm::dvec2 observer{map.config().world_span_m * 0.5, map.config().world_span_m * 0.5};
+  field.focus(observer);
+
+  check.expect(!field.resident().empty(), "локальности размещены", "в радиусе не нашлось ни одной");
+  if (field.resident().empty()) return;
+
+  size_t unreachable = 0;
+  size_t orphan_anchor = 0;
+  size_t stray_zone = 0;
+  size_t over_budget = 0;
+
+  for (const auto* place : field.resident()) {
+    const auto seen = reach_from_streets(*place);
+    for (uint32_t i = 0; i < place->zone_count(); ++i) {
+      if (place->role(i) == pf09::zone_role::count) continue;
+      if (seen[i] == 0) ++unreachable;
+    }
+
+    // Локальность обязана висеть под своим якорем, а якорь — быть узлом яруса `locale` глобального
+    // дерева. Иначе город окажется без владельца, и вопрос «кому платить пошлину» останется без ответа.
+    if (pf09::tier_of(place->anchor()) != pf09::tier::locale) ++orphan_anchor;
+    if (map.resolve(place->centre_m(), pf09::tier::locale) != place->anchor()) ++stray_zone;
+  }
+
+  if (field.resident().size() > opts.local.residency) ++over_budget;
+
+  // Полная достижимость от улиц — это и есть контракт «локальный ИИ может построить маршрут». Регулярный
+  // шаг улиц гарантирует его по построению, и проверка ловит именно поломку построения.
+  check.expect(unreachable == 0, "все зоны достижимы от улицы",
+               std::format("{} зон без пути от улицы", unreachable));
+  check.expect(orphan_anchor == 0, "якорь локальности — узел глобального дерева",
+               std::format("{} локальностей с чужим ярусом якоря", orphan_anchor));
+  check.expect(stray_zone == 0, "центр локальности лежит в своём якоре",
+               std::format("{} локальностей уехали из якоря", stray_zone));
+  check.expect(over_budget == 0, "резидентность не превышает бюджет");
+
+  // Детерминизм: то же место даёт ту же локальность. Проверяется повторным построением с нуля, а не
+  // повторным чтением уже построенного — иначе проверялся бы кеш, а не генератор.
+  pf09::locality_field twin(map, opts.local);
+  twin.focus(observer);
+
+  size_t drift = 0;
+  if (twin.resident().size() != field.resident().size()) {
+    ++drift;
+  } else {
+    for (size_t i = 0; i < field.resident().size(); ++i) {
+      const auto* a = field.resident()[i];
+      const auto* b = twin.resident()[i];
+      if (a->anchor() != b->anchor() || a->zone_count() != b->zone_count()) {
+        ++drift;
+        continue;
+      }
+      for (uint32_t z = 0; z < a->zone_count(); ++z) {
+        if (a->role(z) != b->role(z)) ++drift;
+      }
+    }
+  }
+  check.expect(drift == 0, "локальность детерминирована", std::format("{} расхождений при повторной сборке", drift));
+
+  // Разрежённость: подавляющая часть мира локальностей не имеет, и разрешение вне пятна обязано
+  // возвращать пустой адрес, а не выдумывать зону.
+  const auto* place = field.resident().front();
+  const double away = place->extent_m();
+  const glm::dvec2 outside{place->centre_m().x + away * 3.0, place->centre_m().y + away * 3.0};
+
+  check.expect(field.resolve_local(place->centre_m()).valid(), "внутри пятна зона находится");
+  check.expect(!field.resolve_local(outside).valid(), "вне пятна локальной зоны нет");
+
+  std::cout << std::format("  замер: {} локальностей рядом, {:.1f} КБ, у первой {} зон и {} помещений\n",
+                           field.resident().size(), double(field.resident_bytes()) / 1024.0, place->zone_count(),
+                           count_role(*place, pf09::zone_role::room));
+}
+
+
+// Симметрия порталов и проходимость. Проход — общее ребро двух фигур, значит он обязан быть виден с обеих
+// сторон одинаково: асимметрия означала бы дверь, открытую только снаружи.
+void verify_portals(checker& check, const pf09::zone_store& store, const options& opts) {
+  size_t asymmetric = 0;
+  size_t degenerate = 0;
+  size_t counted = 0;
+
+  for (int32_t y = 0; y < int32_t(opts.build.sector_side); ++y) {
+    for (int32_t x = 0; x < int32_t(opts.build.sector_side); ++x) {
+      const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
+      if (sector == nullptr) continue;
+
+      for (const auto& record : sector->zones) {
+        for (const auto& portal : store.portals_of(record)) {
+          const auto* other = store.find(portal.other);
+          if (other == nullptr) continue; // сосед в невыгруженном секторе — это не асимметрия
+          ++counted;
+
+          const auto back = store.portals_of(*other);
+          // Зеркало ищется ПО ОТРЕЗКУ, а не только по соседу: две фигуры могут делить несколько рёбер,
+          // и тогда «первый портал к этому соседу» — разные порталы с разных сторон.
+          const auto mirror = std::find_if(back.begin(), back.end(), [&](const pf09::zone_portal& item) {
+            return item.other == record.key && item.from == portal.from && item.to == portal.to;
+          });
+          if (mirror == back.end() || mirror->flags != portal.flags) {
+            ++asymmetric;
+            continue;
+          }
+          if (portal.geometric() && portal.from == portal.to) ++degenerate;
+        }
+      }
+    }
+  }
+
+  check.expect(counted > 0, "порталы выведены из геометрии");
+  check.expect(asymmetric == 0, "проход виден с обеих сторон одинаково",
+               std::format("{} несимметричных из {}", asymmetric, counted));
+  check.expect(degenerate == 0, "у прохода между фигурами есть отрезок",
+               std::format("{} вырожденных рёбер", degenerate));
+}
+
+// Персонажи. Путь строится по проёмам, персонаж идёт от проёма к проёму и обязан всё время находиться
+// внутри своей текущей зоны — это и есть проверка, что зональность пригодна для движения, а не только
+// для картинки.
+void verify_agents(checker& check, const pf09::zone_store& store, const options& opts) {
+  // Комнаты группируются ПО ПОСЕЛЕНИЮ. Пары берутся внутри одной группы, потому что между комнатами
+  // разных городов пути на внутреннем уровне и не должно быть: туда ходят по дороге, а дорога — связь
+  // уровня выше. Прежняя редакция брала пары где попало и требовала невозможного.
+  std::map<pf09::zone_key, std::vector<const pf09::zone_record*>> by_settlement;
+  for (int32_t y = 0; y < int32_t(opts.build.sector_side); ++y) {
+    for (int32_t x = 0; x < int32_t(opts.build.sector_side); ++x) {
+      const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
+      if (sector == nullptr) continue;
+      for (const auto& record : sector->zones) {
+        if (record.level != pf09::zone_level::interior || record.abstract()) continue;
+
+        auto owner = record.parent;
+        for (uint32_t hop = 0; hop < 4; ++hop) {
+          const auto* node = store.find(owner);
+          if (node == nullptr || node->level != pf09::zone_level::interior) break;
+          owner = node->parent;
+        }
+        if (owner != pf09::invalid_key) by_settlement[owner].push_back(&record);
+      }
+    }
+  }
+
+  std::vector<const pf09::zone_record*> rooms;
+  for (const auto& [settlement, list] : by_settlement) {
+    if (list.size() > rooms.size()) rooms = list;
+  }
+  check.expect(!rooms.empty(), "есть по чему ходить");
+  if (rooms.empty()) return;
+
+  size_t routed = 0;
+  size_t escaped = 0;
+  size_t stalled = 0;
+  size_t no_path = 0;
+  uint64_t total_steps = 0;
+
+  constexpr uint32_t trials = 64;
+  for (uint32_t i = 0; i < trials; ++i) {
+    const auto* from = rooms[utils::splitmix(i * 2ull + 1ull, 0xa9e17ull) % rooms.size()];
+    const auto* to = rooms[utils::splitmix(i * 2ull + 2ull, 0xa9e17ull) % rooms.size()];
+    if (from == to) continue;
+
+    pf09::agent walker{};
+    walker.zone = from->key;
+    if (!pf09::interior_point(store, *from, walker.position)) continue;
+
+    walker.path = pf09::find_path(store, from->key, to->key);
+    if (walker.path.empty()) {
+      ++no_path;
+      continue;
+    }
+    ++routed;
+
+    uint32_t steps = 0;
+    while (!walker.arrived && steps < 20000) {
+      if (!pf09::step_agent(store, walker, 0.6f)) break;
+      ++steps;
+
+      const auto* here = store.find(walker.zone);
+      if (here == nullptr) break;
+      if (!here->abstract() && !pf09::point_in_outline(store.outline_of(*here), walker.position)) ++escaped;
+    }
+    total_steps += steps;
+    if (!walker.arrived) ++stalled;
+  }
+
+  check.expect(no_path == 0, "маршрут между комнатами находится", std::format("{} пар без пути", no_path));
+  check.expect(escaped == 0, "персонаж не выходит из своей зоны", std::format("{} выходов наружу", escaped));
+  check.expect(stalled == 0, "персонаж доходит до цели", std::format("{} застряли", stalled));
+
+  std::cout << std::format("  замер: {} маршрутов пройдено, {} шагов всего, в среднем {:.0f} шагов на маршрут\n",
+                           routed, total_steps, double(total_steps) / double(std::max<size_t>(routed, 1)));
+}
+
+void verify_zones(checker& check, const pf09::territory& map, const options& opts) {
+  const auto root = world_root(opts);
+  const auto first = build_fixture(map, opts);
+  check.expect(first.sectors > 0 && first.zones > 0, "мир собрался", "сборка не дала ни одного сектора");
+  if (first.zones == 0) return;
+
+  // Детерминизм сборки проверяется по отпечаткам файлов, а не по их числу: одинаковое число секторов с
+  // разным содержимым — ровно тот случай, который «всё построилось» не заметит.
+  std::vector<uint64_t> before;
+  for (uint32_t y = 0; y < opts.build.sector_side; ++y) {
+    for (uint32_t x = 0; x < opts.build.sector_side; ++x) {
+      pf09::zone_sector loaded{};
+      if (pf09::read_sector(pf09::sector_path(root, opts.build.sector_x + int32_t(x), opts.build.sector_y + int32_t(y)),
+                            loaded)) {
+        before.push_back(loaded.fingerprint);
+      }
+    }
+  }
+  build_fixture(map, opts);
+
+  size_t drift = 0;
+  size_t index = 0;
+  for (uint32_t y = 0; y < opts.build.sector_side; ++y) {
+    for (uint32_t x = 0; x < opts.build.sector_side; ++x) {
+      pf09::zone_sector loaded{};
+      if (!pf09::read_sector(pf09::sector_path(root, opts.build.sector_x + int32_t(x),
+                                               opts.build.sector_y + int32_t(y)), loaded)) {
+        continue;
+      }
+      if (index >= before.size() || before[index] != loaded.fingerprint) ++drift;
+      ++index;
+    }
+  }
+  check.expect(drift == 0, "пересборка даёт те же файлы", std::format("{} секторов разошлись", drift));
+
+  pf09::zone_store store(root, opts.stream_radius_m, opts.stream_budget);
+  const auto centre = world_centre(opts);
+  store.focus(centre);
+
+  check.expect(store.resident_sectors() <= opts.stream_budget, "стриминг не превышает бюджет",
+               std::format("{} секторов при бюджете {}", store.resident_sectors(), opts.stream_budget));
+
+  size_t dangling = 0;
+  size_t unresolved = 0;
+  size_t self_link = 0;
+  size_t bad_parent = 0;
+  size_t overlap = 0;
+  size_t inspected = 0;
+
+  for (int32_t y = 0; y < int32_t(opts.build.sector_side); ++y) {
+    for (int32_t x = 0; x < int32_t(opts.build.sector_side); ++x) {
+      const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
+      if (sector == nullptr) continue;
+
+      for (const auto& record : sector->zones) {
+        ++inspected;
+
+        // «Висячая ссылка» и «сектор не загружен» — РАЗНЫЕ вещи, и путать их нельзя: стриминг существует
+        // ровно ради второго. Ссылка обязана указывать на сектор, который есть на диске; а если этот
+        // сектор сейчас резидентен, то разрешение по ключу обязано сработать за один шаг.
+        for (const auto& portal : store.portals_of(record)) {
+          const auto link = portal.other;
+          if (link == record.key) ++self_link;
+
+          const auto target = pf09::sector_path(root, pf09::key_sector_x(link), pf09::key_sector_y(link));
+          if (!std::filesystem::exists(target)) {
+            ++dangling;
+            continue;
+          }
+          if (store.sector(pf09::key_sector_x(link), pf09::key_sector_y(link)) != nullptr &&
+              store.find(link) == nullptr) {
+            ++unresolved;
+          }
+        }
+
+        // Родитель не может лежать на БОЛЕЕ МЕЛКОМ уровне. Тот же уровень допустим и нужен: здание —
+        // абстрактный узел, группирующий комнаты, и оно живёт на одном уровне с ними, потому что здание
+        // это не другой масштаб, а другая природа записи.
+        if (record.parent != pf09::invalid_key) {
+          const auto* parent = store.find(record.parent);
+          if (parent == nullptr) continue;
+          if (uint32_t(parent->level) < uint32_t(record.level)) ++bad_parent;
+          if (parent->level == record.level && !parent->abstract()) ++bad_parent;
+        }
+
+        // Зоны одного вида на одном уровне не должны накладываться: две улицы в одном месте — это не
+        // «выберется меньшая», это ошибка данных. Абстрактные зоны из проверки выпадают: у них нет формы,
+        // и накладываться им нечем.
+        if (record.abstract()) continue;
+        for (const auto& other : sector->zones) {
+          if (&other == &record || other.abstract() || other.level != record.level || other.kind != record.kind) {
+            continue;
+          }
+          if (record.bounds.overlaps_xz(other.bounds) && record.bounds.lower.y < other.bounds.upper.y &&
+              other.bounds.lower.y < record.bounds.upper.y) {
+            ++overlap;
+          }
+        }
+      }
+    }
+  }
+
+  check.expect(dangling == 0, "ссылка указывает на существующий сектор", std::format("{} висячих ссылок", dangling));
+  check.expect(unresolved == 0, "резидентная ссылка разрешается по ключу",
+               std::format("{} ссылок не нашли зону в загруженном секторе", unresolved));
+  check.expect(self_link == 0, "зона не ссылается на себя", std::format("{} петель", self_link));
+  check.expect(bad_parent == 0, "родитель лежит на более крупном уровне", std::format("{} нарушений", bad_parent));
+  check.expect(overlap == 0, "зоны одного вида не накладываются", std::format("{} пересечений", overlap));
+  check.expect(inspected > 0, "зоны прочитались");
+
+  // Пикинг: в центре бокса обязана найтись зона, и найденная обязана этот центр содержать. Требовать
+  // ИМЕННО ту же зону нельзя — внутри здания законно выигрывает комната, она меньше.
+  size_t missed = 0;
+  size_t outside_box = 0;
+  size_t probes = 0;
+
+  const auto* sample = store.sector(opts.build.sector_x, opts.build.sector_y);
+  if (sample != nullptr) {
+    for (const auto& record : sample->zones) {
+      if (record.abstract()) continue;
+      const glm::vec3 middle{(record.bounds.lower.x + record.bounds.upper.x) * 0.5f,
+                             (record.bounds.lower.y + record.bounds.upper.y) * 0.5f,
+                             (record.bounds.lower.z + record.bounds.upper.z) * 0.5f};
+      const auto* found = store.pick(middle, record.level);
+      ++probes;
+      if (found == nullptr) {
+        ++missed;
+      } else if (!found->bounds.contains(middle)) {
+        ++outside_box;
+      }
+    }
+  }
+  check.expect(missed == 0, "в центре зоны что-то находится", std::format("{} промахов из {}", missed, probes));
+  check.expect(outside_box == 0, "найденная зона содержит точку", std::format("{} промахов", outside_box));
+
+  // Пропуски — законная часть модели: между зонами бывает пустота, и врать про неё нельзя.
+  const glm::vec3 nowhere{float(centre.x) + 3000.0f, 400.0f, float(centre.y) + 3000.0f};
+  check.expect(store.pick(nowhere, pf09::zone_level::interior) == nullptr, "в пропуске зоны нет");
+
+  // Ответы не зависят от того, как наблюдатель сюда пришёл. Это главный контракт стриминга: подгрузка
+  // меняет ЧТО доступно, но не ЧТО правда.
+  pf09::zone_store roundabout(root, opts.stream_radius_m, opts.stream_budget);
+  const double travel = double(opts.build.sector_side) * pf09::sector_span_m * 0.4;
+  for (uint32_t step = 0; step < 8; ++step) {
+    roundabout.focus({centre.x - travel + travel * double(step) / 4.0, centre.y + travel * 0.3});
+  }
+  roundabout.focus(centre);
+
+  size_t divergence = 0;
+  for (uint32_t i = 0; i < 4096; ++i) {
+    const auto unit = sample_point(i, 1.0, 0x2ffee1ull);
+    const glm::vec3 point{float(centre.x + (unit.x - 0.5) * 4000.0), 1.0f,
+                          float(centre.y + (unit.y - 0.5) * 4000.0)};
+    for (uint32_t level = 0; level < uint32_t(pf09::zone_level::count); ++level) {
+      const auto* a = store.pick(point, pf09::zone_level(level));
+      const auto* b = roundabout.pick(point, pf09::zone_level(level));
+      const auto key_a = a == nullptr ? pf09::invalid_key : a->key;
+      const auto key_b = b == nullptr ? pf09::invalid_key : b->key;
+      if (key_a != key_b) ++divergence;
+    }
+  }
+  check.expect(divergence == 0, "ответ не зависит от пути наблюдателя",
+               std::format("{} расхождений после другого маршрута", divergence));
+
+  verify_portals(check, store, opts);
+  verify_agents(check, store, opts);
+
+  std::cout << std::format("  замер: {} секторов, {} зон, {} связей, {:.1f} КБ на диске; резидентно {} секторов "
+                           "и {:.1f} КБ\n",
+                           first.sectors, first.zones, first.links, double(first.bytes) / 1024.0,
+                           store.resident_sectors(), double(store.resident_bytes()) / 1024.0);
+}
+
+
 void verify_fingerprint(checker& check, const pf09::territory& map, const uint64_t expected) {
   if (expected == 0) return;
   check.expect(map.fingerprint() == expected, "отпечаток раскладки",
@@ -791,6 +1707,10 @@ int run_verification(const pf09::territory& map, const options& opts) {
   verify_clipmap_walk(check, map, opts);
   verify_clipmap_hysteresis(check, map, opts);
   verify_clipmap_quantisation(check, map, opts, opts.samples / 4 + 1);
+  verify_clipmap_zoom(check, map, opts);
+  verify_single_precision(check, map, opts, opts.samples / 4 + 1);
+  verify_locality(check, map, opts);
+  verify_zones(check, map, opts);
   verify_fingerprint(check, map, opts.expected_fingerprint);
 
   std::cout << std::format("\n  проверок {}, провалов {}\n  отпечаток раскладки: {}\n", check.total(), check.failed(),
@@ -813,7 +1733,169 @@ rgb colour_of(const uint64_t key) {
   return {uint8_t(110 + (h & 0x7f)), uint8_t(110 + ((h >> 21) & 0x7f)), uint8_t(110 + ((h >> 42) & 0x7f))};
 }
 
+
+// --- отрисовка зон ---
+
+rgb kind_colour(const pf09::zone_kind kind) {
+  switch (kind) {
+    case pf09::zone_kind::street: return {150, 146, 138};
+    case pf09::zone_kind::yard: return {132, 156, 112};
+    case pf09::zone_kind::room: return {196, 172, 140};
+    case pf09::zone_kind::landmark: return {214, 150, 90};
+    case pf09::zone_kind::settlement: return {96, 104, 126};
+    default: return {110, 110, 120};
+  }
+}
+
+void draw_line(std::vector<rgb>& pixels, const uint32_t size, glm::vec2 a, glm::vec2 b, const rgb colour) {
+  const float steps = std::max(std::abs(b.x - a.x), std::abs(b.y - a.y));
+  const uint32_t count = uint32_t(std::min(steps, 4096.0f)) + 1;
+  for (uint32_t i = 0; i <= count; ++i) {
+    const float t = float(i) / float(count);
+    const int32_t x = int32_t(a.x + (b.x - a.x) * t);
+    const int32_t y = int32_t(a.y + (b.y - a.y) * t);
+    if (x < 0 || y < 0 || x >= int32_t(size) || y >= int32_t(size)) continue;
+    pixels[size_t(y) * size + uint32_t(x)] = colour;
+  }
+}
+
+int run_zone_dump(const pf09::territory& map, const options& opts) {
+  const auto root = world_root(opts);
+  if (!std::filesystem::exists(root)) build_fixture(map, opts);
+
+  pf09::zone_store store(root, opts.stream_radius_m, opts.stream_budget);
+  auto centre = world_centre(opts);
+  store.focus(centre);
+
+  // Камера ставится на поселение: иначе кадр покажет пустоту между местами, что честно, но неинформативно.
+  const pf09::zone_record* focus_zone = nullptr;
+  for (int32_t sy = 0; sy < int32_t(opts.build.sector_side) && focus_zone == nullptr; ++sy) {
+    for (int32_t sx = 0; sx < int32_t(opts.build.sector_side); ++sx) {
+      const auto* sector = store.sector(opts.build.sector_x + sx, opts.build.sector_y + sy);
+      if (sector == nullptr) continue;
+      for (const auto& record : sector->zones) {
+        if (record.kind != pf09::zone_kind::settlement) continue;
+        focus_zone = &record;
+        break;
+      }
+      if (focus_zone != nullptr) break;
+    }
+  }
+  if (focus_zone != nullptr) {
+    centre = {(focus_zone->bounds.lower.x + focus_zone->bounds.upper.x) * 0.5,
+              (focus_zone->bounds.lower.z + focus_zone->bounds.upper.z) * 0.5};
+    store.focus(centre);
+  }
+
+  const uint32_t size = std::max(opts.dump_size, 64u);
+  const double span = opts.dump_span_m > 0.0 ? opts.dump_span_m : 700.0;
+  const double origin_x = centre.x - span * 0.5;
+  const double origin_y = centre.y - span * 0.5;
+  const double scale = double(size) / span;
+
+  std::vector<rgb> pixels(size_t(size) * size, rgb{26, 26, 30});
+  const auto to_pixel = [&](const glm::vec2 point) {
+    return glm::vec2{float((double(point.x) - origin_x) * scale), float((double(point.y) - origin_y) * scale)};
+  };
+
+  // Заливка идёт по каждой фигуре в пределах её габарита: перебирать все зоны на каждый пиксель значило бы
+  // сотни миллионов проверок там, где хватает суммы площадей.
+  uint32_t drawn = 0;
+  for (int32_t sy = 0; sy < int32_t(opts.build.sector_side); ++sy) {
+    for (int32_t sx = 0; sx < int32_t(opts.build.sector_side); ++sx) {
+      const auto* sector = store.sector(opts.build.sector_x + sx, opts.build.sector_y + sy);
+      if (sector == nullptr) continue;
+
+      for (const auto& record : sector->zones) {
+        if (record.level != pf09::zone_level::interior || record.abstract()) continue;
+        const auto outline = sector->outline_of(record);
+
+        const auto lower = to_pixel({record.bounds.lower.x, record.bounds.lower.z});
+        const auto upper = to_pixel({record.bounds.upper.x, record.bounds.upper.z});
+        const int32_t x0 = std::max(0, int32_t(std::floor(lower.x)));
+        const int32_t y0 = std::max(0, int32_t(std::floor(lower.y)));
+        const int32_t x1 = std::min(int32_t(size) - 1, int32_t(std::ceil(upper.x)));
+        const int32_t y1 = std::min(int32_t(size) - 1, int32_t(std::ceil(upper.y)));
+        if (x1 < x0 || y1 < y0) continue;
+        ++drawn;
+
+        const auto colour = kind_colour(record.kind);
+        for (int32_t y = y0; y <= y1; ++y) {
+          for (int32_t x = x0; x <= x1; ++x) {
+            const glm::vec2 world{float(origin_x + (x + 0.5) / scale), float(origin_y + (y + 0.5) / scale)};
+            if (!pf09::point_in_outline(outline, world)) continue;
+            pixels[size_t(y) * size + uint32_t(x)] = colour;
+          }
+        }
+      }
+    }
+  }
+
+  // Проходы поверх заливки: открытые светлые, запертые красные. Видно, что связность живёт на рёбрах.
+  uint32_t portals_drawn = 0;
+  uint32_t locked_drawn = 0;
+  for (int32_t sy = 0; sy < int32_t(opts.build.sector_side); ++sy) {
+    for (int32_t sx = 0; sx < int32_t(opts.build.sector_side); ++sx) {
+      const auto* sector = store.sector(opts.build.sector_x + sx, opts.build.sector_y + sy);
+      if (sector == nullptr) continue;
+      for (const auto& record : sector->zones) {
+        if (record.level != pf09::zone_level::interior) continue;
+        for (const auto& portal : sector->portals_of(record)) {
+          if (!portal.geometric() || portal.other < record.key) continue;
+          draw_line(pixels, size, to_pixel(portal.from), to_pixel(portal.to),
+                    portal.passable() ? rgb{245, 245, 235} : rgb{200, 60, 60});
+          portal.passable() ? ++portals_drawn : ++locked_drawn;
+        }
+      }
+    }
+  }
+
+  // Персонаж проходит маршрут, и его след рисуется поверх всего.
+  uint32_t path_zones = 0;
+  const auto* start = store.pick({float(centre.x), 0.1f, float(centre.y)}, pf09::zone_level::interior);
+  if (start != nullptr) {
+    const auto* sector = store.sector(pf09::key_sector_x(start->key), pf09::key_sector_y(start->key));
+    const pf09::zone_record* goal = nullptr;
+    for (const auto& record : sector->zones) {
+      if (record.kind == pf09::zone_kind::room) goal = &record;
+    }
+
+    if (goal != nullptr) {
+      pf09::agent walker{};
+      walker.zone = start->key;
+      if (pf09::interior_point(store, *start, walker.position)) {
+        walker.path = pf09::find_path(store, start->key, goal->key);
+        path_zones = uint32_t(walker.path.size());
+
+        auto previous = to_pixel(walker.position);
+        uint32_t steps = 0;
+        while (!walker.arrived && steps < 40000 && pf09::step_agent(store, walker, 0.5f)) {
+          const auto now = to_pixel(walker.position);
+          draw_line(pixels, size, previous, now, rgb{255, 90, 200});
+          previous = now;
+          ++steps;
+        }
+      }
+    }
+  }
+
+  std::ofstream file(opts.dump_path, std::ios::binary);
+  if (!file) {
+    std::cout << std::format("не удалось открыть '{}'\n", opts.dump_path);
+    return EXIT_FAILURE;
+  }
+  file << std::format("P6\n{} {}\n255\n", size, size);
+  file.write(reinterpret_cast<const char*>(pixels.data()), std::streamsize(pixels.size() * sizeof(rgb)));
+
+  std::cout << std::format("PF09 зоны '{}': окно {:.0f} м, {:.2f} м на пиксель, нарисовано {} фигур, "
+                           "{} открытых проходов и {} запертых, маршрут через {} зон\n",
+                           opts.dump_path, span, 1.0 / scale, drawn, portals_drawn, locked_drawn, path_zones);
+  return EXIT_SUCCESS;
+}
+
 int run_dump(const pf09::territory& map, const options& opts) {
+  if (opts.dump_from == dump_source::zones) return run_zone_dump(map, opts);
+
   const uint32_t size = std::max(opts.dump_size, 8u);
   const double step = opts.dump_span_m / double(size);
   const double origin_x = opts.dump_center_x_m - opts.dump_span_m * 0.5;
@@ -824,6 +1906,9 @@ int run_dump(const pf09::territory& map, const options& opts) {
   constexpr pf09::zone_id unresolvable = pf09::invalid_zone - 1;
 
   std::vector<pf09::zone_id> keys(size_t(size) * size);
+  std::vector<uint32_t> serving(keys.size(), 0);
+  bool show_levels = false;
+
   if (opts.dump_from == dump_source::direct) {
     for (uint32_t y = 0; y < size; ++y) {
       for (uint32_t x = 0; x < size; ++x) {
@@ -832,6 +1917,8 @@ int run_dump(const pf09::territory& map, const options& opts) {
       }
     }
   } else {
+    show_levels = opts.dump_from == dump_source::residency;
+
     pf09::clipmap clip(map, opts.clip);
     const glm::dvec2 centre{opts.dump_center_x_m, opts.dump_center_y_m};
     clip.focus(centre, step, opts.dump_span_m * 0.5);
@@ -846,18 +1933,18 @@ int run_dump(const pf09::territory& map, const options& opts) {
         // Берём самый мелкий резидентный уровень, чьё окно накрывает точку. Это и есть правило выполнения
         // zone LOD: карта хранит один ярус на уровень и умеет показать любой ярус НЕ ГЛУБЖЕ него.
         auto value = pf09::zone_id(pf09::invalid_zone);
-        for (uint32_t k = clip.first_resident(); k < clip.first_resident() + clip.resident_count(); ++k) {
-          const auto stored = clip.sample(point, k);
-          if (stored == pf09::invalid_zone) continue;
-
-          value = uint32_t(opts.dump_tier) > uint32_t(clip.level_tier(k))
+        const uint32_t level = clip.serving_level(point);
+        if (level < clip.level_count()) {
+          const auto stored = clip.sample(point, level);
+          value = uint32_t(opts.dump_tier) > uint32_t(clip.level_tier(level))
                     ? unresolvable
                     : map.ancestor_at(stored, opts.dump_tier);
-          ++per_level[k];
-          break;
+          ++per_level[level];
         }
+
         if (value == pf09::invalid_zone) ++outside;
         keys[size_t(y) * size + x] = value;
+        serving[size_t(y) * size + x] = level;
       }
     }
 
@@ -885,12 +1972,33 @@ int run_dump(const pf09::territory& map, const options& opts) {
       const uint64_t key = opts.dump_colouring == dump_mode::owner ? uint64_t(map.owner_of(id)) * 2654435761ull : uint64_t(id);
       auto colour = colour_of(key);
 
+      // Режим резидентности красит пиксель тем, КАКАЯ КАРТИНКА его обслужила: территории остаются
+      // различимы, но поверх них видно кольца уровней и их границы. Это и есть ответ на вопрос «что
+      // лежит в пуле и кто что показывает», которого не было ни в прямом дампе, ни в собранном.
+      if (show_levels) {
+        static constexpr rgb level_tint[12] = {{255, 120, 120}, {255, 190, 110}, {245, 245, 130}, {140, 230, 140},
+                                               {130, 220, 230}, {140, 160, 250}, {210, 140, 240}, {235, 235, 235},
+                                               {200, 90, 60},   {90, 150, 90},   {80, 110, 180},  {150, 90, 150}};
+        const auto tint = level_tint[serving[index] % 12];
+        colour = {uint8_t((colour.r + tint.r * 2) / 3), uint8_t((colour.g + tint.g * 2) / 3),
+                  uint8_t((colour.b + tint.b * 2) / 3)};
+      }
+
       // Граница рисуется сравнением соседей, а не отдельным проходом: на срезе 1 это ровно то, что нужно
       // увидеть глазом — где ярус реально меняется. Резолюционно-независимый SDF приходит на срезе 4.
       const bool edge = (x + 1 < size && keys[index + 1] != id) || (y + 1 < size && keys[index + size] != id) ||
                         (x > 0 && keys[index - 1] != id) || (y > 0 && keys[index - size] != id);
       if (edge) {
         colour = {uint8_t(colour.r / 3), uint8_t(colour.g / 3), uint8_t(colour.b / 3)};
+      }
+
+      // Кольцо смены уровня рисуется белым поверх границ территорий: это край окна картинки, а не край
+      // территории, и путать их нельзя — одно про стриминг, другое про мир.
+      if (show_levels) {
+        const uint32_t here = serving[index];
+        const bool ring = (x + 1 < size && serving[index + 1] != here) ||
+                          (y + 1 < size && serving[index + size] != here);
+        if (ring) colour = {255, 255, 255};
       }
       pixels[index] = colour;
     }
@@ -923,6 +2031,10 @@ int main(const int argc, const char** argv) {
   switch (opts.requested) {
     case action::report: run_report(map); return EXIT_SUCCESS;
     case action::clipmap: return run_clipmap_report(map, opts);
+    case action::zoom: return run_zoom_study(map, opts);
+    case action::locality: return run_locality_report(map, opts);
+    case action::world: return run_build_world(map, opts);
+    case action::stream: return run_stream_report(map, opts);
     case action::verify: return run_verification(map, opts);
     case action::dump: return run_dump(map, opts);
   }

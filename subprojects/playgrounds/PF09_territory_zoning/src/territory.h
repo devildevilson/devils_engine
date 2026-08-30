@@ -149,6 +149,12 @@ public:
   address resolve_chain(const glm::dvec2& point_m) const;
   zone_id resolve(const glm::dvec2& point_m, const tier value = leaf_tier) const;
 
+  // То же разрешение в одинарной точности. Существует не ради скорости, а ради среза 2b: fp64 на GPU
+  // либо отсутствует, либо идёт в 1/8–1/32 темпа, поэтому compute-запекание обязано считать во float.
+  // Спуск от корня renormalizes локальную координату на каждом ярусе, так что точность не накапливает
+  // ошибку вниз по дереву — но проверить это надо замером, а не рассуждением.
+  zone_id resolve_single(const glm::dvec2& point_m, const tier value = leaf_tier) const;
+
   zone_id parent_of(const zone_id id) const;
   zone_id ancestor_at(const zone_id id, const tier value) const;
 
@@ -166,9 +172,20 @@ public:
   // функцию, которой пользуется `resolve`, а не её копию.
   glm::dvec2 warp(const glm::dvec2& point_m) const;
 
+  // Мировая точка внутри узла. Нужна всему, что ПРИВЯЗЫВАЕТСЯ к территории, а не спрашивает её: город
+  // стоит в конкретном месте, и это место надо уметь назвать. Считается спуском от корня по тем же
+  // полосам, что и разрешение, а затем обращением варпа итерацией — прямой формулы у варпа нет, но он
+  // почти тождественен, и неподвижная точка находится за считанные шаги. Контракт простой и проверяемый:
+  // `resolve(node_centre_m(n)) == n`.
+  glm::dvec2 node_centre_m(const zone_id id) const;
+
 private:
-  double split_weight(const glm::i64vec2 parent_cell, const tier value, const uint32_t axis, const uint32_t index) const;
-  uint32_t subdivide(const glm::i64vec2 parent_cell, const tier value, const uint32_t axis, double& local) const;
+  template <typename scalar>
+  scalar split_weight(const glm::i64vec2 parent_cell, const tier value, const uint32_t axis, const uint32_t index) const;
+  template <typename scalar>
+  uint32_t subdivide(const glm::i64vec2 parent_cell, const tier value, const uint32_t axis, scalar& local) const;
+  template <typename scalar>
+  void cells_impl(const glm::dvec2& point_m, std::span<glm::i64vec2> out) const;
   void cells_of(const glm::dvec2& point_m, std::span<glm::i64vec2> out) const;
   glm::i64vec2 representative(const glm::i64vec2 cell, const tier value) const;
   bool absorbed(const glm::i64vec2 cell, const tier value) const;
