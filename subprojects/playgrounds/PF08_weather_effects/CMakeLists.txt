@@ -13,6 +13,7 @@ add_executable(PF08_weather_effects
   src/foliage.cpp src/foliage.h
   src/weather.cpp src/weather.h
   src/surface_memory.cpp src/surface_memory.h
+  src/lightning.cpp src/lightning.h
   src/sky_view.cpp src/sky_view.h
 )
 target_link_libraries(PF08_weather_effects PRIVATE

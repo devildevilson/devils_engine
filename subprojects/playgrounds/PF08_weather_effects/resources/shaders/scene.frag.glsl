@@ -5,6 +5,7 @@
 #define PF08_SURFACE_MEMORY_BINDING 4
 #include "pf08_surface_memory.glsl"
 #include "pf08_surface_weather.glsl"
+#include "pf08_lightning.glsl"
 
 // Затенение предметов сцены. Физически это ровно то же, что и земля: ламбертова поверхность в том же
 // свете, поэтому весь расчёт освещённости живёт в общем `pf08_surface.glsl`, а здесь остаётся только
@@ -65,17 +66,36 @@ void main() {
   pf08_surface_memory_material(sky_data.sky, precipitation_memory, in_world_position, normal,
                                in_foliage_height.x, in_albedo, surface_albedo,
                                rain_memory, snow_memory);
-  vec3 primary_direct;
+  vec3 star_direct[PF08_STAR_COUNT];
   const vec3 illuminance =
     pf08_surface_illuminance(sky_data.sky, transmittance_lut, sky_view_lut, planet_point,
                              in_world_position, normal, view_distance, receiver_bias_scale,
-                             direct_visibility, sky_visibility, primary_direct);
-  vec3 color = illuminance * surface_albedo / pf08_pi;
-  if (snow_memory > 1e-4 && sky_data.sky.star_direction[0].y > 0.0) {
+                             direct_visibility, sky_visibility, star_direct);
+  // Вспышка освещает поверхность независимо от того, оказался ли её канал достаточно широк для
+  // геометрического consumer. Тени локального источника — отдельная задача следующего шага.
+  const vec3 lightning_illuminance =
+    pf08_lightning_surface_illuminance(sky_data.sky, in_world_position, normal);
+  vec3 color = (illuminance + lightning_illuminance) * surface_albedo / pf08_pi;
+  const float sparkle_intensity = sky_data.sky.snow_sparkle.x;
+  const float sparkle_density = sky_data.sky.snow_sparkle.y;
+  if (snow_memory > 1e-4 && sparkle_intensity > 0.0 && sparkle_density > 0.0) {
     const vec3 view_direction = normalize(camera_data.camera_position.xyz - in_world_position);
-    const float sparkle = pf08_snow_sparkle(in_world_position, normal, view_direction,
-                                             sky_data.sky.star_direction[0].xyz, snow_memory);
-    color += primary_direct * sparkle * 0.025;
+    float brightest_direct = 0.0;
+    for (int s = 0; s < PF08_STAR_COUNT; ++s) {
+      brightest_direct = max(brightest_direct, dot(star_direct[s], vec3(0.2126, 0.7152, 0.0722)));
+    }
+    for (int s = 0; s < PF08_STAR_COUNT; ++s) {
+      const float source_luminance = dot(star_direct[s], vec3(0.2126, 0.7152, 0.0722));
+      if (source_luminance <= 1e-5 || sky_data.sky.star_direction[s].y <= 0.0) continue;
+      const float source_lift = mix(1.0, brightest_direct / source_luminance,
+                                    sky_data.sky.snow_sparkle.w);
+      const float sparkle = pf08_snow_sparkle(
+        in_world_position, normal, view_direction, sky_data.sky.star_direction[s].xyz, snow_memory,
+        sparkle_density, sky_data.sky.snow_sparkle.z, s);
+      // 0.45 — documented visibility scale of the authored glint, analogous to the rainbow scale.
+      // It changes reflected radiance only, never the illuminance used by the rest of the scene.
+      color += star_direct[s] * source_lift * sparkle * (0.45 * sparkle_intensity);
+    }
   }
 
   // Воздух между предметом и глазом. Ось расстояния таблицы квадратичная, поэтому и выборка идёт по

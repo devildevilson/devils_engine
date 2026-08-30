@@ -17,6 +17,7 @@
 
 #include "celestial.h"
 #include "fixture.h"
+#include "lightning.h"
 #include "survey.h"
 #include "sky_view.h"
 #include "surface_memory.h"
@@ -73,8 +74,8 @@ void print_usage() {
                "  --time-scale=F      игровых суток за реальную секунду\n"
                "  --ev=F              зафиксировать EV100 вместо адаптации\n"
                "  --ev-bias=F         экспокоррекция в стопах\n"
-               "  --preset=NAME       noon, double_sunset, double_rainbow, night, eclipse\n"
-               "  --weather=NAME      состояние: clear, haze, windy, fog, cloudy, overcast, rain, snow\n"
+               "  --preset=NAME       noon, double_sunset, double_rainbow, snow_glint, night, eclipse\n"
+               "  --weather=NAME      clear, haze, windy, fog, cloudy, overcast, sunshower, rain, downpour, snow\n"
                "  --weather-transition=S  длительность runtime-перехода по T, реальные секунды\n"
                "  --night-vision=F    сила ночного зрения, 0 отключает\n"
                "  --turbidity=F       множитель аэрозоля\n"
@@ -135,6 +136,12 @@ void print_usage() {
                "  --rainbow-source-balance=F  0 физическая яркость, 1 равные дуги\n"
                "  --rainbow-separation=F  художественный множитель разделения дуг\n"
                "  --rainbow-secondary=F  вторичный метеорологический порядок около 51°\n"
+               "  --snow-sparkle-intensity=F --snow-sparkle-density=F  сила и число ледяных бликов\n"
+               "  --snow-sparkle-sharpness=F  угловая резкость микрограней\n"
+               "  --snow-sparkle-source-balance=F  0 физические светила, 1 равные семейства искр\n"
+               "  --lightning=off|distant|close|magic|storm  источник универсального lightning event\n"
+               "  --lightning-phase=F  заморозить вспышку в фазе 0..1 для воспроизводимого A/B\n"
+               "  --lightning-strength=F  художественный множитель световой энергии молнии\n"
                "  --debug=8|9|10|11   volume T | cloud density | cloud shadow | surface memory\n"
                "  --march-steps=N     шагов основного марша неба\n"
                "  --aerial-range=KM   дальность таблицы воздушной перспективы\n"
@@ -432,6 +439,25 @@ bool parse_options(const int argc, char** argv, options& out) {
       out.view.output.rainbow.source_separation_scale = std::stod(value);
     } else if (read_prefixed(argument, "--rainbow-secondary=", value)) {
       out.view.output.rainbow.secondary_bow_strength = std::stod(value);
+    } else if (read_prefixed(argument, "--snow-sparkle-intensity=", value)) {
+      out.view.output.snow_sparkle.intensity = std::stod(value);
+    } else if (read_prefixed(argument, "--snow-sparkle-density=", value)) {
+      out.view.output.snow_sparkle.density = std::stod(value);
+    } else if (read_prefixed(argument, "--snow-sparkle-sharpness=", value)) {
+      out.view.output.snow_sparkle.sharpness = std::stod(value);
+    } else if (read_prefixed(argument, "--snow-sparkle-source-balance=", value)) {
+      out.view.output.snow_sparkle.source_balance = std::stod(value);
+    } else if (read_prefixed(argument, "--lightning=", value)) {
+      if (value != "off" && value != "distant" && value != "close" &&
+          value != "magic" && value != "storm") {
+        utils::warn("PF08 unknown lightning mode '{}'; expected off|distant|close|magic|storm", value);
+        return false;
+      }
+      out.view.lightning_mode = value;
+    } else if (read_prefixed(argument, "--lightning-phase=", value)) {
+      out.view.lightning_phase = std::stod(value);
+    } else if (read_prefixed(argument, "--lightning-strength=", value)) {
+      out.view.lightning_strength = std::stod(value);
     } else if (read_prefixed(argument, "--march-steps=", value)) {
       out.view.march.primary_steps = int32_t(std::stol(value));
     } else if (read_prefixed(argument, "--camera-height=", value)) {
@@ -1240,6 +1266,18 @@ void verify_weather(checker& check) {
   check.expect(cache_gate.try_rebuild(2), "doublebuffer cache разрешает rebuild через два кадра");
   check.expect(!cache_gate.try_rebuild(3) && cache_gate.try_rebuild(4),
                "плавный weather transition сохраняет безопасный ритм cache rebuild");
+
+  const pf08::snow_sparkle_settings sparkle{};
+  check.expect(pf08::valid_snow_sparkle_settings(sparkle),
+               "authored художественные параметры снежного мерцания допустимы");
+  auto sparkle_ab = sparkle;
+  sparkle_ab.intensity = 0.0;
+  check.expect(pf08::valid_snow_sparkle_settings(sparkle_ab),
+               "нулевая сила снежного мерцания является точным A/B режимом");
+  auto invalid_sparkle = sparkle;
+  invalid_sparkle.density = 1.01;
+  check.expect(!pf08::valid_snow_sparkle_settings(invalid_sparkle),
+               "плотность снежных микрограней ограничена единицей");
 }
 
 void verify_event_calendar(checker& check, const pf08::celestial_system& system) {
@@ -1262,6 +1300,54 @@ void verify_event_calendar(checker& check, const pf08::celestial_system& system)
                std::format("получено {}", budget.unique.count));
 }
 
+void verify_lightning(checker& check) {
+  const pf08::lightning_event weather{};
+  check.expect(pf08::valid_lightning_event(weather),
+               "authored weather lightning event имеет конечную геометрию, энергию и время");
+
+  const auto before = pf08::sample_lightning(weather, weather.start_seconds - 0.01);
+  const auto stroke = pf08::sample_lightning(weather, weather.start_seconds + 0.006);
+  const auto after = pf08::sample_lightning(weather, weather.start_seconds + weather.duration_seconds + 0.01);
+  check.expect(!before.active && before.channel == 0.0 && before.flash == 0.0,
+               "lightning event не светит до authored start");
+  check.expect(stroke.active && stroke.channel > 0.0 && stroke.flash >= stroke.channel,
+               "return stroke короче cloud/surface flash");
+  check.expect(!after.active && after.channel == 0.0 && after.flash == 0.0,
+               "lightning event точно заканчивается после duration");
+
+  const glm::dvec3 beside_channel{3.0, 200.0, -900.0};
+  check.expect_near(pf08::lightning_distance_to_channel_m(weather, beside_channel), 3.0, 1e-12,
+                    "расстояние до lightning channel берётся до сегмента, не до origin");
+  const double near_lx = pf08::lightning_illuminance_lx(weather, beside_channel,
+                                                       weather.start_seconds + 0.006);
+  const double far_lx = pf08::lightning_illuminance_lx(weather, glm::dvec3{6.0, 200.0, -900.0},
+                                                      weather.start_seconds + 0.006);
+  check.expect(near_lx > far_lx * 3.9 && near_lx < far_lx * 4.1,
+               "lightning flash следует inverse-square вне малого radius softening");
+
+  const double fov = 65.0 * std::numbers::pi / 180.0;
+  check.expect(!pf08::lightning_channel_resolvable(weather, glm::dvec3{0.0, 2.0, 0.0}, fov, 720),
+               "далёкий субпиксельный channel может быть пропущен без потери flash consumer");
+  check.expect(pf08::lightning_channel_resolvable(weather, glm::dvec3{1.0, 350.0, -900.0}, fov, 720),
+               "близкий lightning channel получает геометрический consumer");
+
+  const auto close = pf08::make_lightning_event(pf08::lightning_profile::close);
+  check.expect(pf08::valid_lightning_event(close) &&
+               pf08::lightning_channel_width_pixels(close, glm::dvec3{0.0, 2.0, 0.0}, fov, 720) >
+                 pf08::lightning_channel_width_pixels(weather, glm::dvec3{0.0, 2.0, 0.0}, fov, 720),
+               "close profile сохраняет физический канал, но делает его разрешимым расстоянием");
+
+  const auto magic = pf08::make_lightning_event(pf08::lightning_profile::magic);
+  check.expect(pf08::valid_lightning_event(magic) && magic.author == pf08::lightning_author::magic &&
+               magic.color_linear.z > magic.color_linear.x,
+               "magic profile меняет authored endpoints/цвет/lifetime, не тип световой модели");
+  const auto magic_stroke = pf08::sample_lightning(magic, magic.start_seconds + 0.006);
+  check.expect(magic_stroke.active && magic_stroke.channel > 0.0 && magic_stroke.flash > 0.0,
+               "weather и magic используют один temporal lightning evaluator");
+  check.expect_near(pf08::thunder_delay_seconds(3430.0), 10.0, 1e-12,
+                    "гром отделён от visual event физической задержкой звука");
+}
+
 int run_verification(const pf08::celestial_system& system) {
   std::cout << "\n== проверки ==\n";
 
@@ -1277,6 +1363,7 @@ int run_verification(const pf08::celestial_system& system) {
   verify_eclipse_energy(check, system);
   verify_calendar(check, system);
   verify_weather(check);
+  verify_lightning(check);
   verify_event_calendar(check, system);
 
   std::cout << std::format("\n  проверок {}, провалов {}\n", check.total(), check.failed());

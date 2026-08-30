@@ -1,6 +1,6 @@
 # PF08 — weather effects
 
-Статус: **срезы 0–4B CLOSED; срез 5 пересмотрен — дешёвая world-map памяти, after-effects и precipitation LOD** (2026-08-29).
+Статус: **срезы 0–6 CLOSED; далее северное сияние и закрывающий аудит** (2026-08-29).
 
 PF08 проверяет погоду как состояние открытого мира, а не как отдельный дождевой emitter. Площадка начинает
 с независимой копии закрытого `PF07_party_environment`: та же P-type двойная система, календарь и затмения,
@@ -25,6 +25,10 @@ build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effe
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=clear --recent-rain=2
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --preset=double_rainbow --weather=clear --recent-rain=2 --surface-time-scale=0 --rainbow-intensity=1.5 --rainbow-saturation=1.6 --rainbow-width=0.85 --rainbow-sharpness=1.25 --rainbow-contrast=0.12 --rainbow-source-balance=1
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=clear --recent-snow=2
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --preset=snow_glint --weather=clear --recent-snow=2 --surface-time-scale=0
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=downpour --lightning=storm
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=downpour --lightning=distant --lightning-phase=0.03
+build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --lightning=magic
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=rain --surface-age=1 --no-precipitation-particles
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=clear --recent-rain=2 --debug=11
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=fog --debug=8
@@ -110,12 +114,24 @@ weather state
 4. **DONE — precipitation across distance.** 4A закрывает дождь: near drops, mid/far extinction и
    depth-driven impact-события. 4B добавляет снег в тот же persistent pool и настоящий видимый навес,
    чья геометрия одновременно задаёт near collision и сухой объём в far medium.
-5. **IN PROGRESS — precipitation memory and after-effects.** Один precipitation field связывает
+5. **DONE — precipitation memory and after-effects.** Один precipitation field связывает
    near/mid/far, слепой дождь, тропический ливень и splash mist. Фиксированная coarse world-map хранит
    недавние rain/snow water values, proxy-материалы реагируют минимально, а радуга и снежное мерцание
    используют эту память. Детальные лужи, грязь, мокрые листья, SSR и lens droplets откладываются до сцены,
-   у которой есть соответствующие материалы и геометрические причины.
-6. **Закрывающий аудит.** Фиксированные clear/overcast/rain/snow кадры в нескольких временах суток,
+   у которой есть соответствующие материалы и геометрические причины. Радуга и снежные микрограни имеют
+   отдельные художественные параметры, точные A/B bypass, двухсветильниковый контракт и измеренную стоимость.
+6. **DONE — universal lightning.** Один кратковременный электрический event описывает геометрию канала,
+   положение/масштаб, цвет, энергию и временную огибающую. Его consumers разделены: далёкая молния может
+   быть силуэтом и вспышкой внутри облака без локального bolt mesh; близкая гроза добавляет канал, освещение
+   среды и поверхности; магический разряд использует тот же механизм вне weather state с другим автором
+   пути, цветом и lifetime. Гроза — композиция overcast/downpour, lightning events и при необходимости грома,
+   а не ещё один монолитный preset shader. Event, объёмная/поверхностная вспышка, разрешимый procedural
+   channel с ветвями, magic-профиль и scheduler используют один механизм.
+7. **PLANNED — aurora and weather horizon.** Северное сияние — протяжённая эмиссионная структура верхней
+   атмосферы, а не облако и не post-process: world/planet-anchored curtains, высотный слой, магнитное
+   направление, спектральные линии, медленное движение и корректная окклюзия горизонтом. После него отдельно
+   решается, добавляет ли ещё какой-либо эффект новый механизм или лишь перекрашивает уже доказанный.
+8. **Закрывающий аудит.** Фиксированные clear/overcast/rain/snow/lightning/aurora кадры в нескольких временах суток,
    временные переходы, GPU budget и Vulkan validation. Побитный PF07 baseline остаётся историческим gate
    срезов 0–4A: с 4B PF08 намеренно содержит новую постоянную геометрию навеса.
 
@@ -381,6 +397,89 @@ after-rain против dry теперь даёт `MAE 0.00431119`, и раду�
 Ember измерим и явно виден. Iris Xe, 120 кадров: dry sky/total minima `0.989/5.802 ms`, две активные дуги
 `1.278/6.224 ms`; редкий двойной after-effect стоит примерно `0.29 ms` в sky pass, а сухой early-out
 не платит за цикл источников.
+
+### Художественный контракт снега
+
+Снег получает не равномерный пластиковый specular, а множество world-locked ледяных микрограней. Одна
+базовая ячейка равна `12.5 см`; её случайная нормаль допускает почти вертикальные кристаллы, иначе низкое
+светило собирало все блики в одну узкую «солнечную дорожку». Угловой профиль использует дешёвый порог со
+`fwidth`-сглаживанием вместо `pow`, а когда пиксель перекрывает `8..24` базовых ячеек, случайный сигнал
+затухает — дальний снег не превращается в temporal noise.
+
+| CLI | Default | Смысл |
+|---|---:|---|
+| `--snow-sparkle-intensity` | `6.0` | художественная radiance искр; `0` — точный A/B bypass |
+| `--snow-sparkle-density` | `0.70` | доля ячеек с активной отражающей микрогранью |
+| `--snow-sparkle-sharpness` | `0.50` | угловая узость совпадения normal/half-vector |
+| `--snow-sparkle-source-balance` | `0.65` | `0` — физический direct light, `1` — равная заметность семейства каждого светила |
+
+Каждое светило получает независимую world-locked ориентацию кристалла и сохраняет свой цвет. Новый
+`snow_glint` намеренно ставит Aurin под горизонт (`-3.8°`), оставляя только Ember на `+8.3°`: золотистые
+искры остаются, то есть эффект не зашит в primary index. При полудне два семейства смешиваются в более
+холодное белое мерцание. Неподвижные paused кадры 8 и 80 побитно одинаковы (`AE=0`), поэтому статичная
+камера не наблюдает выдуманного disco; движение возникает только при смене view/light half-vector.
+
+Fixed paused A/B без листвы, authored против intensity `0`: normalized `MAE 0.0000938067`; малая средняя
+ошибка ожидаема для редких точек, сами блики локально яркие. На полном 120-кадровом `snow_glint` scene-pass
+minimum `2.751 ms` против `2.678 ms`, то есть включение стоит около `0.073 ms`; total minima
+`7.099/7.109 ms` лежат в шуме запуска. Preset проходит Vulkan validation без VUID/API warning/error,
+headless contract — `101/101`.
+
+## Срез 6: универсальная молния
+
+Первый слой — lifetime/photometry contract. `lightning_event` не принадлежит
+weather preset и содержит start/end канала в мировых метрах, цвет, физически отдельные channel luminance и
+luminous intensity, радиусы канала/cloud glow, start/duration, число return strokes и seed. `author` сообщает,
+кто создал событие (`weather|magic|scripted`), но не меняет его исполнение. Благодаря этому магическая молния
+не станет копией грозового shader с другими defines.
+
+Огибающая разделена на два сигнала: короткий `channel` и более медленный `flash`. Несколько детерминированных
+return strokes переиспользуют один путь, но дают повторные пики; до start и после duration оба значения точно
+нулевые. Surface/volume consumer получает inverse-square illuminance от ближайшей точки сегмента, а не от
+origin. Гром отделён полностью и получает только `distance / 343 м/с` — визуальный event не ждёт звук.
+
+Ключ к далёкой молнии зафиксирован численно. Канал радиусом `4.5 см` на authored расстоянии около `900 м`
+занимает примерно `0.06 px` при 720p/65°: рисовать его ribbon бессмысленно и нестабильно, однако flash остаётся
+полноценным источником для облака и поверхности. Близкий observer в метре от того же канала получает десятки
+пикселей ширины и обязан включить geometric consumer. Поэтому реализация разделена намеренно:
+
+1. **DONE:** distant cloud/surface flash без требования видимой линии;
+2. **DONE:** разрешимый procedural channel и ветви для близкой грозы;
+3. **DONE:** тот же channel consumer для authored magic endpoints/color/lifetime;
+4. **DONE:** storm scheduler, который создаёт events поверх `overcast + downpour`, а не владеет их шейдерами.
+
+Четыре явных GPU-вектора передают endpoints/envelopes, цвет/intensity и радиусы. Shared
+`pf08_lightning.glsl` находит ближайшую точку сегмента: surface получает локальный Lambert-вклад, а froxel
+fog/cloud/rain/snow — рассеянный источник с собственным phase function. Радиус glow только ограничивает
+область света и не утолщает канал. Fixed `downpour`, phase `0.03`, strength `1` против `0` даёт normalized
+`MAE 0.0120665`: виден холодный столб внутри тучи и ответ земли, хотя линия ещё не рисуется. Этот кадр
+проходит Vulkan validation без VUID/API warning/error.
+
+CLI-профили `distant|close|magic` создают один тип event; `L` перезапускает выбранный профиль. `storm`
+детерминированно меняет позицию и интервал дальних событий, поэтому гроза получается композицией команды
+`--weather=downpour --lightning=storm`. `--lightning-phase=0..1` замораживает envelope для A/B, а
+`--lightning-strength` меняет энергию, не геометрию. Двенадцать новых headless checks фиксируют lifetime,
+профили, более длинный flash, расстояние до сегмента, inverse-square, near/far gate, общий evaluator и
+задержку грома. Общий контракт теперь `113/113`.
+
+Strength масштабирует и luminous intensity, и channel luminance. Поэтому `--lightning=magic
+--lightning-phase=0.03 --lightning-strength=0` побитно совпадает с `--lightning=off` (`AE=0`), включая clear
+ранний выход fog-apply; выключенная молния не платит за полноэкранный path loop.
+
+Видимый channel строится в world space из двенадцати deterministic-сегментов и трёх ветвей, затем
+проецируется в уже существующий HDR fog-apply. Он вручную проверяет opaque depth и умножается на froxel
+transmittance до своей дистанции. Решающее правило — никакого minimum-one-pixel: при projected diameter
+меньше `0.75 px` весь line consumer прекращается до цикла, и остаётся только flash. Поэтому distant-профиль
+показывает облачный столб без белой черты, а `magic` около `30 м` даёт резкий фиолетовый канал и локально
+освещает землю. Консервативный screen rectangle отсекает большинство фрагментов до двенадцати сегментов:
+на Iris Xe 1280x720 при постоянно замороженном активном magic-channel fog-apply имеет minimum `0.725 ms`,
+а весь кадр без foliage — `5.445 ms`; это намеренно худший случай, тогда как реальный channel живёт лишь
+миллисекунды. Close/magic channel и distant flash оба Vulkan-validation clean.
+
+Ограничение площадки записывается явно: surface flash пока не строит отдельную cube-shadow map локального
+источника. Канал корректно скрывается уже готовой геометрией от камеры, но объект между молнией и приёмником
+не отбрасывает новую lightning-shadow. Это production lighting extension, а не причина заводить второй тип
+молнии; event и его фотометрия уже дают для него все исходные данные.
 
 Карта rain-memory имеет фиксированный world-space размер и должна переживать resize/fullscreen. Найденный
 engine bug был именно здесь: `resize_viewport` пересоздавал только screensize-ресурсы, но обнулял

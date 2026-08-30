@@ -57,8 +57,10 @@ int32_t slower_key = -1;
 int32_t exposure_up_key = -1;
 int32_t exposure_down_key = -1;
 int32_t weather_cycle_key = -1;
+int32_t lightning_key = -1;
 double exposure_step = 0.0;
 bool weather_cycle_requested = false;
+bool lightning_requested = false;
 
 struct alignas(16) camera_block {
   glm::mat4 view_projection;
@@ -81,6 +83,7 @@ void key_callback(GLFWwindow* window, const int key, const int scancode, const i
   if (key == exposure_up_key && action == 1) exposure_step += 1.0;
   if (key == exposure_down_key && action == 1) exposure_step -= 1.0;
   if (key == weather_cycle_key && action == 1) weather_cycle_requested = true;
+  if (key == lightning_key && action == 1) lightning_requested = true;
 }
 
 void mouse_button_callback(GLFWwindow*, const int button, const int action, const int) noexcept {
@@ -702,6 +705,14 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       rainbow.source_separation_scale < 0.0 || rainbow.source_separation_scale > 16.0) {
     utils::error{}("PF08 artistic rainbow settings are outside their documented ranges");
   }
+  if (!valid_snow_sparkle_settings(options.output.snow_sparkle)) {
+    utils::error{}("PF08 artistic snow sparkle settings are outside their documented ranges");
+  }
+  if (!std::isfinite(options.lightning_phase) || options.lightning_phase < -1.0 ||
+      options.lightning_phase > 1.0 || !std::isfinite(options.lightning_strength) ||
+      options.lightning_strength < 0.0 || options.lightning_strength > 16.0) {
+    utils::error{}("PF08 lightning phase must be -1 or [0,1], strength must be in [0,16]");
+  }
   utils::info("PF08 weather '{}': aerosol {:.2f}, wind {:.0f} deg / {:.2f} m, fog {:.4f} 1/m @ H {:.0f} m, cloud {:.2f} @ {:.0f}-{:.0f} m, rain/snow {:.1f}/{:.1f} mm/h, transition {:.1f} s",
               initial_weather->name, weather.state().aerosol_turbidity, weather.state().wind_direction_deg,
               weather.state().wind_strength_m, weather.state().fog_extinction_per_m,
@@ -714,6 +725,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
   pending_height = options.height;
   paused = options.paused;
   weather_cycle_requested = false;
+  lightning_requested = false;
 
   input::init input_runtime(&error_callback);
   input::events::init();
@@ -936,6 +948,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     exposure_down_key = input::glfw_key_from_canonical("minus");
     exposure_up_key = input::glfw_key_from_canonical("equal");
     weather_cycle_key = input::glfw_key_from_canonical("key_t");
+    lightning_key = input::glfw_key_from_canonical("key_l");
     input::set_window_callback(window, &key_callback);
     input::set_window_callback(window, &mouse_button_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
@@ -1013,6 +1026,14 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
     double exposure_bias_stops = 0.0;
     double wall_seconds = 0.0;
     uint32_t frames_total = 0;
+    const bool lightning_enabled = options.lightning_mode != "off";
+    const bool lightning_storm = options.lightning_mode == "storm";
+    const lightning_profile lightning_kind = options.lightning_mode == "close"
+      ? lightning_profile::close : (options.lightning_mode == "magic"
+          ? lightning_profile::magic : lightning_profile::distant);
+    lightning_event lightning = make_lightning_event(lightning_kind, 0.0, 1u);
+    uint32_t lightning_sequence = 1u;
+    double next_storm_seconds = 0.65;
     // Prewarm и явные recent-* инициализируют только первые copies GPU world-map. После этого карта
     // живёт на GPU и продолжает помнить локальные фронты независимо от текущего имени пресета.
     const double initial_rain_memory_mm = options.initial_rain_memory_mm +
@@ -1055,6 +1076,16 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
         weather_cycle_requested = false;
         utils::info("PF08 weather transition '{}' -> '{}' over {:.1f} s", weather.source_name(),
                     weather.target_name(), weather_transition_seconds);
+      }
+      if (lightning_requested && lightning_enabled && options.lightning_phase < 0.0) {
+        lightning = make_lightning_event(lightning_kind, wall_seconds, ++lightning_sequence);
+        lightning_requested = false;
+        utils::info("PF08 lightning retrigger: {} · thunder delay {:.2f} s",
+                    options.lightning_mode,
+                    thunder_delay_seconds(glm::length((lightning.start_m + lightning.end_m) * 0.5 -
+                                                      glm::dvec3(camera.position))));
+      } else if (lightning_requested) {
+        lightning_requested = false;
       }
 
       auto [next_mouse_x, next_mouse_y] = input::cursor_pos(window);
@@ -1103,6 +1134,19 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       wall_seconds += step_seconds;
       if (!paused) game_time_days += time_scale * step_seconds;
       const auto state = system.evaluate(game_time_days);
+
+      if (lightning_enabled && lightning_storm && options.lightning_phase < 0.0 &&
+          wall_seconds >= next_storm_seconds) {
+        lightning = make_lightning_event(lightning_profile::distant, wall_seconds, ++lightning_sequence);
+        // Один scheduler создаёт те же события, что L и magic. Положение меняется детерминированно,
+        // поэтому fixed-frame прогон остаётся воспроизводимым, а гроза не бьёт в одну точку.
+        lightning.start_m.x = std::sin(double(lightning_sequence) * 2.17) * 520.0;
+        lightning.end_m.x = lightning.start_m.x + std::sin(double(lightning_sequence) * 4.31) * 90.0;
+        lightning.start_m.z = -760.0 - std::abs(std::cos(double(lightning_sequence) * 1.73)) * 700.0;
+        lightning.end_m.z = lightning.start_m.z + std::sin(double(lightning_sequence) * 3.11) * 70.0;
+        next_storm_seconds = wall_seconds + 3.2 +
+          4.8 * (0.5 + 0.5 * std::sin(double(lightning_sequence) * 8.53));
+      }
 
       const float aspect = float(std::max(pending_width, 1u)) / float(std::max(pending_height, 1u));
       const glm::mat4 view = camera.view();
@@ -1240,6 +1284,19 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       march.camera_height_km = double(camera.position.y) * 0.001;
       auto sky_block = pack_sky_block(state, star_frame, frame_atmosphere, march, output,
                                       system.config().planet.radius_km, system.config().moons);
+      const double lightning_sample_seconds = options.lightning_phase >= 0.0
+        ? lightning.start_seconds + lightning.duration_seconds * options.lightning_phase : wall_seconds;
+      const auto flash = lightning_enabled ? sample_lightning(lightning, lightning_sample_seconds)
+                                           : lightning_sample{};
+      sky_block.lightning_start_channel = glm::vec4(glm::vec3(lightning.start_m), float(flash.channel));
+      sky_block.lightning_end_flash = glm::vec4(glm::vec3(lightning.end_m), float(flash.flash));
+      sky_block.lightning_colour_intensity =
+        glm::vec4(glm::vec3(lightning.color_linear),
+                  float(lightning.luminous_intensity_cd * options.lightning_strength));
+      sky_block.lightning_shape = glm::vec4(float(lightning.channel_radius_m),
+                                             float(lightning.channel_luminance_nits * options.lightning_strength),
+                                             float(lightning.cloud_glow_radius_m),
+                                             float(lightning.seed));
       // Ветер: направление из настроек, время — РЕАЛЬНОЕ, а не игровое. Перемотка суток не имеет
       // права разгонять качание веток: ветер живёт в том же времени, что и глаз наблюдателя.
       const double wind_angle = weather.state().wind_direction_deg * 3.14159265358979323846 / 180.0;
@@ -1315,7 +1372,7 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
       const auto calendar = system.to_calendar(game_time_days);
       const char* rainbow_sources = options.output.rainbow.sources == rainbow_source_mode::primary
         ? "primary" : (options.output.rainbow.sources == rainbow_source_mode::brightest ? "brightest" : "all");
-      const std::array<std::string, 11> details{
+      const std::array<std::string, 13> details{
         std::format("Year {} · beat {}/{} · day {}/{} · {:02}:{:02} · {:.4f} days per real second{}", calendar.year,
                     calendar.beat_year, system.binary_beat_years(), calendar.day,
                     uint32_t(system.planet_year_days()), calendar.hour,
@@ -1361,6 +1418,12 @@ int run_sky_view(const celestial_system& system, const view_options& raw_options
                     rainbow_sources, options.output.rainbow.intensity, options.output.rainbow.saturation,
                     options.output.rainbow.width, options.output.rainbow.sharpness,
                     options.output.rainbow.source_balance, options.output.rainbow.source_separation_scale),
+        std::format("Snow sparkle: I {:.2f} · density {:.2f} · sharp {:.2f} · source balance {:.2f}",
+                    options.output.snow_sparkle.intensity, options.output.snow_sparkle.density,
+                    options.output.snow_sparkle.sharpness,
+                    options.output.snow_sparkle.source_balance),
+        std::format("Lightning: {} · channel/flash {:.2f}/{:.2f} · strength {:.2f} · L retriggers",
+                    options.lightning_mode, flash.channel, flash.flash, options.lightning_strength),
         std::format("Colour script: tint ({:.2f} {:.2f} {:.2f}) · saturation {:.2f} · contrast {:.2f}",
                     output.grade_tint.x, output.grade_tint.y, output.grade_tint.z, output.grade_saturation,
                     output.grade_contrast)};

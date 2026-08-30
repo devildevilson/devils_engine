@@ -107,8 +107,18 @@ struct alignas(16) sky_gpu_block {
   glm::vec4 rainbow_context;
   // x source mode, y secondary-order bow, z source balance, w source separation scale.
   glm::vec4 rainbow_sources;
+  // x intensity, y active microfacet density, z angular sharpness, w stellar source balance.
+  glm::vec4 snow_sparkle;
+  // Универсальное событие молнии. Геометрия хранится отдельно от двух временных envelope: дальняя
+  // молния может потерять sub-pixel channel, но обязана оставить объёмную и поверхностную вспышку.
+  glm::vec4 lightning_start_channel;
+  glm::vec4 lightning_end_flash;
+  glm::vec4 lightning_colour_intensity;
+  // xyz — channel radius/luminance/glow radius, w — deterministic path seed. Автор остаётся CPU
+  // metadata: weather и magic намеренно не выбирают разные shader branches.
+  glm::vec4 lightning_shape;
 };
-static_assert(sizeof(sky_gpu_block) == 864);
+static_assert(sizeof(sky_gpu_block) == 944);
 
 struct atmosphere_settings {
   double height_km = 100.0;         // верх атмосферы над поверхностью
@@ -217,6 +227,18 @@ struct rainbow_settings {
   double source_separation_scale = 1.0;
 };
 
+// Снежное мерцание — не ещё один material BRDF, а управляемая презентация множества ледяных
+// микрограней. Геометрия блика остаётся specular, проект выбирает лишь его читаемость и то, насколько
+// сильно второе светило разрешено поднять относительно физической освещённости.
+struct snow_sparkle_settings {
+  double intensity = 6.0;
+  double density = 0.70;
+  double sharpness = 0.50;
+  double source_balance = 0.65;
+};
+
+bool valid_snow_sparkle_settings(const snow_sparkle_settings& settings);
+
 struct output_settings {
   double exposure = 1.0e-4;
   // Ночное зрение: при низкой яркости колбочки перестают работать, цвет уходит и картинка холодает.
@@ -253,6 +275,7 @@ struct output_settings {
   double corona_strength = 6.0;
   double star_rotation_scale = 0.15;
   rainbow_settings rainbow;
+  snow_sparkle_settings snow_sparkle;
 };
 
 // Ключ цветового сценария. Хранится по высоте главного светила: именно она задаёт время суток.

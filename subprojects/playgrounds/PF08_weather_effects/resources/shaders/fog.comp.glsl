@@ -3,6 +3,7 @@
 #include "pf08_atmosphere.glsl"
 #include "pf08_clouds.glsl"
 #include "pf08_local_medium.glsl"
+#include "pf08_lightning.glsl"
 #include "pf08_precipitation.glsl"
 #include "pf08_shadow_sample.glsl"
 
@@ -116,6 +117,18 @@ void pf08_weather_sources(const vec3 direction, const vec3 world_position, const
     cloud_source += source_radiance * pf08_mie_phase(cosine, sky.cloud_params.w);
     rain_source += source_radiance * pf08_mie_phase(cosine, 0.60);
     snow_source += source_radiance * pf08_mie_phase(cosine, 0.45);
+  }
+
+  // Дальний channel закономерно исчезает раньше, чем его свет. Объём поэтому читает не толщину
+  // нарисованной линии, а ту же физическую геометрию события как короткий локальный источник.
+  vec3 lightning_direction;
+  const vec3 lightning = pf08_lightning_illuminance(sky, world_position, lightning_direction);
+  if (dot(lightning, lightning) > 0.0) {
+    const float cosine = dot(direction, lightning_direction);
+    fog_source += lightning * pf08_mie_phase(cosine, sky.fog_params.z);
+    cloud_source += lightning * pf08_mie_phase(cosine, sky.cloud_params.w);
+    rain_source += lightning * pf08_mie_phase(cosine, 0.60);
+    snow_source += lightning * pf08_mie_phase(cosine, 0.45);
   }
 }
 

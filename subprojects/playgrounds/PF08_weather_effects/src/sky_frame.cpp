@@ -23,6 +23,14 @@ bool atmosphere_cache_gate::try_rebuild(const uint32_t submitted_frame) noexcept
   return true;
 }
 
+bool valid_snow_sparkle_settings(const snow_sparkle_settings& settings) {
+  return std::isfinite(settings.intensity) && settings.intensity >= 0.0 && settings.intensity <= 16.0 &&
+         std::isfinite(settings.density) && settings.density >= 0.0 && settings.density <= 1.0 &&
+         std::isfinite(settings.sharpness) && settings.sharpness >= 0.1 && settings.sharpness <= 4.0 &&
+         std::isfinite(settings.source_balance) && settings.source_balance >= 0.0 &&
+         settings.source_balance <= 1.0;
+}
+
 namespace {
 
 constexpr double pi = std::numbers::pi;
@@ -167,6 +175,11 @@ sky_gpu_block pack_sky_block(const sky_state& state, const sky_state& star_frame
               static_cast<float>(output.rainbow.secondary_bow_strength),
               static_cast<float>(output.rainbow.source_balance),
               static_cast<float>(output.rainbow.source_separation_scale));
+  block.snow_sparkle =
+    glm::vec4(static_cast<float>(output.snow_sparkle.intensity),
+              static_cast<float>(output.snow_sparkle.density),
+              static_cast<float>(output.snow_sparkle.sharpness),
+              static_cast<float>(output.snow_sparkle.source_balance));
 
   return block;
 }

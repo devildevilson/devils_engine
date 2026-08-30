@@ -8,6 +8,7 @@
 #include <string>
 
 #include "celestial.h"
+#include "lightning.h"
 #include "shadows.h"
 #include "sky_frame.h"
 #include "surface_memory.h"
@@ -118,6 +119,11 @@ struct view_options {
   bool surface_response = true;
   double rain_mid_radius_m = 120.0;
   double snow_mid_radius_m = 160.0;
+  // Молния — событие поверх погоды, а не ещё один weather preset. `storm` повторяет дальний профиль;
+  // остальные режимы запускаются один раз и по L. Неотрицательная phase замораживает envelope для A/B.
+  std::string lightning_mode = "off";
+  double lightning_phase = -1.0;
+  double lightning_strength = 1.0;
   // Preset заполняет единое погодное состояние; прямые CLI-рычаги ниже могут независимо перекрыть
   // его поля для A/B. Отрицательная длительность означает значение из weather/presets.tavl.
   std::string weather_preset = "clear";

@@ -113,6 +113,14 @@ struct pf08_sky_block {
   vec4 rainbow_context;
   // sources: primary/brightest/all mode, secondary bow, source balance, separation scale.
   vec4 rainbow_sources;
+  // Художественный снег: intensity, доля активных микрограней, sharpness и баланс светил.
+  vec4 snow_sparkle;
+  // Молния: начало/channel envelope; конец/flash envelope; цвет/intensity cd;
+  // физический радиус канала, яркость канала, радиус локального glow и deterministic path seed.
+  vec4 lightning_start_channel;
+  vec4 lightning_end_flash;
+  vec4 lightning_colour_intensity;
+  vec4 lightning_shape;
 };
 
 // --- параметризация таблицы прохождения ---

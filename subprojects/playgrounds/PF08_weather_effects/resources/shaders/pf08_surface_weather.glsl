@@ -43,21 +43,40 @@ float pf08_surface_glint_hash(const vec2 cell) {
 
 float pf08_snow_sparkle(const vec3 world_position, const vec3 normal,
                         const vec3 view_direction, const vec3 light_direction,
-                        const float snow_memory) {
+                        const float snow_memory, const float density,
+                        const float sharpness, const int source_index) {
   if (snow_memory <= 1e-4) return 0.0;
-  // Одна world-locked микрогрань на 12.5 см. Это не normal map: направление строится из hash и
-  // остаётся закреплённым за землёй. Узкий highlight даёт множество редких точек только при солнце.
-  const vec2 cell = floor(world_position.xz * 8.0);
-  const float azimuth = pf08_surface_glint_hash(cell) * 6.2831853;
-  const float tilt = mix(0.10, 0.72, pf08_surface_glint_hash(cell + vec2(17.0, 43.0)));
+  // Одна world-locked микрогрань на 12.5 см. Два светила получают РАЗНЫЕ микрограни: один кристалл
+  // не обязан одновременно отражать два разнесённых направления. Это сохраняет два цветных семейства
+  // искр вместо одного белого шума, умноженного на сумму света.
+  const vec2 continuous_cell = world_position.xz * 8.0;
+  const vec2 cell = floor(continuous_cell);
+  const vec2 source_seed = vec2(float(source_index) * 53.0, float(source_index) * 97.0);
+  if (pf08_surface_glint_hash(cell + source_seed + vec2(71.0, 19.0)) > density) return 0.0;
+  vec2 lateral = vec2(pf08_surface_glint_hash(cell + source_seed),
+                      pf08_surface_glint_hash(cell + source_seed + vec2(17.0, 43.0))) * 2.0 - 1.0;
+  lateral *= inversesqrt(max(dot(lateral, lateral), 1e-4));
+  // Кристаллы лежат не как одна гладкая normal map: почти вертикальные грани тоже допустимы.
+  // Старый предел 46° превращал весь эффект в одну узкую полосу солнечной дорожки у горизонта.
+  const float tilt = mix(0.04, 0.97,
+    pf08_surface_glint_hash(cell + source_seed + vec2(31.0, 67.0)));
   const vec3 helper = abs(normal.y) < 0.95 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
   const vec3 tangent = normalize(cross(helper, normal));
   const vec3 bitangent = cross(normal, tangent);
   const vec3 micro_normal = normalize(normal * sqrt(1.0 - tilt * tilt) +
-    (tangent * cos(azimuth) + bitangent * sin(azimuth)) * tilt);
-  const vec3 half_direction = normalize(view_direction + light_direction);
+    (tangent * lateral.x + bitangent * lateral.y) * tilt);
+  const vec3 half_vector = view_direction + light_direction;
+  if (dot(half_vector, half_vector) < 1e-5) return 0.0;
+  const vec3 half_direction = normalize(half_vector);
   const float alignment = max(dot(micro_normal, half_direction), 0.0);
-  return snow_memory * pow(alignment, 320.0) * 18.0;
+  // Пороговый профиль дешевле `pow` и лучше управляется художественно. Производная расширяет только
+  // субпиксельный край блика, а не сам кристалл; очень дальний undersampled шум мягко исчезает.
+  const float threshold = 1.0 - 0.015 / max(sharpness, 0.1);
+  const float angular_aa = max(fwidth(alignment) * 1.5, 0.001);
+  const float profile = smoothstep(threshold - angular_aa, threshold + angular_aa, alignment);
+  const float pixel_footprint = max(length(dFdx(continuous_cell)), length(dFdy(continuous_cell)));
+  const float resolved = 1.0 - smoothstep(8.0, 24.0, pixel_footprint);
+  return snow_memory * profile * resolved;
 }
 
 #endif

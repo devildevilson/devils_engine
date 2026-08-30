@@ -83,9 +83,10 @@ vec3 pf08_surface_illuminance(const pf08_sky_block sky, const sampler2D transmit
                               const sampler2D sky_view_lut, const vec3 planet_point,
                               const vec3 scene_position, const vec3 normal, const float view_distance,
                               const float receiver_bias_scale, const float direct_visibility,
-                              const float sky_visibility, out vec3 primary_direct) {
+                              const float sky_visibility,
+                              out vec3 star_direct[PF08_STAR_COUNT]) {
   vec3 total = vec3(0.0);
-  primary_direct = vec3(0.0);
+  for (int s = 0; s < PF08_STAR_COUNT; ++s) star_direct[s] = vec3(0.0);
   const float fog_column_modulation = sky.fog_params.x > 0.0
     ? pf08_fog_column_modulation(sky, scene_position) : 1.0;
 
@@ -120,7 +121,7 @@ vec3 pf08_surface_illuminance(const pf08_sky_block sky, const sampler2D transmit
     const vec3 contribution =
       light_transmittance * sky.star_color_illuminance[s].rgb * illuminance * cosine * visibility;
     total += contribution;
-    if (s == 0) primary_direct = contribution * direct_visibility;
+    star_direct[s] = contribution * direct_visibility;
   }
 
   const int moon_count = int(sky.march_params.w);
