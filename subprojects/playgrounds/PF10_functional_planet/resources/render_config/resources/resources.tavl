@@ -1,0 +1,9 @@
+{ name = swapchain_image, format = swapchain4, role = present, size = viewport, swap = swapchain }
+{ name = scene_color, format = sf4, role = hdr_color, size = viewport, swap = per_frame }
+{ name = scene_depth, format = d32, role = depth, size = viewport, swap = per_frame }
+{ name = camera_buffer, format = c1, role = upload, size = camera_bytes, swap = per_frame }
+{ name = landmarks, format = c1, role = upload, size = landmark_bytes, swap = per_frame }
+{ name = label_glyphs, format = c1, role = upload, size = label_bytes, swap = per_frame }
+{ name = ui_vertices, format = c1, role = upload, size = ui_vertices_bytes, swap = per_frame }
+{ name = ui_indices, format = c1, role = upload, size = ui_indices_bytes, swap = per_frame }
+{ name = ui_commands, format = c1, role = upload, size = ui_commands_bytes, swap = per_frame }

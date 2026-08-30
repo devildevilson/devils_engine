@@ -1,0 +1,1 @@
+{ name = ui_linear, filter = linear, address = clamp }

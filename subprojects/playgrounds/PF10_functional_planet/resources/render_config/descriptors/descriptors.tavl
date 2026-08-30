@@ -1,0 +1,17 @@
+{ name = planet_data, layout = [ { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" } ] }
+{
+  name = marker_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = vertex },
+    { resource = landmarks, usage = storage_read, stage = vertex }
+  ]
+}
+{
+  name = label_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = vertex },
+    { resource = label_glyphs, usage = storage_read, stage = vertex }
+  ]
+}
+{ name = camera_data, layout = [ { resource = camera_buffer, usage = uniform, stage = vertex } ] }
+{ name = ui_textures, texture_count = 16, sampler_pool = [ ui_linear ], texture_stage = fragment }
