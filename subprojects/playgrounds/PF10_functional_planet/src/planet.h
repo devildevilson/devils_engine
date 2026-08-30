@@ -12,10 +12,11 @@ constexpr float planet_radius = 1.0f;
 constexpr float minimum_height = -0.045f;
 constexpr float maximum_height = 0.085f;
 constexpr float province_frequency = 25.0f;
-constexpr uint32_t default_mesh_side = 256;
+constexpr uint32_t default_mesh_side = 512;
 constexpr uint32_t no_region = 0xffffffffu;
+constexpr float political_edge_range = 0.04f; // radians retained by the compact GPU distance field
 
-enum class region_kind : uint32_t { land, water, polar };
+enum class region_kind : uint32_t { land, water, mountain, polar };
 
 struct region_sample {
   uint32_t id = no_region;
@@ -35,7 +36,7 @@ struct surface_hit {
 // canonical authoring/picking source; this is its one-time runtime bake.
 struct political_texel {
   uint32_t region_id = no_region;
-  float edge_distance = 0.0f;
+  float edge_distance = 0.0f; // approximate angular distance in radians
 };
 static_assert(sizeof(political_texel) == 8);
 
@@ -54,10 +55,43 @@ struct province_graph {
 struct political_atlas {
   uint32_t face_side = 0;
   uint32_t water_regions = 0;
+  uint32_t mountain_regions = 0;
   uint32_t polar_regions = 0;
   std::vector<political_texel> texels; // six cube faces, (face_side + 1)^2 nodes each
   province_graph graph;
 };
+
+// Runtime rendering does not need the hashed 32-bit stable ID at every texel.  A local R16 index addresses
+// region_ids; the other R16 stores a quantized angular distance to the closest border.
+struct packed_political_atlas {
+  uint32_t face_side = 0;
+  std::vector<uint32_t> texels;
+  std::vector<uint32_t> region_ids;
+};
+
+struct alignas(16) surface_patch {
+  uint32_t face = 0;
+  uint32_t x = 0;
+  uint32_t y = 0;
+  uint32_t pad = 0;
+};
+static_assert(sizeof(surface_patch) == 16);
+
+struct alignas(16) border_segment {
+  glm::vec4 a_direction_height{};
+  glm::vec4 b_direction_height{};
+  glm::uvec4 region_ids{};
+};
+static_assert(sizeof(border_segment) == 48);
+
+// Independent surface-feature layer: rivers are tapered spherical capsules, lakes are filled spherical discs.
+// They do not consume province IDs and therefore cannot disturb the navigation graph.
+struct alignas(16) hydrology_feature {
+  glm::vec4 a_direction_height{};
+  glm::vec4 b_direction_height{};
+  glm::vec4 widths_kind{}; // endpoint half-widths in radians, kind (0 river / 1 lake), colour variant
+};
+static_assert(sizeof(hydrology_feature) == 48);
 
 enum class landmark_kind : uint32_t { city, wonder, construction };
 
@@ -78,12 +112,18 @@ region_sample sample_region(glm::vec3 direction) noexcept;
 glm::vec3 surface_position(glm::vec3 direction) noexcept;
 std::vector<glm::vec4> bake_surface_vertices(uint32_t face_side);
 political_atlas bake_political_atlas(uint32_t face_side);
+packed_political_atlas pack_political_atlas(const political_atlas& source);
+std::vector<surface_patch> visible_surface_patches(uint32_t face_side, uint32_t patch_side,
+                                                   glm::vec3 local_eye);
+std::vector<border_segment> make_border_segments(const political_atlas& source);
+std::vector<hydrology_feature> make_hydrology_features();
 surface_hit intersect_surface(glm::vec3 ray_origin, glm::vec3 ray_direction) noexcept;
 std::vector<landmark> make_landmarks(uint32_t count);
 
 struct survey_result {
   uint32_t land_regions = 0;
   uint32_t water_regions = 0;
+  uint32_t mountain_regions = 0;
   uint32_t polar_regions = 0;
   float sampled_min_height = 0.0f;
   float sampled_max_height = 0.0f;

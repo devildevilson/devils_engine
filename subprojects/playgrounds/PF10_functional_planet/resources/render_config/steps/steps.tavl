@@ -23,6 +23,26 @@
   }
 }
 {
+  name = draw_borders
+  material = border_material
+  geometry = border_geometry
+  sets = [ border_data ]
+  command = "draw constant border_draw"
+  blending = {
+    scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
+  }
+}
+{
+  name = draw_hydrology
+  material = hydrology_material
+  geometry = hydrology_geometry
+  sets = [ hydrology_data ]
+  command = "draw constant hydrology_draw"
+  blending = {
+    scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
+  }
+}
+{
   name = draw_overlay
   material = ui_material
   geometry = ui_geometry

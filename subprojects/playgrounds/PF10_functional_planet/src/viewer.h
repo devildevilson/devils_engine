@@ -9,10 +9,11 @@ struct viewer_options {
   uint32_t width = 1280;
   uint32_t height = 720;
   uint32_t frames = 0;
-  uint32_t mesh_side = 256;
+  uint32_t mesh_side = 512;
   float camera_distance = 2.62f;
   bool validation = false;
   bool fixed_rotation = false;
+  bool show_hydrology = true;
   std::string dump_path;
 };
 

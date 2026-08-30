@@ -2,12 +2,19 @@
 { name = one, type = fixed, value = [1, 0, 0] }
 { name = camera_bytes, type = fixed, value = [336, 0, 0] }
 { name = landmark_bytes, type = fixed, value = [3072, 0, 0] }
-// Six faces at the maximum --mesh=256: 6 * 257 * 257 * sizeof(vec4).
-{ name = surface_vertex_bytes, type = fixed, value = [6340704, 0, 0] }
-// Six 513x513 cube nodes at 8 bytes (stable region id + exact procedural edge distance).
-{ name = political_atlas_bytes, type = fixed, value = [12632112, 0, 0] }
+// Six faces at the maximum --mesh=512: 6 * 513 * 513 * sizeof(vec4).
+{ name = surface_vertex_bytes, type = fixed, value = [25264224, 0, 0] }
+// Six 1025x1025 cube nodes: R16 local region index + R16 angular border distance.
+{ name = political_atlas_bytes, type = fixed, value = [25215000, 0, 0] }
+// Stable 32-bit IDs addressed by the compact R16 atlas index.
+{ name = political_region_table_bytes, type = fixed, value = [262144, 0, 0] }
+// At 16x16 cells: 6 * (512/16)^2 records * sizeof(uvec4).
+{ name = surface_patch_bytes, type = fixed, value = [98304, 0, 0] }
+// 145k decimated 48-byte curve records at the authored 1024 atlas, with bounded headroom.
+{ name = border_segment_bytes, type = fixed, value = [8388608, 0, 0] }
+{ name = hydrology_feature_bytes, type = fixed, value = [1048576, 0, 0] }
 // ~4.1k temporary province names plus three empire names, 176 bytes per MSDF projection-volume glyph.
-{ name = label_bytes, type = fixed, value = [5242880, 0, 0] }
+{ name = label_bytes, type = fixed, value = [4194304, 0, 0] }
 { name = ui_vertices_bytes, type = fixed, value = [524288, 0, 0] }
 { name = ui_indices_bytes, type = fixed, value = [131072, 0, 0] }
 { name = ui_commands_bytes, type = fixed, value = [16384, 0, 0] }

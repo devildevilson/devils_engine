@@ -23,9 +23,10 @@ void usage() {
                "  --verify               проверить surface/province contracts без Vulkan\n"
                "  --frames=N             закрыть viewer после N кадров\n"
                "  --shot=PATH            сохранить последний кадр в PPM\n"
-               "  --mesh=N               клеток на грань cube-sphere (32..256, default 256)\n"
+               "  --mesh=N               клеток на грань cube-sphere (32..512, default 512)\n"
                "  --distance=R           расстояние камеры 1.16..4.5 R (default 2.62)\n"
                "  --fixed-rotation       детерминированный угол глобуса для кадров\n"
+               "  --no-hydrology        диагностический A/B без рек и озёр\n"
                "  --validation           включить Vulkan validation layers\n";
 }
 
@@ -50,6 +51,8 @@ int verify() {
         std::format("playable land provinces are in [3000,5000] (sampled {})", first.land_regions));
   check(first.water_regions >= 3 && first.water_regions <= 8,
         std::format("water regions stay large and few ({})", first.water_regions));
+  check(first.mountain_regions == 3,
+        std::format("three explicit non-playable mountain chains are sampled ({})", first.mountain_regions));
   check(first.polar_regions == 2, "north and south are two explicit non-playable regions");
   check(first.sampled_min_height >= pf10::minimum_height - 1.0e-6f &&
           first.sampled_max_height <= pf10::maximum_height + 1.0e-6f,
@@ -60,6 +63,7 @@ int verify() {
 
   const auto politics = pf10::bake_political_atlas(512u);
   const auto& graph = politics.graph;
+  check(politics.mountain_regions == 3u, "dense atlas materializes all mountain barriers");
   check(graph.province_ids.size() >= first.land_regions && graph.province_ids.size() <= 5000u,
         std::format("dense adjacency bake covers the survey and stays in budget ({}/{})",
                     graph.province_ids.size(), first.land_regions));
@@ -91,6 +95,29 @@ int verify() {
           return pf10::sample_region(graph.label_directions[node]).id == graph.province_ids[node] &&
                  graph.label_clearance[node] > 0.0f;
         }), "every label anchor is a positive-clearance point inside its province");
+
+  const auto packed = pf10::pack_political_atlas(politics);
+  bool compact_round_trip = packed.texels.size() == politics.texels.size() && !packed.region_ids.empty();
+  for (size_t i = 0; compact_round_trip && i < packed.texels.size(); i += 257u) {
+    compact_round_trip &= packed.region_ids[packed.texels[i] & 0xffffu] == politics.texels[i].region_id;
+  }
+  check(compact_round_trip, "R16 political indices round-trip to stable planet-local IDs");
+
+  const auto borders = pf10::make_border_segments(politics);
+  check(borders.size() > 50000u && borders.size() < 150000u,
+        std::format("shared smooth border cache stays bounded ({} segments)", borders.size()));
+  const auto patches = pf10::visible_surface_patches(512u, 16u, glm::vec3(0.0f, 0.0f, 1.2f));
+  check(!patches.empty() && patches.size() < 6u * 32u * 32u,
+        std::format("horizon culling retains a strict visible patch subset ({}/6144)", patches.size()));
+
+  const auto hydrology = pf10::make_hydrology_features();
+  check(hydrology.size() >= 500u && hydrology.size() < 4096u,
+        std::format("hydrology fixture is a compact smooth feature layer ({} primitives)", hydrology.size()));
+  check(std::ranges::all_of(hydrology, [](const pf10::hydrology_feature& feature) {
+          return feature.widths_kind.x > 0.0f && feature.widths_kind.y > 0.0f &&
+                 pf10::sample_region(glm::vec3(feature.a_direction_height)).kind == pf10::region_kind::land &&
+                 pf10::sample_region(glm::vec3(feature.b_direction_height)).kind == pf10::region_kind::land;
+        }), "every river/lake primitive lies on playable land without changing province ownership");
 
   const glm::vec3 probe = glm::normalize(glm::vec3(0.37f, 0.51f, -0.78f));
   const float original_height = pf10::surface_height(probe);
@@ -134,9 +161,13 @@ int main(const int argc, const char** argv) {
     else if (argument == "--view") run_verify = false;
     else if (argument == "--validation") options.validation = true;
     else if (argument == "--fixed-rotation") options.fixed_rotation = true;
+    else if (argument == "--no-hydrology") options.show_hydrology = false;
     else if (prefixed(argument, "--frames=", value)) options.frames = uint32_t(std::stoul(value));
     else if (prefixed(argument, "--shot=", value)) options.dump_path = value;
-    else if (prefixed(argument, "--mesh=", value)) options.mesh_side = std::clamp(uint32_t(std::stoul(value)), 32u, 256u);
+    else if (prefixed(argument, "--mesh=", value)) {
+      const uint32_t requested = std::clamp(uint32_t(std::stoul(value)), 32u, 512u);
+      options.mesh_side = requested / 16u * 16u;
+    }
     else if (prefixed(argument, "--distance=", value)) options.camera_distance = std::clamp(std::stof(value), 1.16f, 4.5f);
     else {
       std::cerr << "unknown option: " << argument << '\n';

@@ -17,6 +17,7 @@ namespace devils_engine::pf10 {
 namespace {
 
 constexpr uint32_t water_bit = 0x80000000u;
+constexpr uint32_t mountain_bit = 0xa0000000u;
 constexpr uint32_t polar_bit = 0xc0000000u;
 
 uint32_t mix32(uint32_t value) noexcept {
@@ -95,6 +96,44 @@ ocean_query sample_oceans(const glm::vec3 direction) noexcept {
   return result;
 }
 
+struct ridge_query {
+  float influence = 0.0f;
+  uint32_t chain = 0u;
+};
+
+float chord_segment_distance(const glm::vec3 point, glm::vec3 a, glm::vec3 b) noexcept {
+  a = glm::normalize(a);
+  b = glm::normalize(b);
+  const glm::vec3 chord = b - a;
+  const float denominator = glm::dot(chord, chord);
+  const float t = denominator > 1.0e-8f ?
+                    std::clamp(glm::dot(point - a, chord) / denominator, 0.0f, 1.0f) : 0.0f;
+  return glm::length(point - glm::normalize(a + chord * t));
+}
+
+ridge_query sample_ridges(const glm::vec3 direction) noexcept {
+  // Temporary geography, deliberately expressed as spherical polylines. Province ownership samples this
+  // same field at each Voronoi feature point, so a ridge claims whole cells instead of secretly cutting one
+  // navigation node into disconnected halves.
+  constexpr std::array<std::array<glm::vec3, 4>, 3> chains{{
+    {{{-0.48f, -0.35f, 0.82f}, {-0.22f, -0.12f, 0.97f}, {0.05f, 0.13f, 0.99f}, {0.27f, 0.34f, 0.90f}}},
+    {{{0.79f, -0.42f, -0.45f}, {0.91f, -0.14f, -0.25f}, {0.94f, 0.17f, 0.20f}, {0.73f, 0.46f, 0.51f}}},
+    {{{-0.84f, -0.33f, -0.43f}, {-0.94f, -0.05f, -0.24f}, {-0.91f, 0.25f, 0.32f}, {-0.66f, 0.50f, 0.57f}}}
+  }};
+  constexpr std::array<float, 3> widths{0.050f, 0.044f, 0.046f};
+  ridge_query result{};
+  for (uint32_t chain = 0; chain < chains.size(); ++chain) {
+    float distance = 100.0f;
+    for (uint32_t i = 0; i + 1u < chains[chain].size(); ++i) {
+      distance = std::min(distance, chord_segment_distance(direction, chains[chain][i], chains[chain][i + 1u]));
+    }
+    const float linear = std::clamp((widths[chain] - distance) / (widths[chain] * 0.78f), 0.0f, 1.0f);
+    const float influence = linear * linear * (3.0f - 2.0f * linear);
+    if (influence > result.influence) result = {influence, chain};
+  }
+  return result;
+}
+
 classification classify_non_land(const glm::vec3 direction) noexcept {
   const float polar_edge = std::abs(std::abs(direction.y) - 0.91f);
   if (std::abs(direction.y) >= 0.91f) {
@@ -147,6 +186,11 @@ float surface_height(glm::vec3 direction) noexcept {
   const float mountain_mask = glm::smoothstep(0.43f, 0.61f, continent);
   float height = (continent - 0.50f) * 0.11f + std::pow(ridge, 4.0f) * 0.032f * mountain_mask +
                  detail * 0.008f - 0.006f;
+  const auto authored_ridge = sample_ridges(direction);
+  const float ridge_land = 1.0f - glm::smoothstep(-0.025f, 0.018f, sample_oceans(direction).best);
+  const float polar_fade = 1.0f - glm::smoothstep(0.86f, 0.91f, std::abs(direction.y));
+  const float ridge_texture = 0.72f + 0.28f * value_noise(direction * 72.0f + glm::vec3(9.0f, 41.0f, 23.0f));
+  height += authored_ridge.influence * ridge_land * polar_fade * ridge_texture * 0.052f;
   // There is still one displaced surface in slice 1. A broad water navigation region therefore owns a
   // nearly level radial shell, while coast terrain rises out of it; a separate reflective ocean comes later.
   if (std::abs(direction.y) < 0.91f) {
@@ -166,6 +210,7 @@ region_sample sample_region(glm::vec3 direction) noexcept {
   float nearest = std::numeric_limits<float>::max();
   float second = std::numeric_limits<float>::max();
   uint32_t nearest_id = no_region;
+  glm::vec3 nearest_feature{0.0f, 1.0f, 0.0f};
   for (int z = -1; z <= 1; ++z) {
     for (int y = -1; y <= 1; ++y) {
       for (int x = -1; x <= 1; ++x) {
@@ -179,6 +224,7 @@ region_sample sample_region(glm::vec3 direction) noexcept {
           second = nearest;
           nearest = distance;
           nearest_id = (hash_cell(cell) & 0x3fffffffu) | 1u;
+          nearest_feature = feature;
         } else if (distance < second) {
           second = distance;
         }
@@ -186,6 +232,11 @@ region_sample sample_region(glm::vec3 direction) noexcept {
     }
   }
   const float voronoi_edge = std::sqrt(second) - std::sqrt(nearest);
+  const auto ridge = sample_ridges(glm::normalize(nearest_feature));
+  if (ridge.influence > 0.18f) {
+    return {mountain_bit | (ridge.chain + 1u), region_kind::mountain,
+            std::min(voronoi_edge, non_land.edge * province_frequency)};
+  }
   return {nearest_id, region_kind::land, std::min(voronoi_edge, non_land.edge * province_frequency)};
 }
 
@@ -228,6 +279,7 @@ political_atlas bake_political_atlas(const uint32_t face_side) {
   std::unordered_map<uint32_t, centre_accumulator> centres;
   centres.reserve(5000);
   std::unordered_set<uint32_t> water_ids;
+  std::unordered_set<uint32_t> mountain_ids;
   std::unordered_set<uint32_t> polar_ids;
   std::unordered_set<uint64_t> edge_set;
   edge_set.reserve(16000);
@@ -241,17 +293,71 @@ political_atlas bake_political_atlas(const uint32_t face_side) {
         const glm::vec2 uv = glm::vec2(float(x), float(y)) / float(side) * 2.0f - 1.0f;
         const glm::vec3 direction = cube_direction(face, uv);
         const auto region = sample_region(direction);
-        result.texels[texel_index(face, x, y)] = {region.id, region.edge_distance};
+        const bool cell_owned = region.kind == region_kind::land || region.kind == region_kind::mountain;
+        const float angular_edge = cell_owned ? region.edge_distance / province_frequency : region.edge_distance;
+        result.texels[texel_index(face, x, y)] = {region.id, angular_edge};
         if (region.kind == region_kind::land) {
           auto& centre = centres[region.id];
           centre.sum += direction;
           ++centre.count;
-          if (region.edge_distance > centre.best_edge) {
-            centre.best_edge = region.edge_distance;
+          if (angular_edge > centre.best_edge) {
+            centre.best_edge = angular_edge;
             centre.label_direction = direction;
           }
         } else if (region.kind == region_kind::water) water_ids.insert(region.id);
+        else if (region.kind == region_kind::mountain) mountain_ids.insert(region.id);
         else polar_ids.insert(region.id);
+      }
+    }
+  }
+
+  // Rebuild the render distance from the materialized ownership field.  The analytic Voronoi value is ideal
+  // for label clearance, but discrete samples almost never hit its exact zero and produced dotted borders.
+  // A two-pass 8-neighbour Euclidean chamfer makes every shared ID transition a continuous raster contour.
+  std::vector<float> border_distance(size_t(nodes_per_face), 0.0f);
+  constexpr float diagonal = 1.41421356237f;
+  for (uint32_t face = 0; face < 6u; ++face) {
+    std::fill(border_distance.begin(), border_distance.end(), std::numeric_limits<float>::max());
+    for (uint32_t y = 0; y <= side; ++y) {
+      for (uint32_t x = 0; x <= side; ++x) {
+        const uint32_t id = result.texels[texel_index(face, x, y)].region_id;
+        const bool boundary = (x > 0u && result.texels[texel_index(face, x - 1u, y)].region_id != id) ||
+                              (x < side && result.texels[texel_index(face, x + 1u, y)].region_id != id) ||
+                              (y > 0u && result.texels[texel_index(face, x, y - 1u)].region_id != id) ||
+                              (y < side && result.texels[texel_index(face, x, y + 1u)].region_id != id);
+        if (boundary) border_distance[size_t(y) * (side + 1u) + x] = 0.0f;
+      }
+    }
+    const auto relax = [&](const uint32_t x, const uint32_t y, const int32_t dx, const int32_t dy,
+                           const float weight) {
+      const int32_t nx = int32_t(x) + dx;
+      const int32_t ny = int32_t(y) + dy;
+      if (nx < 0 || ny < 0 || nx > int32_t(side) || ny > int32_t(side)) return;
+      auto& value = border_distance[size_t(y) * (side + 1u) + x];
+      value = std::min(value, border_distance[size_t(ny) * (side + 1u) + uint32_t(nx)] + weight);
+    };
+    for (uint32_t y = 0; y <= side; ++y) {
+      for (uint32_t x = 0; x <= side; ++x) {
+        relax(x, y, -1, 0, 1.0f);
+        relax(x, y, 0, -1, 1.0f);
+        relax(x, y, -1, -1, diagonal);
+        relax(x, y, 1, -1, diagonal);
+      }
+    }
+    for (int32_t y = int32_t(side); y >= 0; --y) {
+      for (int32_t x = int32_t(side); x >= 0; --x) {
+        relax(uint32_t(x), uint32_t(y), 1, 0, 1.0f);
+        relax(uint32_t(x), uint32_t(y), 0, 1, 1.0f);
+        relax(uint32_t(x), uint32_t(y), 1, 1, diagonal);
+        relax(uint32_t(x), uint32_t(y), -1, 1, diagonal);
+      }
+    }
+    const float radians_per_cell = 2.0f / float(side);
+    for (uint32_t y = 0; y <= side; ++y) {
+      for (uint32_t x = 0; x <= side; ++x) {
+        result.texels[texel_index(face, x, y)].edge_distance =
+          std::min(border_distance[size_t(y) * (side + 1u) + x] * radians_per_cell,
+                   political_edge_range);
       }
     }
   }
@@ -283,6 +389,7 @@ political_atlas bake_political_atlas(const uint32_t face_side) {
 
   auto& graph = result.graph;
   result.water_regions = uint32_t(water_ids.size());
+  result.mountain_regions = uint32_t(mountain_ids.size());
   result.polar_regions = uint32_t(polar_ids.size());
   graph.province_ids.reserve(centres.size());
   for (const auto& [id, _] : centres) graph.province_ids.push_back(id);
@@ -299,7 +406,7 @@ political_atlas bake_political_atlas(const uint32_t face_side) {
     const auto& centre = centres.at(id);
     graph.centre_directions[i] = glm::normalize(centre.sum);
     graph.label_directions[i] = centre.label_direction;
-    graph.label_clearance[i] = centre.best_edge / province_frequency;
+    graph.label_clearance[i] = centre.best_edge;
     graph.coastal[i] = uint8_t(centre.coastal);
   }
 
@@ -347,6 +454,203 @@ political_atlas bake_political_atlas(const uint32_t face_side) {
           pending.push_back(neighbour);
         }
       }
+    }
+  }
+  return result;
+}
+
+packed_political_atlas pack_political_atlas(const political_atlas& source) {
+  packed_political_atlas result{};
+  result.face_side = source.face_side;
+  result.region_ids = source.graph.province_ids;
+  std::unordered_set<uint32_t> non_land_ids;
+  non_land_ids.reserve(source.water_regions + source.mountain_regions + source.polar_regions);
+  for (const auto texel : source.texels) {
+    if (!is_land_id(texel.region_id)) non_land_ids.insert(texel.region_id);
+  }
+  result.region_ids.insert(result.region_ids.end(), non_land_ids.begin(), non_land_ids.end());
+  std::ranges::sort(result.region_ids);
+  if (result.region_ids.size() >= uint64_t(std::numeric_limits<uint16_t>::max())) {
+    return {};
+  }
+
+  std::unordered_map<uint32_t, uint16_t> local_indices;
+  local_indices.reserve(result.region_ids.size());
+  for (uint32_t i = 0; i < result.region_ids.size(); ++i) local_indices.emplace(result.region_ids[i], uint16_t(i));
+
+  result.texels.resize(source.texels.size());
+  for (size_t i = 0; i < source.texels.size(); ++i) {
+    const auto source_texel = source.texels[i];
+    const uint32_t local_index = local_indices.at(source_texel.region_id);
+    const float normalized_edge = std::clamp(source_texel.edge_distance / political_edge_range, 0.0f, 1.0f);
+    const uint32_t quantized_edge = uint32_t(normalized_edge * 65535.0f + 0.5f);
+    result.texels[i] = local_index | (quantized_edge << 16u);
+  }
+  return result;
+}
+
+std::vector<surface_patch> visible_surface_patches(const uint32_t face_side, const uint32_t patch_side,
+                                                   const glm::vec3 local_eye) {
+  std::vector<surface_patch> result;
+  if (face_side == 0u || patch_side == 0u || face_side % patch_side != 0u) return result;
+  const uint32_t patches_per_axis = face_side / patch_side;
+  result.reserve(size_t(6u) * patches_per_axis * patches_per_axis / 2u);
+  const float eye_distance = glm::length(local_eye);
+  if (eye_distance <= planet_radius + minimum_height) return result;
+  const glm::vec3 eye_direction = local_eye / eye_distance;
+  const float horizon_cosine = (planet_radius + minimum_height) / eye_distance;
+  // Cube projection is widest near a face corner.  This angular margin deliberately overestimates a patch,
+  // preventing horizon holes while still rejecting most of the back/hidden sphere before vertex shading.
+  const float angular_margin = std::sin(2.15f * float(patch_side) / float(face_side));
+  for (uint32_t face = 0; face < 6u; ++face) {
+    for (uint32_t patch_y = 0; patch_y < patches_per_axis; ++patch_y) {
+      for (uint32_t patch_x = 0; patch_x < patches_per_axis; ++patch_x) {
+        const glm::vec2 centre_node = glm::vec2(float(patch_x * patch_side) + float(patch_side) * 0.5f,
+                                                float(patch_y * patch_side) + float(patch_side) * 0.5f);
+        const glm::vec2 uv = centre_node / float(face_side) * 2.0f - 1.0f;
+        const glm::vec3 direction = cube_direction(face, uv);
+        if (glm::dot(direction, eye_direction) + angular_margin < horizon_cosine) continue;
+        result.push_back({face, patch_x * patch_side, patch_y * patch_side, 0u});
+      }
+    }
+  }
+  return result;
+}
+
+std::vector<border_segment> make_border_segments(const political_atlas& source) {
+  std::vector<border_segment> result;
+  const uint32_t side = source.face_side;
+  if (side == 0u || source.texels.size() != size_t(6u) * (side + 1u) * (side + 1u)) return result;
+  result.reserve(source.graph.undirected_edges * 24u);
+  const uint64_t nodes_per_face = uint64_t(side + 1u) * uint64_t(side + 1u);
+  const auto texel = [&](const uint32_t face, const uint32_t x, const uint32_t y) -> const political_texel& {
+    return source.texels[size_t(uint64_t(face) * nodes_per_face + uint64_t(y) * (side + 1u) + x)];
+  };
+  const auto direction = [&](const uint32_t face, const glm::vec2 node) {
+    return cube_direction(face, node / float(side) * 2.0f - 1.0f);
+  };
+  const auto append = [&](const glm::vec3 a, const glm::vec3 b, const uint32_t left, const uint32_t right) {
+    if (glm::dot(a, b) > 0.9999999f) return;
+    result.push_back({glm::vec4(a, surface_height(a)), glm::vec4(b, surface_height(b)),
+                      glm::uvec4(left, right, 0u, 0u)});
+  };
+
+  struct crossing { glm::vec2 node; uint32_t a; uint32_t b; };
+  const uint32_t contour_step = side >= 2u ? 2u : 1u;
+  for (uint32_t face = 0; face < 6u; ++face) {
+    for (uint32_t y = 0; y < side; y += contour_step) {
+      for (uint32_t x = 0; x < side; x += contour_step) {
+        const uint32_t next_x = std::min(x + contour_step, side);
+        const uint32_t next_y = std::min(y + contour_step, side);
+        const uint32_t ids[4] = {texel(face, x, y).region_id, texel(face, next_x, y).region_id,
+                                 texel(face, next_x, next_y).region_id, texel(face, x, next_y).region_id};
+        crossing crossings[4];
+        uint32_t count = 0;
+        const auto cross_edge = [&](const uint32_t first, const uint32_t second, const glm::vec2 point) {
+          if (ids[first] == ids[second]) return;
+          crossings[count++] = {point, std::min(ids[first], ids[second]), std::max(ids[first], ids[second])};
+        };
+        const float middle_x = (float(x) + float(next_x)) * 0.5f;
+        const float middle_y = (float(y) + float(next_y)) * 0.5f;
+        cross_edge(0u, 1u, glm::vec2(middle_x, float(y)));
+        cross_edge(1u, 2u, glm::vec2(float(next_x), middle_y));
+        cross_edge(2u, 3u, glm::vec2(middle_x, float(next_y)));
+        cross_edge(3u, 0u, glm::vec2(float(x), middle_y));
+        if (count == 2u && crossings[0].a == crossings[1].a && crossings[0].b == crossings[1].b) {
+          append(direction(face, crossings[0].node), direction(face, crossings[1].node),
+                 crossings[0].a, crossings[0].b);
+        } else if (count != 0u) {
+          // Triple junctions and rare four-way raster ambiguities meet at one cell centre. Rounded segment
+          // caps in the shader cover the shared point without inventing a topological neighbour.
+          const glm::vec3 centre = direction(face, glm::vec2(middle_x, middle_y));
+          for (uint32_t i = 0; i < count; ++i) {
+            append(direction(face, crossings[i].node), centre, crossings[i].a, crossings[i].b);
+          }
+        }
+      }
+    }
+  }
+  result.shrink_to_fit();
+  return result;
+}
+
+std::vector<hydrology_feature> make_hydrology_features() {
+  struct source_candidate { glm::vec3 direction{}; float height = 0.0f; };
+  std::vector<source_candidate> candidates;
+  candidates.reserve(900);
+  for (uint32_t i = 0; i < 1800u; ++i) {
+    const glm::vec3 direction = fibonacci_direction(i, 1800u);
+    if (sample_region(direction).kind != region_kind::land) continue;
+    const float height = surface_height(direction);
+    if (height > 0.008f) candidates.push_back({direction, height});
+  }
+  std::ranges::sort(candidates, {}, &source_candidate::height);
+  std::ranges::reverse(candidates);
+
+  std::vector<glm::vec3> sources;
+  sources.reserve(18);
+  const glm::vec3 presentation_view = glm::normalize(glm::vec3(0.0f, -0.19f, 0.982f));
+  const auto presentation = std::ranges::find_if(candidates, [&](const source_candidate& candidate) {
+    return candidate.direction.x > 0.08f && glm::dot(candidate.direction, presentation_view) > 0.94f;
+  });
+  if (presentation != candidates.end()) sources.push_back(presentation->direction);
+  for (const auto& candidate : candidates) {
+    bool separated = true;
+    for (const glm::vec3 existing : sources) {
+      if (glm::dot(candidate.direction, existing) > 0.925f) { separated = false; break; }
+    }
+    if (separated) sources.push_back(candidate.direction);
+    if (sources.size() == 18u) break;
+  }
+
+  std::vector<hydrology_feature> result;
+  result.reserve(sources.size() * 100u);
+  constexpr float epsilon = 0.0035f;
+  constexpr float step = 0.0048f;
+  for (uint32_t river = 0; river < sources.size(); ++river) {
+    glm::vec3 current = sources[river];
+    glm::vec3 momentum{0.0f};
+    const size_t first_segment = result.size();
+    for (uint32_t segment_index = 0; segment_index < 92u; ++segment_index) {
+      const glm::vec3 reference = std::abs(current.y) < 0.82f ? glm::vec3(0.0f, 1.0f, 0.0f) :
+                                                               glm::vec3(1.0f, 0.0f, 0.0f);
+      const glm::vec3 tangent_x = glm::normalize(glm::cross(reference, current));
+      const glm::vec3 tangent_y = glm::normalize(glm::cross(current, tangent_x));
+      const float dx = surface_height(glm::normalize(current + tangent_x * epsilon)) -
+                       surface_height(glm::normalize(current - tangent_x * epsilon));
+      const float dy = surface_height(glm::normalize(current + tangent_y * epsilon)) -
+                       surface_height(glm::normalize(current - tangent_y * epsilon));
+      glm::vec3 downhill = -(tangent_x * dx + tangent_y * dy);
+      if (glm::dot(downhill, downhill) < 1.0e-10f) downhill = tangent_y;
+      downhill = glm::normalize(downhill);
+      const float meander = (hash01(glm::ivec3(int(river), int(segment_index), 71), 0x93a4f62du) - 0.5f) * 0.24f;
+      glm::vec3 flow = downhill + momentum * 0.48f + tangent_x * meander;
+      flow -= current * glm::dot(flow, current);
+      flow = glm::normalize(flow);
+      glm::vec3 next = current;
+      float local_step = step;
+      bool remains_on_land = false;
+      for (uint32_t attempt = 0; attempt < 5u; ++attempt) {
+        next = glm::normalize(current + flow * local_step);
+        if (sample_region(next).kind == region_kind::land) { remains_on_land = true; break; }
+        local_step *= 0.5f;
+      }
+      if (!remains_on_land) break;
+
+      const float progress0 = float(segment_index) / 92.0f;
+      const float progress1 = float(segment_index + 1u) / 92.0f;
+      const float width0 = glm::mix(0.00016f, 0.00058f, progress0);
+      const float width1 = glm::mix(0.00016f, 0.00058f, progress1);
+      result.push_back({glm::vec4(current, surface_height(current)), glm::vec4(next, surface_height(next)),
+                        glm::vec4(width0, width1, 0.0f, float(river & 3u))});
+      current = next;
+      momentum = flow;
+    }
+    const size_t segment_count = result.size() - first_segment;
+    if (segment_count >= 18u && (river % 3u) == 0u) {
+      const float radius = 0.0018f + float((river / 3u) % 3u) * 0.00055f;
+      result.push_back({glm::vec4(current, surface_height(current)), glm::vec4(current, surface_height(current)),
+                        glm::vec4(radius, radius, 1.0f, float(river & 3u))});
     }
   }
   return result;
@@ -419,6 +723,7 @@ survey_result survey_planet(const uint32_t samples) {
   result.sampled_max_height = std::numeric_limits<float>::lowest();
   std::unordered_set<uint32_t> land;
   std::unordered_set<uint32_t> water;
+  std::unordered_set<uint32_t> mountain;
   std::unordered_set<uint32_t> polar;
   land.reserve(6000);
 
@@ -431,6 +736,7 @@ survey_result survey_planet(const uint32_t samples) {
     result.sampled_max_height = std::max(result.sampled_max_height, height);
     if (region.kind == region_kind::land) land.insert(region.id);
     else if (region.kind == region_kind::water) water.insert(region.id);
+    else if (region.kind == region_kind::mountain) mountain.insert(region.id);
     else polar.insert(region.id);
 
     if ((i & 63u) == 0u) {
@@ -440,6 +746,7 @@ survey_result survey_planet(const uint32_t samples) {
   }
   result.land_regions = uint32_t(land.size());
   result.water_regions = uint32_t(water.size());
+  result.mountain_regions = uint32_t(mountain.size());
   result.polar_regions = uint32_t(polar.size());
   result.fingerprint = fingerprint;
   return result;
@@ -449,6 +756,7 @@ const char* region_kind_name(const region_kind kind) noexcept {
   switch (kind) {
     case region_kind::land: return "land province";
     case region_kind::water: return "water region";
+    case region_kind::mountain: return "non-playable mountain ridge";
     case region_kind::polar: return "non-playable polar region";
   }
   return "unknown";

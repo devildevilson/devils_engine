@@ -388,11 +388,30 @@ int run_viewer(const viewer_options& options) {
     bind_texture_descriptor(base, assets);
 
     const auto landmarks = make_landmarks(24);
-    constexpr uint32_t political_atlas_side = 512u;
+    constexpr uint32_t political_atlas_side = 1024u;
     const auto surface_vertices = bake_surface_vertices(options.mesh_side);
     auto politics = bake_political_atlas(political_atlas_side);
+    const auto packed_politics = pack_political_atlas(politics);
+    const auto border_segments = make_border_segments(politics);
+    const auto hydrology = make_hydrology_features();
+    const glm::vec3 presentation_source = hydrology.empty() ? glm::vec3(0.0f, 0.0f, 1.0f) :
+                                                              glm::normalize(glm::vec3(hydrology.front().a_direction_height));
+    const glm::vec3 presentation_target{0.0f, 0.0f, 1.0f};
+    const float presentation_angle = std::acos(std::clamp(glm::dot(presentation_source, presentation_target), -1.0f, 1.0f));
+    const glm::vec3 presentation_cross = glm::cross(presentation_source, presentation_target);
+    const glm::mat4 presentation_rotation = glm::dot(presentation_cross, presentation_cross) > 1.0e-8f ?
+      glm::rotate(glm::mat4(1.0f), presentation_angle, glm::normalize(presentation_cross)) : glm::mat4(1.0f);
+    if (packed_politics.texels.empty() || packed_politics.region_ids.empty()) {
+      utils::error{}("PF10 could not compact the political atlas into R16 indices");
+    }
     write_buffer(base, "surface_vertices", surface_vertices.data(), surface_vertices.size() * sizeof(glm::vec4));
-    write_buffer(base, "political_atlas", politics.texels.data(), politics.texels.size() * sizeof(political_texel));
+    write_buffer(base, "political_atlas", packed_politics.texels.data(), packed_politics.texels.size() * sizeof(uint32_t));
+    write_buffer(base, "political_region_table", packed_politics.region_ids.data(),
+                 packed_politics.region_ids.size() * sizeof(uint32_t));
+    write_buffer(base, "border_segments", border_segments.data(),
+                 border_segments.size() * sizeof(border_segment));
+    write_buffer(base, "hydrology_features", hydrology.data(),
+                 hydrology.size() * sizeof(hydrology_feature));
     politics.texels.clear();
     politics.texels.shrink_to_fit();
     const auto labels = make_labels(overlay.font_metrics(), font_texture, politics.graph);
@@ -413,8 +432,8 @@ int run_viewer(const viewer_options& options) {
     input::set_window_callback(window, &scroll_callback);
     input::set_window_callback(window, &mouse_callback);
 
-    float yaw = options.fixed_rotation ? 2.20f : 0.0f;
-    float pitch = options.fixed_rotation ? -0.24f : -0.16f;
+    float yaw = 0.0f;
+    float pitch = 0.0f;
     float camera_distance = options.camera_distance;
     bool auto_rotate = !options.fixed_rotation;
     bool political = true;
@@ -479,7 +498,8 @@ int run_viewer(const viewer_options& options) {
       }
 
       const glm::mat4 planet_to_world = glm::rotate(glm::mat4(1.0f), yaw, glm::normalize(glm::vec3(0.12f, 1.0f, 0.08f))) *
-                                        glm::rotate(glm::mat4(1.0f), pitch, glm::vec3(1.0f, 0.0f, 0.0f));
+                                        glm::rotate(glm::mat4(1.0f), pitch, glm::vec3(1.0f, 0.0f, 0.0f)) *
+                                        presentation_rotation;
       const glm::mat4 world_to_planet = glm::transpose(planet_to_world);
       const glm::vec3 eye{0.0f, 0.06f, camera_distance};
       const glm::vec3 target{0.0f};
@@ -497,6 +517,8 @@ int run_viewer(const viewer_options& options) {
       const glm::vec3 local_origin = glm::vec3(world_to_planet * glm::vec4(eye, 1.0f));
       const glm::vec3 local_ray = glm::normalize(glm::vec3(world_to_planet * glm::vec4(world_ray, 0.0f)));
       const auto hit = intersect_surface(local_origin, local_ray);
+      constexpr uint32_t surface_patch_side = 16u;
+      const auto visible_patches = visible_surface_patches(options.mesh_side, surface_patch_side, local_origin);
       hovered = hit.hit ? hit.region.id : no_region;
       if (click_pending) {
         selected = hovered;
@@ -504,15 +526,22 @@ int run_viewer(const viewer_options& options) {
       }
 
       detail.clear();
-      detail.push_back(std::format("materialized playable provinces: {}  water regions: {}  polar regions: {}",
-                                   politics.graph.province_ids.size(), politics.water_regions, politics.polar_regions));
+      detail.push_back(std::format("playable provinces: {}  water: {}  mountain chains: {}  polar: {}",
+                                   politics.graph.province_ids.size(), politics.water_regions,
+                                   politics.mountain_regions, politics.polar_regions));
       detail.push_back(std::format("adjacency: {} nodes  {} edges  {} land components  mean degree {:.2f}",
                                    politics.graph.province_ids.size(), politics.graph.undirected_edges,
                                    politics.graph.connected_components,
                                    politics.graph.province_ids.empty() ? 0.0 :
                                      double(politics.graph.neighbours.size()) / double(politics.graph.province_ids.size())));
+      detail.push_back(std::format("shared border cache: {} smooth curve segments", border_segments.size()));
+      detail.push_back(std::format("feature layer: {} tapered river/lake primitives", hydrology.size()));
       detail.push_back(std::format("mesh: 6 x {} x {} cells = {} procedural triangles", options.mesh_side,
                                    options.mesh_side, uint64_t(options.mesh_side) * options.mesh_side * 12ull));
+      detail.push_back(std::format("surface residency: {} / {} visible {}x{} patches", visible_patches.size(),
+                                   6u * (options.mesh_side / surface_patch_side) *
+                                     (options.mesh_side / surface_patch_side),
+                                   surface_patch_side, surface_patch_side));
       if (hit.hit) {
         detail.push_back(std::format("hover: {} id 0x{:08x}  height {:+.4f} R", region_kind_name(hit.region.kind),
                                      hit.region.id, hit.height));
@@ -551,10 +580,13 @@ int run_viewer(const viewer_options& options) {
       camera.inverse_view_projection = glm::inverse(camera.view_projection);
       write_buffer(base, "camera_buffer", &camera, sizeof(camera));
       write_buffer(base, "landmarks", landmarks.data(), landmarks.size() * sizeof(landmark));
+      write_buffer(base, "surface_patches", visible_patches.data(),
+                   visible_patches.size() * sizeof(surface_patch));
 
-      // One triangle strip per cube-face row. Instance boundaries restart the strip for free, retaining the
-      // exact 2*side*side triangles while invoking ~3x fewer vertices than the old repeated triangle list.
-      const VkDrawIndirectCommand planet_command{2u * (options.mesh_side + 1u), 6u * options.mesh_side, 0, 0};
+      // One strip per visible patch row.  A conservative CPU horizon test rejects the hidden sphere before
+      // vertex shading; this is the uniform-resolution precursor to the same patch list carrying LOD levels.
+      const VkDrawIndirectCommand planet_command{2u * (surface_patch_side + 1u),
+                                                  uint32_t(visible_patches.size()) * surface_patch_side, 0, 0};
       const VkDrawIndirectCommand marker_command{12, show_objects ? uint32_t(landmarks.size()) : 0u, 0, 0};
       const bool province_label_lod = camera_distance < 1.72f;
       const VkDrawIndirectCommand label_command{
@@ -562,9 +594,13 @@ int run_viewer(const viewer_options& options) {
         political ? (province_label_lod ? labels.province_glyphs : labels.empire_glyphs) : 0u,
         0u,
         province_label_lod ? labels.empire_glyphs : 0u};
+      const VkDrawIndirectCommand border_command{6u, political ? uint32_t(border_segments.size()) : 0u, 0u, 0u};
+      const VkDrawIndirectCommand hydrology_command{6u, options.show_hydrology ? uint32_t(hydrology.size()) : 0u, 0u, 0u};
       base.write_constant_data(base.find_constant("planet_draw"), planet_command);
       base.write_constant_data(base.find_constant("marker_draw"), marker_command);
       base.write_constant_data(base.find_constant("label_draw"), label_command);
+      base.write_constant_data(base.find_constant("border_draw"), border_command);
+      base.write_constant_data(base.find_constant("hydrology_draw"), hydrology_command);
       base.update_event();
 
       const uint64_t delta_us = uint64_t(std::max(real_dt, 1.0e-6f) * 1.0e6f);

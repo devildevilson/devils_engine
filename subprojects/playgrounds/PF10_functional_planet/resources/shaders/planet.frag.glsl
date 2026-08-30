@@ -11,8 +11,8 @@ layout(set = 0, binding = 0, std140) uniform CameraBlock {
   uvec4 params;
   vec4 viewport_near;
 } camera_data;
-struct PoliticalTexel { uint region_id; float edge_distance; };
-layout(set = 0, binding = 2, std430) readonly buffer PoliticalAtlas { PoliticalTexel texels[]; } political_atlas;
+layout(set = 0, binding = 2, std430) readonly buffer PoliticalAtlas { uint texels[]; } political_atlas;
+layout(set = 0, binding = 3, std430) readonly buffer PoliticalRegionTable { uint ids[]; } political_regions;
 
 layout(location = 0) in vec3 in_local_direction;
 layout(location = 1) in vec3 in_world_position;
@@ -42,9 +42,13 @@ CubeCoordinate cube_coordinate(const vec3 direction) {
   return CubeCoordinate(5u, vec2(-direction.x, direction.y) / magnitude.z);
 }
 
-PoliticalTexel atlas_texel(const uint face, const uvec2 xy, const uint side) {
+uint atlas_texel(const uint face, const uvec2 xy, const uint side) {
   const uint stride = side + 1u;
   return political_atlas.texels[face * stride * stride + xy.y * stride + xy.x];
+}
+
+float atlas_edge(const uint packed) {
+  return float(packed >> 16u) * (0.04 / 65535.0);
 }
 
 pf10_region_sample sample_baked_region(const vec3 direction) {
@@ -52,17 +56,20 @@ pf10_region_sample sample_baked_region(const vec3 direction) {
   const CubeCoordinate cube = cube_coordinate(direction);
   const vec2 location = clamp((cube.uv * 0.5 + 0.5) * float(side), vec2(0.0), vec2(float(side)));
   const uvec2 nearest_xy = uvec2(location + 0.5);
-  const PoliticalTexel nearest = atlas_texel(cube.face, nearest_xy, side);
+  const uint nearest = atlas_texel(cube.face, nearest_xy, side);
   const uvec2 low = uvec2(floor(location));
   const uvec2 high = min(low + 1u, uvec2(side));
   const vec2 blend = fract(location);
-  const float edge0 = mix(atlas_texel(cube.face, uvec2(low.x, low.y), side).edge_distance,
-                          atlas_texel(cube.face, uvec2(high.x, low.y), side).edge_distance, blend.x);
-  const float edge1 = mix(atlas_texel(cube.face, uvec2(low.x, high.y), side).edge_distance,
-                          atlas_texel(cube.face, uvec2(high.x, high.y), side).edge_distance, blend.x);
-  const uint high_bits = nearest.region_id & 0xc0000000u;
-  const uint kind = high_bits == 0xc0000000u ? 2u : (high_bits == 0x80000000u ? 1u : 0u);
-  return pf10_region_sample(nearest.region_id, kind, mix(edge0, edge1, blend.y));
+  const float edge0 = mix(atlas_edge(atlas_texel(cube.face, uvec2(low.x, low.y), side)),
+                          atlas_edge(atlas_texel(cube.face, uvec2(high.x, low.y), side)), blend.x);
+  const float edge1 = mix(atlas_edge(atlas_texel(cube.face, uvec2(low.x, high.y), side)),
+                          atlas_edge(atlas_texel(cube.face, uvec2(high.x, high.y), side)), blend.x);
+  const uint stable_id = political_regions.ids[nearest & 0xffffu];
+  const uint high_bits = stable_id & 0xe0000000u;
+  const uint kind = high_bits == 0xc0000000u ? 2u :
+                    (high_bits == 0xa0000000u ? 3u : (high_bits == 0x80000000u ? 1u : 0u));
+  const float edge = mix(edge0, edge1, blend.y);
+  return pf10_region_sample(stable_id, kind, edge);
 }
 
 void main() {
@@ -75,6 +82,9 @@ void main() {
   } else if (region.kind == 1u) {
     const float ocean_variant = float(pf10_mix32(region.id) & 255u) / 255.0;
     albedo = mix(vec3(0.035, 0.15, 0.25), vec3(0.055, 0.31, 0.42), ocean_variant);
+  } else if (region.kind == 3u) {
+    const float crag = pf10_value_noise(direction * 64.0 + vec3(19.0, 7.0, 43.0));
+    albedo = mix(vec3(0.20, 0.19, 0.17), vec3(0.48, 0.46, 0.41), crag);
   } else if (political) {
     albedo = province_colour(region.id);
   } else {
@@ -92,10 +102,7 @@ void main() {
   const float rim = pow(1.0 - max(dot(normal, normalize(camera_data.camera_position.xyz - in_world_position)), 0.0), 3.0);
   vec3 colour = albedo * (0.19 + direct * 0.86) + vec3(0.055, 0.085, 0.12) * rim;
 
-  // edge is a continuous distance to the nearest political/coast/polar boundary. fwidth makes the line
-  // stay readable while zooming and gives every palette the same geometric border.
-  const float line_width = max(fwidth(region.edge) * 1.45, 0.012);
-  const float border = 1.0 - smoothstep(0.0, line_width, region.edge);
-  colour = mix(colour, camera_data.border_colour.rgb, border * camera_data.border_colour.a);
+  // The packed distance remains available for diagnostics and tiled consumers.  Authored boundary colour is
+  // drawn by the shared-curve decal pass, avoiding atlas stair steps at close range.
   out_color = vec4(colour, 1.0);
 }

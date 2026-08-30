@@ -82,7 +82,7 @@ float pf10_surface_height(vec3 direction) {
 
 struct pf10_region_sample {
   uint id;
-  uint kind; // 0 land, 1 water, 2 polar
+  uint kind; // 0 land, 1 water, 2 polar, 3 non-playable mountain chain
   float edge;
 };
 

@@ -3,7 +3,9 @@
   layout = [
     { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" },
     { resource = surface_vertices, usage = storage_read, stage = vertex },
-    { resource = political_atlas, usage = storage_read, stage = fragment }
+    { resource = political_atlas, usage = storage_read, stage = fragment },
+    { resource = political_region_table, usage = storage_read, stage = fragment },
+    { resource = surface_patches, usage = storage_read, stage = vertex }
   ]
 }
 {
@@ -19,7 +21,23 @@
     { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" },
     { resource = label_glyphs, usage = storage_read, stage = vertex },
     { resource = scene_depth, usage = depth_read, sampler = decal_nearest, stage = fragment },
-    { resource = political_atlas, usage = storage_read, stage = fragment }
+    { resource = political_atlas, usage = storage_read, stage = fragment },
+    { resource = political_region_table, usage = storage_read, stage = fragment }
+  ]
+}
+{
+  name = border_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" },
+    { resource = border_segments, usage = storage_read, stage = vertex },
+    { resource = scene_depth, usage = depth_read, sampler = decal_nearest, stage = fragment }
+  ]
+}
+{
+  name = hydrology_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = vertex },
+    { resource = hydrology_features, usage = storage_read, stage = vertex }
   ]
 }
 { name = camera_data, layout = [ { resource = camera_buffer, usage = uniform, stage = vertex } ] }

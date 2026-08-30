@@ -5,6 +5,10 @@
 // A dedicated never-advanced counter keeps this one-time bake resident while ordinary update constants move.
 { name = surface_vertices, format = c1, role = upload, size = surface_vertex_bytes, swap = static_surface, type = singlebuffer }
 { name = political_atlas, format = c1, role = upload, size = political_atlas_bytes, swap = static_surface, type = singlebuffer }
+{ name = political_region_table, format = c1, role = upload, size = political_region_table_bytes, swap = static_surface, type = singlebuffer }
+{ name = surface_patches, format = c1, role = upload, size = surface_patch_bytes, swap = per_frame }
+{ name = border_segments, format = c1, role = upload, size = border_segment_bytes, swap = static_surface, type = singlebuffer }
+{ name = hydrology_features, format = c1, role = upload, size = hydrology_feature_bytes, swap = static_surface, type = singlebuffer }
 { name = landmarks, format = c1, role = upload, size = landmark_bytes, swap = per_frame }
 { name = label_glyphs, format = c1, role = upload, size = label_bytes, swap = static_surface, type = singlebuffer }
 { name = ui_vertices, format = c1, role = upload, size = ui_vertices_bytes, swap = per_frame }

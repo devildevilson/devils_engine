@@ -20,8 +20,8 @@ layout(set = 0, binding = 0, std140) uniform CameraBlock {
   mat4 inverse_view_projection;
 } camera_data;
 layout(set = 0, binding = 2) uniform sampler2D scene_depth_texture;
-struct PoliticalTexel { uint region_id; float edge_distance; };
-layout(set = 0, binding = 3, std430) readonly buffer PoliticalAtlas { PoliticalTexel texels[]; } political_atlas;
+layout(set = 0, binding = 3, std430) readonly buffer PoliticalAtlas { uint texels[]; } political_atlas;
+layout(set = 0, binding = 4, std430) readonly buffer PoliticalRegionTable { uint ids[]; } political_regions;
 layout(set = 1, binding = 0) uniform texture2D textures[16];
 layout(set = 1, binding = 1) uniform sampler samplers[1];
 #define LABEL_SAMPLER sampler2D(textures[clamp(uint(in_effect.x + 0.5), 0u, 15u)], samplers[0])
@@ -41,7 +41,8 @@ uint region_at(const vec3 direction) {
   const uint side = uint(camera_data.viewport_near.w + 0.5);
   const uvec2 xy = uvec2(clamp((uv * 0.5 + 0.5) * float(side) + 0.5, vec2(0.0), vec2(float(side))));
   const uint stride = side + 1u;
-  return political_atlas.texels[face * stride * stride + xy.y * stride + xy.x].region_id;
+  const uint packed = political_atlas.texels[face * stride * stride + xy.y * stride + xy.x];
+  return political_regions.ids[packed & 0xffffu];
 }
 
 void main() {
