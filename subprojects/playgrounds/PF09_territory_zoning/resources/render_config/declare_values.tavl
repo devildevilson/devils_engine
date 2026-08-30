@@ -10,3 +10,7 @@
 { name = ui_vertices_bytes, type = fixed, value = [524288, 0, 0] }
 { name = ui_indices_bytes, type = fixed, value = [131072, 0, 0] }
 { name = ui_commands_bytes, type = fixed, value = [16384, 0, 0] }
+
+// Мировой интерфейс над персонажами: тот же MSDF-атлас, что у overlay, но геометрия строится в мировых
+// координатах со смещением в пикселях. Бюджет мал — надписей столько, сколько персонажей на экране.
+{ name = label_bytes, type = fixed, value = [2097152, 0, 0] }

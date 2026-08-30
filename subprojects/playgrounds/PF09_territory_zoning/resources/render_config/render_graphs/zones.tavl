@@ -10,7 +10,7 @@
         { scene_color = (color_attachment, store), scene_depth = (depth_attachment, store) },
         { scene_color = (transfer_src, store), scene_depth = (depth_attachment, store) }
       ]
-      steps = [ draw_fill, draw_lines, draw_overlay ]
+      steps = [ draw_fill, draw_lines, draw_labels, draw_overlay ]
     },
     {
       name = pf09_present

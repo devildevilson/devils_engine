@@ -73,7 +73,7 @@ std::vector<part_ref> find_path(const zone_store& store, const part_ref from, co
   if (store.part_of(from) == nullptr || store.part_of(to) == nullptr) return {};
 
   const auto* goal_zone = store.find(to.zone);
-  if (goal_zone == nullptr || goal_zone->impassable()) return {};
+  if (goal_zone == nullptr || !store.passable(*goal_zone)) return {};
 
   // Поиск стал по СТОИМОСТИ, а не по числу шагов: дорога должна тянуть маршрут на себя, иначе персонаж
   // пойдёт напрямик через дворы просто потому, что там меньше клеток. Непроходимое место не пропускается
@@ -106,8 +106,10 @@ std::vector<part_ref> find_path(const zone_store& store, const part_ref from, co
       if (!portal.passable() || portal.other == invalid_key) continue;
 
       const part_ref next{portal.other, portal.other_part};
+      // Проходимость спрашивается У ХРАНИЛИЩА, а не у записи: закрытая дверь — это рантайм-состояние
+      // МЕСТА, и путь обязан меняться от того, что её заперли, без пересборки файлов.
       const auto* zone = store.find(next.zone);
-      if (zone == nullptr || zone->impassable()) continue;
+      if (zone == nullptr || !store.passable(*zone)) continue;
       if (store.part_of(next) == nullptr) continue; // сосед в невыгруженном секторе
 
       const float step = zone->road() ? 0.5f : 1.0f;
@@ -134,6 +136,33 @@ std::vector<part_ref> find_path(const zone_store& store, const part_ref from, co
   }
   std::reverse(path.begin(), path.end());
   return path;
+}
+
+// Ломаная маршрута для рисования: где персонаж сейчас, через какие проёмы он пойдёт и куда придёт.
+// Строится ИЗ ТОГО ЖЕ пути, по которому он шагает, а не из отдельного «визуального» маршрута: иначе
+// нарисованная линия и настоящее движение разошлись бы, и картинка врала бы ровно там, где она нужна.
+std::vector<glm::vec2> route_points(const zone_store& store, const agent& walker) {
+  std::vector<glm::vec2> points;
+  if (walker.arrived || walker.cursor >= walker.path.size()) return points;
+
+  points.push_back(walker.position);
+  auto here = walker.location;
+  for (uint32_t index = walker.cursor; index < walker.path.size(); ++index) {
+    const auto next = walker.path[index];
+    const auto portals = store.portals_of(here);
+    const auto gate = std::find_if(portals.begin(), portals.end(), [&](const zone_portal& item) {
+      return item.other == next.zone && item.other_part == next.part;
+    });
+    // У связи без геометрии точки нет — рисовать её нечем, и подставлять центр было бы выдумкой.
+    // Обрываем линию: лестница и правда не отрезок на плане.
+    if (gate == portals.end() || !gate->geometric()) break;
+    points.push_back(gate->middle());
+    here = next;
+  }
+
+  glm::vec2 last{};
+  if (here == walker.path.back() && interior_point(store, here, last)) points.push_back(last);
+  return points;
 }
 
 bool step_agent(const zone_store& store, agent& walker, const float distance_m) {

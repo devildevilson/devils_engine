@@ -25,6 +25,7 @@
 #include "devils_engine/playground/frame_pacer.h"
 #include "devils_engine/playground/free_camera.h"
 #include "devils_engine/playground/visage_overlay.h"
+#include "devils_engine/visage/font.h"
 #include "devils_engine/utils/core.h"
 #include "devils_engine/utils/fileio.h"
 
@@ -102,6 +103,20 @@ struct stream_vertex {
 };
 static_assert(sizeof(stream_vertex) == 32);
 
+// Вершина мирового интерфейса. Якорь — в мире, раскладка — в пикселях: чисто мировой прямоугольник
+// растягивается наклоном камеры и перестаёт быть текстом, а чисто экранный отрывается от персонажа.
+struct label_vertex {
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  uint32_t tint = 0;
+  float offset_x = 0.0f;
+  float offset_y = 0.0f;
+  float u = -1.0f;   // отрицательный u — сплошная заливка, а не глиф
+  float v = -1.0f;
+};
+static_assert(sizeof(label_vertex) == 32);
+
 constexpr uint32_t no_slot = 0xffffffffu;
 
 uint32_t pack(const uint32_t r, const uint32_t g, const uint32_t b, const uint32_t a) {
@@ -115,8 +130,13 @@ uint32_t wall_tint(const zone_kind kind);
 uint32_t kind_tint(const zone_kind kind) {
   switch (kind) {
     case zone_kind::street: return pack(150, 146, 138, 255);
+    case zone_kind::crossroad: return pack(168, 163, 152, 255);
+    case zone_kind::square: return pack(186, 178, 162, 255);
     case zone_kind::yard: return pack(132, 156, 112, 255);
     case zone_kind::hall: return pack(196, 172, 140, 255);
+    case zone_kind::wall: return pack(112, 96, 82, 255);
+    case zone_kind::door: return pack(214, 150, 90, 255);
+    case zone_kind::stair: return pack(206, 196, 120, 255);
     case zone_kind::landmark: return pack(214, 150, 90, 255);
     case zone_kind::settlement: return pack(96, 104, 126, 255);
     default: return pack(110, 110, 120, 255);
@@ -190,8 +210,68 @@ zone_level level_for_span(const double span_m) {
 struct frame_geometry {
   std::vector<stream_vertex> fill;
   std::vector<stream_vertex> lines;
+  std::vector<label_vertex> labels;
   std::vector<zone_key> slots;   // slot -> ключ зоны, для наведения и выделения
 };
+
+// Прямоугольник мирового интерфейса в пикселях от якоря. Координаты экранные, поэтому y растёт ВНИЗ:
+// так же, как в clip-пространстве Vulkan, и незачем переворачивать знак в трёх местах.
+void emit_label_quad(frame_geometry& out, const glm::vec3 anchor, const glm::vec2 lower, const glm::vec2 upper,
+                     const uint32_t tint) {
+  const auto corner = [&](const float px, const float py) {
+    out.labels.push_back({anchor.x, anchor.y, anchor.z, tint, px, py, -1.0f, -1.0f});
+  };
+  corner(lower.x, lower.y);
+  corner(upper.x, lower.y);
+  corner(upper.x, upper.y);
+  corner(lower.x, lower.y);
+  corner(upper.x, upper.y);
+  corner(lower.x, upper.y);
+}
+
+// Строка тем же MSDF-атласом, что и экранный overlay: второй атлас ради подписей в мире не нужен, а его
+// метрики движок и так отдаёт наружу. Возвращает ширину, чтобы вызывающий мог отцентрировать подложку.
+float emit_label_text(frame_geometry& out, const visage::font_t& font, const glm::vec3 anchor,
+                      const std::string_view text, const float left_px, const float baseline_px,
+                      const float size_px, const uint32_t tint) {
+  float cursor = left_px;
+  for (const unsigned char symbol : text) {
+    const auto* glyph = font.find_glyph(uint32_t(symbol));
+    if (glyph == nullptr) continue;
+
+    if (glyph->w > 0 && glyph->h > 0) {
+      // ВАЖНО про метрики. `pb`/`pt` в этом шрифте уже зеркалены упаковщиком атласа под y-вниз:
+      // хранится `pb = 1 - pt_вверх`, `pt = 1 - pb_вверх`. То есть это НЕ «низ и верх» в привычном
+      // смысле, а смещения вниз от верха строки, отстоящего от базовой линии на один em. Прочитать их
+      // как y-вверх — и высокие буквы встают правильно, а короткие уезжают вверх: у них маленький `pt`,
+      // и квад цепляется не за ту сторону. Выглядит это как пляшущая строка, а не как явная ошибка.
+      const float line_top = baseline_px - size_px;
+      const float left = cursor + float(glyph->pl) * size_px;
+      const float right = cursor + float(glyph->pr) * size_px;
+      const float top = line_top + float(glyph->pb) * size_px;
+      const float bottom = line_top + float(glyph->pt) * size_px;
+
+      // А вот atlas-bounds НЕ зеркалены: сырые строки атласа лежат в текстуре как есть, поэтому верх
+      // квада сэмплит `at/H` (большее v), низ — `ab/H`.
+      const float u0 = float(glyph->al / double(font.width));
+      const float u1 = float(glyph->ar / double(font.width));
+      const float v_bottom = float(glyph->ab / double(font.height));
+      const float v_top = float(glyph->at / double(font.height));
+
+      const auto corner = [&](const float px, const float py, const float u, const float v) {
+        out.labels.push_back({anchor.x, anchor.y, anchor.z, tint, px, py, u, v});
+      };
+      corner(left, bottom, u0, v_bottom);
+      corner(right, bottom, u1, v_bottom);
+      corner(right, top, u1, v_top);
+      corner(left, bottom, u0, v_bottom);
+      corner(right, top, u1, v_top);
+      corner(left, top, u0, v_top);
+    }
+    cursor += float(glyph->advance) * size_px;
+  }
+  return cursor - left_px;
+}
 
 void push(frame_geometry& out, const glm::vec2 flat, const float height, const uint32_t tint, const uint32_t slot) {
   out.fill.push_back({flat.x, height, flat.y, tint, slot, 0, 0, 0});
@@ -443,7 +523,8 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
       playground::overlay_description{
         "PF09 territory zoning",
         "sectors from disk -> polygon zones -> portals from shared edges",
-        "WASD pan | wheel zoom | LMB select | QE yaw | RF pitch | G agents | P portals | H walls | Esc quit"});
+        "WASD pan | wheel zoom | LMB select | QE yaw | RF pitch | ZX floor | C cutaway | V route | N names | "
+        "K toggle door | G agents | P portals | H walls | Esc quit"});
 
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
@@ -499,6 +580,28 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
     }
     store.focus(centre);
 
+    // Центр поселения — это чаще всего площадь, и окно открывалось на пустом пятне мостовой. Смещаемся к
+    // ближайшему ЗДАНИЮ: смотреть тут интересно на застройку, а не на то, что она окружает.
+    {
+      const auto* home = store.sector(sector_of(centre.x), sector_of(centre.y));
+      double best = 1.0e30;
+      glm::dvec2 target = centre;
+      if (home != nullptr) {
+        for (const auto& record : home->zones) {
+          if (record.kind != zone_kind::hall || record.floor != 0) continue;
+          const glm::dvec2 spot{(record.bounds.lower.x + record.bounds.upper.x) * 0.5,
+                                (record.bounds.lower.z + record.bounds.upper.z) * 0.5};
+          const double distance = (spot.x - centre.x) * (spot.x - centre.x) + (spot.y - centre.y) * (spot.y - centre.y);
+          if (distance < best) {
+            best = distance;
+            target = spot;
+          }
+        }
+      }
+      centre = target;
+      store.focus(centre);
+    }
+
     input::events::clear_bindings();
     bind_key("pan_up", "key_w");
     bind_key("pan_down", "key_s");
@@ -507,6 +610,12 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
     bind_key("toggle_agents", "key_g");
     bind_key("toggle_portals", "key_p");
     bind_key("toggle_walls", "key_h");
+    bind_key("floor_down", "key_z");
+    bind_key("floor_up", "key_x");
+    bind_key("toggle_cutaway", "key_c");
+    bind_key("toggle_routes", "key_v");
+    bind_key("toggle_names", "key_n");
+    bind_key("toggle_door", "key_k");
     bind_key("pitch_up", "key_r");
     bind_key("pitch_down", "key_f");
     bind_key("yaw_left", "key_q");
@@ -528,7 +637,20 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
     bool agents_latch = false;
     bool portals_latch = false;
 
+    int32_t current_floor = options.start_floor;
+    bool cutaway = options.start_cutaway;
+    bool show_routes = true;
+    bool show_names = true;
+    bool floor_down_latch = false;
+    bool floor_up_latch = false;
+    bool cutaway_latch = false;
+    bool routes_latch = false;
+    bool names_latch = false;
+    bool door_latch = false;
+    uint32_t toggled_doors = 0;
+
     std::vector<agent> walkers;
+    std::vector<zone_key> walkable;
     frame_geometry geometry;
     std::vector<std::string> detail;
 
@@ -575,6 +697,19 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
       if (walls_key && !walls_latch) show_walls = !show_walls;
       walls_latch = walls_key;
 
+      const auto latched = [](const std::string_view name, bool& latch) {
+        const bool pressed = input::events::is_pressed(name);
+        const bool fired = pressed && !latch;
+        latch = pressed;
+        return fired;
+      };
+      if (latched("floor_down", floor_down_latch)) current_floor = std::max(current_floor - 1, 0);
+      if (latched("floor_up", floor_up_latch)) current_floor = std::min(current_floor + 1, 3);
+      if (latched("toggle_cutaway", cutaway_latch)) cutaway = !cutaway;
+      if (latched("toggle_routes", routes_latch)) show_routes = !show_routes;
+      if (latched("toggle_names", names_latch)) show_names = !show_names;
+      const bool door_key = latched("toggle_door", door_latch);
+
       pitch_deg = std::clamp(pitch_deg + 40.0 * double(dt) *
                                            (double(input::events::is_pressed("pitch_up")) -
                                             double(input::events::is_pressed("pitch_down"))),
@@ -613,7 +748,15 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
         const float t = -eye.y / ray.y;
         if (t > 0.0f) pointer = eye + ray * t;
       }
-      pointer.y = 0.05f;
+      // Луч пересекается с плоскостью ТЕКУЩЕГО ЭТАЖА, а не с землёй: на втором этаже курсор обязан
+      // указывать на второй этаж, иначе выбирается комната под ногами у того, кто стоит наверху.
+      const float floor_base = float(current_floor) * storey_pitch_m;
+      pointer = glm::vec3{float(centre.x), floor_base, float(centre.y)};
+      if (std::abs(ray.y) > 1.0e-5f) {
+        const float t = (floor_base - eye.y) / ray.y;
+        if (t > 0.0f) pointer = eye + ray * t;
+      }
+      pointer.y = floor_base + 0.05f;
 
       const auto hovered_part = store.pick(pointer, level);
       const auto* hovered_zone = hovered_part.valid() ? store.find(hovered_part.zone) : nullptr;
@@ -622,11 +765,47 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
         click_pending = false;
       }
 
+      // Переключение двери — это переключение ПРОХОДИМОСТИ МЕСТА, а не свойства ребра. Одно действие
+      // закрывает сразу все её проходы, и маршруты меняются со следующего же поиска.
+      if (door_key && hovered_zone != nullptr && hovered_zone->kind == zone_kind::door) {
+        store.set_closed(hovered_zone->key, !store.closed(hovered_zone->key));
+        ++toggled_doors;
+        for (auto& walker : walkers) {
+          walker.path.clear();
+          walker.arrived = true;
+        }
+      }
+
       // --- сборка геометрии кадра ---
 
       geometry.fill.clear();
       geometry.lines.clear();
+      geometry.labels.clear();
       geometry.slots.clear();
+
+      // Срез переднего плана. Партийная камера смотрит под углом, и здание перед группой закрывает её
+      // целиком; убирать надо не «всё высокое», а ровно то, что стоит МЕЖДУ камерой и группой. Поэтому
+      // правило геометрическое: клин от группы назад к камере, и стены внутри клина не поднимаются.
+      const glm::vec2 flat_forward =
+        glm::normalize(glm::vec2{forward.x, forward.z} + glm::vec2{1.0e-6f, 0.0f});
+      // Точка отсчёта — цель камеры, а не первый попавшийся персонаж: камера в партийной РПГ и так
+      // стоит на группе, и «между камерой и группой» это ровно «между камерой и целью».
+      const glm::vec2 party{float(centre.x), float(centre.y)};
+      const float cut_depth = float(span_m * 0.8);
+      const float cut_near = float(span_m * 0.05);
+      const float cut_far = float(span_m * 0.22);
+      const auto in_cutaway = [&](const glm::vec2 point) {
+        if (!cutaway) return false;
+        const auto delta = point - party;
+        const float along = glm::dot(delta, flat_forward);
+        if (along >= 0.0f || along <= -cut_depth) return false;
+
+        // Клин РАСШИРЯЕТСЯ к камере: чем ближе стена, тем больше экрана она закрывает, и постоянная
+        // ширина срезала бы дальнее вместе с ближним или не срезала бы ничего.
+        const float side = std::abs(delta.x * flat_forward.y - delta.y * flat_forward.x);
+        const float reach = -along / cut_depth;
+        return side < cut_near + (cut_far - cut_near) * reach;
+      };
 
       const float cull_low_x = float(centre.x - half_w);
       const float cull_high_x = float(centre.x + half_w);
@@ -650,6 +829,13 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
             if (record.bounds.upper.x < cull_low_x || record.bounds.lower.x > cull_high_x) continue;
             if (record.bounds.upper.z < cull_low_z || record.bounds.lower.z > cull_high_z) continue;
 
+            // Этажи. Выше текущего не рисуется ничего — иначе крыша закрывает то, ради чего на этаж
+            // переключились; ровно один этаж ниже остаётся приглушённым, чтобы было видно, где стоишь
+            // относительно улицы, а глубже уже мешает.
+            if (record.floor > current_floor) continue;
+            const bool below = record.floor < current_floor;
+            if (record.floor < current_floor - 1) continue;
+
             const uint32_t slot = uint32_t(geometry.slots.size());
             geometry.slots.push_back(record.key);
             if (record.key == selected) selected_slot = slot;
@@ -663,23 +849,48 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
 
               const float low = part.bounds.lower.y;
               const float high = part.bounds.upper.y;
-              emit_floor(geometry, outline, low, kind_tint(record.kind), slot);
 
-              // Стены поднимаются только там, где высота вообще есть. Улица высотой в двадцать
-              // сантиметров стены не образует, и вертикали на ней были бы шумом, а не архитектурой.
-              if (show_walls && high - low > 0.5f) {
+              const auto centre_of_part = glm::vec2{(part.bounds.lower.x + part.bounds.upper.x) * 0.5f,
+                                                    (part.bounds.lower.z + part.bounds.upper.z) * 0.5f};
+              const bool sliced = in_cutaway(centre_of_part);
+
+              uint32_t floor_tint = kind_tint(record.kind);
+              if (below) {
+                // Нижний этаж уходит в полупрозрачность, а не в другой цвет: он должен читаться как
+                // «то же самое, но не здесь», а перекраска читалась бы как другой вид места.
+                floor_tint = (floor_tint & 0x00ffffffu) | (110u << 24);
+              }
+              emit_floor(geometry, outline, low, floor_tint, slot);
+
+              // Стена теперь ЧИТАЕТСЯ ИЗ ДАННЫХ, а не выводится из отсутствия прохода. Прежнее правило
+              // «ребро без прохода — стена» перестало работать в тот момент, когда стена стала зоной: у
+              // непроходимого места проходы есть, они просто ведут в него, а не сквозь. Поэтому
+              // непроходимая зона поднимается целиком, а у проходимой вертикаль остаётся только там, где
+              // проёма действительно нет.
+              if (show_walls && !below && !sliced && high - low > 0.5f) {
                 const uint32_t tint = wall_tint(record.kind);
                 for (size_t i = 0; i < outline.size(); ++i) {
-                  emit_open_wall(geometry, outline[i], outline[(i + 1) % outline.size()], portals, low, high, tint,
-                                 slot);
+                  const auto a = outline[i];
+                  const auto b = outline[(i + 1) % outline.size()];
+                  if (record.impassable()) {
+                    emit_wall(geometry, a, b, low, high, tint, slot);
+                  } else {
+                    emit_open_wall(geometry, a, b, portals, low, high, tint, slot);
+                  }
                 }
               }
 
-              if (!show_portals) continue;
+              if (!show_portals || below) continue;
               for (const auto& portal : portals) {
                 if (!portal.geometric()) continue;
                 if (portal.other < record.key || (portal.other == record.key && portal.other_part < index)) continue;
-                const uint32_t tint = portal.passable() ? pack(245, 245, 235, 220) : pack(230, 70, 70, 240);
+
+                // Красным помечается то, через что сейчас НЕ ПРОЙТИ, откуда бы это ни следовало: замок на
+                // самом проходе или закрытая дверь по ту сторону. Игроку важно первое, а не то, где живёт
+                // флаг, и разделять эти два случая цветом значило бы показывать устройство данных.
+                const auto* neighbour = store.find(portal.other);
+                const bool open = portal.passable() && (neighbour == nullptr || store.passable(*neighbour));
+                const uint32_t tint = open ? pack(245, 245, 235, 220) : pack(230, 70, 70, 240);
                 emit_line(geometry, portal.from, portal.to, low + 0.06f, tint);
               }
             }
@@ -690,9 +901,17 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
       // --- персонажи ---
 
       if (show_agents) {
-        while (walkers.size() < options.agent_count && !geometry.slots.empty()) {
-          const auto key = geometry.slots[utils::splitmix(walkers.size() + 1ull, uint64_t(drawn_frames) + 1ull) %
-                                          geometry.slots.size()];
+        // Ходить можно только по ПРОХОДИМОМУ. Раньше сюда шёл весь список нарисованных зон, и персонаж
+        // заводился внутри стены: снаружи это выглядело как имя, висящее над кладкой.
+        walkable.clear();
+        for (const auto key : geometry.slots) {
+          const auto* zone = store.find(key);
+          if (zone != nullptr && store.passable(*zone)) walkable.push_back(key);
+        }
+
+        while (walkers.size() < options.agent_count && !walkable.empty()) {
+          const auto key = walkable[utils::splitmix(walkers.size() + 1ull, uint64_t(drawn_frames) + 1ull) %
+                                    walkable.size()];
           agent walker{};
           walker.location = {key, 0};
           if (!interior_point(store, walker.location, walker.position)) break;
@@ -701,10 +920,10 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
 
         for (auto& walker : walkers) {
           if (walker.arrived || walker.path.empty()) {
-            if (geometry.slots.empty()) continue;
-            const auto goal = geometry.slots[utils::splitmix(uint64_t(&walker - walkers.data()) + 1ull,
-                                                             uint64_t(drawn_frames) + 7ull) %
-                                             geometry.slots.size()];
+            if (walkable.empty()) continue;
+            const auto goal = walkable[utils::splitmix(uint64_t(&walker - walkers.data()) + 1ull,
+                                                       uint64_t(drawn_frames) + 7ull) %
+                                       walkable.size()];
             walker.path = find_path(store, walker.location, {goal, 0});
             walker.cursor = 0;
             walker.arrived = walker.path.empty();
@@ -713,10 +932,62 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
         }
 
         const float marker = float(std::max(span_m * 0.003, 0.30));
-        for (const auto& walker : walkers) {
+        for (uint32_t index = 0; index < walkers.size(); ++index) {
+          const auto& walker = walkers[index];
           const auto* part = store.part_of(walker.location);
-          const float height = part == nullptr ? 0.1f : part->bounds.lower.y + 0.1f;
-          emit_marker(geometry, walker.position, marker, height, pack(255, 90, 200, 255));
+          const auto* zone = store.find(walker.location.zone);
+          if (part == nullptr || zone == nullptr) continue;
+          if (zone->floor > current_floor || zone->floor < current_floor - 1) continue;
+
+          const bool leader = index == 0;
+          const bool downstairs = zone->floor < current_floor;
+          const float height = part->bounds.lower.y + 0.1f;
+          const uint32_t body = leader ? pack(255, 214, 96, 255) : pack(255, 90, 200, 255);
+          emit_marker(geometry, walker.position, leader ? marker * 1.4f : marker, height,
+                      downstairs ? ((body & 0x00ffffffu) | (110u << 24)) : body);
+
+          // Маршрут рисуется ИЗ ТОГО ЖЕ пути, по которому персонаж шагает. Отдельная «визуальная»
+          // ломаная разошлась бы с движением, и картинка врала бы ровно там, где на неё смотрят.
+          if (show_routes && !downstairs) {
+            const auto points = route_points(store, walker);
+            const uint32_t tint = leader ? pack(255, 226, 130, 220) : pack(120, 200, 255, 150);
+            for (size_t i = 1; i < points.size(); ++i) {
+              emit_line(geometry, points[i - 1], points[i], height + 0.05f, tint);
+            }
+          }
+
+          // Мировой интерфейс. Показывается не всегда: на общем плане города имена превращаются в кашу,
+          // а порог по ширине обзора — это то же правило, по которому переключается уровень карты.
+          if (show_names && !downstairs && span_m <= 900.0 && index < 12) {
+            static constexpr std::string_view names[] = {"Aldric", "Bran",  "Cedric", "Doran",
+                                                         "Edrin",  "Falk",  "Gorm",   "Hale",
+                                                         "Ivar",   "Jory",  "Kessa",  "Lowen"};
+            const auto name = names[index % (sizeof(names) / sizeof(names[0]))];
+            const auto status = zone_kind_name(zone->kind);
+            const float progress = walker.path.empty()
+                                     ? 1.0f
+                                     : float(walker.cursor) / float(std::max<size_t>(walker.path.size(), 1));
+
+            const glm::vec3 anchor{walker.position.x, height + 1.8f, walker.position.y};
+            const auto& font = overlay.font_metrics();
+            const float name_px = 15.0f;
+            const float status_px = 11.0f;
+            const float name_width = float(font.text_width(name_px, name));
+            const float status_width = float(font.text_width(status_px, status));
+            const float half = std::max(name_width, status_width) * 0.5f + 7.0f;
+
+            emit_label_quad(geometry, anchor, {-half, -56.0f}, {half, -10.0f}, pack(18, 20, 26, 200));
+            emit_label_quad(geometry, anchor, {-half, -56.0f}, {half, -53.0f},
+                            leader ? pack(255, 214, 96, 235) : pack(120, 200, 255, 200));
+            emit_label_text(geometry, font, anchor, name, -name_width * 0.5f, -38.0f, name_px,
+                            pack(240, 236, 226, 255));
+            emit_label_quad(geometry, anchor, {-half + 5.0f, -33.0f}, {half - 5.0f, -28.0f},
+                            pack(52, 56, 64, 220));
+            emit_label_quad(geometry, anchor, {-half + 5.0f, -33.0f},
+                            {-half + 5.0f + (2.0f * half - 10.0f) * progress, -28.0f}, pack(120, 210, 130, 235));
+            emit_label_text(geometry, font, anchor, status, -status_width * 0.5f, -14.0f, status_px,
+                            pack(178, 186, 198, 255));
+          }
         }
       } else {
         walkers.clear();
@@ -741,6 +1012,12 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
         }
         detail.push_back(std::format("parts: {}  portals: {} open, {} locked", shown->part_count, open_gates,
                                      locked_gates));
+        detail.push_back(std::format("floor: {}  passable: {}{}", shown->floor,
+                                     store.passable(*shown) ? "yes" : "no",
+                                     shown->kind == zone_kind::door
+                                       ? (store.closed(shown->key) ? "  (K opens this door)"
+                                                                   : "  (K closes this door)")
+                                       : ""));
 
         const auto* parent = store.find(shown->parent);
         detail.push_back(parent == nullptr ? std::string("part of: none (parent sector not resident)")
@@ -749,6 +1026,9 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
       }
       detail.push_back(std::format("view {:.0f} m  pitch {:.0f} deg  map level {}  zones in frame {}", span_m,
                                    pitch_deg, zone_level_name(level), geometry.slots.size()));
+      detail.push_back(std::format("floor {}  cutaway {}  routes {}  names {}  doors toggled {}", current_floor,
+                                   cutaway ? "on" : "off", show_routes ? "on" : "off", show_names ? "on" : "off",
+                                   toggled_doors));
       detail.push_back(std::format("sectors resident {}  {:.0f} KB  agents {}", store.resident_sectors(),
                                    double(store.resident_bytes()) / 1024.0, walkers.size()));
       overlay.set_detail_lines(detail);
@@ -767,16 +1047,22 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
       camera.view = view;
       camera.camera_position = glm::vec4(float(centre.x), float(centre.y),
                                          std::bit_cast<float>(selected_slot), std::bit_cast<float>(hovered_slot));
-      camera.viewport_near = glm::vec4(float(pending_width), float(pending_height), 0.1f, 1.0f);
+      // В `w` едет слот атласа шрифта: мировым надписям он нужен во фрагменте, а заводить ради одного
+      // числа ещё один набор дескрипторов дороже, чем занять свободное поле уже существующего блока.
+      camera.viewport_near =
+        glm::vec4(float(pending_width), float(pending_height), 0.1f, float(font_texture));
       write_buffer(base, "camera_buffer", &camera, sizeof(camera));
 
       write_buffer(base, "fill_vertices", geometry.fill.data(), geometry.fill.size() * sizeof(stream_vertex));
       write_buffer(base, "line_vertices", geometry.lines.data(), geometry.lines.size() * sizeof(stream_vertex));
+      write_buffer(base, "label_vertices", geometry.labels.data(), geometry.labels.size() * sizeof(label_vertex));
 
       const VkDrawIndirectCommand fill_command{uint32_t(geometry.fill.size()), 1, 0, 0};
       const VkDrawIndirectCommand line_command{uint32_t(geometry.lines.size()), 1, 0, 0};
+      const VkDrawIndirectCommand label_command{uint32_t(geometry.labels.size()), 1, 0, 0};
       base.write_constant_data(base.find_constant("fill_draw"), fill_command);
       base.write_constant_data(base.find_constant("line_draw"), line_command);
+      base.write_constant_data(base.find_constant("label_draw"), label_command);
       base.update_event();
 
       const uint64_t delta_us = uint64_t(std::max(dt, 1.0e-6f) * 1.0e6f);

@@ -13,7 +13,7 @@ namespace devils_engine::pf09 {
 
 namespace {
 
-constexpr char sector_magic[8] = {'P', 'F', '0', '9', 'Z', 'S', '0', '3'};
+constexpr char sector_magic[8] = {'P', 'F', '0', '9', 'Z', 'S', '0', '4'};
 
 struct sector_header {
   char magic[8];
@@ -58,6 +58,8 @@ std::string_view zone_kind_name(const zone_kind value) noexcept {
   switch (value) {
     case zone_kind::hall: return "hall";
     case zone_kind::wall: return "wall";
+    case zone_kind::door: return "door";
+    case zone_kind::stair: return "stair";
     case zone_kind::street: return "street";
     case zone_kind::crossroad: return "crossroad";
     case zone_kind::square: return "square";
@@ -92,6 +94,11 @@ std::span<const glm::vec2> zone_sector::outline_of(const zone_part& part) const 
 std::span<const zone_portal> zone_sector::portals_of(const zone_part& part) const {
   if (part.portal_begin + part.portal_count > portals.size()) return {};
   return {portals.data() + part.portal_begin, part.portal_count};
+}
+
+std::span<const zone_portal> zone_sector::links_of(const zone_record& record) const {
+  if (record.link_begin + record.link_count > portals.size()) return {};
+  return {portals.data() + record.link_begin, record.link_count};
 }
 
 uint64_t zone_sector::byte_size() const noexcept {
@@ -134,6 +141,9 @@ uint64_t compute_fingerprint(const zone_sector& sector) {
     hash = utils::hash_combine(hash, record.part_count);
     hash = utils::hash_combine(hash, record.name_offset);
     hash = utils::hash_combine(hash, record.tags);
+    hash = utils::hash_combine(hash, uint32_t(record.floor));
+    hash = utils::hash_combine(hash, record.link_begin);
+    hash = utils::hash_combine(hash, record.link_count);
     for (uint32_t axis = 0; axis < 3; ++axis) {
       hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(record.bounds.lower[axis]));
       hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(record.bounds.upper[axis]));
@@ -407,6 +417,29 @@ std::vector<zone_portal> zone_store::perimeter(const zone_key key) const {
   return out;
 }
 
+void zone_store::set_closed(const zone_key key, const bool value) {
+  if (key == invalid_key) return;
+  const auto place = std::lower_bound(overrides_.begin(), overrides_.end(), door_state{key, false});
+  if (place != overrides_.end() && place->key == key) {
+    place->closed = value;
+    return;
+  }
+  overrides_.insert(place, door_state{key, value});
+}
+
+bool zone_store::closed(const zone_key key) const {
+  const auto place = std::lower_bound(overrides_.begin(), overrides_.end(), door_state{key, false});
+  if (place != overrides_.end() && place->key == key) return place->closed;
+
+  // Оверрайда нет — значит место в том состоянии, в каком его положил на диск сборщик.
+  const auto* record = find(key);
+  return record != nullptr && record->closed();
+}
+
+bool zone_store::passable(const zone_record& record) const {
+  return !record.impassable() && !closed(record.key);
+}
+
 const zone_part* zone_store::part_of(const part_ref& reference) const {
   const auto* record = find(reference.zone);
   if (record == nullptr || reference.part >= record->part_count) return nullptr;
@@ -430,6 +463,13 @@ std::span<const zone_portal> zone_store::portals_of(const part_ref& reference) c
   const auto* part = part_of(reference);
   if (part == nullptr) return {};
   return sector(key_sector_x(reference.zone), key_sector_y(reference.zone))->portals_of(*part);
+}
+
+std::span<const zone_portal> zone_store::links_of(const zone_key key) const {
+  const auto* record = find(key);
+  if (record == nullptr) return {};
+  const auto* owner = sector(key_sector_x(key), key_sector_y(key));
+  return owner == nullptr ? std::span<const zone_portal>{} : owner->links_of(*record);
 }
 
 std::string_view zone_store::name_of(const zone_record& record) const {

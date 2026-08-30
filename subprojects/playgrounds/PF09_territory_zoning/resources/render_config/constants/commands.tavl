@@ -1,4 +1,5 @@
 // Число вершин переписывается каждый кадр: сколько зон резидентно, столько и треугольников.
 { name = fill_draw, layout = draw4, value = [0.0, 1.0, 0.0, 0.0] }
 { name = line_draw, layout = draw4, value = [0.0, 1.0, 0.0, 0.0] }
+{ name = label_draw, layout = draw4, value = [0.0, 1.0, 0.0, 0.0] }
 { name = ui_push, layout = ui1ui1ui1ui1ui1ui1ui1, value = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] }

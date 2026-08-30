@@ -34,6 +34,9 @@ std::vector<part_ref> find_path(const zone_store& store, const part_ref from, co
 // false, если идти больше некуда.
 bool step_agent(const zone_store& store, agent& walker, const float distance_m);
 
+// Ломаная маршрута для рисования: позиция персонажа, середины проёмов на пути и точка прибытия.
+std::vector<glm::vec2> route_points(const zone_store& store, const agent& walker);
+
 // Точка внутри зоны, от которой удобно стартовать: центр габарита, если он внутри фигуры, иначе первая
 // подходящая точка вдоль диагонали.
 bool interior_point(const zone_store& store, const part_ref& reference, glm::vec2& out);

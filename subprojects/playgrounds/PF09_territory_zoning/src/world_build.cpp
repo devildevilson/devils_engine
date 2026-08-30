@@ -19,9 +19,16 @@ namespace devils_engine::pf09 {
 
 namespace {
 
-constexpr float edge_epsilon = 0.05f; // короче этого общий отрезок проходом не считается
+// Короче этого общий отрезок проходом не считается. Порог задан НЕ вкусом, а представлением: вершины
+// хранятся в мировых `float`, и шаг между соседними представимыми числами растёт вместе с координатой.
+// Зонируется ОКРЕСТНОСТЬ ПАРТИИ, а не планета — дальние города живут фоновой симуляцией и зон не имеют,
+// — поэтому область держится у начала координат, где на пятидесяти километрах шаг `float` равен четырём
+// миллиметрам, а не трём сантиметрам, как было на полумиллионе. Допуск ушёл вслед за ним в пять раз.
+constexpr float edge_epsilon = 0.02f;
+constexpr float collinear_epsilon = 0.03f; // отклонение конца ребра от прямой соседа в узкой фазе
 constexpr double wall_inset_m = 1.2;  // насколько стены здания отступают от границы участка
 constexpr double door_width_m = 2.4;
+constexpr uint32_t plot_stride = 16;     // сколько личностей резервируется под один участок застройки
 
 // Черновая зона до раздачи ключей. Списка соседей здесь НЕТ: связность выводится из геометрии позже, и
 // это главное отличие новой модели — проход это общее ребро, а не строка в списке.
@@ -35,7 +42,17 @@ struct draft {
   std::string name;
   uint64_t identity = 0;
   uint64_t parent_identity = 0;
-  std::vector<uint64_t> graph_links; // явные рёбра для зон без формы
+  int32_t floor = 0;
+
+  // Явные рёбра графа. Нужны там, где общего ребра НЕТ и быть не может: дорога между поселениями и
+  // лестница на другой этаж. Лестница — самый честный случай: её верх и низ лежат ровно друг над другом,
+  // общее ребро у них в плане идеальное, а прохода через него нет, потому что между ними перекрытие.
+  // Поэтому связность и не может быть чистой функцией геометрии — её кладут в файл.
+  struct graph_link {
+    uint64_t identity = 0;
+    uint32_t flags = 0;
+  };
+  std::vector<graph_link> graph_links;
   // Части хранятся В ЛОКАЛЬНЫХ координатах относительно `reference`, а мировые получаются сложением при
   // записи. Это не экономия и не удобство: точка, посчитанная сразу в мировых метрах, приходит уже
   // округлённой до трёх сантиметров, и короткое ребро двери длиной в два метра даёт из таких точек
@@ -44,6 +61,11 @@ struct draft {
   glm::vec2 reference{};
   int32_t sector_x = 0;
   int32_t sector_y = 0;
+  // Сектор задан ЯВНО и не выводится из габарита. Здание — одна вещь, и его комнаты, стены, двери и
+  // лестница обязаны лежать в одном файле: иначе центр габарита разводит их по разным секторам, лестница
+  // с её верхним залом оказываются в разных, и связь между ними то разрешается, то нет — в зависимости
+  // от того, что сейчас подгружено.
+  bool anchored = false;
 };
 
 std::vector<glm::vec2> rectangle(const double x0, const double y0, const double x1, const double y1) {
@@ -70,9 +92,19 @@ zone_bounds merge_bounds(const zone_bounds& a, const zone_bounds& b) {
 // четырёхугольник; комнаты и двери внутри неё строятся В ПАРАМЕТРАХ этой клетки, а не в мировых метрах.
 // Так соседние подфигуры получают буквально одни и те же вершины, и общее ребро остаётся точным.
 glm::vec2 bilinear(const std::array<glm::vec2, 4>& quad, const double u, const double v) {
-  const auto bottom = glm::mix(quad[0], quad[1], float(u));
-  const auto top = glm::mix(quad[3], quad[2], float(u));
-  return glm::mix(bottom, top, float(v));
+  // На краях параметра берём вершины и рёбра ТОЧНО, а не через интерполяцию. `mix(a, b, 1)` возвращает
+  // `a + (b - a)`, что отличается от `b` на округление: при координатах в полмиллиона метров это три
+  // сантиметра, и между стеной здания и соседней улицей открывалась щель такой ширины. Точка выборки в
+  // неё проваливалась, и покрытие переставало быть полным ровно в одном месте из четырёх тысяч.
+  const auto edge = [](const glm::vec2 a, const glm::vec2 b, const double t) {
+    if (t <= 0.0) return a;
+    if (t >= 1.0) return b;
+    return glm::mix(a, b, float(t));
+  };
+
+  const auto bottom = edge(quad[0], quad[1], u);
+  const auto top = edge(quad[3], quad[2], u);
+  return edge(bottom, top, v);
 }
 
 uint64_t identity_of(const uint32_t domain, const uint64_t a, const uint64_t b = 0) {
@@ -203,7 +235,7 @@ build_stats build_world(const territory& map, const locality_config& local, cons
         const double dx = other.centre.x - item.centre.x;
         const double dy = other.centre.y - item.centre.y;
         if (dx * dx + dy * dy > reach * reach) continue;
-        entry.graph_links.push_back(identity_of(domain, other.node));
+        entry.graph_links.push_back({identity_of(domain, other.node), uint32_t(portal_flags::graph)});
       }
       drafts.push_back(std::move(entry));
     }
@@ -239,12 +271,14 @@ build_stats build_world(const territory& map, const locality_config& local, cons
   }
 
   const auto emit_shape = [&](draft entry) {
-    zone_bounds box{{1e30f, entry.low, 1e30f}, {-1e30f, entry.high, -1e30f}};
-    for (const auto& part : entry.parts) {
-      box = merge_bounds(box, bounds_of(part, entry.low, entry.high));
+    if (!entry.anchored) {
+      zone_bounds box{{1e30f, entry.low, 1e30f}, {-1e30f, entry.high, -1e30f}};
+      for (const auto& part : entry.parts) {
+        box = merge_bounds(box, bounds_of(part, entry.low, entry.high));
+      }
+      entry.sector_x = sector_of(double(box.lower.x + entry.reference.x + box.upper.x + entry.reference.x) * 0.5);
+      entry.sector_y = sector_of(double(box.lower.z + entry.reference.y + box.upper.z + entry.reference.y) * 0.5);
     }
-    entry.sector_x = sector_of(double(box.lower.x + entry.reference.x + box.upper.x + entry.reference.x) * 0.5);
-    entry.sector_y = sector_of(double(box.lower.z + entry.reference.y + box.upper.z + entry.reference.y) * 0.5);
     drafts.push_back(std::move(entry));
   };
 
@@ -266,7 +300,7 @@ build_stats build_world(const territory& map, const locality_config& local, cons
       const double dx = other.centre.x - item.centre.x;
       const double dy = other.centre.y - item.centre.y;
       if (dx * dx + dy * dy > 12000.0 * 12000.0) continue;
-      entry.graph_links.push_back(identity_of(3, other.node));
+      entry.graph_links.push_back({identity_of(3, other.node), uint32_t(portal_flags::graph)});
     }
     emit_shape(std::move(entry));
   }
@@ -456,14 +490,21 @@ build_stats build_world(const territory& map, const locality_config& local, cons
       emit_shape(std::move(entry));
     }
 
-    // Здания: зал из всех помещений, стены как непроходимое место и двери как отдельные маленькие места.
+    // Здания: зал из помещений, стены как непроходимое место, двери как отдельные маленькие места и —
+    // у части домов — второй этаж. Этаж поднят над первым на перекрытие, поэтому вывод связей по общим
+    // рёбрам его с первым не соединяет: в плане фигуры лежат ровно друг над другом, «общее ребро» у них
+    // идеальное, а прохода через него нет. Соединяет их ЛЕСТНИЦА — связь, записанная в файл явно. Это и
+    // есть ответ на вопрос, зачем графу лежать в данных, если рёбра и так совпадают: совпадение рёбер не
+    // равносильно проходу ни в одну сторону — бывают совпавшие рёбра без прохода и проходы без рёбер.
     for (uint32_t plot = 0; plot < side * side; ++plot) {
       const uint32_t px = plot % side;
       const uint32_t py = plot / side;
       if (role_at(px, py) != zone_role::building) continue;
 
       const auto quad = cell_quad(px, py);
-      const auto building_identity = identity_of(4, item.node, plot * stride);
+      const auto building_identity = identity_of(4, item.node, plot * plot_stride);
+      const auto upper_hall_identity = identity_of(4, item.node, plot * plot_stride + 8);
+      const bool two_storey = (utils::splitmix(building_identity, 0x51a12cull) & 0xffffull) < 0x7000ull;
 
       draft shell{};
       shell.kind = zone_kind::building;
@@ -471,27 +512,26 @@ build_stats build_world(const territory& map, const locality_config& local, cons
       shell.parent_identity = district_of(px, py);
       shell.name = std::format("building {},{}", px, py);
       shell.reference = reference;
-      shell.sector_x = sector_of(double(reference.x) + double(quad[0].x));
-      shell.sector_y = sector_of(double(reference.y) + double(quad[0].y));
+      const int32_t plot_sector_x = sector_of(double(reference.x) + double(quad[0].x));
+      const int32_t plot_sector_y = sector_of(double(reference.y) + double(quad[0].y));
+      shell.sector_x = plot_sector_x;
+      shell.sector_y = plot_sector_y;
       drafts.push_back(std::move(shell));
 
-      draft hall{};
-      hall.kind = zone_kind::hall;
-      hall.high = 3.0f;
-      hall.identity = identity_of(4, item.node, plot * stride + 1);
-      hall.parent_identity = building_identity;
-      hall.name = std::format("hall of {},{}", px, py);
-      hall.reference = reference;
-      hall.tags = uint32_t(zone_flags::indoor);
+      // Всё, из чего состоит это здание, приписано ОДНОМУ сектору — тому же, что и само здание.
+      const auto anchor_here = [&](draft& target) {
+        target.anchored = true;
+        target.sector_x = plot_sector_x;
+        target.sector_y = plot_sector_y;
+      };
 
       const double step = (1.0 - 2.0 * inset_u) / double(local.room_side);
-      for (uint32_t room = 0; room < rooms_per_plot; ++room) {
+      const auto room_quad = [&](const uint32_t room) {
         const uint32_t rx = room % local.room_side;
         const uint32_t ry = room / local.room_side;
-        hall.parts.push_back(sub_quad(quad, inset_u + double(rx) * step, inset_u + double(ry) * step,
-                                      inset_u + double(rx + 1) * step, inset_u + double(ry + 1) * step));
-      }
-      emit_shape(std::move(hall));
+        return sub_quad(quad, inset_u + double(rx) * step, inset_u + double(ry) * step,
+                        inset_u + double(rx + 1) * step, inset_u + double(ry + 1) * step);
+      };
 
       // Где ставить двери: со сторон, выходящих на улицу или двор.
       std::array<bool, 4> door{};
@@ -504,6 +544,83 @@ build_stats build_world(const territory& map, const locality_config& local, cons
         door[d] = neighbour == zone_role::street || neighbour == zone_role::yard;
       }
 
+      // Кольцо стен, из которого вырезаны дверные проёмы. Оно и делает покрытие полным: между залом и
+      // улицей больше нет пустоты, там стоит непроходимое место со своими рёбрами и соседями.
+      const double gap_low = 0.5 - door_u * 0.5;
+      const double gap_high = 0.5 + door_u * 0.5;
+      const auto wall_ring = [&](draft& target, const std::array<bool, 4>& gaps) {
+        const auto band = [&](const bool horizontal, const double from, const double to, const bool near_side) {
+          const double a = near_side ? 0.0 : 1.0 - inset_u;
+          const double b = a + inset_u;
+          if (to - from < 1.0e-6) return;
+          target.parts.push_back(horizontal ? sub_quad(quad, from, a, to, b) : sub_quad(quad, a, from, b, to));
+        };
+
+        // d: 0 = низ, 1 = верх, 2 = лево, 3 = право. Низ и верх идут во всю ширину, бока — только между ними.
+        for (uint32_t d = 0; d < 2; ++d) {
+          const bool near_side = d == 0;
+          if (gaps[d]) {
+            band(true, 0.0, gap_low, near_side);
+            band(true, gap_high, 1.0, near_side);
+          } else {
+            band(true, 0.0, 1.0, near_side);
+          }
+        }
+        for (uint32_t d = 2; d < 4; ++d) {
+          const bool near_side = d == 2;
+          if (gaps[d]) {
+            band(false, inset_u, gap_low, near_side);
+            band(false, gap_high, 1.0 - inset_u, near_side);
+          } else {
+            band(false, inset_u, 1.0 - inset_u, near_side);
+          }
+        }
+      };
+
+      // Первый этаж. У двухэтажного дома последнее помещение отдано лестнице: она такое же место со
+      // своими рёбрами, просто вдобавок к соседям по плану у неё есть сосед этажом выше.
+      const uint32_t stair_room = two_storey ? rooms_per_plot - 1 : rooms_per_plot;
+
+      draft hall{};
+      hall.kind = zone_kind::hall;
+      hall.high = storey_height_m;
+      hall.identity = identity_of(4, item.node, plot * plot_stride + 1);
+      hall.parent_identity = building_identity;
+      hall.name = std::format("hall of {},{}", px, py);
+      hall.reference = reference;
+      hall.tags = uint32_t(zone_flags::indoor);
+      for (uint32_t room = 0; room < rooms_per_plot; ++room) {
+        if (room == stair_room) continue;
+        hall.parts.push_back(room_quad(room));
+      }
+      anchor_here(hall);
+      emit_shape(std::move(hall));
+
+      if (two_storey) {
+        draft stair{};
+        stair.kind = zone_kind::stair;
+        stair.high = storey_height_m;
+        stair.identity = identity_of(4, item.node, plot * plot_stride + 7);
+        stair.parent_identity = building_identity;
+        stair.name = std::format("stair of {},{}", px, py);
+        stair.reference = reference;
+        stair.tags = uint32_t(zone_flags::indoor);
+        stair.parts.push_back(room_quad(stair_room));
+        stair.graph_links.push_back({upper_hall_identity, portal_flags::climb | portal_flags::graph});
+        anchor_here(stair);
+        emit_shape(std::move(stair));
+      }
+
+      // Начальный замок ставится только там, где дверь НЕ ЕДИНСТВЕННАЯ. У дома с одной дверью запертая
+      // дверь означает запечатанный зал, и это не «интересное препятствие», а кусок города, куда игра
+      // никогда не попадёт. То же правило, что и у замков на рёбрах: запирать можно лишь то, без чего
+      // связность остаётся.
+      const uint32_t door_count = uint32_t(std::count(door.begin(), door.end(), true));
+      uint32_t first_door = 4;
+      for (uint32_t d = 0; d < 4; ++d) {
+        if (door[d] && first_door == 4) first_door = d;
+      }
+
       for (uint32_t d = 0; d < 4; ++d) {
         if (!door[d]) continue;
         draft entry{};
@@ -514,56 +631,71 @@ build_stats build_world(const territory& map, const locality_config& local, cons
           const double u0 = offsets[d][0] < 0 ? 0.0 : 1.0 - inset_u;
           entry.parts.push_back(sub_quad(quad, u0, 0.5 - door_u * 0.5, u0 + inset_u, 0.5 + door_u * 0.5));
         }
-        entry.high = 3.0f;
-        entry.kind = zone_kind::landmark;
-        entry.identity = identity_of(4, item.node, plot * stride + 2 + d);
+        entry.high = storey_height_m;
+        // Дверь — это МЕСТО, а не свойство ребра. Заперта не улица и не комната: перекрыт кусок
+        // поверхности между ними, и закрыть его достаточно один раз, а не на каждом из его рёбер.
+        entry.kind = zone_kind::door;
+        entry.identity = identity_of(4, item.node, plot * plot_stride + 2 + d);
         entry.parent_identity = building_identity;
         entry.name = std::format("door of {},{} side {}", px, py, d);
         entry.reference = reference;
+        // Часть дверей заперта с самого начала. Это НАЧАЛЬНОЕ состояние в файле, а не приговор: рантайм
+        // переключает его, и маршрут обязан меняться вслед, без пересборки секторов.
+        if (door_count > 1 && d == first_door &&
+            (utils::splitmix(entry.identity, 0x9d0c1ull) & 0xffffull) < 0x6000ull) {
+          entry.tags |= uint32_t(zone_flags::closed);
+        }
+        anchor_here(entry);
         emit_shape(std::move(entry));
       }
 
-      // Кольцо стен, из которого вырезаны дверные проёмы. Оно и делает покрытие полным: между залом и
-      // улицей больше нет пустоты, там стоит непроходимое место со своими рёбрами и соседями.
       draft walls{};
       walls.kind = zone_kind::wall;
-      walls.high = 3.0f;
-      walls.identity = identity_of(4, item.node, plot * stride + 6);
+      walls.high = storey_height_m;
+      walls.identity = identity_of(4, item.node, plot * plot_stride + 6);
       walls.parent_identity = building_identity;
       walls.name = std::format("walls of {},{}", px, py);
       walls.reference = reference;
       walls.tags = zone_flags::impassable | zone_flags::indoor;
-
-      const double gap_low = 0.5 - door_u * 0.5;
-      const double gap_high = 0.5 + door_u * 0.5;
-
-      const auto band = [&](const bool horizontal, const double from, const double to, const bool near_side) {
-        const double a = near_side ? 0.0 : 1.0 - inset_u;
-        const double b = a + inset_u;
-        if (to - from < 1.0e-6) return;
-        walls.parts.push_back(horizontal ? sub_quad(quad, from, a, to, b) : sub_quad(quad, a, from, b, to));
-      };
-
-      // d: 0 = низ, 1 = верх, 2 = лево, 3 = право. Низ и верх идут во всю ширину, бока — только между ними.
-      for (uint32_t d = 0; d < 2; ++d) {
-        const bool near_side = d == 0;
-        if (door[d]) {
-          band(true, 0.0, gap_low, near_side);
-          band(true, gap_high, 1.0, near_side);
-        } else {
-          band(true, 0.0, 1.0, near_side);
-        }
-      }
-      for (uint32_t d = 2; d < 4; ++d) {
-        const bool near_side = d == 2;
-        if (door[d]) {
-          band(false, inset_u, gap_low, near_side);
-          band(false, gap_high, 1.0 - inset_u, near_side);
-        } else {
-          band(false, inset_u, 1.0 - inset_u, near_side);
-        }
-      }
+      wall_ring(walls, door);
+      anchor_here(walls);
       emit_shape(std::move(walls));
+
+      if (!two_storey) continue;
+
+      // Второй этаж. Зазор `storey_gap_m` — это перекрытие: без него вывод связей по общим рёбрам
+      // соединил бы верхний зал с нижним прямо сквозь пол, потому что в плане они совпадают.
+      const float upper_low = storey_height_m + storey_gap_m;
+
+      draft top{};
+      top.kind = zone_kind::hall;
+      top.low = upper_low;
+      top.high = upper_low + storey_height_m;
+      top.floor = 1;
+      top.identity = upper_hall_identity;
+      top.parent_identity = building_identity;
+      top.name = std::format("upper hall of {},{}", px, py);
+      top.reference = reference;
+      top.tags = uint32_t(zone_flags::indoor);
+      for (uint32_t room = 0; room < rooms_per_plot; ++room) {
+        top.parts.push_back(room_quad(room));
+      }
+      anchor_here(top);
+      emit_shape(std::move(top));
+
+      draft top_walls{};
+      top_walls.kind = zone_kind::wall;
+      top_walls.low = upper_low;
+      top_walls.high = upper_low + storey_height_m;
+      top_walls.floor = 1;
+      top_walls.identity = identity_of(4, item.node, plot * plot_stride + 9);
+      top_walls.parent_identity = building_identity;
+      top_walls.name = std::format("upper walls of {},{}", px, py);
+      top_walls.reference = reference;
+      top_walls.tags = zone_flags::impassable | zone_flags::indoor;
+      wall_ring(top_walls, std::array<bool, 4>{}); // наверху дверей наружу нет: туда попадают по лестнице
+      anchor_here(top_walls);
+      emit_shape(std::move(top_walls));
     }
   }
 
@@ -616,16 +748,23 @@ build_stats build_world(const territory& map, const locality_config& local, cons
     if (upper - lower < edge_epsilon) return;
 
     // Узкая фаза решает то, что ключ только предположил: концы второго ребра обязаны лежать НА прямой
-    // первого. Допуск в десять сантиметров безопасен, потому что ближайшая параллельная прямая — стена
-    // здания — отстоит на метр двадцать; а вот меньший допуск отсекал настоящие двери, потому что разность
-    // абсолютных координат в полмиллиона метров сама по себе врёт на три сантиметра.
+    // первого. Допуск безопасен, потому что ближайшая параллельная прямая — стена здания — отстоит на
+    // метр двадцать; а слишком МАЛЫЙ допуск отсекал настоящие двери, пока координаты были планетарными.
     const auto normal = glm::vec2{-first_edge.direction.y, first_edge.direction.x};
     const float side_a = glm::dot(second_edge.origin - first_edge.origin, normal);
     const float side_b = glm::dot(second_edge.tail - first_edge.origin, normal);
-    if (std::abs(side_a) > 0.1f || std::abs(side_b) > 0.1f) return;
+    if (std::abs(side_a) > collinear_epsilon || std::abs(side_b) > collinear_epsilon) return;
 
     const auto& first = drafts[items[first_edge.item].draft];
     const auto& second = drafts[items[second_edge.item].draft];
+
+    // Проход выводится только МЕЖДУ ЗОНАМИ ОДНОГО УРОВНЯ. Уровни — это разные карты взаимодействий, а не
+    // ярусы одной; ребро между отрезком улицы и прямоугольником поселения, внутри которого улица лежит,
+    // означало бы, что персонаж может «войти в поселение» как в комнату. Ловилось это косвенно: у
+    // поселения высота сорок метров, и его контур соединялся с ВТОРЫМИ ЭТАЖАМИ пограничных зданий.
+    if (first.level != second.level) return;
+
+    // Перекрытие между этажами: диапазоны высот обязаны пересекаться, иначе общего ребра в плане мало.
     if (first.high <= second.low || second.high <= first.low) return;
 
     // Отрезок восстанавливается в локальных координатах и только потом возвращается в мировые.
@@ -670,6 +809,10 @@ build_stats build_world(const territory& map, const locality_config& local, cons
 
   std::vector<zone_key> keys(drafts.size(), invalid_key);
   std::map<uint64_t, zone_key> by_identity;
+  std::map<uint64_t, uint32_t> draft_by_identity;
+  for (uint32_t index = 0; index < drafts.size(); ++index) {
+    draft_by_identity[drafts[index].identity] = index;
+  }
   for (uint32_t y = 0; y < options.sector_side; ++y) {
     for (uint32_t x = 0; x < options.sector_side; ++x) {
       const auto& list = per_sector[size_t(y) * options.sector_side + x];
@@ -678,6 +821,86 @@ build_stats build_world(const territory& map, const locality_config& local, cons
         keys[list[local_index]] = key;
         by_identity[drafts[list[local_index]].identity] = key;
       }
+    }
+  }
+
+  // Связность проходимого — контракт генерации, а не надежда. Стены стали непроходимыми, и внутренний
+  // двор квартала остаётся отрезанным, если ни одно смежное здание не выходит наружу: раньше двор
+  // соприкасался с постройкой напрямую, теперь между ними стена. Такие карманы вскрываются проёмом в
+  // стене — ограниченная починка, а не молчаливое согласие с непроходимым куском города.
+  {
+    std::vector<std::vector<uint32_t>> neighbours(items.size());
+    for (const auto& item : raw) {
+      neighbours[item.a].push_back(item.b);
+      neighbours[item.b].push_back(item.a);
+    }
+
+    std::vector<uint32_t> owner(items.size());
+    for (uint32_t i = 0; i < owner.size(); ++i) {
+      owner[i] = i;
+    }
+    const auto root_of = [&](uint32_t node) {
+      while (owner[node] != node) {
+        owner[node] = owner[owner[node]];
+        node = owner[node];
+      }
+      return node;
+    };
+    const auto passable_item = [&](const uint32_t item) {
+      const auto& entry = drafts[items[item].draft];
+      return (entry.tags & uint32_t(zone_flags::impassable)) == 0 && !entry.parts.empty();
+    };
+    const auto join = [&](const uint32_t a, const uint32_t b) {
+      const uint32_t ra = root_of(a);
+      const uint32_t rb = root_of(b);
+      if (ra != rb) owner[ra] = rb;
+    };
+
+    for (const auto& item : raw) {
+      if (passable_item(item.a) && passable_item(item.b)) join(item.a, item.b);
+    }
+
+    std::map<uint32_t, uint32_t> weight;
+    for (uint32_t i = 0; i < items.size(); ++i) {
+      if (passable_item(i)) ++weight[root_of(i)];
+    }
+
+    uint32_t main_root = 0;
+    uint32_t main_weight = 0;
+    for (const auto& [component, count] : weight) {
+      if (count > main_weight) {
+        main_weight = count;
+        main_root = component;
+      }
+    }
+
+    // Стена вскрывается, если разделяет РАЗНЫЕ компоненты. Требовать, чтобы одной из них была главная,
+    // оказалось мало: карман бывает отделён от города не одной стеной, а цепочкой, и тогда он ждёт, пока
+    // вскроется соседний. Слияние любых двух компонент доводит починку до конца за несколько проходов, а
+    // число вскрытых стен всё равно ограничено числом карманов.
+    (void)main_root;
+    for (uint32_t pass = 0; pass < 12; ++pass) {
+      bool changed = false;
+      for (uint32_t item = 0; item < items.size(); ++item) {
+        if (passable_item(item)) continue;
+
+        uint32_t first_component = 0xffffffffu;
+        bool separates = false;
+        for (const auto next : neighbours[item]) {
+          if (!passable_item(next)) continue;
+          const uint32_t component = root_of(next);
+          if (first_component == 0xffffffffu) first_component = component;
+          else if (component != first_component) separates = true;
+        }
+        if (!separates) continue;
+
+        drafts[items[item].draft].tags &= ~uint32_t(zone_flags::impassable);
+        for (const auto next : neighbours[item]) {
+          if (passable_item(next)) join(item, next);
+        }
+        changed = true;
+      }
+      if (!changed) break;
     }
   }
 
@@ -694,11 +917,21 @@ build_stats build_world(const territory& map, const locality_config& local, cons
     return node;
   };
 
+  const auto passable_draft = [&](const uint32_t item) {
+    return (drafts[items[item].draft].tags & uint32_t(zone_flags::impassable)) == 0;
+  };
+
   std::vector<uint32_t> flags(raw.size(), uint32_t(portal_flags::open));
   for (uint32_t i = 0; i < raw.size(); ++i) {
     if (keys[items[raw[i].a].draft] == invalid_key || keys[items[raw[i].b].draft] == invalid_key) continue;
-    if (drafts[items[raw[i].a].draft].kind == zone_kind::landmark ||
-        drafts[items[raw[i].b].draft].kind == zone_kind::landmark) {
+
+    // Ребро в НЕПРОХОДИМОЕ место в остове не участвует. Иначе стена даёт мнимую связность: два двора,
+    // соединённые только через неё, считаются уже связанными, и настоящая дверь между ними объявляется
+    // лишним ребром и запирается. Замок тогда отрезает кусок города, хотя правило замков ровно об
+    // обратном — запирать только то, без чего связность остаётся.
+    if (!passable_draft(raw[i].a) || !passable_draft(raw[i].b)) continue;
+    if (drafts[items[raw[i].a].draft].kind == zone_kind::door ||
+        drafts[items[raw[i].b].draft].kind == zone_kind::door) {
       flags[i] |= uint32_t(portal_flags::door);
     }
 
@@ -721,11 +954,29 @@ build_stats build_world(const territory& map, const locality_config& local, cons
     outgoing[raw[i].a].push_back({keys[b.draft], b.part, raw[i].from, raw[i].to, flags[i]});
     outgoing[raw[i].b].push_back({keys[a.draft], a.part, raw[i].from, raw[i].to, flags[i]});
   }
+  // Связь без геометрии кладётся В ОБЕ СТОРОНЫ. Односторонняя запись означала бы лестницу, по которой
+  // можно подняться и нельзя спуститься, и заметилось бы это только тем, что персонаж застрял наверху.
+  // Связь без геометрии кладётся В ОБЕ СТОРОНЫ. Односторонняя запись означала бы лестницу, по которой
+  // можно подняться и нельзя спуститься, и заметилось бы это только тем, что персонаж застрял наверху.
+  //
+  // У зоны С ФОРМОЙ связь висит на первой части: у лестницы есть геометрия, и её ребро графа принадлежит
+  // этой геометрии. У зоны БЕЗ формы частей нет, и связь идёт в собственный список записи — раньше она
+  // на этом месте просто пропадала, и весь политический уровень уезжал на диск набором изолированных
+  // узлов, чего не замечала ни одна проверка, потому что все они смотрели на порталы частей.
+  std::vector<std::vector<zone_portal>> node_links(drafts.size());
+  const auto attach = [&](const uint32_t index, const zone_portal& portal) {
+    if (draft_items[index].empty()) node_links[index].push_back(portal);
+    else outgoing[draft_items[index][0]].push_back(portal);
+  };
+
   for (uint32_t index = 0; index < drafts.size(); ++index) {
-    for (const auto identity : drafts[index].graph_links) {
-      const auto found = by_identity.find(identity);
-      if (found == by_identity.end() || draft_items[index].empty()) continue;
-      outgoing[draft_items[index][0]].push_back({found->second, 0, {}, {}, uint32_t(portal_flags::graph)});
+    if (keys[index] == invalid_key) continue;
+    for (const auto& link : drafts[index].graph_links) {
+      const auto found = by_identity.find(link.identity);
+      const auto target = draft_by_identity.find(link.identity);
+      if (found == by_identity.end() || target == draft_by_identity.end()) continue;
+      attach(index, {found->second, 0, {}, {}, link.flags});
+      attach(target->second, {keys[index], 0, {}, {}, link.flags});
     }
   }
 
@@ -748,6 +999,7 @@ build_stats build_world(const territory& map, const locality_config& local, cons
         record.level = item.level;
         record.kind = item.kind;
         record.tags = item.tags;
+        record.floor = item.floor;
 
         const auto parent_key = by_identity.find(item.parent_identity);
         record.parent = parent_key == by_identity.end() ? invalid_key : parent_key->second;
@@ -779,6 +1031,10 @@ build_stats build_world(const territory& map, const locality_config& local, cons
           out.parts.push_back(entry);
         }
         if (item.parts.empty()) record.bounds = zone_bounds{};
+
+        record.link_begin = uint32_t(out.portals.size());
+        out.portals.insert(out.portals.end(), node_links[index].begin(), node_links[index].end());
+        record.link_count = uint32_t(out.portals.size()) - record.link_begin;
 
         out.zones.push_back(record);
       }

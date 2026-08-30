@@ -23,6 +23,8 @@ struct viewer_options {
   double start_span_m = 900.0;   // ширина обзора при запуске
   uint32_t agent_count = 24;
   uint32_t frames = 0;           // ноль — до закрытия окна
+  int32_t start_floor = 0;       // с какого этажа начинать
+  bool start_cutaway = false;    // срезать передний план сразу
   std::string dump_path;         // сохранить последний кадр
   bool validation = false;
 };

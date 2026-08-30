@@ -7,6 +7,8 @@
 { name = fill_vertices, format = c1, role = upload, size = fill_bytes, swap = per_frame }
 { name = line_vertices, format = c1, role = upload, size = line_bytes, swap = per_frame }
 
+{ name = label_vertices, format = c1, role = upload, size = label_bytes, swap = per_frame }
+
 { name = ui_vertices, format = c1, role = upload, size = ui_vertices_bytes, swap = per_frame }
 { name = ui_indices, format = c1, role = upload, size = ui_indices_bytes, swap = per_frame }
 { name = ui_commands, format = c1, role = upload, size = ui_commands_bytes, swap = per_frame }

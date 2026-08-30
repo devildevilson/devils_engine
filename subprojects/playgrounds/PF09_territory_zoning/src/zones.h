@@ -15,9 +15,12 @@
 //     произвольной формы собирается из частей, и это не уступка растеризатору: по невыпуклой фигуре
 //     нельзя идти по прямой к проёму, не выйдя наружу, поэтому разбиение на выпуклое нужно движению
 //     раньше, чем рисованию. Часть — единица геометрии и навигации, зона — единица смысла.
-//   - проход — это ОБЩЕЕ РЕБРО двух фигур, а не запись в списке соседей. Отсюда связность не авторская,
-//     а выводимая: дверь — это маленькая фигура, чьё ребро лежит и на здании, и на улице. Портал хранит
-//     сам отрезок, поэтому по нему можно не только пройти, но и прицелиться — как в navmesh.
+//   - проход — это ЗАПИСЬ В ФАЙЛЕ, а общее ребро — лишь один из способов её получить. Совпадение рёбер
+//     ненадёжно: две фигуры, которые «должны» граничить, расходятся на округление, и связность,
+//     вычисляемая на лету, начинает мигать. Поэтому геометрия работает ОДИН РАЗ, в сборщике, а игра
+//     читает готовый граф и никогда его не перевыводит. Отрезок в портале хранится затем, чтобы по
+//     нему можно было не только пройти, но и прицелиться, — как в navmesh; связь БЕЗ отрезка
+//     (лестница на другой этаж, дорога между поселениями) законна и помечена флагом `graph`.
 //   - уровни НЕ ОБРАЗУЮТ дерева. На каждом уровне своя карта взаимодействий и свой граф связей; ссылка
 //     вверх есть, но она справочная, а не структурная. Комната знает свой город, но город не обязан
 //     быть разбит на комнаты.
@@ -56,6 +59,8 @@ enum class zone_level : uint32_t {
 enum class zone_kind : uint32_t {
   hall,        // помещения одного здания: то, что игра назовёт баром, кузницей, залом
   wall,        // стены здания: НЕПРОХОДИМОЕ место, а не отсутствие места
+  door,        // проём в стене: место, проходимость которого переключается в рантайме
+  stair,       // лестница: место, связанное с другим этажом СВЯЗЬЮ, а не общим ребром
   street,      // отрезок улицы между перекрёстками
   crossroad,
   square,
@@ -75,6 +80,11 @@ enum class zone_flags : uint32_t {
   impassable = 1u << 0,
   road = 1u << 1,     // предпочтительно для движения: дорога тянет маршрут на себя
   indoor = 1u << 2,
+
+  // Начальное состояние переключаемого места. Обычная дверь — это не особый вид связи, а МЕСТО, у
+  // которого проходимость меняется по ходу игры: заперли, выбили, забаррикадировали. Флаг в файле задаёт
+  // только начальное положение, дальше состоянием владеет рантайм (`zone_store::set_closed`).
+  closed = 1u << 3,
 };
 
 [[nodiscard]] constexpr uint32_t operator|(const zone_flags a, const zone_flags b) noexcept {
@@ -90,6 +100,12 @@ constexpr zone_key invalid_key = 0;
 // Секторная сетка мира. Сторона сектора — единица подгрузки: слишком мелкая множит файлы и швы, слишком
 // крупная тянет с диска лишнее.
 constexpr double sector_span_m = 8192.0;
+
+// Шаг этажа: высота помещения плюс перекрытие. Нужен и сборщику, и рисованию, и пикингу — «на каком
+// уровне искать» это одна величина, и держать её в трёх местах значило бы ждать, когда они разойдутся.
+constexpr float storey_height_m = 3.0f;
+constexpr float storey_gap_m = 0.4f;
+constexpr float storey_pitch_m = storey_height_m + storey_gap_m;
 constexpr int32_t sector_bias = 0x800; // сдвиг, чтобы отрицательные координаты сектора влезли в поле id
 
 // Идентификатор несёт свой сектор. Это не оптимизация, а условие того, чтобы ссылка через границу
@@ -178,9 +194,21 @@ struct zone_record {
   uint32_t name_offset = 0;
   uint32_t tags = 0;
 
+  // Рёбра графа у зоны БЕЗ формы. Порталы живут на частях, потому что у прохода есть отрезок; у зоны без
+  // частей вешать их некуда, и раньше они молча терялись — политический уровень уезжал на диск как набор
+  // изолированных узлов. Узел графа обязан носить свои рёбра сам.
+  uint32_t link_begin = 0;
+  uint32_t link_count = 0;
+
+  // Этаж — ОТДЕЛЬНОЕ поле, а не вывод из высоты. Высоту читает рисование, а «какой уровень здания» —
+  // вопрос игры: подвал, первый, второй. Выводить его из `bounds.lower.y` значило бы требовать, чтобы у
+  // всех зданий этажи были одинаковой высоты, а это неправда уже про подвал.
+  int32_t floor = 0;
+
   bool abstract() const noexcept { return part_count == 0; }
   bool impassable() const noexcept { return (tags & uint32_t(zone_flags::impassable)) != 0; }
   bool road() const noexcept { return (tags & uint32_t(zone_flags::road)) != 0; }
+  bool closed() const noexcept { return (tags & uint32_t(zone_flags::closed)) != 0; }
 };
 
 // Ссылка на часть. Навигация и выборка работают с частями, поэтому адрес у них парный: зона говорит, ЧТО
@@ -212,6 +240,7 @@ struct zone_sector {
   std::span<const zone_part> parts_of(const zone_record& record) const;
   std::span<const glm::vec2> outline_of(const zone_part& part) const;
   std::span<const zone_portal> portals_of(const zone_part& part) const;
+  std::span<const zone_portal> links_of(const zone_record& record) const;
   uint64_t byte_size() const noexcept;
 };
 
@@ -260,10 +289,19 @@ public:
   // считают периметр и решают, где место граничит с чужим.
   std::vector<zone_portal> perimeter(const zone_key key) const;
 
+  // Состояние переключаемых мест. Двери НЕ хранятся как особый вид связи: дверь — зона, и «заперта» это
+  // её проходимость, а не свойство ребра. Поэтому одно место закрывает СРАЗУ ВСЕ проходы через себя, и
+  // не приходится следить за тем, чтобы у двери с четырьмя рёбрами состояние совпало на всех четырёх.
+  void set_closed(const zone_key key, const bool value);
+  bool closed(const zone_key key) const;
+  bool passable(const zone_record& record) const;
+  uint32_t closed_count() const noexcept { return uint32_t(overrides_.size()); }
+
   const zone_part* part_of(const part_ref& reference) const;
   std::span<const zone_part> parts_of(const zone_record& record) const;
   std::span<const glm::vec2> outline_of(const part_ref& reference) const;
   std::span<const zone_portal> portals_of(const part_ref& reference) const;
+  std::span<const zone_portal> links_of(const zone_key key) const;
   std::string_view name_of(const zone_record& record) const;
 
   uint32_t resident_sectors() const noexcept { return uint32_t(resident_.size()); }
@@ -280,7 +318,17 @@ private:
   std::filesystem::path root_;
   double radius_m_ = 0.0;
   uint32_t budget_ = 0;
+  struct door_state {
+    zone_key key = invalid_key;
+    bool closed = false;
+
+    bool operator<(const door_state& other) const noexcept { return key < other.key; }
+  };
+
   std::vector<entry> resident_;
+  // Рантайм-состояние переживает выгрузку сектора: закрытая дверь обязана остаться закрытой, когда
+  // партия отошла на километр и вернулась. Поэтому оно живёт здесь, а не в записи зоны.
+  std::vector<door_state> overrides_;
   stream_stats last_{};
 };
 
