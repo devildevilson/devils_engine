@@ -1,3 +1,5 @@
+#include <cmath>
+#include <utility>
 #include <algorithm>
 #include <memory>
 #include <vector>
@@ -12,6 +14,8 @@
 #include "devils_engine/utils/aabb_tree.h"
 #include "devils_engine/utils/block_allocator.h"
 #include "devils_engine/utils/core.h"
+#include "devils_engine/utils/easing.h"
+#include "devils_engine/utils/inherited.h"
 #include "devils_engine/utils/geometry.h"
 #include "devils_engine/utils/grid.h"
 #include "devils_engine/utils/kd_tree.h"
@@ -997,4 +1001,146 @@ TEST_CASE("geom::inflate — point store with per-object radius [utils::geom]") 
     ++n;
   });
   REQUIRE(n == 3); // (0,0),(5,0),(2.5,0) в пределах R от оси y=0; (-3,3),(10,10) — нет
+}
+
+// Кривые смягчения. Проверяются не сами значения — их задаёт easings.net и переписывать их сюда незачем,
+// — а свойства, без которых кривая непригодна: она обязана начинаться в нуле, кончаться в единице и не
+// выдавать NaN ни в одной точке. Плюс два утверждения, которые ловят реальные опечатки: `in` и `out`
+// одного семейства зеркальны друг другу, а «мягкие» семейства ещё и монотонны.
+TEST_CASE("utils easing curves") {
+  using devils_engine::utils::easing;
+  using devils_engine::utils::ease;
+
+  for (uint8_t i = 0; i < uint8_t(easing::count); ++i) {
+    const auto kind = easing(i);
+    CAPTURE(devils_engine::utils::easing_name(kind));
+
+    // Концы закреплены у всех без исключения: кривая, приходящая в 0.999, оставляет объект не дошедшим,
+    // и заметно это будет однажды и не там, где искали.
+    CHECK(ease(kind, 0.0) == doctest::Approx(0.0).epsilon(1e-9));
+    CHECK(ease(kind, 1.0) == doctest::Approx(1.0).epsilon(1e-9));
+
+    for (int step = 0; step <= 64; ++step) {
+      const double t = double(step) / 64.0;
+      const double v = ease(kind, t);
+      CHECK(v == v);                 // NaN не проходит собственное сравнение
+      CHECK(std::abs(v) < 4.0);      // back и elastic вылетают за [0,1], но не в бесконечность
+    }
+  }
+
+  // Зеркальность: out(t) == 1 - in(1 - t). Опечатка в знаке или в степени ломает именно её.
+  const std::pair<easing, easing> mirrors[] = {
+    {easing::in_sine, easing::out_sine},   {easing::in_quad, easing::out_quad},
+    {easing::in_cubic, easing::out_cubic}, {easing::in_quart, easing::out_quart},
+    {easing::in_quint, easing::out_quint}, {easing::in_circ, easing::out_circ},
+    {easing::in_back, easing::out_back},   {easing::in_bounce, easing::out_bounce},
+  };
+  for (const auto& [in_kind, out_kind] : mirrors) {
+    CAPTURE(devils_engine::utils::easing_name(in_kind));
+    for (int step = 0; step <= 32; ++step) {
+      const double t = double(step) / 32.0;
+      CHECK(ease(out_kind, t) == doctest::Approx(1.0 - ease(in_kind, 1.0 - t)).epsilon(1e-9));
+    }
+  }
+
+  // Монотонность там, где она обещана. `back`, `elastic` и `bounce` не обещают — они и не проверяются.
+  const easing monotonic[] = {easing::linear,      easing::in_sine,  easing::out_sine, easing::in_out_sine,
+                              easing::in_quad,     easing::out_quad, easing::in_out_quad,
+                              easing::in_cubic,    easing::out_cubic, easing::in_out_cubic,
+                              easing::in_quart,    easing::out_quart, easing::in_out_quart,
+                              easing::in_quint,    easing::out_quint, easing::in_out_quint,
+                              easing::in_expo,     easing::out_expo, easing::in_out_expo,
+                              easing::in_circ,     easing::out_circ, easing::in_out_circ};
+  for (const auto kind : monotonic) {
+    CAPTURE(devils_engine::utils::easing_name(kind));
+    double previous = -1.0;
+    for (int step = 0; step <= 64; ++step) {
+      const double v = ease(kind, double(step) / 64.0);
+      CHECK(v >= previous - 1e-9);
+      previous = v;
+    }
+  }
+}
+
+// Фильтры удерживаемого ввода. Главное их свойство — НЕЗАВИСИМОСТЬ ОТ ЧАСТОТЫ КАДРОВ: наивное
+// сглаживание даёт разную плавность на 60 и 144 герцах, то есть разную игру на разных машинах, и
+// поймать это глазами почти невозможно.
+TEST_CASE("utils frame rate independent smoothing") {
+  using devils_engine::utils::approach;
+  using devils_engine::utils::smooth_damp;
+
+  // За период полураспада остаётся ровно половина расстояния — сколько бы кадров на него ни пришлось.
+  CHECK(approach(0.0, 1.0, 0.25, 0.25) == doctest::Approx(0.5).epsilon(1e-9));
+
+  const auto run = [](const double dt, const double seconds) {
+    double value = 0.0;
+    for (int i = 0; i < int(seconds / dt + 0.5); ++i) value = approach(value, 1.0, 0.25, dt);
+    return value;
+  };
+  // Секунда — это четыре полураспада, то есть 1/16 остатка, при любом шаге.
+  CHECK(run(1.0 / 60.0, 1.0) == doctest::Approx(0.9375).epsilon(1e-6));
+  CHECK(run(1.0 / 144.0, 1.0) == doctest::Approx(0.9375).epsilon(1e-6));
+  CHECK(run(1.0 / 30.0, 1.0) == doctest::Approx(0.9375).epsilon(1e-6));
+
+  // Пружина доходит до цели и ОСТАНАВЛИВАЕТСЯ: критическое демпфирование не должно перелетать.
+  double velocity = 0.0;
+  double value = 0.0;
+  double overshoot = 0.0;
+  for (int i = 0; i < 240; ++i) {
+    value = smooth_damp(value, 1.0, velocity, 0.2, 1.0 / 60.0);
+    overshoot = std::max(overshoot, value - 1.0);
+  }
+  CHECK(value == doctest::Approx(1.0).epsilon(1e-6));
+  CHECK(overshoot < 1e-6);
+}
+
+// Наследование ответа по иерархии и таблица рантайм-подмен. Обе мелочи вытащены из PF09, где первая
+// отвечала на «кто держит этот район», а вторая писалась ЧЕТЫРЕ раза подряд — для дверей, для контроля,
+// для занятых мест и для титулов.
+TEST_CASE("utils inherited attribute and override table") {
+  using devils_engine::utils::nearest_carrier;
+  using devils_engine::utils::override_table;
+
+  // комната -> здание -> квартал -> город; носитель ответа — квартал.
+  const int parents[] = {1, 2, 3, -1};
+  const bool carries[] = {false, false, true, true};
+  const auto parent_of = [&](const int key) { return parents[key]; };
+
+  CHECK(nearest_carrier(0, -1, parent_of, [&](const int k) { return carries[k]; }) == 2);
+  CHECK(nearest_carrier(2, -1, parent_of, [&](const int k) { return carries[k]; }) == 2);
+  CHECK(nearest_carrier(3, -1, parent_of, [&](const int k) { return carries[k]; }) == 3);
+  // Никто не несёт — законный ответ «никто», а не выдуманный корень.
+  CHECK(nearest_carrier(0, -1, parent_of, [](const int) { return false; }) == -1);
+
+  // Кольцо в данных не должно вешать поток: подъём ограничен по числу шагов.
+  const int ring[] = {1, 0};
+  CHECK(nearest_carrier(0, -1, [&](const int k) { return ring[k]; }, [](const int) { return false; }, 8) == -1);
+
+  override_table<uint64_t, int> table;
+  CHECK(table.find(7) == nullptr);
+  table.set(7, 42);
+  table.set(3, 11);
+  table.set(9, 5);
+  REQUIRE(table.find(7) != nullptr);
+  CHECK(*table.find(7) == 42);
+  CHECK(table.value_or(100, -1) == -1);
+  CHECK(table.size() == 3);
+
+  // Порядок обхода детерминирован: по нему считают контрольные суммы состояния.
+  std::vector<uint64_t> keys;
+  for (const auto& item : table) keys.push_back(item.key);
+  CHECK(keys == std::vector<uint64_t>{3, 7, 9});
+
+  // «Подмены нет» и «подменено значением по умолчанию» — разные вещи, и таблица обязана их различать.
+  table.set(5, 0);
+  REQUIRE(table.find(5) != nullptr);
+  CHECK(*table.find(5) == 0);
+  CHECK(table.find(6) == nullptr);
+
+  table.set(7, 43);
+  CHECK(*table.find(7) == 43);
+  CHECK(table.size() == 4);
+  CHECK(table.erase(7));
+  CHECK(!table.erase(7));
+  CHECK(table.find(7) == nullptr);
 }

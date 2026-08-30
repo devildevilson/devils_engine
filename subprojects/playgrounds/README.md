@@ -31,4 +31,9 @@
 | `PF05` | `PF05_scene_effects` | закрыта | SDF, decals, particles/weather, cel shading, billboards и world-space UI |
 | `PF06` | `PF06_submarine_light_room` | закрыта | тёмная сцена для `submarine_coop` |
 | `PF07` | `PF07_party_environment` | закрыта | небесная механика, атмосфера, экспозиция, две тени и proxy-долина |
-| `PF08` | `PF08_weather_effects` | активна, срезы 0–3 и rain 4A закрыты | туман, облака и осадки в динамически освещённом мире |
+| `PF08` | `PF08_weather_effects` | закрыта | погода, осадки, surface memory, lightning и aurora в динамически освещённом мире |
+| `PF09` | `PF09_territory_zoning` | активна | стриминг плоских игровых зон, проходы-рёбра и движение |
+| `PF10` | `PF10_functional_planet` | активна, high-res lightweight display + adjacency работают | displaced sphere, 4032-node land graph, mountain barriers, smooth borders/hydrology, surface text и selection |
+
+`anomalous_weather` оставлена в parking lot без номера: она вернётся после PF10, но следующий свободный
+номер заранее за ней не закрепляется.

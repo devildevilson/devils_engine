@@ -4,19 +4,21 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
-- PF10 LIGHTWEIGHT PLANET + LAND GRAPH + SURFACE TEXT RUNNING (2026-08-30). The original uncapped Release
+- PF10 HIGH-RES LIGHTWEIGHT PLANET + BARRIERS/HYDROLOGY RUNNING (2026-08-30). The original uncapped Release
   path measured `15.906 ms` (`62.9 FPS`) on Iris Xe because every vertex evaluated terrain noise and every
-  fragment searched 27 Voronoi cells. Terrain is now a one-time `6x257x257` planet-local position bake drawn
-  as instanced row strips; `region_id + edge_distance` are a static `6x513x513` cube atlas. The final far/near
-  frames are about `2.2–2.5 ms` (`~390–450 FPS`) at 1280x720, including a near province-label pass, with no
-  producer cap. Dense sampling materializes `4072` playable nodes and `12895` undirected CSR edges, mean
-  degree `6.33`, one land component and no isolated nodes; centres/coastal flags accompany stable IDs. Four
-  water areas and two non-playable poles remain outside land navigation. Text now uses actual PF05-style
-  depth-reconstructed MSDF projection volumes in planet space: far LOD draws large-area names, near LOD owns
-  one placeholder label per province, and owner-ID clipping prevents spill into neighbours/water. About
-  `22.6 MB` holds static surface/politics/label data. `--verify` is `18/18`; Release far/near frames pass and
-  the near decal path is Vulkan-validation clean. NEXT: water port graph/content naming; heraldic billboards
-  remain explicitly later. `anomalous_weather` remains in the unnumbered parking lot.
+  fragment searched 27 Voronoi cells. Terrain is now a one-time `6x513x513` planet-local position bake split
+  into conservative visible `16x16` patches. Politics is a `6x1025x1025` compact field: R16 local index plus
+  R16 angular distance and a stable-ID table. Materialized transitions feed `145372` smooth spherical curve
+  segments instead of close-up raster borders. Working atlas materializes `4032` playable nodes and `12812`
+  undirected CSR edges, mean degree `6.36`, one land component and no isolated nodes. Four water areas, three
+  mountain chains made from whole non-playable Voronoi cells, and two poles remain outside land navigation;
+  the same ridge field raises true geometry. A separate `961`-primitive layer draws downhill/meandering
+  planet-local river ribbons and filled lake discs; every endpoint is checked as land and `--no-hydrology`
+  provides A/B. PF05-style depth-reconstructed MSDF volumes retain far empire/near province text and owner-ID
+  clipping. Iris Xe 1280x720 Release frame 80: near hydrology `2.242 ms / 446 FPS`, near A/B off `2.121 / 472`,
+  far `3.041 / 329`, all above the requested 200–250 FPS. Static buffer capacities are about `64.4 MB`.
+  `--verify` is `25/25`; validation is clean. NEXT: water port graph/content naming and true patch LOD;
+  heraldic billboards remain explicitly later. `anomalous_weather` remains in the unnumbered parking lot.
 - PF08 FORMALLY CLOSED — SLICES 0–7 PLUS CLOSING AUDIT (2026-08-30). Eight permanent 1280x720 frame-80
   PNGs now cover clear noon/sunset/night, overcast, rain, snow, universal magic lightning and aurora. The
   dedicated `verify_audit_frames.sh` launches ONLY PF08, writes temporary PPMs and matched all eight frozen
