@@ -1,6 +1,6 @@
 # PF08 — weather effects
 
-Статус: **срезы 0–7 CLOSED; далее закрывающий аудит** (2026-08-30).
+Статус: **FORMALLY CLOSED — срезы 0–7 и закрывающий аудит завершены** (2026-08-30).
 
 PF08 проверяет погоду как состояние открытого мира, а не как отдельный дождевой emitter. Площадка начинает
 с независимой копии закрытого `PF07_party_environment`: та же P-type двойная система, календарь и затмения,
@@ -30,6 +30,7 @@ build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effe
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=downpour --lightning=distant --lightning-phase=0.03
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --lightning=magic
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --preset=aurora --weather=clear
+bash subprojects/playgrounds/PF08_weather_effects/verify_audit_frames.sh
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=rain --surface-age=1 --no-precipitation-particles
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=clear --recent-rain=2 --debug=11
 build-release/subprojects/playgrounds/PF08_weather_effects/bin/PF08_weather_effects --weather=fog --debug=8
@@ -133,9 +134,9 @@ weather state
    направление, спектральные линии, медленное движение и корректная окклюзия горизонтом. После него отдельно
    решается, добавляет ли ещё какой-либо эффект новый механизм или лишь перекрашивает уже доказанный. Все
    перечисленные consumers реализованы; нижняя облачность закрывает сияние штатной volume-композицией.
-8. **Закрывающий аудит.** Фиксированные clear/overcast/rain/snow/lightning/aurora кадры в нескольких временах суток,
-   временные переходы, GPU budget и Vulkan validation. Побитный PF07 baseline остаётся историческим gate
-   срезов 0–4A: с 4B PF08 намеренно содержит новую постоянную геометрию навеса.
+8. **DONE — закрывающий аудит.** Зафиксированы clear/overcast/rain/snow/lightning/aurora кадры в нескольких
+   временах суток, проверены временные переходы, GPU budget и Vulkan validation. Побитный PF07 baseline
+   остаётся историческим gate срезов 0–4A: с 4B PF08 намеренно содержит новую постоянную геометрию навеса.
 
 ## Definition of Done нулевого среза
 
@@ -540,3 +541,61 @@ Fixed authored preset против intensity `0` даёт normalized `MAE 0.0910
 1280x720 minima authored/off: sky `1.710/0.807 ms`, total `6.395/5.362 ms`. Срез добавляет примерно
 `0.903 ms` к sky и `1.033 ms` к кадру только при ненулевой intensity. Vulkan validation активного preset
 чиста, release build проходит, headless contract — `117/117`.
+
+## Закрывающий аудит
+
+Восемь кадров `1280x720`, fixed frame 80, fixed preset EV и без overlay сохранены один раз в
+[`audit_frames/`](audit_frames/README.md). Это не новый повод запускать PF07: `verify_audit_frames.sh`
+запускает только PF08, пишет временные PPM и сравнивает их с сохранёнными PNG. Повторный полный прогон дал
+`AUDIT MATCH` для `clear_noon`, `clear_sunset`, `clear_night`, `overcast_noon`, `rain_sunset`,
+`snow_sunset`, `lightning_magic` и `aurora_night`; все восемь имеют `AE=0`. Галерея занимает `1.4 MiB`,
+её SHA-256 и точные команды записаны рядом с изображениями.
+
+Пять отдельных validation-запусков покрыли clear, rain, snow, downpour+distant-lightning и aurora+overcast.
+Все завершились без `VUID`, API warning или error. Release target собирается, `--verify` даёт `117/117`.
+Переходы проверяются не по картинке одного случайного кадра: численный контракт фиксирует четверть
+четырёхсекундного перехода через секунду, непрерывность при прерывании и минимум два кадра между
+инвалидациями atmosphere cache. Исправленный resize/fullscreen contract сохраняет fixed-size rain-memory;
+его отдельный динамический тест уже удерживал обе радуги после `1280x720 -> 1600x900`.
+
+Steady minima на Iris Xe, полный authored foliage, frame-80 серии; для каждого состояния взят меньший минимум
+двух последовательных детерминированных прогонов:
+
+| Кадр | Total GPU, ms |
+|---|---:|
+| clear noon | `5.814` |
+| clear double sunset | `6.421` |
+| clear night | `4.256` |
+| overcast noon | `7.229` |
+| rain sunset | `9.396` |
+| snow sunset | `10.038` |
+| magic lightning | `7.547` |
+| aurora night | `6.260` |
+
+Худший зафиксированный кадр оставляет около `6.63 ms` до бюджета `16.67 ms` для 60 FPS. Это хороший
+playground budget, но не обещание 120 FPS: снег и сильный дождь уже занимают больше половины 60-Hz кадра,
+а production-сцена добавит персонажей, материалы и gameplay. Поэтому PF08 закрывается с измеренным бюджетом,
+а не с утверждением, что погода «бесплатна».
+
+## Реальные эффекты за границей PF08
+
+Аудит отделяет интересные явления от новых renderer-механизмов:
+
+| Явление | Что потребовалось бы | Решение после PF08 |
+|---|---|---|
+| 22° halo, sundogs, circumzenithal arc, световые столбы | ориентированное рассеяние/преломление на ледяных кристаллах | Самый ценный новый механизм; особенно выразителен с двумя светилами, но заслуживает отдельного optical slice |
+| glory, Brocken spectre и белая fogbow | узкий backscatter вокруг anti-solar direction плюс тень наблюдателя в облаке | Расширение уже имеющихся rainbow geometry и fog, не новая погодная система |
+| corona вокруг солнца/луны и иризация облаков | спектральная дифракция на мелких каплях | Отдельный angular source effect; нельзя честно получить одной сменой cloud colour |
+| virga, rain shaft и microburst | высотно-зависимое испарение осадков и локальное поле нисходящего ветра | Естественное расширение precipitation volume/field |
+| diamond dust, позёмка и снежные языки | повторный подъём surface snow ветром и приземный transport | Требует настоящего пространственного снежного покрова, которого PF08 сознательно не симулирует |
+| noctilucent/nacreous clouds | очень высокий разреженный scattering shell на сумеречном свету | Геометрию можно взять у aurora shell, но заменить emission на stellar scattering |
+| sprites, elves и blue jets | lightning event, переданный в верхнеатмосферную оболочку | Композиция уже доказанных lightning и aurora механизмов |
+| lenticular, mammatus, shelf/roll clouds | другое world-space density authoring и ветровая деформация | Варианты существующего конечного cloud layer, не новый renderer |
+| мираж и heat shimmer | искривление лучей градиентом показателя преломления | По-настоящему новый и дорогой механизм; лучше отдельная площадка |
+| град, freezing rain и прозрачная наледь | фаза осадков, температура и material-specific accumulation | Откладывается до сцены с климатом и настоящими surface materials |
+
+Таким образом, PF08 не закрыта потому, что в природе больше нечего рисовать. Она закрыта потому, что уже
+доказала свои базовые семейства: participating media, конечные облака, near/mid/far precipitation,
+простую world-memory, угловую атмосферную оптику, кратковременное электрическое событие и отдельную
+верхнеатмосферную оболочку. Следующий действительно независимый кандидат — ice-crystal optics либо
+refractive mirage, а не ещё один weather preset поверх тех же полей.
