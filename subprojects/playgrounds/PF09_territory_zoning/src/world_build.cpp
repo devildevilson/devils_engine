@@ -765,7 +765,6 @@ build_stats build_world(const territory& map, const locality_config& local, cons
       hall.parent_identity = building_identity;
       hall.name = std::format("hall of {},{}", px, py);
       hall.reference = reference;
-      hall.tags = uint32_t(zone_flags::indoor);
       for (uint32_t room = 0; room < rooms_per_plot; ++room) {
         if (room == stair_room) continue;
         hall.parts.push_back(room_quad(room));
@@ -781,9 +780,8 @@ build_stats build_world(const territory& map, const locality_config& local, cons
         stair.parent_identity = building_identity;
         stair.name = std::format("stair of {},{}", px, py);
         stair.reference = reference;
-        stair.tags = uint32_t(zone_flags::indoor);
         stair.parts.push_back(room_quad(stair_room));
-        stair.graph_links.push_back({upper_hall_identity, portal_flags::climb | portal_flags::graph});
+        stair.graph_links.push_back({upper_hall_identity, uint32_t(portal_flags::graph)});
         anchor_here(stair);
         emit_shape(std::move(stair));
       }
@@ -833,7 +831,7 @@ build_stats build_world(const territory& map, const locality_config& local, cons
       walls.parent_identity = building_identity;
       walls.name = std::format("walls of {},{}", px, py);
       walls.reference = reference;
-      walls.tags = zone_flags::impassable | zone_flags::indoor;
+      walls.tags = uint32_t(zone_flags::impassable);
       wall_ring(walls, door);
       anchor_here(walls);
       emit_shape(std::move(walls));
@@ -853,7 +851,6 @@ build_stats build_world(const territory& map, const locality_config& local, cons
       top.parent_identity = building_identity;
       top.name = std::format("upper hall of {},{}", px, py);
       top.reference = reference;
-      top.tags = uint32_t(zone_flags::indoor);
       for (uint32_t room = 0; room < rooms_per_plot; ++room) {
         top.parts.push_back(room_quad(room));
       }
@@ -869,7 +866,7 @@ build_stats build_world(const territory& map, const locality_config& local, cons
       top_walls.parent_identity = building_identity;
       top_walls.name = std::format("upper walls of {},{}", px, py);
       top_walls.reference = reference;
-      top_walls.tags = zone_flags::impassable | zone_flags::indoor;
+      top_walls.tags = uint32_t(zone_flags::impassable);
       wall_ring(top_walls, std::array<bool, 4>{}); // наверху дверей наружу нет: туда попадают по лестнице
       anchor_here(top_walls);
       emit_shape(std::move(top_walls));

@@ -27,6 +27,7 @@
 #include "devils_engine/playground/visage_overlay.h"
 #include "devils_engine/visage/font.h"
 #include "devils_engine/utils/core.h"
+#include "devils_engine/utils/easing.h"
 #include "devils_engine/utils/fileio.h"
 
 using namespace devils_engine;
@@ -139,7 +140,6 @@ uint32_t kind_tint(const zone_kind kind) {
     case zone_kind::wall: return pack(112, 96, 82, 255);
     case zone_kind::door: return pack(214, 150, 90, 255);
     case zone_kind::stair: return pack(206, 196, 120, 255);
-    case zone_kind::landmark: return pack(214, 150, 90, 255);
     case zone_kind::settlement: return pack(96, 104, 126, 255);
     default: return pack(110, 110, 120, 255);
   }
@@ -585,8 +585,9 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
       playground::overlay_description{
         "PF09 territory zoning",
         "sectors from disk -> polygon zones -> portals from shared edges",
-        "WASD pan | wheel zoom | LMB select | QE yaw | RF pitch | ZX floor | C cutaway | V route | N names | "
-        "O props | B tactics | M control map | K toggle door | G agents | P portals | H walls | Esc quit"});
+        "WASD pan (Shift faster) | wheel zoom | LMB select | QE yaw | RF pitch | ZX floor | C cutaway | "
+        "V route | N names | O props | B tactics | M control map | K toggle door | G agents | P portals | "
+        "H walls | Esc quit"});
 
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
@@ -681,6 +682,7 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
     bind_key("toggle_props", "key_o");
     bind_key("toggle_tactics", "key_b");
     bind_key("cycle_control", "key_m");
+    bind_key("sprint", "left_shift");
     bind_key("pitch_up", "key_r");
     bind_key("pitch_down", "key_f");
     bind_key("yaw_left", "key_q");
@@ -691,7 +693,29 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
     input::set_window_callback(window, &scroll_callback);
     input::set_window_callback(window, &mouse_callback);
 
+    // Смягчение камеры. Два разных инструмента для двух разных видов ввода, и путать их нельзя:
+    //
+    //   колесо — ДИСКРЕТНОЕ событие с началом, концом и длительностью, поэтому зум ведёт `tween` по
+    //   кривой: щелчок задаёт цель, и до неё доезжают за фиксированное время;
+    //   клавиши — УДЕРЖИВАЕМЫЙ ввод без цели и длительности, поэтому у панорамирования и поворота
+    //   сглаживается ГАЗ: `approach` разгоняет его от нуля к единице и гасит обратно при отпускании.
+    //
+    // Приложить кривую к зажатой клавише не к чему: подставлять в неё нечего, кроме выдуманного «времени
+    // с начала нажатия», и на отпускании всё равно получился бы разрыв.
     double span_m = options.start_span_m;
+    utils::tween<double> zoom{};
+    zoom.curve = utils::easing::out_cubic;
+    zoom.reset(span_m);
+
+    // Период полураспада газа: за столько секунд остаток разницы между нажатым и текущим сокращается
+    // вдвое. Величина в секундах, а не безымянный коэффициент, поэтому она одинакова на 60 и 144 герцах.
+    constexpr double throttle_half_life = 0.07;
+    constexpr double zoom_seconds = 0.22;
+    double pan_forward = 0.0;
+    double pan_strafe = 0.0;
+    double sprint = 0.0;
+    double yaw_rate = 0.0;
+    double pitch_rate = 0.0;
     zone_key selected = invalid_key;
     bool show_agents = true;
     bool show_portals = true;
@@ -760,9 +784,13 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
       }
 
       if (scroll_accumulator != 0.0) {
-        span_m = std::clamp(span_m * std::pow(0.85, scroll_accumulator), 30.0, 400000.0);
+        // Цель считается от ПРЕЖНЕЙ ЦЕЛИ, а начало берётся от текущего значения: так три быстрых щелчка
+        // складываются в один длинный отъезд, а не отменяют друг друга и не дёргают картинку назад.
+        const double target = std::clamp(zoom.to * std::pow(0.85, scroll_accumulator), 30.0, 400000.0);
+        zoom.retarget(span_m, target, zoom_seconds);
         scroll_accumulator = 0.0;
       }
+      span_m = zoom.advance(double(dt));
 
       const bool agents_key = input::events::is_pressed("toggle_agents");
       if (agents_key && !agents_latch) show_agents = !show_agents;
@@ -790,12 +818,19 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
       if (latched("cycle_control", control_latch)) control_mode = (control_mode + 1) % 5;
       const bool door_key = latched("toggle_door", door_latch);
 
-      pitch_deg = std::clamp(pitch_deg + 40.0 * double(dt) *
-                                           (double(input::events::is_pressed("pitch_up")) -
-                                            double(input::events::is_pressed("pitch_down"))),
-                             12.0, 89.0);
-      yaw_rad += float(1.2 * double(dt) * (double(input::events::is_pressed("yaw_right")) -
-                                           double(input::events::is_pressed("yaw_left"))));
+      // Газ поворота сглаживается так же, как газ перемещения: без этого камера трогается и встаёт
+      // рывком, и на медленном повороте это заметнее всего.
+      pitch_rate = utils::approach(pitch_rate,
+                                   double(input::events::is_pressed("pitch_up")) -
+                                     double(input::events::is_pressed("pitch_down")),
+                                   throttle_half_life, double(dt));
+      yaw_rate = utils::approach(yaw_rate,
+                                 double(input::events::is_pressed("yaw_right")) -
+                                   double(input::events::is_pressed("yaw_left")),
+                                 throttle_half_life, double(dt));
+
+      pitch_deg = std::clamp(pitch_deg + 40.0 * double(dt) * pitch_rate, 12.0, 89.0);
+      yaw_rad += float(1.2 * double(dt) * yaw_rate);
 
       // Панорамирование ОТНОСИТЕЛЬНО ВЗГЛЯДА, а не мировых осей. С мировыми осями после поворота на
       // `Q`/`E` клавиши переставали значить то, что видит игрок: `W` уводил вбок, а на развороте в
@@ -807,16 +842,30 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
       const glm::dvec2 view_forward{std::sin(double(yaw_rad)), std::cos(double(yaw_rad))};
       const glm::dvec2 view_right{-view_forward.y, view_forward.x};
 
-      glm::dvec2 step{};
-      step += view_forward * (double(input::events::is_pressed("pan_up")) -
-                              double(input::events::is_pressed("pan_down")));
-      step += view_right * (double(input::events::is_pressed("pan_right")) -
-                            double(input::events::is_pressed("pan_left")));
+      pan_forward = utils::approach(pan_forward,
+                                    double(input::events::is_pressed("pan_up")) -
+                                      double(input::events::is_pressed("pan_down")),
+                                    throttle_half_life, double(dt));
+      pan_strafe = utils::approach(pan_strafe,
+                                   double(input::events::is_pressed("pan_right")) -
+                                     double(input::events::is_pressed("pan_left")),
+                                   throttle_half_life, double(dt));
 
-      // По диагонали идут с той же скоростью, что и по прямой: без этого две зажатые клавиши дают
-      // множитель в корень из двух, и путь наискось незаметно оказывается быстрее.
+      // Ускорение по `Shift` смягчается тем же фильтром, что и сам газ: скачок скорости в три с
+      // половиной раза за один кадр читается как телепорт, а не как ускорение. Множитель применяется
+      // ПОСЛЕ нормировки диагонали — иначе он попал бы под ограничение и перестал бы что-либо ускорять.
+      sprint = utils::approach(sprint, double(input::events::is_pressed("sprint")), throttle_half_life,
+                               double(dt));
+      const double sprint_scale = 1.0 + sprint * 2.5;
+
+      glm::dvec2 step = view_forward * pan_forward + view_right * pan_strafe;
+
+      // Нормируется ТОЛЬКО перебор. Делить всегда было бы нельзя: во время разгона длина газа меньше
+      // единицы, и деление на неё вернуло бы полную скорость с первого же кадра, убив всё смягчение.
+      // Ограничить надо ровно одно — чтобы по диагонали не шли в корень из двух раз быстрее.
       const double step_length = std::sqrt(step.x * step.x + step.y * step.y);
-      if (step_length > 1.0e-6) centre += step * (span_m * 0.6 * double(dt) / step_length);
+      if (step_length > 1.0) step /= step_length;
+      centre += step * (span_m * 0.6 * sprint_scale * double(dt));
 
       store.focus(centre);
 

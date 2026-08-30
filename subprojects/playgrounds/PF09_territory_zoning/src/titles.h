@@ -26,6 +26,8 @@
 #include <string>
 #include <vector>
 
+#include "devils_engine/utils/inherited.h"
+
 #include "zones.h"
 
 namespace devils_engine::pf09 {
@@ -96,13 +98,9 @@ private:
   std::vector<title_record> records_;
   std::vector<char> names_;
 
-  struct holder_state {
-    title_id id = invalid_title;
-    uint32_t holder = 0;
-
-    bool operator<(const holder_state& other) const noexcept { return id < other.id; }
-  };
-  std::vector<holder_state> holders_;
+  // Четвёртая по счёту таблица подмен в этой площадке — и последняя, написанная вручную. Все четыре
+  // делали одно и то же, и теперь делают это одним кодом.
+  utils::override_table<title_id, uint32_t> holders_;
 };
 
 // Земля и право вместе. Раздельные структуры, общий вопрос: связывать их внутри `zone_store` значило бы

@@ -13,7 +13,7 @@ namespace devils_engine::pf09 {
 
 namespace {
 
-constexpr char sector_magic[8] = {'P', 'F', '0', '9', 'Z', 'S', '0', '8'};
+constexpr char sector_magic[8] = {'P', 'F', '0', '9', 'Z', 'S', '0', '9'};
 
 struct sector_header {
   char magic[8];
@@ -70,10 +70,7 @@ std::string_view zone_kind_name(const zone_kind value) noexcept {
     case zone_kind::building: return "building";
     case zone_kind::district: return "district";
     case zone_kind::settlement: return "settlement";
-    case zone_kind::road: return "road";
-    case zone_kind::landmark: return "landmark";
     case zone_kind::market: return "market";
-    case zone_kind::route: return "route";
     case zone_kind::holding: return "holding";
     default: return "?";
   }
@@ -162,12 +159,6 @@ uint64_t compute_fingerprint(const zone_sector& sector) {
       hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(record.bounds.lower[axis]));
       hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(record.bounds.upper[axis]));
     }
-  }
-  for (const auto& part : sector.parts) {
-    hash = utils::hash_combine(hash, part.vertex_begin);
-    hash = utils::hash_combine(hash, part.vertex_count);
-    hash = utils::hash_combine(hash, part.portal_begin);
-    hash = utils::hash_combine(hash, part.portal_count);
   }
   for (const auto& part : sector.parts) {
     hash = utils::hash_combine(hash, part.vertex_begin);
@@ -488,19 +479,20 @@ std::span<const zone_kind> carriers_of(const control_field field) noexcept {
 const zone_record* zone_store::carrier_of(const zone_key key, const control_field field) const {
   const auto kinds = carriers_of(field);
 
-  // Подъём ограничен той же восьмёркой, что и `containing`: цепочка вложенности коротка по построению, а
-  // неограниченный обход означал бы готовность крутиться в кольце, если данные окажутся порчеными.
-  auto current = key;
-  for (uint32_t hop = 0; hop < 8; ++hop) {
-    const auto* record = find(current);
-    if (record == nullptr) return nullptr;
-    for (const auto kind : kinds) {
-      if (record->kind == kind && record->control != no_control) return record;
-    }
-    if (record->parent == invalid_key) return nullptr;
-    current = record->parent;
-  }
-  return nullptr;
+  // Подъём до ближайшего НОСИТЕЛЯ ответа — общий приём, вынесенный в `utils::nearest_carrier`: у комнаты
+  // нет своего уровня преступности, он есть у района, и комната его наследует.
+  const auto found = utils::nearest_carrier(
+    key, invalid_key,
+    [this](const zone_key current) {
+      const auto* record = find(current);
+      return record == nullptr ? invalid_key : record->parent;
+    },
+    [this, kinds](const zone_key current) {
+      const auto* record = find(current);
+      if (record == nullptr || record->control == no_control) return false;
+      return std::find(kinds.begin(), kinds.end(), record->kind) != kinds.end();
+    });
+  return found == invalid_key ? nullptr : find(found);
 }
 
 zone_control zone_store::control_at(const zone_key key, const control_field field) const {
@@ -508,8 +500,7 @@ zone_control zone_store::control_at(const zone_key key, const control_field fiel
   if (carrier == nullptr) return {};
 
   // Рантайм-значение старше записанного: район могли отжать час назад, а файл на диске об этом не знает.
-  const auto place = std::lower_bound(control_.begin(), control_.end(), control_state{carrier->key, {}});
-  if (place != control_.end() && place->key == carrier->key) return place->value;
+  if (const auto* value = control_.find(carrier->key); value != nullptr) return *value;
 
   const auto* owner = sector(key_sector_x(carrier->key), key_sector_y(carrier->key));
   if (owner == nullptr || carrier->control >= owner->controls.size()) return {};
@@ -517,45 +508,25 @@ zone_control zone_store::control_at(const zone_key key, const control_field fiel
 }
 
 void zone_store::set_control(const zone_key carrier, const zone_control& value) {
-  if (carrier == invalid_key) return;
-  const auto place = std::lower_bound(control_.begin(), control_.end(), control_state{carrier, {}});
-  if (place != control_.end() && place->key == carrier) {
-    place->value = value;
-    return;
-  }
-  control_.insert(place, control_state{carrier, value});
+  if (carrier != invalid_key) control_.set(carrier, value);
 }
 
 void zone_store::set_place_holder(const zone_key place, const uint32_t owner) {
-  if (place == invalid_key) return;
-  const auto found = std::lower_bound(place_holders_.begin(), place_holders_.end(), place_state{place, 0});
-  if (found != place_holders_.end() && found->key == place) {
-    found->holder = owner;
-    return;
-  }
-  place_holders_.insert(found, place_state{place, owner});
+  if (place != invalid_key) place_holders_.set(place, owner);
 }
 
-uint32_t zone_store::place_holder(const zone_key place) const {
-  const auto found = std::lower_bound(place_holders_.begin(), place_holders_.end(), place_state{place, 0});
-  return found != place_holders_.end() && found->key == place ? found->holder : 0u;
-}
+uint32_t zone_store::place_holder(const zone_key place) const { return place_holders_.value_or(place, 0u); }
 
 void zone_store::set_closed(const zone_key key, const bool value) {
-  if (key == invalid_key) return;
-  const auto place = std::lower_bound(overrides_.begin(), overrides_.end(), door_state{key, false});
-  if (place != overrides_.end() && place->key == key) {
-    place->closed = value;
-    return;
-  }
-  overrides_.insert(place, door_state{key, value});
+  if (key != invalid_key) closed_.set(key, value);
 }
 
 bool zone_store::closed(const zone_key key) const {
-  const auto place = std::lower_bound(overrides_.begin(), overrides_.end(), door_state{key, false});
-  if (place != overrides_.end() && place->key == key) return place->closed;
+  // «Подмены нет» и «подменено значением по умолчанию» — разные вещи: дверь без записи открыта потому,
+  // что так сказано в файле, а дверь с записью `false` — потому что её ОТКРЫЛИ. Поэтому `find`, а не
+  // `value_or`: второй стёр бы это различие.
+  if (const auto* value = closed_.find(key); value != nullptr) return *value;
 
-  // Оверрайда нет — значит место в том состоянии, в каком его положил на диск сборщик.
   const auto* record = find(key);
   return record != nullptr && record->closed();
 }

@@ -42,6 +42,8 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
+#include "devils_engine/utils/inherited.h"
+
 namespace devils_engine::pf09 {
 
 // Уровни — это игровые задачи, а не степени детализации одной карты. Игрок переключается между ними,
@@ -69,8 +71,8 @@ enum class zone_kind : uint32_t {
   yard,
   building,    // абстрактная группа: здание как совокупность мест
   district,    // квартал: абстрактная группа мест
-  settlement, road, landmark,
-  market, route,
+  settlement,
+  market,
   holding,
   count
 };
@@ -80,13 +82,12 @@ enum class zone_kind : uint32_t {
 enum class zone_flags : uint32_t {
   none = 0,
   impassable = 1u << 0,
-  road = 1u << 1,     // предпочтительно для движения: дорога тянет маршрут на себя
-  indoor = 1u << 2,
+  road = 1u << 1,     // мостовая: обозначает проезжую часть; насколько по ней быстро — говорит `speed`
 
   // Начальное состояние переключаемого места. Обычная дверь — это не особый вид связи, а МЕСТО, у
   // которого проходимость меняется по ходу игры: заперли, выбили, забаррикадировали. Флаг в файле задаёт
   // только начальное положение, дальше состоянием владеет рантайм (`zone_store::set_closed`).
-  closed = 1u << 3,
+  closed = 1u << 2,
 };
 
 [[nodiscard]] constexpr uint32_t operator|(const zone_flags a, const zone_flags b) noexcept {
@@ -151,12 +152,11 @@ enum class portal_flags : uint32_t {
   open = 0,
   door = 1u << 0,
   locked = 1u << 1,
-  climb = 1u << 2,
 
   // Связь БЕЗ геометрии: дорога между поселениями, ребро политического графа. Отрезка у неё нет, и это
   // не вырождение, а другая природа связи — «переместиться», а не «пройти». Флаг нужен, чтобы отличать
   // такую связь от геометрической, у которой отсутствие отрезка было бы ошибкой сборки.
-  graph = 1u << 3,
+  graph = 1u << 2,
 };
 
 [[nodiscard]] constexpr uint32_t operator|(const portal_flags a, const portal_flags b) noexcept {
@@ -401,7 +401,7 @@ public:
   void set_closed(const zone_key key, const bool value);
   bool closed(const zone_key key) const;
   bool passable(const zone_record& record) const;
-  uint32_t closed_count() const noexcept { return uint32_t(overrides_.size()); }
+  uint32_t closed_count() const noexcept { return uint32_t(closed_.size()); }
 
   const zone_part* part_of(const part_ref& reference) const;
   std::span<const zone_part> parts_of(const zone_record& record) const;
@@ -425,33 +425,16 @@ private:
   std::filesystem::path root_;
   double radius_m_ = 0.0;
   uint32_t budget_ = 0;
-  struct door_state {
-    zone_key key = invalid_key;
-    bool closed = false;
-
-    bool operator<(const door_state& other) const noexcept { return key < other.key; }
-  };
-
   std::vector<entry> resident_;
-  // Рантайм-состояние переживает выгрузку сектора: закрытая дверь обязана остаться закрытой, когда
-  // партия отошла на километр и вернулась. Поэтому оно живёт здесь, а не в записи зоны.
-  std::vector<door_state> overrides_;
 
-  struct control_state {
-    zone_key key = invalid_key;
-    zone_control value{};
-
-    bool operator<(const control_state& other) const noexcept { return key < other.key; }
-  };
-  std::vector<control_state> control_;
-
-  struct place_state {
-    zone_key key = invalid_key;
-    uint32_t holder = 0;
-
-    bool operator<(const place_state& other) const noexcept { return key < other.key; }
-  };
-  std::vector<place_state> place_holders_;
+  // Рантайм-состояние переживает выгрузку сектора: закрытая дверь обязана остаться закрытой, когда партия
+  // отошла на километр и вернулась. Поэтому оно живёт здесь, а не в записи зоны.
+  //
+  // Три таблицы подмен одного вида. Раньше каждая была написана вручную — вместе с четвёртой такой же в
+  // `title_book` это четыре копии одного отсортированного вектора; теперь это `utils::override_table`.
+  utils::override_table<zone_key, bool> closed_;
+  utils::override_table<zone_key, zone_control> control_;
+  utils::override_table<zone_key, uint32_t> place_holders_;
   stream_stats last_{};
 };
 

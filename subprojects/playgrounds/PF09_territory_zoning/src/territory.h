@@ -149,12 +149,6 @@ public:
   address resolve_chain(const glm::dvec2& point_m) const;
   zone_id resolve(const glm::dvec2& point_m, const tier value = leaf_tier) const;
 
-  // То же разрешение в одинарной точности. Существует не ради скорости, а ради среза 2b: fp64 на GPU
-  // либо отсутствует, либо идёт в 1/8–1/32 темпа, поэтому compute-запекание обязано считать во float.
-  // Спуск от корня renormalizes локальную координату на каждом ярусе, так что точность не накапливает
-  // ошибку вниз по дереву — но проверить это надо замером, а не рассуждением.
-  zone_id resolve_single(const glm::dvec2& point_m, const tier value = leaf_tier) const;
-
   zone_id parent_of(const zone_id id) const;
   zone_id ancestor_at(const zone_id id, const tier value) const;
 

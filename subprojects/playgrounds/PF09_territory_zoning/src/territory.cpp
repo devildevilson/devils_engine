@@ -269,14 +269,6 @@ void territory::cells_of(const glm::dvec2& point_m, std::span<glm::i64vec2> out)
   cells_impl<double>(point_m, out);
 }
 
-zone_id territory::resolve_single(const glm::dvec2& point_m, const tier value) const {
-  std::array<glm::i64vec2, tier_count> cells{};
-  cells_impl<float>(point_m, cells);
-
-  const size_t index = size_t(value);
-  return make_zone(value, flat_index(representative(cells[index], value), value));
-}
-
 glm::dvec2 territory::node_centre_m(const zone_id id) const {
   const auto value = tier_of(id);
 

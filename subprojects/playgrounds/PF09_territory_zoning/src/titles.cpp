@@ -57,18 +57,11 @@ std::string_view title_book::name_of(const title_id id) const {
 }
 
 void title_book::set_holder(const title_id id, const uint32_t owner) {
-  if (id >= records_.size()) return;
-  const auto place = std::lower_bound(holders_.begin(), holders_.end(), holder_state{id, 0});
-  if (place != holders_.end() && place->id == id) {
-    place->holder = owner;
-    return;
-  }
-  holders_.insert(place, holder_state{id, owner});
+  if (id < records_.size()) holders_.set(id, owner);
 }
 
 uint32_t title_book::holder(const title_id id) const {
-  const auto place = std::lower_bound(holders_.begin(), holders_.end(), holder_state{id, 0});
-  if (place != holders_.end() && place->id == id) return place->holder;
+  if (const auto* value = holders_.find(id); value != nullptr) return *value;
 
   const auto* record = find(id);
   if (record == nullptr) return 0;

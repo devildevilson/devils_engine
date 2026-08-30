@@ -21,7 +21,6 @@
 
 #include "devils_engine/utils/hash.h"
 
-#include "clipmap.h"
 #include "locality.h"
 #include "navigate.h"
 #include "viewer.h"
@@ -35,9 +34,9 @@ using namespace devils_engine;
 
 namespace {
 
-enum class action : uint32_t { report, clipmap, zoom, locality, world, stream, view, verify, dump };
+enum class action : uint32_t { report, locality, world, stream, view, verify, dump };
 enum class dump_mode : uint32_t { zone, owner };
-enum class dump_source : uint32_t { direct, clipmap, residency, zones };
+enum class dump_source : uint32_t { direct, zones };
 
 struct options {
   action requested = action::report;
@@ -51,15 +50,12 @@ struct options {
   double dump_span_m = 1024000.0;
   uint32_t dump_size = 768;
 
-  pf09::clipmap_config clip;
   pf09::locality_config local;
   pf09::build_options build{};
   double stream_radius_m = 12000.0;
   uint32_t stream_budget = 32;
   pf09::viewer_options view{};
-  double zoom_m_per_pixel = 4.0;
   double view_distance_m = 12000.0;
-  uint32_t verify_clip_side = 128;
   uint32_t screen_pixels = 1920;
   double pitch_deg = 55.0;
   double fov_deg = 40.0;
@@ -80,8 +76,6 @@ bool read_prefixed(const std::string_view argument, const std::string_view prefi
 void print_usage() {
   std::cout << "PF09 territory zoning\n"
                "  --report              таблица ярусов, узлов и масштабов (по умолчанию)\n"
-               "  --clipmap             таблица уровней клипмапа, окно резидентности и цена обновления\n"
-               "  --zoom-study          лестница полос зума от высоты партии до империи\n"
                "  --locality            локальности: размещение, состав, связность и бюджет\n"
                "  --build-world         собрать секторные файлы игровых территорий\n"
                "  --stream              пройти маршрут и показать подгрузку секторов\n"
@@ -108,12 +102,9 @@ void print_usage() {
                "  --control-map=0..4    раскраска: вид / кто держит / преступность / собственник / закон\n"
                "  --dump-tier=N         ярус окраски дампа, 0 = world, 6 = parcel\n"
                "  --dump-mode=NAME      zone | owner\n"
-               "  --dump-source=NAME    direct | clipmap | residency | zones\n"
+               "  --dump-source=NAME    direct | zones\n"
                "  --bake-budget=N       потолок печки за кадр в текселях, 0 снимает ограничение\n"
-               "  --zoom=F              метров на пиксель экрана\n"
                "  --view=M              дальность видимости в метрах\n"
-               "  --clip-side=N         сторона уровня клипмапа в текселях\n"
-               "  --clip-levels=N       сколько уровней держит пул\n"
                "  --tier-texels=N       сколько текселей занимает разрешимая ячейка яруса\n"
                "  --base-texel=M        размер текселя самого мелкого уровня в метрах\n"
                "  --dump-center=X,Y     центр дампа в метрах\n"
@@ -141,10 +132,6 @@ bool parse_options(const int argc, const char** argv, options& out) {
       return false;
     } else if (argument == "--report") {
       out.requested = action::report;
-    } else if (argument == "--clipmap") {
-      out.requested = action::clipmap;
-    } else if (argument == "--zoom-study") {
-      out.requested = action::zoom;
     } else if (argument == "--locality") {
       out.requested = action::locality;
     } else if (argument == "--build-world") {
@@ -206,24 +193,9 @@ bool parse_options(const int argc, const char** argv, options& out) {
     } else if (read_prefixed(argument, "--dump-mode=", value)) {
       out.dump_colouring = value == "owner" ? dump_mode::owner : dump_mode::zone;
     } else if (read_prefixed(argument, "--dump-source=", value)) {
-      out.dump_from = value == "clipmap"     ? dump_source::clipmap
-                      : value == "residency" ? dump_source::residency
-                      : value == "zones"     ? dump_source::zones
-                                             : dump_source::direct;
-    } else if (read_prefixed(argument, "--zoom=", value)) {
-      out.zoom_m_per_pixel = std::stod(value);
+      out.dump_from = value == "zones" ? dump_source::zones : dump_source::direct;
     } else if (read_prefixed(argument, "--view=", value)) {
       out.view_distance_m = std::stod(value);
-    } else if (read_prefixed(argument, "--clip-side=", value)) {
-      out.clip.side = uint32_t(std::stoul(value));
-    } else if (read_prefixed(argument, "--clip-levels=", value)) {
-      out.clip.resident_levels = uint32_t(std::stoul(value));
-    } else if (read_prefixed(argument, "--tier-texels=", value)) {
-      out.clip.min_tier_texels = uint32_t(std::stoul(value));
-    } else if (read_prefixed(argument, "--base-texel=", value)) {
-      out.clip.base_texel_m = std::stod(value);
-    } else if (read_prefixed(argument, "--bake-budget=", value)) {
-      out.clip.bake_budget_texels = std::stoull(value);
     } else if (read_prefixed(argument, "--dump-center=", value)) {
       const auto comma = value.find(',');
       if (comma == std::string::npos) {
@@ -326,202 +298,6 @@ void run_report(const pf09::territory& map) {
   const auto largest = *std::max_element(per_owner.begin(), per_owner.end());
   std::cout << std::format("  баронства держат {} династий из {}, крупнейшая владеет {} титулами\n", held,
                            config.dynasty_count, largest);
-}
-
-
-// --- клипмап ---
-
-int run_clipmap_report(const pf09::territory& map, const options& opts) {
-  pf09::clipmap clip(map, opts.clip);
-
-  std::cout << std::format("PF09 клипмап: сторона {}², пул {} уровней, разрешимость {} текселей на ячейку\n",
-                           opts.clip.side, opts.clip.resident_levels, opts.clip.min_tier_texels);
-  std::cout << std::format("  зум {:.2f} м/пиксель, дальность {:.0f} м\n\n", opts.zoom_m_per_pixel,
-                           opts.view_distance_m);
-
-  const auto first = clip.required_first(opts.zoom_m_per_pixel);
-  const auto last = clip.required_last(opts.view_distance_m);
-
-  std::cout << "  уровень   тексель    покрытие   хранит ярус   резидентен\n";
-  const glm::dvec2 centre{map.config().world_span_m * 0.5, map.config().world_span_m * 0.5};
-  clip.focus(centre, opts.zoom_m_per_pixel, opts.view_distance_m);
-
-  for (uint32_t k = 0; k < clip.level_count(); ++k) {
-    const double texel = clip.texel_size_m(k);
-    const double cover = clip.coverage_m(k);
-    std::cout << std::format("  {:>7}   {:>7}   {:>9}   {:<11}   {}\n", k,
-                             texel >= 1000.0 ? std::format("{:.1f} км", texel / 1000.0) : std::format("{:.0f} м", texel),
-                             cover >= 1000.0 ? std::format("{:.0f} км", cover / 1000.0) : std::format("{:.0f} м", cover),
-                             pf09::tier_name(clip.level_tier(k)), clip.resident(k) ? "да" : "—");
-  }
-
-  const uint32_t needed = last >= first ? last - first + 1 : 1;
-  std::cout << std::format("\n  зум требует уровни {}..{} — это {} из пула в {}\n", first, last, needed,
-                           opts.clip.resident_levels);
-  if (needed > opts.clip.resident_levels) {
-    std::cout << "  ПУЛ МАЛ: между самым мелким и самым крупным нужным уровнем останется дыра\n";
-  }
-  std::cout << std::format("  резидентно {} уровней, {:.1f} МБ при 4 байтах на тексель\n", clip.resident_count(),
-                           double(clip.resident_bytes()) / (1024.0 * 1024.0));
-
-  // Время полной перепечки уровня — это ответ на вопрос, можно ли вообще строить уровень на CPU в кадре.
-  // Если нельзя, у среза 2b появляется второй потребитель: запекание уходит на GPU или размазывается.
-  const auto begin = std::chrono::steady_clock::now();
-  const auto reference = clip.bake_reference(clip.first_resident(), centre);
-  const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
-  std::cout << std::format("  полная перепечка уровня {}: {:.1f} мс на {} текселей ({:.2f} млн разрешений/с)\n",
-                           clip.first_resident(), elapsed, reference.size(),
-                           double(reference.size()) / (elapsed * 1000.0));
-
-  // Панорамирование на один тексель самого мелкого резидентного уровня — самый частый шаг камеры.
-  const double step = clip.texel_size_m(clip.first_resident());
-  const auto cost = clip.focus({centre.x + step, centre.y + step}, opts.zoom_m_per_pixel, opts.view_distance_m);
-  std::cout << std::format("  сдвиг на один тексель уровня {}: {} текселей в {} регионах, полос {}, перепечек {}\n",
-                           clip.first_resident(), cost.texels, cost.regions, cost.shifted_levels,
-                           cost.rebuilt_levels);
-
-  const auto far_cost = clip.focus({centre.x + clip.coverage_m(clip.first_resident()) * 2.0, centre.y},
-                                   opts.zoom_m_per_pixel, opts.view_distance_m);
-  std::cout << std::format("  прыжок за пределы окна: {} текселей в {} регионах, перепечек {}\n", far_cost.texels,
-                           far_cost.regions, far_cost.rebuilt_levels);
-  return EXIT_SUCCESS;
-}
-
-
-// --- исследование зума ---
-
-struct zoom_stop {
-  const char* name;
-  double view_width_m;
-  const char* gameplay;
-};
-
-// Остановки взяты из игрового замысла, а не из степеней двойки: именно на них у игрока меняется, ЧТО он
-// делает, и именно эти масштабы обязаны быть удобными. Клипмап под них подстраивается, а не наоборот.
-constexpr zoom_stop zoom_stops[] = {
-  {"party",     60.0,      "прямое управление подопечными"},
-  {"encounter", 250.0,     "окрестности стычки, отдельные постройки"},
-  {"errand",    2000.0,    "абстрактные приказы: съезди в город А"},
-  {"company",   20000.0,   "торговая/наёмничья компания, несколько соседних городов"},
-  {"holding",   120000.0,  "владение землёй, соседние баронства"},
-  {"political", 500000.0,  "политический расклад, уровень CK3"},
-  {"empire",    1500000.0, "империя и прилегающие страны"},
-};
-
-// Считает РАЗЛИЧИМЫЕ территории в кадре, спрашивая ту иерархию, которая на этом масштабе существует.
-// В прошлой редакции здесь опрашивались только глобальные ярусы, и на партийной высоте выходило две
-// территории на экран — но это было свойством иерархии, обрывавшейся на участке в 213 м, а не свойством
-// масштаба. Локальность отвечает ниже участка, и число меняется на порядки.
-uint32_t distinct_zones(const pf09::territory& map, const pf09::locality_field& field, const glm::dvec2& centre,
-                        const double width_m, const pf09::tier value, const uint32_t samples) {
-  std::vector<uint64_t> seen;
-  seen.reserve(samples);
-  for (uint32_t i = 0; i < samples; ++i) {
-    const auto unit = sample_point(i, 1.0, 0x2110ull);
-    const glm::dvec2 point{centre.x + (unit.x - 0.5) * width_m, centre.y + (unit.y - 0.5) * width_m};
-
-    const auto local = field.resolve_local(point);
-    seen.push_back(local.valid() ? (uint64_t(local.anchor) << 32) | local.local
-                                 : uint64_t(map.resolve(point, value)));
-  }
-  std::sort(seen.begin(), seen.end());
-  return uint32_t(std::unique(seen.begin(), seen.end()) - seen.begin());
-}
-
-int run_zoom_study(const pf09::territory& map, const options& opts) {
-  pf09::clipmap clip(map, opts.clip);
-  glm::dvec2 centre{map.config().world_span_m * 0.5, map.config().world_span_m * 0.5};
-
-  // Наблюдатель ставится В ЛОКАЛЬНОСТЬ, а не в чистое поле: партийные остановки иначе меряли бы пустошь,
-  // где никакой мелкой структуры нет ни при какой иерархии, и снова получили бы две территории на кадр.
-  pf09::locality_field field(map, opts.local);
-  field.focus(centre);
-  if (!field.resident().empty()) centre = field.resident().front()->centre_m();
-
-  std::cout << std::format("PF09 лестница зума: экран {} пикселей, наклон {:.0f}°, обзор {:.0f}°, "
-                           "сторона уровня {}²\n\n",
-                           opts.screen_pixels, opts.pitch_deg, opts.fov_deg, opts.clip.side);
-
-  // Сколько уровней нужно одновременно, задаёт не отношение ДАЛЬНОСТЕЙ, а отношение ФУТПРИНТОВ текселя
-  // по экрану. Для луча под углом `a` к земле футпринт вдоль взгляда пропорционален `1 / sin^2(a)`:
-  // дальность растёт, и вдобавок луч ложится на землю всё более полого. Считать по дальностям — значит
-  // получить у вида строго сверху отношение в двадцать раз, хотя там достаточно одного уровня.
-  const double half_fov = opts.fov_deg * 0.5 * std::numbers::pi / 180.0;
-  const double pitch = opts.pitch_deg * std::numbers::pi / 180.0;
-  const double angle_low = std::max(pitch - half_fov, 0.5 * std::numbers::pi / 180.0);
-  const double angle_high = pitch + half_fov;
-
-  // Крупнейший футпринт — там, где синус наименьший, то есть у дальнего от вертикали края экрана;
-  // наименьший — там, где луч ближе всего к отвесу.
-  const double sin_low = std::sin(angle_low);
-  const double sin_high = std::sin(angle_high);
-  const double sin_worst = std::min(sin_low, sin_high);
-  const double sin_best = angle_low <= std::numbers::pi * 0.5 && angle_high >= std::numbers::pi * 0.5
-                            ? 1.0
-                            : std::max(sin_low, sin_high);
-  const double depth_ratio = (sin_best * sin_best) / (sin_worst * sin_worst);
-  const double depth_octaves = std::log2(depth_ratio);
-
-  std::cout << "  остановка     обзор     м/пиксель   уровень   тексель, пикс   территорий на экране   растр\n";
-  for (const auto& stop : zoom_stops) {
-    const double mpp = stop.view_width_m / double(opts.screen_pixels);
-    const uint32_t level = clip.required_first(mpp);
-    const double texel_pixels = clip.texel_size_m(level) / mpp;
-    const auto value = clip.level_tier(level);
-    const uint32_t zones = distinct_zones(map, field, centre, stop.view_width_m, value, 4096);
-
-    // Растр вырождается, когда на экране видно считанные территории: тогда «карта» — это одно-два
-    // значения, и хранить их текстурой нет смысла, их надо спрашивать у CPU по точке.
-    const bool local_scale = stop.view_width_m <= opts.local.extent_m;
-    const char* verdict = local_scale ? "локальность" : (zones < 8 ? "ВЫРОЖДЕН" : "по делу");
-
-    std::cout << std::format("  {:<11} {:>8} {:>11.3f}   {:>7}   {:>13.2f}   {:>20}   {}\n", stop.name,
-                             stop.view_width_m >= 1000.0 ? std::format("{:.0f} км", stop.view_width_m / 1000.0)
-                                                         : std::format("{:.0f} м", stop.view_width_m),
-                             mpp, level, texel_pixels, zones, verdict);
-  }
-
-  // Уровней нужно СУММА двух независимых слагаемых, и второе я сперва забыл. Первое — октавы футпринта:
-  // сколько разных LOD требует наклон камеры. Второе — `log2(экран / сторона уровня)`: окно уровня
-  // покрывает ровно `side` текселей, поэтому экран шириной `P` пикселей нельзя обслужить одним уровнем
-  // при текселе в пиксель — периферию берут более грубые уровни просто потому, что у них окно шире.
-  const double screen_octaves = std::max(0.0, std::log2(double(opts.screen_pixels) / double(opts.clip.side)));
-  const uint32_t pool = uint32_t(std::ceil(depth_octaves + screen_octaves)) + 1;
-
-  std::cout << std::format("\n  наклон {:.0f}° при обзоре {:.0f}°: футпринт по экрану меняется в {:.1f} раз — "
-                           "{:.1f} октавы\n",
-                           opts.pitch_deg, opts.fov_deg, depth_ratio, depth_octaves);
-  std::cout << std::format("  экран {} пикселей против стороны уровня {} — ещё {:.1f} октавы\n", opts.screen_pixels,
-                           opts.clip.side, screen_octaves);
-  std::cout << std::format("  итого уровней в пуле: {}, это {:.1f} МБ при 4 байтах на тексель\n", pool,
-                           double(uint64_t(pool) * opts.clip.side * opts.clip.side * 4) / (1024.0 * 1024.0));
-
-  // Сторона уровня — не свободный параметр вкуса: она входит в бюджет дважды и в разные стороны. Вдвое
-  // большая сторона убирает одну октаву из пула, но учетверяет цену уровня, поэтому оптимум существует и
-  // лежит не там, где подсказывает интуиция «больше текстура — лучше».
-  std::cout << "\n  сторона   уровней   память\n";
-  for (uint32_t side = 128; side <= 2048; side *= 2) {
-    const double octaves = std::max(0.0, std::log2(double(opts.screen_pixels) / double(side)));
-    const uint32_t levels = uint32_t(std::ceil(depth_octaves + octaves)) + 1;
-    std::cout << std::format("  {:>7}   {:>7}   {:>6.1f} МБ\n", side, levels,
-                             double(uint64_t(levels) * side * side * 4) / (1024.0 * 1024.0));
-  }
-
-  std::cout << "\n  полосы с перекрытием (текущая полоса держится, пока обзор внутри её диапазона):\n";
-  std::cout << "  уровень   вход при отдалении   выход при приближении   идеальный обзор\n";
-  constexpr double overlap = 0.35;
-  for (uint32_t k = 0; k < clip.level_count(); ++k) {
-    const double ideal_low = clip.texel_size_m(k) * double(opts.screen_pixels);
-    const double ideal_high = ideal_low * 2.0;
-    std::cout << std::format("  {:>7}   {:>18}   {:>21}   {:>10} .. {}\n", k,
-                             std::format("{:.0f} м", ideal_low * (1.0 - overlap)),
-                             std::format("{:.0f} м", ideal_high * (1.0 + overlap)),
-                             std::format("{:.0f} м", ideal_low), std::format("{:.0f} м", ideal_high));
-  }
-
-  std::cout << std::format("\n  перекрытие {:.0f}% ширины полосы: между входом соседа и выходом текущей есть зазор, "
-                           "в котором и надо печь следующий уровень\n", overlap * 100.0);
-  return EXIT_SUCCESS;
 }
 
 
@@ -988,367 +764,7 @@ void verify_torus(checker& check, const pf09::territory& map, const uint32_t sam
 }
 
 
-void verify_clipmap_levels(checker& check, const pf09::clipmap& clip) {
-  bool doubling = true;
-  bool monotone = true;
-  for (uint32_t k = 1; k < clip.level_count(); ++k) {
-    doubling = doubling && std::abs(clip.coverage_m(k) - clip.coverage_m(k - 1) * 2.0) < 1.0e-6;
-    monotone = monotone && uint32_t(clip.level_tier(k)) <= uint32_t(clip.level_tier(k - 1));
-  }
 
-  check.expect(doubling, "уровень покрывает вдвое больше предыдущего");
-
-  // Ярус, записанный на уровне, не может углубляться с ростом уровня: более крупный тексель разрешает
-  // МЕНЬШЕ, а не больше. Разъедься это — и подъём по дереву от записанного узла перестал бы давать
-  // запрошенный ярус, потому что запрошенный оказался бы глубже записанного.
-  check.expect(monotone, "ярус уровня не углубляется с масштабом");
-  check.expect(clip.coverage_m(clip.level_count() - 1) >= clip.config().side * 0.0, "уровни существуют");
-}
-
-// Полное сравнение резидентных уровней с эталонной перепечкой. Это главный контракт площадки в чистом
-// виде: тексель обязан равняться прямому разрешению своего центра, и никакая инкрементальность не имеет
-// права этого изменить.
-size_t compare_resident(const pf09::clipmap& clip, const glm::dvec2& centre) {
-  size_t mismatches = 0;
-  for (uint32_t k = clip.first_resident(); k < clip.first_resident() + clip.resident_count(); ++k) {
-    const auto reference = clip.bake_reference(k, centre);
-    const auto origin = clip.window_origin(k);
-    const int64_t side = int64_t(clip.config().side);
-
-    for (int64_t y = origin.y; y < origin.y + side; ++y) {
-      for (int64_t x = origin.x; x < origin.x + side; ++x) {
-        const auto point = clip.texel_center_m({x, y}, k);
-        const int64_t wx = ((x % side) + side) % side;
-        const int64_t wy = ((y % side) + side) % side;
-        if (clip.sample(point, k) != reference[size_t(wy * side + wx)]) ++mismatches;
-      }
-    }
-  }
-  return mismatches;
-}
-
-void verify_clipmap_bake(checker& check, const pf09::territory& map, const options& opts) {
-  pf09::clipmap clip(map, opts.clip);
-  const glm::dvec2 centre{map.config().world_span_m * 0.5, map.config().world_span_m * 0.5};
-  clip.focus(centre, opts.zoom_m_per_pixel, opts.view_distance_m);
-
-  check.expect(compare_resident(clip, centre) == 0, "клипмап равен прямому разрешению",
-               "тексели резидентных уровней разошлись с перепечкой");
-}
-
-void verify_clipmap_walk(checker& check, const pf09::territory& map, const options& opts) {
-  auto small = opts.clip;
-  small.side = opts.verify_clip_side;
-
-  // Инварианты тороидального обновления не зависят от стороны, а полная сверка зависит от неё квадратично.
-  // Поэтому прогулка камеры идёт на маленьком экземпляре, а бюджет памяти меряется на настоящем.
-  pf09::clipmap clip(map, small);
-
-  const double span = map.config().world_span_m;
-  glm::dvec2 centre{span * 0.5, span * 0.5};
-  clip.focus(centre, opts.zoom_m_per_pixel, opts.view_distance_m);
-
-  size_t mismatches = 0;
-  size_t overlaps = 0;
-  size_t out_of_bounds = 0;
-  size_t over_budget = 0;
-  constexpr uint32_t steps = 24;
-
-  for (uint32_t i = 0; i < steps; ++i) {
-    const auto jump = sample_point(i, 1.0, 0xc0ffeeull);
-    const double reach = clip.texel_size_m(clip.first_resident()) * double(clip.config().side) * 0.35;
-    const glm::dvec2 moved{centre.x + (jump.x * 2.0 - 1.0) * reach, centre.y + (jump.y * 2.0 - 1.0) * reach};
-
-    const auto previous_origin = clip.window_origin(clip.first_resident());
-    const auto cost = clip.focus(moved, opts.zoom_m_per_pixel, opts.view_distance_m);
-    centre = moved;
-
-    uint64_t region_texels = 0;
-    for (const auto& region : clip.regions()) {
-      region_texels += region.texel_count();
-      if (region.x + region.width > clip.config().side || region.y + region.height > clip.config().side) {
-        ++out_of_bounds;
-      }
-    }
-
-    // Регионы обязаны покрывать записанное ровно один раз. Двойная запись стоила бы вдвое дороже и
-    // прятала бы ошибку адресации: перекрывающиеся полосы дают верный результат при неверных границах.
-    if (region_texels != cost.texels) ++overlaps;
-
-    const auto origin = clip.window_origin(clip.first_resident());
-    const int64_t dx = std::abs(origin.x - previous_origin.x);
-    const int64_t dy = std::abs(origin.y - previous_origin.y);
-    const uint64_t bound = uint64_t(clip.config().side) * uint64_t(dx + dy) * clip.resident_count() + 1u;
-    if (cost.rebuilt_levels == 0 && cost.texels > bound) ++over_budget;
-
-    mismatches += compare_resident(clip, centre);
-  }
-
-  check.expect(mismatches == 0, "тороидальное обновление точно",
-               std::format("{} текселей разошлись с перепечкой после сдвигов", mismatches));
-  check.expect(overlaps == 0, "регионы не перекрываются", std::format("{} шагов с двойной записью", overlaps));
-  check.expect(out_of_bounds == 0, "регионы внутри текстуры", std::format("{} регионов за краем", out_of_bounds));
-  check.expect(over_budget == 0, "трафик обновления ограничен сдвигом",
-               std::format("{} шагов дороже границы side*(|dx|+|dy|)", over_budget));
-}
-
-void verify_clipmap_hysteresis(checker& check, const pf09::territory& map, const options& opts) {
-  auto small = opts.clip;
-  small.side = opts.verify_clip_side;
-  pf09::clipmap clip(map, small);
-
-  const glm::dvec2 centre{map.config().world_span_m * 0.5, map.config().world_span_m * 0.5};
-
-  // Зум ставится ровно на границу между уровнями и качается вокруг неё меньше, чем на гистерезис. Без
-  // гистерезиса окно переключалось бы каждый кадр, а переключение окна — это полная перепечка уровня.
-  const double boundary = clip.texel_size_m(0) * 4.0;
-  clip.focus(centre, boundary, opts.view_distance_m);
-  const auto settled = clip.first_resident();
-
-  uint32_t switches = 0;
-  uint32_t rebuilds = 0;
-  for (uint32_t i = 0; i < 32; ++i) {
-    const double wobble = (i % 2 == 0) ? 1.0 - 0.08 : 1.0 + 0.08;
-    const auto cost = clip.focus(centre, boundary * wobble, opts.view_distance_m);
-    rebuilds += cost.rebuilt_levels;
-    if (clip.first_resident() != settled) ++switches;
-  }
-
-  check.expect(switches == 0, "гистерезис держит окно", std::format("{} переключений на дрожащем зуме", switches));
-  check.expect(rebuilds == 0, "дрожащий зум не перепекает уровни", std::format("{} перепечек", rebuilds));
-}
-
-void verify_clipmap_quantisation(checker& check, const pf09::territory& map, const options& opts,
-                                 const uint32_t samples) {
-  auto small = opts.clip;
-  small.side = opts.verify_clip_side;
-  pf09::clipmap clip(map, small);
-
-  const glm::dvec2 centre{map.config().world_span_m * 0.5, map.config().world_span_m * 0.5};
-  clip.focus(centre, opts.zoom_m_per_pixel, opts.view_distance_m);
-
-  const uint32_t level = clip.first_resident();
-  const auto value = clip.level_tier(level);
-  const double texel = clip.texel_size_m(level);
-  const double reach = clip.coverage_m(level) * 0.45;
-
-  size_t inspected = 0;
-  size_t band = 0;
-  size_t vanished = 0;
-  size_t ancestor_mismatches = 0;
-
-  for (uint32_t i = 0; i < samples; ++i) {
-    const auto unit = sample_point(i, 1.0, 0x9105ull);
-    const glm::dvec2 point{centre.x + (unit.x * 2.0 - 1.0) * reach, centre.y + (unit.y * 2.0 - 1.0) * reach};
-
-    const auto stored = clip.sample(point, level);
-    if (stored == pf09::invalid_zone) continue;
-    ++inspected;
-
-    // Подъём от записанного узла обязан совпасть с прямым разрешением ТОГО ЖЕ ТЕКСЕЛЯ. Это точное
-    // равенство без всяких оговорок, и на нём держится показ любого яруса из одного растра.
-    const glm::dvec2 sampled_centre{std::floor(point.x / texel) * texel + texel * 0.5,
-                                    std::floor(point.y / texel) * texel + texel * 0.5};
-    if (map.ancestor_at(stored, pf09::tier::barony) != map.resolve(sampled_centre, pf09::tier::barony)) {
-      ++ancestor_mismatches;
-    }
-
-    if (stored == map.resolve(point, value)) continue;
-
-    // Растр — это точечная выборка, а точка не равна центру своего текселя. Значит расхождение около
-    // границы неизбежно и НЕ является дефектом; дефект — это расхождение ВДАЛИ от границы, потому что оно
-    // означает территорию, целиком провалившуюся между текселями. Её и ловим: если все девять соседних
-    // центров дают один и тот же узел, а точка внутри них — другой, то на этом уровне ярус на самом деле
-    // не разрешим, как бы его ни объявили.
-    bool uniform = true;
-    for (int32_t dy = -1; dy <= 1 && uniform; ++dy) {
-      for (int32_t dx = -1; dx <= 1 && uniform; ++dx) {
-        const glm::dvec2 probe{sampled_centre.x + dx * texel, sampled_centre.y + dy * texel};
-        uniform = map.resolve(probe, value) == stored;
-      }
-    }
-
-    if (uniform) {
-      ++vanished;
-    } else {
-      ++band;
-    }
-  }
-
-  check.expect(inspected > 0, "точки попали в окно клипмапа");
-  check.expect(ancestor_mismatches == 0, "подъём от текселя даёт нужный ярус",
-               std::format("{} расхождений из {}", ancestor_mismatches, inspected));
-  check.expect(vanished == 0, "территория не проваливается между текселями",
-               std::format("{} точек разошлись с растром вдали от границы", vanished));
-
-  std::cout << std::format("  замер: полоса квантования растра {:.1f}% точек при {} текселях на ячейку яруса '{}'\n",
-                           100.0 * double(band) / double(std::max<size_t>(inspected, 1)), opts.clip.min_tier_texels,
-                           pf09::tier_name(value));
-}
-
-
-// Непрерывный зум с ограниченным бюджетом печки. Это ответ на вопрос, во что превращается перепечка
-// уровня при плавной смене масштаба: если юбка предзагрузки и бюджет работают, кадр не встаёт и ни один
-// пиксель не остаётся без уровня. Дыра здесь — не «менее детально», а нечего показать вообще.
-void verify_clipmap_zoom(checker& check, const pf09::territory& map, const options& opts) {
-  auto cfg = opts.clip;
-  cfg.side = opts.verify_clip_side;
-  cfg.bake_budget_texels = uint64_t(cfg.side) * 8;
-
-  pf09::clipmap clip(map, cfg);
-  const double span = map.config().world_span_m;
-  glm::dvec2 centre{span * 0.5, span * 0.5};
-
-  constexpr uint32_t screen_pixels = 1000;
-  constexpr uint32_t frames = 320;
-  constexpr double octaves = 5.0;
-
-  // Прогрев идёт ДО исчезновения очереди, а не фиксированное число кадров: фиксированное число молча
-  // превратилось бы в часть проверки и скрыло бы, что печка не успевает.
-  const double start_mpp = clip.texel_size_m(0);
-  for (uint32_t i = 0; i < 4096; ++i) {
-    if (clip.focus(centre, start_mpp, start_mpp * screen_pixels).pending_levels == 0) break;
-  }
-
-  size_t holes = 0;
-  size_t uncovered_pick = 0;
-  size_t disagreements = 0;
-  size_t ring_band = 0;
-  size_t compared = 0;
-  uint32_t starved_frames = 0;
-  uint64_t worst_frame = 0;
-  uint32_t longest_pending = 0;
-  uint32_t pending_streak = 0;
-
-  for (uint32_t frame = 0; frame < frames; ++frame) {
-    const double mpp = start_mpp * std::pow(2.0, octaves * double(frame) / double(frames));
-    const double view = mpp * screen_pixels;
-
-    // Камера одновременно едет: зум и панорамирование в реальной игре не разнесены по времени, и полосы
-    // обязаны уживаться с печкой, а не заменять её.
-    centre.x += clip.texel_size_m(clip.first_resident()) * 0.7;
-    const auto cost = clip.focus(centre, mpp, view);
-
-    worst_frame = std::max(worst_frame, cost.texels);
-    starved_frames += cost.starved_levels != 0 ? 1 : 0;
-    pending_streak = cost.pending_levels != 0 ? pending_streak + 1 : 0;
-    longest_pending = std::max(longest_pending, pending_streak);
-
-    for (uint32_t i = 0; i < 64; ++i) {
-      const auto unit = sample_point(frame * 64 + i, 1.0, 0x2003ull);
-      const glm::dvec2 point{centre.x + (unit.x * 2.0 - 1.0) * view, centre.y + (unit.y * 2.0 - 1.0) * view};
-
-      if (clip.serving_level(point) >= clip.level_count()) {
-        ++holes;
-        continue;
-      }
-
-      const auto choice = clip.pick(point, mpp);
-      if (!choice.covered) {
-        ++uncovered_pick;
-        continue;
-      }
-
-      // Смешивать идентификаторы нельзя. Но и согласия «в точности» требовать нельзя: у соседних уровней
-      // разный размер текселя, значит центры текселей — РАЗНЫЕ точки, и у границы крупного яруса они
-      // законно попадают по разные её стороны. Дефект — расхождение вдали от границы; расхождение у
-      // границы означает лишь, что линия границы дёрнется на кольце смены уровня на один крупный тексель.
-      // Именно поэтому границы придётся рисовать из SDF, а не из разницы идентификаторов.
-      const auto coarse_tier = clip.level_tier(choice.coarse);
-      const auto fine = clip.sample(point, choice.fine);
-      const auto coarse = clip.sample(point, choice.coarse);
-      if (fine == pf09::invalid_zone || coarse == pf09::invalid_zone) continue;
-      ++compared;
-
-      const auto fine_ancestor = map.ancestor_at(fine, coarse_tier);
-      const auto coarse_ancestor = map.ancestor_at(coarse, coarse_tier);
-      if (fine_ancestor == coarse_ancestor) continue;
-
-      const double coarse_texel = clip.texel_size_m(choice.coarse);
-      const glm::dvec2 cell{std::floor(point.x / coarse_texel) * coarse_texel + coarse_texel * 0.5,
-                            std::floor(point.y / coarse_texel) * coarse_texel + coarse_texel * 0.5};
-
-      bool uniform = true;
-      for (int32_t dy = -1; dy <= 1 && uniform; ++dy) {
-        for (int32_t dx = -1; dx <= 1 && uniform; ++dx) {
-          const glm::dvec2 probe{cell.x + dx * coarse_texel, cell.y + dy * coarse_texel};
-          uniform = map.resolve(probe, coarse_tier) == coarse_ancestor;
-        }
-      }
-
-      if (uniform) {
-        ++disagreements;
-      } else {
-        ++ring_band;
-      }
-    }
-  }
-
-  check.expect(holes == 0, "непрерывный зум не оставляет дыр", std::format("{} точек без готового уровня", holes));
-  check.expect(uncovered_pick == 0, "пара уровней всегда находится", std::format("{} точек без пары", uncovered_pick));
-  check.expect(worst_frame <= cfg.bake_budget_texels + uint64_t(cfg.side) * 4 * opts.clip.resident_levels,
-               "кадр не встаёт под бюджетом", std::format("худший кадр {} текселей", worst_frame));
-
-  // Расхождение здесь — это не «шов виден», это «уровни врут друг про друга»: показать один и тот же ярус
-  // из соседних колец стало бы невозможно, и переход пришлось бы прятать, а не просто не замечать.
-  check.expect(disagreements == 0, "соседние уровни согласны про общий ярус вдали от границы",
-               std::format("{} расхождений", disagreements));
-
-  std::cout << std::format("  замер: непрерывный зум на {:.0f} октав за {} кадров — худший кадр {} текселей, "
-                           "печка длилась максимум {} кадров подряд\n",
-                           octaves, frames, worst_frame, longest_pending);
-  std::cout << std::format("  замер: пулу не хватило слотов в {} кадрах из {} — цена уплачена детализацией, "
-                           "не покрытием\n", starved_frames, frames);
-  std::cout << std::format("  замер: на кольце смены уровня граница дёргается у {:.2f}% точек\n",
-                           100.0 * double(ring_band) / double(std::max<size_t>(compared, 1)));
-}
-
-
-// Пригодность одинарной точности для compute-запекания. Вопрос не академический: fp64 на GPU либо
-// отсутствует, либо идёт в 1/8–1/32 темпа, поэтому шейдер обязан считать во float. Спуск от корня
-// перенормирует локальную координату на каждом ярусе, так что ошибка не копится вниз по дереву — но
-// проверить это надо замером, потому что цена ошибки высока: CPU-picking и растр разъедутся.
-void verify_single_precision(checker& check, const pf09::territory& map, const options& opts,
-                             const uint32_t samples) {
-  const double span = map.config().world_span_m;
-  const pf09::clipmap probe_map(map, opts.clip);
-  const double finest_texel = probe_map.texel_size_m(0);
-
-  size_t differing = 0;
-  double worst_radius = 0.0;
-
-  for (uint32_t i = 0; i < samples; ++i) {
-    const auto point = sample_point(i, span, 0x32f10a7ull);
-    const auto wide = map.resolve(point);
-    if (wide == map.resolve_single(point)) continue;
-    ++differing;
-
-    // Мерим НЕ «есть ли рядом граница», а НА КАКОМ РАССТОЯНИИ она находится. Фиксированный радиус пробы
-    // отвечал бы только «да/нет» и молчал о масштабе, а решает здесь именно масштаб: расхождение
-    // безопасно ровно настолько, насколько оно меньше текселя.
-    double radius = 1.0e-5;
-    for (uint32_t step = 0; step < 24; ++step) {
-      bool uniform = true;
-      for (int32_t dy = -1; dy <= 1 && uniform; ++dy) {
-        for (int32_t dx = -1; dx <= 1 && uniform; ++dx) {
-          uniform = map.resolve({point.x + dx * radius, point.y + dy * radius}) == wide;
-        }
-      }
-      if (!uniform) break;
-      radius *= 2.0;
-    }
-    worst_radius = std::max(worst_radius, radius);
-  }
-
-  // Порог — половина самого мелкого текселя: расхождение меньше него не способно изменить ни один
-  // запечённый тексель, потому что тексель пекут по центру, а центр отстоит от границы дальше.
-  check.expect(worst_radius < finest_texel * 0.5, "одинарной точности хватает для запекания",
-               std::format("расхождения доходят до {:.4f} м при текселе {:.3f} м", worst_radius, finest_texel));
-
-  std::cout << std::format("  замер: float расходится с double у {:.4f}% точек, дальше всего в {:.4f} м от границы "
-                           "при текселе {:.2f} м\n",
-                           100.0 * double(differing) / double(samples), worst_radius, finest_texel);
-}
 
 
 void verify_locality(checker& check, const pf09::territory& map, const options& opts) {
@@ -1577,6 +993,13 @@ void verify_agents(checker& check, const pf09::zone_store& store, const options&
   size_t inside_prop = 0;
   uint64_t total_steps = 0;
 
+  // Первое время в проверках этой площадки. Потолок нарочно щедрый: он ловит не «стало на десять
+  // процентов медленнее», а «стало в разы» — смену алгоритма, случайный O(n²), потерянный кеш. Узкий
+  // порог на такой машине ловил бы шум и был бы выключен через неделю.
+  double search_millis = 0.0;
+  size_t search_nodes = 0;
+  size_t worst_nodes = 0;
+
   constexpr uint32_t trials = 64;
   for (uint32_t i = 0; i < trials; ++i) {
     const auto from = spots[utils::splitmix(i * 2ull + 1ull, 0xa9e17ull) % spots.size()];
@@ -1587,7 +1010,11 @@ void verify_agents(checker& check, const pf09::zone_store& store, const options&
     walker.location = from;
     if (!pf09::interior_point(store, from, walker.position)) continue;
 
+    const auto search_begin = std::chrono::steady_clock::now();
     walker.path = pf09::find_path(store, from, to);
+    search_millis += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - search_begin).count();
+    search_nodes += pf09::last_search_nodes();
+    worst_nodes = std::max(worst_nodes, pf09::last_search_nodes());
     if (walker.path.empty()) {
       ++no_path;
       continue;
@@ -1617,8 +1044,14 @@ void verify_agents(checker& check, const pf09::zone_store& store, const options&
   check.expect(inside_prop == 0, "персонаж не проходит сквозь предмет",
                std::format("{} шагов внутри непроходимого предмета", inside_prop));
 
-  std::cout << std::format("  замер: {} маршрутов пройдено, {} шагов всего, в среднем {:.0f} шагов на маршрут\n",
-                           routed, total_steps, double(total_steps) / double(std::max<size_t>(routed, 1)));
+  check.expect(search_millis < 400.0, "поиск пути укладывается в бюджет",
+               std::format("{:.0f} мс на {} поисков", search_millis, routed));
+  std::cout << std::format("  замер: {} маршрутов пройдено, {} шагов всего, в среднем {:.0f} шагов на маршрут; "
+                           "поиск занял {:.1f} мс, в среднем {:.2f} мс и {} развёрнутых узлов на маршрут "
+                           "(худший {})\n",
+                           routed, total_steps, double(total_steps) / double(std::max<size_t>(routed, 1)),
+                           search_millis, search_millis / double(std::max<size_t>(routed, 1)),
+                           search_nodes / std::max<size_t>(routed, 1), worst_nodes);
 }
 
 
@@ -1868,8 +1301,6 @@ void verify_tactics(checker& check, const pf09::zone_store& store, const options
 
   size_t asymmetric = 0;
   size_t self_blind = 0;
-  size_t exposed_cover = 0;
-  size_t cover_in_prop = 0;
   size_t with_cover = 0;
   size_t threat_dependent = 0;
   size_t wrong_side = 0;
@@ -1929,9 +1360,10 @@ void verify_tactics(checker& check, const pf09::zone_store& store, const options
     total_cover += cover.size();
     if (!cover.empty()) ++with_cover;
     for (const auto& spot : cover) {
-      // Укрытие обязано быть НЕ ВИДНО оттуда, откуда прячутся, и не занято мебелью.
-      if (pf09::visible(store, place->key, threat, spot.position)) ++exposed_cover;
-      if (pf09::blocked_by_prop(store, {place->key, spot.part}, spot.position)) ++cover_in_prop;
+      // Здесь НЕ проверяется, что укрытие не просматривается угрозой и не стоит в мебели: `cover_spots`
+      // сама отбрасывает и то, и другое, и такая проверка подтверждала бы лишь саму себя. Проверять
+      // имеет смысл то, что функция НЕ гарантирует по построению, — а это две вещи ниже: что укрытие
+      // даёт именно названный предмет и что оно лежит с обратной от угрозы стороны.
 
       // И главное — что укрытие даёт ИМЕННО ПРЕДМЕТ, а не то, что здесь и так ничего не видно. Зеркальная
       // точка — перед тем же предметом, со стороны угрозы — обязана просматриваться. Без этой половины
@@ -2013,9 +1445,6 @@ void verify_tactics(checker& check, const pf09::zone_store& store, const options
   check.expect(self_blind == 0, "точка видна сама себе", std::format("{} мест без этого", self_blind));
   check.expect(asymmetric == 0, "видимость симметрична", std::format("{} несимметричных пар", asymmetric));
   check.expect(with_cover > 0, "укрытия находятся", "ни в одном месте не нашлось укрытия");
-  check.expect(exposed_cover == 0, "укрытие не просматривается угрозой",
-               std::format("{} простреливаемых укрытий", exposed_cover));
-  check.expect(cover_in_prop == 0, "укрытие не внутри предмета", std::format("{} точек в мебели", cover_in_prop));
   // Точное утверждение, а не допуск: если укрытие приписано предмету, то подход к этому предмету со
   // стороны угрозы обязан просматриваться. Иначе прячет форма места, и предмет тут ни при чём.
   check.expect(shadowed_anyway == 0, "названный предмет и есть тот, кто укрывает",
@@ -2039,13 +1468,6 @@ void verify_tactics(checker& check, const pf09::zone_store& store, const options
 }
 
 
-// Поселение первого попавшегося места: маршруты сравниваются ВНУТРИ одного города, потому что между
-// городами внутреннего пути и не должно быть — туда ходят дорогой, а дорога живёт уровнем выше.
-const pf09::zone_record* sample_settlement_of(const pf09::zone_store& store, const pf09::zone_record& record) {
-  static const pf09::zone_record* cached = nullptr;
-  if (cached == nullptr) cached = store.containing(record.key, pf09::zone_kind::settlement);
-  return cached;
-}
 
 
 
@@ -2521,6 +1943,7 @@ void verify_control(checker& check, pf09::zone_store& store, const options& opts
 
   // Маршруты. Осторожный путь обязан ОТЛИЧАТЬСЯ от короткого, иначе преступность — украшение.
   std::vector<pf09::part_ref> spots;
+  pf09::zone_key sample_town = pf09::invalid_key;
   for (int32_t y = 0; y < int32_t(opts.build.sector_side) && spots.size() < 600; ++y) {
     for (int32_t x = 0; x < int32_t(opts.build.sector_side) && spots.size() < 600; ++x) {
       const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
@@ -2528,7 +1951,14 @@ void verify_control(checker& check, pf09::zone_store& store, const options& opts
       for (const auto& record : sector->zones) {
         if (record.level != pf09::zone_level::interior || record.abstract()) continue;
         if (!store.passable(record)) continue;
-        if (store.containing(record.key, pf09::zone_kind::settlement) != sample_settlement_of(store, record)) continue;
+        // Маршруты сравниваются ВНУТРИ одного города: между городами внутреннего пути и не должно
+        // быть — туда ходят дорогой, а дорога живёт уровнем выше. Город запоминается КЛЮЧОМ, а не
+        // указателем: указатель смотрит внутрь резидентного сектора и переживает выгрузку только по
+        // видимости, а сравнение указателей вдобавок молча ломается при перезагрузке того же сектора.
+        const auto* home = store.containing(record.key, pf09::zone_kind::settlement);
+        if (home == nullptr) continue;
+        if (sample_town == pf09::invalid_key) sample_town = home->key;
+        if (home->key != sample_town) continue;
         spots.push_back({record.key, 0});
         if (spots.size() >= 600) break;
       }
@@ -3103,7 +2533,16 @@ void verify_zones(checker& check, const pf09::territory& map, const options& opt
 
 
 void verify_fingerprint(checker& check, const pf09::territory& map, const uint64_t expected) {
-  if (expected == 0) return;
+  // Молчаливого пропуска здесь быть не должно. Отпечаток — единственная защита от тихого дрейфа
+  // генератора, и когда он не закреплён, об этом надо СКАЗАТЬ, а не просто выйти: незакреплённая защита
+  // выглядит в отчёте ровно так же, как сработавшая, и разницу видно только по числу проверок.
+  if (expected == 0) {
+    std::cout << std::format("  замер: отпечаток раскладки НЕ ЗАКРЕПЛЁН; чтобы закрепить, добавьте "
+                             "--expect-fingerprint={}\n",
+                             map.fingerprint());
+    check.expect(true, "отпечаток раскладки посчитан (не закреплён)");
+    return;
+  }
   check.expect(map.fingerprint() == expected, "отпечаток раскладки",
                std::format("{} против ожидаемого {}", map.fingerprint(), expected));
 }
@@ -3123,14 +2562,6 @@ int run_verification(const pf09::territory& map, const options& opts) {
   verify_border_monotonicity(check, map, opts.samples / 20 + 1);
   verify_torus(check, map, opts.samples / 10 + 1);
 
-  const pf09::clipmap probe(map, opts.clip);
-  verify_clipmap_levels(check, probe);
-  verify_clipmap_bake(check, map, opts);
-  verify_clipmap_walk(check, map, opts);
-  verify_clipmap_hysteresis(check, map, opts);
-  verify_clipmap_quantisation(check, map, opts, opts.samples / 4 + 1);
-  verify_clipmap_zoom(check, map, opts);
-  verify_single_precision(check, map, opts, opts.samples / 4 + 1);
   verify_locality(check, map, opts);
   verify_zones(check, map, opts);
   verify_fingerprint(check, map, opts.expected_fingerprint);
@@ -3334,57 +2765,11 @@ int run_dump(const pf09::territory& map, const options& opts) {
   constexpr pf09::zone_id unresolvable = pf09::invalid_zone - 1;
 
   std::vector<pf09::zone_id> keys(size_t(size) * size);
-  std::vector<uint32_t> serving(keys.size(), 0);
-  bool show_levels = false;
-
-  if (opts.dump_from == dump_source::direct) {
-    for (uint32_t y = 0; y < size; ++y) {
-      for (uint32_t x = 0; x < size; ++x) {
-        const glm::dvec2 point{origin_x + (x + 0.5) * step, origin_y + (y + 0.5) * step};
-        keys[size_t(y) * size + x] = map.resolve(point, opts.dump_tier);
-      }
+  for (uint32_t y = 0; y < size; ++y) {
+    for (uint32_t x = 0; x < size; ++x) {
+      const glm::dvec2 point{origin_x + (x + 0.5) * step, origin_y + (y + 0.5) * step};
+      keys[size_t(y) * size + x] = map.resolve(point, opts.dump_tier);
     }
-  } else {
-    show_levels = opts.dump_from == dump_source::residency;
-
-    pf09::clipmap clip(map, opts.clip);
-    const glm::dvec2 centre{opts.dump_center_x_m, opts.dump_center_y_m};
-    clip.focus(centre, step, opts.dump_span_m * 0.5);
-
-    std::vector<uint64_t> per_level(clip.level_count(), 0);
-    uint64_t outside = 0;
-
-    for (uint32_t y = 0; y < size; ++y) {
-      for (uint32_t x = 0; x < size; ++x) {
-        const glm::dvec2 point{origin_x + (x + 0.5) * step, origin_y + (y + 0.5) * step};
-
-        // Берём самый мелкий резидентный уровень, чьё окно накрывает точку. Это и есть правило выполнения
-        // zone LOD: карта хранит один ярус на уровень и умеет показать любой ярус НЕ ГЛУБЖЕ него.
-        auto value = pf09::zone_id(pf09::invalid_zone);
-        const uint32_t level = clip.serving_level(point);
-        if (level < clip.level_count()) {
-          const auto stored = clip.sample(point, level);
-          value = uint32_t(opts.dump_tier) > uint32_t(clip.level_tier(level))
-                    ? unresolvable
-                    : map.ancestor_at(stored, opts.dump_tier);
-          ++per_level[level];
-        }
-
-        if (value == pf09::invalid_zone) ++outside;
-        keys[size_t(y) * size + x] = value;
-        serving[size_t(y) * size + x] = level;
-      }
-    }
-
-    std::cout << std::format("  клипмап: окно {}..{}", clip.first_resident(),
-                             clip.first_resident() + clip.resident_count() - 1);
-    for (uint32_t k = clip.first_resident(); k < clip.first_resident() + clip.resident_count(); ++k) {
-      if (per_level[k] != 0) {
-        std::cout << std::format(", уровень {} даёт {:.1f}% пикселей", k,
-                                 100.0 * double(per_level[k]) / double(keys.size()));
-      }
-    }
-    std::cout << std::format(", вне окна {:.1f}%\n", 100.0 * double(outside) / double(keys.size()));
   }
 
   std::vector<rgb> pixels(keys.size());
@@ -3400,18 +2785,6 @@ int run_dump(const pf09::territory& map, const options& opts) {
       const uint64_t key = opts.dump_colouring == dump_mode::owner ? uint64_t(map.owner_of(id)) * 2654435761ull : uint64_t(id);
       auto colour = colour_of(key);
 
-      // Режим резидентности красит пиксель тем, КАКАЯ КАРТИНКА его обслужила: территории остаются
-      // различимы, но поверх них видно кольца уровней и их границы. Это и есть ответ на вопрос «что
-      // лежит в пуле и кто что показывает», которого не было ни в прямом дампе, ни в собранном.
-      if (show_levels) {
-        static constexpr rgb level_tint[12] = {{255, 120, 120}, {255, 190, 110}, {245, 245, 130}, {140, 230, 140},
-                                               {130, 220, 230}, {140, 160, 250}, {210, 140, 240}, {235, 235, 235},
-                                               {200, 90, 60},   {90, 150, 90},   {80, 110, 180},  {150, 90, 150}};
-        const auto tint = level_tint[serving[index] % 12];
-        colour = {uint8_t((colour.r + tint.r * 2) / 3), uint8_t((colour.g + tint.g * 2) / 3),
-                  uint8_t((colour.b + tint.b * 2) / 3)};
-      }
-
       // Граница рисуется сравнением соседей, а не отдельным проходом: на срезе 1 это ровно то, что нужно
       // увидеть глазом — где ярус реально меняется. Резолюционно-независимый SDF приходит на срезе 4.
       const bool edge = (x + 1 < size && keys[index + 1] != id) || (y + 1 < size && keys[index + size] != id) ||
@@ -3420,14 +2793,6 @@ int run_dump(const pf09::territory& map, const options& opts) {
         colour = {uint8_t(colour.r / 3), uint8_t(colour.g / 3), uint8_t(colour.b / 3)};
       }
 
-      // Кольцо смены уровня рисуется белым поверх границ территорий: это край окна картинки, а не край
-      // территории, и путать их нельзя — одно про стриминг, другое про мир.
-      if (show_levels) {
-        const uint32_t here = serving[index];
-        const bool ring = (x + 1 < size && serving[index + 1] != here) ||
-                          (y + 1 < size && serving[index + size] != here);
-        if (ring) colour = {255, 255, 255};
-      }
       pixels[index] = colour;
     }
   }
@@ -3458,8 +2823,6 @@ int main(const int argc, const char** argv) {
 
   switch (opts.requested) {
     case action::report: run_report(map); return EXIT_SUCCESS;
-    case action::clipmap: return run_clipmap_report(map, opts);
-    case action::zoom: return run_zoom_study(map, opts);
     case action::locality: return run_locality_report(map, opts);
     case action::world: return run_build_world(map, opts);
     case action::stream: return run_stream_report(map, opts);

@@ -6,7 +6,6 @@ cmake_minimum_required(VERSION 3.25)
 add_executable(PF09_territory_zoning
   src/main.cpp
   src/territory.cpp src/territory.h
-  src/clipmap.cpp src/clipmap.h
   src/locality.cpp src/locality.h
   src/zones.cpp src/zones.h
   src/world_build.cpp src/world_build.h
@@ -19,6 +18,7 @@ target_link_libraries(PF09_territory_zoning PRIVATE
   devils_engine::playground_common
   devils_engine::painter
   devils_engine::input
+  devils_engine::acumen
   devils_engine::utils
   devils_engine::visage
   glm::glm

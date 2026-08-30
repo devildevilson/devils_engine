@@ -1,5 +1,7 @@
 #include "navigate.h"
 
+#include "devils_engine/acumen/astar.h"
+
 #include "titles.h"
 
 #include <algorithm>
@@ -8,6 +10,12 @@
 #include <queue>
 
 namespace devils_engine::pf09 {
+
+// Замер последнего поиска. Отдельная переменная здесь честнее параметра: число нужно только замерам, и
+// протаскивать его через сигнатуру ради инструмента значило бы менять контракт под инструмент.
+namespace {
+size_t g_last_search_nodes = 0;
+}
 
 namespace {
 
@@ -203,6 +211,8 @@ bool interior_point(const zone_store& store, const part_ref& reference, glm::vec
   return false;
 }
 
+size_t last_search_nodes() noexcept { return g_last_search_nodes; }
+
 route_exposure measure_route(const zone_store& store, const std::span<const part_ref> path,
                              const uint32_t hostile_faction) {
   route_exposure out{};
@@ -220,6 +230,81 @@ route_exposure measure_route(const zone_store& store, const std::span<const part
   return out;
 }
 
+// Поиск пути отдан ОБЩЕМУ A* движка (`devils_engine::astar`). Своя реализация здесь была лишней: чинить
+// и ускорять поиск по графу надо в одном месте, а не в каждой площадке заново.
+//
+// Эвристика НУЛЕВАЯ, и это не лень. Стоимость шага здесь — не расстояние, а `1/скорость`, умноженная на
+// штрафы за преступность, чужую территорию и чужую фракцию; связать её с метрами нечем, а завышенная
+// оценка снизу сделала бы A* просто НЕПРАВИЛЬНЫМ — он вернул бы не кратчайший путь и молча. С нулевой
+// эвристикой A* вырождается в алгоритм Дейкстры, что для этой задачи и есть верный ответ.
+struct path_query {
+  const zone_store* store = nullptr;
+  const travel_policy* policy = nullptr;
+  std::map<zone_key, zone_control>* control_cache = nullptr;
+};
+
+class path_rules final : public astar<part_ref>::interface {
+public:
+  astar<part_ref>::float_t neighbor_cost(const part_ref& from, const part_ref& to,
+                                         const void* payload) const override {
+    const auto* query = static_cast<const path_query*>(payload);
+    const auto& policy = *query->policy;
+    const auto* zone = query->store->find(to.zone);
+    if (zone == nullptr) return 1.0e9;
+    (void)from;
+
+    float step = zone->step_cost();
+
+    // Территория дорожает шаг. Подъём по вложенности до района стоит дорого, чтобы делать его на каждом
+    // ребре, поэтому ответ запоминается на зону в пределах ОДНОГО поиска: район у соседних мест общий.
+    if (policy.avoid_faction != 0 || policy.crime_weight > 0.0f) {
+      auto known = query->control_cache->find(to.zone);
+      if (known == query->control_cache->end()) {
+        zone_control value{};
+        value.crime = query->store->control_at(to.zone, control_field::crime).crime;
+        value.faction = query->store->control_at(to.zone, control_field::faction).faction;
+        known = query->control_cache->emplace(to.zone, value).first;
+      }
+      if (policy.crime_weight > 0.0f) {
+        step *= 1.0f + policy.crime_weight * float(known->second.crime) / 1000.0f;
+      }
+      if (policy.avoid_faction != 0 && known->second.faction == policy.avoid_faction) {
+        step *= policy.avoid_cost;
+      }
+    }
+
+    // Чужая частная территория дорожает шаг. Спрашивается тот же `may_enter`, которым игра решает, звать
+    // ли стражу: маршрут и правоприменение обязаны опираться на одно правило, иначе персонаж пойдёт
+    // там, где его за это арестуют.
+    if (policy.realm != nullptr && !may_enter(*policy.realm, to.zone, policy.actor).allowed) {
+      step *= policy.trespass_cost;
+    }
+    return step;
+  }
+
+  astar<part_ref>::float_t goal_cost(const part_ref&, const part_ref&, const void*) const override {
+    return 0.0;
+  }
+
+  bool is_same(const part_ref& a, const part_ref& b, const void*) const override { return a == b; }
+
+  void fill_successors(astar<part_ref>::container* container, const part_ref& here,
+                       const void* payload) const override {
+    const auto* query = static_cast<const path_query*>(payload);
+    for (const auto& portal : query->store->portals_of(here)) {
+      if (!portal.passable() || portal.other == invalid_key) continue;
+
+      const part_ref next{portal.other, portal.other_part};
+      // Проходимость спрашивается У ХРАНИЛИЩА, а не у записи: закрытая дверь — рантайм-состояние МЕСТА,
+      // и путь обязан меняться от того, что её заперли, без пересборки файлов.
+      const auto* zone = query->store->find(next.zone);
+      if (zone == nullptr || !query->store->passable(*zone)) continue;
+      if (query->store->part_of(next) == nullptr) continue; // сосед в невыгруженном секторе
+      container->add_successor(next);
+    }
+  }
+};
+
 std::vector<part_ref> find_path(const zone_store& store, const part_ref from, const part_ref to,
                                 const uint32_t budget, const travel_policy& policy) {
   if (from == to) return {};
@@ -228,97 +313,35 @@ std::vector<part_ref> find_path(const zone_store& store, const part_ref from, co
   const auto* goal_zone = store.find(to.zone);
   if (goal_zone == nullptr || !store.passable(*goal_zone)) return {};
 
-  // Поиск стал по СТОИМОСТИ, а не по числу шагов: дорога должна тянуть маршрут на себя, иначе персонаж
-  // пойдёт напрямик через дворы просто потому, что там меньше клеток. Непроходимое место не пропускается
-  // фильтром результата, а не рассматривается вовсе — путь сквозь стену был бы враньём, которое
-  // обнаружилось бы только при движении.
-  struct entry {
-    float cost = 0.0f;
-    part_ref where{};
-
-    bool operator<(const entry& other) const noexcept { return cost > other.cost; }
-  };
-
   std::map<zone_key, zone_control> control_cache;
-  std::map<part_ref, part_ref> came_from;
-  std::map<part_ref, float> best;
-  std::priority_queue<entry> queue;
+  const path_query query{&store, &policy, &control_cache};
 
-  came_from[from] = from;
-  best[from] = 0.0f;
-  queue.push({0.0f, from});
+  static const path_rules rules;
+  astar<part_ref>::container container;
+  astar<part_ref>::algorithm search(&container, &rules, from, to, &query);
 
-  bool found = false;
-  while (!queue.empty() && !found && best.size() < budget) {
-    const auto here = queue.top();
-    queue.pop();
+  auto state = astar<part_ref>::state::searching;
+  for (uint32_t step = 0; step < budget && state == astar<part_ref>::state::searching; ++step) {
+    state = search.step();
+  }
+  g_last_search_nodes = search.step_count();
 
-    const auto known = best.find(here.where);
-    if (known == best.end() || here.cost > known->second) continue;
-
-    for (const auto& portal : store.portals_of(here.where)) {
-      if (!portal.passable() || portal.other == invalid_key) continue;
-
-      const part_ref next{portal.other, portal.other_part};
-      // Проходимость спрашивается У ХРАНИЛИЩА, а не у записи: закрытая дверь — это рантайм-состояние
-      // МЕСТА, и путь обязан меняться от того, что её заперли, без пересборки файлов.
-      const auto* zone = store.find(next.zone);
-      if (zone == nullptr || !store.passable(*zone)) continue;
-      if (store.part_of(next) == nullptr) continue; // сосед в невыгруженном секторе
-
-      // Стоимость шага берётся из СКОРОСТИ места, а не из флага «дорога». Мостовая, обочина и комната
-      // различаются не признаком, а величиной, и маршрут обязан это различать: иначе выбор между улицей
-      // и двором получается двоичным там, где он на самом деле плавный.
-      float step = zone->step_cost();
-
-      // Территория дорожает шаг. Подъём по вложенности до района стоит дорого, чтобы делать его на каждом
-      // ребре, поэтому ответ запоминается на зону в пределах ОДНОГО поиска: район у соседних мест общий,
-      // и второй раз спрашивать его незачем.
-      if (policy.avoid_faction != 0 || policy.crime_weight > 0.0f) {
-        auto known_control = control_cache.find(next.zone);
-        if (known_control == control_cache.end()) {
-          zone_control value{};
-          value.crime = store.control_at(next.zone, control_field::crime).crime;
-          value.faction = store.control_at(next.zone, control_field::faction).faction;
-          known_control = control_cache.emplace(next.zone, value).first;
-        }
-        if (policy.crime_weight > 0.0f) {
-          step *= 1.0f + policy.crime_weight * float(known_control->second.crime) / 1000.0f;
-        }
-        if (policy.avoid_faction != 0 && known_control->second.faction == policy.avoid_faction) {
-          step *= policy.avoid_cost;
-        }
-      }
-
-      // Чужая частная территория дорожает шаг. Спрашивается тот же `may_enter`, которым игра решает,
-      // звать ли стражу: маршрут и правоприменение обязаны опираться на одно правило, иначе персонаж
-      // пойдёт там, где его за это арестуют.
-      if (policy.realm != nullptr && !may_enter(*policy.realm, next.zone, policy.actor).allowed) {
-        step *= policy.trespass_cost;
-      }
-
-      const float cost = here.cost + step;
-
-      const auto seen = best.find(next);
-      if (seen != best.end() && seen->second <= cost) continue;
-
-      best[next] = cost;
-      came_from[next] = here.where;
-      if (next == to) {
-        found = true;
-        break;
-      }
-      queue.push({cost, next});
+  if (state != astar<part_ref>::state::succeeded) {
+    if (state == astar<part_ref>::state::searching) {
+      search.cancel();
+      search.step();
     }
+    return {};
   }
 
-  if (!found) return {};
-
+  // Первый узел решения — исходная часть, её в путь не кладём: `step_agent` ждёт список ОСТАВШИХСЯ.
   std::vector<part_ref> path;
-  for (auto step = to; step != from; step = came_from[step]) {
-    path.push_back(step);
+  for (const auto* node : search.solution()) {
+    path.push_back(node->data);
   }
-  std::reverse(path.begin(), path.end());
+  search.free_solution();
+
+  if (!path.empty()) path.erase(path.begin());
   return path;
 }
 
