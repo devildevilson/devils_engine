@@ -1,0 +1,12 @@
+{ name = viewport, type = screensize }
+{ name = one, type = fixed, value = [1, 0, 0] }
+
+// Байтовые бюджеты потоков геометрии. Треугольники и линии живут в host-visible буферах, потому что их
+// состав меняется вместе с резидентностью секторов: пересобирать device-local буфер на каждый шаг камеры
+// дороже, чем писать в отображённую память.
+{ name = fill_bytes, type = fixed, value = [12582912, 0, 0] }
+{ name = line_bytes, type = fixed, value = [6291456, 0, 0] }
+
+{ name = ui_vertices_bytes, type = fixed, value = [524288, 0, 0] }
+{ name = ui_indices_bytes, type = fixed, value = [131072, 0, 0] }
+{ name = ui_commands_bytes, type = fixed, value = [16384, 0, 0] }

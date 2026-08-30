@@ -23,6 +23,7 @@
 #include "clipmap.h"
 #include "locality.h"
 #include "navigate.h"
+#include "viewer.h"
 #include "world_build.h"
 #include "zones.h"
 #include "territory.h"
@@ -31,7 +32,7 @@ using namespace devils_engine;
 
 namespace {
 
-enum class action : uint32_t { report, clipmap, zoom, locality, world, stream, verify, dump };
+enum class action : uint32_t { report, clipmap, zoom, locality, world, stream, view, verify, dump };
 enum class dump_mode : uint32_t { zone, owner };
 enum class dump_source : uint32_t { direct, clipmap, residency, zones };
 
@@ -52,6 +53,7 @@ struct options {
   pf09::build_options build{};
   double stream_radius_m = 12000.0;
   uint32_t stream_budget = 32;
+  pf09::viewer_options view{};
   double zoom_m_per_pixel = 4.0;
   double view_distance_m = 12000.0;
   uint32_t verify_clip_side = 128;
@@ -80,6 +82,12 @@ void print_usage() {
                "  --locality            локальности: размещение, состав, связность и бюджет\n"
                "  --build-world         собрать секторные файлы игровых территорий\n"
                "  --stream              пройти маршрут и показать подгрузку секторов\n"
+               "  --view                интерактивный просмотр: наведение, выделение, персонажи\n"
+               "  --frames=N            закрыть окно после N кадров\n"
+               "  --shot=PATH           сохранить последний кадр в ppm\n"
+               "  --view-span=M         стартовая ширина обзора\n"
+               "  --agents=N            сколько персонажей гонять\n"
+               "  --validation          слои валидации Vulkan\n"
                "  --world=PATH          каталог секторных файлов\n"
                "  --sectors=N           сторона квадрата собираемых секторов\n"
                "  --stream-radius=M     радиус подгрузки\n"
@@ -137,6 +145,18 @@ bool parse_options(const int argc, const char** argv, options& out) {
       out.requested = action::world;
     } else if (argument == "--stream") {
       out.requested = action::stream;
+    } else if (argument == "--view") {
+      out.requested = action::view;
+    } else if (argument == "--validation") {
+      out.view.validation = true;
+    } else if (read_prefixed(argument, "--frames=", value)) {
+      out.view.frames = uint32_t(std::stoul(value));
+    } else if (read_prefixed(argument, "--shot=", value)) {
+      out.view.dump_path = value;
+    } else if (read_prefixed(argument, "--view-span=", value)) {
+      out.view.start_span_m = std::stod(value);
+    } else if (read_prefixed(argument, "--agents=", value)) {
+      out.view.agent_count = uint32_t(std::stoul(value));
     } else if (read_prefixed(argument, "--world=", value)) {
       out.build.root = value;
     } else if (read_prefixed(argument, "--sectors=", value)) {
@@ -2035,6 +2055,14 @@ int main(const int argc, const char** argv) {
     case action::locality: return run_locality_report(map, opts);
     case action::world: return run_build_world(map, opts);
     case action::stream: return run_stream_report(map, opts);
+    case action::view: {
+      auto view = opts.view;
+      view.world_root = world_root(opts);
+      view.stream_radius_m = opts.stream_radius_m;
+      view.stream_budget = opts.stream_budget;
+      if (!std::filesystem::exists(view.world_root)) build_fixture(map, opts);
+      return pf09::run_viewer(map, opts.local, view);
+    }
     case action::verify: return run_verification(map, opts);
     case action::dump: return run_dump(map, opts);
   }

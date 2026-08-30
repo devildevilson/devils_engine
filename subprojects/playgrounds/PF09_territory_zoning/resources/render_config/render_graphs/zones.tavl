@@ -1,0 +1,26 @@
+{
+  name = pf09_zones
+  startup = true
+  passes = [
+    {
+      name = pf09_scene
+      render_target = scene_target
+      subpasses = [
+        { scene_color = (undefined, clear) },
+        { scene_color = (color_attachment, store) },
+        { scene_color = (transfer_src, store) }
+      ]
+      steps = [ draw_fill, draw_lines, draw_overlay ]
+    },
+    {
+      name = pf09_present
+      wait_for = [ swapchain_image ]
+      subpasses = [
+        { scene_color = (transfer_src, store), swapchain_image = (transfer_dst, store) },
+        { scene_color = (color_attachment, store), swapchain_image = (present, store) }
+      ]
+      steps = [ present_scene ]
+    }
+  ]
+  present_source = swapchain_image
+}

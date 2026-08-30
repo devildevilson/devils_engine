@@ -1,0 +1,5 @@
+// Пустая вершинная раскладка: вершины вытягиваются из storage-буфера по gl_VertexIndex. Так поток
+// геометрии остаётся одним буфером, который переписывается целиком, без описания атрибутов в пайплайне.
+{ name = fill_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
+{ name = line_geometry, vertex_layout = "", index_type = none, topology = line_list, restart = false }
+{ name = ui_geometry, vertex_layout = v2v2c4, index_type = u16, topology = triangle_list, restart = false }

@@ -1,0 +1,18 @@
+{
+  name = fill_material
+  shaders = { vertex = "zone.vert.glsl", fragment = "zone.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = line_material
+  shaders = { vertex = "zone.vert.glsl", fragment = "zone.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = ui_material
+  shaders = { vertex = "ui.vert.glsl", fragment = "ui.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = cw, polygon = fill, line_width = 1.0 }
+}

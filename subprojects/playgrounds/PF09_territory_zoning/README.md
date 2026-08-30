@@ -1,6 +1,6 @@
 # PF09 — territory zoning
 
-Статус: **стриминг территорий, многоугольники, проходы из общих рёбер, пикинг и движение** (2026-08-29).
+Статус: **интерактивный просмотр: зоны на экране, наведение, выделение, метаинформация, персонажи** (2026-08-30).
 
 Каркас территорий для `medieval_hero_manager`. Прежняя постановка строила единое иерархическое разбиение
 плоскости и растр по нему; она закрыта, её выводы зафиксированы ниже, а несущей конструкцией стало другое:
@@ -14,6 +14,9 @@ build-release/subprojects/playgrounds/PF09_territory_zoning/bin/PF09_territory_z
 build-release/subprojects/playgrounds/PF09_territory_zoning/bin/PF09_territory_zoning --stream --stream-radius=12000 --stream-budget=32
 build-release/subprojects/playgrounds/PF09_territory_zoning/bin/PF09_territory_zoning --verify
 build-release/subprojects/playgrounds/PF09_territory_zoning/bin/PF09_territory_zoning --locality --plot-side=32
+build-release/subprojects/playgrounds/PF09_territory_zoning/bin/PF09_territory_zoning --view
+build-release/subprojects/playgrounds/PF09_territory_zoning/bin/PF09_territory_zoning --view --view-span=140 --agents=48
+build-release/subprojects/playgrounds/PF09_territory_zoning/bin/PF09_territory_zoning --view --frames=90 --shot=frame.ppm
 build-release/subprojects/playgrounds/PF09_territory_zoning/bin/PF09_territory_zoning --dump=zones.ppm --dump-source=zones --dump-span=700
 build-release/subprojects/playgrounds/PF09_territory_zoning/bin/PF09_territory_zoning --report
 ```
@@ -52,6 +55,32 @@ political  владения                       где идёт политик
 геометрической, у которой отсутствие отрезка было бы ошибкой сборки. Абстрактный узел нужен и внизу:
 здание — это не место, а ГРУППА мест, и как только оно перестало быть фигурой, исчез вопрос «здание и
 комната накладываются».
+
+## Просмотр
+
+`--view` открывает окно: WASD панорамирует, колесо зумит, ЛКМ выделяет зону, `G` включает персонажей,
+`P` — проходы. Под курсором показывается вид зоны, её ключ, число открытых и запертых проходов и то, во что
+она входит; ниже — уровень карты, число зон в кадре и резидентность секторов. `--frames=N --shot=PATH`
+снимает кадр без участия человека: без этого проверить, что окно рисует именно то, что лежит в хранилище,
+можно было бы только чужими глазами.
+
+Три решения, которые стоит назвать:
+
+**Уровень карты выводится из ширины обзора, а не переключается тумблером.** До `2 км` рисуются места
+(улицы, дворы, комнаты, двери), выше — поселения. Это тот самый единственный технический шов, и он теперь
+не рассуждение в README, а строка кода.
+
+**Вершины вытягиваются из storage-буфера по `gl_VertexIndex`, а не подаются вершинным вводом.** Состав
+геометрии меняется вместе с резидентностью и зумом, и переписывать один отображённый буфер дешевле, чем
+пересобирать device-local вершинный буфер на каждый шаг камеры. Отсюда пустая `vertex_layout` и
+`draw constant`, число вершин в котором переписывается каждый кадр.
+
+**Наведение и выделение решаются сравнением в шейдере, а не перезаписью цветов.** Подсветка меняется вслед
+за курсором каждый кадр; перезаливать из-за мыши геометрию значило бы платить за неё трафиком. В вершине
+лежит номер зоны в кадре, а выделенный и подсвеченный номера приходят в uniform.
+
+Текст overlay латиницей не по небрежности: общий MSDF-атлас Crimson собран без кириллицы, и русские строки
+выходили бы пустыми пятнами. Это ограничение общей оболочки, а не площадки.
 
 ## Что померено
 
