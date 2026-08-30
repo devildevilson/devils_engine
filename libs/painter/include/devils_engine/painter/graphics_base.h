@@ -301,7 +301,9 @@ struct graphics_base {
   // Начальное состояние копий temporal-ресурса: без него первый кадр читает историю, которой ещё нет —
   // картинки в layout UNDEFINED и с мусором в памяти. Копии чистятся в нули и переводятся в тот read-only
   // layout, который объявлен history-биндингами, поэтому история на старте детерминированно пустая.
-  void initialize_temporal_resources();
+  // При resize пересоздаются только screensize-ресурсы: фиксированную temporal-историю
+  // (например, карту состояния мира) нельзя обнулять вместе с ними.
+  void initialize_temporal_resources(bool screensize_only = false);
   void create_descriptor_sets();
   void revalidate_pairs(const std::vector<std::string>& prev_drav_group_names);
 

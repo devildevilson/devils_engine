@@ -702,9 +702,10 @@ void graphics_base::resize_viewport(const uint32_t width, const uint32_t height)
   swapchain_image_size = std::make_tuple(width, height);
   recreate_swapchain(width, height);
   recreate_screensize_resources(width, height);
-  // ресурсы пересозданы => история потеряна вместе с ними: чистим и переводим копии в read-only layout,
-  // иначе первый кадр после resize читает UNDEFINED-картинки
-  initialize_temporal_resources();
+  // История только screensize-ресурсов потеряна вместе с ними: чистим и переводим их
+  // копии в read-only layout, иначе первый кадр после resize читает UNDEFINED-картинки. Фиксированная
+  // temporal-история не пересоздавалась и должна пережить resize.
+  initialize_temporal_resources(true);
   execution_graph.resize_viewport(this, width, height);
   // Кэши условных пассов уехали вместе с пересозданными ресурсами: забываем, что пассы их писали, иначе пасс
   // решит, что это поколение он уже сделал, и обнулённый ресурс останется пустым.
@@ -2252,12 +2253,18 @@ void graphics_base::create_resources() {
   }
 }
 
-void graphics_base::initialize_temporal_resources() {
+void graphics_base::initialize_temporal_resources(const bool screensize_only) {
   std::vector<uint32_t> temporal_slots;
   for (uint32_t i = 0; i < resources.size(); ++i) {
     const auto& res = resources[i];
     if (res.history_depth == 0 || !is_resource_active(i) || res.role == role::present) {
       continue;
+    }
+    if (screensize_only) {
+      const auto& size_value = DS_ASSERT_ARRAY_GET(constant_values, res.size);
+      if (size_value.type != value_type::screensize) {
+        continue;
+      }
     }
     if (res.history_usage == usage::values::count) {
       utils::error{}("Resource '{}' has history depth {} but no history usage resolved", res.name, res.history_depth);

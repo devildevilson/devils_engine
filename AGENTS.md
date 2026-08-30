@@ -4,53 +4,128 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
-- PF08 SLICE 5B CLOSED — precipitation scale, weather context and performance follow-up (2026-08-29,
-  author asked why accumulation was expensive and required sunshowers, tropical rain, a tangible distant
-  rain wall, larger coverage and precipitation LOD). THE FIRST DIAGNOSIS: CPU `surface_weather` history is
-  negligible and snow displacement/material adds only about `0.13 ms`; the actual wet regression was TWO
-  complete star/moon/shadow loops in the fragment shader. New combined `pf08_surface_wet_radiance` shares
-  atmosphere/cloud/fog/precipitation transmittance and shadow visibility between diffuse and GGX. Fixed rain
-  scene minimum is now dry/wet `1.445/1.684 ms`, surcharge `0.239` instead of `1.617 ms` (~85% removed),
-  and the pre/post merge wet frame is byte-identical. PRECIPITATION NOW HAS THREE REPRESENTATIONS: the
-  existing 4096-slot persistent near pool with contacts; a new stateless two-layer, world-anchored 64x64
-  procedural mid grid (8192 candidates, default rain/snow reach `120/160 m`); and the 160x90x96 froxel far
-  medium. Snow startup no longer applies full `velocity*age` to XZ — which shifted slow flakes 40–60 m out
-  of a 22 m near volume — and a camera-local XZ torus wraps only at the faded outer edge, so the whole pool
-  cannot drift to one side. ONE advected world-XZ precipitation field (coverage/cell/speed/edge) drives near
-  spawn, mid occupancy and far extinction; coverage=1 has an exact no-noise path. Its moving boundary is the
-  distant rain wall: objects inside lose contrast by Beer–Lambert without drawing individual far drops.
-  It deliberately does NOT multiply historical snow/wetness, because that would make old accumulation move
-  with the current cloud; a real persistent surface clipmap remains separate future work. New `sunshower`
-  authors `3.5 mm/h`, broken cells, open sun, negligible far extinction and no common wet fog; `downpour`
-  authors `60 mm/h`, low cloud, strong optical column and a one-metre splash-mist layer multiplied by rate
-  and the same field. Froxel density retains all 96 slices, while precipitation lighting defaults to stride
-  2 and reuses source visibility/transmittance across an adjacent pair. Exact `--precip-light-stride=1`
-  versus 2 on downpour: volume `4.332 -> 2.890 ms`, total `10.712 -> 9.272`, image MAE `0.00252273`, PSNR
-  `45.31 dB`; mid+near draw is about `0.10 ms`. Release/runtime GLSL, `git diff --check`, downpour Vulkan
-  validation and `103/103` pass. PF07 and `compare_pf07_baseline.sh` were NOT launched; frozen PNGs were not
-  recaptured.
-- PF08 SLICE 5A CLOSED — snowpack and surface response (2026-08-29). New pure `surface_weather.*`
-  integrates snow water-equivalent and wetness independently of the celestial pause: default scale is 60
-  world seconds per real second, snow depth is explicit 10:1 with a 12 cm cap, melt is 0.8 mm water/h after
-  snowfall stops, rain accelerates it, and meltwater enters the same exponentially compositional wetness;
-  drying has a 0.35 world-hour half-life. `--surface-age=MIN` prewarms WORLD minutes deterministically for
-  A/B, while time scale, melt, drying, response and displacement have separate CLI controls. CPU sends only
-  depth/coverage/wetness. Shared `pf08_surface_weather.glsl` authors world-XZ two-octave patches at a
-  resolvable 4–12 m scale, slope acceptance and the SAME trajectory-aware roof test as precipitation, so
-  early snow is patchy and the visible shelter remains dry/downwind-shaped. `scene.vert` and `shadow.vert`
-  invoke the SAME gravity-vertical displacement after wind; 35 mm snow therefore changes terrain/fixture
-  silhouettes and their shadows together (displacement A/B MAE `0.000881147`). Foliage is not inflated.
-  Snow gets varied cold albedo `0.72..0.97`; wet material darkens diffuse to 58%, moves roughness
-  `0.72->0.22`, uses GGX `F0=0.045`, and reflects the existing sky LUT with an explicit 0.25 compensation
-  because that LUT has no prefiltered roughness mips. The initial unattenuated sharp sample turned grazing
-  wet terrain into a white-blue mirror that read as snow. Only liquid pays the second light/shadow loop;
-  snow scene minimum fell to `1.553 ms` while retaining diffuse, patches and real thickness. Fixed-noon PF08
-  MAE: age 0->5 min `0.019257`, 5->30 `0.0207413`, surface shelter on/off `0.00011922`, wet response
-  `0.0208997`. Iris Xe steady scene/total minima: clear `1.194/5.534 ms`, snow `1.553/9.496`, wet rain
-  `3.040/11.052`. Release/runtime GLSL, snow+rain Vulkan validation and `99/99` pass. PF07 and its compare
-  script were not launched; frozen PNGs were not recaptured. Honest remaining boundary: history is global,
-  while spatial masks are re-evaluated; persistent footprints, puddles, runoff, ripples and lens droplets
-  remain the rest of slice 5.
+- PF10 LIGHTWEIGHT PLANET + LAND GRAPH + SURFACE TEXT RUNNING (2026-08-30). The original uncapped Release
+  path measured `15.906 ms` (`62.9 FPS`) on Iris Xe because every vertex evaluated terrain noise and every
+  fragment searched 27 Voronoi cells. Terrain is now a one-time `6x257x257` planet-local position bake drawn
+  as instanced row strips; `region_id + edge_distance` are a static `6x513x513` cube atlas. The final far/near
+  frames are about `2.2–2.5 ms` (`~390–450 FPS`) at 1280x720, including a near province-label pass, with no
+  producer cap. Dense sampling materializes `4072` playable nodes and `12895` undirected CSR edges, mean
+  degree `6.33`, one land component and no isolated nodes; centres/coastal flags accompany stable IDs. Four
+  water areas and two non-playable poles remain outside land navigation. Text now uses actual PF05-style
+  depth-reconstructed MSDF projection volumes in planet space: far LOD draws large-area names, near LOD owns
+  one placeholder label per province, and owner-ID clipping prevents spill into neighbours/water. About
+  `22.6 MB` holds static surface/politics/label data. `--verify` is `18/18`; Release far/near frames pass and
+  the near decal path is Vulkan-validation clean. NEXT: water port graph/content naming; heraldic billboards
+  remain explicitly later. `anomalous_weather` remains in the unnumbered parking lot.
+- PF08 FORMALLY CLOSED — SLICES 0–7 PLUS CLOSING AUDIT (2026-08-30). Eight permanent 1280x720 frame-80
+  PNGs now cover clear noon/sunset/night, overcast, rain, snow, universal magic lightning and aurora. The
+  dedicated `verify_audit_frames.sh` launches ONLY PF08, writes temporary PPMs and matched all eight frozen
+  files byte-for-pixel (`AE=0`); it never launches PF07 or rewrites references. Five Vulkan-validation runs
+  covered clear, rain, snow, downpour+distant-lightning and aurora+overcast with zero VUID/API warnings/errors.
+  Release build and `117/117` pass. Iris Xe 1280x720 steady total minima across two deterministic runs:
+  clear noon `5.814`, double sunset `6.421`, clear night `4.256`, overcast `7.229`, rain `9.396`, snow
+  `10.038`, magic lightning `7.547`, aurora `6.260 ms`; the worst authored frame retains `6.63 ms` of a
+  60-Hz budget but makes no 120-Hz claim. Transition tests lock 1/4 progress after one second of a four-second
+  blend, interruption continuity and the two-frame atmosphere-cache rebuild cadence; the prior dynamic resize
+  test remains the fullscreen gate for fixed rain-memory. WEATHER HORIZON: ice-crystal halos/sundogs/pillars
+  and refractive mirages are genuinely new mechanisms and belong in another optical lab; glory/fogbow reuse
+  rainbow+fog, virga reuses precipitation volume, noctilucent clouds reuse the aurora shell with scattering,
+  sprites reuse lightning+aurora, and unusual cloud shapes are density authoring. PF08 is closed because the
+  mechanism families are covered, not because every named terrestrial phenomenon received a preset.
+- PF08 SLICE 7 PLANET-ANCHORED AURORA CLOSED (2026-08-30). Aurora is upper-atmosphere emission, not cloud
+  fog and not a post effect. It occupies its own `90–240 km` spherical shell instead of stretching the closed
+  `100 km` scattering-atmosphere LUT through near-vacuum. Eight ray samples build emission around a magnetic
+  oval at colatitude `18±4°`; the planet-anchored pole tilts `16°` toward azimuth `330°`. A longitude field is
+  constant down radial columns, producing vertical curtains: 72 incommensurate green/violet folds drift at
+  `.12°/s` in real time. Atmosphere transmittance is applied before the existing weather volume, so terrain and
+  fixture depth occlude normally and `overcast` hides the aurora without a special branch. Artistic controls
+  expose intensity/saturation/density/daylight visibility, shell, oval, pole, folds and speed. Weak I=1 under
+  normal scotopic vision is nearly grey by design; self-contained `aurora` preset uses I=4, scotopic=0 and a
+  side-on magnetic-oval view for a readable green/violet corona, while CLI overrides retain both modes. Speed
+  zero paused frame 8/80 is byte-identical; authored motion MAE is `.000157413`. Authored versus intensity-zero
+  MAE is `.0910081`. Replacing per-sample acos with the local cosine coordinate and 12 samples with 8 reduced
+  cost to sky minima `1.710/.807 ms`, total `6.395/5.362` at 1280x720. Vulkan validation is clean and verify is
+  `117/117`. Slices 0–7 are closed; closing audit is next.
+- PF08 SLICE 6 UNIVERSAL LIGHTNING CLOSED (2026-08-29). Lightning is not a weather preset: new pure
+  `lightning_event` stores a world-metre channel, colour, separate channel luminance and luminous intensity,
+  cloud-glow radius, start/duration, deterministic return-stroke count/seed and author
+  (`weather|magic|scripted`). The author does not change evaluation, so magic and storms share mechanics.
+  `sample_lightning` emits a short channel envelope and longer flash envelope; segment-distance inverse-square
+  illuminance remains active even when channel geometry is culled. The geometric gate is numeric: a 4.5 cm
+  channel at ~900 m is only ~0.06 px at 720p/65 degrees and should illuminate its cloud without an unstable
+  ribbon, while a near channel is resolvable. Thunder is a separate `distance/343 m/s` consumer. Twelve headless
+  checks cover lifetime, profiles, envelopes, segment distance, falloff, near/far gate, shared magic evaluation
+  and sound delay. Four explicit GPU vectors feed shared `pf08_lightning.glsl`: nearest-segment inverse-square
+  light reaches surfaces and every froxel medium, while glow radius bounds the source without thickening the
+  channel. Fixed downpour phase `.03`, strength 1 vs 0 is normalized MAE `.0120665`; the cold cloud column and
+  ground response remain visible with no line. `distant|close|magic` share one event; L retriggers, `storm`
+  schedules deterministic distant events and composes with `--weather=downpour`; fixed phase makes A/B stable.
+  A shared fullscreen HDR consumer draws a 12-segment world-space path plus three branches only when projected
+  diameter reaches `.75 px`; distant bolts exit before the loop and retain only their flash. Close/magic paths
+  test opaque depth and sample froxel transmittance to channel distance. A conservative screen rectangle cuts
+  the frozen active magic channel's fog-apply minimum to `.725 ms`; total without foliage is `5.445 ms` on Iris
+  Xe. Distant flash and close/magic channel are Vulkan-validation clean; `--verify` is `113/113`. Honest limit:
+  local lightning has no separate cube shadow map, though the visible channel is camera-depth occluded. Strength
+  zero scales both flash and line and is byte-identical to lightning off, preserving the clear early-out. Aurora
+  follows as slice 7.
+- PF08 SLICE 5 SURFACE MODEL REVISED — cheap world memory, after-effects and precipitation performance
+  (2026-08-29, author rejected the artificial scalar wetness/procedural patches/PBR film/displacement model).
+  The previous 5A/5B surface claims are SUPERSEDED: PF08 has no biome/material data, asphalt depressions,
+  leaf-water representation or SSR, so pretending to infer puddles and a universal wet BRDF from rain rate
+  was the wrong abstraction. New `surface_precipitation_memory` is a fixed world-space `64x64` map over
+  `512x512 m` (`8 m` cells, one `vec4`/cell): recent rain reservoir, snow water-equivalent and filtered
+  current rain/snow rates. A 4096-invocation compute integrates `rate * duration` through the SAME advected
+  precipitation field, dries rain exponentially, melts snow separately, accelerates melt in rain and moves
+  meltwater into the rain reservoir. The moving front therefore leaves a stationary trace. Cost is
+  `0.004–0.007 ms`; each buffered copy is `64 KiB`; debug 11 shows rain red and snow cyan. Material response
+  is deliberately tiny: terrain darkens at most 14% from rain and receives a restrained pale snow mix,
+  fixture reacts less, foliage almost not at all, while the real trajectory-aware roof remains dry. Removed:
+  random puddle masks, wet GGX/sky reflection, second light loop and all snow vertex/shadow displacement.
+  120-frame clear/recent-rain/recent-snow scene minima are `1.336/1.377/1.353 ms`, totals
+  `5.783/5.845/5.799`. AFTER-EFFECTS consume the map: a primary rainbow is angular geometry around the
+  anti-solar direction, requires direct low sun and recent rain, and is suppressed by strong current rain.
+  The original restrained bow was visible only analytically, so the shipped artistic version widens RGB
+  bands to about `0.7°`, adds a soft `1.55°` luminous veil and explicitly uses visibility scale `0.0065`.
+  It is now a project-controlled art system: intensity/saturation/width/sharpness, veil, Alexander-band
+  contrast, memory persistence, current-rain cutoff, source mode, source balance, source separation and
+  secondary-order strength occupy three explicit GPU vectors. `primary|brightest|all` selects stellar
+  sources independently; default `all` makes both suns produce their own physically centred primary bow,
+  while balance can lift dim Ember without changing world illumination and separation can exaggerate only
+  bow centres. New `double_rainbow` preset uses g1 d0 16:00, where the stars are ~`13.7°` apart: Aurin's bow
+  is upper and Ember's lower. Artistic equal-source frame versus dry is `MAE 0.00714818`; all versus primary
+  is `0.00104737`. Iris Xe 120-frame dry/double sky minima `0.989/1.278 ms`, total `5.802/6.224`; dry exits
+  before the source loop. Geometry/conditions remain honest unless the explicit separation knob says otherwise.
+  FULLSCREEN BUG: the rainbow itself was resolution-independent and rendered correctly on a direct 1920x1080
+  launch; runtime resize instead erased the fixed 64 KiB world-map that authorises the after-effect. Painter's
+  resize path recreated only screensize resources but called `initialize_temporal_resources` for EVERY history,
+  silently zeroing fixed-size world simulation as collateral damage. Resize initialization is now filtered to
+  screensize histories; fixed temporal buffers/images retain both contents and existing layout. An injected
+  frame-20 `1280x720 -> 1600x900` resize preserved both bows through frame 80. This is an engine lifetime fix,
+  not a rainbow reseed: genuinely accumulated local rain remains intact across fullscreen.
+  Snow uses one stable random microfacet per 12.5 cm world cell and the already computed primary direct light
+  for rare sunlight sparkle, with no extra particles or shadow loop. All authored presets now verify rain XOR
+  snow; continuous rain↔snow interpolation may briefly mix as sleet and to avoid a pop. A real production
+  phase choice belongs to wet-bulb temperature, season and biome, none of which PF08 fabricates. Precipitation
+  still has near 4096-slot particles, stateless 8192-candidate mid LOD and 160x90x96 far froxels driven by one
+  field; the snow XZ torus fix keeps slow flakes around the camera. Lighting now defaults to stride 3 while
+  retaining all density slices: downpour stride `2 -> 3` volume `2.883 -> 2.405 ms`, total
+  `9.257 -> 8.622`, MAE `0.00203176`, PSNR `47.15 dB`. Release, runtime variants, downpour Vulkan validation
+  and `98/98` pass; six checks belonging only to the deleted CPU scalar integrator were removed, while the
+  authored rain-XOR-snow contract was added. PF07 and `compare_pf07_baseline.sh` were not launched; frozen
+  frames were not recaptured.
+- PF08 SLICE 5 ARTISTIC SNOW CLOSED (2026-08-29). Snow sparkle is now a project-authored presentation
+  contract rather than three shader literals: intensity `6`, active-cell density `.70`, angular sharpness
+  `.50`, stellar balance `.65`, all exposed on CLI and packed in an explicit UBO vector. One world-locked
+  microfacet per 12.5 cm cell uses a cheap derivative-AA threshold instead of `pow`; unresolved random signal
+  fades only once a pixel spans 8–24 cells. Nearly vertical crystal normals avoid collapsing low-sun sparkle
+  into one horizon stripe. Both stars own independent facet families and retain their colours; `snow_glint`
+  puts Aurin below the horizon and leaves Ember at +8.3°, yet warm glints remain, proving this is not a primary
+  index effect. Source balance may artistically lift Ember without changing scene illuminance. Paused frame
+  8 vs 80 is byte-identical, authored vs intensity-zero normalized MAE is `0.0000938067`; full-foliage scene
+  minima `2.751/2.678 ms` make the surcharge about `.073 ms`, total minima `7.099/7.109` are noise. Vulkan
+  validation is clean and `--verify` is `101/101`. NEXT ROADMAP: slice 6 is a universal short-lived lightning
+  event shared by distant cloud flashes, close storm bolts and authored magic; slice 7 is planet-anchored
+  upper-atmosphere auroral curtains; slice 8 is the closing audit.
 - PF08 SLICE 4B CLOSED — snow plus real visible shelter (2026-08-29). `snow` is the eighth continuous
   weather preset and a second type in the existing 4096-slot persistent precipitation pool, not recoloured
   rain or a new pipeline enum. Its water-equivalent rate, `1.6 m/s` fall, shared-wind `3.2 m/s` drift,
@@ -134,7 +209,7 @@ This repository is the author's experimental game engine / framework. It is a la
 - PF03 exposure and tone mapping, plus `history = N` pinned to frames (2026-08-19, `RND-21` in part): exposure is a MULTIPLIER in linear HDR ("what counts as middle grey here") and tone mapping is a CURVE compressing the already-exposed range into `[0,1]` ("what to do with highlights that still do not fit") — the order cannot be swapped. Metering is its own pass: one workgroup takes 4096 taps and averages the LOGARITHM of Rec.709 luminance, i.e. a geometric mean, because an arithmetic mean lets one bright sun drag the whole scene into darkness. Adaptation blends against the previous value through the history of the same 1×1 `role = exposure` image, exponentially in REAL dt so the adaptation speed does not depend on frame rate — the third consumer of the history contract. Verified numerically: metering is linear in scene luminance (sun `1 → 6 → 30` yields `2.51` and `2.38` stops against the theoretical `2.58`/`2.32`), exposure cancels it exactly (final image mean holds `74–82` across a 30× lighting range versus `180 → 247` at fixed exposure), `log2(E)` matches `log2(key) − adapted` in every sample, freezing adaptation (`--adapt-rate=0`) changes 33.5k pixels versus instant, and without a curve `1.2%` of the frame burns to flat white while Reinhard/Hable clip nothing. The DISPLAY TRANSFER FUNCTION was measured rather than assumed: debug view 8 emits exactly linear `0.5` and the screenshot reads `187/255`, so the blit into a `B8G8R8A8Srgb` swapchain performs the sRGB encode itself and encoding in the shader would double-encode (a `--encode-srgb` toggle stays for linear presentation formats). The scene needed real dynamic range to be testable at all: a sky brighter than lit surfaces (as in reality), ambient as a FRACTION of the sun, a broad glossy highlight and an emissive panel — the panel matters because auto exposure normalises the AVERAGE, so it tucks the sky under 1.0 and leaves the curve nothing to do, whereas a small source two orders above the average barely moves the average and only a curve can retrieve it. Hable needs its customary `2.0` exposure bias or it systematically under-exposes (measured: mean fell threefold). CONTRACT PINNED: `history = N` now means FRAMES only and requires `swap = per_frame` (loud error otherwise, previously a warning) — for a host-advanced counter "the previous copy" is the previous UPDATE, which may not have moved between two frames at all; update-history is an orthogonal axis and belongs to the caller, written explicitly as a second field of the record. ENGINE BUG FOUND AND FIXED (`RND-34`): `constant::offset` is a BYTE offset while constant memory is a `uint32_t` array, and `get_constant_data`/`write_constant_data` added it to a `uint32_t*`, landing four times too far. The first constant (offset 0) always worked, so the bug survived until a config used two constants by value — the dispatch then read garbage (validation reported `groupCountY = 1072693248`, the high half of a double). Covered by a regression test.
 - PF03 per-object motion and a host-written-history gotcha (2026-08-19): per-object motion needs no notion of *which objects are on screen* — the fragment already knows which instance drew it, so it is enough for the object to carry its previous transform next to the current one; the vertex shader produces two clip positions of the same surface point and the difference lands in the G-buffer. Object identity matters later, for history *rejection* (disocclusion), where comparing depth and normal usually suffices. The previous transform is not duplicated by hand: transforms live in an ordinary per_frame resource and a second binding of the same resource declares `history = 1`, so the host writes only the current frame — this is the second consumer of the history contract and the first on a *buffer* rather than an image. ENGINE FINDING (`RND-33`): the first attempt put the previous transform into the draw group's instance record and produced exactly the failure the metric exists to catch — history matched the current frame BIT-EXACTLY. Host-visible draw-group instance/indirect buffers are hardwired to the `per_update` counter with `doublebuffer`, and `per_update` does not advance in the frame loop, so every frame in flight reads the same memory and "the previous frame" does not exist for that data; anything that changes per frame must not live there. Workaround in the lab: the instance lane carries only the object index (a constant, for which shared memory is safe). Also refined the cross-frame derivation: the producer of history may be the HOST, not only a pass — the host writes copy `c(N)` while the GPU reads `c(N-1)`, which are different copies by the period+history arithmetic — so a host-visible resource needs no semaphore and demanding a writing pass was wrong (it now logs at flow level instead of erroring). Object translation and spin are separate knobs on purpose: spin changes the normal, shading depends on it, so a surface point changes colour between frames and reprojection cannot fix that by construction — measuring the vectors needs an invariant signal (`--object-spin=0`), while spin stays as future load for TAA's neighbourhood clamp. Measured with a locked camera and pure translation: naive error grows with object speed (`107 → 581 → 885` at `0.5/1.0/2.0`), compensated stays far lower (`74 → 248 → 391`, gain `1.5× → 2.3×`), and the residual sits as a thin rim exactly on the silhouettes (disocclusion) while the uncompensated map lights the whole displacement contour. Planned separately: PNG screenshots via libpng as a user-facing tool (`RND-32`) — a screenshot folder with overrides and fallback, a blit into a host staging buffer in its own step, and a key that hands the buffer to libpng; the lab's raw PPM `--dump` stays as the codec-free, bit-reproducible measurement path.
 - PF03 thin G-buffer slice (2026-08-19, `RND-17` in part): the lab now runs `thin G-buffer → shade → compose/reproject → present`. One graphics pass writes depth, an octahedral world normal and a UV-space motion vector into three attachments; shading and composition are compute passes, so the chain is visible without extra host code. Motion comes from the camera only — the vertex shader carries the same world position through the *previous* frame's view-projection, and `motion = previous_uv - current_uv` with the current uv taken from `gl_FragCoord` (not the interpolated clip position, so the metric measures motion rather than interpolation error). The compose pass reads `scene_color` with `history = 1` and shifts the fetch by that vector, which makes it the first real consumer of the history contract and the first *reader ≠ writer* case of the derived cross-frame order (`pass 'pf03_compose' waits previous frame of pass 'pf03_shade'`). Motion vectors are verified numerically, not by eye: with a locked camera the reprojection error is exactly zero (the frame is bit-black); the motion field scales linearly with camera speed (`3.02 → 6.09 → 11.14` px mean magnitude at `0.5/1.0/2.0` rad/s, i.e. doubling the speed doubles the vector); and at a matched view the motion-compensated error stays below the naive one with the gap widening as displacement grows (`1.22×` at 2.5 px/frame → `2.17×` at 20 px/frame). The residual is resampling of the deliberately hard `step()` checkerboard, which is the stress pattern TAA's neighbourhood clamp is meant to handle, so it stays. MEASUREMENT LESSON repeated from PF02 in a new form: an external screenshot cannot compare debug modes at all, because it lands at an arbitrary moment and the camera phase difference swamps the effect being measured — the first "with motion vs without" comparison was accidentally a comparison of two different viewpoints. The lab therefore owns `--orbit=<rad/s>` (camera position is a pure function of the FRAME INDEX, not wall clock) and `--dump=<file.ppm>` (frame-exact readback of `composed_color` through a staging buffer); two runs with identical arguments are bit-identical, so modes are compared numerically. Debug views `0..6` (shaded, depth, normal, motion, reprojected, error-with-motion, error-without-motion) switch by key. Scene is deliberately static: with camera-only motion a moving object would carry a knowingly wrong vector; per-object motion (instance must also carry its previous transform) is the next step and the error metric will show it immediately.
-- Frame-history contract, first `PF03` slice (2026-08-18, `RND-29`): a resource no longer declares how many copies it has. That number is the sum of two orthogonal facts with separate homes: the **rotation period is a property of the counter** (`per_frame` → `frames_in_flight`, `swapchain` → presentation image count; other counters are advanced by the host and their period is unknowable to the engine, so those resources must still state `type` explicitly), and the **history depth is a property of the reading technique**, declared at the read site as `history = N` on a descriptor binding. The resource takes the max over its readers, so two temporal techniques with different depths never have to agree with each other, and copies = `period + max(history)` — verified minimal by brute force in `painter_temporal_history_test` (one copy fewer always races). Evidence that `type` carried no information of its own: across every config all 32 resources formed exactly three `(type, swap)` pairs, i.e. it restated the counter; it survives only as an override. Everything else is *derived* from the same declaration, so a temporal technique adds no semaphores or barriers to the graph config: copies written this frame are fixated into the history layout by a step at the **very end of the frame** (not right after the writing pass — a later pass such as the blit to swapchain would move that copy to `transfer_src` and the next frame would read a layout the descriptor never promised); the reading pass waits on an engine-created semaphore of the writing pass from the **previous frame slot** (the fence cannot substitute: it waits for frame `N - frames_in_flight` while `N-1` is still in flight), with the cross-frame tail of the wait list trimmed on a graph's first submit since nobody has signalled it yet; and copies are cleared to zero and moved into the history layout at creation and after resize, because otherwise frame 0 samples `UNDEFINED` images and "no history yet" would look like a random frame. A binding gives the shader **either** the current copy (a single descriptor) **or** a window of `history` copies — the current copy is deliberately excluded, since the pass that writes new history and reads the previous one (exactly TAA's topology) keeps it writable while history stays read-only, and one binding cannot promise both layouts. Consequence: shaders no longer declare `scene_data[3]` arrays sized by accident to `frames_in_flight`, and `history = 1` arrives as a plain `sampler2D`. GOTCHA fixed on the way: a history binding must not contribute to step barriers at all (it addresses other copies), otherwise one step writing new history while reading the old one looks like a usage conflict; `wait_for` on a pass-local semaphore silently waited on the *previous* frame (now same-frame, with a loud error if the signalling pass comes later, and `wait_previous` as the explicit escape hatch); and `pSignalSemaphores` of every execution group pointed into one shared buffer, so only the last group could signal. `PF03_post_processing` is the consumer: a compute-only stand (scene → accumulate → blit) with `--frames=N`, `--history-weight=`, `--verbose`, running 400+ frames validation-clean with a visible trail that disappears at weight 0.
+- Frame-history contract, first `PF03` slice (2026-08-18, `RND-29`): a resource no longer declares how many copies it has. That number is the sum of two orthogonal facts with separate homes: the **rotation period is a property of the counter** (`per_frame` → `frames_in_flight`, `swapchain` → presentation image count; other counters are advanced by the host and their period is unknowable to the engine, so those resources must still state `type` explicitly), and the **history depth is a property of the reading technique**, declared at the read site as `history = N` on a descriptor binding. The resource takes the max over its readers, so two temporal techniques with different depths never have to agree with each other, and copies = `period + max(history)` — verified minimal by brute force in `painter_temporal_history_test` (one copy fewer always races). Evidence that `type` carried no information of its own: across every config all 32 resources formed exactly three `(type, swap)` pairs, i.e. it restated the counter; it survives only as an override. Everything else is *derived* from the same declaration, so a temporal technique adds no semaphores or barriers to the graph config: copies written this frame are fixated into the history layout by a step at the **very end of the frame** (not right after the writing pass — a later pass such as the blit to swapchain would move that copy to `transfer_src` and the next frame would read a layout the descriptor never promised); the reading pass waits on an engine-created semaphore of the writing pass from the **previous frame slot** (the fence cannot substitute: it waits for frame `N - frames_in_flight` while `N-1` is still in flight), with the cross-frame tail of the wait list trimmed on a graph's first submit since nobody has signalled it yet; and copies are cleared to zero and moved into the history layout at creation, while resize repeats that operation ONLY for recreated screensize history. Fixed-size temporal state is neither recreated nor cleared and survives resize/fullscreen. A binding gives the shader **either** the current copy (a single descriptor) **or** a window of `history` copies — the current copy is deliberately excluded, since the pass that writes new history and reads the previous one (exactly TAA's topology) keeps it writable while history stays read-only, and one binding cannot promise both layouts. Consequence: shaders no longer declare `scene_data[3]` arrays sized by accident to `frames_in_flight`, and `history = 1` arrives as a plain `sampler2D`. GOTCHA fixed on the way: a history binding must not contribute to step barriers at all (it addresses other copies), otherwise one step writing new history while reading the old one looks like a usage conflict; `wait_for` on a pass-local semaphore silently waited on the *previous* frame (now same-frame, with a loud error if the signalling pass comes later, and `wait_previous` as the explicit escape hatch); and `pSignalSemaphores` of every execution group pointed into one shared buffer, so only the last group could signal. `PF03_post_processing` is the consumer: a compute-only stand (scene → accumulate → blit) with `--frames=N`, `--history-weight=`, `--verbose`, running 400+ frames validation-clean with a visible trail that disappears at weight 0.
 - Shader record layout must live in one file (2026-08-18, learned by regression): adding a field to PF02's cascade/spot records broke shadows on every cascade above the first and corrupted spot shadows entirely, because the record declarations were copied into five shaders and the two *vertex* shaders kept the old stride, so every buffer element except index 0 was read at a shifted offset — the atlas debug inset showed three of four tiles black, since a garbage matrix rasterises nothing. Fix: PF02 now has a single `resources/shaders/pf02_records.glsl` (`PF02_SCENE_BLOCK_BODY`, `DirectionalCascade`, `SpotLight`) included by every lab shader, verified to change zero pixels. This required `painter::shader_crafter::set_include_root`: local `#include` now resolves against the shader filesystem root even without a demiurg registry (previously only the generated shared header and demiurg resources were includable), which is what labs on the fs path need.
 - Painter atlas allocation contract (2026-08-18, `RND-27`): `libs/painter/include/devils_engine/painter/atlas_layout.h` owns placement of square regions in one atlas image as a pure mechanism. `allocate_atlas_regions` packs requested sizes deterministically with first-fit over a grid whose step is the gcd of the sizes and the atlas dimensions (shelf packing was tried first and rejected: it wasted the space above smaller regions), `atlas_region_uv` yields the `local_uv * scale + offset` transform and `atlas_occupancy` reports usage. Overflow returns `false` and the *caller* reports it loudly, because only the caller knows what it asked for. `painter_atlas_layout_test` covers reproducing the previous hard `2×2` grid, unequal sizes without overlap, refusal instead of overlap, determinism and uv transforms. Consequence for consumers: cascade/light records carry `uv_scale_offset` and the scene UBO carries the actual region count plus atlas size, so shaders stop knowing the layout — PF02 lost `tile = vec2(index & 1, index >> 1)`, the `* 0.5` divisions and the hardcoded `4` in its cascade-selection loop, and a region's texel size is now derived from that region's real size. GOTCHA: the `draw_regions` wire is packed — spans start immediately after `region_count` commands, not after a max-sized array — so a runtime region count must be written in blocks, otherwise the graph reads spans at the wrong offset and trips the pair-capacity check.
 - PF02 budget parameterisation (2026-08-18): the author rejected a quality target as an *input* (hard for a human to reason about) in favour of `--shadow-distance=<m>` (how far shadows must exist; `--cascade-far` kept as a synonym so earlier measurements stay reproducible) plus an atlas budget `--cascade-tiles=<a,b,c,...>` where the region sizes are explicit and the cascade count is the list length (max six), plus `--shadow-atlas=<size>`. Quality is *displayed*, not configured: the overlay prints `Derived quality: <px/texel at slice end>, <worst in slice 0>, atlas WxH, occupancy`. The directional atlas got its own declare_value (`directional_atlas_resolution`) separate from the spot atlas, because the cascade budget must grow independently; it is read from the config rather than a C++ constant, so it can be declared `type = screensize` with a scale to keep quality resolution-independent. Measured example: `--shadow-atlas=4096 --cascade-tiles=2048,1024,1024,512,512,512 --shadow-distance=100` gives splits `2.3/4.9/8.8/16.8/37.8/100.0` and texels `3.3/13.4/23.9/91.8/207.5/551.0 mm` at 42% atlas occupancy — a denser near cascade (`3.3` vs `4.6 mm`) and a `2.3 m` transition-free bubble, at the price of a half-metre texel in the tail.
