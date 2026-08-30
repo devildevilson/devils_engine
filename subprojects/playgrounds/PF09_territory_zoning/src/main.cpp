@@ -104,6 +104,7 @@ void print_usage() {
                "  --dump=PATH           ppm-срез карты для глаз\n"
                "  --floor=N --cutaway   с какого этажа начинать и срезать ли передний план\n"
                "  --tactics             показать укрытия, наблюдение и веер приказа наведённого места\n"
+               "  --control-map=0|1|2   раскраска: вид места / кто держит район / преступность\n"
                "  --dump-tier=N         ярус окраски дампа, 0 = world, 6 = parcel\n"
                "  --dump-mode=NAME      zone | owner\n"
                "  --dump-source=NAME    direct | clipmap | residency | zones\n"
@@ -163,6 +164,8 @@ bool parse_options(const int argc, const char** argv, options& out) {
       out.view.start_cutaway = true;
     } else if (argument == "--tactics") {
       out.view.start_tactics = true;
+    } else if (read_prefixed(argument, "--control-map=", value)) {
+      out.view.start_control_mode = uint32_t(std::stoul(value)) % 3;
     } else if (read_prefixed(argument, "--view-span=", value)) {
       out.view.start_span_m = std::stod(value);
     } else if (read_prefixed(argument, "--agents=", value)) {
@@ -2032,6 +2035,237 @@ void verify_tactics(checker& check, const pf09::zone_store& store, const options
                            places.size(), with_cover, total_cover, by_object, total_cover - by_object, watched);
 }
 
+
+// Поселение первого попавшегося места: маршруты сравниваются ВНУТРИ одного города, потому что между
+// городами внутреннего пути и не должно быть — туда ходят дорогой, а дорога живёт уровнем выше.
+const pf09::zone_record* sample_settlement_of(const pf09::zone_store& store, const pf09::zone_record& record) {
+  static const pf09::zone_record* cached = nullptr;
+  if (cached == nullptr) cached = store.containing(record.key, pf09::zone_kind::settlement);
+  return cached;
+}
+
+
+// Кто держит территорию и как это меняет маршруты. Это и есть проверка того, что иерархия вложенности
+// НЕСУЩАЯ, а не справочная: если ответ «кто держит район» не влияет ни на что, то и района как игровой
+// сущности нет — есть только слово в файле.
+void verify_control(checker& check, pf09::zone_store& store, const options& opts) {
+  size_t places = 0;
+  size_t no_district_answer = 0;
+  size_t no_settlement_answer = 0;
+  size_t criminal_districts = 0;
+  size_t districts = 0;
+  size_t disagreeing = 0;
+  size_t comparable = 0;
+  size_t wrong_carrier = 0;
+
+  // Образец берётся ИЗ СЕКТОРА НАВЕДЕНИЯ, а не откуда попало. Дальше мы будем отводить наблюдателя и
+  // возвращать, проверяя, что рантайм-состояние пережило выгрузку; место из дальнего сектора после
+  // возврата просто не резидентно, и проверка мерила бы резидентность вместо состояния — ошибка, которая
+  // на этой площадке ловится уже в четвёртый раз.
+  const auto focus_centre = world_centre(opts);
+  const int32_t home_x = pf09::sector_of(focus_centre.x);
+  const int32_t home_y = pf09::sector_of(focus_centre.y);
+
+  const pf09::zone_record* sample_district = nullptr;
+  const pf09::zone_record* sample_place = nullptr;
+
+  for (int32_t y = 0; y < int32_t(opts.build.sector_side); ++y) {
+    for (int32_t x = 0; x < int32_t(opts.build.sector_side); ++x) {
+      const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
+      if (sector == nullptr) continue;
+
+      for (const auto& record : sector->zones) {
+        if (record.kind == pf09::zone_kind::district && record.control != pf09::no_control) {
+          ++districts;
+          const auto own = store.control_at(record.key, pf09::control_field::faction);
+          if (own.faction >= 5) ++criminal_districts;
+
+          // Уровни ВПРАВЕ расходиться, и это не дефект данных, а содержание игры: банда держит квартал
+          // в городе, которым распоряжается кто-то другой. Сравниваем с ПОСЕЛЕНИЕМ, а не с владением:
+          // владение живёт на политическом уровне и в собранную область попадает не всегда, а требовать
+          // от проверки, чтобы барония оказалась внутри фикстуры, значит проверять фикстуру.
+          const auto* town = store.containing(record.key, pf09::zone_kind::settlement);
+          const auto town_faction = town == nullptr
+                                      ? 0u
+                                      : store.control_at(town->key, pf09::control_field::faction).faction;
+          // Расхождение считается только там, где У ГОРОДА ЕСТЬ ответ. Иначе «нет владельца» выглядит как
+          // «другой владелец», и проверка зеленеет ровно тогда, когда носитель потерялся: первая редакция
+          // насчитала расхождение у ВСЕХ 44 районов, потому что поселение не значилось носителем и
+          // отвечало нулём.
+          if (town_faction != 0) {
+            ++comparable;
+            if (town_faction != own.faction) ++disagreeing;
+          }
+          if (sample_district == nullptr && std::abs(opts.build.sector_x + x - home_x) <= 1 &&
+              std::abs(opts.build.sector_y + y - home_y) <= 1) {
+            sample_district = &record;
+          }
+        }
+
+        if (record.level != pf09::zone_level::interior || record.abstract()) continue;
+        // Дверь и стена принадлежат зданию, а не кварталу напрямую; цепочка у них длиннее, но ответ тот же.
+        if (store.containing(record.key, pf09::zone_kind::district) == nullptr) continue;
+        ++places;
+
+        // Ответ ищется НА УРОВНЕ-НОСИТЕЛЕ. Носителем преступности обязан быть район, а не сама комната:
+        // иначе десять тысяч чисел обязаны меняться вместе и однажды разойдутся.
+        const auto* carrier = store.carrier_of(record.key, pf09::control_field::crime);
+        if (carrier == nullptr) ++no_district_answer;
+        else if (carrier->kind != pf09::zone_kind::district) ++wrong_carrier;
+
+        const auto* wealth = store.carrier_of(record.key, pf09::control_field::prosperity);
+        if (wealth == nullptr) ++no_settlement_answer;
+        else if (wealth->kind != pf09::zone_kind::settlement && wealth->kind != pf09::zone_kind::market) {
+          ++wrong_carrier;
+        }
+        if (sample_place == nullptr && std::abs(opts.build.sector_x + x - home_x) <= 1 &&
+            std::abs(opts.build.sector_y + y - home_y) <= 1) {
+          sample_place = &record;
+        }
+      }
+    }
+  }
+
+  check.expect(districts > 0, "районы несут контроль");
+  check.expect(places > 0, "места прочитались");
+  check.expect(no_district_answer == 0, "у места есть ответ «насколько тут опасно»",
+               std::format("{} мест из {} без района-носителя", no_district_answer, places));
+  check.expect(no_settlement_answer == 0, "у места есть ответ «насколько тут богато»",
+               std::format("{} мест без поселения-носителя", no_settlement_answer));
+  check.expect(wrong_carrier == 0, "ответ несёт тот уровень, которому он положен",
+               std::format("{} ответов пришли не с того уровня", wrong_carrier));
+  check.expect(criminal_districts > 0, "часть районов держат не власти");
+  check.expect(comparable > 0, "у города есть свой ответ, с чем сравнивать");
+  check.expect(disagreeing > 0, "уровни расходятся в том, кто держит",
+               "район и город всегда совпали — тогда иерархия ничего не добавляет");
+  check.expect(disagreeing < comparable, "уровни не расходятся поголовно",
+               std::format("разошлись все {} — похоже, у одного из уровней потерялся носитель", comparable));
+
+  // Молчаливый пропуск здесь недопустим: без образца шесть утверждений про рантайм-состояние просто не
+  // выполняются, и «123 проверки вместо 129» — единственное, чем это себя выдаёт. Отсутствие образца
+  // рядом с наведением — само по себе провал.
+  check.expect(sample_district != nullptr && sample_place != nullptr,
+               "рядом с наведением нашлись район и место под ним");
+  if (sample_district == nullptr || sample_place == nullptr) return;
+
+  // Смена владельца — рантайм-событие, и ответ ДЛЯ МЕСТ ПОД НИМ обязан измениться сразу, без пересборки.
+  // Носителя спрашиваем у `carrier_of`, а не у `containing`. Разница не косметическая: `containing`
+  // отдаёт ближайшего предка нужного ВИДА независимо от того, несёт ли он ответ, и первая редакция
+  // восстанавливала значение через `controls[home->control]` — где `control` вполне мог быть
+  // `no_control`. Это индекс `0xffffffff` в вектор, то есть сегфолт, и он честно случился на одном сиде
+  // из девяти. `carrier_of` по построению возвращает только того, у кого ответ есть.
+  const auto* home = store.carrier_of(sample_place->key, pf09::control_field::faction);
+  check.expect(home != nullptr, "у места есть носитель ответа «кто держит»");
+  if (home != nullptr) {
+    // ДАЛЬШЕ ТОЛЬКО КЛЮЧИ. `zone_record*` указывает внутрь вектора резидентного сектора, и выгрузка его
+    // уничтожает: после `focus` любой такой указатель — висячий. Первая редакция читала `sample_place->key`
+    // ПОСЛЕ возврата наблюдателя и получала мусор, а выглядело это как «рантайм-состояние не пережило
+    // выгрузку» — то есть обвиняло ровно тот механизм, который работал.
+    const auto place_key = sample_place->key;
+    const auto home_key = home->key;
+
+    const auto original = store.control_at(place_key, pf09::control_field::faction);
+    const auto before = original.faction;
+    pf09::zone_control seized{};
+    seized.faction = before + 100;
+    seized.crime = 999;
+    store.set_control(home_key, seized);
+    const auto after = store.control_at(place_key, pf09::control_field::faction).faction;
+    check.expect(after == before + 100, "район отжали — место под ним знает об этом",
+                 std::format("ответ остался {}", after));
+    check.expect(store.control_at(place_key, pf09::control_field::crime).crime == 999,
+                 "смена контроля меняет и преступность");
+
+    // Переживает выгрузку: партия ушла за край мира и вернулась, район всё ещё чужой.
+    store.focus({focus_centre.x + pf09::sector_span_m * 40.0, focus_centre.y});
+    store.focus(focus_centre);
+    check.expect(store.control_at(place_key, pf09::control_field::faction).faction == before + 100,
+                 "рантайм-контроль переживает выгрузку сектора");
+    // Возвращаем как было — из значения, снятого ДО подмены, а не из файла: лезть за ним в сектор значит
+    // предполагать, что сектор резидентен и индекс валиден, а обе эти догадки уже подводили.
+    store.set_control(home_key, original);
+  }
+
+  // Маршруты. Осторожный путь обязан ОТЛИЧАТЬСЯ от короткого, иначе преступность — украшение.
+  std::vector<pf09::part_ref> spots;
+  for (int32_t y = 0; y < int32_t(opts.build.sector_side) && spots.size() < 600; ++y) {
+    for (int32_t x = 0; x < int32_t(opts.build.sector_side) && spots.size() < 600; ++x) {
+      const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
+      if (sector == nullptr) continue;
+      for (const auto& record : sector->zones) {
+        if (record.level != pf09::zone_level::interior || record.abstract()) continue;
+        if (!store.passable(record)) continue;
+        if (store.containing(record.key, pf09::zone_kind::settlement) != sample_settlement_of(store, record)) continue;
+        spots.push_back({record.key, 0});
+        if (spots.size() >= 600) break;
+      }
+    }
+  }
+
+  size_t pairs = 0;
+  size_t safer = 0;
+  size_t worse = 0;
+  size_t longer = 0;
+  uint64_t plain_crime = 0;
+  uint64_t careful_crime = 0;
+  size_t plain_steps = 0;
+  size_t careful_steps = 0;
+
+  pf09::travel_policy careful{};
+  careful.crime_weight = 6.0f;
+
+  for (uint32_t i = 0; i < 96 && spots.size() > 2; ++i) {
+    const auto from = spots[utils::splitmix(i * 2ull + 1ull, 0xc0ffeeull) % spots.size()];
+    const auto to = spots[utils::splitmix(i * 2ull + 2ull, 0xc0ffeeull) % spots.size()];
+    if (from == to) continue;
+
+    const auto plain = pf09::find_path(store, from, to);
+    if (plain.empty()) continue;
+    const auto quiet = pf09::find_path(store, from, to, 65536, careful);
+    if (quiet.empty()) continue;
+    ++pairs;
+
+    const auto a = pf09::measure_route(store, plain, 0);
+    const auto b = pf09::measure_route(store, quiet, 0);
+    plain_crime += a.crime_sum;
+    careful_crime += b.crime_sum;
+    plain_steps += a.steps;
+    careful_steps += b.steps;
+    // Сравниваем СРЕДНЮЮ преступность на шаг, а не сумму: осторожный маршрут заведомо длиннее, и по
+    // сумме он проигрывал бы, будучи безопаснее на каждом шагу.
+    const double a_mean = double(a.crime_sum) / double(std::max<uint32_t>(a.steps, 1));
+    const double b_mean = double(b.crime_sum) / double(std::max<uint32_t>(b.steps, 1));
+    if (b_mean < a_mean - 1.0) ++safer;
+    if (b_mean > a_mean + 1.0) ++worse;
+    if (b.steps > a.steps) ++longer;
+  }
+
+  check.expect(pairs > 0, "маршруты для сравнения нашлись");
+  if (pairs == 0) return;
+
+  const double plain_mean = double(plain_crime) / double(std::max<size_t>(plain_steps, 1));
+  const double careful_mean = double(careful_crime) / double(std::max<size_t>(careful_steps, 1));
+
+  // Числовой контракт, но аккуратный. «Осторожный маршрут ТИШЕ НА ДЕСЯТЬ ПРОЦЕНТОВ» — утверждение про
+  // фикстуру: там, где преступность ровная по всему городу, выигрывать нечего, и требовать выигрыша
+  // значит требовать, чтобы сид оказался удачным. Держится другое: осторожность НИКОГДА НЕ ХУЖЕ в целом,
+  // а где выбор есть — лучше, и это видно по числу пар.
+  check.expect(careful_mean <= plain_mean + 1.0, "осторожный маршрут не идёт по местам хуже прежних",
+               std::format("средняя преступность {:.0f} против {:.0f}", careful_mean, plain_mean));
+  // Требовать «тише у большинства» нельзя: у многих пар обходного пути просто нет, и осторожный маршрут
+  // совпадает с коротким — это правильный ответ, а не провал. Утверждение, которое действительно
+  // держится: осторожность НЕ ДЕЛАЕТ ХУЖЕ, и там, где выбор есть, она им пользуется.
+  check.expect(worse * 3 < safer, "осторожность не заводит в места хуже прежних",
+               std::format("тише у {} пар, хуже у {} из {}", safer, worse, pairs));
+
+  std::cout << std::format("  замер: районов {} (из них у преступных сил {}), расходятся с городом {}; "
+                           "средняя преступность маршрута {:.0f} против {:.0f}; тише у {}, хуже у {}, "
+                           "длиннее у {} из {} пар\n",
+                           districts, criminal_districts,
+                           std::format("{} из {}", disagreeing, comparable), careful_mean, plain_mean, safer,
+                           worse, longer, pairs);
+}
+
 // Связи без геометрии. Их два вида, и оба обязаны лежать В ФАЙЛЕ, потому что вывести их из совпадения
 // рёбер нельзя в принципе: у дороги между поселениями общего ребра нет, а у лестницы оно есть, но прохода
 // через него нет. Отдельная забота — узел БЕЗ ФОРМЫ: порталы висят на частях, частей у него ноль, и
@@ -2523,6 +2757,7 @@ void verify_zones(checker& check, const pf09::territory& map, const options& opt
   verify_graph_nodes(check, store, opts);
   verify_props(check, store, opts);
   verify_tactics(check, store, opts);
+  verify_control(check, store, opts);
   verify_doors_and_floors(check, store, opts);
 
   std::cout << std::format("  замер: {} секторов, {} зон, {} связей, {:.1f} КБ на диске; резидентно {} секторов "

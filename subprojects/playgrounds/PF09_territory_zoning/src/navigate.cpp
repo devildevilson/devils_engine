@@ -201,8 +201,25 @@ bool interior_point(const zone_store& store, const part_ref& reference, glm::vec
   return false;
 }
 
+route_exposure measure_route(const zone_store& store, const std::span<const part_ref> path,
+                             const uint32_t hostile_faction) {
+  route_exposure out{};
+  zone_key last = invalid_key;
+  for (const auto& step : path) {
+    if (step.zone == last) continue; // одна зона из нескольких частей считается один раз
+    last = step.zone;
+    ++out.steps;
+    out.crime_sum += store.control_at(step.zone, control_field::crime).crime;
+    if (hostile_faction != 0 &&
+        store.control_at(step.zone, control_field::faction).faction == hostile_faction) {
+      ++out.hostile_steps;
+    }
+  }
+  return out;
+}
+
 std::vector<part_ref> find_path(const zone_store& store, const part_ref from, const part_ref to,
-                                const uint32_t budget) {
+                                const uint32_t budget, const travel_policy& policy) {
   if (from == to) return {};
   if (store.part_of(from) == nullptr || store.part_of(to) == nullptr) return {};
 
@@ -220,6 +237,7 @@ std::vector<part_ref> find_path(const zone_store& store, const part_ref from, co
     bool operator<(const entry& other) const noexcept { return cost > other.cost; }
   };
 
+  std::map<zone_key, zone_control> control_cache;
   std::map<part_ref, part_ref> came_from;
   std::map<part_ref, float> best;
   std::priority_queue<entry> queue;
@@ -246,7 +264,27 @@ std::vector<part_ref> find_path(const zone_store& store, const part_ref from, co
       if (zone == nullptr || !store.passable(*zone)) continue;
       if (store.part_of(next) == nullptr) continue; // сосед в невыгруженном секторе
 
-      const float step = zone->road() ? 0.5f : 1.0f;
+      float step = zone->road() ? 0.5f : 1.0f;
+
+      // Территория дорожает шаг. Подъём по вложенности до района стоит дорого, чтобы делать его на каждом
+      // ребре, поэтому ответ запоминается на зону в пределах ОДНОГО поиска: район у соседних мест общий,
+      // и второй раз спрашивать его незачем.
+      if (policy.avoid_faction != 0 || policy.crime_weight > 0.0f) {
+        auto known_control = control_cache.find(next.zone);
+        if (known_control == control_cache.end()) {
+          zone_control value{};
+          value.crime = store.control_at(next.zone, control_field::crime).crime;
+          value.faction = store.control_at(next.zone, control_field::faction).faction;
+          known_control = control_cache.emplace(next.zone, value).first;
+        }
+        if (policy.crime_weight > 0.0f) {
+          step *= 1.0f + policy.crime_weight * float(known_control->second.crime) / 1000.0f;
+        }
+        if (policy.avoid_faction != 0 && known_control->second.faction == policy.avoid_faction) {
+          step *= policy.avoid_cost;
+        }
+      }
+
       const float cost = here.cost + step;
 
       const auto seen = best.find(next);

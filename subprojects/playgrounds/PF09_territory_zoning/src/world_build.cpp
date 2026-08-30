@@ -54,6 +54,8 @@ struct draft {
   };
   std::vector<graph_link> graph_links;
   std::vector<zone_prop> props;   // расставляются последним проходом, когда известны проёмы
+  zone_control control{};
+  bool carries_control = false;
   // Части хранятся В ЛОКАЛЬНЫХ координатах относительно `reference`, а мировые получаются сложением при
   // записи. Это не экономия и не удобство: точка, посчитанная сразу в мировых метрах, приходит уже
   // округлённой до трёх сантиметров, и короткое ребро двери длиной в два метра даёт из таких точек
@@ -106,6 +108,17 @@ glm::vec2 bilinear(const std::array<glm::vec2, 4>& quad, const double u, const d
   const auto bottom = edge(quad[0], quad[1], u);
   const auto top = edge(quad[3], quad[2], u);
   return edge(bottom, top, v);
+}
+
+// Кто держит и насколько опасно. Легитимные силы — `1..4`, преступные — `5..7`; расходятся они не
+// случайно, а по замыслу: район, который держит банда, лежит внутри баронии, которую держит граф, и вся
+// местная игра растёт из этого расхождения.
+constexpr uint32_t lawful_factions = 4;
+constexpr uint32_t criminal_first = 5;
+constexpr uint32_t criminal_factions = 3;
+
+uint32_t lawful_faction(const uint64_t seed) {
+  return 1u + uint32_t(utils::splitmix(seed, 0x1a2b3cull) % lawful_factions);
 }
 
 uint64_t identity_of(const uint32_t domain, const uint64_t a, const uint64_t b = 0) {
@@ -230,6 +243,12 @@ build_stats build_world(const territory& map, const locality_config& local, cons
       entry.name = std::format("{} {}", zone_kind_name(kind), index_of(item.node));
       entry.sector_x = sector_of(item.centre.x);
       entry.sector_y = sector_of(item.centre.y);
+      entry.carries_control = true;
+      entry.control.faction = lawful_faction(entry.identity);
+      // Экономику несут крупные уровни: у торгового округа она есть, у района — нет, и спрашивать её у
+      // района незачем. Владение отвечает только за то, кто им владеет.
+      entry.control.prosperity =
+        kind == zone_kind::market ? uint16_t(200 + utils::splitmix(entry.identity, 0x77ull) % 800) : uint16_t(0);
 
       for (const auto& other : nodes) {
         if (other.node == item.node) continue;
@@ -295,6 +314,9 @@ build_stats build_world(const territory& map, const locality_config& local, cons
     entry.parent_identity = identity_of(2, map.ancestor_at(item.node, tier::district));
     entry.name = std::format("settlement {}", index_of(item.node));
     entry.reference = glm::vec2{float(item.centre.x), float(item.centre.y)};
+    entry.carries_control = true;
+    entry.control.faction = lawful_faction(entry.identity);
+    entry.control.prosperity = uint16_t(150 + utils::splitmix(entry.identity, 0x91ull) % 850);
 
     for (const auto& other : settlements) {
       if (other.node == item.node) continue;
@@ -366,6 +388,19 @@ build_stats build_world(const territory& map, const locality_config& local, cons
         entry.reference = reference;
         entry.sector_x = sector_of(double(reference.x));
         entry.sector_y = sector_of(double(reference.y));
+
+        // Кто держит район. Обычно та же сила, что и город, но примерно в трети случаев — преступная:
+        // это и есть «местный авторитет держит район». Уровни ВПРАВЕ расходиться, и вся местная игра
+        // растёт из того, что баронией владеет граф, а кварталом распоряжается кто-то другой.
+        entry.carries_control = true;
+        const auto roll = utils::splitmix(entry.identity, 0x5eedull);
+        const bool criminal = (roll & 0xffffull) < 0x5000ull;
+        entry.control.faction =
+          criminal ? criminal_first + uint32_t((roll >> 20) % criminal_factions)
+                   : lawful_faction(identity_of(3, item.node));
+        // Преступность — не украшение: по ней считается стоимость маршрута, и именно из-за неё
+        // осторожный путь отличается от короткого.
+        entry.control.crime = uint16_t(criminal ? 400 + (roll >> 32) % 600 : (roll >> 32) % 350);
         drafts.push_back(std::move(entry));
       }
     }
@@ -1149,6 +1184,11 @@ build_stats build_world(const territory& map, const locality_config& local, cons
           out.parts.push_back(entry);
         }
         if (item.parts.empty()) record.bounds = zone_bounds{};
+
+        if (item.carries_control) {
+          record.control = uint32_t(out.controls.size());
+          out.controls.push_back(item.control);
+        }
 
         record.prop_begin = uint32_t(out.props.size());
         record.prop_count = uint32_t(item.props.size());

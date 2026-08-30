@@ -26,6 +26,7 @@ struct viewer_options {
   int32_t start_floor = 0;       // с какого этажа начинать
   bool start_cutaway = false;    // срезать передний план сразу
   bool start_tactics = false;    // сразу показывать тактическую картину наведённого места
+  uint32_t start_control_mode = 0; // 0 — вид места, 1 — кто держит, 2 — преступность
   std::string dump_path;         // сохранить последний кадр
   bool validation = false;
 };

@@ -13,7 +13,7 @@ namespace devils_engine::pf09 {
 
 namespace {
 
-constexpr char sector_magic[8] = {'P', 'F', '0', '9', 'Z', 'S', '0', '5'};
+constexpr char sector_magic[8] = {'P', 'F', '0', '9', 'Z', 'S', '0', '6'};
 
 struct sector_header {
   char magic[8];
@@ -24,6 +24,7 @@ struct sector_header {
   uint32_t vertex_count;
   uint32_t portal_count;
   uint32_t prop_count;
+  uint32_t control_count;
   uint32_t name_bytes;
   uint64_t fingerprint;
 };
@@ -110,7 +111,7 @@ std::span<const zone_portal> zone_sector::links_of(const zone_record& record) co
 uint64_t zone_sector::byte_size() const noexcept {
   return zones.size() * sizeof(zone_record) + parts.size() * sizeof(zone_part) +
          vertices.size() * sizeof(glm::vec2) + portals.size() * sizeof(zone_portal) +
-         props.size() * sizeof(zone_prop) + names.size();
+         props.size() * sizeof(zone_prop) + controls.size() * sizeof(zone_control) + names.size();
 }
 
 // Луч вправо и счёт пересечений. Границу считаем принадлежащей зоне через `>=`/`<` на одном конце: точка
@@ -153,6 +154,7 @@ uint64_t compute_fingerprint(const zone_sector& sector) {
     hash = utils::hash_combine(hash, record.link_count);
     hash = utils::hash_combine(hash, record.prop_begin);
     hash = utils::hash_combine(hash, record.prop_count);
+    hash = utils::hash_combine(hash, record.control);
     for (uint32_t axis = 0; axis < 3; ++axis) {
       hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(record.bounds.lower[axis]));
       hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(record.bounds.upper[axis]));
@@ -191,6 +193,11 @@ uint64_t compute_fingerprint(const zone_sector& sector) {
     hash = utils::hash_combine(hash, prop.part);
     hash = utils::hash_combine(hash, prop.flags);
   }
+  for (const auto& item : sector.controls) {
+    hash = utils::hash_combine(hash, item.faction);
+    hash = utils::hash_combine(hash, uint32_t(item.crime));
+    hash = utils::hash_combine(hash, uint32_t(item.prosperity));
+  }
   for (const char symbol : sector.names) {
     hash = utils::hash_combine(hash, uint64_t(uint8_t(symbol)));
   }
@@ -207,6 +214,7 @@ void write_sector(const std::filesystem::path& path, const zone_sector& sector) 
   header.vertex_count = uint32_t(sector.vertices.size());
   header.portal_count = uint32_t(sector.portals.size());
   header.prop_count = uint32_t(sector.props.size());
+  header.control_count = uint32_t(sector.controls.size());
   header.name_bytes = uint32_t(sector.names.size());
   header.fingerprint = compute_fingerprint(sector);
 
@@ -227,6 +235,9 @@ void write_sector(const std::filesystem::path& path, const zone_sector& sector) 
   }
   for (const auto& prop : sector.props) {
     append(bytes, prop);
+  }
+  for (const auto& item : sector.controls) {
+    append(bytes, item);
   }
   bytes.insert(bytes.end(), sector.names.begin(), sector.names.end());
 
@@ -259,6 +270,7 @@ bool read_sector(const std::filesystem::path& path, zone_sector& out) {
   out.vertices.resize(header.vertex_count);
   out.portals.resize(header.portal_count);
   out.props.resize(header.prop_count);
+  out.controls.resize(header.control_count);
   out.names.resize(header.name_bytes);
 
   for (auto& record : out.zones) {
@@ -275,6 +287,9 @@ bool read_sector(const std::filesystem::path& path, zone_sector& out) {
   }
   for (auto& prop : out.props) {
     if (!take(bytes, cursor, prop)) return false;
+  }
+  for (auto& item : out.controls) {
+    if (!take(bytes, cursor, item)) return false;
   }
   if (cursor + out.names.size() > bytes.size()) return false;
   std::memcpy(out.names.data(), bytes.data() + cursor, out.names.size());
@@ -440,6 +455,72 @@ std::vector<zone_portal> zone_store::perimeter(const zone_key key) const {
     }
   }
   return out;
+}
+
+namespace {
+
+// Какой вид зоны несёт ответ. Это и есть содержание уровней: у района спрашивают, кто его держит и
+// насколько тут опасно; у поселения — насколько оно богато. Перепутать носителя значит спрашивать
+// комнату о торговле.
+std::span<const zone_kind> carriers_of(const control_field field) noexcept {
+  // Владельца несут ЧЕТЫРЕ уровня, и подъём находит ближайший: у комнаты это район, у самого района —
+  // он сам, у города — город. Пропустить здесь поселение значило бы, что на вопрос «кто правит городом»
+  // отвечает пустота, — а пустота, сравнённая с чем угодно, всегда «не совпадает», и проверка на
+  // расхождение уровней зеленела бы, ничего не проверяя.
+  static constexpr zone_kind faction_carriers[] = {zone_kind::district, zone_kind::settlement,
+                                                   zone_kind::market, zone_kind::holding};
+  static constexpr zone_kind crime_carriers[] = {zone_kind::district};
+  static constexpr zone_kind wealth_carriers[] = {zone_kind::settlement, zone_kind::market};
+
+  switch (field) {
+    case control_field::faction: return faction_carriers;
+    case control_field::crime: return crime_carriers;
+    case control_field::prosperity: return wealth_carriers;
+    default: return {};
+  }
+}
+
+} // namespace
+
+const zone_record* zone_store::carrier_of(const zone_key key, const control_field field) const {
+  const auto kinds = carriers_of(field);
+
+  // Подъём ограничен той же восьмёркой, что и `containing`: цепочка вложенности коротка по построению, а
+  // неограниченный обход означал бы готовность крутиться в кольце, если данные окажутся порчеными.
+  auto current = key;
+  for (uint32_t hop = 0; hop < 8; ++hop) {
+    const auto* record = find(current);
+    if (record == nullptr) return nullptr;
+    for (const auto kind : kinds) {
+      if (record->kind == kind && record->control != no_control) return record;
+    }
+    if (record->parent == invalid_key) return nullptr;
+    current = record->parent;
+  }
+  return nullptr;
+}
+
+zone_control zone_store::control_at(const zone_key key, const control_field field) const {
+  const auto* carrier = carrier_of(key, field);
+  if (carrier == nullptr) return {};
+
+  // Рантайм-значение старше записанного: район могли отжать час назад, а файл на диске об этом не знает.
+  const auto place = std::lower_bound(control_.begin(), control_.end(), control_state{carrier->key, {}});
+  if (place != control_.end() && place->key == carrier->key) return place->value;
+
+  const auto* owner = sector(key_sector_x(carrier->key), key_sector_y(carrier->key));
+  if (owner == nullptr || carrier->control >= owner->controls.size()) return {};
+  return owner->controls[carrier->control];
+}
+
+void zone_store::set_control(const zone_key carrier, const zone_control& value) {
+  if (carrier == invalid_key) return;
+  const auto place = std::lower_bound(control_.begin(), control_.end(), control_state{carrier, {}});
+  if (place != control_.end() && place->key == carrier) {
+    place->value = value;
+    return;
+  }
+  control_.insert(place, control_state{carrier, value});
 }
 
 void zone_store::set_closed(const zone_key key, const bool value) {

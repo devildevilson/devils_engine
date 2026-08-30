@@ -144,6 +144,25 @@ uint32_t kind_tint(const zone_kind kind) {
   }
 }
 
+// Раскраска по контролю. Не декоративный режим: «кто держит район» — вопрос, на который зонирование
+// отвечает подъёмом по вложенности, и увидеть ответ надо ровно там, где он берётся, — на местах, а не
+// на абстрактном узле, у которого и формы-то нет.
+uint32_t faction_tint(const uint32_t faction) {
+  switch (faction) {
+    case 0: return pack(120, 120, 128, 255);
+    case 1: return pack(92, 126, 190, 255);
+    case 2: return pack(96, 160, 112, 255);
+    case 3: return pack(186, 154, 82, 255);
+    case 4: return pack(150, 110, 168, 255);
+    default: return pack(196, 76, 68, 255);   // преступные силы — все оттенки одного красного
+  }
+}
+
+uint32_t crime_tint(const uint32_t crime) {
+  const float t = std::clamp(float(crime) / 1000.0f, 0.0f, 1.0f);
+  return pack(uint32_t(70.0f + 170.0f * t), uint32_t(150.0f - 100.0f * t), uint32_t(110.0f - 70.0f * t), 255);
+}
+
 uint32_t wall_tint(const zone_kind kind) {
   const uint32_t base_tint = kind_tint(kind);
   const auto shade = [&](const uint32_t shift) { return ((base_tint >> shift) & 0xffu) * 55u / 100u; };
@@ -547,7 +566,7 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
         "PF09 territory zoning",
         "sectors from disk -> polygon zones -> portals from shared edges",
         "WASD pan | wheel zoom | LMB select | QE yaw | RF pitch | ZX floor | C cutaway | V route | N names | "
-        "O props | B tactics | K toggle door | G agents | P portals | H walls | Esc quit"});
+        "O props | B tactics | M control map | K toggle door | G agents | P portals | H walls | Esc quit"});
 
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
@@ -641,6 +660,7 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
     bind_key("toggle_door", "key_k");
     bind_key("toggle_props", "key_o");
     bind_key("toggle_tactics", "key_b");
+    bind_key("cycle_control", "key_m");
     bind_key("pitch_up", "key_r");
     bind_key("pitch_down", "key_f");
     bind_key("yaw_left", "key_q");
@@ -658,6 +678,9 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
     bool show_walls = true;
     bool show_props = true;
     bool show_tactics = options.start_tactics;
+    // 0 — по виду места, 1 — кто держит район, 2 — насколько тут опасно.
+    uint32_t control_mode = options.start_control_mode;
+    bool control_latch = false;
     bool walls_latch = false;
     bool props_latch = false;
     bool tactics_latch = false;
@@ -739,6 +762,7 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
       if (latched("toggle_names", names_latch)) show_names = !show_names;
       if (latched("toggle_props", props_latch)) show_props = !show_props;
       if (latched("toggle_tactics", tactics_latch)) show_tactics = !show_tactics;
+      if (latched("cycle_control", control_latch)) control_mode = (control_mode + 1) % 3;
       const bool door_key = latched("toggle_door", door_latch);
 
       pitch_deg = std::clamp(pitch_deg + 40.0 * double(dt) *
@@ -886,6 +910,11 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
               const bool sliced = in_cutaway(centre_of_part);
 
               uint32_t floor_tint = kind_tint(record.kind);
+              if (control_mode == 1) {
+                floor_tint = faction_tint(store.control_at(record.key, control_field::faction).faction);
+              } else if (control_mode == 2) {
+                floor_tint = crime_tint(store.control_at(record.key, control_field::crime).crime);
+              }
               if (below) {
                 // Нижний этаж уходит в полупрозрачность, а не в другой цвет: он должен читаться как
                 // «то же самое, но не здесь», а перекраска читалась бы как другой вид места.
@@ -1105,6 +1134,17 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
         detail.push_back(std::format("parts: {}  portals: {} open, {} locked", shown->part_count, open_gates,
                                      locked_gates));
         detail.push_back(std::format("props: {} here", store.props_of(shown->key).size()));
+        {
+          const auto* holder = store.carrier_of(shown->key, control_field::faction);
+          const auto faction = store.control_at(shown->key, control_field::faction);
+          const auto crime = store.control_at(shown->key, control_field::crime);
+          const auto wealth = store.control_at(shown->key, control_field::prosperity);
+          detail.push_back(std::format("held by faction {} (via {} '{}')  crime {}  prosperity {}",
+                                       faction.faction,
+                                       holder == nullptr ? "nothing" : zone_kind_name(holder->kind),
+                                       holder == nullptr ? "" : store.name_of(*holder), crime.crime,
+                                       wealth.prosperity));
+        }
         detail.push_back(std::format("floor: {}  passable: {}{}", shown->floor,
                                      store.passable(*shown) ? "yes" : "no",
                                      shown->kind == zone_kind::door
@@ -1119,6 +1159,8 @@ int run_viewer(const territory& map, const locality_config& local, const viewer_
       }
       detail.push_back(std::format("view {:.0f} m  pitch {:.0f} deg  map level {}  zones in frame {}", span_m,
                                    pitch_deg, zone_level_name(level), geometry.slots.size()));
+      static constexpr const char* control_names[] = {"kind", "faction", "crime"};
+      detail.push_back(std::format("map colours by {}", control_names[control_mode % 3]));
       detail.push_back(std::format("floor {}  cutaway {}  routes {}  names {}  props {}  tactics {}  "
                                    "doors toggled {}",
                                    current_floor, cutaway ? "on" : "off", show_routes ? "on" : "off",
