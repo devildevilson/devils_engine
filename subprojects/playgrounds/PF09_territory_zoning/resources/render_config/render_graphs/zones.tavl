@@ -6,9 +6,9 @@
       name = pf09_scene
       render_target = scene_target
       subpasses = [
-        { scene_color = (undefined, clear) },
-        { scene_color = (color_attachment, store) },
-        { scene_color = (transfer_src, store) }
+        { scene_color = (undefined, clear), scene_depth = (undefined, clear) },
+        { scene_color = (color_attachment, store), scene_depth = (depth_attachment, store) },
+        { scene_color = (transfer_src, store), scene_depth = (depth_attachment, store) }
       ]
       steps = [ draw_fill, draw_lines, draw_overlay ]
     },

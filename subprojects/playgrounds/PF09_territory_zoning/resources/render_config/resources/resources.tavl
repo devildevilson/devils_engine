@@ -1,5 +1,7 @@
 { name = swapchain_image, format = swapchain4, role = present, size = viewport, swap = swapchain }
 { name = scene_color, format = sf4, role = hdr_color, size = viewport, swap = per_frame }
+// Наклонная камера видит стены друг за другом, поэтому глубина перестала быть необязательной.
+{ name = scene_depth, format = d32, role = depth, size = viewport, swap = per_frame }
 
 { name = camera_buffer, format = mat4mat4v4v4, role = upload, size = one, swap = per_frame }
 { name = fill_vertices, format = c1, role = upload, size = fill_bytes, swap = per_frame }

@@ -18,16 +18,16 @@
 namespace devils_engine::pf09 {
 
 struct agent {
-  zone_key zone = invalid_key;
+  part_ref location{};          // ЧАСТЬ, а не зона: идти можно только по выпуклому
   glm::vec2 position{};
-  std::vector<zone_key> path;   // оставшиеся зоны, начиная со следующей
+  std::vector<part_ref> path;   // оставшиеся части, начиная со следующей
   uint32_t cursor = 0;
   bool arrived = false;
 };
 
 // Поиск в ширину по проходимым порталам. Бюджет узлов ограничен намеренно: путь через полгорода игре не
 // нужен, а неограниченный обход на подгруженном мире означал бы обход всего резидентного.
-std::vector<zone_key> find_path(const zone_store& store, const zone_key from, const zone_key to,
+std::vector<part_ref> find_path(const zone_store& store, const part_ref from, const part_ref to,
                                 const uint32_t budget = 65536);
 
 // Один шаг. Персонаж идёт к проёму, ведущему в следующую зону; дойдя, переступает в неё. Возвращает
@@ -36,7 +36,7 @@ bool step_agent(const zone_store& store, agent& walker, const float distance_m);
 
 // Точка внутри зоны, от которой удобно стартовать: центр габарита, если он внутри фигуры, иначе первая
 // подходящая точка вдоль диагонали.
-bool interior_point(const zone_store& store, const zone_record& record, glm::vec2& out);
+bool interior_point(const zone_store& store, const part_ref& reference, glm::vec2& out);
 
 } // namespace devils_engine::pf09
 

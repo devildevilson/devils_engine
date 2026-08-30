@@ -4,9 +4,12 @@
 // вместе с резидентностью секторов, и переписывать один отображённый буфер дешевле, чем пересобирать
 // device-local вершинный буфер на каждый шаг камеры.
 struct zone_vertex {
-  vec2 position;   // мировые метры, плоскость XZ
+  vec3 position;   // мировые метры: XZ — план, Y — высота стены или пола
   uint tint;       // упакованный RGBA
-  uint zone_slot;  // индекс зоны в текущем кадре; 0xffffffff — «ничья» геометрия вроде следа персонажа
+  uint zone_slot;  // индекс зоны в текущем кадре; 0xffffffff — «ничья» геометрия вроде персонажа
+  uint pad0;
+  uint pad1;
+  uint pad2;
 };
 
 layout(set = 0, binding = 0, std140) uniform CameraBlock {
@@ -29,7 +32,7 @@ vec4 unpack_tint(const uint value) {
 
 void main() {
   const zone_vertex vertex = stream.vertices[gl_VertexIndex];
-  gl_Position = camera_data.view_projection * vec4(vertex.position.x, 0.0, vertex.position.y, 1.0);
+  gl_Position = camera_data.view_projection * vec4(vertex.position, 1.0);
 
   vec4 tint = unpack_tint(vertex.tint);
 

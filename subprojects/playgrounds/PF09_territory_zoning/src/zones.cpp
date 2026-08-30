@@ -13,13 +13,14 @@ namespace devils_engine::pf09 {
 
 namespace {
 
-constexpr char sector_magic[8] = {'P', 'F', '0', '9', 'Z', 'S', '0', '2'};
+constexpr char sector_magic[8] = {'P', 'F', '0', '9', 'Z', 'S', '0', '3'};
 
 struct sector_header {
   char magic[8];
   int32_t x;
   int32_t y;
   uint32_t zone_count;
+  uint32_t part_count;
   uint32_t vertex_count;
   uint32_t portal_count;
   uint32_t name_bytes;
@@ -55,10 +56,14 @@ std::string_view zone_level_name(const zone_level value) noexcept {
 
 std::string_view zone_kind_name(const zone_kind value) noexcept {
   switch (value) {
-    case zone_kind::room: return "room";
+    case zone_kind::hall: return "hall";
+    case zone_kind::wall: return "wall";
     case zone_kind::street: return "street";
+    case zone_kind::crossroad: return "crossroad";
+    case zone_kind::square: return "square";
     case zone_kind::yard: return "yard";
     case zone_kind::building: return "building";
+    case zone_kind::district: return "district";
     case zone_kind::settlement: return "settlement";
     case zone_kind::road: return "road";
     case zone_kind::landmark: return "landmark";
@@ -74,19 +79,24 @@ std::string_view zone_sector::name_of(const zone_record& record) const {
   return std::string_view(names.data() + record.name_offset);
 }
 
-std::span<const glm::vec2> zone_sector::outline_of(const zone_record& record) const {
-  if (record.vertex_begin + record.vertex_count > vertices.size()) return {};
-  return {vertices.data() + record.vertex_begin, record.vertex_count};
+std::span<const zone_part> zone_sector::parts_of(const zone_record& record) const {
+  if (record.part_begin + record.part_count > parts.size()) return {};
+  return {parts.data() + record.part_begin, record.part_count};
 }
 
-std::span<const zone_portal> zone_sector::portals_of(const zone_record& record) const {
-  if (record.portal_begin + record.portal_count > portals.size()) return {};
-  return {portals.data() + record.portal_begin, record.portal_count};
+std::span<const glm::vec2> zone_sector::outline_of(const zone_part& part) const {
+  if (part.vertex_begin + part.vertex_count > vertices.size()) return {};
+  return {vertices.data() + part.vertex_begin, part.vertex_count};
+}
+
+std::span<const zone_portal> zone_sector::portals_of(const zone_part& part) const {
+  if (part.portal_begin + part.portal_count > portals.size()) return {};
+  return {portals.data() + part.portal_begin, part.portal_count};
 }
 
 uint64_t zone_sector::byte_size() const noexcept {
-  return zones.size() * sizeof(zone_record) + vertices.size() * sizeof(glm::vec2) +
-         portals.size() * sizeof(zone_portal) + names.size();
+  return zones.size() * sizeof(zone_record) + parts.size() * sizeof(zone_part) +
+         vertices.size() * sizeof(glm::vec2) + portals.size() * sizeof(zone_portal) + names.size();
 }
 
 // Луч вправо и счёт пересечений. Границу считаем принадлежащей зоне через `>=`/`<` на одном конце: точка
@@ -120,10 +130,8 @@ uint64_t compute_fingerprint(const zone_sector& sector) {
     hash = utils::hash_combine(hash, record.parent);
     hash = utils::hash_combine(hash, uint32_t(record.level));
     hash = utils::hash_combine(hash, uint32_t(record.kind));
-    hash = utils::hash_combine(hash, record.vertex_begin);
-    hash = utils::hash_combine(hash, record.vertex_count);
-    hash = utils::hash_combine(hash, record.portal_begin);
-    hash = utils::hash_combine(hash, record.portal_count);
+    hash = utils::hash_combine(hash, record.part_begin);
+    hash = utils::hash_combine(hash, record.part_count);
     hash = utils::hash_combine(hash, record.name_offset);
     hash = utils::hash_combine(hash, record.tags);
     for (uint32_t axis = 0; axis < 3; ++axis) {
@@ -131,12 +139,25 @@ uint64_t compute_fingerprint(const zone_sector& sector) {
       hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(record.bounds.upper[axis]));
     }
   }
+  for (const auto& part : sector.parts) {
+    hash = utils::hash_combine(hash, part.vertex_begin);
+    hash = utils::hash_combine(hash, part.vertex_count);
+    hash = utils::hash_combine(hash, part.portal_begin);
+    hash = utils::hash_combine(hash, part.portal_count);
+  }
+  for (const auto& part : sector.parts) {
+    hash = utils::hash_combine(hash, part.vertex_begin);
+    hash = utils::hash_combine(hash, part.vertex_count);
+    hash = utils::hash_combine(hash, part.portal_begin);
+    hash = utils::hash_combine(hash, part.portal_count);
+  }
   for (const auto& vertex : sector.vertices) {
     hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(vertex.x));
     hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(vertex.y));
   }
   for (const auto& portal : sector.portals) {
     hash = utils::hash_combine(hash, portal.other);
+    hash = utils::hash_combine(hash, portal.other_part);
     hash = utils::hash_combine(hash, portal.flags);
     hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(portal.from.x));
     hash = utils::hash_combine(hash, std::bit_cast<uint32_t>(portal.from.y));
@@ -155,6 +176,7 @@ void write_sector(const std::filesystem::path& path, const zone_sector& sector) 
   header.x = sector.x;
   header.y = sector.y;
   header.zone_count = uint32_t(sector.zones.size());
+  header.part_count = uint32_t(sector.parts.size());
   header.vertex_count = uint32_t(sector.vertices.size());
   header.portal_count = uint32_t(sector.portals.size());
   header.name_bytes = uint32_t(sector.names.size());
@@ -165,6 +187,9 @@ void write_sector(const std::filesystem::path& path, const zone_sector& sector) 
   append(bytes, header);
   for (const auto& record : sector.zones) {
     append(bytes, record);
+  }
+  for (const auto& part : sector.parts) {
+    append(bytes, part);
   }
   for (const auto& vertex : sector.vertices) {
     append(bytes, vertex);
@@ -199,12 +224,16 @@ bool read_sector(const std::filesystem::path& path, zone_sector& out) {
   out.x = header.x;
   out.y = header.y;
   out.zones.resize(header.zone_count);
+  out.parts.resize(header.part_count);
   out.vertices.resize(header.vertex_count);
   out.portals.resize(header.portal_count);
   out.names.resize(header.name_bytes);
 
   for (auto& record : out.zones) {
     if (!take(bytes, cursor, record)) return false;
+  }
+  for (auto& part : out.parts) {
+    if (!take(bytes, cursor, part)) return false;
   }
   for (auto& vertex : out.vertices) {
     if (!take(bytes, cursor, vertex)) return false;
@@ -310,32 +339,97 @@ const zone_record* zone_store::find(const zone_key key) const {
   return &owner->zones[local];
 }
 
-const zone_record* zone_store::pick(const glm::vec3& point_m, const zone_level level) const {
-  const auto* owner = sector(sector_of(point_m.x), sector_of(point_m.z));
-  if (owner == nullptr) return nullptr;
-
+part_ref zone_store::pick(const glm::vec3& point_m, const zone_level level) const {
   const glm::vec2 flat{point_m.x, point_m.z};
 
   // При попадании в несколько фигур выигрывает МЕНЬШАЯ по габариту: комната внутри здания важнее самого
   // здания, и это единственное правило, дающее один ответ независимо от порядка записей в файле.
-  const zone_record* best = nullptr;
+  part_ref best{};
+  float best_area = 0.0f;
+
+  // Смотреть только «свой» сектор больше нельзя. Зона приписана сектору по своему ЦЕНТРУ, а место теперь
+  // крупное: отрезок улицы или поселение свободно переходит границу файла, и точка в соседнем секторе
+  // тогда не находила ничего. Раньше зоны были размером с клетку, и ошибка пряталась в тонкой полосе.
+  const int32_t home_x = sector_of(point_m.x);
+  const int32_t home_y = sector_of(point_m.z);
+
+  for (int32_t dy = -1; dy <= 1; ++dy) {
+  for (int32_t dx = -1; dx <= 1; ++dx) {
+  const auto* owner = sector(home_x + dx, home_y + dy);
+  if (owner == nullptr) continue;
+
   for (const auto& record : owner->zones) {
     if (record.level != level || record.abstract()) continue;
-    if (!record.bounds.contains(point_m)) continue; // широкая фаза по габариту
-    if (!point_in_outline(owner->outline_of(record), flat)) continue;
-    if (best == nullptr || record.bounds.area_xz() < best->bounds.area_xz()) best = &record;
+    if (!record.bounds.contains(point_m)) continue; // широкая фаза по габариту зоны
+
+    const auto parts = owner->parts_of(record);
+    for (uint32_t index = 0; index < parts.size(); ++index) {
+      if (!parts[index].bounds.contains(point_m)) continue;
+      if (!point_in_outline(owner->outline_of(parts[index]), flat)) continue;
+
+      const float area = parts[index].bounds.area_xz();
+      if (!best.valid() || area < best_area) {
+        best = {record.key, index};
+        best_area = area;
+      }
+    }
+  }
+  }
   }
   return best;
 }
 
-std::span<const glm::vec2> zone_store::outline_of(const zone_record& record) const {
-  const auto* owner = sector(key_sector_x(record.key), key_sector_y(record.key));
-  return owner == nullptr ? std::span<const glm::vec2>{} : owner->outline_of(record);
+const zone_record* zone_store::containing(const zone_key key, const zone_kind kind) const {
+  // Подъём ограничен: цепочка вложенности коротка по построению, и неограниченный обход здесь означал бы
+  // готовность крутиться в цикле, если данные окажутся кольцевыми.
+  auto current = key;
+  for (uint32_t hop = 0; hop < 8; ++hop) {
+    const auto* record = find(current);
+    if (record == nullptr) return nullptr;
+    if (record->kind == kind) return record;
+    if (record->parent == invalid_key) return nullptr;
+    current = record->parent;
+  }
+  return nullptr;
 }
 
-std::span<const zone_portal> zone_store::portals_of(const zone_record& record) const {
+std::vector<zone_portal> zone_store::perimeter(const zone_key key) const {
+  const auto* record = find(key);
+  if (record == nullptr) return {};
+
+  std::vector<zone_portal> out;
+  for (uint32_t index = 0; index < record->part_count; ++index) {
+    for (const auto& portal : portals_of(part_ref{key, index})) {
+      if (!portal.geometric() || portal.other == key) continue; // внутренний стык частей не периметр
+      out.push_back(portal);
+    }
+  }
+  return out;
+}
+
+const zone_part* zone_store::part_of(const part_ref& reference) const {
+  const auto* record = find(reference.zone);
+  if (record == nullptr || reference.part >= record->part_count) return nullptr;
+
+  const auto* owner = sector(key_sector_x(reference.zone), key_sector_y(reference.zone));
+  return &owner->parts[record->part_begin + reference.part];
+}
+
+std::span<const zone_part> zone_store::parts_of(const zone_record& record) const {
   const auto* owner = sector(key_sector_x(record.key), key_sector_y(record.key));
-  return owner == nullptr ? std::span<const zone_portal>{} : owner->portals_of(record);
+  return owner == nullptr ? std::span<const zone_part>{} : owner->parts_of(record);
+}
+
+std::span<const glm::vec2> zone_store::outline_of(const part_ref& reference) const {
+  const auto* part = part_of(reference);
+  if (part == nullptr) return {};
+  return sector(key_sector_x(reference.zone), key_sector_y(reference.zone))->outline_of(*part);
+}
+
+std::span<const zone_portal> zone_store::portals_of(const part_ref& reference) const {
+  const auto* part = part_of(reference);
+  if (part == nullptr) return {};
+  return sector(key_sector_x(reference.zone), key_sector_y(reference.zone))->portals_of(*part);
 }
 
 std::string_view zone_store::name_of(const zone_record& record) const {

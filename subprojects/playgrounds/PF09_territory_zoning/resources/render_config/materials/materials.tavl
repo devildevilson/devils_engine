@@ -1,13 +1,13 @@
 {
   name = fill_material
   shaders = { vertex = "zone.vert.glsl", fragment = "zone.frag.glsl" }
-  depth = { test = false, write = false, compare = always }
+  depth = { test = true, write = true, compare = greater }
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {
   name = line_material
   shaders = { vertex = "zone.vert.glsl", fragment = "zone.frag.glsl" }
-  depth = { test = false, write = false, compare = always }
+  depth = { test = true, write = false, compare = greater }
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {

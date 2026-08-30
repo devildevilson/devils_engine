@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <queue>
 
 namespace devils_engine::pf09 {
 
@@ -11,24 +12,24 @@ namespace {
 constexpr float arrive_epsilon = 0.05f;
 constexpr float step_inside = 0.12f; // насколько переступить за проём, чтобы точно оказаться в новой зоне
 
-glm::vec2 centre_of(const zone_store& store, const zone_record& record) {
-  const auto outline = store.outline_of(record);
+glm::vec2 centre_of(const zone_store& store, const part_ref& reference) {
+  const auto outline = store.outline_of(reference);
   glm::vec2 sum{};
   for (const auto& point : outline) {
     sum += point;
   }
-  return outline.empty() ? glm::vec2{record.bounds.lower.x, record.bounds.lower.z} : sum / float(outline.size());
+  return outline.empty() ? glm::vec2{} : sum / float(outline.size());
 }
 
 // Загнать точку строго ВНУТРЬ фигуры. Точка ровно на общем ребре по правилу пикинга принадлежит ровно
 // одной зоне, и какой именно — зависит от округления; персонаж, остановившийся на ребре, оказался бы
 // в зоне, из которой следующий шаг не найдёт выхода. Поэтому после любого перемещения точка подтягивается
 // к центру, пока не окажется внутри.
-void settle(const zone_store& store, const zone_record& record, glm::vec2& position) {
-  const auto outline = store.outline_of(record);
+void settle(const zone_store& store, const part_ref& reference, glm::vec2& position) {
+  const auto outline = store.outline_of(reference);
   if (outline.empty() || point_in_outline(outline, position)) return;
 
-  const auto centre = centre_of(store, record);
+  const auto centre = centre_of(store, reference);
   for (uint32_t attempt = 0; attempt < 8; ++attempt) {
     position += (centre - position) * 0.4f;
     if (point_in_outline(outline, position)) return;
@@ -38,12 +39,17 @@ void settle(const zone_store& store, const zone_record& record, glm::vec2& posit
 
 } // namespace
 
-bool interior_point(const zone_store& store, const zone_record& record, glm::vec2& out) {
-  const auto outline = store.outline_of(record);
+bool interior_point(const zone_store& store, const part_ref& reference, glm::vec2& out) {
+  const auto outline = store.outline_of(reference);
   if (outline.size() < 3) return false;
 
-  const glm::vec2 middle{(record.bounds.lower.x + record.bounds.upper.x) * 0.5f,
-                         (record.bounds.lower.z + record.bounds.upper.z) * 0.5f};
+  // Часть выпукла, поэтому её центроид всегда внутри. Запасной путь оставлен на случай авторских частей,
+  // выпуклость которых сборщик не гарантирует.
+  glm::vec2 middle{};
+  for (const auto& point : outline) {
+    middle += point;
+  }
+  middle /= float(outline.size());
   if (point_in_outline(outline, middle)) {
     out = middle;
     return true;
@@ -61,42 +67,68 @@ bool interior_point(const zone_store& store, const zone_record& record, glm::vec
   return false;
 }
 
-std::vector<zone_key> find_path(const zone_store& store, const zone_key from, const zone_key to,
+std::vector<part_ref> find_path(const zone_store& store, const part_ref from, const part_ref to,
                                 const uint32_t budget) {
   if (from == to) return {};
-  if (store.find(from) == nullptr || store.find(to) == nullptr) return {};
+  if (store.part_of(from) == nullptr || store.part_of(to) == nullptr) return {};
 
-  std::map<zone_key, zone_key> came_from;
-  std::vector<zone_key> queue{from};
+  const auto* goal_zone = store.find(to.zone);
+  if (goal_zone == nullptr || goal_zone->impassable()) return {};
+
+  // Поиск стал по СТОИМОСТИ, а не по числу шагов: дорога должна тянуть маршрут на себя, иначе персонаж
+  // пойдёт напрямик через дворы просто потому, что там меньше клеток. Непроходимое место не пропускается
+  // фильтром результата, а не рассматривается вовсе — путь сквозь стену был бы враньём, которое
+  // обнаружилось бы только при движении.
+  struct entry {
+    float cost = 0.0f;
+    part_ref where{};
+
+    bool operator<(const entry& other) const noexcept { return cost > other.cost; }
+  };
+
+  std::map<part_ref, part_ref> came_from;
+  std::map<part_ref, float> best;
+  std::priority_queue<entry> queue;
+
   came_from[from] = from;
+  best[from] = 0.0f;
+  queue.push({0.0f, from});
 
-  // Бюджет ограничивает РАСШИРЕНИЕ очереди, а не сам обход. Прежняя редакция обрывала цикл при
-  // достижении бюджета целиком, и путь длиной в город объявлялся несуществующим ровно тогда, когда город
-  // оказывался чуть больше бюджета — то есть проверка падала не на ошибке, а на размере.
   bool found = false;
-  for (size_t head = 0; head < queue.size() && !found; ++head) {
-    const auto* record = store.find(queue[head]);
-    if (record == nullptr) continue;
+  while (!queue.empty() && !found && best.size() < budget) {
+    const auto here = queue.top();
+    queue.pop();
 
-    for (const auto& portal : store.portals_of(*record)) {
-      // Запертый проход не участвует в поиске. Это не фильтр результата, а именно правило обхода: путь,
-      // построенный через замок, был бы враньём, которое обнаружилось бы только при движении.
+    const auto known = best.find(here.where);
+    if (known == best.end() || here.cost > known->second) continue;
+
+    for (const auto& portal : store.portals_of(here.where)) {
       if (!portal.passable() || portal.other == invalid_key) continue;
-      if (came_from.contains(portal.other)) continue;
-      if (store.find(portal.other) == nullptr) continue; // сосед в невыгруженном секторе
 
-      came_from[portal.other] = queue[head];
-      if (portal.other == to) {
+      const part_ref next{portal.other, portal.other_part};
+      const auto* zone = store.find(next.zone);
+      if (zone == nullptr || zone->impassable()) continue;
+      if (store.part_of(next) == nullptr) continue; // сосед в невыгруженном секторе
+
+      const float step = zone->road() ? 0.5f : 1.0f;
+      const float cost = here.cost + step;
+
+      const auto seen = best.find(next);
+      if (seen != best.end() && seen->second <= cost) continue;
+
+      best[next] = cost;
+      came_from[next] = here.where;
+      if (next == to) {
         found = true;
         break;
       }
-      if (queue.size() < budget) queue.push_back(portal.other);
+      queue.push({cost, next});
     }
   }
 
   if (!found) return {};
 
-  std::vector<zone_key> path;
+  std::vector<part_ref> path;
   for (auto step = to; step != from; step = came_from[step]) {
     path.push_back(step);
   }
@@ -110,28 +142,25 @@ bool step_agent(const zone_store& store, agent& walker, const float distance_m) 
     return false;
   }
 
-  const auto* here = store.find(walker.zone);
-  if (here == nullptr) return false;
+  if (store.part_of(walker.location) == nullptr) return false;
 
   const auto next = walker.path[walker.cursor];
-  const auto portals = store.portals_of(*here);
+  const auto portals = store.portals_of(walker.location);
   const auto gate = std::find_if(portals.begin(), portals.end(), [&](const zone_portal& item) {
-    return item.other == next && item.passable();
+    return item.other == next.zone && item.other_part == next.part && item.passable();
   });
   if (gate == portals.end()) return false;
-
-  const auto* target = store.find(next);
-  if (target == nullptr) return false;
+  if (store.part_of(next) == nullptr) return false;
 
   // У связи без геометрии (дорога между поселениями, ребро политического графа) отрезка нет. Такой
   // переход мгновенный: он и означает не «пройти», а «переместиться» — и притворяться, что персонаж
   // шагает по нему метр за метром, было бы ложью про масштаб.
   const bool abstract_gate = !gate->geometric();
   if (abstract_gate) {
-    walker.zone = next;
+    walker.location = next;
     ++walker.cursor;
-    if (!interior_point(store, *target, walker.position)) walker.position = centre_of(store, *target);
-    settle(store, *target, walker.position);
+    if (!interior_point(store, next, walker.position)) walker.position = centre_of(store, next);
+    settle(store, next, walker.position);
     walker.arrived = walker.cursor >= walker.path.size();
     return true;
   }
@@ -141,15 +170,22 @@ bool step_agent(const zone_store& store, agent& walker, const float distance_m) 
   const float remaining = std::sqrt(delta.x * delta.x + delta.y * delta.y);
 
   if (remaining > distance_m + arrive_epsilon) {
-    walker.position += delta * (distance_m / remaining);
-    settle(store, *here, walker.position);
-    return true;
+    const auto stepped = walker.position + delta * (distance_m / remaining);
+
+    // Если шаг вывел из своей части — значит проём уже достигнут, и надо переступать, а не возвращаться.
+    // Прежняя редакция подтягивала точку обратно к центру, шаг снова выводил её наружу, и персонаж
+    // колебался на месте бесконечно: за двести тысяч шагов он так и не проходил один проём.
+    const auto outline = store.outline_of(walker.location);
+    if (outline.empty() || point_in_outline(outline, stepped)) {
+      walker.position = stepped;
+      return true;
+    }
   }
 
   // Переступаем проём: становимся чуть ЗА ним, в сторону следующей зоны. Останавливаться ровно на ребре
   // нельзя — точка на общей границе принадлежит ровно одной зоне по правилу пикинга, и какой именно,
   // зависело бы от округления.
-  const auto beyond = centre_of(store, *target);
+  const auto beyond = centre_of(store, next);
   const auto inward = beyond - aim;
   const float length = std::sqrt(inward.x * inward.x + inward.y * inward.y);
 
@@ -158,9 +194,9 @@ bool step_agent(const zone_store& store, agent& walker, const float distance_m) 
   // Проём может быть длинным и узким, а центр соседней зоны — почти напротив него: тогда шага внутрь не
   // хватает, чтобы точка гарантированно оказалась в новой фигуре. Дотягиваем к центру, пока не окажемся
   // внутри. Оставить точку снаружи нельзя: следующий шаг искал бы проход из зоны, в которой персонажа нет.
-  settle(store, *target, walker.position);
+  settle(store, next, walker.position);
 
-  walker.zone = next;
+  walker.location = next;
   ++walker.cursor;
   walker.arrived = walker.cursor >= walker.path.size();
   return true;

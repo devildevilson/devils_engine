@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <set>
 #include <numbers>
 #include <numeric>
 #include <string>
@@ -665,7 +666,7 @@ int run_stream_report(const pf09::territory& map, const options& opts) {
       if (sector == nullptr) continue;
 
       const auto found = std::find_if(sector->zones.begin(), sector->zones.end(), [](const pf09::zone_record& item) {
-        return item.level == pf09::zone_level::interior && item.kind == pf09::zone_kind::room;
+        return item.level == pf09::zone_level::interior && item.kind == pf09::zone_kind::hall;
       });
       if (found == sector->zones.end()) continue;
 
@@ -680,11 +681,14 @@ int run_stream_report(const pf09::territory& map, const options& opts) {
 
   std::cout << std::format("\n  что под точкой ({:.0f}, {:.0f}, {:.0f}):\n", probe.x, probe.y, probe.z);
   for (uint32_t level = 0; level < uint32_t(pf09::zone_level::count); ++level) {
-    const auto* found = store.pick(probe, pf09::zone_level(level));
+    const auto hit = store.pick(probe, pf09::zone_level(level));
+    const auto* found = hit.valid() ? store.find(hit.zone) : nullptr;
     std::cout << std::format("    {:<10} {}\n", pf09::zone_level_name(pf09::zone_level(level)),
-                             found == nullptr ? std::string("— пусто, и это законный ответ")
-                                              : std::format("{} '{}', проходов {}", pf09::zone_kind_name(found->kind),
-                                                            store.name_of(*found), found->portal_count));
+                             found == nullptr
+                               ? std::string("— пусто, и это законный ответ")
+                               : std::format("{} '{}', частей {}, проходов {}", pf09::zone_kind_name(found->kind),
+                                             store.name_of(*found), found->part_count,
+                                             store.portals_of(hit).size()));
   }
 
   std::cout << std::format("\n  всего прочитано за проход {:.1f} КБ\n", double(total_read) / 1024.0);
@@ -1408,6 +1412,50 @@ void verify_locality(checker& check, const pf09::territory& map, const options& 
 }
 
 
+// Разделяющая ось для двух выпуклых многоугольников. Если существует ось, на которую их проекции не
+// пересекаются, фигуры не накладываются. Для выпуклого это не эвристика, а точный ответ.
+bool convex_overlap(const std::span<const glm::vec2> a, const std::span<const glm::vec2> b) {
+  if (a.size() < 3 || b.size() < 3) return false;
+
+  // Проекции считаются ОТНОСИТЕЛЬНО общей точки и на единичную ось. Абсолютные координаты доходят до
+  // полумиллиона метров, где шаг `float` уже около двух единиц проекции на неединичной оси — больше
+  // любого разумного допуска, и соприкасающиеся фигуры объявлялись пересекающимися. Это та же ошибка,
+  // что и с ключом прямой: точность `float` зависит от величины, а допуск задан в метрах.
+  const glm::vec2 reference = a[0];
+
+  const auto separated = [&](const std::span<const glm::vec2> from) {
+    for (size_t i = 0; i < from.size(); ++i) {
+      const auto edge = from[(i + 1) % from.size()] - from[i];
+      const float length = std::sqrt(edge.x * edge.x + edge.y * edge.y);
+      if (length < 1.0e-4f) continue;
+      const glm::vec2 axis{-edge.y / length, edge.x / length};
+
+      float min_a = 1e30f;
+      float max_a = -1e30f;
+      for (const auto& point : a) {
+        const float value = axis.x * (point.x - reference.x) + axis.y * (point.y - reference.y);
+        min_a = std::min(min_a, value);
+        max_a = std::max(max_a, value);
+      }
+
+      float min_b = 1e30f;
+      float max_b = -1e30f;
+      for (const auto& point : b) {
+        const float value = axis.x * (point.x - reference.x) + axis.y * (point.y - reference.y);
+        min_b = std::min(min_b, value);
+        max_b = std::max(max_b, value);
+      }
+
+      // Соприкосновение по общему ребру — не наложение, а именно то, чем связаны соседние зоны.
+      constexpr float slack = 0.02f;
+      if (min_a >= max_b - slack || min_b >= max_a - slack) return true;
+    }
+    return false;
+  };
+
+  return !separated(a) && !separated(b);
+}
+
 // Симметрия порталов и проходимость. Проход — общее ребро двух фигур, значит он обязан быть виден с обеих
 // сторон одинаково: асимметрия означала бы дверь, открытую только снаружи.
 void verify_portals(checker& check, const pf09::zone_store& store, const options& opts) {
@@ -1421,22 +1469,26 @@ void verify_portals(checker& check, const pf09::zone_store& store, const options
       if (sector == nullptr) continue;
 
       for (const auto& record : sector->zones) {
-        for (const auto& portal : store.portals_of(record)) {
-          const auto* other = store.find(portal.other);
-          if (other == nullptr) continue; // сосед в невыгруженном секторе — это не асимметрия
-          ++counted;
+        for (uint32_t index = 0; index < record.part_count; ++index) {
+          const pf09::part_ref here{record.key, index};
+          for (const auto& portal : store.portals_of(here)) {
+            const pf09::part_ref there{portal.other, portal.other_part};
+            if (store.part_of(there) == nullptr) continue; // сосед в невыгруженном секторе — не асимметрия
+            ++counted;
 
-          const auto back = store.portals_of(*other);
-          // Зеркало ищется ПО ОТРЕЗКУ, а не только по соседу: две фигуры могут делить несколько рёбер,
-          // и тогда «первый портал к этому соседу» — разные порталы с разных сторон.
-          const auto mirror = std::find_if(back.begin(), back.end(), [&](const pf09::zone_portal& item) {
-            return item.other == record.key && item.from == portal.from && item.to == portal.to;
-          });
-          if (mirror == back.end() || mirror->flags != portal.flags) {
-            ++asymmetric;
-            continue;
+            const auto back = store.portals_of(there);
+            // Зеркало ищется ПО ОТРЕЗКУ, а не только по соседу: две фигуры могут делить несколько рёбер,
+            // и тогда «первый портал к этому соседу» — разные порталы с разных сторон.
+            const auto mirror = std::find_if(back.begin(), back.end(), [&](const pf09::zone_portal& item) {
+              return item.other == record.key && item.other_part == index && item.from == portal.from &&
+                     item.to == portal.to;
+            });
+            if (mirror == back.end() || mirror->flags != portal.flags) {
+              ++asymmetric;
+              continue;
+            }
+            if (portal.geometric() && portal.from == portal.to) ++degenerate;
           }
-          if (portal.geometric() && portal.from == portal.to) ++degenerate;
         }
       }
     }
@@ -1462,7 +1514,9 @@ void verify_agents(checker& check, const pf09::zone_store& store, const options&
       const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
       if (sector == nullptr) continue;
       for (const auto& record : sector->zones) {
-        if (record.level != pf09::zone_level::interior || record.abstract()) continue;
+        // Непроходимые места целями не берутся: пути в стену не должно быть, и требовать его значило бы
+        // проверять не связность, а собственную забывчивость.
+        if (record.level != pf09::zone_level::interior || record.abstract() || record.impassable()) continue;
 
         auto owner = record.parent;
         for (uint32_t hop = 0; hop < 4; ++hop) {
@@ -1479,8 +1533,15 @@ void verify_agents(checker& check, const pf09::zone_store& store, const options&
   for (const auto& [settlement, list] : by_settlement) {
     if (list.size() > rooms.size()) rooms = list;
   }
-  check.expect(!rooms.empty(), "есть по чему ходить");
-  if (rooms.empty()) return;
+  // Ходят по ЧАСТЯМ: зона может состоять из нескольких выпуклых кусков, и выбирать надо кусок.
+  std::vector<pf09::part_ref> spots;
+  for (const auto* record : rooms) {
+    for (uint32_t index = 0; index < record->part_count; ++index) {
+      spots.push_back({record->key, index});
+    }
+  }
+  check.expect(!spots.empty(), "есть по чему ходить");
+  if (spots.empty()) return;
 
   size_t routed = 0;
   size_t escaped = 0;
@@ -1490,15 +1551,15 @@ void verify_agents(checker& check, const pf09::zone_store& store, const options&
 
   constexpr uint32_t trials = 64;
   for (uint32_t i = 0; i < trials; ++i) {
-    const auto* from = rooms[utils::splitmix(i * 2ull + 1ull, 0xa9e17ull) % rooms.size()];
-    const auto* to = rooms[utils::splitmix(i * 2ull + 2ull, 0xa9e17ull) % rooms.size()];
+    const auto from = spots[utils::splitmix(i * 2ull + 1ull, 0xa9e17ull) % spots.size()];
+    const auto to = spots[utils::splitmix(i * 2ull + 2ull, 0xa9e17ull) % spots.size()];
     if (from == to) continue;
 
     pf09::agent walker{};
-    walker.zone = from->key;
-    if (!pf09::interior_point(store, *from, walker.position)) continue;
+    walker.location = from;
+    if (!pf09::interior_point(store, from, walker.position)) continue;
 
-    walker.path = pf09::find_path(store, from->key, to->key);
+    walker.path = pf09::find_path(store, from, to);
     if (walker.path.empty()) {
       ++no_path;
       continue;
@@ -1506,13 +1567,13 @@ void verify_agents(checker& check, const pf09::zone_store& store, const options&
     ++routed;
 
     uint32_t steps = 0;
-    while (!walker.arrived && steps < 20000) {
+    while (!walker.arrived && steps < 40000) {
       if (!pf09::step_agent(store, walker, 0.6f)) break;
       ++steps;
 
-      const auto* here = store.find(walker.zone);
-      if (here == nullptr) break;
-      if (!here->abstract() && !pf09::point_in_outline(store.outline_of(*here), walker.position)) ++escaped;
+      const auto outline = store.outline_of(walker.location);
+      if (outline.empty()) break;
+      if (!pf09::point_in_outline(outline, walker.position)) ++escaped;
     }
     total_steps += steps;
     if (!walker.arrived) ++stalled;
@@ -1524,6 +1585,107 @@ void verify_agents(checker& check, const pf09::zone_store& store, const options&
 
   std::cout << std::format("  замер: {} маршрутов пройдено, {} шагов всего, в среднем {:.0f} шагов на маршрут\n",
                            routed, total_steps, double(total_steps) / double(std::max<size_t>(routed, 1)));
+}
+
+
+// Полное покрытие, непроходимость и вложенность — три утверждения новой модели, и каждое проверяется
+// отдельно, потому что ломаются они независимо.
+void verify_places(checker& check, const pf09::zone_store& store, const options& opts) {
+  const pf09::zone_record* sample = nullptr;
+  const pf09::zone_sector* home = nullptr;
+
+  for (int32_t y = 0; y < int32_t(opts.build.sector_side) && sample == nullptr; ++y) {
+    for (int32_t x = 0; x < int32_t(opts.build.sector_side); ++x) {
+      const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
+      if (sector == nullptr) continue;
+      for (const auto& record : sector->zones) {
+        if (record.kind != pf09::zone_kind::settlement) continue;
+        sample = &record;
+        home = sector;
+        break;
+      }
+      if (sample != nullptr) break;
+    }
+  }
+  check.expect(sample != nullptr, "поселение найдено");
+  if (sample == nullptr) return;
+  (void)home;
+
+  // Покрытие: внутри поселения пустоты быть не должно. Стена — это место, а не отсутствие места, и
+  // раньше между комнатой и улицей действительно ничего не лежало.
+  const glm::vec2 lower{sample->bounds.lower.x, sample->bounds.lower.z};
+  const glm::vec2 upper{sample->bounds.upper.x, sample->bounds.upper.z};
+
+  size_t probes = 0;
+  size_t empty = 0;
+  size_t multi_kind = 0;
+  std::map<pf09::zone_kind, uint32_t> kinds;
+  for (uint32_t i = 0; i < 4096; ++i) {
+    const auto unit = sample_point(i, 1.0, 0x9a6eull);
+    const glm::vec3 point{lower.x + float(unit.x) * (upper.x - lower.x), 0.05f,
+                          lower.y + float(unit.y) * (upper.y - lower.y)};
+    ++probes;
+    const auto hit = store.pick(point, pf09::zone_level::interior);
+    if (!hit.valid()) {
+      ++empty;
+      continue;
+    }
+    const auto* zone = store.find(hit.zone);
+    if (zone != nullptr) ++kinds[zone->kind];
+  }
+  {
+    std::string summary;
+    for (const auto& [kind, count] : kinds) {
+      summary += std::format("{}={} ", pf09::zone_kind_name(kind), count);
+    }
+    std::cout << std::format("  замер: покрытие по видам мест — {}\n", summary);
+  }
+  check.expect(empty == 0, "игровая поверхность покрыта целиком",
+               std::format("{} точек из {} не принадлежат ни одному месту", empty, probes));
+  (void)multi_kind;
+
+  // Вложенность: у каждого места есть квартал, у квартала — поселение. Без этого вопрос «кто держит
+  // район» не на что опереть.
+  size_t no_district = 0;
+  size_t no_settlement = 0;
+  size_t inspected = 0;
+  size_t lonely_perimeter = 0;
+  size_t internal_leak = 0;
+
+  for (int32_t y = 0; y < int32_t(opts.build.sector_side); ++y) {
+    for (int32_t x = 0; x < int32_t(opts.build.sector_side); ++x) {
+      const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
+      if (sector == nullptr) continue;
+
+      for (const auto& record : sector->zones) {
+        if (record.level != pf09::zone_level::interior || record.abstract()) continue;
+        if (record.kind == pf09::zone_kind::landmark) continue; // дверь принадлежит зданию, а не кварталу
+        ++inspected;
+
+        if (store.containing(record.key, pf09::zone_kind::district) == nullptr) ++no_district;
+        if (store.containing(record.key, pf09::zone_kind::settlement) == nullptr) ++no_settlement;
+
+        // Периметр: только внешние рёбра. Стык двух частей ОДНОГО места периметром не является — по нему
+        // не строят баррикаду, потому что это не граница.
+        const auto edges = store.perimeter(record.key);
+        if (edges.empty()) ++lonely_perimeter;
+        for (const auto& portal : edges) {
+          if (portal.other == record.key) ++internal_leak;
+        }
+      }
+    }
+  }
+
+  check.expect(inspected > 0, "места прочитались");
+  check.expect(no_district == 0, "у места есть квартал", std::format("{} мест без квартала", no_district));
+  check.expect(no_settlement == 0, "у места есть поселение", std::format("{} мест без поселения", no_settlement));
+  check.expect(lonely_perimeter == 0, "у места есть периметр", std::format("{} мест без внешних рёбер",
+                                                                           lonely_perimeter));
+  check.expect(internal_leak == 0, "внутренний стык не попал в периметр",
+               std::format("{} внутренних рёбер снаружи", internal_leak));
+
+  std::cout << std::format("  замер: мест {}, у первого поселения габарит {:.0f}x{:.0f} м\n", inspected,
+                           double(upper.x - lower.x), double(upper.y - lower.y));
 }
 
 void verify_zones(checker& check, const pf09::territory& map, const options& opts) {
@@ -1586,9 +1748,13 @@ void verify_zones(checker& check, const pf09::territory& map, const options& opt
         // «Висячая ссылка» и «сектор не загружен» — РАЗНЫЕ вещи, и путать их нельзя: стриминг существует
         // ровно ради второго. Ссылка обязана указывать на сектор, который есть на диске; а если этот
         // сектор сейчас резидентен, то разрешение по ключу обязано сработать за один шаг.
-        for (const auto& portal : store.portals_of(record)) {
+        for (uint32_t index = 0; index < record.part_count; ++index) {
+        for (const auto& portal : store.portals_of(pf09::part_ref{record.key, index})) {
           const auto link = portal.other;
-          if (link == record.key) ++self_link;
+
+          // Петля — это проход части В САМУ СЕБЯ. Проход между двумя частями одной зоны петлёй не
+          // является и обязан существовать: зона произвольной формы только из них и состоит.
+          if (link == record.key && portal.other_part == index) ++self_link;
 
           const auto target = pf09::sector_path(root, pf09::key_sector_x(link), pf09::key_sector_y(link));
           if (!std::filesystem::exists(target)) {
@@ -1596,9 +1762,10 @@ void verify_zones(checker& check, const pf09::territory& map, const options& opt
             continue;
           }
           if (store.sector(pf09::key_sector_x(link), pf09::key_sector_y(link)) != nullptr &&
-              store.find(link) == nullptr) {
+              store.part_of({link, portal.other_part}) == nullptr) {
             ++unresolved;
           }
+        }
         }
 
         // Родитель не может лежать на БОЛЕЕ МЕЛКОМ уровне. Тот же уровень допустим и нужен: здание —
@@ -1611,22 +1778,74 @@ void verify_zones(checker& check, const pf09::territory& map, const options& opt
           if (parent->level == record.level && !parent->abstract()) ++bad_parent;
         }
 
-        // Зоны одного вида на одном уровне не должны накладываться: две улицы в одном месте — это не
-        // «выберется меньшая», это ошибка данных. Абстрактные зоны из проверки выпадают: у них нет формы,
-        // и накладываться им нечем.
+        // Зоны одного вида на одном уровне не должны накладываться. Габаритами это больше не проверить:
+        // фигуры перестали быть выровненными по осям, и у двух соседних скошенных четырёхугольников
+        // габариты пересекаются, хотя сами они лишь соприкасаются. Поэтому габарит остался широкой
+        // фазой, а решает разделяющая ось — для выпуклых частей она точна.
         if (record.abstract()) continue;
-        for (const auto& other : sector->zones) {
-          if (&other == &record || other.abstract() || other.level != record.level || other.kind != record.kind) {
-            continue;
-          }
-          if (record.bounds.overlaps_xz(other.bounds) && record.bounds.lower.y < other.bounds.upper.y &&
-              other.bounds.lower.y < record.bounds.upper.y) {
-            ++overlap;
+        for (const auto& part : sector->parts_of(record)) {
+          const auto outline = sector->outline_of(part);
+          for (const auto& other : sector->zones) {
+            if (other.key <= record.key || other.abstract()) continue;
+            if (other.level != record.level || other.kind != record.kind) continue;
+            if (!record.bounds.overlaps_xz(other.bounds)) continue;
+
+            for (const auto& other_part : sector->parts_of(other)) {
+              if (!part.bounds.overlaps_xz(other_part.bounds)) continue;
+              if (part.bounds.lower.y >= other_part.bounds.upper.y ||
+                  other_part.bounds.lower.y >= part.bounds.upper.y) {
+                continue;
+              }
+              if (convex_overlap(outline, sector->outline_of(other_part))) ++overlap;
+            }
           }
         }
       }
     }
   }
+
+  // Выпуклость частей — несущее условие, а не свойство фикстуры: на невыпуклой части и разделяющая ось
+  // неприменима, и персонаж, идущий по прямой к проёму, выходит наружу. Поэтому её проверяет отдельная
+  // проверка, а не подразумевает сборщик.
+  size_t concave = 0;
+  size_t degenerate_part = 0;
+  for (int32_t y = 0; y < int32_t(opts.build.sector_side); ++y) {
+    for (int32_t x = 0; x < int32_t(opts.build.sector_side); ++x) {
+      const auto* sector = store.sector(opts.build.sector_x + x, opts.build.sector_y + y);
+      if (sector == nullptr) continue;
+
+      for (const auto& record_scan : sector->zones) {
+      for (const auto& part : sector->parts_of(record_scan)) {
+        const auto outline = sector->outline_of(part);
+        if (outline.size() < 3) {
+          ++degenerate_part;
+          continue;
+        }
+
+        int32_t sign = 0;
+        double area = 0.0;
+        for (size_t i = 0; i < outline.size(); ++i) {
+          const auto& a = outline[i];
+          const auto& b = outline[(i + 1) % outline.size()];
+          const auto& c = outline[(i + 2) % outline.size()];
+          const double cross = double(b.x - a.x) * double(c.y - b.y) - double(b.y - a.y) * double(c.x - b.x);
+          area += double(a.x) * double(b.y) - double(b.x) * double(a.y);
+
+          const int32_t here = cross > 1.0e-4 ? 1 : (cross < -1.0e-4 ? -1 : 0);
+          if (here == 0) continue;
+          if (sign == 0) sign = here;
+          else if (sign != here) {
+            ++concave;
+            break;
+          }
+        }
+        if (std::abs(area) < 0.01) ++degenerate_part;
+      }
+      }
+    }
+  }
+  check.expect(concave == 0, "части выпуклы", std::format("{} невыпуклых частей", concave));
+  check.expect(degenerate_part == 0, "у части есть площадь", std::format("{} вырожденных частей", degenerate_part));
 
   check.expect(dangling == 0, "ссылка указывает на существующий сектор", std::format("{} висячих ссылок", dangling));
   check.expect(unresolved == 0, "резидентная ссылка разрешается по ключу",
@@ -1646,14 +1865,15 @@ void verify_zones(checker& check, const pf09::territory& map, const options& opt
   if (sample != nullptr) {
     for (const auto& record : sample->zones) {
       if (record.abstract()) continue;
-      const glm::vec3 middle{(record.bounds.lower.x + record.bounds.upper.x) * 0.5f,
-                             (record.bounds.lower.y + record.bounds.upper.y) * 0.5f,
-                             (record.bounds.lower.z + record.bounds.upper.z) * 0.5f};
-      const auto* found = store.pick(middle, record.level);
+      const auto& probe_part = sample->parts_of(record).front();
+      const glm::vec3 middle{(probe_part.bounds.lower.x + probe_part.bounds.upper.x) * 0.5f,
+                             (probe_part.bounds.lower.y + probe_part.bounds.upper.y) * 0.5f,
+                             (probe_part.bounds.lower.z + probe_part.bounds.upper.z) * 0.5f};
+      const auto found = store.pick(middle, record.level);
       ++probes;
-      if (found == nullptr) {
+      if (!found.valid()) {
         ++missed;
-      } else if (!found->bounds.contains(middle)) {
+      } else if (!store.part_of(found)->bounds.contains(middle)) {
         ++outside_box;
       }
     }
@@ -1663,7 +1883,7 @@ void verify_zones(checker& check, const pf09::territory& map, const options& opt
 
   // Пропуски — законная часть модели: между зонами бывает пустота, и врать про неё нельзя.
   const glm::vec3 nowhere{float(centre.x) + 3000.0f, 400.0f, float(centre.y) + 3000.0f};
-  check.expect(store.pick(nowhere, pf09::zone_level::interior) == nullptr, "в пропуске зоны нет");
+  check.expect(!store.pick(nowhere, pf09::zone_level::interior).valid(), "в пропуске зоны нет");
 
   // Ответы не зависят от того, как наблюдатель сюда пришёл. Это главный контракт стриминга: подгрузка
   // меняет ЧТО доступно, но не ЧТО правда.
@@ -1680,17 +1900,16 @@ void verify_zones(checker& check, const pf09::territory& map, const options& opt
     const glm::vec3 point{float(centre.x + (unit.x - 0.5) * 4000.0), 1.0f,
                           float(centre.y + (unit.y - 0.5) * 4000.0)};
     for (uint32_t level = 0; level < uint32_t(pf09::zone_level::count); ++level) {
-      const auto* a = store.pick(point, pf09::zone_level(level));
-      const auto* b = roundabout.pick(point, pf09::zone_level(level));
-      const auto key_a = a == nullptr ? pf09::invalid_key : a->key;
-      const auto key_b = b == nullptr ? pf09::invalid_key : b->key;
-      if (key_a != key_b) ++divergence;
+      if (store.pick(point, pf09::zone_level(level)) != roundabout.pick(point, pf09::zone_level(level))) {
+        ++divergence;
+      }
     }
   }
   check.expect(divergence == 0, "ответ не зависит от пути наблюдателя",
                std::format("{} расхождений после другого маршрута", divergence));
 
   verify_portals(check, store, opts);
+  verify_places(check, store, opts);
   verify_agents(check, store, opts);
 
   std::cout << std::format("  замер: {} секторов, {} зон, {} связей, {:.1f} КБ на диске; резидентно {} секторов "
@@ -1760,7 +1979,7 @@ rgb kind_colour(const pf09::zone_kind kind) {
   switch (kind) {
     case pf09::zone_kind::street: return {150, 146, 138};
     case pf09::zone_kind::yard: return {132, 156, 112};
-    case pf09::zone_kind::room: return {196, 172, 140};
+    case pf09::zone_kind::hall: return {196, 172, 140};
     case pf09::zone_kind::landmark: return {214, 150, 90};
     case pf09::zone_kind::settlement: return {96, 104, 126};
     default: return {110, 110, 120};
@@ -1828,10 +2047,11 @@ int run_zone_dump(const pf09::territory& map, const options& opts) {
 
       for (const auto& record : sector->zones) {
         if (record.level != pf09::zone_level::interior || record.abstract()) continue;
-        const auto outline = sector->outline_of(record);
+        for (const auto& part : sector->parts_of(record)) {
+        const auto outline = sector->outline_of(part);
 
-        const auto lower = to_pixel({record.bounds.lower.x, record.bounds.lower.z});
-        const auto upper = to_pixel({record.bounds.upper.x, record.bounds.upper.z});
+        const auto lower = to_pixel({part.bounds.lower.x, part.bounds.lower.z});
+        const auto upper = to_pixel({part.bounds.upper.x, part.bounds.upper.z});
         const int32_t x0 = std::max(0, int32_t(std::floor(lower.x)));
         const int32_t y0 = std::max(0, int32_t(std::floor(lower.y)));
         const int32_t x1 = std::min(int32_t(size) - 1, int32_t(std::ceil(upper.x)));
@@ -1847,6 +2067,7 @@ int run_zone_dump(const pf09::territory& map, const options& opts) {
             pixels[size_t(y) * size + uint32_t(x)] = colour;
           }
         }
+        }
       }
     }
   }
@@ -1860,11 +2081,13 @@ int run_zone_dump(const pf09::territory& map, const options& opts) {
       if (sector == nullptr) continue;
       for (const auto& record : sector->zones) {
         if (record.level != pf09::zone_level::interior) continue;
-        for (const auto& portal : sector->portals_of(record)) {
-          if (!portal.geometric() || portal.other < record.key) continue;
-          draw_line(pixels, size, to_pixel(portal.from), to_pixel(portal.to),
-                    portal.passable() ? rgb{245, 245, 235} : rgb{200, 60, 60});
-          portal.passable() ? ++portals_drawn : ++locked_drawn;
+        for (const auto& part : sector->parts_of(record)) {
+          for (const auto& portal : sector->portals_of(part)) {
+            if (!portal.geometric() || portal.other < record.key) continue;
+            draw_line(pixels, size, to_pixel(portal.from), to_pixel(portal.to),
+                      portal.passable() ? rgb{245, 245, 235} : rgb{200, 60, 60});
+            portal.passable() ? ++portals_drawn : ++locked_drawn;
+          }
         }
       }
     }
@@ -1872,19 +2095,19 @@ int run_zone_dump(const pf09::territory& map, const options& opts) {
 
   // Персонаж проходит маршрут, и его след рисуется поверх всего.
   uint32_t path_zones = 0;
-  const auto* start = store.pick({float(centre.x), 0.1f, float(centre.y)}, pf09::zone_level::interior);
-  if (start != nullptr) {
-    const auto* sector = store.sector(pf09::key_sector_x(start->key), pf09::key_sector_y(start->key));
-    const pf09::zone_record* goal = nullptr;
+  const auto start = store.pick({float(centre.x), 0.1f, float(centre.y)}, pf09::zone_level::interior);
+  if (start.valid()) {
+    const auto* sector = store.sector(pf09::key_sector_x(start.zone), pf09::key_sector_y(start.zone));
+    pf09::part_ref goal{};
     for (const auto& record : sector->zones) {
-      if (record.kind == pf09::zone_kind::room) goal = &record;
+      if (record.kind == pf09::zone_kind::hall) goal = {record.key, 0};
     }
 
-    if (goal != nullptr) {
+    if (goal.valid()) {
       pf09::agent walker{};
-      walker.zone = start->key;
-      if (pf09::interior_point(store, *start, walker.position)) {
-        walker.path = pf09::find_path(store, start->key, goal->key);
+      walker.location = start;
+      if (pf09::interior_point(store, start, walker.position)) {
+        walker.path = pf09::find_path(store, start, goal);
         path_zones = uint32_t(walker.path.size());
 
         auto previous = to_pixel(walker.position);

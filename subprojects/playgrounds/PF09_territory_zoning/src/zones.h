@@ -11,9 +11,10 @@
 //     (комната, отрезок улицы, площадь, участок дороги, владение), а не клетка разбиения. Точка в
 //     пропуске не принадлежит никакой зоне, и честный ответ на вопрос «где я» — «нигде», а не
 //     ближайшая клетка.
-//   - форма зоны — ПРОИЗВОЛЬНЫЙ МНОГОУГОЛЬНИК, а не бокс. Бокс годился для комнаты и не годился ни для
-//     чего сложнее: владение не квадратное, улица не квадратная, и подгонка под прямоугольник либо
-//     наложит зоны друг на друга, либо оставит между ними щели.
+//   - форма зоны — набор ВЫПУКЛЫХ ЧАСТЕЙ, а не один многоугольник и тем более не бокс. Зона
+//     произвольной формы собирается из частей, и это не уступка растеризатору: по невыпуклой фигуре
+//     нельзя идти по прямой к проёму, не выйдя наружу, поэтому разбиение на выпуклое нужно движению
+//     раньше, чем рисованию. Часть — единица геометрии и навигации, зона — единица смысла.
 //   - проход — это ОБЩЕЕ РЕБРО двух фигур, а не запись в списке соседей. Отсюда связность не авторская,
 //     а выводимая: дверь — это маленькая фигура, чьё ребро лежит и на здании, и на улице. Портал хранит
 //     сам отрезок, поэтому по нему можно не только пройти, но и прицелиться — как в navmesh.
@@ -49,13 +50,36 @@ enum class zone_level : uint32_t {
   count
 };
 
+// Вид ЗОНЫ-МЕСТА, а не отдельной выпуклой фигуры. Выпуклая фигура мельче осмысленного места: бар — это
+// несколько фигур внутри здания, площадь — несколько уличных клеток, задний двор — пара. Поэтому вид
+// описывает место целиком, а части — только его геометрию.
 enum class zone_kind : uint32_t {
-  room, street, yard, building,
+  hall,        // помещения одного здания: то, что игра назовёт баром, кузницей, залом
+  wall,        // стены здания: НЕПРОХОДИМОЕ место, а не отсутствие места
+  street,      // отрезок улицы между перекрёстками
+  crossroad,
+  square,
+  yard,
+  building,    // абстрактная группа: здание как совокупность мест
+  district,    // квартал: абстрактная группа мест
   settlement, road, landmark,
   market, route,
   holding,
   count
 };
+
+// Свойства места. Проходимость — свойство ЗОНЫ, а не ребра: стена непроходима целиком, а запертая дверь
+// закрывает конкретный проход. Смешивать их значит терять оба различия.
+enum class zone_flags : uint32_t {
+  none = 0,
+  impassable = 1u << 0,
+  road = 1u << 1,     // предпочтительно для движения: дорога тянет маршрут на себя
+  indoor = 1u << 2,
+};
+
+[[nodiscard]] constexpr uint32_t operator|(const zone_flags a, const zone_flags b) noexcept {
+  return uint32_t(a) | uint32_t(b);
+}
 
 std::string_view zone_level_name(const zone_level value) noexcept;
 std::string_view zone_kind_name(const zone_kind value) noexcept;
@@ -122,8 +146,9 @@ enum class portal_flags : uint32_t {
 }
 
 struct zone_portal {
-  zone_key other = invalid_key;
-  glm::vec2 from{};   // отрезок общего ребра: по нему и проходят
+  zone_key other = invalid_key;   // зона по ту сторону
+  uint32_t other_part = 0;        // и её часть: соседство живёт между ЧАСТЯМИ, а не между зонами
+  glm::vec2 from{};               // отрезок общего ребра: по нему и проходят
   glm::vec2 to{};
   uint32_t flags = 0;
 
@@ -132,20 +157,43 @@ struct zone_portal {
   glm::vec2 middle() const noexcept { return {(from.x + to.x) * 0.5f, (from.y + to.y) * 0.5f}; }
 };
 
+// Выпуклая часть зоны. Собственный габарит нужен широкой фазе: зона из десятка частей иначе
+// проверялась бы целиком там, где хватает одной.
+struct zone_part {
+  zone_bounds bounds{};
+  uint32_t vertex_begin = 0;
+  uint32_t vertex_count = 0;
+  uint32_t portal_begin = 0;
+  uint32_t portal_count = 0;
+};
+
 struct zone_record {
   zone_key key = invalid_key;
   zone_key parent = invalid_key;   // справочная ссылка на уровень выше, не структурная
-  zone_bounds bounds{};
+  zone_bounds bounds{};            // объединение габаритов частей
   zone_level level = zone_level::interior;
-  zone_kind kind = zone_kind::room;
-  uint32_t vertex_begin = 0;
-  uint32_t vertex_count = 0;       // ноль означает АБСТРАКТНУЮ зону: узел графа без формы
-  uint32_t portal_begin = 0;
-  uint32_t portal_count = 0;
+  zone_kind kind = zone_kind::hall;
+  uint32_t part_begin = 0;
+  uint32_t part_count = 0;         // ноль означает АБСТРАКТНУЮ зону: узел графа без формы
   uint32_t name_offset = 0;
   uint32_t tags = 0;
 
-  bool abstract() const noexcept { return vertex_count == 0; }
+  bool abstract() const noexcept { return part_count == 0; }
+  bool impassable() const noexcept { return (tags & uint32_t(zone_flags::impassable)) != 0; }
+  bool road() const noexcept { return (tags & uint32_t(zone_flags::road)) != 0; }
+};
+
+// Ссылка на часть. Навигация и выборка работают с частями, поэтому адрес у них парный: зона говорит, ЧТО
+// это, часть — ГДЕ именно.
+struct part_ref {
+  zone_key zone = invalid_key;
+  uint32_t part = 0;
+
+  bool valid() const noexcept { return zone != invalid_key; }
+  bool operator==(const part_ref&) const noexcept = default;
+  bool operator<(const part_ref& other) const noexcept {
+    return zone != other.zone ? zone < other.zone : part < other.part;
+  }
 };
 
 // Один файл. Читается и пишется целиком: единица подгрузки должна совпадать с единицей файла, иначе
@@ -154,14 +202,16 @@ struct zone_sector {
   int32_t x = 0;
   int32_t y = 0;
   std::vector<zone_record> zones;
+  std::vector<zone_part> parts;
   std::vector<glm::vec2> vertices;
   std::vector<zone_portal> portals;
   std::vector<char> names;
   uint64_t fingerprint = 0;
 
   std::string_view name_of(const zone_record& record) const;
-  std::span<const glm::vec2> outline_of(const zone_record& record) const;
-  std::span<const zone_portal> portals_of(const zone_record& record) const;
+  std::span<const zone_part> parts_of(const zone_record& record) const;
+  std::span<const glm::vec2> outline_of(const zone_part& part) const;
+  std::span<const zone_portal> portals_of(const zone_part& part) const;
   uint64_t byte_size() const noexcept;
 };
 
@@ -198,11 +248,22 @@ public:
   const zone_sector* sector(const int32_t x, const int32_t y) const;
   const zone_record* find(const zone_key key) const;
 
-  // Зона в точке на заданном уровне. Пропуски — законный ответ `nullptr`: между зонами бывает пустота.
-  const zone_record* pick(const glm::vec3& point_m, const zone_level level) const;
+  // Часть в точке на заданном уровне. Пропуски — законный ответ: между зонами бывает пустота.
+  part_ref pick(const glm::vec3& point_m, const zone_level level) const;
 
-  std::span<const glm::vec2> outline_of(const zone_record& record) const;
-  std::span<const zone_portal> portals_of(const zone_record& record) const;
+  // Предок заданного вида. Иерархия здесь — ВЛОЖЕННОСТЬ, а не масштаб: «эта выпуклая фигура — часть
+  // площади, площадь в таком-то квартале, квартал в таком-то городе». На ней и держатся вопросы вроде
+  // «кто держит район» — район обязан быть чем-то, на что можно показать.
+  const zone_record* containing(const zone_key key, const zone_kind kind) const;
+
+  // Внешние рёбра места: те проходы, что ведут НЕ в его собственные части. По ним ставят баррикады,
+  // считают периметр и решают, где место граничит с чужим.
+  std::vector<zone_portal> perimeter(const zone_key key) const;
+
+  const zone_part* part_of(const part_ref& reference) const;
+  std::span<const zone_part> parts_of(const zone_record& record) const;
+  std::span<const glm::vec2> outline_of(const part_ref& reference) const;
+  std::span<const zone_portal> portals_of(const part_ref& reference) const;
   std::string_view name_of(const zone_record& record) const;
 
   uint32_t resident_sectors() const noexcept { return uint32_t(resident_.size()); }
