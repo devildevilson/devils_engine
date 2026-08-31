@@ -175,6 +175,16 @@ uint32_t encode_cell(const glm::ivec3 cell) noexcept {
          (uint32_t(cell.z + offset) << 12u);
 }
 
+uint32_t province_id_from_cell(const glm::ivec3 cell) noexcept {
+  // The encoded fixture cell is already a unique 18-bit canonical identity. Scramble it only with an affine
+  // permutation modulo 2^30: the odd multiplier makes this mapping bijective, while the two high bits remain
+  // available for water/mountain/polar classes. A truncated general-purpose hash is not an identity function.
+  constexpr uint32_t land_mask = 0x3fffffffu;
+  constexpr uint32_t multiplier = 0x1e35a7bdu; // odd => invertible modulo every power of two
+  constexpr uint32_t offset = 0x0badf00du;
+  return (encode_cell(cell) * multiplier + offset) & land_mask;
+}
+
 glm::ivec3 decode_cell(const uint32_t key) noexcept {
   constexpr int32_t offset = 32;
   return glm::ivec3(int32_t(key & 63u) - offset, int32_t((key >> 6u) & 63u) - offset,
@@ -254,7 +264,7 @@ region_sample sample_region(glm::vec3 direction) noexcept {
         if (distance < nearest) {
           second = nearest;
           nearest = distance;
-          nearest_id = (hash_cell(cell) & 0x3fffffffu) | 1u;
+          nearest_id = province_id_from_cell(cell);
           nearest_cell = encode_cell(cell);
           nearest_feature = feature;
         } else if (distance < second) {
@@ -572,6 +582,7 @@ political_atlas bake_political_atlas(const uint32_t face_side) {
     graph.label_curve_starts[node] = control;
     graph.label_curve_ends[node] = control;
     float endpoint_inset = 0.68f;
+    bool curve_fitted = false;
     for (uint32_t attempt = 0u; attempt < 8u; ++attempt) {
       const glm::vec3 start = glm::normalize(glm::mix(control, raw_start, endpoint_inset));
       const glm::vec3 end = glm::normalize(glm::mix(control, raw_end, endpoint_inset));
@@ -586,9 +597,34 @@ political_atlas bake_political_atlas(const uint32_t face_side) {
       if (contained) {
         graph.label_curve_starts[node] = start;
         graph.label_curve_ends[node] = end;
+        curve_fitted = true;
         break;
       }
       endpoint_inset *= 0.72f;
+    }
+    if (!curve_fitted) {
+      // A heavily clipped coastal cell can defeat the long principal-axis fit. It must still receive a real
+      // label corridor: grow a short symmetric tangent segment from the verified interior anchor and shrink
+      // it against the canonical evaluator. Leaving start=end silently turns the label into sub-pixel dust.
+      float half_span = std::max(std::min(graph.label_clearance[node] * 0.55f, 0.012f), 0.0008f);
+      for (uint32_t attempt = 0u; attempt < 12u; ++attempt) {
+        const glm::vec3 start = glm::normalize(control - label_axes[node] * half_span);
+        const glm::vec3 end = glm::normalize(control + label_axes[node] * half_span);
+        bool contained = true;
+        for (uint32_t sample = 0u; sample <= 8u; ++sample) {
+          const float t = float(sample) / 8.0f;
+          const float u = 1.0f - t;
+          const glm::vec3 direction = glm::normalize(start * (u * u) + control * (2.0f * u * t) +
+                                                      end * (t * t));
+          contained &= sample_region(direction).id == graph.province_ids[node];
+        }
+        if (contained) {
+          graph.label_curve_starts[node] = start;
+          graph.label_curve_ends[node] = end;
+          break;
+        }
+        half_span *= 0.5f;
+      }
     }
   }
 

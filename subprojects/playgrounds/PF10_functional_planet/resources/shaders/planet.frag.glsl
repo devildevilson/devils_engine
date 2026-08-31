@@ -265,10 +265,9 @@ void main() {
                                                         field_distance_pixels(region.province_field);
     const float coast_pixels = field_distance_pixels(region.coast_field);
     const float polar_pixels = field_distance_pixels(region.polar_field);
-    const bool state_frontier = region.state != PF10_NO_REGION && region.neighbour_state != PF10_NO_REGION &&
-                                region.state != region.neighbour_state;
-    const bool ordinary_province = region.exact != 0u && !state_frontier &&
-                                   region.neighbour_kind != PF10_NO_REGION;
+    // The thin province contour is the coverage fallback for every playable adjacency. State ribbons are
+    // drawn later and cover it; suppressing it here would leave a hole whenever a short state trail is culled.
+    const bool ordinary_province = region.exact != 0u && region.neighbour_kind != PF10_NO_REGION;
     const float province_lod = 1.0 - smoothstep(1.42, 1.72, length(camera_data.camera_position.xyz));
     // Keep derivative AA well inside the conservative 0.0048-radian refinement band. At its outer edge the
     // exact implicit field is intentionally replaced by a coarse sentinel; letting a quad straddle that

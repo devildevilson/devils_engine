@@ -2,9 +2,11 @@
 #include <cstdint>
 #include <format>
 #include <iostream>
+#include <limits>
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -67,6 +69,19 @@ int verify() {
   pf10::assign_fixture_states(politics.graph, glm::normalize(glm::vec3(0.0f, -0.19f, 0.982f)), 3u);
   const auto& graph = politics.graph;
   check(politics.mountain_regions == 3u, "dense atlas materializes all mountain barriers");
+  std::unordered_map<uint32_t, uint32_t> cell_by_province;
+  std::unordered_map<uint32_t, uint32_t> province_atlas_samples;
+  cell_by_province.reserve(graph.province_ids.size());
+  province_atlas_samples.reserve(graph.province_ids.size());
+  bool unique_province_identity = true;
+  for (const auto& texel : politics.texels) {
+    if ((texel.region_id & 0xc0000000u) != 0u) continue;
+    const auto [entry, inserted] = cell_by_province.try_emplace(texel.region_id, texel.cell_key);
+    unique_province_identity &= inserted || entry->second == texel.cell_key;
+    ++province_atlas_samples[texel.region_id];
+  }
+  check(unique_province_identity && cell_by_province.size() == graph.province_ids.size(),
+        "every playable province ID maps bijectively to one Voronoi cell key");
   check(graph.province_ids.size() >= first.land_regions && graph.province_ids.size() <= 5000u,
         std::format("dense adjacency bake covers the survey and stays in budget ({}/{})",
                     graph.province_ids.size(), first.land_regions));
@@ -146,6 +161,25 @@ int verify() {
             }
             return true;
           }), "Bezier label corridors remain inside their province");
+  float minimum_label_span = std::numeric_limits<float>::max();
+  uint32_t collapsed_label_curves = 0u;
+  uint32_t subpixel_provinces = 0u;
+  uint32_t minimum_label_node = pf10::no_region;
+  if (label_layout_complete) {
+    for (size_t node = 0u; node < graph.province_ids.size(); ++node) {
+      const float span = std::acos(std::clamp(glm::dot(graph.label_curve_starts[node],
+                                                       graph.label_curve_ends[node]), -1.0f, 1.0f));
+      // Fewer than eight nodes in the atlas-512 verification field is a genuinely sub-pixel land sliver at
+      // inspection scale, not enough surface to contain a five-character decal. It stays a graph node for
+      // this arbitrary fixture, but must not weaken the regression for ordinary materialized provinces.
+      if (province_atlas_samples[graph.province_ids[node]] < 8u) { ++subpixel_provinces; continue; }
+      if (span < minimum_label_span) { minimum_label_span = span; minimum_label_node = uint32_t(node); }
+      collapsed_label_curves += span <= 0.0005f;
+    }
+  }
+  check(label_layout_complete && collapsed_label_curves == 0u,
+        std::format("no labelable province curve collapses (minimum {:.6f} rad at node {}, {} subpixel slivers)",
+                    minimum_label_span, minimum_label_node, subpixel_provinces));
 
   const auto packed = pf10::pack_political_atlas(politics);
   bool compact_round_trip = packed.texels.size() == politics.texels.size() && !packed.cells.empty();
