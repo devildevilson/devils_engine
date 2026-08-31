@@ -11,6 +11,7 @@ add_library(devils_originator
   src/originator/buffer.cpp
   src/originator/tools.cpp
   src/originator/standard_tools.cpp
+  src/originator/scatter_tools.cpp
   src/originator/pipeline.cpp
   include/devils_engine/originator/common.h
   include/devils_engine/originator/buffer.h
@@ -47,6 +48,25 @@ target_link_libraries(devils_originator_script
 )
 
 add_library(devils_engine::originator_script ALIAS devils_originator_script)
+
+# Нативные примитивы поверх сторонних библиотек: FastNoise2 (поля шума) и jc_voronoi (топология
+# областей). Отдельная цель по той же причине — ядро не обязано тянуть внешние зависимости.
+add_library(devils_originator_primitives
+  src/originator/noise_tools.cpp
+  src/originator/voronoi_tools.cpp
+  include/devils_engine/originator/primitives.h
+)
+
+target_include_directories(devils_originator_primitives
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
+)
+
+target_link_libraries(devils_originator_primitives
+  PUBLIC devils_engine::originator
+  PRIVATE devils_engine::options devils_engine::utils FastNoise jc_voronoi::jc_voronoi
+)
+
+add_library(devils_engine::originator_primitives ALIAS devils_originator_primitives)
 
 # Скриптовый слой — ОТДЕЛЬНАЯ цель: ядро генератора не должно тянуть lua за собой, а потребителю,
 # которому нужен только пайплайн на C++, незачем линковать интерпретатор.

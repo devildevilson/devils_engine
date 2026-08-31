@@ -11,5 +11,11 @@ return function(step)
     program = step.programs.biome_rule,
     inputs = { cells:field("smoothed"), cells:field("moisture") },
     outputs = { cells:field("biome_ds") },
+    -- Пороги правила приходят из конфига: скрипт читает их как ctx:arg, а не хардкодит.
+    params = {
+      sea_level = step.params.sea_level,
+      dry = step.params.dry,
+      wet = step.params.wet,
+    },
   }
 end

@@ -53,6 +53,10 @@ struct step_description {
 
 struct pipeline_description {
   std::string name;
+  // Общие значения пайплайна: то, что должно быть объявлено ОДИН раз, а не продублировано в каждом
+  // шаге, которому оно нужно. Порог, продублированный в двух местах, однажды разъедется, и заметить
+  // это будет почти нечем. Шаг видит их среди своих параметров и может переопределить своим.
+  parameters values;
   std::vector<buffer_description> buffers;
   std::vector<step_description> steps;
 };
@@ -61,6 +65,8 @@ struct pipeline_description {
 // объявляется отдельно — он выводится из шагов и сверяется с объявленными буферами.
 std::vector<buffer_description> parse_buffers(const std::string_view& text, const std::string_view& label);
 std::vector<step_description> parse_steps(const std::string_view& text, const std::string_view& label);
+// Документ общих значений: numbers = { ... }, strings = { ... }.
+parameters parse_values(const std::string_view& text, const std::string_view& label);
 
 // Именованные размеры, которые host подставляет в буферы.
 class size_table {
@@ -119,6 +125,9 @@ private:
   void validate() const;
 
   pipeline_description description_;
+  // Готовые параметры шага: общие значения пайплайна плюс его собственные сверху. Считаются один раз
+  // при построении, чтобы тело шага получало один набор, а не разбиралось в приоритетах.
+  std::vector<parameters> step_params_;
   uint64_t seed_ = 0;
   std::vector<std::unique_ptr<buffer>> buffers_;
   std::vector<std::vector<buffer*>> step_writes_;

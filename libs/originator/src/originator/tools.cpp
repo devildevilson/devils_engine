@@ -103,6 +103,17 @@ std::string_view parameters::string_at(const size_t index) const noexcept {
   return index < entries_.size() ? std::string_view(entries_[index].text) : std::string_view{};
 }
 
+void parameters::overlay(const parameters& other) {
+  for (size_t i = 0; i < other.size(); ++i) {
+    const auto name = other.name_at(i);
+    if (other.is_string_at(i)) {
+      set_string(name, std::string(other.string_at(i)));
+    } else {
+      set_number(name, other.number_at(i));
+    }
+  }
+}
+
 double parameters::number(const std::string_view& name, const double fallback) const noexcept {
   const auto* entry = find(name);
   return entry != nullptr && !entry->is_string ? entry->value : fallback;
@@ -215,16 +226,28 @@ dispatch_check check_dispatch(const tool_description& tool,
     return fail(std::format("step '{}': tool '{}' got an inverted range [{}, {})", step_name, tool.name, range_begin, range_end));
   }
 
-  for (const auto& binding : outputs) {
-    if (range_end > binding.count()) {
-      return fail(std::format("step '{}': tool '{}' range [{}, {}) exceeds '{}' with {} elements",
-                              step_name, tool.name, range_begin, range_end, binding.buffer_name(), binding.count()));
+  // К чему относится диапазон, зависит от апертуры, и это не косметика:
+  //   pointwise/reduce — и к входам, и к выходам: элемент i читается и пишется по одному индексу;
+  //   gather — только к выходам: входы читаются целиком, там и лежат соседи;
+  //   scatter — только к входам: выход это ДРУГАЯ структура (смещения групп, суммы по корзинам),
+  //             и её размер задаёт число групп, а не число обрабатываемых элементов.
+  const bool range_covers_outputs = tool.shape != aperture::scatter;
+  const bool range_covers_inputs = tool.shape != aperture::gather;
+
+  if (range_covers_outputs) {
+    for (const auto& binding : outputs) {
+      if (range_end > binding.count()) {
+        return fail(std::format("step '{}': tool '{}' range [{}, {}) exceeds '{}' with {} elements",
+                                step_name, tool.name, range_begin, range_end, binding.buffer_name(), binding.count()));
+      }
     }
   }
-  for (const auto& binding : inputs) {
-    if (range_end > binding.count() && tool.shape != aperture::gather) {
-      return fail(std::format("step '{}': tool '{}' range [{}, {}) exceeds '{}' with {} elements",
-                              step_name, tool.name, range_begin, range_end, binding.buffer_name(), binding.count()));
+  if (range_covers_inputs) {
+    for (const auto& binding : inputs) {
+      if (range_end > binding.count()) {
+        return fail(std::format("step '{}': tool '{}' range [{}, {}) exceeds '{}' with {} elements",
+                                step_name, tool.name, range_begin, range_end, binding.buffer_name(), binding.count()));
+      }
     }
   }
 
@@ -288,10 +311,19 @@ void dispatch(const tool_description& tool,
   call.range_end = range_end;
   call.step_name = step_name;
   call.tool_name = tool.name;
+  // Пул отдаётся только тем апертурам, которые движок не разбивает сам.
+  call.pool = check.parallel ? nullptr : pool;
 
   const size_t count = call.range_count();
   if (count == 0) {
     return;
+  }
+
+  // Подготовка идёт до разбиения: её результат общий для всех чанков и неизменен на всё время вызова.
+  std::shared_ptr<void> shared;
+  if (tool.prepare != nullptr) {
+    shared = tool.prepare(call);
+    call.shared = shared.get();
   }
 
   if (!check.parallel || pool == nullptr || pool->size() == 0) {

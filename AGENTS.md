@@ -4,7 +4,7 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
-- PF10 EXACT CLOSE-UP POLITICS + SMOOTH NORMALS + LOCAL 4X LOD RUNNING (2026-08-31). The 1024 political
+- PF10 CURVED AREA LABELS + WORLD-Y ORBIT ADDED TO EXACT CLOSE-UP PLANET (2026-08-31). The 1024 political
   cube atlas is now only a cheap accelerator: its R16 addresses one of `4702` compact exact-cell records
   (Voronoi feature, stable owner, kind), while R16 distance gates a `3x3` candidate refinement inside a
   `0.0075 rad` border band. Close province ownership and `fwidth` boundaries are therefore continuous instead
@@ -15,10 +15,16 @@ This repository is the author's experimental game engine / framework. It is a la
   focus of about `24–36` patches replaces base `16x16` strips with crack-free 4x strips (effective 2048 cells
   per face); it refines spherical direction while interpolating authoritative baked radii, preserving ridge
   geometry and doing no per-vertex terrain-noise search. Working atlas still owns `4032` playable nodes and
-  `12812` CSR edges; water/mountains/poles, `961` hydrology primitives and PF05-style labels are unchanged.
-  Iris Xe 1280x720 Release frame 120: near `3.769 ms / 265 FPS`, near hydrology-off `3.746 / 267`, far
-  `1.991 / 502`; static capacities fall from about `64.4` to `56 MB`. `--verify` is `27/27`; close validation
-  is clean. NEXT: water port graph/content naming and hierarchical LOD below the current `1.16R` camera floor;
+  `12812` CSR edges; water/mountains/poles and `961` hydrology primitives are unchanged. Province label layout
+  now solid-angle weights cube samples, derives an area centroid and principal tangent axis from first/second
+  moments, then selects inset far endpoints. Every PF05-style glyph receives its own position/tangent along a
+  quadratic spherical Bezier, allowing horizontal through near-vertical names. Coastal/narrow corridors shrink
+  until 13 canonical samples retain one owner; three temporary disjoint province groups exercise the same far
+  state-label mechanism. WASD now orbits the camera: side is `cross(+Y,radial)`, vertical is projected world Y,
+  view-up stays +Y and `|radial.y|<=.94` excludes both lookAt pole singularities; R still toggles planet spin.
+  Iris Xe 1280x720 Release frame 120: near `3.696 ms / 270 FPS`, far curved labels `2.729 / 366`; static
+  capacities remain about `56 MB`. `--verify` is `31/31`; close validation is clean. NEXT: water port
+  graph/content naming and hierarchical LOD below the current `1.16R` camera floor;
   heraldic billboards remain explicitly later. `anomalous_weather` remains in the unnumbered parking lot.
 - PF08 FORMALLY CLOSED — SLICES 0–7 PLUS CLOSING AUDIT (2026-08-30). Eight permanent 1280x720 frame-80
   PNGs now cover clear noon/sunset/night, overcast, rain, snow, universal magic lightning and aurora. The

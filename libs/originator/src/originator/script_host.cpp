@@ -221,12 +221,16 @@ void script_host::bind_tools() {
     const sol::optional<int64_t> explicit_seed = args["seed"];
     const uint64_t seed = explicit_seed.has_value() ? std::bit_cast<uint64_t>(*explicit_seed) : current_seed_;
 
+    // Откуда берётся диапазон по умолчанию, решает АПЕРТУРА. У scatter выход — структура другого
+    // размера (смещения групп, суммы по корзинам), поэтому её размер задаёт число корзин, а не
+    // число обрабатываемых элементов: считать по нему было бы тихой обработкой первых N элементов.
+    const bool count_from_inputs = tool->shape == aperture::scatter || outputs.empty();
     size_t begin = 0;
     size_t end = 0;
-    if (!outputs.empty()) {
+    if (count_from_inputs) {
+      end = inputs.empty() ? 0 : inputs.front().count();
+    } else {
       end = outputs.front().count();
-    } else if (!inputs.empty()) {
-      end = inputs.front().count();
     }
 
     const sol::optional<sol::table> range = args["range"];
@@ -265,6 +269,7 @@ void script_host::bind_tools() {
 
     const auto inputs = read_field_list(args, "inputs");
     const auto outputs = read_field_list(args, "outputs");
+    const auto params = read_parameters(args);
 
     const sol::optional<bool> predicate = args["predicate"];
     const auto kind = predicate.value_or(false) ? script_program::result_kind::predicate
@@ -283,7 +288,7 @@ void script_host::bind_tools() {
       end = (*range)[2].get_or<size_t>(end);
     }
 
-    dispatch_script(program, inputs, outputs, seed, begin, end, current_step_, pool_);
+    dispatch_script(program, inputs, outputs, params, seed, begin, end, current_step_, pool_);
   });
 
   api.set_function("tool_exists", [this](const std::string& name) { return tools_->find(name) != nullptr; });

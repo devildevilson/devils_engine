@@ -13,9 +13,56 @@
     (biome, ub1)
     (biome_lua, ub1)
     (biome_ds, ub1)
+    (region, us1)
   ]
   layout = soa
   size = cell_count
+}
+
+// Сайты областей. Их мало, поэтому позиции расставляет сама lua поэлементно — это ровно тот случай,
+// который правилом разрешён: скрипт обходит множество, которое сам же перечислил.
+{
+  name = sites
+  format = [ (position, v2) ]
+  layout = soa
+  size = site_count
+}
+
+// Соседство областей в CSR: смещения плюс дуги. offsets[site_count] — сколько дуг всего.
+{
+  name = region_offsets
+  format = [ (start, ui1) ]
+  layout = soa
+  size = site_count_plus_one
+}
+{
+  name = region_arcs
+  format = [ (site, us1) ]
+  layout = soa
+  size = arc_capacity
+}
+
+// Раскладка клеток по областям, тот же CSR: смещения групп и индексы клеток в порядке групп.
+{
+  name = region_cell_offsets
+  format = [ (start, ui1) ]
+  layout = soa
+  size = site_count_plus_one
+}
+{
+  name = region_cell_order
+  format = [ (cell, ui1) ]
+  layout = soa
+  size = cell_count
+}
+
+// Сводка по области: сумма высот. Делить на число клеток будет потребитель — здесь важно, что
+// сложение плавающих чисел воспроизводится при любом числе потоков.
+{
+  name = region_stats
+  format = [ (height_sum, v1) ]
+  layout = soa
+  size = site_count
 }
 
 // Состояние между шагами — обычный буфер на один элемент. Отдельного механизма для «сколько всего

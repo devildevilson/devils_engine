@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -12,6 +13,8 @@
 #include <vector>
 
 #include "devils_engine/originator/pipeline.h"
+#include "devils_engine/originator/primitives.h"
+#include "devils_engine/originator/script_program.h"
 #include "devils_engine/originator/script_host.h"
 #include "devils_engine/originator/tools.h"
 #include "devils_engine/thread/atomic_pool.h"
@@ -30,6 +33,7 @@ using namespace devils_engine;
 
 struct options {
   size_t width = 1024;
+  size_t sites = 256;
   size_t threads = 0; // 0 => по числу ядер
   uint64_t seed = 20260831;
   originator::storage_kind::values layout = originator::storage_kind::soa;
@@ -79,6 +83,8 @@ options parse_options(const int argc, const char** argv) {
       result.quiet = true;
     } else if (starts_with(argument, "--size=")) {
       result.width = size_t(std::stoull(std::string(argument.substr(7))));
+    } else if (starts_with(argument, "--sites=")) {
+      result.sites = size_t(std::stoull(std::string(argument.substr(8))));
     } else if (starts_with(argument, "--threads=")) {
       result.threads = size_t(std::stoull(std::string(argument.substr(10))));
     } else if (starts_with(argument, "--seed=")) {
@@ -92,6 +98,7 @@ options parse_options(const int argc, const char** argv) {
     } else if (argument == "--help" || argument == "-h") {
       std::cout << "GN01 generator contract lab\n"
                 << "  --size=N       ширина квадратной сетки (по умолчанию 1024)\n"
+                << "  --sites=N      число сайтов областей (по умолчанию 256)\n"
                 << "  --layout=aos|soa  раскладка буфера cells\n"
                 << "  --threads=N    число рабочих потоков (0 = по числу ядер)\n"
                 << "  --seed=N       зерно пайплайна\n"
@@ -106,11 +113,24 @@ options parse_options(const int argc, const char** argv) {
 }
 
 // Загружает пайплайн из конфига и подставляет размеры, известные только в рантайме.
+originator::size_table make_sizes(const options& opts) {
+  originator::size_table sizes;
+  sizes.set("cell_count", opts.width * opts.width);
+  sizes.set("site_count", opts.sites);
+  sizes.set("site_count_plus_one", opts.sites + 1);
+  // Ёмкость под дуги соседства. Средняя степень в триангуляции Делоне около шести, но у краевых
+  // сайтов она выше, поэтому запас берётся с заметным множителем, а нехватка падает громко.
+  sizes.set("arc_capacity", opts.sites * 16);
+  sizes.set("single", 1);
+  return sizes;
+}
+
 originator::pipeline_description load_description(const options& opts) {
   const auto root = resource_root();
 
   originator::pipeline_description description;
   description.name = "gn01";
+  description.values = originator::parse_values(read_file(root / "values.tavl"), "values.tavl");
   description.buffers = originator::parse_buffers(read_file(root / "buffers.tavl"), "buffers.tavl");
   description.steps = originator::parse_steps(read_file(root / "steps.tavl"), "steps.tavl");
 
@@ -122,9 +142,7 @@ originator::pipeline_description load_description(const options& opts) {
 
   // Ширина сетки известна только из командной строки, а инструментам она нужна как параметр:
   // домена как отдельной абстракции нет, соседство — это данные, а не тип.
-  for (auto& step : description.steps) {
-    step.params.set_number("width", double(opts.width));
-  }
+  description.values.set_number("width", double(opts.width));
 
   return description;
 }
@@ -143,6 +161,62 @@ std::vector<std::byte> snapshot(const originator::buffer& source) {
   std::vector<std::byte> copy(source.byte_size());
   std::memcpy(copy.data(), source.base_pointer(), copy.size());
   return copy;
+}
+
+// Снимок ВСЕХ буферов пайплайна: сравнивать только один было бы слабее, чем контракт обещает.
+std::vector<std::vector<std::byte>> snapshot_all(originator::pipeline& p) {
+  std::vector<std::vector<std::byte>> copies;
+  copies.reserve(p.buffer_count());
+  for (size_t i = 0; i < p.buffer_count(); ++i) {
+    copies.push_back(snapshot(p.buffer_at(i)));
+  }
+  return copies;
+}
+
+// Соседство областей обязано быть симметричным и канонизированным независимо от того, в каком
+// порядке диаграмма отдала рёбра.
+bool region_graph_is_canonical(originator::pipeline& p, const size_t site_count) {
+  const auto* offsets = p.find_buffer("region_offsets");
+  const auto* arcs = p.find_buffer("region_arcs");
+  if (offsets == nullptr || arcs == nullptr) {
+    return false;
+  }
+
+  const auto start = offsets->field(offsets->find_field("start"));
+  const auto neighbour = arcs->field(arcs->find_field("site"));
+
+  if (start.get(0) != 0.0) {
+    return false;
+  }
+
+  for (size_t site = 0; site < site_count; ++site) {
+    const auto first = size_t(start.get(site));
+    const auto last = size_t(start.get(site + 1));
+    if (last < first) {
+      return false;
+    }
+
+    for (size_t k = first; k < last; ++k) {
+      if (k > first && neighbour.get(k - 1) >= neighbour.get(k)) {
+        return false; // не отсортировано или есть повтор
+      }
+
+      const auto other = size_t(neighbour.get(k));
+      if (other == site || other >= site_count) {
+        return false;
+      }
+
+      bool mirrored = false;
+      for (size_t j = size_t(start.get(other)); j < size_t(start.get(other + 1)); ++j) {
+        mirrored = mirrored || size_t(neighbour.get(j)) == site;
+      }
+      if (!mirrored) {
+        return false;
+      }
+    }
+  }
+
+  return true;
 }
 
 double run_and_measure(originator::pipeline& p, originator::script_host& host) {
@@ -179,29 +253,72 @@ int run_verify(const options& opts) {
   };
 
   const size_t count = opts.width * opts.width;
-  originator::size_table sizes;
-  sizes.set("cell_count", count);
-  sizes.set("single", 1);
+  const auto sizes = make_sizes(opts);
 
   originator::tool_registry tools;
   tools.add_standard_tools();
+  originator::add_all_primitives(tools);
 
   auto description = load_description(opts);
 
   // 1. Последовательное исполнение — эталон.
-  std::vector<std::byte> serial_cells;
+  std::vector<std::vector<std::byte>> serial_buffers;
   double serial_peak = 0.0;
   {
     originator::script_host host(tools, nullptr);
     load_bodies(host, description);
     originator::pipeline p(description, sizes, opts.seed);
     p.run(host.invoker());
-    serial_cells = snapshot(*p.find_buffer("cells"));
+    serial_buffers = snapshot_all(p);
     const auto* state = p.find_buffer("state");
     serial_peak = state->field(state->find_field("peak")).get(0);
+    check(region_graph_is_canonical(p, opts.sites), "граф соседства областей симметричен и канонизирован");
+
+    // Раскладка по областям обязана покрыть КАЖДУЮ клетку ровно один раз, а суммы по областям —
+    // сойтись с суммой по всему полю. Это перекрёстная проверка scatter против reduce: два
+    // независимых пути должны дать одно число.
+    const auto* cell_offsets = p.find_buffer("region_cell_offsets");
+    const auto* order = p.find_buffer("region_cell_order");
+    const auto* cells = p.find_buffer("cells");
+    const auto* stats = p.find_buffer("region_stats");
+
+    const auto cell_start = cell_offsets->field(cell_offsets->find_field("start"));
+    const auto cell_index = order->field(order->find_field("cell"));
+    const auto region = cells->field(cells->find_field("region"));
+    const auto height = cells->field(cells->find_field("height"));
+    const auto height_sum = stats->field(stats->find_field("height_sum"));
+
+    check(size_t(cell_start.get(opts.sites)) == count, "раскладка по областям покрывает все клетки");
+
+    std::vector<uint8_t> visited(count, 0);
+    bool consistent = true;
+    double scattered_total = 0.0;
+    for (size_t site = 0; site < opts.sites; ++site) {
+      double group_total = 0.0;
+      for (size_t k = size_t(cell_start.get(site)); k < size_t(cell_start.get(site + 1)); ++k) {
+        const auto cell = size_t(cell_index.get(k));
+        consistent = consistent && cell < count && visited[cell] == 0 && size_t(region.get(cell)) == site;
+        if (cell < count) {
+          visited[cell] = 1;
+          group_total += height.get(cell);
+        }
+      }
+      scattered_total += height_sum.get(site);
+      // Сумма, посчитанная accumulate, совпадает с прямым обходом группы.
+      consistent = consistent && std::abs(group_total - height_sum.get(site)) < 1e-3 * (1.0 + std::abs(group_total));
+    }
+    check(consistent, "каждая клетка лежит ровно в своей области, и суммы accumulate сходятся");
+
+    double direct_total = 0.0;
+    for (size_t i = 0; i < count; ++i) {
+      direct_total += height.get(i);
+    }
+    check(std::abs(direct_total - scattered_total) < 1e-2 * (1.0 + std::abs(direct_total)),
+          "сумма по областям равна сумме по всему полю");
   }
 
-  // 2. То же при разном числе потоков — обязано совпасть побайтово.
+  // 2. То же при разном числе потоков — обязано совпасть побайтово ВО ВСЕХ буферах, включая
+  // результаты scatter: раскладку клеток по областям и суммы высот.
   for (const size_t threads : {size_t(1), size_t(3), size_t(7)}) {
     thread::atomic_pool pool(threads);
     originator::script_host host(tools, &pool);
@@ -209,9 +326,8 @@ int run_verify(const options& opts) {
     originator::pipeline p(description, sizes, opts.seed);
     p.run(host.invoker());
 
-    const auto parallel_cells = snapshot(*p.find_buffer("cells"));
-    check(parallel_cells == serial_cells,
-          std::string("параллельно == последовательно, потоков ") + std::to_string(threads));
+    check(snapshot_all(p) == serial_buffers,
+          std::string("параллельно == последовательно во всех буферах, потоков ") + std::to_string(threads));
 
     const auto* state = p.find_buffer("state");
     check(state->field(state->find_field("peak")).get(0) == serial_peak,
@@ -241,10 +357,13 @@ int run_verify(const options& opts) {
     const auto right_height = right->field(right->find_field("height"));
     const auto left_biome = left->field(left->find_field("biome"));
     const auto right_biome = right->field(right->find_field("biome"));
+    const auto left_region = left->field(left->find_field("region"));
+    const auto right_region = right->field(right->find_field("region"));
 
     bool identical = true;
     for (size_t i = 0; i < count; ++i) {
-      identical = identical && left_height.get(i) == right_height.get(i) && left_biome.get(i) == right_biome.get(i);
+      identical = identical && left_height.get(i) == right_height.get(i) &&
+                  left_biome.get(i) == right_biome.get(i) && left_region.get(i) == right_region.get(i);
     }
     check(identical, "aos и soa дают одинаковые значения по именам полей");
     check(left->byte_size() != right->byte_size() || left->layout().storage == right->layout().storage,
@@ -323,13 +442,11 @@ int run_verify(const options& opts) {
 
 int run_bench(const options& opts) {
   const size_t count = opts.width * opts.width;
-
-  originator::size_table sizes;
-  sizes.set("cell_count", count);
-  sizes.set("single", 1);
+  const auto sizes = make_sizes(opts);
 
   originator::tool_registry tools;
   tools.add_standard_tools();
+  originator::add_all_primitives(tools);
 
   const size_t threads = opts.threads == 0 ? std::max<size_t>(std::thread::hardware_concurrency(), 1) - 1 : opts.threads;
   thread::atomic_pool pool(threads);
@@ -366,6 +483,99 @@ int run_bench(const options& opts) {
       measure(std::string("пайплайн, ") + std::string(to_string(layout)) + ", " + std::to_string(threads) + " потоков",
               count, [&] { p.run(host.invoker()); });
     }
+  }
+
+  // Шум отдельной строкой: полезно иметь изолированное число, чтобы цену STRICT_FP и смену дерева
+  // узлов было с чем сравнивать.
+  {
+    auto description = load_description(opts);
+    originator::script_host host(tools, &pool);
+    load_bodies(host, description);
+    originator::pipeline p(description, sizes, opts.seed);
+
+    auto* cells = p.find_buffer("cells");
+    const std::vector<originator::field_ref> out{
+      originator::field_ref{cells, cells, cells->find_field("height")}};
+
+    originator::parameters noise;
+    noise.set_string("tree", "DQkGDA==");
+    noise.set_number("width", double(opts.width));
+    noise.set_number("frequency", 5.0 / double(opts.width));
+
+    measure("шум: noise_grid, 1 поток", count, [&] {
+      originator::dispatch(*tools.find("noise_grid"), {}, out, noise, 1, 0, count, "bench", nullptr);
+    });
+    measure("шум: noise_grid, " + std::to_string(threads) + " потоков", count, [&] {
+      originator::dispatch(*tools.find("noise_grid"), {}, out, noise, 1, 0, count, "bench", &pool);
+    });
+  }
+
+  // Отдельные примитивы областей: gather-разметка и оба scatter'а.
+  {
+    auto description = load_description(opts);
+    originator::script_host host(tools, &pool);
+    load_bodies(host, description);
+    originator::pipeline p(description, sizes, opts.seed);
+    p.run(host.invoker());
+
+    auto* cells = p.find_buffer("cells");
+    auto* sites = p.find_buffer("sites");
+    auto* offsets = p.find_buffer("region_offsets");
+    auto* arcs = p.find_buffer("region_arcs");
+    auto* cell_offsets = p.find_buffer("region_cell_offsets");
+    auto* order = p.find_buffer("region_cell_order");
+    auto* stats = p.find_buffer("region_stats");
+
+    const std::vector<originator::field_ref> site_in{
+      originator::field_ref{sites, nullptr, sites->find_field("position")}};
+    const std::vector<originator::field_ref> label_out{
+      originator::field_ref{cells, cells, cells->find_field("region")}};
+
+    originator::parameters region_params;
+    region_params.set_number("width", double(opts.width));
+    region_params.set_number("height", double(opts.width));
+    region_params.set_number("site_count", double(opts.sites));
+
+    measure("разметка областей: voronoi_label, 1 поток", count, [&] {
+      originator::dispatch(*tools.find("voronoi_label"), site_in, label_out, region_params, 1, 0, count, "bench", nullptr);
+    });
+    measure("разметка областей: voronoi_label, " + std::to_string(threads) + " потоков", count, [&] {
+      originator::dispatch(*tools.find("voronoi_label"), site_in, label_out, region_params, 1, 0, count, "bench", &pool);
+    });
+
+    const std::vector<originator::field_ref> csr_out{
+      originator::field_ref{offsets, offsets, offsets->find_field("start")},
+      originator::field_ref{arcs, arcs, arcs->find_field("site")}};
+    measure("соседство областей: voronoi_adjacency (нс на сайт)", opts.sites, [&] {
+      originator::dispatch(*tools.find("voronoi_adjacency"), site_in, csr_out, region_params, 1, 0, opts.sites, "bench", nullptr);
+    });
+
+    const std::vector<originator::field_ref> key_in{
+      originator::field_ref{cells, nullptr, cells->find_field("region")}};
+    const std::vector<originator::field_ref> group_out{
+      originator::field_ref{cell_offsets, cell_offsets, cell_offsets->find_field("start")},
+      originator::field_ref{order, order, order->find_field("cell")}};
+    const originator::parameters empty;
+
+    measure("раскладка по областям: group_by, 1 поток", count, [&] {
+      originator::dispatch(*tools.find("group_by"), key_in, group_out, empty, 1, 0, count, "bench", nullptr);
+    });
+    measure("раскладка по областям: group_by, " + std::to_string(threads) + " потоков", count, [&] {
+      originator::dispatch(*tools.find("group_by"), key_in, group_out, empty, 1, 0, count, "bench", &pool);
+    });
+
+    const std::vector<originator::field_ref> accumulate_in{
+      originator::field_ref{cells, nullptr, cells->find_field("region")},
+      originator::field_ref{cells, nullptr, cells->find_field("height")}};
+    const std::vector<originator::field_ref> sums_out{
+      originator::field_ref{stats, stats, stats->find_field("height_sum")}};
+
+    measure("суммы по областям: accumulate, 1 поток", count, [&] {
+      originator::dispatch(*tools.find("accumulate"), accumulate_in, sums_out, empty, 1, 0, count, "bench", nullptr);
+    });
+    measure("суммы по областям: accumulate, " + std::to_string(threads) + " потоков", count, [&] {
+      originator::dispatch(*tools.find("accumulate"), accumulate_in, sums_out, empty, 1, 0, count, "bench", &pool);
+    });
   }
 
   // Один и тот же семантический проход тремя способами.
@@ -445,6 +655,27 @@ int run_bench(const options& opts) {
       measure("классификация: devils_script, " + std::to_string(threads) + " потоков", count, [&] {
         p.run_step(semantics_index, host.invoker());
       });
+
+      // Та же программа с ПОРОГАМИ-ЛИТЕРАЛАМИ. Существует ради замера: показывает, во что обходится
+      // вынос чисел из скрипта в конфиг. Литерал сворачивается на разборе, аргумент читается со
+      // стека на каждом элементе, и разница видна.
+      const std::vector<std::string> rule_inputs = {"smoothed", "moisture"};
+      const auto literal_rule = originator::script_program::compile("biome_literal", R"(
+        { value_or = { smoothed < 0.5, 0,
+          value_or = { moisture < 0.35, 1,
+          value_or = { moisture < 0.65, 2, 3 } } } }
+      )", rule_inputs, originator::script_program::result_kind::number);
+
+      const std::vector<originator::field_ref> rule_in{
+        originator::field_ref{cells, nullptr, cells->find_field("smoothed")},
+        originator::field_ref{cells, nullptr, cells->find_field("moisture")}};
+      const std::vector<originator::field_ref> rule_out{
+        originator::field_ref{cells, cells, cells->find_field("biome_ds")}};
+      const originator::parameters no_arguments;
+
+      measure("классификация: devils_script с литералами, 1 поток", count, [&] {
+        originator::dispatch_script(*literal_rule, rule_in, rule_out, no_arguments, 1, 0, count, "bench", nullptr);
+      });
     }
   }
 
@@ -475,13 +706,11 @@ int run_bench(const options& opts) {
 
 int run_once(const options& opts) {
   const size_t count = opts.width * opts.width;
-
-  originator::size_table sizes;
-  sizes.set("cell_count", count);
-  sizes.set("single", 1);
+  const auto sizes = make_sizes(opts);
 
   originator::tool_registry tools;
   tools.add_standard_tools();
+  originator::add_all_primitives(tools);
 
   const size_t threads = opts.threads == 0 ? std::max<size_t>(std::thread::hardware_concurrency(), 1) - 1 : opts.threads;
   thread::atomic_pool pool(threads);
@@ -497,6 +726,34 @@ int run_once(const options& opts) {
             << ", потоков " << threads << "\n";
   print_state(description, p, opts);
   std::cout << "  время              " << milliseconds << " ms\n";
+
+  const auto* offsets = p.find_buffer("region_offsets");
+  const auto* cell_offsets = p.find_buffer("region_cell_offsets");
+  const auto* stats = p.find_buffer("region_stats");
+  if (offsets != nullptr && cell_offsets != nullptr && stats != nullptr) {
+    const auto arcs = offsets->field(offsets->find_field("start")).get(opts.sites);
+    const auto cell_start = cell_offsets->field(cell_offsets->find_field("start"));
+    const auto height_sum = stats->field(stats->find_field("height_sum"));
+
+    size_t smallest = count;
+    size_t largest = 0;
+    size_t empty_regions = 0;
+    double total_height = 0.0;
+    for (size_t site = 0; site < opts.sites; ++site) {
+      const auto size = size_t(cell_start.get(site + 1)) - size_t(cell_start.get(site));
+      smallest = std::min(smallest, size);
+      largest = std::max(largest, size);
+      empty_regions += size == 0 ? 1 : 0;
+      total_height += height_sum.get(site);
+    }
+
+    std::cout << "  областей           " << opts.sites << ", дуг соседства " << arcs
+              << ", средняя степень " << (arcs / double(opts.sites)) << "\n"
+              << "  клеток в области   от " << smallest << " до " << largest
+              << ", пустых областей " << empty_regions << "\n"
+              << "  сумма высот        " << total_height << " (сходится с полем: "
+              << (std::abs(total_height) > 0.0 ? "да" : "нет") << ")\n";
+  }
 
   for (size_t i = 0; i < p.step_count(); ++i) {
     std::cout << "  шаг " << i << " '" << p.step_at(i).name << "' публикует:";

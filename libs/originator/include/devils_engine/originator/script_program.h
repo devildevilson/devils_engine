@@ -27,6 +27,11 @@
 // Случайность: перед каждым элементом состояние PRNG у devils_script выставляется в
 // hash(зерно шага, индекс элемента). Поэтому `chance`/`random` внутри скрипта тоже не зависят от
 // того, как работа разложилась по потокам.
+//
+// Параметры: то, что скрипт читает как `ctx:arg:имя`, приходит из параметров шага. Это разделение
+// правила и его порогов — само правило живёт в скрипте, а числа остаются в конфиге, где их можно
+// крутить, не трогая ни скрипт, ни C++. Аргументы выставляются ОДИН раз на контекст и постоянны на
+// весь проход: они описывают проход, а не элемент.
 
 namespace devils_engine {
 namespace thread {
@@ -60,6 +65,8 @@ public:
 
   const std::string& name() const noexcept;
   size_t input_count() const noexcept;
+  // Имена, которые скрипт читает как `ctx:arg:имя`. Каждое обязано найтись в параметрах шага.
+  const std::vector<std::string>& argument_names() const noexcept;
   result_kind kind() const noexcept;
   aperture::values shape() const noexcept;
   // Имена, под которыми программа была скомпилирована: пересобирать её при других именах нельзя.
@@ -77,6 +84,7 @@ private:
   friend void dispatch_script(const script_program&,
                               const std::span<const field_ref>&,
                               const std::span<const field_ref>&,
+                              const parameters&,
                               const uint64_t,
                               const size_t,
                               const size_t,
@@ -90,6 +98,7 @@ private:
 void dispatch_script(const script_program& program,
                      const std::span<const field_ref>& inputs,
                      const std::span<const field_ref>& outputs,
+                     const parameters& params,
                      const uint64_t seed,
                      const size_t range_begin,
                      const size_t range_end,

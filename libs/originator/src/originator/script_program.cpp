@@ -8,6 +8,7 @@
 #include <devils_script/container.h>
 #include <devils_script/context.h>
 #include <devils_script/system.h>
+#include <devils_script/type_traits.h>
 
 #include "devils_engine/thread/atomic_pool.h"
 #include "devils_engine/utils/core.h"
@@ -46,9 +47,20 @@ void register_readers(ds::system& system, const std::span<const std::string>& na
 }
 } // namespace
 
+// Один объявленный `ctx:arg:` скрипта: имя, слот в контексте и то, каким типом его выставлять.
+struct script_argument {
+  enum class kind { number, integer, boolean };
+
+  std::string name;
+  size_t slot = 0;
+  kind value_kind = kind::number;
+};
+
 struct script_program::implementation {
   std::string name;
   std::vector<std::string> input_names;
+  std::vector<std::string> argument_names;
+  std::vector<script_argument> arguments;
   result_kind kind = result_kind::number;
   ds::system system;
   ds::container program;
@@ -103,7 +115,40 @@ std::unique_ptr<script_program> script_program::compile(const std::string_view& 
     utils::error{}("originator script '{}': could not compile: {}", name, error.what());
   }
 
+  // Слот 0 занимает корневой скоуп (сам элемент), именованные аргументы идут с первого. Их типы
+  // проверяются здесь, а не при первом исполнении: непонятный тип аргумента — ошибка конфига.
+  for (size_t slot = 1; slot < impl.program.args.size(); ++slot) {
+    const auto argument_name = impl.program.get_arg_name(slot);
+    if (argument_name.empty()) {
+      continue;
+    }
+
+    const auto type = impl.program.args[slot].type;
+    script_argument argument;
+    argument.name.assign(argument_name);
+    argument.slot = slot;
+
+    if (type == ds::utils::type_name<double>()) {
+      argument.value_kind = script_argument::kind::number;
+    } else if (type == ds::utils::type_name<int64_t>()) {
+      argument.value_kind = script_argument::kind::integer;
+    } else if (type == ds::utils::type_name<bool>()) {
+      argument.value_kind = script_argument::kind::boolean;
+    } else {
+      utils::error{}("originator script '{}': argument '{}' has type '{}'; only number, integer and "
+                     "boolean arguments can come from step parameters",
+                     name, argument_name, type);
+    }
+
+    impl.argument_names.push_back(argument.name);
+    impl.arguments.push_back(std::move(argument));
+  }
+
   return program;
+}
+
+const std::vector<std::string>& script_program::argument_names() const noexcept {
+  return impl_->argument_names;
 }
 
 const std::string& script_program::name() const noexcept {
@@ -132,6 +177,7 @@ void run_chunk(const script_program::implementation& impl,
                const std::span<const const_field_accessor>& accessors,
                const field_accessor& output,
                const bool predicate,
+               const parameters& params,
                const uint64_t seed,
                const size_t begin,
                const size_t end) {
@@ -139,6 +185,16 @@ void run_chunk(const script_program::implementation& impl,
   // из скомпилированной программы, а не из умолчаний.
   ds::context vm(std::max<size_t>(impl.program.max_stack, 1), std::max<size_t>(impl.program.max_saved, 1));
   vm.create_lists(&impl.program);
+
+  // Аргументы постоянны на весь проход, поэтому выставляются ОДИН раз: clear() их не сбрасывает,
+  // он трогает только операндный стек.
+  for (const auto& argument : impl.arguments) {
+    switch (argument.value_kind) {
+      case script_argument::kind::number: vm.set_arg(argument.slot, params.number(argument.name)); break;
+      case script_argument::kind::integer: vm.set_arg(argument.slot, params.integer(argument.name)); break;
+      case script_argument::kind::boolean: vm.set_arg(argument.slot, params.number(argument.name) != 0.0); break;
+    }
+  }
 
   script_element element{accessors.data(), 0};
 
@@ -159,6 +215,7 @@ void run_chunk(const script_program::implementation& impl,
 void dispatch_script(const script_program& program,
                      const std::span<const field_ref>& inputs,
                      const std::span<const field_ref>& outputs,
+                     const parameters& params,
                      const uint64_t seed,
                      const size_t range_begin,
                      const size_t range_end,
@@ -210,6 +267,15 @@ void dispatch_script(const script_program& program,
     }
   }
 
+  // Каждый объявленный `ctx:arg:` обязан найтись в параметрах шага. Молчаливый нуль здесь означал бы
+  // правило, которое считает не то, что написано в конфиге, и заметить это было бы почти нечем.
+  for (const auto& argument : impl.arguments) {
+    if (!params.has(argument.name)) {
+      utils::error{}("originator step '{}': script '{}' reads ctx:arg:{}, but the step declares no such parameter",
+                     step_name, impl.name, argument.name);
+    }
+  }
+
   std::vector<const_field_accessor> accessors;
   accessors.reserve(inputs.size());
   for (const auto& binding : inputs) {
@@ -225,7 +291,7 @@ void dispatch_script(const script_program& program,
   }
 
   if (pool == nullptr || pool->size() == 0) {
-    run_chunk(impl, accessors, output, predicate, seed, range_begin, range_end);
+    run_chunk(impl, accessors, output, predicate, params, seed, range_begin, range_end);
     return;
   }
 
@@ -235,8 +301,8 @@ void dispatch_script(const script_program& program,
   const size_t chunk = std::max<size_t>((count + workers - 1) / workers, 4096);
   for (size_t start = range_begin; start < range_end; start += chunk) {
     const size_t stop = std::min(start + chunk, range_end);
-    pool->submit([&impl, &accessors, &output, predicate, seed](const size_t begin, const size_t end) {
-      run_chunk(impl, accessors, output, predicate, seed, begin, end);
+    pool->submit([&impl, &accessors, &output, &params, predicate, seed](const size_t begin, const size_t end) {
+      run_chunk(impl, accessors, output, predicate, params, seed, begin, end);
     }, start, stop);
   }
 

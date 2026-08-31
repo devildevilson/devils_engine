@@ -253,22 +253,30 @@ double reduce_count_above_partial(const tool_call& call, const size_t begin, con
 } // namespace
 
 void tool_registry::add_standard_tools() {
-  add(tool_description{"fill", aperture::pointwise, 0, 1, tool_fill, nullptr, nullptr, 0.0});
-  add(tool_description{"value_noise", aperture::pointwise, 0, 1, tool_value_noise, nullptr, nullptr, 0.0});
-  add(tool_description{"remap", aperture::pointwise, 1, 1, tool_remap, nullptr, nullptr, 0.0});
-  add(tool_description{"classify", aperture::pointwise, 2, 1, tool_classify, nullptr, nullptr, 0.0});
-  add(tool_description{"box_blur", aperture::gather, 1, 1, tool_box_blur, nullptr, nullptr, 0.0});
+  // Именованная инициализация намеренно: набор полей описания инструмента будет расти, и
+  // позиционная запись ломалась бы на каждом новом поле.
+  add(tool_description{.name = "fill", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_fill});
+  add(tool_description{.name = "value_noise", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_value_noise});
+  add(tool_description{.name = "remap", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_remap});
+  add(tool_description{.name = "classify", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_classify});
+  add(tool_description{.name = "box_blur", .shape = aperture::gather, .input_count = 1, .output_count = 1, .body = tool_box_blur});
 
-  add(tool_description{"reduce_min", aperture::reduce, 1, 0, nullptr, reduce_min_partial,
-                       [](const double a, const double b) { return std::min(a, b); },
-                       std::numeric_limits<double>::infinity()});
-  add(tool_description{"reduce_max", aperture::reduce, 1, 0, nullptr, reduce_max_partial,
-                       [](const double a, const double b) { return std::max(a, b); },
-                       -std::numeric_limits<double>::infinity()});
-  add(tool_description{"reduce_sum", aperture::reduce, 1, 0, nullptr, reduce_sum_partial,
-                       [](const double a, const double b) { return a + b; }, 0.0});
-  add(tool_description{"reduce_count_above", aperture::reduce, 1, 0, nullptr, reduce_count_above_partial,
-                       [](const double a, const double b) { return a + b; }, 0.0});
+  add(tool_description{.name = "reduce_min", .shape = aperture::reduce, .input_count = 1, .output_count = 0,
+                       .partial = reduce_min_partial,
+                       .combine = [](const double a, const double b) { return std::min(a, b); },
+                       .initial = std::numeric_limits<double>::infinity()});
+  add(tool_description{.name = "reduce_max", .shape = aperture::reduce, .input_count = 1, .output_count = 0,
+                       .partial = reduce_max_partial,
+                       .combine = [](const double a, const double b) { return std::max(a, b); },
+                       .initial = -std::numeric_limits<double>::infinity()});
+  add(tool_description{.name = "reduce_sum", .shape = aperture::reduce, .input_count = 1, .output_count = 0,
+                       .partial = reduce_sum_partial,
+                       .combine = [](const double a, const double b) { return a + b; }, .initial = 0.0});
+  add(tool_description{.name = "reduce_count_above", .shape = aperture::reduce, .input_count = 1, .output_count = 0,
+                       .partial = reduce_count_above_partial,
+                       .combine = [](const double a, const double b) { return a + b; }, .initial = 0.0});
+
+  add_scatter_tools();
 }
 
 } // namespace originator

@@ -27,7 +27,15 @@ struct step_mirror {
   std::vector<std::string> reads;
   std::vector<std::string> writes;
   std::map<std::string, double> params;
+  // Строковые параметры отдельной строкой конфига: tavl раскладывает документ по типам полей
+  // структуры, поэтому одна карта не может держать и числа, и текст.
+  std::map<std::string, std::string> strings;
   std::map<std::string, std::string> programs;
+};
+
+struct values_mirror {
+  std::map<std::string, double> numbers;
+  std::map<std::string, std::string> strings;
 };
 
 void report_diagnostics(const tavl::ct_context& ctx, const std::string_view& label) {
@@ -109,12 +117,39 @@ std::vector<step_description> parse_steps(const std::string_view& text, const st
     for (const auto& [key, value] : mirror.params) {
       description.params.set_number(key, value);
     }
+    for (auto& [key, value] : mirror.strings) {
+      description.params.set_string(key, std::move(value));
+    }
     for (auto& [key, value] : mirror.programs) {
       description.programs.emplace_back(key, std::move(value));
     }
 
     result.push_back(std::move(description));
     mirror = step_mirror{};
+  }
+
+  report_diagnostics(ctx, label);
+  return result;
+}
+
+parameters parse_values(const std::string_view& text, const std::string_view& label) {
+  tavl::parser p;
+  p.add_default_operator();
+  p.flush(std::string(text));
+  p.finish();
+
+  tavl::ct_context ctx;
+  parameters result;
+
+  values_mirror mirror{};
+  while (tavl::deserialize_next(p, ctx, mirror)) {
+    for (const auto& [key, value] : mirror.numbers) {
+      result.set_number(key, value);
+    }
+    for (auto& [key, value] : mirror.strings) {
+      result.set_string(key, std::move(value));
+    }
+    mirror = values_mirror{};
   }
 
   report_diagnostics(ctx, label);
@@ -178,9 +213,13 @@ void pipeline::build(const size_table& sizes) {
 
   step_writes_.resize(description_.steps.size());
   step_reads_.resize(description_.steps.size());
+  step_params_.resize(description_.steps.size());
 
   for (size_t i = 0; i < description_.steps.size(); ++i) {
     const auto& step = description_.steps[i];
+
+    step_params_[i] = description_.values;
+    step_params_[i].overlay(step.params);
 
     for (const auto& name : step.writes) {
       auto* target = find_buffer(name);
@@ -306,7 +345,7 @@ void pipeline::run_step(const size_t index, const step_invoker& invoker) {
   // Зерно шага — функция от зерна пайплайна и ИМЕНИ шага, а не позиция в потоке случайности.
   // Поэтому перестановка или перезапуск шага не сдвигает случайность остальных.
   context.seed = utils::mix(seed_, std::hash<std::string>{}(step.name));
-  context.params = &step.params;
+  context.params = &step_params_[index];
   context.programs = step.programs;
   context.writes = step_writes_[index];
   context.reads = step_reads_[index];

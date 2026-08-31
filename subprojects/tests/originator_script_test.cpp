@@ -56,7 +56,8 @@ TEST_CASE("originator script reads buffer fields by their declared names") {
   const std::vector<originator::field_ref> inputs{readable(cells, "height"), readable(cells, "moisture")};
   const std::vector<originator::field_ref> outputs{writable(cells, "scripted")};
 
-  originator::dispatch_script(*program, inputs, outputs, 1, 0, count, "test", nullptr);
+  const originator::parameters no_params;
+  originator::dispatch_script(*program, inputs, outputs, no_params, 1, 0, count, "test", nullptr);
 
   const auto height = cells.field(cells.find_field("height"));
   const auto moisture = cells.field(cells.find_field("moisture"));
@@ -92,7 +93,7 @@ TEST_CASE("originator script classifies with the same rule as the native tool") 
   )", names, originator::script_program::result_kind::number);
 
   const std::vector<originator::field_ref> script_out{writable(cells, "scripted")};
-  originator::dispatch_script(*program, inputs, script_out, 1, 0, count, "script", nullptr);
+  originator::dispatch_script(*program, inputs, script_out, params, 1, 0, count, "script", nullptr);
 
   const auto native = cells.field(cells.find_field("biome"));
   const auto scripted = cells.field(cells.find_field("scripted"));
@@ -110,7 +111,8 @@ TEST_CASE("originator script predicate writes one or zero") {
 
   const std::vector<originator::field_ref> inputs{readable(cells, "height")};
   const std::vector<originator::field_ref> outputs{writable(cells, "scripted")};
-  originator::dispatch_script(*program, inputs, outputs, 1, 0, count, "test", nullptr);
+  const originator::parameters no_params;
+  originator::dispatch_script(*program, inputs, outputs, no_params, 1, 0, count, "test", nullptr);
 
   const auto height = cells.field(cells.find_field("height"));
   const auto scripted = cells.field(cells.find_field("scripted"));
@@ -128,7 +130,8 @@ TEST_CASE("originator script gives the same bytes at any number of threads") {
   {
     const std::vector<originator::field_ref> inputs{readable(reference, "height"), readable(reference, "moisture")};
     const std::vector<originator::field_ref> outputs{writable(reference, "scripted")};
-    originator::dispatch_script(*program, inputs, outputs, 99, 0, count, "test", nullptr);
+    const originator::parameters no_params;
+    originator::dispatch_script(*program, inputs, outputs, no_params, 99, 0, count, "test", nullptr);
   }
   const auto expected = reference.field(reference.find_field("scripted"));
 
@@ -137,7 +140,8 @@ TEST_CASE("originator script gives the same bytes at any number of threads") {
     auto cells = make_cells();
     const std::vector<originator::field_ref> inputs{readable(cells, "height"), readable(cells, "moisture")};
     const std::vector<originator::field_ref> outputs{writable(cells, "scripted")};
-    originator::dispatch_script(*program, inputs, outputs, 99, 0, count, "test", &pool);
+    const originator::parameters no_params;
+    originator::dispatch_script(*program, inputs, outputs, no_params, 99, 0, count, "test", &pool);
 
     const auto actual = cells.field(cells.find_field("scripted"));
     bool identical = true;
@@ -159,23 +163,78 @@ TEST_CASE("originator script refuses bindings it was not compiled against") {
 
   // Порядок привязок перепутан: скрипт считал бы одно, а получал другое.
   const std::vector<originator::field_ref> swapped{readable(cells, "moisture"), readable(cells, "height")};
-  CHECK_THROWS_AS(originator::dispatch_script(*program, swapped, outputs, 1, 0, count, "test", nullptr),
+  const originator::parameters no_params;
+  CHECK_THROWS_AS(originator::dispatch_script(*program, swapped, outputs, no_params, 1, 0, count, "test", nullptr),
                   std::runtime_error);
 
   // Не то число входов.
   const std::vector<originator::field_ref> short_list{readable(cells, "height")};
-  CHECK_THROWS_AS(originator::dispatch_script(*program, short_list, outputs, 1, 0, count, "test", nullptr),
+  CHECK_THROWS_AS(originator::dispatch_script(*program, short_list, outputs, no_params, 1, 0, count, "test", nullptr),
                   std::runtime_error);
 
   // Выход привязан на чтение.
   const std::vector<originator::field_ref> inputs{readable(cells, "height"), readable(cells, "moisture")};
   const std::vector<originator::field_ref> read_only{readable(cells, "scripted")};
-  CHECK_THROWS_AS(originator::dispatch_script(*program, inputs, read_only, 1, 0, count, "test", nullptr),
+  CHECK_THROWS_AS(originator::dispatch_script(*program, inputs, read_only, no_params, 1, 0, count, "test", nullptr),
                   std::runtime_error);
 
   // Два входа с одинаковым именем неразличимы внутри скрипта.
   const std::vector<std::string> duplicated = {"height", "height"};
   CHECK_THROWS_AS(originator::script_program::compile("bad", "height", duplicated,
                                                       originator::script_program::result_kind::number),
+                  std::runtime_error);
+}
+
+TEST_CASE("originator script reads its thresholds from step parameters") {
+  auto cells = make_cells();
+
+  const std::vector<std::string> names = {"height", "moisture"};
+  // Правило живёт в скрипте, числа — в конфиге. Скрипт не хардкодит пороги, которые автор хочет крутить.
+  const auto program = originator::script_program::compile("biome", R"(
+    { value_or = { height < ctx:arg:sea_level, 0,
+      value_or = { moisture < ctx:arg:dry, 1,
+      value_or = { moisture < ctx:arg:wet, 2, 3 } } } }
+  )", names, originator::script_program::result_kind::number);
+
+  REQUIRE(program->argument_names().size() == 3);
+
+  const std::vector<originator::field_ref> inputs{readable(cells, "height"), readable(cells, "moisture")};
+  const std::vector<originator::field_ref> outputs{writable(cells, "scripted")};
+
+  originator::parameters params;
+  params.set_number("sea_level", 0.5);
+  params.set_number("dry", 0.35);
+  params.set_number("wet", 0.65);
+
+  originator::dispatch_script(*program, inputs, outputs, params, 1, 0, count, "climate", nullptr);
+
+  const auto height = cells.field(cells.find_field("height"));
+  const auto moisture = cells.field(cells.find_field("moisture"));
+  const auto biome = cells.field(cells.find_field("scripted"));
+
+  const auto expected = [](const double h, const double m) {
+    if (h < 0.5) return 0.0;
+    if (m < 0.35) return 1.0;
+    if (m < 0.65) return 2.0;
+    return 3.0;
+  };
+  for (size_t i = 0; i < count; ++i) {
+    CHECK(biome.get(i) == expected(height.get(i), moisture.get(i)));
+  }
+
+  // Другие пороги — другой результат, при том же скрипте и том же буфере.
+  originator::parameters raised;
+  raised.set_number("sea_level", 2.0);
+  raised.set_number("dry", 0.35);
+  raised.set_number("wet", 0.65);
+  originator::dispatch_script(*program, inputs, outputs, raised, 1, 0, count, "climate", nullptr);
+  for (size_t i = 0; i < count; i += 97) {
+    CHECK(biome.get(i) == 0.0); // порог выше любой высоты => всё вода
+  }
+
+  // Забытый параметр — громкая ошибка с именем аргумента, а не молчаливый нуль.
+  originator::parameters incomplete;
+  incomplete.set_number("sea_level", 0.5);
+  CHECK_THROWS_AS(originator::dispatch_script(*program, inputs, outputs, incomplete, 1, 0, count, "climate", nullptr),
                   std::runtime_error);
 }

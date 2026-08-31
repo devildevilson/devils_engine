@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -70,6 +71,10 @@ public:
   double number_at(const size_t index) const noexcept;
   std::string_view string_at(const size_t index) const noexcept;
 
+  // Накладывает other поверх текущего набора: то, что задано в other, побеждает. Нужно для общих
+  // значений пайплайна, которые шаг может переопределить своим параметром.
+  void overlay(const parameters& other);
+
   double number(const std::string_view& name, const double fallback = 0.0) const noexcept;
   int64_t integer(const std::string_view& name, const int64_t fallback = 0) const noexcept;
   std::string_view string(const std::string_view& name, const std::string_view& fallback = {}) const noexcept;
@@ -98,6 +103,15 @@ struct tool_call {
   std::string_view step_name;
   std::string_view tool_name;
 
+  // Состояние, построенное подготовкой инструмента один раз до разбиения работы: пространственный
+  // индекс, диаграмма, таблица — то, что нельзя строить в каждом чанке заново.
+  const void* shared = nullptr;
+
+  // Пул доступен ТОЛЬКО телам с апертурой scatter и sequential: их движок не разбивает, потому что
+  // корректное разбиение зависит от алгоритма, и они организуют свои фазы сами. Тело pointwise,
+  // gather или reduce уже исполняется внутри чанка и параллелить себя не должно.
+  thread::atomic_pool* pool = nullptr;
+
   size_t range_count() const noexcept;
   const field_ref& input(const size_t index) const;
   const field_ref& output(const size_t index) const;
@@ -112,12 +126,17 @@ using tool_body = std::function<void(const tool_call& call, const size_t chunk_b
 using reduce_body = std::function<double(const tool_call& call, const size_t chunk_begin, const size_t chunk_end)>;
 using reduce_combine = std::function<double(const double accumulated, const double partial)>;
 
+// Подготовка: вызывается ОДИН раз перед разбиением работы, результат живёт до конца вызова и
+// приходит в тело через tool_call::shared. Нужна инструментам, которым требуется общая структура.
+using tool_prepare = std::function<std::shared_ptr<void>(const tool_call& call)>;
+
 struct tool_description {
   std::string name;
   aperture::values shape = aperture::pointwise;
   uint32_t input_count = 0;
   uint32_t output_count = 0;
   tool_body body;
+  tool_prepare prepare;
 
   // Заполняются только у апертуры reduce; тогда body остаётся пустым.
   reduce_body partial;
@@ -138,6 +157,10 @@ public:
 
   // Регистрирует набор инструментов, поставляемых движком.
   void add_standard_tools();
+  // Инструменты с апертурой scatter. Они существуют отдельно потому, что произвольного
+  // параллельного разброса по чужим индексам НЕ БЫВАЕТ детерминированным: детерминизм даёт не
+  // апертура, а конкретный алгоритм, поэтому scatter доступен только этим готовым инструментам.
+  void add_scatter_tools();
 
 private:
   std::vector<tool_description> tools_;

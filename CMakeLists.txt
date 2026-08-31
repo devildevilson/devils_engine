@@ -438,6 +438,29 @@ FetchContent_Declare(
   EXCLUDE_FROM_ALL
 )
 
+# FastNoise2 собирает по одному варианту кода на каждый набор SIMD-инструкций и выбирает его в
+# РАНТАЙМЕ. Для генератора это неприемлемо: один и тот же seed давал бы разные артефакты на разных
+# машинах (замерено расхождение 1.8e-07 между Max и SSE2). STRICT_FP — штатная опция upstream,
+# которая делает выход всех наборов ПОБИТОВО одинаковым, поэтому выбор набора перестаёт влиять на
+# результат, а скорость лучшего доступного набора сохраняется.
+set(FASTNOISE2_STRICT_FP ON CACHE BOOL "Deterministic FastNoise2 output across SIMD feature sets" FORCE)
+set(FASTNOISE2_TOOLS OFF CACHE BOOL "" FORCE)
+set(FASTNOISE2_TESTS OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+  FastNoise2
+  GIT_REPOSITORY https://github.com/Auburn/FastNoise2.git
+  GIT_TAG        v1.1.1
+  OVERRIDE_FIND_PACKAGE
+)
+
+FetchContent_Declare(
+  voronoi
+  GIT_REPOSITORY https://github.com/JCash/voronoi.git
+  GIT_TAG        v0.10.2
+  OVERRIDE_FIND_PACKAGE
+)
+
 FetchContent_MakeAvailable(ZLIB)
 
 # workarounds for zlib-ng
@@ -454,7 +477,7 @@ FetchContent_MakeAvailable(freetype)
 
 add_library(Freetype::Freetype ALIAS freetype-interface)
 
-FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus) # RE-flex
+FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus FastNoise2 voronoi) # RE-flex
 
 if (TARGET minizip)
   target_compile_options(minizip PRIVATE
