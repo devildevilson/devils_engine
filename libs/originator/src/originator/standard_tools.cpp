@@ -156,8 +156,10 @@ void tool_value_noise(const tool_call& call, const size_t begin, const size_t en
   const auto& out = call.output(0);
   auto accessor = out.write();
 
+  // as_span сам отдаёт непустой span только для однокомпонентного поля точно совпадающего рода,
+  // поэтому отдельная проверка компонент здесь не нужна.
   const auto span = accessor.as_span<float>();
-  if (!span.empty() && accessor.type().components == 1) {
+  if (!span.empty()) {
     // Быстрый путь: поле лежит подряд, компилятор видит обычный цикл по float.
     for (size_t i = begin; i < end; ++i) {
       const float x = float(i % settings.width);

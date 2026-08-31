@@ -460,8 +460,8 @@ parameter values, но не собственные parser, language-form resolve
 алгоритмы и типы artifacts, Lua связывает проходы, проект определяет pipeline, semantic schemas,
 constraints и repair policy.
 
-Реализуется библиотекой [`libs/originator`](libs/originator/README.md); первый вертикальный срез
-закрыт площадкой `GN01_generator_contract` 2026-08-31. Уточнение исходной модели по итогам среза:
+Реализуется библиотекой [`libs/originator`](libs/originator/README.md); площадка
+`GN01_generator_contract` **закрыта закрывающим аудитом 2026-08-31**. Уточнение исходной модели по итогам среза:
 pipeline описывается в `tavl`, а Lua занимает место `command` графического шага — тело шага, а не
 описание графа. Параллельность НЕ сообщается скриптом: её выводит движок из объявленной апертуры
 инструмента (`pointwise`/`gather`/`scatter`/`reduce`/`sequential`) и фактических привязок, поэтому

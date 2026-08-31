@@ -307,15 +307,9 @@ void script_host::bind_tools() {
     dispatch_script(program, inputs, outputs, params, seed, begin, end, current_step_, pool_);
   });
 
+  // Существует потому, что примитивы (FastNoise2, jc_voronoi) — ОТДЕЛЬНАЯ цель сборки: скрипт может
+  // законно спросить, доступен ли инструмент, и выбрать другой путь.
   api.set_function("tool_exists", [this](const std::string& name) { return tools_->find(name) != nullptr; });
-  api.set_function("aperture_of", [this](const std::string& name) -> sol::optional<std::string> {
-    const auto* tool = tools_->find(name);
-    if (tool == nullptr) {
-      return sol::nullopt;
-    }
-    return std::string(to_string(tool->shape));
-  });
-
   env_["originator"] = api;
 }
 

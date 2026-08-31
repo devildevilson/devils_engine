@@ -135,12 +135,14 @@ struct tool_description {
   aperture::values shape = aperture::pointwise;
   uint32_t input_count = 0;
   uint32_t output_count = 0;
-  tool_body body;
-  tool_prepare prepare;
+  // Инициализаторы по умолчанию нужны не для красоты: описание заполняется именованной
+  // инициализацией с опущенными полями, и без них компилятор законно жалуется на пропуски.
+  tool_body body = nullptr;
+  tool_prepare prepare = nullptr;
 
   // Заполняются только у апертуры reduce; тогда body остаётся пустым.
-  reduce_body partial;
-  reduce_combine combine;
+  reduce_body partial = nullptr;
+  reduce_combine combine = nullptr;
   double initial = 0.0;
 };
 

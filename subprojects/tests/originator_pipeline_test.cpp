@@ -158,6 +158,16 @@ TEST_CASE("originator rejects unknown buffers and contradictory bindings") {
 
   {
     originator::pipeline_description description;
+    description.name = "twice";
+    description.buffers = buffers;
+    description.steps = originator::parse_steps(R"(
+{ name = terrain, body = gen/terrain, writes = [ cells, cells ] }
+)", "steps");
+    CHECK_THROWS_AS(originator::pipeline(description, make_sizes(64), 1), std::runtime_error);
+  }
+
+  {
+    originator::pipeline_description description;
     description.name = "both";
     description.buffers = buffers;
     description.steps = originator::parse_steps(R"(

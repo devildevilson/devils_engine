@@ -36,6 +36,7 @@ TEST_CASE("originator field type spelling follows painter") {
   CHECK_FALSE(originator::parse_field_type("3").valid());
   CHECK_FALSE(originator::parse_field_type("zz2").valid());
   CHECK_FALSE(originator::parse_field_type("v9").valid());
+  CHECK_FALSE(originator::parse_field_type("v0").valid()); // нулевых компонент не бывает
   CHECK_FALSE(originator::parse_field_type("").valid());
 }
 
@@ -149,4 +150,48 @@ TEST_CASE("originator read binding cannot write") {
 
   static_assert(!std::is_constructible_v<originator::field_accessor, originator::const_field_accessor>,
                 "read binding must not be widenable to a write binding");
+}
+
+TEST_CASE("originator fast path refuses a type that does not match the storage") {
+  constexpr size_t count = 16;
+
+  const std::vector<field_pair> fields = {
+    {"height", "v1"},   // float32
+    {"owner", "ui1"},   // сырой uint32 — того же размера, что float
+    {"normal", "v3"},   // многокомпонентное
+    {"shade", "c1"},    // нормализованный байт
+    {"mark", "ub1"},    // сырой байт
+  };
+  auto layout = originator::make_buffer_layout(originator::storage_kind::soa, fields, "cells");
+  originator::buffer b("cells", std::move(layout), count);
+
+  auto height = b.field(b.find_field("height"));
+  auto owner = b.field(b.find_field("owner"));
+  auto normal = b.field(b.find_field("normal"));
+  auto shade = b.field(b.find_field("shade"));
+  auto mark = b.field(b.find_field("mark"));
+
+  // Совпадающий тип — быстрый путь доступен.
+  CHECK(height.as_span<float>().size() == count);
+  CHECK(owner.as_span<uint32_t>().size() == count);
+  CHECK(mark.as_span<uint8_t>().size() == count);
+
+  // Совпадает РАЗМЕР, но не род хранения: раньше это проходило, и инструмент писал биты float в поле,
+  // объявленное как uint32. Значение читалось как 1061158912 вместо 0.75, без единой жалобы.
+  CHECK(owner.as_span<float>().empty());
+  CHECK(height.as_span<uint32_t>().empty());
+  CHECK(height.as_span<int32_t>().empty());
+
+  // Нормализованный байт не то же самое, что сырой: через span он отдал бы 0..255 вместо 0..1.
+  CHECK(shade.as_span<uint8_t>().empty());
+
+  // Многокомпонентное поле быстрого пути не имеет.
+  CHECK(normal.as_span<float>().empty());
+  CHECK(normal.contiguous());
+
+  // Аксессор при этом работает для всех: он делает преобразование.
+  owner.set(0, 7.0);
+  shade.set(0, 0.5);
+  CHECK(owner.get(0) == doctest::Approx(7.0));
+  CHECK(shade.get(0) == doctest::Approx(0.5).epsilon(0.01));
 }

@@ -111,7 +111,8 @@ void tool_noise_grid(const tool_call& call, const size_t begin, const size_t end
 
   const auto span = target.as_span<float>();
   const bool identity = prepared.amplitude == 1.0f && prepared.offset == 0.0f;
-  const bool direct = !span.empty() && target.type().components == 1;
+  // as_span сам отдаёт непустой span только для однокомпонентного поля точно совпадающего рода.
+  const bool direct = !span.empty();
 
   const size_t first_row = begin / width;
   const size_t last_row = (end + width - 1) / width;

@@ -4,6 +4,35 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- GN01 GENERATOR CONTRACT CLOSED WITH A CLOSING AUDIT (2026-08-31). New `libs/originator` in four build
+  targets: core (buffers/tools/pipeline, no lua and no devils_script), `originator_script`,
+  `originator_lua` and `originator_primitives` (FastNoise2 + jc_voronoi). The pipeline lives in `tavl`
+  and lua is the step BODY, occupying the place a graphics `command` holds; a graphics pipeline can fix
+  its command set because the conveyor is fixed, and a generator has no conveyor. Parallelism is never
+  declared by a script: it is derived from the tool's aperture
+  (`pointwise`/`gather`/`sequential`/`scatter`/`reduce`) plus the actual bindings, and a violating call
+  does not assemble — a read binding has no write operation, and a gather whose source equals its
+  destination is refused before execution. Three execution tiers measured on ONE rule over `4194304`
+  elements: native kernel `3.44` ns/element (`1.10` on 11 threads), `devils_script` `90.05` (`17.15`),
+  per-element lua `120.13` with no parallel path at all. The surprise: ds beats lua by only 2x in a
+  single thread — its real advantages are that it parallelises and that it type-checks at parse time.
+  Both scatter tools (`group_by` CSR, `accumulate`) are bit-identical at 1/4/9 threads through fixed
+  chunking, and parallelise 4.4x/4.5x. `voronoi_polygons` returns a shared-vertex planar mesh whose
+  polygon areas sum EXACTLY to the map area. Four rules that were each a mistake before measurement:
+  regular noise must generate whole rows (`GenUniformGrid2D` accumulates positions inside a row, so a
+  run starting mid-row drifts `3e-07`), `FASTNOISE2_STRICT_FP` instead of picking a SIMD feature set at
+  runtime (`max` vs `SSE2` drifted `1.8e-07`, now exactly `0`), TWO seeds instead of one under chunking
+  (`step.seed` chunk-independent for fields continuous across a seam, `step.chunk_seed` for what must be
+  independent per chunk — one seed made noise drift `1.99` at the seams), and self-calibration by a
+  measured range is incompatible with chunking. Chunking measured per aperture on 2x2/4x4/8x8:
+  pointwise exact `0` over 262144 cells, gather differs ONLY inside a `radius`-wide border band and
+  exactly `0` inside, global scatter refused by declared key support. The closing audit raised eight
+  items including one real bug: the field fast path compared only byte size, so `span<float>` over a
+  field declared as raw `uint32` passed and silently wrote float bits (`1061158912` read back instead of
+  `0.75`); fixed by requiring an exact storage match, with a test that failed before the fix. Cross-chunk
+  scatter merging is deliberately absent: a float accumulator changes `816/1024` group sums with chunk
+  arrival order while fixed point changes none. `311/311` tests; package sealing stays a project
+  decision, not an engine format.
 - PF10 PIXEL-STABLE PROVINCE + TWO-SIDED STATE BORDERS CLOSED (2026-08-31). The 1024 political cube atlas
   remains only an accelerator: R16 addresses one of `4702` exact Voronoi records and R16 conservatively gates
   refinement. Close-up now remaps the full 3x3 candidate stencil across cube-face seams and pays it only in a

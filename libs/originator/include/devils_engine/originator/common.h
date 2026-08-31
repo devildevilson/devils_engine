@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <type_traits>
 
 // Базовые типы originator: описание типа поля буфера и словарь режимов.
 //
@@ -68,6 +69,32 @@ struct field_type {
 
 // Разбирает написание вида "v3", "ui1", "c4". Возвращает невалидный тип, если строка не разобрана;
 // вызывающий решает, ошибка это конфига (падать) или ожидаемый отказ.
+// Точное соответствие C++-типа роду хранения. Нужно для быстрого пути доступа к полю: сверять там
+// ОДИН размер недостаточно — `ui1` и `v1` оба четырёхбайтовые, и span<float> над полем, объявленным
+// как сырой uint32, молча пишет туда биты float. Поэтому соответствие задаётся явно, а роды без
+// точного C++-типа (`sf` — половинная точность, `c` — нормализованный байт) его не получают вовсе:
+// к ним обращаются только через аксессор, который делает преобразование.
+template <typename type_t>
+constexpr field_base::values exact_storage_base() noexcept {
+  if constexpr (std::is_same_v<type_t, float>) {
+    return field_base::v;
+  } else if constexpr (std::is_same_v<type_t, uint32_t>) {
+    return field_base::ui;
+  } else if constexpr (std::is_same_v<type_t, uint16_t>) {
+    return field_base::us;
+  } else if constexpr (std::is_same_v<type_t, uint8_t>) {
+    return field_base::ub;
+  } else if constexpr (std::is_same_v<type_t, int32_t>) {
+    return field_base::i;
+  } else if constexpr (std::is_same_v<type_t, int16_t>) {
+    return field_base::is;
+  } else if constexpr (std::is_same_v<type_t, int8_t>) {
+    return field_base::ib;
+  } else {
+    return field_base::count; // нет точного соответствия => быстрый путь недоступен
+  }
+}
+
 field_type parse_field_type(const std::string_view& str) noexcept;
 std::string_view to_string(const field_base::values base) noexcept;
 std::string_view to_string(const field_kind::values kind) noexcept;
@@ -75,16 +102,6 @@ std::string_view to_string(const field_kind::values kind) noexcept;
 // Чтение/запись одной компоненты в канонический double. Указатель — начало КОМПОНЕНТЫ, а не поля.
 double load_component(const void* ptr, const field_base::values base) noexcept;
 void store_component(void* ptr, const field_base::values base, const double value) noexcept;
-
-// Как шаг привязан к буферу. Read-вью физически не умеет писать, поэтому нарушение не выражается,
-// а не ловится проверкой.
-struct binding_mode {
-  enum values {
-    read,  // произвольный доступ, неизменяем на всё время шага
-    write, // читать И писать может только владелец шага; в массовой операции — только свой элемент
-    count
-  };
-};
 
 // Апертура: как инструмент адресуется относительно обрабатываемого элемента. Из неё выводится
 // параллельность — инструмент её ОБЪЯВЛЯЕТ, скрипт её не выбирает.
@@ -120,7 +137,6 @@ std::string_view to_string(const key_support::values value) noexcept;
 key_support::values parse_key_support(const std::string_view& str) noexcept;
 
 std::string_view to_string(const aperture::values value) noexcept;
-std::string_view to_string(const binding_mode::values value) noexcept;
 
 // Параллелится ли апертура сама по себе. Для gather этого НЕ достаточно: нужна ещё проверка
 // непересечения источника и приёмника, см. tools.h.

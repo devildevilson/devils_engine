@@ -24,7 +24,6 @@ constexpr base_traits base_table[field_base::count] = {
 constexpr std::string_view kind_names[field_kind::count] = {"floating", "unsigned_integer", "signed_integer", "normalized"};
 
 constexpr std::string_view aperture_names[aperture::count] = {"pointwise", "gather", "scatter", "reduce", "sequential"};
-constexpr std::string_view binding_names[binding_mode::count] = {"read", "write"};
 constexpr std::string_view key_support_names[key_support::count] = {"chunk_local", "global"};
 
 // f16 <-> f32. Своя реализация, а не зависимость: нужны ровно две функции, обе на уровне битов.
@@ -164,10 +163,6 @@ key_support::values parse_key_support(const std::string_view& str) noexcept {
     }
   }
   return key_support::count;
-}
-
-std::string_view to_string(const binding_mode::values value) noexcept {
-  return value < binding_mode::count ? binding_names[value] : std::string_view("invalid");
 }
 
 bool is_parallel(const aperture::values value) noexcept {

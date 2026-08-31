@@ -100,6 +100,14 @@ public:
   // span и обработать векторно. При aos это ложно для всего, кроме однополевого буфера.
   bool contiguous() const noexcept;
 
+  // Быстрый путь: сырая память поля как span<type_t>. Отдаётся ТОЛЬКО когда type_t точно совпадает
+  // с родом хранения и поле однокомпонентное; иначе возвращается пустой span и вызывающий идёт
+  // через аксессор. Сверять один размер нельзя: `ui1` и `v1` оба четырёхбайтовые, и span<float> над
+  // сырым uint32 молча писал бы туда биты float.
+  //
+  // Многокомпонентное поле быстрого пути не имеет намеренно: для него понадобился бы тип-агрегат от
+  // вызывающего, а вместе с ним и ответственность за совместимость — заводить это без потребителя
+  // незачем.
   template <typename type_t>
   std::span<std::conditional_t<is_const, const type_t, type_t>> as_span() const noexcept;
 
@@ -213,7 +221,10 @@ template <bool is_const>
 template <typename type_t>
 std::span<std::conditional_t<is_const, const type_t, type_t>> basic_field_accessor<is_const>::as_span() const noexcept {
   using element_type = std::conditional_t<is_const, const type_t, type_t>;
-  if (!contiguous() || sizeof(type_t) != type_.byte_size()) {
+  if (!contiguous() || type_.components != 1 || type_.base != exact_storage_base<type_t>()) {
+    return std::span<element_type>{};
+  }
+  if (sizeof(type_t) != type_.byte_size()) {
     return std::span<element_type>{};
   }
   return std::span<element_type>(reinterpret_cast<element_type*>(base_), count_);

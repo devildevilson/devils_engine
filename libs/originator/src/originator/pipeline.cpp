@@ -261,6 +261,22 @@ void pipeline::validate() const {
       }
     }
 
+    // Повтор в writes — почти наверняка опечатка конфига: буфер попадёт в published_after дважды.
+    for (size_t a = 0; a < step.writes.size(); ++a) {
+      for (size_t b = a + 1; b < step.writes.size(); ++b) {
+        if (step.writes[a] == step.writes[b]) {
+          utils::error{}("originator step '{}': buffer '{}' is listed twice in writes", step.name, step.writes[a]);
+        }
+      }
+    }
+    for (size_t a = 0; a < step.reads.size(); ++a) {
+      for (size_t b = a + 1; b < step.reads.size(); ++b) {
+        if (step.reads[a] == step.reads[b]) {
+          utils::error{}("originator step '{}': buffer '{}' is listed twice in reads", step.name, step.reads[a]);
+        }
+      }
+    }
+
     for (const auto& read_name : step.reads) {
       const auto same = std::find(step.writes.begin(), step.writes.end(), read_name);
       if (same != step.writes.end()) {
@@ -280,6 +296,25 @@ void pipeline::validate() const {
       if (std::find(written.begin(), written.end(), target) == written.end()) {
         written.push_back(target);
       }
+    }
+  }
+
+  // Буфер, который ни один шаг не читает и не пишет, — объявленная и оплаченная память, которой
+  // никто не пользуется. Это не ошибка (host может заполнять его сам), но почти всегда остаток от
+  // правки конфига, поэтому о нём стоит сказать.
+  for (const auto& candidate : buffers_) {
+    bool bound = false;
+    for (size_t i = 0; i < description_.steps.size() && !bound; ++i) {
+      for (const auto* target : step_writes_[i]) {
+        bound = bound || target == candidate.get();
+      }
+      for (const auto* source : step_reads_[i]) {
+        bound = bound || source == candidate.get();
+      }
+    }
+    if (!bound) {
+      utils::warn("originator pipeline '{}': buffer '{}' is declared and allocated ({} bytes) but no step binds it",
+                  description_.name, candidate->name(), candidate->byte_size());
     }
   }
 }
