@@ -626,6 +626,64 @@ political_atlas bake_political_atlas(const uint32_t face_side) {
         half_span *= 0.5f;
       }
     }
+    // A map name may be diagonal or vertical, but never upside down. At the province anchor, projected +Y
+    // is the canonical direction toward the north pole. Reversing the complete curve preserves glyph order
+    // and geometry while keeping the text-up vector within 90 degrees of that local north vector.
+    const glm::vec3 north = glm::vec3(0.0f, 1.0f, 0.0f) - control * control.y;
+    const glm::vec3 tangent = graph.label_curve_ends[node] - graph.label_curve_starts[node];
+    if (glm::dot(glm::cross(control, tangent), north) < 0.0f) {
+      std::swap(graph.label_curve_starts[node], graph.label_curve_ends[node]);
+    }
+    const auto entirely_north_up = [&] {
+      for (uint32_t sample = 0u; sample <= 12u; ++sample) {
+        const float t = float(sample) / 12.0f;
+        const float u = 1.0f - t;
+        const glm::vec3 direction = glm::normalize(graph.label_curve_starts[node] * (u * u) +
+                                                    control * (2.0f * u * t) +
+                                                    graph.label_curve_ends[node] * (t * t));
+        glm::vec3 local_tangent = (control - graph.label_curve_starts[node]) * u +
+                                  (graph.label_curve_ends[node] - control) * t;
+        local_tangent -= direction * glm::dot(direction, local_tangent);
+        const glm::vec3 local_north = glm::vec3(0.0f, 1.0f, 0.0f) - direction * direction.y;
+        if (glm::dot(local_tangent, local_tangent) > 1.0e-12f &&
+            glm::dot(glm::cross(direction, local_tangent), local_north) < -1.0e-7f) return false;
+      }
+      return true;
+    };
+    if (!entirely_north_up()) {
+      // A highly asymmetric clipped cell can make the principal-axis curve turn back at one endpoint. Scaling
+      // that curve cannot change the sign of its derivative and eventually collapses it. Replace only this
+      // exceptional path with a symmetric curve along its principal tangent and shrink it against canonical
+      // ownership. Retaining that tangent matters for a long north-south province; forcing local east would
+      // satisfy orientation by making precisely that useful label corridor unnecessarily tiny.
+      glm::vec3 axis = graph.label_curve_ends[node] - graph.label_curve_starts[node];
+      axis -= control * glm::dot(control, axis);
+      if (glm::dot(axis, axis) < 1.0e-8f) axis = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), control);
+      if (glm::dot(axis, axis) < 1.0e-8f) axis = glm::cross(glm::vec3(1.0f, 0.0f, 0.0f), control);
+      axis = glm::normalize(axis);
+      if (glm::dot(glm::cross(control, axis), north) < 0.0f) axis = -axis;
+      float half_span = std::max(std::acos(std::clamp(glm::dot(graph.label_curve_starts[node],
+                                                               graph.label_curve_ends[node]), -1.0f, 1.0f)) * 0.5f,
+                                 0.0008f);
+      for (uint32_t attempt = 0u; attempt < 12u; ++attempt) {
+        const glm::vec3 start = glm::normalize(control - axis * half_span);
+        const glm::vec3 end = glm::normalize(control + axis * half_span);
+        bool contained = true;
+        for (uint32_t sample = 0u; sample <= 12u; ++sample) {
+          const float t = float(sample) / 12.0f;
+          const float u = 1.0f - t;
+          const glm::vec3 direction = glm::normalize(start * (u * u) + control * (2.0f * u * t) +
+                                                      end * (t * t));
+          contained &= sample_region(direction).id == graph.province_ids[node];
+        }
+        if (contained) {
+          graph.label_curve_starts[node] = start;
+          graph.label_curve_ends[node] = end;
+          break;
+        }
+        half_span *= 0.72f;
+      }
+    }
   }
 
   std::vector<std::pair<uint32_t, uint32_t>> edges;

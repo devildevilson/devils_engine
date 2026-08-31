@@ -27,7 +27,7 @@ layout(set = 1, binding = 0) uniform texture2D textures[16];
 layout(set = 1, binding = 1) uniform sampler samplers[1];
 #define LABEL_SAMPLER sampler2D(textures[clamp(uint(in_effect.x + 0.5), 0u, 15u)], samplers[0])
 
-uint region_at(const vec3 direction) {
+uvec2 ownership_at(const vec3 direction) {
   const vec3 magnitude = abs(direction);
   uint face;
   vec2 uv;
@@ -43,7 +43,8 @@ uint region_at(const vec3 direction) {
   const uvec2 xy = uvec2(clamp((uv * 0.5 + 0.5) * float(side) + 0.5, vec2(0.0), vec2(float(side))));
   const uint stride = side + 1u;
   const uint packed = political_atlas.texels[face * stride * stride + xy.y * stride + xy.x];
-  return political_regions.cells[packed & 0xffffu].metadata.x;
+  const uvec4 metadata = political_regions.cells[packed & 0xffffu].metadata;
+  return metadata.xz;
 }
 
 void main() {
@@ -54,7 +55,13 @@ void main() {
   const vec3 world = world_h.xyz / world_h.w;
   const vec3 planet = (camera_data.world_to_planet * vec4(world, 1.0)).xyz;
   const uint owner_region = floatBitsToUint(in_effect.w);
-  if (owner_region != 0xffffffffu && region_at(normalize(planet)) != owner_region) discard;
+  if (owner_region != 0xffffffffu) {
+    const bool state_label = (owner_region & 0xc0000000u) == 0x40000000u;
+    // A province name is a strictly local decal and must not leak into its neighbour. A state name is a
+    // cartographic annotation: its centreline is fitted and trimmed to owned territory on the CPU, but
+    // clipping the broad SDF glyph footprint at every coast/frontier makes the word itself unreadable.
+    if (!state_label && ownership_at(normalize(planet)).x != owner_region) discard;
+  }
   const vec3 local = (in_planet_to_decal * vec4(planet, 1.0)).xyz;
   if (any(greaterThan(abs(local), vec3(0.5)))) discard;
 

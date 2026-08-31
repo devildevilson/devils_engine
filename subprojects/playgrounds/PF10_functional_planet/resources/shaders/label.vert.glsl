@@ -37,7 +37,10 @@ void main() {
   const vec3 world_anchor = (camera_data.planet_to_world * vec4(local_anchor, 1.0)).xyz;
   const vec3 world_radial = normalize((camera_data.planet_to_world * vec4(glyph.decal_to_planet[2].xyz, 0.0)).xyz);
   const bool province_lod = length(camera_data.camera_position.xyz) < 1.72;
-  const bool glyph_is_province = floatBitsToUint(glyph.effect.w) != 0xffffffffu;
+  const uint owner = floatBitsToUint(glyph.effect.w);
+  // Land province IDs occupy class 00. State labels use the explicit 01 marker and belong to the far LOD;
+  // treating every clipped label as provincial would cull all state glyphs as soon as clipping was enabled.
+  const bool glyph_is_province = owner != 0xffffffffu && (owner & 0xc0000000u) == 0u;
   if (province_lod != glyph_is_province || dot(world_radial, camera_data.camera_position.xyz - world_anchor) <= 0.015) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
   } else {

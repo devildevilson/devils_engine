@@ -123,11 +123,11 @@ glm::vec3 evaluate_curve(const surface_label_curve& curve, const float t) {
   return glm::normalize(curve.start * (u * u) + curve.control * (2.0f * u * t) + curve.end * (t * t));
 }
 
-float curve_length(const surface_label_curve& curve) {
+float curve_length(const surface_label_curve& curve, const float begin = 0.0f, const float end = 1.0f) {
   float result = 0.0f;
-  glm::vec3 previous = evaluate_curve(curve, 0.0f);
+  glm::vec3 previous = evaluate_curve(curve, begin);
   for (uint32_t i = 1u; i <= 16u; ++i) {
-    const glm::vec3 current = evaluate_curve(curve, float(i) / 16.0f);
+    const glm::vec3 current = evaluate_curve(curve, glm::mix(begin, end, float(i) / 16.0f));
     result += std::acos(std::clamp(glm::dot(previous, current), -1.0f, 1.0f));
     previous = current;
   }
@@ -172,18 +172,26 @@ surface_label_curve fit_group_curve(const std::vector<glm::vec3>& points) {
     if (along < minimum) { minimum = along; result.start = direction; }
     if (along > maximum) { maximum = along; result.end = direction; }
   }
-  constexpr float endpoint_inset = 0.58f;
+  // State text is the far-LOD cartographic label: use almost the full longitudinal extent. Glyph placement
+  // retains its own small end margin, so the curve itself can approach the extreme member provinces.
+  constexpr float endpoint_inset = 0.90f;
   result.start = glm::normalize(glm::mix(result.control, result.start, endpoint_inset));
   result.end = glm::normalize(glm::mix(result.control, result.end, endpoint_inset));
+  const glm::vec3 north = glm::vec3(0.0f, 1.0f, 0.0f) - result.control * result.control.y;
+  const glm::vec3 tangent = result.end - result.start;
+  if (glm::dot(glm::cross(result.control, tangent), north) < 0.0f) std::swap(result.start, result.end);
   return result;
 }
 
 void append_surface_label(std::vector<decal_glyph>& result, const visage::font_t& font,
                           const std::string_view text, const surface_label_curve& curve,
                           const float maximum_font_height, const float transverse_clearance,
-                          const glm::vec4 fill, const uint32_t texture_slot, const uint32_t owner_region) {
+                          const float longitudinal_margin, const glm::vec4 fill,
+                          const uint32_t texture_slot, const uint32_t owner_region,
+                          const float curve_begin = 0.0f, const float curve_end = 1.0f) {
   const float unit_width = std::max(float(font.text_width(1.0, text)), 0.001f);
-  const float available_length = std::max(curve_length(curve) * 0.78f, 0.001f);
+  const float occupied_fraction = 1.0f - longitudinal_margin * 2.0f;
+  const float available_length = std::max(curve_length(curve, curve_begin, curve_end) * occupied_fraction, 0.001f);
   const float font_height = std::min({maximum_font_height, available_length / unit_width,
                                       transverse_clearance * 1.25f});
   float unit_cursor = 0.0f;
@@ -196,10 +204,13 @@ void append_surface_label(std::vector<decal_glyph>& result, const visage::font_t
         const float height = float(glyph->pt - glyph->pb) * font_height;
         const float glyph_centre_unit = unit_cursor + (float(glyph->pl) +
                                          float(glyph->pr - glyph->pl) * 0.5f);
-        const float t = std::clamp(0.11f + 0.78f * glyph_centre_unit / unit_width, 0.0f, 1.0f);
+        const float local_t = std::clamp(longitudinal_margin + occupied_fraction * glyph_centre_unit / unit_width,
+                                         0.0f, 1.0f);
+        const float t = glm::mix(curve_begin, curve_end, local_t);
         const glm::vec3 curve_direction = evaluate_curve(curve, t);
-        const glm::vec3 before = evaluate_curve(curve, std::max(t - 0.004f, 0.0f));
-        const glm::vec3 after = evaluate_curve(curve, std::min(t + 0.004f, 1.0f));
+        const float tangent_step = std::max((curve_end - curve_begin) * 0.004f, 1.0e-5f);
+        const glm::vec3 before = evaluate_curve(curve, std::max(t - tangent_step, curve_begin));
+        const glm::vec3 after = evaluate_curve(curve, std::min(t + tangent_step, curve_end));
         const glm::vec3 curve_right = glm::normalize((after - before) - curve_direction *
                                                      glm::dot(after - before, curve_direction));
         const glm::vec3 curve_up = glm::normalize(glm::cross(curve_direction, curve_right));
@@ -227,29 +238,57 @@ label_set make_labels(const visage::font_t& font, const uint32_t texture_slot, c
                       const glm::vec3 presentation_direction) {
   label_set result;
   result.glyphs.reserve(graph.province_ids.size() * 6u + 64u);
-  struct empire_source { const char* text; glm::vec3 seed; };
-  const glm::vec3 front = glm::normalize(presentation_direction);
-  const auto state_seed = [&](const uint32_t state) {
-    return state < graph.state_centres.size() ? graph.state_centres[state] : front;
-  };
-  const std::array<empire_source, 3> empires{{
-    {"NORTHREACH", state_seed(0u)}, {"MERIDIAN SEA", state_seed(1u)}, {"EMBER COAST", state_seed(2u)}}};
-  std::array<std::vector<std::pair<float, glm::vec3>>, 3> state_candidates;
+  constexpr uint32_t state_owner_bit = 0x40000000u;
+  const std::array<const char*, 3> state_names{{"NORTHREACH", "MERIDIAN SEA", "EMBER COAST"}};
+  const glm::vec3 presentation = glm::normalize(presentation_direction);
+  std::array<std::vector<glm::vec3>, 3> all_state_members;
+  std::array<std::vector<glm::vec3>, 3> state_members;
   for (uint32_t province = 0u; province < graph.centre_directions.size(); ++province) {
     const uint32_t owner = province < graph.state_ids.size() ? graph.state_ids[province] : no_region;
-    if (owner >= state_candidates.size()) continue;
-    const float owner_score = glm::dot(graph.centre_directions[province], empires[owner].seed);
-    state_candidates[owner].emplace_back(owner_score, graph.centre_directions[province]);
+    if (owner >= state_members.size()) continue;
+    const glm::vec3 direction = graph.centre_directions[province];
+    all_state_members[owner].push_back(direction);
+    // One planet-wide state label cannot be legible on both hemispheres. Fit the authored presentation-side
+    // instance to the full safely visible portion; it remains planet-local and rotates away with the globe.
+    if (glm::dot(direction, presentation) > 0.34f) state_members[owner].push_back(direction);
   }
-  for (uint32_t empire = 0u; empire < std::size(empires); ++empire) {
-    auto& nearest = state_candidates[empire];
-    std::ranges::sort(nearest, [](const auto& a, const auto& b) { return a.first > b.first; });
-    std::vector<glm::vec3> member_provinces;
-    const size_t member_count = std::min(nearest.size(), size_t(96));
-    member_provinces.reserve(member_count);
-    for (size_t member = 0; member < member_count; ++member) member_provinces.push_back(nearest[member].second);
-    append_surface_label(result.glyphs, font, empires[empire].text, fit_group_curve(member_provinces),
-                         0.034f, 0.034f, glm::vec4(0.94f, 0.91f, 0.80f, 1.0f), texture_slot, no_region);
+  const auto state_at = [&](const glm::vec3 direction) {
+    const uint32_t id = sample_region(direction).id;
+    const auto found = std::ranges::lower_bound(graph.province_ids, id);
+    if (found == graph.province_ids.end() || *found != id) return no_region;
+    return graph.state_ids[size_t(found - graph.province_ids.begin())];
+  };
+  const auto longest_owned_interval = [&](const surface_label_curve& curve, const uint32_t state) {
+    constexpr uint32_t samples = 512u;
+    float best_begin = 0.0f;
+    float best_end = 0.0f;
+    float run_begin = 0.0f;
+    bool inside = state_at(evaluate_curve(curve, 0.0f)) == state;
+    for (uint32_t i = 1u; i <= samples; ++i) {
+      const float t = float(i) / float(samples);
+      const bool next_inside = state_at(evaluate_curve(curve, t)) == state;
+      if (next_inside && !inside) run_begin = t;
+      if ((!next_inside || i == samples) && inside) {
+        const float run_end = next_inside ? t : float(i - 1u) / float(samples);
+        if (curve_length(curve, run_begin, run_end) > curve_length(curve, best_begin, best_end)) {
+          best_begin = run_begin;
+          best_end = run_end;
+        }
+      }
+      inside = next_inside;
+    }
+    // Keep the glyph centres away from the sampled frontier. Ownership clipping remains authoritative for
+    // the glyph footprint, while this inset prevents a numerical boundary crossing from splitting a letter.
+    const float inset = std::min((best_end - best_begin) * 0.025f, 0.012f);
+    return std::pair{best_begin + inset, best_end - inset};
+  };
+  for (uint32_t state = 0u; state < state_names.size(); ++state) {
+    const auto& members = state_members[state].size() >= 8u ? state_members[state] : all_state_members[state];
+    const surface_label_curve curve = fit_group_curve(members);
+    const auto [curve_begin, curve_end] = longest_owned_interval(curve, state);
+    append_surface_label(result.glyphs, font, state_names[state], curve,
+                         0.110f, 0.100f, 0.035f, glm::vec4(0.94f, 0.91f, 0.80f, 1.0f), texture_slot,
+                         state_owner_bit | state, curve_begin, curve_end);
   }
   result.empire_glyphs = uint32_t(result.glyphs.size());
   for (uint32_t province = 0; province < graph.province_ids.size(); ++province) {
@@ -257,7 +296,7 @@ label_set make_labels(const visage::font_t& font, const uint32_t texture_slot, c
     append_surface_label(result.glyphs, font, text,
                          {graph.label_curve_starts[province], graph.label_directions[province],
                           graph.label_curve_ends[province]},
-                         0.0080f, graph.label_clearance[province],
+                         0.0080f, graph.label_clearance[province], 0.11f,
                          glm::vec4(0.95f, 0.94f, 0.88f, 0.96f), texture_slot,
                          graph.province_ids[province]);
   }

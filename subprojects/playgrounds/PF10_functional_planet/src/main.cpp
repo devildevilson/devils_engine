@@ -161,6 +161,23 @@ int verify() {
             }
             return true;
           }), "Bezier label corridors remain inside their province");
+  check(label_layout_complete &&
+          std::ranges::all_of(std::views::iota(size_t(0), graph.province_ids.size()), [&](const size_t node) {
+            for (uint32_t sample = 0u; sample <= 8u; ++sample) {
+              const float t = float(sample) / 8.0f;
+              const float u = 1.0f - t;
+              const glm::vec3 direction = glm::normalize(graph.label_curve_starts[node] * (u * u) +
+                                                          graph.label_directions[node] * (2.0f * u * t) +
+                                                          graph.label_curve_ends[node] * (t * t));
+              glm::vec3 tangent = graph.label_directions[node] - graph.label_curve_starts[node];
+              tangent = tangent * u + (graph.label_curve_ends[node] - graph.label_directions[node]) * t;
+              tangent -= direction * glm::dot(direction, tangent);
+              if (glm::dot(tangent, tangent) < 1.0e-12f) continue;
+              const glm::vec3 north = glm::vec3(0.0f, 1.0f, 0.0f) - direction * direction.y;
+              if (glm::dot(glm::cross(direction, tangent), north) < -1.0e-7f) return false;
+            }
+            return true;
+          }), "province label up never turns more than 90 degrees away from local north");
   float minimum_label_span = std::numeric_limits<float>::max();
   uint32_t collapsed_label_curves = 0u;
   uint32_t subpixel_provinces = 0u;
