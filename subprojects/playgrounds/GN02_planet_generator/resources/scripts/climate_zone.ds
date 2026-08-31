@@ -1,0 +1,23 @@
+// Климатическая зона: лестница правил по лету, зиме и осадкам.
+//
+// Порядок ветвей — это порядок ГЛАВНОСТИ признака, а не удобства. Сначала решается вопрос «вода или
+// суша», потом «бывает ли лето», потом «есть ли вода в году», и только потом «жарко или холодно».
+// Обратный порядок дал бы тропическую пустыню там, где на самом деле полярная.
+//
+// Идентификаторы зон совпадают с таблицей имён в main.cpp: правило здесь, имена там, числа в
+// values.tavl. Восьмой порог (высокогорье) живёт отдельным правилом alpine.ds — не по вкусу, а
+// потому что у контекста devils_script восемь слотов аргументов, и семь из них уже заняты.
+//
+//   0 океан   1 морской лёд   2 ледник   3 тундра   4 тайга
+//   5 лес     6 степь         7 пустыня  8 саванна  9 джунгли   10 высокогорье
+{
+  value_or = { land < 0.5 and temperature_summer - ctx:arg:ice_summer < 0, 1,
+  value_or = { land < 0.5, 0,
+  value_or = { temperature_summer - ctx:arg:ice_summer < 0, 2,
+  value_or = { temperature_summer - ctx:arg:tundra_summer < 0, 3,
+  value_or = { precipitation - ctx:arg:arid_precipitation < 0, 7,
+  value_or = { precipitation - ctx:arg:steppe_precipitation < 0, 6,
+  value_or = { temperature_winter - ctx:arg:tropical_winter > 0 and precipitation - ctx:arg:wet_precipitation > 0, 9,
+  value_or = { temperature_winter - ctx:arg:tropical_winter > 0, 8,
+  value_or = { temperature_summer - ctx:arg:boreal_summer < 0, 4, 5 } } } } } } } } }
+}

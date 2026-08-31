@@ -165,6 +165,13 @@ originator::pipeline_description load_description(const options& opts) {
   return description;
 }
 
+// Перф-стенд намеренно нарушает правило «lua не обходит плотный буфер поэлементно» — он ровно это и
+// измеряет. Поэтому бюджет тела шага здесь снимается ВСЛУХ: по умолчанию он ненулевой, и зацикленное
+// тело падает с номером строки вместо того, чтобы повесить генерацию.
+void allow_unbounded_scripts(originator::script_host& host) {
+  host.set_budget(originator::script_budget{.instruction_limit = 0, .wall_time_us = 0});
+}
+
 void load_bodies(originator::script_host& host, const originator::pipeline_description& description) {
   const auto root = resource_root();
   for (const auto& step : description.steps) {
@@ -510,6 +517,121 @@ int run_verify(const options& opts) {
     check(rejected, "чтение буфера до первой записи отклоняется");
   }
 
+  // 6. Окружение lua и бюджет тела шага.
+  //
+  // Стейт генератора — СВОЙ, а не общий с visage, и проверяется это не «по построению», а списком:
+  // в окружении нет ни файловой системы, ни os, ни load, ни math.random, ни UI-глобалов visage.
+  // Разделение важно в обе стороны: скрипт генератора не должен уметь тронуть UI, а UI-скрипт не
+  // должен видеть буферы генератора.
+  {
+    static constexpr std::string_view environment_body = R"lua(
+      return function(step)
+        local forbidden = {
+          "io", "os", "package", "require", "dofile", "loadfile", "load", "loadstring",
+          "debug", "collectgarbage", "newproxy",
+          -- глобалы visage: если они здесь видны, значит стейты смешаны
+          "nk", "app", "ui", "settings",
+        }
+        for i = 1, #forbidden do
+          local name = forbidden[i]
+          if _G[name] ~= nil then error("visible global: " .. name) end
+        end
+        local required = {
+          "assert", "error", "ipairs", "next", "pairs", "pcall", "xpcall", "select",
+          "tonumber", "tostring", "type", "setmetatable", "getmetatable",
+        }
+        for i = 1, #required do
+          local name = required[i]
+          if _G[name] == nil then error("missing global: " .. name) end
+        end
+        if math.random ~= nil or math.randomseed ~= nil then error("math.random is visible") end
+        if _G.originator == nil then error("originator api is missing") end
+        if _G.originator.run == nil then error("originator.run is missing") end
+      end
+    )lua";
+
+    // Тело, которое зацикливается целиком. Обязано упасть с именем шага и номером строки.
+    static constexpr std::string_view loop_body = R"lua(
+      return function(step)
+        local x = 0
+        while true do x = x + 1 end
+      end
+    )lua";
+
+    // То же, но цикл спрятан в pcall: ошибку бюджета тело ловит и возвращается «успешно». Шаг всё
+    // равно обязан провалиться — иначе зацикленное тело с pcall внутри висело бы вечно, а генерация
+    // считала бы его выполненным.
+    static constexpr std::string_view guarded_loop_body = R"lua(
+      return function(step)
+        pcall(function()
+          local x = 0
+          while true do x = x + 1 end
+        end)
+      end
+    )lua";
+
+    const auto run_probe = [&](const std::string_view& step_name, const std::string_view& source,
+                               const originator::script_budget budget) {
+      originator::script_host host(tools, nullptr);
+      host.set_budget(budget);
+      host.load_body(step_name, source, std::string("verify/") + std::string(step_name) + ".lua");
+
+      auto probe = description;
+      probe.steps.clear();
+      originator::step_description step;
+      step.name = std::string(step_name);
+      step.body = std::string("verify/") + std::string(step_name) + ".lua";
+      step.writes.push_back("cells");
+      probe.steps.push_back(std::move(step));
+
+      originator::pipeline p(probe, sizes, opts.seed);
+      p.run(host.invoker());
+    };
+
+    {
+      originator::script_host fresh(tools, nullptr);
+      check(fresh.budget().instruction_limit != 0,
+            "бюджет тела шага по умолчанию НЕ бесконечный");
+    }
+
+    bool clean = true;
+    std::string environment_error;
+    try {
+      run_probe("environment", environment_body, originator::script_budget{});
+    } catch (const std::exception& error) {
+      clean = false;
+      environment_error = error.what();
+    }
+    check(clean, std::string("окружение генератора отдельное и без недетерминизма: ") + environment_error);
+
+    // Бюджет здесь маленький намеренно: проверка обязана занимать миллисекунды, а не ждать
+    // настоящего лимита. Шаг хука считается из лимита, поэтому маленький лимит и ловится рано.
+    bool rejected = false;
+    try {
+      run_probe("loop", loop_body, originator::script_budget{.instruction_limit = 200000, .wall_time_us = 0});
+    } catch (const std::exception&) {
+      rejected = true;
+    }
+    check(rejected, "бесконечный цикл в теле шага падает по бюджету инструкций");
+
+    rejected = false;
+    try {
+      run_probe("loop", loop_body, originator::script_budget{.instruction_limit = 0, .wall_time_us = 20000});
+    } catch (const std::exception&) {
+      rejected = true;
+    }
+    check(rejected, "тот же цикл падает по бюджету времени, когда лимит инструкций снят");
+
+    rejected = false;
+    try {
+      run_probe("guarded_loop", guarded_loop_body,
+                originator::script_budget{.instruction_limit = 200000, .wall_time_us = 0});
+    } catch (const std::exception&) {
+      rejected = true;
+    }
+    check(rejected, "проглоченная pcall'ом ошибка бюджета всё равно проваливает шаг");
+  }
+
   std::cout << "GN01 verify: " << (checks - failures) << "/" << checks << "\n";
   return failures == 0 ? 0 : 1;
 }
@@ -545,6 +667,7 @@ int run_bench(const options& opts) {
     // Полный пайплайн последовательно и параллельно.
     {
       originator::script_host host(tools, nullptr);
+      allow_unbounded_scripts(host);
       load_bodies(host, description);
       originator::pipeline p(description, sizes, opts.seed);
       measure(std::string("пайплайн, ") + std::string(to_string(layout)) + ", 1 поток", count,
@@ -552,6 +675,7 @@ int run_bench(const options& opts) {
     }
     {
       originator::script_host host(tools, &pool);
+      allow_unbounded_scripts(host);
       load_bodies(host, description);
       originator::pipeline p(description, sizes, opts.seed);
       measure(std::string("пайплайн, ") + std::string(to_string(layout)) + ", " + std::to_string(threads) + " потоков",
@@ -564,6 +688,7 @@ int run_bench(const options& opts) {
   {
     auto description = load_description(opts);
     originator::script_host host(tools, &pool);
+    allow_unbounded_scripts(host);
     load_bodies(host, description);
     originator::pipeline p(description, sizes, opts.seed);
 
@@ -588,6 +713,7 @@ int run_bench(const options& opts) {
   {
     auto description = load_description(opts);
     originator::script_host host(tools, &pool);
+    allow_unbounded_scripts(host);
     load_bodies(host, description);
     originator::pipeline p(description, sizes, opts.seed);
     p.run(host.invoker());
@@ -669,6 +795,7 @@ int run_bench(const options& opts) {
   {
     auto description = load_description(opts);
     originator::script_host host(tools, &pool);
+    allow_unbounded_scripts(host);
     load_bodies(host, description);
     host.load_body("classify_lua", read_file(resource_root() / "scripts/classify_lua.lua"), "scripts/classify_lua.lua");
 
@@ -727,6 +854,7 @@ int run_bench(const options& opts) {
 
     if (semantics_index < description.steps.size()) {
       originator::script_host serial_host(tools, nullptr);
+      allow_unbounded_scripts(serial_host);
       load_bodies(serial_host, description);
       originator::pipeline serial_pipeline(description, sizes, opts.seed);
       for (size_t i = 0; i < semantics_index; ++i) {

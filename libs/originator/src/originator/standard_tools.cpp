@@ -193,6 +193,73 @@ void tool_remap(const tool_call& call, const size_t begin, const size_t end) {
   }
 }
 
+// Произведение двух полей: scale * a * b + offset.
+//
+// Нужно ровно там, где величину надо ОГРАНИЧИТЬ маской: сумма осадков по суше, население по
+// пригодным клеткам, что угодно «только там, где». Через свёртку по полю с маской это не выражается —
+// свёртка читает одно поле, — а заводить свёртку с маской значило бы удваивать каждую из них.
+void tool_modulate(const tool_call& call, const size_t begin, const size_t end) {
+  const auto first = call.input(0).read();
+  const auto second = call.input(1).read();
+  auto target = call.output(0).write();
+
+  const double scale = call.params->number("scale", 1.0);
+  const double offset = call.params->number("offset", 0.0);
+
+  for (size_t i = begin; i < end; ++i) {
+    target.set(i, scale * first.get(i) * second.get(i) + offset);
+  }
+}
+
+// Экспоненциальный спад по расстоянию: offset + amplitude * exp(-x / width).
+//
+// Существует не для удобства, а потому что этой формой описывается почти всё, что «спадает от
+// границы»: поднятие от сходящегося стыка, глубина жёлоба, высота хребта, влияние берега. Правило на
+// devils_script её выразить не может: в этой версии ds вызов функции НЕ является операндом
+// выражения, а разбивать формулу на программу из одного вызова на каждое слагаемое — это уже не
+// правило, а сборка. Поэтому спад считает движок, а конфиг остаётся местом, где спады складываются.
+void tool_decay(const tool_call& call, const size_t begin, const size_t end) {
+  const auto source = call.input(0).read();
+  auto target = call.output(0).write();
+
+  const double width = call.params->number("width", 1.0);
+  const double amplitude = call.params->number("amplitude", 1.0);
+  const double offset = call.params->number("offset", 0.0);
+  if (width <= 0.0) {
+    utils::error{}("originator step '{}': decay needs a positive width, got {}", call.step_name, width);
+  }
+
+  for (size_t i = begin; i < end; ++i) {
+    // Отрицательное расстояние — это метка «недостигнуто», а не расстояние. Растить от неё
+    // экспоненту нельзя: получилось бы, что дальше всех влияет сильнее всех.
+    const double distance = std::max(0.0, source.get(i));
+    target.set(i, offset + amplitude * std::exp(-distance / width));
+  }
+}
+
+// Взвешенная сумма двух полей.
+//
+// Выглядит как мелочь, но без неё не собирается ни один многослойный результат: сложить два поля
+// нечем, а правило на devils_script возвращает ОДНО значение в ОДНО поле. Кроме того у контекста
+// devils_script восемь слотов аргументов, поэтому большая формула честно разбивается на слагаемые —
+// и складывать их надо чем-то.
+void tool_blend(const tool_call& call, const size_t begin, const size_t end) {
+  const auto first = call.input(0).read();
+  const auto second = call.input(1).read();
+  auto target = call.output(0).write();
+
+  const double weight_first = call.params->number("first", 1.0);
+  const double weight_second = call.params->number("second", 1.0);
+  const double offset = call.params->number("offset", 0.0);
+  const double lower = call.params->number("min", -std::numeric_limits<double>::infinity());
+  const double upper = call.params->number("max", std::numeric_limits<double>::infinity());
+
+  for (size_t i = begin; i < end; ++i) {
+    const double value = weight_first * first.get(i) + weight_second * second.get(i) + offset;
+    target.set(i, std::clamp(value, lower, upper));
+  }
+}
+
 // Семантическая классификация: тот же расчёт позже повторяется на devils_script и на lua, чтобы
 // сравнение трёх уровней шло по ОДНОЙ задаче, а не по трём разным.
 void tool_classify(const tool_call& call, const size_t begin, const size_t end) {
@@ -307,6 +374,9 @@ void tool_registry::add_standard_tools() {
   add(tool_description{.name = "value_noise", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_value_noise});
   add(tool_description{.name = "remap", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_remap});
   add(tool_description{.name = "classify", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_classify});
+  add(tool_description{.name = "blend", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_blend});
+  add(tool_description{.name = "decay", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_decay});
+  add(tool_description{.name = "modulate", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_modulate});
   add(tool_description{.name = "box_blur", .shape = aperture::gather, .input_count = 1, .output_count = 1, .body = tool_box_blur});
 
   add(tool_description{.name = "reduce_min", .shape = aperture::reduce, .input_count = 1, .output_count = 0,

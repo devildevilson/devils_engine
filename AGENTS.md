@@ -4,6 +4,77 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- GN02 PLANET GENERATOR: FIRST VERTICAL SLICE CLOSED (2026-08-31). New playground
+  `GN02_planet_generator` computes a whole planet downward by CAUSE in seven config-declared steps:
+  topology, tectonics, surface, climate, seasons, peoples, regions. Surface address is a DIRECTION, not
+  a coordinate pair: cells lie on a Fibonacci lattice and adjacency is a symmetrised CSR, so there is no
+  seam and per-cell sums need no area weights. Sea level is not a number but a bisection under a declared
+  land fraction (`29.0%` hit exactly at both resolutions). Five engine additions are generic and now live
+  in `libs/originator`: `add_graph_tools` (`sphere_points`, `sphere_adjacency`, `graph_blur`,
+  `graph_frontier`, `graph_flood`, `graph_vote`, `poisson_seeds`, `lookup`) plus field arithmetic
+  `blend`/`modulate`/`decay`. `graph_flood` takes PASSABILITY separately from cost, because an expensive
+  price is not a ban: a province flooded across a strait stays two pieces after water is masked out, and
+  that shows up only when a border is drawn. Six findings were each a mistake before measurement:
+  (1) precipitation must be normalised by the LAND mean — normalising by the planet made 28% of the
+  surface desert, because it always rains over ocean; (2) convective rain must be non-linear in
+  temperature (exponent 2.5), otherwise the equator comes out DRIER than mid-latitudes and the planet has
+  no tropics; (3) the equatorial bulge at 800 m stopped being a correction and became the cause — three
+  seeds in a row put 78-88% land in polar bands against 15-20% in the tropics, because continental crust
+  floats only 420 m above oceanic, so it was reduced to 150 m; (4) relief smoothing with self-weight 2.4
+  erased mountains entirely (a peak fell to a quarter per pass over ~7 neighbours; global maximum was
+  1132 m); (5) `poisson_seeds` blanks candidates BY STRAIGHT LINE while flood passability follows the
+  GRAPH, so a landlocked sea can lose its seed to one across an isthmus — fixed by a neighbour-step patch
+  wave looped to zero uncovered cells; (6) widths must be declared in RADIANS and divided by the lattice
+  step, or changing resolution silently changes the world. THREE MEASURED devils_script limits reshaped
+  the rules: a function call is not an expression operand; the context has EIGHT argument slots (so at
+  most seven `ctx:arg`); and A LINE BREAK INSIDE AN EXPRESSION SILENTLY CHANGES THE PROGRAM — the same
+  population-growth formula gave `0..0.49` on one line and `0.00013..1` split before a `*`, with no
+  error. The third is a candidate fix for `devils_script` itself. Release on 11 threads: `479 ms` for
+  65536 cells, `1929 ms` for 262144, package `19.0`/`75.7 MB`; parallelism only `1.8x` because floods,
+  seed selection and bisection are sequential by nature. `--verify` is `37/37` on four seeds and
+  `312/312` tests pass. NEXT: rivers/erosion, reading the package in PF10, states and trade.
+- ORIGINATOR LUA ENVIRONMENT AND STEP BUDGET (2026-08-31). The generator's lua state was already its
+  own (`sol::state` + environment, no `math.random`, no io/os, separate build target from `visage`), but
+  two real defects sat under it. First, the whitelist DID NOT WORK: `std::string_view` keys silently
+  missed in sol2 proxying, so every base function and standard library landed in the environment as
+  `nil` — GN01 bodies never noticed because they only touch `step`, `originator` and arithmetic, and the
+  single `error()` in `terrain.lua` sat on a path that never fired, so the error report itself would have
+  crashed. Keys are now `const char*`, and a missing MANDATORY global (`assert`, `error`, `pcall`,
+  `type`, `tostring`, `tonumber`, `pairs`, `ipairs`) or an empty standard library is a loud failure at
+  host construction. Second, the default budget was unlimited, so a looping step body hung forever.
+  Default is now 200M lua INSTRUCTIONS with wall time off: instructions do not count time spent inside a
+  native tool, so they catch exactly what must be caught, while a clock cannot tell a loop from an hour
+  of honest world noise. Hook interval is derived from the limit (a 500-instruction limit with a
+  10000-instruction hook would never fire), and budget exhaustion sets a flag that fails the step EVEN IF
+  `pcall` inside the body swallowed the error — otherwise `pcall(function() while true do end end)` would
+  hang while the pipeline counted the step as done. The perf bench opts out out loud. GN01 `--verify`
+  grew four checks for this and is `22/22`.
+- PF10 FORMALLY CLOSED WITH A STRUCTURAL CLOSING AUDIT (2026-08-31). The audit deliberately has no frozen
+  image gallery: unlike the weather labs there is no meaningful on/off reference contract to protect. It
+  strengthened `--verify` from `39` to `47` checks instead: every one of the 1.58M atlas-512 texels now
+  round-trips through R16 and agrees with canonical kind/state/CSR metadata; playable CSR is explicitly one
+  component; state ribbons and hydrology are bit-identical across repeated builds; every rendered ribbon half
+  samples its recorded physical state; complete river centrelines and 16-sample lake rims remain playable;
+  and 256 planet-wide radial rays return the front displaced owner. This found TWO real data bugs. Two of
+  `1719` atlas-512 state segments sat at ambiguous three-way junctions and used guessed side IDs; they are now
+  omitted instead of lying, with the thin province line retained as coverage fallback (`1717` honest segments,
+  `3944` at runtime atlas-1024). Two lake rims crossed non-playable terrain despite land centres; lake radius
+  now shrinks against canonical rim samples, leaving `959` feature primitives. Debug/Release are `47/47`;
+  min/default mesh, near/far, both layer A/Bs and all three border-debug modes launch. Near/far/exact-debug
+  Vulkan validation is VUID/API clean. Iris Xe 1280x720 Release is `4.324 ms / 231.3 FPS` at `1.16R` and
+  `2.998 / 333.5` at far LOD. PF10 is closed; water port graphs, persistence, deeper hierarchical LOD and
+  heraldic billboards require future consumer-owned scope.
+- PF10 GIANT STATE LABELS + NORTH-UP PROVINCE LABELS CLOSED (2026-08-31). Far LOD state names now use the
+  same PF05-derived MSDF surface decals at genuinely cartographic scale: up to `.110 rad` high, with a small
+  `.035` longitudinal margin over almost the full presentation-side state extent. A 512-sample canonical pass
+  trims the PCA Bézier to its longest continuous centreline inside the connected state. The broad glyph itself
+  is deliberately not pixel-clipped at every coast/frontier because that split letters into unreadable pieces;
+  ownership constrains the path, while province labels remain strictly owner-clipped. Province Béziers are
+  reversed as whole curves when necessary so `cross(surface normal, text tangent)` stays in the local-north
+  half-plane; glyph order remains intact, including near-vertical names. The new verification checks this at
+  nine points along every curve. Release is `4.337 ms / 230.6 FPS` at the `1.16R` camera floor and
+  `2.993 ms / 334 FPS` at far LOD, including about `.11 ms` for 31 giant glyph volumes. `--verify` is `39/39`;
+  Debug/Release build and both near/far Vulkan validation are clean.
 - GN01 GENERATOR CONTRACT CLOSED WITH A CLOSING AUDIT (2026-08-31). New `libs/originator` in four build
   targets: core (buffers/tools/pipeline, no lua and no devils_script), `originator_script`,
   `originator_lua` and `originator_primitives` (FastNoise2 + jc_voronoi). The pipeline lives in `tavl`
@@ -33,27 +104,28 @@ This repository is the author's experimental game engine / framework. It is a la
   scatter merging is deliberately absent: a float accumulator changes `816/1024` group sums with chunk
   arrival order while fixed point changes none. `311/311` tests; package sealing stays a project
   decision, not an engine format.
-- PF10 PIXEL-STABLE PROVINCE + TWO-SIDED STATE BORDERS CLOSED (2026-08-31). The 1024 political cube atlas
-  remains only an accelerator: R16 addresses one of `4702` exact Voronoi records and R16 conservatively gates
-  refinement. Close-up now remaps the full 3x3 candidate stencil across cube-face seams and pays it only in a
-  `0.0048 rad` band. Squared-distance difference is the exact bisector plane; its analytic screen derivative
-  produces a pixel-distance field, so the thin solid province line no longer changes thickness with slope or
-  grows false inset ticks when the nearest feature pair changes. Beyond `1.72R` the shader retains the cheap
-  atlas path. Province CSR is also the canonical ownership hierarchy: all `4032` playable nodes receive one
-  of three fixture state IDs, conservative smoothing removes only narrow bays, and disconnected islands are
-  reassigned whole across their longest frontier; every induced state graph verifies connected. State borders
-  are not inflated province pixels. Atlas transitions are bisection-refined against the canonical evaluator,
-  welded into about `17.4k` planet-local segments and given cumulative angular `s`. One instanced screen-width
-  ribbon draws both neighbours side by side: each half alternates its own two-colour palette along world-locked
-  `s`, with a neutral centre separator. Very short accidental fixture enclaves stay in graph data but omit the
-  state-level symbol at this LOD. `--no-state-borders` and `--border-debug=exact|distance|state` preserve A/B.
-  Far PF05-style labels now consume the same actual state ownership instead of recomputing a separate grouping;
-  curved province labels, world-Y orbit, smooth normals, crack-free 4x focus, hydrology and barriers are intact.
-  Iris Xe 1280x720 Release: near `1.16R` frame 120 is `4.387 ms / 228 FPS`, far frame 80 is `3.268 / 306`;
-  close A/B puts the state ribbon near `0.12 ms`. Its capacity is `3 MiB`; named PF10 config capacities total
-  about `57.2 MiB`. `--verify` is `36/36`; close Vulkan validation is clean. NEXT: water port graph/content
-  naming and hierarchical LOD below the current `1.16R` camera floor; heraldic billboards remain explicitly
-  later. `anomalous_weather` remains in the unnumbered parking lot.
+- PF10 CANONICAL PROVINCE ID COLLISIONS FIXED (2026-08-31). The apparent missing contours and zero-sized
+  names on `0x2EFD4C17`/`0x1A154983` had one structural cause: `(hash_cell & 0x3fffffff)|1` was treated as
+  identity, and `524` active IDs each owned 2–4 distinct 3D Voronoi cell keys. The two reported IDs were four
+  remote cells; area moments joined their locations and collapsed both Beziers, while state assignment made
+  remote pieces false enclaves. The fragment then suppressed the thin province contour on a state frontier,
+  and the presentation filter removed its short closed state trail, leaving no line. Canonical land identity is
+  now an affine permutation of the already unique 18-bit `cell_key` modulo `2^30`; its odd multiplier is a
+  bijection and hashing is only presentation entropy. The working atlas has `4602` playable nodes, `12945`
+  undirected CSR edges and `4702` compact exact records. The four former components now own independent IDs
+  `2B17612A/0B6E5E30/2890AAB3/18FD74A7`, with atlas-1024 label spans `.0324/.0090/.0415/.0440 rad` rather than
+  zero. Every ordinary province line is also retained beneath the later state ribbon as a coverage fallback;
+  discarding a short state symbol can no longer erase the boundary. A clipped-cell label fallback grows and
+  shrinks a symmetric tangent corridor from its verified interior anchor. Atlas-512 verification explicitly
+  proves ID↔cell-key bijection and no collapse among labelable provinces; it records `288` genuine sub-eight-
+  texel fixture slivers which cannot physically contain a five-character decal and must be merged/min-area
+  filtered by future production generation. Unique ownership removes false state topology: atlas-1024 now
+  materializes `3946` state segments in four trails instead of about `17.4k`. Pixel-stable seam-aware province
+  AA, connected three-state CSR ownership, two-sided patterned ribbons, PF05 decals, world-Y orbit, hydrology
+  and 4x focus remain intact. Iris Xe 1280x720 Release: near `1.16R` frame 120 `4.642 ms / 215 FPS`, far frame
+  80 `2.993 / 334`; `--verify` is `38/38`, Debug/Release build and close Vulkan validation are clean. NEXT:
+  water port graph/content naming and hierarchical LOD; heraldic billboards remain later and anomalous weather
+  stays parked.
 - PF08 FORMALLY CLOSED — SLICES 0–7 PLUS CLOSING AUDIT (2026-08-30). Eight permanent 1280x720 frame-80
   PNGs now cover clear noon/sunset/night, overcast, rain, snow, universal magic lightning and aurora. The
   dedicated `verify_audit_frames.sh` launches ONLY PF08, writes temporary PPMs and matched all eight frozen

@@ -1,8 +1,10 @@
 #include "devils_engine/originator/script_host.h"
 
+#include <algorithm>
 #include <bit>
 #include <chrono>
 #include <cstring>
+#include <format>
 
 #include "devils_engine/thread/atomic_pool.h"
 #include "devils_engine/utils/core.h"
@@ -13,13 +15,25 @@ namespace originator {
 namespace {
 // Что видит скрипт генератора. Список намеренно короче UI-окружения: ни math.random, ни os.time, ни
 // файловой системы — всё, из чего мог бы просочиться недетерминизм.
-constexpr std::string_view whitelisted_globals[] = {
+//
+// Ключи здесь именно const char*, и это не косметика: с ключом std::string_view проксирование sol2
+// молча промахивалось, и весь этот список оседал в окружении как nil. Тела шагов GN01 этого не
+// заметили, потому что обращались только к step, originator и арифметике, а единственный error() в
+// terrain.lua стоял на пути, который не срабатывал. Поэтому ниже есть ещё и проверка ЯДРА списка:
+// такая пропажа обязана падать при создании хоста, а не всплывать через полгода на первой ошибке.
+constexpr const char* whitelisted_globals[] = {
   "assert", "error", "ipairs", "next", "pairs", "pcall", "xpcall", "print", "select",
-  "tonumber", "tostring", "type", "unpack", "rawequal", "rawget", "rawset",
+  "tonumber", "tostring", "type", "unpack", "rawequal", "rawget", "rawset", "rawlen",
   "setmetatable", "getmetatable", "_VERSION",
 };
 
-constexpr std::string_view safe_libraries[] = {"coroutine", "string", "table", "math", "utf8"};
+// Без чего тело шага писать нельзя. Отсутствие любого из них означает, что окружение собралось
+// неправильно, а не что автор скрипта чего-то не знает.
+constexpr const char* mandatory_globals[] = {
+  "assert", "error", "pcall", "type", "tostring", "tonumber", "pairs", "ipairs",
+};
+
+constexpr const char* safe_libraries[] = {"coroutine", "string", "table", "math", "utf8"};
 
 char script_host_registry_key = 0;
 
@@ -106,17 +120,39 @@ script_host::script_host(tool_registry& tools, thread::atomic_pool* pool) : tool
   env_ = sol::environment(lua_, sol::create);
   env_["_G"] = env_;
 
-  for (const auto& name : whitelisted_globals) {
-    env_[name] = lua_[name];
+  for (const auto* name : whitelisted_globals) {
+    // unpack в 5.4 не существует (он уехал в table.unpack), поэтому отсутствие имени в списке —
+    // норма, а вот отсутствие ЗНАЧЕНИЯ у скопированного имени было бы тихой потерей.
+    sol::object value = lua_[name];
+    if (value.valid()) {
+      env_[name] = value;
+    }
   }
 
-  for (const auto& library : safe_libraries) {
+  for (const auto* library : safe_libraries) {
+    const sol::object source = lua_[library];
+    if (!source.is<sol::table>()) {
+      utils::error{}("originator: standard library '{}' is not available in the generator state", library);
+    }
+
     sol::table copy(lua_, sol::create);
-    const sol::table original = lua_[library];
+    const sol::table original = source.as<sol::table>();
+    size_t copied = 0;
     for (const auto& pair : original) {
       copy[pair.first] = pair.second;
+      ++copied;
+    }
+    if (copied == 0) {
+      utils::error{}("originator: standard library '{}' copied empty into the generator environment", library);
     }
     env_[library] = copy;
+  }
+
+  for (const auto* name : mandatory_globals) {
+    const sol::object value = env_[name];
+    if (!value.valid()) {
+      utils::error{}("originator: generator environment lost the mandatory global '{}'", name);
+    }
   }
 
   // Источник недетерминизма номер один: скрипт не имеет своего генератора случайности. Зерно
@@ -126,6 +162,10 @@ script_host::script_host(tool_registry& tools, thread::atomic_pool* pool) : tool
 
   lua_pushlightuserdata(lua_.lua_state(), this);
   lua_rawsetp(lua_.lua_state(), LUA_REGISTRYINDEX, &script_host_registry_key);
+
+  // Бюджет по умолчанию ненулевой, поэтому шаг хука обязан быть посчитан от него, а не остаться
+  // значением поля: конструктор и set_budget должны приводить хост в одно и то же состояние.
+  set_budget(budget_);
 
   bind_types();
   bind_tools();
@@ -143,6 +183,13 @@ sol::environment& script_host::env() noexcept {
 
 void script_host::set_budget(const script_budget budget) noexcept {
   budget_ = budget;
+
+  // Шаг хука выводится из лимита, а не берётся константой: с лимитом в 500 инструкций хук, стоящий
+  // раз в 10000, не сработает НИ РАЗУ, и маленький бюджет окажется тихо бесконечным.
+  const uint64_t interval = budget_.instruction_limit == 0
+                              ? 10000ull
+                              : std::min<uint64_t>(budget_.instruction_limit, 10000ull);
+  hook_interval_ = uint32_t(std::max<uint64_t>(interval, 1ull));
 }
 
 const script_budget& script_host::budget() const noexcept {
@@ -157,7 +204,7 @@ void script_host::instruction_hook(lua_State* L, lua_Debug* ar) {
     return;
   }
 
-  self->instruction_counter_ += 1000;
+  self->instruction_counter_ += self->hook_interval_;
 
   const bool instructions_exceeded =
     self->budget_.instruction_limit != 0 && self->instruction_counter_ >= self->budget_.instruction_limit;
@@ -168,9 +215,17 @@ void script_host::instruction_hook(lua_State* L, lua_Debug* ar) {
     return;
   }
 
+  // Флаг ставится ДО ошибки: её может поймать pcall внутри тела, а факт исчерпания бюджета от этого
+  // не исчезает. После возврата из тела хост посмотрит на флаг и всё равно провалит шаг.
+  self->budget_tripped_ = true;
+
   lua_getinfo(L, "Sl", ar);
-  luaL_error(L, "originator step '%s': script budget exceeded at %s:%d",
-             self->current_step_.c_str(), ar->short_src, ar->currentline);
+  // Сообщение собирается заранее и уходит одной строкой: lua_pushfstring понимает лишь узкий набор
+  // спецификаторов, и '%llu' для него не существует.
+  const auto message = std::format("originator step '{}': script budget exceeded ({} instructions, {} us)",
+                                   self->current_step_, self->instruction_counter_,
+                                   uint64_t(now_us() - self->start_time_us_));
+  luaL_error(L, "%s at %s:%d", message.c_str(), ar->short_src, ar->currentline);
 }
 
 void script_host::bind_types() {
@@ -477,8 +532,9 @@ step_invoker script_host::invoker() {
     const bool limited = budget_.instruction_limit != 0 || budget_.wall_time_us != 0;
     if (limited) {
       instruction_counter_ = 0;
+      budget_tripped_ = false;
       start_time_us_ = now_us();
-      lua_sethook(lua_.lua_state(), &script_host::instruction_hook, LUA_MASKCOUNT, 1000);
+      lua_sethook(lua_.lua_state(), &script_host::instruction_hook, LUA_MASKCOUNT, int(hook_interval_));
     }
 
     const auto result = entry->function(step);
@@ -490,6 +546,15 @@ step_invoker script_host::invoker() {
     if (!result.valid()) {
       const sol::error err = result;
       utils::error{}("originator step '{}': body failed: {}", context.name, err.what());
+    }
+
+    // Тело вернулось «успешно», но бюджет по дороге кончился — значит ошибку поймали внутри и
+    // продолжили. Шаг всё равно провален: иначе зацикленное тело с pcall внутри осталось бы висеть,
+    // а генерация — считать его выполненным.
+    if (budget_tripped_) {
+      utils::error{}("originator step '{}': script budget exceeded and the error was swallowed inside the body "
+                     "({} instructions, {} us)",
+                     context.name, instruction_counter_, uint64_t(now_us() - start_time_us_));
     }
   };
 }

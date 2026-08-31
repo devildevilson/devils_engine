@@ -12,6 +12,7 @@ add_library(devils_originator
   src/originator/tools.cpp
   src/originator/standard_tools.cpp
   src/originator/scatter_tools.cpp
+  src/originator/graph_tools.cpp
   src/originator/pipeline.cpp
   include/devils_engine/originator/common.h
   include/devils_engine/originator/buffer.h
