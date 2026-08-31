@@ -47,7 +47,9 @@ struct province_graph {
   std::vector<uint32_t> neighbour_offsets; // size = province_ids.size() + 1
   std::vector<uint32_t> neighbours;        // CSR values are node indices, not hashed ids
   std::vector<glm::vec3> centre_directions;
-  std::vector<glm::vec3> label_directions; // deepest sampled interior point, not merely the centroid
+  std::vector<glm::vec3> label_curve_starts;
+  std::vector<glm::vec3> label_directions; // area-centred quadratic Bezier control point
+  std::vector<glm::vec3> label_curve_ends;
   std::vector<float> label_clearance;      // approximate angular radius available around label_directions
   std::vector<uint8_t> coastal;
   uint32_t undirected_edges = 0;
@@ -111,6 +113,8 @@ uint32_t hash_cell(glm::ivec3 cell) noexcept;
 float surface_height(glm::vec3 direction) noexcept;
 region_sample sample_region(glm::vec3 direction) noexcept;
 glm::vec3 surface_position(glm::vec3 direction) noexcept;
+glm::vec3 orbit_camera_direction(glm::vec3 direction, float horizontal, float vertical,
+                                 float angular_step) noexcept;
 std::vector<glm::vec4> bake_surface_vertices(uint32_t face_side);
 political_atlas bake_political_atlas(uint32_t face_side);
 packed_political_atlas pack_political_atlas(const political_atlas& source);

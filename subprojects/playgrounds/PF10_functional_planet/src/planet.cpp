@@ -11,6 +11,7 @@
 
 #include <glm/common.hpp>
 #include <glm/geometric.hpp>
+#include <glm/mat3x3.hpp>
 #include <glm/vec2.hpp>
 
 namespace devils_engine::pf10 {
@@ -276,6 +277,28 @@ glm::vec3 surface_position(glm::vec3 direction) noexcept {
   return direction * (planet_radius + surface_height(direction));
 }
 
+glm::vec3 orbit_camera_direction(glm::vec3 direction, const float horizontal, const float vertical,
+                                 const float angular_step) noexcept {
+  direction = glm::normalize(direction);
+  const glm::vec3 world_up{0.0f, 1.0f, 0.0f};
+  glm::vec3 side = glm::cross(world_up, direction);
+  if (glm::dot(side, side) < 1.0e-8f) side = {1.0f, 0.0f, 0.0f};
+  else side = glm::normalize(side);
+  glm::vec3 north = world_up - direction * direction.y;
+  if (glm::dot(north, north) < 1.0e-8f) north = {0.0f, 0.0f, direction.y >= 0.0f ? -1.0f : 1.0f};
+  else north = glm::normalize(north);
+  if (horizontal != 0.0f || vertical != 0.0f) {
+    direction = glm::normalize(direction + (side * horizontal + north * vertical) * angular_step);
+  }
+
+  constexpr float maximum_camera_y = 0.94f;
+  const float clamped_y = std::clamp(direction.y, -maximum_camera_y, maximum_camera_y);
+  glm::vec2 horizontal_direction{direction.x, direction.z};
+  if (glm::dot(horizontal_direction, horizontal_direction) < 1.0e-8f) horizontal_direction = {0.0f, 1.0f};
+  horizontal_direction = glm::normalize(horizontal_direction) * std::sqrt(1.0f - clamped_y * clamped_y);
+  return {horizontal_direction.x, clamped_y, horizontal_direction.y};
+}
+
 std::vector<glm::vec4> bake_surface_vertices(const uint32_t face_side) {
   const uint32_t side = std::max(face_side, 1u);
   const uint64_t nodes_per_face = uint64_t(side + 1u) * uint64_t(side + 1u);
@@ -333,8 +356,10 @@ political_atlas bake_political_atlas(const uint32_t face_side) {
 
   struct centre_accumulator {
     glm::vec3 sum{0.0f};
-    glm::vec3 label_direction{0.0f, 1.0f, 0.0f};
+    glm::mat3 second_moment{0.0f};
+    glm::vec3 deepest_direction{0.0f, 1.0f, 0.0f};
     float best_edge = -1.0f;
+    float weight = 0.0f;
     uint32_t count = 0;
     bool coastal = false;
   };
@@ -360,11 +385,18 @@ political_atlas bake_political_atlas(const uint32_t face_side) {
         result.texels[texel_index(face, x, y)] = {region.id, angular_edge, region.cell_key};
         if (region.kind == region_kind::land) {
           auto& centre = centres[region.id];
-          centre.sum += direction;
+          // Cube-map texels do not cover equal solid angles. Weighting by the projection Jacobian keeps the
+          // label centre near the middle of spherical area instead of pulling it toward cube corners.
+          const float weight = std::pow(1.0f + glm::dot(uv, uv), -1.5f);
+          centre.sum += direction * weight;
+          centre.second_moment += glm::mat3(direction * direction.x,
+                                             direction * direction.y,
+                                             direction * direction.z) * weight;
+          centre.weight += weight;
           ++centre.count;
           if (angular_edge > centre.best_edge) {
             centre.best_edge = angular_edge;
-            centre.label_direction = direction;
+            centre.deepest_direction = direction;
           }
         } else if (region.kind == region_kind::water) water_ids.insert(region.id);
         else if (region.kind == region_kind::mountain) mountain_ids.insert(region.id);
@@ -459,17 +491,105 @@ political_atlas bake_political_atlas(const uint32_t face_side) {
   std::unordered_map<uint32_t, uint32_t> node_index;
   node_index.reserve(graph.province_ids.size());
   graph.centre_directions.resize(graph.province_ids.size());
+  graph.label_curve_starts.resize(graph.province_ids.size());
   graph.label_directions.resize(graph.province_ids.size());
+  graph.label_curve_ends.resize(graph.province_ids.size());
   graph.label_clearance.resize(graph.province_ids.size());
   graph.coastal.resize(graph.province_ids.size());
+  std::vector<glm::vec3> label_axes(graph.province_ids.size());
   for (uint32_t i = 0; i < graph.province_ids.size(); ++i) {
     const uint32_t id = graph.province_ids[i];
     node_index.emplace(id, i);
     const auto& centre = centres.at(id);
-    graph.centre_directions[i] = glm::normalize(centre.sum);
-    graph.label_directions[i] = centre.label_direction;
-    graph.label_clearance[i] = centre.best_edge;
+    const glm::vec3 centre_direction = glm::normalize(centre.sum);
+    graph.centre_directions[i] = centre_direction;
+    graph.label_directions[i] = centre_direction;
+    const glm::mat3 projection = glm::mat3(1.0f) - glm::mat3(centre_direction * centre_direction.x,
+                                                             centre_direction * centre_direction.y,
+                                                             centre_direction * centre_direction.z);
+    const glm::mat3 moment = centre.second_moment / std::max(centre.weight, 1.0e-6f);
+    const glm::mat3 covariance = projection * moment * projection;
+    glm::vec3 east = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), centre_direction);
+    if (glm::dot(east, east) < 1.0e-6f) east = glm::cross(glm::vec3(1.0f, 0.0f, 0.0f), centre_direction);
+    east = glm::normalize(east);
+    glm::vec3 axis = east;
+    for (uint32_t iteration = 0; iteration < 8u; ++iteration) {
+      const glm::vec3 next = projection * (covariance * axis);
+      if (glm::dot(next, next) < 1.0e-12f) break;
+      axis = glm::normalize(next);
+    }
+    // Stable left-to-right orientation prevents a label from being generated upside-down on the same map.
+    if (glm::dot(axis, east) < 0.0f) axis = -axis;
+    label_axes[i] = axis;
     graph.coastal[i] = uint8_t(centre.coastal);
+  }
+
+  // A second linear atlas pass chooses the materialized point closest to the spherical area centroid and the
+  // two farthest points along the principal tangent axis. Endpoints are pulled inward before becoming the
+  // quadratic Bezier span, so glyph projection volumes stay away from political borders.
+  std::vector<float> anchor_scores(graph.province_ids.size(), -std::numeric_limits<float>::max());
+  std::vector<float> minimum_projection(graph.province_ids.size(), std::numeric_limits<float>::max());
+  std::vector<float> maximum_projection(graph.province_ids.size(), -std::numeric_limits<float>::max());
+  for (uint32_t face = 0; face < 6u; ++face) {
+    for (uint32_t y = 0; y <= side; ++y) {
+      for (uint32_t x = 0; x <= side; ++x) {
+        const auto& texel = result.texels[texel_index(face, x, y)];
+        if (!is_land_id(texel.region_id)) continue;
+        const auto found = node_index.find(texel.region_id);
+        if (found == node_index.end()) continue;
+        const uint32_t node = found->second;
+        const glm::vec2 uv = glm::vec2(float(x), float(y)) / float(side) * 2.0f - 1.0f;
+        const glm::vec3 direction = cube_direction(face, uv);
+        const glm::vec3 centre_direction = graph.centre_directions[node];
+        const float anchor_score = glm::dot(direction, centre_direction) + texel.edge_distance * 0.01f;
+        if (anchor_score > anchor_scores[node]) {
+          anchor_scores[node] = anchor_score;
+          graph.label_directions[node] = direction;
+          graph.label_clearance[node] = texel.edge_distance;
+        }
+        const float along = std::atan2(glm::dot(direction, label_axes[node]),
+                                       glm::dot(direction, centre_direction));
+        if (along < minimum_projection[node]) {
+          minimum_projection[node] = along;
+          graph.label_curve_starts[node] = direction;
+        }
+        if (along > maximum_projection[node]) {
+          maximum_projection[node] = along;
+          graph.label_curve_ends[node] = direction;
+        }
+      }
+    }
+  }
+  for (uint32_t node = 0; node < graph.province_ids.size(); ++node) {
+    if (graph.label_clearance[node] <= 0.0f) {
+      const auto& fallback = centres.at(graph.province_ids[node]);
+      graph.label_directions[node] = fallback.deepest_direction;
+      graph.label_clearance[node] = fallback.best_edge;
+    }
+    const glm::vec3 control = graph.label_directions[node];
+    const glm::vec3 raw_start = graph.label_curve_starts[node];
+    const glm::vec3 raw_end = graph.label_curve_ends[node];
+    graph.label_curve_starts[node] = control;
+    graph.label_curve_ends[node] = control;
+    float endpoint_inset = 0.68f;
+    for (uint32_t attempt = 0u; attempt < 8u; ++attempt) {
+      const glm::vec3 start = glm::normalize(glm::mix(control, raw_start, endpoint_inset));
+      const glm::vec3 end = glm::normalize(glm::mix(control, raw_end, endpoint_inset));
+      bool contained = true;
+      for (uint32_t sample = 0u; sample <= 12u; ++sample) {
+        const float t = float(sample) / 12.0f;
+        const float u = 1.0f - t;
+        const glm::vec3 direction = glm::normalize(start * (u * u) + control * (2.0f * u * t) +
+                                                    end * (t * t));
+        contained &= sample_region(direction).id == graph.province_ids[node];
+      }
+      if (contained) {
+        graph.label_curve_starts[node] = start;
+        graph.label_curve_ends[node] = end;
+        break;
+      }
+      endpoint_inset *= 0.72f;
+    }
   }
 
   std::vector<std::pair<uint32_t, uint32_t>> edges;

@@ -91,10 +91,28 @@ int verify() {
     double(graph.neighbours.size()) / double(graph.province_ids.size());
   check(mean_degree >= 4.0 && mean_degree <= 8.0,
         std::format("mean province degree is plausible ({:.2f})", mean_degree));
-  check(std::ranges::all_of(std::views::iota(size_t(0), graph.province_ids.size()), [&](const size_t node) {
-          return pf10::sample_region(graph.label_directions[node]).id == graph.province_ids[node] &&
-                 graph.label_clearance[node] > 0.0f;
-        }), "every label anchor is a positive-clearance point inside its province");
+  const bool label_layout_complete = graph.label_curve_starts.size() == graph.province_ids.size() &&
+                                     graph.label_directions.size() == graph.province_ids.size() &&
+                                     graph.label_curve_ends.size() == graph.province_ids.size() &&
+                                     graph.label_clearance.size() == graph.province_ids.size();
+  check(label_layout_complete, "every province owns a complete curved-label layout");
+  check(label_layout_complete &&
+          std::ranges::all_of(std::views::iota(size_t(0), graph.province_ids.size()), [&](const size_t node) {
+            return graph.label_clearance[node] > 0.0f &&
+                   pf10::sample_region(graph.label_directions[node]).id == graph.province_ids[node];
+          }), "area-centred label anchors have positive clearance inside their province");
+  check(label_layout_complete &&
+          std::ranges::all_of(std::views::iota(size_t(0), graph.province_ids.size()), [&](const size_t node) {
+            for (uint32_t sample = 0u; sample <= 8u; ++sample) {
+              const float t = float(sample) / 8.0f;
+              const float u = 1.0f - t;
+              const glm::vec3 direction = glm::normalize(graph.label_curve_starts[node] * (u * u) +
+                                                          graph.label_directions[node] * (2.0f * u * t) +
+                                                          graph.label_curve_ends[node] * (t * t));
+              if (pf10::sample_region(direction).id != graph.province_ids[node]) return false;
+            }
+            return true;
+          }), "Bezier label corridors remain inside their province");
 
   const auto packed = pf10::pack_political_atlas(politics);
   bool compact_round_trip = packed.texels.size() == politics.texels.size() && !packed.cells.empty();
@@ -146,6 +164,19 @@ int verify() {
         "visible displaced surface resolves to a selectable navigation region");
   check(!pf10::intersect_surface(glm::vec3(0.0f, 0.0f, 3.0f), glm::vec3(0.0f, 1.0f, 0.0f)).hit,
         "a ray beside the globe cannot select a hidden province");
+
+  glm::vec3 camera_direction{0.0f, 0.0f, 1.0f};
+  for (uint32_t i = 0u; i < 200u; ++i) {
+    camera_direction = pf10::orbit_camera_direction(camera_direction, 0.0f, 1.0f, 0.08f);
+  }
+  check(std::abs(glm::length(camera_direction) - 1.0f) < 1.0e-5f && camera_direction.y <= 0.940001f,
+        "world-Y camera orbit stays normalized and cannot reach the north-pole singularity");
+  for (uint32_t i = 0u; i < 400u; ++i) {
+    camera_direction = pf10::orbit_camera_direction(camera_direction, 1.0f, -1.0f, 0.08f);
+  }
+  check(std::abs(glm::length(camera_direction) - 1.0f) < 1.0e-5f &&
+          std::abs(camera_direction.y) <= 0.940001f,
+        "combined WASD orbit remains finite and outside both polar extrema");
 
   std::cout << std::format("PF10 verify: {}/{} passed\n", passed, passed + failed);
   return failed == 0 ? 0 : 1;

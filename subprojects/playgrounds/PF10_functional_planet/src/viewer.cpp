@@ -1,11 +1,13 @@
 #include "viewer.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -13,6 +15,7 @@
 #include <glm/detail/type_half.hpp>
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/mat3x3.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/trigonometric.hpp>
 
@@ -109,27 +112,101 @@ struct label_set {
   uint32_t province_glyphs = 0;
 };
 
+struct surface_label_curve {
+  glm::vec3 start{0.0f, 0.0f, 1.0f};
+  glm::vec3 control{0.0f, 0.0f, 1.0f};
+  glm::vec3 end{0.0f, 0.0f, 1.0f};
+};
+
+glm::vec3 evaluate_curve(const surface_label_curve& curve, const float t) {
+  const float u = 1.0f - t;
+  return glm::normalize(curve.start * (u * u) + curve.control * (2.0f * u * t) + curve.end * (t * t));
+}
+
+float curve_length(const surface_label_curve& curve) {
+  float result = 0.0f;
+  glm::vec3 previous = evaluate_curve(curve, 0.0f);
+  for (uint32_t i = 1u; i <= 16u; ++i) {
+    const glm::vec3 current = evaluate_curve(curve, float(i) / 16.0f);
+    result += std::acos(std::clamp(glm::dot(previous, current), -1.0f, 1.0f));
+    previous = current;
+  }
+  return result;
+}
+
+surface_label_curve fit_group_curve(const std::vector<glm::vec3>& points) {
+  if (points.empty()) return {};
+  glm::vec3 sum{0.0f};
+  glm::mat3 moment{0.0f};
+  for (const glm::vec3 raw : points) {
+    const glm::vec3 direction = glm::normalize(raw);
+    sum += direction;
+    moment += glm::mat3(direction * direction.x, direction * direction.y, direction * direction.z);
+  }
+  const glm::vec3 centre = glm::normalize(sum);
+  const glm::mat3 projection = glm::mat3(1.0f) - glm::mat3(centre * centre.x, centre * centre.y, centre * centre.z);
+  const glm::mat3 covariance = projection * (moment / float(points.size())) * projection;
+  glm::vec3 east = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), centre);
+  if (glm::dot(east, east) < 1.0e-6f) east = glm::cross(glm::vec3(1.0f, 0.0f, 0.0f), centre);
+  east = glm::normalize(east);
+  glm::vec3 axis = east;
+  for (uint32_t iteration = 0u; iteration < 8u; ++iteration) {
+    const glm::vec3 next = projection * (covariance * axis);
+    if (glm::dot(next, next) < 1.0e-12f) break;
+    axis = glm::normalize(next);
+  }
+  if (glm::dot(axis, east) < 0.0f) axis = -axis;
+
+  surface_label_curve result{points.front(), points.front(), points.front()};
+  float centre_score = -2.0f;
+  float minimum = std::numeric_limits<float>::max();
+  float maximum = -std::numeric_limits<float>::max();
+  for (const glm::vec3 raw : points) {
+    const glm::vec3 direction = glm::normalize(raw);
+    const float score = glm::dot(direction, centre);
+    if (score > centre_score) {
+      centre_score = score;
+      result.control = direction;
+    }
+    const float along = std::atan2(glm::dot(direction, axis), glm::dot(direction, centre));
+    if (along < minimum) { minimum = along; result.start = direction; }
+    if (along > maximum) { maximum = along; result.end = direction; }
+  }
+  constexpr float endpoint_inset = 0.58f;
+  result.start = glm::normalize(glm::mix(result.control, result.start, endpoint_inset));
+  result.end = glm::normalize(glm::mix(result.control, result.end, endpoint_inset));
+  return result;
+}
+
 void append_surface_label(std::vector<decal_glyph>& result, const visage::font_t& font,
-                          const std::string_view text, glm::vec3 anchor, const float font_height,
+                          const std::string_view text, const surface_label_curve& curve,
+                          const float maximum_font_height, const float transverse_clearance,
                           const glm::vec4 fill, const uint32_t texture_slot, const uint32_t owner_region) {
-  anchor = glm::normalize(anchor);
-  const glm::vec3 reference = std::abs(anchor.y) > 0.92f ? glm::vec3(1.0f, 0.0f, 0.0f) :
-                                                           glm::vec3(0.0f, 1.0f, 0.0f);
-  const glm::vec3 right = glm::normalize(glm::cross(reference, anchor));
-  const glm::vec3 up = glm::normalize(glm::cross(anchor, right));
-  float cursor = -float(font.text_width(font_height, text)) * 0.5f;
+  const float unit_width = std::max(float(font.text_width(1.0, text)), 0.001f);
+  const float available_length = std::max(curve_length(curve) * 0.78f, 0.001f);
+  const float font_height = std::min({maximum_font_height, available_length / unit_width,
+                                      transverse_clearance * 1.25f});
+  float unit_cursor = 0.0f;
   for (const unsigned char character : text) {
       const auto* glyph = font.find_glyph(uint32_t(character));
       if (glyph == nullptr) continue;
-      const float advance = float(glyph->advance) * font_height;
       if (glyph->w > 0 && glyph->h > 0) {
-        const float left = cursor + float(glyph->pl) * font_height;
         const float bottom = float(glyph->pb) * font_height - font_height * 0.32f;
         const float width = float(glyph->pr - glyph->pl) * font_height;
         const float height = float(glyph->pt - glyph->pb) * font_height;
-        const glm::vec3 glyph_direction = glm::normalize(anchor + right * (left + width * 0.5f) +
-                                                          up * (bottom + height * 0.5f));
-        const glm::vec3 glyph_right = glm::normalize(right - glyph_direction * glm::dot(right, glyph_direction));
+        const float glyph_centre_unit = unit_cursor + (float(glyph->pl) +
+                                         float(glyph->pr - glyph->pl) * 0.5f);
+        const float t = std::clamp(0.11f + 0.78f * glyph_centre_unit / unit_width, 0.0f, 1.0f);
+        const glm::vec3 curve_direction = evaluate_curve(curve, t);
+        const glm::vec3 before = evaluate_curve(curve, std::max(t - 0.004f, 0.0f));
+        const glm::vec3 after = evaluate_curve(curve, std::min(t + 0.004f, 1.0f));
+        const glm::vec3 curve_right = glm::normalize((after - before) - curve_direction *
+                                                     glm::dot(after - before, curve_direction));
+        const glm::vec3 curve_up = glm::normalize(glm::cross(curve_direction, curve_right));
+        const glm::vec3 glyph_direction = glm::normalize(curve_direction +
+                                                          curve_up * (bottom + height * 0.5f));
+        const glm::vec3 glyph_right = glm::normalize(curve_right - glyph_direction *
+                                                                   glm::dot(curve_right, glyph_direction));
         const glm::vec3 glyph_up = glm::normalize(glm::cross(glyph_direction, glyph_right));
         const glm::vec3 centre = surface_position(glyph_direction);
         constexpr float projection_depth = 0.120f;
@@ -142,29 +219,64 @@ void append_surface_label(std::vector<decal_glyph>& result, const visage::font_t
                     float(glyph->ar / double(font.width)), float(glyph->at / double(font.height))),
           fill, glm::vec4(float(texture_slot), 0.0f, 0.05f, std::bit_cast<float>(owner_region))});
       }
-      cursor += advance;
+      unit_cursor += float(glyph->advance);
   }
 }
 
-label_set make_labels(const visage::font_t& font, const uint32_t texture_slot, const province_graph& graph) {
+label_set make_labels(const visage::font_t& font, const uint32_t texture_slot, const province_graph& graph,
+                      const glm::vec3 presentation_direction) {
   label_set result;
   result.glyphs.reserve(graph.province_ids.size() * 6u + 64u);
-  struct empire_source { const char* text; glm::vec3 direction; };
-  constexpr empire_source empires[] = {
-    {"NORTHREACH", {-0.85f, 0.35f, -0.38f}},
-    {"MERIDIAN SEA", {0.05f, -0.249f, -0.967f}},
-    {"EMBER COAST", {-0.73f, -0.50f, -0.46f}}};
-  for (const auto& source : empires) {
-    append_surface_label(result.glyphs, font, source.text, source.direction, 0.034f,
-                         glm::vec4(0.94f, 0.91f, 0.80f, 1.0f), texture_slot, no_region);
+  struct empire_source { const char* text; glm::vec3 seed; };
+  const glm::vec3 front = glm::normalize(presentation_direction);
+  std::array<glm::vec3, 3> state_seeds{front, front, front};
+  float front_score = -2.0f;
+  for (const glm::vec3 province : graph.centre_directions) {
+    const float score = glm::dot(province, front);
+    if (score > front_score) { front_score = score; state_seeds[0] = province; }
+  }
+  for (uint32_t seed_index = 1u; seed_index < state_seeds.size(); ++seed_index) {
+    float best_score = -2.0f;
+    for (const glm::vec3 province : graph.centre_directions) {
+      const float visibility = glm::dot(province, front);
+      if (visibility < 0.35f) continue;
+      float separation = 2.0f;
+      for (uint32_t previous = 0u; previous < seed_index; ++previous) {
+        separation = std::min(separation, 1.0f - glm::dot(province, state_seeds[previous]));
+      }
+      const float score = separation + visibility * 0.12f;
+      if (score > best_score) { best_score = score; state_seeds[seed_index] = province; }
+    }
+  }
+  const std::array<empire_source, 3> empires{{
+    {"NORTHREACH", state_seeds[0]}, {"MERIDIAN SEA", state_seeds[1]}, {"EMBER COAST", state_seeds[2]}}};
+  std::array<std::vector<std::pair<float, glm::vec3>>, 3> state_candidates;
+  for (const glm::vec3 province : graph.centre_directions) {
+    uint32_t owner = 0u;
+    float owner_score = -2.0f;
+    for (uint32_t empire = 0u; empire < empires.size(); ++empire) {
+      const float score = glm::dot(province, empires[empire].seed);
+      if (score > owner_score) { owner_score = score; owner = empire; }
+    }
+    state_candidates[owner].emplace_back(owner_score, province);
+  }
+  for (uint32_t empire = 0u; empire < std::size(empires); ++empire) {
+    auto& nearest = state_candidates[empire];
+    std::ranges::sort(nearest, [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::vector<glm::vec3> member_provinces;
+    const size_t member_count = std::min(nearest.size(), size_t(96));
+    member_provinces.reserve(member_count);
+    for (size_t member = 0; member < member_count; ++member) member_provinces.push_back(nearest[member].second);
+    append_surface_label(result.glyphs, font, empires[empire].text, fit_group_curve(member_provinces),
+                         0.034f, 0.034f, glm::vec4(0.94f, 0.91f, 0.80f, 1.0f), texture_slot, no_region);
   }
   result.empire_glyphs = uint32_t(result.glyphs.size());
   for (uint32_t province = 0; province < graph.province_ids.size(); ++province) {
     const std::string text = std::format("P{:04}", province + 1u);
-    const float unit_width = std::max(float(font.text_width(1.0, text)), 0.001f);
-    const float fitted_height = std::min(0.0080f, graph.label_clearance[province] * 1.45f / unit_width);
     append_surface_label(result.glyphs, font, text,
-                         graph.label_directions[province], fitted_height,
+                         {graph.label_curve_starts[province], graph.label_directions[province],
+                          graph.label_curve_ends[province]},
+                         0.0080f, graph.label_clearance[province],
                          glm::vec4(0.95f, 0.94f, 0.88f, 0.96f), texture_slot,
                          graph.province_ids[province]);
   }
@@ -377,7 +489,7 @@ int run_viewer(const viewer_options& options) {
       common_resources + "fonts/crimson.roman.ttf", common_resources + "ui/lab_overlay.lua",
       playground::overlay_description{
         "PF10 functional planet", "displaced sphere + 3-5k navigable provinces + stable planet-local ids",
-        "WASD rotate | wheel zoom | LMB select | R auto-rotate | B border colour | P political | O objects | Esc quit"});
+        "WASD orbit camera | wheel zoom | LMB select | R auto-rotate | B border colour | P political | O objects | Esc quit"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(font_texture,
@@ -411,7 +523,7 @@ int run_viewer(const viewer_options& options) {
                  hydrology.size() * sizeof(hydrology_feature));
     politics.texels.clear();
     politics.texels.shrink_to_fit();
-    const auto labels = make_labels(overlay.font_metrics(), font_texture, politics.graph);
+    const auto labels = make_labels(overlay.font_metrics(), font_texture, politics.graph, presentation_source);
     write_buffer(base, "label_glyphs", labels.glyphs.data(), labels.glyphs.size() * sizeof(decal_glyph));
 
     input::events::clear_bindings();
@@ -429,8 +541,8 @@ int run_viewer(const viewer_options& options) {
     input::set_window_callback(window, &scroll_callback);
     input::set_window_callback(window, &mouse_callback);
 
-    float yaw = 0.0f;
-    float pitch = 0.0f;
+    float planet_yaw = 0.0f;
+    glm::vec3 camera_direction = glm::normalize(glm::vec3(0.0f, 0.06f, 1.0f));
     float camera_distance = options.camera_distance;
     bool auto_rotate = !options.fixed_rotation;
     bool political = true;
@@ -486,19 +598,23 @@ int run_viewer(const viewer_options& options) {
       border_latch = border_key;
 
       if (!options.fixed_rotation) {
-        if (auto_rotate) yaw += dt * 0.095f;
-        yaw += dt * 0.85f * (float(input::events::is_pressed("rotate_right")) -
-                             float(input::events::is_pressed("rotate_left")));
-        pitch = std::clamp(pitch + dt * 0.75f * (float(input::events::is_pressed("rotate_up")) -
-                                                 float(input::events::is_pressed("rotate_down"))),
-                           -1.25f, 1.25f);
+        if (auto_rotate) planet_yaw += dt * 0.095f;
+        const float horizontal = float(input::events::is_pressed("rotate_right")) -
+                                 float(input::events::is_pressed("rotate_left"));
+        const float vertical = float(input::events::is_pressed("rotate_up")) -
+                               float(input::events::is_pressed("rotate_down"));
+        if (horizontal != 0.0f || vertical != 0.0f) {
+          // The helper derives east/north from the radial normal and clamps latitude before +Y lookAt can
+          // become singular at either pole.
+          camera_direction = orbit_camera_direction(camera_direction, horizontal, vertical, dt * 0.82f);
+        }
       }
 
-      const glm::mat4 planet_to_world = glm::rotate(glm::mat4(1.0f), yaw, glm::normalize(glm::vec3(0.12f, 1.0f, 0.08f))) *
-                                        glm::rotate(glm::mat4(1.0f), pitch, glm::vec3(1.0f, 0.0f, 0.0f)) *
+      const glm::mat4 planet_to_world = glm::rotate(glm::mat4(1.0f), planet_yaw,
+                                                     glm::normalize(glm::vec3(0.12f, 1.0f, 0.08f))) *
                                         presentation_rotation;
       const glm::mat4 world_to_planet = glm::transpose(planet_to_world);
-      const glm::vec3 eye{0.0f, 0.06f, camera_distance};
+      const glm::vec3 eye = camera_direction * camera_distance;
       const glm::vec3 target{0.0f};
       const glm::vec3 forward = glm::normalize(target - eye);
       const glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f)));

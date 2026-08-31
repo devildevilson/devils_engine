@@ -21,10 +21,10 @@ cmake --build build-debug --target PF10_functional_planet -j2
 
 Управление:
 
-- `WASD` — вращать планету;
+- `WASD` — двигать камеру по орбите вокруг планеты;
 - колесо — приблизить/отдалить единственный глобус;
 - `LMB` — закрепить область под курсором;
-- `R` — остановить/возобновить медленное вращение;
+- `R` — остановить/возобновить медленное автоматическое вращение планеты;
 - `B` — переключить один из четырёх цветов всех границ;
 - `P` — political/terrain A/B; вместе с political выключаются временные labels;
 - `O` — показать/скрыть object anchors;
@@ -108,10 +108,26 @@ CPU picking переводит camera ray обратно в planet-local space, 
 `R+h(d)` marching+bisection и запрашивает тот же region evaluator. Hover и selection сравнивают стабильный
 ID в shader; скрытую область за глобусом выбрать нельзя.
 
+WASD теперь двигает именно камеру, а не подменяет управление вращением глобуса. Для текущей радиальной
+нормали `n` направление вправо получается как `normalize(cross(+Y,n))`, а вверх — как проекция world `+Y`
+в tangent plane. View всегда строится с world-up `+Y`. После шага направление нормализуется и ограничивается
+`|n.y| <= 0.94`: оба полярных cap остаются видимы, но камера не может попасть точно над/под полюсом и сделать
+`lookAt`/боковой вектор вырожденным. `R` независимо управляет медленным вращением самой планеты.
+
 Подписи используют **тот же Crimson atlas, glyph metrics, depth reconstruction и oriented projection volume**,
 что screen-space decals PF05. Это не screen-aligned текст: fragment восстанавливает точку настоящего рельефа
 из `scene_depth`, переводит её в planet-local glyph volume и только там читает MSDF. Поэтому надпись
 вращается с планетой и повторяет поверхность. Owner-ID не даёт provincial decal вытечь в соседа или воду.
+
+Положение province label теперь выводится из площади области, а не из одной самой глубокой atlas-точки.
+Cube samples взвешиваются их spherical solid-angle Jacobian; из первого и второго моментов получаются
+area centroid и главная tangent-axis. Второй линейный проход выбирает ближайшую к centroid внутреннюю точку
+и дальние точки вдоль оси. Они образуют квадратичную Bézier-кривую; каждый glyph отдельно получает точку,
+касательную и normal на этой кривой, поэтому надпись естественно бывает горизонтальной, диагональной или
+почти вертикальной. Endpoints втягиваются от границы, а для coastal/узких форм corridor адаптивно сокращается,
+пока 13 canonical region samples не подтвердят один owner ID. Размер ограничен длиной curve и поперечным
+clearance. Для дальнего fixture три непересекающихся набора провинций получают тот же curve fit; реальные
+названия и государственная принадлежность позже просто заменят временную группировку без нового render path.
 
 LOD сейчас намеренно простой: дальше `1.72R` рисуются три временных имени крупных областей (`31` glyph),
 ближе — placeholder `P0001...` для каждой видимой провинции (`20 360` glyph records на всю планету;
@@ -128,12 +144,12 @@ LOD сейчас намеренно простой: дальше `1.72R` рис�
 `15.906 ms`, или `62.9 FPS` GPU-equivalent на Iris Xe при 1280x720. После статического bake, triangle strips
 и политического atlas итог остаётся значительно выше целевого бюджета. На Iris Xe, Release 1280x720,
 детерминированные 120-frame запуски после exact boundaries, smooth normals и локального 4x LOD: максимальное
-приближение `1.16R` с гидрографией `3.769 ms / 265 FPS`, без неё `3.746 ms / 267 FPS`; дальний empire LOD
-`1.991 ms / 502 FPS`. Pacing выключен, GPU timestamps измеряют passes отдельно. Зарезервированные статические
+приближение `1.16R` с гидрографией `3.696 ms / 270 FPS`; дальний curved-empire LOD
+`2.729 ms / 366 FPS`. Pacing выключен, GPU timestamps измеряют passes отдельно. Зарезервированные статические
 surface/politics/hydrology/label buffers занимают около `56 MB`; oct-normal не добавляет buffer, а per-frame
 списки base/refined patches имеют по `96 KiB` capacity.
 
-`--verify` сейчас даёт `27/27`:
+`--verify` сейчас даёт `31/31`:
 
 - land count лежит в `[3000,5000]` (`3933` в survey, `3995` в проверочном atlas-512);
 - water regions крупные и немногочисленные (`4`), mountain chains ровно три, polar regions ровно две;
@@ -141,7 +157,8 @@ surface/politics/hydrology/label buffers занимают около `56 MB`; oc
 - повторный survey даёт fingerprint `0x7ca2363eb03efbe4`;
 - плотный bake покрывает survey, CSR полон, симметричен, не имеет self/isolated nodes и держит mean degree
   в `[4,8]` (`6.28` в проверочном atlas-512);
-- label anchor каждой провинции является положительно удалённой от границы внутренней точкой;
+- каждая провинция имеет полный curved-label layout; area-centred anchor обладает положительным clearance,
+  а вся sampled Bézier-кривая остаётся внутри того же owner ID;
 - compact `R16` atlas round-trip возвращает exact cell и исходный стабильный ID; exact table ограничена
   `8192` records;
 - visible-patch subset численно ограничен, close-up refinement является строгим `4x` subset и выключается
@@ -150,6 +167,8 @@ surface/politics/hydrology/label buffers занимают около `56 MB`; oc
 - высота и `province_id` сохраняются после planet transform;
 - 24 object anchors принадлежат записанным провинциям;
 - центральный camera ray выбирает видимую displaced surface, а луч мимо планеты ничего не выбирает.
+- world-Y orbit остаётся единичным и конечным после сотен комбинированных шагов и не достигает обоих
+  полярных экстремумов.
 
 Debug и Release targets собираются. Fixed far/near 1280x720 frames проходят; Vulkan validation на пути
 planet + refined planet + markers + ribbons + exact borders + depth-reconstructed MSDF decals + overlay не сообщает
