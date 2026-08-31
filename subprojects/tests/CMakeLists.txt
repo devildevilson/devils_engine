@@ -184,3 +184,12 @@ add_custom_command(TARGET utils_general_test POST_BUILD
     ${CMAKE_CURRENT_LIST_DIR}/shaders
     ${TEST_OUTPUT_DIRECTORY}/shaders
 )
+
+devils_add_doctest(originator_buffer_test originator_buffer_test.cpp)
+target_link_libraries(originator_buffer_test PRIVATE devils_engine::originator)
+
+devils_add_doctest(originator_tools_test originator_tools_test.cpp)
+target_link_libraries(originator_tools_test PRIVATE devils_engine::originator devils_engine::utils)
+
+devils_add_doctest(originator_pipeline_test originator_pipeline_test.cpp)
+target_link_libraries(originator_pipeline_test PRIVATE devils_engine::originator devils_engine::utils)

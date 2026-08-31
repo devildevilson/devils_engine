@@ -522,6 +522,7 @@ add_subdirectory(libs/painter/)
 add_subdirectory(libs/visage/)
 add_subdirectory(libs/bindings/)
 add_subdirectory(libs/acumen/)
+add_subdirectory(libs/originator/)
 add_subdirectory(libs/prefab/) # после aesthetics + act (зависит от их alias'ов)
 
 # Header-only standard systems in libs/simul expose sound/painter/visage/lua binding types in their public API.

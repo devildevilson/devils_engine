@@ -460,15 +460,22 @@ parameter values, но не собственные parser, language-form resolve
 алгоритмы и типы artifacts, Lua связывает проходы, проект определяет pipeline, semantic schemas,
 constraints и repair policy.
 
+Реализуется библиотекой [`libs/originator`](libs/originator/README.md); первый вертикальный срез
+закрыт площадкой `GN01_generator_contract` 2026-08-31. Уточнение исходной модели по итогам среза:
+pipeline описывается в `tavl`, а Lua занимает место `command` графического шага — тело шага, а не
+описание графа. Параллельность НЕ сообщается скриптом: её выводит движок из объявленной апертуры
+инструмента (`pointwise`/`gather`/`scatter`/`reduce`/`sequential`) и фактических привязок, поэтому
+нарушающий вызов не собирается, а не отлавливается постфактум.
+
 | ID | Задача | Сложность | Результат |
 | --- | --- | --- | --- |
-| `GEN-01` | Typed artifact/pass descriptors | `M–L` | ids, schemas, required/optional inputs, outputs, versions and budgets |
-| `GEN-02` | Pass/tool registry and execution host | `L` | validate → prepare → execute → validate → publish lifecycle |
-| `GEN-03` | Reusable C++ building-block facade | `L` | noises, fields, Voronoi, graphs, grouping/filter/reduce through stable registration |
-| `GEN-04` | Dedicated deterministic headless Lua environment | `L` | generator-only API, instruction/time/memory budgets, no UI globals |
-| `GEN-05` | Lua pipeline glue and typed artifact handles | `L` | scripts compose passes without owning native artifact memory |
+| `GEN-01` | Typed artifact/pass descriptors | `M–L` | **частично 2026-08-31.** `buffer_layout` (именованные поля + написание форматов painter + aos/soa) и `step_description` (`reads`/`writes`/`params`/`body`) есть; versions, schemas и budgets прохода — нет |
+| `GEN-02` | Pass/tool registry and execution host | `L` | **частично 2026-08-31.** `tool_registry` + `pipeline` с validate → execute и `published_after`; validate после шага, repair и publish наружу — нет |
+| `GEN-03` | Reusable C++ building-block facade | `L` | **частично 2026-08-31.** fill/value_noise/remap/classify/box_blur + четыре свёртки через стабильную регистрацию; вороной, графы и group_by — нет |
+| `GEN-04` | Dedicated deterministic headless Lua environment | `L` | **сделано 2026-08-31.** `originator::script_host`: свой whitelist, нет `math.random`/os/файловой системы, бюджеты инструкций и времени, отдельная цель сборки от `visage` |
+| `GEN-05` | Lua pipeline glue and typed artifact handles | `L` | **пересмотрено + частично 2026-08-31.** Lua не собирает граф — она ТЕЛО шага. `script_buffer_view`/`field_ref`: имя поля разрешается один раз, тяжёлой памятью скрипт не владеет |
 | `GEN-06` | Pass templates | `L` | raster/graph/unit/volume templates with explicit iteration and ordering |
-| `GEN-07` | Deterministic scheduler | `L–XL` | semantic seal/order, deterministic RNG domains and serial-vs-MT identity |
+| `GEN-07` | Deterministic scheduler | `L–XL` | **частично 2026-08-31.** serial-vs-MT побайтовое совпадение и свёртки с фиксированным разбиением закреплены; зерно шага = hash(зерно, имя шага). Seal/order пакета — нет |
 | `GEN-08` | Provenance, cache keys and invalidation | `L` | seed/module/pass/tool/input fingerprints trace every artifact |
 | `GEN-09` | Validation, bounded repair/rewind and failure reports | `L–XL` | failed constraints do not silently publish broken artifacts |
 | `GEN-10` | Generated-content inspection tooling | `M–L` | simplified maps/graphs/heatmaps, pass timings and batch reports |

@@ -1,0 +1,26 @@
+//--- Шаги генератора GN01
+// reads/writes — это и есть биндинги, из которых выводится всё остальное: порядок, доступность
+// буфера после шага, изменяемость вью в теле шага и отказ до исполнения при чтении незаписанного.
+// Буфер в writes доступен своему шагу и на чтение, поэтому в reads его повторять нельзя.
+
+{
+  name = terrain
+  body = scripts/terrain.lua
+  writes = [ cells ]
+  params = { frequency = 0.012, octaves = 4 }
+}
+
+{
+  name = climate
+  body = scripts/climate.lua
+  writes = [ cells ]
+  params = { radius = 2, sea_level = 0.5, dry = 0.35, wet = 0.65 }
+}
+
+{
+  name = stats
+  body = scripts/stats.lua
+  reads = [ cells ]
+  writes = [ state ]
+  params = { sea_level = 0.5 }
+}
