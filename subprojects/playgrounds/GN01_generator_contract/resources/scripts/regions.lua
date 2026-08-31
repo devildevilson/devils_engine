@@ -41,6 +41,21 @@ return function(step)
     range = { 0, site_count },
   }
 
+  -- scatter: контуры областей. Это ответ на третий, отдельный вопрос — не «кому принадлежит клетка»
+  -- и не «кто с кем граничит», а «какой у области контур». Вершины ОБЩИЕ: соседние области ссылаются
+  -- на одну и ту же, поэтому сетка замощает карту без щелей, что бы потом с координатами ни делали.
+  originator.voronoi_polygons{
+    inputs = { sites:field("position") },
+    outputs = {
+      step.writes.polygon_offsets:field("start"),
+      step.writes.polygon_corners:field("vertex"),
+      step.writes.polygon_vertices:field("position"),
+      step.writes.polygon_counts:field("vertices"),
+    },
+    params = { width = width, height = width },
+    range = { 0, site_count },
+  }
+
   -- scatter: клетки, разложенные по областям. Диапазон относится ко ВХОДАМ, а выход — структура
   -- другого размера, поэтому число корзин задаёт буфер смещений, а не диапазон.
   originator.group_by{

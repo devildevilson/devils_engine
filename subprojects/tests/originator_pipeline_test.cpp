@@ -177,3 +177,95 @@ TEST_CASE("originator rejects an undeclared size") {
   incomplete.set("single", 1);
   CHECK_THROWS_AS(originator::pipeline(description, incomplete, 1), std::runtime_error);
 }
+
+TEST_CASE("originator keeps two seeds with different chunk contracts") {
+  originator::pipeline_description description;
+  description.name = "chunked";
+  description.buffers = originator::parse_buffers(buffers_config, "buffers");
+  description.steps = originator::parse_steps(steps_config, "steps");
+
+  struct seeds {
+    std::vector<uint64_t> continuous;
+    std::vector<uint64_t> per_chunk;
+  };
+
+  const auto collect = [](seeds& out) {
+    return [&out](const originator::step_context& ctx) {
+      out.continuous.push_back(ctx.seed);
+      out.per_chunk.push_back(ctx.chunk_seed);
+    };
+  };
+
+  originator::pipeline p(description, make_sizes(64), 100);
+
+  seeds first;
+  p.set_chunk({1, 2, 0});
+  p.run(collect(first));
+
+  seeds other;
+  p.set_chunk({2, 2, 0});
+  p.run(collect(other));
+
+  // Непрерывное зерно НЕ зависит от чанка: поле, посчитанное по мировой позиции, не должно
+  // разъезжаться на швах. Именно на этом изначальный дизайн с одним зерном и сломался.
+  CHECK(other.continuous == first.continuous);
+  // Зерно чанка зависит: то, что обязано быть независимым в каждом чанке, его и берёт.
+  CHECK(other.per_chunk != first.per_chunk);
+
+  // Возврат к тому же ключу даёт то же самое, хотя между ними считался другой чанк.
+  seeds again;
+  p.set_chunk({1, 2, 0});
+  p.run(collect(again));
+  CHECK(again.per_chunk == first.per_chunk);
+  CHECK(again.continuous == first.continuous);
+
+  // Свежий пайплайн с тем же зерном мира и тем же ключом — тоже то же самое.
+  originator::pipeline fresh(description, make_sizes(64), 100);
+  seeds from_fresh;
+  fresh.set_chunk({1, 2, 0});
+  fresh.run(collect(from_fresh));
+  CHECK(from_fresh.per_chunk == first.per_chunk);
+  CHECK(from_fresh.continuous == first.continuous);
+
+  // Каждая координата ключа участвует: иначе (1,2,0) и (1,0,2) совпали бы.
+  seeds swapped;
+  fresh.set_chunk({1, 0, 2});
+  fresh.run(collect(swapped));
+  CHECK(swapped.per_chunk != first.per_chunk);
+
+  // Разные шаги получают разные зёрна, и это не зависит от чанка.
+  REQUIRE(first.continuous.size() == 2);
+  CHECK(first.continuous[0] != first.continuous[1]);
+  CHECK(first.per_chunk[0] != first.per_chunk[1]);
+
+  // Ключ виден телу шага: без него нельзя посчитать мировое смещение чанка.
+  p.set_chunk({7, -3, 1});
+  p.run_step(0, [](const originator::step_context& ctx) {
+    CHECK(ctx.chunk.x == 7);
+    CHECK(ctx.chunk.y == -3);
+    CHECK(ctx.chunk.z == 1);
+  });
+}
+
+TEST_CASE("originator buffers survive a chunk change so streaming does not reallocate") {
+  originator::pipeline_description description;
+  description.name = "chunked";
+  description.buffers = originator::parse_buffers(buffers_config, "buffers");
+  description.steps = originator::parse_steps(steps_config, "steps");
+
+  originator::pipeline p(description, make_sizes(256), 5);
+  auto* cells = p.find_buffer("cells");
+  REQUIRE(cells != nullptr);
+
+  const auto* memory_before = cells->base_pointer();
+  auto height = cells->field(cells->find_field("height"));
+  height.set(10, 0.75);
+
+  p.set_chunk({4, 4, 0});
+  CHECK(cells->base_pointer() == memory_before); // та же память, без перевыделения
+  CHECK(height.get(10) == doctest::Approx(0.75)); // и без неявного обнуления
+
+  // Обнуление остаётся явным: оно нужно только чтобы ДОКАЗАТЬ независимость чанков.
+  p.clear_buffers();
+  CHECK(height.get(10) == doctest::Approx(0.0));
+}

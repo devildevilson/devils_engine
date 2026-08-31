@@ -404,6 +404,15 @@ sol::table script_host::make_step_table(const step_context& context) {
   step["name"] = std::string(context.name);
   step["index"] = context.index;
   step["seed"] = std::bit_cast<int64_t>(context.seed);
+  step["chunk_seed"] = std::bit_cast<int64_t>(context.chunk_seed);
+
+  // Ключ чанка нужен телу шага, чтобы посчитать мировое смещение: поле шума в чанке (2,3) должно
+  // продолжать поле соседнего чанка, а не начинаться заново.
+  sol::table chunk(lua_, sol::create);
+  chunk["x"] = context.chunk.x;
+  chunk["y"] = context.chunk.y;
+  chunk["z"] = context.chunk.z;
+  step["chunk"] = chunk;
 
   // Параметры шага приходят из конфига: скрипт не хардкодит числа, которые хочет крутить автор.
   sol::table params(lua_, sol::create);

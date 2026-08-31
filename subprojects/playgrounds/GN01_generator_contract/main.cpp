@@ -33,7 +33,10 @@ using namespace devils_engine;
 
 struct options {
   size_t width = 1024;
+  size_t map_width = 0; // 0 => равна width (нечанкованный прогон)
   size_t sites = 256;
+  size_t chunks = 0;    // делений карты по стороне для --chunked
+  bool normalize = true;
   size_t threads = 0; // 0 => по числу ядер
   uint64_t seed = 20260831;
   originator::storage_kind::values layout = originator::storage_kind::soa;
@@ -83,6 +86,8 @@ options parse_options(const int argc, const char** argv) {
       result.quiet = true;
     } else if (starts_with(argument, "--size=")) {
       result.width = size_t(std::stoull(std::string(argument.substr(7))));
+    } else if (starts_with(argument, "--chunked=")) {
+      result.chunks = size_t(std::stoull(std::string(argument.substr(10))));
     } else if (starts_with(argument, "--sites=")) {
       result.sites = size_t(std::stoull(std::string(argument.substr(8))));
     } else if (starts_with(argument, "--threads=")) {
@@ -99,6 +104,7 @@ options parse_options(const int argc, const char** argv) {
       std::cout << "GN01 generator contract lab\n"
                 << "  --size=N       ширина квадратной сетки (по умолчанию 1024)\n"
                 << "  --sites=N      число сайтов областей (по умолчанию 256)\n"
+                << "  --chunked=N    сверить генерацию по NxN чанкам с картой целиком\n"
                 << "  --layout=aos|soa  раскладка буфера cells\n"
                 << "  --threads=N    число рабочих потоков (0 = по числу ядер)\n"
                 << "  --seed=N       зерно пайплайна\n"
@@ -121,6 +127,10 @@ originator::size_table make_sizes(const options& opts) {
   // Ёмкость под дуги соседства. Средняя степень в триангуляции Делоне около шести, но у краевых
   // сайтов она выше, поэтому запас берётся с заметным множителем, а нехватка падает громко.
   sizes.set("arc_capacity", opts.sites * 16);
+  // Планарная диаграмма даёт около двух уникальных вершин и шести-восьми углов на область; запас
+  // берётся с множителем, а нехватка падает громко с нужным числом в сообщении.
+  sizes.set("corner_capacity", opts.sites * 16);
+  sizes.set("vertex_capacity", opts.sites * 8);
   sizes.set("single", 1);
   return sizes;
 }
@@ -142,7 +152,15 @@ originator::pipeline_description load_description(const options& opts) {
 
   // Ширина сетки известна только из командной строки, а инструментам она нужна как параметр:
   // домена как отдельной абстракции нет, соседство — это данные, а не тип.
+  //
+  // width — ширина строки буфера, map_width — ширина всей карты. В обычном прогоне они совпадают;
+  // при чанкованной генерации буфер меньше карты, и частоту шума нужно считать от карты, иначе
+  // каждый чанк получил бы свой масштаб черт рельефа.
   description.values.set_number("width", double(opts.width));
+  description.values.set_number("map_width", double(opts.map_width == 0 ? opts.width : opts.map_width));
+  if (!opts.normalize) {
+    description.values.set_number("normalize", 0.0);
+  }
 
   return description;
 }
@@ -171,6 +189,61 @@ std::vector<std::vector<std::byte>> snapshot_all(originator::pipeline& p) {
     copies.push_back(snapshot(p.buffer_at(i)));
   }
   return copies;
+}
+
+// Контуры областей обязаны замощать карту: сумма площадей полигонов равна площади карты. Это самая
+// сильная проверка сетки — она ловит и щели, и наложения, и неверный порядок обхода.
+bool polygons_tile_the_map(originator::pipeline& p, const size_t site_count, const double map_side) {
+  const auto* offsets = p.find_buffer("polygon_offsets");
+  const auto* corners = p.find_buffer("polygon_corners");
+  const auto* vertices = p.find_buffer("polygon_vertices");
+  const auto* counts = p.find_buffer("polygon_counts");
+  if (offsets == nullptr || corners == nullptr || vertices == nullptr || counts == nullptr) {
+    return false;
+  }
+
+  const auto start = offsets->field(offsets->find_field("start"));
+  const auto corner = corners->field(corners->find_field("vertex"));
+  const auto position = vertices->field(vertices->find_field("position"));
+  const auto vertex_count = size_t(counts->field(counts->find_field("vertices")).get(0));
+
+  if (vertex_count == 0 || start.get(0) != 0.0) {
+    return false;
+  }
+
+  double total = 0.0;
+  for (size_t site = 0; site < site_count; ++site) {
+    const auto first = size_t(start.get(site));
+    const auto last = size_t(start.get(site + 1));
+    if (last < first) {
+      return false;
+    }
+
+    const size_t ring = last - first;
+    if (ring < 3) {
+      return false;
+    }
+
+    double area = 0.0;
+    for (size_t k = 0; k < ring; ++k) {
+      const auto index = size_t(corner.get(first + k));
+      const auto next_index = size_t(corner.get(first + (k + 1) % ring));
+      if (index >= vertex_count || next_index >= vertex_count) {
+        return false;
+      }
+      area += position.get(index, 0) * position.get(next_index, 1) -
+              position.get(next_index, 0) * position.get(index, 1);
+    }
+
+    area *= 0.5;
+    if (area <= 0.0) {
+      return false; // обход не против часовой либо полигон вырожден
+    }
+    total += area;
+  }
+
+  const double expected = map_side * map_side;
+  return std::abs(total - expected) < 1e-4 * expected;
 }
 
 // Соседство областей обязано быть симметричным и канонизированным независимо от того, в каком
@@ -273,6 +346,7 @@ int run_verify(const options& opts) {
     const auto* state = p.find_buffer("state");
     serial_peak = state->field(state->find_field("peak")).get(0);
     check(region_graph_is_canonical(p, opts.sites), "граф соседства областей симметричен и канонизирован");
+    check(polygons_tile_the_map(p, opts.sites, double(opts.width)), "контуры областей замощают карту без щелей");
 
     // Раскладка по областям обязана покрыть КАЖДУЮ клетку ровно один раз, а суммы по областям —
     // сойтись с суммой по всему полю. Это перекрёстная проверка scatter против reduce: два
@@ -550,6 +624,19 @@ int run_bench(const options& opts) {
       originator::dispatch(*tools.find("voronoi_adjacency"), site_in, csr_out, region_params, 1, 0, opts.sites, "bench", nullptr);
     });
 
+    auto* polygon_offsets = p.find_buffer("polygon_offsets");
+    auto* polygon_corners = p.find_buffer("polygon_corners");
+    auto* polygon_vertices = p.find_buffer("polygon_vertices");
+    auto* polygon_counts = p.find_buffer("polygon_counts");
+    const std::vector<originator::field_ref> polygon_out{
+      originator::field_ref{polygon_offsets, polygon_offsets, polygon_offsets->find_field("start")},
+      originator::field_ref{polygon_corners, polygon_corners, polygon_corners->find_field("vertex")},
+      originator::field_ref{polygon_vertices, polygon_vertices, polygon_vertices->find_field("position")},
+      originator::field_ref{polygon_counts, polygon_counts, polygon_counts->find_field("vertices")}};
+    measure("контуры областей: voronoi_polygons (нс на сайт)", opts.sites, [&] {
+      originator::dispatch(*tools.find("voronoi_polygons"), site_in, polygon_out, region_params, 1, 0, opts.sites, "bench", nullptr);
+    });
+
     const std::vector<originator::field_ref> key_in{
       originator::field_ref{cells, nullptr, cells->find_field("region")}};
     const std::vector<originator::field_ref> group_out{
@@ -704,6 +791,149 @@ int run_bench(const options& opts) {
   return 0;
 }
 
+// Чанкованная генерация против карты целиком.
+//
+// Проверяется не «работает ли чанкование вообще», а КАКИЕ ШАГИ его переживают. Ответ разный, и это
+// главное содержание режима: шум зависит только от мировой позиции и чанкуется точно, а шаги с
+// апертурой gather на границе чанка видят не тех соседей и без полосы перекрытия не сходятся.
+int run_chunked(const options& opts) {
+  const size_t divisions = opts.chunks;
+  if (divisions < 2 || opts.width % divisions != 0) {
+    utils::error{}("GN01: --chunked=N requires N >= 2 that divides --size ({} % {} != 0)", opts.width, divisions);
+  }
+
+  const size_t chunk_width = opts.width / divisions;
+  std::cout << "GN01 chunked: карта " << opts.width << "x" << opts.width << " как " << divisions << "x"
+            << divisions << " чанков по " << chunk_width << "x" << chunk_width << "\n";
+
+  originator::tool_registry tools;
+  tools.add_standard_tools();
+  originator::add_all_primitives(tools);
+
+  // Нормализация по измеренному диапазону работает только для карты целиком, поэтому в этом режиме
+  // обе стороны сравнения считаются с фиксированным масштабом. Иначе сравнивались бы не чанкование,
+  // а два разных отображения.
+  auto whole_options = opts;
+  whole_options.normalize = false;
+  auto whole_description = load_description(whole_options);
+
+  originator::script_host whole_host(tools, nullptr);
+  load_bodies(whole_host, whole_description);
+  originator::pipeline whole(whole_description, make_sizes(whole_options), opts.seed);
+  whole.run_step(0, whole_host.invoker()); // только terrain: остальные шаги сравниваются иначе
+  const auto* whole_cells = whole.find_buffer("cells");
+  const auto whole_height = whole_cells->field(whole_cells->find_field("height"));
+
+  auto chunk_options = opts;
+  chunk_options.normalize = false;
+  chunk_options.width = chunk_width;
+  chunk_options.map_width = opts.width;
+  auto chunk_description = load_description(chunk_options);
+
+  originator::script_host chunk_host(tools, nullptr);
+  load_bodies(chunk_host, chunk_description);
+  originator::pipeline chunked(chunk_description, make_sizes(chunk_options), opts.seed);
+
+  double worst = 0.0;
+  size_t compared = 0;
+
+  for (size_t cy = 0; cy < divisions; ++cy) {
+    for (size_t cx = 0; cx < divisions; ++cx) {
+      // Порядок обхода намеренно не сбрасывает буферы: если бы шаг читал то, чего не писал, чанк
+      // зависел бы от предыдущего, и расхождение это показало бы.
+      chunked.set_chunk({int64_t(cx), int64_t(cy), 0});
+      chunked.run_step(0, chunk_host.invoker());
+
+      const auto* chunk_cells = chunked.find_buffer("cells");
+      const auto chunk_height = chunk_cells->field(chunk_cells->find_field("height"));
+
+      for (size_t y = 0; y < chunk_width; ++y) {
+        for (size_t x = 0; x < chunk_width; ++x) {
+          const size_t local = y * chunk_width + x;
+          const size_t global = (cy * chunk_width + y) * opts.width + (cx * chunk_width + x);
+          worst = std::max(worst, std::abs(chunk_height.get(local) - whole_height.get(global)));
+          ++compared;
+        }
+      }
+    }
+  }
+
+  std::cout << "  сверено клеток     " << compared << "\n"
+            << "  худшее расхождение " << worst << "\n";
+
+  // Повторная генерация первого чанка ПОСЛЕ всех остальных: результат обязан совпасть сам с собой.
+  chunked.set_chunk({0, 0, 0});
+  chunked.run_step(0, chunk_host.invoker());
+  const auto* first_cells = chunked.find_buffer("cells");
+  const auto first_height = first_cells->field(first_cells->find_field("height"));
+
+  double drift = 0.0;
+  for (size_t y = 0; y < chunk_width; ++y) {
+    for (size_t x = 0; x < chunk_width; ++x) {
+      drift = std::max(drift, std::abs(first_height.get(y * chunk_width + x) - whole_height.get(y * opts.width + x)));
+    }
+  }
+  std::cout << "  повтор чанка (0,0) " << drift << " (обязан совпасть с первым проходом)\n";
+
+  // Вторая половина ответа: шаг с апертурой gather чанкуется НЕ ТАК. box_blur читает окно вокруг
+  // элемента, и у клетки возле границы чанка часть окна лежит в соседнем чанке, которого в буфере
+  // нет. Ошибка обязана быть строго в полосе шириной radius и строго нулевой внутри.
+  whole.run_step(1, whole_host.invoker());
+  const auto whole_smoothed = whole_cells->field(whole_cells->find_field("smoothed"));
+  const auto radius = size_t(std::max<int64_t>(int64_t(whole_description.values.integer("radius", 1)), 0));
+
+  double interior_worst = 0.0;
+  double border_worst = 0.0;
+  size_t border_cells = 0;
+
+  for (size_t cy = 0; cy < divisions; ++cy) {
+    for (size_t cx = 0; cx < divisions; ++cx) {
+      chunked.set_chunk({int64_t(cx), int64_t(cy), 0});
+      chunked.run_step(0, chunk_host.invoker());
+      chunked.run_step(1, chunk_host.invoker());
+
+      const auto* chunk_cells = chunked.find_buffer("cells");
+      const auto chunk_smoothed = chunk_cells->field(chunk_cells->find_field("smoothed"));
+
+      for (size_t y = 0; y < chunk_width; ++y) {
+        for (size_t x = 0; x < chunk_width; ++x) {
+          const size_t global_x = cx * chunk_width + x;
+          const size_t global_y = cy * chunk_width + y;
+          const double difference = std::abs(chunk_smoothed.get(y * chunk_width + x) -
+                                             whole_smoothed.get(global_y * opts.width + global_x));
+
+          // «Возле границы» считается по границе ЧАНКА, а не карты: у края карты окно обрезано
+          // одинаково в обоих прогонах, и расхождения там быть не должно.
+          const bool near_chunk_edge =
+            (x < radius && cx != 0) || (x + radius >= chunk_width && cx + 1 != divisions) ||
+            (y < radius && cy != 0) || (y + radius >= chunk_width && cy + 1 != divisions);
+
+          if (near_chunk_edge) {
+            border_worst = std::max(border_worst, difference);
+            ++border_cells;
+          } else {
+            interior_worst = std::max(interior_worst, difference);
+          }
+        }
+      }
+    }
+  }
+
+  std::cout << "  gather (box_blur, radius " << radius << "):\n"
+            << "    внутри чанка     " << interior_worst << " на " << (compared - border_cells) << " клетках\n"
+            << "    в полосе границы " << border_worst << " на " << border_cells << " клетках\n";
+
+  const bool pointwise_exact = worst == 0.0 && drift == 0.0;
+  const bool gather_localized = interior_worst == 0.0;
+
+  std::cout << "  вывод:\n"
+            << "    pointwise (шум) чанкуется " << (pointwise_exact ? "ТОЧНО" : "С РАСХОЖДЕНИЕМ") << "\n"
+            << "    gather (размытие) расходится " << (gather_localized ? "ТОЛЬКО в полосе шириной radius" : "И ВНУТРИ чанка")
+            << " => нужна полоса перекрытия шириной radius\n";
+
+  return pointwise_exact && gather_localized ? 0 : 1;
+}
+
 int run_once(const options& opts) {
   const size_t count = opts.width * opts.width;
   const auto sizes = make_sizes(opts);
@@ -747,6 +977,15 @@ int run_once(const options& opts) {
       total_height += height_sum.get(site);
     }
 
+    const auto* polygon_offsets = p.find_buffer("polygon_offsets");
+    const auto* polygon_counts = p.find_buffer("polygon_counts");
+    if (polygon_offsets != nullptr && polygon_counts != nullptr) {
+      const auto corners = polygon_offsets->field(polygon_offsets->find_field("start")).get(opts.sites);
+      const auto polygon_vertices = polygon_counts->field(polygon_counts->find_field("vertices")).get(0);
+      std::cout << "  контуры            " << polygon_vertices << " общих вершин, " << corners
+                << " углов, в среднем " << (corners / double(opts.sites)) << " на область\n";
+    }
+
     std::cout << "  областей           " << opts.sites << ", дуг соседства " << arcs
               << ", средняя степень " << (arcs / double(opts.sites)) << "\n"
               << "  клеток в области   от " << smallest << " до " << largest
@@ -776,6 +1015,9 @@ int main(const int argc, const char** argv) {
     }
     if (opts.bench) {
       return run_bench(opts);
+    }
+    if (opts.chunks != 0) {
+      return run_chunked(opts);
     }
     return run_once(opts);
   } catch (const std::exception& error) {

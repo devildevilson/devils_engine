@@ -42,6 +42,34 @@
   size = arc_capacity
 }
 
+// Контуры областей как планарная сетка с ОБЩИМИ вершинами: соседние области ссылаются на одну
+// вершину, а не на две совпадающие копии, поэтому щели на стыке невозможны по построению.
+{
+  name = polygon_offsets
+  format = [ (start, ui1) ]
+  layout = soa
+  size = site_count_plus_one
+}
+{
+  name = polygon_corners
+  format = [ (vertex, ui1) ]
+  layout = soa
+  size = corner_capacity
+}
+{
+  name = polygon_vertices
+  format = [ (position, v2) ]
+  layout = soa
+  size = vertex_capacity
+}
+// Число углов видно из смещений, а число вершин — нет, поэтому инструмент пишет его отдельно.
+{
+  name = polygon_counts
+  format = [ (vertices, ui1) ]
+  layout = aos
+  size = single
+}
+
 // Раскладка клеток по областям, тот же CSR: смещения групп и индексы клеток в порядке групп.
 {
   name = region_cell_offsets

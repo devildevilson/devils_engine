@@ -17,6 +17,7 @@
 //   voronoi_label     "какому сайту принадлежит эта клетка" — растровая разметка. Это запрос
 //                     ближайшего сайта, диаграмма для него не нужна: kd-дерево строится один раз
 //                     подготовкой, дальше запросы независимы, и проход спокойно параллелится.
+//   voronoi_polygons  "какой у области контур" — планарная сетка с ОБЩИМИ вершинами;
 //   voronoi_adjacency "какие области соседствуют" — точная топология. Растр на такой вопрос
 //                     отвечает плохо: тонкая область может не получить ни одной клетки, а две
 //                     области могут коснуться по диагонали. Здесь считается триангуляция Делоне,
@@ -205,6 +206,153 @@ void tool_voronoi_adjacency(const tool_call& call, const size_t begin, const siz
   offsets.set(site_count, double(written));
 }
 
+// Полигоны областей как ПЛАНАРНАЯ СЕТКА С ОБЩИМИ ВЕРШИНАМИ, а не как набор независимых колец.
+//
+// jc_voronoi отдаёт таблицу уникальных вершин и индексы концов на каждом ребре, поэтому соседние
+// области ссылаются на ОДНУ вершину, а не на две совпадающие копии. Для полигонального мира это
+// принципиально: копии рано или поздно разъезжаются при любом преобразовании координат, и на стыке
+// областей появляется щель, которой нет в данных.
+//
+// Выходы — тот же CSR, что у соседства, плюс таблица вершин:
+//   0  offsets       начало кольца каждой области, offsets[site_count] = всего углов;
+//   1  corners       индексы вершин в порядке обхода против часовой;
+//   2  vertices      уникальные позиции вершин (v2);
+//   3  vertex_count  один элемент: сколько вершин реально записано.
+//
+// Четвёртый выход существует потому, что число углов видно из offsets, а число вершин — нет, и
+// молчаливая договорённость «читай до первого нуля» была бы хуже явного счётчика.
+void tool_voronoi_polygons(const tool_call& call, const size_t begin, const size_t end) {
+  require_position_field(call);
+
+  if (begin != 0) {
+    utils::error{}("originator step '{}': voronoi_polygons builds one whole diagram and needs a range "
+                   "starting at 0, got [{}, {})",
+                   call.step_name, begin, end);
+  }
+
+  const size_t site_count = end > begin ? end - begin : 0;
+  if (site_count < 3) {
+    utils::error{}("originator step '{}': voronoi_polygons needs at least 3 sites, got {}",
+                   call.step_name, site_count);
+  }
+
+  auto offsets = call.output(0).write();
+  auto corners = call.output(1).write();
+  auto vertices = call.output(2).write();
+  auto vertex_count_out = call.output(3).write();
+
+  if (offsets.count() < site_count + 1) {
+    utils::error{}("originator step '{}': voronoi_polygons writes {} offsets, but the buffer holds {}",
+                   call.step_name, site_count + 1, offsets.count());
+  }
+  if (vertices.type().components < 2) {
+    utils::error{}("originator step '{}': voronoi_polygons needs a 2-component vertex field, '{}.{}' has {}",
+                   call.step_name, call.output(2).buffer_name(), call.output(2).field_name(),
+                   vertices.type().components);
+  }
+  if (vertex_count_out.count() < 1) {
+    utils::error{}("originator step '{}': voronoi_polygons needs a one-element field for the vertex count",
+                   call.step_name);
+  }
+
+  const auto positions = call.input(0).read();
+  std::vector<jcv_point> points(site_count);
+  for (size_t i = 0; i < site_count; ++i) {
+    points[i].x = jcv_real(positions.get(i, 0));
+    points[i].y = jcv_real(positions.get(i, 1));
+  }
+
+  // Границы обязательны: без них полигоны краевых областей уходят в бесконечность, и замощения
+  // конечной области не получается.
+  const auto width = call.params->number("width", 0.0);
+  if (width <= 0.0) {
+    utils::error{}("originator step '{}': voronoi_polygons needs a positive 'width' — boundary cells have no "
+                   "finite polygon without a clipping rectangle",
+                   call.step_name);
+  }
+  jcv_rect bounds{};
+  bounds.min.x = 0;
+  bounds.min.y = 0;
+  bounds.max.x = jcv_real(width);
+  bounds.max.y = jcv_real(call.params->number("height", width));
+
+  jcv_diagram diagram{};
+  jcv_diagram_generate(int(site_count), points.data(), &bounds, nullptr, &diagram);
+
+  const int unique_vertices = jcv_get_num_vertices(&diagram);
+  if (unique_vertices < 0 || size_t(unique_vertices) > vertices.count()) {
+    const size_t needed = unique_vertices < 0 ? 0 : size_t(unique_vertices);
+    jcv_diagram_free(&diagram);
+    utils::error{}("originator step '{}': voronoi_polygons produced {} unique vertices, but the buffer holds {} — "
+                   "raise its declared size",
+                   call.step_name, needed, vertices.count());
+  }
+
+  std::vector<jcv_point> table(unique_vertices > 0 ? size_t(unique_vertices) : 1);
+  jcv_diagram_get_vertices(&diagram, table.data());
+
+  // Кольца собираются по входному индексу сайта: часть точек диаграмма могла отбросить (дубликаты
+  // или выход за границы), и такая область честно остаётся с пустым кольцом.
+  std::vector<std::vector<uint32_t>> rings(site_count);
+  const jcv_site* sites = jcv_diagram_get_sites(&diagram);
+
+  for (int i = 0; i < diagram.numsites; ++i) {
+    const jcv_site* site = &sites[i];
+    if (site->index >= site_count) {
+      continue;
+    }
+
+    jcv_edge_iter iter{};
+    jcv_site_get_edges(&diagram, site, &iter);
+    jcv_edge edge{};
+
+    auto& ring = rings[site->index];
+    while (jcv_edge_next(&iter, &edge) != 0) {
+      const int corner = edge.vertices[0];
+      if (corner < 0 || corner >= unique_vertices) {
+        continue;
+      }
+      ring.push_back(uint32_t(corner));
+    }
+
+    // Канонизация: кольцо поворачивается так, чтобы начинаться с минимального индекса вершины.
+    // Поворот замкнутого обхода ничего не меняет геометрически, но делает результат сравнимым между
+    // запусками без оговорок про то, с какого ребра диаграмма начала обход.
+    if (ring.size() > 1) {
+      const auto smallest = std::min_element(ring.begin(), ring.end());
+      std::rotate(ring.begin(), smallest, ring.end());
+    }
+  }
+
+  jcv_diagram_free(&diagram);
+
+  size_t total_corners = 0;
+  for (const auto& ring : rings) {
+    total_corners += ring.size();
+  }
+  if (total_corners > corners.count()) {
+    utils::error{}("originator step '{}': voronoi_polygons produced {} corners, but the buffer holds {} — "
+                   "raise its declared size",
+                   call.step_name, total_corners, corners.count());
+  }
+
+  size_t written = 0;
+  for (size_t site = 0; site < site_count; ++site) {
+    offsets.set(site, double(written));
+    for (const uint32_t corner : rings[site]) {
+      corners.set(written, double(corner));
+      ++written;
+    }
+  }
+  offsets.set(site_count, double(written));
+
+  for (size_t i = 0; i < size_t(unique_vertices); ++i) {
+    vertices.set(i, double(table[i].x), 0);
+    vertices.set(i, double(table[i].y), 1);
+  }
+  vertex_count_out.set(0, double(unique_vertices));
+}
+
 } // namespace
 
 void add_voronoi_tools(tool_registry& registry) {
@@ -218,6 +366,9 @@ void add_voronoi_tools(tool_registry& registry) {
   registry.add(tool_description{.name = "voronoi_adjacency", .shape = aperture::scatter,
                                 .input_count = 1, .output_count = 2,
                                 .body = tool_voronoi_adjacency});
+  registry.add(tool_description{.name = "voronoi_polygons", .shape = aperture::scatter,
+                                .input_count = 1, .output_count = 4,
+                                .body = tool_voronoi_polygons});
 }
 
 void add_all_primitives(tool_registry& registry) {

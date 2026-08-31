@@ -292,6 +292,20 @@ uint64_t pipeline::seed() const noexcept {
   return seed_;
 }
 
+const chunk_key& pipeline::chunk() const noexcept {
+  return chunk_;
+}
+
+void pipeline::set_chunk(const chunk_key& key) noexcept {
+  chunk_ = key;
+}
+
+void pipeline::clear_buffers() noexcept {
+  for (auto& candidate : buffers_) {
+    candidate->clear();
+  }
+}
+
 size_t pipeline::buffer_count() const noexcept {
   return buffers_.size();
 }
@@ -342,9 +356,14 @@ void pipeline::run_step(const size_t index, const step_invoker& invoker) {
   step_context context;
   context.name = step.name;
   context.index = index;
-  // Зерно шага — функция от зерна пайплайна и ИМЕНИ шага, а не позиция в потоке случайности.
-  // Поэтому перестановка или перезапуск шага не сдвигает случайность остальных.
-  context.seed = utils::mix(seed_, std::hash<std::string>{}(step.name));
+  // Зерно шага — функция от зерна пайплайна и ИМЕНИ шага, а не позиция в потоке случайности:
+  // перестановка или перезапуск шага не сдвигает случайность остальных.
+  const auto step_hash = std::hash<std::string>{}(step.name);
+  context.seed = utils::mix(seed_, step_hash);
+  // Второе зерно домешивает ключ чанка. Оба чистые функции, поэтому чанк не зависит от того, какие
+  // чанки посчитаны раньше — ни через одно, ни через другое.
+  context.chunk_seed = utils::mix(seed_, step_hash, uint64_t(chunk_.x), uint64_t(chunk_.y), uint64_t(chunk_.z));
+  context.chunk = chunk_;
   context.params = &step_params_[index];
   context.programs = step.programs;
   context.writes = step_writes_[index];

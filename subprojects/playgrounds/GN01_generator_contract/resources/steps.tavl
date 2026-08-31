@@ -29,12 +29,17 @@
 
 // Области. Здесь работают все три апертуры, которых не было в первом срезе:
 //   gather   — разметка клеток ближайшим сайтом;
-//   scatter  — соседство областей из Делоне и раскладка клеток по областям;
+//   scatter  — соседство областей из Делоне, контуры областей, раскладка клеток по областям;
 //   scatter  — суммирование высот по областям.
 {
   name = regions
   body = scripts/regions.lua
-  writes = [ sites, cells, region_offsets, region_arcs, region_cell_offsets, region_cell_order, region_stats ]
+  writes = [
+    sites, cells,
+    region_offsets, region_arcs,
+    polygon_offsets, polygon_corners, polygon_vertices, polygon_counts,
+    region_cell_offsets, region_cell_order, region_stats
+  ]
 }
 
 {

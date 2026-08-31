@@ -307,3 +307,130 @@ TEST_CASE("originator voronoi_adjacency refuses a neighbours buffer that is too 
   CHECK_THROWS_AS(originator::dispatch(*adjacency, inputs, outputs, params, 1, 0, site_count, "topology", nullptr),
                   std::runtime_error);
 }
+
+TEST_CASE("originator voronoi_polygons builds a shared-vertex planar mesh that tiles the box") {
+  const auto registry = make_registry();
+  const auto* polygons = registry.find("voronoi_polygons");
+  REQUIRE(polygons != nullptr);
+  CHECK(polygons->shape == originator::aperture::scatter);
+
+  auto sites = make_sites();
+
+  const std::vector<field_pair> offset_fields = {{"start", "ui1"}};
+  const std::vector<field_pair> corner_fields = {{"vertex", "ui1"}};
+  const std::vector<field_pair> vertex_fields = {{"position", "v2"}};
+  const std::vector<field_pair> count_fields = {{"vertices", "ui1"}};
+
+  auto offsets = originator::buffer("polygon_offsets", originator::make_buffer_layout(originator::storage_kind::soa, offset_fields, "polygon_offsets"), site_count + 1);
+  auto corners = originator::buffer("polygon_corners", originator::make_buffer_layout(originator::storage_kind::soa, corner_fields, "polygon_corners"), site_count * 16);
+  auto vertices = originator::buffer("polygon_vertices", originator::make_buffer_layout(originator::storage_kind::soa, vertex_fields, "polygon_vertices"), site_count * 8);
+  auto counts = originator::buffer("polygon_counts", originator::make_buffer_layout(originator::storage_kind::soa, count_fields, "polygon_counts"), 1);
+
+  originator::parameters params;
+  params.set_number("width", double(grid_width));
+  params.set_number("height", double(grid_width));
+
+  const std::vector<originator::field_ref> inputs{readable(sites, "position")};
+  const std::vector<originator::field_ref> outputs{
+    writable(offsets, "start"), writable(corners, "vertex"),
+    writable(vertices, "position"), writable(counts, "vertices")};
+
+  originator::dispatch(*polygons, inputs, outputs, params, 1, 0, site_count, "shaping", nullptr);
+
+  const auto start = offsets.field(0);
+  const auto corner = corners.field(0);
+  const auto position = vertices.field(0);
+  const auto vertex_count = size_t(counts.field(0).get(0));
+
+  CHECK(vertex_count > site_count);          // планарная диаграмма даёт примерно 2 вершины на область
+  CHECK(vertex_count <= site_count * 8);
+  CHECK(start.get(0) == 0.0);
+  const auto total_corners = size_t(start.get(site_count));
+  CHECK(total_corners >= site_count * 3);
+
+  // Каждое кольцо замкнуто, невырождено, обходится против часовой, а индексы попадают в таблицу.
+  double total_area = 0.0;
+  for (size_t site = 0; site < site_count; ++site) {
+    const auto first = size_t(start.get(site));
+    const auto last = size_t(start.get(site + 1));
+    REQUIRE(last >= first);
+    const size_t ring = last - first;
+    CHECK(ring >= 3);
+
+    double area = 0.0;
+    for (size_t k = 0; k < ring; ++k) {
+      const auto index = size_t(corner.get(first + k));
+      const auto next_index = size_t(corner.get(first + (k + 1) % ring));
+      REQUIRE(index < vertex_count);
+      REQUIRE(next_index < vertex_count);
+      area += position.get(index, 0) * position.get(next_index, 1) -
+              position.get(next_index, 0) * position.get(index, 1);
+    }
+    area *= 0.5;
+    CHECK(area > 0.0); // положительная площадь = обход против часовой
+    total_area += area;
+
+    // Канонизация: кольцо начинается с минимального индекса вершины.
+    for (size_t k = 1; k < ring; ++k) {
+      CHECK(corner.get(first) <= corner.get(first + k));
+    }
+  }
+
+  // Главный инвариант: ячейки замощают прямоугольник без щелей и без наложений, поэтому сумма
+  // площадей равна его площади. Общие вершины — это и есть причина, по которой равенство точное.
+  const double box_area = double(grid_width) * double(grid_width);
+  CHECK(total_area == doctest::Approx(box_area).epsilon(1e-6));
+
+  // Тот же вход — та же сетка.
+  auto repeat_offsets = originator::buffer("polygon_offsets", originator::make_buffer_layout(originator::storage_kind::soa, offset_fields, "polygon_offsets"), site_count + 1);
+  auto repeat_corners = originator::buffer("polygon_corners", originator::make_buffer_layout(originator::storage_kind::soa, corner_fields, "polygon_corners"), site_count * 16);
+  auto repeat_vertices = originator::buffer("polygon_vertices", originator::make_buffer_layout(originator::storage_kind::soa, vertex_fields, "polygon_vertices"), site_count * 8);
+  auto repeat_counts = originator::buffer("polygon_counts", originator::make_buffer_layout(originator::storage_kind::soa, count_fields, "polygon_counts"), 1);
+  const std::vector<originator::field_ref> repeat_out{
+    writable(repeat_offsets, "start"), writable(repeat_corners, "vertex"),
+    writable(repeat_vertices, "position"), writable(repeat_counts, "vertices")};
+  originator::dispatch(*polygons, inputs, repeat_out, params, 1, 0, site_count, "shaping", nullptr);
+
+  CHECK(repeat_counts.field(0).get(0) == double(vertex_count));
+  for (size_t i = 0; i <= site_count; ++i) {
+    CHECK(repeat_offsets.field(0).get(i) == start.get(i));
+  }
+  for (size_t i = 0; i < total_corners; ++i) {
+    CHECK(repeat_corners.field(0).get(i) == corner.get(i));
+  }
+}
+
+TEST_CASE("originator voronoi_polygons refuses to work without a clipping rectangle") {
+  const auto registry = make_registry();
+  const auto* polygons = registry.find("voronoi_polygons");
+
+  auto sites = make_sites();
+  const std::vector<field_pair> offset_fields = {{"start", "ui1"}};
+  const std::vector<field_pair> corner_fields = {{"vertex", "ui1"}};
+  const std::vector<field_pair> vertex_fields = {{"position", "v2"}};
+  const std::vector<field_pair> count_fields = {{"vertices", "ui1"}};
+  auto offsets = originator::buffer("o", originator::make_buffer_layout(originator::storage_kind::soa, offset_fields, "o"), site_count + 1);
+  auto corners = originator::buffer("c", originator::make_buffer_layout(originator::storage_kind::soa, corner_fields, "c"), site_count * 16);
+  auto vertices = originator::buffer("v", originator::make_buffer_layout(originator::storage_kind::soa, vertex_fields, "v"), site_count * 8);
+  auto counts = originator::buffer("n", originator::make_buffer_layout(originator::storage_kind::soa, count_fields, "n"), 1);
+
+  const std::vector<originator::field_ref> inputs{readable(sites, "position")};
+  const std::vector<originator::field_ref> outputs{
+    writable(offsets, "start"), writable(corners, "vertex"),
+    writable(vertices, "position"), writable(counts, "vertices")};
+
+  // Без границ полигоны краевых областей уходят в бесконечность: молча отдать такую сетку нельзя.
+  const originator::parameters no_bounds;
+  CHECK_THROWS_AS(originator::dispatch(*polygons, inputs, outputs, no_bounds, 1, 0, site_count, "shaping", nullptr),
+                  std::runtime_error);
+
+  // Слишком маленькая таблица вершин — тоже громкая ошибка.
+  auto tiny = originator::buffer("v", originator::make_buffer_layout(originator::storage_kind::soa, vertex_fields, "v"), 4);
+  const std::vector<originator::field_ref> tiny_out{
+    writable(offsets, "start"), writable(corners, "vertex"),
+    writable(tiny, "position"), writable(counts, "vertices")};
+  originator::parameters bounded;
+  bounded.set_number("width", double(grid_width));
+  CHECK_THROWS_AS(originator::dispatch(*polygons, inputs, tiny_out, bounded, 1, 0, site_count, "shaping", nullptr),
+                  std::runtime_error);
+}

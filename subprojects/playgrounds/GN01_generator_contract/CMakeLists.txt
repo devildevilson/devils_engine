@@ -19,6 +19,11 @@ set_target_properties(GN01_generator_contract PROPERTIES
 
 if (DEVILS_ENGINE_BUILD_TESTS)
   add_test(NAME GN01_generator_contract_verify
-    COMMAND GN01_generator_contract --verify --size=256)
-  set_tests_properties(GN01_generator_contract_verify PROPERTIES LABELS devils_engine)
+    COMMAND GN01_generator_contract --verify --size=256 --sites=64)
+  add_test(NAME GN01_generator_contract_chunked
+    COMMAND GN01_generator_contract --chunked=4 --size=256 --sites=64)
+  set_tests_properties(
+    GN01_generator_contract_verify
+    GN01_generator_contract_chunked
+    PROPERTIES LABELS devils_engine)
 endif()

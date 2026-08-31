@@ -5,21 +5,33 @@
 --
 -- Здесь же видно, зачем дирижёру вообще читать данные: свёртка возвращает ДВА числа, и по ним
 -- скрипт параметризует следующий вызов. Без этого fixture зависел бы от разрешения — одна и та же
--- частота на сетке 512 и 2048 покрывает разные участки поля шума, и доля суши уезжала бы с 55% до
--- 37% при том же зерне.
+-- частота на сетке 512 и 2048 покрывала бы разные участки поля шума, и доля суши уезжала бы.
+--
+-- И здесь же видна граница чанкования. Шум чанкуется: он зависит только от мировой позиции, поэтому
+-- достаточно сдвинуть начало координат по ключу чанка. Нормализация по измеренному диапазону НЕ
+-- чанкуется: чанк измерил бы свой собственный диапазон и получил бы своё отображение, не совпадающее
+-- с соседями. Поэтому режим выбирает конфиг, а не скрипт угадывает.
 
-local function generate_normalized(field, step, features, salt)
-  -- Частота задаётся в ЧЕРТАХ НА КАРТУ, а не на клетку: разрешение не должно менять мир.
+local function generate(field, step, features, salt)
+  -- Частота задаётся в чертах на КАРТУ, а не на клетку и не на чанк: ни разрешение, ни разбиение на
+  -- чанки не должны менять мир.
+  local frequency = features / step.params.map_width
+
   originator.noise_grid{
     outputs = { field },
     params = {
       tree = step.params.tree,
       width = step.params.width,
-      frequency = features / step.params.width,
+      frequency = frequency,
+      -- Мировое смещение чанка: поле в чанке (2,3) продолжает поле соседа, а не начинается заново.
+      x_offset = step.chunk.x * step.params.width,
+      y_offset = step.chunk.y * step.params.width,
       seed_offset = salt,
     },
   }
+end
 
+local function normalize(field)
   -- Диапазон выхода закодированного дерева узлов заранее не известен, поэтому он не угадывается
   -- параметрами, а измеряется. Две свёртки — это два числа, читать их из lua дешево.
   local lowest = originator.reduce_min{ inputs = { field } }
@@ -39,10 +51,29 @@ local function generate_normalized(field, step, features, salt)
   }
 end
 
+local function rescale(field, step)
+  originator.remap{
+    inputs = { field },
+    outputs = { field },
+    params = { scale = step.params.fixed_scale, offset = step.params.fixed_offset },
+  }
+end
+
 return function(step)
   local cells = step.writes.cells
 
   -- Имя поля разрешается ОДИН раз, дальше в работе участвует уже ссылка.
-  generate_normalized(cells:field("height"), step, step.params.features, 1)
-  generate_normalized(cells:field("moisture"), step, step.params.features * 2.5, 2)
+  local height = cells:field("height")
+  local moisture = cells:field("moisture")
+
+  generate(height, step, step.params.features, 1)
+  generate(moisture, step, step.params.features * 2.5, 2)
+
+  if step.params.normalize ~= 0 then
+    normalize(height)
+    normalize(moisture)
+  else
+    rescale(height, step)
+    rescale(moisture, step)
+  end
 end
