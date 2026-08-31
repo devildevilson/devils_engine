@@ -4,8 +4,15 @@ PF10 проверяет не «похожий на планету шар», а �
 реальная геометрическая высота, тысячи стабильных политических областей, подписи и объектные anchors.
 Рельеф и вся семантика принадлежат планете: при повороте глобуса они не плывут в world/screen space.
 
-**Первое отображение, close-up refinement и иерархия province/state работают (2026-08-31).** Это один
-близкий глобус без атмосферы и прочего окружения.
+**PF10 формально закрыта с closing audit (2026-08-31).** Площадка доказала один близкий функциональный
+глобус: displaced surface, 3–5 тысяч навигационных провинций, государственную иерархию, три уровня границ,
+planet-local interaction, гидрографию, объекты и MSDF-подписи. Атмосфера и прочее окружение сюда не входят.
+
+Closing audit нашёл две реальные ошибки данных. Два коротких segment в трёхсторонних state junction не могли
+физически подтвердить записанные стороны и раньше получали их по fallback; теперь такой ribbon не лжёт и
+оставляет видимой тонкую province line под собой. У двух озёр центр находился на суше, но rim заходил в
+non-playable область; радиус теперь сокращается по 16 canonical samples. Усиленный `--verify` фиксирует оба
+контракта.
 
 ## Запуск
 
@@ -105,11 +112,13 @@ Province CSR теперь является источником и для сле
 
 Государственная граница не является утолщённой province line. При старте переходы state ID один раз
 материализуются из dense atlas, пересечение уточняется 11 bisection-шагами на каноническом evaluator и
-сшивается в planet-local trails с непрерывной угловой координатой `s`. Получается `3946` коротких
+сшивается в planet-local trails с непрерывной угловой координатой `s`. Получается `3944` коротких
 segments вместо fullscreen-поиска соседей. Инстансный screen-width ribbon рисует две половины рядом:
 каждая сторона берёт palette именно своего государства и чередует два его цвета вдоль world-locked `s`,
 а узкий тёмный separator сохраняет читаемость пары. Province border всегда остаётся тонкой сплошной линией
 под ribbon как coverage fallback; поэтому отбрасывание короткого state trail больше не создаёт дырку.
+На неоднозначном junction ribbon теперь рисуется только тогда, когда canonical samples действительно
+подтверждают разные государства с двух его сторон; две бывшие fallback-вставки closing audit удалил.
 State frontier остаётся более толстой узорной линией; coast/pole/mountain-water переходы — отдельной аналитической
 границей. `--no-state-borders` даёт A/B, а `--border-debug=exact|distance|state` показывает refinement band,
 пиксельное расстояние или ownership государств.
@@ -122,12 +131,14 @@ State frontier остаётся более толстой узорной лин�
 может разрезать один навигационный node на две невидимо несвязанные половины. Внутренние границы ячеек одной
 цепи не рисуются.
 
-Гидрография — отдельный feature layer из `961` примитива. Истоки выбираются среди высокой игровой суши,
+Гидрография — отдельный feature layer из `959` примитивов. Истоки выбираются среди высокой игровой суши,
 направление шага оценивается конечной разностью `surface_height`, добавляется небольшое детерминированное
 meander, а каждый следующий endpoint повторно проверяется как land. Реки — сужающиеся/расширяющиеся
 сферические ribbons, озёра — заполненные tangent discs; derivative AA делает их края плавными. Это
 planet-local геометрия немного над рельефом, а не screen-space линия и не часть province ID. Консервативный
-horizon gate убирает обратную сторону до rasterization. `--no-hydrology` оставлен как точный A/B.
+horizon gate убирает обратную сторону до rasterization. River centerline целиком проверяется как playable
+land; у озера 16 проб rim сокращают радиус до полного размещения на суше. `--no-hydrology` оставлен как
+точный A/B.
 
 ### Interaction, text и объекты
 
@@ -186,48 +197,58 @@ LOD сейчас намеренно простой: дальше `1.72R` рис�
 
 Первый честный uncapped Release замер выполнял procedural height в vertex и 27-cell Voronoi во fragment:
 `15.906 ms`, или `62.9 FPS` GPU-equivalent на Iris Xe при 1280x720. После статического bake, triangle strips
-i политического atlas итог остаётся выше целевого бюджета. На Iris Xe, Release 1280x720, детерминированный
+и политического atlas итог остаётся выше целевого бюджета. На Iris Xe, Release 1280x720, детерминированный
 120-frame запуск после pixel-stable province borders и двусторонних state ribbons: максимальное приближение
-`1.16R` с гидрографией и north-up labels `4.337 ms / 230.6 FPS`; frame-80 дальнего LOD с исполинскими
-state names — `2.993 ms / 334 FPS`. Отдельный близкий
+`1.16R` с гидрографией и north-up labels `4.324 ms / 231.3 FPS`; дальний LOD с исполинскими
+state names — `2.998 ms / 333.5 FPS`. Отдельный близкий
 A/B измерил state ribbon примерно в `0.12 ms`. Pacing выключен, GPU timestamps измеряют passes отдельно.
 Новый state-frontier buffer резервирует `3 MiB`; суммарные именованные capacity в PF10 config — около
 `57.2 MiB`, oct-normal не добавляет buffer, а per-frame списки base/refined patches имеют по `96 KiB`.
 
-`--verify` сейчас даёт `39/39`:
+Closing `--verify` даёт `47/47`:
 
 - land count лежит в `[3000,5000]` (`4473` в survey, `4548` в проверочном atlas-512);
 - water regions крупные и немногочисленные (`4`), mountain chains ровно три, polar regions ровно две;
 - высота ограничена и имеет наблюдаемый радиальный диапазон;
 - повторный survey даёт fingerprint `0x80c461f7182ed83b`;
 - плотный bake покрывает survey, CSR полон, симметричен, не имеет self/isolated nodes и держит mean degree
-  в `[4,8]` (`5.58` в проверочном atlas-512);
+  в `[4,8]` (`5.58` в проверочном atlas-512); весь playable land образует ровно одну компоненту;
 - каждый playable ID взаимно-однозначно соответствует ровно одному `cell_key`; hash collision больше не
   может объединить удалённые компоненты в один CSR node;
 - все игровые провинции принадлежат одному из трёх государств и каждое state-induced подмножество CSR связно;
-- state frontiers укладываются в `65536` segments, обе стороны каждого segment имеют разные допустимые
-  state ID, `s` строго растёт, а один segment остаётся atlas-local (`max 0.005051 rad` в atlas-512);
+- все `1.58M` texels atlas-512, а не разреженная выборка, round-trip проходят через R16 index; exact records
+  совпадают с canonical kind/state/CSR metadata;
+- state frontiers укладываются в `65536` segments (`1717` в atlas-512), повторный build бит-идентичен,
+  обе физические стороны каждого отрисованного segment подтверждают записанные state ID, `s` строго растёт,
+  а один segment остаётся atlas-local (`max 0.005063 rad`);
 - каждая провинция имеет полный curved-label layout; area-centred anchor обладает положительным clearance,
   а вся sampled Bézier-кривая остаётся внутри того же owner ID;
 - на девяти точках каждой province Bézier экранный верх glyph остаётся в северной полуплоскости и никогда
   не поворачивает имя более чем на 90 градусов от локального севера;
 - ни одна materialized labelable province не имеет нулевой curve (`minimum 0.002466 rad` в atlas-512);
-- compact `R16` atlas round-trip возвращает exact cell и исходный стабильный ID; exact table ограничена
-  `8192` records;
+- exact table ограничена `8192` records (`4643` в atlas-512, `4702` в runtime atlas-1024);
 - visible-patch subset численно ограничен, close-up refinement является строгим `4x` subset и выключается
   на дальней камере;
-- feature layer компактен, а оба endpoint каждой реки/озера остаются на игровой суше;
+- feature layer компактен и бит-идентичен при повторном build; не только endpoints, но вся sampled river
+  centerline и каждый 16-точечный lake rim остаются на игровой суше;
 - высота и `province_id` сохраняются после planet transform;
 - 24 object anchors принадлежат записанным провинциям;
-- центральный camera ray выбирает видимую displaced surface, а луч мимо планеты ничего не выбирает.
+- центральный camera ray выбирает видимую displaced surface, луч мимо планеты ничего не выбирает, а ещё
+  `256` planet-wide radial rays возвращают именно передний displaced owner;
 - world-Y orbit остаётся единичным и конечным после сотен комбинированных шагов и не достигает обоих
   полярных экстремумов.
 
-Debug и Release targets собираются. Fixed far/near 1280x720 frames проходят; Vulkan validation на пути
-planet + refined planet + markers + hydrology + state ribbons + exact province borders + depth-reconstructed
-MSDF decals + overlay не сообщает VUID/API warning/error.
+Debug и Release targets собираются и оба проходят `47/47`. Runtime audit запускает `--mesh=32` и default
+`512`, near/far LOD, `--no-hydrology`, `--no-state-borders` и все `--border-debug=exact|distance|state`.
+Vulkan validation отдельно проходит near, far и exact-debug пути: planet + refined planet + markers +
+hydrology + state ribbons + exact province borders + depth-reconstructed MSDF decals + overlay не сообщает
+VUID/API warning/error.
 
-## Следующие срезы
+Frozen image gallery здесь сознательно отсутствует: в PF10 нет содержательного weather-on/off либо иного
+эталонного A/B, которое нужно защищать пиксельным сравнением. Closing gate — канонические структурные
+инварианты, чистые render/validation пути, численный performance budget и временный визуальный осмотр.
+
+## За пределами закрытой PF10
 
 1. **Water navigation.** Определить отдельный port-to-port graph и запрет навигации через polar regions;
    land CSR уже материализован.
@@ -238,7 +259,10 @@ MSDF decals + overlay не сообщает VUID/API warning/error.
 4. **LOD and residency.** Развить нынешний центральный 4x focus в иерархические shell/ring levels для
    бесшовного спуска значительно ближе `1.16R`; текущий crack-free стык и стабильные height/normal/border/ID
    уже являются первым уровнем.
-5. **Audit.** Детерминированные globe/terrain/political/selected frames, budgets и явные production limits.
+
+Это не незавершённые обещания PF10: water graph, persistence и более глубокий LOD должны получить собственный
+scope при появлении реального gameplay/content consumer. Геральдические billboards также остаются намеренно
+на потом.
 
 ## Не входит сейчас
 

@@ -1,5 +1,8 @@
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <format>
 #include <iostream>
 #include <limits>
@@ -105,6 +108,9 @@ int verify() {
   }
   check(symmetric, "every land adjacency is an undirected symmetric edge");
   check(!isolated, "no playable province is isolated from the navigation graph");
+  check(graph.connected_components == 1u,
+        std::format("playable province navigation is one connected land graph ({} component)",
+                    graph.connected_components));
   const double mean_degree = graph.province_ids.empty() ? 0.0 :
     double(graph.neighbours.size()) / double(graph.province_ids.size());
   check(mean_degree >= 4.0 && mean_degree <= 8.0,
@@ -200,12 +206,28 @@ int verify() {
 
   const auto packed = pf10::pack_political_atlas(politics);
   bool compact_round_trip = packed.texels.size() == politics.texels.size() && !packed.cells.empty();
-  for (size_t i = 0; compact_round_trip && i < packed.texels.size(); i += 257u) {
-    compact_round_trip &= packed.cells[packed.texels[i] & 0xffffu].metadata.x == politics.texels[i].region_id;
+  bool compact_metadata = compact_round_trip;
+  for (size_t i = 0; compact_round_trip && i < packed.texels.size(); ++i) {
+    const uint32_t local_index = packed.texels[i] & 0xffffu;
+    compact_round_trip &= local_index < packed.cells.size() &&
+                          packed.cells[local_index].metadata.x == politics.texels[i].region_id;
+    if (!compact_round_trip) break;
+    const auto& cell = packed.cells[local_index];
+    const auto province = std::ranges::lower_bound(graph.province_ids, politics.texels[i].region_id);
+    const bool playable = province != graph.province_ids.end() && *province == politics.texels[i].region_id;
+    if (playable) {
+      const size_t node = size_t(province - graph.province_ids.begin());
+      compact_metadata &= cell.metadata.y == 0u && cell.metadata.z == graph.state_ids[node] &&
+                          cell.metadata.w == node && cell.feature.w == 1.0f;
+    } else {
+      compact_metadata &= cell.metadata.z == pf10::no_region && cell.metadata.w == pf10::no_region;
+    }
   }
-  check(compact_round_trip, "R16 political indices round-trip to exact cells and stable planet-local IDs");
+  check(compact_round_trip, "every R16 political texel round-trips to its exact stable planet-local ID");
+  check(compact_metadata, "every compact political record agrees with canonical kind/state/CSR ownership");
 
   const auto state_borders = pf10::make_state_borders(politics);
+  const auto repeated_state_borders = pf10::make_state_borders(politics);
   const uint32_t state_border_trails = state_borders.empty() ? 0u :
     std::ranges::max(state_borders | std::views::transform([](const pf10::state_border_segment& segment) {
       return segment.states.z;
@@ -217,10 +239,36 @@ int verify() {
   check(!state_borders.empty() && state_borders.size() < 65536u,
         std::format("state frontiers materialize as a compact exact ribbon set ({} segments, {} trails)",
                     state_borders.size(), state_border_trails));
+  check(state_borders.size() == repeated_state_borders.size() &&
+          (state_borders.empty() || std::memcmp(state_borders.data(), repeated_state_borders.data(),
+                                                state_borders.size() * sizeof(pf10::state_border_segment)) == 0),
+        "materialized state ribbons are bit-identical across repeated builds");
   check(std::ranges::all_of(state_borders, [&](const pf10::state_border_segment& segment) {
           return segment.states.x < graph.state_count && segment.states.y < graph.state_count &&
                  segment.states.x != segment.states.y && segment.b_position_s.w > segment.a_position_s.w;
         }), "every state ribbon has two different valid sides and increasing world-locked arc length");
+  const auto state_for_region = [&](const uint32_t id) {
+    const auto found = std::ranges::lower_bound(graph.province_ids, id);
+    return found == graph.province_ids.end() || *found != id ? pf10::no_region :
+           graph.state_ids[size_t(found - graph.province_ids.begin())];
+  };
+  uint32_t invalid_state_sides = 0u;
+  for (const auto& segment : state_borders) {
+    const glm::vec3 a = glm::normalize(glm::vec3(segment.a_position_s));
+    const glm::vec3 b = glm::normalize(glm::vec3(segment.b_position_s));
+    const glm::vec3 middle = glm::normalize(a + b);
+    const glm::vec3 along = glm::normalize(b - a);
+    const glm::vec3 across = glm::normalize(glm::cross(middle, along));
+    bool valid = false;
+    for (const float epsilon : {0.00045f, 0.0009f, 0.0018f, 0.0036f}) {
+      const uint32_t plus = state_for_region(pf10::sample_region(glm::normalize(middle + across * epsilon)).id);
+      const uint32_t minus = state_for_region(pf10::sample_region(glm::normalize(middle - across * epsilon)).id);
+      valid |= plus == segment.states.x && minus == segment.states.y;
+    }
+    invalid_state_sides += !valid;
+  }
+  check(invalid_state_sides == 0u,
+        std::format("every rendered state-ribbon half owns its physical side ({} invalid)", invalid_state_sides));
   check(maximum_state_segment < 0.012f,
         std::format("every state ribbon segment remains atlas-local (max {:.6f} rad)", maximum_state_segment));
 
@@ -237,13 +285,53 @@ int verify() {
         "inspection LOD turns off outside close viewing distance");
 
   const auto hydrology = pf10::make_hydrology_features();
+  const auto repeated_hydrology = pf10::make_hydrology_features();
   check(hydrology.size() >= 500u && hydrology.size() < 4096u,
         std::format("hydrology fixture is a compact smooth feature layer ({} primitives)", hydrology.size()));
+  check(hydrology.size() == repeated_hydrology.size() &&
+          (hydrology.empty() || std::memcmp(hydrology.data(), repeated_hydrology.data(),
+                                            hydrology.size() * sizeof(pf10::hydrology_feature)) == 0),
+        "hydrology feature data is bit-identical across repeated builds");
   check(std::ranges::all_of(hydrology, [](const pf10::hydrology_feature& feature) {
           return feature.widths_kind.x > 0.0f && feature.widths_kind.y > 0.0f &&
                  pf10::sample_region(glm::vec3(feature.a_direction_height)).kind == pf10::region_kind::land &&
                  pf10::sample_region(glm::vec3(feature.b_direction_height)).kind == pf10::region_kind::land;
         }), "every river/lake primitive lies on playable land without changing province ownership");
+  uint32_t invalid_river_centrelines = 0u;
+  uint32_t invalid_lake_rims = 0u;
+  for (const auto& feature : hydrology) {
+    const glm::vec3 a = glm::normalize(glm::vec3(feature.a_direction_height));
+    const glm::vec3 b = glm::normalize(glm::vec3(feature.b_direction_height));
+    if (feature.widths_kind.z <= 0.5f) {
+      bool valid = true;
+      for (uint32_t sample = 0u; sample <= 4u; ++sample) {
+        valid &= pf10::sample_region(glm::normalize(glm::mix(a, b, float(sample) * 0.25f))).kind ==
+                 pf10::region_kind::land;
+      }
+      invalid_river_centrelines += !valid;
+      continue;
+    }
+    glm::vec3 along = b - a;
+    if (glm::dot(along, along) < 1.0e-10f) {
+      along = glm::cross(a, std::abs(a.y) < 0.8f ? glm::vec3(0.0f, 1.0f, 0.0f) :
+                                                      glm::vec3(1.0f, 0.0f, 0.0f));
+    }
+    along = glm::normalize(along);
+    const glm::vec3 across = glm::normalize(glm::cross(a, along));
+    bool valid = true;
+    for (uint32_t sample = 0u; sample < 16u; ++sample) {
+      const float angle = float(sample) * 0.39269908169f;
+      const glm::vec3 rim = glm::normalize(a +
+        (along * std::cos(angle) + across * std::sin(angle)) * feature.widths_kind.x);
+      valid &= pf10::sample_region(rim).kind == pf10::region_kind::land;
+    }
+    invalid_lake_rims += !valid;
+  }
+  check(invalid_river_centrelines == 0u,
+        std::format("complete river centrelines remain on playable land ({} invalid)",
+                    invalid_river_centrelines));
+  check(invalid_lake_rims == 0u,
+        std::format("complete lake rims remain on playable land ({} invalid)", invalid_lake_rims));
 
   const glm::vec3 probe = glm::normalize(glm::vec3(0.37f, 0.51f, -0.78f));
   const float original_height = pf10::surface_height(probe);
@@ -267,6 +355,20 @@ int verify() {
         "visible displaced surface resolves to a selectable navigation region");
   check(!pf10::intersect_surface(glm::vec3(0.0f, 0.0f, 3.0f), glm::vec3(0.0f, 1.0f, 0.0f)).hit,
         "a ray beside the globe cannot select a hidden province");
+  bool radial_picking = true;
+  constexpr float golden_angle = 2.39996322972865332f;
+  for (uint32_t sample = 0u; sample < 256u; ++sample) {
+    const float y = 1.0f - 2.0f * (float(sample) + 0.5f) / 256.0f;
+    const float radius = std::sqrt(std::max(1.0f - y * y, 0.0f));
+    const float angle = float(sample) * golden_angle;
+    const glm::vec3 direction{std::cos(angle) * radius, y, std::sin(angle) * radius};
+    const auto expected = pf10::sample_region(direction);
+    const auto hit = pf10::intersect_surface(direction * 3.0f, -direction);
+    radial_picking &= hit.hit && hit.region.id == expected.id &&
+                      glm::dot(hit.direction, direction) > 0.999999f &&
+                      std::abs(hit.height - pf10::surface_height(direction)) < 1.0e-5f;
+  }
+  check(radial_picking, "radial picking returns the front displaced owner on 256 planet-wide probes");
 
   glm::vec3 camera_direction{0.0f, 0.0f, 1.0f};
   for (uint32_t i = 0u; i < 200u; ++i) {

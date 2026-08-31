@@ -1119,15 +1119,18 @@ std::vector<state_border_segment> make_state_borders(const political_atlas& poli
           const bool valid_minus = minus_state == edge.low_state || minus_state == edge.high_state;
           if (valid_plus && valid_minus && plus_state != minus_state) break;
         }
-        if (!((plus_state == edge.low_state || plus_state == edge.high_state) &&
-              (minus_state == edge.low_state || minus_state == edge.high_state) && plus_state != minus_state)) {
-          plus_state = edge.low_state;
-          minus_state = edge.high_state;
+        const bool resolved_sides = (plus_state == edge.low_state || plus_state == edge.high_state) &&
+                                    (minus_state == edge.low_state || minus_state == edge.high_state) &&
+                                    plus_state != minus_state;
+        // A three-state raster junction can leave a tiny segment whose midpoint has no epsilon with the
+        // advertised pair on opposite sides. Never guess: the thin province contour remains underneath as
+        // coverage fallback, while a two-colour state ribbon with fabricated orientation would be false data.
+        if (resolved_sides) {
+          const glm::vec3 a_position = a * (planet_radius + surface_height(a));
+          const glm::vec3 b_position = b * (planet_radius + surface_height(b));
+          result.push_back({glm::vec4(a_position, cumulative), glm::vec4(b_position, cumulative + length),
+                            glm::uvec4(plus_state, minus_state, component, 0u)});
         }
-        const glm::vec3 a_position = a * (planet_radius + surface_height(a));
-        const glm::vec3 b_position = b * (planet_radius + surface_height(b));
-        result.push_back({glm::vec4(a_position, cumulative), glm::vec4(b_position, cumulative + length),
-                          glm::uvec4(plus_state, minus_state, component, 0u)});
         cumulative += length;
       }
       current = next;
@@ -1273,9 +1276,27 @@ std::vector<hydrology_feature> make_hydrology_features() {
     }
     const size_t segment_count = result.size() - first_segment;
     if (segment_count >= 18u && (river % 3u) == 0u) {
-      const float radius = 0.0018f + float((river / 3u) % 3u) * 0.00055f;
-      result.push_back({glm::vec4(current, surface_height(current)), glm::vec4(current, surface_height(current)),
-                        glm::vec4(radius, radius, 1.0f, float(river & 3u))});
+      float radius = 0.0018f + float((river / 3u) % 3u) * 0.00055f;
+      const glm::vec3 reference = std::abs(current.y) < 0.8f ? glm::vec3(0.0f, 1.0f, 0.0f) :
+                                                              glm::vec3(1.0f, 0.0f, 0.0f);
+      const glm::vec3 tangent = glm::normalize(glm::cross(current, reference));
+      const glm::vec3 bitangent = glm::normalize(glm::cross(current, tangent));
+      bool contained = false;
+      for (uint32_t attempt = 0u; attempt < 8u; ++attempt) {
+        contained = true;
+        for (uint32_t sample = 0u; sample < 16u; ++sample) {
+          const float angle = float(sample) * 0.39269908169f;
+          const glm::vec3 rim = glm::normalize(current +
+            (tangent * std::cos(angle) + bitangent * std::sin(angle)) * radius);
+          contained &= sample_region(rim).kind == region_kind::land;
+        }
+        if (contained) break;
+        radius *= 0.72f;
+      }
+      if (contained) {
+        result.push_back({glm::vec4(current, surface_height(current)), glm::vec4(current, surface_height(current)),
+                          glm::vec4(radius, radius, 1.0f, float(river & 3u))});
+      }
     }
   }
   return result;
