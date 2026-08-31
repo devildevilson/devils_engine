@@ -14,6 +14,8 @@ struct viewer_options {
   bool validation = false;
   bool fixed_rotation = false;
   bool show_hydrology = true;
+  bool show_state_borders = true;
+  uint32_t border_debug = 0;
   std::string dump_path;
 };
 

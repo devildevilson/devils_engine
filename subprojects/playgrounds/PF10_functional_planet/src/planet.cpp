@@ -641,6 +641,135 @@ political_atlas bake_political_atlas(const uint32_t face_side) {
   return result;
 }
 
+void assign_fixture_states(province_graph& graph, glm::vec3 presentation_direction,
+                           const uint32_t requested_state_count) {
+  graph.state_ids.clear();
+  graph.state_centres.clear();
+  graph.state_count = 0u;
+  if (graph.province_ids.empty()) return;
+
+  const uint32_t count = std::clamp(requested_state_count, 1u, uint32_t(graph.province_ids.size()));
+  const glm::vec3 front = glm::normalize(presentation_direction);
+  glm::vec3 east = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), front);
+  if (glm::dot(east, east) < 1.0e-6f) east = glm::cross(glm::vec3(1.0f, 0.0f, 0.0f), front);
+  east = glm::normalize(east);
+  const glm::vec3 north = glm::normalize(glm::cross(front, east));
+  std::vector<uint32_t> seeds;
+  seeds.reserve(count);
+  for (uint32_t seed_index = 0u; seed_index < count; ++seed_index) {
+    const float angle = float(seed_index) / float(count) * 2.0f * std::numbers::pi_v<float>;
+    const glm::vec3 target = count == 3u ?
+      (seed_index == 0u ? glm::normalize(front + east * 0.62f) :
+       (seed_index == 1u ? glm::normalize(front - east * 0.62f) : -front)) :
+      glm::normalize(front + (east * std::cos(angle) + north * std::sin(angle)) * 0.72f);
+    uint32_t best_node = 0u;
+    float best_score = -std::numeric_limits<float>::max();
+    for (uint32_t node = 0u; node < graph.centre_directions.size(); ++node) {
+      if (std::ranges::find(seeds, node) != seeds.end()) continue;
+      const glm::vec3 direction = graph.centre_directions[node];
+      const float score = glm::dot(direction, target);
+      if (score > best_score) {
+        best_score = score;
+        best_node = node;
+      }
+    }
+    seeds.push_back(best_node);
+  }
+
+  // Start from smooth spherical Voronoi caps. Obstacles can split a cap into graph-disconnected islands;
+  // each island not containing its seed is moved wholesale to the neighbouring state with the longest
+  // shared frontier. Adding it through that frontier preserves connectivity without the thin graph-distance
+  // tendrils and one-province salt-and-pepper artifacts that are unacceptable in a political fixture.
+  graph.state_ids.resize(graph.province_ids.size());
+  for (uint32_t node = 0u; node < graph.province_ids.size(); ++node) {
+    uint32_t owner = 0u;
+    float owner_score = -std::numeric_limits<float>::max();
+    for (uint32_t state = 0u; state < seeds.size(); ++state) {
+      const float score = glm::dot(graph.centre_directions[node], graph.centre_directions[seeds[state]]);
+      if (score > owner_score) { owner_score = score; owner = state; }
+    }
+    graph.state_ids[node] = owner;
+  }
+  // Province centres near a spherical bisector can alternate on an irregular Voronoi graph, creating
+  // one-cell bays that a 6-pixel state ribbon completely covers. A conservative synchronous majority pass
+  // removes only narrow tips (at least three neighbours and a two-edge advantage); seed provinces are fixed.
+  std::vector<uint32_t> smoothed = graph.state_ids;
+  for (uint32_t iteration = 0u; iteration < 10u; ++iteration) {
+    smoothed = graph.state_ids;
+    for (uint32_t node = 0u; node < graph.province_ids.size(); ++node) {
+      if (std::ranges::find(seeds, node) != seeds.end()) continue;
+      std::vector<uint32_t> contacts(count, 0u);
+      for (uint32_t i = graph.neighbour_offsets[node]; i < graph.neighbour_offsets[node + 1u]; ++i) {
+        ++contacts[graph.state_ids[graph.neighbours[i]]];
+      }
+      const uint32_t owner = graph.state_ids[node];
+      uint32_t replacement = owner;
+      for (uint32_t candidate = 0u; candidate < count; ++candidate) {
+        if (contacts[candidate] > contacts[replacement]) replacement = candidate;
+      }
+      if (replacement != owner && contacts[replacement] >= 3u &&
+          contacts[replacement] >= contacts[owner] + 2u) smoothed[node] = replacement;
+    }
+    graph.state_ids.swap(smoothed);
+  }
+  for (uint32_t state = 0u; state < count; ++state) {
+    std::vector<int32_t> component(graph.province_ids.size(), -1);
+    std::vector<std::vector<uint32_t>> components;
+    for (uint32_t root = 0u; root < graph.province_ids.size(); ++root) {
+      if (graph.state_ids[root] != state || component[root] >= 0) continue;
+      const int32_t index = int32_t(components.size());
+      components.emplace_back();
+      std::vector<uint32_t> pending{root};
+      component[root] = index;
+      while (!pending.empty()) {
+        const uint32_t node = pending.back();
+        pending.pop_back();
+        components.back().push_back(node);
+        for (uint32_t i = graph.neighbour_offsets[node]; i < graph.neighbour_offsets[node + 1u]; ++i) {
+          const uint32_t neighbour = graph.neighbours[i];
+          if (graph.state_ids[neighbour] == state && component[neighbour] < 0) {
+            component[neighbour] = index;
+            pending.push_back(neighbour);
+          }
+        }
+      }
+    }
+    const int32_t retained = component[seeds[state]];
+    for (uint32_t index = 0u; index < components.size(); ++index) {
+      if (int32_t(index) == retained) continue;
+      std::vector<uint32_t> contacts(count, 0u);
+      for (const uint32_t node : components[index]) {
+        for (uint32_t i = graph.neighbour_offsets[node]; i < graph.neighbour_offsets[node + 1u]; ++i) {
+          const uint32_t neighbour_state = graph.state_ids[graph.neighbours[i]];
+          if (neighbour_state < count && neighbour_state != state) ++contacts[neighbour_state];
+        }
+      }
+      uint32_t destination = no_region;
+      for (uint32_t candidate = 0u; candidate < count; ++candidate) {
+        if (contacts[candidate] != 0u &&
+            (destination == no_region || contacts[candidate] > contacts[destination])) destination = candidate;
+      }
+      if (destination != no_region) {
+        for (const uint32_t node : components[index]) graph.state_ids[node] = destination;
+      }
+    }
+  }
+
+  graph.state_count = count;
+  graph.state_centres.assign(count, glm::vec3(0.0f));
+  std::vector<uint32_t> members(count, 0u);
+  for (uint32_t node = 0u; node < graph.state_ids.size(); ++node) {
+    const uint32_t state = graph.state_ids[node];
+    if (state >= count) continue;
+    graph.state_centres[state] += graph.centre_directions[node];
+    ++members[state];
+  }
+  for (uint32_t state = 0u; state < count; ++state) {
+    graph.state_centres[state] = members[state] == 0u ? graph.centre_directions[seeds[state]] :
+                                                       glm::normalize(graph.state_centres[state]);
+  }
+}
+
 packed_political_atlas pack_political_atlas(const political_atlas& source) {
   packed_political_atlas result{};
   result.face_side = source.face_side;
@@ -665,6 +794,12 @@ packed_political_atlas pack_political_atlas(const political_atlas& source) {
     }
   }
 
+  std::unordered_map<uint32_t, uint32_t> province_nodes;
+  province_nodes.reserve(source.graph.province_ids.size());
+  for (uint32_t node = 0u; node < source.graph.province_ids.size(); ++node) {
+    province_nodes.emplace(source.graph.province_ids[node], node);
+  }
+
   result.texels.resize(source.texels.size());
   for (size_t i = 0; i < source.texels.size(); ++i) {
     const auto source_texel = source.texels[i];
@@ -677,9 +812,248 @@ packed_political_atlas pack_political_atlas(const political_atlas& source) {
     // Shader presentation kind: land=0, water=1, polar=2, mountain=3.
     cell.metadata.y = high_bits == polar_bit ? 2u :
                       (high_bits == mountain_bit ? 3u : (high_bits == water_bit ? 1u : 0u));
+    const auto province = province_nodes.find(source_texel.region_id);
+    cell.metadata.z = province != province_nodes.end() && province->second < source.graph.state_ids.size() ?
+                        source.graph.state_ids[province->second] : no_region;
+    cell.metadata.w = province != province_nodes.end() ? province->second : no_region;
     const float normalized_edge = std::clamp(source_texel.edge_distance / political_edge_range, 0.0f, 1.0f);
     const uint32_t quantized_edge = uint32_t(normalized_edge * 65535.0f + 0.5f);
     result.texels[i] = local_index | (quantized_edge << 16u);
+  }
+  return result;
+}
+
+std::vector<state_border_segment> make_state_borders(const political_atlas& politics) {
+  std::vector<state_border_segment> result;
+  const auto& graph = politics.graph;
+  if (politics.face_side == 0u || graph.state_ids.size() != graph.province_ids.size() ||
+      graph.state_count < 2u) return result;
+
+  std::unordered_map<uint32_t, uint32_t> state_by_province;
+  state_by_province.reserve(graph.province_ids.size());
+  for (uint32_t node = 0u; node < graph.province_ids.size(); ++node) {
+    state_by_province.emplace(graph.province_ids[node], graph.state_ids[node]);
+  }
+  const auto state_for_id = [&](const uint32_t id) {
+    const auto found = state_by_province.find(id);
+    return found == state_by_province.end() ? no_region : found->second;
+  };
+  const auto state_at = [&](const glm::vec3 direction) { return state_for_id(sample_region(direction).id); };
+
+  struct contour_point { glm::vec3 direction; uint32_t low_state; uint32_t high_state; };
+  struct raw_segment { glm::vec3 a; glm::vec3 b; uint32_t low_state; uint32_t high_state; };
+  std::vector<raw_segment> raw_segments;
+  raw_segments.reserve(32768u);
+  const uint32_t side = politics.face_side;
+  const uint64_t nodes_per_face = uint64_t(side + 1u) * uint64_t(side + 1u);
+  const auto texel_index = [=](const uint32_t face, const uint32_t x, const uint32_t y) {
+    return size_t(uint64_t(face) * nodes_per_face + uint64_t(y) * (side + 1u) + x);
+  };
+  const auto refine_crossing = [&](glm::vec3 a, glm::vec3 b, const uint32_t state_a) {
+    for (uint32_t iteration = 0u; iteration < 11u; ++iteration) {
+      const glm::vec3 middle = glm::normalize(a + b);
+      if (state_at(middle) == state_a) a = middle;
+      else b = middle;
+    }
+    return glm::normalize(a + b);
+  };
+
+  constexpr std::array<std::array<uint32_t, 2>, 4> cell_edges{{{{0u, 1u}}, {{1u, 2u}},
+                                                                 {{2u, 3u}}, {{3u, 0u}}}};
+  for (uint32_t face = 0u; face < 6u; ++face) {
+    for (uint32_t y = 0u; y < side; ++y) {
+      for (uint32_t x = 0u; x < side; ++x) {
+        const std::array<uint32_t, 4> states{{
+          state_for_id(politics.texels[texel_index(face, x, y)].region_id),
+          state_for_id(politics.texels[texel_index(face, x + 1u, y)].region_id),
+          state_for_id(politics.texels[texel_index(face, x + 1u, y + 1u)].region_id),
+          state_for_id(politics.texels[texel_index(face, x, y + 1u)].region_id)}};
+        bool has_frontier = false;
+        for (const auto edge : cell_edges) {
+          has_frontier |= states[edge[0]] != no_region && states[edge[1]] != no_region &&
+                          states[edge[0]] != states[edge[1]];
+        }
+        if (!has_frontier) continue;
+
+        const glm::vec2 uv0 = glm::vec2(float(x), float(y)) / float(side) * 2.0f - 1.0f;
+        const glm::vec2 uv1 = glm::vec2(float(x + 1u), float(y + 1u)) / float(side) * 2.0f - 1.0f;
+        const std::array<glm::vec3, 4> directions{{
+          cube_direction(face, {uv0.x, uv0.y}), cube_direction(face, {uv1.x, uv0.y}),
+          cube_direction(face, {uv1.x, uv1.y}), cube_direction(face, {uv0.x, uv1.y})}};
+        std::array<contour_point, 4> crossings{};
+        uint32_t crossing_count = 0u;
+        for (const auto edge : cell_edges) {
+          const uint32_t state_a = states[edge[0]];
+          const uint32_t state_b = states[edge[1]];
+          if (state_a == no_region || state_b == no_region || state_a == state_b) continue;
+          crossings[crossing_count++] = {refine_crossing(directions[edge[0]], directions[edge[1]], state_a),
+                                         std::min(state_a, state_b), std::max(state_a, state_b)};
+        }
+
+        std::array<uint8_t, 4> consumed{};
+        const glm::vec3 junction = cube_direction(face, (uv0 + uv1) * 0.5f);
+        for (uint32_t first = 0u; first < crossing_count; ++first) {
+          if (consumed[first]) continue;
+          std::array<uint32_t, 4> matching{};
+          uint32_t matching_count = 0u;
+          for (uint32_t candidate = first; candidate < crossing_count; ++candidate) {
+            if (!consumed[candidate] && crossings[candidate].low_state == crossings[first].low_state &&
+                crossings[candidate].high_state == crossings[first].high_state) {
+              matching[matching_count++] = candidate;
+            }
+          }
+          if (matching_count == 1u) {
+            consumed[matching[0]] = 1u;
+            raw_segments.push_back({crossings[matching[0]].direction, junction,
+                                    crossings[first].low_state, crossings[first].high_state});
+            continue;
+          }
+          for (uint32_t pair = 0u; pair + 1u < matching_count; pair += 2u) {
+            consumed[matching[pair]] = consumed[matching[pair + 1u]] = 1u;
+            raw_segments.push_back({crossings[matching[pair]].direction, crossings[matching[pair + 1u]].direction,
+                                    crossings[first].low_state, crossings[first].high_state});
+          }
+        }
+      }
+    }
+  }
+
+  struct node_key {
+    int32_t x;
+    int32_t y;
+    int32_t z;
+    uint32_t low_state;
+    uint32_t high_state;
+    bool operator==(const node_key&) const = default;
+  };
+  struct node_key_hash {
+    size_t operator()(const node_key& key) const noexcept {
+      uint32_t value = mix32(uint32_t(key.x) ^ (uint32_t(key.y) * 0x9e3779b9u));
+      value = mix32(value ^ uint32_t(key.z) ^ key.low_state * 0x85ebca6bu ^ key.high_state * 0xc2b2ae35u);
+      return size_t(value);
+    }
+  };
+  struct border_node { glm::vec3 sum{0.0f}; uint32_t samples = 0u; std::vector<uint32_t> edges; };
+  struct border_edge { uint32_t a; uint32_t b; uint32_t low_state; uint32_t high_state; };
+  std::unordered_map<node_key, uint32_t, node_key_hash> node_indices;
+  node_indices.reserve(raw_segments.size());
+  std::vector<border_node> nodes;
+  std::vector<border_edge> edges;
+  edges.reserve(raw_segments.size());
+  const auto node_for = [&](const glm::vec3 direction, const uint32_t low_state,
+                            const uint32_t high_state) {
+    // Adjacent marching cells refine their shared crossing independently. Eleven bisection steps leave a
+    // few microradians of opposite-sided residue, so the topology weld must be looser than that numerical
+    // error while remaining far below one atlas cell (about 0.002 radians at the authored 1024 side).
+    constexpr float quantization = 65536.0f;
+    const node_key key{int32_t(std::lround(direction.x * quantization)),
+                       int32_t(std::lround(direction.y * quantization)),
+                       int32_t(std::lround(direction.z * quantization)), low_state, high_state};
+    const auto [found, inserted] = node_indices.try_emplace(key, uint32_t(nodes.size()));
+    if (inserted) nodes.emplace_back();
+    auto& node = nodes[found->second];
+    node.sum += direction;
+    ++node.samples;
+    return found->second;
+  };
+  std::unordered_set<uint64_t> unique_edges;
+  unique_edges.reserve(raw_segments.size());
+  for (const auto& segment : raw_segments) {
+    const uint32_t a = node_for(segment.a, segment.low_state, segment.high_state);
+    const uint32_t b = node_for(segment.b, segment.low_state, segment.high_state);
+    if (a == b) continue;
+    const uint64_t key = (uint64_t(std::min(a, b)) << 32u) | uint64_t(std::max(a, b));
+    if (!unique_edges.insert(key).second) continue;
+    const uint32_t edge = uint32_t(edges.size());
+    edges.push_back({a, b, segment.low_state, segment.high_state});
+    nodes[a].edges.push_back(edge);
+    nodes[b].edges.push_back(edge);
+  }
+  std::vector<glm::vec3> node_directions(nodes.size());
+  for (uint32_t node = 0u; node < nodes.size(); ++node) node_directions[node] = glm::normalize(nodes[node].sum);
+
+  std::vector<uint8_t> visited(edges.size(), 0u);
+  result.reserve(edges.size());
+  uint32_t component = 0u;
+  for (uint32_t root_edge = 0u; root_edge < edges.size(); ++root_edge) {
+    if (visited[root_edge]) continue;
+    uint32_t start = edges[root_edge].a;
+    std::vector<uint32_t> component_edges;
+    std::vector<uint32_t> search{root_edge};
+    std::vector<uint8_t> discovered(edges.size(), 0u);
+    discovered[root_edge] = 1u;
+    while (!search.empty()) {
+      const uint32_t edge_index = search.back();
+      search.pop_back();
+      component_edges.push_back(edge_index);
+      const auto& edge = edges[edge_index];
+      for (const uint32_t node : {edge.a, edge.b}) {
+        if (nodes[node].edges.size() != 2u) start = node;
+        for (const uint32_t adjacent : nodes[node].edges) {
+          if (!discovered[adjacent]) { discovered[adjacent] = 1u; search.push_back(adjacent); }
+        }
+      }
+    }
+
+    float cumulative = float(mix32(component ^ (edges[root_edge].low_state << 8u) ^
+                                      edges[root_edge].high_state) & 65535u) * (0.018f / 65535.0f);
+    const float trail_begin_s = cumulative;
+    const size_t trail_begin_segment = result.size();
+    uint32_t current = start;
+    while (true) {
+      uint32_t edge_index = no_region;
+      for (const uint32_t candidate : nodes[current].edges) {
+        if (!visited[candidate]) { edge_index = candidate; break; }
+      }
+      if (edge_index == no_region) break;
+      visited[edge_index] = 1u;
+      const auto& edge = edges[edge_index];
+      const uint32_t next = edge.a == current ? edge.b : edge.a;
+      const glm::vec3 a = node_directions[current];
+      const glm::vec3 b = node_directions[next];
+      const float length = std::acos(std::clamp(glm::dot(a, b), -1.0f, 1.0f));
+      if (length > 1.0e-7f) {
+        const glm::vec3 middle = glm::normalize(a + b);
+        const glm::vec3 along = glm::normalize(b - a);
+        const glm::vec3 across = glm::normalize(glm::cross(middle, along));
+        uint32_t plus_state = no_region;
+        uint32_t minus_state = no_region;
+        for (const float epsilon : {0.00045f, 0.0009f, 0.0018f, 0.0036f}) {
+          plus_state = state_at(glm::normalize(middle + across * epsilon));
+          minus_state = state_at(glm::normalize(middle - across * epsilon));
+          const bool valid_plus = plus_state == edge.low_state || plus_state == edge.high_state;
+          const bool valid_minus = minus_state == edge.low_state || minus_state == edge.high_state;
+          if (valid_plus && valid_minus && plus_state != minus_state) break;
+        }
+        if (!((plus_state == edge.low_state || plus_state == edge.high_state) &&
+              (minus_state == edge.low_state || minus_state == edge.high_state) && plus_state != minus_state)) {
+          plus_state = edge.low_state;
+          minus_state = edge.high_state;
+        }
+        const glm::vec3 a_position = a * (planet_radius + surface_height(a));
+        const glm::vec3 b_position = b * (planet_radius + surface_height(b));
+        result.push_back({glm::vec4(a_position, cumulative), glm::vec4(b_position, cumulative + length),
+                          glm::uvec4(plus_state, minus_state, component, 0u)});
+        cumulative += length;
+      }
+      current = next;
+    }
+    const float trail_length = cumulative - trail_begin_s;
+    const bool closed = current == start;
+    // The three-state fixture is intended to demonstrate continental frontiers, not accidental one-province
+    // enclaves caused by coarse content partitioning. Keep short topology in the province graph, but omit its
+    // state-level symbol at this LOD; real authored enclaves can opt back in when political content owns style.
+    const bool presentation_trail = trail_length >= 0.025f && (!closed || trail_length >= 0.28f);
+    if (!presentation_trail) result.resize(trail_begin_segment);
+    // Ambiguous raster junctions can branch. Preserve every remaining trail rather than silently dropping it;
+    // its phase restarts only at that already exceptional multi-state junction.
+    for (const uint32_t edge_index : component_edges) {
+      if (!visited[edge_index]) {
+        root_edge = std::min(root_edge, edge_index);
+        break;
+      }
+    }
+    if (presentation_trail) ++component;
   }
   return result;
 }

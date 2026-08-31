@@ -20,7 +20,7 @@
         { scene_color = (color_attachment, store), scene_depth = (depth_read, store) },
         { scene_color = (transfer_src, store), scene_depth = (depth_read, store) }
       ]
-      steps = [ draw_hydrology, draw_labels, draw_overlay ]
+      steps = [ draw_state_borders, draw_hydrology, draw_labels, draw_overlay ]
     },
     {
       name = pf10_present

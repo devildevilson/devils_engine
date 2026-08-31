@@ -52,6 +52,9 @@ struct province_graph {
   std::vector<glm::vec3> label_curve_ends;
   std::vector<float> label_clearance;      // approximate angular radius available around label_directions
   std::vector<uint8_t> coastal;
+  std::vector<uint32_t> state_ids;         // fixture ownership, parallel to province_ids
+  std::vector<glm::vec3> state_centres;    // area-weighted directions used by far labels
+  uint32_t state_count = 0;
   uint32_t undirected_edges = 0;
   uint32_t connected_components = 0;
 };
@@ -69,7 +72,7 @@ struct political_atlas {
 // Voronoi feature/owner table; the other R16 is a conservative trigger distance for near-field refinement.
 struct alignas(16) political_cell_record {
   glm::vec4 feature{}; // query-space feature.xyz; w=1 for Voronoi cells, 0 for analytic water/poles
-  glm::uvec4 metadata{}; // stable owner ID, region_kind, reserved, reserved
+  glm::uvec4 metadata{}; // stable owner ID, region_kind, state ID, province CSR node
 };
 static_assert(sizeof(political_cell_record) == 32);
 
@@ -78,6 +81,15 @@ struct packed_political_atlas {
   std::vector<uint32_t> texels;
   std::vector<political_cell_record> cells;
 };
+
+// One exact materialized state-frontier segment. xyz contains the displaced receiver position and w is the
+// cumulative angular coordinate along the connected frontier, used by a world-locked colour pattern.
+struct alignas(16) state_border_segment {
+  glm::vec4 a_position_s{};
+  glm::vec4 b_position_s{};
+  glm::uvec4 states{}; // +across state, -across state, connected component, reserved
+};
+static_assert(sizeof(state_border_segment) == 48);
 
 struct alignas(16) surface_patch {
   uint32_t face = 0;
@@ -117,7 +129,10 @@ glm::vec3 orbit_camera_direction(glm::vec3 direction, float horizontal, float ve
                                  float angular_step) noexcept;
 std::vector<glm::vec4> bake_surface_vertices(uint32_t face_side);
 political_atlas bake_political_atlas(uint32_t face_side);
+void assign_fixture_states(province_graph& graph, glm::vec3 presentation_direction,
+                           uint32_t state_count = 3u);
 packed_political_atlas pack_political_atlas(const political_atlas& source);
+std::vector<state_border_segment> make_state_borders(const political_atlas& politics);
 std::vector<surface_patch> visible_surface_patches(uint32_t face_side, uint32_t patch_side,
                                                    glm::vec3 local_eye);
 std::vector<surface_patch> refined_surface_patches(uint32_t face_side, uint32_t patch_side,

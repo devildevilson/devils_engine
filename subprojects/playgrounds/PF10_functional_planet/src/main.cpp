@@ -27,6 +27,8 @@ void usage() {
                "  --distance=R           расстояние камеры 1.16..4.5 R (default 2.62)\n"
                "  --fixed-rotation       детерминированный угол глобуса для кадров\n"
                "  --no-hydrology        диагностический A/B без рек и озёр\n"
+               "  --no-state-borders    диагностический A/B без государственных ribbons\n"
+               "  --border-debug=MODE   exact | distance | state\n"
                "  --validation           включить Vulkan validation layers\n";
 }
 
@@ -61,7 +63,8 @@ int verify() {
         "geometry has a visible radial height range");
   check(first.fingerprint == second.fingerprint, std::format("deterministic fingerprint 0x{:016x}", first.fingerprint));
 
-  const auto politics = pf10::bake_political_atlas(512u);
+  auto politics = pf10::bake_political_atlas(512u);
+  pf10::assign_fixture_states(politics.graph, glm::normalize(glm::vec3(0.0f, -0.19f, 0.982f)), 3u);
   const auto& graph = politics.graph;
   check(politics.mountain_regions == 3u, "dense atlas materializes all mountain barriers");
   check(graph.province_ids.size() >= first.land_regions && graph.province_ids.size() <= 5000u,
@@ -91,6 +94,36 @@ int verify() {
     double(graph.neighbours.size()) / double(graph.province_ids.size());
   check(mean_degree >= 4.0 && mean_degree <= 8.0,
         std::format("mean province degree is plausible ({:.2f})", mean_degree));
+  const bool state_layout_complete = graph.state_count == 3u &&
+                                     graph.state_ids.size() == graph.province_ids.size() &&
+                                     graph.state_centres.size() == graph.state_count &&
+                                     std::ranges::all_of(graph.state_ids, [&](const uint32_t state) {
+                                       return state < graph.state_count;
+                                     });
+  check(state_layout_complete, "every playable province owns one of three explicit fixture states");
+  bool states_connected = state_layout_complete;
+  for (uint32_t state = 0u; states_connected && state < graph.state_count; ++state) {
+    const auto root = std::ranges::find(graph.state_ids, state);
+    if (root == graph.state_ids.end()) { states_connected = false; break; }
+    std::vector<uint8_t> state_visited(graph.province_ids.size(), 0u);
+    std::vector<uint32_t> state_pending{uint32_t(root - graph.state_ids.begin())};
+    state_visited[state_pending.front()] = 1u;
+    uint32_t reached = 0u;
+    while (!state_pending.empty()) {
+      const uint32_t node = state_pending.back();
+      state_pending.pop_back();
+      ++reached;
+      for (uint32_t i = graph.neighbour_offsets[node]; i < graph.neighbour_offsets[node + 1u]; ++i) {
+        const uint32_t neighbour = graph.neighbours[i];
+        if (!state_visited[neighbour] && graph.state_ids[neighbour] == state) {
+          state_visited[neighbour] = 1u;
+          state_pending.push_back(neighbour);
+        }
+      }
+    }
+    states_connected &= reached == std::ranges::count(graph.state_ids, state);
+  }
+  check(states_connected, "every fixture state is connected in the province navigation graph");
   const bool label_layout_complete = graph.label_curve_starts.size() == graph.province_ids.size() &&
                                      graph.label_directions.size() == graph.province_ids.size() &&
                                      graph.label_curve_ends.size() == graph.province_ids.size() &&
@@ -120,6 +153,25 @@ int verify() {
     compact_round_trip &= packed.cells[packed.texels[i] & 0xffffu].metadata.x == politics.texels[i].region_id;
   }
   check(compact_round_trip, "R16 political indices round-trip to exact cells and stable planet-local IDs");
+
+  const auto state_borders = pf10::make_state_borders(politics);
+  const uint32_t state_border_trails = state_borders.empty() ? 0u :
+    std::ranges::max(state_borders | std::views::transform([](const pf10::state_border_segment& segment) {
+      return segment.states.z;
+    })) + 1u;
+  const float maximum_state_segment = state_borders.empty() ? 0.0f :
+    std::ranges::max(state_borders | std::views::transform([](const pf10::state_border_segment& segment) {
+      return segment.b_position_s.w - segment.a_position_s.w;
+    }));
+  check(!state_borders.empty() && state_borders.size() < 65536u,
+        std::format("state frontiers materialize as a compact exact ribbon set ({} segments, {} trails)",
+                    state_borders.size(), state_border_trails));
+  check(std::ranges::all_of(state_borders, [&](const pf10::state_border_segment& segment) {
+          return segment.states.x < graph.state_count && segment.states.y < graph.state_count &&
+                 segment.states.x != segment.states.y && segment.b_position_s.w > segment.a_position_s.w;
+        }), "every state ribbon has two different valid sides and increasing world-locked arc length");
+  check(maximum_state_segment < 0.012f,
+        std::format("every state ribbon segment remains atlas-local (max {:.6f} rad)", maximum_state_segment));
 
   check(packed.cells.size() > graph.province_ids.size() && packed.cells.size() < 8192u,
         std::format("exact political feature table stays compact ({} records)", packed.cells.size()));
@@ -198,6 +250,16 @@ int main(const int argc, const char** argv) {
     else if (argument == "--validation") options.validation = true;
     else if (argument == "--fixed-rotation") options.fixed_rotation = true;
     else if (argument == "--no-hydrology") options.show_hydrology = false;
+    else if (argument == "--no-state-borders") options.show_state_borders = false;
+    else if (prefixed(argument, "--border-debug=", value)) {
+      if (value == "exact") options.border_debug = 1u;
+      else if (value == "distance") options.border_debug = 2u;
+      else if (value == "state") options.border_debug = 3u;
+      else {
+        std::cerr << "unknown border debug mode: " << value << '\n';
+        return 2;
+      }
+    }
     else if (prefixed(argument, "--frames=", value)) options.frames = uint32_t(std::stoul(value));
     else if (prefixed(argument, "--shot=", value)) options.dump_path = value;
     else if (prefixed(argument, "--mesh=", value)) {

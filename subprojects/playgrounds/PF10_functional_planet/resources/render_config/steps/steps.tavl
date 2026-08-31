@@ -40,6 +40,16 @@
   }
 }
 {
+  name = draw_state_borders
+  material = state_border_material
+  geometry = state_border_geometry
+  sets = [ state_border_data ]
+  command = "draw constant state_border_draw"
+  blending = {
+    scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
+  }
+}
+{
   name = draw_overlay
   material = ui_material
   geometry = ui_geometry

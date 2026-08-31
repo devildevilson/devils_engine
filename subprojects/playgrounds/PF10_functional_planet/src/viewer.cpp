@@ -229,36 +229,17 @@ label_set make_labels(const visage::font_t& font, const uint32_t texture_slot, c
   result.glyphs.reserve(graph.province_ids.size() * 6u + 64u);
   struct empire_source { const char* text; glm::vec3 seed; };
   const glm::vec3 front = glm::normalize(presentation_direction);
-  std::array<glm::vec3, 3> state_seeds{front, front, front};
-  float front_score = -2.0f;
-  for (const glm::vec3 province : graph.centre_directions) {
-    const float score = glm::dot(province, front);
-    if (score > front_score) { front_score = score; state_seeds[0] = province; }
-  }
-  for (uint32_t seed_index = 1u; seed_index < state_seeds.size(); ++seed_index) {
-    float best_score = -2.0f;
-    for (const glm::vec3 province : graph.centre_directions) {
-      const float visibility = glm::dot(province, front);
-      if (visibility < 0.35f) continue;
-      float separation = 2.0f;
-      for (uint32_t previous = 0u; previous < seed_index; ++previous) {
-        separation = std::min(separation, 1.0f - glm::dot(province, state_seeds[previous]));
-      }
-      const float score = separation + visibility * 0.12f;
-      if (score > best_score) { best_score = score; state_seeds[seed_index] = province; }
-    }
-  }
+  const auto state_seed = [&](const uint32_t state) {
+    return state < graph.state_centres.size() ? graph.state_centres[state] : front;
+  };
   const std::array<empire_source, 3> empires{{
-    {"NORTHREACH", state_seeds[0]}, {"MERIDIAN SEA", state_seeds[1]}, {"EMBER COAST", state_seeds[2]}}};
+    {"NORTHREACH", state_seed(0u)}, {"MERIDIAN SEA", state_seed(1u)}, {"EMBER COAST", state_seed(2u)}}};
   std::array<std::vector<std::pair<float, glm::vec3>>, 3> state_candidates;
-  for (const glm::vec3 province : graph.centre_directions) {
-    uint32_t owner = 0u;
-    float owner_score = -2.0f;
-    for (uint32_t empire = 0u; empire < empires.size(); ++empire) {
-      const float score = glm::dot(province, empires[empire].seed);
-      if (score > owner_score) { owner_score = score; owner = empire; }
-    }
-    state_candidates[owner].emplace_back(owner_score, province);
+  for (uint32_t province = 0u; province < graph.centre_directions.size(); ++province) {
+    const uint32_t owner = province < graph.state_ids.size() ? graph.state_ids[province] : no_region;
+    if (owner >= state_candidates.size()) continue;
+    const float owner_score = glm::dot(graph.centre_directions[province], empires[owner].seed);
+    state_candidates[owner].emplace_back(owner_score, graph.centre_directions[province]);
   }
   for (uint32_t empire = 0u; empire < std::size(empires); ++empire) {
     auto& nearest = state_candidates[empire];
@@ -503,7 +484,6 @@ int run_viewer(const viewer_options& options) {
     constexpr uint32_t political_atlas_side = 1024u;
     const auto surface_vertices = bake_surface_vertices(options.mesh_side);
     auto politics = bake_political_atlas(political_atlas_side);
-    const auto packed_politics = pack_political_atlas(politics);
     const auto hydrology = make_hydrology_features();
     const glm::vec3 presentation_source = hydrology.empty() ? glm::vec3(0.0f, 0.0f, 1.0f) :
                                                               glm::normalize(glm::vec3(hydrology.front().a_direction_height));
@@ -512,6 +492,9 @@ int run_viewer(const viewer_options& options) {
     const glm::vec3 presentation_cross = glm::cross(presentation_source, presentation_target);
     const glm::mat4 presentation_rotation = glm::dot(presentation_cross, presentation_cross) > 1.0e-8f ?
       glm::rotate(glm::mat4(1.0f), presentation_angle, glm::normalize(presentation_cross)) : glm::mat4(1.0f);
+    assign_fixture_states(politics.graph, presentation_source, 3u);
+    const auto packed_politics = pack_political_atlas(politics);
+    const auto state_borders = make_state_borders(politics);
     if (packed_politics.texels.empty() || packed_politics.cells.empty()) {
       utils::error{}("PF10 could not compact the political atlas into R16 indices");
     }
@@ -521,6 +504,8 @@ int run_viewer(const viewer_options& options) {
                  packed_politics.cells.size() * sizeof(political_cell_record));
     write_buffer(base, "hydrology_features", hydrology.data(),
                  hydrology.size() * sizeof(hydrology_feature));
+    write_buffer(base, "state_borders", state_borders.data(),
+                 state_borders.size() * sizeof(state_border_segment));
     politics.texels.clear();
     politics.texels.shrink_to_fit();
     const auto labels = make_labels(overlay.font_metrics(), font_texture, politics.graph, presentation_source);
@@ -655,6 +640,8 @@ int run_viewer(const viewer_options& options) {
                                      double(politics.graph.neighbours.size()) / double(politics.graph.province_ids.size())));
       detail.push_back(std::format("politics: {} exact cells, atlas only gates near-border refinement",
                                    packed_politics.cells.size()));
+      detail.push_back(std::format("states: {} connected fixtures, {} exact patterned border segments",
+                                   politics.graph.state_count, state_borders.size()));
       detail.push_back(std::format("feature layer: {} tapered river/lake primitives", hydrology.size()));
       detail.push_back(std::format("mesh: 6 x {} x {} cells = {} procedural triangles", options.mesh_side,
                                    options.mesh_side, uint64_t(options.mesh_side) * options.mesh_side * 12ull));
@@ -696,7 +683,8 @@ int run_viewer(const viewer_options& options) {
       camera.light_direction = glm::vec4(glm::normalize(glm::vec3(-0.45f, -0.72f, -0.34f)), 0.0f);
       camera.border_colour = border_palette(palette);
       camera.params = glm::uvec4(selected, hovered, options.mesh_side,
-                                 (political ? 1u : 0u) | (show_objects ? 2u : 0u));
+                                 (political ? 1u : 0u) | (show_objects ? 2u : 0u) |
+                                 (options.border_debug << 8u));
       camera.viewport_near = glm::vec4(float(pending_width), float(pending_height), 0.05f,
                                        float(political_atlas_side));
       camera.inverse_view_projection = glm::inverse(camera.view_projection);
@@ -723,11 +711,14 @@ int run_viewer(const viewer_options& options) {
         0u,
         province_label_lod ? labels.empire_glyphs : 0u};
       const VkDrawIndirectCommand hydrology_command{6u, options.show_hydrology ? uint32_t(hydrology.size()) : 0u, 0u, 0u};
+      const VkDrawIndirectCommand state_border_command{
+        6u, political && options.show_state_borders ? uint32_t(state_borders.size()) : 0u, 0u, 0u};
       base.write_constant_data(base.find_constant("planet_draw"), planet_command);
       base.write_constant_data(base.find_constant("refined_planet_draw"), refined_planet_command);
       base.write_constant_data(base.find_constant("marker_draw"), marker_command);
       base.write_constant_data(base.find_constant("label_draw"), label_command);
       base.write_constant_data(base.find_constant("hydrology_draw"), hydrology_command);
+      base.write_constant_data(base.find_constant("state_border_draw"), state_border_command);
       base.update_event();
 
       const uint64_t delta_us = uint64_t(std::max(real_dt, 1.0e-6f) * 1.0e6f);

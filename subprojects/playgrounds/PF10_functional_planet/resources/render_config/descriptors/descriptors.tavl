@@ -42,5 +42,13 @@
     { resource = hydrology_features, usage = storage_read, stage = vertex }
   ]
 }
+{
+  name = state_border_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" },
+    { resource = state_borders, usage = storage_read, stage = vertex },
+    { resource = scene_depth, usage = depth_read, sampler = decal_nearest, stage = fragment }
+  ]
+}
 { name = camera_data, layout = [ { resource = camera_buffer, usage = uniform, stage = vertex } ] }
 { name = ui_textures, texture_count = 16, sampler_pool = [ ui_linear ], texture_stage = fragment }

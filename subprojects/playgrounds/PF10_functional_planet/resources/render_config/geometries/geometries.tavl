@@ -3,4 +3,5 @@
 { name = marker_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
 { name = label_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
 { name = hydrology_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
+{ name = state_border_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
 { name = ui_geometry, vertex_layout = v2v2c4, index_type = u16, topology = triangle_list, restart = false }

@@ -4,8 +4,8 @@ PF10 проверяет не «похожий на планету шар», а �
 реальная геометрическая высота, тысячи стабильных политических областей, подписи и объектные anchors.
 Рельеф и вся семантика принадлежат планете: при повороте глобуса они не плывут в world/screen space.
 
-**Первое отображение и close-up refinement работают (2026-08-31).** Это один близкий глобус без атмосферы
-и прочего окружения.
+**Первое отображение, close-up refinement и иерархия province/state работают (2026-08-31).** Это один
+близкий глобус без атмосферы и прочего окружения.
 
 ## Запуск
 
@@ -17,6 +17,8 @@ cmake --build build-debug --target PF10_functional_planet -j2
   --fixed-rotation --frames=8 --shot=/tmp/pf10.ppm
 ./build-release/subprojects/playgrounds/PF10_functional_planet/bin/PF10_functional_planet \
   --distance=1.20 --frames=80 --shot=/tmp/pf10_provinces.ppm
+./build-release/subprojects/playgrounds/PF10_functional_planet/bin/PF10_functional_planet \
+  --distance=1.20 --no-state-borders --border-debug=distance
 ```
 
 Управление:
@@ -79,13 +81,33 @@ refinement полностью выключен. `--mesh=32..512` меняет б
 
 Канонический evaluator запускается один раз при старте. Политический cube atlas теперь имеет сторону `1024`
 и хранит один `uint`: `R16` локального индекса exact-cell плюс `R16` консервативного расстояния. Таблица из
-`4702` записей хранит query-space Voronoi feature, стабильный 32-bit owner ID и kind. Внутри области shader
-делает только один atlas/table lookup. В узкой полосе `0.0075 rad` у границы он берёт максимум девять разных
-кандидатов из `3x3` atlas neighbourhood и сравнивает точные расстояния до feature points; coast и poles там
-вычисляются аналитически. Получается непрерывная сферическая Voronoi boundary без полного 27-cell поиска и
-без ступенчатой raster-polyline. `fwidth`-AA и цвет границы теперь компонуются прямо в surface fragment.
-Дальше `1.72R`, когда граница уже субпиксельная и показываются имперские labels, остаётся дешёвое atlas
-расстояние. Старый curve cache и его `8 MB` capacity удалены; `B` по-прежнему меняет цвет без перестройки.
+`4702` записей хранит query-space Voronoi feature, стабильный 32-bit owner ID, kind, state и CSR node. Внутри
+области shader делает только один atlas/table lookup. В узкой полосе `0.0048 rad` у границы он берёт максимум
+девять разных кандидатов из `3x3` atlas neighbourhood; выход за cube-face переводится через каноническое
+направление на соседнюю грань, а не clamp-ится к шву. Разность квадратов расстояний даёт точную плоскость
+Voronoi bisector, её аналитический экранный градиент превращает расстояние в пиксели. Поэтому тонкая
+province line имеет одну экранную толщину при любом наклоне, не раздувается от world-space масштаба и не
+получает ложных штрихов там, где меняется пара ближайших feature points. Coast и poles считаются аналитически.
+Дальше `1.72R`, когда province line уже субпиксельная и показываются государственные labels, остаётся дешёвое
+atlas расстояние. Старый curve cache и его `8 MB` capacity удалены; `B` меняет цвет без перестройки.
+
+### Государства и три уровня границ
+
+Province CSR теперь является источником и для следующего уровня: каждый игровой node хранит `state_id`.
+Текущий fixture создаёт три государства, сглаживает только узкие одноячеечные выступы и переносит
+отсоединённые островки целиком через самый длинный общий фронтир. Проверка графа отдельно доказывает, что
+каждое из трёх государств связно. Это временный content-раздел, но ownership уже не вычисляется второй
+несогласованной формулой в label/render коде.
+
+Государственная граница не является утолщённой province line. При старте переходы state ID один раз
+материализуются из dense atlas, пересечение уточняется 11 bisection-шагами на каноническом evaluator и
+сшивается в planet-local trails с непрерывной угловой координатой `s`. Получается около `17.4k` коротких
+segments вместо fullscreen-поиска соседей. Инстансный screen-width ribbon рисует две половины рядом:
+каждая сторона берёт palette именно своего государства и чередует два его цвета вдоль world-locked `s`,
+а узкий тёмный separator сохраняет читаемость пары. Province border остаётся тонкой сплошной линией;
+state frontier — более толстой узорной; coast/pole/mountain-water переходы остаются отдельной аналитической
+границей. `--no-state-borders` даёт A/B, а `--border-debug=exact|distance|state` показывает refinement band,
+пиксельное расстояние или ownership государств.
 
 ### Горные барьеры, реки и озёра
 
@@ -126,8 +148,8 @@ area centroid и главная tangent-axis. Второй линейный пр
 касательную и normal на этой кривой, поэтому надпись естественно бывает горизонтальной, диагональной или
 почти вертикальной. Endpoints втягиваются от границы, а для coastal/узких форм corridor адаптивно сокращается,
 пока 13 canonical region samples не подтвердят один owner ID. Размер ограничен длиной curve и поперечным
-clearance. Для дальнего fixture три непересекающихся набора провинций получают тот же curve fit; реальные
-названия и государственная принадлежность позже просто заменят временную группировку без нового render path.
+clearance. Для дальнего fixture те же три связных `state_id` получают тот же curve fit; реальные названия
+позже просто заменят временный content без нового render path.
 
 LOD сейчас намеренно простой: дальше `1.72R` рисуются три временных имени крупных областей (`31` glyph),
 ближе — placeholder `P0001...` для каждой видимой провинции (`20 360` glyph records на всю планету;
@@ -142,14 +164,14 @@ LOD сейчас намеренно простой: дальше `1.72R` рис�
 
 Первый честный uncapped Release замер выполнял procedural height в vertex и 27-cell Voronoi во fragment:
 `15.906 ms`, или `62.9 FPS` GPU-equivalent на Iris Xe при 1280x720. После статического bake, triangle strips
-и политического atlas итог остаётся значительно выше целевого бюджета. На Iris Xe, Release 1280x720,
-детерминированные 120-frame запуски после exact boundaries, smooth normals и локального 4x LOD: максимальное
-приближение `1.16R` с гидрографией `3.696 ms / 270 FPS`; дальний curved-empire LOD
-`2.729 ms / 366 FPS`. Pacing выключен, GPU timestamps измеряют passes отдельно. Зарезервированные статические
-surface/politics/hydrology/label buffers занимают около `56 MB`; oct-normal не добавляет buffer, а per-frame
-списки base/refined patches имеют по `96 KiB` capacity.
+i политического atlas итог остаётся выше целевого бюджета. На Iris Xe, Release 1280x720, детерминированный
+120-frame запуск после pixel-stable province borders и двусторонних state ribbons: максимальное приближение
+`1.16R` с гидрографией `4.387 ms / 228 FPS`; frame-80 дальнего LOD — `3.268 ms / 306 FPS`. Отдельный близкий
+A/B измерил state ribbon примерно в `0.12 ms`. Pacing выключен, GPU timestamps измеряют passes отдельно.
+Новый state-frontier buffer резервирует `3 MiB`; суммарные именованные capacity в PF10 config — около
+`57.2 MiB`, oct-normal не добавляет buffer, а per-frame списки base/refined patches имеют по `96 KiB`.
 
-`--verify` сейчас даёт `31/31`:
+`--verify` сейчас даёт `36/36`:
 
 - land count лежит в `[3000,5000]` (`3933` в survey, `3995` в проверочном atlas-512);
 - water regions крупные и немногочисленные (`4`), mountain chains ровно три, polar regions ровно две;
@@ -157,6 +179,9 @@ surface/politics/hydrology/label buffers занимают около `56 MB`; oc
 - повторный survey даёт fingerprint `0x7ca2363eb03efbe4`;
 - плотный bake покрывает survey, CSR полон, симметричен, не имеет self/isolated nodes и держит mean degree
   в `[4,8]` (`6.28` в проверочном atlas-512);
+- все игровые провинции принадлежат одному из трёх государств и каждое state-induced подмножество CSR связно;
+- state frontiers укладываются в `65536` segments, обе стороны каждого segment имеют разные допустимые
+  state ID, `s` строго растёт, а один segment остаётся atlas-local (`max 0.005051 rad` в atlas-512);
 - каждая провинция имеет полный curved-label layout; area-centred anchor обладает положительным clearance,
   а вся sampled Bézier-кривая остаётся внутри того же owner ID;
 - compact `R16` atlas round-trip возвращает exact cell и исходный стабильный ID; exact table ограничена
@@ -171,8 +196,8 @@ surface/politics/hydrology/label buffers занимают около `56 MB`; oc
   полярных экстремумов.
 
 Debug и Release targets собираются. Fixed far/near 1280x720 frames проходят; Vulkan validation на пути
-planet + refined planet + markers + ribbons + exact borders + depth-reconstructed MSDF decals + overlay не сообщает
-VUID/API warning/error.
+planet + refined planet + markers + hydrology + state ribbons + exact province borders + depth-reconstructed
+MSDF decals + overlay не сообщает VUID/API warning/error.
 
 ## Следующие срезы
 

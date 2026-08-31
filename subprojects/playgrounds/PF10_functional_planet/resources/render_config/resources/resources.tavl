@@ -9,6 +9,7 @@
 { name = surface_patches, format = c1, role = upload, size = surface_patch_bytes, swap = per_frame }
 { name = refined_surface_patches, format = c1, role = upload, size = refined_surface_patch_bytes, swap = per_frame }
 { name = hydrology_features, format = c1, role = upload, size = hydrology_feature_bytes, swap = static_surface, type = singlebuffer }
+{ name = state_borders, format = c1, role = upload, size = state_border_bytes, swap = static_surface, type = singlebuffer }
 { name = landmarks, format = c1, role = upload, size = landmark_bytes, swap = per_frame }
 { name = label_glyphs, format = c1, role = upload, size = label_bytes, swap = static_surface, type = singlebuffer }
 { name = ui_vertices, format = c1, role = upload, size = ui_vertices_bytes, swap = per_frame }

@@ -12,6 +12,8 @@
 { name = surface_patch_bytes, type = fixed, value = [98304, 0, 0] }
 { name = refined_surface_patch_bytes, type = fixed, value = [98304, 0, 0] }
 { name = hydrology_feature_bytes, type = fixed, value = [1048576, 0, 0] }
+// Up to 65536 exact 48-byte materialized state-frontier segments.
+{ name = state_border_bytes, type = fixed, value = [3145728, 0, 0] }
 // ~4.1k temporary province names plus three empire names, 176 bytes per MSDF projection-volume glyph.
 { name = label_bytes, type = fixed, value = [4194304, 0, 0] }
 { name = ui_vertices_bytes, type = fixed, value = [524288, 0, 0] }

@@ -30,6 +30,22 @@ vec3 province_colour(const uint id) {
 
 struct CubeCoordinate { uint face; vec2 uv; };
 
+const uint PF10_NO_REGION = 0xffffffffu;
+const float PF10_NO_BORDER = 1.0e12;
+
+struct PoliticalSample {
+  uint id;
+  uint kind;
+  uint state;
+  uint neighbour_state;
+  uint neighbour_kind;
+  uint exact;
+  float province_field;
+  float coast_field;
+  float polar_field;
+  float coarse_edge;
+};
+
 CubeCoordinate cube_coordinate(const vec3 direction) {
   const vec3 magnitude = abs(direction);
   if (magnitude.x >= magnitude.y && magnitude.x >= magnitude.z) {
@@ -44,16 +60,37 @@ CubeCoordinate cube_coordinate(const vec3 direction) {
   return CubeCoordinate(5u, vec2(-direction.x, direction.y) / magnitude.z);
 }
 
+vec3 cube_direction(const uint face, const vec2 uv) {
+  if (face == 0u) return normalize(vec3(1.0, uv.y, -uv.x));
+  if (face == 1u) return normalize(vec3(-1.0, uv.y, uv.x));
+  if (face == 2u) return normalize(vec3(uv.x, 1.0, -uv.y));
+  if (face == 3u) return normalize(vec3(uv.x, -1.0, uv.y));
+  if (face == 4u) return normalize(vec3(uv.x, uv.y, 1.0));
+  return normalize(vec3(-uv.x, uv.y, -1.0));
+}
+
 uint atlas_texel(const uint face, const uvec2 xy, const uint side) {
   const uint stride = side + 1u;
   return political_atlas.texels[face * stride * stride + xy.y * stride + xy.x];
+}
+
+// A clamped 3x3 stencil loses the province just across a cube seam. Remapping an out-of-face node through
+// the sphere preserves the same tiny candidate budget while making the exact Voronoi pair seam-independent.
+uint atlas_neighbour_texel(const uint face, const ivec2 xy, const uint side) {
+  if (all(greaterThanEqual(xy, ivec2(0))) && all(lessThanEqual(xy, ivec2(side)))) {
+    return atlas_texel(face, uvec2(xy), side);
+  }
+  const vec2 extended_uv = vec2(xy) / float(side) * 2.0 - 1.0;
+  const CubeCoordinate mapped = cube_coordinate(cube_direction(face, extended_uv));
+  const vec2 mapped_location = clamp((mapped.uv * 0.5 + 0.5) * float(side), vec2(0.0), vec2(float(side)));
+  return atlas_texel(mapped.face, uvec2(mapped_location + 0.5), side);
 }
 
 float atlas_edge(const uint packed) {
   return float(packed >> 16u) * (0.04 / 65535.0);
 }
 
-pf10_region_sample sample_baked_region(const vec3 direction) {
+PoliticalSample sample_baked_region(const vec3 direction) {
   const uint side = uint(camera_data.viewport_near.w + 0.5);
   const CubeCoordinate cube = cube_coordinate(direction);
   const vec2 location = clamp((cube.uv * 0.5 + 0.5) * float(side), vec2(0.0), vec2(float(side)));
@@ -69,17 +106,21 @@ pf10_region_sample sample_baked_region(const vec3 direction) {
   const PoliticalCell coarse_cell = political_regions.cells[nearest & 0xffffu];
   const uint stable_id = coarse_cell.metadata.x;
   const uint kind = coarse_cell.metadata.y;
+  const uint state = coarse_cell.metadata.z;
   const float edge = mix(edge0, edge1, blend.y);
-  pf10_region_sample coarse = pf10_region_sample(stable_id, kind, edge);
+  PoliticalSample coarse = PoliticalSample(stable_id, kind, state, PF10_NO_REGION, PF10_NO_REGION, 0u,
+                                            PF10_NO_BORDER, PF10_NO_BORDER, PF10_NO_BORDER, edge);
   // Exact cells matter at the province-inspection LOD. At empire LOD the same boundary is sub-pixel, so the
   // compact distance field is both visually sufficient and substantially cheaper over the whole globe.
-  if (edge > 0.0075 || length(camera_data.camera_position.xyz) >= 1.72) return coarse;
+  if (edge > 0.0048 || length(camera_data.camera_position.xyz) >= 1.72) return coarse;
 
   // Water and poles are analytic. Evaluating this only in the atlas' conservative border band keeps the
   // common interior path at one atlas/table load while making coast and polar ownership sub-pixel smooth.
   const float polar_edge = abs(abs(direction.y) - 0.91);
   if (abs(direction.y) >= 0.91) {
-    return pf10_region_sample(0xc0000000u | (direction.y >= 0.0 ? 1u : 2u), 2u, polar_edge);
+    return PoliticalSample(0xc0000000u | (direction.y >= 0.0 ? 1u : 2u), 2u, PF10_NO_REGION,
+                           PF10_NO_REGION, PF10_NO_REGION, 1u, PF10_NO_BORDER, PF10_NO_BORDER,
+                           abs(direction.y) - 0.91, edge);
   }
   const vec4 oceans[4] = vec4[4](
     vec4(0.781, 0.120, 0.613, 0.675), vec4(-0.704, 0.151, 0.694, 0.715),
@@ -88,17 +129,24 @@ pf10_region_sample sample_baked_region(const vec3 direction) {
   float best_ocean_score = -100.0;
   float second_ocean_score = -100.0;
   uint best_ocean = 0u;
+  uint second_ocean = 0u;
   for (uint i = 0u; i < 4u; ++i) {
     const float score = dot(direction, oceans[i].xyz) - oceans[i].w + coast_noise;
     if (score > best_ocean_score) {
       second_ocean_score = best_ocean_score;
+      second_ocean = best_ocean;
       best_ocean_score = score;
       best_ocean = i;
-    } else if (score > second_ocean_score) second_ocean_score = score;
+    } else if (score > second_ocean_score) {
+      second_ocean_score = score;
+      second_ocean = i;
+    }
   }
   if (best_ocean_score > 0.0) {
-    return pf10_region_sample(0x80000000u | (best_ocean + 1u), 1u,
-                              min(best_ocean_score, best_ocean_score - second_ocean_score));
+    const float ocean_pair = best_ocean_score - second_ocean_score;
+    const float signed_ocean_pair = best_ocean < second_ocean ? ocean_pair : -ocean_pair;
+    return PoliticalSample(0x80000000u | (best_ocean + 1u), 1u, PF10_NO_REGION, PF10_NO_REGION, 1u, 1u,
+                           signed_ocean_pair, best_ocean_score, abs(direction.y) - 0.91, edge);
   }
 
   // The 1024 atlas identifies a tiny candidate set. Distances to those exact query-space features recover
@@ -108,51 +156,82 @@ pf10_region_sample sample_baked_region(const vec3 direction) {
   uint best_owner = 0xffffffffu;
   uint second_owner = 0xffffffffu;
   uint best_kind = 0u;
+  uint second_kind = PF10_NO_REGION;
+  uint best_state = PF10_NO_REGION;
+  uint second_state = PF10_NO_REGION;
+  vec3 best_feature = vec3(0.0);
+  vec3 second_feature = vec3(0.0);
   uint seen_indices[9];
   uint seen_count = 0u;
   const ivec2 centre = ivec2(floor(location));
-  for (int oy = -1; oy <= 1; ++oy) {
-    for (int ox = -1; ox <= 1; ++ox) {
-      const uvec2 xy = uvec2(clamp(centre + ivec2(ox, oy), ivec2(0), ivec2(side)));
-      const uint local_index = atlas_texel(cube.face, xy, side) & 0xffffu;
-      bool duplicate = false;
-      for (uint previous = 0u; previous < seen_count; ++previous) duplicate = duplicate || seen_indices[previous] == local_index;
-      if (duplicate) continue;
-      seen_indices[seen_count++] = local_index;
-      const PoliticalCell cell = political_regions.cells[local_index];
-      if (cell.feature.w < 0.5) continue;
-      const vec3 delta = direction * PF10_PROVINCE_FREQUENCY - cell.feature.xyz;
-      const float distance_value = dot(delta, delta);
-      const uint owner = cell.metadata.x;
-      if (owner == best_owner) {
-        best_distance = min(best_distance, distance_value);
-      } else if (distance_value < best_distance) {
-        if (best_owner != second_owner) {
-          second_distance = best_distance;
-          second_owner = best_owner;
-        }
+  const ivec2 candidate_offsets[9] = ivec2[9](
+    ivec2(0, 0), ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1),
+    ivec2(-1, -1), ivec2(1, -1), ivec2(-1, 1), ivec2(1, 1));
+  for (uint candidate = 0u; candidate < 9u; ++candidate) {
+    const uint local_index = atlas_neighbour_texel(cube.face, centre + candidate_offsets[candidate], side) &
+                             0xffffu;
+    bool duplicate = false;
+    for (uint previous = 0u; previous < seen_count; ++previous) {
+      duplicate = duplicate || seen_indices[previous] == local_index;
+    }
+    if (duplicate) continue;
+    seen_indices[seen_count++] = local_index;
+    const PoliticalCell cell = political_regions.cells[local_index];
+    if (cell.feature.w < 0.5) continue;
+    const vec3 delta = direction * PF10_PROVINCE_FREQUENCY - cell.feature.xyz;
+    const float distance_value = dot(delta, delta);
+    const uint owner = cell.metadata.x;
+    if (owner == best_owner) {
+      if (distance_value < best_distance) {
         best_distance = distance_value;
-        best_owner = owner;
-        best_kind = cell.metadata.y;
-      } else if (owner == second_owner) {
-        second_distance = min(second_distance, distance_value);
-      } else if (distance_value < second_distance) {
-        second_distance = distance_value;
-        second_owner = owner;
+        best_feature = cell.feature.xyz;
       }
+    } else if (distance_value < best_distance) {
+      if (best_owner != second_owner) {
+        second_distance = best_distance;
+        second_owner = best_owner;
+        second_kind = best_kind;
+        second_state = best_state;
+        second_feature = best_feature;
+      }
+      best_distance = distance_value;
+      best_owner = owner;
+      best_kind = cell.metadata.y;
+      best_state = cell.metadata.z;
+      best_feature = cell.feature.xyz;
+    } else if (owner == second_owner) {
+      if (distance_value < second_distance) {
+        second_distance = distance_value;
+        second_feature = cell.feature.xyz;
+      }
+    } else if (distance_value < second_distance) {
+      second_distance = distance_value;
+      second_owner = owner;
+      second_kind = cell.metadata.y;
+      second_state = cell.metadata.z;
+      second_feature = cell.feature.xyz;
     }
   }
   if (best_owner == 0xffffffffu) return coarse;
-  const float land_edge = min(-best_ocean_score, polar_edge);
-  const float voronoi_edge = second_owner == 0xffffffffu ? 0.04 :
-                              max(sqrt(second_distance) - sqrt(best_distance), 0.0) /
-                                PF10_PROVINCE_FREQUENCY;
-  return pf10_region_sample(best_owner, best_kind, min(voronoi_edge, land_edge));
+  // Squared-distance difference is an exact plane equation for a Voronoi bisector. Canonical owner order
+  // supplies a continuous sign across the ownership switch; dividing by fwidth later converts it to pixels.
+  const float distance_difference = second_owner == PF10_NO_REGION ? PF10_NO_BORDER :
+                                      max(second_distance - best_distance, 0.0);
+  const vec3 plane_gradient = 2.0 * PF10_PROVINCE_FREQUENCY * (best_feature - second_feature);
+  const float pixel_gradient = abs(dot(plane_gradient, dFdx(direction))) +
+                               abs(dot(plane_gradient, dFdy(direction)));
+  const float province_pixel_distance = distance_difference / max(pixel_gradient, 1.0e-7);
+  return PoliticalSample(best_owner, best_kind, best_state, second_state, second_kind, 1u,
+                         province_pixel_distance, best_ocean_score, abs(direction.y) - 0.91, edge);
+}
+
+float field_distance_pixels(const float field) {
+  return abs(field) / max(fwidth(field), 1.0e-7);
 }
 
 void main() {
   const vec3 direction = normalize(in_local_direction);
-  const pf10_region_sample region = sample_baked_region(direction);
+  const PoliticalSample region = sample_baked_region(direction);
   const bool political = (camera_data.params.w & 1u) != 0u;
   vec3 albedo;
   if (region.kind == 2u) {
@@ -181,12 +260,40 @@ void main() {
   vec3 colour = albedo * (0.19 + direct * 0.86) + vec3(0.055, 0.085, 0.12) * rim;
 
   if (political) {
-    const float line_half_width = 0.00042;
-    // Cap the derivative: the exact/coarse handover intentionally changes the auxiliary distance value,
-    // and an unbounded fwidth would reveal that invisible handover as a faint dotted contour.
-    const float aa = clamp(fwidth(region.edge), 0.000035, 0.00030);
-    const float border = 1.0 - smoothstep(line_half_width - aa, line_half_width + aa, region.edge);
+    const bool exact_voronoi_metric = region.exact != 0u && (region.kind == 0u || region.kind == 3u);
+    const float province_pixels = exact_voronoi_metric ? region.province_field :
+                                                        field_distance_pixels(region.province_field);
+    const float coast_pixels = field_distance_pixels(region.coast_field);
+    const float polar_pixels = field_distance_pixels(region.polar_field);
+    const bool state_frontier = region.state != PF10_NO_REGION && region.neighbour_state != PF10_NO_REGION &&
+                                region.state != region.neighbour_state;
+    const bool ordinary_province = region.exact != 0u && !state_frontier &&
+                                   region.neighbour_kind != PF10_NO_REGION;
+    const float province_lod = 1.0 - smoothstep(1.42, 1.72, length(camera_data.camera_position.xyz));
+    // Keep derivative AA well inside the conservative 0.0048-radian refinement band. At its outer edge the
+    // exact implicit field is intentionally replaced by a coarse sentinel; letting a quad straddle that
+    // implementation handover would turn the huge derivative into a false dotted inset contour.
+    const float refinement_guard = 1.0 - smoothstep(0.0034, 0.0043, region.coarse_edge);
+    const float province_border = ordinary_province ?
+      (1.0 - smoothstep(0.68, 1.18, province_pixels)) * province_lod * refinement_guard : 0.0;
+    const float analytic_pixels = min(coast_pixels, polar_pixels);
+    const float analytic_border = region.exact != 0u ?
+      (1.0 - smoothstep(0.92, 1.42, analytic_pixels)) * refinement_guard : 0.0;
+    const float border = max(province_border, analytic_border);
     colour = mix(colour, camera_data.border_colour.rgb, border * camera_data.border_colour.a);
+
+    const uint border_debug = (camera_data.params.w >> 8u) & 3u;
+    if (border_debug == 1u) {
+      const bool near_coarse_boundary = region.exact == 0u && region.coarse_edge < 0.0048;
+      colour = region.exact != 0u ? mix(colour, vec3(0.05, 0.85, 0.20), 0.72) :
+               (near_coarse_boundary ? vec3(0.95, 0.08, 0.16) : colour * 0.28);
+    } else if (border_debug == 2u && region.exact != 0u) {
+      const float pixels = min(province_pixels, analytic_pixels);
+      colour = pixels < 0.5 ? vec3(0.95, 0.12, 0.08) :
+               (pixels < 1.5 ? vec3(0.10, 0.88, 0.18) : vec3(0.08, 0.24, 0.90));
+    } else if (border_debug == 3u && region.state != PF10_NO_REGION) {
+      colour = province_colour(0x51a7e000u + region.state * 0x13579bdu);
+    }
   }
   out_color = vec4(colour, 1.0);
 }
