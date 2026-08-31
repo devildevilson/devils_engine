@@ -193,3 +193,6 @@ target_link_libraries(originator_tools_test PRIVATE devils_engine::originator de
 
 devils_add_doctest(originator_pipeline_test originator_pipeline_test.cpp)
 target_link_libraries(originator_pipeline_test PRIVATE devils_engine::originator devils_engine::utils)
+
+devils_add_doctest(originator_script_test originator_script_test.cpp)
+target_link_libraries(originator_script_test PRIVATE devils_engine::originator devils_engine::originator_script devils_engine::utils)

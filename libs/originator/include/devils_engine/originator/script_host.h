@@ -2,6 +2,8 @@
 #define DEVILS_ENGINE_ORIGINATOR_SCRIPT_HOST_H
 
 #include <cstdint>
+#include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -9,6 +11,7 @@
 #include <sol/sol.hpp>
 
 #include "pipeline.h"
+#include "script_program.h"
 #include "tools.h"
 
 // Lua-хост генератора: отдельное headless-окружение, в котором ТЕЛО ШАГА — это lua-функция.
@@ -72,6 +75,11 @@ public:
   void load_body(const std::string_view& step_name, const std::string_view& source, const std::string_view& chunk_name);
   bool has_body(const std::string_view& step_name) const noexcept;
 
+  // Регистрирует исходник программы devils_script под именем. Компиляция ОТЛОЖЕНА до первого вызова:
+  // имена полей, против которых программа компилируется, известны только по фактическим привязкам.
+  void load_program(const std::string_view& program_name, const std::string_view& source);
+  bool has_program(const std::string_view& program_name) const noexcept;
+
   // Invoker для pipeline::run: находит тело по имени шага и вызывает его с построенной таблицей.
   step_invoker invoker();
 
@@ -81,17 +89,35 @@ private:
     sol::protected_function function;
   };
 
+  struct program_source {
+    std::string name;
+    std::string source;
+  };
+
+  // Скомпилированная программа кэшируется по паре (имя, набор имён входов): та же программа с
+  // другими входами — это другая компиляция, а не переиспользование.
+  struct program_entry {
+    std::string name;
+    std::string signature;
+    std::unique_ptr<script_program> program;
+  };
+
   static void instruction_hook(lua_State* L, lua_Debug* ar);
   void bind_types();
   void bind_tools();
   sol::table make_step_table(const step_context& context);
   const body_entry* find_body(const std::string_view& step_name) const noexcept;
+  const script_program& acquire_program(const std::string_view& program_name,
+                                        const std::span<const field_ref>& inputs,
+                                        const script_program::result_kind kind);
 
   sol::state lua_;
   sol::environment env_;
   tool_registry* tools_ = nullptr;
   thread::atomic_pool* pool_ = nullptr;
   std::vector<body_entry> bodies_;
+  std::vector<program_source> program_sources_;
+  std::vector<program_entry> programs_;
 
   script_budget budget_{};
   uint64_t instruction_counter_ = 0;

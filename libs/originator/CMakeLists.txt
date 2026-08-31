@@ -30,6 +30,24 @@ target_link_libraries(devils_originator
 
 add_library(devils_engine::originator ALIAS devils_originator)
 
+# Слой devils_script — тоже отдельная цель по той же причине, что и lua: ядро генератора не обязано
+# тянуть за собой ни один скриптовый backend.
+add_library(devils_originator_script
+  src/originator/script_program.cpp
+  include/devils_engine/originator/script_program.h
+)
+
+target_include_directories(devils_originator_script
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
+)
+
+target_link_libraries(devils_originator_script
+  PUBLIC devils_engine::originator
+  PRIVATE devils_engine::options devils_engine::utils devils_script
+)
+
+add_library(devils_engine::originator_script ALIAS devils_originator_script)
+
 # Скриптовый слой — ОТДЕЛЬНАЯ цель: ядро генератора не должно тянуть lua за собой, а потребителю,
 # которому нужен только пайплайн на C++, незачем линковать интерпретатор.
 if (MSVC)
@@ -50,7 +68,7 @@ target_include_directories(devils_originator_lua
 )
 
 target_link_libraries(devils_originator_lua
-  PUBLIC devils_engine::originator sol2::sol2 ${DEVILS_ORIGINATOR_LUA_LIBRARIES}
+  PUBLIC devils_engine::originator devils_engine::originator_script sol2::sol2 ${DEVILS_ORIGINATOR_LUA_LIBRARIES}
   PRIVATE devils_engine::options devils_engine::utils
 )
 

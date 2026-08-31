@@ -12,6 +12,7 @@
     (smoothed, v1)
     (biome, ub1)
     (biome_lua, ub1)
+    (biome_ds, ub1)
   ]
   layout = soa
   size = cell_count

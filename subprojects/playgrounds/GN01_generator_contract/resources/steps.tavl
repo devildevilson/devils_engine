@@ -17,6 +17,16 @@
   params = { radius = 2, sea_level = 0.5, dry = 0.35, wet = 0.65 }
 }
 
+// Семантический проход тем же правилом, но на devils_script. Это средний уровень исполнения:
+// правило можно править без перекомпиляции, а стоимость остаётся на порядок ближе к нативной, чем
+// поэлементный обход из lua.
+{
+  name = semantics
+  body = scripts/semantics.lua
+  writes = [ cells ]
+  programs = { biome_rule = scripts/biome_rule.ds }
+}
+
 {
   name = stats
   body = scripts/stats.lua

@@ -467,11 +467,17 @@ pipeline описывается в `tavl`, а Lua занимает место `c
 инструмента (`pointwise`/`gather`/`scatter`/`reduce`/`sequential`) и фактических привязок, поэтому
 нарушающий вызов не собирается, а не отлавливается постфактум.
 
+Три уровня исполнения измерены на одном правиле (GN01, `4 194 304` элемента, Release): нативное ядро
+`4.29` нс/элемент, `devils_script` `53.34`, поэлементный lua `108.12`. На 11 потоках нативное ядро
+`0.92`, ds `8.69`, а у поэлементного lua параллельного пути НЕТ — интерпретатор один и однопоточный.
+Отсюда роль каждого уровня: lua обходит только те множества, которые сама перечислила.
+
 | ID | Задача | Сложность | Результат |
 | --- | --- | --- | --- |
 | `GEN-01` | Typed artifact/pass descriptors | `M–L` | **частично 2026-08-31.** `buffer_layout` (именованные поля + написание форматов painter + aos/soa) и `step_description` (`reads`/`writes`/`params`/`body`) есть; versions, schemas и budgets прохода — нет |
 | `GEN-02` | Pass/tool registry and execution host | `L` | **частично 2026-08-31.** `tool_registry` + `pipeline` с validate → execute и `published_after`; validate после шага, repair и publish наружу — нет |
 | `GEN-03` | Reusable C++ building-block facade | `L` | **частично 2026-08-31.** fill/value_noise/remap/classify/box_blur + четыре свёртки через стабильную регистрацию; вороной, графы и group_by — нет |
+| `GEN-03a` | devils_script над плотным буфером | `L` | **сделано 2026-08-31.** `originator::script_program`: скоуп = элемент, поля по именам привязок, апертура следует из регистрации (писать и достать соседа нечем), PRNG от индекса, небезопасные опкоды. Замер: `53.34` нс/элемент в один поток и `8.69` на 11 против `4.29`/`0.92` у нативного ядра и `108.12` у поэлементного lua. **Вывод, которого не ждали:** выигрыш ds перед lua не в скорости интерпретации (там всего 2x), а в том, что ds распараллеливается и проверяется по типам на разборе |
 | `GEN-04` | Dedicated deterministic headless Lua environment | `L` | **сделано 2026-08-31.** `originator::script_host`: свой whitelist, нет `math.random`/os/файловой системы, бюджеты инструкций и времени, отдельная цель сборки от `visage` |
 | `GEN-05` | Lua pipeline glue and typed artifact handles | `L` | **пересмотрено + частично 2026-08-31.** Lua не собирает граф — она ТЕЛО шага. `script_buffer_view`/`field_ref`: имя поля разрешается один раз, тяжёлой памятью скрипт не владеет |
 | `GEN-06` | Pass templates | `L` | raster/graph/unit/volume templates with explicit iteration and ordering |

@@ -27,6 +27,7 @@ struct step_mirror {
   std::vector<std::string> reads;
   std::vector<std::string> writes;
   std::map<std::string, double> params;
+  std::map<std::string, std::string> programs;
 };
 
 void report_diagnostics(const tavl::ct_context& ctx, const std::string_view& label) {
@@ -107,6 +108,9 @@ std::vector<step_description> parse_steps(const std::string_view& text, const st
     description.writes = std::move(mirror.writes);
     for (const auto& [key, value] : mirror.params) {
       description.params.set_number(key, value);
+    }
+    for (auto& [key, value] : mirror.programs) {
+      description.programs.emplace_back(key, std::move(value));
     }
 
     result.push_back(std::move(description));
@@ -303,6 +307,7 @@ void pipeline::run_step(const size_t index, const step_invoker& invoker) {
   // Поэтому перестановка или перезапуск шага не сдвигает случайность остальных.
   context.seed = utils::mix(seed_, std::hash<std::string>{}(step.name));
   context.params = &step.params;
+  context.programs = step.programs;
   context.writes = step_writes_[index];
   context.reads = step_reads_[index];
 

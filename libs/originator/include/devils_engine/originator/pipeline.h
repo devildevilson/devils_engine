@@ -46,6 +46,9 @@ struct step_description {
   std::vector<std::string> reads;
   std::vector<std::string> writes;
   parameters params;
+  // Программы devils_script, доступные телу шага по имени. Тело решает, к каким полям их применить;
+  // имена входов берутся у самих привязок, поэтому в скрипте поле зовётся ровно так же, как в конфиге.
+  std::vector<std::pair<std::string, std::string>> programs;
 };
 
 struct pipeline_description {
@@ -76,6 +79,7 @@ struct step_context {
   size_t index = 0;
   uint64_t seed = 0; // hash(зерно пайплайна, имя шага): не поток, а функция от имени
   const parameters* params = nullptr;
+  std::span<const std::pair<std::string, std::string>> programs;
 
   // Привязки шага. Буфер в writes доступен и на чтение, буфер в reads — только на чтение.
   std::span<buffer* const> writes;

@@ -255,6 +255,37 @@ void script_host::bind_tools() {
     });
   }
 
+  // Средний уровень: devils_script над плотным буфером. Форма вызова та же, что у инструмента, —
+  // скрипт не выбирает ни потоки, ни апертуру.
+  api.set_function("run_script", [this](const sol::table args) {
+    const sol::optional<std::string> program_name = args["program"];
+    if (!program_name.has_value()) {
+      utils::error{}("originator step '{}': run_script needs a 'program' name", current_step_);
+    }
+
+    const auto inputs = read_field_list(args, "inputs");
+    const auto outputs = read_field_list(args, "outputs");
+
+    const sol::optional<bool> predicate = args["predicate"];
+    const auto kind = predicate.value_or(false) ? script_program::result_kind::predicate
+                                                : script_program::result_kind::number;
+
+    const auto& program = acquire_program(*program_name, inputs, kind);
+
+    const sol::optional<int64_t> explicit_seed = args["seed"];
+    const uint64_t seed = explicit_seed.has_value() ? std::bit_cast<uint64_t>(*explicit_seed) : current_seed_;
+
+    size_t begin = 0;
+    size_t end = outputs.empty() ? 0 : outputs.front().count();
+    const sol::optional<sol::table> range = args["range"];
+    if (range.has_value()) {
+      begin = (*range)[1].get_or<size_t>(0);
+      end = (*range)[2].get_or<size_t>(end);
+    }
+
+    dispatch_script(program, inputs, outputs, seed, begin, end, current_step_, pool_);
+  });
+
   api.set_function("tool_exists", [this](const std::string& name) { return tools_->find(name) != nullptr; });
   api.set_function("aperture_of", [this](const std::string& name) -> sol::optional<std::string> {
     const auto* tool = tools_->find(name);
@@ -288,6 +319,66 @@ void script_host::load_body(const std::string_view& step_name, const std::string
   }
 
   bodies_.push_back(body_entry{std::string(step_name), returned.as<sol::protected_function>()});
+}
+
+void script_host::load_program(const std::string_view& program_name, const std::string_view& source) {
+  for (auto& entry : program_sources_) {
+    if (entry.name == program_name) {
+      if (entry.source != source) {
+        utils::error{}("originator: program '{}' is already registered with different source", program_name);
+      }
+      return;
+    }
+  }
+  program_sources_.push_back(program_source{std::string(program_name), std::string(source)});
+}
+
+bool script_host::has_program(const std::string_view& program_name) const noexcept {
+  for (const auto& entry : program_sources_) {
+    if (entry.name == program_name) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const script_program& script_host::acquire_program(const std::string_view& program_name,
+                                                   const std::span<const field_ref>& inputs,
+                                                   const script_program::result_kind kind) {
+  // Имена входов берутся у самих привязок: поле зовётся в скрипте ровно так же, как в конфиге, и
+  // второго списка имён, который мог бы разъехаться с первым, не существует.
+  std::vector<std::string> names;
+  names.reserve(inputs.size());
+  std::string signature;
+  for (const auto& binding : inputs) {
+    if (!binding.valid()) {
+      utils::error{}("originator step '{}': program '{}' got an invalid input", current_step_, program_name);
+    }
+    names.emplace_back(binding.field_name());
+    signature.append(names.back());
+    signature.push_back(kind == script_program::result_kind::predicate ? '?' : '#');
+  }
+
+  for (const auto& entry : programs_) {
+    if (entry.name == program_name && entry.signature == signature) {
+      return *entry.program;
+    }
+  }
+
+  const program_source* source = nullptr;
+  for (const auto& entry : program_sources_) {
+    if (entry.name == program_name) {
+      source = &entry;
+      break;
+    }
+  }
+  if (source == nullptr) {
+    utils::error{}("originator step '{}': no devils_script program named '{}'", current_step_, program_name);
+  }
+
+  auto compiled = script_program::compile(program_name, source->source, names, kind);
+  programs_.push_back(program_entry{std::string(program_name), std::move(signature), std::move(compiled)});
+  return *programs_.back().program;
 }
 
 bool script_host::has_body(const std::string_view& step_name) const noexcept {
@@ -328,6 +419,14 @@ sol::table script_host::make_step_table(const step_context& context) {
     writes[target->name()] = script_buffer_view{target, target};
   }
   step["writes"] = writes;
+
+  // Программы шага видны телу по имени, объявленному в конфиге.
+  sol::table programs(lua_, sol::create);
+  for (const auto& [program_name, path] : context.programs) {
+    (void)path;
+    programs[program_name] = program_name;
+  }
+  step["programs"] = programs;
 
   sol::table reads(lua_, sol::create);
   for (const auto* source : context.reads) {

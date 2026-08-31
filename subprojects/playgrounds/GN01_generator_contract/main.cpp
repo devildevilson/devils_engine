@@ -132,8 +132,10 @@ originator::pipeline_description load_description(const options& opts) {
 void load_bodies(originator::script_host& host, const originator::pipeline_description& description) {
   const auto root = resource_root();
   for (const auto& step : description.steps) {
-    const auto path = root / step.body;
-    host.load_body(step.name, read_file(path), step.body);
+    host.load_body(step.name, read_file(root / step.body), step.body);
+    for (const auto& [program_name, path] : step.programs) {
+      host.load_program(program_name, read_file(root / path));
+    }
   }
 }
 
@@ -249,7 +251,7 @@ int run_verify(const options& opts) {
           "раскладки действительно различаются размещением");
   }
 
-  // 4. Нативная классификация и её поэлементный lua-двойник считают одно и то же.
+  // 4. Три уровня исполнения считают одно и то же правило.
   {
     originator::script_host host(tools, nullptr);
     load_bodies(host, description);
@@ -268,11 +270,16 @@ int run_verify(const options& opts) {
     const auto native = cells->field(cells->find_field("biome"));
     const auto scripted = cells->field(cells->find_field("biome_lua"));
 
-    bool identical = true;
+    const auto by_script = cells->field(cells->find_field("biome_ds"));
+
+    bool same_lua = true;
+    bool same_ds = true;
     for (size_t i = 0; i < count; ++i) {
-      identical = identical && native.get(i) == scripted.get(i);
+      same_lua = same_lua && native.get(i) == scripted.get(i);
+      same_ds = same_ds && native.get(i) == by_script.get(i);
     }
-    check(identical, "нативный classify и его lua-двойник совпадают поэлементно");
+    check(same_lua, "нативный classify и его lua-двойник совпадают поэлементно");
+    check(same_ds, "нативный classify и правило на devils_script совпадают поэлементно");
   }
 
   // 5. Контракты, которые обязаны падать громко.
@@ -411,6 +418,34 @@ int run_bench(const options& opts) {
     measure("классификация: поэлементный lua, 1 поток", count, [&] {
       lua_pipeline.run_step(last, host.invoker());
     });
+
+    // Средний уровень: то же правило на devils_script. Шаг semantics уже объявлен в конфиге, его
+    // индекс известен, а буферы к этому моменту заполнены по-настоящему.
+    size_t semantics_index = description.steps.size();
+    for (size_t i = 0; i < description.steps.size(); ++i) {
+      if (description.steps[i].name == "semantics") {
+        semantics_index = i;
+      }
+    }
+
+    if (semantics_index < description.steps.size()) {
+      originator::script_host serial_host(tools, nullptr);
+      load_bodies(serial_host, description);
+      originator::pipeline serial_pipeline(description, sizes, opts.seed);
+      for (size_t i = 0; i < semantics_index; ++i) {
+        serial_pipeline.run_step(i, serial_host.invoker());
+      }
+      // Первый вызов компилирует программу; замер должен мерить исполнение, а не компиляцию.
+      serial_pipeline.run_step(semantics_index, serial_host.invoker());
+      measure("классификация: devils_script, 1 поток", count, [&] {
+        serial_pipeline.run_step(semantics_index, serial_host.invoker());
+      });
+
+      p.run_step(semantics_index, host.invoker());
+      measure("классификация: devils_script, " + std::to_string(threads) + " потоков", count, [&] {
+        p.run_step(semantics_index, host.invoker());
+      });
+    }
   }
 
   // Ширина колонки считается в СИМВОЛАХ, а не в байтах: подписи кириллические, и по длине строки
