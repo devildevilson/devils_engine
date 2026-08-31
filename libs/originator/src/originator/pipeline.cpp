@@ -296,8 +296,13 @@ const chunk_key& pipeline::chunk() const noexcept {
   return chunk_;
 }
 
+bool pipeline::chunked() const noexcept {
+  return chunked_;
+}
+
 void pipeline::set_chunk(const chunk_key& key) noexcept {
   chunk_ = key;
+  chunked_ = true;
 }
 
 void pipeline::clear_buffers() noexcept {
@@ -364,6 +369,7 @@ void pipeline::run_step(const size_t index, const step_invoker& invoker) {
   // чанки посчитаны раньше — ни через одно, ни через другое.
   context.chunk_seed = utils::mix(seed_, step_hash, uint64_t(chunk_.x), uint64_t(chunk_.y), uint64_t(chunk_.z));
   context.chunk = chunk_;
+  context.chunked = chunked_;
   context.params = &step_params_[index];
   context.programs = step.programs;
   context.writes = step_writes_[index];

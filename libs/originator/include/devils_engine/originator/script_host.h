@@ -123,6 +123,7 @@ private:
   uint64_t instruction_counter_ = 0;
   int64_t start_time_us_ = 0;
   uint64_t current_seed_ = 0;
+  bool current_chunked_ = false;
   std::string current_step_;
 };
 

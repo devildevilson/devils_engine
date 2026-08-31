@@ -207,3 +207,31 @@ TEST_CASE("originator scatter tools reject keys outside the declared buckets") {
   CHECK_THROWS_AS(originator::dispatch(*group_by, inputs, tiny_out, params, 1, 0, count, "grouping", nullptr),
                   std::runtime_error);
 }
+
+TEST_CASE("originator refuses a global scatter while a chunk is being generated") {
+  const auto registry = make_registry();
+  const auto* group_by = registry.find("group_by");
+  const auto* fill = registry.find("fill");
+  REQUIRE(group_by != nullptr);
+  REQUIRE(fill != nullptr);
+
+  CHECK(originator::parse_key_support("chunk_local") == originator::key_support::chunk_local);
+  CHECK(originator::parse_key_support("global") == originator::key_support::global);
+  CHECK(originator::parse_key_support("whatever") == originator::key_support::count);
+  CHECK(originator::to_string(originator::key_support::chunk_local) == "chunk_local");
+
+  // Группа, собирающая элементы со всей карты, не заканчивается ни одним чанком: результат зависел
+  // бы от того, какие чанки успели посчитаться. Это отклоняется до исполнения.
+  const auto refused = originator::check_key_support(*group_by, originator::key_support::global, true, "regions");
+  CHECK_FALSE(refused.allowed);
+  CHECK(refused.message.find("coarse world pass") != std::string::npos);
+
+  // Объявленная чанк-локальная группа разрешена: её чанк заканчивает сам.
+  CHECK(originator::check_key_support(*group_by, originator::key_support::chunk_local, true, "regions").allowed);
+
+  // Без чанкования носитель ключа ни на что не влияет.
+  CHECK(originator::check_key_support(*group_by, originator::key_support::global, false, "regions").allowed);
+
+  // Для не-scatter апертур проверка не применяется вообще.
+  CHECK(originator::check_key_support(*fill, originator::key_support::global, true, "terrain").allowed);
+}

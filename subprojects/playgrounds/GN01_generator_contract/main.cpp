@@ -926,12 +926,43 @@ int run_chunked(const options& opts) {
   const bool pointwise_exact = worst == 0.0 && drift == 0.0;
   const bool gather_localized = interior_worst == 0.0;
 
+  // Третья часть ответа: scatter в чанковом проходе. Шаг regions честно объявил свои группы
+  // глобальными, поэтому при активном чанке он ОБЯЗАН быть отклонён до исполнения. Молча посчитать
+  // сводку по чанку — худший из возможных исходов: она зависела бы от того, какие чанки успели.
+  bool scatter_refused = false;
+  std::string refusal;
+  try {
+    size_t regions_index = chunk_description.steps.size();
+    for (size_t i = 0; i < chunk_description.steps.size(); ++i) {
+      if (chunk_description.steps[i].name == "regions") {
+        regions_index = i;
+      }
+    }
+    if (regions_index < chunk_description.steps.size()) {
+      chunked.set_chunk({0, 0, 0});
+      for (size_t i = 0; i < regions_index; ++i) {
+        chunked.run_step(i, chunk_host.invoker());
+      }
+      chunked.run_step(regions_index, chunk_host.invoker());
+    }
+  } catch (const std::exception& error) {
+    scatter_refused = true;
+    refusal = error.what();
+  }
+
+  std::cout << "  scatter с глобальными группами при активном чанке: "
+            << (scatter_refused ? "отклонён до исполнения" : "ПРОПУЩЕН (это ошибка)") << "\n";
+
   std::cout << "  вывод:\n"
             << "    pointwise (шум) чанкуется " << (pointwise_exact ? "ТОЧНО" : "С РАСХОЖДЕНИЕМ") << "\n"
             << "    gather (размытие) расходится " << (gather_localized ? "ТОЛЬКО в полосе шириной radius" : "И ВНУТРИ чанка")
             << " => нужна полоса перекрытия шириной radius\n";
 
-  return pointwise_exact && gather_localized ? 0 : 1;
+  std::cout << "    глобальный scatter в чанковом проходе "
+            << (scatter_refused ? "не собирается => сводки живут в грубом мировом проходе" : "ПРОШЁЛ, guard не работает")
+            << "\n";
+
+  return pointwise_exact && gather_localized && scatter_refused ? 0 : 1;
 }
 
 int run_once(const options& opts) {

@@ -269,6 +269,32 @@ dispatch_check check_dispatch(const tool_description& tool,
   return result;
 }
 
+dispatch_check check_key_support(const tool_description& tool,
+                                 const key_support::values support,
+                                 const bool chunk_active,
+                                 const std::string_view& step_name) {
+  dispatch_check result;
+  result.parallel = is_parallel(tool.shape);
+
+  if (tool.shape != aperture::scatter || !chunk_active) {
+    return result;
+  }
+
+  if (support == key_support::chunk_local) {
+    return result;
+  }
+
+  result.allowed = false;
+  result.parallel = false;
+  result.message = std::format(
+    "step '{}': tool '{}' scatters into groups declared as '{}', but the pipeline is generating a chunk. "
+    "A global group is never finished by one chunk, so the result would depend on which chunks ran — "
+    "compute such a summary in the coarse world pass, or declare key_support = chunk_local if the group "
+    "really does fit inside one chunk",
+    step_name, tool.name, to_string(support == key_support::count ? key_support::global : support));
+  return result;
+}
+
 namespace {
 // Разбиение параллельной работы. Для pointwise/gather элементы независимы, поэтому границы чанков
 // на результат не влияют; фиксированный минимальный размер нужен только чтобы не платить за

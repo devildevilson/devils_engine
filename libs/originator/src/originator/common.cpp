@@ -25,6 +25,7 @@ constexpr std::string_view kind_names[field_kind::count] = {"floating", "unsigne
 
 constexpr std::string_view aperture_names[aperture::count] = {"pointwise", "gather", "scatter", "reduce", "sequential"};
 constexpr std::string_view binding_names[binding_mode::count] = {"read", "write"};
+constexpr std::string_view key_support_names[key_support::count] = {"chunk_local", "global"};
 
 // f16 <-> f32. Своя реализация, а не зависимость: нужны ровно две функции, обе на уровне битов.
 float half_to_float(const uint16_t half) noexcept {
@@ -150,6 +151,19 @@ std::string_view to_string(const field_kind::values kind) noexcept {
 
 std::string_view to_string(const aperture::values value) noexcept {
   return value < aperture::count ? aperture_names[value] : std::string_view("invalid");
+}
+
+std::string_view to_string(const key_support::values value) noexcept {
+  return value < key_support::count ? key_support_names[value] : std::string_view("invalid");
+}
+
+key_support::values parse_key_support(const std::string_view& str) noexcept {
+  for (size_t i = 0; i < key_support::count; ++i) {
+    if (key_support_names[i] == str) {
+      return key_support::values(i);
+    }
+  }
+  return key_support::count;
 }
 
 std::string_view to_string(const binding_mode::values value) noexcept {

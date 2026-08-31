@@ -434,3 +434,163 @@ TEST_CASE("originator voronoi_polygons refuses to work without a clipping rectan
   CHECK_THROWS_AS(originator::dispatch(*polygons, inputs, tiny_out, bounded, 1, 0, site_count, "shaping", nullptr),
                   std::runtime_error);
 }
+
+TEST_CASE("originator position_grid fills world positions for the noise-by-position path") {
+  const auto registry = make_registry();
+  const auto* positions = registry.find("position_grid");
+  REQUIRE(positions != nullptr);
+  CHECK(positions->shape == originator::aperture::pointwise);
+
+  constexpr size_t side = 8;
+  constexpr size_t volume = side * side * side;
+
+  const std::vector<field_pair> volume_fields = {{"world", "v3"}};
+  auto voxels = originator::buffer("voxels", originator::make_buffer_layout(originator::storage_kind::soa, volume_fields, "voxels"), volume);
+
+  originator::parameters params;
+  params.set_number("size_x", double(side));
+  params.set_number("size_y", double(side));
+  params.set_number("cell_size", 0.5);
+  params.set_number("origin_x", 100.0);
+  params.set_number("origin_y", 200.0);
+  params.set_number("origin_z", 300.0);
+
+  const std::vector<originator::field_ref> out{writable(voxels, "world")};
+  originator::dispatch(*positions, {}, out, params, 1, 0, volume, "voxelize", nullptr);
+
+  const auto world = voxels.field(0);
+
+  // Раскладка индекса: x внутренний, затем y, затем z — как у FastNoise2, чтобы поле скармливалось
+  // выборке по позициям без перестановки.
+  for (size_t z = 0; z < side; ++z) {
+    for (size_t y = 0; y < side; ++y) {
+      for (size_t x = 0; x < side; ++x) {
+        const size_t i = (z * side + y) * side + x;
+        CHECK(world.get(i, 0) == doctest::Approx(100.0 + double(x) * 0.5));
+        CHECK(world.get(i, 1) == doctest::Approx(200.0 + double(y) * 0.5));
+        CHECK(world.get(i, 2) == doctest::Approx(300.0 + double(z) * 0.5));
+      }
+    }
+  }
+
+  // Двухкомпонентное поле получает только x и y, третьей координаты у него нет.
+  const std::vector<field_pair> plane_fields = {{"world", "v2"}};
+  auto plane = originator::buffer("plane", originator::make_buffer_layout(originator::storage_kind::soa, plane_fields, "plane"), side * side);
+  const std::vector<originator::field_ref> plane_out{writable(plane, "world")};
+  originator::dispatch(*positions, {}, plane_out, params, 1, 0, side * side, "voxelize", nullptr);
+  CHECK(plane.field(0).get(side + 1, 0) == doctest::Approx(100.5));
+  CHECK(plane.field(0).get(side + 1, 1) == doctest::Approx(200.5));
+
+  // Однокомпонентное поле — громкий отказ: позиция не бывает скаляром.
+  const std::vector<field_pair> scalar_fields = {{"world", "v1"}};
+  auto scalar = originator::buffer("scalar", originator::make_buffer_layout(originator::storage_kind::soa, scalar_fields, "scalar"), 4);
+  const std::vector<originator::field_ref> scalar_out{writable(scalar, "world")};
+  CHECK_THROWS_AS(originator::dispatch(*positions, {}, scalar_out, params, 1, 0, 4, "voxelize", nullptr),
+                  std::runtime_error);
+}
+
+TEST_CASE("originator position_grid plus noise_at is continuous across chunk origins") {
+  const auto registry = make_registry();
+  const auto* positions = registry.find("position_grid");
+  const auto* noise = registry.find("noise_at");
+
+  constexpr size_t chunk_side = 16;
+  constexpr size_t chunk_cells = chunk_side * chunk_side;
+
+  const std::vector<field_pair> fields = {{"world", "v2"}, {"density", "v1"}};
+
+  originator::parameters noise_params;
+  noise_params.set_string("tree", std::string(node_tree));
+  noise_params.set_number("frequency", 0.05);
+
+  // Две соседние по x «плитки» одного поля: правый край левой обязан продолжаться левым краем правой.
+  const auto sample_tile = [&](const double origin_x) {
+    auto tile = originator::buffer("tile", originator::make_buffer_layout(originator::storage_kind::soa, fields, "tile"), chunk_cells);
+
+    originator::parameters grid;
+    grid.set_number("size_x", double(chunk_side));
+    grid.set_number("size_y", double(chunk_side));
+    grid.set_number("cell_size", 1.0);
+    grid.set_number("origin_x", origin_x);
+
+    const std::vector<originator::field_ref> grid_out{writable(tile, "world")};
+    originator::dispatch(*positions, {}, grid_out, grid, 1, 0, chunk_cells, "voxelize", nullptr);
+
+    const std::vector<originator::field_ref> noise_in{readable(tile, "world")};
+    const std::vector<originator::field_ref> noise_out{writable(tile, "density")};
+    originator::dispatch(*noise, noise_in, noise_out, noise_params, 4242, 0, chunk_cells, "carve", nullptr);
+
+    std::vector<double> values(chunk_cells);
+    const auto density = tile.field(tile.find_field("density"));
+    for (size_t i = 0; i < chunk_cells; ++i) {
+      values[i] = density.get(i);
+    }
+    return values;
+  };
+
+  const auto left = sample_tile(0.0);
+  const auto right = sample_tile(double(chunk_side));
+
+  // Колонка x = chunk_side левой плитки не существует, поэтому сверяется перекрытие: тот же мировой
+  // столбец, посчитанный из двух разных начал координат.
+  const auto overlap = sample_tile(double(chunk_side) - 1.0);
+  bool continuous = true;
+  for (size_t y = 0; y < chunk_side; ++y) {
+    // мировой x = chunk_side - 1: последний столбец плитки overlap[0] и он же в left
+    continuous = continuous && overlap[y * chunk_side + 0] == left[y * chunk_side + (chunk_side - 1)];
+    // мировой x = chunk_side: первый столбец right и второй столбец overlap
+    continuous = continuous && right[y * chunk_side + 0] == overlap[y * chunk_side + 1];
+  }
+  CHECK(continuous);
+
+  // Поле действительно заполнено, а не оставлено нулями.
+  CHECK(*std::max_element(left.begin(), left.end()) > *std::min_element(left.begin(), left.end()));
+}
+
+TEST_CASE("originator both noise paths agree with each other bit for bit") {
+  const auto registry = make_registry();
+  const auto* grid_tool = registry.find("position_grid");
+  const auto* uniform = registry.find("noise_grid");
+  const auto* at = registry.find("noise_at");
+
+  const std::vector<field_pair> fields = {{"world", "v2"}, {"by_grid", "v1"}, {"by_position", "v1"}};
+  auto buf = originator::buffer("both", originator::make_buffer_layout(originator::storage_kind::soa, fields, "both"), grid_count);
+
+  originator::parameters grid;
+  grid.set_number("size_x", double(grid_width));
+  grid.set_number("size_y", double(grid_width));
+  grid.set_number("cell_size", 1.0);
+  const std::vector<originator::field_ref> world_out{writable(buf, "world")};
+  originator::dispatch(*grid_tool, {}, world_out, grid, 1, 0, grid_count, "p", nullptr);
+
+  const auto params = [] {
+    originator::parameters p;
+    p.set_string("tree", std::string(node_tree));
+    p.set_number("frequency", 0.02);
+    p.set_number("width", double(grid_width));
+    return p;
+  }();
+
+  const std::vector<originator::field_ref> uniform_out{writable(buf, "by_grid")};
+  originator::dispatch(*uniform, {}, uniform_out, params, 777, 0, grid_count, "n", nullptr);
+
+  const std::vector<originator::field_ref> at_in{readable(buf, "world")};
+  const std::vector<originator::field_ref> at_out{writable(buf, "by_position")};
+  originator::dispatch(*at, at_in, at_out, params, 777, 0, grid_count, "n", nullptr);
+
+  const auto by_grid = buf.field(buf.find_field("by_grid"));
+  const auto by_position = buf.field(buf.find_field("by_position"));
+
+  double worst = 0.0;
+  size_t differing = 0;
+  for (size_t i = 0; i < grid_count; ++i) {
+    worst = std::max(worst, std::abs(by_grid.get(i) - by_position.get(i)));
+    differing += by_grid.get(i) != by_position.get(i) ? 1 : 0;
+  }
+
+  // Замерено: пути согласуются ТОЧНО. Это не мелочь — она означает, что двумерную карту можно
+  // считать регулярной сеткой, а трёхмерные чанки выборкой по позициям, и на стыке систем поля
+  // сойдутся бит в бит, а не «примерно». Проверка точная, потому что измерение это позволяет.
+  CHECK(differing == 0);
+  CHECK(worst == 0.0);
+}

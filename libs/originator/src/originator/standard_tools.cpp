@@ -94,6 +94,50 @@ float fbm(const noise_settings& s, const float x, const float y) noexcept {
   return s.offset + s.amplitude * (value / normalization);
 }
 
+// Поле МИРОВЫХ ПОЗИЦИЙ регулярной сетки. Без него не работает единственный точный путь генерации
+// объёма: `noise_at` берёт позиции полем, а заполнить это поле было нечем.
+//
+// Раскладка индекса — x внутренний, затем y, затем z. Это не произвольный выбор: та же раскладка у
+// `noise_grid` и у самого FastNoise2 (`out[(z*yCount + y)*xCount + x]`), поэтому поле, посчитанное
+// здесь, скармливается выборке по позициям без перестановки.
+//
+// Инструмент НЕ знает про чанки: начало координат приходит параметром. Так тело шага остаётся
+// единственным местом, которое переводит ключ чанка в мировое смещение, и инструмент не приобретает
+// знания о понятиях пайплайна.
+void tool_position_grid(const tool_call& call, const size_t begin, const size_t end) {
+  const auto& out = call.output(0);
+  auto target = out.write();
+
+  const uint32_t components = target.type().components;
+  if (components < 2) {
+    utils::error{}("originator step '{}': position_grid needs a 2- or 3-component field, '{}.{}' has {}",
+                   call.step_name, out.buffer_name(), out.field_name(), components);
+  }
+
+  const auto size_x = size_t(std::max<int64_t>(call.params->integer("size_x", 1), 1));
+  const auto size_y = size_t(std::max<int64_t>(call.params->integer("size_y", int64_t(size_x)), 1));
+
+  const double cell = call.params->number("cell_size", 1.0);
+  const double origin_x = call.params->number("origin_x", 0.0);
+  const double origin_y = call.params->number("origin_y", 0.0);
+  const double origin_z = call.params->number("origin_z", 0.0);
+
+  const size_t plane = size_x * size_y;
+  const bool volume = components >= 3;
+
+  for (size_t i = begin; i < end; ++i) {
+    const size_t x = i % size_x;
+    const size_t y = (i / size_x) % size_y;
+
+    target.set(i, origin_x + double(x) * cell, 0);
+    target.set(i, origin_y + double(y) * cell, 1);
+    if (volume) {
+      const size_t z = plane == 0 ? 0 : i / plane;
+      target.set(i, origin_z + double(z) * cell, 2);
+    }
+  }
+}
+
 void tool_fill(const tool_call& call, const size_t begin, const size_t end) {
   const auto& out = call.output(0);
   const double value = call.params->number("value", 0.0);
@@ -256,6 +300,8 @@ void tool_registry::add_standard_tools() {
   // Именованная инициализация намеренно: набор полей описания инструмента будет расти, и
   // позиционная запись ломалась бы на каждом новом поле.
   add(tool_description{.name = "fill", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_fill});
+  add(tool_description{.name = "position_grid", .shape = aperture::pointwise, .input_count = 0, .output_count = 1,
+                       .body = tool_position_grid});
   add(tool_description{.name = "value_noise", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_value_noise});
   add(tool_description{.name = "remap", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_remap});
   add(tool_description{.name = "classify", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_classify});

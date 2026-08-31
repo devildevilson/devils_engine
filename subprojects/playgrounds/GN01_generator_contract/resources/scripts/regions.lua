@@ -39,6 +39,7 @@ return function(step)
     outputs = { step.writes.region_offsets:field("start"), step.writes.region_arcs:field("site") },
     params = { width = width, height = width },
     range = { 0, site_count },
+    key_support = "global",
   }
 
   -- scatter: контуры областей. Это ответ на третий, отдельный вопрос — не «кому принадлежит клетка»
@@ -54,18 +55,26 @@ return function(step)
     },
     params = { width = width, height = width },
     range = { 0, site_count },
+    key_support = "global",
   }
 
   -- scatter: клетки, разложенные по областям. Диапазон относится ко ВХОДАМ, а выход — структура
   -- другого размера, поэтому число корзин задаёт буфер смещений, а не диапазон.
+  --
+  -- key_support объявляет автор, потому что из одного чанка это не проверяется: область простирается
+  -- по всей карте, значит ни один чанк её не заканчивает. Объявление честное, и оно же означает, что
+  -- этот шаг принадлежит грубому мировому проходу, а не чанковому. При чанкованной генерации вызов
+  -- будет отклонён — это правильно, такую сводку из чанков не собирают.
   originator.group_by{
     inputs = { cells:field("region") },
     outputs = { step.writes.region_cell_offsets:field("start"), step.writes.region_cell_order:field("cell") },
+    key_support = "global",
   }
 
   -- scatter: сумма высот по областям, воспроизводимая бит в бит при любом числе потоков.
   originator.accumulate{
     inputs = { cells:field("region"), cells:field("height") },
     outputs = { step.writes.region_stats:field("height_sum") },
+    key_support = "global",
   }
 end

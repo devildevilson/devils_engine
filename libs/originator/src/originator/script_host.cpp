@@ -239,6 +239,22 @@ void script_host::bind_tools() {
       end = (*range)[2].get_or<size_t>(end);
     }
 
+    // Носитель ключа объявляет автор: из одного чанка его не проверить. Молчание = глобальный, то
+    // есть при чанкованной генерации scatter отклоняется, пока автор не скажет обратное вслух.
+    if (tool->shape == aperture::scatter) {
+      const sol::optional<std::string> declared = args["key_support"];
+      const auto support = declared.has_value() ? parse_key_support(*declared) : key_support::global;
+      if (declared.has_value() && support == key_support::count) {
+        utils::error{}("originator step '{}': tool '{}' got unknown key_support '{}', expected chunk_local or global",
+                       current_step_, tool_name, *declared);
+      }
+
+      const auto check = check_key_support(*tool, support, current_chunked_, current_step_);
+      if (!check.allowed) {
+        utils::error{}("originator {}", check.message);
+      }
+    }
+
     if (tool->shape == aperture::reduce) {
       const double value = dispatch_reduce(*tool, inputs, params, seed, begin, end, current_step_, pool_);
       return sol::make_object(s, value);
@@ -460,6 +476,7 @@ step_invoker script_host::invoker() {
 
     current_step_.assign(context.name);
     current_seed_ = context.seed;
+    current_chunked_ = context.chunked;
 
     auto step = make_step_table(context);
 

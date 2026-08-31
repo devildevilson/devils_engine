@@ -4,28 +4,27 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
-- PF10 CURVED AREA LABELS + WORLD-Y ORBIT ADDED TO EXACT CLOSE-UP PLANET (2026-08-31). The 1024 political
-  cube atlas is now only a cheap accelerator: its R16 addresses one of `4702` compact exact-cell records
-  (Voronoi feature, stable owner, kind), while R16 distance gates a `3x3` candidate refinement inside a
-  `0.0075 rad` border band. Close province ownership and `fwidth` boundaries are therefore continuous instead
-  of atlas stairs without returning to the original 27-cell fragment search. Empire LOD keeps the cheap atlas
-  path beyond `1.72R`. The old raster-derived curve pass, shaders and 8-MB buffer are deleted. Surface normals
-  are baked from displaced neighbours, oct-packed into the existing position `.w` and smoothly interpolated,
-  removing the visible 512-mesh triangular facets at zero extra buffer cost. At `<=1.42R`, a view-following
-  focus of about `24–36` patches replaces base `16x16` strips with crack-free 4x strips (effective 2048 cells
-  per face); it refines spherical direction while interpolating authoritative baked radii, preserving ridge
-  geometry and doing no per-vertex terrain-noise search. Working atlas still owns `4032` playable nodes and
-  `12812` CSR edges; water/mountains/poles and `961` hydrology primitives are unchanged. Province label layout
-  now solid-angle weights cube samples, derives an area centroid and principal tangent axis from first/second
-  moments, then selects inset far endpoints. Every PF05-style glyph receives its own position/tangent along a
-  quadratic spherical Bezier, allowing horizontal through near-vertical names. Coastal/narrow corridors shrink
-  until 13 canonical samples retain one owner; three temporary disjoint province groups exercise the same far
-  state-label mechanism. WASD now orbits the camera: side is `cross(+Y,radial)`, vertical is projected world Y,
-  view-up stays +Y and `|radial.y|<=.94` excludes both lookAt pole singularities; R still toggles planet spin.
-  Iris Xe 1280x720 Release frame 120: near `3.696 ms / 270 FPS`, far curved labels `2.729 / 366`; static
-  capacities remain about `56 MB`. `--verify` is `31/31`; close validation is clean. NEXT: water port
-  graph/content naming and hierarchical LOD below the current `1.16R` camera floor;
-  heraldic billboards remain explicitly later. `anomalous_weather` remains in the unnumbered parking lot.
+- PF10 PIXEL-STABLE PROVINCE + TWO-SIDED STATE BORDERS CLOSED (2026-08-31). The 1024 political cube atlas
+  remains only an accelerator: R16 addresses one of `4702` exact Voronoi records and R16 conservatively gates
+  refinement. Close-up now remaps the full 3x3 candidate stencil across cube-face seams and pays it only in a
+  `0.0048 rad` band. Squared-distance difference is the exact bisector plane; its analytic screen derivative
+  produces a pixel-distance field, so the thin solid province line no longer changes thickness with slope or
+  grows false inset ticks when the nearest feature pair changes. Beyond `1.72R` the shader retains the cheap
+  atlas path. Province CSR is also the canonical ownership hierarchy: all `4032` playable nodes receive one
+  of three fixture state IDs, conservative smoothing removes only narrow bays, and disconnected islands are
+  reassigned whole across their longest frontier; every induced state graph verifies connected. State borders
+  are not inflated province pixels. Atlas transitions are bisection-refined against the canonical evaluator,
+  welded into about `17.4k` planet-local segments and given cumulative angular `s`. One instanced screen-width
+  ribbon draws both neighbours side by side: each half alternates its own two-colour palette along world-locked
+  `s`, with a neutral centre separator. Very short accidental fixture enclaves stay in graph data but omit the
+  state-level symbol at this LOD. `--no-state-borders` and `--border-debug=exact|distance|state` preserve A/B.
+  Far PF05-style labels now consume the same actual state ownership instead of recomputing a separate grouping;
+  curved province labels, world-Y orbit, smooth normals, crack-free 4x focus, hydrology and barriers are intact.
+  Iris Xe 1280x720 Release: near `1.16R` frame 120 is `4.387 ms / 228 FPS`, far frame 80 is `3.268 / 306`;
+  close A/B puts the state ribbon near `0.12 ms`. Its capacity is `3 MiB`; named PF10 config capacities total
+  about `57.2 MiB`. `--verify` is `36/36`; close Vulkan validation is clean. NEXT: water port graph/content
+  naming and hierarchical LOD below the current `1.16R` camera floor; heraldic billboards remain explicitly
+  later. `anomalous_weather` remains in the unnumbered parking lot.
 - PF08 FORMALLY CLOSED — SLICES 0–7 PLUS CLOSING AUDIT (2026-08-30). Eight permanent 1280x720 frame-80
   PNGs now cover clear noon/sunset/night, overcast, rain, snow, universal magic lightning and aurora. The
   dedicated `verify_audit_frames.sh` launches ONLY PF08, writes temporary PPMs and matched all eight frozen

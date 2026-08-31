@@ -115,6 +115,9 @@ struct step_context {
   uint64_t seed = 0;
   uint64_t chunk_seed = 0;
   chunk_key chunk{};
+  // Идёт ли чанкованная генерация. Выставляется вызовом set_chunk — сам ключ этого не показывает,
+  // потому что чанк (0,0,0) такой же полноправный, как любой другой.
+  bool chunked = false;
   const parameters* params = nullptr;
   std::span<const std::pair<std::string, std::string>> programs;
 
@@ -138,6 +141,7 @@ public:
   // Текущий чанк. Смена ключа НЕ перевыделяет буферы: один пайплайн генерирует много чанков подряд,
   // и это единственный способ не платить за аллокацию на каждый чанк.
   const chunk_key& chunk() const noexcept;
+  bool chunked() const noexcept;
   void set_chunk(const chunk_key& key) noexcept;
 
   // Обнуляет все буферы. Правильному пайплайну это не нужно: каждый шаг пишет то, что читает
@@ -167,6 +171,7 @@ private:
 
   pipeline_description description_;
   chunk_key chunk_{};
+  bool chunked_ = false;
   // Готовые параметры шага: общие значения пайплайна плюс его собственные сверху. Считаются один раз
   // при построении, чтобы тело шага получало один набор, а не разбиралось в приоритетах.
   std::vector<parameters> step_params_;
