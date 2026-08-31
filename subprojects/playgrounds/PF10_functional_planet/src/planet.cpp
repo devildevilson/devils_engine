@@ -168,6 +168,37 @@ glm::vec3 cube_direction(const uint32_t face, const glm::vec2 uv) noexcept {
 
 bool is_land_id(const uint32_t id) noexcept { return (id & 0xc0000000u) == 0u; }
 
+uint32_t encode_cell(const glm::ivec3 cell) noexcept {
+  constexpr int32_t offset = 32;
+  return uint32_t(cell.x + offset) | (uint32_t(cell.y + offset) << 6u) |
+         (uint32_t(cell.z + offset) << 12u);
+}
+
+glm::ivec3 decode_cell(const uint32_t key) noexcept {
+  constexpr int32_t offset = 32;
+  return glm::ivec3(int32_t(key & 63u) - offset, int32_t((key >> 6u) & 63u) - offset,
+                    int32_t((key >> 12u) & 63u) - offset);
+}
+
+glm::vec3 cell_feature(const glm::ivec3 cell) noexcept {
+  return glm::vec3(cell) + glm::vec3(hash01(cell, 0xa511e9b3u), hash01(cell, 0x63d83595u),
+                                     hash01(cell, 0xb5297a4du));
+}
+
+uint32_t pack_octahedral_normal(glm::vec3 normal) noexcept {
+  normal = glm::normalize(normal);
+  normal /= std::abs(normal.x) + std::abs(normal.y) + std::abs(normal.z);
+  glm::vec2 encoded = glm::vec2(normal);
+  if (normal.z < 0.0f) {
+    const glm::vec2 signs{encoded.x >= 0.0f ? 1.0f : -1.0f, encoded.y >= 0.0f ? 1.0f : -1.0f};
+    encoded = (glm::vec2(1.0f) - glm::abs(glm::vec2(encoded.y, encoded.x))) * signs;
+  }
+  const auto quantize = [](const float value) {
+    return uint16_t(int16_t(std::lround(std::clamp(value, -1.0f, 1.0f) * 32767.0f)));
+  };
+  return uint32_t(quantize(encoded.x)) | (uint32_t(quantize(encoded.y)) << 16u);
+}
+
 } // namespace
 
 uint32_t hash_cell(const glm::ivec3 cell) noexcept {
@@ -210,20 +241,20 @@ region_sample sample_region(glm::vec3 direction) noexcept {
   float nearest = std::numeric_limits<float>::max();
   float second = std::numeric_limits<float>::max();
   uint32_t nearest_id = no_region;
+  uint32_t nearest_cell = no_region;
   glm::vec3 nearest_feature{0.0f, 1.0f, 0.0f};
   for (int z = -1; z <= 1; ++z) {
     for (int y = -1; y <= 1; ++y) {
       for (int x = -1; x <= 1; ++x) {
         const glm::ivec3 cell = base + glm::ivec3(x, y, z);
-        const glm::vec3 feature = glm::vec3(cell) + glm::vec3(hash01(cell, 0xa511e9b3u),
-                                                              hash01(cell, 0x63d83595u),
-                                                              hash01(cell, 0xb5297a4du));
+        const glm::vec3 feature = cell_feature(cell);
         const glm::vec3 delta = query - feature;
         const float distance = glm::dot(delta, delta);
         if (distance < nearest) {
           second = nearest;
           nearest = distance;
           nearest_id = (hash_cell(cell) & 0x3fffffffu) | 1u;
+          nearest_cell = encode_cell(cell);
           nearest_feature = feature;
         } else if (distance < second) {
           second = distance;
@@ -235,9 +266,9 @@ region_sample sample_region(glm::vec3 direction) noexcept {
   const auto ridge = sample_ridges(glm::normalize(nearest_feature));
   if (ridge.influence > 0.18f) {
     return {mountain_bit | (ridge.chain + 1u), region_kind::mountain,
-            std::min(voronoi_edge, non_land.edge * province_frequency)};
+            std::min(voronoi_edge, non_land.edge * province_frequency), nearest_cell};
   }
-  return {nearest_id, region_kind::land, std::min(voronoi_edge, non_land.edge * province_frequency)};
+  return {nearest_id, region_kind::land, std::min(voronoi_edge, non_land.edge * province_frequency), nearest_cell};
 }
 
 glm::vec3 surface_position(glm::vec3 direction) noexcept {
@@ -249,13 +280,44 @@ std::vector<glm::vec4> bake_surface_vertices(const uint32_t face_side) {
   const uint32_t side = std::max(face_side, 1u);
   const uint64_t nodes_per_face = uint64_t(side + 1u) * uint64_t(side + 1u);
   std::vector<glm::vec4> result(size_t(nodes_per_face * 6u));
+  const auto index = [=](const uint32_t face, const uint32_t x, const uint32_t y) {
+    return size_t(uint64_t(face) * nodes_per_face + uint64_t(y) * (side + 1u) + x);
+  };
   for (uint32_t face = 0; face < 6u; ++face) {
     for (uint32_t y = 0; y <= side; ++y) {
       for (uint32_t x = 0; x <= side; ++x) {
         const glm::vec2 uv = glm::vec2(float(x), float(y)) / float(side) * 2.0f - 1.0f;
         const glm::vec3 direction = cube_direction(face, uv);
-        result[size_t(uint64_t(face) * nodes_per_face + uint64_t(y) * (side + 1u) + x)] =
-          glm::vec4(surface_position(direction), 0.0f);
+        result[index(face, x, y)] = glm::vec4(surface_position(direction), 0.0f);
+      }
+    }
+  }
+  for (uint32_t face = 0; face < 6u; ++face) {
+    for (uint32_t y = 0; y <= side; ++y) {
+      for (uint32_t x = 0; x <= side; ++x) {
+        const glm::vec3 direction = glm::normalize(glm::vec3(result[index(face, x, y)]));
+        glm::vec3 derivative_x{};
+        glm::vec3 derivative_y{};
+        if (x > 0u && x < side && y > 0u && y < side) {
+          derivative_x = glm::vec3(result[index(face, x + 1u, y)] - result[index(face, x - 1u, y)]);
+          derivative_y = glm::vec3(result[index(face, x, y + 1u)] - result[index(face, x, y - 1u)]);
+        } else {
+          // Cube-face duplicates must agree at seams. Only the O(side) edge nodes use direction-space
+          // samples; the O(side^2) interior obtains the same smooth derivative from the existing bake.
+          const glm::vec3 reference = std::abs(direction.y) < 0.88f ? glm::vec3(0.0f, 1.0f, 0.0f) :
+                                                                      glm::vec3(1.0f, 0.0f, 0.0f);
+          const glm::vec3 tangent_x = glm::normalize(glm::cross(reference, direction));
+          const glm::vec3 tangent_y = glm::normalize(glm::cross(direction, tangent_x));
+          constexpr float epsilon = 0.00135f;
+          derivative_x = surface_position(glm::normalize(direction + tangent_x * epsilon)) -
+                         surface_position(glm::normalize(direction - tangent_x * epsilon));
+          derivative_y = surface_position(glm::normalize(direction + tangent_y * epsilon)) -
+                         surface_position(glm::normalize(direction - tangent_y * epsilon));
+        }
+        glm::vec3 normal = glm::normalize(glm::cross(derivative_x, derivative_y));
+        if (glm::dot(normal, direction) < 0.0f) normal = -normal;
+        const uint32_t packed_normal = pack_octahedral_normal(normal);
+        result[index(face, x, y)].w = std::bit_cast<float>(packed_normal);
       }
     }
   }
@@ -295,7 +357,7 @@ political_atlas bake_political_atlas(const uint32_t face_side) {
         const auto region = sample_region(direction);
         const bool cell_owned = region.kind == region_kind::land || region.kind == region_kind::mountain;
         const float angular_edge = cell_owned ? region.edge_distance / province_frequency : region.edge_distance;
-        result.texels[texel_index(face, x, y)] = {region.id, angular_edge};
+        result.texels[texel_index(face, x, y)] = {region.id, angular_edge, region.cell_key};
         if (region.kind == region_kind::land) {
           auto& centre = centres[region.id];
           centre.sum += direction;
@@ -462,26 +524,39 @@ political_atlas bake_political_atlas(const uint32_t face_side) {
 packed_political_atlas pack_political_atlas(const political_atlas& source) {
   packed_political_atlas result{};
   result.face_side = source.face_side;
-  result.region_ids = source.graph.province_ids;
-  std::unordered_set<uint32_t> non_land_ids;
-  non_land_ids.reserve(source.water_regions + source.mountain_regions + source.polar_regions);
+  std::vector<uint64_t> keys;
+  keys.reserve(8192u);
   for (const auto texel : source.texels) {
-    if (!is_land_id(texel.region_id)) non_land_ids.insert(texel.region_id);
+    const uint32_t identity = texel.cell_key == no_region ? texel.region_id : texel.cell_key;
+    keys.push_back((uint64_t(texel.cell_key != no_region) << 63u) | uint64_t(identity));
   }
-  result.region_ids.insert(result.region_ids.end(), non_land_ids.begin(), non_land_ids.end());
-  std::ranges::sort(result.region_ids);
-  if (result.region_ids.size() >= uint64_t(std::numeric_limits<uint16_t>::max())) {
-    return {};
-  }
+  std::ranges::sort(keys);
+  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+  if (keys.size() >= uint64_t(std::numeric_limits<uint16_t>::max())) return {};
 
-  std::unordered_map<uint32_t, uint16_t> local_indices;
-  local_indices.reserve(result.region_ids.size());
-  for (uint32_t i = 0; i < result.region_ids.size(); ++i) local_indices.emplace(result.region_ids[i], uint16_t(i));
+  std::unordered_map<uint64_t, uint16_t> local_indices;
+  local_indices.reserve(keys.size());
+  result.cells.resize(keys.size());
+  for (uint32_t i = 0; i < keys.size(); ++i) {
+    local_indices.emplace(keys[i], uint16_t(i));
+    if ((keys[i] >> 63u) != 0u) {
+      const glm::ivec3 cell = decode_cell(uint32_t(keys[i]));
+      result.cells[i].feature = glm::vec4(cell_feature(cell), 1.0f);
+    }
+  }
 
   result.texels.resize(source.texels.size());
   for (size_t i = 0; i < source.texels.size(); ++i) {
     const auto source_texel = source.texels[i];
-    const uint32_t local_index = local_indices.at(source_texel.region_id);
+    const uint32_t identity = source_texel.cell_key == no_region ? source_texel.region_id : source_texel.cell_key;
+    const uint64_t key = (uint64_t(source_texel.cell_key != no_region) << 63u) | uint64_t(identity);
+    const uint32_t local_index = local_indices.at(key);
+    auto& cell = result.cells[local_index];
+    cell.metadata.x = source_texel.region_id;
+    const uint32_t high_bits = source_texel.region_id & 0xe0000000u;
+    // Shader presentation kind: land=0, water=1, polar=2, mountain=3.
+    cell.metadata.y = high_bits == polar_bit ? 2u :
+                      (high_bits == mountain_bit ? 3u : (high_bits == water_bit ? 1u : 0u));
     const float normalized_edge = std::clamp(source_texel.edge_distance / political_edge_range, 0.0f, 1.0f);
     const uint32_t quantized_edge = uint32_t(normalized_edge * 65535.0f + 0.5f);
     result.texels[i] = local_index | (quantized_edge << 16u);
@@ -517,60 +592,22 @@ std::vector<surface_patch> visible_surface_patches(const uint32_t face_side, con
   return result;
 }
 
-std::vector<border_segment> make_border_segments(const political_atlas& source) {
-  std::vector<border_segment> result;
-  const uint32_t side = source.face_side;
-  if (side == 0u || source.texels.size() != size_t(6u) * (side + 1u) * (side + 1u)) return result;
-  result.reserve(source.graph.undirected_edges * 24u);
-  const uint64_t nodes_per_face = uint64_t(side + 1u) * uint64_t(side + 1u);
-  const auto texel = [&](const uint32_t face, const uint32_t x, const uint32_t y) -> const political_texel& {
-    return source.texels[size_t(uint64_t(face) * nodes_per_face + uint64_t(y) * (side + 1u) + x)];
-  };
-  const auto direction = [&](const uint32_t face, const glm::vec2 node) {
-    return cube_direction(face, node / float(side) * 2.0f - 1.0f);
-  };
-  const auto append = [&](const glm::vec3 a, const glm::vec3 b, const uint32_t left, const uint32_t right) {
-    if (glm::dot(a, b) > 0.9999999f) return;
-    result.push_back({glm::vec4(a, surface_height(a)), glm::vec4(b, surface_height(b)),
-                      glm::uvec4(left, right, 0u, 0u)});
-  };
-
-  struct crossing { glm::vec2 node; uint32_t a; uint32_t b; };
-  const uint32_t contour_step = side >= 2u ? 2u : 1u;
-  for (uint32_t face = 0; face < 6u; ++face) {
-    for (uint32_t y = 0; y < side; y += contour_step) {
-      for (uint32_t x = 0; x < side; x += contour_step) {
-        const uint32_t next_x = std::min(x + contour_step, side);
-        const uint32_t next_y = std::min(y + contour_step, side);
-        const uint32_t ids[4] = {texel(face, x, y).region_id, texel(face, next_x, y).region_id,
-                                 texel(face, next_x, next_y).region_id, texel(face, x, next_y).region_id};
-        crossing crossings[4];
-        uint32_t count = 0;
-        const auto cross_edge = [&](const uint32_t first, const uint32_t second, const glm::vec2 point) {
-          if (ids[first] == ids[second]) return;
-          crossings[count++] = {point, std::min(ids[first], ids[second]), std::max(ids[first], ids[second])};
-        };
-        const float middle_x = (float(x) + float(next_x)) * 0.5f;
-        const float middle_y = (float(y) + float(next_y)) * 0.5f;
-        cross_edge(0u, 1u, glm::vec2(middle_x, float(y)));
-        cross_edge(1u, 2u, glm::vec2(float(next_x), middle_y));
-        cross_edge(2u, 3u, glm::vec2(middle_x, float(next_y)));
-        cross_edge(3u, 0u, glm::vec2(float(x), middle_y));
-        if (count == 2u && crossings[0].a == crossings[1].a && crossings[0].b == crossings[1].b) {
-          append(direction(face, crossings[0].node), direction(face, crossings[1].node),
-                 crossings[0].a, crossings[0].b);
-        } else if (count != 0u) {
-          // Triple junctions and rare four-way raster ambiguities meet at one cell centre. Rounded segment
-          // caps in the shader cover the shared point without inventing a topological neighbour.
-          const glm::vec3 centre = direction(face, glm::vec2(middle_x, middle_y));
-          for (uint32_t i = 0; i < count; ++i) {
-            append(direction(face, crossings[i].node), centre, crossings[i].a, crossings[i].b);
-          }
-        }
-      }
+std::vector<surface_patch> refined_surface_patches(const uint32_t face_side, const uint32_t patch_side,
+                                                   const glm::vec3 local_eye) {
+  std::vector<surface_patch> result;
+  const float eye_distance = glm::length(local_eye);
+  if (eye_distance > 1.42f || face_side == 0u || patch_side == 0u) return result;
+  const glm::vec3 eye_direction = local_eye / std::max(eye_distance, 1.0e-6f);
+  // A tight focus disc is intentional: 4x strips multiply vertex work, while the smooth-normal base mesh
+  // already covers peripheral vision. The disc follows the view and refines what the player inspects.
+  constexpr float refine_cosine = 0.98511f; // central 9.90 degrees at inspection zoom
+  for (const surface_patch patch : visible_surface_patches(face_side, patch_side, local_eye)) {
+    const glm::vec2 centre_node = glm::vec2(float(patch.x), float(patch.y)) + float(patch_side) * 0.5f;
+    const glm::vec2 uv = centre_node / float(face_side) * 2.0f - 1.0f;
+    if (glm::dot(cube_direction(patch.face, uv), eye_direction) >= refine_cosine) {
+      result.push_back({patch.face, patch.x, patch.y, 4u});
     }
   }
-  result.shrink_to_fit();
   return result;
 }
 

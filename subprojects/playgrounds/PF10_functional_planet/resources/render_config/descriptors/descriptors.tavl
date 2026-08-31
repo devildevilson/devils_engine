@@ -9,6 +9,16 @@
   ]
 }
 {
+  name = refined_planet_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" },
+    { resource = surface_vertices, usage = storage_read, stage = vertex },
+    { resource = political_atlas, usage = storage_read, stage = fragment },
+    { resource = political_region_table, usage = storage_read, stage = fragment },
+    { resource = refined_surface_patches, usage = storage_read, stage = vertex }
+  ]
+}
+{
   name = marker_data
   layout = [
     { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" },
@@ -23,14 +33,6 @@
     { resource = scene_depth, usage = depth_read, sampler = decal_nearest, stage = fragment },
     { resource = political_atlas, usage = storage_read, stage = fragment },
     { resource = political_region_table, usage = storage_read, stage = fragment }
-  ]
-}
-{
-  name = border_data
-  layout = [
-    { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" },
-    { resource = border_segments, usage = storage_read, stage = vertex },
-    { resource = scene_depth, usage = depth_read, sampler = decal_nearest, stage = fragment }
   ]
 }
 {

@@ -97,18 +97,23 @@ int verify() {
         }), "every label anchor is a positive-clearance point inside its province");
 
   const auto packed = pf10::pack_political_atlas(politics);
-  bool compact_round_trip = packed.texels.size() == politics.texels.size() && !packed.region_ids.empty();
+  bool compact_round_trip = packed.texels.size() == politics.texels.size() && !packed.cells.empty();
   for (size_t i = 0; compact_round_trip && i < packed.texels.size(); i += 257u) {
-    compact_round_trip &= packed.region_ids[packed.texels[i] & 0xffffu] == politics.texels[i].region_id;
+    compact_round_trip &= packed.cells[packed.texels[i] & 0xffffu].metadata.x == politics.texels[i].region_id;
   }
-  check(compact_round_trip, "R16 political indices round-trip to stable planet-local IDs");
+  check(compact_round_trip, "R16 political indices round-trip to exact cells and stable planet-local IDs");
 
-  const auto borders = pf10::make_border_segments(politics);
-  check(borders.size() > 50000u && borders.size() < 150000u,
-        std::format("shared smooth border cache stays bounded ({} segments)", borders.size()));
+  check(packed.cells.size() > graph.province_ids.size() && packed.cells.size() < 8192u,
+        std::format("exact political feature table stays compact ({} records)", packed.cells.size()));
   const auto patches = pf10::visible_surface_patches(512u, 16u, glm::vec3(0.0f, 0.0f, 1.2f));
   check(!patches.empty() && patches.size() < 6u * 32u * 32u,
         std::format("horizon culling retains a strict visible patch subset ({}/6144)", patches.size()));
+  const auto refined = pf10::refined_surface_patches(512u, 16u, glm::vec3(0.0f, 0.0f, 1.2f));
+  check(!refined.empty() && refined.size() < patches.size() &&
+          std::ranges::all_of(refined, [](const pf10::surface_patch patch) { return patch.pad == 4u; }),
+        std::format("inspection LOD is a strict crack-free 4x focus subset ({} patches)", refined.size()));
+  check(pf10::refined_surface_patches(512u, 16u, glm::vec3(0.0f, 0.0f, 2.0f)).empty(),
+        "inspection LOD turns off outside close viewing distance");
 
   const auto hydrology = pf10::make_hydrology_features();
   check(hydrology.size() >= 500u && hydrology.size() < 4096u,

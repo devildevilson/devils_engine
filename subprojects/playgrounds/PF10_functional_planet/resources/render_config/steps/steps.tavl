@@ -6,6 +6,13 @@
   command = "draw constant planet_draw"
 }
 {
+  name = draw_refined_planet
+  material = refined_planet_material
+  geometry = planet_geometry
+  sets = [ refined_planet_data ]
+  command = "draw constant refined_planet_draw"
+}
+{
   name = draw_markers
   material = marker_material
   geometry = marker_geometry
@@ -18,16 +25,6 @@
   geometry = label_geometry
   sets = [ label_data, ui_textures ]
   command = "draw constant label_draw"
-  blending = {
-    scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
-  }
-}
-{
-  name = draw_borders
-  material = border_material
-  geometry = border_geometry
-  sets = [ border_data ]
-  command = "draw constant border_draw"
   blending = {
     scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
   }

@@ -5,6 +5,12 @@
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {
+  name = refined_planet_material
+  shaders = { vertex = "planet_lod.vert.glsl", fragment = "planet.frag.glsl" }
+  depth = { test = true, write = true, compare = greater }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
   name = marker_material
   shaders = { vertex = "marker.vert.glsl", fragment = "marker.frag.glsl" }
   depth = { test = true, write = true, compare = greater }
@@ -13,12 +19,6 @@
 {
   name = label_material
   shaders = { vertex = "label.vert.glsl", fragment = "label.frag.glsl" }
-  depth = { test = false, write = false, compare = always }
-  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
-}
-{
-  name = border_material
-  shaders = { vertex = "border.vert.glsl", fragment = "border.frag.glsl" }
   depth = { test = false, write = false, compare = always }
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }

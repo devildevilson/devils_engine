@@ -4,7 +4,8 @@ PF10 проверяет не «похожий на планету шар», а �
 реальная геометрическая высота, тысячи стабильных политических областей, подписи и объектные anchors.
 Рельеф и вся семантика принадлежат планете: при повороте глобуса они не плывут в world/screen space.
 
-**Первое отображение работает (2026-08-30).** Это один близкий глобус без атмосферы и прочего окружения.
+**Первое отображение и close-up refinement работают (2026-08-31).** Это один близкий глобус без атмосферы
+и прочего окружения.
 
 ## Запуск
 
@@ -35,16 +36,24 @@ cmake --build build-debug --target PF10_functional_planet -j2
 
 Канонический адрес поверхности — единичное planet-local направление `d`; точка имеет вид
 `p=d*(R+h(d))`. Transform применяется после вычисления высоты. Это vertex displacement: меняются позиции,
-depth, производные normals и силуэт. Значение ограничено `[-0.045R,+0.085R]`; текущая детерминированная
+depth, smooth normals и силуэт. Значение ограничено `[-0.045R,+0.085R]`; текущая детерминированная
 выборка заняла `[-0.03659R,+0.08500R]`. Амплитуда намеренно крупная, потому что первый fixture доказывает
 геометрию, а не физический масштаб конкретной планеты.
 
 Глобус — cube-sphere: default `6 x 512 x 512` клеток и `3 145 728` треугольников. Высота один раз запекается
 в `25.26 MB` planet-local position buffer; кадр больше не вычисляет четыре октавы шума на каждой вершине.
 Поверхность разбита на `16x16` patches. Консервативный horizon test перед vertex shader оставляет в близком
-кадре около `830/6144` patches, поэтому высокое разрешение не означает три миллиона реально обработанных
-треугольников. Каждый ряд видимого patch — instance triangle strip. Fragment normal выводится из производных
-уже смещённой world position. `--mesh=32..512` меняет геометрическое разрешение кратно 16.
+кадре около `740/6144` patches, поэтому высокое разрешение не означает три миллиона реально обработанных
+треугольников. Каждый ряд видимого patch — instance triangle strip. Гладкая нормаль один раз считается по
+соседним displaced vertices, octahedral-пакуется в неиспользованный `w` той же позиции и интерполируется во
+fragment; прежняя `cross(dFdx,dFdy)` была постоянной внутри треугольника и показывала крупные грани.
+
+При расстоянии до `1.42R` центральный диск следует за взглядом и заменяет около `24–36` базовых patches
+локальной сеткой `4x`, то есть эффективными `2048` клетками на грань. Она уточняет cube-sphere direction и
+интерполирует уже запечённую авторитетную высоту — поэтому не пересчитывает terrain noise и не теряет
+авторские mountain ridges. Внешнее кольцо шириной в одну базовую клетку сходится к исходной piecewise-linear
+границе: T-junction не образует видимой трещины. Периферия остаётся на дешёвой сетке 512; дальше `1.42R`
+refinement полностью выключен. `--mesh=32..512` меняет базовое геометрическое разрешение кратно 16.
 
 ### Области планеты
 
@@ -69,11 +78,14 @@ depth, производные normals и силуэт. Значение огра
 приближённое centre direction и coastal flag. Water port-to-port graph остаётся отдельным будущим контрактом.
 
 Канонический evaluator запускается один раз при старте. Политический cube atlas теперь имеет сторону `1024`
-и хранит один `uint`: `R16` локального индекса области плюс `R16` углового расстояния; отдельная таблица
-возвращает стабильный 32-bit ID. Это `25.22 MB` вместо `50.43 MB` для наивных `id+float` при том же
-разрешении. Материализованные переходы ID превращаются в общий decimated curve cache из `145 372`
-сферических сегментов. Граница рисуется отдельной depth-reconstructed декалью с `fwidth`, поэтому вблизи
-она непрерывная и не наследует ступени пиксельного атласа; `B` меняет её цвет без перестройки atlas/geometry.
+и хранит один `uint`: `R16` локального индекса exact-cell плюс `R16` консервативного расстояния. Таблица из
+`4702` записей хранит query-space Voronoi feature, стабильный 32-bit owner ID и kind. Внутри области shader
+делает только один atlas/table lookup. В узкой полосе `0.0075 rad` у границы он берёт максимум девять разных
+кандидатов из `3x3` atlas neighbourhood и сравнивает точные расстояния до feature points; coast и poles там
+вычисляются аналитически. Получается непрерывная сферическая Voronoi boundary без полного 27-cell поиска и
+без ступенчатой raster-polyline. `fwidth`-AA и цвет границы теперь компонуются прямо в surface fragment.
+Дальше `1.72R`, когда граница уже субпиксельная и показываются имперские labels, остаётся дешёвое atlas
+расстояние. Старый curve cache и его `8 MB` capacity удалены; `B` по-прежнему меняет цвет без перестройки.
 
 ### Горные барьеры, реки и озёра
 
@@ -115,12 +127,13 @@ LOD сейчас намеренно простой: дальше `1.72R` рис�
 Первый честный uncapped Release замер выполнял procedural height в vertex и 27-cell Voronoi во fragment:
 `15.906 ms`, или `62.9 FPS` GPU-equivalent на Iris Xe при 1280x720. После статического bake, triangle strips
 и политического atlas итог остаётся значительно выше целевого бюджета. На Iris Xe, Release 1280x720,
-детерминированные 80-frame запуски: близкий полный province LOD с гидрографией `2.242 ms / 446 FPS`, без неё
-`2.121 ms / 472 FPS`; дальний empire LOD `3.041 ms / 329 FPS`. Сама гидрография добавляет около `0.09 ms`
-к surface-decal pass. Pacing выключен, GPU timestamps измеряют passes отдельно. Зарезервированные статические
-surface/politics/border/hydrology/label buffers занимают около `64.4 MB`; в каждом кадре они не пересоздаются.
+детерминированные 120-frame запуски после exact boundaries, smooth normals и локального 4x LOD: максимальное
+приближение `1.16R` с гидрографией `3.769 ms / 265 FPS`, без неё `3.746 ms / 267 FPS`; дальний empire LOD
+`1.991 ms / 502 FPS`. Pacing выключен, GPU timestamps измеряют passes отдельно. Зарезервированные статические
+surface/politics/hydrology/label buffers занимают около `56 MB`; oct-normal не добавляет buffer, а per-frame
+списки base/refined patches имеют по `96 KiB` capacity.
 
-`--verify` сейчас даёт `25/25`:
+`--verify` сейчас даёт `27/27`:
 
 - land count лежит в `[3000,5000]` (`3933` в survey, `3995` в проверочном atlas-512);
 - water regions крупные и немногочисленные (`4`), mountain chains ровно три, polar regions ровно две;
@@ -129,15 +142,17 @@ surface/politics/border/hydrology/label buffers занимают около `64.
 - плотный bake покрывает survey, CSR полон, симметричен, не имеет self/isolated nodes и держит mean degree
   в `[4,8]` (`6.28` в проверочном atlas-512);
 - label anchor каждой провинции является положительно удалённой от границы внутренней точкой;
-- compact `R16` atlas round-trip возвращает исходные стабильные ID;
-- border cache и visible-patch subset численно ограничены;
+- compact `R16` atlas round-trip возвращает exact cell и исходный стабильный ID; exact table ограничена
+  `8192` records;
+- visible-patch subset численно ограничен, close-up refinement является строгим `4x` subset и выключается
+  на дальней камере;
 - feature layer компактен, а оба endpoint каждой реки/озера остаются на игровой суше;
 - высота и `province_id` сохраняются после planet transform;
 - 24 object anchors принадлежат записанным провинциям;
 - центральный camera ray выбирает видимую displaced surface, а луч мимо планеты ничего не выбирает.
 
 Debug и Release targets собираются. Fixed far/near 1280x720 frames проходят; Vulkan validation на пути
-planet + markers + ribbons + curve borders + depth-reconstructed MSDF decals + overlay не сообщает
+planet + refined planet + markers + ribbons + exact borders + depth-reconstructed MSDF decals + overlay не сообщает
 VUID/API warning/error.
 
 ## Следующие срезы
@@ -148,8 +163,9 @@ VUID/API warning/error.
    становится проверяемым bake канонических province records, а не второй истиной.
 3. **Editing and persistence.** Изменение высоты/принадлежности обновляет render, picking, border и graph;
    save/load возвращает тот же fingerprint и selection.
-4. **LOD and residency.** Приближение от глобуса к участку, crack-free стыки и стабильные
-   height/normal/border/ID/text/object anchors.
+4. **LOD and residency.** Развить нынешний центральный 4x focus в иерархические shell/ring levels для
+   бесшовного спуска значительно ближе `1.16R`; текущий crack-free стык и стабильные height/normal/border/ID
+   уже являются первым уровнем.
 5. **Audit.** Детерминированные globe/terrain/political/selected frames, budgets и явные production limits.
 
 ## Не входит сейчас

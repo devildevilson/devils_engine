@@ -1,6 +1,6 @@
 { name = planet_draw, layout = draw4, value = [0.0, 1.0, 0.0, 0.0] }
+{ name = refined_planet_draw, layout = draw4, value = [0.0, 0.0, 0.0, 0.0] }
 { name = marker_draw, layout = draw4, value = [12.0, 0.0, 0.0, 0.0] }
 { name = label_draw, layout = draw4, value = [6.0, 0.0, 0.0, 0.0] }
-{ name = border_draw, layout = draw4, value = [6.0, 0.0, 0.0, 0.0] }
 { name = hydrology_draw, layout = draw4, value = [6.0, 0.0, 0.0, 0.0] }
 { name = ui_push, layout = ui1ui1ui1ui1ui1ui1ui1, value = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] }

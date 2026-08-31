@@ -17,6 +17,15 @@ layout(set = 0, binding = 4, std430) readonly buffer SurfacePatches { uvec4 patc
 layout(location = 0) out vec3 out_local_direction;
 layout(location = 1) out vec3 out_world_position;
 layout(location = 2) out float out_height;
+layout(location = 3) out vec3 out_world_normal;
+
+vec3 unpack_octahedral_normal(const float packed) {
+  const vec2 encoded = unpackSnorm2x16(floatBitsToUint(packed));
+  vec3 normal = vec3(encoded, 1.0 - abs(encoded.x) - abs(encoded.y));
+  const float fold = max(-normal.z, 0.0);
+  normal.xy += vec2(normal.x >= 0.0 ? -fold : fold, normal.y >= 0.0 ? -fold : fold);
+  return normalize(normal);
+}
 
 void main() {
   const uint side = max(camera_data.params.z, 1u);
@@ -30,7 +39,8 @@ void main() {
                               patch_record.z + row + (strip_vertex & 1u));
   const uint nodes_per_face = (side + 1u) * (side + 1u);
   const uint node = face * nodes_per_face + cell_xy.y * (side + 1u) + cell_xy.x;
-  const vec3 local_position = surface.positions[node].xyz;
+  const vec4 baked_vertex = surface.positions[node];
+  const vec3 local_position = baked_vertex.xyz;
   const vec3 direction = normalize(local_position);
   const float height = length(local_position) - PF10_RADIUS;
   const vec3 world_position = (camera_data.planet_to_world * vec4(local_position, 1.0)).xyz;
@@ -38,4 +48,6 @@ void main() {
   out_local_direction = direction;
   out_world_position = world_position;
   out_height = height;
+  out_world_normal = normalize((camera_data.planet_to_world *
+                                vec4(unpack_octahedral_normal(baked_vertex.w), 0.0)).xyz);
 }

@@ -22,6 +22,7 @@ struct region_sample {
   uint32_t id = no_region;
   region_kind kind = region_kind::land;
   float edge_distance = 0.0f;
+  uint32_t cell_key = no_region; // exact Voronoi feature identity for land/mountain cells
 };
 
 struct surface_hit {
@@ -37,8 +38,9 @@ struct surface_hit {
 struct political_texel {
   uint32_t region_id = no_region;
   float edge_distance = 0.0f; // approximate angular distance in radians
+  uint32_t cell_key = no_region;
 };
-static_assert(sizeof(political_texel) == 8);
+static_assert(sizeof(political_texel) == 12);
 
 struct province_graph {
   std::vector<uint32_t> province_ids;      // sorted; CSR node index -> stable planet-local id
@@ -61,12 +63,18 @@ struct political_atlas {
   province_graph graph;
 };
 
-// Runtime rendering does not need the hashed 32-bit stable ID at every texel.  A local R16 index addresses
-// region_ids; the other R16 stores a quantized angular distance to the closest border.
+// Runtime rendering does not need a full cell record at every texel. A local R16 index addresses the exact
+// Voronoi feature/owner table; the other R16 is a conservative trigger distance for near-field refinement.
+struct alignas(16) political_cell_record {
+  glm::vec4 feature{}; // query-space feature.xyz; w=1 for Voronoi cells, 0 for analytic water/poles
+  glm::uvec4 metadata{}; // stable owner ID, region_kind, reserved, reserved
+};
+static_assert(sizeof(political_cell_record) == 32);
+
 struct packed_political_atlas {
   uint32_t face_side = 0;
   std::vector<uint32_t> texels;
-  std::vector<uint32_t> region_ids;
+  std::vector<political_cell_record> cells;
 };
 
 struct alignas(16) surface_patch {
@@ -76,13 +84,6 @@ struct alignas(16) surface_patch {
   uint32_t pad = 0;
 };
 static_assert(sizeof(surface_patch) == 16);
-
-struct alignas(16) border_segment {
-  glm::vec4 a_direction_height{};
-  glm::vec4 b_direction_height{};
-  glm::uvec4 region_ids{};
-};
-static_assert(sizeof(border_segment) == 48);
 
 // Independent surface-feature layer: rivers are tapered spherical capsules, lakes are filled spherical discs.
 // They do not consume province IDs and therefore cannot disturb the navigation graph.
@@ -115,7 +116,8 @@ political_atlas bake_political_atlas(uint32_t face_side);
 packed_political_atlas pack_political_atlas(const political_atlas& source);
 std::vector<surface_patch> visible_surface_patches(uint32_t face_side, uint32_t patch_side,
                                                    glm::vec3 local_eye);
-std::vector<border_segment> make_border_segments(const political_atlas& source);
+std::vector<surface_patch> refined_surface_patches(uint32_t face_side, uint32_t patch_side,
+                                                   glm::vec3 local_eye);
 std::vector<hydrology_feature> make_hydrology_features();
 surface_hit intersect_surface(glm::vec3 ray_origin, glm::vec3 ray_direction) noexcept;
 std::vector<landmark> make_landmarks(uint32_t count);
