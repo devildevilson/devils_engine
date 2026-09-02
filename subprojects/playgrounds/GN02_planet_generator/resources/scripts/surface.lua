@@ -37,6 +37,20 @@ return function(step)
     }
   end
 
+  -- 1a. Изломанность накладывается ПОСЛЕ сглаживания, и порядок здесь содержательный. Сглаживание
+  -- убирает ступеньки заливки по графу — артефакт решётки в ТЕКТОНИЧЕСКОМ сигнале; фрактальная
+  -- деталь к этому сигналу не относится и сглаживанию не подлежит. Пока она добавлялась внутри
+  -- формулы рельефа, два прохода размытия съедали около половины её амплитуды, и деталь приходилось
+  -- задирать вдвое, чтобы она была видна вообще.
+  --
+  -- Амплитуда приходит полем roughness: дно ровное, континент неровен, горный пояс неровен сильнее
+  -- всего. Это произведение и сумма, то есть арифметика, поэтому её считает движок, а не правило.
+  originator.modulate{
+    inputs = { cells:field("relief_noise"), cells:field("roughness") },
+    outputs = { smooth },
+  }
+  originator.blend{ inputs = { height, smooth }, outputs = { height } }
+
   -- 2. Уровень моря бисекцией под долю суши. Границы поиска взяты шире любого рельефа: формула
   -- рельефа может измениться, а поиск обязан сойтись всё равно.
   local count = cells:count()
@@ -44,6 +58,9 @@ return function(step)
   local low, high = -12000.0, 12000.0
   local level = 0.0
   local land_cells = 0
+
+  local land_support = cells:field("land_support")
+  local erosion_passes = math.floor(p.coast_erosion_passes)
 
   for _ = 1, math.floor(p.sea_level_iterations) do
     level = 0.5 * (low + high)
@@ -54,6 +71,24 @@ return function(step)
       outputs = { land },
       params = { sea_level = level, bulge = p.bulge },
     }
+
+    -- Прибрежная эрозия ВНУТРИ поиска уровня моря, а не после него. Если смывать крошки потом, доля
+    -- суши уедет вниз вместе со смытым, а доля — это требование автора мира, а не что получится.
+    -- Поддержка считается размытием по графу: доля суши среди клетки и её соседей.
+    for _ = 1, erosion_passes do
+      originator.graph_blur{
+        inputs = { offsets, arcs, land },
+        outputs = { land_support },
+        params = { self_weight = 1.0, neighbour_weight = 1.0 },
+      }
+      originator.run_script{
+        program = step.programs.coast,
+        predicate = true,
+        inputs = { land, land_support },
+        outputs = { land },
+        params = { coast_support = p.coast_support },
+      }
+    end
 
     land_cells = originator.reduce_sum{ inputs = { land } }
     -- Выше уровень — меньше суши, поэтому направление именно такое.

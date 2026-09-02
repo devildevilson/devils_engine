@@ -1,6 +1,7 @@
 #include "devils_engine/originator/pipeline.h"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <optional>
 
@@ -36,6 +37,9 @@ struct step_mirror {
 struct values_mirror {
   std::map<std::string, double> numbers;
   std::map<std::string, std::string> strings;
+  // Диапазоны настройки: имя = [минимум, максимум, шаг]. Тройка, а не три отдельных документа,
+  // потому что границы значения и его шаг — одно утверждение, и разъезжаться им незачем.
+  std::map<std::string, std::vector<double>> ranges;
 };
 
 void report_diagnostics(const tavl::ct_context& ctx, const std::string_view& label) {
@@ -148,6 +152,49 @@ parameters parse_values(const std::string_view& text, const std::string_view& la
     }
     for (auto& [key, value] : mirror.strings) {
       result.set_string(key, std::move(value));
+    }
+    mirror = values_mirror{};
+  }
+
+  report_diagnostics(ctx, label);
+  return result;
+}
+
+double value_range::clamp(const double value) const noexcept {
+  return std::min(std::max(value, minimum), maximum);
+}
+
+double value_range::advance(const double value, const int64_t steps) const noexcept {
+  if (step <= 0.0) {
+    return clamp(value);
+  }
+  // Позиция считается в шагах ОТ МИНИМУМА и округляется: так значение всегда лежит на сетке шага,
+  // и повторные «плюс-минус» не оставляют дробного хвоста.
+  const double position = std::round((value - minimum) / step) + double(steps);
+  return clamp(minimum + position * step);
+}
+
+std::vector<value_range> parse_value_ranges(const std::string_view& text, const std::string_view& label) {
+  tavl::parser p;
+  p.add_default_operator();
+  p.flush(std::string(text));
+  p.finish();
+
+  tavl::ct_context ctx;
+  std::vector<value_range> result;
+
+  values_mirror mirror{};
+  while (tavl::deserialize_next(p, ctx, mirror)) {
+    for (const auto& [key, triple] : mirror.ranges) {
+      if (triple.size() != 3) {
+        utils::error{}("originator: range '{}' in '{}' needs exactly [minimum, maximum, step], got {} values",
+                       key, label, triple.size());
+      }
+      if (triple[1] <= triple[0] || triple[2] <= 0.0) {
+        utils::error{}("originator: range '{}' in '{}' is empty or has a non-positive step: [{}, {}, {}]",
+                       key, label, triple[0], triple[1], triple[2]);
+      }
+      result.push_back(value_range{key, triple[0], triple[1], triple[2]});
     }
     mirror = values_mirror{};
   }

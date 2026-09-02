@@ -80,12 +80,32 @@ struct pipeline_description {
   std::vector<step_description> steps;
 };
 
+// Диапазон настройки одного значения: границы и шаг.
+//
+// Существует ради простых настроек генератора. Хост, который хочет показать значение ползунком, не
+// обязан знать, что это значение означает: границы и шаг объявлены рядом с самим значением, в том же
+// документе. Значение без объявленного диапазона просто не настраивается — и это правильный ответ по
+// умолчанию, потому что не всякое число мира имеет смысл крутить вслепую.
+struct value_range {
+  std::string name;
+  double minimum = 0.0;
+  double maximum = 0.0;
+  double step = 0.0;
+
+  double clamp(const double value) const noexcept;
+  // Значение, сдвинутое на n шагов и прижатое к границам. Шаг применяется от МИНИМУМА, а не от
+  // текущего значения: иначе накопленная дробная часть уводит настройку с сетки шага.
+  double advance(const double value, const int64_t steps) const noexcept;
+};
+
 // Разбор конфига. Оба принимают текст одного документа tavl; список буферов пайплайна не
 // объявляется отдельно — он выводится из шагов и сверяется с объявленными буферами.
 std::vector<buffer_description> parse_buffers(const std::string_view& text, const std::string_view& label);
 std::vector<step_description> parse_steps(const std::string_view& text, const std::string_view& label);
 // Документ общих значений: numbers = { ... }, strings = { ... }.
 parameters parse_values(const std::string_view& text, const std::string_view& label);
+// Диапазоны настройки из того же документа: ranges = { имя = [минимум, максимум, шаг] }.
+std::vector<value_range> parse_value_ranges(const std::string_view& text, const std::string_view& label);
 
 // Именованные размеры, которые host подставляет в буферы.
 class size_table {

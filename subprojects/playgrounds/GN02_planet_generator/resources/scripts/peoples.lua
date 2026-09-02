@@ -172,7 +172,9 @@ return function(step)
   for i = 0, count - 1 do
     local label = math.tointeger(cells:field("culture_seed"):get(i))
     if label ~= 0 then
-      local index = label - 1
+      -- Индекс равен МЕТКЕ (см. соглашение в buffers.tavl): корзина 0 у group_by и accumulate это
+      -- «метки нет», поэтому строка записи и номер области совпадают.
+      local index = label
       culture_origin:set(index, position:get(i, 0), 0)
       culture_origin:set(index, position:get(i, 1), 1)
       culture_origin:set(index, position:get(i, 2), 2)
@@ -188,7 +190,15 @@ return function(step)
 
   -- 6. Расселение культур голосованием. Проходы идут парами по той же причине, что и всюду: gather
   -- читает соседей из входного поля и пишет своё, поэтому поля меняются местами.
-  local ticks = math.floor(p.culture_ticks)
+  --
+  -- Число тиков считается из ДАЛЬНОСТИ в радианах, а не берётся числом: один тик — это один шаг
+  -- графа, поэтому на решётке из 262 тысяч клеток те же 28 тиков уносят культуру вдвое ближе, чем на
+  -- решётке из 65 тысяч. Первый же кадр просмотрщика показал это как пятна культур на пустой планете.
+  local spacing = math.sqrt(4.0 * math.pi / count)
+  local ticks = math.floor(math.min(p.culture_reach / spacing, p.culture_max_ticks))
+  if ticks < 2 then
+    ticks = 2
+  end
   for tick = 1, math.floor(ticks / 2) do
     originator.graph_vote{
       inputs = { offsets, arcs, culture, population, culture_mask },
@@ -220,20 +230,20 @@ return function(step)
     local starts = step.writes.culture_offsets:field("start")
     for label = 1, culture_count do
       local size = starts:get(label + 1) - starts:get(label)
-      culture_cells:set(label - 1, size)
+      culture_cells:set(label, size)
 
       -- Рост становится событием не каждый тик, а когда культура вырастает в разы: журнал должен
       -- отвечать на вопрос «что было важным», а не «что было».
       if size >= known_size[label] * p.history_growth_step then
         known_size[label] = size
-        record(tick * 2, 2, label, 0, math.tointeger(culture_origin_cell:get(label - 1)), size)
+        record(tick * 2, 2, label, 0, math.tointeger(culture_origin_cell:get(label)), size)
       end
 
-      if not met[label] and culture_frontier:get(label - 1) > 0 then
+      if not met[label] and culture_frontier:get(label) > 0 then
         met[label] = true
-        culture_contacts:set(label - 1, 1)
-        record(tick * 2, 3, label, 0, math.tointeger(culture_origin_cell:get(label - 1)),
-               culture_frontier:get(label - 1))
+        culture_contacts:set(label, 1)
+        record(tick * 2, 3, label, 0, math.tointeger(culture_origin_cell:get(label)),
+               culture_frontier:get(label))
       end
     end
   end
@@ -247,7 +257,7 @@ return function(step)
 
   local largest, largest_size = 0, -1
   for label = 1, culture_count do
-    local size = culture_cells:get(label - 1)
+    local size = culture_cells:get(label)
     if size > largest_size then
       largest, largest_size = label, size
     end

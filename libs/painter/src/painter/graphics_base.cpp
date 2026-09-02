@@ -114,7 +114,14 @@ graphics_base::graphics_base(VkInstance instance, VkDevice device, VkPhysicalDev
                                                                                                                                                                         swapchain_image_semaphore(invalid_resource_slot),
                                                                                                                                                                         finish_rendering_semaphore(invalid_resource_slot),
                                                                                                                                                                         computed_current_frame_index(invalid_resource_slot),
-                                                                                                                                                                        swapchain_image_size(std::make_tuple(640, 480)) {}
+                                                                                                                                                                        swapchain_image_size(std::make_tuple(640, 480)),
+                                                                                                                                                                        desirable_present_mode(physical_device_present_mode::values::fifo),
+                                                                                                                                                                        fallback_present_mode(physical_device_present_mode::values::fifo) {}
+
+void graphics_base::set_present_mode(const physical_device_present_mode::values desirable, const physical_device_present_mode::values fallback) noexcept {
+  desirable_present_mode = desirable;
+  fallback_present_mode = fallback;
+}
 
 graphics_base::~graphics_base() noexcept {
   if (device == VK_NULL_HANDLE) {
@@ -1555,7 +1562,8 @@ void graphics_base::recreate_swapchain(const uint32_t width, const uint32_t heig
   const auto formats = pd.getSurfaceFormatsKHR(surface);
   const auto caps = pd.getSurfaceCapabilitiesKHR(surface);
 
-  const auto present_mode = choose_swapchain_present_mode(presents);
+  const auto present_mode = choose_swapchain_present_mode(
+    presents, vk::PresentModeKHR(desirable_present_mode), vk::PresentModeKHR(fallback_present_mode));
   const auto format = choose_swapchain_surface_format(formats);
   const auto extent = choose_swapchain_extent(width, height, caps);
 

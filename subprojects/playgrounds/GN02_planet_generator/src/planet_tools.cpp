@@ -102,6 +102,107 @@ void tool_plate_velocity(const tool_call& call, const size_t begin, const size_t
   }
 }
 
+// Горячие точки: цепь островов, оставленная плитой над мантийным плюмом.
+//
+// Это единственный способ получить океанические острова НЕ количеством, а механизмом. Плюм стоит в
+// мантии неподвижно, плита едет над ним, и каждый кусок коры, прошедший над плюмом, унёс с собой
+// вулкан. Отсюда сами собой берутся все узнаваемые черты архипелага: цепь, а не россыпь; острова
+// вдоль направления движения плиты; самый молодой и высокий на одном конце, потухшие и осевшие на
+// другом; длина цепи тем больше, чем быстрее плита.
+//
+// Геометрия считается в системе полюса Эйлера плиты, потому что там движение — это просто поворот:
+//   theta  угол между точкой и полюсом (широта на малом круге). Клетка и плюм обязаны лежать на
+//          ОДНОМ малом круге, иначе кора над плюмом не проходила: разница theta — промах мимо следа;
+//   phi    угол поворота от плюма к клетке вокруг полюса. Он же ВОЗРАСТ: плита едет в сторону
+//          растущего phi, значит клетка при phi > 0 прошла над плюмом phi / rate назад, а при
+//          phi < 0 ещё только подъезжает — там острова нет и быть не может.
+//
+// Длина следа выводится из скорости плиты и времени жизни плюма (`life`), а не задаётся отдельно:
+// быстрая плита растягивает ту же цепь длиннее и делает острова реже.
+void tool_hotspot_tracks(const tool_call& call, const size_t begin, const size_t end) {
+  const auto positions = call.input(0).read();
+  const auto axes = call.input(1).read();
+  const auto rates = call.input(2).read();
+  const auto plume_positions = call.input(3).read();
+  const auto plume_strength = call.input(4).read();
+  auto target = call.output(0).write();
+
+  const auto plume_count = std::min(size_t(std::max<int64_t>(call.params->integer("count", 0), 0)),
+                                    plume_positions.count());
+  const double life = call.params->number("life", 1.0);
+  const double track_width = call.params->number("track_width", 0.02);
+  const double swell_width = call.params->number("swell_width", 0.08);
+  const double swell_share = call.params->number("swell_share", 0.25);
+
+  if (plume_count == 0 || life <= 0.0 || track_width <= 0.0) {
+    for (size_t i = begin; i < end; ++i) {
+      target.set(i, 0.0);
+    }
+    return;
+  }
+
+  for (size_t i = begin; i < end; ++i) {
+    const vec3 point = normalized(read_vec3(positions, i));
+    const vec3 axis = normalized(read_vec3(axes, i));
+    const double rate = rates.get(i);
+
+    // Составляющая точки поперёк полюса: в ней и лежит поворот. У самого полюса она вырождается, и
+    // это не край случая, а физика — материал у полюса Эйлера не движется вовсе.
+    const vec3 point_ring = point - axis * dot(point, axis);
+    const double point_ring_length = length(point_ring);
+
+    double best = 0.0;
+    for (size_t plume = 0; plume < plume_count; ++plume) {
+      const double strength = plume_strength.get(plume);
+      if (strength <= 0.0) {
+        continue;
+      }
+      const vec3 source = normalized(read_vec3(plume_positions, plume));
+
+      // Промах мимо следа: разница углов от полюса. Считается через дуги, а не через разность
+      // косинусов, иначе у полюса разрешение теряется целиком.
+      const double off_track =
+        std::abs(std::acos(std::clamp(dot(point, axis), -1.0, 1.0)) -
+                 std::acos(std::clamp(dot(source, axis), -1.0, 1.0)));
+
+      // Сам плюм: широкое поднятие вокруг него самого, независимое от следа. Так у цепи появляется
+      // «голова» — активная область, а не одна точка.
+      const double direct = std::acos(std::clamp(dot(point, source), -1.0, 1.0));
+      const double head = swell_share * strength * std::exp(-(direct * direct) / (swell_width * swell_width));
+      best = std::max(best, head);
+
+      if (rate <= 1e-6 || point_ring_length < 1e-6) {
+        continue;
+      }
+
+      const vec3 source_ring = source - axis * dot(source, axis);
+      if (length(source_ring) < 1e-6) {
+        continue;
+      }
+      const vec3 from = normalized(source_ring);
+      const vec3 to = normalized(point_ring);
+      const double turn = std::atan2(dot(cross(from, to), axis), std::clamp(dot(from, to), -1.0, 1.0));
+      if (turn <= 0.0) {
+        continue; // кора ещё не дошла до плюма: следа впереди не бывает
+      }
+
+      // Возраст: сколько прошло с того момента, как эта кора была над плюмом. Затухание КВАДРАТИЧНОЕ,
+      // потому что старый вулкан теряет высоту двумя способами сразу — остывающая литосфера под ним
+      // проседает, а море срезает вершину. Отсюда и вид настоящей цепи: один-два острова, дальше
+      // атоллы, дальше подводные горы.
+      const double age = turn / rate;
+      if (age > life) {
+        continue;
+      }
+      const double fade = 1.0 - age / life;
+      const double across = std::exp(-(off_track * off_track) / (track_width * track_width));
+      best = std::max(best, strength * fade * fade * across);
+    }
+
+    target.set(i, best);
+  }
+}
+
 // Взаимодействие плит на границе: сближение, сдвиг и сторона, которая уходит вниз.
 //
 // Тип границы здесь не объявляется списком, а СЧИТАЕТСЯ из скоростей: относительная скорость двух
@@ -355,6 +456,8 @@ void add_planet_tools(tool_registry& registry) {
                                 .input_count = 1, .output_count = 1, .body = tool_axis_component});
   registry.add(tool_description{.name = "plate_velocity", .shape = aperture::pointwise,
                                 .input_count = 3, .output_count = 1, .body = tool_plate_velocity});
+  registry.add(tool_description{.name = "hotspot_tracks", .shape = aperture::gather,
+                                .input_count = 5, .output_count = 1, .body = tool_hotspot_tracks});
   registry.add(tool_description{.name = "plate_interaction", .shape = aperture::gather,
                                 .input_count = 6, .output_count = 3, .body = tool_plate_interaction});
   registry.add(tool_description{.name = "wind_field", .shape = aperture::pointwise,

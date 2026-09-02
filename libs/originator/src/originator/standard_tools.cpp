@@ -176,6 +176,30 @@ void tool_value_noise(const tool_call& call, const size_t begin, const size_t en
   }
 }
 
+// Афинное преобразование с ограничением: clamp(scale * x + offset).
+//
+// Параметр absolute берёт модуль ДО умножения, и он здесь не ради экономии вызова. Без него не
+// выражается ridged-шум — |n|, сложенный обратно в единицу, — а это стандартный и, кажется,
+// единственный дешёвый способ получить хребты со СКЛАДКОЙ: у обычного шума гребень круглый, у
+// свёрнутого излом там, где значение проходит ноль. Горная гряда без излома читается как вал, а не
+// как гряда, поэтому модуль — часть арифметики, а не частный случай.
+// index: порядковый номер элемента как значение поля.
+//
+// Выглядит бессмысленно, пока не понадобится заливка, которая несёт не признак «здесь граница», а
+// НОМЕР клетки границы. С признаком заливка отвечает только «далеко ли до границы», и всё, что у той
+// границы происходит — скорость сближения, сторона субдукции, — остаётся недоступным: величина лежит
+// в клетке, до которой дошли, а не в той, от которой шли. Номер превращает косвенность в данные, и
+// дальше её читает lookup.
+void tool_index(const tool_call& call, const size_t begin, const size_t end) {
+  auto target = call.output(0).write();
+  const double scale = call.params->number("scale", 1.0);
+  const double offset = call.params->number("offset", 0.0);
+
+  for (size_t i = begin; i < end; ++i) {
+    target.set(i, double(i) * scale + offset);
+  }
+}
+
 void tool_remap(const tool_call& call, const size_t begin, const size_t end) {
   const auto& in = call.input(0);
   const auto& out = call.output(0);
@@ -183,12 +207,14 @@ void tool_remap(const tool_call& call, const size_t begin, const size_t end) {
   const double offset = call.params->number("offset", 0.0);
   const double lower = call.params->number("min", -std::numeric_limits<double>::infinity());
   const double upper = call.params->number("max", std::numeric_limits<double>::infinity());
+  const bool absolute = call.params->integer("absolute", 0) != 0;
 
   const auto source = in.read();
   auto target = out.write();
 
   for (size_t i = begin; i < end; ++i) {
-    const double value = source.get(i) * scale + offset;
+    const double sample = absolute ? std::abs(source.get(i)) : source.get(i);
+    const double value = sample * scale + offset;
     target.set(i, std::clamp(value, lower, upper));
   }
 }
@@ -257,6 +283,32 @@ void tool_blend(const tool_call& call, const size_t begin, const size_t end) {
   for (size_t i = begin; i < end; ++i) {
     const double value = weight_first * first.get(i) + weight_second * second.get(i) + offset;
     target.set(i, std::clamp(value, lower, upper));
+  }
+}
+
+// Побольше и поменьше из двух полей.
+//
+// Нужны там, где два слоя НАКЛАДЫВАЮТСЯ, а не складываются: остров посреди океана поднимается над
+// дном, а не прибавляется к спадающему материковому конусу — со сложением он опускался бы тем ниже,
+// чем дальше от материка, что бессмыслица. Тем же выражается и объединение масок: сумма с обрезкой
+// по единице ведёт себя как максимум только пока слагаемые не перекрываются.
+void tool_maximum(const tool_call& call, const size_t begin, const size_t end) {
+  const auto first = call.input(0).read();
+  const auto second = call.input(1).read();
+  auto target = call.output(0).write();
+
+  for (size_t i = begin; i < end; ++i) {
+    target.set(i, std::max(first.get(i), second.get(i)));
+  }
+}
+
+void tool_minimum(const tool_call& call, const size_t begin, const size_t end) {
+  const auto first = call.input(0).read();
+  const auto second = call.input(1).read();
+  auto target = call.output(0).write();
+
+  for (size_t i = begin; i < end; ++i) {
+    target.set(i, std::min(first.get(i), second.get(i)));
   }
 }
 
@@ -372,11 +424,14 @@ void tool_registry::add_standard_tools() {
   add(tool_description{.name = "position_grid", .shape = aperture::pointwise, .input_count = 0, .output_count = 1,
                        .body = tool_position_grid});
   add(tool_description{.name = "value_noise", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_value_noise});
+  add(tool_description{.name = "index", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_index});
   add(tool_description{.name = "remap", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_remap});
   add(tool_description{.name = "classify", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_classify});
   add(tool_description{.name = "blend", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_blend});
   add(tool_description{.name = "decay", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_decay});
   add(tool_description{.name = "modulate", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_modulate});
+  add(tool_description{.name = "maximum", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_maximum});
+  add(tool_description{.name = "minimum", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_minimum});
   add(tool_description{.name = "box_blur", .shape = aperture::gather, .input_count = 1, .output_count = 1, .body = tool_box_blur});
 
   add(tool_description{.name = "reduce_min", .shape = aperture::reduce, .input_count = 1, .output_count = 0,

@@ -18,7 +18,7 @@
   name = tectonics
   body = scripts/tectonics.lua
   reads = [ cell_offsets, cell_arcs ]
-  writes = [ cells, plates, plate_offsets, plate_order, state ]
+  writes = [ cells, plates, plate_offsets, plate_order, hotspots, state ]
   programs = {
     convergent = scripts/convergent.ds
     divergent = scripts/divergent.ds
@@ -35,11 +35,29 @@
   writes = [ cells, state ]
   programs = {
     land = scripts/land.ds
+    coast = scripts/coast.ds
     ocean = scripts/ocean.ds
   }
 }
 
-// 4. Климат: ветры от вращения, температура и перенос влаги. Осадки не считаются «на месте» — влага
+// 4. Области рельефа: что это за место и усиление этого места. Идёт ПОСЛЕ поверхности, потому что
+// опознание читает глубину от уровня моря, и ПЕРЕД климатом, потому что усиление меняет высоты, а
+// климат считается по высотам.
+{
+  name = landforms
+  body = scripts/landforms.lua
+  reads = [ cell_offsets, cell_arcs ]
+  writes = [ cells, landform_types, landform_offsets, landform_order, state ]
+  programs = {
+    landform_water = scripts/landform_water.ds
+    landform_land = scripts/landform_land.ds
+    land = scripts/land.ds
+    coast = scripts/coast.ds
+    ocean = scripts/ocean.ds
+  }
+}
+
+// 5. Климат: ветры от вращения, температура и перенос влаги. Осадки не считаются «на месте» — влага
 // едет по ветру, поэтому шаг состоит из цикла переносов, а не из одной формулы.
 {
   name = climate
@@ -48,7 +66,7 @@
   writes = [ cells ]
 }
 
-// 5. Сезоны: лето и зима как тёплый и холодный из двух наклонений, отсюда же градиент и зоны.
+// 6. Сезоны: лето и зима как тёплый и холодный из двух наклонений, отсюда же градиент и зоны.
 {
   name = seasons
   body = scripts/seasons.lua
@@ -62,7 +80,7 @@
   }
 }
 
-// 6. Люди: пригодность земли, расселение, культуры и журнал событий.
+// 7. Люди: пригодность земли, расселение, культуры и журнал событий.
 {
   name = peoples
   body = scripts/peoples.lua
@@ -75,7 +93,7 @@
   }
 }
 
-// 7. Области: провинции по суше и морские зоны по воде. Идут ПОСЛЕ людей, потому что сводка области
+// 8. Области: провинции по суше и морские зоны по воде. Идут ПОСЛЕ людей, потому что сводка области
 // включает население и культуру: область — это то, чем владеют, а владеют людьми, а не рельефом.
 {
   name = regions
@@ -90,4 +108,21 @@
     unassigned_water = scripts/unassigned_water.ds
     island_seeded = scripts/island_seeded.ds
   }
+}
+
+// 9. География: иерархия названных мест. Идёт ПОСЛЕ областей, потому что вся иерархия набирается из
+// провинций и морских зон — она их аггрегирует, а не нарезает заново. Отсюда же главное свойство:
+// все границы уровней совпадают с границами провинций по построению, потому что уровень это МНОЖЕСТВО
+// провинций, а не отдельная заливка по клеткам.
+{
+  name = geography
+  body = scripts/geography.lua
+  reads = [ cell_offsets, cell_arcs, province_offsets, province_order, sea_offsets, sea_order ]
+  writes = [
+    cells, provinces, sea_zones, state,
+    province_neighbour_offsets, province_neighbour_arcs,
+    sea_neighbour_offsets, sea_neighbour_arcs,
+    land_masses, continents, historical_regions, oceans,
+    duchies, empires, realms, baronies
+  ]
 }

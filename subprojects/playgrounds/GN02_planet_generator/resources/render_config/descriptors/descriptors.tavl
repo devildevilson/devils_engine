@@ -1,0 +1,12 @@
+{
+  name = planet_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" },
+    { resource = surface_vertices, usage = storage_read, stage = vertex },
+    { resource = cell_visuals, usage = storage_read, stage = vertex }
+  ]
+}
+// Небу нужна только камера, зато во фрагментном шейдере: направление луча считается на пиксель.
+{ name = sky_data, layout = [ { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" } ] }
+{ name = camera_data, layout = [ { resource = camera_buffer, usage = uniform, stage = vertex } ] }
+{ name = ui_textures, texture_count = 16, sampler_pool = [ ui_linear ], texture_stage = fragment }

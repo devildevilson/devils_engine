@@ -76,6 +76,13 @@ parameters read_parameters(const sol::table& args) {
       result.set_number(name, value.as<double>());
     } else if (value.is<std::string>()) {
       result.set_string(name, value.as<std::string>());
+    } else if (value.is<bool>()) {
+      // Флаг инструмента — то же число, только записанное так, как его естественно писать в lua.
+      // Проверка идёт ПОСЛЕДНЕЙ: у числа lua_toboolean тоже истинен, и порядок здесь единственное,
+      // что не даёт единице приехать булевым. Без этой ветки `absolute = true` молча пропадал бы —
+      // параметр не число и не строка, значит его просто нет, и инструмент брал бы значение по
+      // умолчанию, ничего не сообщая.
+      result.set_number(name, value.as<bool>() ? 1.0 : 0.0);
     }
   }
   return result;

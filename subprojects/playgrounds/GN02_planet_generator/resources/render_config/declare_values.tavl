@@ -1,0 +1,10 @@
+{ name = viewport, type = screensize }
+{ name = camera_bytes, type = fixed, value = [256, 0, 0] }
+// Икосфера до восьми подразделений: 20 * 4^8 треугольников по три вершины по 16 байт. Размер
+// объявлен заранее, как и у буферов генератора: просмотрщик тоже обязан назвать свою цену по памяти.
+{ name = surface_vertex_bytes, type = fixed, value = [62914560, 0, 0] }
+// Цвет и высота на клетку, до 1 048 576 клеток.
+{ name = cell_visual_bytes, type = fixed, value = [16777216, 0, 0] }
+{ name = ui_vertices_bytes, type = fixed, value = [524288, 0, 0] }
+{ name = ui_indices_bytes, type = fixed, value = [131072, 0, 0] }
+{ name = ui_commands_bytes, type = fixed, value = [16384, 0, 0] }

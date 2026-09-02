@@ -6,14 +6,19 @@
 -- и разные суммы в сводке.
 --
 -- Обе нарезки — заливка по ПОДГРАФУ: вода для провинции непроходима, суша для морской зоны тоже.
--- Дорогая цена вместо запрета здесь не работает: провинция, залитая через пролив, после отсечения
--- воды осталась бы двумя кусками на разных берегах, и заметно это стало бы только на отрисовке
--- границы.
+-- Дорогая цена вместо запрета не работает: провинция, залитая через пролив, после отсечения воды
+-- осталась бы двумя кусками на разных берегах, и заметно это стало бы только на отрисовке границы.
 --
 -- Отсюда же добор затравок. Раз вода непроходима, остров, на который не попала ни одна затравка,
 -- остаётся без провинции вовсе — это нашла проверка «каждая клетка суши лежит в провинции».
--- Правильный ответ не «залить через море», а «дать острову свою область»: добор ставит затравки в
--- каждый непокрытый кусок, продолжая нумерацию с того места, где кончилась предыдущая волна.
+-- Правильный ответ не «залить через море», а «дать острову свою область».
+--
+-- РАЗМЕР ПРОВИНЦИИ ОГРАНИЧЕН С ДВУХ СТОРОН, и это уступка играбельности, сделанная сознательно.
+-- Сверху ограничение держит вместимость заливки: метка, набравшая предел, дальше не растёт, и её
+-- остаток забирает добор — то есть крупная провинция делится, а не расползается на полматерика.
+-- Снизу работает слияние: у слишком мелкой провинции снимается ЗАТРАВКА, и заливка сама отдаёт её
+-- клетки соседям по стоимости. Остров меньше минимума так не исправить, потому что соседа по суше у
+-- него нет, — и это верный ответ: остров и есть отдельная провинция.
 
 return function(step)
   local cells = step.writes.cells
@@ -38,6 +43,7 @@ return function(step)
   local flood_cost = cells:field("flood_cost")
   local island_label = cells:field("island_label")
   local island_mask = cells:field("island_mask")
+  local frontier = cells:field("frontier")
   local scratch_distance = cells:field("scratch_distance")
 
   local count = cells:count()
@@ -46,35 +52,56 @@ return function(step)
   -- Расстояние между затравками считается ЗДЕСЬ, а не выводится инструментом. Инструмент выводит его
   -- из площади под маской, и для первой волны это верно, а для добора — нет: там маска это несколько
   -- островов, и вывод по их площади дал бы затравку почти в каждой клетке.
-  local land_share = originator.reduce_sum{ inputs = { land } } / count
+  local land_cells = originator.reduce_sum{ inputs = { land } }
+  local land_share = land_cells / count
   local province_distance = 0.92 * math.sqrt(4.0 * math.pi * land_share / p.province_count)
   local sea_distance = 0.92 * math.sqrt(4.0 * math.pi * (1.0 - land_share) / p.sea_zone_count)
 
-  -- Вторая волна ставит затравки НЕ на том же расстоянии, что первая, и это выяснилось измерением:
-  -- при 30 морских зонах шаг первой волны равен 0.5 радиана (3200 км по Земле), и одна принятая
-  -- затравка второй волны гасила все остальные непокрытые клетки в этом радиусе — включая замкнутые
-  -- моря по другую сторону перешейка, до которых заливка не доходит. Гашение идёт по прямой, а
-  -- проходимость — по графу, и совпадать они не обязаны. Поэтому у второй волны шаг соседский: её
-  -- задача не «разложить ровно», а «накрыть каждый оставшийся кусок».
+  -- Добор ставит затравки НЕ на том же расстоянии, что первая волна, и это выяснилось измерением: при
+  -- 30 морских зонах шаг первой волны равен 0.5 радиана (3200 км по Земле), и одна принятая затравка
+  -- добора гасила все остальные непокрытые клетки в этом радиусе — включая замкнутые моря по другую
+  -- сторону перешейка, до которых заливка не доходит. Гашение идёт по прямой, а проходимость — по
+  -- графу, и совпадать они не обязаны. Поэтому у добора шаг соседский: его задача не «разложить
+  -- ровно», а «накрыть каждый оставшийся кусок».
   local patch_distance = spacing * 1.5
 
-  -- Общая часть двух нарезок: заливка от затравок плюс добор непокрытого остатка.
-  local function carve(seed_field, label_field, passable, cost, distance, score, unassigned_program)
+  -- Границы размера провинции В КЛЕТКАХ, посчитанные от СРЕДНЕЙ провинции. Так они не зависят ни от
+  -- разрешения планеты, ни от того, сколько провинций попросили в командной строке.
+  local average_province = math.max(1.0, land_cells / p.province_count)
+  local min_cells = math.max(2, math.floor(average_province * p.province_min_share))
+  local max_cells = math.max(min_cells + 1, math.floor(average_province * p.province_max_share))
+
+  local function place_seeds(seed_field, passable, score, distance)
     originator.poisson_seeds{
       inputs = { position, passable, score },
       outputs = { seed_field },
       params = { min_distance = distance },
     }
-    originator.graph_flood{
-      inputs = { offsets, arcs, seed_field, cost, passable },
-      outputs = { label_field, scratch_distance },
-      params = { unreached = -1 },
-    }
+  end
 
-    -- Добор идёт в цикле, а не одним проходом: гашение по прямой может оставить непокрытым кусок,
-    -- лежащий рядом, но не связанный. Проходов немного — остаток каждый раз резко убывает, — а
-    -- нижняя граница «ни одной непокрытой клетки» проверяется явно.
-    for _ = 1, 8 do
+  -- Заливка плюс добор непокрытого остатка. Цикл, а не один проход: гашение по прямой может оставить
+  -- непокрытым кусок, лежащий рядом но не связанный, а при ограничении сверху добор ещё и подхватывает
+  -- клетки, которые не влезли в набравшую предел метку.
+  --
+  -- Шаг добора УМЕНЬШАЕТСЯ вдвое от прохода к проходу, начиная с обычного расстояния между областями,
+  -- и это исправление после замера. Когда добор сразу шёл с соседским шагом, он вёл себя правильно на
+  -- островах и отвратительно внутри материка: после слияния мелких провинций освободившийся кусок
+  -- оказывался непокрытым целиком, и добор засевал его затравками через полторы клетки — вместо одной
+  -- области получались десятки провинций в одну клетку. Первый проход с обычным шагом отдаёт такой
+  -- кусок одной-двум областям, а соседский шаг остаётся тем, чем и был: последним средством для
+  -- крошечных островов, которые погасила затравка за проливом.
+  local function grow(seed_field, label_field, passable, cost, capacity, score, unassigned_program,
+                      primary_distance)
+    local function flood()
+      originator.graph_flood{
+        inputs = { offsets, arcs, seed_field, cost, passable },
+        outputs = { label_field, scratch_distance },
+        params = { unreached = -1, capacity = capacity },
+      }
+    end
+
+    flood()
+    for pass = 1, 16 do
       originator.run_script{
         program = unassigned_program,
         predicate = true,
@@ -85,11 +112,12 @@ return function(step)
         break
       end
 
+      local distance = math.max(patch_distance, primary_distance * 0.5 ^ (pass - 1))
       local placed = originator.reduce_max{ inputs = { seed_field } }
       originator.poisson_seeds{
         inputs = { position, island_mask, score },
         outputs = { island_label },
-        params = { min_distance = patch_distance },
+        params = { min_distance = distance },
       }
       -- Признак затравки добора и сдвиг её номера в свободную часть пространства метк: волна обязана
       -- продолжать нумерацию, а не начинать заново, иначе два разных острова получили бы одну область.
@@ -110,14 +138,34 @@ return function(step)
         outputs = { seed_field },
       }
 
-      originator.graph_flood{
-        inputs = { offsets, arcs, seed_field, cost, passable },
-        outputs = { label_field, scratch_distance },
-        params = { unreached = -1 },
-      }
+      flood()
     end
 
     return originator.reduce_max{ inputs = { label_field } }
+  end
+
+  local province_starts = step.writes.province_offsets:field("start")
+  local province_order = step.writes.province_order:field("cell")
+  local province_frontier = provinces:field("frontier")
+
+  -- Сводка по областям: раскладка клеток и длина рубежа. Рубеж нужен слиянию (у острова его нет), и он
+  -- же уходит в пакет как данные: у области с длинным рубежом другая цена обороны.
+  local function summarise_provinces()
+    originator.group_by{
+      inputs = { province },
+      outputs = { province_starts, province_order },
+      key_support = "global",
+    }
+    originator.graph_frontier{
+      inputs = { offsets, arcs, province },
+      outputs = { frontier },
+      params = { ignore = 0 },
+    }
+    originator.accumulate{
+      inputs = { province, frontier },
+      outputs = { province_frontier },
+      key_support = "global",
+    }
   end
 
   -- 1. Стоимость роста провинции: горы дороги. Провинции из-за этого ложатся по долинам и вдоль
@@ -130,20 +178,67 @@ return function(step)
 
   -- 2. Провинции. Счёт при выборе затравок — пригодность: провинции получаются мельче там, где живут
   -- люди, и крупнее в пустом краю. Это не украшение, а то, как устроено административное деление.
-  local province_count = carve(province_seed, province, land, flood_cost, province_distance,
-                               habitability, step.programs.unassigned_land)
+  place_seeds(province_seed, land, habitability, province_distance)
+  local province_count = grow(province_seed, province, land, flood_cost, max_cells, habitability,
+                              step.programs.unassigned_land, province_distance)
 
-  -- 3. Морские зоны. Стоимость постоянная: у воды нет рельефа, который стоило бы объезжать.
-  local sea_zone_count = carve(sea_seed, sea_zone, water, one, sea_distance, one,
-                               step.programs.unassigned_water)
+  -- 3. Слияние мелких провинций.
+  local merged = 0
+  for _ = 1, math.floor(p.province_merge_passes) do
+    summarise_provinces()
 
-  -- 4. Раскладка клеток по областям и суммы. Суммы, а не средние: делить будет потребитель, зато
-  -- сложение в scatter воспроизводится при любом числе потоков.
-  originator.group_by{
-    inputs = { province },
-    outputs = { step.writes.province_offsets:field("start"), step.writes.province_order:field("cell") },
-    key_support = "global",
-  }
+    -- Обратного отображения «метка -> клетка затравки» в данных нет, поэтому один проход по клеткам.
+    local seed_of = {}
+    for i = 0, count - 1 do
+      local label = math.tointeger(province_seed:get(i))
+      if label ~= 0 then
+        seed_of[label] = i
+      end
+    end
+
+    local removed = 0
+    for label = 1, province_count do
+      local size = province_starts:get(label + 1) - province_starts:get(label)
+      -- Рубеж больше нуля означает «есть сосед по суше»: только тогда клетки есть кому отдать.
+      if size > 0 and size < min_cells and province_frontier:get(label) > 0 and seed_of[label] then
+        province_seed:set(seed_of[label], 0)
+        removed = removed + 1
+      end
+    end
+
+    if removed == 0 then
+      break
+    end
+    merged = merged + removed
+    province_count = grow(province_seed, province, land, flood_cost, max_cells, habitability,
+                          step.programs.unassigned_land, province_distance)
+  end
+
+  -- Последняя заливка с запасом к пределу. Без запаса одиночные клетки, у которых все соседи набрали
+  -- предел, получают свою затравку от добора — и появляется провинция в одну клетку. Такой артефакт
+  -- хуже, чем провинция на четверть больше предела.
+  local soft_capacity = math.floor(max_cells * p.province_capacity_slack)
+  province_count = grow(province_seed, province, land, flood_cost, soft_capacity, habitability,
+                        step.programs.unassigned_land, province_distance)
+
+  -- 4. Морские зоны. Стоимость постоянная и предела нет: у воды нет рельефа, который стоило бы
+  -- объезжать, а крупная акватория — это то, чего от неё и хотят.
+  place_seeds(sea_seed, water, one, sea_distance)
+  local sea_zone_count = grow(sea_seed, sea_zone, water, one, 0, one, step.programs.unassigned_water,
+                              sea_distance)
+
+  -- 5. Итоговые сводки. Суммы, а не средние: делить будет потребитель, зато сложение в scatter
+  -- воспроизводится при любом числе потоков.
+  --
+  -- Сначала буферы областей ОБНУЛЯЮТСЯ, и это не гигиена, а исправление настоящего бага: метка,
+  -- исчезнувшая при слиянии, оставляла в записи свои старые числа. В отчёте из-за этого висели
+  -- «провинции в одну клетку», которых на карте нет, а в пакет уходила запись области, которой не
+  -- существует. Ни одна проверка связности такого не ловит: буфер-то валиден.
+  provinces:clear()
+  sea_zones:clear()
+
+  summarise_provinces()
+
   local province_sums = {
     { "height", provinces:field("height_sum") },
     { "temperature", provinces:field("temperature_sum") },
@@ -175,9 +270,9 @@ return function(step)
     key_support = "global",
   }
 
-  -- 5. Что про область знает только скрипт: её затравка, центр и культура. Обход идёт по всем
-  -- клеткам ОДИН раз, и это честная цена: узнать, в какой клетке стоит затравка области, больше
-  -- ниоткуда нельзя — обратного отображения «метка -> клетка» в данных нет.
+  -- 6. Что про область знает только скрипт: её затравка, центр и культура. Обход идёт по всем клеткам
+  -- ОДИН раз, и это честная цена: узнать, в какой клетке стоит затравка области, больше ниоткуда
+  -- нельзя — обратного отображения «метка -> клетка» в данных нет.
   local province_center = provinces:field("center")
   local province_seed_cell = provinces:field("seed_cell")
   local province_cells = provinces:field("cells")
@@ -186,14 +281,14 @@ return function(step)
   local sea_seed_cell = sea_zones:field("seed_cell")
   local sea_cells = sea_zones:field("cells")
 
-  local province_starts = step.writes.province_offsets:field("start")
   local sea_starts = step.writes.sea_offsets:field("start")
   local culture = cells:field("culture")
 
   for i = 0, count - 1 do
     local label = math.tointeger(province_seed:get(i))
     if label ~= 0 then
-      local index = label - 1
+      -- Индекс равен МЕТКЕ (соглашение в buffers.tavl): корзина 0 это «метки нет».
+      local index = label
       province_center:set(index, position:get(i, 0), 0)
       province_center:set(index, position:get(i, 1), 1)
       province_center:set(index, position:get(i, 2), 2)
@@ -204,7 +299,7 @@ return function(step)
 
     local zone = math.tointeger(sea_seed:get(i))
     if zone ~= 0 then
-      local index = zone - 1
+      local index = zone
       sea_center:set(index, position:get(i, 0), 0)
       sea_center:set(index, position:get(i, 1), 1)
       sea_center:set(index, position:get(i, 2), 2)
@@ -215,4 +310,8 @@ return function(step)
 
   state:field("province_count"):set(0, province_count)
   state:field("sea_zone_count"):set(0, sea_zone_count)
+  state:field("province_merged"):set(0, merged)
+  state:field("province_min_cells"):set(0, min_cells)
+  -- В сводку уходит МЯГКИЙ предел: это тот, который держится по факту, а строгий остаётся целью.
+  state:field("province_max_cells"):set(0, soft_capacity)
 end

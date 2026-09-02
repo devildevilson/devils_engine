@@ -1,0 +1,26 @@
+{
+  name = gn02_planet
+  startup = true
+  passes = [
+    {
+      name = gn02_scene
+      render_target = scene_target
+      subpasses = [
+        { scene_color = (undefined, clear), scene_depth = (undefined, clear) },
+        { scene_color = (color_attachment, store), scene_depth = (depth_attachment, store) },
+        { scene_color = (transfer_src, store), scene_depth = (depth_attachment, store) }
+      ]
+      steps = [ draw_sky, draw_planet, draw_overlay ]
+    },
+    {
+      name = gn02_present
+      wait_for = [ swapchain_image ]
+      subpasses = [
+        { scene_color = (transfer_src, store), swapchain_image = (transfer_dst, store) },
+        { scene_color = (color_attachment, store), swapchain_image = (present, store) }
+      ]
+      steps = [ present_scene ]
+    }
+  ]
+  present_source = swapchain_image
+}

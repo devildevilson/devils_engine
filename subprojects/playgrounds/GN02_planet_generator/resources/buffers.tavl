@@ -23,8 +23,25 @@
     (lat_sin, v1)
     (one, v1)
     (relief_noise, v1)
+    (relief_octave, v1)
+    (roughness, v1)
+    (base_height, v1)
+    (shelf_ramp, v1)
+    (swell, v1)
+    (ocean_floor, v1)
+    (belt_convergence, v1)
+    (belt_subduction, v1)
+    (belt, v1)
+    (hotspot, v1)
+    (arc_band, v1)
+    (arc_platform, v1)
+    (arc_segment, v1)
     (plate_rate, v1)
     (crust, v1)
+    (crust_work, v1)
+    (island_crust, v1)
+    (continent_distance, v1)
+    (island_distance, v1)
     (convergence, v1)
     (shear, v1)
     (subduction, v1)
@@ -41,6 +58,11 @@
     (decay_b, v1)
     (height, v1)
     (height_smooth, v1)
+    (land_support, v1)
+    (height_relative, v1)
+    (relief_local, v1)
+    (landform_gain, v1)
+    (landform_offset, v1)
     (ocean_distance, v1)
     (temperature, v1)
     (season_a, v1)
@@ -66,13 +88,28 @@
 
     // Метки. Ноль означает «нет метки» везде, поэтому метки считаются с единицы.
     (scratch_label, ui1)
+    (boundary_seed, ui1)
     (island_label, ui1)
     (province_seed, ui1)
     (province, ui1)
     (sea_seed, ui1)
     (sea_zone, ui1)
+    // Уровни географической иерархии на клетке. Клетка получает их НЕ заливкой, а выборкой по номеру
+    // своей провинции (или морской зоны): так границы уровней совпадают с границами провинций по
+    // построению, а не по счастливому совпадению.
+    (land_mass, ui1)
+    (continent, ui1)
+    (historical_region, ui1)
+    (duchy, ui1)
+    (empire, ui1)
+    (realm, ui1)
+    (ocean, ui1)
     (plate_seed, us1)
     (plate, us1)
+    (group_seed, us1)
+    (continent_seed, us1)
+    (island_seed, us1)
+    (hotspot_seed, us1)
     (culture_seed, us1)
     (culture, us1)
     (culture_next, us1)
@@ -83,6 +120,9 @@
     (culture_mask, ub1)
     (island_mask, ub1)
     (climate, ub1)
+    (landform, ub1)
+    (landform_water, ub1)
+    (landform_land, ub1)
     (frontier, ub1)
   ]
   layout = soa
@@ -104,6 +144,55 @@
   size = arc_capacity
 }
 
+// Мантийные плюмы. Стоят в мантии неподвижно, плита едет над ними, и каждый кусок коры, прошедший над
+// плюмом, унёс с собой вулкан: отсюда берутся океанические острова — цепью, а не россыпью.
+{
+  name = hotspots
+  format = [
+    (position, v3)
+    (strength, v1)
+    (seed_cell, ui1)
+  ]
+  layout = aos
+  size = hotspot_capacity
+}
+
+// Виды областей рельефа. Таблица маленькая и постоянная, но она БУФЕР, а не константы в скрипте:
+// усиление читает её выборкой по индексу (`lookup`), то есть тем же механизмом, каким клетка узнаёт
+// свойства своей плиты или своей провинции. Иначе пришлось бы городить лестницу правил на каждое
+// число, а их два десятка.
+{
+  name = landform_types
+  format = [
+    (gain, v1)
+    (offset, v1)
+    (cells, ui1)
+  ]
+  layout = aos
+  size = landform_capacity
+}
+
+{
+  name = landform_offsets
+  format = [ (start, ui1) ]
+  layout = soa
+  size = landform_capacity_plus_one
+}
+{
+  name = landform_order
+  format = [ (cell, ui1) ]
+  layout = soa
+  size = cell_count
+}
+
+// ЗАПИСИ ОБЛАСТЕЙ ИНДЕКСИРУЮТСЯ МЕТКОЙ, А НЕ МЕТКОЙ МИНУС ОДИН, и поэтому их на одну больше, чем
+// областей. Соглашение задано не вкусом, а инструментами: group_by и accumulate раскладывают по
+// корзине, равной СЫРОМУ значению ключа, то есть корзина 0 — это «метки нет» (вода для провинции,
+// незанятая клетка для культуры). Пока скрипт писал центр и размер по метке минус один, а суммы
+// приходили по метке, запись склеивала две РАЗНЫХ области: измерено provinces[0].height_sum = -3.9e7,
+// то есть суммарная глубина всей воды, при provinces[0].cells = 19 от первой провинции. Один из
+// эффектов был живым, а не только на бумаге: слияние мелких провинций читало frontier соседа.
+//
 // Тектонические плиты. Плита описана полюсом Эйлера и угловой скоростью, а не вектором сдвига: на
 // замкнутой поверхности «едет в сторону» не имеет смысла, а «поворачивается вокруг оси» имеет.
 {
@@ -116,7 +205,7 @@
     (cells, ui1)
   ]
   layout = aos
-  size = plate_capacity
+  size = plate_capacity_plus_one
 }
 {
   name = plate_offsets
@@ -144,10 +233,37 @@
     (habitability_sum, v1)
     (seed_cell, ui1)
     (cells, ui1)
+    // Длина рубежа в клетках. Считается тем же инструментом, что и границы культур, и нужна не для
+    // отладки: у области с длинной границей другая цена обороны и другая проходимость.
+    (frontier, ui1)
+    // Место провинции в географической иерархии. Живёт на ПРОВИНЦИИ, а не на клетке, потому что
+    // провинция и есть неделимая единица географии: резать её на части ради разных мест запрещено.
+    (land_mass, ui1)
+    (continent, ui1)
+    (historical_region, ui1)
+    // ПОЛИТИЧЕСКАЯ ИЕРАРХИЯ ДЕ-ЮРЕ. Провинция здесь — графство: то, что держит один человек. Титул
+    // королевства НЕ отдельное разбиение, а та же историческая область: именно это и означает «из
+    // географии вытекает политика» — де-юре королевство и есть исторический край, а не независимо
+    // нарезанная область поверх него.
+    (duchy, ui1)
+    (empire, ui1)
+    // ДЕ-ФАКТО государство: кто этой землёй ВЛАДЕЕТ, в отличие от того, кому она принадлежит по
+    // титулу. Растится другим процессом — голосованием по населению, а не заливкой по площади, —
+    // потому что и в жизни это другой процесс: границы держав рисует сила, а не право.
+    (realm, ui1)
+    (realm_next, ui1)
+    (baronies, ui1)
+    (name_seed, ui1)
+    // Рабочие поля для роста уровней иерархии по графу провинций: затравка, метка, расстояние
+    // заливки и маска «эта провинция участвует в текущем разбиении».
+    (region_distance, v1)
+    (region_seed, ui1)
+    (region_label, ui1)
+    (region_mask, ub1)
     (culture, us1)
   ]
   layout = aos
-  size = province_capacity
+  size = province_capacity_plus_one
 }
 {
   name = province_offsets
@@ -172,9 +288,15 @@
     (temperature_sum, v1)
     (seed_cell, ui1)
     (cells, ui1)
+    (region_distance, v1)
+    (ocean, ui1)
+    (water_body, ui1)
+    (region_seed, ui1)
+    (region_label, ui1)
+    (region_mask, ub1)
   ]
   layout = aos
-  size = sea_capacity
+  size = sea_capacity_plus_one
 }
 {
   name = sea_offsets
@@ -187,6 +309,167 @@
   format = [ (cell, ui1) ]
   layout = soa
   size = cell_count
+}
+
+// Соседство ПРОВИНЦИЙ и соседство МОРСКИХ ЗОН в CSR. Собираются из клеточного CSR инструментом
+// label_adjacency и существуют ровно для одного: уровни географической иерархии растятся по графу
+// провинций, а не по клеткам. Если растить по клеткам, граница исторической области ляжет посреди
+// провинции и разрежет её на части — а по условию все границы обязаны совпадать с границами
+// провинций.
+//
+// Ёмкость дуг: у провинции в среднем шесть соседей, симметричный граф даёт вдвое; запас взят с
+// головой, а нехватка падает громко с нужным числом в сообщении.
+{
+  name = province_neighbour_offsets
+  format = [ (start, ui1) ]
+  layout = soa
+  size = province_capacity_plus_one
+}
+{
+  name = province_neighbour_arcs
+  format = [ (province, ui1) ]
+  layout = soa
+  size = province_arc_capacity
+}
+{
+  name = sea_neighbour_offsets
+  format = [ (start, ui1) ]
+  layout = soa
+  size = sea_capacity_plus_one
+}
+{
+  name = sea_neighbour_arcs
+  format = [ (zone, ui1) ]
+  layout = soa
+  size = sea_arc_capacity
+}
+
+// Уровни географической иерархии. Четыре буфера одинаковой формы, а не один с полем «уровень»:
+// уровни различаются не значением, а тем, ЧЕМ они набраны — массив набран провинциями через
+// связность, материк и историческая область набраны провинциями через рост по графу, океан набран
+// морскими зонами. Разные родители — разные записи.
+//
+// У каждой записи есть родитель, центр, размер и ЗАТРАВКА ИМЕНИ. Имя лежит затравкой, а не текстом,
+// потому что буфер числовой: синтез названия из затравки и наименующей культуры делает потребитель,
+// и делает его детерминированно, поэтому в пакете название есть — просто в свёрнутом виде.
+{
+  name = land_masses
+  format = [
+    (center, v3)
+    (cells, ui1)
+    (provinces, ui1)
+    (seed_province, ui1)
+    (name_seed, ui1)
+    (culture, us1)
+  ]
+  layout = aos
+  size = land_mass_capacity
+}
+{
+  name = continents
+  format = [
+    (center, v3)
+    (cells, ui1)
+    (provinces, ui1)
+    (seed_province, ui1)
+    (name_seed, ui1)
+    (land_mass, ui1)
+    (culture, us1)
+  ]
+  layout = aos
+  size = continent_capacity
+}
+{
+  name = historical_regions
+  format = [
+    (center, v3)
+    (cells, ui1)
+    (provinces, ui1)
+    (seed_province, ui1)
+    (name_seed, ui1)
+    (continent, ui1)
+    (culture, us1)
+  ]
+  layout = aos
+  size = historical_capacity
+}
+{
+  name = oceans
+  format = [
+    (center, v3)
+    (cells, ui1)
+    (zones, ui1)
+    (seed_zone, ui1)
+    (name_seed, ui1)
+    (culture, us1)
+  ]
+  layout = aos
+  size = ocean_capacity
+}
+
+// Титулы де-юре и державы де-факто. Форма записи та же, что у географических уровней, и это не
+// экономия: политический уровень — это ТО ЖЕ САМОЕ множество провинций, только другого масштаба, и
+// заводить для него другую форму значило бы утверждать, что он устроен иначе.
+{
+  name = duchies
+  format = [
+    (center, v3)
+    (cells, ui1)
+    (provinces, ui1)
+    (seed_province, ui1)
+    (name_seed, ui1)
+    (historical_region, ui1)
+    (culture, us1)
+  ]
+  layout = aos
+  size = duchy_capacity
+}
+{
+  name = empires
+  format = [
+    (center, v3)
+    (cells, ui1)
+    (provinces, ui1)
+    (seed_province, ui1)
+    (name_seed, ui1)
+    (continent, ui1)
+    (culture, us1)
+  ]
+  layout = aos
+  size = empire_capacity
+}
+{
+  name = realms
+  format = [
+    (center, v3)
+    (population, v1)
+    (cells, ui1)
+    (provinces, ui1)
+    (seed_province, ui1)
+    (name_seed, ui1)
+    // Сколько провинций державы лежат в её собственной культуре. Число в записи, потому что по нему
+    // видно, держава это народ или империя из чужих земель — а это разные игры.
+    (native_provinces, ui1)
+    (culture, us1)
+  ]
+  layout = aos
+  size = realm_capacity
+}
+
+// Баронства. В отличие от всего остального это НЕ область, а точка: баронство — это владение в
+// клетке, а не кусок карты. Поэтому у записи есть клетка и нет ни центра, ни размера.
+{
+  name = baronies
+  format = [
+    (cell, ui1)
+    (province, ui1)
+    (name_seed, ui1)
+    // 0 замок, 1 город, 2 храм. Вид не случаен: замок стоит там, где выше пригодность, город на
+    // берегу, храм — один на графство.
+    (kind, ub1)
+  ]
+  layout = aos
+  size = barony_capacity
 }
 
 // Культуры и их сводки.
@@ -203,7 +486,7 @@
     (contacts, us1)
   ]
   layout = aos
-  size = culture_capacity
+  size = culture_capacity_plus_one
 }
 {
   name = culture_offsets
@@ -244,8 +527,27 @@
     (population, v1)
     (land_cells, ui1)
     (event_count, ui1)
+    // Границы размера провинции и сколько мелких пришлось слить. В сводке, а не только в конфиге,
+    // потому что это результат: по нему видно, справилось ли усреднение.
+    (province_min_cells, ui1)
+    (province_max_cells, ui1)
+    (province_merged, ui1)
     (province_count, ui1)
     (sea_zone_count, ui1)
+    (land_mass_count, ui1)
+    (water_body_count, ui1)
+    (lake_count, ui1)
+    (duchy_count, ui1)
+    (empire_count, ui1)
+    (realm_count, ui1)
+    (barony_count, ui1)
+    // Сколько провинций мелких массивов прикреплено к чужому материку. Число в сводке, потому что
+    // прикрепление — это уступка географии: остров получает материк, с которым не связан по суше.
+    (attached_provinces, ui1)
+    (continent_count, ui1)
+    (historical_count, ui1)
+    (ocean_count, ui1)
+    (landform_count, us1)
     (plate_count, us1)
     (culture_count, us1)
   ]

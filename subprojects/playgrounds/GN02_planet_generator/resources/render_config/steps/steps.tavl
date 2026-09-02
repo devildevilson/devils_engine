@@ -1,0 +1,26 @@
+{
+  name = draw_sky
+  material = sky_material
+  geometry = sky_geometry
+  sets = [ sky_data ]
+  command = "draw constant sky_draw"
+}
+{
+  name = draw_planet
+  material = planet_material
+  geometry = planet_geometry
+  sets = [ planet_data ]
+  command = "draw constant planet_draw"
+}
+{
+  name = draw_overlay
+  material = ui_material
+  geometry = ui_geometry
+  command = "draw_ui ui_vertices ui_indices ui_commands"
+  sets = [ camera_data, ui_textures ]
+  push_constants = [ ui_push ]
+  blending = {
+    scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
+  }
+}
+{ name = present_scene, command = "blit scene_color swapchain_image" }

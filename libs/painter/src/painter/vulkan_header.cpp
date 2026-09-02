@@ -115,10 +115,15 @@ std::vector<vk::LayerProperties> required_validation_layers(const std::vector<co
   return finalLayers;
 }
 
-vk::PresentModeKHR choose_swapchain_present_mode(const std::vector<vk::PresentModeKHR>& modes) {
-  if (check_swapchain_present_mode(modes, vk::PresentModeKHR::eMailbox)) {
-    return vk::PresentModeKHR::eMailbox;
+vk::PresentModeKHR choose_swapchain_present_mode(
+  const std::vector<vk::PresentModeKHR>& modes, const vk::PresentModeKHR desirable, const vk::PresentModeKHR fallback) {
+  if (check_swapchain_present_mode(modes, desirable)) {
+    return desirable;
   }
+  if (check_swapchain_present_mode(modes, fallback)) {
+    return fallback;
+  }
+  // Fifo обязателен по спецификации, поэтому последний вариант всегда есть.
   return vk::PresentModeKHR::eFifo;
 }
 

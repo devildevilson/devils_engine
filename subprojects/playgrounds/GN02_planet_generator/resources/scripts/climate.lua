@@ -122,7 +122,7 @@ return function(step)
   local land_cells = originator.reduce_sum{ inputs = { land } }
   local mean_rain = originator.reduce_sum{ inputs = { moisture_next } } / math.max(land_cells, 1.0)
   if mean_rain <= 0.0 then
-    error("climate: перенос влаги не дал над сушей ни одного дождя, проверьте ветер и испарение")
+    error("climate: moisture transport produced no rain over land at all; check wind and evaporation")
   end
 
   originator.remap{

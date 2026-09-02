@@ -8,7 +8,10 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <numbers>
+#include <set>
+#include <glm/geometric.hpp>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -24,8 +27,11 @@
 #include "devils_engine/thread/atomic_pool.h"
 #include "devils_engine/utils/kd_tree.h"
 
+#include "names.h"
 #include "package.h"
 #include "planet_tools.h"
+#include "viewer.h"
+#include "visual.h"
 
 // GN02 — генератор планеты. Вторая площадка кампании генератора и первый её ПОТРЕБИТЕЛЬ: GN01
 // отвечала на вопрос «как устроен генератор», GN02 отвечает на вопрос «что из этого получается мир».
@@ -45,11 +51,28 @@ namespace fs = std::filesystem;
 using namespace devils_engine;
 
 struct options {
-  size_t cells = 65536;
+  // Разрешение поверхности по умолчанию. 262144 клетки — это 44 км на клетку, и это НИЖНЯЯ граница
+  // для мира, а не выбор ради красоты: острова здесь физического происхождения, и постройка горячей
+  // точки поперёк в две сотни километров должна занимать хотя бы несколько клеток. На 65536 (88 км)
+  // она занимает две, на 16384 (176 км) — не существует вовсе. Миллион клеток тоже работает: 19 с и
+  // 370 MB, что для одноразового генератора приемлемо.
+  size_t cells = 262144;
   size_t plates = 24;
-  size_t provinces = 900;
-  size_t sea_zones = 90;
-  size_t cultures = 48;
+  // Провинций больше, чем клеток на них уходит: число провинций — решение ИГРЫ, а не решётки, и от
+  // разрешения зависеть не должно. При 262144 клетках и 40% суши на провинцию приходится около
+  // тридцати клеток, то есть форму области видно.
+  size_t provinces = 3200;
+  // Морских областей ВДВОЕ МЕНЬШЕ, чем было: акватория — самое крупное названное место после океана,
+  // и при 320 запрошенных выходило 640 фактических, то есть область размером с небольшое море. Имя у
+  // такой области звучит натянуто, а ходить через неё — одно движение. 180 запрошенных дают около
+  // 380 фактических: превышение здесь штатное, каждый замкнутый водоём получает свою область добором.
+  size_t sea_zones = 180;
+  size_t cultures = 64;
+  // Два порога географии. Живут в options, а не читаются из пайплайна, потому что у СОБРАННОГО
+  // пайплайна значений конфига уже не спросить: они разошлись по параметрам шагов. Оба нужны только
+  // синтезу названий — выбрать «остров» или «море» вместо безымянного массива и океана.
+  size_t continent_min_provinces = 40;
+  size_t ocean_zones = 36;
   size_t threads = 0; // 0 => по числу ядер
   uint64_t seed = 20260901;
   fs::path dump;
@@ -58,6 +81,14 @@ struct options {
   bool report = true;
   bool map = false;
   bool quiet = false;
+
+  // Просмотрщик. Площадка остаётся headless по сути: окно — это ещё один способ задать вопрос тем же
+  // данным, а не второй режим работы генератора.
+  bool view = false;
+  gn02::viewer_options viewer{};
+  // Значения, заданные из командной строки поверх конфига. Тот же механизм, что крутит настройки в
+  // окне: правка числа мира не должна требовать правки файла.
+  std::vector<std::pair<std::string, double>> overrides;
 };
 
 std::string read_file(const fs::path& path) {
@@ -89,6 +120,27 @@ options parse_options(const int argc, const char** argv) {
       result.report = false;
     } else if (argument == "--map") {
       result.map = true;
+    } else if (argument == "--view") {
+      result.view = true;
+    } else if (argument == "--validation") {
+      result.viewer.validation = true;
+    } else if (argument == "--uncapped") {
+      result.viewer.uncapped = true;
+    } else if (starts_with(argument, "--width=")) {
+      result.viewer.width = uint32_t(std::stoul(std::string(argument.substr(8))));
+    } else if (starts_with(argument, "--height=")) {
+      result.viewer.height = uint32_t(std::stoul(std::string(argument.substr(9))));
+    } else if (starts_with(argument, "--frames=")) {
+      result.viewer.frames = uint32_t(std::stoul(std::string(argument.substr(9))));
+      result.viewer.fixed_rotation = true;
+    } else if (starts_with(argument, "--mesh=")) {
+      result.viewer.subdivisions = uint32_t(std::stoul(std::string(argument.substr(7))));
+    } else if (starts_with(argument, "--mode=")) {
+      result.viewer.mode = size_t(std::stoul(std::string(argument.substr(7))));
+    } else if (starts_with(argument, "--step=")) {
+      result.viewer.step_limit = size_t(std::stoul(std::string(argument.substr(7))));
+    } else if (starts_with(argument, "--frame-dump=")) {
+      result.viewer.dump_path = std::string(argument.substr(13));
     } else if (starts_with(argument, "--cells=")) {
       result.cells = size_t(std::stoull(std::string(argument.substr(8))));
     } else if (starts_with(argument, "--plates=")) {
@@ -105,22 +157,48 @@ options parse_options(const int argc, const char** argv) {
       result.seed = std::stoull(std::string(argument.substr(7)));
     } else if (starts_with(argument, "--stats=")) {
       result.stats = std::string(argument.substr(8));
+    } else if (starts_with(argument, "--set")) {
+      // Обе формы: `--set name=value` и `--set=name=value`. Первая набирается руками чаще, вторая
+      // удобнее в скриптах, и отказывать одной из них незачем.
+      std::string_view body = argument.substr(5);
+      if (body.empty()) {
+        if (i + 1 >= argc) {
+          utils::error{}("GN02: --set needs name=value");
+        }
+        body = argv[++i];
+      } else if (body.front() == '=') {
+        body = body.substr(1);
+      }
+
+      const auto split = body.find('=');
+      if (split == std::string_view::npos) {
+        utils::error{}("GN02: --set expects name=value, got '{}'", body);
+      }
+      result.overrides.emplace_back(std::string(body.substr(0, split)),
+                                    std::stod(std::string(body.substr(split + 1))));
     } else if (starts_with(argument, "--dump=")) {
       result.dump = fs::path(std::string(argument.substr(7)));
     } else if (argument == "--help" || argument == "-h") {
       std::cout << "GN02 planet generator lab\n"
-                << "  --cells=N       клеток планеты (по умолчанию 65536)\n"
-                << "  --plates=N      тектонических плит (24)\n"
-                << "  --provinces=N   провинций суши (900)\n"
-                << "  --sea-zones=N   морских зон (90)\n"
-                << "  --cultures=N    культур (48)\n"
-                << "  --seed=N        зерно мира\n"
-                << "  --threads=N     рабочих потоков (0 = по числу ядер)\n"
-                << "  --dump=PATH     записать пакет планеты\n"
-                << "  --map           напечатать ASCII-карту климата\n"
-                << "  --stats=A,B     напечатать min/max/среднее полей буфера cells\n"
-                << "  --verify        прогнать контрактные проверки\n"
-                << "  --quiet         без отчёта\n";
+                << "  --cells=N       planet cells (default 65536)\n"
+                << "  --plates=N      tectonic plates (24)\n"
+                << "  --provinces=N   land provinces (900)\n"
+                << "  --sea-zones=N   sea zones (90)\n"
+                << "  --cultures=N    cultures (48)\n"
+                << "  --seed=N        world seed\n"
+                << "  --threads=N     worker threads (0 = one per core)\n"
+                << "  --dump=PATH     write the planet package\n"
+                << "  --map           print the ASCII climate map\n"
+                << "  --stats=A,B     print min/max/mean of cells fields\n"
+                << "  --view          open the planet viewer\n"
+                << "  --step=N        show the world after step N (0 = all)\n"
+                << "  --mode=N        field to display (0 = climate)\n"
+                << "  --mesh=N        icosphere subdivisions (0 = pick from cell count)\n"
+                << "  --uncapped      draw without the 60 FPS limit (for measuring)\n"
+                << "  --width/--height/--frames/--frame-dump/--validation - window and frame dump\n"
+                << "  --verify        run the contract checks\n"
+                << "  --set NAME=VALUE  override a value from values.tavl (repeatable)\n"
+                << "  --quiet         no report\n";
       std::exit(0);
     } else {
       utils::error{}("GN02: unknown argument '{}'", argument);
@@ -138,14 +216,42 @@ originator::size_table make_sizes(const options& opts) {
   // громко с нужным числом в сообщении.
   sizes.set("arc_capacity", opts.cells * 10);
 
+  // Мантийные плюмы: их число объявлено в values.tavl, а не ключом командной строки, потому что это
+  // свойство ПЛАНЕТЫ, а не запрос игры — сколько провинций нарезать, решает игра, сколько горячих
+  // точек в мантии, решает мир. Запас вдвое, как у плит.
+  sizes.set("hotspot_capacity", 128);
+  // Виды областей рельефа: их одиннадцать, но запас берётся с головой — таблица крошечная, а
+  // добавление вида не должно требовать правки C++.
+  sizes.set("landform_capacity", 32);
+  sizes.set("landform_capacity_plus_one", 33);
   sizes.set("plate_capacity", opts.plates * 2);
   sizes.set("plate_capacity_plus_one", opts.plates * 2 + 1);
-  // Пуассоновский выбор затравок даёт немного БОЛЬШЕ цели: расстояние подобрано по площади, а не
-  // по счёту. Поэтому ёмкость под области берётся с запасом, а не равной цели.
-  sizes.set("province_capacity", opts.provinces * 2);
-  sizes.set("province_capacity_plus_one", opts.provinces * 2 + 1);
-  sizes.set("sea_capacity", opts.sea_zones * 3);
-  sizes.set("sea_capacity_plus_one", opts.sea_zones * 3 + 1);
+  // Ёмкость под области берётся с БОЛЬШИМ запасом, и запас этот не перестраховка. Число областей
+  // получается больше запрошенного по трём причинам сразу: пуассоновский выбор считает расстояние по
+  // площади, а не по счёту; каждый остров получает свою область добором; и верхняя граница размера
+  // делит крупные провинции. Измерено: при цели 900 выходит 1235, при цели 220 — больше 440, на чём
+  // старый запас в два раза и сломался (громко, на группировке по ключу — но сломался).
+  sizes.set("province_capacity", opts.provinces * 4 + 1024);
+  sizes.set("province_capacity_plus_one", opts.provinces * 4 + 1025);
+  sizes.set("sea_capacity", opts.sea_zones * 4 + 512);
+  sizes.set("sea_capacity_plus_one", opts.sea_zones * 4 + 513);
+  // Дуги графа соседства ОБЛАСТЕЙ. У провинции в среднем шесть соседей, симметризация даёт вдвое;
+  // запас берётся кратным, а нехватка падает громко с нужным числом в сообщении.
+  sizes.set("province_arc_capacity", (opts.provinces * 4 + 1024) * 16);
+  sizes.set("sea_arc_capacity", (opts.sea_zones * 4 + 512) * 16);
+  // Уровни географической иерархии. Ёмкость с запасом: у каждого уровня число областей выводится из
+  // числа провинций, а добор непокрытых кусков (остров, отрезанный водой) добавляет свои.
+  sizes.set("land_mass_capacity", 1024);
+  sizes.set("continent_capacity", 1024);
+  sizes.set("historical_capacity", opts.provinces + 512);
+  sizes.set("ocean_capacity", 256);
+  // Титулы де-юре и державы де-факто. Ёмкости выведены из числа провинций теми же соотношениями,
+  // какими заданы сами уровни, и умножены с запасом: добор непокрытых кусков добавляет свои области
+  // сверх расчёта, и обрыв по ёмкости обязан быть невозможен, а не маловероятен.
+  sizes.set("duchy_capacity", opts.provinces + 512);
+  sizes.set("empire_capacity", opts.provinces / 4 + 256);
+  sizes.set("realm_capacity", opts.provinces + 512);
+  sizes.set("barony_capacity", opts.provinces * 12 + 1024);
   sizes.set("culture_capacity", opts.cultures * 3);
   sizes.set("culture_capacity_plus_one", opts.cultures * 3 + 1);
   sizes.set("history_capacity", 4096);
@@ -169,6 +275,15 @@ originator::pipeline_description load_description(const options& opts) {
   description.values.set_number("province_count", double(opts.provinces));
   description.values.set_number("sea_zone_count", double(opts.sea_zones));
   description.values.set_number("culture_count", double(opts.cultures));
+
+  // Правки из командной строки идут ПОСЛЕДНИМИ: они перекрывают и конфиг, и подставленные числа,
+  // потому что человек, который их написал, знает больше обоих.
+  for (const auto& [name, value] : opts.overrides) {
+    if (!description.values.has(name)) {
+      utils::error{}("GN02: --set names '{}', but values.tavl has no such value", name);
+    }
+    description.values.set_number(name, value);
+  }
   return description;
 }
 
@@ -228,8 +343,11 @@ struct world {
   std::vector<std::pair<std::string, double>> steps;
 };
 
+// step_limit == 0 означает «все шаги». Ограничение существует ради просмотра по шагам: мир,
+// посчитанный до шага N, — это тот же мир, у которого следующие поля ещё нулевые.
 world generate(const options& opts, const originator::tool_registry& tools,
-               const originator::pipeline_description& description, thread::atomic_pool* pool) {
+               const originator::pipeline_description& description, thread::atomic_pool* pool,
+               const size_t step_limit = 0) {
   originator::script_host host(const_cast<originator::tool_registry&>(tools), pool);
   load_bodies(host, description);
 
@@ -239,8 +357,10 @@ world generate(const options& opts, const originator::tool_registry& tools,
   // Шаги исполняются по одному, чтобы каждый был измерен отдельно. Порядок и результат от этого не
   // меняются: run() делает ровно то же самое, просто без замера.
   const auto invoker = host.invoker();
+  const size_t steps = step_limit == 0 ? result.line->step_count()
+                                       : std::min(step_limit, result.line->step_count());
   const auto start = std::chrono::steady_clock::now();
-  for (size_t i = 0; i < result.line->step_count(); ++i) {
+  for (size_t i = 0; i < steps; ++i) {
     const auto step_start = std::chrono::steady_clock::now();
     result.line->run_step(i, invoker);
     const auto step_stop = std::chrono::steady_clock::now();
@@ -285,28 +405,631 @@ struct climate_names {
 };
 
 // Порядок совпадает с идентификаторами в scripts/climate_zone.ds: там правило, здесь только имена.
+// Имена латиницей: весь вывод программы — и отчёт, и оверлей — читается одним шрифтом и одной
+// раскладкой, а кириллица в атласе шрифта площадок отсутствует вовсе.
 constexpr climate_names climate_table[] = {
-  {"океан", '~'},      {"морской лёд", '*'}, {"ледник", '#'},   {"тундра", '-'},
-  {"тайга", 'T'},      {"лес", 'F'},         {"степь", 's'},    {"пустыня", '.'},
-  {"саванна", 'v'},    {"джунгли", 'J'},     {"высокогорье", '^'},
+  {"ocean", '~'},      {"sea ice", '*'},   {"ice cap", '#'},  {"tundra", '-'},
+  {"taiga", 'T'},      {"forest", 'F'},    {"steppe", 's'},   {"desert", '.'},
+  {"savanna", 'v'},    {"jungle", 'J'},    {"alpine", '^'},
 };
 
 constexpr size_t climate_count = sizeof(climate_table) / sizeof(climate_table[0]);
 
+// Виды областей рельефа. Порядок совпадает с идентификаторами в scripts/landform_water.ds и
+// scripts/landform_land.ds и с порядком имён в теле шага landforms: правило там, имена здесь, числа
+// усиления в values.tavl.
+constexpr const char* landform_names[] = {
+  "abyssal plain", "ocean ridge", "shelf", "archipelago", "trench",
+  "coastal plain", "lowland", "plateau", "hills", "mountains", "volcanic island",
+};
+
+constexpr size_t landform_count = sizeof(landform_names) / sizeof(landform_names[0]);
+
 void print_step_times(const world& value) {
-  std::cout << "  время по шагам:\n";
+  std::cout << "  step timings:\n";
   for (const auto& [name, milliseconds] : value.steps) {
     const double share = value.milliseconds <= 0.0 ? 0.0 : 100.0 * milliseconds / value.milliseconds;
-    std::cout << "    " << std::format("{:<12}", name) << std::format("{:>9.1f}", milliseconds) << " мс  "
+    std::cout << "    " << std::format("{:<12}", name) << std::format("{:>9.1f}", milliseconds) << " ms  "
               << std::format("{:>5.1f}", share) << "%\n";
+  }
+}
+
+// Связные куски суши. Считаются по тому же графу соседства, что и всё остальное, и нужны не для
+// красоты: остров, в который не влезает провинция, для игры не существует, а один сверхматерик на
+// пол-планеты означает, что остальная половина — пустая вода.
+struct land_masses {
+  size_t components = 0;
+  size_t largest = 0;
+  size_t playable = 0; // кусков, вмещающих хотя бы одну провинцию
+  size_t specks = 0;   // кусков меньше трёх клеток
+  // Океанические острова и их ФОРМА. Форма здесь не украшение: жалоба на генератор звучала как
+  // «дуга выходит длинной ровной полосой суши», а полоса и цепь островов при одинаковой площади
+  // различаются ровно двумя числами — сколько отдельных кусков и насколько каждый вытянут.
+  size_t oceanic = 0;        // кусков на океанической коре
+  size_t oceanic_cells = 0;  // их суммарная площадь в клетках
+  size_t strips = 0;         // из них вытянутых сильнее чем вчетверо
+  double median_elongation = 0.0;
+  double median_oceanic_size = 0.0;
+};
+
+// Вытянутость куска: корень из отношения двух первых собственных значений матрицы разброса его
+// клеток. У круглого острова единица, у полосы длиной L и шириной w — примерно L/w. Считается по
+// положениям на сфере, поэтому третье собственное значение (толщина сферического слоя) отбрасывается
+// само собой: оно на порядки меньше двух первых.
+double elongation_of(const std::vector<std::array<double, 3>>& points) {
+  if (points.size() < 4) {
+    return 1.0;
+  }
+  std::array<double, 3> mean{0.0, 0.0, 0.0};
+  for (const auto& p : points) {
+    for (size_t k = 0; k < 3; ++k) {
+      mean[k] += p[k];
+    }
+  }
+  for (size_t k = 0; k < 3; ++k) {
+    mean[k] /= double(points.size());
+  }
+
+  double covariance[3][3] = {};
+  for (const auto& p : points) {
+    const std::array<double, 3> d{p[0] - mean[0], p[1] - mean[1], p[2] - mean[2]};
+    for (size_t i = 0; i < 3; ++i) {
+      for (size_t j = 0; j < 3; ++j) {
+        covariance[i][j] += d[i] * d[j];
+      }
+    }
+  }
+  for (size_t i = 0; i < 3; ++i) {
+    for (size_t j = 0; j < 3; ++j) {
+      covariance[i][j] /= double(points.size());
+    }
+  }
+
+  // Собственные значения симметричной матрицы 3x3 по замкнутой формуле: степенной метод здесь не
+  // нужен, а библиотечная зависимость ради трёх чисел тем более.
+  const double p1 = covariance[0][1] * covariance[0][1] + covariance[0][2] * covariance[0][2] +
+                    covariance[1][2] * covariance[1][2];
+  const double trace = covariance[0][0] + covariance[1][1] + covariance[2][2];
+  if (p1 <= 0.0) {
+    std::array<double, 3> diagonal{covariance[0][0], covariance[1][1], covariance[2][2]};
+    std::sort(diagonal.begin(), diagonal.end(), std::greater<double>());
+    return diagonal[1] <= 0.0 ? 1.0 : std::sqrt(diagonal[0] / diagonal[1]);
+  }
+  const double q = trace / 3.0;
+  const double p2 = (covariance[0][0] - q) * (covariance[0][0] - q) + (covariance[1][1] - q) * (covariance[1][1] - q) +
+                    (covariance[2][2] - q) * (covariance[2][2] - q) + 2.0 * p1;
+  const double p = std::sqrt(p2 / 6.0);
+  double b[3][3];
+  for (size_t i = 0; i < 3; ++i) {
+    for (size_t j = 0; j < 3; ++j) {
+      b[i][j] = (covariance[i][j] - (i == j ? q : 0.0)) / p;
+    }
+  }
+  const double determinant = b[0][0] * (b[1][1] * b[2][2] - b[1][2] * b[2][1]) -
+                             b[0][1] * (b[1][0] * b[2][2] - b[1][2] * b[2][0]) +
+                             b[0][2] * (b[1][0] * b[2][1] - b[1][1] * b[2][0]);
+  const double phi = std::acos(std::clamp(determinant / 2.0, -1.0, 1.0)) / 3.0;
+  const double first = q + 2.0 * p * std::cos(phi);
+  const double third = q + 2.0 * p * std::cos(phi + 2.0 * std::numbers::pi / 3.0);
+  const double second = trace - first - third;
+  std::array<double, 3> values{first, second, third};
+  std::sort(values.begin(), values.end(), std::greater<double>());
+  return values[1] <= 0.0 ? 1.0 : std::sqrt(values[0] / values[1]);
+}
+
+land_masses measure_land_masses(originator::pipeline& line, const size_t count, const size_t province_cells) {
+  const auto land = field_of(line, "cells", "land");
+  const auto offsets = field_of(line, "cell_offsets", "start");
+  const auto arcs = field_of(line, "cell_arcs", "cell");
+  const auto crust = field_of(line, "cells", "crust");
+  const auto positions = field_of(line, "cells", "position");
+
+  std::vector<double> elongations;
+  std::vector<double> oceanic_sizes;
+  std::vector<std::array<double, 3>> points;
+
+  land_masses result;
+  std::vector<uint8_t> seen(count, 0);
+  std::vector<uint32_t> stack;
+  for (size_t start = 0; start < count; ++start) {
+    if (seen[start] != 0 || land.get(start) == 0.0) {
+      continue;
+    }
+    stack.clear();
+    stack.push_back(uint32_t(start));
+    seen[start] = 1;
+    size_t size = 0;
+    double crust_sum = 0.0;
+    points.clear();
+    while (!stack.empty()) {
+      const auto cell = stack.back();
+      stack.pop_back();
+      ++size;
+      crust_sum += crust.get(cell);
+      points.push_back({positions.get(cell, 0), positions.get(cell, 1), positions.get(cell, 2)});
+      const auto first = size_t(offsets.get(cell));
+      const auto last = size_t(offsets.get(size_t(cell) + 1));
+      for (size_t k = first; k < last; ++k) {
+        const auto other = uint32_t(arcs.get(k));
+        if (other < count && seen[other] == 0 && land.get(other) != 0.0) {
+          seen[other] = 1;
+          stack.push_back(other);
+        }
+      }
+    }
+
+    ++result.components;
+    result.largest = std::max(result.largest, size);
+    result.playable += size >= province_cells ? 1 : 0;
+    result.specks += size < 3 ? 1 : 0;
+
+    // Океанический остров — тот, что стоит на океанической коре, а не осколок материка. Порог по
+    // средней континентальности куска: у дуги и горячей точки она близка к нулю, у обломка материка
+    // близка к единице.
+    const double mean_crust = size == 0 ? 1.0 : crust_sum / double(size);
+    if (mean_crust < 0.35 && size >= 4) {
+      ++result.oceanic;
+      result.oceanic_cells += size;
+      oceanic_sizes.push_back(double(size));
+      const double elongation = elongation_of(points);
+      elongations.push_back(elongation);
+      result.strips += elongation > 4.0 ? 1 : 0;
+    }
+  }
+
+  // Медиана, а не среднее: один сверхдлинный хребет сдвинул бы среднее так, что по нему нельзя было
+  // бы судить о типичном острове.
+  const auto median = [](std::vector<double>& values) {
+    if (values.empty()) {
+      return 0.0;
+    }
+    std::sort(values.begin(), values.end());
+    return values[values.size() / 2];
+  };
+  result.median_elongation = median(elongations);
+  result.median_oceanic_size = median(oceanic_sizes);
+  return result;
+}
+
+// География: иерархия названных мест и её проверка на месте.
+//
+// Печатается не «сколько чего», а РАЗМЕР уровня в единицах уровня ниже: смысл исторической области в
+// том, что она объединяет десяток-два провинций, и увидеть это можно только так. Плюс главное
+// свойство иерархии — что родитель у всех членов уровня один, — здесь именно СЧИТАЕТСЯ, а не
+// предполагается: если материк перелез в чужой массив, число в строке «split» станет ненулевым.
+void print_geography(originator::pipeline& line, const double geography_continent_min,
+                     const double geography_ocean_zones) {
+  const auto land_masses = size_t(field_value(line, "state", "land_mass_count", 0));
+  const auto continents = size_t(field_value(line, "state", "continent_count", 0));
+  const auto historical = size_t(field_value(line, "state", "historical_count", 0));
+  const auto oceans = size_t(field_value(line, "state", "ocean_count", 0));
+  const auto province_count = size_t(field_value(line, "state", "province_count", 0));
+  const auto sea_zone_count = size_t(field_value(line, "state", "sea_zone_count", 0));
+
+  const auto province_land_mass = field_of(line, "provinces", "land_mass");
+  const auto province_continent = field_of(line, "provinces", "continent");
+  const auto province_region = field_of(line, "provinces", "historical_region");
+  const auto province_cells = field_of(line, "provinces", "cells");
+
+  // Разрывы иерархии: сколько областей уровня лежат больше чем в одном родителе.
+  const auto count_split = [&](const originator::const_field_accessor& child,
+                               const originator::const_field_accessor& parent, const size_t child_count) {
+    std::vector<size_t> seen(child_count + 1, 0);
+    size_t split = 0;
+    for (size_t node = 1; node <= province_count && node < child.count(); ++node) {
+      const auto index = size_t(child.get(node));
+      if (index == 0 || index > child_count) {
+        continue;
+      }
+      const auto owner = size_t(parent.get(node)) + 1;
+      if (seen[index] == 0) {
+        seen[index] = owner;
+      } else if (seen[index] != owner) {
+        seen[index] = owner;
+        ++split;
+      }
+    }
+    return split;
+  };
+
+  const auto mean_size = [](const size_t total, const size_t parts) {
+    return parts == 0 ? 0.0 : double(total) / double(parts);
+  };
+
+  const auto water_bodies = size_t(field_value(line, "state", "water_body_count", 0));
+  const auto lakes = size_t(field_value(line, "state", "lake_count", 0));
+  const auto attached = size_t(field_value(line, "state", "attached_provinces", 0));
+
+  std::cout << "  geography           " << land_masses << " land masses -> " << continents
+            << " continents -> " << historical << " historical regions -> " << province_count
+            << " provinces\n"
+            << "  ocean hierarchy     " << water_bodies << " water bodies -> " << oceans << " oceans -> "
+            << sea_zone_count << " oceanic regions, of which " << lakes << " bodies are lakes\n"
+            << "  level size          "
+            << std::format("{:.1f}", mean_size(province_count, land_masses)) << " provinces per land mass, "
+            << std::format("{:.1f}", mean_size(province_count, continents)) << " per continent, "
+            << std::format("{:.1f}", mean_size(province_count, historical)) << " per historical region, "
+            << std::format("{:.1f}", mean_size(sea_zone_count, oceans)) << " regions per ocean\n"
+            // Единственный настоящий инвариант иерархии: область лежит в ОДНОМ материке. Материк
+            // при этом лежать в одном массиве НЕ обязан — мелкие острова прикрепляются к ближайшему
+            // материку намеренно, и число прикреплённых провинций стоит рядом, чтобы уступка была
+            // видна, а не спрятана.
+            << "  hierarchy           " << count_split(province_region, province_continent, historical)
+            << " regions split across continents, " << attached
+            << " provinces attached to a continent across water\n";
+
+  // Крупнейшие области каждого уровня: по ним видно, не съел ли уровень свой родитель целиком.
+  const auto largest_of = [&](const originator::const_field_accessor& child, const size_t child_count) {
+    std::vector<size_t> sizes(child_count + 1, 0);
+    for (size_t node = 1; node <= province_count && node < child.count(); ++node) {
+      const auto index = size_t(child.get(node));
+      if (index != 0 && index <= child_count) {
+        sizes[index] += size_t(province_cells.get(node));
+      }
+    }
+    size_t total = 0;
+    size_t largest = 0;
+    for (size_t i = 1; i <= child_count; ++i) {
+      total += sizes[i];
+      largest = std::max(largest, sizes[i]);
+    }
+    return total == 0 ? 0.0 : 100.0 * double(largest) / double(total);
+  };
+
+  // Сам граф соседства областей: без этой строки «уровень не вырос» не отличить от «графа нет».
+  const auto graph_shape = [&](const std::string_view offsets_name, const std::string_view arcs_name,
+                               const size_t node_count) {
+    const auto starts = field_of(line, offsets_name, "start");
+    size_t arcs_total = 0;
+    size_t isolated = 0;
+    for (size_t node = 1; node <= node_count && node + 1 < starts.count(); ++node) {
+      const auto degree = size_t(starts.get(node + 1)) - size_t(starts.get(node));
+      arcs_total += degree;
+      isolated += degree == 0 ? 1 : 0;
+    }
+    return std::make_pair(node_count == 0 ? 0.0 : double(arcs_total) / double(node_count), isolated);
+  };
+  // Тот же граф, посчитанный НЕЗАВИСИМО от инструмента: если числа расходятся, виноват инструмент, а
+  // не данные. Проверка дешёвая — один проход по клеткам, — а ловит она то, что иначе выглядит как
+  // «уровень почему-то не вырос».
+  const auto graph_by_hand = [&](const std::string_view label_name, const size_t node_count) {
+    const auto labels = field_of(line, "cells", label_name);
+    const auto offsets = field_of(line, "cell_offsets", "start");
+    const auto arcs = field_of(line, "cell_arcs", "cell");
+    const auto cells = labels.count();
+
+    std::vector<std::vector<uint32_t>> neighbours(node_count + 1);
+    for (size_t i = 0; i < cells; ++i) {
+      const auto own = size_t(labels.get(i));
+      if (own == 0 || own > node_count) {
+        continue;
+      }
+      const auto first = size_t(offsets.get(i));
+      const auto last = size_t(offsets.get(i + 1));
+      for (size_t k = first; k < last; ++k) {
+        const auto other_cell = size_t(arcs.get(k));
+        if (other_cell >= cells) {
+          continue;
+        }
+        const auto other = size_t(labels.get(other_cell));
+        if (other != 0 && other != own && other <= node_count) {
+          neighbours[own].push_back(uint32_t(other));
+        }
+      }
+    }
+    size_t total = 0;
+    for (auto& list : neighbours) {
+      std::sort(list.begin(), list.end());
+      list.erase(std::unique(list.begin(), list.end()), list.end());
+      total += list.size();
+    }
+    return total;
+  };
+
+  const auto [province_degree, province_isolated] =
+    graph_shape("province_neighbour_offsets", "province", province_count);
+  const auto [sea_degree, sea_isolated] = graph_shape("sea_neighbour_offsets", "zone", sea_zone_count);
+  const auto province_arcs_by_hand = graph_by_hand("province", province_count);
+  const auto sea_arcs_by_hand = graph_by_hand("sea_zone", sea_zone_count);
+  std::cout << "  area graph check    provinces " << size_t(province_degree * double(province_count) + 0.5)
+            << " arcs from the tool, " << province_arcs_by_hand << " by hand; sea zones "
+            << size_t(sea_degree * double(sea_zone_count) + 0.5) << " against " << sea_arcs_by_hand << "\n";
+
+  std::cout << "  area graphs         provinces " << std::format("{:.1f}", province_degree)
+            << " neighbours (" << province_isolated << " isolated), sea zones "
+            << std::format("{:.1f}", sea_degree) << " (" << sea_isolated << " isolated)\n";
+
+  // ТИТУЛЫ ДЕ-ЮРЕ И ДЕРЖАВЫ ДЕ-ФАКТО. Печатаются рядом с географией, потому что первое из неё и
+  // выведено: де-юре королевство — это историческая область, и отдельной строкой оно не считается.
+  // У держав главное число не количество, а РАЗБРОС РАЗМЕРА: если державы вышли одинаковыми, значит
+  // граница нарисована делением площади, а не силой, и голосование по населению не сработало.
+  {
+    const auto duchies = size_t(field_value(line, "state", "duchy_count", 0));
+    const auto empires = size_t(field_value(line, "state", "empire_count", 0));
+    const auto realm_count = size_t(field_value(line, "state", "realm_count", 0));
+    const auto baronies = size_t(field_value(line, "state", "barony_count", 0));
+
+    const auto realm_provinces = field_of(line, "realms", "provinces");
+    const auto realm_native = field_of(line, "realms", "native_provinces");
+    std::vector<double> held;
+    size_t native_total = 0;
+    size_t held_total = 0;
+    for (size_t i = 1; i <= realm_count && i < realm_provinces.count(); ++i) {
+      const auto size = size_t(realm_provinces.get(i));
+      if (size == 0) {
+        continue;
+      }
+      held.push_back(double(size));
+      held_total += size;
+      native_total += size_t(realm_native.get(i));
+    }
+    std::sort(held.begin(), held.end());
+
+    std::cout << "  titles              " << empires << " empires -> " << historical
+              << " kingdoms (the historical regions) -> " << duchies << " duchies -> " << province_count
+              << " counties -> " << baronies << " baronies\n"
+              << "  title size          "
+              << std::format("{:.1f}", mean_size(province_count, empires)) << " counties per empire, "
+              << std::format("{:.1f}", mean_size(province_count, duchies)) << " per duchy, "
+              << std::format("{:.1f}", mean_size(baronies, province_count)) << " baronies per county\n"
+              << "  de facto realms     " << held.size() << " realms, median "
+              << std::format("{:.0f}", held.empty() ? 0.0 : held[held.size() / 2]) << " counties, largest "
+              << std::format("{:.0f}", held.empty() ? 0.0 : held.back()) << ", smallest "
+              << std::format("{:.0f}", held.empty() ? 0.0 : held.front()) << ", "
+              << std::format("{:.0f}", held_total == 0 ? 0.0 : 100.0 * double(native_total) / double(held_total))
+              << "% of held counties are of the realm's own culture\n";
+  }
+
+  // ОБРАЗЕЦ ИЕРАРХИИ НАЗВАНИЯМИ. Числа выше говорят, что иерархия правильной формы; эта выборка
+  // говорит, что она ОСМЫСЛЕННА — а это разные утверждения, и второе числами не проверяется. Берётся
+  // крупнейший массив, его материки и области одного материка: смотреть надо на то, читается ли
+  // «Северная <материк>» как название места.
+  {
+    const auto names = gn02::build_place_names(line, size_t(std::max(1.0, geography_continent_min)),
+                                         size_t(std::max(1.0, geography_ocean_zones)));
+    const auto province_land_mass_field = field_of(line, "provinces", "land_mass");
+    const auto continent_land_mass = field_of(line, "continents", "land_mass");
+    const auto continent_cells = field_of(line, "continents", "cells");
+    const auto region_continent_field = field_of(line, "historical_regions", "continent");
+    const auto region_cells = field_of(line, "historical_regions", "cells");
+    const auto mass_cells = field_of(line, "land_masses", "cells");
+    const auto ocean_cells = field_of(line, "oceans", "cells");
+
+    size_t biggest_mass = 0;
+    double biggest_mass_cells = -1.0;
+    for (size_t i = 1; i <= land_masses && i < mass_cells.count(); ++i) {
+      if (mass_cells.get(i) > biggest_mass_cells) {
+        biggest_mass_cells = mass_cells.get(i);
+        biggest_mass = i;
+      }
+    }
+
+    std::cout << "  sample hierarchy    " << (biggest_mass == 0 ? "-" : names.land_masses[biggest_mass])
+              << " (" << std::format("{:.0f}", std::max(0.0, biggest_mass_cells)) << " cells)\n";
+
+    size_t shown = 0;
+    size_t biggest_continent = 0;
+    double biggest_continent_cells = -1.0;
+    for (size_t i = 1; i <= continents && i < continent_cells.count(); ++i) {
+      if (size_t(continent_land_mass.get(i)) != biggest_mass) {
+        continue;
+      }
+      if (continent_cells.get(i) > biggest_continent_cells) {
+        biggest_continent_cells = continent_cells.get(i);
+        biggest_continent = i;
+      }
+      if (shown < 6) {
+        std::cout << "                        - " << names.continents[i] << " ("
+                  << std::format("{:.0f}", continent_cells.get(i)) << " cells)\n";
+        ++shown;
+      }
+    }
+
+    shown = 0;
+    for (size_t i = 1; i <= historical && i < region_cells.count() && shown < 8; ++i) {
+      if (size_t(region_continent_field.get(i)) != biggest_continent) {
+        continue;
+      }
+      std::cout << "                          . " << names.historical_regions[i] << " ("
+                << std::format("{:.0f}", region_cells.get(i)) << " cells)\n";
+      ++shown;
+    }
+
+    // Титулы того же материка и крупнейшие державы: по этим двум строкам видно, читается ли
+    // политика как политика, а не как раскраска.
+    const auto duchy_region = field_of(line, "duchies", "historical_region");
+    const auto duchy_cells = field_of(line, "duchies", "cells");
+    const auto empire_continent = field_of(line, "empires", "continent");
+    shown = 0;
+    for (size_t i = 1; i < names.empires.size() && shown < 3; ++i) {
+      if (size_t(empire_continent.get(i)) != biggest_continent) {
+        continue;
+      }
+      std::cout << "                        # Empire of " << names.empires[i] << "\n";
+      ++shown;
+    }
+    shown = 0;
+    for (size_t i = 1; i < names.duchies.size() && shown < 4; ++i) {
+      const auto region = size_t(duchy_region.get(i));
+      if (region == 0 || region >= names.historical_regions.size() ||
+          size_t(field_of(line, "historical_regions", "continent").get(region)) != biggest_continent) {
+        continue;
+      }
+      std::cout << "                        # Duchy of " << names.duchies[i] << " in the Kingdom of "
+                << names.historical_regions[region] << " (" << std::format("{:.0f}", duchy_cells.get(i))
+                << " cells)\n";
+      ++shown;
+    }
+
+    const auto realm_size = field_of(line, "realms", "provinces");
+    std::vector<std::pair<size_t, size_t>> ranked;
+    for (size_t i = 1; i < names.realms.size() && i < realm_size.count(); ++i) {
+      ranked.emplace_back(size_t(realm_size.get(i)), i);
+    }
+    std::sort(ranked.begin(), ranked.end(), std::greater<>());
+    for (size_t k = 0; k < ranked.size() && k < 4; ++k) {
+      std::cout << "                        * " << names.realms[ranked[k].second] << " ("
+                << ranked[k].first << " counties)\n";
+    }
+
+    shown = 0;
+    for (size_t i = 1; i <= oceans && i < ocean_cells.count() && shown < 5; ++i) {
+      std::cout << "                        ~ " << names.oceans[i] << " ("
+                << std::format("{:.0f}", ocean_cells.get(i)) << " cells)\n";
+      ++shown;
+    }
+  }
+
+  std::cout << "  largest             "
+            << std::format("{:.1f}", largest_of(province_land_mass, land_masses)) << "% of land in one mass, "
+            << std::format("{:.1f}", largest_of(province_continent, continents)) << "% in one continent, "
+            << std::format("{:.1f}", largest_of(province_region, historical)) << "% in one region\n";
+}
+
+// Гипсография и изломанность: два числа, которыми меряется правдоподобие рельефа.
+//
+// Гипсографическая кривая — доля поверхности по высотным полосам. У планеты она ДВУГОРБАЯ: чаще
+// всего встречаются абиссальная равнина и прибрежная суша, а континентальный склон между ними
+// занимает считанные проценты. Ровный скат в этой таблице виден сразу — полосы склона перестают быть
+// редкими, и это значит, что модель растянула самый редкий рельеф на всю ширину шельфа.
+//
+// Изломанность — средний перепад высоты между соседями. Одно число на всю планету бессмысленно,
+// поэтому оно считается отдельно по суше, по мелководью и по глубокой воде: самая ровная поверхность
+// планеты — абиссальная равнина, самая неровная — горный пояс, и отношение между ними и есть то, что
+// «одинаковая деталь везде» ломает первым делом.
+struct relief_band {
+  const char* name;
+  double lower;
+  double upper;
+};
+
+constexpr relief_band relief_bands[] = {
+  {"above 4000 m", 4000.0, 1e9},   {"2000..4000 m", 2000.0, 4000.0},
+  {"1000..2000 m", 1000.0, 2000.0}, {"250..1000 m", 250.0, 1000.0},
+  {"0..250 m", 0.0, 250.0},         {"shelf 0..-200", -200.0, 0.0},
+  {"slope -200..-2000", -2000.0, -200.0}, {"-2000..-4000", -4000.0, -2000.0},
+  {"-4000..-6000", -6000.0, -4000.0}, {"below -6000", -1e9, -6000.0},
+};
+
+// Типичный перепад высоты между соседями по трём поверхностям. МЕДИАНА, а не среднее, и это не
+// придирка к статистике: жёлоб даёт между соседями три километра на одной дуге, и полтора процента
+// таких дуг сдвигают среднее вдвое. Вопрос же стоит про типичную клетку — «насколько здесь неровно», —
+// а на него отвечает медиана.
+//
+// Дуги, а не клетки: у клетки соседей около семи, и «перепад на клетку» зависел бы от степени
+// вершины, то есть от решётки, а не от рельефа.
+struct relief_steps {
+  double land = 0.0;
+  double shallow = 0.0;
+  double plain = 0.0;
+};
+
+double median_of(std::vector<double>& values) {
+  if (values.empty()) {
+    return 0.0;
+  }
+  const size_t middle = values.size() / 2;
+  std::nth_element(values.begin(), values.begin() + middle, values.end());
+  return values[middle];
+}
+
+relief_steps measure_relief_steps(originator::pipeline& line, const size_t count) {
+  const auto height = field_of(line, "cells", "height");
+  const auto land = field_of(line, "cells", "land");
+  const auto offsets = field_of(line, "cell_offsets", "start");
+  const auto arcs = field_of(line, "cell_arcs", "cell");
+  // Абиссальная равнина опознаётся по ВОЗРАСТУ дна, а не только по глубине: глубина ловит заодно
+  // фланг хребта, а он молодой и потому наклонный.
+  const auto age = field_of(line, "cells", "age");
+  const double sea_level = field_value(line, "state", "sea_level", 0);
+
+  std::vector<double> land_steps;
+  std::vector<double> shallow_steps;
+  std::vector<double> plain_steps;
+
+  for (size_t i = 0; i < count; ++i) {
+    const double relative = height.get(i) - sea_level;
+    const bool is_land = land.get(i) != 0.0;
+
+    const auto first = size_t(offsets.get(i));
+    const auto last = size_t(offsets.get(i + 1));
+    for (size_t k = first; k < last; ++k) {
+      const auto other = size_t(arcs.get(k));
+      if (other <= i || other >= count) {
+        continue; // каждая пара соседей лежит в CSR дважды
+      }
+      const double step = std::abs(height.get(i) - height.get(other));
+      const double other_relative = height.get(other) - sea_level;
+      const bool other_land = land.get(other) != 0.0;
+      if (is_land && other_land) {
+        land_steps.push_back(step);
+      } else if (!is_land && !other_land) {
+        if (age.get(i) > 0.9 && age.get(other) > 0.9 && relative < -3000.0 && other_relative < -3000.0) {
+          plain_steps.push_back(step);
+        } else if (relative > -2000.0 && other_relative > -2000.0) {
+          shallow_steps.push_back(step);
+        }
+      }
+    }
+  }
+
+  return relief_steps{median_of(land_steps), median_of(shallow_steps), median_of(plain_steps)};
+}
+
+void print_relief_profile(originator::pipeline& line, const size_t count) {
+  const auto height = field_of(line, "cells", "height");
+  const auto land = field_of(line, "cells", "land");
+  const double sea_level = field_value(line, "state", "sea_level", 0);
+
+  std::array<size_t, sizeof(relief_bands) / sizeof(relief_bands[0])> bands{};
+  double land_height_sum = 0.0;
+  size_t land_cells = 0;
+
+  for (size_t i = 0; i < count; ++i) {
+    // Высоты меряются ОТ УРОВНЯ МОРЯ: сама отметка ищется бисекцией и от прогона к прогону разная,
+    // поэтому абсолютные метры сравнивать между мирами нельзя, а глубины под водой — можно.
+    const double relative = height.get(i) - sea_level;
+    for (size_t band = 0; band < bands.size(); ++band) {
+      if (relative >= relief_bands[band].lower && relative < relief_bands[band].upper) {
+        bands[band] += 1;
+        break;
+      }
+    }
+    if (land.get(i) != 0.0) {
+      land_height_sum += relative;
+      ++land_cells;
+    }
+  }
+
+  // Уклон, а не перепад между соседями: перепад зависит от шага решётки, и одна и та же планета в
+  // грубом и мелком разрешении давала бы разные числа при одинаковом рельефе. Шаг решётки —
+  // sqrt(4pi/N) радиан, сто километров — 0.0157 радиана.
+  const auto steps = measure_relief_steps(line, count);
+  const double spacing = std::sqrt(4.0 * std::numbers::pi / double(count));
+  const double per_hundred_km = 0.0157 / spacing;
+  std::cout << "  land elevation      mean "
+            << std::format("{:.0f}", land_cells == 0 ? 0.0 : land_height_sum / double(land_cells))
+            << " m above sea level\n"
+            << "  typical slope       land " << std::format("{:.0f}", steps.land * per_hundred_km)
+            << ", shallow water " << std::format("{:.0f}", steps.shallow * per_hundred_km)
+            << ", abyssal plain " << std::format("{:.0f}", steps.plain * per_hundred_km)
+            << " m per 100 km (median)\n"
+            << "  hypsometry (share of the surface, from sea level):\n";
+  for (size_t band = 0; band < bands.size(); ++band) {
+    if (bands[band] == 0) {
+      continue;
+    }
+    std::cout << "    " << std::format("{:<18}", relief_bands[band].name)
+              << std::format("{:>7}", bands[band]) << " ("
+              << std::format("{:.1f}", 100.0 * double(bands[band]) / double(count)) << "%)\n";
   }
 }
 
 void print_report(originator::pipeline& line, const options& opts, const double milliseconds) {
   const size_t count = opts.cells;
 
-  std::cout << "GN02: " << count << " клеток, зерно " << opts.seed << ", " << std::format("{:.1f}", milliseconds)
-            << " мс, память " << std::format("{:.1f}", double(line.total_byte_size()) / (1024.0 * 1024.0)) << " MB\n";
+  std::cout << "GN02: " << count << " cells, seed " << opts.seed << ", " << std::format("{:.1f}", milliseconds)
+            << " ms, memory " << std::format("{:.1f}", double(line.total_byte_size()) / (1024.0 * 1024.0)) << " MB\n";
 
   const auto land = field_of(line, "cells", "land");
   const auto height = field_of(line, "cells", "height");
@@ -357,39 +1080,174 @@ void print_report(originator::pipeline& line, const options& opts, const double 
     land_by_latitude[band] += is_land ? 1 : 0;
   }
 
-  std::cout << "  суша               " << land_cells << " клеток ("
+  // Океан считается ОБЪЁМОМ, а не только долей поверхности, и это разные требования к миру. Доля
+  // поверхности — вопрос игры: жизнь идёт по суше, и океан на карте воспринимается меньше, чем он есть.
+  // Объём — вопрос физики: воды у планеты столько, сколько её есть, и если суши стало больше, океан
+  // обязан стать глубже, а не исчезнуть. Земной ориентир: 1.335e9 км³ при средней глубине 3688 м.
+  const double planet_radius_km = 6371.0;
+  const double cell_area_km2 = 4.0 * std::numbers::pi * planet_radius_km * planet_radius_km / double(count);
+  const double sea_level_value = field_value(line, "state", "sea_level", 0);
+  double water_depth_sum = 0.0;
+  size_t water_cells = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (land.get(i) == 0.0) {
+      water_depth_sum += std::max(0.0, sea_level_value - height.get(i));
+      ++water_cells;
+    }
+  }
+  const double ocean_volume_km3 = water_depth_sum * 0.001 * cell_area_km2;
+  constexpr double earth_ocean_volume_km3 = 1.335e9;
+
+  std::cout << "  land                " << land_cells << " cells ("
             << std::format("{:.1f}", 100.0 * double(land_cells) / double(count)) << "%)\n"
-            << "  рельеф             " << std::format("{:.0f}", deepest) << " .. "
-            << std::format("{:.0f}", highest) << " м\n"
-            << "  средняя температура " << std::format("{:.1f}", temperature_sum / double(count)) << " °C\n"
-            << "  осадки на суше     " << std::format("{:.2f}", land_cells == 0 ? 0.0 : driest) << " .. "
-            << std::format("{:.2f}", land_cells == 0 ? 0.0 : wettest) << ", среднее "
+            << "  relief              " << std::format("{:.0f}", deepest) << " .. "
+            << std::format("{:.0f}", highest) << " m, sea level "
+            << std::format("{:.0f}", field_value(line, "state", "sea_level", 0)) << " m\n"
+            << "  mean temperature    " << std::format("{:.1f}", temperature_sum / double(count)) << " C\n"
+            << "  land precipitation  " << std::format("{:.2f}", land_cells == 0 ? 0.0 : driest) << " .. "
+            << std::format("{:.2f}", land_cells == 0 ? 0.0 : wettest) << ", mean "
             << std::format("{:.2f}", land_cells == 0 ? 0.0 : land_precipitation / double(land_cells))
-            << " (в долях среднего по суше)\n"
-            << "  население          " << std::format("{:.0f}", population_sum) << "\n";
+            << " (shares of the land mean)\n"
+            << "  population          " << std::format("{:.0f}", population_sum) << "\n"
+            << "  ocean               " << std::format("{:.1f}", 100.0 * double(water_cells) / double(count))
+            << "% of the surface, mean depth "
+            << std::format("{:.0f}", water_cells == 0 ? 0.0 : water_depth_sum / double(water_cells))
+            << " m, volume " << std::format("{:.3f}", ocean_volume_km3 / earth_ocean_volume_km3) << " Earth\n";
 
-  std::cout << "  плит               " << size_t(field_value(line, "state", "plate_count", 0)) << "\n"
-            << "  провинций          " << size_t(field_value(line, "state", "province_count", 0)) << "\n"
-            << "  морских зон        " << size_t(field_value(line, "state", "sea_zone_count", 0)) << "\n"
-            << "  культур            " << size_t(field_value(line, "state", "culture_count", 0)) << "\n"
-            << "  событий истории    " << size_t(field_value(line, "state", "event_count", 0)) << "\n";
+  print_relief_profile(line, count);
 
-  std::cout << "  климат:\n";
+  // Покрытие культурами считается от ПРИГОДНОЙ суши, а не от всей: культура не занимает ледник и
+  // пустыню, через них ходят. Без этой доли непонятно, мало культур или мало пригодной земли.
+  const auto culture = field_of(line, "cells", "culture");
+  const auto culture_mask = field_of(line, "cells", "culture_mask");
+  size_t habitable_cells = 0;
+  size_t cultured_cells = 0;
+  for (size_t i = 0; i < count; ++i) {
+    habitable_cells += culture_mask.get(i) != 0.0 ? 1 : 0;
+    cultured_cells += culture.get(i) != 0.0 ? 1 : 0;
+  }
+
+  std::cout << "  habitable land      " << habitable_cells << " cells ("
+            << std::format("{:.1f}", land_cells == 0 ? 0.0 : 100.0 * double(habitable_cells) / double(land_cells))
+            << "% of land), cultures hold "
+            << std::format("{:.1f}", habitable_cells == 0 ? 0.0 : 100.0 * double(cultured_cells) / double(habitable_cells))
+            << "% of it\n";
+
+  const auto province_count = size_t(field_value(line, "state", "province_count", 0));
+  const auto min_cells = size_t(field_value(line, "state", "province_min_cells", 0));
+  const auto max_cells = size_t(field_value(line, "state", "province_max_cells", 0));
+
+  std::cout << "  plates              " << size_t(field_value(line, "state", "plate_count", 0)) << "\n"
+            << "  provinces           " << province_count << "\n"
+            << "  sea zones           " << size_t(field_value(line, "state", "sea_zone_count", 0)) << "\n"
+            << "  cultures            " << size_t(field_value(line, "state", "culture_count", 0)) << "\n"
+            << "  history events      " << size_t(field_value(line, "state", "event_count", 0)) << "\n";
+
+  // География: иерархия названных мест. В отчёте она стоит рядом с числом провинций намеренно —
+  // каждый уровень задан РАЗМЕРОМ в провинциях, поэтому проверять его надо в тех же единицах.
+  print_geography(line, opts.continent_min_provinces, opts.ocean_zones);
+
+  // Куски суши и размеры провинций: две величины, ради которых генерация вообще усредняется. Если
+  // острова мельче провинции, а провинции разбегаются по размеру, играть на карте нельзя, сколько бы
+  // физики в ней ни было.
+  const auto masses = measure_land_masses(line, count, min_cells);
+  std::cout << "  land masses         " << masses.components << " components, largest "
+            << std::format("{:.1f}", land_cells == 0 ? 0.0 : 100.0 * double(masses.largest) / double(land_cells))
+            << "% of land, " << masses.playable << " hold a province, " << masses.specks << " specks\n";
+  std::cout << "  oceanic islands     " << masses.oceanic << " pieces on oceanic crust, "
+            << std::format("{:.1f}", land_cells == 0 ? 0.0 : 100.0 * double(masses.oceanic_cells) / double(land_cells))
+            << "% of land, median " << std::format("{:.0f}", masses.median_oceanic_size) << " cells, elongation "
+            << std::format("{:.1f}", masses.median_elongation) << ", " << masses.strips << " strips over 4x\n";
+
+  const auto province_cells_field = field_of(line, "provinces", "cells");
+  size_t smallest_province = std::numeric_limits<size_t>::max();
+  size_t largest_province = 0;
+  size_t below = 0;
+  size_t above = 0;
+  size_t counted = 0;
+  // Записи областей нумеруются С ЕДИНИЦЫ: строка 0 — это корзина «метки нет» у group_by и
+  // accumulate (для провинций там лежит вся вода). Соглашение объявлено в buffers.tavl.
+  for (size_t i = 1; i <= province_count && i < province_cells_field.count(); ++i) {
+    const auto size = size_t(province_cells_field.get(i));
+    if (size == 0) {
+      continue;
+    }
+    ++counted;
+    smallest_province = std::min(smallest_province, size);
+    largest_province = std::max(largest_province, size);
+    below += size < min_cells ? 1 : 0;
+    above += size > max_cells ? 1 : 0;
+  }
+  if (counted == 0) {
+    smallest_province = 0;
+  }
+
+  std::cout << "  province size       " << smallest_province << " .. " << largest_province << " cells (bounds "
+            << min_cells << " .. " << max_cells << "), below " << below << ", above " << above << ", merged "
+            << size_t(field_value(line, "state", "province_merged", 0)) << "\n";
+
+  // Области рельефа: ради них существует отдельный шаг, и без этой таблицы «области есть» остаётся
+  // утверждением, а не измерением. Доля считается от поверхности, а не от суши: половина видов
+  // подводные.
+  const auto landform = field_of(line, "cells", "landform");
+  std::array<size_t, landform_count> landforms{};
+  for (size_t i = 0; i < count; ++i) {
+    const auto kind = size_t(landform.get(i));
+    if (kind < landform_count) {
+      landforms[kind] += 1;
+    }
+  }
+  // Уклон СВОЕГО вида — то самое измерение, ради которого шаг усиления и существует. Доля области
+  // говорит, что вид опознан; уклон говорит, стал ли он собой. Считается по дугам, у которых ОБА
+  // конца одного вида: дуга через границу видов принадлежит обоим и ни одному.
+  const auto offsets_field = field_of(line, "cell_offsets", "start");
+  const auto arcs_field = field_of(line, "cell_arcs", "cell");
+  std::array<std::vector<double>, landform_count> landform_steps{};
+  for (size_t i = 0; i < count; ++i) {
+    const auto kind = size_t(landform.get(i));
+    if (kind >= landform_count) {
+      continue;
+    }
+    const auto first = size_t(offsets_field.get(i));
+    const auto last = size_t(offsets_field.get(i + 1));
+    for (size_t k = first; k < last; ++k) {
+      const auto other = size_t(arcs_field.get(k));
+      if (other <= i || other >= count || size_t(landform.get(other)) != kind) {
+        continue;
+      }
+      landform_steps[kind].push_back(std::abs(height.get(i) - height.get(other)));
+    }
+  }
+
+  const double landform_spacing = std::sqrt(4.0 * std::numbers::pi / double(count));
+  const double landform_per_hundred = 0.0157 / landform_spacing;
+  std::cout << "  landforms (share of the surface, typical slope in m per 100 km):\n";
+  for (size_t kind = 0; kind < landform_count; ++kind) {
+    if (landforms[kind] == 0) {
+      continue;
+    }
+    std::cout << "    " << std::format("{:<16}", landform_names[kind]) << std::format("{:>7}", landforms[kind])
+              << " (" << std::format("{:>4.1f}", 100.0 * double(landforms[kind]) / double(count)) << "%)  slope "
+              << std::format("{:>4.0f}", median_of(landform_steps[kind]) * landform_per_hundred) << "\n";
+  }
+
+  std::cout << "  climate:\n";
   for (size_t zone = 0; zone < climate_count; ++zone) {
     if (zones[zone] == 0) {
       continue;
     }
-    std::cout << "    " << climate_table[zone].symbol << " " << climate_table[zone].name << " — " << zones[zone]
-              << " (" << std::format("{:.1f}", 100.0 * double(zones[zone]) / double(count)) << "%)\n";
+    std::cout << "    " << climate_table[zone].symbol << " " << std::format("{:<9}", climate_table[zone].name)
+              << std::format("{:>7}", zones[zone]) << " ("
+              << std::format("{:.1f}", 100.0 * double(zones[zone]) / double(count)) << "%)\n";
   }
 
-  std::cout << "  суша по широте:\n";
+  std::cout << "  land by latitude:\n";
   for (size_t band = 0; band < land_by_latitude.size(); ++band) {
     const double share = cells_by_latitude[band] == 0
                            ? 0.0
                            : 100.0 * double(land_by_latitude[band]) / double(cells_by_latitude[band]);
-    std::cout << "    " << std::format("{:>4}", int(-90 + int(band) * 30)) << "…"
-              << std::format("{:>4}", int(-60 + int(band) * 30)) << "°  " << std::format("{:.1f}", share) << "%\n";
+    std::cout << "    " << std::format("{:>4}", int(-90 + int(band) * 30)) << ".."
+              << std::format("{:>4}", int(-60 + int(band) * 30)) << " deg  " << std::format("{:.1f}", share) << "%\n";
   }
 }
 
@@ -408,7 +1266,7 @@ void print_field_stats(originator::pipeline& line, const options& opts, const st
       total += value;
     }
     std::cout << "  " << std::format("{:<20}", name) << std::format("{:>14.5g}", lowest) << " .. "
-              << std::format("{:>14.5g}", highest) << "   среднее " << std::format("{:>12.5g}", total / double(opts.cells))
+              << std::format("{:>14.5g}", highest) << "   mean " << std::format("{:>12.5g}", total / double(opts.cells))
               << "\n";
   }
 }
@@ -510,7 +1368,7 @@ bool labels_are_connected(originator::pipeline& line, const std::string_view& la
 }
 
 int run_verify(const options& opts) {
-  std::cout << "GN02 verify: " << opts.cells << " клеток, зерно " << opts.seed << "\n";
+  std::cout << "GN02 verify: " << opts.cells << " cells, seed " << opts.seed << "\n";
 
   size_t checks = 0;
   size_t failures = 0;
@@ -518,7 +1376,7 @@ int run_verify(const options& opts) {
     ++checks;
     if (!condition) {
       ++failures;
-      std::cout << "  ПРОВАЛ: " << label << "\n";
+      std::cout << "  FAILED: " << label << "\n";
     }
   };
 
@@ -533,7 +1391,6 @@ int run_verify(const options& opts) {
 
   auto reference = generate(opts, tools, description, nullptr);
   auto& line = *reference.line;
-  const auto serial_buffers = snapshot_all(line);
 
   // 1. Топология замкнутой поверхности.
   {
@@ -548,7 +1405,7 @@ int run_verify(const options& opts) {
       const double z = positions.get(i, 2);
       unit_length = unit_length && std::abs(std::sqrt(x * x + y * y + z * z) - 1.0) < 1e-5;
     }
-    check(unit_length, "все клетки лежат на единичной сфере");
+    check(unit_length, "every cell sits on the unit sphere");
 
     bool symmetric = true;
     bool degrees_sane = true;
@@ -569,9 +1426,9 @@ int run_verify(const options& opts) {
         symmetric = symmetric && back && other != i;
       }
     }
-    check(symmetric, "соседство симметрично и без петель");
-    check(degrees_sane, "степень каждой клетки в разумных границах");
-    check(total_arcs == size_t(offsets.get(count)), "смещения CSR сходятся с числом дуг");
+    check(symmetric, "adjacency is symmetric and loop free");
+    check(degrees_sane, "cell degree stays within sane bounds");
+    check(total_arcs == size_t(offsets.get(count)), "CSR offsets agree with the arc count");
 
     // Связность: одна заливка от одной клетки обязана накрыть планету целиком. Дырявый граф не
     // виден ни в одной локальной проверке, а ломает всё дальнейшее.
@@ -593,7 +1450,7 @@ int run_verify(const options& opts) {
         }
       }
     }
-    check(reached == count, std::format("граф соседства связен ({} из {} клеток)", reached, count));
+    check(reached == count, std::format("the adjacency graph is connected ({} of {} cells)", reached, count));
   }
 
   // 2. Тектоника: плита есть у каждой клетки, и суммы по плитам сходятся.
@@ -607,11 +1464,11 @@ int run_verify(const options& opts) {
       const auto value = size_t(plate.get(i));
       assigned = assigned && value >= 1 && value <= plate_count;
     }
-    check(assigned, "каждая клетка принадлежит плите");
-    check(plate_count >= 4, std::format("плит получилось достаточно ({})", plate_count));
+    check(assigned, "every cell belongs to a plate");
+    check(plate_count >= 4, std::format("enough plates came out ({})", plate_count));
     check(size_t(plate_offsets.get(plate_offsets.count() - 1)) == count,
-          "раскладка клеток по плитам покрывает планету");
-    check(labels_are_connected(line, "plate", count, plate_count), "каждая плита связна");
+          "the plate layout covers the planet");
+    check(labels_are_connected(line, "plate", count, plate_count), "every plate is connected");
   }
 
   // 3. Поверхность: доля суши держится около заданной, рельеф не выродился.
@@ -621,6 +1478,7 @@ int run_verify(const options& opts) {
     const auto sea_level = field_value(line, "state", "sea_level", 0);
 
     size_t land_cells = 0;
+    size_t above_level = 0;
     double lowest = 1e30;
     double highest = -1e30;
     bool mask_matches = true;
@@ -629,23 +1487,124 @@ int run_verify(const options& opts) {
       land_cells += is_land ? 1 : 0;
       lowest = std::min(lowest, height.get(i));
       highest = std::max(highest, height.get(i));
-      // Маска суши обязана согласоваться с уровнем моря с точностью до поправки на вращение: клетка
-      // выше уровня моря плюс максимальная поправка обязана быть сушей.
-      if (height.get(i) > sea_level + 2000.0) {
-        mask_matches = mask_matches && is_land;
+      // Маска суши согласована с уровнем моря В ОДНУ СТОРОНУ, и это не послабление, а следствие
+      // прибрежной эрозии: она СНИМАЕТ клетки, которые выше уровня, но почти не имеют суши по
+      // соседству. Поэтому «выше уровня ⇒ суша» больше неверно, а «суша ⇒ выше уровня» верно и
+      // проверяется точно; запас в 300 метров покрывает поправку на вращение.
+      if (is_land) {
+        mask_matches = mask_matches && height.get(i) > sea_level - 300.0;
       }
-      if (height.get(i) < sea_level - 2000.0) {
-        mask_matches = mask_matches && !is_land;
-      }
+      // Тот же порог, что и у проверки суши: местный уровень отличается от общего не больше чем на
+      // треть вздутия, и 300 метров покрывают это с запасом.
+      above_level += height.get(i) > sea_level - 300.0 ? 1 : 0;
     }
 
     const double share = double(land_cells) / double(count);
     const double target = field_value(line, "state", "land_target", 0);
     check(std::abs(share - target) < 0.02,
-          std::format("доля суши {:.3f} близка к заданной {:.3f}", share, target));
-    check(mask_matches, "маска суши согласована с уровнем моря");
+          std::format("land share {:.3f} is close to the declared {:.3f}", share, target));
+    check(mask_matches, "every land cell sits above sea level");
+    // Эрозия только СНИМАЕТ сушу, поэтому суши не больше, чем клеток выше уровня. Интересна вторая
+    // половина: она не должна съедать заметную часть материков. Четверть — это уже не «смыло крошки»,
+    // а другая планета, и порог стоит именно там.
+    check(land_cells <= above_level && above_level - land_cells < above_level / 4,
+          std::format("coastal erosion only trims the edge ({} land cells of {} above the level)", land_cells,
+                      above_level));
     check(highest > 3000.0 && lowest < -3000.0,
-          std::format("рельеф имеет и горы, и глубины ({:.0f} .. {:.0f} м)", lowest, highest));
+          std::format("relief has both mountains and depths ({:.0f} .. {:.0f} m)", lowest, highest));
+  }
+
+  // 3a. Форма рельефа, а не только его размах. Три свойства, которые модель обязана давать, и каждое
+  // ловит ошибку, которую здесь уже допускали.
+  {
+    const auto land = field_of(line, "cells", "land");
+    const auto height = field_of(line, "cells", "height");
+    const auto convergent = field_of(line, "cells", "convergent_distance");
+    const double sea_level = field_value(line, "state", "sea_level", 0);
+
+    size_t water_cells = 0;
+    size_t deep_cells = 0;
+    double high_distance = 0.0;
+    size_t high_cells = 0;
+    double all_distance = 0.0;
+
+    for (size_t i = 0; i < count; ++i) {
+      const double relative = height.get(i) - sea_level;
+      const bool is_land = land.get(i) != 0.0;
+      water_cells += is_land ? 0 : 1;
+      deep_cells += !is_land && relative < -3000.0 ? 1 : 0;
+      all_distance += convergent.get(i);
+      if (is_land && relative > 2000.0) {
+        high_distance += convergent.get(i);
+        ++high_cells;
+      }
+    }
+
+    const auto steps = measure_relief_steps(line, count);
+    // Амплитуда детали зависит от места. Пока она была одинаковой, дно выходило таким же бугристым,
+    // как суша, — и это видно на глобусе раньше, чем в числах.
+    check(steps.plain > 0.0 && steps.plain < steps.land,
+          std::format("the abyssal plain is flatter than the land ({:.0f} m against {:.0f} m per neighbour)",
+                      steps.plain, steps.land));
+    // Двугорбая гипсография: дно океана — это в основном равнина, а не пологий скат от берега.
+    const double deep_share = water_cells == 0 ? 0.0 : double(deep_cells) / double(water_cells);
+    check(deep_share > 0.5,
+          std::format("the sea floor is mostly abyssal ({:.0f}% of water deeper than 3 km)", 100.0 * deep_share));
+    // Горы стоят у сходящихся границ. Проверка ловит ровно ту ошибку, из-за которой ширины пояса не
+    // значили ничего: скорость сближения бралась у самой клетки, а она ненулевая только на ленте в
+    // одну клетку, поэтому «пояс» был лентой, а не поясом.
+    const double high_mean = high_cells == 0 ? 0.0 : high_distance / double(high_cells);
+    const double all_mean = count == 0 ? 0.0 : all_distance / double(count);
+    check(high_cells > 0 && high_mean < 0.5 * all_mean,
+          std::format("mountains follow the convergent belts ({:.1f} steps against {:.1f} on average)",
+                      high_mean, all_mean));
+  }
+
+  // 3b. Области рельефа: они опознаны и они РАЗНЫЕ. Вторая половина важнее первой: опознать можно и
+  // одинаковое, а шаг усиления существует ровно ради того, чтобы область стала собой.
+  {
+    const auto landform = field_of(line, "cells", "landform");
+    const auto height = field_of(line, "cells", "height");
+    const auto offsets = field_of(line, "cell_offsets", "start");
+    const auto arcs = field_of(line, "cell_arcs", "cell");
+
+    constexpr size_t kinds = 11;
+    std::array<size_t, kinds> shares{};
+    std::array<std::vector<double>, kinds> steps{};
+    bool addressable = true;
+    for (size_t i = 0; i < count; ++i) {
+      const auto kind = size_t(landform.get(i));
+      addressable = addressable && kind < kinds;
+      if (kind >= kinds) {
+        continue;
+      }
+      shares[kind] += 1;
+      const auto first = size_t(offsets.get(i));
+      const auto last = size_t(offsets.get(i + 1));
+      for (size_t k = first; k < last; ++k) {
+        const auto other = size_t(arcs.get(k));
+        if (other <= i || other >= count || size_t(landform.get(other)) != kind) {
+          continue;
+        }
+        steps[kind].push_back(std::abs(height.get(i) - height.get(other)));
+      }
+    }
+
+    size_t present = 0;
+    for (size_t kind = 0; kind < kinds; ++kind) {
+      present += double(shares[kind]) / double(count) > 0.005 ? 1 : 0;
+    }
+    check(addressable, "every cell has a landform kind");
+    check(present >= 6, std::format("the planet has a variety of landforms ({} kinds above half a percent)", present));
+
+    // Порядок «равнина ровнее холмов ровнее гор» — это и есть определение этих слов. Если он не
+    // держится, значит опознание разложило клетки по видам, а усиление их не различило.
+    const double plain = median_of(steps[5]);
+    const double hills = median_of(steps[8]);
+    const double mountains = median_of(steps[9]);
+    check(plain > 0.0 && hills > plain && mountains > 2.0 * hills,
+          std::format("plains, hills and mountains differ by slope ({:.0f} < {:.0f} < {:.0f} m per neighbour)",
+                      plain, hills, mountains));
   }
 
   // 4. Климат: лето не холоднее зимы, осадки неотрицательны, дождевая тень существует.
@@ -677,11 +1636,11 @@ int run_verify(const options& opts) {
         ++polar_cells;
       }
     }
-    check(ordered, "лето нигде не холоднее зимы");
-    check(finite, "температуры и осадки — конечные неотрицательные числа");
+    check(ordered, "summer is nowhere colder than winter");
+    check(finite, "temperatures and rainfall are finite and non-negative");
     check(equator_cells > 0 && polar_cells > 0 &&
             equator_temperature / double(equator_cells) > polar_temperature / double(polar_cells) + 20.0,
-          "на экваторе теплее, чем у полюсов, минимум на 20 °C");
+          "the equator is at least 20 C warmer than the poles");
 
     // Континентальность: сезонная амплитуда внутри материка обязана быть больше, чем на воде. Это
     // проверка не формулы, а того, что расстояние до океана вообще доехало до температуры.
@@ -703,7 +1662,7 @@ int run_verify(const options& opts) {
     }
     check(inland_cells > 0 && ocean_cells > 0 &&
             inland_amplitude / double(inland_cells) > ocean_amplitude / double(ocean_cells) + 1.0,
-          "внутри материка сезонная амплитуда больше, чем на воде");
+          "seasonal swing inland exceeds the swing over water");
   }
 
   // 5. Области: провинции покрывают сушу, морские зоны — воду, и те и другие связны.
@@ -725,13 +1684,251 @@ int run_verify(const options& opts) {
       water_covered = water_covered && (is_land || has_zone);
       disjoint = disjoint && !(has_province && has_zone);
     }
-    check(land_covered, "каждая клетка суши лежит в провинции");
-    check(water_covered, "каждая клетка воды лежит в морской зоне");
-    check(disjoint, "провинции и морские зоны не пересекаются");
+    check(land_covered, "every land cell belongs to a province");
+    check(water_covered, "every water cell belongs to a sea zone");
+    check(disjoint, "provinces and sea zones do not overlap");
     check(province_count >= 8 && sea_zone_count >= 4,
-          std::format("областей достаточно: {} провинций, {} морских зон", province_count, sea_zone_count));
-    check(labels_are_connected(line, "province", count, province_count), "каждая провинция связна");
-    check(labels_are_connected(line, "sea_zone", count, sea_zone_count), "каждая морская зона связна");
+          std::format("enough areas: {} provinces, {} sea zones", province_count, sea_zone_count));
+    check(labels_are_connected(line, "province", count, province_count), "every province is connected");
+    check(labels_are_connected(line, "sea_zone", count, sea_zone_count), "every sea zone is connected");
+
+    // Запись области и её суммы описывают ОДНУ И ТУ ЖЕ область.
+    //
+    // Проверка нужна потому, что сойтись эти две вещи могут только по соглашению, а соглашений было
+    // два сразу: group_by и accumulate раскладывают по корзине, равной сырому ключу, а скрипт писал
+    // центр и размер по «метка минус один». Ни одна проверка связности такого не ловит — буфер-то
+    // валиден. Ловится это сложением: сумма высот по всем записям областей обязана совпасть с суммой
+    // высот по клеткам суши, а при сдвиге на единицу в неё попадает корзина 0, то есть вся вода.
+    {
+      const auto heights = field_of(line, "cells", "height");
+      const auto provinces_of = field_of(line, "cells", "province");
+      const auto province_height = field_of(line, "provinces", "height_sum");
+
+      double from_cells = 0.0;
+      for (size_t i = 0; i < count; ++i) {
+        if (provinces_of.get(i) != 0.0) {
+          from_cells += heights.get(i);
+        }
+      }
+      double from_records = 0.0;
+      for (size_t i = 1; i <= province_count && i < province_height.count(); ++i) {
+        from_records += province_height.get(i);
+      }
+      const double scale = std::max(1.0, std::abs(from_cells));
+      check(std::abs(from_records - from_cells) < 1e-6 * scale,
+            std::format("province records line up with their sums ({:.0f} from cells, {:.0f} from records)",
+                        from_cells, from_records));
+      check(province_height.get(0) <= 0.0,
+            std::format("record row 0 is the unlabelled bucket, not a province (height sum {:.0f})",
+                        province_height.get(0)));
+    }
+
+    // ГЕОГРАФИЧЕСКАЯ ИЕРАРХИЯ. Проверяется не «она есть», а два её обещания: что она ПОЛНАЯ (у каждой
+    // клетки есть место на каждом уровне) и что её границы СОВПАДАЮТ С ГРАНИЦАМИ ПРОВИНЦИЙ. Второе —
+    // главное условие задачи, и проверить его можно только так: пройти по клеткам и убедиться, что
+    // внутри одной провинции значение уровня одно. Если уровень когда-нибудь начнут растить по
+    // клеткам, эта проверка упадёт первой.
+    {
+      const auto land_of = field_of(line, "cells", "land");
+      const auto provinces_of = field_of(line, "cells", "province");
+      const auto zones_of = field_of(line, "cells", "sea_zone");
+      const auto mass_of = field_of(line, "cells", "land_mass");
+      const auto continent_of = field_of(line, "cells", "continent");
+      const auto region_of = field_of(line, "cells", "historical_region");
+      const auto ocean_of = field_of(line, "cells", "ocean");
+
+      size_t land_without_place = 0;
+      size_t water_without_region = 0;
+      for (size_t i = 0; i < count; ++i) {
+        if (land_of.get(i) != 0.0) {
+          if (mass_of.get(i) == 0.0 || continent_of.get(i) == 0.0 || region_of.get(i) == 0.0) {
+            ++land_without_place;
+          }
+        } else if (zones_of.get(i) == 0.0) {
+          ++water_without_region;
+        }
+      }
+      check(land_without_place == 0,
+            std::format("every land cell has a land mass, a continent and a historical region ({} without)",
+                        land_without_place));
+      check(water_without_region == 0,
+            std::format("every water cell has an oceanic region ({} without)", water_without_region));
+
+      const auto uniform_inside = [&](const originator::const_field_accessor& owner,
+                                      const originator::const_field_accessor& level, const size_t owner_count) {
+        std::vector<double> seen(owner_count + 2, -1.0);
+        size_t broken = 0;
+        for (size_t i = 0; i < count; ++i) {
+          const auto key = size_t(owner.get(i));
+          if (key == 0 || key >= seen.size()) {
+            continue;
+          }
+          if (seen[key] < 0.0) {
+            seen[key] = level.get(i);
+          } else if (seen[key] != level.get(i)) {
+            ++broken;
+          }
+        }
+        return broken;
+      };
+
+      const auto mass_broken = uniform_inside(provinces_of, mass_of, province_count);
+      const auto continent_broken = uniform_inside(provinces_of, continent_of, province_count);
+      const auto region_broken = uniform_inside(provinces_of, region_of, province_count);
+      const auto ocean_broken = uniform_inside(zones_of, ocean_of, sea_zone_count);
+      check(mass_broken == 0 && continent_broken == 0 && region_broken == 0 && ocean_broken == 0,
+            std::format("geographic borders coincide with area borders ({} cells disagree with their area)",
+                        mass_broken + continent_broken + region_broken + ocean_broken));
+    }
+
+    // Уровень иерархии лежит в ОДНОМ родителе. Для исторической области это инвариант: она растится
+    // внутри материка, и выйти за него не может. Для материка инварианта нет намеренно — мелкие
+    // массивы прикрепляются к ближайшему материку через воду.
+    {
+      const auto province_continent = field_of(line, "provinces", "continent");
+      const auto province_region = field_of(line, "provinces", "historical_region");
+      const auto historical = size_t(field_value(line, "state", "historical_count", 0));
+
+      std::vector<size_t> owner(historical + 2, 0);
+      size_t split = 0;
+      for (size_t node = 1; node <= province_count && node < province_region.count(); ++node) {
+        const auto region = size_t(province_region.get(node));
+        if (region == 0 || region >= owner.size()) {
+          continue;
+        }
+        const auto continent = size_t(province_continent.get(node)) + 1;
+        if (owner[region] == 0) {
+          owner[region] = continent;
+        } else if (owner[region] != continent) {
+          owner[region] = continent;
+          ++split;
+        }
+      }
+      check(split == 0, std::format("every historical region lies in one continent ({} split)", split));
+      check(historical >= 8, std::format("the hierarchy is deep enough: {} historical regions", historical));
+
+      // НАЗВАНИЯ РАЗЛИЧИМЫ. Проверка нужна потому, что название собирается из затравки, а затравок
+      // столько же, сколько мест: два места могут получить одно имя, и на карте это выглядит как
+      // ошибка данных, хотя данные верны. Внутри материка совпадение недопустимо совсем — по имени
+      // области там и ориентируются; по планете в целом допускается, как и в жизни.
+      const auto names = gn02::build_place_names(line, opts.continent_min_provinces, opts.ocean_zones);
+      std::set<std::string> continent_names;
+      size_t continent_clashes = 0;
+      for (size_t i = 1; i < names.continents.size(); ++i) {
+        if (!names.continents[i].empty() && !continent_names.insert(names.continents[i]).second) {
+          ++continent_clashes;
+        }
+      }
+      std::map<std::pair<size_t, std::string>, size_t> region_names;
+      size_t region_clashes = 0;
+      for (size_t i = 1; i <= historical && i < names.historical_regions.size(); ++i) {
+        if (names.historical_regions[i].empty()) {
+          continue;
+        }
+        const auto continent = size_t(field_of(line, "historical_regions", "continent").get(i));
+        if (++region_names[{continent, names.historical_regions[i]}] > 1) {
+          ++region_clashes;
+        }
+      }
+      check(continent_clashes == 0, std::format("continent names are distinct ({} clashes)", continent_clashes));
+      check(region_clashes == 0,
+            std::format("historical region names are distinct inside a continent ({} clashes)", region_clashes));
+      check(!names.oceans.empty() && (names.oceans.size() < 2 || !names.oceans[1].empty()),
+            "oceans are named");
+
+      // ТИТУЛЫ. Проверяется то же, что у географии: полнота и вложенность. Плюс баронства, у которых
+      // проверка своя — они не область, а точка, и точка обязана лежать в своём графстве.
+      const auto province_duchy = field_of(line, "provinces", "duchy");
+      const auto province_empire = field_of(line, "provinces", "empire");
+      const auto province_realm = field_of(line, "provinces", "realm");
+      const auto province_baronies = field_of(line, "provinces", "baronies");
+      const auto province_size = field_of(line, "provinces", "cells");
+
+      size_t without_title = 0;
+      size_t without_realm = 0;
+      size_t without_barony = 0;
+      for (size_t node = 1; node <= province_count && node < province_size.count(); ++node) {
+        if (province_size.get(node) == 0.0) {
+          continue;
+        }
+        if (province_duchy.get(node) == 0.0 || province_empire.get(node) == 0.0) {
+          ++without_title;
+        }
+        if (province_realm.get(node) == 0.0) {
+          ++without_realm;
+        }
+        if (province_baronies.get(node) == 0.0) {
+          ++without_barony;
+        }
+      }
+      check(without_title == 0,
+            std::format("every county holds a duchy and an empire title ({} without)", without_title));
+      check(without_realm == 0,
+            std::format("every county belongs to a de facto realm ({} without)", without_realm));
+      check(without_barony == 0, std::format("every county holds a barony ({} without)", without_barony));
+
+      const auto duchies = size_t(field_value(line, "state", "duchy_count", 0));
+      std::vector<size_t> duchy_owner(duchies + 2, 0);
+      size_t duchy_split = 0;
+      for (size_t node = 1; node <= province_count && node < province_duchy.count(); ++node) {
+        const auto duchy = size_t(province_duchy.get(node));
+        if (duchy == 0 || duchy >= duchy_owner.size()) {
+          continue;
+        }
+        const auto region = size_t(province_region.get(node)) + 1;
+        if (duchy_owner[duchy] == 0) {
+          duchy_owner[duchy] = region;
+        } else if (duchy_owner[duchy] != region) {
+          duchy_owner[duchy] = region;
+          ++duchy_split;
+        }
+      }
+      check(duchy_split == 0,
+            std::format("every duchy lies in one kingdom ({} split)", duchy_split));
+
+      const auto barony_count = size_t(field_value(line, "state", "barony_count", 0));
+      const auto barony_cell = field_of(line, "baronies", "cell");
+      const auto barony_province = field_of(line, "baronies", "province");
+      const auto cell_province = field_of(line, "cells", "province");
+      size_t misplaced = 0;
+      for (size_t i = 1; i <= barony_count && i < barony_cell.count(); ++i) {
+        const auto cell = size_t(barony_cell.get(i));
+        if (cell >= count || cell_province.get(cell) != barony_province.get(i)) {
+          ++misplaced;
+        }
+      }
+      check(misplaced == 0, std::format("every barony sits in its own county ({} misplaced)", misplaced));
+    }
+
+    // Свойства, которых требует ИГРА, а не физика. Планета может быть безупречно правдоподобной и при
+    // этом непригодной: один сверхматерик и пустой океан, провинция на пол-континента, острова, в
+    // которые не влезает область. Поэтому усреднение проверяется так же, как всё остальное.
+    const auto min_cells = size_t(field_value(line, "state", "province_min_cells", 0));
+    const auto max_cells = size_t(field_value(line, "state", "province_max_cells", 0));
+    const auto province_sizes = field_of(line, "provinces", "cells");
+
+    size_t oversized = 0;
+    size_t largest_province = 0;
+    for (size_t i = 1; i <= province_count && i < province_sizes.count(); ++i) {
+      const auto size = size_t(province_sizes.get(i));
+      largest_province = std::max(largest_province, size);
+      oversized += size > max_cells ? 1 : 0;
+    }
+    check(oversized == 0,
+          std::format("no province exceeds the upper size bound ({} cells, largest {})", max_cells,
+                      largest_province));
+
+    size_t land_total = 0;
+    for (size_t i = 0; i < count; ++i) {
+      land_total += land.get(i) != 0.0 ? 1 : 0;
+    }
+    const auto masses = measure_land_masses(line, count, min_cells);
+    check(masses.largest < size_t(0.92 * double(land_total)),
+          std::format("land is not one supercontinent (largest mass {:.0f}% of land)",
+                      land_total == 0 ? 0.0 : 100.0 * double(masses.largest) / double(land_total)));
+    check(masses.playable >= 6,
+          std::format("enough separate landmasses can hold a province ({} of {})", masses.playable,
+                      masses.components));
   }
 
   // 6. Люди: население стоит там, где пригодно, культуры покрывают обитаемую сушу.
@@ -763,35 +1960,107 @@ int run_verify(const options& opts) {
       }
       cultured += culture.get(i) != 0.0 ? 1 : 0;
     }
-    check(water_empty, "на воде никто не живёт");
-    check(bounded, "пригодность в [0,1], население конечно и неотрицательно");
+    check(water_empty, "nobody lives on water");
+    check(bounded, "habitability in [0,1], population finite and non-negative");
     // Сравниваются ПЛОТНОСТИ, а не суммы, и это исправление после провала на одном из зёрен: у сухой
     // планеты пригодных клеток мало, поэтому их суммарное население законно меньше, а плотность —
     // нет. Проверять надо то свойство, которое обязано держаться при любом мире.
     const double habitable_density = habitable_cells == 0 ? 0.0 : habitable_population / double(habitable_cells);
     const double barren_density = barren_cells == 0 ? 0.0 : barren_population / double(barren_cells);
     check(habitable_cells > 0 && habitable_density > barren_density,
-          std::format("плотность населения в пригодных клетках выше ({:.3g} против {:.3g})",
+          std::format("population density is higher in habitable cells ({:.3g} against {:.3g})",
                       habitable_density, barren_density));
-    check(culture_count >= 4, std::format("культур получилось достаточно ({})", culture_count));
-    check(cultured > 0, "культуры заняли обитаемую сушу");
-    check(labels_are_connected(line, "culture", count, culture_count), "каждая культура связна");
+    check(culture_count >= 4, std::format("enough cultures came out ({})", culture_count));
+    check(cultured > 0, "cultures claimed habitable land");
+    check(labels_are_connected(line, "culture", count, culture_count), "every culture is connected");
     check(size_t(field_value(line, "state", "event_count", 0)) >= culture_count,
-          "история записала как минимум основание каждой культуры");
+          "history recorded at least the founding of every culture");
   }
 
-  // 7. Число потоков не влияет ни на один буфер.
-  for (const size_t threads : {size_t(1), size_t(3), size_t(7)}) {
-    thread::atomic_pool pool(threads);
-    auto parallel = generate(opts, tools, description, &pool);
-    check(snapshot_all(*parallel.line) == serial_buffers,
-          std::format("параллельно == последовательно во всех буферах, потоков {}", threads));
+  // 10. Число потоков не влияет ни на один буфер.
+  //
+  // Проверка идёт на МЕНЬШЕЙ планете, и это не послабление: детерминизм разбиения от разрешения не
+  // зависит вовсе — гонка либо есть в инструменте, либо её нет, — а прогонов здесь четыре (эталон и
+  // три числа потоков), и на полном разрешении они одни занимали бы больше времени, чем все прочие
+  // сорок семь проверок вместе. Остальные проверки остаются на заказанном разрешении, потому что
+  // ИХ свойства от него как раз зависят: острова физического происхождения на грубой решётке просто
+  // не помещаются.
+  {
+    // Меняется ТОЛЬКО число клеток. Числа областей и культур трогать нельзя: они уже вошли в описание
+    // пайплайна как значения шагов, а размеры буферов считаются из них же — уменьшить одно и не
+    // уменьшить другое значит получить метку сверх объявленных корзин, что и случилось при первой
+    // попытке (ключ 24 при 24 корзинах).
+    auto threaded_options = opts;
+    threaded_options.cells = std::min(opts.cells, size_t(16384));
+
+    auto serial = generate(threaded_options, tools, description, nullptr);
+    const auto reference = snapshot_all(*serial.line);
+    for (const size_t threads : {size_t(1), size_t(3), size_t(7)}) {
+      thread::atomic_pool pool(threads);
+      auto parallel = generate(threaded_options, tools, description, &pool);
+      check(snapshot_all(*parallel.line) == reference,
+            std::format("parallel == serial in every buffer, threads {}", threads));
+    }
   }
 
-  // 8. Пакет: он и есть результат, поэтому круг «записали — прочитали — сошлось» обязателен.
+  // 8. Сетка просмотрщика. Проверяется здесь, а не глазами, по той же причине, по которой проверяется
+  // всё остальное: «похоже на планету» глаз оценит, а «сетка замкнута и адресует существующие
+  // клетки» — нет. Дырка в сетке видна как чёрное пятно только при определённом повороте.
+  {
+    constexpr uint32_t subdivisions = 4;
+    const auto mesh = gn02::build_surface(line, subdivisions);
+    const size_t expected_triangles = 20u * size_t(std::pow(4.0, double(subdivisions)));
+
+    check(mesh.size() == expected_triangles * 3,
+          std::format("the icosphere produced {} triangles out of {}", mesh.size() / 3, expected_triangles));
+
+    bool addressable = true;
+    std::vector<uint8_t> touched(count, 0);
+    for (const auto& vertex : mesh) {
+      addressable = addressable && vertex.cell < count;
+      if (vertex.cell < count) {
+        touched[vertex.cell] = 1;
+      }
+      const double length = std::sqrt(double(vertex.direction.x) * vertex.direction.x +
+                                      double(vertex.direction.y) * vertex.direction.y +
+                                      double(vertex.direction.z) * vertex.direction.z);
+      addressable = addressable && std::abs(length - 1.0) < 1e-4;
+    }
+    check(addressable, "every mesh vertex sits on the sphere and points at a real cell");
+
+    // Замкнутость: сумма площадей треугольников равна площади сферы. Это единственная проверка,
+    // которая ловит и дырку, и вывернутый треугольник, и вершину, уехавшую с поверхности.
+    double area = 0.0;
+    for (size_t i = 0; i + 2 < mesh.size(); i += 3) {
+      const auto& a = mesh[i].direction;
+      const auto& b = mesh[i + 1].direction;
+      const auto& c = mesh[i + 2].direction;
+      // Площадь сферического треугольника через избыток углов (формула Жирара): плоская площадь
+      // занижает её тем сильнее, чем крупнее треугольник.
+      const auto angle = [](const glm::vec3& p, const glm::vec3& q, const glm::vec3& r) {
+        const glm::vec3 u = glm::normalize(glm::cross(p, q));
+        const glm::vec3 v = glm::normalize(glm::cross(p, r));
+        return std::acos(std::clamp(double(glm::dot(u, v)), -1.0, 1.0));
+      };
+      area += angle(a, b, c) + angle(b, c, a) + angle(c, a, b) - std::numbers::pi;
+    }
+    // Допуск выбран между двумя числами, а не «на глаз»: накопленная ошибка формулы на float-вершинах
+    // измерена как 5.2e-06 от площади, а ОДИН потерянный треугольник из 5120 — это 1.95e-04. Порог
+    // 5e-05 лежит между ними, поэтому проверка ловит дырку и не ловит арифметику.
+    check(std::abs(area - 4.0 * std::numbers::pi) < 5e-5 * 4.0 * std::numbers::pi,
+          std::format("the mesh tiles the sphere: area {:.9f} against 4pi = {:.9f}", area, 4.0 * std::numbers::pi));
+
+    const size_t addressed = size_t(std::count(touched.begin(), touched.end(), uint8_t(1)));
+    // Сетка на 5120 треугольников грубее 16384 клеток намеренно: проверка смотрит не на покрытие, а
+    // на то, что выбор ближайшей клетки не сваливается в несколько клеток на всю планету.
+    check(addressed >= mesh.size() / 6,
+          std::format("nearest-cell choice is spread out: {} cells over {} vertices", addressed, mesh.size()));
+  }
+
+  // 9. Пакет: он и есть результат, поэтому круг «записали — прочитали — сошлось» обязателен.
   {
     const auto section_names = split_words(description.values.string("package"));
-    check(!section_names.empty(), "конфиг перечисляет секции пакета");
+    check(!section_names.empty(), "the config lists the package sections");
 
     const auto written = gn02::build_package(line, section_names, opts.seed, count);
     const auto path = fs::temp_directory_path() / std::format("gn02_verify_{}.planet", opts.seed);
@@ -804,21 +2073,33 @@ int run_verify(const options& opts) {
                        written.sections[i].count == read_back.sections[i].count &&
                        written.sections[i].bytes == read_back.sections[i].bytes;
     }
-    check(sections_match, "пакет читается обратно секция в секцию");
+    check(sections_match, "the package reads back section by section");
     check(read_back.fingerprint == written.fingerprint && read_back.seed == opts.seed,
-          "отпечаток и зерно пакета совпадают");
+          "package fingerprint and seed match");
 
     // Тот же мир из того же зерна обязан дать тот же отпечаток, а другое зерно — другой. Первое
     // проверяет воспроизводимость, второе — что зерно вообще доехало до формул.
-    auto twin = generate(opts, tools, description, nullptr);
-    const auto twin_package = gn02::build_package(*twin.line, section_names, opts.seed, count);
-    check(twin_package.fingerprint == written.fingerprint, "то же зерно даёт тот же отпечаток");
+    //
+    // Обе идут на МЕНЬШЕЙ планете и по той же причине, что и проверка потоков: воспроизводимость от
+    // разрешения не зависит, а это ещё три полных прогона. Меняется только число клеток — числа
+    // областей и культур уже вошли в описание пайплайна, и рассогласовать их с размерами буферов
+    // значит получить метку сверх объявленных корзин.
+    auto twin_options = opts;
+    twin_options.cells = std::min(opts.cells, size_t(16384));
+    auto twin_reference = generate(twin_options, tools, description, nullptr);
+    const auto twin_written =
+      gn02::build_package(*twin_reference.line, section_names, twin_options.seed, twin_options.cells);
 
-    auto other_options = opts;
+    auto twin = generate(twin_options, tools, description, nullptr);
+    const auto twin_package = gn02::build_package(*twin.line, section_names, twin_options.seed, twin_options.cells);
+    check(twin_package.fingerprint == twin_written.fingerprint, "the same seed gives the same fingerprint");
+
+    auto other_options = twin_options;
     other_options.seed = opts.seed + 1;
     auto other = generate(other_options, tools, load_description(other_options), nullptr);
-    const auto other_package = gn02::build_package(*other.line, section_names, other_options.seed, count);
-    check(other_package.fingerprint != written.fingerprint, "другое зерно даёт другой отпечаток");
+    const auto other_package =
+      gn02::build_package(*other.line, section_names, other_options.seed, other_options.cells);
+    check(other_package.fingerprint != twin_written.fingerprint, "a different seed gives a different fingerprint");
 
     fs::remove(path);
   }
@@ -827,7 +2108,70 @@ int run_verify(const options& opts) {
   return failures == 0 ? 0 : 1;
 }
 
-int run_once(const options& opts) {
+// Просмотрщик получает не пайплайн, а СПОСОБ его пересчитать: и смена шага, и смена зерна, и правка
+// настройки — это новый прогон генератора, а не переключение отображения. Владеть миром должен тот,
+// кто его считает, поэтому наружу уходит функция, а не данные.
+int run_view(const options& opts) {
+  originator::tool_registry tools;
+  tools.add_standard_tools();
+  tools.add_graph_tools();
+  originator::add_all_primitives(tools);
+  gn02::add_planet_tools(tools);
+
+  const size_t threads = opts.threads == 0
+                           ? std::max<size_t>(std::thread::hardware_concurrency(), 1) - 1
+                           : opts.threads;
+  auto pool = std::make_unique<thread::atomic_pool>(threads);
+
+  // Настраиваемые значения приходят из ТОГО ЖЕ документа, что и сами значения: границы и шаг объявлены
+  // рядом с числом, поэтому список настроек не нужно поддерживать вторым местом в C++.
+  const auto ranges = originator::parse_value_ranges(read_file(resource_root() / "values.tavl"), "values.tavl");
+  const auto base_description = load_description(opts);
+  std::vector<gn02::tunable_value> tunables;
+  tunables.reserve(ranges.size());
+  for (const auto& range : ranges) {
+    if (!base_description.values.has(range.name)) {
+      utils::error{}("GN02: values.tavl declares a range for '{}', but no such value", range.name);
+    }
+    tunables.push_back(gn02::tunable_value{range, range.clamp(base_description.values.number(range.name))});
+  }
+
+  const auto regenerate = [&](const gn02::generation_request& request) {
+    auto local = opts;
+    local.seed = request.seed;
+
+    auto description = load_description(local);
+    for (const auto& [name, value] : request.overrides) {
+      description.values.set_number(name, value);
+    }
+    // Числа, которые host обязан пересчитать сам: их берут из значений, а не из командной строки.
+    local.provinces = size_t(std::max(1.0, description.values.number("province_count", double(local.provinces))));
+    local.continent_min_provinces = size_t(std::max(
+      1.0, description.values.number("continent_min_provinces", double(local.continent_min_provinces))));
+    local.ocean_zones = size_t(std::max(1.0, description.values.number("ocean_zones", double(local.ocean_zones))));
+    local.sea_zones = size_t(std::max(1.0, description.values.number("sea_zone_count", double(local.sea_zones))));
+    local.cultures = size_t(std::max(1.0, description.values.number("culture_count", double(local.cultures))));
+
+    auto produced = generate(local, tools, description, threads == 0 ? nullptr : pool.get(), request.step_limit);
+
+    gn02::generated_world result;
+    result.milliseconds = produced.milliseconds;
+    result.executed_steps = produced.steps.size();
+    result.seed = local.seed;
+    result.step_names.reserve(produced.line->step_count());
+    for (size_t i = 0; i < produced.line->step_count(); ++i) {
+      result.step_names.push_back(produced.line->step_at(i).name);
+    }
+    result.line = std::move(produced.line);
+    return result;
+  };
+
+  auto viewer = opts.viewer;
+  viewer.seed = opts.seed;
+  return gn02::run_viewer(viewer, std::move(tunables), regenerate);
+}
+
+int run_once(options opts) {
   originator::tool_registry tools;
   tools.add_standard_tools(); // включает scatter-инструменты
   tools.add_graph_tools();
@@ -835,6 +2179,11 @@ int run_once(const options& opts) {
   gn02::add_planet_tools(tools);
 
   const auto description = load_description(opts);
+  // Пороги географии приходят из конфига: в options они только для того, чтобы синтез названий не
+  // спрашивал их у собранного пайплайна, где значений конфига уже нет.
+  opts.continent_min_provinces = size_t(std::max(
+    1.0, description.values.number("continent_min_provinces", double(opts.continent_min_provinces))));
+  opts.ocean_zones = size_t(std::max(1.0, description.values.number("ocean_zones", double(opts.ocean_zones))));
 
   const size_t threads = opts.threads == 0
                            ? std::max<size_t>(std::thread::hardware_concurrency(), 1) - 1
@@ -859,7 +2208,7 @@ int run_once(const options& opts) {
     const auto value = gn02::build_package(*result.line, section_names, opts.seed, opts.cells);
     gn02::write_package(value, opts.dump);
     if (!opts.quiet) {
-      std::cout << "  пакет             " << opts.dump.string() << ", отпечаток "
+      std::cout << "  package             " << opts.dump.string() << ", fingerprint "
                 << std::format("{:#018x}", value.fingerprint) << "\n";
     }
   }
@@ -874,6 +2223,9 @@ int main(const int argc, const char** argv) {
     const auto opts = parse_options(argc, argv);
     if (opts.verify) {
       return run_verify(opts);
+    }
+    if (opts.view) {
+      return run_view(opts);
     }
     return run_once(opts);
   } catch (const std::exception& error) {

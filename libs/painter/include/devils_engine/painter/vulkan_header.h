@@ -41,7 +41,14 @@ vulkan_features_bitset make_device_features_bitset(VkPhysicalDevice dev);
 
 std::vector<vk::ExtensionProperties> required_device_extensions(vk::PhysicalDevice device, const std::vector<const char*>& layers, const std::vector<const char*>& extensions);
 std::vector<vk::LayerProperties> required_validation_layers(const std::vector<const char*>& layers);
-vk::PresentModeKHR choose_swapchain_present_mode(const std::vector<vk::PresentModeKHR>& modes);
+// Режим представления по умолчанию — Fifo, то есть вертикальная синхронизация. Fifo единственный,
+// который спецификация обязывает поддерживать, и он же ограничивает частоту частотой монитора.
+// Mailbox рисует кадры, которых никто не увидит, и греет машину впустую, поэтому включается только
+// по явной просьбе — режим просят замером, а не получают по умолчанию.
+vk::PresentModeKHR choose_swapchain_present_mode(
+  const std::vector<vk::PresentModeKHR>& modes,
+  const vk::PresentModeKHR desirable = vk::PresentModeKHR::eFifo,
+  const vk::PresentModeKHR fallback = vk::PresentModeKHR::eFifo);
 vk::SurfaceFormatKHR choose_swapchain_surface_format(const std::vector<vk::SurfaceFormatKHR>& formats);
 vk::Extent2D choose_swapchain_extent(const uint32_t width, const uint32_t height, const vk::SurfaceCapabilitiesKHR& capabilities);
 bool check_swapchain_present_mode(const std::vector<vk::PresentModeKHR>& modes, const vk::PresentModeKHR mode);

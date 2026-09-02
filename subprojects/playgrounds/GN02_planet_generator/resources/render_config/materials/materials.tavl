@@ -1,0 +1,20 @@
+// Небо рисуется до планеты и без глубины вообще: оно накрывает весь экран и по определению стоит
+// позади всего, поэтому ни проверять, ни писать глубину ему незачем.
+{
+  name = sky_material
+  shaders = { vertex = "sky.vert.glsl", fragment = "sky.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = planet_material
+  shaders = { vertex = "planet.vert.glsl", fragment = "planet.frag.glsl" }
+  depth = { test = true, write = true, compare = greater }
+  raster = { cull = back, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = ui_material
+  shaders = { vertex = "ui.vert.glsl", fragment = "ui.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = cw, polygon = fill, line_width = 1.0 }
+}

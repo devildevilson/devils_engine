@@ -236,26 +236,35 @@ static uint32_t find_queue(const std::vector<system_info::physical_device::queue
   return UINT32_MAX;
 }
 
+// Желаемый режим — fifo, то есть вертикальная синхронизация: она обязательна по спецификации и
+// ограничивает частоту частотой монитора. Про запас — mailbox: он тоже не рвёт кадр, но частоту не
+// ограничивает, поэтому стоит вторым, а не первым. immediate последний: он единственный, который
+// показывает разорванный кадр.
 static std::pair<physical_device_present_mode::values, physical_device_present_mode::values> find_present_modes(
   const std::vector<physical_device_present_mode::values>& modes) {
-  auto main = physical_device_present_mode::values::count;
-  for (const auto& mode : modes) {
-    if (mode == physical_device_present_mode::values::mailbox) {
-      main = mode;
+  const auto has = [&modes](const physical_device_present_mode::values wanted) {
+    for (const auto& mode : modes) {
+      if (mode == wanted) {
+        return true;
+      }
     }
-  }
+    return false;
+  };
 
-  auto secondary = physical_device_present_mode::values::immediate;
-  for (const auto& mode : modes) {
-    if (mode == physical_device_present_mode::values::fifo) {
-      secondary = mode;
-    }
-  }
+  const auto main = has(physical_device_present_mode::values::fifo)
+                      ? physical_device_present_mode::values::fifo
+                      : (has(physical_device_present_mode::values::mailbox)
+                           ? physical_device_present_mode::values::mailbox
+                           : physical_device_present_mode::values::immediate);
 
-  if (main == physical_device_present_mode::values::mailbox) {
-    return std::make_pair(main, secondary);
+  const auto secondary = has(physical_device_present_mode::values::mailbox)
+                           ? physical_device_present_mode::values::mailbox
+                           : physical_device_present_mode::values::immediate;
+
+  if (main == secondary) {
+    return std::make_pair(main, physical_device_present_mode::values::immediate);
   }
-  return std::make_pair(secondary, physical_device_present_mode::values::immediate);
+  return std::make_pair(main, secondary);
 }
 
 static void fill_queue_indices(physical_device_data& p_data, const system_info::physical_device& info) {

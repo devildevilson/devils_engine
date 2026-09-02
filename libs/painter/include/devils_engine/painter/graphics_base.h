@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "common_steps.h"
+#include "device_features.h"
 #include "devils_engine/utils/core.h"
 #include "queue.h"
 #include "structures.h"
@@ -138,6 +139,12 @@ struct graphics_base {
 
   std::tuple<uint32_t, uint32_t> swapchain_image_size;
 
+  // Режим представления свопчейна. По умолчанию Fifo и Fifo: вертикальная синхронизация — не
+  // настройка производительности, а нормальное поведение окна, а режимы без ограничения частоты
+  // просят явным set_present_mode, когда мерят скорость отрисовки.
+  physical_device_present_mode::values desirable_present_mode;
+  physical_device_present_mode::values fallback_present_mode;
+
   // где то еще должен быть дексриптор для текстурок
 
   graphics_base(VkInstance instance, VkDevice device, VkPhysicalDevice physical_device, enum presentation_engine_type presentation_engine_type) noexcept;
@@ -167,6 +174,9 @@ struct graphics_base {
   bool is_resource_active(uint32_t i) const;
   bool is_descriptor_active(uint32_t i) const;
   void set_surface(VkSurfaceKHR surface, const uint32_t width, const uint32_t height);
+  // Сменить режим представления. Вступает в силу на следующем пересоздании свопчейна, поэтому
+  // вызывать до set_surface.
+  void set_present_mode(const physical_device_present_mode::values desirable, const physical_device_present_mode::values fallback) noexcept;
   void populate_constant_default_values();
 
   // counter_offset здесь и ниже — СКОЛЬКО КАДРОВ НАЗАД: 0 текущая копия, 1 предыдущий кадр.

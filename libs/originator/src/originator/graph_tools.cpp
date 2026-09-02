@@ -524,6 +524,42 @@ void tool_poisson_seeds(const tool_call& call, const size_t begin, const size_t 
   }
 }
 
+// graph_slope: средний модуль разности со всеми соседями.
+//
+// Отличается от «отклонения от размытого» ровно тем, ради чего и заведён: наклонная ПЛОСКОСТЬ от
+// своего размытия почти не отклоняется, поэтому по отклонению ровное нагорье и ровный склон выглядят
+// одинаково. Средний перепад до соседей — это настоящий уклон, и по нему нагорье отличается от горной
+// страны, а абиссальная равнина от фланга хребта.
+//
+// Величина выходит В ЕДИНИЦАХ ПОЛЯ НА ШАГ РЕШЁТКИ, то есть зависит от разрешения; приводить её к
+// расстоянию — дело вызывающего, который один и знает шаг своей решётки.
+void tool_graph_slope(const tool_call& call, const size_t begin, const size_t end) {
+  const auto offsets = call.input(0).read();
+  const auto arcs = call.input(1).read();
+  const auto values = call.input(2).read();
+  auto target = call.output(0).write();
+
+  const size_t count = values.count();
+  for (size_t i = begin; i < end; ++i) {
+    const double own = values.get(i);
+    const auto first = size_t(offsets.get(i));
+    const auto last = size_t(offsets.get(i + 1));
+
+    double total = 0.0;
+    size_t taken = 0;
+    for (size_t k = first; k < last; ++k) {
+      const auto other = size_t(arcs.get(k));
+      if (other >= count) {
+        continue;
+      }
+      total += std::abs(values.get(other) - own);
+      ++taken;
+    }
+
+    target.set(i, taken == 0 ? 0.0 : total / double(taken));
+  }
+}
+
 // lookup: значение из ДРУГОГО буфера по индексу, лежащему в поле.
 //
 // Косвенность — это то же самое отношение, что и дуга графа, только записанное одним числом вместо
@@ -610,6 +646,166 @@ void tool_graph_vote(const tool_call& call, const size_t begin, const size_t end
   }
 }
 
+// connected_components: связные куски подграфа под маской.
+//
+// Отвечает на вопрос, который поклеточной меткой не выражается вовсе: «этот земляной массив» — это
+// не свойство клетки, а свойство СВЯЗНОСТИ. Метка «суша» есть у каждой клетки суши, но того, что
+// Евразия и Америка это два разных куска, в ней нет; чтобы это узнать, надо обойти граф. То же
+// нужно и океанам, и вообще любой иерархии географических названий: верхний её уровень — всегда
+// связный кусок, а не значение поля.
+//
+// Апертура sequential: обход одного куска нельзя разбить на чанки, не согласовав их между собой, а
+// согласование стоит дороже самого обхода.
+//
+// Нумерация идёт в порядке ПЕРВОГО ПОЯВЛЕНИЯ (по индексу первой клетки куска), поэтому результат не
+// зависит ни от порядка обхода внутри куска, ни от числа потоков. Куски мельче min_size получают
+// ноль, а нумерация после отбрасывания остаётся ПЛОТНОЙ: дырка в номерах сломала бы group_by, для
+// которого номер это индекс корзины.
+void tool_connected_components(const tool_call& call, const size_t begin, const size_t end) {
+  const auto offsets = call.input(0).read();
+  const auto arcs = call.input(1).read();
+  const auto mask = call.input(2).read();
+  auto target = call.output(0).write();
+
+  if (begin != 0) {
+    utils::error{}("originator step '{}': connected_components walks the WHOLE graph, so its range must start "
+                   "at 0, got [{}, {})", call.step_name, begin, end);
+  }
+
+  const size_t count = end > begin ? end - begin : 0;
+  const auto minimum = size_t(std::max<int64_t>(call.params->integer("min_size", 0), 0));
+
+  std::vector<uint32_t> raw(count, 0);
+  std::vector<size_t> sizes;
+  std::vector<uint32_t> stack;
+
+  for (size_t start = 0; start < count; ++start) {
+    if (raw[start] != 0 || mask.get(start) == 0.0) {
+      continue;
+    }
+
+    const auto label = uint32_t(sizes.size() + 1);
+    sizes.push_back(0);
+    stack.clear();
+    stack.push_back(uint32_t(start));
+    raw[start] = label;
+
+    while (!stack.empty()) {
+      const auto cell = stack.back();
+      stack.pop_back();
+      sizes.back() += 1;
+
+      const auto first = size_t(offsets.get(cell));
+      const auto last = size_t(offsets.get(size_t(cell) + 1));
+      for (size_t k = first; k < last; ++k) {
+        const auto other = uint32_t(arcs.get(k));
+        if (other >= count || raw[other] != 0 || mask.get(other) == 0.0) {
+          continue;
+        }
+        raw[other] = label;
+        stack.push_back(other);
+      }
+    }
+  }
+
+  // Плотная перенумерация: номер сохраняется только у кусков не меньше порога.
+  std::vector<uint32_t> renumbered(sizes.size() + 1, 0);
+  uint32_t kept = 0;
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    if (sizes[i] >= minimum) {
+      renumbered[i + 1] = ++kept;
+    }
+  }
+
+  for (size_t i = 0; i < count; ++i) {
+    target.set(i, double(renumbered[raw[i]]));
+  }
+}
+
+// label_adjacency: CSR по МЕТКАМ, собранный из CSR по элементам.
+//
+// Нужен потому, что иерархия областей строится НЕ поклеточно. Если растить историческую область
+// заливкой по клеткам, её граница ляжет где попало и разрежет провинции на части — а по условию
+// задачи все границы обязаны совпадать с границами провинций, иначе надпись и выделение начинают
+// спорить друг с другом. Правильный способ один: собрать граф соседства ПРОВИНЦИЙ и растить область
+// по нему, а клетка получает свою область через lookup по номеру провинции. Тогда совпадение границ
+// не проверяется, а выполняется по построению.
+//
+// Строка метки L лежит по индексу L, а строка 0 всегда пуста. Соглашение то же, что у group_by и
+// accumulate: корзина равна СЫРОМУ значению ключа, а ключ 0 означает «метки нет». Один индекс на
+// все таблицы областей — иначе запись области, её суммы и её строка соседства расходятся, и
+// расхождение это ничем не ловится, потому что все три буфера остаются валидными.
+//
+// Граф выходит симметричным сам, без досимметризации: соседство элементов симметрично, а метка
+// соседа не зависит от того, с какой стороны на дугу смотреть.
+void tool_label_adjacency(const tool_call& call, const size_t begin, const size_t end) {
+  const auto labels = call.input(0).read();
+  const auto offsets = call.input(1).read();
+  const auto arcs = call.input(2).read();
+  auto row_offsets = call.output(0).write();
+  auto row_arcs = call.output(1).write();
+
+  if (begin != 0) {
+    utils::error{}("originator step '{}': label_adjacency builds the CSR of the WHOLE label set, so its range "
+                   "must start at 0, got [{}, {})", call.step_name, begin, end);
+  }
+
+  const size_t count = end > begin ? end - begin : 0;
+  const size_t rows = row_offsets.count() == 0 ? 0 : row_offsets.count() - 1;
+  if (rows == 0) {
+    utils::error{}("originator step '{}': label_adjacency needs an offsets buffer of at least two elements, got {}",
+                   call.step_name, row_offsets.count());
+  }
+
+  std::vector<std::vector<uint32_t>> neighbours(rows);
+  for (size_t i = 0; i < count; ++i) {
+    const auto own = uint32_t(labels.get(i));
+    if (own == 0) {
+      continue;
+    }
+    if (own >= rows) {
+      utils::error{}("originator step '{}': label_adjacency got label {} at element {}, but the offsets buffer "
+                     "holds only {} rows", call.step_name, own, i, rows);
+    }
+
+    const auto first = size_t(offsets.get(i));
+    const auto last = size_t(offsets.get(i + 1));
+    for (size_t k = first; k < last; ++k) {
+      const auto other_element = size_t(arcs.get(k));
+      if (other_element >= count) {
+        continue;
+      }
+      const auto other = uint32_t(labels.get(other_element));
+      if (other == 0 || other == own) {
+        continue;
+      }
+      if (other >= rows) {
+        utils::error{}("originator step '{}': label_adjacency got label {} at element {}, but the offsets buffer "
+                       "holds only {} rows", call.step_name, other, other_element, rows);
+      }
+      neighbours[own].push_back(other);
+    }
+  }
+
+  size_t total = 0;
+  for (size_t row = 0; row < rows; ++row) {
+    auto& list = neighbours[row];
+    std::sort(list.begin(), list.end());
+    list.erase(std::unique(list.begin(), list.end()), list.end());
+
+    row_offsets.set(row, double(total));
+    for (const auto value : list) {
+      if (total >= row_arcs.count()) {
+        utils::error{}("originator step '{}': label_adjacency needs an arc buffer of more than {} elements",
+                       call.step_name, row_arcs.count());
+      }
+      row_arcs.set(total, double(value));
+      ++total;
+    }
+  }
+  row_offsets.set(rows, double(total));
+}
+
 } // namespace
 
 void tool_registry::add_graph_tools() {
@@ -629,8 +825,14 @@ void tool_registry::add_graph_tools() {
                        .body = tool_poisson_seeds});
   add(tool_description{.name = "graph_vote", .shape = aperture::gather, .input_count = 5, .output_count = 1,
                        .body = tool_graph_vote});
+  add(tool_description{.name = "graph_slope", .shape = aperture::gather, .input_count = 3, .output_count = 1,
+                       .body = tool_graph_slope});
   add(tool_description{.name = "lookup", .shape = aperture::gather, .input_count = 2, .output_count = 1,
                        .body = tool_lookup});
+  add(tool_description{.name = "connected_components", .shape = aperture::sequential, .input_count = 3,
+                       .output_count = 1, .body = tool_connected_components});
+  add(tool_description{.name = "label_adjacency", .shape = aperture::scatter, .input_count = 3, .output_count = 2,
+                       .body = tool_label_adjacency});
 }
 
 } // namespace originator
