@@ -21,7 +21,7 @@ TEST_CASE("flow directional buckets are centered at zero") {
   CHECK(flow::directional_image_index(-(pi / 8.0f) * 1.01f, 8) == 7);
 }
 
-TEST_CASE("flow playback emits actions once and advances states") {
+TEST_CASE("flow presentation playback advances visuals without gameplay actions") {
   flow::library lib;
 
   flow::state a;
@@ -40,27 +40,57 @@ TEST_CASE("flow playback emits actions once and advances states") {
   lib.add_state("anim/a:0", a);
   lib.add_state("anim/a:1", b);
 
-  flow::playback pb;
+  flow::presentation_playback pb;
   pb.current = 0;
 
-  auto r0 = lib.sample(pb, 50, {});
-  REQUIRE(r0.actions.size() == 1);
-  CHECK(r0.actions[0].action == utils::string_hash("scripts/start"));
+  auto r0 = lib.sample_presentation(pb, 50, {});
   CHECK(pb.current == 0);
   CHECK(pb.elapsed_mcs == 50);
   CHECK(pb.uv.x == doctest::Approx(0.125f));
   CHECK(pb.uv.y == doctest::Approx(0.0f));
 
-  auto r1 = lib.sample(pb, 50, {});
-  REQUIRE(r1.actions.size() == 1);
-  CHECK(r1.actions[0].action == utils::string_hash("scripts/end"));
+  auto r1 = lib.sample_presentation(pb, 50, {});
   CHECK(pb.current == 1);
   CHECK(pb.elapsed_mcs == 0);
   CHECK(pb.uv.x == doctest::Approx(0.25f));
 
-  auto r2 = lib.sample(pb, 1, {});
-  REQUIRE(r2.actions.empty());
+  auto r2 = lib.sample_presentation(pb, 1, {});
   CHECK(pb.current == 1);
+  CHECK_FALSE(r0.sprite.visible);
+  CHECK_FALSE(r1.sprite.visible);
+  CHECK_FALSE(r2.sprite.visible);
+}
+
+TEST_CASE("flow gameplay playback emits authored actions from simulation ticks") {
+  flow::library lib;
+
+  flow::state a;
+  a.duration_mcs = 100;
+  a.next = 1;
+  a.action = utils::string_hash("scripts/start");
+  flow::state b;
+  b.duration_mcs = 100;
+  b.action = utils::string_hash("scripts/end");
+  lib.add_state("anim/a:0", a);
+  lib.add_state("anim/a:1", b);
+
+  flow::gameplay_playback pb;
+  pb.current = 0;
+  const utils::simulation_rate microsecond_ticks(1'000'000);
+
+  const auto r0 = lib.sample_gameplay(pb, {50}, microsecond_ticks);
+  REQUIRE(r0.actions.size() == 1);
+  CHECK(r0.actions[0].action == utils::string_hash("scripts/start"));
+  CHECK(pb.current == 0);
+  CHECK(pb.elapsed_ticks == 50);
+
+  const auto r1 = lib.sample_gameplay(pb, {50}, microsecond_ticks);
+  REQUIRE(r1.actions.size() == 1);
+  CHECK(r1.actions[0].action == utils::string_hash("scripts/end"));
+  CHECK(pb.current == 1);
+  CHECK(pb.elapsed_ticks == 0);
+
+  CHECK(lib.sample_gameplay(pb, {1}, microsecond_ticks).actions.empty());
 }
 
 TEST_CASE("flow uv accumulates and truncates whole part") {
@@ -74,19 +104,19 @@ TEST_CASE("flow uv accumulates and truncates whole part") {
 
   lib.add_state("anim/uv:0", a);
 
-  flow::playback pb;
+  flow::presentation_playback pb;
   pb.current = 0;
 
-  lib.sample(pb, 100, {});
+  lib.sample_presentation(pb, 100, {});
   CHECK(pb.uv.x == doctest::Approx(0.75f));
   CHECK(pb.uv.y == doctest::Approx(0.25f));
 
-  lib.sample(pb, 100, {});
+  lib.sample_presentation(pb, 100, {});
   CHECK(pb.uv.x == doctest::Approx(0.5f));
   CHECK(pb.uv.y == doctest::Approx(0.5f));
 }
 
-TEST_CASE("flow zero-duration states chain actions with guard") {
+TEST_CASE("flow zero-duration gameplay states chain actions with guard") {
   flow::library lib;
 
   flow::state a;
@@ -110,16 +140,15 @@ TEST_CASE("flow zero-duration states chain actions with guard") {
   lib.add_state("anim/z:1", b);
   lib.add_state("anim/z:2", c);
 
-  flow::playback pb;
+  flow::gameplay_playback pb;
   pb.current = 0;
 
-  auto r = lib.sample(pb, 0, {});
+  auto r = lib.sample_gameplay(pb, {0}, utils::simulation_rate(60));
   REQUIRE(r.actions.size() == 3);
   CHECK(r.actions[0].action == utils::string_hash("scripts/a"));
   CHECK(r.actions[1].action == utils::string_hash("scripts/b"));
   CHECK(r.actions[2].action == utils::string_hash("scripts/c"));
   CHECK(pb.current == 2);
-  CHECK(pb.uv.x == doctest::Approx(0.3f));
 }
 
 TEST_CASE("flow parses state tavl") {

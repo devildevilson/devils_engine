@@ -88,7 +88,7 @@ HexChoice
 
 | Слой | Чем владеет |
 |---|---|
-| `libs/simul` | общий lifecycle/loading runtime state, presentation barrier, возобновляемый `turn_pipeline`, broker и host-инфраструктура |
+| `libs/simul` | общий lifecycle/loading runtime state, tick-driven gameplay timeline/barrier, возобновляемый `turn_pipeline`, broker и host-инфраструктура |
 | `libs/resolve` | pointer-free provenance, bounded work/frontier, детерминированный порядок, damage route/outcome primitives и жёсткий retaliation lineage |
 | `libs/act` + devils_script | общий resource/compiler seam и выполнение скомпилированных скриптов |
 | `cardgame` | автомат приключения, порядок боя, партии, карты, цели, стихии, статусы, смерть, follow-up, награды и project-specific presentation vocabulary |
@@ -104,7 +104,7 @@ HexChoice
 | Файл | Ответственность |
 |---|---|
 | `include/cardgame/combat.h` | все основные боевые data types, cursors, reports, presentation commands и API `combat` |
-| `src/combat.cpp` | combat FSM, effect resolver, damage routing, retaliation, follow-up fixture и presentation checkpoints |
+| `src/combat.cpp` | combat FSM, effect resolver, damage routing, retaliation, follow-up fixture и causal animation markers |
 | `include/cardgame/effect_program.h` | target query/snapshot, targeter и explicit binding |
 | `src/effect_program.cpp` | детерминированная материализация целей одного beat |
 | `include/cardgame/follow_up.h` | категории execution, enabler и порядок участников party pass |
@@ -483,8 +483,8 @@ combat_session
 
 ### Что уже является хорошей основой
 
-- gameplay не зависит от времени прихода presentation checkpoints;
-- snapshot не содержит transient pointers и render tasks;
+- gameplay-анимация продвигается simulation tick и не зависит от render callback;
+- snapshot не содержит transient pointers/render tasks, но содержит ожидающие causal animation events;
 - authored effects, emitted instances и outcomes имеют явные диапазоны и типы;
 - target snapshots материализуются до cue;
 - signed semantics не теряют исходную категорию;
@@ -544,5 +544,5 @@ ctest --test-dir build -R 'cardgame_|resolve_pipeline_test' --output-on-failure
 ```
 
 Основные проверки покрывают target bindings, follow-up ordering/report visibility, normal/stolen/forced
-action cycles, typed signed effects, shield routing, retaliation, script resource lookup, nested
-presentation checkpoints, mid-resolution resume и animated/headless identity.
+action cycles, typed signed effects, shield routing, retaliation, script resource lookup, nested causal
+animation markers, mid-resolution resume и animated/headless identity.

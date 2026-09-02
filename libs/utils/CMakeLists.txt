@@ -70,6 +70,7 @@ set(HDR_LIST
   include/devils_engine/utils/atomic_file.h
   include/devils_engine/utils/fileio.h
   include/devils_engine/utils/time-utils.hpp
+  include/devils_engine/utils/simulation_time.h
   include/devils_engine/utils/timeline.h
   include/devils_engine/utils/sha256.h
   include/devils_engine/utf/utf.hpp

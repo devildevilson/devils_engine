@@ -36,6 +36,7 @@ add_library(devils_simul
   include/devils_engine/simul/startup_resources.h
   include/devils_engine/simul/systems.h
   include/devils_engine/simul/interaction_commit.h
+  include/devils_engine/simul/gameplay_timeline.h
   include/devils_engine/simul/window_runtime.h
   include/devils_engine/simul/write_buffer_channel.h
 )

@@ -639,7 +639,7 @@ enum class presentation_command_kind : uint8_t {
 
 struct presentation_command {
   presentation_command_kind kind = presentation_command_kind::start;
-  simul::presentation_task_id task = 0;
+  simul::animation_task_id task = 0;
   presentation_subject subject = presentation_subject::player_attack;
   instance_id instance = 0;
   entity_id target = invalid_entity;
@@ -677,7 +677,8 @@ struct combat_state {
   bool operator==(const combat_state&) const noexcept = default;
 };
 
-// Serializable project cursor. Presentation task ids are deliberately absent.
+// Serializable project cursor. Active animation task ids live in the enclosing
+// combat snapshot together with the causal tick timeline.
 struct combat_cursor {
   combat_phase phase = combat_phase::turn_begin;
   combat_group group = combat_group::turn_begin;
@@ -697,7 +698,9 @@ public:
     pipeline_type::snapshot pipeline{};
     resolution_work resolution{};
     std::optional<player_intent> pending_intent;
-    uint64_t next_presentation_task = 1;
+    uint64_t next_animation_task = 1;
+    std::vector<simul::animation_task_id> active_beat_tasks;
+    simul::animation_task_id active_response_task = 0;
     instance_id next_instance = 1;
     instance_id next_root = 1;
     instance_id next_execution = 1;
@@ -705,20 +708,19 @@ public:
   };
 
   explicit combat(run_mode mode = run_mode::headless,
-                  const combat_effect_script_provider* scripts = nullptr) noexcept;
+                  const combat_effect_script_provider* scripts = nullptr);
 
   bool submit(player_intent intent);
-  void update(uint64_t engine_tick);
-  bool notify_presentation(simul::presentation_task_id task,
-                           simul::presentation_event_kind kind) noexcept;
+  void update(uint64_t simulation_tick);
   std::vector<presentation_command> take_presentation_commands();
 
   const combat_state& state() const noexcept;
   const combat_cursor& cursor() const noexcept;
   const resolution_work& last_resolution() const noexcept;
   bool awaiting_player() const noexcept;
-  bool waiting_presentation() const noexcept;
+  bool waiting_gameplay_event() const noexcept;
   bool faulted() const noexcept;
+  uint64_t simulation_tick() const noexcept;
 
   snapshot save() const;
   void load(const snapshot& value);
@@ -729,8 +731,6 @@ public:
 
   // turn_pipeline host contract
   simul::step_control run_step(combat_cursor& cursor, pipeline_type& pipe);
-  uint64_t barrier_budget() const noexcept;
-  void on_barrier_timeout(const combat_cursor&, const simul::presentation_barrier&) noexcept;
 
 private:
   void begin_card_resolution(combat_cursor& cursor);
@@ -790,17 +790,17 @@ private:
   resolution_work resolution_;
   std::optional<player_intent> pending_intent_;
   std::vector<presentation_command> presentation_outbox_;
-  // Presentation task ids are derived and intentionally absent from snapshots.
-  std::vector<simul::presentation_task_id> active_beat_tasks_;
-  simul::presentation_task_id active_response_task_ = 0;
-  uint64_t next_presentation_task_ = 1;
+  // IDs correlate causal animation markers with presentation commands. The
+  // active subset is causal and therefore included in combat::snapshot.
+  std::vector<simul::animation_task_id> active_beat_tasks_;
+  simul::animation_task_id active_response_task_ = 0;
+  uint64_t next_animation_task_ = 1;
   instance_id next_instance_ = 1;
   instance_id next_root_ = 1;
   instance_id next_execution_ = 1;
   instance_id next_effect_call_ = 1;
   run_mode mode_ = run_mode::headless;
   const combat_effect_script_provider* scripts_ = nullptr;
-  bool timeout_reported_ = false;
 };
 
 } // namespace core

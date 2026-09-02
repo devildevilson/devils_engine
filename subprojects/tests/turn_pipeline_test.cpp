@@ -1,101 +1,98 @@
+#include <cstdint>
 #include <string>
 #include <vector>
 
 #include <devils_engine/simul/turn_pipeline.h>
 #include <doctest/doctest.h>
 
-using devils_engine::simul::presentation_barrier;
-using devils_engine::simul::presentation_event_kind;
-using devils_engine::simul::presentation_task_id;
-using devils_engine::simul::step_control;
-using devils_engine::simul::turn_pipeline;
+namespace simul = devils_engine::simul;
+namespace utils = devils_engine::utils;
 
 namespace {
 
-enum class beat_step : uint8_t { cue,
-                                 commit,
-                                 after };
+enum class beat_step : uint8_t {
+  cue,
+  commit,
+  after
+};
 
-// Project-owned serializable cursor. Gameplay coordinates belong here, not in turn_pipeline.
 struct cursor_t {
   uint32_t group = 0;
   beat_step step = beat_step::cue;
   uint64_t player_action_index = 0;
   uint64_t countdown_pulse_index = 0;
+  std::vector<simul::animation_task_id> active_tasks;
+  bool operator==(const cursor_t&) const = default;
 };
 
 struct mock_host {
   std::vector<std::vector<char>> program;
   std::string sim_log;
+  std::vector<simul::animation_task_id> presentation_commands;
   bool animated = false;
-
-  presentation_task_id next_task = 1;
-  std::vector<presentation_task_id> active_tasks;
-  uint64_t barrier_budget_ticks = 0;
-  uint32_t timeout_calls = 0;
+  simul::animation_task_id next_task = 1;
   int halts = 0;
 
-  step_control run_step(cursor_t& cursor, turn_pipeline<cursor_t>& pipe) {
+  simul::step_control run_step(cursor_t& cursor, simul::turn_pipeline<cursor_t>& pipe) {
     if (cursor.group >= program.size()) {
       ++halts;
-      return step_control::halt;
+      return simul::step_control::halt;
     }
 
     switch (cursor.step) {
-      case beat_step::cue: {
-        active_tasks.clear();
+      case beat_step::cue:
+        cursor.active_tasks.clear();
         if (animated) {
           for (size_t i = 0; i < program[cursor.group].size(); ++i) {
-            const auto id = next_task++;
-            active_tasks.push_back(id);
-            pipe.expect_presentation(id, presentation_event_kind::gameplay);
+            const auto task = next_task++;
+            cursor.active_tasks.push_back(task);
+            pipe.expect_animation_after(
+              task, simul::animation_event_kind::gameplay, utils::simulation_duration{2});
+            presentation_commands.push_back(task);
           }
         }
-        // Resume after a dropped in-flight cue must run commit exactly once.
         cursor.step = beat_step::commit;
-        return step_control::wait;
-      }
+        return simul::step_control::wait;
+
       case beat_step::commit:
-        // Authoritative result is calculated only after every animation reached its gameplay point.
-        for (const char effect : program[cursor.group]) {
-          sim_log.push_back(effect);
-        }
+        for (const char effect : program[cursor.group]) sim_log.push_back(effect);
         if (animated) {
-          for (const auto id : active_tasks) {
-            // Main would send the calculated result back to render here; render cannot finish the
-            // task before receiving it, so the same task id is safe for the second checkpoint.
-            pipe.expect_presentation(id, presentation_event_kind::finished);
+          for (const auto task : cursor.active_tasks) {
+            pipe.expect_animation_after(
+              task,
+              simul::animation_event_kind::recovery_finished,
+              utils::simulation_duration{3});
           }
         }
         cursor.step = beat_step::after;
-        return step_control::wait;
+        return simul::step_control::wait;
+
       case beat_step::after:
+        cursor.active_tasks.clear();
         ++cursor.group;
         cursor.step = beat_step::cue;
-        if (cursor.group == program.size()) {
-          ++cursor.player_action_index;
-        }
-        return step_control::advance;
+        if (cursor.group == program.size()) ++cursor.player_action_index;
+        return simul::step_control::advance;
     }
-    return step_control::halt;
+    return simul::step_control::halt;
   }
+};
 
-  uint64_t barrier_budget() const noexcept {
-    return barrier_budget_ticks;
-  }
-  void on_barrier_timeout(const cursor_t&, const presentation_barrier&) noexcept {
-    ++timeout_calls;
-  }
+template <class Pipeline>
+concept renderer_can_notify_gameplay = requires(Pipeline& pipe) {
+  pipe.notify_presentation(1, 1);
 };
 
 } // namespace
 
-TEST_CASE("headless pipeline runs cue commit and finish boundaries inline [turn_pipeline]") {
+static_assert(!renderer_can_notify_gameplay<simul::turn_pipeline<cursor_t>>);
+
+TEST_CASE("headless pipeline runs deterministic boundaries inline [turn_pipeline]") {
   mock_host host;
   host.program = {{'a', 'b'}, {'c'}, {'d', 'e', 'f'}};
 
-  turn_pipeline<cursor_t> pipe;
-  pipe.update(host, 0);
+  simul::turn_pipeline<cursor_t> pipe(16);
+  pipe.update(host, {0});
 
   CHECK(host.sim_log == "abcdef");
   CHECK(host.halts == 1);
@@ -104,105 +101,105 @@ TEST_CASE("headless pipeline runs cue commit and finish boundaries inline [turn_
   CHECK(pipe.cursor().player_action_index == 1);
 }
 
-TEST_CASE("gameplay commit waits for marker and next step waits for animation finish [turn_pipeline]") {
+TEST_CASE("gameplay markers are released by ticks without renderer callbacks [turn_pipeline]") {
   mock_host host;
   host.program = {{'a', 'b'}, {'c'}};
   host.animated = true;
 
-  turn_pipeline<cursor_t> pipe;
-  pipe.update(host, 1);
-
+  simul::turn_pipeline<cursor_t> pipe(16);
+  pipe.update(host, {10});
+  REQUIRE(pipe.waiting());
+  REQUIRE(host.presentation_commands.size() == 2);
   CHECK(host.sim_log.empty());
-  CHECK(pipe.waiting());
-  REQUIRE(host.active_tasks.size() == 2);
-  const auto first_tasks = host.active_tasks;
 
-  // Marker order is presentation-only. No commit until the whole batch reached the marker.
-  CHECK(pipe.notify_presentation(first_tasks.back(), presentation_event_kind::gameplay));
-  pipe.update(host, 2);
+  pipe.update(host, {11});
   CHECK(host.sim_log.empty());
-  CHECK(pipe.notify_presentation(first_tasks.front(), presentation_event_kind::gameplay));
-  pipe.update(host, 3);
+  pipe.update(host, {12});
   CHECK(host.sim_log == "ab");
   CHECK(pipe.waiting());
 
-  // A gameplay marker cannot accidentally satisfy the distinct finished checkpoint.
-  CHECK_FALSE(pipe.notify_presentation(first_tasks.front(), presentation_event_kind::gameplay));
-  for (const auto id : first_tasks) {
-    CHECK(pipe.notify_presentation(id, presentation_event_kind::finished));
-  }
-  pipe.update(host, 4);
+  pipe.update(host, {14});
   CHECK(host.sim_log == "ab");
-  CHECK(pipe.waiting()); // group 2 has now started and is waiting at its gameplay point
+  pipe.update(host, {15});
+  CHECK(host.sim_log == "ab");
+  CHECK(pipe.cursor().group == 1);
+  CHECK(pipe.cursor().step == beat_step::commit);
 
-  REQUIRE(host.active_tasks.size() == 1);
-  const auto second = host.active_tasks.front();
-  CHECK(pipe.notify_presentation(second, presentation_event_kind::gameplay));
-  pipe.update(host, 5);
+  pipe.update(host, {17});
   CHECK(host.sim_log == "abc");
-  CHECK(pipe.notify_presentation(second, presentation_event_kind::finished));
-  pipe.update(host, 6);
+  pipe.update(host, {20});
   CHECK_FALSE(pipe.waiting());
   CHECK(pipe.cursor().player_action_index == 1);
 }
 
-TEST_CASE("snapshot at an in-flight cue resumes at deterministic commit exactly once [turn_pipeline]") {
+TEST_CASE("in-flight gameplay animation events survive snapshot [turn_pipeline]") {
   mock_host host;
-  host.program = {{'a', 'b'}, {'c'}};
+  host.program = {{'a', 'b'}};
   host.animated = true;
 
-  turn_pipeline<cursor_t> pipe;
-  pipe.update(host, 1); // cue group 0; commit has not run
-  REQUIRE(host.sim_log.empty());
+  simul::turn_pipeline<cursor_t> pipe(8);
+  pipe.update(host, {30});
   REQUIRE(pipe.waiting());
   REQUIRE(pipe.cursor().step == beat_step::commit);
-
   const auto snap = pipe.save();
 
   mock_host resumed;
   resumed.program = host.program;
-  resumed.animated = false; // in-flight presentation is derived and was dropped
-
-  turn_pipeline<cursor_t> restored;
+  resumed.animated = true;
+  resumed.next_task = host.next_task;
+  simul::turn_pipeline<cursor_t> restored(8);
   restored.load(snap);
+
+  restored.update(resumed, {31});
+  CHECK(resumed.sim_log.empty());
+  restored.update(resumed, {32});
+  CHECK(resumed.sim_log == "ab");
+  CHECK(restored.waiting());
+  restored.update(resumed, {35});
   CHECK_FALSE(restored.waiting());
-  restored.update(resumed, 0);
-
-  CHECK(resumed.sim_log == "abc");
   CHECK(restored.cursor().player_action_index == 1);
-  restored.update(resumed, 1); // halt is stable; no duplicate commit
-  CHECK(resumed.sim_log == "abc");
+  restored.update(resumed, {36});
+  CHECK(resumed.sim_log == "ab");
 }
 
-TEST_CASE("stalled presentation faults once instead of hanging silently [turn_pipeline]") {
+TEST_CASE("turn pipeline rejects inconsistent snapshots transactionally [turn_pipeline]") {
   mock_host host;
-  host.program = {{'a'}};
+  host.program = {{'a', 'b'}};
   host.animated = true;
-  host.barrier_budget_ticks = 5;
 
-  turn_pipeline<cursor_t> pipe;
-  pipe.update(host, 10);
-  REQUIRE(pipe.waiting());
-  CHECK_FALSE(pipe.faulted());
+  simul::turn_pipeline<cursor_t> pipe(8);
+  pipe.update(host, {30});
+  const auto saved = pipe.save();
+  REQUIRE(saved.pending.size() == 2);
 
-  pipe.update(host, 15); // strict budget: exactly 5 is still allowed
-  CHECK(host.timeout_calls == 0);
-  pipe.update(host, 16);
-  CHECK(pipe.faulted());
-  CHECK(host.timeout_calls == 1);
+  auto missing_barrier_event = saved;
+  missing_barrier_event.pending.pop_back();
+  CHECK_THROWS_AS(pipe.load(missing_barrier_event), std::invalid_argument);
+  CHECK(pipe.save() == saved);
 
-  pipe.update(host, 100);
-  CHECK(host.timeout_calls == 1); // latched fault, callback is not repeated every frame
-  CHECK(host.sim_log.empty());
+  auto not_waiting = saved;
+  not_waiting.waiting = false;
+  CHECK_THROWS_AS(pipe.load(not_waiting), std::invalid_argument);
+  CHECK(pipe.save() == saved);
 }
 
-TEST_CASE("project cursor owns independent action and countdown pulse coordinates [turn_pipeline]") {
-  turn_pipeline<cursor_t> pipe;
+TEST_CASE("turn pipeline exposes its event budget [turn_pipeline]") {
+  mock_host host;
+  host.program = {{'a', 'b'}};
+  host.animated = true;
+
+  simul::turn_pipeline<cursor_t> pipe(1);
+  CHECK_THROWS_AS(pipe.update(host, {1}), std::length_error);
+  CHECK(pipe.faulted());
+}
+
+TEST_CASE("project cursor owns independent gameplay coordinates [turn_pipeline]") {
+  simul::turn_pipeline<cursor_t> pipe(4);
   pipe.cursor().player_action_index = 2;
-  pipe.cursor().countdown_pulse_index = 1; // e.g. one normal + one no_countdown action
+  pipe.cursor().countdown_pulse_index = 1;
 
   const auto snap = pipe.save();
-  turn_pipeline<cursor_t> restored;
+  simul::turn_pipeline<cursor_t> restored(4);
   restored.load(snap);
 
   CHECK(restored.cursor().player_action_index == 2);

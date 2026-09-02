@@ -22,13 +22,7 @@ void check(const bool value, const char* message) {
 void drive_to_player(cg::combat& game, uint64_t& engine_tick) {
   for (uint32_t guard = 0; guard < 256; ++guard) {
     game.update(++engine_tick);
-    for (const auto& command : game.take_presentation_commands()) {
-      const auto event = command.kind == cg::presentation_command_kind::start
-                           ? devils_engine::simul::presentation_event_kind::gameplay
-                           : devils_engine::simul::presentation_event_kind::finished;
-      check(game.notify_presentation(command.task, event),
-            "fake presentation produced an unexpected event");
-    }
+    (void)game.take_presentation_commands();
     if (game.awaiting_player()) return;
     check(!game.faulted(), "grouped action pipeline faulted");
   }
@@ -308,7 +302,7 @@ int main() {
           {cg::player_intent_kind::play_card, cg::card_kind::strike, 1}),
         "could not submit in-flight grouped action");
   in_flight.update(++in_flight_tick);
-  check(in_flight.waiting_presentation() &&
+  check(in_flight.waiting_gameplay_event() &&
           in_flight.cursor().phase == cg::combat_phase::action_cycle &&
           in_flight.cursor().group == cg::combat_group::card_effects &&
           in_flight.cursor().action.token == 1,
@@ -322,7 +316,7 @@ int main() {
 
   cg::combat resumed(cg::run_mode::headless);
   resumed.load(in_flight_snapshot);
-  uint64_t resumed_tick = 0;
+  uint64_t resumed_tick = resumed.simulation_tick();
   drive_to_player(resumed, resumed_tick);
 
   cg::combat control(cg::run_mode::headless);

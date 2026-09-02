@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "devils_engine/demiurg/resource_system.h"
+#include "devils_engine/utils/simulation_time.h"
 #include "devils_engine/utils/string_id.h"
 
 namespace devils_engine {
@@ -43,10 +44,16 @@ struct state {
   vec2 uv = {};
 };
 
-struct playback {
+struct presentation_playback {
   uint32_t current = invalid_state;
   uint64_t elapsed_mcs = 0;
   vec2 uv = {};
+  bool finished = false;
+};
+
+struct gameplay_playback {
+  uint32_t current = invalid_state;
+  uint64_t elapsed_ticks = 0;
   bool action_emitted = false;
   bool finished = false;
 };
@@ -69,8 +76,11 @@ struct action_event {
   utils::id action = utils::invalid_id;
 };
 
-struct sample_result {
+struct presentation_sample {
   sprite_sample sprite;
+};
+
+struct gameplay_sample {
   std::vector<action_event> actions;
 };
 
@@ -94,8 +104,17 @@ public:
     const std::vector<std::string>& next_names);
   void resolve_pending_links(bool warn_unresolved);
 
-  sample_result sample(playback& pb, uint64_t dt_mcs, const sample_context& ctx,
-                       uint32_t zero_duration_step_limit = default_zero_duration_step_limit) const;
+  presentation_sample sample_presentation(
+    presentation_playback& pb,
+    uint64_t dt_mcs,
+    const sample_context& ctx,
+    uint32_t zero_duration_step_limit = default_zero_duration_step_limit) const;
+
+  gameplay_sample sample_gameplay(
+    gameplay_playback& pb,
+    utils::simulation_duration dt,
+    utils::simulation_rate rate,
+    uint32_t zero_duration_step_limit = default_zero_duration_step_limit) const;
 
 private:
   struct named_state {

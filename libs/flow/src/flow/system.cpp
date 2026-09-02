@@ -68,7 +68,11 @@ static state convert_state(
   return out;
 }
 
-static void emit_action_once(const state& st, const uint32_t state_index, playback& pb, sample_result& out) {
+static void emit_action_once(
+  const state& st,
+  const uint32_t state_index,
+  gameplay_playback& pb,
+  gameplay_sample& out) {
   if (pb.action_emitted || st.action == utils::invalid_id) {
     return;
   }
@@ -76,9 +80,15 @@ static void emit_action_once(const state& st, const uint32_t state_index, playba
   pb.action_emitted = true;
 }
 
-static void enter_state(playback& pb, const uint32_t next) {
+static void enter_presentation_state(presentation_playback& pb, const uint32_t next) {
   pb.current = next;
   pb.elapsed_mcs = 0;
+  pb.finished = next == invalid_state;
+}
+
+static void enter_gameplay_state(gameplay_playback& pb, const uint32_t next) {
+  pb.current = next;
+  pb.elapsed_ticks = 0;
   pb.action_emitted = false;
   pb.finished = next == invalid_state;
 }
@@ -178,12 +188,12 @@ void library::resolve_pending_links(const bool warn_unresolved) {
   pending_.resize(write);
 }
 
-sample_result library::sample(
-  playback& pb,
+presentation_sample library::sample_presentation(
+  presentation_playback& pb,
   const uint64_t dt_mcs,
   const sample_context& ctx,
   const uint32_t zero_duration_step_limit) const {
-  sample_result out;
+  presentation_sample out;
   if (pb.current == invalid_state || pb.current >= states_.size()) {
     pb.finished = true;
     return out;
@@ -195,7 +205,6 @@ sample_result library::sample(
   while (pb.current != invalid_state && pb.current < states_.size()) {
     const state& st = states_[pb.current].data;
     const uint32_t cur_index = pb.current;
-    emit_action_once(st, cur_index, pb, out);
 
     if (st.duration_mcs == 0) {
       pb.uv = truncate_uv(vec2{pb.uv.x + st.uv.x, pb.uv.y + st.uv.y});
@@ -207,7 +216,7 @@ sample_result library::sample(
         utils::warn("flow: zero-duration transition limit {} reached at state {}", zero_duration_step_limit, cur_index);
         break;
       }
-      enter_state(pb, st.next);
+      enter_presentation_state(pb, st.next);
       continue;
     }
 
@@ -239,7 +248,63 @@ sample_result library::sample(
       break;
     }
 
-    enter_state(pb, st.next);
+    enter_presentation_state(pb, st.next);
+    if (remaining == 0) break;
+  }
+
+  return out;
+}
+
+gameplay_sample library::sample_gameplay(
+  gameplay_playback& pb,
+  const utils::simulation_duration dt,
+  const utils::simulation_rate rate,
+  const uint32_t zero_duration_step_limit) const {
+  gameplay_sample out;
+  if (pb.current == invalid_state || pb.current >= states_.size()) {
+    pb.finished = true;
+    return out;
+  }
+
+  uint64_t remaining = dt.ticks;
+  uint32_t guard = 0;
+
+  while (pb.current != invalid_state && pb.current < states_.size()) {
+    const state& st = states_[pb.current].data;
+    const uint32_t cur_index = pb.current;
+    emit_action_once(st, cur_index, pb, out);
+    const uint64_t duration_ticks =
+      rate.to_ticks_ceil(utils::authored_duration{st.duration_mcs}).ticks;
+
+    if (duration_ticks == 0) {
+      if (st.next == invalid_state) {
+        pb.finished = true;
+        break;
+      }
+      if (++guard > zero_duration_step_limit) {
+        utils::warn(
+          "flow: zero-duration gameplay transition limit {} reached at state {}",
+          zero_duration_step_limit,
+          cur_index);
+        break;
+      }
+      enter_gameplay_state(pb, st.next);
+      continue;
+    }
+
+    const uint64_t before = pb.elapsed_ticks;
+    const uint64_t step = std::min<uint64_t>(
+      remaining, duration_ticks - std::min(before, duration_ticks));
+    pb.elapsed_ticks = std::min<uint64_t>(duration_ticks, pb.elapsed_ticks + step);
+    remaining -= step;
+
+    if (pb.elapsed_ticks < duration_ticks) break;
+    if (st.next == invalid_state) {
+      pb.finished = true;
+      break;
+    }
+
+    enter_gameplay_state(pb, st.next);
     if (remaining == 0) {
       const state& next_st = states_[pb.current].data;
       emit_action_once(next_st, pb.current, pb, out);

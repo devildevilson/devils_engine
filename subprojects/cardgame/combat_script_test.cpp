@@ -52,11 +52,6 @@ std::vector<cg::presentation_command> drive_to_player(
     const auto commands = game.take_presentation_commands();
     for (const auto& command : commands) {
       observed.push_back(command);
-      const auto event = command.kind == cg::presentation_command_kind::start
-                           ? devils_engine::simul::presentation_event_kind::gameplay
-                           : devils_engine::simul::presentation_event_kind::finished;
-      check(game.notify_presentation(command.task, event),
-            "scripted card produced an unexpected presentation event");
     }
     if (game.awaiting_player()) return observed;
     check(!game.faulted(), "scripted card pipeline faulted");
@@ -379,14 +374,14 @@ int main() {
                           1}),
         "resource-backed card intent was rejected");
   in_flight.update(++in_flight_tick);
-  check(in_flight.waiting_presentation() &&
+  check(in_flight.waiting_gameplay_event() &&
           in_flight.last_resolution().script_effects.size() == 1 &&
           in_flight.last_resolution().attacks.empty(),
         "resource-backed card did not pause before invoking its DS effect");
 
   cg::combat resumed(cg::run_mode::headless, &script_resources);
   resumed.load(in_flight.save());
-  uint64_t resumed_tick = 0;
+  uint64_t resumed_tick = resumed.simulation_tick();
   drive_to_player(resumed, resumed_tick);
 
   cg::combat control(cg::run_mode::headless, &script_resources);
@@ -412,7 +407,7 @@ int main() {
                       1}),
         "resource-backed shield card intent was rejected");
   guard.update(++guard_tick);
-  check(guard.waiting_presentation() &&
+  check(guard.waiting_gameplay_event() &&
           guard.last_resolution().shields.empty(),
         "resource-backed shield card did not pause before its DS invocation");
   const auto guard_snapshot = guard.save();
@@ -447,7 +442,7 @@ int main() {
 
   cg::combat resumed_guard(cg::run_mode::headless, &script_resources);
   resumed_guard.load(guard_snapshot);
-  uint64_t resumed_guard_tick = 0;
+  uint64_t resumed_guard_tick = resumed_guard.simulation_tick();
   (void)drive_to_player(resumed_guard, resumed_guard_tick);
   check(resumed_guard.state() == guard.state() &&
           resumed_guard.last_resolution() == guard.last_resolution(),
@@ -488,18 +483,12 @@ int main() {
   follow_up_in_flight.update(++follow_up_tick);
   auto commands = follow_up_in_flight.take_presentation_commands();
   check(commands.size() == 1 &&
-          commands.front().kind == cg::presentation_command_kind::start &&
-          follow_up_in_flight.notify_presentation(
-            commands.front().task,
-            devils_engine::simul::presentation_event_kind::gameplay),
+          commands.front().kind == cg::presentation_command_kind::start,
         "follow-up integration did not reach the card gameplay checkpoint");
   follow_up_in_flight.update(++follow_up_tick);
   commands = follow_up_in_flight.take_presentation_commands();
   check(commands.size() == 1 &&
-          commands.front().kind == cg::presentation_command_kind::result &&
-          follow_up_in_flight.notify_presentation(
-            commands.front().task,
-            devils_engine::simul::presentation_event_kind::finished),
+          commands.front().kind == cg::presentation_command_kind::result,
         "follow-up integration did not finish the card presentation");
   follow_up_in_flight.update(++follow_up_tick);
   commands = follow_up_in_flight.take_presentation_commands();
@@ -515,7 +504,7 @@ int main() {
 
   cg::combat resumed_follow_up(cg::run_mode::headless, &script_resources);
   resumed_follow_up.load(follow_up_snapshot);
-  uint64_t resumed_follow_up_tick = 0;
+  uint64_t resumed_follow_up_tick = resumed_follow_up.simulation_tick();
   (void)drive_to_player(resumed_follow_up, resumed_follow_up_tick);
 
   cg::combat control_follow_up(cg::run_mode::headless, &script_resources);

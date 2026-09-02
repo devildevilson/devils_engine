@@ -256,9 +256,9 @@ start animation
     → move outer combat FSM cursor
 ```
 
-Resolver не ждёт render thread сам. Ожиданием владеет `simul::presentation_barrier`/project host. Headless
-режим не регистрирует presentation task и проходит тот же commit немедленно, поэтому animated/headless
-должны давать идентичный gameplay state.
+Resolver не ждёт render thread сам. Ожиданием владеет tick-driven gameplay timeline/project host. И headless,
+и animated регистрируют одинаковый causal animation event; только animated дополнительно публикует однонаправленную
+presentation-команду. Поэтому они обязаны достигать commit на одном simulation tick и давать идентичный state.
 
 ### Почему один frontier не задаёт весь порядок карточного боя
 
@@ -489,7 +489,8 @@ Presentation output эфемерен и не сериализуется как a
 - `total_jobs` и `frontier_index`, если они участвуют в budgets/debug;
 - project state, уже применённый на предыдущей commit boundary.
 
-Transient `journal`, target grouping, worker tasks и presentation barrier в snapshot не входят. Проект может
+Transient `journal`, target grouping и worker tasks в snapshot не входят. Ожидающие tick-driven gameplay events
+и их barrier входят, потому что определяют будущий commit. Проект может
 зарегистрировать подходящий `frontier_state<Item>` в своей схеме или зеркалировать его поля в собственном
 serializable aggregate. Нельзя сохранять указатели, spans, callback addresses или физический append order.
 
@@ -529,7 +530,7 @@ serializable aggregate. Нельзя сохранять указатели, span
 - Делать один безусловный BFS там, где gameplay требует reaction/death до следующего primary hit.
 - Смешивать combat status с `aesthetics::flag_set`.
 - Давать render thread право менять gameplay state.
-- Сериализовать transient worker journal или presentation task.
+- Сериализовать transient worker journal или render/presentation task вместо causal gameplay event.
 
 ## Ближайшее развитие
 

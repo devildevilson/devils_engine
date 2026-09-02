@@ -12,6 +12,18 @@ namespace cardgame {
 namespace core {
 namespace {
 
+constexpr size_t combat_animation_event_capacity = 1024;
+constexpr devils_engine::utils::simulation_rate combat_simulation_rate{60};
+// Fixture-authored animation timing. Resources remain in microseconds; the
+// session rate quantizes causal deadlines once, before they enter game state.
+constexpr auto gameplay_marker_delay = combat_simulation_rate.to_ticks_ceil(
+  devils_engine::utils::authored_duration{10'000});
+constexpr auto recovery_finished_delay = combat_simulation_rate.to_ticks_ceil(
+  devils_engine::utils::authored_duration{10'000});
+
+} // namespace
+namespace {
+
 constexpr int32_t enemy_attack_damage = 2;
 constexpr int32_t enemy_start_countdown = 2;
 constexpr int32_t basis_points = 10000;
@@ -149,8 +161,8 @@ void reset_action_report(action_report& report) {
 }
 
 combat::combat(const run_mode mode,
-               const combat_effect_script_provider* scripts) noexcept
-  : mode_(mode), scripts_(scripts) {}
+               const combat_effect_script_provider* scripts)
+  : pipeline_(combat_animation_event_capacity), mode_(mode), scripts_(scripts) {}
 
 bool combat::submit(player_intent intent) {
   if (!awaiting_player() || pending_intent_.has_value()) {
@@ -160,13 +172,8 @@ bool combat::submit(player_intent intent) {
   return true;
 }
 
-void combat::update(const uint64_t engine_tick) {
-  pipeline_.update(*this, engine_tick);
-}
-
-bool combat::notify_presentation(const simul::presentation_task_id task,
-                                 const simul::presentation_event_kind kind) noexcept {
-  return pipeline_.notify_presentation(task, kind);
+void combat::update(const uint64_t simulation_tick) {
+  pipeline_.update(*this, devils_engine::utils::simulation_tick{simulation_tick});
 }
 
 std::vector<presentation_command> combat::take_presentation_commands() {
@@ -190,33 +197,37 @@ bool combat::awaiting_player() const noexcept {
          !pipeline_.waiting() && !pipeline_.faulted();
 }
 
-bool combat::waiting_presentation() const noexcept {
+bool combat::waiting_gameplay_event() const noexcept {
   return pipeline_.waiting();
 }
 
 bool combat::faulted() const noexcept {
-  return pipeline_.faulted() || timeout_reported_ ||
+  return pipeline_.faulted() ||
          resolution_.damage_frontier.status == resolve::frontier_status::faulted;
 }
 
+uint64_t combat::simulation_tick() const noexcept {
+  return pipeline_.current_tick().value;
+}
+
 combat::snapshot combat::save() const {
-  return snapshot{state_, pipeline_.save(), resolution_, pending_intent_, next_presentation_task_,
-                  next_instance_, next_root_, next_execution_, next_effect_call_};
+  return snapshot{state_, pipeline_.save(), resolution_, pending_intent_, next_animation_task_,
+                  active_beat_tasks_, active_response_task_, next_instance_, next_root_,
+                  next_execution_, next_effect_call_};
 }
 
 void combat::load(const snapshot& value) {
   state_ = value.state;
   resolution_ = value.resolution;
   pending_intent_ = value.pending_intent;
-  next_presentation_task_ = value.next_presentation_task;
+  next_animation_task_ = value.next_animation_task;
+  active_beat_tasks_ = value.active_beat_tasks;
+  active_response_task_ = value.active_response_task;
   next_instance_ = value.next_instance;
   next_root_ = value.next_root;
   next_execution_ = value.next_execution;
   next_effect_call_ = value.next_effect_call;
   presentation_outbox_.clear();
-  active_beat_tasks_.clear();
-  active_response_task_ = 0;
-  timeout_reported_ = false;
   pipeline_.load(value.pipeline);
 }
 
@@ -1236,16 +1247,18 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
       const effect_beat& beat = resolution_.program.beats[cursor.beat_index];
       active_beat_tasks_.assign(beat.effects.size(), 0);
       bool waiting = false;
-      if (mode_ == run_mode::animated) {
-        for (size_t i = 0; i < beat.effects.size(); ++i) {
-          const authored_effect_report& call =
-            resolution_.report.effects[cursor.beat_report_begin + i];
-          if (call.target_set.targets.empty()) continue;
+      for (size_t i = 0; i < beat.effects.size(); ++i) {
+        const authored_effect_report& call =
+          resolution_.report.effects[cursor.beat_report_begin + i];
+        if (call.target_set.targets.empty()) continue;
 
-          const auto task = next_presentation_task_++;
-          active_beat_tasks_[i] = task;
-          // Arm the complete beat before publishing any cue: presentation may answer immediately.
-          pipe.expect_presentation(task, simul::presentation_event_kind::gameplay);
+        const auto task = next_animation_task_++;
+        active_beat_tasks_[i] = task;
+        // The causal marker is armed in every mode. Presentation is merely an
+        // optional one-way observer of the same animation task.
+        pipe.expect_animation_after(
+          task, simul::animation_event_kind::gameplay, gameplay_marker_delay);
+        if (mode_ == run_mode::animated) {
           presentation_command command;
           command.kind = presentation_command_kind::start;
           command.task = task;
@@ -1254,8 +1267,8 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
           command.targets = call.target_set.targets;
           command.target = command.targets.front();
           presentation_outbox_.push_back(std::move(command));
-          waiting = true;
         }
+        waiting = true;
       }
       cursor.stage = resolution_stage::select_effect;
       return waiting ? simul::step_control::wait : simul::step_control::advance;
@@ -1401,11 +1414,11 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
     case resolution_stage::select_response:
       if (cursor.response_index < resolution_.responses.size()) {
         cursor.stage = resolution_stage::response_commit;
+        const damage_instance& response = resolution_.responses[cursor.response_index];
+        active_response_task_ = next_animation_task_++;
+        pipe.expect_animation_after(
+          active_response_task_, simul::animation_event_kind::gameplay, gameplay_marker_delay);
         if (mode_ == run_mode::animated) {
-          const damage_instance& response = resolution_.responses[cursor.response_index];
-          active_response_task_ = next_presentation_task_++;
-          pipe.expect_presentation(
-            active_response_task_, simul::presentation_event_kind::gameplay);
           presentation_command command;
           command.kind = presentation_command_kind::start;
           command.task = active_response_task_;
@@ -1414,9 +1427,8 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
           command.target = static_cast<entity_id>(response.header.target);
           command.targets.push_back(command.target);
           presentation_outbox_.push_back(std::move(command));
-          return simul::step_control::wait;
         }
-        return simul::step_control::advance;
+        return simul::step_control::wait;
       }
       if (resolution_.damage_frontier.active()) {
         if (!resolve::advance(
@@ -1435,29 +1447,33 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
       const size_t outcome_begin = resolution_.damage_trace.size();
       resolve_damage_work(response);
       cursor.stage = resolution_stage::response_after;
-      if (mode_ == run_mode::animated && active_response_task_ != 0) {
-        pipe.expect_presentation(
-          active_response_task_, simul::presentation_event_kind::finished);
-        presentation_command command;
-        command.kind = presentation_command_kind::result;
-        command.task = active_response_task_;
-        command.subject = presentation_subject::returned_damage;
-        command.instance = response.header.id;
-        command.target = static_cast<entity_id>(response.header.target);
-        command.targets.push_back(command.target);
-        for (size_t i = outcome_begin; i < resolution_.damage_trace.size(); ++i) {
-          const damage_outcome& outcome = resolution_.damage_trace[i];
-          command.results.push_back(presentation_command::result_value{
-            damage_subject(outcome.damage),
-            outcome.damage.header.id,
-            static_cast<entity_id>(outcome.damage.header.target),
-            outcome.route.before - outcome.route.committed_after,
-            0});
+      if (active_response_task_ != 0) {
+        pipe.expect_animation_after(
+          active_response_task_,
+          simul::animation_event_kind::recovery_finished,
+          recovery_finished_delay);
+        if (mode_ == run_mode::animated) {
+          presentation_command command;
+          command.kind = presentation_command_kind::result;
+          command.task = active_response_task_;
+          command.subject = presentation_subject::returned_damage;
+          command.instance = response.header.id;
+          command.target = static_cast<entity_id>(response.header.target);
+          command.targets.push_back(command.target);
+          for (size_t i = outcome_begin; i < resolution_.damage_trace.size(); ++i) {
+            const damage_outcome& outcome = resolution_.damage_trace[i];
+            command.results.push_back(presentation_command::result_value{
+              damage_subject(outcome.damage),
+              outcome.damage.header.id,
+              static_cast<entity_id>(outcome.damage.header.target),
+              outcome.route.before - outcome.route.committed_after,
+              0});
+          }
+          if (!command.results.empty()) {
+            command.value = command.results.front().value;
+          }
+          presentation_outbox_.push_back(std::move(command));
         }
-        if (!command.results.empty()) {
-          command.value = command.results.front().value;
-        }
-        presentation_outbox_.push_back(std::move(command));
         return simul::step_control::wait;
       }
       return simul::step_control::advance;
@@ -1546,18 +1562,19 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
 
     case resolution_stage::beat_results: {
       bool waiting = false;
-      if (mode_ == run_mode::animated) {
-        const effect_beat& beat = resolution_.program.beats[cursor.beat_index];
-        if (!active_beat_tasks_.empty() && active_beat_tasks_.size() != beat.effects.size()) {
-          throw std::logic_error("cardgame presentation task batch shape changed");
-        }
-        for (size_t i = 0; i < active_beat_tasks_.size(); ++i) {
-          const auto task = active_beat_tasks_[i];
-          if (task == 0) continue;
-          const authored_effect_report& call =
-            resolution_.report.effects[cursor.beat_report_begin + i];
-          pipe.expect_presentation(task, simul::presentation_event_kind::finished);
+      const effect_beat& beat = resolution_.program.beats[cursor.beat_index];
+      if (!active_beat_tasks_.empty() && active_beat_tasks_.size() != beat.effects.size()) {
+        throw std::logic_error("cardgame animation task batch shape changed");
+      }
+      for (size_t i = 0; i < active_beat_tasks_.size(); ++i) {
+        const auto task = active_beat_tasks_[i];
+        if (task == 0) continue;
+        const authored_effect_report& call =
+          resolution_.report.effects[cursor.beat_report_begin + i];
+        pipe.expect_animation_after(
+          task, simul::animation_event_kind::recovery_finished, recovery_finished_delay);
 
+        if (mode_ == run_mode::animated) {
           presentation_command command;
           command.kind = presentation_command_kind::result;
           command.task = task;
@@ -1571,8 +1588,8 @@ simul::step_control combat::run_resolution_step(combat_cursor& combat_cursor,
             command.outcome = command.results.front().outcome;
           }
           presentation_outbox_.push_back(std::move(command));
-          waiting = true;
         }
+        waiting = true;
       }
       cursor.stage = resolution_stage::beat_after;
       return waiting ? simul::step_control::wait : simul::step_control::advance;
@@ -1993,16 +2010,6 @@ simul::step_control combat::run_step(combat_cursor& cursor, pipeline_type& pipe)
       return simul::step_control::halt;
   }
   return simul::step_control::halt;
-}
-
-uint64_t combat::barrier_budget() const noexcept {
-  return 600;
-}
-
-void combat::on_barrier_timeout(
-  const combat_cursor&,
-  const simul::presentation_barrier&) noexcept {
-  timeout_reported_ = true;
 }
 
 } // namespace core

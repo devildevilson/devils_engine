@@ -4,8 +4,78 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- GN02 MAP RENDERING: THE FRAGMENT DECIDES THE AREA (2026-09-02). `69/69` planet checks, `339/339`
+  project tests. Three asks about borders, and the third one — "the bands exist but they sit at a
+  distance from the borders themselves; the outlined border and the surface under it do not agree on how
+  they are drawn" — described the defect literally. THE WATERSHED MOVED: the vertex decides SHAPE
+  (displacement has nowhere else to live), the fragment decides everything else — colour, area, coast,
+  border, selection. Choosing an area PER VERTEX is impossible in principle, not merely awkward: a label
+  is discrete, so any interpolated quantity mixes two different labels, and the workaround of handing
+  over a PAIR of colours plus a signed field between them breaks at vertices deep inside an area — they
+  have no pair, so their sign is not consistent with their neighbours, and the map grows OUTLINED SLIVERS
+  inside provinces. Making the sign globally consistent would require the area adjacency graph to be
+  bipartite, and it is not. So the pixel finds its own cell: a graph DESCENT from the cell the vertex
+  named (Voronoi cells are convex, so a step to the nearest neighbour cannot stall, and one step suffices
+  because a triangle is finer than a cell), then AREA COVERAGE over the cell and its ring with a COMPACT
+  kernel. Compact and not Gaussian for a reason: a Gaussian has to be truncated at the ring, and
+  truncation is asymmetric about a border — more is cut from the far area than from the near one, so the
+  border drifts outward and the lattice reappears. The kernel width is DERIVED, not tuned: a one-cell
+  area must win at its own centre against the worst possible ring of eight neighbours at the minimum
+  distance, hence `8*(1 - 1/R^2)^2 < 1`, so `R < 1.244`, and 1.2 leaves a quarter of margin. The first
+  attempt set 1.5 by eye and was ARITHMETICALLY wrong (a lone cell's share is 0.35, not the 0.54 I
+  computed); measured, 1.5 hides 154 land-mass cells and 91 province cells — exactly the one-cell islands
+  that physics produced and the generator named. A verify check now mirrors the shader rule and reports
+  that number, because the eye cannot see it: an island eaten by the kernel looks like it was never there.
+  General rule that fell out: A LABEL NEEDS A BORDER, A NUMBER NEEDS INTERPOLATION. A class is a label
+  too, so climate and landform regions are filled FLAT like provinces — while they were blended "softly"
+  with a power on the weight, both maps came out as BEADS, because the power gives almost everything to
+  the nearest cell. Numbers (height, temperature) interpolate linearly, and the blend-sharpness parameter
+  disappeared entirely: nothing between those two cases was ever needed. The border LINE now lies on the
+  ZERO OF THE SAME MARGIN that picks the fill, so it cannot land anywhere else; there were four wrong
+  attempts before, and the instructive one is the blurred frontier — an unsigned quantity has no side, so
+  its 0.5 level yields TWO lines, each one cell away from the real border. Whether a line is drawn is a
+  SEPARATE flag from whether the field has areas (the answer to "some views need no border at all"): a
+  hash colour is a name and needs the line, a semantic palette names the class itself and a black stroke
+  between desert and steppe would assert a boundary nature does not have. Line thickness must be measured
+  in PIXELS (distance to the zero over the field's screen slope), and the slope as a SUM OF ABSOLUTE
+  derivatives rather than a vector length — on a quad edge one derivative vanishes and the line breaks
+  into dashes. One SILENT bug cost three screenshots: the neighbour count is stored as an INTEGER in the
+  record's fourth word and must be read with `floatBitsToUint`, not a type cast — integer 6 in float bits
+  is a denormal, i.e. zero; the neighbourhood came out empty, the descent never stepped, and the picture
+  silently fell back to the Voronoi lattice. Neither the compiler nor the validation layer says anything;
+  the only symptom is that an edit which must change everything changes nothing, which is why the
+  diagnostic was to triple the kernel width and see that the picture still did not move. Cost: `254 → 207`
+  FPS uncapped at 262144 cells (a pixel reads up to nine cells instead of four per vertex); with vsync it
+  is still exactly 60. Direction recorded, not a task: transitions between climate zones will also be
+  built by MORE CLASSES — where Earth puts semi-desert and savanna between desert and forest we have a
+  single border, and rendering neither can nor should fix that.
+  A FOLLOW-UP PASS fixed "holey borders" — at some distance the line broke into dashes — and both causes
+  were about SAMPLING, not about the field. (a) The field's slope must be computed ANALYTICALLY, never by
+  a screen derivative: the candidate neighbourhood changes as the pixel crosses a Voronoi edge, so
+  coverage takes a tiny step — the border itself does not move, but the derivative spikes, and the line
+  width and its fade were both computed from it. A compact kernel has an analytic derivative
+  (`-4u(1-u^2)/R`), it is continuous, and the coverage gradient is a sum of it over an area's cells (with
+  a quotient-rule term for the normalisation, and the radial part projected out because the pixel travels
+  ON THE SPHERE). (b) The FILL EDGE must be antialiased by PIXEL AREA COVERAGE: a one-pixel staircase
+  under a thin line is what made the line holey. The decisive measurement was rendering the same frame at
+  double resolution and downsampling — the line came out clean, so the defect lived in sampling. Blending
+  by pixel coverage is NOT the forbidden mixing of labels: what mixes is not the area values but their
+  shares of the pixel's area, exactly as in a glyph. General rule: THE FILL, ITS EDGE AND ITS BORDER MUST
+  BE COMPUTED FROM ONE FIELD. The smoothing scale is now a knob (`B` in the window, `--smoothing=`)
+  because it is taste; the range ends are derived, and the verify check measures the WIDEST allowed width
+  so it covers the whole knob. Cost `207 → 150` FPS, run-to-run spread `136..171` on an integrated GPU, so
+  read it as "about a third of a frame at 60 Hz" rather than as a precise number. A second SILENT bug of
+  the same family as the denormal read: key-latch slots are hand-numbered per call site, the new key's
+  slot ran past the array, and the out-of-bounds write changed the VIEW MODE — the window showed relief
+  instead of what `--mode` asked for, with nothing in any output about it. The symptom of this family is
+  always "an edit that must change everything changes nothing, or changes the wrong thing". A bounds check
+  now lives inside the latch. Also found by the five-seed verify and fixed BY CONSTRUCTION: two continents
+  could draw the same synthesised name (seed 1); on a clash the name seed now advances by the same mixing
+  used inside synthesis, which keeps "the name is fully determined by the data" because the traversal
+  order is the same for every consumer of the package.
+
 - GN02 ISLAND CLUSTERS, TACTILITY AND SMOOTHING: THE TASK QUEUE IS CLOSED (2026-09-02). `67/67` planet
-  checks, `321/321` project tests. (1) A THIRD ISLAND MECHANISM, because neither of the first two can
+  checks at the time, `321/321` project tests. (1) A THIRD ISLAND MECHANISM, because neither of the first two can
   produce a CLUSTER: a hotspot track and a volcanic front are both LINES. The Aegean is a drowned
   highland on continental crust — the back-arc crust is stretched, the region subsided, and the peaks of
   the old fold belt stand out of the water. So the mechanism is not "raise islands" but LOWER A MOUNTAIN
@@ -19,18 +89,24 @@ This repository is the author's experimental game engine / framework. It is a la
   a fixed amount — a fixed subsidence does not know where the crust stood, and the interior of a
   continent stands a kilometre higher than its edge. The quantity to measure was not the island count but
   the LAND FRACTION INSIDE THE BASIN: at 45% it percolates into one mass and grows peninsulas onto the
-  mainland, at 15% there are too few islands; 23% gives 49 pieces with 25 in clusters. (2) SMOOTHING is
-  a mesh vertex taking FOUR nearest cells with distance weights instead of one — with one it inherits a
-  cell's value whole, so relief gets per-cell terraces and an area border becomes a polygonal chain, both
-  of which show the Fibonacci lattice rather than the world. The border itself needs a SEPARATE FIELD
-  blurred over the adjacency graph, and that was the third attempt: the weight difference of the two
-  nearest cells outlines every cell in the lattice; the same difference restricted to differing areas
-  outlines the area border but along the lattice chain; only averaging the field over the graph smooths
-  the border's SHAPE rather than its screen edge. (3) TACTILITY is surface labels plus ray picking, and
-  the property that matters is that WHAT IS SELECTED AND LABELLED IS DECIDED BY THE CHOSEN VIEW — the
-  level is declared next to the view itself, not derived by a second formula in the label code. Labels
-  need two thresholds, and screen-space decluttering must store a RECTANGLE, not a point: near the
-  horizon the disc compresses and long names overlap while their centres are far apart. (4) Two loud
+  mainland, at 15% there are too few islands; 23% gives 49 pieces with 25 in clusters. (2) SMOOTHING was reworked in a second
+  pass (see the entry above) and the account here is kept only for the lessons that survived: the coast
+  is decided per FRAGMENT at the 0.5 level of a smooth LAND FRACTION, and that fraction must be its own
+  field rather than the sign of the height, because height in the record is CLAMPED at zero (water is a
+  smooth sphere; depth is shown by colour, not by shape), so "height above zero" on a blend meant "there
+  is land nearby", not "this is land". Everything the first pass did with per-vertex colour, blend
+  sharpness and a blurred border field was later found wrong in principle. (3) TACTILITY is surface labels plus ray picking. Labels are
+  DECALS: every corner of every glyph sits ON THE SPHERE (the corner direction is the anchor shifted
+  along a tangent basis, then normalised), so the text bends with the planet, foreshortens toward the
+  horizon and is occluded by a mountain. The first attempt drew a BILLBOARD sized in screen fractions —
+  always readable, but hanging ABOVE the planet rather than lying on it, and the difference shows the
+  moment the globe turns. Size is therefore in RADIANS: a decal has a place on the surface, so it has a
+  size on the surface, and readability comes from three thresholds (screen size, which doubles as LOD;
+  the horizon; and an occupancy RECTANGLE — a point is not enough, because a long name has a different
+  width). The lift above the surface is measured from the HIGHEST POSSIBLE mountain: at 1.5 km the text
+  sank into slopes and read as clipped glyphs rather than as occlusion. The property that matters is that
+  WHAT IS SELECTED AND LABELLED IS DECIDED BY THE CHOSEN VIEW — the level is declared next to the view
+  itself, not derived by a second formula in the label code. (4) Two loud
   bugs found: a camera block repeated in a shader WITHOUT one field silently shifts every later field to
   a wrong offset (that is how the whole overlay vanished — no error, no warning), and sea-zone capacity
   depended only on the requested zone count, so at a million cells the label reached 1302 against 1232

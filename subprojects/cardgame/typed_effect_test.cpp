@@ -26,13 +26,6 @@ std::vector<cg::presentation_command> drive_to_player(
   for (uint32_t guard = 0; guard < 256; ++guard) {
     game.update(++engine_tick);
     auto commands = game.take_presentation_commands();
-    for (const auto& command : commands) {
-      const auto event = command.kind == cg::presentation_command_kind::start
-                           ? devils_engine::simul::presentation_event_kind::gameplay
-                           : devils_engine::simul::presentation_event_kind::finished;
-      check(game.notify_presentation(command.task, event),
-            "fake presentation produced an unexpected event");
-    }
     observed.insert(observed.end(), commands.begin(), commands.end());
     if (game.awaiting_player()) return observed;
     check(!game.faulted(), "typed effect pipeline faulted");

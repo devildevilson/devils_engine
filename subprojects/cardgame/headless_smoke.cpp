@@ -22,19 +22,12 @@ void check(const bool value, const char* message) {
   }
 }
 
-// Fake render thread. It acknowledges presentation commands only between main-thread updates:
-// start -> gameplay marker, result -> finished marker.
+// Presentation commands are observed and discarded here. Gameplay markers are
+// released independently by the main-thread tick timeline.
 void drive_to_player(cg::combat& game, uint64_t& engine_tick) {
   for (uint32_t guard = 0; guard < 256; ++guard) {
     game.update(++engine_tick);
-    const auto commands = game.take_presentation_commands();
-    for (const auto& command : commands) {
-      const auto event = command.kind == cg::presentation_command_kind::start
-                           ? devils_engine::simul::presentation_event_kind::gameplay
-                           : devils_engine::simul::presentation_event_kind::finished;
-      check(game.notify_presentation(command.task, event),
-            "fake render produced an unexpected presentation event");
-    }
+    (void)game.take_presentation_commands();
     if (game.awaiting_player()) {
       return;
     }
@@ -68,6 +61,8 @@ int main() {
   uint64_t animated_tick = 0;
   drive_to_player(headless, headless_tick);
   drive_to_player(animated, animated_tick);
+  check(headless_tick == animated_tick,
+        "headless and animated startup consumed different gameplay ticks");
 
   // Three turns. quick_strike increments the player-action coordinate but not countdown;
   // end_turn creates forced countdown pulses that are not player actions.
@@ -87,6 +82,8 @@ int main() {
     submit_and_drive(animated, intent, animated_tick);
     check(headless.state() == animated.state(),
           "animated and headless authoritative states diverged");
+    check(headless_tick == animated_tick,
+          "headless and animated paths consumed different gameplay ticks");
   }
 
   check(headless.state().turn_index == 4, "script did not cross three turn boundaries");
@@ -230,7 +227,7 @@ int main() {
   // present does the sim execute attack then status and publish one aggregated result per effect.
   cg::combat mid_resolution(cg::run_mode::animated, scripts);
   mid_resolution.load(elemental_snapshot);
-  uint64_t mid_resolution_tick = 0;
+  uint64_t mid_resolution_tick = mid_resolution.simulation_tick();
   check(mid_resolution.submit(fire), "could not submit mid-resolution snapshot action");
   mid_resolution.update(++mid_resolution_tick);
   auto mid_commands = mid_resolution.take_presentation_commands();
@@ -240,11 +237,6 @@ int main() {
                    command.targets == std::vector<cg::entity_id>{cg::enemy_entity};
           }),
         "one beat did not publish both authored-effect cues with frozen targets");
-  for (const auto& command : mid_commands) {
-    check(mid_resolution.notify_presentation(
-            command.task, devils_engine::simul::presentation_event_kind::gameplay),
-          "could not deliver one batched gameplay marker");
-  }
   mid_resolution.update(++mid_resolution_tick);
   mid_commands = mid_resolution.take_presentation_commands();
   cg::combat::snapshot mid_retaliation_snapshot;
@@ -254,10 +246,6 @@ int main() {
             mid_commands.front().subject == cg::presentation_subject::returned_damage,
           "damage leaf did not open its own immediate retaliation cue");
     if (response == 0) mid_retaliation_snapshot = mid_resolution.save();
-    const auto retaliation_task = mid_commands.front().task;
-    check(mid_resolution.notify_presentation(
-            retaliation_task, devils_engine::simul::presentation_event_kind::gameplay),
-          "could not deliver retaliation gameplay marker");
     mid_resolution.update(++mid_resolution_tick);
     mid_commands = mid_resolution.take_presentation_commands();
     check(mid_commands.size() == 1 &&
@@ -265,9 +253,6 @@ int main() {
             mid_commands.front().subject == cg::presentation_subject::returned_damage &&
             mid_commands.front().results.size() == 1,
           "retaliation did not publish its own immediate authored attack result");
-    check(mid_resolution.notify_presentation(
-            retaliation_task, devils_engine::simul::presentation_event_kind::finished),
-          "could not finish retaliation authored attack");
     mid_resolution.update(++mid_resolution_tick);
     mid_commands = mid_resolution.take_presentation_commands();
   }
@@ -291,11 +276,11 @@ int main() {
   check(mid_resolution.state().enemy.hp == 96 && mid_resolution.state().player.hp == 28,
         "beat did not commit its authored effects sequentially after the shared gameplay barrier");
 
-  // Snapshot after the complete beat commit but before its shared finished barrier. Presentation
-  // tasks are dropped, while the already committed report and outcomes must not be repeated.
+  // Snapshot after the complete beat commit but before its shared finished barrier. Causal animation
+  // tasks remain in the snapshot even when the resumed headless host emits no presentation commands.
   cg::combat resumed_resolution(cg::run_mode::headless, scripts);
   resumed_resolution.load(mid_resolution.save());
-  uint64_t resumed_resolution_tick = 0;
+  uint64_t resumed_resolution_tick = resumed_resolution.simulation_tick();
   drive_to_player(resumed_resolution, resumed_resolution_tick);
   check(resumed_resolution.state() == elemental_headless.state(),
         "mid-resolution resume lost or duplicated reaction/return/effect work");
@@ -304,7 +289,7 @@ int main() {
 
   cg::combat resumed_retaliation(cg::run_mode::headless, scripts);
   resumed_retaliation.load(mid_retaliation_snapshot);
-  uint64_t resumed_retaliation_tick = 0;
+  uint64_t resumed_retaliation_tick = resumed_retaliation.simulation_tick();
   drive_to_player(resumed_retaliation, resumed_retaliation_tick);
   check(resumed_retaliation.state() == elemental_headless.state() &&
           resumed_retaliation.last_resolution() == elemental_headless.last_resolution(),
@@ -419,14 +404,14 @@ int main() {
   check(in_flight.submit(
           {cg::player_intent_kind::play_card, cg::card_kind::strike, 1}),
         "could not submit in-flight snapshot action");
-  in_flight.update(++in_flight_tick); // publishes start and waits; no gameplay marker delivered
+  in_flight.update(++in_flight_tick); // publishes start and waits; gameplay marker is not due yet
   check(in_flight.state().enemy.hp == 100, "damage committed before gameplay marker");
-  check(in_flight.waiting_presentation(), "animated attack is not waiting at gameplay marker");
+  check(in_flight.waiting_gameplay_event(), "animated attack is not waiting at gameplay marker");
 
   const auto snap = in_flight.save();
   cg::combat resumed(cg::run_mode::headless, scripts);
   resumed.load(snap);
-  uint64_t resumed_tick = 0;
+  uint64_t resumed_tick = resumed.simulation_tick();
   drive_to_player(resumed, resumed_tick);
 
   cg::combat control(cg::run_mode::headless, scripts);

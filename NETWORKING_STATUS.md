@@ -13,6 +13,14 @@ recorded here only after it is reproduced by an executable test or directly obse
 | Gameplay transport | GameNetworkingSockets v1.6.0 selected |
 | PRE-01 capability spike | complete |
 | PRE-02 causal-state/checkpoint audit | complete; implementation gaps routed to NET-03/04 |
+| PRE-03 Jolt spike | deferred until adding Jolt has a concrete engine consumer |
+| NET-00 neutral contract/fixtures | complete |
+| NET-01 bounded tick journal | complete; 8/8 cases pass in Debug and Release |
+| TIME-00 strong simulation time | complete; tick/rate/conversion primitives pass 4/4 cases |
+| TIME-01 gameplay timeline/presentation split | complete; generic timeline, flow, turn pipeline and cardgame proof |
+| TIME-02 fixed-step host/project migration | next alongside NET-02; existing host/tile clocks are not migrated |
+| Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
+| NET-02 sequence window/history | next |
 | Repeated Release resume simulation | flaky existing test; must be diagnosed before production replay |
 | Production `devils_engine::network_gns` adapter | not started |
 | Session handshake, reconnect recovery and peer authority | not started |
@@ -20,9 +28,116 @@ recorded here only after it is reproduced by an executable test or directly obse
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
 | Yojimbo comparison | deferred indefinitely; not an implementation gate |
 
-The current executable is intentionally a direct GNS consumer. It passes opaque bytes and does not invent an
-engine transport abstraction, network entity type, serialization scheme or client/server policy before those
-contracts are known.
+The PRE-01 executable is intentionally a direct GNS consumer. It passes opaque bytes and does not move an
+engine transport abstraction, network entity type, serialization scheme or client/server policy into the new
+neutral library.
+
+## NET-00/01 — neutral core and bounded tick journal
+
+`libs/network` is now a header-only `devils_engine::network` target. It depends only on
+`devils_engine::options`; it does not include or link GNS, `aesthetics`, `act`, `tile_frontier`, a socket API,
+Lua or a background-thread implementation. `README.md` fixes the meanings of tick, principal, player,
+sequence, intent, bundle, state frame and checkpoint without assigning a client/server topology.
+
+The first template is:
+
+```cpp
+tick_journal<Record, Tick, TickOf, SemanticLess, SemanticEquivalent>
+```
+
+The project owns `Record` and all semantic policies. The journal owns only a single tick's collection
+lifecycle:
+
+```text
+idle -> recording -> sealed -> consumed -> idle
+                      \-> faulted -------> idle
+```
+
+Measured/checked behavior:
+
+- physical arrival permutations seal into the same canonical record bytes;
+- another tick is rejected without mutation;
+- duplicate `(principal, sequence)` provenance faults the tick;
+- exact capacity succeeds, while one extra record latches overflow and makes `seal` fail;
+- records are inaccessible before seal, recording after seal fails, and consume is once-only;
+- `consume` transfers the vector into an owning batch which exposes only a const span;
+- a 64-bit generation accompanies the project tick, so stale tags are rejected after the tick type wraps;
+- both a small intent and an unrelated float transform-state fixture instantiate the same template without
+  inheritance or an engine/project record base.
+
+The journal is deliberately single-owner. It does not decide whether a tick is late/future, authenticate a
+principal, define a wire format, open a socket or perform replay. Those boundaries remain visible for NET-02+
+instead of being hidden in a session singleton.
+
+### Native-float cross-compiler micro-corpus
+
+The initial worst-case numeric assumption is now executable. A 384-step native transition uses ordinary
+float/double expressions plus `sin`, `cos`, `atan2`, `hypot`, `exp` and `log1p`, then writes every state as
+canonical little-endian bits. Both binaries are run twice; a same-build mismatch is a test failure, while a
+cross-build mismatch reports its first tick/state-byte as evidence that correction is required rather than as
+a broken test.
+
+Current result with `-std=c++23 -O3 -mavx -fno-fast-math`:
+
+| Build | Runtime | Output | SHA-256 |
+| --- | --- | ---: | --- |
+| GCC 16.1.1 | libstdc++ + system libm | 21,505 B hex trace | `77e13886fa5dd6706add0856195b81e18738d9750f75cc7410bc7f69b74e66e6` |
+| Clang 22.1.8 | libstdc++ + system libm | 21,505 B hex trace | `77e13886fa5dd6706add0856195b81e18738d9750f75cc7410bc7f69b74e66e6` |
+
+The two outputs are bit-identical for this corpus. This proves only this compiler/ISA/library/flag/input
+combination. It does not prove cross-platform determinism, and the protocol continues to assume divergence.
+Together with the compiler probe, the relevant networking slice is 9/9 in both Debug and Release.
+
+The installed Arch package `llvm-libs` is LLVM's runtime library package, not libc++: the machine currently
+lacks libc++ headers and `libc++.so`. The test first attempts `Clang -stdlib=libc++` and records an explicit
+libstdc++ fallback, so installing the separate `libc++` package will automatically extend the comparison to
+the intended standard-library runtime.
+
+Reproduction:
+
+```sh
+cmake --build build-debug --target network_tick_journal_test
+ctest --test-dir build-debug -R 'network_(tick_journal|native_float)' --output-on-failure
+cat build-debug/cmake/subprojects/tests/network_native_float_probe/result.txt
+```
+
+## TIME-00/01 — causal tick time and animation separation
+
+`utils/simulation_time.h` now distinguishes an absolute `simulation_tick`, a relative `simulation_duration` and
+an `authored_duration` in integer microseconds. `simulation_rate` performs checked quotient/remainder conversion
+without compiler-specific 128-bit integers. Deadline conversion rounds upward; deriving nominal microseconds from
+an absolute tick avoids accumulating `16,666 us` truncation sixty times per second.
+
+`simul::gameplay_timeline<Payload, Key>` is a single-owner bounded min-heap with project-owned value payloads. It
+has no callback/source hierarchy, thread API, renderer type or network dependency. Events are identified by
+`(source, ordinal)`, backward scheduling and capacity overflow are explicit, due events are returned in canonical
+`(tick, source, ordinal)` order, and the snapshot stores that canonical order rather than the physical heap.
+Corrupt/over-capacity/duplicate snapshot replacement is rejected before live timeline state changes.
+
+The first consumer proves the thread boundary:
+
+- `simul::turn_pipeline` schedules causal animation markers on the gameplay timeline and no longer exposes a
+  presentation notification entry point;
+- pending event ticks, task IDs and the barrier are causal snapshot state and are cross-validated on load;
+- `flow::sample_presentation` advances sprite/UV display from presentation microseconds and emits no gameplay;
+- `flow::sample_gameplay` advances an independent playback from tick durations and returns action data;
+- `cardgame` schedules the same gameplay/recovery deadlines in headless and animated modes. Animated mode alone
+  publishes visual commands; a test now requires both modes to consume the same gameplay ticks.
+
+Current evidence is 29/29 relevant CTest entries in both Debug and Release: 4 simulation-time cases, 5 generic
+timeline cases, 6 turn-pipeline cases, 7 flow cases and 7 cardgame executables.
+
+This closes only the primitives and the concrete animation seam. The older `utils::timelines`, `simul::game_host`
+and `tile_frontier` still derive gameplay advancement from scheduler microsecond deltas and maintain overlapping
+local tick/game-time counters. Calendars, cooldowns and project-wide delayed jobs have not migrated. That is the
+explicit TIME-02 task; `chrono` remains valid there only for pacing, profiling and non-causal timeouts.
+
+Reproduction:
+
+```sh
+cmake --build build-debug --target simulation_time_test gameplay_timeline_test turn_pipeline_test flow_test cardgame_headless_smoke
+ctest --test-dir build-debug -R '^(simulation_time_test|gameplay_timeline_test|turn_pipeline_test|flow_test|cardgame_)' --output-on-failure
+```
 
 ## How GameNetworkingSockets works in this project
 

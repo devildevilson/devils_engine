@@ -527,6 +527,7 @@ endif()
 # Link each target with other targets or add options, etc.
 add_subdirectory(libs/options/)
 add_subdirectory(libs/utils/)
+add_subdirectory(libs/network/)
 add_subdirectory(libs/catalogue/)
 add_subdirectory(libs/resolve/)
 add_subdirectory(libs/demiurg/)
@@ -549,7 +550,7 @@ target_link_libraries(devils_simul PUBLIC devils_engine::sound devils_engine::in
 target_link_libraries(devils_simul PRIVATE Vulkan::Headers GPUOpen::VulkanMemoryAllocator VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp)
 
 add_library(devils_engine INTERFACE)
-target_link_libraries(devils_engine INTERFACE devils_engine::catalogue devils_engine::resolve devils_engine::acumen devils_engine::act devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::utils devils_engine::mood devils_engine::simul devils_engine::flow devils_engine::aesthetics devils_engine::visage devils_engine::options)
+target_link_libraries(devils_engine INTERFACE devils_engine::network devils_engine::catalogue devils_engine::resolve devils_engine::acumen devils_engine::act devils_engine::demiurg devils_engine::bindings devils_engine::input devils_engine::painter devils_engine::sound devils_engine::utils devils_engine::mood devils_engine::simul devils_engine::flow devils_engine::aesthetics devils_engine::visage devils_engine::options)
 add_library(devils_engine::devils_plane ALIAS devils_engine)
 
 # First external gameplay consumer. It intentionally starts as a headless combat kernel; the full
@@ -565,7 +566,7 @@ add_subdirectory(subprojects/playgrounds "${CMAKE_BINARY_DIR}/cmake/subprojects/
 if (DEVILS_ENGINE_BUILD_TESTS)
   add_custom_target(devils_engine_test
     COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} --output-on-failure -L devils_engine
-    DEPENDS utils_general_test utils_contract_test thread_general_test gamenetworking_sockets_capability_test resolve_pipeline_test simul_lifecycle_test turn_pipeline_test aesthetics_world_test sound_system_test acumen_test flow_test catalogue_introspection_test cardgame_effect_program_test cardgame_follow_up_test cardgame_action_pipeline_test cardgame_typed_effect_test cardgame_combat_script_test cardgame_execution_report_script_test cardgame_headless_smoke tile_frontier_snapshot_smoke tile_frontier_resume_smoke tile_frontier_checkpoint_audit
+    DEPENDS utils_general_test utils_contract_test timeline_test simulation_time_test gameplay_timeline_test thread_general_test gamenetworking_sockets_capability_test network_tick_journal_test resolve_pipeline_test simul_lifecycle_test turn_pipeline_test aesthetics_world_test sound_system_test acumen_test flow_test catalogue_introspection_test cardgame_effect_program_test cardgame_follow_up_test cardgame_action_pipeline_test cardgame_typed_effect_test cardgame_combat_script_test cardgame_execution_report_script_test cardgame_headless_smoke tile_frontier_snapshot_smoke tile_frontier_resume_smoke tile_frontier_checkpoint_audit
     USES_TERMINAL
     COMMENT "Running devils_engine tests"
   )

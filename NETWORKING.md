@@ -50,6 +50,14 @@ clearly neutral boundary proves that it belongs in the engine.
 14. Standalone GNS supplies encrypted transport but no certificate authority. `IP_AllowWithoutAuth=2` is valid
     only for explicitly unauthenticated development/LAN sessions; public identity authentication needs a chosen
     certificate/signaling service and must never be inferred from packet encryption alone.
+15. Wall/`chrono` time may pace a process, measure a timeout or drive presentation, but it is not causal input.
+    Gameplay calendars, cooldowns, animation events and delayed work advance from an integer simulation tick.
+16. Content-facing durations remain authored in integer microseconds. A session-wide integral tick rate converts
+    them to tick durations with ceil once they enter causal state, so a positive duration never completes early
+    and choosing 30/60/120 Hz does not require rewriting content.
+17. Gameplay animation and rendered animation are separate consumers of the same request. The main/simulation
+    owner schedules data-only gameplay events on its tick timeline; the renderer independently advances visuals
+    and never sends a callback which can commit gameplay.
 
 ## Terms and invariants
 
@@ -88,6 +96,46 @@ clearly neutral boundary proves that it belongs in the engine.
 : Data reconstructible from authoritative state, such as queries or a spatial index. It is excluded from a
   checkpoint and rebuilt after load. If gameplay reads it, reconstruction and all tie-breaks must obey the
   relevant determinism contract.
+
+`authored duration`
+: An integer duration stored in content/configuration in microseconds. It expresses design time without choosing
+  the session tick rate and is quantized to an integer tick duration before becoming causal state.
+
+`gameplay timeline`
+: A bounded, single-owner queue of project-owned data events keyed by simulation tick. It returns every due event
+  as a canonical batch and is checkpointed with the world. It contains no callbacks, wall-clock timestamps,
+  renderer handles or thread synchronization.
+
+## Simulation time and presentation separation
+
+The authoritative loop has two clocks with different jobs:
+
+```text
+wall/chrono pacing -> decides when the process attempts the next fixed step
+simulation tick    -> is the only time coordinate read by gameplay
+presentation time  -> interpolates/displays committed state and may run ahead/behind visually
+```
+
+Changing render FPS, pausing a render thread, losing a window or running without graphics must not change which
+tick commits an action. A request such as “play attack animation” is fanned out in one direction:
+
+```text
+project/main thread
+  +-> gameplay timeline: (due_tick, task_id, gameplay marker)
+  \-> render outbox:      (task_id, visual animation command)   [optional]
+```
+
+The task ID only correlates the two views; render completion is not an authoritative fact. Headless and animated
+modes schedule the same causal marker at the same tick. Only the animated mode emits the render command.
+
+The generic gameplay timeline is a bounded min-heap because scheduling and due extraction need priority-queue
+behavior. Its public checkpoint is nevertheless a canonical vector sorted by `(tick, source key, ordinal)` so
+heap layout and insertion order never become serialized state. It returns owned due batches rather than invoking
+functions. Capacity, duplicate identity and backward-time errors are explicit.
+
+Tick rate is session/configuration identity and must enter the compatibility fingerprint before networking can
+start. Replaying a checkpoint with a different rate is invalid even though content durations remain in
+microseconds. Conversion uses integer quotient/remainder arithmetic and does not require `int128`.
 
 ## Logical histories, not packet histories
 
@@ -1043,13 +1091,18 @@ future flexibility.
 Dependency/order map:
 
 ```text
-PRE-01 GNS capability spike
-PRE-02 complete/incremental state gap audit
-PRE-03 Jolt math/determinism/rollback spike
-  -> NET-00 freeze only the missing neutral contracts
+PRE-01 GNS capability spike (complete) -------------------+
+PRE-02 complete/incremental state gap audit (complete) ---+-> NET-00 contract
+PRE-03 Jolt math/determinism/rollback spike (deferred; not a NET-00/01 gate)
 
-NET-00 contract
-  -> NET-01 tick journal
+TIME-00 strong simulation time + authored-duration conversion (complete)
+  -> TIME-01 bounded gameplay timeline + render/gameplay split (complete)
+       -> TIME-02 fixed-step host/calendar/cooldown migration
+            +-> NET-04 checkpoint + replay
+            \-> SERVER-01 headless authority
+
+NET-00 contract (complete)
+  -> NET-01 tick journal (complete)
        -> NET-02 sequence + bundle history
             -> NET-06 in-memory delivery laboratory
                  -> NET-07 replication baselines
@@ -1078,7 +1131,9 @@ NET-11 hardening starts before public traffic, after the chosen transport/state 
 
 The numeric branch can run alongside state/session work. It does not block the first server-authoritative
 float slice, but the slice must keep a clean numeric seam so strict/fixed backends can later run the identical
-recorded scenario.
+recorded scenario. Until that branch earns a stronger profile, the working assumption is deliberately the
+worst useful one: native float/double transitions and platform `libm` may diverge, so protocol correctness must
+come from detection, authoritative state frames/checkpoints and replay rather than from presumed determinism.
 
 ### PRE-01 — GNS capability spike (`S-M`) — complete 2026-09-02
 
@@ -1130,7 +1185,7 @@ simulation race/lifetime problem is isolated.
 Done with a manifest of missing state sections, measured costs and a chosen first checkpoint representation.
 The implementation gaps are inputs to NET-03 and NET-04, not unfinished PRE-02 research.
 
-### PRE-03 — Jolt math/determinism/rollback spike (`M`)
+### PRE-03 — Jolt math/determinism/rollback spike (`M`) — deferred
 
 - Inventory the scalar/vector/transcendental operations needed by one causal movement/physics fixture.
 - Put Jolt trig/vector math behind a disposable facade and list operations it does not implement independently
@@ -1142,7 +1197,52 @@ The implementation gaps are inputs to NET-03 and NET-04, not unfinished PRE-02 r
 Done with an evidence-backed decision for Jolt math reuse and with an explicit exact-versus-corrected physics
 test matrix; it does not yet commit the engine to Jolt.
 
-### NET-00 — written contracts and fixtures (`S`)
+### TIME-00 — strong simulation time (`S`) — complete 2026-09-02
+
+- Add distinct `simulation_tick`, `simulation_duration` and `authored_duration` value types.
+- Add an integral session `simulation_rate` and overflow-checked microseconds/ticks conversions without `int128`.
+- Round causal deadlines upward and derive nominal elapsed microseconds from the absolute tick without per-step
+  truncation drift.
+- Test zero/sub-tick/exact/non-integral durations, multiple rates, invalid rates and arithmetic overflow.
+
+Done in `utils/simulation_time.h`; these primitives deliberately do not own sleeping, frame pacing, pause,
+calendar policy or a global clock singleton.
+
+### TIME-01 — gameplay timeline and presentation separation (`S-M`) — complete 2026-09-02
+
+- Add a bounded `gameplay_timeline<Payload, Key>` containing data rather than callbacks.
+- Canonicalize due batches and checkpoint form independently of heap/insertion layout.
+- Reject past, duplicate and over-capacity events; validate replacement snapshots before publishing them.
+- Move `simul::turn_pipeline` animation barriers onto that timeline and remove the renderer-to-gameplay notify API.
+- Split `flow` sampling into microsecond-driven presentation playback and tick-driven gameplay event playback.
+- Prove in `cardgame` that headless and animated paths wait for identical causal deadlines; rendering remains an
+  optional one-way outbox, while pending animation event IDs/ticks survive snapshot/resume.
+
+Done without a network, ECS, client/server topology, animation backend or project event base class.
+
+### TIME-02 — fixed-step host and project migration (`M`)
+
+- Make the simulation host accumulate wall time only to decide how many fixed ticks to execute; never pass
+  measured frame duration into gameplay.
+- Migrate `utils::timelines`, `game_host` and `tile_frontier` from microsecond deltas/local counters to the strong
+  tick coordinate while preserving explicit pause/scale commands.
+- Derive game calendar/time-of-day from absolute tick plus project policy; serialize the causal origin/remainders
+  only where the chosen scale cannot be expressed exactly.
+- Convert cooldowns, delayed commands and gameplay animation resources from authored microseconds at their causal
+  boundary and include tick rate in project/session fingerprints.
+- Test different render rates, pacing jitter, catch-up, headless execution and snapshot/replay against identical
+  tick bundles.
+
+Done when no authoritative transition reads local `chrono`/render delta and the same recorded inputs produce the
+same checkpoint bytes under multiple presentation/pacing schedules. This remains open; TIME-00/01 do not claim
+that the existing host and `tile_frontier` have already migrated.
+
+### NET-00 — written contracts and fixtures (`S`) — complete 2026-09-02
+
+`libs/network` now exists as the header-only `devils_engine::network` target. Its README freezes the terms and
+non-goals, while the test fixtures provide unrelated intent and transform-state record shapes without any
+project, ECS or transport inheritance. The neutral target depends only on the engine compile-options target;
+GNS remains outside it.
 
 - Preserve this document as the architectural decision record.
 - Define project terminology for tick, principal, player, sequence, intent, bundle, state frame and checkpoint.
@@ -1151,7 +1251,13 @@ test matrix; it does not yet commit the engine to Jolt.
 
 Done when no test fixture includes `aesthetics`, `act`, `tile_frontier` or a socket library.
 
-### NET-01 — bounded tick journal (`S-M`)
+### NET-01 — bounded tick journal (`S-M`) — complete 2026-09-02
+
+The first primitive is implemented in `tick_journal.h`. `begin` reserves the complete runtime budget before
+publishing a tick tag, `try_record` rejects another tick and latches overflow without a partial append, and
+`seal` canonicalizes physical arrival order while rejecting duplicate project provenance. `consume` moves the
+storage into a const-view owning batch. A monotonically increasing 64-bit generation is part of every tag, so
+reusing a journal after the project tick type wraps cannot validate an old tag.
 
 - Add header-only `tick_journal` with explicit phases and runtime capacity.
 - Inject tick extraction, semantic ordering and duplicate equivalence as template policies/callables.
@@ -1306,6 +1412,11 @@ checkpoint recovery are structurally verified at measured high unit counts. Full
 tick packets.
 
 ### NUM-01 — causal math facade and baseline corpus (`M`)
+
+A deliberately tiny compiler probe now precedes the full task: 384 ordinary native-float integration steps
+exercise `sin`, `cos`, `atan2`, `hypot`, `exp` and `log1p`, emit canonical little-endian state bits, and compare
+GCC with Clang. It detects/reports equality or divergence but treats neither as a portability guarantee. The
+full tile actor facade/profile matrix below remains open.
 
 - Extract only tile actor operations needed for position/velocity/integration/spatial queries.
 - Preserve GLM conversion at the presentation boundary.

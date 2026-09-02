@@ -39,6 +39,12 @@ target_link_libraries(utils_contract_test PRIVATE devils_engine::utils)
 devils_add_doctest(timeline_test timeline_test.cpp)
 target_link_libraries(timeline_test PRIVATE devils_engine::utils)
 
+devils_add_doctest(simulation_time_test simulation_time_test.cpp)
+target_link_libraries(simulation_time_test PRIVATE devils_engine::utils)
+
+devils_add_doctest(gameplay_timeline_test gameplay_timeline_test.cpp)
+target_link_libraries(gameplay_timeline_test PRIVATE devils_engine::simul)
+
 devils_add_doctest(tile_frontier_config_test tile_frontier_config_test.cpp ../tile_frontier/src/core/config.cpp)
 target_link_libraries(tile_frontier_config_test PRIVATE devils_engine::utils devils_engine::input tavl)
 target_include_directories(tile_frontier_config_test PRIVATE
@@ -54,6 +60,30 @@ target_link_libraries(thread_general_test PRIVATE devils_engine::thread)
 # an engine library.
 devils_add_doctest(gamenetworking_sockets_capability_test gamenetworking_sockets_capability_test.cpp)
 target_link_libraries(gamenetworking_sockets_capability_test PRIVATE GameNetworkingSockets::static)
+
+devils_add_doctest(network_tick_journal_test network_tick_journal_test.cpp)
+target_link_libraries(network_tick_journal_test PRIVATE devils_engine::network)
+
+find_program(DEVILS_NETWORK_GXX NAMES g++)
+find_program(DEVILS_NETWORK_CLANGXX NAMES clang++)
+if (DEVILS_NETWORK_GXX AND DEVILS_NETWORK_CLANGXX)
+  set(DEVILS_NETWORK_NATIVE_FLOAT_ARCH_FLAG "")
+  if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|i[3-6]86)$")
+    set(DEVILS_NETWORK_NATIVE_FLOAT_ARCH_FLAG "-mavx")
+  endif()
+  add_test(NAME network_native_float_cross_compiler_probe
+    COMMAND ${CMAKE_COMMAND}
+      -DPROBE_SOURCE=${CMAKE_CURRENT_LIST_DIR}/network_native_float_corpus.cpp
+      -DPROBE_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/network_native_float_probe
+      -DPROBE_ARCH_FLAG=${DEVILS_NETWORK_NATIVE_FLOAT_ARCH_FLAG}
+      -DGXX=${DEVILS_NETWORK_GXX}
+      -DCLANGXX=${DEVILS_NETWORK_CLANGXX}
+      -P ${CMAKE_CURRENT_LIST_DIR}/network_cross_compiler_probe.cmake
+  )
+  set_tests_properties(network_native_float_cross_compiler_probe PROPERTIES LABELS devils_engine)
+else()
+  message(STATUS "network native-float cross-compiler probe disabled: g++ or clang++ not found")
+endif()
 
 devils_add_doctest(resolve_pipeline_test resolve_pipeline_test.cpp)
 target_link_libraries(resolve_pipeline_test PRIVATE devils_engine::resolve devils_engine::thread)
