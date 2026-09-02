@@ -1,8 +1,9 @@
 # Networking, replication and deterministic simulation
 
-Status: design audit, 2026-09-01. This document collects the networking discussion and turns it into
-independently testable engine and project slices. Nothing here claims that a socket, protocol or complete
-multiplayer game already exists.
+Status: design audit plus completed GNS capability spike, 2026-09-02. This document collects the networking
+discussion and turns it into independently testable engine and project slices. Mutable implementation details,
+GNS behavior and test results live in [NETWORKING_STATUS.md](NETWORKING_STATUS.md). No production adapter,
+session protocol or multiplayer game exists yet.
 
 The repository is exploratory, therefore networking should be added in the same way as `resolve`,
 `catalogue` and `originator`: a minimal mechanism is implemented only when its contract can be stated,
@@ -24,15 +25,16 @@ clearly neutral boundary proves that it belongs in the engine.
 5. The first useful model is server-authoritative float simulation: clients send intents, while the server
    sends small authoritative state frames and reliable discrete state/events. Fixed-point and stricter float
    profiles remain later A/B alternatives, not blockers for the first networked slice.
-6. Gameplay traffic should use a message-oriented UDP transport. GameNetworkingSockets and Yojimbo are the
-   strongest current candidates. ASIO remains useful for HTTP/TCP/control services, but ASIO by itself is an
-   asynchronous socket layer, not a ready reliable game protocol.
+6. Gameplay traffic should use a message-oriented UDP transport. GameNetworkingSockets is the selected current
+   direction. Yojimbo remains a possible future comparison, not an implementation gate. ASIO remains useful for
+   HTTP/TCP/control services, but ASIO by itself is an asynchronous socket layer, not a ready reliable game
+   protocol.
 7. Transport, serialization, state replication, replay and gameplay intent meaning are separate layers. A
    library dependency must not be allowed to decide the project state model.
-8. Before implementing `libs/network`, run bounded capability spikes for GameNetworkingSockets and Yojimbo.
-   Reuse their public transport mechanisms where the contract fits; do not copy an internal queue merely
-   because it happens to be implemented as a ring. Engine primitives are added only for the simulation/session
-   semantics that the selected backend does not own.
+8. Before implementing `libs/network`, run a bounded capability spike for GameNetworkingSockets. Reuse its
+   public transport mechanisms where the contract fits; do not copy an internal queue merely because it happens
+   to be implemented as a ring. Engine primitives are added only for the simulation/session semantics GNS does
+   not own. A Yojimbo spike is deferred indefinitely and does not block the current roadmap.
 9. A network tick is a logical simulation coordinate, not a UDP packet. Intent bundles, motion state frames,
    state digests and checkpoints are separate messages even when a transport aggregates them into one datagram.
 10. Intent bundles are produced every simulation tick. Transform/physics state can be sent less often and on a
@@ -40,6 +42,14 @@ clearly neutral boundary proves that it belongs in the engine.
 11. The implementation campaign proceeds from capability research to isolated primitives/tests, two independent
     simulations in memory, real multi-process loopback/LAN transport, compatible cross-build exchange, a headless
     authority process and only then a scaled online `tile_frontier` experiment.
+12. GameNetworkingSockets v1.6.0 is now pinned through root `FetchContent`. The first consumer is a direct
+    capability test, not `libs/network`: transport behavior must be measured before its types are hidden by an
+    adapter.
+13. Transport reconnect means creating a new connection. Restoring peer identity, authority epoch, acknowledged
+    input tick, replication baseline and checkpoint is an engine/session handshake, not a GNS reconnect feature.
+14. Standalone GNS supplies encrypted transport but no certificate authority. `IP_AllowWithoutAuth=2` is valid
+    only for explicitly unauthenticated development/LAN sessions; public identity authentication needs a chosen
+    certificate/signaling service and must never be inferred from packet encryption alone.
 
 ## Terms and invariants
 
@@ -537,9 +547,9 @@ guesses.
 
 ### Pre-implementation transport capability audit
 
-Transport selection is a research gate, not the last adapter decision. Build two disposable probes before
-freezing the neutral API. Each probe sends opaque byte messages; it must not introduce a project entity,
-checkpoint or custom serialization model.
+Transport capability is a research gate, not the adapter itself. Build a disposable GNS probe before freezing
+the neutral API. A future Yojimbo comparison, if reopened, must run the same fixture. The probe sends opaque byte
+messages; it must not introduce a project entity, checkpoint or custom serialization model.
 
 The audit must answer from public API behavior and a small executable, not from feature-list inference:
 
@@ -558,9 +568,9 @@ The audit must answer from public API behavior and a small executable, not from 
 - serialization overlap: can the engine send one already-canonical byte span without adopting a second state
   schema or message class hierarchy?
 
-Current source-level finding: both candidates already own packet sequencing, acknowledgement, duplicate
-handling, fragmentation/reassembly and transport send/receive queues. GNS additionally exposes connection poll
-groups, caller-owned send messages, configurable lanes and lane queue status. Yojimbo exposes configured
+Current source-level finding: both reviewed libraries own packet sequencing, acknowledgement, duplicate handling,
+fragmentation/reassembly and transport send/receive queues. GNS additionally exposes connection poll groups,
+caller-owned send messages, configurable lanes and lane queue status. Yojimbo exposes configured
 reliable-ordered and unreliable-unordered message channels, large data blocks and its own bitpacking/message
 factory layer. These mechanisms must be reused by their adapter.
 
@@ -570,7 +580,7 @@ backend internally uses a ring/sequence buffer, coupling gameplay rollback to an
 would give it the wrong eviction, lifetime and compatibility contract. `tick_journal`, `bounded_history`,
 `checkpoint_ring` and `baseline_store` remain engine-owned only if their independent tests prove those semantics.
 
-The spike ends with a short checked-in comparison table and one of three decisions per candidate feature:
+The GNS spike ends with a checked-in result table and one of three decisions per transport feature:
 
 ```text
 reuse through adapter
@@ -596,7 +606,7 @@ reliable and sequenced lanes through one session.
 
 ### GameNetworkingSockets
 
-Current leading backend candidate. It provides connection-oriented, message-oriented UDP; reliable and
+Current selected backend. It provides connection-oriented, message-oriented UDP; reliable and
 unreliable messages; fragmentation/reassembly/retransmission; encryption; lanes; IPv6; latency/loss simulation
 and detailed statistics. It deliberately does not provide entity serialization or delta state, which matches
 the desired ownership boundary.
@@ -610,12 +620,24 @@ to implement tick rollback history.
 The adapter should translate only neutral connection/message/delivery concepts. GNS connection handles and
 flags do not enter project state or replay data.
 
-### Yojimbo
+#### Current implementation evidence
 
-Strong second candidate and reference implementation. It provides encrypted client/server UDP, connect
-tokens, reliable ordered and unreliable channels, fragmentation, bitpacking and statistics. It is a more
-vertical stack and brings its own serialization/reliability dependencies, so an experiment must check whether
-those layers fight the engine's existing schema and ownership model.
+PRE-01 is complete for the current GNS-only decision. The direct probe covers message ownership, internal and
+real UDP loopback, above-MTU fragmentation/reassembly, lanes, Nagle/flush, backpressure, sustained loss/reorder,
+real IP listen/connect, new-handle reconnect, the standalone authentication boundary and the local P2P fast
+path. Detailed behavior, exact scenarios, current timings, reproduction commands and unresolved infrastructure
+are maintained in [NETWORKING_STATUS.md](NETWORKING_STATUS.md).
+
+Yojimbo remains unbuilt and its comparison is deferred indefinitely. It may be reopened later only if a concrete
+GNS limitation justifies the cost.
+
+### Yojimbo (comparison deferred indefinitely)
+
+This is retained only as an archival reference and possible future comparison if a concrete GNS limitation is
+found. It provides encrypted client/server UDP, connect tokens, reliable ordered and unreliable channels,
+fragmentation, bitpacking and statistics. It is a more vertical stack and brings its own
+serialization/reliability dependencies, so a future experiment would have to check whether those layers fight
+the engine's existing schema and ownership model.
 
 Yojimbo is explicitly single-threaded: all calls for an instance belong to one network thread. Its client and
 server must share an identical channel/configuration and message factory. This fits a dedicated network owner,
@@ -1021,7 +1043,7 @@ future flexibility.
 Dependency/order map:
 
 ```text
-PRE-01 GNS/Yojimbo capability spikes
+PRE-01 GNS capability spike
 PRE-02 complete/incremental state gap audit
 PRE-03 Jolt math/determinism/rollback spike
   -> NET-00 freeze only the missing neutral contracts
@@ -1049,7 +1071,7 @@ NUM-01 native math corpus
        -> NUM-04 fixed64 only if necessary
             -> TF-NET-02 numeric A/B
 
-NET-09 may implement the non-selected Yojimbo/GNS adapter only far enough for a measured comparison.
+NET-09 may implement a Yojimbo adapter only if a concrete GNS limitation later earns a measured comparison.
 NET-10 ASIO services are a consumer-driven side branch.
 NET-11 hardening starts before public traffic, after the chosen transport/state codecs exist.
 ```
@@ -1058,18 +1080,25 @@ The numeric branch can run alongside state/session work. It does not block the f
 float slice, but the slice must keep a clean numeric seam so strict/fixed backends can later run the identical
 recorded scenario.
 
-### PRE-01 — GNS/Yojimbo capability spikes (`S-M`)
+### PRE-01 — GNS capability spike (`S-M`) — complete 2026-09-02
 
-- Build isolated probes against each candidate without adding `libs/network` architecture.
+GNS v1.6.0 is pinned and the direct probe covers opaque reliable/unreliable/bulk payloads, internal and real UDP
+loopback, fragmentation/reassembly, poll groups, lanes, caller/GNS ownership, Nagle/flush, injected lag,
+guaranteed-loss recovery, sustained mixed traffic, IP listen/connect, new-handle reconnect, standalone auth and
+the local P2P fast path. It also records what cannot be proven without signaling and certificate infrastructure.
+Yojimbo comparison is explicitly deferred and no longer blocks the next tasks. Current executable evidence is
+kept in [NETWORKING_STATUS.md](NETWORKING_STATUS.md).
+
+- Build an isolated GNS probe without adding `libs/network` architecture.
 - Run the public-API checklist in the transport capability audit above.
 - Send opaque canonical byte spans over reliable, unreliable and bulk paths.
 - Measure ownership/copies, aggregation, MTU fragmentation, queue limits, lane/channel blocking and diagnostics.
-- Verify whether each backend's loopback/fault tools are sufficient for adapter tests.
+- Verify whether GNS loopback/fault tools are sufficient for adapter tests.
 - Identify transport rings/queues that can be reused and explicitly distinguish them from simulation history.
 - Record exact dependency/build/threading/serialization costs.
 
-Done with a checked-in comparison and a list of only the missing neutral primitives. No production backend is
-selected from documentation alone.
+Done with checked-in measured results and a list of only the missing neutral/session primitives. GNS was selected
+from executable behavior rather than documentation alone.
 
 ### PRE-02 — complete/incremental state gap audit (`S-M`)
 
@@ -1180,7 +1209,7 @@ Done when a fake entity set converges after arbitrary permitted loss/reordering 
 ### NET-08 — selected gameplay transport adapter (`M-L`)
 
 - Add optional dependency/target isolated from neutral core.
-- Use PRE-01's selected backend; GNS is the current hypothesis, not a pre-spike commitment.
+- Use PRE-01's selected GNS backend.
 - Map reliable ordered, reliable bulk and unreliable sequenced messages.
 - Expose connection events, RTT/jitter/loss and bounded send completion ownership.
 - Exercise built-in latency/loss simulation and loopback processes.
@@ -1189,11 +1218,11 @@ Done when a fake entity set converges after arbitrary permitted loss/reordering 
 Done when the same NET-06 session tests can run over the selected backend with no change to simulation/state
 code.
 
-### NET-09 — non-selected transport comparison (`M`, optional)
+### NET-09 — Yojimbo comparison (`M`, deferred indefinitely)
 
 - Implement only enough adapter to run the same fixture.
 - Measure dependency/build footprint, message behavior, serialization overlap and diagnostics.
-- Reopen the PRE-01 choice only if measured runtime behavior contradicts the spike.
+- Reopen the PRE-01 choice only if a concrete GNS limitation contradicts the spike.
 
 Done with a written GNS/Yojimbo comparison; maintaining both production adapters is not a goal.
 

@@ -49,6 +49,12 @@ target_include_directories(tile_frontier_config_test PRIVATE
 devils_add_doctest(thread_general_test thread_general_test.cpp)
 target_link_libraries(thread_general_test PRIVATE devils_engine::thread)
 
+# PRE-01 from NETWORKING.md deliberately probes the third-party transport before
+# a production adapter exists.  It links GNS directly and moves no GNS type into
+# an engine library.
+devils_add_doctest(gamenetworking_sockets_capability_test gamenetworking_sockets_capability_test.cpp)
+target_link_libraries(gamenetworking_sockets_capability_test PRIVATE GameNetworkingSockets::static)
+
 devils_add_doctest(resolve_pipeline_test resolve_pipeline_test.cpp)
 target_link_libraries(resolve_pipeline_test PRIVATE devils_engine::resolve devils_engine::thread)
 

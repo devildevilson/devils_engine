@@ -175,6 +175,15 @@ set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
 
 set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
 
+# FastNoise2 собирает по одному варианту кода на каждый набор SIMD-инструкций и выбирает его в
+# РАНТАЙМЕ. Для генератора это неприемлемо: один и тот же seed давал бы разные артефакты на разных
+# машинах (замерено расхождение 1.8e-07 между Max и SSE2). STRICT_FP — штатная опция upstream,
+# которая делает выход всех наборов ПОБИТОВО одинаковым, поэтому выбор набора перестаёт влиять на
+# результат, а скорость лучшего доступного набора сохраняется.
+set(FASTNOISE2_STRICT_FP ON CACHE BOOL "Deterministic FastNoise2 output across SIMD feature sets" FORCE)
+set(FASTNOISE2_TOOLS OFF CACHE BOOL "" FORCE)
+set(FASTNOISE2_TESTS OFF CACHE BOOL "" FORCE)
+
 #set(BUILD_SHARED_LIBS ON)
 
 FetchContent_Declare(
@@ -185,15 +194,6 @@ FetchContent_Declare(
   GIT_PROGRESS   TRUE
   OVERRIDE_FIND_PACKAGE
 )
-
-#FetchContent_Declare(
-#  alpaca
-#  GIT_REPOSITORY https://github.com/p-ranav/alpaca.git
-#  GIT_TAG        83a592f0c3807500f1aaf3b07fd48105a01e2780 # Oct 1, 2024
-#  GIT_SHALLOW    TRUE
-#  GIT_PROGRESS   TRUE
-#  OVERRIDE_FIND_PACKAGE
-#)
 
 FetchContent_Declare(
   zpp_bits
@@ -438,15 +438,6 @@ FetchContent_Declare(
   EXCLUDE_FROM_ALL
 )
 
-# FastNoise2 собирает по одному варианту кода на каждый набор SIMD-инструкций и выбирает его в
-# РАНТАЙМЕ. Для генератора это неприемлемо: один и тот же seed давал бы разные артефакты на разных
-# машинах (замерено расхождение 1.8e-07 между Max и SSE2). STRICT_FP — штатная опция upstream,
-# которая делает выход всех наборов ПОБИТОВО одинаковым, поэтому выбор набора перестаёт влиять на
-# результат, а скорость лучшего доступного набора сохраняется.
-set(FASTNOISE2_STRICT_FP ON CACHE BOOL "Deterministic FastNoise2 output across SIMD feature sets" FORCE)
-set(FASTNOISE2_TOOLS OFF CACHE BOOL "" FORCE)
-set(FASTNOISE2_TESTS OFF CACHE BOOL "" FORCE)
-
 FetchContent_Declare(
   FastNoise2
   GIT_REPOSITORY https://github.com/Auburn/FastNoise2.git
@@ -458,6 +449,13 @@ FetchContent_Declare(
   voronoi
   GIT_REPOSITORY https://github.com/JCash/voronoi.git
   GIT_TAG        v0.10.2
+  OVERRIDE_FIND_PACKAGE
+)
+
+FetchContent_Declare(
+  GameNetworkingSockets
+  GIT_REPOSITORY https://github.com/ValveSoftware/GameNetworkingSockets.git
+  GIT_TAG        v1.6.0
   OVERRIDE_FIND_PACKAGE
 )
 
@@ -477,7 +475,7 @@ FetchContent_MakeAvailable(freetype)
 
 add_library(Freetype::Freetype ALIAS freetype-interface)
 
-FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus FastNoise2 voronoi) # RE-flex
+FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus FastNoise2 voronoi GameNetworkingSockets) # RE-flex
 
 if (TARGET minizip)
   target_compile_options(minizip PRIVATE
@@ -531,9 +529,7 @@ add_subdirectory(libs/options/)
 add_subdirectory(libs/utils/)
 add_subdirectory(libs/catalogue/)
 add_subdirectory(libs/resolve/)
-# Generic config resources in act/mood/acumen/prefab inherit demiurg::resource_interface.
 add_subdirectory(libs/demiurg/)
-# act goes before mood/acumen: both expose act types in their public APIs.
 add_subdirectory(libs/act/)
 add_subdirectory(libs/mood/)
 add_subdirectory(libs/simul/)
@@ -569,7 +565,7 @@ add_subdirectory(subprojects/playgrounds "${CMAKE_BINARY_DIR}/cmake/subprojects/
 if (DEVILS_ENGINE_BUILD_TESTS)
   add_custom_target(devils_engine_test
     COMMAND ${CMAKE_CTEST_COMMAND} --test-dir ${CMAKE_BINARY_DIR} --output-on-failure -L devils_engine
-    DEPENDS utils_general_test utils_contract_test thread_general_test resolve_pipeline_test simul_lifecycle_test turn_pipeline_test aesthetics_world_test sound_system_test acumen_test flow_test catalogue_introspection_test cardgame_effect_program_test cardgame_follow_up_test cardgame_action_pipeline_test cardgame_typed_effect_test cardgame_combat_script_test cardgame_execution_report_script_test cardgame_headless_smoke tile_frontier_snapshot_smoke tile_frontier_resume_smoke
+    DEPENDS utils_general_test utils_contract_test thread_general_test gamenetworking_sockets_capability_test resolve_pipeline_test simul_lifecycle_test turn_pipeline_test aesthetics_world_test sound_system_test acumen_test flow_test catalogue_introspection_test cardgame_effect_program_test cardgame_follow_up_test cardgame_action_pipeline_test cardgame_typed_effect_test cardgame_combat_script_test cardgame_execution_report_script_test cardgame_headless_smoke tile_frontier_snapshot_smoke tile_frontier_resume_smoke
     USES_TERMINAL
     COMMENT "Running devils_engine tests"
   )

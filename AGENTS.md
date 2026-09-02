@@ -4,6 +4,128 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- GN02 NAMED-PLACE HIERARCHY, CK-STYLE TITLES, ISLAND ARCS, VSYNC AND STARS (2026-09-02). Five of the
+  seven queued tasks; `66/66` planet checks, `320/320` project tests. (1) A LEVEL GROWN OVER AREAS MUST
+  BE GROWN OVER THE AREA GRAPH, not over cells. The task's hard rule was "every border coincides with a
+  province border", and growing a historical region by flooding cells would cut provinces in half. Two
+  new engine tools make it structural instead of hoped-for: `connected_components` (a connected piece
+  is a property of the GRAPH, not a value of a field — the label "land" is on every land cell, but the
+  fact that Eurasia and America are two pieces is not in it) and `label_adjacency` (a CSR over LABELS
+  built from the CSR over elements). A cell then learns its level by `lookup` on its province number,
+  so the borders coincide by construction. (2) A LEVEL MUST BE GROWN INSIDE EACH PARENT SEPARATELY.
+  Grown over the whole set at once, the flood cannot cross water, so the count stops being a function
+  of the level's size and becomes a function of how many pieces of land the planet has: three ocean
+  seeds covered 57 sea zones of 94 and the leftovers produced 35 "oceans", each one enclosed lake.
+  (3) THE SMALL PIECES MUST BE ATTACHED, NOT PROMOTED. Japan is an island but its continent is Asia;
+  without a threshold a hundred islands give a hundred "continents". Empires needed the same fix — 77
+  empires on 862 counties against a requested hundred counties per empire, and the whole difference was
+  islands declaring themselves empires. Symmetrically, a lake is not an ocean. (4) DE JURE POLITICS IS
+  THE SAME PARTITION AT OTHER SCALES, and the de jure KINGDOM *is* the historical region — that is what
+  "the political hierarchy follows from the geographic one" actually means. De facto realms are a
+  different PROCESS, not a different scale: a title is a right and divides area evenly, a realm is
+  force, so it grows by `graph_vote` weighted by population; 83% of a realm's counties come out of its
+  own culture although the vote never looks at culture. (5) A NAME IS A SEED, NOT A STRING: the buffers
+  are numeric and the name is fully determined by the seed, so the record stores `name_seed` plus the
+  naming culture and synthesis is deterministic. (6) FOUND A REAL CONVENTION BUG IN ALL FOUR RECORD
+  BUFFERS: `group_by`/`accumulate` bucket by the RAW key (bucket 0 = "no label"), while the scripts
+  wrote centre and size at "label minus one", so one record mixed TWO DIFFERENT areas —
+  `provinces[0].height_sum = -3.9e7`, the summed depth of all water, next to `cells = 19` from the
+  first province. One effect was live: merging small provinces read a NEIGHBOUR's frontier flag. Only
+  addition catches it, and that check is now in `--verify`. (7) ISLAND ARCS: the mask that chops
+  volcanoes decided nothing while the back-arc platform stayed continuous and lifted the whole arc above
+  water. Both halves of the fix are physical — the arc front WANDERS relative to the trench (the slab
+  dip varies along the junction, which is also the answer to "a strip of REGULAR shape": distance to the
+  junction is a graph flood and therefore smooth), and the arc is cut by TRANSVERSE straits. Pieces
+  `18 → 87`, median `254 → 28` cells, elongation `4.9 → 2.3`. (8) TWO FRAME LIMITERS, and measurement
+  said so: with the producer-loop pacer removed the rate stayed 63 FPS because the present mode held it.
+  `choose_swapchain_present_mode` now takes a desired and a fallback mode, defaulting to `Fifo`.
+  (9) Stars on the skybox re-taught the PF07 lesson — count the RIGHT quantity: the star count came out
+  right (315 on half a screen against 950 predicted for the whole) and the sky still did not read,
+  because the median star was at 20 of 255. It also exposed a real geometry error: a cube lattice in
+  VOLUME is not bijective with directions, so a star drifts into a neighbouring cell and nobody draws
+  it — a cube UNWRAP is needed. (10) The new step was quadratic (8.7 s of 33, the most expensive step
+  with the least work): the per-parent loop walked the whole area-buffer CAPACITY each time. Bucketing
+  nodes by parent once: `8.7 → 3.5 s` Debug, `915 ms` Release, same result.
+
+- GN02 PHYSICAL ISLANDS, LANDFORM REGIONS, MORE LAND (2026-09-02). Three asks — islands from physics
+  rather than from a count, physical REGIONS that a later step amplifies, and less water area without
+  losing the water — and each landed a transferable rule. (1) ISLANDS ARE NOW A MECHANISM: a mantle
+  plume stands still while the plate rides over it, so the chain, its direction, its age gradient and
+  its length all fall out of the Euler-pole geometry instead of being parameters (new `hotspot_tracks`
+  tool; new engine tool `graph_slope`). The second mechanism is the island arc, and it only works as
+  TWO parts — a wide low back-arc platform plus narrow volcanoes on it: without the platform a volcano
+  has to climb 6 km from the abyss and comes out either a 4 km mountain or nothing (measured 19 land
+  masses instead of 36). Corollary: physically-born islands have a RESOLUTION FLOOR — a 200 km edifice
+  is 1.5 cells on a 16k lattice, so the contract test moved to 49152 cells and the default to 262144.
+  (2) REGIONS ARE CLASSIFIED FROM MEASURED PHYSICS AND THEN AMPLIFIED: the per-kind gain is applied to
+  the deviation from the smoothed neighbourhood, which makes plains flatter and mountains sharper —
+  27x between coastal plain and mountains in the measured per-kind slope. Two rules there: the
+  descriptor must be the true local SLOPE, not deviation-from-blur (a tilted plane barely deviates
+  from its own blur, so a flat plateau and a smooth slope were indistinguishable — 122 against 121);
+  and the gain field must be BLURRED before use, because a hard class boundary with different gains
+  makes a step where the relief has none (a "flattened" abyssal plain came out rougher than with no
+  amplification at all). (3) LESS WATER AREA, SAME WATER: land 40% instead of 29% with the ocean
+  deepened to keep the volume at 1.0 Earth, and the report prints the volume so it stays a
+  measurement. The cost is visible and irreducible: with the water forced deeper, 14% of the surface
+  sits below 6 km against Earth's 2%. (4) Also fixed: the two-pass shelf construction oscillated
+  (raising the shelf break drops a shallow band to the ocean floor, which removes land, which lowers
+  the sea level) — both conditions collapse into ONE bisection, "cells above shelf_break + shelf_drop
+  equals the land target".
+- GN02 RELIEF REWORK: HYPSOMETRY, BELTS, FRACTAL DETAIL (2026-09-01). A pass for "more realistic and
+  more pronounced relief" that turned into six real modelling errors, all of the same kind — a quantity
+  computed in the wrong place, invisible because the result still looked plausible. (1) BOUNDARY SPEED
+  WAS LOCAL: `plate_interaction` writes convergence only on cells whose neighbour is in another plate,
+  i.e. a ONE-CELL ribbon, so `uplift * drive * decay(distance)` was nonzero only where `decay` is
+  already 1 — every belt width in the config (orogen, trench, ridge, rift) did nothing, mountains were
+  a one-cell ribbon smeared by smoothing, and uplift had been inflated to compensate. Fixed by flooding
+  the boundary CELL ID instead of a 0/1 flag and looking up its convergence and subduction side, which
+  is what the new engine tool `index` exists for. (2) ALL NOISE FREQUENCIES WERE ~100x TOO LOW: the
+  encoded FastNoise2 tree carries its own frequency (~0.01 cycle per radian per frequency unit), so
+  "fine relief detail" at frequency 11 had a pattern several radians wide — a smooth planetary gradient.
+  Neither detail amplitude nor frequency moved the measured land slope until frequency grew fiftyfold.
+  Noise sizes are now declared in RADIANS with the tree's scale declared next to the tree. (3) TWO
+  MECHANISMS FOUGHT OVER THE CONTINENTAL MARGIN: seafloor depth was subtracted in the divergent rule via
+  `(1 - crust)`, so the drop to the abyss was made by the CRUST WIDTH (3 km over 0.12 rad) and was
+  steeper than the constructed slope; the shelf collapsed to 1.7% of the surface against Earth's 5%.
+  Depth now belongs to the single height curve. (4) ISLAND CONES MUST OVERLAY, NOT ADD: summing a
+  descending continental cone with an island cone sank mid-ocean islands the further they were from a
+  continent (playable landmasses 46 instead of 130) — hence the new `maximum`/`minimum` tools. (5)
+  FRACTAL NORMALISATION BY THE SUM OF AMPLITUDES makes the fractal WEAKER than one octave, because
+  octave peaks never align; normalise by power (root of the sum of squares) instead. (6) AGE-DEPTH WAS
+  LINEAR IN FLOOD STEPS: resolution-dependent (a finer lattice drowned the ocean twice as deep) and it
+  made ridge flanks steeper than land. A saturating curve is both the plate-cooling model and the fix.
+  Transferable rule: measure the SHAPE of a field (hypsometry, per-class neighbour slope), not only its
+  range — a plausible min/max hid every one of these. Use the MEDIAN for "typical roughness": one
+  trench arc carries 3 km and 1.5% of such arcs double the mean.
+- GN02 PLAYABILITY PASS, SETTINGS AND CAMERA LIMIT (2026-08-31). Three deliberate departures from
+  "whatever physics gives" toward "what a game needs", each measured rather than tasted. (1) CONTINENTS
+  ARE SEEDED, NOT DRAWN FROM PLATES: declaring a whole plate continental produced either one
+  supercontinent or all land in one hemisphere — real, but half the map is then empty water. Continent
+  centres are now spread by poisson selection and mass falls off from them, so continentality is a CELL
+  property, which is also truer: a real plate carries both continent and ocean floor. The falloff needs a
+  PLATEAU inside plus a shelf-wide ramp — a linear falloff from the centre left land only at the very
+  middle, the sea-level search then dropped the water and exposed mid-ocean ridges, and land came out as
+  RIBBONS along plate seams. (2) MANY MEDIUM ISLANDS at `0.045` rad with their OWN score field, because a
+  shared score made the greedy seeding put island centres exactly where continent centres already were.
+  (3) COASTAL EROSION removes cells with almost no land neighbours — physically wave erosion, in practice
+  the specks in which no province fits: at 16384 cells the world went from `183` land masses with `113`
+  specks to `53` masses with `1`; at 65536 it is `108` masses, `0` specks, `81` able to hold a province.
+  The pass runs INSIDE the sea-level bisection so the declared land share still holds exactly. PROVINCE
+  SIZE IS NOW BOUNDED BOTH WAYS — from above by flood capacity (a full label stops growing and the patch
+  wave splits it), from below by merging (the seed of a small province is removed and the flood hands its
+  cells to neighbours), both expressed as shares of the average so they follow neither resolution nor the
+  requested province count: `3..45` cells within bounds `8..62`, none over, `32` under (all islands).
+  Two more real defects surfaced: the patch wave must START at the normal area spacing and halve per pass
+  (going straight to neighbour spacing re-seeded a merged region every 1.5 cells and produced `54`
+  one-cell provinces), and area buffers must be CLEARED before the final summary or a label that vanished
+  in merging leaves its old numbers in the record — a nonexistent area shipped in the package, and no
+  connectivity check can catch it because the buffer is valid. VIEWER: camera is clamped by the ROTATION
+  AXIS component to `±0.94` (~70 deg) because that is what degenerates in `lookAt`, all program text is
+  now Latin (the playground font atlas has no Cyrillic), `G` regenerates with a fresh hashed seed, and
+  `Tab`/`-`/`=`/`Enter` drive simple generator settings whose bounds and step are declared next to the
+  value itself in `values.tavl` (`ranges = { name = [min, max, step] }`, parsed by the new engine call
+  `originator::parse_value_ranges`); `--set name=value` gives the same override headlessly. `--verify` is
+  `45/45` on four seeds, `312/312` tests pass, `713 ms` for 65536 cells and `3.49 s` for 262144.
 - GN02 PLANET GENERATOR: FIRST VERTICAL SLICE CLOSED (2026-08-31). New playground
   `GN02_planet_generator` computes a whole planet downward by CAUSE in seven config-declared steps:
   topology, tectonics, surface, climate, seasons, peoples, regions. Surface address is a DIRECTION, not
@@ -25,14 +147,40 @@ This repository is the author's experimental game engine / framework. It is a la
   1132 m); (5) `poisson_seeds` blanks candidates BY STRAIGHT LINE while flood passability follows the
   GRAPH, so a landlocked sea can lose its seed to one across an isthmus — fixed by a neighbour-step patch
   wave looped to zero uncovered cells; (6) widths must be declared in RADIANS and divided by the lattice
-  step, or changing resolution silently changes the world. THREE MEASURED devils_script limits reshaped
-  the rules: a function call is not an expression operand; the context has EIGHT argument slots (so at
-  most seven `ctx:arg`); and A LINE BREAK INSIDE AN EXPRESSION SILENTLY CHANGES THE PROGRAM — the same
-  population-growth formula gave `0..0.49` on one line and `0.00013..1` split before a `*`, with no
-  error. The third is a candidate fix for `devils_script` itself. Release on 11 threads: `479 ms` for
+  step, or changing resolution silently changes the world. THREE devils_script properties reshaped the
+  rules: a function call is not an expression operand; the context has EIGHT argument slots (so at most
+  seven `ctx:arg`); and A LINE BREAK ENDS AN EXPRESSION — `ds` separates elements by `,` or `\n`, so a
+  formula split across lines is legitimately two formulas. The last is a LANGUAGE RULE, not a defect
+  (confirmed by the author), but easy to step on: the same population-growth formula gave `0..0.49` on
+  one line and `0.00013..1` split before a `*`, with no error because there is no error. Config rule
+  that follows: one expression per line, break only after a comma, and check a rule by the RANGE of its
+  output (`--stats`), because the text looks the same either way. Release on 11 threads: `479 ms` for
   65536 cells, `1929 ms` for 262144, package `19.0`/`75.7 MB`; parallelism only `1.8x` because floods,
-  seed selection and bisection are sequential by nature. `--verify` is `37/37` on four seeds and
+  seed selection and bisection are sequential by nature. `--verify` is `41/41` on four seeds and
   `312/312` tests pass. NEXT: rivers/erosion, reading the package in PF10, states and trade.
+- GN02 VIEWER AND PER-STEP INSPECTION (2026-08-31). `--view` opens a PF10-style planet window from the
+  same binary: painter render graph in `tavl`, orbit camera, twelve fields on the digits (`climate`,
+  `relief`, `plates`, `tectonics`, `temperature`, `seasonality`, `precipitation`, `habitability`,
+  `population`, `cultures`, `provinces`, `sea zones`), and `[`/`]` stepping through the SEVEN GENERATION
+  STEPS — which re-runs the generator up to step N rather than switching a display, so later fields stay
+  zero and the overlay says so. The mesh deliberately does NOT match the generator: cells are a Fibonacci
+  lattice with no polygons, so an icosphere is drawn and each vertex takes the value of its NEAREST cell —
+  the same question a package consumer has to ask. Subdivision is auto-picked at about four triangles per
+  cell; `628 FPS` at 65536 cells and `615` at 262144 (both `327 680` triangles) on Iris Xe at 1280x720,
+  and a step regeneration costs `505 ms`. Four presentation rules came out of the first frames: displace
+  only land and only above sea level (absolute height made the shelf a sawtooth of 4 km steps), flat-shade
+  categorical fields and interpolate continuous ones (interpolating two random label colours invents a
+  third that belongs to no region), colour land by the SQUARE ROOT of height (almost all land is under a
+  kilometre and went uniformly green), and overlay text must be ASCII because the playground font atlas
+  has no Cyrillic. THE WINDOW ALSO FOUND TWO REAL DEFECTS in minutes. In the world: culture spread was
+  counted in TICKS, i.e. graph hops, so cultures reached half as far on the 262144 lattice — the same
+  mistake as relief widths and moisture travel, now fixed by declaring `culture_reach` in radians (mean
+  culture label `3.47` vs `3.59` across resolutions instead of a 2x gap). In the drawing itself: unlabelled
+  LAND and water were painted the same dark colour, so the culture map read as a speck on an empty planet
+  while the measurement said `87%` of habitable land was claimed — the picture lied, not the model. The
+  report now prints the habitable-land share, and `--verify` grew four mesh checks including sphere
+  closure: the sum of spherical triangle areas equals `4π` within `5e-05`, a tolerance chosen between the
+  measured float error `5.2e-06` and one missing triangle out of 5120 (`1.95e-04`).
 - ORIGINATOR LUA ENVIRONMENT AND STEP BUDGET (2026-08-31). The generator's lua state was already its
   own (`sol::state` + environment, no `math.random`, no io/os, separate build target from `visage`), but
   two real defects sat under it. First, the whitelist DID NOT WORK: `std::string_view` keys silently
