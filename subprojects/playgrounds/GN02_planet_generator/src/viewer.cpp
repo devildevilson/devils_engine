@@ -515,7 +515,7 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
       playground::overlay_description{
         "GN02 planet generator",
         "fibonacci cell lattice + CSR adjacency, nine steps from tectonics to named places",
-        "WASD orbit | wheel zoom | R spin | H relief | U overlay | Esc quit"});
+        "WASD orbit | wheel zoom | R spin | H relief | U overlay | B border smoothing | Esc quit"});
     const auto atlas = overlay.font_atlas();
     const auto font_texture = assets.register_texture_storage("playground.crimson_roman");
     assets.create_texture_storage(font_texture,
@@ -539,6 +539,7 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
     bind_key("toggle_rotation", "key_r");
     bind_key("toggle_relief", "key_h");
     bind_key("toggle_overlay", "key_u");
+    bind_key("cycle_smoothing", "key_b");
     bind_key("mode_next", "key_m");
     bind_key("mode_previous", "key_n");
     bind_key("step_next", "right_bracket");
@@ -568,8 +569,31 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
     // что похожа планета» лучше всего задаётся кадром без единой буквы.
     bool overlay_visible = true;
 
-    std::array<bool, 24> latches{};
+    // Ступени сглаживания границ. Верхний конец не вкусовой: при ширине ядра больше 1.244
+    // одноклеточная область проигрывает своему окружению в собственном центре и ПРОПАДАЕТ с карты
+    // (проверка `--verify` мерит это на настоящей решётке). Нижний — там, где сглаживания уже нет и
+    // граница совпадает с ломаной решётки Фибоначчи.
+    static constexpr std::array<float, 4> smoothing_steps{{0.70f, 0.90f, 1.10f, 1.24f}};
+    static constexpr std::array<const char*, 4> smoothing_names{{"lattice", "angular", "gentle", "smooth"}};
+    size_t smoothing_choice = 2;
+    for (size_t k = 0; k < smoothing_steps.size(); ++k) {
+      if (std::abs(smoothing_steps[k] - options.border_smoothing) <
+          std::abs(smoothing_steps[smoothing_choice] - options.border_smoothing)) {
+        smoothing_choice = k;
+      }
+    }
+
+    // Защёлки нажатий. Номер защёлки назначается РУКАМИ у каждого вызова, поэтому здесь стоит
+    // проверка границы: она превращает молчаливую порчу соседних переменных на стеке в громкую
+    // ошибку. Цена этого знания уже заплачена — с добавлением кнопки сглаживания номер вышел за
+    // массив, и запись `false` мимо него меняла НОМЕР ПОЛЯ: окно показывало рельеф вместо того, что
+    // просили ключом, и ни один вывод об этом не говорил.
+    std::array<bool, 25> latches{};
     const auto pressed_once = [&](const std::string_view event, const size_t slot) {
+      if (slot >= latches.size()) {
+        utils::error{}("GN02 viewer: key latch {} for '{}' is outside the {} declared latches", slot, event,
+                       latches.size());
+      }
       const bool down = input::events::is_pressed(event);
       const bool fired = down && !latches[slot];
       latches[slot] = down;
@@ -611,6 +635,12 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
       }
       if (pressed_once("toggle_overlay", 23)) {
         overlay_visible = !overlay_visible;
+      }
+      // СГЛАЖИВАНИЕ ГРАНИЦ — вкус в известных границах, поэтому кнопка, а не константа. Значения
+      // перебираются списком, а не крутятся: на карте различимы именно ступени, а не десятые доли, и
+      // список сразу называет свои концы — от «по решётке» до самого плавного, какой допустим.
+      if (pressed_once("cycle_smoothing", 24)) {
+        smoothing_choice = (smoothing_choice + 1) % smoothing_steps.size();
       }
 
       const size_t previous_mode = mode;
@@ -738,8 +768,10 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
                                      current.range.maximum, current.range.step,
                                      settings_dirty ? "  (Enter to apply)" : ""));
       }
-      detail.push_back(std::format("relief {}, spin {}, distance {:.2f} R", relief ? "on" : "off",
-                                   auto_rotate ? "on" : "off", camera_distance));
+      detail.push_back(std::format("relief {}, spin {}, distance {:.2f} R, border smoothing {:.2f} ({})",
+                                   relief ? "on" : "off", auto_rotate ? "on" : "off", camera_distance,
+                                   smoothing_steps[smoothing_choice],
+                                   smoothing_names[smoothing_choice]));
 
       // ВЫДЕЛЕНИЕ. Строка идёт последней намеренно: это единственная строка оверлея, которая
       // отвечает не на «что нагенерировано», а на «что я сейчас показываю пальцем», и именно её и не
@@ -828,7 +860,12 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
       // ничего между ними не понадобилось. Слот не убран, потому что блок камеры повторяется в
       // четырёх шейдерах байт в байт и его размер объявлен в конфиге: свободное поле честнее
       // изменения раскладки.
-      camera.viewport_near = glm::vec4(float(pending_width), float(pending_height), 0.05f, 0.0f);
+      // Четвёртая компонента — ШИРИНА ЯДРА заливки в шагах решётки, то есть масштаб сглаживания
+      // границ. Раньше здесь лежала резкость смешивания клеток, и она ушла вместе с самим
+      // смешиванием метк: класс заливается плоско, число интерполируется линейно, и ничего между
+      // ними не понадобилось.
+      camera.viewport_near = glm::vec4(float(pending_width), float(pending_height), 0.05f,
+                                       smoothing_steps[smoothing_choice]);
       write_buffer(base, "camera_buffer", &camera, sizeof(camera));
       write_buffer(base, "cell_visuals", visuals.data(), visuals.size() * sizeof(cell_visual));
       visuals_dirty = false;

@@ -179,10 +179,29 @@ place_names build_place_names(originator::pipeline& line, const size_t continent
                               : std::format("Isle of {}", word);
   }
 
+  // Имена материков РАЗЛИЧИМЫ ПО ПОСТРОЕНИЮ, а не по удаче. Затравок столько же, сколько мест,
+  // поэтому два материка могут получить одно слово: на карте это читается как ошибка данных, хотя
+  // данные верны. Проверка на пяти зёрнах и нашла такое столкновение на зерне 1.
+  //
+  // При столкновении затравка ПРОДВИГАЕТСЯ тем же перемешиванием, что и внутри синтеза, и слово
+  // берётся заново. Контракт «имя полностью определено данными» при этом держится: порядок обхода
+  // один и тот же у любого потребителя пакета, значит и продвижение то же. Тот же приём уже стоит у
+  // исторических областей, где сторон света пять, а областей в материке бывает двадцать.
   const auto continent_name_seed = field_of(line, "continents", "name_seed");
   const auto continent_culture = field_of(line, "continents", "culture");
+  std::unordered_set<std::string> continent_taken;
   for (size_t i = 1; i <= continent_count && i < continent_name_seed.count(); ++i) {
-    result.continents[i] = word_of(uint64_t(continent_name_seed.get(i)), size_t(continent_culture.get(i)));
+    auto seed = uint64_t(continent_name_seed.get(i));
+    const auto culture = size_t(continent_culture.get(i));
+    auto word = word_of(seed, culture);
+    // Восемь попыток: складов в традиции хватает на тысячи слов, поэтому восемь подряд занятых
+    // означало бы не столкновение, а исчерпание традиции, и молчать об этом нельзя.
+    for (uint32_t attempt = 0; attempt < 8 && continent_taken.count(word) != 0; ++attempt) {
+      seed = mix(seed, 0x9e3779b9ull);
+      word = word_of(seed, culture);
+    }
+    continent_taken.insert(word);
+    result.continents[i] = std::move(word);
   }
 
   // Историческая область называется СТОРОНОЙ СВЕТА СВОЕГО МАТЕРИКА — «Северная Европа», — ровно как

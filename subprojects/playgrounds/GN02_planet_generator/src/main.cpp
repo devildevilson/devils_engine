@@ -137,6 +137,8 @@ options parse_options(const int argc, const char** argv) {
       // Расстояние камеры ключом, а не только колесом: без него снимок с приближения не повторить, а
       // именно на приближении и видно, показывает ли карта мир или свою сетку.
       result.viewer.camera_distance = std::stof(std::string(argument.substr(11)));
+    } else if (starts_with(argument, "--smoothing=")) {
+      result.viewer.border_smoothing = float(std::atof(std::string(argument.substr(12)).c_str()));
     } else if (starts_with(argument, "--mesh=")) {
       result.viewer.subdivisions = uint32_t(std::stoul(std::string(argument.substr(7))));
     } else if (starts_with(argument, "--mode=")) {
@@ -201,6 +203,7 @@ options parse_options(const int argc, const char** argv) {
                 << "  --distance=R    camera distance in planet radii (default 2.6)\n"
                 << "  --uncapped      draw without the 60 FPS limit (for measuring)\n"
                 << "  --width/--height/--frames/--frame-dump/--validation - window and frame dump\n"
+                << "  --smoothing=W   border smoothing in lattice steps (0.70 angular .. 1.24 smooth)\n"
                 << "  --verify        run the contract checks\n"
                 << "  --set NAME=VALUE  override a value from values.tavl (repeatable)\n"
                 << "  --quiet         no report\n";
@@ -2176,10 +2179,11 @@ int run_verify(const options& opts) {
   // 8а. Геометрия клеток и ЧЕСТНОСТЬ КАРТЫ.
   //
   // Выбор области делает фрагмент: он находит ближайшую клетку и считает покрытие областей ядром
-  // шириной в 1.2 шага решётки. У такого выбора есть цена — область, у которой в окрестности пикселя
-  // мало своих клеток, проигрывает окружению и ПРОПАДАЕТ С КАРТЫ. Ширина ядра выведена из требования
-  // «не пропадает никто»: восемь соседей на минимальном расстоянии дают 8*(1 - 1/1.2^2)^2 = 0.75
-  // против единицы у самой клетки. Проверка мерит это на настоящей решётке, а не на худшем случае.
+  // шириной около шага решётки. У такого выбора есть цена — область, у которой в окрестности пикселя
+  // мало своих клеток, проигрывает окружению и ПРОПАДАЕТ С КАРТЫ. Верхняя граница ширины выведена из
+  // требования «не пропадает никто»: восемь соседей на минимальном расстоянии дают
+  // 8*(1 - 1/R^2)^2 < 1 при R < 1.244. Проверка мерит это на настоящей решётке при самой широкой
+  // разрешённой ширине, а не на худшем мыслимом кольце.
   //
   // Проверять надо именно так, потому что глазом это не видно: одноклеточный остров, съеденный
   // ядром, выглядит как «его тут и не было», а не как дефект отрисовки. Первая версия ставила ширину
@@ -2210,7 +2214,7 @@ int run_verify(const options& opts) {
     }
     check(geometry_sane, "cell geometry lists real neighbours, sorted by distance, on the unit sphere");
 
-    // Правило повторяет шейдер (`planet.frag.glsl`, kernel_width): если оно меняется там, оно
+    // Правило повторяет шейдер (`planet.frag.glsl`, ядро заливки): если оно меняется там, оно
     // обязано измениться и здесь, иначе проверка перестанет мерить то, что рисуется.
     const auto hidden_cells = [&](const std::string_view field_name) {
       const auto labels = field_of(line, "cells", field_name);
@@ -2219,7 +2223,10 @@ int run_verify(const options& opts) {
         const auto& record = graph[i];
         const double spacing =
           std::max(double(glm::distance(record.direction, graph[record.neighbours[0]].direction)), 1e-6);
-        const double radius = spacing * 1.2;
+        // Ширина берётся САМАЯ БОЛЬШАЯ из разрешённых окном (`min/max_kernel_width` в шейдере):
+        // сглаживание границ настраивается кнопкой, поэтому проверять надо худший случай диапазона,
+        // а не значение по умолчанию. Узкое ядро клеток не теряет тем более.
+        const double radius = spacing * 1.24;
         const double own = labels.get(i);
         double own_coverage = 1.0; // вес самой клетки в её собственном центре равен единице
         double rival = 0.0;
