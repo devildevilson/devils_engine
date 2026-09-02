@@ -90,7 +90,10 @@ target_include_directories(devils_originator_lua
 
 target_link_libraries(devils_originator_lua
   PUBLIC devils_engine::originator devils_engine::originator_script sol2::sol2 ${DEVILS_ORIGINATOR_LUA_LIBRARIES}
-  PRIVATE devils_engine::options devils_engine::utils
+  # Базовые функции lua приходят из движка, а не пишутся заново: `base.prng64_2`, `base.value`,
+  # `base.dice` и упаковка сделаны на общих утилитах, поэтому скрипт генератора и остальной движок
+  # считают ОДНИМ хешем. Цель `bindings_base` намеренно без интерфейса — генератор headless.
+  PRIVATE devils_engine::options devils_engine::utils devils_engine::bindings_base
 )
 
 if (WIN32)

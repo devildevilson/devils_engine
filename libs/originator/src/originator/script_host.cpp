@@ -1,5 +1,7 @@
 #include "devils_engine/originator/script_host.h"
 
+#include "devils_engine/bindings/env.h"
+
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -166,6 +168,19 @@ script_host::script_host(tool_registry& tools, thread::atomic_pool* pool) : tool
   // приходит от шага, а случайность считается инструментами как функция от индекса.
   env_["math"]["random"] = sol::nil;
   env_["math"]["randomseed"] = sol::nil;
+
+  // БАЗОВЫЕ ФУНКЦИИ ДВИЖКА в таблице `base`, а не своя копия в каждом скрипте. Они сделаны на общих
+  // утилитах (`utils::prng`, `utils::dice`, упаковка), поэтому скрипт генератора хеширует ТЕМ ЖЕ, чем
+  // хеширует остальной движок: `base.prng64_2(a, b)` вместо рукописного splitmix в теле шага,
+  // `base.prng64_normalize` вместо деления на 2^53 руками, `base.value`/`base.dice` для чисел из
+  // состояния.
+  //
+  // Случайность отсюда НЕ противоречит запрету выше: у всех этих функций нет своего состояния —
+  // число выводится из аргументов, то есть из зерна шага и номера элемента. Единственные функции
+  // таблицы, на которые телу шага опираться нельзя, — `base.perf` (замер времени) и
+  // `base.script_stack`: это диагностика, и решение, зависящее от времени, сломало бы и
+  // воспроизводимость, и равенство «параллельно == последовательно».
+  bindings::basic_functions(env_);
 
   lua_pushlightuserdata(lua_.lua_state(), this);
   lua_rawsetp(lua_.lua_state(), LUA_REGISTRYINDEX, &script_host_registry_key);

@@ -9,34 +9,34 @@
 // 1. Топология замкнутой поверхности: клетки и соседство. Ни одного слова про мир — только форма.
 {
   name = topology
-  body = scripts/topology.lua
+  body = scripts/S01_topology.lua
   writes = [ cells, cell_offsets, cell_arcs ]
 }
 
 // 2. Тектоника: плиты, их движение, стыки и рельеф.
 {
   name = tectonics
-  body = scripts/tectonics.lua
+  body = scripts/S02_tectonics.lua
   reads = [ cell_offsets, cell_arcs ]
   writes = [ cells, plates, plate_offsets, plate_order, hotspots, state ]
   programs = {
-    convergent = scripts/convergent.ds
-    divergent = scripts/divergent.ds
-    relief_convergent = scripts/relief_convergent.ds
-    relief_divergent = scripts/relief_divergent.ds
+    convergent = scripts/S02_convergent.ds
+    divergent = scripts/S02_divergent.ds
+    relief_convergent = scripts/S02_relief_convergent.ds
+    relief_divergent = scripts/S02_relief_divergent.ds
   }
 }
 
 // 3. Поверхность: сглаживание, уровень моря под заданную долю суши, расстояние до океана.
 {
   name = surface
-  body = scripts/surface.lua
+  body = scripts/S03_surface.lua
   reads = [ cell_offsets, cell_arcs ]
   writes = [ cells, state ]
   programs = {
-    land = scripts/land.ds
-    coast = scripts/coast.ds
-    ocean = scripts/ocean.ds
+    land = scripts/S03_land.ds
+    coast = scripts/S03_coast.ds
+    ocean = scripts/S03_ocean.ds
   }
 }
 
@@ -45,15 +45,15 @@
 // климат считается по высотам.
 {
   name = landforms
-  body = scripts/landforms.lua
+  body = scripts/S04_landforms.lua
   reads = [ cell_offsets, cell_arcs ]
   writes = [ cells, landform_types, landform_offsets, landform_order, state ]
   programs = {
-    landform_water = scripts/landform_water.ds
-    landform_land = scripts/landform_land.ds
-    land = scripts/land.ds
-    coast = scripts/coast.ds
-    ocean = scripts/ocean.ds
+    landform_water = scripts/S04_landform_water.ds
+    landform_land = scripts/S04_landform_land.ds
+    land = scripts/S03_land.ds
+    coast = scripts/S03_coast.ds
+    ocean = scripts/S03_ocean.ds
   }
 }
 
@@ -61,7 +61,7 @@
 // едет по ветру, поэтому шаг состоит из цикла переносов, а не из одной формулы.
 {
   name = climate
-  body = scripts/climate.lua
+  body = scripts/S05_climate.lua
   reads = [ cell_offsets, cell_arcs ]
   writes = [ cells ]
 }
@@ -69,27 +69,27 @@
 // 6. Сезоны: лето и зима как тёплый и холодный из двух наклонений, отсюда же градиент и зоны.
 {
   name = seasons
-  body = scripts/seasons.lua
+  body = scripts/S06_seasons.lua
   writes = [ cells, state ]
   programs = {
-    summer = scripts/summer.ds
-    winter = scripts/winter.ds
-    seasonality = scripts/seasonality.ds
-    climate_zone = scripts/climate_zone.ds
-    alpine = scripts/alpine.ds
+    summer = scripts/S06_summer.ds
+    winter = scripts/S06_winter.ds
+    seasonality = scripts/S06_seasonality.ds
+    climate_zone = scripts/S06_climate_zone.ds
+    alpine = scripts/S06_alpine.ds
   }
 }
 
 // 7. Люди: пригодность земли, расселение, культуры и журнал событий.
 {
   name = peoples
-  body = scripts/peoples.lua
+  body = scripts/S07_peoples.lua
   reads = [ cell_offsets, cell_arcs ]
   writes = [ cells, cultures, culture_offsets, culture_order, history, state ]
   programs = {
-    habitability = scripts/habitability.ds
-    population_step = scripts/population_step.ds
-    culture_mask = scripts/culture_mask.ds
+    habitability = scripts/S07_habitability.ds
+    population_step = scripts/S07_population_step.ds
+    culture_mask = scripts/S07_culture_mask.ds
   }
 }
 
@@ -97,16 +97,16 @@
 // включает население и культуру: область — это то, чем владеют, а владеют людьми, а не рельефом.
 {
   name = regions
-  body = scripts/regions.lua
+  body = scripts/S08_regions.lua
   reads = [ cell_offsets, cell_arcs ]
   writes = [
     cells, provinces, province_offsets, province_order,
     sea_zones, sea_offsets, sea_order, seed_offsets, seed_order, state
   ]
   programs = {
-    unassigned_land = scripts/unassigned_land.ds
-    unassigned_water = scripts/unassigned_water.ds
-    island_seeded = scripts/island_seeded.ds
+    unassigned_land = scripts/S08_unassigned_land.ds
+    unassigned_water = scripts/S08_unassigned_water.ds
+    island_seeded = scripts/S08_island_seeded.ds
   }
 }
 
@@ -116,7 +116,7 @@
 // провинций, а не отдельная заливка по клеткам.
 {
   name = geography
-  body = scripts/geography.lua
+  body = scripts/S09_geography.lua
   reads = [ cell_offsets, cell_arcs, province_offsets, province_order, sea_offsets, sea_order ]
   writes = [
     cells, provinces, sea_zones, state,

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <format>
 #include <span>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "devils_engine/utils/core.h"
@@ -214,12 +215,19 @@ place_names build_place_names(originator::pipeline& line, const size_t continent
   const auto region_continent = field_of(line, "historical_regions", "continent");
   const auto continent_center = field_of(line, "continents", "center");
 
+  // Занятые имена держатся ПО МАТЕРИКУ: различимость нужна там, где по имени ориентируются, а два
+  // «Северных» в разных материках друг другу не мешают. Имя стороны света уже содержит имя материка,
+  // поэтому для него достаточно одного множества, а вот СОБСТВЕННОЕ слово области надо проверять
+  // именно внутри её материка.
   std::unordered_set<std::string> taken;
+  std::unordered_map<size_t, std::unordered_set<std::string>> taken_in_continent;
   for (size_t i = 1; i <= historical_count && i < region_name_seed.count(); ++i) {
     const auto owner = size_t(region_continent.get(i));
-    const auto word = word_of(uint64_t(region_name_seed.get(i)), size_t(region_culture.get(i)));
+    auto seed = uint64_t(region_name_seed.get(i));
+    const auto culture = size_t(region_culture.get(i));
+    auto word = word_of(seed, culture);
     if (owner == 0 || owner >= result.continents.size() || result.continents[owner].empty()) {
-      result.historical_regions[i] = word;
+      result.historical_regions[i] = std::move(word);
       continue;
     }
 
@@ -228,15 +236,25 @@ place_names build_place_names(originator::pipeline& line, const size_t continent
     const std::array<double, 3> parent{continent_center.get(owner, 0), continent_center.get(owner, 1),
                                        continent_center.get(owner, 2)};
     auto candidate = std::format("{} {}", compass_of(region, parent), result.continents[owner]);
+    auto& used = taken_in_continent[owner];
     if (taken.insert(candidate).second) {
+      used.insert(candidate);
       result.historical_regions[i] = std::move(candidate);
-    } else {
-      result.historical_regions[i] = word;
+      continue;
     }
+
+    // Сторона света занята — область получает собственное имя, и оно тоже обязано быть различимо
+    // ВНУТРИ материка. Первая версия этой проверки не делала, и проверка на пяти зёрнах нашла
+    // столкновение: сторон света пять, а областей в материке бывает двадцать, поэтому в собственные
+    // имена уходит большинство областей крупного материка, и совпадение там — вопрос времени.
+    for (uint32_t attempt = 0; attempt < 8 && used.count(word) != 0; ++attempt) {
+      seed = mix(seed, 0x9e3779b9ull);
+      word = word_of(seed, culture);
+    }
+    used.insert(word);
+    result.historical_regions[i] = std::move(word);
   }
 
-  // Океан или море: у океана десятки областей, у замкнутого моря их единицы. Слово выбирается
-  // размером, а не видом записи, потому что вид записи у них один и тот же.
   const auto ocean_name_seed = field_of(line, "oceans", "name_seed");
   const auto ocean_culture = field_of(line, "oceans", "culture");
   const auto ocean_zone_count = field_of(line, "oceans", "zones");

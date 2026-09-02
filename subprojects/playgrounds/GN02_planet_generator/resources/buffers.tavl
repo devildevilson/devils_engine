@@ -1,6 +1,6 @@
 //--- Буферы генератора планеты GN02
 //
-// Адрес поверхности здесь — НАПРАВЛЕНИЕ, а не пара (x, y): планета замкнута, у неё нет края и нет
+// Адрес поверхности здесь — НАПРАВЛЕНИЕ, а не пара «столбец, строка»: планета замкнута, у неё нет края и нет
 // строки. Поэтому нет ни одного поля вида «столбец/строка», а соседство лежит отдельным CSR — оно
 // данные, а не свойство раскладки.
 //
@@ -8,124 +8,129 @@
 // документ, а при переключении на aos порядок сразу становится размером элемента.
 //
 // Размер задан ИМЕНЕМ константы: генератор обязан назвать свою стоимость по памяти до запуска.
+//
+// Поле пишется ОПЕРАТОРОМ: `position = v3`, а не кортежем `(position, v3)`. Лишние скобки в
+// документе-схеме ничего не сообщают, а строка с оператором читается как строка таблицы. Для разбора
+// это одно и то же: строка с оператором — та же ПАРА, что и строка в скобках, потому что чтение пары
+// пропускает операторные лексемы между слотами.
 
 {
   name = cells
   format = [
     // Топология
-    (position, v3)
-    (plate_axis, v3)
-    (velocity, v3)
-    (wind, v3)
+    position = v3
+    plate_axis = v3
+    velocity = v3
+    wind = v3
 
     // Скаляры поверхности и климата. Имена важны буквально: программа на devils_script читает поле
     // по имени привязки, поэтому переименование поля здесь — это переименование в правиле.
-    (lat_sin, v1)
-    (one, v1)
-    (relief_noise, v1)
-    (relief_octave, v1)
-    (roughness, v1)
-    (base_height, v1)
-    (shelf_ramp, v1)
-    (swell, v1)
-    (ocean_floor, v1)
-    (belt_convergence, v1)
-    (belt_subduction, v1)
-    (belt, v1)
-    (hotspot, v1)
-    (arc_band, v1)
-    (arc_platform, v1)
-    (arc_segment, v1)
-    (basin, v1)
-    (basin_shape, v1)
-    (plate_rate, v1)
-    (crust, v1)
-    (crust_work, v1)
-    (island_crust, v1)
-    (continent_distance, v1)
-    (island_distance, v1)
-    (convergence, v1)
-    (shear, v1)
-    (subduction, v1)
-    (convergent_distance, v1)
-    (divergent_distance, v1)
-    (flood_cost, v1)
-    (scratch_distance, v1)
+    lat_sin = v1
+    one = v1
+    relief_noise = v1
+    relief_octave = v1
+    roughness = v1
+    base_height = v1
+    shelf_ramp = v1
+    swell = v1
+    ocean_floor = v1
+    belt_convergence = v1
+    belt_subduction = v1
+    belt = v1
+    hotspot = v1
+    arc_band = v1
+    arc_platform = v1
+    arc_segment = v1
+    basin = v1
+    basin_shape = v1
+    plate_rate = v1
+    crust = v1
+    crust_work = v1
+    island_crust = v1
+    continent_distance = v1
+    island_distance = v1
+    convergence = v1
+    shear = v1
+    subduction = v1
+    convergent_distance = v1
+    divergent_distance = v1
+    flood_cost = v1
+    scratch_distance = v1
     // Промежуточные величины рельефа. Они существуют потому, что правило на devils_script не может
     // вызвать функцию внутри выражения: спад и ограничение считает движок, а правило складывает.
-    (drive, v1)
-    (open_drive, v1)
-    (age, v1)
-    (decay_a, v1)
-    (decay_b, v1)
-    (height, v1)
-    (height_smooth, v1)
-    (land_support, v1)
-    (height_relative, v1)
-    (relief_local, v1)
-    (landform_gain, v1)
-    (landform_offset, v1)
-    (ocean_distance, v1)
-    (temperature, v1)
-    (season_a, v1)
-    (season_b, v1)
-    (temperature_summer, v1)
-    (temperature_winter, v1)
-    (seasonality, v1)
-    (moisture, v1)
-    (moisture_next, v1)
-    (rain, v1)
-    (precipitation, v1)
-    (habitability, v1)
-    (population, v1)
-    (population_next, v1)
+    drive = v1
+    open_drive = v1
+    age = v1
+    decay_a = v1
+    decay_b = v1
+    height = v1
+    height_smooth = v1
+    land_support = v1
+    height_relative = v1
+    relief_local = v1
+    landform_gain = v1
+    landform_offset = v1
+    ocean_distance = v1
+    temperature = v1
+    season_a = v1
+    season_b = v1
+    temperature_summer = v1
+    temperature_winter = v1
+    seasonality = v1
+    moisture = v1
+    moisture_next = v1
+    rain = v1
+    precipitation = v1
+    habitability = v1
+    population = v1
+    population_next = v1
     // Нормированные условия пригодности в [0,1]. Их считает движок по порогам из конфига, а правило
-    // habitability.ds их только комбинирует: «привести величину к отрезку по двум порогам» — это
+    // S07_habitability.ds их только комбинирует: «привести величину к отрезку по двум порогам» — это
     // арифметика, а не правило, и вызов функции внутри выражения ds не принимает.
-    (warmth, v1)
-    (wetness, v1)
-    (altitude, v1)
-    (heat_penalty, v1)
-    (winter_penalty, v1)
+    warmth = v1
+    wetness = v1
+    altitude = v1
+    heat_penalty = v1
+    winter_penalty = v1
 
     // Метки. Ноль означает «нет метки» везде, поэтому метки считаются с единицы.
-    (scratch_label, ui1)
-    (boundary_seed, ui1)
-    (island_label, ui1)
-    (province_seed, ui1)
-    (province, ui1)
-    (sea_seed, ui1)
-    (sea_zone, ui1)
+    scratch_label = ui1
+    boundary_seed = ui1
+    island_label = ui1
+    province_seed = ui1
+    province = ui1
+    sea_seed = ui1
+    sea_zone = ui1
     // Уровни географической иерархии на клетке. Клетка получает их НЕ заливкой, а выборкой по номеру
     // своей провинции (или морской зоны): так границы уровней совпадают с границами провинций по
     // построению, а не по счастливому совпадению.
-    (land_mass, ui1)
-    (continent, ui1)
-    (historical_region, ui1)
-    (duchy, ui1)
-    (empire, ui1)
-    (realm, ui1)
-    (ocean, ui1)
-    (plate_seed, us1)
-    (plate, us1)
-    (group_seed, us1)
-    (continent_seed, us1)
-    (island_seed, us1)
-    (hotspot_seed, us1)
-    (culture_seed, us1)
-    (culture, us1)
-    (culture_next, us1)
-    (land, ub1)
-    (convergent_seed, ub1)
-    (divergent_seed, ub1)
-    (ocean_seed, ub1)
-    (culture_mask, ub1)
-    (island_mask, ub1)
-    (climate, ub1)
-    (landform, ub1)
-    (landform_water, ub1)
-    (landform_land, ub1)
-    (frontier, ub1)
+    land_mass = ui1
+    continent = ui1
+    historical_region = ui1
+    duchy = ui1
+    empire = ui1
+    realm = ui1
+    ocean = ui1
+    plate_seed = us1
+    plate = us1
+    group_seed = us1
+    continent_seed = us1
+    island_seed = us1
+    hotspot_seed = us1
+    culture_seed = us1
+    culture = us1
+    culture_next = us1
+    land = ub1
+    convergent_seed = ub1
+    divergent_seed = ub1
+    ocean_seed = ub1
+    culture_mask = ub1
+    island_mask = ub1
+    climate = ub1
+    landform = ub1
+    landform_water = ub1
+    landform_land = ub1
+    frontier = ub1
   ]
   layout = soa
   size = cell_count
@@ -135,13 +140,13 @@
 // пара соседей встречается дважды.
 {
   name = cell_offsets
-  format = [ (start, ui1) ]
+  format = [ start = ui1 ]
   layout = soa
   size = cell_count_plus_one
 }
 {
   name = cell_arcs
-  format = [ (cell, ui1) ]
+  format = [ cell = ui1 ]
   layout = soa
   size = arc_capacity
 }
@@ -151,9 +156,9 @@
 {
   name = hotspots
   format = [
-    (position, v3)
-    (strength, v1)
-    (seed_cell, ui1)
+    position = v3
+    strength = v1
+    seed_cell = ui1
   ]
   layout = aos
   size = hotspot_capacity
@@ -166,9 +171,9 @@
 {
   name = landform_types
   format = [
-    (gain, v1)
-    (offset, v1)
-    (cells, ui1)
+    gain = v1
+    offset = v1
+    cells = ui1
   ]
   layout = aos
   size = landform_capacity
@@ -176,13 +181,13 @@
 
 {
   name = landform_offsets
-  format = [ (start, ui1) ]
+  format = [ start = ui1 ]
   layout = soa
   size = landform_capacity_plus_one
 }
 {
   name = landform_order
-  format = [ (cell, ui1) ]
+  format = [ cell = ui1 ]
   layout = soa
   size = cell_count
 }
@@ -200,24 +205,24 @@
 {
   name = plates
   format = [
-    (axis, v3)
-    (rate, v1)
-    (crust, v1)
-    (seed_cell, ui1)
-    (cells, ui1)
+    axis = v3
+    rate = v1
+    crust = v1
+    seed_cell = ui1
+    cells = ui1
   ]
   layout = aos
   size = plate_capacity_plus_one
 }
 {
   name = plate_offsets
-  format = [ (start, ui1) ]
+  format = [ start = ui1 ]
   layout = soa
   size = plate_capacity_plus_one
 }
 {
   name = plate_order
-  format = [ (cell, ui1) ]
+  format = [ cell = ui1 ]
   layout = soa
   size = cell_count
 }
@@ -227,55 +232,55 @@
 {
   name = provinces
   format = [
-    (center, v3)
-    (height_sum, v1)
-    (temperature_sum, v1)
-    (precipitation_sum, v1)
-    (population_sum, v1)
-    (habitability_sum, v1)
-    (seed_cell, ui1)
-    (cells, ui1)
+    center = v3
+    height_sum = v1
+    temperature_sum = v1
+    precipitation_sum = v1
+    population_sum = v1
+    habitability_sum = v1
+    seed_cell = ui1
+    cells = ui1
     // Длина рубежа в клетках. Считается тем же инструментом, что и границы культур, и нужна не для
     // отладки: у области с длинной границей другая цена обороны и другая проходимость.
-    (frontier, ui1)
+    frontier = ui1
     // Место провинции в географической иерархии. Живёт на ПРОВИНЦИИ, а не на клетке, потому что
     // провинция и есть неделимая единица географии: резать её на части ради разных мест запрещено.
-    (land_mass, ui1)
-    (continent, ui1)
-    (historical_region, ui1)
+    land_mass = ui1
+    continent = ui1
+    historical_region = ui1
     // ПОЛИТИЧЕСКАЯ ИЕРАРХИЯ ДЕ-ЮРЕ. Провинция здесь — графство: то, что держит один человек. Титул
     // королевства НЕ отдельное разбиение, а та же историческая область: именно это и означает «из
     // географии вытекает политика» — де-юре королевство и есть исторический край, а не независимо
     // нарезанная область поверх него.
-    (duchy, ui1)
-    (empire, ui1)
+    duchy = ui1
+    empire = ui1
     // ДЕ-ФАКТО государство: кто этой землёй ВЛАДЕЕТ, в отличие от того, кому она принадлежит по
     // титулу. Растится другим процессом — голосованием по населению, а не заливкой по площади, —
     // потому что и в жизни это другой процесс: границы держав рисует сила, а не право.
-    (realm, ui1)
-    (realm_next, ui1)
-    (baronies, ui1)
-    (name_seed, ui1)
+    realm = ui1
+    realm_next = ui1
+    baronies = ui1
+    name_seed = ui1
     // Рабочие поля для роста уровней иерархии по графу провинций: затравка, метка, расстояние
     // заливки и маска «эта провинция участвует в текущем разбиении».
-    (region_distance, v1)
-    (region_seed, ui1)
-    (region_label, ui1)
-    (region_mask, ub1)
-    (culture, us1)
+    region_distance = v1
+    region_seed = ui1
+    region_label = ui1
+    region_mask = ub1
+    culture = us1
   ]
   layout = aos
   size = province_capacity_plus_one
 }
 {
   name = province_offsets
-  format = [ (start, ui1) ]
+  format = [ start = ui1 ]
   layout = soa
   size = province_capacity_plus_one
 }
 {
   name = province_order
-  format = [ (cell, ui1) ]
+  format = [ cell = ui1 ]
   layout = soa
   size = cell_count
 }
@@ -294,13 +299,13 @@
 // вызовом инструмента.
 {
   name = seed_offsets
-  format = [ (start, ui1) ]
+  format = [ start = ui1 ]
   layout = soa
   size = seed_capacity_plus_one
 }
 {
   name = seed_order
-  format = [ (cell, ui1) ]
+  format = [ cell = ui1 ]
   layout = soa
   size = cell_count
 }
@@ -310,30 +315,30 @@
 {
   name = sea_zones
   format = [
-    (center, v3)
-    (depth_sum, v1)
-    (temperature_sum, v1)
-    (seed_cell, ui1)
-    (cells, ui1)
-    (region_distance, v1)
-    (ocean, ui1)
-    (water_body, ui1)
-    (region_seed, ui1)
-    (region_label, ui1)
-    (region_mask, ub1)
+    center = v3
+    depth_sum = v1
+    temperature_sum = v1
+    seed_cell = ui1
+    cells = ui1
+    region_distance = v1
+    ocean = ui1
+    water_body = ui1
+    region_seed = ui1
+    region_label = ui1
+    region_mask = ub1
   ]
   layout = aos
   size = sea_capacity_plus_one
 }
 {
   name = sea_offsets
-  format = [ (start, ui1) ]
+  format = [ start = ui1 ]
   layout = soa
   size = sea_capacity_plus_one
 }
 {
   name = sea_order
-  format = [ (cell, ui1) ]
+  format = [ cell = ui1 ]
   layout = soa
   size = cell_count
 }
@@ -348,25 +353,25 @@
 // головой, а нехватка падает громко с нужным числом в сообщении.
 {
   name = province_neighbour_offsets
-  format = [ (start, ui1) ]
+  format = [ start = ui1 ]
   layout = soa
   size = province_capacity_plus_one
 }
 {
   name = province_neighbour_arcs
-  format = [ (province, ui1) ]
+  format = [ province = ui1 ]
   layout = soa
   size = province_arc_capacity
 }
 {
   name = sea_neighbour_offsets
-  format = [ (start, ui1) ]
+  format = [ start = ui1 ]
   layout = soa
   size = sea_capacity_plus_one
 }
 {
   name = sea_neighbour_arcs
-  format = [ (zone, ui1) ]
+  format = [ zone = ui1 ]
   layout = soa
   size = sea_arc_capacity
 }
@@ -382,12 +387,12 @@
 {
   name = land_masses
   format = [
-    (center, v3)
-    (cells, ui1)
-    (provinces, ui1)
-    (seed_province, ui1)
-    (name_seed, ui1)
-    (culture, us1)
+    center = v3
+    cells = ui1
+    provinces = ui1
+    seed_province = ui1
+    name_seed = ui1
+    culture = us1
   ]
   layout = aos
   size = land_mass_capacity
@@ -395,13 +400,13 @@
 {
   name = continents
   format = [
-    (center, v3)
-    (cells, ui1)
-    (provinces, ui1)
-    (seed_province, ui1)
-    (name_seed, ui1)
-    (land_mass, ui1)
-    (culture, us1)
+    center = v3
+    cells = ui1
+    provinces = ui1
+    seed_province = ui1
+    name_seed = ui1
+    land_mass = ui1
+    culture = us1
   ]
   layout = aos
   size = continent_capacity
@@ -409,13 +414,13 @@
 {
   name = historical_regions
   format = [
-    (center, v3)
-    (cells, ui1)
-    (provinces, ui1)
-    (seed_province, ui1)
-    (name_seed, ui1)
-    (continent, ui1)
-    (culture, us1)
+    center = v3
+    cells = ui1
+    provinces = ui1
+    seed_province = ui1
+    name_seed = ui1
+    continent = ui1
+    culture = us1
   ]
   layout = aos
   size = historical_capacity
@@ -423,12 +428,12 @@
 {
   name = oceans
   format = [
-    (center, v3)
-    (cells, ui1)
-    (zones, ui1)
-    (seed_zone, ui1)
-    (name_seed, ui1)
-    (culture, us1)
+    center = v3
+    cells = ui1
+    zones = ui1
+    seed_zone = ui1
+    name_seed = ui1
+    culture = us1
   ]
   layout = aos
   size = ocean_capacity
@@ -440,13 +445,13 @@
 {
   name = duchies
   format = [
-    (center, v3)
-    (cells, ui1)
-    (provinces, ui1)
-    (seed_province, ui1)
-    (name_seed, ui1)
-    (historical_region, ui1)
-    (culture, us1)
+    center = v3
+    cells = ui1
+    provinces = ui1
+    seed_province = ui1
+    name_seed = ui1
+    historical_region = ui1
+    culture = us1
   ]
   layout = aos
   size = duchy_capacity
@@ -454,13 +459,13 @@
 {
   name = empires
   format = [
-    (center, v3)
-    (cells, ui1)
-    (provinces, ui1)
-    (seed_province, ui1)
-    (name_seed, ui1)
-    (continent, ui1)
-    (culture, us1)
+    center = v3
+    cells = ui1
+    provinces = ui1
+    seed_province = ui1
+    name_seed = ui1
+    continent = ui1
+    culture = us1
   ]
   layout = aos
   size = empire_capacity
@@ -468,16 +473,16 @@
 {
   name = realms
   format = [
-    (center, v3)
-    (population, v1)
-    (cells, ui1)
-    (provinces, ui1)
-    (seed_province, ui1)
-    (name_seed, ui1)
+    center = v3
+    population = v1
+    cells = ui1
+    provinces = ui1
+    seed_province = ui1
+    name_seed = ui1
     // Сколько провинций державы лежат в её собственной культуре. Число в записи, потому что по нему
     // видно, держава это народ или империя из чужих земель — а это разные игры.
-    (native_provinces, ui1)
-    (culture, us1)
+    native_provinces = ui1
+    culture = us1
   ]
   layout = aos
   size = realm_capacity
@@ -488,12 +493,12 @@
 {
   name = baronies
   format = [
-    (cell, ui1)
-    (province, ui1)
-    (name_seed, ui1)
+    cell = ui1
+    province = ui1
+    name_seed = ui1
     // 0 замок, 1 город, 2 храм. Вид не случаен: замок стоит там, где выше пригодность, город на
     // берегу, храм — один на графство.
-    (kind, ub1)
+    kind = ub1
   ]
   layout = aos
   size = barony_capacity
@@ -503,27 +508,27 @@
 {
   name = cultures
   format = [
-    (origin, v3)
-    (population, v1)
-    (habitability, v1)
-    (origin_cell, ui1)
-    (cells, ui1)
-    (frontier, ui1)
-    (birth_tick, us1)
-    (contacts, us1)
+    origin = v3
+    population = v1
+    habitability = v1
+    origin_cell = ui1
+    cells = ui1
+    frontier = ui1
+    birth_tick = us1
+    contacts = us1
   ]
   layout = aos
   size = culture_capacity_plus_one
 }
 {
   name = culture_offsets
-  format = [ (start, ui1) ]
+  format = [ start = ui1 ]
   layout = soa
   size = culture_capacity_plus_one
 }
 {
   name = culture_order
-  format = [ (cell, ui1) ]
+  format = [ cell = ui1 ]
   layout = soa
   size = cell_count
 }
@@ -532,12 +537,12 @@
 {
   name = history
   format = [
-    (value, v1)
-    (cell, ui1)
-    (tick, us1)
-    (subject, us1)
-    (object, us1)
-    (kind, ub1)
+    value = v1
+    cell = ui1
+    tick = us1
+    subject = us1
+    object = us1
+    kind = ub1
   ]
   layout = aos
   size = history_capacity
@@ -548,35 +553,35 @@
 {
   name = state
   format = [
-    (sea_level, v1)
-    (land_target, v1)
-    (mean_temperature, v1)
-    (population, v1)
-    (land_cells, ui1)
-    (event_count, ui1)
+    sea_level = v1
+    land_target = v1
+    mean_temperature = v1
+    population = v1
+    land_cells = ui1
+    event_count = ui1
     // Границы размера провинции и сколько мелких пришлось слить. В сводке, а не только в конфиге,
     // потому что это результат: по нему видно, справилось ли усреднение.
-    (province_min_cells, ui1)
-    (province_max_cells, ui1)
-    (province_merged, ui1)
-    (province_count, ui1)
-    (sea_zone_count, ui1)
-    (land_mass_count, ui1)
-    (water_body_count, ui1)
-    (lake_count, ui1)
-    (duchy_count, ui1)
-    (empire_count, ui1)
-    (realm_count, ui1)
-    (barony_count, ui1)
+    province_min_cells = ui1
+    province_max_cells = ui1
+    province_merged = ui1
+    province_count = ui1
+    sea_zone_count = ui1
+    land_mass_count = ui1
+    water_body_count = ui1
+    lake_count = ui1
+    duchy_count = ui1
+    empire_count = ui1
+    realm_count = ui1
+    barony_count = ui1
     // Сколько провинций мелких массивов прикреплено к чужому материку. Число в сводке, потому что
     // прикрепление — это уступка географии: остров получает материк, с которым не связан по суше.
-    (attached_provinces, ui1)
-    (continent_count, ui1)
-    (historical_count, ui1)
-    (ocean_count, ui1)
-    (landform_count, us1)
-    (plate_count, us1)
-    (culture_count, us1)
+    attached_provinces = ui1
+    continent_count = ui1
+    historical_count = ui1
+    ocean_count = ui1
+    landform_count = us1
+    plate_count = us1
+    culture_count = us1
   ]
   layout = aos
   size = single

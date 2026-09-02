@@ -23,16 +23,10 @@
 
 -- Детерминированный хеш вместо math.random: генератора случайности в окружении нет намеренно, а
 -- зерно приходит от шага. Тот же, что в tectonics: одна и та же пара (зерно, номер) обязана давать
--- одно и то же значение при любом порядке вызовов.
+-- одно и то же значение при любом порядке вызовов. Сам хеш — движковый (`base.prng64_2`): один хеш на
+-- весь движок, а не копия splitmix в каждом теле шага.
 local function mix(a, b)
-  local ia = math.tointeger(a) or 0
-  local ib = math.tointeger(b) or 0
-  local x = (ia * 0x9E3779B97F4A7C15) ~ (ib * 0xBF58476D1CE4E5B9)
-  x = x ~ (x >> 30)
-  x = x * 0xBF58476D1CE4E5B9
-  x = x ~ (x >> 27)
-  x = x * 0x94D049BB133111EB
-  return x ~ (x >> 31)
+  return base.prng64_2(math.tointeger(a) or 0, math.tointeger(b) or 0)
 end
 
 return function(step)
