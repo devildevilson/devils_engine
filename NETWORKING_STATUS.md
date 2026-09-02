@@ -12,6 +12,8 @@ recorded here only after it is reproduced by an executable test or directly obse
 | --- | --- |
 | Gameplay transport | GameNetworkingSockets v1.6.0 selected |
 | PRE-01 capability spike | complete |
+| PRE-02 causal-state/checkpoint audit | complete; implementation gaps routed to NET-03/04 |
+| Repeated Release resume simulation | flaky existing test; must be diagnosed before production replay |
 | Production `devils_engine::network_gns` adapter | not started |
 | Session handshake, reconnect recovery and peer authority | not started |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
@@ -301,3 +303,138 @@ Remaining transport work is routed as follows:
 - NET-LAB-01: IPv6, multiple processes/machines, real reconnect recovery and Internet P2P infrastructure;
 - session/auth design: certificate authority, principal authentication and credential lifecycle;
 - NET-09: Yojimbo only if a concrete GNS limitation later justifies reopening the comparison.
+
+## PRE-02 — causal state and checkpoint audit
+
+PRE-02 is complete as an audit, not as a production checkpoint implementation. The executable
+[checkpoint_audit.cpp](subprojects/tile_frontier/checkpoint_audit.cpp) works over the real
+`tile_frontier::core::actor_world_slice` and leaves its live save/load format unchanged. It parses the current
+canonical payload into 19 independently comparable regions (world header, 17 component blocks and project
+globals), reconstructs full payloads from reused sections or 4 KiB pages, then requires the unchanged loader to
+accept them and reproduce exactly the same canonical bytes.
+
+### Causal-state boundary found by the audit
+
+The current checkpoint is a complete resume image for the isolated actor slice at a committed tick boundary,
+subject to the content/config and transactional-load gaps below. It is not yet a checkpoint of the complete
+`tile_frontier` host.
+
+| Owner | Current treatment | Classification / required contract |
+| --- | --- | --- |
+| ECS entity allocator (`cur_index`, removed IDs) | serialized in `world.header` | causal; exact entity identity and future allocation order depend on it |
+| 17 registered ECS component pools | serialized in stable component-hash order, with entities in pool order | causal except for the mixed presentation fields noted below |
+| actor tick, accumulated game time, food spawn sequence, bounds/target and scheduling knobs | serialized in the 56-byte `sim_globals` tail | causal; future deadlines, scheduling, movement bounds and spawn order depend on them |
+| `player_intent_queue` | deliberately omitted and recreated empty | transient ingress; correct only when capture occurs after intents for the tick have been committed and the durable tick journal is stored separately |
+| deferred call journals, due/kill worklists, sound emits, query/system objects and perception kD tree | omitted, cleared or rebuilt | derived/transient; capture is legal only between ticks after all worker barriers and commits complete |
+| player entity cache and obstacle cache | omitted and rebuilt from components | derived; reconstruction is already implemented |
+| GOAP/FSM registries, prefab bodies, scripts, `actor_tuning` and other loaded resources | omitted | immutable session content, not checkpoint bytes; a content fingerprint is mandatory because these values determine future simulation and future spawns |
+| `actor_visual` | serialized as one component | mixed: texture/color are presentation, but `size` participates in perception. Split causal body/size from cosmetics before a gameplay-only state root is claimed |
+| tile grid/chunk loading, camera, batches, metrics, UI RNG, sound outboxes and render/resource handles | outside the actor snapshot | currently presentation/lifecycle for this slice. Mutable tile gameplay must later become its own causal section; scene/content identity belongs in checkpoint/session metadata |
+| host clocks, calendar, pause and lifecycle | outside the actor snapshot | most wall/UI/lifecycle state is non-causal; effective gameplay time is already in the slice. Pause/scale changes must nevertheless be ordered session commands so future `game_delta_ticks` is reproduced |
+| input history, authority epoch, peer/baseline acknowledgements | outside world state by design | session recovery state; stored beside checkpoints, never mixed into the world root |
+| future physics world | absent | PRE-03 must enumerate body-ID allocation, transforms/velocities, sleeping/activation and any solver/cache state required by its restore contract |
+
+The serialized causal component set is: position, velocity, brain seed/phase/speed, perception, cognition,
+stats, FSM state, GOAP/FSM resource references, eating/grab relationships, flags, food, obstacle, spawn point and
+player-controller identity. A normal simulation tick changed exactly seven current regions: cognition, FSM
+state, perception, position, velocity, stats and `sim_globals`.
+
+### Format and replacement findings
+
+Useful properties already exist:
+
+- scalar encoding is canonical little-endian and IEEE floats are stored by their exact bit pattern;
+- the world header preserves allocator state, component blocks have stable IDs and byte lengths, and maps in the
+  generic serializer are sorted;
+- the outer container has a version, raw/payload sizes, zstd compression and a Murmur64 integrity checksum;
+- full save/load already round-trips byte-identically in the audit.
+
+The current payload is not yet a durable network checkpoint schema:
+
+- `sim_globals` is an unframed, unversioned tail and is absent from the component schema fingerprint;
+- the component layout fingerprint does not mix field names and the registry fingerprint is cached on first
+  use, without an explicit freeze point;
+- the loader does not require end-of-payload/end-of-container, so trailing data is not part of a strict schema
+  decision;
+- Murmur64 is corruption detection only, not authentication and not the production page/state digest;
+- exact float serialization preserves divergence; it does not create cross-platform numeric determinism.
+
+Most importantly, load is destructive on failure. `actor_world_slice::load` replaces the live world and clears
+caches before `unseal` has validated the packet; `load_world` then installs allocator state and component pools
+progressively. The corruption probe confirms that a rejected packet changes the destination. NET-03/04 must
+decode and validate every section into staging state, rebuild required derived state there, and publish it with
+one replacement operation only after success. Snapshot-loaded notifications must happen after commit, not while
+the candidate is partial.
+
+### Measurements
+
+Release measurements on 2026-09-02 use 20 warm-up ticks and the default audit fixtures. They are local
+microbenchmarks, not budgets. The large fixture has 8192 actors plus 1024 food entities, 1024 spawn points and 32
+obstacles.
+
+| Fixture | Raw | zstd-fast container | zstd-normal container | ECS dump | Full save | Unseal | Full load |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 512 actors | 81,221 B | 34,320 B (42.3%) | 34,217 B (42.1%) | 44.8 us | 197.8 us | 82.4 us | 152.2 us |
+| 8192 actors | 1,291,685 B | 543,872 B (42.1%) | 518,129 B (40.1%) | 734.6 us | 3.23 ms | 1.37 ms | 2.10 ms |
+
+On the large fixture, one full-payload Murmur hash, all 19 section hashes and all 334 page hashes each cost
+about `0.17 ms`: changing hash granularity does not avoid scanning the bytes. zstd-fast alone costs about
+`2.20 ms` and dominates the current full save.
+
+The following delta estimates concatenate changed material, compress it with zstd-fast and add an explicitly
+optimistic manifest allowance of 32 bytes plus 24 bytes per changed unit. This is a comparison instrument, not
+a proposed wire format.
+
+| Change from the 8192-actor base | Whole-section reuse | 4 KiB page reuse | Estimated page delta | % of full zstd |
+| --- | ---: | ---: | ---: | ---: |
+| one position write | 90.5% bytes reused | 99.7% | 3,483 B | 0.6% |
+| one simulation tick | 38.4% | 69.9% | 209,596 B | 38.5% |
+| five simulation ticks | 38.4% | 44.2% | 357,702 B | 65.8% |
+| twenty simulation ticks | 38.4% | 42.9% | 361,449 B | 66.5% |
+| one food entity spawn | 78.4% | 99.0% | 6,430 B | 1.2% |
+| one food entity removal | 78.4% | 96.4% | 19,181 B | 3.5% |
+
+Section-level explicit dirty/version declarations were exact for the three audited mutations (`missed=0`,
+`redundant=0`), but they materialize an entire component pool: 104,143 B for one position write and about
+150,560 B for one spawn/removal, versus 3,483 B, 6,430 B and 19,181 B with pages. Coarse component dirty flags
+therefore cannot substitute for page-level reuse. Page dirty tracking could later avoid hashing unchanged
+pages, but only after every mutation path can be proven to mark the correct storage generation.
+
+### PRE-02 decision
+
+The first authoritative representation remains a full, sectioned, canonical checkpoint with transactional
+replacement. It is the recovery anchor and the only representation that may stand alone.
+
+A 4 KiB page-manifest delta is earned as an optional storage/transfer encoding on top of that representation:
+the measured bandwidth savings are material for both sparse changes and active simulation. It must identify an
+explicit retained base checkpoint, reconstruct the exact canonical full bytes before apply, use a strong
+production digest, be reliable, and have a bounded rebase policy. It is not regular transform/state-frame
+replication and it cannot become a chain with an unavailable base.
+
+The prototype still performs a full serialization and byte scan, so it proves bandwidth/storage potential, not
+incremental capture cost. NET-03 should first introduce neutral section manifests, schema/content fingerprints
+and staging replacement. NET-04 should then implement full checkpoint/replay; page deltas follow behind the
+same API and remain optional until capture cadence, retained-baseline memory and dirty-page bookkeeping are
+measured in the real online stand.
+
+### Reproduction
+
+```sh
+cmake --build build-debug --target tile_frontier_checkpoint_audit
+ctest --test-dir build-debug -R '^tile_frontier_checkpoint_audit$' --output-on-failure
+
+cmake --build build-release --target tile_frontier_checkpoint_audit
+ctest --test-dir build-release -R '^tile_frontier_checkpoint_audit$' --output-on-failure
+```
+
+### Verification and adjacent runtime finding
+
+The new checkpoint audit passes in Debug and Release, and its Release CTest passed 20 consecutive repetitions.
+The existing `tile_frontier_snapshot_smoke` also passes. A repeated run exposed a separate intermittent failure
+in the existing four-worker `tile_frontier_resume_smoke`: four Release repetitions passed and the fifth
+segfaulted; an earlier combined run ended with `std::length_error` from `vector::reserve`. A direct run and a
+gdb run passed, so there is no stable stack yet. No resume-simulation source was changed by PRE-02.
+
+This does not invalidate the exact reconstruction checks in the new executable, but it does block a production
+claim that repeated multithreaded resume/replay is stable. The race/lifetime failure must be isolated before
+NET-04 closes; it should not be disguised by weakening or removing the existing resume test.

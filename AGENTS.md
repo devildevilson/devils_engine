@@ -4,6 +4,38 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- GN02 ISLAND CLUSTERS, TACTILITY AND SMOOTHING: THE TASK QUEUE IS CLOSED (2026-09-02). `67/67` planet
+  checks, `321/321` project tests. (1) A THIRD ISLAND MECHANISM, because neither of the first two can
+  produce a CLUSTER: a hotspot track and a volcanic front are both LINES. The Aegean is a drowned
+  highland on continental crust — the back-arc crust is stretched, the region subsided, and the peaks of
+  the old fold belt stand out of the water. So the mechanism is not "raise islands" but LOWER A MOUNTAIN
+  COUNTRY, and it took four measured corrections. Conditions must be thresholded ONE BY ONE: a product
+  of four quantities near one half is one quarter, and after a single saturating gate that reads as
+  "fully extended" everywhere any one of them was nonzero — continents turned into a sieve. The shape
+  must be a band the size of a real archipelago, not a broad decay: distance to a convergent junction is
+  small almost everywhere, because there are many junctions. The orogen must be SUPPRESSED by the basin
+  mask, or the tectonic uplift raises the lowered crust straight back (459 enclosed water bodies against
+  13 islands). And the elevation inside the basin must be REPLACED with a shelf elevation, not reduced by
+  a fixed amount — a fixed subsidence does not know where the crust stood, and the interior of a
+  continent stands a kilometre higher than its edge. The quantity to measure was not the island count but
+  the LAND FRACTION INSIDE THE BASIN: at 45% it percolates into one mass and grows peninsulas onto the
+  mainland, at 15% there are too few islands; 23% gives 49 pieces with 25 in clusters. (2) SMOOTHING is
+  a mesh vertex taking FOUR nearest cells with distance weights instead of one — with one it inherits a
+  cell's value whole, so relief gets per-cell terraces and an area border becomes a polygonal chain, both
+  of which show the Fibonacci lattice rather than the world. The border itself needs a SEPARATE FIELD
+  blurred over the adjacency graph, and that was the third attempt: the weight difference of the two
+  nearest cells outlines every cell in the lattice; the same difference restricted to differing areas
+  outlines the area border but along the lattice chain; only averaging the field over the graph smooths
+  the border's SHAPE rather than its screen edge. (3) TACTILITY is surface labels plus ray picking, and
+  the property that matters is that WHAT IS SELECTED AND LABELLED IS DECIDED BY THE CHOSEN VIEW — the
+  level is declared next to the view itself, not derived by a second formula in the label code. Labels
+  need two thresholds, and screen-space decluttering must store a RECTANGLE, not a point: near the
+  horizon the disc compresses and long names overlap while their centres are far apart. (4) Two loud
+  bugs found: a camera block repeated in a shader WITHOUT one field silently shifts every later field to
+  a wrong offset (that is how the whole overlay vanished — no error, no warning), and sea-zone capacity
+  depended only on the requested zone count, so at a million cells the label reached 1302 against 1232
+  declared buckets — the number of enclosed water bodies grows as the lattice gets finer.
+
 - GN02 NAMED-PLACE HIERARCHY, CK-STYLE TITLES, ISLAND ARCS, VSYNC AND STARS (2026-09-02). Five of the
   seven queued tasks; `66/66` planet checks, `320/320` project tests. (1) A LEVEL GROWN OVER AREAS MUST
   BE GROWN OVER THE AREA GRAPH, not over cells. The task's hard rule was "every border coincides with a

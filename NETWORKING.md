@@ -1100,7 +1100,25 @@ kept in [NETWORKING_STATUS.md](NETWORKING_STATUS.md).
 Done with checked-in measured results and a list of only the missing neutral/session primitives. GNS was selected
 from executable behavior rather than documentation alone.
 
-### PRE-02 — complete/incremental state gap audit (`S-M`)
+### PRE-02 — complete/incremental state gap audit (`S-M`) — complete 2026-09-02
+
+The real `tile_frontier` actor slice now has a self-checking checkpoint audit. It inventories the causal and
+derived owners, measures full canonical save/load/hash/compression at 512 and 8192 actors, and reconstructs
+byte-identical checkpoints through both stable component sections and 4 KiB pages. Every reconstruction is
+accepted by the unchanged live loader and reserializes to the exact expected bytes.
+
+The decision is to make a full, sectioned, canonical checkpoint with transactional replacement the first
+standalone representation. A reliable 4 KiB page-manifest delta is earned as an optional encoding over an
+explicit retained base: on the large fixture it measured about 210 KiB after one simulation tick and 358–361
+KiB after five/twenty ticks, versus a 544 KiB full zstd checkpoint. This currently saves transfer/storage only;
+the prototype still serializes and scans the complete state. Component-level dirty flags are too coarse for
+sparse changes.
+
+The audit also proved that current failed loads destroy the destination and that the project-global tail lacks
+its own framing/schema. The complete state manifest, measurements, format gaps and reproduction commands live
+in [NETWORKING_STATUS.md](NETWORKING_STATUS.md). Repetition also exposed an intermittent crash in the existing
+Release multithreaded resume smoke; the new audit itself is 20/20, but NET-04 cannot close until that separate
+simulation race/lifetime problem is isolated.
 
 - Inventory every causal state owner beyond ECS bytes, including timeline, allocators, workflow cursors and
   physics mapping/state.
@@ -1110,6 +1128,7 @@ from executable behavior rather than documentation alone.
 - Decide whether an incremental checkpoint is earned; keep regular state-frame delta replication separate.
 
 Done with a manifest of missing state sections, measured costs and a chosen first checkpoint representation.
+The implementation gaps are inputs to NET-03 and NET-04, not unfinished PRE-02 research.
 
 ### PRE-03 — Jolt math/determinism/rollback spike (`M`)
 

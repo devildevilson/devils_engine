@@ -138,6 +138,29 @@ target_compile_definitions(tile_frontier_mt_benchmark PRIVATE
 set_target_properties(tile_frontier_mt_benchmark PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
 
+# PRE-02 checkpoint audit: measures the existing full slice snapshot and validates whole-component,
+# 4 KiB page and explicit dirty/version reuse by reconstructing the exact canonical payload. The
+# live loader/format is unchanged; the executable fails if any reconstructed payload diverges.
+add_executable(tile_frontier_checkpoint_audit checkpoint_audit.cpp ${TILE_FRONTIER_BRAIN_TEST_SOURCES})
+target_link_libraries(tile_frontier_checkpoint_audit
+  devils_engine::devils_plane
+  devils_engine::demiurg
+  devils_engine::prefab
+  glm::glm
+  tavl
+  Vulkan::Headers
+  GPUOpen::VulkanMemoryAllocator
+  VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp
+)
+target_include_directories(tile_frontier_checkpoint_audit PRIVATE
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/core>"
+)
+target_compile_definitions(tile_frontier_checkpoint_audit PRIVATE
+  TILE_FRONTIER_SOURCE_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/modules/")
+set_target_properties(tile_frontier_checkpoint_audit PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
+
 # Config-loaded void action acceptance: tavl -> devils_script -> act::script_function<void> ->
 # catalogue deferred record/commit. Kept headless and independent of the application/render stack.
 add_executable(tile_frontier_config_effect_smoke
@@ -170,6 +193,8 @@ if (DEVILS_ENGINE_BUILD_TESTS)
   set_tests_properties(tile_frontier_snapshot_smoke PROPERTIES LABELS devils_engine)
   add_test(NAME tile_frontier_resume_smoke COMMAND tile_frontier_resume_smoke)
   set_tests_properties(tile_frontier_resume_smoke PROPERTIES LABELS devils_engine)
+  add_test(NAME tile_frontier_checkpoint_audit COMMAND tile_frontier_checkpoint_audit)
+  set_tests_properties(tile_frontier_checkpoint_audit PROPERTIES LABELS devils_engine)
   add_test(NAME tile_frontier_config_effect_smoke COMMAND tile_frontier_config_effect_smoke)
   set_tests_properties(tile_frontier_config_effect_smoke PROPERTIES LABELS devils_engine)
 endif()
