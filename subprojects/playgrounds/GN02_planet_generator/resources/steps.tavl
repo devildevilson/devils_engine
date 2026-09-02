@@ -101,7 +101,7 @@
   reads = [ cell_offsets, cell_arcs ]
   writes = [
     cells, provinces, province_offsets, province_order,
-    sea_zones, sea_offsets, sea_order, state
+    sea_zones, sea_offsets, sea_order, seed_offsets, seed_order, state
   ]
   programs = {
     unassigned_land = scripts/unassigned_land.ds

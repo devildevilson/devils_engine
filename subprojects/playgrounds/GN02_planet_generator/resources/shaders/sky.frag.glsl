@@ -1,14 +1,6 @@
 #version 450
 
-layout(set = 0, binding = 0, std140) uniform CameraBlock {
-  mat4 view_projection;
-  mat4 inverse_view_projection;
-  mat4 planet_to_world;
-  vec4 camera_position;
-  vec4 light_direction;
-  vec4 params;
-  vec4 viewport_near;
-} camera;
+#include "camera_block.glsl"
 
 layout(location = 0) in vec2 in_ndc;
 

@@ -4,19 +4,11 @@ layout(location = 1) in vec2 in_uv;
 layout(location = 2) in vec4 in_color;
 layout(location = 0) out vec2 out_uv;
 layout(location = 1) out vec4 out_color;
-// Блок камеры повторяется здесь ЦЕЛИКОМ и байт в байт, включая то, чем оверлей не пользуется. Пропуск
-// одного поля не даёт ни ошибки компиляции, ни предупреждения: все следующие поля просто читаются с
-// чужого смещения. Именно так оверлей и исчез, когда в блок добавилась обратная матрица — интерфейс
-// брал размер окна из места, где лежат параметры отрисовки, и уезжал за экран целиком.
-layout(set = 0, binding = 0, std140) uniform CameraBlock {
-  mat4 view_projection;
-  mat4 inverse_view_projection;
-  mat4 planet_to_world;
-  vec4 camera_position;
-  vec4 light_direction;
-  vec4 params;
-  vec4 viewport_near;
-} camera;
+
+// Оверлей берёт из блока камеры только размер окна, но включает его ЦЕЛИКОМ: раскладка в std140
+// читается по смещениям, и именно на этом оверлей однажды исчез — он брал размер окна оттуда, где
+// лежат параметры отрисовки. Теперь раскладка одна на все шейдеры и лежит в одном файле.
+#include "camera_block.glsl"
 void main() {
   const vec2 clip = in_position / camera.viewport_near.xy * 2.0 - 1.0;
   gl_Position = vec4(clip, 0.0, 1.0);

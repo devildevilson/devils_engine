@@ -122,7 +122,7 @@ glm::vec3 label_colour(const uint32_t label) {
 
 // Палитра климатических зон. Порядок совпадает с идентификаторами из scripts/climate_zone.ds и с
 // таблицей символов ASCII-карты: одно правило, три представления, и все три читают одну нумерацию.
-const std::array<glm::vec3, 11> climate_palette{{
+const std::array<glm::vec3, climate_class_count> climate_palette{{
   {0.05f, 0.14f, 0.32f}, // 0 океан
   {0.62f, 0.72f, 0.82f}, // 1 морской лёд
   {0.92f, 0.94f, 0.97f}, // 2 ледник
@@ -142,7 +142,7 @@ const std::array<glm::vec3, 11> climate_palette{{
 // Цвета подобраны так, чтобы вид читался без легенды: под водой синие от глубокого к мелкому,
 // на суше от зелёного (равнина) через охру (нагорье) к серому (горы), вулканический остров красный —
 // он и есть чужая кора посреди океана.
-const std::array<glm::vec3, 11> landform_palette{{
+const std::array<glm::vec3, landform_class_count> landform_palette{{
   {0.06f, 0.12f, 0.26f}, // 0 абиссальная равнина
   {0.16f, 0.34f, 0.52f}, // 1 океанический хребет
   {0.35f, 0.62f, 0.75f}, // 2 шельф

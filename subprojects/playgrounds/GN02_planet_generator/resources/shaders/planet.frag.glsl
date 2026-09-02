@@ -12,23 +12,15 @@
 // который можно задать в любом месте. Тогда и заливка, и её граница, и берег, и подсветка выделения
 // считаются ОДНИМ полем на пиксель, и сетка треугольников не участвует в них вовсе: она осталась
 // только формой поверхности.
-layout(set = 0, binding = 0, std140) uniform CameraBlock {
-  mat4 view_projection;
-  mat4 inverse_view_projection;
-  mat4 planet_to_world;
-  vec4 camera_position;
-  vec4 light_direction;
-  vec4 params;        // масштаб рельефа, режим областей (0 нет, 1 есть, 2 есть с линией), радиус, берег
-  vec4 viewport_near; // ширина, высота, ближняя плоскость, ШИРИНА ЯДРА заливки
-} camera;
+
+#include "camera_block.glsl"
 
 layout(set = 0, binding = 2, std430) readonly buffer CellVisuals { vec4 cells[]; } visuals;
 layout(set = 0, binding = 3, std430) readonly buffer CellGeometry { vec4 cells[]; } geometry;
 
 layout(location = 0) in vec3 in_normal;
 layout(location = 1) in vec3 in_direction;
-layout(location = 2) in float in_height;
-layout(location = 3) flat in uint in_start_cell;
+layout(location = 2) flat in uint in_start_cell;
 
 layout(location = 0) out vec4 out_colour;
 

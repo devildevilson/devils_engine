@@ -10,15 +10,7 @@
 // Размер задан в РАДИАНАХ, а не в долях экрана, и это следствие того же: у декали есть место на
 // поверхности, значит есть и размер на поверхности. Читаемость обеспечивает не постоянный размер, а
 // порог: подпись, которая на экране мельче нескольких пикселей, вообще не собирается.
-layout(set = 0, binding = 0, std140) uniform CameraBlock {
-  mat4 view_projection;
-  mat4 inverse_view_projection;
-  mat4 planet_to_world;
-  vec4 camera_position;
-  vec4 light_direction;
-  vec4 params;
-  vec4 viewport_near;
-} camera;
+#include "camera_block.glsl"
 
 // Глиф: якорь с угловой высотой, прямоугольник в долях высоты, координаты в атласе и цвет с номером
 // текстуры.

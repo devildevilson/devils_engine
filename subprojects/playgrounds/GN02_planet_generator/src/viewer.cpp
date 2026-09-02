@@ -575,13 +575,26 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
     // граница совпадает с ломаной решётки Фибоначчи.
     static constexpr std::array<float, 4> smoothing_steps{{0.70f, 0.90f, 1.10f, 1.24f}};
     static constexpr std::array<const char*, 4> smoothing_names{{"lattice", "angular", "gentle", "smooth"}};
-    size_t smoothing_choice = 2;
-    for (size_t k = 0; k < smoothing_steps.size(); ++k) {
-      if (std::abs(smoothing_steps[k] - options.border_smoothing) <
-          std::abs(smoothing_steps[smoothing_choice] - options.border_smoothing)) {
-        smoothing_choice = k;
+    // Значение ЧИСЛОМ, а кнопка только переставляет его на следующую ступень. Первая версия держала
+    // здесь НОМЕР ступени и притягивала к ней значение ключа: `--smoothing=0.83` молча превращался
+    // в `0.90`, а оверлей показывал притянутое число. Ключ обязан задавать то, что просили.
+    float smoothing = std::clamp(options.border_smoothing, smoothing_steps.front(), smoothing_steps.back());
+    const auto next_smoothing = [&](const float value) {
+      for (const float step : smoothing_steps) {
+        if (step > value + 1e-4f) {
+          return step;
+        }
       }
-    }
+      return smoothing_steps.front();
+    };
+    const auto name_of_smoothing = [&](const float value) {
+      for (size_t k = 0; k < smoothing_steps.size(); ++k) {
+        if (std::abs(smoothing_steps[k] - value) < 1e-4f) {
+          return smoothing_names[k];
+        }
+      }
+      return "custom";
+    };
 
     // Защёлки нажатий. Номер защёлки назначается РУКАМИ у каждого вызова, поэтому здесь стоит
     // проверка границы: она превращает молчаливую порчу соседних переменных на стеке в громкую
@@ -640,7 +653,7 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
       // перебираются списком, а не крутятся: на карте различимы именно ступени, а не десятые доли, и
       // список сразу называет свои концы — от «по решётке» до самого плавного, какой допустим.
       if (pressed_once("cycle_smoothing", 24)) {
-        smoothing_choice = (smoothing_choice + 1) % smoothing_steps.size();
+        smoothing = next_smoothing(smoothing);
       }
 
       const size_t previous_mode = mode;
@@ -770,8 +783,7 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
       }
       detail.push_back(std::format("relief {}, spin {}, distance {:.2f} R, border smoothing {:.2f} ({})",
                                    relief ? "on" : "off", auto_rotate ? "on" : "off", camera_distance,
-                                   smoothing_steps[smoothing_choice],
-                                   smoothing_names[smoothing_choice]));
+                                   smoothing, name_of_smoothing(smoothing)));
 
       // ВЫДЕЛЕНИЕ. Строка идёт последней намеренно: это единственная строка оверлея, которая
       // отвечает не на «что нагенерировано», а на «что я сейчас показываю пальцем», и именно её и не
@@ -822,8 +834,14 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
           // Точка попадания переводится в planet-local: клетки лежат в системе планеты, а вращение
           // планеты живёт в матрице.
           const glm::vec3 local = glm::vec3(glm::inverse(planet_to_world) * glm::vec4(hit, 1.0f));
-          hovered_cell = locator.locate(local);
-          if (hovered_cell < visuals.size()) {
+          // Под курсором лежит та область, КОТОРУЮ РИСУЕТ КАРТА, а не та, чья клетка ближе.
+          // Правило одно на все три ответа (заливка, проверка, выбор мышью), см. `map_winner`: у
+          // границы победитель по покрытию отличается от ближайшей клетки, и клик у края области
+          // выделял бы соседнюю.
+          const uint32_t nearest = locator.locate(local);
+          if (nearest < visuals.size()) {
+            hovered_cell = map_winner(std::span<const cell_geometry>(cell_graph), nearest, local, smoothing,
+                                      [&](const uint32_t cell) { return visuals[cell].area; });
             hovered_area = visuals[hovered_cell].area;
           }
         }
@@ -855,17 +873,11 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
       const float area_mode = current_mode.areas ? (current_mode.outline ? 2.0f : 1.0f) : 0.0f;
       camera.params = glm::vec4(relief ? options.relief_scale / 6371000.0f : 0.0f, area_mode, 1.0f,
                                 current_mode.coast ? 1.0f : 0.0f);
-      // Четвёртая компонента СВОБОДНА. Раньше здесь лежала резкость смешивания клеток, и она ушла
-      // вместе с самим смешиванием метк: класс заливается плоско, число интерполируется линейно, и
-      // ничего между ними не понадобилось. Слот не убран, потому что блок камеры повторяется в
-      // четырёх шейдерах байт в байт и его размер объявлен в конфиге: свободное поле честнее
-      // изменения раскладки.
       // Четвёртая компонента — ШИРИНА ЯДРА заливки в шагах решётки, то есть масштаб сглаживания
-      // границ. Раньше здесь лежала резкость смешивания клеток, и она ушла вместе с самим
+      // границ областей. Раньше здесь лежала резкость смешивания клеток, и она ушла вместе с самим
       // смешиванием метк: класс заливается плоско, число интерполируется линейно, и ничего между
       // ними не понадобилось.
-      camera.viewport_near = glm::vec4(float(pending_width), float(pending_height), 0.05f,
-                                       smoothing_steps[smoothing_choice]);
+      camera.viewport_near = glm::vec4(float(pending_width), float(pending_height), 0.05f, smoothing);
       write_buffer(base, "camera_buffer", &camera, sizeof(camera));
       write_buffer(base, "cell_visuals", visuals.data(), visuals.size() * sizeof(cell_visual));
       visuals_dirty = false;

@@ -131,6 +131,9 @@ options parse_options(const int argc, const char** argv) {
     } else if (starts_with(argument, "--height=")) {
       result.viewer.height = uint32_t(std::stoul(std::string(argument.substr(9))));
     } else if (starts_with(argument, "--frames=")) {
+      // Число кадров ЗАМОРАЖИВАЕТ и вращение, и это не побочный эффект, а требование: кадр с
+      // ограниченным числом кадров снимается ради сравнения снимков, а у вращающейся планеты два
+      // прогона дают разные картинки, и любое сравнение превращается в угадывание.
       result.viewer.frames = uint32_t(std::stoul(std::string(argument.substr(9))));
       result.viewer.fixed_rotation = true;
     } else if (starts_with(argument, "--distance=")) {
@@ -138,7 +141,9 @@ options parse_options(const int argc, const char** argv) {
       // именно на приближении и видно, показывает ли карта мир или свою сетку.
       result.viewer.camera_distance = std::stof(std::string(argument.substr(11)));
     } else if (starts_with(argument, "--smoothing=")) {
-      result.viewer.border_smoothing = float(std::atof(std::string(argument.substr(12)).c_str()));
+      // `stof`, а не `atof`: у остальных ключей разбор громкий, а `atof` на мусоре молча даёт нуль —
+      // то есть «самую угловатую границу», и понять, что ключ не понят, было бы нельзя.
+      result.viewer.border_smoothing = std::stof(std::string(argument.substr(12)));
     } else if (starts_with(argument, "--mesh=")) {
       result.viewer.subdivisions = uint32_t(std::stoul(std::string(argument.substr(7))));
     } else if (starts_with(argument, "--mode=")) {
@@ -250,6 +255,9 @@ originator::size_table make_sizes(const options& opts) {
   const size_t sea_capacity = opts.sea_zones * 4 + 512 + opts.cells / 512;
   sizes.set("sea_capacity", sea_capacity);
   sizes.set("sea_capacity_plus_one", sea_capacity + 1);
+  // Раскладка по ПОЛЮ ЗАТРАВКИ обслуживает и провинции, и морские зоны по очереди, поэтому ёмкость у
+  // неё общая — по большей из двух.
+  sizes.set("seed_capacity_plus_one", std::max<size_t>(opts.provinces * 4 + 1024, sea_capacity) + 1);
   // Дуги графа соседства ОБЛАСТЕЙ. У провинции в среднем шесть соседей, симметризация даёт вдвое;
   // запас берётся кратным, а нехватка падает громко с нужным числом в сообщении.
   sizes.set("province_arc_capacity", (opts.provinces * 4 + 1024) * 16);
@@ -429,6 +437,10 @@ constexpr climate_names climate_table[] = {
 };
 
 constexpr size_t climate_count = sizeof(climate_table) / sizeof(climate_table[0]);
+// Одно множество классов перечислено ТРИЖДЫ: правило в `climate_zone.ds`, имена здесь, палитра в
+// `visual.cpp`. Связать первое с остальными может только проверка (правило — данные), а вот имена и
+// палитру связывает уже компилятор.
+static_assert(climate_count == gn02::climate_class_count);
 
 // Виды областей рельефа. Порядок совпадает с идентификаторами в scripts/landform_water.ds и
 // scripts/landform_land.ds и с порядком имён в теле шага landforms: правило там, имена здесь, числа
@@ -439,6 +451,7 @@ constexpr const char* landform_names[] = {
 };
 
 constexpr size_t landform_count = sizeof(landform_names) / sizeof(landform_names[0]);
+static_assert(landform_count == gn02::landform_class_count);
 
 void print_step_times(const world& value) {
   std::cout << "  step timings:\n";
@@ -1746,6 +1759,26 @@ int run_verify(const options& opts) {
       }
     }
     check(ordered, "summer is nowhere colder than winter");
+
+    // КЛАСС, ВЫДАННЫЙ ПРАВИЛОМ, ОБЯЗАН ИМЕТЬ ИМЯ И ЦВЕТ. Одно множество классов перечислено трижды —
+    // правило в `climate_zone.ds`, имена в отчёте, палитра в просмотрщике, — и первое из трёх это
+    // ДАННЫЕ, поэтому связать его с остальными может только проверка. Палитра берёт цвет с зажимом
+    // по последнему элементу, значит новый класс молча покрасился бы цветом предыдущего, и выглядело
+    // бы это как «правило не сработало».
+    {
+      const auto climate_field = field_of(line, "cells", "climate");
+      const auto landform_field = field_of(line, "cells", "landform");
+      double highest_zone = 0.0;
+      double highest_kind = 0.0;
+      for (size_t i = 0; i < count; ++i) {
+        highest_zone = std::max(highest_zone, climate_field.get(i));
+        highest_kind = std::max(highest_kind, landform_field.get(i));
+      }
+      check(highest_zone < double(climate_count) && highest_kind < double(landform_count),
+            std::format("every class the rules produce has a name and a colour (climate up to {:.0f} of {}, "
+                        "landform up to {:.0f} of {})",
+                        highest_zone, climate_count, highest_kind, landform_count));
+    }
     check(finite, "temperatures and rainfall are finite and non-negative");
     check(equator_cells > 0 && polar_cells > 0 &&
             equator_temperature / double(equator_cells) > polar_temperature / double(polar_cells) + 20.0,
@@ -2189,6 +2222,10 @@ int run_verify(const options& opts) {
   // ядром, выглядит как «его тут и не было», а не как дефект отрисовки. Первая версия ставила ширину
   // 1.5 «на глаз», и такие острова исчезали молча.
   {
+    // Ширина берётся САМАЯ БОЛЬШАЯ из разрешённых окном (`max_kernel_width` в шейдере): сглаживание
+    // границ настраивается кнопкой, поэтому проверять надо худший случай диапазона. Узкое ядро ни
+    // клеток, ни соседей не теряет тем более.
+    constexpr float kernel_width = 1.24f;
     const auto graph = gn02::build_cell_geometry(line, count);
     bool geometry_sane = true;
     for (size_t i = 0; i < count && geometry_sane; ++i) {
@@ -2214,48 +2251,56 @@ int run_verify(const options& opts) {
     }
     check(geometry_sane, "cell geometry lists real neighbours, sorted by distance, on the unit sphere");
 
-    // Правило повторяет шейдер (`planet.frag.glsl`, ядро заливки): если оно меняется там, оно
-    // обязано измениться и здесь, иначе проверка перестанет мерить то, что рисуется.
+    // ОБРЕЗАНИЕ КОЛЬЦА БЕЗВРЕДНО, и это надо проверять, а не предполагать. Запись клетки держит до
+    // восьми соседей, а степень в графе доходит до двадцати четырёх: симметризация kNN добавляет
+    // связи в тех местах, где решётка неоднородна. Отброшенный сосед — это отброшенный ВЕС, и если
+    // он попадает внутрь ядра, то отрезается он не симметрично относительно границы (у дальней
+    // области больше, чем у ближней), а это ровно тот дефект, из-за которого ядро выбрано
+    // компактным, а не гауссовым.
+    //
+    // Проверяется поэтому не «степень мала», а то, что все отброшенные соседи лежат ЗА радиусом
+    // ядра при самой широкой разрешённой ширине.
+    const auto cell_offsets = field_of(line, "cell_offsets", "start");
+    const auto cell_arcs = field_of(line, "cell_arcs", "cell");
+    size_t dropped_inside = 0;
+    size_t dropped_total = 0;
+    for (size_t i = 0; i < count; ++i) {
+      const auto first = size_t(cell_offsets.get(i));
+      const auto last = size_t(cell_offsets.get(i + 1));
+      if (last - first <= graph[i].neighbours.size()) {
+        continue;
+      }
+      const glm::vec3 own = graph[i].direction;
+      std::vector<float> ring;
+      ring.reserve(last - first);
+      for (size_t k = first; k < last; ++k) {
+        const auto other = size_t(cell_arcs.get(k));
+        if (other < count) {
+          ring.push_back(glm::distance(own, graph[other].direction));
+        }
+      }
+      std::sort(ring.begin(), ring.end());
+      const float spacing = std::max(ring.front(), 1e-6f);
+      for (size_t k = graph[i].neighbours.size(); k < ring.size(); ++k) {
+        ++dropped_total;
+        dropped_inside += ring[k] < spacing * kernel_width ? 1 : 0;
+      }
+    }
+    check(dropped_inside == 0,
+          std::format("the eight-neighbour cut drops nothing the kernel would weigh ({} of {} dropped arcs "
+                      "sit inside the widest kernel)",
+                      dropped_inside, dropped_total));
+
+
     const auto hidden_cells = [&](const std::string_view field_name) {
       const auto labels = field_of(line, "cells", field_name);
+      const auto label_of = [&](const uint32_t cell) { return labels.get(cell); };
       size_t hidden = 0;
       for (size_t i = 0; i < count; ++i) {
-        const auto& record = graph[i];
-        const double spacing =
-          std::max(double(glm::distance(record.direction, graph[record.neighbours[0]].direction)), 1e-6);
-        // Ширина берётся САМАЯ БОЛЬШАЯ из разрешённых окном (`min/max_kernel_width` в шейдере):
-        // сглаживание границ настраивается кнопкой, поэтому проверять надо худший случай диапазона,
-        // а не значение по умолчанию. Узкое ядро клеток не теряет тем более.
-        const double radius = spacing * 1.24;
-        const double own = labels.get(i);
-        double own_coverage = 1.0; // вес самой клетки в её собственном центре равен единице
-        double rival = 0.0;
-        std::array<std::pair<double, double>, 8> others{};
-        size_t distinct = 0;
-        for (uint32_t k = 0; k < record.neighbour_count; ++k) {
-          const uint32_t other = record.neighbours[k];
-          const double ratio =
-            std::min(double(glm::distance(record.direction, graph[other].direction)) / radius, 1.0);
-          const double falloff = 1.0 - ratio * ratio;
-          const double weight = falloff * falloff;
-          const double label = labels.get(other);
-          if (label == own) {
-            own_coverage += weight;
-            continue;
-          }
-          size_t slot = 0;
-          while (slot < distinct && others[slot].first != label) {
-            ++slot;
-          }
-          if (slot == distinct && distinct < others.size()) {
-            others[distinct++] = {label, 0.0};
-          }
-          if (slot < others.size()) {
-            others[slot].second += weight;
-            rival = std::max(rival, others[slot].second);
-          }
-        }
-        hidden += own_coverage <= rival ? 1 : 0;
+        // В СВОЁМ ЖЕ центре клетка обязана побеждать: иначе её область в этом месте не нарисована.
+        const uint32_t winner = gn02::map_winner(std::span<const gn02::cell_geometry>(graph), uint32_t(i),
+                                                 graph[i].direction, kernel_width, label_of);
+        hidden += labels.get(winner) == labels.get(i) ? 0 : 1;
       }
       return hidden;
     };

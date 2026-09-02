@@ -168,6 +168,28 @@ return function(step)
     }
   end
 
+  -- Обратное отображение «метка -> клетка затравки». Строится ТЕМ ЖЕ `group_by`, только по полю
+  -- ЗАТРАВКИ: у метки там ровно одна клетка, поэтому её корзина и есть ответ. Читается сразу в
+  -- таблицу по меткам (их тысячи, а не сотни тысяч), чтобы служебные буферы можно было переиспользовать
+  -- под второе разбиение.
+  local seed_offsets = step.writes.seed_offsets:field("start")
+  local seed_order = step.writes.seed_order:field("cell")
+  local function seed_cells_of(seed_field, label_count)
+    originator.group_by{
+      inputs = { seed_field },
+      outputs = { seed_offsets, seed_order },
+      key_support = "global",
+    }
+    local result = {}
+    for label = 1, label_count do
+      local first = math.tointeger(seed_offsets:get(label))
+      if math.tointeger(seed_offsets:get(label + 1)) > first then
+        result[label] = math.tointeger(seed_order:get(first))
+      end
+    end
+    return result
+  end
+
   -- 1. Стоимость роста провинции: горы дороги. Провинции из-за этого ложатся по долинам и вдоль
   -- берега, а не режут хребет пополам — так же, как это делают настоящие границы.
   originator.remap{
@@ -187,14 +209,7 @@ return function(step)
   for _ = 1, math.floor(p.province_merge_passes) do
     summarise_provinces()
 
-    -- Обратного отображения «метка -> клетка затравки» в данных нет, поэтому один проход по клеткам.
-    local seed_of = {}
-    for i = 0, count - 1 do
-      local label = math.tointeger(province_seed:get(i))
-      if label ~= 0 then
-        seed_of[label] = i
-      end
-    end
+    local seed_of = seed_cells_of(province_seed, province_count)
 
     local removed = 0
     for label = 1, province_count do
@@ -270,9 +285,8 @@ return function(step)
     key_support = "global",
   }
 
-  -- 6. Что про область знает только скрипт: её затравка, центр и культура. Обход идёт по всем клеткам
-  -- ОДИН раз, и это честная цена: узнать, в какой клетке стоит затравка области, больше ниоткуда
-  -- нельзя — обратного отображения «метка -> клетка» в данных нет.
+  -- 6. Что про область знает только скрипт: её затравка, центр и культура. Обход идёт ПО МЕТКАМ, а не
+  -- по клеткам: обратное отображение «метка -> клетка затравки» даёт `group_by` по полю затравки.
   local province_center = provinces:field("center")
   local province_seed_cell = provinces:field("seed_cell")
   local province_cells = provinces:field("cells")
@@ -284,27 +298,29 @@ return function(step)
   local sea_starts = step.writes.sea_offsets:field("start")
   local culture = cells:field("culture")
 
-  for i = 0, count - 1 do
-    local label = math.tointeger(province_seed:get(i))
-    if label ~= 0 then
+  local province_seed_cells = seed_cells_of(province_seed, province_count)
+  for label = 1, province_count do
+    local i = province_seed_cells[label]
+    if i then
       -- Индекс равен МЕТКЕ (соглашение в buffers.tavl): корзина 0 это «метки нет».
-      local index = label
-      province_center:set(index, position:get(i, 0), 0)
-      province_center:set(index, position:get(i, 1), 1)
-      province_center:set(index, position:get(i, 2), 2)
-      province_seed_cell:set(index, i)
-      province_cells:set(index, province_starts:get(label + 1) - province_starts:get(label))
-      province_culture:set(index, culture:get(i))
+      province_center:set(label, position:get(i, 0), 0)
+      province_center:set(label, position:get(i, 1), 1)
+      province_center:set(label, position:get(i, 2), 2)
+      province_seed_cell:set(label, i)
+      province_cells:set(label, province_starts:get(label + 1) - province_starts:get(label))
+      province_culture:set(label, culture:get(i))
     end
+  end
 
-    local zone = math.tointeger(sea_seed:get(i))
-    if zone ~= 0 then
-      local index = zone
-      sea_center:set(index, position:get(i, 0), 0)
-      sea_center:set(index, position:get(i, 1), 1)
-      sea_center:set(index, position:get(i, 2), 2)
-      sea_seed_cell:set(index, i)
-      sea_cells:set(index, sea_starts:get(zone + 1) - sea_starts:get(zone))
+  local sea_seed_cells = seed_cells_of(sea_seed, sea_zone_count)
+  for zone = 1, sea_zone_count do
+    local i = sea_seed_cells[zone]
+    if i then
+      sea_center:set(zone, position:get(i, 0), 0)
+      sea_center:set(zone, position:get(i, 1), 1)
+      sea_center:set(zone, position:get(i, 2), 2)
+      sea_seed_cell:set(zone, i)
+      sea_cells:set(zone, sea_starts:get(zone + 1) - sea_starts:get(zone))
     end
   end
 
