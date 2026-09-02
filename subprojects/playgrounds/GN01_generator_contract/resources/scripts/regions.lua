@@ -20,7 +20,9 @@ return function(step)
   for i = 0, site_count - 1 do
     fx = (fx + gx) % 1.0
     fy = (fy + gy) % 1.0
-    local jitter = ((i * 2654435761) % 1024) / 1024.0 - 0.5
+    -- Дрожание берётся ДВИЖКОВЫМ хешем (`base.*`), а не умножением на константу руками: одна
+    -- функция хеша на весь движок, и у неё нет своего состояния — число выводится из номера сайта.
+    local jitter = base.prng64_normalize(base.prng64(i)) - 0.5
     position:set(i, (fx + jitter * spread / width) % 1.0 * width, 0)
     position:set(i, fy * width, 1)
   end

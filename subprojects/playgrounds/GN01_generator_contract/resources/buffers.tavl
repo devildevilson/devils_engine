@@ -7,13 +7,13 @@
 {
   name = cells
   format = [
-    (height, v1)
-    (moisture, v1)
-    (smoothed, v1)
-    (biome, ub1)
-    (biome_lua, ub1)
-    (biome_ds, ub1)
-    (region, us1)
+    height = v1
+    moisture = v1
+    smoothed = v1
+    biome = ub1
+    biome_lua = ub1
+    biome_ds = ub1
+    region = us1
   ]
   layout = soa
   size = cell_count
@@ -23,7 +23,7 @@
 // который правилом разрешён: скрипт обходит множество, которое сам же перечислил.
 {
   name = sites
-  format = [ (position, v2) ]
+  format = [ position = v2 ]
   layout = soa
   size = site_count
 }
@@ -31,13 +31,13 @@
 // Соседство областей в CSR: смещения плюс дуги. offsets[site_count] — сколько дуг всего.
 {
   name = region_offsets
-  format = [ (start, ui1) ]
+  format = [ start = ui1 ]
   layout = soa
   size = site_count_plus_one
 }
 {
   name = region_arcs
-  format = [ (site, us1) ]
+  format = [ site = us1 ]
   layout = soa
   size = arc_capacity
 }
@@ -46,26 +46,26 @@
 // вершину, а не на две совпадающие копии, поэтому щели на стыке невозможны по построению.
 {
   name = polygon_offsets
-  format = [ (start, ui1) ]
+  format = [ start = ui1 ]
   layout = soa
   size = site_count_plus_one
 }
 {
   name = polygon_corners
-  format = [ (vertex, ui1) ]
+  format = [ vertex = ui1 ]
   layout = soa
   size = corner_capacity
 }
 {
   name = polygon_vertices
-  format = [ (position, v2) ]
+  format = [ position = v2 ]
   layout = soa
   size = vertex_capacity
 }
 // Число углов видно из смещений, а число вершин — нет, поэтому инструмент пишет его отдельно.
 {
   name = polygon_counts
-  format = [ (vertices, ui1) ]
+  format = [ vertices = ui1 ]
   layout = aos
   size = single
 }
@@ -73,13 +73,13 @@
 // Раскладка клеток по областям, тот же CSR: смещения групп и индексы клеток в порядке групп.
 {
   name = region_cell_offsets
-  format = [ (start, ui1) ]
+  format = [ start = ui1 ]
   layout = soa
   size = site_count_plus_one
 }
 {
   name = region_cell_order
-  format = [ (cell, ui1) ]
+  format = [ cell = ui1 ]
   layout = soa
   size = cell_count
 }
@@ -88,7 +88,7 @@
 // сложение плавающих чисел воспроизводится при любом числе потоков.
 {
   name = region_stats
-  format = [ (height_sum, v1) ]
+  format = [ height_sum = v1 ]
   layout = soa
   size = site_count
 }
@@ -97,7 +97,7 @@
 // получилось» не нужно: это те же данные, просто их мало.
 {
   name = state
-  format = [ (peak, v1), (land_cells, ui1) ]
+  format = [ peak = v1, land_cells = ui1 ]
   layout = aos
   size = single
 }
