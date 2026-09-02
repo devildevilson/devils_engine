@@ -10,7 +10,7 @@
         { scene_color = (color_attachment, store), scene_depth = (depth_attachment, store) },
         { scene_color = (transfer_src, store), scene_depth = (depth_attachment, store) }
       ]
-      steps = [ draw_sky, draw_planet, draw_overlay ]
+      steps = [ draw_sky, draw_planet, draw_labels, draw_overlay ]
     },
     {
       name = gn02_present

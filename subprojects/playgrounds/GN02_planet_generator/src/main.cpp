@@ -233,12 +233,19 @@ originator::size_table make_sizes(const options& opts) {
   // старый запас в два раза и сломался (громко, на группировке по ключу — но сломался).
   sizes.set("province_capacity", opts.provinces * 4 + 1024);
   sizes.set("province_capacity_plus_one", opts.provinces * 4 + 1025);
-  sizes.set("sea_capacity", opts.sea_zones * 4 + 512);
-  sizes.set("sea_capacity_plus_one", opts.sea_zones * 4 + 513);
+  // Ёмкость морских зон зависит и от РАЗРЕШЕНИЯ, а не только от запрошенного числа зон, и это
+  // исправление настоящего обрыва. Каждый замкнутый водоём получает свою зону добором, а число
+  // замкнутых водоёмов растёт с разрешением: на мелкой решётке разрешаются пруды, которых на грубой
+  // просто нет. Затопленные нагорья добавили их ещё около двух сотен. Измерено: при 180 запрошенных
+  // зонах и миллионе клеток метка дошла до 1302 при объявленных 1232 корзинах — падение громкое, с
+  // нужным числом в сообщении, но случаться на поддерживаемом разрешении оно не должно.
+  const size_t sea_capacity = opts.sea_zones * 4 + 512 + opts.cells / 512;
+  sizes.set("sea_capacity", sea_capacity);
+  sizes.set("sea_capacity_plus_one", sea_capacity + 1);
   // Дуги графа соседства ОБЛАСТЕЙ. У провинции в среднем шесть соседей, симметризация даёт вдвое;
   // запас берётся кратным, а нехватка падает громко с нужным числом в сообщении.
   sizes.set("province_arc_capacity", (opts.provinces * 4 + 1024) * 16);
-  sizes.set("sea_arc_capacity", (opts.sea_zones * 4 + 512) * 16);
+  sizes.set("sea_arc_capacity", sea_capacity * 16);
   // Уровни географической иерархии. Ёмкость с запасом: у каждого уровня число областей выводится из
   // числа провинций, а добор непокрытых кусков (остров, отрезанный водой) добавляет свои.
   sizes.set("land_mass_capacity", 1024);
@@ -450,6 +457,16 @@ struct land_masses {
   size_t strips = 0;         // из них вытянутых сильнее чем вчетверо
   double median_elongation = 0.0;
   double median_oceanic_size = 0.0;
+  // СКОПЛЕНИЯ островов на континентальной коре — затопленные нагорья вроде Эгейского моря. Мерятся
+  // отдельно от океанических, потому что и происхождение у них другое, и главный вопрос другой: у
+  // цепи спрашивают, разбита ли она на куски, а у скопления — сгруппированы ли куски. Поэтому здесь
+  // считается число СОСЕДЕЙ в пределах небольшого угла: у одинокого острова их нет, у архипелага
+  // много, и одно это число отличает россыпь от скопления.
+  size_t shelf_islands = 0;
+  size_t shelf_cells = 0;
+  double median_shelf_size = 0.0;
+  double median_neighbours = 0.0;
+  size_t clustered = 0; // островов, у которых не меньше трёх соседей рядом
 };
 
 // Вытянутость куска: корень из отношения двух первых собственных значений матрицы разброса его
@@ -526,7 +543,17 @@ land_masses measure_land_masses(originator::pipeline& line, const size_t count, 
 
   std::vector<double> elongations;
   std::vector<double> oceanic_sizes;
+  std::vector<double> shelf_sizes;
+  std::vector<std::array<double, 3>> shelf_centres;
   std::vector<std::array<double, 3>> points;
+
+  // Порог «мелкого» острова — доля от всей суши, а не число клеток: иначе он зависел бы от
+  // разрешения. Радиус скопления — в радианах, как все расстояния конфига.
+  const auto shelf_island_limit = std::max<size_t>(size_t(0.004 * double(count)), 4);
+    // Радиус скопления — размер настоящего архипелага, а не радиус «рядом»: Эгейское море это примерно
+  // 500 на 600 километров, то есть 0.12 радиана по земному радиусу. На меньшем радиусе счёт соседей
+  // говорил бы не о том, скопление ли это, а о том, помещаются ли два острова в одну клетку решётки.
+  constexpr double cluster_radius = 0.12;
 
   land_masses result;
   std::vector<uint8_t> seen(count, 0);
@@ -567,6 +594,26 @@ land_masses measure_land_masses(originator::pipeline& line, const size_t count, 
     // средней континентальности куска: у дуги и горячей точки она близка к нулю, у обломка материка
     // близка к единице.
     const double mean_crust = size == 0 ? 1.0 : crust_sum / double(size);
+    // Островом СКОПЛЕНИЯ считается мелкий кусок на континентальной коре: крупные куски — это сами
+    // материки, и группировать их незачем.
+    if (mean_crust >= 0.35 && size >= 2 && size <= shelf_island_limit) {
+      ++result.shelf_islands;
+      result.shelf_cells += size;
+      shelf_sizes.push_back(double(size));
+      std::array<double, 3> centre{0.0, 0.0, 0.0};
+      for (const auto& point : points) {
+        for (size_t k = 0; k < 3; ++k) {
+          centre[k] += point[k];
+        }
+      }
+      const double length = std::sqrt(centre[0] * centre[0] + centre[1] * centre[1] + centre[2] * centre[2]);
+      if (length > 0.0) {
+        for (auto& value : centre) {
+          value /= length;
+        }
+        shelf_centres.push_back(centre);
+      }
+    }
     if (mean_crust < 0.35 && size >= 4) {
       ++result.oceanic;
       result.oceanic_cells += size;
@@ -588,6 +635,27 @@ land_masses measure_land_masses(originator::pipeline& line, const size_t count, 
   };
   result.median_elongation = median(elongations);
   result.median_oceanic_size = median(oceanic_sizes);
+
+  // Соседи считаются по УГЛУ между центрами островов, а не по расстоянию в графе: острова скопления
+  // разделены водой, и по графу суши они друг другу не соседи вовсе.
+  const double cosine_limit = std::cos(cluster_radius);
+  std::vector<double> neighbours;
+  neighbours.reserve(shelf_centres.size());
+  for (size_t i = 0; i < shelf_centres.size(); ++i) {
+    size_t near = 0;
+    for (size_t j = 0; j < shelf_centres.size(); ++j) {
+      if (i == j) {
+        continue;
+      }
+      const double dot = shelf_centres[i][0] * shelf_centres[j][0] + shelf_centres[i][1] * shelf_centres[j][1] +
+                         shelf_centres[i][2] * shelf_centres[j][2];
+      near += dot >= cosine_limit ? 1 : 0;
+    }
+    neighbours.push_back(double(near));
+    result.clustered += near >= 3 ? 1 : 0;
+  }
+  result.median_shelf_size = median(shelf_sizes);
+  result.median_neighbours = median(neighbours);
   return result;
 }
 
@@ -1158,6 +1226,41 @@ void print_report(originator::pipeline& line, const options& opts, const double 
             << std::format("{:.1f}", land_cells == 0 ? 0.0 : 100.0 * double(masses.oceanic_cells) / double(land_cells))
             << "% of land, median " << std::format("{:.0f}", masses.median_oceanic_size) << " cells, elongation "
             << std::format("{:.1f}", masses.median_elongation) << ", " << masses.strips << " strips over 4x\n";
+  // Сам бассейн, а не его следствия. Без этой строки «скопления не получаются» не отличить от
+  // «бассейн вообще не тонет»: острова считаются по готовой суше, и по их числу нельзя понять, где
+  // именно механизм не сработал.
+  {
+    const auto basin = field_of(line, "cells", "basin");
+    const auto heights = field_of(line, "cells", "height");
+    const auto land_mask = field_of(line, "cells", "land");
+    const double sea_level = field_value(line, "state", "sea_level", 0);
+
+    size_t inside = 0;
+    size_t inside_land = 0;
+    double depth_sum = 0.0;
+    for (size_t i = 0; i < count; ++i) {
+      if (basin.get(i) <= 0.5) {
+        continue;
+      }
+      ++inside;
+      if (land_mask.get(i) != 0.0) {
+        ++inside_land;
+      } else {
+        depth_sum += sea_level - heights.get(i);
+      }
+    }
+    const size_t inside_water = inside - inside_land;
+    std::cout << "  back-arc basins     " << std::format("{:.2f}", 100.0 * double(inside) / double(count))
+              << "% of the surface, " << std::format("{:.0f}", inside == 0 ? 0.0 : 100.0 * double(inside_land) / double(inside))
+              << "% of it is land, water there is "
+              << std::format("{:.0f}", inside_water == 0 ? 0.0 : depth_sum / double(inside_water)) << " m deep\n";
+  }
+
+  std::cout << "  shelf archipelagos  " << masses.shelf_islands << " small pieces on continental crust, "
+            << std::format("{:.1f}", land_cells == 0 ? 0.0 : 100.0 * double(masses.shelf_cells) / double(land_cells))
+            << "% of land, median " << std::format("{:.0f}", masses.median_shelf_size) << " cells, "
+            << std::format("{:.0f}", masses.median_neighbours) << " neighbours within 0.12 rad, "
+            << masses.clustered << " in clusters\n";
 
   const auto province_cells_field = field_of(line, "provinces", "cells");
   size_t smallest_province = std::numeric_limits<size_t>::max();
@@ -2015,18 +2118,28 @@ int run_verify(const options& opts) {
           std::format("the icosphere produced {} triangles out of {}", mesh.size() / 3, expected_triangles));
 
     bool addressable = true;
+    bool weights_sum = true;
     std::vector<uint8_t> touched(count, 0);
     for (const auto& vertex : mesh) {
-      addressable = addressable && vertex.cell < count;
-      if (vertex.cell < count) {
-        touched[vertex.cell] = 1;
+      // Все ЧЕТЫРЕ клетки вершины обязаны существовать: сглаживание берёт их все, и одна нулевая
+      // клетка среди четырёх — это цвет чужого места, размазанный по четверти веса.
+      uint32_t total = 0;
+      for (size_t k = 0; k < vertex.cells.size(); ++k) {
+        addressable = addressable && vertex.cells[k] < count;
+        if (vertex.cells[k] < count) {
+          touched[vertex.cells[k]] = 1;
+        }
+        total += (vertex.weights >> (8 * k)) & 0xffu;
       }
+      // Сумма весов ровно 255: шейдер на это опирается и заново не нормирует.
+      weights_sum = weights_sum && total == 255;
       const double length = std::sqrt(double(vertex.direction.x) * vertex.direction.x +
                                       double(vertex.direction.y) * vertex.direction.y +
                                       double(vertex.direction.z) * vertex.direction.z);
       addressable = addressable && std::abs(length - 1.0) < 1e-4;
     }
-    check(addressable, "every mesh vertex sits on the sphere and points at a real cell");
+    check(addressable, "every mesh vertex sits on the sphere and points at four real cells");
+    check(weights_sum, "the packed blend weights of every mesh vertex sum to 255");
 
     // Замкнутость: сумма площадей треугольников равна площади сферы. Это единственная проверка,
     // которая ловит и дырку, и вывернутый треугольник, и вершину, уехавшую с поверхности.
@@ -2168,6 +2281,10 @@ int run_view(const options& opts) {
 
   auto viewer = opts.viewer;
   viewer.seed = opts.seed;
+  viewer.continent_min_provinces = size_t(std::max(
+    1.0, base_description.values.number("continent_min_provinces", double(opts.continent_min_provinces))));
+  viewer.ocean_zones =
+    size_t(std::max(1.0, base_description.values.number("ocean_zones", double(opts.ocean_zones))));
   return gn02::run_viewer(viewer, std::move(tunables), regenerate);
 }
 

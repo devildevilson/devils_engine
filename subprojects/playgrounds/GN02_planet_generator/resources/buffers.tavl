@@ -36,6 +36,8 @@
     (arc_band, v1)
     (arc_platform, v1)
     (arc_segment, v1)
+    (basin, v1)
+    (basin_shape, v1)
     (plate_rate, v1)
     (crust, v1)
     (crust_work, v1)

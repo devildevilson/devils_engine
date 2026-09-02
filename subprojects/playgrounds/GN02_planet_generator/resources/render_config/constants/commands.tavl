@@ -2,4 +2,6 @@
 // отличие от планеты, где оно меняется вместе с подразделением сетки.
 { name = sky_draw, layout = draw4, value = [3.0, 1.0, 0.0, 0.0] }
 { name = planet_draw, layout = draw4, value = [0.0, 1.0, 0.0, 0.0] }
+// Число вершин подписей меняется каждый кадр вместе с набором подписей.
+{ name = label_draw, layout = draw4, value = [0.0, 1.0, 0.0, 0.0] }
 { name = ui_push, layout = ui1ui1ui1ui1ui1ui1ui1, value = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] }

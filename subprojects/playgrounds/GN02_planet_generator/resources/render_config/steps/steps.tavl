@@ -13,6 +13,16 @@
   command = "draw constant planet_draw"
 }
 {
+  name = draw_labels
+  material = label_material
+  geometry = label_geometry
+  sets = [ label_data, ui_textures ]
+  command = "draw constant label_draw"
+  blending = {
+    scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
+  }
+}
+{
   name = draw_overlay
   material = ui_material
   geometry = ui_geometry

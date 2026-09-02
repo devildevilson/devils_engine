@@ -236,10 +236,11 @@ static uint32_t find_queue(const std::vector<system_info::physical_device::queue
   return UINT32_MAX;
 }
 
-// Желаемый режим — fifo, то есть вертикальная синхронизация: она обязательна по спецификации и
-// ограничивает частоту частотой монитора. Про запас — mailbox: он тоже не рвёт кадр, но частоту не
-// ограничивает, поэтому стоит вторым, а не первым. immediate последний: он единственный, который
-// показывает разорванный кадр.
+// Режимы представления, доступные устройству, в порядке ПРЕДПОЧТИТЕЛЬНОСТИ: mailbox, потом fifo,
+// потом что осталось. Это ранжирование ВОЗМОЖНОСТЕЙ железа, а не политика окна: mailbox лучший режим
+// сам по себе — он не рвёт кадр и не заставляет ждать, — а вертикальная синхронизация по умолчанию
+// задаётся не здесь, а тем, что просит свопчейн (`graphics_base::desirable_present_mode`, по умолчанию
+// `Fifo`). Immediate последний: он единственный, который показывает разорванный кадр.
 static std::pair<physical_device_present_mode::values, physical_device_present_mode::values> find_present_modes(
   const std::vector<physical_device_present_mode::values>& modes) {
   const auto has = [&modes](const physical_device_present_mode::values wanted) {
@@ -251,19 +252,17 @@ static std::pair<physical_device_present_mode::values, physical_device_present_m
     return false;
   };
 
-  const auto main = has(physical_device_present_mode::values::fifo)
-                      ? physical_device_present_mode::values::fifo
-                      : (has(physical_device_present_mode::values::mailbox)
-                           ? physical_device_present_mode::values::mailbox
+  const auto main = has(physical_device_present_mode::values::mailbox)
+                      ? physical_device_present_mode::values::mailbox
+                      : (has(physical_device_present_mode::values::fifo)
+                           ? physical_device_present_mode::values::fifo
                            : physical_device_present_mode::values::immediate);
 
-  const auto secondary = has(physical_device_present_mode::values::mailbox)
-                           ? physical_device_present_mode::values::mailbox
+  const auto secondary = main != physical_device_present_mode::values::fifo &&
+                             has(physical_device_present_mode::values::fifo)
+                           ? physical_device_present_mode::values::fifo
                            : physical_device_present_mode::values::immediate;
 
-  if (main == secondary) {
-    return std::make_pair(main, physical_device_present_mode::values::immediate);
-  }
   return std::make_pair(main, secondary);
 }
 

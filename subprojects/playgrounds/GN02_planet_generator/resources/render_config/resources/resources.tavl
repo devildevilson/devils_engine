@@ -7,6 +7,9 @@
 { name = surface_vertices, format = c1, role = upload, size = surface_vertex_bytes, swap = static_surface, type = singlebuffer }
 // Цвет клетки меняется при каждой смене поля, поэтому он идёт по кадрам, как камера.
 { name = cell_visuals, format = c1, role = upload, size = cell_visual_bytes, swap = per_frame }
+// Глифы подписей мест. Пишутся каждый кадр: набор подписей зависит и от представления, и от того,
+// какая сторона планеты повёрнута к нам.
+{ name = label_glyphs, format = c1, role = upload, size = label_glyph_bytes, swap = per_frame }
 { name = ui_vertices, format = c1, role = upload, size = ui_vertices_bytes, swap = per_frame }
 { name = ui_indices, format = c1, role = upload, size = ui_indices_bytes, swap = per_frame }
 { name = ui_commands, format = c1, role = upload, size = ui_commands_bytes, swap = per_frame }

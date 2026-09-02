@@ -22,7 +22,7 @@ using cell_tree = utils::kd_tree<uint32_t, tree_point, 3>;
 // Имена латиницей потому, что они уходят прямиком в оверлей, а атлас шрифта площадок покрывает
 // только ASCII: кириллица в нём не отрисовывается вовсе.
 const std::array<view_mode, 20> modes{{
-  {"climate", "zones from summer, winter and rain", 5, true},
+  {"climate", "zones from summer, winter and rain", 5, true, view_mode::named::none},
   {"relief", "hypsometry: depths blue, land green to snow", 2, false},
   {"plates", "tectonic plates, convergent rims warm, divergent cold", 2, true},
   {"tectonics", "convergence red, divergence blue, subduction dark", 2, false},
@@ -31,22 +31,22 @@ const std::array<view_mode, 20> modes{{
   {"precipitation", "in shares of the land mean", 4, false},
   {"habitability", "where a person can live", 6, false},
   {"population", "density, logarithmic", 6, false},
-  {"cultures", "who claimed the cell", 6, true},
-  {"provinces", "land carved into provinces", 7, true},
-  {"sea zones", "water carved into zones", 7, true},
-  {"landforms", "what kind of place this is, and it is measured", 4, true},
+  {"cultures", "who claimed the cell", 6, true, view_mode::named::none},
+  {"provinces", "land carved into provinces", 7, true, view_mode::named::province},
+  {"sea zones", "water carved into zones", 7, true, view_mode::named::sea_zone},
+  {"landforms", "what kind of place this is, and it is measured", 4, true, view_mode::named::landform},
   // Уровни географической иерархии. Красятся ТЕМ ЖЕ способом, что провинции, и это само по себе
   // проверка: если граница уровня не совпадёт с границей провинции, на карте появится пятно внутри
   // области, а не только цифра в отчёте.
-  {"land masses", "connected pieces of land: Eurasia, not Europe", 9, true},
-  {"continents", "grown inside a land mass, small islands attached", 9, true},
-  {"historical regions", "grown inside a continent: Northern Europe", 9, true},
-  {"oceans", "grown inside a water body; lakes have none", 9, true},
+  {"land masses", "connected pieces of land: Eurasia, not Europe", 9, true, view_mode::named::land_mass},
+  {"continents", "grown inside a land mass, small islands attached", 9, true, view_mode::named::continent},
+  {"historical regions", "grown inside a continent: Northern Europe", 9, true, view_mode::named::historical_region},
+  {"oceans", "grown inside a water body; lakes have none", 9, true, view_mode::named::ocean},
   // Политика. Тем же способом и по той же причине: границы титула обязаны лежать по границам
   // графств, и на карте это видно сразу.
-  {"duchies", "de jure duchies inside a kingdom", 9, true},
-  {"empires", "de jure empires, islands attached", 9, true},
-  {"realms", "de facto states: who actually holds the land", 9, true},
+  {"duchies", "de jure duchies inside a kingdom", 9, true, view_mode::named::duchy},
+  {"empires", "de jure empires, islands attached", 9, true, view_mode::named::empire},
+  {"realms", "de facto states: who actually holds the land", 9, true, view_mode::named::realm},
 }};
 
 originator::const_field_accessor field_of(originator::pipeline& source, const std::string_view& buffer_name,
@@ -159,6 +159,92 @@ glm::vec3 relief_colour(const double height, const bool land) {
 
 } // namespace
 
+std::vector<labelled_area> collect_labelled_areas(originator::pipeline& source, const view_mode::named level) {
+  // Уровень задаёт БУФЕР ЗАПИСЕЙ и его поле счёта — больше ничего. Соответствие лежит таблицей, а не
+  // лестницей условий, потому что вопрос ровно один: где лежат центры этого уровня.
+  struct source_table {
+    view_mode::named level;
+    const char* records;
+    const char* size_field;
+    const char* count;
+  };
+  static constexpr source_table table[] = {
+    {view_mode::named::province, "provinces", "cells", "province_count"},
+    {view_mode::named::sea_zone, "sea_zones", "cells", "sea_zone_count"},
+    {view_mode::named::land_mass, "land_masses", "cells", "land_mass_count"},
+    {view_mode::named::continent, "continents", "cells", "continent_count"},
+    {view_mode::named::historical_region, "historical_regions", "cells", "historical_count"},
+    {view_mode::named::ocean, "oceans", "cells", "ocean_count"},
+    {view_mode::named::duchy, "duchies", "cells", "duchy_count"},
+    {view_mode::named::empire, "empires", "cells", "empire_count"},
+    {view_mode::named::realm, "realms", "cells", "realm_count"},
+  };
+
+  for (const auto& entry : table) {
+    if (entry.level != level) {
+      continue;
+    }
+    const auto centres = field_of(source, entry.records, "center");
+    const auto sizes = field_of(source, entry.records, entry.size_field);
+    const auto total = size_t(field_of(source, "state", entry.count).get(0));
+
+    std::vector<labelled_area> result;
+    result.reserve(total);
+    for (size_t i = 1; i <= total && i < sizes.count(); ++i) {
+      const glm::vec3 centre{float(centres.get(i, 0)), float(centres.get(i, 1)), float(centres.get(i, 2))};
+      const float length = glm::length(centre);
+      if (sizes.get(i) <= 0.0 || length < 1.0e-4f) {
+        continue;
+      }
+      result.push_back(labelled_area{centre / length, uint32_t(i), float(sizes.get(i))});
+    }
+    return result;
+  }
+
+  return {};
+}
+
+struct cell_locator::state {
+  cell_tree tree;
+  float radius = 0.1f;
+};
+
+cell_locator::cell_locator(originator::pipeline& source) : state_(std::make_unique<state>()) {
+  const auto* cells = source.find_buffer("cells");
+  if (cells == nullptr) {
+    utils::error{}("GN02 visual: the pipeline has no 'cells' buffer");
+  }
+  const auto positions = field_of(source, "cells", "position");
+  const size_t count = cells->count();
+  state_->tree.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    state_->tree.insert(
+      tree_point{float(positions.get(i, 0)), float(positions.get(i, 1)), float(positions.get(i, 2))}, uint32_t(i));
+  }
+  state_->tree.build();
+  // Радиус поиска с запасом от шага решётки: пустой ответ означал бы «под курсором нет планеты», а
+  // это неправда, если луч в неё попал.
+  state_->radius = float(6.0 * std::sqrt(4.0 * std::numbers::pi / double(std::max<size_t>(count, 1))));
+}
+
+cell_locator::~cell_locator() = default;
+cell_locator::cell_locator(cell_locator&&) noexcept = default;
+cell_locator& cell_locator::operator=(cell_locator&&) noexcept = default;
+
+uint32_t cell_locator::locate(const glm::vec3& direction) const {
+  const glm::vec3 unit = glm::normalize(direction);
+  const tree_point query{unit.x, unit.y, unit.z};
+  float radius = state_->radius;
+  for (uint32_t attempt = 0; attempt < 6; ++attempt) {
+    const auto* node = state_->tree.nearest(query, radius, [](const uint32_t&) { return true; });
+    if (node != nullptr) {
+      return node->payload;
+    }
+    radius *= 2.0f;
+  }
+  return UINT32_MAX;
+}
+
 std::span<const view_mode> view_modes() noexcept {
   return std::span<const view_mode>(modes.data(), modes.size());
 }
@@ -237,25 +323,131 @@ std::vector<surface_vertex> build_surface(originator::pipeline& source, const ui
     triangles.swap(refined);
   }
 
-  // Радиус поиска берётся с большим запасом: клетки могут стоять реже, чем вершины сетки, и
-  // пустой ответ означал бы дырку в карте, а не мелкую погрешность.
-  const float search_radius = float(4.0 * std::sqrt(4.0 * std::numbers::pi / double(std::max<size_t>(count, 1))));
+  // Четыре ближайшие клетки на вершину и веса по расстоянию. Радиус поиска берётся с запасом от шага
+  // решётки: он должен накрыть не одну клетку, а её окружение, иначе кандидатов будет меньше четырёх
+  // и сглаживать будет нечем.
+  const double spacing = std::sqrt(4.0 * std::numbers::pi / double(std::max<size_t>(count, 1)));
+  const float blend_radius = float(2.2 * spacing);
 
   std::vector<surface_vertex> result;
   result.reserve(triangles.size() * 3);
+  std::vector<std::pair<float, uint32_t>> found;
+  found.reserve(64);
+
   for (const auto& face : triangles) {
     for (const auto& direction : face) {
       const tree_point query{direction.x, direction.y, direction.z};
-      const auto* node = tree.nearest(query, std::max(search_radius, 0.05f), [](const uint32_t&) { return true; });
-      if (node == nullptr) {
+      found.clear();
+      float radius = blend_radius;
+      for (uint32_t attempt = 0; attempt < 6 && found.size() < 4; ++attempt) {
+        found.clear();
+        tree.radius(
+          query, radius, [](const uint32_t&) { return true; },
+          [&](const cell_tree::node& node) {
+            const float dx = node.pos[0] - query[0];
+            const float dy = node.pos[1] - query[1];
+            const float dz = node.pos[2] - query[2];
+            found.emplace_back(dx * dx + dy * dy + dz * dz, node.payload);
+          });
+        radius *= 1.7f;
+      }
+
+      if (found.empty()) {
         // Запас радиуса не сработал только если клеток вообще нет; тогда лучше упасть, чем рисовать
         // поверхность, привязанную к нулевой клетке.
-        utils::error{}("GN02 visual: no cell within {} of a surface vertex", search_radius);
+        utils::error{}("GN02 visual: no cell within {} of a surface vertex", radius);
       }
-      result.push_back(surface_vertex{direction, node->payload});
+      std::sort(found.begin(), found.end());
+
+      surface_vertex vertex{};
+      vertex.direction = direction;
+
+      // Вес обратно пропорционален расстоянию, а не его квадрату: у квадрата ближайшая клетка
+      // забирает почти всё, и сглаживания не выходит. Малое слагаемое в знаменателе не косметика —
+      // вершина сетки может лежать точно в клетке, и тогда деление на ноль дало бы NaN на всю
+      // поверхность.
+      const size_t taken = std::min<size_t>(found.size(), 4);
+      std::array<double, 4> weights{};
+      double total = 0.0;
+      for (size_t k = 0; k < taken; ++k) {
+        const double distance = std::sqrt(double(found[k].first));
+        weights[k] = 1.0 / (distance + 1.0e-4 * spacing);
+        total += weights[k];
+        vertex.cells[k] = found[k].second;
+      }
+      for (size_t k = taken; k < 4; ++k) {
+        vertex.cells[k] = found[0].second;
+      }
+
+      // Упаковка в байты с добором остатка в первый вес: сумма обязана быть ровно 255, иначе шейдеру
+      // придётся нормировать заново, а это лишняя работа на каждую вершину каждого кадра.
+      std::array<uint32_t, 4> packed{};
+      uint32_t written_total = 0;
+      for (size_t k = 0; k < taken; ++k) {
+        packed[k] = uint32_t(std::lround(255.0 * weights[k] / total));
+        written_total += packed[k];
+      }
+      if (written_total > 255) {
+        packed[0] -= std::min(packed[0], written_total - 255);
+      } else {
+        packed[0] += 255 - written_total;
+      }
+      vertex.weights = packed[0] | (packed[1] << 8) | (packed[2] << 16) | (packed[3] << 24);
+
+      result.push_back(vertex);
     }
   }
   return result;
+}
+
+// Сглаженная близость к границе области.
+//
+// Считается в два шага, и оба нужны. Сначала РУБЕЖ: у клетки, у которой есть сосед из другой области,
+// значение единица. Это точная граница, но она полигональная — ломаная по клеткам решётки. Затем
+// размытие по тому же графу соседства: оно превращает ломаную в гладкую полосу, потому что усредняет
+// не картинку, а САМО ПОЛЕ близости.
+//
+// Проходов два: одного мало (полоса остаётся шириной в клетку и линия по-прежнему угловатая), трёх
+// много (полоса расползается, и мелкая область оказывается границей целиком).
+void fill_area_borders(originator::pipeline& source, std::vector<cell_visual>& visuals, const size_t cells) {
+  const auto offsets = field_of(source, "cell_offsets", "start");
+  const auto arcs = field_of(source, "cell_arcs", "cell");
+
+  std::vector<float> field(cells, 0.0f);
+  for (size_t i = 0; i < cells; ++i) {
+    const auto first = size_t(offsets.get(i));
+    const auto last = size_t(offsets.get(i + 1));
+    for (size_t k = first; k < last; ++k) {
+      const auto other = size_t(arcs.get(k));
+      if (other < cells && visuals[other].area != visuals[i].area) {
+        field[i] = 1.0f;
+        break;
+      }
+    }
+  }
+
+  std::vector<float> blurred(cells, 0.0f);
+  for (uint32_t pass = 0; pass < 2; ++pass) {
+    for (size_t i = 0; i < cells; ++i) {
+      const auto first = size_t(offsets.get(i));
+      const auto last = size_t(offsets.get(i + 1));
+      float total = field[i];
+      float weight = 1.0f;
+      for (size_t k = first; k < last; ++k) {
+        const auto other = size_t(arcs.get(k));
+        if (other < cells) {
+          total += field[other];
+          weight += 1.0f;
+        }
+      }
+      blurred[i] = total / weight;
+    }
+    field.swap(blurred);
+  }
+
+  for (size_t i = 0; i < cells; ++i) {
+    visuals[i].border = field[i];
+  }
 }
 
 std::vector<cell_visual> build_cell_visuals(originator::pipeline& source, const size_t mode, const size_t cells) {
@@ -291,6 +483,7 @@ std::vector<cell_visual> build_cell_visuals(originator::pipeline& source, const 
       for (size_t i = 0; i < cells; ++i) {
         const auto zone = size_t(climate.get(i));
         result[i].colour = climate_palette[std::min(zone, climate_palette.size() - 1)];
+        result[i].area = float(zone + 1);
       }
       break;
     }
@@ -314,6 +507,7 @@ std::vector<cell_visual> build_cell_visuals(originator::pipeline& source, const 
           colour = glm::mix(colour, glm::vec3(0.25f, 0.55f, 1.0f), 0.75f);
         }
         result[i].colour = colour;
+        result[i].area = float(plate.get(i) + 1.0);
       }
       break;
     }
@@ -382,6 +576,7 @@ std::vector<cell_visual> build_cell_visuals(originator::pipeline& source, const 
         // были одного тёмного цвета, и карта культур читалась как «культуры заняли пятнышко на пустой
         // планете». Замер показал обратное — занято 87% пригодной суши, — то есть врала отрисовка.
         result[i].colour = culture.get(i) != 0.0 ? label_colour(uint32_t(culture.get(i))) : empty_colour(i);
+        result[i].area = float(culture.get(i));
       }
       break;
     }
@@ -389,6 +584,7 @@ std::vector<cell_visual> build_cell_visuals(originator::pipeline& source, const 
       const auto province = field_of(source, "cells", "province");
       for (size_t i = 0; i < cells; ++i) {
         result[i].colour = province.get(i) != 0.0 ? label_colour(uint32_t(province.get(i))) : empty_colour(i);
+        result[i].area = float(province.get(i));
       }
       break;
     }
@@ -396,6 +592,7 @@ std::vector<cell_visual> build_cell_visuals(originator::pipeline& source, const 
       const auto zone = field_of(source, "cells", "sea_zone");
       for (size_t i = 0; i < cells; ++i) {
         result[i].colour = zone.get(i) != 0.0 ? label_colour(uint32_t(zone.get(i))) : empty_colour(i);
+        result[i].area = float(zone.get(i));
       }
       break;
     }
@@ -403,6 +600,7 @@ std::vector<cell_visual> build_cell_visuals(originator::pipeline& source, const 
       const auto kind = field_of(source, "cells", "landform");
       for (size_t i = 0; i < cells; ++i) {
         result[i].colour = landform_palette[std::min(size_t(kind.get(i)), landform_palette.size() - 1)];
+        result[i].area = float(kind.get(i) + 1.0);
       }
       break;
     }
@@ -412,9 +610,17 @@ std::vector<cell_visual> build_cell_visuals(originator::pipeline& source, const 
       const auto level = field_of(source, "cells", level_fields[std::min<size_t>(mode - 13, 6)]);
       for (size_t i = 0; i < cells; ++i) {
         result[i].colour = level.get(i) != 0.0 ? label_colour(uint32_t(level.get(i))) : empty_colour(i);
+        result[i].area = float(level.get(i));
       }
       break;
     }
+  }
+
+  // Граница рисуется только у категориальных полей: у непрерывного поля областей нет, и обводить
+  // нечего. Проверка идёт по самому режиму, а не по тому, заполнил ли кто-нибудь номера областей:
+  // «есть ли здесь области» — свойство режима.
+  if (mode < modes.size() && modes[mode].categorical) {
+    fill_area_borders(source, result, cells);
   }
 
   return result;

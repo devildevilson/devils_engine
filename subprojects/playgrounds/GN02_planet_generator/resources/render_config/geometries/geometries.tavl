@@ -3,4 +3,6 @@
 // У неба тоже нет вершин: три вершины полноэкранного треугольника строятся из gl_VertexIndex.
 { name = sky_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
 { name = planet_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
+// У подписи тоже нет вершинного буфера: шесть вершин на глиф строятся из gl_VertexIndex.
+{ name = label_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
 { name = ui_geometry, vertex_layout = v2v2c4, index_type = u16, topology = triangle_list, restart = false }

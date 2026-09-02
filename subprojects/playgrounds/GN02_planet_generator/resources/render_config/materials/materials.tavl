@@ -12,6 +12,15 @@
   depth = { test = true, write = true, compare = greater }
   raster = { cull = back, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
+// Подпись рисуется БЕЗ ГЛУБИНЫ и со смешиванием. Без глубины — потому что она стоит не на
+// поверхности, а над ней, и любая привязка к глубине дала бы борьбу с рельефом за один и тот же
+// пиксель; за горизонт её убирает не глубина, а проверка направления в шейдере.
+{
+  name = label_material
+  shaders = { vertex = "label.vert.glsl", fragment = "label.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
 {
   name = ui_material
   shaders = { vertex = "ui.vert.glsl", fragment = "ui.frag.glsl" }
