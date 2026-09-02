@@ -22,31 +22,48 @@ using cell_tree = utils::kd_tree<uint32_t, tree_point, 3>;
 // Имена латиницей потому, что они уходят прямиком в оверлей, а атлас шрифта площадок покрывает
 // только ASCII: кириллица в нём не отрисовывается вовсе.
 const std::array<view_mode, 20> modes{{
-  {"climate", "zones from summer, winter and rain", 5, true, view_mode::named::none},
-  {"relief", "hypsometry: depths blue, land green to snow", 2, false},
-  {"plates", "tectonic plates, convergent rims warm, divergent cold", 2, true},
-  {"tectonics", "convergence red, divergence blue, subduction dark", 2, false},
-  {"temperature", "mean of summer and winter", 5, false},
-  {"seasonality", "summer minus winter", 5, false},
-  {"precipitation", "in shares of the land mean", 4, false},
-  {"habitability", "where a person can live", 6, false},
-  {"population", "density, logarithmic", 6, false},
-  {"cultures", "who claimed the cell", 6, true, view_mode::named::none},
-  {"provinces", "land carved into provinces", 7, true, view_mode::named::province},
-  {"sea zones", "water carved into zones", 7, true, view_mode::named::sea_zone},
-  {"landforms", "what kind of place this is, and it is measured", 4, true, view_mode::named::landform},
+  // После подсказки идут: с какого шага поле осмысленно, какой уровень названных мест ему
+  // соответствует и три флага — есть ли ОБЛАСТИ (то есть плоская заливка по покрытию), обводить ли
+  // границу ЛИНИЕЙ и делится ли палитра по берегу.
+  //
+  // Области и линия — РАЗНЫЕ решения, и разница видна на климате. У климата области есть (зона —
+  // это метка клетки), поэтому заливка у него плоская. Но линии нет: палитра СМЫСЛОВАЯ — пустыня
+  // песочная, лес зелёный, — цвет сам называет класс, а чёрная черта между пустыней и степью
+  // сообщала бы о рубеже, которого в природе нет.
+  //
+  // Класс — это МЕТКА, а не число, и смешивать его нельзя даже мягко. Первая версия смешивала
+  // климат и области рельефа с резкостью, и обе карты выходили бусами: у степени от веса ближайшая
+  // клетка забирает почти всё, поэтому получались блоки по клеткам с мягким краем — то есть решётка
+  // Фибоначчи, показанная вместо мира. Смешивание осталось только у настоящих чисел (высота,
+  // температура, осадки), и там оно линейное.
+  {"climate", "zones from summer, winter and rain", 5, view_mode::named::none, true},
+  {"relief", "hypsometry: depths blue, land green to snow", 2, view_mode::named::none, false, false, true},
+  {"plates", "tectonic plates, convergent rims warm, divergent cold", 2, view_mode::named::none, true, true},
+  {"tectonics", "convergence red, divergence blue, subduction dark", 2, view_mode::named::none},
+  {"temperature", "mean of summer and winter", 5, view_mode::named::none},
+  {"seasonality", "summer minus winter", 5, view_mode::named::none},
+  {"precipitation", "in shares of the land mean", 4, view_mode::named::none},
+  {"habitability", "where a person can live", 6, view_mode::named::none},
+  {"population", "density, logarithmic", 6, view_mode::named::none},
+  {"cultures", "who claimed the cell", 6, view_mode::named::none, true, true},
+  {"provinces", "land carved into provinces", 7, view_mode::named::province, true, true},
+  {"sea zones", "water carved into zones", 7, view_mode::named::sea_zone, true, true},
+  // У областей рельефа палитра тоже смысловая, и линии у них нет по той же причине, что у климата:
+  // граница между холмами и горами измерена, но она не рубеж, а порог на непрерывном склоне.
+  {"landforms", "what kind of place this is, and it is measured", 4, view_mode::named::landform, true},
   // Уровни географической иерархии. Красятся ТЕМ ЖЕ способом, что провинции, и это само по себе
   // проверка: если граница уровня не совпадёт с границей провинции, на карте появится пятно внутри
   // области, а не только цифра в отчёте.
-  {"land masses", "connected pieces of land: Eurasia, not Europe", 9, true, view_mode::named::land_mass},
-  {"continents", "grown inside a land mass, small islands attached", 9, true, view_mode::named::continent},
-  {"historical regions", "grown inside a continent: Northern Europe", 9, true, view_mode::named::historical_region},
-  {"oceans", "grown inside a water body; lakes have none", 9, true, view_mode::named::ocean},
+  {"land masses", "connected pieces of land: Eurasia, not Europe", 9, view_mode::named::land_mass, true, true},
+  {"continents", "grown inside a land mass, small islands attached", 9, view_mode::named::continent, true, true},
+  {"historical regions", "grown inside a continent: Northern Europe", 9, view_mode::named::historical_region,
+   true, true},
+  {"oceans", "grown inside a water body; lakes have none", 9, view_mode::named::ocean, true, true},
   // Политика. Тем же способом и по той же причине: границы титула обязаны лежать по границам
   // графств, и на карте это видно сразу.
-  {"duchies", "de jure duchies inside a kingdom", 9, true, view_mode::named::duchy},
-  {"empires", "de jure empires, islands attached", 9, true, view_mode::named::empire},
-  {"realms", "de facto states: who actually holds the land", 9, true, view_mode::named::realm},
+  {"duchies", "de jure duchies inside a kingdom", 9, view_mode::named::duchy, true, true},
+  {"empires", "de jure empires, islands attached", 9, view_mode::named::empire, true, true},
+  {"realms", "de facto states: who actually holds the land", 9, view_mode::named::realm, true, true},
 }};
 
 originator::const_field_accessor field_of(originator::pipeline& source, const std::string_view& buffer_name,
@@ -400,54 +417,39 @@ std::vector<surface_vertex> build_surface(originator::pipeline& source, const ui
   return result;
 }
 
-// Сглаженная близость к границе области.
-//
-// Считается в два шага, и оба нужны. Сначала РУБЕЖ: у клетки, у которой есть сосед из другой области,
-// значение единица. Это точная граница, но она полигональная — ломаная по клеткам решётки. Затем
-// размытие по тому же графу соседства: оно превращает ломаную в гладкую полосу, потому что усредняет
-// не картинку, а САМО ПОЛЕ близости.
-//
-// Проходов два: одного мало (полоса остаётся шириной в клетку и линия по-прежнему угловатая), трёх
-// много (полоса расползается, и мелкая область оказывается границей целиком).
-void fill_area_borders(originator::pipeline& source, std::vector<cell_visual>& visuals, const size_t cells) {
+std::vector<cell_geometry> build_cell_geometry(originator::pipeline& source, const size_t cells) {
+  const auto positions = field_of(source, "cells", "position");
   const auto offsets = field_of(source, "cell_offsets", "start");
   const auto arcs = field_of(source, "cell_arcs", "cell");
 
-  std::vector<float> field(cells, 0.0f);
+  std::vector<cell_geometry> result(cells);
+  std::vector<std::pair<float, uint32_t>> ring;
   for (size_t i = 0; i < cells; ++i) {
+    auto& record = result[i];
+    record.direction = glm::vec3(float(positions.get(i, 0)), float(positions.get(i, 1)),
+                                 float(positions.get(i, 2)));
+
     const auto first = size_t(offsets.get(i));
     const auto last = size_t(offsets.get(i + 1));
+    ring.clear();
     for (size_t k = first; k < last; ++k) {
       const auto other = size_t(arcs.get(k));
-      if (other < cells && visuals[other].area != visuals[i].area) {
-        field[i] = 1.0f;
-        break;
+      if (other >= cells) {
+        continue;
       }
+      const glm::vec3 direction(float(positions.get(other, 0)), float(positions.get(other, 1)),
+                                float(positions.get(other, 2)));
+      ring.emplace_back(glm::dot(direction - record.direction, direction - record.direction), uint32_t(other));
+    }
+    // Если соседей больше восьми, берутся БЛИЖАЙШИЕ: спуску нужны те, через которые он идёт, а
+    // дальние соседи симметризации только занимают место.
+    std::sort(ring.begin(), ring.end());
+    record.neighbour_count = uint32_t(std::min<size_t>(ring.size(), record.neighbours.size()));
+    for (uint32_t k = 0; k < record.neighbour_count; ++k) {
+      record.neighbours[k] = ring[k].second;
     }
   }
-
-  std::vector<float> blurred(cells, 0.0f);
-  for (uint32_t pass = 0; pass < 2; ++pass) {
-    for (size_t i = 0; i < cells; ++i) {
-      const auto first = size_t(offsets.get(i));
-      const auto last = size_t(offsets.get(i + 1));
-      float total = field[i];
-      float weight = 1.0f;
-      for (size_t k = first; k < last; ++k) {
-        const auto other = size_t(arcs.get(k));
-        if (other < cells) {
-          total += field[other];
-          weight += 1.0f;
-        }
-      }
-      blurred[i] = total / weight;
-    }
-    field.swap(blurred);
-  }
-
-  for (size_t i = 0; i < cells; ++i) {
-    visuals[i].border = field[i];
-  }
+  return result;
 }
 
 std::vector<cell_visual> build_cell_visuals(originator::pipeline& source, const size_t mode, const size_t cells) {
@@ -461,6 +463,7 @@ std::vector<cell_visual> build_cell_visuals(originator::pipeline& source, const 
     // берегу выходит пила: соседние клетки различаются на четыре километра, и шельф торчит зубцами.
     // На глобусе вода и должна быть ровной сферой — глубину показывает цвет, а не форма.
     result[i].height = float(std::max(0.0, height.get(i) - sea_level));
+    result[i].land = land.get(i) != 0.0 ? 1.0f : 0.0f;
   }
 
   // Клетка без метки: суша серо-бурая, вода тёмно-синяя. Пустое место на карте меток обязано
@@ -468,6 +471,13 @@ std::vector<cell_visual> build_cell_visuals(originator::pipeline& source, const 
   const auto empty_colour = [&](const size_t index) {
     return land.get(index) != 0.0 ? glm::vec3(0.26f, 0.24f, 0.21f) : glm::vec3(0.05f, 0.08f, 0.15f);
   };
+
+  // Непомеченная клетка получает РАЗНЫЕ номера областей на суше и на воде, хотя метки у неё нет ни
+  // там, ни там. Иначе они попадают в одну область с двумя разными цветами, а заливка по покрытию
+  // держится на том, что у области цвет один: берег между «незанятой землёй» и водой рисовался бы
+  // границей КЛЕТКИ, то есть лестницей. Видно это на карте культур (занята не вся суша) и при
+  // просмотре по шагам, где поле следующего шага ещё нулевое.
+  const auto empty_area = [&](const size_t index) { return land.get(index) != 0.0 ? -1.0f : 0.0f; };
 
   const auto scalar = [&](const originator::const_field_accessor& field, const double low, const double high,
                           const std::span<const glm::vec3>& stops) {
@@ -576,7 +586,7 @@ std::vector<cell_visual> build_cell_visuals(originator::pipeline& source, const 
         // были одного тёмного цвета, и карта культур читалась как «культуры заняли пятнышко на пустой
         // планете». Замер показал обратное — занято 87% пригодной суши, — то есть врала отрисовка.
         result[i].colour = culture.get(i) != 0.0 ? label_colour(uint32_t(culture.get(i))) : empty_colour(i);
-        result[i].area = float(culture.get(i));
+        result[i].area = culture.get(i) != 0.0 ? float(culture.get(i)) : empty_area(i);
       }
       break;
     }
@@ -584,7 +594,7 @@ std::vector<cell_visual> build_cell_visuals(originator::pipeline& source, const 
       const auto province = field_of(source, "cells", "province");
       for (size_t i = 0; i < cells; ++i) {
         result[i].colour = province.get(i) != 0.0 ? label_colour(uint32_t(province.get(i))) : empty_colour(i);
-        result[i].area = float(province.get(i));
+        result[i].area = province.get(i) != 0.0 ? float(province.get(i)) : empty_area(i);
       }
       break;
     }
@@ -592,7 +602,7 @@ std::vector<cell_visual> build_cell_visuals(originator::pipeline& source, const 
       const auto zone = field_of(source, "cells", "sea_zone");
       for (size_t i = 0; i < cells; ++i) {
         result[i].colour = zone.get(i) != 0.0 ? label_colour(uint32_t(zone.get(i))) : empty_colour(i);
-        result[i].area = float(zone.get(i));
+        result[i].area = zone.get(i) != 0.0 ? float(zone.get(i)) : empty_area(i);
       }
       break;
     }
@@ -610,17 +620,10 @@ std::vector<cell_visual> build_cell_visuals(originator::pipeline& source, const 
       const auto level = field_of(source, "cells", level_fields[std::min<size_t>(mode - 13, 6)]);
       for (size_t i = 0; i < cells; ++i) {
         result[i].colour = level.get(i) != 0.0 ? label_colour(uint32_t(level.get(i))) : empty_colour(i);
-        result[i].area = float(level.get(i));
+        result[i].area = level.get(i) != 0.0 ? float(level.get(i)) : empty_area(i);
       }
       break;
     }
-  }
-
-  // Граница рисуется только у категориальных полей: у непрерывного поля областей нет, и обводить
-  // нечего. Проверка идёт по самому режиму, а не по тому, заполнил ли кто-нибудь номера областей:
-  // «есть ли здесь области» — свойство режима.
-  if (mode < modes.size() && modes[mode].categorical) {
-    fill_area_borders(source, result, cells);
   }
 
   return result;

@@ -104,8 +104,8 @@ struct alignas(16) camera_block {
   glm::mat4 planet_to_world;
   glm::vec4 camera_position;
   glm::vec4 light_direction;
-  glm::vec4 params;        // масштаб рельефа, плоская закраска, радиус, режим
-  glm::vec4 viewport_near; // ширина, высота, ближняя плоскость, резкость смешивания клеток
+  glm::vec4 params;        // масштаб рельефа, режим областей (0/1/2), радиус, берег
+  glm::vec4 viewport_near; // ширина, высота, ближняя плоскость, свободно
 };
 static_assert(sizeof(camera_block) == 256);
 
@@ -363,6 +363,10 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
   }
 
   auto surface = build_surface(*world.line, subdivisions);
+  // Геометрия клеток нужна ФРАГМЕНТУ: выбор области делается на пиксель, и пиксель сам ищет свою
+  // клетку спуском по графу. Зависит только от положений клеток, поэтому живёт столько же, сколько
+  // сетка, — до следующего пересчёта мира.
+  auto cell_graph = build_cell_geometry(*world.line, world.line->find_buffer("cells")->count());
   auto visuals = build_cell_visuals(*world.line, mode, world.line->find_buffer("cells")->count());
   bool visuals_dirty = true;
 
@@ -525,6 +529,7 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
     // Сетка поверхности загружается один раз: она зависит только от положений клеток, а те
     // считаются первым шагом и дальше не меняются.
     write_buffer(base, "surface_vertices", surface.data(), surface.size() * sizeof(surface_vertex));
+    write_buffer(base, "cell_geometry", cell_graph.data(), cell_graph.size() * sizeof(cell_geometry));
 
     input::events::clear_bindings();
     bind_key("rotate_up", "key_w");
@@ -680,6 +685,8 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
         settings_dirty = false;
         surface = build_surface(*world.line, subdivisions);
         write_buffer(base, "surface_vertices", surface.data(), surface.size() * sizeof(surface_vertex));
+        cell_graph = build_cell_geometry(*world.line, world.line->find_buffer("cells")->count());
+        write_buffer(base, "cell_geometry", cell_graph.data(), cell_graph.size() * sizeof(cell_geometry));
         locator = cell_locator(*world.line);
         names = build_place_names(*world.line, options.continent_min_provinces, options.ocean_zones);
         labelled = collect_labelled_areas(*world.line, mode_table[mode].level);
@@ -806,12 +813,22 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
       camera.light_direction = glm::vec4(glm::normalize(glm::vec3(-0.42f, -0.35f, -0.84f)), selected_area);
       // Масштаб рельефа в радиусах планеты на метр высоты: 6000 м при масштабе 12 дают 1.2% радиуса.
       // Без преувеличения рельеф на глобусе не виден вовсе — Земля с точностью до процента гладкая.
-      camera.params = glm::vec4(relief ? options.relief_scale / 6371000.0f : 0.0f,
-                                current_mode.categorical ? 1.0f : 0.0f, 1.0f, float(mode));
-      // Четвёртая компонента — резкость смешивания четырёх ближайших клеток, и она приходит РЕЖИМОМ:
-      // непрерывное поле сглаживается полностью, категориальное почти не смешивается.
-      camera.viewport_near =
-        glm::vec4(float(pending_width), float(pending_height), 0.05f, current_mode.blend_sharpness());
+      // Вторая компонента — режим областей ОДНИМ числом: 0 — областей нет, 1 — есть (плоская
+      // заливка по знаковому расстоянию), 2 — есть и обводятся линией. Два флага уложены в одно
+      // число намеренно: блок камеры повторяется в четырёх шейдерах байт в байт, и каждое новое поле
+      // это четыре места, где о нём можно забыть.
+      //
+      // Четвёртая компонента — «различает ли палитра сушу и воду», а не номер режима: номер режима
+      // шейдеру не нужен вовсе, а сторону берега выбирает именно фрагмент.
+      const float area_mode = current_mode.areas ? (current_mode.outline ? 2.0f : 1.0f) : 0.0f;
+      camera.params = glm::vec4(relief ? options.relief_scale / 6371000.0f : 0.0f, area_mode, 1.0f,
+                                current_mode.coast ? 1.0f : 0.0f);
+      // Четвёртая компонента СВОБОДНА. Раньше здесь лежала резкость смешивания клеток, и она ушла
+      // вместе с самим смешиванием метк: класс заливается плоско, число интерполируется линейно, и
+      // ничего между ними не понадобилось. Слот не убран, потому что блок камеры повторяется в
+      // четырёх шейдерах байт в байт и его размер объявлен в конфиге: свободное поле честнее
+      // изменения раскладки.
+      camera.viewport_near = glm::vec4(float(pending_width), float(pending_height), 0.05f, 0.0f);
       write_buffer(base, "camera_buffer", &camera, sizeof(camera));
       write_buffer(base, "cell_visuals", visuals.data(), visuals.size() * sizeof(cell_visual));
       visuals_dirty = false;
@@ -850,6 +867,9 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
           const float angular = float(std::sqrt(std::max(share, 0.0) * 4.0));
           const float screen = angular * planet_ndc;
           const bool chosen = selected_area > 0.5f && std::abs(area.area - selected_area) < 0.5f;
+          // Порог по РАЗМЕРУ НА ЭКРАНЕ, хотя сама подпись задана в радианах: у декали размер на
+          // поверхности постоянен, а читаемость зависит от того, сколько это пикселей. Поэтому порог
+          // и остался экранным — он же и означает LOD: при отлёте мелкие подписи пропадают сами.
           if (screen < 0.055f && !chosen) {
             continue;
           }
@@ -858,7 +878,10 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
           // решает, рисовать ли глиф, а здесь решается, тратить ли на подпись бюджет и место.
           const glm::vec3 world_direction =
             glm::normalize(glm::vec3(planet_to_world * glm::vec4(area.centre, 0.0f)));
-          if (glm::dot(world_direction, glm::normalize(eye)) < 0.30f) {
+          // Порог горизонта высокий намеренно: у самого края диска декаль ложится почти вдоль взгляда,
+          // сжимается перспективой в несколько пикселей по высоте и читается как артефакт, а не как
+          // надпись.
+          if (glm::dot(world_direction, glm::normalize(eye)) < 0.45f) {
             continue;
           }
           const glm::vec4 clip = camera_view_projection * planet_to_world * glm::vec4(area.centre, 1.0f);
@@ -884,10 +907,18 @@ int run_viewer(const viewer_options& options, std::vector<tunable_value> tunable
           if (text.empty()) {
             continue;
           }
-          const float height = std::clamp(screen * 0.42f, 0.020f, 0.055f);
-          const occupied box{ndc, glm::vec2(float(overlay.font_metrics().text_width(1.0, text)) * height *
-                                              0.5f / aspect,
-                                            height * 0.75f)};
+          // Высота подписи в РАДИАНАХ: у декали есть место на поверхности, значит есть и размер на
+          // поверхности. Берётся от угловой протяжённости самой области, поэтому крупное место
+          // подписано крупно, а мелкое мелко, и при приближении подписи растут вместе с планетой.
+          const float height = std::clamp(angular * 0.34f, 0.004f, 0.10f);
+          // Экранный размер той же подписи нужен только разведению: занятое место мерится на экране,
+          // потому что налезают подписи именно там.
+          const float screen_height = height * planet_ndc;
+          // Запас 1.2 к прямоугольнику: у декали ширина на экране зависит ещё и от наклона к взгляду,
+          // а наклон здесь не считается — дешевле дать запас, чем повторять проекцию каждого угла.
+          const occupied box{ndc, glm::vec2(float(overlay.font_metrics().text_width(1.0, text)) *
+                                              screen_height * 0.60f / aspect,
+                                            screen_height * 0.90f)};
           bool free_space = true;
           for (const auto& other : placed) {
             if (std::abs(other.centre.x - box.centre.x) < other.half.x + box.half.x &&

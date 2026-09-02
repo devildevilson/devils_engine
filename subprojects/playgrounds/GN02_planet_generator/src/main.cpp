@@ -133,6 +133,10 @@ options parse_options(const int argc, const char** argv) {
     } else if (starts_with(argument, "--frames=")) {
       result.viewer.frames = uint32_t(std::stoul(std::string(argument.substr(9))));
       result.viewer.fixed_rotation = true;
+    } else if (starts_with(argument, "--distance=")) {
+      // Расстояние камеры ключом, а не только колесом: без него снимок с приближения не повторить, а
+      // именно на приближении и видно, показывает ли карта мир или свою сетку.
+      result.viewer.camera_distance = std::stof(std::string(argument.substr(11)));
     } else if (starts_with(argument, "--mesh=")) {
       result.viewer.subdivisions = uint32_t(std::stoul(std::string(argument.substr(7))));
     } else if (starts_with(argument, "--mode=")) {
@@ -194,6 +198,7 @@ options parse_options(const int argc, const char** argv) {
                 << "  --step=N        show the world after step N (0 = all)\n"
                 << "  --mode=N        field to display (0 = climate)\n"
                 << "  --mesh=N        icosphere subdivisions (0 = pick from cell count)\n"
+                << "  --distance=R    camera distance in planet radii (default 2.6)\n"
                 << "  --uncapped      draw without the 60 FPS limit (for measuring)\n"
                 << "  --width/--height/--frames/--frame-dump/--validation - window and frame dump\n"
                 << "  --verify        run the contract checks\n"
@@ -745,8 +750,7 @@ void print_geography(originator::pipeline& line, const double geography_continen
   };
 
   // Сам граф соседства областей: без этой строки «уровень не вырос» не отличить от «графа нет».
-  const auto graph_shape = [&](const std::string_view offsets_name, const std::string_view arcs_name,
-                               const size_t node_count) {
+  const auto graph_shape = [&](const std::string_view offsets_name, const size_t node_count) {
     const auto starts = field_of(line, offsets_name, "start");
     size_t arcs_total = 0;
     size_t isolated = 0;
@@ -795,8 +799,8 @@ void print_geography(originator::pipeline& line, const double geography_continen
   };
 
   const auto [province_degree, province_isolated] =
-    graph_shape("province_neighbour_offsets", "province", province_count);
-  const auto [sea_degree, sea_isolated] = graph_shape("sea_neighbour_offsets", "zone", sea_zone_count);
+    graph_shape("province_neighbour_offsets", province_count);
+  const auto [sea_degree, sea_isolated] = graph_shape("sea_neighbour_offsets", sea_zone_count);
   const auto province_arcs_by_hand = graph_by_hand("province", province_count);
   const auto sea_arcs_by_hand = graph_by_hand("sea_zone", sea_zone_count);
   std::cout << "  area graph check    provinces " << size_t(province_degree * double(province_count) + 0.5)
@@ -855,7 +859,6 @@ void print_geography(originator::pipeline& line, const double geography_continen
   {
     const auto names = gn02::build_place_names(line, size_t(std::max(1.0, geography_continent_min)),
                                          size_t(std::max(1.0, geography_ocean_zones)));
-    const auto province_land_mass_field = field_of(line, "provinces", "land_mass");
     const auto continent_land_mass = field_of(line, "continents", "land_mass");
     const auto continent_cells = field_of(line, "continents", "cells");
     const auto region_continent_field = field_of(line, "historical_regions", "continent");
@@ -2168,6 +2171,94 @@ int run_verify(const options& opts) {
     // на то, что выбор ближайшей клетки не сваливается в несколько клеток на всю планету.
     check(addressed >= mesh.size() / 6,
           std::format("nearest-cell choice is spread out: {} cells over {} vertices", addressed, mesh.size()));
+  }
+
+  // 8а. Геометрия клеток и ЧЕСТНОСТЬ КАРТЫ.
+  //
+  // Выбор области делает фрагмент: он находит ближайшую клетку и считает покрытие областей ядром
+  // шириной в 1.2 шага решётки. У такого выбора есть цена — область, у которой в окрестности пикселя
+  // мало своих клеток, проигрывает окружению и ПРОПАДАЕТ С КАРТЫ. Ширина ядра выведена из требования
+  // «не пропадает никто»: восемь соседей на минимальном расстоянии дают 8*(1 - 1/1.2^2)^2 = 0.75
+  // против единицы у самой клетки. Проверка мерит это на настоящей решётке, а не на худшем случае.
+  //
+  // Проверять надо именно так, потому что глазом это не видно: одноклеточный остров, съеденный
+  // ядром, выглядит как «его тут и не было», а не как дефект отрисовки. Первая версия ставила ширину
+  // 1.5 «на глаз», и такие острова исчезали молча.
+  {
+    const auto graph = gn02::build_cell_geometry(line, count);
+    bool geometry_sane = true;
+    for (size_t i = 0; i < count && geometry_sane; ++i) {
+      const auto& record = graph[i];
+      geometry_sane = geometry_sane && record.neighbour_count > 0 &&
+                      record.neighbour_count <= record.neighbours.size();
+      const double length = std::sqrt(double(record.direction.x) * record.direction.x +
+                                      double(record.direction.y) * record.direction.y +
+                                      double(record.direction.z) * record.direction.z);
+      geometry_sane = geometry_sane && std::abs(length - 1.0) < 1e-4;
+      float previous = 0.0f;
+      for (uint32_t k = 0; k < record.neighbour_count; ++k) {
+        const uint32_t other = record.neighbours[k];
+        geometry_sane = geometry_sane && other < count && other != uint32_t(i);
+        if (other >= count) {
+          break;
+        }
+        // Порядок по расстоянию — не косметика: шейдер берёт ПЕРВОГО соседа как меру шага решётки.
+        const float distance = glm::distance(record.direction, graph[other].direction);
+        geometry_sane = geometry_sane && distance >= previous - 1e-6f;
+        previous = distance;
+      }
+    }
+    check(geometry_sane, "cell geometry lists real neighbours, sorted by distance, on the unit sphere");
+
+    // Правило повторяет шейдер (`planet.frag.glsl`, kernel_width): если оно меняется там, оно
+    // обязано измениться и здесь, иначе проверка перестанет мерить то, что рисуется.
+    const auto hidden_cells = [&](const std::string_view field_name) {
+      const auto labels = field_of(line, "cells", field_name);
+      size_t hidden = 0;
+      for (size_t i = 0; i < count; ++i) {
+        const auto& record = graph[i];
+        const double spacing =
+          std::max(double(glm::distance(record.direction, graph[record.neighbours[0]].direction)), 1e-6);
+        const double radius = spacing * 1.2;
+        const double own = labels.get(i);
+        double own_coverage = 1.0; // вес самой клетки в её собственном центре равен единице
+        double rival = 0.0;
+        std::array<std::pair<double, double>, 8> others{};
+        size_t distinct = 0;
+        for (uint32_t k = 0; k < record.neighbour_count; ++k) {
+          const uint32_t other = record.neighbours[k];
+          const double ratio =
+            std::min(double(glm::distance(record.direction, graph[other].direction)) / radius, 1.0);
+          const double falloff = 1.0 - ratio * ratio;
+          const double weight = falloff * falloff;
+          const double label = labels.get(other);
+          if (label == own) {
+            own_coverage += weight;
+            continue;
+          }
+          size_t slot = 0;
+          while (slot < distinct && others[slot].first != label) {
+            ++slot;
+          }
+          if (slot == distinct && distinct < others.size()) {
+            others[distinct++] = {label, 0.0};
+          }
+          if (slot < others.size()) {
+            others[slot].second += weight;
+            rival = std::max(rival, others[slot].second);
+          }
+        }
+        hidden += own_coverage <= rival ? 1 : 0;
+      }
+      return hidden;
+    };
+
+    // Массивы суши — самые мелкие области: одноклеточный остров тут законен и назван.
+    const size_t hidden_masses = hidden_cells("land_mass");
+    const size_t hidden_provinces = hidden_cells("province");
+    check(hidden_masses == 0 && hidden_provinces == 0,
+          std::format("no cell is hidden by the map kernel ({} land-mass cells, {} province cells)",
+                      hidden_masses, hidden_provinces));
   }
 
   // 9. Пакет: он и есть результат, поэтому круг «записали — прочитали — сошлось» обязателен.

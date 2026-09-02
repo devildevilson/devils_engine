@@ -3,7 +3,11 @@
   layout = [
     { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" },
     { resource = surface_vertices, usage = storage_read, stage = vertex },
-    { resource = cell_visuals, usage = storage_read, stage = vertex }
+    // Запись клетки нужна ОБОИМ: вершина берёт из неё высоту для смещения поверхности, фрагмент —
+    // цвет, номер области и опору. Выбор области живёт во фрагменте, потому что на вершине он
+    // невозможен: метка дискретна, а интерполяция между вершинами смешивает две разные метки.
+    { resource = cell_visuals, usage = storage_read, stage = "vertex | fragment" },
+    { resource = cell_geometry, usage = storage_read, stage = fragment }
   ]
 }
 // Небу нужна только камера, зато во фрагментном шейдере: направление луча считается на пиксель.

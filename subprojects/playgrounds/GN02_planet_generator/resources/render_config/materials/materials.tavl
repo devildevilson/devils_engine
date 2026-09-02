@@ -12,13 +12,14 @@
   depth = { test = true, write = true, compare = greater }
   raster = { cull = back, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
-// Подпись рисуется БЕЗ ГЛУБИНЫ и со смешиванием. Без глубины — потому что она стоит не на
-// поверхности, а над ней, и любая привязка к глубине дала бы борьбу с рельефом за один и тот же
-// пиксель; за горизонт её убирает не глубина, а проверка направления в шейдере.
+// Подпись — ДЕКАЛЬ НА ПОВЕРХНОСТИ, поэтому проверка глубины включена, а запись нет: гора перед
+// надписью обязана её закрыть, как закрывает всё остальное, но сама надпись глубину не занимает —
+// иначе она спорила бы за пиксель с рельефом, на котором лежит. За горизонт её убирает та же глубина:
+// обратная сторона планеты лежит дальше ближней.
 {
   name = label_material
   shaders = { vertex = "label.vert.glsl", fragment = "label.frag.glsl" }
-  depth = { test = false, write = false, compare = always }
+  depth = { test = true, write = false, compare = greater }
   raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
 }
 {
