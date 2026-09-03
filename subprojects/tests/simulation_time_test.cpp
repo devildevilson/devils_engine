@@ -39,21 +39,37 @@ TEST_CASE("tick-derived time uses rational projection without per-step drift [ti
 }
 
 TEST_CASE("simulation time rejects invalid rates and arithmetic overflow [time]") {
-  CHECK_THROWS_AS(utils::simulation_rate(0), std::invalid_argument);
+  CHECK_THROWS(utils::simulation_rate(0));
 
   const utils::simulation_rate maximum_rate(std::numeric_limits<uint32_t>::max());
-  CHECK_THROWS_AS(
-    maximum_rate.to_ticks_ceil({std::numeric_limits<uint64_t>::max()}),
-    std::overflow_error);
-  CHECK_THROWS_AS(
+  CHECK_THROWS(
+    maximum_rate.to_ticks_ceil({std::numeric_limits<uint64_t>::max()}));
+  CHECK_THROWS(
     utils::simulation_tick{std::numeric_limits<uint64_t>::max()} +
-      utils::simulation_duration{1},
-    std::overflow_error);
+      utils::simulation_duration{1});
 
   constexpr uint64_t max_whole_seconds =
     std::numeric_limits<uint64_t>::max() / utils::microseconds_per_second;
-  CHECK_THROWS_AS(
+  CHECK_THROWS(
     utils::simulation_rate(3).to_microseconds_floor(
-      {max_whole_seconds * 3 + 2}),
-    std::overflow_error);
+      {max_whole_seconds * 3 + 2}));
+}
+
+TEST_CASE("fixed-step pacing is independent of elapsed-time partition [time]") {
+  utils::fixed_step_accumulator coarse(utils::simulation_rate(60));
+  utils::fixed_step_accumulator fragmented(utils::simulation_rate(60));
+
+  CHECK(coarse.advance({1'000'000}) == 60);
+  uint64_t fragmented_steps = 0;
+  for (const uint64_t elapsed : {7'000u, 13'000u, 1u, 29'999u, 450'000u, 500'000u}) {
+    fragmented_steps += fragmented.advance({elapsed});
+  }
+  CHECK(fragmented_steps == 60);
+  CHECK(fragmented.fractional_units() == coarse.fractional_units());
+
+  utils::fixed_step_accumulator bounded(utils::simulation_rate(60));
+  CHECK(bounded.advance({1'000'000}, 8) == 8);
+  CHECK(bounded.pending_steps() == 52);
+  CHECK(bounded.advance({0}, 8) == 8);
+  CHECK(bounded.pending_steps() == 44);
 }

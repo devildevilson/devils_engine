@@ -287,6 +287,81 @@ TEST_CASE("resource_system expands tavl list resources and aliases indices [demi
   fs::remove_all(root);
 }
 
+// Отделитель с заголовком (`//--- имя документа`) — обычная запись в конфигах проекта, и весь этот
+// текст для tavl комментарий. Пока остаток строки оставался в секции, он становился её ПЕРВЫМ
+// значением, и документ читался не тем обходом — молча, без единой диагностики.
+// Отделитель — это СТРОКА. Файл, который лишь УПОМИНАЕТ его в комментарии, документом-списком не
+// является: иначе текст про формат резал бы файл, который сам этот формат не использует.
+TEST_CASE("resource_system does not split a file that only mentions the separator [demiurg]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_demiurg_mention_test";
+  fs::remove_all(root);
+  fs::create_directories(root / "core" / "configs");
+
+  {
+    std::ofstream out(root / "core" / "configs" / "abc.tavl");
+    out << "// в этом файле нет отделителей `//---`, о них здесь только написано\n";
+    out << "name = abc1\n";
+    out << "data = 123\n";
+  }
+
+  demiurg::module_system modules((root.generic_string() + "/"));
+  modules.load_modules({demiurg::module_system::list_entry{"core/", "", ""}});
+
+  demiurg::resource_system resources;
+  resources.register_type<list_test_resource>("configs", "tavl");
+  resources.parse_resources(&modules);
+
+  CHECK(resources.get("configs/abc") != nullptr);
+  CHECK(resources.get("configs/abc:abc1") == nullptr);
+  CHECK(resources.resources_count() == 1);
+
+  fs::remove_all(root);
+}
+
+TEST_CASE("resource_system keeps the title of a //--- separator out of the section [demiurg]") {
+  namespace fs = std::filesystem;
+
+  const auto root = fs::temp_directory_path() / "devils_engine_demiurg_titled_separator_test";
+  fs::remove_all(root);
+  fs::create_directories(root / "core" / "configs");
+
+  {
+    std::ofstream out(root / "core" / "configs" / "abc.tavl");
+    out << "//--- первый документ\n";
+    out << "name = abc1\n";
+    out << "data = 123\n";
+    out << "//--- второй документ\n";
+    out << "name = abc2\n";
+    out << "data = 456\n";
+  }
+
+  demiurg::module_system modules((root.generic_string() + "/"));
+  modules.load_modules({demiurg::module_system::list_entry{"core/", "", ""}});
+
+  demiurg::resource_system resources;
+  resources.register_type<list_test_resource>("configs", "tavl");
+  resources.parse_resources(&modules);
+
+  auto* abc1 = resources.get<list_test_resource>("configs/abc:abc1");
+  auto* abc2 = resources.get<list_test_resource>("configs/abc:abc2");
+  REQUIRE(abc1 != nullptr);
+  REQUIRE(abc2 != nullptr);
+
+  CHECK(abc1->list_section.starts_with("name = abc1"));
+  CHECK(abc2->list_section.starts_with("name = abc2"));
+  CHECK(abc1->list_start_line == 2);
+  CHECK(abc2->list_start_line == 5);
+
+  // Смещение и размер обязаны указывать на тот же текст: по ним секция перечитывается из модуля,
+  // когда list_section уже сброшен.
+  const std::string full = abc2->module->load_text(abc2->path);
+  CHECK(full.substr(abc2->list_offset, abc2->list_size) == abc2->list_section);
+
+  fs::remove_all(root);
+}
+
 TEST_CASE("resource_system resolves stable resource handles by hashed logical id [demiurg]") {
   namespace fs = std::filesystem;
 

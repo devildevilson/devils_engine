@@ -1,0 +1,33 @@
+{
+  name = draw_sky
+  material = sky_material
+  geometry = sky_geometry
+  sets = [ sky_data ]
+  command = "draw constant sky_draw"
+}
+{
+  name = draw_terrain
+  material = terrain_material
+  geometry = terrain_geometry
+  sets = [ terrain_data ]
+  command = "draw constant surface_draw"
+}
+{
+  name = draw_props
+  material = prop_material
+  geometry = prop_geometry
+  sets = [ prop_data ]
+  command = "draw constant prop_draw"
+}
+{
+  name = draw_overlay
+  material = ui_material
+  geometry = ui_geometry
+  command = "draw_ui ui_vertices ui_indices ui_commands"
+  sets = [ camera_data, ui_textures ]
+  push_constants = [ ui_push ]
+  blending = {
+    scene_color = { enable = true, color = "src_alpha add one_minus_src_alpha", alpha = "one add one_minus_src_alpha" }
+  }
+}
+{ name = present_scene, command = "blit scene_color swapchain_image" }

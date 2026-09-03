@@ -1,6 +1,9 @@
 #include <algorithm>
+#include <cmath>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <FastNoise/FastNoise.h>
@@ -63,7 +66,71 @@ struct prepared_noise {
   int seed = 0;
   float amplitude = 1.0f;
   float offset = 0.0f;
+  // Частота, УЖЕ приведённая к мировым единицам, если вызывающий задал размер формы. Разрешается она
+  // в подготовке, а не в теле: тело исполняется по чанкам, а перевод один на весь вызов.
+  float frequency = 1.0f;
 };
+
+// ПЕРИОД ДЕРЕВА ШУМА при частоте 1, в единицах координат. Величина ИЗМЕРЯЕТСЯ, а не задаётся, и это
+// принципиально: дерево приходит закодированной строкой из редактора, то есть внутри него может
+// стоять любой доменный масштаб, любое число октав и любой множитель. Предполагать масштаб ЧУЖИХ
+// данных нельзя — это уже стоило одной ошибки:
+//
+//   `frequency = 1/190` в расчёте «форма в 190 метров» дала форму в СЕМНАДЦАТЬ КИЛОМЕТРОВ, потому
+//   что у общего дерева движка период оказался 91 единица. Чанк в 32 метра видел поле постоянным, и
+//   мир получался пустым — при том, что ни одна проверка не падала.
+//
+// Меряется среднее расстояние между сменами знака вдоль НАКЛОННОЙ линии: у решёточного шума линия по
+// одной оси проходит через узлы решётки и даёт не тот масштаб. Линия начинается далеко от начала
+// координат, потому что у начала шум обычно проходит через нуль и особенно гладок.
+//
+// Зерно для измерения — ВСЕГДА НОЛЬ, а не зерно шага, и это тоже решение: период должен быть
+// свойством ДЕРЕВА, иначе один и тот же `feature = 190` означал бы разные метры в разных мирах.
+double measure_tree_period(const FastNoise::SmartNode<>& generator) {
+  constexpr int count = 8192;
+  constexpr double step_x = 0.7;
+  constexpr double step_y = 0.31;
+  constexpr double step_z = 0.53;
+
+  std::vector<float> xs(count);
+  std::vector<float> ys(count);
+  std::vector<float> zs(count);
+  std::vector<float> values(count);
+  for (int i = 0; i < count; ++i) {
+    xs[i] = float(1000.0 + double(i) * step_x);
+    ys[i] = float(500.0 + double(i) * step_y);
+    zs[i] = float(-300.0 + double(i) * step_z);
+  }
+  generator->GenPositionArray3D(values.data(), count, xs.data(), ys.data(), zs.data(), 0.0f, 0.0f, 0.0f, 0);
+
+  size_t crossings = 0;
+  for (int i = 1; i < count; ++i) {
+    crossings += (values[i] >= 0.0f) != (values[i - 1] >= 0.0f) ? 1 : 0;
+  }
+
+  const double length = std::sqrt(step_x * step_x + step_y * step_y + step_z * step_z) * double(count - 1);
+  // Смена знака происходит дважды за период, отсюда двойка. Дерево без смен знака вовсе (постоянное
+  // или строго положительное) периода не имеет — тогда мировой размер формы неприменим, и об этом
+  // надо сказать вслух, а не делить на ноль.
+  return crossings == 0 ? 0.0 : 2.0 * length / double(crossings);
+}
+
+// Кэш периодов по тексту дерева. Дерево — данные конфига, их немного, а измерение стоит восемь тысяч
+// выборок: платить за него на каждый чанк было бы четвертью стоимости самого шума.
+double tree_period(const std::string_view& tree, const FastNoise::SmartNode<>& generator) {
+  static std::mutex guard;
+  static std::vector<std::pair<std::string, double>> cache;
+
+  const std::lock_guard lock(guard);
+  for (const auto& [key, value] : cache) {
+    if (key == tree) {
+      return value;
+    }
+  }
+  const double period = measure_tree_period(generator);
+  cache.emplace_back(std::string(tree), period);
+  return period;
+}
 
 std::shared_ptr<void> prepare_noise(const tool_call& call) {
   const auto tree = call.params->string("tree");
@@ -85,6 +152,45 @@ std::shared_ptr<void> prepare_noise(const tool_call& call) {
   prepared->seed = int(int64_t(call.seed) + call.params->integer("seed_offset", 0));
   prepared->amplitude = float(call.params->number("amplitude", 1.0));
   prepared->offset = float(call.params->number("offset", 0.0));
+
+  // ЕДИНЫЙ МЕТР: размер формы задаётся в мировых единицах (`feature`), а не частотой. Частота —
+  // величина обратной размерности, и в ней невозможно узнать глазом «сто девяносто метров»; хуже
+  // того, её перевод в метры зависит от масштаба дерева, то есть от ЧУЖИХ данных. Поэтому масштаб
+  // измеряется движком, а конфиг говорит длину.
+  //
+  // `frequency` остаётся: у него другой смысл — «единиц шума на единицу мира», и он нужен там, где
+  // мировая длина не имеет смысла (например поле на единичной сфере, как у планеты).
+  const bool has_feature = call.params->has("feature");
+  const bool has_frequency = call.params->has("frequency");
+  if (has_feature && has_frequency) {
+    utils::error{}("originator step '{}': tool '{}' got both 'feature' ({}) and 'frequency' ({}) — the first "
+                   "is a length in world units and the second is noise units per world unit, so only one of "
+                   "them can be right",
+                   call.step_name, call.tool_name, call.params->number("feature"),
+                   call.params->number("frequency"));
+  }
+
+  if (has_feature) {
+    const double feature = call.params->number("feature");
+    if (feature <= 0.0) {
+      utils::error{}("originator step '{}': tool '{}' needs a positive 'feature' size, got {}",
+                     call.step_name, call.tool_name, feature);
+    }
+    const double period = tree_period(tree, prepared->generator);
+    if (period <= 0.0) {
+      utils::error{}("originator step '{}': tool '{}' cannot measure the period of tree '{}' — it never "
+                     "changes sign, so a world feature size means nothing for it; use 'frequency'",
+                     call.step_name, call.tool_name, tree);
+    }
+    prepared->frequency = float(period / feature);
+  } else {
+    // Значение по умолчанию у инструментов РАЗНОЕ, и менять его нельзя: у регулярной сетки
+    // координата — индекс клетки, у выборки по позициям — мировая величина, поэтому разумный
+    // множитель у них отличается на два порядка. Существующие миры считаны с этими числами.
+    const double fallback = call.tool_name == "noise_grid" ? 0.01 : 1.0;
+    prepared->frequency = float(call.params->number("frequency", fallback));
+  }
+
   return prepared;
 }
 
@@ -100,7 +206,7 @@ void tool_noise_grid(const tool_call& call, const size_t begin, const size_t end
   auto target = call.output(0).write();
 
   const auto width = size_t(std::max<int64_t>(call.params->integer("width", 1), 1));
-  const float frequency = float(call.params->number("frequency", 0.01));
+  const float frequency = prepared.frequency;
   const float step = float(call.params->number("step", 1.0)) * frequency;
   const float x_origin = float(call.params->number("x_offset", 0.0)) * frequency;
   const float y_origin = float(call.params->number("y_offset", 0.0)) * frequency;
@@ -159,7 +265,7 @@ void tool_noise_at(const tool_call& call, const size_t begin, const size_t end) 
                    call.step_name, call.input(0).buffer_name(), call.input(0).field_name(), components);
   }
 
-  const float frequency = float(call.params->number("frequency", 1.0));
+  const float frequency = prepared.frequency;
   const size_t run = end > begin ? end - begin : 0;
   if (run == 0) {
     return;

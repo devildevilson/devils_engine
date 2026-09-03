@@ -230,6 +230,9 @@ target_link_libraries(originator_tools_test PRIVATE devils_engine::originator de
 devils_add_doctest(originator_pipeline_test originator_pipeline_test.cpp)
 target_link_libraries(originator_pipeline_test PRIVATE devils_engine::originator devils_engine::utils)
 
+devils_add_doctest(originator_config_test originator_config_test.cpp)
+target_link_libraries(originator_config_test PRIVATE devils_engine::originator devils_engine::originator_config devils_engine::demiurg devils_engine::utils)
+
 devils_add_doctest(originator_script_test originator_script_test.cpp)
 target_link_libraries(originator_script_test PRIVATE devils_engine::originator devils_engine::originator_script devils_engine::utils)
 
@@ -238,3 +241,6 @@ target_link_libraries(originator_primitives_test PRIVATE devils_engine::originat
 
 devils_add_doctest(originator_scatter_test originator_scatter_test.cpp)
 target_link_libraries(originator_scatter_test PRIVATE devils_engine::originator devils_engine::utils)
+
+devils_add_doctest(originator_volume_test originator_volume_test.cpp)
+target_link_libraries(originator_volume_test PRIVATE devils_engine::originator devils_engine::utils)

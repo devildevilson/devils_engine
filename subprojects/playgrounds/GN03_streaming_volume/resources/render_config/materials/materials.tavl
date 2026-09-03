@@ -1,0 +1,32 @@
+// Небо рисуется до поверхности и без глубины вообще: оно накрывает весь экран и по определению
+// стоит позади всего.
+{
+  name = sky_material
+  shaders = { vertex = "sky.vert.glsl", fragment = "sky.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+// ОТСЕЧЕНИЕ ЗАДНЕЙ ГРАНИ ВЫКЛЮЧЕНО, и это решение, а не небрежность: камера залетает В ПЕЩЕРУ, где
+// видна именно задняя сторона поверхности. С отсечением стена хода пропала бы, то есть выглядела бы
+// ровно как дырка в мире — как то, что площадка и ищет глазами. Освещение поэтому двустороннее:
+// нормаль во фрагменте разворачивается к наблюдателю.
+{
+  name = terrain_material
+  shaders = { vertex = "terrain.vert.glsl", fragment = "terrain.frag.glsl" }
+  depth = { test = true, write = true, compare = greater }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+// У вехи отсечение тоже выключено: она стоит и в пещере, где видно её изнутри, и на склоне, где
+// наклонена к наблюдателю. Освещение двустороннее по той же причине, что у поверхности.
+{
+  name = prop_material
+  shaders = { vertex = "prop.vert.glsl", fragment = "prop.frag.glsl" }
+  depth = { test = true, write = true, compare = greater }
+  raster = { cull = none, front_face = ccw, polygon = fill, line_width = 1.0 }
+}
+{
+  name = ui_material
+  shaders = { vertex = "ui.vert.glsl", fragment = "ui.frag.glsl" }
+  depth = { test = false, write = false, compare = always }
+  raster = { cull = none, front_face = cw, polygon = fill, line_width = 1.0 }
+}

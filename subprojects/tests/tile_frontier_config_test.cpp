@@ -37,6 +37,8 @@ TEST_CASE("tile_frontier project config selects a turn-driven calendar [config][
   CHECK(cfg.time.game_seconds == 60);
   CHECK(cfg.time.calendar.source == "turn");
   CHECK(cfg.time.calendar.days_in_month == std::vector<uint32_t>{3, 2});
+  CHECK(cfg.simulation.tick_rate == 60);
+  CHECK(cfg.simulation.max_steps_per_frame == 8);
 
   const auto calendar = make_calendar_clock(cfg.time);
   CHECK(calendar.source() == utils::calendar_source::turn);

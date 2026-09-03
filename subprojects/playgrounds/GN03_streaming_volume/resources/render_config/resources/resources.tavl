@@ -1,0 +1,17 @@
+{ name = swapchain_image, format = swapchain4, role = present, size = viewport, swap = swapchain }
+{ name = scene_color, format = sf4, role = hdr_color, size = viewport, swap = per_frame }
+{ name = scene_depth, format = d32, role = depth, size = viewport, swap = per_frame }
+{ name = camera_buffer, format = c1, role = upload, size = camera_bytes, swap = per_frame }
+// Арена вершин — ОДНА копия, а не по копии на кадр. Копия на кадр означала бы, что каждый новый
+// чанк везётся столько раз, сколько кадров в полёте, то есть тридцать два мегабайта видеопамяти за
+// каждый экземпляр. Одна копия безопасна потому, что арена НЕ ПЕРЕЗАПИСЫВАЕТ живые байты: отрезок
+// выгруженного чанка ждёт столько кадров, сколько их бывает в полёте, и только потом попадает в
+// оборот. Видимая цена — выгруженный чанк живёт на экране лишний кадр или два.
+{ name = surface_vertices, format = c1, role = upload, size = surface_vertex_bytes, swap = static_surface, type = singlebuffer }
+// Смещения чанков относительно чанка камеры. Идут ПО КАДРАМ, в отличие от арены: они меняются
+// каждый раз, когда камера переходит в другой чанк, и стоят при этом килобайты.
+{ name = chunk_offsets, format = c1, role = upload, size = chunk_offset_bytes, swap = per_frame }
+{ name = prop_instances, format = c1, role = upload, size = prop_instance_bytes, swap = per_frame }
+{ name = ui_vertices, format = c1, role = upload, size = ui_vertices_bytes, swap = per_frame }
+{ name = ui_indices, format = c1, role = upload, size = ui_indices_bytes, swap = per_frame }
+{ name = ui_commands, format = c1, role = upload, size = ui_commands_bytes, swap = per_frame }

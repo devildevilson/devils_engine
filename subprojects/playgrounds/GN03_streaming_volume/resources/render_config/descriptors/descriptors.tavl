@@ -1,0 +1,20 @@
+{
+  name = terrain_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" },
+    { resource = surface_vertices, usage = storage_read, stage = vertex },
+    { resource = chunk_offsets, usage = storage_read, stage = vertex }
+  ]
+}
+// Небу нужна только камера, зато во фрагменте: направление луча считается на пиксель.
+{ name = sky_data, layout = [ { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" } ] }
+// Сущностям нужна камера в обоих шейдерах (наклон в вершинном, туман во фрагментном) и свой буфер.
+{
+  name = prop_data
+  layout = [
+    { resource = camera_buffer, usage = uniform, stage = "vertex | fragment" },
+    { resource = prop_instances, usage = storage_read, stage = vertex }
+  ]
+}
+{ name = camera_data, layout = [ { resource = camera_buffer, usage = uniform, stage = vertex } ] }
+{ name = ui_textures, texture_count = 16, sampler_pool = [ ui_linear ], texture_stage = fragment }

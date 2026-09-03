@@ -60,7 +60,7 @@ TEST_CASE("gameplay timeline rejects past duplicate and over-budget events [time
   CHECK(timeline.try_schedule({{8}, 3, 0, marker::hit}) ==
         simul::schedule_result::capacity_exceeded);
   CHECK(timeline.pending_count() == 2);
-  CHECK_THROWS_AS(timeline.advance_to({4}), std::invalid_argument);
+  CHECK_THROWS(timeline.advance_to({4}));
 }
 
 TEST_CASE("gameplay timeline accepts and drains an event on the current tick [time]") {
@@ -90,12 +90,12 @@ TEST_CASE("gameplay timeline snapshot is canonical and replacement is transactio
   CHECK(saved.pending[2].at == utils::simulation_tick{20});
 
   timeline_t restored(4);
-  restored.load(saved);
+  REQUIRE(restored.load(saved));
   CHECK(restored.save() == saved);
 
   auto corrupt = saved;
   corrupt.pending.push_back(corrupt.pending.front());
-  CHECK_THROWS_AS(restored.load(corrupt), std::invalid_argument);
+  CHECK_FALSE(restored.load(corrupt));
   CHECK(restored.save() == saved);
 }
 

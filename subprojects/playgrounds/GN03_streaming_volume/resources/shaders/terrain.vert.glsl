@@ -1,0 +1,54 @@
+#version 450
+
+// Вершина приходит НЕ через вершинный буфер, а из storage-буфера по gl_VertexIndex: геометрия
+// процедурная, треугольники уже развёрнуты по три вершины, а общих вершин у marching cubes нет —
+// нормаль берётся из градиента поля, а не усредняется по соседним треугольникам.
+//
+// ВСЁ ЗАДАНО ОТНОСИТЕЛЬНО ЧАНКА КАМЕРЫ, и это главное решение этого шейдера.
+//
+// Вершина — три слова, двенадцать байт:
+//   позиция    три uint16 — фиксированная точка ВНУТРИ СВОЕГО ЧАНКА (0 = начало, 65535 = дальняя
+//              граница). Шаг решётки полмиллиметра на чанке в 32 метра, то есть точнее, чем float32
+//              на любом удалении от начала мира;
+//   слот чанка uint16 — строка в таблице смещений, а не ключ: ключ это три 64-битных числа, больше
+//              самой вершины;
+//   нормаль    три int8 — она единичная, и шаг 1/127 это 0.45 градуса.
+//
+// Мировое место вершины никому здесь не нужно: нужно её место относительно чанка камеры, а его даёт
+// таблица смещений. Поэтому уход камеры из чанка стоит обновления таблицы в килобайты, а не
+// переписывания арены в десятки мегабайт, и точность не зависит от того, как далеко улетел
+// наблюдатель — большие мировые координаты в шейдер не попадают вовсе.
+//
+// ВЫРОЖДЕННАЯ ВЕРШИНА — это дырка в арене: выгруженный чанк оставляет отрезок из нулей, то есть три
+// совпавшие вершины, и растеризатор отбрасывает такой треугольник по нулевой площади. Поэтому арену
+// можно рисовать одним вызовом на [0, high_water), не сдвигая при каждой выгрузке десятки мегабайт.
+
+#include "camera_block.glsl"
+
+layout(set = 0, binding = 1, std430) readonly buffer SurfaceVertices { uint words[]; } surface;
+layout(set = 0, binding = 2, std430) readonly buffer ChunkOffsets { vec4 offsets[]; } chunks;
+
+layout(location = 0) out vec3 out_normal;
+layout(location = 1) out vec3 out_position;
+
+void main() {
+  const uint base = uint(gl_VertexIndex) * 3u;
+  const uint packed_xy = surface.words[base];
+  const uint packed_z_slot = surface.words[base + 1u];
+  const int packed_normal = int(surface.words[base + 2u]);
+
+  // Шаг фиксированной точки выводится из размера чанка: та же формула, что у кодирования на стороне
+  // хоста (`encode_local_position`), и эти двое обязаны договориться об одном и том же.
+  const float step = camera.params.x / 65535.0;
+  const vec3 local = vec3(float(packed_xy & 0xffffu), float(packed_xy >> 16u),
+                          float(packed_z_slot & 0xffffu)) * step;
+  const uint slot = packed_z_slot >> 16u;
+
+  // bitfieldExtract со ЗНАКОВЫМ аргументом расширяет знак сам. Ручная распаковка через маски дала бы
+  // тот же результат тремя лишними строками, в каждой из которых можно забыть про знак.
+  out_normal = vec3(float(bitfieldExtract(packed_normal, 0, 8)), float(bitfieldExtract(packed_normal, 8, 8)),
+                    float(bitfieldExtract(packed_normal, 16, 8))) / 127.0;
+
+  out_position = chunks.offsets[slot].xyz + local;
+  gl_Position = camera.view_projection * vec4(out_position, 1.0);
+}

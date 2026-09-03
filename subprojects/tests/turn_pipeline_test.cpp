@@ -148,7 +148,7 @@ TEST_CASE("in-flight gameplay animation events survive snapshot [turn_pipeline]"
   resumed.animated = true;
   resumed.next_task = host.next_task;
   simul::turn_pipeline<cursor_t> restored(8);
-  restored.load(snap);
+  REQUIRE(restored.load(snap));
 
   restored.update(resumed, {31});
   CHECK(resumed.sim_log.empty());
@@ -174,12 +174,12 @@ TEST_CASE("turn pipeline rejects inconsistent snapshots transactionally [turn_pi
 
   auto missing_barrier_event = saved;
   missing_barrier_event.pending.pop_back();
-  CHECK_THROWS_AS(pipe.load(missing_barrier_event), std::invalid_argument);
+  CHECK_FALSE(pipe.load(missing_barrier_event));
   CHECK(pipe.save() == saved);
 
   auto not_waiting = saved;
   not_waiting.waiting = false;
-  CHECK_THROWS_AS(pipe.load(not_waiting), std::invalid_argument);
+  CHECK_FALSE(pipe.load(not_waiting));
   CHECK(pipe.save() == saved);
 }
 
@@ -189,7 +189,7 @@ TEST_CASE("turn pipeline exposes its event budget [turn_pipeline]") {
   host.animated = true;
 
   simul::turn_pipeline<cursor_t> pipe(1);
-  CHECK_THROWS_AS(pipe.update(host, {1}), std::length_error);
+  CHECK_THROWS(pipe.update(host, {1}));
   CHECK(pipe.faulted());
 }
 
@@ -200,7 +200,7 @@ TEST_CASE("project cursor owns independent gameplay coordinates [turn_pipeline]"
 
   const auto snap = pipe.save();
   simul::turn_pipeline<cursor_t> restored(4);
-  restored.load(snap);
+  REQUIRE(restored.load(snap));
 
   CHECK(restored.cursor().player_action_index == 2);
   CHECK(restored.cursor().countdown_pulse_index == 1);

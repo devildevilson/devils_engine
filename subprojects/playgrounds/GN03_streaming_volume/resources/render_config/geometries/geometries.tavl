@@ -1,0 +1,8 @@
+// У неба и у поверхности нет вершинных буферов: вершины строятся из gl_VertexIndex, а поверхность
+// читает их из storage-буфера арены.
+{ name = sky_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
+{ name = terrain_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
+// У вехи тоже нет вершинного буфера: двенадцать вершин четырёхгранника строятся из gl_VertexIndex, а
+// экземпляр читается из storage-буфера по gl_InstanceIndex.
+{ name = prop_geometry, vertex_layout = "", index_type = none, topology = triangle_list, restart = false }
+{ name = ui_geometry, vertex_layout = v2v2c4, index_type = u16, topology = triangle_list, restart = false }

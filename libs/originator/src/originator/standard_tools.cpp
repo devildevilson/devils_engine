@@ -208,12 +208,24 @@ void tool_remap(const tool_call& call, const size_t begin, const size_t end) {
   const double lower = call.params->number("min", -std::numeric_limits<double>::infinity());
   const double upper = call.params->number("max", std::numeric_limits<double>::infinity());
   const bool absolute = call.params->integer("absolute", 0) != 0;
+  // КОМПОНЕНТА ИСТОЧНИКА. Существует потому, что правило на devils_script компоненту вектора достать
+  // не может (у GN02 из-за этого широта приезжала отдельным полем), а объёму она нужна на каждом
+  // шаге: вертикальный градиент плотности — это высота, то есть вторая компонента поля позиций.
+  // Инструмент, который умеет читать только нулевую компоненту, оставлял бы единственным выходом
+  // копию поля позиций тремя скалярами.
+  const auto component = uint32_t(std::max<int64_t>(call.params->integer("component", 0), 0));
 
   const auto source = in.read();
   auto target = out.write();
 
+  if (component >= source.type().components) {
+    utils::error{}("originator step '{}': remap was asked for component {} of '{}.{}', which has {}",
+                   call.step_name, component, in.buffer_name(), in.field_name(), source.type().components);
+  }
+
   for (size_t i = begin; i < end; ++i) {
-    const double sample = absolute ? std::abs(source.get(i)) : source.get(i);
+    const double raw = source.get(i, component);
+    const double sample = absolute ? std::abs(raw) : raw;
     const double value = sample * scale + offset;
     target.set(i, std::clamp(value, lower, upper));
   }

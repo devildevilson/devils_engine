@@ -167,6 +167,66 @@ TEST_CASE("originator noise_at samples a position field") {
   }
 }
 
+TEST_CASE("originator noise feature size is a world length, whatever the tree's own scale is") {
+  const auto registry = make_registry();
+  const auto* noise = registry.find("noise_at");
+  REQUIRE(noise != nullptr);
+
+  // Линия по всем трём осям: у решёточного шума линия вдоль одной оси проходит через узлы решётки и
+  // даёт не тот масштаб. Шаг подобран так, чтобы на запрошенной форме приходилось много выборок.
+  constexpr size_t count = 20000;
+  const std::vector<field_pair> position_fields = {{"position", "v3"}};
+  auto points = originator::buffer(
+    "points", originator::make_buffer_layout(originator::storage_kind::soa, position_fields, "points"), count);
+  const std::vector<field_pair> value_fields = {{"value", "v1"}};
+  auto values = originator::buffer(
+    "values", originator::make_buffer_layout(originator::storage_kind::soa, value_fields, "values"), count);
+
+  const double step_x = 0.61;
+  const double step_y = 0.27;
+  const double step_z = 0.44;
+  const double step = std::sqrt(step_x * step_x + step_y * step_y + step_z * step_z);
+  auto position = points.field(0);
+  for (size_t i = 0; i < count; ++i) {
+    position.set(i, 7000.0 + double(i) * step_x, 0);
+    position.set(i, -3000.0 + double(i) * step_y, 1);
+    position.set(i, 1500.0 + double(i) * step_z, 2);
+  }
+
+  const std::vector<originator::field_ref> inputs{readable(points, "position")};
+  const std::vector<originator::field_ref> outputs{writable(values, "value")};
+
+  // Измеренный период дерева здесь не нужен вовсе: смысл параметра в том, что вызывающему не надо
+  // ничего знать про дерево. Проверяется именно это — запрошенная длина совпадает с наблюдаемой.
+  for (const double feature : {40.0, 160.0, 640.0}) {
+    originator::parameters params;
+    params.set_string("tree", std::string(node_tree));
+    params.set_number("feature", feature);
+    originator::dispatch(*noise, inputs, outputs, params, 11, 0, count, "feature", nullptr);
+
+    const auto sampled = values.field(0);
+    size_t crossings = 0;
+    for (size_t i = 1; i < count; ++i) {
+      crossings += (sampled.get(i) >= 0.0) != (sampled.get(i - 1) >= 0.0) ? 1 : 0;
+    }
+    REQUIRE(crossings > 8);
+    const double observed = 2.0 * step * double(count - 1) / double(crossings);
+    // Допуск широкий намеренно: период — СТАТИСТИКА дерева, а не его точное свойство, и на другой
+    // линии он отличается. Важно, что наблюдаемая длина того же ПОРЯДКА, что запрошенная, — именно
+    // это и было неверно, когда 190 метров означали 17 километров (расхождение в 90 раз).
+    CHECK(observed > feature * 0.5);
+    CHECK(observed < feature * 2.0);
+  }
+
+  // Оба параметра сразу — громкая ошибка: одно из них обязано быть неверным.
+  originator::parameters both;
+  both.set_string("tree", std::string(node_tree));
+  both.set_number("feature", 100.0);
+  both.set_number("frequency", 0.01);
+  CHECK_THROWS_AS(originator::dispatch(*noise, inputs, outputs, both, 11, 0, count, "feature", nullptr),
+                  std::runtime_error);
+}
+
 TEST_CASE("originator voronoi_label matches an exhaustive nearest-site search") {
   const auto registry = make_registry();
   const auto* label = registry.find("voronoi_label");
