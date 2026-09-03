@@ -32,6 +32,25 @@ target_link_libraries(devils_originator
 
 add_library(devils_engine::originator ALIAS devils_originator)
 
+# Слой demiurg: генератор как РЕСУРС. Отдельная цель по той же причине, что lua и devils_script —
+# ядру генератора незачем знать, откуда приехал текст. Потребителю, который читает документы с диска
+# (стенд, тест), эта цель не нужна вовсе.
+add_library(devils_originator_config
+  src/originator/generator_resource.cpp
+  include/devils_engine/originator/generator_resource.h
+)
+
+target_include_directories(devils_originator_config
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
+)
+
+target_link_libraries(devils_originator_config
+  PUBLIC devils_engine::originator devils_engine::demiurg
+  PRIVATE devils_engine::options devils_engine::utils
+)
+
+add_library(devils_engine::originator_config ALIAS devils_originator_config)
+
 # Слой devils_script — тоже отдельная цель по той же причине, что и lua: ядро генератора не обязано
 # тянуть за собой ни один скриптовый backend.
 add_library(devils_originator_script

@@ -34,6 +34,16 @@ struct step_mirror {
   std::map<std::string, std::string> programs;
 };
 
+// Точка входа: та же строка шагов, но внутри одного документа. Отдельное зеркало, а не расширенное
+// зеркало шага: поля точки входа и поля шага не должны перепутываться, иначе `values` внутри блока
+// шага молча читалось бы как ссылка на документ.
+struct entry_mirror {
+  std::string name;
+  std::string values;
+  std::string buffers;
+  std::vector<step_mirror> steps;
+};
+
 struct values_mirror {
   std::map<std::string, double> numbers;
   std::map<std::string, std::string> strings;
@@ -41,6 +51,55 @@ struct values_mirror {
   // потому что границы значения и его шаг — одно утверждение, и разъезжаться им незачем.
   std::map<std::string, std::vector<double>> ranges;
 };
+
+// Форма документа ДО разбора: список блоков (`{ ... } { ... }`) или одна структура (`имя = значение`).
+//
+// Проверка существует потому, что перепутанные формы НЕ дают ошибки разбора: строка верхнего уровня
+// превращает весь документ в структуру, и все следующие блоки становятся её лишними значениями. Для
+// зеркала шага это кончалось не диагностикой, а безостановочным чтением одного и того же места.
+//
+// Маркеры (строки, комментарии) пропускаются так же, как их пропускает deserialize_next, поэтому
+// после классификации разбор начинается ровно с того же события.
+bool document_is_list(tavl::parser& p) {
+  for (;;) {
+    const auto ev = p.peek();
+    if (ev.type == tavl::event_type::eof || ev.type == tavl::event_type::not_enought_data) {
+      return true; // пустой документ: список из нуля блоков
+    }
+    if (ev.type == tavl::event_type::row_begin || ev.type == tavl::event_type::row_end ||
+        ev.type == tavl::event_type::empty_row || ev.type == tavl::event_type::got_comment) {
+      p.poll_event();
+      continue;
+    }
+    return ev.type == tavl::event_type::object_begin || ev.type == tavl::event_type::array_begin ||
+           ev.type == tavl::event_type::tuple_begin;
+  }
+}
+
+step_description make_step(step_mirror& mirror, const std::string_view& label, const size_t index) {
+  if (mirror.name.empty()) {
+    utils::error{}("originator: step {} in '{}' has no name", index, label);
+  }
+  if (mirror.body.empty()) {
+    utils::error{}("originator step '{}': body must name a script resource", mirror.name);
+  }
+
+  step_description description;
+  description.name = std::move(mirror.name);
+  description.body = std::move(mirror.body);
+  description.reads = std::move(mirror.reads);
+  description.writes = std::move(mirror.writes);
+  for (const auto& [key, value] : mirror.params) {
+    description.params.set_number(key, value);
+  }
+  for (auto& [key, value] : mirror.strings) {
+    description.params.set_string(key, std::move(value));
+  }
+  for (auto& [key, value] : mirror.programs) {
+    description.programs.emplace_back(key, std::move(value));
+  }
+  return description;
+}
 
 void report_diagnostics(const tavl::ct_context& ctx, const std::string_view& label) {
   for (const auto& d : ctx.diagnostics) {
@@ -113,39 +172,59 @@ std::vector<step_description> parse_steps(const std::string_view& text, const st
   p.flush(std::string(text));
   p.finish();
 
+  if (!document_is_list(p)) {
+    utils::error{}("originator: '{}' is a list of step blocks, but starts with a row of its own; "
+                   "a generator that names its own values and buffers is an ENTRY document (parse_entry), "
+                   "where the steps live inside 'steps = [ ... ]'",
+                   label);
+  }
+
   tavl::ct_context ctx;
   std::vector<step_description> result;
 
   step_mirror mirror{};
   while (tavl::deserialize_next(p, ctx, mirror)) {
-    if (mirror.name.empty()) {
-      utils::error{}("originator: step {} in '{}' has no name", result.size(), label);
-    }
-    if (mirror.body.empty()) {
-      utils::error{}("originator step '{}': body must name a script resource", mirror.name);
-    }
-
-    step_description description;
-    description.name = std::move(mirror.name);
-    description.body = std::move(mirror.body);
-    description.reads = std::move(mirror.reads);
-    description.writes = std::move(mirror.writes);
-    for (const auto& [key, value] : mirror.params) {
-      description.params.set_number(key, value);
-    }
-    for (auto& [key, value] : mirror.strings) {
-      description.params.set_string(key, std::move(value));
-    }
-    for (auto& [key, value] : mirror.programs) {
-      description.programs.emplace_back(key, std::move(value));
-    }
-
-    result.push_back(std::move(description));
+    result.push_back(make_step(mirror, label, result.size()));
     mirror = step_mirror{};
   }
 
   report_diagnostics(ctx, label);
   return result;
+}
+
+pipeline_entry parse_entry(const std::string_view& text, const std::string_view& label) {
+  tavl::parser p;
+  p.add_default_operator();
+  p.flush(std::string(text));
+  p.finish();
+
+  if (document_is_list(p)) {
+    utils::error{}("originator: '{}' is a bare list of blocks, not an entry document; "
+                   "an entry names its parts ('values', 'buffers') and carries its steps in 'steps = [ ... ]'",
+                   label);
+  }
+
+  tavl::ct_context ctx;
+  entry_mirror mirror{};
+  tavl::deserialize_next(p, ctx, mirror);
+  report_diagnostics(ctx, label);
+
+  if (mirror.buffers.empty()) {
+    utils::error{}("originator entry '{}': 'buffers' must name the document of buffer declarations", label);
+  }
+  if (mirror.steps.empty()) {
+    utils::error{}("originator entry '{}': 'steps' is empty, so the generator does nothing", label);
+  }
+
+  pipeline_entry entry;
+  entry.name = std::move(mirror.name);
+  entry.values = std::move(mirror.values);
+  entry.buffers = std::move(mirror.buffers);
+  entry.steps.reserve(mirror.steps.size());
+  for (size_t i = 0; i < mirror.steps.size(); ++i) {
+    entry.steps.push_back(make_step(mirror.steps[i], label, i));
+  }
+  return entry;
 }
 
 parameters parse_values(const std::string_view& text, const std::string_view& label) {

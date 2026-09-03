@@ -1,0 +1,61 @@
+// Генератор GN01 — ТОЧКА ВХОДА. Один файл называет свои части: общие значения, буферы и шаги.
+// Пути — demiurg-id: от корня модуля, без расширения (расширение оставлено для глаза), а путь,
+// начатый с точки, считается от папки этой точки входа. Отделителей `//---` здесь быть не должно —
+// они разложили бы файл на суб-ресурсы, и id `generator/contract` перестал бы существовать.
+//
+// reads/writes — это и есть биндинги, из которых выводится всё остальное: порядок, доступность
+// буфера после шага, изменяемость вью в теле шага и отказ до исполнения при чтении незаписанного.
+// Буфер в writes доступен своему шагу и на чтение, поэтому в reads его повторять нельзя.
+//
+// Числа и строки, общие для нескольких шагов, лежат в документе значений и приходят каждому шагу
+// среди его параметров. Собственный params нужен только там, где значение принадлежит одному шагу.
+
+name = gn01
+
+values  = ./values.tavl
+buffers = ./buffers.tavl
+
+steps = [
+  {
+    name = terrain
+    body = ./scripts/terrain.lua
+    writes = [ cells ]
+  }
+
+  {
+    name = climate
+    body = ./scripts/climate.lua
+    writes = [ cells ]
+  }
+
+  // Семантический проход тем же правилом, но на devils_script. Пороги приходят в скрипт как
+  // ctx:arg — правило живёт в скрипте, числа остаются в конфиге, и оба уровня читают одни и те же.
+  {
+    name = semantics
+    body = ./scripts/semantics.lua
+    writes = [ cells ]
+    programs = { biome_rule = ./scripts/biome_rule.ds }
+  }
+
+  // Области. Здесь работают все три апертуры, которых не было в первом срезе:
+  //   gather   — разметка клеток ближайшим сайтом;
+  //   scatter  — соседство областей из Делоне, контуры областей, раскладка клеток по областям;
+  //   scatter  — суммирование высот по областям.
+  {
+    name = regions
+    body = ./scripts/regions.lua
+    writes = [
+      sites, cells,
+      region_offsets, region_arcs,
+      polygon_offsets, polygon_corners, polygon_vertices, polygon_counts,
+      region_cell_offsets, region_cell_order, region_stats
+    ]
+  }
+
+  {
+    name = stats
+    body = ./scripts/stats.lua
+    reads = [ cells ]
+    writes = [ state ]
+  }
+]

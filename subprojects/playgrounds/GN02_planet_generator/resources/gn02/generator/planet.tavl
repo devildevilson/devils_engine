@@ -1,0 +1,146 @@
+// Генератор планеты GN02 — ТОЧКА ВХОДА.
+//
+// Файл один, и он называет свои части: документ общих значений, документ буферов и шаги. Хост знает
+// про генератор ровно одно имя (`generator/planet`), а как этот генератор внутри разложен по файлам —
+// дело самого генератора; мод, который принесёт свой, разложит его иначе.
+//
+// Пути — demiurg-id: от корня модуля и без расширения (расширение здесь оставлено для глаза, разбор
+// его снимает). Путь, начатый с точки, считается от папки этой точки входа.
+//
+// В этом файле НЕТ отделителей `//---`: они разложили бы его на суб-ресурсы, и id `generator/planet`
+// перестал бы существовать.
+//
+// Порядок шагов — это порядок ПРИЧИН, а не удобства: суша не может быть распределена раньше, чем
+// посчитаны плиты, климат — раньше суши, а люди — раньше климата. Поэтому каждый следующий шаг
+// читает то, что записал предыдущий, и связь видна в reads/writes, а не в комментарии.
+//
+// Буфер в writes доступен своему шагу и на чтение, поэтому повторять его в reads нельзя.
+
+name = planet
+
+values  = ./values.tavl
+buffers = ./buffers.tavl
+
+steps = [
+
+  // 1. Топология замкнутой поверхности: клетки и соседство. Ни одного слова про мир — только форма.
+  {
+    name = topology
+    body = ./scripts/S01_topology.lua
+    writes = [ cells, cell_offsets, cell_arcs ]
+  }
+
+  // 2. Тектоника: плиты, их движение, стыки и рельеф.
+  {
+    name = tectonics
+    body = ./scripts/S02_tectonics.lua
+    reads = [ cell_offsets, cell_arcs ]
+    writes = [ cells, plates, plate_offsets, plate_order, hotspots, state ]
+    programs = {
+      convergent = ./scripts/S02_convergent.ds
+      divergent = ./scripts/S02_divergent.ds
+      relief_convergent = ./scripts/S02_relief_convergent.ds
+      relief_divergent = ./scripts/S02_relief_divergent.ds
+    }
+  }
+
+  // 3. Поверхность: сглаживание, уровень моря под заданную долю суши, расстояние до океана.
+  {
+    name = surface
+    body = ./scripts/S03_surface.lua
+    reads = [ cell_offsets, cell_arcs ]
+    writes = [ cells, state ]
+    programs = {
+      land = ./scripts/S03_land.ds
+      coast = ./scripts/S03_coast.ds
+      ocean = ./scripts/S03_ocean.ds
+    }
+  }
+
+  // 4. Области рельефа: что это за место и усиление этого места. Идёт ПОСЛЕ поверхности, потому что
+  // опознание читает глубину от уровня моря, и ПЕРЕД климатом, потому что усиление меняет высоты, а
+  // климат считается по высотам.
+  {
+    name = landforms
+    body = ./scripts/S04_landforms.lua
+    reads = [ cell_offsets, cell_arcs ]
+    writes = [ cells, landform_types, landform_offsets, landform_order, state ]
+    programs = {
+      landform_water = ./scripts/S04_landform_water.ds
+      landform_land = ./scripts/S04_landform_land.ds
+      land = ./scripts/S03_land.ds
+      coast = ./scripts/S03_coast.ds
+      ocean = ./scripts/S03_ocean.ds
+    }
+  }
+
+  // 5. Климат: ветры от вращения, температура и перенос влаги. Осадки не считаются «на месте» — влага
+  // едет по ветру, поэтому шаг состоит из цикла переносов, а не из одной формулы.
+  {
+    name = climate
+    body = ./scripts/S05_climate.lua
+    reads = [ cell_offsets, cell_arcs ]
+    writes = [ cells ]
+  }
+
+  // 6. Сезоны: лето и зима как тёплый и холодный из двух наклонений, отсюда же градиент и зоны.
+  {
+    name = seasons
+    body = ./scripts/S06_seasons.lua
+    writes = [ cells, state ]
+    programs = {
+      summer = ./scripts/S06_summer.ds
+      winter = ./scripts/S06_winter.ds
+      seasonality = ./scripts/S06_seasonality.ds
+      climate_zone = ./scripts/S06_climate_zone.ds
+      alpine = ./scripts/S06_alpine.ds
+    }
+  }
+
+  // 7. Люди: пригодность земли, расселение, культуры и журнал событий.
+  {
+    name = peoples
+    body = ./scripts/S07_peoples.lua
+    reads = [ cell_offsets, cell_arcs ]
+    writes = [ cells, cultures, culture_offsets, culture_order, history, state ]
+    programs = {
+      habitability = ./scripts/S07_habitability.ds
+      population_step = ./scripts/S07_population_step.ds
+      culture_mask = ./scripts/S07_culture_mask.ds
+    }
+  }
+
+  // 8. Области: провинции по суше и морские зоны по воде. Идут ПОСЛЕ людей, потому что сводка области
+  // включает население и культуру: область — это то, чем владеют, а владеют людьми, а не рельефом.
+  {
+    name = regions
+    body = ./scripts/S08_regions.lua
+    reads = [ cell_offsets, cell_arcs ]
+    writes = [
+      cells, provinces, province_offsets, province_order,
+      sea_zones, sea_offsets, sea_order, seed_offsets, seed_order, state
+    ]
+    programs = {
+      unassigned_land = ./scripts/S08_unassigned_land.ds
+      unassigned_water = ./scripts/S08_unassigned_water.ds
+      island_seeded = ./scripts/S08_island_seeded.ds
+    }
+  }
+
+  // 9. География: иерархия названных мест. Идёт ПОСЛЕ областей, потому что вся иерархия набирается из
+  // провинций и морских зон — она их аггрегирует, а не нарезает заново. Отсюда же главное свойство:
+  // все границы уровней совпадают с границами провинций по построению, потому что уровень это МНОЖЕСТВО
+  // провинций, а не отдельная заливка по клеткам.
+  {
+    name = geography
+    body = ./scripts/S09_geography.lua
+    reads = [ cell_offsets, cell_arcs, province_offsets, province_order, sea_offsets, sea_order ]
+    writes = [
+      cells, provinces, sea_zones, state,
+      province_neighbour_offsets, province_neighbour_arcs,
+      sea_neighbour_offsets, sea_neighbour_arcs,
+      land_masses, continents, historical_regions, oceans,
+      duchies, empires, realms, baronies
+    ]
+  }
+]

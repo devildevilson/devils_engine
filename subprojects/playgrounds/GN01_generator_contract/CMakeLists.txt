@@ -9,6 +9,7 @@ target_compile_definitions(GN01_generator_contract PRIVATE
 
 target_link_libraries(GN01_generator_contract PRIVATE
   devils_engine::originator
+  devils_engine::originator_config
   devils_engine::originator_lua
   devils_engine::originator_primitives
   devils_engine::utils

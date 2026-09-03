@@ -12,6 +12,9 @@
 #include <string_view>
 #include <vector>
 
+#include "devils_engine/demiurg/module_system.h"
+#include "devils_engine/demiurg/resource_system.h"
+#include "devils_engine/originator/generator_resource.h"
 #include "devils_engine/originator/pipeline.h"
 #include "devils_engine/originator/primitives.h"
 #include "devils_engine/originator/script_program.h"
@@ -55,19 +58,29 @@ struct timing {
   }
 };
 
-std::string read_file(const fs::path& path) {
-  std::ifstream stream(path, std::ios::binary);
-  if (!stream) {
-    utils::error{}("GN01: could not open '{}'", path.string());
-  }
-  std::ostringstream buffer;
-  buffer << stream.rdbuf();
-  return buffer.str();
-}
-
 fs::path resource_root() {
   const fs::path shipped = fs::path(GN01_RESOURCE_ROOT);
   return shipped;
+}
+
+// Генератор приезжает через demiurg: хост знает одно имя, `generator/contract`, а что этот генератор
+// разложен на документ значений, документ буферов и папку скриптов — знает сама точка входа.
+struct generator_registry {
+  demiurg::module_system modules;
+  demiurg::resource_system resources;
+  originator::generator_config config;
+
+  generator_registry() : modules(resource_root().generic_string() + "/") {
+    modules.load_modules({demiurg::module_system::list_entry{"gn01/", "", ""}});
+    originator::register_generator_resources(resources);
+    resources.parse_resources(&modules);
+    config = originator::load_generator(resources, "generator/contract");
+  }
+};
+
+const generator_registry& generator() {
+  static const generator_registry registry;
+  return registry;
 }
 
 bool starts_with(const std::string_view& text, const std::string_view& prefix) {
@@ -136,13 +149,7 @@ originator::size_table make_sizes(const options& opts) {
 }
 
 originator::pipeline_description load_description(const options& opts) {
-  const auto root = resource_root();
-
-  originator::pipeline_description description;
-  description.name = "gn01";
-  description.values = originator::parse_values(read_file(root / "values.tavl"), "values.tavl");
-  description.buffers = originator::parse_buffers(read_file(root / "buffers.tavl"), "buffers.tavl");
-  description.steps = originator::parse_steps(read_file(root / "steps.tavl"), "steps.tavl");
+  originator::pipeline_description description = generator().config.description;
 
   for (auto& declaration : description.buffers) {
     if (declaration.name == "cells") {
@@ -173,13 +180,23 @@ void allow_unbounded_scripts(originator::script_host& host) {
 }
 
 void load_bodies(originator::script_host& host, const originator::pipeline_description& description) {
-  const auto root = resource_root();
+  const auto& package = generator().config;
   for (const auto& step : description.steps) {
-    host.load_body(step.name, read_file(root / step.body), step.body);
-    for (const auto& [program_name, path] : step.programs) {
-      host.load_program(program_name, read_file(root / path));
+    // Имя чанка для lua — demiurg-id тела: в сообщении об ошибке скрипта стоит тот же адрес, по
+    // которому этот скрипт лежит в модуле.
+    host.load_body(step.name, package.source(step.body), step.body);
+    for (const auto& [program_name, id] : step.programs) {
+      host.load_program(program_name, package.source(id));
     }
   }
+}
+
+// Тело, которого НЕТ в пайплайне: перф-стенд гоняет одно и то же правило на двух уровнях исполнения,
+// и lua-двойник правила шагом не является, поэтому точка входа его не называет.
+const std::string& classify_lua_body() {
+  static const std::string text =
+    originator::read_generator_source(generator().resources, "generator/scripts/classify_lua");
+  return text;
 }
 
 std::vector<std::byte> snapshot(const originator::buffer& source) {
@@ -455,12 +472,12 @@ int run_verify(const options& opts) {
   {
     originator::script_host host(tools, nullptr);
     load_bodies(host, description);
-    host.load_body("classify_lua", read_file(resource_root() / "scripts/classify_lua.lua"), "scripts/classify_lua.lua");
+    host.load_body("classify_lua", classify_lua_body(), "generator/scripts/classify_lua");
 
     auto extended = description;
     auto lua_step = extended.steps[1];
     lua_step.name = "classify_lua";
-    lua_step.body = "scripts/classify_lua.lua";
+    lua_step.body = "generator/scripts/classify_lua";
     extended.steps.push_back(lua_step);
 
     originator::pipeline p(extended, sizes, opts.seed);
@@ -797,7 +814,7 @@ int run_bench(const options& opts) {
     originator::script_host host(tools, &pool);
     allow_unbounded_scripts(host);
     load_bodies(host, description);
-    host.load_body("classify_lua", read_file(resource_root() / "scripts/classify_lua.lua"), "scripts/classify_lua.lua");
+    host.load_body("classify_lua", classify_lua_body(), "generator/scripts/classify_lua");
 
     originator::pipeline p(description, sizes, opts.seed);
     p.run(host.invoker());

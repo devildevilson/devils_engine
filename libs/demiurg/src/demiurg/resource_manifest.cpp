@@ -70,15 +70,40 @@ std::string parse_name_field(const std::string_view section) {
   return {};
 }
 
+static constexpr std::string_view section_separator = "//---";
+
+// Отделитель документов — это СТРОКА, а не подстрока: `//---`, перед которым на строке нет ничего,
+// кроме пробелов. Поиск подстрокой резал файл по упоминанию отделителя внутри комментария, то есть по
+// тексту ПРО отделитель, и делал это молча.
+size_t find_separator(const std::string_view content, const size_t from) {
+  size_t pos = from;
+  while (pos <= content.size()) {
+    const size_t found = content.find(section_separator, pos);
+    if (found == std::string_view::npos) {
+      return std::string_view::npos;
+    }
+
+    size_t start = found;
+    while (start > 0 && (content[start - 1] == ' ' || content[start - 1] == '\t')) {
+      start -= 1;
+    }
+    if (start == 0 || content[start - 1] == '\n') {
+      return found;
+    }
+    pos = found + section_separator.size();
+  }
+  return std::string_view::npos;
+}
+
 std::vector<tavl_section_view> split_tavl_sections(const std::string_view content) {
-  static constexpr std::string_view separator = "//---";
+  const auto& separator = section_separator;
 
   std::vector<tavl_section_view> sections;
   size_t pos = 0;
   size_t line = 1;
   uint32_t index = 0;
   while (pos <= content.size()) {
-    const size_t sep = content.find(separator, pos);
+    const size_t sep = find_separator(content, pos);
     const size_t end = sep == std::string_view::npos ? content.size() : sep;
     std::string_view raw = content.substr(pos, end - pos);
     size_t raw_offset = pos;
@@ -99,6 +124,12 @@ std::vector<tavl_section_view> split_tavl_sections(const std::string_view conten
     }
     line += count_newlines(content.substr(pos, sep + separator.size() - pos));
     pos = sep + separator.size();
+    // Заголовок отделителя (`//--- имя документа`) принадлежит САМОМУ отделителю, а не следующему
+    // документу. Для tavl вся эта строка — комментарий, и остаток строки, оставленный в секции,
+    // становился её первым значением: документ читался не тем обходом, причём без диагностики.
+    // Перевод строки НЕ съедаем — на нём считается номер первой строки секции.
+    const size_t line_end = content.find('\n', pos);
+    pos = line_end == std::string_view::npos ? content.size() : line_end;
     index += 1;
   }
   return sections;
@@ -110,7 +141,7 @@ bool append_tavl_list_candidates(
   std::vector<resource_candidate>& out,
   const resource_candidate& base,
   const std::string_view content) {
-  if (base.ext != "tavl" || content.find("//---") == std::string_view::npos) {
+  if (base.ext != "tavl" || find_separator(content, 0) == std::string_view::npos) {
     return false;
   }
 

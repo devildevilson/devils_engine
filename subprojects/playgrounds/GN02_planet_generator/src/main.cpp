@@ -19,6 +19,9 @@
 #include <string_view>
 #include <vector>
 
+#include "devils_engine/demiurg/module_system.h"
+#include "devils_engine/demiurg/resource_system.h"
+#include "devils_engine/originator/generator_resource.h"
 #include "devils_engine/originator/pipeline.h"
 #include "devils_engine/originator/primitives.h"
 #include "devils_engine/originator/script_host.h"
@@ -91,18 +94,34 @@ struct options {
   std::vector<std::pair<std::string, double>> overrides;
 };
 
-std::string read_file(const fs::path& path) {
-  std::ifstream stream(path, std::ios::binary);
-  if (!stream) {
-    utils::error{}("GN02: could not open '{}'", path.string());
-  }
-  std::ostringstream buffer;
-  buffer << stream.rdbuf();
-  return buffer.str();
-}
-
 fs::path resource_root() {
   return fs::path(GN02_RESOURCE_ROOT);
+}
+
+// Генератор приезжает через demiurg — тем же путём, каким приехал бы из мода игрока, а не чтением
+// файлов по именам, известным площадке. Хост знает ровно ОДНО имя, `generator/planet`; всё остальное
+// (значения, буферы, тела шагов, программы) называет сама точка входа.
+//
+// Модуль здесь один и лежит папкой, но это ничего не меняет: тот же набор в zip'е и тот же набор,
+// переопределённый модом, дают ту же точку входа с тем же id.
+struct generator_registry {
+  demiurg::module_system modules;
+  demiurg::resource_system resources;
+  originator::generator_config config;
+
+  generator_registry() : modules(resource_root().generic_string() + "/") {
+    modules.load_modules({demiurg::module_system::list_entry{"gn02/", "", ""}});
+    originator::register_generator_resources(resources);
+    resources.parse_resources(&modules);
+    config = originator::load_generator(resources, "generator/planet");
+  }
+};
+
+// Один реестр на процесс: описание перечитывается на каждую перегенерацию (значения меняются из окна
+// и из командной строки), а вот файлы читать заново незачем — они те же.
+const generator_registry& generator() {
+  static const generator_registry registry;
+  return registry;
 }
 
 bool starts_with(const std::string_view& text, const std::string_view& prefix) {
@@ -283,13 +302,7 @@ originator::size_table make_sizes(const options& opts) {
 }
 
 originator::pipeline_description load_description(const options& opts) {
-  const auto root = resource_root();
-
-  originator::pipeline_description description;
-  description.name = "gn02";
-  description.values = originator::parse_values(read_file(root / "values.tavl"), "values.tavl");
-  description.buffers = originator::parse_buffers(read_file(root / "buffers.tavl"), "buffers.tavl");
-  description.steps = originator::parse_steps(read_file(root / "steps.tavl"), "steps.tavl");
+  originator::pipeline_description description = generator().config.description;
 
   // Значения, известные только из командной строки. Всё остальное живёт в конфиге: числа мира не
   // должны быть спрятаны в C++, иначе автор мира не сможет его настроить.
@@ -303,7 +316,7 @@ originator::pipeline_description load_description(const options& opts) {
   // потому что человек, который их написал, знает больше обоих.
   for (const auto& [name, value] : opts.overrides) {
     if (!description.values.has(name)) {
-      utils::error{}("GN02: --set names '{}', but values.tavl has no such value", name);
+      utils::error{}("GN02: --set names '{}', but the generator has no such value", name);
     }
     description.values.set_number(name, value);
   }
@@ -311,14 +324,16 @@ originator::pipeline_description load_description(const options& opts) {
 }
 
 void load_bodies(originator::script_host& host, const originator::pipeline_description& description) {
-  const auto root = resource_root();
+  const auto& package = generator().config;
   for (const auto& step : description.steps) {
     if (step.body.empty()) {
       utils::error{}("GN02: step '{}' has no body", step.name);
     }
-    host.load_body(step.name, read_file(root / step.body), step.body);
-    for (const auto& [name, path] : step.programs) {
-      host.load_program(name, read_file(root / path));
+    // Имя чанка для lua — это demiurg-id тела: в сообщении об ошибке скрипта стоит ровно тот адрес,
+    // по которому этот скрипт лежит в модуле.
+    host.load_body(step.name, package.source(step.body), step.body);
+    for (const auto& [name, id] : step.programs) {
+      host.load_program(name, package.source(id));
     }
   }
 }
@@ -2381,13 +2396,13 @@ int run_view(const options& opts) {
 
   // Настраиваемые значения приходят из ТОГО ЖЕ документа, что и сами значения: границы и шаг объявлены
   // рядом с числом, поэтому список настроек не нужно поддерживать вторым местом в C++.
-  const auto ranges = originator::parse_value_ranges(read_file(resource_root() / "values.tavl"), "values.tavl");
+  const auto& ranges = generator().config.ranges;
   const auto base_description = load_description(opts);
   std::vector<gn02::tunable_value> tunables;
   tunables.reserve(ranges.size());
   for (const auto& range : ranges) {
     if (!base_description.values.has(range.name)) {
-      utils::error{}("GN02: values.tavl declares a range for '{}', but no such value", range.name);
+      utils::error{}("GN02: the values document declares a range for '{}', but no such value", range.name);
     }
     tunables.push_back(gn02::tunable_value{range, range.clamp(base_description.values.number(range.name))});
   }

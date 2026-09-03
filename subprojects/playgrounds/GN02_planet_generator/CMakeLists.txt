@@ -19,6 +19,7 @@ target_compile_definitions(GN02_planet_generator PRIVATE
 
 target_link_libraries(GN02_planet_generator PRIVATE
   devils_engine::originator
+  devils_engine::originator_config
   devils_engine::originator_lua
   devils_engine::originator_primitives
   devils_engine::playground_common
