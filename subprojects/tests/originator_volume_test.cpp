@@ -526,6 +526,64 @@ TEST_CASE("polyline_distance measures the way a corridor needs it") {
                   std::runtime_error);
 }
 
+TEST_CASE("polyline_distance in the chebyshev metric gives an angular corridor") {
+  const auto registry = make_registry();
+  const auto* tool = registry.find("polyline_distance");
+  REQUIRE(tool != nullptr);
+
+  // Один отрезок вдоль оси x: у него ответ в чебышёвской метрике точен, потому что проекция совпадает
+  // в обеих метриках.
+  const std::vector<field_pair> point_fields = {{"position", "v3"}};
+  auto points = originator::buffer(
+    "points", originator::make_buffer_layout(originator::storage_kind::soa, point_fields, "points"), 2);
+  auto point = points.field(0);
+  point.set(0, 0.0, 0);
+  point.set(1, 40.0, 0);
+
+  const std::vector<field_pair> offset_fields = {{"offset", "ui1"}};
+  auto offsets = originator::buffer(
+    "offsets", originator::make_buffer_layout(originator::storage_kind::soa, offset_fields, "offsets"), 2);
+  offsets.field(0).set(0, 0.0);
+  offsets.field(0).set(1, 2.0);
+
+  const std::vector<field_pair> sample_fields = {{"position", "v3"}, {"distance", "v1"}};
+  auto samples = originator::buffer(
+    "probes", originator::make_buffer_layout(originator::storage_kind::soa, sample_fields, "probes"), 2);
+  auto sample_position = samples.field(0);
+  // Точка по диагонали от оси: у круглого сечения она в 4.24 метра, у квадратного — в 3.
+  sample_position.set(0, 20.0, 0);
+  sample_position.set(0, 3.0, 1);
+  sample_position.set(0, 3.0, 2);
+  sample_position.set(1, 20.0, 0);
+  sample_position.set(1, 3.0, 1);
+
+  const std::vector<originator::field_ref> inputs{readable(samples, "position"), readable(points, "position"),
+                                                  readable(offsets, "offset")};
+  const std::vector<originator::field_ref> outputs{writable(samples, "distance")};
+
+  originator::parameters round_params;
+  round_params.set_number("max_distance", 30.0);
+  originator::dispatch(*tool, inputs, outputs, round_params, 1, 0, 2, "round", nullptr);
+  const auto round = samples.field(samples.find_field("distance"));
+  CHECK(round.get(0) == doctest::Approx(std::sqrt(18.0)));
+  CHECK(round.get(1) == doctest::Approx(3.0));
+
+  originator::parameters angular_params;
+  angular_params.set_number("max_distance", 30.0);
+  angular_params.set_string("metric", "chebyshev");
+  originator::dispatch(*tool, inputs, outputs, angular_params, 1, 0, 2, "angular", nullptr);
+  const auto angular = samples.field(samples.find_field("distance"));
+  // ФОРМА СЕЧЕНИЯ, а не мелкая настройка: у чебышёвской метрики поверхность уровня — куб, поэтому
+  // диагональная точка попадает внутрь трубы того же «радиуса», а круглая её не достаёт.
+  CHECK(angular.get(0) == doctest::Approx(3.0));
+  CHECK(angular.get(1) == doctest::Approx(3.0));
+
+  originator::parameters wrong;
+  wrong.set_string("metric", "manhattan");
+  CHECK_THROWS_AS(originator::dispatch(*tool, inputs, outputs, wrong, 1, 0, 2, "angular", nullptr),
+                  std::runtime_error);
+}
+
 TEST_CASE("marching_cubes refuses a grid that disagrees with its buffer") {
   const auto registry = make_registry();
   const auto* tool = registry.find("marching_cubes");

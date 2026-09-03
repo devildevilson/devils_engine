@@ -12,7 +12,7 @@ namespace devils_engine::gn03 {
 namespace {
 
 constexpr uint32_t file_magic = 0x334b5347u; // "GSK3"
-constexpr uint32_t file_version = 1;
+constexpr uint32_t file_version = 2; // 2: у цепочки появился СТИЛЬ
 
 struct file_header {
   uint32_t magic = file_magic;
@@ -23,6 +23,7 @@ struct file_header {
   uint64_t node_count = 0;
   uint64_t point_count = 0;
   uint64_t offset_count = 0;
+  uint64_t style_count = 0;
 };
 
 // Сторона тайла индекса. Больше поля запроса намеренно: тайл меньше поля означал бы, что один чанк
@@ -32,7 +33,8 @@ constexpr double default_tile_size = 256.0;
 } // namespace
 
 void world_skeleton::build(const description& what, std::vector<skeleton_node> nodes,
-                           std::vector<std::array<double, 3>> points, std::vector<uint32_t> offsets) {
+                           std::vector<std::array<double, 3>> points, std::vector<uint32_t> offsets,
+                           std::vector<uint32_t> styles) {
   if (offsets.size() < 2) {
     utils::error{}("GN03 skeleton needs at least two CSR offsets, got {}", offsets.size());
   }
@@ -44,11 +46,16 @@ void world_skeleton::build(const description& what, std::vector<skeleton_node> n
   if (offsets.back() > points.size()) {
     utils::error{}("GN03 skeleton says {} points but the buffer holds {}", offsets.back(), points.size());
   }
+  if (styles.size() + 1 != offsets.size()) {
+    utils::error{}("GN03 skeleton has {} chains by its offsets but {} styles — every chain must declare one",
+                   offsets.size() - 1, styles.size());
+  }
 
   description_ = what;
   nodes_ = std::move(nodes);
   points_ = std::move(points);
   offsets_ = std::move(offsets);
+  styles_ = std::move(styles);
   build_index();
 }
 
@@ -60,7 +67,8 @@ void world_skeleton::build_index() {
     const size_t first = offsets_[chain];
     const size_t last = offsets_[chain + 1];
     for (size_t i = first; i + 1 < last; ++i) {
-      segments_.push_back(segment{points_[i], points_[i + 1], uint32_t(chain), uint32_t(i)});
+      segments_.push_back(segment{points_[i], points_[i + 1], uint32_t(chain), uint32_t(i),
+                                  chain < styles_.size() ? styles_[chain] : 0u});
     }
   }
 
@@ -143,6 +151,7 @@ bool world_skeleton::collect(const std::array<double, 3>& low, const std::array<
 
   out.points.clear();
   out.offsets.clear();
+  out.styles.clear();
   out.chains = 0;
   out.offsets.push_back(0);
 
@@ -165,6 +174,7 @@ bool world_skeleton::collect(const std::array<double, 3>& low, const std::array<
       out.points.push_back(segments_[chosen[k]].to);
     }
     out.offsets.push_back(uint32_t(out.points.size()));
+    out.styles.push_back(head.style);
     out.chains += 1;
     i = j;
   }
@@ -177,6 +187,7 @@ bool world_skeleton::query(const std::array<double, 3>& low, const std::array<do
   if (segments_.empty()) {
     out.points.clear();
     out.offsets.assign(1, 0);
+    out.styles.clear();
     out.chains = 0;
     return true;
   }
@@ -223,9 +234,11 @@ bool world_skeleton::save(const std::string& path) const {
   header.node_count = nodes_.size();
   header.point_count = points_.size();
   header.offset_count = offsets_.size();
+  header.style_count = styles_.size();
 
   std::vector<char> bytes(sizeof(header) + nodes_.size() * sizeof(skeleton_node) +
-                          points_.size() * sizeof(std::array<double, 3>) + offsets_.size() * sizeof(uint32_t));
+                          points_.size() * sizeof(std::array<double, 3>) +
+                          offsets_.size() * sizeof(uint32_t) + styles_.size() * sizeof(uint32_t));
   size_t cursor = 0;
   const auto append = [&bytes, &cursor](const void* data, const size_t size) {
     if (size != 0) {
@@ -237,6 +250,7 @@ bool world_skeleton::save(const std::string& path) const {
   append(nodes_.data(), nodes_.size() * sizeof(skeleton_node));
   append(points_.data(), points_.size() * sizeof(std::array<double, 3>));
   append(offsets_.data(), offsets_.size() * sizeof(uint32_t));
+  append(styles_.data(), styles_.size() * sizeof(uint32_t));
 
   return file_io::write(std::span<const char>(bytes.data(), bytes.size()), path, file_io::type::binary);
 }
@@ -262,7 +276,8 @@ bool world_skeleton::load(const std::string& path) {
 
   const size_t expected = sizeof(file_header) + size_t(header.node_count) * sizeof(skeleton_node) +
                           size_t(header.point_count) * sizeof(std::array<double, 3>) +
-                          size_t(header.offset_count) * sizeof(uint32_t);
+                          size_t(header.offset_count) * sizeof(uint32_t) +
+                          size_t(header.style_count) * sizeof(uint32_t);
   if (bytes.size() != expected) {
     utils::error{}("GN03 skeleton '{}' claims {} nodes, {} points and {} offsets, which needs {} bytes, but the "
                    "file is {}",
@@ -276,6 +291,7 @@ bool world_skeleton::load(const std::string& path) {
   nodes_.resize(size_t(header.node_count));
   points_.resize(size_t(header.point_count));
   offsets_.resize(size_t(header.offset_count));
+  styles_.resize(size_t(header.style_count));
 
   size_t cursor = sizeof(file_header);
   const auto take = [&bytes, &cursor](void* data, const size_t size) {
@@ -287,6 +303,7 @@ bool world_skeleton::load(const std::string& path) {
   take(nodes_.data(), nodes_.size() * sizeof(skeleton_node));
   take(points_.data(), points_.size() * sizeof(std::array<double, 3>));
   take(offsets_.data(), offsets_.size() * sizeof(uint32_t));
+  take(styles_.data(), styles_.size() * sizeof(uint32_t));
 
   build_index();
   return true;

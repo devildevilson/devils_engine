@@ -29,6 +29,6 @@ steps = [
     name = route
     body = ./scripts/W02_route.lua
     reads = [ nodes ]
-    writes = [ route_points, route_offsets, skeleton_state ]
+    writes = [ route_points, route_offsets, route_styles, skeleton_state ]
   }
 ]

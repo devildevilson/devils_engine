@@ -30,6 +30,11 @@ layout(set = 0, binding = 2, std430) readonly buffer ChunkOffsets { vec4 offsets
 
 layout(location = 0) out vec3 out_normal;
 layout(location = 1) out vec3 out_position;
+// ОТТЕНОК БИОМА: четвёртый байт того же слова, где лежит нормаль. Он приходит от ГЕНЕРАТОРА — это
+// смешанный по весам биомов оттенок, снятый с решётки отсчётов, — а не считается здесь по позиции.
+// Считать его в шейдере значило бы завести ВТОРУЮ копию правила биомов, которая однажды разъедется
+// с первой, и на карте появился бы цвет не того биома, который посчитан.
+layout(location = 2) out float out_shade;
 
 void main() {
   const uint base = uint(gl_VertexIndex) * 3u;
@@ -48,6 +53,7 @@ void main() {
   // тот же результат тремя лишними строками, в каждой из которых можно забыть про знак.
   out_normal = vec3(float(bitfieldExtract(packed_normal, 0, 8)), float(bitfieldExtract(packed_normal, 8, 8)),
                     float(bitfieldExtract(packed_normal, 16, 8))) / 127.0;
+  out_shade = float(bitfieldExtract(packed_normal, 24, 8)) / 127.0;
 
   out_position = chunks.offsets[slot].xyz + local;
   gl_Position = camera.view_projection * vec4(out_position, 1.0);

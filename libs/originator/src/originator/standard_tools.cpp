@@ -298,6 +298,36 @@ void tool_blend(const tool_call& call, const size_t begin, const size_t end) {
   }
 }
 
+// Отношение двух полей: scale * a / b + offset, со знаменателем не меньше объявленного.
+//
+// Заведено НОРМИРОВКОЙ: смешивание нескольких правил по весам это сумма произведений, делённая на
+// сумму весов, и без деления она не выражается вовсе. Первый потребитель — биомы, но нормировка
+// нужна любому взвешенному среднему, поэтому инструмент общий, а не «биомный».
+//
+// Минимальный знаменатель — параметр, а не константа, и он ОБЯЗАТЕЛЕН по смыслу: у взвешенного
+// среднего нулевая сумма весов означает «ни одно правило здесь не действует», и это ситуация автора
+// конфига, а не движка. Молча вернуть ноль было бы худшим ответом: ноль плотности это поверхность,
+// то есть в дырке покрытия появилась бы стена.
+void tool_ratio(const tool_call& call, const size_t begin, const size_t end) {
+  const auto first = call.input(0).read();
+  const auto second = call.input(1).read();
+  auto target = call.output(0).write();
+
+  const double scale = call.params->number("scale", 1.0);
+  const double offset = call.params->number("offset", 0.0);
+  const double floor_value = call.params->number("minimum_divisor", 1.0e-9);
+  if (floor_value <= 0.0) {
+    utils::error{}("originator step '{}': ratio needs a positive minimum_divisor, got {}", call.step_name,
+                   floor_value);
+  }
+
+  for (size_t i = begin; i < end; ++i) {
+    const double divisor = second.get(i);
+    const double safe = std::abs(divisor) < floor_value ? (divisor < 0.0 ? -floor_value : floor_value) : divisor;
+    target.set(i, scale * first.get(i) / safe + offset);
+  }
+}
+
 // Побольше и поменьше из двух полей.
 //
 // Нужны там, где два слоя НАКЛАДЫВАЮТСЯ, а не складываются: остров посреди океана поднимается над
@@ -442,6 +472,7 @@ void tool_registry::add_standard_tools() {
   add(tool_description{.name = "blend", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_blend});
   add(tool_description{.name = "decay", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_decay});
   add(tool_description{.name = "modulate", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_modulate});
+  add(tool_description{.name = "ratio", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_ratio});
   add(tool_description{.name = "maximum", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_maximum});
   add(tool_description{.name = "minimum", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_minimum});
   add(tool_description{.name = "box_blur", .shape = aperture::gather, .input_count = 1, .output_count = 1, .body = tool_box_blur});

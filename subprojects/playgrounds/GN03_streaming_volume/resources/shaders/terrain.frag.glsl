@@ -7,6 +7,7 @@ layout(location = 0) in vec3 in_normal;
 // что здесь считается — направление на камеру, расстояние для тумана, сетка чанков, — этого хватает,
 // потому что начало отсчёта отличается от мирового на целое число размеров чанка.
 layout(location = 1) in vec3 in_position;
+layout(location = 2) in float in_shade;
 
 layout(location = 0) out vec4 out_colour;
 
@@ -31,10 +32,22 @@ void main() {
 
   const float slope = clamp(1.0 - normal.y, 0.0, 1.0);
 
-  const vec3 flat_colour = vec3(0.32, 0.40, 0.22);  // пол
-  const vec3 steep_colour = vec3(0.38, 0.35, 0.31); // стена
-  const vec3 cliff_colour = vec3(0.24, 0.22, 0.21); // потолок и обрыв
-  vec3 albedo = mix(flat_colour, steep_colour, smoothstep(0.15, 0.65, slope));
+  // ЦВЕТ БИОМА ПО ОТТЕНКУ, пришедшему от генератора. Лента, а не таблица: оттенок уже СМЕШАН по весам
+  // биомов, поэтому на переходе он лежит между их значениями, и цвет обязан меняться так же плавно.
+  // Таблица «индекс биома -> цвет» дала бы резкую границу там, где форма переходит гладко.
+  //
+  // Точки ленты соответствуют объявленным `biome_*_shade`: плато, степь, карст, бэдленды, горы.
+  vec3 biome_colour = vec3(0.30, 0.40, 0.20);                                        // плато
+  biome_colour = mix(biome_colour, vec3(0.55, 0.50, 0.24), smoothstep(0.18, 0.32, in_shade)); // степь
+  biome_colour = mix(biome_colour, vec3(0.52, 0.52, 0.50), smoothstep(0.32, 0.55, in_shade)); // карст
+  biome_colour = mix(biome_colour, vec3(0.52, 0.30, 0.20), smoothstep(0.55, 0.70, in_shade)); // бэдленды
+  biome_colour = mix(biome_colour, vec3(0.62, 0.66, 0.72), smoothstep(0.70, 0.86, in_shade)); // горы
+
+  // Уклон поверх биома: пол своего цвета, стена и потолок серее. Уклон отвечает на вопрос «пол это
+  // или стена», а биом — «какой это край мира», и это два разных вопроса.
+  const vec3 steep_colour = mix(biome_colour, vec3(0.38, 0.35, 0.31), 0.65); // стена
+  const vec3 cliff_colour = mix(biome_colour, vec3(0.20, 0.19, 0.18), 0.80); // потолок и обрыв
+  vec3 albedo = mix(biome_colour, steep_colour, smoothstep(0.15, 0.65, slope));
   albedo = mix(albedo, cliff_colour, smoothstep(0.80, 1.35, slope));
 
   const float sun = max(dot(normal, camera.sun_direction.xyz), 0.0);
@@ -61,6 +74,11 @@ void main() {
     colour = normal * 0.5 + 0.5;
   } else if (mode == 2) {
     colour = vec3(slope, 1.0 - slope, 0.2);
+  } else if (mode == 3) {
+    // Отладочное представление БИОМА: чистый оттенок без света и тумана. Нужно ровно затем, зачем
+    // сетка чанков — увидеть границу там, где на затенённой картинке её не отличить от склона.
+    out_colour = vec4(vec3(in_shade), 1.0);
+    return;
   }
 
   // Туман до самой границы окна чанков: дальность приходит из окна, а цвет — тот же, что у неба у

@@ -716,6 +716,22 @@ void tool_polyline_distance(const tool_call& call, const size_t begin, const siz
   // бесконечность в ней превращает любую сумму в бесконечность.
   const double limit = call.params->number("max_distance", 1.0e9);
 
+  // МЕТРИКА — это ФОРМА СЕЧЕНИЯ коридора, а не мелкая настройка. Евклидова даёт круглую трубу
+  // (естественная пещера), чебышёвская — угловатую (тоннель бункера): у неё поверхность уровня это
+  // куб, потому что расстояние равно наибольшей из координат.
+  //
+  // Замер идёт от ближайшей точки, найденной В ЕВКЛИДОВОЙ метрике, и это осознанное упрощение: у
+  // отрезка, идущего вдоль оси, ответ точен, у наклонного сечение слегка скошено. Точная проекция в
+  // чебышёвской метрике стоила бы решения задачи минимизации на отрезок, а разница видна только на
+  // косых участках и читается как «тоннель прорублен не идеально» — то есть как признак бункера.
+  const auto metric = call.params->string("metric", "euclidean");
+  const bool chebyshev = metric == "chebyshev";
+  if (!chebyshev && metric != "euclidean") {
+    utils::error{}("originator step '{}': polyline_distance got unknown metric '{}', expected euclidean or "
+                   "chebyshev",
+                   call.step_name, metric);
+  }
+
   for (size_t i = begin; i < end; ++i) {
     std::array<double, 3> point{};
     for (uint32_t axis = 0; axis < 3; ++axis) {
@@ -746,11 +762,13 @@ void tool_polyline_distance(const tool_call& call, const size_t begin, const siz
       }
 
       double sum = 0.0;
+      double widest = 0.0;
       for (uint32_t axis = 0; axis < 3; ++axis) {
         const double delta = point[axis] - (piece.from[axis] + t * direction[axis]);
         sum += delta * delta;
+        widest = std::max(widest, std::abs(delta));
       }
-      best = std::min(best, std::sqrt(sum));
+      best = std::min(best, chebyshev ? widest : std::sqrt(sum));
     }
 
     target.set(i, best);

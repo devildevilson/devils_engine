@@ -55,12 +55,16 @@ public:
   };
 
   void build(const description& what, std::vector<skeleton_node> nodes, std::vector<std::array<double, 3>> points,
-             std::vector<uint32_t> offsets);
+             std::vector<uint32_t> offsets, std::vector<uint32_t> styles);
 
   const description& about() const noexcept { return description_; }
   std::span<const skeleton_node> nodes() const noexcept { return nodes_; }
   std::span<const std::array<double, 3>> points() const noexcept { return points_; }
   std::span<const uint32_t> offsets() const noexcept { return offsets_; }
+  // СТИЛЬ ЦЕПОЧКИ — свойство маршрута, а не чанка: 0 естественная пещера, 1 тоннель бункера. Чанк
+  // получает его вместе с точками, потому что от стиля зависит ФОРМА СЕЧЕНИЯ, а её коэффициентом не
+  // задать — у круглой трубы и угловатой разные метрики расстояния.
+  std::span<const uint32_t> styles() const noexcept { return styles_; }
   bool empty() const noexcept { return points_.size() < 2; }
 
   // Запрос по области. `low`/`high` — коробка чанка в мировых координатах; поле запроса добавляется
@@ -71,6 +75,7 @@ public:
   struct query_result {
     std::vector<std::array<double, 3>> points;
     std::vector<uint32_t> offsets; // CSR: цепочек столько, сколько вернулось
+    std::vector<uint32_t> styles;  // стиль каждой вернувшейся подцепочки
     size_t chains = 0;
   };
   bool query(const std::array<double, 3>& low, const std::array<double, 3>& high, size_t point_capacity,
@@ -93,6 +98,7 @@ private:
     std::array<double, 3> to{};
     uint32_t chain = 0;
     uint32_t point = 0; // индекс первой точки отрезка в `points_`
+    uint32_t style = 0;
   };
 
   bool collect(const std::array<double, 3>& low, const std::array<double, 3>& high,
@@ -103,6 +109,7 @@ private:
   std::vector<skeleton_node> nodes_;
   std::vector<std::array<double, 3>> points_;
   std::vector<uint32_t> offsets_;
+  std::vector<uint32_t> styles_;
 
   // Пространственный индекс: сетка тайлов по горизонтали, тайл -> отрезки, его касающиеся. Тайл же
   // естественная единица резидентности, если каркас однажды перестанет влезать в память целиком.

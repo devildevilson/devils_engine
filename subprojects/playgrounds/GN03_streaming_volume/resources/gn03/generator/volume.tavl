@@ -25,7 +25,7 @@ buffers = ./buffers.tavl
 //
 // Контракт для хоста жёсткий: заполненный вход обязан быть ФУНКЦИЕЙ ОБЛАСТИ, а не того, что успело
 // подгрузиться. Неполный вход — это не «чуть хуже», это другой мир при том же ключе.
-inputs = [ route_points, route_offsets ]
+inputs = [ route_points, route_offsets, bunker_points, bunker_offsets ]
 
 steps = [
   // Поле плотности чанка. Всё, что здесь происходит, — апертура pointwise, а она переживает
@@ -33,8 +33,8 @@ steps = [
   {
     name = field
     body = ./scripts/S01_field.lua
-    reads = [ route_points, route_offsets ]
-    writes = [ samples ]
+    reads = [ route_points, route_offsets, bunker_points, bunker_offsets ]
+    writes = [ samples, state ]
   }
 
   // Поверхность: треугольники нулевого уровня плотности. Шаг читает поле и пишет вершины плюс их

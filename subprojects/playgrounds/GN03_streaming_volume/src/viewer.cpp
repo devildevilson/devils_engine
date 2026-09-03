@@ -465,7 +465,7 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
     context.base = &base;
     context.assets = &assets;
 
-    static constexpr std::array<const char*, 3> mode_names{{"shaded", "normals", "slope"}};
+    static constexpr std::array<const char*, 4> mode_names{{"shaded", "normals", "slope", "biome"}};
     size_t mode = std::min(options.mode, mode_names.size() - 1);
     bool grid_visible = options.grid;
     bool overlay_visible = true;

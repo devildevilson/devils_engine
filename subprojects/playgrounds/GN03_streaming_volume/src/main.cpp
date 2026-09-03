@@ -333,6 +333,16 @@ public:
     const auto position = vertices_field_->field(vertices_field_->find_field("position"));
     const auto normal = vertices_field_->field(vertices_field_->find_field("normal"));
 
+    // ОТТЕНОК БИОМА берётся с решётки ОТСЧЁТОВ по ближайшему узлу, а не интерполируется по ребру, как
+    // позиция и нормаль. Причина в масштабах: климат меняется на сотнях метров, а клетка здесь метр,
+    // поэтому «ближайший узел» для него точен, а интерполяция по ребру потребовала бы менять контракт
+    // инструмента (ещё вход и ещё выход) ради разницы, которой не видно.
+    auto* samples = line_->find_buffer("samples");
+    const auto shade = samples == nullptr
+                         ? originator::const_field_accessor{}
+                         : samples->field(samples->find_field("biome_shade"));
+    const size_t side = cells_ + 3;
+
     mesh.vertices.resize(count);
     for (size_t i = 0; i < count; ++i) {
       auto& vertex = mesh.vertices[i];
@@ -349,11 +359,25 @@ public:
       }
       // Слот чанка проставит арена при вставке: до неё геометрия своего слота не знает.
       vertex.chunk = 0;
+
+      // Оттенок биома в свободный байт вершины: цвет получается ТЕМ ЖЕ весом, что и форма, поэтому
+      // переход цвета совпадает с переходом рельефа, а не рисуется отдельно.
       vertex.padding = 0;
+      if (shade.valid()) {
+        const auto node = [this, side](const double local) {
+          const auto index = int64_t(std::lround(local / cell_)) + 1;
+          return size_t(std::clamp<int64_t>(index, 0, int64_t(side) - 1));
+        };
+        const size_t index = node(position.get(i, 0)) +
+                             side * (node(position.get(i, 1)) + side * node(position.get(i, 2)));
+        const double value = std::clamp(shade.get(index), 0.0, 1.0);
+        vertex.padding = int8_t(std::lround(value * 127.0));
+      }
     }
 
     // Сущности. Их немного, поэтому они переносятся как есть, без упаковки: приводить десяток вех к
     // системе чанка камеры дешевле каждый кадр, чем заводить им вторую арену со слотами.
+    mesh.biomes_used = uint32_t(state_field_->field(state_field_->find_field("biomes_used")).get(0));
     const size_t prop_count = size_t(state_field_->field(state_field_->find_field("prop_count")).get(0));
     const auto prop_position = props_field_->field(props_field_->find_field("position"));
     const auto prop_normal = props_field_->field(props_field_->find_field("normal"));
@@ -385,25 +409,49 @@ private:
   // перекрытия, и отрезок, влияющий на её крайний узел, обязан попасть в запрос. Радиус влияния
   // прибавляет сам каркас.
   void fill_route(const originator::chunk_key& key) {
-    auto* points = line_->find_buffer("route_points");
-    auto* offsets = line_->find_buffer("route_offsets");
-    if (points == nullptr || offsets == nullptr) {
-      utils::error{}("GN03: the generator must declare the 'route_points' and 'route_offsets' inputs");
+    // ДВЕ ПАРЫ БУФЕРОВ — по одной на СТИЛЬ коридора. Разделяет их хост, и это самое дешёвое место:
+    // здесь это одна проверка стиля при копировании, тогда как инструмент расстояния считает по
+    // одному набору цепочек с одной метрикой, и подмножество цепочек ему не задать.
+    struct style_target {
+      originator::buffer* points = nullptr;
+      originator::buffer* offsets = nullptr;
+      originator::field_accessor point_field;
+      originator::field_accessor offset_field;
+      size_t written_points = 0;
+      size_t written_chains = 0;
+    };
+
+    std::array<style_target, 2> targets{};
+    static constexpr std::array<const char*, 2> point_names{{"route_points", "bunker_points"}};
+    static constexpr std::array<const char*, 2> offset_names{{"route_offsets", "bunker_offsets"}};
+    for (size_t style = 0; style < targets.size(); ++style) {
+      targets[style].points = line_->find_buffer(point_names[style]);
+      targets[style].offsets = line_->find_buffer(offset_names[style]);
+      if (targets[style].points == nullptr || targets[style].offsets == nullptr) {
+        utils::error{}("GN03: the generator must declare the '{}' and '{}' inputs", point_names[style],
+                       offset_names[style]);
+      }
+      targets[style].point_field =
+        targets[style].points->field(targets[style].points->find_field("position"));
+      targets[style].offset_field =
+        targets[style].offsets->field(targets[style].offsets->find_field("offset"));
     }
 
-    auto point_field = points->field(points->find_field("position"));
-    auto offset_field = offsets->field(offsets->find_field("offset"));
-
-    // Пустой маршрут — это ОДНА пустая цепочка во всех смещениях: у пустой цепочки нет отрезков,
-    // поэтому инструмент честно вернёт предел, а не прочитает мусор.
-    const auto clear_offsets = [&offset_field, offsets](const size_t value) {
-      for (size_t i = 0; i < offsets->count(); ++i) {
-        offset_field.set(i, double(value));
+    // Пустой маршрут — это пустые цепочки во ВСЕХ смещениях: у пустой цепочки нет отрезков, поэтому
+    // инструмент честно вернёт предел, а не прочитает мусор.
+    const auto finish = [&targets]() {
+      for (auto& target : targets) {
+        for (size_t i = target.written_chains + 1; i < target.offsets->count(); ++i) {
+          target.offset_field.set(i, double(target.written_points));
+        }
       }
     };
 
     if (skeleton_ == nullptr || skeleton_->empty()) {
-      clear_offsets(0);
+      for (auto& target : targets) {
+        target.offset_field.set(0, 0.0);
+      }
+      finish();
       return;
     }
 
@@ -414,23 +462,45 @@ private:
                                      double(key.y * int64_t(cells_) + int64_t(cells_) + 1) * cell_,
                                      double(key.z * int64_t(cells_) + int64_t(cells_) + 1) * cell_};
 
-    if (!skeleton_->query(low, high, points->count(), offsets->count(), route_)) {
+    // Запрос идёт ОДИН на все стили: область у чанка одна, и спрашивать её дважды значило бы дважды
+    // ходить по индексу ради того же ответа. Ёмкость проверяется по СУММЕ, а разделение — ниже.
+    if (!skeleton_->query(low, high, targets[0].points->count(), targets[0].offsets->count(), route_)) {
       // ОТКАЗ, А НЕ ОБРЕЗКА. Обрезанный маршрут даёт коридор, кончающийся в середине горы, и найти
       // причину по картинке нельзя; а неполный вход означает другой мир при том же ключе.
       utils::error{}("GN03: the skeleton route in chunk ({}, {}, {}) does not fit the declared meta capacity "
                      "({} points, {} chains) — raise chunk_route_capacity",
-                     key.x, key.y, key.z, points->count(), offsets->count());
+                     key.x, key.y, key.z, targets[0].points->count(), targets[0].offsets->count());
     }
 
-    for (size_t i = 0; i < route_.points.size(); ++i) {
-      for (uint32_t axis = 0; axis < 3; ++axis) {
-        point_field.set(i, route_.points[i][axis], axis);
+    for (auto& target : targets) {
+      target.offset_field.set(0, 0.0);
+    }
+
+    for (size_t chain = 0; chain + 1 < route_.offsets.size(); ++chain) {
+      const size_t style = chain < route_.styles.size() && route_.styles[chain] == 1 ? 1 : 0;
+      auto& target = targets[style];
+      const size_t first = route_.offsets[chain];
+      const size_t last = route_.offsets[chain + 1];
+
+      if (target.written_points + (last - first) > target.points->count() ||
+          target.written_chains + 2 > target.offsets->count()) {
+        utils::error{}("GN03: the '{}' meta of chunk ({}, {}, {}) does not fit its declared capacity ({} points, "
+                       "{} chains) — raise chunk_route_capacity",
+                       point_names[style], key.x, key.y, key.z, target.points->count(),
+                       target.offsets->count());
       }
+
+      for (size_t i = first; i < last; ++i) {
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+          target.point_field.set(target.written_points, route_.points[i][axis], axis);
+        }
+        target.written_points += 1;
+      }
+      target.written_chains += 1;
+      target.offset_field.set(target.written_chains, double(target.written_points));
     }
-    clear_offsets(route_.points.size());
-    for (size_t i = 0; i < route_.offsets.size(); ++i) {
-      offset_field.set(i, double(route_.offsets[i]));
-    }
+
+    finish();
   }
 
   originator::tool_registry tools_;
@@ -521,6 +591,16 @@ gn03::world_skeleton build_skeleton(const std::vector<std::pair<std::string, dou
     offset_list[i] = uint32_t(offset_field.get(i));
   }
 
+  auto* styles = line.find_buffer("route_styles");
+  if (styles == nullptr) {
+    utils::error{}("GN03: the skeleton generator must declare 'route_styles'");
+  }
+  std::vector<uint32_t> style_list(chain_count);
+  const auto style_field = styles->field(styles->find_field("style"));
+  for (size_t i = 0; i < style_list.size(); ++i) {
+    style_list[i] = uint32_t(style_field.get(i));
+  }
+
   gn03::world_skeleton::description about;
   about.seed = seed;
   about.world_span = description.values.number("world_span", 0.0);
@@ -531,10 +611,17 @@ gn03::world_skeleton build_skeleton(const std::vector<std::pair<std::string, dou
                     description.values.number("corridor_falloff", 0.0);
 
   gn03::world_skeleton skeleton;
-  skeleton.build(about, std::move(node_list), std::move(point_list), std::move(offset_list));
+  size_t bunker_chains = 0;
+  for (const auto style : style_list) {
+    bunker_chains += style == 1 ? 1 : 0;
+  }
+  skeleton.build(about, std::move(node_list), std::move(point_list), std::move(offset_list),
+                 std::move(style_list));
 
-  utils::info("GN03 skeleton: {} nodes and {} route points over {} m in {:.1f} ms (influence {} m)", node_count,
-              point_count, about.world_span, milliseconds, about.influence);
+  utils::info("GN03 skeleton: {} nodes, {} route points in {} chains ({} of them bunker) over {} m in {:.1f} ms "
+              "(influence {} m)",
+              node_count, point_count, chain_count, bunker_chains, about.world_span, milliseconds,
+              about.influence);
   return skeleton;
 }
 
@@ -1258,7 +1345,52 @@ int main_verify(const options& opts) {
     checks.check(too_steep == 0, "no entity stands on a slope steeper than the declared limit");
   }
 
-  // 14. КАРКАС И МЕТА ЧАНКА. Двухмасштабная генерация добавляет ровно один новый риск, и он не в
+  // 14. БИОМЫ: СМЕШИВАНИЕ ПРАВИЛ. Проверяется главное свойство схемы — что «считать только
+  // присутствующие биомы» это ТОЧНОЕ равенство, а не приближение. Оно держится ровно потому, что вес
+  // биома имеет КОМПАКТНЫЙ носитель: за своим радиусом он ровно ноль, а не «почти ноль», как у
+  // экспоненты. С экспонентой отбрасывание было бы приближением, и мир зависел бы от того, где
+  // проведена граница «пренебрежимо мало».
+  {
+    auto all_description = description;
+    all_description.values.set_number("force_all_biomes", 1.0);
+    chunk_worker every_biome(all_description, table, opts.seed, &skeleton);
+
+    size_t mismatched = 0;
+    size_t total_used = 0;
+    size_t most_used = 0;
+    double pruned_ms = 0.0;
+    double full_ms = 0.0;
+    constexpr size_t sample = 8;
+    for (size_t i = 0; i < sample; ++i) {
+      const originator::chunk_key key{int64_t(i) * 11 - 30, int64_t(i % 3) - 1, int64_t(i) * 7 - 20};
+
+      gn03::chunk_mesh pruned;
+      const auto pruned_start = std::chrono::steady_clock::now();
+      worker.generate(key, pruned);
+      pruned_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pruned_start).count();
+
+      gn03::chunk_mesh full;
+      const auto full_start = std::chrono::steady_clock::now();
+      every_biome.generate(key, full);
+      full_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - full_start).count();
+
+      if (!same_geometry(pruned.vertices, full.vertices)) {
+        ++mismatched;
+      }
+      total_used += pruned.biomes_used;
+      most_used = std::max(most_used, size_t(pruned.biomes_used));
+    }
+
+    checks.check(mismatched == 0, "computing only the biomes present in a chunk is bit-identical to computing "
+                                  "all of them");
+    checks.check(most_used >= 1, "every chunk has at least the base biome, so the weights never sum to zero");
+    utils::info("GN03 verify: {:.1f} biomes per chunk on average (at most {} of {} declared); the chunk costs "
+                "{:.2f} ms with pruning against {:.2f} ms computing every biome",
+                double(total_used) / double(sample), most_used, description.values.integer("biome_count", 0),
+                pruned_ms / double(sample), full_ms / double(sample));
+  }
+
+  // 15. КАРКАС И МЕТА ЧАНКА. Двухмасштабная генерация добавляет ровно один новый риск, и он не в
   // геометрии, а в ЗАПРОСЕ: если чанк получит не всю свою область каркаса, тот же ключ даст другой
   // мир. Поэтому проверяется не «коридор выглядит правильно», а полнота запроса.
   {
@@ -1391,7 +1523,7 @@ int main_verify(const options& opts) {
     }
   }
 
-  // 15. ПАМЯТЬ МИРА. Проверяется главное свойство модели «выводимое + отличие»: соединение это
+  // 16. ПАМЯТЬ МИРА. Проверяется главное свойство модели «выводимое + отличие»: соединение это
   // ФУНКЦИЯ от (выводимые сущности, склад), и ничего кроме. Иначе «вернулся — а стало иначе» ловилось
   // бы только глазами и только иногда.
   {
@@ -1505,7 +1637,7 @@ int main_verify(const options& opts) {
     std::filesystem::remove(twin_path);
   }
 
-  // 16. ОТПЕЧАТОК ЭТАЛОННЫХ ЧАНКОВ. Это ДИАГНОСТИКА, а не критерий, и разница принципиальная: как
+  // 17. ОТПЕЧАТОК ЭТАЛОННЫХ ЧАНКОВ. Это ДИАГНОСТИКА, а не критерий, и разница принципиальная: как
   // только меняется правило поля или хеш, отпечаток меняется целиком, и проверять его равенство
   // означало бы падать при каждой правке мира (довод уже оплачен на GN02 — там смена хеша сдвинула
   // каждое число планеты, и ни одно СВОЙСТВО не сломалось).
@@ -1532,7 +1664,7 @@ int main_verify(const options& opts) {
                 total, fingerprint);
   }
 
-  // 17. ОКНО, СДВИНУТОЕ НА ХОДУ, не теряет чанки. Проверка написана под НАЙДЕННЫЙ баг: при
+  // 18. ОКНО, СДВИНУТОЕ НА ХОДУ, не теряет чанки. Проверка написана под НАЙДЕННЫЙ баг: при
   // перемещении часть чанков не появлялась никогда, а после отлёта и возврата появлялась. Причина
   // была в пересборке очереди — чанк, ждавший своей очереди в прошлом окне, оставался помеченным как
   // ждущий, но ни в одной очереди не лежал.
@@ -1589,7 +1721,7 @@ int main_verify(const options& opts) {
                                     "the queue was still full");
   }
 
-  // 18. ПРОПУСКНАЯ СПОСОБНОСТЬ фонового стримера. Замер, а не критерий, но он отвечает на вопрос, от
+  // 19. ПРОПУСКНАЯ СПОСОБНОСТЬ фонового стримера. Замер, а не критерий, но он отвечает на вопрос, от
   // которого зависит вся конструкция: во что превращается «4 миллисекунды на чанк», когда чанки
   // считаются в несколько потоков. Ускорение здесь заведомо не линейное — каждый поток тащит свой
   // буфер отсчётов в 1.4 мегабайта, и упирается всё в память, а не в арифметику.

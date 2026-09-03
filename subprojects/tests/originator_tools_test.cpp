@@ -181,6 +181,45 @@ TEST_CASE("originator reductions do not depend on the number of threads") {
   CHECK(serial_sum > 0.0);
 }
 
+TEST_CASE("originator ratio normalises and refuses a zero divisor policy") {
+  originator::tool_registry registry;
+  registry.add_standard_tools();
+  const auto* ratio = registry.find("ratio");
+  REQUIRE(ratio != nullptr);
+  CHECK(ratio->shape == originator::aperture::pointwise);
+
+  auto cells = make_field_buffer(originator::storage_kind::soa, 4);
+  auto weight = cells.field(cells.find_field("moisture"));
+  auto sum = cells.field(cells.find_field("height"));
+  auto out = cells.field(cells.find_field("smoothed"));
+  const double numerators[4] = {6.0, -3.0, 5.0, 7.0};
+  const double denominators[4] = {2.0, 4.0, 0.0, -2.0};
+  for (size_t i = 0; i < 4; ++i) {
+    sum.set(i, numerators[i]);
+    weight.set(i, denominators[i]);
+  }
+
+  originator::parameters params;
+  params.set_number("minimum_divisor", 0.5);
+  const std::vector<originator::field_ref> ratio_inputs{readable(cells, "height"), readable(cells, "moisture")};
+  const std::vector<originator::field_ref> ratio_outputs{writable(cells, "smoothed")};
+  originator::dispatch(*ratio, ratio_inputs, ratio_outputs, params, 1, 0, 4, "normalise", nullptr);
+
+  CHECK(out.get(0) == doctest::Approx(3.0));
+  CHECK(out.get(1) == doctest::Approx(-0.75));
+  // Нулевой знаменатель зажимается объявленным минимумом, а не даёт бесконечность: у взвешенного
+  // среднего это означает «ни одно правило здесь не действует», и молчаливый ноль плотности стал бы
+  // поверхностью, то есть стеной в дырке покрытия.
+  CHECK(out.get(2) == doctest::Approx(10.0));
+  // Знак знаменателя сохраняется при зажиме: иначе поле у дырки прыгало бы через ноль.
+  CHECK(out.get(3) == doctest::Approx(-3.5));
+
+  originator::parameters broken;
+  broken.set_number("minimum_divisor", 0.0);
+  CHECK_THROWS_AS(originator::dispatch(*ratio, ratio_inputs, ratio_outputs, broken, 1, 0, 4, "normalise", nullptr),
+                  std::runtime_error);
+}
+
 TEST_CASE("originator range is checked against the buffer") {
   originator::tool_registry registry;
   registry.add_standard_tools();
