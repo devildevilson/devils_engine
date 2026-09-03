@@ -149,6 +149,10 @@ generator_config load_generator(const demiurg::resource_system& resources, const
   const auto buffers_id = acquire(config, resources, entry.buffers, config.entry_id);
   config.description.buffers = parse_buffers(config.source(buffers_id), buffers_id);
 
+  // Входы пайплайна: имена буферов, приходящих извне. Переписывать в абсолютные id их не нужно —
+  // это имена БУФЕРОВ, а не путей, и они уже объявлены в документе буферов.
+  config.description.inputs = entry.inputs;
+
   config.description.steps = entry.steps;
   for (auto& step : config.description.steps) {
     // Тело и программы переписываются АБСОЛЮТНЫМИ id: дальше по ним же берётся текст, и второго

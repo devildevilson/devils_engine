@@ -32,6 +32,7 @@ return function(step)
   local lift = samples:field("lift")
   local density = samples:field("density")
   local island_density = samples:field("island_density")
+  local route_distance = samples:field("route_distance")
 
   local cells = p.chunk_cells
   local cell = p.cell_size
@@ -169,4 +170,37 @@ return function(step)
     originator.fill{ outputs = { lift }, params = { value = 0.0 } }
     originator.fill{ outputs = { island_density }, params = { value = 0.0 } }
   end
+  -- Коридор режется ПОСЛЕДНИМ, и порядок здесь содержательный: он проходимый, значит ничто не имеет
+  -- права его засыпать. Пока он стоял до островов, остров, попавший на маршрут, наполнял тоннель
+  -- обратно — наложение максимума честно возвращало породу в уже прорезанную трубу.
+  -- КОРИДОР КАРКАСА. Здесь двухмасштабный генератор наконец сходится: грубый проход проложил
+  -- маршрут через геймплейные узлы, а чанк превращает его в поле — расстояние до ломаной, и из
+  -- расстояния вырезается проходимая труба.
+  --
+  -- Вырезается она НАЛОЖЕНИЕМ МИНИМУМА, а не вычитанием: внутри трубы поле обязано стать
+  -- отрицательным независимо от того, сколько там было породы, а снаружи — не тронуть её вовсе.
+  -- Вычитание постоянной величины сделало бы и то, и другое неверно: у поверхности пробило бы яму, а
+  -- глубоко в горе не пробило бы ничего.
+  --
+  -- Маршрут приходит ВХОДОМ пайплайна: его заполняет хост запросом к каркасу по области этого чанка.
+  -- Расстояние считается поэлементно (апертура gather читает точки ломаной, пишет свой элемент),
+  -- поэтому коридор непрерывен через шов по той же причине, по которой непрерывно поле: ломаная —
+  -- АБСОЛЮТНЫЕ мировые данные, одни и те же у обоих чанков.
+  if p.corridor_radius > 0.0 then
+    originator.polyline_distance{
+      inputs = { position, step.reads.route_points:field("position"), step.reads.route_offsets:field("offset") },
+      outputs = { route_distance },
+      params = { max_distance = p.corridor_radius + p.corridor_falloff },
+    }
+    -- (расстояние - радиус) * крутизна: внутри трубы отрицательно, на её стенке ноль, снаружи растёт.
+    originator.remap{
+      inputs = { route_distance },
+      outputs = { route_distance },
+      params = { scale = p.corridor_wall, offset = -p.corridor_radius * p.corridor_wall },
+    }
+    originator.minimum{ inputs = { density, route_distance }, outputs = { density } }
+  else
+    originator.fill{ outputs = { route_distance }, params = { value = 0.0 } }
+  end
+
 end

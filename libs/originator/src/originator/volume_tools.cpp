@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <memory>
 #include <vector>
 
 #include "devils_engine/originator/tools.h"
@@ -627,12 +628,147 @@ void tool_marching_cubes(const tool_call& call, const size_t, const size_t) {
 
 } // namespace
 
+// polyline_distance: расстояние от элемента до НАБОРА ЛОМАНЫХ.
+//
+// Зачем это в объёмных инструментах и почему именно ломаная, а не кривая. Двухмасштабному генератору
+// нужна ровно эта величина: грубый мировой проход кладёт МАРШРУТ (железную дорогу, реку, коридор в
+// горе), а чанк обязан превратить его в поле — «насколько эта точка близка к маршруту». Дальше
+// конфиг делает из расстояния что угодно: вычитает коридор из плотности, поднимает насыпь,
+// увлажняет пойму.
+//
+// Кривую инструмент НЕ знает, и это решение. Безье, Катмулл-Ром, дуги — их много, они разные, и все
+// они распрямляются в ломаную ОДИН раз на грубом масштабе, где точек сотни, а не миллионы. Поэтому
+// движок берёт ломаную (плюс CSR-смещения цепочек, канонический для проекта способ хранить много
+// вещей переменной длины), а густота распрямления остаётся решением того, кто строил маршрут: она и
+// есть его гладкость.
+//
+// Апертура gather: читает произвольные элементы входов (все точки ломаной), пишет свой элемент.
+// Источник и приёмник обязаны различаться — здесь это выполняется по построению, потому что точки
+// ломаной лежат в ДРУГОМ буфере.
+//
+// Отсечение по охватывающему прямоугольнику отрезка — не оптимизация, а условие применимости: без
+// него цена элемента равна числу отрезков во всём мире, а с ним — числу отрезков РЯДОМ, то есть
+// обычно нулю. Именно поэтому у инструмента есть `max_distance`: он и ограничивает результат, и
+// задаёт, насколько широко смотреть.
+struct prepared_polyline {
+  struct segment {
+    double from[3]{};
+    double to[3]{};
+    double low[3]{};
+    double high[3]{};
+  };
+  std::vector<segment> segments;
+};
+
+std::shared_ptr<void> prepare_polyline(const tool_call& call) {
+  auto prepared = std::make_shared<prepared_polyline>();
+
+  const auto points = call.input(1).read();
+  const auto offsets = call.input(2).read();
+  const uint32_t components = call.input(1).type().components;
+  if (components < 2) {
+    utils::error{}("originator step '{}': polyline_distance needs a 2- or 3-component point field, '{}.{}' has {}",
+                   call.step_name, call.input(1).buffer_name(), call.input(1).field_name(), components);
+  }
+  if (offsets.count() < 2) {
+    utils::error{}("originator step '{}': polyline_distance needs a CSR offsets buffer of at least two "
+                   "elements, '{}' has {}",
+                   call.step_name, call.input(2).buffer_name(), offsets.count());
+  }
+
+  const double margin = call.params->number("max_distance", 0.0);
+  const size_t chains = offsets.count() - 1;
+  for (size_t chain = 0; chain < chains; ++chain) {
+    const auto first = size_t(offsets.get(chain));
+    const auto last = size_t(offsets.get(chain + 1));
+    if (last < first || last > points.count()) {
+      utils::error{}("originator step '{}': polyline_distance got chain {} spanning [{}, {}) of '{}', which "
+                     "holds {} points",
+                     call.step_name, chain, first, last, call.input(1).buffer_name(), points.count());
+    }
+    for (size_t i = first; i + 1 < last; ++i) {
+      prepared_polyline::segment piece;
+      for (uint32_t axis = 0; axis < 3; ++axis) {
+        piece.from[axis] = axis < components ? points.get(i, axis) : 0.0;
+        piece.to[axis] = axis < components ? points.get(i + 1, axis) : 0.0;
+        piece.low[axis] = std::min(piece.from[axis], piece.to[axis]) - margin;
+        piece.high[axis] = std::max(piece.from[axis], piece.to[axis]) + margin;
+      }
+      prepared->segments.push_back(piece);
+    }
+  }
+  return prepared;
+}
+
+void tool_polyline_distance(const tool_call& call, const size_t begin, const size_t end) {
+  const auto& prepared = *static_cast<const prepared_polyline*>(call.shared);
+  const auto positions = call.input(0).read();
+  auto target = call.output(0).write();
+
+  const uint32_t components = positions.type().components;
+  if (components < 2) {
+    utils::error{}("originator step '{}': polyline_distance needs a 2- or 3-component position field, '{}.{}' "
+                   "has {}",
+                   call.step_name, call.input(0).buffer_name(), call.input(0).field_name(), components);
+  }
+
+  // Значение по умолчанию — предел, а не бесконечность: полем дальше пользуется арифметика конфига, а
+  // бесконечность в ней превращает любую сумму в бесконечность.
+  const double limit = call.params->number("max_distance", 1.0e9);
+
+  for (size_t i = begin; i < end; ++i) {
+    std::array<double, 3> point{};
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      point[axis] = axis < components ? positions.get(i, axis) : 0.0;
+    }
+
+    double best = limit;
+    for (const auto& piece : prepared.segments) {
+      // Отсечение по прямоугольнику: элемент дальше предела от отрезка не может улучшить результат.
+      if (point[0] < piece.low[0] || point[0] > piece.high[0] || point[1] < piece.low[1] ||
+          point[1] > piece.high[1] || point[2] < piece.low[2] || point[2] > piece.high[2]) {
+        continue;
+      }
+
+      std::array<double, 3> direction{piece.to[0] - piece.from[0], piece.to[1] - piece.from[1],
+                                      piece.to[2] - piece.from[2]};
+      const double length_squared =
+        direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2];
+
+      // Проекция на отрезок с зажимом в его концы: без зажима «расстояние до прямой» даёт коридор,
+      // продолжающийся за концом маршрута, то есть тоннель в никуда.
+      double t = 0.0;
+      if (length_squared > 0.0) {
+        t = ((point[0] - piece.from[0]) * direction[0] + (point[1] - piece.from[1]) * direction[1] +
+             (point[2] - piece.from[2]) * direction[2]) /
+            length_squared;
+        t = std::clamp(t, 0.0, 1.0);
+      }
+
+      double sum = 0.0;
+      for (uint32_t axis = 0; axis < 3; ++axis) {
+        const double delta = point[axis] - (piece.from[axis] + t * direction[axis]);
+        sum += delta * delta;
+      }
+      best = std::min(best, std::sqrt(sum));
+    }
+
+    target.set(i, best);
+  }
+}
+
 void tool_registry::add_volume_tools() {
   add(tool_description{.name = "marching_cubes",
                        .shape = aperture::scatter,
                        .input_count = 2,
                        .output_count = 3,
                        .body = tool_marching_cubes});
+  add(tool_description{.name = "polyline_distance",
+                       .shape = aperture::gather,
+                       .input_count = 3,
+                       .output_count = 1,
+                       .body = tool_polyline_distance,
+                       .prepare = prepare_polyline});
 }
 
 } // namespace originator

@@ -28,6 +28,10 @@ return function(step)
   local out_normal = props:field("normal")
   local out_size = props:field("size")
   local out_kind = props:field("kind")
+  -- Идентичность вехи: номер попытки. Не место в массиве — место зависит от того, сколько попыток до
+  -- неё отказалось, и от подкрутки любого порога все места сдвинулись бы, то есть память об одной
+  -- вехе стала бы памятью о другой.
+  local out_origin = props:field("origin")
   local capacity = props:count()
 
   -- ЦЕЛЫЕ ЯВНО. Числа конфига приходят в lua как double, поэтому `cells + 3` это 35.0, а не 35, и
@@ -142,6 +146,7 @@ return function(step)
         out_normal:set(written, nz, 2)
         out_size:set(written, size)
         out_kind:set(written, kind)
+        out_origin:set(written, attempt)
         written = written + 1
       end
     end

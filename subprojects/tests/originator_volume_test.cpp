@@ -433,6 +433,99 @@ TEST_CASE("marching_cubes refuses to overflow the declared vertex capacity") {
   CHECK_THROWS_AS(run_marching_cubes(registry, grid, &sphere_field, nullptr, 128), std::runtime_error);
 }
 
+TEST_CASE("polyline_distance measures the way a corridor needs it") {
+  const auto registry = make_registry();
+  const auto* tool = registry.find("polyline_distance");
+  REQUIRE(tool != nullptr);
+  CHECK(tool->shape == originator::aperture::gather);
+
+  // Две цепочки: отрезок вдоль x и отдельный отрезок вдоль z. Разные цепочки нужны потому, что
+  // маршрут в мире не один, а конец одного не должен соединяться с началом другого — иначе между
+  // ними появился бы коридор, которого никто не строил.
+  const std::vector<field_pair> point_fields = {{"position", "v3"}};
+  auto points = originator::buffer(
+    "points", originator::make_buffer_layout(originator::storage_kind::soa, point_fields, "points"), 5);
+  auto point = points.field(0);
+  const double coordinates[5][3] = {{0, 0, 0}, {10, 0, 0}, {20, 0, 0}, {50, 0, 50}, {50, 0, 70}};
+  for (size_t i = 0; i < 5; ++i) {
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      point.set(i, coordinates[i][axis], axis);
+    }
+  }
+
+  const std::vector<field_pair> offset_fields = {{"offset", "ui1"}};
+  auto offsets = originator::buffer(
+    "offsets", originator::make_buffer_layout(originator::storage_kind::soa, offset_fields, "offsets"), 3);
+  offsets.field(0).set(0, 0.0);
+  offsets.field(0).set(1, 3.0);
+  offsets.field(0).set(2, 5.0);
+
+  const std::vector<field_pair> sample_fields = {{"position", "v3"}, {"distance", "v1"}};
+  constexpr size_t sample_count = 6;
+  auto samples = originator::buffer(
+    "probes", originator::make_buffer_layout(originator::storage_kind::soa, sample_fields, "probes"), sample_count);
+  auto sample_position = samples.field(0);
+  const double probes[sample_count][3] = {
+    {5, 0, 0},      // на первой цепочке
+    {5, 4, 0},      // в четырёх метрах над ней
+    {-10, 0, 0},    // ЗА концом цепочки: расстояние до КОНЦА, а не до прямой
+    {50, 0, 60},    // на второй цепочке
+    {200, 0, 200},  // далеко от обеих цепочек: дальше объявленного предела
+    {15, 3, 4},     // около первой цепочки под углом
+  };
+  for (size_t i = 0; i < sample_count; ++i) {
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      sample_position.set(i, probes[i][axis], axis);
+    }
+  }
+
+  originator::parameters params;
+  params.set_number("max_distance", 30.0);
+
+  const std::vector<originator::field_ref> inputs{readable(samples, "position"), readable(points, "position"),
+                                                  readable(offsets, "offset")};
+  const std::vector<originator::field_ref> outputs{writable(samples, "distance")};
+  originator::dispatch(*tool, inputs, outputs, params, 1, 0, sample_count, "route", nullptr);
+
+  const auto distance = samples.field(samples.find_field("distance"));
+  CHECK(distance.get(0) == doctest::Approx(0.0));
+  CHECK(distance.get(1) == doctest::Approx(4.0));
+  // ЗА концом маршрута расстояние считается до конца, а не до бесконечной прямой: иначе коридор
+  // продолжался бы за станцию, то есть тоннель уходил бы в никуда.
+  CHECK(distance.get(2) == doctest::Approx(10.0));
+  CHECK(distance.get(3) == doctest::Approx(0.0));
+  // Дальше предела значение равно пределу, а не бесконечности: полем дальше пользуется арифметика
+  // конфига, и бесконечность превратила бы любую сумму в бесконечность. Проба взята заведомо далёкой
+  // (212 метров до ближайшей цепочки): первая попытка ставила её в 21 метре и падала честно — там
+  // расстояние настоящее, а не предел.
+  CHECK(distance.get(4) == doctest::Approx(30.0));
+  CHECK(distance.get(5) == doctest::Approx(5.0));
+
+  // Параллельно — то же самое: апертура gather читает точки, которые никто не пишет.
+  auto again = originator::buffer(
+    "probes", originator::make_buffer_layout(originator::storage_kind::soa, sample_fields, "probes"), sample_count);
+  auto again_position = again.field(0);
+  for (size_t i = 0; i < sample_count; ++i) {
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      again_position.set(i, probes[i][axis], axis);
+    }
+  }
+  const std::vector<originator::field_ref> again_inputs{readable(again, "position"), readable(points, "position"),
+                                                        readable(offsets, "offset")};
+  const std::vector<originator::field_ref> again_outputs{writable(again, "distance")};
+  thread::atomic_pool pool(3);
+  originator::dispatch(*tool, again_inputs, again_outputs, params, 1, 0, sample_count, "route", &pool);
+  const auto parallel = again.field(again.find_field("distance"));
+  for (size_t i = 0; i < sample_count; ++i) {
+    CHECK(parallel.get(i) == distance.get(i));
+  }
+
+  // Цепочка, выходящая за буфер точек, — ошибка конфига, а не повод читать чужую память.
+  offsets.field(0).set(2, 99.0);
+  CHECK_THROWS_AS(originator::dispatch(*tool, inputs, outputs, params, 1, 0, sample_count, "route", nullptr),
+                  std::runtime_error);
+}
+
 TEST_CASE("marching_cubes refuses a grid that disagrees with its buffer") {
   const auto registry = make_registry();
   const auto* tool = registry.find("marching_cubes");

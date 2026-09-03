@@ -7,6 +7,8 @@ project(GN03_streaming_volume VERSION 0.1.0 LANGUAGES CXX)
 # генератор: разнести их значило бы дважды собирать пайплайн и однажды собрать его по-разному.
 add_executable(GN03_streaming_volume
   src/main.cpp
+  src/memory.cpp src/memory.h
+  src/skeleton.cpp src/skeleton.h
   src/streaming.cpp src/streaming.h
   src/viewer.cpp src/viewer.h)
 

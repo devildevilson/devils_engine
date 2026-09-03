@@ -376,6 +376,18 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
     prop_instances.reserve(prop_instance_limit);
     size_t dropped_props = 0;
 
+    if (options.memory == nullptr) {
+      utils::error{}("GN03 viewer needs the world memory: a world without one is a different contract");
+    }
+    auto& memory = *options.memory;
+    std::vector<world_memory::joined_prop> visible;
+    // Ближайшая веха и её имя: взаимодействие всегда с одной, и она же подписана в оверлее, иначе
+    // «нажал и ничего не произошло» не отличить от «нажал не на то».
+    prop_id nearest_id{};
+    bool nearest_found = false;
+    float nearest_distance = 0.0f;
+    bool nearest_marked = false;
+
     std::vector<tunable_value> tunables = options.tunables;
     uint64_t seed = options.seed;
     const auto overrides_of = [&tunables]() {
@@ -406,6 +418,10 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
     bind_key("setting_increase", "equal");
     bind_key("apply", "enter");
     bind_key("new_seed", "key_n");
+    // ВЗАИМОДЕЙСТВИЕ, ради которого память и заводится: забрать веху и переключить пометку. Обе
+    // операции меняют не мир, а ОТЛИЧИЕ мира от выводимого.
+    bind_key("collect", "key_f");
+    bind_key("mark", "key_r");
     escape_key = input::glfw_key_from_canonical("escape");
     input::set_window_callback(window, &key_callback);
     input::set_framebuffer_size_callback(window, &framebuffer_callback);
@@ -430,9 +446,13 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
     // накопление, и величина там мала, поэтому преобразование точно.
     local_frame observer;
     observer.key = options.start;
-    observer.position = glm::dvec3(chunk_span * 0.5, 0.0, chunk_span * 0.5);
+    observer.position = options.start_offset_valid ? options.start_offset
+                                                   : glm::dvec3(chunk_span * 0.5, 0.0, chunk_span * 0.5);
     camera.position = glm::vec3(observer.position);
-    camera.pitch = -0.45f;
+    camera.pitch = options.start_offset_valid ? options.start_pitch : -0.45f;
+    if (options.start_offset_valid) {
+      camera.yaw = options.start_yaw;
+    }
     camera.move_speed = float(chunk_span) * 0.6f;
     camera.fast_multiplier = 5.0f;
 
@@ -456,7 +476,7 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
     std::vector<chunk_mesh> postponed;
     uint32_t drawn_frames = 0;
 
-    std::array<bool, 10> latches{};
+    std::array<bool, 12> latches{};
     const auto pressed_once = [&](const std::string_view event, const size_t slot) {
       if (slot >= latches.size()) {
         utils::error{}("GN03 viewer: key latch {} for '{}' is outside the {} declared latches", slot, event,
@@ -670,26 +690,58 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
 
       // Сущности собираются заново каждый кадр и СРАЗУ в системе чанка камеры: их немного, поэтому
       // смещение применяется здесь, на процессоре, и шейдеру не нужны ни слот, ни таблица.
+      //
+      // СОЕДИНЕНИЕ С ПАМЯТЬЮ ПРОИСХОДИТ ЗДЕСЬ ЖЕ, каждый кадр, из (выводимое + склад). Хранить
+      // «уже соединённое» было бы вторым представлением того же, и оно однажды разъехалось бы со
+      // складом; а так соединение остаётся ФУНКЦИЕЙ, и это ровно то свойство, которое проверяется.
       prop_instances.clear();
       dropped_props = 0;
+      nearest_found = false;
+      nearest_distance = 0.0f;
       for (const auto& [key, list] : chunk_props) {
         const auto offset = chunk_offset(key, observer.key, chunk_span);
-        for (const auto& prop : list) {
+        memory.join(key, list, visible);
+        for (const auto& entry : visible) {
           if (prop_instances.size() >= prop_instance_limit) {
             ++dropped_props;
             continue;
           }
+          const auto& prop = *entry.prop;
           gpu_prop instance;
           for (uint32_t axis = 0; axis < 3; ++axis) {
             instance.position[axis] = offset[axis] + float(prop.position[axis]);
             instance.normal[axis] = float(prop.normal[axis]);
           }
           instance.scale = float(prop.size);
-          instance.kind = prop.kind;
+          // Род и пометка в одном слове: род в младшем байте, пометка выше. Пометка — это ПАМЯТЬ, а
+          // не свойство мира, поэтому она приезжает из склада, а не из генератора.
+          instance.kind = prop.kind | (entry.delta.marked ? 0x100u : 0u);
           prop_instances.push_back(instance);
+
+          const glm::vec3 to_prop = glm::vec3(instance.position[0], instance.position[1], instance.position[2]) -
+                                    camera.position;
+          const float distance = glm::length(to_prop);
+          if (!nearest_found || distance < nearest_distance) {
+            nearest_found = true;
+            nearest_distance = distance;
+            nearest_id = prop_id{key, prop.origin};
+            nearest_marked = entry.delta.marked;
+          }
         }
       }
       write_buffer(base, "prop_instances", prop_instances.data(), prop_instances.size() * sizeof(gpu_prop));
+
+      // Взаимодействие идёт ПОСЛЕ сборки кадра, потому что «ближайшая» известна только после неё, и
+      // изменение склада увидит следующий кадр — так же, как его увидит вернувшийся чанк.
+      static constexpr float reach = 12.0f;
+      if (nearest_found && nearest_distance <= reach) {
+        if (pressed_once("collect", 8)) {
+          memory.take(nearest_id);
+        }
+        if (pressed_once("mark", 9)) {
+          memory.mark(nearest_id);
+        }
+      }
 
       const float aspect = float(std::max(pending_width, 1u)) / float(std::max(pending_height, 1u));
       const float near_plane = 0.1f;
@@ -732,6 +784,13 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
                     postponed.size(), rejected_chunks),
         std::format("entities {} in {} chunks{}", prop_instances.size(), chunk_props.size(),
                     dropped_props != 0 ? std::format(", {} over the buffer", dropped_props) : std::string{}),
+        // Склад памяти: сколько сущностей мир помнит ИЗМЕНЁННЫМИ. Это же и размер сохранения.
+        std::format("world memory {} entries; nearest {}", memory.size(),
+                    nearest_found && nearest_distance <= reach
+                      ? std::format("{:.1f} m, chunk {} {} {} #{}{} (F take, R mark)", nearest_distance,
+                                    nearest_id.chunk.x, nearest_id.chunk.y, nearest_id.chunk.z,
+                                    nearest_id.origin, nearest_marked ? ", marked" : "")
+                      : std::string("out of reach")),
         // Мировое место камеры собирается из ключа и локального смещения: сама камера мировых
         // координат не хранит вовсе.
         std::format("view {} | seed {} | chunk {} {} {} | camera {:.0f} {:.0f} {:.0f}", mode_names[mode], seed,

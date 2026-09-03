@@ -41,6 +41,9 @@ struct entry_mirror {
   std::string name;
   std::string values;
   std::string buffers;
+  // Буферы, которые пайплайн получает ИЗВНЕ: их заполняет хост до запуска, а не какой-то шаг. См.
+  // pipeline_description::inputs.
+  std::vector<std::string> inputs;
   std::vector<step_mirror> steps;
 };
 
@@ -220,6 +223,7 @@ pipeline_entry parse_entry(const std::string_view& text, const std::string_view&
   entry.name = std::move(mirror.name);
   entry.values = std::move(mirror.values);
   entry.buffers = std::move(mirror.buffers);
+  entry.inputs = std::move(mirror.inputs);
   entry.steps.reserve(mirror.steps.size());
   for (size_t i = 0; i < mirror.steps.size(); ++i) {
     entry.steps.push_back(make_step(mirror.steps[i], label, i));
@@ -388,7 +392,26 @@ void pipeline::validate() const {
 
   // Буфер считается валидным начиная с шага, который его пишет. Чтение раньше первой записи — это
   // чтение неопределённых данных, и молчать про это нельзя.
+  //
+  // ВХОДЫ ПАЙПЛАЙНА считаются записанными с самого начала. Понятие входа появилось из двухмасштабной
+  // генерации: грубый мировой проход считается ОДИН раз и отдаёт каркас (маршруты, узлы, сводки), а
+  // чанковый пайплайн читает из него то, что попадает в свою область. Заполняет такой буфер ХОСТ —
+  // он один знает, какая часть каркаса резидентна и что попадает в область этого чанка, — поэтому ни
+  // одного шага, который его пишет, не существует и существовать не должно.
+  //
+  // Объявляется это в точке входа (`inputs = [ ... ]`), а не выводится: «буфер, который читают, но
+  // никто не пишет» — это ровно то, о чём библиотека обязана кричать, и отличить приход извне от
+  // опечатки в имени можно только по объявлению автора.
   std::vector<const buffer*> written;
+  for (const auto& name : description_.inputs) {
+    const auto found = std::find_if(buffers_.begin(), buffers_.end(),
+                                    [&name](const auto& candidate) { return candidate->name() == name; });
+    if (found == buffers_.end()) {
+      utils::error{}("originator pipeline '{}': input '{}' is not among its declared buffers", description_.name,
+                     name);
+    }
+    written.push_back(found->get());
+  }
 
   for (size_t i = 0; i < description_.steps.size(); ++i) {
     const auto& step = description_.steps[i];
@@ -450,7 +473,15 @@ void pipeline::validate() const {
         bound = bound || source == candidate.get();
       }
     }
-    if (!bound) {
+    // Вход пайплайна, который никто не читает, — тоже остаток от правки конфига, но говорить про него
+    // надо иначе: он не «не привязан», он привезён и не понадобился.
+    const bool declared_input =
+      std::find(description_.inputs.begin(), description_.inputs.end(), candidate->name()) !=
+      description_.inputs.end();
+    if (!bound && declared_input) {
+      utils::warn("originator pipeline '{}': input '{}' is filled from outside ({} bytes) but no step reads it",
+                  description_.name, candidate->name(), candidate->byte_size());
+    } else if (!bound) {
       utils::warn("originator pipeline '{}': buffer '{}' is declared and allocated ({} bytes) but no step binds it",
                   description_.name, candidate->name(), candidate->byte_size());
     }

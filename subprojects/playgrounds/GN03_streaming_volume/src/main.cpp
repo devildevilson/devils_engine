@@ -24,7 +24,10 @@
 #include "devils_engine/originator/script_host.h"
 #include "devils_engine/originator/tools.h"
 #include "devils_engine/utils/core.h"
+#include "devils_engine/utils/fileio.h"
 
+#include "memory.h"
+#include "skeleton.h"
 #include "streaming.h"
 #include "viewer.h"
 
@@ -58,6 +61,12 @@ struct options {
   size_t view_mode = 0;
   bool grid = false;
   std::string dump_path;
+  // Файл каркаса. Грубый проход считается один раз, поэтому его результат естественно лежит пакетом:
+  // есть файл — читаем, нет — считаем и пишем.
+  std::string skeleton_path;
+  // Файл памяти мира. Это и есть сохранение: остальное — функция от зерна, поэтому сохранять больше
+  // нечего. Пустой путь означает «помнить только в этом запуске».
+  std::string memory_path;
   std::vector<std::pair<std::string, double>> overrides;
   // Чанк, на котором идёт проверка. Ключ существует потому, что «где именно» у объёма имеет
   // значение: у поля шума есть места, где оно почти постоянно, и проверка, ставшая на такое место,
@@ -67,6 +76,11 @@ struct options {
   // должен рисоваться одинаково и рядом с нулём, и в миллионе чанков от него, а нажать кнопку в
   // автоматическом прогоне некому.
   originator::chunk_key start{0, 2, 0};
+  // Посадить камеру НА МАРШРУТ каркаса: коридор это узкая труба, и увидеть её можно только изнутри.
+  // Ключ принимает номер точки маршрута, потому что «начало» у маршрута одно, а посмотреть хочется в
+  // разных местах.
+  bool on_route = false;
+  size_t route_index = 0;
 };
 
 fs::path resource_root() {
@@ -79,12 +93,16 @@ struct generator_registry {
   demiurg::module_system modules;
   demiurg::resource_system resources;
   originator::generator_config config;
+  // ДВА ГЕНЕРАТОРА, а не один с ветвлением: грубый проход и чанковый — разные пайплайны с разными
+  // буферами и разной ценой, и объединять их значило бы держать в одном описании два масштаба.
+  originator::generator_config skeleton_config;
 
   generator_registry() : modules(resource_root().generic_string() + "/") {
     modules.load_modules({demiurg::module_system::list_entry{"gn03/", "", ""}});
     originator::register_generator_resources(resources);
     resources.parse_resources(&modules);
     config = originator::load_generator(resources, "generator/volume");
+    skeleton_config = originator::load_generator(resources, "generator/skeleton");
   }
 };
 
@@ -155,6 +173,15 @@ options parse_options(const int argc, const char** argv) {
       result.probe.x = std::stoll(text.substr(0, first));
       result.probe.y = std::stoll(text.substr(first + 1, second - first - 1));
       result.probe.z = std::stoll(text.substr(second + 1));
+    } else if (argument == "--on-route") {
+      result.on_route = true;
+    } else if (starts_with(argument, "--on-route=")) {
+      result.on_route = true;
+      result.route_index = size_t(std::stoull(value_of("--on-route=")));
+    } else if (starts_with(argument, "--skeleton=")) {
+      result.skeleton_path = value_of("--skeleton=");
+    } else if (starts_with(argument, "--memory=")) {
+      result.memory_path = value_of("--memory=");
     } else if (starts_with(argument, "--dump=")) {
       result.dump_path = value_of("--dump=");
     } else if (starts_with(argument, "--set=")) {
@@ -215,6 +242,8 @@ struct chunk_geometry_sizes {
   double cell_size = 1.0;
   size_t vertex_capacity = 0;
   size_t prop_capacity = 0;
+  size_t route_capacity = 0;
+  size_t route_chain_capacity = 0;
 };
 
 chunk_geometry_sizes read_sizes(const originator::pipeline_description& description) {
@@ -223,6 +252,8 @@ chunk_geometry_sizes read_sizes(const originator::pipeline_description& descript
   sizes.cell_size = description.values.number("cell_size", 0.0);
   sizes.vertex_capacity = size_t(description.values.integer("vertex_capacity", 0));
   sizes.prop_capacity = size_t(description.values.integer("prop_capacity", 0));
+  sizes.route_capacity = size_t(description.values.integer("chunk_route_capacity", 0));
+  sizes.route_chain_capacity = size_t(description.values.integer("chunk_route_chain_capacity", 0));
   if (sizes.chunk_cells == 0 || sizes.cell_size <= 0.0 || sizes.vertex_capacity == 0 ||
       sizes.prop_capacity == 0) {
     utils::error{}("GN03: the generator must declare chunk_cells, cell_size, vertex_capacity and prop_capacity");
@@ -236,6 +267,8 @@ originator::size_table make_size_table(const chunk_geometry_sizes& sizes) {
   table.set("sample_count", sizes.side * sizes.side * sizes.side);
   table.set("vertex_capacity", sizes.vertex_capacity);
   table.set("prop_capacity", sizes.prop_capacity);
+  table.set("chunk_route_capacity", sizes.route_capacity);
+  table.set("chunk_route_chain_capacity", sizes.route_chain_capacity);
   table.set("state_count", 1);
   return table;
 }
@@ -248,7 +281,7 @@ originator::size_table make_size_table(const chunk_geometry_sizes& sizes) {
 class chunk_worker {
 public:
   chunk_worker(const originator::pipeline_description& description, const originator::size_table& sizes,
-               const uint64_t seed) {
+               const uint64_t seed, const gn03::world_skeleton* skeleton = nullptr) : skeleton_(skeleton) {
     tools_.add_standard_tools();
     tools_.add_volume_tools();
     originator::add_all_primitives(tools_);
@@ -266,6 +299,8 @@ public:
     }
 
     span_ = double(description.values.integer("chunk_cells", 1)) * description.values.number("cell_size", 1.0);
+    cells_ = size_t(description.values.integer("chunk_cells", 1));
+    cell_ = description.values.number("cell_size", 1.0);
     line_ = std::make_unique<originator::pipeline>(description, sizes, seed);
     vertices_field_ = line_->find_buffer("vertices");
     props_field_ = line_->find_buffer("props");
@@ -277,6 +312,7 @@ public:
 
   void generate(const originator::chunk_key& key, gn03::chunk_mesh& mesh) {
     line_->set_chunk(key);
+    fill_route(key);
     const auto invoker = host_->invoker();
 
     // Шаги идут по одному ради ЗАМЕРА: поле и поверхность стоят разного, и знать, сколько стоит
@@ -323,6 +359,7 @@ public:
     const auto prop_normal = props_field_->field(props_field_->find_field("normal"));
     const auto prop_size = props_field_->field(props_field_->find_field("size"));
     const auto prop_kind = props_field_->field(props_field_->find_field("kind"));
+    const auto prop_origin = props_field_->field(props_field_->find_field("origin"));
 
     mesh.props.resize(prop_count);
     for (size_t i = 0; i < prop_count; ++i) {
@@ -333,12 +370,69 @@ public:
       }
       prop.size = prop_size.get(i);
       prop.kind = uint32_t(prop_kind.get(i));
+      prop.origin = uint32_t(prop_origin.get(i));
     }
   }
 
   originator::pipeline& line() noexcept { return *line_; }
 
 private:
+  // ВХОД ПАЙПЛАЙНА заполняется здесь, до первого шага, и это единственное место, которое знает про
+  // два масштаба сразу: генератор чанка про каркас не знает вовсе (он читает обычный буфер), а
+  // каркас не знает про чанки.
+  //
+  // Область запроса — решётка отсчётов, а не клетки: поле считается на всей решётке, включая полосу
+  // перекрытия, и отрезок, влияющий на её крайний узел, обязан попасть в запрос. Радиус влияния
+  // прибавляет сам каркас.
+  void fill_route(const originator::chunk_key& key) {
+    auto* points = line_->find_buffer("route_points");
+    auto* offsets = line_->find_buffer("route_offsets");
+    if (points == nullptr || offsets == nullptr) {
+      utils::error{}("GN03: the generator must declare the 'route_points' and 'route_offsets' inputs");
+    }
+
+    auto point_field = points->field(points->find_field("position"));
+    auto offset_field = offsets->field(offsets->find_field("offset"));
+
+    // Пустой маршрут — это ОДНА пустая цепочка во всех смещениях: у пустой цепочки нет отрезков,
+    // поэтому инструмент честно вернёт предел, а не прочитает мусор.
+    const auto clear_offsets = [&offset_field, offsets](const size_t value) {
+      for (size_t i = 0; i < offsets->count(); ++i) {
+        offset_field.set(i, double(value));
+      }
+    };
+
+    if (skeleton_ == nullptr || skeleton_->empty()) {
+      clear_offsets(0);
+      return;
+    }
+
+    const std::array<double, 3> low{double(key.x * int64_t(cells_) - 1) * cell_,
+                                    double(key.y * int64_t(cells_) - 1) * cell_,
+                                    double(key.z * int64_t(cells_) - 1) * cell_};
+    const std::array<double, 3> high{double(key.x * int64_t(cells_) + int64_t(cells_) + 1) * cell_,
+                                     double(key.y * int64_t(cells_) + int64_t(cells_) + 1) * cell_,
+                                     double(key.z * int64_t(cells_) + int64_t(cells_) + 1) * cell_};
+
+    if (!skeleton_->query(low, high, points->count(), offsets->count(), route_)) {
+      // ОТКАЗ, А НЕ ОБРЕЗКА. Обрезанный маршрут даёт коридор, кончающийся в середине горы, и найти
+      // причину по картинке нельзя; а неполный вход означает другой мир при том же ключе.
+      utils::error{}("GN03: the skeleton route in chunk ({}, {}, {}) does not fit the declared meta capacity "
+                     "({} points, {} chains) — raise chunk_route_capacity",
+                     key.x, key.y, key.z, points->count(), offsets->count());
+    }
+
+    for (size_t i = 0; i < route_.points.size(); ++i) {
+      for (uint32_t axis = 0; axis < 3; ++axis) {
+        point_field.set(i, route_.points[i][axis], axis);
+      }
+    }
+    clear_offsets(route_.points.size());
+    for (size_t i = 0; i < route_.offsets.size(); ++i) {
+      offset_field.set(i, double(route_.offsets[i]));
+    }
+  }
+
   originator::tool_registry tools_;
   std::unique_ptr<originator::script_host> host_;
   std::unique_ptr<originator::pipeline> line_;
@@ -346,12 +440,111 @@ private:
   originator::buffer* props_field_ = nullptr;
   originator::buffer* state_field_ = nullptr;
   double span_ = 1.0; // размер чанка в мире: шаг фиксированной точки выводится из него
+  size_t cells_ = 1;
+  double cell_ = 1.0;
+  const gn03::world_skeleton* skeleton_ = nullptr;
+  gn03::world_skeleton::query_result route_;
 };
 
+// ГРУБЫЙ ПРОХОД. Считается один раз, не знает про чанки и покрывает область много больше видимого
+// мира. Отдельный пайплайн со своими буферами: объединять два масштаба в одно описание значило бы
+// держать в нём и сорок узлов, и сорок три тысячи отсчётов.
+gn03::world_skeleton build_skeleton(const std::vector<std::pair<std::string, double>>& overrides,
+                                    const uint64_t seed) {
+  auto description = generator().skeleton_config.description;
+  for (const auto& [name, value] : overrides) {
+    if (description.values.has(name)) {
+      description.values.set_number(name, value);
+    }
+  }
+
+  originator::size_table sizes;
+  sizes.set("node_capacity", size_t(description.values.integer("node_capacity", 0)));
+  sizes.set("route_capacity", size_t(description.values.integer("route_capacity", 0)));
+  sizes.set("route_chain_capacity", size_t(description.values.integer("route_chain_capacity", 0)));
+  sizes.set("state_count", 1);
+
+  originator::tool_registry tools;
+  tools.add_standard_tools();
+  tools.add_volume_tools();
+  originator::add_all_primitives(tools);
+
+  originator::script_host host(tools, nullptr);
+  const auto& package = generator().skeleton_config;
+  for (const auto& step : description.steps) {
+    host.load_body(step.name, package.source(step.body), step.body);
+    for (const auto& [name, id] : step.programs) {
+      host.load_program(name, package.source(id));
+    }
+  }
+
+  originator::pipeline line(description, sizes, seed);
+  const auto start = std::chrono::steady_clock::now();
+  line.run(host.invoker());
+  const double milliseconds =
+    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+
+  auto* nodes = line.find_buffer("nodes");
+  auto* points = line.find_buffer("route_points");
+  auto* offsets = line.find_buffer("route_offsets");
+  auto* state = line.find_buffer("skeleton_state");
+  if (nodes == nullptr || points == nullptr || offsets == nullptr || state == nullptr) {
+    utils::error{}("GN03: the skeleton generator must declare 'nodes', 'route_points', 'route_offsets' and "
+                   "'skeleton_state'");
+  }
+
+  const size_t node_count = size_t(state->field(state->find_field("node_count")).get(0));
+  const size_t point_count = size_t(state->field(state->find_field("point_count")).get(0));
+  const size_t chain_count = size_t(state->field(state->find_field("chain_count")).get(0));
+
+  std::vector<gn03::skeleton_node> node_list(node_count);
+  const auto node_position = nodes->field(nodes->find_field("position"));
+  const auto node_kind = nodes->field(nodes->find_field("kind"));
+  for (size_t i = 0; i < node_count; ++i) {
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      node_list[i].position[axis] = node_position.get(i, axis);
+    }
+    node_list[i].kind = uint32_t(node_kind.get(i));
+  }
+
+  std::vector<std::array<double, 3>> point_list(point_count);
+  const auto point_position = points->field(points->find_field("position"));
+  for (size_t i = 0; i < point_count; ++i) {
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      point_list[i][axis] = point_position.get(i, axis);
+    }
+  }
+
+  std::vector<uint32_t> offset_list(chain_count + 1);
+  const auto offset_field = offsets->field(offsets->find_field("offset"));
+  for (size_t i = 0; i < offset_list.size(); ++i) {
+    offset_list[i] = uint32_t(offset_field.get(i));
+  }
+
+  gn03::world_skeleton::description about;
+  about.seed = seed;
+  about.world_span = description.values.number("world_span", 0.0);
+  // РАДИУС ВЛИЯНИЯ объявляет каркас, а не читатель: за радиусом коридора плюс спад поле уже не
+  // меняется, значит спрашивать дальше незачем — но и ближе нельзя, иначе отрезок, гнущий поле внутри
+  // чанка, в запрос не попадёт.
+  about.influence = description.values.number("corridor_radius", 0.0) +
+                    description.values.number("corridor_falloff", 0.0);
+
+  gn03::world_skeleton skeleton;
+  skeleton.build(about, std::move(node_list), std::move(point_list), std::move(offset_list));
+
+  utils::info("GN03 skeleton: {} nodes and {} route points over {} m in {:.1f} ms (influence {} m)", node_count,
+              point_count, about.world_span, milliseconds, about.influence);
+  return skeleton;
+}
+
 gn03::generator_factory make_factory(const originator::pipeline_description& description,
-                                     const originator::size_table& sizes, const uint64_t seed) {
-  return [description, sizes, seed]() -> gn03::chunk_generator {
-    auto worker = std::make_shared<chunk_worker>(description, sizes, seed);
+                                     const originator::size_table& sizes, const uint64_t seed,
+                                     const gn03::world_skeleton* skeleton) {
+  // Каркас отдаётся рабочим потокам ПО УКАЗАТЕЛЮ и только на чтение: после сборки он неизменен,
+  // поэтому запрос по области — чистая функция, и делить его между потоками можно без всякой защиты.
+  return [description, sizes, seed, skeleton]() -> gn03::chunk_generator {
+    auto worker = std::make_shared<chunk_worker>(description, sizes, seed, skeleton);
     return [worker](const originator::chunk_key& key, gn03::chunk_mesh& mesh) { worker->generate(key, mesh); };
   };
 }
@@ -421,7 +614,9 @@ int main_verify(const options& opts) {
   utils::info("GN03 verify: chunk {} cells of {} m, {} samples per chunk, capacity {} vertices",
               sizes.chunk_cells, sizes.cell_size, sizes.side * sizes.side * sizes.side, sizes.vertex_capacity);
 
-  chunk_worker worker(description, table, opts.seed);
+  // Каркас в проверке строится ТОТ ЖЕ, что и в окне: иначе проверялся бы другой мир.
+  const auto skeleton = build_skeleton(opts.overrides, opts.seed);
+  chunk_worker worker(description, table, opts.seed, &skeleton);
   verification checks;
 
   // 1. Правило независимости чанков: результат зависит только от (зерно, ключ).
@@ -467,14 +662,16 @@ int main_verify(const options& opts) {
 
   // Второй пайплайн с тем же зерном — то же самое.
   {
-    chunk_worker twin(description, table, opts.seed);
+    chunk_worker twin(description, table, opts.seed, &skeleton);
     checks.check(same_geometry(first_pass, generate_one(twin, probe)),
                  "a second pipeline with the same seed gives the same chunk");
   }
 
   // Другое зерно — другой мир. Проверка того, что зерно вообще доходит до поля.
   {
-    chunk_worker other(description, table, opts.seed + 1);
+    // Другое зерно — другой мир И другой каркас: маршрут тоже функция зерна.
+    const auto other_skeleton = build_skeleton(opts.overrides, opts.seed + 1);
+    chunk_worker other(description, table, opts.seed + 1, &other_skeleton);
     checks.check(!same_geometry(first_pass, generate_one(other, probe)), "another seed gives another world");
   }
 
@@ -1016,7 +1213,7 @@ int main_verify(const options& opts) {
     checks.check(same_props(sample_props, props_of(populated)),
                  "clearing every buffer changes none of the entities");
     {
-      chunk_worker twin(description, table, opts.seed);
+      chunk_worker twin(description, table, opts.seed, &skeleton);
       checks.check(same_props(sample_props, props_of_twin(twin, populated)),
                    "a second pipeline with the same seed places the same entities");
     }
@@ -1061,7 +1258,254 @@ int main_verify(const options& opts) {
     checks.check(too_steep == 0, "no entity stands on a slope steeper than the declared limit");
   }
 
-  // 14. ОТПЕЧАТОК ЭТАЛОННЫХ ЧАНКОВ. Это ДИАГНОСТИКА, а не критерий, и разница принципиальная: как
+  // 14. КАРКАС И МЕТА ЧАНКА. Двухмасштабная генерация добавляет ровно один новый риск, и он не в
+  // геометрии, а в ЗАПРОСЕ: если чанк получит не всю свою область каркаса, тот же ключ даст другой
+  // мир. Поэтому проверяется не «коридор выглядит правильно», а полнота запроса.
+  {
+    const double span = double(sizes.chunk_cells) * sizes.cell_size;
+    checks.check(!skeleton.empty(), "the skeleton has a route at all");
+    checks.check(skeleton.about().influence > 0.0, "the skeleton declares its radius of influence");
+
+    // ПОЛНОТА ИНДЕКСА: то же, что находит полный перебор. Пропущенный отрезок иначе виден только как
+    // коридор, оборвавшийся в середине горы, и только если случайно пролететь именно там.
+    size_t mismatches = 0;
+    size_t chunks_with_route = 0;
+    size_t densest_meta = 0;
+    for (int64_t z = -3; z <= 3; ++z) {
+      for (int64_t y = -1; y <= 1; ++y) {
+        for (int64_t x = -3; x <= 3; ++x) {
+          const originator::chunk_key key{x * 3, y, z * 3};
+          const std::array<double, 3> low{double(key.x) * span - sizes.cell_size,
+                                          double(key.y) * span - sizes.cell_size,
+                                          double(key.z) * span - sizes.cell_size};
+          const std::array<double, 3> high{low[0] + span + 2.0 * sizes.cell_size,
+                                           low[1] + span + 2.0 * sizes.cell_size,
+                                           low[2] + span + 2.0 * sizes.cell_size};
+
+          gn03::world_skeleton::query_result indexed;
+          gn03::world_skeleton::query_result exhaustive;
+          const bool indexed_fits = skeleton.query(low, high, sizes.route_capacity, sizes.route_chain_capacity,
+                                                   indexed);
+          const bool exhaustive_fits = skeleton.query_exhaustive(low, high, sizes.route_capacity,
+                                                                 sizes.route_chain_capacity, exhaustive);
+          if (indexed_fits != exhaustive_fits || indexed.points != exhaustive.points ||
+              indexed.offsets != exhaustive.offsets) {
+            ++mismatches;
+          }
+          chunks_with_route += indexed.points.empty() ? 0 : 1;
+          densest_meta = std::max(densest_meta, indexed.points.size());
+        }
+      }
+    }
+    checks.check(mismatches == 0, "the spatial index finds exactly what an exhaustive scan finds");
+    checks.check(chunks_with_route > 0, "the sampled chunks include some the route passes through");
+    utils::info("GN03 verify: {} of 147 sampled chunks carry route meta, the densest {} points of the declared "
+                "{} — a chunk gets a QUERY over its area, not the skeleton",
+                chunks_with_route, densest_meta, sizes.route_capacity);
+
+    // ОТКАЗ, А НЕ ОБРЕЗКА: с ёмкостью в одну точку запрос обязан сказать «не влезло».
+    {
+      gn03::world_skeleton::query_result tiny;
+      bool refused_somewhere = false;
+      for (int64_t x = -3; x <= 3 && !refused_somewhere; ++x) {
+        const originator::chunk_key key{x * 3, 0, 0};
+        const std::array<double, 3> low{double(key.x) * span, -span, 0.0};
+        const std::array<double, 3> high{low[0] + span, span, span};
+        gn03::world_skeleton::query_result full;
+        if (skeleton.query(low, high, sizes.route_capacity, sizes.route_chain_capacity, full) &&
+            !full.points.empty()) {
+          refused_somewhere = !skeleton.query(low, high, 1, sizes.route_chain_capacity, tiny);
+        }
+      }
+      checks.check(refused_somewhere, "a query that does not fit the declared capacity refuses instead of "
+                                      "truncating");
+    }
+
+    // ПАКЕТ: грубый проход считается один раз, поэтому его результат живёт файлом. Круг «записал —
+    // прочитал» обязан давать тот же запрос, иначе мир после перезапуска другой.
+    {
+      const std::string path = std::string("gn03_skeleton_check.bin");
+      checks.check(skeleton.save(path), "the skeleton writes its package to disk");
+      gn03::world_skeleton restored;
+      checks.check(restored.load(path), "the skeleton reads its package back");
+      checks.check(restored.about().seed == skeleton.about().seed &&
+                     restored.about().influence == skeleton.about().influence &&
+                     restored.nodes().size() == skeleton.nodes().size() &&
+                     restored.points().size() == skeleton.points().size(),
+                   "the package keeps the description, the nodes and the route");
+
+      const std::array<double, 3> low{-span, -span, -span};
+      const std::array<double, 3> high{span * 2.0, span, span * 2.0};
+      gn03::world_skeleton::query_result before;
+      gn03::world_skeleton::query_result after;
+      skeleton.query(low, high, sizes.route_capacity, sizes.route_chain_capacity, before);
+      restored.query(low, high, sizes.route_capacity, sizes.route_chain_capacity, after);
+      checks.check(before.points == after.points && before.offsets == after.offsets,
+                   "a reloaded package answers a query with exactly the same route");
+      std::filesystem::remove(path);
+    }
+
+    // КОРИДОР НЕПРЕРЫВЕН ЧЕРЕЗ ШОВ, и это главное свойство двухмасштабной генерации: у двух соседних
+    // чанков МЕТА РАЗНАЯ (каждый спросил свою область), а поле на общей грани обязано совпасть.
+    // Проверяется на паре чанков, через которую маршрут действительно проходит.
+    {
+      bool checked_pair = false;
+      bool faces_match = false;
+      // Имя переменной не `point`: так называется тип мировой точки в этом файле, и тень над типом
+      // выглядела бы как ошибка шаблона, а не как то, чем является.
+      for (const auto& route_point : skeleton.points()) {
+        const originator::chunk_key left{int64_t(std::floor(route_point[0] / span)),
+                                         int64_t(std::floor(route_point[1] / span)),
+                                         int64_t(std::floor(route_point[2] / span))};
+        const originator::chunk_key right{left.x + 1, left.y, left.z};
+
+        const auto left_mesh = generate_one(worker, left);
+        const auto right_mesh = generate_one(worker, right);
+        if (left_mesh.empty() || right_mesh.empty()) {
+          continue;
+        }
+
+        const auto on_plane = [span](const vertex_list& source, const originator::chunk_key& key,
+                                     const uint16_t local_x) {
+          std::vector<point> result;
+          for (const auto& vertex : source) {
+            if (vertex.position[0] == local_x) {
+              result.push_back(point_of(vertex, key, span));
+            }
+          }
+          std::sort(result.begin(), result.end());
+          result.erase(std::unique(result.begin(), result.end()), result.end());
+          return result;
+        };
+        const auto left_face = on_plane(left_mesh, left, 65535);
+        const auto right_face = on_plane(right_mesh, right, 0);
+        if (left_face.empty()) {
+          continue;
+        }
+        checked_pair = true;
+        faces_match = left_face == right_face;
+        break;
+      }
+      checks.check(checked_pair, "some chunk pair on the route shares a face with geometry on it");
+      checks.check(faces_match, "two chunks with DIFFERENT route meta still agree on their shared face");
+    }
+  }
+
+  // 15. ПАМЯТЬ МИРА. Проверяется главное свойство модели «выводимое + отличие»: соединение это
+  // ФУНКЦИЯ от (выводимые сущности, склад), и ничего кроме. Иначе «вернулся — а стало иначе» ловилось
+  // бы только глазами и только иногда.
+  {
+    const originator::chunk_key key{4, 0, -2};
+    gn03::chunk_mesh mesh;
+    worker.generate(key, mesh);
+    const auto derived = mesh.props;
+    checks.check(!derived.empty(), "the memory probe chunk has entities to remember");
+
+    gn03::world_memory memory;
+    std::vector<gn03::world_memory::joined_prop> visible;
+
+    // Пустой склад означает «мир таков, каким его посчитал генератор».
+    checks.check(memory.join(key, derived, visible) == derived.size(),
+                 "an empty memory leaves the derived world exactly as it is");
+    checks.check(memory.size() == 0, "an untouched world stores nothing at all");
+
+    // Идентичность: номера попыток различны, иначе память об одной сущности стала бы памятью о другой.
+    std::set<uint32_t> origins;
+    for (const auto& prop : derived) {
+      origins.insert(prop.origin);
+    }
+    checks.check(origins.size() == derived.size(), "every entity of a chunk carries a distinct identity");
+
+    // Забрать: сущность исчезает из мира, а склад растёт РОВНО на одну запись.
+    const gn03::prop_id taken{key, derived.front().origin};
+    memory.take(taken);
+    checks.check(memory.join(key, derived, visible) == derived.size() - 1, "a taken entity leaves the world");
+    checks.check(memory.size() == 1, "memory grows with what was touched, not with what exists");
+
+    // ГЛАВНОЕ: чанк, посчитанный ЗАНОВО, соединяется со складом в то же самое. Это и есть «улетел и
+    // вернулся»: выводимое пересчитано с нуля, а мир помнит.
+    gn03::chunk_mesh again;
+    worker.generate(originator::chunk_key{-40, 2, 17}, again); // между ними считался другой чанк
+    worker.generate(key, again);
+    std::vector<gn03::world_memory::joined_prop> after;
+    const size_t after_count = memory.join(key, again.props, after);
+    bool same_after_reload = after_count == derived.size() - 1;
+    for (size_t i = 0; i < after.size() && same_after_reload; ++i) {
+      same_after_reload = after[i].prop->origin == visible[i].prop->origin &&
+                          after[i].delta.taken == visible[i].delta.taken &&
+                          after[i].delta.marked == visible[i].delta.marked;
+    }
+    checks.check(same_after_reload, "a chunk recomputed from scratch joins the memory into the same world");
+
+    // Порядок появления отличий не имеет значения: склад это множество, а не журнал.
+    gn03::world_memory forward;
+    gn03::world_memory backward;
+    const gn03::prop_id first{key, derived[0].origin};
+    const gn03::prop_id second{key, derived[derived.size() / 2].origin};
+    forward.take(first);
+    forward.mark(second);
+    backward.mark(second);
+    backward.take(first);
+    std::vector<gn03::world_memory::joined_prop> forward_visible;
+    std::vector<gn03::world_memory::joined_prop> backward_visible;
+    forward.join(key, derived, forward_visible);
+    backward.join(key, derived, backward_visible);
+    bool order_free = forward_visible.size() == backward_visible.size();
+    for (size_t i = 0; i < forward_visible.size() && order_free; ++i) {
+      order_free = forward_visible[i].prop->origin == backward_visible[i].prop->origin &&
+                   forward_visible[i].delta.marked == backward_visible[i].delta.marked;
+    }
+    checks.check(order_free, "the order in which the world was changed does not change the world");
+
+    // Пометка ПЕРЕКЛЮЧАЕТСЯ, и снятая пометка не оставляет мусора. Проверка эта нашла настоящую
+    // развилку: сначала счётчик касаний учитывался в «запись пуста», и снятая пометка оставляла
+    // запись навсегда — то есть игрок, потрогавший и вернувший как было тысячу вех, платил тысячей
+    // записей в сохранении. Критерий должен быть «МИР ОТЛИЧАЕТСЯ», а не «что-то происходило».
+    gn03::world_memory toggling;
+    toggling.mark(second);
+    checks.check(toggling.size() == 1, "marking an entity is remembered");
+    toggling.mark(second);
+    checks.check(toggling.size() == 0, "unmarking forgets the entry: a counter nothing depends on is a "
+                                       "statistic, not a difference");
+
+    // Отличие, которому в мире больше ничего не соответствует: мир изменился под сохранением. Оно НЕ
+    // выбрасывается (сущность может вернуться), но должно быть посчитано вслух.
+    gn03::world_memory stale;
+    stale.take(gn03::prop_id{key, 9999});
+    checks.check(stale.unmatched(key, derived) == 1, "a delta with nothing to match is reported, not dropped");
+    checks.check(memory.unmatched(key, derived) == 0, "a delta that matches the world is not reported as stale");
+
+    // Файл склада И ЕСТЬ сохранение мира. Круг «записал — прочитал» обязан быть точным, а второй
+    // записанный файл — побайтово тем же: порядок записей в файле фиксирован сортировкой, а не
+    // порядком обхода таблицы.
+    const std::string path = std::string("gn03_memory_check.bin");
+    memory.mark(second);
+    checks.check(memory.save(path), "the memory writes itself to disk");
+    gn03::world_memory restored;
+    checks.check(restored.load(path), "the memory reads itself back");
+    checks.check(restored.size() == memory.size(), "the round trip keeps every entry");
+    const auto* original_delta = memory.find(second);
+    const auto* restored_delta = restored.find(second);
+    checks.check(original_delta != nullptr && restored_delta != nullptr &&
+                   original_delta->marked == restored_delta->marked &&
+                   original_delta->taken == restored_delta->taken &&
+                   original_delta->touches == restored_delta->touches,
+                 "the round trip keeps flags and counters");
+    const std::string twin_path = std::string("gn03_memory_check_twin.bin");
+    checks.check(restored.save(twin_path), "the restored memory writes itself out again");
+    const auto first_bytes = file_io::read<char>(path, file_io::type::binary);
+    const auto second_bytes = file_io::read<char>(twin_path, file_io::type::binary);
+    checks.check(!first_bytes.empty() && first_bytes.size() == second_bytes.size() &&
+                   std::memcmp(first_bytes.data(), second_bytes.data(), first_bytes.size()) == 0,
+                 "saving the same memory twice gives the same bytes");
+    utils::info("GN03 verify: the memory of {} touched entities is {} bytes on disk — a save file is the size of "
+                "what the player disturbed, not of the world",
+                memory.size(), first_bytes.size());
+    std::filesystem::remove(path);
+    std::filesystem::remove(twin_path);
+  }
+
+  // 16. ОТПЕЧАТОК ЭТАЛОННЫХ ЧАНКОВ. Это ДИАГНОСТИКА, а не критерий, и разница принципиальная: как
   // только меняется правило поля или хеш, отпечаток меняется целиком, и проверять его равенство
   // означало бы падать при каждой правке мира (довод уже оплачен на GN02 — там смена хеша сдвинула
   // каждое число планеты, и ни одно СВОЙСТВО не сломалось).
@@ -1088,7 +1532,7 @@ int main_verify(const options& opts) {
                 total, fingerprint);
   }
 
-  // 15. ОКНО, СДВИНУТОЕ НА ХОДУ, не теряет чанки. Проверка написана под НАЙДЕННЫЙ баг: при
+  // 17. ОКНО, СДВИНУТОЕ НА ХОДУ, не теряет чанки. Проверка написана под НАЙДЕННЫЙ баг: при
   // перемещении часть чанков не появлялась никогда, а после отлёта и возврата появлялась. Причина
   // была в пересборке очереди — чанк, ждавший своей очереди в прошлом окне, оставался помеченным как
   // ждущий, но ни в одной очереди не лежал.
@@ -1096,7 +1540,7 @@ int main_verify(const options& opts) {
   // Один рабочий поток здесь намеренно: с одиннадцатью очередь рассасывается быстрее, чем окно
   // успевает сдвинуться, и баг просто не воспроизводится.
   {
-    const auto factory = make_factory(description, table, opts.seed);
+    const auto factory = make_factory(description, table, opts.seed, &skeleton);
     gn03::chunk_streamer streamer(factory, 1);
 
     gn03::chunk_window window;
@@ -1145,12 +1589,12 @@ int main_verify(const options& opts) {
                                     "the queue was still full");
   }
 
-  // 16. ПРОПУСКНАЯ СПОСОБНОСТЬ фонового стримера. Замер, а не критерий, но он отвечает на вопрос, от
+  // 18. ПРОПУСКНАЯ СПОСОБНОСТЬ фонового стримера. Замер, а не критерий, но он отвечает на вопрос, от
   // которого зависит вся конструкция: во что превращается «4 миллисекунды на чанк», когда чанки
   // считаются в несколько потоков. Ускорение здесь заведомо не линейное — каждый поток тащит свой
   // буфер отсчётов в 1.4 мегабайта, и упирается всё в память, а не в арифметику.
   {
-    const auto factory = make_factory(description, table, opts.seed);
+    const auto factory = make_factory(description, table, opts.seed, &skeleton);
     // Окно берётся большим НЕ ради солидности числа: у каждого рабочего потока есть цена запуска
     // (свой sol::state, свой пайплайн, свои буферы), и на двух десятках чанков она и есть весь
     // замер. Двести сорок три чанка её размазывают.
@@ -1226,10 +1670,77 @@ int main(const int argc, const char** argv) {
               view.workers, opts.radius * 2 + 1, opts.vertical_radius * 2 + 1, opts.radius * 2 + 1,
               opts.arena_vertices, opts.arena_vertices * sizeof(gn03::gpu_vertex) / (1024 * 1024));
 
+  // КАРКАС: грубый проход считается ОДИН раз. Есть пакет — читаем, нет — считаем и пишем. Это и есть
+  // «каркас может считаться на фоне, но быть много крупнее видимого мира»: его цена не зависит от
+  // того, сколько чанков вокруг игрока, и платится она однажды.
+  gn03::world_skeleton skeleton;
+  bool skeleton_ready = false;
+  if (!opts.skeleton_path.empty() && skeleton.load(opts.skeleton_path)) {
+    if (skeleton.about().seed != opts.seed) {
+      // Пакет от ДРУГОГО зерна — это другой мир, и молча взять его нельзя: коридоры пошли бы не там,
+      // где их проложил каркас этого мира.
+      utils::warn("GN03: the skeleton at '{}' was built for seed {} but the world runs on {} — rebuilding",
+                  opts.skeleton_path, skeleton.about().seed, opts.seed);
+    } else {
+      skeleton_ready = true;
+      utils::info("GN03: skeleton loaded from '{}': {} nodes, {} route points, influence {} m",
+                  opts.skeleton_path, skeleton.nodes().size(), skeleton.points().size(),
+                  skeleton.about().influence);
+    }
+  }
+  if (!skeleton_ready) {
+    skeleton = build_skeleton(opts.overrides, opts.seed);
+    if (!opts.skeleton_path.empty() && !skeleton.save(opts.skeleton_path)) {
+      utils::warn("GN03: could not write the skeleton package to '{}'", opts.skeleton_path);
+    }
+  }
+
+  // ПАМЯТЬ МИРА принадлежит хосту: окно её меняет, но читает и пишет на диск тот, кто знает, где
+  // лежит сохранение. Если файла ещё нет, склад просто пуст — мир при этом полностью выводим.
+  gn03::world_memory memory;
+  if (!opts.memory_path.empty()) {
+    if (memory.load(opts.memory_path)) {
+      utils::info("GN03: world memory loaded from '{}': {} entries", opts.memory_path, memory.size());
+    } else {
+      utils::info("GN03: no world memory at '{}' yet — the world is entirely derived", opts.memory_path);
+    }
+  }
+  view.memory = &memory;
+
+  // Посадка на маршрут: место и направление берутся у КАРКАСА, то есть у грубого прохода. Мировая
+  // точка тут же разбирается на ключ чанка и смещение внутри него — другого способа задать место в
+  // этом мире нет вовсе.
+  if (opts.on_route && !skeleton.empty()) {
+    const auto points = skeleton.points();
+    const size_t index = std::min(opts.route_index, points.size() - 1);
+    const size_t next = std::min(index + 1, points.size() - 1);
+    const double span = double(sizes.chunk_cells) * sizes.cell_size;
+
+    originator::chunk_key key{};
+    glm::dvec3 offset{};
+    const std::array<int64_t*, 3> axis_key{&key.x, &key.y, &key.z};
+    for (uint32_t axis = 0; axis < 3; ++axis) {
+      const double world = points[index][axis];
+      *axis_key[axis] = int64_t(std::floor(world / span));
+      offset[axis] = world - double(*axis_key[axis]) * span;
+    }
+
+    view.start = key;
+    view.start_offset = offset;
+    view.start_offset_valid = true;
+    const double dx = points[next][0] - points[index][0];
+    const double dz = points[next][2] - points[index][2];
+    // Взгляд вдоль маршрута: у камеры угол считается от оси x, как и atan2 здесь.
+    view.start_yaw = float(std::atan2(dz, dx));
+    view.start_pitch = 0.0f;
+    utils::info("GN03: camera starts on route point {} of {} — chunk ({}, {}, {}) at ({:.1f}, {:.1f}, {:.1f})",
+                index, points.size(), key.x, key.y, key.z, offset.x, offset.y, offset.z);
+  }
+
   // Пересборка генератора принадлежит хосту, а не окну: окно умеет попросить другой мир, но собрать
   // пайплайн из конфига — работа того, кто знает, откуда конфиг приехал.
-  const auto builder = [&opts](const std::vector<std::pair<std::string, double>>& overrides,
-                               const uint64_t seed) -> gn03::generator_factory {
+  const auto builder = [&opts, &skeleton](const std::vector<std::pair<std::string, double>>& overrides,
+                                          const uint64_t seed) -> gn03::generator_factory {
     auto description = make_description(overrides);
     // Значения из командной строки накладываются ПОСЛЕ значений окна: ключ задаёт то, с чего мир
     // начался, а окно — то, во что его крутят, и последнее слово за тем, кто крутит сейчас.
@@ -1237,8 +1748,23 @@ int main(const int argc, const char** argv) {
       description.values.set_number(name, value);
     }
     const auto sizes = read_sizes(description);
-    return make_factory(description, make_size_table(sizes), seed);
+    // Смена зерна или значений мира — это и другой КАРКАС: он тоже функция зерна, поэтому
+    // пересчитывается вместе с миром, а не остаётся от прошлого.
+    if (seed != skeleton.about().seed) {
+      skeleton = build_skeleton(overrides, seed);
+    }
+    return make_factory(description, make_size_table(sizes), seed, &skeleton);
   };
 
-  return gn03::run_viewer(view, builder);
+  const int code = gn03::run_viewer(view, builder);
+
+  if (!opts.memory_path.empty()) {
+    if (!memory.save(opts.memory_path)) {
+      utils::warn("GN03: could not write the world memory to '{}'", opts.memory_path);
+    } else {
+      utils::info("GN03: world memory saved to '{}': {} entries ({} bytes)", opts.memory_path, memory.size(),
+                  16 + memory.size() * 40);
+    }
+  }
+  return code;
 }

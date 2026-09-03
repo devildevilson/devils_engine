@@ -143,6 +143,78 @@ TEST_CASE("originator rejects a step that reads before anything wrote") {
   CHECK_THROWS_AS(originator::pipeline(description, make_sizes(64), 1), std::runtime_error);
 }
 
+TEST_CASE("originator lets a declared input come from outside the pipeline") {
+  // ДВУХМАСШТАБНАЯ ГЕНЕРАЦИЯ требует этого понятия, и без него не выражается. Грубый мировой проход
+  // считается один раз и отдаёт каркас; чанковый пайплайн читает из каркаса свою область, а заполняет
+  // такой буфер ХОСТ — он один знает, что резидентно и что попадает в область чанка. Значит шага,
+  // который его пишет, нет и быть не должно.
+  const std::string_view steps = R"(
+{
+  name = climate
+  body = gen/climate
+  reads = [ cells ]
+  writes = [ state ]
+}
+)";
+
+  // Без объявления это ровно та ошибка, о которой библиотека обязана кричать: читают то, чего никто
+  // не писал, и отличить приход извне от опечатки в имени можно только по объявлению автора.
+  {
+    originator::pipeline_description description;
+    description.name = "two_scale";
+    description.buffers = originator::parse_buffers(buffers_config, "buffers");
+    description.steps = originator::parse_steps(steps, "steps");
+    CHECK_THROWS_AS(originator::pipeline(description, make_sizes(64), 1), std::runtime_error);
+  }
+
+  {
+    originator::pipeline_description description;
+    description.name = "two_scale";
+    description.buffers = originator::parse_buffers(buffers_config, "buffers");
+    description.steps = originator::parse_steps(steps, "steps");
+    description.inputs = {"cells"};
+    CHECK_NOTHROW(originator::pipeline(description, make_sizes(64), 1));
+  }
+
+  // Вход, которого нет среди буферов, — опечатка, и молчать про неё нельзя: пайплайн собрался бы, а
+  // хост заполнял бы буфер, которого нет.
+  {
+    originator::pipeline_description description;
+    description.name = "two_scale";
+    description.buffers = originator::parse_buffers(buffers_config, "buffers");
+    description.steps = originator::parse_steps(steps, "steps");
+    description.inputs = {"skeleton"};
+    CHECK_THROWS_AS(originator::pipeline(description, make_sizes(64), 1), std::runtime_error);
+  }
+}
+
+TEST_CASE("originator reads a declared input list from the entry document") {
+  const auto entry = originator::parse_entry(R"(
+name = two_scale
+
+values  = ./values
+buffers = ./buffers
+
+inputs = [ route_points, route_offsets ]
+
+steps = [
+  {
+    name = field
+    body = ./scripts/field
+    reads = [ route_points, route_offsets ]
+    writes = [ cells ]
+  }
+]
+)", "entry");
+
+  CHECK(entry.name == "two_scale");
+  REQUIRE(entry.inputs.size() == 2);
+  CHECK(entry.inputs[0] == "route_points");
+  CHECK(entry.inputs[1] == "route_offsets");
+  REQUIRE(entry.steps.size() == 1);
+  CHECK(entry.steps[0].reads.size() == 2);
+}
+
 TEST_CASE("originator rejects unknown buffers and contradictory bindings") {
   auto buffers = originator::parse_buffers(buffers_config, "buffers");
 
