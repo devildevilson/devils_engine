@@ -12,7 +12,12 @@
 -- чанкуется: чанк измерил бы свой собственный диапазон и получил бы своё отображение, не совпадающее
 -- с соседями. Поэтому режим выбирает конфиг, а не скрипт угадывает.
 
-local function generate(field, step, features, salt)
+local function generate(field, step, cells, features, salt)
+  -- Ширина строки буфера читается У БУФЕРА, а не из параметров: инструмент возьмёт её оттуда же, и
+  -- двух чисел, случайно равных, больше не существует. map_width — величина ДРУГАЯ (ширина всей
+  -- карты), и она остаётся значением пайплайна.
+  local width = cells:extent().x
+
   -- Частота задаётся в чертах на КАРТУ, а не на клетку и не на чанк: ни разрешение, ни разбиение на
   -- чанки не должны менять мир.
   local frequency = features / step.params.map_width
@@ -21,11 +26,10 @@ local function generate(field, step, features, salt)
     outputs = { field },
     params = {
       tree = step.params.tree,
-      width = step.params.width,
       frequency = frequency,
       -- Мировое смещение чанка: поле в чанке (2,3) продолжает поле соседа, а не начинается заново.
-      x_offset = step.chunk.x * step.params.width,
-      y_offset = step.chunk.y * step.params.width,
+      x_offset = step.chunk.x * width,
+      y_offset = step.chunk.y * width,
       seed_offset = salt,
     },
   }
@@ -66,8 +70,8 @@ return function(step)
   local height = cells:field("height")
   local moisture = cells:field("moisture")
 
-  generate(height, step, step.params.features, 1)
-  generate(moisture, step, step.params.features * 2.5, 2)
+  generate(height, step, cells, step.params.features, 1)
+  generate(moisture, step, cells, step.params.features * 2.5, 2)
 
   if step.params.normalize ~= 0 then
     normalize(height)

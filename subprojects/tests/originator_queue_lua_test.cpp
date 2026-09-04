@@ -114,7 +114,9 @@ return function(step)
   }
 
   assert(report.calls == 2, "the queue reports what it declared")
-  assert(report.passes == 2, "one pass per call until fusion lands")
+  -- box_blur это gather: ему нужен весь предыдущий проход, поэтому группа слияния на нём рвётся.
+  assert(report.passes == 2, "a gather breaks the fusion group")
+  assert(report.fused == 0, "nothing to fuse in this pair")
 end
 )lua";
 } // namespace

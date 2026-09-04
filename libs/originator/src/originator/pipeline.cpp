@@ -18,6 +18,10 @@ namespace {
 struct buffer_mirror {
   std::string name;
   std::vector<std::pair<std::string, std::string>> format;
+  // Форма буфера ИМЕНАМИ констант, 1..3 оси: `extent = [ map_width, map_width ]`. Объявляется вместо
+  // `size`, а не вместе с ним — произведение осей и есть число элементов, и второй способ назвать то
+  // же число однажды разошёлся бы с первым.
+  std::vector<std::string> extent;
   std::optional<std::string> layout;
   std::string size;
 };
@@ -141,8 +145,18 @@ std::vector<buffer_description> parse_buffers(const std::string_view& text, cons
     if (mirror.name.empty()) {
       utils::error{}("originator: buffer {} in '{}' has no name", result.size(), label);
     }
-    if (mirror.size.empty()) {
-      utils::error{}("originator buffer '{}': size must name a declared constant", mirror.name);
+    if (mirror.size.empty() && mirror.extent.empty()) {
+      utils::error{}("originator buffer '{}': declare either 'size' or 'extent', both naming declared constants",
+                     mirror.name);
+    }
+    if (!mirror.size.empty() && !mirror.extent.empty()) {
+      utils::error{}("originator buffer '{}': 'size' and 'extent' both name the element count, and two sources of "
+                     "one number eventually disagree — the count is the PRODUCT of the extent, so drop 'size'",
+                     mirror.name);
+    }
+    if (mirror.extent.size() > 3) {
+      utils::error{}("originator buffer '{}': extent has {} axes, at most 3 are addressable",
+                     mirror.name, mirror.extent.size());
     }
 
     const auto storage = mirror.layout.has_value() ? parse_storage_kind(*mirror.layout) : storage_kind::aos;
@@ -160,6 +174,7 @@ std::vector<buffer_description> parse_buffers(const std::string_view& text, cons
     description.name = mirror.name;
     description.layout = make_buffer_layout(storage, fields, mirror.name);
     description.size_name = mirror.size;
+    description.extent_names = std::move(mirror.extent);
     result.push_back(std::move(description));
 
     mirror = buffer_mirror{};
@@ -349,6 +364,20 @@ pipeline::pipeline(pipeline_description description, const size_table& sizes, co
 void pipeline::build(const size_table& sizes) {
   buffers_.reserve(description_.buffers.size());
   for (const auto& declaration : description_.buffers) {
+    if (!declaration.extent_names.empty()) {
+      buffer_extent extent;
+      size_t* const axes[3] = {&extent.x, &extent.y, &extent.z};
+      for (size_t axis = 0; axis < declaration.extent_names.size(); ++axis) {
+        *axes[axis] = sizes.get(declaration.extent_names[axis], declaration.name);
+        if (*axes[axis] == 0) {
+          utils::error{}("originator buffer '{}': extent axis {} ('{}') resolved to zero",
+                         declaration.name, axis, declaration.extent_names[axis]);
+        }
+      }
+      buffers_.push_back(std::make_unique<buffer>(declaration.name, declaration.layout, extent));
+      continue;
+    }
+
     const size_t count = sizes.get(declaration.size_name, declaration.name);
     buffers_.push_back(std::make_unique<buffer>(declaration.name, declaration.layout, count));
   }

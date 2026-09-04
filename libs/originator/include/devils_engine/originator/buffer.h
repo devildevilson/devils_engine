@@ -50,6 +50,31 @@ struct field_placement {
 
 // Объявленная раскладка буфера: упорядоченный список полей плюс выбор хранения. Порядок значим —
 // он определяет расположение в памяти, поэтому в конфиге это список, а не отображение.
+// ФОРМА буфера: сколько элементов по осям. Существует отдельно от числа элементов потому, что это
+// разные вопросы: число элементов — сколько буфер СТОИТ, форма — чем его АДРЕСУЮТ.
+//
+// Появилась она не из-за GPU, хотя там без неё диспатч не портируемый. Сегодня форма приезжает
+// ПАРАМЕТРОМ, причём в трёх разных написаниях: `width` у `value_noise` и `box_blur`, `size_x`/`size_y`
+// у `position_grid`. Это одна и та же истина, продублированная столько раз, сколько инструментов её
+// читают, — а библиотека сама себе такое запрещает («порог, продублированный в трёх местах, однажды
+// разъедется»). Объявленная у буфера форма читается инструментом У ПРИВЯЗКИ, и второго списка чисел
+// не остаётся.
+//
+// Ноль по оси x означает «форма не объявлена»: такой буфер линейный, и адресуют его номером элемента.
+struct buffer_extent {
+  size_t x = 0;
+  size_t y = 0;
+  size_t z = 0;
+
+  bool declared() const noexcept;
+  // Сколько осей объявлено: 1, 2 или 3. Ноль означает, что формы нет вовсе.
+  uint32_t axes() const noexcept;
+  // Произведение объявленных осей — оно же число элементов буфера с такой формой.
+  size_t count() const noexcept;
+
+  bool operator==(const buffer_extent& other) const noexcept = default;
+};
+
 class buffer_layout {
 public:
   storage_kind::values storage = storage_kind::aos;
@@ -125,10 +150,14 @@ class buffer {
 public:
   buffer() noexcept = default;
   buffer(std::string name, buffer_layout layout, const size_t count);
+  // Буфер с объявленной ФОРМОЙ. Число элементов не передаётся отдельно, потому что оно уже сказано:
+  // это произведение осей. Второй способ назвать то же число означал бы, что однажды они разойдутся.
+  buffer(std::string name, buffer_layout layout, const buffer_extent extent);
 
   const std::string& name() const noexcept;
   const buffer_layout& layout() const noexcept;
   size_t count() const noexcept;
+  const buffer_extent& extent() const noexcept;
   size_t byte_size() const noexcept;
 
   size_t find_field(const std::string_view& name) const noexcept;
@@ -146,6 +175,7 @@ public:
 private:
   std::string name_;
   buffer_layout layout_;
+  buffer_extent extent_{};
   size_t count_ = 0;
   std::vector<field_placement> placement_;
   std::vector<std::byte> memory_;

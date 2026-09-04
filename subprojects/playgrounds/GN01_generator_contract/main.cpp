@@ -141,6 +141,9 @@ options parse_options(const int argc, const char** argv) {
 originator::size_table make_sizes(const options& opts) {
   originator::size_table sizes;
   sizes.set("cell_count", opts.width * opts.width);
+  // Ширина буфера как КОНСТАНТА РАЗМЕРА: `cells` объявляет ею свою форму, и она же становится
+  // единственным источником ширины растра — раньше её отдельно называл каждый параметр инструмента.
+  sizes.set("width", opts.width);
   sizes.set("site_count", opts.sites);
   sizes.set("site_count_plus_one", opts.sites + 1);
   // Ёмкость под дуги соседства. Средняя степень в триангуляции Делоне около шести, но у краевых
@@ -169,7 +172,6 @@ originator::pipeline_description load_description(const options& opts) {
   // width — ширина строки буфера, map_width — ширина всей карты. В обычном прогоне они совпадают;
   // при чанкованной генерации буфер меньше карты, и частоту шума нужно считать от карты, иначе
   // каждый чанк получил бы свой масштаб черт рельефа.
-  description.values.set_number("width", double(opts.width));
   description.values.set_number("map_width", double(opts.map_width == 0 ? opts.width : opts.map_width));
   if (!opts.normalize) {
     description.values.set_number("normalize", 0.0);
@@ -520,8 +522,9 @@ int run_verify(const options& opts) {
       const auto field = cells->find_field("height");
       const std::vector<originator::field_ref> same_in{originator::field_ref{cells, nullptr, field}};
       const std::vector<originator::field_ref> same_out{originator::field_ref{cells, cells, field}};
-      originator::parameters params;
-      params.set_number("width", double(opts.width));
+      // Параметр формы здесь НЕ ставится намеренно: буфер объявил extent, и лишний `width` отклонил
+      // бы вызов раньше — по другой причине, а проверка называет эту.
+      const originator::parameters params;
       originator::dispatch(*tools.find("box_blur"), same_in, same_out, params, 1, 0, count, "verify", nullptr);
     } catch (const std::exception&) {
       rejected = true;
@@ -538,6 +541,34 @@ int run_verify(const options& opts) {
       rejected = true;
     }
     check(rejected, "чтение буфера до первой записи отклоняется");
+
+    // ФОРМА РАСТРА ИМЕЕТ РОВНО ОДИН ИСТОЧНИК. Пока она приезжала параметром в каждый инструмент, одна
+    // и та же истина жила в трёх написаниях (`width`, `size_x`), и разъехаться ей было нечем помешать.
+    rejected = false;
+    try {
+      auto shaped = description;
+      shaped.steps.resize(1);
+      originator::pipeline p(shaped, sizes, opts.seed);
+      auto* cells = p.find_buffer("cells");
+      const std::vector<originator::field_ref> out{
+        originator::field_ref{cells, cells, cells->find_field("height")}};
+      originator::parameters params;
+      params.set_number("width", double(opts.width));
+      originator::dispatch(*tools.find("value_noise"), {}, out, params, 1, 0, count, "verify", nullptr);
+    } catch (const std::exception&) {
+      rejected = true;
+    }
+    check(rejected, "форма, названная и буфером, и параметром, отклоняется");
+
+    rejected = false;
+    try {
+      // То же правило в конфиге: `size` рядом с `extent` называет число элементов дважды.
+      originator::parse_buffers("{ name = both, format = [ h = v1 ], size = cell_count, extent = [ width ] }",
+                                "verify");
+    } catch (const std::exception&) {
+      rejected = true;
+    }
+    check(rejected, "буфер, назвавший и size, и extent, отклоняется");
   }
 
   // 6. Окружение lua и бюджет тела шага.
@@ -687,7 +718,6 @@ int run_bench_queue(const options& opts) {
   // Данные настоящие, хотя у этих трёх инструментов ветвлений по данным нет: на нулях замер был бы
   // тот же, но сверять его глазами с полем в отчёте было бы нечем.
   originator::parameters noise;
-  noise.set_number("width", double(opts.width));
   noise.set_number("frequency", 4.0 / double(opts.width));
   for (const char* name : {"height", "moisture"}) {
     const std::vector<originator::field_ref> out{field(name, true)};
@@ -842,7 +872,6 @@ int run_bench(const options& opts) {
 
     originator::parameters noise;
     noise.set_string("tree", "DQkGDA==");
-    noise.set_number("width", double(opts.width));
     noise.set_number("frequency", 5.0 / double(opts.width));
 
     measure("шум: noise_grid, 1 поток", count, [&] {
@@ -875,16 +904,21 @@ int run_bench(const options& opts) {
     const std::vector<originator::field_ref> label_out{
       originator::field_ref{cells, cells, cells->find_field("region")}};
 
+    // Два РАЗНЫХ набора, и это не дублирование: у разметки растр — форма приёмника, а у соседства и
+    // контуров `width`/`height` это границы МИРА в его единицах. Числа здесь совпадают случайно.
+    originator::parameters label_params;
+    label_params.set_number("site_count", double(opts.sites));
+
     originator::parameters region_params;
     region_params.set_number("width", double(opts.width));
     region_params.set_number("height", double(opts.width));
     region_params.set_number("site_count", double(opts.sites));
 
     measure("разметка областей: voronoi_label, 1 поток", count, [&] {
-      originator::dispatch(*tools.find("voronoi_label"), site_in, label_out, region_params, 1, 0, count, "bench", nullptr);
+      originator::dispatch(*tools.find("voronoi_label"), site_in, label_out, label_params, 1, 0, count, "bench", nullptr);
     });
     measure("разметка областей: voronoi_label, " + std::to_string(threads) + " потоков", count, [&] {
-      originator::dispatch(*tools.find("voronoi_label"), site_in, label_out, region_params, 1, 0, count, "bench", &pool);
+      originator::dispatch(*tools.find("voronoi_label"), site_in, label_out, label_params, 1, 0, count, "bench", &pool);
     });
 
     const std::vector<originator::field_ref> csr_out{

@@ -30,7 +30,10 @@ return function(step)
     originator.queue.box_blur{
       inputs = { height },
       outputs = { smoothed },
-      params = { width = step.params.width, radius = step.params.radius },
+      -- Ширина растра больше не приезжает параметром: инструмент берёт её у ПРИВЯЗКИ, потому что
+      -- буфер объявил свою форму. Передать её ещё и здесь — громкая ошибка, и это правильно: два
+      -- источника одного числа однажды разъедутся.
+      params = { radius = step.params.radius },
     },
 
     -- Классификация — семантический проход. Здесь он нативный; тот же расчёт повторяют

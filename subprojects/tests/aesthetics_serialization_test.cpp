@@ -275,6 +275,46 @@ TEST_CASE("materialized queries rebuild automatically after snapshot load [aesth
   CHECK(std::get<0>(intersection[0]) == both);
 }
 
+TEST_CASE("transactional world load preserves live state and subscriptions on every failure [aesthetics::serial]") {
+  aesthetics::world source;
+  const auto replacement = source.gen_entityid();
+  source.create<pos>(replacement, pos{11, 12});
+  source.create<vel>(replacement, vel{13.0f, 14.0f});
+  const auto bytes = aesthetics::serial::dump_world(&source);
+
+  aesthetics::world live;
+  const auto original = live.gen_entityid();
+  live.create<pos>(original, pos{1, 2});
+  live.create<vel>(original, vel{3.0f, 4.0f});
+  auto query = live.query<pos, vel>();
+  load_watcher watcher;
+  live.subscribe<aesthetics::serial::snapshot_loaded_event>(&watcher);
+  const auto* const address = &live;
+
+  // Inject a truncation at every byte.  stage_world may have constructed an arbitrary prefix, but
+  // no rejected prefix is allowed to publish it or notify address-bound queries/systems.
+  for (std::size_t size = 0; size < bytes.size(); ++size) {
+    aesthetics::serial::reader in{std::span<const std::byte>{bytes}.first(size)};
+    CHECK_FALSE(aesthetics::serial::load_world(&live, in));
+    REQUIRE(live.get<pos>(original) != nullptr);
+    CHECK(live.get<pos>(original)->x == 1);
+    CHECK(query.size() == 1);
+    CHECK(std::get<0>(query[0]) == original);
+    CHECK(watcher.fired == 0);
+    CHECK(&live == address);
+  }
+
+  aesthetics::serial::reader valid{bytes};
+  REQUIRE(aesthetics::serial::load_world(&live, valid));
+  CHECK(&live == address);
+  CHECK(watcher.fired == 1);
+  CHECK(query.size() == 1);
+  CHECK(std::get<0>(query[0]) == replacement);
+  REQUIRE(live.get<pos>(replacement) != nullptr);
+  CHECK(live.get<pos>(replacement)->x == 11);
+  live.unsubscribe<aesthetics::serial::snapshot_loaded_event>(&watcher);
+}
+
 TEST_CASE("empty world round-trips [aesthetics::serial]") {
   aesthetics::world w;
   std::vector<std::byte> buf;

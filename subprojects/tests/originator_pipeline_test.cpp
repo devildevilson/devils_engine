@@ -351,3 +351,63 @@ TEST_CASE("originator buffers survive a chunk change so streaming does not reall
   p.clear_buffers();
   CHECK(height.get(10) == doctest::Approx(0.0));
 }
+
+TEST_CASE("originator buffer declares its shape instead of its size") {
+  // ФОРМА и РАЗМЕР — разные вопросы: размер говорит, сколько буфер стоит, форма — чем его адресуют.
+  // Поэтому объявляется что-то одно: произведение осей И ЕСТЬ число элементов, а второй способ
+  // назвать то же число однажды разошёлся бы с первым.
+  constexpr std::string_view shaped = R"(
+{
+  name = raster
+  format = [ height = v1 ]
+  layout = soa
+  extent = [ map_width, map_height ]
+}
+)";
+
+  const auto buffers = originator::parse_buffers(shaped, "buffers");
+  REQUIRE(buffers.size() == 1);
+  CHECK(buffers[0].size_name.empty());
+  REQUIRE(buffers[0].extent_names.size() == 2);
+  CHECK(buffers[0].extent_names[0] == "map_width");
+  CHECK(buffers[0].extent_names[1] == "map_height");
+
+  originator::size_table sizes;
+  sizes.set("map_width", 64);
+  sizes.set("map_height", 32);
+
+  originator::pipeline_description description;
+  description.name = "shaped";
+  description.buffers = buffers;
+  description.steps = originator::parse_steps(R"(
+{
+  name = only
+  body = gen/only
+  writes = [ raster ]
+}
+)", "steps");
+
+  originator::pipeline p(description, sizes, 1);
+  const auto* raster = p.find_buffer("raster");
+  REQUIRE(raster != nullptr);
+  CHECK(raster->extent().x == 64);
+  CHECK(raster->extent().y == 32);
+  CHECK(raster->extent().axes() == 2);
+  // Число элементов не объявлялось вовсе — оно ВЫВЕДЕНО.
+  CHECK(raster->count() == 64 * 32);
+}
+
+TEST_CASE("originator refuses a buffer that names its element count twice") {
+  CHECK_THROWS_AS(originator::parse_buffers(R"(
+{ name = both, format = [ height = v1 ], size = cell_count, extent = [ map_width ] }
+)", "buffers"), std::runtime_error);
+
+  CHECK_THROWS_AS(originator::parse_buffers(R"(
+{ name = neither, format = [ height = v1 ] }
+)", "buffers"), std::runtime_error);
+
+  // Адресовать больше трёх осей нечем: ни диспатч, ни картинка их не выражают.
+  CHECK_THROWS_AS(originator::parse_buffers(R"(
+{ name = wide, format = [ height = v1 ], extent = [ a, b, c, d ] }
+)", "buffers"), std::runtime_error);
+}

@@ -205,7 +205,7 @@ void tool_noise_grid(const tool_call& call, const size_t begin, const size_t end
   const auto& prepared = *static_cast<const prepared_noise*>(call.shared);
   auto target = call.output(0).write();
 
-  const auto width = size_t(std::max<int64_t>(call.params->integer("width", 1), 1));
+  const auto width = resolve_extent(call, call.output(0), "width").x;
   const float frequency = prepared.frequency;
   const float step = float(call.params->number("step", 1.0)) * frequency;
   const float x_origin = float(call.params->number("x_offset", 0.0)) * frequency;

@@ -79,8 +79,10 @@ void tool_voronoi_label(const tool_call& call, const size_t begin, const size_t 
   const auto& tree = *static_cast<const site_tree*>(call.shared);
   auto target = call.output(0).write();
 
-  const auto width = size_t(std::max<int64_t>(call.params->integer("width", 1), 1));
-  const auto height = size_t(std::max<int64_t>(call.params->integer("height", int64_t(width)), 1));
+  // Растр разметки — это форма ПРИЁМНИКА: именно в него пишется метка на клетку.
+  const auto shape = resolve_extent(call, call.output(0), "width", "height");
+  const size_t width = shape.x;
+  const size_t height = shape.y;
   const float max_radius = float(call.params->number("max_radius", double(width + height)));
   (void)height; // участвует только в радиусе по умолчанию: разметка адресуется линейным индексом
 

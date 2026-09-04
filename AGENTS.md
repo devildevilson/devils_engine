@@ -4,6 +4,104 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- ORIGINATOR TOOLING REFINEMENT AHEAD OF THE TRANSLATOR (2026-09-04). `411/411` project tests, GN01
+  `24/24` (`+2`). Two of the three declarations from `ORIGINATOR_GPGPU.md` §5 step 2 are in; the
+  translator stays behind them by decision.
+  (1) BUFFER SHAPE (`extent`) REPLACES SIZE where a buffer is addressed as a raster: `extent = [ width,
+  width ]` names the axes with the same size CONSTANTS, at most three, and the element count is DERIVED
+  as their product — `size` next to `extent` is a loud refusal because it is a second way to name one
+  number. This was not GPU work: the shape used to arrive as a PARAMETER to every tool that reads it,
+  in THREE spellings (`width` for value_noise/noise_grid/box_blur, `size_x`/`size_y` for
+  position_grid, `width`/`height` for voronoi_label) — one truth duplicated once per reader. Now the
+  tool takes it from the BINDING (`resolve_extent`) and a step body from the buffer
+  (`cells:extent()`). Both spellings stay valid while documents are translated, but NEVER on the same
+  call: a shape parameter next to a declared extent is refused by buffer and parameter name, and a test
+  proves the two spellings give a bit-identical field, so translating a config does not change the
+  world. GN01 is translated; GN02/GN03 still ride the legacy path untouched.
+  The translation itself found a conflation worth keeping apart: `voronoi_adjacency` and
+  `voronoi_polygons` take `width`/`height` as WORLD bounds, not as the target raster — the numbers
+  coincide in GN01 by accident, so those stayed parameters. Folding them into one shape would have
+  declared two different quantities equal.
+  (2) `ds` SAVED SLOTS ARE NOW RESET PER ELEMENT, closing the latent defect below, and it came out
+  STRICTER than expected: reading a slot not written on this element is a LOUD refusal (`Saved value #0
+  has type '', expected 'double'`), not a defined zero — so a program that is not pointwise never runs,
+  instead of answering differently at different thread counts. Done the way ds itself does it for a
+  fresh SUB-script frame (the `execute` opcode clears its saved frame's types); paid only by programs
+  that actually use `ctx_save`, since the others declare zero slots. A compile-time dominance check is
+  still wanted, but now as the condition for translating `ctx_save` into a shader local rather than as
+  the fix.
+  (3) §6.4 WAS CORRECTED BY THE AUTHOR AND THE CORRECTION IS THE BETTER IDEA. I had written "runtime
+  path choice is incompatible with world determinism, so `auto` is only for presentation". What is
+  incompatible is not the choice but a choice made from MACHINE properties. An ALGORITHMIC criterion
+  ("a queue shorter than four passes runs on the CPU") is decided from values the config already
+  declares, so every machine takes the same branch. The author's analogy is the right one: AVX vs SSE2
+  FIXED IN THE BUILD MANIFEST — and the project already lived this, since FastNoise2 picked its SIMD
+  set at runtime and one seed produced different artefacts per machine, closed not by a smarter choice
+  but by `FASTNOISE2_STRICT_FP`, i.e. by removing the runtime dependency. So: the criterion reads only
+  declared values (passes after fusion grouping, element count, footprint, presence of untranslatable
+  calls); thresholds live in the MANIFEST and measurement says what number to write there, not which
+  branch to take now; `auto` as a runtime notion is not needed at all; and a machine that cannot run the
+  decided path REFUSES LOUDLY rather than substituting the other one — substitution is precisely the
+  runtime dependency, and it is the same rule by which GN03 POSTPONES a chunk instead of generating a
+  wrong one. Structural criteria are preferred over size-based ones, because a size threshold would
+  have to enter the world's identity.
+- ORIGINATOR GPGPU DESIGN PASS (2026-09-04, `ORIGINATOR_GPGPU.md` §6, design only — nothing built).
+  THE HEADLINE: almost all of it is ALREADY IN PAINTER, so the work is what to DECLARE, not what to
+  build. Verified in code: `compute_dispatch_constant` takes X/Y/Z from a constant (literally a
+  `VkDispatchIndirectCommand` in constant data), `compute_dispatch_indirect` reads them FROM A BUFFER
+  (`task.dispatchIndirect(res.buf, offset)`), barriers are already derived and stored on the step
+  (`make_barriers1`), a transfer step exists (`transfer_copy_buffer`), and `resource_container` already
+  carries `extent{x,y,z}`, `format`, `mips`, `usage_mask`, `mem_ptr`, `is_image()`, `host_visible()`.
+  DECISIONS: (1) the device copy is a CACHE — the host owns the truth; the transfer plan is DERIVED
+  from the queue's existing boundaries (upload = fields read before anyone in the queue wrote them,
+  download = exactly `output`), and BARRIER DERIVATION IS THE SAME QUESTION AS THE DEAD-WORK CHECK, so
+  it must not grow a second answer. First version has no residency at all, because invalidation is the
+  only part that cannot be derived (a host `field:set` after a queue silently staleness the copy; the
+  only cheap place to mark dirty is where a WRITABLE accessor is handed out, once per call).
+  (2) Buffer-vs-image KIND is derived from usage exactly as painter already does (`is_image()` is a
+  function of usage); what gets declared is the SHAPE, `extent`. That declaration is needed TODAY
+  without any GPU: `width` currently arrives as a PARAMETER to `noise_grid`/`box_blur`/`position_grid`,
+  and in GN01 `step.params.width` is written in two step bodies about the same buffer — the very
+  duplicated truth the library forbids itself. (3) An image is worth it exactly when reads land on a
+  NON-INTEGER coordinate (LUTs, upsampling a coarse field into a fine chunk — GN03's two-scale case is
+  literally hardware bilinear); and FILTERED SAMPLING IS NOT DETERMINISTIC (Vulkan filter precision is
+  implementation-defined), so it is strictly the presentation class and never enters chunked
+  generation. (4) RUNTIME PATH CHOICE AND WORLD DETERMINISM ARE INCOMPATIBLE — §4.2 accepts CPU/GPU
+  divergence only because the path is chosen ONCE; if the runtime picks, a machine with a GPU grows a
+  different planet from the same seed. So `auto` is legal only for the presentation class, and a
+  world-facing queue declares its path, which becomes part of the world's identity (same shape as
+  `key_support`: silence means the safe answer, CPU).
+  (5) FOLDING THE LINEAR INDEX INTO 2D/3D IS MANDATORY, NOT AN OPTIMISATION. Measured limits on this
+  box: `maxComputeWorkGroupCount = [2147483647, 65535, 65535]`, `maxComputeWorkGroupSize =
+  [1024,1024,1024]`, `maxComputeWorkGroupInvocations = 1024`, `maxComputeSharedMemorySize = 49152`,
+  `maxStorageBufferRange = 4294967295`, `maxImageDimension2D/3D = 16384/2048`. Intel's X is effectively
+  unbounded, but Vulkan's GUARANTEED minimum for X is `65535`, i.e. `4 194 240` elements at group size
+  64 — and GN01 at `--size=4096` runs `16 777 216`. So a 1D dispatch already fails the portable limit,
+  and worst of all it would WORK on this machine and break on someone else's: same family as the
+  FastNoise2 SIMD-set divergence. Group SIZE stays a specialization constant; group SHAPE (`64x1` vs
+  `8x8`) is a hint the author gives, and the engine clamps it against the limits OUT LOUD.
+  (6) INDIRECT CLOSES CONDITIONAL WORK WITHOUT LEAVING THE QUEUE, and the mechanism already runs on the
+  CPU: GN03's variable-length output declares capacity as the buffer size and delivers the USED length
+  in an ordinary one-element buffer (`state.vertex_count`) — on the device that same buffer IS the
+  `dispatchIndirect` argument. So a call's range may come FROM A FIELD (`range = { count =
+  state:field("vertex_count") }`): one declaration, two paths. Two consequences: such calls fuse only
+  when they reference the SAME counter field (equal ranges then hold by construction), and OVERFLOW ON
+  A DEVICE CANNOT BE A LOUD REFUSAL — nothing to throw in a shader, so it must CLAMP and record the
+  clamp in the output, which means a variable-length buffer carries two numbers, length and "hit the
+  cap". A silently truncated surface is a hole in the world that cannot be traced from the picture, and
+  that is literally GN03's lesson.
+  (7) THREE OF THE NEXT FOUR ITEMS ARE CPU WORK that pays on its own and each removes one GPU blocker:
+  `extent`, range-from-field, and the ds saved-slot check. The translator moves behind them.
+  (8) LATENT DEFECT FOUND BY THE GPU QUESTION: `ctx_save` is a language construct, not a registered
+  function, and `ds::context::clear()` resets the operand stack and the base offsets but NOT the
+  `saved_stack` CONTENTS, while `run_chunk` builds the context per CHUNK and calls `clear()` per
+  element. So a slot saved on element i is physically readable on element i+1, and a program that reads
+  a slot it did not save on this element (a `ctx_save` inside an untaken `value_or` branch) picks up the
+  previous element's value — with the chunk boundary depending on the thread count, which breaks
+  "parallel == serial bit for bit". No live bug (GN01–GN03 rules are simple expressions where the write
+  dominates the read), but the README's structural guarantee currently rests on the shape of the
+  programs rather than on a check. Fix options in §6.8; the compile-time dominance check is preferred
+  because the translator needs it anyway — one check, two consumers.
 - ORIGINATOR COMPUTATION QUEUE, FIRST SLICE (2026-09-04, construction in `a7a73b7`, fusion after).
   Whole suite green at `402/402`; the queue's own targets are `originator_queue_test` and
   `originator_queue_lua_test` (the rest of the count growth is the concurrent NET work). GN01

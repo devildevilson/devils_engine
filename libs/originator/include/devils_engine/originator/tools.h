@@ -46,6 +46,9 @@ struct field_ref {
   std::string_view buffer_name() const noexcept;
   std::string_view field_name() const noexcept;
 
+  // Форма буфера, к которому относится поле. Не объявлена => буфер линейный.
+  const buffer_extent& extent() const noexcept;
+
   const_field_accessor read() const noexcept;
   field_accessor write() const noexcept; // пустой аксессор, если ссылка не изменяемая
 
@@ -116,6 +119,21 @@ struct tool_call {
   const field_ref& input(const size_t index) const;
   const field_ref& output(const size_t index) const;
 };
+
+// ФОРМА, по которой инструмент адресует свой буфер.
+//
+// Берётся У ПРИВЯЗКИ, если буфер объявил `extent`, и только иначе — из параметров, по прежнему
+// написанию (`width` у растровых инструментов, `size_x`/`size_y` у `position_grid`). Одновременно и
+// то, и другое — ГРОМКАЯ ошибка: два источника одной истины однажды разъедутся, а заметить это будет
+// нечем. Поэтому конфиг переводится буфер за буфером, но не наполовину.
+//
+// Оси, которые прежнее написание не называет, выводятся из числа элементов: у двумерного растра
+// `y = count / x`. Ноль осей вернуться не может — инструмент, вызвавший это, форму требует.
+buffer_extent resolve_extent(const tool_call& call,
+                             const field_ref& binding,
+                             const char* legacy_x,
+                             const char* legacy_y = nullptr,
+                             const char* legacy_z = nullptr);
 
 // Тело инструмента исполняется над ПОДДИАПАЗОНОМ. Для параллельных апертур поддиапазонов много и
 // они идут одновременно, для sequential он ровно один и равен полному диапазону.

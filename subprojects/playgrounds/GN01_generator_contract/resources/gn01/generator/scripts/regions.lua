@@ -10,7 +10,10 @@ return function(step)
 
   local position = sites:field("position")
   local site_count = sites:count()
-  local width = step.params.width
+  -- Мир областей занимает ровно растр карты, поэтому его ширина берётся у ФОРМЫ буфера. У диаграммы
+  -- это остаётся ПАРАМЕТРОМ и дальше: `width`/`height` у соседства и контуров — границы МИРА в его
+  -- единицах, а не растр приёмника, и числа совпадают здесь случайно.
+  local width = cells:extent().x
   local spread = step.params.spread
 
   -- Детерминированная россыпь без math.random: его в окружении генератора нет намеренно.
@@ -31,7 +34,8 @@ return function(step)
   originator.voronoi_label{
     inputs = { sites:field("position") },
     outputs = { cells:field("region") },
-    params = { width = width, height = width, site_count = site_count },
+    -- Растр разметки — это форма ПРИЁМНИКА, и она уже объявлена буфером.
+    params = { site_count = site_count },
   }
 
   -- scatter: точная топология из Делоне. Ребро между сайтами и есть соседство областей, поэтому

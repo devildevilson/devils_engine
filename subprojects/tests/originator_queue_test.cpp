@@ -115,9 +115,10 @@ TEST_CASE("originator queue runs the same work as the same calls one by one") {
   const auto queue = climate_queue(queued, grid_count);
   const auto report = originator::run_queue(queue, nullptr);
   CHECK(report.calls == 2);
-  // Пока обходов ровно столько, сколько элементов. Слияние соседних pointwise обязано уменьшить
-  // именно это число, и величина существует затем, чтобы выигрыш был измерен, а не предположен.
+  // Обходов два, хотя слияние есть: `box_blur` это gather, ему нужны соседи, то есть весь
+  // предыдущий проход целиком, — группа на нём разрывается. Слияние этой цепочки не касается.
   CHECK(report.passes == 2);
+  CHECK(report.fused == 0);
 
   const auto reference = climate_queue(separate, grid_count);
   for (const auto& call : reference.calls) {

@@ -573,10 +573,28 @@ Additional tests:
 - byte/count eviction remains deterministic;
 - digest reports the first divergent tick.
 
-## NET-05: state digest and mismatch localization
+## NET-05: state digest and mismatch localization — complete 2026-09-04
 
-The first digest may simply hash canonical uncompressed state bytes with SHA-256. The transmitted root can be
-truncated if measured safe for diagnostics, while full roots remain in logs.
+The digest algorithm is an injected policy, not part of the state schema. The working high-frequency policy is
+Murmur64 over canonical uncompressed state: on the current Release checkpoint audit it costs `10.81 us` for
+`81,221 B` and `176.65 us` for `1,291,685 B`. The current scalar SHA-256 implementation costs `268.35 us` and
+`4,305.80 us` respectively, so imposing it on every periodic check would cost more than the measured fast zstd
+compression on the large fixture. SHA-256 remains available for rare/durable identities and as an independent
+reference policy; an optimized keyed BLAKE2b through libsodium or BLAKE3 can be evaluated when authentication or
+durable content identity becomes a concrete requirement.
+
+CRC64 is suitable for detecting accidental transmission/storage corruption but its linear structure is a poor
+state-identity policy. A 32-bit root is too narrow for long-running mismatch detection: one million independent
+expected-vs-actual checks have a false-equality probability on the order of `10^-4`. For 64 bits the corresponding
+number is about `5e-14` (and the birthday-collision probability among a set of one million arbitrary roots is on
+the order of `10^-8`). None of CRC64, Murmur64 or plain SHA-256 authenticates a peer; authenticated
+transport/session keys are a separate layer.
+
+`make_state_digest<Schema, Hasher>` uses the schema's canonical traversal once and produces the complete root plus
+roots for canonical `[id, version, byte_size, payload]` section frames. Normal traffic needs only the complete
+root; section reports can be requested after disagreement. `compare_state_digests` identifies a section-set,
+section-content or envelope-only mismatch. Integrated with NET-04 verification, an injected one-field divergence
+reports both its first tick and owning section.
 
 Later, the same section traversal may expose hierarchical roots:
 
@@ -591,8 +609,9 @@ state root
 This is diagnostic structure, not necessarily a dynamic Merkle tree. Do not add incremental hashing before a
 full canonical hash is measured as a real bottleneck.
 
-The Murmur64 checksum in the current snapshot envelope remains accidental-corruption detection. It is neither
-state identity nor authentication.
+The Murmur64 checksum in the current snapshot envelope remains accidental-corruption detection despite using the
+same primitive: its protocol role is container integrity, whereas a NET-05 root is computed over the declared
+canonical causal document. Neither is authentication.
 
 ## NET-06: in-memory transport and fault injection
 
@@ -1240,11 +1259,10 @@ KiB after five/twenty ticks, versus a 544 KiB full zstd checkpoint. This current
 the prototype still serializes and scans the complete state. Component-level dirty flags are too coarse for
 sparse changes.
 
-The audit also proved that current failed loads destroy the destination and that the project-global tail lacks
-its own framing/schema. The complete state manifest, measurements, format gaps and reproduction commands live
-in [NETWORKING_STATUS.md](NETWORKING_STATUS.md). Repetition also exposed an intermittent crash in the existing
-Release multithreaded resume smoke; the new audit itself is 20/20, but NET-04 cannot close until that separate
-simulation race/lifetime problem is isolated.
+The audit originally proved that failed loads destroyed the destination and that the project-global tail lacks
+its own framing/schema. Transactional ECS replacement has since closed the destructive-load finding; the
+complete state manifest, measurements, remaining format gaps and reproduction commands live in
+[NETWORKING_STATUS.md](NETWORKING_STATUS.md).
 
 - Inventory every causal state owner beyond ECS bytes, including timeline, allocators, workflow cursors and
   physics mapping/state.
@@ -1381,7 +1399,7 @@ Done: every truncated/bad load preserves the complete live fake host, schema fai
 and checkpoint writing/hash input share one canonical traversal. Applying it to the real world owner proceeds in
 the already separate transactional ECS follow-up.
 
-### ECS-transactional follow-up (`M`)
+### ECS-transactional follow-up (`M`) — complete 2026-09-04
 
 - Add a safe way to construct/load a clean `aesthetics::world` and replace an owner.
 - Do not swap only `world_` while systems retain pointers/queries to the old object.
@@ -1389,6 +1407,14 @@ the already separate transactional ECS follow-up.
 - Add failure injection after each state section.
 
 Done when `tile_frontier` preserves the old running instance after every deliberately corrupt load.
+
+Done: `aesthetics::serial::stage_world` decodes a detached candidate and `world::replace_state` publishes
+only allocator/component state while preserving the world's address, subscribers and systems. The generic
+loader is transactional and requires the exact canonical component section set and boundaries. The real
+`actor_world_slice` validates ECS, the complete project tail, unique player identity and derived obstacle
+cache before a single publication phase; invalid input never resets live systems or registries. The checkpoint
+audit injects a validly sealed truncation after every state section plus outer-container corruption, verifies
+the running instance byte-for-byte, then advances it again.
 
 ### NET-04 — checkpoint ring and replay (`M`) — complete 2026-09-04
 
@@ -1404,7 +1430,7 @@ Done: the generated run checks all seven checkpoints through tick six, including
 bundle. Count/byte eviction, strong tick succession, history bounds, gaps, duplicate/order faults, callback
 refusals, presentation suppression and first mismatching root are covered by six tests in Debug and Release.
 
-### NET-05 — digest diagnostics (`S-M`)
+### NET-05 — digest diagnostics (`S-M`) — complete 2026-09-04
 
 - Hash canonical full state first.
 - Record per-section roots and first mismatch.
@@ -1412,6 +1438,13 @@ refusals, presentation suppression and first mismatching root are covered by six
 - Benchmark hash cost independently of compression.
 
 Done when an injected one-field corruption identifies tick and owning section.
+
+Done: `make_state_digest` accepts an explicit hash policy, hashes the exact canonical document and records framed
+per-section roots in the same schema traversal. `compare_state_digests` distinguishes complete agreement,
+section-set, section-content and envelope-only disagreement. The replay integration injects one wrong actor value
+at tick three and reports tick three plus the actor section. SHA-256 proves byte equivalence against a direct hash;
+buffered Murmur64 proves the production diagnostic choice is not baked into the algorithm. Four tests pass in
+Debug and Release. No page hierarchy or incremental hashing was added before evidence requires it.
 
 ### NET-06 — in-memory transport laboratory (`M`)
 

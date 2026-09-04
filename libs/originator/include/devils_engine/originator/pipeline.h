@@ -56,7 +56,11 @@ struct chunk_key {
 struct buffer_description {
   std::string name;
   buffer_layout layout;
+  // Имя константы размера. Пусто, если объявлена ФОРМА: тогда число элементов — произведение осей.
   std::string size_name;
+  // Имена констант по осям, 1..3. ФОРМА — это то, чем буфер адресуют, и она объявляется вместо
+  // размера, а не вместе с ним. Пусто => буфер линейный, адресуется номером элемента.
+  std::vector<std::string> extent_names;
 };
 
 struct step_description {

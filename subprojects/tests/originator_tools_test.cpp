@@ -241,3 +241,60 @@ TEST_CASE("originator range is checked against the buffer") {
   const auto inverted = originator::check_dispatch(*fill, {}, out, 64, 32, "terrain");
   CHECK_FALSE(inverted.allowed);
 }
+
+TEST_CASE("originator tool takes the raster shape from its binding") {
+  auto& registry = *[] {
+    static originator::tool_registry r;
+    if (r.size() == 0) {
+      r.add_standard_tools();
+    }
+    return &r;
+  }();
+
+  const std::vector<field_pair> fields = {{"height", "v1"}, {"smoothed", "v1"}};
+  auto layout = originator::make_buffer_layout(originator::storage_kind::soa, fields, "cells");
+
+  // Один и тот же растр, объявленный двумя способами: формой у буфера и параметром у вызова. Пока
+  // документы переводятся, оба написания валидны, и результат обязан совпасть побитово — иначе
+  // перевод конфига менял бы мир.
+  originator::buffer shaped("cells", layout, originator::buffer_extent{grid_width, grid_width, 0});
+  originator::buffer linear("cells", layout, grid_count);
+  CHECK(shaped.count() == linear.count());
+  CHECK(shaped.extent().axes() == 2);
+  CHECK_FALSE(linear.extent().declared());
+
+  const auto params = noise_params();
+  originator::parameters without_width;
+  without_width.set_number("frequency", params.number("frequency"));
+  without_width.set_number("octaves", params.number("octaves"));
+
+  const auto* noise = registry.find("value_noise");
+  REQUIRE(noise != nullptr);
+  const auto shaped_out = std::vector<originator::field_ref>{writable(shaped, "height")};
+  const auto linear_out = std::vector<originator::field_ref>{writable(linear, "height")};
+  originator::dispatch(*noise, {}, shaped_out, without_width, 12345, 0, grid_count, "test", nullptr);
+  originator::dispatch(*noise, {}, linear_out, params, 12345, 0, grid_count, "test", nullptr);
+  CHECK(snapshot(shaped) == snapshot(linear));
+
+  // Форма, названная ДВАЖДЫ, — громкая ошибка: два источника одного числа однажды разъедутся, а
+  // заметить это будет нечем, потому что поле выглядит правдоподобным при любом из них.
+  CHECK_THROWS_AS(originator::dispatch(*noise, {}, shaped_out, params, 12345, 0, grid_count, "test", nullptr),
+                  std::runtime_error);
+
+  // gather читает окно, поэтому у него форма тоже от привязки — и высота выводится, а не угадывается.
+  const auto* blur = registry.find("box_blur");
+  REQUIRE(blur != nullptr);
+  const auto blur_in = std::vector<originator::field_ref>{readable(shaped, "height")};
+  const auto blur_out = std::vector<originator::field_ref>{writable(shaped, "smoothed")};
+  originator::parameters radius;
+  radius.set_number("radius", 2);
+  originator::dispatch(*blur, blur_in, blur_out, radius, 1, 0, grid_count, "test", nullptr);
+
+  const auto linear_in = std::vector<originator::field_ref>{readable(linear, "height")};
+  const auto linear_blur_out = std::vector<originator::field_ref>{writable(linear, "smoothed")};
+  originator::parameters legacy;
+  legacy.set_number("radius", 2);
+  legacy.set_number("width", double(grid_width));
+  originator::dispatch(*blur, linear_in, linear_blur_out, legacy, 1, 0, grid_count, "test", nullptr);
+  CHECK(snapshot(shaped) == snapshot(linear));
+}

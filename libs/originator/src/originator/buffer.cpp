@@ -148,6 +148,34 @@ buffer::buffer(std::string name, buffer_layout layout, const size_t count) :
   data_ = raw + (aligned - size_t(address));
 }
 
+bool buffer_extent::declared() const noexcept {
+  return x != 0;
+}
+
+uint32_t buffer_extent::axes() const noexcept {
+  if (x == 0) return 0;
+  if (y == 0) return 1;
+  return z == 0 ? 2 : 3;
+}
+
+size_t buffer_extent::count() const noexcept {
+  switch (axes()) {
+    case 1: return x;
+    case 2: return x * y;
+    case 3: return x * y * z;
+    default: return 0;
+  }
+}
+
+buffer::buffer(std::string name, buffer_layout layout, const buffer_extent extent)
+  : buffer(std::move(name), std::move(layout), extent.count()) {
+  extent_ = extent;
+}
+
+const buffer_extent& buffer::extent() const noexcept {
+  return extent_;
+}
+
 const std::string& buffer::name() const noexcept {
   return name_;
 }

@@ -73,7 +73,6 @@ noise_settings read_noise_settings(const tool_call& call) {
   s.amplitude = float(p.number("amplitude", 1.0));
   s.offset = float(p.number("offset", 0.0));
   s.octaves = uint32_t(std::clamp<int64_t>(p.integer("octaves", 4), 1, 16));
-  s.width = uint32_t(std::max<int64_t>(p.integer("width", 1), 1));
   s.seed = hash_u64(call.seed ^ uint64_t(p.integer("salt", 0)));
   return s;
 }
@@ -114,8 +113,9 @@ void tool_position_grid(const tool_call& call, const size_t begin, const size_t 
                    call.step_name, out.buffer_name(), out.field_name(), components);
   }
 
-  const auto size_x = size_t(std::max<int64_t>(call.params->integer("size_x", 1), 1));
-  const auto size_y = size_t(std::max<int64_t>(call.params->integer("size_y", int64_t(size_x)), 1));
+  const auto shape = resolve_extent(call, out, "size_x", "size_y", "size_z");
+  const size_t size_x = shape.x;
+  const size_t size_y = shape.y;
 
   const double cell = call.params->number("cell_size", 1.0);
   const double origin_x = call.params->number("origin_x", 0.0);
@@ -152,8 +152,11 @@ void tool_fill(const tool_call& call, const size_t begin, const size_t end) {
 }
 
 void tool_value_noise(const tool_call& call, const size_t begin, const size_t end) {
-  const auto settings = read_noise_settings(call);
+  auto settings = read_noise_settings(call);
   const auto& out = call.output(0);
+  // Форма растра приходит от БУФЕРА, а прежнее написание (`width` в параметрах) остаётся, пока
+  // документы переводятся. Оба сразу — громкая ошибка, см. resolve_extent.
+  settings.width = uint32_t(resolve_extent(call, out, "width").x);
   auto accessor = out.write();
 
   // as_span сам отдаёт непустой span только для однокомпонентного поля точно совпадающего рода,
@@ -397,10 +400,11 @@ void tool_box_blur(const tool_call& call, const size_t begin, const size_t end) 
   const auto source = call.input(0).read();
   auto target = call.output(0).write();
 
-  const auto width = size_t(std::max<int64_t>(call.params->integer("width", 1), 1));
+  const auto shape = resolve_extent(call, call.output(0), "width");
+  const size_t width = shape.x;
   const auto radius = size_t(std::clamp<int64_t>(call.params->integer("radius", 1), 0, 64));
   const size_t count = source.count();
-  const size_t height = width == 0 ? 0 : count / width;
+  const size_t height = shape.y;
 
   for (size_t i = begin; i < end; ++i) {
     const size_t x = i % width;

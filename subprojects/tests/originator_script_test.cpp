@@ -238,3 +238,52 @@ TEST_CASE("originator script reads its thresholds from step parameters") {
   CHECK_THROWS_AS(originator::dispatch_script(*program, inputs, outputs, incomplete, 1, 0, count, "climate", nullptr),
                   std::runtime_error);
 }
+
+TEST_CASE("originator script cannot carry a saved value from one element to the next") {
+  // `ctx_save` — конструкция языка, а не регистрируемая функция, поэтому в программу генератора она
+  // попадает наравне со всем остальным. А saved-слот живёт в контексте, контекст живёт на ЧАНК, и
+  // `clear()` его содержимое не трогает. Значит программа, читающая слот, который на ЭТОМ элементе не
+  // сохраняла, БРАЛА БЫ значение предыдущего элемента — и результат зависел бы от того, где легла
+  // граница чанка, то есть от числа потоков. Поле при этом выглядело бы правдоподобным, так что по
+  // результату генерации такую потерю не видно.
+  //
+  // Теперь слоты сбрасываются на каждый элемент, и чтение несохранённого слота — ГРОМКИЙ отказ, а не
+  // чужое значение. Это и правильный ответ: такая программа не pointwise, значит исполняться она не
+  // должна вообще, а не должна давать разный ответ при разном числе потоков.
+  auto cells = make_cells();
+  const auto height = cells.field(cells.find_field("height"));
+  // Первый элемент обязан идти по СОХРАНЯЮЩЕЙ ветке: иначе отказ случился бы и без сброса слотов, и
+  // тест не отличал бы одно от другого.
+  REQUIRE(height.get(0) < 0.5);
+
+  const std::vector<std::string> names = {"height"};
+  const auto program = originator::script_program::compile(
+    "leak", "{ value_or = { height < 0.5, { ctx_save = { keep = height }, ctx:saved:keep }, ctx:saved:keep } }",
+    names, originator::script_program::result_kind::number);
+  REQUIRE(program->input_count() == 1);
+
+  const std::vector<originator::field_ref> inputs{readable(cells, "height")};
+  const std::vector<originator::field_ref> outputs{writable(cells, "scripted")};
+  const originator::parameters params;
+
+  // Диапазон, где ветка сохранения проходит на КАЖДОМ элементе, законен и считается.
+  size_t saving = 0;
+  while (saving < count && height.get(saving) < 0.5) {
+    ++saving;
+  }
+  REQUIRE(saving > 1);
+  originator::dispatch_script(*program, inputs, outputs, params, 1, 0, saving, "test", nullptr);
+
+  const auto scripted = cells.field(cells.find_field("scripted"));
+  for (size_t i = 0; i < saving; ++i) {
+    CHECK(scripted.get(i) == doctest::Approx(height.get(i)));
+  }
+
+  // А стоит диапазону захватить элемент, на котором слот не записан, — отказ, и он не зависит от
+  // того, как диапазон разбит.
+  CHECK_THROWS_AS(originator::dispatch_script(*program, inputs, outputs, params, 1, 0, count, "test", nullptr),
+                  std::exception);
+  CHECK_THROWS_AS(
+    originator::dispatch_script(*program, inputs, outputs, params, 1, saving, saving + 1, "test", nullptr),
+    std::exception);
+}

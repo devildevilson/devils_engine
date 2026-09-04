@@ -35,6 +35,11 @@ std::string_view field_ref::field_name() const noexcept {
   return valid() ? std::string_view(source->layout().fields[field_index].name) : std::string_view("<none>");
 }
 
+const buffer_extent& field_ref::extent() const noexcept {
+  static const buffer_extent none{};
+  return source != nullptr ? source->extent() : none;
+}
+
 const_field_accessor field_ref::read() const noexcept {
   return valid() ? source->field(field_index) : const_field_accessor{};
 }
@@ -181,6 +186,42 @@ const tool_description& tool_registry::at(const size_t index) const noexcept {
 
 size_t tool_registry::size() const noexcept {
   return tools_.size();
+}
+
+buffer_extent resolve_extent(const tool_call& call,
+                             const field_ref& binding,
+                             const char* legacy_x,
+                             const char* legacy_y,
+                             const char* legacy_z) {
+  const auto& declared = binding.extent();
+  const auto* params = call.params;
+
+  const auto legacy_present = [&](const char* name) { return name != nullptr && params != nullptr && params->has(name); };
+
+  if (declared.declared()) {
+    for (const auto* name : {legacy_x, legacy_y, legacy_z}) {
+      if (!legacy_present(name)) continue;
+      utils::error{}("originator step '{}': tool '{}' got parameter '{}' while buffer '{}' already declares its "
+                     "extent — the shape must have ONE source, so drop the parameter",
+                     call.step_name, call.tool_name, name, binding.buffer_name());
+    }
+    return declared;
+  }
+
+  const size_t count = binding.count();
+  buffer_extent result;
+  result.x = size_t(std::max<int64_t>(params != nullptr && legacy_x != nullptr ? params->integer(legacy_x, 1) : 1, 1));
+  if (legacy_present(legacy_y)) {
+    result.y = size_t(std::max<int64_t>(params->integer(legacy_y, 1), 1));
+  } else {
+    // Вторая ось выводится из числа элементов: у растра, объявленного одной шириной, высота это
+    // остаток. Ноль недопустим — по нему инструмент делил бы.
+    result.y = result.x == 0 ? 0 : std::max<size_t>(count / result.x, 1);
+  }
+  if (legacy_present(legacy_z)) {
+    result.z = size_t(std::max<int64_t>(params->integer(legacy_z, 1), 1));
+  }
+  return result;
 }
 
 prepared_call::prepared_call(const tool_description& tool,

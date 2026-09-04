@@ -85,6 +85,23 @@ std::string_view queue_call_aperture(const queue_call& self) {
   return to_string(self.shape);
 }
 
+// Форма буфера телу шага. Отдаётся ТАБЛИЦЕЙ, а не тремя методами, потому что это одно утверждение:
+// у объявленной формы оси читаются вместе. `axes` говорит, сколько их объявлено; необъявленная форма
+// даёт нули, и по ним видно, что буфер линейный.
+//
+// Существует затем, чтобы скрипт брал ширину растра ОТТУДА ЖЕ, откуда её берёт инструмент. Пока
+// ширина приезжала параметром, тело шага и инструмент читали два разных числа, случайно равных.
+sol::table view_extent(const script_buffer_view& self, sol::this_state s) {
+  const auto& extent = self.source != nullptr ? self.source->extent() : buffer_extent{};
+  sol::state_view lua(s);
+  sol::table result(lua, sol::create);
+  result["x"] = extent.x;
+  result["y"] = extent.y;
+  result["z"] = extent.z;
+  result["axes"] = extent.axes();
+  return result;
+}
+
 int64_t now_us() noexcept {
   return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
@@ -356,6 +373,7 @@ void script_host::bind_types() {
     "field", &script_buffer_view::field,
     "writable", &script_buffer_view::writable,
     "name", &script_buffer_view::name,
+    "extent", &view_extent,
     "clear", &script_buffer_view::clear);
 }
 
@@ -644,6 +662,10 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
   sol::table result(lua_, sol::create);
   result["calls"] = report.calls;
   result["passes"] = report.passes;
+  // `fused` отдаётся телу шага наравне с остальным: тело — единственное место, где видно, СЛИЛОСЬ ли
+  // то, что автор писал подряд, а по числу обходов одного этого не понять (обходов столько же и
+  // тогда, когда группа развалилась на одиночек).
+  result["fused"] = report.fused;
   return sol::make_object(s, result);
 }
 

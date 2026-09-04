@@ -12,19 +12,20 @@ recorded here only after it is reproduced by an executable test or directly obse
 | --- | --- |
 | Gameplay transport | GameNetworkingSockets v1.6.0 selected |
 | PRE-01 capability spike | complete |
-| PRE-02 causal-state/checkpoint audit | complete; implementation gaps routed to NET-03/04 |
+| PRE-02 causal-state/checkpoint audit | complete; transactional replacement follow-up complete |
 | PRE-03 Jolt spike | deferred until adding Jolt has a concrete engine consumer |
 | NET-00 neutral contract/fixtures | complete |
 | NET-01 bounded tick journal | complete; 8/8 cases pass in Debug and Release |
 | NET-02 sequence window/history | complete; 9/9 cases pass in Debug and Release |
 | NET-03 explicit state sections/schema | complete; 8/8 cases pass in Debug and Release |
 | NET-04 checkpoint ring/replay | complete; 6/6 cases pass in Debug and Release |
-| ECS transactional world replacement | next |
+| NET-05 digest diagnostics | complete; 4/4 cases pass in Debug and Release |
+| ECS transactional world replacement | complete; 13/13 focused cases pass in Debug and Release |
 | TIME-00 strong simulation time | complete; tick/rate/conversion/pacing primitives pass 5/5 cases |
 | TIME-01 gameplay timeline/presentation split | complete; generic timeline, flow, turn pipeline and cardgame proof |
 | TIME-02 fixed-step host/project migration | complete; host and tile actor consume an external 60 Hz tick |
 | Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
-| Complete project suite | last full run before NET-04: 385/385 in Debug and Release; NET-04 affected target: 6/6 |
+| Complete project suite | last whole-suite run before this follow-up: 402/402; NET-05 focused set: 19/19 in Debug and Release |
 | Production `devils_engine::network_gns` adapter | not started |
 | Session handshake, reconnect recovery and peer authority | not started |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
@@ -35,7 +36,7 @@ The PRE-01 executable is intentionally a direct GNS consumer. It passes opaque b
 engine transport abstraction, network entity type, serialization scheme or client/server policy into the new
 neutral library.
 
-## NET-00/01/02/03/04 — neutral core through checkpoint replay
+## NET-00/01/02/03/04/05 — neutral core through digest diagnostics
 
 `libs/network` is now a header-only `devils_engine::network` target. It depends only on common engine options and
 the `utils::error` facility; it does not include or link GNS, `aesthetics`, `act`, `tile_frontier`, a socket API,
@@ -186,6 +187,56 @@ ctest --test-dir build-debug -R '^network_checkpoint_replay_test::' --output-on-
 
 cmake --build build-release -j4 --target network_checkpoint_replay_test
 ctest --test-dir build-release -R '^network_checkpoint_replay_test::' --output-on-failure
+```
+
+### NET-05 state digest diagnostics
+
+NET-05 adds the hash-policy concept, canonical sink and diagnostic report in `state_digest.h`:
+
+```cpp
+make_state_digest<Schema, Hasher>(host)
+compare_state_digests(expected, actual)
+```
+
+The complete root covers exactly the bytes produced by `Schema::write`: the canonical envelope, section metadata
+and payloads, without compressed-container representation. During that same schema traversal the report records
+one root for every canonical `[id, version, byte_size, payload]` frame. A root disagreement is localized as a
+different section set, the first differing section, or an envelope-only mismatch. Derived state absent from the
+schema does not affect either root.
+
+The algorithm is a policy. `buffered_murmur64_state_hasher` is the initial frequent diagnostic implementation;
+it is deliberately named `buffered` because the shared Murmur64A primitive is one-shot. Callers that have already
+materialized checkpoint bytes should hash them directly and request a section report only after disagreement.
+`sha256_state_hasher` remains an independent, wider reference/durable-identity option. A CRC64 would be appropriate
+for accidental corruption but not selected as state identity; 32 bits are too narrow for a long-running oracle.
+None of these unkeyed hashes provides authentication.
+
+The four cases prove direct SHA-256 equivalence with checkpoint bytes, parameter-pack-order independence, derived
+state exclusion, section/set/envelope localization, an explicit Murmur64 policy and replay integration. The replay
+case injects one actor-field divergence at tick three and reports tick three plus the actor section. Together with
+the adjacent schema and replay targets, `19/19` focused cases pass in Debug and Release.
+
+The checkpoint audit now times both hashes independently of compression. One local Release run measured:
+
+| Canonical state | Murmur64 | SHA-256 | zstd-fast |
+| ---: | ---: | ---: | ---: |
+| 81,221 B | 10.81 us | 268.35 us | 133.44 us |
+| 1,291,685 B | 176.65 us | 4,305.80 us | 2,251.43 us |
+
+These are local policy-selection measurements, not portable performance promises. They reject unconditional use
+of the current scalar SHA-256 on every frequent state check; they do not justify page trees or incremental hashing
+yet.
+
+Reproduction:
+
+```sh
+cmake --build build-debug -j4 --target network_state_digest_test network_state_schema_test network_checkpoint_replay_test tile_frontier_checkpoint_audit
+ctest --test-dir build-debug -R '^(network_state_digest_test|network_state_schema_test|network_checkpoint_replay_test)::' --output-on-failure
+ctest --test-dir build-debug -R '^tile_frontier_checkpoint_audit$' --output-on-failure
+
+cmake --build build-release -j4 --target network_state_digest_test network_state_schema_test network_checkpoint_replay_test tile_frontier_checkpoint_audit
+ctest --test-dir build-release -R '^(network_state_digest_test|network_state_schema_test|network_checkpoint_replay_test)::' --output-on-failure
+ctest --test-dir build-release -R '^tile_frontier_checkpoint_audit$' --output-on-failure
 ```
 
 ### Native-float cross-compiler micro-corpus
@@ -576,9 +627,9 @@ Remaining transport work is routed as follows:
 
 ## PRE-02 — causal state and checkpoint audit
 
-PRE-02 is complete as an audit, not as a production checkpoint implementation. The executable
+PRE-02 is complete as an audit, and its transactional replacement follow-up is now implemented. The executable
 [checkpoint_audit.cpp](subprojects/tile_frontier/checkpoint_audit.cpp) works over the real
-`tile_frontier::core::actor_world_slice` and leaves its live save/load format unchanged. It parses the current
+`tile_frontier::core::actor_world_slice`. It parses the current
 canonical payload into 19 independently comparable regions (world header, 17 component blocks and project
 globals), reconstructs full payloads from reused sections or 4 KiB pages, then requires the unchanged loader to
 accept them and reproduce exactly the same canonical bytes.
@@ -624,21 +675,30 @@ The current payload is not yet a durable network checkpoint schema:
 - `sim_globals` is an unframed, unversioned tail and is absent from the component schema fingerprint;
 - the component layout fingerprint does not mix field names and the registry fingerprint is cached on first
   use, without an explicit freeze point;
-- the loader does not require end-of-payload/end-of-container, so trailing data is not part of a strict schema
-  decision;
 - Murmur64 is corruption detection only, not authentication and not the production page/state digest;
 - exact float serialization preserves divergence; it does not create cross-platform numeric determinism.
 
 NET-03 resolves the registry part of this list: the component table is now externally read-only and an explicit
-freeze precedes the cached fingerprint. The unframed project tail and destructive real-slice load remain inputs
-to the project schema/ECS replacement follow-up rather than being hidden by the neutral format.
+freeze precedes the cached fingerprint.
 
-Most importantly, the legacy actor-slice load is destructive on failure. `actor_world_slice::load` replaces the live world and clears
-caches before `unseal` has validated the packet; `load_world` then installs allocator state and component pools
-progressively. The corruption probe confirms that a rejected packet changes the destination. NET-03/04 must
-decode and validate every section into staging state, rebuild required derived state there, and publish it with
-one replacement operation only after success. Snapshot-loaded notifications must happen after commit, not while
-the candidate is partial.
+### Transactional ECS/world replacement — complete 2026-09-04
+
+- `aesthetics::serial::stage_world` decodes a detached candidate without notifying live subscribers;
+- the generic loader requires exactly the registered component count, canonical section-ID order and exact
+  declared section lengths, then calls `world::replace_state` only on success;
+- `replace_state` keeps the `world` object's address, subscribers and owned systems stable, moves only allocator
+  and component storage state, and emits `snapshot_loaded_event` after commit;
+- `actor_world_slice::load` stages the ECS body, requires strict end-of-project-payload, validates unique player
+  identity, recreates transient intent ingress and derives the obstacle cache before touching the live slice;
+- a recoverable outer-container, ECS, project-tail or derived-state refusal leaves world bytes, scalars, systems
+  and registries unchanged. Exceptions are not used for these outcomes.
+
+The registered checkpoint audit now starts a real running slice, injects outer-container corruption and a
+validly sealed truncation immediately after every one of its 19 state regions (the last region receives a
+trailing byte), verifies the live canonical state after each refusal, and successfully advances the preserved
+instance afterward. This closes the destructive-load finding. The remaining schema concern is not framing but
+that `sim_globals` still has no explicit project section ID/version and is absent from the project schema
+fingerprint.
 
 ### Measurements
 
@@ -686,10 +746,9 @@ production digest, be reliable, and have a bounded rebase policy. It is not regu
 replication and it cannot become a chain with an unavailable base.
 
 The prototype still performs a full serialization and byte scan, so it proves bandwidth/storage potential, not
-incremental capture cost. NET-03 should first introduce neutral section manifests, schema/content fingerprints
-and staging replacement. NET-04 should then implement full checkpoint/replay; page deltas follow behind the
-same API and remain optional until capture cadence, retained-baseline memory and dirty-page bookkeeping are
-measured in the real online stand.
+incremental capture cost. NET-03, NET-04 and transactional ECS replacement now provide section manifests,
+staging, checkpoint retention and replay. Page deltas remain behind the same API and stay optional until capture
+cadence, retained-baseline memory and dirty-page bookkeeping are measured in the real online stand.
 
 ### Reproduction
 
@@ -701,14 +760,10 @@ cmake --build build-release -j4 --target tile_frontier_checkpoint_audit
 ctest --test-dir build-release -R '^tile_frontier_checkpoint_audit$' --output-on-failure
 ```
 
-### Verification and adjacent runtime finding
+### Verification
 
-The new checkpoint audit passes in Debug and Release, and its Release CTest passed 20 consecutive repetitions.
-The existing `tile_frontier_snapshot_smoke` also passes. A repeated run exposed a separate intermittent failure
-in the existing four-worker `tile_frontier_resume_smoke`: four Release repetitions passed and the fifth
-segfaulted; an earlier combined run ended with `std::length_error` from `vector::reserve`. A direct run and a
-gdb run passed, so there is no stable stack yet. No resume-simulation source was changed by PRE-02.
-
-This does not invalidate the exact reconstruction checks in the new executable, but it does block a production
-claim that repeated multithreaded resume/replay is stable. The race/lifetime failure must be isolated before
-NET-04 closes; it should not be disguised by weakening or removing the existing resume test.
+The original checkpoint audit passed in Debug and Release, including 20 consecutive Release repetitions. The
+transactional follow-up's focused set now passes `13/13` in both configurations: eleven aesthetics serializer
+cases, the real multithreaded `tile_frontier_resume_smoke`, and `tile_frontier_checkpoint_audit`. The generic
+test rejects every truncated byte prefix without changing a live queried world; each real audit fixture rejects
+20 targeted inputs (outer corruption plus every state-region boundary) and advances the preserved slice again.
