@@ -261,6 +261,11 @@ target_link_libraries(originator_config_test PRIVATE devils_engine::originator d
 devils_add_doctest(originator_script_test originator_script_test.cpp)
 target_link_libraries(originator_script_test PRIVATE devils_engine::originator devils_engine::originator_script devils_engine::utils)
 
+# Транслятор ds -> GLSL и сверка двух путей. Линкует и скриптовый слой, и painter: одна программа,
+# два исполнения. Часть с устройством ОХРАНЯЕМАЯ.
+devils_add_doctest(originator_translate_test originator_translate_test.cpp)
+target_link_libraries(originator_translate_test PRIVATE devils_engine::originator devils_engine::originator_script devils_engine::painter devils_engine::utils)
+
 devils_add_doctest(originator_primitives_test originator_primitives_test.cpp)
 target_link_libraries(originator_primitives_test PRIVATE devils_engine::originator devils_engine::originator_primitives devils_engine::utils)
 

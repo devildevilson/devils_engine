@@ -58,7 +58,9 @@ add_library(devils_engine::originator_config ALIAS devils_originator_config)
 # тянуть за собой ни один скриптовый backend.
 add_library(devils_originator_script
   src/originator/script_program.cpp
+  src/originator/script_translate.cpp
   include/devils_engine/originator/script_program.h
+  include/devils_engine/originator/script_translate.h
 )
 
 target_include_directories(devils_originator_script
@@ -67,7 +69,9 @@ target_include_directories(devils_originator_script
 
 target_link_libraries(devils_originator_script
   PUBLIC devils_engine::originator
-  PRIVATE devils_engine::options devils_engine::utils devils_script
+  # tavl — тот же парсер, которым разбирает ds: транслятор идёт по AST, который отдаёт сам ds, и
+  # второго разбора текста в проекте не появляется.
+  PRIVATE devils_engine::options devils_engine::utils devils_script tavl
 )
 
 add_library(devils_engine::originator_script ALIAS devils_originator_script)
