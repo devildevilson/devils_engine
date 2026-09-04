@@ -193,36 +193,20 @@ void standard_render_create_instance(State& c) {
     return;
   }
 
-  painter::load_dispatcher1(!c.config.headless);
+  // Сама сборка живёт в painter: у неё два потребителя (рантайм с окном и вычислительный контекст
+  // без окна), и они отличаются одним флагом. Здесь остаётся только то, что принадлежит рантайму —
+  // его собственные флаги готовности.
+  painter::instance_options options;
+  options.app_name = c.config.app_name;
+  options.engine_name = c.config.engine_name;
+  options.app_version = c.config.app_version;
+  options.engine_version = c.config.engine_version;
+  options.presentation = !c.config.headless;
+  options.validation = c.config.vulkan_debug;
 
-  vk::ApplicationInfo ai{};
-  ai.pApplicationName = c.config.app_name.c_str();
-  ai.applicationVersion = c.config.app_version;
-  ai.pEngineName = c.config.engine_name.c_str();
-  ai.engineVersion = c.config.engine_version;
-  ai.apiVersion = VK_API_VERSION_1_0;
-
-  std::vector<const char*> exts = painter::get_required_extensions(!c.config.headless, c.config.vulkan_debug);
-  vk::InstanceCreateInfo ici{};
-  ici.pApplicationInfo = &ai;
-  if (c.config.vulkan_debug) {
-    if (!painter::check_validation_layer_support(painter::default_validation_layers)) {
-      utils::error{}("Requested Vulkan validation layers are not available");
-    }
-
-    ici.enabledLayerCount = painter::default_validation_layers.size();
-    ici.ppEnabledLayerNames = painter::default_validation_layers.data();
-  }
-  ici.enabledExtensionCount = exts.size();
-  ici.ppEnabledExtensionNames = exts.data();
-
-  DE_LOG(catalogue::log_domain::render, flow, "{}: creating Vulkan instance", c.config.app_name);
-  c.instance = vk::createInstance(ici);
-  DE_LOG(catalogue::log_domain::render, flow, "{}: Vulkan instance created", c.config.app_name);
-  painter::load_dispatcher2(c.instance);
-  if (c.config.vulkan_debug) {
-    c.debug_messenger = painter::create_debug_messenger(c.instance);
-  }
+  const auto created = painter::create_instance(options);
+  c.instance = created.instance;
+  c.debug_messenger = created.messenger;
   c.instance_ready = true;
 }
 
@@ -252,40 +236,13 @@ void standard_render_create_device(State& c, const command_window_recreation* wi
 
   painter::system_info::print_choosed_device(c.physical_device_data.handle);
 
-  painter::device_maker dm(c.instance);
-  dm.beginDevice(c.physical_device_data.handle);
-  c.queue_plan = painter::make_device_queue_plan(c.physical_device_data);
-  for (uint32_t i = 0; i < c.queue_plan.request_count; ++i) {
-    const auto& request = c.queue_plan.requests[i];
-    dm.createQueue(request.family, request.count);
-  }
-  dm.features(vk::PhysicalDevice(c.physical_device_data.handle).getFeatures());
-  if (c.config.headless) {
-    dm.setExtensions({});
-  } else {
-    dm.setExtensions(painter::default_device_extensions);
-  }
-
-  c.device = dm.create({}, c.config.app_name + ".device");
-  painter::load_dispatcher3(c.device);
-
-  vk::Device dev(c.device);
-  c.queues = painter::device_queues::get(c.device, c.queue_plan);
-  painter::set_name(dev, vk::Queue(c.queues.graphics.handle()), c.config.app_name + ".graphics_queue");
-  if (!c.queues.transfer.aliases(c.queues.graphics)) {
-    painter::set_name(dev, vk::Queue(c.queues.transfer.handle()), c.config.app_name + ".transfer_queue");
-  }
-  if (!c.queues.compute.aliases(c.queues.graphics) && !c.queues.compute.aliases(c.queues.transfer)) {
-    painter::set_name(dev, vk::Queue(c.queues.compute.handle()), c.config.app_name + ".compute_queue");
-  }
-  DE_LOG(
-    catalogue::log_domain::render,
-    flow,
-    "{} queues: graphics={}:{}, transfer={}:{}, compute={}:{}",
-    c.config.app_name,
-    c.queues.graphics.family_index(), c.queues.graphics.queue_index(),
-    c.queues.transfer.family_index(), c.queues.transfer.queue_index(),
-    c.queues.compute.family_index(), c.queues.compute.queue_index());
+  // ВЫБОР физического устройства остаётся здесь — он разный с окном и без окна (проверка
+  // поверхности, кэш на диске, отложенное создание). А сборка логического устройства одна на движок.
+  const auto created =
+    painter::create_device(c.instance, c.physical_device_data, !c.config.headless, c.config.app_name);
+  c.device = created.device;
+  c.queue_plan = created.plan;
+  c.queues = created.queues;
 
   c.device_ready = true;
 }

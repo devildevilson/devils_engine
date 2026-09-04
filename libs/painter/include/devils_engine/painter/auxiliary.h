@@ -18,6 +18,47 @@ namespace devils_engine {
 namespace painter {
 
 struct cached_system_data;
+struct physical_device_data;
+
+// СБОРКА VULKAN: инстанс и логическое устройство одной функцией на каждое.
+//
+// Выделено потому, что у этих тридцати строк в движке ДВА потребителя, и отличаются они одним
+// флагом: рантайм с окном и вычислительный контекст без окна. Пока сборка жила только в шаблонах
+// `simul::render_runtime`, второму потребителю оставалось скопировать её себе — а скопированная
+// последовательность создания устройства однажды разъезжается с первой, и заметить это можно только
+// по чужому падению на чужой машине.
+struct instance_options {
+  std::string app_name = "devils_engine";
+  std::string engine_name = "devils_engine";
+  uint32_t app_version = 1;
+  uint32_t engine_version = 1;
+  // Нужна ли поверхность окна. Определяет и загружаемый диспатчер, и набор расширений инстанса.
+  bool presentation = true;
+  bool validation = false;
+};
+
+struct created_instance {
+  VkInstance instance = nullptr;
+  // Пусто, если валидация выключена.
+  VkDebugUtilsMessengerEXT messenger = nullptr;
+};
+
+created_instance create_instance(const instance_options& options);
+
+struct created_device {
+  VkDevice device = nullptr;
+  device_queue_plan plan{};
+  device_queues queues{};
+};
+
+// Логическое устройство по УЖЕ ВЫБРАННОМУ физическому: план очередей, сами очереди и их имена.
+// Выбор физического устройства сюда не входит намеренно — он разный с окном и без окна (проверка
+// поверхности, кэш на диске, отложенное создание), и складывать два разных вопроса в одну функцию
+// было бы неправдой.
+created_device create_device(VkInstance instance,
+                             const physical_device_data& data,
+                             const bool presentation,
+                             const std::string& name);
 
 const std::vector<const char*> default_validation_layers = {"VK_LAYER_KHRONOS_validation"};
 const std::vector<const char*> default_device_extensions = {"VK_KHR_swapchain"};

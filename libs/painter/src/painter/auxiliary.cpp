@@ -6,6 +6,7 @@
 #include "auxiliary.h"
 #include "devils_engine/input/core.h"
 #include "devils_engine/utils/core.h"
+#include "makers.h"
 #include "system_info.h"
 #include "vulkan_header.h"
 #if defined(_WIN32)
@@ -1708,6 +1709,84 @@ bool format_sizes_are_equal(uint32_t srcFormat, uint32_t dstFormat, uint32_t reg
 }
 bool format_requires_ycbcr_conversion(uint32_t format) {
   return format >= VK_FORMAT_G8B8G8R8_422_UNORM && format <= VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM;
+}
+
+created_instance create_instance(const instance_options& options) {
+  load_dispatcher1(options.presentation);
+
+  vk::ApplicationInfo ai{};
+  ai.pApplicationName = options.app_name.c_str();
+  ai.applicationVersion = options.app_version;
+  ai.pEngineName = options.engine_name.c_str();
+  ai.engineVersion = options.engine_version;
+  ai.apiVersion = VK_API_VERSION_1_0;
+
+  std::vector<const char*> exts = get_required_extensions(options.presentation, options.validation);
+  vk::InstanceCreateInfo ici{};
+  ici.pApplicationInfo = &ai;
+  if (options.validation) {
+    if (!check_validation_layer_support(default_validation_layers)) {
+      utils::error{}("Requested Vulkan validation layers are not available");
+    }
+
+    ici.enabledLayerCount = default_validation_layers.size();
+    ici.ppEnabledLayerNames = default_validation_layers.data();
+  }
+  ici.enabledExtensionCount = exts.size();
+  ici.ppEnabledExtensionNames = exts.data();
+
+  DE_LOG(catalogue::log_domain::render, flow, "{}: creating Vulkan instance", options.app_name);
+  created_instance result;
+  result.instance = vk::createInstance(ici);
+  DE_LOG(catalogue::log_domain::render, flow, "{}: Vulkan instance created", options.app_name);
+
+  load_dispatcher2(result.instance);
+  if (options.validation) {
+    result.messenger = create_debug_messenger(result.instance);
+  }
+  return result;
+}
+
+created_device create_device(VkInstance instance,
+                             const physical_device_data& data,
+                             const bool presentation,
+                             const std::string& name) {
+  device_maker dm(instance);
+  dm.beginDevice(data.handle);
+
+  created_device result;
+  result.plan = make_device_queue_plan(data);
+  for (uint32_t i = 0; i < result.plan.request_count; ++i) {
+    const auto& request = result.plan.requests[i];
+    dm.createQueue(request.family, request.count);
+  }
+  dm.features(vk::PhysicalDevice(data.handle).getFeatures());
+  // Расширение свопчейна нужно ровно тому, кто показывает кадры. Без окна оно не просто лишнее —
+  // устройство без поверхности его может и не иметь.
+  dm.setExtensions(presentation ? default_device_extensions : std::vector<const char*>{});
+
+  result.device = dm.create({}, name + ".device");
+  load_dispatcher3(result.device);
+
+  vk::Device dev(result.device);
+  result.queues = device_queues::get(result.device, result.plan);
+  set_name(dev, vk::Queue(result.queues.graphics.handle()), name + ".graphics_queue");
+  if (!result.queues.transfer.aliases(result.queues.graphics)) {
+    set_name(dev, vk::Queue(result.queues.transfer.handle()), name + ".transfer_queue");
+  }
+  if (!result.queues.compute.aliases(result.queues.graphics) &&
+      !result.queues.compute.aliases(result.queues.transfer)) {
+    set_name(dev, vk::Queue(result.queues.compute.handle()), name + ".compute_queue");
+  }
+
+  DE_LOG(catalogue::log_domain::render, flow,
+         "{} queues: graphics={}:{}, transfer={}:{}, compute={}:{}",
+         name,
+         result.queues.graphics.family_index(), result.queues.graphics.queue_index(),
+         result.queues.transfer.family_index(), result.queues.transfer.queue_index(),
+         result.queues.compute.family_index(), result.queues.compute.queue_index());
+
+  return result;
 }
 
 bool format_is_undef(uint32_t format) {

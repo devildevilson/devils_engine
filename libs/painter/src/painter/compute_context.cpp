@@ -1,0 +1,410 @@
+#include "compute_context.h"
+
+#include <cstring>
+
+#include "devils_engine/utils/core.h"
+
+#include "graphics_base.h"
+#include "makers.h"
+#include "shader_crafter.h"
+#include "system_info.h"
+#include "vulkan_header.h"
+
+#include <shaderc/shaderc.h>
+
+namespace devils_engine {
+namespace painter {
+
+struct compute_context::buffer_entry {
+  VkBuffer handle = nullptr;
+  VmaAllocation allocation = nullptr;
+  void* mapped = nullptr;
+  size_t byte_size = 0;
+};
+
+struct compute_context::program_entry {
+  VkDescriptorSetLayout set_layout = nullptr;
+  VkPipelineLayout pipeline_layout = nullptr;
+  VkPipeline pipeline = nullptr;
+  VkDescriptorSet set = nullptr;
+  uint32_t storage_count = 0;
+  uint32_t push_byte_size = 0;
+};
+
+bool compute_device_available() {
+  // Инстанс поднимается и опускается: узнать, есть ли устройство, иначе нечем, а «нет устройства» —
+  // законный ответ, а не ошибка. Валидация здесь выключена намеренно: проверка не должна падать на
+  // машине, где слоёв не установлено.
+  instance_options options;
+  options.app_name = "devils_compute_probe";
+  options.presentation = false;
+  options.validation = false;
+
+  try {
+    const auto created = create_instance(options);
+    if (created.instance == nullptr) {
+      return false;
+    }
+
+    bool found = false;
+    try {
+      system_info si(created.instance);
+      const auto data = si.choose_physical_device_headless();
+      found = data.handle != nullptr;
+    } catch (const std::exception&) {
+      found = false;
+    }
+
+    vk::Instance(created.instance).destroy();
+    return found;
+  } catch (const std::exception&) {
+    return false;
+  }
+}
+
+compute_context::compute_context(compute_context_config config) : config_(std::move(config)) {
+  instance_options options;
+  options.app_name = config_.app_name;
+  options.presentation = false;
+  options.validation = config_.validation;
+  instance_ = create_instance(options);
+
+  system_info si(instance_.instance);
+  const auto physical = si.choose_physical_device_headless();
+  if (physical.handle == nullptr) {
+    utils::error{}("compute context '{}': no Vulkan device is available", config_.app_name);
+  }
+  system_info::print_choosed_device(physical.handle);
+
+  device_ = create_device(instance_.instance, physical, false, config_.app_name);
+
+  const auto properties = vk::PhysicalDevice(physical.handle).getProperties();
+  device_name_.assign(properties.deviceName.data());
+  for (uint32_t axis = 0; axis < 3; ++axis) {
+    limits_.max_group_count[axis] = properties.limits.maxComputeWorkGroupCount[axis];
+    limits_.max_group_size[axis] = properties.limits.maxComputeWorkGroupSize[axis];
+  }
+  limits_.max_group_invocations = properties.limits.maxComputeWorkGroupInvocations;
+  limits_.max_shared_memory_bytes = properties.limits.maxComputeSharedMemorySize;
+  limits_.max_storage_buffer_range = properties.limits.maxStorageBufferRange;
+
+  base_ = std::make_unique<graphics_base>(
+    instance_.instance, device_.device, physical.handle, presentation_engine_type::no_present);
+  base_->create_allocator();
+  base_->create_descriptor_pool();
+  if (config_.pipeline_cache_path.empty()) {
+    // Пустой путь означает кэш в памяти: `get_or_create_pipeline_cache` с несуществующим файлом
+    // создаёт пустой кэш и не пишет его обратно, поэтому отдельной ветки для этого не нужно.
+    base_->get_or_create_pipeline_cache(std::string{});
+  } else {
+    base_->get_or_create_pipeline_cache(config_.pipeline_cache_path);
+  }
+
+  // Пул СВОЙ и на вычислительной очереди: graphics_base создаёт его на семействе графики, а
+  // отдельная вычислительная очередь ради этого и планируется.
+  vk::Device dev(device_.device);
+  vk::CommandPoolCreateInfo cpci{};
+  cpci.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+  cpci.queueFamilyIndex = device_.queues.compute.family_index();
+  command_pool_ = dev.createCommandPool(cpci);
+  set_name(dev, vk::CommandPool(command_pool_), config_.app_name + ".compute_command_pool");
+
+  // Гранулярный fence, а не device-wide waitIdle: ждать надо ровно свою отправку.
+  fence_ = dev.createFence(vk::FenceCreateInfo{});
+  set_name(dev, vk::Fence(fence_), config_.app_name + ".compute_fence");
+}
+
+compute_context::~compute_context() noexcept {
+  if (device_.device == nullptr) {
+    return;
+  }
+
+  vk::Device dev(device_.device);
+  dev.waitIdle();
+
+  for (auto& program : programs_) {
+    if (program.pipeline != nullptr) dev.destroy(vk::Pipeline(program.pipeline));
+    if (program.pipeline_layout != nullptr) dev.destroy(vk::PipelineLayout(program.pipeline_layout));
+    if (program.set_layout != nullptr) dev.destroy(vk::DescriptorSetLayout(program.set_layout));
+  }
+  programs_.clear();
+
+  if (base_ != nullptr && base_->allocator != nullptr) {
+    vma::Allocator allocator(base_->allocator);
+    for (auto& entry : buffers_) {
+      if (entry.mapped != nullptr) {
+        allocator.unmapMemory(vma::Allocation(entry.allocation));
+      }
+      if (entry.handle != nullptr) {
+        allocator.destroyBuffer(vk::Buffer(entry.handle), vma::Allocation(entry.allocation));
+      }
+    }
+  }
+  buffers_.clear();
+
+  if (fence_ != nullptr) dev.destroy(vk::Fence(fence_));
+  if (command_pool_ != nullptr) dev.destroy(vk::CommandPool(command_pool_));
+
+  // graphics_base снимает аллокатор, пул дескрипторов и кэш пайплайнов; устройство и инстанс он не
+  // трогает — их создал этот контекст, ему их и закрывать.
+  base_.reset();
+
+  dev.destroy();
+  if (instance_.messenger != nullptr) {
+    destroy_debug_messenger(instance_.instance, instance_.messenger);
+  }
+  vk::Instance(instance_.instance).destroy();
+}
+
+VkDevice compute_context::device() const noexcept {
+  return device_.device;
+}
+
+const std::string& compute_context::device_name() const noexcept {
+  return device_name_;
+}
+
+const compute_context::device_limits& compute_context::limits() const noexcept {
+  return limits_;
+}
+
+const compute_context::buffer_entry& compute_context::buffer_at(const buffer_id id) const {
+  if (id >= buffers_.size()) {
+    utils::error{}("compute context '{}': buffer {} does not exist", config_.app_name, id);
+  }
+  return buffers_[id];
+}
+
+compute_context::buffer_id compute_context::create_buffer(const size_t byte_size, const bool host_visible) {
+  if (byte_size == 0) {
+    utils::error{}("compute context '{}': a buffer of zero bytes has nothing to compute over", config_.app_name);
+  }
+  if (byte_size > limits_.max_storage_buffer_range) {
+    utils::error{}("compute context '{}': buffer of {} bytes exceeds maxStorageBufferRange {} on '{}'",
+                   config_.app_name, byte_size, limits_.max_storage_buffer_range, device_name_);
+  }
+
+  vk::BufferCreateInfo bci{};
+  bci.size = byte_size;
+  bci.usage = vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc |
+              vk::BufferUsageFlagBits::eTransferDst;
+  bci.sharingMode = vk::SharingMode::eExclusive;
+
+  vma::AllocationCreateInfo aci{};
+  aci.usage = host_visible ? vma::MemoryUsage::eCpuToGpu : vma::MemoryUsage::eGpuOnly;
+  if (host_visible) {
+    aci.flags = vma::AllocationCreateFlagBits::eMapped;
+  }
+
+  vma::Allocator allocator(base_->allocator);
+  auto [handle, allocation] = allocator.createBuffer(bci, aci);
+
+  buffer_entry entry;
+  entry.handle = handle;
+  entry.allocation = allocation;
+  entry.byte_size = byte_size;
+  if (host_visible) {
+    entry.mapped = allocator.mapMemory(allocation);
+  }
+
+  set_name(vk::Device(device_.device), vk::Buffer(handle),
+           config_.app_name + ".buffer" + std::to_string(buffers_.size()));
+  buffers_.push_back(entry);
+  return buffer_id(buffers_.size() - 1);
+}
+
+size_t compute_context::buffer_byte_size(const buffer_id id) const {
+  return buffer_at(id).byte_size;
+}
+
+void compute_context::write(const buffer_id id, const void* data, const size_t byte_size) {
+  const auto& entry = buffer_at(id);
+  if (entry.mapped == nullptr) {
+    utils::error{}("compute context '{}': buffer {} lives on the device and has no host mapping",
+                   config_.app_name, id);
+  }
+  if (byte_size > entry.byte_size) {
+    utils::error{}("compute context '{}': writing {} bytes into buffer {} of {} bytes",
+                   config_.app_name, byte_size, id, entry.byte_size);
+  }
+  std::memcpy(entry.mapped, data, byte_size);
+  vma::Allocator(base_->allocator).flushAllocation(vma::Allocation(entry.allocation), 0, byte_size);
+}
+
+void compute_context::read(const buffer_id id, void* data, const size_t byte_size) const {
+  const auto& entry = buffer_at(id);
+  if (entry.mapped == nullptr) {
+    utils::error{}("compute context '{}': buffer {} lives on the device and has no host mapping",
+                   config_.app_name, id);
+  }
+  if (byte_size > entry.byte_size) {
+    utils::error{}("compute context '{}': reading {} bytes from buffer {} of {} bytes",
+                   config_.app_name, byte_size, id, entry.byte_size);
+  }
+  vma::Allocator(base_->allocator).invalidateAllocation(vma::Allocation(entry.allocation), 0, byte_size);
+  std::memcpy(data, entry.mapped, byte_size);
+}
+
+void compute_context::copy(const buffer_id from, const buffer_id to, const size_t byte_size) {
+  const auto& source = buffer_at(from);
+  const auto& target = buffer_at(to);
+  if (byte_size > source.byte_size || byte_size > target.byte_size) {
+    utils::error{}("compute context '{}': copying {} bytes between buffers of {} and {} bytes",
+                   config_.app_name, byte_size, source.byte_size, target.byte_size);
+  }
+
+  const bool done = do_command(
+    device_.device, command_pool_, device_.queues.compute.handle(), fence_,
+    [&](VkCommandBuffer raw) {
+      vk::CommandBuffer buf(raw);
+      const vk::BufferCopy region(0, 0, byte_size);
+      buf.copyBuffer(vk::Buffer(source.handle), vk::Buffer(target.handle), 1, &region);
+    });
+  if (!done) {
+    utils::error{}("compute context '{}': buffer copy did not complete", config_.app_name);
+  }
+}
+
+compute_context::program_id compute_context::create_program(const std::string& name,
+                                                            const std::string& source,
+                                                            const uint32_t storage_count,
+                                                            const uint32_t push_byte_size) {
+  if (storage_count == 0) {
+    utils::error{}("compute context '{}': program '{}' binds no buffers and has nothing to read or write",
+                   config_.app_name, name);
+  }
+
+  // Тем же компилятором, которым движок компилирует шейдеры материалов. Реестр не нужен: текст
+  // приходит целиком, а `#include` у шейдера, написанного руками, нет.
+  shader_crafter crafter(nullptr);
+  crafter.set_optimization(true);
+  crafter.set_shader_entry_point("main");
+  crafter.set_shader_type(shaderc_compute_shader);
+  const auto spirv = crafter.compile(name, source);
+  if (spirv.empty()) {
+    utils::error{}("compute context '{}': program '{}' did not compile: {}",
+                   config_.app_name, name, crafter.err_msg());
+  }
+
+  vk::Device dev(device_.device);
+
+  descriptor_set_layout_maker layout_maker(dev);
+  for (uint32_t binding = 0; binding < storage_count; ++binding) {
+    layout_maker.binding(binding, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eCompute);
+  }
+
+  program_entry program;
+  program.storage_count = storage_count;
+  program.push_byte_size = push_byte_size;
+  program.set_layout = layout_maker.create(name + ".set_layout");
+
+  pipeline_layout_maker pipeline_layout(dev);
+  pipeline_layout.addDescriptorLayout(vk::DescriptorSetLayout(program.set_layout));
+  if (push_byte_size != 0) {
+    pipeline_layout.addPushConstRange(0, push_byte_size, vk::ShaderStageFlagBits::eCompute);
+  }
+  program.pipeline_layout = pipeline_layout.create(name + ".pipeline_layout");
+
+  vk::ShaderModuleCreateInfo smci{};
+  smci.codeSize = spirv.size() * sizeof(uint32_t);
+  smci.pCode = spirv.data();
+  const auto module = dev.createShaderModuleUnique(smci);
+
+  compute_pipeline_maker pipeline_maker(dev);
+  pipeline_maker.shader(module.get());
+  program.pipeline = pipeline_maker.create(name, vk::PipelineLayout(program.pipeline_layout));
+
+  descriptor_set_maker set_maker(dev);
+  set_maker.layout(vk::DescriptorSetLayout(program.set_layout));
+  const auto sets = set_maker.create(vk::DescriptorPool(base_->descriptor_pool), name + ".set");
+  if (sets.empty()) {
+    utils::error{}("compute context '{}': program '{}' got no descriptor set", config_.app_name, name);
+  }
+  program.set = sets.front();
+
+  programs_.push_back(program);
+  return program_id(programs_.size() - 1);
+}
+
+void compute_context::dispatch(const program_id id,
+                               const std::span<const buffer_id>& buffers,
+                               const void* push,
+                               const size_t push_byte_size,
+                               const size_t element_count,
+                               const uint32_t group_size) {
+  if (id >= programs_.size()) {
+    utils::error{}("compute context '{}': program {} does not exist", config_.app_name, id);
+  }
+  const auto& program = programs_[id];
+
+  if (buffers.size() != program.storage_count) {
+    utils::error{}("compute context '{}': program expects {} buffers, got {}",
+                   config_.app_name, program.storage_count, buffers.size());
+  }
+  if (push_byte_size != program.push_byte_size) {
+    utils::error{}("compute context '{}': program declares {} push bytes, got {}",
+                   config_.app_name, program.push_byte_size, push_byte_size);
+  }
+  if (group_size == 0 || group_size > limits_.max_group_invocations || group_size > limits_.max_group_size[0]) {
+    utils::error{}("compute context '{}': group size {} does not fit '{}' (max invocations {}, max size x {})",
+                   config_.app_name, group_size, device_name_, limits_.max_group_invocations,
+                   limits_.max_group_size[0]);
+  }
+  if (element_count == 0) {
+    return;
+  }
+
+  vk::Device dev(device_.device);
+
+  std::vector<vk::DescriptorBufferInfo> infos;
+  std::vector<vk::WriteDescriptorSet> writes;
+  infos.reserve(buffers.size());
+  writes.reserve(buffers.size());
+  for (size_t i = 0; i < buffers.size(); ++i) {
+    const auto& entry = buffer_at(buffers[i]);
+    infos.emplace_back(vk::Buffer(entry.handle), 0, entry.byte_size);
+  }
+  for (size_t i = 0; i < buffers.size(); ++i) {
+    writes.emplace_back(vk::DescriptorSet(program.set), uint32_t(i), 0, 1,
+                        vk::DescriptorType::eStorageBuffer, nullptr, &infos[i]);
+  }
+  dev.updateDescriptorSets(writes, {});
+
+  // ЧИСЛО ГРУПП СВОРАЧИВАЕТСЯ В ОСИ, и это не оптимизация. Гарантированный Vulkan'ом минимум
+  // `maxComputeWorkGroupCount[0]` это 65535, то есть при группе 64 линейный диспатч кончается на
+  // 4.2 млн элементов — а буферы генератора бывают и по 16.7 млн. Одномерный диспатч прошёл бы на
+  // машине автора (у Intel предел по x это 2^31-1) и упал бы у игрока.
+  const uint64_t total_groups = (uint64_t(element_count) + group_size - 1) / group_size;
+  uint32_t groups_x = uint32_t(std::min<uint64_t>(total_groups, limits_.max_group_count[0]));
+  uint32_t groups_y = 1;
+  if (total_groups > limits_.max_group_count[0]) {
+    groups_x = limits_.max_group_count[0];
+    const uint64_t rows = (total_groups + groups_x - 1) / groups_x;
+    if (rows > limits_.max_group_count[1]) {
+      utils::error{}("compute context '{}': {} elements need {} groups, which does not fit {}x{} on '{}'",
+                     config_.app_name, element_count, total_groups, limits_.max_group_count[0],
+                     limits_.max_group_count[1], device_name_);
+    }
+    groups_y = uint32_t(rows);
+  }
+
+  const bool done = do_command(
+    device_.device, command_pool_, device_.queues.compute.handle(), fence_,
+    [&](VkCommandBuffer raw) {
+      vk::CommandBuffer buf(raw);
+      buf.bindPipeline(vk::PipelineBindPoint::eCompute, vk::Pipeline(program.pipeline));
+      buf.bindDescriptorSets(vk::PipelineBindPoint::eCompute, vk::PipelineLayout(program.pipeline_layout), 0,
+                             {vk::DescriptorSet(program.set)}, {});
+      if (push_byte_size != 0) {
+        buf.pushConstants(vk::PipelineLayout(program.pipeline_layout), vk::ShaderStageFlagBits::eCompute, 0,
+                          uint32_t(push_byte_size), push);
+      }
+      buf.dispatch(groups_x, groups_y, 1);
+    });
+  if (!done) {
+    utils::error{}("compute context '{}': dispatch did not complete", config_.app_name);
+  }
+}
+
+} // namespace painter
+} // namespace devils_engine

@@ -4,9 +4,62 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
-- ORIGINATOR TOOLING REFINEMENT AHEAD OF THE TRANSLATOR (2026-09-04). `411/411` project tests, GN01
-  `24/24` (`+2`). Two of the three declarations from `ORIGINATOR_GPGPU.md` §5 step 2 are in; the
-  translator stays behind them by decision.
+- COMPUTE CONTEXT: VULKAN WITHOUT A WINDOW AND WITHOUT A RENDER GRAPH (2026-09-04). `421/421` project
+  tests. `painter::compute_context` (`libs/painter/.../compute_context.{h,cpp}`) plus the guarded
+  `painter_compute_context_test`. `ORIGINATOR_GPGPU.md` §5 step 3 is done; the translator is next.
+  WHERE IT IS ASSEMBLED WAS THE ACTUAL WORK, exactly as the design said. Instance and logical-device
+  assembly is now `painter::create_instance` / `painter::create_device` in `auxiliary.h`, and
+  `simul::render_runtime`'s templates CALL them — those thirty lines had two consumers differing by one
+  flag, so a second copy would have drifted. Choosing the PHYSICAL device stayed in the runtime
+  deliberately: it differs with and without a window (surface capability, on-disk cache, postponed
+  creation), and folding two different questions into one function would have been a lie. The context
+  takes allocator, descriptor pool and pipeline cache from `graphics_base` but keeps its OWN command
+  pool on the COMPUTE queue, because `graphics_base::create_command_pool` takes the graphics family and
+  a separate `device_queues::compute` is planned precisely for this. No surface, no swapchain, no
+  frames in flight, no graph. GLSL text goes through the same `shader_crafter` the engine uses for
+  material shaders, so no second GLSL compiler appears.
+  MEASURED (Iris Xe, `remap` = `clamp(x*scale+offset)`, the same arithmetic as the native tool; split
+  host→device→compute→back, best of five): 1 MB `0.765`/`0.686`/`0.759` = `2.210` ms; 4 MB
+  `1.936`/`1.352`/`1.804` = `5.093` ms; 16 MB `4.749`/`3.652`/`4.608` = `13.009` ms. **TRANSFER IS 70%
+  OF THE ROUND TRIP AT EVERY SIZE.** Three conclusions, all measured:
+  (1) THE COMPUTE BEATS THE CPU BUT THE ROUND TRIP DOES NOT. One `remap` pass over 1 M elements:
+  dispatch `1.35` ms against `3.67` ms on eleven threads (from the fusion bench: three fused passes =
+  `11.0` ms), so the compute alone is `2.7x` faster — while the full round trip costs `5.09` ms and
+  LOSES to eleven threads. §4.5's rule "a queue longer than one instrument, otherwise pointless" is
+  therefore a fact, not caution.
+  (2) THE THRESHOLD IS COMPUTABLE AND IS TWO-TO-THREE PASSES. Transfer costs `3.74` ms, each pass saves
+  `3.67 - 1.35 = 2.32` ms, so the device pays off from the SECOND pass and wins visibly from the third
+  (`11.0` against `7.8` ms). Against ONE thread (`19.7` ms per pass) it wins from the first. This is
+  exactly the number §6.4 says belongs in the manifest: a STRUCTURAL criterion ("shorter than N passes
+  runs on the CPU") now has a measured N.
+  (3) DIVERGENCE FROM THE CPU IS ONE ULP (`5.96e-08`). §4.2 still holds (two paths, two results), but
+  on a multiply-add the magnitude is negligible — so §4.1's real risk lives in transcendentals and
+  reductions, where the decision AMPLIFIES the difference, not in arithmetic.
+  The measurement splits into three submissions ON PURPOSE, to attribute cost per phase. A real queue
+  goes to the device in ONE submission (§1's "executes as a whole, without returning to the
+  orchestrator" is true at the Vulkan level too), so `70%` is an UPPER bound that the next slice must
+  recompute.
+- ORIGINATOR TOOLING REFINEMENT AHEAD OF THE TRANSLATOR (2026-09-04). `418/418` project tests, GN01
+  `24/24` (`+2`). ALL THREE declarations from `ORIGINATOR_GPGPU.md` §5 step 2 are in; the translator
+  stays behind them by decision.
+  (0) CALL RANGE FROM A FIELD (`range = { count = state:field("used") }`), in both namespaces. The
+  mechanism already existed and already worked on the host — GN03 declares capacity as the buffer size
+  and delivers the USED length in an ordinary one-element buffer; what is new is that a range can
+  REFERENCE such a field, and on a device that same buffer IS the `dispatchIndirect` argument. Rules,
+  each following from the same fact: the counter is read at EXECUTION time (an earlier element of the
+  same queue writes it, so a value read at declaration would be the previous run's); the field must be
+  a single-component integer (a fractional element count is a silent truncation); NO element may write
+  the counter LATER than the one reading it, and the refusal names both positions; the counter counts
+  as a READ of the field, so the pass that computed the length is alive and the barrier between them
+  falls out of the same question as the dead-work check; a counted range starts at zero and explicit
+  bounds beside it are refused; and CAPACITY is what gets checked before execution, since the range is
+  unknown while the capacity is exactly the bound the overflow clamps to.
+  OVERFLOW CLAMPS RATHER THAN REFUSES, deliberately on BOTH paths: nothing to throw in a shader, and a
+  CPU refusal against a GPU clamp would give one declaration two behaviours. The clamp is reported
+  (`report.clamped`, visible in lua) because a silently truncated pass cannot be traced from the result
+  — GN03 paid for that lesson with a hole in the world. Fusion follows: counted calls fuse only when
+  they reference the SAME counter field, so equal ranges hold by construction; two counters holding the
+  same number today do NOT fuse, because tomorrow they diverge.
   (1) BUFFER SHAPE (`extent`) REPLACES SIZE where a buffer is addressed as a raster: `extent = [ width,
   width ]` names the axes with the same size CONSTANTS, at most three, and the element count is DERIVED
   as their product — `size` next to `extent` is a loud refusal because it is a second way to name one

@@ -36,6 +36,7 @@ set(SRC_LIST
   src/painter/vulkan_header.cpp
   src/painter/shader_source_file.cpp
   src/painter/common.cpp
+  src/painter/compute_context.cpp
   src/painter/structures.cpp
   src/painter/graphics_base.cpp
   src/painter/common_steps.cpp

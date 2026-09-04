@@ -191,6 +191,11 @@ target_link_libraries(flow_test PRIVATE devils_engine::flow devils_engine::demiu
 devils_add_doctest(catalogue_introspection_test catalogue_introspection_test.cpp)
 target_link_libraries(catalogue_introspection_test PRIVATE devils_engine::catalogue devils_engine::utils)
 
+# Вычислительный контекст: Vulkan без окна и без render-графа. Тест ОХРАНЯЕМЫЙ — отсутствие
+# устройства законно, и тогда он просто ничего не проверяет.
+devils_add_doctest(painter_compute_context_test painter_compute_context_test.cpp)
+target_link_libraries(painter_compute_context_test PRIVATE devils_engine::painter devils_engine::utils)
+
 devils_add_doctest(painter_shader_prepare_test painter_shader_prepare_test.cpp)
 target_link_libraries(painter_shader_prepare_test PRIVATE devils_engine::painter devils_engine::demiurg devils_engine::utils)
 target_compile_definitions(painter_shader_prepare_test PRIVATE
