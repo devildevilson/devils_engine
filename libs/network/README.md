@@ -93,8 +93,8 @@ penalties, sockets, wire serialization, replay execution and checkpointing.
 manifest for a complete causal state. Every project-owned section declares an
 explicit 32-bit ID and version plus `write`, `read` and `validate` operations.
 The parameter-pack order is erased: the schema sorts sections by ID, rejects
-duplicate IDs at compile time and derives a stable schema digest from the
-canonical `(id, version)` sequence.
+duplicate IDs at compile time and derives a stable schema fingerprint from
+the canonical `(format, count, id, version)` sequence.
 
 The first compatibility policy is deliberately `exact`. Unknown, missing,
 duplicate or reordered sections, version mismatches, malformed section data
@@ -114,7 +114,9 @@ payload bytes identically to either consumer. The built-in `state_writer` and
 `state_reader` provide minimal canonical little-endian adapters; compatible
 project adapters may be substituted.
 
-The schema digest is format compatibility metadata, not a cryptographic state
+The 32-bit schema fingerprint is produced by the shared
+`utils::murmur_hash3_32` primitive over canonical format/count/ID/version
+bytes. It is format compatibility metadata, not a cryptographic state
 identity. Strong content hashing remains NET-05; checkpoint retention and
 replay remain NET-04. The schema owns no sockets, threads, ECS types, systems
 or callbacks.

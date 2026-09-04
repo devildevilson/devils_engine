@@ -108,12 +108,12 @@ state_schema<Host, Writer, Reader, Sections...>
 
 Each project section declares an explicit 32-bit ID and version and supplies typed write, staging-read and
 staging-validation operations. The schema sorts policies by ID regardless of parameter-pack order, rejects
-duplicate IDs at compile time, and derives a stable schema digest from the canonical format/count/ID/version
-sequence. Version zero is reserved. The digest is compatibility metadata, not the strong state identity planned
-for NET-05.
+duplicate IDs at compile time, and derives a stable 32-bit Murmur3 schema fingerprint from the canonical
+format/count/ID/version byte sequence through the shared `utils::murmur_hash3_32` primitive. Version zero is
+reserved. The fingerprint is compatibility metadata, not the strong state identity planned for NET-05.
 
 The initial compatibility policy is deliberately exact. Missing, unknown, duplicate and reordered sections,
-version mismatches, malformed or truncated bodies, section/document trailing bytes and a bad schema digest all
+version mismatches, malformed or truncated bodies, section/document trailing bytes and a bad schema fingerprint all
 return an explicit `state_load_status`; section failures carry the relevant ID and version information. No
 migration or optional-section assumption is hidden in the first format.
 
@@ -131,6 +131,11 @@ The eight NET-03 cases pass in Debug and Release. The adjacent `aesthetics` regi
 the first fingerprint/dump/load: public inspection is const and late component registration is a fatal invariant
 violation. This closes the nested ECS schema identity, but not real-world replacement: safely swapping a loaded
 `aesthetics::world` together with systems and materialized queries remains the next dedicated ECS task.
+
+The closing hash audit removed the private FNV implementation from NET-03. Schema compatibility now uses the
+shared constexpr Murmur3 utility; `utils::murmur_hash3_32` also accepts `span<const byte>` and treats string bytes
+as unsigned, including values with the high bit set. The affected utility, schema and aesthetics slices pass
+`33/33` in both Debug and Release.
 
 Reproduction:
 

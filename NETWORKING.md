@@ -432,8 +432,9 @@ compile-time ID sort; duplicate IDs are rejected by `static_assert`; version zer
 
 `emit_canonical` is the single traversal for the complete envelope and every section payload. A normal writer
 produces checkpoint bytes, while a sink with the same three scalar/byte operations hashes exactly that byte
-stream. The 64-bit FNV schema digest covers canonical `(format, count, id, version)` metadata only: it is a format
-identity, not the strong state/content digest planned for NET-05.
+stream. The 32-bit Murmur3 schema fingerprint uses the shared `utils::murmur_hash3_32` implementation and covers
+canonical `(format, count, id, version)` metadata only: it is format compatibility metadata, not the strong
+state/content digest planned for NET-05.
 
 The fake-host test uses two unrelated sections and checks every required boundary, including every possible
 truncation of a valid document. All eight NET-03 cases pass in Debug and Release. The live host stays byte-for-byte
@@ -475,7 +476,7 @@ storage into one public struct.
 Required tests use a fake host with two unrelated section types:
 
 1. canonical bytes are independent of construction order;
-2. section ID/version changes alter schema digest;
+2. section ID/version changes alter the schema fingerprint;
 3. duplicate IDs fail at compile time where possible;
 4. a truncated/bad section leaves the live host byte-identical;
 5. validation failure leaves the live host byte-identical;
@@ -1095,7 +1096,7 @@ acceptable initially and should be optimized only after measurement.
 Before the first simulation tick, peers compare at least:
 
 - protocol major/minor;
-- full project state schema digest;
+- full project state schema fingerprint;
 - ordered content/module fingerprint;
 - gameplay rules/configuration digest;
 - simulation tick quantum;

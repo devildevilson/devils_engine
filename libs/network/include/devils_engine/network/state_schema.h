@@ -12,6 +12,8 @@
 #include <utility>
 #include <vector>
 
+#include <devils_engine/utils/hash.h>
+
 namespace devils_engine::network {
 
 // Minimal canonical little-endian byte adapters. A project may substitute
@@ -153,7 +155,7 @@ enum class state_load_status : std::uint8_t {
   section_decode_failed,
   section_trailing_bytes,
   section_validation_failed,
-  schema_digest_mismatch,
+  schema_fingerprint_mismatch,
   trailing_bytes,
   host_validation_failed
 };
@@ -183,13 +185,13 @@ consteval bool unique_state_section_ids() {
   return true;
 }
 
-constexpr std::uint64_t schema_fnv_offset = UINT64_C(14695981039346656037);
-constexpr std::uint64_t schema_fnv_prime = UINT64_C(1099511628211);
-
-constexpr void schema_hash_u32(std::uint64_t& hash, const std::uint32_t value) noexcept {
+template <std::size_t Size>
+consteval void schema_append_u32(
+  std::array<std::byte, Size>& bytes,
+  std::size_t& position,
+  const std::uint32_t value) {
   for (unsigned i = 0; i < 4; ++i) {
-    hash ^= std::uint8_t(value >> (i * 8));
-    hash *= schema_fnv_prime;
+    bytes[position++] = std::byte(std::uint8_t(value >> (i * 8)));
   }
 }
 
@@ -283,15 +285,16 @@ private:
 
   inline static constexpr auto descriptors_ = make_descriptors();
 
-  static consteval std::uint64_t make_schema_digest() {
-    std::uint64_t result = detail::schema_fnv_offset;
-    detail::schema_hash_u32(result, format_version);
-    detail::schema_hash_u32(result, std::uint32_t(section_count));
+  static consteval std::uint32_t make_schema_fingerprint() {
+    std::array<std::byte, (2 + section_count * 2) * sizeof(std::uint32_t)> bytes{};
+    std::size_t position = 0;
+    detail::schema_append_u32(bytes, position, format_version);
+    detail::schema_append_u32(bytes, position, std::uint32_t(section_count));
     for (const descriptor& value : descriptors_) {
-      detail::schema_hash_u32(result, value.id);
-      detail::schema_hash_u32(result, value.version);
+      detail::schema_append_u32(bytes, position, value.id);
+      detail::schema_append_u32(bytes, position, value.version);
     }
-    return result;
+    return utils::murmur_hash3_32(std::span<const std::byte>{bytes});
   }
 
 public:
@@ -311,8 +314,8 @@ public:
                  ...),
                 "network::state_schema section does not satisfy its policy contract");
 
-  static constexpr std::uint64_t schema_digest() noexcept {
-    return make_schema_digest();
+  static constexpr std::uint32_t schema_fingerprint() noexcept {
+    return make_schema_fingerprint();
   }
 
   // This is the single canonical traversal. A byte writer produces checkpoint
@@ -322,7 +325,7 @@ public:
   static void emit_canonical(const Host& host, Sink& sink) {
     sink.u32(magic);
     sink.u32(format_version);
-    sink.u64(schema_digest());
+    sink.u32(schema_fingerprint());
     sink.u32(std::uint32_t(section_count));
 
     for (const descriptor& value : descriptors_) {
@@ -361,7 +364,7 @@ public:
     Replace&& replace) {
     const std::uint32_t input_magic = reader.u32();
     const std::uint32_t input_format = reader.u32();
-    const std::uint64_t input_digest = reader.u64();
+    const std::uint32_t input_fingerprint = reader.u32();
     const std::uint32_t input_count = reader.u32();
     if (!reader.good()) return {state_load_status::truncated_header};
     if (input_magic != magic) return {state_load_status::bad_magic};
@@ -421,8 +424,8 @@ public:
       const descriptor& missing = descriptors_[expected_index];
       return {state_load_status::missing_section, missing.id, missing.version, 0};
     }
-    if (input_digest != schema_digest()) {
-      return {state_load_status::schema_digest_mismatch};
+    if (input_fingerprint != schema_fingerprint()) {
+      return {state_load_status::schema_fingerprint_mismatch};
     }
     if (reader.position() != reader.size()) {
       return {state_load_status::trailing_bytes};

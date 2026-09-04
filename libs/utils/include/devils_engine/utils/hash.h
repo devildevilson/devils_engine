@@ -2,7 +2,9 @@
 #define DEVILS_ENGINE_UTILS_HASH_H
 
 #include <climits>
+#include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 namespace devils_engine {
@@ -12,7 +14,8 @@ namespace utils {
 // Разделение по назначению:
 //   - числовые миксеры (fmix32/fmix64/wyhash64/splitmix/hash_combine) — рассеять/сложить уже-числовые
 //     ключи (биты состояния, id, кортежи полей);
-//   - murmur_hash3_32 — хеш СТРОК (в т.ч. compile-time, для строковых id вроде catalogue).
+//   - murmur_hash3_32 — хеш БАЙТОВОЙ ПОСЛЕДОВАТЕЛЬНОСТИ (в т.ч. compile-time, для
+//     строковых id вроде catalogue и канонических бинарных метаданных).
 // Для последовательного id строк есть string_hash (rapidhash) в string_id.h; murmur_hash64A остаётся
 // в type_traits.h — он тесно завязан на type_id.
 
@@ -68,25 +71,36 @@ namespace utils {
   return x;
 }
 
-// --- murmur3 (x86, 32 бита) для строк ---
+// --- murmur3 (x86, 32 бита) для байтовых последовательностей ---
 
 namespace detail {
 constexpr uint32_t rotl32(const uint32_t x, const int8_t r) noexcept {
   return (x << r) | (x >> (32 - r));
 }
 
-constexpr uint32_t get_block(const std::string_view& key, const uint32_t index) noexcept {
-  return (uint32_t(key[index * sizeof(uint32_t) + 0]) << CHAR_BIT * 0) |
-         (uint32_t(key[index * sizeof(uint32_t) + 1]) << CHAR_BIT * 1) |
-         (uint32_t(key[index * sizeof(uint32_t) + 2]) << CHAR_BIT * 2) |
-         (uint32_t(key[index * sizeof(uint32_t) + 3]) << CHAR_BIT * 3);
+constexpr uint8_t byte_value(const char value) noexcept {
+  return static_cast<uint8_t>(value);
 }
 
-constexpr uint32_t get_tail(const std::string_view& key, const uint32_t index) noexcept {
-  return (uint32_t(key[index]));
+constexpr uint8_t byte_value(const std::byte value) noexcept {
+  return std::to_integer<uint8_t>(value);
 }
 
-constexpr uint32_t murmur_hash3_x86_32(const std::string_view& key, const uint32_t seed = 0) noexcept {
+template <class Bytes>
+constexpr uint32_t get_block(const Bytes& key, const uint32_t index) noexcept {
+  return (uint32_t(byte_value(key[index * sizeof(uint32_t) + 0])) << CHAR_BIT * 0) |
+         (uint32_t(byte_value(key[index * sizeof(uint32_t) + 1])) << CHAR_BIT * 1) |
+         (uint32_t(byte_value(key[index * sizeof(uint32_t) + 2])) << CHAR_BIT * 2) |
+         (uint32_t(byte_value(key[index * sizeof(uint32_t) + 3])) << CHAR_BIT * 3);
+}
+
+template <class Bytes>
+constexpr uint32_t get_tail(const Bytes& key, const uint32_t index) noexcept {
+  return uint32_t(byte_value(key[index]));
+}
+
+template <class Bytes>
+constexpr uint32_t murmur_hash3_x86_32(const Bytes& key, const uint32_t seed = 0) noexcept {
   const uint32_t len = uint32_t(key.size());
   const uint32_t nblocks = len / sizeof(uint32_t);
 
@@ -134,6 +148,12 @@ constexpr uint32_t murmur_hash3_x86_32(const std::string_view& key, const uint32
 constexpr uint32_t default_murmur32_seed = 0x9747b28cU;
 constexpr uint32_t murmur_hash3_32(const std::string_view& in_str, const uint32_t seed = default_murmur32_seed) noexcept {
   return detail::murmur_hash3_x86_32(in_str, seed);
+}
+
+constexpr uint32_t murmur_hash3_32(
+  const std::span<const std::byte> bytes,
+  const uint32_t seed = default_murmur32_seed) noexcept {
+  return detail::murmur_hash3_x86_32(bytes, seed);
 }
 
 } // namespace utils

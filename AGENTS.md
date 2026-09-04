@@ -4,6 +4,36 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- ORIGINATOR COMPUTATION QUEUE, FIRST SLICE (2026-09-04). `393/393` project tests (`+2` new targets:
+  `originator_queue_test`, `originator_queue_lua_test`), GN01 `22/22` with the queue in production.
+  `ORIGINATOR_GPGPU.md` step 1 is now done except fusion; the design doc and
+  `libs/originator/README.md` ("Очередь вычислений") carry the contract.
+  THE CONSTRUCTION: a queue is a NAMED chain of pre-declared calls executed as a whole. It is split by
+  NAMESPACE, not by a flag — `originator.box_blur{...}` computes now, `originator.queue.box_blur{...}`
+  DECLARES, and `originator.queue{ ..., output = {...} }` runs the lot. Argument tables are identical
+  in both namespaces; only the moment of execution differs. `originator.queue.run_script{...}` puts a
+  `devils_script` program in as an ordinary element (the core `computation_queue.h` knows nothing of
+  lua or ds — a foreign element carries its own body).
+  THE RULE WORTH KEEPING: INPUTS ARE DERIVED, THE OUTPUT IS DECLARED. A queue sees every reader inside
+  itself, so a field read before anyone in the queue wrote it IS an input and can be computed; who
+  reads a result AFTER the queue it cannot know, so `output` is said out loud. From that same boundary
+  follows the dead-work check: an element whose output nobody downstream reads and which `output` does
+  not name is dead, and so is one whose result a later element overwrites without reading. Overwrite is
+  judged by range COVERAGE — two calls writing different halves of one field are both alive, and a
+  false refusal there would cost more than a missed warning.
+  Apertures that fit are exactly those writing their own element into a declared output (`pointwise`,
+  `gather`); the other three each get their OWN reason, not a shared "does not fit". `reduce`'s refusal
+  turned out not to be a choice among mitigations but a consequence: a reduction is computed in order to
+  READ its value back in the conductor (that is what `terrain.lua`'s normalisation does), and reading
+  back in lua is the one thing a queue does not do. A declared call must reach a queue EXACTLY once —
+  declarations are counted, and both a dropped and a twice-used element fail the step, because neither
+  is visible in the result. The report returns `passes` (real data traversals, today == `calls`) so the
+  fusion win will be MEASURED rather than assumed.
+  **SOL2 LANDMINE FOUND AND FIXED, and it is not queue-specific — see Build/Layout Notes.** Two
+  DIFFERENT lambdas declared in the SAME function with the SAME parameter list share sol2's `__gc`
+  metatable (gcc prints a lambda as `<lambda(args)>`, with no ordinal, and sol2 keys the functor
+  destructor by the demangled name), so one type's destructor destroys the other's functor at the
+  wrong layout. It surfaced as `free(): invalid size` at `lua_close`, arbitrarily far from the cause.
 - GN03 CLOSED BY A CLOSING AUDIT (2026-09-04). GN03's own `104/104` property checks (`+17`);
   `359/367` project tests — the eight failures are `GameNetworkingSockets`' own tests, and that
   dependency does not LINK in this environment (the system `abseil` was upgraded, the cached build
@@ -1895,6 +1925,20 @@ hook) because every script comes from demiurg/mods (there is no plain-lua-from-d
 - Current `libs/` layering from CMake: `options` is the common interface build contract; `utils` is the low-level base; `act` feeds `mood` and `acumen`; `demiurg` feeds resource-backed `sound`/`painter`/`visage`; `input` feeds Vulkan/GLFW integration for `painter`; `bindings` and `visage` are tightly coupled for Lua/Nuklear UI.
 - Be explicit about legacy/prototype code in docs and changes: `utils::actor_ref`, old painter renderer/image-container files, abandoned sound source classes and the completed OpenAL path/A-B lab are archived under ignored `exclude/`; live sound is miniaudio-only; `catalogue` is still a prototype, not stable netcode.
 - Linux portable runtime bundling is handled by `cmake/devils_portable_runtime.cmake`: it sets local RPATH to `$ORIGIN` and runs `file(GET_RUNTIME_DEPENDENCIES)` after build. The dependency copy script writes resolved `.so` files into the executable's `bin/`, removes stale/symlink `.so*` entries, names copied libraries by SONAME when available, and deliberately excludes the ELF loader plus core glibc-family libraries (`ld-linux`, `libc`, `libm`, `libdl`, `libpthread`, etc.).
+- **SOL2 GOTCHA, MEASURED 2026-09-04: never hand `table::set_function` a bare lambda when another
+  lambda with the same parameter list is registered from the same function.** sol2 stores the functor
+  in a userdata and caches its `__gc` in the lua registry via `luaL_newmetatable(name)`, where `name`
+  comes from the DEMANGLED type name. On gcc a lambda demangles as `func()::<lambda(args)>` — no
+  ordinal — so two distinct closures with the same parameter list get the SAME metatable name, the
+  second reuses the first's `__gc`, and its functor is destroyed through the wrong layout. Confirmed
+  directly: `sol.main()::<lambda(sol::table)>.user` is identical for two lambdas with different
+  captures. The failure appears as `free(): invalid size` inside `lua_close`, i.e. nowhere near the
+  registration, and capture ORDER decides whether it crashes or corrupts silently (a `this`-first
+  capture read a bogus string past the object and happened not to abort). Fix used in
+  `libs/originator/src/originator/script_host.cpp`: every function goes into lua through a
+  `std::function<result(args)>` alias with a declared signature, so name equality means TYPE equality
+  and two registrations sharing a signature are deliberately ONE type. Related trap already recorded:
+  `sol::optional` in a non-trailing parameter.
 - `vulkanmemoryallocator-hpp` is header-only from this project's point of view but brings Vulkan headers/VMA targets through CMake; keep those targets explicit in consumers such as `tile_frontier` instead of assuming a system Vulkan SDK layout. `msdf-atlas-gen` is not header-only; `artery-font` support is intentionally not needed.
 - Current focused contract tests live in `tests/thread_general_test.cpp`, `tests/utils_contract_test.cpp`, `tests/sound_system_test.cpp`, and `tests/catalogue_introspection_test.cpp`. `thread_general_test` covers `atomic.h`, `atomic_pool.h`, `lock.h`, legacy `queue1`, and the new `thread::spsc_queue`; `utils_contract_test` covers `memory_pool`, `stack_allocator`, and `fixed_pool_mt` size/alignment checks; `sound_system_test` covers sound math/format helpers, task/resource defaults, playback-device enumeration, and a guarded `system` construction smoke test; `catalogue_introspection_test` covers mirrored wrapper pointers for free functions, methods, const methods, structural functors, dry-run, and rolling stats. Newer: `tests/flow_test.cpp` (animation parse/playback/sampling), `tests/painter_shader_prepare_test.cpp` (assets-side GLSL→SPIR-V prepare + demiurg include resolution + list-pattern render config), and `tests/demiurg_resource_loader_test.cpp` (external GPU step + dependency gating + **stable `resource_handle` survives `clear()`+re-parse**).
 
