@@ -124,3 +124,31 @@ or callbacks.
 The target is header-only and depends only on C++23, `devils_engine::options`
 and the common `devils_engine::utils` error facility. `devils_engine::network`
 contains no GNS type.
+
+## Implemented slice: checkpoint retention and replay
+
+`checkpoint_ring<Tick, Blob, SizeOf>` retains immutable project-owned
+checkpoint blobs under count and logical-byte budgets. It uses the same
+strictly increasing tick and deterministic oldest-first eviction contract as
+`bounded_history`, and adds selection of the newest checkpoint not later than
+a requested tick. Compression and the meaning of logical retained size remain
+owner policies.
+
+`replay_to` is a free templated algorithm over a host, checkpoint, forward
+bundle range and injected restore/apply/step/verify operations. Tick extraction,
+bundle extraction and the successor relation are policies too. This lets strong
+project tick types participate without teaching the library arithmetic or a
+bundle representation.
+
+A checkpoint at `K` is committed state after `K`; replay applies bundle `T`
+before stepping `T` for every tick in `K+1..N`. The entire relevant range is
+preflighted before restore, so missing, duplicate, out-of-order and unavailable
+history never partially restore a world. Empty ticks must therefore exist as
+explicit empty bundles.
+
+Apply and step receive `replay_context` with presentation suppressed.
+`VerifyState` runs at the restored checkpoint and after every replayed tick,
+allowing the caller to report the first divergent state root without coupling
+NET-04 to a hash implementation. Replay advances the supplied host in place;
+recoverable callers should replay a detached staging host and publish it only
+after successful completion.
