@@ -275,12 +275,23 @@ block*: [component_hash:u32][byte_len:u32][count:u32][(entityid_t, component)*]
 - компонентные данные.
 
 Схема защищена fingerprint'ом: он строится из hash имени компонента и layout
-hash типа. Если magic или fingerprint не совпали, `load_world` возвращает
-`false` и не кидает исключение.
+hash типа. Полный snapshot обязан содержать ровно все блоки схемы в каноническом
+порядке, а каждый блок — потребить ровно объявленную длину. Несовпадение magic,
+fingerprint, состава или границ возвращается как обычный отказ.
 
-Загрузка ожидает чистый `world`. Она пишет компоненты напрямую в storage, мимо
-`world::create`, чтобы не будить системы на полупостроенном мире. После успешной
-загрузки эмитится `serial::snapshot_loaded_event`.
+`stage_world(reader)` декодирует данные в отдельный `world`, не трогая live state
+и не посылая событий. Это точка для владельца, которому после ECS надо проверить
+свои project sections и derived invariants. `load_world(destination, reader)` —
+готовая транзакционная обёртка для чисто ECS snapshot: она сначала полностью
+строит staging, затем вызывает `world::replace_state`.
+
+`replace_state` не перемещает сам объект `world`: его адрес, subscribers и
+принадлежащие ему systems остаются стабильны, заменяются только entity allocator
+и component storages. После commit эмитится `snapshot_loaded_event`, поэтому
+materialized queries перестраиваются уже по целому новому состоянию. Любой
+recoverable отказ до commit оставляет destination без изменений; исключения для
+этого пути не используются. Это транзакционная, но не concurrent-операция:
+владелец вызывает её на границе simulation tick без параллельного доступа к миру.
 
 ## Sink Layer
 

@@ -92,17 +92,18 @@ void dump_world(const world* w, writer& wr) {
   }
 }
 
-bool load_world(world* w, reader& r) {
+std::optional<world> stage_world(reader& r) {
+  world staged;
   const uint32_t magic = r.u32();
   const uint32_t fp = r.u32();
   // несовпадение -> восстановимо (чужой/старый/битый сейв): warn + false, не исключение.
   if (!r.ok || magic != snapshot_magic) {
     utils::warn("bad snapshot magic: 0x{:08x} (expected 0x{:08x})", magic, snapshot_magic);
-    return false;
+    return std::nullopt;
   }
   if (fp != component_registry::fingerprint()) {
     utils::warn("snapshot schema mismatch: file 0x{:08x} vs build 0x{:08x}", fp, component_registry::fingerprint());
-    return false;
+    return std::nullopt;
   }
 
   world::snapshot_state st;
@@ -114,39 +115,45 @@ bool load_world(world* w, reader& r) {
   }
   if (!r.ok) {
     utils::warn("snapshot: truncated generator state");
-    return false;
+    return std::nullopt;
   }
-  w->load_state(st);
+  staged.load_state(st);
 
   const uint32_t block_count = r.u32();
   const auto& table = component_registry::table();
+  if (!r.ok || block_count != table.size()) {
+    utils::warn("snapshot: component block count {} does not match schema {}", block_count, table.size());
+    return std::nullopt;
+  }
   for (uint32_t b = 0; b < block_count && r.ok; ++b) {
     const uint32_t hash = r.u32();
     const uint32_t len = r.u32();
-    const std::size_t next = r.pos + len;
-
-    const auto it = std::lower_bound(table.begin(), table.end(), hash,
-                                     [](const component_registry::entry& e, const uint32_t v) {
-                                       return e.hash < v;
-                                     });
-    if (it != table.end() && it->hash == hash) {
-      it->load(w, r);
+    if (!r.ok || hash != table[b].hash) {
+      utils::warn("snapshot: component block {} has non-canonical or unexpected id 0x{:08x}", b, hash);
+      return std::nullopt;
     }
-    // страховка: даже при найденном типе встаём на границу блока (рассинхрон длины / unknown-тип).
-    if (next <= r.b.size()) {
-      r.pos = next;
-    } else {
-      r.ok = false;
+    if (len > r.b.size() - r.pos) {
+      utils::warn("snapshot: truncated component block 0x{:08x}", hash);
+      return std::nullopt;
+    }
+    const std::size_t next = r.pos + len;
+    table[b].load(&staged, r);
+    if (!r.ok || r.pos != next) {
+      utils::warn("snapshot: component block 0x{:08x} did not consume its declared payload", hash);
+      return std::nullopt;
     }
   }
 
-  if (!r.ok) {
-    utils::warn("snapshot: truncated / corrupt payload");
+  return staged;
+}
+
+bool load_world(world* w, reader& r) {
+  auto staged = stage_world(r);
+  if (!staged.has_value()) {
     return false;
   }
 
-  // мир целиком построен -> будим системы: пусть пересоберут query/кэши.
-  w->emit(snapshot_loaded_event{});
+  w->replace_state(std::move(*staged));
   return true;
 }
 

@@ -497,6 +497,12 @@ public:
 
   snapshot_state save_state() const; // определены в impl-блоке ниже
   void load_state(const snapshot_state& s);
+  // Publishes already constructed component/allocator state in one non-failing commit while keeping
+  // this world's address, event subscriptions and owned systems stable.  Queries and other subscribers
+  // may hold pointers to this object, so replacing the complete world object is not a valid snapshot
+  // commit.  Call only at an owner-controlled boundary with no concurrent world access.  The
+  // notification is emitted only after all state has moved into place.
+  void replace_state(world&& staged);
   void remove_entity(const entityid_t id);
   entity::components_arr find_components(const entityid_t id);
   entity::const_components_arr find_components(const entityid_t id) const;
@@ -2069,6 +2075,13 @@ world::snapshot_state world::save_state() const {
 void world::load_state(const snapshot_state& s) {
   cur_index = s.cur_index;
   removed_entities = s.removed_entities;
+}
+
+void world::replace_state(world&& staged) {
+  cur_index = staged.cur_index;
+  removed_entities = std::move(staged.removed_entities);
+  containers = std::move(staged.containers);
+  emit(snapshot_loaded_event{});
 }
 
 void world::remove_entity(const entityid_t id) {

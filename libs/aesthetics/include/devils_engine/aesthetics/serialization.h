@@ -713,8 +713,14 @@ void dump_world(const world* w, writer& wr);
 // удобная обёртка: reserve по estimate_size, дампит, возвращает готовый буфер.
 std::vector<std::byte> dump_world(const world* w);
 
-// грузить в ЧИСТЫЙ world. В КОНЦЕ эмитит snapshot_loaded_event -> системы пересобирают query.
-// false при несовпадении magic/схемы или обрыве данных (guard, не migration).
+// Decode into a detached world.  No live state is changed and no snapshot notification is emitted;
+// the caller may validate project-owned tail sections and derived invariants before publishing it.
+// nullopt means incompatible/truncated input (guard, not migration).
+std::optional<world> stage_world(reader& r);
+
+// Transactional convenience for an owner with no additional project sections: decode into staging,
+// then replace only the destination's component state.  The world's address/subscribers/systems stay
+// stable and snapshot_loaded_event is emitted after commit.  Every failure preserves destination.
 bool load_world(world* w, reader& r);
 
 } // namespace serial
