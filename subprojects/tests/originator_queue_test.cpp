@@ -384,3 +384,165 @@ TEST_CASE("originator queue names dead work before it runs") {
     CHECK(originator::check_queue(queue).allowed);
   }
 }
+
+namespace {
+// Буфер-счётчик: обычный буфер на один элемент, ровно как `state.vertex_count` у GN03. Отдельного
+// механизма для «сколько всего получилось» не заводилось и здесь не заводится.
+originator::buffer make_counter() {
+  const std::vector<field_pair> fields = {{"used", "ui1"}, {"broken", "v1"}};
+  auto layout = originator::make_buffer_layout(originator::storage_kind::soa, fields, "state");
+  return originator::buffer("state", std::move(layout), 1);
+}
+
+void set_counter(originator::buffer& state, const double value) {
+  state.field(state.find_field("used")).set(0, value);
+}
+
+originator::queue_call counted_call(originator::buffer& cells,
+                                   originator::buffer& state,
+                                   const std::string_view& tool,
+                                   const std::string_view& source,
+                                   const std::string_view& target) {
+  originator::parameters scale;
+  scale.set_number("scale", 2.0);
+
+  auto call = tool_call(tool, {readable(cells, source)}, {writable(cells, target)}, scale, grid_count);
+  call.range_end = 0;
+  call.count_from = readable(state, "used");
+  return call;
+}
+} // namespace
+
+TEST_CASE("originator queue counts elements from a field instead of a number") {
+  auto cells = make_cells(grid_count);
+  auto state = make_counter();
+  fill_noise(cells, grid_count);
+
+  originator::computation_queue queue;
+  queue.name = "counted";
+  queue.calls.push_back(counted_call(cells, state, "remap", "height", "smoothed"));
+  queue.output.push_back(writable(cells, "smoothed"));
+  REQUIRE(originator::check_queue(queue).allowed);
+  CHECK(queue.calls[0].indirect());
+
+  // Счётчик читается В МОМЕНТ ИСПОЛНЕНИЯ, а не при объявлении: одна и та же объявленная очередь
+  // обрабатывает разное число элементов, потому что число ей приносит буфер.
+  const auto height = cells.field(cells.find_field("height"));
+  const auto smoothed = cells.field(cells.find_field("smoothed"));
+
+  for (const size_t requested : {size_t(0), size_t(1), size_t(37), grid_count}) {
+    cells.field(cells.find_field("smoothed")).set(0, 0.0);
+    for (size_t i = 0; i < grid_count; ++i) {
+      cells.field(cells.find_field("smoothed")).set(i, -1.0);
+    }
+    set_counter(state, double(requested));
+
+    const auto report = originator::run_queue(queue, nullptr);
+    CHECK(report.clamped == 0);
+
+    size_t processed = 0;
+    while (processed < grid_count && smoothed.get(processed) != -1.0) {
+      ++processed;
+    }
+    CHECK(processed == requested);
+    for (size_t i = 0; i < requested; ++i) {
+      CHECK(smoothed.get(i) == doctest::Approx(height.get(i) * 2.0));
+    }
+  }
+}
+
+TEST_CASE("originator queue clamps a count that exceeds the capacity and says so") {
+  auto cells = make_cells(grid_count);
+  auto state = make_counter();
+  fill_noise(cells, grid_count);
+
+  originator::computation_queue queue;
+  queue.name = "counted";
+  queue.calls.push_back(counted_call(cells, state, "remap", "height", "smoothed"));
+  queue.output.push_back(writable(cells, "smoothed"));
+
+  // Зажим, а не отказ: на устройстве бросить нечем, и если бы CPU отказывал, у одного объявления
+  // было бы два поведения. Зато факт зажима возвращается наружу — тихо обрезанный проход не
+  // отследить по результату.
+  set_counter(state, double(grid_count * 4));
+  const auto report = originator::run_queue(queue, nullptr);
+  CHECK(report.clamped == 1);
+
+  const auto height = cells.field(cells.find_field("height"));
+  const auto smoothed = cells.field(cells.find_field("smoothed"));
+  for (size_t i = 0; i < grid_count; ++i) {
+    CHECK(smoothed.get(i) == doctest::Approx(height.get(i) * 2.0));
+  }
+}
+
+TEST_CASE("originator queue fuses counted calls only when they share the counter") {
+  auto cells = make_cells(grid_count);
+  auto state = make_counter();
+  auto other = make_counter();
+  fill_noise(cells, grid_count);
+  set_counter(state, double(grid_count));
+  set_counter(other, double(grid_count));
+
+  SUBCASE("one counter for both") {
+    originator::computation_queue queue;
+    queue.name = "counted";
+    queue.calls.push_back(counted_call(cells, state, "remap", "height", "smoothed"));
+    queue.calls.push_back(counted_call(cells, state, "remap", "smoothed", "moisture"));
+    queue.output.push_back(writable(cells, "moisture"));
+
+    const auto report = originator::run_queue(queue, nullptr);
+    // Равенство диапазонов выполняется ПО ПОСТРОЕНИЮ, а не по совпадению чисел.
+    CHECK(report.fused == 2);
+    CHECK(report.passes == 1);
+  }
+
+  SUBCASE("two counters holding the same number") {
+    originator::computation_queue queue;
+    queue.name = "counted";
+    queue.calls.push_back(counted_call(cells, state, "remap", "height", "smoothed"));
+    queue.calls.push_back(counted_call(cells, other, "remap", "smoothed", "moisture"));
+    queue.output.push_back(writable(cells, "moisture"));
+
+    // Числа сейчас равны, но проверить это до исполнения нечем, а слияние требует РАВНЫХ диапазонов.
+    const auto report = originator::run_queue(queue, nullptr);
+    CHECK(report.fused == 0);
+    CHECK(report.passes == 2);
+  }
+}
+
+TEST_CASE("originator queue refuses a count it cannot trust") {
+  auto cells = make_cells(grid_count);
+  auto state = make_counter();
+  fill_noise(cells, grid_count);
+  set_counter(state, 8.0);
+
+  SUBCASE("a fractional counter field") {
+    originator::computation_queue queue;
+    queue.name = "counted";
+    auto call = counted_call(cells, state, "remap", "height", "smoothed");
+    call.count_from = readable(state, "broken");
+    queue.calls.push_back(std::move(call));
+    queue.output.push_back(writable(cells, "smoothed"));
+
+    const auto check = originator::check_queue(queue);
+    CHECK_FALSE(check.allowed);
+    CHECK(check.message.find("integer") != std::string::npos);
+  }
+
+  SUBCASE("a counter written LATER in the same queue") {
+    originator::parameters index_params;
+    index_params.set_number("scale", 1.0);
+
+    originator::computation_queue queue;
+    queue.name = "counted";
+    queue.calls.push_back(counted_call(cells, state, "remap", "height", "smoothed"));
+    // Этот вызов пишет счётчик ПОСЛЕ того, как его прочитали: значение было бы с прошлого раза.
+    queue.calls.push_back(
+      tool_call("index", {}, {originator::field_ref{&state, &state, state.find_field("used")}}, index_params, 1));
+    queue.output.push_back(writable(cells, "smoothed"));
+
+    const auto check = originator::check_queue(queue);
+    CHECK_FALSE(check.allowed);
+    CHECK(check.message.find("LATER") != std::string::npos);
+  }
+}

@@ -166,13 +166,42 @@ size_t default_range_end(const aperture::values shape,
   return outputs.front().count();
 }
 
-void read_range(const sol::table& args, size_t& begin, size_t& end) {
+// Диапазон вызова: пара чисел `range = { from, to }` либо СЧЁТЧИК `range = { count = поле }`.
+//
+// Счётчик не разрешается здесь намеренно. Его пишет предыдущий элемент очереди, а объявление вызова
+// происходит ДО исполнения — прочитанное сейчас было бы значением с прошлого раза. Поэтому наружу
+// уезжает сама ссылка, а число из неё читает тот, кто исполняет.
+field_ref read_range(const sol::table& args, const std::string_view& step_name, size_t& begin, size_t& end) {
   const sol::optional<sol::table> range = args["range"];
   if (!range.has_value()) {
-    return;
+    return field_ref{};
   }
+
+  const sol::object counter = (*range)["count"];
+  if (counter.valid()) {
+    if (!counter.is<field_ref>()) {
+      utils::error{}("originator step '{}': range.count must be a field reference — the element count is READ from a "
+                     "buffer, and a plain number goes into range = {{ from, to }}",
+                     step_name);
+    }
+    const auto field = counter.as<const field_ref&>();
+    if (!valid_count_field(field)) {
+      utils::error{}("originator step '{}': range.count names '{}.{}', which is not a single-component integer — a "
+                     "fractional element count is a silent truncation",
+                     step_name, field.buffer_name(), field.field_name());
+    }
+    if ((*range)[1].valid() || (*range)[2].valid()) {
+      utils::error{}("originator step '{}': range names both a count field and explicit bounds; a counted range "
+                     "starts at zero and ends where the counter says",
+                     step_name);
+    }
+    begin = 0;
+    return field;
+  }
+
   begin = (*range)[1].get_or<size_t>(0);
   end = (*range)[2].get_or<size_t>(end);
+  return field_ref{};
 }
 
 // Зерно ходит через lua как знаковое целое: у lua нет беззнакового 64-битного типа, а значение
@@ -444,7 +473,13 @@ sol::object script_host::run_tool(const std::string& tool_name, const sol::table
 
   size_t begin = 0;
   size_t end = default_range_end(tool->shape, inputs, outputs);
-  read_range(args, begin, end);
+  // Немедленный вызов разрешает счётчик СРАЗУ: возвращаться в дирижёра тут и не надо, он уже здесь.
+  // Смысл счётчика — в очереди, где за числом вернуться некуда.
+  const auto counter = read_range(args, current_step_, begin, end);
+  if (counter.valid()) {
+    bool clamped = false;
+    end = read_count_field(counter, outputs.empty() ? 0 : outputs.front().count(), clamped);
+  }
 
   // Носитель ключа объявляет автор: из одного чанка его не проверить. Молчание = глобальный, то
   // есть при чанкованной генерации scatter отклоняется, пока автор не скажет обратное вслух.
@@ -491,7 +526,11 @@ void script_host::run_program(const sol::table args) {
 
   size_t begin = 0;
   size_t end = default_range_end(program.shape(), inputs, outputs);
-  read_range(args, begin, end);
+  const auto counter = read_range(args, current_step_, begin, end);
+  if (counter.valid()) {
+    bool clamped = false;
+    end = read_count_field(counter, outputs.empty() ? 0 : outputs.front().count(), clamped);
+  }
 
   dispatch_script(program, inputs, outputs, params, seed, begin, end, current_step_, pool_);
 }
@@ -515,7 +554,7 @@ queue_call script_host::make_tool_call(const std::string& tool_name, const sol::
   call.params = read_parameters(args);
   call.seed = read_seed(args, current_seed_);
   call.range_end = default_range_end(call.shape, call.inputs, call.outputs);
-  read_range(args, call.range_begin, call.range_end);
+  call.count_from = read_range(args, current_step_, call.range_begin, call.range_end);
 
   // Апертура и привязки проверяются ЗДЕСЬ, на объявлении, а не при запуске очереди. Проверка та же
   // самая (check_queue делает её ещё раз для очередей, собранных из C++), но сообщение приходит из
@@ -529,7 +568,11 @@ queue_call script_host::make_tool_call(const std::string& tool_name, const sol::
                    current_step_, tool_name, to_string(call.shape), queue_rejection_reason(call.shape));
   }
 
-  const auto check = check_dispatch(*tool, call.inputs, call.outputs, call.range_begin, call.range_end, current_step_);
+  // У вызова со счётчиком диапазон до исполнения неизвестен, поэтому проверяется ЁМКОСТЬ приёмника —
+  // та же граница, по которой зажимается превышение.
+  const size_t checked_end = call.count_from.valid() ? (call.outputs.empty() ? 0 : call.outputs.front().count())
+                                                     : call.range_end;
+  const auto check = check_dispatch(*tool, call.inputs, call.outputs, call.range_begin, checked_end, current_step_);
   if (!check.allowed) {
     utils::error{}("originator {}", check.message);
   }
@@ -560,10 +603,12 @@ queue_call script_host::make_script_call(const sol::table& args) {
 
   call.shape = program.shape();
   call.range_end = default_range_end(call.shape, call.inputs, call.outputs);
-  read_range(args, call.range_begin, call.range_end);
+  call.count_from = read_range(args, current_step_, call.range_begin, call.range_end);
 
+  const size_t checked_end = call.count_from.valid() ? (call.outputs.empty() ? 0 : call.outputs.front().count())
+                                                     : call.range_end;
   const auto check =
-    check_script_dispatch(program, call.inputs, call.outputs, call.params, call.range_begin, call.range_end, current_step_);
+    check_script_dispatch(program, call.inputs, call.outputs, call.params, call.range_begin, checked_end, current_step_);
   if (!check.allowed) {
     utils::error{}("originator {}", check.message);
   }
@@ -666,6 +711,9 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
   // то, что автор писал подряд, а по числу обходов одного этого не понять (обходов столько же и
   // тогда, когда группа развалилась на одиночек).
   result["fused"] = report.fused;
+  // Сколько вызовов упёрлось в ёмкость. Тело шага обязано это читать: отказать нельзя (на устройстве
+  // бросить нечем), а тихо обрезанный проход по результату не отследить.
+  result["clamped"] = report.clamped;
   return sol::make_object(s, result);
 }
 

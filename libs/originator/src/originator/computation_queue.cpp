@@ -15,11 +15,15 @@ size_t queue_call::range_count() const noexcept {
   return range_end > range_begin ? range_end - range_begin : 0;
 }
 
+bool queue_call::indirect() const noexcept {
+  return count_from.valid();
+}
+
 bool queue_call::reads(const field_ref& field) const noexcept {
   for (const auto& binding : inputs) {
     if (binding.same_field_as(field)) return true;
   }
-  return false;
+  return count_from.valid() && count_from.same_field_as(field);
 }
 
 bool queue_call::writes(const field_ref& field) const noexcept {
@@ -105,11 +109,41 @@ queue_check check_queue(const computation_queue& queue) {
                               queue.name, position, call.label));
     }
 
+    if (call.indirect()) {
+      if (!valid_count_field(call.count_from)) {
+        return fail(std::format("step '{}': queue element {} ('{}') counts elements from '{}.{}', which is not a "
+                                "single-component integer — a fractional element count is a silent truncation",
+                                queue.name, position, call.label, call.count_from.buffer_name(),
+                                call.count_from.field_name()));
+      }
+      // Счётчик обязан быть УЖЕ посчитан: его пишет либо предыдущий элемент очереди, либо хост до
+      // запуска. Запись позже означала бы, что вызов читает значение с прошлого раза — и заметить
+      // это можно только по неправдоподобной длине, если она вообще неправдоподобна.
+      for (size_t later = i + 1; later < queue.calls.size(); ++later) {
+        if (!queue.calls[later].writes(call.count_from)) continue;
+        return fail(std::format("step '{}': queue element {} ('{}') counts elements from '{}.{}', but element {} "
+                                "writes that field LATER — the count would be the one from the previous run",
+                                queue.name, position, call.label, call.count_from.buffer_name(),
+                                call.count_from.field_name(), later + 1));
+      }
+      if (call.range_begin != 0) {
+        return fail(std::format("step '{}': queue element {} ('{}') counts elements from a field and cannot also "
+                                "start at {} — a counted range starts at zero",
+                                queue.name, position, call.label, call.range_begin));
+      }
+    }
+
     // Привязки нативного инструмента проверяются ровно тем же, чем проверяется одиночный вызов:
     // второго набора правил у очереди нет и быть не должно. Чужое тело проверяет тот, кто его
     // собрал, — только он знает, против чего скомпилирована программа.
+    //
+    // У вызова со счётчиком проверяется ЁМКОСТЬ, а не диапазон: сколько элементов он обработает,
+    // до исполнения неизвестно, поэтому границей служит объявленный размер приёмника, а превышение
+    // зажимается по ней в момент вызова.
     if (call.tool != nullptr) {
-      const auto check = check_dispatch(*call.tool, call.inputs, call.outputs, call.range_begin, call.range_end, queue.name);
+      const size_t checked_end = call.indirect() ? call.outputs.front().count() : call.range_end;
+      const auto check =
+        check_dispatch(*call.tool, call.inputs, call.outputs, call.range_begin, checked_end, queue.name);
       if (!check.allowed) {
         return fail(std::format("{}; that call is queue element {} of {}", check.message, position, queue.calls.size()));
       }
@@ -179,8 +213,13 @@ size_t fusion_group_end(const computation_queue& queue, const size_t first) noex
   size_t last = first + 1;
   while (last < queue.calls.size()) {
     const auto& next = queue.calls[last];
-    const bool fusable = next.shape == aperture::pointwise && next.tool != nullptr &&
-                         next.range_begin == head.range_begin && next.range_end == head.range_end;
+    // Диапазоны обязаны быть РАВНЫ. У вызова со счётчиком равенство до исполнения не проверить,
+    // поэтому такие сливаются только когда ссылаются на ОДНО И ТО ЖЕ поле счётчика — тогда
+    // равенство выполняется по построению, а не по совпадению чисел.
+    const bool same_range = head.indirect() || next.indirect()
+                              ? head.indirect() && next.indirect() && head.count_from.same_field_as(next.count_from)
+                              : next.range_begin == head.range_begin && next.range_end == head.range_end;
+    const bool fusable = next.shape == aperture::pointwise && next.tool != nullptr && same_range;
     if (!fusable) {
       break;
     }
@@ -218,17 +257,43 @@ size_t group_element_bytes(const std::span<const queue_call>& group) {
   return std::max<size_t>(total, 1);
 }
 
+// Диапазон вызова В МОМЕНТ ИСПОЛНЕНИЯ. У обычного он объявлен, у вызова со счётчиком читается из
+// поля — и читается именно здесь, потому что писал его предыдущий элемент этой же очереди.
+struct resolved_range {
+  size_t begin = 0;
+  size_t end = 0;
+  bool clamped = false;
+};
+
+resolved_range resolve_range(const queue_call& call) {
+  if (!call.indirect()) {
+    return resolved_range{call.range_begin, call.range_end, false};
+  }
+
+  resolved_range result;
+  const size_t capacity = call.outputs.empty() ? 0 : call.outputs.front().count();
+  result.end = read_count_field(call.count_from, capacity, result.clamped);
+  return result;
+}
+
 // Слитое исполнение: один обход данных на всю группу.
-void run_group(const computation_queue& queue, const std::span<const queue_call>& group, thread::atomic_pool* pool) {
+bool run_group(const computation_queue& queue, const std::span<const queue_call>& group, thread::atomic_pool* pool) {
+  // Диапазон у группы ОДИН: он либо объявлен одинаково, либо читается из одного и того же счётчика —
+  // именно это и проверяет группировка, поэтому здесь достаточно разрешить его один раз.
+  const auto range = resolve_range(group.front());
+  const size_t begin = range.begin;
+  const size_t end = range.end;
+  if (end <= begin) {
+    return range.clamped;
+  }
+
   std::vector<prepared_call> prepared;
   prepared.reserve(group.size());
   for (const auto& call : group) {
-    prepared.emplace_back(*call.tool, call.inputs, call.outputs, call.params, call.seed, call.range_begin,
-                          call.range_end, queue.name, nullptr);
+    prepared.emplace_back(*call.tool, call.inputs, call.outputs, call.params, call.seed, begin, end, queue.name,
+                          nullptr);
   }
 
-  const size_t begin = group.front().range_begin;
-  const size_t end = group.front().range_end;
   const size_t tile = std::max(fusion_tile_bytes / group_element_bytes(group), minimum_fusion_tile);
   const size_t tile_count = (end - begin + tile - 1) / tile;
 
@@ -246,7 +311,7 @@ void run_group(const computation_queue& queue, const std::span<const queue_call>
 
   if (pool == nullptr || pool->size() == 0 || tile_count <= 1) {
     run_tiles(0, tile_count);
-    return;
+    return range.clamped;
   }
 
   // Плитки группируются в задачи по той же причине, что чанки свёртки: очередь пула ограничена, и
@@ -260,6 +325,7 @@ void run_group(const computation_queue& queue, const std::span<const queue_call>
 
   pool->compute();
   pool->wait();
+  return range.clamped;
 }
 } // namespace
 
@@ -279,14 +345,26 @@ queue_report run_queue(const computation_queue& queue, thread::atomic_pool* pool
     // нечего, — а за плитки пришлось бы платить; заодно одиночный вызов остаётся ровно тем, чем был.
     if (last - first == 1) {
       const auto& call = queue.calls[first];
+      const auto range = resolve_range(call);
+      report.clamped += size_t(range.clamped);
+
       if (call.tool != nullptr) {
-        dispatch(*call.tool, call.inputs, call.outputs, call.params, call.seed, call.range_begin, call.range_end,
-                 queue.name, pool);
+        dispatch(*call.tool, call.inputs, call.outputs, call.params, call.seed, range.begin, range.end, queue.name,
+                 pool);
+      } else if (call.indirect()) {
+        // Чужое тело получает уже разрешённый диапазон: счётчик читает очередь, а не тело, — иначе
+        // у каждого слоя появился бы свой способ его прочитать.
+        queue_call counted = call;
+        counted.range_begin = range.begin;
+        counted.range_end = range.end;
+        counted.body(counted, queue.name, pool);
       } else {
         call.body(call, queue.name, pool);
       }
     } else {
-      run_group(queue, std::span<const queue_call>(queue.calls).subspan(first, last - first), pool);
+      const bool clamped =
+        run_group(queue, std::span<const queue_call>(queue.calls).subspan(first, last - first), pool);
+      report.clamped += size_t(clamped);
       report.fused += last - first;
     }
 

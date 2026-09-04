@@ -188,6 +188,34 @@ size_t tool_registry::size() const noexcept {
   return tools_.size();
 }
 
+bool valid_count_field(const field_ref& counter) noexcept {
+  if (!counter.valid()) {
+    return false;
+  }
+  const auto type = counter.type();
+  return type.components == 1 &&
+         (type.kind() == field_kind::unsigned_integer || type.kind() == field_kind::signed_integer);
+}
+
+size_t read_count_field(const field_ref& counter, const size_t capacity, bool& clamped) {
+  clamped = false;
+  if (!counter.valid() || counter.count() == 0) {
+    return 0;
+  }
+
+  const double raw = counter.read().get(0);
+  if (raw <= 0.0) {
+    return 0;
+  }
+
+  const auto value = size_t(raw);
+  if (value > capacity) {
+    clamped = true;
+    return capacity;
+  }
+  return value;
+}
+
 buffer_extent resolve_extent(const tool_call& call,
                              const field_ref& binding,
                              const char* legacy_x,

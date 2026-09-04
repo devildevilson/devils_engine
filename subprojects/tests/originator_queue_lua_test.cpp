@@ -21,7 +21,15 @@ constexpr std::string_view buffers_config = R"(
   name = cells
   format = [ height = v1, smoothed = v1, moisture = v1, biome = ub1 ]
   layout = soa
-  size = cell_count
+  extent = [ grid_width, grid_width ]
+}
+// Состояние между шагами — обычный буфер на один элемент. Он же служит СЧЁТЧИКОМ: столько элементов
+// обработает следующий вызов, и в очереди за этим числом возвращаться в lua не надо.
+{
+  name = state
+  format = [ used = ui1 ]
+  layout = soa
+  size = single
 }
 )";
 
@@ -30,7 +38,8 @@ constexpr size_t grid_count = grid_width * grid_width;
 
 originator::size_table make_sizes() {
   originator::size_table sizes;
-  sizes.set("cell_count", grid_count);
+  sizes.set("grid_width", grid_width);
+  sizes.set("single", 1);
   return sizes;
 }
 
@@ -43,7 +52,7 @@ originator::pipeline_description make_description(const std::string_view& step_n
   step.name.assign(step_name);
   step.body = "gen/body";
   step.writes.push_back("cells");
-  step.params.set_number("width", double(grid_width));
+  step.writes.push_back("state");
   step.params.set_number("radius", 2);
   step.params.set_number("sea_level", 0.5);
   step.params.set_number("dry", 0.35);
@@ -72,8 +81,8 @@ return function(step)
   local moisture = cells:field("moisture")
   local biome = cells:field("biome")
 
-  originator.value_noise{ outputs = { height }, params = { width = step.params.width, frequency = 0.05 } }
-  originator.value_noise{ outputs = { moisture }, params = { width = step.params.width, frequency = 0.09 } }
+  originator.value_noise{ outputs = { height }, params = { frequency = 0.05 } }
+  originator.value_noise{ outputs = { moisture }, params = { frequency = 0.09 } }
 
   originator.box_blur{
     inputs = { height },
@@ -96,14 +105,14 @@ return function(step)
   local moisture = cells:field("moisture")
   local biome = cells:field("biome")
 
-  originator.value_noise{ outputs = { height }, params = { width = step.params.width, frequency = 0.05 } }
-  originator.value_noise{ outputs = { moisture }, params = { width = step.params.width, frequency = 0.09 } }
+  originator.value_noise{ outputs = { height }, params = { frequency = 0.05 } }
+  originator.value_noise{ outputs = { moisture }, params = { frequency = 0.09 } }
 
   local report = originator.queue{
     originator.queue.box_blur{
       inputs = { height },
       outputs = { smoothed },
-      params = { width = step.params.width, radius = step.params.radius },
+      params = { radius = step.params.radius },
     },
     originator.queue.classify{
       inputs = { smoothed, moisture },
@@ -322,6 +331,152 @@ TEST_CASE("originator queue refuses in lua before it computes anything") {
             inputs = { cells:field("height") },
             outputs = { cells:field("smoothed") },
             params = { scale = 3.0 },
+          },
+          output = { cells:field("smoothed") },
+        }
+      end
+    )lua");
+  }
+}
+
+TEST_CASE("originator queue in lua counts elements from a field") {
+  originator::tool_registry tools;
+  tools.add_standard_tools();
+
+  // Столько элементов, сколько скажет буфер. Возврата в дирижёра за этим числом нет — именно это и
+  // удлиняет очередь, а короткая очередь бессмысленна.
+  static constexpr std::string_view counted_body = R"lua(
+    return function(step)
+      local cells = step.writes.cells
+      local state = step.writes.state
+      local used = state:field("used")
+      local height = cells:field("height")
+      local smoothed = cells:field("smoothed")
+      local moisture = cells:field("moisture")
+
+      originator.value_noise{ outputs = { height }, params = { frequency = 0.05 } }
+      for i = 0, cells:count() - 1 do smoothed:set(i, -1.0) end
+      used:set(0, 17)
+
+      local report = originator.queue{
+        originator.queue.remap{
+          inputs = { height },
+          outputs = { smoothed },
+          params = { scale = 2.0 },
+          range = { count = used },
+        },
+        originator.queue.remap{
+          inputs = { smoothed },
+          outputs = { moisture },
+          params = { scale = 1.0 },
+          range = { count = used },
+        },
+        output = { smoothed, moisture },
+      }
+
+      assert(report.clamped == 0, "17 fits the buffer")
+      -- Оба вызова смотрят в ОДИН счётчик, поэтому равенство диапазонов держится по построению.
+      assert(report.fused == 2, "one counter, one group")
+      assert(report.passes == 1, "one traversal")
+
+      for i = 0, 16 do
+        assert(smoothed:get(i) == height:get(i) * 2.0, "counted element " .. i)
+      end
+      assert(smoothed:get(17) == -1.0, "element past the count is untouched")
+    end
+  )lua";
+
+  originator::script_host host(tools, nullptr);
+  originator::pipeline p(make_description("queued"), make_sizes(), 5);
+  run_body(host, counted_body, p);
+}
+
+TEST_CASE("originator queue in lua reports a clamped count") {
+  originator::tool_registry tools;
+  tools.add_standard_tools();
+
+  static constexpr std::string_view clamped_body = R"lua(
+    return function(step)
+      local cells = step.writes.cells
+      local used = step.writes.state:field("used")
+      used:set(0, cells:count() * 4)
+
+      local report = originator.queue{
+        originator.queue.remap{
+          inputs = { cells:field("height") },
+          outputs = { cells:field("smoothed") },
+          params = { scale = 2.0 },
+          range = { count = used },
+        },
+        output = { cells:field("smoothed") },
+      }
+
+      -- Отказать нельзя: на устройстве бросить нечем, и два поведения у одного объявления были бы
+      -- хуже. Поэтому зажим, а факт зажима обязан прочитать ХОСТ — то есть вот это тело.
+      assert(report.clamped == 1, "the queue says it hit the cap")
+    end
+  )lua";
+
+  originator::script_host host(tools, nullptr);
+  originator::pipeline p(make_description("queued"), make_sizes(), 5);
+  run_body(host, clamped_body, p);
+}
+
+TEST_CASE("originator queue in lua refuses a count it cannot trust") {
+  originator::tool_registry tools;
+  tools.add_standard_tools();
+
+  const auto fails = [&](const std::string_view& body) {
+    originator::script_host host(tools, nullptr);
+    originator::pipeline p(make_description("queued"), make_sizes(), 1);
+    host.load_body("queued", body, "test/body");
+    CHECK_THROWS_AS(p.run(host.invoker()), std::runtime_error);
+  };
+
+  SUBCASE("a plain number where a counter belongs") {
+    fails(R"lua(
+      return function(step)
+        local cells = step.writes.cells
+        originator.queue{
+          originator.queue.remap{
+            inputs = { cells:field("height") },
+            outputs = { cells:field("smoothed") },
+            params = { scale = 2.0 },
+            range = { count = 17 },
+          },
+          output = { cells:field("smoothed") },
+        }
+      end
+    )lua");
+  }
+
+  SUBCASE("a fractional field as the counter") {
+    fails(R"lua(
+      return function(step)
+        local cells = step.writes.cells
+        originator.queue{
+          originator.queue.remap{
+            inputs = { cells:field("height") },
+            outputs = { cells:field("smoothed") },
+            params = { scale = 2.0 },
+            range = { count = cells:field("height") },
+          },
+          output = { cells:field("smoothed") },
+        }
+      end
+    )lua");
+  }
+
+  SUBCASE("a counter next to explicit bounds") {
+    fails(R"lua(
+      return function(step)
+        local cells = step.writes.cells
+        originator.queue{
+          originator.queue.remap{
+            inputs = { cells:field("height") },
+            outputs = { cells:field("smoothed") },
+            params = { scale = 2.0 },
+            range = { 0, 10, count = step.writes.state:field("used") },
           },
           output = { cells:field("smoothed") },
         }
