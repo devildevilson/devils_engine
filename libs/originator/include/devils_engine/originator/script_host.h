@@ -10,6 +10,7 @@
 
 #include <sol/sol.hpp>
 
+#include "computation_queue.h"
 #include "pipeline.h"
 #include "script_program.h"
 #include "tools.h"
@@ -118,6 +119,14 @@ private:
   static void instruction_hook(lua_State* L, lua_Debug* ar);
   void bind_types();
   void bind_tools();
+  // Отдельный неймспейс `originator.queue`: те же инструменты, но вызов не исполняется, а
+  // ОБЪЯВЛЯЕТСЯ. Разделение по имени, а не по флагу в аргументах, потому что это два разных
+  // действия: `originator.box_blur{...}` считает сейчас, `originator.queue.box_blur{...}` описывает
+  // работу, которую исполнит очередь целиком.
+  sol::table make_queue_api();
+  // Собирает объявленный вызов нативного инструмента из таблицы аргументов lua.
+  queue_call make_tool_call(const std::string& tool_name, const sol::table& args);
+  queue_call make_script_call(const sol::table& args);
   sol::table make_step_table(const step_context& context);
   const body_entry* find_body(const std::string_view& step_name) const noexcept;
   const script_program& acquire_program(const std::string_view& program_name,
@@ -133,6 +142,11 @@ private:
   std::vector<program_entry> programs_;
 
   script_budget budget_{};
+  // Объявленный и НЕ отданный очереди вызов — потерянная работа: тело написало `queue.blend{...}`,
+  // ничего не посчиталось, и заметить это по результату почти нечем. Поэтому записи считаются, и
+  // расхождение с числом принятых очередями проваливает шаг так же громко, как ошибка привязки.
+  uint64_t queue_records_ = 0;
+  uint64_t queue_consumed_ = 0;
   uint64_t instruction_counter_ = 0;
   // Шаг счётчика хуков считается из лимита ровно как в visage: маленький лимит обязан ловиться
   // рано, а большой — не платить за хук чаще, чем раз в 10000 инструкций.

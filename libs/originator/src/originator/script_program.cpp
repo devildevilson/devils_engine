@@ -212,6 +212,82 @@ void run_chunk(const script_program::implementation& impl,
   }
 }
 
+dispatch_check check_script_dispatch(const script_program& program,
+                                    const std::span<const field_ref>& inputs,
+                                    const std::span<const field_ref>& outputs,
+                                    const parameters& params,
+                                    const size_t range_begin,
+                                    const size_t range_end,
+                                    const std::string_view& step_name) {
+  dispatch_check result;
+  result.parallel = is_parallel(program.shape());
+
+  const auto& name = program.name();
+  const auto& input_names = program.input_names();
+
+  const auto fail = [&](std::string message) {
+    result.allowed = false;
+    result.parallel = false;
+    result.message = std::move(message);
+    return result;
+  };
+
+  if (inputs.size() != input_names.size()) {
+    return fail(std::format("step '{}': script '{}' was compiled against {} inputs, got {}",
+                            step_name, name, input_names.size(), inputs.size()));
+  }
+  if (outputs.size() != 1) {
+    return fail(std::format("step '{}': script '{}' writes exactly one field, got {}",
+                            step_name, name, outputs.size()));
+  }
+
+  // Имя привязки обязано совпасть с тем, под которым поле видно в скрипте: иначе скрипт считал бы
+  // одно, а получал другое, и это не заметно ни в конфиге, ни в тексте скрипта.
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    if (!inputs[i].valid()) {
+      return fail(std::format("step '{}': script '{}' got an invalid input {}", step_name, name, i));
+    }
+    if (inputs[i].field_name() != input_names[i]) {
+      return fail(std::format("step '{}': script '{}' reads input {} as '{}', but the binding is '{}.{}'",
+                              step_name, name, i, input_names[i], inputs[i].buffer_name(), inputs[i].field_name()));
+    }
+  }
+
+  const auto& target = outputs.front();
+  if (!target.valid()) {
+    return fail(std::format("step '{}': script '{}' got an invalid output", step_name, name));
+  }
+  if (!target.writable()) {
+    return fail(std::format("step '{}': script '{}' writes to '{}.{}', but that buffer is bound for reading",
+                            step_name, name, target.buffer_name(), target.field_name()));
+  }
+  if (range_end < range_begin) {
+    return fail(std::format("step '{}': script '{}' got an inverted range [{}, {})",
+                            step_name, name, range_begin, range_end));
+  }
+  if (range_end > target.count()) {
+    return fail(std::format("step '{}': script '{}' range [{}, {}) exceeds '{}' with {} elements",
+                            step_name, name, range_begin, range_end, target.buffer_name(), target.count()));
+  }
+  for (const auto& binding : inputs) {
+    if (range_end > binding.count()) {
+      return fail(std::format("step '{}': script '{}' range [{}, {}) exceeds '{}' with {} elements",
+                              step_name, name, range_begin, range_end, binding.buffer_name(), binding.count()));
+    }
+  }
+
+  // Каждый объявленный `ctx:arg:` обязан найтись в параметрах шага. Молчаливый нуль здесь означал бы
+  // правило, которое считает не то, что написано в конфиге, и заметить это было бы почти нечем.
+  for (const auto& argument : program.argument_names()) {
+    if (!params.has(argument)) {
+      return fail(std::format("step '{}': script '{}' reads ctx:arg:{}, but the step declares no such parameter",
+                              step_name, name, argument));
+    }
+  }
+
+  return result;
+}
+
 void dispatch_script(const script_program& program,
                      const std::span<const field_ref>& inputs,
                      const std::span<const field_ref>& outputs,
@@ -223,58 +299,12 @@ void dispatch_script(const script_program& program,
                      thread::atomic_pool* pool) {
   const auto& impl = *program.impl_;
 
-  if (inputs.size() != impl.input_names.size()) {
-    utils::error{}("originator step '{}': script '{}' was compiled against {} inputs, got {}",
-                   step_name, impl.name, impl.input_names.size(), inputs.size());
-  }
-  if (outputs.size() != 1) {
-    utils::error{}("originator step '{}': script '{}' writes exactly one field, got {}",
-                   step_name, impl.name, outputs.size());
-  }
-
-  // Имя привязки обязано совпасть с тем, под которым поле видно в скрипте: иначе скрипт считал бы
-  // одно, а получал другое, и это не заметно ни в конфиге, ни в тексте скрипта.
-  for (size_t i = 0; i < inputs.size(); ++i) {
-    if (!inputs[i].valid()) {
-      utils::error{}("originator step '{}': script '{}' got an invalid input {}", step_name, impl.name, i);
-    }
-    if (inputs[i].field_name() != impl.input_names[i]) {
-      utils::error{}("originator step '{}': script '{}' reads input {} as '{}', but the binding is '{}.{}'",
-                     step_name, impl.name, i, impl.input_names[i], inputs[i].buffer_name(), inputs[i].field_name());
-    }
+  const auto check = check_script_dispatch(program, inputs, outputs, params, range_begin, range_end, step_name);
+  if (!check.allowed) {
+    utils::error{}("originator {}", check.message);
   }
 
   const auto& target = outputs.front();
-  if (!target.valid()) {
-    utils::error{}("originator step '{}': script '{}' got an invalid output", step_name, impl.name);
-  }
-  if (!target.writable()) {
-    utils::error{}("originator step '{}': script '{}' writes to '{}.{}', but that buffer is bound for reading",
-                   step_name, impl.name, target.buffer_name(), target.field_name());
-  }
-  if (range_end < range_begin) {
-    utils::error{}("originator step '{}': script '{}' got an inverted range [{}, {})",
-                   step_name, impl.name, range_begin, range_end);
-  }
-  if (range_end > target.count()) {
-    utils::error{}("originator step '{}': script '{}' range [{}, {}) exceeds '{}' with {} elements",
-                   step_name, impl.name, range_begin, range_end, target.buffer_name(), target.count());
-  }
-  for (const auto& binding : inputs) {
-    if (range_end > binding.count()) {
-      utils::error{}("originator step '{}': script '{}' range [{}, {}) exceeds '{}' with {} elements",
-                     step_name, impl.name, range_begin, range_end, binding.buffer_name(), binding.count());
-    }
-  }
-
-  // Каждый объявленный `ctx:arg:` обязан найтись в параметрах шага. Молчаливый нуль здесь означал бы
-  // правило, которое считает не то, что написано в конфиге, и заметить это было бы почти нечем.
-  for (const auto& argument : impl.arguments) {
-    if (!params.has(argument.name)) {
-      utils::error{}("originator step '{}': script '{}' reads ctx:arg:{}, but the step declares no such parameter",
-                     step_name, impl.name, argument.name);
-    }
-  }
 
   std::vector<const_field_accessor> accessors;
   accessors.reserve(inputs.size());

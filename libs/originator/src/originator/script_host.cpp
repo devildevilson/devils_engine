@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <bit>
 #include <chrono>
+#include <functional>
 #include <cstring>
 #include <format>
 
@@ -37,7 +38,36 @@ constexpr const char* mandatory_globals[] = {
 
 constexpr const char* safe_libraries[] = {"coroutine", "string", "table", "math", "utf8"};
 
+// Имена, занятые самой таблицей `originator` и её неймспейсом `queue`. Ярлыки инструментов кладутся
+// в те же таблицы, поэтому инструмент с таким именем затёр бы функцию МОЛЧА — и тело шага получило
+// бы вместо очереди обычный вызов или вместо `run_script` инструмент. Кто кого затрёт, зависело бы
+// ещё и от порядка регистрации, а такую пропажу по результату генерации не видно.
+constexpr const char* reserved_api_names[] = {"run", "run_script", "tool_exists", "queue"};
+
 char script_host_registry_key = 0;
+
+// ФУНКЦИИ УХОДЯТ В LUA ЧЕРЕЗ std::function С ОБЪЯВЛЕННОЙ СИГНАТУРОЙ, А НЕ ЛЯМБДОЙ НАПРЯМУЮ, и это
+// не стиль, а обход ИЗМЕРЕННОЙ ошибки порчи памяти.
+//
+// sol2 хранит функтор в userdata и кэширует его деструктор (`__gc`) в реестре lua по имени
+// метатаблицы, а имя получает из ДЕМАНГЛИРОВАННОГО имени типа. Gcc печатает лямбду как
+// `функция()::<lambda(аргументы)>` — БЕЗ порядкового номера. Значит две РАЗНЫЕ лямбды, объявленные
+// в одной функции с одинаковым списком параметров, получают одно и то же имя метатаблицы:
+// `luaL_newmetatable` находит уже созданную, и `__gc` ПЕРВОЙ лямбды начинает разрушать функтор
+// ВТОРОЙ по чужой раскладке. Проверено: `sol.main()::<lambda(sol::table)>.user` совпадает у двух
+// лямбд с разными захватами, а падение выглядит как «free(): invalid size» при закрытии стейта, то
+// есть далеко от места ошибки и без всякой связи с ней.
+//
+// У `std::function<результат(аргументы)>` имя своё и полное, поэтому совпадение имён означает
+// совпадение ТИПОВ, а разные типы получают разные метатаблицы. Ошибка перестаёт быть возможной, а
+// не становится менее вероятной: две регистрации с одной сигнатурой ниже — это намеренно ОДИН тип.
+using immediate_run_binding = std::function<sol::object(const std::string&, const sol::table, sol::this_state)>;
+using immediate_tool_binding = std::function<sol::object(const sol::table, sol::this_state)>;
+using immediate_script_binding = std::function<void(const sol::table)>;
+using tool_exists_binding = std::function<bool(const std::string&)>;
+using queue_named_record_binding = std::function<queue_call(const std::string&, const sol::table)>;
+using queue_record_binding = std::function<queue_call(const sol::table)>;
+using queue_run_binding = std::function<sol::object(const sol::table, const sol::table, sol::this_state)>;
 
 int64_t now_us() noexcept {
   return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -88,6 +118,35 @@ parameters read_parameters(const sol::table& args) {
     }
   }
   return result;
+}
+
+// Откуда берётся диапазон по умолчанию, решает АПЕРТУРА. У scatter выход — структура другого
+// размера (смещения групп, суммы по корзинам), поэтому её размер задаёт число корзин, а не число
+// обрабатываемых элементов: считать по нему было бы тихой обработкой первых N элементов.
+size_t default_range_end(const aperture::values shape,
+                         const std::span<const field_ref>& inputs,
+                         const std::span<const field_ref>& outputs) noexcept {
+  const bool count_from_inputs = shape == aperture::scatter || outputs.empty();
+  if (count_from_inputs) {
+    return inputs.empty() ? 0 : inputs.front().count();
+  }
+  return outputs.front().count();
+}
+
+void read_range(const sol::table& args, size_t& begin, size_t& end) {
+  const sol::optional<sol::table> range = args["range"];
+  if (!range.has_value()) {
+    return;
+  }
+  begin = (*range)[1].get_or<size_t>(0);
+  end = (*range)[2].get_or<size_t>(end);
+}
+
+// Зерно ходит через lua как знаковое целое: у lua нет беззнакового 64-битного типа, а значение
+// здесь непрозрачный токен, а не число, которым считают.
+uint64_t read_seed(const sol::table& args, const uint64_t fallback) {
+  const sol::optional<int64_t> explicit_seed = args["seed"];
+  return explicit_seed.has_value() ? std::bit_cast<uint64_t>(*explicit_seed) : fallback;
 }
 } // namespace
 
@@ -271,6 +330,15 @@ void script_host::bind_types() {
     "writable", [](const field_ref& self) { return self.writable(); },
     "components", [](const field_ref& self) { return self.type().components; });
 
+  // Объявленный вызов очереди. Конструктора нет намеренно: собрать его можно только через
+  // originator.queue.<инструмент>{...}, где привязки проверяются на месте. Методы здесь
+  // диагностические — они отвечают на «что я объявил», а не дают что-то менять.
+  env_.new_usertype<queue_call>(
+    "queue_call", sol::no_constructor,
+    "label", [](const queue_call& self) { return self.label; },
+    "aperture", [](const queue_call& self) { return std::string(to_string(self.shape)); },
+    "count", [](const queue_call& self) { return self.range_end > self.range_begin ? self.range_end - self.range_begin : 0; });
+
   env_.new_usertype<script_buffer_view>(
     "buffer_view",
     "count", [](const script_buffer_view& self) { return self.count(); },
@@ -281,6 +349,12 @@ void script_host::bind_types() {
 }
 
 void script_host::bind_tools() {
+  for (const auto* reserved : reserved_api_names) {
+    if (tools_->find(reserved) != nullptr) {
+      utils::error{}("originator: a tool named '{}' would shadow originator.{} and its queue namesake", reserved, reserved);
+    }
+  }
+
   sol::table api(lua_, sol::create);
 
   const auto run = [this](const std::string& tool_name, const sol::table args, sol::this_state s) -> sol::object {
@@ -293,28 +367,11 @@ void script_host::bind_tools() {
     const auto outputs = read_field_list(args, "outputs");
     const auto params = read_parameters(args);
 
-    // Зерно ходит через lua как знаковое целое: у lua нет беззнакового 64-битного типа, а значение
-    // здесь непрозрачный токен, а не число, которым считают.
-    const sol::optional<int64_t> explicit_seed = args["seed"];
-    const uint64_t seed = explicit_seed.has_value() ? std::bit_cast<uint64_t>(*explicit_seed) : current_seed_;
+    const uint64_t seed = read_seed(args, current_seed_);
 
-    // Откуда берётся диапазон по умолчанию, решает АПЕРТУРА. У scatter выход — структура другого
-    // размера (смещения групп, суммы по корзинам), поэтому её размер задаёт число корзин, а не
-    // число обрабатываемых элементов: считать по нему было бы тихой обработкой первых N элементов.
-    const bool count_from_inputs = tool->shape == aperture::scatter || outputs.empty();
     size_t begin = 0;
-    size_t end = 0;
-    if (count_from_inputs) {
-      end = inputs.empty() ? 0 : inputs.front().count();
-    } else {
-      end = outputs.front().count();
-    }
-
-    const sol::optional<sol::table> range = args["range"];
-    if (range.has_value()) {
-      begin = (*range)[1].get_or<size_t>(0);
-      end = (*range)[2].get_or<size_t>(end);
-    }
+    size_t end = default_range_end(tool->shape, inputs, outputs);
+    read_range(args, begin, end);
 
     // Носитель ключа объявляет автор: из одного чанка его не проверить. Молчание = глобальный, то
     // есть при чанкованной генерации scatter отклоняется, пока автор не скажет обратное вслух.
@@ -341,20 +398,20 @@ void script_host::bind_tools() {
     return sol::nil;
   };
 
-  api.set_function("run", run);
+  api.set_function("run", immediate_run_binding(run));
 
   // Ярлык на каждый зарегистрированный инструмент: originator.value_noise{ outputs = {...} }
   // читается лучше, чем run("value_noise", ...), и остаётся ровно тем же вызовом.
   for (size_t i = 0; i < tools_->size(); ++i) {
     const std::string name = tools_->at(i).name;
-    api.set_function(name, [this, name, run](const sol::table args, sol::this_state s) {
+    api.set_function(name, immediate_tool_binding([name, run](const sol::table args, sol::this_state s) {
       return run(name, args, s);
-    });
+    }));
   }
 
   // Средний уровень: devils_script над плотным буфером. Форма вызова та же, что у инструмента, —
   // скрипт не выбирает ни потоки, ни апертуру.
-  api.set_function("run_script", [this](const sol::table args) {
+  api.set_function("run_script", immediate_script_binding([this](const sol::table args) {
     const sol::optional<std::string> program_name = args["program"];
     if (!program_name.has_value()) {
       utils::error{}("originator step '{}': run_script needs a 'program' name", current_step_);
@@ -370,24 +427,165 @@ void script_host::bind_tools() {
 
     const auto& program = acquire_program(*program_name, inputs, kind);
 
-    const sol::optional<int64_t> explicit_seed = args["seed"];
-    const uint64_t seed = explicit_seed.has_value() ? std::bit_cast<uint64_t>(*explicit_seed) : current_seed_;
+    const uint64_t seed = read_seed(args, current_seed_);
 
     size_t begin = 0;
-    size_t end = outputs.empty() ? 0 : outputs.front().count();
-    const sol::optional<sol::table> range = args["range"];
-    if (range.has_value()) {
-      begin = (*range)[1].get_or<size_t>(0);
-      end = (*range)[2].get_or<size_t>(end);
-    }
+    size_t end = default_range_end(program.shape(), inputs, outputs);
+    read_range(args, begin, end);
 
     dispatch_script(program, inputs, outputs, params, seed, begin, end, current_step_, pool_);
-  });
+  }));
 
   // Существует потому, что примитивы (FastNoise2, jc_voronoi) — ОТДЕЛЬНАЯ цель сборки: скрипт может
   // законно спросить, доступен ли инструмент, и выбрать другой путь.
-  api.set_function("tool_exists", [this](const std::string& name) { return tools_->find(name) != nullptr; });
+  api.set_function("tool_exists", tool_exists_binding([this](const std::string& name) { return tools_->find(name) != nullptr; }));
+
+  api["queue"] = make_queue_api();
+
   env_["originator"] = api;
+}
+
+queue_call script_host::make_tool_call(const std::string& tool_name, const sol::table& args) {
+  const auto* tool = tools_->find(tool_name);
+  if (tool == nullptr) {
+    utils::error{}("originator step '{}': no tool named '{}'", current_step_, tool_name);
+  }
+
+  queue_call call;
+  call.label = tool_name;
+  call.tool = tool;
+  call.shape = tool->shape;
+  call.inputs = read_field_list(args, "inputs");
+  call.outputs = read_field_list(args, "outputs");
+  call.params = read_parameters(args);
+  call.seed = read_seed(args, current_seed_);
+  call.range_end = default_range_end(call.shape, call.inputs, call.outputs);
+  read_range(args, call.range_begin, call.range_end);
+
+  // Апертура и привязки проверяются ЗДЕСЬ, на объявлении, а не при запуске очереди. Проверка та же
+  // самая (check_queue делает её ещё раз для очередей, собранных из C++), но сообщение приходит из
+  // той строки lua, где вызов написан, — а исполняется очередь в одном месте, и по ней уже не
+  // видно, кто из элементов её собрал.
+  //
+  // key_support здесь не спрашивается намеренно: scatter в очередь не пускается вовсе, значит
+  // носителю ключа нечего охранять.
+  if (!fits_in_queue(call.shape)) {
+    utils::error{}("originator step '{}': tool '{}' has aperture '{}', which the queue does not take: {}",
+                   current_step_, tool_name, to_string(call.shape), queue_rejection_reason(call.shape));
+  }
+
+  const auto check = check_dispatch(*tool, call.inputs, call.outputs, call.range_begin, call.range_end, current_step_);
+  if (!check.allowed) {
+    utils::error{}("originator {}", check.message);
+  }
+
+  return call;
+}
+
+queue_call script_host::make_script_call(const sol::table& args) {
+  const sol::optional<std::string> program_name = args["program"];
+  if (!program_name.has_value()) {
+    utils::error{}("originator step '{}': queue.run_script needs a 'program' name", current_step_);
+  }
+
+  queue_call call;
+  call.label = *program_name;
+  call.inputs = read_field_list(args, "inputs");
+  call.outputs = read_field_list(args, "outputs");
+  call.params = read_parameters(args);
+  call.seed = read_seed(args, current_seed_);
+
+  const sol::optional<bool> predicate = args["predicate"];
+  const auto kind = predicate.value_or(false) ? script_program::result_kind::predicate
+                                              : script_program::result_kind::number;
+
+  // Компиляция идёт на ОБЪЯВЛЕНИИ, то есть всё ещё до исполнения очереди: программа компилируется
+  // против имён фактических привязок, и они здесь уже известны.
+  const auto& program = acquire_program(*program_name, call.inputs, kind);
+
+  call.shape = program.shape();
+  call.range_end = default_range_end(call.shape, call.inputs, call.outputs);
+  read_range(args, call.range_begin, call.range_end);
+
+  const auto check =
+    check_script_dispatch(program, call.inputs, call.outputs, call.params, call.range_begin, call.range_end, current_step_);
+  if (!check.allowed) {
+    utils::error{}("originator {}", check.message);
+  }
+
+  // Ядро очереди про devils_script не знает, поэтому элемент несёт своё исполнение телом. Указатель
+  // на программу стабилен: программы живут в unique_ptr, и рост кэша их не перемещает.
+  const auto* pointer = &program;
+  call.body = [pointer](const queue_call& queued, const std::string_view& step_name, thread::atomic_pool* pool) {
+    dispatch_script(*pointer, queued.inputs, queued.outputs, queued.params, queued.seed, queued.range_begin,
+                    queued.range_end, step_name, pool);
+  };
+
+  return call;
+}
+
+sol::table script_host::make_queue_api() {
+  sol::table api(lua_, sol::create);
+
+  api.set_function("run", queue_named_record_binding([this](const std::string& tool_name, const sol::table args) {
+    auto call = make_tool_call(tool_name, args);
+    ++queue_records_;
+    return call;
+  }));
+
+  // Ярлыки те же, что у немедленного вызова, и это важнее краткости: одна и та же строка аргументов
+  // читается одинаково в обоих неймспейсах, а отличие ровно одно — когда работа исполняется.
+  // Регистрируются ВСЕ инструменты, включая непригодные: `originator.queue.group_by{...}` обязан
+  // сказать, почему scatter не пускается, а не упасть на «attempt to call a nil value».
+  for (size_t i = 0; i < tools_->size(); ++i) {
+    const std::string name = tools_->at(i).name;
+    api.set_function(name, queue_record_binding([this, name](const sol::table args) {
+      auto call = make_tool_call(name, args);
+      ++queue_records_;
+      return call;
+    }));
+  }
+
+  api.set_function("run_script", queue_record_binding([this](const sol::table args) {
+    auto call = make_script_call(args);
+    ++queue_records_;
+    return call;
+  }));
+
+  // Сама очередь — ВЫЗОВ таблицы: `originator.queue{ ... }`. Таблица нужна как неймспейс, вызов —
+  // как исполнение, и метаметод позволяет иметь и то, и другое под одним именем.
+  sol::table meta(lua_, sol::create);
+  meta.set_function("__call", queue_run_binding([this](const sol::table self, const sol::table args, sol::this_state s) -> sol::object {
+    (void)self;
+
+    computation_queue queue;
+    queue.name = current_step_;
+
+    const size_t size = args.size();
+    queue.calls.reserve(size);
+    for (size_t i = 1; i <= size; ++i) {
+      const sol::object entry = args[i];
+      if (!entry.is<queue_call>()) {
+        utils::error{}("originator step '{}': queue element {} is not a declared call — elements of a queue come "
+                       "from originator.queue.<tool>{{...}}, not from originator.<tool>{{...}}",
+                       current_step_, i);
+      }
+      queue.calls.push_back(entry.as<const queue_call&>());
+      ++queue_consumed_;
+    }
+
+    queue.output = read_field_list(args, "output");
+
+    const auto report = run_queue(queue, pool_);
+
+    sol::table result(lua_, sol::create);
+    result["calls"] = report.calls;
+    result["passes"] = report.passes;
+    return sol::make_object(s, result);
+  }));
+  api[sol::metatable_key] = meta;
+
+  return api;
 }
 
 void script_host::load_body(const std::string_view& step_name, const std::string_view& source, const std::string_view& chunk_name) {
@@ -548,6 +746,8 @@ step_invoker script_host::invoker() {
     current_step_.assign(context.name);
     current_seed_ = context.seed;
     current_chunked_ = context.chunked;
+    queue_records_ = 0;
+    queue_consumed_ = 0;
 
     auto step = make_step_table(context);
 
@@ -577,6 +777,20 @@ step_invoker script_host::invoker() {
       utils::error{}("originator step '{}': script budget exceeded and the error was swallowed inside the body "
                      "({} instructions, {} us)",
                      context.name, instruction_counter_, uint64_t(now_us() - start_time_us_));
+    }
+
+    // ОБЪЯВЛЕННЫЙ ВЫЗОВ ОБЯЗАН ПОПАСТЬ В ОЧЕРЕДЬ РОВНО ОДИН РАЗ. Иначе тело шага получает две тихие
+    // ошибки, которых не видно по результату: забытый элемент ничего не посчитал, а отданный дважды
+    // посчитал одно и то же поле теми же аргументами второй раз.
+    if (queue_consumed_ < queue_records_) {
+      utils::error{}("originator step '{}': {} declared queue calls were never handed to a queue — "
+                     "originator.queue.<tool>{{...}} only DECLARES work, it runs inside originator.queue{{ ... }}",
+                     context.name, queue_records_ - queue_consumed_);
+    }
+    if (queue_consumed_ > queue_records_) {
+      utils::error{}("originator step '{}': a declared queue call went into a queue more than once ({} elements "
+                     "against {} declarations)",
+                     context.name, queue_consumed_, queue_records_);
     }
   };
 }

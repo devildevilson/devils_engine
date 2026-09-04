@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <devils_engine/network/network.h>
+#include <devils_engine/utils/hash.h>
 #include <doctest/doctest.h>
 
 namespace network = devils_engine::network;
@@ -81,9 +82,9 @@ using reidentified_schema = network::state_schema<fake_host, network::state_writ
 
 static_assert(network::unique_state_section_ids_v<actor_section, clock_section>);
 static_assert(!network::unique_state_section_ids_v<actor_section, actor_section_v2>);
-static_assert(schema::schema_digest() == reversed_schema::schema_digest());
-static_assert(schema::schema_digest() != versioned_schema::schema_digest());
-static_assert(schema::schema_digest() != reidentified_schema::schema_digest());
+static_assert(schema::schema_fingerprint() == reversed_schema::schema_fingerprint());
+static_assert(schema::schema_fingerprint() != versioned_schema::schema_fingerprint());
+static_assert(schema::schema_fingerprint() != reidentified_schema::schema_fingerprint());
 
 struct validate_host {
   bool operator()(const fake_state& staging) const noexcept {
@@ -118,38 +119,28 @@ void patch_u64(std::vector<std::byte>& bytes, const std::size_t offset, const st
   }
 }
 
-constexpr std::uint64_t fnv_offset = UINT64_C(14695981039346656037);
-constexpr std::uint64_t fnv_prime = UINT64_C(1099511628211);
-
-void hash_byte(std::uint64_t& hash, const std::uint8_t value) {
-  hash ^= value;
-  hash *= fnv_prime;
-}
-
-std::uint64_t hash_bytes(const std::span<const std::byte> bytes) {
-  std::uint64_t result = fnv_offset;
-  for (const std::byte value : bytes)
-    hash_byte(result, std::to_integer<std::uint8_t>(value));
-  return result;
-}
-
 struct hash_sink {
-  std::uint64_t value = fnv_offset;
+  hash_sink() noexcept : writer(bytes_) {}
 
   void u32(const std::uint32_t input) {
-    for (unsigned i = 0; i < 4; ++i)
-      hash_byte(value, std::uint8_t(input >> (i * 8)));
+    writer.u32(input);
   }
 
   void u64(const std::uint64_t input) {
-    for (unsigned i = 0; i < 8; ++i)
-      hash_byte(value, std::uint8_t(input >> (i * 8)));
+    writer.u64(input);
   }
 
   void bytes(const std::span<const std::byte> input) {
-    for (const std::byte byte : input)
-      hash_byte(value, std::to_integer<std::uint8_t>(byte));
+    writer.bytes(input);
   }
+
+  std::uint32_t value() const noexcept {
+    return devils_engine::utils::murmur_hash3_32(bytes_);
+  }
+
+private:
+  std::vector<std::byte> bytes_;
+  network::state_writer writer;
 };
 
 } // namespace
@@ -190,7 +181,7 @@ TEST_CASE("network state schema section and host validation are transactional") 
   SUBCASE("section decode refusal") {
     const fake_host source{{17, 90}, 0, 0};
     auto bytes = schema::write(source);
-    patch_u32(bytes, 36, UINT32_MAX);
+    patch_u32(bytes, 32, UINT32_MAX);
     fake_host destination{{2, 10}, 12, 7};
     const fake_host before = destination;
     const auto result = load(destination, bytes);
@@ -202,7 +193,7 @@ TEST_CASE("network state schema section and host validation are transactional") 
   SUBCASE("section-local truncation") {
     const fake_host source{{17, 90}, 0, 0};
     auto bytes = schema::write(source);
-    patch_u64(bytes, 28, 3);
+    patch_u64(bytes, 24, 3);
     fake_host destination{{2, 10}, 12, 7};
     const fake_host before = destination;
     const auto result = load(destination, bytes);
@@ -234,12 +225,12 @@ TEST_CASE("network state schema section and host validation are transactional") 
 TEST_CASE("network state schema diagnoses missing duplicate unknown and reordered sections") {
   const fake_host source{{17, 90}, 0, 0};
   const auto canonical = schema::write(source);
-  // Header is 20 bytes. First section is [16-byte header][4-byte body], so the
-  // second section ID begins at byte 40.
+  // Header is 16 bytes. First section is [16-byte header][4-byte body], so the
+  // second section ID begins at byte 36.
 
   SUBCASE("missing") {
     auto bytes = canonical;
-    patch_u32(bytes, 16, 1);
+    patch_u32(bytes, 12, 1);
     fake_host destination{};
     const auto result = load(destination, bytes);
     CHECK(result.status == network::state_load_status::missing_section);
@@ -248,7 +239,7 @@ TEST_CASE("network state schema diagnoses missing duplicate unknown and reordere
 
   SUBCASE("duplicate") {
     auto bytes = canonical;
-    patch_u32(bytes, 40, actor_section::id);
+    patch_u32(bytes, 36, actor_section::id);
     fake_host destination{};
     const auto result = load(destination, bytes);
     CHECK(result.status == network::state_load_status::duplicate_section);
@@ -257,7 +248,7 @@ TEST_CASE("network state schema diagnoses missing duplicate unknown and reordere
 
   SUBCASE("unknown") {
     auto bytes = canonical;
-    patch_u32(bytes, 20, actor_section::id - 1);
+    patch_u32(bytes, 16, actor_section::id - 1);
     fake_host destination{};
     const auto result = load(destination, bytes);
     CHECK(result.status == network::state_load_status::unknown_section);
@@ -266,7 +257,7 @@ TEST_CASE("network state schema diagnoses missing duplicate unknown and reordere
 
   SUBCASE("non-canonical order") {
     auto bytes = canonical;
-    patch_u32(bytes, 40, actor_section::id - 1);
+    patch_u32(bytes, 36, actor_section::id - 1);
     fake_host destination{};
     const auto result = load(destination, bytes);
     CHECK(result.status == network::state_load_status::non_canonical_order);
@@ -274,7 +265,7 @@ TEST_CASE("network state schema diagnoses missing duplicate unknown and reordere
   }
 }
 
-TEST_CASE("network state schema diagnoses version and schema digest changes") {
+TEST_CASE("network state schema diagnoses version and schema fingerprint changes") {
   const fake_host source{{17, 90}, 0, 0};
   const auto canonical = schema::write(source);
 
@@ -296,7 +287,7 @@ TEST_CASE("network state schema diagnoses version and schema digest changes") {
 
   SUBCASE("section version") {
     auto bytes = canonical;
-    patch_u32(bytes, 24, actor_section::version + 1);
+    patch_u32(bytes, 20, actor_section::version + 1);
     fake_host destination{};
     const auto result = load(destination, bytes);
     CHECK(result.status == network::state_load_status::version_mismatch);
@@ -305,12 +296,12 @@ TEST_CASE("network state schema diagnoses version and schema digest changes") {
     CHECK(result.actual_version == actor_section::version + 1);
   }
 
-  SUBCASE("header schema digest") {
+  SUBCASE("header schema fingerprint") {
     auto bytes = canonical;
     bytes[8] ^= std::byte{1};
     fake_host destination{};
     const auto result = load(destination, bytes);
-    CHECK(result.status == network::state_load_status::schema_digest_mismatch);
+    CHECK(result.status == network::state_load_status::schema_fingerprint_mismatch);
   }
 }
 
@@ -320,8 +311,8 @@ TEST_CASE("network state schema rejects section and document trailing bytes") {
 
   SUBCASE("inside section") {
     auto bytes = canonical;
-    patch_u64(bytes, 28, 5);
-    bytes.insert(bytes.begin() + 40, std::byte{0});
+    patch_u64(bytes, 24, 5);
+    bytes.insert(bytes.begin() + 36, std::byte{0});
     fake_host destination{};
     const auto result = load(destination, bytes);
     CHECK(result.status == network::state_load_status::section_trailing_bytes);
@@ -342,5 +333,5 @@ TEST_CASE("network state schema hash sink covers exactly checkpoint bytes") {
   const auto bytes = schema::write(source);
   hash_sink sink;
   schema::emit_canonical(source, sink);
-  CHECK(sink.value == hash_bytes(bytes));
+  CHECK(sink.value() == devils_engine::utils::murmur_hash3_32(bytes));
 }

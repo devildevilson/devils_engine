@@ -236,6 +236,14 @@ target_link_libraries(originator_tools_test PRIVATE devils_engine::originator de
 devils_add_doctest(originator_pipeline_test originator_pipeline_test.cpp)
 target_link_libraries(originator_pipeline_test PRIVATE devils_engine::originator devils_engine::utils)
 
+devils_add_doctest(originator_queue_test originator_queue_test.cpp)
+target_link_libraries(originator_queue_test PRIVATE devils_engine::originator devils_engine::utils)
+
+# Lua-поверхность очереди. Отдельная цель потому, что она линкует скриптовый слой: ядру генератора
+# lua не нужна, а этому тесту нужна — он проверяет и то, что регистрация неймспейса не портит память.
+devils_add_doctest(originator_queue_lua_test originator_queue_lua_test.cpp)
+target_link_libraries(originator_queue_lua_test PRIVATE devils_engine::originator devils_engine::originator_lua devils_engine::utils)
+
 devils_add_doctest(originator_config_test originator_config_test.cpp)
 target_link_libraries(originator_config_test PRIVATE devils_engine::originator devils_engine::originator_config devils_engine::demiurg devils_engine::utils)
 

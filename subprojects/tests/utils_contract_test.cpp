@@ -1,10 +1,13 @@
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -13,6 +16,7 @@
 #include "devils_engine/utils/atomic_file.h"
 #include "devils_engine/utils/event_dispatcher.h"
 #include "devils_engine/utils/fileio.h"
+#include "devils_engine/utils/hash.h"
 #include "devils_engine/utils/memory_pool.h"
 #include "devils_engine/utils/stack_allocator.h"
 #include "devils_engine/utils/string_id.h"
@@ -61,6 +65,22 @@ struct alignas(32) fixed_pool_over_aligned_object {
 };
 
 } // namespace
+
+TEST_CASE("murmur3 hashes canonical binary bytes [utils::hash]") {
+  constexpr std::array<std::byte, 4> bytes{
+    std::byte{0x00}, std::byte{0x7f}, std::byte{0x80}, std::byte{0xff}};
+  constexpr std::array<char, 4> chars{
+    char(0x00), char(0x7f), char(0x80), char(0xff)};
+
+  static_assert(utils::murmur_hash3_32(std::string_view{"foo"}, 0) == UINT32_C(0xf6a5c420));
+  static_assert(
+    utils::murmur_hash3_32(std::span<const std::byte>{bytes}, 0) ==
+    utils::murmur_hash3_32(std::string_view{chars.data(), chars.size()}, 0));
+
+  CHECK(
+    utils::murmur_hash3_32(std::span<const std::byte>{bytes}) ==
+    utils::murmur_hash3_32(std::string_view{chars.data(), chars.size()}));
+}
 
 TEST_CASE("string_pool keeps stable dense ids and supports lookup [utils::string_id]") {
   utils::string_pool<1002> pool;
