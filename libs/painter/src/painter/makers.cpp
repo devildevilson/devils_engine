@@ -911,6 +911,15 @@ vk::Pipeline compute_pipeline_maker::create(
   vk::PipelineLayout layout,
   vk::Pipeline base,
   const int32_t baseIndex) {
+  return create(name, vk::PipelineCache(nullptr), layout, base, baseIndex);
+}
+
+vk::Pipeline compute_pipeline_maker::create(
+  const std::string& name,
+  vk::PipelineCache cache,
+  vk::PipelineLayout layout,
+  vk::Pipeline base,
+  const int32_t baseIndex) {
   const vk::SpecializationInfo specInfo{
     static_cast<uint32_t>(entries.size()),
     entries.data(),
@@ -926,7 +935,7 @@ vk::Pipeline compute_pipeline_maker::create(
     base,
     baseIndex);
 
-  auto [res, p] = device.createComputePipeline(nullptr, info);
+  auto [res, p] = device.createComputePipeline(cache, info);
   if (res != vk::Result::eSuccess) {
     utils::error{}("Could not create compute pipeline '{}'", name);
   }

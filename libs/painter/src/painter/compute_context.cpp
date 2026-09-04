@@ -1,5 +1,6 @@
 #include "compute_context.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "devils_engine/utils/core.h"
@@ -22,12 +23,26 @@ struct compute_context::buffer_entry {
   size_t byte_size = 0;
 };
 
+struct compute_context::image_entry {
+  VkImage handle = nullptr;
+  VkImageView view = nullptr;
+  VmaAllocation allocation = nullptr;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t format = 0;
+  size_t byte_size = 0;
+};
+
 struct compute_context::program_entry {
+  // Ключ кэша: сам текст плюс форма привязок. Текст хранится целиком, а не только его хеш — на хеше
+  // столкновение означало бы, что вместо одной программы исполняется другая, и понять это по
+  // результату невозможно.
+  std::string source;
   VkDescriptorSetLayout set_layout = nullptr;
   VkPipelineLayout pipeline_layout = nullptr;
   VkPipeline pipeline = nullptr;
   VkDescriptorSet set = nullptr;
-  uint32_t storage_count = 0;
+  std::vector<binding_kind> bindings;
   uint32_t push_byte_size = 0;
 };
 
@@ -109,6 +124,17 @@ compute_context::compute_context(compute_context_config config) : config_(std::m
   command_pool_ = dev.createCommandPool(cpci);
   set_name(dev, vk::CommandPool(command_pool_), config_.app_name + ".compute_command_pool");
 
+  // Один линейный сэмплер на контекст. Он и есть та причина, по которой картинка бывает выгоднее
+  // буфера: фильтр между элементами достаётся аппаратно. Он же и граница — фильтр не детерминирован.
+  vk::SamplerCreateInfo sci{};
+  sci.magFilter = vk::Filter::eLinear;
+  sci.minFilter = vk::Filter::eLinear;
+  sci.addressModeU = vk::SamplerAddressMode::eClampToEdge;
+  sci.addressModeV = vk::SamplerAddressMode::eClampToEdge;
+  sci.addressModeW = vk::SamplerAddressMode::eClampToEdge;
+  linear_sampler_ = dev.createSampler(sci);
+  set_name(dev, vk::Sampler(linear_sampler_), config_.app_name + ".linear_sampler");
+
   // Гранулярный fence, а не device-wide waitIdle: ждать надо ровно свою отправку.
   fence_ = dev.createFence(vk::FenceCreateInfo{});
   set_name(dev, vk::Fence(fence_), config_.app_name + ".compute_fence");
@@ -131,6 +157,14 @@ compute_context::~compute_context() noexcept {
 
   if (base_ != nullptr && base_->allocator != nullptr) {
     vma::Allocator allocator(base_->allocator);
+    for (auto& entry : images_) {
+      if (entry.view != nullptr) {
+        dev.destroy(vk::ImageView(entry.view));
+      }
+      if (entry.handle != nullptr) {
+        allocator.destroyImage(vk::Image(entry.handle), vma::Allocation(entry.allocation));
+      }
+    }
     for (auto& entry : buffers_) {
       if (entry.mapped != nullptr) {
         allocator.unmapMemory(vma::Allocation(entry.allocation));
@@ -142,8 +176,18 @@ compute_context::~compute_context() noexcept {
   }
   buffers_.clear();
 
+  images_.clear();
+
+  if (linear_sampler_ != nullptr) dev.destroy(vk::Sampler(linear_sampler_));
   if (fence_ != nullptr) dev.destroy(vk::Fence(fence_));
   if (command_pool_ != nullptr) dev.destroy(vk::CommandPool(command_pool_));
+
+  // ОБЪЯВЛЕННЫЙ ПУТЬ КЭША ОБЯЗАН БЫТЬ ЗАПИСАН. Читать файл и не писать его — это путь, который
+  // выглядит кэшем и им не является: цена компиляции ИЗМЕРЕНА и составляет около ста миллисекунд на
+  // программу, то есть без записи каждый запуск платит её заново.
+  if (base_ != nullptr && !config_.pipeline_cache_path.empty()) {
+    base_->dump_cache_on_disk(config_.pipeline_cache_path);
+  }
 
   // graphics_base снимает аллокатор, пул дескрипторов и кэш пайплайнов; устройство и инстанс он не
   // трогает — их создал этот контекст, ему их и закрывать.
@@ -265,19 +309,177 @@ void compute_context::copy(const buffer_id from, const buffer_id to, const size_
   }
 }
 
+const compute_context::image_entry& compute_context::image_at(const image_id id) const {
+  if (id >= images_.size()) {
+    utils::error{}("compute context '{}': image {} does not exist", config_.app_name, id);
+  }
+  return images_[id];
+}
+
+compute_context::image_id compute_context::create_image(const uint32_t width,
+                                                        const uint32_t height,
+                                                        const image_format format) {
+  if (width == 0 || height == 0) {
+    utils::error{}("compute context '{}': an image of {}x{} has nothing to compute over",
+                   config_.app_name, width, height);
+  }
+
+  const auto properties = vk::PhysicalDevice(base_->physical_device).getProperties();
+  if (width > properties.limits.maxImageDimension2D || height > properties.limits.maxImageDimension2D) {
+    utils::error{}("compute context '{}': image {}x{} exceeds maxImageDimension2D {} on '{}'",
+                   config_.app_name, width, height, properties.limits.maxImageDimension2D, device_name_);
+  }
+
+  const auto vk_format = format == image_format::r32f ? vk::Format::eR32Sfloat : vk::Format::eR8G8B8A8Unorm;
+  const size_t pixel_bytes = format == image_format::r32f ? 4 : 4;
+
+  // ФОРМАТ СПРАШИВАЕТСЯ У УСТРОЙСТВА, а не берётся на веру. Обязательные форматы Vulkan гарантируют
+  // и storage-образ, и линейный фильтр для этих двух, но «гарантирует спецификация» и «умеет ЭТА
+  // машина» — разные утверждения, а молча отсутствующая возможность даёт неопределённое поведение.
+  const auto supported = vk::PhysicalDevice(base_->physical_device).getFormatProperties(vk_format);
+  const auto required = vk::FormatFeatureFlagBits::eStorageImage | vk::FormatFeatureFlagBits::eSampledImage |
+                        vk::FormatFeatureFlagBits::eSampledImageFilterLinear;
+  if ((supported.optimalTilingFeatures & required) != required) {
+    utils::error{}("compute context '{}': format for the requested image lacks storage, sampling or linear "
+                   "filtering on '{}'",
+                   config_.app_name, device_name_);
+  }
+
+  vk::ImageCreateInfo ici{};
+  ici.imageType = vk::ImageType::e2D;
+  ici.format = vk_format;
+  ici.extent = vk::Extent3D(width, height, 1);
+  ici.mipLevels = 1;
+  ici.arrayLayers = 1;
+  ici.samples = vk::SampleCountFlagBits::e1;
+  ici.tiling = vk::ImageTiling::eOptimal;
+  ici.usage = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
+              vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
+  ici.sharingMode = vk::SharingMode::eExclusive;
+  ici.initialLayout = vk::ImageLayout::eUndefined;
+
+  vma::AllocationCreateInfo aci{};
+  aci.usage = vma::MemoryUsage::eGpuOnly;
+
+  vma::Allocator allocator(base_->allocator);
+  auto [handle, allocation] = allocator.createImage(ici, aci);
+
+  vk::Device dev(device_.device);
+  vk::ImageViewCreateInfo ivci{};
+  ivci.image = handle;
+  ivci.viewType = vk::ImageViewType::e2D;
+  ivci.format = vk_format;
+  ivci.subresourceRange = vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+
+  image_entry entry;
+  entry.handle = handle;
+  entry.allocation = allocation;
+  entry.view = dev.createImageView(ivci);
+  entry.width = width;
+  entry.height = height;
+  entry.format = uint32_t(vk_format);
+  entry.byte_size = size_t(width) * size_t(height) * pixel_bytes;
+
+  set_name(dev, vk::Image(handle), config_.app_name + ".image" + std::to_string(images_.size()));
+
+  // ОДИН переход: UNDEFINED -> GENERAL, и дальше картинка в нём и живёт. Упрощение лаборатории, и оно
+  // названо в заголовке: GENERAL законен и для записи, и для выборки, но дороже оптимального.
+  const bool done = do_command(
+    device_.device, command_pool_, device_.queues.compute.handle(), fence_,
+    [&](VkCommandBuffer raw) {
+      vk::CommandBuffer buf(raw);
+      vk::ImageMemoryBarrier barrier{};
+      barrier.oldLayout = vk::ImageLayout::eUndefined;
+      barrier.newLayout = vk::ImageLayout::eGeneral;
+      barrier.image = handle;
+      barrier.subresourceRange = ivci.subresourceRange;
+      barrier.srcAccessMask = {};
+      barrier.dstAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead;
+      buf.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eComputeShader,
+                          {}, {}, {}, {barrier});
+    });
+  if (!done) {
+    utils::error{}("compute context '{}': image layout transition did not complete", config_.app_name);
+  }
+
+  images_.push_back(entry);
+  return image_id(images_.size() - 1);
+}
+
+uint32_t compute_context::image_width(const image_id id) const {
+  return image_at(id).width;
+}
+
+uint32_t compute_context::image_height(const image_id id) const {
+  return image_at(id).height;
+}
+
+void compute_context::read_image(const image_id id, void* data, const size_t byte_size) {
+  const auto& entry = image_at(id);
+  if (byte_size > entry.byte_size) {
+    utils::error{}("compute context '{}': reading {} bytes from an image of {} bytes",
+                   config_.app_name, byte_size, entry.byte_size);
+  }
+
+  const auto staging = create_buffer(entry.byte_size, true);
+  const auto& target = buffer_at(staging);
+
+  const bool done = do_command(
+    device_.device, command_pool_, device_.queues.compute.handle(), fence_,
+    [&](VkCommandBuffer raw) {
+      vk::CommandBuffer buf(raw);
+      vk::BufferImageCopy region{};
+      region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+      region.imageExtent = vk::Extent3D(entry.width, entry.height, 1);
+      buf.copyImageToBuffer(vk::Image(entry.handle), vk::ImageLayout::eGeneral, vk::Buffer(target.handle),
+                            1, &region);
+    });
+  if (!done) {
+    utils::error{}("compute context '{}': image readback did not complete", config_.app_name);
+  }
+
+  read(staging, data, byte_size);
+}
+
 compute_context::program_id compute_context::create_program(const std::string& name,
                                                             const std::string& source,
                                                             const uint32_t storage_count,
                                                             const uint32_t push_byte_size) {
-  if (storage_count == 0) {
-    utils::error{}("compute context '{}': program '{}' binds no buffers and has nothing to read or write",
+  // Прежняя форма: все привязки — storage-буферы. Осталась потому, что так их объявляет
+  // подавляющее большинство переводов, и заставлять их перечислять один и тот же род было бы шумом.
+  const std::vector<binding_kind> bindings(storage_count, binding_kind::storage_buffer);
+  return make_program(name, source, bindings, push_byte_size);
+}
+
+compute_context::program_id compute_context::create_program(const std::string& name,
+                                                            const std::string& source,
+                                                            const std::span<const binding_kind>& bindings,
+                                                            const uint32_t push_byte_size) {
+  return make_program(name, source, bindings, push_byte_size);
+}
+
+compute_context::program_id compute_context::make_program(const std::string& name,
+                                                          const std::string& source,
+                                                          const std::span<const binding_kind>& bindings,
+                                                          const uint32_t push_byte_size) {
+  if (bindings.empty()) {
+    utils::error{}("compute context '{}': program '{}' binds nothing and has nothing to read or write",
                    config_.app_name, name);
+  }
+
+  for (size_t i = 0; i < programs_.size(); ++i) {
+    const auto& known = programs_[i];
+    if (known.push_byte_size != push_byte_size) continue;
+    if (known.bindings.size() != bindings.size()) continue;
+    if (!std::equal(known.bindings.begin(), known.bindings.end(), bindings.begin())) continue;
+    if (known.source != source) continue;
+    return program_id(i);
   }
 
   // Тем же компилятором, которым движок компилирует шейдеры материалов. Реестр не нужен: текст
   // приходит целиком, а `#include` у шейдера, написанного руками, нет.
   shader_crafter crafter(nullptr);
-  crafter.set_optimization(true);
+  crafter.set_optimization(config_.optimize_shaders);
   crafter.set_shader_entry_point("main");
   crafter.set_shader_type(shaderc_compute_shader);
   const auto spirv = crafter.compile(name, source);
@@ -288,13 +490,22 @@ compute_context::program_id compute_context::create_program(const std::string& n
 
   vk::Device dev(device_.device);
 
+  const auto descriptor_of = [](const binding_kind kind) {
+    switch (kind) {
+      case binding_kind::storage_image: return vk::DescriptorType::eStorageImage;
+      case binding_kind::sampled_image: return vk::DescriptorType::eCombinedImageSampler;
+      default: return vk::DescriptorType::eStorageBuffer;
+    }
+  };
+
   descriptor_set_layout_maker layout_maker(dev);
-  for (uint32_t binding = 0; binding < storage_count; ++binding) {
-    layout_maker.binding(binding, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eCompute);
+  for (size_t binding = 0; binding < bindings.size(); ++binding) {
+    layout_maker.binding(uint32_t(binding), descriptor_of(bindings[binding]), vk::ShaderStageFlagBits::eCompute);
   }
 
   program_entry program;
-  program.storage_count = storage_count;
+  program.source = source;
+  program.bindings.assign(bindings.begin(), bindings.end());
   program.push_byte_size = push_byte_size;
   program.set_layout = layout_maker.create(name + ".set_layout");
 
@@ -312,7 +523,11 @@ compute_context::program_id compute_context::create_program(const std::string& n
 
   compute_pipeline_maker pipeline_maker(dev);
   pipeline_maker.shader(module.get());
-  program.pipeline = pipeline_maker.create(name, vk::PipelineLayout(program.pipeline_layout));
+  // Через КЭШ ПАЙПЛАЙНОВ. До этой правки вычислительный путь его не использовал: maker звал
+  // `createComputePipeline` с nullptr, а созданный без кэша пайплайн работает точно так же — просто
+  // создаётся дольше, и по поведению это неотличимо.
+  program.pipeline =
+    pipeline_maker.create(name, vk::PipelineCache(base_->cache), vk::PipelineLayout(program.pipeline_layout));
 
   descriptor_set_maker set_maker(dev);
   set_maker.layout(vk::DescriptorSetLayout(program.set_layout));
@@ -322,8 +537,13 @@ compute_context::program_id compute_context::create_program(const std::string& n
   }
   program.set = sets.front();
 
-  programs_.push_back(program);
+  programs_.push_back(std::move(program));
+  ++compiled_;
   return program_id(programs_.size() - 1);
+}
+
+size_t compute_context::compiled_programs() const noexcept {
+  return compiled_;
 }
 
 void compute_context::dispatch(const program_id id,
@@ -337,9 +557,14 @@ void compute_context::dispatch(const program_id id,
   }
   const auto& program = programs_[id];
 
-  if (buffers.size() != program.storage_count) {
-    utils::error{}("compute context '{}': program expects {} buffers, got {}",
-                   config_.app_name, program.storage_count, buffers.size());
+  if (buffers.size() != program.bindings.size()) {
+    utils::error{}("compute context '{}': program expects {} bindings, got {}",
+                   config_.app_name, program.bindings.size(), buffers.size());
+  }
+  for (const auto kind : program.bindings) {
+    if (kind == binding_kind::storage_buffer) continue;
+    utils::error{}("compute context '{}': program binds an image, so it needs dispatch_2d with typed resources",
+                   config_.app_name);
   }
   if (push_byte_size != program.push_byte_size) {
     utils::error{}("compute context '{}': program declares {} push bytes, got {}",
@@ -386,6 +611,99 @@ void compute_context::dispatch(const program_id id,
                      limits_.max_group_count[1], device_name_);
     }
     groups_y = uint32_t(rows);
+  }
+
+  const bool done = do_command(
+    device_.device, command_pool_, device_.queues.compute.handle(), fence_,
+    [&](VkCommandBuffer raw) {
+      vk::CommandBuffer buf(raw);
+      buf.bindPipeline(vk::PipelineBindPoint::eCompute, vk::Pipeline(program.pipeline));
+      buf.bindDescriptorSets(vk::PipelineBindPoint::eCompute, vk::PipelineLayout(program.pipeline_layout), 0,
+                             {vk::DescriptorSet(program.set)}, {});
+      if (push_byte_size != 0) {
+        buf.pushConstants(vk::PipelineLayout(program.pipeline_layout), vk::ShaderStageFlagBits::eCompute, 0,
+                          uint32_t(push_byte_size), push);
+      }
+      buf.dispatch(groups_x, groups_y, 1);
+    });
+  if (!done) {
+    utils::error{}("compute context '{}': dispatch did not complete", config_.app_name);
+  }
+}
+
+void compute_context::dispatch_2d(const program_id id,
+                                  const std::span<const bound_resource>& resources,
+                                  const void* push,
+                                  const size_t push_byte_size,
+                                  const uint32_t width,
+                                  const uint32_t height,
+                                  const uint32_t group_x,
+                                  const uint32_t group_y) {
+  if (id >= programs_.size()) {
+    utils::error{}("compute context '{}': program {} does not exist", config_.app_name, id);
+  }
+  const auto& program = programs_[id];
+
+  if (resources.size() != program.bindings.size()) {
+    utils::error{}("compute context '{}': program expects {} bindings, got {}",
+                   config_.app_name, program.bindings.size(), resources.size());
+  }
+  if (push_byte_size != program.push_byte_size) {
+    utils::error{}("compute context '{}': program declares {} push bytes, got {}",
+                   config_.app_name, program.push_byte_size, push_byte_size);
+  }
+  if (group_x == 0 || group_y == 0 || uint64_t(group_x) * group_y > limits_.max_group_invocations) {
+    utils::error{}("compute context '{}': group {}x{} does not fit '{}' (max invocations {})",
+                   config_.app_name, group_x, group_y, device_name_, limits_.max_group_invocations);
+  }
+  if (width == 0 || height == 0) {
+    return;
+  }
+
+  vk::Device dev(device_.device);
+
+  std::vector<vk::DescriptorBufferInfo> buffer_infos(resources.size());
+  std::vector<vk::DescriptorImageInfo> image_infos(resources.size());
+  std::vector<vk::WriteDescriptorSet> writes;
+  writes.reserve(resources.size());
+
+  for (size_t i = 0; i < resources.size(); ++i) {
+    const auto kind = program.bindings[i];
+    const auto& resource = resources[i];
+
+    // Род ресурса обязан совпасть с родом биндинга. Дескриптор типизирован, и перепутанные род
+    // означал бы чтение картинки как буфера — а это не ошибка драйвера, это молча другие числа.
+    if (kind == binding_kind::storage_buffer) {
+      if (resource.buffer == invalid_id) {
+        utils::error{}("compute context '{}': binding {} wants a buffer, got an image", config_.app_name, i);
+      }
+      const auto& entry = buffer_at(resource.buffer);
+      buffer_infos[i] = vk::DescriptorBufferInfo(vk::Buffer(entry.handle), 0, entry.byte_size);
+      writes.emplace_back(vk::DescriptorSet(program.set), uint32_t(i), 0, 1,
+                          vk::DescriptorType::eStorageBuffer, nullptr, &buffer_infos[i]);
+      continue;
+    }
+
+    if (resource.image == invalid_id) {
+      utils::error{}("compute context '{}': binding {} wants an image, got a buffer", config_.app_name, i);
+    }
+    const auto& entry = image_at(resource.image);
+    const bool sampled = kind == binding_kind::sampled_image;
+    image_infos[i] = vk::DescriptorImageInfo(sampled ? vk::Sampler(linear_sampler_) : vk::Sampler(nullptr),
+                                             vk::ImageView(entry.view), vk::ImageLayout::eGeneral);
+    writes.emplace_back(vk::DescriptorSet(program.set), uint32_t(i), 0, 1,
+                        sampled ? vk::DescriptorType::eCombinedImageSampler : vk::DescriptorType::eStorageImage,
+                        &image_infos[i], nullptr);
+  }
+
+  dev.updateDescriptorSets(writes, {});
+
+  const uint32_t groups_x = (width + group_x - 1) / group_x;
+  const uint32_t groups_y = (height + group_y - 1) / group_y;
+  if (groups_x > limits_.max_group_count[0] || groups_y > limits_.max_group_count[1]) {
+    utils::error{}("compute context '{}': {}x{} needs {}x{} groups, which does not fit {}x{} on '{}'",
+                   config_.app_name, width, height, groups_x, groups_y, limits_.max_group_count[0],
+                   limits_.max_group_count[1], device_name_);
   }
 
   const bool done = do_command(

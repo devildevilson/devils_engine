@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <format>
+#include <ranges>
 
 #include <devils_script/script_ast.h>
 #include <devils_script/system.h>
@@ -364,7 +365,30 @@ translation translate_to_glsl(const std::string_view& name,
     stored = std::format("int(clamp({}, -2147483648.0, 2147483647.0))", numeric);
   }
 
+  // ШЕЙДЕР НЕСЁТ СВОЁ ПРОИСХОЖДЕНИЕ. Заголовок-комментарий отвечает на вопрос «как именно перевод
+  // перенёс скрипт»: исходный текст ds, какой биндинг какому полю соответствует и как выложена
+  // push-константа. Без этого сверять сторону хоста приходится по памяти, а перепутанный порядок
+  // аргументов не выглядит ошибкой ни с той, ни с другой стороны. Комментарий бесплатен: glslc
+  // снимает его при компиляции.
   std::string text;
+  text.append(std::format("// Переведено из devils_script: программа '{}'.\n//\n", name));
+  text.append("// ИСХОДНЫЙ ТЕКСТ:\n");
+  for (const auto line : std::views::split(source, '\n')) {
+    text.append("//   ");
+    text.append(std::string_view(line.begin(), line.end()));
+    text.push_back('\n');
+  }
+  text.append("//\n// ПРИВЯЗКИ:\n");
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    text.append(std::format("//   binding {} = вход '{}' ({})\n", i, inputs[i].name, to_string(inputs[i].base)));
+  }
+  text.append(std::format("//   binding {} = выход '{}' ({})\n", inputs.size(), output.name, to_string(output.base)));
+  text.append("//\n// PUSH-КОНСТАНТА, байт за байтом:\n//   0: uint count\n");
+  for (size_t i = 0; i < result.arguments.size(); ++i) {
+    text.append(std::format("//   {}: float {}\n", sizeof(uint32_t) + i * sizeof(float), result.arguments[i]));
+  }
+  text.append(std::format("//\n// ВЫРАЖЕНИЕ:\n//   {}\n\n", expression));
+
   text.append("#version 450\n\n");
   text.append(std::format("layout(local_size_x = {}) in;\n\n", group_size));
 

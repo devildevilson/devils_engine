@@ -16,6 +16,7 @@
 #include "devils_engine/demiurg/module_system.h"
 #include "devils_engine/demiurg/resource_system.h"
 #include "devils_engine/originator/computation_queue.h"
+#include "devils_engine/originator/script_translate.h"
 #include "devils_engine/originator/generator_resource.h"
 #include "devils_engine/originator/pipeline.h"
 #include "devils_engine/originator/primitives.h"
@@ -48,6 +49,7 @@ struct options {
   bool verify = false;
   bool bench = false;
   bool bench_queue = false;
+  bool translate = false;
   bool quiet = false;
 };
 
@@ -100,6 +102,8 @@ options parse_options(const int argc, const char** argv) {
       result.bench = true;
     } else if (argument == "--bench-queue") {
       result.bench_queue = true;
+    } else if (argument == "--translate") {
+      result.translate = true;
     } else if (argument == "--quiet") {
       result.quiet = true;
     } else if (starts_with(argument, "--size=")) {
@@ -128,7 +132,8 @@ options parse_options(const int argc, const char** argv) {
                 << "  --seed=N       зерно пайплайна\n"
                 << "  --verify       прогнать контрактные проверки\n"
                 << "  --bench        замерить уровни исполнения\n"
-                << "  --bench-queue  замерить слияние проходов очереди\n";
+                << "  --bench-queue  замерить слияние проходов очереди\n"
+                << "  --translate    напечатать перевод правила ds в шейдер\n";
       std::exit(0);
     } else {
       utils::error{}("GN01: unknown argument '{}'", argument);
@@ -697,6 +702,58 @@ int run_verify(const options& opts) {
 // прогон мерил бы тепловое состояние, а не код. Здесь два варианта идут ПООЧЕРЁДНО много раз, и
 // печатается минимум и медиана: минимум говорит про сам код, медиана — про то, стоит ли верить
 // минимуму.
+// ПЕРЕВОД ПРАВИЛА В ШЕЙДЕР, напечатанный целиком. Существует ради вопроса «как именно транслятор
+// перенёс скрипт»: у перевода нет промежуточного представления, которое можно было бы посмотреть, и
+// единственный честный ответ — показать результат. Заголовок шейдера при этом несёт и исходный текст,
+// и таблицу привязок, и раскладку push-константы, поэтому сверять сторону хоста можно по нему же.
+int run_translate(const options& opts) {
+  (void)opts;
+
+  const auto& config = generator().config;
+
+  // Программа находится ТАК ЖЕ, как её находит пайплайн: по объявлению шага. Второй путь к тому же
+  // тексту (жёсткий id) разошёлся бы с первым при первом же переименовании файла.
+  std::string program_id;
+  std::string program_name;
+  for (const auto& step : config.description.steps) {
+    for (const auto& [name, id] : step.programs) {
+      program_name = name;
+      program_id = id;
+    }
+  }
+  if (program_id.empty()) {
+    utils::error{}("GN01: no devils_script program is declared by any step");
+  }
+  const auto& source = config.source(program_id);
+
+  // Привязки те же, что у шага semantics: имена приходят от самих привязок, второго списка нет.
+  const std::vector<originator::translated_field> inputs = {
+    {"smoothed", originator::field_base::v},
+    {"moisture", originator::field_base::v},
+  };
+  const originator::translated_field output{"biome_ds", originator::field_base::ub};
+
+  // Выход у GN01 однобайтовый, а на устройстве такого рода нет без расширений — значит и перевод
+  // отказывает, и это правильный ответ, а не повод притворяться. Печатаем перевод в 32-битное поле:
+  // вопрос здесь про правило, а не про упаковку.
+  const originator::translated_field wide{"biome_ds", originator::field_base::ui};
+  std::cout << "GN01 translate: правило '" << program_name << "' (" << program_id << ") в шейдер\n"
+            << "  выход '" << output.name << "' объявлен родом '" << to_string(output.base)
+            << "', у которого на устройстве нет представления без расширений — переводим в '"
+            << to_string(wide.base) << "'\n\n";
+
+  const auto translated = originator::translate_to_glsl(program_name, source, inputs, wide,
+                                                        originator::script_program::result_kind::number);
+
+  std::cout << translated.source << "\n";
+  std::cout << "аргументы в порядке push-константы:";
+  for (const auto& argument : translated.arguments) {
+    std::cout << " " << argument << "=" << config.description.values.number(argument);
+  }
+  std::cout << "\n";
+  return 0;
+}
+
 int run_bench_queue(const options& opts) {
   const size_t count = opts.width * opts.width;
   const auto sizes = make_sizes(opts);
@@ -1349,6 +1406,9 @@ int main(const int argc, const char** argv) {
     const auto opts = parse_options(argc, argv);
     if (opts.verify) {
       return run_verify(opts);
+    }
+    if (opts.translate) {
+      return run_translate(opts);
     }
     if (opts.bench_queue) {
       return run_bench_queue(opts);

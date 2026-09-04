@@ -12,6 +12,7 @@ target_link_libraries(GN01_generator_contract PRIVATE
   devils_engine::originator_config
   devils_engine::originator_lua
   devils_engine::originator_primitives
+  devils_engine::originator_script
   devils_engine::utils
   devils_engine::options)
 

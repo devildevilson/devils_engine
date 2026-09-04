@@ -41,8 +41,14 @@ struct compute_context_config {
   std::string app_name = "devils_compute";
   bool validation = false;
   // Файл кэша пайплайнов. Пусто => кэш живёт только в памяти: лаборатории он не нужен, а
-  // компиляция шейдера стоит миллисекунды-десятки и платится один раз за прогон.
+  // компиляция шейдера платится один раз за прогон.
   std::string pipeline_cache_path;
+  // Гонять ли оптимизатор SPIR-V. Вынесено наружу потому, что цена его ИЗМЕРЕНА и она велика: у
+  // сгенерированного шейдера почти вся стоимость компиляции лежит здесь, а выигрыш от оптимизации
+  // выражения, которое и так тривиально, ещё надо доказать. Значение по умолчанию оставлено тем же,
+  // с которым движок компилирует шейдеры материалов, — чтобы разница была видна как РЕШЕНИЕ, а не
+  // как случайное расхождение с остальным движком.
+  bool optimize_shaders = true;
 };
 
 // ЕСТЬ ЛИ УСТРОЙСТВО ВООБЩЕ. Отдельно от конструктора потому, что отсутствие устройства — не ошибка:
@@ -95,16 +101,80 @@ public:
   // решает, окупается ли устройство на короткой очереди (§4.5).
   void copy(const buffer_id from, const buffer_id to, const size_t byte_size);
 
+  // КАРТИНКА, а не буфер, и различает их не форма данных, а КАК АДРЕСУЮТ И КАК ЧИТАЮТ: у буфера
+  // линейный индекс элемента, у картинки координата, аппаратный clamp/wrap, фильтр МЕЖДУ элементами
+  // и свёрнутая раскладка ради 2D-локальности. Поэтому картинка выгодна ровно тогда, когда читают по
+  // НЕЦЕЛОЙ координате; если читают только свой элемент — буфер лучше по всем пунктам.
+  //
+  // И там же граница, которую надо знать вслух: ФИЛЬТРОВАННАЯ ВЫБОРКА НЕ ДЕТЕРМИНИРОВАНА — точность
+  // фильтра в Vulkan implementation-defined, то есть хуже обычного float. Значит картинка с фильтром
+  // это строго класс ПРЕДСТАВЛЕНИЯ и в чанковую генерацию не пускается вовсе.
+  enum class image_format {
+    r32f,   // одно поле float32: поле высоты, маска, промежуточный результат
+    rgba8,  // видимая текстура: четыре нормализованных байта
+  };
+
+  using image_id = uint32_t;
+
+  // Картинка живёт в layout GENERAL всё время своей жизни. Это упрощение ЛАБОРАТОРИИ, и оно названо:
+  // GENERAL законен и для записи storage-образом, и для выборки, но стоит дороже, чем
+  // SHADER_READ_ONLY_OPTIMAL. Настоящий путь — вывод переходов из привязок, и он у painter уже есть в
+  // render-графе; заводить второй здесь значило бы завести второго планировщика.
+  image_id create_image(const uint32_t width, const uint32_t height, const image_format format);
+  uint32_t image_width(const image_id id) const;
+  uint32_t image_height(const image_id id) const;
+
+  // Забрать картинку на хост. Нужно ровно двум вещам: сводке и КАРТИНКЕ ДЛЯ ГЛАЗА. Ни то, ни другое
+  // не является частью конвейера — результат остаётся на устройстве, а сюда приезжает то, что человек
+  // или отчёт обязаны увидеть.
+  void read_image(const image_id id, void* data, const size_t byte_size);
+
+  // Что программа привязывает. Род объявляется, потому что дескриптор типизирован: storage-образ,
+  // выборка с сэмплером и storage-буфер — три разных дескриптора, и перепутать их молча нельзя.
+  enum class binding_kind {
+    storage_buffer,
+    storage_image,
+    sampled_image,
+  };
+
+  // Ссылка на привязываемый ресурс. Один из двух идентификаторов, второй остаётся invalid_id: род
+  // ресурса обязан совпасть с родом биндинга, и расхождение — громкая ошибка.
+  struct bound_resource {
+    buffer_id buffer = invalid_id;
+    image_id image = invalid_id;
+
+    static bound_resource of_buffer(const buffer_id id) noexcept { return bound_resource{id, invalid_id}; }
+    static bound_resource of_image(const image_id id) noexcept { return bound_resource{invalid_id, id}; }
+  };
+
   // Программа: GLSL-текст компилируется в SPIR-V и становится вычислительным пайплайном на
   // `storage_count` storage-буферов (биндинги 0..n-1) и push-константы.
   //
   // Текст, а не файл: шейдер лаборатории написан руками и лежит рядом с кодом, который его
   // проверяет. Компиляция идёт тем же `shader_crafter`, которым движок компилирует шейдеры
   // материалов, поэтому второго компилятора GLSL здесь не появляется.
+  //
+  // РЕЗУЛЬТАТ КЭШИРУЕТСЯ по самому тексту вместе с формой привязок. Ключом служит текст, потому что он
+  // и есть производная от всего остального: перевод — чистая функция от (текст ds, имена входов, роды
+  // полей, версия транслятора), поэтому другой ключ означает другой текст, а тот же текст — ту же
+  // программу. Нужно это не ради красоты: компиляция GLSL стоит миллисекунды-десятки, а у
+  // стримингового генератора чанков тысячи, и один и тот же перевод зовётся в каждом.
   program_id create_program(const std::string& name,
                             const std::string& source,
                             const uint32_t storage_count,
                             const uint32_t push_byte_size);
+
+  // Та же программа, но привязки объявлены ПО РОДАМ: storage-буферы, storage-образы и выборка с
+  // сэмплером в порядке биндингов 0..n-1.
+  program_id create_program(const std::string& name,
+                            const std::string& source,
+                            const std::span<const binding_kind>& bindings,
+                            const uint32_t push_byte_size);
+
+  // Сколько КОМПИЛЯЦИЙ действительно было. Отдаётся наружу затем, чтобы попадание в кэш можно было
+  // проверить, а не предположить: программа, скомпилированная дважды, работает так же, и по
+  // результату этого не видно.
+  size_t compiled_programs() const noexcept;
 
   // Один проход. Число ЭЛЕМЕНТОВ, а не групп: размер группы объявлен программой, а свёртка числа
   // групп в оси и проверка по пределам — забота контекста, потому что предел у устройства, а не у
@@ -116,11 +186,33 @@ public:
                 const size_t element_count,
                 const uint32_t group_size = 64);
 
+  // Диспатч по ДВУМ осям: число элементов по x и по y. Для картинки это её собственная форма, и
+  // считать по ней прямо честнее, чем сворачивать линейный индекс обратно в координату.
+  //
+  // Барьеров между отправками здесь нет и не нужно: каждая отправка ждёт свой fence, то есть запись
+  // предыдущего прохода завершена до начала следующего. У НАСТОЯЩЕЙ очереди, которая уходит на
+  // устройство одной отправкой, барьеры понадобятся — и они выводятся из привязок тем же вопросом,
+  // которым выводится проверка мёртвой работы (§6.1).
+  void dispatch_2d(const program_id program,
+                   const std::span<const bound_resource>& resources,
+                   const void* push,
+                   const size_t push_byte_size,
+                   const uint32_t width,
+                   const uint32_t height,
+                   const uint32_t group_x = 8,
+                   const uint32_t group_y = 8);
+
 private:
   struct buffer_entry;
+  struct image_entry;
   struct program_entry;
 
   const buffer_entry& buffer_at(const buffer_id id) const;
+  const image_entry& image_at(const image_id id) const;
+  program_id make_program(const std::string& name,
+                          const std::string& source,
+                          const std::span<const binding_kind>& bindings,
+                          const uint32_t push_byte_size);
 
   compute_context_config config_;
   created_instance instance_{};
@@ -130,8 +222,11 @@ private:
   VkFence fence_ = nullptr;
   std::string device_name_;
   device_limits limits_{};
+  VkSampler linear_sampler_ = nullptr;
   std::vector<buffer_entry> buffers_;
+  std::vector<image_entry> images_;
   std::vector<program_entry> programs_;
+  size_t compiled_ = 0;
 };
 
 } // namespace painter

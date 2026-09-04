@@ -4,6 +4,98 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- GN04 OPENED: BACKGROUND TEXTURES ON THE DEVICE (2026-09-04). `430/430` project tests, GN04's own
+  `11/11`. `ORIGINATOR_GPGPU.md` §5 step 5 (textures) done; the queue is now used end to end on a
+  device for the first time. Fourth generator-campaign lab
+  (`subprojects/playgrounds/GN04_texture_generation`), headless BY NATURE — it proves the picture does
+  NOT leave the device, and a window would substitute for that proof rather than support it.
+  THE CASE WAS NOT PICKED AT RANDOM: it is the one place where NONE of the queue's weaknesses
+  interfere — the result stays on the device (so transfer is not paid), determinism is not required
+  (presentation, not simulation), the reduction is INTEGER (so group arrival order does not matter),
+  and the chain is short. Checking a construction belongs where its weaknesses are irrelevant;
+  otherwise the measurement measures the weaknesses.
+  FOUR PASSES: Voronoi labelling (`gather` — region id and border proximity into two images; sites are
+  placed by the HOST, which the library's rule allows since the set is small and enumerated by the host
+  itself), smoothing BY FILTERED SAMPLING, colour composition, histogram via atomics.
+  THE HEADLINE NUMBER IS `4096:1`. 512x512, 64 regions: `13.81` ms on the device (labelling `4.65`,
+  smoothing `0.87`, composition `0.85`, histogram `7.43`), `256` bytes of summary out in `0.58` ms, and
+  a megabyte of picture stayed. The round trip that ate 70% of `remap`'s time in step 3 is not paid at
+  all here.
+  IMAGE-VS-BUFFER CONFIRMED IN THE FORM §6.3 PREDICTED: the smoothing pass reads with a linear filter
+  at a NON-INTEGER coordinate — four taps at half a texel, each already averaged over four neighbours
+  by hardware bilinear. A buffer has no such read; there one would fetch sixteen elements by hand. The
+  check "the filter actually ran" (the smoothed field differs from the source, and differs
+  measurably) is its own item: without it the sampling pass would be expensive copying, and that is
+  invisible in the picture.
+  AN INTEGER REDUCTION VIA ATOMICS IS REPRODUCIBLE, verified by running the chain twice: group arrival
+  order is unpinned, but integer addition does not depend on order — so §4.3 hits FLOAT reductions, not
+  reductions as such. Mitigation 2 of §4.3 is now working code rather than an argument.
+  UNEXPECTED NUMBER: THE HISTOGRAM COSTS MORE THAN THE LABELLING ITSELF (`7.43` against `4.65` ms),
+  though it does incomparably less work — one `atomicAdd` per pixel against a loop over 64 sites. The
+  cause is CONTENTION: `262144` pixels fight over `64` counters. The right shape is known and
+  deliberately not built until a reduction has a real consumer: accumulate in the group's shared
+  memory and issue ONE atomic per group instead of one per pixel. Practical consequence for §3.2: on a
+  device `reduce`'s bottleneck is not the two-stage tree but contention in the first stage.
+  `compute_context` GAINED IMAGES for this: `create_image` (r32f / rgba8, format features QUERIED from
+  the device rather than taken on faith), a linear sampler, typed bindings (storage buffer / storage
+  image / sampled image — a descriptor is typed, and confusing the kinds silently would mean reading an
+  image as a buffer), `dispatch_2d`, and `read_image`. Images live in `GENERAL` for their whole life —
+  a lab simplification, named as such: the right path is deriving transitions from bindings, and
+  painter already has it in the render graph, so a second one must not appear here. No barriers between
+  passes because each submission waits on its fence; a real one-submission queue will need them, and
+  they follow from the same question as the dead-work check (§6.1).
+  WHAT THE LAB DOES NOT CLAIM: the queue is still not COMPOSED from config — the passes are wired by
+  hand, while §3.3 says originator should compose the device pipeline from its own config. That is the
+  next step and it is bigger than this one.
+- QUEUE BEFORE THE DEVICE: GATHER, LAYOUTS, SHADER CACHE (2026-09-04). `429/429` project tests.
+  `ORIGINATOR_GPGPU.md` §5 step 5 done, and THE BIGGEST FIND IS AN ENGINE-WIDE ONE, not a queue one.
+  (1) **`shaderc::Compiler` WAS BEING CONSTRUCTED PER COMPILE** inside `shader_crafter::compile`, so
+  every shader in the ENGINE paid glslang's one-time initialisation. Measured: `100`–`124` ms per
+  program, the SECOND program no cheaper than the first (so not warm-up); the SPIR-V optimizer is not
+  the cost (`99`–`105` ms without it); the driver is not the cost (a disk pipeline cache gave `111.8`
+  cold against `107.1` warm). With one compiler per thread: first compile `92` ms (the one-time
+  glslang init), second **`2.3` ms**, `1.1` ms unoptimized. So **98% of compile time went into standing
+  a compiler up and throwing it away.** Fixed as `static thread_local` in `shader_crafter` — a member
+  would not have helped, because nearly every consumer creates a crafter per call
+  (`glsl_source_file::prepare_spirv`, the compute context); glslang state is process-natured and one
+  compiler per thread is its honest model, and a single `shaderc::Compiler` is not thread-safe, hence
+  thread_local rather than plain static.
+  (2) SECOND PAINTER GAP FOUND ALONGSIDE: `compute_pipeline_maker::create` called
+  `createComputePipeline` with `nullptr` instead of the cache, i.e. painter's COMPUTE path never used
+  its pipeline cache at all — and that is invisible in behaviour, since an uncached pipeline works
+  identically and only takes longer to create. The graphics maker did pass it. Added the cache-taking
+  overload and the compute context uses it.
+  (3) GATHER ON THE DEVICE IS THE BEST CASE MEASURED SO FAR, and it inverts step 3's conclusion.
+  `box_blur` radius 2 (a 5x5 window) over 1 M cells: CPU one thread `251`–`261` ms, dispatch
+  `1.8`–`2.0` ms = **135–141x**; deviation from the native tool `2.4e-07` (two ULP on a 25-term sum).
+  Counting transfer (`3.7` ms) the round trip is ~`5.7` ms against `251` ms — `44x` WITH transfer,
+  where `remap` lost to eleven threads. THE RULE: what pays for itself is not the aperture but the
+  DENSITY OF WORK PER ELEMENT, and gather is dense by construction. Raster windows are balanced by
+  construction; the imbalanced case is the adjacency CSR (degree up to 24 against a mean of six in
+  GN02) and stays a named gap needing the graph tools' data.
+  (4) LAYOUT COSTS MUCH MORE ON THE DEVICE THAN ON THE CPU, as §3.2 suspected: same pass over 1 M
+  elements, `soa` (stride 1) `0.60`–`1.03` ms, `aos` stride 4 `2.4`–`3.0x`, stride 8 `4.4`–`6.0x` —
+  roughly LINEAR in the stride, because fetches come in cache lines and a stride of N uses 1/N of each.
+  On the CPU the same switch cost 2% single-thread and 17% on eleven. `layout = aos|soa` stays one line
+  of config, but its price is now named.
+  (5) The shader cache is still wanted but no longer urgent: it saves `1`–`2.3` ms on a repeat, not a
+  hundred. Implemented in `compute_context` keyed by the TEXT plus binding shape (the text, not a hash:
+  a hash collision would mean running a different program than the one asked for, undetectable from the
+  result), plus the declared `pipeline_cache_path` is now actually WRITTEN on destruction — reading a
+  cache file and never writing it is a path that looks like a cache and is not one.
+  (6) TRANSLATOR DEBUG OUTPUT, as asked: the emitted shader carries its own origin in a header comment
+  — the ds source, the binding table, the push-constant layout byte by byte, and the final expression.
+  `GN01 --translate` prints the translation of the lab's real rule. The comment costs nothing (glslc
+  strips it) and it is what makes the host side checkable instead of remembered.
+  (7) TWO DESIGN ANSWERS RECORDED, both deferred on purpose (§7). Randomness: a uniform buffer is the
+  right DELIVERY and needed anyway, because `maxPushConstantsSize` is guaranteed at only 128 bytes (31
+  float arguments); but OBTAINING the salt is the separate half — either the translator derives its own
+  deterministic salt (paths then differ, which §4.2 already accepts) or it reads ds's salt out of the
+  compiled container. Lists: the first answer ("no dynamic memory") was incomplete — a shader has no
+  GROWTH but does have fixed local arrays, and IN A POINTWISE PROGRAM THE LIST LENGTH IS BOUNDED BY THE
+  NUMBER OF `add_to` SITES IN THE TEXT, because there is no loop (no iterators are registered). So the
+  capacity is DERIVED, not declared, and the pipeline ops become unrolled loops. A list filled by an
+  ITERATOR stays a refusal, and it should be solved together with neighbour access, not before.
 - TRANSLATOR `ds` -> GLSL (2026-09-04). `426/426` project tests.
   `libs/originator/.../script_translate.{h,cpp}` + `originator_translate_test`.
   `ORIGINATOR_GPGPU.md` §5 step 4 is done except randomness, and the reason randomness is missing is

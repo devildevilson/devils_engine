@@ -730,7 +730,11 @@ void compute_step_instance::create_pipeline(const graphics_base* ctx) {
     }
     maker.addData(specialization.data.size(), specialization.data.data());
   }
-  const auto next = maker.create(step.name + ".pipeline", pipeline_layout, pipeline);
+  // ЧЕРЕЗ КЭШ ПАЙПЛАЙНОВ: `graphics_base` его создаёт и заполняет с диска, а вычислительный шаг
+  // графа до этого создавал пайплайн с nullptr — то есть кэш существовал и не использовался, и по
+  // поведению это неотличимо (пайплайн без кэша работает так же, только создаётся дольше).
+  const auto next =
+    maker.create(step.name + ".pipeline", vk::PipelineCache(ctx->cache), pipeline_layout, pipeline);
   if (pipeline != VK_NULL_HANDLE) {
     vk::Device(device).destroy(pipeline);
   }

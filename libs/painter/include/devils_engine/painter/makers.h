@@ -271,6 +271,15 @@ public:
                       vk::Pipeline base = vk::Pipeline(nullptr),
                       const int32_t baseIndex = -1);
 
+  // Перегрузка с КЭШЕМ ПАЙПЛАЙНОВ, как у графического maker'а. Без неё вычислительный путь кэшем не
+  // пользовался вовсе: `createComputePipeline` звался с nullptr, а созданный без кэша пайплайн
+  // работает точно так же — просто создаётся дольше, и заметить это по поведению нельзя.
+  vk::Pipeline create(const std::string& name,
+                      vk::PipelineCache cache,
+                      vk::PipelineLayout layout,
+                      vk::Pipeline base = vk::Pipeline(nullptr),
+                      const int32_t baseIndex = -1);
+
 protected:
   vk::Device device = nullptr;
 
