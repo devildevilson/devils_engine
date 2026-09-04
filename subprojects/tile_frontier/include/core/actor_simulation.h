@@ -343,10 +343,18 @@ public:
     std::string_view name, std::string_view point_group) override;
   bool enqueue_player_intent(devils_engine::act::intent intent);
   devils_engine::aesthetics::entityid_t player_entity() const noexcept { return player_entity_; }
-  // game_delta_ticks — уже отмасштабированный game-домен (µs игрового времени за кадр): пауза даёт 0,
-  // замедление/ускорение (game_time_scale) масштабируют его. Слайс сам аккумулирует game_now()
-  // (сериализуется ⇒ deadlines/flags переживают resume) и выводит dt секунд для интеграции/drives.
-  actor_metrics update(uint64_t game_delta_ticks, actor_batch& batch, devils_engine::thread::atomic_pool& pool);
+  // Tick задаёт session/host: слайс больше не изобретает локальную кадровую координату. game_delta
+  // — целочисленная проекция этого fixed step в game-домен (пауза даёт 0, scale её меняет).
+  // Tick обязан монотонно расти, но может иметь разрыв: paused/loading session ticks не исполняют
+  // gameplay. Накопленный game_now сериализуется вместе со слайсом.
+  actor_metrics update(devils_engine::utils::simulation_tick tick,
+                       devils_engine::utils::game_duration game_delta,
+                       actor_batch& batch,
+                       devils_engine::thread::atomic_pool& pool);
+
+  devils_engine::utils::simulation_tick simulation_now() const noexcept {
+    return {tick_};
+  }
 
   // Текущее игровое время слайса (для deadlines/flag expiry; game-домен, стоит на паузе).
   devils_engine::utils::game_timestamp game_now() const noexcept {
@@ -422,9 +430,9 @@ private:
   void integrate_and_update_drives(float dt_seconds, devils_engine::thread::atomic_pool& pool);
   // Завершает поедание у хищников, чей срок истёк: сбрасывает голод, снимает actor_eating,
   // удаляет съеденную жертву из мира (kill-list, удаление ПОСЛЕ обхода). Зовётся после apply.
-  void resolve_eating(uint64_t game_delta_ticks);
+  void resolve_eating(devils_engine::utils::game_duration game_delta);
   // sweep флагов: вычесть game-дельту у всех flag_set, удалить исчерпанные записи (см. flag_set.h).
-  void expire_flags(uint64_t game_delta_ticks);
+  void expire_flags(devils_engine::utils::game_duration game_delta);
   uint32_t apply_player_intents();
   void restore_player_entity();
   // Допополняет еду до food_target_ (детерминированно по тику+счётчику). Зовётся раз за тик.

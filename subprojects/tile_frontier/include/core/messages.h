@@ -164,6 +164,13 @@ struct command_draw_camera {
   size_t frame_time = 0; // интервал до следующего снапшота, единицы utils::global_time_resolution
 };
 
+// main -> render: состояние единственной active-gameplay timeline. Render продолжает обслуживать
+// окно/UI на паузе, но не продвигает world interpolation по wall clock. Latest-wins достаточно:
+// важен текущий уровень, а не история его переключений.
+struct command_active_gameplay_state {
+  bool active = true;
+};
+
 // (command_write_buffer удалён — запись буферов переведена на SPSC write_buffer_channel:
 //  POD-сообщение {name_hash,pos,size} + byte_ring под payload, см. write_buffer_channel.h.)
 

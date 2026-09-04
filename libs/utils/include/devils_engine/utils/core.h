@@ -38,16 +38,24 @@ struct error {
   explicit constexpr error(const std::source_location location = std::source_location::current()) noexcept : location(location) {}
 
   template <typename... Args>
-  [[noreturn]] void operator()(const std::format_string<Args...>& format, Args&&... args) const {
-    const std::string message = std::format(format, std::forward<Args>(args)...);
-    const std::string full_message = std::format(
-      "{}:{}: {}: {}",
-      make_sane_file_name(location.file_name()),
-      location.line(),
-      location.function_name(),
-      message);
-    spdlog::error("{}", full_message);
-    throw std::runtime_error(full_message);
+  [[noreturn]] constexpr void operator()(const std::format_string<Args...>& format,
+                                         Args&&... args) const {
+    if consteval {
+      // A fatal invariant cannot produce a value during constant evaluation. Throwing here is
+      // deliberately not a recoverable exception path: it makes the surrounding constexpr
+      // expression ill-formed and points at the utils::error call site.
+      throw "devils_engine::utils::error during constant evaluation";
+    } else {
+      const std::string message = std::format(format, std::forward<Args>(args)...);
+      const std::string full_message = std::format(
+        "{}:{}: {}: {}",
+        make_sane_file_name(location.file_name()),
+        location.line(),
+        location.function_name(),
+        message);
+      spdlog::error("{}", full_message);
+      throw std::runtime_error(full_message);
+    }
   }
 };
 

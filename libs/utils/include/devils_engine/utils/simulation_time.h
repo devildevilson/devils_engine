@@ -4,7 +4,8 @@
 #include <compare>
 #include <cstdint>
 #include <limits>
-#include <stdexcept>
+
+#include "core.h"
 
 namespace devils_engine::utils {
 
@@ -28,7 +29,7 @@ struct authored_duration {
 constexpr simulation_tick operator+(const simulation_tick tick,
                                     const simulation_duration duration) {
   if (duration.ticks > std::numeric_limits<uint64_t>::max() - tick.value) {
-    throw std::overflow_error("simulation tick deadline overflow");
+    error{}("simulation tick deadline overflow");
   }
   return {tick.value + duration.ticks};
 }
@@ -41,7 +42,7 @@ public:
   constexpr explicit simulation_rate(const uint32_t ticks_per_second)
     : ticks_per_second_(ticks_per_second) {
     if (ticks_per_second == 0) {
-      throw std::invalid_argument("simulation rate must be positive");
+      error{}("simulation rate must be positive");
     }
   }
 
@@ -55,7 +56,7 @@ public:
     const uint64_t whole_seconds = duration.microseconds / microseconds_per_second;
     const uint64_t remainder = duration.microseconds % microseconds_per_second;
     if (whole_seconds > std::numeric_limits<uint64_t>::max() / ticks_per_second_) {
-      throw std::overflow_error("authored duration does not fit simulation ticks");
+      error{}("authored duration does not fit simulation ticks");
     }
 
     const uint64_t whole_ticks = whole_seconds * ticks_per_second_;
@@ -64,7 +65,7 @@ public:
       remainder_product / microseconds_per_second +
       uint64_t(remainder_product % microseconds_per_second != 0);
     if (partial_ticks > std::numeric_limits<uint64_t>::max() - whole_ticks) {
-      throw std::overflow_error("authored duration does not fit simulation ticks");
+      error{}("authored duration does not fit simulation ticks");
     }
     return {whole_ticks + partial_ticks};
   }
@@ -75,20 +76,100 @@ public:
     const uint64_t whole_seconds = tick.value / ticks_per_second_;
     const uint64_t remainder = tick.value % ticks_per_second_;
     if (whole_seconds > std::numeric_limits<uint64_t>::max() / microseconds_per_second) {
-      throw std::overflow_error("simulation tick does not fit authored microseconds");
+      error{}("simulation tick does not fit authored microseconds");
     }
     const uint64_t whole_microseconds = whole_seconds * microseconds_per_second;
     const uint64_t partial_microseconds =
       (remainder * microseconds_per_second) / ticks_per_second_;
     if (partial_microseconds >
         std::numeric_limits<uint64_t>::max() - whole_microseconds) {
-      throw std::overflow_error("simulation tick does not fit authored microseconds");
+      error{}("simulation tick does not fit authored microseconds");
     }
     return {whole_microseconds + partial_microseconds};
   }
 
 private:
   uint32_t ticks_per_second_;
+};
+
+// Non-causal pacing helper. Wall/presentation elapsed time may arrive in any
+// partition; only complete fixed steps leave this accumulator. Unserved steps
+// remain as explicit debt when max_steps limits catch-up.
+class fixed_step_accumulator {
+public:
+  constexpr explicit fixed_step_accumulator(const simulation_rate rate)
+    : rate_(rate) {}
+
+  constexpr simulation_rate rate() const noexcept {
+    return rate_;
+  }
+
+  constexpr uint64_t pending_steps() const noexcept {
+    return pending_steps_;
+  }
+
+  constexpr uint64_t fractional_units() const noexcept {
+    return fractional_units_;
+  }
+
+  constexpr void reset(const simulation_rate rate) noexcept {
+    rate_ = rate;
+    pending_steps_ = 0;
+    fractional_units_ = 0;
+  }
+
+  constexpr void add_elapsed(const authored_duration elapsed) {
+    const uint64_t whole_seconds = elapsed.microseconds / microseconds_per_second;
+    const uint64_t remainder = elapsed.microseconds % microseconds_per_second;
+    if (whole_seconds >
+        std::numeric_limits<uint64_t>::max() / rate_.ticks_per_second()) {
+      error{}("fixed-step pacing debt overflow");
+    }
+
+    uint64_t added_steps = whole_seconds * rate_.ticks_per_second();
+    const uint64_t units = remainder * uint64_t(rate_.ticks_per_second());
+    if (units / microseconds_per_second >
+        std::numeric_limits<uint64_t>::max() - added_steps) {
+      error{}("fixed-step pacing debt overflow");
+    }
+    added_steps += units / microseconds_per_second;
+
+    const uint64_t added_fraction = units % microseconds_per_second;
+    if (added_fraction >= microseconds_per_second - fractional_units_) {
+      if (added_steps == std::numeric_limits<uint64_t>::max()) {
+        error{}("fixed-step pacing debt overflow");
+      }
+      ++added_steps;
+      fractional_units_ = added_fraction -
+                          (microseconds_per_second - fractional_units_);
+    } else {
+      fractional_units_ += added_fraction;
+    }
+
+    if (added_steps > std::numeric_limits<uint64_t>::max() - pending_steps_) {
+      error{}("fixed-step pacing debt overflow");
+    }
+    pending_steps_ += added_steps;
+  }
+
+  constexpr uint64_t take_steps(
+    const uint64_t max_steps = std::numeric_limits<uint64_t>::max()) noexcept {
+    const uint64_t result = pending_steps_ < max_steps ? pending_steps_ : max_steps;
+    pending_steps_ -= result;
+    return result;
+  }
+
+  constexpr uint64_t advance(
+    const authored_duration elapsed,
+    const uint64_t max_steps = std::numeric_limits<uint64_t>::max()) {
+    add_elapsed(elapsed);
+    return take_steps(max_steps);
+  }
+
+private:
+  simulation_rate rate_;
+  uint64_t pending_steps_ = 0;
+  uint64_t fractional_units_ = 0;
 };
 
 constexpr simulation_tick deadline_after(const simulation_tick now,

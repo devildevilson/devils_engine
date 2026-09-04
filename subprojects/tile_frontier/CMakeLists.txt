@@ -186,6 +186,28 @@ target_compile_definitions(tile_frontier_config_effect_smoke PRIVATE
 set_target_properties(tile_frontier_config_effect_smoke PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
 
+# TIME-02 fixed-step acceptance: two different wall/presentation pacing schedules must produce
+# exactly the same external tick stream and complete actor checkpoint.
+add_executable(tile_frontier_time_smoke time_smoke.cpp ${TILE_FRONTIER_BRAIN_TEST_SOURCES})
+target_link_libraries(tile_frontier_time_smoke
+  devils_engine::devils_plane
+  devils_engine::demiurg
+  devils_engine::prefab
+  glm::glm
+  tavl
+  Vulkan::Headers
+  GPUOpen::VulkanMemoryAllocator
+  VulkanMemoryAllocator-Hpp::VulkanMemoryAllocator-Hpp
+)
+target_include_directories(tile_frontier_time_smoke PRIVATE
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/core>"
+)
+target_compile_definitions(tile_frontier_time_smoke PRIVATE
+  TILE_FRONTIER_SOURCE_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources/modules/")
+set_target_properties(tile_frontier_time_smoke PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${PROJECT_OUTPUT_DIRECTORY}/bin")
+
 # Регистрация в ctest под меткой devils_engine (ctest -L devils_engine). Плоский main → код
 # возврата 0/1 = pass/fail, без doctest-дискавери. Метка ставит их в один прогон с остальными.
 if (DEVILS_ENGINE_BUILD_TESTS)
@@ -197,6 +219,8 @@ if (DEVILS_ENGINE_BUILD_TESTS)
   set_tests_properties(tile_frontier_checkpoint_audit PROPERTIES LABELS devils_engine)
   add_test(NAME tile_frontier_config_effect_smoke COMMAND tile_frontier_config_effect_smoke)
   set_tests_properties(tile_frontier_config_effect_smoke PROPERTIES LABELS devils_engine)
+  add_test(NAME tile_frontier_time_smoke COMMAND tile_frontier_time_smoke)
+  set_tests_properties(tile_frontier_time_smoke PROPERTIES LABELS devils_engine)
 endif()
 include("${CMAKE_SOURCE_DIR}/cmake/devils_portable_runtime.cmake")
 devils_bundle_runtime_dependencies(${PROJECT_NAME})

@@ -380,7 +380,7 @@ int main() {
         "resource-backed card did not pause before invoking its DS effect");
 
   cg::combat resumed(cg::run_mode::headless, &script_resources);
-  resumed.load(in_flight.save());
+  check(resumed.load(in_flight.save()), "in-flight snapshot was rejected");
   uint64_t resumed_tick = resumed.simulation_tick();
   drive_to_player(resumed, resumed_tick);
 
@@ -441,7 +441,7 @@ int main() {
         "emit_shield did not publish its typed presentation result");
 
   cg::combat resumed_guard(cg::run_mode::headless, &script_resources);
-  resumed_guard.load(guard_snapshot);
+  check(resumed_guard.load(guard_snapshot), "guard snapshot was rejected");
   uint64_t resumed_guard_tick = resumed_guard.simulation_tick();
   (void)drive_to_player(resumed_guard, resumed_guard_tick);
   check(resumed_guard.state() == guard.state() &&
@@ -503,7 +503,7 @@ int main() {
   const auto follow_up_snapshot = follow_up_in_flight.save();
 
   cg::combat resumed_follow_up(cg::run_mode::headless, &script_resources);
-  resumed_follow_up.load(follow_up_snapshot);
+  check(resumed_follow_up.load(follow_up_snapshot), "follow-up snapshot was rejected");
   uint64_t resumed_follow_up_tick = resumed_follow_up.simulation_tick();
   (void)drive_to_player(resumed_follow_up, resumed_follow_up_tick);
 

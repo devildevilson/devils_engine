@@ -54,8 +54,11 @@ public:
   std::pair<std::size_t, std::size_t> project_loading_progress() const; // вклад чанков {done,total} в прогресс
   void register_project_ui_bindings();                        // только gameplay/UI API; engine bindings ставит host
   void on_framebuffer_resize(uint32_t w, uint32_t h);         // cam.aspect от живого размера
-  void update_gameplay(size_t time, uint64_t game_dt_ticks,
-                       const devils_engine::simul::phase_gate& gate); // середина кадра (тайлы/актёры/звук/метрики)
+  void begin_simulation_frame(size_t time, const devils_engine::simul::phase_gate& gate);
+  void update_simulation(devils_engine::utils::simulation_tick tick,
+                         devils_engine::utils::game_duration game_dt,
+                         const devils_engine::simul::phase_gate& gate);
+  void end_simulation_frame(size_t time, const devils_engine::simul::phase_gate& gate);
   void on_visage_before_update();                             // tf_* env + слияние sound_state перед visage
   void project_settings_reloaded();                           // проектная реакция на reload настроек
 

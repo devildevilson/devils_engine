@@ -4,6 +4,461 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- GN03 CLOSED BY A CLOSING AUDIT (2026-09-04). GN03's own `104/104` property checks (`+17`);
+  `359/367` project tests — the eight failures are `GameNetworkingSockets`' own tests, and that
+  dependency does not LINK in this environment (the system `abseil` was upgraded, the cached build
+  still references the old `.so` versions); nothing in the audit touches it.
+  THE AUDIT'S BEST FIND IS ABOUT THE LAB'S OWN SUBJECT: the spin of an entity around its axis was
+  hashed IN THE SHADER FROM ITS POSITION, and the position a frame sees is relative to the CAMERA'S
+  CHUNK — so entities turned in place every time the observer stepped into the next chunk. The rule
+  worth naming: everything derived about an entity is derived from its NAME (chunk key plus attempt
+  number — the very identity the world remembers it by), never from the frame's numbers. The spin now
+  comes from the CPU in eight bits of the kind word, and the check reproduces the OLD way too, so the
+  difference is visible in the report. Other defects: entity columns were drawn from nodes
+  `2..cells-1`, so they kept two cells from the far border and one from the near one — a band without
+  entities along every seam (the check measures both bands: `103` against `0` before, `94` against
+  `83` after); surface time accumulated with `+=` into a REUSED mesh that the streamer does not reset
+  when the window discards a chunk, so the reported chunk cost lied exactly when the window moves
+  fast; the skeleton PACKAGE was read without the CSR invariants that `build` checks (a plausible size
+  with one corrupted offset indexed points PAST THE END of the array — and a file is foreign data);
+  in the engine, `polyline_distance` read `max_distance` TWICE with DIFFERENT defaults (`0` in prepare
+  as the pruning box, `1e9` in the body as the answer where there is no polyline — a call without the
+  parameter produced a field with a discontinuity, which reads as a wall in the middle of the world),
+  and `ratio`'s `minimum_divisor` was DOCUMENTED as mandatory while having a default, i.e. the engine
+  decided which weight sum counts as zero; both are now required, with tests for both refusals. Two
+  silent truncations where the whole lab refuses loudly: the entity buffer overflow broke the loop
+  quietly (and the declared capacity `128` did not cover the declared `prop_attempts` range of `200`),
+  and "the biome weights never sum to zero because the base biome spans the climate plane" was a
+  property of the TABLE, which the config author edits. Plus the arena's slot discipline — the thing
+  that once broke — is now three checks instead of a comment.
+- GN03 SCENE OPTIMISATION: THE FRAME'S PRICE IS THE DRAWN RANGE, NOT WHAT IS VISIBLE (2026-09-04).
+  The question came from looking at the screen ("frames drop when flying with shift"), so the lab
+  gained a RECORDED FLIGHT (`--flight=<m/s>`, fixed route, step capped so runs stay comparable) and a
+  per-phase frame report plus device passes through the engine's existing `gpu_timestamp_profiler`.
+  (1) MEASURE WITHOUT PACING. The same frame with the same geometry costs `5.1` ms when the loop runs
+  flat out and `10.6` ms when paced to sixty: the integrated GPU sits at `633` MHz of `1250` and never
+  clocks up in a leisurely loop. A paced measurement measures power management — same family as PF03's
+  "compare dumps only at fixed exposure".
+  (2) The scene pass is proportional to the vertices IN THE DRAWN RANGE (`1.33`/`2.80`/`4.83` M →
+  `1.81`/`2.99`/`4.21` ms; marginally about `0.65` ns per vertex), and the resolution sweep
+  (`3.69`/`2.55`/`2.16` ms at 1280x720 / 640x360 / 320x180) splits that into ~`2.1` ms of vertex
+  stream and ~`1.5` ms of fragments.
+  (3) PER-CHUNK FRUSTUM CULLING BUYS NOTHING, AND THAT IS MEASURED: `29`–`30%` of the window's chunks
+  are visible and the pass does not move (`4.65` against `4.74` ms hot, `10.49` against `10.72`
+  paced), because an off-screen triangle produces no fragments anyway while the vertex stream is still
+  read in full — a vertex learns its slot only from its own bytes. Kept behind `--cull` to reproduce
+  the measurement, off by default. NAMED ENGINE GAP: an invisible chunk becomes free only with a
+  MULTI-draw indirect (one draw per chunk from a list), and painter's `draw_indirect` step hardcodes
+  `drawCount = 1`; at 30% visible that is the difference between `2.1` and `0.6` ms of vertex stream.
+  The second lever lying next to it is welding vertices inside a chunk (an index buffer), which
+  marching cubes deliberately does not do.
+  (4) THE HITCH WHILE MOVING WAS THE EVICTION SLAB, and it is fixed. A sideways window step evicts
+  `45` chunks at once (`81` upwards), and eviction zeroed the chunk's whole arena span: measured
+  `36.6` M of the `78.8` M uploaded vertices were ZEROS (half of all upload traffic), the worst frame
+  carried `9.66` MiB, and its evict and upload phases cost `5.25` and `5.13` ms on top of a `6.6` ms
+  frame. Now A CHUNK'S DEATH IS A ROW IN THE OFFSET TABLE (the shader collapses a dead row's vertex to
+  a point), so eviction costs ZERO arena bytes; the zero-fill remains only so a slot and its span can
+  return to circulation (while foreign vertices with that slot still lie in the arena, handing the
+  slot out would gift the new owner the previous chunk's triangles) and is paid on a declared per-frame
+  BUDGET (`65536` vertices = 768 KiB, `--scrub`). Worst frame: `2.3`–`2.9` MiB instead of `9.66`.
+  (5) The number that answers the original question: near the ground with the default window the paced
+  frame costs `15.4` ms STANDING STILL (`10.0` ms scene pass, `1.0` ms the lab's overlay, `0.16` ms
+  ALL of the streaming work), so `137` of `600` frames are already over a sixty-per-second budget. The
+  drop while moving is the price of the WINDOW, to which movement adds the last few percent; the only
+  lever today is a smaller window (`--radius=3`) or a coarser chunk.
+- GN03 STREAMING VOLUME OPENED: THE GENERATOR NOW EMITS GEOMETRY (2026-09-03). `367/367` project tests
+  (`+13`), GN03's own `87/87` property checks, GN02 unchanged. Third generator-campaign lab
+  (`subprojects/playgrounds/GN03_streaming_volume`): a free camera flies while marching-cubes surface is
+  built around it from a chunked density field — hills, overhangs, arches and tunnels.
+  (1) THE REAL QUESTION WAS VARIABLE-LENGTH OUTPUT, and the answer is that NO NEW MECHANISM was
+  needed. Every originator buffer so far had a known length (as many heights as cells); how many
+  triangles a density field yields is unknown until it runs. Three things that already existed sufficed:
+  capacity is the buffer's declared size, the USED length arrives in an ordinary one-element buffer
+  (`state.vertex_count` — "state between steps is a normal buffer with size = 1"), and overflow is a
+  loud refusal naming the buffer and both numbers. Not truncation: a truncated surface reads as a hole
+  in the world and cannot be traced from the picture.
+  (2) `tool_registry::add_volume_tools()` + `marching_cubes` in the engine: aperture `scatter`, and the
+  project's first genuine `chunk_local` key support (the group is one pass's vertex list, and the chunk
+  finishes it itself). Three fixed-partition phases exactly like `group_by`: cube case per cell → integer
+  prefix sum in cell order → each cell writes its own precomputed span, so the result is bit-identical at
+  any thread count.
+  (3) THE 256-CASE TABLE IS DERIVED, NOT TRANSCRIBED. Canonical tables are data one can copy with a typo,
+  and a single wrong row is a hole that shows up once in a hundred chunks. It is built from the face rule
+  instead, and the rule is a function of ONLY that face's four signs — so two neighbouring cubes read the
+  shared face identically and surface continuity holds BY CONSTRUCTION. Orientation follows from the same
+  rule (solid stays on the right seen from outside), so triangle winding agrees with `-grad(density)`.
+  (4) FOUR FINDINGS, EACH AN ERROR BEFORE MEASUREMENT. "Watertight" is about DIRECTED edges: the
+  criterion "every edge in exactly two triangles" produced 74 false failures out of 20752 because on an
+  ambiguous face the surface legitimately TOUCHES ITSELF along a segment; the right test is forward count
+  == backward count. Metres were not metres: the engine's shared noise tree has its own scale (period
+  `91` units at frequency 1, range `±1.35`, mean `|v|` `0.385`), so "a 190 m feature" was a 17 km feature,
+  a 32 m chunk saw a CONSTANT field, and the world came out empty — found only because the report prints
+  field ranges, since zero vertices cannot distinguish "empty" from "no surface here". A postponed chunk
+  must WAIT for arena room rather than go back into the queue (requeuing thrashed 717 regenerations
+  instead of 324 chunks). And the camera started inside a hill, because relief reaches 1.35 amplitude.
+  (5) MEASURED (Release, Iris Xe): chunk of 32 cells = `42875` samples costs `4.15` ms and `8524`
+  vertices single-threaded; `216` chunks/s on one thread against `870`–`970` on eleven (`4.0`–`4.5x` — memory bound,
+  each worker drags its own 1.4 MiB sample buffer); default window `9x9` chunks × 4 layers = 324 chunks
+  and `4.67` M vertices; frame `4.44` ms in ONE draw call. The arena is one 96 MiB buffer drawn as
+  `[0, high_water)`: holes are filled with degenerate triangles, spans are granular in multiples of
+  three, and a freed span waits `frames_in_flight` frames before reuse (so an unloaded chunk lingers a
+  frame or two instead of tearing).
+  (6) Not in scope, deliberately: LOD and cross-level stitching, editable fields, collisions, occlusion
+  (cave walls underground are meshed and drawn though nobody sees them — that is why the arena is large),
+  textures/materials, chunk persistence.
+  (7) SAME DAY, TWO MORE SLICES. The world now goes IN EVERY DIRECTION: the chunk window became a CUBE
+  around the observer (radii on all three axes instead of absolute vertical bounds, which meant "the
+  world is flat and has a top"), and above ground level there are floating islands — a rare noise
+  excursion with a height gate and a fade, composed by `maximum` rather than a sum (a sum makes an
+  island thicker the lower it hangs, and at ground level it becomes a second relief layer).
+  (8) EVERYTHING IS NOW RELATIVE TO THE CAMERA'S CHUNK, and no large world coordinate exists in the
+  vertex, the shader or the camera. A vertex is TWELVE bytes: three `uint16` of fixed point inside its
+  own chunk (half a millimetre step), a `uint16` chunk slot, three `int8` of normal. Where that chunk
+  sits relative to the camera comes from an offsets table of 4096 slots — 64 KiB, rewritten whole every
+  frame. Consequences: the camera leaving its chunk costs 64 KiB of writes instead of 72 MiB of arena,
+  frame precision no longer depends on how far the observer flew, and the vertex shrank by a quarter.
+  `local_frame`/`rebase`/`chunk_offset` are the whole mechanism; the floor division is deliberate,
+  since truncation toward zero puts −0.5 and +0.5 in the same chunk.
+  (9) THREE MORE FINDINGS. A CHUNK SLOT MUST NOT BE RECYCLED BEFORE ITS BYTES: while the arena kept a
+  removed chunk's bytes ("don't write what the device is reading") but released the slot at once, the
+  lingering triangles kept drawing with their old slot and jumped to A DIFFERENT PLACE in the world for
+  a frame or two — the correct order is the reverse, zero the span immediately (a degenerate triangle
+  draws nothing whatever its slot) and delay only the REUSE of the space. A FLOATING ORIGIN FIXES
+  RESOLUTION, NOT ACCUMULATION: measured over 370 km of flight, a naive `float32` position drifts
+  `2783.78` m and the framed one `0.36` m — but not to zero, because the local offset is still summed in
+  `float`; the scheme's promise is constant resolution (`3.8` µm against `3` cm), and the check now
+  states that instead of absence of drift. THE FIELD HAS ITS OWN, NEARER LIMIT: lattice positions reach
+  the noise as `float32`, so up to `10^7` m the lattice is still distinct while at `10^8` m 88% of
+  neighbouring nodes collapse onto one position — with `--start=1000000:2:-500000` the rendering is
+  perfect and the islands are cubes. The world's working radius is therefore a stated number, and only
+  different arithmetic inside the noise would move it.
+  (10) UNITS: NOISE FEATURE SIZE IS NOW A WORLD LENGTH, AND THE TREE'S SCALE IS MEASURED. The lesson
+  from the "metres were not metres" bug was not "multiply by 91" but "never assume the scale of SOMEONE
+  ELSE'S data", so the conversion moved out of the config and into the engine: `noise_at`/`noise_grid`
+  take `feature` in world units, and `prepare` measures the tree's period itself (sign changes along a
+  DIAGONAL line — along one axis a lattice noise passes through its nodes and reads the wrong scale;
+  seed ALWAYS zero, because the period must be a property of the TREE, not of the world, or the same
+  `feature = 190` would mean different metres in different worlds; cached by tree text, since 8192
+  samples per chunk would be a quarter of the noise's own cost). `frequency` stays with its own meaning
+  (noise units per world unit) for fields where a world length is meaningless, e.g. the planet's unit
+  sphere; giving both is a loud refusal. GN03's config now speaks only metres and carries no conversion
+  factor at all. The library README also states which of the OTHER tools carry length: `radius` on the
+  blurs is LATTICE STEPS, not metres.
+  (11) TWO STREAMING BUGS WITH ONE SYMPTOM ("a chunk never appears until you fly away and come back"),
+  both in the queue rather than the generator. LOST QUEUE: `set_window` rebuilt the queue and enqueued
+  only keys absent from the state table — but a chunk that had been WAITING in the previous window was
+  already in that table, so it stayed "queued" precisely nowhere; flying away dropped it from the table
+  and coming back re-created it, which is exactly the reported symptom. NO WAKEUP: `forget` (a chunk
+  that did not fit the arena, or went stale) put the chunk back in the queue without notifying the
+  condition variable, so with all workers asleep it lay unnoticed until the next window change. The
+  first is pinned by a regression check that FAILS with the bug restored: the window moves three times
+  while the queue is still full, and every chunk of the final window must arrive (one worker
+  deliberately — with eleven the queue drains faster than the window moves and the bug hides).
+  (12) DETERMINISM BOUNDARY, STATED. A chunk's CONTENT is fully deterministic (four checks: order,
+  threads, cleared buffers, a second pipeline), and a fingerprint of twelve reference chunks (`178545`
+  vertices) is printed as one line — measured on this machine, Debug and Release produce it BIT
+  IDENTICAL, so neither FMA contraction nor reassociation moved anything on this pipeline. It is one
+  free data point, not a proof of cross-platform equality. WHEN a chunk appears is NOT deterministic,
+  and that is a stated property: the mesh is a PRESENTATION of the field, not world state, so per
+  `NETWORKING.md`'s split it belongs to the non-deterministic class — hence checks assert "every chunk
+  of the window arrives", never "in which frame". Inside a chunk the geometry is ALREADY integer
+  (positions in fixed point, normals in bytes), which makes float disagreement rare and bounded rather
+  than absent; only an integer FIELD removes it, the same conclusion `ORIGINATOR_GPGPU.md` reaches for
+  the GPU. The boundary moves the day the surface becomes collision or navigation — then it stops being
+  presentation and has to be computed in fixed point end to end.
+  (13) ACCUMULATION IS A SECOND DISEASE AND IT IS NOW CURED. A floating origin fixes RESOLUTION (what a
+  number can express at all); ACCUMULATION (a million roundings summed) does not depend on the origin at
+  all — it depends on the ACCUMULATOR'S WIDTH, because every addition rounds by half a float step of the
+  current magnitude and a session is millions of frames. Measured over 370 km of travel: a world
+  position in `float32` drifts `2783.78` m, in-chunk with a `float32` accumulator `0.364759` m, in-chunk
+  with a `double` accumulator `2.9e-10` m. The first number argues for the floating origin, the second
+  against calling it sufficient — `0.36` m accrues in a couple of play sessions, which is an obstacle,
+  not a footnote (the first write-up wrongly filed it as an accepted limit). The observer position is
+  now `double` (`local_frame::position`), converted to float once per frame for the view matrix and
+  never fed back; `playground::free_camera` gained separate `look`/`displacement` so the ACCUMULATOR
+  BELONGS TO THE CONSUMER — a world larger than `float32` needs it in `double`, a one-room lab does not.
+  A FOURTH SCHEME closes the question: key + offset in FIXED POINT (1/65536 m) drifts EXACTLY ZERO, and
+  zero BY CONSTRUCTION rather than by magnitude — offset and chunk span are integers, so both the
+  addition and the wrap are integer, and integer addition does not round. The only price is a one-time
+  quantisation of the step itself (`4.9e-6` m): a fixed bias, identical on every machine, that does not
+  grow with time. Hence the split by purpose: the camera is PRESENTATION and needs a float for the view
+  matrix anyway, so a `double` accumulator costs twelve bytes and settles it; ENTITY positions, once
+  they exist in the simulation, must be "key + fixed point" rather than "key + double", because there
+  what is needed is not small drift but its ABSENCE plus bit equality across machines — the same
+  conclusion the project already reached choosing fixed point as the simulation language, and the same
+  representation GN03's VERTICES already live in. Also worth recording: the drift has no observer at
+  all while a path is computed ONCE (the world is `f(key, seed)`, geometry is relative, chunk choice is
+  by key — nothing observable depends on the "ideal" path); it becomes observable only when the same
+  path is computed TWICE, i.e. lockstep, replay, a saved waypoint — which is exactly the project's
+  stated direction, hence worth curing.
+  (14) "IS CROSS-PLATFORM FLOAT MATH WORTH WORRYING ABOUT" NOW HAS A NUMBER. A last-bit field
+  disagreement becomes different geometry only through DECISIONS, and marching cubes has two: the sign
+  of a node against the iso level (which picks the cube case, i.e. topology) and the fraction along an
+  edge (which moves a vertex — but the vertex is quantised to fixed point with a `0.5` mm step, so a
+  difference below one quantum vanishes entirely). Measured over `257250` nodes: within `1e-7` of the
+  iso level (the scale of FastNoise2's SIMD divergence) NOT ONE node, within `1e-5` none, within `1e-3`
+  (far larger than any arithmetic disagreement) three — one flipped node per two chunks, and a flipped
+  node changes the geometry of at most the eight cells around it. Hence the rule beyond this lab: float
+  divergence is dangerous exactly where a decision AMPLIFIES it. GN02's sea level, found by bisection
+  against a land-share target, is such a decision (a last bit moves the threshold, the threshold moves
+  which cells are land, and it is a different planet); GN03's decisions are local, so there is no
+  amplification — and that is measured rather than assumed.
+  (15) FIRST ENTITIES: KEY PLUS OFFSET, DERIVED FROM THE FIELD. Markers with a place, a tilt and a kind,
+  and their mechanism is the geometry's: position is an integer chunk key plus an offset (no absolute
+  position anywhere), the CHUNK OWNS them (unload the chunk and they go with it — no separate registry
+  of world objects was needed), and what stands in a chunk is a third generator step, i.e. `f(key,
+  seed)` exactly like the field. Variable-length output again, same mechanism again: declared capacity
+  plus a counter. THE SECOND SEED FINALLY EARNED ITS KEEP: the field must be CONTINUOUS across a seam
+  (`step.seed`), while entity scatter must be INDEPENDENT per chunk (`step.chunk_seed`) — GN01's
+  two-seed contract existed from the start and no consumer had used both until the volume. Placement:
+  forty attempts per chunk, the column chosen BY HASH (a lattice scan would show regularity at seams
+  because candidates would start from each chunk's own origin), then FLOORS are found in that column —
+  there can be several, because a cave floor is a floor too, and that is exactly what separates a volume
+  from a height map. Everything else comes from the field: exact height is the linear crossing fraction
+  (the same one marching cubes uses, so the marker stands ON the surface rather than on the nearest
+  node), tilt is minus the density gradient, a wall does not count as a floor, and the kind is chosen by
+  whether there is a ROOF overhead — pole in the open, boulder on a slope, glowing crystal under a roof.
+  An entity is not placed onto the world, it is DERIVED from it. Rendering: instances, and the buffer is
+  rewritten WHOLE every frame rather than living in an arena — the difference is quantity, not
+  principle: millions of vertices against a dozen entities per chunk (measured `1072` in the window
+  above ground, `2631` below), half a megabyte per frame is what the overlay writes anyway, and a second
+  arena with slots and deferred release would cost more in every way. Seven checks, all about the world:
+  reproducibility by the same three routes, "stands exactly where the field crosses the iso level",
+  "lies inside its own chunk", "never on a slope steeper than the declared limit", capacity against the
+  most populated chunk of the sample.
+  (16) A LATENT BUG THE DEBUG BUILD CAUGHT: the entity step computed a lattice index as
+  `x + side * (y + side * z)` where `side = cells + 3`, and config numbers reach lua as `double` — so
+  `side` was `35.0` and the index came out fractional. Release accepted it silently (sol2's safety
+  checks are on only in debug), Debug threw "number maybe has significant decimals". The rule: cast lua
+  indices to integers EXPLICITLY (`math.tointeger`), because a "number" from the config is not an
+  integer. After the fix the world is unchanged (same 84 entities, same fingerprint) — it was a typing
+  bug, not a world bug.
+  (17) WORLD MEMORY: DERIVED PLUS DELTA. While an entity is derived it is FREE — unload the chunk and it
+  is gone, come back and it is recomputed bit-identically. Memory begins where the world stopped being a
+  function, and what is stored is not the world but the DIFFERENCE: `world = derived + delta`. Identity
+  is (chunk key, generator ATTEMPT NUMBER), not the slot in the output array: the slot depends on how
+  many attempts before it were rejected, so nudging the slope threshold would shift every slot and make
+  the memory of one entity the memory of another. The store is sparse (it grows with what was touched,
+  not with what exists: `760` entries = `30416` bytes, 40 bytes per record), it IS the save file (record
+  order is fixed by sorting rather than by hash-table iteration, so two saves compare byte for byte),
+  and the join of derived with the store is a FUNCTION — verified by the very scenario that motivated
+  it: a chunk recomputed from scratch after other chunks joins into the same world.
+  THE FINDING is the CRITERION for what enters a save: "THE WORLD DIFFERS", not "something happened".
+  The first version counted a touch counter in "the record is empty", so unmarking left a record forever
+  — a player who touched and reverted a thousand markers paid a thousand records. A quantity nothing in
+  the world depends on is a STATISTIC, not a difference; the moment something depends on it, it becomes
+  a difference and enters the condition by itself. A delta with nothing to match (the world changed
+  under the save: another seed, other settings, another rule version) is NOT dropped but COUNTED — the
+  entity may come back, yet "half the player's memory no longer refers to anything" must be visible as a
+  number. Deliberately absent: entities the player CREATES, which the derived world never had — those
+  need an identity not tied to the generator, i.e. a REGISTRY rather than a delta.
+  (18) THE TWO SCALES FINALLY MET: SKELETON AND CHUNK META. The library has declared them since GN01
+  ("a coarse world pass, once, and a fine chunked one, on demand") but they had never met — GN03's field
+  is pure noise and needs no skeleton. The skeleton is a SEPARATE generator (`generator/skeleton`):
+  gameplay nodes on a jittered lattice, a nearest-neighbour tour, Catmull-Rom smoothing FLATTENED INTO A
+  POLYLINE; it runs once (`1.2` ms), covers `4096` m against the ~300 m visible window, and lives as a
+  package on disk (a package from another seed is not silently accepted — that is a different world).
+  THE QUESTION AT THE SEAM is how a chunk gets its share of the skeleton, and the answer is NOT THE
+  SKELETON BUT A QUERY OVER ITS AREA, whose result arrives as an ordinary buffer with declared capacity.
+  Three rules: the query must be COMPLETE (if it returns "whatever happened to be resident", the same key
+  yields a different world depending on load history — incomplete meta is not "slightly worse", it is a
+  DIFFERENT WORLD, so the spatial index is checked against an exhaustive scan); the query margin is
+  DERIVED from the radius of influence DECLARED BY THE SKELETON (a segment passing NEAR a chunk bends the
+  field inside it, and the query adds the margin itself so it cannot be forgotten outside); overflowing
+  the capacity REFUSES rather than truncates (a truncated route gives a corridor that ends inside a
+  mountain). Measured: the route reaches 7 of 147 sampled chunks, the densest needing 3 points of the
+  declared 96.
+  TWO ENGINE ADDITIONS came from it. `polyline_distance` (gather; points plus CSR chain offsets; bbox
+  rejection; projection CLAMPED to the segment ends, since "distance to the line" continues the corridor
+  past the end of the route, i.e. builds a tunnel to nowhere) is the quantity that was missing to turn a
+  coarse route into a field — the engine deliberately knows no curves, because Bézier/Catmull-Rom/arcs
+  are many and all flatten into a polyline ONCE at the coarse scale, where the flattening density IS the
+  smoothness. And `pipeline_description::inputs` — PIPELINE INPUTS: the meta buffer is filled by the
+  HOST, so no step writes it and none should, yet "reading before anything wrote" would otherwise reject
+  the whole pipeline. The input is DECLARED by the author rather than inferred from "nobody writes it":
+  that is exactly what the library must treat as an error, and only a declaration distinguishes "brought
+  from outside" from "mistyped the name".
+  The corridor is cut by OVERLAYING A MINIMUM rather than subtracting (inside the tube the field must go
+  negative no matter how much rock was there, and outside it must not be touched at all — subtracting a
+  constant would punch a pit at the surface and nothing deep in a mountain), and it is cut LAST: while it
+  ran before the islands, an island landing on the route honestly filled the tunnel back in. The property
+  checked at the seam: two neighbouring chunks have DIFFERENT meta yet agree exactly on their shared face.
+  (19) BIOMES: RULES ARE BLENDED, NOT PICTURES. A biome is a set of NUMBERS (amplitudes, gradient, cave
+  width/strength, shade) plus a place in a climate plane; one rule serves all of them, and density is
+  computed per biome PRESENT in the chunk and summed with its weight. Five biomes: plateau, mountains,
+  karst (the world becomes a network of passages), steppe, badlands. Two decisions make it work.
+  A WEIGHT WITH COMPACT SUPPORT — `(1-r²/reach²)²` reaches EXACTLY ZERO at its radius rather than "almost
+  zero" like an exponential, and only that makes "compute just the present biomes" an EXACT equality:
+  verified bit-identical against computing all five. With an exponential one would have to pick a
+  "negligible" threshold, and the world would depend on where that threshold sits. AND THE COST IS THE
+  NUMBER OF BIOMES IN THE CHUNK, NOT IN THE WORLD: presence comes from the chunk's climate RANGE (two
+  reductions) and is tested conservatively; measured `2.5` biomes per chunk of five, `15.9` ms with
+  pruning against `21.9` ms without. Noise layers are computed ONCE for all biomes, and that is about
+  cost: feature size enters the frequency, so a biome with a different SIZE would force a noise pass per
+  biome, whereas a different amplitude costs one multiply — hence the rule that amplitudes and
+  thresholds are what to vary first. Normalisation required one new engine tool, `ratio`, with a
+  MANDATORY minimum divisor: a zero weight sum means "no rule acts here", and a silent zero density
+  would be a SURFACE, i.e. a wall inside a coverage hole. Colour comes FROM THE GENERATOR (the shade
+  accumulates with the same weights, rides in the vertex's fourth byte, and the shader expands it into a
+  ramp) — computing the biome in the shader would be a second copy of the rule that eventually disagrees
+  with the first, painting the colour of a biome that was not the one computed.
+  (20) TUNNELS: A STYLE IS GEOMETRY, NOT A COEFFICIENT. The skeleton route carries styles, and a style
+  belongs to a CHAIN rather than a point (it changes at nodes, or the cross-section would jump mid-
+  passage); it is chosen per LINK, and consecutive links of one style become one chain, so the world
+  gets stretches instead of alternation every step. A natural cave is a round cross-section (euclidean
+  metric) with walls broken by the detail layer and a Catmull-Rom path; a bunker tunnel is angular (the
+  chebyshev metric, whose level surface is a cube), with even walls and straight segments turning at
+  nodes. Hence TWO CALLS with different metrics instead of one with a coefficient, and TWO PAIRS of meta
+  buffers instead of one with a "style" field: the distance tool works over one set of chains with one
+  metric and cannot be given a subset of chains — so the host splits them while filling the input, where
+  it is one style test per copied chain.
+  (21) A measurement metric must not bottom out on a plateau: the field limit was first measured as the
+  share of neighbours sharing a DENSITY value and read 32% at the origin, because in the air density
+  saturates on the islands' constant floor (`max` with a constant) — the metric was measuring the
+  plateau. Position is what loses precision, so position is what to measure.
+
+- ORIGINATOR THROUGH DEMIURG: THE GENERATOR IS NOW ONE NAME (2026-09-03). `354/354` project tests
+  (`+9`), GN02 `71/71` unchanged and bit-identical output. The ask was an ENTRY POINT: a generator
+  should be addressable by one id, and that id should name its own parts, instead of the host knowing
+  the names of three files — which is the same as the host knowing the internals of somebody else's
+  generator, and which leaves a mod no way to lay its own generator out differently.
+  (1) THE LINES THE AUTHOR HAD ALREADY WRITTEN WERE A LIVE BUG. `values = values.tavl` and
+  `buffers = buffers.tavl` sat at the top of GN02's `steps.tavl` since `848d179`, and they did not
+  "do nothing": a top-level ROW next to top-level `{ ... }` BLOCKS makes tavl read the document as one
+  aggregate whose blocks are excess values, and with the step mirror that turned into unbounded
+  allocation — the generator was killed by the OOM killer before printing a line, at ANY resolution.
+  Measured and confirmed by deleting the two lines. Both confusions are now classified BEFORE parsing
+  (`document_is_list`) and refused by name: a row inside a steps list, and a bare list of blocks handed
+  to `parse_entry`.
+  (2) THE ENTRY IS ONE DOCUMENT: `name`, `values`, `buffers` and `steps = [ ... ]`. The steps had to
+  move INSIDE the document rather than stay top-level blocks — not for looks, but because the two
+  shapes cannot coexist in one tavl document at all (see (1)).
+  (3) PATHS ARE DEMIURG IDS: root-relative, extension-free, `./` relative to the entry's own folder.
+  `absolute_resource_path`/`resource_parent_path` MOVED from `simul` (where they sat next to the lua
+  bindings) into `demiurg/resource_path.h`: the rule belongs to resource addressing, not to lua, and
+  the second consumer would otherwise have grown a second opinion about what `../common/values.tavl`
+  means.
+  (4) NEW TARGET `devils_engine::originator_config` — `generator_source` (a text carrier exactly like
+  `painter::render_config_source`) plus `load_generator(resources, entry_id)` returning a
+  `generator_config`: pipeline description, value ranges, and every script text keyed by absolute id.
+  The core `originator` still knows nothing about demiurg, as it knows nothing about lua.
+  (5) TWO SILENT DEFECTS IN DEMIURG'S `//---` SPLITTER, both found by writing the config: the separator
+  was matched as a SUBSTRING (so a file that merely MENTIONS `//---` in a comment was split — and the
+  entry file's own comment says exactly that), and the separator's TITLE (`//--- имя документа`, which the playground configs
+  happen to be written with) was left in the following section, where it became that section's first
+  value. Both are now line-anchored/consumed-to-end-of-line, with regression tests.
+  (6) BOTH PLAYGROUNDS CONVERTED: generator files moved into `resources/gn02/generator/` and
+  `resources/gn01/generator/` — real demiurg MODULES — and both `main.cpp` lost `read_file` entirely.
+  Output is bit-identical (409 land cells of 1024 at the same seed before and after), GN02 `--verify`
+  still `71/71`, GN01 `22/22` plus its chunked comparison, `354/354` overall. A lua chunk name is now
+  the demiurg id, so a script error points at the address the script actually lives at
+  (`[string "generator/scripts/regions"]:39`). GN01 needed one extra seam: `read_generator_source`,
+  because its perf bench runs a lua TWIN of a `ds` rule that is not a step, so the entry does not name
+  it. Third rule of the same family, stated in both READMEs: an entry FILE must carry no `//---`, or
+  its base id stops existing and the failure reads like a typo in a path that is in fact correct.
+  (7) DESIGN ONLY, NOT SCHEDULED: `ORIGINATOR_GPGPU.md` (root) writes down the computation-queue /
+  GPGPU task — goal, what it buys (GPU obvious; on CPU honestly small, and the only real speedup is
+  FUSION of adjacent pointwise passes, not removing lua calls), what it needs (`ds`→GLSL, whose math
+  vocabulary ALREADY IS GLSL's names; GPU specifics incl. dispatch groups; a small headless context),
+  and its limits with mitigations. The author's decisions, not to be re-litigated: the unit of
+  transfer is a QUEUE not a step; there is NO float determinism on GPU, so the queue is unusable for
+  chunked generation unless integer; a CPU/GPU result mismatch is a STATED PROPERTY, not a defect
+  (the generator needs no bit-exactness between paths, and `ds` can be taught `float`); the PRNG
+  inside originator can be 32-bit (a `uvec2` splitmix64 is nice-to-have, not a blocker); painter
+  ALREADY does headless (`presentation_engine_type::no_present`, `choose_physical_device_headless`,
+  a dedicated compute queue) — what needs care is WHERE the compute context is assembled, since the
+  path lives in `simul::render_runtime` and demands a render config with graphs; the queue must have
+  a CPU implementation; no second scheduler. The one genuinely sharp limit is REDUCTION ORDER: a
+  `reduce` result feeds back into the world (GN02 picks sea level from a land-share target), so a
+  hardware-ordered GPU reduction breaks "same seed = same world" BETWEEN RUNS ON ONE MACHINE — a
+  different and worse thing than CPU≠GPU. Step 0 of the proposed
+  order is a MEASUREMENT that can close the task: what share of a generator's wall time is even in
+  GPU-able apertures.
+
+- GN02 AFTER-AUDIT PASS: ENGINE BASE FUNCTIONS, STEP-NUMBERED SCRIPTS, BUFFER FIELDS AS OPERATOR ROWS
+  (2026-09-02). `71/71` planet checks on five seeds plus the check resolution and a million cells;
+  `340/340` and `345/345` project tests; tavl's own suite `109/109`.
+  (1) ONE HASH FOR THE WHOLE ENGINE. `bindings::basic_functions` now lands in the generator's step
+  environment as the `base` table, and the step bodies moved off their hand-written splitmix onto
+  `base.prng64_2` / `base.prng64_normalize`. While every body carried its own copy, "the same seed"
+  meant "the same seed inside this file", and the generator hashed differently from the rest of the
+  engine. This required splitting the bindings library: `env.cpp` lived in one target with the nuklear
+  bindings, so any consumer of `base.prng64` dragged in visage — unacceptable for a headless generator
+  — hence `devils_engine::bindings_base` (which also breaks the visage↔bindings link cycle). Two
+  functions of that table are off-limits inside a step body: `base.perf` (wall-clock) and
+  `base.script_stack`, because a decision that depends on time breaks both reproducibility and
+  "parallel == sequential". CONSEQUENCE, stated plainly: a different hash is A DIFFERENT WORLD for the
+  same seed. Every reported number moved (land pieces 139→158, sea zones 635→559, largest realm 81→199
+  counties) and NOT ONE property broke — the argument for property checks over golden snapshots.
+  (2) The "shared lua prelude" gap is WITHDRAWN as mis-named: sharing a helper between step bodies is
+  impossible BY DESIGN, because `require` would drag `demiurg` in, so duplication inside a playground is
+  the norm; the same decision is why there is no `os`, why `math.random` is nilled, and why `sin`/`cos`
+  are expected to move to host functions later — generator scripts get no OS access and no source of
+  nondeterminism.
+  (3) SCRIPT NAMES CARRY THE STEP: `S01_topology.lua`, `S02_convergent.ds`, `S08_regions.lua` — the
+  prefix is the step number, and for a `ds` rule it is the step where the rule FIRST appears
+  (`S03_land.ds` is read by both surface and landforms). The pipeline is sequential, so the file name
+  answers the first question one asks of the folder.
+  (4) A BUFFER FIELD IS AN OPERATOR ROW: `position = v3` instead of the `(position, v3)` tuple. Parsing
+  is unchanged, and that is a property rather than a coincidence: a row with an operator IS the same
+  PAIR as a row in parens, because reading a pair skips operator tokens between slots — so both
+  spellings stay valid and the format migrates file by file. The wanted spelling was `position : v3`,
+  but `:` was not in tavl's `operator_chars`, so registering the operator aborted on the validity check.
+  THE TAVL CHANGE IS DONE IN THE LOCAL CLONE and left uncommitted for the author's release: one
+  character in `detail.h` plus three tests (an unspaced `position:v3` splits; datetime keeps priority
+  over a registered `:`, which is the interaction that makes it safe; a list of pairs reads identically
+  in all spellings) and a README note. After that release the format flips with one line —
+  `p.add_operator(":", binary, 2)` in `parse_buffers`.
+  A FIFTH FINDING came from the new world: historical-region names could clash inside a continent (seed
+  99). There are five compass directions and up to twenty regions in a continent, so most regions of a
+  large continent fall back to their OWN word, and nobody checked that fallback for uniqueness. Fixed by
+  construction like the continents (the name seed advances on a clash). Same family as the audit's
+  finding, found by the same five-seed check — the new draw simply presented a different pair.
+
+- GN02 PLANET GENERATOR: CLOSED BY A CLOSING AUDIT (2026-09-02). `71/71` planet checks on five seeds,
+  at the check resolution and at a million cells; `340/340` and `345/345` project tests. Ten findings,
+  four of them real defects, two named as ENGINE GAPS rather than fixed here.
+  (1) CLICKING SELECTED A DIFFERENT AREA THAN THE ONE DRAWN: picking took the NEAREST cell while the map
+  fills the coverage winner, and near a border those differ — a click at the edge selected the neighbour
+  and the highlight appeared beside the click. Same family as "the border is not where the colours meet",
+  and the same cure: the map rule became ONE function called by the fill (its GLSL twin), the verify
+  check and the picking, which also removed a third copy of the rule that lived inside the check.
+  (2) `--smoothing=W` was silently pulled to the nearest button step, because the viewer stored the step
+  INDEX instead of the number — and the overlay then reported the pulled value, i.e. lied about what was
+  drawn; `atof` also became `stof`, since `atof` returns a silent zero on garbage, which here means "the
+  most angular border".
+  (3) A COMMENT ASSERTED A FALSEHOOD AND COST THE MOST EXPENSIVE STEP FIVE DENSE LUA PASSES: "there is no
+  inverse label → cell mapping in the data" — the mapping is built by the SAME `group_by`, applied to the
+  SEED field, where each label owns exactly one cell. Five passes over every cell became five native
+  groupings plus loops over LABELS (thousands, not hundreds of thousands): `regions` `1334 → 1204 ms`
+  with a bit-identical result, `+4 MB`. The cost of one dense Lua pass was measured in a way that changes
+  no result — by DUPLICATING the pass: `35..105 ms` at 262144 cells.
+  (4) THE EIGHT-NEIGHBOUR CUT WAS NEVER CHECKED, though graph degree reaches 24 (symmetrised kNN adds
+  arcs where the lattice is uneven). A dropped neighbour is a dropped WEIGHT, and if it falls inside the
+  kernel it is cut ASYMMETRICALLY about a border — precisely the defect for which the kernel was chosen
+  compact rather than Gaussian. The check now measures not "degree is small" but "every dropped arc sits
+  beyond the widest allowed kernel"; it holds at both resolutions on five seeds.
+  Also: rule classes are now tied to their names and palette (the palette clamps, so a new class would
+  silently take the previous class's colour — `static_assert` ties names to palette, a check ties the rule
+  to the names); five hand-written copies of the camera block became one included file (the engine already
+  had the mechanism, the playground was not using it, and one omission had already cost the whole
+  overlay); a dead varying went away; the hidden coupling of `--frames` to frozen rotation is documented;
+  continent names are unique by construction.
+  DELIBERATELY NOT FIXED: one dense pass of the same family remains in `S02_tectonics.lua` at `35..105 ms` of
+  its 1067 ms, because copying twelve lines to win one percent would create a second copy to keep in
+  sync, and sharing a helper between step bodies is IMPOSSIBLE BY DESIGN, not by omission — `require`
+  would drag `demiurg` along, so inside a playground duplicated code is the norm (per the engine's
+  author). The same decision is why the host opens only base/coroutine/math/string/table/utf8 with no
+  `os` (which is how the attempt to time from inside Lua failed) and why `math.random` is explicitly
+  nilled: generator scripts get no OS access and no source of nondeterminism. NAMED ENGINE GAP: MAP FILL
+  BY LATTICE COVERAGE as part of painter — the rule
+  irreducibly has two implementations (GLSL on the GPU, C++ for the check and the picking) until it moves
+  into the engine, which by project rule waits for a SECOND consumer.
+  What the campaign gave the engine: painter's present-mode choice with a desirable and a fallback (vsync
+  policy lives where it is asked for, not where modes are enumerated), and originator's
+  `connected_components` and `label_adjacency` (a connected piece is a property of the GRAPH, and the CSR
+  BY LABELS is what the whole named-place hierarchy is grown from).
+
 - GN02 MAP RENDERING: THE FRAGMENT DECIDES THE AREA (2026-09-02). `69/69` planet checks, `339/339`
   project tests. Three asks about borders, and the third one — "the bands exist but they sit at a
   distance from the borders themselves; the outlined border and the surface under it do not agree on how
@@ -832,7 +1287,7 @@ Domain-scoped logging lives in `libs/catalogue/logging.h` (`DE_LOG`/`DE_TRACE` m
 - `libs/act`: shared gameplay-function registry (`devils_engine::act`) — typed-by-return functions (effect/predicate/number/string/object), immutable `exec_context`, `intent` seam, `registry`, and generic `script_resource`/`script_compiler` boundary. `native_function` and devils_script-backed `script_function` are live; Lua backend remains pending. `acumen` and `mood` consume act contracts.
 - `libs/bindings`: Lua/sol2 binding layer for sandbox env, `base` utilities, deterministic `rng_state`, reflect-based table conversion, and large Nuklear bindings. No local README yet; root README summarizes it from code/CMake.
 - `libs/catalogue`: active code is function-call introspection/tracing/timing/statistics, the older in-memory `call_log`, and typed deterministic MT strategy wrappers/executors in `deferred.h`. The first live ECS integration is tile_frontier's cognition→collect/elect→structural/FSM pipeline, including config-loaded void actions over the same deferred building blocks. Dense 128-byte inline payload storage is live; remaining nearby work is member/custom bounded codecs and executor ownership after a second consumer. The obsolete `act::effect_sink` seam was deleted on 2026-07-19. Older recording/replay/RPC/channel files are archived under `exclude/` and are not to be revived as catalogue's direction. Replay/network persistence, if ever needed, belongs to a separate layer.
-- `libs/demiurg`: module/resource registry and staged resource loader. The durable cross-system handle is now `demiurg::resource_handle` (hash of logical id, survives registry rebuild — see "Assets / resource pipeline" and "Demiurg ↔ Lua resource API"); raw `resource_interface*` is fine only for same-lifetime same-thread reads. Loaders must honor dependency gating and external render/GPU steps. tavl list-pattern (`path:name`/`path:index`) and dependency-cycle diagnostics are done.
+- `libs/demiurg`: module/resource registry and staged resource loader. The durable cross-system handle is now `demiurg::resource_handle` (hash of logical id, survives registry rebuild — see "Assets / resource pipeline" and "Demiurg ↔ Lua resource API"); raw `resource_interface*` is fine only for same-lifetime same-thread reads. Loaders must honor dependency gating and external render/GPU steps. tavl list-pattern (`path:name`/`path:index`) and dependency-cycle diagnostics are done. `demiurg/resource_path.h` owns the ONE engine-wide translation from a written path to an id (`absolute_resource_path`/`resource_parent_path`: drop extension, fold `.`/`..`, keep the `:name` tail; only a dot-prefixed path is relative) — moved out of `simul` on 2026-09-03. The `//---` separator is line-anchored and swallows its own title line, and a file that has one loses its base id (only `path:name`/`path:index` resolve) — say so in consumer error messages, because it reads like a typo in a correct path.
 - `libs/flow`: first active 2D/2.5D/UV animation slice. It is now a CMake target `devils_engine::flow` with `flow::library`, `flow::state`, `flow::playback`, `flow::animation_resource`, directional image selection, action events, and UV accumulation/truncation. 3D/skeletal/blending remain future work.
 - `libs/input`: GLFW window/input wrapper, Vulkan surface/proc helpers, key-name registry, and abstract input-event state machine.
   - Key-name contract now has three distinct layers in `input/key_names`: canonical names for config/storage (`key_w`, `minus`, `f10`, `right_super`, `kp_1`), US/QWERTY display names (`W`, `-`, `F10`, `Right Super`, `Num 1`), and local names via `glfwGetKeyName` plus platform fallback. Prefer canonical names in configs; parse them with `key_from_canonical`, which returns `(glfw_key, scancode)` in the same order as the GLFW key callback.
@@ -840,6 +1295,7 @@ Domain-scoped logging lives in `libs/catalogue/logging.h` (`DE_LOG`/`DE_TRACE` m
   - `events` event ids are `utils::id` hashes from `utils::string_hash`, not `std::string_view` keys. Hot-path code should precompute `events::event_id` once with `events::make_event_id("use")` and call id overloads (`check_event(id, ...)`, etc.); string overloads remain as convenience wrappers that hash then forward.
   - Hash collision checking intentionally lives in `events::set_key(std::string_view, ...)`: `event_map` stores the original event name and errors if the same hash is registered with a different name during binding load/setup. `key_mapping` stores event ids per scancode and removes stale scancode entries when a key has no events left.
 - `libs/painter`: active Vulkan/render-graph layer (`graphics_base`, `render_config_storage`, `render_graph_instance`, `assets_base`) plus demiurg resources for render config, shaders, pipeline cache, meshes and textures. Older painter files remain beside the active path.
+- `libs/originator`: procedural generator framework (typed buffers, config-declared steps, lua as the step body). Volume tools (2026-09-03, `add_volume_tools`): `marching_cubes` is the first tool whose output length is unknown before it runs — capacity is the buffer's declared size, the used length is an ordinary one-element buffer, overflow refuses loudly, and its 256-case table is DERIVED from the cube-face rule rather than transcribed. Four build targets stay separate on purpose — core (`originator`, no lua/ds/demiurg), `originator_script` (devils_script over a dense buffer), `originator_primitives` (FastNoise2/jc_voronoi), `originator_lua` (own `sol::state`, own budget, no visage), plus `originator_config` (2026-09-03): the demiurg seam. A generator is addressed by ONE id — its ENTRY document (`name`/`values`/`buffers`/`steps = [ ... ]`, all references are demiurg ids) — and `load_generator(resources, entry_id)` returns description + ranges + every script text. tavl cannot mix top-level rows with top-level blocks in one document, so steps live inside the entry; both confusions are refused before parsing.
 - `libs/sound`: miniaudio-only production sound prototype (`system`); former OpenAL reference/compatibility code is archived under ignored `exclude/`.
 - `libs/utils`: broad utility library. It also owns the former `libs/thread` utilities under `libs/utils/include/devils_engine/thread` and `libs/utils/src/thread`; keep `devils_engine::thread` as an alias to `devils_utils` for compatibility instead of reintroducing a separate `libs/thread` target.
 - `libs/aesthetics`: ECS storage/view/query/events/snapshot implementation; still exploratory and performance-sensitive.

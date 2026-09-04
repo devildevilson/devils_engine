@@ -10,6 +10,6 @@ add_library(devils_network INTERFACE)
 target_include_directories(devils_network INTERFACE
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
 )
-target_link_libraries(devils_network INTERFACE devils_engine::options)
+target_link_libraries(devils_network INTERFACE devils_engine::options devils_engine::utils)
 
 add_library(devils_engine::network ALIAS devils_network)

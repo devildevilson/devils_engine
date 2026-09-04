@@ -82,6 +82,7 @@ struct render_simulation_init : public simul::standard_render_state<broker> {
   nominal_clock cam_clock;
   std::chrono::steady_clock::time_point cam_last_tp{};
   bool cam_tp_valid = false;
+  bool active_gameplay = true;
 
   ~render_simulation_init() noexcept = default;
 };
@@ -385,8 +386,17 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
       });
     });
 
+  if (const command_active_gameplay_state* cmd = br.active_gameplay_state.consume()) {
+    if (container->active_gameplay != cmd->active) {
+      container->active_gameplay = cmd->active;
+      // Не включаем время, проведённое на паузе, в первый dt после возобновления.
+      container->cam_tp_valid = false;
+      container->actor_draw_tp_valid = false;
+    }
+  }
+
   // Снапшот камеры: prev <- cur, часы на ноль; между снапшотами alpha гоним по реальному wall-time
-  // рендер-кадра (та же дисциплина, что у акторов ниже). UBO пересобирается каждый рендер-кадр.
+  // рендер-кадра только при active gameplay. UBO пересобирается каждый рендер-кадр.
   bool camera_snapshot = false;
   if (const command_draw_camera* cmd = br.draw_camera.consume()) {
     container->cam_prev = container->cam_cur;
@@ -398,7 +408,7 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
   }
   if (container->cam_have_cur) {
     const auto now = std::chrono::steady_clock::now();
-    if (!camera_snapshot && container->cam_tp_valid) {
+    if (container->active_gameplay && !camera_snapshot && container->cam_tp_valid) {
       container->cam_clock.advance(size_t(std::max<int64_t>(utils::count_mcs(container->cam_last_tp, now), 0)));
     }
     container->cam_last_tp = now;
@@ -427,10 +437,10 @@ void render_simulation::update([[maybe_unused]] const size_t time) {
   }
 
   if (container->graph_ready && container->actor_draw_ready) {
-    // alpha гоним по РЕАЛЬНОМУ прошедшему времени рендер-кадра, а не по номинальному шагу (п.①).
+    // alpha гоним по РЕАЛЬНОМУ прошедшему времени активного render-кадра, а не по номинальному шагу.
     // На кадре прихода снапшота elapsed сброшен в push() -> не продвигаем (alpha=0 -> показываем prev).
     const auto now = std::chrono::steady_clock::now();
-    if (!actor_snapshot) {
+    if (container->active_gameplay && !actor_snapshot) {
       const size_t real_dt = container->actor_draw_tp_valid
                                ? size_t(std::max<int64_t>(utils::count_mcs(container->actor_draw_last_tp, now), 0))
                                : 0;

@@ -47,7 +47,8 @@
 //
 // Проект (Derived) реализует хуки: project_init (аллоцирует standard_game_state-наследника + резолвит
 // подсистемы/календарь), asset_registry, begin_project_loading, project_loading_complete,
-// on_framebuffer_resize, update_gameplay, on_visage_before_update, project_settings_reloaded;
+// on_framebuffer_resize, begin_simulation_frame/update_simulation/end_simulation_frame,
+// on_visage_before_update, project_settings_reloaded;
 // optional register_project_ui_bindings дополняет gameplay/UI API. Стандартный UI
 // startup, engine Lua bindings,
 // font GPU-view и sound-state merge принадлежат host; scene-resource composition остаётся проектным.
@@ -102,6 +103,10 @@ public:
     }
 
     this->set_frame_time(frame_time_from_fps(bootstrap_->engine.main_fps));
+    const utils::simulation_rate simulation_rate(
+      bootstrap_->engine.simulation_tick_rate);
+    simulation_pacer_.reset(simulation_rate);
+    c.clocks.set_simulation_rate(simulation_rate);
     c.clocks.set_game_scale(utils::game_time_scale::from_seconds(
       bootstrap_->settings.time.game_seconds,
       bootstrap_->settings.time.real_seconds));
@@ -214,19 +219,30 @@ public:
   void host_update(const size_t time) {
     auto& c = derived().state();
     c.lifecycle.update(*this, time);
-    // Движок централизованно решает ворота фаз (game/pause) — проект их не пересчитывает.
+    // Wall/presentation time pumps services only. It may decide how many fixed steps are due,
+    // but its value is never passed into an authoritative transition.
     const phase_gate gate = compute_phase_gate(c.lifecycle.phase(), c.pause);
     c.clocks.set_game_paused(!gate.run_gameplay);
-    c.clocks.set_presentation_paused(!gate.run_presentation);
-    const auto game_before = c.clocks.game_now();
-    c.clocks.advance(time);
-    const uint64_t game_dt = c.clocks.game_now().ticks - game_before.ticks;
+    c.clocks.advance_frame(time);
 
     begin_main_frame(c, time, systems_.sound, systems_.render,
                      [this](const uint32_t w, const uint32_t h) { derived().on_framebuffer_resize(w, h); });
 
     update_engine_services();
-    derived().update_gameplay(time, game_dt, gate);
+    derived().begin_simulation_frame(time, gate);
+
+    simulation_pacer_.add_elapsed(utils::authored_duration{time});
+    const uint64_t max_steps = std::max<uint32_t>(
+      bootstrap_->engine.max_simulation_steps_per_frame, 1u);
+    const uint64_t steps = simulation_pacer_.take_steps(max_steps);
+    for (uint64_t i = 0; i < steps; ++i) {
+      const utils::simulation_tick tick =
+        c.clocks.simulation_now() + utils::simulation_duration{1};
+      const utils::game_duration game_dt = c.clocks.advance_simulation(tick);
+      derived().update_simulation(tick, game_dt, gate);
+    }
+
+    derived().end_simulation_frame(time, gate);
 
     run_visage_frame(c, time, systems_.render, [this]() {
       advance_sound_state(derived().state());
@@ -543,6 +559,7 @@ private:
   }
 
   Bootstrap* bootstrap_ = nullptr;
+  utils::fixed_step_accumulator simulation_pacer_{utils::simulation_rate(60)};
   system_presence systems_;
   std::atomic_bool quit_requested_{false};
   int app_exit_code_ = 0;

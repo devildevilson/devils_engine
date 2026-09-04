@@ -723,7 +723,7 @@ public:
   uint64_t simulation_tick() const noexcept;
 
   snapshot save() const;
-  void load(const snapshot& value);
+  [[nodiscard]] bool load(const snapshot& value);
 
   // Project policy seams. Their data-driven forms will be ds predicates/scripts over card,
   // effect and target scopes; they deliberately do not belong to simul::turn_pipeline.

@@ -10,10 +10,11 @@
 #include <limits>
 #include <optional>
 #include <span>
-#include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+#include <devils_engine/utils/core.h>
 
 namespace devils_engine {
 namespace network {
@@ -30,6 +31,12 @@ enum class tick_record_result : uint8_t {
   recorded,
   wrong_tick,
   capacity_exceeded
+};
+
+enum class tick_seal_result : uint8_t {
+  sealed,
+  capacity_exceeded,
+  duplicate
 };
 
 template <class Tick>
@@ -116,10 +123,10 @@ public:
 
   tag_type begin(const Tick tick, const size_t capacity) {
     if (phase_ != tick_journal_phase::idle) {
-      throw std::logic_error("network::tick_journal begin outside idle phase");
+      utils::error{}("network::tick_journal begin outside idle phase");
     }
     if (generation_ == std::numeric_limits<uint64_t>::max()) {
-      throw std::overflow_error("network::tick_journal generation space exhausted");
+      utils::error{}("network::tick_journal generation space exhausted");
     }
 
     // Reserve before publishing the new tag. A failed allocation leaves the
@@ -163,27 +170,23 @@ public:
     return tick_record_result::recorded;
   }
 
-  void seal() {
+  [[nodiscard]] tick_seal_result seal() {
     require_phase(tick_journal_phase::recording, "seal outside recording phase");
     if (overflowed_) {
       phase_ = tick_journal_phase::faulted;
-      throw std::length_error("network::tick_journal capacity exceeded");
+      return tick_seal_result::capacity_exceeded;
     }
 
-    try {
-      std::sort(records_.begin(), records_.end(), semantic_less_);
-      for (size_t i = 1; i < records_.size(); ++i) {
-        if (std::invoke(semantic_equivalent_, records_[i - 1], records_[i])) {
-          phase_ = tick_journal_phase::faulted;
-          throw std::invalid_argument("network::tick_journal duplicate semantic provenance");
-        }
+    std::sort(records_.begin(), records_.end(), semantic_less_);
+    for (size_t i = 1; i < records_.size(); ++i) {
+      if (std::invoke(semantic_equivalent_, records_[i - 1], records_[i])) {
+        phase_ = tick_journal_phase::faulted;
+        return tick_seal_result::duplicate;
       }
-    } catch (...) {
-      phase_ = tick_journal_phase::faulted;
-      throw;
     }
 
     phase_ = tick_journal_phase::sealed;
+    return tick_seal_result::sealed;
   }
 
   std::span<const Record> records(const tag_type tag) const {
@@ -204,7 +207,7 @@ public:
   void retire(const tag_type tag) {
     require_tag(tag);
     if (phase_ != tick_journal_phase::consumed && phase_ != tick_journal_phase::faulted) {
-      throw std::logic_error("network::tick_journal retire before consume or fault");
+      utils::error{}("network::tick_journal retire before consume or fault");
     }
 
     records_.clear();
@@ -217,13 +220,13 @@ public:
 private:
   void require_phase(const tick_journal_phase expected, const char* message) const {
     if (phase_ != expected) {
-      throw std::logic_error(message);
+      utils::error{}("network::tick_journal {}", message);
     }
   }
 
   void require_tag(const tag_type tag) const {
     if (!current_tag_.has_value() || *current_tag_ != tag) {
-      throw std::invalid_argument("network::tick_journal stale or foreign tag");
+      utils::error{}("network::tick_journal stale or foreign tag");
     }
   }
 

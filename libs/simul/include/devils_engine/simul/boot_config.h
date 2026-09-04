@@ -27,6 +27,8 @@ struct engine_boot_config {
   bool vulkan_debug = false;
 
   uint32_t main_fps = 20;
+  uint32_t simulation_tick_rate = 60;
+  uint32_t max_simulation_steps_per_frame = 8;
   uint32_t render_fps = 60;
   uint32_t sound_fps = 60;
   uint32_t assets_fps = 60;

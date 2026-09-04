@@ -50,14 +50,24 @@ clearly neutral boundary proves that it belongs in the engine.
 14. Standalone GNS supplies encrypted transport but no certificate authority. `IP_AllowWithoutAuth=2` is valid
     only for explicitly unauthenticated development/LAN sessions; public identity authentication needs a chosen
     certificate/signaling service and must never be inferred from packet encryption alone.
-15. Wall/`chrono` time may pace a process, measure a timeout or drive presentation, but it is not causal input.
-    Gameplay calendars, cooldowns, animation events and delayed work advance from an integer simulation tick.
-16. Content-facing durations remain authored in integer microseconds. A session-wide integral tick rate converts
-    them to tick durations with ceil once they enter causal state, so a positive duration never completes early
-    and choosing 30/60/120 Hz does not require rewriting content.
-17. Gameplay animation and rendered animation are separate consumers of the same request. The main/simulation
+15. Every project has exactly three primary time coordinates: the discrete simulation tick; unscaled continuous
+    microseconds used for wall timestamps, authored durations and human-facing configuration; and active-gameplay
+    microseconds derived from committed ticks through the session rate/scale. Calendar and turns are projections,
+    while the gameplay event heap is a data structure rather than a fourth clock.
+16. Active-gameplay time stops during a local paused session. Camera/world presentation and their metric sampling
+    are gated by that same active state; UI/platform polling may continue in wall time. A multiplayer participant
+    cannot locally stop the authoritative active-gameplay timeline: opening a menu only changes local input and
+    presentation policy while session ticks continue.
+17. Content-facing durations remain authored in integer microseconds. A session-wide integral tick rate converts
+    deadlines to ticks or projects each fixed step into active-gameplay microseconds with an explicit remainder,
+    so choosing 30/60/120 Hz does not require rewriting content.
+18. Gameplay animation and rendered animation are separate consumers of the same request. The main/simulation
     owner schedules data-only gameplay events on its tick timeline; the renderer independently advances visuals
     and never sends a callback which can commit gameplay.
+19. Programming-invariant failures use the single fatal `utils::error` path; exception subclasses are not an API.
+    Invalid network/checkpoint/config data uses an explicit result (`bool`, `optional`, `expected` or a project
+    status enum) and validates a replacement before mutation. Production `try/catch` is audit debt unless an
+    unavoidable throwing dependency is being translated at one narrow boundary.
 
 ## Terms and invariants
 
@@ -101,23 +111,30 @@ clearly neutral boundary proves that it belongs in the engine.
 : An integer duration stored in content/configuration in microseconds. It expresses design time without choosing
   the session tick rate and is quantized to an integer tick duration before becoming causal state.
 
-`gameplay timeline`
+`active gameplay time`
+: A pausable/scalable continuous microsecond projection produced only by committed simulation ticks. Cooldowns,
+  calendars and other rate-sensitive gameplay quantities may use it. Its exact rational remainder is causal state.
+
+`gameplay event timeline`
 : A bounded, single-owner queue of project-owned data events keyed by simulation tick. It returns every due event
   as a canonical batch and is checkpointed with the world. It contains no callbacks, wall-clock timestamps,
   renderer handles or thread synchronization.
 
 ## Simulation time and presentation separation
 
-The authoritative loop has two clocks with different jobs:
+The engine exposes three time coordinates with different jobs:
 
 ```text
-wall/chrono pacing -> decides when the process attempts the next fixed step
-simulation tick    -> is the only time coordinate read by gameplay
-presentation time  -> interpolates/displays committed state and may run ahead/behind visually
+real microseconds    -> authored durations, wall timestamps, pacing and human-facing values
+simulation tick      -> discrete authoritative ordering and fixed-step execution
+active gameplay us   -> pausable/scalable tick-derived time for cooldowns/calendar/world presentation
 ```
 
-Changing render FPS, pausing a render thread, losing a window or running without graphics must not change which
-tick commits an action. A request such as “play attack animation” is fanned out in one direction:
+Render interpolation may sample wall time internally, but it only interpolates committed snapshots and freezes its
+world-facing state when active gameplay is paused. Metrics still measure real CPU/frame durations,
+yet their accumulation window is active-only so a menu pause does not dilute the first sample after resume.
+Changing render FPS, pausing a render thread, losing a window or running without graphics must not change which tick
+commits an action. A request such as “play attack animation” is fanned out in one direction:
 
 ```text
 project/main thread
@@ -298,7 +315,7 @@ Contract:
 
 - `TickOf(record)` must equal the open tick;
 - `try_record` never partially writes a record;
-- capacity overflow is latched and makes `seal` fail loudly;
+- capacity overflow is latched and reported by an explicit `tick_seal_result`;
 - `seal` sorts by `SemanticLess` and rejects semantic duplicates through `SemanticEquivalent`;
 - `records()` exposes only sealed storage;
 - a consumed slot cannot be reopened under the same generation accidentally;
@@ -952,8 +969,9 @@ audit are:
    different heap arrangement may choose a different plan.
 5. the root build supports AVX, AVX2 and NATIVE, and `libs/options` selects matching GLM intrinsic paths. The
    current common target has no separate deterministic simulation compile profile.
-6. `utils::timelines` contains engine/game/presentation ticks, scale, pause state and `game_remainder_`. Saving
-   actor-local `game_ticks` alone does not prove full application/session resume.
+6. `utils::timelines` now exposes a validated causal snapshot containing the session tick, game/calendar
+   projection, scale, pause state and fractional remainder. NET-03/04 must still place that section beside the
+   project world in a full application checkpoint; saving actor-local `game_ticks` alone remains insufficient.
 7. `tile_frontier::player_intent_queue` is intentionally ephemeral and its promised durable replay log does
    not yet exist. It currently rejects a second pending intent by `intent.kind`, not by
    `(principal, client_sequence)`.
@@ -1097,7 +1115,7 @@ PRE-03 Jolt math/determinism/rollback spike (deferred; not a NET-00/01 gate)
 
 TIME-00 strong simulation time + authored-duration conversion (complete)
   -> TIME-01 bounded gameplay timeline + render/gameplay split (complete)
-       -> TIME-02 fixed-step host/calendar/cooldown migration
+       -> TIME-02 fixed-step host/calendar/cooldown migration (complete)
             +-> NET-04 checkpoint + replay
             \-> SERVER-01 headless authority
 
@@ -1220,7 +1238,7 @@ calendar policy or a global clock singleton.
 
 Done without a network, ECS, client/server topology, animation backend or project event base class.
 
-### TIME-02 — fixed-step host and project migration (`M`)
+### TIME-02 — fixed-step host and project migration (`M`) — complete 2026-09-02
 
 - Make the simulation host accumulate wall time only to decide how many fixed ticks to execute; never pass
   measured frame duration into gameplay.
@@ -1228,21 +1246,42 @@ Done without a network, ECS, client/server topology, animation backend or projec
   tick coordinate while preserving explicit pause/scale commands.
 - Derive game calendar/time-of-day from absolute tick plus project policy; serialize the causal origin/remainders
   only where the chosen scale cannot be expressed exactly.
-- Convert cooldowns, delayed commands and gameplay animation resources from authored microseconds at their causal
-  boundary and include tick rate in project/session fingerprints.
+- Convert authored durations at their causal boundary. Existing tile cooldown/flag values remain integer
+  game-microseconds by project choice, but advance exclusively by the tick-derived rational projection; gameplay
+  animation deadlines use simulation ticks directly.
+- Make tick rate an explicit immutable boot/session value. NET-03 and the later handshake must include it in the
+  state/session fingerprint once those fingerprints exist.
 - Test different render rates, pacing jitter, catch-up, headless execution and snapshot/replay against identical
   tick bundles.
 
-Done when no authoritative transition reads local `chrono`/render delta and the same recorded inputs produce the
-same checkpoint bytes under multiple presentation/pacing schedules. This remains open; TIME-00/01 do not claim
-that the existing host and `tile_frontier` have already migrated.
+Done in the current host and `tile_frontier` slice:
+
+- `fixed_step_accumulator` converts arbitrarily partitioned wall/presentation elapsed time into bounded catch-up
+  steps while retaining unserved debt;
+- `game_host` executes `begin frame -> 0..N fixed simulation steps -> end frame`; only non-causal pacing,
+  interpolation and profiling see a frame delta;
+- `utils::timelines` advances gameplay only for the next explicit session tick and snapshots the exact rational
+  remainder needed for continuation;
+- `tile_frontier::actor_world_slice` consumes an external monotonic tick plus derived game duration; its former
+  local per-frame tick increment is gone, and paused/loading session-tick gaps are explicit;
+- tile render snapshots are published once per presentation frame from the final completed simulation state.
+- camera movement, render interpolation and performance-sample accumulation stop with active gameplay during a
+  local single-player/menu pause; render/UI service work itself continues.
+
+`tile_frontier_time_smoke` feeds the same recorded tick-30 intent through a one-frame 2-second schedule and a
+100-frame jittered schedule. In each Debug/Release build both schedules execute 120 ticks at 60 Hz, reach exactly
+2,000,000 game microseconds and emit the same 7,472-byte checkpoint. This does not claim cross-build byte identity.
+The catch-up cap is eight steps per main frame and retained
+debt is drained rather than discarded. Timeline snapshot continuation, speed changes, pause gaps, worker-count
+identity and save/load continuation are covered by the adjacent tests. Network bundle ownership/replay belongs to
+NET-02/04, and putting tick rate into an actual session handshake belongs to the handshake task rather than TIME-02.
 
 ### NET-00 — written contracts and fixtures (`S`) — complete 2026-09-02
 
 `libs/network` now exists as the header-only `devils_engine::network` target. Its README freezes the terms and
 non-goals, while the test fixtures provide unrelated intent and transform-state record shapes without any
-project, ECS or transport inheritance. The neutral target depends only on the engine compile-options target;
-GNS remains outside it.
+project, ECS or transport inheritance. The neutral target depends only on common engine options and the
+`utils::error` facility; GNS remains outside it.
 
 - Preserve this document as the architectural decision record.
 - Define project terminology for tick, principal, player, sequence, intent, bundle, state frame and checkpoint.
@@ -1257,7 +1296,8 @@ The first primitive is implemented in `tick_journal.h`. `begin` reserves the com
 publishing a tick tag, `try_record` rejects another tick and latches overflow without a partial append, and
 `seal` canonicalizes physical arrival order while rejecting duplicate project provenance. `consume` moves the
 storage into a const-view owning batch. A monotonically increasing 64-bit generation is part of every tag, so
-reusing a journal after the project tick type wraps cannot validate an old tag.
+reusing a journal after the project tick type wraps cannot validate an old tag. Expected seal rejection returns
+`tick_seal_result`; phase/tag misuse follows the fatal `utils::error` invariant path.
 
 - Add header-only `tick_journal` with explicit phases and runtime capacity.
 - Inject tick extraction, semantic ordering and duplicate equivalence as template policies/callables.
@@ -1474,6 +1514,17 @@ Done when the networking model is chosen per subsystem rather than globally by p
 - Add two-process soak tests, sanitizer runs and hostile packet corpus.
 
 Done before accepting traffic outside a controlled local test network.
+
+### POST-NET-AUDIT-01 — engine consistency pass (`M-L`, after the networking campaign)
+
+- Inventory direct standard-library throws and production `try/catch` blocks.
+- Route impossible engine/programming states through `utils::error`; replace expected parse/I/O/wire failures with
+  explicit result values and transactional mutation.
+- Unify the three-coordinate time vocabulary and remove local frame/tick counters which duplicate an owner.
+- Audit duplicated ownership, naming and boundary conventions exposed while networking crosses existing systems.
+
+Done when remaining catches are documented narrow adapters around unavoidable throwing dependencies, not ordinary
+control flow, and equivalent engine subsystems use the same failure/time/ownership conventions.
 
 ## Cross-platform and regression matrix
 

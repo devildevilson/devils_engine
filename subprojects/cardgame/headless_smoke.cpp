@@ -107,8 +107,8 @@ int main() {
     {1000, cg::effect_kind::thorns, cg::enemy_entity, 1, 0});
   elemental_snapshot.state.player.effects.push_back(
     {1001, cg::effect_kind::thorns, cg::player_entity, 1, 0});
-  elemental_headless.load(elemental_snapshot);
-  elemental_animated.load(elemental_snapshot);
+  check(elemental_headless.load(elemental_snapshot), "headless elemental snapshot was rejected");
+  check(elemental_animated.load(elemental_snapshot), "animated elemental snapshot was rejected");
 
   const cg::player_intent fire{
     cg::player_intent_kind::play_card, cg::card_kind::fire_strike, 1};
@@ -226,7 +226,7 @@ int main() {
   // Both authored effects in the fire-card beat cue together. Only after every gameplay marker is
   // present does the sim execute attack then status and publish one aggregated result per effect.
   cg::combat mid_resolution(cg::run_mode::animated, scripts);
-  mid_resolution.load(elemental_snapshot);
+  check(mid_resolution.load(elemental_snapshot), "mid-resolution snapshot was rejected");
   uint64_t mid_resolution_tick = mid_resolution.simulation_tick();
   check(mid_resolution.submit(fire), "could not submit mid-resolution snapshot action");
   mid_resolution.update(++mid_resolution_tick);
@@ -279,7 +279,7 @@ int main() {
   // Snapshot after the complete beat commit but before its shared finished barrier. Causal animation
   // tasks remain in the snapshot even when the resumed headless host emits no presentation commands.
   cg::combat resumed_resolution(cg::run_mode::headless, scripts);
-  resumed_resolution.load(mid_resolution.save());
+  check(resumed_resolution.load(mid_resolution.save()), "resolution snapshot was rejected");
   uint64_t resumed_resolution_tick = resumed_resolution.simulation_tick();
   drive_to_player(resumed_resolution, resumed_resolution_tick);
   check(resumed_resolution.state() == elemental_headless.state(),
@@ -288,7 +288,7 @@ int main() {
         "mid-resolution resume changed the materialized resolution trace");
 
   cg::combat resumed_retaliation(cg::run_mode::headless, scripts);
-  resumed_retaliation.load(mid_retaliation_snapshot);
+  check(resumed_retaliation.load(mid_retaliation_snapshot), "retaliation snapshot was rejected");
   uint64_t resumed_retaliation_tick = resumed_retaliation.simulation_tick();
   drive_to_player(resumed_retaliation, resumed_retaliation_tick);
   check(resumed_retaliation.state() == elemental_headless.state() &&
@@ -305,7 +305,7 @@ int main() {
     {2000, cg::effect_kind::thorns, cg::enemy_entity, 1, 0});
   multi_snapshot.state.player.effects.push_back(
     {2001, cg::effect_kind::thorns, cg::player_entity, 1, 0});
-  multi_hit.load(multi_snapshot);
+  check(multi_hit.load(multi_snapshot), "multi-hit snapshot was rejected");
   submit_and_drive(multi_hit,
                    {cg::player_intent_kind::play_card, cg::card_kind::double_strike, 1},
                    multi_hit_tick);
@@ -326,7 +326,7 @@ int main() {
   drive_to_player(beat_death, beat_death_tick);
   auto beat_death_snapshot = beat_death.save();
   beat_death_snapshot.state.enemy.hp = 2;
-  beat_death.load(beat_death_snapshot);
+  check(beat_death.load(beat_death_snapshot), "beat-death snapshot was rejected");
   submit_and_drive(beat_death,
                    {cg::player_intent_kind::play_card, cg::card_kind::combo_strike, 1},
                    beat_death_tick);
@@ -355,7 +355,7 @@ int main() {
     {3000, cg::effect_kind::thorns, cg::enemy_entity, 1, 0});
   duplicate_snapshot.state.enemy.effects.push_back(
     {3000, cg::effect_kind::thorns, cg::enemy_entity, 1, 0});
-  duplicate_thorns.load(duplicate_snapshot);
+  check(duplicate_thorns.load(duplicate_snapshot), "duplicate-thorns snapshot was rejected");
   submit_and_drive(duplicate_thorns,
                    {cg::player_intent_kind::play_card, cg::card_kind::strike, 1},
                    duplicate_thorns_tick);
@@ -370,7 +370,7 @@ int main() {
   auto immune_snapshot = immune.save();
   immune_snapshot.state.enemy.effect_immunity_mask =
     uint64_t{1} << static_cast<uint8_t>(cg::effect_kind::burning);
-  immune.load(immune_snapshot);
+  check(immune.load(immune_snapshot), "immune snapshot was rejected");
   submit_and_drive(immune, fire, immune_tick);
   check(immune.state().enemy.effects.empty(), "immune target received a forbidden effect");
   check(immune.last_resolution().effect_trace.size() == 1 &&
@@ -385,7 +385,7 @@ int main() {
   submit_and_drive(effect_update, fire, effect_update_tick);
   auto update_snapshot = effect_update.save();
   update_snapshot.state.enemy_countdown = 2; // keep this focused action before the enemy intent
-  effect_update.load(update_snapshot);
+  check(effect_update.load(update_snapshot), "effect-update snapshot was rejected");
   submit_and_drive(effect_update, fire, effect_update_tick);
   check(effect_update.state().enemy.effects.size() == 1 &&
           effect_update.state().enemy.effects.front().stacks == 2,
@@ -410,7 +410,7 @@ int main() {
 
   const auto snap = in_flight.save();
   cg::combat resumed(cg::run_mode::headless, scripts);
-  resumed.load(snap);
+  check(resumed.load(snap), "resume snapshot was rejected");
   uint64_t resumed_tick = resumed.simulation_tick();
   drive_to_player(resumed, resumed_tick);
 

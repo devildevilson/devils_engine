@@ -43,7 +43,9 @@ Guarantees:
   only through a const view instead of leaving a view into a reusable slot;
 - every open cycle has a 64-bit generation tag, so reuse after tick-number
   wrap cannot accept a stale tag;
-- invalid lifecycle operations throw rather than silently resetting state.
+- capacity/duplicate rejection is an explicit `tick_seal_result`;
+- invalid lifecycle operations are programming errors routed through the
+  engine's fatal `utils::error` handler rather than exception subtypes.
 
 The comparator must be a strict weak order and semantically equivalent records
 must form one adjacent equivalence class under that order. `TickOf` must return
@@ -54,5 +56,6 @@ Explicit non-goals of this slice: sockets, threads, ACKs, packet encoding,
 authentication, tick acceptance windows, prediction, rollback, checkpointing,
 ECS knowledge, compression and encryption.
 
-The target is header-only and depends only on C++23 plus
-`devils_engine::options`. `devils_engine::network` contains no GNS type.
+The target is header-only and depends only on C++23, `devils_engine::options`
+and the common `devils_engine::utils` error facility. `devils_engine::network`
+contains no GNS type.

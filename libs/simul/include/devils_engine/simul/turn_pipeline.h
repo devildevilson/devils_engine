@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -46,7 +45,7 @@ public:
   void expect(const animation_event event) {
     if (std::find(pending_.begin(), pending_.end(), event) != pending_.end()) return;
     if (pending_.size() == capacity_) {
-      throw std::length_error("gameplay barrier capacity exceeded");
+      utils::error{}("gameplay barrier capacity exceeded");
     }
     pending_.push_back(event);
   }
@@ -66,15 +65,20 @@ public:
     return pending_.size();
   }
 
+  size_t capacity() const noexcept {
+    return capacity_;
+  }
+
   const std::vector<animation_event>& pending() const noexcept {
     return pending_;
   }
 
-  void load(const std::span<const animation_event> pending) {
+  [[nodiscard]] bool load(const std::span<const animation_event> pending) {
     if (pending.size() > capacity_) {
-      throw std::length_error("gameplay barrier snapshot exceeds capacity");
+      return false;
     }
     pending_.assign(pending.begin(), pending.end());
+    return true;
   }
 
 private:
@@ -145,22 +149,17 @@ public:
     const auto result = timeline_.try_schedule({at, task, uint32_t(kind), kind});
     switch (result) {
       case schedule_result::scheduled:
-        try {
-          barrier_.expect({task, kind});
-        } catch (...) {
-          faulted_ = true;
-          throw;
-        }
+        barrier_.expect({task, kind});
         return;
       case schedule_result::duplicate:
         faulted_ = true;
-        throw std::invalid_argument("turn pipeline duplicate animation event");
+        utils::error{}("turn pipeline duplicate animation event");
       case schedule_result::past_tick:
         faulted_ = true;
-        throw std::invalid_argument("turn pipeline animation event is in the past");
+        utils::error{}("turn pipeline animation event is in the past");
       case schedule_result::capacity_exceeded:
         faulted_ = true;
-        throw std::length_error("turn pipeline animation event capacity exceeded");
+        utils::error{}("turn pipeline animation event capacity exceeded");
     }
   }
 
@@ -174,23 +173,26 @@ public:
     return snapshot{cursor_, timeline_.save(), barrier_.pending(), waiting_, faulted_};
   }
 
-  void load(const snapshot& value) {
+  [[nodiscard]] bool load(const snapshot& value) {
     Cursor prepared_cursor = value.cursor;
     timeline_type candidate(timeline_.capacity());
-    candidate.load(value.timeline);
+    if (!candidate.load(value.timeline)) return false;
+
+    gameplay_barrier candidate_barrier(barrier_.capacity());
+    if (!candidate_barrier.load(value.pending)) return false;
 
     const auto scheduled = candidate.pending_ordered();
     if (scheduled.size() != value.pending.size()) {
-      throw std::invalid_argument("turn pipeline snapshot barrier/timeline size mismatch");
+      return false;
     }
     if (!scheduled.empty() && !value.waiting) {
-      throw std::invalid_argument("turn pipeline snapshot has events without a wait");
+      return false;
     }
     for (size_t i = 0; i < value.pending.size(); ++i) {
       const auto& event = value.pending[i];
       if (std::find(value.pending.begin(), value.pending.begin() + i, event) !=
           value.pending.begin() + i) {
-        throw std::invalid_argument("turn pipeline snapshot contains a duplicate barrier event");
+        return false;
       }
       const auto match = std::find_if(scheduled.begin(), scheduled.end(),
         [&](const typename timeline_type::event_type& queued) {
@@ -199,16 +201,17 @@ public:
                  queued.payload == event.kind;
         });
       if (match == scheduled.end()) {
-        throw std::invalid_argument("turn pipeline snapshot barrier/timeline event mismatch");
+        return false;
       }
     }
 
     using std::swap;
     swap(cursor_, prepared_cursor);
     timeline_ = std::move(candidate);
-    barrier_.load(value.pending);
+    barrier_ = std::move(candidate_barrier);
     waiting_ = value.waiting;
     faulted_ = value.faulted;
+    return true;
   }
 
   template <typename Host>
@@ -219,7 +222,7 @@ public:
       for (const auto& due : timeline_.advance_to(tick)) {
         if (!barrier_.notify({due.source, due.payload})) {
           faulted_ = true;
-          throw std::logic_error("turn pipeline released an event outside its barrier");
+          utils::error{}("turn pipeline released an event outside its barrier");
         }
       }
 
@@ -232,7 +235,7 @@ public:
       const step_control control = host.run_step(cursor_, *this);
       if (control != step_control::wait && !barrier_.resolved()) {
         faulted_ = true;
-        throw std::logic_error("turn pipeline host scheduled an event without waiting");
+        utils::error{}("turn pipeline host scheduled an event without waiting");
       }
       switch (control) {
         case step_control::advance:

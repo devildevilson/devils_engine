@@ -48,8 +48,6 @@ int main() {
   const uint32_t count = 2000;
   const glm::vec2 mn{0.5f, 0.5f}, mx{64.0f, 64.0f};
   const uint32_t tex = 4;
-  const uint64_t dt = devils_engine::utils::timeline_ticks_per_second / 60; // µs game-времени за тик
-
   thread::atomic_pool single_pool(1);
   thread::atomic_pool pool(4); // тем же пулом гоняем оба слайса ⇒ MT-детерминизм тоже под тестом
 
@@ -65,10 +63,13 @@ int main() {
     tf::actor_world_slice one_worker, four_workers;
     one_worker.init(512, mn, mx, tex, brains);
     four_workers.init(512, mn, mx, tex, brains);
+    utils::timelines clocks(utils::simulation_rate(60));
     int worker_count_diverged_at = -1;
     for (int i = 1; i <= 45 && worker_count_diverged_at < 0; ++i) {
-      one_worker.update(dt, batch_a, single_pool);
-      four_workers.update(dt, batch_b, pool);
+      const auto tick = clocks.simulation_now() + utils::simulation_duration{1};
+      const auto game_delta = clocks.advance_simulation(tick);
+      one_worker.update(tick, game_delta, batch_a, single_pool);
+      four_workers.update(tick, game_delta, batch_b, pool);
       if (dump(one_worker) != dump(four_workers)) {
         worker_count_diverged_at = i;
       }
@@ -81,8 +82,10 @@ int main() {
   // --- warmup: настоящий геймплей до момента снапшота (поедание/респавн/FSM успели наработать) ---
   tf::actor_world_slice a;
   a.init(count, mn, mx, tex, brains);
+  utils::timelines clocks_a(utils::simulation_rate(60));
   for (int i = 0; i < 60; ++i) {
-    a.update(dt, batch_a, pool);
+    const auto tick = clocks_a.simulation_now() + utils::simulation_duration{1};
+    a.update(tick, clocks_a.advance_simulation(tick), batch_a, pool);
   }
 
   // --- save → load в чистый слайс ---
@@ -94,6 +97,8 @@ int main() {
     std::printf("RESUME FAILED: load returned false\n");
     return 1;
   }
+  utils::timelines clocks_b(utils::simulation_rate(1));
+  CHECK(clocks_b.restore_causal_state(clocks_a.causal_state()));
 
   // --- сразу после load миры должны быть побайтово равны ---
   const bool equal_after_load = dump(a) == dump(b);
@@ -103,8 +108,14 @@ int main() {
   // --- гоняем оба дальше синхронно: должны оставаться идентичны тик-в-тик ---
   int diverged_at = -1;
   for (int i = 1; i <= 120 && diverged_at < 0; ++i) {
-    const auto ma = a.update(dt, batch_a, pool);
-    const auto mb = b.update(dt, batch_b, pool);
+    const auto tick_a = clocks_a.simulation_now() + utils::simulation_duration{1};
+    const auto tick_b = clocks_b.simulation_now() + utils::simulation_duration{1};
+    const auto dt_a = clocks_a.advance_simulation(tick_a);
+    const auto dt_b = clocks_b.advance_simulation(tick_b);
+    CHECK(tick_a == tick_b);
+    CHECK(dt_a == dt_b);
+    const auto ma = a.update(tick_a, dt_a, batch_a, pool);
+    const auto mb = b.update(tick_b, dt_b, batch_b, pool);
     if (ma.actors != mb.actors || ma.ticks != mb.ticks || dump(a) != dump(b)) {
       diverged_at = i;
     }

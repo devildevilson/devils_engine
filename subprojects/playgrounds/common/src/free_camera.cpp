@@ -16,10 +16,12 @@ glm::vec3 free_camera::right() const noexcept {
   return glm::normalize(glm::cross(forward(), glm::vec3{0.0f, 1.0f, 0.0f}));
 }
 
-void free_camera::update(const camera_motion& motion, const float dt) {
+void free_camera::look(const camera_motion& motion) noexcept {
   yaw += motion.look_delta.x * look_sensitivity;
   pitch = std::clamp(pitch - motion.look_delta.y * look_sensitivity, -1.55334306f, 1.55334306f);
+}
 
+glm::vec3 free_camera::displacement(const camera_motion& motion, const float dt) const noexcept {
   const float speed = move_speed * (motion.fast ? fast_multiplier : 1.0f) * std::max(dt, 0.0f);
   const auto world_up = glm::vec3{0.0f, 1.0f, 0.0f};
   glm::vec3 delta = forward() * motion.forward + right() * motion.right + world_up * motion.up;
@@ -27,7 +29,14 @@ void free_camera::update(const camera_motion& motion, const float dt) {
   if (length > 1.0f) {
     delta /= length;
   }
-  position += delta * speed;
+  return delta * speed;
+}
+
+void free_camera::update(const camera_motion& motion, const float dt) {
+  // Порядок важен и сохранён: взгляд применяется ДО движения, поэтому «вперёд» считается уже по
+  // новому направлению. Потребитель, складывающий позицию сам, обязан сохранить тот же порядок.
+  look(motion);
+  position += displacement(motion, dt);
 }
 
 glm::mat4 free_camera::view() const noexcept {

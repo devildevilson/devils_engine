@@ -136,18 +136,31 @@ std::pair<std::size_t, std::size_t> tile_frontier_game::loading_progress() const
   return {chunks_loaded_count_, chunks_loaded_.size()};
 }
 
-void tile_frontier_game::update(const frame_context& context) {
+void tile_frontier_game::begin_frame(const presentation_context& context) {
   drain_loaded_chunks(context.messages, context.generation);
-  move_camera(context); // presentation-контрол: двигается и при gameplay-паузе
+  if (context.render_available) {
+    auto& state = context.messages.active_gameplay_state.write_slot();
+    state.active = context.gate.run_gameplay;
+    context.messages.active_gameplay_state.publish();
+  }
+  move_camera(context);
   collect_player_intents(context);
-  publish_camera_and_tiles(context);
-  publish_sound_listener(context.messages, context.sound_available); // слушатель = камера, и на паузе
-  if (context.gate.run_gameplay && actor_batch_.valid()) {
+  publish_sound_listener(context.messages, context.sound_available);
+}
+
+void tile_frontier_game::update_simulation(const simulation_context& context) {
+  if (context.run_gameplay && actor_batch_.valid()) {
     update_actors(context);
   }
 }
 
-void tile_frontier_game::collect_player_intents(const frame_context& context) {
+void tile_frontier_game::end_frame(const presentation_context& context) {
+  publish_camera_and_tiles(context);
+  publish_actor_snapshot(context);
+  update_metrics(context.settings.metrics, context.gate.run_gameplay);
+}
+
+void tile_frontier_game::collect_player_intents(const presentation_context& context) {
   if (!context.gate.run_gameplay) {
     return;
   }
@@ -172,10 +185,10 @@ void tile_frontier_game::collect_player_intents(const frame_context& context) {
 
 // Первый живой player-input: named actions camera_* (WASD, standard key bindings) двигают
 // камеру со скоростью, пропорциональной видимой полуширине (одинаково ощущается на любом зуме).
-// Presentation-плоскость: реальное время кадра (context.time), game pause/scale не влияют; точка
-// камеры не выходит за мировой бокс тайлов.
-void tile_frontier_game::move_camera(const frame_context& context) {
-  if (!context.gate.in_game) {
+// Presentation-плоскость: скорость задаётся в понятном человеку real-time, но active-gameplay gate
+// замораживает камеру вместе с миром на локальной паузе. Точка не выходит за мировой бокс тайлов.
+void tile_frontier_game::move_camera(const presentation_context& context) {
+  if (!context.gate.run_gameplay) {
     return;
   }
   static const auto up = input::events::make_event_id("camera_up");
@@ -236,7 +249,7 @@ void tile_frontier_game::drain_loaded_chunks(broker& messages, const uint64_t ge
   }
 }
 
-void tile_frontier_game::publish_camera_and_tiles(const frame_context& context) {
+void tile_frontier_game::publish_camera_and_tiles(const presentation_context& context) {
   if (!tile_batch_.valid()) {
     return;
   }
@@ -245,7 +258,7 @@ void tile_frontier_game::publish_camera_and_tiles(const frame_context& context) 
   // собирает рендер-поток, интерполируя prev→cur по реальным часам (см. render_system.cpp) — иначе
   // камера шагала бы с частотой main-тика на фоне плавных акторов.
   const glm::mat4 view_projection = camera_.view_proj();
-  if (context.render_available) {
+  if (context.render_available && context.gate.run_gameplay) {
     auto& cam = context.messages.draw_camera.write_slot();
     cam.center_x = camera_.center.x;
     cam.center_y = camera_.center.y;
@@ -280,33 +293,42 @@ void tile_frontier_game::publish_camera_and_tiles(const frame_context& context) 
   context.messages.draw_tiles.publish();
 }
 
-void tile_frontier_game::update_actors(const frame_context& context) {
+void tile_frontier_game::update_actors(const simulation_context& context) {
   const auto begin = std::chrono::steady_clock::now();
-  actors_last_metrics_ = actors_.update(context.game_delta_ticks, actor_batch_, context.pool);
+  actors_last_metrics_ = actors_.update(context.tick, context.game_delta, actor_batch_, context.pool);
   const auto end = std::chrono::steady_clock::now();
   const uint64_t update_us = uint64_t(std::max<int64_t>(utils::count_mcs(begin, end), 0));
 
-  if (context.render_available) {
-    auto& slot = context.messages.draw_actors.write_slot();
-    slot.count = actor_batch_.count();
-    slot.stride = actor_batch::stride();
-    slot.sim_frame_time = context.time;
-    slot.bytes.resize(size_t(slot.count) * slot.stride);
-    actor_batch_.blit(std::span<uint8_t>(slot.bytes));
-    slot.ids.assign(actor_batch_.ids().begin(), actor_batch_.ids().end());
+  publish_actor_sounds(context.messages, context.sound_available);
+  metrics_actor_ticks_ += 1;
+  metrics_intents_ += actors_last_metrics_.intents;
+  metrics_instances_ += actors_last_metrics_.instances;
+  metrics_actor_update_us_ += update_us;
+}
 
-    if (!actors_logged_) {
-      DE_TRACE(catalogue::log_domain::gameplay,
-               "actor slice {} actors, {} intents, {} instances, {} B/inst, {} B payload",
-               actors_last_metrics_.actors, actors_last_metrics_.intents, slot.count,
-               slot.stride, slot.bytes.size());
-      actors_logged_ = true;
-    }
-    context.messages.draw_actors.publish();
+void tile_frontier_game::publish_actor_snapshot(const presentation_context& context) {
+  if (!context.gate.run_gameplay || !context.render_available || !actor_batch_.valid()) {
+    return;
   }
 
-  publish_actor_sounds(context.messages, context.sound_available);
-  update_metrics(context.settings.metrics, update_us);
+  auto& slot = context.messages.draw_actors.write_slot();
+  slot.count = actor_batch_.count();
+  slot.stride = actor_batch::stride();
+  // One snapshot publication per presentation frame. Several fixed simulation steps may have
+  // contributed to this final state; render interpolation remains wall-time presentation work.
+  slot.sim_frame_time = context.time;
+  slot.bytes.resize(size_t(slot.count) * slot.stride);
+  actor_batch_.blit(std::span<uint8_t>(slot.bytes));
+  slot.ids.assign(actor_batch_.ids().begin(), actor_batch_.ids().end());
+
+  if (!actors_logged_) {
+    DE_TRACE(catalogue::log_domain::gameplay,
+             "actor slice {} actors, {} intents, {} instances, {} B/inst, {} B payload",
+             actors_last_metrics_.actors, actors_last_metrics_.intents, slot.count,
+             slot.stride, slot.bytes.size());
+    actors_logged_ = true;
+  }
+  context.messages.draw_actors.publish();
 }
 
 // Слушатель = точка камеры (top-down дефолтная ориентация из command_sound_listener: панорама
@@ -374,17 +396,20 @@ void tile_frontier_game::publish_actor_sounds(broker& messages, const bool sound
   }
 }
 
-void tile_frontier_game::update_metrics(const metrics_config& config, const uint64_t update_us) {
-  metrics_frames_ += 1;
-  metrics_actor_ticks_ += 1;
-  metrics_intents_ += actors_last_metrics_.intents;
-  metrics_instances_ += actors_last_metrics_.instances;
-  metrics_actor_update_us_ += update_us;
-
-  if (!config.enabled) {
+void tile_frontier_game::update_metrics(const metrics_config& config, const bool active) {
+  const auto now = std::chrono::steady_clock::now();
+  if (!active || !config.enabled) {
+    // FPS/CPU costs are real-time measurements by definition, but their sampling window is an
+    // active-gameplay window: menu pause must not dilute the first result after resume.
+    metrics_last_log_ = now;
+    metrics_frames_ = 0;
+    metrics_actor_ticks_ = 0;
+    metrics_intents_ = 0;
+    metrics_instances_ = 0;
+    metrics_actor_update_us_ = 0;
     return;
   }
-  const auto now = std::chrono::steady_clock::now();
+  metrics_frames_ += 1;
   const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
     now - metrics_last_log_).count();
   if (elapsed_ms < config.log_interval_ms || metrics_frames_ == 0) {
@@ -395,7 +420,9 @@ void tile_frontier_game::update_metrics(const metrics_config& config, const uint
   ui_main_fps_ = double(metrics_frames_) / seconds;
   ui_intents_per_sec_ = double(metrics_intents_) / seconds;
   ui_instances_per_sec_ = double(metrics_instances_) / seconds;
-  ui_actor_update_avg_us_ = double(metrics_actor_update_us_) / double(metrics_actor_ticks_);
+  ui_actor_update_avg_us_ = metrics_actor_ticks_ == 0
+    ? 0.0
+    : double(metrics_actor_update_us_) / double(metrics_actor_ticks_);
   DE_LOG(catalogue::log_domain::main, flow,
          "metrics: main_fps={:.1f}, actors={}, intents/s={:.0f}, actor_instances/s={:.0f}, actor_update_avg_us={:.1f}",
          ui_main_fps_, actors_last_metrics_.actors, ui_intents_per_sec_,

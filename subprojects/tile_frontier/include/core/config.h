@@ -27,6 +27,10 @@ struct window_config {
 
 struct simulation_config {
   uint32_t main_fps = 20;
+  // Authoritative session coordinate. main_fps only controls platform/input/presentation pumping.
+  uint32_t tick_rate = 60;
+  // Catch-up is bounded per main frame but debt is retained, never discarded.
+  uint32_t max_steps_per_frame = 8;
   uint32_t sound_fps = 60;
   uint32_t render_fps = 60;
   uint32_t assets_fps = 60;

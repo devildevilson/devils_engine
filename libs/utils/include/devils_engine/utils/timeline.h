@@ -6,18 +6,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <stdexcept>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "simulation_time.h"
+
 namespace devils_engine {
 namespace utils {
 
-inline constexpr uint64_t timeline_ticks_per_second = UINT64_C(1000000); // microseconds
+inline constexpr uint64_t timeline_ticks_per_second = microseconds_per_second; // microseconds
 
 enum class clock_domain : uint8_t { engine,
-                                    presentation,
                                     game,
                                     calendar };
 
@@ -44,11 +44,9 @@ struct basic_duration {
 };
 
 using engine_timestamp = basic_timestamp<clock_domain::engine>;
-using presentation_timestamp = basic_timestamp<clock_domain::presentation>;
 using game_timestamp = basic_timestamp<clock_domain::game>;
 using calendar_timestamp = basic_timestamp<clock_domain::calendar>;
 using engine_duration = basic_duration<clock_domain::engine>;
-using presentation_duration = basic_duration<clock_domain::presentation>;
 using game_duration = basic_duration<clock_domain::game>;
 using calendar_duration = basic_duration<clock_domain::calendar>;
 
@@ -66,7 +64,6 @@ struct basic_deadline {
 };
 
 using engine_deadline = basic_deadline<clock_domain::engine>;
-using presentation_deadline = basic_deadline<clock_domain::presentation>;
 using game_deadline = basic_deadline<clock_domain::game>;
 using calendar_deadline = basic_deadline<clock_domain::calendar>;
 
@@ -80,7 +77,7 @@ public:
                                      const uint32_t engine_ticks = 1)
     : game_ticks_(game_ticks), engine_ticks_(engine_ticks) {
     if (game_ticks == 0 || engine_ticks == 0) {
-      throw std::invalid_argument("game_time_scale: ratio terms must be positive");
+      error{}("game_time_scale: ratio terms must be positive");
     }
   }
 
@@ -132,15 +129,28 @@ struct turn_deadline {
   }
 };
 
-// Engine always advances. Presentation is real-rate but pausable (world animation). Game is both
-// pausable and scaled. Turns are an orthogonal discrete gameplay coordinate.
+// Three coordinates are intentionally enough: the discrete simulation tick, unscaled engine/wall
+// microseconds, and the pausable/scalable active-gameplay microsecond timeline. Calendar and turns
+// are projections/coordinates over gameplay, not additional continuously advancing clocks.
+struct timelines_causal_state {
+  simulation_tick simulation{};
+  game_timestamp game{};
+  turn_index turn{};
+  uint64_t game_remainder = 0;
+  uint32_t ticks_per_second = 60;
+  uint32_t scale_game_ticks = 1;
+  uint32_t scale_engine_ticks = 1;
+  bool game_paused = false;
+  constexpr auto operator<=>(const timelines_causal_state&) const noexcept = default;
+};
+
 class timelines {
 public:
+  constexpr explicit timelines(const simulation_rate rate = simulation_rate(60)) noexcept
+    : simulation_rate_(rate) {}
+
   constexpr engine_timestamp engine_now() const noexcept {
     return {engine_ticks_};
-  }
-  constexpr presentation_timestamp presentation_now() const noexcept {
-    return {presentation_ticks_};
   }
   constexpr game_timestamp game_now() const noexcept {
     return {game_ticks_};
@@ -148,18 +158,82 @@ public:
   constexpr turn_index turn_now() const noexcept {
     return {turn_};
   }
+  constexpr simulation_tick simulation_now() const noexcept {
+    return simulation_tick_;
+  }
+  constexpr simulation_rate simulation_rate_value() const noexcept {
+    return simulation_rate_;
+  }
 
-  constexpr void advance(const uint64_t delta_ticks) noexcept {
+  constexpr timelines_causal_state causal_state() const noexcept {
+    return {
+      .simulation = simulation_tick_,
+      .game = {game_ticks_},
+      .turn = {turn_},
+      .game_remainder = game_remainder_,
+      .ticks_per_second = simulation_rate_.ticks_per_second(),
+      .scale_game_ticks = scale_.game_ticks(),
+      .scale_engine_ticks = scale_.engine_ticks(),
+      .game_paused = game_paused_,
+    };
+  }
+
+  // Checkpoint/network input is fallible data, not a programming invariant. Validate the full
+  // candidate before replacing live causal state.
+  constexpr bool restore_causal_state(const timelines_causal_state& value) {
+    if (value.ticks_per_second == 0 || value.scale_game_ticks == 0 ||
+        value.scale_engine_ticks == 0) {
+      return false;
+    }
+    const simulation_rate rate(value.ticks_per_second);
+    const game_time_scale scale(value.scale_game_ticks, value.scale_engine_ticks);
+    const uint64_t denominator =
+      uint64_t(rate.ticks_per_second()) * scale.engine_ticks();
+    if (value.game_remainder >= denominator) {
+      return false;
+    }
+    simulation_tick_ = value.simulation;
+    game_ticks_ = value.game.ticks;
+    turn_ = value.turn.value;
+    game_remainder_ = value.game_remainder;
+    simulation_rate_ = rate;
+    scale_ = scale;
+    game_paused_ = value.game_paused;
+    return true;
+  }
+
+  constexpr void advance_frame(const uint64_t delta_ticks) noexcept {
     engine_ticks_ += delta_ticks;
-    if (!presentation_paused_) {
-      presentation_ticks_ += delta_ticks;
+  }
+
+  constexpr game_duration advance_simulation(const simulation_tick next) {
+    if (simulation_tick_.value == std::numeric_limits<uint64_t>::max() ||
+        next.value != simulation_tick_.value + 1) {
+      error{}("timelines require the next consecutive simulation tick");
     }
-    if (!game_paused_) {
-      game_ticks_ += (delta_ticks / scale_.engine_ticks()) * scale_.game_ticks();
-      const uint64_t scaled_remainder = (delta_ticks % scale_.engine_ticks()) * scale_.game_ticks() + game_remainder_;
-      game_ticks_ += scaled_remainder / scale_.engine_ticks();
-      game_remainder_ = scaled_remainder % scale_.engine_ticks();
+    simulation_tick_ = next;
+    if (game_paused_) return {};
+
+    const uint64_t numerator =
+      microseconds_per_second * uint64_t(scale_.game_ticks());
+    const uint64_t denominator =
+      uint64_t(simulation_rate_.ticks_per_second()) * scale_.engine_ticks();
+    uint64_t delta = numerator / denominator;
+    const uint64_t added_remainder = numerator % denominator;
+    if (added_remainder >= denominator - game_remainder_) {
+      if (delta == std::numeric_limits<uint64_t>::max()) {
+        error{}("gameplay time delta overflow");
+      }
+      ++delta;
+      game_remainder_ = added_remainder - (denominator - game_remainder_);
+    } else {
+      game_remainder_ += added_remainder;
     }
+    if (delta > std::numeric_limits<uint64_t>::max() - game_ticks_) {
+      error{}("gameplay time overflow");
+    }
+    game_ticks_ += delta;
+    return {delta};
   }
 
   constexpr void set_game_paused(const bool value) noexcept {
@@ -167,16 +241,6 @@ public:
   }
   constexpr bool game_paused() const noexcept {
     return game_paused_;
-  }
-  constexpr void set_presentation_paused(const bool value) noexcept {
-    presentation_paused_ = value;
-  }
-  constexpr bool presentation_paused() const noexcept {
-    return presentation_paused_;
-  }
-  constexpr void set_world_paused(const bool value) noexcept {
-    game_paused_ = value;
-    presentation_paused_ = value;
   }
 
   constexpr void set_game_scale(const game_time_scale value) noexcept {
@@ -187,9 +251,14 @@ public:
     return scale_;
   }
 
-  constexpr void set_game_time(const game_timestamp value) noexcept {
-    game_ticks_ = value.ticks;
+  void set_simulation_rate(const simulation_rate value) {
+    if (simulation_tick_.value != 0) {
+      error{}("simulation rate is immutable after the first tick");
+    }
+    simulation_rate_ = value;
+    game_remainder_ = 0;
   }
+
   constexpr void advance_turns(const turn_duration value = {1}) noexcept {
     if (!game_paused_) {
       turn_ += value.turns;
@@ -201,13 +270,13 @@ public:
 
 private:
   uint64_t engine_ticks_ = 0;
-  uint64_t presentation_ticks_ = 0;
   uint64_t game_ticks_ = 0;
   uint64_t turn_ = 0;
   uint64_t game_remainder_ = 0;
+  simulation_tick simulation_tick_{};
+  simulation_rate simulation_rate_{60};
   game_time_scale scale_{};
   bool game_paused_ = false;
-  bool presentation_paused_ = false;
 };
 
 struct calendar_time_parts {
@@ -235,11 +304,11 @@ public:
                            std::vector<uint32_t> days_in_month = {})
     : hours_per_day_(hours_per_day), days_in_month_(std::move(days_in_month)) {
     if (hours_per_day_ == 0) {
-      throw std::invalid_argument("calendar_policy: hours_per_day must be positive");
+      error{}("calendar_policy: hours_per_day must be positive");
     }
     for (const auto days : days_in_month_) {
       if (days == 0) {
-        throw std::invalid_argument("calendar_policy: month must contain at least one day");
+        error{}("calendar_policy: month must contain at least one day");
       }
       days_per_year_ += days;
     }
@@ -253,7 +322,7 @@ public:
   }
   uint32_t days_in_month(const uint32_t month) const {
     if (month == 0 || month > days_in_month_.size()) {
-      throw std::out_of_range("calendar_policy: invalid month");
+      error{}("calendar_policy: invalid month");
     }
     return days_in_month_[month - 1];
   }
@@ -315,13 +384,13 @@ public:
                                       const uint32_t hour = 0, const uint32_t minute = 0,
                                       const uint32_t second = 0, const uint32_t subsecond_ticks = 0) const {
     if (!has_calendar()) {
-      throw std::logic_error("calendar_policy: no months configured");
+      error{}("calendar_policy: no months configured");
     }
     if (month == 0 || month > days_in_month_.size()) {
-      throw std::out_of_range("calendar_policy: invalid month");
+      error{}("calendar_policy: invalid month");
     }
     if (day == 0 || day > days_in_month_[month - 1]) {
-      throw std::out_of_range("calendar_policy: invalid day");
+      error{}("calendar_policy: invalid day");
     }
     uint64_t absolute_day = year * days_per_year_;
     for (uint32_t i = 0; i + 1 < month; ++i) {
@@ -336,7 +405,7 @@ private:
                      const uint32_t subsecond_ticks) const {
     if (hour >= hours_per_day_ || minute >= 60 || second >= 60 ||
         subsecond_ticks >= timeline_ticks_per_second) {
-      throw std::out_of_range("calendar_policy: invalid time of day");
+      error{}("calendar_policy: invalid time of day");
     }
   }
 
@@ -372,10 +441,10 @@ public:
                           calendar_step per_turn = {})
     : source_(source), policy_(std::move(policy)), epoch_(epoch), per_turn_(per_turn) {
     if (source_ == calendar_source::turn && per_turn_.empty()) {
-      throw std::invalid_argument("calendar_clock: turn source requires a non-zero per-turn step");
+      error{}("calendar_clock: turn source requires a non-zero per-turn step");
     }
     if ((per_turn_.months != 0 || per_turn_.years != 0) && !policy_.has_calendar()) {
-      throw std::invalid_argument("calendar_clock: month/year turn step requires configured months");
+      error{}("calendar_clock: month/year turn step requires configured months");
     }
   }
 
@@ -405,14 +474,14 @@ public:
 private:
   static uint64_t checked_add(const uint64_t a, const uint64_t b) {
     if (b > std::numeric_limits<uint64_t>::max() - a) {
-      throw std::overflow_error("calendar_clock: timestamp overflow");
+      error{}("calendar_clock: timestamp overflow");
     }
     return a + b;
   }
 
   static uint64_t checked_mul(const uint64_t a, const uint64_t b) {
     if (a != 0 && b > std::numeric_limits<uint64_t>::max() / a) {
-      throw std::overflow_error("calendar_clock: timestamp overflow");
+      error{}("calendar_clock: timestamp overflow");
     }
     return a * b;
   }

@@ -65,7 +65,7 @@ int main() {
   inverse_snapshot.state.enemy.effects.push_back(
     {2999, cg::effect_kind::thorns, cg::enemy_entity, 2, 0});
   inverse_snapshot.state.enemy_countdown = 10;
-  inverse.load(inverse_snapshot);
+  check(inverse.load(inverse_snapshot), "inverse snapshot was rejected");
   (void)submit_and_drive(inverse, cg::card_kind::inverse_strike, inverse_tick);
   const auto& inverse_work = inverse.last_resolution();
   check(inverse.state().enemy.hp == 95 && inverse.state().enemy.shield == 4 &&
@@ -104,7 +104,7 @@ int main() {
   shield_snapshot.state.enemy.effects.push_back(
     {3000, cg::effect_kind::thorns, cg::enemy_entity, 3, 0});
   shield_snapshot.state.enemy_countdown = 10;
-  shield_only.load(shield_snapshot);
+  check(shield_only.load(shield_snapshot), "shield snapshot was rejected");
   const auto shield_commands =
     submit_and_drive(shield_only, cg::card_kind::strike, shield_tick);
   const auto& shield_work = shield_only.last_resolution();
@@ -153,7 +153,7 @@ int main() {
   shield_element_snapshot.state.enemy.shield = 10;
   shield_element_snapshot.state.enemy.elemental_mark = cg::element::water;
   shield_element_snapshot.state.enemy_countdown = 10;
-  shield_element.load(shield_element_snapshot);
+  check(shield_element.load(shield_element_snapshot), "shield-element snapshot was rejected");
   (void)submit_and_drive(
     shield_element, cg::card_kind::fire_strike, shield_element_tick);
   const auto& shield_element_work = shield_element.last_resolution();
@@ -183,7 +183,7 @@ int main() {
   overflow_snapshot.state.enemy.effects.push_back(
     {3000, cg::effect_kind::thorns, cg::enemy_entity, 1, 0});
   overflow_snapshot.state.enemy_countdown = 10;
-  overflow.load(overflow_snapshot);
+  check(overflow.load(overflow_snapshot), "overflow snapshot was rejected");
   (void)submit_and_drive(overflow, cg::card_kind::strike, overflow_tick);
   const auto& overflow_work = overflow.last_resolution();
   check(overflow.state().enemy.shield == 0 && overflow.state().enemy.hp == 6 &&
@@ -235,7 +235,7 @@ int main() {
   retaliation_snapshot.state.player.effects.push_back(
     {3002, cg::effect_kind::thorns, cg::player_entity, 3, 0});
   retaliation_snapshot.state.enemy_countdown = 10;
-  routed_retaliation.load(retaliation_snapshot);
+  check(routed_retaliation.load(retaliation_snapshot), "retaliation snapshot was rejected");
   const auto retaliation_commands = submit_and_drive(
     routed_retaliation, cg::card_kind::strike, retaliation_tick);
   const auto& retaliation_work = routed_retaliation.last_resolution();
@@ -278,8 +278,8 @@ int main() {
   healing_snapshot.state.player.hp = 20;
   healing_snapshot.state.player.healing_effectiveness_basis_points = 5000;
   healing_snapshot.state.enemy_countdown = 10;
-  healing_headless.load(healing_snapshot);
-  healing_animated.load(healing_snapshot);
+  check(healing_headless.load(healing_snapshot), "headless healing snapshot was rejected");
+  check(healing_animated.load(healing_snapshot), "animated healing snapshot was rejected");
 
   (void)submit_and_drive(healing_headless, cg::card_kind::mend, healing_headless_tick);
   const auto healing_commands =
@@ -330,7 +330,7 @@ int main() {
   auto negative_snapshot = negative.save();
   negative_snapshot.state.player.hp = 5;
   negative_snapshot.state.enemy_countdown = 10;
-  negative.load(negative_snapshot);
+  check(negative.load(negative_snapshot), "negative snapshot was rejected");
   const size_t tick_count_before =
     trace_count(negative.state(), cg::combat_trace_kind::actor_state_tick);
   (void)submit_and_drive(negative, cg::card_kind::cursed_mend, negative_tick);
@@ -362,7 +362,7 @@ int main() {
   auto attribute_snapshot = attribute.save();
   attribute_snapshot.state.enemy_countdown = 10;
   attribute_snapshot.state.enemy.attribute_resistance_basis_points[static_cast<size_t>(cg::attribute_kind::agility)] = 5000;
-  attribute.load(attribute_snapshot);
+  check(attribute.load(attribute_snapshot), "attribute snapshot was rejected");
   (void)submit_and_drive(attribute, cg::card_kind::cripple, attribute_tick);
   const auto& attribute_work = attribute.last_resolution();
   check(attribute.state().enemy.agility == 8 &&

@@ -5,7 +5,10 @@
 
 Уже есть:
 
-- input-neutral `free_camera` и `camera_motion`;
+- input-neutral `free_camera` и `camera_motion`, у которой взгляд и движение можно применить по
+  отдельности (`look` + `displacement`): позицию во `float` нельзя накапливать миллион кадров — снос
+  выходит 0.36 метра за пару часов полёта, поэтому миру больше `float32` нужен свой накопитель в
+  `double`, и камера отдаёт мгновенное смещение, а не хранит итог;
 - Vulkan reversed-Z infinite projection helper;
 - `frame_pacer`: deadline + `sleep_until`, отключаемый для stress-run; пропущенные deadlines не догоняются burst-кадрами;
 - небольшой non-interactive `visage_overlay`: общий Lua/Nuklear entry, MSDF font atlas, описание лаборатории и сглаженные FPS/frame time.

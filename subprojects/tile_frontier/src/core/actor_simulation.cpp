@@ -988,11 +988,21 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   }
 }
 
-actor_metrics actor_world_slice::update(const uint64_t game_delta_ticks, actor_batch& batch, thread::atomic_pool& pool) {
-  // game-домен: аккумулируем игровое время слайса (deadlines/flags сравниваются с game_now()),
-  // dt секунд для интеграции/drives выводится из той же дельты. Пауза даёт 0, scale масштабирует.
-  game_ticks_ += game_delta_ticks;
-  const float dt_seconds = float(game_delta_ticks) / float(utils::timeline_ticks_per_second);
+actor_metrics actor_world_slice::update(const utils::simulation_tick tick,
+                                        const utils::game_duration game_delta,
+                                        actor_batch& batch,
+                                        thread::atomic_pool& pool) {
+  if (tick.value <= tick_) {
+    utils::error{}("actor_world_slice requires a newer external simulation tick");
+  }
+  tick_ = tick.value;
+  if (game_delta.ticks > std::numeric_limits<uint64_t>::max() - game_ticks_) {
+    utils::error{}("actor_world_slice game time overflow");
+  }
+  // Float dt remains the deliberate non-deterministic physics experiment, but it is derived only
+  // from an integer fixed step. Frame pacing can no longer change the sequence of integration dt.
+  game_ticks_ += game_delta.ticks;
+  const float dt_seconds = float(game_delta.ticks) / float(utils::timeline_ticks_per_second);
   using build_sense_tree_perf = actor_perf_domain::fn_traits<
     &actor_world_slice::build_sense_tree, "sense.tree", "self", "pool">;
   using cognition_perf = actor_perf_domain::fn_traits<&actor_world_slice::cognition, "cognition", "self", "tick", "pool">;
@@ -1019,7 +1029,6 @@ actor_metrics actor_world_slice::update(const uint64_t game_delta_ticks, actor_b
   using gather_sense_tree_fn_t = gather_sense_tree_perf::loc_fn_t;
   using finalize_sense_tree_fn_t = finalize_sense_tree_perf::loc_fn_t;
 
-  tick_ += 1;
   const uint32_t applied_player_intents = apply_player_intents();
   ensure_actor_perf_introspection();
   if (!sense_tree_ready_) {
@@ -1029,8 +1038,8 @@ actor_metrics actor_world_slice::update(const uint64_t game_delta_ticks, actor_b
   cognition_fn_t{}(*this, tick_, pool);
   apply_fn_t{}(*this, pool);            // collect MT + elect ST, затем FSM/звук
   maps_fn_t{}(*this, dt_seconds, pool); // две независимые map-системы, один общий barrier
-  resolve_eating_fn_t{}(*this, game_delta_ticks);
-  expire_flags_fn_t{}(*this, game_delta_ticks); // сроки флагов тикают game-дельтой (пауза/scale учтены)
+  resolve_eating_fn_t{}(*this, game_delta);
+  expire_flags_fn_t{}(*this, game_delta); // сроки флагов тикают game-дельтой (пауза/scale учтены)
   maintain_food_fn_t{}(*this);
 
   // Snapshot semantics are unchanged: positions at the end of tick N are positions at the start of
@@ -1358,7 +1367,7 @@ void actor_world_slice::integrate_and_update_drives(const float dt_seconds, thre
 // снять actor_eating (хищник снова «созреет» и переобдумает), удалить съеденную жертву. СКАН — лямбда-
 // система (reduce view<actor_eating> в eat_finished_/eat_kill_; мутация СВОЕГО stats disjoint). Структурное
 // удаление компонентов/сущностей — ПОСЛЕ прохода в обёртке (нельзя мутировать пул при обходе), однопоточно.
-void actor_world_slice::resolve_eating(const uint64_t game_delta_ticks) {
+void actor_world_slice::resolve_eating(const utils::game_duration game_delta) {
   eat_finished_.clear();
   eat_kill_.clear();
   if (!resolve_eating_sys_) {
@@ -1379,7 +1388,7 @@ void actor_world_slice::resolve_eating(const uint64_t game_delta_ticks) {
         eat_kill_.push_back(eat->target);
       });
   }
-  resolve_eating_sys_->update(game_delta_ticks);
+  resolve_eating_sys_->update(game_delta.ticks);
   for (const auto pid : eat_finished_) {
     // Сытость — живая демонстрация флагов: пока флаг жив, голод не растёт (см. drives_system).
     // Ставится ЗДЕСЬ (post-commit факт доедания), а не в eat-скрипте: ветки составного скрипта
@@ -1400,11 +1409,10 @@ void actor_world_slice::resolve_eating(const uint64_t game_delta_ticks) {
 
 // Sweep флагов: вычесть прошедшую game-дельту у всех flag_set (self-мутация, порядок обхода
 // стабилен). Компонентов с флагами мало и записи крошечные — обычный ST-проход без пула.
-void actor_world_slice::expire_flags(const uint64_t game_delta_ticks) {
-  const utils::game_duration dt{game_delta_ticks};
+void actor_world_slice::expire_flags(const utils::game_duration game_delta) {
   for (auto [id, flags] : world_.view<flag_set>()) {
     static_cast<void>(id);
-    flags->advance(dt);
+    flags->advance(game_delta);
   }
 }
 
@@ -1539,7 +1547,7 @@ void actor_world_slice::maintain_food() {
 }
 
 // ── read-only UI-шов к act-функциям ────────────────────────────────────────
-// Вызовы идут на главном потоке между кадровыми фазами (visage update после update_gameplay),
+// Вызовы идут на главном потоке между fixed simulation steps и presentation/UI фазами,
 // поэтому MT-полосы не нужны: свой ui_scratch_. Контекст только для чтения;
 // seed = brain актора (детерминированные random-ветки describe совпадают с симом этого тика).
 

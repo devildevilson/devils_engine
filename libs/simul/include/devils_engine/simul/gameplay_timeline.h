@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -76,7 +75,7 @@ public:
 
   std::vector<event_type> advance_to(const utils::simulation_tick now) {
     if (now < current_) {
-      throw std::invalid_argument("gameplay timeline cannot move backwards");
+      utils::error{}("gameplay timeline cannot move backwards");
     }
 
     std::vector<event_type> due;
@@ -104,19 +103,19 @@ public:
   }
 
   // Transactional replacement: validation/build happens in temporary storage.
-  void load(const snapshot& value) {
+  [[nodiscard]] bool load(const snapshot& value) {
     if (value.pending.size() > capacity_) {
-      throw std::length_error("gameplay timeline snapshot exceeds capacity");
+      return false;
     }
 
     std::vector<event_type> prepared;
     prepared.reserve(capacity_);
     for (const auto& event : value.pending) {
       if (event.at < value.current) {
-        throw std::invalid_argument("gameplay timeline snapshot contains a past event");
+        return false;
       }
       if (contains_identity(prepared, event)) {
-        throw std::invalid_argument("gameplay timeline snapshot contains a duplicate event");
+        return false;
       }
       prepared.push_back(event);
     }
@@ -124,6 +123,7 @@ public:
 
     heap_.swap(prepared);
     current_ = value.current;
+    return true;
   }
 
 private:

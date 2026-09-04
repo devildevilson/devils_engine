@@ -53,10 +53,8 @@ public:
     bool assets_available = false;
   };
 
-  struct frame_context {
+  struct presentation_context {
     size_t time = 0;
-    uint64_t game_delta_ticks = 0;
-    size_t host_tick = 0;
     uint64_t generation = 0;
     uint32_t framebuffer_width = 1;
     uint32_t framebuffer_height = 1;
@@ -67,13 +65,24 @@ public:
     devils_engine::simul::phase_gate gate;
     const app_config& settings;
     broker& messages;
-    devils_engine::thread::atomic_pool& pool;
     bool render_available = false;
     bool sound_available = false;
   };
 
+  struct simulation_context {
+    devils_engine::utils::simulation_tick tick{};
+    devils_engine::utils::game_duration game_delta{};
+    const app_config& settings;
+    broker& messages;
+    devils_engine::thread::atomic_pool& pool;
+    bool run_gameplay = false;
+    bool sound_available = false;
+  };
+
   void begin_scene(const scene_start_context& context);
-  void update(const frame_context& context);
+  void begin_frame(const presentation_context& context);
+  void update_simulation(const simulation_context& context);
+  void end_frame(const presentation_context& context);
   void framebuffer_resized(uint32_t width, uint32_t height) noexcept;
 
   bool loading_complete() const noexcept;
@@ -84,15 +93,16 @@ public:
 
 private:
   void drain_loaded_chunks(broker& messages, uint64_t generation);
-  // WASD-движение камеры (presentation: реальное время кадра, работает и на gameplay-паузе);
-  // точка камеры клампится в бокс тайлового мира [0, world_extent_].
-  void move_camera(const frame_context& context);
-  void collect_player_intents(const frame_context& context);
-  void publish_camera_and_tiles(const frame_context& context);
+  // WASD-движение камеры: скорость выражена в реальном времени кадра, но изменение разрешено
+  // только пока active-gameplay timeline идёт; точка клампится в [0, world_extent_].
+  void move_camera(const presentation_context& context);
+  void collect_player_intents(const presentation_context& context);
+  void publish_camera_and_tiles(const presentation_context& context);
+  void publish_actor_snapshot(const presentation_context& context);
   void publish_sound_listener(broker& messages, bool sound_available);
-  void update_actors(const frame_context& context);
+  void update_actors(const simulation_context& context);
   void publish_actor_sounds(broker& messages, bool sound_available);
-  void update_metrics(const metrics_config& config, uint64_t update_us);
+  void update_metrics(const metrics_config& config, bool active);
   void reset_metrics() noexcept;
 
   gtl::flat_hash_map<uint64_t, devils_engine::demiurg::resource_handle> sound_by_name_;

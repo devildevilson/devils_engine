@@ -60,8 +60,6 @@ run_result run(const size_t workers, const uint32_t entity_count,
   const glm::vec2 min_bound{0.5f, 0.5f};
   const glm::vec2 max_bound{64.0f, 64.0f};
   constexpr uint32_t texture_count = 4;
-  constexpr uint64_t dt = devils_engine::utils::timeline_ticks_per_second / 60; // µs game-времени за тик
-
   thread::atomic_pool pool(workers);
   tf::actor_world_slice slice;
   tf::actor_batch batch;
@@ -70,15 +68,21 @@ run_result run(const size_t workers, const uint32_t entity_count,
     throw std::runtime_error("tile_frontier benchmark actor batch layout is invalid");
   }
   slice.init(entity_count, min_bound, max_bound, texture_count, brains);
+  devils_engine::utils::timelines clocks(devils_engine::utils::simulation_rate(60));
+
+  const auto step = [&]() {
+    const auto tick = clocks.simulation_now() + devils_engine::utils::simulation_duration{1};
+    slice.update(tick, clocks.advance_simulation(tick), batch, pool);
+  };
 
   for (size_t i = 0; i < warmup_ticks; ++i) {
-    slice.update(dt, batch, pool);
+    step();
   }
   tf::reset_actor_perf_statistics();
 
   const auto begin = std::chrono::steady_clock::now();
   for (size_t i = 0; i < measured_ticks; ++i) {
-    slice.update(dt, batch, pool);
+    step();
   }
   const auto end = std::chrono::steady_clock::now();
 

@@ -234,7 +234,7 @@ int main() {
   drive_to_player(stolen, stolen_tick);
   auto stolen_snapshot = stolen.save();
   stolen_snapshot.state.intercept_next_card = true;
-  stolen.load(stolen_snapshot);
+  check(stolen.load(stolen_snapshot), "stolen snapshot was rejected");
   trace_begin = stolen.state().trace.size();
   submit_and_drive(stolen,
                    {cg::player_intent_kind::play_card, cg::card_kind::quick_strike, 1},
@@ -315,7 +315,7 @@ int main() {
         "in-flight snapshot did not retain the open action-report segment");
 
   cg::combat resumed(cg::run_mode::headless);
-  resumed.load(in_flight_snapshot);
+  check(resumed.load(in_flight_snapshot), "in-flight snapshot was rejected");
   uint64_t resumed_tick = resumed.simulation_tick();
   drive_to_player(resumed, resumed_tick);
 

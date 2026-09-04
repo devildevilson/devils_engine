@@ -216,7 +216,9 @@ combat::snapshot combat::save() const {
                   next_execution_, next_effect_call_};
 }
 
-void combat::load(const snapshot& value) {
+bool combat::load(const snapshot& value) {
+  if (!pipeline_.load(value.pipeline)) return false;
+
   state_ = value.state;
   resolution_ = value.resolution;
   pending_intent_ = value.pending_intent;
@@ -228,7 +230,7 @@ void combat::load(const snapshot& value) {
   next_execution_ = value.next_execution;
   next_effect_call_ = value.next_effect_call;
   presentation_outbox_.clear();
-  pipeline_.load(value.pipeline);
+  return true;
 }
 
 bool combat::advances_countdown(const card_kind card) noexcept {

@@ -24,6 +24,7 @@ struct broker : public simul::standard_broker {
   thread::mailbox<command_draw_tiles> draw_tiles;
   thread::mailbox<command_draw_actors> draw_actors;
   thread::mailbox<command_draw_camera> draw_camera;
+  thread::mailbox<command_active_gameplay_state> active_gameplay_state;
 
   // main → assets
   thread::spsc_queue<command_load_chunk> load_chunk; // reliable

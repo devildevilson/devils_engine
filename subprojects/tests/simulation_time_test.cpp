@@ -6,6 +6,10 @@
 
 namespace utils = devils_engine::utils;
 
+static_assert(utils::simulation_rate(60).to_ticks_ceil({1'000'000}).ticks == 60);
+static_assert(utils::simulation_rate(60).to_microseconds_floor({60}).microseconds ==
+              1'000'000);
+
 TEST_CASE("authored microseconds convert to causal ticks without early completion [time]") {
   const utils::simulation_rate hz60(60);
 

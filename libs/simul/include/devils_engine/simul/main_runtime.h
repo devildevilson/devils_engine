@@ -195,6 +195,14 @@ void sync_engine_boot_config(engine_boot_config& engine, const Settings& setting
     engine.vulkan_debug = settings.logging.vulkan_debug;
   }
   engine.main_fps = settings.simulation.main_fps;
+  if constexpr (requires { settings.simulation.tick_rate; }) {
+    engine.simulation_tick_rate = settings.simulation.tick_rate;
+  } else {
+    engine.simulation_tick_rate = settings.simulation.main_fps;
+  }
+  if constexpr (requires { settings.simulation.max_steps_per_frame; }) {
+    engine.max_simulation_steps_per_frame = settings.simulation.max_steps_per_frame;
+  }
   engine.render_fps = settings.simulation.render_fps;
   engine.sound_fps = settings.simulation.sound_fps;
   engine.assets_fps = settings.simulation.assets_fps;

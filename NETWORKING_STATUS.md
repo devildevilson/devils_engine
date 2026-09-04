@@ -16,9 +16,9 @@ recorded here only after it is reproduced by an executable test or directly obse
 | PRE-03 Jolt spike | deferred until adding Jolt has a concrete engine consumer |
 | NET-00 neutral contract/fixtures | complete |
 | NET-01 bounded tick journal | complete; 8/8 cases pass in Debug and Release |
-| TIME-00 strong simulation time | complete; tick/rate/conversion primitives pass 4/4 cases |
+| TIME-00 strong simulation time | complete; tick/rate/conversion/pacing primitives pass 5/5 cases |
 | TIME-01 gameplay timeline/presentation split | complete; generic timeline, flow, turn pipeline and cardgame proof |
-| TIME-02 fixed-step host/project migration | next alongside NET-02; existing host/tile clocks are not migrated |
+| TIME-02 fixed-step host/project migration | complete; host and tile actor consume an external 60 Hz tick |
 | Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
 | NET-02 sequence window/history | next |
 | Repeated Release resume simulation | flaky existing test; must be diagnosed before production replay |
@@ -34,8 +34,8 @@ neutral library.
 
 ## NET-00/01 — neutral core and bounded tick journal
 
-`libs/network` is now a header-only `devils_engine::network` target. It depends only on
-`devils_engine::options`; it does not include or link GNS, `aesthetics`, `act`, `tile_frontier`, a socket API,
+`libs/network` is now a header-only `devils_engine::network` target. It depends only on common engine options and
+the `utils::error` facility; it does not include or link GNS, `aesthetics`, `act`, `tile_frontier`, a socket API,
 Lua or a background-thread implementation. `README.md` fixes the meanings of tick, principal, player,
 sequence, intent, bundle, state frame and checkpoint without assigning a client/server topology.
 
@@ -58,12 +58,16 @@ Measured/checked behavior:
 - physical arrival permutations seal into the same canonical record bytes;
 - another tick is rejected without mutation;
 - duplicate `(principal, sequence)` provenance faults the tick;
-- exact capacity succeeds, while one extra record latches overflow and makes `seal` fail;
+- exact capacity succeeds, while one extra record latches overflow and returns
+  `tick_seal_result::capacity_exceeded`; duplicate provenance returns `tick_seal_result::duplicate`;
 - records are inaccessible before seal, recording after seal fails, and consume is once-only;
 - `consume` transfers the vector into an owning batch which exposes only a const span;
 - a 64-bit generation accompanies the project tick, so stale tags are rejected after the tick type wraps;
 - both a small intent and an unrelated float transform-state fixture instantiate the same template without
   inheritance or an engine/project record base.
+
+Expected seal failures are explicit values. Invalid lifecycle phases and stale/foreign tags are programming
+invariants and use the common fatal `utils::error` path; NET-01 exposes no exception subtype contract.
 
 The journal is deliberately single-owner. It does not decide whether a tick is late/future, authenticate a
 principal, define a wire format, open a socket or perform replay. Those boundaries remain visible for NET-02+
@@ -101,7 +105,7 @@ ctest --test-dir build-debug -R 'network_(tick_journal|native_float)' --output-o
 cat build-debug/cmake/subprojects/tests/network_native_float_probe/result.txt
 ```
 
-## TIME-00/01 — causal tick time and animation separation
+## TIME-00/01/02 — causal tick time, animation separation and fixed-step host
 
 `utils/simulation_time.h` now distinguishes an absolute `simulation_tick`, a relative `simulation_duration` and
 an `authored_duration` in integer microseconds. `simulation_rate` performs checked quotient/remainder conversion
@@ -124,19 +128,49 @@ The first consumer proves the thread boundary:
 - `cardgame` schedules the same gameplay/recovery deadlines in headless and animated modes. Animated mode alone
   publishes visual commands; a test now requires both modes to consume the same gameplay ticks.
 
-Current evidence is 29/29 relevant CTest entries in both Debug and Release: 4 simulation-time cases, 5 generic
-timeline cases, 6 turn-pipeline cases, 7 flow cases and 7 cardgame executables.
+TIME-02 extends this seam through the live host:
 
-This closes only the primitives and the concrete animation seam. The older `utils::timelines`, `simul::game_host`
-and `tile_frontier` still derive gameplay advancement from scheduler microsecond deltas and maintain overlapping
-local tick/game-time counters. Calendars, cooldowns and project-wide delayed jobs have not migrated. That is the
-explicit TIME-02 task; `chrono` remains valid there only for pacing, profiling and non-causal timeouts.
+- `fixed_step_accumulator` accepts wall elapsed time in any partition, emits only complete fixed steps, bounds
+  catch-up per main frame and retains debt;
+- `game_host` pumps platform/services once, executes zero or more fixed simulation steps, then publishes/UI-updates
+  once. A measured frame duration no longer reaches an authoritative transition;
+- `utils::timelines` now has the three-coordinate model: discrete session tick, unscaled real microseconds and
+  pausable/scalable active-gameplay microseconds. Calendar/turn are projections rather than extra clocks. Its
+  causal snapshot preserves tick, gameplay time, turn, pause/scale and the fractional projection remainder;
+- `tile_frontier` has separate presentation and simulation contexts. Its actor world accepts the host tick instead
+  of incrementing a private counter; integer-microsecond cooldowns advance only from the tick-derived game delta;
+- `simulation.tick_rate=60` and `max_steps_per_frame=8` are explicit config values. Tick rate is immutable after
+  the first tick and is ready to participate in the future session fingerprint/handshake.
+- camera movement, camera/actor render interpolation and metric accumulation are active-gameplay-gated: menu pause
+  freezes them without stopping UI/platform wall-time work. A multiplayer session must later reject local
+  authoritative pause commands.
+
+TIME code also follows the engine error policy: invariant violations call the single `utils::error` fatal path,
+whose call operator now works in constant-evaluation contexts; a malformed causal-clock snapshot returns `false`
+transactionally. Gameplay-timeline and turn-pipeline snapshot replacement follows the same rule. NET-01 seal
+rejection is an explicit `tick_seal_result`, while invalid journal lifecycle/tag use is fatal. No exception
+subtype is part of the NET/TIME API.
+
+The headless `tile_frontier_time_smoke` supplies one semantic intent at tick 30 and compares two pacing schedules:
+one 2,000,000-us frame versus 100 irregular frames. Within each build both execute 120 ticks, reach exactly
+2,000,000 game us and produce the same 7,472-byte full actor checkpoint; cross-build byte identity is not claimed.
+Debug and Release both pass 10 timeline cases, 5 simulation
+time/pacing cases and the four affected tile executables (`time`, `resume`, `checkpoint_audit`, `config_effect`).
+The existing Release resume flake remains a tracked broader-suite issue; the targeted run passed here but one pass
+does not erase that history.
+
+On 2026-09-04 the consolidated error-policy regression set passed `42/42` in both Debug and Release: the cases
+above plus 5 gameplay-timeline, 8 tick-journal, 6 turn-pipeline and 4 cardgame consumer executables. Both complete
+`tile_frontier` targets also built successfully. Release emitted only pre-existing third-party `opusfile` compiler
+warnings during the dependency rebuild.
 
 Reproduction:
 
 ```sh
-cmake --build build-debug --target simulation_time_test gameplay_timeline_test turn_pipeline_test flow_test cardgame_headless_smoke
-ctest --test-dir build-debug -R '^(simulation_time_test|gameplay_timeline_test|turn_pipeline_test|flow_test|cardgame_)' --output-on-failure
+cmake --build build-debug --target timeline_test simulation_time_test tile_frontier_time_smoke tile_frontier_resume_smoke tile_frontier_checkpoint_audit tile_frontier_config_effect_smoke
+./build-debug/subprojects/tests/bin/timeline_test
+./build-debug/subprojects/tests/bin/simulation_time_test
+ctest --test-dir build-debug -R '^tile_frontier_(time_smoke|resume_smoke|checkpoint_audit|config_effect_smoke)$' --output-on-failure
 ```
 
 ## How GameNetworkingSockets works in this project

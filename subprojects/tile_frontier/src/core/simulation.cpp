@@ -137,9 +137,8 @@ std::pair<std::size_t, std::size_t> simulation::project_loading_progress() const
   return state().game.loading_progress();
 }
 
-void simulation::update_gameplay(
+void simulation::begin_simulation_frame(
   const size_t time,
-  const uint64_t game_delta_ticks,
   const simul::phase_gate& gate) {
   auto& state = this->state();
   const auto [window_width, window_height] = state.window != nullptr
@@ -148,10 +147,8 @@ void simulation::update_gameplay(
   const auto [mouse_x, mouse_y] = state.window != nullptr
                                     ? input::cursor_pos(state.window)
                                     : std::tuple<double, double>{0.0, 0.0};
-  state.game.update(tile_frontier_game::frame_context{
+  state.game.begin_frame(tile_frontier_game::presentation_context{
     .time = time,
-    .game_delta_ticks = game_delta_ticks,
-    .host_tick = state.tick,
     .generation = state.state_generation,
     .framebuffer_width = state.fb_width,
     .framebuffer_height = state.fb_height,
@@ -162,7 +159,49 @@ void simulation::update_gameplay(
     .gate = gate,
     .settings = bootstrap()->settings,
     .messages = *state.br,
+    .render_available = systems().render,
+    .sound_available = systems().sound,
+  });
+}
+
+void simulation::update_simulation(
+  const utils::simulation_tick tick,
+  const utils::game_duration game_dt,
+  const simul::phase_gate& gate) {
+  auto& state = this->state();
+  state.game.update_simulation(tile_frontier_game::simulation_context{
+    .tick = tick,
+    .game_delta = game_dt,
+    .settings = bootstrap()->settings,
+    .messages = *state.br,
     .pool = *bootstrap()->pool,
+    .run_gameplay = gate.run_gameplay,
+    .sound_available = systems().sound,
+  });
+}
+
+void simulation::end_simulation_frame(
+  const size_t time,
+  const simul::phase_gate& gate) {
+  auto& state = this->state();
+  const auto [window_width, window_height] = state.window != nullptr
+                                               ? input::window_size(state.window)
+                                               : std::tuple<uint32_t, uint32_t>{1u, 1u};
+  const auto [mouse_x, mouse_y] = state.window != nullptr
+                                    ? input::cursor_pos(state.window)
+                                    : std::tuple<double, double>{0.0, 0.0};
+  state.game.end_frame(tile_frontier_game::presentation_context{
+    .time = time,
+    .generation = state.state_generation,
+    .framebuffer_width = state.fb_width,
+    .framebuffer_height = state.fb_height,
+    .window_width = window_width,
+    .window_height = window_height,
+    .mouse_x = float(mouse_x),
+    .mouse_y = float(mouse_y),
+    .gate = gate,
+    .settings = bootstrap()->settings,
+    .messages = *state.br,
     .render_available = systems().render,
     .sound_available = systems().sound,
   });

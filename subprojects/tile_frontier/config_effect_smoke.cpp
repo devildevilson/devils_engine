@@ -139,13 +139,21 @@ int main() {
   thread::atomic_pool pool_one(1);
   thread::atomic_pool pool_four(4);
 
+  // Host-like fixed clock owns the session tick and its exact rational game-time projection.
+  utils::timelines clocks(utils::simulation_rate(60));
+  const auto advance_slices = [&]() {
+    const auto next = clocks.simulation_now() + utils::simulation_duration{1};
+    const auto game_delta = clocks.advance_simulation(next);
+    const auto metrics = one_worker.update(next, game_delta, batch_one, pool_one);
+    four_workers.update(next, game_delta, batch_four, pool_four);
+    return metrics;
+  };
+
   // 300 тиков: и bit-identity 1-vs-4, и живость config-eat (`eat = prey` реально хватает добычу).
-  constexpr uint64_t dt = devils_engine::utils::timeline_ticks_per_second / 60; // µs game-времени за тик
   uint32_t eating_peak = 0;
   const size_t food_before_player_intent = one_worker.ecs().count<tf::food_item>();
   for (size_t tick = 0; tick < 300; ++tick) {
-    const auto ma = one_worker.update(dt, batch_one, pool_one);
-    four_workers.update(dt, batch_four, pool_four);
+    const auto ma = advance_slices();
     eating_peak = std::max(eating_peak, ma.eating);
     if (tick == 0 && one_worker.ecs().count<tf::food_item>() != food_before_player_intent + 1) {
       std::cerr << "FAILED: player spawn-food intent was not applied at the tick boundary\n";
@@ -161,17 +169,32 @@ int main() {
     return 1;
   }
 
-  // Смена скорости и пауза мид-ран — та же последовательность game-дельт обоим слайсам ⇒ identity
-  // обязана держаться: дельта = вход, флаги/сроки тикают только на game-дельту (пауза = 0).
-  const uint64_t phases[][2] = {{dt * 3, 45}, {0, 15}, {dt / 2, 45}};
-  for (const auto& [phase_dt, ticks] : phases) {
-    for (uint64_t t = 0; t < ticks; ++t) {
-      one_worker.update(phase_dt, batch_one, pool_one);
-      four_workers.update(phase_dt, batch_four, pool_four);
-      if (dump(one_worker) != dump(four_workers)) {
-        std::cerr << "FAILED: diverged under game speed change (dt=" << phase_dt << ")\n";
-        return 1;
-      }
+  // Смена скорости — causal boundary-команда clock-а; акторы получают лишь tick + derived delta.
+  clocks.set_game_scale(utils::game_time_scale(3, 1));
+  for (uint64_t t = 0; t < 45; ++t) {
+    advance_slices();
+    if (dump(one_worker) != dump(four_workers)) {
+      std::cerr << "FAILED: diverged under 3x game speed\n";
+      return 1;
+    }
+  }
+  // Paused session ticks существуют, но gameplay transition не исполняется. После снятия паузы
+  // внешний tick законно имеет разрыв, тогда как game time слайса оставался неподвижен.
+  clocks.set_game_paused(true);
+  for (uint64_t t = 0; t < 15; ++t) {
+    const auto next = clocks.simulation_now() + utils::simulation_duration{1};
+    if (clocks.advance_simulation(next).ticks != 0) {
+      std::cerr << "FAILED: paused fixed tick advanced game time\n";
+      return 1;
+    }
+  }
+  clocks.set_game_paused(false);
+  clocks.set_game_scale(utils::game_time_scale(1, 2));
+  for (uint64_t t = 0; t < 45; ++t) {
+    advance_slices();
+    if (dump(one_worker) != dump(four_workers)) {
+      std::cerr << "FAILED: diverged under 0.5x game speed\n";
+      return 1;
     }
   }
 
@@ -192,8 +215,7 @@ int main() {
     return 1;
   }
   for (size_t tick = 0; tick < 60; ++tick) {
-    one_worker.update(dt, batch_one, pool_one);
-    four_workers.update(dt, batch_four, pool_four);
+    advance_slices();
     if (dump(one_worker) != dump(four_workers)) {
       std::cerr << "FAILED: mixed-brain population diverged at tick " << (tick + 1) << '\n';
       return 1;

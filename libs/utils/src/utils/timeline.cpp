@@ -9,7 +9,7 @@ calendar_source parse_calendar_source(const std::string_view value) {
   if (value == "turn") {
     return calendar_source::turn;
   }
-  throw std::invalid_argument("calendar source must be 'game_time' or 'turn'");
+  error{}("calendar source must be 'game_time' or 'turn'");
 }
 } // namespace utils
 } // namespace devils_engine
