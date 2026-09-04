@@ -900,7 +900,6 @@ actor_world_slice::~actor_world_slice() = default;
 
 void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, const glm::vec2 max_bound, const uint32_t texture_count,
                              const brain_config& brains, const std::vector<std::string>& prefab_cycle) {
-  world_ = aesthetics::world{};
   // Кэш-системы держат query, подписанный на СТАРЫЙ world — сбросить, пересоздадутся против нового.
   integration_sys_.reset();
   drives_sys_.reset();
@@ -908,7 +907,11 @@ void actor_world_slice::init(const uint32_t count, const glm::vec2 min_bound, co
   sense_tree_ready_ = false;
   select_sys_.reset();
   resolve_eating_sys_.reset();
+  cognition_sys_.reset();
   deferred_.reset();
+  // Адрес world_ остаётся стабильным: внешние holders не должны переживать move-assignment всего
+  // объекта мира. Здесь subscribers уже сняты вместе с системами, commit публикует пустой state.
+  world_.replace_state(aesthetics::world{});
   brains_ = brains;
   setup_brain_registry();
   calls_.reset(count); // предварительная ёмкость по числу акторов; растёт в cognition до index_capacity
@@ -1518,21 +1521,6 @@ uint32_t actor_world_slice::apply_player_intents() {
   return applied;
 }
 
-void actor_world_slice::restore_player_entity() {
-  player_entity_ = aesthetics::invalid_entityid;
-  for (auto [id, player] : world_.view<player_controller>()) {
-    static_cast<void>(player);
-    if (player_entity_ != aesthetics::invalid_entityid) {
-      utils::error{}("Snapshot contains more than one player_controller");
-    }
-    player_entity_ = id;
-  }
-  if (player_entity_ == aesthetics::invalid_entityid) {
-    utils::error{}("Snapshot does not contain player_controller");
-  }
-  world_.create<player_intent_queue>(player_entity_);
-}
-
 // maintain_food — допополнить еду до целевого числа. Кап на тик, чтобы не было всплеска при
 // массовом выедании. Детерминированно (spawn_food завязан на tick_ + счётчик).
 void actor_world_slice::maintain_food() {
@@ -1607,14 +1595,6 @@ struct sim_globals {
 };
 } // namespace
 
-void actor_world_slice::rebuild_obstacle_cache() {
-  obstacles_.clear();
-  for (auto [id, obs, pos] : world_.view<obstacle, actor_position>()) {
-    static_cast<void>(id);
-    obstacles_.push_back(obstacle_disc{pos->value, obs->radius});
-  }
-}
-
 std::vector<uint8_t> actor_world_slice::save(const aesthetics::serial::sink_policy& policy) const {
   namespace serial = aesthetics::serial;
   // payload = dump_world (компоненты) + свой дампер скаляров. Пред-resize по оценке мира + запас
@@ -1633,39 +1613,66 @@ std::vector<uint8_t> actor_world_slice::save(const aesthetics::serial::sink_poli
 
 bool actor_world_slice::load(const std::span<const uint8_t> packet, const brain_config& brains) {
   namespace serial = aesthetics::serial;
-  // чистый слайс: пересобираем реестр функций + GOAP/FSM (как init), но БЕЗ спавна сущностей.
-  world_ = aesthetics::world{};
-  // Кэш-системы держат query на старом world — сбросить (пересоздадутся против загруженного мира).
-  integration_sys_.reset();
-  drives_sys_.reset();
-  sense_tree_sys_.reset();
-  sense_tree_ready_ = false;
-  select_sys_.reset();
-  resolve_eating_sys_.reset();
-  deferred_.reset();
-  brains_ = brains;
-  setup_brain_registry();
-  calls_.clear();
-  // как в init: аллокаторы пулов поедания заранее на главном потоке (view<> не кинет; type-id
-  // фиксируется до MT). load_world и так тронет все зарегистрированные типы, но порядок важен.
-  static_cast<void>(world_.get_or_create_allocator<actor_eating>(sizeof(actor_eating) * 250));
-  static_cast<void>(world_.get_or_create_allocator<flag_set>(sizeof(flag_set) * 250));
-  static_cast<void>(world_.get_or_create_allocator<actor_grabbed>(sizeof(actor_grabbed) * 250));
-
+  // Recoverable work happens entirely off to the side.  In particular, even a valid outer container
+  // may fail in the ECS body or project tail and must not alter the running slice.
   std::vector<std::byte> raw;
   if (!serial::unseal(packet, raw)) {
     return false; // битый контейнер/checksum
   }
   serial::reader r{raw};
-  if (!serial::load_world(&world_, r)) {
+  auto staged_world = serial::stage_world(r);
+  if (!staged_world.has_value()) {
     return false; // magic/схема/обрыв → false
   }
   sim_globals g{};
   serial::deserialize(r, g);
-  if (!r.ok) {
-    utils::warn("slice load: truncated sim_globals");
+  if (!r.ok || r.pos != raw.size()) {
+    utils::warn("slice load: truncated sim_globals or trailing payload");
     return false;
   }
+
+  // Validate and construct every derived value against the candidate.  These are ordinary foreign
+  // snapshot failures, so they return false rather than terminating the process.
+  aesthetics::entityid_t staged_player = aesthetics::invalid_entityid;
+  for (auto [id, player] : staged_world->view<player_controller>()) {
+    static_cast<void>(player);
+    if (staged_player != aesthetics::invalid_entityid) {
+      utils::warn("slice load: snapshot contains more than one player_controller");
+      return false;
+    }
+    staged_player = id;
+  }
+  if (staged_player == aesthetics::invalid_entityid) {
+    utils::warn("slice load: snapshot does not contain player_controller");
+    return false;
+  }
+  staged_world->create<player_intent_queue>(staged_player);
+
+  std::vector<obstacle_disc> staged_obstacles;
+  staged_obstacles.reserve(staged_world->count<obstacle>());
+  for (auto [id, obs, pos] : staged_world->view<obstacle, actor_position>()) {
+    static_cast<void>(id);
+    staged_obstacles.push_back(obstacle_disc{pos->value, obs->radius});
+  }
+
+  // Everything below is the non-failing publication phase.  Address-bound systems are destroyed
+  // before commit; world_ itself stays at the same address.  replace_state emits the query rebuild
+  // notification only after the new allocator/component state is installed.
+  integration_sys_.reset();
+  drives_sys_.reset();
+  sense_tree_sys_.reset();
+  select_sys_.reset();
+  resolve_eating_sys_.reset();
+  cognition_sys_.reset();
+  deferred_.reset();
+  brains_ = brains;
+  setup_brain_registry();
+  calls_.clear();
+  sound_emits_.clear();
+  due_.clear();
+  eat_finished_.clear();
+  eat_kill_.clear();
+  sense_tree_ready_ = false;
 
   tick_ = g.tick;
   game_ticks_ = g.game_ticks;
@@ -1676,9 +1683,10 @@ bool actor_world_slice::load(const std::span<const uint8_t> packet, const brain_
   texture_count_ = g.texture_count;
   commit_game_ticks_ = g.commit_game_ticks;
   think_budget_ = g.think_budget;
+  player_entity_ = staged_player;
+  obstacles_ = std::move(staged_obstacles);
 
-  restore_player_entity();
-  rebuild_obstacle_cache(); // кэш выводим из мира, не хранится в снапшоте
+  world_.replace_state(std::move(*staged_world));
   return true;
 }
 

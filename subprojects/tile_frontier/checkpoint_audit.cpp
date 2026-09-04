@@ -1,9 +1,9 @@
 // PRE-02 checkpoint audit over the real tile_frontier actor slice.
 //
-// The executable does not change the live snapshot format. It measures full canonical write,
-// hash, compression and load, then treats the existing component blocks as immutable sections and
-// compares whole-section, 4 KiB page and explicit dirty/version reuse. Every reconstructed payload
-// is fed through the unchanged actor_world_slice::load path and must round-trip byte-identically.
+// The executable measures full canonical write, hash, compression and load, then treats the existing
+// component blocks as immutable sections and compares whole-section, 4 KiB page and explicit
+// dirty/version reuse. Every reconstructed payload is fed through actor_world_slice::load and must
+// round-trip byte-identically; section-boundary failure injection verifies transactional replacement.
 
 #include <algorithm>
 #include <atomic>
@@ -24,6 +24,7 @@
 #include <devils_engine/aesthetics/sink.h>
 #include <devils_engine/thread/atomic_pool.h>
 #include <devils_engine/utils/compression.h>
+#include <devils_engine/utils/sha256cpp.h>
 #include <devils_engine/utils/timeline.h>
 #include <devils_engine/utils/type_traits.h>
 #include <spdlog/spdlog.h>
@@ -477,8 +478,13 @@ void measure_full_checkpoint(
     return live.save(aesthetics::serial::network_policy).size();
   });
 
-  const double hash_us = average_microseconds(iterations, [&] {
+  const double murmur64_us = average_microseconds(iterations, [&] {
     return hash_bytes(fixture.base.raw);
+  });
+  const double sha256_us = average_microseconds(iterations, [&] {
+    utils::SHA256 hasher;
+    hasher.update(fixture.base.raw.data(), fixture.base.raw.size());
+    return hasher.finalize().front();
   });
   const double section_hash_us = average_microseconds(iterations, [&] {
     std::uint64_t value = 0;
@@ -519,7 +525,8 @@ void measure_full_checkpoint(
             << " (" << std::fixed << std::setprecision(1)
             << percent(fixture.base.packet.size(), fixture.base.raw.size()) << "%), zstd-normal container="
             << normal_packet.size() << " (" << percent(normal_packet.size(), fixture.base.raw.size()) << "%)\n";
-  std::cout << "  average over " << iterations << " iterations: full hash=" << std::setprecision(2) << hash_us
+  std::cout << "  average over " << iterations << " iterations: Murmur64=" << std::setprecision(2) << murmur64_us
+            << " us, SHA-256=" << sha256_us
             << " us, section hashes=" << section_hash_us << " us, page hashes=" << page_hash_us
             << " us, zstd-fast=" << compress_us << " us, seal(hash+compress+container)=" << seal_us
             << " us, ECS dump=" << ecs_dump_us << " us, full save=" << full_save_us
@@ -527,17 +534,53 @@ void measure_full_checkpoint(
             << " us (" << load_iterations << " iterations)\n";
 }
 
-[[nodiscard]] bool failed_load_changed_destination(
+[[nodiscard]] std::size_t transactional_failure_checks(
   const checkpoint& baseline,
   const tf::brain_config& brains) {
   tf::actor_world_slice destination;
   if (!destination.load(baseline.packet, brains)) utils::error{}("could not initialize corruption fixture");
+  tf::actor_batch batch;
+  batch.bind("v2ui1c4v1");
+  thread::atomic_pool pool(1);
+  const auto first_tick = destination.simulation_now() + utils::simulation_duration{1};
+  static_cast<void>(destination.update(first_tick, utils::game_duration{16667}, batch, pool));
   const auto before = capture(destination).raw;
+
+  std::size_t checked = 0;
   auto corrupt = baseline.packet;
   corrupt.back() ^= UINT8_C(0xff);
   if (destination.load(corrupt, brains)) utils::error{}("corrupt checkpoint was accepted");
-  const auto after = capture(destination).raw;
-  return before != after;
+  if (capture(destination).raw != before) utils::error{}("outer-container failure changed live slice");
+  ++checked;
+
+  // A valid checksum around a truncated raw payload forces the loader through every successfully
+  // decoded prefix.  Cut immediately after each state section; the final section instead gets a
+  // trailing byte, which exercises the strict end-of-project-payload check.
+  for (const section& item : baseline.sections) {
+    const std::size_t end = item.offset + item.size;
+    std::vector<std::byte> invalid;
+    if (end < baseline.raw.size()) {
+      invalid.assign(baseline.raw.begin(), baseline.raw.begin() + std::ptrdiff_t(end));
+    } else {
+      invalid = baseline.raw;
+      invalid.push_back(std::byte{0x5a});
+    }
+    const auto packet = aesthetics::serial::seal(invalid, aesthetics::serial::network_policy);
+    if (destination.load(packet, brains)) {
+      utils::error{}("checkpoint failure injection after section '{}' was accepted", item.name);
+    }
+    if (capture(destination).raw != before) {
+      utils::error{}("checkpoint failure after section '{}' changed live slice", item.name);
+    }
+    ++checked;
+  }
+
+  // The preserved instance is not merely byte-identical: its lazily constructed systems and their
+  // queries remain usable after the whole refusal sequence.
+  const auto next_tick = destination.simulation_now() + utils::simulation_duration{1};
+  static_cast<void>(destination.update(next_tick, utils::game_duration{16667}, batch, pool));
+
+  return checked;
 }
 
 void run_fixture(
@@ -559,9 +602,9 @@ void run_fixture(
   compare_scenario("one entity removal", fixture.base, fixture.structural_remove, brains);
   validate_dirty_prototypes(fixture, brains);
 
-  const bool destination_changed = failed_load_changed_destination(fixture.base, brains);
-  std::cout << "  corrupt load preserves destination: "
-            << (destination_changed ? "NO (known PRE-02 gap)" : "yes") << '\n';
+  const std::size_t transactional_checks = transactional_failure_checks(fixture.base, brains);
+  std::cout << "  transactional load failures preserve destination: yes ("
+            << transactional_checks << " injected failures)\n";
 }
 
 } // namespace

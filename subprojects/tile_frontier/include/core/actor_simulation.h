@@ -434,17 +434,12 @@ private:
   // sweep флагов: вычесть game-дельту у всех flag_set, удалить исчерпанные записи (см. flag_set.h).
   void expire_flags(devils_engine::utils::game_duration game_delta);
   uint32_t apply_player_intents();
-  void restore_player_entity();
   // Допополняет еду до food_target_ (детерминированно по тику+счётчику). Зовётся раз за тик.
   void maintain_food();
   void create_food_spawn_points();
   glm::vec2 resolve_spawn_point(std::string_view point_group);
   // Спавнит одну еду-сущность через semantic spawn-point group "food".
   void spawn_food();
-  // Перестраивает плоский кэш obstacles_ из компонентов мира (obstacle+position). Зовётся
-  // после load: кэш выводим из мира, поэтому в снапшот не пишется. Порядок = dense-порядок
-  // (= порядок id), совпадает с исходным спавном ⇒ детерминизм коллизии сохраняется.
-  void rebuild_obstacle_cache();
   devils_engine::aesthetics::world world_;
   devils_engine::act::registry registry_; // общий реестр геймплейных функций (см. libs/act)
   // Мозги адресуются per-entity: goap_ref/fsm_ref (хеш имени) → registry.get(id). Слайсовых
