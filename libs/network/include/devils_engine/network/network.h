@@ -3,6 +3,7 @@
 
 #include "bounded_history.h"
 #include "sequence_window.h"
+#include "state_schema.h"
 #include "tick_journal.h"
 
 #endif

@@ -87,6 +87,38 @@ thread-safe by itself.
 Explicit non-goals of this slice: ACK encoding, delivery promises, peer
 penalties, sockets, wire serialization, replay execution and checkpointing.
 
+## Implemented slice: canonical state schema
+
+`state_schema<Host, Writer, Reader, Sections...>` is the project-neutral
+manifest for a complete causal state. Every project-owned section declares an
+explicit 32-bit ID and version plus `write`, `read` and `validate` operations.
+The parameter-pack order is erased: the schema sorts sections by ID, rejects
+duplicate IDs at compile time and derives a stable schema digest from the
+canonical `(id, version)` sequence.
+
+The first compatibility policy is deliberately `exact`. Unknown, missing,
+duplicate or reordered sections, version mismatches, malformed section data
+and trailing bytes are returned as `state_load_status` values with the
+relevant section ID. The schema has no migration or optional-section policy
+yet.
+
+Decode writes only into a caller-provided `Host::staging_type`. Section
+validation and the project-supplied whole-state validation run before one
+project-supplied `noexcept` replacement operation. Thus a foreign-data failure
+cannot partially mutate the live host. Rebuilding derived caches belongs in
+that final project replacement operation, not in the serialized sections.
+
+`emit_canonical` is the single traversal used by checkpoint writing and a
+future state-hash sink. It emits the complete envelope, section metadata and
+payload bytes identically to either consumer. The built-in `state_writer` and
+`state_reader` provide minimal canonical little-endian adapters; compatible
+project adapters may be substituted.
+
+The schema digest is format compatibility metadata, not a cryptographic state
+identity. Strong content hashing remains NET-05; checkpoint retention and
+replay remain NET-04. The schema owns no sockets, threads, ECS types, systems
+or callbacks.
+
 The target is header-only and depends only on C++23, `devils_engine::options`
 and the common `devils_engine::utils` error facility. `devils_engine::network`
 contains no GNS type.

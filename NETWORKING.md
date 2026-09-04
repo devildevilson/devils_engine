@@ -254,7 +254,7 @@ libs/network/
     sequence_window.h
     bounded_history.h
     replay.h
-    state_sections.h
+    state_schema.h
     state_digest.h
     delivery.h
     in_memory_transport.h
@@ -388,12 +388,12 @@ Required tests:
 All nine NET-02 cases pass in Debug and Release. Together with NET-01, the neutral networking core passes
 17/17 cases in both configurations. There are no GNS, ACK, wire-format or replay dependencies in this slice.
 
-## NET-03: explicit full-state sections
+## NET-03: explicit full-state sections — complete 2026-09-04
 
 The project world is one schema, but ECS bytes are not the whole state. A checkpoint also needs clocks,
 remainders, global sequences, project configuration and resumable workflow cursors.
 
-The neutral mechanism should be a compile-time list of project-owned section policies:
+The neutral mechanism is a compile-time list of project-owned section policies:
 
 ```cpp
 template<class Host, class Writer, class Reader, class... Sections>
@@ -413,7 +413,9 @@ struct actor_world_section {
 };
 ```
 
-The exact spelling is deliberately deferred until NET-03. These properties are not optional:
+The implemented spelling uses `Host::staging_type`; sections operate on the live host only while writing and on
+the staging type while reading/validating. Cross-section validation and one final `noexcept` replacement are
+project-supplied callables. These properties are enforced:
 
 - section IDs and versions are explicit and unique at compile time;
 - section order is canonical and independent of registration/static-init order;
@@ -422,6 +424,25 @@ The exact spelling is deliberately deferred until NET-03. These properties are n
 - decode targets staging data and never mutates the live simulation;
 - a project supplies the final validation and replacement operation;
 - state schema contains data ownership, not system callbacks, threads or caches.
+
+The initial compatibility policy is explicitly `exact`: unknown, missing, duplicate and non-canonical sections,
+version mismatches, malformed bodies and trailing bytes are rejected as `state_load_status` values. Results carry
+the responsible section ID and expected/actual version where applicable. Parameter-pack order is erased by a
+compile-time ID sort; duplicate IDs are rejected by `static_assert`; version zero is reserved.
+
+`emit_canonical` is the single traversal for the complete envelope and every section payload. A normal writer
+produces checkpoint bytes, while a sink with the same three scalar/byte operations hashes exactly that byte
+stream. The 64-bit FNV schema digest covers canonical `(format, count, id, version)` metadata only: it is a format
+identity, not the strong state/content digest planned for NET-05.
+
+The fake-host test uses two unrelated sections and checks every required boundary, including every possible
+truncation of a valid document. All eight NET-03 cases pass in Debug and Release. The live host stays byte-for-byte
+unchanged on decode, section-validation and whole-host-validation failure; success performs exactly one replacement.
+
+The `aesthetics` component registry now has an explicit freeze phase. Its public table is const, the first
+fingerprint/dump/load freezes registration, and a later `SERIALIZABLE_COMPONENT` registration is a fatal invariant
+violation. This makes an ECS world suitable as one nested project section. Transactionally replacing the real
+world plus its query-owning systems remains the deliberately separate ECS follow-up below.
 
 The intended project split is:
 
@@ -1144,7 +1165,7 @@ NET-00 contract (complete)
                                      -> SERVER-01 headless authority
                                           -> TF-NET-01 online authoritative float stand
 
-NET-03 state sections + schema freeze
+NET-03 state sections + schema freeze (complete)
   -> ECS transactional replacement
        -> NET-04 checkpoint + replay
             -> NET-05 digest diagnostics
@@ -1330,7 +1351,7 @@ tested.
 Done without ACK packets, networking or replay driver. The result is two independent header-only templates;
 expected refusal is returned as a value and invariant-free classification does not use exceptions.
 
-### NET-03 — project state sections and schema freeze (`M-L`)
+### NET-03 — project state sections and schema freeze (`M-L`) — complete 2026-09-04
 
 - Add compile-time section schema mechanism with explicit IDs/versions.
 - Make `aesthetics` component registry freeze explicit and reject late registration.
@@ -1338,7 +1359,9 @@ expected refusal is returned as a value and invariant-free classification does n
 - Use the same canonical traversal for write and hash.
 - Build staging decode/validation/replacement against fake hosts first.
 
-Done when a failed load cannot change one byte of live fake state and schema changes are diagnosed by section.
+Done: every truncated/bad load preserves the complete live fake host, schema failures identify their section,
+and checkpoint writing/hash input share one canonical traversal. Applying it to the real world owner proceeds in
+the already separate transactional ECS follow-up.
 
 ### ECS-transactional follow-up (`M`)
 

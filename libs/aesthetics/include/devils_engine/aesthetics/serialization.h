@@ -659,7 +659,11 @@ public:
     size_fn est;
   };
 
-  static std::vector<entry>& table() noexcept; // Мейерс-синглтон, определён в serialization.cpp
+  // Read-only introspection. Registration is a startup phase; fingerprint(),
+  // dump/load and explicit freeze() close it permanently for this executable.
+  static const std::vector<entry>& table() noexcept;
+  static bool frozen() noexcept;
+  static void freeze() noexcept;
 
   template <typename T>
   static bool add() {
@@ -669,7 +673,11 @@ public:
     const std::string_view name = utils::type_name<T>();
     const uint32_t h = utils::murmur_hash3_32(name);
 
-    auto& t = table();
+    if (frozen()) {
+      utils::error{}("serializable component '{}' registered after component schema freeze", name);
+    }
+
+    auto& t = mutable_table();
     const auto it = std::lower_bound(t.begin(), t.end(), h,
                                      [](const entry& e, const uint32_t v) {
                                        return e.hash < v;
@@ -686,6 +694,9 @@ public:
 
   // отпечаток схемы: свёртка по УЖЕ отсортированной таблице -> детерминирован. В serialization.cpp.
   static uint32_t fingerprint() noexcept;
+
+private:
+  static std::vector<entry>& mutable_table() noexcept;
 };
 
 #define SERIALIZABLE_COMPONENT(T) \

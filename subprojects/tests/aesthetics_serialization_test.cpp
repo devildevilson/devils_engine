@@ -1,7 +1,9 @@
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <doctest/doctest.h>
@@ -85,6 +87,20 @@ struct load_watcher : public aesthetics::basic_reciever<aesthetics::serial::snap
 } // namespace
 
 SERIALIZABLE_COMPONENT(transform)
+
+static_assert(std::is_const_v<std::remove_reference_t<
+                decltype(aesthetics::serial::component_registry::table())>>);
+
+TEST_CASE("component schema fingerprint freezes read-only registry [aesthetics::serial]") {
+  const auto& before = aesthetics::serial::component_registry::table();
+  CHECK_FALSE(before.empty());
+  const uint32_t fingerprint = aesthetics::serial::component_registry::fingerprint();
+  CHECK(aesthetics::serial::component_registry::frozen());
+  CHECK(aesthetics::serial::component_registry::fingerprint() == fingerprint);
+  CHECK(std::is_sorted(before.begin(), before.end(), [](const auto& left, const auto& right) {
+    return left.hash < right.hash;
+  }));
+}
 
 TEST_CASE("snapshot round-trips components, entity refs and generator state [aesthetics::serial]") {
   aesthetics::world w;

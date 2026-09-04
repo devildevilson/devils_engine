@@ -17,12 +17,13 @@ recorded here only after it is reproduced by an executable test or directly obse
 | NET-00 neutral contract/fixtures | complete |
 | NET-01 bounded tick journal | complete; 8/8 cases pass in Debug and Release |
 | NET-02 sequence window/history | complete; 9/9 cases pass in Debug and Release |
-| NET-03 explicit state sections/schema | next |
+| NET-03 explicit state sections/schema | complete; 8/8 cases pass in Debug and Release |
+| ECS transactional world replacement | next |
 | TIME-00 strong simulation time | complete; tick/rate/conversion/pacing primitives pass 5/5 cases |
 | TIME-01 gameplay timeline/presentation split | complete; generic timeline, flow, turn pipeline and cardgame proof |
 | TIME-02 fixed-step host/project migration | complete; host and tile actor consume an external 60 Hz tick |
 | Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
-| Repeated Release resume simulation | flaky existing test; must be diagnosed before production replay |
+| Complete project suite | 385/385 pass in Debug and Release; GNS/Abseil link and resume flake currently clear |
 | Production `devils_engine::network_gns` adapter | not started |
 | Session handshake, reconnect recovery and peer authority | not started |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
@@ -33,7 +34,7 @@ The PRE-01 executable is intentionally a direct GNS consumer. It passes opaque b
 engine transport abstraction, network entity type, serialization scheme or client/server policy into the new
 neutral library.
 
-## NET-00/01/02 — neutral core, tick journal, sequence window and history
+## NET-00/01/02/03 — neutral core through complete-state schema
 
 `libs/network` is now a header-only `devils_engine::network` target. It depends only on common engine options and
 the `utils::error` facility; it does not include or link GNS, `aesthetics`, `act`, `tile_frontier`, a socket API,
@@ -71,7 +72,7 @@ Expected seal failures are explicit values. Invalid lifecycle phases and stale/f
 invariants and use the common fatal `utils::error` path; NET-01 exposes no exception subtype contract.
 
 The journal is deliberately single-owner. It does not decide whether a tick is late/future, authenticate a
-principal, define a wire format, open a socket or perform replay. Those boundaries remain visible for NET-03+
+principal, define a wire format, open a socket or perform replay. Those boundaries remain visible for NET-04+
 instead of being hidden in a session singleton.
 
 NET-02 adds two independent header-only templates, still without GNS or project types:
@@ -98,6 +99,45 @@ The nine NET-02 cases cover gaps and late arrival, duplicate/stale/too-far class
 reset, count eviction, multi-entry byte eviction, transactional refusal, explicit empty bundles and zero count
 capacity. NET-01 plus NET-02 passes `17/17` in both Debug and Release. The implementation contains no `throw` or
 `try`/`catch`; all expected refusal in this slice is a returned status.
+
+NET-03 adds:
+
+```cpp
+state_schema<Host, Writer, Reader, Sections...>
+```
+
+Each project section declares an explicit 32-bit ID and version and supplies typed write, staging-read and
+staging-validation operations. The schema sorts policies by ID regardless of parameter-pack order, rejects
+duplicate IDs at compile time, and derives a stable schema digest from the canonical format/count/ID/version
+sequence. Version zero is reserved. The digest is compatibility metadata, not the strong state identity planned
+for NET-05.
+
+The initial compatibility policy is deliberately exact. Missing, unknown, duplicate and reordered sections,
+version mismatches, malformed or truncated bodies, section/document trailing bytes and a bad schema digest all
+return an explicit `state_load_status`; section failures carry the relevant ID and version information. No
+migration or optional-section assumption is hidden in the first format.
+
+All foreign bytes are decoded into a caller-provided `Host::staging_type`. Every section validation and the
+project's final cross-section validation finish before the schema invokes one project-supplied `noexcept`
+replacement. The exhaustive truncation test cuts a valid document at every byte and proves the whole fake live
+host remains unchanged. Decode, section-validation and host-validation refusals are equally transactional.
+
+`emit_canonical` is shared by ordinary checkpoint writing and arbitrary state sinks; a test hash sink receives
+exactly the same envelope, metadata and payload bytes as the stored checkpoint. Built-in minimal little-endian
+`state_writer`/`state_reader` are available, but the template accepts compatible project adapters. The library
+still knows no ECS, GNS, project component, thread, callback or cache type.
+
+The eight NET-03 cases pass in Debug and Release. The adjacent `aesthetics` registry is now explicitly frozen by
+the first fingerprint/dump/load: public inspection is const and late component registration is a fatal invariant
+violation. This closes the nested ECS schema identity, but not real-world replacement: safely swapping a loaded
+`aesthetics::world` together with systems and materialized queries remains the next dedicated ECS task.
+
+Reproduction:
+
+```sh
+cmake --build build-debug -j4 --target network_state_schema_test aesthetics_serialization_test
+ctest --test-dir build-debug -R '^(network_state_schema_test|aesthetics_serialization_test)::' --output-on-failure
+```
 
 ### Native-float cross-compiler micro-corpus
 
@@ -183,18 +223,23 @@ one 2,000,000-us frame versus 100 irregular frames. Within each build both execu
 2,000,000 game us and produce the same 7,472-byte full actor checkpoint; cross-build byte identity is not claimed.
 Debug and Release both pass 10 timeline cases, 5 simulation
 time/pacing cases and the four affected tile executables (`time`, `resume`, `checkpoint_audit`, `config_effect`).
-The existing Release resume flake remains a tracked broader-suite issue; the targeted run passed here but one pass
-does not erase that history.
+The previously observed Release resume flake did not recur in the author's complete Debug/Release runs or the
+post-NET-03 complete runs and is no longer an active blocker; future replay stress can still retain the scenario.
 
 On 2026-09-04 the consolidated error-policy regression set passed `42/42` in both Debug and Release: the cases
 above plus 5 gameplay-timeline, 8 tick-journal, 6 turn-pipeline and 4 cardgame consumer executables. Both complete
 `tile_frontier` targets also built successfully. Release emitted only pre-existing third-party `opusfile` compiler
 warnings during the dependency rebuild.
 
+After NET-03, the complete project suite passes `385/385` in both Debug and Release. These runs include the real
+GNS capability tests, tile_frontier snapshot/resume/checkpoint/time tests and all eight new state-schema cases;
+the earlier cached-Abseil link failure is resolved. CTest wall time was `157.18 s` in Debug and `25.53 s` in
+Release; both builds were limited to `-j4`.
+
 Reproduction:
 
 ```sh
-cmake --build build-debug --target timeline_test simulation_time_test tile_frontier_time_smoke tile_frontier_resume_smoke tile_frontier_checkpoint_audit tile_frontier_config_effect_smoke
+cmake --build build-debug -j4 --target timeline_test simulation_time_test tile_frontier_time_smoke tile_frontier_resume_smoke tile_frontier_checkpoint_audit tile_frontier_config_effect_smoke
 ./build-debug/subprojects/tests/bin/timeline_test
 ./build-debug/subprojects/tests/bin/simulation_time_test
 ctest --test-dir build-debug -R '^tile_frontier_(time_smoke|resume_smoke|checkpoint_audit|config_effect_smoke)$' --output-on-failure
@@ -447,10 +492,10 @@ Minimal-feature size and the need for ICE and both library variants remain NET-0
 ### Reproduction
 
 ```sh
-cmake --build build-debug --target gamenetworking_sockets_capability_test
+cmake --build build-debug -j4 --target gamenetworking_sockets_capability_test
 ctest --test-dir build-debug -R gamenetworking_sockets_capability_test --output-on-failure
 
-cmake --build build-release --target gamenetworking_sockets_capability_test
+cmake --build build-release -j4 --target gamenetworking_sockets_capability_test
 ctest --test-dir build-release -R gamenetworking_sockets_capability_test --output-on-failure
 ```
 
@@ -535,7 +580,11 @@ The current payload is not yet a durable network checkpoint schema:
 - Murmur64 is corruption detection only, not authentication and not the production page/state digest;
 - exact float serialization preserves divergence; it does not create cross-platform numeric determinism.
 
-Most importantly, load is destructive on failure. `actor_world_slice::load` replaces the live world and clears
+NET-03 resolves the registry part of this list: the component table is now externally read-only and an explicit
+freeze precedes the cached fingerprint. The unframed project tail and destructive real-slice load remain inputs
+to the project schema/ECS replacement follow-up rather than being hidden by the neutral format.
+
+Most importantly, the legacy actor-slice load is destructive on failure. `actor_world_slice::load` replaces the live world and clears
 caches before `unseal` has validated the packet; `load_world` then installs allocator state and component pools
 progressively. The corruption probe confirms that a rejected packet changes the destination. NET-03/04 must
 decode and validate every section into staging state, rebuild required derived state there, and publish it with
@@ -596,10 +645,10 @@ measured in the real online stand.
 ### Reproduction
 
 ```sh
-cmake --build build-debug --target tile_frontier_checkpoint_audit
+cmake --build build-debug -j4 --target tile_frontier_checkpoint_audit
 ctest --test-dir build-debug -R '^tile_frontier_checkpoint_audit$' --output-on-failure
 
-cmake --build build-release --target tile_frontier_checkpoint_audit
+cmake --build build-release -j4 --target tile_frontier_checkpoint_audit
 ctest --test-dir build-release -R '^tile_frontier_checkpoint_audit$' --output-on-failure
 ```
 

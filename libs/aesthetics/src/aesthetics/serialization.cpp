@@ -6,13 +6,37 @@ namespace devils_engine {
 namespace aesthetics {
 namespace serial {
 
-std::vector<component_registry::entry>& component_registry::table() noexcept {
-  static std::vector<entry> t; // Мейерс: обходим static-init-order-fiasco
-  return t;
+namespace {
+struct component_registry_storage {
+  std::vector<component_registry::entry> table;
+  bool frozen = false;
+};
+
+component_registry_storage& registry_storage() noexcept {
+  static component_registry_storage value;
+  return value;
+}
+} // namespace
+
+const std::vector<component_registry::entry>& component_registry::table() noexcept {
+  return registry_storage().table;
+}
+
+std::vector<component_registry::entry>& component_registry::mutable_table() noexcept {
+  return registry_storage().table;
+}
+
+bool component_registry::frozen() noexcept {
+  return registry_storage().frozen;
+}
+
+void component_registry::freeze() noexcept {
+  registry_storage().frozen = true;
 }
 
 uint32_t component_registry::fingerprint() noexcept {
   // свёртка по УЖЕ отсортированной таблице -> детерминирована; считается один раз.
+  freeze();
   static const uint32_t fp = [] {
     uint32_t acc = detail::fnv_offset;
     for (const auto& e : table()) {
@@ -25,6 +49,7 @@ uint32_t component_registry::fingerprint() noexcept {
 }
 
 std::size_t estimate_size(const world* w) {
+  component_registry::freeze();
   std::size_t total = 64; // заголовок + gen_state
   for (const auto& e : component_registry::table()) {
     total += 8 + e.est(w); // +8: hash+len блока
