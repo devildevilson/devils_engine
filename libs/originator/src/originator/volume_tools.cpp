@@ -676,6 +676,17 @@ std::shared_ptr<void> prepare_polyline(const tool_call& call) {
                    call.step_name, call.input(2).buffer_name(), offsets.count());
   }
 
+  // ПРЕДЕЛ ОБЯЗАТЕЛЕН, и это не придирка к оформлению. Он значит здесь две вещи сразу: насколько
+  // широко смотреть (поле отсечения вокруг отрезка) и что вернуть там, где отрезков нет. Пока у него
+  // было значение по умолчанию, эти два смысла разъезжались — подготовка брала ноль, а тело
+  // миллиард, — и вызов без параметра давал поле, у которого почти везде миллиард, а внутри
+  // прямоугольника отрезка настоящее расстояние. Такой разрыв в поле выглядит как стена посреди мира,
+  // и найти его причину по картинке нельзя.
+  if (!call.params->has("max_distance")) {
+    utils::error{}("originator step '{}': polyline_distance needs max_distance — it is both how far to look "
+                   "and what to answer where there is no polyline",
+                   call.step_name);
+  }
   const double margin = call.params->number("max_distance", 0.0);
   const size_t chains = offsets.count() - 1;
   for (size_t chain = 0; chain < chains; ++chain) {
@@ -712,9 +723,11 @@ void tool_polyline_distance(const tool_call& call, const size_t begin, const siz
                    call.step_name, call.input(0).buffer_name(), call.input(0).field_name(), components);
   }
 
-  // Значение по умолчанию — предел, а не бесконечность: полем дальше пользуется арифметика конфига, а
-  // бесконечность в ней превращает любую сумму в бесконечность.
-  const double limit = call.params->number("max_distance", 1.0e9);
+  // Ответ там, где отрезков рядом нет, — ПРЕДЕЛ, а не бесконечность: полем дальше пользуется
+  // арифметика конфига, а бесконечность в ней превращает любую сумму в бесконечность. Тот же предел
+  // задаёт и поле отсечения при подготовке, и одно значение на двоих здесь обязательно: разные
+  // числа означали бы разрыв в поле на границе прямоугольника отрезка.
+  const double limit = call.params->number("max_distance", 0.0);
 
   // МЕТРИКА — это ФОРМА СЕЧЕНИЯ коридора, а не мелкая настройка. Евклидова даёт круглую трубу
   // (естественная пещера), чебышёвская — угловатую (тоннель бункера): у неё поверхность уровня это

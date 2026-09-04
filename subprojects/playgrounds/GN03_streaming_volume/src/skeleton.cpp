@@ -32,9 +32,13 @@ constexpr double default_tile_size = 256.0;
 
 } // namespace
 
-void world_skeleton::build(const description& what, std::vector<skeleton_node> nodes,
-                           std::vector<std::array<double, 3>> points, std::vector<uint32_t> offsets,
-                           std::vector<uint32_t> styles) {
+// ПРОВЕРКА ИНВАРИАНТОВ ОДНА НА ДВА ВХОДА, и это не вкусовщина. Каркас приходит либо от генератора,
+// либо ИЗ ФАЙЛА, а файл — чужие данные: его мог написать другой сборкой, обрезать копированием или
+// поправить руками. Проверки стояли только в `build`, поэтому пакет с правдоподобным размером и
+// испорченными смещениями проходил насквозь, а `build_index` читал точки ЗА КОНЦОМ массива — из
+// файла, то есть по чужой воле.
+void world_skeleton::validate(const std::vector<std::array<double, 3>>& points,
+                              const std::vector<uint32_t>& offsets, const std::vector<uint32_t>& styles) {
   if (offsets.size() < 2) {
     utils::error{}("GN03 skeleton needs at least two CSR offsets, got {}", offsets.size());
   }
@@ -50,6 +54,12 @@ void world_skeleton::build(const description& what, std::vector<skeleton_node> n
     utils::error{}("GN03 skeleton has {} chains by its offsets but {} styles — every chain must declare one",
                    offsets.size() - 1, styles.size());
   }
+}
+
+void world_skeleton::build(const description& what, std::vector<skeleton_node> nodes,
+                           std::vector<std::array<double, 3>> points, std::vector<uint32_t> offsets,
+                           std::vector<uint32_t> styles) {
+  validate(points, offsets, styles);
 
   description_ = what;
   nodes_ = std::move(nodes);
@@ -304,6 +314,10 @@ bool world_skeleton::load(const std::string& path) {
   take(points_.data(), points_.size() * sizeof(std::array<double, 3>));
   take(offsets_.data(), offsets_.size() * sizeof(uint32_t));
   take(styles_.data(), styles_.size() * sizeof(uint32_t));
+
+  // Те же инварианты, что и у собранного каркаса: размер файла сходится ещё не значит, что смещения
+  // указывают внутрь точек.
+  validate(points_, offsets_, styles_);
 
   build_index();
   return true;

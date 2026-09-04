@@ -218,6 +218,12 @@ TEST_CASE("originator ratio normalises and refuses a zero divisor policy") {
   broken.set_number("minimum_divisor", 0.0);
   CHECK_THROWS_AS(originator::dispatch(*ratio, ratio_inputs, ratio_outputs, broken, 1, 0, 4, "normalise", nullptr),
                   std::runtime_error);
+
+  // Минимальный знаменатель ОБЯЗАТЕЛЕН, а не «по умолчанию мал»: значение по умолчанию означало бы,
+  // что движок сам решает, какая сумма весов считается нулевой, — а это решение автора конфига.
+  originator::parameters absent;
+  CHECK_THROWS_AS(originator::dispatch(*ratio, ratio_inputs, ratio_outputs, absent, 1, 0, 4, "normalise", nullptr),
+                  std::runtime_error);
 }
 
 TEST_CASE("originator range is checked against the buffer") {

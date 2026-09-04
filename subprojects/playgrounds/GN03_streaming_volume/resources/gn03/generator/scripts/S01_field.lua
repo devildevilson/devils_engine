@@ -147,6 +147,16 @@ return function(step)
     end
   end
 
+  -- НИ ОДНОГО БИОМА — ОТКАЗ, а не пустая сумма весов. Утверждение «сумма весов не бывает нулевой,
+  -- потому что базовый биом накрывает всю климатическую плоскость» — свойство ТАБЛИЦЫ, а таблицу
+  -- правит автор конфига. Молча получить нулевой знаменатель значило бы получить нулевую плотность,
+  -- то есть ПОВЕРХНОСТЬ в дырке покрытия: стену там, где правил нет вовсе.
+  if #present == 0 then
+    error(string.format("no biome covers chunk (%d, %d, %d): warmth %.3f..%.3f, wetness %.3f..%.3f -- give one " ..
+                        "biome a reach that spans the climate plane",
+                        step.chunk.x, step.chunk.y, step.chunk.z, warm_low, warm_high, wet_low, wet_high))
+  end
+
   -- Сколько биомов участвовало — в состояние: цена биомов равна их числу В ЧАНКЕ, и это число должно
   -- быть видно, а не подразумеваться.
   step.writes.state:field("biomes_used"):set(0, #present)

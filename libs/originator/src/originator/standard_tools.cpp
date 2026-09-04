@@ -315,6 +315,14 @@ void tool_ratio(const tool_call& call, const size_t begin, const size_t end) {
 
   const double scale = call.params->number("scale", 1.0);
   const double offset = call.params->number("offset", 0.0);
+  // ОБЯЗАТЕЛЕН, а не «по умолчанию мал». Значение по умолчанию здесь означало бы, что движок сам
+  // решает, какая сумма весов считается нулевой, — а это ровно то решение, которое принадлежит автору
+  // конфига: у поля плотности ноль это ПОВЕРХНОСТЬ, то есть в дырке покрытия появилась бы стена.
+  if (!call.params->has("minimum_divisor")) {
+    utils::error{}("originator step '{}': ratio needs minimum_divisor — a zero divisor means 'no rule acts "
+                   "here', and what to answer there is the config author's decision",
+                   call.step_name);
+  }
   const double floor_value = call.params->number("minimum_divisor", 1.0e-9);
   if (floor_value <= 0.0) {
     utils::error{}("originator step '{}': ratio needs a positive minimum_divisor, got {}", call.step_name,

@@ -81,6 +81,16 @@ struct options {
   // разных местах.
   bool on_route = false;
   size_t route_index = 0;
+  // Скорость записанного полёта в метрах в секунду (0 — камера слушается клавиш). Существует ради
+  // замера: «на ускорении кадры просаживаются» — утверждение про кадры, и проверяется он полётом,
+  // который можно повторить, а не полётом, наигранным руками.
+  double flight_speed = 0.0;
+  // Гасить ли чанки за пирамидой видимости. По умолчанию НЕТ: замер показал, что пасс упирается в
+  // поток вершин, а не в видимые треугольники, поэтому отсечение чанков не даёт ничего.
+  bool cull = false;
+  // Сколько вершин арены оттирать за кадр (см. --scrub). Существует ради замера: бюджет во всю арену
+  // это прежнее поведение, когда выгрузка чанков платила за себя целиком в одном кадре.
+  size_t scrub_budget = 65536;
 };
 
 fs::path resource_root() {
@@ -182,6 +192,12 @@ options parse_options(const int argc, const char** argv) {
       result.skeleton_path = value_of("--skeleton=");
     } else if (starts_with(argument, "--memory=")) {
       result.memory_path = value_of("--memory=");
+    } else if (starts_with(argument, "--scrub=")) {
+      result.scrub_budget = size_t(std::stoull(value_of("--scrub=")));
+    } else if (argument == "--cull") {
+      result.cull = true;
+    } else if (starts_with(argument, "--flight=")) {
+      result.flight_speed = std::stod(value_of("--flight="));
     } else if (starts_with(argument, "--dump=")) {
       result.dump_path = value_of("--dump=");
     } else if (starts_with(argument, "--set=")) {
@@ -311,6 +327,12 @@ public:
   }
 
   void generate(const originator::chunk_key& key, gn03::chunk_mesh& mesh) {
+    // ЗАМЕРЫ ОБНУЛЯЮТСЯ ЗДЕСЬ, потому что чанк приходит в ПОВТОРНО ИСПОЛЬЗУЕМОМ теле: время
+    // поверхности набирается по шагам через `+=`, и у чанка, выброшенного окном на выходе (стример
+    // не сбрасывает тело в этом случае), оно доставалось следующему. Врал замер ровно тогда, когда
+    // окно двигается быстро, то есть в единственном интересном случае.
+    mesh.field_milliseconds = 0.0;
+    mesh.surface_milliseconds = 0.0;
     line_->set_chunk(key);
     fill_route(key);
     const auto invoker = host_->invoker();
@@ -923,6 +945,65 @@ int main_verify(const options& opts) {
     checks.check(!arena.insert(originator::chunk_key{9, 9, 9}, huge), "the arena refuses what does not fit");
   }
 
+  // 6b. СЛОТ И ЕГО БАЙТЫ. Выгрузка чанка теперь стоит одну строку таблицы смещений, а не обнуление
+  // всего его отрезка, и обнуление осталось ровно для одного: пока в арене лежат вершины с этим
+  // слотом, отдавать слот новому чанку нельзя — иначе он получит в подарок чужие треугольники. Это
+  // уже случалось однажды, поэтому проверяется, а не подразумевается.
+  {
+    gn03::vertex_arena arena(4096, 96, 2);
+    const vertex_list block(300);
+    const auto slot_of = [&arena](const originator::chunk_key& key) {
+      for (const auto& live : arena.live()) {
+        if (live.key == key) {
+          return int64_t(live.slot);
+        }
+      }
+      return int64_t(-1);
+    };
+
+    arena.insert(originator::chunk_key{0, 0, 0}, block);
+    const int64_t first_slot = slot_of(originator::chunk_key{0, 0, 0});
+    arena.remove(originator::chunk_key{0, 0, 0});
+    checks.check(slot_of(originator::chunk_key{0, 0, 0}) < 0,
+                 "an unloaded chunk disappears from the table the same frame, without touching the arena");
+
+    arena.insert(originator::chunk_key{1, 0, 0}, block);
+    checks.check(slot_of(originator::chunk_key{1, 0, 0}) != first_slot,
+                 "the slot of an unloaded chunk is not handed out again while its vertices still lie in the "
+                 "arena");
+    for (size_t i = 0; i < 4; ++i) {
+      arena.advance_frame();
+    }
+    arena.insert(originator::chunk_key{2, 0, 0}, block);
+    checks.check(slot_of(originator::chunk_key{2, 0, 0}) == first_slot,
+                 "after the scrub and the retirement frames the slot comes back together with its span");
+
+    // ОБТИРКА НЕ ДОРОЖЕ ОБЪЯВЛЕННОГО БЮДЖЕТА: цена выгрузки обязана быть ценой кадра, а не размером
+    // окна. Здесь бюджет мал намеренно, чтобы отрезок не уместился в один кадр.
+    gn03::vertex_arena budgeted(8192, 96, 1, 96);
+    const vertex_list wide(960);
+    budgeted.insert(originator::chunk_key{0, 0, 0}, wide);
+    budgeted.take_dirty();
+    budgeted.remove(originator::chunk_key{0, 0, 0});
+    budgeted.advance_frame();
+    size_t moved = 0;
+    for (const auto& span : budgeted.take_dirty()) {
+      moved += span.count;
+    }
+    checks.check(moved <= 96, "one frame of scrubbing costs no more than the declared budget");
+    checks.check(budgeted.scrub_backlog() > 0, "the rest of the span stays in the backlog");
+    for (size_t i = 0; i < 32; ++i) {
+      budgeted.advance_frame();
+    }
+    checks.check(budgeted.scrub_backlog() == 0, "the backlog is paid off by the following frames");
+    const auto mirror = budgeted.mirror();
+    bool cleared = true;
+    for (size_t i = 0; i < 960; ++i) {
+      cleared = cleared && mirror[i].chunk == 0 && mirror[i].position[0] == 0;
+    }
+    checks.check(cleared, "the scrubbed span really is zeroed, so the slot returns to a clean arena");
+  }
+
   // 7. Окно чанков: объём, попадание и приоритет.
   {
     gn03::chunk_window window;
@@ -1343,6 +1424,85 @@ int main_verify(const options& opts) {
     checks.check(off_surface == 0, "every entity stands exactly where the field crosses the iso level");
     checks.check(outside_chunk == 0, "every entity lies inside its own chunk");
     checks.check(too_steep == 0, "no entity stands on a slope steeper than the declared limit");
+
+    // ВЕХИ ДОХОДЯТ ДО ОБЕИХ ГРАНИЦ ЧАНКА ОДИНАКОВО. Проверка написана под найденный дефект: столбец
+    // выбирался из узлов 2..cells-1, то есть от ближней границы веха отступала на клетку, а от
+    // дальней на две — и вдоль каждого шва в мире шла полоса без вех шириной в три клетки. Заметить
+    // это глазом нельзя (вех семь на чанк), а на карте регулярность видна сразу.
+    {
+      size_t near_band = 0;
+      size_t far_band = 0;
+      size_t counted = 0;
+      for (int64_t i = 0; i < 160; ++i) {
+        const auto key = originator::chunk_key{i * 7 - 61, (i % 3) - 1, i * 5 - 43};
+        for (const auto& prop : props_of(key)) {
+          for (const uint32_t axis : {0u, 2u}) {
+            const double value = prop.position[axis];
+            near_band += value < 2.0 * cell ? 1 : 0;
+            far_band += value > span - 2.0 * cell ? 1 : 0;
+            ++counted;
+          }
+        }
+      }
+      utils::info("GN03 verify: of {} entity coordinates {} land in the first two cells of the chunk and {} in "
+                  "the last two — the two bands must be the same width",
+                  counted, near_band, far_band);
+      checks.check(counted > 200, "the sample has enough entities to talk about their distribution");
+      checks.check(near_band > 0 && far_band > 0, "entities reach both borders of their chunk");
+      checks.check(std::max(near_band, far_band) < 3 * std::min(near_band, far_band) + 8,
+                   "neither border of a chunk has a band without entities");
+    }
+
+    // ВИД ВЕХИ — СВОЙСТВО МИРА, А НЕ НАБЛЮДАТЕЛЯ. Проверка написана под найденный дефект: поворот
+    // вехи вокруг своей оси считался в шейдере хешем от её позиции, а позиция там задана
+    // ОТНОСИТЕЛЬНО ЧАНКА КАМЕРЫ — то есть вехи проворачивались на месте, стоило наблюдателю перейти в
+    // соседний чанк. Теперь поворот выводится из имени вехи, и то же имя мир использует, чтобы её
+    // помнить.
+    {
+      // Прежний способ воспроизведён ЗДЕСЬ, чтобы проверка показывала не только новое поведение, но и
+      // то, чем оно отличается: шейдер брал хеш от позиции, а позиция в кадре задана относительно
+      // чанка камеры.
+      const auto spin_of_position = [](const glm::vec3& position) {
+        const double value = double(position.x) + double(position.z) * 7.31 + double(position.y) * 3.17;
+        const double scaled = std::sin(value * 78.233) * 43758.5453123;
+        return scaled - std::floor(scaled);
+      };
+
+      const originator::chunk_key observer_here = populated;
+      const originator::chunk_key observer_there{populated.x + 1, populated.y, populated.z};
+      bool old_way_moved = false;
+      bool new_way_held = true;
+      bool spins_differ = false;
+      uint32_t first_spin = 0;
+      bool have_first = false;
+      for (const auto& prop : sample_props) {
+        const glm::vec3 local(float(prop.position[0]), float(prop.position[1]), float(prop.position[2]));
+        const glm::vec3 from_here = gn03::chunk_offset(populated, observer_here, span) + local;
+        const glm::vec3 from_there = gn03::chunk_offset(populated, observer_there, span) + local;
+        old_way_moved = old_way_moved || spin_of_position(from_here) != spin_of_position(from_there);
+
+        const uint32_t spin = gn03::prop_spin_bits(populated, prop.origin);
+        new_way_held = new_way_held && spin == gn03::prop_spin_bits(populated, prop.origin) &&
+                       gn03::pack_prop_kind(prop.kind, false, spin) ==
+                         gn03::pack_prop_kind(prop.kind, false, gn03::prop_spin_bits(populated, prop.origin));
+        if (have_first) {
+          spins_differ = spins_differ || spin != first_spin;
+        }
+        first_spin = have_first ? first_spin : spin;
+        have_first = true;
+      }
+      checks.check(old_way_moved, "a hash of the camera-relative position really does change when the "
+                                  "observer moves to the next chunk");
+      checks.check(new_way_held, "an entity looks the same no matter which chunk the observer is in");
+      checks.check(spins_differ, "entities of one chunk do not all face the same way");
+      // Разные вехи одного чанка и вехи разных чанков различаются: поворот выведен из имени, а имя у
+      // каждой своё.
+      checks.check(gn03::prop_spin_bits(originator::chunk_key{7, -3, 11}, 4) !=
+                     gn03::prop_spin_bits(originator::chunk_key{7, -3, 12}, 4),
+                   "the same entity number in two chunks faces two different ways");
+      checks.check(gn03::pack_prop_kind(2, true, 200) == (2u | 0x100u | (200u << 16)),
+                   "kind, memory mark and spin share one word without stepping on each other");
+    }
   }
 
   // 14. БИОМЫ: СМЕШИВАНИЕ ПРАВИЛ. Проверяется главное свойство схемы — что «считать только
@@ -1474,6 +1634,33 @@ int main_verify(const options& opts) {
       restored.query(low, high, sizes.route_capacity, sizes.route_chain_capacity, after);
       checks.check(before.points == after.points && before.offsets == after.offsets,
                    "a reloaded package answers a query with exactly the same route");
+
+      // ПАКЕТ — ЧУЖИЕ ДАННЫЕ, и сошедшийся размер файла ещё не значит, что смещения указывают внутрь
+      // точек. Проверки инвариантов стояли только на сборке, поэтому испорченный пакет проходил
+      // насквозь, а индекс читал точки за концом массива. Здесь портится одно смещение — ровно то,
+      // что делает обрезанная копия файла.
+      {
+        auto bytes = file_io::read<char>(path, file_io::type::binary);
+        checks.check(!bytes.empty(), "the package can be read as bytes at all");
+        // Первое смещение CSR лежит сразу за узлами и точками: заголовок, узлы, точки, смещения.
+        const size_t offsets_at = 64 + skeleton.nodes().size() * sizeof(gn03::skeleton_node) +
+                                  skeleton.points().size() * sizeof(std::array<double, 3>);
+        if (offsets_at + sizeof(uint32_t) <= bytes.size()) {
+          const uint32_t nonsense = uint32_t(skeleton.points().size() + 1000);
+          std::memcpy(bytes.data() + offsets_at, &nonsense, sizeof(nonsense));
+          const std::string broken_path = std::string("gn03_skeleton_broken.bin");
+          file_io::write(std::span<const char>(bytes.data(), bytes.size()), broken_path, file_io::type::binary);
+          gn03::world_skeleton damaged;
+          bool refused = false;
+          try {
+            damaged.load(broken_path);
+          } catch (const std::exception&) {
+            refused = true;
+          }
+          checks.check(refused, "a package whose offsets point outside its own points is refused, not indexed");
+          std::filesystem::remove(broken_path);
+        }
+      }
       std::filesystem::remove(path);
     }
 
@@ -1779,6 +1966,9 @@ int main(const int argc, const char** argv) {
   view.grid = opts.grid;
   view.validation = opts.validation;
   view.uncapped = opts.uncapped;
+  view.flight_speed = opts.flight_speed;
+  view.cull = opts.cull;
+  view.scrub_budget = opts.scrub_budget;
   view.dump_path = opts.dump_path;
   view.seed = opts.seed;
   view.chunk_cells = sizes.chunk_cells;

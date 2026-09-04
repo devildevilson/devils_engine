@@ -10,8 +10,12 @@
 // дешевле, чем заводить им вторую арену со слотами.
 //
 // ОРИЕНТАЦИЯ ПО НОРМАЛИ ПОЛА: веха наклоняется вместе с землёй, а не торчит вертикально из склона.
-// Поворот вокруг своей оси берётся ХЕШЕМ ПОЗИЦИИ, а не приезжает данными: он ни на что не влияет,
-// кроме вида, и хранить его было бы четыре лишних байта на сущность за то, что и так выводится.
+//
+// Поворот вокруг своей оси ПРИЕЗЖАЕТ ДАННЫМИ, восемью битами в слове рода, и это исправление. Он
+// брался хешем от позиции — а позиция здесь задана ОТНОСИТЕЛЬНО ЧАНКА КАМЕРЫ и меняется на размер
+// чанка, стоит наблюдателю перейти в соседний. Вехи от этого проворачивались на месте: вид предмета
+// зависел от того, откуда на него смотрят. Теперь поворот выводится из ИМЕНИ вехи (ключ чанка плюс
+// номер попытки) на процессоре — из того же имени, по которому мир её помнит.
 
 #include "camera_block.glsl"
 
@@ -20,10 +24,6 @@ layout(set = 0, binding = 1, std430) readonly buffer Props { vec4 data[]; } prop
 layout(location = 0) out vec3 out_normal;
 layout(location = 1) out vec3 out_position;
 layout(location = 2) flat out uint out_kind;
-
-float hash11(const float value) {
-  return fract(sin(value * 78.233) * 43758.5453123);
-}
 
 void main() {
   const vec4 head = props.data[gl_InstanceIndex * 2];
@@ -40,7 +40,8 @@ void main() {
   vec3 tangent = normalize(cross(reference, up));
   const vec3 bitangent = cross(up, tangent);
 
-  const float spin = hash11(base_point.x + base_point.z * 7.31 + base_point.y * 3.17) * 6.2831853;
+  // Восемь бит на полный оборот — шаг 1.4 градуса, чего для «стоит не строго на север» хватает.
+  const float spin = float((out_kind >> 16u) & 0xffu) * (6.2831853 / 256.0);
   const vec3 axis_a = tangent * cos(spin) + bitangent * sin(spin);
   const vec3 axis_b = bitangent * cos(spin) - tangent * sin(spin);
 

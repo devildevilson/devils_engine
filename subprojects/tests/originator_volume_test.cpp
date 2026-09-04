@@ -520,6 +520,14 @@ TEST_CASE("polyline_distance measures the way a corridor needs it") {
     CHECK(parallel.get(i) == distance.get(i));
   }
 
+  // ПРЕДЕЛ ОБЯЗАТЕЛЕН. Он значит две вещи сразу — насколько широко смотреть и что отвечать там, где
+  // ломаной нет, — и пока у него было значение по умолчанию, эти два смысла разъезжались: подготовка
+  // брала ноль, тело миллиард, и вызов без параметра давал поле с разрывом на границе прямоугольника
+  // отрезка. Разрыв в поле плотности выглядит как стена посреди мира.
+  originator::parameters no_limit;
+  CHECK_THROWS_AS(originator::dispatch(*tool, inputs, outputs, no_limit, 1, 0, sample_count, "route", nullptr),
+                  std::runtime_error);
+
   // Цепочка, выходящая за буфер точек, — ошибка конфига, а не повод читать чужую память.
   offsets.field(0).set(2, 99.0);
   CHECK_THROWS_AS(originator::dispatch(*tool, inputs, outputs, params, 1, 0, sample_count, "route", nullptr),

@@ -91,6 +91,11 @@ public:
   bool load(const std::string& path);
 
 private:
+  // Инварианты CSR: смещения не идут назад, не выходят за точки, и у каждой цепочки объявлен стиль.
+  // Зовётся и при сборке, и при ЧТЕНИИ ПАКЕТА: файл — чужие данные, и сошедшийся размер ещё не
+  // означает, что смещения указывают внутрь массива точек.
+  static void validate(const std::vector<std::array<double, 3>>& points, const std::vector<uint32_t>& offsets,
+                       const std::vector<uint32_t>& styles);
   void build_index();
 
   struct segment {

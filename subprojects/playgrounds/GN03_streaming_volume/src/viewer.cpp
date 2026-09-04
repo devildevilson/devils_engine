@@ -20,6 +20,7 @@
 #include "devils_engine/input/events.h"
 #include "devils_engine/painter/assets_base.h"
 #include "devils_engine/painter/auxiliary.h"
+#include "devils_engine/painter/gpu_timing.h"
 #include "devils_engine/painter/graphics_base.h"
 #include "devils_engine/painter/makers.h"
 #include "devils_engine/painter/system_info.h"
@@ -39,6 +40,185 @@ uint32_t pending_width = 1280;
 uint32_t pending_height = 720;
 bool resize_pending = false;
 int32_t escape_key = -1;
+
+// ЗАМЕР КАДРА ПО ФАЗАМ.
+//
+// Существует ради утверждения, которое иначе проверить нечем: «на ускорении кадры просаживаются».
+// Просадка — это не средняя цена кадра, а ХУДШИЙ кадр: средняя цена говорит, сколько стоит полёт, а
+// худший кадр — то, что видно глазом. Поэтому считается и то, и другое, и отдельно — сколько кадров
+// вышло за бюджет шестидесяти в секунду.
+//
+// Фазы разделены так, чтобы каждая отвечала на СВОЙ вопрос: работа окна чанков, выгрузка, вставка,
+// заливка арены, таблица смещений, сущности, оверлей и подача кадра устройству. Одно число «кадр
+// стоит N» не отвечает ни на один из них — ровно та же ошибка, из-за которой у PF03 метрику
+// подкручивали в обе стороны без толку.
+enum class frame_phase : size_t { window, evict, insert, upload, offsets, props, overlay, submit, whole, count };
+
+constexpr std::array<const char*, size_t(frame_phase::count)> phase_names{
+  {"window", "evict", "insert", "upload", "offsets", "props", "overlay", "submit", "frame"}};
+
+struct frame_profile {
+  std::array<double, size_t(frame_phase::count)> total{};
+  std::array<double, size_t(frame_phase::count)> worst{};
+  size_t frames = 0;
+  size_t over_budget = 0;
+  size_t evicted_chunks = 0;
+  size_t inserted_chunks = 0;
+  size_t zeroed_vertices = 0;
+  size_t uploaded_vertices = 0;
+  size_t worst_upload_vertices = 0;
+  size_t chunk_steps = 0;
+  size_t holes_at_worst = 0;
+  size_t drawn_at_worst = 0;
+  double worst_frame = 0.0;
+  // РАСПРЕДЕЛЕНИЕ, а не только среднее с худшим: просадка — это доля кадров, а не одно число.
+  // Ведра по 4 мс, последнее — «дороже 32 мс», то есть меньше тридцати кадров в секунду.
+  std::array<size_t, 9> buckets{};
+  // Состояние арены и очереди на последнем кадре: рывки от неё начинаются не сразу, а когда она
+  // заполнится, поэтому судить о ней по началу полёта нельзя.
+  size_t final_used = 0;
+  size_t final_holes = 0;
+  size_t final_drawn = 0;
+  size_t final_postponed = 0;
+  size_t rejections = 0;
+  // Отсечение по пирамиде видимости: сколько чанков окна вообще видно. Число нужно рядом с ценой
+  // пасса, иначе «отсечение помогло» останется утверждением без величины.
+  size_t live_rows = 0;
+  size_t visible_rows = 0;
+
+  void count(const double milliseconds) {
+    const size_t bucket = std::min(size_t(milliseconds / 4.0), buckets.size() - 1);
+    buckets[bucket] += 1;
+  }
+
+  void add(const frame_phase phase, const double milliseconds) {
+    const size_t index = size_t(phase);
+    total[index] += milliseconds;
+    worst[index] = std::max(worst[index], milliseconds);
+  }
+
+  void report() const {
+    if (frames == 0) {
+      return;
+    }
+    utils::info("GN03 frames: {} drawn, {} over the 16.6 ms budget; worst frame {:.2f} ms", frames,
+                over_budget, worst_frame);
+    for (size_t i = 0; i < total.size(); ++i) {
+      utils::info("GN03 frame phase {:>8}: {:.3f} ms average, {:.2f} ms worst", phase_names[i],
+                  total[i] / double(frames), worst[i]);
+    }
+    utils::info("GN03 frames: {} chunk steps, {} chunks evicted, {} inserted; {} vertices zeroed and {} "
+                "uploaded ({:.1f} MiB), worst single frame uploaded {} ({:.2f} MiB)",
+                chunk_steps, evicted_chunks, inserted_chunks, zeroed_vertices, uploaded_vertices,
+                double(uploaded_vertices * sizeof(gpu_vertex)) / (1024.0 * 1024.0), worst_upload_vertices,
+                double(worst_upload_vertices * sizeof(gpu_vertex)) / (1024.0 * 1024.0));
+    utils::info("GN03 frames: at the worst frame the arena drew {} vertices of which {} were holes",
+                drawn_at_worst, holes_at_worst);
+    std::string spread;
+    for (size_t i = 0; i < buckets.size(); ++i) {
+      if (buckets[i] == 0) {
+        continue;
+      }
+      spread += std::format("{}{}{} ms: {}", spread.empty() ? "" : ", ", i * 4,
+                            i + 1 == buckets.size() ? "+" : std::format("-{}", (i + 1) * 4), buckets[i]);
+    }
+    utils::info("GN03 frames: spread {}", spread);
+    utils::info("GN03 frames: at the end the arena held {} vertices, {} of them holes, and drew {}; {} chunks "
+                "waited for room ({} rejections)",
+                final_used, final_holes, final_drawn, final_postponed, rejections);
+    if (live_rows != 0) {
+      utils::info("GN03 frames: {:.1f} of {:.1f} chunks were inside the view frustum on average ({:.0f}% of the "
+                  "window drawn)",
+                  double(visible_rows) / double(frames), double(live_rows) / double(frames),
+                  100.0 * double(visible_rows) / double(live_rows));
+    }
+  }
+};
+
+// ЦЕНА ПАССОВ НА УСТРОЙСТВЕ. Процессорные фазы отвечают на «сколько стоит собрать кадр», но не на
+// «сколько стоит его нарисовать», а у этой площадки второе — отдельный вопрос: арена рисуется ОДНИМ
+// вызовом на [0, high_water), то есть вместе с дырками выгруженных чанков, и во что обходятся сами
+// дырки, догадкой не установить.
+struct gpu_timings {
+  struct pass {
+    std::string name;
+    double total = 0.0;
+    double worst = 0.0;
+  };
+  std::vector<pass> passes;
+  double frame_total = 0.0;
+  double frame_worst = 0.0;
+  size_t samples = 0;
+
+  void add(const std::span<const painter::gpu_pass_timing> measured, const double frame_milliseconds) {
+    if (passes.size() != measured.size()) {
+      passes.assign(measured.size(), pass{});
+      for (size_t i = 0; i < measured.size(); ++i) {
+        passes[i].name = measured[i].name;
+      }
+    }
+    for (size_t i = 0; i < measured.size(); ++i) {
+      passes[i].total += measured[i].milliseconds;
+      passes[i].worst = std::max(passes[i].worst, measured[i].milliseconds);
+    }
+    frame_total += frame_milliseconds;
+    frame_worst = std::max(frame_worst, frame_milliseconds);
+    ++samples;
+  }
+
+  void report() const {
+    if (samples == 0) {
+      utils::info("GN03 GPU timings: no samples collected");
+      return;
+    }
+    const double count = double(samples);
+    for (const auto& measured : passes) {
+      utils::info("GN03 GPU pass {:>14}: {:.3f} ms average, {:.2f} ms worst", measured.name,
+                  measured.total / count, measured.worst);
+    }
+    utils::info("GN03 GPU whole frame: {:.3f} ms average, {:.2f} ms worst over {} frames", frame_total / count,
+                frame_worst, samples);
+  }
+};
+
+// ВИДЕН ЛИ ЧАНК. Куб чанка проверяется по восьми углам в КЛИПОВЫХ координатах: если все восемь
+// оказались за одной и той же плоскостью, куб целиком за ней, и рисовать его незачем. Проверка
+// консервативна в правильную сторону — она может оставить невидимый чанк, но не может убрать
+// видимый, а «убрала видимый» выглядело бы точно как дырка в мире.
+//
+// Проекция здесь обратная и бесконечная, поэтому дальней плоскости нет вовсе: далёкий чанк прячет
+// туман, а не отсечение. Ближняя выражается через `w`: за камерой у него меняется знак.
+bool chunk_is_visible(const glm::mat4& view_projection, const glm::vec3& low, const float span,
+                      const float near_plane) {
+  uint32_t outside_left = 0, outside_right = 0, outside_bottom = 0, outside_top = 0, outside_near = 0;
+  for (uint32_t corner = 0; corner < 8; ++corner) {
+    const glm::vec3 point(low.x + ((corner & 1u) != 0 ? span : 0.0f), low.y + ((corner & 2u) != 0 ? span : 0.0f),
+                          low.z + ((corner & 4u) != 0 ? span : 0.0f));
+    const glm::vec4 clip = view_projection * glm::vec4(point, 1.0f);
+    outside_left += clip.x < -clip.w ? 1u : 0u;
+    outside_right += clip.x > clip.w ? 1u : 0u;
+    outside_bottom += clip.y < -clip.w ? 1u : 0u;
+    outside_top += clip.y > clip.w ? 1u : 0u;
+    outside_near += clip.w < near_plane ? 1u : 0u;
+  }
+  return outside_left != 8 && outside_right != 8 && outside_bottom != 8 && outside_top != 8 && outside_near != 8;
+}
+
+// Часы фазы. Отдельный тип, потому что фаз девять, и написать `steady_clock::now()` восемнадцать раз
+// означало бы однажды забыть одну.
+class phase_clock {
+public:
+  phase_clock(frame_profile& profile, const frame_phase phase) :
+    profile_(profile), phase_(phase), start_(std::chrono::steady_clock::now()) {}
+  ~phase_clock() {
+    profile_.add(phase_, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_).count());
+  }
+
+private:
+  frame_profile& profile_;
+  frame_phase phase_;
+  std::chrono::steady_clock::time_point start_;
+};
 
 void error_callback(const int error, const char* message) noexcept {
   utils::warn("GN03 input error {}: {}", error, message);
@@ -343,7 +523,7 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
 
     // Отрезок, возвращённый ареной, ждёт столько кадров, сколько их бывает в полёте: устройство
     // читает арену, и кадры, уже отданные ему, ссылаются на прежние вершины.
-    vertex_arena arena(arena_vertices, 768, base.frames_in_flight() + 1);
+    vertex_arena arena(arena_vertices, 768, base.frames_in_flight() + 1, options.scrub_budget);
 
     // ТАБЛИЦА СМЕЩЕНИЙ ЧАНКОВ — то, что делает «всё относительно камеры» дешёвым. Вершина знает
     // только свои координаты внутри чанка и номер слота; куда этот чанк попадает относительно чанка
@@ -464,6 +644,13 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
     painter::graphics_ctx context;
     context.base = &base;
     context.assets = &assets;
+    painter::gpu_timestamp_profiler gpu_profiler(base);
+    gpu_timings gpu;
+    context.set_gpu_profiler(&gpu_profiler);
+    if (!gpu_profiler.available()) {
+      utils::warn("GN03: GPU timestamps are unavailable on this device; the cost of drawing the arena stays "
+                  "unmeasured");
+    }
 
     static constexpr std::array<const char*, 4> mode_names{{"shaded", "normals", "slope", "biome"}};
     size_t mode = std::min(options.mode, mode_names.size() - 1);
@@ -491,7 +678,10 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
     window_state.centre = observer.key;
     streamer->set_window(window_state);
 
+    frame_profile profile;
+
     while (!input::should_close(window)) {
+      const auto frame_start = std::chrono::steady_clock::now();
       input::poll_events();
       const auto now = std::chrono::steady_clock::now();
       const float dt = std::clamp(std::chrono::duration<float>(now - previous_time).count(), 0.0f, 0.1f);
@@ -515,10 +705,26 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
       motion.look_delta = {float(next_mouse_x - mouse_x), float(next_mouse_y - mouse_y)};
       mouse_x = next_mouse_x;
       mouse_y = next_mouse_y;
+      // ПОЛЁТ ПО ЗАПИСИ. Заменяет ввод целиком, а не добавляется к нему: замер обязан быть
+      // повторяемым, а полёт, наигранный руками, каждый раз идёт другой дорогой — сравнивать два
+      // таких прогона нельзя.
+      if (options.flight_speed > 0.0) {
+        motion = playground::camera_motion{};
+        motion.forward = 1.0f;
+        camera.pitch = 0.0f;
+        camera.yaw = 0.35f;
+        camera.move_speed = float(options.flight_speed);
+      }
       // Взгляд применяется камерой, а движение НАКАПЛИВАЕТСЯ ЗДЕСЬ, в double. Порядок тот же, что у
       // `update`: сначала взгляд, потом смещение по новому направлению.
       camera.look(motion);
-      observer.position += glm::dvec3(camera.displacement(motion, dt));
+      // ШАГ ПОЛЁТА ОГРАНИЧЕН СВЕРХУ, и это условие сравнимости замеров. Чистые часы делают прогоны
+      // несравнимыми в одну сторону (быстрый прогон за те же 2500 кадров пролетает меньше мира, то
+      // есть выбрасывает меньше чанков), а чистые кадры — в другую (кадр дешевле, значит мир едет
+      // быстрее реального времени, и генератор перестаёт успевать вовсе). Ограничение сверху при
+      // темпе в шестьдесят кадров даёт и одну дорогу, и одну скорость относительно генератора.
+      const float step_dt = options.flight_speed > 0.0 ? std::min(dt, 1.0f / 60.0f) : dt;
+      observer.position += glm::dvec3(camera.displacement(motion, step_dt));
 
       // ВЫХОД ИЗ ЧАНКА: ключ меняется, а позиция заворачивается внутрь. Это и есть весь механизм
       // плавающего начала координат — ни арену, ни таблицу пересчитывать не нужно, потому что
@@ -573,7 +779,7 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
         // мир, которого нет.
         vk::Device(device).waitIdle();
         streamer.reset();
-        arena = vertex_arena(arena_vertices, 768, base.frames_in_flight() + 1);
+        arena = vertex_arena(arena_vertices, 768, base.frames_in_flight() + 1, options.scrub_budget);
         chunk_props.clear();
         streamer = std::make_unique<chunk_streamer>(builder(overrides_of(), seed), options.workers);
         window_state.centre = observer.key;
@@ -587,13 +793,19 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
       // сортировку сотен ключей ради того же самого набора. Ключ камеры — он же и есть центр окна,
       // потому что окно теперь трёхмерно во все стороны.
       if (!(observer.key == window_state.centre)) {
+        const phase_clock clock(profile, frame_phase::window);
         window_state.centre = observer.key;
         streamer->set_window(window_state);
+        ++profile.chunk_steps;
       }
 
-      for (const auto& key : streamer->take_evicted()) {
-        arena.remove(key);
-        chunk_props.erase(key);
+      {
+        const phase_clock clock(profile, frame_phase::evict);
+        for (const auto& key : streamer->take_evicted()) {
+          profile.zeroed_vertices += arena.remove(key);
+          ++profile.evicted_chunks;
+          chunk_props.erase(key);
+        }
       }
 
       // ОТЛОЖЕННЫЕ ЧАНКИ ЖДУТ МЕСТА, А НЕ СЧИТАЮТСЯ ЗАНОВО. Первая версия возвращала не поместившийся
@@ -603,6 +815,7 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
       // мегабайты в оперативной памяти, и правильное решение — держать её и попробовать позже.
       const auto try_insert = [&](chunk_mesh& mesh) {
         if (arena.insert(mesh.key, mesh.vertices)) {
+          ++profile.inserted_chunks;
           // Сущности принимаются вместе с геометрией и только вместе с ней: чанк, которого нет в
           // арене, не должен показывать свои вехи — иначе они висели бы над пустотой.
           if (!mesh.props.empty()) {
@@ -617,6 +830,10 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
         }
         return false;
       };
+
+      // Вставка мерится метками, а не областью видимости: она кончается посередине блока, потому что
+      // дальше идёт проверка `can_draw`, которая может увести кадр совсем.
+      const auto insert_start = std::chrono::steady_clock::now();
 
       // Сначала те, что уже ждут: иначе новый чанк занимал бы освободившееся место перед тем, кто
       // стоит в очереди дольше, и ждущий не попал бы в мир никогда.
@@ -654,6 +871,8 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
         ++rejected_chunks;
         break;
       }
+      profile.add(frame_phase::insert,
+                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - insert_start).count());
 
       if (!base.can_draw()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(8));
@@ -664,6 +883,8 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
 
       // Изменившиеся отрезки арены — и только они. Заливать всю арену каждый кадр значило бы везти
       // десятки мегабайт ради нескольких новых чанков.
+      {
+      const phase_clock upload_clock(profile, frame_phase::upload);
       const auto dirty = arena.take_dirty();
       if (!dirty.empty()) {
         const auto frame = base.get_current_buffer_resource_frame(arena_slot);
@@ -672,21 +893,53 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
         }
         auto* destination = static_cast<uint8_t*>(frame.mapped) + frame.sub.offset;
         const auto mirror = arena.mirror();
+        size_t moved = 0;
         for (const auto& region : dirty) {
           std::memcpy(destination + region.first * sizeof(gpu_vertex), mirror.data() + region.first,
                       region.count * sizeof(gpu_vertex));
+          moved += region.count;
         }
+        profile.uploaded_vertices += moved;
+        profile.worst_upload_vertices = std::max(profile.worst_upload_vertices, moved);
+      }
       }
 
       // Таблица смещений: по одной строке на чанк, лежащий в арене. Пишется целиком, потому что
       // после ухода камеры из чанка меняются ВСЕ строки сразу — и это дешевле любого учёта, кто
       // именно изменился: четыре тысячи векторов это 64 килобайта.
-      for (const auto& live : arena.live()) {
-        if (live.slot < chunk_offsets.size()) {
-          chunk_offsets[live.slot] = glm::vec4(chunk_offset(live.key, observer.key, chunk_span), 0.0f);
+      // Матрица кадра считается ДО таблицы смещений, потому что таблица теперь отвечает и на вопрос
+      // «виден ли чанк»: живая строка и видимая строка — одно и то же поле.
+      const float aspect = float(std::max(pending_width, 1u)) / float(std::max(pending_height, 1u));
+      const float near_plane = 0.1f;
+      const auto view = camera.view();
+      const auto projection = playground::infinite_reverse_z_projection(glm::radians(70.0f), aspect, near_plane);
+      const auto view_projection = projection * view;
+
+      {
+        const phase_clock clock(profile, frame_phase::offsets);
+        // ТАБЛИЦА ПИШЕТСЯ ЦЕЛИКОМ И НАЧИНАЕТСЯ С НУЛЕЙ, и это не расточительство, а механизм: ноль в
+        // `w` означает «этой строки нет», и шейдер схлопывает её вершины в точку. Отсюда выгрузка
+        // чанка стоит НОЛЬ байтов арены — раньше она обнуляла его отрезок, то есть 384 килобайта на
+        // чанк при сорока пяти чанках за шаг окна.
+        std::fill(chunk_offsets.begin(), chunk_offsets.end(), glm::vec4(0.0f));
+        for (const auto& live : arena.live()) {
+          if (live.slot >= chunk_offsets.size()) {
+            continue;
+          }
+          const auto offset = chunk_offset(live.key, observer.key, chunk_span);
+          ++profile.live_rows;
+          // ЧАНК, КОТОРОГО НЕ ВИДНО, ГАСИТСЯ ТОЙ ЖЕ СТРОКОЙ, что и выгруженный: арена рисуется одним
+          // вызовом, поэтому «не рисовать чанк» выражается только через его строку — и выражается
+          // бесплатно, потому что строка и так пишется каждый кадр. Окно трёхмерно и вокруг камеры,
+          // а видно из него меньше половины.
+          if (options.cull && !chunk_is_visible(view_projection, offset, float(chunk_span), near_plane)) {
+            continue;
+          }
+          ++profile.visible_rows;
+          chunk_offsets[live.slot] = glm::vec4(offset, 1.0f);
         }
+        write_buffer(base, "chunk_offsets", chunk_offsets.data(), chunk_offsets.size() * sizeof(glm::vec4));
       }
-      write_buffer(base, "chunk_offsets", chunk_offsets.data(), chunk_offsets.size() * sizeof(glm::vec4));
 
       // Сущности собираются заново каждый кадр и СРАЗУ в системе чанка камеры: их немного, поэтому
       // смещение применяется здесь, на процессоре, и шейдеру не нужны ни слот, ни таблица.
@@ -694,6 +947,7 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
       // СОЕДИНЕНИЕ С ПАМЯТЬЮ ПРОИСХОДИТ ЗДЕСЬ ЖЕ, каждый кадр, из (выводимое + склад). Хранить
       // «уже соединённое» было бы вторым представлением того же, и оно однажды разъехалось бы со
       // складом; а так соединение остаётся ФУНКЦИЕЙ, и это ровно то свойство, которое проверяется.
+      const auto props_start = std::chrono::steady_clock::now();
       prop_instances.clear();
       dropped_props = 0;
       nearest_found = false;
@@ -713,9 +967,12 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
             instance.normal[axis] = float(prop.normal[axis]);
           }
           instance.scale = float(prop.size);
-          // Род и пометка в одном слове: род в младшем байте, пометка выше. Пометка — это ПАМЯТЬ, а
-          // не свойство мира, поэтому она приезжает из склада, а не из генератора.
-          instance.kind = prop.kind | (entry.delta.marked ? 0x100u : 0u);
+          // Род, пометка и поворот в одном слове. Пометка — это ПАМЯТЬ, а не свойство мира, поэтому
+          // она приезжает из склада; поворот выводится из ИМЕНИ вехи (ключ чанка плюс номер попытки),
+          // а не из её позиции — позиция здесь задана относительно чанка камеры, и хеш от неё
+          // проворачивал бы веху при каждом переходе наблюдателя в соседний чанк.
+          instance.kind =
+            pack_prop_kind(prop.kind, entry.delta.marked, prop_spin_bits(key, prop.origin));
           prop_instances.push_back(instance);
 
           const glm::vec3 to_prop = glm::vec3(instance.position[0], instance.position[1], instance.position[2]) -
@@ -730,6 +987,8 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
         }
       }
       write_buffer(base, "prop_instances", prop_instances.data(), prop_instances.size() * sizeof(gpu_prop));
+      profile.add(frame_phase::props,
+                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - props_start).count());
 
       // Взаимодействие идёт ПОСЛЕ сборки кадра, потому что «ближайшая» известна только после неё, и
       // изменение склада увидит следующий кадр — так же, как его увидит вернувшийся чанк.
@@ -743,13 +1002,8 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
         }
       }
 
-      const float aspect = float(std::max(pending_width, 1u)) / float(std::max(pending_height, 1u));
-      const float near_plane = 0.1f;
-      const auto view = camera.view();
-      const auto projection = playground::infinite_reverse_z_projection(glm::radians(70.0f), aspect, near_plane);
-
       camera_block block{};
-      block.view_projection = projection * view;
+      block.view_projection = view_projection;
       block.inverse_view_projection = glm::inverse(block.view_projection);
       block.camera_position = glm::vec4(camera.position, 1.0f);
       block.sun_direction = glm::vec4(glm::normalize(glm::vec3(0.42f, 0.70f, 0.28f)), 0.0f);
@@ -805,15 +1059,45 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
       }
       overlay.set_detail_lines(detail);
 
-      const uint64_t delta_us = uint64_t(std::max(dt, 1.0e-6f) * 1.0e6f);
-      const uint64_t stamp_us = uint64_t(seconds * 1.0e6);
-      overlay.update(delta_us, stamp_us);
-      write_overlay(base, overlay, overlay_visible);
+      {
+        const phase_clock clock(profile, frame_phase::overlay);
+        const uint64_t delta_us = uint64_t(std::max(dt, 1.0e-6f) * 1.0e6f);
+        const uint64_t stamp_us = uint64_t(seconds * 1.0e6);
+        overlay.update(delta_us, stamp_us);
+        write_overlay(base, overlay, overlay_visible);
+      }
 
-      context.prepare();
-      context.draw();
-      base.submit_frame();
+      {
+        const phase_clock clock(profile, frame_phase::submit);
+        context.prepare();
+        context.draw();
+        base.submit_frame();
+      }
       arena.advance_frame();
+      if (gpu_profiler.has_results()) {
+        gpu.add(gpu_profiler.passes(), gpu_profiler.frame_milliseconds());
+      }
+
+      // Кадр целиком — БЕЗ ожидания темпа: пейсер спит ровно столько, сколько кадр не отработал, и
+      // включать его сон в цену кадра значило бы получить ровно 16.6 мс всегда.
+      {
+        const double whole =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frame_start).count();
+        profile.add(frame_phase::whole, whole);
+        ++profile.frames;
+        profile.count(whole);
+        profile.over_budget += whole > 16.6 ? 1 : 0;
+        profile.final_used = arena.used();
+        profile.final_holes = arena.hole_vertices();
+        profile.final_drawn = arena.high_water();
+        profile.final_postponed = postponed.size();
+        profile.rejections = rejected_chunks;
+        if (whole > profile.worst_frame) {
+          profile.worst_frame = whole;
+          profile.holes_at_worst = arena.hole_vertices();
+          profile.drawn_at_worst = arena.high_water();
+        }
+      }
       pacer.wait();
 
       ++drawn_frames;
@@ -823,6 +1107,8 @@ int run_viewer(const viewer_options& options, const factory_builder& builder) {
     }
 
     vk::Device(device).waitIdle();
+    profile.report();
+    gpu.report();
     if (!options.dump_path.empty()) {
       dump_scene(base, options.dump_path);
       utils::info("GN03 viewer: frame saved to '{}'", options.dump_path);

@@ -75,6 +75,11 @@ size_t chunk_window::volume() const noexcept {
   return size_t(std::max<int64_t>(side * side * layers, 0));
 }
 
+uint32_t prop_spin_bits(const originator::chunk_key& key, const uint32_t origin) noexcept {
+  const uint64_t hashed = mix(uint64_t(key.x) ^ mix(uint64_t(key.y) ^ mix(uint64_t(key.z) ^ mix(origin))));
+  return uint32_t(hashed >> 40) & 0xffu;
+}
+
 size_t chunk_key_hash::operator()(const originator::chunk_key& key) const noexcept {
   return size_t(mix(uint64_t(key.x) ^ mix(uint64_t(key.y) ^ mix(uint64_t(key.z)))));
 }
@@ -294,8 +299,10 @@ size_t vertex_arena::key_hash::operator()(const originator::chunk_key& key) cons
   return chunk_key_hash{}(key);
 }
 
-vertex_arena::vertex_arena(const size_t capacity, const size_t granularity, const size_t retirement_frames) :
-  capacity_(capacity), granularity_(std::max<size_t>(granularity, 3)), retirement_frames_(retirement_frames) {
+vertex_arena::vertex_arena(const size_t capacity, const size_t granularity, const size_t retirement_frames,
+                           const size_t scrub_budget) :
+  capacity_(capacity), granularity_(std::max<size_t>(granularity, 3)), retirement_frames_(retirement_frames),
+  scrub_budget_(std::max<size_t>(scrub_budget, 3)) {
   // Гранулярность кратна трём, потому что единица геометрии — треугольник: отрезок, не кратный
   // трём, разрезал бы треугольник между чанками, и в дырке появился бы треугольник из чужих вершин.
   granularity_ = (granularity_ + 2) / 3 * 3;
@@ -311,16 +318,6 @@ vertex_arena::vertex_arena(const size_t capacity, const size_t granularity, cons
 
 size_t vertex_arena::rounded(const size_t count) const noexcept {
   return (count + granularity_ - 1) / granularity_ * granularity_;
-}
-
-void vertex_arena::fill_degenerate(const block& region) {
-  if (region.count == 0) {
-    return;
-  }
-  // Вырожденный треугольник — три совпавшие вершины. Нулевая вершина именно такова, и растеризатор
-  // её отбрасывает по нулевой площади, то есть дырка в арене не стоит ни одного пикселя.
-  std::memset(mirror_.data() + region.first, 0, region.count * sizeof(gpu_vertex));
-  dirty_.push_back(region);
 }
 
 void vertex_arena::recompute_high_water() noexcept {
@@ -396,29 +393,22 @@ bool vertex_arena::insert(const originator::chunk_key& key, const std::span<cons
   return true;
 }
 
-void vertex_arena::remove(const originator::chunk_key& key) {
+size_t vertex_arena::remove(const originator::chunk_key& key) {
   const auto found = blocks_.find(key);
   if (found == blocks_.end()) {
-    return;
+    return 0;
   }
   const block region = found->second.region;
   const uint32_t slot = found->second.slot;
   used_ = used_ > region.count ? used_ - region.count : 0;
   blocks_.erase(found);
 
-  // ОТРЕЗОК ОБНУЛЯЕТСЯ СРАЗУ, а в оборот возвращается позже, и порядок здесь важен.
+  // ЧАНК ИСЧЕЗАЕТ ЗДЕСЬ, и стоит это одну строку списка живых: таблица смещений пишется целиком
+  // каждый кадр, а строка мёртвого слота получает ноль в `w`, и шейдер схлопывает её вершины в
+  // точку. Ни одного байта арены при этом не пишется.
   //
-  // Первая версия делала наоборот — держала байты как есть и обнуляла их при возврате места, чтобы
-  // не писать в то, что читает устройство. Но слот чанка возвращался сразу, а лежащая геометрия
-  // продолжала рисоваться со своим прежним номером слота: стоило новому чанку занять этот слот, и
-  // старые треугольники уезжали в ЧУЖОЕ место мира на кадр-два. Обнуление сразу убирает это по
-  // построению: вырожденный треугольник не рисуется, каким бы ни был его слот.
-  //
-  // Гонка с устройством при этом остаётся, но её последствие меняет знак: порванная запись НУЛЕЙ
-  // означает, что часть треугольников исчезла кадром раньше, а порванная запись новых вершин
-  // означала бы смесь двух чанков в одном треугольнике.
-  fill_degenerate(region);
-  free_slots_.push_back(slot);
+  // Раньше на этом месте стояло обнуление всего отрезка — 384 килобайта на чанк в зеркало и столько
+  // же на устройство, при том что окно на шаге в сторону выбрасывает сразу сорок пять чанков.
   for (auto it = live_.begin(); it != live_.end(); ++it) {
     if (it->key == key) {
       *it = live_.back();
@@ -427,11 +417,38 @@ void vertex_arena::remove(const originator::chunk_key& key) {
     }
   }
 
-  retiring_.push_back(retiring{region, retirement_frames_});
+  // Слот и место возвращаются ПОЗЖЕ и только вместе, и обнуление здесь нужно ровно для этого: пока в
+  // арене лежат вершины с этим слотом, отдать слот новому чанку значило бы подарить ему чужие
+  // треугольники. Оттирается отрезок ПО БЮДЖЕТУ (см. advance_frame), потому что цена выгрузки обязана
+  // быть ценой КАДРА, а не размером окна.
+  scrubbing_.push_back(scrubbing{region, slot, 0});
   recompute_high_water();
+  return region.count;
 }
 
 void vertex_arena::advance_frame() {
+  // ОБТИРКА ПО БЮДЖЕТУ. Отрезки выгруженных чанков обнуляются понемногу: чанк с экрана уже исчез
+  // (его строки нет среди живых), и обнуление нужно только затем, чтобы вернуть слот и место. Бюджет
+  // превращает цену выгрузки из «сколько чанков выбросило окно» в «сколько названо на кадр».
+  size_t budget = scrub_budget_;
+  for (auto it = scrubbing_.begin(); it != scrubbing_.end() && budget != 0;) {
+    const size_t left = it->region.count - it->done;
+    const size_t taken = std::min(left, budget);
+    if (taken != 0) {
+      // Вырожденный треугольник — три совпавшие вершины. Нулевая вершина именно такова, и
+      // растеризатор отбрасывает её по нулевой площади.
+      std::memset(mirror_.data() + it->region.first + it->done, 0, taken * sizeof(gpu_vertex));
+      dirty_.push_back(block{it->region.first + it->done, taken});
+      it->done += taken;
+      budget -= taken;
+    }
+    if (it->done < it->region.count) {
+      break; // бюджет кончился на середине отрезка: остальное — следующему кадру
+    }
+    retiring_.push_back(retiring{it->region, it->slot, retirement_frames_});
+    it = scrubbing_.erase(it);
+  }
+
   for (auto it = retiring_.begin(); it != retiring_.end();) {
     if (it->frames_left > 0) {
       --it->frames_left;
@@ -439,10 +456,11 @@ void vertex_arena::advance_frame() {
       continue;
     }
 
-    // Обнулён отрезок был ещё при выгрузке; здесь он только возвращается в оборот. Ждать нужно
-    // именно ПЕРЕИСПОЛЬЗОВАНИЯ: пока кадры в полёте читают эти байты, писать в них новую геометрию
-    // означало бы смесь двух чанков в одном треугольнике.
+    // Отрезок оттёрт, кадры в полёте дожили: место и слот возвращаются в оборот ВМЕСТЕ. Порознь их
+    // разделять нельзя — слот без места означал бы, что новый чанк получит номер, по которому в
+    // арене ещё лежат чужие вершины.
     free_list_.push_back(it->region);
+    free_slots_.push_back(it->slot);
     it = retiring_.erase(it);
   }
 
@@ -477,6 +495,17 @@ size_t vertex_arena::hole_vertices() const noexcept {
   }
   for (const auto& region : retiring_) {
     total += region.region.count;
+  }
+  for (const auto& region : scrubbing_) {
+    total += region.region.count;
+  }
+  return total;
+}
+
+size_t vertex_arena::scrub_backlog() const noexcept {
+  size_t total = 0;
+  for (const auto& region : scrubbing_) {
+    total += region.region.count - region.done;
   }
   return total;
 }
