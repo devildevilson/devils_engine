@@ -252,7 +252,7 @@ libs/network/
   include/devils_engine/network/
     tick_journal.h
     sequence_window.h
-    history.h
+    bounded_history.h
     replay.h
     state_sections.h
     state_digest.h
@@ -261,7 +261,8 @@ libs/network/
     network.h
 ```
 
-Only `tick_journal.h` belongs to the first implementation slice.
+`tick_journal.h`, `sequence_window.h` and `bounded_history.h` are implemented;
+the remaining names are only ownership sketches for later slices.
 
 ## Template design rules
 
@@ -347,9 +348,9 @@ Required `network_tick_journal_test` checks:
 Not in NET-01: sockets, wire encoding, replay, checkpointing, validation semantics, timeouts, players, ECS or
 rollback.
 
-## NET-02: sequence windows and bounded bundle history
+## NET-02: sequence windows and bounded bundle history — complete 2026-09-04
 
-After the journal is proven, add independent generic primitives:
+The journal is followed by two independent generic primitives:
 
 ```cpp
 template<class Sequence, size_t WindowBits>
@@ -365,6 +366,16 @@ explicitly. It does not send ACKs or decide whether duplicates are malicious.
 `bounded_history` owns immutable sealed bundles indexed by tick. Runtime count/byte budgets and eviction are
 explicit. It can be used by replay tests, a server, a client prediction owner or an offline tool.
 
+The implemented window uses `WindowBits` both as its duplicate-retention window and as the largest forward gap
+accepted implicitly. A larger authenticated session jump requires an explicit `reset`; the half-range distance
+is ambiguous and is never accepted implicitly. Classification without observation does not mutate state.
+
+The implemented history requires monotonically increasing insertion but permits gaps. Its byte budget is the
+logical cost supplied with each project-owned bundle, not guessed from allocator capacity or memory reachable
+through an arbitrary type. A successful insertion reports exact count/bytes evicted. Duplicate, out-of-order and
+budget refusal are ordinary statuses which do not mutate retained entries. Zero-byte bundles remain explicit
+ticks and consume count capacity; returned access is const and borrowed only until eviction/clear/destruction.
+
 Required tests:
 
 - sequence wrap at the maximum value;
@@ -373,6 +384,9 @@ Required tests:
 - tick lookup and ordered iteration;
 - oldest eviction under count and byte budgets;
 - an existing immutable bundle is never mutated through a returned view.
+
+All nine NET-02 cases pass in Debug and Release. Together with NET-01, the neutral networking core passes
+17/17 cases in both configurations. There are no GNS, ACK, wire-format or replay dependencies in this slice.
 
 ## NET-03: explicit full-state sections
 
@@ -1121,7 +1135,7 @@ TIME-00 strong simulation time + authored-duration conversion (complete)
 
 NET-00 contract (complete)
   -> NET-01 tick journal (complete)
-       -> NET-02 sequence + bundle history
+       -> NET-02 sequence + bundle history (complete)
             -> NET-06 in-memory delivery laboratory
                  -> NET-07 replication baselines
                       -> NET-08 selected real-transport adapter
@@ -1307,13 +1321,14 @@ reusing a journal after the project tick type wraps cannot validate an old tag. 
 Done when shuffled physical insertion produces identical sealed records and every invalid phase/budget case is
 tested.
 
-### NET-02 — sequence window and immutable bundle history (`S-M`)
+### NET-02 — sequence window and immutable bundle history (`S-M`) — complete 2026-09-04
 
 - Add wrap-safe sequence classification.
 - Add bounded tick-indexed immutable history with count/byte budgets.
 - Test duplicates, gaps, wrap, eviction and immutable views.
 
-Done without ACK packets, networking or replay driver.
+Done without ACK packets, networking or replay driver. The result is two independent header-only templates;
+expected refusal is returned as a value and invariant-free classification does not use exceptions.
 
 ### NET-03 — project state sections and schema freeze (`M-L`)
 

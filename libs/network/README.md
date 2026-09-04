@@ -56,6 +56,37 @@ Explicit non-goals of this slice: sockets, threads, ACKs, packet encoding,
 authentication, tick acceptance windows, prediction, rollback, checkpointing,
 ECS knowledge, compression and encryption.
 
+## Implemented slice: sequence window and bounded history
+
+`sequence_window<Sequence, WindowBits>` accepts an unsigned modular sequence
+without assigning it any transport meaning. It classifies observations as
+`new_value`, `duplicate`, `stale` or `too_far_ahead`. Bit zero is the newest
+accepted value; the remaining bits remember accepted late arrivals. Both
+unsigned wrap and the ambiguous half-range distance are handled explicitly.
+
+`WindowBits` is deliberately both the duplicate-retention window and the
+largest forward gap accepted implicitly. An authenticated session recovery
+which proves a larger jump must establish a new epoch with `reset`; a random
+packet cannot move the acceptance horizon arbitrarily. Classification alone
+does not mutate the window, and gaps do not imply delivery.
+
+`bounded_history<Tick, Bundle>` is a single-owner, strictly increasing tick
+history. The project inserts an already sealed bundle and declares its logical
+byte size. Count and byte budgets are runtime values; successful insertion
+evicts as many oldest entries as necessary and returns the exact evicted count
+and byte total. Duplicate ticks, out-of-order insertion and impossible budgets
+are ordinary status values and leave retained history unchanged. A zero-byte
+bundle is still an explicit tick and consumes one count slot.
+
+The history exposes only const entries and bundle pointers. Those borrowed
+views remain valid until that entry is evicted, the history is cleared, or the
+history is destroyed. Tick ordering is normal strict ordering; modular packet
+sequence handling belongs to `sequence_window`. Neither template is
+thread-safe by itself.
+
+Explicit non-goals of this slice: ACK encoding, delivery promises, peer
+penalties, sockets, wire serialization, replay execution and checkpointing.
+
 The target is header-only and depends only on C++23, `devils_engine::options`
 and the common `devils_engine::utils` error facility. `devils_engine::network`
 contains no GNS type.

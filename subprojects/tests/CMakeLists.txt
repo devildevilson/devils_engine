@@ -64,6 +64,9 @@ target_link_libraries(gamenetworking_sockets_capability_test PRIVATE GameNetwork
 devils_add_doctest(network_tick_journal_test network_tick_journal_test.cpp)
 target_link_libraries(network_tick_journal_test PRIVATE devils_engine::network)
 
+devils_add_doctest(network_sequence_history_test network_sequence_history_test.cpp)
+target_link_libraries(network_sequence_history_test PRIVATE devils_engine::network)
+
 find_program(DEVILS_NETWORK_GXX NAMES g++)
 find_program(DEVILS_NETWORK_CLANGXX NAMES clang++)
 if (DEVILS_NETWORK_GXX AND DEVILS_NETWORK_CLANGXX)

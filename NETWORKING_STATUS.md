@@ -1,6 +1,6 @@
 # Networking implementation status
 
-Last updated: 2026-09-02.
+Last updated: 2026-09-04.
 
 This file is the mutable implementation and verification journal for the networking work. Architectural
 decisions, terminology, invariants and the ordered roadmap remain in [NETWORKING.md](NETWORKING.md). A result is
@@ -16,11 +16,12 @@ recorded here only after it is reproduced by an executable test or directly obse
 | PRE-03 Jolt spike | deferred until adding Jolt has a concrete engine consumer |
 | NET-00 neutral contract/fixtures | complete |
 | NET-01 bounded tick journal | complete; 8/8 cases pass in Debug and Release |
+| NET-02 sequence window/history | complete; 9/9 cases pass in Debug and Release |
+| NET-03 explicit state sections/schema | next |
 | TIME-00 strong simulation time | complete; tick/rate/conversion/pacing primitives pass 5/5 cases |
 | TIME-01 gameplay timeline/presentation split | complete; generic timeline, flow, turn pipeline and cardgame proof |
 | TIME-02 fixed-step host/project migration | complete; host and tile actor consume an external 60 Hz tick |
 | Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
-| NET-02 sequence window/history | next |
 | Repeated Release resume simulation | flaky existing test; must be diagnosed before production replay |
 | Production `devils_engine::network_gns` adapter | not started |
 | Session handshake, reconnect recovery and peer authority | not started |
@@ -32,7 +33,7 @@ The PRE-01 executable is intentionally a direct GNS consumer. It passes opaque b
 engine transport abstraction, network entity type, serialization scheme or client/server policy into the new
 neutral library.
 
-## NET-00/01 — neutral core and bounded tick journal
+## NET-00/01/02 — neutral core, tick journal, sequence window and history
 
 `libs/network` is now a header-only `devils_engine::network` target. It depends only on common engine options and
 the `utils::error` facility; it does not include or link GNS, `aesthetics`, `act`, `tile_frontier`, a socket API,
@@ -70,8 +71,33 @@ Expected seal failures are explicit values. Invalid lifecycle phases and stale/f
 invariants and use the common fatal `utils::error` path; NET-01 exposes no exception subtype contract.
 
 The journal is deliberately single-owner. It does not decide whether a tick is late/future, authenticate a
-principal, define a wire format, open a socket or perform replay. Those boundaries remain visible for NET-02+
+principal, define a wire format, open a socket or perform replay. Those boundaries remain visible for NET-03+
 instead of being hidden in a session singleton.
+
+NET-02 adds two independent header-only templates, still without GNS or project types:
+
+```cpp
+sequence_window<Sequence, WindowBits>
+bounded_history<Tick, Bundle>
+```
+
+`sequence_window` classifies an unsigned modular value as new, duplicate, stale or too far ahead. It remembers
+late arrivals inside its bitmap, accepts wrap through the unsigned maximum, and refuses the ambiguous half-range
+distance. `WindowBits` is also the largest forward gap accepted implicitly: a larger jump must be authenticated
+by the future session owner and applied through an explicit reset. A read-only classification does not mutate
+the window, and an accepted gap is not represented as a delivery promise.
+
+`bounded_history` stores project-sealed bundles under strictly increasing ticks; gaps are valid. The project
+supplies a logical byte cost because the generic library cannot infer serialized size or memory reachable from
+an arbitrary bundle. Count and byte limits are runtime budgets. A successful insert evicts the oldest entries
+until both fit and reports exact evicted count/bytes; duplicate tick, out-of-order tick and impossible budget are
+explicit statuses and leave retained history unchanged. Empty bundles are retained as real ticks and still use
+a count slot. Lookups and iteration expose const borrowed data only, valid until eviction, clear or destruction.
+
+The nine NET-02 cases cover gaps and late arrival, duplicate/stale/too-far classification, unsigned wrap, epoch
+reset, count eviction, multi-entry byte eviction, transactional refusal, explicit empty bundles and zero count
+capacity. NET-01 plus NET-02 passes `17/17` in both Debug and Release. The implementation contains no `throw` or
+`try`/`catch`; all expected refusal in this slice is a returned status.
 
 ### Native-float cross-compiler micro-corpus
 
@@ -100,7 +126,8 @@ the intended standard-library runtime.
 Reproduction:
 
 ```sh
-cmake --build build-debug --target network_tick_journal_test
+cmake --build build-debug -j4 --target network_tick_journal_test network_sequence_history_test
+ctest --test-dir build-debug -R '^network_(sequence_history|tick_journal)_test::' --output-on-failure
 ctest --test-dir build-debug -R 'network_(tick_journal|native_float)' --output-on-failure
 cat build-debug/cmake/subprojects/tests/network_native_float_probe/result.txt
 ```
