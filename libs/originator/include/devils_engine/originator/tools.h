@@ -178,6 +178,38 @@ private:
   std::vector<tool_description> tools_;
 };
 
+// Инструмент, ПОДГОТОВЛЕННЫЙ к исполнению по частям: tool_call собран, prepare выполнен один раз,
+// и дальше тело можно звать на любом поддиапазоне сколько угодно раз.
+//
+// Существует ради слияния проходов в очереди вычислений. Обычный dispatch обходит данные «вызов,
+// потом чанк»; слияние переставляет обход на «плитка, потом вызов», и тогда один tool_call вместе с
+// результатом своей подготовки обслуживает много плиток. Держать эту пару снаружи иначе нечем.
+//
+// Проверок здесь НЕТ намеренно: тот, кто исполняет по частям, проверяет свой набор вызовов целиком и
+// до начала работы (см. check_queue). Одиночный вызов проверяет dispatch, и он же этим классом
+// пользуется, чтобы второй сборки tool_call в библиотеке не появилось.
+class prepared_call {
+public:
+  prepared_call(const tool_description& tool,
+                const std::span<const field_ref>& inputs,
+                const std::span<const field_ref>& outputs,
+                const parameters& params,
+                const uint64_t seed,
+                const size_t range_begin,
+                const size_t range_end,
+                const std::string_view& step_name,
+                thread::atomic_pool* pool);
+
+  // Тело над поддиапазоном. Границы обязаны лежать внутри объявленного диапазона — это забота
+  // вызывающего, ровно как у tool_body.
+  void run(const size_t begin, const size_t end) const;
+
+private:
+  const tool_description* tool_ = nullptr;
+  std::shared_ptr<void> shared_;
+  tool_call call_;
+};
+
 // Результат проверки вызова. Пустое сообщение => вызов допустим.
 struct dispatch_check {
   bool allowed = true;

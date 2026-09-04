@@ -143,6 +143,119 @@ TEST_CASE("originator queue result does not depend on the number of threads") {
   }
 }
 
+namespace {
+// Цепочка из трёх pointwise над одним диапазоном: `smoothed` считается, читается и превращается в
+// `moisture`, ни одно промежуточное поле наружу не выходит. Это и есть то, что слияние должно
+// сложить в ОДИН обход.
+originator::computation_queue pointwise_chain(originator::buffer& cells, const size_t count) {
+  originator::parameters scale;
+  scale.set_number("scale", 1.5);
+  scale.set_number("offset", -0.25);
+
+  originator::parameters blend;
+  blend.set_number("a", 0.5);
+  blend.set_number("b", 0.5);
+
+  originator::parameters modulate;
+  modulate.set_number("scale", 2.0);
+
+  originator::computation_queue queue;
+  queue.name = "chain";
+  queue.calls.push_back(tool_call("remap", {readable(cells, "height")}, {writable(cells, "smoothed")}, scale, count));
+  queue.calls.push_back(tool_call("blend", {readable(cells, "smoothed"), readable(cells, "moisture")},
+                                  {writable(cells, "smoothed")}, blend, count));
+  queue.calls.push_back(tool_call("modulate", {readable(cells, "smoothed"), readable(cells, "height")},
+                                  {writable(cells, "moisture")}, modulate, count));
+  queue.output.push_back(writable(cells, "moisture"));
+  return queue;
+}
+
+void run_call_by_call(const originator::computation_queue& queue, thread::atomic_pool* pool) {
+  for (const auto& call : queue.calls) {
+    originator::dispatch(*call.tool, call.inputs, call.outputs, call.params, call.seed, call.range_begin,
+                         call.range_end, queue.name, pool);
+  }
+}
+} // namespace
+
+TEST_CASE("originator queue fuses adjacent pointwise passes into one traversal") {
+  auto cells = make_cells(grid_count);
+  fill_noise(cells, grid_count);
+
+  const auto report = originator::run_queue(pointwise_chain(cells, grid_count), nullptr);
+  CHECK(report.calls == 3);
+  CHECK(report.fused == 3);
+  // Три вызова, ОДИН обход данных. Это и есть измеряемая величина.
+  CHECK(report.passes == 1);
+}
+
+TEST_CASE("originator queue fusion is bit-identical to the same calls run one by one") {
+  auto fused = make_cells(grid_count);
+  auto separate = make_cells(grid_count);
+  fill_noise(fused, grid_count);
+  fill_noise(separate, grid_count);
+
+  originator::run_queue(pointwise_chain(fused, grid_count), nullptr);
+  run_call_by_call(pointwise_chain(separate, grid_count), nullptr);
+  CHECK(snapshot(fused) == snapshot(separate));
+
+  // И при любом числе потоков: плитки независимы, потому что каждый элемент считается сам по себе.
+  const auto reference = snapshot(separate);
+  for (const size_t threads : {1u, 3u, 7u}) {
+    thread::atomic_pool pool(threads);
+    auto parallel = make_cells(grid_count);
+    fill_noise(parallel, grid_count);
+    originator::run_queue(pointwise_chain(parallel, grid_count), &pool);
+    CHECK(snapshot(parallel) == reference);
+  }
+}
+
+TEST_CASE("originator queue does not fuse across what it must not") {
+  auto cells = make_cells(grid_count);
+  fill_noise(cells, grid_count);
+
+  SUBCASE("a gather in the middle breaks the group") {
+    // box_blur читает соседей, то есть ему нужен ВЕСЬ предыдущий проход, а не своя плитка.
+    auto queue = pointwise_chain(cells, grid_count);
+    originator::parameters blur;
+    blur.set_number("width", double(grid_width));
+    blur.set_number("radius", 2);
+    auto gather = tool_call("box_blur", {readable(cells, "moisture")}, {writable(cells, "biome")}, blur, grid_count);
+    queue.calls.push_back(std::move(gather));
+    queue.output.push_back(writable(cells, "biome"));
+
+    const auto report = originator::run_queue(queue, nullptr);
+    CHECK(report.calls == 4);
+    CHECK(report.fused == 3);
+    // Слитая тройка плюс отдельный gather.
+    CHECK(report.passes == 2);
+  }
+
+  SUBCASE("a different range breaks the group") {
+    auto queue = pointwise_chain(cells, grid_count);
+    queue.calls[1].range_end = grid_count / 2;
+    // Второй вызов теперь пишет только половину, поэтому третий не может считаться по его плиткам.
+    const auto report = originator::run_queue(queue, nullptr);
+    CHECK(report.calls == 3);
+    CHECK(report.fused == 0);
+    CHECK(report.passes == 3);
+  }
+
+  SUBCASE("a single pointwise call stays a single call") {
+    originator::parameters scale;
+    scale.set_number("scale", 2.0);
+
+    originator::computation_queue queue;
+    queue.name = "one";
+    queue.calls.push_back(tool_call("remap", {readable(cells, "height")}, {writable(cells, "smoothed")}, scale, grid_count));
+    queue.output.push_back(writable(cells, "smoothed"));
+
+    const auto report = originator::run_queue(queue, nullptr);
+    CHECK(report.fused == 0);
+    CHECK(report.passes == 1);
+  }
+}
+
 TEST_CASE("originator queue refuses before it runs a single call") {
   auto cells = make_cells(grid_count);
   fill_noise(cells, grid_count);

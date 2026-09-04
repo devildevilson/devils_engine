@@ -520,7 +520,7 @@ Required invariants:
 The research spike must compare three starting choices: full checkpoint plus compression; section/page hash reuse
 with full manifest; and explicit version/dirty tracking. The smallest measured sufficient mechanism wins.
 
-## NET-04: checkpoint ring and replay algorithm
+## NET-04: checkpoint ring and replay algorithm — complete 2026-09-04
 
 Checkpoint storage and replay are separate generic mechanisms:
 
@@ -538,6 +538,23 @@ the owner before insertion if desired.
 
 `replay_to` is a free/template algorithm. It receives operations or a Host concept; it does not require
 inheritance. It restores checkpoint `K`, applies every canonical bundle in order and stops at target tick `N`.
+
+The implemented ring reuses the independently tested `bounded_history` storage policy and adds checkpoint
+semantics plus `latest_at_or_before`. `SizeOf` is injected and must return an exact `size_t`; the library does
+not guess whether a blob's cost means compressed bytes, canonical bytes or retained heap memory.
+
+Replay receives `Restore`, `ApplyBundle`, `Step`, `VerifyState`, `NextTick`, `TickOf` and `BundleOf` policies.
+`NextTick` is explicit because ordering alone cannot tell a generic strong tick type whether a bundle is
+missing. The complete range is checked for duplicate, out-of-order and missing ticks before restore runs.
+Checkpoint `K` is the committed state after tick `K`; bundle `T` is applied before stepping `T`, hence replay
+executes exactly `K+1..N`. Every callback receives or observes the same `replay_context`, whose only current
+effect policy suppresses presentation.
+
+`VerifyState` runs after restore and after every replayed tick. It owns the project's root representation and
+comparison policy; the neutral algorithm reports `state_mismatch` with the first divergent tick without knowing
+whether the root is an integer test oracle or the future NET-05 digest. Replay advances its supplied host in
+place after successful restore. A caller that must preserve a running predicted world on later replay failure
+passes a detached staging host and publishes it only after `replay_result::completed()`.
 
 The central property test is performed for every possible checkpoint in a short run:
 
@@ -1373,7 +1390,7 @@ the already separate transactional ECS follow-up.
 
 Done when `tile_frontier` preserves the old running instance after every deliberately corrupt load.
 
-### NET-04 — checkpoint ring and replay (`M`)
+### NET-04 — checkpoint ring and replay (`M`) — complete 2026-09-04
 
 - Add generic immutable checkpoint ring.
 - Add generic replay free algorithm/Host concept.
@@ -1382,6 +1399,10 @@ Done when `tile_frontier` preserves the old running instance after every deliber
 - Compare state root after every replayed tick.
 
 Done when every checkpoint `K` in a generated run resumes to the same final fake-state root.
+
+Done: the generated run checks all seven checkpoints through tick six, including an explicitly retained empty
+bundle. Count/byte eviction, strong tick succession, history bounds, gaps, duplicate/order faults, callback
+refusals, presentation suppression and first mismatching root are covered by six tests in Debug and Release.
 
 ### NET-05 — digest diagnostics (`S-M`)
 

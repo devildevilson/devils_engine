@@ -1,29 +1,40 @@
 #include "devils_engine/originator/computation_queue.h"
 
+#include <algorithm>
 #include <format>
+#include <span>
+#include <vector>
 
+#include "devils_engine/thread/atomic_pool.h"
 #include "devils_engine/utils/core.h"
 
 namespace devils_engine {
 namespace originator {
 
-namespace {
-bool reads_field(const queue_call& call, const field_ref& field) noexcept {
-  for (const auto& binding : call.inputs) {
+size_t queue_call::range_count() const noexcept {
+  return range_end > range_begin ? range_end - range_begin : 0;
+}
+
+bool queue_call::reads(const field_ref& field) const noexcept {
+  for (const auto& binding : inputs) {
     if (binding.same_field_as(field)) return true;
   }
   return false;
 }
 
+bool queue_call::writes(const field_ref& field) const noexcept {
+  for (const auto& binding : outputs) {
+    if (binding.same_field_as(field)) return true;
+  }
+  return false;
+}
+
+namespace {
 // Затирает ли этот вызов поле ЦЕЛИКОМ в границах прежней записи. Покрытие проверяется не ради
 // строгости, а чтобы не объявить мёртвым честный случай: два вызова, пишущие РАЗНЫЕ отрезки одного
 // поля, оба живые, и ложный отказ здесь стоил бы дороже пропущенного предупреждения.
 bool overwrites_field(const queue_call& call, const field_ref& field, const size_t begin, const size_t end) noexcept {
-  for (const auto& binding : call.outputs) {
-    if (!binding.same_field_as(field)) continue;
-    if (call.range_begin <= begin && call.range_end >= end) return true;
-  }
-  return false;
+  return call.writes(field) && call.range_begin <= begin && call.range_end >= end;
 }
 
 bool named_in_output(const computation_queue& queue, const field_ref& field) noexcept {
@@ -132,7 +143,7 @@ queue_check check_queue(const computation_queue& queue) {
       bool read_later = false;
       bool covered_later = false;
       for (size_t j = i + 1; j < queue.calls.size(); ++j) {
-        read_later = read_later || reads_field(queue.calls[j], written);
+        read_later = read_later || queue.calls[j].reads(written);
         covered_later = covered_later || overwrites_field(queue.calls[j], written, call.range_begin, call.range_end);
       }
 
@@ -150,26 +161,137 @@ queue_check check_queue(const computation_queue& queue) {
   return result;
 }
 
+namespace {
+// Докуда простирается группа слияния, начатая элементом first. Условия — в комментарии к
+// `fusion_tile_bytes`; здесь важно, что группа берётся ПОДРЯД ИДУЩЕЙ и жадно: перестановка порядка
+// вызовов очереди изменила бы результат, поэтому её никто и не делает.
+//
+// Программа devils_script в группу пока не входит, хотя структурно она такой же pointwise: её
+// исполнение живёт в слое `originator_script`, а вход в него на каждой плитке создавал бы контекст
+// виртуальной машины заново. Форма для этого есть (тело получает поддиапазон), но ей нужен свой
+// подготовленный вызов — как `prepared_call` у нативного инструмента.
+size_t fusion_group_end(const computation_queue& queue, const size_t first) noexcept {
+  const auto& head = queue.calls[first];
+  if (head.shape != aperture::pointwise || head.tool == nullptr) {
+    return first + 1;
+  }
+
+  size_t last = first + 1;
+  while (last < queue.calls.size()) {
+    const auto& next = queue.calls[last];
+    const bool fusable = next.shape == aperture::pointwise && next.tool != nullptr &&
+                         next.range_begin == head.range_begin && next.range_end == head.range_end;
+    if (!fusable) {
+      break;
+    }
+    ++last;
+  }
+  return last;
+}
+
+// Рабочий набор группы на один элемент. Поле считается ОДИН раз: промежуточное поле, которое один
+// вызов пишет, а следующий читает, и есть то, что слияние оставляет в кэше, — учесть его дважды
+// значило бы занизить плитку ровно там, где слияние работает.
+size_t group_element_bytes(const std::span<const queue_call>& group) {
+  std::vector<field_ref> counted;
+  size_t total = 0;
+
+  const auto account = [&](const field_ref& field) {
+    for (const auto& known : counted) {
+      if (known.same_field_as(field)) {
+        return;
+      }
+    }
+    counted.push_back(field);
+    total += field.type().byte_size();
+  };
+
+  for (const auto& call : group) {
+    for (const auto& binding : call.inputs) {
+      account(binding);
+    }
+    for (const auto& binding : call.outputs) {
+      account(binding);
+    }
+  }
+
+  return std::max<size_t>(total, 1);
+}
+
+// Слитое исполнение: один обход данных на всю группу.
+void run_group(const computation_queue& queue, const std::span<const queue_call>& group, thread::atomic_pool* pool) {
+  std::vector<prepared_call> prepared;
+  prepared.reserve(group.size());
+  for (const auto& call : group) {
+    prepared.emplace_back(*call.tool, call.inputs, call.outputs, call.params, call.seed, call.range_begin,
+                          call.range_end, queue.name, nullptr);
+  }
+
+  const size_t begin = group.front().range_begin;
+  const size_t end = group.front().range_end;
+  const size_t tile = std::max(fusion_tile_bytes / group_element_bytes(group), minimum_fusion_tile);
+  const size_t tile_count = (end - begin + tile - 1) / tile;
+
+  const auto run_tiles = [&prepared, begin, end, tile](const size_t first, const size_t last) {
+    for (size_t index = first; index < last; ++index) {
+      const size_t from = begin + index * tile;
+      const size_t to = std::min(from + tile, end);
+      // ПОРЯДОК ВНУТРИ ПЛИТКИ ЗНАЧИМ: вызовы идут по очереди, поэтому элемент i второго вызова
+      // читает то, что первый вызов только что посчитал, — и читает из кэша.
+      for (const auto& call : prepared) {
+        call.run(from, to);
+      }
+    }
+  };
+
+  if (pool == nullptr || pool->size() == 0 || tile_count <= 1) {
+    run_tiles(0, tile_count);
+    return;
+  }
+
+  // Плитки группируются в задачи по той же причине, что чанки свёртки: очередь пула ограничена, и
+  // класть в неё десятки тысяч задач нельзя. Внутри задачи плитки идут подряд — так и надо, кэш
+  // греется на своей плитке, а не на чужой.
+  const size_t task_count = std::min(tile_count, (pool->size() + 1) * 4);
+  const size_t tiles_per_task = (tile_count + task_count - 1) / task_count;
+  for (size_t first = 0; first < tile_count; first += tiles_per_task) {
+    pool->submit(run_tiles, first, std::min(first + tiles_per_task, tile_count));
+  }
+
+  pool->compute();
+  pool->wait();
+}
+} // namespace
+
 queue_report run_queue(const computation_queue& queue, thread::atomic_pool* pool) {
   const auto check = check_queue(queue);
   if (!check.allowed) {
     utils::error{}("originator {}", check.message);
   }
 
-  // Слияние соседних проходов встанет ЗДЕСЬ: два подряд pointwise над одним диапазоном — это один
-  // обход данных, и данные останутся в кэше. Пока обходов ровно столько, сколько элементов, и это
-  // честная точка отсчёта для замера.
   queue_report report;
   report.calls = queue.calls.size();
 
-  for (const auto& call : queue.calls) {
-    if (call.tool != nullptr) {
-      dispatch(*call.tool, call.inputs, call.outputs, call.params, call.seed, call.range_begin, call.range_end,
-               queue.name, pool);
+  for (size_t first = 0; first < queue.calls.size();) {
+    const size_t last = fusion_group_end(queue, first);
+
+    // Группа из одного вызова идёт обычным путём. Плиточный обход ей ничего не даёт — переиспользовать
+    // нечего, — а за плитки пришлось бы платить; заодно одиночный вызов остаётся ровно тем, чем был.
+    if (last - first == 1) {
+      const auto& call = queue.calls[first];
+      if (call.tool != nullptr) {
+        dispatch(*call.tool, call.inputs, call.outputs, call.params, call.seed, call.range_begin, call.range_end,
+                 queue.name, pool);
+      } else {
+        call.body(call, queue.name, pool);
+      }
     } else {
-      call.body(call, queue.name, pool);
+      run_group(queue, std::span<const queue_call>(queue.calls).subspan(first, last - first), pool);
+      report.fused += last - first;
     }
+
     ++report.passes;
+    first = last;
   }
 
   return report;

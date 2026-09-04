@@ -46,28 +46,44 @@ constexpr const char* reserved_api_names[] = {"run", "run_script", "tool_exists"
 
 char script_host_registry_key = 0;
 
-// ФУНКЦИИ УХОДЯТ В LUA ЧЕРЕЗ std::function С ОБЪЯВЛЕННОЙ СИГНАТУРОЙ, А НЕ ЛЯМБДОЙ НАПРЯМУЮ, и это
-// не стиль, а обход ИЗМЕРЕННОЙ ошибки порчи памяти.
+// БИНДИНГИ ОБЪЯВЛЯЮТСЯ ФУНКЦИЯМИ, А НЕ ЛЯМБДАМИ, и это не стиль, а обход ИЗМЕРЕННОЙ ошибки порчи
+// памяти.
 //
 // sol2 хранит функтор в userdata и кэширует его деструктор (`__gc`) в реестре lua по имени
 // метатаблицы, а имя получает из ДЕМАНГЛИРОВАННОГО имени типа. Gcc печатает лямбду как
 // `функция()::<lambda(аргументы)>` — БЕЗ порядкового номера. Значит две РАЗНЫЕ лямбды, объявленные
 // в одной функции с одинаковым списком параметров, получают одно и то же имя метатаблицы:
-// `luaL_newmetatable` находит уже созданную, и `__gc` ПЕРВОЙ лямбды начинает разрушать функтор
-// ВТОРОЙ по чужой раскладке. Проверено: `sol.main()::<lambda(sol::table)>.user` совпадает у двух
-// лямбд с разными захватами, а падение выглядит как «free(): invalid size» при закрытии стейта, то
-// есть далеко от места ошибки и без всякой связи с ней.
+// `luaL_newmetatable` находит уже созданную, и `__gc` ПЕРВОЙ начинает разрушать функтор ВТОРОЙ по
+// чужой раскладке. Проверено: `sol.main()::<lambda(sol::table)>.user` совпадает у двух лямбд с
+// разными захватами, а падало это как «free(): invalid size» при закрытии стейта — далеко от места
+// ошибки и без всякой связи с ней. Хуже всего то, что ПОРЯДОК ЗАХВАТА решал, упадёт оно или
+// испортит память молча.
 //
-// У `std::function<результат(аргументы)>` имя своё и полное, поэтому совпадение имён означает
-// совпадение ТИПОВ, а разные типы получают разные метатаблицы. Ошибка перестаёт быть возможной, а
-// не становится менее вероятной: две регистрации с одной сигнатурой ниже — это намеренно ОДИН тип.
-using immediate_run_binding = std::function<sol::object(const std::string&, const sol::table, sol::this_state)>;
-using immediate_tool_binding = std::function<sol::object(const sol::table, sol::this_state)>;
-using immediate_script_binding = std::function<void(const sol::table)>;
-using tool_exists_binding = std::function<bool(const std::string&)>;
-using queue_named_record_binding = std::function<queue_call(const std::string&, const sol::table)>;
-using queue_record_binding = std::function<queue_call(const sol::table)>;
-using queue_run_binding = std::function<sol::object(const sol::table, const sol::table, sol::this_state)>;
+// У функции — свободной или метода — тип называется её собственным именем, поэтому у каждого
+// биндинга имя своё по построению, и ошибка перестаёт быть ВЫРАЗИМОЙ, а не менее вероятной. Ровно
+// поэтому же ярлыки инструментов сделаны замыканиями В LUA (см. install_shortcuts): ярлык всего лишь
+// подставляет константное имя первым аргументом, и замыкание над строкой в lua не стоит ни одного
+// C++-типа.
+
+double field_get(const field_ref& self, const size_t index, const sol::optional<uint32_t> component) {
+  return self.read().get(index, component.value_or(0));
+}
+
+void field_set(const field_ref& self, const size_t index, const double value, const sol::optional<uint32_t> component) {
+  if (!self.writable()) {
+    utils::error{}("originator: field '{}.{}' is bound for reading and cannot be written",
+                   self.buffer_name(), self.field_name());
+  }
+  self.write().set(index, value, component.value_or(0));
+}
+
+uint32_t field_components(const field_ref& self) {
+  return self.type().components;
+}
+
+std::string_view queue_call_aperture(const queue_call& self) {
+  return to_string(self.shape);
+}
 
 int64_t now_us() noexcept {
   return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -312,40 +328,35 @@ void script_host::instruction_hook(lua_State* L, lua_Debug* ar) {
 void script_host::bind_types() {
   // Ссылка на поле: имя разрешено один раз, дальше работа идёт по ней. Индекс элемента — с НУЛЯ,
   // как в самих данных: индексная арифметика вида i % width иначе становится источником ошибок.
+  //
+  // Конструктора нет ни у одного из трёх типов: собранный из lua пустой `field` не падает (аксессор
+  // проверяет базу), а МОЛЧА читает нули и молча теряет записи — это хуже, чем его отсутствие.
   env_.new_usertype<field_ref>(
-    "field",
-    "get", [](const field_ref& self, const size_t index, const sol::optional<uint32_t> component) {
-      return self.read().get(index, component.value_or(0));
-    },
-    "set", [](const field_ref& self, const size_t index, const double value, const sol::optional<uint32_t> component) {
-      if (!self.writable()) {
-        utils::error{}("originator: field '{}.{}' is bound for reading and cannot be written",
-                       self.buffer_name(), self.field_name());
-      }
-      self.write().set(index, value, component.value_or(0));
-    },
-    "count", [](const field_ref& self) { return self.count(); },
-    "name", [](const field_ref& self) { return std::string(self.field_name()); },
-    "buffer_name", [](const field_ref& self) { return std::string(self.buffer_name()); },
-    "writable", [](const field_ref& self) { return self.writable(); },
-    "components", [](const field_ref& self) { return self.type().components; });
+    "field", sol::no_constructor,
+    "get", &field_get,
+    "set", &field_set,
+    "count", &field_ref::count,
+    "name", &field_ref::field_name,
+    "buffer_name", &field_ref::buffer_name,
+    "writable", &field_ref::writable,
+    "components", &field_components);
 
-  // Объявленный вызов очереди. Конструктора нет намеренно: собрать его можно только через
-  // originator.queue.<инструмент>{...}, где привязки проверяются на месте. Методы здесь
-  // диагностические — они отвечают на «что я объявил», а не дают что-то менять.
+  // Объявленный вызов очереди. Собрать его можно только через originator.queue.<инструмент>{...},
+  // где привязки проверяются на месте. Всё, что видно здесь, — диагностика: тип отвечает на «что я
+  // объявил», а менять в нём нечего, поэтому `label` отдан только на чтение.
   env_.new_usertype<queue_call>(
     "queue_call", sol::no_constructor,
-    "label", [](const queue_call& self) { return self.label; },
-    "aperture", [](const queue_call& self) { return std::string(to_string(self.shape)); },
-    "count", [](const queue_call& self) { return self.range_end > self.range_begin ? self.range_end - self.range_begin : 0; });
+    "label", sol::readonly(&queue_call::label),
+    "aperture", &queue_call_aperture,
+    "count", &queue_call::range_count);
 
   env_.new_usertype<script_buffer_view>(
-    "buffer_view",
-    "count", [](const script_buffer_view& self) { return self.count(); },
-    "field", [](const script_buffer_view& self, const std::string& name) { return self.field(name); },
-    "writable", [](const script_buffer_view& self) { return self.writable(); },
-    "name", [](const script_buffer_view& self) { return std::string(self.name()); },
-    "clear", [](const script_buffer_view& self) { self.clear(); });
+    "buffer_view", sol::no_constructor,
+    "count", &script_buffer_view::count,
+    "field", &script_buffer_view::field,
+    "writable", &script_buffer_view::writable,
+    "name", &script_buffer_view::name,
+    "clear", &script_buffer_view::clear);
 }
 
 void script_host::bind_tools() {
@@ -356,93 +367,119 @@ void script_host::bind_tools() {
   }
 
   sol::table api(lua_, sol::create);
-
-  const auto run = [this](const std::string& tool_name, const sol::table args, sol::this_state s) -> sol::object {
-    const auto* tool = tools_->find(tool_name);
-    if (tool == nullptr) {
-      utils::error{}("originator step '{}': no tool named '{}'", current_step_, tool_name);
-    }
-
-    const auto inputs = read_field_list(args, "inputs");
-    const auto outputs = read_field_list(args, "outputs");
-    const auto params = read_parameters(args);
-
-    const uint64_t seed = read_seed(args, current_seed_);
-
-    size_t begin = 0;
-    size_t end = default_range_end(tool->shape, inputs, outputs);
-    read_range(args, begin, end);
-
-    // Носитель ключа объявляет автор: из одного чанка его не проверить. Молчание = глобальный, то
-    // есть при чанкованной генерации scatter отклоняется, пока автор не скажет обратное вслух.
-    if (tool->shape == aperture::scatter) {
-      const sol::optional<std::string> declared = args["key_support"];
-      const auto support = declared.has_value() ? parse_key_support(*declared) : key_support::global;
-      if (declared.has_value() && support == key_support::count) {
-        utils::error{}("originator step '{}': tool '{}' got unknown key_support '{}', expected chunk_local or global",
-                       current_step_, tool_name, *declared);
-      }
-
-      const auto check = check_key_support(*tool, support, current_chunked_, current_step_);
-      if (!check.allowed) {
-        utils::error{}("originator {}", check.message);
-      }
-    }
-
-    if (tool->shape == aperture::reduce) {
-      const double value = dispatch_reduce(*tool, inputs, params, seed, begin, end, current_step_, pool_);
-      return sol::make_object(s, value);
-    }
-
-    dispatch(*tool, inputs, outputs, params, seed, begin, end, current_step_, pool_);
-    return sol::nil;
-  };
-
-  api.set_function("run", immediate_run_binding(run));
-
-  // Ярлык на каждый зарегистрированный инструмент: originator.value_noise{ outputs = {...} }
-  // читается лучше, чем run("value_noise", ...), и остаётся ровно тем же вызовом.
-  for (size_t i = 0; i < tools_->size(); ++i) {
-    const std::string name = tools_->at(i).name;
-    api.set_function(name, immediate_tool_binding([name, run](const sol::table args, sol::this_state s) {
-      return run(name, args, s);
-    }));
-  }
-
+  api.set_function("run", &script_host::run_tool, this);
   // Средний уровень: devils_script над плотным буфером. Форма вызова та же, что у инструмента, —
   // скрипт не выбирает ни потоки, ни апертуру.
-  api.set_function("run_script", immediate_script_binding([this](const sol::table args) {
-    const sol::optional<std::string> program_name = args["program"];
-    if (!program_name.has_value()) {
-      utils::error{}("originator step '{}': run_script needs a 'program' name", current_step_);
-    }
-
-    const auto inputs = read_field_list(args, "inputs");
-    const auto outputs = read_field_list(args, "outputs");
-    const auto params = read_parameters(args);
-
-    const sol::optional<bool> predicate = args["predicate"];
-    const auto kind = predicate.value_or(false) ? script_program::result_kind::predicate
-                                                : script_program::result_kind::number;
-
-    const auto& program = acquire_program(*program_name, inputs, kind);
-
-    const uint64_t seed = read_seed(args, current_seed_);
-
-    size_t begin = 0;
-    size_t end = default_range_end(program.shape(), inputs, outputs);
-    read_range(args, begin, end);
-
-    dispatch_script(program, inputs, outputs, params, seed, begin, end, current_step_, pool_);
-  }));
-
+  api.set_function("run_script", &script_host::run_program, this);
   // Существует потому, что примитивы (FastNoise2, jc_voronoi) — ОТДЕЛЬНАЯ цель сборки: скрипт может
   // законно спросить, доступен ли инструмент, и выбрать другой путь.
-  api.set_function("tool_exists", tool_exists_binding([this](const std::string& name) { return tools_->find(name) != nullptr; }));
+  api.set_function("tool_exists", &script_host::has_tool, this);
+
+  install_shortcuts(api, api["run"]);
 
   api["queue"] = make_queue_api();
 
   env_["originator"] = api;
+}
+
+// Ярлык на каждый зарегистрированный инструмент: `originator.value_noise{ outputs = {...} }`
+// читается лучше, чем `run("value_noise", ...)`, и остаётся ровно тем же вызовом.
+//
+// Делается это ЗАМЫКАНИЕМ В LUA, а не функтором из C++, и причина — в комментарии к биндингам выше:
+// ярлык всего лишь подставляет константное имя первым аргументом, то есть он замыкание над строкой,
+// а замыкание в lua не стоит ни одного C++-типа и потому не может столкнуться именем ни с чем.
+// Захватывается сама функция `run`, а не таблица: тогда ярлык продолжает работать, даже если тело
+// шага переприсвоит `originator.run`.
+void script_host::install_shortcuts(sol::table& api, const sol::object& run) {
+  static constexpr std::string_view factory_source =
+    "return function(run, name) return function(args) return run(name, args) end end";
+
+  const auto factory_result = lua_.safe_script(factory_source, env_, sol::script_pass_on_error, "originator/shortcut");
+  if (!factory_result.valid()) {
+    const sol::error err = factory_result;
+    utils::error{}("originator: could not build the tool shortcut factory: {}", err.what());
+  }
+
+  const sol::protected_function factory = factory_result;
+  for (size_t i = 0; i < tools_->size(); ++i) {
+    const auto& name = tools_->at(i).name;
+    const auto made = factory(run, name);
+    if (!made.valid()) {
+      const sol::error err = made;
+      utils::error{}("originator: could not build the shortcut for tool '{}': {}", name, err.what());
+    }
+    api[name] = made.get<sol::object>();
+  }
+}
+
+sol::object script_host::run_tool(const std::string& tool_name, const sol::table args, sol::this_state s) {
+  const auto* tool = tools_->find(tool_name);
+  if (tool == nullptr) {
+    utils::error{}("originator step '{}': no tool named '{}'", current_step_, tool_name);
+  }
+
+  const auto inputs = read_field_list(args, "inputs");
+  const auto outputs = read_field_list(args, "outputs");
+  const auto params = read_parameters(args);
+
+  const uint64_t seed = read_seed(args, current_seed_);
+
+  size_t begin = 0;
+  size_t end = default_range_end(tool->shape, inputs, outputs);
+  read_range(args, begin, end);
+
+  // Носитель ключа объявляет автор: из одного чанка его не проверить. Молчание = глобальный, то
+  // есть при чанкованной генерации scatter отклоняется, пока автор не скажет обратное вслух.
+  if (tool->shape == aperture::scatter) {
+    const sol::optional<std::string> declared = args["key_support"];
+    const auto support = declared.has_value() ? parse_key_support(*declared) : key_support::global;
+    if (declared.has_value() && support == key_support::count) {
+      utils::error{}("originator step '{}': tool '{}' got unknown key_support '{}', expected chunk_local or global",
+                     current_step_, tool_name, *declared);
+    }
+
+    const auto check = check_key_support(*tool, support, current_chunked_, current_step_);
+    if (!check.allowed) {
+      utils::error{}("originator {}", check.message);
+    }
+  }
+
+  if (tool->shape == aperture::reduce) {
+    const double value = dispatch_reduce(*tool, inputs, params, seed, begin, end, current_step_, pool_);
+    return sol::make_object(s, value);
+  }
+
+  dispatch(*tool, inputs, outputs, params, seed, begin, end, current_step_, pool_);
+  return sol::nil;
+}
+
+void script_host::run_program(const sol::table args) {
+  const sol::optional<std::string> program_name = args["program"];
+  if (!program_name.has_value()) {
+    utils::error{}("originator step '{}': run_script needs a 'program' name", current_step_);
+  }
+
+  const auto inputs = read_field_list(args, "inputs");
+  const auto outputs = read_field_list(args, "outputs");
+  const auto params = read_parameters(args);
+
+  const sol::optional<bool> predicate = args["predicate"];
+  const auto kind = predicate.value_or(false) ? script_program::result_kind::predicate
+                                              : script_program::result_kind::number;
+
+  const auto& program = acquire_program(*program_name, inputs, kind);
+
+  const uint64_t seed = read_seed(args, current_seed_);
+
+  size_t begin = 0;
+  size_t end = default_range_end(program.shape(), inputs, outputs);
+  read_range(args, begin, end);
+
+  dispatch_script(program, inputs, outputs, params, seed, begin, end, current_step_, pool_);
+}
+
+bool script_host::has_tool(const std::string& tool_name) const {
+  return tools_->find(tool_name) != nullptr;
 }
 
 queue_call script_host::make_tool_call(const std::string& tool_name, const sol::table& args) {
@@ -526,66 +563,88 @@ queue_call script_host::make_script_call(const sol::table& args) {
 
 sol::table script_host::make_queue_api() {
   sol::table api(lua_, sol::create);
-
-  api.set_function("run", queue_named_record_binding([this](const std::string& tool_name, const sol::table args) {
-    auto call = make_tool_call(tool_name, args);
-    ++queue_records_;
-    return call;
-  }));
+  api.set_function("run", &script_host::declare_tool, this);
+  api.set_function("run_script", &script_host::declare_program, this);
 
   // Ярлыки те же, что у немедленного вызова, и это важнее краткости: одна и та же строка аргументов
   // читается одинаково в обоих неймспейсах, а отличие ровно одно — когда работа исполняется.
-  // Регистрируются ВСЕ инструменты, включая непригодные: `originator.queue.group_by{...}` обязан
-  // сказать, почему scatter не пускается, а не упасть на «attempt to call a nil value».
-  for (size_t i = 0; i < tools_->size(); ++i) {
-    const std::string name = tools_->at(i).name;
-    api.set_function(name, queue_record_binding([this, name](const sol::table args) {
-      auto call = make_tool_call(name, args);
-      ++queue_records_;
-      return call;
-    }));
-  }
-
-  api.set_function("run_script", queue_record_binding([this](const sol::table args) {
-    auto call = make_script_call(args);
-    ++queue_records_;
-    return call;
-  }));
+  // Ставятся ВСЕ инструменты, включая непригодные: `originator.queue.group_by{...}` обязан сказать,
+  // почему scatter не пускается, а не упасть на «attempt to call a nil value».
+  install_shortcuts(api, api["run"]);
 
   // Сама очередь — ВЫЗОВ таблицы: `originator.queue{ ... }`. Таблица нужна как неймспейс, вызов —
   // как исполнение, и метаметод позволяет иметь и то, и другое под одним именем.
   sol::table meta(lua_, sol::create);
-  meta.set_function("__call", queue_run_binding([this](const sol::table self, const sol::table args, sol::this_state s) -> sol::object {
-    (void)self;
-
-    computation_queue queue;
-    queue.name = current_step_;
-
-    const size_t size = args.size();
-    queue.calls.reserve(size);
-    for (size_t i = 1; i <= size; ++i) {
-      const sol::object entry = args[i];
-      if (!entry.is<queue_call>()) {
-        utils::error{}("originator step '{}': queue element {} is not a declared call — elements of a queue come "
-                       "from originator.queue.<tool>{{...}}, not from originator.<tool>{{...}}",
-                       current_step_, i);
-      }
-      queue.calls.push_back(entry.as<const queue_call&>());
-      ++queue_consumed_;
-    }
-
-    queue.output = read_field_list(args, "output");
-
-    const auto report = run_queue(queue, pool_);
-
-    sol::table result(lua_, sol::create);
-    result["calls"] = report.calls;
-    result["passes"] = report.passes;
-    return sol::make_object(s, result);
-  }));
+  meta.set_function("__call", &script_host::execute_queue, this);
   api[sol::metatable_key] = meta;
 
   return api;
+}
+
+queue_call script_host::declare_tool(const std::string& tool_name, const sol::table args) {
+  auto call = make_tool_call(tool_name, args);
+  ++queue_records_;
+  return call;
+}
+
+queue_call script_host::declare_program(const sol::table args) {
+  auto call = make_script_call(args);
+  ++queue_records_;
+  return call;
+}
+
+sol::object script_host::execute_queue(const sol::table self, const sol::table args, sol::this_state s) {
+  (void)self;
+
+  computation_queue queue;
+  queue.name = current_step_;
+
+  // Список элементов читается по НАИБОЛЬШЕМУ целому ключу, а не по `#`. На таблице с дыркой длина в
+  // lua не определена (`{ a, nil, b }` законно даёт и 1, и 3), поэтому по `#` пропущенный элемент мог
+  // бы просто исчезнуть — а очередь, посчитавшая на один проход меньше, отличается от правильной
+  // только результатом, которого никто не ждал. Здесь дырка обязана падать громко, как и любое
+  // значение, объявлением не являющееся.
+  //
+  // Заодно отклоняется незнакомый ключ: `outputs = {...}` вместо `output` иначе означал бы очередь
+  // без объявленной границы, и жаловалась бы она не на опечатку, а на отсутствие выхода.
+  size_t highest = 0;
+  for (const auto& pair : args) {
+    if (pair.first.get_type() == sol::type::number) {
+      const int64_t key = pair.first.as<int64_t>();
+      if (key >= 1) {
+        highest = std::max(highest, size_t(key));
+      }
+      continue;
+    }
+
+    const sol::optional<std::string> name = pair.first.as<sol::optional<std::string>>();
+    if (!name.has_value() || *name != "output") {
+      utils::error{}("originator step '{}': the queue got an unknown key '{}'; a queue takes its elements as a list "
+                     "and names its transfer boundary in 'output'",
+                     current_step_, name.value_or(std::string(sol::type_name(s, pair.first.get_type()))));
+    }
+  }
+
+  queue.calls.reserve(highest);
+  for (size_t i = 1; i <= highest; ++i) {
+    const sol::object entry = args[i];
+    if (!entry.is<queue_call>()) {
+      utils::error{}("originator step '{}': queue element {} of {} is '{}', not a declared call — elements come from "
+                     "originator.queue.<tool>{{...}}, and a hole in the list is a LOST PASS, not an empty slot",
+                     current_step_, i, highest, sol::type_name(s, entry.get_type()));
+    }
+    queue.calls.push_back(entry.as<const queue_call&>());
+    ++queue_consumed_;
+  }
+
+  queue.output = read_field_list(args, "output");
+
+  const auto report = run_queue(queue, pool_);
+
+  sol::table result(lua_, sol::create);
+  result["calls"] = report.calls;
+  result["passes"] = report.passes;
+  return sol::make_object(s, result);
 }
 
 void script_host::load_body(const std::string_view& step_name, const std::string_view& source, const std::string_view& chunk_name) {

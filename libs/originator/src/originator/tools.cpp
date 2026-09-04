@@ -183,6 +183,43 @@ size_t tool_registry::size() const noexcept {
   return tools_.size();
 }
 
+prepared_call::prepared_call(const tool_description& tool,
+                             const std::span<const field_ref>& inputs,
+                             const std::span<const field_ref>& outputs,
+                             const parameters& params,
+                             const uint64_t seed,
+                             const size_t range_begin,
+                             const size_t range_end,
+                             const std::string_view& step_name,
+                             thread::atomic_pool* pool)
+  : tool_(&tool) {
+  call_.inputs = inputs;
+  call_.outputs = outputs;
+  call_.params = &params;
+  call_.seed = seed;
+  call_.range_begin = range_begin;
+  call_.range_end = range_end;
+  call_.step_name = step_name;
+  call_.tool_name = tool.name;
+  // Пул отдаётся только тем апертурам, которые движок не разбивает сам: тело pointwise, gather или
+  // reduce уже исполняется внутри чанка и параллелить себя не должно.
+  call_.pool = is_parallel(tool.shape) ? nullptr : pool;
+
+  // Подготовка идёт ДО разбиения: её результат общий для всех частей и неизменен на всё время
+  // жизни. Пустой диапазон подготовки не требует — строить пространственный индекс не для чего.
+  if (tool.prepare != nullptr && call_.range_count() != 0) {
+    shared_ = tool.prepare(call_);
+    call_.shared = shared_.get();
+  }
+}
+
+void prepared_call::run(const size_t begin, const size_t end) const {
+  if (end <= begin) {
+    return;
+  }
+  tool_->body(call_, begin, end);
+}
+
 dispatch_check check_dispatch(const tool_description& tool,
                               const std::span<const field_ref>& inputs,
                               const std::span<const field_ref>& outputs,
@@ -328,39 +365,22 @@ void dispatch(const tool_description& tool,
     utils::error{}("originator {}", check.message);
   }
 
-  tool_call call;
-  call.inputs = inputs;
-  call.outputs = outputs;
-  call.params = &params;
-  call.seed = seed;
-  call.range_begin = range_begin;
-  call.range_end = range_end;
-  call.step_name = step_name;
-  call.tool_name = tool.name;
-  // Пул отдаётся только тем апертурам, которые движок не разбивает сам.
-  call.pool = check.parallel ? nullptr : pool;
-
-  const size_t count = call.range_count();
+  const size_t count = range_end > range_begin ? range_end - range_begin : 0;
   if (count == 0) {
     return;
   }
 
-  // Подготовка идёт до разбиения: её результат общий для всех чанков и неизменен на всё время вызова.
-  std::shared_ptr<void> shared;
-  if (tool.prepare != nullptr) {
-    shared = tool.prepare(call);
-    call.shared = shared.get();
-  }
+  const prepared_call prepared(tool, inputs, outputs, params, seed, range_begin, range_end, step_name, pool);
 
   if (!check.parallel || pool == nullptr || pool->size() == 0) {
-    tool.body(call, range_begin, range_end);
+    prepared.run(range_begin, range_end);
     return;
   }
 
   const size_t chunk = chunk_size_for(count, pool->size() + 1);
   for (size_t start = range_begin; start < range_end; start += chunk) {
     const size_t stop = std::min(start + chunk, range_end);
-    pool->submit([&tool, &call](const size_t begin, const size_t end) { tool.body(call, begin, end); }, start, stop);
+    pool->submit([&prepared](const size_t begin, const size_t end) { prepared.run(begin, end); }, start, stop);
   }
 
   pool->compute();

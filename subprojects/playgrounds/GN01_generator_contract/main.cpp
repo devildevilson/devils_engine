@@ -7,6 +7,7 @@
 #include <format>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -14,6 +15,7 @@
 
 #include "devils_engine/demiurg/module_system.h"
 #include "devils_engine/demiurg/resource_system.h"
+#include "devils_engine/originator/computation_queue.h"
 #include "devils_engine/originator/generator_resource.h"
 #include "devils_engine/originator/pipeline.h"
 #include "devils_engine/originator/primitives.h"
@@ -45,6 +47,7 @@ struct options {
   originator::storage_kind::values layout = originator::storage_kind::soa;
   bool verify = false;
   bool bench = false;
+  bool bench_queue = false;
   bool quiet = false;
 };
 
@@ -95,6 +98,8 @@ options parse_options(const int argc, const char** argv) {
       result.verify = true;
     } else if (argument == "--bench") {
       result.bench = true;
+    } else if (argument == "--bench-queue") {
+      result.bench_queue = true;
     } else if (argument == "--quiet") {
       result.quiet = true;
     } else if (starts_with(argument, "--size=")) {
@@ -122,7 +127,8 @@ options parse_options(const int argc, const char** argv) {
                 << "  --threads=N    число рабочих потоков (0 = по числу ядер)\n"
                 << "  --seed=N       зерно пайплайна\n"
                 << "  --verify       прогнать контрактные проверки\n"
-                << "  --bench        замерить уровни исполнения\n";
+                << "  --bench        замерить уровни исполнения\n"
+                << "  --bench-queue  замерить слияние проходов очереди\n";
       std::exit(0);
     } else {
       utils::error{}("GN01: unknown argument '{}'", argument);
@@ -651,6 +657,127 @@ int run_verify(const options& opts) {
 
   std::cout << "GN01 verify: " << (checks - failures) << "/" << checks << "\n";
   return failures == 0 ? 0 : 1;
+}
+
+// СЛИЯНИЕ ПРОХОДОВ ОЧЕРЕДИ: отдельный режим, а не строка в общем стенде, и это не оформление.
+//
+// Разница между «слитно» и «по одному» — единицы процентов, а общий стенд к этому моменту успевает
+// прогнать весь пайплайн четыре раза; на ноутбуке этого достаточно, чтобы частота ушла, и один
+// прогон мерил бы тепловое состояние, а не код. Здесь два варианта идут ПООЧЕРЁДНО много раз, и
+// печатается минимум и медиана: минимум говорит про сам код, медиана — про то, стоит ли верить
+// минимуму.
+int run_bench_queue(const options& opts) {
+  const size_t count = opts.width * opts.width;
+  const auto sizes = make_sizes(opts);
+
+  originator::tool_registry tools;
+  tools.add_standard_tools();
+
+  const size_t threads = opts.threads == 0 ? std::max<size_t>(std::thread::hardware_concurrency(), 1) - 1 : opts.threads;
+  thread::atomic_pool pool(threads);
+
+  auto description = load_description(opts);
+  originator::pipeline p(description, sizes, opts.seed);
+
+  auto* cells = p.find_buffer("cells");
+  const auto field = [&](const char* name, const bool writable) {
+    return originator::field_ref{cells, writable ? cells : nullptr, cells->find_field(name)};
+  };
+
+  // Данные настоящие, хотя у этих трёх инструментов ветвлений по данным нет: на нулях замер был бы
+  // тот же, но сверять его глазами с полем в отчёте было бы нечем.
+  originator::parameters noise;
+  noise.set_number("width", double(opts.width));
+  noise.set_number("frequency", 4.0 / double(opts.width));
+  for (const char* name : {"height", "moisture"}) {
+    const std::vector<originator::field_ref> out{field(name, true)};
+    originator::dispatch(*tools.find("value_noise"), {}, out, noise, 7, 0, count, "bench", &pool);
+  }
+
+  originator::parameters scale;
+  scale.set_number("scale", 1.5);
+  scale.set_number("offset", -0.25);
+  originator::parameters mix;
+  mix.set_number("a", 0.5);
+  mix.set_number("b", 0.5);
+  originator::parameters mask;
+  mask.set_number("scale", 2.0);
+
+  const auto declare = [&](const char* tool_name, std::vector<originator::field_ref> inputs,
+                           std::vector<originator::field_ref> outputs, const originator::parameters& params) {
+    originator::queue_call call;
+    call.label = tool_name;
+    call.tool = tools.find(tool_name);
+    call.shape = call.tool->shape;
+    call.inputs = std::move(inputs);
+    call.outputs = std::move(outputs);
+    call.params = params;
+    call.seed = 1;
+    call.range_end = count;
+    return call;
+  };
+
+  // Цепочка из трёх pointwise над одним диапазоном: `smoothed` считается, читается и превращается в
+  // `moisture`. Ни одно промежуточное поле наружу не выходит — минимальный честный случай слияния.
+  originator::computation_queue chain;
+  chain.name = "bench";
+  chain.calls.push_back(declare("remap", {field("height", false)}, {field("smoothed", true)}, scale));
+  chain.calls.push_back(
+    declare("blend", {field("smoothed", false), field("moisture", false)}, {field("smoothed", true)}, mix));
+  chain.calls.push_back(
+    declare("modulate", {field("smoothed", false), field("height", false)}, {field("moisture", true)}, mask));
+  chain.output.push_back(field("moisture", true));
+
+  const auto report = originator::run_queue(chain, nullptr);
+
+  const size_t element_bytes = 3 * sizeof(float);
+  std::cout << "GN01 bench-queue: сетка " << opts.width << "x" << opts.width << " = " << count
+            << " элементов, потоков " << threads << "\n"
+            << "  вызовов " << report.calls << ", обходов " << report.passes << ", слито " << report.fused << "\n"
+            << "  рабочий набор группы " << (double(count * element_bytes) / (1024.0 * 1024.0)) << " MB ("
+            << element_bytes << " байт на элемент)\n\n";
+
+  const auto call_by_call = [&](thread::atomic_pool* target) {
+    for (const auto& call : chain.calls) {
+      originator::dispatch(*call.tool, call.inputs, call.outputs, call.params, call.seed, call.range_begin,
+                           call.range_end, chain.name, target);
+    }
+  };
+
+  constexpr size_t rounds = 9;
+
+  const auto compare = [&](const std::string& label, thread::atomic_pool* target) {
+    std::vector<double> separate;
+    std::vector<double> fused;
+
+    const auto once = [&](const auto& body) {
+      const auto start = std::chrono::steady_clock::now();
+      body();
+      const auto stop = std::chrono::steady_clock::now();
+      return std::chrono::duration<double, std::milli>(stop - start).count();
+    };
+
+    // По одному и слитно ЧЕРЕДУЮТСЯ: если частота уезжает, она уезжает у обоих одинаково.
+    for (size_t round = 0; round < rounds; ++round) {
+      separate.push_back(once([&] { call_by_call(target); }));
+      fused.push_back(once([&] { originator::run_queue(chain, target); }));
+    }
+
+    std::sort(separate.begin(), separate.end());
+    std::sort(fused.begin(), fused.end());
+
+    const double best_separate = separate.front();
+    const double best_fused = fused.front();
+    std::cout << "  " << label << "\n"
+              << "    по одному  минимум " << best_separate << " мс, медиана " << separate[rounds / 2] << " мс\n"
+              << "    слитно     минимум " << best_fused << " мс, медиана " << fused[rounds / 2] << " мс\n"
+              << "    слияние    " << (100.0 * (best_separate - best_fused) / best_separate) << "% по минимуму, "
+              << (100.0 * (separate[rounds / 2] - fused[rounds / 2]) / separate[rounds / 2]) << "% по медиане\n\n";
+  };
+
+  compare("1 поток", nullptr);
+  compare(std::to_string(threads) + " потоков", &pool);
+  return 0;
 }
 
 int run_bench(const options& opts) {
@@ -1188,6 +1315,9 @@ int main(const int argc, const char** argv) {
     const auto opts = parse_options(argc, argv);
     if (opts.verify) {
       return run_verify(opts);
+    }
+    if (opts.bench_queue) {
+      return run_bench_queue(opts);
     }
     if (opts.bench) {
       return run_bench(opts);

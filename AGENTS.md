@@ -4,8 +4,10 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
-- ORIGINATOR COMPUTATION QUEUE, FIRST SLICE (2026-09-04). `393/393` project tests (`+2` new targets:
-  `originator_queue_test`, `originator_queue_lua_test`), GN01 `22/22` with the queue in production.
+- ORIGINATOR COMPUTATION QUEUE, FIRST SLICE (2026-09-04, construction in `a7a73b7`, fusion after).
+  Whole suite green at `402/402`; the queue's own targets are `originator_queue_test` and
+  `originator_queue_lua_test` (the rest of the count growth is the concurrent NET work). GN01
+  `22/22` with the queue in production.
   `ORIGINATOR_GPGPU.md` step 1 is now done except fusion; the design doc and
   `libs/originator/README.md` ("Очередь вычислений") carry the contract.
   THE CONSTRUCTION: a queue is a NAMED chain of pre-declared calls executed as a whole. It is split by
@@ -29,6 +31,54 @@ This repository is the author's experimental game engine / framework. It is a la
   declarations are counted, and both a dropped and a twice-used element fail the step, because neither
   is visible in the result. The report returns `passes` (real data traversals, today == `calls`) so the
   fusion win will be MEASURED rather than assumed.
+  FUSION LANDED. Adjacent `pointwise` calls over the SAME range now run in one traversal: the queue
+  reorders the walk from "call, then its chunks" to "tile, then every call of the group", so the
+  intermediate field stays in cache. Legal exactly for `pointwise` and exactly at equal ranges
+  (element i of the second call reads ONLY element i, and the first call of that same tile has already
+  written it); `gather` needs the whole previous pass, and a different range means one call's tile is
+  not the other's. Bit-identity holds for the same reason it holds for a single pointwise call, and it
+  is tested at 1/3/7 threads. Tile size comes from the group's footprint — bytes per element over
+  DISTINCT fields, the shared intermediate counted once — targeting L1d as a starting number.
+  MEASURED (`--bench-queue`, `remap`→`blend`→`modulate`, Release, i7 / 11 threads; variants
+  interleaved, read the median): **zero on one thread at any size** (`+0.7%` / `-1.0%` / `-0.4%` at
+  `1.0` / `4.2` / `16.8` M elements) and **14–25% on eleven** (`+25.4%` / `+14.0%` / `+14.1%`). The
+  explanation follows from the same numbers rather than being guessed: a pass costs `18.8` ns per
+  element, so ONE thread pushes about `0.6` GB/s — orders of magnitude below bandwidth, nothing there
+  to save. Eleven threads bring the pass to `4.0` ns per element for a speedup of only `4.7x`, i.e.
+  the parallel pass is ALREADY bandwidth-limited, and only then does the saved traffic show.
+  SO THE REAL SINGLE-THREAD LEVER IS NOT FUSION: `18.8` ns for one multiply-add is the price of the
+  GENERIC ACCESSOR (`get`/`set` with bounds checks and a field-kind switch per element). The
+  `as_span<float>` fast path exists in the library but only the noise and volume tools use it — the
+  arithmetic tools do not. Fusion is not thereby pointless: it removes exactly the cost that will
+  remain after the accessor, and on a GPU that cost is the main one.
+  MEASUREMENT LESSON, same family as GN03's "measure without pacing": at a few percent, one run on a
+  laptop measures thermal state — in the general `--bench`, which runs the whole pipeline four times
+  before this line, the SIGN of the result changed between runs. Hence a separate mode where the two
+  variants INTERLEAVE and both minimum and median are printed. The first pair's minimum means nothing
+  (at `1024` it read `-72%` purely because the variant that went first got a hot buffer); read the
+  median, and use the minimum only to judge whether to believe it.
+  A `ds` program does not join a fusion group yet: its execution lives in `originator_script`, and
+  entering it per tile would rebuild the VM context each time — it needs a prepared call of its own,
+  like `prepared_call` for a native tool.
+  TRANSACTION-WITH-CALLBACK (a coroutine collecting intermediate values, DB-transaction style) WAS
+  CONSIDERED AND REJECTED, reasons recorded in `ORIGINATOR_GPGPU.md` §4.5a: the analogy carries the
+  word but not the mechanism (no concurrent writers, no log, no rollback); it un-declares the call set
+  and kills both "one refusal before execution" and the dead-work check; on a device it means a sync
+  point and a round trip INSIDE the queue, i.e. exactly the cost the queue exists to remove; and an
+  observable intermediate must materialise, which disables fusion. The shape that IS wanted already
+  exists and is called a queue boundary — two queues with ordinary lua between them, as
+  `terrain.lua`'s normalisation already does.
+  **NO LAMBDAS IN THE BINDINGS.** Every function reaching lua from `script_host` is now a member
+  function pointer (`&script_host::run_tool`, …) or a free function (`field_get`, `field_set`, …), and
+  the per-tool shortcuts — the one thing needing a bound name — are LUA closures built by a two-line
+  factory over the bound `run`, so they cost no C++ type. Named functions have unique type names by
+  construction, which makes the sol2 bug below UNEXPRESSIBLE rather than merely unlikely. Reserved
+  names (`run`, `run_script`, `tool_exists`, `queue`) are refused loudly at host construction, because
+  a tool with such a name would silently shadow the function.
+  QUEUE ELEMENT LIST IS READ BY HIGHEST INTEGER KEY, NOT BY `#`: on a table with a hole lua's length
+  is undefined (`{a, nil, b}` may legally give 1 or 3), so by `#` a missed element would simply
+  vanish, and a queue one pass short differs from the right one only in a result nobody expected. A
+  hole, a plain value, and an unknown key (`outputs =` for `output =`) all fail loudly and by name.
   **SOL2 LANDMINE FOUND AND FIXED, and it is not queue-specific — see Build/Layout Notes.** Two
   DIFFERENT lambdas declared in the SAME function with the SAME parameter list share sol2's `__gc`
   metatable (gcc prints a lambda as `<lambda(args)>`, with no ordinal, and sol2 keys the functor
@@ -1935,10 +1985,13 @@ hook) because every script comes from demiurg/mods (there is no plain-lua-from-d
   captures. The failure appears as `free(): invalid size` inside `lua_close`, i.e. nowhere near the
   registration, and capture ORDER decides whether it crashes or corrupts silently (a `this`-first
   capture read a bogus string past the object and happened not to abort). Fix used in
-  `libs/originator/src/originator/script_host.cpp`: every function goes into lua through a
-  `std::function<result(args)>` alias with a declared signature, so name equality means TYPE equality
-  and two registrations sharing a signature are deliberately ONE type. Related trap already recorded:
-  `sol::optional` in a non-trailing parameter.
+  `libs/originator/src/originator/script_host.cpp`: bindings are declared as FUNCTIONS — member
+  function pointers (`set_function(key, &script_host::method, this)`) and free functions used as
+  usertype methods — never lambdas, because a named function's type name is unique by construction.
+  Where a binding must carry a bound name, the closure is built in LUA instead (a factory returning
+  `function(args) return run(name, args) end`), which costs no C++ type at all. Note sol2 does NOT
+  accept two bound leading arguments for a free function pointer, and that is what forced the choice.
+  Related trap already recorded: `sol::optional` in a non-trailing parameter.
 - `vulkanmemoryallocator-hpp` is header-only from this project's point of view but brings Vulkan headers/VMA targets through CMake; keep those targets explicit in consumers such as `tile_frontier` instead of assuming a system Vulkan SDK layout. `msdf-atlas-gen` is not header-only; `artery-font` support is intentionally not needed.
 - Current focused contract tests live in `tests/thread_general_test.cpp`, `tests/utils_contract_test.cpp`, `tests/sound_system_test.cpp`, and `tests/catalogue_introspection_test.cpp`. `thread_general_test` covers `atomic.h`, `atomic_pool.h`, `lock.h`, legacy `queue1`, and the new `thread::spsc_queue`; `utils_contract_test` covers `memory_pool`, `stack_allocator`, and `fixed_pool_mt` size/alignment checks; `sound_system_test` covers sound math/format helpers, task/resource defaults, playback-device enumeration, and a guarded `system` construction smoke test; `catalogue_introspection_test` covers mirrored wrapper pointers for free functions, methods, const methods, structural functors, dry-run, and rolling stats. Newer: `tests/flow_test.cpp` (animation parse/playback/sampling), `tests/painter_shader_prepare_test.cpp` (assets-side GLSL→SPIR-V prepare + demiurg include resolution + list-pattern render config), and `tests/demiurg_resource_loader_test.cpp` (external GPU step + dependency gating + **stable `resource_handle` survives `clear()`+re-parse**).
 

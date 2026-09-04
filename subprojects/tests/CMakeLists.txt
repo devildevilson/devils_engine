@@ -70,6 +70,9 @@ target_link_libraries(network_sequence_history_test PRIVATE devils_engine::netwo
 devils_add_doctest(network_state_schema_test network_state_schema_test.cpp)
 target_link_libraries(network_state_schema_test PRIVATE devils_engine::network)
 
+devils_add_doctest(network_checkpoint_replay_test network_checkpoint_replay_test.cpp)
+target_link_libraries(network_checkpoint_replay_test PRIVATE devils_engine::network)
+
 find_program(DEVILS_NETWORK_GXX NAMES g++)
 find_program(DEVILS_NETWORK_CLANGXX NAMES clang++)
 if (DEVILS_NETWORK_GXX AND DEVILS_NETWORK_CLANGXX)

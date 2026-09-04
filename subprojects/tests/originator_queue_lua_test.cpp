@@ -211,6 +211,62 @@ TEST_CASE("originator queue refuses in lua before it computes anything") {
     )lua");
   }
 
+  SUBCASE("a hole in the element list") {
+    // `#` на таблице с дыркой не определён, поэтому по нему элемент мог бы просто исчезнуть, а
+    // очередь на один проход короче отличается от правильной только результатом.
+    fails(R"lua(
+      return function(step)
+        local cells = step.writes.cells
+        local first = originator.queue.remap{
+          inputs = { cells:field("height") },
+          outputs = { cells:field("smoothed") },
+          params = { scale = 2.0 },
+        }
+        local second = originator.queue.remap{
+          inputs = { cells:field("smoothed") },
+          outputs = { cells:field("moisture") },
+          params = { scale = 2.0 },
+        }
+        originator.queue{ first, nil, second, output = { cells:field("moisture") } }
+      end
+    )lua");
+  }
+
+  SUBCASE("a plain value in the element list") {
+    fails(R"lua(
+      return function(step)
+        local cells = step.writes.cells
+        originator.queue{
+          originator.queue.remap{
+            inputs = { cells:field("height") },
+            outputs = { cells:field("smoothed") },
+            params = { scale = 2.0 },
+          },
+          42,
+          output = { cells:field("smoothed") },
+        }
+      end
+    )lua");
+  }
+
+  SUBCASE("a misspelled key instead of output") {
+    // `outputs` вместо `output` иначе означал бы очередь без объявленной границы, и жаловалась бы
+    // она не на опечатку, а на отсутствие выхода.
+    fails(R"lua(
+      return function(step)
+        local cells = step.writes.cells
+        originator.queue{
+          originator.queue.remap{
+            inputs = { cells:field("height") },
+            outputs = { cells:field("smoothed") },
+            params = { scale = 2.0 },
+          },
+          outputs = { cells:field("smoothed") },
+        }
+      end
+    )lua");
+  }
+
   SUBCASE("a reduction declared inside the queue") {
     fails(R"lua(
       return function(step)

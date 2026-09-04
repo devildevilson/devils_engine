@@ -18,12 +18,13 @@ recorded here only after it is reproduced by an executable test or directly obse
 | NET-01 bounded tick journal | complete; 8/8 cases pass in Debug and Release |
 | NET-02 sequence window/history | complete; 9/9 cases pass in Debug and Release |
 | NET-03 explicit state sections/schema | complete; 8/8 cases pass in Debug and Release |
+| NET-04 checkpoint ring/replay | complete; 6/6 cases pass in Debug and Release |
 | ECS transactional world replacement | next |
 | TIME-00 strong simulation time | complete; tick/rate/conversion/pacing primitives pass 5/5 cases |
 | TIME-01 gameplay timeline/presentation split | complete; generic timeline, flow, turn pipeline and cardgame proof |
 | TIME-02 fixed-step host/project migration | complete; host and tile actor consume an external 60 Hz tick |
 | Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
-| Complete project suite | 385/385 pass in Debug and Release; GNS/Abseil link and resume flake currently clear |
+| Complete project suite | last full run before NET-04: 385/385 in Debug and Release; NET-04 affected target: 6/6 |
 | Production `devils_engine::network_gns` adapter | not started |
 | Session handshake, reconnect recovery and peer authority | not started |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
@@ -34,7 +35,7 @@ The PRE-01 executable is intentionally a direct GNS consumer. It passes opaque b
 engine transport abstraction, network entity type, serialization scheme or client/server policy into the new
 neutral library.
 
-## NET-00/01/02/03 — neutral core through complete-state schema
+## NET-00/01/02/03/04 — neutral core through checkpoint replay
 
 `libs/network` is now a header-only `devils_engine::network` target. It depends only on common engine options and
 the `utils::error` facility; it does not include or link GNS, `aesthetics`, `act`, `tile_frontier`, a socket API,
@@ -142,6 +143,49 @@ Reproduction:
 ```sh
 cmake --build build-debug -j4 --target network_state_schema_test aesthetics_serialization_test
 ctest --test-dir build-debug -R '^(network_state_schema_test|aesthetics_serialization_test)::' --output-on-failure
+```
+
+### NET-04 checkpoint ring and replay
+
+NET-04 adds two independent mechanisms in `checkpoint_ring.h` and `replay.h`:
+
+```cpp
+checkpoint_ring<Tick, Blob, SizeOf>
+replay_to(host, checkpoint_tick, checkpoint, target_tick, bundles,
+          restore, apply_bundle, step, verify_state, next_tick)
+```
+
+The ring is a checkpoint-semantic wrapper over the already tested bounded immutable history. It stores no world
+or serializer type, computes logical byte cost through `SizeOf`, evicts oldest checkpoints deterministically
+under count and byte budgets, and can select the latest retained checkpoint not later than a requested tick.
+
+Replay defines checkpoint `K` as committed state after `K` and applies bundle `T` before stepping `T`. It checks
+the whole input range before restore, so target bounds, duplicate/out-of-order entries, a missing first retained
+tick and an internal gap are values in `replay_status` and leave the host untouched. A tick successor is an
+injected policy: mere ordering cannot prove adjacency for an arbitrary project strong tick type. An overflow-safe
+successor for integral ticks is supplied as a convenience, not imposed on projects.
+
+`Restore`, `ApplyBundle`, `Step` and `VerifyState` are plain callables. No inheritance or virtual intent source is
+introduced. Apply/step receive an explicit presentation-suppressed context. Verify runs immediately after restore
+and after every replayed tick, so its first refusal reports the exact divergent tick while the production root
+algorithm remains deferred to NET-05. Replay mutates the supplied host after restore; a recoverable correction
+therefore uses a detached staging host and publishes it only after successful completion.
+
+The generated fake run contains six bundles, including an explicit empty tick, and seven checkpoints. Restoring
+from every possible `K` through the final tick produces the same causal root as uninterrupted execution while
+leaving the presentation counter unchanged. Further cases cover count/byte eviction, checkpoint selection,
+history bounds, missing/duplicate/out-of-order bundles, successor exhaustion, callback refusal and the first
+mismatching root. All `6/6` cases pass in Debug and Release.
+The combined NET-01/02/03/04 neutral regression set passes `31/31` in both configurations.
+
+Reproduction:
+
+```sh
+cmake --build build-debug -j4 --target network_checkpoint_replay_test
+ctest --test-dir build-debug -R '^network_checkpoint_replay_test::' --output-on-failure
+
+cmake --build build-release -j4 --target network_checkpoint_replay_test
+ctest --test-dir build-release -R '^network_checkpoint_replay_test::' --output-on-failure
 ```
 
 ### Native-float cross-compiler micro-corpus

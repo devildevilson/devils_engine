@@ -124,7 +124,21 @@ private:
   // действия: `originator.box_blur{...}` считает сейчас, `originator.queue.box_blur{...}` описывает
   // работу, которую исполнит очередь целиком.
   sol::table make_queue_api();
-  // Собирает объявленный вызов нативного инструмента из таблицы аргументов lua.
+  // Ярлыки инструментов ставятся ЗАМЫКАНИЯМИ В LUA над привязанным `run` и константным именем.
+  // Причина — в комментарии к биндингам в script_host.cpp: у лямбды из C++ имя типа не уникально,
+  // а замыкание в lua не стоит ни одного C++-типа.
+  void install_shortcuts(sol::table& api, const sol::object& run);
+
+  // БИНДИНГИ — МЕТОДЫ, А НЕ ЛЯМБДЫ, и это обход измеренной ошибки порчи памяти в sol2; полностью
+  // причина описана в script_host.cpp рядом со свободными функциями биндингов.
+  sol::object run_tool(const std::string& tool_name, const sol::table args, sol::this_state s);
+  void run_program(const sol::table args);
+  bool has_tool(const std::string& tool_name) const;
+  queue_call declare_tool(const std::string& tool_name, const sol::table args);
+  queue_call declare_program(const sol::table args);
+  sol::object execute_queue(const sol::table self, const sol::table args, sol::this_state s);
+
+  // Собирает объявленный вызов из таблицы аргументов lua; счётчик объявлений трогают declare_*.
   queue_call make_tool_call(const std::string& tool_name, const sol::table& args);
   queue_call make_script_call(const sol::table& args);
   sol::table make_step_table(const step_context& context);
