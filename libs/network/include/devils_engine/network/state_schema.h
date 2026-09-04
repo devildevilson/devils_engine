@@ -319,10 +319,13 @@ public:
   }
 
   // This is the single canonical traversal. A byte writer produces checkpoint
-  // bytes; a future state hasher can implement the same sink operations and
-  // therefore covers exactly the same framing and payload.
-  template <state_canonical_sink Sink>
-  static void emit_canonical(const Host& host, Sink& sink) {
+  // bytes; a state hasher can implement the same sink operations and therefore
+  // covers exactly the same framing and payload. ObserveSection sees each
+  // canonical payload as a borrowed view valid only for that invocation.
+  template <state_canonical_sink Sink, class ObserveSection>
+    requires std::invocable<ObserveSection&, std::uint32_t, std::uint32_t,
+                            std::span<const std::byte>>
+  static void emit_canonical(const Host& host, Sink& sink, ObserveSection observe_section) {
     sink.u32(magic);
     sink.u32(format_version);
     sink.u32(schema_fingerprint());
@@ -334,11 +337,18 @@ public:
       value.write(host, payload_writer);
       payload.resize(payload_writer.position());
 
+      std::invoke(observe_section, value.id, value.version,
+                  std::span<const std::byte>{payload});
       sink.u32(value.id);
       sink.u32(value.version);
       sink.u64(std::uint64_t(payload.size()));
       sink.bytes(payload);
     }
+  }
+
+  template <state_canonical_sink Sink>
+  static void emit_canonical(const Host& host, Sink& sink) {
+    emit_canonical(host, sink, [](std::uint32_t, std::uint32_t, std::span<const std::byte>) {});
   }
 
   static void write(const Host& host, Writer& writer) {

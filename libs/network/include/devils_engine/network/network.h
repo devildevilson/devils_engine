@@ -6,6 +6,7 @@
 #include "replay.h"
 #include "sequence_window.h"
 #include "state_schema.h"
+#include "state_digest.h"
 #include "tick_journal.h"
 
 #endif

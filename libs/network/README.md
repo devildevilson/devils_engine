@@ -109,17 +109,18 @@ cannot partially mutate the live host. Rebuilding derived caches belongs in
 that final project replacement operation, not in the serialized sections.
 
 `emit_canonical` is the single traversal used by checkpoint writing and a
-future state-hash sink. It emits the complete envelope, section metadata and
-payload bytes identically to either consumer. The built-in `state_writer` and
-`state_reader` provide minimal canonical little-endian adapters; compatible
-project adapters may be substituted.
+state-hash sink. It emits the complete envelope, section metadata and payload
+bytes identically to either consumer, and may expose each borrowed canonical
+section payload to a diagnostic observer during that traversal. The built-in
+`state_writer` and `state_reader` provide minimal canonical little-endian
+adapters; compatible project adapters may be substituted.
 
 The 32-bit schema fingerprint is produced by the shared
 `utils::murmur_hash3_32` primitive over canonical format/count/ID/version
 bytes. It is format compatibility metadata, not a cryptographic state
-identity. Strong content hashing remains NET-05; checkpoint retention and
-replay remain NET-04. The schema owns no sockets, threads, ECS types, systems
-or callbacks.
+identity. Content-state diagnostics are supplied by NET-05; checkpoint
+retention and replay remain NET-04. The schema owns no sockets, threads, ECS
+types, systems or callbacks.
 
 The target is header-only and depends only on C++23, `devils_engine::options`
 and the common `devils_engine::utils` error facility. `devils_engine::network`
@@ -152,3 +153,28 @@ allowing the caller to report the first divergent state root without coupling
 NET-04 to a hash implementation. Replay advances the supplied host in place;
 recoverable callers should replay a detached staging host and publish it only
 after successful completion.
+
+## Implemented slice: state digest diagnostics
+
+`make_state_digest<Schema, Hasher>` feeds the exact canonical, uncompressed
+state document into an injected hash policy. Its report contains one complete
+root plus roots over every canonical `[id, version, byte_size, payload]`
+section frame. Section roots are diagnostics: peers need exchange only the
+full root normally and request a section report after a mismatch.
+
+`compare_state_digests` distinguishes an identical state, an envelope-only
+mismatch, a different section set and the first differing canonical section.
+Together with `replay_to` this identifies both the first divergent tick and
+the project-owned state section without teaching either mechanism a project
+type.
+
+Hash choice is an explicit policy rather than a wire-format property. The
+provided `buffered_murmur64_state_hasher` is the initial frequent diagnostic
+policy; it is non-cryptographic and buffers because the shared Murmur64A
+utility is one-shot. A project that already owns canonical checkpoint bytes
+should hash those bytes directly and build section diagnostics only after a
+mismatch. `sha256_state_hasher` is the wider reference policy for rare or
+durable identities. Neither policy authenticates a peer or message.
+
+There is deliberately no page tree, incremental dirty tracking, socket,
+thread, checkpoint retention or correction policy in this slice.
