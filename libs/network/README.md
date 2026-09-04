@@ -178,3 +178,25 @@ durable identities. Neither policy authenticates a peer or message.
 
 There is deliberately no page tree, incremental dirty tracking, socket,
 thread, checkpoint retention or correction policy in this slice.
+
+## Implemented slice: deterministic in-memory link
+
+`in_memory_link<Message, SizeOf, FaultPolicy>` is a single-owner logical
+transport for session tests. `Message` remains project-owned and opaque; the
+library asks only for its logical wire size. Calling `advance()` moves an
+explicit transport step, so the library does not equate network time with a
+simulation tick or wall-clock duration.
+
+Each direction has independent count, byte and bandwidth budgets. Lower lane
+IDs consume the current step's bandwidth first. A reliable ordered lane
+retries injected loss, delivers exactly once and preserves its order; an
+unreliable lane may lose, duplicate and reorder messages according to the
+injected policy. Expected submission failures are `link_send_status` values.
+Disconnect drops all queued, scheduled and received data; reconnect creates a
+fresh epoch and restarts per-lane sequences.
+
+The retained trace records acceptance/refusal, byte transmission, injected
+loss, retry, scheduling and delivery. Supplying the same message stream and
+fault policy therefore gives a directly comparable trace. This mechanism does
+not simulate packets, ACKs, MTU, congestion control or GNS internals; it models
+only the application-visible delivery contract that NET-08 must reproduce.

@@ -613,17 +613,21 @@ The Murmur64 checksum in the current snapshot envelope remains accidental-corrup
 same primitive: its protocol role is container integrity, whereas a NET-05 root is computed over the declared
 canonical causal document. Neither is authentication.
 
-## NET-06: in-memory transport and fault injection
+## NET-06: in-memory transport and fault injection — complete 2026-09-04
 
-Before a real socket backend, a deterministic in-memory transport must exercise the message contract:
+The reusable mechanism is deliberately smaller than a socket emulator:
 
 ```cpp
-template<class Message, class Clock, class DeliveryPolicy, class FaultPolicy>
+template<class Message, class SizeOf, class FaultPolicy>
 class in_memory_link;
 ```
 
-The mechanism may use injected policies/callables rather than exactly these template parameters. It must be
-able to model:
+`Message` is opaque project data, `SizeOf` supplies its logical wire cost and `FaultPolicy` maps stable
+`(epoch, direction, lane, sequence, attempt)` metadata to drop/delay/duplicate effects. Time advances only by an
+explicit `advance()`: the owner decides whether one transport step corresponds to a simulation tick, a test event
+or something else. Thus the link does not import `chrono`, gameplay time or a project tick type.
+
+The mechanism models:
 
 - fixed and varying latency;
 - packet loss;
@@ -633,8 +637,17 @@ able to model:
 - disconnect and reconnect;
 - reliable ordered, reliable bulk and unreliable sequenced logical delivery.
 
-The fault schedule is explicit input data with a seed, so a failing run is replayable. The library does not
-pretend that its reliable policy is a production congestion protocol; it only supplies controllable delivery
+Each direction has separate count/byte/bandwidth budgets. Smaller lane IDs are serviced first, so current intents
+can preempt a partially transmitted bulk message on its next step. Reliable ordered messages retry an injected
+loss and arrive once in lane order; unreliable messages can disappear, duplicate or arrive after a newer sequence.
+Disconnect clears queues, scheduled deliveries and inboxes, while reconnect creates a new epoch and restarts lane
+sequences. Expected send/backpressure failures are values; counter exhaustion and invalid retry configuration are
+fatal invariants.
+
+The fault schedule is explicit input data, so a failing run is replayable. The retained trace records acceptance,
+transmitted chunks, faults, retries, scheduling and delivery. The NET06 playground repeats the same schedule and
+compares all 65 trace events and both final simulation states exactly. The library does not pretend that its
+reliable policy is a production congestion or ACK protocol; it supplies controllable application-visible delivery
 semantics for session tests.
 
 This slice proves client/server orchestration without mixing simulation bugs with sockets.
@@ -1194,7 +1207,7 @@ TIME-00 strong simulation time + authored-duration conversion (complete)
 NET-00 contract (complete)
   -> NET-01 tick journal (complete)
        -> NET-02 sequence + bundle history (complete)
-            -> NET-06 in-memory delivery laboratory
+            -> NET-06 in-memory delivery laboratory (complete)
                  -> NET-07 replication baselines
                       -> NET-08 selected real-transport adapter
                            -> NET-LAB-01 multi-process loopback/LAN
@@ -1206,7 +1219,7 @@ NET-03 state sections + schema freeze (complete)
   -> ECS transactional replacement
        -> NET-04 checkpoint + replay
             -> NET-05 digest diagnostics
-                 -> NET-06
+                 -> NET-06 (complete)
 
 NUM-01 native math corpus
   -> NUM-02 strict float
@@ -1446,7 +1459,7 @@ at tick three and reports tick three plus the actor section. SHA-256 proves byte
 buffered Murmur64 proves the production diagnostic choice is not baked into the algorithm. Four tests pass in
 Debug and Release. No page hierarchy or incremental hashing was added before evidence requires it.
 
-### NET-06 — in-memory transport laboratory (`M`)
+### NET-06 — in-memory transport laboratory (`M`) — complete 2026-09-04
 
 - Add deterministic fault schedule and bounded logical channels.
 - Test delay, loss, reorder, duplicate, bandwidth, disconnect and reconnect.
@@ -1454,6 +1467,14 @@ Debug and Release. No page hierarchy or incremental hashing was added before evi
 - Keep fault schedule and packet trace replayable.
 
 Done when all session behavior is testable without the OS network stack.
+
+Done: `network::in_memory_link` is a header-only template over opaque message, size and fault policies. The
+`NET06_in_memory_transport` playground drives two independent fake hosts with ten reliable intent bundles and five
+unreliable state frames. Its scripted run covers fixed/varying delay, one reliable retry, permanent unreliable
+loss, duplicate, reorder, independent lanes, bandwidth preemption, exact count/byte backpressure, bidirectional
+delivery and disconnect/reconnect with stale-epoch removal. Repeating the schedule produces the same 65-event trace
+and final `30/30` authority/follower state. The campaign passes `121/121` checks in Debug and Release and is a
+registered CTest. Packet/ACK/MTU simulation remains deliberately outside this logical transport.
 
 ### NET-07 — replicated baseline/delta primitives (`M-L`)
 

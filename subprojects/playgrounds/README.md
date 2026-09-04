@@ -34,6 +34,7 @@
 | `PF08` | `PF08_weather_effects` | закрыта | погода, осадки, surface memory, lightning и aurora в динамически освещённом мире |
 | `PF09` | `PF09_territory_zoning` | активна | стриминг плоских игровых зон, проходы-рёбра и движение |
 | `PF10` | `PF10_functional_planet` | активна, high-res lightweight display + adjacency работают | displaced sphere, 4032-node land graph, mountain barriers, smooth borders/hydrology, surface text и selection |
+| `NET06` | `NET06_in_memory_transport` | закрыта | детерминированные delay/loss/reorder/duplicate/bandwidth/reconnect без сокетов |
 
 `anomalous_weather` оставлена в parking lot без номера: она вернётся после PF10, но следующий свободный
 номер заранее за ней не закрепляется.

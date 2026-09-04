@@ -20,12 +20,13 @@ recorded here only after it is reproduced by an executable test or directly obse
 | NET-03 explicit state sections/schema | complete; 8/8 cases pass in Debug and Release |
 | NET-04 checkpoint ring/replay | complete; 6/6 cases pass in Debug and Release |
 | NET-05 digest diagnostics | complete; 4/4 cases pass in Debug and Release |
+| NET-06 in-memory transport playground | complete; 121/121 checks pass in Debug and Release |
 | ECS transactional world replacement | complete; 13/13 focused cases pass in Debug and Release |
 | TIME-00 strong simulation time | complete; tick/rate/conversion/pacing primitives pass 5/5 cases |
 | TIME-01 gameplay timeline/presentation split | complete; generic timeline, flow, turn pipeline and cardgame proof |
 | TIME-02 fixed-step host/project migration | complete; host and tile actor consume an external 60 Hz tick |
 | Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
-| Complete project suite | last whole-suite run before this follow-up: 402/402; NET-05 focused set: 19/19 in Debug and Release |
+| Complete project suite | last whole-suite run before this follow-up: 402/402; neutral NET-01..06 set passes 36/36 in Debug and Release |
 | Production `devils_engine::network_gns` adapter | not started |
 | Session handshake, reconnect recovery and peer authority | not started |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
@@ -36,7 +37,7 @@ The PRE-01 executable is intentionally a direct GNS consumer. It passes opaque b
 engine transport abstraction, network entity type, serialization scheme or client/server policy into the new
 neutral library.
 
-## NET-00/01/02/03/04/05 — neutral core through digest diagnostics
+## NET-00/01/02/03/04/05/06 — neutral core through deterministic delivery
 
 `libs/network` is now a header-only `devils_engine::network` target. It depends only on common engine options and
 the `utils::error` facility; it does not include or link GNS, `aesthetics`, `act`, `tile_frontier`, a socket API,
@@ -237,6 +238,41 @@ ctest --test-dir build-debug -R '^tile_frontier_checkpoint_audit$' --output-on-f
 cmake --build build-release -j4 --target network_state_digest_test network_state_schema_test network_checkpoint_replay_test tile_frontier_checkpoint_audit
 ctest --test-dir build-release -R '^(network_state_digest_test|network_state_schema_test|network_checkpoint_replay_test)::' --output-on-failure
 ctest --test-dir build-release -R '^tile_frontier_checkpoint_audit$' --output-on-failure
+```
+
+### NET-06 deterministic in-memory transport playground
+
+`network::in_memory_link<Message, SizeOf, FaultPolicy>` is the first executable transport/session boundary. The
+message stays project-owned and opaque; only logical size and deterministic fault output are injected. An explicit
+transport step deliberately has no built-in relationship to `chrono` or gameplay tick.
+
+The implementation owns independent directional queues, count/byte budgets, bandwidth, per-lane sequences,
+scheduled deliveries, inboxes, connection epoch and a replayable trace. Smaller lane IDs receive bandwidth first.
+Reliable messages retry loss and preserve exactly-once lane order; unreliable messages expose declared loss,
+duplicate and reorder. Disconnect removes all session data and reconnect starts a new epoch. Expected disconnected
+or budget refusal is returned as `link_send_status`; only configuration/counter exhaustion uses the fatal error
+path.
+
+The `subprojects/playgrounds/NET06_in_memory_transport` fixture sends ten reliable intent bundles and five
+unreliable state frames from an authority simulation to an independent follower. The declared schedule drops the
+first attempt of intent sequence two, delays frame zero beyond newer frames, duplicates frame two and permanently
+drops frame three. All intents still arrive in tick order; the follower converges to the uninterrupted authority at
+`30/30`. State-frame acceptance observes three advancing, one duplicate and one obsolete frame. Separate scenarios
+prove bulk preemption by a smaller control lane, reliable ordering under unequal delay, exact queue budgets,
+reverse-direction delivery and removal of an in-flight old-epoch message across reconnect.
+
+Running the main schedule twice yields identical 65-event traces and final results. The complete executable reports
+`121/121` checks in both Debug and Release and is registered as `NET06_in_memory_transport_verify`.
+Together with every neutral NET-01..05 test, the current networking set passes `36/36` in both configurations.
+
+Reproduction:
+
+```sh
+cmake --build build-debug -j4 --target NET06_in_memory_transport
+ctest --test-dir build-debug -R '^NET06_in_memory_transport_verify$' --output-on-failure
+
+cmake --build build-release -j4 --target NET06_in_memory_transport
+ctest --test-dir build-release -R '^NET06_in_memory_transport_verify$' --output-on-failure
 ```
 
 ### Native-float cross-compiler micro-corpus
@@ -466,9 +502,9 @@ The library provides configuration values for artificial packet lag, loss and re
 buffer limits. PRE-01 uses these against encrypted UDP loopback, so the loss tests exercise the real GNS
 reliability and packet scheduling paths rather than an engine mock.
 
-These controls are valuable but do not replace the deterministic in-memory fault laboratory planned by NET-06.
-GNS fault injection is transport-level and timing-dependent; replay/session tests need a recorded logical fault
-schedule that is exactly repeatable.
+These controls complement rather than replace the deterministic NET-06 in-memory fault laboratory. GNS fault
+injection is transport-level and timing-dependent; replay/session tests use NET-06's recorded logical fault
+schedule when they require an exactly repeatable trace.
 
 ### Encryption, identity and authentication
 
