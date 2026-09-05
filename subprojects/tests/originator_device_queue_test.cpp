@@ -364,3 +364,192 @@ TEST_CASE("originator device queue puts a gather tool on the device too") {
   std::printf("  gather on the device vs the native tool: worst deviation %.3g\n", worst);
   CHECK(worst < 1e-5);
 }
+
+// =============================================================================================
+// РОД РЕСУРСА ВЫВОДИТСЯ (§6.2/6.3).
+//
+// Проверяется здесь не «картинка работает», а то, что решение о ней ПРИНЯТО ПЛАНОМ и принято по
+// единственному основанию: кто-то читает это поле между элементами. План, разложивший в картинки всё
+// подряд, считает то же самое и стоит дороже — по результату этого не видно.
+// =============================================================================================
+
+namespace {
+// Чужое тело: читает свой элемент ВЫБОРКОЙ, ровно в центре текселя. В центре билинейный фильтр
+// возвращает сам тексель, поэтому у такого чтения есть точный эталон — и сверять можно не «похоже»,
+// а РАВНО.
+constexpr std::string_view sample_centre_body = R"glsl(
+  vec2 texel = vec2(1.0) / vec2(float(args.extent_x), float(args.extent_y));
+  vec2 uv = (vec2(float(index % args.extent_x), float(index / args.extent_x)) + vec2(0.5)) * texel;
+  out_0_set(index, in_0_sample(uv));
+)glsl";
+
+void copy_body(const originator::queue_call& call, const std::string_view&, thread::atomic_pool*) {
+  const auto source = call.inputs[0].read();
+  const auto target = call.outputs[0].write();
+  for (size_t i = call.range_begin; i < call.range_end; ++i) {
+    target.set(i, source.get(i));
+  }
+}
+
+originator::queue_call sampling_call(originator::buffer& cells,
+                                     const std::string_view& from,
+                                     const std::string_view& to) {
+  originator::queue_call call;
+  call.label = "sample_centre";
+  call.body = copy_body;
+  call.shape = originator::aperture::gather;
+  call.inputs = {readable(cells, from)};
+  call.outputs = {writable(cells, to)};
+  call.range_end = grid_count;
+  call.device_body = std::string(sample_centre_body);
+  call.device_filtered_inputs = {0};
+  return call;
+}
+} // namespace
+
+TEST_CASE("originator derives which field becomes an image from how the queue reads it") {
+  if (!painter::compute_device_available()) {
+    MESSAGE("no Vulkan device available");
+    return;
+  }
+
+  auto on_cpu = make_cells();
+  auto on_device = make_cells();
+
+  const auto chain = [](originator::buffer& cells) {
+    originator::parameters scale;
+    scale.set_number("scale", 1.5);
+    scale.set_number("offset", -0.25);
+
+    originator::computation_queue queue;
+    queue.name = "sampled";
+    queue.calls.push_back(tool_call("remap", {readable(cells, "height")}, {writable(cells, "smoothed")}, scale));
+    queue.calls.push_back(sampling_call(cells, "smoothed", "mixed"));
+    // `smoothed` названо в выходе НАМЕРЕННО: оно картинка, и значит план обязан уметь привезти
+    // картинку обратно. Внутри очереди такая передача не платится вовсе — здесь она на границе.
+    queue.output.push_back(writable(cells, "smoothed"));
+    queue.output.push_back(writable(cells, "mixed"));
+    return queue;
+  };
+
+  run_on_cpu(chain(on_cpu));
+
+  painter::compute_context_config config;
+  config.app_name = "device_queue_images";
+  painter::compute_context ctx(config);
+  originator::device_queue plan(ctx, chain(on_device));
+
+  // РОВНО ОДНО поле стало картинкой — то, которое читают фильтром. Ни вход очереди, ни выход, который
+  // читают по своему индексу, род не меняют: по всем прочим пунктам буфер лучше.
+  CHECK(plan.image_count() == 1);
+  CHECK(plan.is_image("cells.smoothed"));
+  CHECK_FALSE(plan.is_image("cells.height"));
+  CHECK_FALSE(plan.is_image("cells.mixed"));
+
+  const std::vector<std::string> expected_upload = {"cells.height"};
+  CHECK(plan.uploaded_fields() == expected_upload);
+
+  const auto report = plan.run();
+  CHECK(report.images == 1);
+
+  // Картинка, объявленная выходом, приехала обратно — и приехала целой.
+  const double image_worst = worst_difference(on_cpu, on_device, "smoothed");
+  std::printf("  image round trip: worst deviation %.3g\n", image_worst);
+  CHECK(image_worst < 1e-6);
+
+  // Выборка в ЦЕНТРЕ текселя обязана вернуть сам тексель: фильтр там ничего не смешивает, и это
+  // единственная точка, где у фильтрованного чтения есть точный эталон.
+  const double centre_worst = worst_difference(on_cpu, on_device, "mixed");
+  std::printf("  filtered read at the texel centre: worst deviation %.3g\n", centre_worst);
+  CHECK(centre_worst < 1e-6);
+}
+
+TEST_CASE("originator refuses a filtered read it cannot honour, and says why") {
+  auto cells = make_cells();
+
+  SUBCASE("a filter over integers") {
+    const std::vector<field_pair> fields = {{"label", "ui1"}, {"result", "v1"}};
+    auto layout = originator::make_buffer_layout(originator::storage_kind::soa, fields, "labels");
+    originator::buffer labels("labels", std::move(layout),
+                              originator::buffer_extent{grid_width, grid_width, 0});
+
+    originator::computation_queue queue;
+    queue.name = "integer_filter";
+    queue.calls.push_back(sampling_call(labels, "label", "result"));
+    queue.output.push_back(writable(labels, "result"));
+
+    const auto check = originator::check_device_queue(queue);
+    CHECK_FALSE(check.allowed);
+    // Среднее двух номеров области — не номер области, и это не придирка к типу, а к смыслу.
+    CHECK(check.message.find("not a label") != std::string::npos);
+  }
+
+  SUBCASE("a filter over a buffer with no shape") {
+    const std::vector<field_pair> fields = {{"height", "v1"}, {"result", "v1"}};
+    auto layout = originator::make_buffer_layout(originator::storage_kind::soa, fields, "linear");
+    originator::buffer linear("linear", std::move(layout), grid_count);
+
+    originator::computation_queue queue;
+    queue.name = "shapeless_filter";
+    queue.calls.push_back(sampling_call(linear, "height", "result"));
+    queue.output.push_back(writable(linear, "result"));
+
+    const auto check = originator::check_device_queue(queue);
+    CHECK_FALSE(check.allowed);
+    CHECK(check.message.find("extent") != std::string::npos);
+  }
+
+  SUBCASE("an image of another shape addressed by index") {
+    // Индекс сворачивается по форме ВЫЗОВА, поэтому картинку другой формы им не прочитать: она
+    // вернула бы не тот тексель и не пожаловалась бы. Читать её можно выборкой — тем самым чтением,
+    // ради которого она картинкой и стала.
+    const std::vector<field_pair> coarse_fields = {{"height", "v1"}, {"result", "v1"}};
+    auto coarse_layout = originator::make_buffer_layout(originator::storage_kind::soa, coarse_fields, "coarse");
+    originator::buffer coarse("coarse", std::move(coarse_layout),
+                              originator::buffer_extent{grid_width / 2, grid_width / 2, 0});
+
+    const size_t coarse_count = (grid_width / 2) * (grid_width / 2);
+
+    originator::computation_queue queue;
+    queue.name = "mixed_shapes";
+    // Первый вызов делает `coarse.height` картинкой, читая его фильтром.
+    auto filtered = sampling_call(coarse, "height", "result");
+    filtered.range_end = coarse_count;
+    queue.calls.push_back(std::move(filtered));
+
+    // Второй читает ту же картинку ПО ИНДЕКСУ, но пишет в буфер ДРУГОЙ формы, а свернуть индекс
+    // можно только по форме вызова.
+    originator::parameters scale;
+    scale.set_number("scale", 2.0);
+    auto by_index = tool_call("remap", {readable(coarse, "height")}, {writable(cells, "smoothed")}, scale);
+    by_index.range_end = coarse_count;
+    queue.calls.push_back(std::move(by_index));
+    queue.output.push_back(writable(coarse, "result"));
+    queue.output.push_back(writable(cells, "smoothed"));
+
+    const auto check = originator::check_device_queue(queue);
+    CHECK_FALSE(check.allowed);
+    CHECK(check.message.find("wrong texel") != std::string::npos);
+  }
+}
+
+TEST_CASE("originator refuses a native tool over a field it was not written for") {
+  // ЛАТЕНТНЫЙ ДЕФЕКТ, закрытый вместе со сборкой привязок: прежде текст инструмента объявлял
+  // `float data[]` у ЛЮБОГО поля, поэтому вызов над `ui1` читал БИТЫ как float. На CPU то же поле
+  // читается аксессором и даёт значение — то есть два пути молча считали разное.
+  const std::vector<field_pair> fields = {{"label", "ui1"}, {"result", "v1"}};
+  auto layout = originator::make_buffer_layout(originator::storage_kind::soa, fields, "labels");
+  originator::buffer labels("labels", std::move(layout), grid_count);
+
+  originator::parameters scale;
+  scale.set_number("scale", 2.0);
+
+  originator::computation_queue queue;
+  queue.name = "integer_tool";
+  queue.calls.push_back(tool_call("remap", {readable(labels, "label")}, {writable(labels, "result")}, scale));
+  queue.output.push_back(writable(labels, "result"));
+
+  const auto check = originator::check_device_queue(queue);
+  CHECK_FALSE(check.allowed);
+  CHECK(check.message.find("BITS") != std::string::npos);
+}

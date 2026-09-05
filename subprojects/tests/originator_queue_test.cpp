@@ -546,3 +546,162 @@ TEST_CASE("originator queue refuses a count it cannot trust") {
     CHECK(check.message.find("LATER") != std::string::npos);
   }
 }
+
+// =============================================================================================
+// ДВЕ ГРАНИЦЫ: что уезжает и что просто живо.
+// =============================================================================================
+
+namespace {
+// Накопитель по корзинам: тот же вид работы, что гистограмма у GN04. Тело здесь однопоточное, и это
+// не упрощение — целочисленное накопление от порядка не зависит, поэтому обход в один поток даёт
+// ровно тот же ответ, что атомики на устройстве.
+void accumulate_body(const originator::queue_call& call, const std::string_view&, thread::atomic_pool*) {
+  const auto source = call.inputs[0].read();
+  const auto counts = call.outputs[0].write();
+  const size_t buckets = counts.count();
+  for (size_t i = call.range_begin; i < call.range_end; ++i) {
+    const auto bucket = size_t(source.get(i) * double(buckets)) % buckets;
+    counts.set(bucket, counts.get(bucket) + 1.0);
+  }
+}
+
+originator::queue_call scatter_call(originator::buffer& cells, originator::buffer& bins, const bool order_free) {
+  originator::queue_call call;
+  call.label = "accumulate";
+  call.body = accumulate_body;
+  call.shape = originator::aperture::scatter;
+  call.inputs = {readable(cells, "smoothed")};
+  call.outputs = {writable(bins, "count")};
+  call.range_end = grid_count;
+  call.order_free_writes = order_free;
+  return call;
+}
+
+originator::buffer make_bins(const size_t count) {
+  const std::vector<field_pair> fields = {{"count", "ui1"}};
+  auto layout = originator::make_buffer_layout(originator::storage_kind::soa, fields, "bins");
+  return originator::buffer("bins", std::move(layout), count);
+}
+} // namespace
+
+TEST_CASE("originator queue takes a scatter only when its writes are declared order-free") {
+  auto cells = make_cells(grid_count);
+  auto bins = make_bins(16);
+  fill_noise(cells, grid_count);
+
+  originator::parameters blur;
+  blur.set_number("radius", 1);
+  blur.set_number("width", double(grid_width));
+
+  const auto build = [&](const bool order_free) {
+    originator::computation_queue queue;
+    queue.name = "histogram";
+    queue.calls.push_back(
+      tool_call("box_blur", {readable(cells, "height")}, {writable(cells, "smoothed")}, blur, grid_count));
+    queue.calls.push_back(scatter_call(cells, bins, order_free));
+    queue.output.push_back(writable(bins, "count"));
+    return queue;
+  };
+
+  // Без объявления scatter отклоняется, и отказ называет ИМЕННО ТУ причину, по которой он есть:
+  // порядок записей задаёт алгоритм.
+  const auto refused = originator::check_queue(build(false));
+  CHECK_FALSE(refused.allowed);
+  CHECK(refused.message.find("ORDER") != std::string::npos);
+
+  // С объявлением он законен, потому что отклоняли не чужие индексы, а порядок.
+  const auto allowed = originator::check_queue(build(true));
+  CHECK(allowed.allowed);
+
+  auto queue = build(true);
+  const auto report = originator::run_queue(queue, nullptr);
+  CHECK(report.calls == 2);
+
+  // Каждый элемент попал ровно в одну корзину: сумма обязана сойтись с числом элементов.
+  const auto counts = bins.field(bins.find_field("count"));
+  size_t total = 0;
+  for (size_t i = 0; i < counts.count(); ++i) {
+    total += size_t(counts.get(i));
+  }
+  CHECK(total == grid_count);
+}
+
+TEST_CASE("originator queue counts an accumulator as a reader of what it accumulates into") {
+  // ЗАПОЛНЕНИЕ НУЛЯМИ ПЕРЕД НАКОПИТЕЛЕМ — честная работа, а не мёртвая: `+=` читает то, к чему
+  // прибавляет. Пока очередь считала выход накопителя обычной записью, такой `fill` выглядел бы
+  // затёртым не прочитав, и отказ был бы верным по объявлению и неверным по делу.
+  auto cells = make_cells(grid_count);
+  auto bins = make_bins(16);
+  fill_noise(cells, grid_count);
+
+  originator::parameters zero;
+  zero.set_number("value", 0.0);
+  originator::parameters blur;
+  blur.set_number("radius", 1);
+  blur.set_number("width", double(grid_width));
+
+  originator::computation_queue queue;
+  queue.name = "reset_then_accumulate";
+  queue.calls.push_back(tool_call("fill", {}, {writable(bins, "count")}, zero, 16));
+  queue.calls.push_back(
+    tool_call("box_blur", {readable(cells, "height")}, {writable(cells, "smoothed")}, blur, grid_count));
+  queue.calls.push_back(scatter_call(cells, bins, true));
+  queue.output.push_back(writable(bins, "count"));
+
+  const auto check = originator::check_queue(queue);
+  CHECK(check.allowed);
+  if (!check.allowed) {
+    MESSAGE(check.message);
+  }
+
+  originator::run_queue(queue, nullptr);
+  const auto counts = bins.field(bins.find_field("count"));
+  size_t total = 0;
+  for (size_t i = 0; i < counts.count(); ++i) {
+    total += size_t(counts.get(i));
+  }
+  CHECK(total == grid_count);
+}
+
+TEST_CASE("originator queue keeps a pass alive without sending it back") {
+  // ГРАНИЦА ЖИЗНИ И ГРАНИЦА ПЕРЕДАЧИ — РАЗНЫЕ. У видимой текстуры GN04 читатель есть, но живёт он на
+  // устройстве; назвать её в `output` значило бы качать мегабайт ради того, чтобы проход не сочли
+  // мёртвым, а не назвать — получить отказ на честной работе.
+  auto cells = make_cells(grid_count);
+  fill_noise(cells, grid_count);
+
+  originator::parameters scale;
+  scale.set_number("scale", 2.0);
+
+  const auto build = [&](const bool as_resident) {
+    originator::computation_queue queue;
+    queue.name = "kept";
+    queue.calls.push_back(
+      tool_call("remap", {readable(cells, "height")}, {writable(cells, "smoothed")}, scale, grid_count));
+    if (as_resident) {
+      queue.resident.push_back(writable(cells, "smoothed"));
+    }
+    return queue;
+  };
+
+  // Без границы вовсе очередь отклоняется: ничего из посчитанного не читают.
+  const auto nameless = originator::check_queue(build(false));
+  CHECK_FALSE(nameless.allowed);
+  CHECK(nameless.message.find("boundary") != std::string::npos);
+
+  // Названная в `resident` — законна, и проход жив.
+  auto queue = build(true);
+  CHECK(originator::check_queue(queue).allowed);
+  originator::run_queue(queue, nullptr);
+
+  const auto smoothed = cells.field(cells.find_field("smoothed"));
+  const auto height = cells.field(cells.find_field("height"));
+  CHECK(smoothed.get(7) == doctest::Approx(height.get(7) * 2.0));
+
+  // Одно поле в обоих списках — два ответа на один вопрос, и один из них обязательно неправда.
+  auto both = build(true);
+  both.output.push_back(writable(cells, "smoothed"));
+  const auto conflicting = originator::check_queue(both);
+  CHECK_FALSE(conflicting.allowed);
+  CHECK(conflicting.message.find("both") != std::string::npos);
+}

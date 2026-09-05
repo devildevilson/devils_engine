@@ -7,6 +7,7 @@
 #include <devils_script/script_ast.h>
 #include <devils_script/system.h>
 
+#include "devils_engine/originator/device_form.h"
 #include "devils_engine/utils/core.h"
 
 namespace devils_engine {
@@ -61,15 +62,6 @@ constexpr refusal refusals[] = {
   {"execute", "a sub-script would need its own translation and its own frame"},
 };
 
-std::string_view glsl_buffer_type(const field_base::values base) noexcept {
-  switch (base) {
-    case field_base::v: return "float";
-    case field_base::ui: return "uint";
-    case field_base::i: return "int";
-    default: return {};
-  }
-}
-
 struct translator {
   const tavl::parser* parser = nullptr;
   std::string_view program_name;
@@ -106,9 +98,9 @@ struct translator {
   std::string field(const std::string_view& name, const tavl::token& token) const {
     for (size_t i = 0; i < inputs.size(); ++i) {
       if (inputs[i].name != name) continue;
-      const auto type = glsl_buffer_type(inputs[i].base);
-      return type == "float" ? std::format("in_{}.data[index]", i)
-                             : std::format("float(in_{}.data[index])", i);
+      const auto type = device_type_name(inputs[i].base);
+      return type == "float" ? std::format("in_{}_at(index)", i)
+                             : std::format("float(in_{}_at(index))", i);
     }
 
     refuse(token, std::format("'{}' is not one of the bound fields: a program is compiled against the names of "
@@ -305,13 +297,13 @@ translation translate_to_glsl(const std::string_view& name,
     utils::error{}("originator script '{}': {} input fields, at most {} are supported", name, inputs.size(),
                    max_script_inputs);
   }
-  if (glsl_buffer_type(output.base).empty()) {
+  if (device_type_name(output.base).empty()) {
     utils::error{}("originator script '{}': output field '{}' has storage kind '{}', which a shader buffer has no "
                    "type for; the queue takes the 32-bit kinds v, ui and i",
                    name, output.name, to_string(output.base));
   }
   for (const auto& field : inputs) {
-    if (!glsl_buffer_type(field.base).empty()) continue;
+    if (!device_type_name(field.base).empty()) continue;
     utils::error{}("originator script '{}': input field '{}' has storage kind '{}', which a shader buffer has no "
                    "type for; the queue takes the 32-bit kinds v, ui and i",
                    name, field.name, to_string(field.base));
@@ -353,7 +345,6 @@ translation translate_to_glsl(const std::string_view& name,
   // Верхнюю границу float32 при этом не представляет точно (`4294967295` округляется до `4294967296`),
   // и это объявленное расхождение путей на самом краю, а не незамеченная ошибка.
   std::string stored;
-  const auto output_type = glsl_buffer_type(output.base);
   const auto numeric = kind == script_program::result_kind::predicate
                          ? std::format("(({}) ? 1.0 : 0.0)", expression)
                          : std::format("({})", expression);
@@ -383,37 +374,40 @@ translation translate_to_glsl(const std::string_view& name,
     text.append(std::format("//   binding {} = вход '{}' ({})\n", i, inputs[i].name, to_string(inputs[i].base)));
   }
   text.append(std::format("//   binding {} = выход '{}' ({})\n", inputs.size(), output.name, to_string(output.base)));
-  text.append("//\n// PUSH-КОНСТАНТА, байт за байтом:\n//   0: uint count\n");
+  text.append("//\n// PUSH-КОНСТАНТА, байт за байтом:\n");
+  text.append("//   0: uint count\n//   4: uint begin\n//   8: uint extent_x\n//   12: uint extent_y\n");
   for (size_t i = 0; i < result.arguments.size(); ++i) {
-    text.append(std::format("//   {}: float {}\n", sizeof(uint32_t) + i * sizeof(float), result.arguments[i]));
+    text.append(std::format("//   {}: float arg_{}\n", sizeof(device_call_header) + i * sizeof(float),
+                            result.arguments[i]));
   }
   text.append(std::format("//\n// ВЫРАЖЕНИЕ:\n//   {}\n\n", expression));
 
-  text.append("#version 450\n\n");
-  text.append(std::format("layout(local_size_x = {}) in;\n\n", group_size));
-
-  for (size_t i = 0; i < inputs.size(); ++i) {
-    text.append(std::format("layout(std430, binding = {}) readonly buffer in_{}_buffer {{ {} data[]; }} in_{};\n",
-                            i, i, glsl_buffer_type(inputs[i].base), i));
+  // ПРИВЯЗКИ СОБИРАЕТ ОБЩИЙ СБОРЩИК, а не транслятор. Иначе у перевода была бы СВОЯ шапка
+  // push-константы — а у него она и была, и отличалась от инструментной: `uint count` против
+  // `count, begin, extent_x, extent_y`. Пока перевод не попадал в устройственную очередь, это не
+  // стреляло; попав, вызов прочитал бы `begin` вместо первого аргумента и не пожаловался бы.
+  std::vector<device_binding> shape;
+  shape.reserve(inputs.size() + 1);
+  for (const auto& binding : inputs) {
+    device_binding declared;
+    declared.base = binding.base;
+    shape.push_back(declared);
   }
-  text.append(std::format("layout(std430, binding = {}) writeonly buffer out_buffer {{ {} data[]; }} out_field;\n\n",
-                          inputs.size(), output_type));
+  device_binding written;
+  written.base = output.base;
+  written.writable = true;
+  shape.push_back(written);
 
-  text.append("layout(push_constant) uniform arguments_block {\n  uint count;\n");
+  result.params.reserve(result.arguments.size());
   for (const auto& argument : result.arguments) {
-    text.append(std::format("  float arg_{};\n", argument));
+    // Имя аргумента ds попадает в шейдер с приставкой: `ctx:arg:` не запрещает называться `min` или
+    // `index`, а имя поля push-константы обязано не столкнуться ни со встроенной функцией, ни с
+    // локальной переменной свёртки индекса.
+    result.params.push_back(device_param{argument, 0.0, std::format("arg_{}", argument)});
   }
-  text.append("} args;\n\n");
 
-  // Индекс собирается из ДВУХ осей: гарантированный минимум `maxComputeWorkGroupCount[0]` это 65535,
-  // и одномерный диспатч кончается на 4.2 млн элементов при группе 64 — а буферы генератора бывают
-  // и больше. Охранник нужен потому, что диспатч кратен размеру группы, а число элементов нет.
-  text.append("void main() {\n");
-  text.append("  uint group = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;\n");
-  text.append("  uint index = group * gl_WorkGroupSize.x + gl_LocalInvocationID.x;\n");
-  text.append("  if (index >= args.count) return;\n\n");
-  text.append(std::format("  out_field.data[index] = {};\n", stored));
-  text.append("}\n");
+  result.body = std::format("  out_0_set(index, {});\n", stored);
+  text.append(build_device_shader(shape, result.params, result.body, group_size));
 
   result.source = std::move(text);
   return result;

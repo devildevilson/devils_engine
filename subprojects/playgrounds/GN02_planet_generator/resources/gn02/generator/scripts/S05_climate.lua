@@ -91,18 +91,36 @@ return function(step)
   -- moisture -> moisture_next -> moisture, а дождь копится в одном и том же поле. Копить в своём
   -- элементе выходного поля можно: клетка читает и пишет только себя, и порядок обхода ни на что не
   -- влияет — проход остаётся параллельным.
+  --
+  -- ЭТО ОЧЕРЕДЬ, и она здесь самая длинная во всём генераторе: два прохода на пару, пар столько,
+  -- сколько уложилось в дальность переноса — обычно десяток-полтора. Между ними НЕТ НИ ОДНОГО
+  -- промежуточного значения в lua: дирижёр ничего не читает и ничего не решает, он повторяет один и
+  -- тот же вызов с переставленными местами источником и приёмником. Подграф существовал и раньше —
+  -- у него не было имени, и потому его нельзя было ни померить как одну вещь, ни перенести целиком.
+  --
+  -- Заполнение нулями осталось СНАРУЖИ намеренно. `moisture_step` НАКАПЛИВАЕТ дождь в своём
+  -- элементе `rain`, но объявляет его только выходом — а очередь видит объявления, не тела. Внутри
+  -- очереди `fill{rain}` выглядел бы как проход, чей результат следующий элемент затирает не читая,
+  -- то есть как мёртвая работа, и отказ был бы честным по объявлению и неверным по делу.
+  local transport_queue = {}
   for _ = 1, pairs_count do
-    originator.moisture_step{
+    transport_queue[#transport_queue + 1] = originator.queue.moisture_step{
       inputs = { offsets, arcs, position, wind, moisture, land, temperature, height },
       outputs = { moisture_next, rain },
       params = transport,
     }
-    originator.moisture_step{
+    transport_queue[#transport_queue + 1] = originator.queue.moisture_step{
       inputs = { offsets, arcs, position, wind, moisture_next, land, temperature, height },
       outputs = { moisture, rain },
       params = transport,
     }
   end
+
+  -- ГРАНИЦА ПЕРЕДАЧИ: что читают ПОСЛЕ очереди. `moisture_next` в неё не входит — он живёт ровно
+  -- между двумя соседними проходами и наружу не выходит, и это видно ровно потому, что граница
+  -- названа вслух.
+  transport_queue.output = { moisture, rain }
+  originator.queue(transport_queue)
 
   -- 4. Осадки в долях от СРЕДНЕГО по планете, а не в условных единицах накопленного дождя.
   --

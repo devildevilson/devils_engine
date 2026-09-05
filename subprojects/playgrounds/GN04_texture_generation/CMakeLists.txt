@@ -8,6 +8,10 @@ project(GN04_texture_generation VERSION 0.1.0 LANGUAGES CXX)
 add_executable(GN04_texture_generation src/main.cpp)
 
 target_link_libraries(GN04_texture_generation PRIVATE
+  # Проходы связывает НЕ площадка: pipeline составляет originator из своей же очереди. Отсюда и
+  # зависимость — на устройственный слой генератора, а не на painter напрямую.
+  devils_engine::originator
+  devils_engine::originator_device
   devils_engine::painter
   devils_engine::utils
   devils_engine::options)

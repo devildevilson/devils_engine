@@ -16,11 +16,13 @@ add_library(devils_originator
   src/originator/graph_tools.cpp
   src/originator/pipeline.cpp
   src/originator/computation_queue.cpp
+  src/originator/device_form.cpp
   include/devils_engine/originator/common.h
   include/devils_engine/originator/buffer.h
   include/devils_engine/originator/tools.h
   include/devils_engine/originator/pipeline.h
   include/devils_engine/originator/computation_queue.h
+  include/devils_engine/originator/device_form.h
 )
 
 target_include_directories(devils_originator

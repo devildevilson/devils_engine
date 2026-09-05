@@ -681,9 +681,9 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
     }
 
     const sol::optional<std::string> name = pair.first.as<sol::optional<std::string>>();
-    if (!name.has_value() || *name != "output") {
-      utils::error{}("originator step '{}': the queue got an unknown key '{}'; a queue takes its elements as a list "
-                     "and names its transfer boundary in 'output'",
+    if (!name.has_value() || (*name != "output" && *name != "resident")) {
+      utils::error{}("originator step '{}': the queue got an unknown key '{}'; a queue takes its elements as a list, "
+                     "names what comes back to the host in 'output' and what stays on the device in 'resident'",
                      current_step_, name.value_or(std::string(sol::type_name(s, pair.first.get_type()))));
     }
   }
@@ -701,6 +701,7 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
   }
 
   queue.output = read_field_list(args, "output");
+  queue.resident = read_field_list(args, "resident");
 
   const auto report = run_queue(queue, pool_);
 

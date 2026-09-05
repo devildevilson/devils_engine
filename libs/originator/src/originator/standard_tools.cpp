@@ -471,8 +471,12 @@ double reduce_count_above_partial(const tool_call& call, const size_t begin, con
 
 } // namespace
 
-// УСТРОЙСТВЕННЫЕ ФОРМЫ ИНСТРУМЕНТОВ. Соглашение о шейдере описано у `tool_description::device_source`;
-// здесь важно только то, что каждый шейдер повторяет тело своего инструмента ФОРМУЛА В ФОРМУЛУ.
+// УСТРОЙСТВЕННЫЕ ФОРМЫ ИНСТРУМЕНТОВ. Соглашение о шейдере описано у `tool_description::device_body`;
+// здесь важно только то, что каждое тело повторяет тело своего инструмента ФОРМУЛА В ФОРМУЛУ.
+//
+// Привязок в этих текстах нет намеренно: их собирает `build_device_shader`, уже зная выведенный род
+// каждого поля. Инструмент обращается к полю аксессором (`in_0_at`, `out_0_set`) и поэтому одинаково
+// работает и над буфером, и над картинкой — а какой из двух это будет, решает вся очередь целиком.
 //
 // Повторяет, а не «делает то же самое»: если бы устройственная форма считала чуть иначе, разница
 // проявилась бы не отказом, а другим миром — и заметить это можно было бы только сверкой двух путей,
@@ -480,46 +484,6 @@ double reduce_count_above_partial(const tool_call& call, const size_t begin, con
 //
 // `+/- INFINITY` у границ зажима приходит числом: у push-константы нет способа сказать «не задано»,
 // а бесконечность во float32 представима точно и ведёт себя в `clamp` ровно как отсутствие границы.
-namespace device {
-constexpr std::string_view preamble = R"glsl(#version 450
-layout(local_size_x = 64) in;
-)glsl";
-
-std::string one_in_one_out(const std::string_view& params, const std::string_view& body) {
-  return std::string(preamble) +
-         "layout(std430, binding = 0) readonly buffer in_0_buffer { float data[]; } in_0;\n"
-         "layout(std430, binding = 1) writeonly buffer out_0_buffer { float data[]; } out_0;\n"
-         "layout(push_constant) uniform originator_call {\n"
-         "  uint count; uint begin; uint extent_x; uint extent_y;\n" +
-         std::string(params) +
-         "} args;\n"
-         "void main() {\n"
-         "  uint group = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;\n"
-         "  uint local = group * gl_WorkGroupSize.x + gl_LocalInvocationID.x;\n"
-         "  if (local >= args.count) return;\n"
-         "  uint index = args.begin + local;\n" +
-         std::string(body) +
-         "}\n";
-}
-
-std::string two_in_one_out(const std::string_view& params, const std::string_view& body) {
-  return std::string(preamble) +
-         "layout(std430, binding = 0) readonly buffer in_0_buffer { float data[]; } in_0;\n"
-         "layout(std430, binding = 1) readonly buffer in_1_buffer { float data[]; } in_1;\n"
-         "layout(std430, binding = 2) writeonly buffer out_0_buffer { float data[]; } out_0;\n"
-         "layout(push_constant) uniform originator_call {\n"
-         "  uint count; uint begin; uint extent_x; uint extent_y;\n" +
-         std::string(params) +
-         "} args;\n"
-         "void main() {\n"
-         "  uint group = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;\n"
-         "  uint local = group * gl_WorkGroupSize.x + gl_LocalInvocationID.x;\n"
-         "  if (local >= args.count) return;\n"
-         "  uint index = args.begin + local;\n" +
-         std::string(body) +
-         "}\n";
-}
-} // namespace device
 
 void tool_registry::add_standard_tools() {
   // Именованная инициализация намеренно: набор полей описания инструмента будет расти, и
@@ -533,70 +497,64 @@ void tool_registry::add_standard_tools() {
     .name = "remap", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_remap,
     // `component` в устройственную форму не входит: многокомпонентное поле в очередь не пускается
     // (§3.2), поэтому компонента там всегда нулевая, и параметр стал бы ложью.
-    .device_source = device::one_in_one_out(
-      "  float scale; float offset; float lower; float upper; float absolute;\n",
-      // `sample` в GLSL — ЗАРЕЗЕРВИРОВАННОЕ слово (квалификатор интерполяции), поэтому величина
-      // называется иначе. Ловится это только компилятором, и хорошо, что им: имя, случайно ставшее
-      // ключевым, — ровно тот случай, для которого проверку типов и отдали glslc.
-      "  float raw = in_0.data[index];\n"
-      "  float taken = args.absolute != 0.0 ? abs(raw) : raw;\n"
-      "  out_0.data[index] = clamp(taken * args.scale + args.offset, args.lower, args.upper);\n"),
+    // `sample` в GLSL — ЗАРЕЗЕРВИРОВАННОЕ слово (квалификатор интерполяции), поэтому величина
+    // называется иначе. Ловится это только компилятором, и хорошо, что им: имя, случайно ставшее
+    // ключевым, — ровно тот случай, для которого проверку типов и отдали glslc.
+    .device_body = "  float raw = in_0_at(index);\n"
+                   "  float taken = args.absolute != 0.0 ? abs(raw) : raw;\n"
+                   "  out_0_set(index, clamp(taken * args.scale + args.offset, args.lower, args.upper));\n",
+    // `min`/`max` в GLSL — встроенные функции, поэтому поле push-константы называется иначе, а имя
+    // параметра остаётся прежним: переименовывать его значило бы менять конфиги ради шейдера.
     .device_params = {{"scale", 1.0}, {"offset", 0.0},
-                      {"min", -std::numeric_limits<double>::infinity()},
-                      {"max", std::numeric_limits<double>::infinity()},
+                      {"min", -std::numeric_limits<double>::infinity(), "lower"},
+                      {"max", std::numeric_limits<double>::infinity(), "upper"},
                       {"absolute", 0.0}}});
   add(tool_description{.name = "classify", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_classify});
   add(tool_description{
     .name = "blend", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_blend,
-    .device_source = device::two_in_one_out(
-      "  float weight_first; float weight_second; float offset; float lower; float upper;\n",
-      "  float value = args.weight_first * in_0.data[index] + args.weight_second * in_1.data[index] + args.offset;\n"
-      "  out_0.data[index] = clamp(value, args.lower, args.upper);\n"),
-    .device_params = {{"first", 1.0}, {"second", 1.0}, {"offset", 0.0},
-                      {"min", -std::numeric_limits<double>::infinity()},
-                      {"max", std::numeric_limits<double>::infinity()}}});
+    .device_body = "  float value = args.weight_first * in_0_at(index) + args.weight_second * in_1_at(index) + args.offset;\n"
+                   "  out_0_set(index, clamp(value, args.lower, args.upper));\n",
+    .device_params = {{"first", 1.0, "weight_first"}, {"second", 1.0, "weight_second"}, {"offset", 0.0},
+                      {"min", -std::numeric_limits<double>::infinity(), "lower"},
+                      {"max", std::numeric_limits<double>::infinity(), "upper"}}});
   add(tool_description{.name = "decay", .shape = aperture::pointwise, .input_count = 1, .output_count = 1, .body = tool_decay});
   add(tool_description{
     .name = "modulate", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_modulate,
-    .device_source = device::two_in_one_out(
-      "  float scale; float offset;\n",
-      "  out_0.data[index] = args.scale * in_0.data[index] * in_1.data[index] + args.offset;\n"),
+    .device_body = "  out_0_set(index, args.scale * in_0_at(index) * in_1_at(index) + args.offset);\n",
     .device_params = {{"scale", 1.0}, {"offset", 0.0}}});
   add(tool_description{.name = "ratio", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_ratio});
   add(tool_description{
     .name = "maximum", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_maximum,
-    .device_source = device::two_in_one_out("", "  out_0.data[index] = max(in_0.data[index], in_1.data[index]);\n"),
+    .device_body = "  out_0_set(index, max(in_0_at(index), in_1_at(index)));\n",
     .device_params = {}});
   add(tool_description{
     .name = "minimum", .shape = aperture::pointwise, .input_count = 2, .output_count = 1, .body = tool_minimum,
-    .device_source = device::two_in_one_out("", "  out_0.data[index] = min(in_0.data[index], in_1.data[index]);\n"),
+    .device_body = "  out_0_set(index, min(in_0_at(index), in_1_at(index)));\n",
     .device_params = {}});
   add(tool_description{
     .name = "box_blur", .shape = aperture::gather, .input_count = 1, .output_count = 1, .body = tool_box_blur,
     // Форма растра приходит ОБЩЕЙ ШАПКОЙ, а не параметром: `extent` объявлен буфером, и второго
     // способа назвать ширину не осталось ни на одном из путей.
-    .device_source = device::one_in_one_out(
-      "  float radius;\n",
-      "  uint radius = uint(args.radius);\n"
-      "  uint width = args.extent_x;\n"
-      "  uint height = args.extent_y;\n"
-      "  uint x = index % width;\n"
-      "  uint y = index / width;\n"
-      "  uint x0 = x >= radius ? x - radius : 0u;\n"
-      "  uint x1 = min(x + radius, width - 1u);\n"
-      "  uint y0 = y >= radius ? y - radius : 0u;\n"
-      "  uint y1 = height == 0u ? y : min(y + radius, height - 1u);\n"
-      "  float sum = 0.0;\n"
-      "  uint taken = 0u;\n"
-      "  for (uint sy = y0; sy <= y1; ++sy) {\n"
-      "    for (uint sx = x0; sx <= x1; ++sx) {\n"
-      "      uint at = sy * width + sx;\n"
-      "      if (at >= in_0.data.length()) continue;\n"
-      "      sum += in_0.data[at];\n"
-      "      taken += 1u;\n"
-      "    }\n"
-      "  }\n"
-      "  out_0.data[index] = taken == 0u ? 0.0 : sum / float(taken);\n"),
+    .device_body = "  uint radius = uint(args.radius);\n"
+                   "  uint width = args.extent_x;\n"
+                   "  uint height = args.extent_y;\n"
+                   "  uint x = index % width;\n"
+                   "  uint y = index / width;\n"
+                   "  uint x0 = x >= radius ? x - radius : 0u;\n"
+                   "  uint x1 = min(x + radius, width - 1u);\n"
+                   "  uint y0 = y >= radius ? y - radius : 0u;\n"
+                   "  uint y1 = height == 0u ? y : min(y + radius, height - 1u);\n"
+                   "  float sum = 0.0;\n"
+                   "  uint taken = 0u;\n"
+                   "  for (uint sy = y0; sy <= y1; ++sy) {\n"
+                   "    for (uint sx = x0; sx <= x1; ++sx) {\n"
+                   "      uint at = sy * width + sx;\n"
+                   "      if (at >= in_0_length()) continue;\n"
+                   "      sum += in_0_at(at);\n"
+                   "      taken += 1u;\n"
+                   "    }\n"
+                   "  }\n"
+                   "  out_0_set(index, taken == 0u ? 0.0 : sum / float(taken));\n",
     .device_params = {{"radius", 1.0}}});
 
   add(tool_description{.name = "reduce_min", .shape = aperture::reduce, .input_count = 1, .output_count = 0,

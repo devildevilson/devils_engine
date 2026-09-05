@@ -59,22 +59,45 @@ return function(step)
   -- в конфиге иначе означали бы разное на разных разрешениях.
   local count = cells:count()
   local spacing = math.sqrt(4.0 * math.pi / count)
-  originator.graph_slope{ inputs = { offsets, arcs, height }, outputs = { relief_local } }
-  originator.remap{ inputs = { relief_local }, outputs = { relief_local }, params = { scale = 0.0157 / spacing } }
+  local smoothing = math.floor(p.landform_smoothing)
 
+  -- ДВЕ ОЧЕРЕДИ ПОДРЯД, и обе построены одинаково: подготовка плюс размытие парами. Размывать надо
+  -- парами, потому что gather требует разных полей источника и приёмника, а между самими вызовами нет
+  -- ни одного промежуточного значения в lua — дирижёр переставляет местами `work` и приёмник, и
+  -- больше ничего. `work` не назван в границе НИ В ОДНОЙ из них: он живёт ровно между двумя соседними
+  -- проходами, и это видно ровно потому, что граница названа вслух.
+  --
   -- Уклон РАЗМЫВАЕТСЯ: вид области — свойство места, а не отдельной клетки, и одиночный обрыв посреди
   -- равнины не делает её горной страной.
-  for _ = 1, math.floor(p.landform_smoothing) do
-    originator.graph_blur{ inputs = { offsets, arcs, relief_local }, outputs = { work }, params = { self_weight = p.landform_self_weight } }
-    originator.graph_blur{ inputs = { offsets, arcs, work }, outputs = { relief_local }, params = { self_weight = p.landform_self_weight } }
+  local slope_queue = {
+    originator.queue.graph_slope{ inputs = { offsets, arcs, height }, outputs = { relief_local } },
+    originator.queue.remap{ inputs = { relief_local }, outputs = { relief_local }, params = { scale = 0.0157 / spacing } },
+  }
+  for _ = 1, smoothing do
+    slope_queue[#slope_queue + 1] = originator.queue.graph_blur{
+      inputs = { offsets, arcs, relief_local }, outputs = { work },
+      params = { self_weight = p.landform_self_weight } }
+    slope_queue[#slope_queue + 1] = originator.queue.graph_blur{
+      inputs = { offsets, arcs, work }, outputs = { relief_local },
+      params = { self_weight = p.landform_self_weight } }
   end
+  slope_queue.output = { relief_local }
+  originator.queue(slope_queue)
 
   -- Сглаженная высота — опора усиления: усиливается ОТКЛОНЕНИЕ от неё.
-  originator.remap{ inputs = { height }, outputs = { smooth }, params = { scale = 1.0 } }
-  for _ = 1, math.floor(p.landform_smoothing) do
-    originator.graph_blur{ inputs = { offsets, arcs, smooth }, outputs = { work }, params = { self_weight = p.landform_self_weight } }
-    originator.graph_blur{ inputs = { offsets, arcs, work }, outputs = { smooth }, params = { self_weight = p.landform_self_weight } }
+  local smooth_queue = {
+    originator.queue.remap{ inputs = { height }, outputs = { smooth }, params = { scale = 1.0 } },
+  }
+  for _ = 1, smoothing do
+    smooth_queue[#smooth_queue + 1] = originator.queue.graph_blur{
+      inputs = { offsets, arcs, smooth }, outputs = { work },
+      params = { self_weight = p.landform_self_weight } }
+    smooth_queue[#smooth_queue + 1] = originator.queue.graph_blur{
+      inputs = { offsets, arcs, work }, outputs = { smooth },
+      params = { self_weight = p.landform_self_weight } }
   end
+  smooth_queue.output = { smooth }
+  originator.queue(smooth_queue)
 
   -- 3. Доля суши в окрестности: по ней опознаётся архипелаг — мелководье, вокруг которого есть земля,
   -- в отличие от такого же мелководья у открытого океана.
@@ -87,33 +110,42 @@ return function(step)
   -- 4. Опознание. Правил ДВА, по воде и по суше, и это не деление по вкусу: у контекста devils_script
   -- восемь слотов аргументов, а признаков у воды и у суши разные наборы. Собираются они обратно
   -- умножением на маску суши — она ровно ноль или единица.
-  originator.run_script{
-    program = step.programs.landform_water,
-    inputs = { relative, relief_local, land_support },
-    outputs = { cells:field("landform_water") },
-    params = {
-      trench_depth = p.trench_depth,
-      ridge_relief = p.ridge_relief,
-      shallow_depth = p.shallow_depth,
-      archipelago_support = p.archipelago_support,
+  -- ОЧЕРЕДЬ ИЗ ПРОГРАММ И ИНСТРУМЕНТОВ ВПЕРЕМЕШКУ. Программа `devils_script` — такой же объявленный
+  -- элемент, как нативный инструмент: очередь не различает эти два случая нигде, кроме места вызова.
+  -- Здесь это видно буквально — два правила, а за ними четыре инструмента, собирающие их обратно, и
+  -- между ними по-прежнему ни одного промежуточного значения в lua.
+  originator.queue{
+    originator.queue.run_script{
+      program = step.programs.landform_water,
+      inputs = { relative, relief_local, land_support },
+      outputs = { cells:field("landform_water") },
+      params = {
+        trench_depth = p.trench_depth,
+        ridge_relief = p.ridge_relief,
+        shallow_depth = p.shallow_depth,
+        archipelago_support = p.archipelago_support,
+      },
     },
-  }
-  originator.run_script{
-    program = step.programs.landform_land,
-    inputs = { relative, relief_local, cells:field("crust") },
-    outputs = { cells:field("landform_land") },
-    params = {
-      island_crust = p.island_crust,
-      mountain_relief = p.mountain_relief,
-      hill_relief = p.hill_relief,
-      plateau_height = p.plateau_height,
-      plain_height = p.plain_height,
+    originator.queue.run_script{
+      program = step.programs.landform_land,
+      inputs = { relative, relief_local, cells:field("crust") },
+      outputs = { cells:field("landform_land") },
+      params = {
+        island_crust = p.island_crust,
+        mountain_relief = p.mountain_relief,
+        hill_relief = p.hill_relief,
+        plateau_height = p.plateau_height,
+        plain_height = p.plain_height,
+      },
     },
+    originator.queue.modulate{ inputs = { cells:field("landform_land"), land }, outputs = { landform } },
+    originator.queue.remap{ inputs = { land }, outputs = { work }, params = { scale = -1.0, offset = 1.0 } },
+    originator.queue.modulate{ inputs = { cells:field("landform_water"), work }, outputs = { work } },
+    originator.queue.blend{ inputs = { landform, work }, outputs = { landform } },
+
+    -- Маски и промежуточные произведения наружу не выходят: наружу выходит опознанный вид.
+    output = { landform },
   }
-  originator.modulate{ inputs = { cells:field("landform_land"), land }, outputs = { landform } }
-  originator.remap{ inputs = { land }, outputs = { work }, params = { scale = -1.0, offset = 1.0 } }
-  originator.modulate{ inputs = { cells:field("landform_water"), work }, outputs = { work } }
-  originator.blend{ inputs = { landform, work }, outputs = { landform } }
 
   -- 5. Таблица усиления. Числа приходят из конфига по ИМЕНАМ вида, а не позицией в списке: список из
   -- двадцати двух чисел подряд однажды разъедется с порядком видов, и заметить это будет нечем.

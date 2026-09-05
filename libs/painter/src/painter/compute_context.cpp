@@ -105,6 +105,7 @@ compute_context::compute_context(compute_context_config config) : config_(std::m
     limits_.max_group_size[axis] = properties.limits.maxComputeWorkGroupSize[axis];
   }
   limits_.max_group_invocations = properties.limits.maxComputeWorkGroupInvocations;
+  limits_.max_image_2d = properties.limits.maxImageDimension2D;
   limits_.max_shared_memory_bytes = properties.limits.maxComputeSharedMemorySize;
   limits_.max_storage_buffer_range = properties.limits.maxStorageBufferRange;
 
@@ -821,15 +822,55 @@ void compute_context::recorder::copy(const buffer_id from, const buffer_id to, c
 }
 
 void compute_context::recorder::barrier() {
-  // Глобальный барьер на вычислительной стадии: запись шейдера видна его же чтению. Точность до
-  // буфера здесь ничего не дала бы — стадия и так одна, а составитель очереди уже знает, между
-  // какими проходами барьер НУЖЕН, и между остальными его не ставит.
+  // Глобальный барьер: запись предыдущей операции видна чтению следующей. Точность до ресурса здесь
+  // ничего не дала бы — составитель очереди уже знает, между какими проходами барьер НУЖЕН, и между
+  // остальными его не ставит.
+  //
+  // Стадии названы ОБЕ, вычислительная и трансферная, и это не перестраховка. В одной отправке
+  // соседями бывают три разные пары: загрузка -> проход (трансфер -> вычисление), проход -> проход
+  // (вычисление -> вычисление) и проход -> выгрузка (вычисление -> трансфер). Барьер только по
+  // вычислительной стадии закрывал бы одну из трёх, а две оставшиеся были бы гонкой, которая на
+  // интегрированной памяти «работает» и разъезжается на дискретной — то есть ровно тот класс, что
+  // работает у автора и ломается у игрока.
   vk::CommandBuffer buf(buffer_);
   vk::MemoryBarrier memory{};
-  memory.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
-  memory.dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
-  buf.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader,
-                      {}, {memory}, {}, {});
+  memory.srcAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferWrite;
+  memory.dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite |
+                         vk::AccessFlagBits::eTransferRead;
+  const auto stages = vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eTransfer;
+  buf.pipelineBarrier(stages, stages, {}, {memory}, {}, {});
+}
+
+void compute_context::recorder::copy_to_image(const buffer_id from, const image_id to) {
+  const auto& source = owner_->buffer_at(from);
+  const auto& target = owner_->image_at(to);
+  if (source.byte_size < target.byte_size) {
+    utils::error{}("compute context '{}': filling an image of {} bytes from a buffer of {} bytes",
+                   owner_->config_.app_name, target.byte_size, source.byte_size);
+  }
+
+  vk::CommandBuffer buf(buffer_);
+  vk::BufferImageCopy region{};
+  region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+  region.imageExtent = vk::Extent3D(target.width, target.height, 1);
+  buf.copyBufferToImage(vk::Buffer(source.handle), vk::Image(target.handle), vk::ImageLayout::eGeneral,
+                        1, &region);
+}
+
+void compute_context::recorder::copy_from_image(const image_id from, const buffer_id to) {
+  const auto& source = owner_->image_at(from);
+  const auto& target = owner_->buffer_at(to);
+  if (target.byte_size < source.byte_size) {
+    utils::error{}("compute context '{}': reading an image of {} bytes into a buffer of {} bytes",
+                   owner_->config_.app_name, source.byte_size, target.byte_size);
+  }
+
+  vk::CommandBuffer buf(buffer_);
+  vk::BufferImageCopy region{};
+  region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+  region.imageExtent = vk::Extent3D(source.width, source.height, 1);
+  buf.copyImageToBuffer(vk::Image(source.handle), vk::ImageLayout::eGeneral, vk::Buffer(target.handle),
+                        1, &region);
 }
 
 void compute_context::recorder::dispatch(const program_id program,

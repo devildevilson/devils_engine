@@ -165,56 +165,77 @@ return function(step)
   originator.fill{ outputs = { blend_den }, params = { value = 0.0 } }
   originator.fill{ outputs = { shade_num }, params = { value = 0.0 } }
 
+  -- ПРАВИЛО ОДНОГО БИОМА — ЭТО ОЧЕРЕДЬ, и здесь она самая длинная в чанке: четырнадцать-шестнадцать
+  -- проходов подряд, все pointwise над одним диапазоном, и НИ ОДНОГО промежуточного значения в lua
+  -- между ними. Дирижёр не читает ни одной величины — он подставляет числа биома из таблицы и
+  -- называет проходы по порядку. Значит подграф существовал и раньше: у него не было имени, и потому
+  -- его нельзя было ни померить как одну вещь, ни слить проходы, ни перенести целиком.
+  --
+  -- Слияние здесь законно ровно по определению: элемент i каждого следующего прохода читает элемент
+  -- i предыдущего и ничей больше, а промежуточные поля (`weight`, `climate_a`, `climate_b`,
+  -- `biome_density`) живут внутри плитки вместо круга через память. Побитово результат при этом тот
+  -- же — от разбиения на плитки он не зависит.
+  --
+  -- ВЕТКА ПЕЩЕР меняет не выполнение, а СОСТАВ очереди: два прохода либо объявлены, либо нет. Это
+  -- решение по параметру конфига, а не по данным, поэтому оно и принимается здесь, при составлении.
   for _, i in ipairs(present) do
     local reach = p["biome_" .. i .. "_reach"]
+    local rule = {}
+    local function step(call) rule[#rule + 1] = call end
 
     -- ВЕС: (1 - r²/reach²)², гладкий бугор с КОМПАКТНЫМ носителем. За радиусом ровно ноль — именно
     -- это делает отбрасывание далёких биомов точным, а не приблизительным.
-    originator.remap{ inputs = { warmth }, outputs = { climate_a },
-                      params = { offset = -p["biome_" .. i .. "_warmth"] } }
-    originator.modulate{ inputs = { climate_a, climate_a }, outputs = { weight } }
-    originator.remap{ inputs = { wetness }, outputs = { climate_a },
-                      params = { offset = -p["biome_" .. i .. "_wetness"] } }
-    originator.modulate{ inputs = { climate_a, climate_a }, outputs = { climate_b } }
-    originator.blend{ inputs = { weight, climate_b }, outputs = { weight } }
-    originator.remap{ inputs = { weight }, outputs = { weight },
-                      params = { scale = 1.0 / (reach * reach), max = 1.0 } }
-    originator.remap{ inputs = { weight }, outputs = { weight },
-                      params = { scale = -1.0, offset = 1.0, min = 0.0 } }
-    originator.modulate{ inputs = { weight, weight }, outputs = { weight } }
+    step(originator.queue.remap{ inputs = { warmth }, outputs = { climate_a },
+                                 params = { offset = -p["biome_" .. i .. "_warmth"] } })
+    step(originator.queue.modulate{ inputs = { climate_a, climate_a }, outputs = { weight } })
+    step(originator.queue.remap{ inputs = { wetness }, outputs = { climate_a },
+                                 params = { offset = -p["biome_" .. i .. "_wetness"] } })
+    step(originator.queue.modulate{ inputs = { climate_a, climate_a }, outputs = { climate_b } })
+    step(originator.queue.blend{ inputs = { weight, climate_b }, outputs = { weight } })
+    step(originator.queue.remap{ inputs = { weight }, outputs = { weight },
+                                 params = { scale = 1.0 / (reach * reach), max = 1.0 } })
+    step(originator.queue.remap{ inputs = { weight }, outputs = { weight },
+                                 params = { scale = -1.0, offset = 1.0, min = 0.0 } })
+    step(originator.queue.modulate{ inputs = { weight, weight }, outputs = { weight } })
 
     -- ПЛОТНОСТЬ ПО ПРАВИЛУ ЭТОГО БИОМА: запас по высоте со своим градиентом, рельеф и детали со
     -- своими амплитудами, пещеры со своей шириной и силой.
-    originator.remap{
+    step(originator.queue.remap{
       inputs = { position }, outputs = { biome_density },
       params = {
         component = 1, scale = -p["biome_" .. i .. "_gradient"],
         offset = p.surface_level * p["biome_" .. i .. "_gradient"],
       },
-    }
-    originator.blend{ inputs = { biome_density, relief }, outputs = { biome_density },
-                      params = { first = 1.0, second = p["biome_" .. i .. "_relief"] } }
-    originator.blend{ inputs = { biome_density, detail }, outputs = { biome_density },
-                      params = { first = 1.0, second = p["biome_" .. i .. "_detail"] } }
+    })
+    step(originator.queue.blend{ inputs = { biome_density, relief }, outputs = { biome_density },
+                                 params = { first = 1.0, second = p["biome_" .. i .. "_relief"] } })
+    step(originator.queue.blend{ inputs = { biome_density, detail }, outputs = { biome_density },
+                                 params = { first = 1.0, second = p["biome_" .. i .. "_detail"] } })
 
     local cave_width = p["biome_" .. i .. "_cave_width"]
     if cave_width > 0.0 then
       -- Ход идёт там, где слой шума проходит через нуль: нулевая изолиния — поверхность, её
       -- окрестность — труба, поэтому получаются ходы, а не шары.
-      originator.remap{ inputs = { cave }, outputs = { climate_b },
-                        params = { absolute = true, scale = -1.0 / cave_width, offset = 1.0, min = 0.0 } }
-      originator.blend{ inputs = { biome_density, climate_b }, outputs = { biome_density },
-                        params = { first = 1.0, second = -p["biome_" .. i .. "_cave_strength"] } }
+      step(originator.queue.remap{ inputs = { cave }, outputs = { climate_b },
+                                   params = { absolute = true, scale = -1.0 / cave_width, offset = 1.0, min = 0.0 } })
+      step(originator.queue.blend{ inputs = { biome_density, climate_b }, outputs = { biome_density },
+                                   params = { first = 1.0, second = -p["biome_" .. i .. "_cave_strength"] } })
     end
 
     -- Накопление взвешенной суммы и суммы весов. Оттенок накапливается ТЕМ ЖЕ весом, поэтому цвет
     -- переходит между биомами так же гладко, как и форма — и по картинке видно ровно то, что
     -- посчитано, а не отдельная раскраска.
-    originator.modulate{ inputs = { biome_density, weight }, outputs = { climate_b } }
-    originator.blend{ inputs = { blend_num, climate_b }, outputs = { blend_num } }
-    originator.blend{ inputs = { blend_den, weight }, outputs = { blend_den } }
-    originator.blend{ inputs = { shade_num, weight }, outputs = { shade_num },
-                      params = { first = 1.0, second = p["biome_" .. i .. "_shade"] } }
+    step(originator.queue.modulate{ inputs = { biome_density, weight }, outputs = { climate_b } })
+    step(originator.queue.blend{ inputs = { blend_num, climate_b }, outputs = { blend_num } })
+    step(originator.queue.blend{ inputs = { blend_den, weight }, outputs = { blend_den } })
+    step(originator.queue.blend{ inputs = { shade_num, weight }, outputs = { shade_num },
+                                 params = { first = 1.0, second = p["biome_" .. i .. "_shade"] } })
+
+    -- ГРАНИЦА: наружу выходят три накопителя, и только они. Всё остальное — `weight`, `climate_a`,
+    -- `climate_b`, `biome_density` — принадлежит правилу одного биома и следующей итерацией
+    -- переписывается целиком.
+    rule.output = { blend_num, blend_den, shade_num }
+    originator.queue(rule)
   end
 
   -- Нормировка. Сумма весов не бывает нулевой по построению: базовый биом накрывает всю
@@ -228,28 +249,34 @@ return function(step)
   -- НАЛОЖЕНИЕМ, а не суммой: остров поднимается над пустотой, а не прибавляется к запасу плотности —
   -- с суммой он выходил бы тем толще, чем ниже висит.
   if p.island_amplitude > 0.0 then
-    originator.noise_at{
-      inputs = { position }, outputs = { island },
-      params = { tree = p.tree, feature = p.island_feature, amplitude = 1.0, seed_offset = 5311 },
-    }
-    -- Ворота по высоте: ниже пола островов нет вовсе, выше они разгораются на island_soft метрах.
-    -- Резкий пол дал бы всем островам ровное плоское днище на одной высоте.
-    originator.remap{
-      inputs = { position }, outputs = { gate },
-      params = {
-        component = 1, scale = 1.0 / p.island_soft,
-        offset = -p.island_floor / p.island_soft, min = 0.0, max = 1.0,
+    -- Шесть проходов подряд, снова без единого промежуточного значения в lua, — вторая очередь
+    -- этого шага. Наружу из неё выходит ОДНА величина: плотность, в которую острова наложены.
+    originator.queue{
+      originator.queue.noise_at{
+        inputs = { position }, outputs = { island },
+        params = { tree = p.tree, feature = p.island_feature, amplitude = 1.0, seed_offset = 5311 },
       },
+      -- Ворота по высоте: ниже пола островов нет вовсе, выше они разгораются на island_soft метрах.
+      -- Резкий пол дал бы всем островам ровное плоское днище на одной высоте.
+      originator.queue.remap{
+        inputs = { position }, outputs = { gate },
+        params = {
+          component = 1, scale = 1.0 / p.island_soft,
+          offset = -p.island_floor / p.island_soft, min = 0.0, max = 1.0,
+        },
+      },
+      originator.queue.remap{
+        inputs = { position }, outputs = { lift },
+        params = { component = 1, scale = p.island_fade, offset = -p.island_floor * p.island_fade, min = 0.0 },
+      },
+      originator.queue.modulate{ inputs = { island, gate }, outputs = { island_density },
+                                 params = { scale = p.island_amplitude } },
+      originator.queue.blend{ inputs = { island_density, lift }, outputs = { island_density },
+                              params = { first = 1.0, second = -1.0, offset = -p.island_threshold } },
+      originator.queue.maximum{ inputs = { density, island_density }, outputs = { density } },
+
+      output = { density },
     }
-    originator.remap{
-      inputs = { position }, outputs = { lift },
-      params = { component = 1, scale = p.island_fade, offset = -p.island_floor * p.island_fade, min = 0.0 },
-    }
-    originator.modulate{ inputs = { island, gate }, outputs = { island_density },
-                         params = { scale = p.island_amplitude } }
-    originator.blend{ inputs = { island_density, lift }, outputs = { island_density },
-                      params = { first = 1.0, second = -1.0, offset = -p.island_threshold } }
-    originator.maximum{ inputs = { density, island_density }, outputs = { density } }
   else
     originator.fill{ outputs = { island }, params = { value = 0.0 } }
     originator.fill{ outputs = { gate }, params = { value = 0.0 } }

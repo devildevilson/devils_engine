@@ -4,6 +4,89 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- GN04 NOW RECEIVES A PIPELINE COMPOSED BY libs/originator; IMAGES, A SECOND BOUNDARY AND SCATTER
+  (2026-09-05). `450/450` project tests, GN04's own `22/22`. Recorded as `ORIGINATOR_GPGPU.md` §9.
+  BINDINGS ARE NOW GENERATED, BECAUSE THE RESOURCE KIND IS DERIVED. §6.2 declared that buffer-vs-image
+  is DERIVED from usage — but while a tool wrote its whole shader text, the kind was written INTO that
+  text by hand (`layout(std430 ...) buffer`), so "derived" was untrue. A tool now declares a BODY
+  written against accessors (`in_<i>_at`, `in_<i>_length`, `in_<i>_sample`, `out_<j>_set`,
+  `out_<j>_add`) and `build_device_shader` (`libs/originator/.../device_form.h`) assembles the preamble
+  knowing the derived kinds. The same assembler now builds the translated `ds` program too, which
+  closed a drifted convention BEFORE it fired: the translator had its OWN push header (`uint count`)
+  against the tool one (`count, begin, extent_x, extent_y`) — harmless only while translations never
+  entered a device queue.
+  A LATENT DEFECT CLOSED WITH IT: the old text declared `float data[]` for ANY field, while the queue
+  admits kinds `v`, `ui` and `i`. A native tool over a `ui1` field therefore read its BITS as float —
+  exactly what `as_span<T>` catches on the host — while the CPU path read the same field through an
+  accessor and got the VALUE. Two paths silently computing differently. Accessors are now typed by the
+  declared kind, and a native tool over a non-float field is REFUSED with its reason: its body was
+  written once for every future binding and cannot know the kind. A foreign body was written for THESE
+  fields, so it gets the integer accessors.
+  WHAT MAKES A FIELD AN IMAGE: exactly ONE declaration, and not "make this an image" — the only thing
+  invisible from the bindings, namely THIS INPUT IS READ FILTERED (`device_filtered_inputs`). The plan
+  then decides: a field ANY call reads filtered becomes an image, everything else stays a buffer. That
+  is §6.3's criterion verbatim, and in GN04 it does real work — of four raster fields exactly ONE
+  (`edge`) becomes an image, while `region` (read by its own index) and `colour` (not read at all) stay
+  buffers though they live in the same raster of the same shape.
+  FILTER REFUSALS, each its own: a filter over integers (the average of two region labels is not a
+  label — a refusal by MEANING, not by type), a filter over a buffer with no `extent` (reading BETWEEN
+  elements needs to know between which), and an image of another shape addressed BY INDEX (the index
+  folds by the CALL's shape, so it would read the wrong texel and not complain). Hence a filtered input
+  has no index accessor at all — its shape need not match the call's, which is exactly what upsampling
+  a coarse field into a fine chunk needs.
+  A painter BARRIER BUG FIXED ON THE WAY: `compute_context::recorder::barrier` covered the compute
+  stage only, but one submission has three neighbouring pairs — upload→pass (transfer→compute),
+  pass→pass, and pass→download. Two of three were a race that "works" on integrated memory. Same class
+  as works-for-the-author-breaks-for-the-player.
+  TWO BOUNDARIES: `output` AND `resident`. `output` meant two things at once — "live" and "goes back to
+  the host" — and the first real consumer split them: GN04's visible texture stays on the device and is
+  read LATER by a post-process the queue cannot see. Naming it in `output` would download a megabyte
+  just to keep the compose pass from being called dead; not naming it would refuse honest work. The
+  dead-work check treats both lists alike (it asks whether ANYONE reads this, not where the reader
+  lives); they differ only in the transfer plan. A field in both lists is refused: it either comes back
+  or it does not, and two answers mean one of them is untrue.
+  SCATTER IN A QUEUE: WHAT WAS REFUSED WAS THE ORDER, NOT THE FOREIGN INDICES. Re-reading §4.4's own
+  wording says so. Integer accumulation has no order at all — GN04 MEASURED that last round — so a tool
+  whose writes do not depend on order declares it (`order_free_writes`) and is admitted. Floating
+  accumulation cannot declare it (§4.3), and an image cannot either (no atomics without an extension).
+  From that one declaration three things follow, all by the same single question — AN ACCUMULATOR READS
+  WHAT IT WRITES INTO: a `fill` with zeros before it is honest work rather than dead; its output is a
+  queue INPUT, so the initial value is UPLOADED (otherwise the atomic would add to allocator garbage
+  and the summary would come out plausible and wrong); and a barrier is needed before it. The upload
+  trap fired TWICE while writing the lab — a second run without zeroing gives exactly double.
+  GN04 ON THE PLAN: four passes, not one Vulkan command from the lab. `1024x1024`, 64 regions: 4 calls,
+  3 barriers, 1 image, uploads 768 B, downloads 256 B; the SAME calls with the boundary "everything
+  out" download `16777472` B — `65537:1`. The second plan is never run: transfer is derived at
+  composition, so it is PLANS that get compared. The lab used to state that ratio; now the plan does.
+  HOW FAR THE PATHS AGREE on the same queue (it has a CPU path — §4.6 requires one): Voronoi labelling
+  `0` of `1048576` pixels decided differently (the decision is INTEGER, so arithmetic differences would
+  only move pixels exactly on a border, and there were none); edge closeness `2.98e-08`; FILTERED
+  smoothing `2.98e-08`; an image round trip through the boundary exactly `0`; a filtered read at the
+  TEXEL CENTRE exactly `0`. The smoothing figure is an OBSERVATION, not a promise — §6.3 declared
+  filter precision implementation-defined, and this machine's bilinear happened to match the textbook
+  formula to two ULP.
+  THE REDUCTION IS NOW CHECKED HARDER: the summary is compared not against the other path's histogram
+  but against a histogram of THE SAME LABELS computed on the host. Otherwise the check would be empty
+  exactly where it matters most — border pixels legitimately disagree, and any summary difference would
+  be written off to them.
+  QUEUES THAT WERE ALREADY WRITTEN (§1's claim retested), six of them: GN02 step `climate` — the
+  moisture transport loop, pairs of `moisture_step`, a dozen or more passes with NOT ONE intermediate
+  lua value; the longest queue in the planet generator, and `moisture_next` staying out of `output`
+  names out loud that it lives only between two neighbouring passes. GN02 step `landforms` — two
+  prepare-then-blur-in-pairs chains, plus LANDFORM IDENTIFICATION, where `devils_script` programs and
+  native tools stand SIDE BY SIDE in one queue (two `run_script` rules, then four tools reassembling
+  them by the land mask): the queue does not distinguish the two cases anywhere but the call site, and
+  here that is literally visible. GN03 step `field` — one biome's rule, 14-16 consecutive `pointwise`
+  passes over one range (the fusion case), plus the air-island chain of six.
+  MEASURED HONESTLY: GN03's single-thread chunk cost is UNCHANGED (`143.1` ms before, `143.2` ms
+  after), which agrees with the earlier measurement that fusion buys 0% on one thread and 14-25% on
+  eleven. The conversion buys naming and a boundary, not speed, and saying otherwise would be untrue.
+  ONE CONVERSION REFUSED AND EXPLAINED ITSELF: `fill{rain}` before the transport loop. `moisture_step`
+  ACCUMULATES rain into its own element but declares `rain` as an output only — and the queue sees
+  declarations, not bodies. Inside the queue that `fill` would look overwritten-unread, and the refusal
+  would be honest by declaration and wrong in fact. The fill stayed outside. (The mechanism to say it
+  honestly now exists — `order_free_writes` — but it needs the TOOL to declare its accumulation, which
+  is an edit to `moisture_step`, not to the step body.)
 - ORIGINATOR NOW COMPOSES THE DEVICE PIPELINE FROM ITS OWN QUEUE (2026-09-05). `436/436` project
   tests. `libs/originator/.../device_queue.h` in a new target `devils_engine::originator_device`
   (separate for the same reason lua and `devils_script` are: the generator core must not know about

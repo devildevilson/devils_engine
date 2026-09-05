@@ -59,6 +59,25 @@ std::vector<originator::translated_field> classify_inputs() {
   return {originator::translated_field{"height", originator::field_base::i},
           originator::translated_field{"moisture", originator::field_base::i}};
 }
+
+// Push-константа устройственного вызова: ОБЩАЯ шапка, затем объявленные аргументы по одному float.
+std::vector<std::byte> make_push(const uint32_t element_count,
+                                 const originator::translation& translated,
+                                 const originator::parameters& params) {
+  std::vector<std::byte> push(sizeof(originator::device_call_header) +
+                              translated.params.size() * sizeof(float));
+  originator::device_call_header header;
+  header.count = element_count;
+  header.begin = 0;
+  header.extent_x = element_count;
+  header.extent_y = 1;
+  std::memcpy(push.data(), &header, sizeof(header));
+  for (size_t i = 0; i < translated.params.size(); ++i) {
+    const float value = float(params.number(translated.params[i].name, translated.params[i].fallback));
+    std::memcpy(push.data() + sizeof(header) + i * sizeof(float), &value, sizeof(value));
+  }
+  return push;
+}
 } // namespace
 
 TEST_CASE("originator translates a ds program into a compute shader") {
@@ -76,15 +95,24 @@ TEST_CASE("originator translates a ds program into a compute shader") {
 
   // Поле читается по своему индексу и никак иначе: программа структурно pointwise, и в переводе это
   // видно буквально.
-  CHECK(translated.source.find("in_0.data[index]") != std::string::npos);
-  CHECK(translated.source.find("in_1.data[index]") != std::string::npos);
+  CHECK(translated.source.find("in_0_at(index)") != std::string::npos);
+  CHECK(translated.source.find("in_1_at(index)") != std::string::npos);
   // Целые поля читаются с преобразованием: `float[]` над сырым int32 читал бы биты float.
-  CHECK(translated.source.find("float(in_0.data[index])") != std::string::npos);
+  CHECK(translated.source.find("float(in_0_at(index))") != std::string::npos);
+  // Тело отдаётся ОТДЕЛЬНО от привязок: род поля выводится из всей очереди, поэтому собрать текст
+  // может только тот, кто её видит целиком.
+  CHECK(translated.body.find("out_0_set(index,") != std::string::npos);
+  CHECK(translated.source.find(translated.body) != std::string::npos);
+  // Шапка push-константы — ОБЩАЯ, та же, что у нативного инструмента.
+  CHECK(translated.source.find("uint count; uint begin; uint extent_x; uint extent_y;") != std::string::npos);
+  REQUIRE(translated.params.size() == 2);
+  CHECK(translated.params[0].name == "low");
+  CHECK(translated.params[0].shader_name() == "arg_low");
   // Запись в целое поле повторяет store_component: зажим и усечение, а не «как получится».
   CHECK(translated.source.find("uint(clamp(") != std::string::npos);
   // Индекс из двух осей и охранник — без них диспатч не портируемый.
   CHECK(translated.source.find("gl_WorkGroupID.y") != std::string::npos);
-  CHECK(translated.source.find("if (index >= args.count) return;") != std::string::npos);
+  CHECK(translated.source.find("if (local >= args.count) return;") != std::string::npos);
   CHECK(translated.source.find("local_size_x = 64") != std::string::npos);
 }
 
@@ -184,15 +212,10 @@ TEST_CASE("originator translated shader agrees with the CPU path bit for bit") {
   config.app_name = "translate_test";
   painter::compute_context ctx(config);
 
-  // Push-байты выкладываются в объявленном порядке: сначала число элементов, затем аргументы так, как
-  // их перечислил транслятор. Свой порядок здесь означал бы правило, считающее по чужим числам.
-  std::vector<std::byte> push(sizeof(uint32_t) + translated.arguments.size() * sizeof(float));
-  const uint32_t element_count = uint32_t(count);
-  std::memcpy(push.data(), &element_count, sizeof(element_count));
-  for (size_t i = 0; i < translated.arguments.size(); ++i) {
-    const float value = float(params.number(translated.arguments[i]));
-    std::memcpy(push.data() + sizeof(uint32_t) + i * sizeof(float), &value, sizeof(value));
-  }
+  // Push-байты выкладываются ОБЩЕЙ шапкой, той же, что у нативного инструмента, а за ней аргументы в
+  // объявленном порядке. Своя шапка у перевода однажды уже была — и отличалась от инструментной; пока
+  // перевод не попадал в устройственную очередь, это не стреляло.
+  const auto push = make_push(uint32_t(count), translated, params);
 
   const auto device_program =
     ctx.create_program("classify", translated.source, uint32_t(inputs.size() + 1), uint32_t(push.size()));
@@ -318,13 +341,7 @@ TEST_CASE("originator translates GN01's actual biome rule, and the float paths d
   config.app_name = "translate_float_test";
   painter::compute_context ctx(config);
 
-  std::vector<std::byte> push(sizeof(uint32_t) + translated.arguments.size() * sizeof(float));
-  const uint32_t element_count = uint32_t(count);
-  std::memcpy(push.data(), &element_count, sizeof(element_count));
-  for (size_t i = 0; i < translated.arguments.size(); ++i) {
-    const float value = float(params.number(translated.arguments[i]));
-    std::memcpy(push.data() + sizeof(uint32_t) + i * sizeof(float), &value, sizeof(value));
-  }
+  const auto push = make_push(uint32_t(count), translated, params);
 
   // Само создание программы уже проверка: шейдер, который не компилируется, — отказ с сообщением
   // glslc, и типы у перевода проверяет именно он.

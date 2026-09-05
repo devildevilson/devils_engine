@@ -34,15 +34,37 @@ bool queue_call::writes(const field_ref& field) const noexcept {
 }
 
 namespace {
+// Объявил ли вызов свои записи независимыми от порядка. У нативного инструмента это свойство самого
+// инструмента, у чужого тела — того, кто его собрал: тот же порядок, что у устройственной формы.
+bool order_free(const queue_call& call) noexcept {
+  return call.tool != nullptr ? call.tool->order_free_writes : call.order_free_writes;
+}
+
+// НАКОПИТЕЛЬ ЧИТАЕТ ТО, ВО ЧТО ПИШЕТ, и это меняет ответы обеих проверок сразу.
+//
+// `rain[i] += ...` — не запись поля, а его изменение, поэтому проход, заполнивший `rain` нулями
+// ДО накопителя, живой (иначе очередь объявила бы мёртвой честную инициализацию), а барьер между
+// ними нужен. Оба вывода идут отсюда, и это тот же единственный вопрос, а не третий набор правил.
+bool reads_for_liveness(const queue_call& call, const field_ref& field) noexcept {
+  return call.reads(field) || (order_free(call) && call.writes(field));
+}
+
 // Затирает ли этот вызов поле ЦЕЛИКОМ в границах прежней записи. Покрытие проверяется не ради
 // строгости, а чтобы не объявить мёртвым честный случай: два вызова, пишущие РАЗНЫЕ отрезки одного
 // поля, оба живые, и ложный отказ здесь стоил бы дороже пропущенного предупреждения.
+//
+// Накопитель не затирает ничего по определению: он прибавляет к тому, что нашёл.
 bool overwrites_field(const queue_call& call, const field_ref& field, const size_t begin, const size_t end) noexcept {
-  return call.writes(field) && call.range_begin <= begin && call.range_end >= end;
+  return !order_free(call) && call.writes(field) && call.range_begin <= begin && call.range_end >= end;
 }
 
-bool named_in_output(const computation_queue& queue, const field_ref& field) noexcept {
+// Назван ли на ГРАНИЦЕ — в любом из двух списков. Проверке мёртвой работы всё равно, где живёт
+// читатель: она спрашивает, прочитает ли это хоть кто-нибудь.
+bool named_at_boundary(const computation_queue& queue, const field_ref& field) noexcept {
   for (const auto& binding : queue.output) {
+    if (binding.same_field_as(field)) return true;
+  }
+  for (const auto& binding : queue.resident) {
     if (binding.same_field_as(field)) return true;
   }
   return false;
@@ -56,8 +78,9 @@ bool fits_in_queue(const aperture::values value) noexcept {
 std::string_view queue_rejection_reason(const aperture::values value) noexcept {
   switch (value) {
     case aperture::scatter:
-      return "scatter writes by foreign indices into a structure of another shape, and its order comes from the "
-             "algorithm rather than from the queue: call such a tool on its own";
+      return "scatter writes by foreign indices into a structure of another shape, and the ORDER of those writes "
+             "comes from the algorithm rather than from the queue: call such a tool on its own, or — if its writes "
+             "genuinely do not depend on order, the way integer accumulation does not — declare that";
     case aperture::sequential:
       return "sequential work is ordered by construction, so the queue breaks on it — and that break is a "
              "boundary worth seeing in the config";
@@ -82,11 +105,13 @@ queue_check check_queue(const computation_queue& queue) {
     return fail(std::format("step '{}': the queue declares no calls", queue.name));
   }
 
-  // Пустой выход — отказ, а не мелочь: очередь существует ради того, что она отдаёт наружу, и без
-  // объявленной границы передачи проверить мёртвую работу тоже нечем.
-  if (queue.output.empty()) {
-    return fail(std::format("step '{}': the queue declares no output, so nothing it computes leaves it — "
-                            "name the fields the rest of the step reads in 'output'",
+  // Пустая граница — отказ, а не мелочь: очередь существует ради того, что читают после неё, и без
+  // объявленной границы проверить мёртвую работу тоже нечем. Списка два, и хватает любого: `output`
+  // называет то, что едет на хост, `resident` — то, что остаётся живым на устройстве.
+  if (queue.output.empty() && queue.resident.empty()) {
+    return fail(std::format("step '{}': the queue declares no boundary at all, so nothing it computes is read — "
+                            "name what the rest of the step reads in 'output', or what stays on the device in "
+                            "'resident'",
                             queue.name));
   }
 
@@ -99,7 +124,11 @@ queue_check check_queue(const computation_queue& queue) {
                               queue.name, position, call.label));
     }
 
-    if (!fits_in_queue(call.shape)) {
+    // АПЕРТУРА. У `scatter` есть объявляемое исключение, и оно проверяется здесь, а не в
+    // `fits_in_queue`: независимость записей от порядка — свойство КОНКРЕТНОГО инструмента, а не
+    // рода адресации, и спрашивать о ней надо у вызова.
+    const bool admitted = fits_in_queue(call.shape) || (call.shape == aperture::scatter && order_free(call));
+    if (!admitted) {
       return fail(std::format("step '{}': queue element {} ('{}') has aperture '{}', which the queue does not take: {}",
                               queue.name, position, call.label, to_string(call.shape), queue_rejection_reason(call.shape)));
     }
@@ -150,19 +179,38 @@ queue_check check_queue(const computation_queue& queue) {
     }
   }
 
-  for (const auto& binding : queue.output) {
-    if (!binding.valid()) {
-      return fail(std::format("step '{}': the queue names an invalid field in 'output'", queue.name));
-    }
+  const auto check_boundary = [&](const std::vector<field_ref>& list, const std::string_view& which) -> std::string {
+    for (const auto& binding : list) {
+      if (!binding.valid()) {
+        return std::format("step '{}': the queue names an invalid field in '{}'", queue.name, which);
+      }
 
-    bool produced = false;
-    for (const auto& call : queue.calls) {
-      for (const auto& written : call.outputs) {
-        produced = produced || written.same_field_as(binding);
+      bool produced = false;
+      for (const auto& call : queue.calls) {
+        for (const auto& written : call.outputs) {
+          produced = produced || written.same_field_as(binding);
+        }
+      }
+      if (!produced) {
+        return std::format("step '{}': the queue names '{}.{}' in '{}', but no call inside writes it",
+                           queue.name, binding.buffer_name(), binding.field_name(), which);
       }
     }
-    if (!produced) {
-      return fail(std::format("step '{}': the queue names '{}.{}' in 'output', but no call inside writes it",
+    return {};
+  };
+
+  const auto output_message = check_boundary(queue.output, "output");
+  if (!output_message.empty()) return fail(output_message);
+  const auto resident_message = check_boundary(queue.resident, "resident");
+  if (!resident_message.empty()) return fail(resident_message);
+
+  // Одно поле в обоих списках — не ошибка исполнения, а ДВА ответа на один вопрос: оно и едет, и
+  // остаётся. Один из двух окажется неправдой, и какой именно — по результату не видно.
+  for (const auto& binding : queue.resident) {
+    for (const auto& leaving : queue.output) {
+      if (!binding.same_field_as(leaving)) continue;
+      return fail(std::format("step '{}': '{}.{}' is named both in 'output' and in 'resident' — it either comes "
+                              "back to the host or it does not, and two answers here mean one of them is untrue",
                               queue.name, binding.buffer_name(), binding.field_name()));
     }
   }
@@ -177,17 +225,17 @@ queue_check check_queue(const computation_queue& queue) {
       bool read_later = false;
       bool covered_later = false;
       for (size_t j = i + 1; j < queue.calls.size(); ++j) {
-        read_later = read_later || queue.calls[j].reads(written);
+        read_later = read_later || reads_for_liveness(queue.calls[j], written);
         covered_later = covered_later || overwrites_field(queue.calls[j], written, call.range_begin, call.range_end);
       }
 
-      alive = alive || read_later || (!covered_later && named_in_output(queue, written));
+      alive = alive || read_later || (!covered_later && named_at_boundary(queue, written));
     }
 
     if (!alive) {
       const auto& written = call.outputs.front();
       return fail(std::format("step '{}': queue element {} ('{}') writes '{}.{}', but nothing inside the queue reads "
-                              "it and 'output' does not name it — the pass is dead",
+                              "it and neither 'output' nor 'resident' names it — the pass is dead",
                               queue.name, i + 1, call.label, written.buffer_name(), written.field_name()));
     }
   }
