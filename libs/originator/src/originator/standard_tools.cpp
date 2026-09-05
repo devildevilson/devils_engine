@@ -692,6 +692,7 @@ void tool_registry::add_standard_tools() {
                        .combine = [](const double a, const double b) { return a + b; }, .initial = 0.0});
 
   add_scatter_tools();
+  add_constraint_tools();
 }
 
 } // namespace originator

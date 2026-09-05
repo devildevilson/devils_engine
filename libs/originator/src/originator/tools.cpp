@@ -152,6 +152,10 @@ const field_ref& tool_call::output(const size_t index) const {
   return outputs[index];
 }
 
+bool tool_call::has_input(const size_t index) const noexcept {
+  return index < inputs.size() && inputs[index].valid();
+}
+
 bool tool_call::has_output(const size_t index) const noexcept {
   return index < outputs.size() && outputs[index].valid();
 }
@@ -170,6 +174,10 @@ void tool_registry::add(tool_description description) {
   }
   if (!is_reduce && description.body == nullptr) {
     utils::error{}("originator: tool '{}' has no body", description.name);
+  }
+  if (description.optional_inputs > description.input_count) {
+    utils::error{}("originator: tool '{}' declares {} optional inputs of {}", description.name,
+                   description.optional_inputs, description.input_count);
   }
   if (description.optional_outputs > description.output_count) {
     utils::error{}("originator: tool '{}' declares {} optional outputs of {}", description.name,
@@ -313,8 +321,14 @@ dispatch_check check_dispatch(const tool_description& tool,
     return result;
   };
 
-  if (inputs.size() != tool.input_count) {
-    return fail(std::format("step '{}': tool '{}' expects {} inputs, got {}", step_name, tool.name, tool.input_count, inputs.size()));
+  const uint32_t least_inputs = tool.input_count - std::min(tool.input_count, tool.optional_inputs);
+  if (inputs.size() > tool.input_count || inputs.size() < least_inputs) {
+    if (tool.optional_inputs == 0) {
+      return fail(std::format("step '{}': tool '{}' expects {} inputs, got {}", step_name, tool.name,
+                              tool.input_count, inputs.size()));
+    }
+    return fail(std::format("step '{}': tool '{}' takes from {} to {} inputs, got {}", step_name, tool.name,
+                            least_inputs, tool.input_count, inputs.size()));
   }
   const uint32_t least_outputs = tool.output_count - std::min(tool.output_count, tool.optional_outputs);
   if (outputs.size() > tool.output_count || outputs.size() < least_outputs) {
@@ -350,12 +364,19 @@ dispatch_check check_dispatch(const tool_description& tool,
   //   pointwise/reduce — и к входам, и к выходам: элемент i читается и пишется по одному индексу;
   //   gather — только к выходам: входы читаются целиком, там и лежат соседи;
   //   scatter — только к входам: выход это ДРУГАЯ структура (смещения групп, суммы по корзинам),
-  //             и её размер задаёт число групп, а не число обрабатываемых элементов.
+  //             и её размер задаёт число групп, а не число обрабатываемых элементов;
+  //   sequential — только к ПЕРВОМУ выходу. Входы такой инструмент читает целиком, ровно как gather:
+  //             у решателя ограничений там таблица правил в несколько десятков слов, а диапазон
+  //             описывает растр в миллион клеток — упорядочены у него ЗАПИСИ, а не чтения. А выходов
+  //             после первого у него столько, сколько сводок о прогоне (сколько понадобилось попыток,
+  //             сколько вышло вершин), и это опять ДРУГАЯ структура.
   const bool range_covers_outputs = tool.shape != aperture::scatter;
-  const bool range_covers_inputs = tool.shape != aperture::gather;
+  const bool only_first_output = tool.shape == aperture::sequential;
+  const bool range_covers_inputs = tool.shape != aperture::gather && tool.shape != aperture::sequential;
 
   if (range_covers_outputs) {
-    for (const auto& binding : outputs) {
+    for (const auto& binding : only_first_output ? outputs.subspan(0, std::min<size_t>(1, outputs.size()))
+                                                 : outputs) {
       if (range_end > binding.count()) {
         return fail(std::format("step '{}': tool '{}' range [{}, {}) exceeds '{}' with {} elements",
                                 step_name, tool.name, range_begin, range_end, binding.buffer_name(), binding.count()));
