@@ -199,6 +199,66 @@ void tool_accumulate(const tool_call& call, const size_t begin, const size_t end
   }
 }
 
+// count_by: ключ -> СКОЛЬКО элементов попало в корзину.
+//
+// От `accumulate` отличается двумя вещами, и обе принципиальны.
+//
+// СЧИТАЕТ ЦЕЛЫМИ. Целое сложение коммутативно, поэтому у результата нет зависимости от порядка — ни
+// от порядка чанков, ни от порядка прихода групп на устройстве. Именно это и позволяет инструменту
+// объявить `order_free_writes` и попасть в очередь: `scatter` отклоняется за ПОРЯДОК записей, а
+// здесь порядка нет вовсе (§4.3 бьёт по плавающей свёртке, а не по свёртке как таковой).
+//
+// НЕ ОБНУЛЯЕТ приёмник. `accumulate` по умолчанию обнуляет, а здесь этого нельзя: на устройстве
+// атомик умеет только прибавлять, и обнуление внутри того же прохода означало бы гонку. Одно
+// объявление с двумя поведениями хуже, чем лишний вызов, поэтому обнуление — отдельный `fill`, и
+// очередь считает его ЖИВЫМ ровно потому, что накопитель читает то, во что пишет.
+void tool_count_by(const tool_call& call, const size_t begin, const size_t end) {
+  const auto keys = call.input(0).read();
+  auto counts = call.output(0).write();
+
+  const size_t bucket_count = counts.count();
+  if (bucket_count == 0) {
+    return;
+  }
+
+  const size_t count = end > begin ? end - begin : 0;
+  const size_t chunks = chunk_count_of(count);
+  const bool table_fits = chunks != 0 && chunks <= maximum_counter_table / bucket_count;
+  const size_t effective_chunks = table_fits ? chunks : 1;
+  const size_t effective_chunk_size = table_fits ? scatter_chunk_size : count;
+
+  std::vector<uint64_t> partials(effective_chunks * bucket_count, 0);
+
+  const auto count_chunk = [&](const size_t chunk) {
+    const size_t first = begin + chunk * effective_chunk_size;
+    const size_t last = std::min(first + effective_chunk_size, end);
+    uint64_t* row = partials.data() + chunk * bucket_count;
+    for (size_t i = first; i < last; ++i) {
+      row[bucket_of(keys.get(i), bucket_count, call, i)] += 1;
+    }
+  };
+
+  if (call.pool != nullptr && call.pool->size() != 0 && effective_chunks > 1) {
+    for (size_t chunk = 0; chunk < effective_chunks; ++chunk) {
+      call.pool->submit([&count_chunk](const size_t index) { count_chunk(index); }, chunk);
+    }
+    call.pool->compute();
+    call.pool->wait();
+  } else {
+    for (size_t chunk = 0; chunk < effective_chunks; ++chunk) {
+      count_chunk(chunk);
+    }
+  }
+
+  for (size_t bucket = 0; bucket < bucket_count; ++bucket) {
+    uint64_t total = uint64_t(counts.get(bucket));
+    for (size_t chunk = 0; chunk < effective_chunks; ++chunk) {
+      total += partials[chunk * bucket_count + bucket];
+    }
+    counts.set(bucket, double(total));
+  }
+}
+
 } // namespace
 
 void tool_registry::add_scatter_tools() {
@@ -206,6 +266,20 @@ void tool_registry::add_scatter_tools() {
                        .body = tool_group_by});
   add(tool_description{.name = "accumulate", .shape = aperture::scatter, .input_count = 2, .output_count = 1,
                        .body = tool_accumulate});
+  add(tool_description{
+    .name = "count_by", .shape = aperture::scatter, .input_count = 1, .output_count = 1,
+    .body = tool_count_by,
+    // КЛЮЧ ВНЕ ДИАПАЗОНА: на хосте это громкая ошибка данных, на устройстве бросить нечем, и там
+    // такой элемент пропускается. Расхождение бывает только у конфига, который на CPU уже падает, —
+    // поэтому оно названо здесь, а не спрятано.
+    .device_body = "  uint bucket = uint(in_0_at(index));\n"
+                   "  if (bucket >= out_0_length()) return;\n"
+                   "  out_0_add(bucket, 1u);\n",
+    .device_params = {},
+    // Приёмник — счётчик, то есть целое поле по природе.
+    .device_integer_ready = true,
+    // ТО САМОЕ ОБЪЯВЛЕНИЕ, которое пускает scatter в очередь.
+    .order_free_writes = true});
 }
 
 } // namespace originator

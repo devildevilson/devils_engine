@@ -30,31 +30,31 @@ std::string field_name_of(const field_ref& field) {
 // хранения на CPU, а считать в них никто и не собирался (§3.2), поэтому ограничение почти не задевает
 // того, для чего они заведены.
 bool device_field_kind(const field_type type) noexcept {
-  if (type.components != 1) {
-    return false;
-  }
-  return type.base == field_base::v || type.base == field_base::ui || type.base == field_base::i;
+  // Число КОМПОНЕНТ ограничения не ставит: в раскладке `soa` они лежат подряд внутри элемента,
+  // поэтому поле читается тем же буфером, только аксессором с компонентой. Ограничение — на РОД: у
+  // узких родов нет типизированного буфера шейдера, и заведены они ради компактного хранения на
+  // хосте, а не ради счёта (§3.2).
+  return type.components >= 1 && type.components <= max_field_components &&
+         (type.base == field_base::v || type.base == field_base::ui || type.base == field_base::i);
 }
 
-std::string_view refuse_field(const field_ref& field) noexcept {
-  const auto type = field.type();
-  if (type.components != 1) {
-    return "a multi-component field has no single-typed shader buffer";
-  }
+std::string_view refuse_field(const field_ref&) noexcept {
   return "the queue takes the 32-bit kinds v, ui and i on a device; the narrow kinds exist for compact "
          "storage on the host, and computing in them was never the point";
 }
 
+// ОТКУДА У ВЫЗОВА ТЕЛО. Ровно два источника, и оба контролируемые: у нативного инструмента оно
+// написано заранее и лежит в библиотеке, у чужого тела — это перевод программы `devils_script`.
 const std::string& body_of(const queue_call& call) noexcept {
-  return call.tool != nullptr ? call.tool->device_body : call.device_body;
+  return call.tool != nullptr ? call.tool->device_body : call.device.body();
 }
 
 const std::vector<device_param>& params_of(const queue_call& call) noexcept {
-  return call.tool != nullptr ? call.tool->device_params : call.device_params;
+  return call.tool != nullptr ? call.tool->device_params : call.device.params();
 }
 
 const std::vector<uint32_t>& filtered_of(const queue_call& call) noexcept {
-  return call.tool != nullptr ? call.tool->device_filtered_inputs : call.device_filtered_inputs;
+  return call.tool != nullptr ? call.tool->device_filtered_inputs : call.device.filtered_inputs();
 }
 
 bool order_free_of(const queue_call& call) noexcept {
@@ -135,9 +135,9 @@ std::string derive_fields(const computation_queue& queue, std::vector<plan_field
 
     // Фильтр между ЦЕЛЫМИ не имеет смысла: среднее двух номеров области — не номер области. Поэтому
     // картинкой становится только плавающее поле, и формат у неё один — `r32f`.
-    if (entry.field.type().base != field_base::v) {
-      return std::format("step '{}': '{}' is read filtered, but its kind is not floating — a filter averages "
-                         "between elements, and the average of two integer labels is not a label",
+    if (entry.field.type().base != field_base::v || entry.field.type().components != 1) {
+      return std::format("step '{}': '{}' is read filtered, but it is not a single floating value — a filter "
+                         "averages between elements, and the average of two integer labels is not a label",
                          queue.name, field_name_of(entry.field));
     }
 
@@ -215,10 +215,23 @@ device_check check_device_queue(const computation_queue& queue) {
     if (body_of(call).empty()) {
       const auto reason = native
                             ? std::string("the tool declares no device form")
-                            : (call.device_refusal.empty() ? std::string("the call carries no device form")
-                                                           : call.device_refusal);
+                            : (call.device.refusal().empty()
+                                 ? std::string("the call carries no device form; a foreign body reaches a device "
+                                               "only as a translated devils_script program")
+                                 : call.device.refusal());
       return fail(std::format("step '{}': queue element {} ('{}') does not run on a device: {}",
                               queue.name, position, call.label, reason));
+    }
+
+    // КОСВЕННЫЙ ДИАПАЗОН на устройстве — это `dispatchIndirect`, а его здесь нет. Прежде такой вызов
+    // молча получал `range_count() == 0` и не делал НИЧЕГО: диапазон со счётчиком не задан числом.
+    // Проход, не сделавший ничего, по результату отличим от сделавшего только тем, что поле осталось
+    // прежним, — а оно и так бывает прежним.
+    if (call.indirect()) {
+      return fail(std::format("step '{}': queue element {} ('{}') counts its elements from '{}.{}', and a device "
+                              "plan has no indirect dispatch yet — its range would silently be zero",
+                              queue.name, position, call.label, call.count_from.buffer_name(),
+                              call.count_from.field_name()));
     }
 
     const auto extent = call_extent(call);
@@ -239,10 +252,10 @@ device_check check_device_queue(const computation_queue& queue) {
                            queue.name, binding.buffer_name());
       }
 
-      // ТЕЛО НАТИВНОГО ИНСТРУМЕНТА ПИШЕТСЯ ПРОТИВ `float` и не может быть написано иначе: его писали
-      // один раз на все будущие привязки. Прежде текст объявлял `float data[]` у ЛЮБОГО поля, и вызов
-      // над целым полем молча читал биты — теперь это отказ.
-      if (native && binding.type().base != field_base::v) {
+      // ТЕЛО НАТИВНОГО ИНСТРУМЕНТА ПИШЕТСЯ ПРОТИВ `float`, если инструмент не объявил обратного: его
+      // писали один раз на все будущие привязки. Прежде текст объявлял `float data[]` у ЛЮБОГО поля,
+      // и вызов над целым полем молча читал биты — теперь это отказ.
+      if (native && !call.tool->device_integer_ready && binding.type().base != field_base::v) {
         return std::format("step '{}': queue element {} ('{}') binds '{}' of kind '{}', but the device body of a "
                            "native tool is written against float — it is written once for every future binding, "
                            "so it cannot know the kind. Reading that field as float would take its BITS",
@@ -397,10 +410,12 @@ device_queue::device_queue(painter::compute_context& context, const computation_
       const auto& slot = slots_[slot_of(binding)];
       device_binding declared;
       declared.base = binding.type().base;
+      declared.components = binding.type().components;
       declared.residence = slot.residence;
       declared.access = by_filter ? device_access::filtered : device_access::plain;
       declared.writable = writes;
       declared.accumulates = writes && accumulates && slot.residence == device_residence::in_buffer;
+      declared.converting = call.tool != nullptr && call.tool->device_integer_ready;
       shape.push_back(declared);
 
       if (slot.residence == device_residence::in_image) {
@@ -434,22 +449,7 @@ device_queue::device_queue(painter::compute_context& context, const computation_
     //    объявленном порядке. Один способ выложить байты на все инструменты и все переводы — два
     //    способа однажды разъехались бы, а шейдер прочитал бы чужие числа и не пожаловался.
     plan.push.resize(push_size);
-    const auto extent = call_extent(call);
-    device_call_header header;
-    header.count = uint32_t(call.range_count());
-    header.begin = uint32_t(call.range_begin);
-    header.extent_x = uint32_t(extent.x);
-    header.extent_y = uint32_t(extent.y == 0 ? 1 : extent.y);
-    std::memcpy(plan.push.data(), &header, sizeof(header));
-
-    for (size_t p = 0; p < params.size(); ++p) {
-      // Значение по умолчанию берётся у САМОГО инструмента через его же чтение параметров: числа,
-      // которых в вызове нет, обязаны совпасть с тем, что подставил бы CPU.
-      const float value = float(call.params.number(params[p].name, params[p].fallback));
-      std::memcpy(plan.push.data() + sizeof(header) + p * sizeof(float), &value, sizeof(value));
-    }
-
-    plan.element_count = call.range_count();
+    write_push(call, plan);
 
     // 5. БАРЬЕР ВЫВОДИТСЯ. Тот же вопрос, что у проверки мёртвой работы: читает ли этот проход то,
     //    что записал какой-то предыдущий. Есть зависимость — есть барьер, нет — нет, и это не
@@ -470,6 +470,47 @@ device_queue::device_queue(painter::compute_context& context, const computation_
 }
 
 device_queue::~device_queue() noexcept = default;
+
+void device_queue::write_push(const queue_call& call, call_plan& plan) const {
+  const auto& params = params_of(call);
+  const auto extent = call_extent(call);
+
+  device_call_header header;
+  header.count = uint32_t(call.range_count());
+  header.begin = uint32_t(call.range_begin);
+  header.extent_x = uint32_t(extent.x);
+  header.extent_y = uint32_t(extent.y == 0 ? 1 : extent.y);
+  std::memcpy(plan.push.data(), &header, sizeof(header));
+
+  for (size_t p = 0; p < params.size(); ++p) {
+    // Значение по умолчанию берётся у САМОГО инструмента через его же чтение параметров: числа,
+    // которых в вызове нет, обязаны совпасть с тем, что подставил бы CPU.
+    const float value = float(call.params.number(params[p].name, params[p].fallback));
+    std::memcpy(plan.push.data() + sizeof(header) + p * sizeof(float), &value, sizeof(value));
+  }
+
+  plan.element_count = call.range_count();
+}
+
+device_report device_queue::run(const computation_queue& current) {
+  if (current.calls.size() != plans_.size()) {
+    utils::error{}("originator step '{}': the plan holds {} calls and was handed {}", queue_.name,
+                   plans_.size(), current.calls.size());
+  }
+
+  for (size_t i = 0; i < plans_.size(); ++i) {
+    const auto& call = current.calls[i];
+    const auto& known = queue_.calls[i];
+    if (call.tool != known.tool || call.label != known.label || call.inputs.size() != known.inputs.size() ||
+        call.outputs.size() != known.outputs.size() || call.range_begin != known.range_begin ||
+        call.range_end != known.range_end) {
+      utils::error{}("originator step '{}': queue element {} no longer matches the plan built for it",
+                     queue_.name, i + 1);
+    }
+    write_push(call, plans_[i]);
+  }
+  return execute(true);
+}
 
 const std::vector<std::string>& device_queue::uploaded_fields() const noexcept {
   return uploaded_;

@@ -7,6 +7,38 @@
 namespace devils_engine {
 namespace originator {
 
+translated_form translated_form::refused(std::string why) {
+  translated_form result;
+  result.refusal_ = std::move(why);
+  return result;
+}
+
+translated_form::translated_form(authority,
+                                 std::string body,
+                                 std::vector<device_param> params,
+                                 std::vector<uint32_t> filtered_inputs)
+  : body_(std::move(body)), params_(std::move(params)), filtered_inputs_(std::move(filtered_inputs)) {}
+
+bool translated_form::declared() const noexcept {
+  return !body_.empty();
+}
+
+const std::string& translated_form::body() const noexcept {
+  return body_;
+}
+
+const std::vector<device_param>& translated_form::params() const noexcept {
+  return params_;
+}
+
+const std::vector<uint32_t>& translated_form::filtered_inputs() const noexcept {
+  return filtered_inputs_;
+}
+
+const std::string& translated_form::refusal() const noexcept {
+  return refusal_;
+}
+
 std::string_view device_type_name(const field_base::values base) noexcept {
   switch (base) {
     case field_base::v: return "float";
@@ -26,6 +58,19 @@ void emit_input(std::string& text, const size_t index, const uint32_t binding, c
   if (shape.residence == device_residence::in_buffer) {
     text.append(std::format("layout(std430, binding = {}) readonly buffer in_{}_block {{ {} data[]; }} in_{}_raw;\n",
                             binding, index, type, index));
+    // МНОГОКОМПОНЕНТНОЕ ПОЛЕ читается тем же буфером: в раскладке `soa` компоненты лежат подряд
+    // внутри элемента, поэтому нужен только аксессор, берущий компоненту, и длина, считающая
+    // ЭЛЕМЕНТЫ, а не числа. `in_i_at(at)` при этом остаётся нулевой компонентой — у однокомпонентного
+    // поля это то же самое, и тело, написанное для одного, не ломается на другом.
+    if (shape.components > 1) {
+      text.append(std::format("{} in_{}_at(uint at, uint component) {{ return in_{}_raw.data[at * {}u + component]; }}\n",
+                              type, index, index, shape.components));
+      text.append(std::format("{} in_{}_at(uint at) {{ return in_{}_raw.data[at * {}u]; }}\n",
+                              type, index, index, shape.components));
+      text.append(std::format("uint in_{}_length() {{ return uint(in_{}_raw.data.length()) / {}u; }}\n\n",
+                              index, index, shape.components));
+      return;
+    }
     text.append(std::format("{} in_{}_at(uint at) {{ return in_{}_raw.data[at]; }}\n", type, index, index));
     text.append(std::format("uint in_{}_length() {{ return uint(in_{}_raw.data.length()); }}\n\n", index, index));
     return;
@@ -55,9 +100,23 @@ void emit_output(std::string& text, const size_t index, const uint32_t binding, 
     // есть, то нет, — лишний повод разъехаться.
     text.append(std::format("layout(std430, binding = {}) buffer out_{}_block {{ {} data[]; }} out_{}_raw;\n",
                             binding, index, type, index));
-    text.append(std::format("void out_{}_set(uint at, {} value) {{ out_{}_raw.data[at] = value; }}\n",
-                            index, type, index));
-    text.append(std::format("uint out_{}_length() {{ return uint(out_{}_raw.data.length()); }}\n", index, index));
+    text.append(std::format("uint out_{}_components() {{ return {}u; }}\n", index, shape.components));
+    text.append(std::format("uint out_{}_length() {{ return uint(out_{}_raw.data.length()) / {}u; }}\n",
+                            index, index, shape.components));
+    // Компонента адресуется отдельно, а форма без неё пишет НУЛЕВУЮ: у однокомпонентного поля это
+    // одно и то же, поэтому тело, написанное для одного, не ломается на другом.
+    text.append(std::format("void out_{}_set(uint at, uint component, {} value) {{ out_{}_raw.data[at * {}u + component] = value; }}\n",
+                            index, type, index, shape.components));
+    text.append(std::format("void out_{}_set(uint at, {} value) {{ out_{}_raw.data[at * {}u] = value; }}\n",
+                            index, type, index, shape.components));
+    if (shape.converting && shape.base != field_base::v) {
+      // Тело, написанное против `float`, над целым полем: ПРЕОБРАЗОВАНИЕ значения, а не переклад
+      // битов, — то же самое, что делает аксессор на хосте.
+      text.append(std::format("void out_{}_set(uint at, uint component, float value) {{ out_{}_set(at, component, {}(value)); }}\n",
+                              index, index, type));
+      text.append(std::format("void out_{}_set(uint at, float value) {{ out_{}_set(at, 0u, {}(value)); }}\n",
+                              index, index, type));
+    }
     if (shape.accumulates) {
       text.append(std::format("void out_{}_add(uint at, {} value) {{ atomicAdd(out_{}_raw.data[at], value); }}\n",
                               index, type, index));
@@ -69,6 +128,9 @@ void emit_output(std::string& text, const size_t index, const uint32_t binding, 
   text.append(std::format("layout(r32f, binding = {}) uniform image2D out_{}_raw;\n", binding, index));
   text.append(std::format("void out_{}_set(uint at, float value) {{ imageStore(out_{}_raw, {}, vec4(value, 0.0, 0.0, 0.0)); }}\n",
                           index, index, to_coordinate));
+  text.append(std::format("void out_{}_set(uint at, uint component, float value) {{ out_{}_set(at, value); }}\n",
+                          index, index));
+  text.append(std::format("uint out_{}_components() {{ return 1u; }}\n", index));
   text.append(std::format("uint out_{}_length() {{ return args.extent_x * args.extent_y; }}\n\n", index));
 }
 } // namespace
@@ -79,6 +141,11 @@ std::string build_device_shader(const std::span<const device_binding>& bindings,
                                 const uint32_t group_size) {
   if (bindings.empty()) {
     utils::error{}("originator: a device form with no bindings computes nothing");
+  }
+  for (size_t i = 0; i < bindings.size(); ++i) {
+    if (bindings[i].components != 1 && bindings[i].residence == device_residence::in_image) {
+      utils::error{}("originator: binding {} is a multi-component image, and the queue keeps images single-channel", i);
+    }
   }
 
   std::string text;
@@ -93,6 +160,17 @@ std::string build_device_shader(const std::span<const device_binding>& bindings,
     text.append(std::format("  float {};\n", param.shader_name()));
   }
   text.append("} args;\n\n");
+
+  // СКОЛЬКО ПРИВЯЗОК У ЭТОГО ВЫЗОВА — доступно телу как определение препроцессора. Нужно там, где у
+  // инструмента есть НЕОБЯЗАТЕЛЬНЫЙ выход: непривязанного выхода в шейдере нет вовсе, поэтому тело
+  // обязано уметь спросить, а не полагаться на то, что аксессор объявлен.
+  size_t declared_inputs = 0;
+  size_t declared_outputs = 0;
+  for (const auto& shape : bindings) {
+    (shape.writable ? declared_outputs : declared_inputs) += 1;
+  }
+  text.append(std::format("#define ORIGINATOR_INPUTS {}\n", declared_inputs));
+  text.append(std::format("#define ORIGINATOR_OUTPUTS {}\n\n", declared_outputs));
 
   size_t inputs = 0;
   size_t outputs = 0;

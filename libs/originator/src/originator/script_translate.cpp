@@ -398,16 +398,20 @@ translation translate_to_glsl(const std::string_view& name,
   written.writable = true;
   shape.push_back(written);
 
-  result.params.reserve(result.arguments.size());
+  std::vector<device_param> params;
+  params.reserve(result.arguments.size());
   for (const auto& argument : result.arguments) {
     // Имя аргумента ds попадает в шейдер с приставкой: `ctx:arg:` не запрещает называться `min` или
     // `index`, а имя поля push-константы обязано не столкнуться ни со встроенной функцией, ни с
     // локальной переменной свёртки индекса.
-    result.params.push_back(device_param{argument, 0.0, std::format("arg_{}", argument)});
+    params.push_back(device_param{argument, 0.0, std::format("arg_{}", argument)});
   }
 
-  result.body = std::format("  out_0_set(index, {});\n", stored);
-  text.append(build_device_shader(shape, result.params, result.body, group_size));
+  // Форма ВЫДАЁТСЯ здесь и только здесь: чужое тело попадает на устройство ровно как переведённая
+  // программа `devils_script`, и никак иначе.
+  auto body = std::format("  out_0_set(index, {});\n", stored);
+  text.append(build_device_shader(shape, params, body, group_size));
+  result.form = translated_form(translation_authority::key(), std::move(body), std::move(params), {});
 
   result.source = std::move(text);
   return result;

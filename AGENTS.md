@@ -4,6 +4,76 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- WHERE DEVICE CODE COMES FROM, GN04 ON CONFIG, AND AN AUDIT (2026-09-05). `458/458` project tests,
+  GN04's own `22/22`. Recorded as `ORIGINATOR_GPGPU.md` §10.
+  THE DIVIDING LINE IS NOT "GLSL OR NOT", IT IS WHO DECIDES WHAT IS COMPUTED. A native tool's device
+  body is written AHEAD OF TIME and lives in the library (`remap`, `graph_flood`, `plate_velocity`):
+  that is project source, compiled with the engine and read at review, so keeping ready GLSL there is
+  fine and needs no text checking — nobody substituted the text. `run_script` is the other case: what
+  it computes is decided by the AUTHOR OF THE DATA, so it brings a `devils_script` PROGRAM, never a
+  shader, and the engine translates it by the AST `ds` itself hands over. A brought-in shader would
+  pass no check at all and get direct access to device memory.
+  THE RULE IS NOW BACKED BY A TYPE, not only a comment: a foreign body's form is `translated_form`,
+  and it cannot be built from a string — the constructor is sealed by a key the core hands to exactly
+  the translator. The previous `queue_call::device_body` was a plain string, and the first consumer
+  (GN04) put raw GLSL in it BECAUSE IT COULD. Full enforcement is impossible without owning the
+  project — C++ goes around anything — but it no longer happens by accident.
+  `run_script` INSIDE A QUEUE IS NOW ACTUALLY TRANSLATED: `script_host` attaches the form, and an
+  untranslatable construct yields a declared REFUSAL carrying the translator's reason, on which the
+  queue stays on the CPU.
+  WHERE A QUEUE RUNS IS A CONFIG DECLARATION (`device = true`) — §6.4 in full: the decision lives in
+  the manifest, so every machine takes one branch, and a machine that cannot take it REFUSES LOUDLY.
+  The executor is installed by whoever assembled the application (`set_device_executor`); the
+  generator core still knows nothing about Vulkan. THE PLAN IS BUILT ONCE and reused BY THE QUEUE'S
+  SIGNATURE — parameter values are not part of the signature and are rewritten into the push constant
+  before each submission, so changing a threshold does not build a second plan with its own device
+  buffers. Checked by counters, not assumed.
+  THE BODIES MOVED FROM THE LAB INTO THE LIBRARY, and the honest answer to "general or GN04-specific?"
+  was "general, and one of them already existed": `voronoi_label` was being REIMPLEMENTED by the lab.
+  It now has a device form (brute force over the site list — a kd-tree does not travel, and scanning
+  costs exactly as many sites as there are) and an OPTIONAL second output, border closeness, computed
+  in the SAME traversal (`optional_outputs`, `tool_call::has_output`, `ORIGINATOR_OUTPUTS` in the
+  shader) — optional because someone who only wants labels should not declare a buffer for a result
+  nobody reads. New: `filtered_blur` (the engine's ONLY tool declaring a filtered input, hence the
+  only reason a field ever becomes an image), `label_colour` (colour DERIVED from the label by hash,
+  packed RGBA8; the shading curve stays outside, in a plain `remap`), and `count_by` (the first tool
+  with `order_free_writes`; it does NOT clear its target, because an atomic can only add and one
+  declaration with two behaviours is worse than an extra call — so the clearing is a `fill` INSIDE the
+  queue, alive precisely because an accumulator reads what it writes into).
+  TWO REFUSALS TURNED OUT TO BE UNNECESSARY: multi-component fields (in `soa` the components lie
+  contiguously inside the element, so only an accessor with a component and an element-counting length
+  were missing — without this the `v2` site positions could not reach a device at all), and integer
+  fields under a native tool, which is still refused BY DEFAULT but can be opted into with
+  `device_integer_ready`, whereupon converting accessor overloads are emitted. The price is named:
+  conversion goes through `float32`, exact to 2^24, while the host reads the same field through double.
+  GN04 IS NOW A LAB LIKE THE OTHERS: the queue moved out of code into `buffers.tavl`, `values.tavl`,
+  `texture.tavl` and `S01_texture.lua`; `main.cpp` holds NOT ONE line of GLSL and not one Vulkan
+  command. The two boundaries are declared by a config number, and that immediately caught its author:
+  the first verify run showed 258069 differences of 262144 because the check read fields not named in
+  `output`. They had not arrived — the device computed them and left them there, exactly as promised.
+  Numbers: 6 calls, 4 barriers, 1 image; uploads only `sites.position` (512 B), downloads
+  `summary.count` (256 B) against 16777472 B at the inspection boundary — `65537:1` at `1024x1024`.
+  Labelling matches the CPU path on EVERY pixel; edge closeness `1.29e-05`, filtered smoothing
+  `7.15e-07`.
+  AUDIT. Silent defects found and closed this round: `float data[]` over a field of ANY kind (a native
+  tool over `ui1` read its BITS while the CPU read the VALUE); the translator's OWN push header
+  against the tool one (harmless only while translations never entered a device queue); an indirect
+  range silently dispatching ZERO elements on a device (a pass that did nothing is distinguishable
+  from one that did only by the field staying unchanged — and it stays unchanged anyway); a
+  `compute_context` barrier covering only the compute stage while one submission has three
+  neighbouring pairs.
+  THE OPEN FINDING IS MEMORY, AND IT IS MEASURED. The library's own rule says a generator must be able
+  to name its memory cost before it runs. GN02 at a million cells names **432 MB** (the sum of
+  declared buffers) while the machine needs **562 MiB** of peak RSS — a third on top that nobody
+  declares, and it is the tools' TRANSIENT tables: `sphere_adjacency` holds `nearest` and `filled`
+  (every arc twice before canonicalisation) for about a hundred megabytes; the scatter partial-sum
+  table is capped by `maximum_counter_table` at 8M cells, i.e. **64 MiB** nothing accounts for;
+  `label_adjacency` piles neighbours into a vector of vectors and dedups only at the end. The first
+  step is deliberately small and honest: `sphere_adjacency` no longer keeps a separate counter table
+  and computes 32-bit offsets (12 MiB at a million cells) — but the peak moved 563 -> 562 MiB, so the
+  bottleneck is NOT there and must be found by phase measurement, not by reading. The right shape of
+  the report: a pipeline must name its PEAK including transient tables, and a tool must declare its
+  transient cost the way it declares its aperture.
 - GN04 NOW RECEIVES A PIPELINE COMPOSED BY libs/originator; IMAGES, A SECOND BOUNDARY AND SCATTER
   (2026-09-05). `450/450` project tests, GN04's own `22/22`. Recorded as `ORIGINATOR_GPGPU.md` §9.
   BINDINGS ARE NOW GENERATED, BECAUSE THE RESOURCE KIND IS DERIVED. §6.2 declared that buffer-vs-image

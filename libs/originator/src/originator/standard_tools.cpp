@@ -469,6 +469,87 @@ double reduce_count_above_partial(const tool_call& call, const size_t begin, con
   return value;
 }
 
+// ЧТЕНИЕ МЕЖДУ ЭЛЕМЕНТАМИ — то единственное, ради чего поле на устройстве становится КАРТИНКОЙ
+// (§6.3). Четыре отсчёта на `radius` текселей от центра, каждый из них — билинейная выборка, то есть
+// уже среднее четырёх соседей. У буфера такого чтения нет: там пришлось бы читать шестнадцать
+// элементов руками.
+//
+// И там же объявленная граница: точность фильтра в Vulkan implementation-defined, поэтому проход
+// принадлежит классу ПРЕДСТАВЛЕНИЯ и в чанковую генерацию не пускается (`NETWORKING.md`).
+double sample_bilinear(const const_field_accessor& field, const size_t width, const size_t height,
+                       const double u, const double v) {
+  // Повторяет то, что делает сэмплер: координата в текселях смещена на полтексела, край ЗАЖАТ.
+  const double x = u * double(width) - 0.5;
+  const double y = v * double(height) - 0.5;
+  const auto x0 = int64_t(std::floor(x));
+  const auto y0 = int64_t(std::floor(y));
+  const double fx = x - double(x0);
+  const double fy = y - double(y0);
+
+  const auto at = [&](int64_t xi, int64_t yi) {
+    xi = std::clamp<int64_t>(xi, 0, int64_t(width) - 1);
+    yi = std::clamp<int64_t>(yi, 0, int64_t(height) - 1);
+    return field.get(size_t(yi) * width + size_t(xi));
+  };
+
+  const double top = at(x0, y0) * (1.0 - fx) + at(x0 + 1, y0) * fx;
+  const double bottom = at(x0, y0 + 1) * (1.0 - fx) + at(x0 + 1, y0 + 1) * fx;
+  return top * (1.0 - fy) + bottom * fy;
+}
+
+void tool_filtered_blur(const tool_call& call, const size_t begin, const size_t end) {
+  const auto source = call.input(0).read();
+  auto target = call.output(0).write();
+
+  const auto shape = resolve_extent(call, call.output(0), "width", "height");
+  const size_t width = shape.x;
+  const size_t height = shape.y == 0 ? 1 : shape.y;
+  const double radius = call.params->number("radius", 1.0);
+
+  const double texel_x = 1.0 / double(width);
+  const double texel_y = 1.0 / double(height);
+  const double offset_x = texel_x * radius;
+  const double offset_y = texel_y * radius;
+
+  for (size_t i = begin; i < end; ++i) {
+    const double u = (double(i % width) + 0.5) * texel_x;
+    const double v = (double(i / width) + 0.5) * texel_y;
+
+    double sum = sample_bilinear(source, width, height, u - offset_x, v - offset_y);
+    sum += sample_bilinear(source, width, height, u + offset_x, v - offset_y);
+    sum += sample_bilinear(source, width, height, u - offset_x, v + offset_y);
+    sum += sample_bilinear(source, width, height, u + offset_x, v + offset_y);
+    target.set(i, sum * 0.25);
+  }
+}
+
+// ЦВЕТ ИЗ МЕТКИ. Присутствует ради того, чтобы разметку было ВИДНО: таблицы цветов у метки нет и
+// заводить её незачем, а один и тот же номер обязан давать один и тот же цвет — значит цвет
+// ВЫВОДИТСЯ из номера хешем. Приёмник — упакованные RGBA8 в целом поле, ровно то, что лежит в
+// видимой текстуре.
+//
+// Затенение приходит ВТОРЫМ входом уже готовым (0..1): какую кривую применить к близости границы,
+// решает автор обычным `remap`, а не спрятанная внутри инструмента константа.
+void tool_label_colour(const tool_call& call, const size_t begin, const size_t end) {
+  const auto labels = call.input(0).read();
+  const auto shade = call.input(1).read();
+  auto target = call.output(0).write();
+  const double dim = call.params->number("dim", 0.25);
+
+  for (size_t i = begin; i < end; ++i) {
+    const auto label = uint32_t(labels.get(i));
+    const uint32_t hashed = label * 2654435761u;
+    const double lit = dim + (1.0 - dim) * std::clamp(shade.get(i), 0.0, 1.0);
+
+    uint32_t packed = 255u << 24;
+    for (uint32_t channel = 0; channel < 3; ++channel) {
+      const double base = double((hashed >> (16 - channel * 8)) & 255u) / 255.0;
+      packed |= uint32_t(std::clamp(base * lit, 0.0, 1.0) * 255.0 + 0.5) << (channel * 8);
+    }
+    target.set(i, double(packed));
+  }
+}
+
 } // namespace
 
 // УСТРОЙСТВЕННЫЕ ФОРМЫ ИНСТРУМЕНТОВ. Соглашение о шейдере описано у `tool_description::device_body`;
@@ -488,7 +569,14 @@ double reduce_count_above_partial(const tool_call& call, const size_t begin, con
 void tool_registry::add_standard_tools() {
   // Именованная инициализация намеренно: набор полей описания инструмента будет расти, и
   // позиционная запись ломалась бы на каждом новом поле.
-  add(tool_description{.name = "fill", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_fill});
+  add(tool_description{
+    .name = "fill", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_fill,
+    // Заливка не смотрит на род поля вовсе — она кладёт одно и то же число, и на устройстве тоже.
+    // Поэтому она объявляет себя годной для любого рода: иначе очередь, начинающаяся с обнуления
+    // целого счётчика, не переносилась бы вся из-за самого простого своего элемента.
+    .device_body = "  for (uint c = 0u; c < out_0_components(); ++c) out_0_set(index, c, args.value);\n",
+    .device_params = {{"value", 0.0}},
+    .device_integer_ready = true});
   add(tool_description{.name = "position_grid", .shape = aperture::pointwise, .input_count = 0, .output_count = 1,
                        .body = tool_position_grid});
   add(tool_description{.name = "value_noise", .shape = aperture::pointwise, .input_count = 0, .output_count = 1, .body = tool_value_noise});
@@ -556,6 +644,37 @@ void tool_registry::add_standard_tools() {
                    "  }\n"
                    "  out_0_set(index, taken == 0u ? 0.0 : sum / float(taken));\n",
     .device_params = {{"radius", 1.0}}});
+
+  add(tool_description{
+    .name = "filtered_blur", .shape = aperture::gather, .input_count = 1, .output_count = 1,
+    .body = tool_filtered_blur,
+    .device_body = "  vec2 texel = vec2(1.0) / vec2(float(args.extent_x), float(args.extent_y));\n"
+                   "  vec2 uv = (vec2(float(index % args.extent_x), float(index / args.extent_x)) + vec2(0.5)) * texel;\n"
+                   "  vec2 offset = texel * args.radius;\n"
+                   "  float sum = in_0_sample(uv + vec2(-offset.x, -offset.y));\n"
+                   "  sum += in_0_sample(uv + vec2(offset.x, -offset.y));\n"
+                   "  sum += in_0_sample(uv + vec2(-offset.x, offset.y));\n"
+                   "  sum += in_0_sample(uv + vec2(offset.x, offset.y));\n"
+                   "  out_0_set(index, sum * 0.25);\n",
+    .device_params = {{"radius", 1.0}},
+    // ЕДИНСТВЕННОЕ ОБЪЯВЛЕНИЕ, ИЗ КОТОРОГО СЛЕДУЕТ КАРТИНКА. Не «сделай вход образом», а «этот вход
+    // читают МЕЖДУ элементами»; в картинку его превращает план, потому что больше ничем картинка от
+    // буфера в лучшую сторону не отличается.
+    .device_filtered_inputs = {0}});
+
+  add(tool_description{
+    .name = "label_colour", .shape = aperture::pointwise, .input_count = 2, .output_count = 1,
+    .body = tool_label_colour,
+    .device_body = "  uint hashed = uint(in_0_at(index)) * 2654435761u;\n"
+                   "  vec3 base = vec3(float((hashed >> 16) & 255u), float((hashed >> 8) & 255u),\n"
+                   "                   float(hashed & 255u)) / 255.0;\n"
+                   "  float lit = args.dim + (1.0 - args.dim) * clamp(in_1_at(index), 0.0, 1.0);\n"
+                   "  uvec3 bytes = uvec3(clamp(base * lit, vec3(0.0), vec3(1.0)) * 255.0 + vec3(0.5));\n"
+                   "  out_0_set(index, bytes.x | (bytes.y << 8u) | (bytes.z << 16u) | (255u << 24u));\n",
+    .device_params = {{"dim", 0.25}},
+    // Приёмник — упакованные байты в целом поле, и тело написано под целое: `out_0_set` здесь берёт
+    // `uint`, а не `float`.
+    .device_integer_ready = true});
 
   add(tool_description{.name = "reduce_min", .shape = aperture::reduce, .input_count = 1, .output_count = 0,
                        .partial = reduce_min_partial,

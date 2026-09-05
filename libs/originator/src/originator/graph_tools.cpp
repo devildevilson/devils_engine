@@ -213,22 +213,24 @@ void tool_sphere_adjacency(const tool_call& call, const size_t begin, const size
   // Симметризация. Дуга кладётся в оба конца, затем список каждой клетки сортируется и чистится от
   // повторов — так CSR становится каноническим: он не зависит ни от порядка обхода, ни от того, кто
   // из двух соседей нашёл другого.
-  std::vector<uint32_t> counts(count, 0);
+  // СЧЁТ ИДЁТ ПРЯМО В СМЕЩЕНИЯ, и обе таблицы 32-битные. Отдельная таблица счётчиков и 64-битные
+  // смещения стоили здесь 12 МиБ на миллионе клеток впустую: дуг у решётки на сфере около восьми на
+  // клетку, то есть их номер не выходит за 32 бита с огромным запасом, а счётчик и смещение — это
+  // одна и та же величина, посчитанная дважды.
+  std::vector<uint32_t> starts(count + 1, 0);
   for (size_t i = 0; i < count; ++i) {
     for (uint32_t k = 0; k < degrees[i]; ++k) {
       const uint32_t other = nearest[i * neighbours + k];
-      counts[i] += 1;
-      counts[other] += 1;
+      starts[i + 1] += 1;
+      starts[other + 1] += 1;
     }
   }
-
-  std::vector<size_t> starts(count + 1, 0);
   for (size_t i = 0; i < count; ++i) {
-    starts[i + 1] = starts[i] + counts[i];
+    starts[i + 1] += starts[i];
   }
 
   std::vector<uint32_t> filled(starts.back(), 0);
-  std::vector<size_t> cursors(starts.begin(), starts.end() - 1);
+  std::vector<uint32_t> cursors(starts.begin(), starts.end() - 1);
   for (size_t i = 0; i < count; ++i) {
     for (uint32_t k = 0; k < degrees[i]; ++k) {
       const uint32_t other = nearest[i * neighbours + k];
@@ -240,7 +242,7 @@ void tool_sphere_adjacency(const tool_call& call, const size_t begin, const size
   size_t total = 0;
   for (size_t i = 0; i < count; ++i) {
     auto* first = filled.data() + starts[i];
-    auto* last = filled.data() + starts[i] + counts[i];
+    auto* last = filled.data() + starts[i + 1];
     std::sort(first, last);
     last = std::unique(first, last);
 

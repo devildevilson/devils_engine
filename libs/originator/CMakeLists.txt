@@ -102,7 +102,9 @@ add_library(devils_engine::originator_primitives ALIAS devils_originator_primiti
 # Vulkan, а потребителю, которому нужен только путь на CPU, незачем линковать painter.
 add_library(devils_originator_device
   src/originator/device_queue.cpp
+  src/originator/device_executor.cpp
   include/devils_engine/originator/device_queue.h
+  include/devils_engine/originator/device_executor.h
 )
 
 target_include_directories(devils_originator_device

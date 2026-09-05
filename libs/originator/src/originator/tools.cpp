@@ -152,6 +152,10 @@ const field_ref& tool_call::output(const size_t index) const {
   return outputs[index];
 }
 
+bool tool_call::has_output(const size_t index) const noexcept {
+  return index < outputs.size() && outputs[index].valid();
+}
+
 void tool_registry::add(tool_description description) {
   if (description.name.empty()) {
     utils::error{}("originator: tool must have a name");
@@ -166,6 +170,10 @@ void tool_registry::add(tool_description description) {
   }
   if (!is_reduce && description.body == nullptr) {
     utils::error{}("originator: tool '{}' has no body", description.name);
+  }
+  if (description.optional_outputs > description.output_count) {
+    utils::error{}("originator: tool '{}' declares {} optional outputs of {}", description.name,
+                   description.optional_outputs, description.output_count);
   }
 
   tools_.push_back(std::move(description));
@@ -308,8 +316,14 @@ dispatch_check check_dispatch(const tool_description& tool,
   if (inputs.size() != tool.input_count) {
     return fail(std::format("step '{}': tool '{}' expects {} inputs, got {}", step_name, tool.name, tool.input_count, inputs.size()));
   }
-  if (outputs.size() != tool.output_count) {
-    return fail(std::format("step '{}': tool '{}' expects {} outputs, got {}", step_name, tool.name, tool.output_count, outputs.size()));
+  const uint32_t least_outputs = tool.output_count - std::min(tool.output_count, tool.optional_outputs);
+  if (outputs.size() > tool.output_count || outputs.size() < least_outputs) {
+    if (tool.optional_outputs == 0) {
+      return fail(std::format("step '{}': tool '{}' expects {} outputs, got {}", step_name, tool.name,
+                              tool.output_count, outputs.size()));
+    }
+    return fail(std::format("step '{}': tool '{}' takes from {} to {} outputs, got {}", step_name, tool.name,
+                            least_outputs, tool.output_count, outputs.size()));
   }
 
   for (size_t i = 0; i < inputs.size(); ++i) {

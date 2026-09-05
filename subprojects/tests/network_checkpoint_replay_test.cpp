@@ -60,8 +60,8 @@ using bundle_history = network::bounded_history<tick_id, intent_bundle>;
 
 static_assert(std::same_as<decltype(std::declval<ring&>().find(tick_id{})),
                            const checkpoint_blob*>);
-static_assert(std::same_as<decltype(std::declval<ring&>().entries()),
-                           const std::deque<ring::entry>&>);
+static_assert(std::same_as<std::ranges::range_reference_t<decltype(std::declval<ring&>().entries())>,
+                          const ring::entry&>);
 
 void apply_causal(fake_world& world, const intent_bundle& bundle) {
   for (const std::int64_t value : bundle.intents) {

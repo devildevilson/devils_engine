@@ -1493,7 +1493,8 @@ registered CTest. Packet/ACK/MTU simulation remains deliberately outside this lo
 - Test lost baseline, stale delta, duplicate create/delete and full baseline recovery.
 - Do not add ECS dirty tracking yet; a project can initially enumerate replicated state.
 
-Done when a fake entity set converges after arbitrary permitted loss/reordering without a full checkpoint.
+Done when a fake entity set converges under recorded loss/reordering schedules without a full checkpoint,
+assuming eventual reliable delivery and a draining consumer. Infinite loss is not a convergence guarantee.
 
 Done: `replication.h` adds a versioned header, non-mutating latest-state sequence gate, count/byte-bounded explicit
 baseline store and a project-codec materialization seam. Its optional canonical keyed codec detects changed values
@@ -1501,8 +1502,26 @@ without version advance, stale versions, duplicate keys and repeated create/dele
 unit cases pass in Debug and Release. The `NET07_replication_baselines` playground composes these primitives with
 NET06: one delta is lost, a dependency is delivered without its base, another pair is reordered, two reliable full
 replication baselines recover the stream, the delayed frame becomes stale and a duplicated final delta applies once.
-The fake entity sets converge at baseline 105 in `60/60` internal checks. No causal checkpoint, ECS dirty tracking,
+The fake entity sets converge at baseline 105. The pre-NET08 audit follow-up adds coalesced/correlated recovery,
+immutable repeated-baseline validation and distant/wrapped sequence recovery; the revised playground has
+`58/58` internal checks (the assertion layout changed). No causal checkpoint, ECS dirty tracking,
 wire codec or project component rule entered the library.
+
+### Before NET-08 — audited recovery and prepared memory
+
+- Keep logical transport budgets until message consumption, including delayed/inbox copies; bound traces too.
+- Preallocate history and transport metadata slots; recycle retired ownership explicitly.
+- Use prepared delta output and canonical document/section scratch; hash existing bytes without buffering twice.
+- Keep hot-path capacity refusals as statuses, never grow a vector silently in a prepared API.
+- Pin comparator tie refusal and float equality consistent with canonical bytes.
+- Verify zero allocations after preparation, linear delta materialization, and a complete late-input/checkpoint/
+  replay/digest composition independently of sockets.
+
+The implemented APIs and ownership limits are documented in `libs/network/README.md`; reproduced results are
+in `NETWORKING_STATUS.md`. Dynamic project payloads and ECS staging require their own storage policy and are
+not covered by a generic zero-allocation promise. NET-08 must measure the GNS ownership boundary separately;
+reuse the existing bounded thread/payload channels where their FIFO ownership contract fits, rather than
+introducing a second inter-thread queue merely for networking.
 
 ### NET-08 — selected gameplay transport adapter (`M-L`)
 

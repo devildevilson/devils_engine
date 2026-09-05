@@ -1,5 +1,7 @@
 #include "devils_engine/originator/script_host.h"
 
+#include "devils_engine/originator/script_translate.h"
+
 #include "devils_engine/bindings/env.h"
 
 #include <algorithm>
@@ -561,11 +563,29 @@ queue_call script_host::make_tool_call(const std::string& tool_name, const sol::
   // той строки lua, где вызов написан, — а исполняется очередь в одном месте, и по ней уже не
   // видно, кто из элементов её собрал.
   //
-  // key_support здесь не спрашивается намеренно: scatter в очередь не пускается вовсе, значит
-  // носителю ключа нечего охранять.
-  if (!fits_in_queue(call.shape)) {
+  // У `scatter` есть объявляемое исключение, и спрашивать о нём надо у ИНСТРУМЕНТА: независимость
+  // записей от порядка — свойство конкретного алгоритма, а не рода адресации. Правило здесь ровно то
+  // же, что у `check_queue`; второго набора условий не появляется.
+  const bool admitted = fits_in_queue(call.shape) ||
+                        (call.shape == aperture::scatter && tool->order_free_writes);
+  if (!admitted) {
     utils::error{}("originator step '{}': tool '{}' has aperture '{}', which the queue does not take: {}",
                    current_step_, tool_name, to_string(call.shape), queue_rejection_reason(call.shape));
+  }
+
+  // ЧАНКОВАННЫЙ scatter охраняется носителем ключа, как и у одиночного вызова: раз апертура в очередь
+  // теперь попадает, охранять стало что.
+  if (call.shape == aperture::scatter) {
+    const sol::optional<std::string> declared = args["key_support"];
+    const auto support = declared.has_value() ? parse_key_support(*declared) : key_support::global;
+    if (declared.has_value() && support == key_support::count) {
+      utils::error{}("originator step '{}': tool '{}' got unknown key_support '{}', expected chunk_local or global",
+                     current_step_, tool_name, *declared);
+    }
+    const auto key_check = check_key_support(*tool, support, current_chunked_, current_step_);
+    if (!key_check.allowed) {
+      utils::error{}("originator {}", key_check.message);
+    }
   }
 
   // У вызова со счётчиком диапазон до исполнения неизвестен, поэтому проверяется ЁМКОСТЬ приёмника —
@@ -611,6 +631,25 @@ queue_call script_host::make_script_call(const sol::table& args) {
     check_script_dispatch(program, call.inputs, call.outputs, call.params, call.range_begin, checked_end, current_step_);
   if (!check.allowed) {
     utils::error{}("originator {}", check.message);
+  }
+
+  // УСТРОЙСТВЕННАЯ ФОРМА — ПЕРЕВОД, и получить её иначе нельзя. Это и есть смысл того, что
+  // `run_script` принимает ds, а не шейдер: что считается на этом шаге, решает автор данных, поэтому
+  // он приносит программу, а в GLSL её превращает движок по AST, который отдаёт сам `ds`.
+  //
+  // Непереводимая конструкция — не ошибка: это объявленный ОТКАЗ, по которому очередь остаётся на
+  // CPU, а устройственный план называет причину вместо того, чтобы молчать.
+  if (!call.outputs.empty()) {
+    std::string signature;
+    for (const auto& binding : call.inputs) {
+      signature.append(binding.field_name());
+      signature.push_back(':');
+      signature.append(to_string(binding.type().base));
+      signature.push_back(';');
+    }
+    signature.push_back(kind == script_program::result_kind::predicate ? '?' : '#');
+    signature.append(to_string(call.outputs.front().type().base));
+    call.device = acquire_device_form(*program_name, signature, call.inputs, call.outputs.front(), kind);
   }
 
   // Ядро очереди про devils_script не знает, поэтому элемент несёт своё исполнение телом. Указатель
@@ -681,9 +720,10 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
     }
 
     const sol::optional<std::string> name = pair.first.as<sol::optional<std::string>>();
-    if (!name.has_value() || (*name != "output" && *name != "resident")) {
+    if (!name.has_value() || (*name != "output" && *name != "resident" && *name != "device")) {
       utils::error{}("originator step '{}': the queue got an unknown key '{}'; a queue takes its elements as a list, "
-                     "names what comes back to the host in 'output' and what stays on the device in 'resident'",
+                     "names what comes back to the host in 'output', what stays on the device in 'resident', and "
+                     "where it is computed in 'device'",
                      current_step_, name.value_or(std::string(sol::type_name(s, pair.first.get_type()))));
     }
   }
@@ -703,7 +743,13 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
   queue.output = read_field_list(args, "output");
   queue.resident = read_field_list(args, "resident");
 
-  const auto report = run_queue(queue, pool_);
+  // ГДЕ СЧИТАЕТСЯ — ОБЪЯВЛЕНИЕ КОНФИГА (§6.4), а не свойство машины. Все машины берут одну ветку, а
+  // та, что исполнить её не может, ОТКАЗЫВАЕТ ГРОМКО: молча посчитав на CPU очередь, решённую на
+  // GPU, генератор выдал бы другой мир под тем же зерном.
+  const sol::optional<bool> on_device = args["device"];
+  queue.on_device = on_device.value_or(false);
+
+  const auto report = queue.on_device ? run_on_device(queue) : run_queue(queue, pool_);
 
   sol::table result(lua_, sol::create);
   result["calls"] = report.calls;
@@ -715,6 +761,9 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
   // Сколько вызовов упёрлось в ёмкость. Тело шага обязано это читать: отказать нельзя (на устройстве
   // бросить нечем), а тихо обрезанный проход по результату не отследить.
   result["clamped"] = report.clamped;
+  // Путь ПОДТВЕРЖДАЕТСЯ отчётом: объявить `device = true` мало — тело шага обязано иметь возможность
+  // увидеть, что он и был взят.
+  result["device"] = report.on_device;
   return sol::make_object(s, result);
 }
 
@@ -760,6 +809,68 @@ bool script_host::has_program(const std::string_view& program_name) const noexce
     }
   }
   return false;
+}
+
+void script_host::set_device_executor(queue_executor* executor) noexcept {
+  device_executor_ = executor;
+}
+
+queue_report script_host::run_on_device(const computation_queue& queue) {
+  if (device_executor_ == nullptr) {
+    utils::error{}("originator step '{}': the queue is declared to run on a device, but no device executor is "
+                   "installed — the path is a decision of the config, so a machine that cannot take it refuses "
+                   "instead of quietly computing something else",
+                   current_step_);
+  }
+
+  std::string refusal;
+  if (!device_executor_->can_run(queue, refusal)) {
+    utils::error{}("originator step '{}': the queue is declared to run on a device and cannot: {}",
+                   current_step_, refusal);
+  }
+  return device_executor_->run(queue);
+}
+
+const translated_form& script_host::acquire_device_form(const std::string_view& program_name,
+                                                       const std::string_view& signature,
+                                                       const std::span<const field_ref>& inputs,
+                                                       const field_ref& output,
+                                                       const script_program::result_kind kind) {
+  for (const auto& entry : device_forms_) {
+    if (entry.name == program_name && entry.signature == signature) {
+      return entry.form;
+    }
+  }
+
+  const program_source* source = nullptr;
+  for (const auto& entry : program_sources_) {
+    if (entry.name == program_name) {
+      source = &entry;
+      break;
+    }
+  }
+  if (source == nullptr) {
+    utils::error{}("originator step '{}': no devils_script program named '{}'", current_step_, program_name);
+  }
+
+  std::vector<translated_field> fields;
+  fields.reserve(inputs.size());
+  for (const auto& binding : inputs) {
+    fields.push_back(translated_field{std::string(binding.field_name()), binding.type().base});
+  }
+  const translated_field target{std::string(output.field_name()), output.type().base};
+
+  translated_form form;
+  try {
+    form = translate_to_glsl(program_name, source->source, fields, target, kind).form;
+  } catch (const std::exception& error) {
+    // Перевод падает на том, чего он ещё не умеет (случайность, списки, `ctx_save`). Это законный
+    // ответ, а не дефект: очередь считается на CPU, а причина едет дальше вместе с объявлением.
+    form = translated_form::refused(error.what());
+  }
+
+  device_forms_.push_back(device_form_entry{std::string(program_name), std::string(signature), std::move(form)});
+  return device_forms_.back().form;
 }
 
 const script_program& script_host::acquire_program(const std::string_view& program_name,

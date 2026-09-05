@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "common.h"
+#include "device_form.h"
 #include "script_program.h"
 #include "tools.h"
 
@@ -57,11 +58,9 @@ struct translation {
   // (буфер или картинка) выводится из ВСЕЙ очереди, поэтому собирать текст обязан тот, кто её видит
   // целиком, а не перевод одной программы.
   std::string source;
-  // Тело без привязок, написанное против аксессоров: то, что кладут в `queue_call::device_body`.
-  std::string body;
-  // Аргументы `ctx:arg:` в порядке push-константы — именами, под которыми их ищут в параметрах
-  // вызова. То, что кладут в `queue_call::device_params`.
-  std::vector<device_param> params;
+  // ОБЪЯВЛЕННАЯ ФОРМА: то, что кладут в `queue_call::device`. Собрать её из строки нельзя — она
+  // выдаётся только здесь, и это единственный способ для чужого тела попасть на устройство.
+  translated_form form;
   std::vector<std::string> arguments;
   // Размер рабочей группы, объявленный в тексте. Отдаётся наружу потому, что диспатч обязан считать
   // число групп по НЕМУ, а не по своему представлению о нём.
@@ -71,6 +70,14 @@ struct translation {
 // Переводит текст программы против имён и родов привязок — тех же имён и в том же порядке, что у
 // `script_program::compile`. Непереводимая конструкция это ОТКАЗ с её именем и позицией в тексте:
 // молча выпущенный шейдер, который считает не то, был бы худшим из возможных исходов.
+// ДЕРЖАТЕЛЬ КЛЮЧА на объявление устройственной формы. Существует затем, чтобы «форму выдал перевод»
+// было утверждением КОМПИЛЯТОРА, а не комментарием: конструктор `translated_form::authority` закрыт,
+// и получить его может только этот класс.
+class translation_authority {
+public:
+  static translated_form::authority key() noexcept { return translated_form::authority{}; }
+};
+
 translation translate_to_glsl(const std::string_view& name,
                              const std::string_view& source,
                              const std::span<const translated_field>& inputs,

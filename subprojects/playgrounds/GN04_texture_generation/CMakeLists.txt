@@ -7,11 +7,18 @@ project(GN04_texture_generation VERSION 0.1.0 LANGUAGES CXX)
 # картинку целиком можно попросить отдельно (`--dump`), и это уже для глаза, а не для конвейера.
 add_executable(GN04_texture_generation src/main.cpp)
 
+target_compile_definitions(GN04_texture_generation PRIVATE
+  GN04_RESOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/resources")
+
 target_link_libraries(GN04_texture_generation PRIVATE
-  # Проходы связывает НЕ площадка: pipeline составляет originator из своей же очереди. Отсюда и
-  # зависимость — на устройственный слой генератора, а не на painter напрямую.
+  # Пайплайн приезжает КОНФИГОМ, как у остальных площадок кампании, а проходы связывает НЕ площадка:
+  # pipeline составляет originator из объявленной очереди. Отсюда и набор целей.
   devils_engine::originator
+  devils_engine::originator_config
   devils_engine::originator_device
+  devils_engine::originator_lua
+  devils_engine::originator_primitives
+  devils_engine::originator_script
   devils_engine::painter
   devils_engine::utils
   devils_engine::options)

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <memory>
 #include <vector>
 
@@ -88,6 +89,16 @@ void tool_voronoi_label(const tool_call& call, const size_t begin, const size_t 
 
   const auto accept_any = [](const uint32_t&) { return true; };
 
+  // БЛИЗОСТЬ К ГРАНИЦЕ — необязательный второй выход, и он не «ещё одно поле заодно»: у самой границы
+  // расстояния до двух ближайших сайтов равны, поэтому разность `d2 - d1` и есть расстояние до
+  // границы области. Считается она ТЕМ ЖЕ обходом (второй запрос к тому же дереву, отвергающий
+  // победителя), поэтому отдельный проход по растру не нужен.
+  //
+  // Именно поэтому выход необязательный: тому, кому нужна только разметка, незачем объявлять буфер
+  // ради результата, который никто не прочитает.
+  const bool want_edge = call.has_output(1);
+  auto edge = want_edge ? call.output(1).write() : field_accessor{};
+
   for (size_t i = begin; i < end; ++i) {
     const std::array<float, 2> query{float(i % width), float(i / width)};
     const auto* nearest = tree.nearest(query, max_radius, accept_any);
@@ -97,6 +108,27 @@ void tool_voronoi_label(const tool_call& call, const size_t begin, const size_t 
                      call.step_name, max_radius, i);
     }
     target.set(i, double(nearest->payload));
+
+    if (!want_edge) {
+      continue;
+    }
+
+    const auto winner = nearest->payload;
+    const auto* second = tree.nearest(query, max_radius, [&](const uint32_t& id) { return id != winner; });
+    if (second == nullptr) {
+      // Сайт всего один: границ нет, и близость к ней не определена. Ноль здесь честнее любого
+      // большого числа — «границы рядом нет» и «границы нет вовсе» это разные вещи только там, где
+      // области больше одной.
+      edge.set(i, 0.0);
+      continue;
+    }
+
+    const auto distance = [&](const std::array<float, 2>& point) {
+      const double dx = double(point[0]) - double(query[0]);
+      const double dy = double(point[1]) - double(query[1]);
+      return std::sqrt(dx * dx + dy * dy);
+    };
+    edge.set(i, distance(second->pos) - distance(nearest->pos));
   }
 }
 
@@ -358,9 +390,44 @@ void tool_voronoi_polygons(const tool_call& call, const size_t begin, const size
 } // namespace
 
 void add_voronoi_tools(tool_registry& registry) {
-  registry.add(tool_description{.name = "voronoi_label", .shape = aperture::gather,
-                                .input_count = 1, .output_count = 1,
-                                .body = tool_voronoi_label, .prepare = prepare_site_tree});
+  registry.add(tool_description{
+    .name = "voronoi_label", .shape = aperture::gather,
+    .input_count = 1, .output_count = 2, .optional_outputs = 1,
+    .body = tool_voronoi_label, .prepare = prepare_site_tree,
+    // УСТРОЙСТВЕННАЯ ФОРМА — ПЕРЕБОР, а не дерево, и это не лень. kd-дерево на устройство не
+    // переносится (его строит подготовка на хосте), а перебор по списку сайтов там стоит ровно
+    // столько, сколько сайтов: работа на элемент плотная, а именно плотность и окупает устройство.
+    //
+    // `max_radius` устройственная форма НЕ читает, и это названо: на хосте он ограничивает ПОИСК по
+    // дереву, а перебор ничего не ищет — он смотрит все сайты. Разойтись два пути могут только на
+    // радиусе, меньшем расстояния до ближайшего сайта, то есть там, где путь на CPU уже падает.
+    .device_body = "  uint width = args.extent_x;\n"
+                   "  vec2 query = vec2(float(index % width), float(index / width));\n"
+                   "  float nearest = 3.4e38;\n"
+                   "  float second = 3.4e38;\n"
+                   "  uint winner = 0u;\n"
+                   "  uint site_count = in_0_length();\n"
+                   "  for (uint i = 0u; i < site_count; ++i) {\n"
+                   "    vec2 delta = vec2(in_0_at(i, 0u), in_0_at(i, 1u)) - query;\n"
+                   "    float squared = dot(delta, delta);\n"
+                   "    if (squared < nearest) {\n"
+                   "      second = nearest;\n"
+                   "      nearest = squared;\n"
+                   "      winner = i;\n"
+                   "    } else if (squared < second) {\n"
+                   "      second = squared;\n"
+                   "    }\n"
+                   "  }\n"
+                   "  out_0_set(index, float(winner));\n"
+                   "#if ORIGINATOR_OUTPUTS > 1\n"
+                   "  out_1_set(index, second > 3.3e38 ? 0.0 : sqrt(second) - sqrt(nearest));\n"
+                   "#endif\n",
+    .device_params = {},
+    // МЕТКА ЦЕЛАЯ ПО ПРИРОДЕ: номер области — это номер, а не число, и приёмник у неё обычно `ui1`.
+    // Поэтому инструмент объявляет себя годным для любого рода: тело пишет `float(winner)`, а
+    // переводящая перегрузка аксессора кладёт в целое поле значение, а не биты. Точности `float32`
+    // хватает с запасом — областей столько, сколько их перечислил хост, и до 2^24 отсюда далеко.
+    .device_integer_ready = true});
   // scatter, а не sequential: инструмент пишет по ВЫЧИСЛЕННЫМ индексам в структуру другого размера
   // (CSR из смещений и дуг), и детерминизм ему даёт собственная схема фаз с канонизацией, а не
   // порядок обхода. Апертура scatter заодно означает, что диапазон относится ко ВХОДАМ — то есть к

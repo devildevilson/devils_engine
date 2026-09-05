@@ -21,7 +21,8 @@ recorded here only after it is reproduced by an executable test or directly obse
 | NET-04 checkpoint ring/replay | complete; 6/6 cases pass in Debug and Release |
 | NET-05 digest diagnostics | complete; 4/4 cases pass in Debug and Release |
 | NET-06 in-memory transport playground | complete; 121/121 checks pass in Debug and Release |
-| NET-07 replication baselines/deltas | complete; 7/7 unit cases and 60/60 playground checks pass in Debug and Release |
+| NET-07 replication baselines/deltas | complete; audited recovery, 7/7 unit cases and revised 58/58 playground checks pass in Debug and Release |
+| Pre-NET08 audit / prepared memory | fixed core findings; 11/11 new cases, full focused networking set 56/56 in Debug and Release |
 | ECS transactional world replacement | complete; 13/13 focused cases pass in Debug and Release |
 | TIME-00 strong simulation time | complete; tick/rate/conversion/pacing primitives pass 5/5 cases |
 | TIME-01 gameplay timeline/presentation split | complete; generic timeline, flow, turn pipeline and cardgame proof |
@@ -33,6 +34,89 @@ recorded here only after it is reproduced by an executable test or directly obse
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
 | Yojimbo comparison | deferred indefinitely; not an implementation gate |
+
+## Pre-NET08 audit follow-up — 2026-09-05
+
+The fixes below precede the real transport adapter. No Originator sources or targets were changed/built by
+this networking follow-up; concurrent generator work is outside the verification claim.
+
+### Correctness fixes
+
+- NET07 coalesces multiple missing-base reports into one pending reliable request. Recovery carries a request
+  token; only a matching response from the fixture's trusted authority can explicitly reset a distant sequence
+  horizon. A token is correlation, not authentication. Duplicated replies and identical baseline IDs under new
+  frame sequences are harmless; conflicting content/tick under the current immutable ID is refused without
+  publishing state or sequence. The authority now chooses a coherent `(ID, tick, payload)` from its current
+  state, not from the request ordinal. Checked gaps: 33, 300, 30000, including uint16 wrap.
+- NET06 count/byte budgets now cover the entire retained lifetime: outbound, delayed deliveries and unread
+  inbox messages. With count=1, bytes=24 and 1000 send/advance iterations without a consumer, **only one** send
+  succeeds; retained=1/24 B even though outbound=0. Consumption frees the reservation. Extra unreliable
+  duplicates cannot exceed either budget and suppressed copies are counted. Reliable originals are not dropped
+  because a consumer is slow. Trace storage has an independent fixed cap and omitted-event counter.
+- Keyed delta apply merges sorted inputs in O(base + delta + output), replacing per-element insert/erase.
+  Deleting 1000/2000/4000 entries now performs **zero payload copies and zero payload moves**; the old erase
+  algorithm needed 499500/1999000/7998000 move assignments. Keeping N survivors copies each value once into
+  prepared output, rather than copying the whole base before patching it.
+- Tick journal rejects comparator ties between distinct records with `ambiguous_order`. Stable sorting would
+  only preserve arrival-dependent order. The existing policy requirement that equivalent provenance forms
+  an adjacent ordering class remains explicit.
+- Added shared `utils::float_bits_equal`, applied fieldwise where canonical bytes preserve signed zero/NaN
+  payloads. Checked +0/-0 version mismatch, advanced-version reproduction, identical NaN and distinct NaN
+  payloads. Ordinary value equality remains a project policy, not silently replaced for arbitrary structs.
+- Added composition proof: native-float prediction differs after tick 2, authoritative intent crosses reliable
+  loss/retry and delay, then checkpoint 0 restores a staging host and ticks 1..6 replay. Final canonical Murmur
+  digest matches authority; the original six presentation events are not repeated.
+
+### Memory paths actually measured
+
+`network_hot_path_test` replaces `operator new` only inside its own executable. Measurement begins after all
+fixture preparation; assertions and reference-result construction are outside the measured region.
+
+| Measured path | Work | Allocations after preparation |
+| --- | --- | ---: |
+| Prepared keyed delta build + apply | 10000 mixed create/update/delete iterations | 0 |
+| Link send/retry/duplicate/delivery/consume, trace rotation and reconnect | 1000 two-way cycles | 0 |
+| Journal → immutable history → take retired batch → recycle | 10000 ticks | 0 |
+| Canonical checkpoint + full/section Murmur diagnostics | 10000 iterations, matching convenience API bytes/roots | 0 |
+| Delayed input → restore → replay → final digest | Complete six-tick correction path | 0 |
+
+Mechanisms: fixed history slots instead of deque allocation, explicit `take_oldest` ownership recycling,
+`sealed_tick_batch::release_storage`/journal `recycle`, capacity-checked delta `*_into`, bounded
+`state_writer`/`Schema::try_write`, and `try_murmur64_digest` over already serialized bytes. The logical link
+uses one prepared slot pool per direction with per-lane index lists, prepared delivery/inbox buffers and
+in-place sorting with a total ordering key. NET07 consumes inboxes by borrowed callback rather than allocating
+an owning drain vector each pump.
+
+Important boundary: these counters cover the neutral algorithms and the tested payload policies, **not every
+project payload**. Convenience APIs still allocate. Copying a dynamic Message/Value, dropping its nested
+vector/string, or decoding a real ECS staging world can allocate/free. Logical byte budgets do not measure
+reserved nested capacity or allocator metadata. NET07's fake snapshots still own vectors. GNS payload ownership,
+worker-channel arenas, real ECS decode buffers and large-world memory high-water measurements remain explicit
+work at their respective integration boundaries; none is claimed allocation-free here.
+
+`entries()` now returns a const-element random-access view by value, not `const deque&`. Reacquire the view
+after a mutation; individual entry addresses remain stable until their own eviction. A test pins rotation,
+pointer stability and safe empty moved-from histories.
+
+### Verification and reproduction
+
+Debug and Release: **56/56** focused registered tests pass, including the native-float compiler corpus, NET06
+`121/121`, revised NET07 `58/58`, and new hot-path tests `11/11` (`99/99` assertions). The NET07 assertion count
+changed because expected protocol refusals now take ordinary branches; compare scenarios, not historical totals.
+The whole project suite was not run during this follow-up.
+
+The same 11 hot-path cases also pass with Clang 22.1.8 + libstdc++ under AddressSanitizer,
+UndefinedBehaviorSanitizer and LeakSanitizer, with no reported errors/leaks. Leak checking needed a run outside
+the ptrace-based sandbox. A libc++ build was attempted but its development headers (`array`, `ciso646`) are
+not installed in this environment; libc++ is not claimed verified by this follow-up.
+
+```sh
+cmake --build build-debug --target network_hot_path_test network_tick_journal_test network_sequence_history_test network_state_schema_test network_checkpoint_replay_test network_state_digest_test network_replication_test NET06_in_memory_transport NET07_replication_baselines -j4
+ctest --test-dir build-debug -R '^(network_|NET0[67]_)' --output-on-failure -j4
+
+cmake --build build-release --target network_hot_path_test network_tick_journal_test network_sequence_history_test network_state_schema_test network_checkpoint_replay_test network_state_digest_test network_replication_test NET06_in_memory_transport NET07_replication_baselines -j4
+ctest --test-dir build-release -R '^(network_|NET0[67]_)' --output-on-failure -j4
+```
 
 The PRE-01 executable is intentionally a direct GNS consumer. It passes opaque bytes and does not move an
 engine transport abstraction, network entity type, serialization scheme or client/server policy into the new

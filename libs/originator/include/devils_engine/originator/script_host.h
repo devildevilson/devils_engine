@@ -83,6 +83,14 @@ public:
   sol::environment& env() noexcept;
 
   void set_budget(const script_budget budget) noexcept;
+
+  // ИСПОЛНИТЕЛЬ УСТРОЙСТВЕННЫХ ОЧЕРЕДЕЙ. Ставится снаружи потому, что ядру генератора незачем знать
+  // про Vulkan: реализацию даёт `devils_engine::originator_device`, а решение о пути принимает
+  // конфиг (`originator.queue{ ..., device = true }`).
+  //
+  // Не поставлен, а очередь просит устройство — ГРОМКИЙ отказ, а не тихий переход на CPU: молча
+  // посчитав на CPU очередь, решённую на GPU, генератор выдал бы другой мир под тем же зерном.
+  void set_device_executor(queue_executor* executor) noexcept;
   const script_budget& budget() const noexcept;
 
   // Загружает тело шага. Чанк ОБЯЗАН вернуть функцию — она и есть шаг.
@@ -116,6 +124,14 @@ private:
     std::unique_ptr<script_program> program;
   };
 
+  // Устройственная форма той же программы. Кэшируется отдельно потому, что зависит ещё и от РОДА
+  // ВЫХОДА: одна и та же программа, пишущая в `v1` и в `ui1`, переводится по-разному.
+  struct device_form_entry {
+    std::string name;
+    std::string signature;
+    translated_form form;
+  };
+
   static void instruction_hook(lua_State* L, lua_Debug* ar);
   void bind_types();
   void bind_tools();
@@ -143,6 +159,17 @@ private:
   queue_call make_script_call(const sol::table& args);
   sol::table make_step_table(const step_context& context);
   const body_entry* find_body(const std::string_view& step_name) const noexcept;
+  // Исполнение очереди, объявившей себя устройственной. Отсутствие исполнителя — громкий отказ.
+  queue_report run_on_device(const computation_queue& queue);
+
+  // Перевод программы в устройственную форму, с тем же кэшем, что у компиляции: перевод — чистая
+  // функция от (текст, имена и роды привязок, род выхода), поэтому ключ у них общий.
+  const translated_form& acquire_device_form(const std::string_view& program_name,
+                                             const std::string_view& signature,
+                                             const std::span<const field_ref>& inputs,
+                                             const field_ref& output,
+                                             const script_program::result_kind kind);
+
   const script_program& acquire_program(const std::string_view& program_name,
                                         const std::span<const field_ref>& inputs,
                                         const script_program::result_kind kind);
@@ -154,6 +181,8 @@ private:
   std::vector<body_entry> bodies_;
   std::vector<program_source> program_sources_;
   std::vector<program_entry> programs_;
+  std::vector<device_form_entry> device_forms_;
+  queue_executor* device_executor_ = nullptr;
 
   script_budget budget_{};
   // Объявленный и НЕ отданный очереди вызов — потерянная работа: тело написало `queue.blend{...}`,

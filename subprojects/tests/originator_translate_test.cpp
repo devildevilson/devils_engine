@@ -65,15 +65,15 @@ std::vector<std::byte> make_push(const uint32_t element_count,
                                  const originator::translation& translated,
                                  const originator::parameters& params) {
   std::vector<std::byte> push(sizeof(originator::device_call_header) +
-                              translated.params.size() * sizeof(float));
+                              translated.form.params().size() * sizeof(float));
   originator::device_call_header header;
   header.count = element_count;
   header.begin = 0;
   header.extent_x = element_count;
   header.extent_y = 1;
   std::memcpy(push.data(), &header, sizeof(header));
-  for (size_t i = 0; i < translated.params.size(); ++i) {
-    const float value = float(params.number(translated.params[i].name, translated.params[i].fallback));
+  for (size_t i = 0; i < translated.form.params().size(); ++i) {
+    const float value = float(params.number(translated.form.params()[i].name, translated.form.params()[i].fallback));
     std::memcpy(push.data() + sizeof(header) + i * sizeof(float), &value, sizeof(value));
   }
   return push;
@@ -99,15 +99,21 @@ TEST_CASE("originator translates a ds program into a compute shader") {
   CHECK(translated.source.find("in_1_at(index)") != std::string::npos);
   // Целые поля читаются с преобразованием: `float[]` над сырым int32 читал бы биты float.
   CHECK(translated.source.find("float(in_0_at(index))") != std::string::npos);
+  // ФОРМА ВЫДАНА ПЕРЕВОДОМ, и это единственный способ для чужого тела попасть на устройство: собрать
+  // `translated_form` из строки нельзя, конструктор закрыт ключом. Проверяется здесь не «нельзя» —
+  // это утверждение компилятора, — а то, что перевод форму ВЫДАЁТ.
+  CHECK(translated.form.declared());
+  CHECK(translated.form.refusal().empty());
+
   // Тело отдаётся ОТДЕЛЬНО от привязок: род поля выводится из всей очереди, поэтому собрать текст
   // может только тот, кто её видит целиком.
-  CHECK(translated.body.find("out_0_set(index,") != std::string::npos);
-  CHECK(translated.source.find(translated.body) != std::string::npos);
+  CHECK(translated.form.body().find("out_0_set(index,") != std::string::npos);
+  CHECK(translated.source.find(translated.form.body()) != std::string::npos);
   // Шапка push-константы — ОБЩАЯ, та же, что у нативного инструмента.
   CHECK(translated.source.find("uint count; uint begin; uint extent_x; uint extent_y;") != std::string::npos);
-  REQUIRE(translated.params.size() == 2);
-  CHECK(translated.params[0].name == "low");
-  CHECK(translated.params[0].shader_name() == "arg_low");
+  REQUIRE(translated.form.params().size() == 2);
+  CHECK(translated.form.params()[0].name == "low");
+  CHECK(translated.form.params()[0].shader_name() == "arg_low");
   // Запись в целое поле повторяет store_component: зажим и усечение, а не «как получится».
   CHECK(translated.source.find("uint(clamp(") != std::string::npos);
   // Индекс из двух осей и охранник — без них диспатч не портируемый.
@@ -385,4 +391,18 @@ TEST_CASE("originator translates GN01's actual biome rule, and the float paths d
   // классификация усиливает разницу до смены класса. Проверяется только то, что расхождение ОСТАЁТСЯ
   // РЕДКИМ — иначе это уже не арифметика, а ошибка перевода.
   CHECK(differences < count / 100);
+}
+
+TEST_CASE("originator names a refused device form instead of silently having none") {
+  // ОТКАЗ — ЗАКОННЫЙ ОТВЕТ, а не дефект: непереводимая конструкция (случайность, списки, `ctx_save`)
+  // оставляет очередь на CPU. Но отказ обязан НЕСТИ ПРИЧИНУ: форма, которой просто нет, и форма,
+  // которую отказались объявить, различаются только тем, что вторая может это сказать.
+  const auto refused = originator::translated_form::refused("randomness has no salt in the AST");
+  CHECK_FALSE(refused.declared());
+  CHECK(refused.body().empty());
+  CHECK(refused.refusal() == "randomness has no salt in the AST");
+
+  const originator::translated_form nothing;
+  CHECK_FALSE(nothing.declared());
+  CHECK(nothing.refusal().empty());
 }

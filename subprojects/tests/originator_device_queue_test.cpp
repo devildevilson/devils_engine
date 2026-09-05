@@ -374,15 +374,6 @@ TEST_CASE("originator device queue puts a gather tool on the device too") {
 // =============================================================================================
 
 namespace {
-// Чужое тело: читает свой элемент ВЫБОРКОЙ, ровно в центре текселя. В центре билинейный фильтр
-// возвращает сам тексель, поэтому у такого чтения есть точный эталон — и сверять можно не «похоже»,
-// а РАВНО.
-constexpr std::string_view sample_centre_body = R"glsl(
-  vec2 texel = vec2(1.0) / vec2(float(args.extent_x), float(args.extent_y));
-  vec2 uv = (vec2(float(index % args.extent_x), float(index / args.extent_x)) + vec2(0.5)) * texel;
-  out_0_set(index, in_0_sample(uv));
-)glsl";
-
 void copy_body(const originator::queue_call& call, const std::string_view&, thread::atomic_pool*) {
   const auto source = call.inputs[0].read();
   const auto target = call.outputs[0].write();
@@ -391,18 +382,28 @@ void copy_body(const originator::queue_call& call, const std::string_view&, thre
   }
 }
 
-originator::queue_call sampling_call(originator::buffer& cells,
-                                     const std::string_view& from,
-                                     const std::string_view& to) {
+// РАДИУС НОЛЬ — не вырожденный случай, а единственная точка, где у фильтрованного чтения есть ТОЧНЫЙ
+// эталон: все четыре отсчёта попадают в центр текселя, а там билинейный фильтр ничего не смешивает и
+// обязан вернуть сам тексель. Всё остальное у фильтра implementation-defined (§6.3), и сверять его
+// побитово нельзя ни с чем.
+originator::queue_call blur_call(originator::buffer& cells,
+                                 const std::string_view& from,
+                                 const std::string_view& to,
+                                 const double radius) {
+  const auto* tool = registry().find("filtered_blur");
+  REQUIRE(tool != nullptr);
+
+  originator::parameters params;
+  params.set_number("radius", radius);
+
   originator::queue_call call;
-  call.label = "sample_centre";
-  call.body = copy_body;
-  call.shape = originator::aperture::gather;
+  call.label = "filtered_blur";
+  call.tool = tool;
+  call.shape = tool->shape;
   call.inputs = {readable(cells, from)};
   call.outputs = {writable(cells, to)};
+  call.params = std::move(params);
   call.range_end = grid_count;
-  call.device_body = std::string(sample_centre_body);
-  call.device_filtered_inputs = {0};
   return call;
 }
 } // namespace
@@ -424,7 +425,7 @@ TEST_CASE("originator derives which field becomes an image from how the queue re
     originator::computation_queue queue;
     queue.name = "sampled";
     queue.calls.push_back(tool_call("remap", {readable(cells, "height")}, {writable(cells, "smoothed")}, scale));
-    queue.calls.push_back(sampling_call(cells, "smoothed", "mixed"));
+    queue.calls.push_back(blur_call(cells, "smoothed", "mixed", 0.0));
     // `smoothed` названо в выходе НАМЕРЕННО: оно картинка, и значит план обязан уметь привезти
     // картинку обратно. Внутри очереди такая передача не платится вовсе — здесь она на границе.
     queue.output.push_back(writable(cells, "smoothed"));
@@ -475,7 +476,7 @@ TEST_CASE("originator refuses a filtered read it cannot honour, and says why") {
 
     originator::computation_queue queue;
     queue.name = "integer_filter";
-    queue.calls.push_back(sampling_call(labels, "label", "result"));
+    queue.calls.push_back(blur_call(labels, "label", "result", 1.0));
     queue.output.push_back(writable(labels, "result"));
 
     const auto check = originator::check_device_queue(queue);
@@ -491,7 +492,7 @@ TEST_CASE("originator refuses a filtered read it cannot honour, and says why") {
 
     originator::computation_queue queue;
     queue.name = "shapeless_filter";
-    queue.calls.push_back(sampling_call(linear, "height", "result"));
+    queue.calls.push_back(blur_call(linear, "height", "result", 1.0));
     queue.output.push_back(writable(linear, "result"));
 
     const auto check = originator::check_device_queue(queue);
@@ -513,7 +514,7 @@ TEST_CASE("originator refuses a filtered read it cannot honour, and says why") {
     originator::computation_queue queue;
     queue.name = "mixed_shapes";
     // Первый вызов делает `coarse.height` картинкой, читая его фильтром.
-    auto filtered = sampling_call(coarse, "height", "result");
+    auto filtered = blur_call(coarse, "height", "result", 1.0);
     filtered.range_end = coarse_count;
     queue.calls.push_back(std::move(filtered));
 
@@ -552,4 +553,60 @@ TEST_CASE("originator refuses a native tool over a field it was not written for"
   const auto check = originator::check_device_queue(queue);
   CHECK_FALSE(check.allowed);
   CHECK(check.message.find("BITS") != std::string::npos);
+}
+
+TEST_CASE("originator device plan repeats the reason a foreign body refused") {
+  // Чужое тело попадает на устройство ТОЛЬКО переводом `devils_script`. Когда перевод отказал,
+  // причина обязана доехать до плана: «на устройство не переносится» без объяснения означало бы, что
+  // автор ищет её сам, а искать надо в трансляторе.
+  auto cells = make_cells();
+
+  originator::queue_call call;
+  call.label = "untranslatable";
+  call.body = copy_body;
+  call.shape = originator::aperture::pointwise;
+  call.inputs = {readable(cells, "height")};
+  call.outputs = {writable(cells, "smoothed")};
+  call.range_end = grid_count;
+  call.device = originator::translated_form::refused("'chance' has no salt in the AST");
+
+  originator::computation_queue queue;
+  queue.name = "refused";
+  queue.calls.push_back(std::move(call));
+  queue.output.push_back(writable(cells, "smoothed"));
+
+  const auto check = originator::check_device_queue(queue);
+  CHECK_FALSE(check.allowed);
+  CHECK(check.message.find("no salt in the AST") != std::string::npos);
+}
+
+TEST_CASE("originator device plan refuses a range it would silently read as zero") {
+  // КОСВЕННЫЙ ДИАПАЗОН на устройстве — это `dispatchIndirect`, и его пока нет. Прежде такой вызов
+  // получал `range_count() == 0` и не делал НИЧЕГО: поле оставалось прежним, а прежним оно бывает и
+  // без того, поэтому по результату этого не видно.
+  auto cells = make_cells();
+
+  const std::vector<field_pair> fields = {{"used", "ui1"}};
+  auto layout = originator::make_buffer_layout(originator::storage_kind::soa, fields, "state");
+  originator::buffer state("state", std::move(layout), size_t(1));
+  state.field(state.find_field("used")).set(0, double(grid_count / 2));
+
+  originator::parameters scale;
+  scale.set_number("scale", 2.0);
+
+  auto call = tool_call("remap", {readable(cells, "height")}, {writable(cells, "smoothed")}, scale);
+  call.range_end = 0;
+  call.count_from = readable(state, "used");
+
+  originator::computation_queue queue;
+  queue.name = "counted";
+  queue.calls.push_back(std::move(call));
+  queue.output.push_back(writable(cells, "smoothed"));
+
+  // На CPU такая очередь законна и работает — путь на устройство отказывает отдельно.
+  CHECK(originator::check_queue(queue).allowed);
+
+  const auto check = originator::check_device_queue(queue);
+  CHECK_FALSE(check.allowed);
+  CHECK(check.message.find("indirect dispatch") != std::string::npos);
 }

@@ -81,10 +81,9 @@ static_assert(std::same_as<decltype(std::declval<const history&>().find(0)),
                            const bundle*>);
 static_assert(std::same_as<decltype(std::declval<history&>().find(0)),
                            const bundle*>);
-static_assert(std::same_as<decltype(std::declval<const history&>().entries()),
-                           const std::deque<history::entry>&>);
-static_assert(std::same_as<decltype(std::declval<history&>().entries()),
-                           const std::deque<history::entry>&>);
+static_assert(std::same_as<std::ranges::range_reference_t<decltype(std::declval<const history&>().entries())>,
+                          const history::entry&>);
+static_assert(std::ranges::random_access_range<decltype(std::declval<history&>().entries())>);
 
 bundle make_bundle(const char* name, const std::initializer_list<uint8_t> bytes) {
   return {name, bytes};
