@@ -64,7 +64,7 @@ public:
     return history_.newest_tick();
   }
 
-  const auto& entries() const noexcept {
+  auto entries() const noexcept {
     return history_.entries();
   }
 
@@ -99,6 +99,10 @@ public:
 
   void clear() noexcept {
     history_.clear();
+  }
+
+  std::optional<Blob> take_oldest() {
+    return history_.take_oldest();
   }
 
 private:

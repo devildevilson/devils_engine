@@ -37,7 +37,7 @@ Guarantees:
 - a record for a different tick is not written;
 - capacity is reserved at `begin`; exceeding it latches a fault and makes
   `seal` fail;
-- semantic duplicates are rejected after canonical sorting;
+- semantic duplicates and distinguishable records tied by the comparator are rejected after canonical sorting;
 - unsealed storage is never exposed;
 - `consume` is once-only and transfers an owning bundle which exposes records
   only through a const view instead of leaving a view into a reusable slot;
@@ -48,7 +48,9 @@ Guarantees:
   engine's fatal `utils::error` handler rather than exception subtypes.
 
 The comparator must be a strict weak order and semantically equivalent records
-must form one adjacent equivalence class under that order. `TickOf` must return
+must form one adjacent equivalence class under that order. Distinct records must
+have distinct ordering keys; otherwise `seal` returns `ambiguous_order` (a stable
+sort would merely preserve the nondeterministic arrival order). `TickOf` must return
 the exact `Tick` type; implicit narrowing is rejected because it could alias two
 different project ticks.
 
@@ -78,9 +80,11 @@ and byte total. Duplicate ticks, out-of-order insertion and impossible budgets
 are ordinary status values and leave retained history unchanged. A zero-byte
 bundle is still an explicit tick and consumes one count slot.
 
-The history exposes only const entries and bundle pointers. Those borrowed
-views remain valid until that entry is evicted, the history is cleared, or the
-history is destroyed. Tick ordering is normal strict ordering; modular packet
+The history preallocates fixed ring slots and exposes const entries and bundle
+pointers. Entry addresses remain valid until their own eviction/clear/destruction;
+the borrowed `entries()` random-access range must be obtained again after any
+mutation. It is a view returned by value, no longer a `const deque&`.
+Tick ordering is normal strict ordering; modular packet
 sequence handling belongs to `sequence_window`. Neither template is
 thread-safe by itself.
 
@@ -187,7 +191,13 @@ library asks only for its logical wire size. Calling `advance()` moves an
 explicit transport step, so the library does not equate network time with a
 simulation tick or wall-clock duration.
 
-Each direction has independent count, byte and bandwidth budgets. Lower lane
+Each direction has independent count, byte and bandwidth budgets. Count/byte
+budgets cover outbound + scheduled + unread inbox data until consumption, not
+just the send queue. Extra injected duplicates use the same budget; copies which
+cannot fit are suppressed and counted by `suppressed_duplicates()`. The original
+successful delivery always retains its reserved slot, including reliable traffic.
+`queued_*` still measures outbound data; `retained_*` measures the full lifetime.
+Lower lane
 IDs consume the current step's bandwidth first. A reliable ordered lane
 retries injected loss, delivers exactly once and preserves its order; an
 unreliable lane may lose, duplicate and reorder messages according to the
@@ -196,7 +206,10 @@ Disconnect drops all queued, scheduled and received data; reconnect creates a
 fresh epoch and restarts per-lane sequences.
 
 The retained trace records acceptance/refusal, byte transmission, injected
-loss, retry, scheduling and delivery. Supplying the same message stream and
+loss, retry, scheduling and delivery, up to `trace_count_budget` (default 4096;
+zero disables storage). Further events increment `omitted_trace_events()`;
+`clear_trace()` reuses storage. A truncated trace is not a complete replay log.
+Supplying the same message stream and
 fault policy therefore gives a directly comparable trace. This mechanism does
 not simulate packets, ACKs, MTU, congestion control or GNS internals; it models
 only the application-visible delivery contract that NET-08 must reproduce.
@@ -233,3 +246,43 @@ Projects remain free to use another snapshot and delta representation.
 Entity IDs, ECS enumeration/dirty tracking, component declarations, interest,
 ownership, visibility, quantization, wire serialization and correction remain
 project/session policy rather than properties of these templates.
+
+## Prepared storage and hot-path ownership
+
+Preparation is explicit; a runtime budget is not a claim that a generic payload
+fits in `sizeof(T)`. These are separate resource limits:
+
+| Path | Prepared API | Ownership / refusal |
+| --- | --- | --- |
+| Tick collection | `recycle(vector&&)`, then `begin` within prepared capacity | `consume` transfers immutable ownership; only after retirement may the owner call `std::move(batch).release_storage()` |
+| Histories/checkpoints/baselines | Fixed slots allocated by constructor; move prepared payload in | `take_oldest()` returns ownership for reuse; automatic eviction destroys it |
+| Delta build/apply | Reserve output, use `make_keyed_delta_into` / `apply_keyed_delta_into` | Linear merge; capacity/precondition refusal leaves output unchanged; input/output may not alias |
+| Canonical serialization | Reserve document and largest-section scratch, `Schema::try_write` | No vector growth; `false` means partial scratch, never publish it; buffers must be distinct |
+| Murmur diagnostics | `try_murmur64_digest<Schema>(bytes, report)` with reserved sections | Hashes the existing canonical document/section slices directly, no second full byte buffer; rejects bad framing without changing report |
+| Logical delivery | Constructor prepares shared per-direction queue slots, delivery/inbox vectors and trace; `consume` borrows inbox messages | Capacity is returned only after callback; callback may enqueue a reply, but must not recursively consume/advance/disconnect |
+
+The link allocates queue slots once and links them by indices per lane: there
+are no 512 independently allocating deques. Delivery sorting uses a total
+`(ready_step, insertion_order)` order and in-place `sort`, not allocating
+`stable_sort`. `drain()` remains an allocating owning convenience API; use
+`consume()` for a prepared hot loop.
+
+The owning convenience `make_keyed_delta`, `apply_keyed_delta`, `Schema::write`
+and generic `make_state_digest` may allocate. So can project `Message`/`Value`
+copy/assignment, serialization callbacks and dynamic staging. Prepared `*_into`
+overloads retain outer vector capacity and assign existing elements, but erasing
+a nested owning value destroys its allocation. Truly bounded dynamic payloads
+need a project/adapter-owned arena or recycled ownership handles; a borrowed
+`span` must not outlive that ownership. Logical wire-byte budgets do not measure
+allocator overhead or reserved capacity of nested containers.
+
+For float values, the equality policy must agree with canonical bytes.
+`utils::float_bits_equal` (`utils/float_bits.h`) compares IEEE float/double
+fields, distinguishing signed zero and NaN payloads. Apply it fieldwise; never
+compare raw padded structs. A project may instead normalize values before
+versioning, serialization and hashing, consistently in all three places.
+
+`network_hot_path_test` counts allocations after preparation for these paths,
+including checkpoint restore/replay/digest over the faulty logical link. The
+test's allocation hooks belong only to that executable, not to the engine.
+This does not claim allocation freedom inside GNS or the real ECS serializer.

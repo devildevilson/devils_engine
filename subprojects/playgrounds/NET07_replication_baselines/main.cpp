@@ -45,6 +45,7 @@ struct message {
   delta changes;
   std::uint64_t requested_baseline = 0;
   std::size_t wire_bytes = 0;
+  std::uint64_t recovery_token = 0;
 };
 
 struct message_size {
@@ -168,63 +169,107 @@ struct follower {
   std::size_t duplicate = 0;
   std::size_t stale = 0;
 
+  std::uint64_t current_tick = 0;
+  std::uint64_t next_request = 1;
+  std::optional<std::uint64_t> pending_request;
+  std::size_t rejected = 0;
+  std::size_t coalesced = 0;
+
+  void request_recovery(const std::uint64_t missing, link_type& link) {
+    if (pending_request) {
+      ++coalesced;
+      return;
+    }
+    auto request = make_request(missing);
+    request.recovery_token = next_request;
+    if (link.try_send(network::link_endpoint::second, reliable(request_lane),
+                      std::move(request)) == network::link_send_status::accepted) {
+      pending_request = next_request++;
+    }
+  }
+
   void receive(const message& value, link_type& link, verifier& verify) {
-    verify.require(value.kind != message_kind::baseline_request,
-                   "follower received its own baseline request");
+    // This fixture's transport peer is the trusted authority. In an actual
+    // session the authority/epoch check precedes this code. A token correlates
+    // recovery, it does not authenticate a packet.
+    if (value.kind == message_kind::baseline_request ||
+        value.header.format_version != frame_format) {
+      ++rejected;
+      return;
+    }
+    const bool recovery = value.kind == message_kind::full_baseline &&
+                          pending_request && value.recovery_token == *pending_request;
     const auto acceptance = frames.classify(
       value.header.format_version, value.header.state_sequence);
     if (acceptance == network::state_frame_acceptance::duplicate) {
       ++duplicate;
       return;
     }
-    if (acceptance == network::state_frame_acceptance::stale) {
+    if (acceptance == network::state_frame_acceptance::stale &&
+        !(recovery && value.header.server_tick > current_tick)) {
+      if (recovery) pending_request.reset();
       ++stale;
       return;
     }
-    verify.require(acceptance == network::state_frame_acceptance::accepted,
-                   "frame sequence was not acceptable");
+    if (acceptance == network::state_frame_acceptance::too_far_ahead && !recovery) {
+      request_recovery(value.header.base_baseline.value_or(value.header.result_baseline), link);
+      return;
+    }
 
     if (value.kind == message_kind::full_baseline) {
-      verify.require(!value.header.base_baseline.has_value(),
-                     "full baseline unexpectedly names a base");
-      const auto stored = baselines.try_store(
-        value.header.result_baseline, value.full);
-      verify.require(stored.stored(), "full baseline was not stored");
-      verify.require(frames.commit(value.header.format_version,
-                                   value.header.state_sequence) ==
-                       network::state_frame_acceptance::accepted,
-                     "full baseline sequence was not committed");
+      if (value.header.base_baseline || value.header.server_tick < current_tick) {
+        ++rejected;
+        return;
+      }
+      const auto* existing = baselines.find(value.header.result_baseline);
+      if (existing) {
+        // Same immutable identity may be repeated under a new frame sequence,
+        // but never assigned new content or move the current state backwards.
+        if (*existing != value.full || current_baseline != value.header.result_baseline ||
+            current_tick != value.header.server_tick) {
+          ++rejected;
+          return;
+        }
+      } else {
+        if (!baselines.try_store(value.header.result_baseline, value.full).stored()) {
+          ++rejected;
+          return;
+        }
+      }
+      const auto committed = recovery
+                               ? frames.reset(value.header.format_version, value.header.state_sequence)
+                               : frames.commit(value.header.format_version, value.header.state_sequence);
+      verify.require(committed == network::state_frame_acceptance::accepted,
+                     "validated full baseline sequence was not committed");
       current_baseline = value.header.result_baseline;
+      current_tick = value.header.server_tick;
+      if (recovery) pending_request.reset();
       ++applied_full;
       return;
     }
 
-    verify.require(value.header.base_baseline.has_value(),
-                   "delta does not name its exact base");
-    const auto materialized = network::try_materialize_delta(
-      baselines,
-      *value.header.base_baseline,
-      value.header.result_baseline,
-      value.changes,
-      apply_project_delta);
-    if (materialized.status == network::delta_materialize_status::missing_baseline) {
-      ++missing_base;
-      verify.require(
-        link.try_send(
-          network::link_endpoint::second,
-          reliable(request_lane),
-          make_request(*value.header.base_baseline)) ==
-          network::link_send_status::accepted,
-        "baseline request was not accepted by transport");
+    if (!value.header.base_baseline || value.header.server_tick < current_tick) {
+      ++rejected;
       return;
     }
-
-    verify.require(materialized.materialized(), "delta was not materialized");
+    const auto materialized = network::try_materialize_delta(
+      baselines, *value.header.base_baseline, value.header.result_baseline,
+      value.changes, apply_project_delta);
+    if (materialized.status == network::delta_materialize_status::missing_baseline) {
+      ++missing_base;
+      request_recovery(*value.header.base_baseline, link);
+      return;
+    }
+    if (!materialized.materialized()) {
+      ++rejected;
+      return;
+    }
     verify.require(frames.commit(value.header.format_version,
                                  value.header.state_sequence) ==
                      network::state_frame_acceptance::accepted,
                    "delta sequence was not committed");
     current_baseline = value.header.result_baseline;
+    current_tick = value.header.server_tick;
     ++applied_delta;
   }
 
@@ -297,6 +342,8 @@ session_result run_session() {
 
   follower replica;
   snapshot authority = state100;
+  std::uint64_t authority_tick = 100;
+  std::uint64_t authority_baseline = 100;
   std::uint16_t next_frame_sequence = 1;
   std::size_t requests = 0;
 
@@ -310,18 +357,18 @@ session_result run_session() {
 
   const auto pump_once = [&]() {
     link.advance();
-    for (const auto& delivered : link.drain(network::link_endpoint::second)) {
+    link.consume(network::link_endpoint::second, [&](const auto& delivered) {
       replica.receive(delivered.message, link, verify);
-    }
-    for (const auto& delivered : link.drain(network::link_endpoint::first)) {
+    });
+    link.consume(network::link_endpoint::first, [&](const auto& delivered) {
       verify.require(delivered.message.kind == message_kind::baseline_request,
                      "authority received a non-request message");
       ++requests;
-      send_from_authority(
-        make_full(next_frame_sequence++, 100 + requests * 2,
-                  requests == 1 ? 102 : 104, authority),
-        reliable(baseline_lane));
-    }
+      auto response = make_full(next_frame_sequence++, authority_tick,
+                                authority_baseline, authority);
+      response.recovery_token = delivered.message.recovery_token;
+      send_from_authority(std::move(response), reliable(baseline_lane));
+    });
   };
 
   send_from_authority(
@@ -341,6 +388,7 @@ session_result run_session() {
                      make_delta(verify, state101, state102)),
     unreliable(delta_lane));
   authority = state102;
+  authority_tick = authority_baseline = 102;
   for (std::size_t i = 0; i < 6; ++i)
     pump_once();
   verify.require(replica.current() != nullptr && *replica.current() == state102,
@@ -355,6 +403,7 @@ session_result run_session() {
                      make_delta(verify, state103, state104)),
     unreliable(delta_lane));
   authority = state104;
+  authority_tick = authority_baseline = 104;
   for (std::size_t i = 0; i < 16; ++i)
     pump_once();
   verify.require(replica.current() != nullptr && *replica.current() == state104,
@@ -365,6 +414,7 @@ session_result run_session() {
                      make_delta(verify, state104, state105)),
     unreliable(delta_lane));
   authority = state105;
+  authority_tick = authority_baseline = 105;
   for (std::size_t i = 0; i < 4; ++i)
     pump_once();
 
@@ -403,6 +453,69 @@ session_result run_session() {
   };
 }
 
+std::size_t run_recovery_regressions() {
+  verifier verify;
+  link_type link({8, 4096, 4096, 1, 1, 128});
+  link.connect();
+  follower replica;
+  const snapshot initial{{1, 1, {0, 100}}};
+  const snapshot updated{{1, 2, {1, 90}}};
+  replica.receive(make_full(1, 100, 100, initial), link, verify);
+  replica.receive(make_full(2, 100, 100, initial), link, verify);
+  verify.require(replica.applied_full == 2 && replica.rejected == 0,
+                 "same immutable baseline under a new sequence was rejected");
+  replica.receive(make_full(3, 100, 100, updated), link, verify);
+  verify.require(replica.rejected == 1 && *replica.current() == initial && replica.frames.newest() == 2,
+                 "conflicting baseline changed state or sequence");
+
+  const auto missing = make_delta_frame(4, 102, 101, 102, {});
+  replica.receive(missing, link, verify);
+  replica.receive(missing, link, verify);
+  replica.receive(make_delta_frame(5, 103, 102, 103, {}), link, verify);
+  verify.require(replica.pending_request && replica.coalesced == 2 &&
+                   link.queued_count(network::link_endpoint::second) == 1,
+                 "missing-base reports were not coalesced");
+  const auto token = *replica.pending_request;
+
+  // The authority has advanced beyond the normal forward window. An
+  // unsolicited full frame cannot authorize its own sequence-window reset.
+  auto recovery = make_full(50, 150, 150, updated);
+  replica.receive(recovery, link, verify);
+  verify.require(replica.frames.newest() == 2 && *replica.current() == initial,
+                 "uncorrelated distant full reset the horizon");
+  recovery.recovery_token = token + 1;
+  replica.receive(recovery, link, verify);
+  verify.require(replica.frames.newest() == 2, "wrong recovery token was accepted");
+  recovery.recovery_token = token;
+  replica.receive(recovery, link, verify);
+  verify.require(!replica.pending_request && replica.frames.newest() == 50 &&
+                   replica.current_tick == 150 && *replica.current() == updated,
+                 "requested full did not recover across the sequence gap");
+  replica.receive(recovery, link, verify);
+  verify.require(replica.duplicate == 1, "recovery response was not idempotent");
+  replica.receive(make_full(51, 150, 150, updated), link, verify);
+  verify.require(replica.frames.newest() == 51 && *replica.current() == updated,
+                 "repeated recovery baseline failed under a fresh sequence");
+
+  // Many legal schedules, including a gap which wraps uint16_t but stays below
+  // the modular half-range. Payload identity does not depend on request count.
+  for (std::uint16_t gap : {std::uint16_t{33}, std::uint16_t{300}, std::uint16_t{30000}}) {
+    link.disconnect();
+    link.connect();
+    follower peer;
+    peer.receive(make_full(65000, 1, 1, initial), link, verify);
+    const auto sequence = std::uint16_t(65000u + gap);
+    peer.receive(make_delta_frame(sequence, 2, 2, 3, {}), link, verify);
+    verify.require(peer.pending_request.has_value(), "large gap did not request recovery");
+    auto full = make_full(std::uint16_t(sequence + 1), 3, 3, updated);
+    full.recovery_token = *peer.pending_request;
+    peer.receive(full, link, verify);
+    verify.require(!peer.pending_request && *peer.current() == updated,
+                   "recovery failed at a wrapped or distant sequence");
+  }
+  return verify.checks;
+}
+
 } // namespace
 
 int main(const int argc, const char* const* argv) {
@@ -415,7 +528,8 @@ int main(const int argc, const char* const* argv) {
       utils::error{}("NET07: unknown argument '{}'", arg);
   }
 
-  const session_result result = run_session();
+  session_result result = run_session();
+  result.checks += run_recovery_regressions();
   std::cout << "NET07 replication baselines: " << result.checks << '/' << result.checks
             << " checks; full=" << result.full
             << ", delta=" << result.deltas

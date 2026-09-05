@@ -21,30 +21,46 @@ namespace devils_engine::network {
 // depend on its serializer.
 class state_writer {
 public:
-  explicit state_writer(std::vector<std::byte>& bytes) noexcept : bytes_(bytes) {}
+  explicit state_writer(std::vector<std::byte>& bytes, const bool allow_growth = true) noexcept
+    : bytes_(bytes), allow_growth_(allow_growth) {}
+
+  bool good() const noexcept {
+    return good_;
+  }
 
   std::size_t position() const noexcept {
     return bytes_.size();
   }
 
   void u32(const std::uint32_t value) {
+    if (!need(4)) return;
     for (unsigned i = 0; i < 4; ++i) {
       bytes_.push_back(std::byte(std::uint8_t(value >> (i * 8))));
     }
   }
 
   void u64(const std::uint64_t value) {
+    if (!need(8)) return;
     for (unsigned i = 0; i < 8; ++i) {
       bytes_.push_back(std::byte(std::uint8_t(value >> (i * 8))));
     }
   }
 
   void bytes(const std::span<const std::byte> values) {
+    if (!need(values.size())) return;
     bytes_.insert(bytes_.end(), values.begin(), values.end());
   }
 
 private:
+  bool need(const std::size_t count) noexcept {
+    if (!good_) return false;
+    if (!allow_growth_ && count > bytes_.capacity() - bytes_.size()) good_ = false;
+    return good_;
+  }
+
   std::vector<std::byte>& bytes_;
+  bool allow_growth_ = true;
+  bool good_ = true;
 };
 
 class state_reader {
@@ -326,15 +342,46 @@ public:
     requires std::invocable<ObserveSection&, std::uint32_t, std::uint32_t,
                             std::span<const std::byte>>
   static void emit_canonical(const Host& host, Sink& sink, ObserveSection observe_section) {
+    std::vector<std::byte> payload;
+    emit_impl<false>(host, sink, observe_section, payload);
+  }
+
+  // The output is scratch until true is returned: overflow leaves a partial
+  // document which must not be published. Sink and section writer must enforce
+  // their own prepared capacities; callbacks/payload storage must not alias.
+  template <state_canonical_sink Sink, class ObserveSection>
+    requires std::constructible_from<Writer, std::vector<std::byte>&, bool> &&
+             requires(Writer& writer, Sink& sink) {
+               { writer.good() } -> std::same_as<bool>;
+               { sink.good() } -> std::same_as<bool>;
+             }
+  [[nodiscard]] static bool try_emit_canonical(
+    const Host& host, Sink& sink, std::vector<std::byte>& payload,
+    ObserveSection observe_section) {
+    return emit_impl<true>(host, sink, observe_section, payload);
+  }
+
+private:
+  template <bool Bounded, class Sink, class ObserveSection>
+  static bool emit_impl(const Host& host, Sink& sink, ObserveSection& observe_section,
+                        std::vector<std::byte>& payload) {
     sink.u32(magic);
     sink.u32(format_version);
     sink.u32(schema_fingerprint());
     sink.u32(std::uint32_t(section_count));
 
     for (const descriptor& value : descriptors_) {
-      std::vector<std::byte> payload;
-      Writer payload_writer{payload};
+      payload.clear();
+      auto payload_writer = [&]() {
+        if constexpr (Bounded)
+          return Writer{payload, false};
+        else
+          return Writer{payload};
+      }();
       value.write(host, payload_writer);
+      if constexpr (Bounded) {
+        if (!payload_writer.good()) return false;
+      }
       payload.resize(payload_writer.position());
 
       std::invoke(observe_section, value.id, value.version,
@@ -343,7 +390,23 @@ public:
       sink.u32(value.version);
       sink.u64(std::uint64_t(payload.size()));
       sink.bytes(payload);
+      if constexpr (Bounded) {
+        if (!sink.good()) return false;
+      }
     }
+    return true;
+  }
+
+public:
+  [[nodiscard]] static bool try_write(const Host& host, std::vector<std::byte>& output,
+                                      std::vector<std::byte>& payload)
+    requires std::same_as<Writer, state_writer>
+  {
+    if (&output == &payload) return false;
+    output.clear();
+    Writer writer{output, false};
+    return try_emit_canonical(host, writer, payload,
+                              [](std::uint32_t, std::uint32_t, std::span<const std::byte>) {});
   }
 
   template <state_canonical_sink Sink>

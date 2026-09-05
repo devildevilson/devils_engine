@@ -36,7 +36,8 @@ enum class tick_record_result : uint8_t {
 enum class tick_seal_result : uint8_t {
   sealed,
   capacity_exceeded,
-  duplicate
+  duplicate,
+  ambiguous_order
 };
 
 template <class Tick>
@@ -63,6 +64,12 @@ public:
     return records_;
   }
 
+  // Explicit ownership transfer back to a pool/journal. All borrowed views of
+  // this batch expire here; a live immutable history must never be recycled.
+  std::vector<Record> release_storage() && {
+    return std::move(records_);
+  }
+
 private:
   tag_type tag_;
   std::vector<Record> records_;
@@ -76,16 +83,15 @@ template <
   class Tick,
   class TickOf,
   class SemanticLess,
-  class SemanticEquivalent
->
-requires std::regular<Tick> &&
-         std::invocable<const TickOf&, const Record&> &&
-         std::same_as<
-           std::remove_cvref_t<std::invoke_result_t<const TickOf&, const Record&>>,
-           Tick> &&
-         std::predicate<const SemanticLess&, const Record&, const Record&> &&
-         std::predicate<const SemanticEquivalent&, const Record&, const Record&> &&
-         std::sortable<typename std::vector<Record>::iterator, SemanticLess>
+  class SemanticEquivalent>
+  requires std::regular<Tick> &&
+           std::invocable<const TickOf&, const Record&> &&
+           std::same_as<
+             std::remove_cvref_t<std::invoke_result_t<const TickOf&, const Record&>>,
+             Tick> &&
+           std::predicate<const SemanticLess&, const Record&, const Record&> &&
+           std::predicate<const SemanticEquivalent&, const Record&, const Record&> &&
+           std::sortable<typename std::vector<Record>::iterator, SemanticLess>
 class tick_journal {
 public:
   using record_type = Record;
@@ -119,6 +125,14 @@ public:
 
   std::optional<tag_type> current_tag() const {
     return current_tag_;
+  }
+
+  // Preparation/recycling is an idle-phase operation. Supplying a retired
+  // batch's storage avoids allocating on the next begin/consume cycle.
+  void recycle(std::vector<Record>&& storage) {
+    require_phase(tick_journal_phase::idle, "recycle outside idle phase");
+    records_ = std::move(storage);
+    records_.clear();
   }
 
   tag_type begin(const Tick tick, const size_t capacity) {
@@ -182,6 +196,10 @@ public:
       if (std::invoke(semantic_equivalent_, records_[i - 1], records_[i])) {
         phase_ = tick_journal_phase::faulted;
         return tick_seal_result::duplicate;
+      }
+      if (!std::invoke(semantic_less_, records_[i - 1], records_[i])) {
+        phase_ = tick_journal_phase::faulted;
+        return tick_seal_result::ambiguous_order;
       }
     }
 

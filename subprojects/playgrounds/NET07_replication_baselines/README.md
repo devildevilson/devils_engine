@@ -34,6 +34,27 @@ Authority последовательно строит состояния `100..1
 Итоговый fake entity set совпадает с authority. Full replication baseline содержит только состояние
 данного replication stream; это не causal checkpoint мира и не заменяет NET04.
 
+## Регрессии аудита перед NET08
+
+- Несколько missing-base кадров объединяются в один pending reliable request.
+- Ответ несёт request token; только ожидаемый full от доверенного authority
+  может явно сбросить окно sequence после большого разрыва. Token — корреляция,
+  не аутентификация. Неверный token не меняет состояние.
+- Повтор того же immutable baseline под новым frame sequence допустим;
+  другие bytes/tick под тем же ID отклоняются без изменения состояния и окна.
+- Authority отвечает согласованным `(baseline ID, tick, payload)` актуального
+  состояния, а не выбирает baseline по порядковому номеру запроса.
+- Проверены разрывы 33, 300, 30000 и переход через uint16 wrap.
+- Inbox читается через `consume`, без временного owning vector на каждом pump.
+
+Основной сценарий и регрессии дают `58/58` проверок. Это проверенные fault schedules,
+не доказательство сходимости при бесконечной потере или отсутствии backpressure.
+Reliable delivery предполагает возобновление канала и работу потребителя.
+Сессия, смена authority, криптографическая проверка и reconnect ещё не реализованы;
+при создании новой сессии follower и pending tokens должны создаваться заново.
+Динамические snapshot/delta payloads этого fake-проекта всё ещё владеют vector;
+нулевые аллокации generic hot paths проверяет отдельный `network_hot_path_test`.
+
 ## Запуск
 
 ```bash

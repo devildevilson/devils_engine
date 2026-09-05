@@ -12,6 +12,7 @@
 
 #include <devils_engine/utils/sha256cpp.h>
 #include <devils_engine/utils/type_traits.h>
+#include "state_schema.h"
 
 namespace devils_engine::network {
 
@@ -125,6 +126,62 @@ enum class state_digest_comparison_status : std::uint8_t {
   section_set_mismatch,
   section_mismatch
 };
+
+enum class state_digest_build_status : std::uint8_t {
+  built,
+  capacity_exceeded,
+  invalid_document
+};
+
+// Prepared checkpoint bytes are already contiguous: hashing them directly
+// avoids buffering the same document again in buffered_murmur64_state_hasher.
+// Checks framing, NOT project section semantics; this is for locally emitted
+// canonical bytes, not a substitute for Schema::load on foreign input.
+// Refusals leave the report untouched. Reserve sections before the hot loop.
+template <class Schema>
+[[nodiscard]] state_digest_build_status try_murmur64_digest(
+  const std::span<const std::byte> bytes,
+  state_digest_report<std::uint64_t>& output) {
+  state_reader reader{bytes};
+  const auto magic = reader.u32();
+  const auto format = reader.u32();
+  const auto fingerprint = reader.u32();
+  const auto count = reader.u32();
+  if (!reader.good() || magic != Schema::magic || format != Schema::format_version ||
+      fingerprint != Schema::schema_fingerprint() || count != Schema::section_count)
+    return state_digest_build_status::invalid_document;
+  if (count > output.sections.capacity()) return state_digest_build_status::capacity_exceeded;
+  std::uint32_t previous = 0;
+  for (std::uint32_t i = 0; i < count; ++i) {
+    const auto id = reader.u32();
+    const auto version = reader.u32();
+    const auto size = reader.u64();
+    if (!reader.good() || (i != 0 && id <= previous) || version == 0 ||
+        size > reader.size() - reader.position()) return state_digest_build_status::invalid_document;
+    reader.take(std::size_t(size));
+    previous = id;
+  }
+  if (reader.position() != reader.size()) return state_digest_build_status::invalid_document;
+
+  const auto hash = [](const std::span<const std::byte> value) {
+    return utils::murmur_hash64A(std::string_view{
+      reinterpret_cast<const char*>(value.data()), value.size()});
+  };
+  reader = state_reader{bytes};
+  reader.take(16);
+  output.sections.clear();
+  for (std::uint32_t i = 0; i < count; ++i) {
+    const auto start = reader.position();
+    const auto id = reader.u32();
+    const auto version = reader.u32();
+    const auto size = reader.u64();
+    reader.take(std::size_t(size));
+    const auto frame = bytes.subspan(start, reader.position() - start);
+    output.sections.push_back({id, version, std::uint64_t(frame.size()), hash(frame)});
+  }
+  output.root = hash(bytes);
+  return state_digest_build_status::built;
+}
 
 struct state_digest_comparison {
   state_digest_comparison_status status = state_digest_comparison_status::matched;

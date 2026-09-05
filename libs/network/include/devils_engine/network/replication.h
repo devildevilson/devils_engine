@@ -174,7 +174,7 @@ public:
     return values_.find_entry(id);
   }
 
-  const auto& entries() const noexcept {
+  auto entries() const noexcept {
     return values_.entries();
   }
 
@@ -202,6 +202,10 @@ public:
 
   void clear() noexcept {
     values_.clear();
+  }
+
+  std::optional<Snapshot> take_oldest() {
+    return values_.take_oldest();
   }
 
 private:
@@ -333,7 +337,9 @@ enum class keyed_delta_status : unsigned char {
   delta_not_canonical,
   invalid_change,
   version_not_advanced,
-  precondition_failed
+  precondition_failed,
+  capacity_exceeded,
+  aliased_output
 };
 
 template <class Key, class Value, class Version>
@@ -371,63 +377,165 @@ bool same_key(const Key& first, const Key& second, KeyLess& less) {
   return !std::invoke(less, first, second) && !std::invoke(less, second, first);
 }
 
+template <class Key, class Value, class Version, class KeyLess, class ValueEqual, class Emit>
+keyed_delta_status visit_keyed_delta(
+  const keyed_snapshot<Key, Value, Version>& base,
+  const keyed_snapshot<Key, Value, Version>& current,
+  KeyLess& less, ValueEqual& equal, Emit emit) {
+  if (!has_strictly_ordered_keys(base, less)) return keyed_delta_status::base_not_canonical;
+  if (!has_strictly_ordered_keys(current, less)) return keyed_delta_status::current_not_canonical;
+  std::size_t b = 0, c = 0;
+  while (b < base.size() || c < current.size()) {
+    if (b == base.size() || (c < current.size() && std::invoke(less, current[c].key, base[b].key))) {
+      const auto& value = current[c++];
+      emit(value.key, std::optional<Version>{}, &value);
+    } else if (c == current.size() || std::invoke(less, base[b].key, current[c].key)) {
+      const auto& value = base[b++];
+      emit(value.key, std::optional<Version>{value.version},
+           static_cast<const keyed_state_entry<Key, Value, Version>*>(nullptr));
+    } else {
+      const auto& before = base[b++];
+      const auto& after = current[c++];
+      if (before.version == after.version) {
+        if (!std::invoke(equal, before.value, after.value)) return keyed_delta_status::version_not_advanced;
+      } else {
+        emit(after.key, std::optional<Version>{before.version}, &after);
+      }
+    }
+  }
+  return keyed_delta_status::success;
+}
+
+// One merge, never vector insert/erase per change. Emit sees references, so the
+// validation/counting pass does not copy project payloads.
+template <class Key, class Value, class Version, class KeyLess, class ValueEqual, class Emit>
+keyed_delta_status visit_keyed_apply(
+  const keyed_snapshot<Key, Value, Version>& base,
+  const keyed_delta<Key, Value, Version>& delta,
+  KeyLess& less, ValueEqual& equal, Emit emit) {
+  if (!has_strictly_ordered_keys(base, less)) return keyed_delta_status::base_not_canonical;
+  if (!has_strictly_ordered_keys(delta, less)) return keyed_delta_status::delta_not_canonical;
+  std::size_t b = 0;
+  for (const auto& change : delta) {
+    while (b < base.size() && std::invoke(less, base[b].key, change.key)) {
+      const auto& value = base[b++];
+      emit(value.key, value.version, value.value);
+    }
+    const bool exists = b < base.size() && same_key(base[b].key, change.key, less);
+    if (!change.expected_version) {
+      if (!change.result) return keyed_delta_status::invalid_change;
+      if (exists) return keyed_delta_status::precondition_failed;
+    } else {
+      if (!exists || !(base[b].version == *change.expected_version))
+        return keyed_delta_status::precondition_failed;
+      if (change.result && change.result->version == *change.expected_version) {
+        return std::invoke(equal, base[b].value, change.result->value)
+                 ? keyed_delta_status::invalid_change
+                 : keyed_delta_status::version_not_advanced;
+      }
+      ++b;
+    }
+    if (change.result) emit(change.key, change.result->version, change.result->value);
+  }
+  while (b < base.size()) {
+    const auto& value = base[b++];
+    emit(value.key, value.version, value.value);
+  }
+  return keyed_delta_status::success;
+}
+
 } // namespace detail
 
-// A reusable default codec for canonical key-sorted state. Projects may use a
-// different codec through try_materialize_delta; networking does not require
-// this representation.
+// Policies must be pure and agree with canonical serialization: equal values
+// must serialize identically (or be normalized before this codec). In particular
+// numerical float equality is not bit equality; compare float fields explicitly.
+// These prepared-output overloads never grow vector capacity. Rejections leave
+// output unchanged; project value assignment itself may allocate. Inputs/output
+// must not alias. Reserve (and prepare nested payloads) outside the hot loop.
+template <class Key, class Value, class Version,
+          class KeyLess = std::less<Key>, class ValueEqual = std::equal_to<Value>>
+[[nodiscard]] keyed_delta_status make_keyed_delta_into(
+  const keyed_snapshot<Key, Value, Version>& base,
+  const keyed_snapshot<Key, Value, Version>& current,
+  keyed_delta<Key, Value, Version>& output,
+  KeyLess less = {}, ValueEqual equal = {}) {
+  std::size_t count = 0;
+  const auto status = detail::visit_keyed_delta(base, current, less, equal,
+                                                [&](const auto&, const auto&, const auto*) {
+                                                  ++count;
+                                                });
+  if (status != keyed_delta_status::success) return status;
+  if (count > output.capacity()) return keyed_delta_status::capacity_exceeded;
+  std::size_t index = 0;
+  detail::visit_keyed_delta(base, current, less, equal,
+                            [&](const Key& key, std::optional<Version> expected, const auto* value) {
+                              if (index == output.size()) output.push_back({key, expected, std::nullopt});
+                              auto& target = output[index++];
+                              target.key = key;
+                              target.expected_version = expected;
+                              if (value) {
+                                if (target.result) {
+                                  target.result->version = value->version;
+                                  target.result->value = value->value;
+                                } else {
+                                  target.result.emplace(versioned_value<Value, Version>{value->version, value->value});
+                                }
+                              } else
+                                target.result.reset();
+                            });
+  output.erase(output.begin() + std::ptrdiff_t(count), output.end());
+  return keyed_delta_status::success;
+}
+
+template <class Key, class Value, class Version,
+          class KeyLess = std::less<Key>, class ValueEqual = std::equal_to<Value>>
+[[nodiscard]] keyed_delta_status apply_keyed_delta_into(
+  const keyed_snapshot<Key, Value, Version>& base,
+  const keyed_delta<Key, Value, Version>& delta,
+  keyed_snapshot<Key, Value, Version>& output,
+  KeyLess less = {}, ValueEqual equal = {}) {
+  if (&base == &output) return keyed_delta_status::aliased_output;
+  std::size_t count = 0;
+  const auto status = detail::visit_keyed_apply(base, delta, less, equal,
+                                                [&](const auto&, const auto&, const auto&) {
+                                                  ++count;
+                                                });
+  if (status != keyed_delta_status::success) return status;
+  if (count > output.capacity()) return keyed_delta_status::capacity_exceeded;
+  std::size_t index = 0;
+  detail::visit_keyed_apply(base, delta, less, equal,
+                            [&](const Key& key, const Version& version, const Value& value) {
+                              if (index == output.size())
+                                output.push_back({key, version, value});
+                              else {
+                                auto& target = output[index];
+                                target.key = key;
+                                target.version = version;
+                                target.value = value;
+                              }
+                              ++index;
+                            });
+  output.erase(output.begin() + std::ptrdiff_t(count), output.end());
+  return keyed_delta_status::success;
+}
+
+// Allocating convenience APIs. Hot-path consumers use *_into above.
 template <class Key, class Value, class Version,
           class KeyLess = std::less<Key>, class ValueEqual = std::equal_to<Value>>
 [[nodiscard]] keyed_delta_build_result<Key, Value, Version> make_keyed_delta(
   const keyed_snapshot<Key, Value, Version>& base,
   const keyed_snapshot<Key, Value, Version>& current,
-  KeyLess less = {},
-  ValueEqual equal = {}) {
-  if (!detail::has_strictly_ordered_keys(base, less)) {
-    return {keyed_delta_status::base_not_canonical, {}};
-  }
-  if (!detail::has_strictly_ordered_keys(current, less)) {
-    return {keyed_delta_status::current_not_canonical, {}};
-  }
-
-  keyed_delta_build_result<Key, Value, Version> output;
-  std::size_t base_index = 0;
-  std::size_t current_index = 0;
-  while (base_index < base.size() || current_index < current.size()) {
-    if (base_index == base.size() ||
-        (current_index < current.size() &&
-         std::invoke(less, current[current_index].key, base[base_index].key))) {
-      const auto& value = current[current_index++];
-      output.delta.push_back({
-        value.key,
-        std::nullopt,
-        versioned_value<Value, Version>{value.version, value.value},
-      });
-      continue;
-    }
-
-    if (current_index == current.size() ||
-        std::invoke(less, base[base_index].key, current[current_index].key)) {
-      const auto& value = base[base_index++];
-      output.delta.push_back({value.key, value.version, std::nullopt});
-      continue;
-    }
-
-    const auto& old_value = base[base_index++];
-    const auto& new_value = current[current_index++];
-    const bool same_version = old_value.version == new_value.version;
-    const bool same_value = std::invoke(equal, old_value.value, new_value.value);
-    if (same_version && same_value) continue;
-    if (same_version) {
-      return {keyed_delta_status::version_not_advanced, {}};
-    }
-    output.delta.push_back({
-      new_value.key,
-      old_value.version,
-      versioned_value<Value, Version>{new_value.version, new_value.value},
-    });
-  }
-  return output;
+  KeyLess less = {}, ValueEqual equal = {}) {
+  keyed_delta_build_result<Key, Value, Version> result;
+  std::size_t count = 0;
+  result.status = detail::visit_keyed_delta(base, current, less, equal,
+                                            [&](const auto&, const auto&, const auto*) {
+                                              ++count;
+                                            });
+  if (!result.succeeded()) return result;
+  result.delta.reserve(count);
+  result.status = make_keyed_delta_into(base, current, result.delta, less, equal);
+  return result;
 }
 
 template <class Key, class Value, class Version,
@@ -435,58 +543,17 @@ template <class Key, class Value, class Version,
 [[nodiscard]] keyed_delta_apply_result<Key, Value, Version> apply_keyed_delta(
   const keyed_snapshot<Key, Value, Version>& base,
   const keyed_delta<Key, Value, Version>& delta,
-  KeyLess less = {},
-  ValueEqual equal = {}) {
-  if (!detail::has_strictly_ordered_keys(base, less)) {
-    return {keyed_delta_status::base_not_canonical, std::nullopt};
-  }
-  if (!detail::has_strictly_ordered_keys(delta, less)) {
-    return {keyed_delta_status::delta_not_canonical, std::nullopt};
-  }
-
-  keyed_snapshot<Key, Value, Version> candidate = base;
-  for (const auto& change : delta) {
-    auto it = std::lower_bound(
-      candidate.begin(), candidate.end(), change.key,
-      [&less](const auto& value, const Key& key) {
-        return std::invoke(less, value.key, key);
-      });
-    const bool exists = it != candidate.end() &&
-                        detail::same_key(it->key, change.key, less);
-
-    if (!change.expected_version) {
-      if (!change.result) {
-        return {keyed_delta_status::invalid_change, std::nullopt};
-      }
-      if (exists) {
-        return {keyed_delta_status::precondition_failed, std::nullopt};
-      }
-      candidate.insert(it, {
-                             change.key,
-                             change.result->version,
-                             change.result->value,
-                           });
-      continue;
-    }
-
-    if (!exists || !(it->version == *change.expected_version)) {
-      return {keyed_delta_status::precondition_failed, std::nullopt};
-    }
-    if (!change.result) {
-      candidate.erase(it);
-      continue;
-    }
-    if (change.result->version == *change.expected_version) {
-      if (std::invoke(equal, it->value, change.result->value)) {
-        return {keyed_delta_status::invalid_change, std::nullopt};
-      }
-      return {keyed_delta_status::version_not_advanced, std::nullopt};
-    }
-    it->version = change.result->version;
-    it->value = change.result->value;
-  }
-
-  return {keyed_delta_status::success, std::move(candidate)};
+  KeyLess less = {}, ValueEqual equal = {}) {
+  std::size_t count = 0;
+  const auto status = detail::visit_keyed_apply(base, delta, less, equal,
+                                                [&](const auto&, const auto&, const auto&) {
+                                                  ++count;
+                                                });
+  if (status != keyed_delta_status::success) return {status, std::nullopt};
+  keyed_snapshot<Key, Value, Version> result;
+  result.reserve(count);
+  const auto applied = apply_keyed_delta_into(base, delta, result, less, equal);
+  return {applied, std::move(result)};
 }
 
 } // namespace devils_engine::network
