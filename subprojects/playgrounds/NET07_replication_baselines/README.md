@@ -55,6 +55,10 @@ Reliable delivery предполагает возобновление канал
 Динамические snapshot/delta payloads этого fake-проекта всё ещё владеют vector;
 нулевые аллокации generic hot paths проверяет отдельный `network_hot_path_test`.
 
+Project-owned message model и follower вынесены в `session.h`; follower шаблонизирован только по
+минимальной границе `try_send`. NET-08C запускает именно этот обработчик через in-memory transport и
+через канонические bytes поверх GNS. Это сохраняет одну state/recovery реализацию для обоих backend.
+
 ## Запуск
 
 ```bash

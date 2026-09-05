@@ -1523,7 +1523,7 @@ not covered by a generic zero-allocation promise. NET-08 must measure the GNS ow
 reuse the existing bounded thread/payload channels where their FIFO ownership contract fits, rather than
 introducing a second inter-thread queue merely for networking.
 
-### NET-08 — selected gameplay transport adapter (`M-L`, in progress)
+### NET-08 — selected gameplay transport adapter (`M-L`, complete)
 
 - Add optional dependency/target isolated from neutral core.
 - Use PRE-01's selected GNS backend.
@@ -1554,7 +1554,11 @@ Implementation is split into independently verified slices:
   recovery. Results and native lifecycle caveats are recorded in `NETWORKING_STATUS.md`.
 - **NET-08C: backend-independent session proof.** Run the recorded NET06/NET07 simulation/state scenario
   through the real backend, including stale unreliable frames, lane pressure, delayed ownership releases and
-  recovery. Only this closes NET-08 as a whole; socket-pair byte tests alone do not.
+  recovery. Implemented with one templated receiver/replay scenario over the in-memory and GNS byte boundaries,
+  an explicit canonical laboratory codec, real UDP loss/retry, delayed input checkpoint replay with matching
+  digest, stale/duplicate state frames and independent prepared lane capacity. Results are recorded in
+  `NETWORKING_STATUS.md`. This closes the transport adapter; handshake, peer/session identity and reconnect
+  recovery remain higher session-layer work.
 
 ### NET-09 — Yojimbo comparison (`M`, deferred indefinitely)
 
@@ -1606,6 +1610,28 @@ precise pre-simulation rejection reason; "different build" never means silently 
 
 Done when a clean machine can run the complete authoritative causal simulation without graphical dependencies
 and graphical followers can join/reconnect through the same protocol.
+
+### SERVER-02 — independent health/readiness probes for container deployment (`M`)
+
+- Separate the operational probe path from GNS gameplay connections, peer slots, handshake and bulk queues.
+  Do not join a game or serialize a world to answer a probe. Provide bounded immutable/atomic status published
+  by the owners; the probe never reads a live ECS world across threads.
+- Distinguish startup, liveness and readiness. Liveness checks owner progress/heartbeat using monotonic wall
+  time, not a pausable gameplay clock; an HTTP responder alone must not hide a stalled simulation/network owner.
+  Readiness requires loaded content/world, initialized transport and an admission-enabled, non-draining server.
+  Temporary unready/overload is not automatically a reason to restart the process.
+- Design a small separately bound management endpoint (e.g. `/livez`, `/readyz`) and an optional local CLI/IPC
+  probe for Docker HEALTHCHECK. Select HTTP implementation together with NET-10; the status model and local
+  probe need not wait for the general HTTP client layer. Docker HEALTHCHECK itself does not implement a
+  separate readiness gate: deployment/orchestrator admission must consume readiness explicitly.
+- Configure management address/port independently; expose only to the intended management network or locally.
+  Bound response size, request rate, timeouts and resource use; reveal no secrets, world contents or admin actions.
+- Container fixture: explicit published gameplay UDP port, separate optional probe port, startup grace period,
+  stalled-owner detection, readiness loss/recovery under load, and SIGTERM: unready first, bounded drain, exit.
+  Probe handling must stay responsive under full gameplay queues without falsely declaring a stalled owner healthy.
+
+Done when automated container checks distinguish startup/unready/stall/drain and cannot consume gameplay peer
+capacity or block simulation. Depends on SERVER-01 for integration; does not require Internet P2P or game HTTP.
 
 ### TF-NET-01 — online `tile_frontier` authoritative-float stand (`L-XL`)
 

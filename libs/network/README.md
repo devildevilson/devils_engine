@@ -392,7 +392,10 @@ a transport early and releases its registration slot.
   nonzero listen port; native shutdown may defer OS-port release, so a subsequent
   bind can return `backend_rejected`. Tests try a bounded localhost port range.
 
-NET-08C will run the same full session fixture over both backends. Engine worker
-integration should use existing bounded FIFO channels where appropriate; this
-slice deliberately remains caller-driven. No HTTP, P2P signaling, trusted-session
-authentication, automatic reconnect or gameplay-thread mutation is added.
+NET-08C now runs the same NET06 checkpoint/replay/digest and NET07
+baseline/delta/recovery handlers over both an in-memory byte boundary and real
+localhost UDP through this adapter. Its bounded laboratory codec remains project
+fixture code, not GNS knowledge. Engine worker integration should use existing
+bounded FIFO channels where appropriate; the adapter deliberately remains
+caller-driven. No HTTP, P2P signaling, trusted-session authentication, automatic
+session reconnect or gameplay-thread mutation is added.

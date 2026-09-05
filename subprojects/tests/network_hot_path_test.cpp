@@ -8,10 +8,13 @@
 #include <devils_engine/utils/float_bits.h>
 #include <doctest/doctest.h>
 
+#include "../playgrounds/NET06_in_memory_transport/causal_fixture.h"
+
 // This executable alone replaces new. Count the measured region, not doctest,
 // setup or assertions. Include aligned/array allocations so a container cannot
 // escape the check simply by changing its element alignment.
 namespace {
+using namespace net06_fixture;
 thread_local bool count_allocations = false;
 thread_local std::size_t allocations = 0;
 
@@ -149,47 +152,6 @@ struct moving_value {
   bool operator==(const moving_value&) const = default;
 };
 
-struct causal_state {
-  float x = 0, velocity = 0;
-  unsigned tick = 0;
-};
-struct causal_host {
-  using staging_type = causal_state;
-  causal_state state;
-  unsigned presentation = 0;
-};
-struct causal_section {
-  static constexpr std::uint32_t id = 1, version = 1;
-  static void write(const causal_host& h, net::state_writer& w) {
-    w.u32(std::bit_cast<std::uint32_t>(h.state.x));
-    w.u32(std::bit_cast<std::uint32_t>(h.state.velocity));
-    w.u32(h.state.tick);
-  }
-  static bool read(causal_state& s, net::state_reader& r) {
-    s.x = std::bit_cast<float>(r.u32());
-    s.velocity = std::bit_cast<float>(r.u32());
-    s.tick = r.u32();
-    return r.good();
-  }
-  static bool validate(const causal_state&) {
-    return true;
-  }
-};
-using causal_schema = net::state_schema<causal_host, net::state_writer, net::state_reader, causal_section>;
-struct late_intent {
-  unsigned tick;
-  float velocity;
-};
-struct intent_size {
-  std::size_t operator()(const late_intent&) const noexcept {
-    return 8;
-  }
-};
-struct blob_size {
-  std::size_t operator()(const std::vector<std::byte>& b) const noexcept {
-    return b.size();
-  }
-};
 } // namespace
 
 TEST_CASE("network prepared delta merge has no allocations and refuses without mutation") {

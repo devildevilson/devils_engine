@@ -571,7 +571,7 @@ if (DEVILS_ENGINE_BUILD_TESTS)
     COMMENT "Running devils_engine tests"
   )
   if (TARGET network_gns_transport_test)
-    add_dependencies(devils_engine_test network_gns_transport_test)
+    add_dependencies(devils_engine_test network_gns_transport_test network_backend_session_test)
   endif()
 endif()
 

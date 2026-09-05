@@ -48,8 +48,9 @@ state, что uninterrupted authority. State-frame sequence acceptance отде�
 - ACK/packet/MTU моделирование и попытка повторить внутренности GNS;
 - wire serialization и fragmentation;
 - baseline/delta replication — это NET-07;
-- настоящий GNS adapter и networking thread — это NET-08;
+- networking worker остаётся отдельной задачей поверх завершённого GNS adapter;
 - handshake, authority, authentication и reconnect recovery policy.
 
-In-memory link моделирует наблюдаемые обещания будущего backend, а не его внутренний протокол. NET-08
-должен будет прогнать ту же session fixture через GNS, не меняя simulation/state code.
+In-memory link моделирует наблюдаемые обещания backend, а не его внутренний протокол. NET-08C прогоняет
+те же causal checkpoint/replay типы из `causal_fixture.h` через prepared in-memory bytes и реальный GNS,
+не меняя schema/replay code. Результаты записаны в корневом `NETWORKING_STATUS.md`.

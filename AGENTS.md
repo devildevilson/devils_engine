@@ -4,6 +4,69 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- LEARNING, GRAPHS AND BACKTRACKING FOR THE CONSTRAINT SOLVER (2026-09-05). `501/501` project tests,
+  GN05's own `19/19`. Three additions to `libs/originator/.../constraint_tools.cpp` and three modes in
+  `subprojects/playgrounds/GN05_constraint_collapse`.
+  ONE CORE, THREE TOOLS. `collapse` (raster), `graph_collapse` (CSR) and `learn_rules` (rules off a
+  sample) share ONE implementation of wave, observation, propagation and rollback: the neighbourhood
+  arrives as a function, because a raster and a graph differ by exactly that. A second copy of this
+  logic would have drifted silently — both versions would keep producing "some" layout.
+  GRAPH RULES MUST BE SYMMETRIC, AND ASYMMETRY IS A REFUSAL. A graph arc has no canonical direction, so
+  "a next to b" and "b next to a" are the SAME statement and the matrix is ONE (`allowed[a * tiles + b]`
+  instead of two axes). An asymmetric table is refused by naming the pair: silent symmetrisation (by OR
+  or by AND) would generate rules nobody wrote.
+  LEARNING: ADMITTED IFF OBSERVED. A `window x window` window walks the drawn sample, distinct windows
+  become an alphabet of PATTERNS, and observed adjacencies of windows become the table. The classic
+  overlapping model instead admits a pair whose windows AGREE on the overlap even if nobody saw them
+  side by side; that gives more variety but no promise one can present. Observation gives a checkable
+  one — NO WINDOW IN THE RESULT THAT WAS NOT IN THE SAMPLE — and the playground verifies it against the
+  SAMPLE itself, not against the table derived from it. At window 1 both models coincide and it is
+  exactly the simple tiled model. The solver then works in the alphabet of PATTERNS while the map is
+  needed in tiles: the translation is a plain `lookup` over pattern representatives, and no second
+  mechanism was needed.
+  ROLLBACKS ARE TWO QUANTITIES, NOT ONE. `rollbacks` is PATIENCE (how many undos per attempt),
+  `history` is MEMORY (how many observations back). What is kept is a change JOURNAL, not a wave
+  snapshot: a snapshot per observation would cost a copy of the whole wave per choice, i.e. quadratic
+  in cells. The undone choice is then FORBIDDEN — without that the solver returns to the same point and
+  the search never narrows — and the forbid is journalled into the ENCLOSING level, because it is only
+  valid in the state it was derived in.
+  DECLARED CAPACITY NO LONGER COSTS TIME. The pattern alphabet's capacity must be declared (nobody
+  knows the count before the run) and it used to double as the solver's WIDTH — a generously declared
+  spare silently made solving 4x slower. Now the tail of the alphabet that weighs nothing and relates
+  to nothing is not part of the alphabet: capacity 96/512/2048 give the SAME map (checked by hash) in
+  556/570/690 ms, and the residual is parsing the declared matrix, i.e. the memory the author asked
+  for.
+  ZERO WEIGHT MEANS "NEVER CHOSEN" AND IS EXCLUDED FROM THE INITIAL WAVE: otherwise the option count —
+  the solver's CRITERION — would lie. A pre-taken cell is a condition, not a choice, so its tile is set
+  regardless of weight; that is how "deep water only where I drew it" is expressed.
+  MEASURED, AND THE ANSWERS CUT BOTH WAYS: on tight learned rules a handful of rollbacks replaces half
+  a dozen restarts and wins up to 3x in time (seeds 2/3/4 at `96x96`: 7/5/6 attempts and 3838/3342/3494
+  ms became 1 attempt with 4/1/2 rollbacks and 1272/1236/1251 ms). On a SYNTHETIC hard instance
+  (3-colouring an odd torus) restarts win on cost while rollbacks win on reach (side 15, one attempt,
+  40 seeds: 4/40 without, 24/40 with) — and at side 45 NOTHING works, neither 64 restarts (330 ms) nor
+  65536 rollbacks with history 64 (46 s). A rollback rescues a LOCAL mistake; against a constraint
+  whose consequence is global it is as powerless as a restart. What is cheaper depends on how much the
+  thrown-away work was worth.
+  THE JOURNAL COSTS ~18% WHEN NO ROLLBACK HAPPENS (optimised build, `192x192`, 7 tiles: 37.5 → 44.5 ms
+  median) and is lost in the noise on a wide alphabet. The layout is BITWISE IDENTICAL with and without
+  rollbacks when none are used — checked by hash at four sizes. NB: the Debug build showed ~50%, which
+  is an artefact of unoptimised `push_back`, not a design fact — worth remembering before publishing a
+  Debug ratio as a property.
+  THE WINDOW IS THE PRICE KNOB: sample `48x48` → raster `64x64` gives 7 patterns / 26 ms / no structure
+  at window 1, 85 / 556 ms / islands with beaches at window 2, and 435 / 80 SECONDS at window 3.
+  Declared pairs constrain WHAT touches WHAT; learned windows constrain the SHAPE — the difference is
+  visible by eye (grainy lawful speckle versus real coastlines).
+  THE SAME LADDER ON A DEGREE-6 GRAPH IS NOT THE SAME RULE SET. On a free sphere it goes 55% water with
+  no mountains at all; with 24 snow peaks pinned, not a drop of water. The "neighbour one step away"
+  rule has no restoring force, so the whole ball drifts wherever the first condition pushed it, and the
+  more neighbours a cell has the stronger this is. A rule set tuned on one neighbourhood does not
+  transfer to another — the graph mode therefore pins conditions from BOTH ends of the ladder.
+  LEARNING REPRODUCES THE DRAWING'S SLIPS, caught here on a live example: the first sample wobbled the
+  coast by ANGLE, and near the centre — where the angle between adjacent cells changes fast — the
+  ladder skipped a step, so in a couple of places water touched grass ON THE PICTURE. The rules carried
+  that faithfully and the playground check caught not the solver but the DRAWING. The wobble is now a
+  function of position, and the ladder holds on the sample BY CONSTRUCTION.
+
 - CONSTRAINT SOLVER (WAVE FUNCTION COLLAPSE) AND GN05 (2026-09-05). `480/480` project tests, GN05's own
   `8/8`. New tool `collapse` (`libs/originator/.../constraint_tools.cpp`) plus the lab
   `subprojects/playgrounds/GN05_constraint_collapse`.
@@ -45,12 +108,9 @@ This repository is the author's experimental game engine / framework. It is a la
   frequency in the result — what ends up on the map is decided mostly by the constraints and the
   pre-taken frame. Tuning proportions by weights works only approximately, and that must be known in
   advance.
-  DELIBERATELY ABSENT: learning rules from a sample (the overlapping model) — declared rules are DATA
-  the config author controls and "why did it come out like this" has an answer; sample extraction is
-  to be added as a separate tool writing THE SAME matrix, so the solver keeps one contract and gains a
-  second source of rules. Also absent: a graph-neighbourhood solver (arcs on a sphere have no canonical
-  direction, so rules there come out symmetric — same core, different tool), backtracking instead of
-  restart, and chunked generation (constraints cross chunk borders, so `key_support` is `global`).
+  NAMED AS ABSENT AT THE TIME, ALL THREE DONE IN THE NEXT SESSION (see the entry above): learning
+  rules from a sample, a graph-neighbourhood solver, and backtracking instead of restart. Still absent:
+  chunked generation (constraints cross chunk borders, so `key_support` is `global`).
 - WHERE DEVICE CODE COMES FROM, GN04 ON CONFIG, AND AN AUDIT (2026-09-05). `458/458` project tests,
   GN04's own `22/22`. Recorded as `ORIGINATOR_GPGPU.md` §10.
   THE DIVIDING LINE IS NOT "GLSL OR NOT", IT IS WHO DECIDES WHAT IS COMPUTED. A native tool's device

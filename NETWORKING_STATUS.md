@@ -1,6 +1,6 @@
 # Networking implementation status
 
-Last updated: 2026-09-05.
+Last updated: 2026-09-06.
 
 This file is the mutable implementation and verification journal for the networking work. Architectural
 decisions, terminology, invariants and the ordered roadmap remain in [NETWORKING.md](NETWORKING.md). A result is
@@ -28,14 +28,88 @@ recorded here only after it is reproduced by an executable test or directly obse
 | TIME-01 gameplay timeline/presentation split | complete; generic timeline, flow, turn pipeline and cardgame proof |
 | TIME-02 fixed-step host/project migration | complete; host and tile actor consume an external 60 Hz tick |
 | Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
-| Complete project suite | last whole-suite run before this follow-up: 402/402; neutral NET-01..06 set passes 36/36 in Debug and Release |
-| `devils_engine::network_gns` adapter | NET-08A/B implemented; focused networking set 71/71 in Debug and Release; NET-08 remains in progress |
+| Complete project suite | not run after adding NET-08C; focused networking set is the verification scope |
+| `devils_engine::network_gns` adapter | NET-08A/B/C complete; focused networking set 75/75 in Debug and Release |
 | NET-08B listen/connect/accept lifecycle | complete; explicit admission, bounded routing/observations, shutdown and fresh-generation reconnect |
-| NET-08C shared in-memory/GNS session fixture | pending; socket-pair byte tests do not close this gate |
+| NET-08C shared in-memory/GNS session fixture | complete; 4/4 cases pass in Debug and Release, five repeated Debug runs pass |
 | Session handshake, reconnect recovery and peer authority | not started |
+| Dedicated-server health/readiness probes | SERVER-02 planned; separate from gameplay GNS/peer capacity |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
 | Yojimbo comparison | deferred indefinitely; not an implementation gate |
+
+## NET-08C — common simulation/state proof over GNS, 2026-09-06
+
+NET-08 is complete as a gameplay transport adapter. `network_backend_session_test` runs the same project/session
+handlers over an in-memory byte backend and real localhost UDP through `gns_transport`. The backend owns only
+opaque byte movement and delivery/lane policy; it does not know actors, baselines, ticks, checkpoints or digests.
+The NET07 replication receiver was extracted into `NET07_replication_baselines/session.h` and templated on its
+message link. The NET06 causal checkpoint types similarly live in `NET06_in_memory_transport/causal_fixture.h`,
+so the old hot-path test and GNS proof exercise one schema instead of copied lookalikes.
+
+### Proved composition
+
+- A small laboratory codec writes an explicit little-endian envelope and bounded actor/delta arrays into
+  prepared scratch. It round-trips full baseline, delta and recovery request, and rejects every truncated
+  prefix, trailing bytes, unknown envelope type/version and prepared-capacity overflow. This is a fixture wire
+  format, not a frozen engine session protocol.
+- The common NET07 path loses `100 -> 101`, receives `101 -> 102` without its exact base, sends a reliable
+  correlated request, installs full `102`, receives `103 -> 104` first, recovers full `104`, then rejects the
+  delayed `102 -> 103` as stale. A duplicated final `104 -> 105` applies once. Both backends end at exactly the
+  same project-owned entity set, with three full baselines, one delta, two missing-base detections, two requests,
+  one stale frame, one duplicate and no project rejection.
+- The common NET06 path sends the authoritative tick-2 float intent only after prediction has reached tick 6.
+  It restores checkpoint 0 into staging, replaces the recorded input, replays ticks 1..6 with presentation
+  suppressed, transactionally publishes the result and matches the authority's canonical Murmur64 digest.
+  Presentation remains at six rather than being emitted again during replay.
+- In-memory reliable messages lose their first attempt and exercise the neutral retry model. Each real-GNS
+  common scenario begins with 100% native send loss for 40 ms; reliable traffic is accepted, retransmitted by
+  GNS after loss ends and recovery converges. Logical stale/duplicate scheduling is explicit at the message
+  boundary and is not presented as control over native packet ordering.
+- Filling all four prepared reliable bulk slots makes the fifth send return count backpressure. A reliable
+  control/recovery message still uses its own lane and arrives. Even after delivery, deliberately unobserved
+  GNS payload-release completions retain all four reservations; polling releases reclaims them and permits the
+  next bulk send. This pins memory ownership separately from delivery acknowledgement.
+
+### Verification and limits
+
+- Debug and Release focused networking sets: **75/75** registered tests pass in each configuration.
+- NET-08C target: **4/4** cases pass in both builds; all four pass five consecutive Debug repetitions.
+  Assertion counts depend slightly on the number of asynchronous empty polls and are intentionally not used as
+  the stable result. Existing NET07 remains **58/58** and `network_hot_path_test` remains **11/11**.
+- Builds used only focused networking targets and their dependencies, at most `-j4`; UDP tests ran outside the
+  sandbox. No sanitizer run, allocator replacement, Originator target or whole-project suite was run.
+- The test still deliberately allocates fake-project snapshots/deltas and GNS still allocates native message
+  headers. Prepared scratch bounds serialization growth; it is not a claim that the whole session allocates
+  nothing. Full replication baselines remain recovery data, not routine per-tick world checkpoints.
+- NET-08C does not add protocol/schema/content handshake, authenticated player/session identity, authority
+  assignment, automatic reconnect, replay across a new connection, multi-process execution or an engine worker.
+  These are the next session/laboratory tasks above the now-proven opaque transport.
+
+## GNS direct-IP connection, ports and bind behavior
+
+For the pinned GNS v1.6.0 direct-IP path, one `HSteamNetConnection` is one logical bidirectional relationship
+to a peer. A dedicated authority therefore normally owns one connection handle per connected client. It is not
+a TCP socket and does not imply one server UDP socket per client: accepted connections share the listener's
+underlying UDP socket and its fixed local port while keeping independent reliability, congestion, crypto,
+statistics, lanes and remote endpoints.
+
+`CreateListenSocketIP` requires a nonzero port and binds the supplied local address. A cleared/unspecified IP
+means wildcard/all local addresses and attempts dual-stack operation; a concrete local IPv4/IPv6 address binds
+that address and thereby its OS interface. The API does not accept an interface name or subnet prefix. Bind
+chooses where packets arrive; admitting only a subnet requires application/firewall policy before `accept`.
+
+In this pinned implementation, each outgoing `ConnectByIPAddress` currently opens its own UDP socket on an
+OS-selected ephemeral local port. Its address family follows the remote address and its source address/interface
+follows OS routing. The public API exposes the remote address, not a local-bind option for this path, and the
+source explicitly calls possible socket sharing or a selected local address future work. Treat this as current
+implementation behavior, not a permanent application invariant. `CreateListenSocketP2P`/`ConnectP2P` are a
+different signaling/NAT/relay path with virtual ports; NET-08C exercised direct localhost IP only.
+
+In a normal Docker bridge, the game should listen on the container address/wildcard and fixed UDP port; Docker
+publishes/maps a selected host IP/UDP port. A management health/readiness endpoint needs its own independently
+configured bind and must not consume a gameplay connection or peer slot. This follow-up adds that planned work
+as **SERVER-02** in `NETWORKING.md`; no HTTP/probe implementation is part of NET-08C.
 
 ## NET-08B — endpoint lifecycle, 2026-09-05
 
@@ -94,9 +168,9 @@ is outside this contract.
 Build/test commands are the same focused commands recorded below for NET-08A. The implementation contract is
 also documented in `libs/network/README.md` and the public header.
 
-Next is **NET-08C**, the backend-independent NET06/NET07 session proof with real GNS transport. Engine-worker
-integration remains separate from this caller-driven lifecycle slice and should reuse existing bounded FIFO
-channels. Native allocator profiling/replacement and a fresh sanitizer pass are deferred.
+NET-08C is completed above. Engine-worker integration remains separate from this caller-driven lifecycle slice
+and should reuse existing bounded FIFO channels. Native allocator profiling/replacement and a fresh sanitizer
+pass are deferred.
 
 ## NET-08A — GNS opaque-message and ownership boundary
 
@@ -156,8 +230,7 @@ Init/Kill. The runtime must outlive native receive leases even when they outlive
 
 - **NET-08B:** completed by the follow-up above. Later engine-worker integration should use existing bounded
   channels; it is not hidden in the endpoint wrapper.
-- **NET-08C:** run the shared NET06/NET07 simulation/state scenario through GNS, including reorder, saturation,
-  delayed ownership release and recovery. This is still required to close NET-08.
+- **NET-08C:** completed by the common backend/session proof above.
 - After NET-08: multi-process loopback/LAN (NET-LAB-01), compatible/incompatible cross-build exchange
   (NET-LAB-02), dedicated headless authority and the online tile_frontier stand. HTTP and Yojimbo remain deferred.
 
