@@ -82,6 +82,11 @@ target_link_libraries(network_replication_test PRIVATE devils_engine::network)
 devils_add_doctest(network_hot_path_test network_hot_path_test.cpp)
 target_link_libraries(network_hot_path_test PRIVATE devils_engine::network)
 
+if (TARGET devils_engine::network_gns)
+  devils_add_doctest(network_gns_transport_test network_gns_transport_test.cpp)
+  target_link_libraries(network_gns_transport_test PRIVATE devils_engine::network_gns)
+endif()
+
 find_program(DEVILS_NETWORK_GXX NAMES g++)
 find_program(DEVILS_NETWORK_CLANGXX NAMES clang++)
 if (DEVILS_NETWORK_GXX AND DEVILS_NETWORK_CLANGXX)
@@ -255,6 +260,9 @@ target_link_libraries(originator_pipeline_test PRIVATE devils_engine::originator
 
 devils_add_doctest(originator_queue_test originator_queue_test.cpp)
 target_link_libraries(originator_queue_test PRIVATE devils_engine::originator devils_engine::utils)
+
+devils_add_doctest(originator_collapse_test originator_collapse_test.cpp)
+target_link_libraries(originator_collapse_test PRIVATE devils_engine::originator devils_engine::utils)
 
 # Lua-поверхность очереди. Отдельная цель потому, что она линкует скриптовый слой: ядру генератора
 # lua не нужна, а этому тесту нужна — он проверяет и то, что регистрация неймспейса не портит память.

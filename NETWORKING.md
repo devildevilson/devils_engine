@@ -1523,7 +1523,7 @@ not covered by a generic zero-allocation promise. NET-08 must measure the GNS ow
 reuse the existing bounded thread/payload channels where their FIFO ownership contract fits, rather than
 introducing a second inter-thread queue merely for networking.
 
-### NET-08 — selected gameplay transport adapter (`M-L`)
+### NET-08 — selected gameplay transport adapter (`M-L`, in progress)
 
 - Add optional dependency/target isolated from neutral core.
 - Use PRE-01's selected GNS backend.
@@ -1534,6 +1534,21 @@ introducing a second inter-thread queue merely for networking.
 
 Done when the same NET-06 session tests can run over the selected backend with no change to simulation/state
 code.
+
+Implementation is split into independently verified slices:
+
+- **NET-08A: opaque message/ownership boundary.** Optional `devils_engine::network_gns`, exclusive adoption of
+  fresh GNS connections, per-lane prepared payload slots, reliable ordered/unreliable sequenced delivery,
+  bounded received-message leases, release notifications and native connection/lane statistics. No runtime
+  Init/Kill, worker or project callback is hidden in this object. Implemented in `gns_transport.{h,cpp}`;
+  recorded tests/results are in `NETWORKING_STATUS.md`.
+- **NET-08B: endpoint lifecycle.** Own listen/connect/accept and bounded connection-event routing; define
+  callback/owner-thread lifetime, connection refusal, shutdown and reconnect with fresh peer generations.
+  Reuse the existing inter-thread channels where ownership is FIFO. Authentication remains explicit session
+  policy; do not silently enable unauthenticated IP traffic in the adapter.
+- **NET-08C: backend-independent session proof.** Run the recorded NET06/NET07 simulation/state scenario
+  through the real backend, including stale unreliable frames, lane pressure, delayed ownership releases and
+  recovery. Only this closes NET-08 as a whole; socket-pair byte tests alone do not.
 
 ### NET-09 — Yojimbo comparison (`M`, deferred indefinitely)
 

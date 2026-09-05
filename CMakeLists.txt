@@ -570,6 +570,9 @@ if (DEVILS_ENGINE_BUILD_TESTS)
     USES_TERMINAL
     COMMENT "Running devils_engine tests"
   )
+  if (TARGET network_gns_transport_test)
+    add_dependencies(devils_engine_test network_gns_transport_test)
+  endif()
 endif()
 
 if (DEVILS_ENGINE_BUILD_VENDOR_TESTS)

@@ -4,6 +4,53 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- CONSTRAINT SOLVER (WAVE FUNCTION COLLAPSE) AND GN05 (2026-09-05). `480/480` project tests, GN05's own
+  `8/8`. New tool `collapse` (`libs/originator/.../constraint_tools.cpp`) plus the lab
+  `subprojects/playgrounds/GN05_constraint_collapse`.
+  WHY IT EARNS ITS PLACE: a HARD LOCAL PROHIBITION. Noise gives smoothness, Voronoi gives regions,
+  graph flood gives reachability — none of them can say "water NEVER touches grass". That is the one
+  thing the solver promises, so that is the one thing the checks verify.
+  INPUT/OUTPUT: tile weights + a MATRIX of allowed adjacency + optionally pre-taken cells → one tile
+  index per cell + optionally the number of attempts. The matrix is declared as
+  `allowed[(axis * tiles + a) * tiles + b]`; there are two axes and THE OPPOSITE DIRECTIONS ARE DERIVED
+  by transposition — two lists of one truth would drift silently, because an asymmetric table looks
+  like an ordinary one and merely contradicts more often. The bitsets the solver works with are its own
+  business: word layout written down twice would be the same duplication.
+  APERTURE `sequential`, AND THAT IS NOT AN IMPLEMENTATION DETAIL. Which cell to observe next is
+  decided by the field left behind by the previous propagation. So the solver will never enter a queue
+  (the queue's `sequential` refusal says exactly this) and will never reach a device — parallel WFC
+  variants exist and produce DIFFERENT results. It is also the first tool in the library that can FAIL
+  TO FIND AN ANSWER: a contradiction is a normal outcome of arc consistency, hence a declared attempt
+  count and a LOUD refusal when they run out — a half-filled grid is a different world under the same
+  seed and invisible in the result.
+  DETERMINISM BOUGHT BY DROPPING ENTROPY: the classic compares Shannon entropy in float, so the choice
+  of cell depends on comparing floats — the very class the project already burned on with FastNoise2.
+  The criterion here is INTEGER (fewest remaining options) with ties broken by a hash of cell and seed,
+  the same trick `graph_flood` already uses. Entropy stays a HEURISTIC, not a definition of the task.
+  MEMORY NAMED UP FRONT (the GEN-15 lesson applied immediately): the wave is `cells x ceil(tiles/32)`
+  words and nothing else. The classic also keeps support counters per (cell, tile, direction) — 64 MiB
+  at `512x512` with 64 tiles — and they are deliberately absent: support is recomputed as a bitset
+  union. A named time-for-memory trade, to be reversed only after measurement.
+  TWO DISPATCH RULES GENERALISED ALONG THE WAY, both needed by a solver whose inputs are a rule table
+  rather than per-element data: `optional_inputs` (symmetric to `optional_outputs`) so pre-taken cells
+  need not be a buffer of zeros; and for `sequential` the range now covers only the FIRST output while
+  inputs are read WHOLESALE — a solver's inputs are a few dozen words of rules while its range is a
+  million cells, and what is ordered about it is the WRITES, not the reads.
+  MEASURED: cost is LINEAR in cells (4.60/3.81/3.54/3.30 µs per cell at 64/128/192/256 square) — the
+  observation queue with stale-entry discarding does not blow up quadratically. But three MICROseconds
+  per cell against three NANOseconds for a native pointwise pass: that is the price of solving a
+  problem, not of walking a field, and the two should not be confused.
+  UNEXPECTED NUMBER: weights are declared `grass 2.4`, `forest 1.8`, `water 1.0`, and the layout comes
+  out `water 32%`, `grass 20%`, `forest 11%`. A weight is a preference AT THE MOMENT OF CHOICE, not a
+  frequency in the result — what ends up on the map is decided mostly by the constraints and the
+  pre-taken frame. Tuning proportions by weights works only approximately, and that must be known in
+  advance.
+  DELIBERATELY ABSENT: learning rules from a sample (the overlapping model) — declared rules are DATA
+  the config author controls and "why did it come out like this" has an answer; sample extraction is
+  to be added as a separate tool writing THE SAME matrix, so the solver keeps one contract and gains a
+  second source of rules. Also absent: a graph-neighbourhood solver (arcs on a sphere have no canonical
+  direction, so rules there come out symmetric — same core, different tool), backtracking instead of
+  restart, and chunked generation (constraints cross chunk borders, so `key_support` is `global`).
 - WHERE DEVICE CODE COMES FROM, GN04 ON CONFIG, AND AN AUDIT (2026-09-05). `458/458` project tests,
   GN04's own `22/22`. Recorded as `ORIGINATOR_GPGPU.md` §10.
   THE DIVIDING LINE IS NOT "GLSL OR NOT", IT IS WHO DECIDES WHAT IS COMPUTED. A native tool's device

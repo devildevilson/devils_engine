@@ -29,11 +29,99 @@ recorded here only after it is reproduced by an executable test or directly obse
 | TIME-02 fixed-step host/project migration | complete; host and tile actor consume an external 60 Hz tick |
 | Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
 | Complete project suite | last whole-suite run before this follow-up: 402/402; neutral NET-01..06 set passes 36/36 in Debug and Release |
-| Production `devils_engine::network_gns` adapter | not started |
+| `devils_engine::network_gns` adapter | NET-08A message/ownership boundary implemented; NET-08 as a whole remains in progress |
+| NET-08B listen/connect/accept lifecycle | next; currently the adapter adopts fresh caller-created connections |
+| NET-08C shared in-memory/GNS session fixture | pending; socket-pair byte tests do not close this gate |
 | Session handshake, reconnect recovery and peer authority | not started |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
 | Yojimbo comparison | deferred indefinitely; not an implementation gate |
+
+## NET-08A — GNS opaque-message and ownership boundary
+
+The optional compiled `devils_engine::network_gns` target provides `gns_transport` in
+`libs/network/{include/devils_engine/network,src/network}/gns_transport.{h,cpp}`. Neutral `network` headers and
+linkage are unchanged. This is a single-owner transport object, not a worker or session: it borrows initialized
+GNS interfaces, owns adopted connections/poll group and does not install a process-global callback or call
+Init/Kill. The runtime must outlive native receive leases even when they outlive the transport.
+
+### Implemented and checked
+
+- Opaque messages preserve payload bytes and lane IDs. Reliable ordered lanes and lower-priority reliable bulk
+  are independent declarations; unreliable-sequenced lanes filter native older/duplicate message numbers.
+  The latter is a transport filter, not an application tick/baseline gate; adversarial reorder coverage remains
+  part of NET-08C, beyond the current ordinary unreliable byte-transfer check.
+- Fixed per-lane send slots and retained-byte limits are shared across this adapter's peers. Saturating the bulk
+  reservation does not consume the high-priority lane's slots. Data is copied once from the caller into a slab,
+  then passed through GNS custom payload ownership; caller storage can be overwritten immediately after send.
+- `m_pfnFreeData` publishes slot release atomically. The owner observes it with `poll_send_releases`; unread
+  completions retain their slots and produce backpressure. Completion means **payload memory released**, not
+  remote delivery. Failure through `SendMessages(..., false)` leaves the native message with the adapter,
+  which releases it and returns the negative native EResult without leaking a slot.
+- Release is not FIFO: tests release the second message before the first, reclaim only that slot, reconnect,
+  and keep the old first payload readable. Its later release still names the old peer generation, never the new
+  connection. A separate test destroys both adapters while a lease remains alive and releases it on another
+  thread. Native callbacks retain their slab lifetime, not a dangling transport pointer.
+- Receive outputs are move-only native-message leases. The limit counts all outstanding leases, not merely the
+  current poll batch. Nonempty output is refused without overwriting a lease; native examination has a work
+  budget even when filtering stale unreliable messages. Invalid native lane/size/reliability closes the peer.
+- Adopting a new connection reuses preallocated metadata but assigns a process-unique generation. Repeated
+  internal-pipe reconnects (100 cycles) reject old IDs and use the **same payload storage address** each time.
+- State notifications are polled observations with a caller-provided output span, not a lossless callback log.
+  Native connection/lane statistics expose RTT, quality, maximum jitter and lane queue depth/time without
+  conflating packet quality with a measured loss percentage.
+- Real UDP socket pairs deliver a reliable message after a deliberate 100% loss interval ends. A 400 KiB
+  fragmented reliable bulk transfer at 512 KiB/s does not prevent a later high-priority message arriving first.
+
+### Memory findings in the pinned GNS source
+
+1. `CSteamNetworkingMessage::New` still performs `new CSteamNetworkingMessage`, even when `AllocateMessage(0)`
+   is requested. Our slab removes the additional payload allocation, **not the native header allocation**.
+   The adapter does not fabricate/recycle private GNS objects; native allocator profiling/control is a separate
+   work item. The byte-address reuse test proves slab reuse, not zero allocations inside GNS.
+2. GNS silently clamps configuration values: send/receive buffers have a 4 KiB minimum, maximum received message
+   size has a 64 B minimum, and queued receive count has a minimum of two in this pinned implementation.
+   Adoption reads back explicitly set limits and refuses mismatches. Only the derived send-queue cap includes
+   an explicit 4 KiB floor; application per-lane byte budgets remain exact. A test requests a 256 B backend receive
+   cap, detects the backend's clamp and verifies that the rejected native handle was closed.
+3. Memory budgets have distinct owners: prepared send slab bytes, outstanding received leases, and backend queued
+   messages. Backend receive limits do not describe all packet/reassembly/crypto working memory. A total process
+   allocation/high-water budget has not been claimed or measured here.
+4. `thread::byte_ring` requires FIFO reclamation and therefore cannot own out-of-order native send releases.
+   Its existing `payload_channel` remains suitable for the later main↔worker hop: the worker copies into an
+   independently owned send slot before releasing the FIFO message. No second inter-thread queue was introduced.
+
+### Remaining NET-08 work
+
+- **NET-08B:** listen/connect/accept, bounded callback routing, lifecycle/terminal events, owner-thread rules,
+  shutdown and fresh-generation reconnect; then integrate an engine worker through existing bounded channels.
+- **NET-08C:** run the shared NET06/NET07 simulation/state scenario through GNS, including reorder, saturation,
+  delayed ownership release and recovery. This is still required to close NET-08.
+- After NET-08: multi-process loopback/LAN (NET-LAB-01), compatible/incompatible cross-build exchange
+  (NET-LAB-02), dedicated headless authority and the online tile_frontier stand. HTTP and Yojimbo remain deferred.
+
+### Verification — 2026-09-05
+
+- Debug and Release focused networking sets: **65/65** registered tests pass in each configuration.
+- New adapter target: **9/9** cases, **1644/1644** assertions; all nine cases also pass five consecutive Debug
+  repetitions, including both real-UDP scenarios.
+- Clang 22.1.8 + libstdc++ with ASan/UBSan/LeakSanitizer: **9/9** pass without reported errors/leaks. Adapter
+  and test sources were instrumented; vendor GNS/dependency archives were reused, not rebuilt with sanitizers.
+- UDP and LeakSanitizer runs needed execution outside the sandbox (socket creation and ptrace restrictions).
+  No Internet peers, authentication service or P2P signaling were exercised.
+- Builds used at most `-j4` and only networking targets/dependencies. No Originator target or whole-project
+  test suite was run for this change.
+
+```sh
+cmake --build build-debug --target network_gns_transport_test -j4
+ctest --test-dir build-debug -R '^(network_|NET0[67]_)' --output-on-failure -j4
+ctest --test-dir build-debug -R '^network_gns_transport_test::' --repeat until-fail:5 --output-on-failure -j4
+
+cmake --build build-release --target network_gns_transport_test -j4
+ctest --test-dir build-release -R '^(network_|NET0[67]_)' --output-on-failure -j4
+```
+
+The full focused commands assume the preceding NET-01..07 targets have already been built.
 
 ## Pre-NET08 audit follow-up — 2026-09-05
 

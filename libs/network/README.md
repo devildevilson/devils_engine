@@ -286,3 +286,69 @@ versioning, serialization and hashing, consistently in all three places.
 including checkpoint restore/replay/digest over the faulty logical link. The
 test's allocation hooks belong only to that executable, not to the engine.
 This does not claim allocation freedom inside GNS or the real ECS serializer.
+
+## Optional GNS adapter — NET-08A
+
+Link `devils_engine::network_gns` and include `network/gns_transport.h` explicitly.
+The neutral `network` target and umbrella header remain free of GNS headers and
+linkage. `DEVILS_ENGINE_BUILD_NETWORK_GNS=OFF` disables this target; it does not
+undo the repository's existing top-level GNS fetch or the independent PRE-01 probe.
+
+`gns_transport` is a single-owner concrete backend, not a session or a worker.
+The caller lends initialized `ISteamNetworkingSockets`/`ISteamNetworkingUtils`;
+their runtime must outlive the transport **and all outstanding received leases**.
+`adopt` takes exclusive ownership of a fresh connection even on refusal (it
+closes rejected handles); duplicate adoption into the same object is a refusal
+without close. Generational `gns_peer` values reject stale and foreign-instance
+references. They are local transport handles, not player or authority IDs.
+
+The lane declaration supplies delivery, priority/weight, Nagle policy, number of
+send slots, maximum payload size and retained-byte budget. A bulk channel is simply another
+reliable lane with its own reservation and priority. Opaque messages acquire no
+application framing, tick, component or snapshot knowledge. Unreliable-sequenced
+delivery discards native message numbers older than the newest observed number
+on that connection/lane. It does not replace application state-frame validation.
+
+Memory and lifetime:
+
+- Send slabs allocate `sum(lane.send_slots * lane.max_payload_bytes)` bytes at
+  preparation, plus fixed metadata. Budgets are per lane across this adapter's
+  peers. `try_send` copies the caller's bytes into one free slab slot; GNS receives
+  a native `AllocateMessage(0)` header with a custom payload-release callback.
+- GNS can free payloads out of order and from a different thread. A FIFO
+  `thread::byte_ring` therefore cannot directly own this boundary. Each slot
+  publishes release atomically; `poll_send_releases` copies completion metadata
+  into caller storage and makes slots reusable. Completion is **memory release,
+  not delivery ACK**; disconnect can release an undelivered message.
+- Native callbacks retain their slab's shared lifetime, not a transport pointer.
+  Adapter destruction does not invalidate a message still retained by GNS.
+  Rejected native sends are released immediately and emit no accepted-send completion.
+- Receive returns move-only `gns_received_message` leases without copying the
+  payload. A shared atomic count bounds outstanding leases across repeated polls,
+  including leases moved to another thread. The byte upper bound of leased
+  payloads is `receive_leases * max_receive_bytes`. `reset` returns ownership to
+  GNS; spans into that message expire immediately.
+- Backend queued-message byte/count/max-message limits are separate. GNS may
+  clamp settings, so adoption reads them back and refuses non-exact limits.
+  Its send queue is derived from summed lane budgets with the pinned backend's
+  4 KiB floor; the smaller application slab budgets still hold exactly.
+- These limits do not account for all of GNS's packet/reassembly/crypto working
+  memory. In the pinned source, `AllocateMessage(0)` still calls
+  `new CSteamNetworkingMessage`: the payload allocation is removed, the native
+  header allocation is **not**. No wrapper vector grows during send/receive/poll.
+  Profiling/controlling allocations inside GNS is a separate integration step;
+  do not fabricate/recycle its private message implementation from the adapter.
+
+`receive` requires empty output elements and has an explicit work budget,
+including discarded stale frames. A non-OK result may still carry earlier
+successful messages in `count`; process/release those leases. `poll_connections`
+reports observed state changes without an internal growing event log: intermediate
+states may coalesce between calls. `statistics` preserves native RTT, quality,
+jitter (including unavailable values) and per-lane queue data without inventing
+a packet-loss metric from quality or using global queue time for multiple lanes.
+
+For now the application creates connections (tests use internal/real-UDP GNS
+socket pairs). NET-08B adds listen/connect and bounded callback routing; NET-08C
+will run the same full session fixture over both backends. No HTTP, P2P signaling,
+session authentication, automatic reconnect or gameplay-thread mutation is added
+by NET-08A.
