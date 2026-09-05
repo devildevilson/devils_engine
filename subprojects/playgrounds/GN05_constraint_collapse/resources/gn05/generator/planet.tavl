@@ -1,0 +1,24 @@
+// Генератор GN05 в режиме ГРАФА — ТОЧКА ВХОДА.
+//
+// Тот же решатель, но соседство приходит данными, а не формой буфера. Всё, что от этого меняется в
+// конфиге, — матрица правил становится ОДНОЙ вместо двух осей.
+
+name = gn05_planet
+
+values  = ./values.tavl
+buffers = ./buffers_planet.tavl
+
+steps = [
+  {
+    name = table
+    body = ./scripts/S00_tiles.lua
+    writes = [ tiles ]
+  }
+
+  {
+    name = planet
+    body = ./scripts/S04_planet.lua
+    reads = [ tiles ]
+    writes = [ cells, cell_offsets, cell_arcs, rules, state ]
+  }
+]

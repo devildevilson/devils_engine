@@ -1,0 +1,49 @@
+// Буферы генератора GN05 в режиме ГРАФА.
+//
+// Здесь нет ни одного поля вида «столбец/строка»: у замкнутой поверхности нет края и нет строки.
+// Соседство лежит отдельным CSR — оно ДАННЫЕ, а не свойство раскладки, и решатель видит только его.
+
+{
+  name = tiles
+  format = [ weight = v1, colour = ui1 ]
+  layout = soa
+  size = tile_count
+}
+
+// ОДНА матрица на пару тайлов: у дуги графа нет направления, поэтому «a рядом с b» и «b рядом с a» —
+// одно утверждение. Несимметричную таблицу решатель отклоняет вслух.
+{
+  name = rules
+  format = [ allowed = ub1 ]
+  layout = soa
+  size = symmetric_rule_size
+}
+
+{
+  name = cells
+  format = [ position = v3, tile = ui1, given = ui1 ]
+  layout = soa
+  size = cell_count
+}
+
+// CSR соседства: смещения на клетку плюс одно за конец, и дуги.
+{
+  name = cell_offsets
+  format = [ start = ui1 ]
+  layout = soa
+  size = offset_count
+}
+
+{
+  name = cell_arcs
+  format = [ cell = ui1 ]
+  layout = soa
+  size = arc_count
+}
+
+{
+  name = state
+  format = [ attempts = ui1, rollbacks = ui1 ]
+  layout = soa
+  size = single
+}

@@ -1,0 +1,34 @@
+// Генератор GN05 в режиме ОБУЧЕНИЯ — ТОЧКА ВХОДА.
+//
+// Тот же решатель, что и у объявленных правил, и та же таблица — но заполняет её не автор, а
+// инструмент, пробежавший по нарисованному образцу. Ради этого и разделены шаги: рисование образца
+// это одно действие, снятие правил и раскладка — другое.
+//
+// Шаг с лесенкой тайлов указывает на ТОТ ЖЕ файл, что и остальные генераторы площадки: таблица тайлов
+// объявлена один раз, а ссылок на неё три.
+
+name = gn05_learned
+
+values  = ./values.tavl
+buffers = ./buffers_learned.tavl
+
+steps = [
+  {
+    name = table
+    body = ./scripts/S00_tiles.lua
+    writes = [ tiles ]
+  }
+
+  {
+    name = sample
+    body = ./scripts/S02_sample.lua
+    writes = [ sample ]
+  }
+
+  {
+    name = layout
+    body = ./scripts/S03_learned.lua
+    reads = [ sample ]
+    writes = [ alphabet, learned_rules, cells, state ]
+  }
+]
