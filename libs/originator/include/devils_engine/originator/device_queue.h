@@ -1,0 +1,113 @@
+#ifndef DEVILS_ENGINE_ORIGINATOR_DEVICE_QUEUE_H
+#define DEVILS_ENGINE_ORIGINATOR_DEVICE_QUEUE_H
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "computation_queue.h"
+
+#include "devils_engine/painter/compute_context.h"
+
+// ОЧЕРЕДЬ НА УСТРОЙСТВЕ: originator СОСТАВЛЯЕТ pipeline из своего конфига.
+//
+// Это то, что доку обещала с самого начала и чего до сих пор не было: «originator СОСТАВЛЯЕТ pipeline
+// для `graphics_base` из своего конфига, а не рисует» (§3.3 в `ORIGINATOR_GPGPU.md`). До этого
+// устройство водили руками — лаборатория связывала проходы сама, а очередь оставалась CPU-понятием.
+//
+// Второго планировщика при этом не появляется. Всё, что здесь есть, ВЫВОДИТСЯ из той же очереди,
+// которую проверяет `check_queue`:
+//
+//   ПЕРЕДАЧА выводится из границ очереди (§6.1): загружаются поля, которые вызов читает и которых до
+//   него никто не писал, выгружается ровно `output`. Объявлять план передачи не надо — он уже
+//   вычислен, и вычислен тем же обходом;
+//
+//   БАРЬЕРЫ выводятся тем же вопросом, что проверка мёртвой работы: «читает ли следующий проход то,
+//   что записал предыдущий». Это буквально один вопрос, заданный дважды, поэтому и ответ здесь один,
+//   а не второй набор правил. Где зависимости нет — барьера нет, и это не оптимизация, а следствие;
+//
+//   ФОРМА вызова на устройстве объявляется тем, кто его собрал: нативный инструмент объявляет её
+//   сам, программа `devils_script` — переводом. Ядро очереди про GLSL не знает.
+//
+// Всё уходит ОДНОЙ ОТПРАВКОЙ. §5 п.3 мерил круг тремя отправками намеренно, чтобы приписать цену по
+// фазам, и получил 70% на передачу как оценку СВЕРХУ; здесь это число пересчитывается по-настоящему.
+
+namespace devils_engine {
+namespace originator {
+
+// Можно ли эту очередь исполнить на устройстве. Пустое сообщение => можно.
+//
+// Отказ здесь — НЕ ошибка: очередь обязана иметь путь на CPU (§4.6), и «на устройство не
+// переносится» это законный ответ, по которому вызывающий уходит в `run_queue`.
+struct device_check {
+  bool allowed = true;
+  std::string message;
+};
+
+device_check check_device_queue(const computation_queue& queue);
+
+struct device_report {
+  size_t calls = 0;
+  // Сколько барьеров реально поставлено. Величина существует затем, чтобы «барьеры выводятся» было
+  // проверяемо: у цепочки, где каждый проход читает предыдущий, их на один меньше числа проходов, а
+  // у независимых проходов — ни одного.
+  size_t barriers = 0;
+  size_t upload_bytes = 0;
+  size_t download_bytes = 0;
+  // Времена одной отправки: запись команд и ожидание устройства.
+  double record_ms = 0.0;
+  double submit_ms = 0.0;
+};
+
+// План, составленный ОДИН раз и исполняемый много: у стримингового генератора один и тот же перевод
+// зовётся в каждом чанке, и компилировать шейдеры заново на каждый было бы той же ошибкой, что
+// поднимать компилятор на каждый шейдер.
+class device_queue {
+public:
+  device_queue(painter::compute_context& context, const computation_queue& queue);
+  ~device_queue() noexcept;
+
+  device_queue(const device_queue&) = delete;
+  device_queue& operator=(const device_queue&) = delete;
+
+  // Исполняет план: загрузка входов, все проходы с выведенными барьерами, выгрузка выхода — одной
+  // отправкой. Читает из хостовых буферов очереди и пишет в них же, поэтому результат оказывается
+  // там, где его ждёт остальной шаг.
+  device_report run();
+
+  // То же самое, но КАЖДЫМ ШАГОМ СВОЕЙ ОТПРАВКОЙ. Существует только ради замера, и это признаётся
+  // вслух: §5 п.3 мерил круг тремя отправками намеренно — чтобы приписать цену по фазам — и назвал
+  // 70% на передачу оценкой СВЕРХУ. Сравнить одну оценку с другой можно только запустив оба способа
+  // на одной и той же работе, поэтому второй способ здесь и остаётся.
+  device_report run_step_by_step();
+
+  // Что план из себя представляет. Отдаётся наружу затем, чтобы вывод передачи и барьеров можно было
+  // ПРОВЕРИТЬ, а не предположить: план, загрузивший лишнее поле, работает так же.
+  const std::vector<std::string>& uploaded_fields() const noexcept;
+  const std::vector<std::string>& downloaded_fields() const noexcept;
+  size_t barrier_count() const noexcept;
+
+private:
+  struct field_slot;
+  struct call_plan;
+
+  device_report execute(const bool single_submission);
+
+  painter::compute_context* context_ = nullptr;
+  computation_queue queue_;
+  std::vector<field_slot> slots_;
+  std::vector<call_plan> plans_;
+  std::vector<std::string> uploaded_;
+  std::vector<std::string> downloaded_;
+  std::vector<size_t> upload_slots_;
+  std::vector<size_t> download_slots_;
+  size_t barriers_ = 0;
+  size_t upload_bytes_ = 0;
+  size_t download_bytes_ = 0;
+};
+
+} // namespace originator
+} // namespace devils_engine
+
+#endif

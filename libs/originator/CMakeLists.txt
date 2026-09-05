@@ -95,6 +95,25 @@ target_link_libraries(devils_originator_primitives
 
 add_library(devils_engine::originator_primitives ALIAS devils_originator_primitives)
 
+# Устройственный слой: originator СОСТАВЛЯЕТ pipeline для вычислений на GPU из своей же очереди.
+# Отдельная цель по той же причине, что lua и devils_script — ядру генератора незачем знать про
+# Vulkan, а потребителю, которому нужен только путь на CPU, незачем линковать painter.
+add_library(devils_originator_device
+  src/originator/device_queue.cpp
+  include/devils_engine/originator/device_queue.h
+)
+
+target_include_directories(devils_originator_device
+  PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>"
+)
+
+target_link_libraries(devils_originator_device
+  PUBLIC devils_engine::originator devils_engine::painter
+  PRIVATE devils_engine::options devils_engine::utils
+)
+
+add_library(devils_engine::originator_device ALIAS devils_originator_device)
+
 # Скриптовый слой — ОТДЕЛЬНАЯ цель: ядро генератора не должно тянуть lua за собой, а потребителю,
 # которому нужен только пайплайн на C++, незачем линковать интерпретатор.
 if (MSVC)

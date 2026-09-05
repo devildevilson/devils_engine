@@ -263,6 +263,11 @@ target_link_libraries(originator_script_test PRIVATE devils_engine::originator d
 
 # Транслятор ds -> GLSL и сверка двух путей. Линкует и скриптовый слой, и painter: одна программа,
 # два исполнения. Часть с устройством ОХРАНЯЕМАЯ.
+# Очередь, СОСТАВЛЕННАЯ для устройства из самой себя: выведенная передача, выведенные барьеры, один
+# результат на двух путях. Часть с устройством ОХРАНЯЕМАЯ, а проверка плана работает всюду.
+devils_add_doctest(originator_device_queue_test originator_device_queue_test.cpp)
+target_link_libraries(originator_device_queue_test PRIVATE devils_engine::originator devils_engine::originator_device devils_engine::utils)
+
 # Очередь перед устройством: gather, роды полей и раскладка, кэш шейдеров. Всё измеряемое, поэтому
 # живёт тестом, а не рассуждением. Часть с устройством ОХРАНЯЕМАЯ.
 devils_add_doctest(originator_device_test originator_device_test.cpp)

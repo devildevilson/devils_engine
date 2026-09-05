@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -171,6 +172,17 @@ public:
                             const std::span<const binding_kind>& bindings,
                             const uint32_t push_byte_size);
 
+  using binding_set_id = uint32_t;
+
+  // НАБОР ДЕСКРИПТОРОВ НА ВЫЗОВ, а не на программу, и это не удобство.
+  //
+  // Дескрипторы вступают в силу при ОТПРАВКЕ, а не при записи команды. Значит два вызова одной
+  // программы с разными привязками, записанные в одну отправку, при общем наборе прочитали бы оба
+  // ПОСЛЕДНИЕ привязки — и это молча другие числа, а не отказ. А очередь ровно этим и занимается:
+  // два `remap` подряд — та же программа над разными полями. Поэтому набор принадлежит вызову.
+  binding_set_id create_binding_set(const program_id program);
+  void update_binding_set(const binding_set_id set, const std::span<const bound_resource>& resources);
+
   // Сколько КОМПИЛЯЦИЙ действительно было. Отдаётся наружу затем, чтобы попадание в кэш можно было
   // проверить, а не предположить: программа, скомпилированная дважды, работает так же, и по
   // результату этого не видно.
@@ -202,13 +214,45 @@ public:
                    const uint32_t group_x = 8,
                    const uint32_t group_y = 8);
 
+  // ЗАПИСЬ НЕСКОЛЬКИХ ОПЕРАЦИЙ В ОДНУ ОТПРАВКУ.
+  //
+  // Существует потому, что цена отправки — не цена работы: замер §5 п.3 в `ORIGINATOR_GPGPU.md`
+  // раскладывал круг передачи на три отправки НАМЕРЕННО, чтобы приписать цену по фазам, и получил
+  // 70% на передачу как оценку СВЕРХУ. Настоящая очередь уходит на устройство одной отправкой — это
+  // и есть смысл «исполняется целиком, без возврата в оркестратор», верный и на уровне Vulkan.
+  class recorder {
+  public:
+    void copy(const buffer_id from, const buffer_id to, const size_t byte_size);
+    void dispatch(const program_id program,
+                  const binding_set_id set,
+                  const void* push,
+                  const size_t push_byte_size,
+                  const size_t element_count,
+                  const uint32_t group_size = 64);
+    // БАРЬЕР между проходами: запись предыдущего видна чтению следующего. Ставится там, где
+    // зависимость ЕСТЬ, и не ставится там, где её нет — а знает это тот, кто составил очередь.
+    void barrier();
+
+  private:
+    friend class compute_context;
+    recorder(compute_context& owner, VkCommandBuffer buffer) noexcept;
+
+    compute_context* owner_ = nullptr;
+    VkCommandBuffer buffer_ = nullptr;
+  };
+
+  // Отправляет ОДИН командный буфер и ждёт его. Всё, что записал `record`, уходит вместе.
+  void submit(const std::function<void(recorder&)>& record);
+
 private:
   struct buffer_entry;
   struct image_entry;
   struct program_entry;
+  struct binding_set_entry;
 
   const buffer_entry& buffer_at(const buffer_id id) const;
   const image_entry& image_at(const image_id id) const;
+  const binding_set_entry& set_at(const binding_set_id id) const;
   program_id make_program(const std::string& name,
                           const std::string& source,
                           const std::span<const binding_kind>& bindings,
@@ -226,6 +270,7 @@ private:
   std::vector<buffer_entry> buffers_;
   std::vector<image_entry> images_;
   std::vector<program_entry> programs_;
+  std::vector<binding_set_entry> sets_;
   size_t compiled_ = 0;
 };
 

@@ -4,6 +4,51 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- ORIGINATOR NOW COMPOSES THE DEVICE PIPELINE FROM ITS OWN QUEUE (2026-09-05). `436/436` project
+  tests. `libs/originator/.../device_queue.h` in a new target `devils_engine::originator_device`
+  (separate for the same reason lua and `devils_script` are: the generator core must not know about
+  Vulkan, and a CPU-only consumer must not link painter). This is what `ORIGINATOR_GPGPU.md` §3.3
+  promised from the start and what did not exist until now — the device used to be driven by hand while
+  the queue stayed a CPU notion. Recorded as §8.
+  NO SECOND SCHEDULER APPEARED. Everything in the plan is DERIVED from the same queue `check_queue`
+  validates: TRANSFER from the queue's boundaries (upload the fields a call reads that nobody in the
+  queue wrote; download exactly `output`) and BARRIERS from the same question as the dead-work check
+  ("does the next pass read what the previous one wrote") — literally one question asked twice. Tested:
+  a `remap`→`blend` chain uploads `height` and `moisture`, does NOT upload `smoothed` (the first pass
+  writes it), downloads only `mixed`, and `smoothed` on the host stays UNTOUCHED — computed on the
+  device and left there. One barrier for the dependent pair, ZERO for a lone `box_blur`; both numbers
+  are checked. Plan validation needs no device at all: it is derived from the declaration, not asked of
+  the driver.
+  DESCRIPTORS BELONG TO THE CALL, NOT THE PROGRAM, and that is not convenience. Descriptors take effect
+  at SUBMISSION, not at record time, so two calls of one program with different bindings recorded into
+  one submission would both read the LAST bindings — silently different numbers, not a refusal. And a
+  queue does exactly that: two `remap`s in a row are one program over different fields. Hence
+  `compute_context::create_binding_set` per call, with the pipeline still per program.
+  ONE SUBMISSION: §5 STEP 3's 70% IS NOW RECOMPUTED. Same work both ways (`262144` elements, 2 passes,
+  3 MB moved, best of seven, variants interleaved): **one submission `1.442` ms against `3.506` ms step
+  by step = `2.43x`**. Five submissions instead of one cost `+2.06` ms, i.e. about `0.5` ms per
+  submission — which matches the constant term §5 step 3 found in its slope, and means MOST of that 70%
+  was submission cost, not transfer. So the real transfer share is nearer `40%` and falls further as
+  the queue lengthens, and step 3's break-even ("from the second or third pass") moves in the device's
+  favour. `run_step_by_step` stays in the code and is admitted as measurement-only: comparing one
+  estimate with another requires running both on the same work.
+  REFUSALS, each for its own reason: a tool with no device form (a legal answer, not a defect — the
+  caller falls back to `run_queue`; forms exist for `remap`, `blend`, `modulate`, `maximum`, `minimum`,
+  `box_blur`), `aos` layout (a strided field cannot be transferred as a block, and stride costs
+  LINEARLY on a device per §5 step 5), narrow or multi-component field kinds, and everything the CPU
+  path refuses — the device plan runs `check_queue` in full first.
+  DUPLICATION NAMED OUT LOUD: device-form parameter defaults are declared (`device_param::fallback`)
+  while the tool body writes them as literals. A drifted default would mean a call WITHOUT that
+  parameter computing differently on the two paths, visible only by comparison — so the comparison
+  exists, and a chain with no optional parameters at all diverges by EXACTLY ZERO. Removing the
+  duplication means every tool body reading its values from the declaration; that waits for a second
+  consumer.
+  HOW FAR THE PATHS AGREE: `remap`+`blend` exactly `0`, the same without optional parameters exactly
+  `0`, `box_blur` radius 2 `2.98e-07` (two ULP). The zeros are an observation, not a promise — the CPU
+  computes in double but the result lands in the same `float32`; `box_blur` shows why the promise
+  cannot be made once there are many terms.
+  A GLSL RESERVED WORD BIT ONCE: `remap`'s device form declared `float sample`, and `sample` is an
+  interpolation qualifier. Caught by glslc — which is exactly what type checking was handed to it for.
 - GN04 OPENED: BACKGROUND TEXTURES ON THE DEVICE (2026-09-04). `430/430` project tests, GN04's own
   `11/11`. `ORIGINATOR_GPGPU.md` §5 step 5 (textures) done; the queue is now used end to end on a
   device for the first time. Fourth generator-campaign lab

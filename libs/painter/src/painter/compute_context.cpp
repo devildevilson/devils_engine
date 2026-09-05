@@ -46,6 +46,11 @@ struct compute_context::program_entry {
   uint32_t push_byte_size = 0;
 };
 
+struct compute_context::binding_set_entry {
+  VkDescriptorSet set = nullptr;
+  program_id program = invalid_id;
+};
+
 bool compute_device_available() {
   // Инстанс поднимается и опускается: узнать, есть ли устройство, иначе нечем, а «нет устройства» —
   // законный ответ, а не ошибка. Валидация здесь выключена намеренно: проверка не должна падать на
@@ -721,6 +726,174 @@ void compute_context::dispatch_2d(const program_id id,
     });
   if (!done) {
     utils::error{}("compute context '{}': dispatch did not complete", config_.app_name);
+  }
+}
+
+const compute_context::binding_set_entry& compute_context::set_at(const binding_set_id id) const {
+  if (id >= sets_.size()) {
+    utils::error{}("compute context '{}': binding set {} does not exist", config_.app_name, id);
+  }
+  return sets_[id];
+}
+
+compute_context::binding_set_id compute_context::create_binding_set(const program_id program) {
+  if (program >= programs_.size()) {
+    utils::error{}("compute context '{}': program {} does not exist", config_.app_name, program);
+  }
+
+  descriptor_set_maker maker(vk::Device(device_.device));
+  maker.layout(vk::DescriptorSetLayout(programs_[program].set_layout));
+  const auto sets = maker.create(vk::DescriptorPool(base_->descriptor_pool),
+                                 config_.app_name + ".set" + std::to_string(sets_.size()));
+  if (sets.empty()) {
+    utils::error{}("compute context '{}': could not allocate a binding set", config_.app_name);
+  }
+
+  binding_set_entry entry;
+  entry.set = sets.front();
+  entry.program = program;
+  sets_.push_back(entry);
+  return binding_set_id(sets_.size() - 1);
+}
+
+void compute_context::update_binding_set(const binding_set_id id,
+                                         const std::span<const bound_resource>& resources) {
+  const auto& entry = set_at(id);
+  const auto& program = programs_[entry.program];
+
+  if (resources.size() != program.bindings.size()) {
+    utils::error{}("compute context '{}': the set's program expects {} bindings, got {}",
+                   config_.app_name, program.bindings.size(), resources.size());
+  }
+
+  std::vector<vk::DescriptorBufferInfo> buffer_infos(resources.size());
+  std::vector<vk::DescriptorImageInfo> image_infos(resources.size());
+  std::vector<vk::WriteDescriptorSet> writes;
+  writes.reserve(resources.size());
+
+  for (size_t i = 0; i < resources.size(); ++i) {
+    const auto kind = program.bindings[i];
+    const auto& resource = resources[i];
+
+    if (kind == binding_kind::storage_buffer) {
+      if (resource.buffer == invalid_id) {
+        utils::error{}("compute context '{}': binding {} wants a buffer, got an image", config_.app_name, i);
+      }
+      const auto& buffer = buffer_at(resource.buffer);
+      buffer_infos[i] = vk::DescriptorBufferInfo(vk::Buffer(buffer.handle), 0, buffer.byte_size);
+      writes.emplace_back(vk::DescriptorSet(entry.set), uint32_t(i), 0, 1,
+                          vk::DescriptorType::eStorageBuffer, nullptr, &buffer_infos[i]);
+      continue;
+    }
+
+    if (resource.image == invalid_id) {
+      utils::error{}("compute context '{}': binding {} wants an image, got a buffer", config_.app_name, i);
+    }
+    const auto& image = image_at(resource.image);
+    const bool sampled = kind == binding_kind::sampled_image;
+    image_infos[i] = vk::DescriptorImageInfo(sampled ? vk::Sampler(linear_sampler_) : vk::Sampler(nullptr),
+                                             vk::ImageView(image.view), vk::ImageLayout::eGeneral);
+    writes.emplace_back(vk::DescriptorSet(entry.set), uint32_t(i), 0, 1,
+                        sampled ? vk::DescriptorType::eCombinedImageSampler : vk::DescriptorType::eStorageImage,
+                        &image_infos[i], nullptr);
+  }
+
+  vk::Device(device_.device).updateDescriptorSets(writes, {});
+}
+
+compute_context::recorder::recorder(compute_context& owner, VkCommandBuffer buffer) noexcept
+  : owner_(&owner), buffer_(buffer) {}
+
+void compute_context::recorder::copy(const buffer_id from, const buffer_id to, const size_t byte_size) {
+  const auto& source = owner_->buffer_at(from);
+  const auto& target = owner_->buffer_at(to);
+  if (byte_size > source.byte_size || byte_size > target.byte_size) {
+    utils::error{}("compute context '{}': copying {} bytes between buffers of {} and {} bytes",
+                   owner_->config_.app_name, byte_size, source.byte_size, target.byte_size);
+  }
+  if (byte_size == 0) {
+    return;
+  }
+
+  vk::CommandBuffer buf(buffer_);
+  const vk::BufferCopy region(0, 0, byte_size);
+  buf.copyBuffer(vk::Buffer(source.handle), vk::Buffer(target.handle), 1, &region);
+}
+
+void compute_context::recorder::barrier() {
+  // Глобальный барьер на вычислительной стадии: запись шейдера видна его же чтению. Точность до
+  // буфера здесь ничего не дала бы — стадия и так одна, а составитель очереди уже знает, между
+  // какими проходами барьер НУЖЕН, и между остальными его не ставит.
+  vk::CommandBuffer buf(buffer_);
+  vk::MemoryBarrier memory{};
+  memory.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+  memory.dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
+  buf.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eComputeShader,
+                      {}, {memory}, {}, {});
+}
+
+void compute_context::recorder::dispatch(const program_id program,
+                                         const binding_set_id set,
+                                         const void* push,
+                                         const size_t push_byte_size,
+                                         const size_t element_count,
+                                         const uint32_t group_size) {
+  auto& owner = *owner_;
+  if (program >= owner.programs_.size()) {
+    utils::error{}("compute context '{}': program {} does not exist", owner.config_.app_name, program);
+  }
+  const auto& entry = owner.programs_[program];
+  const auto& bound = owner.set_at(set);
+  if (bound.program != program) {
+    utils::error{}("compute context '{}': binding set {} belongs to another program",
+                   owner.config_.app_name, set);
+  }
+  if (push_byte_size != entry.push_byte_size) {
+    utils::error{}("compute context '{}': program declares {} push bytes, got {}",
+                   owner.config_.app_name, entry.push_byte_size, push_byte_size);
+  }
+  if (group_size == 0 || group_size > owner.limits_.max_group_invocations) {
+    utils::error{}("compute context '{}': group size {} does not fit '{}' (max invocations {})",
+                   owner.config_.app_name, group_size, owner.device_name_, owner.limits_.max_group_invocations);
+  }
+  if (element_count == 0) {
+    return;
+  }
+
+  const uint64_t total_groups = (uint64_t(element_count) + group_size - 1) / group_size;
+  uint32_t groups_x = uint32_t(std::min<uint64_t>(total_groups, owner.limits_.max_group_count[0]));
+  uint32_t groups_y = 1;
+  if (total_groups > owner.limits_.max_group_count[0]) {
+    groups_x = owner.limits_.max_group_count[0];
+    const uint64_t rows = (total_groups + groups_x - 1) / groups_x;
+    if (rows > owner.limits_.max_group_count[1]) {
+      utils::error{}("compute context '{}': {} elements need {} groups, which does not fit {}x{} on '{}'",
+                     owner.config_.app_name, element_count, total_groups, owner.limits_.max_group_count[0],
+                     owner.limits_.max_group_count[1], owner.device_name_);
+    }
+    groups_y = uint32_t(rows);
+  }
+
+  vk::CommandBuffer buf(buffer_);
+  buf.bindPipeline(vk::PipelineBindPoint::eCompute, vk::Pipeline(entry.pipeline));
+  buf.bindDescriptorSets(vk::PipelineBindPoint::eCompute, vk::PipelineLayout(entry.pipeline_layout), 0,
+                         {vk::DescriptorSet(bound.set)}, {});
+  if (push_byte_size != 0) {
+    buf.pushConstants(vk::PipelineLayout(entry.pipeline_layout), vk::ShaderStageFlagBits::eCompute, 0,
+                      uint32_t(push_byte_size), push);
+  }
+  buf.dispatch(groups_x, groups_y, 1);
+}
+
+void compute_context::submit(const std::function<void(recorder&)>& record) {
+  const bool done = do_command(
+    device_.device, command_pool_, device_.queues.compute.handle(), fence_,
+    [&](VkCommandBuffer raw) {
+      recorder rec(*this, raw);
+      record(rec);
+    });
+  if (!done) {
+    utils::error{}("compute context '{}': the submission did not complete", config_.app_name);
   }
 }
 
