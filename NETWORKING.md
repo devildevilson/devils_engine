@@ -1544,8 +1544,14 @@ Implementation is split into independently verified slices:
   recorded tests/results are in `NETWORKING_STATUS.md`.
 - **NET-08B: endpoint lifecycle.** Own listen/connect/accept and bounded connection-event routing; define
   callback/owner-thread lifetime, connection refusal, shutdown and reconnect with fresh peer generations.
-  Reuse the existing inter-thread channels where ownership is FIFO. Authentication remains explicit session
-  policy; do not silently enable unauthenticated IP traffic in the adapter.
+  Implemented: one prepared `gns_dispatcher` per native interface, caller-driven pumping, explicit admission,
+  per-peer coalesced observations (not a lossless callback log), terminal retention until close, generational
+  listeners/peers and final idempotent shutdown. Queued native callbacks retain no transport pointers.
+  Native callback pumping itself has no work-budget API; do not claim a bound on GNS's internal queue.
+  Reuse the existing inter-thread channels where ownership is FIFO when introducing an engine worker;
+  no second worker/scheduler is introduced by this endpoint slice. Authentication remains explicit session
+  policy; the adapter does not silently enable unauthenticated IP traffic. Transport reconnect is not session
+  recovery. Results and native lifecycle caveats are recorded in `NETWORKING_STATUS.md`.
 - **NET-08C: backend-independent session proof.** Run the recorded NET06/NET07 simulation/state scenario
   through the real backend, including stale unreliable frames, lane pressure, delayed ownership releases and
   recovery. Only this closes NET-08 as a whole; socket-pair byte tests alone do not.

@@ -287,7 +287,7 @@ including checkpoint restore/replay/digest over the faulty logical link. The
 test's allocation hooks belong only to that executable, not to the engine.
 This does not claim allocation freedom inside GNS or the real ECS serializer.
 
-## Optional GNS adapter — NET-08A
+## Optional GNS adapter — NET-08A/B
 
 Link `devils_engine::network_gns` and include `network/gns_transport.h` explicitly.
 The neutral `network` target and umbrella header remain free of GNS headers and
@@ -347,8 +347,52 @@ states may coalesce between calls. `statistics` preserves native RTT, quality,
 jitter (including unavailable values) and per-lane queue data without inventing
 a packet-loss metric from quality or using global queue time for multiple lanes.
 
-For now the application creates connections (tests use internal/real-UDP GNS
-socket pairs). NET-08B adds listen/connect and bounded callback routing; NET-08C
-will run the same full session fixture over both backends. No HTTP, P2P signaling,
-session authentication, automatic reconnect or gameplay-thread mutation is added
-by NET-08A.
+### Endpoint lifecycle
+
+For real IP endpoints, prepare one `gns_dispatcher(sockets, utils, transport_capacity)`
+per native interface and construct transports with that dispatcher. The original
+interface-taking constructor remains an adopt-only boundary. A full dispatcher
+registration table leaves a new transport `!ready()`; it never grows on demand.
+The dispatcher must outlive registered transports; explicit `shutdown()` detaches
+a transport early and releases its registration slot.
+
+- `listen(address, options)` and `connect(address, options)` install a static
+  connection callback atomically with native endpoint creation. At most 64 native
+  creation options are accepted; replacing this routing callback is refused.
+  Authentication remains caller policy; no unauthenticated-IP option is inserted.
+  The tests explicitly allow unauthenticated localhost peers, not trusted identities.
+- `dispatcher.pump()` is the **only** callback pump for that interface, on the same
+  owner thread as its transports. It dispatches to currently registered owners
+  using native connection/listener handles, not callback snapshots of user data.
+  No captured transport pointer survives in GNS. Late events for closed endpoints
+  are ignored; destruction and registration-slot reuse do not redirect them to a
+  replacement. Do not mix raw `RunCallbacks` or a second dispatcher for this interface.
+- An incoming connection reserves a peer slot and gets its lane/receive budgets
+  configured before admission. `poll_connections` reports `needs_accept`; the
+  caller must promptly choose `accept(peer)` or `close(peer)`. No automatic project
+  admission, authority selection or second session state machine is hidden here.
+  Native accept may refuse because the connection ended meanwhile: return status,
+  then observe/close the terminal peer. Capacity/configuration refusal closes the
+  native connection immediately and increments `refused_incoming_count()`.
+- Routing tables and listener/peer metadata are prepared once. There is no growing
+  wrapper event queue: observations coalesce by peer, an empty/full caller output
+  does not consume a state, and terminal peers stay owned until explicit close.
+  This is **not** a lossless log of intermediate transitions. GNS `RunCallbacks`
+  drains its native callback queue without an exposed work budget; bounded wrapper
+  memory does not mean bounded native callback work or allocation freedom in GNS.
+- `close_listener` invalidates its generational ID **and all its child peer IDs**:
+  native GNS closes accepted children too. Local close/shutdown do not emit a second
+  event to acknowledge the caller's own operation. `shutdown` is final, idempotent,
+  unregisters routing and closes listeners/connections/poll group without linger.
+  Outstanding receive leases and send release storage retain their existing lifetime
+  contract; completions can still be reclaimed after shutdown.
+- Reconnect is a new `connect`, not implicit retry: fresh peer generation, reset
+  lane sequence filters, reused prepared slots. This is transport reconnection,
+  **not** resuming a session or replaying its checkpoints. GNS v1.6.0 requires a
+  nonzero listen port; native shutdown may defer OS-port release, so a subsequent
+  bind can return `backend_rejected`. Tests try a bounded localhost port range.
+
+NET-08C will run the same full session fixture over both backends. Engine worker
+integration should use existing bounded FIFO channels where appropriate; this
+slice deliberately remains caller-driven. No HTTP, P2P signaling, trusted-session
+authentication, automatic reconnect or gameplay-thread mutation is added.

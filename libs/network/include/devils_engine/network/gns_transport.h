@@ -31,6 +31,7 @@ struct gns_transport_config {
   // Backend queued data is separate from messages leased to the caller.
   int backend_receive_messages = 128;
   int backend_receive_bytes = 4 * 1024 * 1024;
+  std::size_t listeners = 1;
 };
 
 // Generation is unique across transport instances in this process. Neither
@@ -39,6 +40,12 @@ struct gns_peer {
   std::uint32_t slot = UINT32_MAX;
   std::uint64_t generation = 0;
   bool operator==(const gns_peer&) const = default;
+};
+
+struct gns_listener {
+  std::uint32_t slot = UINT32_MAX;
+  std::uint64_t generation = 0;
+  bool operator==(const gns_listener&) const = default;
 };
 
 enum class gns_status : std::uint8_t {
@@ -54,12 +61,21 @@ enum class gns_status : std::uint8_t {
   byte_budget_exceeded,
   backend_rejected,
   output_not_empty,
-  invalid_message
+  invalid_message,
+  invalid_listener,
+  listener_capacity_exceeded,
+  invalid_options,
+  invalid_state
 };
 
 struct gns_adopt_result {
   gns_status status = gns_status::ok;
   gns_peer peer;
+};
+
+struct gns_listen_result {
+  gns_status status = gns_status::ok;
+  gns_listener listener;
 };
 
 struct gns_send_result {
@@ -120,9 +136,35 @@ struct gns_receive_result {
 struct gns_connection_event {
   gns_peer peer;
   SteamNetConnectionInfo_t info{};
+  bool needs_accept = false;
 };
 
-// Single owner, no worker, no global Init/Kill or callback installation. The
+class gns_transport;
+
+// One dispatcher per borrowed GNS interface, shared by all endpoint transports.
+// Single owner thread; ALL RunCallbacks calls for this interface must go through
+// pump(), including after an endpoint is destroyed (old callbacks can be queued).
+// Must outlive registered transports; no Init/Kill, worker or global callback
+// replacement. Registration storage is allocated once. Native callbacks retain
+// only a static function, never an object pointer or callback-time user data.
+class gns_dispatcher {
+public:
+  gns_dispatcher(ISteamNetworkingSockets& sockets, ISteamNetworkingUtils& utils,
+                 std::size_t transport_capacity);
+  ~gns_dispatcher();
+  gns_dispatcher(const gns_dispatcher&) = delete;
+  gns_dispatcher& operator=(const gns_dispatcher&) = delete;
+  void pump();
+
+private:
+  friend class gns_transport;
+  struct impl;
+  std::unique_ptr<impl> impl_;
+  static thread_local gns_dispatcher* active_;
+  static void on_connection(SteamNetConnectionStatusChangedCallback_t* event);
+};
+
+// Single owner, no worker, no global Init/Kill or callback replacement. The
 // caller lends initialized GNS interfaces and owns their runtime lifetime.
 // Methods are owner-thread only, except received-message release and native
 // send-buffer release. Config/lanes and buffer allocation are preparation.
@@ -130,6 +172,10 @@ class gns_transport {
 public:
   gns_transport(ISteamNetworkingSockets& sockets, ISteamNetworkingUtils& utils,
                 gns_transport_config config, std::span<const gns_lane_config> lanes);
+  // Endpoint API requires a dispatcher. If its prepared registration table is
+  // full, ready() is false and operations return not_ready.
+  gns_transport(gns_dispatcher& dispatcher, gns_transport_config config,
+                std::span<const gns_lane_config> lanes);
   ~gns_transport();
   gns_transport(const gns_transport&) = delete;
   gns_transport& operator=(const gns_transport&) = delete;
@@ -137,6 +183,21 @@ public:
   gns_transport& operator=(gns_transport&&) = delete;
 
   bool ready() const noexcept;
+  // At most 64 native creation options; callback routing is reserved. No auth
+  // relaxation is implicit: the caller supplies its policy at creation time.
+  [[nodiscard]] gns_listen_result listen(const SteamNetworkingIPAddr& address,
+                                         std::span<const SteamNetworkingConfigValue_t> options = {});
+  [[nodiscard]] gns_status listen_address(gns_listener listener, SteamNetworkingIPAddr& address);
+  [[nodiscard]] gns_adopt_result connect(const SteamNetworkingIPAddr& address,
+                                         std::span<const SteamNetworkingConfigValue_t> options = {});
+  [[nodiscard]] gns_status accept(gns_peer peer);
+  // GNS closes ALL children of a listener, including accepted connections.
+  // Their peer IDs are invalidated here as well. No local-close event is emitted.
+  [[nodiscard]] gns_status close_listener(gns_listener listener);
+  // Idempotent final shutdown, no linger: closes endpoints/poll group and
+  // unregisters routing. Leases/releases can outlive it; new work is refused.
+  void shutdown();
+  std::uint64_t refused_incoming_count() const noexcept;
   // Takes exclusive ownership on entry, INCLUDING refusal (closes the handle).
   // An already owned handle is refused without closing it. Only transfer fresh
   // connections before their first application messages/lane configuration.
@@ -168,6 +229,8 @@ public:
   std::size_t leased_receive_count() const noexcept;
 
 private:
+  friend class gns_dispatcher;
+  bool on_connection(const SteamNetConnectionStatusChangedCallback_t& event);
   struct impl;
   std::unique_ptr<impl> impl_;
 };

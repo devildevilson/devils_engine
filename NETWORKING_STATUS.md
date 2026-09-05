@@ -29,13 +29,74 @@ recorded here only after it is reproduced by an executable test or directly obse
 | TIME-02 fixed-step host/project migration | complete; host and tile actor consume an external 60 Hz tick |
 | Native-float GCC/Clang micro-corpus | complete baseline; equal in the currently available runtime matrix |
 | Complete project suite | last whole-suite run before this follow-up: 402/402; neutral NET-01..06 set passes 36/36 in Debug and Release |
-| `devils_engine::network_gns` adapter | NET-08A message/ownership boundary implemented; NET-08 as a whole remains in progress |
-| NET-08B listen/connect/accept lifecycle | next; currently the adapter adopts fresh caller-created connections |
+| `devils_engine::network_gns` adapter | NET-08A/B implemented; focused networking set 71/71 in Debug and Release; NET-08 remains in progress |
+| NET-08B listen/connect/accept lifecycle | complete; explicit admission, bounded routing/observations, shutdown and fresh-generation reconnect |
 | NET-08C shared in-memory/GNS session fixture | pending; socket-pair byte tests do not close this gate |
 | Session handshake, reconnect recovery and peer authority | not started |
 | Internet P2P/signaling | not tested; infrastructure is not yet present |
 | Trusted public-session authentication | not designed; standalone GNS has no configured CA |
 | Yojimbo comparison | deferred indefinitely; not an implementation gate |
+
+## NET-08B — endpoint lifecycle, 2026-09-05
+
+`gns_transport` now owns IP listen/connect/accept in addition to the original adopt-only boundary. A prepared
+`gns_dispatcher` is shared by all endpoint transports using one native interface. It borrows the runtime,
+does not create a thread, and does not replace a process-global callback. All callback pumping for this
+interface must use its `pump()` on the transports' owner thread. Dispatcher lifetime must cover registered
+transports; explicit shutdown unregisters early. A second dispatcher/raw `RunCallbacks` on the same interface
+is outside this contract.
+
+### Contract and memory
+
+- Listen/connect install a **static** callback as a creation option, before an event can be queued. Dispatch
+  examines currently registered owners and native connection/listener handles. No transport pointer or
+  callback-time `ConnectionUserData` snapshot is stored in GNS. This avoids retaining destroyed owners in
+  delayed callbacks; routing slots can be reused after unregistering. Creation options use a fixed stack array
+  (at most 64 caller options); overriding the routing callback is an ordinary refusal.
+- Dispatcher registrations, listeners and peers have fixed preparation-time capacity. Incoming connections
+  reserve peer slots and receive exact lane/buffer configuration **before** `accept`. Capacity/configuration
+  failure closes the native handle and increments `refused_incoming_count`. A pending incoming connection
+  consumes capacity too; it cannot bypass the limit by waiting for admission.
+- Admission stays external: a `needs_accept` observation requires a prompt explicit `accept` or `close`.
+  Native acceptance can fail if the peer has already disconnected; this is a return status, not an exception.
+  No authentication relaxation is supplied by the wrapper. Local tests explicitly pass
+  `IP_AllowWithoutAuth=2`; this checks lifecycle/encrypted transport, not authenticated public-session identity.
+- Events remain **coalesced observations per peer**, not a lossless transition FIFO. Small/empty output does
+  not consume an unreported current state. Terminal handles retain their peer slots until explicit close.
+  No wrapper event vector grows in the pump. GNS's own `RunCallbacks` drains its native queue and has no
+  exposed work budget: fixed wrapper storage is not a bound on native callback work or native allocations.
+- `close_listener` also invalidates all its accepted/pending children, matching GNS's native contract.
+  `shutdown` unregisters routing, closes connections/listeners/poll group without linger, and is final and
+  idempotent. It emits no redundant local-close notifications. Existing received leases and send payload
+  release storage can outlive shutdown; GNS runtime lifetime must still cover the leases.
+- Reconnect is a fresh `connect`, reusing prepared tables/slabs with new generational IDs. It does not restore
+  a player/session, choose authority or replay checkpoints. Those remain above opaque transport.
+- GNS v1.6.0 refuses port zero for listeners. Tests select a free port from a bounded localhost range.
+  Rebinding immediately after closing a used listener was also observed to refuse: native connection teardown
+  can retain the underlying UDP socket. The adapter returns `backend_rejected`, not an exception or hidden retry.
+
+### Reproduced verification
+
+- Debug and Release focused networking sets: **71/71** registered tests pass in each configuration.
+- Adapter target: **15/15** cases, **2074/2074** assertions in both builds. Its full set also passes **five
+  consecutive Debug repetitions**. No new sanitizer run was performed, as requested.
+- Six new cases cover: ten real UDP connect/accept/message/close/reconnect cycles; two simultaneous listeners
+  routed through one dispatcher with single-element event output; pending-admission capacity and explicit
+  rejection; twenty shutdowns before callback pumping followed by registration/listener reuse and a real new
+  connection; late accept after remote close and invalid inbound budgets; dispatcher/listener/option limits.
+  Foreign/stale IDs, terminal retention and listener-child invalidation are asserted directly.
+- Existing nine ownership/lane/socket-pair cases still pass, including received leases outliving adapter
+  destruction, out-of-order payload release, complete packet loss recovery and high-priority-vs-bulk delivery.
+- Only `network_gns_transport_test` and dependencies were built, at most `-j4`; focused CTest runs used `-j4`.
+  UDP tests ran outside the sandbox. No Originator source/target was changed/built, and no whole-project suite,
+  Internet peer, P2P/signaling, authentication service or new allocator was exercised.
+
+Build/test commands are the same focused commands recorded below for NET-08A. The implementation contract is
+also documented in `libs/network/README.md` and the public header.
+
+Next is **NET-08C**, the backend-independent NET06/NET07 session proof with real GNS transport. Engine-worker
+integration remains separate from this caller-driven lifecycle slice and should reuse existing bounded FIFO
+channels. Native allocator profiling/replacement and a fresh sanitizer pass are deferred.
 
 ## NET-08A — GNS opaque-message and ownership boundary
 
@@ -93,8 +154,8 @@ Init/Kill. The runtime must outlive native receive leases even when they outlive
 
 ### Remaining NET-08 work
 
-- **NET-08B:** listen/connect/accept, bounded callback routing, lifecycle/terminal events, owner-thread rules,
-  shutdown and fresh-generation reconnect; then integrate an engine worker through existing bounded channels.
+- **NET-08B:** completed by the follow-up above. Later engine-worker integration should use existing bounded
+  channels; it is not hidden in the endpoint wrapper.
 - **NET-08C:** run the shared NET06/NET07 simulation/state scenario through GNS, including reorder, saturation,
   delayed ownership release and recovery. This is still required to close NET-08.
 - After NET-08: multi-process loopback/LAN (NET-LAB-01), compatible/incompatible cross-build exchange

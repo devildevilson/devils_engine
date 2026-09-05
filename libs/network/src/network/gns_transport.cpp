@@ -2,6 +2,7 @@
 #include <devils_engine/utils/core.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <limits>
@@ -61,7 +62,49 @@ void reclaim(send_pool& pool, send_slot& slot) {
   pool.retained_bytes -= slot.completion.bytes;
   slot.state.store(slot_state::free, std::memory_order_relaxed);
 }
+
+constexpr std::size_t max_creation_options = 64;
+bool valid_options(const std::span<const SteamNetworkingConfigValue_t> options) {
+  return options.size() <= max_creation_options &&
+         std::ranges::none_of(options, [](const auto& option) {
+           return option.m_eValue == k_ESteamNetworkingConfig_Callback_ConnectionStatusChanged;
+         });
+}
 } // namespace
+
+struct gns_dispatcher::impl {
+  ISteamNetworkingSockets& sockets;
+  ISteamNetworkingUtils& utils;
+  std::vector<gns_transport*> transports;
+};
+
+thread_local gns_dispatcher* gns_dispatcher::active_ = nullptr;
+
+gns_dispatcher::gns_dispatcher(ISteamNetworkingSockets& sockets, ISteamNetworkingUtils& utils,
+                               const std::size_t capacity)
+  : impl_(std::make_unique<impl>(sockets, utils, std::vector<gns_transport*>(capacity))) {
+  if (capacity == 0) devils_engine::utils::error{}("network GNS dispatcher capacity must be positive");
+}
+
+gns_dispatcher::~gns_dispatcher() {
+  for (const auto* transport : impl_->transports)
+    if (transport) devils_engine::utils::error{}("network GNS dispatcher must outlive transports");
+}
+
+void gns_dispatcher::pump() {
+  if (active_) devils_engine::utils::error{}("network GNS callback pump must not be recursive");
+  active_ = this;
+  impl_->sockets.RunCallbacks();
+  active_ = nullptr;
+}
+
+void gns_dispatcher::on_connection(SteamNetConnectionStatusChangedCallback_t* event) {
+  // A stale native callback carries no pointer to a destroyed owner. Raw
+  // RunCallbacks outside pump violates the dispatch contract, but must not UAF.
+  if (!active_) return;
+  for (auto* transport : active_->impl_->transports)
+    if (transport && transport->on_connection(*event)) return;
+}
 
 gns_received_message::~gns_received_message() {
   reset();
@@ -105,12 +148,19 @@ struct gns_transport::impl {
     HSteamNetConnection handle = k_HSteamNetConnection_Invalid;
     std::uint64_t generation = 0;
     ESteamNetworkingConnectionState reported = k_ESteamNetworkingConnectionState_None;
+    HSteamListenSocket listener = k_HSteamListenSocket_Invalid;
+    bool needs_accept = false;
+  };
+  struct listener {
+    HSteamListenSocket handle = k_HSteamListenSocket_Invalid;
+    std::uint64_t generation = 0;
   };
 
   impl(ISteamNetworkingSockets& sockets, ISteamNetworkingUtils& utils,
        const gns_transport_config config, const std::span<const gns_lane_config> lanes)
     : sockets(sockets), utils(utils), config(config) {
-    if (config.peers == 0 || config.peers >= UINT32_MAX || lanes.empty() || lanes.size() > 255 ||
+    if (config.peers == 0 || config.peers >= UINT32_MAX || config.listeners >= UINT32_MAX ||
+        lanes.empty() || lanes.size() > 255 ||
         config.receive_leases == 0 || config.max_receive_bytes == 0 ||
         config.max_receive_bytes > std::size_t(INT32_MAX) || config.backend_receive_messages <= 0 ||
         config.backend_receive_bytes <= 0 || std::size_t(config.backend_receive_bytes) <= config.max_receive_bytes)
@@ -131,6 +181,7 @@ struct gns_transport::impl {
     // per-lane slabs still enforce the smaller application budgets exactly.
     send_buffer_bytes = int(std::max(total_bytes, std::size_t{4096}));
     peers.resize(config.peers);
+    listeners.resize(config.listeners);
     newest.resize(config.peers * lanes.size());
     pools.reserve(lanes.size());
     priorities.reserve(lanes.size());
@@ -149,6 +200,8 @@ struct gns_transport::impl {
       if (peer.handle != k_HSteamNetConnection_Invalid)
         sockets.CloseConnection(peer.handle, 0, "transport shutdown", false);
     }
+    for (const auto& listener : listeners)
+      if (listener.handle != k_HSteamListenSocket_Invalid) sockets.CloseListenSocket(listener.handle);
     if (group != k_HSteamNetPollGroup_Invalid) sockets.DestroyPollGroup(group);
     // In-flight slots retain their own pools until GNS frees the payload.
   }
@@ -163,6 +216,7 @@ struct gns_transport::impl {
   ISteamNetworkingUtils& utils;
   gns_transport_config config;
   std::vector<connection> peers;
+  std::vector<listener> listeners;
   std::vector<std::int64_t> newest;
   std::vector<std::shared_ptr<send_pool>> pools;
   std::vector<int> priorities;
@@ -170,14 +224,148 @@ struct gns_transport::impl {
   std::shared_ptr<detail::gns_receive_budget> receive_budget;
   HSteamNetPollGroup group = k_HSteamNetPollGroup_Invalid;
   int send_buffer_bytes = 0;
+  gns_dispatcher* dispatcher = nullptr;
+  std::uint64_t refused_incoming = 0;
 };
 
 gns_transport::gns_transport(ISteamNetworkingSockets& sockets, ISteamNetworkingUtils& utils,
                              const gns_transport_config config, const std::span<const gns_lane_config> lanes)
   : impl_(std::make_unique<impl>(sockets, utils, config, lanes)) {}
-gns_transport::~gns_transport() = default;
+gns_transport::gns_transport(gns_dispatcher& dispatcher, const gns_transport_config config,
+                             const std::span<const gns_lane_config> lanes)
+  : gns_transport(dispatcher.impl_->sockets, dispatcher.impl_->utils, config, lanes) {
+  const auto slot = std::ranges::find(dispatcher.impl_->transports, nullptr);
+  if (slot == dispatcher.impl_->transports.end()) {
+    shutdown();
+    return;
+  }
+  *slot = this;
+  impl_->dispatcher = &dispatcher;
+}
+gns_transport::~gns_transport() {
+  shutdown();
+}
 bool gns_transport::ready() const noexcept {
   return impl_->group != k_HSteamNetPollGroup_Invalid;
+}
+
+gns_listen_result gns_transport::listen(const SteamNetworkingIPAddr& address,
+                                        const std::span<const SteamNetworkingConfigValue_t> options) {
+  auto& state = *impl_;
+  if (!ready() || !state.dispatcher) return {gns_status::not_ready, {}};
+  if (!valid_options(options)) return {gns_status::invalid_options, {}};
+  const auto slot = std::ranges::find_if(state.listeners, [](const auto& item) {
+    return !item.handle;
+  });
+  if (slot == state.listeners.end()) return {gns_status::listener_capacity_exceeded, {}};
+  std::array<SteamNetworkingConfigValue_t, max_creation_options + 1> values;
+  std::ranges::copy(options, values.begin());
+  values[options.size()].SetPtr(k_ESteamNetworkingConfig_Callback_ConnectionStatusChanged,
+                                reinterpret_cast<void*>(&gns_dispatcher::on_connection));
+  const auto handle = state.sockets.CreateListenSocketIP(address, int(options.size() + 1), values.data());
+  if (!handle) return {gns_status::backend_rejected, {}};
+  *slot = {handle, new_generation()};
+  return {gns_status::ok, {std::uint32_t(slot - state.listeners.begin()), slot->generation}};
+}
+
+gns_status gns_transport::listen_address(const gns_listener listener, SteamNetworkingIPAddr& address) {
+  if (listener.slot >= impl_->listeners.size()) return gns_status::invalid_listener;
+  const auto& item = impl_->listeners[listener.slot];
+  if (!item.handle || item.generation != listener.generation) return gns_status::invalid_listener;
+  return impl_->sockets.GetListenSocketAddress(item.handle, &address) ? gns_status::ok : gns_status::backend_rejected;
+}
+
+gns_adopt_result gns_transport::connect(const SteamNetworkingIPAddr& address,
+                                        const std::span<const SteamNetworkingConfigValue_t> options) {
+  auto& state = *impl_;
+  if (!ready() || !state.dispatcher) return {gns_status::not_ready, {}};
+  if (!valid_options(options)) return {gns_status::invalid_options, {}};
+  if (std::ranges::none_of(state.peers, [](const auto& item) {
+        return !item.handle;
+      }))
+    return {gns_status::peer_capacity_exceeded, {}};
+  std::array<SteamNetworkingConfigValue_t, max_creation_options + 1> values;
+  std::ranges::copy(options, values.begin());
+  values[options.size()].SetPtr(k_ESteamNetworkingConfig_Callback_ConnectionStatusChanged,
+                                reinterpret_cast<void*>(&gns_dispatcher::on_connection));
+  const auto handle = state.sockets.ConnectByIPAddress(address, int(options.size() + 1), values.data());
+  return handle ? adopt(handle) : gns_adopt_result{gns_status::backend_rejected, {}};
+}
+
+bool gns_transport::on_connection(const SteamNetConnectionStatusChangedCallback_t& event) {
+  auto& state = *impl_;
+  // Existing peers are observed by poll_connections. Native intermediate states
+  // coalesce; terminal handles remain owned until the caller explicitly closes.
+  for (const auto& peer : state.peers)
+    if (peer.handle == event.m_hConn) return true;
+  if (!event.m_info.m_hListenSocket) return false;
+  const auto listener = std::ranges::find_if(state.listeners, [&](const auto& item) {
+    return item.handle == event.m_info.m_hListenSocket;
+  });
+  if (listener == state.listeners.end()) return false;
+  SteamNetConnectionInfo_t current{};
+  // A Connecting callback may already be stale, including after local close.
+  if (!state.sockets.GetConnectionInfo(event.m_hConn, &current)) return true;
+  if (current.m_eState != k_ESteamNetworkingConnectionState_Connecting) {
+    state.sockets.CloseConnection(event.m_hConn, 0, "incoming connection ended before admission", false);
+    ++state.refused_incoming;
+    return true;
+  }
+  const auto result = adopt(event.m_hConn);
+  if (result.status != gns_status::ok) {
+    ++state.refused_incoming;
+    return true;
+  }
+  auto& peer = state.peers[result.peer.slot];
+  peer.listener = listener->handle;
+  peer.needs_accept = true;
+  return true;
+}
+
+gns_status gns_transport::accept(const gns_peer peer) {
+  auto* item = impl_->find(peer);
+  if (!item) return gns_status::invalid_peer;
+  if (!item->needs_accept) return gns_status::invalid_state;
+  if (impl_->sockets.AcceptConnection(item->handle) != k_EResultOK) return gns_status::backend_rejected;
+  item->needs_accept = false;
+  return gns_status::ok;
+}
+
+gns_status gns_transport::close_listener(const gns_listener listener) {
+  if (listener.slot >= impl_->listeners.size()) return gns_status::invalid_listener;
+  auto& item = impl_->listeners[listener.slot];
+  if (!item.handle || item.generation != listener.generation) return gns_status::invalid_listener;
+  for (auto& peer : impl_->peers) {
+    if (!peer.handle || peer.listener != item.handle) continue;
+    impl_->sockets.CloseConnection(peer.handle, 0, "listener close", false);
+    peer = {};
+  }
+  impl_->sockets.CloseListenSocket(item.handle);
+  item = {};
+  return gns_status::ok;
+}
+
+void gns_transport::shutdown() {
+  auto& state = *impl_;
+  if (state.dispatcher) {
+    for (auto& item : state.dispatcher->impl_->transports)
+      if (item == this) item = nullptr;
+    state.dispatcher = nullptr;
+  }
+  for (auto& peer : state.peers) {
+    if (peer.handle) state.sockets.CloseConnection(peer.handle, 0, "transport shutdown", false);
+    peer = {};
+  }
+  for (auto& listener : state.listeners) {
+    if (listener.handle) state.sockets.CloseListenSocket(listener.handle);
+    listener = {};
+  }
+  if (state.group) state.sockets.DestroyPollGroup(state.group);
+  state.group = k_HSteamNetPollGroup_Invalid;
+}
+
+std::uint64_t gns_transport::refused_incoming_count() const noexcept {
+  return impl_->refused_incoming;
 }
 
 gns_adopt_result gns_transport::adopt(const HSteamNetConnection handle) {
@@ -345,7 +533,7 @@ std::size_t gns_transport::poll_connections(const std::span<gns_connection_event
     SteamNetConnectionInfo_t info{};
     if (peer.handle == k_HSteamNetConnection_Invalid || !impl_->sockets.GetConnectionInfo(peer.handle, &info) ||
         info.m_eState == peer.reported) continue;
-    output[count++] = {{std::uint32_t(i), peer.generation}, info};
+    output[count++] = {{std::uint32_t(i), peer.generation}, info, peer.needs_accept && info.m_eState == k_ESteamNetworkingConnectionState_Connecting};
     peer.reported = info.m_eState;
   }
   return count;
