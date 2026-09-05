@@ -4,6 +4,7 @@
 #include "bounded_history.h"
 #include "checkpoint_ring.h"
 #include "in_memory_link.h"
+#include "replication.h"
 #include "replay.h"
 #include "sequence_window.h"
 #include "state_schema.h"

@@ -654,30 +654,40 @@ This slice proves client/server orchestration without mixing simulation bugs wit
 
 ## NET-07: replication primitives
 
-Replication is distinct from checkpoint serialization. A state frame references an explicit tick, state
-sequence and optional baseline:
+Replication is distinct from checkpoint serialization. A state frame references an explicit tick, application
+sequence and base/result baseline IDs:
 
 ```cpp
+template<class Tick, unsigned_integral Sequence, class BaselineId, class InputSequence>
 struct state_frame_header {
-  uint64_t server_tick;
-  uint64_t state_sequence;
-  uint64_t baseline_sequence;
-  uint64_t acknowledged_input_sequence;
+  uint32_t format_version;
+  Tick server_tick;
+  Sequence state_sequence;
+  optional<BaselineId> base_baseline;
+  BaselineId result_baseline;
+  InputSequence acknowledged_input_sequence;
 };
 ```
 
-The engine may later provide generic baseline/change-mask primitives parameterized by project codecs. It must
-not define what a transform, entity or relevant field is.
+An absent base identifies a full replication baseline, not a world checkpoint. A delta always names the exact
+retained base from which it was made; no latest/nearest fallback is legal.
 
-Possible neutral templates:
+The neutral primitives are:
 
 ```cpp
-template<class Key, class Value, class Version, class Equal>
+template<class BaselineId, class Snapshot, class SizeOf>
 class baseline_store;
 
-template<class Snapshot, class DeltaPolicy>
-auto make_delta(const Snapshot& base, const Snapshot& current);
+template<class Store, class Delta, class ApplyDelta>
+auto try_materialize_delta(Store&, BaselineId base, BaselineId result,
+                           const Delta&, ApplyDelta);
 ```
+
+`state_frame_window` accepts only advancing compatible latest-state frames and mutates only after explicit
+commit. `baseline_store` is bounded by count and project-declared logical bytes. `try_materialize_delta` asks the
+project codec for a complete candidate and publishes it only when both codec and store accept it. The optional
+`make_keyed_delta`/`apply_keyed_delta` codec handles canonical sorted key/value/version state with explicit
+create/update/delete preconditions; it is not required by the replication contract.
 
 Project policy owns:
 
@@ -1476,7 +1486,7 @@ delivery and disconnect/reconnect with stale-epoch removal. Repeating the schedu
 and final `30/30` authority/follower state. The campaign passes `121/121` checks in Debug and Release and is a
 registered CTest. Packet/ACK/MTU simulation remains deliberately outside this logical transport.
 
-### NET-07 — replicated baseline/delta primitives (`M-L`)
+### NET-07 — replicated baseline/delta primitives (`M-L`) — complete 2026-09-05
 
 - Define neutral baseline IDs and versioned sequenced-frame acceptance.
 - Add generic key/value baseline store and project codec seam.
@@ -1484,6 +1494,15 @@ registered CTest. Packet/ACK/MTU simulation remains deliberately outside this lo
 - Do not add ECS dirty tracking yet; a project can initially enumerate replicated state.
 
 Done when a fake entity set converges after arbitrary permitted loss/reordering without a full checkpoint.
+
+Done: `replication.h` adds a versioned header, non-mutating latest-state sequence gate, count/byte-bounded explicit
+baseline store and a project-codec materialization seam. Its optional canonical keyed codec detects changed values
+without version advance, stale versions, duplicate keys and repeated create/delete without partial mutation. Seven
+unit cases pass in Debug and Release. The `NET07_replication_baselines` playground composes these primitives with
+NET06: one delta is lost, a dependency is delivered without its base, another pair is reordered, two reliable full
+replication baselines recover the stream, the delayed frame becomes stale and a duplicated final delta applies once.
+The fake entity sets converge at baseline 105 in `60/60` internal checks. No causal checkpoint, ECS dirty tracking,
+wire codec or project component rule entered the library.
 
 ### NET-08 — selected gameplay transport adapter (`M-L`)
 

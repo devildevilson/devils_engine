@@ -200,3 +200,36 @@ loss, retry, scheduling and delivery. Supplying the same message stream and
 fault policy therefore gives a directly comparable trace. This mechanism does
 not simulate packets, ACKs, MTU, congestion control or GNS internals; it models
 only the application-visible delivery contract that NET-08 must reproduce.
+
+## Implemented slice: replication baselines and deltas
+
+`state_frame_header` carries independent simulation tick, application sequence,
+format version, acknowledged input sequence and explicit base/result baseline
+IDs. A missing base ID identifies a full replication baseline; it does not turn
+that frame into a causal world checkpoint.
+
+`state_frame_window<Sequence, MaxForwardAdvance>` is the latest-state acceptance
+gate. It rejects an incompatible format, a duplicate, every older frame and an
+untrusted forward jump outside the configured modular window. Classification is
+non-mutating; the owner commits only after decoding and state materialization
+succeed. An authenticated recovery may establish a distant sequence explicitly
+with `reset`.
+
+`baseline_store<BaselineId, Snapshot, SizeOf>` retains immutable complete
+replication snapshots under strictly increasing IDs and count/logical-byte
+budgets. `try_materialize_delta` looks up exactly the named base, invokes a
+project codec returning `optional<Snapshot>`, then publishes the complete
+candidate under its result ID. A missing base, codec refusal, duplicate or
+out-of-order result and budget overflow are distinct values and never mutate the
+store.
+
+The optional default codec represents canonical key-sorted state as
+`keyed_snapshot<Key, Value, Version>`. Its delta records an expected version and
+an optional result per key, making create, update and erase preconditions
+explicit. Build/apply reject duplicate or unsorted keys, a changed value without
+a changed version, repeated create/delete and stale versions transactionally.
+Projects remain free to use another snapshot and delta representation.
+
+Entity IDs, ECS enumeration/dirty tracking, component declarations, interest,
+ownership, visibility, quantization, wire serialization and correction remain
+project/session policy rather than properties of these templates.

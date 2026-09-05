@@ -1,6 +1,6 @@
 # Networking implementation status
 
-Last updated: 2026-09-04.
+Last updated: 2026-09-05.
 
 This file is the mutable implementation and verification journal for the networking work. Architectural
 decisions, terminology, invariants and the ordered roadmap remain in [NETWORKING.md](NETWORKING.md). A result is
@@ -21,6 +21,7 @@ recorded here only after it is reproduced by an executable test or directly obse
 | NET-04 checkpoint ring/replay | complete; 6/6 cases pass in Debug and Release |
 | NET-05 digest diagnostics | complete; 4/4 cases pass in Debug and Release |
 | NET-06 in-memory transport playground | complete; 121/121 checks pass in Debug and Release |
+| NET-07 replication baselines/deltas | complete; 7/7 unit cases and 60/60 playground checks pass in Debug and Release |
 | ECS transactional world replacement | complete; 13/13 focused cases pass in Debug and Release |
 | TIME-00 strong simulation time | complete; tick/rate/conversion/pacing primitives pass 5/5 cases |
 | TIME-01 gameplay timeline/presentation split | complete; generic timeline, flow, turn pipeline and cardgame proof |
@@ -263,7 +264,7 @@ reverse-direction delivery and removal of an in-flight old-epoch message across 
 
 Running the main schedule twice yields identical 65-event traces and final results. The complete executable reports
 `121/121` checks in both Debug and Release and is registered as `NET06_in_memory_transport_verify`.
-Together with every neutral NET-01..05 test, the current networking set passes `36/36` in both configurations.
+Together with every neutral NET-01..05 test, the networking set through NET06 passes `36/36` in both configurations.
 
 Reproduction:
 
@@ -273,6 +274,48 @@ ctest --test-dir build-debug -R '^NET06_in_memory_transport_verify$' --output-on
 
 cmake --build build-release -j4 --target NET06_in_memory_transport
 ctest --test-dir build-release -R '^NET06_in_memory_transport_verify$' --output-on-failure
+```
+
+### NET-07 explicit replication baselines and deltas
+
+`replication.h` deliberately keeps three identities separate: simulation tick, state-frame sequence and baseline
+ID. `state_frame_header` also carries an explicit format version and acknowledged input sequence. A full replication
+baseline has no base ID; every delta names both the exact base it requires and the result baseline it will produce.
+None of these values is inferred from transport delivery order.
+
+`state_frame_window<Sequence, MaxForwardAdvance>` implements latest-state acceptance rather than reliable-command
+deduplication: a compatible forward frame may be committed, the current sequence is a duplicate, and every older
+frame is stale even if it was never observed. Classification does not mutate the horizon, so decode/materialization
+can fail first. An authenticated full recovery can explicitly reset a jump larger than the normal acceptance window.
+
+`baseline_store<BaselineId, Snapshot, SizeOf>` wraps immutable complete snapshots in a baseline-specific API with
+strictly increasing IDs, deterministic oldest-first eviction and independent count/logical-wire-byte budgets.
+`try_materialize_delta` performs exact lookup, asks the injected project codec for an optional complete candidate,
+and only then inserts the result. Missing base, codec rejection, duplicate/out-of-order result and budget overflow
+are separate statuses; all leave retained baselines unchanged.
+
+The optional `keyed_snapshot<Key, Value, Version>` codec is one independently testable default, not a required ECS
+shape. Its canonical sorted delta expresses create as “key absent -> value”, update as “expected version -> new
+version/value”, and erase as “expected version -> absent”. Construction and application reject unsorted/duplicate
+keys, value changes without version advance, stale versions, repeated creates/deletes and meaningless operations
+transactionally. Entity identity, enumeration, interest, visibility, quantization and wire encoding remain project
+policy.
+
+The `NET07_replication_baselines` playground composes this with the NET06 in-memory transport. Authority states
+`100..105` include updates, creates and deletes. The scripted channel loses `100 -> 101`, delivers `101 -> 102`
+without its base, delays `102 -> 103` behind `103 -> 104`, and duplicates `104 -> 105`. The follower issues two
+reliable baseline requests, installs full replication baselines 102 and 104, rejects the delayed frame as stale and
+applies one copy of the final delta. It converges at baseline 105 with `60/60` internal checks. These recovery frames
+are scoped replication snapshots, never NET04 causal world checkpoints.
+
+Seven primitive test cases plus the playground pass in Debug and Release:
+
+```sh
+cmake --build build-debug -j4 --target network_replication_test NET07_replication_baselines
+ctest --test-dir build-debug -R '^(network_replication_test::|NET07_replication_baselines_verify)' --output-on-failure
+
+cmake --build build-release -j4 --target network_replication_test NET07_replication_baselines
+ctest --test-dir build-release -R '^(network_replication_test::|NET07_replication_baselines_verify)' --output-on-failure
 ```
 
 ### Native-float cross-compiler micro-corpus
