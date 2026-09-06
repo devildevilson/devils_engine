@@ -27,6 +27,7 @@
 | id ресурса -> тексты генератора | `include/.../generator_resource.h` |
 | lua-хост, биндинги, бюджет | `include/.../script_host.h` |
 | `devils_script` над буфером | `include/.../script_program.h` |
+| куда уходят часы и что годно к устройству | `include/.../execution_profile.h` |
 | перевод `ds` -> GLSL, что переводится и где расходятся пути | `include/.../script_translate.h` |
 | FastNoise2 и jc_voronoi | `include/.../primitives.h` |
 

@@ -502,12 +502,23 @@ sol::object script_host::run_tool(const std::string& tool_name, const sol::table
     }
   }
 
+  // Учёт снимает стенные часы ВОКРУГ диспатча: всё, что до него, — разбор таблицы аргументов, и он
+  // принадлежит композиции, а не работе.
+  const auto started = profile_ != nullptr ? now_us() : 0;
+  const auto measured = [&](const size_t elements) {
+    if (profile_ == nullptr) return;
+    account(tool_name, uint64_t(now_us() - started), elements, touched_fields(inputs, outputs), tool->shape,
+            fitness_of(*tool, inputs, outputs));
+  };
+
   if (tool->shape == aperture::reduce) {
     const double value = dispatch_reduce(*tool, inputs, params, seed, begin, end, current_step_, pool_);
+    measured(end > begin ? end - begin : 0);
     return sol::make_object(s, value);
   }
 
   dispatch(*tool, inputs, outputs, params, seed, begin, end, current_step_, pool_);
+  measured(end > begin ? end - begin : 0);
   return sol::nil;
 }
 
@@ -537,7 +548,37 @@ void script_host::run_program(const sol::table args) {
     end = read_count_field(counter, outputs.empty() ? 0 : outputs.front().count(), clamped);
   }
 
+  // ГОДНОСТЬ ПРОГРАММЫ ЗНАЕТ ТОЛЬКО ПЕРЕВОД, поэтому под учётом она переводится, даже если этот вызов
+  // остаётся на CPU: иначе на вопрос «уедет ли» ответить нечем. Цена перевода записывается ОТДЕЛЬНО —
+  // это цена первого чанка, а не цена работы, и складывать её с ней значило бы соврать про обе.
+  uint64_t translation = 0;
+  auto fitness = device_fitness::no_body;
+  if (profile_ != nullptr && !outputs.empty() && !device_representable(inputs, outputs)) {
+    // Род поля решает РАНЬШЕ перевода, и спрашивать перевод здесь нельзя: он откажет тем же самым, но
+    // громко — а диагностический прогон не имеет права выглядеть как череда ошибок.
+    fitness = device_fitness::narrow;
+  } else if (profile_ != nullptr && !outputs.empty()) {
+    const auto translation_started = now_us();
+    std::string signature;
+    for (const auto& binding : inputs) {
+      signature.append(binding.field_name());
+      signature.push_back(':');
+      signature.append(to_string(binding.type().base));
+      signature.push_back(';');
+    }
+    signature.push_back(kind == script_program::result_kind::predicate ? '?' : '#');
+    signature.append(to_string(outputs.front().type().base));
+    const auto& form = acquire_device_form(*program_name, signature, inputs, outputs.front(), kind);
+    translation = uint64_t(now_us() - translation_started);
+    fitness = form.declared() ? device_fitness::ready : device_fitness::no_body;
+  }
+
+  const auto started = profile_ != nullptr ? now_us() : 0;
   dispatch_script(program, inputs, outputs, params, seed, begin, end, current_step_, pool_);
+  if (profile_ != nullptr) {
+    account(*program_name, uint64_t(now_us() - started), end > begin ? end - begin : 0,
+            touched_fields(inputs, outputs), program.shape(), fitness, 0, false, translation);
+  }
 }
 
 bool script_host::has_tool(const std::string& tool_name) const {
@@ -652,7 +693,11 @@ queue_call script_host::make_script_call(const sol::table& args) {
     }
     signature.push_back(kind == script_program::result_kind::predicate ? '?' : '#');
     signature.append(to_string(call.outputs.front().type().base));
+    const auto translation_started = profile_ != nullptr ? now_us() : 0;
     call.device = acquire_device_form(*program_name, signature, call.inputs, call.outputs.front(), kind);
+    if (profile_ != nullptr) {
+      pending_translation_us_ += uint64_t(now_us() - translation_started);
+    }
   }
 
   // Ядро очереди про devils_script не знает, поэтому элемент несёт своё исполнение телом. Указатель
@@ -752,7 +797,51 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
   const sol::optional<bool> on_device = args["device"];
   queue.on_device = on_device.value_or(false);
 
+  // ОЧЕРЕДЬ УЧИТЫВАЕТСЯ ОДНОЙ ЗАПИСЬЮ: она и исполняется целиком. Годность у неё — годность САМОГО
+  // СЛАБОГО элемента: на устройство уезжает вся очередь или ничего, поэтому один непереносимый вызов
+  // держит её на CPU, и приписывать ей годность по большинству значило бы завысить долю.
+  auto fitness = device_fitness::ready;
+  size_t elements = 0;
+  size_t by_fitness[device_fitness::count] = {};
+  std::vector<field_ref> inputs;
+  std::vector<field_ref> outputs;
+  for (const auto& call : queue.calls) {
+    const auto call_fitness =
+      call.tool != nullptr
+        ? fitness_of(*call.tool, call.inputs, call.outputs)
+        : (!device_representable(call.inputs, call.outputs)
+             ? device_fitness::narrow
+             : (call.device.declared() ? device_fitness::ready : device_fitness::no_body));
+    fitness = std::max(fitness, call_fitness);
+    by_fitness[call_fitness] += 1;
+    elements += call.range_count();
+    inputs.insert(inputs.end(), call.inputs.begin(), call.inputs.end());
+    outputs.insert(outputs.end(), call.outputs.begin(), call.outputs.end());
+  }
+
+  const auto started = profile_ != nullptr ? now_us() : 0;
   const auto report = queue.on_device ? run_on_device(queue) : run_queue(queue, pool_);
+  if (profile_ != nullptr) {
+    {
+      profile_record record;
+      record.step = current_step_;
+      record.label = "queue";
+      record.microseconds = uint64_t(now_us() - started);
+      record.elements = elements;
+      record.fields = touched_fields(inputs, outputs);
+      for (const auto& [name, bytes] : record.fields) {
+        record.bytes += bytes;
+      }
+      record.shape = aperture::pointwise;
+      record.fitness = fitness;
+      record.translation_microseconds = pending_translation_us_;
+      pending_translation_us_ = 0;
+      record.queue_size = queue.calls.size();
+      std::copy(std::begin(by_fitness), std::end(by_fitness), std::begin(record.queue_fitness));
+      record.on_device = report.on_device;
+      profile_->add(std::move(record));
+    }
+  }
 
   sol::table result(lua_, sol::create);
   result["calls"] = report.calls;
@@ -816,6 +905,40 @@ bool script_host::has_program(const std::string_view& program_name) const noexce
 
 void script_host::set_device_executor(queue_executor* executor) noexcept {
   device_executor_ = executor;
+}
+
+void script_host::set_profile(execution_profile* profile) noexcept {
+  profile_ = profile;
+}
+
+void script_host::account(std::string label,
+                          const uint64_t microseconds,
+                          const size_t elements,
+                          std::vector<std::pair<std::string, size_t>> fields,
+                          const aperture::values shape,
+                          const device_fitness::values fitness,
+                          const size_t queue_size,
+                          const bool on_device,
+                          const uint64_t translation_microseconds) {
+  if (profile_ == nullptr) {
+    return;
+  }
+
+  profile_record record;
+  record.step = current_step_;
+  record.label = std::move(label);
+  record.microseconds = microseconds;
+  record.elements = elements;
+  record.fields = std::move(fields);
+  for (const auto& [name, size] : record.fields) {
+    record.bytes += size;
+  }
+  record.translation_microseconds = translation_microseconds;
+  record.shape = shape;
+  record.fitness = fitness;
+  record.queue_size = queue_size;
+  record.on_device = on_device;
+  profile_->add(std::move(record));
 }
 
 queue_report script_host::run_on_device(const computation_queue& queue) {
@@ -993,6 +1116,13 @@ step_invoker script_host::invoker() {
     queue_records_ = 0;
     queue_consumed_ = 0;
 
+    // Шаг меряется ЦЕЛИКОМ, а не суммой своих вызовов: разница между ними и есть время композиции,
+    // то есть та часть, которую не переносит никуда никакой перенос.
+    const auto step_started = profile_ != nullptr ? now_us() : 0;
+    if (profile_ != nullptr) {
+      profile_->begin_step(context.name);
+    }
+
     auto step = make_step_table(context);
 
     const bool limited = budget_.instruction_limit != 0 || budget_.wall_time_us != 0;
@@ -1035,6 +1165,12 @@ step_invoker script_host::invoker() {
       utils::error{}("originator step '{}': a declared queue call went into a queue more than once ({} elements "
                      "against {} declarations)",
                      context.name, queue_consumed_, queue_records_);
+    }
+
+    // Шаг закрывается ПОСЛЕ всех проверок: провалившийся шаг не является измерением, и запись о нём
+    // сюда не доходит — исключение уносит управление раньше.
+    if (profile_ != nullptr) {
+      profile_->end_step(uint64_t(now_us() - step_started));
     }
   };
 }

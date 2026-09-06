@@ -11,6 +11,7 @@
 #include <sol/sol.hpp>
 
 #include "computation_queue.h"
+#include "execution_profile.h"
 #include "pipeline.h"
 #include "script_program.h"
 #include "tools.h"
@@ -83,6 +84,12 @@ public:
   void set_device_executor(queue_executor* executor) noexcept;
   const script_budget& budget() const noexcept;
 
+  // УЧЁТ ИСПОЛНЕНИЯ. Выключен по умолчанию (nullptr): две отметки времени на вызов — шум против
+  // диспатча, но тело шага, зовущее инструмент на каждой из тысяч провинций, платило бы за них на
+  // каждом вызове. Включённый учёт вдобавок ПЕРЕВОДИТ программы, которые иначе не переводились бы:
+  // ответить «уедет ли этот вызов» иначе нечем, и цена перевода записывается отдельной величиной.
+  void set_profile(execution_profile* profile) noexcept;
+
   // Загружает тело шага. Чанк ОБЯЗАН вернуть функцию — она и есть шаг.
   void load_body(const std::string_view& step_name, const std::string_view& source, const std::string_view& chunk_name);
   bool has_body(const std::string_view& step_name) const noexcept;
@@ -144,6 +151,18 @@ private:
   queue_call declare_program(const sol::table args);
   sol::object execute_queue(const sol::table self, const sol::table args, sol::this_state s);
 
+  // Записывает измеренный вызов, если учёт включён. Отдельным методом, потому что мест вызова три
+  // (инструмент, программа, очередь), а форма записи у них одна.
+  void account(std::string label,
+               const uint64_t microseconds,
+               const size_t elements,
+               std::vector<std::pair<std::string, size_t>> fields,
+               const aperture::values shape,
+               const device_fitness::values fitness,
+               const size_t queue_size = 0,
+               const bool on_device = false,
+               const uint64_t translation_microseconds = 0);
+
   // Собирает объявленный вызов из таблицы аргументов lua; счётчик объявлений трогают declare_*.
   queue_call make_tool_call(const std::string& tool_name, const sol::table& args);
   queue_call make_script_call(const sol::table& args);
@@ -173,6 +192,11 @@ private:
   std::vector<program_entry> programs_;
   std::vector<device_form_entry> device_forms_;
   queue_executor* device_executor_ = nullptr;
+
+  execution_profile* profile_ = nullptr;
+  // Перевод программы случается на ОБЪЯВЛЕНИИ элемента очереди, а записывается вместе с самой
+  // очередью: это цена первого чанка, и приписывать её работе значило бы соврать про обе величины.
+  uint64_t pending_translation_us_ = 0;
 
   script_budget budget_{};
   // Объявленный и НЕ отданный очереди вызов — потерянная работа: тело написало `queue.blend{...}`,
