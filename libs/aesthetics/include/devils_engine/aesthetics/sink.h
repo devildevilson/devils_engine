@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "devils_engine/utils/compression.h" // compression_level
+#include "devils_engine/utils/serialization_sink.h"
 #include "serialization.h"                   // world, writer/reader, dump_world/load_world
 
 // Sink = ВЕРХНИЙ слой сериализации: тупое ядро (serialize<T>) пишет агрегаты в writer-буфер,
@@ -31,34 +31,19 @@ namespace devils_engine {
 namespace aesthetics {
 namespace serial {
 
-constexpr uint32_t container_magic = UINT32_C(0xDE5AC001); // 'DE' snapshot container v01
-constexpr uint16_t container_version = 1;
-
-struct sink_policy {
-  utils::compression_level level;
-  bool embed_screenshot;
-};
-// на замерах zstd: level>1 почти не улучшает ratio, а best(19) даёт +~20% ценой ~x200 времени
-// (100k: fast ~14мс vs best ~3.2с). Поэтому дефолты умеренные; best — осознанный knob для архива/async.
-inline constexpr sink_policy disk_policy{utils::compression_level::normal, true};   // zstd 3 + скриншот
-inline constexpr sink_policy network_policy{utils::compression_level::fast, false}; // zstd 1
-
-// --- packet-обёртка (работает над УЖЕ собранным payload, не знает про world) ------
-// seal: сырой payload -> сжатый контейнер с checksum (+ опц. скриншот). screenshot — уже готовые
-// байты (PNG и т.п.); sink не знает как его снять — это забота render-слоя.
-std::vector<uint8_t> seal(std::span<const std::byte> payload, const sink_policy& policy = disk_policy,
-                          std::span<const uint8_t> screenshot = {});
-
-// unseal: контейнер -> сырой payload (в raw_out, для чтения дамперами через reader). Валидирует
-// magic/версию/checksum/декомпрессию. screenshot_out (если задан) получит встроенный скриншот.
-// false при битом контейнере — guard, не throw. Схему payload (fingerprint) стережёт уже load_world.
-bool unseal(std::span<const uint8_t> data, std::vector<std::byte>& raw_out,
-            std::vector<uint8_t>* screenshot_out = nullptr);
+using utils::serial::container_magic;
+using utils::serial::container_version;
+using utils::serial::disk_policy;
+using utils::serial::network_policy;
+using utils::serial::seal;
+using utils::serial::sink_policy;
+using utils::serial::unseal;
 
 // --- удобные обёртки для одиночного мира (payload = ровно один dump_world) ---------
-std::vector<uint8_t> pack(const world* w, const sink_policy& policy = disk_policy,
-                          std::span<const uint8_t> screenshot = {});
-bool unpack(std::span<const uint8_t> data, world* w, std::vector<uint8_t>* screenshot_out = nullptr);
+std::vector<std::byte> pack(const world* w, const sink_policy& policy = disk_policy,
+                            std::span<const uint8_t> screenshot = {});
+bool unpack(std::span<const std::byte> data, world* w,
+            std::vector<uint8_t>* screenshot_out = nullptr);
 
 bool save_to_file(const world* w, const std::string& path, const sink_policy& policy = disk_policy,
                   std::span<const uint8_t> screenshot = {});

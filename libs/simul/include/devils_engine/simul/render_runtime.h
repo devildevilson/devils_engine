@@ -263,6 +263,7 @@ void standard_render_create_base_resources(State& c) {
   c.base->create_command_pool(c.queues.graphics);
   c.base->create_descriptor_pool();
   c.base->get_or_create_pipeline_cache(c.config.cache_registry, c.config.pipeline_cache_id);
+  c.base->set_shader_cache_directory(c.config.shader_cache_directory);
 
   if (c.config.engine_registry == nullptr) {
     utils::error{}("render: engine registry is null (render-graph source)");
@@ -328,6 +329,7 @@ void standard_render_request_shader_prepare(State& c) {
   command_prepare_shaders cmd;
   cmd.registry = c.config.engine_registry;
   cmd.prefix = c.config.shader_config_prefix;
+  cmd.shader_cache_directory = c.config.shader_cache_directory;
   c.br->prepare_shaders.try_push(std::move(cmd));
   c.shader_prepare_requested = true;
   DE_LOG(catalogue::log_domain::render, flow, "render: requested shader prepare for prefix '{}'", c.config.shader_config_prefix);

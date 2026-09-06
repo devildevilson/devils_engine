@@ -19,7 +19,6 @@
 #include <devils_engine/acumen/registry.h>
 #include <devils_engine/acumen/system.h>   // acumen::system — GOAP над act::registry
 #include <devils_engine/act/intent.h>
-#include <devils_engine/aesthetics/sink.h>           // serial::sink_policy/seal/unseal — save/load слайса
 #include <devils_engine/aesthetics/world.h>
 #include <devils_engine/mood/registry.h>
 #include <devils_engine/mood/system.h>            // mood::system — FSM-исполнитель (состояние/анимация/звук)
@@ -53,6 +52,8 @@ struct system;
 
 namespace tile_frontier {
 namespace core {
+
+struct actor_checkpoint_access;
 
 // Статистика времени фаз апдейта актора (catalogue). Актор-сим и UI (visage) живут в ОДНОМ
 // потоке (оба зовутся из simulation::update), поэтому UI читает её напрямую — без broker.
@@ -312,6 +313,17 @@ struct brain_config {
   std::vector<prefab_def> prefabs;
 };
 
+// Реестры связаны внутренними указателями. Один стабильный владелец позволяет полностью
+// собрать runtime в staging, затем перенести его без пересборки и аллокаций при публикации.
+struct actor_brain_runtime {
+  brain_config brains;
+  devils_engine::act::registry functions;
+  devils_engine::acumen::registry goaps;
+  devils_engine::mood::registry fsms;
+  std::vector<std::pair<uint64_t, std::string>> goap_origins;
+  devils_engine::prefab::prefab_registry<spawn_args> prefabs;
+};
+
 // Проектные map-фазы актора на общем примитиве aesthetics::template_system. Параллельную форму и
 // общий barrier задаёт внешний aesthetics::run. Определения в .cpp — только forward-decl здесь.
 struct integration_system; // движение позиции по скорости + расталкивание препятствиями
@@ -321,6 +333,7 @@ struct deferred_effects;   // catalogue collect/elect executors (определ�
 
 class actor_world_slice : public spawn_sink {
   friend struct cognition_system; // worklist_system::process зовёт приватный decide_actor
+  friend struct actor_checkpoint_access;
 public:
   // Плоский кэш препятствия для коллизии (публичен — читается integration_system при обходе).
   struct obstacle_disc {
@@ -328,7 +341,7 @@ public:
     float radius;
   };
 
-  actor_world_slice() noexcept;
+  actor_world_slice();
   ~actor_world_slice(); // out-of-line: unique_ptr на неполные *_system (pimpl-идиома)
 
   // prefab_cycle — микс актёрных префабов стартового спавна: i-й актор = cycle[i % size]
@@ -346,7 +359,7 @@ public:
   // Tick задаёт session/host: слайс больше не изобретает локальную кадровую координату. game_delta
   // — целочисленная проекция этого fixed step в game-домен (пауза даёт 0, scale её меняет).
   // Tick обязан монотонно расти, но может иметь разрыв: paused/loading session ticks не исполняют
-  // gameplay. Накопленный game_now сериализуется вместе со слайсом.
+  // gameplay. Накопленный game_now восстанавливается из timeline-секции общего checkpoint.
   actor_metrics update(devils_engine::utils::simulation_tick tick,
                        devils_engine::utils::game_duration game_delta,
                        actor_batch& batch,
@@ -379,17 +392,6 @@ public:
   const devils_engine::aesthetics::world& ecs() const noexcept {
     return world_;
   }
-
-  // ── save/load полного состояния слайса (мир + не-ECS скаляры) ──
-  // Слоистая схема сериализатора: dump_world кладёт компоненты, следом свой дампер кладёт
-  // реплицируемые скаляры (tick/seq/config), seal заворачивает готовый payload в пакет.
-  // save: слайс -> пакет (пригоден для диска/сети — политика решает компрессию/скриншот).
-  std::vector<uint8_t> save(const devils_engine::aesthetics::serial::sink_policy& policy =
-                              devils_engine::aesthetics::serial::disk_policy) const;
-  // load: пакет -> ЧИСТЫЙ слайс (пересобирает registry/GOAP/FSM, грузит мир и скаляры,
-  // перестраивает кэш препятствий). false при битом пакете/несовпадении схемы. Кэши/скретч
-  // MT перестраиваются лениво в update; obstacles_ восстанавливается здесь из компонентов.
-  bool load(std::span<const uint8_t> packet, const brain_config& brains);
 
   // sim-звуки этого тика (вход в состояние FSM). Презентационный мост дренажит после update().
   std::span<const sound_emit> sound_events() const noexcept {
@@ -441,15 +443,7 @@ private:
   // Спавнит одну еду-сущность через semantic spawn-point group "food".
   void spawn_food();
   devils_engine::aesthetics::world world_;
-  devils_engine::act::registry registry_; // общий реестр геймплейных функций (см. libs/act)
-  // Мозги адресуются per-entity: goap_ref/fsm_ref (хеш имени) → registry.get(id). Слайсовых
-  // goap_/fsm_ указателей больше нет — резолв в decide_actor/apply, промах = громкая ошибка.
-  devils_engine::acumen::registry goap_registry_;
-  devils_engine::mood::registry fsm_registry_;
-  // Дедуп act-регистраций между goap-конфигами: хеш имени метрики/действия → origin (resource id,
-  // где элемент определён). Одинаковый origin = копии одного скрипта (общая база) — пропускаем,
-  // разный = конфликт имён — громкая ошибка. Живёт только на время setup_brain_registry.
-  std::vector<std::pair<uint64_t, std::string>> goap_origins_;
+  std::unique_ptr<actor_brain_runtime> brain_runtime_;
   // kD-дерево слоя восприятия: перестраивается раз за тик, отвечает на «ближайший
   // крупнее/мельче в радиусе» с прунингом. Арена реюзится. Читается воркерами конкурентно.
   devils_engine::utils::kd_tree<perception_target> sense_tree_;
@@ -491,16 +485,8 @@ private:
   std::unique_ptr<devils_engine::aesthetics::basic_system> resolve_eating_sys_;
   std::vector<devils_engine::aesthetics::entityid_t> eat_finished_; // хищники с истёкшим поеданием (per-tick)
   std::vector<devils_engine::aesthetics::entityid_t> eat_kill_;     // съеденные жертвы на удаление (per-tick)
-  // Required project gameplay config. Resource-backed program/transition pointers must outlive slice.
-  brain_config brains_;
-
-  // Реестр префабов слайса: рецепты сборки энтити из компонентов. Пока — «food» (data food_item +
-  // derived visual/position через on_construct); spawn_at через prefab_.spawn(name, world, {pos}).
-  // Регистрируется в setup_brain_registry (общая точка init/load). Растёт по мере переезда спавна в него.
-  devils_engine::prefab::prefab_registry<spawn_args> prefab_;
-
   uint64_t tick_ = 0;
-  uint64_t game_ticks_ = 0; // накопленное игровое время слайса (µs game-домена), сериализуется
+  uint64_t game_ticks_ = 0; // локальная проекция timeline.game; отдельно не сериализуется
 
   // Отдельный scratch для UI-вызовов act-функций (main-thread, между кадровыми фазами):
   // не трогает per-worker полосы cognition и не требует живого пула.

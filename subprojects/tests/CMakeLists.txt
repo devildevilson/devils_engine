@@ -36,6 +36,9 @@ target_link_libraries(utils_general_test PRIVATE devils_engine::utils devils_eng
 devils_add_doctest(utils_contract_test utils_contract_test.cpp)
 target_link_libraries(utils_contract_test PRIVATE devils_engine::utils)
 
+devils_add_doctest(utils_serialization_test utils_serialization_test.cpp)
+target_link_libraries(utils_serialization_test PRIVATE devils_engine::utils)
+
 devils_add_doctest(timeline_test timeline_test.cpp)
 target_link_libraries(timeline_test PRIVATE devils_engine::utils)
 

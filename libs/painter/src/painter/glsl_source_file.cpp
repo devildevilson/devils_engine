@@ -15,7 +15,7 @@ bool glsl_source_file::prepared(const uint32_t shader_kind) const noexcept {
   return spirv_shader_kind == shader_kind && !spirv.empty();
 }
 
-bool glsl_source_file::prepare_spirv(const demiurg::resource_system* reg, const uint32_t shader_kind, std::string* error) {
+bool glsl_source_file::prepare_spirv(shader_compiler& compiler, const demiurg::resource_system* reg, const uint32_t shader_kind, std::string* error) {
   if (prepared(shader_kind)) {
     return true;
   }
@@ -28,7 +28,7 @@ bool glsl_source_file::prepare_spirv(const demiurg::resource_system* reg, const 
   sc.set_optimization(true);
   sc.set_shader_entry_point("main");
   sc.set_shader_type(shader_kind);
-  auto out = sc.compile(std::string(id), memory);
+  auto out = sc.compile(compiler, std::string(id), memory);
   if (out.empty()) {
     if (error != nullptr) {
       *error = sc.err_msg();
@@ -58,12 +58,13 @@ const std::vector<uint32_t>* glsl_source_file::prepared_spirv(
 }
 
 bool glsl_source_file::prepare_spirv(
+  shader_compiler& compiler,
   const demiurg::resource_system* reg,
   const uint32_t shader_kind,
   const std::span<const shader_definition> definitions,
   std::string* error) {
   if (definitions.empty()) {
-    return prepare_spirv(reg, shader_kind, error);
+    return prepare_spirv(compiler, reg, shader_kind, error);
   }
   if (prepared_spirv(shader_kind, definitions) != nullptr) {
     return true;
@@ -79,7 +80,7 @@ bool glsl_source_file::prepare_spirv(
   for (const auto& [name, value] : definitions) {
     sc.add_definition(name, value);
   }
-  auto out = sc.compile(std::string(id), memory);
+  auto out = sc.compile(compiler, std::string(id), memory);
   if (out.empty()) {
     if (error != nullptr) {
       *error = sc.err_msg();

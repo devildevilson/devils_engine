@@ -11,7 +11,6 @@
 
 #include <glaze/glaze.hpp>
 //#include <alpaca/alpaca.h>
-#include <zpp_bits.h>
 
 #include "core.h"
 #include "string-utils.hpp"
@@ -52,89 +51,6 @@ std::expected<std::string, glz::error_ctx> to_json(const T& x) {
 template <typename T>
 auto from_json(T& x, const std::string& c) {
   return glz::read_json(x, c);
-}
-
-//template <alpaca::options O, typename T>
-//size_t to_binary(const T &x, std::vector<uint8_t> &c) {
-//  return alpaca::serialize<O>(x, c);
-//}
-//
-//template <alpaca::options O, typename T>
-//std::vector<uint8_t> to_binary(const T &x) {
-//  return alpaca::serialize<O>(x);
-//}
-//
-//template <alpaca::options O, typename T>
-//std::error_code from_binary(T &x, const std::vector<uint8_t> &c) {
-//  std::error_code ec;
-//  x = alpaca::deserialize<T, O>(c, ec);
-//  //if (ec) {
-//  //  utils::error{}("Could not parse binary for struct '{}' (msg: {})", utils::type_name<T>(), ec.message());
-//  //}
-//  return ec;
-//}
-
-//template <typename T>
-//size_t to_binary(const T &x, std::vector<uint8_t> &c) {
-//  return alpaca::serialize<alpaca::options::none>(x, c);
-//}
-//
-//template <typename T>
-//std::vector<uint8_t> to_binary(const T &x) {
-//  return alpaca::serialize<alpaca::options::none>(x);
-//}
-//
-//template <typename T>
-//std::error_code from_binary(T &x, const std::vector<uint8_t> &c) {
-//  std::error_code ec;
-//  x = alpaca::deserialize<T, alpaca::options::none>(c, ec);
-//  //if (ec) {
-//  //  utils::error{}("Could not parse binary for struct '{}' (msg: {})", utils::type_name<T>(), ec.message());
-//  //}
-//  return ec;
-//}
-
-//std::errc::result_out_of_range - attempting to write or read from a too short buffer.
-//std::errc::no_buffer_space - growing buffer would grow beyond the allocation limits or overflow.
-//std::errc::value_too_large - varint(variable length integer) encoding is beyond the representation limits.
-//std::errc::message_size - message size is beyond the user defined allocation limits.
-//std::errc::not_supported - attempt to call an RPC that is not listed as supported.
-//std::errc::bad_message - attempt to read a variant of unrecognized type.
-//std::errc::invalid_argument - attempting to serialize null pointer or a value - less variant.
-//std::errc::protocol_error - attempt to deserialize an invalid protocol message.
-
-template <typename T>
-std::vector<uint8_t> to_binary(const T& x) {
-  auto default_options = zpp::bits::endian::network{};
-  auto& [data, out] = zpp::bits::data_out<uint8_t>(default_options);
-  auto res = out(x);
-  if (res.has_value()) {
-    return data;
-  }
-  return std::vector<uint8_t>{};
-}
-
-template <typename T>
-std::errc to_binary(const T& x, std::vector<uint8_t>& data) {
-  auto default_options = zpp::bits::endian::network{};
-  zpp::bits::out out(data, default_options);
-  return out(x);
-}
-
-template <typename T>
-T from_binary(const std::vector<uint8_t>& data) {
-  auto default_options = zpp::bits::endian::network{};
-  zpp::bits::in in(data, default_options);
-  T x;
-  in(x);
-  return x;
-}
-
-template <typename T>
-std::errc from_binary(const std::vector<uint8_t>& data, T& x) {
-  auto default_options = zpp::bits::endian::network{};
-  zpp::bits::in in(data, default_options);
-  return in(x);
 }
 
 template <typename T>

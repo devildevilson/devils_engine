@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <devils_engine/utils/sha256cpp.h>
+#include <devils_engine/utils/core.h>
 #include <devils_engine/utils/type_traits.h>
 #include "state_schema.h"
 
@@ -204,7 +205,7 @@ template <class Schema, state_digest_hasher Hasher, class Host>
   result.sections.reserve(Schema::section_count);
 
   canonical_digest_sink<Hasher> full;
-  Schema::emit_canonical(
+  const bool emitted = Schema::emit_canonical(
     host, full,
     [&result](const std::uint32_t id, const std::uint32_t version,
               const std::span<const std::byte> payload) {
@@ -220,6 +221,7 @@ template <class Schema, state_digest_hasher Hasher, class Host>
         section.finish(),
       });
     });
+  if (!emitted) utils::error{}("cannot hash state: canonical serialization failed");
   result.root = full.finish();
   return result;
 }

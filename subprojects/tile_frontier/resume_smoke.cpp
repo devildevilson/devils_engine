@@ -1,7 +1,7 @@
-// Resume-детерминизм РЕАЛЬНОГО геймплея tile_frontier: прогоняем симуляцию, save() → load() в
+// Resume-детерминизм РЕАЛЬНОГО геймплея tile_frontier: прогоняем симуляцию, checkpoint → restore в
 // чистый слайс, затем гоняем оба слайса синхронно и сверяем ПОЛНОЕ состояние побайтово. Оракул
-// равенства — сам сериализатор: dump_world детерминирован (позиционно + сортировка мап), поэтому
-// dump_world(A) == dump_world(B) ⇔ миры идентичны во всех компонентах. Это доказывает, что снапшот
+// равенства — сам сериализатор: checkpoint детерминирован (позиционно + сортировка мап), поэтому
+// сравниваются timeline, world и actor-секция, а не только ECS-компоненты. Это доказывает, что снапшот
 // (а) round-trip'ит всё состояние и (б) захватывает ДОСТАТОЧНО, чтобы продолжить один-в-один.
 // Плоский main (без doctest): печатает результат, код возврата 0/1.
 #include <cstdint>
@@ -13,6 +13,7 @@
 #include <spdlog/spdlog.h>
 
 #include "core/actor_simulation.h"
+#include "core/actor_checkpoint.h"
 #include "test_brain_fixture.h"
 
 using namespace devils_engine;
@@ -83,31 +84,56 @@ int main() {
   tf::actor_world_slice a;
   a.init(count, mn, mx, tex, brains);
   utils::timelines clocks_a(utils::simulation_rate(60));
-  for (int i = 0; i < 60; ++i) {
+  clocks_a.set_game_scale(utils::game_time_scale{7, 3});
+  for (int i = 0; i < 61; ++i) {
     const auto tick = clocks_a.simulation_now() + utils::simulation_duration{1};
     a.update(tick, clocks_a.advance_simulation(tick), batch_a, pool);
   }
+  CHECK(clocks_a.causal_state().game_remainder != 0);
 
   // --- save → load в чистый слайс ---
-  const auto packet = a.save();
-  std::printf("saved packet: %zu bytes (world + sim scalars, sealed)\n", packet.size());
-
-  tf::actor_world_slice b;
-  if (!b.load(packet, brains)) {
-    std::printf("RESUME FAILED: load returned false\n");
+  tf::actor_checkpoint_buffers checkpoint;
+  if (!tf::write_actor_checkpoint(a, clocks_a, checkpoint)) {
+    std::printf("RESUME FAILED: checkpoint write returned false\n");
     return 1;
   }
+  std::printf("saved checkpoint: %zu canonical bytes (timeline + world + actor)\n",
+              checkpoint.document.size());
+
+  tf::actor_world_slice b;
   utils::timelines clocks_b(utils::simulation_rate(1));
-  CHECK(clocks_b.restore_causal_state(clocks_a.causal_state()));
+  if (!tf::load_actor_checkpoint(b, clocks_b, checkpoint.document, brains).loaded()) {
+    std::printf("RESUME FAILED: checkpoint load returned refusal\n");
+    return 1;
+  }
 
   // --- сразу после load миры должны быть побайтово равны ---
   const bool equal_after_load = dump(a) == dump(b);
   CHECK(equal_after_load);
+  CHECK(clocks_a.causal_state() == clocks_b.causal_state());
+  tf::actor_checkpoint_buffers resumed_checkpoint;
+  CHECK(tf::write_actor_checkpoint(b, clocks_b, resumed_checkpoint));
+  CHECK(checkpoint.document == resumed_checkpoint.document);
+  // Повторная установка проверяет освобождение старого runtime и стабильность новых ссылок.
+  CHECK(tf::load_actor_checkpoint(b, clocks_b, checkpoint.document, brains).loaded());
+  CHECK(a.spawn_prefab("actor", {15.0f, 15.0f}) == b.spawn_prefab("actor", {15.0f, 15.0f}));
+  utils::timelines unrelated_clocks;
+  CHECK(!tf::write_actor_checkpoint(a, unrelated_clocks, checkpoint));
   std::printf("post-load world bytes equal: %s\n", equal_after_load ? "yes" : "NO");
 
   // --- гоняем оба дальше синхронно: должны оставаться идентичны тик-в-тик ---
   int diverged_at = -1;
   for (int i = 1; i <= 120 && diverged_at < 0; ++i) {
+    if (i % 17 == 0) {
+      act::intent intent;
+      intent.kind = act::intent_kind::spawn_prefab;
+      intent.payload.spawn.prefab = utils::string_hash("food");
+      intent.payload.spawn.target = act::vec3{12.0, 13.0, 0.0};
+      intent.source_action = utils::string_hash("resume_spawn");
+      CHECK(a.enqueue_player_intent(intent));
+      CHECK(b.enqueue_player_intent(intent));
+      CHECK(!tf::write_actor_checkpoint(a, clocks_a, checkpoint));
+    }
     const auto tick_a = clocks_a.simulation_now() + utils::simulation_duration{1};
     const auto tick_b = clocks_b.simulation_now() + utils::simulation_duration{1};
     const auto dt_a = clocks_a.advance_simulation(tick_a);
@@ -116,7 +142,10 @@ int main() {
     CHECK(dt_a == dt_b);
     const auto ma = a.update(tick_a, dt_a, batch_a, pool);
     const auto mb = b.update(tick_b, dt_b, batch_b, pool);
-    if (ma.actors != mb.actors || ma.ticks != mb.ticks || dump(a) != dump(b)) {
+    CHECK(tf::write_actor_checkpoint(a, clocks_a, checkpoint));
+    CHECK(tf::write_actor_checkpoint(b, clocks_b, resumed_checkpoint));
+    if (ma.actors != mb.actors || ma.ticks != mb.ticks ||
+        checkpoint.document != resumed_checkpoint.document) {
       diverged_at = i;
     }
   }

@@ -26,6 +26,7 @@ set(HDR_LIST
   include/core/tile_batch.h
   include/core/tile_frontier_game.h
   include/core/actor_simulation.h
+  include/core/actor_checkpoint.h
   include/core/brain_config_loader.h
   include/core/entity_scope.h
   include/core/script_environment.h
@@ -43,6 +44,7 @@ set(SRC_LIST
   src/core/tile_map.cpp
   src/core/tile_frontier_game.cpp
   src/core/actor_simulation.cpp
+  src/core/actor_checkpoint.cpp
   src/core/brain_config_loader.cpp
   src/core/script_environment.cpp
   src/core/world_scene_resource.cpp
@@ -91,6 +93,7 @@ set_target_properties(tile_frontier_snapshot_smoke PROPERTIES RUNTIME_OUTPUT_DIR
 # слайса + регистрация компонентов через actor_snapshot.h) поверх devils_plane.
 set(TILE_FRONTIER_BRAIN_TEST_SOURCES
   src/core/actor_simulation.cpp
+  src/core/actor_checkpoint.cpp
   src/core/brain_config_loader.cpp
   src/core/script_environment.cpp
   test_brain_fixture.cpp

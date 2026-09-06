@@ -33,6 +33,7 @@ set(SRC_LIST
   src/thread/stack_pool.cpp
   src/thread/atomic_pool.cpp
   src/utils/prng.cpp
+  src/utils/process_memory.cpp
   src/utils/atomic_file.cpp
   src/utils/fileio.cpp
   src/utils/time.cpp
@@ -43,6 +44,7 @@ set(SRC_LIST
   src/utils/sha256cpp.cpp
   src/utf/utf.cpp
   src/utils/compression.cpp
+  src/utils/serialization_sink.cpp
   src/utils/loader.cpp
   src/utils/locale.cpp
   #src/utils/patterns.cpp
@@ -64,9 +66,12 @@ set(HDR_LIST
   include/devils_engine/utils/string-utils.hpp
   include/devils_engine/utils/safe_handle.h
   include/devils_engine/utils/prng.h
+  include/devils_engine/utils/process_memory.h
   include/devils_engine/utils/dice.h
 
   include/devils_engine/utils/named_serializer.h
+  include/devils_engine/utils/serialization.h
+  include/devils_engine/utils/state_schema.h
   include/devils_engine/utils/atomic_file.h
   include/devils_engine/utils/fileio.h
   include/devils_engine/utils/time-utils.hpp
@@ -75,6 +80,7 @@ set(HDR_LIST
   include/devils_engine/utils/sha256.h
   include/devils_engine/utf/utf.hpp
   include/devils_engine/utils/compression.h
+  include/devils_engine/utils/serialization_sink.h
   include/devils_engine/utils/load_stage.h
   include/devils_engine/utils/loader.h
   include/devils_engine/utils/locale-utils.hpp
@@ -104,7 +110,9 @@ target_link_libraries(devils_utils
 )
 
 if (WIN32)
-  target_link_libraries(devils_utils bcrypt ncrypt crypt32)
+  # psapi — ради `GetProcessMemoryInfo` в process_memory.cpp: пик памяти каждая система отдаёт своим
+  # способом, и на Windows он живёт именно там.
+  target_link_libraries(devils_utils bcrypt ncrypt crypt32 psapi)
 endif()
 
 target_include_directories(devils_utils PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/>")

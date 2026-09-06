@@ -170,6 +170,9 @@ TEST_CASE("painter constant defaults are active before the first frame [painter]
 }
 
 TEST_CASE("glsl_source_file caches prepared SPIR-V by shader stage [painter]") {
+  // Компилятор ПЕРЕДАЁТСЯ снаружи и переиспользуется в пределах случая: подъём glslang стоит
+  // около 90 мс, и объект на вызов вернул бы ровно ту цену, ради которой он и заведён.
+  painter::shader_compiler compiler;
   painter::glsl_source_file shader;
   shader.memory =
     "#version 450\n"
@@ -179,13 +182,13 @@ TEST_CASE("glsl_source_file caches prepared SPIR-V by shader stage [painter]") {
     "}\n";
 
   std::string error;
-  CHECK(shader.prepare_spirv(nullptr, shaderc_vertex_shader, &error));
+  CHECK(shader.prepare_spirv(compiler, nullptr, shaderc_vertex_shader, &error));
   CHECK(error.empty());
   CHECK(shader.prepared(shaderc_vertex_shader));
   CHECK_FALSE(shader.spirv.empty());
 
   const auto first_size = shader.spirv.size();
-  CHECK(shader.prepare_spirv(nullptr, shaderc_vertex_shader, &error));
+  CHECK(shader.prepare_spirv(compiler, nullptr, shaderc_vertex_shader, &error));
   CHECK(shader.spirv.size() == first_size);
 
   shader.unload_warm(utils::safe_handle_t{});
@@ -195,6 +198,9 @@ TEST_CASE("glsl_source_file caches prepared SPIR-V by shader stage [painter]") {
 }
 
 TEST_CASE("glsl_source_file keeps material-defined shader variants separate [painter]") {
+  // Компилятор ПЕРЕДАЁТСЯ снаружи и переиспользуется в пределах случая: подъём glslang стоит
+  // около 90 мс, и объект на вызов вернул бы ровно ту цену, ради которой он и заведён.
+  painter::shader_compiler compiler;
   painter::glsl_source_file shader;
   shader.memory =
     "#version 450\n"
@@ -210,8 +216,8 @@ TEST_CASE("glsl_source_file keeps material-defined shader variants separate [pai
   const std::vector<painter::glsl_source_file::shader_definition> red{{"PF01_RED", "1"}};
   const std::vector<painter::glsl_source_file::shader_definition> blue{{"PF01_BLUE", "1"}};
   std::string error;
-  CHECK(shader.prepare_spirv(nullptr, shaderc_fragment_shader, red, &error));
-  CHECK(shader.prepare_spirv(nullptr, shaderc_fragment_shader, blue, &error));
+  CHECK(shader.prepare_spirv(compiler, nullptr, shaderc_fragment_shader, red, &error));
+  CHECK(shader.prepare_spirv(compiler, nullptr, shaderc_fragment_shader, blue, &error));
   const auto* red_spirv = shader.prepared_spirv(shaderc_fragment_shader, red);
   const auto* blue_spirv = shader.prepared_spirv(shaderc_fragment_shader, blue);
   REQUIRE(red_spirv != nullptr);
@@ -224,6 +230,9 @@ TEST_CASE("glsl_source_file keeps material-defined shader variants separate [pai
 }
 
 TEST_CASE("shader_crafter serves utils shared header from generated memory include [painter]") {
+  // Компилятор ПЕРЕДАЁТСЯ снаружи и переиспользуется в пределах случая: подъём glslang стоит
+  // около 90 мс, и объект на вызов вернул бы ровно ту цену, ради которой он и заведён.
+  painter::shader_compiler compiler;
   painter::glsl_source_file shader;
   shader.memory =
     "#version 450\n"
@@ -236,13 +245,16 @@ TEST_CASE("shader_crafter serves utils shared header from generated memory inclu
     "}\n";
 
   std::string error;
-  CHECK(shader.prepare_spirv(nullptr, shaderc_fragment_shader, &error));
+  CHECK(shader.prepare_spirv(compiler, nullptr, shaderc_fragment_shader, &error));
   CHECK(error.empty());
   CHECK(shader.prepared(shaderc_fragment_shader));
   CHECK_FALSE(shader.spirv.empty());
 }
 
 TEST_CASE("shader_crafter keeps legacy bindings shared include alias [painter]") {
+  // Компилятор ПЕРЕДАЁТСЯ снаружи и переиспользуется в пределах случая: подъём glslang стоит
+  // около 90 мс, и объект на вызов вернул бы ровно ту цену, ради которой он и заведён.
+  painter::shader_compiler compiler;
   painter::glsl_source_file shader;
   shader.memory =
     "#version 450\n"
@@ -253,7 +265,7 @@ TEST_CASE("shader_crafter keeps legacy bindings shared include alias [painter]")
     "}\n";
 
   std::string error;
-  CHECK(shader.prepare_spirv(nullptr, shaderc_fragment_shader, &error));
+  CHECK(shader.prepare_spirv(compiler, nullptr, shaderc_fragment_shader, &error));
   CHECK(error.empty());
   CHECK(shader.prepared(shaderc_fragment_shader));
   CHECK_FALSE(shader.spirv.empty());
@@ -397,6 +409,9 @@ TEST_CASE("painter render config reads demiurg tavl list subresources [painter]"
 }
 
 TEST_CASE("specialization reflection reports id, type and size of shader constants [painter]") {
+  // Компилятор ПЕРЕДАЁТСЯ снаружи и переиспользуется в пределах случая: подъём glslang стоит
+  // около 90 мс, и объект на вызов вернул бы ровно ту цену, ради которой он и заведён.
+  painter::shader_compiler compiler;
   painter::glsl_source_file shader;
   shader.memory =
     "#version 450\n"
@@ -411,7 +426,7 @@ TEST_CASE("specialization reflection reports id, type and size of shader constan
     "}\n";
 
   std::string error;
-  REQUIRE(shader.prepare_spirv(nullptr, shaderc_fragment_shader, &error));
+  REQUIRE(shader.prepare_spirv(compiler, nullptr, shaderc_fragment_shader, &error));
   const auto reflected = painter::reflect_specialization_constants(shader.spirv, "test");
 
   const auto find_by_id = [&](const uint32_t id) -> const painter::specialization_constant* {
@@ -447,7 +462,7 @@ TEST_CASE("specialization reflection reports id, type and size of shader constan
   named.set_debug_info(true);
   named.set_shader_entry_point("main");
   named.set_shader_type(shaderc_fragment_shader);
-  const auto named_spirv = named.compile("test", shader.memory);
+  const auto named_spirv = named.compile(compiler, "test", shader.memory);
   REQUIRE_FALSE(named_spirv.empty());
 
   auto merged = reflected;
@@ -538,4 +553,91 @@ TEST_CASE("render config parses step shader constants and comparison samplers [p
   const auto plain_slot = storage.find_sampler("nearest");
   REQUIRE(plain_slot != painter::invalid_resource_slot);
   CHECK(storage.samplers[plain_slot].compare_enable == 0);
+}
+
+// ДИСКОВЫЙ КЭШ SPIR-V. Проверяется не «повторный вызов быстрее» — это ничего не доказывает, — а два
+// утверждения, ради которых он и заведён: тёплый прогон НЕ ПОДНИМАЕТ glslang вовсе (там 90 мс), и
+// правка ВКЛЮЧЁННОГО файла обязана быть ПРОМАХОМ, иначе движок исполнит не тот шейдер, который
+// написан, и по картинке этого не увидеть.
+TEST_CASE("shader compiler serves SPIR-V from the disk cache without starting glslang [painter]") {
+  const auto directory = (std::filesystem::temp_directory_path() /
+                          std::filesystem::path("devils_shader_cache_test")).string();
+  std::filesystem::remove_all(directory);
+
+  const auto include_root = directory + "/includes/";
+  std::filesystem::create_directories(include_root);
+  const auto include_path = include_root + "shared_bit.h";
+
+  const std::string source =
+    "#version 450\n"
+    "#include \"shared_bit.h\"\n"
+    "layout(location = 0) out vec4 colour;\n"
+    "void main() { colour = vec4(shared_value(), 0.0, 0.0, 1.0); }\n";
+
+  const auto write_include = [&](const char* body) {
+    std::ofstream out(include_path, std::ios::binary | std::ios::trunc);
+    out << body;
+  };
+
+  const auto compile_with = [&](painter::shader_compiler& compiler) {
+    painter::shader_crafter sc(nullptr);
+    sc.set_include_root(include_root);
+    sc.set_optimization(false);
+    sc.set_shader_entry_point("main");
+    sc.set_shader_type(shaderc_fragment_shader);
+    return sc.compile(compiler, "cached", source);
+  };
+
+  write_include("float shared_value() { return 0.25; }\n");
+
+  std::vector<uint32_t> cold;
+  {
+    painter::shader_compiler compiler;
+    compiler.set_cache_directory(directory);
+    CHECK_FALSE(compiler.glslang_started());
+    cold = compile_with(compiler);
+    REQUIRE_FALSE(cold.empty());
+    // Холодный прогон обязан быть НАСТОЯЩЕЙ компиляцией: кэш, который "попал" на пустом каталоге,
+    // означал бы, что проверка ниже не проверяет ничего.
+    CHECK(compiler.glslang_started());
+    CHECK(compiler.compilations() == 1);
+    CHECK(compiler.cache_hits() == 0);
+  }
+
+  {
+    painter::shader_compiler compiler;
+    compiler.set_cache_directory(directory);
+    const auto warm = compile_with(compiler);
+    CHECK(warm == cold);
+    CHECK(compiler.cache_hits() == 1);
+    CHECK(compiler.compilations() == 0);
+    // ГЛАВНОЕ УТВЕРЖДЕНИЕ: состояние glslang не поднято, то есть 90 мс инициализации не заплачены.
+    CHECK_FALSE(compiler.glslang_started());
+  }
+
+  // ПРАВКА ВКЛЮЧЁННОГО ФАЙЛА: текст самого шейдера не менялся, поэтому ключ тот же, а ответ обязан
+  // быть другим. Именно этот случай ключ по одному тексту и пропустил бы.
+  write_include("float shared_value() { return 0.75; }\n");
+  {
+    painter::shader_compiler compiler;
+    compiler.set_cache_directory(directory);
+    const auto changed = compile_with(compiler);
+    REQUIRE_FALSE(changed.empty());
+    CHECK(compiler.cache_hits() == 0);
+    CHECK(compiler.compilations() == 1);
+    CHECK(compiler.glslang_started());
+    CHECK(changed != cold);
+  }
+
+  // Каталог, в который нельзя писать, обязан вести себя как отсутствие кэша, а не как отказ собрать
+  // шейдер: кэш — ускорение, и превращать его в причину падения нельзя.
+  {
+    painter::shader_compiler compiler;
+    compiler.set_cache_directory("/proc/devils_engine_not_a_directory");
+    const auto still = compile_with(compiler);
+    CHECK_FALSE(still.empty());
+    CHECK(compiler.cache_hits() == 0);
+  }
+
+  std::filesystem::remove_all(directory);
 }

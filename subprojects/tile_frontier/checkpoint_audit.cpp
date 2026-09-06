@@ -2,7 +2,7 @@
 //
 // The executable measures full canonical write, hash, compression and load, then treats the existing
 // component blocks as immutable sections and compares whole-section, 4 KiB page and explicit
-// dirty/version reuse. Every reconstructed payload is fed through actor_world_slice::load and must
+// dirty/version reuse. Every reconstructed payload is fed through load_actor_checkpoint and must
 // round-trip byte-identically; section-boundary failure injection verifies transactional replacement.
 
 #include <algorithm>
@@ -30,6 +30,7 @@
 #include <spdlog/spdlog.h>
 
 #include "core/actor_simulation.h"
+#include "core/actor_checkpoint.h"
 #include "test_brain_fixture.h"
 
 using namespace devils_engine;
@@ -37,8 +38,11 @@ namespace tf = tile_frontier::core;
 
 namespace {
 
-constexpr std::uint64_t world_header_section = UINT64_C(0x100000000);
-constexpr std::uint64_t project_globals_section = UINT64_C(0x100000001);
+constexpr std::uint64_t document_header_section = UINT64_C(0x100000000);
+constexpr std::uint64_t timeline_document_section = UINT64_C(0x100000001);
+constexpr std::uint64_t world_frame_section = UINT64_C(0x100000002);
+constexpr std::uint64_t world_header_section = UINT64_C(0x100000003);
+constexpr std::uint64_t actor_document_section = UINT64_C(0x100000004);
 constexpr std::size_t page_size = 4096;
 
 std::atomic_size_t timing_sink = 0;
@@ -59,7 +63,7 @@ struct section {
 };
 
 struct checkpoint {
-  std::vector<std::uint8_t> packet;
+  std::vector<std::byte> packet;
   std::vector<std::byte> raw;
   std::vector<section> sections;
 };
@@ -98,49 +102,78 @@ struct dirty_result : reuse_result {
   return std::string(it->name);
 }
 
-[[nodiscard]] std::vector<section> parse_sections(const std::span<const std::byte> raw) {
-  aesthetics::serial::reader reader{raw};
-  if (reader.u32() != aesthetics::serial::snapshot_magic) {
-    utils::error{}("checkpoint payload has invalid world magic");
-  }
-  static_cast<void>(reader.u32()); // component schema fingerprint
-  static_cast<void>(reader.u64()); // next fresh entity index
+void parse_world_sections(const std::span<const std::byte> raw,
+                          const std::size_t base, const std::size_t size,
+                          std::vector<section>& result) {
+  aesthetics::serial::reader reader{raw.subspan(base, size)};
+  if (reader.u32() != aesthetics::serial::snapshot_magic)
+    utils::error{}("checkpoint world section has invalid magic");
+  static_cast<void>(reader.u32());
+  static_cast<void>(reader.u64());
   const std::uint64_t removed_count = reader.u64();
-  if (removed_count > raw.size() / sizeof(aesthetics::entityid_t)) {
-    utils::error{}("checkpoint payload has invalid removed-entity count");
-  }
-  for (std::uint64_t i = 0; i < removed_count; ++i) {
-    static_cast<void>(reader.u32());
-  }
+  if (removed_count > size / sizeof(aesthetics::entityid_t))
+    utils::error{}("checkpoint world section has invalid removed-entity count");
+  for (std::uint64_t i = 0; i < removed_count; ++i) static_cast<void>(reader.u32());
   const std::uint32_t block_count = reader.u32();
   if (!reader.ok) utils::error{}("checkpoint world header is truncated");
-
-  std::vector<section> result;
-  result.reserve(static_cast<std::size_t>(block_count) + 2);
-  result.push_back(section{world_header_section, "world.header", 0, reader.pos});
-
+  result.push_back(section{world_header_section, "world.header", base, reader.pos});
   for (std::uint32_t i = 0; i < block_count; ++i) {
     const std::size_t start = reader.pos;
     const std::uint32_t hash = reader.u32();
     const std::uint32_t payload_size = reader.u32();
     reader.skip(payload_size);
     if (!reader.ok) utils::error{}("checkpoint component block is truncated");
-    result.push_back(section{hash, component_name(hash), start, reader.pos - start});
+    result.push_back(section{hash, component_name(hash), base + start, reader.pos - start});
   }
+  if (reader.pos != size) utils::error{}("checkpoint world section has trailing bytes");
+}
 
-  if (reader.pos >= raw.size()) {
-    utils::error{}("checkpoint has no project globals section");
+[[nodiscard]] std::vector<section> parse_sections(const std::span<const std::byte> raw) {
+  utils::serial::reader reader{raw};
+  if (reader.u32() != UINT32_C(0x4e535430)) utils::error{}("checkpoint document has invalid magic");
+  static_cast<void>(reader.u32());
+  static_cast<void>(reader.u32());
+  const std::uint32_t count = reader.u32();
+  if (!reader.ok) utils::error{}("checkpoint document header is truncated");
+
+  std::vector<section> result;
+  result.reserve(aesthetics::serial::component_registry::table().size() + 5);
+  result.push_back(section{document_header_section, "checkpoint.header", 0, reader.pos});
+  for (std::uint32_t i = 0; i < count; ++i) {
+    const std::size_t frame_start = reader.pos;
+    const std::uint32_t id = reader.u32();
+    static_cast<void>(reader.u32());
+    const std::uint64_t payload_size = reader.u64();
+    if (!reader.ok || payload_size > raw.size() - reader.pos)
+      utils::error{}("checkpoint section is truncated");
+    const std::size_t payload_start = reader.pos;
+    reader.skip(std::size_t(payload_size));
+    if (id == tf::checkpoint_world_section) {
+      result.push_back(section{world_frame_section, "world.section-header", frame_start,
+                               payload_start - frame_start});
+      parse_world_sections(raw, payload_start, std::size_t(payload_size), result);
+    } else {
+      const auto stable_id = id == tf::checkpoint_timeline_section
+                               ? timeline_document_section
+                               : actor_document_section;
+      const char* name = id == tf::checkpoint_timeline_section
+                           ? "timeline"
+                           : "actor.causal";
+      result.push_back(section{stable_id, name, frame_start, reader.pos - frame_start});
+    }
   }
-  result.push_back(section{project_globals_section, "project.sim_globals", reader.pos, raw.size() - reader.pos});
+  if (reader.pos != raw.size()) utils::error{}("checkpoint document has trailing bytes");
   return result;
 }
 
-[[nodiscard]] checkpoint capture(const tf::actor_world_slice& slice) {
+[[nodiscard]] checkpoint capture(const tf::actor_world_slice& slice,
+                                 const utils::timelines& clocks) {
   checkpoint result;
-  result.packet = slice.save(aesthetics::serial::network_policy);
-  if (!aesthetics::serial::unseal(result.packet, result.raw)) {
-    utils::error{}("could not unseal freshly written checkpoint");
-  }
+  tf::actor_checkpoint_buffers buffers;
+  if (!tf::write_actor_checkpoint(slice, clocks, buffers))
+    utils::error{}("could not write actor checkpoint");
+  result.raw = std::move(buffers.document);
+  result.packet = aesthetics::serial::seal(result.raw, aesthetics::serial::network_policy);
   result.sections = parse_sections(result.raw);
   return result;
 }
@@ -280,11 +313,11 @@ void validate_reconstruction(
   if (result.reconstructed != expected.raw) {
     utils::error{}("incremental reconstruction does not equal the canonical payload");
   }
-  const auto packet = aesthetics::serial::seal(result.reconstructed, aesthetics::serial::network_policy);
   tf::actor_world_slice loaded;
-  if (!loaded.load(packet, brains) || capture(loaded).raw != expected.raw) {
-    utils::error{}("reconstructed payload does not load through the unchanged live loader");
-  }
+  utils::timelines clocks;
+  const auto status = tf::load_actor_checkpoint(loaded, clocks, result.reconstructed, brains);
+  if (!status.loaded() || capture(loaded, clocks).raw != expected.raw)
+    utils::error{}("reconstructed payload does not load through the checkpoint schema");
 }
 
 void print_reuse(const std::string_view name, const reuse_result& result) {
@@ -312,7 +345,8 @@ void print_section_inventory(const checkpoint& value) {
   for (const section& item : value.sections) {
     std::cout << "    " << std::left << std::setw(46) << item.name
               << std::right << std::setw(10) << item.size << " bytes";
-    if (item.id <= UINT32_MAX) {
+    if (item.id <= UINT32_MAX && item.id != tf::checkpoint_timeline_section &&
+        item.id != tf::checkpoint_world_section && item.id != tf::checkpoint_actor_section) {
       std::cout << ", " << read_component_count(bytes_of(value, item)) << " components";
     }
     std::cout << '\n';
@@ -376,10 +410,12 @@ struct fixture_result {
 
   fixture_result result;
   result.entity_count = entity_count;
-  result.base = capture(source);
+  result.base = capture(source, source_clocks);
 
   tf::actor_world_slice local;
-  if (!local.load(result.base.packet, brains)) utils::error{}("could not clone local-change fixture");
+  utils::timelines local_clocks;
+  if (!tf::load_actor_checkpoint(local, local_clocks, result.base.raw, brains).loaded())
+    utils::error{}("could not clone local-change fixture");
   bool changed_position = false;
   for (auto [id, position] : local.ecs().view<tf::actor_position>()) {
     static_cast<void>(id);
@@ -388,34 +424,36 @@ struct fixture_result {
     break;
   }
   if (!changed_position) utils::error{}("local-change fixture has no position");
-  result.local_change = capture(local);
+  result.local_change = capture(local, local_clocks);
 
   tf::actor_world_slice ticked;
-  if (!ticked.load(result.base.packet, brains)) utils::error{}("could not clone tick fixture");
   utils::timelines ticked_clocks(utils::simulation_rate(1));
-  if (!ticked_clocks.restore_causal_state(source_clocks.causal_state())) {
-    utils::error{}("could not restore tick fixture clock");
-  }
+  if (!tf::load_actor_checkpoint(ticked, ticked_clocks, result.base.raw, brains).loaded())
+    utils::error{}("could not clone tick fixture");
   auto update_ticked = [&]() {
     const auto tick = ticked_clocks.simulation_now() + utils::simulation_duration{1};
     ticked.update(tick, ticked_clocks.advance_simulation(tick), batch, pool);
   };
   update_ticked();
-  result.one_tick = capture(ticked);
+  result.one_tick = capture(ticked, ticked_clocks);
   for (std::size_t i = 1; i < 5; ++i)
     update_ticked();
-  result.five_ticks = capture(ticked);
+  result.five_ticks = capture(ticked, ticked_clocks);
   for (std::size_t i = 5; i < 20; ++i)
     update_ticked();
-  result.twenty_ticks = capture(ticked);
+  result.twenty_ticks = capture(ticked, ticked_clocks);
 
   tf::actor_world_slice structural;
-  if (!structural.load(result.base.packet, brains)) utils::error{}("could not clone structural fixture");
+  utils::timelines structural_clocks;
+  if (!tf::load_actor_checkpoint(structural, structural_clocks, result.base.raw, brains).loaded())
+    utils::error{}("could not clone structural fixture");
   static_cast<void>(structural.spawn_prefab("food", glm::vec2{3.0f, 5.0f}));
-  result.structural_change = capture(structural);
+  result.structural_change = capture(structural, structural_clocks);
 
   tf::actor_world_slice removed;
-  if (!removed.load(result.base.packet, brains)) utils::error{}("could not clone removal fixture");
+  utils::timelines removed_clocks;
+  if (!tf::load_actor_checkpoint(removed, removed_clocks, result.base.raw, brains).loaded())
+    utils::error{}("could not clone removal fixture");
   aesthetics::entityid_t removed_id = aesthetics::invalid_entityid;
   for (auto [id, food] : removed.ecs().view<tf::food_item>()) {
     static_cast<void>(food);
@@ -424,7 +462,7 @@ struct fixture_result {
   }
   if (removed_id == aesthetics::invalid_entityid) utils::error{}("removal fixture has no food entity");
   removed.ecs().remove_entity(removed_id);
-  result.structural_remove = capture(removed);
+  result.structural_remove = capture(removed, removed_clocks);
   return result;
 }
 
@@ -433,7 +471,8 @@ void validate_dirty_prototypes(const fixture_result& fixture, const tf::brain_co
   const std::uint64_t visual = component_section_id<tf::actor_visual>();
   const std::uint64_t food = component_section_id<tf::food_item>();
   const std::vector<std::uint64_t> local_dirty{position};
-  const std::vector<std::uint64_t> structural_dirty{world_header_section, position, visual, food};
+  const std::vector<std::uint64_t> structural_dirty{
+    world_frame_section, world_header_section, position, visual, food};
 
   const auto local = reuse_declared_dirty(fixture.base, fixture.local_change, local_dirty);
   const auto structural = reuse_declared_dirty(fixture.base, fixture.structural_change, structural_dirty);
@@ -463,7 +502,9 @@ void measure_full_checkpoint(
   const std::size_t iterations,
   const tf::brain_config& brains) {
   tf::actor_world_slice live;
-  if (!live.load(fixture.base.packet, brains)) utils::error{}("could not initialize timing fixture");
+  utils::timelines live_clocks;
+  if (!tf::load_actor_checkpoint(live, live_clocks, fixture.base.raw, brains).loaded())
+    utils::error{}("could not initialize timing fixture");
 
   std::vector<std::uint8_t> raw_u8;
   raw_u8.reserve(fixture.base.raw.size());
@@ -474,8 +515,13 @@ void measure_full_checkpoint(
   const double ecs_dump_us = average_microseconds(iterations, [&] {
     return aesthetics::serial::dump_world(&live.ecs()).size();
   });
+  tf::actor_checkpoint_buffers write_buffers;
+  if (!tf::write_actor_checkpoint(live, live_clocks, write_buffers))
+    utils::error{}("could not prepare timed checkpoint buffers");
   const double full_save_us = average_microseconds(iterations, [&] {
-    return live.save(aesthetics::serial::network_policy).size();
+    if (!tf::write_actor_checkpoint(live, live_clocks, write_buffers))
+      utils::error{}("timed checkpoint write failed");
+    return write_buffers.document.size();
   });
 
   const double murmur64_us = average_microseconds(iterations, [&] {
@@ -516,7 +562,9 @@ void measure_full_checkpoint(
   const std::size_t load_iterations = std::max<std::size_t>(1, iterations / 4);
   const double load_us = average_microseconds(load_iterations, [&] {
     tf::actor_world_slice loaded;
-    if (!loaded.load(fixture.base.packet, brains)) utils::error{}("timed full load failed");
+    utils::timelines clocks;
+    if (!tf::load_actor_checkpoint(loaded, clocks, fixture.base.raw, brains).loaded())
+      utils::error{}("timed full load failed");
     return loaded.ecs().index_capacity();
   });
 
@@ -538,19 +586,25 @@ void measure_full_checkpoint(
   const checkpoint& baseline,
   const tf::brain_config& brains) {
   tf::actor_world_slice destination;
-  if (!destination.load(baseline.packet, brains)) utils::error{}("could not initialize corruption fixture");
+  utils::timelines destination_clocks;
+  if (!tf::load_actor_checkpoint(destination, destination_clocks, baseline.raw, brains).loaded())
+    utils::error{}("could not initialize corruption fixture");
   tf::actor_batch batch;
   batch.bind("v2ui1c4v1");
   thread::atomic_pool pool(1);
-  const auto first_tick = destination.simulation_now() + utils::simulation_duration{1};
-  static_cast<void>(destination.update(first_tick, utils::game_duration{16667}, batch, pool));
-  const auto before = capture(destination).raw;
+  const auto first_tick = destination_clocks.simulation_now() + utils::simulation_duration{1};
+  static_cast<void>(destination.update(
+    first_tick, destination_clocks.advance_simulation(first_tick), batch, pool));
+  const auto before = capture(destination, destination_clocks).raw;
 
   std::size_t checked = 0;
   auto corrupt = baseline.packet;
-  corrupt.back() ^= UINT8_C(0xff);
-  if (destination.load(corrupt, brains)) utils::error{}("corrupt checkpoint was accepted");
-  if (capture(destination).raw != before) utils::error{}("outer-container failure changed live slice");
+  corrupt.back() ^= std::byte{0xff};
+  std::vector<std::byte> corrupt_raw;
+  if (aesthetics::serial::unseal(corrupt, corrupt_raw))
+    utils::error{}("corrupt checkpoint envelope was accepted");
+  if (capture(destination, destination_clocks).raw != before)
+    utils::error{}("outer-container failure changed live state");
   ++checked;
 
   // A valid checksum around a truncated raw payload forces the loader through every successfully
@@ -565,20 +619,37 @@ void measure_full_checkpoint(
       invalid = baseline.raw;
       invalid.push_back(std::byte{0x5a});
     }
-    const auto packet = aesthetics::serial::seal(invalid, aesthetics::serial::network_policy);
-    if (destination.load(packet, brains)) {
+    if (tf::load_actor_checkpoint(destination, destination_clocks, invalid, brains).loaded()) {
       utils::error{}("checkpoint failure injection after section '{}' was accepted", item.name);
     }
-    if (capture(destination).raw != before) {
-      utils::error{}("checkpoint failure after section '{}' changed live slice", item.name);
+    if (capture(destination, destination_clocks).raw != before) {
+      utils::error{}("checkpoint failure after section '{}' changed live state", item.name);
     }
+    ++checked;
+  }
+
+  // Correct framing with invalid values exercises validation AFTER a complete world was staged.
+  // Corrupt rate in timeline, then the actor budget in the final section.
+  for (const auto id : {timeline_document_section, actor_document_section}) {
+    const auto* item = find_section(baseline, id);
+    if (item == nullptr) utils::error{}("missing causal section in corruption fixture");
+    auto invalid = baseline.raw;
+    const std::size_t offset = id == timeline_document_section ? item->offset + 16 + 32
+                                                     : item->offset + item->size - 8;
+    const std::size_t width = id == timeline_document_section ? 4 : 8;
+    std::fill_n(invalid.begin() + std::ptrdiff_t(offset), width, std::byte{0});
+    if (tf::load_actor_checkpoint(destination, destination_clocks, invalid, brains).loaded())
+      utils::error{}("invalid causal section was accepted");
+    if (capture(destination, destination_clocks).raw != before)
+      utils::error{}("causal validation failure changed live state");
     ++checked;
   }
 
   // The preserved instance is not merely byte-identical: its lazily constructed systems and their
   // queries remain usable after the whole refusal sequence.
-  const auto next_tick = destination.simulation_now() + utils::simulation_duration{1};
-  static_cast<void>(destination.update(next_tick, utils::game_duration{16667}, batch, pool));
+  const auto next_tick = destination_clocks.simulation_now() + utils::simulation_duration{1};
+  static_cast<void>(destination.update(
+    next_tick, destination_clocks.advance_simulation(next_tick), batch, pool));
 
   return checked;
 }

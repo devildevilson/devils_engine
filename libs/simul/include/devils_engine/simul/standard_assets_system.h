@@ -147,6 +147,12 @@ private:
       std::vector<painter::glsl_source_file*> shaders;
       cmd.registry->template find<painter::glsl_source_file>(cmd.prefix, shaders);
 
+      // ОДИН КОМПИЛЯТОР НА ВСЮ ПАЧКУ, и создаётся он здесь, а не внутри ресурса: подъём состояния
+      // glslang стоит около 90 мс, и на файл эту цену платить нельзя. Живёт ровно столько, сколько
+      // идёт подготовка префикса, — потом освобождается вместе с ним.
+      painter::shader_compiler compiler;
+      compiler.set_cache_directory(cmd.shader_cache_directory);
+
       for (auto* shader : shaders) {
         if (shader == nullptr) {
           continue;
@@ -158,7 +164,7 @@ private:
         }
 
         std::string err;
-        if (shader->prepare_spirv(cmd.registry, kind, &err)) {
+        if (shader->prepare_spirv(compiler, cmd.registry, kind, &err)) {
           out.compiled += 1;
         } else {
           out.failed += 1;

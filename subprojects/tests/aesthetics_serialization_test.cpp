@@ -53,7 +53,7 @@ struct vec3f {
 
 } // namespace
 
-namespace devils_engine::aesthetics::serial {
+namespace devils_engine::utils::serial {
 template <>
 struct adapter<vec3f> {
   static constexpr std::string_view name = "test.vec3f"; // кросс-компиляторный тег
@@ -68,7 +68,7 @@ struct adapter<vec3f> {
     v.z = r.f32();
   }
 };
-} // namespace devils_engine::aesthetics::serial
+} // namespace devils_engine::utils::serial
 
 namespace {
 
@@ -375,8 +375,22 @@ TEST_CASE("sink pack/unpack round-trips with compression + checksum [aesthetics:
 
   SUBCASE("corrupted payload fails checksum") {
     auto bytes = aesthetics::serial::pack(&w, aesthetics::serial::network_policy);
-    bytes.back() ^= 0xFFu; // портим последний байт payload
+    bytes.back() ^= std::byte{0xff}; // портим последний байт payload
     aesthetics::world w2;
     CHECK_FALSE(aesthetics::serial::unpack(bytes, &w2));
+  }
+
+  SUBCASE("valid envelope with trailing world bytes leaves world and preview unchanged") {
+    auto raw = aesthetics::serial::dump_world(&w);
+    raw.push_back(std::byte{1});
+    const std::vector<uint8_t> shot{1, 2, 3};
+    const auto bytes = aesthetics::serial::seal(raw, aesthetics::serial::disk_policy, shot);
+    aesthetics::world destination;
+    destination.create<pos>(destination.gen_entityid(), pos{77, 88});
+    const auto before = aesthetics::serial::dump_world(&destination);
+    std::vector<uint8_t> preview{9};
+    CHECK_FALSE(aesthetics::serial::unpack(bytes, &destination, &preview));
+    CHECK(aesthetics::serial::dump_world(&destination) == before);
+    CHECK(preview == std::vector<uint8_t>{9});
   }
 }

@@ -329,7 +329,7 @@ static void resolve_specialization_names(
   for (const auto& [name, value] : definitions) {
     sc.add_definition(name, value);
   }
-  const auto named_spirv = sc.compile(source_name, source_text);
+  const auto named_spirv = sc.compile(ctx->shaders(), source_name, source_text);
   if (named_spirv.empty()) {
     utils::warn(
       "Could not resolve specialization constant names of shader '{}': {}",
@@ -386,7 +386,7 @@ static vk::UniqueShaderModule load_shader_module(
 
     if (res->prepared_spirv(shader_kind, definitions) == nullptr) {
       std::string err;
-      if (!res->prepare_spirv(ctx->config_reg_, shader_kind, definitions, &err)) {
+      if (!res->prepare_spirv(ctx->shaders(), ctx->config_reg_, shader_kind, definitions, &err)) {
         utils::error{}("Shader '{}' compilation failed\nError: {}", id, err);
       }
       utils::warn("Shader '{}' was compiled on render thread; expected assets-side prepared SPIR-V", id);
@@ -421,7 +421,7 @@ static vk::UniqueShaderModule load_shader_module(
   for (const auto& [name, value] : definitions) {
     sc.add_definition(name, value);
   }
-  const auto spv = sc.compile(full_path, content);
+  const auto spv = sc.compile(ctx->shaders(), full_path, content);
   if (spv.empty()) {
     utils::error{}("Shader '{}' compilation failed\nError: {}", full_path, sc.err_msg());
   }

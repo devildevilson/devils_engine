@@ -14,7 +14,7 @@
 
 // --- адаптеры glm (ЛИСТ: canon = name, сериализация = write/read; reflect их не трогает) ---
 namespace devils_engine {
-namespace aesthetics {
+namespace utils {
 namespace serial {
 
 template <>
@@ -61,7 +61,7 @@ struct adapter<glm::vec4> {
 };
 
 } // namespace serial
-} // namespace aesthetics
+} // namespace utils
 } // namespace devils_engine
 
 // --- регистрация компонентов (позиционно, без имён на проводе; схему стережёт fingerprint) ---

@@ -221,8 +221,8 @@ thread-safe контейнером.
 
 ## Сериализация
 
-`libs/aesthetics` содержит собственный бинарный serializer в
-`aesthetics::serial`.
+`aesthetics::serial` содержит ECS-проекцию поверх общего codec из
+`utils/serialization.h`. Byte order, containers, reflection и adapters принадлежат `utils::serial`.
 
 Нижний слой:
 
@@ -250,7 +250,7 @@ SERIALIZABLE_COMPONENT(position)
 - вложенные aggregate-типы.
 
 Для внешних не-aggregate типов, например glm-подобных векторов, предусмотрена
-точка расширения `serial::adapter<T>`. Adapter задает стабильное имя типа для
+точка расширения `utils::serial::adapter<T>`. Adapter задает стабильное имя типа для
 fingerprint и функции `write/read`.
 
 Hash-map контейнеры сериализуются в отсортированном по ключу порядке, чтобы
@@ -295,9 +295,10 @@ recoverable отказ до commit оставляет destination без изм�
 
 ## Sink Layer
 
-`sink.h/.cpp` - верхний слой упаковки уже готового payload.
+Общая упаковка находится в `utils/serialization_sink.h/.cpp`; `aesthetics/sink.h`
+содержит aliases и удобные wrappers для world. Буферы имеют тип `vector<byte>`.
 
-Он не знает, что внутри payload: это может быть `dump_world`, network delta или
+Общий слой не знает, что внутри payload: это может быть `dump_world`, network delta или
 любой другой бинарный блок. Формат контейнера:
 
 ```text

@@ -85,7 +85,7 @@ struct row {
 };
 
 row measure(const aesthetics::world& w, const char* mode, aesthetics::serial::sink_policy pol, const int reps) {
-  std::vector<uint8_t> packed;
+  std::vector<std::byte> packed;
   const double p = ms([&] {
     packed = aesthetics::serial::pack(&w, pol);
   },

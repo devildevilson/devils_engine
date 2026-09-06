@@ -332,6 +332,6 @@ TEST_CASE("network state schema hash sink covers exactly checkpoint bytes") {
   const fake_host source{{17, 90}, 999, 4};
   const auto bytes = schema::write(source);
   hash_sink sink;
-  schema::emit_canonical(source, sink);
+  REQUIRE(schema::emit_canonical(source, sink));
   CHECK(sink.value() == devils_engine::utils::murmur_hash3_32(bytes));
 }

@@ -68,6 +68,14 @@ using reversed_schema = network::state_schema<host, network::state_writer, netwo
                                               clock_section, actor_section>;
 using sha_report = network::state_digest_report<devils_engine::utils::digest>;
 
+struct refusing_clock_section : clock_section {
+  static void write(const host&, network::state_writer& writer) {
+    writer.fail();
+  }
+};
+using refusing_schema = network::state_schema<host, network::state_writer, network::state_reader,
+                                               actor_section, refusing_clock_section>;
+
 static_assert(network::state_digest_hasher<network::sha256_state_hasher>);
 static_assert(network::state_digest_hasher<network::buffered_murmur64_state_hasher>);
 
@@ -76,6 +84,14 @@ static_assert(network::state_digest_hasher<network::buffered_murmur64_state_hash
 }
 
 } // namespace
+
+TEST_CASE("state digest never publishes a root for a partially serialized host") {
+  const host source{{17, 90}, 999};
+  CHECK_THROWS_WITH(
+    static_cast<void>(network::make_state_digest<refusing_schema, network::sha256_state_hasher>(source)),
+    doctest::Contains("canonical serialization failed"));
+  CHECK(refusing_schema::write(source).empty());
+}
 
 TEST_CASE("state digest full root covers exact canonical bytes and ignores derived state") {
   const host source{{17, 90}, 999};

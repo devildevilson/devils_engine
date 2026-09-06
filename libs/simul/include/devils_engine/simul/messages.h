@@ -118,6 +118,9 @@ struct command_gpu_done {
 struct command_prepare_shaders {
   const demiurg::resource_system* registry = nullptr;
   std::string prefix;
+  // Каталог дискового кэша SPIR-V. Едет КОМАНДОЙ, а не берётся системой ресурсов из своего
+  // состояния: работу описывает тот, кто её заказал, и путь к кэшу — часть описания работы.
+  std::string shader_cache_directory;
 };
 
 struct command_shaders_prepared {

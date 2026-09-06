@@ -4,7 +4,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
+
+#include "shader_compiler.h"
 
 namespace devils_engine {
 namespace demiurg {
@@ -30,7 +33,12 @@ public:
   void set_include_root(std::string root);
   void set_shader_type(const uint32_t type);
   void set_shader_entry_point(std::string entry_point);
-  std::vector<uint32_t> compile(const std::string& source_name, const std::string& source);
+  // Компилятор ПЕРЕДАЁТСЯ СНАРУЖИ и переиспользуется: подъём состояния glslang стоит около 90 мс, и
+  // один объект на пачку шейдеров — единственное, что эту цену убирает. Он же держит дисковый кэш,
+  // поэтому попадание в кэш не поднимает glslang вовсе. Крафтер при этом остаётся одноразовой
+  // настройкой одной компиляции (дефайны, стадия, точка входа) — эти две жизни разной длины, и
+  // держать их в одном объекте значило бы платить за длинную цену короткой.
+  std::vector<uint32_t> compile(shader_compiler& compiler, const std::string& source_name, const std::string& source);
   // было бы неплохо схранить статус ошибки где нибудь
   uint32_t err_type() const;
   const std::string& err_msg() const;

@@ -4,6 +4,385 @@ This repository is the author's experimental game engine / framework. It is a la
 
 ## Current Focus
 
+- GENERAL SERIALIZATION AND COMPOSITE ACTOR CHECKPOINTS (2026-09-06).
+  Canonical byte codec/adapters now live in `utils/serialization.h`; section composition moved from
+  `network/state_schema.h` to `utils/state_schema.h` (network names remain aliases). Generic
+  checksum/zstd/preview packaging is `utils/serialization_sink.h`; aesthetics owns only the ECS
+  projection and world wrappers. Serializer payload/envelope buffers use `std::byte`. Zpp and its build dependency
+  are removed; Glaze stays because demiurg still uses JSON.
+  `tile_frontier/core/actor_checkpoint.h` replaces actor_world_slice::save/load, without wrappers:
+  timeline + world + actor-private causal counters. Tick/game time occur ONLY in the timeline
+  section. Write at a committed boundary, with matching clocks and no pending intent; buffers are
+  caller-owned and retain capacity. Growing `write` and byte-capacity-bounded `try_write` are
+  distinct; map sorting, adapters and staging may still allocate.
+  Restore builds a detached ECS world and stable-address `actor_brain_runtime` BEFORE publishing.
+  The runtime owns interdependent act/GOAP/FSM/prefab registries; prefab callbacks capture that
+  stable runtime, never the temporary staging actor. Publication moves ownership, resets lazy
+  address-bound systems and emits the world event last. Subscribers must not throw. Failed decode
+  or validation leaves live world and timelines unchanged. The new actor document deliberately
+  breaks old actor save compatibility, while the inner ECS/envelope byte grammar is retained.
+  Resume smoke checks nonzero timeline remainder (tick 61, scale 7:3), repeated restore, new prefab
+  spawn and 120 subsequent ticks with intents against the WHOLE canonical document. Checkpoint
+  audit now includes timeline/actor sections and tests refusal after staging every prefix as well
+  as invalid rate/budget. Generic codec tests link utils only.
+  Final parallel tests exposed an existing small-world tail race: kd_tree::build_parallel returns
+  without a pool barrier on its synchronous path, while actor_batch was already submitted. The
+  actor tick finalizer now explicitly drains/waits on BOTH paths before returning/checkpointing.
+  Canonical traversal/write overloads now propagate section-writer failure; vector convenience
+  returns empty on refusal, and one-shot make_state_digest refuses to return a prefix root.
+  Writer failure is sticky even for backpatch. Utils-only tests check growth, capacity reuse,
+  shrinking payloads without stale tails, alias refusal and failure propagation.
+  Verification: 60/60 focused Debug tests (utils serialization, ECS serialization, network
+  schema/digest/replay/session/hot-path/backend and five tile_frontier smokes); tile_frontier builds.
+
+- SESSION-01, THE FIRST LAYER ABOVE THE CLOSED NET-08 TRANSPORT (2026-09-06). Focused networking set `81/81`
+  in Debug and Release; new `network_session_test` `6/6`, `76/76`. `libs/network/session.h` fixes three
+  borders. EXACT INSTALLATION COMPATIBILITY is one SHA-256 over a canonical manifest containing the
+  product/version and COMPLETE resolved core, project and mod file bytes; filesystem order is erased, explicit
+  mod load order is not. The hash is prepared before connect and is compatibility evidence, NEVER identity.
+  Handshake compares protocol, content, state/intent schemas and numeric profile BEFORE calling an injected
+  authenticator, whose principal is logical and outlives a `gns_peer`. Membership names session, local peer,
+  authority peer, principal and authority epoch; stale/future epochs and wrong session/authority are refusals.
+  RECONNECT IS A TRANSACTION: checkpoint `K` means committed state AFTER K, every sealed bundle `K+1..N`
+  including empty ticks is required, roots at K/N are checked in detached staging, replay suppresses
+  presentation, and only then one noexcept publish may touch the live world. The test checkpoint carries tick,
+  PRNG cursor, entity counter and timeline remainder; deliberately omitting the PRNG cursor is caught at root K
+  and publishes nothing. The real tile_frontier resume/time proofs were rerun in both builds: actor state stays
+  byte-identical for 120 resumed ticks and wall-time partition does not change its checkpoint. ONE GAP IS NOW
+  NAMED: `actor_world_slice::save()` and `utils::timelines_causal_state` are two checkpoint owners today; a
+  network checkpoint envelope must compose both or it omits the clock remainder. This answers the join question:
+  checkpoint+intents is sufficient IFF the checkpoint contains every cause of the next tick. Wire
+  challenge/response, credential storage, automatic GNS reconnect and a real new-connection recovery exchange
+  remain the next SESSION-01/NET-LAB-01 integration slice.
+
+- ADJACENCY ON THE DEVICE: TWO REFUSALS, BOTH MEASURED, AND FOR DIFFERENT REASONS (2026-09-06).
+  `531/531` project tests. The task was "write the bodies for `label_adjacency`/`sphere_adjacency`".
+  THE MEASUREMENT ANSWERED BEFORE THE MECHANISM STARTED, and the two tools got different answers.
+  WHAT THEY COST (GN02 profile, 262144 cells, `28.6` s total): `sphere_adjacency` `411.3` ms, `1.4%`,
+  ONE call in step `topology`, with nothing to join in a run (it sits among `sequential` floods).
+  `label_adjacency` DOES NOT APPEAR AT ALL — the whole `scatter` aperture together is `813.7` ms
+  (`2.8%`) and half of that is the sphere. For scale, the `climate` step's `queue` is `2674.2` ms
+  (`9.3%`) in 96 calls that are all `no_body`.
+  `sphere_adjacency` IS A REFUSAL ON DISTANCE PRECISION. The neighbour order is canonical — distance,
+  ties by cell index — so any other search structure gives THE SAME GRAPH as long as the SET of
+  nearest matches. The host computes distances in `double`, a shader would use `float32`, and the only
+  question is how far the boundary between the 6th and 7th neighbour sits from the last bit. Measured
+  on the lattice itself (positions are identical on both paths — the field is `v3`, already float32,
+  so only the distance arithmetic can differ): at `16384` cells, zero cells under one ULP and the
+  narrowest gap is `116` ULP; at `65536`, one cell under one ULP and the narrowest gap is `0.81`.
+  THE SETS MATCHED AT BOTH SIZES, BUT THE MARGIN VANISHED under a fourfold increase. At a million
+  cells there will be several such cells and whether they agree is LUCK, not a property — i.e. "the
+  graph may differ on a handful of cells and you don't know which", a different world under the same
+  seed. `double` on the device needs `Float64`, which Vulkan does not guarantee. Same shape of refusal
+  as `sphere_points`, different cause: there the spiral diverged, here it is the decision about who
+  the sixth neighbour is.
+  `label_adjacency` IS NOT A PROHIBITION BUT A COST OF ENTRY. Determinism is not involved — the work
+  is integer and does not run into float32. The FORM does: a canonical CSR is count-with-duplicates,
+  prefix sum, fill, dedup, and a second prefix sum with compaction — FIVE PASSES, TWO SCANS AND THREE
+  SCRATCH BUFFERS that the call declaration does not have. A tool today has ONE body and ONE pass, and
+  there is no device scan in the library at all. So this is not "write a body", it is "introduce the
+  form of a TOOL MADE OF SEVERAL PASSES", and that should be built for whoever pays for it — this tool
+  does not: it is invisible in the profile.
+  BOTH REFUSALS ARE NOW WRITTEN NEXT TO THE TOOLS with their numbers, and the float32 measurement is a
+  test, so the claim stays checkable rather than becoming folklore. WHAT THE MEASUREMENT SAYS IS NEXT:
+  the `climate` step's `queue` at `9.3%` — six and a half times the adjacency, and not a new mechanism
+  but a refusal reason to read.
+
+- A DISK SPIR-V CACHE, A NAMED OWNER FOR THE COMPILER, AND WHAT UNEVEN CSR ACTUALLY COSTS
+  (2026-09-06). `530/530` project tests. Three items off the GPGPU list, and two of them came back
+  with a different answer than the list expected.
+  THE DISK SPIR-V CACHE WAS UNDERVALUED BY ITS OWN ESTIMATE. §5 п.5 shelved it because, after the
+  `shaderc` fix, compiling one shader costs `1`–`2.3` ms and there was little to save. That counted
+  the wrong quantity: THE REAL SAVING IS THE 90 ms OF GLSLANG STARTUP THAT A WARM RUN NEVER PAYS.
+  `shaderc::Compiler`'s constructor raises that state regardless of what is compiled, so if every
+  program comes from the cache the compiler is never constructed at all — hence the design: the state
+  is raised LAZILY, on the first real compilation, not in the constructor. Measured on GN04 (time to
+  first result — context, six programs, first run): `143` ms without the cache, `144` cold, `37` warm.
+  `3.9x`, and the world is unchanged (`22/22` on `--verify` either way).
+  THE KEY DELIBERATELY EXCLUDES THE INCLUDED FILES, and that is the interesting part. Which files
+  `#include` pulls in is known only AFTER preprocessing, i.e. after glslang is up — the very thing a
+  warm run must not pay. So the entry stores the LIST of files it substituted with a content hash
+  each, and a read re-reads and compares them: files are read, glslang is not started. Editing an
+  included file MUST be a miss, or the engine runs a shader other than the one written and you cannot
+  see it in the picture. Three smaller rules, all so the cache cannot become a failure: the key also
+  lives INSIDE the entry (a hash collision must be rejected, not executed), the format version is in
+  the header (a changed format is a miss, not garbage), and AN UNUSABLE DIRECTORY BEHAVES AS NO CACHE
+  with one complaint per compiler — a cache is a speed-up, not a reason a shader fails to build.
+  THE COMPILER GOT A NAMED OWNER INSTEAD OF A `thread_local`. It lived as a function-local
+  `static thread_local` — that fixed the measured cost, but with hidden CACHING STATE whose owner and
+  moment of death are unnamed. Now `painter::shader_compiler` is passed in from outside, owned by
+  `graphics_base` (the render thread, next to the pipeline cache and for the same reason),
+  `compute_context`, and the assets system — ONE compiler for a whole prefix batch, exactly where the
+  win is. `shader_crafter` stays the one-shot setup of ONE compilation; these are two lifetimes of
+  different length. THE OTHER THREE `thread_local`s WERE CHECKED AND KEPT, because they are a
+  different kind: `gns_dispatcher::active_` is a trampoline for a third-party C callback with no user
+  pointer, set and cleared around one `pump()`; `catalogue::current_record_context` is an RAII AMBIENT
+  SCOPE, which is the whole point of it (otherwise it goes into every signature); the third is test
+  scaffolding. Exactly one was the wrong kind.
+  UNEVEN CSR COSTS `20`–`43%`, NOT MULTIPLES — the gap §5 п.5 named and never measured. Three layouts
+  with the SAME arc total (262144 nodes, 1572864 arcs, 37449 of degree 24 against 3): even degree six
+  `0.270` ms per pass, spikes CLUSTERED `0.330` (`1.20x`), spikes SPREAD `0.387` (`1.43x`). A 64-wide
+  wave absorbs one spike; the catastrophe implied by `24:6` is not there. AND THE LAYOUT MATTERS MORE
+  THAN THE UNEVENNESS: spread spikes cost twice the excess of clustered ones (`0.117` vs `0.060` ms)
+  because they land in EVERY wave — and in the real planet graph they are clustered, i.e. the cheaper
+  case. The cost of one pass is taken as a SLOPE (a queue of 1 pass against 81, both fields resident
+  so transfer is identical): the full round trip here is almost entirely transfer — the arc buffer is
+  six megabytes — and the first version of this measurement drowned in it and reported "unevenness
+  costs nothing". CAUGHT BY A CHECK: that first version also printed "81 passes cost the same as one",
+  which was TRUE — the call's range was never declared and NOT ONE pass ran. The check that caught it
+  is "the field after the passes is not a constant". A measurement without one prints confident
+  numbers about nothing — the same lesson as the buffer-copy defect.
+  AND WHAT THE "FOUR MISSING BODIES" TURNED OUT TO BE. `value_noise`, `poisson_seeds`,
+  `label_adjacency`, `sphere_adjacency` were listed as honest `no_body`. Checking the apertures says
+  otherwise: `poisson_seeds` is `sequential` — REFUSED by construction, not missing; `sphere_adjacency`
+  and `label_adjacency` are `scatter` and both BUILD A CSR (count, prefix sum, fill), which is three
+  passes and wants a "tool made of several passes" form that does not exist. Only `value_noise` was
+  a real missing body, and it is now written — closing the separate 64-bit PRNG item along the way.
+  Its lattice hashes with splitmix64, and GLSL has no 64-bit integers, so they are assembled from a
+  pair of `uint` via `umulExtended`; a different hash would be a DIFFERENT FIELD that looks like the
+  same noise. It needed one declaration: the RAW call seed in the header (`raw_seed_lo`/`raw_seed_hi`)
+  — the folded 32-bit `seed` is irreversible and cannot be repurposed, because every existing body and
+  the whole `ds` translation read it and changing it would change their randomness, i.e. the world.
+  CHECKED WHERE THE HASH IS WHAT IS ACTUALLY CHECKED: at frequency exactly 1 the sample coordinate is
+  an integer, interpolation degenerates, and the field value EQUALS the lattice value — no float
+  operation left between splitmix64 and the result. `0 of 262144` differ there. With interpolation it
+  is `1.79e-07` (one ULP), four octaves `2.38e-07`. `26 of 46` tools now have a body.
+
+- THE PUSH-CONSTANT BUDGET IS THE LIBRARY'S DECLARATION, NOT A QUESTION TO THE DEVICE (2026-09-06).
+  Originator tests `142/142`, translator `12/12`. `maxPushConstantsSize` was never queried or checked
+  anywhere — the last cheap gap the GPGPU list still named. THE FIX IS NOT TO QUERY IT. The limit now
+  lives as a constant (`device_push_limit = 128`, Vulkan's GUARANTEED minimum) and the device's own
+  value is asked for NOWHERE, for the same reason the work-group limits next to it are held that way:
+  something clamped to the author's machine fits for the author and refuses for the player — and for a
+  generator a refusal is not "slower", it is A DIFFERENT WORLD UNDER THE SAME SEED, because a queue
+  that does not reach the device is computed on the CPU. What fits the guaranteed minimum fits
+  EVERYWHERE, so "will this queue run on a device" has ONE answer on all machines.
+  The layout is the header (`count, begin, extent_x, extent_y, seed`, 20 bytes) plus one `float` per
+  parameter, i.e. `27` parameters (`device_param_limit`, computed from the header rather than written
+  as a number). CHECKED IN ONE PLACE — `build_device_shader`, where the push constant is declared —
+  so native bodies and translations get the same limit; the translator additionally names its OWN
+  reason (that many `ctx:arg:`) and treats it as a REFUSAL, so the queue stays on the CPU and computes
+  the same thing. The test pins the BOUNDARY from both sides — a limit that never fires promises
+  nothing — plus the `128 == header + 27 * 4` identity.
+  THE HEADROOM IS MEASURED, NOT HOPED: the most parameterised tool in the library declares `5`
+  (`remap`, `blend`), five times under the ceiling. Which retires half of §7.1's argument: the uniform
+  buffer it proposed is NOT needed for parameter delivery. It stays wanted for the other thing — a
+  shared queue context (step seed, chunk key, the salts of every call site) — which does not fit 128
+  bytes and should not: a push constant carries what changes per call. And the sensor for when that
+  moment arrives now exists, because the refusal names the number. FIXED WHILE THERE: §7.1 still said
+  "31 arguments fit", from before the header grew.
+
+- FOUR TOOLS, AND WHAT "INTEGERS IN THE SHADER" TURNED OUT TO MEAN (2026-09-06). Originator tests
+  `182/182`. Three bodies written and one REFUSED WITH A NUMBER, plus the question the user asked
+  alongside them.
+  `graph_slope` and `graph_vote` are the `graph_blur` shape again — buffers and one CSR loop — with one
+  thing that had to travel and nearly did not: the vote's TIE-BREAK ON THE SMALLER LABEL. With equal
+  weights the answer must not depend on the order the arcs are visited, and that rule belongs to BOTH
+  paths, not to a hope that the device happens to agree. Slope agrees within `1e-6` (a float sum), vote
+  agrees BITWISE (it is a choice, not arithmetic).
+  `polyline_distance` needed two mechanisms that did not exist. THE HOST'S PREPARED INDEX IS NOT ON THE
+  DEVICE — only declared bindings go there — so the body REBUILDS the segment in place from the same two
+  buffers the preparation reads, and the bounding-box cull stays a CONDITION OF APPLICABILITY rather
+  than an optimisation. And a WORD-VALUED parameter (`metric = "chebyshev"`) does not fit a push
+  constant, which carries `float`; a numeric synonym would be two ways of saying one thing, so
+  `device_param` grew `resolve`, and the tool itself turns the name into a number, once, where its CPU
+  body already lives. Worst deviation `5.7e-06` (euclidean) and `3.8e-06` (chebyshev) at 262144
+  elements.
+  `sphere_points` IS REFUSED, AND THE REFUSAL IS MEASURED. The Fibonacci spiral's angle comes from the
+  fractional part of `i * φ`, of which `float32` keeps four bits: at a million points the angle is off
+  by `0.9955` OF A TURN, i.e. it is noise. Fixed point would fix it and CHANGE THE LATTICE ON BOTH PATHS
+  — a different world for everyone who computes it — and buy nothing, because `sphere_adjacency`
+  (`scatter`) comes next and there is no run to join. `25 of 46` tools now have a body.
+  THEN: "can integers from `ds` be written as integers in the shader?" — and the answer is neither yes
+  nor no. IN AN ORIGINATOR PROGRAM EVERY FIELD READ IN `ds` IS A `double`: the accessor is registered
+  that way whatever the field's kind. So integer arithmetic in the shader would DIVERGE from `ds`, not
+  converge — `a / b` would become integer division, and a sum would wrap at 2^32 where `double` is exact
+  to 2^53. The naive "yes" makes it worse. BUT `float32` HAS A 2^24 CEILING, and above it adjacent
+  integers merge: an identifier field wider than sixteen million COLLIDES on the device, and that is a
+  real disagreement with a `ds` that reads exactly. So the line is drawn by semantics: THE LEAF STAYS
+  INTEGER — an integer literal or a read of an integer-kind field, in COMPARISONS (no epsilon) and in an
+  IDENTITY STORE (no round trip through `float32`); everything arithmetic stays floating, as `ds` has
+  it. Comparing two leaves as integers cannot change an answer — in `ds` it compares two EXACT doubles,
+  and an epsilon on integers is equality — but it stops lying above 2^24. CHECKED WHERE IT SHOWS: 4096
+  pairs of adjacent integers starting at 2^24; `ds` says "not equal" for every pair and the device now
+  does too, where before the fix it would have said "equal" for ALL of them. Full typing was refused for
+  the standing reason: it would mean reproducing `ds`'s overload resolution (`5 / 2` is integer or
+  double division there depending on the expected type), i.e. a SECOND type system to silently drift
+  from the first.
+
+- REDUCTIONS, AND A SILENT DEFECT THE SUM CAUGHT (2026-09-06). Device-queue tests `15/15`. Item 2 of
+  the GPGPU list: §5 п.6 had measured that GN04's histogram cost MORE than the labelling it summarised
+  (`7.43` vs `4.65` ms) although it does incomparably less work — the cause being CONTENTION, a quarter
+  million pixels fighting over dozens of counters. The named form is now built: a group accumulates in
+  SHARED memory and one atomic per bucket per group reaches the global buffer.
+  IT NEEDED A DECLARATION THAT DID NOT EXIST — `device_whole_group`. A barrier not reached by every
+  invocation is undefined behaviour, and the generated `main` cut the extra ones off with an EARLY
+  RETURN; the last, partial group of a range would hang or count garbage, and only at some data sizes.
+  A body declaring this now gets an `in_range` flag and decides for itself. Not named `active` — that is
+  a GLSL reserved word, and glslc caught it, which is exactly what type checking was delegated for.
+  MEASURED (isolated one-call queue, 262144 elements, median of three): narrow histogram `6.57` ->
+  `5.16` ms (`~21%`, and that is the WHOLE round trip including a megabyte of transfer, so the dispatch
+  share is larger); wide histogram `5.77` -> `5.48` ms, i.e. unchanged as it must be — the fallback path
+  runs the same code, and the match inside noise confirms the measurement measures what changed. ON
+  GN04'S REAL QUEUE THE DIFFERENCE IS INVISIBLE (`5.31` vs `5.35`–`5.40` ms at `512²`): there the
+  histogram is a small part and the Voronoi labelling dominates.
+  AND THE SUM CAUGHT A SILENT DEFECT OLDER THAN THIS TASK. The histogram check verified not only "CPU
+  equals GPU" but also "every element was counted" — and the second one fired: the total came out
+  exactly twice the element count. A BUFFER COPY SHARED MEMORY WITH ITS ORIGINAL: `buffer` holds both a
+  byte vector and a RAW pointer to the aligned start INSIDE it, and the implicit copy duplicated the
+  vector and then copied the pointer, which still looked into the source. Both buffers stayed valid and
+  the copy wrote into the original. WORST OF ALL: a two-path comparison done through a buffer copy was
+  comparing memory WITH ITSELF and always agreed — that is where this session's "the noise matches
+  bitwise" came from. Three checks were verifying nothing; after the fix two of them failed at once, one
+  on a real disagreement. The fix is not just recomputing the pointer: a vector copy keeps bytes at
+  their old OFFSETS while the new allocation's aligned start lands elsewhere, so the data is copied
+  START TO START. THE LESSON: a two-path comparison needs a check that FAILS when the wrong things are
+  being compared — here it was the sum, a quantity independent of whose bytes get read.
+  CORRECTED, THEREFORE: our noise does NOT match bitwise across paths. Measured properly it is one last
+  bit typically, `3.1e-06`/`3.4e-06`/`4.25e-06` worst over four octaves, with `8`–`15%` of elements
+  exact. Both hypotheses were tested and neither explained it (the `mix` formula, and `-ffp-contract=off`
+  on the host), so the divergence lives in the driver — which is precisely what §4.2 declares.
+
+- MEMORY: DECLARED AGAINST OCCUPIED (2026-09-06). Originator tests `143/143`. Closes the audit's main
+  open finding (§10.5): the library promises a generator can name its memory cost BEFORE the run, and
+  the promise rested on the sum of declared buffers while the machine needed a third more.
+  FIRST THING FOUND: NOBODY MEASURED THE OCCUPIED SIDE. Every number in every report was a sum of
+  DECLARATIONS; the process peak was asked nowhere, so the promise had nothing to be compared against.
+  Hence `utils::peak_resident_bytes()` — Linux reads `VmHWM` from `/proc/self/status` as a FILE rather
+  than through `getrusage` (whose `ru_maxrss` means different units on different systems, exactly the
+  class of drift this project hunts), Windows uses `GetProcessMemoryInfo`, and everything else returns
+  ZERO meaning "not measured here", never "no memory used".
+  SECOND: A TOOL NOW DECLARES ITS TEMPORARY COST (`tool_description::footprint`), as a function OF THE
+  CALL, because table sizes depend on element count and parameters and only the tool knows them —
+  exactly like the aperture.
+  THIRD, AND THIS IS THE DECISION THAT MATTERED: "NOTHING" AND "UNKNOWN" ARE DIFFERENT ANSWERS. The
+  first report said "78% of the hours undeclared" while almost all of those calls allocate not one
+  byte — a tool's silence read as a gap. So a tool with nothing to declare declares it EXPLICITLY
+  (`no_temporary_memory`), and the report shows only the real gap and names it, like the missing-body
+  list.
+  NUMBERS ON THE SAME MILLION CELLS THE AUDIT FLAGGED: declared buffers `432` MB -> `452.8` MiB, the
+  largest temporary table `not declared by anyone` -> `168.0` MiB (`graph_flood`), process peak `562`
+  MiB measured externally -> `580.0` MiB measured by the generator itself, and the unexplained THIRD ->
+  ZERO: declared now covers the peak with a `40.9` MiB MARGIN. The margin says what it should — the
+  estimates are UPPER bounds (arc count for adjacency, queue length for the flood) — so the report
+  prints the relation BOTH WAYS: "not accounted for" when declared is below the peak, "declared with a
+  margin" when above. Staying silent in one direction would hide the very thing the number is for.
+  THE REMAINING GAP IS NAMED AND IS NOT IN THE ENGINE: all `21` undeclared calls are GN02's own tools
+  (`hotspot_tracks`, `insolation`, `plate_velocity`, `wind_field`, `plate_interaction`,
+  `axis_component`) plus the FastNoise2 wrapper — the playground author's territory, and the report now
+  names them instead of leaving one to guess.
+
+- NOISE OF OUR OWN, CALLED OUR OWN (2026-09-06). Originator tests `142/142`. §11 ended on "what is left
+  is noise"; FastNoise2 itself cannot move — its node tree arrives as an ENCODED STRING and is evaluated
+  by its own library, so porting it would mean porting a graph interpreter. So the core got its own:
+  `noise_value` (lattice value), `noise_perlin` (gradient), `noise_cellular` (Worley F1), all with
+  octaves, written TWICE (C++ and GLSL) and declared as ours — the field they compute equals FastNoise2
+  at no seed, and never will. `position_grid` got a body too, so the device builds the lattice itself
+  and positions never cross the boundary.
+  ONE HASH ON BOTH PATHS (`utils::shared::prng2`, already in the shader preamble) and BOTH PATHS COMPUTE
+  IN float32 — deliberately, because computing the noise in double on the host would produce different
+  numbers exactly where identical ones were available. (THIS ENTRY ORIGINALLY CLAIMED BITWISE AGREEMENT,
+  `worst deviation 0`; that was an ARTEFACT of the buffer-copy defect found the same day — see
+  "REDUCTIONS, AND A SILENT DEFECT THE SUM CAUGHT" above for the honest numbers.)
+  THE LATTICE IS ALWAYS THREE-DIMENSIONAL and a two-component position field means the `z = 0` SLICE:
+  one implementation instead of two that would drift. The cost is named — a flat field pays eight hashes
+  where four would do.
+  THE PRICE DOES NOT FLATTER, and that is the honest half: on the CPU our noise is NINE TIMES slower
+  than FastNoise2 at equal threads (`28.1` vs `3.2` ms on 1024², four octaves) — SIMD there, a scalar
+  pass through the general accessor here, plus the 3D lattice. ON THE DEVICE IT PAYS: lattice plus three
+  noise fields on 262144 elements is `30.6` ms INCLUDING transfer against `223.3` ms of one CPU thread.
+  So the rule for a config author is: take our noise where the queue is declared for a device; where
+  everything runs on the CPU, FastNoise2 stays faster. Named and NOT done: a separate 2D path (four
+  corners, two hash rounds) should give about `3x` on flat fields — but it is a DIFFERENT field, not the
+  same one faster, so it would have to be declared out loud.
+  TWO GENERAL MECHANISMS FELL OUT: `tool_description::device_prelude` (functions a body calls — noise
+  does not fit in an expression, and `main` cannot declare them) and per-binding component defines
+  (`ORIGINATOR_IN_0_COMPONENTS`), because a body working over both a plane and a volume must ASK rather
+  than assume the component accessor exists.
+
+- THE TWO BLOCKERS THE MEASUREMENT NAMED, AND WHAT THEY TURNED OUT TO BE (2026-09-06). Originator tests
+  `178/178` (two new device cases); the two `tile_frontier` failures in the full run belong to the
+  parallel checkpoint work editing `libs/aesthetics/serialization`, not here.
+  THE FIELD KIND WAS NOT A CONFIG PROBLEM. Widening GN01's labels by hand worked (`4.6%` -> `63.8%`
+  ready) but was the wrong fix: a narrow kind exists FOR COMPACT STORAGE ON THE HOST, and making the
+  author give that up for someone else's device pays memory exactly where it was wanted. §6.1 had
+  already declared the right thing — the device copy is a CACHE, and a cache need not repeat the
+  layout of the truth. So a narrow field now lives on the device in the 32-bit kind of the same MEANING
+  (`ub`/`us` -> uint, `ib`/`is` -> int, `sf`/`c` -> float), and the conversion at the border is done by
+  the SAME `load_component`/`store_component` the host accessor uses — the two paths agree BY
+  CONSTRUCTION, clamping and rounding included. Three consequences had to be said out loud: the SHADER
+  clamps (by the ORIGINAL kind's range, because a `resident` field is never downloaded and a `ub` that
+  became `uint` would happily hold 300); `device_integer_ready` is no longer needed for narrow integers
+  (float32 is exact to 2^24, and `ub`/`us`/`ib`/`is` fit in 16 bits — so the BINDING decides, not the
+  tool); and a latent silent defect closed itself — a `ui1` field read through a filter used to become
+  an `r32f` image with its bits copied verbatim, i.e. read as something else entirely. Result WITHOUT A
+  SINGLE CONFIG EDIT: narrow `74.6%` -> `0%` on GN01, `26.5%` -> `0.1%` on GN02.
+  BODIES ARE MEASURED BY THE RUN THEY UNBREAK, and the profiler now prints the work list by name.
+  Written: `classify`, `decay`, `ratio`, `index`, `lookup`, `graph_blur`, `graph_frontier` — 18 of 43
+  tools now have one. The graph ones are three buffers and one loop (a raster window is meaningless on
+  a sphere); checked against the CPU path in a new test — the blur agrees within `1e-6` (a float sum)
+  while the frontier and the lookup agree BITWISE, because those are integer decisions and a difference
+  there would mean reading the wrong neighbours. Named cost: CSR occupancy is UNEVEN (degree up to 24
+  against six on average), and that wants measuring on a real graph rather than assuming.
+  TOGETHER (the only row that promises anything is the last one — work that can actually leave whole):
+  ready `4.6% -> 82.1%` / `4.7% -> 24.4%` / `50.2% -> 51.1%`, and IN RUNS >= 2 `0% -> 20.3%` (GN01),
+  `1.8% -> 22.4%` (GN02), `51%` (GN03). WHAT IS LEFT IS NOISE: FastNoise2 is the main remaining
+  `no_body` in all three generators, and it is the only work that would still move the number much.
+
+- THE DEVICE SESSION WAS CANCELLED BY THE MEASUREMENT (2026-09-06, same day, after the profiler).
+  `516/516` project tests. THE UNIT OF RESIDENCY IS THE QUEUE, and making the region bigger means
+  DECLARING more work in one queue, not inventing a new concept. The profiler prints what a run is made
+  of, and GN03's most expensive run read `fill fill fill queue[17] queue[17] queue[17] queue[17]
+  queue[17]` — eight calls with NOTHING between them: no read-back, no call the queue refuses. The body
+  simply flushed a queue per biome. Residency INSIDE a queue already exists (a field written by one
+  element and read by the next never crosses the border), so the whole measured saving was available by
+  declaring ONE queue. PROVED BY EDIT: all biome rules now build one queue in `S01_field.lua`, the
+  profile shows exactly the prediction (`88 passes in 1 call, transfer 2.45 -> 2.45 MB` against
+  `12.76 -> 2.45` before), the world is BITWISE identical (fingerprint `ea836d9f19da9946` of the twelve
+  reference chunks, `104/104` checks), and CPU throughput is unchanged (`263.7` vs `263.0` chunks/s —
+  noise; a chunk is computed single-threaded and fusion in one thread gives zero, as measured earlier).
+  The profiler now names this case itself ("N of them declared as SEVERAL calls where one queue would
+  do"). A session would only be needed where something the queue refuses (`reduce`, `scatter`,
+  `sequential`) sits BETWEEN two device runs — and no such case exists among the measured ones: GN03's
+  runs are separated by the climate reductions, i.e. by a genuine read-back where the region has to end
+  anyway. ALSO FIXED while measuring the profiler's own cost: the queue classification ran even with
+  profiling off (two vectors of bindings per queue), and a `run_script` whose output field is `ub1`
+  logged an error-level line on EVERY ordinary run — a declared refusal printed as a failure, i.e. the
+  noise that teaches you not to read messages. The kind is now checked before the translation is asked
+  for. Off-cost measured: `5563` vs `5499` ms median on GN02 — inside the noise.
+
+- WHERE THE GENERATOR'S HOURS ACTUALLY GO (2026-09-06). `510/510` project tests (5 new). Closes
+  `ORIGINATOR_GPGPU.md` §5 п.0, the measurement the plan demanded FIRST and that was never taken.
+  New `originator::execution_profile` (core) + `script_host::set_profile`, `--profile` on GN01/GN02/GN03.
+  THE QUANTITY IS WALL CLOCK, AND THE REASON IS NAMED. Counting "how many calls fit the aperture" is
+  meaningless — a hundred cheap `fill`s and one `graph_flood` give the same count and the opposite
+  answer. So a record is the wall clock of ONE call, and four classes say what it is blocked BY:
+  `ready` / `no_body` (write the body — 11 tools of 43 have one) / `narrow` (the field's kind has no
+  device type: `ub`, `us`, `sf`, `c`) / `refused` (the aperture, i.e. never). Step time is measured
+  whole, and the difference from the sum of its calls IS the lua composition.
+  THE THREE REAL GENERATORS BLOCK ON THREE DIFFERENT THINGS, and none of it was obvious in advance:
+  GN01 (map) `74.6%` narrow, GN02 (planet) `44.8%` refused-by-aperture (`39%` of it `sequential`
+  floods) plus `19.3%` lua composition, GN03 (streaming volume) `50.2%` ALREADY READY with zero
+  narrow. For map generators THE FIELD KIND IS THE BLOCKER, NOT THE MISSING BODIES — GN02's whole
+  96-call `climate` queue is narrow to the last element. MEASURED BY EXPERIMENT: re-declaring GN01's
+  four label fields from `ub1`/`us1` to `ui1` moves readiness from `4.6%` to `63.8%` and pipeline
+  memory from `21.0` to `32.0` MB (+52%), with wall time unchanged. An honest trade of memory for
+  portability, and it belongs to the author of the config, not to the engine.
+  READINESS IS NOT PORTABILITY, and that is the finding that changes the roadmap. After widening
+  GN01's kinds, `63.8%` is ready and `0%` sits in runs of two or more passes: the ready calls stand
+  ALONE, separated by calls without bodies, and a lone pointwise call loses to the transfer round trip
+  (§5 п.3). So a missing body costs not its own share but the RUN IT BREAKS, and the profile prints
+  both: "today in runs >= 2" against "if the missing bodies were written" — GN01 `0%` -> `10.5%`,
+  GN02 `1.8%` -> `9.2%`, GN03 `50.2%` -> `87.8%` (longest run 103 passes).
+  AND THE PRICE OF RESIDENCY LASTING EXACTLY ONE QUEUE IS NOW A NUMBER. Every `run()` re-uploads its
+  inputs and downloads its outputs, so adjacent calls pay for the same field once each; the union over
+  a run is what a shared session would pay: GN02 `734` -> `353` MB (`51.9%`), GN03 over 25 chunks
+  `287.9` -> `81.8` MB (`71.6%`), one chunk's `field` step `12.76` -> `2.45` MB (`5.2x`). This meets
+  §5 п.3 from the other side: there transfer was `70%` of the round, here residency removes `72%` of
+  the transfer. That is the justification for the device session, and it is measured, not assumed.
+  TRANSLATION IS NOT WORTH PRE-COMPUTING: `ds` -> GLSL costs `0.71` ms per GN02 run, `0.25` ms for
+  GN01, zero for GN03 (no programs on that path). After the `shaderc` fix there is nothing to save.
+
 - THE TRANSLATOR'S SECOND HALF, AND THE LIBRARY'S DOCUMENTATION PASS (2026-09-06). `505/505` project
   tests, `originator_translate_test` 10/10 (4 of them new). `libs/originator` only.
   RANDOMNESS ON THE DEVICE IS A DECLARED SECOND STREAM, NOT A COPY OF THE CPU ONE. `chance`, `random`,

@@ -7,6 +7,7 @@
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <span>
 #include <string_view>
 #include <type_traits>
 #include <vector>
@@ -494,6 +495,7 @@ public:
   // копии, в отличие от save_state(): нужно, чтобы засайзить плотные per-entity структуры
   // (message_buffer) на главном потоке до параллельной фазы.
   size_t index_capacity() const noexcept { return cur_index; }
+  std::span<const entityid_t> removed_entity_ids() const noexcept { return removed_entities; }
 
   snapshot_state save_state() const; // определены в impl-блоке ниже
   void load_state(const snapshot_state& s);

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "devils_engine/demiurg/resource_base.h"
+#include "shader_compiler.h"
 
 namespace devils_engine {
 namespace demiurg {
@@ -35,9 +36,11 @@ public:
   glsl_source_file();
 
   bool prepared(uint32_t shader_kind) const noexcept;
-  bool prepare_spirv(const demiurg::resource_system* reg, uint32_t shader_kind, std::string* error = nullptr);
+  // Компилятор ПЕРЕДАЁТСЯ: ресурс компилируется пачками (все шейдеры префикса за один проход), и
+  // владелец пачки обязан быть виден в коде — компилятор, создаваемый на файл, стоил бы 90 мс на файл.
+  bool prepare_spirv(shader_compiler& compiler, const demiurg::resource_system* reg, uint32_t shader_kind, std::string* error = nullptr);
   const std::vector<uint32_t>* prepared_spirv(uint32_t shader_kind, std::span<const shader_definition> definitions) const noexcept;
-  bool prepare_spirv(const demiurg::resource_system* reg, uint32_t shader_kind, std::span<const shader_definition> definitions, std::string* error = nullptr);
+  bool prepare_spirv(shader_compiler& compiler, const demiurg::resource_system* reg, uint32_t shader_kind, std::span<const shader_definition> definitions, std::string* error = nullptr);
 
   void load_cold(const utils::safe_handle_t& handle) override;
   void load_warm(const utils::safe_handle_t& handle) override;

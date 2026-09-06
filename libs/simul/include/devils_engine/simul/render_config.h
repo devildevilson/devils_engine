@@ -23,6 +23,9 @@ struct render_system_config {
   const demiurg::resource_system* cache_registry = nullptr;
   std::string pipeline_cache_id;
   std::string pipeline_cache_path;
+  // Каталог дискового кэша SPIR-V. Отдельно от кэша пайплайнов, потому что закрывают они РАЗНЫЕ
+  // половины: тот снимает трансляцию SPIR-V в код устройства, этот — трансляцию GLSL в SPIR-V.
+  std::string shader_cache_directory;
 
   // Заполняется standard_render_create_base_resources именем первого графа из project
   // render-config. Все объявленные там графы становятся resident.

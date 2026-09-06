@@ -120,6 +120,7 @@ compute_context::compute_context(compute_context_config config) : config_(std::m
   } else {
     base_->get_or_create_pipeline_cache(config_.pipeline_cache_path);
   }
+  base_->set_shader_cache_directory(config_.shader_cache_directory);
 
   // Пул СВОЙ и на вычислительной очереди: graphics_base создаёт его на семействе графики, а
   // отдельная вычислительная очередь ради этого и планируется.
@@ -488,7 +489,7 @@ compute_context::program_id compute_context::make_program(const std::string& nam
   crafter.set_optimization(config_.optimize_shaders);
   crafter.set_shader_entry_point("main");
   crafter.set_shader_type(shaderc_compute_shader);
-  const auto spirv = crafter.compile(name, source);
+  const auto spirv = crafter.compile(base_->shaders(), name, source);
   if (spirv.empty()) {
     utils::error{}("compute context '{}': program '{}' did not compile: {}",
                    config_.app_name, name, crafter.err_msg());

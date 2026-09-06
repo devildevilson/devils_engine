@@ -15,6 +15,7 @@
 #include <spdlog/spdlog.h>
 
 #include "core/actor_simulation.h"
+#include "core/actor_checkpoint.h"
 #include "test_brain_fixture.h"
 
 using namespace devils_engine;
@@ -23,7 +24,7 @@ namespace tf = tile_frontier::core;
 namespace {
 
 struct run_result {
-  std::vector<uint8_t> checkpoint;
+  std::vector<std::byte> checkpoint;
   utils::timelines_causal_state clocks;
 };
 
@@ -58,6 +59,9 @@ run_result run_schedule(const std::span<const uint64_t> frame_microseconds,
         }
       }
       actors.update(tick, clocks.advance_simulation(tick), batch, pool);
+      if (pool.tasks_count() != 0 || pool.working_count() != 0) {
+        utils::error{}("TIME-02 update returned before its batch task completed");
+      }
     }
   };
 
@@ -69,7 +73,11 @@ run_result run_schedule(const std::span<const uint64_t> frame_microseconds,
     execute(pacer.take_steps(max_steps_per_frame));
   }
 
-  return {actors.save(), clocks.causal_state()};
+  tf::actor_checkpoint_buffers checkpoint;
+  if (!tf::write_actor_checkpoint(actors, clocks, checkpoint)) {
+    utils::error{}("TIME-02 checkpoint write failed");
+  }
+  return {std::move(checkpoint.document), clocks.causal_state()};
 }
 
 std::vector<uint64_t> fragmented_schedule(const uint64_t total) {

@@ -196,14 +196,6 @@ FetchContent_Declare(
 )
 
 FetchContent_Declare(
-  zpp_bits
-  GIT_REPOSITORY https://github.com/eyalz800/zpp_bits.git
-  GIT_TAG        v4.5
-  GIT_PROGRESS   TRUE
-  SOURCE_SUBDIR somePathThatNeverExistsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAa
-)
-
-FetchContent_Declare(
   gtl
   GIT_REPOSITORY https://github.com/greg7mdp/gtl.git
   #GIT_TAG        v1.2.0
@@ -475,7 +467,7 @@ FetchContent_MakeAvailable(freetype)
 
 add_library(Freetype::Freetype ALIAS freetype-interface)
 
-FetchContent_MakeAvailable(glaze zpp_bits gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus FastNoise2 voronoi GameNetworkingSockets) # RE-flex
+FetchContent_MakeAvailable(glaze gtl spdlog minizip-ng atomic_queue nuklear msdfgen msdf-atlas-gen dr_libs stb glfw3 sol2 Vulkan-Headers VulkanMemoryAllocator VulkanMemoryAllocator-Hpp dynamic_bitset glm doctest cpuinfo miniaudio rapidhash tavl devils_script reflect ogg opus FastNoise2 voronoi GameNetworkingSockets) # RE-flex
 
 if (TARGET minizip)
   target_compile_options(minizip PRIVATE

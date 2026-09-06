@@ -11,6 +11,7 @@
 #include "device_features.h"
 #include "devils_engine/utils/core.h"
 #include "queue.h"
+#include "shader_compiler.h"
 #include "structures.h"
 #include "vulkan_minimal.h"
 
@@ -103,6 +104,7 @@ struct graphics_base {
   // тянет шейдеры из реестра (glsl_source_file/shader_source_file по расширению), иначе
   // fs-fallback через file_io (fast_test / корневой main.cpp). shader_prefix_ — напр. "shaders/".
   const demiurg::resource_system* config_reg_ = nullptr;
+  mutable shader_compiler shader_compiler_;
   std::string shader_prefix_;
   std::string shader_filesystem_prefix_;
 
@@ -160,6 +162,17 @@ struct graphics_base {
   // через dump_cache_on_disk (round-trip через отдельный cache-модуль).
   void get_or_create_pipeline_cache(const demiurg::resource_system* reg, const std::string& id);
   void dump_cache_on_disk(const std::string& path) const;
+  // КОМПИЛЯТОР ШЕЙДЕРОВ ПОТОКА ГРАФИКИ. Живёт здесь, потому что здесь же живёт кэш пайплайнов, и по
+  // той же причине: это переиспользуемое состояние, которое дорого поднимать и незачем поднимать
+  // дважды. `mutable` — потому что запись команд получает базу по КОНСТАНТНОЙ ссылке, а компилятор
+  // не состояние графики, а её инструмент: разрешение имён specialization-констант компилирует и не
+  // меняет при этом ничего наблюдаемого.
+  //
+  // ДИСКОВЫЙ КЭШ SPIR-V задаётся тем же путём, что и кэш пайплайнов, — рядом с ним и той же
+  // командой. Два кэша закрывают РАЗНЫЕ половины: пайплайновый снимает трансляцию SPIR-V в код
+  // устройства, этот — трансляцию GLSL в SPIR-V, и одного без другого мало.
+  shader_compiler& shaders() const noexcept { return shader_compiler_; }
+  void set_shader_cache_directory(std::string path);
   // Задаёт demiurg-источник шейдеров (Фаза 1). Вызывать до change_render_graph.
   void set_shader_source(const demiurg::resource_system* reg, std::string prefix);
   // Filesystem source for standalone tools/playgrounds that do not build a demiurg registry.

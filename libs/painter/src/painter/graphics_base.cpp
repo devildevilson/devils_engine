@@ -235,6 +235,10 @@ void graphics_base::get_or_create_pipeline_cache(const demiurg::resource_system*
   cache = vk::Device(device).createPipelineCache(pcci);
 }
 
+void graphics_base::set_shader_cache_directory(std::string path) {
+  shader_compiler_.set_cache_directory(std::move(path));
+}
+
 void graphics_base::dump_cache_on_disk(const std::string& path) const {
   if (cache == VK_NULL_HANDLE) {
     return;

@@ -38,10 +38,10 @@ uint32_t component_registry::fingerprint() noexcept {
   // свёртка по УЖЕ отсортированной таблице -> детерминирована; считается один раз.
   freeze();
   static const uint32_t fp = [] {
-    uint32_t acc = detail::fnv_offset;
+    uint32_t acc = utils::serial::detail::fnv_offset;
     for (const auto& e : table()) {
-      acc = (acc ^ e.hash) * detail::fnv_prime;
-      acc = (acc ^ e.layout) * detail::fnv_prime;
+      acc = (acc ^ e.hash) * utils::serial::detail::fnv_prime;
+      acc = (acc ^ e.layout) * utils::serial::detail::fnv_prime;
     }
     return acc;
   }();
@@ -59,10 +59,9 @@ std::size_t estimate_size(const world* w) {
 
 std::vector<std::byte> dump_world(const world* w) {
   std::vector<std::byte> buf;
-  buf.resize(estimate_size(w)); // ПРЕД-resize: запись = чистый memcpy, ensure() почти не срабатывает
+  buf.reserve(estimate_size(w));
   writer wr{buf};
   dump_world(w, wr);
-  buf.resize(wr.pos()); // усечь до фактически записанного
   return buf;
 }
 
@@ -70,10 +69,10 @@ void dump_world(const world* w, writer& wr) {
   wr.u32(snapshot_magic);
   wr.u32(component_registry::fingerprint());
 
-  const auto st = w->save_state();
-  wr.u64(uint64_t(st.cur_index));
-  wr.u64(uint64_t(st.removed_entities.size()));
-  for (const auto id : st.removed_entities) {
+  wr.u64(uint64_t(w->index_capacity()));
+  const auto removed = w->removed_entity_ids();
+  wr.u64(uint64_t(removed.size()));
+  for (const auto id : removed) {
     wr.u32(id);
   }
 
@@ -88,6 +87,7 @@ void dump_world(const world* w, writer& wr) {
 
     e.dump(w, wr); // payload
 
+    if (wr.pos() - body_start > UINT32_MAX) { wr.ok = false; return; }
     wr.patch_u32(len_slot, uint32_t(wr.pos() - body_start)); // бэкпатч длины
   }
 }
@@ -107,9 +107,12 @@ std::optional<world> stage_world(reader& r) {
   }
 
   world::snapshot_state st;
-  st.cur_index = std::size_t(r.u64());
+  const auto index = r.u64();
   const uint64_t removed = r.u64();
-  st.removed_entities.reserve(removed < r.b.size() ? removed : 0); // защита от мусорного размера
+  if (!r.good() || index > maximum_entities || removed > index ||
+      removed > (r.size() - r.position()) / sizeof(entityid_t)) return std::nullopt;
+  st.cur_index = std::size_t(index);
+  st.removed_entities.reserve(std::size_t(removed));
   for (uint64_t i = 0; i < removed && r.ok; ++i) {
     st.removed_entities.push_back(r.u32());
   }
@@ -136,9 +139,9 @@ std::optional<world> stage_world(reader& r) {
       utils::warn("snapshot: truncated component block 0x{:08x}", hash);
       return std::nullopt;
     }
-    const std::size_t next = r.pos + len;
-    table[b].load(&staged, r);
-    if (!r.ok || r.pos != next) {
+    reader body{r.take(len)};
+    table[b].load(&staged, body);
+    if (!body.good() || body.position() != body.size()) {
       utils::warn("snapshot: component block 0x{:08x} did not consume its declared payload", hash);
       return std::nullopt;
     }

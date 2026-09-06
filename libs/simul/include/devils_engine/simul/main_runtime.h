@@ -495,6 +495,7 @@ std::unique_ptr<RenderType> make_standard_render(Bootstrap& boot, std::string ap
   render_cfg.cache_registry = boot.engine_resources.get();
   render_cfg.pipeline_cache_id = pipeline_cache_id;
   render_cfg.pipeline_cache_path = pipeline_cache_path;
+  render_cfg.shader_cache_directory = project_path(boot.settings.render.cache_folder + "/painter/spirv");
   render_cfg.app_name = std::move(app_name);
   render_cfg.headless = boot.engine.headless;
   render_cfg.vulkan_debug = boot.engine.vulkan_debug;

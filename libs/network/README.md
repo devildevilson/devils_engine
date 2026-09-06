@@ -93,7 +93,8 @@ penalties, sockets, wire serialization, replay execution and checkpointing.
 
 ## Implemented slice: canonical state schema
 
-`state_schema<Host, Writer, Reader, Sections...>` is the project-neutral
+`utils::serial::state_schema<Host, Writer, Reader, Sections...>` (re-exported by
+`network/state_schema.h`) is the project-neutral
 manifest for a complete causal state. Every project-owned section declares an
 explicit 32-bit ID and version plus `write`, `read` and `validate` operations.
 The parameter-pack order is erased: the schema sorts sections by ID, rejects
@@ -109,8 +110,8 @@ yet.
 Decode writes only into a caller-provided `Host::staging_type`. Section
 validation and the project-supplied whole-state validation run before one
 project-supplied `noexcept` replacement operation. Thus a foreign-data failure
-cannot partially mutate the live host. Rebuilding derived caches belongs in
-that final project replacement operation, not in the serialized sections.
+cannot partially mutate the live host. Fallible runtime/cache preparation belongs in
+detached staging; the final replacement installs it and invalidates address-bound caches.
 
 `emit_canonical` is the single traversal used by checkpoint writing and a
 state-hash sink. It emits the complete envelope, section metadata and payload
@@ -118,6 +119,12 @@ bytes identically to either consumer, and may expose each borrowed canonical
 section payload to a diagnostic observer during that traversal. The built-in
 `state_writer` and `state_reader` provide minimal canonical little-endian
 adapters; compatible project adapters may be substituted.
+
+The traversal returns success/failure, including section-writer refusals. A failed byte writer
+stays failed; vector-returning `Schema::write(host)` yields an empty vector, never a partial
+document. The one-shot `make_state_digest` treats failure to serialize its live host as a critical
+error and cannot return a root of a prefix. The prepared path can instead check `Schema::try_write`
+before passing the complete bytes to `try_murmur64_digest`.
 
 The 32-bit schema fingerprint is produced by the shared
 `utils::murmur_hash3_32` primitive over canonical format/count/ID/version

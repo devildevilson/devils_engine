@@ -1448,3 +1448,115 @@ TEST_CASE("originator reproduces the 64-bit lattice hash on the device") {
     CHECK(worst < 1.0e-6);
   }
 }
+
+// МОЖЕТ ЛИ СОСЕДСТВО НА СФЕРЕ УЕХАТЬ НА УСТРОЙСТВО — вопрос не про механизм из нескольких проходов,
+// а про то, ОСТАНЕТСЯ ЛИ ГРАФ ТЕМ ЖЕ. Порядок соседей у инструмента канонический: расстояние, при
+// равенстве — номер клетки, — поэтому чужая структура поиска даёт тот же ответ, ПОКА совпадает
+// множество ближайших. Хост считает расстояния в `double`, шейдер считал бы во `float32`, и вопрос
+// ровно один: перескакивает ли граница между k-м и (k+1)-м соседом через разрешение `float32`.
+//
+// Позиции при этом У ОБОИХ ПУТЕЙ ОДНИ И ТЕ ЖЕ: поле трёхкомпонентное `v3`, то есть уже `float32`.
+// Разойтись может только арифметика расстояния.
+//
+// Решётка Фибоначчи упорядочена по оси (`along` монотонна по индексу), поэтому кандидаты лежат в ОКНЕ
+// ИНДЕКСОВ около своего: это не приближение, а свойство решётки, и тест проверяет, что выбранные
+// соседи не упираются в край окна.
+TEST_CASE("originator measures whether a float32 neighbour search keeps the same sphere graph") {
+  constexpr size_t neighbours = 6;
+
+  struct found {
+    double key = 0.0;
+    uint32_t cell = 0;
+    bool operator<(const found& other) const noexcept {
+      return key < other.key || (key == other.key && cell < other.cell);
+    }
+  };
+
+  const auto sweep = [&](const size_t count, const size_t window) {
+    std::vector<float> px(count), py(count), pz(count);
+    constexpr double golden = 0.61803398874989484820;
+    for (size_t i = 0; i < count; ++i) {
+      const double along = 1.0 - (2.0 * double(i) + 1.0) / double(count);
+      const double ring = std::sqrt(std::max(0.0, 1.0 - along * along));
+      const double angle = 2.0 * 3.14159265358979323846 * std::fmod(double(i) * golden, 1.0);
+      px[i] = float(ring * std::cos(angle));
+      py[i] = float(along);
+      pz[i] = float(ring * std::sin(angle));
+    }
+
+    size_t different_sets = 0;
+    size_t at_window_edge = 0;
+    size_t sub_ulp = 0;
+    double worst_relative_gap = 1e30;
+
+    std::vector<found> exact;
+    std::vector<found> narrow;
+    std::vector<uint32_t> a(neighbours), b(neighbours);
+
+    for (size_t i = 0; i < count; ++i) {
+      const size_t first = i > window ? i - window : 0;
+      const size_t last = std::min(count, i + window + 1);
+      exact.clear();
+      narrow.clear();
+
+      for (size_t j = first; j < last; ++j) {
+        if (j == i) continue;
+        // Как считает хост: разности и корень в double.
+        const double dx = double(px[j]) - double(px[i]);
+        const double dy = double(py[j]) - double(py[i]);
+        const double dz = double(pz[j]) - double(pz[i]);
+        exact.push_back(found{std::sqrt(dx * dx + dy * dy + dz * dz), uint32_t(j)});
+        // Как считал бы шейдер: всё во float32.
+        const float fx = px[j] - px[i];
+        const float fy = py[j] - py[i];
+        const float fz = pz[j] - pz[i];
+        narrow.push_back(found{double(std::sqrt(fx * fx + fy * fy + fz * fz)), uint32_t(j)});
+      }
+
+      std::partial_sort(exact.begin(), exact.begin() + neighbours + 1, exact.end());
+      std::partial_sort(narrow.begin(), narrow.begin() + neighbours + 1, narrow.end());
+
+      // Окно достаточно широкое, если ни один выбранный сосед не лёг на его край.
+      for (size_t k = 0; k < neighbours; ++k) {
+        const auto shift = exact[k].cell > i ? exact[k].cell - uint32_t(i) : uint32_t(i) - exact[k].cell;
+        at_window_edge += size_t(shift >= window);
+      }
+
+      // ГЛАВНАЯ ВЕЛИЧИНА: далеко ли граница между шестым и седьмым соседом от разрешения `float32`.
+      // Зазор меньше одного последнего бита означает, что множество соседей у этой клетки решается
+      // НЕ геометрией, а тем, в какой ширине посчитали.
+      const double gap = exact[neighbours].key - exact[neighbours - 1].key;
+      const double ulp = std::abs(exact[neighbours - 1].key) * 1.1920929e-07;
+      const double relative = ulp > 0.0 ? gap / ulp : 1e30;
+      worst_relative_gap = std::min(worst_relative_gap, relative);
+      sub_ulp += size_t(relative < 1.0);
+
+      for (size_t k = 0; k < neighbours; ++k) {
+        a[k] = exact[k].cell;
+        b[k] = narrow[k].cell;
+      }
+      std::sort(a.begin(), a.end());
+      std::sort(b.begin(), b.end());
+      different_sets += size_t(a != b);
+    }
+
+    MESSAGE("sphere neighbours in float32, " << count << " cells: " << different_sets
+            << " different neighbour sets, " << sub_ulp
+            << " cells whose 6th/7th boundary is under one ULP, narrowest " << worst_relative_gap);
+
+    // Окно обязано быть достаточным, иначе всё измеренное выше — про край окна, а не про float32.
+    CHECK(at_window_edge == 0);
+    return std::make_pair(different_sets, sub_ulp);
+  };
+
+  const auto small = sweep(16384, 512);
+  const auto large = sweep(65536, 1024);
+
+  // ЧТО ИЗМЕРЕНО, ТО И УТВЕРЖДАЕТСЯ: на этих размерах множество соседей от ширины арифметики не
+  // зависит. Но клетки, у которых граница шестого и седьмого соседа лежит ПОД последним битом,
+  // существуют, и их число растёт с числом клеток — то есть совпадение здесь не структурное
+  // свойство, а везение, и обещать его на миллионе нельзя.
+  CHECK(small.first == 0);
+  CHECK(large.first == 0);
+  CHECK(large.second >= small.second);
+}
