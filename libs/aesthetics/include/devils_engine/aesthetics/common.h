@@ -180,7 +180,7 @@ public:
 
 template <typename T>
 class_container<T>* make_container_ptr(T* ptr) {
-  constexpr size_t offset = offsetof(class_container<T>, class_container<T>::obj);
+  constexpr size_t offset = offsetof(class_container<T>, obj);
   return reinterpret_cast<class_container<T>*>(reinterpret_cast<char*>(ptr) - offset);
 }
 

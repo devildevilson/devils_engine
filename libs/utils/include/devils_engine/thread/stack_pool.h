@@ -25,7 +25,7 @@ public:
   class arbitrary_job {
   public:
     virtual ~arbitrary_job() noexcept = default;
-    virtual void execute() const noexcept = 0;
+    virtual void execute() const = 0;
   };
 
   stack_pool(const size_t stack_size, const size_t workers_count);
