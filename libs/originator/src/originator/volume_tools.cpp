@@ -801,12 +801,63 @@ void tool_registry::add_volume_tools() {
                          const size_t samples = call.input(0).valid() ? call.input(0).count() : 0;
                          return samples * sizeof(uint8_t) + (samples + 1) * sizeof(uint32_t);
                        }});
-  add(tool_description{.name = "polyline_distance",
-                       .shape = aperture::gather,
-                       .input_count = 3,
-                       .output_count = 1,
-                       .body = tool_polyline_distance,
-                       .prepare = prepare_polyline});
+  add(tool_description{
+    .name = "polyline_distance",
+    .shape = aperture::gather,
+    .input_count = 3,
+    .output_count = 1,
+    .body = tool_polyline_distance,
+    .prepare = prepare_polyline,
+    // ПОДГОТОВЛЕННОГО ИНДЕКСА НА УСТРОЙСТВЕ НЕТ: туда уезжают только объявленные привязки, а
+    // `prepared_polyline` живёт в памяти хоста. Отрезок здесь поэтому СОБИРАЕТСЯ НА МЕСТЕ из тех же
+    // двух буферов, из которых его собирает подготовка, — а отсечение по прямоугольнику остаётся, оно
+    // и есть условие применимости: без него цена элемента равна числу отрезков во всём мире.
+    //
+    // Математика та же слово в слово: проекция на отрезок с ЗАЖИМОМ в концы (без него коридор
+    // продолжается за конец маршрута), предел как ответ там, где отрезков нет, и метрика как ФОРМА
+    // сечения.
+    .device_body = "  vec3 point = vec3(in_0_at(index, 0u), in_0_at(index, 1u), 0.0);\n"
+                   "#if ORIGINATOR_IN_0_COMPONENTS >= 3\n"
+                   "  point.z = in_0_at(index, 2u);\n"
+                   "#endif\n"
+                   "  float best = args.max_distance;\n"
+                   "  uint chains = in_2_length() > 0u ? in_2_length() - 1u : 0u;\n"
+                   "  for (uint chain = 0u; chain < chains; ++chain) {\n"
+                   "    uint first = uint(in_2_at(chain));\n"
+                   "    uint last = uint(in_2_at(chain + 1u));\n"
+                   "    for (uint k = first; k + 1u < last; ++k) {\n"
+                   "      vec3 from = vec3(in_1_at(k, 0u), in_1_at(k, 1u), 0.0);\n"
+                   "      vec3 to = vec3(in_1_at(k + 1u, 0u), in_1_at(k + 1u, 1u), 0.0);\n"
+                   "#if ORIGINATOR_IN_1_COMPONENTS >= 3\n"
+                   "      from.z = in_1_at(k, 2u);\n"
+                   "      to.z = in_1_at(k + 1u, 2u);\n"
+                   "#endif\n"
+                   "      vec3 low = min(from, to) - vec3(args.max_distance);\n"
+                   "      vec3 high = max(from, to) + vec3(args.max_distance);\n"
+                   "      if (any(lessThan(point, low)) || any(greaterThan(point, high))) continue;\n"
+                   "      vec3 direction = to - from;\n"
+                   "      float length_squared = dot(direction, direction);\n"
+                   "      float t = 0.0;\n"
+                   "      if (length_squared > 0.0) {\n"
+                   "        t = clamp(dot(point - from, direction) / length_squared, 0.0, 1.0);\n"
+                   "      }\n"
+                   "      vec3 delta = point - (from + t * direction);\n"
+                   "      float measured = args.chebyshev != 0.0 ? max(max(abs(delta.x), abs(delta.y)), abs(delta.z))\n"
+                   "                                             : sqrt(dot(delta, delta));\n"
+                   "      best = min(best, measured);\n"
+                   "    }\n"
+                   "  }\n"
+                   "  out_0_set(index, best);\n",
+    .device_params = {{"max_distance", 0.0},
+                      // МЕТРИКА ОБЪЯВЛЕНА СЛОВОМ, а в push-константу едет числом: перевод делает сам
+                      // инструмент, а не второй числовой синоним того же параметра в конфиге.
+                      {"metric", 0.0, "chebyshev",
+                       [](const parameters& params) {
+                         return params.string("metric", "euclidean") == "chebyshev" ? 1.0 : 0.0;
+                       }}},
+    // Смещения цепочек — целое поле, а тело написано против `float`: номера точек маршрута
+    // остаются точными во float32 далеко за пределами любого разумного каркаса.
+    .device_integer_ready = true});
 }
 
 } // namespace originator

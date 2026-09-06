@@ -34,6 +34,7 @@ originator::tool_registry& registry() {
   if (r.size() == 0) {
     r.add_standard_tools();
     r.add_graph_tools();
+    r.add_volume_tools();
   }
   return r;
 }
@@ -989,4 +990,190 @@ TEST_CASE("originator counts into shared memory and agrees with the CPU count") 
   measure_buckets(64);
   // Широкая: не влезает, работает запасной путь с прямым атомиком.
   measure_buckets(1024);
+}
+
+TEST_CASE("originator device bodies of the remaining gather tools agree with the CPU ones") {
+  if (!painter::compute_device_available()) {
+    MESSAGE("no Vulkan device available: the remaining bodies are not compared here");
+    return;
+  }
+
+  constexpr size_t nodes = 4096;
+  constexpr size_t degree = 6;
+
+  const std::vector<field_pair> graph_fields = {{"start", "ui1"}};
+  auto offsets_layout = originator::make_buffer_layout(originator::storage_kind::soa, graph_fields, "offsets");
+  originator::buffer offsets("offsets", std::move(offsets_layout), nodes + 1);
+
+  const std::vector<field_pair> arc_fields = {{"node", "ui1"}};
+  auto arcs_layout = originator::make_buffer_layout(originator::storage_kind::soa, arc_fields, "arcs");
+  originator::buffer arcs("arcs", std::move(arcs_layout), nodes * degree);
+
+  const std::vector<field_pair> value_fields = {{"value", "v1"},  {"label", "ub1"}, {"weight", "v1"},
+                                                {"mask", "ub1"},  {"slope", "v1"},  {"voted", "ub1"}};
+  auto cells_layout = originator::make_buffer_layout(originator::storage_kind::soa, value_fields, "cells");
+  originator::buffer cells("cells", std::move(cells_layout), nodes);
+
+  auto start = offsets.field(offsets.find_field("start"));
+  auto arc = arcs.field(arcs.find_field("node"));
+  for (size_t i = 0; i <= nodes; ++i) {
+    start.set(i, double(i * degree));
+  }
+  for (size_t i = 0; i < nodes; ++i) {
+    for (size_t k = 0; k < degree; ++k) {
+      const int64_t shift = int64_t(k) - int64_t(degree / 2) - (k >= degree / 2 ? 0 : 1);
+      arc.set(i * degree + k, double((int64_t(i) + shift + int64_t(nodes)) % int64_t(nodes)));
+    }
+  }
+
+  auto value = cells.field(cells.find_field("value"));
+  auto label = cells.field(cells.find_field("label"));
+  auto weight = cells.field(cells.find_field("weight"));
+  auto mask = cells.field(cells.find_field("mask"));
+  for (size_t i = 0; i < nodes; ++i) {
+    value.set(i, std::sin(double(i) * 0.05));
+    // Метка есть у части клеток: голосование только тогда и осмысленно, когда есть куда расти.
+    label.set(i, (i % 7) == 0 ? double((i / 7) % 4 + 1) : 0.0);
+    weight.set(i, double((i * 37) % 11) / 11.0);
+    mask.set(i, 1.0);
+  }
+
+  originator::parameters vote;
+  vote.set_number("threshold", 0.0);
+
+  const auto make = [&](originator::buffer& o, originator::buffer& a, originator::buffer& c) {
+    originator::computation_queue queue;
+    queue.name = "gather";
+    auto slope = tool_call("graph_slope", {readable(o, "start"), readable(a, "node"), readable(c, "value")},
+                           {writable(c, "slope")}, {});
+    slope.range_end = nodes;
+    auto voted = tool_call("graph_vote",
+                           {readable(o, "start"), readable(a, "node"), readable(c, "label"),
+                            readable(c, "weight"), readable(c, "mask")},
+                           {writable(c, "voted")}, vote);
+    voted.range_end = nodes;
+    queue.calls.push_back(std::move(slope));
+    queue.calls.push_back(std::move(voted));
+    queue.output.push_back(writable(c, "slope"));
+    queue.output.push_back(writable(c, "voted"));
+    return queue;
+  };
+
+  auto device_cells = cells;
+  const auto cpu_queue = make(offsets, arcs, cells);
+  const auto check = originator::check_device_queue(cpu_queue);
+  REQUIRE_MESSAGE(check.allowed, check.message);
+  run_on_cpu(cpu_queue);
+
+  painter::compute_context_config config;
+  config.app_name = "device_gather_test";
+  painter::compute_context context(config);
+  originator::device_queue plan(context, make(offsets, arcs, device_cells));
+  plan.run();
+
+  CHECK(worst_difference(cells, device_cells, "slope") < 1.0e-6);
+
+  // Голосование — ВЫБОР, а не арифметика: расхождение здесь означало бы, что пути выбрали разного
+  // соседа, и это обязано быть побитовым.
+  size_t vote_differences = 0;
+  size_t voted_cells = 0;
+  const auto cpu_voted = cells.field(cells.find_field("voted"));
+  const auto gpu_voted = device_cells.field(device_cells.find_field("voted"));
+  for (size_t i = 0; i < nodes; ++i) {
+    vote_differences += size_t(cpu_voted.get(i) != gpu_voted.get(i));
+    voted_cells += size_t(cpu_voted.get(i) != 0.0);
+  }
+  CHECK(vote_differences == 0);
+  // И голосование обязано что-то изменить: если бы метку не получил никто, сверка была бы пустой.
+  CHECK(voted_cells > nodes / 4);
+}
+
+TEST_CASE("originator rebuilds a polyline on the device and measures the same distance") {
+  if (!painter::compute_device_available()) {
+    MESSAGE("no Vulkan device available: the polyline is not compared here");
+    return;
+  }
+
+  // ПОДГОТОВЛЕННОГО ИНДЕКСА НА УСТРОЙСТВЕ НЕТ: отрезок собирается на месте из тех же двух буферов.
+  // Проверяется, что от этого не меняется НИ ОДНО значение — включая ответ там, где ломаной рядом нет
+  // (предел, а не бесконечность) и обе метрики, потому что метрика приезжает словом, а в шейдер
+  // числом.
+  constexpr size_t chain_points = 24;
+
+  const std::vector<field_pair> point_fields = {{"position", "v3"}};
+  auto point_layout = originator::make_buffer_layout(originator::storage_kind::soa, point_fields, "route");
+  originator::buffer route("route", std::move(point_layout), chain_points);
+
+  const std::vector<field_pair> offset_fields = {{"start", "ui1"}};
+  auto offset_layout = originator::make_buffer_layout(originator::storage_kind::soa, offset_fields, "chains");
+  originator::buffer chains("chains", std::move(offset_layout), 3);
+
+  const std::vector<field_pair> sample_fields = {{"position", "v3"}, {"distance", "v1"}};
+  auto sample_layout = originator::make_buffer_layout(originator::storage_kind::soa, sample_fields, "samples");
+  originator::buffer samples("samples", std::move(sample_layout),
+                             originator::buffer_extent{grid_width, grid_width, 0});
+
+  auto point = route.field(route.find_field("position"));
+  for (size_t i = 0; i < chain_points; ++i) {
+    point.set(i, std::cos(double(i) * 0.4) * 40.0, 0);
+    point.set(i, double(i) * 3.0, 1);
+    point.set(i, std::sin(double(i) * 0.4) * 40.0, 2);
+  }
+  auto chain_start = chains.field(chains.find_field("start"));
+  chain_start.set(0, 0.0);
+  chain_start.set(1, 12.0);
+  chain_start.set(2, double(chain_points));
+
+  auto position = samples.field(samples.find_field("position"));
+  for (size_t i = 0; i < grid_count; ++i) {
+    position.set(i, double(i % grid_width) * 0.25 - 60.0, 0);
+    position.set(i, double(i / grid_width) * 0.25, 1);
+    position.set(i, double((i * 13) % 97) * 0.5 - 24.0, 2);
+  }
+
+  const auto compare = [&](const std::string_view& metric) {
+    originator::parameters params;
+    params.set_number("max_distance", 25.0);
+    params.set_string("metric", std::string(metric));
+
+    const auto build = [&](originator::buffer& target) {
+      originator::computation_queue queue;
+      queue.name = "corridor";
+      auto call = tool_call("polyline_distance",
+                            {readable(target, "position"), readable(route, "position"), readable(chains, "start")},
+                            {writable(target, "distance")}, params);
+      call.range_end = grid_count;
+      queue.calls.push_back(std::move(call));
+      queue.output.push_back(writable(target, "distance"));
+      return queue;
+    };
+
+    auto device_samples = samples;
+    const auto cpu_queue = build(samples);
+    const auto check = originator::check_device_queue(cpu_queue);
+    REQUIRE_MESSAGE(check.allowed, check.message);
+    run_on_cpu(cpu_queue);
+
+    painter::compute_context_config config;
+    config.app_name = "device_polyline_test";
+    painter::compute_context context(config);
+    originator::device_queue plan(context, build(device_samples));
+    plan.run();
+
+    const auto worst = worst_difference(samples, device_samples, "distance");
+    // И поле обязано быть содержательным: если бы все элементы упёрлись в предел, сверка сравнивала
+    // бы одну константу с другой.
+    size_t inside = 0;
+    const auto measured = samples.field(samples.find_field("distance"));
+    for (size_t i = 0; i < grid_count; ++i) {
+      inside += size_t(measured.get(i) < 24.9);
+    }
+    std::printf("  polyline '%s': worst deviation %.3g, %zu of %zu elements inside the corridor\n",
+                std::string(metric).c_str(), worst, inside, grid_count);
+    CHECK(worst < 1.0e-4);
+    CHECK(inside > grid_count / 100);
+  };
+
+  compare("euclidean");
+  compare("chebyshev");
 }

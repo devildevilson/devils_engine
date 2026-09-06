@@ -838,6 +838,17 @@ void tool_label_adjacency(const tool_call& call, const size_t begin, const size_
 void tool_registry::add_graph_tools() {
   const auto add = [this](tool_description description) { this->add(std::move(description)); };
 
+  // УСТРОЙСТВЕННОГО ТЕЛА У НЕГО НЕ БУДЕТ, и это измеренный отказ, а не недоделка.
+  //
+  // Угол спирали берётся от ДРОБНОЙ части произведения `i * φ`, и держится он на double: у индекса в
+  // миллионы произведение съедает старшие биты мантиссы. Во `float32` от дробной части остаётся
+  // четыре бита — замерено: на миллионе точек угол расходится с точным на `0.9955` ОБОРОТА, то есть
+  // становится случайным. Решётка вышла бы другая и заметно худшая.
+  //
+  // Починить это можно фиксированной точкой в `uint32` (домножение на золотое сечение по модулю 2^32
+  // точно), но тогда РЕШЁТКА СМЕНИТСЯ НА ОБОИХ ПУТЯХ, то есть сменится мир у всех, кто её считает.
+  // И покупать этим нечего: за `sphere_points` идёт `sphere_adjacency` с апертурой scatter, которая
+  // на устройство не поедет никогда, — переносить не к чему приклеиться.
   add(tool_description{.name = "sphere_points", .shape = aperture::pointwise, .input_count = 0, .output_count = 1,
                        .body = tool_sphere_points, .footprint = no_temporary_memory});
   add(tool_description{.name = "sphere_adjacency", .shape = aperture::scatter, .input_count = 1, .output_count = 2,
@@ -903,10 +914,55 @@ void tool_registry::add_graph_tools() {
                          return count * (sizeof(float) * 3 + sizeof(uint32_t)) + count * sizeof(uint8_t) +
                                 count * sizeof(uint32_t) * 4;
                        }});
-  add(tool_description{.name = "graph_vote", .shape = aperture::gather, .input_count = 5, .output_count = 1,
-                       .body = tool_graph_vote, .footprint = no_temporary_memory});
-  add(tool_description{.name = "graph_slope", .shape = aperture::gather, .input_count = 3, .output_count = 1,
-                       .body = tool_graph_slope, .footprint = no_temporary_memory});
+  add(tool_description{
+    .name = "graph_vote", .shape = aperture::gather, .input_count = 5, .output_count = 1,
+    .body = tool_graph_vote, .footprint = no_temporary_memory,
+    // Пустая клетка перенимает метку сильнейшего соседа. ТАЙ-БРЕЙК ПО МЕНЬШЕЙ МЕТКЕ обязателен и
+    // здесь: при равных весах результат не имеет права зависеть от того, в каком порядке лежат дуги,
+    // а на устройстве порядок обхода тот же, но полагаться на это нельзя — правило одно на оба пути.
+    .device_body = "  float own = in_2_at(index);\n"
+                   "  if (own != 0.0 || in_4_at(index) == 0.0) {\n"
+                   "    out_0_set(index, own);\n"
+                   "  } else {\n"
+                   "    float best_label = 0.0;\n"
+                   "    float best_weight = args.threshold;\n"
+                   "    uint first = uint(in_0_at(index));\n"
+                   "    uint last = uint(in_0_at(index + 1u));\n"
+                   "    for (uint k = first; k < last; ++k) {\n"
+                   "      uint other = uint(in_1_at(k));\n"
+                   "      float other_label = in_2_at(other);\n"
+                   "      if (other_label == 0.0) continue;\n"
+                   "      float weight = in_3_at(other);\n"
+                   "      if (weight > best_weight ||\n"
+                   "          (weight == best_weight && best_label != 0.0 && other_label < best_label)) {\n"
+                   "        best_weight = weight;\n"
+                   "        best_label = other_label;\n"
+                   "      }\n"
+                   "    }\n"
+                   "    out_0_set(index, best_label);\n"
+                   "  }\n",
+    .device_params = {{"threshold", 0.0}},
+    .device_integer_ready = true});
+  add(tool_description{
+    .name = "graph_slope", .shape = aperture::gather, .input_count = 3, .output_count = 1,
+    .body = tool_graph_slope, .footprint = no_temporary_memory,
+    // Средний модуль разности со ВСЕМИ соседями. Дуга, ведущая за пределы поля значений,
+    // пропускается и в среднее не входит — иначе делитель врал бы на краю.
+    .device_body = "  float own = in_2_at(index);\n"
+                   "  uint first = uint(in_0_at(index));\n"
+                   "  uint last = uint(in_0_at(index + 1u));\n"
+                   "  uint count = in_2_length();\n"
+                   "  float total = 0.0;\n"
+                   "  uint taken = 0u;\n"
+                   "  for (uint k = first; k < last; ++k) {\n"
+                   "    uint other = uint(in_1_at(k));\n"
+                   "    if (other >= count) continue;\n"
+                   "    total += abs(in_2_at(other) - own);\n"
+                   "    taken += 1u;\n"
+                   "  }\n"
+                   "  out_0_set(index, taken == 0u ? 0.0 : total / float(taken));\n",
+    .device_params = {},
+    .device_integer_ready = true});
   add(tool_description{
     .name = "lookup", .shape = aperture::gather, .input_count = 2, .output_count = 1,
     .body = tool_lookup, .footprint = no_temporary_memory,

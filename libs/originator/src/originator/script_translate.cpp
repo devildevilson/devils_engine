@@ -159,6 +159,73 @@ struct translator {
     return saved_local(name);
   }
 
+  // ЦЕЛОЕ, КОТОРОЕ МОЖНО ОСТАВИТЬ ЦЕЛЫМ, И ГРАНИЦА ЭТОГО.
+  //
+  // Всё остальное перевод считает во `float32`, и это не небрежность: у `ds` в программе originator
+  // ЛЮБОЕ чтение поля возвращает `double` (аксессор так и зарегистрирован), поэтому арифметика там
+  // двойной точности при любом роде поля. Считать её в шейдере целыми значило бы РАЗОЙТИСЬ с CPU, а
+  // не сойтись: `a / b` стало бы целочисленным делением, а сумма — переполняться на 2^32 там, где
+  // double точен до 2^53.
+  //
+  // Но у `float32` есть потолок: целые он представляет точно лишь до 2^24. Значит поле-идентификатор
+  // шире шестнадцати миллионов на устройстве СЛИПАЕТСЯ — два разных номера дают одно число. Вот это
+  // и лечится, причём ровно там, где лечение не меняет семантику:
+  //
+  //   ЛИСТ — целочисленный литерал или чтение поля целого рода;
+  //   СРАВНЕНИЕ ДВУХ ЛИСТОВ идёт целыми (у `ds` это сравнение двух ТОЧНЫХ double, то есть тот же
+  //   ответ, а на устройстве оно становится точным и выше 2^24);
+  //   ЗАПИСЬ ЛИСТА в целое поле идёт целым (копия идентификатора остаётся собой).
+  //
+  // Арифметика в этот путь не входит НАМЕРЕННО: там целые разошлись бы с double по делению и по
+  // переполнению, и выигрыш в точности обернулся бы другим результатом.
+  // Блок из ОДНОГО значения — это то же значение: `{ id }` и `id` означают одно и то же, и лист
+  // обязан узнаваться под любой из этих записей.
+  tavl::node_view unwrap(tavl::node_view node) const {
+    while (is_block(node) && node.size() == 1) {
+      node = node.child(0);
+    }
+    return node;
+  }
+
+  bool integer_leaf(const tavl::node_view outer) const {
+    const auto node = unwrap(outer);
+    const auto& root = node.root();
+    if (root.type != tavl::node_type::token) return false;
+    if (root.token.type == tavl::token_type::number_int || root.token.type == tavl::token_type::number_uint) {
+      return true;
+    }
+    if (root.token.type != tavl::token_type::identifier) return false;
+    const auto name = text(root.token);
+    for (const auto& binding : inputs) {
+      if (binding.name != name) continue;
+      const auto base = device_storage_base(binding.base);
+      return base == field_base::ui || base == field_base::i;
+    }
+    return false;
+  }
+
+  // Тот же лист, записанный целым выражением шейдера.
+  std::string integer_text(const tavl::node_view outer) const {
+    const auto node = unwrap(outer);
+    const auto& root = node.root();
+    const auto content = text(root.token);
+    if (root.token.type != tavl::token_type::identifier) {
+      return std::string(content);
+    }
+    for (size_t i = 0; i < inputs.size(); ++i) {
+      if (inputs[i].name != name_of(root.token)) continue;
+      // Знаковое и беззнаковое сравнивать между собой нельзя, поэтому оба приводятся к знаковому:
+      // диапазон идентификаторов сюда влезает, а смешение родов — нет.
+      return device_storage_base(inputs[i].base) == field_base::i ? std::format("in_{}_at(index)", i)
+                                                                  : std::format("int(in_{}_at(index))", i);
+    }
+    return std::string(content);
+  }
+
+  std::string_view name_of(const tavl::token& token) const {
+    return text(token);
+  }
+
   // Чтение поля своего элемента. Никакого другого обращения к данным у программы нет — она
   // структурно pointwise, и именно поэтому один её вызов это одна инвокация без синхронизации.
   std::string field(const std::string_view& name, const tavl::token& token) const {
@@ -255,6 +322,18 @@ std::string translator::binary(const std::string_view& op, const tavl::node_view
 
   if (node.size() != 2) {
     refuse(token, std::format("operator '{}' got {} operands", op, node.size()));
+  }
+
+  // ДВА ЦЕЛЫХ ЛИСТА СРАВНИВАЮТСЯ ЦЕЛЫМИ: у `ds` это сравнение двух точных double, то есть тот же
+  // ответ, а на устройстве оно перестаёт врать выше 2^24, где `float32` склеивает соседние числа.
+  static constexpr std::string_view comparisons[] = {"<", ">", "<=", ">=", "==", "!="};
+  const bool comparison = std::find(std::begin(comparisons), std::end(comparisons), op) != std::end(comparisons);
+  if (comparison && integer_leaf(node.child(0)) && integer_leaf(node.child(1))) {
+    const auto a = integer_text(node.child(0));
+    const auto b = integer_text(node.child(1));
+    if (op == "==") return std::format("({} == {})", a, b);
+    if (op == "!=") return std::format("({} != {})", a, b);
+    return std::format("({} {} {})", a, op, b);
   }
 
   const auto left = required(node.child(0), std::format("the left operand of '{}'", op));
@@ -786,7 +865,14 @@ translation translate_to_glsl(const std::string_view& name,
                          ? std::format("clamp({}, {:.1f}, {:.1f})", numeric, range.minimum, range.maximum)
                          : numeric;
   const auto stored_base = device_storage_base(output.base);
-  if (stored_base == field_base::v) {
+  // КОПИЯ ИДЕНТИФИКАТОРА ОСТАЁТСЯ СОБОЙ: целый лист, уходящий в целое поле, не делает круг через
+  // `float32` и потому не слипается выше 2^24. Всё остальное считается плавающим — см. `integer_leaf`.
+  const bool integer_identity = kind != script_program::result_kind::predicate && stored_base != field_base::v &&
+                                emitter.integer_leaf(tavl::node_view{nodes});
+  if (integer_identity) {
+    const auto direct = emitter.integer_text(tavl::node_view{nodes});
+    stored = stored_base == field_base::ui ? std::format("uint(max({}, 0))", direct) : direct;
+  } else if (stored_base == field_base::v) {
     stored = clamped;
   } else if (stored_base == field_base::ui) {
     stored = std::format("uint({})", clamped);

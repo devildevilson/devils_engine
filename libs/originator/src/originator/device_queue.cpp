@@ -530,8 +530,11 @@ void device_queue::write_push(const queue_call& call, call_plan& plan) const {
 
   for (size_t p = 0; p < params.size(); ++p) {
     // Значение по умолчанию берётся у САМОГО инструмента через его же чтение параметров: числа,
-    // которых в вызове нет, обязаны совпасть с тем, что подставил бы CPU.
-    const float value = float(call.params.number(params[p].name, params[p].fallback));
+    // которых в вызове нет, обязаны совпасть с тем, что подставил бы CPU. Нечисловой параметр
+    // переводит в число сам инструмент — второго словаря для этого не заводится.
+    const float value = params[p].resolve != nullptr
+                          ? float(params[p].resolve(call.params))
+                          : float(call.params.number(params[p].name, params[p].fallback));
     std::memcpy(plan.push.data() + sizeof(header) + p * sizeof(float), &value, sizeof(value));
   }
 

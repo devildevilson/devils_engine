@@ -509,11 +509,20 @@ TEST_CASE("originator translates branch blocks, locals and randomness") {
   CHECK(sequenced.source.find("&&") != std::string::npos);
   CHECK(sequenced.source.find(": true") != std::string::npos);
 
-  // Равенство переводится СРАВНЕНИЕМ С ДОПУСКОМ — тем же, каким его считает `ds`: побитовое `==`
-  // разошлось бы с ним ровно на границе правила.
-  const auto equality = translate("{ value_or = { a == 0, 1, 2 } }", number);
+  // Равенство ПЛАВАЮЩИХ переводится сравнением С ДОПУСКОМ — тем же, каким его считает `ds`: побитовое
+  // `==` разошлось бы с ним ровно на границе правила.
+  const std::vector<originator::translated_field> floating = {{"a", originator::field_base::v},
+                                                              {"b", originator::field_base::v}};
+  const auto equality = originator::translate_to_glsl("equality", "{ value_or = { a == b, 1, 2 } }", floating,
+                                                      output, number);
   CHECK(equality.source.find("abs(") != std::string::npos);
   CHECK(equality.source.find("0.000001") != std::string::npos);
+
+  // А два ЦЕЛЫХ листа сравниваются целыми: у `ds` это сравнение двух точных double, то есть тот же
+  // ответ, а на устройстве оно перестаёт врать выше 2^24. Допуск здесь был бы лишним кругом через
+  // `float32` — ровно там, где он и теряет числа.
+  const auto integer_equality = translate("{ value_or = { a == 0, 1, 2 } }", number);
+  CHECK(integer_equality.source.find("0.000001") == std::string::npos);
 
   // `switch`: сравниваемое значение считается ОДИН раз и живёт локалью.
   const auto switched =
@@ -753,4 +762,84 @@ TEST_CASE("originator weighted choice follows the declared weights") {
   MESSAGE("weights 1:3 gave the heavy branch " << share);
   CHECK(share > 0.70);
   CHECK(share < 0.80);
+}
+
+TEST_CASE("originator keeps integer leaves integer, and that shows above 2^24") {
+  // ГРАНИЦА `float32` — 2^24: выше него соседние целые склеиваются в одно число. У `ds` поле читается
+  // в `double` и точно до 2^53, поэтому программа, СРАВНИВАЮЩАЯ идентификаторы, на устройстве обязана
+  // была бы отвечать неверно — если бы сравнение шло плавающим.
+  //
+  // Арифметика в целый путь не входит НАМЕРЕННО: у `ds` она двойной точности при любом роде поля
+  // (аксессор возвращает `double`), и целые в шейдере РАЗОШЛИСЬ бы с ней делением и переполнением.
+  const std::vector<originator::translated_field> inputs = {{"id", originator::field_base::ui},
+                                                            {"other", originator::field_base::ui}};
+  const originator::translated_field output{"mark", originator::field_base::ui};
+  const auto number = originator::script_program::result_kind::number;
+
+  // Сравнение двух целых листов — целыми, без единого `float(` вокруг них.
+  const auto compared = originator::translate_to_glsl("compare", "{ value_or = { id == other, 1, 0 } }", inputs,
+                                                      output, number);
+  CHECK(compared.source.find("(int(in_0_at(index)) == int(in_1_at(index)))") != std::string::npos);
+
+  // Копия идентификатора не делает круга через float.
+  const auto copied = originator::translate_to_glsl("copy", "{ id }", inputs, output, number);
+  CHECK(copied.form.body().find("uint(max(int(in_0_at(index)), 0))") != std::string::npos);
+
+  // А арифметика остаётся плавающей — это и есть граница, проведённая по семантике `ds`.
+  const auto summed = originator::translate_to_glsl("sum", "{ id + other }", inputs, output, number);
+  CHECK(summed.source.find("float(in_0_at(index))") != std::string::npos);
+
+  if (!painter::compute_device_available()) {
+    MESSAGE("no Vulkan device available: the boundary is not measured here");
+    return;
+  }
+
+  // ЧИСЛА ВЫШЕ 2^24, ОТЛИЧАЮЩИЕСЯ НА ЕДИНИЦУ: во `float32` они равны, в целых — нет.
+  constexpr size_t pairs = 4096;
+  const std::vector<field_pair> fields = {{"id", "ui1"}, {"other", "ui1"}, {"mark", "ui1"}};
+  auto layout = originator::make_buffer_layout(originator::storage_kind::soa, fields, "cells");
+  originator::buffer cells("cells", std::move(layout), pairs);
+
+  auto id = cells.field(cells.find_field("id"));
+  auto other = cells.field(cells.find_field("other"));
+  for (size_t i = 0; i < pairs; ++i) {
+    const double base = 16777216.0 + double(i) * 2.0; // 2^24 и выше
+    id.set(i, base);
+    other.set(i, base + 1.0);
+  }
+
+  const std::vector<std::string> names = {"id", "other"};
+  const auto program = originator::script_program::compile("compare", "{ value_or = { id == other, 1, 0 } }",
+                                                           names, number);
+  originator::parameters params;
+  const std::vector<originator::field_ref> program_inputs{readable(cells, "id"), readable(cells, "other")};
+  const std::vector<originator::field_ref> program_outputs{writable(cells, "mark")};
+  originator::dispatch_script(*program, program_inputs, program_outputs, params, 1, 0, pairs, "boundary", nullptr);
+
+  size_t cpu_equal = 0;
+  const auto mark = cells.field(cells.find_field("mark"));
+  for (size_t i = 0; i < pairs; ++i) {
+    cpu_equal += size_t(mark.get(i) != 0.0);
+  }
+  // `ds` читает в double: соседние целые выше 2^24 для него РАЗНЫЕ.
+  CHECK(cpu_equal == 0);
+
+  std::vector<std::vector<int32_t>> host(2, std::vector<int32_t>(pairs));
+  for (size_t i = 0; i < pairs; ++i) {
+    host[0][i] = int32_t(id.get(i));
+    host[1][i] = int32_t(other.get(i));
+  }
+
+  painter::compute_context_config config;
+  config.app_name = "translate_integer_test";
+  painter::compute_context context(config);
+
+  const auto push = make_push(uint32_t(pairs), compared, params);
+  const auto gpu = run_on_device(context, compared, host, push, pairs);
+  size_t gpu_equal = 0;
+  for (size_t i = 0; i < pairs; ++i) {
+    gpu_equal += size_t(gpu[i] != 0u);
+  }
+  // И на устройстве теперь тоже: целое сравнение не склеивает соседей.
+  CHECK(gpu_equal == 0);
 }
