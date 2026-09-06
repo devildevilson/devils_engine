@@ -21,6 +21,7 @@
 #include "devils_engine/originator/pipeline.h"
 #include "devils_engine/originator/primitives.h"
 #include "devils_engine/originator/script_program.h"
+#include "devils_engine/originator/execution_profile.h"
 #include "devils_engine/originator/script_host.h"
 #include "devils_engine/originator/tools.h"
 #include "devils_engine/thread/atomic_pool.h"
@@ -47,6 +48,8 @@ struct options {
   uint64_t seed = 20260831;
   originator::storage_kind::values layout = originator::storage_kind::soa;
   bool verify = false;
+  // Учёт исполнения: во что обходятся вызовы и какая их доля годна к переносу на устройство.
+  bool profile = false;
   bool bench = false;
   bool bench_queue = false;
   bool translate = false;
@@ -98,6 +101,8 @@ options parse_options(const int argc, const char** argv) {
     const std::string_view argument = argv[i];
     if (argument == "--verify") {
       result.verify = true;
+    } else if (argument == "--profile") {
+      result.profile = true;
     } else if (argument == "--bench") {
       result.bench = true;
     } else if (argument == "--bench-queue") {
@@ -131,6 +136,7 @@ options parse_options(const int argc, const char** argv) {
                 << "  --threads=N    число рабочих потоков (0 = по числу ядер)\n"
                 << "  --seed=N       зерно пайплайна\n"
                 << "  --verify       прогнать контрактные проверки\n"
+                << "  --profile      замерить, куда уходят часы и что годно к устройству\n"
                 << "  --bench        замерить уровни исполнения\n"
                 << "  --bench-queue  замерить слияние проходов очереди\n"
                 << "  --translate    напечатать перевод правила ds в шейдер\n";
@@ -1341,10 +1347,18 @@ int run_once(const options& opts) {
 
   auto description = load_description(opts);
   originator::script_host host(tools, threads == 0 ? nullptr : &pool);
+  originator::execution_profile profile;
+  if (opts.profile) {
+    host.set_profile(&profile);
+  }
   load_bodies(host, description);
 
   originator::pipeline p(description, sizes, opts.seed);
   const double milliseconds = run_and_measure(p, host);
+
+  if (opts.profile) {
+    std::cout << "\n" << originator::format_profile(profile) << "\n";
+  }
 
   std::cout << "GN01: пайплайн '" << p.name() << "', раскладка " << to_string(opts.layout)
             << ", потоков " << threads << "\n";

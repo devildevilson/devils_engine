@@ -21,6 +21,7 @@
 #include "devils_engine/originator/generator_resource.h"
 #include "devils_engine/originator/pipeline.h"
 #include "devils_engine/originator/primitives.h"
+#include "devils_engine/originator/execution_profile.h"
 #include "devils_engine/originator/script_host.h"
 #include "devils_engine/originator/tools.h"
 #include "devils_engine/utils/core.h"
@@ -53,6 +54,9 @@ struct options {
   size_t threads = 0; // 0 = по числу ядер минус один
   size_t arena_vertices = 6u << 20;
   bool verify = false;
+  // Учёт исполнения на нескольких чанках подряд: во что обходятся вызовы и какая их доля годна к
+  // переносу. Флагом, потому что учёт стоит двух отметок времени на вызов.
+  bool profile = false;
   bool validation = false;
   bool uncapped = false;
   uint32_t width = 1280;
@@ -131,7 +135,9 @@ options parse_options(const int argc, const char** argv) {
     const std::string_view argument(argv[i]);
     const auto value_of = [&](const std::string_view prefix) { return std::string(argument.substr(prefix.size())); };
 
-    if (argument == "--verify") {
+    if (argument == "--profile") {
+      result.profile = true;
+    } else if (argument == "--verify") {
       result.verify = true;
     } else if (argument == "--validation") {
       result.validation = true;
@@ -421,6 +427,9 @@ public:
   }
 
   originator::pipeline& line() noexcept { return *line_; }
+  // Учёт исполнения ставится снаружи: тело шага у чанка одно и то же, поэтому мерить его надо на
+  // НЕСКОЛЬКИХ чанках подряд — цена первого отличается от цены остальных ровно переводом и прогревом.
+  void set_profile(originator::execution_profile* profile) noexcept { host_->set_profile(profile); }
 
 private:
   // ВХОД ПАЙПЛАЙНА заполняется здесь, до первого шага, и это единственное место, которое знает про
@@ -713,6 +722,42 @@ point point_of(const gn03::gpu_vertex& vertex, const originator::chunk_key& key,
     result[axis] = double(origin[axis]) * span + gn03::decode_local_position(vertex.position[axis], span);
   }
   return result;
+}
+
+// УЧЁТ НА НЕСКОЛЬКИХ ЧАНКАХ ПОДРЯД. Один чанк ничего не говорит про стриминг: цена ПЕРВОГО включает
+// перевод программ и прогрев, а генератор потом считает тысячи чанков тем же телом. Поэтому первый
+// чанк меряется отдельно, а сводка снимается с остальных.
+int main_profile(const options& opts) {
+  const auto description = make_description(opts.overrides);
+  const auto sizes = read_sizes(description);
+  const auto table = make_size_table(sizes);
+
+  const auto skeleton = build_skeleton(opts.overrides, opts.seed);
+  chunk_worker worker(description, table, opts.seed, &skeleton);
+
+  using originator::format_profile;
+
+  originator::execution_profile first;
+  worker.set_profile(&first);
+  gn03::chunk_mesh mesh;
+  worker.generate(opts.probe, mesh);
+
+  originator::execution_profile rest;
+  worker.set_profile(&rest);
+  constexpr int64_t side = 2;
+  size_t chunks = 0;
+  for (int64_t x = -side; x <= side; ++x) {
+    for (int64_t z = -side; z <= side; ++z) {
+      const originator::chunk_key key{opts.probe.x + x, opts.probe.y, opts.probe.z + z};
+      worker.generate(key, mesh);
+      chunks += 1;
+    }
+  }
+  worker.set_profile(nullptr);
+
+  std::printf("\nПЕРВЫЙ ЧАНК (включает перевод программ и прогрев):\n\n%s\n", format_profile(first, 5).c_str());
+  std::printf("\nСЛЕДУЮЩИЕ %zu ЧАНКОВ:\n\n%s\n", chunks, format_profile(rest, 8).c_str());
+  return 0;
 }
 
 int main_verify(const options& opts) {
@@ -1952,6 +1997,9 @@ int main(const int argc, const char** argv) {
 
   if (opts.verify) {
     return main_verify(opts);
+  }
+  if (opts.profile) {
+    return main_profile(opts);
   }
 
   const auto description = make_description(opts.overrides);

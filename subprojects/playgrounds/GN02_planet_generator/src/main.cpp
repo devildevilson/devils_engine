@@ -24,6 +24,7 @@
 #include "devils_engine/originator/generator_resource.h"
 #include "devils_engine/originator/pipeline.h"
 #include "devils_engine/originator/primitives.h"
+#include "devils_engine/originator/execution_profile.h"
 #include "devils_engine/originator/script_host.h"
 #include "devils_engine/originator/script_program.h"
 #include "devils_engine/originator/tools.h"
@@ -82,6 +83,9 @@ struct options {
   std::string stats;
   bool verify = false;
   bool report = true;
+  // Учёт исполнения: во что обходятся вызовы и какая их доля вообще может уехать на устройство.
+  // Флагом, а не всегда, потому что учёт стоит двух отметок времени на вызов.
+  bool profile = false;
   bool map = false;
   bool quiet = false;
 
@@ -132,7 +136,9 @@ options parse_options(const int argc, const char** argv) {
   options result;
   for (int i = 1; i < argc; ++i) {
     const std::string_view argument = argv[i];
-    if (argument == "--verify") {
+    if (argument == "--profile") {
+      result.profile = true;
+    } else if (argument == "--verify") {
       result.verify = true;
     } else if (argument == "--quiet") {
       result.quiet = true;
@@ -228,6 +234,7 @@ options parse_options(const int argc, const char** argv) {
                 << "  --uncapped      draw without the 60 FPS limit (for measuring)\n"
                 << "  --width/--height/--frames/--frame-dump/--validation - window and frame dump\n"
                 << "  --smoothing=W   border smoothing in lattice steps (0.70 angular .. 1.24 smooth)\n"
+                << "  --profile       measure where the wall clock goes and what could go to a device\n"
                 << "  --verify        run the contract checks\n"
                 << "  --set NAME=VALUE  override a value from values.tavl (repeatable)\n"
                 << "  --quiet         no report\n";
@@ -385,8 +392,9 @@ struct world {
 // посчитанный до шага N, — это тот же мир, у которого следующие поля ещё нулевые.
 world generate(const options& opts, const originator::tool_registry& tools,
                const originator::pipeline_description& description, thread::atomic_pool* pool,
-               const size_t step_limit = 0) {
+               const size_t step_limit = 0, originator::execution_profile* profile = nullptr) {
   originator::script_host host(const_cast<originator::tool_registry&>(tools), pool);
+  host.set_profile(profile);
   load_bodies(host, description);
 
   world result;
@@ -2465,8 +2473,13 @@ int run_once(options opts) {
                            : opts.threads;
   thread::atomic_pool pool(threads);
 
-  auto result = generate(opts, tools, description, threads == 0 ? nullptr : &pool);
+  originator::execution_profile profile;
+  auto result = generate(opts, tools, description, threads == 0 ? nullptr : &pool,
+                         0, opts.profile ? &profile : nullptr);
 
+  if (opts.profile) {
+    std::cout << "\n" << originator::format_profile(profile) << "\n";
+  }
   if (opts.report) {
     print_report(*result.line, opts, result.milliseconds);
     print_step_times(result);

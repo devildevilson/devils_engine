@@ -554,8 +554,6 @@ void script_host::run_program(const sol::table args) {
   uint64_t translation = 0;
   auto fitness = device_fitness::no_body;
   if (profile_ != nullptr && !outputs.empty() && !device_representable(inputs, outputs)) {
-    // Род поля решает РАНЬШЕ перевода, и спрашивать перевод здесь нельзя: он откажет тем же самым, но
-    // громко — а диагностический прогон не имеет права выглядеть как череда ошибок.
     fitness = device_fitness::narrow;
   } else if (profile_ != nullptr && !outputs.empty()) {
     const auto translation_started = now_us();
@@ -800,23 +798,28 @@ sol::object script_host::execute_queue(const sol::table self, const sol::table a
   // ОЧЕРЕДЬ УЧИТЫВАЕТСЯ ОДНОЙ ЗАПИСЬЮ: она и исполняется целиком. Годность у неё — годность САМОГО
   // СЛАБОГО элемента: на устройство уезжает вся очередь или ничего, поэтому один непереносимый вызов
   // держит её на CPU, и приписывать ей годность по большинству значило бы завысить долю.
+  //
+  // ВЕСЬ РАЗБОР ПОД УСЛОВИЕМ: у выключенного учёта не должно быть цены, а обход всех вызовов очереди
+  // со сборкой двух списков привязок — цена вполне настоящая, у очереди из 96 элементов особенно.
   auto fitness = device_fitness::ready;
   size_t elements = 0;
   size_t by_fitness[device_fitness::count] = {};
   std::vector<field_ref> inputs;
   std::vector<field_ref> outputs;
-  for (const auto& call : queue.calls) {
-    const auto call_fitness =
-      call.tool != nullptr
-        ? fitness_of(*call.tool, call.inputs, call.outputs)
-        : (!device_representable(call.inputs, call.outputs)
-             ? device_fitness::narrow
-             : (call.device.declared() ? device_fitness::ready : device_fitness::no_body));
-    fitness = std::max(fitness, call_fitness);
-    by_fitness[call_fitness] += 1;
-    elements += call.range_count();
-    inputs.insert(inputs.end(), call.inputs.begin(), call.inputs.end());
-    outputs.insert(outputs.end(), call.outputs.begin(), call.outputs.end());
+  if (profile_ != nullptr) {
+    for (const auto& call : queue.calls) {
+      const auto call_fitness =
+        call.tool != nullptr
+          ? fitness_of(*call.tool, call.inputs, call.outputs)
+          : (!device_representable(call.inputs, call.outputs)
+               ? device_fitness::narrow
+               : (call.device.declared() ? device_fitness::ready : device_fitness::no_body));
+      fitness = std::max(fitness, call_fitness);
+      by_fitness[call_fitness] += 1;
+      elements += call.range_count();
+      inputs.insert(inputs.end(), call.inputs.begin(), call.inputs.end());
+      outputs.insert(outputs.end(), call.outputs.begin(), call.outputs.end());
+    }
   }
 
   const auto started = profile_ != nullptr ? now_us() : 0;
@@ -977,6 +980,22 @@ const translated_form& script_host::acquire_device_form(const std::string_view& 
   }
   if (source == nullptr) {
     utils::error{}("originator step '{}': no devils_script program named '{}'", current_step_, program_name);
+  }
+
+  // РОД ПОЛЯ РЕШАЕТ РАНЬШЕ ПЕРЕВОДА, и спрашивать перевод здесь нельзя: он откажет тем же самым, но
+  // ГРОМКО — а это объявленный отказ, по которому очередь просто остаётся на CPU. Пока проверки не
+  // было, обычный прогон генератора с полями `ub1` печатал пачку строк уровня error, ничего при этом
+  // не сломав: тот самый случай, когда шум приучает не читать сообщения.
+  {
+    const field_ref single[] = {output};
+    if (!device_representable(inputs, single)) {
+      device_forms_.push_back(device_form_entry{
+        std::string(program_name), std::string(signature),
+        translated_form::refused(std::format(
+          "field kinds outside the 32-bit set (v, ui, i) have no shader type: '{}' is '{}'",
+          output.field_name(), to_string(output.type().base)))});
+      return device_forms_.back().form;
+    }
   }
 
   std::vector<translated_field> fields;

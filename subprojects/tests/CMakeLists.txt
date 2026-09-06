@@ -82,6 +82,9 @@ target_link_libraries(network_replication_test PRIVATE devils_engine::network)
 devils_add_doctest(network_hot_path_test network_hot_path_test.cpp)
 target_link_libraries(network_hot_path_test PRIVATE devils_engine::network)
 
+devils_add_doctest(network_session_test network_session_test.cpp)
+target_link_libraries(network_session_test PRIVATE devils_engine::network)
+
 if (TARGET devils_engine::network_gns)
   devils_add_doctest(network_gns_transport_test network_gns_transport_test.cpp)
   target_link_libraries(network_gns_transport_test PRIVATE devils_engine::network_gns)
@@ -262,6 +265,9 @@ target_link_libraries(originator_pipeline_test PRIVATE devils_engine::originator
 
 devils_add_doctest(originator_queue_test originator_queue_test.cpp)
 target_link_libraries(originator_queue_test PRIVATE devils_engine::originator devils_engine::utils)
+
+devils_add_doctest(originator_profile_test originator_profile_test.cpp)
+target_link_libraries(originator_profile_test PRIVATE devils_engine::originator devils_engine::utils)
 
 devils_add_doctest(originator_collapse_test originator_collapse_test.cpp)
 target_link_libraries(originator_collapse_test PRIVATE devils_engine::originator devils_engine::utils)

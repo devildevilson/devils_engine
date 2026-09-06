@@ -161,9 +161,17 @@ return function(step)
   -- быть видно, а не подразумеваться.
   step.writes.state:field("biomes_used"):set(0, #present)
 
-  originator.fill{ outputs = { blend_num }, params = { value = 0.0 } }
-  originator.fill{ outputs = { blend_den }, params = { value = 0.0 } }
-  originator.fill{ outputs = { shade_num }, params = { value = 0.0 } }
+  -- ОЧЕРЕДЬ ОДНА НА ВСЕ БИОМЫ, а не на каждый. Между правилами соседних биомов дирижёр не читает ни
+  -- одной величины — значит цепочка не прерывается, и разрывать её на пять очередей было решением
+  -- записи, а не устройства работы. Цена разрыва измерена учётом: пять очередей платят за одни и те
+  -- же поля пять раз, и на устройстве это была бы передача 12.76 МБ вместо 2.45 МБ на чанк.
+  local rule = {}
+  -- Имя не `step`: так зовётся аргумент тела шага, и локаль его бы затенила.
+  local function push(call) rule[#rule + 1] = call end
+
+  push(originator.queue.fill{ outputs = { blend_num }, params = { value = 0.0 } })
+  push(originator.queue.fill{ outputs = { blend_den }, params = { value = 0.0 } })
+  push(originator.queue.fill{ outputs = { shade_num }, params = { value = 0.0 } })
 
   -- ПРАВИЛО ОДНОГО БИОМА — ЭТО ОЧЕРЕДЬ, и здесь она самая длинная в чанке: четырнадцать-шестнадцать
   -- проходов подряд, все pointwise над одним диапазоном, и НИ ОДНОГО промежуточного значения в lua
@@ -180,63 +188,62 @@ return function(step)
   -- решение по параметру конфига, а не по данным, поэтому оно и принимается здесь, при составлении.
   for _, i in ipairs(present) do
     local reach = p["biome_" .. i .. "_reach"]
-    local rule = {}
-    local function step(call) rule[#rule + 1] = call end
 
     -- ВЕС: (1 - r²/reach²)², гладкий бугор с КОМПАКТНЫМ носителем. За радиусом ровно ноль — именно
     -- это делает отбрасывание далёких биомов точным, а не приблизительным.
-    step(originator.queue.remap{ inputs = { warmth }, outputs = { climate_a },
+    push(originator.queue.remap{ inputs = { warmth }, outputs = { climate_a },
                                  params = { offset = -p["biome_" .. i .. "_warmth"] } })
-    step(originator.queue.modulate{ inputs = { climate_a, climate_a }, outputs = { weight } })
-    step(originator.queue.remap{ inputs = { wetness }, outputs = { climate_a },
+    push(originator.queue.modulate{ inputs = { climate_a, climate_a }, outputs = { weight } })
+    push(originator.queue.remap{ inputs = { wetness }, outputs = { climate_a },
                                  params = { offset = -p["biome_" .. i .. "_wetness"] } })
-    step(originator.queue.modulate{ inputs = { climate_a, climate_a }, outputs = { climate_b } })
-    step(originator.queue.blend{ inputs = { weight, climate_b }, outputs = { weight } })
-    step(originator.queue.remap{ inputs = { weight }, outputs = { weight },
+    push(originator.queue.modulate{ inputs = { climate_a, climate_a }, outputs = { climate_b } })
+    push(originator.queue.blend{ inputs = { weight, climate_b }, outputs = { weight } })
+    push(originator.queue.remap{ inputs = { weight }, outputs = { weight },
                                  params = { scale = 1.0 / (reach * reach), max = 1.0 } })
-    step(originator.queue.remap{ inputs = { weight }, outputs = { weight },
+    push(originator.queue.remap{ inputs = { weight }, outputs = { weight },
                                  params = { scale = -1.0, offset = 1.0, min = 0.0 } })
-    step(originator.queue.modulate{ inputs = { weight, weight }, outputs = { weight } })
+    push(originator.queue.modulate{ inputs = { weight, weight }, outputs = { weight } })
 
     -- ПЛОТНОСТЬ ПО ПРАВИЛУ ЭТОГО БИОМА: запас по высоте со своим градиентом, рельеф и детали со
     -- своими амплитудами, пещеры со своей шириной и силой.
-    step(originator.queue.remap{
+    push(originator.queue.remap{
       inputs = { position }, outputs = { biome_density },
       params = {
         component = 1, scale = -p["biome_" .. i .. "_gradient"],
         offset = p.surface_level * p["biome_" .. i .. "_gradient"],
       },
     })
-    step(originator.queue.blend{ inputs = { biome_density, relief }, outputs = { biome_density },
+    push(originator.queue.blend{ inputs = { biome_density, relief }, outputs = { biome_density },
                                  params = { first = 1.0, second = p["biome_" .. i .. "_relief"] } })
-    step(originator.queue.blend{ inputs = { biome_density, detail }, outputs = { biome_density },
+    push(originator.queue.blend{ inputs = { biome_density, detail }, outputs = { biome_density },
                                  params = { first = 1.0, second = p["biome_" .. i .. "_detail"] } })
 
     local cave_width = p["biome_" .. i .. "_cave_width"]
     if cave_width > 0.0 then
       -- Ход идёт там, где слой шума проходит через нуль: нулевая изолиния — поверхность, её
       -- окрестность — труба, поэтому получаются ходы, а не шары.
-      step(originator.queue.remap{ inputs = { cave }, outputs = { climate_b },
+      push(originator.queue.remap{ inputs = { cave }, outputs = { climate_b },
                                    params = { absolute = true, scale = -1.0 / cave_width, offset = 1.0, min = 0.0 } })
-      step(originator.queue.blend{ inputs = { biome_density, climate_b }, outputs = { biome_density },
+      push(originator.queue.blend{ inputs = { biome_density, climate_b }, outputs = { biome_density },
                                    params = { first = 1.0, second = -p["biome_" .. i .. "_cave_strength"] } })
     end
 
     -- Накопление взвешенной суммы и суммы весов. Оттенок накапливается ТЕМ ЖЕ весом, поэтому цвет
     -- переходит между биомами так же гладко, как и форма — и по картинке видно ровно то, что
     -- посчитано, а не отдельная раскраска.
-    step(originator.queue.modulate{ inputs = { biome_density, weight }, outputs = { climate_b } })
-    step(originator.queue.blend{ inputs = { blend_num, climate_b }, outputs = { blend_num } })
-    step(originator.queue.blend{ inputs = { blend_den, weight }, outputs = { blend_den } })
-    step(originator.queue.blend{ inputs = { shade_num, weight }, outputs = { shade_num },
+    push(originator.queue.modulate{ inputs = { biome_density, weight }, outputs = { climate_b } })
+    push(originator.queue.blend{ inputs = { blend_num, climate_b }, outputs = { blend_num } })
+    push(originator.queue.blend{ inputs = { blend_den, weight }, outputs = { blend_den } })
+    push(originator.queue.blend{ inputs = { shade_num, weight }, outputs = { shade_num },
                                  params = { first = 1.0, second = p["biome_" .. i .. "_shade"] } })
 
-    -- ГРАНИЦА: наружу выходят три накопителя, и только они. Всё остальное — `weight`, `climate_a`,
-    -- `climate_b`, `biome_density` — принадлежит правилу одного биома и следующей итерацией
-    -- переписывается целиком.
-    rule.output = { blend_num, blend_den, shade_num }
-    originator.queue(rule)
   end
+
+  -- ГРАНИЦА: наружу выходят три накопителя, и только они. Всё остальное — `weight`, `climate_a`,
+  -- `climate_b`, `biome_density` — принадлежит правилу одного биома и следующим биомом переписывается
+  -- целиком, а перезапись после чтения очередь считает живой работой.
+  rule.output = { blend_num, blend_den, shade_num }
+  originator.queue(rule)
 
   -- Нормировка. Сумма весов не бывает нулевой по построению: базовый биом накрывает всю
   -- климатическую плоскость, и его радиус объявлен именно для этого.

@@ -212,6 +212,7 @@ profile_summary summarize(const execution_profile& profile) {
       summary.payable_transfer_per_call += run.transfer_per_call;
       summary.payable_transfer_shared += run.transfer_shared;
       summary.payable_runs += 1;
+      summary.split_runs += size_t(run.records >= 2);
     }
     summary.runs.push_back(std::move(run));
   }
@@ -294,6 +295,14 @@ std::string format_profile(const execution_profile& profile, const size_t top_ca
                             ? 0.0
                             : 100.0 * double(summary.payable_transfer_per_call - summary.payable_transfer_shared) /
                                 double(summary.payable_transfer_per_call)));
+  if (summary.split_runs != 0) {
+    // РЕЗИДЕНТНОСТЬ ВНУТРИ ОЧЕРЕДИ УЖЕ ЕСТЬ: поле, которое пишет один элемент очереди и читает
+    // следующий, границы не пересекает. Прогон, объявленный несколькими вызовами, платит за передачу
+    // зря — и это правка КОНФИГА (объявить их одной очередью), а не работа библиотеки.
+    text.append(std::format("  из них {} объявлены НЕСКОЛЬКИМИ вызовами там, где могли быть одной "
+                            "очередью — это и есть разница выше\n",
+                            summary.split_runs));
+  }
   // ЧТО ДАДУТ ТЕЛА, в правильной валюте: не своя доля, а СКЛЕЙКА соседей. Отсутствующее тело рвёт
   // цепочку, и годный вызов по обе стороны от него остаётся одиночкой, которая кругу передачи
   // проигрывает.
@@ -314,6 +323,16 @@ std::string format_profile(const execution_profile& profile, const size_t top_ca
                             run.step, run.passes, run.records, milliseconds(run.microseconds),
                             double(run.transfer_per_call) / (1024.0 * 1024.0),
                             double(run.transfer_shared) / (1024.0 * 1024.0)));
+    // ИЗ ЧЕГО ПРОГОН СОСТОИТ. Без этого не отличить «несколько очередей подряд, между которыми ничего
+    // нет» (тогда их надо просто объявить одной, и это правка конфига) от «между ними стоит вызов,
+    // который в очередь не пускается» (тогда нужна общая резидентность, и это работа библиотеки).
+    text.append("   ");
+    for (size_t k = 0; k < run.records; ++k) {
+      const auto& part = profile.records()[run.first_record + k];
+      text.append(std::format(" {}{}", part.label,
+                              part.queue_size != 0 ? std::format("[{}]", part.queue_size) : ""));
+    }
+    text.push_back('\n');
   }
 
   if (summary.translation_microseconds != 0) {
