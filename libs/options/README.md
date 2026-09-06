@@ -232,7 +232,6 @@ LTO применяется только для:
 
 - `dr_libs`;
 - `stb`;
-- `zpp_bits`;
 - `rapidhash`;
 - `reflect`.
 

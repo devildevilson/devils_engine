@@ -151,10 +151,15 @@ TEST_CASE("originator refuses what it cannot translate, and says why") {
   fails("{ max = { height } }");
   fails("{ value_or = { height < 0, 1 } }");
 
-  // Род поля, у которого на устройстве нет представления без расширений.
+  // УЗКИЙ РОД БОЛЬШЕ НЕ ОТКАЗ: на устройстве поле живёт расширенным, потому что копия там это КЭШ, а
+  // кэш вправе быть шире истины. Проверяется ровно то, что делает расширение честным: тип аксессора
+  // тридцатидвухбитный, а ЗАЖИМ идёт по ИСХОДНОМУ роду — иначе поле из `resident`, которое никогда не
+  // скачивается, осталось бы со значением, невозможным на хосте.
   const originator::translated_field narrow{"biome", originator::field_base::ub};
-  CHECK_THROWS_AS(originator::translate_to_glsl("narrow", classify_source, inputs, narrow, kind),
-                  std::runtime_error);
+  const auto widened = originator::translate_to_glsl("narrow", classify_source, inputs, narrow, kind);
+  CHECK(widened.source.find("buffer out_0_block { uint data[]; }") != std::string::npos);
+  CHECK(widened.source.find("clamp(") != std::string::npos);
+  CHECK(widened.source.find("255.0") != std::string::npos);
 }
 
 TEST_CASE("originator translates the arithmetic vocabulary one to one") {

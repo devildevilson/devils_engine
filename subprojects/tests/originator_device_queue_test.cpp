@@ -33,6 +33,7 @@ originator::tool_registry& registry() {
   static originator::tool_registry r;
   if (r.size() == 0) {
     r.add_standard_tools();
+    r.add_graph_tools();
   }
   return r;
 }
@@ -239,19 +240,18 @@ TEST_CASE("originator device queue refuses what does not go to a device, and say
 
   SUBCASE("a tool without a device form") {
     originator::parameters params;
-    params.set_number("sea_level", 0.5);
+    params.set_number("width", 1.0);
 
-    // `classify` пишет в однобайтовое поле и устройственной формы не объявляет: у площадки на CPU он
-    // есть, а на устройстве его нет, и это законный ответ, а не дефект.
-    const std::vector<field_pair> narrow = {{"height", "v1"}, {"moisture", "v1"}, {"biome", "ub1"}};
-    auto layout = originator::make_buffer_layout(originator::storage_kind::soa, narrow, "cells");
+    // `value_noise` устройственной формы не объявляет: у площадки на CPU он есть, а на устройстве
+    // нет, и это законный ответ, а не дефект. Инструмент здесь важен только тем, что тела у него нет.
+    const std::vector<field_pair> plain = {{"height", "v1"}};
+    auto layout = originator::make_buffer_layout(originator::storage_kind::soa, plain, "cells");
     originator::buffer other("cells", std::move(layout), grid_count);
 
     originator::computation_queue queue;
-    queue.name = "narrow";
-    queue.calls.push_back(tool_call("classify", {readable(other, "height"), readable(other, "moisture")},
-                                    {writable(other, "biome")}, params));
-    queue.output.push_back(writable(other, "biome"));
+    queue.name = "bodiless";
+    queue.calls.push_back(tool_call("value_noise", {}, {writable(other, "height")}, params));
+    queue.output.push_back(writable(other, "height"));
 
     const auto check = originator::check_device_queue(queue);
     CHECK_FALSE(check.allowed);
@@ -609,4 +609,203 @@ TEST_CASE("originator device plan refuses a range it would silently read as zero
   const auto check = originator::check_device_queue(queue);
   CHECK_FALSE(check.allowed);
   CHECK(check.message.find("indirect dispatch") != std::string::npos);
+}
+
+TEST_CASE("originator keeps a narrow field on the device as a widened copy, and the two paths agree") {
+  if (!painter::compute_device_available()) {
+    MESSAGE("no Vulkan device available: the widened copy is not checked here");
+    return;
+  }
+
+  // КОПИЯ НА УСТРОЙСТВЕ — КЭШ, А КЭШ ВПРАВЕ БЫТЬ ШИРЕ ИСТИНЫ. Байтового буфера у шейдера нет, но это
+  // не повод отказывать полю `ub1`: на устройстве оно живёт как `uint`, а преобразование на границе
+  // делают те же аксессоры, что и весь CPU-путь. Проверяется именно СОВПАДЕНИЕ ПУТЕЙ, и на целых оно
+  // обязано быть побитовым — расхождение здесь означало бы, что расширение считает не то.
+  const std::vector<field_pair> fields = {
+    {"height", "v1"}, {"label", "ub1"}, {"copy", "ub1"}, {"mark", "us1"}};
+  auto layout = originator::make_buffer_layout(originator::storage_kind::soa, fields, "cells");
+  originator::buffer cells("cells", std::move(layout), originator::buffer_extent{grid_width, grid_width, 0});
+
+  auto height = cells.field(cells.find_field("height"));
+  auto label = cells.field(cells.find_field("label"));
+  for (size_t i = 0; i < grid_count; ++i) {
+    height.set(i, double(i % 97));
+    label.set(i, double(i % 256));
+  }
+
+  originator::parameters copy;
+  copy.set_number("scale", 1.0);
+  originator::parameters wide;
+  // ЗАЖИМ ПРОВЕРЯЕТСЯ НАРОЧНО: `label` доходит до 255, а множитель 300 уводит результат далеко за
+  // границу байта. На хосте `store_component` зажимает, и расширенная копия обязана зажать так же —
+  // иначе поле, оставшееся на устройстве, несло бы значение, невозможное на CPU.
+  wide.set_number("scale", 300.0);
+
+  originator::computation_queue queue;
+  queue.name = "widened";
+  queue.calls.push_back(tool_call("remap", {readable(cells, "label")}, {writable(cells, "copy")}, copy));
+  queue.calls.push_back(tool_call("remap", {readable(cells, "label")}, {writable(cells, "mark")}, wide));
+  queue.output.push_back(writable(cells, "copy"));
+  queue.output.push_back(writable(cells, "mark"));
+
+  // `remap` объявил себя годным для любого рода, иначе план отклонил бы вызов над целым полем.
+  const auto check = originator::check_device_queue(queue);
+  REQUIRE_MESSAGE(check.allowed, check.message);
+
+  auto expected = cells;
+  run_on_cpu(queue);
+  std::vector<double> cpu_copy(grid_count);
+  std::vector<double> cpu_mark(grid_count);
+  const auto host_copy = cells.field(cells.find_field("copy"));
+  const auto host_mark = cells.field(cells.find_field("mark"));
+  for (size_t i = 0; i < grid_count; ++i) {
+    cpu_copy[i] = host_copy.get(i);
+    cpu_mark[i] = host_mark.get(i);
+  }
+
+  painter::compute_context_config config;
+  config.app_name = "device_widened_test";
+  painter::compute_context context(config);
+  originator::device_queue plan(context, queue);
+
+  // Передача считается по УСТРОЙСТВЕННОМУ размеру: байтовое поле едет вчетверо шире своего хостового,
+  // и это объявленная цена расширения, а не просчёт.
+  CHECK(plan.upload_byte_count() == grid_count * sizeof(uint32_t));
+
+  auto device_cells = expected;
+  originator::computation_queue device_queue_copy = queue;
+  for (auto& call : device_queue_copy.calls) {
+    for (auto& binding : call.inputs) binding = readable(device_cells, binding.field_name());
+    for (auto& binding : call.outputs) binding = writable(device_cells, binding.field_name());
+  }
+  for (auto& binding : device_queue_copy.output) {
+    binding = writable(device_cells, binding.field_name());
+  }
+  originator::device_queue device_plan(context, device_queue_copy);
+  device_plan.run();
+
+  const auto gpu_copy = device_cells.field(device_cells.find_field("copy"));
+  const auto gpu_mark = device_cells.field(device_cells.find_field("mark"));
+  size_t differences = 0;
+  size_t clamped = 0;
+  for (size_t i = 0; i < grid_count; ++i) {
+    differences += size_t(gpu_copy.get(i) != cpu_copy[i]) + size_t(gpu_mark.get(i) != cpu_mark[i]);
+    clamped += size_t(cpu_mark[i] == 65535.0);
+  }
+
+  // ПОБИТОВО: значения целые и небольшие, поэтому обещать здесь можно именно совпадение, а не
+  // близость.
+  CHECK(differences == 0);
+  // И зажим действительно случился, иначе проверка выше ничего не проверяла бы.
+  CHECK(clamped > 0);
+}
+
+TEST_CASE("originator device bodies of the graph tools agree with the CPU ones") {
+  if (!painter::compute_device_available()) {
+    MESSAGE("no Vulkan device available: the graph bodies are not compared here");
+    return;
+  }
+
+  // ГРАФ — ДРУГОЙ СПОСОБ АДРЕСОВАТЬ ПРОСТРАНСТВО, и на устройстве он выражается тремя буферами и
+  // одним циклом. Сверяется не «шейдер работает», а то, что цикл по CSR читает ТЕХ ЖЕ соседей: у
+  // сбитого смещения результат остаётся правдоподобным полем, и по картинке этого не видно.
+  constexpr size_t nodes = 4096;
+  constexpr size_t degree = 6;
+
+  const std::vector<field_pair> graph_fields = {{"start", "ui1"}};
+  auto offsets_layout = originator::make_buffer_layout(originator::storage_kind::soa, graph_fields, "offsets");
+  originator::buffer offsets("offsets", std::move(offsets_layout), nodes + 1);
+
+  const std::vector<field_pair> arc_fields = {{"node", "ui1"}};
+  auto arcs_layout = originator::make_buffer_layout(originator::storage_kind::soa, arc_fields, "arcs");
+  originator::buffer arcs("arcs", std::move(arcs_layout), nodes * degree);
+
+  const std::vector<field_pair> value_fields = {{"value", "v1"}, {"blurred", "v1"}, {"label", "ub1"},
+                                                {"edge", "ub1"}, {"picked", "v1"}};
+  auto cells_layout = originator::make_buffer_layout(originator::storage_kind::soa, value_fields, "cells");
+  originator::buffer cells("cells", std::move(cells_layout), nodes);
+
+  // Кольцо со степенью 6: соседство симметрично по построению, как того и требует контракт графа.
+  auto start = offsets.field(offsets.find_field("start"));
+  auto arc = arcs.field(arcs.find_field("node"));
+  for (size_t i = 0; i <= nodes; ++i) {
+    start.set(i, double(i * degree));
+  }
+  for (size_t i = 0; i < nodes; ++i) {
+    for (size_t k = 0; k < degree; ++k) {
+      const int64_t shift = int64_t(k) - int64_t(degree / 2) - (k >= degree / 2 ? 0 : 1);
+      arc.set(i * degree + k, double((int64_t(i) + shift + int64_t(nodes)) % int64_t(nodes)));
+    }
+  }
+
+  auto value = cells.field(cells.find_field("value"));
+  auto label = cells.field(cells.find_field("label"));
+  for (size_t i = 0; i < nodes; ++i) {
+    value.set(i, std::sin(double(i) * 0.05));
+    label.set(i, double((i / 64) % 5));
+  }
+
+  originator::parameters blur;
+  blur.set_number("self_weight", 1.0);
+  blur.set_number("neighbour_weight", 0.5);
+  originator::parameters frontier;
+  frontier.set_number("ignore", 0.0);
+  originator::parameters pick;
+  pick.set_number("offset", 0.0);
+  pick.set_number("missing", -1.0);
+
+  const auto make = [&](originator::buffer& o, originator::buffer& a, originator::buffer& c) {
+    const auto read_o = [&](const std::string_view& n) { return readable(o, n); };
+    originator::computation_queue queue;
+    queue.name = "graph";
+    auto blur_call = tool_call("graph_blur", {read_o("start"), readable(a, "node"), readable(c, "value")},
+                               {writable(c, "blurred")}, blur);
+    blur_call.range_end = nodes;
+    auto frontier_call = tool_call("graph_frontier", {read_o("start"), readable(a, "node"), readable(c, "label")},
+                                   {writable(c, "edge")}, frontier);
+    frontier_call.range_end = nodes;
+    auto lookup_call = tool_call("lookup", {readable(c, "label"), readable(c, "value")},
+                                 {writable(c, "picked")}, pick);
+    lookup_call.range_end = nodes;
+    queue.calls.push_back(std::move(blur_call));
+    queue.calls.push_back(std::move(frontier_call));
+    queue.calls.push_back(std::move(lookup_call));
+    queue.output.push_back(writable(c, "blurred"));
+    queue.output.push_back(writable(c, "edge"));
+    queue.output.push_back(writable(c, "picked"));
+    return queue;
+  };
+
+  auto device_cells = cells;
+  const auto cpu_queue = make(offsets, arcs, cells);
+  const auto check = originator::check_device_queue(cpu_queue);
+  REQUIRE_MESSAGE(check.allowed, check.message);
+  run_on_cpu(cpu_queue);
+
+  painter::compute_context_config config;
+  config.app_name = "device_graph_test";
+  painter::compute_context context(config);
+  originator::device_queue plan(context, make(offsets, arcs, device_cells));
+  plan.run();
+
+  // Размытие плавающее, поэтому сверяется в пределах float; граница и выборка по индексу —
+  // ЦЕЛОЧИСЛЕННЫЕ решения, и там расхождение означало бы чтение не тех соседей.
+  CHECK(worst_difference(cells, device_cells, "blurred") < 1.0e-6);
+
+  size_t edge_differences = 0;
+  size_t picked_differences = 0;
+  size_t edges = 0;
+  const auto cpu_edge = cells.field(cells.find_field("edge"));
+  const auto gpu_edge = device_cells.field(device_cells.find_field("edge"));
+  const auto cpu_picked = cells.field(cells.find_field("picked"));
+  const auto gpu_picked = device_cells.field(device_cells.find_field("picked"));
+  for (size_t i = 0; i < nodes; ++i) {
+    edge_differences += size_t(cpu_edge.get(i) != gpu_edge.get(i));
+    picked_differences += size_t(cpu_picked.get(i) != gpu_picked.get(i));
+    edges += size_t(cpu_edge.get(i) != 0.0);
+  }
+  CHECK(edge_differences == 0);
+  CHECK(picked_differences == 0);
+  // И граница обязана быть содержательной: без единой границы сверка ничего не проверяет.
+  CHECK(edges > 0);
 }
